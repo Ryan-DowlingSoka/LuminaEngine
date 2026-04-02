@@ -65,7 +65,7 @@ namespace Lumina
          * Called on every update stage and runs systems attached to this world.
          */
         void Update(const FUpdateContext& Context);
-        void Render(FRenderGraph& RenderGraph);
+        void Render(FRenderGraph& RenderGraph) const;
         
         FUNCTION(Script)
         entt::entity ConstructEntity(const FName& Name, const FTransform& Transform = FTransform());
@@ -99,9 +99,9 @@ namespace Lumina
         
         void DestroyEntity(entt::entity Entity);
         
-        void SetActiveCamera(entt::entity InEntity);
+        void SetActiveCamera(entt::entity InEntity) const;
         
-        SCameraComponent* GetActiveCamera();
+        SCameraComponent* GetActiveCamera() const;
         
         entt::entity GetActiveCameraEntity() const;
         

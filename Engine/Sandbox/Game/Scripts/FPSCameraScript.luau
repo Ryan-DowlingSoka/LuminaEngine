@@ -23,8 +23,6 @@ function NewScript:Update(DeltaTime: number)
 
     self.Transform:AddYaw(-MouseX)
     self.Transform:AddPitch(MouseY, -89.9, 89.9)
-
-    World:MarkTransformDirty(self.Entity)
 end
             
 function NewScript:OnDetach()

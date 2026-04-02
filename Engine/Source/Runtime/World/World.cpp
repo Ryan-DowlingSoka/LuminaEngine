@@ -124,9 +124,18 @@ namespace Lumina
             return Registry.destroy(Entity);
         }
         
-        static uint32 DispatchEvent_Lua(FEntityRegistry& Registry, entt::entity Entity)
+        static void DispatchEvent_Lua(FEntityRegistry& Registry, Lua::FRef Ref)
         {
-            return 0;
+            LUMINA_PROFILE_SECTION("Dispatch Event [Lua]");
+            entt::id_type Type = ECS::Utils::GetTypeID(Ref);
+            auto Meta = ECS::Utils::InvokeMetaFunc(Type, "dispatch_lua"_hs, entt::forward_as_meta(Registry), entt::forward_as_meta(Ref));
+        }
+        
+        static void EnqueueEvent_Lua(FEntityRegistry& Registry, Lua::FRef Ref)
+        {
+            LUMINA_PROFILE_SECTION("Enqueue Event [Lua]");
+            entt::id_type Type = ECS::Utils::GetTypeID(Ref);
+            auto Meta = ECS::Utils::InvokeMetaFunc(Type, "enqueue_lua"_hs, entt::forward_as_meta(Registry), entt::forward_as_meta(Ref));
         }
         
         static entt::entity DuplicateEntity_Lua(FEntityRegistry& Registry, entt::entity Entity)
@@ -225,6 +234,7 @@ namespace Lumina
             .AddFunction<&LuaBinds::IsEntityNull_Lua>("IsNull")
             .AddFunction<&LuaBinds::RuntimeView_Lua>("RuntimeView")
             .AddFunction<&LuaBinds::DispatchEvent_Lua>("DispatchEvent")
+            .AddFunction<&LuaBinds::EnqueueEvent_Lua>("EnqueueEvent")
             .Register();
     }
 
@@ -401,12 +411,12 @@ namespace Lumina
         TickSystems(SystemContext);
     }
 
-    void CWorld::Render(FRenderGraph& RenderGraph)
+    void CWorld::Render(FRenderGraph& RenderGraph) const
     {
         LUMINA_PROFILE_SCOPE();
 
         SCameraComponent* CameraComponent = GetActiveCamera();
-        FViewVolume ViewVolume = CameraComponent ? CameraComponent->GetViewVolume() : FViewVolume();
+        const FViewVolume& ViewVolume = CameraComponent ? CameraComponent->GetViewVolume() : FViewVolume();
         
         RenderScene->RenderView(RenderGraph, ViewVolume);
     }
@@ -548,7 +558,6 @@ namespace Lumina
         
         EntityRegistry.emplace<SNameComponent>(NewEntity).Name = Name;
         EntityRegistry.emplace<STransformComponent>(NewEntity, Transform);
-        EntityRegistry.emplace_or_replace<FNeedsTransformUpdate>(NewEntity);
         
         return NewEntity;
     }
@@ -612,7 +621,7 @@ namespace Lumina
         return (uint32)EntityRegistry.view<entt::entity>().size();
     }
 
-    void CWorld::SetActiveCamera(entt::entity InEntity)
+    void CWorld::SetActiveCamera(entt::entity InEntity) const
     {
         if (!EntityRegistry.valid(InEntity))
         {
@@ -625,7 +634,7 @@ namespace Lumina
         }
     }
 
-    SCameraComponent* CWorld::GetActiveCamera()
+    SCameraComponent* CWorld::GetActiveCamera() const
     {
         return CameraManager->GetCameraComponent();
     }

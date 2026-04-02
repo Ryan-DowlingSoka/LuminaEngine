@@ -915,20 +915,23 @@ namespace Lumina
             if (IsAssetEditorTool() || bSimulatingWorld || bGamePreviewRunning)
             {
                 DrawSimulationControls(ButtonSize);
+            }
+            
+            if (!bGamePreviewRunning)
+            {
+                ImGui::SameLine();
+                ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+                ImGui::SameLine();  
+                
+                DrawCameraControls(ButtonSize);
         
                 ImGui::SameLine();
                 ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-                ImGui::SameLine();   
+                ImGui::SameLine();
+        
+                DrawViewportOptions(ButtonSize);
             }
             
-            DrawCameraControls(ButtonSize);
-        
-            ImGui::SameLine();
-            ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-            ImGui::SameLine();
-        
-            DrawViewportOptions(ButtonSize);
-        
             ImGui::EndGroup();
         }
         ImGui::End();
@@ -1526,10 +1529,7 @@ namespace Lumina
             bWorldGridEnabled = !bWorldGridEnabled;
         }
         
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-        {
-            ImGui::SetTooltip("Toggle Grid (G)");
-        }
+        ImGuiX::TextTooltip("Toggle Grid");
         
         ImGui::SameLine();
         
@@ -2137,18 +2137,16 @@ namespace Lumina
             EditorEntity = entt::null;
             
             SetupWorldForTool();
-            WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
+            ASSERT(World->GetEntityRegistry().valid(EditorEntity));
             
-            World->GetEntityRegistry().patch<STransformComponent>(EditorEntity, [TransformCopy](STransformComponent& Patch)
-            {
-                Patch = TransformCopy;
-            });
+            WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
 
             World->GetEntityRegistry().patch<SCameraComponent>(EditorEntity, [CameraCopy](SCameraComponent& Patch)
             {
                 Patch = CameraCopy;
             });
             
+            World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetWorldTransform(TransformCopy.WorldTransform);
             
             OutlinerListView.ClearTree();
             OutlinerListView.MarkTreeDirty();
@@ -2173,14 +2171,12 @@ namespace Lumina
             
             SetWorld(ProxyWorld);
             ProxyWorld->SetActive(true);
+            ASSERT(World->GetEntityRegistry().valid(EditorEntity));
             
             WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
             
-            World->GetEntityRegistry().patch<STransformComponent>(EditorEntity, [TransformCopy](STransformComponent& Patch)
-            {
-                Patch = TransformCopy;
-            });
-
+            World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetWorldTransform(TransformCopy.WorldTransform);
+            
             World->GetEntityRegistry().patch<SCameraComponent>(EditorEntity, [CameraCopy](SCameraComponent& Patch)
             {
                 Patch = CameraCopy;

@@ -1,7 +1,6 @@
 ﻿#include "pch.h"
 #include "EditorEntityMovementSystem.h"
 #include <glm/gtx/string_cast.hpp>
-#include <World/Entity/Components/DirtyComponent.h>
 #include "Input/InputProcessor.h"
 #include "World/Entity/Components/CameraComponent.h"
 #include "World/Entity/Components/EditorComponent.h"
@@ -32,7 +31,7 @@ namespace Lumina
 			STransformComponent& Transform = View.get<STransformComponent>(EditorEntity);
 			SVelocityComponent& Velocity = View.get<SVelocityComponent>(EditorEntity);
 			FEditorComponent& Editor = View.get<FEditorComponent>(EditorEntity);
-
+			
 			if (!Editor.bEnabled)
 			{
 				return;

@@ -14,7 +14,7 @@ namespace Lumina
         auto View = SystemContext.CreateView<SCameraComponent, STransformComponent>();
         View.each([](SCameraComponent& CameraComponent, const STransformComponent& TransformComponent)
         {
-            CameraComponent.SetView(TransformComponent.GetWorldLocation(), TransformComponent.GetForward(), TransformComponent.GetUp());
+            CameraComponent.SetView(TransformComponent.GetLocation(), TransformComponent.GetForward(), TransformComponent.GetUp());
         });
     }
 }
