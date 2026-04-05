@@ -8,27 +8,31 @@ end
 
 function NewScript:OnReady()
     -- Called when the entity hierarchy is initialized
+    Input.SetMouseMode(EMouseMode.Captured)
 end
 
 function NewScript:Update(DeltaTime: number)
     
+    local Forward = self.Transform:GetUp()
+    local Right = self.Transform:GetRight()
+
+    local Speed = 10
+
     if Input.IsKeyDown(EKey.W) then
-        self.Transform:Translate(vector.create(0.0, 1 * DeltaTime, 0.0))
+        self.Transform:Translate(-Forward * DeltaTime * Speed)
     end
 
     if Input.IsKeyDown(EKey.S) then
-        self.Transform:Translate(vector.create(0.0, -1 * DeltaTime, 0.0))
+        self.Transform:Translate(Forward * DeltaTime * Speed)
     end
 
-    if Input.IsKeyDown(EKey.A) then
-        self.Transform:Translate(vector.create(1 * DeltaTime, 0.0, 0.0))
-    end
+    
+    local MouseX = Input.GetMouseDeltaX() * DeltaTime * 10
+    local MouseY = Input.GetMouseDeltaY() * DeltaTime * 10
+    self.Transform:AddYaw(-MouseX)
+    self.Transform:AddPitch(MouseY, -89, 89)
 
-    if Input.IsKeyDown(EKey.D) then
-        self.Transform:Translate(vector.create(-1 * DeltaTime, 0.0, 0.0))
-    end
-
-    Registry:DispatchEvent(SImpulseEvent.new())
+    --Registry:DispatchEvent(SImpulseEvent.new())
 
 end
             

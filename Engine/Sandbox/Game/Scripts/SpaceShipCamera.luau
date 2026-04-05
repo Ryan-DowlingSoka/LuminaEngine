@@ -12,11 +12,13 @@ end
 function NewScript:OnReady()
     Player = World:GetEntityByTag("Player")
     PlayerTransform = Registry:Get(Player, STransformComponent)
-    self.Transform:SetLocation(PlayerTransform:GetLocation() + vector.create(0.0, 0.0, -20.0))
 end
 
 function NewScript:Update(DeltaTime: number)
-    
+        local PlayerLocation = PlayerTransform:GetLocation()
+        self.Transform:SetLocation(PlayerLocation + vector.create(0.0, 1.0, -5.0))
+        
+
 end
             
 function NewScript:OnDetach()
