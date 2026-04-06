@@ -190,6 +190,11 @@ namespace Lumina
         FPackageHeader Header;
         FMemoryReader Reader(Data);
         Reader << Header;
+        
+        if (Header.Version != GPackageFileLuminaVersion.FileVersion)
+        {
+            LOG_WARN("Package \"{}\" was loaded with a different engine version. {}, it may be unstable.", Path, Header.Version);
+        }
 
         Reader.Seek(Header.ExportTableOffset);
         

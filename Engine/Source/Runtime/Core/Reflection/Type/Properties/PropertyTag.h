@@ -11,10 +11,8 @@ namespace Lumina
 namespace Lumina
 {
     /** Aids in serialization of reflected properties. */
-    class FPropertyTag
+    struct FPropertyTag
     {
-    public:
-        
         /** Type of the property */
         FName Type;
 
@@ -37,14 +35,5 @@ namespace Lumina
 
             return Ar;
         }
-    };
-    
-    struct FPropertyTagTable
-    {
-        uint32 Version = 1;
-        uint32 NumEntries = 0;
-        
-        // Followed by: FPropertyTagEntry[NumEntries]
-        // Followed by: Raw property data
     };
 }

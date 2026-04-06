@@ -83,7 +83,7 @@ namespace Lumina
         /** Tag matching PACKAGE_FILE_TAG to make sure this file is a Lumina package */
         uint32 Tag;
         
-        /** File format version (increment when the layout changes) */
+        /** File format version. */
         int32 Version;
 
         /** Byte offset from file start to the import table section */
