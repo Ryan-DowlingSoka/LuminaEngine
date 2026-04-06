@@ -403,6 +403,22 @@ namespace Lumina
                         }
                     }
                 });
+                
+                ECS::Utils::ForEachChild(World->GetEntityRegistry(), SelectedEntity, [&](entt::entity Child)
+                {
+                    ECS::Utils::ForEachComponent(World->GetEntityRegistry(), Child, [&](void*, entt::basic_sparse_set<>& Set, const entt::meta_type& Type)
+                    {
+                        if (entt::meta_any ReturnValue = ECS::Utils::InvokeMetaFunc(Type, "static_struct"_hs))
+                        {
+                            CStruct* StructType = ReturnValue.cast<CStruct*>();
+                    
+                            if (CComponentVisualizer* Visualizer = ComponentVisualizerRegistry.GetComponentVisualizer(StructType))
+                            {
+                                Visualizer->Draw(World, World->GetEntityRegistry(), Child);
+                            }
+                        }
+                    });
+                });
             });
         }
     }

@@ -154,6 +154,13 @@ namespace Lumina
             WorldTransform = InTransform;
             MarkDirty();
         }
+        
+        FUNCTION(Script)
+        void SetLocalTransform(const FTransform& InTransform)
+        {
+            LocalTransform = InTransform;
+            MarkDirty();
+        }
     
         FUNCTION(Script)
         glm::vec3 GetForward() const
