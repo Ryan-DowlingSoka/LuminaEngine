@@ -262,6 +262,11 @@ namespace Lumina
 
 	void FWindow::KeyCallback(GLFWwindow* window, int Key, int Scancode, int Action, int Mods)
 	{
+		if (Key == GLFW_KEY_UNKNOWN)
+		{
+			return;
+		}
+
 		bool Ctrl = Mods & GLFW_MOD_CONTROL;
 		bool Shift = Mods & GLFW_MOD_SHIFT;
 		bool Alt = Mods & GLFW_MOD_ALT;
