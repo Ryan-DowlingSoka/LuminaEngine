@@ -272,6 +272,7 @@ namespace Lumina::ECS::Utils
     
     void ReparentEntity(FEntityRegistry& Registry, entt::entity Child, entt::entity Parent)
     {
+        #if LE_DEBUG
         if (Child == Parent)
         {
             LOG_ERROR("Cannot parent an entity to itself!");
@@ -289,20 +290,22 @@ namespace Lumina::ECS::Utils
             LOG_ERROR("Cannot create circular hierarchy - parent is a descendant of child!");
             return;
         }
-
+        #endif
+        
         FRelationshipComponent& ChildRelationship = Registry.get_or_emplace<FRelationshipComponent>(Child);
+        STransformComponent& ChildTransform = Registry.get<STransformComponent>(Child);
         
         if (ChildRelationship.Parent == Parent)
         {
             return;
         }
 
-        glm::mat4 ChildWorldMatrix = Registry.get<STransformComponent>(Child).WorldTransform.GetMatrix();
+        glm::mat4 ChildWorldMatrix = ChildTransform.GetWorldMatrix();
         glm::mat4 ParentWorldMatrix = glm::mat4(1.0f);
         
         if (Parent != entt::null)
         {
-            ParentWorldMatrix = Registry.get<STransformComponent>(Parent).WorldTransform.GetMatrix();
+            ParentWorldMatrix = Registry.get<STransformComponent>(Parent).GetWorldMatrix();
         }
 
         glm::mat4 NewLocalMatrix = glm::inverse(ParentWorldMatrix) * ChildWorldMatrix;
@@ -332,13 +335,11 @@ namespace Lumina::ECS::Utils
         }
 
         FTransform NewTransform;
-        NewTransform.Location = Translation;
-        NewTransform.Rotation = Rotation;
-        NewTransform.Scale = Scale;
+        NewTransform.Location   = Translation;
+        NewTransform.Rotation   = Rotation;
+        NewTransform.Scale      = Scale;
         
-        Registry.emplace_or_replace<STransformComponent>(Child, NewTransform);
-        Registry.emplace_or_replace<FNeedsTransformUpdate>(Child);
-        
+        ChildTransform.SetLocalTransform(NewTransform);
     }
 
     void DestroyEntityHierarchy(FEntityRegistry& Registry, entt::entity Entity)

@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "Core/Object/ObjectMacros.h"
+#include "Core/Object/ObjectHandleTyped.h"
 #include "BillboardComponent.generated.h"
 
 namespace Lumina

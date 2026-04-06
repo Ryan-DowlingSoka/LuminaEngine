@@ -341,7 +341,7 @@ namespace Lumina
                                 ImTextureRef Texture = ImGuiX::ToImTextureRef(Image.DisplayImage);
                                 ImGui::Image(Texture, ImageSize);
                             }
-                            
+                            ImGui::Dummy({});
                             ImGui::TableSetColumnIndex(1);
                             
                             if (!Image.RelativePath.empty())

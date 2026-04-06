@@ -172,7 +172,7 @@ namespace Lumina
         STransformComponent& MeshTransform = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
         STransformComponent& EditorTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
 
-        glm::quat Rotation = Math::FindLookAtRotation(MeshTransform.GetLocation() + glm::vec3(0.0f, 0.85f, 0.0f), EditorTransform.GetLocation());
+        glm::quat Rotation = Math::FindLookAtRotation(MeshTransform.GetWorldLocation()+ glm::vec3(0.0f, 0.85f, 0.0f), EditorTransform.GetLocation());
         EditorTransform.SetRotation(Rotation);
     }
 

@@ -24,7 +24,7 @@ project "Sandbox"
     	"EA",
     	"EnkiTS",
 		"Tracy",
-		"lua54",
+        "Luau",
 	}
 	 
 	files

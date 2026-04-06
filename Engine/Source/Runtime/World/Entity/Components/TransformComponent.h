@@ -154,15 +154,34 @@ namespace Lumina
             WorldTransform = InTransform;
             MarkDirty();
         }
+        
+        FUNCTION(Script)
+        void SetLocalTransform(const FTransform& InTransform)
+        {
+            LocalTransform = InTransform;
+            MarkDirty();
+        }
     
         FUNCTION(Script)
-        glm::vec3 GetForward() const { return LocalTransform.GetForward(); }
+        glm::vec3 GetForward() const
+        {
+            ResolveIfDirty();
+            return LocalTransform.GetForward();
+        }
     
         FUNCTION(Script)
-        glm::vec3 GetRight()   const { return LocalTransform.GetRight(); }
+        glm::vec3 GetRight()   const
+        {
+            ResolveIfDirty();
+            return LocalTransform.GetRight();
+        }
     
         FUNCTION(Script)
-        glm::vec3 GetUp()      const { return LocalTransform.GetUp(); }
+        glm::vec3 GetUp()      const
+        {
+            ResolveIfDirty();
+            return LocalTransform.GetUp();
+        }
     
         FUNCTION(Script)
         float MaxScale() const
@@ -183,7 +202,7 @@ namespace Lumina
         glm::vec3 GetScale()    const { return GetLocalScale(); }
     
         FUNCTION(Script)
-        glm::vec3 SetLocation(const glm::vec3& L)   { return SetLocalLocation(L); }
+        glm::vec3 SetLocation(const glm::vec3& L)    { return SetLocalLocation(L); }
     
         FUNCTION(Script)
         glm::quat SetRotation(const glm::quat& R)    { return SetLocalRotation(R); }

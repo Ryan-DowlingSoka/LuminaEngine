@@ -427,7 +427,7 @@ namespace Lumina
                 
                 FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
                 Billboard.TextureIndex          = BillboardComponent.Texture->GetRHIRef()->GetTextureCacheIndex();
-                Billboard.Position              = TransformComponent.GetLocation();
+                Billboard.Position              = TransformComponent.GetWorldLocation();
                 Billboard.Size                  = BillboardComponent.Scale;
                 Billboard.EntityID              = entt::to_integral(Entity);
 
@@ -537,7 +537,7 @@ namespace Lumina
                     FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
                     Billboard.TextureIndex          = GetNamedImage(ENamedImage::PointLightIcon)->GetTextureCacheIndex();
                     Billboard.ColorPack             = Light.Color;
-                    Billboard.Position              = TransformComponent.GetLocation();
+                    Billboard.Position              = TransformComponent.GetWorldLocation();
                     Billboard.Size                  = 0.35f;
                     Billboard.EntityID              = entt::to_integral(Entity);
                 }
@@ -610,12 +610,11 @@ namespace Lumina
             LUMINA_PROFILE_SECTION("Spot Light Processing");
 
             auto View = World->GetEntityRegistry().view<SSpotLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-            View.each([&] (entt::entity Entity, SSpotLightComponent& SpotLightComponent, STransformComponent& TransformComponent)
+            View.each([&] (entt::entity Entity, SSpotLightComponent& SpotLightComponent, STransformComponent& Transform)
             {
-                const FTransform& Transform = TransformComponent.WorldTransform;
         
-                glm::vec3 UpdatedForward    = Transform.Rotation * FViewVolume::ForwardAxis;
-                glm::vec3 UpdatedUp         = Transform.Rotation * FViewVolume::UpAxis;
+                glm::vec3 UpdatedForward    = Transform.GetRotation() * FViewVolume::ForwardAxis;
+                glm::vec3 UpdatedUp         = Transform.GetRotation() * FViewVolume::UpAxis;
         
                 float InnerDegrees = SpotLightComponent.InnerConeAngle;
                 float OuterDegrees = SpotLightComponent.OuterConeAngle;
@@ -624,11 +623,11 @@ namespace Lumina
                 float OuterCos = glm::cos(glm::radians(OuterDegrees));
                 
                 FViewVolume ViewVolume(OuterDegrees * 2.00f, 1.0f, 0.01f, SpotLightComponent.Attenuation);
-                ViewVolume.SetView(Transform.Location, -UpdatedForward, UpdatedUp);
+                ViewVolume.SetView(Transform.GetWorldLocation(), -UpdatedForward, UpdatedUp);
                 
                 FLight Light;
                 Light.Flags                 = LIGHT_TYPE_SPOT;
-                Light.Position              = Transform.Location;
+                Light.Position              = Transform.GetWorldLocation();
                 Light.Direction             = glm::normalize(UpdatedForward);
                 Light.Falloff               = SpotLightComponent.Falloff;
                 Light.Color                 = PackColor(glm::vec4(SpotLightComponent.LightColor, 1.0));
@@ -643,7 +642,7 @@ namespace Lumina
                     FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
                     Billboard.TextureIndex          = GetNamedImage(ENamedImage::SpotLightIcon)->GetTextureCacheIndex();
                     Billboard.ColorPack             = Light.Color;
-                    Billboard.Position              = TransformComponent.GetLocation();
+                    Billboard.Position              = Transform.GetWorldLocation();
                     Billboard.Size                  = 0.35f;
                     Billboard.EntityID              = entt::to_integral(Entity);
                 }
@@ -807,7 +806,7 @@ namespace Lumina
                     FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
                     Billboard.TextureIndex          = GetNamedImage(ENamedImage::CameraIcon)->GetTextureCacheIndex();
                     Billboard.ColorPack             = PackColor(FColor::White);
-                    Billboard.Position              = Transform.GetLocation();
+                    Billboard.Position              = Transform.GetWorldLocation();
                     Billboard.Size                  = 0.35f;
                     Billboard.EntityID              = entt::to_integral(Entity);
                 });
@@ -823,7 +822,7 @@ namespace Lumina
                     FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
                     Billboard.TextureIndex          = GetNamedImage(ENamedImage::CharacterIcon)->GetTextureCacheIndex();
                     Billboard.ColorPack             = PackColor(FColor::White);
-                    Billboard.Position              = Transform.GetLocation();
+                    Billboard.Position              = Transform.GetWorldLocation();
                     Billboard.Size                  = 0.35f;
                     Billboard.EntityID              = entt::to_integral(Entity);
                 }

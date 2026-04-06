@@ -131,6 +131,6 @@ namespace Lumina
     {
         const STransformComponent& Transform    = Registry.get<STransformComponent>(Entity);
         
-        PDI->DrawArrow(Transform.GetWorldLocation(), Transform.GetForward(), 1.5f, FColor::Green, 4.0f);
+        PDI->DrawArrow(Transform.GetWorldLocation(), Transform.GetWorldRotation() * glm::vec3(0.0, 0.0, 1.0), 1.5f, FColor::Green, 4.0f);
     }
 }
