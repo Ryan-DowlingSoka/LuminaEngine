@@ -3076,11 +3076,11 @@ namespace Lumina
             
         constexpr ImGuiTableFlags Flags = 
         ImGuiTableFlags_BordersOuter | 
-        ImGuiTableFlags_BordersInnerH | 
         ImGuiTableFlags_NoBordersInBodyUntilResize | 
         ImGuiTableFlags_SizingFixedFit;
             
-        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4, 8));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 10.0f)); // increase Y for taller header
+        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0, 0));
         bool bIsOpen = false;
         if (ImGui::BeginTable("GridTable", 1, Flags))
         {
@@ -3088,10 +3088,9 @@ namespace Lumina
             ImGui::TableNextColumn();
             ImGui::AlignTextToFramePadding();
             
-            
-            ImGui::PushStyleColor(ImGuiCol_Header, 0);
-            ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0);
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0);
+            ImGui::PushStyleColor(ImGuiCol_Header, 0xFF3A3A3A);
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0xFF484848);
+            ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0xFF404040);
             ImGui::SetNextItemAllowOverlap();
             bIsOpen = ImGui::CollapsingHeader(Table->GetType()->MakeDisplayName().c_str(), ImGuiTreeNodeFlags_DefaultOpen);
             ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, 0xFF1C1C1C);
@@ -3122,24 +3121,24 @@ namespace Lumina
             ImGui::EndTable();
         }
         
-        ImGui::PopStyleVar();
+        ImGui::PopStyleVar(2);
         
         
         if (bIsOpen)
         {
             ImGui::Spacing();
             
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 6.0f));
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 8.0f));
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 6.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 1.0f);
             ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.015f, 0.015f, 0.015f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.12f, 0.12f, 0.14f, 1.0f));
             
-            ImGui::Indent(4.0f);
+            ImGui::Indent(8.0f);
             
             Table->DrawTree(World->IsSimulating());
             
-            ImGui::Unindent(4.0f);
+            ImGui::Unindent(8.0f);
             
             ImGui::PopStyleColor(2);
             ImGui::PopStyleVar(3);

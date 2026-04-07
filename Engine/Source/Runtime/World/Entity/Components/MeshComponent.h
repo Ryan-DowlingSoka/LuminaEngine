@@ -11,11 +11,11 @@ namespace Lumina
     class CMaterialInterface;
     
     REFLECT()
-    struct RUNTIME_API SMeshComponent
+    struct RUNTIME_API ALIGN_FOR_FALSE_SHARING SMeshComponent
     {
         GENERATED_BODY()
         
-        PROPERTY(Editable, Category = "Materials")
+        PROPERTY(Editable, Category = "Rendering")
         TVector<TObjectPtr<CMaterialInterface>> MaterialOverrides;
         
         PROPERTY(Editable, Category = "Rendering")
@@ -33,12 +33,11 @@ namespace Lumina
         PROPERTY(Editable, Category = "Culling")
         bool bIgnoreOcclusionCulling = false;
 
-        PROPERTY(Editable, Category = "Shadow")
+        PROPERTY(Editable, Category = "Shadows")
         bool bCastShadow = true;
 
-        PROPERTY(Editable, Category = "Shadow")
+        PROPERTY(Editable, Category = "Shadows")
         bool bReceiveShadow = true;
-
+        
     };
-    
 }

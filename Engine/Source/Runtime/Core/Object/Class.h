@@ -129,6 +129,9 @@ namespace Lumina
     
         /** Adds a property to this struct's property list. */
         RUNTIME_API virtual void AddProperty(FProperty* Property);
+        
+        /** Returns the struct operations for this type */
+        RUNTIME_API FStructOps* GetStructOps() const { return StructOps.get(); }
     
         /**
          * Serializes only the properties tagged for reflection, writing or reading their values

@@ -24,7 +24,7 @@ namespace Lumina
         FUNCTION(Script)
         CStaticMesh* GetStaticMesh() const { return StaticMesh; }
         
-        PROPERTY(Editable, Category = "Mesh")
+        PROPERTY(Editable, Category = "Rendering")
         TObjectPtr<CStaticMesh> StaticMesh;
     };
 }

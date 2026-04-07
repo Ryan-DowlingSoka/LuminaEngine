@@ -17,15 +17,10 @@ namespace Lumina
 
     namespace Threading
     {
+        constexpr size_t GCacheLineSize = std::hardware_destructive_interference_size;
+        #define ALIGN_FOR_FALSE_SHARING alignas(std::hardware_destructive_interference_size)
 
         using ThreadID = uint64;
-        
-        enum class ENamedThreads : uint8
-        {
-            MainThread,
-            RenderThread,
-        };
-        
 
         RUNTIME_API void ThreadYield();
         RUNTIME_API uint64 GetThreadID();

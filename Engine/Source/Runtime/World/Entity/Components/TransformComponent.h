@@ -1,7 +1,7 @@
 #pragma once
 
 #include <glm/glm.hpp>
-
+#include "Core/Threading/Thread.h"
 #include "DirtyComponent.h"
 #include "Core/Math/Transform.h"
 #include "World/Entity/EntityUtils.h"
@@ -12,7 +12,7 @@ namespace Lumina
 {
 
     REFLECT(Component, HideInComponentList)
-    struct RUNTIME_API STransformComponent
+    struct RUNTIME_API ALIGN_FOR_FALSE_SHARING STransformComponent
     {
         GENERATED_BODY()
     

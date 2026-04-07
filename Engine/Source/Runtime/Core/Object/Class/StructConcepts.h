@@ -32,4 +32,10 @@ namespace Lumina::Concepts
     {
         { V.ToString() } -> std::same_as<FString>;
     };
+    
+    template<typename T>
+    concept THasLessThan = requires(const T& A, const T& B)
+    {
+        { A < B } -> std::same_as<bool>;
+    };
 }

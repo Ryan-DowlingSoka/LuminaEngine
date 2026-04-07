@@ -1,6 +1,5 @@
 #include "pch.h"
 #include "Thread.h"
-#include <new>
 #include "rpmalloc.h"
 #include "Core/Assertions/Assert.h"
 
@@ -9,9 +8,6 @@ namespace Lumina
 {
     namespace Threading
     {
-
-        constexpr size_t GCacheLineSize = std::hardware_destructive_interference_size;
-        
         static std::thread::id GMainThreadID = {};
 
         void ThreadYield()

@@ -679,12 +679,10 @@ namespace Lumina
         
         constexpr ImGuiTableFlags Flags = 
             ImGuiTableFlags_BordersOuter | 
-            ImGuiTableFlags_BordersInnerH | 
             ImGuiTableFlags_NoBordersInBodyUntilResize | 
             ImGuiTableFlags_SizingStretchSame;
         
-        
-        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4, 8));
+        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0, 2));
         ImGui::PushID(this);
         
         if (ImGui::BeginTable("GridTable", 2, Flags))
