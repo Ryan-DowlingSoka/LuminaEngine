@@ -169,6 +169,7 @@ setx LUMINA_DIR "C:\path\to\lumina"
 
 ### Third Party Dependencies
 - **GLFW** - A multi-platform library for OpenGL, OpenGL ES, Vulkan, window and input
+- **Luau** - An efficient, optionally typed scripting language built from Lua. 
 - **ImGui** - Immediate mode graphical user interface for rapid tool development with minimal dependencies
 - **Tracy** - Real-time frame profiler with GPU profiling, memory tracking, and remote access capabilities
 - **SPDLog** - Fast C++ logging library with async mode, custom formatting, and multiple sink support
