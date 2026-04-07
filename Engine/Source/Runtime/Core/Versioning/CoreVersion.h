@@ -17,19 +17,14 @@ enum class ELuminaEngineVersion : uint32
 
 struct FPackageFileVersion
 {
-
-	FPackageFileVersion(ELuminaEngineVersion EngineVersion)
+	FPackageFileVersion(ELuminaEngineVersion EngineVersion) noexcept
 	: FileVersion(static_cast<int32>(EngineVersion)) {}
 	
-	/** UE5 version comparisons */
 	bool operator >=(ELuminaEngineVersion Version) const
 	{
 		return FileVersion >= static_cast<int32>(Version);
 	}
-
-
-public:
-
+	
 	int32		FileVersion = 0;
 };
 

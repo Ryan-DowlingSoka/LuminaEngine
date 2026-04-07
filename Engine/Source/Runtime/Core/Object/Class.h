@@ -92,45 +92,70 @@ namespace Lumina
     //--------------------------------------------------------------------------------
     
     
-    /** Base class for any data structure that holds fields */
+    /**
+     * Base class for any data structure that holds fields.
+     *
+     * CStruct represents a reflected type that can contain properties (FProperty instances)
+     * and supports single inheritance via a SuperStruct chain. It serves as the foundation
+     * for native C++ types exposed to the reflection system.
+     */
     class CStruct : public CField
     {
         friend RUNTIME_API void ConstructCStruct(CStruct** OutStruct, const FStructParams& Params);
         
         DECLARE_CLASS(Lumina, CStruct, CField, "/Script/Engine", RUNTIME_API)
         DEFINE_CLASS_FACTORY(CStruct)
-
+    
     public:
         
         CStruct() = default;
-
+    
         // Begin Internal Use Only Constructors 
         CStruct(CPackage* Package, const FName& InName, uint32 InSize, uint32 InAlignment, EObjectFlags InFlags)
             : CField(Package, InName, InSize, InAlignment, InFlags)
         {}
         //~ End Internal Use Only Constructors
-        
+    
+        /** Sets the parent struct this struct inherits from. */
         virtual void SetSuperStruct(CStruct* InSuper);
         
         void RegisterDependencies() override;
         
-        /** Struct this inherits from, may be null */
+        /** Returns the parent struct in the inheritance chain, or null if this is a root struct. */
         CStruct* GetSuperStruct() const { return SuperStruct; }
-
+    
+        /** Returns the property with the given name, searching the full inheritance chain. Returns null if not found. */
         RUNTIME_API FProperty* GetProperty(const FName& Name) const;
+    
+        /** Adds a property to this struct's property list. */
         RUNTIME_API virtual void AddProperty(FProperty* Property);
-
-        RUNTIME_API void SerializeTaggedProperties(FArchive& Ar, void* Data);
+        
+        /** Returns the struct operations for this type */
+        RUNTIME_API FStructOps* GetStructOps() const { return StructOps.get(); }
+    
+        /**
+         * Serializes only the properties tagged for reflection, writing or reading their values
+         * through the archive along with any necessary tags for versioning and skip support.
+         */
+        RUNTIME_API void SerializeTaggedProperties(FArchive& Ar, void* Data) const;
         
         void Serialize(FArchive& Ar) override { }
         void Serialize(IStructuredArchive::FRecord Slot) override { }
-        
+    
+        /**
+         * Returns the property with the given name, cast to the specified property type.
+         * No type safety check is performed — caller must ensure the cast is valid.
+         */
         template<typename PropertyType>
         PropertyType* GetProperty(const FName& Name)
         {
             return static_cast<PropertyType*>(GetProperty(Name));
         }
-
+    
+        /**
+         * Iterates over all properties of the given type in this struct's property list,
+         * invoking Func for each one.
+         */
         template<typename PropertyType, typename TFunc>
         requires (eastl::is_base_of_v<FProperty, PropertyType> && eastl::is_invocable_v<TFunc, PropertyType*>)
         void ForEachProperty(TFunc&& Func)
@@ -142,27 +167,34 @@ namespace Lumina
                 Current = static_cast<PropertyType*>(Current->Next);
             }
         }
-        
+    
+        /** Returns true if this struct is the given type or a child of it. */
         template<class T>
         bool IsChildOf() const
         {
             return IsChildOf(T::StaticClass());
         }
-        
+    
+        /** Returns true if this struct is equal to Base or is derived from it. */
         RUNTIME_API bool IsChildOf(const CStruct* Base) const;
-
-        /** Links a derived to it's parent (if one exists) and will link properties. */
+    
+        /**
+         * Links this struct to its SuperStruct (if one exists) and finalizes the property list.
+         * Must be called after all properties have been added and before the struct is used at runtime.
+         */
         RUNTIME_API virtual void Link();
         
         FFixedString MakeDisplayName() const override;
         
     private:
-
+    
+        /** Type-specific operations (construction, destruction, copy) for instances of this struct. */
         TUniquePtr<FStructOps> StructOps;
         
-        /** Parent struct */
+        /** Parent struct in the inheritance chain. Null if this is a root struct. */
         CStruct* SuperStruct = nullptr;
-        
+    
+        /** True once Link() has been successfully called. Prevents redundant linking. */
         bool bLinked = false;
     };
 

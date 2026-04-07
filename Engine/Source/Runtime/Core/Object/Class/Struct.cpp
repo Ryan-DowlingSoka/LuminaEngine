@@ -135,7 +135,7 @@ namespace Lumina
         return false;
     }
     
-    void CStruct::SerializeTaggedProperties(FArchive& Ar, void* Data)
+    void CStruct::SerializeTaggedProperties(FArchive& Ar, void* Data) const
     {
         if (StructOps && StructOps->HasSerializer())
         {

@@ -368,7 +368,7 @@ namespace Lumina
         
         FPackageHeader Header;
         Header.Tag = PACKAGE_FILE_TAG;
-        Header.Version = 1;
+        Header.Version = GPackageFileLuminaVersion.FileVersion;
 
         // Skip the header until we've built the tables.
         Writer.Seek(sizeof(FPackageHeader));

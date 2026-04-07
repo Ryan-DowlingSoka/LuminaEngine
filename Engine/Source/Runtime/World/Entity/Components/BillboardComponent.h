@@ -18,5 +18,8 @@ namespace Lumina
         
         PROPERTY(Editable)
         float Scale = 1.0f;
+        
+        PROPERTY(Editable, Color)
+        glm::vec4 Tint;
     };
 }

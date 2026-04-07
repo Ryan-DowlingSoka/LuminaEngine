@@ -59,18 +59,8 @@ namespace Lumina::ECS::Utils
 		return InvokeMetaFunc(entt::resolve(TypeID), FunctionID, Forward<TArgs>(Args)...);
 	}
 
-	RUNTIME_API inline auto GetSharedMetaCtxHandle()
-	{
-		return entt::locator<entt::meta_ctx>::handle();
-	}
-
-	void SetMetaContext(auto SharedCtx)
-	{
-		entt::locator<entt::meta_ctx>::reset(SharedCtx);
-	}
-
 	template<typename TFunc>
-		requires(eastl::is_invocable_v<TFunc, void*, entt::basic_sparse_set<>&, entt::meta_type>)
+	requires(eastl::is_invocable_v<TFunc, void*, entt::basic_sparse_set<>&, entt::meta_type>)
 	void ForEachComponent(FEntityRegistry& Registry, entt::entity Entity, TFunc&& Func)
 	{
 		for (auto&& [ID, Storage] : Registry.storage())
@@ -113,20 +103,20 @@ namespace Lumina::ECS::Utils
 	void ForEachDescendant(entt::registry& Registry, entt::entity Parent, TFunc&& Func)
 	{
 		ForEachChild(Registry, Parent, [&](entt::entity Child)
-			{
-				eastl::invoke(Func, Child);
-				ForEachDescendant(Registry, Child, Func);
-			});
+		{
+			eastl::invoke(Func, Child);
+			ForEachDescendant(Registry, Child, Func);
+		});
 	}
 
 	template<typename TFunc>
 	void ForEachDescendantReverse(entt::registry& Registry, entt::entity Parent, TFunc&& Func)
 	{
 		ForEachChild(Registry, Parent, [&](entt::entity Child)
-			{
-				ForEachDescendantReverse(Registry, Child, Func);
-				eastl::invoke(Func, Child);
-			});
+		{
+			ForEachDescendantReverse(Registry, Child, Func);
+			eastl::invoke(Func, Child);
+		});
 	}
 
 	template<typename TFunc>
@@ -142,10 +132,9 @@ namespace Lumina::ECS::Utils
 
 	inline FArchive& operator << (FArchive& Ar, entt::entity& Entity)
 	{
-		uint32 UintEntity = static_cast<uint32>(Entity);
+		entt::id_type UintEntity = entt::to_integral(Entity);
 		Ar << UintEntity;
 		Entity = static_cast<entt::entity>(UintEntity);
-
 		return Ar;
 	}
 }
