@@ -138,6 +138,7 @@ Contributions to Lumina are recognized in several ways, including Steam keys for
 > **Error C1076 compiler limit: internal heap limit reached** - Try again, this is currently an issue with a font file.
 > **Build fails?** [Submit an issue](https://github.com/mrdrelliot/LuminaEngine/issues) or contact me on Discord
 > **An application control policy has blocked this file** - Garbage Windows 11 feature, disable "Smart App Control"
+> **After every pull/merge, delete all Binaires, Intermediates, and "Clean" the build.
 
 > [!NOTE]
 > The `LUMINA_DIR` environment variable is set automatically during build. If needed, set it manually:
