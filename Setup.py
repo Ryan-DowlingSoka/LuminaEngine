@@ -286,6 +286,13 @@ def main():
         
         SetupDisplay.step(4, total_steps, "Cleaning Up")
         cleanup_file(archive_file)
+
+
+        subprocess.run(
+        ["git", "config", "core.hooksPath", "BuildScripts/Hooks"],
+        check=True
+        )
+        print("Git hooks configured.")
         
         print()
         SetupDisplay.header("SETUP COMPLETE")

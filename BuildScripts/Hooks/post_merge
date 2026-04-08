@@ -1,7 +1,10 @@
-bash#!/bin/bash
-# Delete intermediates directory after pull
-if [ -d "Intermediate" ]; then
-    echo "Cleaning up Intermediate directory..."
-    rm -rf Intermediate
-    echo "Intermediate directory deleted."
-fi
+#!/bin/sh
+echo "Cleaning Binaries and Intermediates..."
+rm -rf ./Binaries
+rm -rf ./Intermediates
+rm -rf ./idea
+rm -rf ./.vs
+rm -rf ./.vscode
+rm -rf ./.sln
+rm -rf ./.slnx
+echo "Done. Please rebuild."
