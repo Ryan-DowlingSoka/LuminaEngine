@@ -648,7 +648,7 @@ namespace Lumina
         BufferCreateInfo.usage          = ToVkBufferUsage(InDescription.Usage);
         BufferCreateInfo.flags          = 0;
         
-        Allocation = Device->GetAllocator()->AllocateBuffer(&BufferCreateInfo, VmaFlags, &Buffer, Description.DebugName.c_str());
+        Allocation = Device->GetAllocator().AllocateBuffer(&BufferCreateInfo, VmaFlags, &Buffer, Description.DebugName.c_str());
         
         
         static_cast<FVulkanRenderContext*>(GRenderContext)->SetVulkanObjectName(Description.DebugName, VK_OBJECT_TYPE_BUFFER, (uintptr_t)Buffer);
@@ -662,12 +662,12 @@ namespace Lumina
 
     FVulkanBuffer::~FVulkanBuffer()
     {
-        Device->GetAllocator()->DestroyBuffer(Buffer, Allocation);
+        Device->GetAllocator().DestroyBuffer(Buffer, Allocation);
     }
 
     void* FVulkanBuffer::GetMappedMemory() const
     {
-        return Device->GetAllocator()->GetMappedMemory(this);
+        return Device->GetAllocator().GetMappedMemory(this);
     }
 
     FVulkanSampler::FVulkanSampler(FVulkanDevice* InDevice, const FSamplerDesc& InDesc)
@@ -785,7 +785,7 @@ namespace Lumina
         ImageCreateInfo.usage               = UsageFlags;
         ImageCreateInfo.sharingMode         = VK_SHARING_MODE_EXCLUSIVE;
     
-        Allocation = Device->GetAllocator()->AllocateImage(&ImageCreateInfo, AllocationFlags, &Image, InDescription.DebugName.c_str());
+        Allocation = Device->GetAllocator().AllocateImage(&ImageCreateInfo, AllocationFlags, &Image, InDescription.DebugName.c_str());
         static_cast<FVulkanRenderContext*>(GRenderContext)->SetVulkanObjectName(InDescription.DebugName, VK_OBJECT_TYPE_IMAGE, (uintptr_t)Image);
     }
 
@@ -814,7 +814,7 @@ namespace Lumina
 
         if (!bImageManagedExternal)
         {
-            Device->GetAllocator()->DestroyImage(Image, Allocation);
+            Device->GetAllocator().DestroyImage(Image, Allocation);
         }
     }
 

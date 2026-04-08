@@ -16,7 +16,7 @@ namespace Lumina
 namespace Lumina
 {
 
-#define DECLARE_FPROPERTY(Type) \
+    #define DECLARE_FPROPERTY(Type) \
     static EPropertyTypeFlags StaticType() { return Type; } \
     virtual EPropertyTypeFlags GetType() override { return StaticType(); }
     
@@ -153,17 +153,20 @@ namespace Lumina
         
     public:
         
+        /** Any attached metadata of the property */
+        FMetaDataPair       Metadata;
+        
+        /** Typename of the element */
         FName               TypeName;
         
-        FMetaDataPair       Metadata;
+        /** Size of the internal element type */
+        uint32              ElementSize;
 
-        size_t              ElementSize;
-
-        /** Specifies the type of property this is */
-        EPropertyTypeFlags  TypeFlags;
-        
         /** Flags this property has (ReadOnly, Transient, etc.) */
         EPropertyFlags      Flags;
+        
+        /** Specifies the type of property this is */
+        EPropertyTypeFlags  TypeFlags;
     };
 
     template <typename PropertyBaseClass>
@@ -243,7 +246,7 @@ namespace Lumina
     {
     public:
 
-        enum
+        enum : uint8
         {
             Size = sizeof(TCPPType),
             Alignment = alignof(TCPPType)
@@ -252,13 +255,13 @@ namespace Lumina
         /** Convert the address of a value of the property to the proper type */
         static const TCPPType* GetPropertyValuePtr(const void* Ptr)
         {
-            return (const TCPPType*)Ptr;
+            return static_cast<const TCPPType*>(Ptr);
         }
 
         /** Convert the address of a value of the property to the proper type */
         static TCPPType* GetPropertyValuePtr(void* Ptr)
         {
-            return (TCPPType*)Ptr;
+            return static_cast<TCPPType*>(Ptr);
         }
 
         /** Get the value of the property from an address */
@@ -301,7 +304,7 @@ namespace Lumina
 
 
     template<typename TCPPType>
-    requires std::is_arithmetic_v<TCPPType>
+    requires eastl::is_arithmetic_v<TCPPType>
     class TProperty_Numeric : public TProperty<FNumericProperty, TCPPType>
     {
     public:
@@ -327,40 +330,40 @@ namespace Lumina
         
     };
 
-    template <typename TCPPType> requires std::is_arithmetic_v<TCPPType>
+    template <typename TCPPType> requires eastl::is_arithmetic_v<TCPPType>
     void TProperty_Numeric<TCPPType>::SetIntPropertyValue(void* Data, uint64 Value) const
     {
-        TTypeInfo::SetPropertyValue(Data, (TCPPType)Value); 
+        TTypeInfo::SetPropertyValue(Data, static_cast<TCPPType>(Value)); 
     }
 
-    template <typename TCPPType> requires std::is_arithmetic_v<TCPPType>
+    template <typename TCPPType> requires eastl::is_arithmetic_v<TCPPType>
     void TProperty_Numeric<TCPPType>::SetIntPropertyValue(void* Data, int64 Value) const
     {
-        TTypeInfo::SetPropertyValue(Data, (TCPPType)Value); 
+        TTypeInfo::SetPropertyValue(Data, static_cast<TCPPType>(Value)); 
     }
 
-    template <typename TCPPType> requires std::is_arithmetic_v<TCPPType>
+    template <typename TCPPType> requires eastl::is_arithmetic_v<TCPPType>
     int64 TProperty_Numeric<TCPPType>::GetSignedIntPropertyValue(void const* Data) const
     {
-        return (int64)TTypeInfo::GetPropertyValue(Data);
+        return static_cast<int64>(TTypeInfo::GetPropertyValue(Data));
     }
 
-    template <typename TCPPType> requires std::is_arithmetic_v<TCPPType>
+    template <typename TCPPType> requires eastl::is_arithmetic_v<TCPPType>
     int64 TProperty_Numeric<TCPPType>::GetSignedIntPropertyValue_InContainer(void const* Container) const
     {
-        return (int64)TTypeInfo::GetPropertyValue(Container);
+        return static_cast<int64>(TTypeInfo::GetPropertyValue(Container));
     }
 
-    template <typename TCPPType> requires std::is_arithmetic_v<TCPPType>
+    template <typename TCPPType> requires eastl::is_arithmetic_v<TCPPType>
     uint64 TProperty_Numeric<TCPPType>::GetUnsignedIntPropertyValue(void const* Data) const
     {
-        return (uint64)TTypeInfo::GetPropertyValue(Data);
+        return static_cast<uint64>(TTypeInfo::GetPropertyValue(Data));
     }
 
-    template <typename TCPPType> requires std::is_arithmetic_v<TCPPType>
+    template <typename TCPPType> requires eastl::is_arithmetic_v<TCPPType>
     uint64 TProperty_Numeric<TCPPType>::GetUnsignedIntPropertyValue_InContainer(void const* Container) const
     {
-        return (uint64)TTypeInfo::GetPropertyValue(Container);
+        return static_cast<uint64>(TTypeInfo::GetPropertyValue(Container));
     }
     
     //-------------------------------------------------------------------------------
@@ -372,7 +375,7 @@ namespace Lumina
 
         DECLARE_FPROPERTY(EPropertyTypeFlags::Bool)
         
-        FBoolProperty(FFieldOwner InOwner, const FPropertyParams* Params)
+        FBoolProperty(const FFieldOwner& InOwner, const FPropertyParams* Params)
             : Super(InOwner, Params)
         {}
     };
@@ -383,7 +386,7 @@ namespace Lumina
         using Super = TProperty_Numeric<int8>;
         DECLARE_FPROPERTY(EPropertyTypeFlags::Int8)
 
-        FInt8Property(FFieldOwner InOwner, const FPropertyParams* Params)
+        FInt8Property(const FFieldOwner& InOwner, const FPropertyParams* Params)
             : Super(InOwner, Params)
         {}
     };
@@ -394,7 +397,7 @@ namespace Lumina
         using Super = TProperty_Numeric<int16>;
         DECLARE_FPROPERTY(EPropertyTypeFlags::Int16)
 
-        FInt16Property(FFieldOwner InOwner, const FPropertyParams* Params)
+        FInt16Property(const FFieldOwner& InOwner, const FPropertyParams* Params)
             : Super(InOwner, Params)
         {}
     };
@@ -405,7 +408,7 @@ namespace Lumina
         using Super = TProperty_Numeric<int32>;
         DECLARE_FPROPERTY(EPropertyTypeFlags::Int32)
 
-        FInt32Property(FFieldOwner InOwner, const FPropertyParams* Params)
+        FInt32Property(const FFieldOwner& InOwner, const FPropertyParams* Params)
             : Super(InOwner, Params)
         {}
     };
@@ -416,7 +419,7 @@ namespace Lumina
         using Super = TProperty_Numeric<int64>;
         DECLARE_FPROPERTY(EPropertyTypeFlags::Int64)
 
-        FInt64Property(FFieldOwner InOwner, const FPropertyParams* Params)
+        FInt64Property(const FFieldOwner& InOwner, const FPropertyParams* Params)
             : Super(InOwner, Params)
         {}
     };
@@ -427,7 +430,7 @@ namespace Lumina
         using Super = TProperty_Numeric<uint8>;
         DECLARE_FPROPERTY(EPropertyTypeFlags::UInt8)
 
-        FUInt8Property(FFieldOwner InOwner, const FPropertyParams* Params)
+        FUInt8Property(const FFieldOwner& InOwner, const FPropertyParams* Params)
             : Super(InOwner, Params)
         {}
     };
@@ -438,7 +441,7 @@ namespace Lumina
         using Super = TProperty_Numeric<uint16>;
         DECLARE_FPROPERTY(EPropertyTypeFlags::UInt16)
 
-        FUInt16Property(FFieldOwner InOwner, const FPropertyParams* Params)
+        FUInt16Property(const FFieldOwner& InOwner, const FPropertyParams* Params)
             : Super(InOwner, Params)
         {}
     };
@@ -449,7 +452,7 @@ namespace Lumina
         using Super = TProperty_Numeric<uint32>;
         DECLARE_FPROPERTY(EPropertyTypeFlags::UInt32)
 
-        FUInt32Property(FFieldOwner InOwner, const FPropertyParams* Params)
+        FUInt32Property(const FFieldOwner& InOwner, const FPropertyParams* Params)
             : Super(InOwner, Params)
         {}
     };
@@ -460,7 +463,7 @@ namespace Lumina
         using Super = TProperty_Numeric<uint64>;
         DECLARE_FPROPERTY(EPropertyTypeFlags::UInt64)
 
-        FUInt64Property(FFieldOwner InOwner, const FPropertyParams* Params)
+        FUInt64Property(const FFieldOwner& InOwner, const FPropertyParams* Params)
             : Super(InOwner, Params)
         {}
     };
@@ -471,7 +474,7 @@ namespace Lumina
         using Super = TProperty_Numeric<float>;
         DECLARE_FPROPERTY(EPropertyTypeFlags::Float)
 
-        FFloatProperty(FFieldOwner InOwner, const FPropertyParams* Params)
+        FFloatProperty(const FFieldOwner& InOwner, const FPropertyParams* Params)
             : Super(InOwner, Params)
         {}
     };
@@ -482,7 +485,7 @@ namespace Lumina
         using Super = TProperty_Numeric<double>;
         DECLARE_FPROPERTY(EPropertyTypeFlags::Double)
 
-        FDoubleProperty(FFieldOwner InOwner, const FPropertyParams* Params)
+        FDoubleProperty(const FFieldOwner& InOwner, const FPropertyParams* Params)
             : Super(InOwner, Params)
         {}
     };

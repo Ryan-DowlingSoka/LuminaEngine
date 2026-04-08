@@ -830,7 +830,7 @@ namespace Lumina
 
         if (!Allocations.empty())
         {
-            VK_CHECK(vmaFlushAllocations(RenderContext->GetDevice()->GetAllocator()->GetVMA(),
+            VK_CHECK(vmaFlushAllocations(RenderContext->GetDevice()->GetAllocator().GetVMA(),
                 uint32(Allocations.size()),
                 Allocations.data(),
                 Offsets.data(),

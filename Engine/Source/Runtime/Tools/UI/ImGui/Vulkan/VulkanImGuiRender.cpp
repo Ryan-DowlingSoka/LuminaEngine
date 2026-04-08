@@ -293,7 +293,7 @@ namespace Lumina
 		VkPhysicalDeviceMemoryProperties memProps{};
 		
 		vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
-		VmaAllocator Allocator = VulkanRenderContext->GetDevice()->GetAllocator()->GetVMA();
+		VmaAllocator Allocator = VulkanRenderContext->GetDevice()->GetAllocator().GetVMA();
 		
 		ImGui::BeginChild("ContentArea");
 		
@@ -614,7 +614,7 @@ namespace Lumina
 		vmaCalculateStatistics(Allocator, &stats);
 		
 		VmaBudget Budget = {};
-		VulkanRenderContext->GetDevice()->GetAllocator()->GetMemoryBudget(&Budget);
+		VulkanRenderContext->GetDevice()->GetAllocator().GetMemoryBudget(&Budget);
 		
 		// Update history
 		static float timeCounter = 0.0f;

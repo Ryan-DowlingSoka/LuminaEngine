@@ -875,7 +875,7 @@ namespace Lumina
 
         *OutRowPitch = wInBlocks * formatInfo.BytesPerBlock;
 
-        uint8* MappedPtr = (uint8*)VulkanDevice->GetAllocator()->GetMappedMemory(VulkanStagingImage->Buffer);
+        uint8* MappedPtr = static_cast<uint8*>(VulkanDevice->GetAllocator().GetMappedMemory(VulkanStagingImage->Buffer));
         MappedPtr += Region.Offset;
         return MappedPtr;
     }
@@ -1295,7 +1295,7 @@ namespace Lumina
     void* FVulkanRenderContext::MapBuffer(FRHIBuffer* Buffer)
     {
         FVulkanBuffer* VulkanBuffer = static_cast<FVulkanBuffer*>(Buffer);
-        return VulkanDevice->GetAllocator()->GetMappedMemory(VulkanBuffer);
+        return VulkanDevice->GetAllocator().GetMappedMemory(VulkanBuffer);
     }
 
     void FVulkanRenderContext::UnMapBuffer(FRHIBuffer* Buffer)

@@ -173,33 +173,33 @@ namespace Lumina
             return Buffer;
         }
 
-        VkBuffer GetBuffer() const { return Buffer; }
-        VmaAllocation GetAllocation() const { return Allocation; }
-        void* GetMappedMemory() const;
+        NODISCARD VkBuffer GetBuffer() const { return Buffer; }
+        NODISCARD VmaAllocation GetAllocation() const { return Allocation; }
+        NODISCARD void* GetMappedMemory() const;
         
-        const FRHIBufferDesc& GetDescription() const override { return Description; }
-        bool IsStorageBuffer() const override { return Description.Usage.IsFlagSet(EBufferUsageFlags::StorageBuffer); }
-        bool IsUniformBuffer() const override { return Description.Usage.IsFlagSet(EBufferUsageFlags::UniformBuffer); }
-        bool IsVertexBuffer() const override { return Description.Usage.IsFlagSet(EBufferUsageFlags::VertexBuffer); }
-        bool IsIndexBuffer() const override { return Description.Usage.IsFlagSet(EBufferUsageFlags::IndexBuffer); }
-        bool IsStagingBuffer() const override { return Description.Usage.IsFlagSet(EBufferUsageFlags::StagingBuffer); }
-        uint64 GetSize() const override { return Description.Size; }
-        uint32 GetStride() const override { return Description.Stride; }
-        const TBitFlags<EBufferUsageFlags>& GetUsage() const override { return Description.Usage; }
-        uint64 GetAddress() const override { return BufferAddress; }
+        NODISCARD const FRHIBufferDesc& GetDescription() const override { return Description; }
+        NODISCARD bool IsStorageBuffer() const override { return Description.Usage.IsFlagSet(EBufferUsageFlags::StorageBuffer); }
+        NODISCARD bool IsUniformBuffer() const override { return Description.Usage.IsFlagSet(EBufferUsageFlags::UniformBuffer); }
+        NODISCARD bool IsVertexBuffer() const override { return Description.Usage.IsFlagSet(EBufferUsageFlags::VertexBuffer); }
+        NODISCARD bool IsIndexBuffer() const override { return Description.Usage.IsFlagSet(EBufferUsageFlags::IndexBuffer); }
+        NODISCARD bool IsStagingBuffer() const override { return Description.Usage.IsFlagSet(EBufferUsageFlags::StagingBuffer); }
+        NODISCARD uint64 GetSize() const override { return Description.Size; }
+        NODISCARD uint32 GetStride() const override { return Description.Stride; }
+        NODISCARD const TBitFlags<EBufferUsageFlags>& GetUsage() const override { return Description.Usage; }
+        NODISCARD uint64 GetAddress() const override { return BufferAddress; }
 
     private:
+        
+        FRHIBufferDesc                      Description;
+        TFixedVector<FBufferVersionItem, 2> VersionTracking;
         
         VmaAllocation                       Allocation = nullptr;
         VkBuffer                            Buffer = VK_NULL_HANDLE;
 
         uint64                              LastUseCommandListID = 0;
-        
-        FRHIBufferDesc                      Description;
-        TFixedVector<FBufferVersionItem, 4> VersionTracking;
+        VkDeviceAddress                     BufferAddress = 0;
 
         uint32                              VersionSearchStart = 0;
-        VkDeviceAddress                     BufferAddress = 0;
         ECommandQueue                       LastUseQueue = ECommandQueue::Graphics;
 
     };

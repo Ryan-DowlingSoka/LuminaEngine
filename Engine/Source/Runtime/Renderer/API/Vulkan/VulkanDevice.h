@@ -29,8 +29,10 @@ namespace Lumina
 
 
         FVulkanMemoryAllocator(FVulkanRenderContext* InCxt, VkInstance Instance, VkPhysicalDevice PhysicalDevice, VkDevice Device);
-        ~FVulkanMemoryAllocator();
+        ~FVulkanMemoryAllocator() = default;
+        LE_NO_COPYMOVE(FVulkanMemoryAllocator);
         
+        void Shutdown() const;
         void GetMemoryBudget(VmaBudget* OutBudgets);
         void LogMemoryStats();
         
@@ -57,56 +59,26 @@ namespace Lumina
     class FVulkanDevice
     {
     public:
-
-        FVulkanDevice(FVulkanRenderContext* RenderContext, VkInstance Instance, VkPhysicalDevice InPhysicalDevice, VkDevice InDevice)
-            : PhysicalDevice(InPhysicalDevice)
-            , Device(InDevice)
-        {
-            vkGetPhysicalDeviceMemoryProperties(PhysicalDevice, &PhysicalDeviceMemoryProperties);
-            vkGetPhysicalDeviceProperties(PhysicalDevice, &PhysicalDeviceProperties);
-
-            VkPhysicalDeviceFeatures2 features2{};
-            features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-
-            Features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-            Features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-            Features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
-
-            features2.pNext = &Features11;
-            Features11.pNext = &Features12;
-            Features12.pNext = &Features13;
-
-            vkGetPhysicalDeviceFeatures2(PhysicalDevice, &features2);
-
-            Features10 = features2.features;
-            
-            Allocator = Memory::New<FVulkanMemoryAllocator>(RenderContext, Instance, PhysicalDevice, Device);
-        }
-
-        virtual ~FVulkanDevice()
-        {
-            Memory::Delete(Allocator);
-            vkDestroyDevice(Device, nullptr);
-        }
-        
+        FVulkanDevice(FVulkanRenderContext* RenderContext, VkInstance Instance, VkPhysicalDevice InPhysicalDevice, VkDevice InDevice);
+        virtual ~FVulkanDevice();
         LE_NO_COPYMOVE(FVulkanDevice);
 
-        FVulkanMemoryAllocator* GetAllocator() const { return Allocator; }
-        VkPhysicalDevice GetPhysicalDevice() const { return PhysicalDevice; }
-        VkDevice GetDevice() const { return Device; }
+        NODISCARD FVulkanMemoryAllocator& GetAllocator() { return Allocator; }
+        NODISCARD VkPhysicalDevice GetPhysicalDevice() const { return PhysicalDevice; }
+        NODISCARD VkDevice GetDevice() const { return Device; }
 
-        const VkPhysicalDeviceFeatures& GetFeatures10() const { return Features10; }
-        const VkPhysicalDeviceVulkan11Features& GetFeatures11() const { return Features11; }
-        const VkPhysicalDeviceVulkan12Features& GetFeatures12() const { return Features12; }
-        const VkPhysicalDeviceVulkan13Features& GetFeatures13() const { return Features13; }
+        NODISCARD const VkPhysicalDeviceFeatures& GetFeatures10() const { return Features10; }
+        NODISCARD const VkPhysicalDeviceVulkan11Features& GetFeatures11() const { return Features11; }
+        NODISCARD const VkPhysicalDeviceVulkan12Features& GetFeatures12() const { return Features12; }
+        NODISCARD const VkPhysicalDeviceVulkan13Features& GetFeatures13() const { return Features13; }
         
-        VkPhysicalDeviceProperties GetPhysicalDeviceProperties() const { return PhysicalDeviceProperties; }
-        VkPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties() const { return PhysicalDeviceMemoryProperties; }
+        NODISCARD VkPhysicalDeviceProperties GetPhysicalDeviceProperties() const { return PhysicalDeviceProperties; }
+        NODISCARD VkPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties() const { return PhysicalDeviceMemoryProperties; }
     
     private:
 
         FMutex                                  ChildMutex;
-        FVulkanMemoryAllocator*                 Allocator = nullptr;
+        FVulkanMemoryAllocator                  Allocator;
         VkPhysicalDevice                        PhysicalDevice;
         VkDevice                                Device;
 

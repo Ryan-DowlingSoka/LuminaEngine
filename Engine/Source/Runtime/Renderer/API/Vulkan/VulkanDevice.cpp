@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "VulkanDevice.h"
 #define VMA_IMPLEMENTATION
+#include <volk/volk.h>
 #include "vk_mem_alloc.h"
 #include "Renderer/RHIGlobals.h"
 #include "VulkanMacros.h"
@@ -33,11 +34,11 @@ namespace Lumina
         RenderContext = InCxt;
     }
 
-    FVulkanMemoryAllocator::~FVulkanMemoryAllocator()
+    void FVulkanMemoryAllocator::Shutdown() const
     {
         vmaDestroyAllocator(Allocator);
     }
-    
+
     VmaAllocation FVulkanMemoryAllocator::AllocateBuffer(const VkBufferCreateInfo* CreateInfo, VmaAllocationCreateFlags Flags, VkBuffer* vkBuffer, const char* AllocationName) const
     {
         LUMINA_PROFILE_SCOPE();
@@ -136,7 +137,37 @@ namespace Lumina
 
         return Buffer->GetAllocation()->GetMappedData();
     }
-    
+
+    FVulkanDevice::FVulkanDevice(FVulkanRenderContext* RenderContext, VkInstance Instance, VkPhysicalDevice InPhysicalDevice, VkDevice InDevice)
+        : Allocator(RenderContext, Instance, InPhysicalDevice, InDevice)
+        , PhysicalDevice(InPhysicalDevice)
+        , Device(InDevice)
+    {
+        vkGetPhysicalDeviceMemoryProperties(PhysicalDevice, &PhysicalDeviceMemoryProperties);
+        vkGetPhysicalDeviceProperties(PhysicalDevice, &PhysicalDeviceProperties);
+
+        VkPhysicalDeviceFeatures2 features2{};
+        features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+
+        Features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        Features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        Features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+
+        features2.pNext = &Features11;
+        Features11.pNext = &Features12;
+        Features12.pNext = &Features13;
+
+        vkGetPhysicalDeviceFeatures2(PhysicalDevice, &features2);
+
+        Features10 = features2.features;
+    }
+
+    FVulkanDevice::~FVulkanDevice()
+    {
+        Allocator.Shutdown();
+        vkDestroyDevice(Device, nullptr);
+    }
+
     void FVulkanMemoryAllocator::GetMemoryBudget(VmaBudget* OutBudgets)
     {
         vmaGetHeapBudgets(Allocator, OutBudgets);
