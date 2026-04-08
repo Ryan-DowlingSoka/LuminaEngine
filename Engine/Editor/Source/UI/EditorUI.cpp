@@ -175,7 +175,6 @@ namespace Lumina
     void FEditorUI::OnStartFrame(const FUpdateContext& UpdateContext)
     {
         LUMINA_PROFILE_SCOPE();
-        DEBUG_ASSERT(UpdateContext.GetUpdateStage() == EUpdateStage::FrameStart);
         ImGuizmo::BeginFrame();
 
         auto TitleBarLeftContents = [this, &UpdateContext] ()

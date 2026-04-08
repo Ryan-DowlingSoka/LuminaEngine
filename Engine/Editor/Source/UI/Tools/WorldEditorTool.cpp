@@ -2728,6 +2728,8 @@ namespace Lumina
 
     void FWorldEditorTool::DrawEntityProperties(entt::entity Entity)
     {
+        LUMINA_PROFILE_SCOPE();
+
         if (World->IsSimulating())
         {
             ImGui::BeginDisabled();
@@ -2905,6 +2907,8 @@ namespace Lumina
 
     void FWorldEditorTool::DrawComponentList(entt::entity Entity)
     {
+        LUMINA_PROFILE_SCOPE();
+        
         for (TUniquePtr<FPropertyTable>& Table : PropertyTables)
         {
             DrawComponentHeader(Table, Entity);

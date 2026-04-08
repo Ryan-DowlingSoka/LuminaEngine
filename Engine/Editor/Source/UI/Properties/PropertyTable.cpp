@@ -103,6 +103,7 @@ namespace Lumina
         {
             ImGui::BeginDisabled(IsReadOnly());
             const float ChildHeaderOffset = Offset + 8;
+            
             for (TUniquePtr<FPropertyRow>& Row : Children)
             {
                 Row->DrawRow(ChildHeaderOffset, bReadOnly);
@@ -392,7 +393,8 @@ namespace Lumina
         ImGui::PushStyleColor(ImGuiCol_Header, 0);
         ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0);
         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0);
-        bExpanded = ImGui::CollapsingHeader(ArrayProperty->GetPropertyDisplayName().c_str());
+        ImGuiTreeNodeFlags Flags = ArrayProperty->GetNum(GetPropertyHandle()->ContainerPtr) ? 0 : ImGuiTreeNodeFlags_Leaf;
+        bExpanded = ImGui::CollapsingHeader(ArrayProperty->GetPropertyDisplayName().c_str(), Flags);
         ImGui::PopStyleColor(3);
     }
 
@@ -416,7 +418,7 @@ namespace Lumina
             TUniquePtr<FPropertyRow> NewRow = CreatePropertyRow(ElementPropHandle, this, Callbacks);
             NewRow->SetIsArrayElement(true);
             
-            Children.push_back(Move(NewRow));
+            Children.emplace_back(Move(NewRow));
         }
     }
 
@@ -545,7 +547,7 @@ namespace Lumina
         ImGui::PushStyleColor(ImGuiCol_Header, 0);
         ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0);
         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0);
-        bExpanded = ImGui::CollapsingHeader(StructProperty->GetPropertyDisplayName().c_str());
+        bExpanded = ImGui::CollapsingHeader(StructProperty->GetPropertyDisplayName().c_str(), ImGuiTreeNodeFlags_Leaf);
         ImGui::PopStyleColor(3);
     }
 
@@ -584,7 +586,7 @@ namespace Lumina
     void FCategoryPropertyRow::AddProperty(const TSharedPtr<FPropertyHandle>& InPropHandle)
     {
         TUniquePtr<FPropertyRow> NewRow = CreatePropertyRow(InPropHandle, this, Callbacks);
-        Children.push_back(Move(NewRow));
+        Children.emplace_back(Move(NewRow));
     }
 
     void FCategoryPropertyRow::DrawHeader(float Offset)
