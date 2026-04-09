@@ -1,6 +1,4 @@
 ﻿#include "ReflectedType.h"
-
-#include "eastl/any.h"
 #include "Functions/ReflectedFunction.h"
 #include "Properties/ReflectedProperty.h"
 #include "Reflector/Clang/Utils.h"
@@ -638,7 +636,28 @@ namespace Lumina::Reflection
             Stream += "\t}, \"new\");\n";
             Stream += "\tlua_setfield(L, -2, \"new\");\n";
         }
-            
+        
+        if (dynamic_cast<FReflectedClass*>(this))
+        {
+            Stream += "\tlua_pushcfunction(L, +[](lua_State* State)\n";
+            Stream += "\t{\n";
+            Stream += "\t\tauto Name = lua_tostring(State, 1);\n";
+            Stream += "\t\tauto* Instance = Lumina::LoadObject<" + QualifiedName + ">(Name);\n";
+            Stream += "\t\tif(Instance == nullptr)\n";
+            Stream += "\t\t{\n";
+            Stream += "\t\t\tlua_pushnil(State);\n";
+            Stream += "\t\t}\n";
+            Stream += "\t\telse\n";
+            Stream += "\t\t{\n";
+            Stream += "\t\t\tvoid* Block = lua_newuserdatataggedwithmetatable(State, sizeof(Lumina::Lua::TUserdataHeader<" + QualifiedName + ">), Lumina::Lua::TClassTraits<" + QualifiedName + ">::Tag());\n";
+            Stream += "\t\t\tauto* Header = new (Block) Lumina::Lua::TUserdataHeader<" + QualifiedName + ">{};\n";
+            Stream += "\t\t\tHeader->SetExternal(Instance);\n";
+            Stream += "\t\t}\n";
+            Stream += "\t\treturn 1;\n";            
+            Stream += "\t}, \"Load\");\n";
+            Stream += "\tlua_setfield(L, -2, \"Load\");\n";
+        }
+        
         Stream += "\n";
         Stream += "\tlua_setglobal(L, \"" + DisplayName + "\");\n";
             

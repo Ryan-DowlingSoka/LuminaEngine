@@ -1,9 +1,7 @@
 #include "pch.h"
 #include "Scripting.h"
-
 #include <glm/gtx/quaternion.hpp>
 #include <glm/gtx/string_cast.hpp>
-
 #include "lstate.h"
 #include "luacode.h"
 #include "lualib.h"
@@ -106,6 +104,8 @@ namespace Lumina::Lua
         FRef EngineTable    = GlobalsRef.NewTable("Engine");
         FRef MathTable      = EngineTable.NewTable("Math");
         FRef AudioTable     = EngineTable.NewTable("Audio");
+        
+        EngineTable.SetFunction<[](FStringView Name) { return StaticLoadObject(Name); } >("LoadObject");
         
         MathTable.Set("Pi",        glm::pi<float>());
         MathTable.Set("TwoPi",     glm::two_pi<float>());
