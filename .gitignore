@@ -9,7 +9,7 @@
 /CrashDumps/
 
 *.zip
-
+/.claude/
 /.vs/
 *.vcxproj
 *.user
@@ -52,3 +52,4 @@
 *.pdb
 *.idb
 External.7z
+CLAUDE.md
