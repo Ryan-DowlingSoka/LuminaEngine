@@ -15,6 +15,7 @@
 #include "WorldTypes.h"
 #include "Core/Functional/FunctionRef.h"
 #include "Entity/Systems/EntitySystem.h"
+#include "Entity/Events/LuaEventBus.h"
 #include "World.generated.h"
 
 
@@ -175,7 +176,9 @@ namespace Lumina
         TUniquePtr<Physics::IPhysicsScene>                  PhysicsScene;
         
         TVector<FSystemVariant>                             SystemUpdateList[(int32)EUpdateStage::Max];
-        
+
+        FLuaEventBus                                        LuaEventBus;
+
         FLineBatcherComponent*                              LineBatcherComponent;
         
         int64                                               WorldIndex = -1;
