@@ -893,16 +893,14 @@ namespace Lumina
     FRHISamplerRef FVulkanRenderContext::CreateSampler(const FSamplerDesc& SamplerDesc)
     {
         uint64 Hash = Hash::GetHash(SamplerDesc);
-        
+
         FScopeLock Lock(SamplerMutex);
-        if (SamplerMap.find(Hash) != SamplerMap.end())
+        auto [It, bInserted] = SamplerMap.try_emplace(Hash);
+        if (bInserted)
         {
-            return SamplerMap.at(Hash);
+            It->second = MakeRefCount<FVulkanSampler>(VulkanDevice, SamplerDesc);
         }
-        else
-        {
-            return SamplerMap[Hash] = MakeRefCount<FVulkanSampler>(VulkanDevice, SamplerDesc);
-        }
+        return It->second;
     }
 
     FRHIVertexShaderRef FVulkanRenderContext::CreateVertexShader(const FShaderHeader& Shader)
@@ -1185,11 +1183,14 @@ namespace Lumina
 
     FRHITimerQueryRef FVulkanRenderContext::CreateTimerQuery()
     {
-        VkQueryPoolCreateInfo QueryPoolInfo = {};
-        QueryPoolInfo.queryCount    = TimerQueryAllocator.GetCapacity() * 2;
-        QueryPoolInfo.queryType     = VK_QUERY_TYPE_TIMESTAMP;
-        
-        VK_CHECK(vkCreateQueryPool(GetDevice()->GetDevice(), &QueryPoolInfo, VK_ALLOC_CALLBACK, &TimerQueryPool));
+        if (TimerQueryPool == VK_NULL_HANDLE)
+        {
+            VkQueryPoolCreateInfo QueryPoolInfo = {};
+            QueryPoolInfo.sType         = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+            QueryPoolInfo.queryCount    = TimerQueryAllocator.GetCapacity() * 2;
+            QueryPoolInfo.queryType     = VK_QUERY_TYPE_TIMESTAMP;
+            VK_CHECK(vkCreateQueryPool(GetDevice()->GetDevice(), &QueryPoolInfo, VK_ALLOC_CALLBACK, &TimerQueryPool));
+        }
         
         int32 QueryIndex = TimerQueryAllocator.Allocate();
         
@@ -1272,22 +1273,8 @@ namespace Lumina
         FQueue* WaitOnQueue = Queues[(uint32)WaitOn].get();
 
         VkPipelineStageFlags WaitStage = 0;
-    
-        if (Waiting == ECommandQueue::Graphics)
-        {
-            WaitStage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | 
-                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-                        VK_PIPELINE_STAGE_TRANSFER_BIT;
-        }
-        else if (Waiting == ECommandQueue::Compute)
-        {
-            WaitStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-        }
-        else if (Waiting == ECommandQueue::Transfer)
-        {
-            WaitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        }
+        
+        WaitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
         
         WaitingQueue->AddWaitSemaphore(WaitOnQueue->TimelineSemaphore, WaitOnQueue->LastSubmittedID, WaitStage);
     }

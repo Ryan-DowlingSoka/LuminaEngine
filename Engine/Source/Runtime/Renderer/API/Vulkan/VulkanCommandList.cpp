@@ -262,8 +262,8 @@ namespace Lumina
         
         if (PendingState.IsInState(EPendingCommandState::AutomaticBarriers))
         {
-            RequireBufferState(Source->Buffer, EResourceStates::CopyDest);
-            RequireTextureState(Destination, DstSubresource, EResourceStates::CopySource);
+            RequireBufferState(Source->Buffer, EResourceStates::CopySource);
+            RequireTextureState(Destination, DstSubresource, EResourceStates::CopyDest);
         }
         CommitBarriers();
         
@@ -1182,10 +1182,9 @@ namespace Lumina
             Attachment.loadOp       = (PassInfo.DepthAttachment.LoadOp == ERenderLoadOp::Clear) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
             Attachment.storeOp      = (PassInfo.DepthAttachment.StoreOp == ERenderStoreOp::Store) ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
             
+            Attachment.clearValue.depthStencil.depth = PassInfo.DepthAttachment.ClearColor.r;
+            Attachment.clearValue.depthStencil.stencil = (uint32)PassInfo.DepthAttachment.ClearColor.g;
             DepthAttachment = Attachment;
-            DepthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            DepthAttachment.clearValue.depthStencil.depth = PassInfo.DepthAttachment.ClearColor.r;
-            DepthAttachment.clearValue.depthStencil.stencil = (uint32)PassInfo.DepthAttachment.ClearColor.g;
 
             if (NumArraySlices)
             {
@@ -1574,6 +1573,81 @@ namespace Lumina
     }
 
     
+    // Stages that only exist in the rasterization pipeline.
+    static constexpr VkPipelineStageFlags2 GGraphicsOnlyStages =
+        VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT                         |
+        VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT                        |
+        VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT          |
+        VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT       |
+        VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT                      |
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT                      |
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT                 |
+        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT                  |
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT              |
+        VK_PIPELINE_STAGE_2_TRANSFORM_FEEDBACK_BIT_EXT               |
+        VK_PIPELINE_STAGE_2_CONDITIONAL_RENDERING_BIT_EXT            |
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
+
+    // Access types produced/consumed exclusively by graphics-only stages.
+    static constexpr VkAccessFlags2 GGraphicsOnlyAccess =
+        VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT                        |
+        VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT                        |
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT                       |
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT                |
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT               |
+        VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT                        |
+        VK_ACCESS_2_INDEX_READ_BIT                                   |
+        VK_ACCESS_2_TRANSFORM_FEEDBACK_WRITE_BIT_EXT                 |
+        VK_ACCESS_2_TRANSFORM_FEEDBACK_COUNTER_READ_BIT_EXT          |
+        VK_ACCESS_2_TRANSFORM_FEEDBACK_COUNTER_WRITE_BIT_EXT         |
+        VK_ACCESS_2_CONDITIONAL_RENDERING_READ_BIT_EXT               |
+        VK_ACCESS_2_FRAGMENT_SHADING_RATE_ATTACHMENT_READ_BIT_KHR;
+
+    // Stages valid on a dedicated transfer queue.
+    static constexpr VkPipelineStageFlags2 GTransferValidStages =
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT       |
+        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT    |
+        VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT |
+        VK_PIPELINE_STAGE_2_HOST_BIT           |
+        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
+    static constexpr VkAccessFlags2 GTransferValidAccess =
+        VK_ACCESS_2_TRANSFER_READ_BIT  |
+        VK_ACCESS_2_TRANSFER_WRITE_BIT |
+        VK_ACCESS_2_HOST_READ_BIT      |
+        VK_ACCESS_2_HOST_WRITE_BIT     |
+        VK_ACCESS_2_MEMORY_READ_BIT    |
+        VK_ACCESS_2_MEMORY_WRITE_BIT;
+
+    // Strips stage/access flags that are invalid for the recording queue family.
+    // Falls back to ALL_COMMANDS when all stage bits are removed so that layout
+    // transitions on non-graphics queues (e.g. depth image prep) are still ordered.
+    static void FilterBarrierForQueue(VkPipelineStageFlags2& StageMask,
+                                      VkAccessFlags2& AccessMask,
+                                      ECommandQueue Queue)
+    {
+        if (Queue == ECommandQueue::Graphics)
+        {
+            return;
+        }
+
+        if (Queue == ECommandQueue::Compute)
+        {
+            StageMask  &= ~GGraphicsOnlyStages;
+            AccessMask &= ~GGraphicsOnlyAccess;
+        }
+        else if (Queue == ECommandQueue::Transfer)
+        {
+            StageMask  &= GTransferValidStages;
+            AccessMask &= GTransferValidAccess;
+        }
+
+        if (StageMask == 0)
+        {
+            StageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        }
+    }
+
     void FVulkanCommandList::CommitBarriersInternal()
     {
         LUMINA_PROFILE_SCOPE();
@@ -1582,7 +1656,7 @@ namespace Lumina
         TFixedVector<VkBufferMemoryBarrier2, 4> BufferBarriers;
 
         VkCommandBuffer CommandBuffer = CurrentCommandBuffer->CommandBuffer;
-        
+
         {
             LUMINA_PROFILE_SECTION("Texture Barriers");
             for (const FTextureBarrier& Barrier : StateTracker.GetTextureBarriers())
@@ -1590,11 +1664,14 @@ namespace Lumina
                 FResourceStateMapping2 Before = Vk::ConvertResourceState2(Barrier.StateBefore);
                 FResourceStateMapping2 After = Vk::ConvertResourceState2(Barrier.StateAfter);
 
+                FilterBarrierForQueue(Before.StageFlags, Before.AccessMask, Info.CommandQueue);
+                FilterBarrierForQueue(After.StageFlags,  After.AccessMask,  Info.CommandQueue);
+
                 ASSERT(After.ImageLayout != VK_IMAGE_LAYOUT_UNDEFINED);
-                
+
                 FVulkanImage* Image = static_cast<FVulkanImage*>(Barrier.Texture);
                 const FFormatInfo& formatInfo = RHI::Format::Info(Image->GetDescription().Format);
-                
+
                 VkImageAspectFlags AspectMask = 0;
                 if (formatInfo.bHasDepth)
                 {
@@ -1615,7 +1692,7 @@ namespace Lumina
                 SubresourceRange.baseMipLevel   = Barrier.bEntireTexture ? 0 : Barrier.MipLevel;
                 SubresourceRange.levelCount     = Barrier.bEntireTexture ? Image->GetDescription().NumMips : 1;
                 SubresourceRange.aspectMask     = AspectMask;
-                
+
                 VkImageMemoryBarrier2 ImageBarrier  = {};
                 ImageBarrier.sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
                 ImageBarrier.srcAccessMask          = Before.AccessMask;
@@ -1628,22 +1705,24 @@ namespace Lumina
                 ImageBarrier.dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
                 ImageBarrier.image                  = Image->GetAPI<VkImage, EAPIResourceType::Image>();
                 ImageBarrier.subresourceRange       = SubresourceRange;
-                
+
                 ImageBarriers.push_back(ImageBarrier);
             }
-            
+
         }
-        
+
         {
             LUMINA_PROFILE_SECTION("Buffer Barriers");
             for (const FBufferBarrier& Barrier : StateTracker.GetBufferBarriers())
             {
                 FResourceStateMapping2 Before = Vk::ConvertResourceState2(Barrier.StateBefore);
                 FResourceStateMapping2 After = Vk::ConvertResourceState2(Barrier.StateAfter);
-                
-                
+
+                FilterBarrierForQueue(Before.StageFlags, Before.AccessMask, Info.CommandQueue);
+                FilterBarrierForQueue(After.StageFlags,  After.AccessMask,  Info.CommandQueue);
+
                 FVulkanBuffer* Buffer = static_cast<FVulkanBuffer*>(Barrier.Buffer);
-                
+
                 VkBufferMemoryBarrier2 BufferBarrier    = {};
                 BufferBarrier.sType                     = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
                 BufferBarrier.srcAccessMask             = Before.AccessMask;
@@ -1655,7 +1734,7 @@ namespace Lumina
                 BufferBarrier.buffer                    = Buffer->Buffer;
                 BufferBarrier.offset                    = 0;
                 BufferBarrier.size                      = Buffer->GetDescription().Size;
-                
+
                 BufferBarriers.push_back(BufferBarrier);
             }
         }
