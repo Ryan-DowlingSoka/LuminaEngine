@@ -1274,6 +1274,7 @@ namespace Lumina
 
         VkPipelineStageFlags WaitStage = 0;
         
+        // @TODO proper wait queue.
         WaitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
         
         WaitingQueue->AddWaitSemaphore(WaitOnQueue->TimelineSemaphore, WaitOnQueue->LastSubmittedID, WaitStage);
