@@ -28,7 +28,6 @@ namespace Lumina
         
         TFixedVector<FTaskHandle, 1> TaskHandles;
         TFixedVector<ICommandList*, 1> AllCommandLists;
-        TFixedVector<ICommandList*, 1> ComputeCommandLists;
         
 		FMutex CommandListMutex;
 
@@ -43,13 +42,13 @@ namespace Lumina
                 // The user has promised us this pass can now run at any time without issues, so we dispatch it and keep going.
                 if (Pass->GetDescriptor()->HasAnyFlag(ERGExecutionFlags::Async))
                 {
-                    auto Task = Task::AsyncTask(1, 1, [&CommandListMutex, &ComputeCommandLists, Pass](uint32, uint32, uint32)
+                    auto Task = Task::AsyncTask(1, 1, [&CommandListMutex, &AllCommandLists, Pass](uint32, uint32, uint32)
                     {
-                        FRHICommandListRef LocalCommandList = GRenderContext->CreateCommandList(FCommandListInfo::Compute());
+                        FRHICommandListRef LocalCommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
                     
                         {
                             FScopeLock Lock(CommandListMutex);
-                            ComputeCommandLists.emplace_back(LocalCommandList);
+                            AllCommandLists.emplace_back(LocalCommandList);
                         }
             
                         LocalCommandList->Open();
@@ -75,11 +74,6 @@ namespace Lumina
         for (const FTaskHandle& Task : TaskHandles)
         {
             Task->Wait();
-        }
-        
-        if (!ComputeCommandLists.empty())
-        {
-            GRenderContext->ExecuteCommandLists(ComputeCommandLists.data(), (uint32)ComputeCommandLists.size(), ECommandQueue::Compute);   
         }
         
         GRenderContext->ExecuteCommandLists(AllCommandLists.data(), (uint32)AllCommandLists.size(), ECommandQueue::Graphics);

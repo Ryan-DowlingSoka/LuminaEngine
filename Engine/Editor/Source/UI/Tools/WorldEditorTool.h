@@ -45,6 +45,7 @@ namespace Lumina
         
         FWorldEditorTool(IEditorToolContext* Context, CWorld* InWorld);
         ~FWorldEditorTool() noexcept override = default;
+        LE_NO_COPYMOVE(FWorldEditorTool);
 
         void OnInitialize() override;
         void OnDeinitialize(const FUpdateContext& UpdateContext) override;
@@ -87,6 +88,9 @@ namespace Lumina
         bool HasSimulatingWorld() const { return bSimulatingWorld || bGamePreviewRunning; }
         
         void StopAllSimulations();
+        
+        bool IsUnsavedDocument() override;
+
 
     protected:
         
@@ -115,7 +119,6 @@ namespace Lumina
 
         void DrawWorldSettings(bool bFocused);
         void DrawOutliner(bool bFocused);
-        void DrawSystems(bool bFocused);
         void DrawEntityProperties(entt::entity Entity);
         void DrawEntityActionButtons(entt::entity Entity);
         void DrawComponentList(entt::entity Entity);
@@ -126,9 +129,6 @@ namespace Lumina
         
         void OnPrePropertyChangeEvent(const FPropertyChangedEvent& Event);
         void OnPostPropertyChangeEvent(const FPropertyChangedEvent& Event);
-
-
-        bool IsUnsavedDocument() override;
         
         void DrawEntityEditor(bool bFocused, entt::entity Entity);
 

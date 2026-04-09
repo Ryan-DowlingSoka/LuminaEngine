@@ -142,9 +142,8 @@ namespace Lumina
     public:
         
         static void DefaultCallback(const CVarValueType&) {}
-
         
-        constexpr TConsoleVar(FStringView Name, T DefaultValue, FStringView Hint, void(*InCallback)(const CVarValueType&) = DefaultCallback)
+        TConsoleVar(FStringView Name, T DefaultValue, FStringView Hint, void(*InCallback)(const CVarValueType&) = DefaultCallback) noexcept
             : Storage(DefaultValue)
         {
             FConsoleVariable Var(Name, Hint, &Storage, Storage, InCallback);

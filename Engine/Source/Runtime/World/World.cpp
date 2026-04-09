@@ -21,6 +21,7 @@
 #include "Entity/Components/SingletonEntityComponent.h"
 #include "entity/components/tagcomponent.h"
 #include "Entity/Events/WorldEvents.h"
+#include "Entity/Events/LuaEventBus.h"
 #include "Physics/Physics.h"
 #include "Scene/RenderScene/Forward/ForwardRenderScene.h"
 #include "Scripting/Lua/Scripting.h"
@@ -207,6 +208,16 @@ namespace Lumina
 
     void CWorld::RegisterLuaModule(Lua::FRef& GlobalRef)
     {
+        GlobalRef.NewClass<FLuaEventBus>("EventBus")
+            .AddFunction<&FLuaEventBus::Subscribe>("Subscribe")
+            .AddFunction<&FLuaEventBus::SubscribeEntity>("SubscribeEntity")
+            .AddFunction<&FLuaEventBus::Unsubscribe>("Unsubscribe")
+            .AddFunction<&FLuaEventBus::Dispatch>("Dispatch")
+            .AddFunction<&FLuaEventBus::DispatchDeferred>("DispatchDeferred")
+            .AddFunction<&FLuaEventBus::ClearEvent>("ClearEvent")
+            .AddFunction<&FLuaEventBus::GetSubscriberCount>("GetSubscriberCount")
+            .Register();
+
         GlobalRef.NewClass<Physics::IPhysicsScene>("PhysicsScene")
             .AddFunction<&Physics::IPhysicsScene::ActivateBody>("ActivateBody")
             .AddFunction<&Physics::IPhysicsScene::DeactivateBody>("DeactivateBody")
@@ -304,6 +315,7 @@ namespace Lumina
         EntityRegistry.ctx().emplace<FCameraManager*>(CameraManager.get());
         EntityRegistry.ctx().emplace<FSystemContext&>(SystemContext);
         EntityRegistry.ctx().emplace<CWorld*>(this);
+        EntityRegistry.ctx().emplace<FLuaEventBus*>(&LuaEventBus);
 
         CreateRenderer();
         RegisterSystems();
@@ -368,6 +380,8 @@ namespace Lumina
             PhysicsScene->StopSimulate();
         }
         
+        LuaEventBus.Clear();
+
         RegistryPending.clear<>();
         EntityRegistry.clear<>();
         PhysicsScene.reset();
@@ -407,6 +421,11 @@ namespace Lumina
         SystemContext.UpdateStage   = Stage;
         
         SingletonDispatcher.update<FScriptComponentPendingReady>();
+
+        if (Stage == EUpdateStage::FrameStart)
+        {
+            LuaEventBus.ProcessDeferred();
+        }
 
         TickSystems(SystemContext);
     }
@@ -783,6 +802,7 @@ namespace Lumina
         ScriptComponent.Script->Environment.Set("World", this);
         ScriptComponent.Script->Environment.Set("Registry", &EntityRegistry);
         ScriptComponent.Script->Environment.Set("Physics", PhysicsScene.get());
+        ScriptComponent.Script->Environment.Set("Events", &LuaEventBus);
         
         ScriptComponent.Script->Reference.Set("Entity", Entity);
         ScriptComponent.Script->Reference.Set("Transform", &EntityRegistry.get<STransformComponent>(Entity));
@@ -825,12 +845,15 @@ namespace Lumina
 
     void CWorld::OnScriptComponentDestroyed(entt::registry& Registry, entt::entity Entity)
     {
+        // Auto-remove all event bus subscriptions owned by this entity.
+        LuaEventBus.UnsubscribeEntity(Entity);
+
         SScriptComponent& ScriptComponent = Registry.get<SScriptComponent>(Entity);
         if (ScriptComponent.Script == nullptr || !ScriptComponent.DetachFunc.IsValid())
         {
             return;
         }
-        
+
         if ((WorldType == EWorldType::Editor) == ScriptComponent.bRunInEditor)
         {
             ScriptComponent.DetachFunc(ScriptComponent.Script->Reference);

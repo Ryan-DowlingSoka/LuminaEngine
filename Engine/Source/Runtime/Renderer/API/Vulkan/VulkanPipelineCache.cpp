@@ -15,9 +15,10 @@ namespace Lumina
         Hash::HashCombine(Hash, InDesc);
         Hash::HashCombine(Hash, RenderPassDesc);
         
-        if (GraphicsPipelines.find(Hash) != GraphicsPipelines.end())
+        auto It = GraphicsPipelines.find(Hash);
+        if (It != GraphicsPipelines.end())
         {
-            return GraphicsPipelines.at(Hash);
+            return It->second;
         }
         
         auto NewPipeline = TRefCountPtr<FVulkanGraphicsPipeline>::Create(Device, InDesc, RenderPassDesc);
@@ -32,9 +33,10 @@ namespace Lumina
         LUMINA_PROFILE_SCOPE();
 
         size_t Hash = Hash::GetHash(InDesc);
-        if (ComputePipelines.find(Hash) != ComputePipelines.end())
+        auto It = ComputePipelines.find(Hash);
+        if (It != ComputePipelines.end())
         {
-            return ComputePipelines.at(Hash);
+            return It->second;
         }
         
         auto NewPipeline = MakeRefCount<FVulkanComputePipeline>(Device, InDesc);
