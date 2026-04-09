@@ -149,6 +149,13 @@ namespace Lumina
         }
         
         FUNCTION(Script)
+        const FTransform& GetWorldTransform() const
+        {
+            ResolveIfDirty();
+            return WorldTransform; 
+        }
+        
+        FUNCTION(Script)
         void SetWorldTransform(const FTransform& InTransform)
         {
             WorldTransform = InTransform;

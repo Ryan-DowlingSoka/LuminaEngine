@@ -9,9 +9,9 @@ struct FPushConstants
 
 struct VSOutput
 {
-    float3  WorldPos    : WORLD_POS;
-    float3  LightPos    : LIGHT_POS;
-    float4  Position    : SV_Position;
+    float3 WorldPos : TEXCOORD0;
+    float3 LightPos : TEXCOORD1;
+    float4 Position : SV_Position;
 };
 
 [shader("vertex")]

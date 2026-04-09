@@ -405,6 +405,7 @@ namespace Lumina
                 }
             
                 RenderStats.NumBatches = DrawCommands.size();
+                
             }
         }
         
@@ -1591,7 +1592,73 @@ namespace Lumina
 
     void FForwardRenderScene::TransparentPass(FRenderGraph& RenderGraph)
     {
+#if 0
+        FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
+        RenderGraph.AddPass(RG_Raster, FRGEvent("Transparent Pass"), Descriptor, [&](ICommandList& CmdList)
+        {
+            LUMINA_PROFILE_SECTION_COLORED("Transparent Pass", tracy::Color::CadetBlue);
         
+            FRenderPassDesc::FAttachment RenderTarget;
+            RenderTarget.SetImage(GetNamedImage(ENamedImage::HDR))
+                        .SetLoadOp(ERenderLoadOp::Load);
+        
+            FRenderPassDesc::FAttachment Depth;
+            Depth.SetImage(GetNamedImage(ENamedImage::DepthAttachment))
+                 .SetLoadOp(ERenderLoadOp::Load);
+        
+            FRenderPassDesc RenderPass;
+            RenderPass.AddColorAttachment(RenderTarget)
+                      .SetDepthAttachment(Depth)
+                      .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+        
+            FDepthStencilState DepthState;
+            DepthState.SetDepthFunc(EComparisonFunc::GreaterOrEqual)
+                      .DisableDepthWrite();  // Read depth, do not write
+        
+            FRasterState RasterState;
+            RasterState.EnableDepthClip()
+                       .SetCullMode(ERasterCullMode::None); // Two-sided for translucent
+            
+            FBlendState BlendState; BlendState
+                .Targets[0]
+                    .SetBlendEnable(true)
+                    .SetSrcBlend(EBlendFactor::SrcAlpha)
+                    .SetDestBlend(EBlendFactor::InvSrcAlpha)
+                    .SetBlendOp(EBlendOp::Add)
+                    .SetSrcBlendAlpha(EBlendFactor::One)
+                    .SetDestBlendAlpha(EBlendFactor::InvSrcAlpha)
+                    .SetBlendOpAlpha(EBlendOp::Add);
+            
+            FRenderState RenderState;
+            RenderState.SetDepthStencilState(DepthState)
+                       .SetRasterState(RasterState)
+                       .SetBlendState(BlendState);
+            
+            for (uint32 Idx : TranslucentList)
+            {
+                const FMeshDrawCommand& Batch = DrawCommands[Idx];
+        
+                FGraphicsPipelineDesc Desc;
+                Desc.SetDebugName("Transparent Pass")
+                    .SetRenderState(RenderState)
+                    .SetVertexShader(Batch.VertexShader)
+                    .SetPixelShader(Batch.PixelShader)
+                    .AddBindingLayout(SceneBindingLayout)
+                    .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        
+                FGraphicsState GraphicsState;
+                GraphicsState.SetRenderPass(RenderPass)
+                             .SetViewportState(SceneViewportState)
+                             .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
+                             .SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect))
+                             .AddBindingSet(SceneBindingSet)
+                             .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        
+                CmdList.SetGraphicsState(GraphicsState);
+                CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
+            }
+        });
+#endif
     }
 
     void FForwardRenderScene::EnvironmentPass(FRenderGraph& RenderGraph)

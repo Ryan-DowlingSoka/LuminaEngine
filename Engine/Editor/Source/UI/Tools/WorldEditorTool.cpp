@@ -2156,7 +2156,7 @@ namespace Lumina
             PropertyTables.clear();
             bSimulatingWorld = true;
             
-            STransformComponent TransformCopy = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
+            FTransform TransformCopy = World->GetEntityRegistry().get<STransformComponent>(EditorEntity).GetWorldTransform();
             SCameraComponent CameraCopy =  World->GetEntityRegistry().get<SCameraComponent>(EditorEntity);
 
             World->SetActive(false);
@@ -2172,12 +2172,13 @@ namespace Lumina
             
             WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
 
+            World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetLocalTransform(TransformCopy);
+            
             World->GetEntityRegistry().patch<SCameraComponent>(EditorEntity, [CameraCopy](SCameraComponent& Patch)
             {
                 Patch = CameraCopy;
             });
             
-            World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetWorldTransform(TransformCopy.WorldTransform);
             
             OutlinerListView.ClearTree();
             OutlinerListView.MarkTreeDirty();
@@ -2194,7 +2195,7 @@ namespace Lumina
             PropertyTables.clear();
             bSimulatingWorld = false;
 
-            STransformComponent TransformCopy = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
+            FTransform TransformCopy = World->GetEntityRegistry().get<STransformComponent>(EditorEntity).GetWorldTransform();
             SCameraComponent CameraCopy =  World->GetEntityRegistry().get<SCameraComponent>(EditorEntity);
             
             World->DestroyEntity(EditorEntity);
@@ -2206,7 +2207,7 @@ namespace Lumina
             
             WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
             
-            World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetWorldTransform(TransformCopy.WorldTransform);
+            World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetLocalTransform(TransformCopy);
             
             World->GetEntityRegistry().patch<SCameraComponent>(EditorEntity, [CameraCopy](SCameraComponent& Patch)
             {

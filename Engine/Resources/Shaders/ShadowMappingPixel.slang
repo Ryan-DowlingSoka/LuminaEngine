@@ -16,8 +16,9 @@ struct FPushConstants
 
 struct PSInput
 {
-    float3 WorldPos : WORLD_POS;
-    float3 LightPos : LIGHT_POS;
+    float3 WorldPos : TEXCOORD0;
+    float3 LightPos : TEXCOORD1;
+    float4 Position : SV_Position;
 };
 
 // ============================================================================
@@ -25,7 +26,7 @@ struct PSInput
 // ============================================================================
 
 [shader("fragment")]
-float FragmentMain(PSInput Input, FPushConstants PC) : SV_Depth
+float FragmentMain(PSInput Input, uniform FPushConstants PC) : SV_Depth
 {
     FLight Light    = GetLightAt(PC.LightIndex);
     float  Distance = length(Input.WorldPos - Input.LightPos);
