@@ -170,6 +170,27 @@ namespace Lumina
             
             ImGui::Separator();
             
+            if (ScriptComponent->Script)
+            {
+                if (ImGui::BeginTable("ScriptReference", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
+                {
+                    ImGui::TableSetupColumn("Key");
+                    ImGui::TableSetupColumn("Value");
+                    ImGui::TableHeadersRow();
+
+                    for (auto&& [Key, Value] : ScriptComponent->Script->Reference)
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::TextUnformatted(Key.ToString().c_str());
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::TextUnformatted(Value.ToString().c_str());
+                    }
+
+                    ImGui::EndTable();
+                }
+            }
+            
             ImGui::PopStyleColor(3);
             
             ImGui::EndGroup();

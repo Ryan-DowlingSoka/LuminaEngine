@@ -193,7 +193,7 @@ namespace Lumina
         
         if (Header.Version != GPackageFileLuminaVersion.FileVersion)
         {
-            LOG_WARN("Package \"{}\" was loaded with a different engine version. {}, it may be unstable.", Path, Header.Version);
+            LOG_WARN("Package \"{}\" was last saved with a different engine version. {}, it may be unstable.", Path, Header.Version);
         }
 
         Reader.Seek(Header.ExportTableOffset);

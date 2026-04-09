@@ -87,6 +87,19 @@ namespace Lumina::Lua
         }
     }
 
+    FString FRef::ToString() const
+    {
+        if (!Push())
+        {
+            return {};
+        }
+        
+        size_t Length = 0;
+        FString View = luaL_tolstring(State, -1, &Length);
+        lua_pop(State, 2);
+        return View;
+    }
+
     EType FRef::GetType() const
     {
         if (!Push())

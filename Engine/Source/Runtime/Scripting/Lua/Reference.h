@@ -33,14 +33,8 @@ namespace Lumina::Lua
                 if (!bAtEnd)
                 {
                     lua_rawgeti(L, LUA_REGISTRYINDEX, TableRef);
-                    KeyIndex = lua_gettop(L);
-                    ValueIndex = KeyIndex + 1;
-                    
-                    if (!lua_next(L, KeyIndex))
-                    {
-                        bAtEnd = true;
-                        lua_pop(L, 1);
-                    }
+                    lua_pushnil(L);
+                    Advance();
                 }
             }
             
@@ -52,21 +46,20 @@ namespace Lumina::Lua
                 }
             }
             
+            LE_NO_COPYMOVE(FIterator);
+            
             TPair<FRef, FRef> operator*() const
             {
-                return eastl::make_pair(FRef(State, KeyIndex), FRef(State, ValueIndex));
+                return eastl::make_pair(FRef(State, -2), FRef(State, -1));
             }
             
             FIterator& operator++()
             {
                 lua_pop(State, 1);
-                if (!lua_next(State, KeyIndex))
-                {
-                    bAtEnd = true;
-                    lua_pop(State, 1);
-                }
+                Advance();
                 return *this;
             }
+
             
             bool operator==(const FIterator& Other) const { return bAtEnd == Other.bAtEnd; }
             bool operator!=(const FIterator& Other) const { return !(*this == Other); }
@@ -74,10 +67,17 @@ namespace Lumina::Lua
             
         private:
             
+            void Advance()
+            {
+                if (!lua_next(State, -2))
+                {
+                    bAtEnd = true;
+                    lua_pop(State, 1);
+                }
+            }
+            
             lua_State* State = nullptr;
             int TableRef = 0;
-            int KeyIndex = 0;
-            int ValueIndex = 0;
             bool bAtEnd = false;
         };
         
@@ -123,6 +123,7 @@ namespace Lumina::Lua
         
         void Reset();
         
+        NODISCARD FString ToString() const;
         NODISCARD EType GetType() const;
         NODISCARD bool Push() const;
         NODISCARD FRef NewTable(FStringView Key) const;

@@ -50,12 +50,10 @@ int GuardedMain(int ArgC, char** ArgV)  // NOLINT(misc-use-internal-linkage)
     }
     catch (std::exception& Error)
     {
-        std::println("Fatal error: {}", Error.what());
-        return -1;
+        PANIC("Fatal Error {}", Error.what());
     }
     catch (...)
     {
-        std::println("Unknown fatal error");
-        return -1;
+        PANIC("Unknown fatal error");
     }
 }
