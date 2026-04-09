@@ -25,7 +25,6 @@ namespace Lumina
     public:
         
         friend class FEditorUI;
-        virtual ~FEditorTool() = default;
 
         constexpr static char const* const ViewportWindowName = "Viewport";
 
@@ -68,19 +67,15 @@ namespace Lumina
     public:
 
         FEditorTool(IEditorToolContext* Context, const FString& DisplayName, CWorld* InWorld = nullptr);
+        virtual ~FEditorTool() = default;
+        LE_NO_COPYMOVE(FEditorTool);
         
 
         virtual void Initialize();
         virtual void Deinitialize(const FUpdateContext& UpdateContext);
         NODISCARD virtual FName GetToolName() const { return ToolName; }
         
-        NODISCARD ImGuiID CalculateDockspaceID() const
-        {
-            uint32 dockspaceID = CurrLocationID;
-            char const* const pEditorToolTypeName = GetUniqueTypeName();
-            dockspaceID = ImHashData(pEditorToolTypeName, strlen(pEditorToolTypeName), dockspaceID);
-            return dockspaceID;
-        }
+        NODISCARD ImGuiID CalculateDockspaceID() const;
 
         NODISCARD FFixedString GetToolWindowName(const FString& Name) const { return GetToolWindowName(Name.c_str(), CurrDockspaceID); }
         
@@ -166,18 +161,6 @@ namespace Lumina
         /** Called when the new icon is pressed */
         virtual void OnNew() { }
         
-        /** Called when the user begins manipulating something to be transacted. Captures the before-state for the transaction. */
-        virtual void BeginTransaction() { }
-
-        /** Called when the user finishes manipulating something that was transacted. Captures the after-state and pushes the transaction onto the undo stack. */
-        virtual void EndTransaction(FName Name) { }
-
-        /** Restores the registry to the state before the last transaction. Pushes the current state onto the redo stack. */
-        virtual void Undo() { }
-
-        /** Restores the registry to the state after the last undone transaction. Pushes the current state onto the undo stack. */
-        virtual void Redo() { }
-        
         NODISCARD virtual bool IsUnsavedDocument() { return false; }
 
         /** @TODO Cache and compare */
@@ -198,6 +181,18 @@ namespace Lumina
         }
 
     protected:
+        
+        /** Called when the user begins manipulating something to be transacted. Captures the before-state for the transaction. */
+        virtual void BeginTransaction() { }
+
+        /** Called when the user finishes manipulating something that was transacted. Captures the after-state and pushes the transaction onto the undo stack. */
+        virtual void EndTransaction(FName Name) { }
+
+        /** Restores the registry to the state before the last transaction. Pushes the current state onto the redo stack. */
+        virtual void Undo() { }
+
+        /** Restores the registry to the state after the last undone transaction. Pushes the current state onto the undo stack. */
+        virtual void Redo() { }
 
         void Internal_CreateViewportTool();
         

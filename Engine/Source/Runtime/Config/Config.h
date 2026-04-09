@@ -1,7 +1,7 @@
 ﻿#pragma once
 
+#include "Containers/Array.h"
 #include "Containers/String.h"
-#include "Log/Log.h"
 #include "nlohmann/json.hpp"
 
 namespace Lumina
@@ -19,9 +19,6 @@ namespace Lumina
         const nlohmann::json* GetJson(FStringView Key);
 
         bool Set(const FString& Path, const nlohmann::json& Value);
-
-        template<typename T>
-        T GetNested(FStringView Path, const T& Defaults = T{});
 
         template<typename TFunc>
         void ForEach(TFunc&& Func);

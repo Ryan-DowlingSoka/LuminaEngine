@@ -38,7 +38,6 @@
 
 namespace Lumina
 {
-    static constexpr const char* SystemOutlinerName = "Systems";
     static constexpr const char* WorldSettingsName = "World Settings";
     static constexpr const char* SceneGraphName = "Scene Graph";
     static constexpr const char* DragDropID = "EntityDropID";
@@ -61,11 +60,6 @@ namespace Lumina
         CreateToolWindow(WorldSettingsName, [&](bool bFocused)
         {
             DrawWorldSettings(bFocused);
-        });
-
-        CreateToolWindow(SystemOutlinerName, [&] (bool bFocused)
-        {
-            DrawSystems(bFocused);
         });
         
         CreateToolWindow("Details", [&] (bool bFocused)
@@ -494,7 +488,6 @@ namespace Lumina
         ImGui::DockBuilderDockWindow(GetToolWindowName(ViewportWindowName).c_str(), dockLeft);
         ImGui::DockBuilderDockWindow(GetToolWindowName(SceneGraphName).c_str(), dockRightTop);
         ImGui::DockBuilderDockWindow(GetToolWindowName("Details").c_str(), dockRightBottomLeft);
-        ImGui::DockBuilderDockWindow(GetToolWindowName(SystemOutlinerName).c_str(), dockRightBottomRight);
         ImGui::DockBuilderDockWindow(GetToolWindowName(WorldSettingsName).c_str(), dockRightBottom);
 
     }
@@ -2649,81 +2642,6 @@ namespace Lumina
             ImGui::PopStyleColor();
         }
         
-    }
-
-    void FWorldEditorTool::DrawSystems(bool bFocused)
-    {
-        const ImGuiStyle& Style = ImGui::GetStyle();
-    
-        const float AvailWidth = ImGui::GetContentRegionAvail().x;
-        uint32 SystemCount = 0;
-        for (uint8 i = 0; i < (uint8)EUpdateStage::Max; ++i)
-        {
-            SystemCount += (uint32)World->GetSystemsForUpdateStage((EUpdateStage)i).size();
-        }
-        
-        ImGui::BeginGroup();
-        {
-            ImGui::AlignTextToFramePadding();
-    
-            ImGui::BeginHorizontal("##SystemCount");
-            {
-                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), LE_ICON_CUBE " Systems");
-            
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.25f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.25f, 0.3f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.2f, 0.25f, 1.0f));
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, Style.FramePadding.y));
-                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
-                
-                ImGui::Button(FFixedString().sprintf("%u", SystemCount).c_str());
-            }
-            ImGui::EndHorizontal();
-            
-            ImGui::PopStyleVar(2);
-            ImGui::PopStyleColor(3);
-        }
-        ImGui::EndGroup();
-        
-        ImGui::SameLine(AvailWidth - 80.0f);
-        
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.25f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.6f, 0.3f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.15f, 0.45f, 0.2f, 1.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-        
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(3);
-    
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.08f, 0.1f, 1.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 8.0f));
-        
-        if (ImGui::BeginChild("SystemList", ImVec2(0, 0), true))
-        {
-            constexpr ImVec4 StageColors[] = 
-            {
-                ImVec4(0.3f, 0.5f, 0.7f, 1.0f),
-                ImVec4(0.5f, 0.6f, 0.3f, 1.0f),
-                ImVec4(0.7f, 0.4f, 0.3f, 1.0f),
-                ImVec4(0.6f, 0.3f, 0.6f, 1.0f),
-                ImVec4(0.3f, 0.6f, 0.5f, 1.0f),
-                ImVec4(0.8f, 0.2f, 0.2f, 1.0f),
-            };
-            
-            for (int i = 0; i < (int)EUpdateStage::Max; ++i)
-            {
-                
-            }
-        }
-        ImGui::EndChild();
-        
-        ImGui::PopStyleVar(2);
-        ImGui::PopStyleColor();
     }
 
     void FWorldEditorTool::DrawEntityProperties(entt::entity Entity)

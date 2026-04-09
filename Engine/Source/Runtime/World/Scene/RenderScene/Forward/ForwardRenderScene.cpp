@@ -31,11 +31,6 @@ namespace Lumina
 {
     static TConsoleVar CVarSelectionThickness("r.SelectionThickness", 5, "Changes thickness of entity selection.");
     
-    static uint32 PackCustomData(glm::vec4 Data)
-    {
-        return ((uint32)Data.w << 24) | ((uint32)Data.z << 16) | ((uint32)Data.y << 8) | (uint32)Data.x;
-    }
-    
     FForwardRenderScene::FForwardRenderScene(CWorld* InWorld)
         : World(InWorld)
         , LightData()
@@ -1494,19 +1489,18 @@ namespace Lumina
                 .SetDepthAttachment(Depth)
                 .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
             
-            
-            FRasterState RasterState;
-            RasterState.EnableDepthClip();
-            RasterState.SetFillMode(RenderSettings.bWireframe ? ERasterFillMode::Wireframe : ERasterFillMode::Solid);
-            RasterState.SetLineWidth(5.0f);
+            FRasterState RasterState; RasterState
+                .EnableDepthClip()
+                .SetFillMode(RenderSettings.bWireframe ? ERasterFillMode::Wireframe : ERasterFillMode::Solid)
+                .SetLineWidth(5.0f);
         
             FDepthStencilState DepthState; DepthState
                 .SetDepthFunc(RenderSettings.bWireframe ? EComparisonFunc::GreaterOrEqual : EComparisonFunc::Equal)
                 .DisableDepthWrite();
             
-            FRenderState RenderState;
-            RenderState.SetRasterState(RasterState);
-            RenderState.SetDepthStencilState(DepthState);
+            FRenderState RenderState; RenderState
+                .SetRasterState(RasterState)
+                .SetDepthStencilState(DepthState);
             
             for (const FMeshDrawCommand& Batch : DrawCommands)
             {

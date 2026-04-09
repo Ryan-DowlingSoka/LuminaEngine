@@ -153,6 +153,14 @@ namespace Lumina
         ToolWindows.clear();
     }
 
+    ImGuiID FEditorTool::CalculateDockspaceID() const
+    {
+        uint32 DockspaceID = CurrLocationID;
+        char const* const EditorToolTypeName = GetUniqueTypeName();
+        DockspaceID = ImHashData(EditorToolTypeName, strlen(EditorToolTypeName), DockspaceID);
+        return DockspaceID;
+    }
+
     void FEditorTool::SetWorld(CWorld* InWorld)
     {
         if (World == InWorld)
@@ -361,7 +369,7 @@ namespace Lumina
                 
                 const glm::vec4 ZAxisColor  = (i == 0) ? glm::vec4(0.0f, 0.0f, 1.0f, 1.0f) : glm::vec4(0.05f);
                 const glm::vec4 XAxisColor  = (i == 0) ? glm::vec4(1.0f, 0.0f, 0.0f, 1.0f) : glm::vec4(0.05f);
-                const float AxisThickness   = (i == 0) ? 8.0f : 3.5f;
+                const float AxisThickness   = (i == 0) ? 5.0f : 3.5f;
 
                 World->DrawLine(
                     glm::vec3(Coord, 0, -Scale * Spacing),
