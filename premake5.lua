@@ -1,5 +1,6 @@
 
 include "BuildScripts/Dependencies"
+include "BuildScripts/Module"
 include "BuildScripts/Actions/Reflection"
 
 workspace "Lumina"
@@ -140,15 +141,15 @@ workspace "Lumina"
     
     filter {}
 
-    group "Applications"
-    	include "Engine/Applications/Lumina"
-		include "Engine/Applications/Reflector"
-	group ""
-
     group "Engine"
 		include "Engine/Source/Runtime"
         include "Engine/Editor"
         include "Engine/Sandbox"
+	group ""
+
+    group "Applications"
+    	include "Engine/Applications/Lumina"
+		include "Engine/Applications/Reflector"
 	group ""
 
     group "Engine/Shaders"

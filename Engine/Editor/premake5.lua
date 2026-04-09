@@ -1,58 +1,16 @@
-project "Editor"
-	kind "SharedLib"
-    rtti "off"
-	enablereflection "true"
-	removeplatforms { "Game" }
-
-    libdirs
+LuminaModule({
+    Name = "Editor",
+    Kind = "SharedLib",
+    Reflection = true,
+    PublicIncludeDirs = { "." },
+    ModuleDependencies = { "Runtime" },
+    Dependencies =
     {
-		LuminaConfig.EnginePath("Engine/Source/ThirdParty/NvidiaAftermath/lib"),
-    }
-
-	linkoptions
+        "ImGui", "RPMalloc", "EA", "EnkiTS", "Tracy", "Luau",
+    },
+    ExtraLinks = { "GFSDK_Aftermath_Lib" },
+    LibDirs =
     {
-        "/NODEFAULTLIB:LIBCMT"
-    }
-
-	prebuildcommands
-	{
-		LuminaConfig.RunReflection()
-	}
-
-	defines
-	{
-		"RUNTIME_API=DLL_IMPORT"
-	}
-
-	links
-	{
-		"Runtime",
-		"ImGui",
-		"RPMalloc",
-    	"EA",
-		"EnkiTS",
-		"Tracy",
-		
-        "Luau",
-
-		"GFSDK_Aftermath_Lib",
-	}
-
-	files
-	{
-		"Source/**.h",
-		"Source/**.cpp",
-		"**.lua",
-		LuminaConfig.GetReflectionFiles()
-	}
-
-	forceincludes
-	{
-		"EditorAPI.h",
-	}
-
-	includedirs
-	{
-        "Source",
-		LuminaConfig.GetPublicIncludeDirectories(),
-	}
+        LuminaConfig.EnginePath("Engine/Source/ThirdParty/NvidiaAftermath/lib"),
+    },
+})

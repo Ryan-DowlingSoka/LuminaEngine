@@ -181,7 +181,15 @@ namespace Lumina
 
             if (bTransitionNecessary || bUAVNecessary)
             {
-                TextureBarriers.emplace_back(FTextureBarrier{texture, 0, 0, true, Tracking->State, state});
+                TextureBarriers.emplace_back(FTextureBarrier
+                    {
+                        texture,
+                        0, 
+                        0, 
+                        true,
+                        Tracking->State,
+                        state
+                    });
             }
 
             Tracking->State = state;
@@ -212,18 +220,18 @@ namespace Lumina
             
             bool bAnyUavBarrier = false;
 
-            for (uint32 arraySlice = subresources.BaseArraySlice; arraySlice < subresources.BaseArraySlice + subresources.NumArraySlices; arraySlice++)
+            for (uint32 ArraySlice = subresources.BaseArraySlice; ArraySlice < subresources.BaseArraySlice + subresources.NumArraySlices; ArraySlice++)
             {
                 for (uint32 mipLevel = subresources.BaseMipLevel; mipLevel < subresources.BaseMipLevel + subresources.NumMipLevels; mipLevel++)
                 {
-                    uint32 subresourceIndex = CalcSubresource(mipLevel, arraySlice, texture->DescRef);
+                    uint32 subresourceIndex = CalcSubresource(mipLevel, ArraySlice, texture->DescRef);
 
                     EResourceStates PriorState = Tracking->SubresourceStates[subresourceIndex];
 
                     if (PriorState == EResourceStates::Unknown && !bStateExpanded)
                     {
                         LOG_ERROR("Unknown prior state of texture \"{0}\" subresource (MipLevel = {1}, ArraySlice = {2}). Call CommandList::BeginTrackingTextureState(...) before using the texture or use the keepInitialState and initialState members of TextureDesc.",
-                                  texture->DescRef.DebugName, mipLevel, arraySlice);
+                                  texture->DescRef.DebugName, mipLevel, ArraySlice);
                     }
                     
                     bool bTransitionNecessary = PriorState != state;
@@ -235,7 +243,7 @@ namespace Lumina
                         {
                             .Texture        = texture,
                             .MipLevel       = mipLevel,
-                            .ArraySlice     = arraySlice,
+                            .ArraySlice     = ArraySlice,
                             .bEntireTexture = false,
                             .StateBefore    = PriorState,
                             .StateAfter     = state

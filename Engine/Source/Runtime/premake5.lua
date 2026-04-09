@@ -1,99 +1,40 @@
-project "Runtime"
-    kind "SharedLib"
-    rtti "off"
-    staticruntime "Off"
-    pchheader "pch.h"
-    pchsource "pch.cpp"
-    dependson { "Reflector" }
-    enablereflection "true"
-
-    defines
+LuminaModule({
+    Name = "Runtime",
+    Kind = "SharedLib",
+    RootFiles = true,
+    PCH = { Header = "pch.h", Source = "pch.cpp" },
+    Reflection = true,
+    PublicIncludeDirs = { "." },
+    PrivateDefines =
     {
-        "EASTL_USER_DEFINED_ALLOCATOR=1",
         "GLFW_INCLUDE_NONE",
         "GLFW_STATIC",
         "LUMINA_RENDERER_VULKAN",
         "VK_NO_PROTOTYPES",
         "LUMINA_RPMALLOC",
-        --"WITH_AFTERMATH",
-    }
-
-    linkoptions
+    },
+    Dependencies =
     {
-        "/NODEFAULTLIB:LIBCMT"
-    }
-
-    files
+        "MiniAudio", "GLFW", "ImGui", "EA", "Tracy", "Luau", "EnkiTS",
+        "JoltPhysics", "RPMalloc", "XXHash", "Volk", "VKBootstrap",
+        "TinyOBJLoader", "MeshOptimizer", "SPIRV-Reflect", "FastGLTF",
+        "OpenFBX", "BasicUniversal",
+    },
+    ExtraLinks =
     {
-        "**.cpp",
-        "**.h",
-        "**.lua",
-        "**.slang",
-        LuminaConfig.GetReflectionFiles()
-    }
-
-    prebuildcommands 
-    {
-        LuminaConfig.CopyFile(LuminaConfig.EnginePath("Engine/Source/ThirdParty/NvidiaAftermath/lib/GFSDK_Aftermath_Lib.x64.dll"), LuminaConfig.GetTargetDirectory()),
-        LuminaConfig.CopyFile(LuminaConfig.EnginePath("Engine/Source/ThirdParty/NvidiaAftermath/lib/GFSDK_Aftermath_Lib.lib"), LuminaConfig.GetTargetDirectory()),
-        LuminaConfig.RunReflection()
-    }
-
-    includedirs
-    {
-        LuminaConfig.GetPublicIncludeDirectories()
-    }
-    
-    libdirs
+        "slang", "slang-compiler",
+        "GFSDK_Aftermath_Lib.lib", "GFSDK_Aftermath_Lib.x64.dll",
+    },
+    LibDirs =
     {
         LuminaConfig.EnginePath("Engine/Source/ThirdParty/NvidiaAftermath/lib"),
         LuminaConfig.EnginePath("External/SLang/lib"),
-    }
-
-    fatalwarnings
+    },
+    FatalWarnings = { "4456", "4457", "4458", "4238" },
+    PrebuildCommands =
     {
-        "4456",
-        "4457",
-        "4458",
-        "4238",
-    }
-
-    forceincludes
-	{
-		"LuminaAPI.h",
-	}
-
-    links
-    {
-        "MiniAudio",
-        "GLFW",
-        "ImGui",
-        "EA",
-        "Tracy",
-        "Luau",
-        "EnkiTS",
-        "JoltPhysics",
-        "RPMalloc",
-        "XXHash",
-        "Volk",
-        "VKBootstrap",
-        "TinyOBJLoader",
-        "MeshOptimizer",
-        "SPIRV-Reflect",
-        "FastGLTF",
-        "OpenFBX",
-        "BasicUniversal",
-        "slang",
-        "slang-compiler",
-        "GFSDK_Aftermath_Lib.lib",
-        "GFSDK_Aftermath_Lib.x64.dll",
-    }        
-        
-    filter "files:Engine/Source/ThirdParty/**.cpp"
-        enablepch "Off"
-    filter {}
-
-    filter "files:Engine/Source/ThirdParty/**.c"
-        enablepch "Off"
-        language "C"
-    filter {}
+        LuminaConfig.CopyFile(LuminaConfig.EnginePath("Engine/Source/ThirdParty/NvidiaAftermath/lib/GFSDK_Aftermath_Lib.x64.dll"), LuminaConfig.GetTargetDirectory()),
+        LuminaConfig.CopyFile(LuminaConfig.EnginePath("Engine/Source/ThirdParty/NvidiaAftermath/lib/GFSDK_Aftermath_Lib.lib"), LuminaConfig.GetTargetDirectory()),
+    },
+    ExtraFiles = { },
+})

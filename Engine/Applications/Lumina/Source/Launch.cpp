@@ -1,11 +1,10 @@
 ﻿#include "Core/Application/Application.h"
 #include "Core/Application/ApplicationGlobalState.h"
-
 #if WITH_EDITOR
 #include "LuminaEditor.h"
 #endif
-#include <print>
 #include <exception>
+#include <print>
 #include "Config/Config.h"
 #include "Core/CommandLine/CommandLine.h"
 
