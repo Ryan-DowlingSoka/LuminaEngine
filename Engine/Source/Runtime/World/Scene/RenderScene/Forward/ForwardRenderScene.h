@@ -48,6 +48,8 @@ namespace Lumina
             DepthAttachment,
             DepthPyramid,
             Picker,
+            Accum,
+            Revealage,
             
             #if USING(WITH_EDITOR)
             PointLightIcon,
@@ -103,6 +105,7 @@ namespace Lumina
         void BasePass(FRenderGraph& RenderGraph);
         void BillboardPass(FRenderGraph& RenderGraph);
         void TransparentPass(FRenderGraph& RenderGraph);
+        void OITResolvePass(FRenderGraph& RenderGraph);
         void EnvironmentPass(FRenderGraph& RenderGraph);
         void BatchedLineDraw(FRenderGraph& RenderGraph);
         void SelectionPass(FRenderGraph& RenderGraph);

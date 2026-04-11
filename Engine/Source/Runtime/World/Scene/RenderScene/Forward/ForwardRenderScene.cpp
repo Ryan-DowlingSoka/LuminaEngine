@@ -135,6 +135,7 @@ namespace Lumina
         EnvironmentPass(RenderGraph);
         BasePass(RenderGraph);
         TransparentPass(RenderGraph);
+        OITResolvePass(RenderGraph);
         BatchedLineDraw(RenderGraph);
         BillboardPass(RenderGraph);
         ToneMappingPass(RenderGraph);
@@ -1678,12 +1679,18 @@ namespace Lumina
         {
             LUMINA_PROFILE_SECTION_COLORED("Transparent Pass", tracy::Color::CadetBlue);
 
-            FRenderPassDesc::FAttachment RenderTarget;
-            RenderTarget.SetImage(GetNamedImage(ENamedImage::HDR))
-                        .SetLoadOp(ERenderLoadOp::Load);
-
-            FRenderPassDesc::FAttachment PickerImageAttachment; PickerImageAttachment
-                .SetImage(GetNamedImage(ENamedImage::Picker))
+            FRenderPassDesc::FAttachment RenderTarget0;
+            RenderTarget0.SetImage(GetNamedImage(ENamedImage::Accum))
+                        .SetLoadOp(ERenderLoadOp::Clear)
+                        .SetClearColor(glm::vec4(0.0));
+            
+            FRenderPassDesc::FAttachment RenderTarget1;
+            RenderTarget1.SetImage(GetNamedImage(ENamedImage::Revealage))
+                        .SetLoadOp(ERenderLoadOp::Clear)
+                        .SetClearColor(glm::vec4(1.0));
+            
+            FRenderPassDesc::FAttachment PickerImageAttachment; 
+            PickerImageAttachment.SetImage(GetNamedImage(ENamedImage::Picker))
                 .SetLoadOp(ERenderLoadOp::Load);
 
             FRenderPassDesc::FAttachment Depth;
@@ -1691,7 +1698,8 @@ namespace Lumina
                  .SetLoadOp(ERenderLoadOp::Load);
 
             FRenderPassDesc RenderPass;
-            RenderPass.AddColorAttachment(RenderTarget)
+            RenderPass.AddColorAttachment(RenderTarget0)
+                      .AddColorAttachment(RenderTarget1)
                       .AddColorAttachment(PickerImageAttachment)
                       .SetDepthAttachment(Depth)
                       .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
@@ -1700,15 +1708,22 @@ namespace Lumina
             RasterState.EnableDepthClip()
                        .SetCullMode(ERasterCullMode::None);
 
-            FBlendState TranslucentBlendState; TranslucentBlendState
-                .Targets[0]
-                    .SetBlendEnable(true)
-                    .SetSrcBlend(EBlendFactor::SrcAlpha)
-                    .SetDestBlend(EBlendFactor::InvSrcAlpha)
-                    .SetBlendOp(EBlendOp::Add)
-                    .SetSrcBlendAlpha(EBlendFactor::One)
-                    .SetDestBlendAlpha(EBlendFactor::InvSrcAlpha)
-                    .SetBlendOpAlpha(EBlendOp::Add);
+            FBlendState::RenderTarget Blend0;
+            Blend0.SetBlendEnable(true);
+            Blend0.SetSrcBlend(EBlendFactor::One);
+            Blend0.SetDestBlend(EBlendFactor::One);
+            Blend0.SetBlendOp(EBlendOp::Add);
+
+            FBlendState::RenderTarget Blend1;
+            Blend1.SetBlendEnable(true);
+            Blend1.SetSrcBlend(EBlendFactor::Zero);
+            Blend1.SetDestBlend(EBlendFactor::OneMinusSrcColor);
+            Blend1.SetBlendOp(EBlendOp::Add);
+
+            FBlendState TranslucentBlendState;
+            TranslucentBlendState.SetRenderTarget(0, Blend0);
+            TranslucentBlendState.SetRenderTarget(1, Blend1);
+            
 
             FBlendState AdditiveBlendState; AdditiveBlendState
                 .Targets[0]
@@ -1752,6 +1767,79 @@ namespace Lumina
                 CmdList.SetGraphicsState(GraphicsState);
                 CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
             }
+        });
+    }
+
+    void FForwardRenderScene::OITResolvePass(FRenderGraph& RenderGraph)
+    {
+        if (TranslucentDrawList.empty())
+        {
+            return;
+        }
+
+        FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
+        RenderGraph.AddPass(RG_Raster, FRGEvent("OIT Resolve Pass"), Descriptor, [&](ICommandList& CmdList)
+        {
+            LUMINA_PROFILE_SECTION_COLORED("OIT Resolve Pass", tracy::Color::GreenYellow);
+            
+            FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
+            FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("OITResolve.slang");
+            if (!VertexShader || !PixelShader)
+            {
+                return;
+            }
+            
+            
+            FBlendState::RenderTarget Blend0;
+            Blend0.SetBlendEnable(true);
+
+            Blend0.SetSrcBlend(EBlendFactor::SrcAlpha);
+            Blend0.SetDestBlend(EBlendFactor::OneMinusSrcAlpha);
+            Blend0.SetBlendOp(EBlendOp::Add);
+
+            Blend0.SetSrcBlendAlpha(EBlendFactor::One);
+            Blend0.SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha);
+            Blend0.SetBlendOpAlpha(EBlendOp::Add);
+            
+            FBlendState BlendState;
+            BlendState.SetRenderTarget(0, Blend0);
+            
+            FRenderPassDesc::FAttachment Attachment; Attachment
+                .SetImage(GetNamedImage(ENamedImage::HDR))
+                    .SetLoadOp(ERenderLoadOp::Load);
+            
+            FRenderPassDesc RenderPass; RenderPass
+                .AddColorAttachment(Attachment)
+                .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+        
+            FRasterState RasterState;
+            RasterState.SetCullNone();
+            
+            FRenderState RenderState;
+            RenderState.SetRasterState(RasterState);
+            RenderState.SetBlendState(BlendState);
+
+        
+            FGraphicsPipelineDesc Desc;
+            Desc.SetDebugName("OITResolve Pass");
+            Desc.SetRenderState(RenderState);
+            Desc.AddBindingLayout(SceneBindingLayout);
+            Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+            Desc.SetVertexShader(VertexShader);
+            Desc.SetPixelShader(PixelShader);
+        
+            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+        
+            FGraphicsState GraphicsState;
+            GraphicsState.AddBindingSet(SceneBindingSet);
+            GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            GraphicsState.SetPipeline(Pipeline);
+            GraphicsState.SetRenderPass(RenderPass);
+            GraphicsState.SetViewportState(SceneViewportState);
+            
+            CmdList.SetGraphicsState(GraphicsState);
+        
+            CmdList.Draw(3, 1, 0, 0);
         });
     }
 
@@ -2276,6 +2364,32 @@ namespace Lumina
             NamedImages[(int)ENamedImage::Cascade] = GRenderContext->CreateImage(ImageDesc);
         }
         
+        {
+            FRHIImageDesc ImageDesc = {};
+            ImageDesc.Extent = Extent;
+            ImageDesc.Format = EFormat::RGBA16_FLOAT;
+            ImageDesc.Dimension = EImageDimension::Texture2D;
+            ImageDesc.InitialState = EResourceStates::RenderTarget;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
+            ImageDesc.DebugName = "Accum";
+            
+            NamedImages[(int)ENamedImage::Accum] = GRenderContext->CreateImage(ImageDesc);
+        }
+        
+        {
+            FRHIImageDesc ImageDesc = {};
+            ImageDesc.Extent = Extent;
+            ImageDesc.Format = EFormat::R32_FLOAT;
+            ImageDesc.Dimension = EImageDimension::Texture2D;
+            ImageDesc.InitialState = EResourceStates::RenderTarget;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
+            ImageDesc.DebugName = "Revealage";
+            
+            NamedImages[(int)ENamedImage::Revealage] = GRenderContext->CreateImage(ImageDesc);
+        }
+        
         //==================================================================================================
         
     }
@@ -2324,6 +2438,8 @@ namespace Lumina
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(11, GetNamedImage(ENamedImage::Picker), TStaticRHISampler<false, false>::GetRHI()));
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(12, GetNamedImage(ENamedImage::DepthPyramid), TStaticRHISampler<false, false>::GetRHI()));
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(13, GetNamedImage(ENamedImage::HDR)));
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(14, GetNamedImage(ENamedImage::Accum)));
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(15, GetNamedImage(ENamedImage::Revealage)));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);

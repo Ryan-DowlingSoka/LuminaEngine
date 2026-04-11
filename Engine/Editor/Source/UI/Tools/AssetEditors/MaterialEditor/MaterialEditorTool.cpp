@@ -330,15 +330,6 @@ namespace Lumina
             bGLSLPreviewDirty = true;
             
             IShaderCompiler* ShaderCompiler = GRenderContext->GetShaderCompiler();
-            ShaderCompiler->CompilerShaderRaw(Tree, {}, [this](const FShaderHeader& Header) mutable 
-            {
-                CMaterial* Material = Cast<CMaterial>(Asset.Get());
-                FRHIPixelShaderRef PixelShader = GRenderContext->CreatePixelShader(Header);
-                Material->PixelShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
-                Material->PixelShader = PixelShader;
-                GRenderContext->OnShaderCompiled(PixelShader, false, true);
-            });
-            
             
             FString VertexPath = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/BaseVertexPass.slang";
             FString LoadedVertexString;
@@ -356,6 +347,26 @@ namespace Lumina
                 Material->VertexShader = VertexShader;
                 GRenderContext->OnShaderCompiled(VertexShader, false, true);
             });
+            
+            FShaderCompileOptions Options;
+            if (Material->GetBlendMode() == EBlendMode::Translucent)
+            {
+                Options.MacroDefinitions.emplace_back("TRANSLUCENT");
+            }
+            if (Material->GetShadingModel() == EMaterialShadingModel::Unlit)
+            {
+                Options.MacroDefinitions.emplace_back("UNLIT");
+            }
+            
+            ShaderCompiler->CompilerShaderRaw(Tree, Move(Options), [this](const FShaderHeader& Header) mutable 
+            {
+                CMaterial* Material = Cast<CMaterial>(Asset.Get());
+                FRHIPixelShaderRef PixelShader = GRenderContext->CreatePixelShader(Header);
+                Material->PixelShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+                Material->PixelShader = PixelShader;
+                GRenderContext->OnShaderCompiled(PixelShader, false, true);
+            });
+            
             
             ShaderCompiler->Flush();
 

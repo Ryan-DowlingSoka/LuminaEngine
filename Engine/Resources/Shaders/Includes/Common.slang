@@ -398,6 +398,16 @@ float4 GetLightColor(FLight Light)
     return UnpackColor(Light.Color);
 }
 
+bool IsApproximatelyEqual(float a, float b, float EPSILON)
+{
+    return abs(a - b) <= (abs(a) < abs(b) ? abs(b) : abs(a)) * EPSILON;
+}
+
+float max3(float3 V)
+{
+    return max(max(V.x, V.y), V.z);
+}
+
 bool HasFlag(uint Value, uint Flag)
 {
     return (Value & Flag) != 0u;

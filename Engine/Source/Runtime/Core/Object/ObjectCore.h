@@ -110,7 +110,7 @@ namespace Lumina
         None                = 0,
         Editable            = BIT(0),
         ReadOnly            = BIT(1),
-        Transient           = BIT(2),
+        NoSerialize         = BIT(2),
         Const               = BIT(3),
         Private             = BIT(4),
         Protected           = BIT(5),

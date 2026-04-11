@@ -79,18 +79,18 @@ void EnumRemoveFlags(Enum& Flags, Enum FlagsToRemove)
     /** Must be in-sync with EPropertyFlags in ObjectCore.h */
     enum class EPropertyFlags : uint16_t
     {
-        None = 0,
-        Editable = BIT(0),
-        ReadOnly = BIT(1),
-        Transient = BIT(2),
-        Const = BIT(3),
-        Private = BIT(4),
-        Protected = BIT(5),
-        SubField = BIT(6),
-        Trivial = BIT(7),
-        Script = BIT(8),
-        Builtin = BIT(9),
-        BulkSerialize = BIT(10),
+        None            = 0,
+        Editable        = BIT(0),
+        ReadOnly        = BIT(1),
+        NoSerialize     = BIT(2),
+        Const           = BIT(3),
+        Private         = BIT(4),
+        Protected       = BIT(5),
+        SubField        = BIT(6),
+        Trivial         = BIT(7),
+        Script          = BIT(8),
+        Builtin         = BIT(9),
+        BulkSerialize   = BIT(10),
     };
 
     ENUM_CLASS_FLAGS(EPropertyFlags)
@@ -118,7 +118,7 @@ void EnumRemoveFlags(Enum& Flags, Enum FlagsToRemove)
 
         AppendFlag(EPropertyFlags::Editable, "Lumina::EPropertyFlags::Editable");
         AppendFlag(EPropertyFlags::ReadOnly, "Lumina::EPropertyFlags::ReadOnly");
-        AppendFlag(EPropertyFlags::Transient, "Lumina::EPropertyFlags::Transient");
+        AppendFlag(EPropertyFlags::NoSerialize, "Lumina::EPropertyFlags::NoSerialize");
         AppendFlag(EPropertyFlags::Const, "Lumina::EPropertyFlags::Const");
         AppendFlag(EPropertyFlags::Private, "Lumina::EPropertyFlags::Private");
         AppendFlag(EPropertyFlags::Protected, "Lumina::EPropertyFlags::Protected");

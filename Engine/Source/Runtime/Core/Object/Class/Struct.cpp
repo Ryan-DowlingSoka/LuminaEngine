@@ -151,7 +151,7 @@ namespace Lumina
             
             for (FProperty* Current = LinkedProperty; Current; Current = (FProperty*)Current->Next)
             {
-                if (Current->IsTransient())
+                if (!Current->ShouldSerialize())
                 {
                     continue;
                 }
@@ -226,7 +226,7 @@ namespace Lumina
         
                 if (FoundProperty)
                 {
-                    if (FoundProperty->IsTransient())
+                    if (!FoundProperty->ShouldSerialize())
                     {
                         LOG_WARN("Property '{}' that was previously serialized, is not marked transient. Skipping.", Tag.Name.ToString());
                         Ar.Seek(DataStartPos + Tag.Size);

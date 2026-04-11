@@ -105,7 +105,7 @@ namespace Lumina
         const FName& GetTypeName() const;
         
         NODISCARD bool IsReadOnly()     const       { return EnumHasAnyFlags(Flags, EPropertyFlags::ReadOnly); }
-        NODISCARD bool IsTransient()    const       { return EnumHasAnyFlags(Flags, EPropertyFlags::Transient); }
+        NODISCARD bool ShouldSerialize()const       { return !EnumHasAnyFlags(Flags, EPropertyFlags::NoSerialize); }
         NODISCARD bool IsEditable()     const       { return EnumHasAnyFlags(Flags, EPropertyFlags::Editable); }
         NODISCARD bool IsConst()        const       { return EnumHasAnyFlags(Flags, EPropertyFlags::Const); }
         NODISCARD bool IsInner()        const       { return EnumHasAnyFlags(Flags, EPropertyFlags::SubField); }

@@ -61,10 +61,22 @@ namespace Lumina
             }
             
             EMaterialGPUFlags GPUFlags = EMaterialGPUFlags::None;
-            if (BlendMode == EBlendMode::Masked)        GPUFlags |= EMaterialGPUFlags::Masked;
-            if (BlendMode == EBlendMode::Translucent)   GPUFlags |= EMaterialGPUFlags::Translucent;
-            if (BlendMode == EBlendMode::Additive)      GPUFlags |= EMaterialGPUFlags::Additive;
-            if (ShadingModel == EMaterialShadingModel::Unlit) GPUFlags |= EMaterialGPUFlags::Unlit;
+            if (BlendMode == EBlendMode::Masked)
+            {
+                GPUFlags |= EMaterialGPUFlags::Masked;
+            }
+            if (BlendMode == EBlendMode::Translucent)
+            {
+                GPUFlags |= EMaterialGPUFlags::Translucent;
+            }
+            if (BlendMode == EBlendMode::Additive)
+            {
+                GPUFlags |= EMaterialGPUFlags::Additive;
+            }
+            if (ShadingModel == EMaterialShadingModel::Unlit)
+            {
+                GPUFlags |= EMaterialGPUFlags::Unlit;
+            }
             MaterialUniforms.Flags = (uint32)GPUFlags;
             MaterialUniforms.OpacityClipValue = OpacityMaskClipValue;
 

@@ -52,9 +52,9 @@ namespace Lumina
                 PropertyFlags |= EPropertyFlags::ReadOnly;
             }
             
-            if (MetadataPair.Key == "Transient")
+            if (MetadataPair.Key == "NoSerialize")
             {
-                PropertyFlags |= EPropertyFlags::Transient;
+                PropertyFlags |= EPropertyFlags::NoSerialize;
             }
             
             if (MetadataPair.Key == "Editable")

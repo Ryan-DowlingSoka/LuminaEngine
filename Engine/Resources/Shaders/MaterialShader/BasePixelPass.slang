@@ -12,9 +12,20 @@ struct PSInput
 };
 
 struct PSOutput
-{
-    float4  Color   : SV_Target0;
-    uint    Picker  : SV_Target1;
+{   
+    #ifdef TRANSLUCENT
+
+    float4  Accum       : SV_Target0;
+    float   Revealage   : SV_Target1;
+    uint    Picker      : SV_Target2;
+
+    #else
+
+    float4 Color        : SV_Target0;
+    uint Picker         : SV_Target1;
+
+    #endif
+
 };
 
 struct FCubemapCoord
@@ -260,7 +271,6 @@ PSOutput FragmentMain(PSInput Input)
     float  Roughness = Material.Roughness;
     float  Metallic  = Material.Metallic;
 
-    // Masked alpha clip - discard fragments below the clip threshold
     uint MatFlags = uMaterialUniforms[MaterialIndex].Flags;
     if (HasFlag(MatFlags, MatFlag_Masked))
     {
@@ -271,16 +281,12 @@ PSOutput FragmentMain(PSInput Input)
         }
     }
 
-    // Unlit path - skip all lighting, output diffuse directly
-    if (HasFlag(MatFlags, MatFlag_Unlit))
-    {
-        float3 Color = Albedo + Material.Emissive;
+    
+#ifdef UNLIT
 
-        PSOutput Output;
-        Output.Color    = float4(Color, Alpha);
-        Output.Picker   = InstanceData.EntityID;
-        return Output;
-    }
+    float3 Color    = float3(Albedo + Material.Emissive);
+
+#else
 
     float3 Position  = mul(GetInverseCameraView(), float4(ViewPosition, 1.0)).xyz;
 
@@ -335,8 +341,23 @@ PSOutput FragmentMain(PSInput Input)
     float3 Ambient = GetAmbientLightColor() * GetAmbientLightIntensity() * AO;
     float3 Color   = Ambient + Lo + Material.Emissive;
 
+#endif // UNLIT
+
     PSOutput Output;
+
+#ifdef TRANSLUCENT
+
+    float Weight = clamp(pow(min(1.0, Alpha * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - Input.Position.z * 0.9, 3.0), 1e-2, 3e3);
+    Output.Accum = float4(Color.rgb * Alpha, Alpha) * Weight;
+    Output.Revealage = Alpha;
+
+#else
+
     Output.Color    = float4(Color, Alpha);
+
+#endif // TRANSLUCENT
+
+
     Output.Picker   = InstanceData.EntityID;
     return Output;
 }

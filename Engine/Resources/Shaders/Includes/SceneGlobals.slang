@@ -13,7 +13,7 @@ struct SkinnedVertexBuffer
 
 [[vk::binding(0, 0)]] ConstantBuffer<FSceneGlobalData>              uSceneData;
 [[vk::binding(1, 0)]] StructuredBuffer<FLightData>                  uLightData;
-[[vk::binding(2, 0)]] RWStructuredBuffer<FGPUInstance>             uInstanceData;
+[[vk::binding(2, 0)]] RWStructuredBuffer<FGPUInstance>              uInstanceData;
 [[vk::binding(3, 0)]] RWStructuredBuffer<uint>                      uMappingData;
 [[vk::binding(4, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectDrawData;
 [[vk::binding(5, 0)]] StructuredBuffer<float4x4>                    uBoneMatrices;
@@ -26,6 +26,9 @@ struct SkinnedVertexBuffer
 [[vk::binding(11, 0)]] Texture2D<uint>                              uSelectionTexture;
 [[vk::binding(12, 0)]] Sampler2D                                    uDepthPyramid;
 [[vk::binding(13, 0)]] Sampler2D                                    uHDRSceneColor;
+
+[[vk::binding(14, 0)]] Sampler2D                                    uAccum;
+[[vk::binding(15, 0)]] Sampler2D                                    uRevealage;
 
 // ---------------------------------------------------------------------------------
 //  Binding Set 1
