@@ -10,11 +10,26 @@
 
 namespace Lumina
 {
+    /** GPU material flags - must match EMaterialFlags in Common.slang */
+    enum class EMaterialGPUFlags : uint32
+    {
+        None        = 0,
+        Masked      = 1 << 0,
+        Translucent = 1 << 1,
+        Additive    = 1 << 2,
+        Unlit       = 1 << 3,
+    };
+
+    ENUM_CLASS_FLAGS(EMaterialGPUFlags);
+
     struct FMaterialUniforms
     {
         glm::vec4   Vectors[MAX_VECTORS];
         float       Scalars[MAX_SCALARS];
         uint32      Textures[MAX_TEXTURES];
+        uint32      Flags;
+        float       OpacityClipValue;
+        uint32      Padding[2];
     };
     
 

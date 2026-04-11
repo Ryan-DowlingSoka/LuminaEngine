@@ -157,6 +157,9 @@ namespace Lumina
         /** Packed array of all cached mesh draw commands */
         TVector<FMeshDrawCommand>               DrawCommands;
 
+        /** Indices into DrawCommands for translucent batches, rendered after opaque */
+        TVector<uint32>                         TranslucentDrawList;
+
         /** Packed indirect draw arguments, gets sent directly to the GPU */
         TVector<FDrawIndirectArguments>         IndirectDrawArguments;
     };

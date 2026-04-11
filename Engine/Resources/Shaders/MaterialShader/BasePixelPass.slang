@@ -260,6 +260,28 @@ PSOutput FragmentMain(PSInput Input)
     float  Roughness = Material.Roughness;
     float  Metallic  = Material.Metallic;
 
+    // Masked alpha clip - discard fragments below the clip threshold
+    uint MatFlags = uMaterialUniforms[MaterialIndex].Flags;
+    if (HasFlag(MatFlags, MatFlag_Masked))
+    {
+        float ClipValue = uMaterialUniforms[MaterialIndex].OpacityClipValue;
+        if (Alpha < ClipValue)
+        {
+            discard;
+        }
+    }
+
+    // Unlit path - skip all lighting, output diffuse directly
+    if (HasFlag(MatFlags, MatFlag_Unlit))
+    {
+        float3 Color = Albedo + Material.Emissive;
+
+        PSOutput Output;
+        Output.Color    = float4(Color, Alpha);
+        Output.Picker   = InstanceData.EntityID;
+        return Output;
+    }
+
     float3 Position  = mul(GetInverseCameraView(), float4(ViewPosition, 1.0)).xyz;
 
     float3 N  = GetWorldNormal(WorldNormal, Input.UV, WorldPosition, Normal);

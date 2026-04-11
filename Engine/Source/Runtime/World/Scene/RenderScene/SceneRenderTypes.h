@@ -115,6 +115,8 @@ namespace Lumina
         ReceiveShadow           = BIT(3),
 		Occluder                = BIT(4),
         IgnoreOcclusionCulling  = BIT(5),
+        Translucent             = BIT(6),
+        Masked                  = BIT(7),
     };
     
     ENUM_CLASS_FLAGS(EInstanceFlags);

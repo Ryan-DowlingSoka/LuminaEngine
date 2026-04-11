@@ -37,10 +37,17 @@ namespace Lumina
 		uint64 MaterialID;
 
 		uint32 bDrawInDepthPass : 1;
+		uint32 bTranslucent : 1;
+		uint32 bMasked : 1;
+		uint32 bAdditive : 1;
 
 		bool operator == (const FDrawBatchKey& Key) const
 		{
-			return MaterialID == Key.MaterialID && bDrawInDepthPass == Key.bDrawInDepthPass;
+			return MaterialID == Key.MaterialID
+				&& bDrawInDepthPass == Key.bDrawInDepthPass
+				&& bTranslucent == Key.bTranslucent
+				&& bMasked == Key.bMasked
+				&& bAdditive == Key.bAdditive;
 		}
 	};
 
@@ -49,6 +56,9 @@ namespace Lumina
 		size_t Seed = 0;
 		Hash::HashCombine(Seed, K.MaterialID);
 		Hash::HashCombine(Seed, K.bDrawInDepthPass);
+		Hash::HashCombine(Seed, K.bTranslucent);
+		Hash::HashCombine(Seed, K.bMasked);
+		Hash::HashCombine(Seed, K.bAdditive);
 		return Seed;
 	}
 
@@ -64,5 +74,8 @@ namespace Lumina
 		uint32                      		IndirectDrawOffset = 0;
 		uint32                      		DrawCount = 0;
 		uint32                      		bDrawInDepthPass : 1;
+		uint32                      		bTranslucent : 1;
+		uint32                      		bMasked : 1;
+		uint32                      		bAdditive : 1;
 	};
 }

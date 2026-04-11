@@ -221,35 +221,51 @@ namespace Lumina
                         {
                             Flags |= EInstanceFlags::CastShadow;
                         }
-                        
-                        bool bDrawInDepthPass = MeshComponent.bUseAsOccluder;
-                        
+
+                        EBlendMode BlendMode = Material->GetBlendMode();
+                        bool bIsTranslucent = BlendMode == EBlendMode::Translucent || BlendMode == EBlendMode::Additive;
+                        bool bIsMasked = BlendMode == EBlendMode::Masked;
+                        bool bIsAdditive = BlendMode == EBlendMode::Additive;
+                        bool bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bIsTranslucent;
+
+                        if (bIsTranslucent)
+                        {
+                            Flags |= EInstanceFlags::Translucent;
+                        }
+                        if (bIsMasked)
+                        {
+                            Flags |= EInstanceFlags::Masked;
+                        }
+
                         FDrawBatchKey BatchKey
                         {
                             .MaterialID         = (uintptr_t)Material->GetMaterial(),
                             .bDrawInDepthPass   = bDrawInDepthPass,
+                            .bTranslucent       = bIsTranslucent,
+                            .bMasked            = bIsMasked,
+                            .bAdditive          = bIsAdditive,
                         };
 
                         auto [BatchIt, bBatchInserted] = BatchedDraws.try_emplace(BatchKey, DrawCommands.size());
                         uint64 DrawID = BatchIt->second;
-                        
+
                         if (bBatchInserted)
                         {
                             TFixedHashMap<FDrawKey, uint32, 4> Map;
-                            DrawCommands.emplace_back(Move(Map), Material->GetVertexShader(), Material->GetPixelShader(), 0, 0, bDrawInDepthPass);
+                            DrawCommands.emplace_back(Move(Map), Material->GetVertexShader(), Material->GetPixelShader(), 0, 0, bDrawInDepthPass, bIsTranslucent, bIsMasked, bIsAdditive);
                         }
-                        
+
                         auto& DrawArguments = DrawCommands[DrawID].DrawArgumentIndexMap;
-                        
+
                         auto [DrawIt, bDrawInserted] = DrawArguments.try_emplace(FDrawKey{Surface.StartIndex, Surface.IndexCount}, IndirectDrawArguments.size());
-                        
+
                         if (bDrawInserted)
                         {
                             IndirectDrawArguments.emplace_back(Surface.IndexCount, 0, Surface.StartIndex, 0);
                         }
 
                         IndirectDrawArguments[DrawIt->second].InstanceCount++;
-                        
+
                         InstanceData.emplace_back(FGPUInstance
                         {
                             .Transform                  = TransformMatrix,
@@ -311,28 +327,44 @@ namespace Lumina
                         {
                             Flags |= EInstanceFlags::CastShadow;
                         }
-                        
-                        bool bDrawInDepthPass = MeshComponent.bUseAsOccluder;
+
+                        EBlendMode BlendMode = Material->GetBlendMode();
+                        bool bIsTranslucent = BlendMode == EBlendMode::Translucent || BlendMode == EBlendMode::Additive;
+                        bool bIsMasked = BlendMode == EBlendMode::Masked;
+                        bool bIsAdditive = BlendMode == EBlendMode::Additive;
+                        bool bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bIsTranslucent;
+
+                        if (bIsTranslucent)
+                        {
+                            Flags |= EInstanceFlags::Translucent;
+                        }
+                        if (bIsMasked)
+                        {
+                            Flags |= EInstanceFlags::Masked;
+                        }
 
                         FDrawBatchKey BatchKey
                         {
                             .MaterialID = (uintptr_t)Material->GetMaterial(),
                             .bDrawInDepthPass = bDrawInDepthPass,
+                            .bTranslucent = bIsTranslucent,
+                            .bMasked = bIsMasked,
+                            .bAdditive = bIsAdditive,
                         };
 
                         auto [BatchIt, bBatchInserted] = BatchedDraws.try_emplace(BatchKey, DrawCommands.size());
                         uint64 DrawID = BatchIt->second;
-                        
+
                         if (bBatchInserted)
                         {
                             TFixedHashMap<FDrawKey, uint32, 4> Map;
-                            DrawCommands.emplace_back(Move(Map), Material->GetVertexShader(), Material->GetPixelShader(), 0, 0, bDrawInDepthPass);
+                            DrawCommands.emplace_back(Move(Map), Material->GetVertexShader(), Material->GetPixelShader(), 0, 0, bDrawInDepthPass, bIsTranslucent, bIsMasked, bIsAdditive);
                         }
-                        
+
                         auto& DrawArguments = DrawCommands[DrawID].DrawArgumentIndexMap;
-                        
+
                         auto [DrawIt, bDrawInserted] = DrawArguments.try_emplace(FDrawKey{Surface.StartIndex, Surface.IndexCount}, IndirectDrawArguments.size());
-                        
+
                         if (bDrawInserted)
                         {
                             IndirectDrawArguments.emplace_back(FDrawIndirectArguments
@@ -405,7 +437,15 @@ namespace Lumina
                 }
             
                 RenderStats.NumBatches = DrawCommands.size();
-                
+
+                TranslucentDrawList.reserve(DrawCommands.size());
+                for (uint32 i = 0; i < (uint32)DrawCommands.size(); ++i)
+                {
+                    if (DrawCommands[i].bTranslucent)
+                    {
+                        TranslucentDrawList.push_back(i);
+                    }
+                }
             }
         }
         
@@ -940,6 +980,7 @@ namespace Lumina
     {
         SimpleVertices.clear();
         DrawCommands.clear();
+        TranslucentDrawList.clear();
         IndirectDrawArguments.clear();
         InstanceData.clear();
         LightData.NumLights = 0;
@@ -1022,18 +1063,33 @@ namespace Lumina
                 .SetDepthStencilState(FDepthStencilState().SetDepthFunc(EComparisonFunc::Greater))
                 .SetRasterState(FRasterState().EnableDepthClip());
             
-            FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("DepthPrePass.slang");
-            
+            FRHIVertexShaderRef DepthOnlyVertexShader = FShaderLibrary::GetVertexShader("DepthPrePass.slang");
+
             for (const FMeshDrawCommand& Batch : DrawCommands)
             {
+                if (Batch.bTranslucent)
+                {
+                    continue;
+                }
+
                 FGraphicsPipelineDesc Desc; Desc
-                .SetRenderState(RenderState)
-                .AddBindingLayout(SceneBindingLayout)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                .SetVertexShader(VertexShader);
-                
+                    .SetRenderState(RenderState)
+                    .AddBindingLayout(SceneBindingLayout)
+                    .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+
+                if (Batch.bMasked)
+                {
+                    // Masked materials need the full material shader for alpha clip
+                    Desc.SetVertexShader(Batch.VertexShader);
+                    Desc.SetPixelShader(Batch.PixelShader);
+                }
+                else
+                {
+                    Desc.SetVertexShader(DepthOnlyVertexShader);
+                }
+
                 FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-                
+
                 FGraphicsState GraphicsState;
                 GraphicsState.SetRenderPass(RenderPass);
                 GraphicsState.SetViewportState(SceneViewportState);
@@ -1041,7 +1097,7 @@ namespace Lumina
                 GraphicsState.AddBindingSet(SceneBindingSet);
                 GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
                 GraphicsState.SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect));
-                
+
                 CmdList.SetGraphicsState(GraphicsState);
                 CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
             }
@@ -1274,9 +1330,14 @@ namespace Lumina
                 );
                 
                 GraphicsState.SetViewportState(FViewportState(Viewport, Scissor));
-                
+
                 for (const FMeshDrawCommand& Batch : DrawCommands)
                 {
+                    if (Batch.bTranslucent)
+                    {
+                        continue;
+                    }
+
                     FGraphicsPipelineDesc Desc; Desc
                         .SetDebugName("Point Light Shadow Pass")
                         .SetRenderState(RenderState)
@@ -1375,6 +1436,11 @@ namespace Lumina
                 
                 for (const FMeshDrawCommand& Batch : DrawCommands)
                 {
+                    if (Batch.bTranslucent)
+                    {
+                        continue;
+                    }
+
                     FGraphicsPipelineDesc Desc; Desc
                         .SetDebugName("Spot Shadow Pass")
                         .SetRenderState(RenderState)
@@ -1382,7 +1448,7 @@ namespace Lumina
                         .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
                         .SetVertexShader(VertexShader)
                         .SetPixelShader(PixelShader);
-                    
+
                     FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
                     
                     GraphicsState.SetPipeline(Pipeline);
@@ -1432,6 +1498,11 @@ namespace Lumina
             
             for (const FMeshDrawCommand& Batch : DrawCommands)
             {
+                if (Batch.bTranslucent)
+                {
+                    continue;
+                }
+
                 FGraphicsPipelineDesc Desc; Desc
                     .SetDebugName("Cascaded Shadow Maps")
                     .SetRenderState(RenderState)
@@ -1505,6 +1576,11 @@ namespace Lumina
             
             for (const FMeshDrawCommand& Batch : DrawCommands)
             {
+                if (Batch.bTranslucent)
+                {
+                    continue;
+                }
+
                 FGraphicsPipelineDesc Desc; Desc
                     .SetDebugName("Forward Base Pass")
                     .SetRenderState(RenderState)
@@ -1512,7 +1588,7 @@ namespace Lumina
                     .SetPixelShader(Batch.PixelShader)
                     .AddBindingLayout(SceneBindingLayout)
                     .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-                
+
                 FGraphicsState GraphicsState; GraphicsState
                     .SetRenderPass(RenderPass)
                     .SetViewportState(SceneViewportState)
@@ -1592,34 +1668,39 @@ namespace Lumina
 
     void FForwardRenderScene::TransparentPass(FRenderGraph& RenderGraph)
     {
-#if 0
+        if (TranslucentDrawList.empty())
+        {
+            return;
+        }
+
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
         RenderGraph.AddPass(RG_Raster, FRGEvent("Transparent Pass"), Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Transparent Pass", tracy::Color::CadetBlue);
-        
+
             FRenderPassDesc::FAttachment RenderTarget;
             RenderTarget.SetImage(GetNamedImage(ENamedImage::HDR))
                         .SetLoadOp(ERenderLoadOp::Load);
-        
+
+            FRenderPassDesc::FAttachment PickerImageAttachment; PickerImageAttachment
+                .SetImage(GetNamedImage(ENamedImage::Picker))
+                .SetLoadOp(ERenderLoadOp::Load);
+
             FRenderPassDesc::FAttachment Depth;
             Depth.SetImage(GetNamedImage(ENamedImage::DepthAttachment))
                  .SetLoadOp(ERenderLoadOp::Load);
-        
+
             FRenderPassDesc RenderPass;
             RenderPass.AddColorAttachment(RenderTarget)
+                      .AddColorAttachment(PickerImageAttachment)
                       .SetDepthAttachment(Depth)
                       .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
-        
-            FDepthStencilState DepthState;
-            DepthState.SetDepthFunc(EComparisonFunc::GreaterOrEqual)
-                      .DisableDepthWrite();  // Read depth, do not write
-        
+
             FRasterState RasterState;
             RasterState.EnableDepthClip()
-                       .SetCullMode(ERasterCullMode::None); // Two-sided for translucent
-            
-            FBlendState BlendState; BlendState
+                       .SetCullMode(ERasterCullMode::None);
+
+            FBlendState TranslucentBlendState; TranslucentBlendState
                 .Targets[0]
                     .SetBlendEnable(true)
                     .SetSrcBlend(EBlendFactor::SrcAlpha)
@@ -1628,16 +1709,30 @@ namespace Lumina
                     .SetSrcBlendAlpha(EBlendFactor::One)
                     .SetDestBlendAlpha(EBlendFactor::InvSrcAlpha)
                     .SetBlendOpAlpha(EBlendOp::Add);
-            
-            FRenderState RenderState;
-            RenderState.SetDepthStencilState(DepthState)
-                       .SetRasterState(RasterState)
-                       .SetBlendState(BlendState);
-            
-            for (uint32 Idx : TranslucentList)
+
+            FBlendState AdditiveBlendState; AdditiveBlendState
+                .Targets[0]
+                    .SetBlendEnable(true)
+                    .SetSrcBlend(EBlendFactor::SrcAlpha)
+                    .SetDestBlend(EBlendFactor::One)
+                    .SetBlendOp(EBlendOp::Add)
+                    .SetSrcBlendAlpha(EBlendFactor::One)
+                    .SetDestBlendAlpha(EBlendFactor::One)
+                    .SetBlendOpAlpha(EBlendOp::Add);
+
+            for (uint32 Idx : TranslucentDrawList)
             {
                 const FMeshDrawCommand& Batch = DrawCommands[Idx];
-        
+
+                FDepthStencilState DepthState;
+                DepthState.SetDepthFunc(EComparisonFunc::GreaterOrEqual)
+                          .DisableDepthWrite();
+
+                FRenderState RenderState;
+                RenderState.SetDepthStencilState(DepthState)
+                           .SetRasterState(RasterState)
+                           .SetBlendState(Batch.bAdditive ? AdditiveBlendState : TranslucentBlendState);
+
                 FGraphicsPipelineDesc Desc;
                 Desc.SetDebugName("Transparent Pass")
                     .SetRenderState(RenderState)
@@ -1645,7 +1740,7 @@ namespace Lumina
                     .SetPixelShader(Batch.PixelShader)
                     .AddBindingLayout(SceneBindingLayout)
                     .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        
+
                 FGraphicsState GraphicsState;
                 GraphicsState.SetRenderPass(RenderPass)
                              .SetViewportState(SceneViewportState)
@@ -1653,12 +1748,11 @@ namespace Lumina
                              .SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect))
                              .AddBindingSet(SceneBindingSet)
                              .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        
+
                 CmdList.SetGraphicsState(GraphicsState);
                 CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
             }
         });
-#endif
     }
 
     void FForwardRenderScene::EnvironmentPass(FRenderGraph& RenderGraph)

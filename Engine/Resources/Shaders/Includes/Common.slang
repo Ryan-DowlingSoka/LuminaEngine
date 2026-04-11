@@ -57,6 +57,8 @@ enum EInstanceFlags
     ReceiveShadow   = BIT(3),
     Occluder        = BIT(4),
     NoCull          = BIT(5),
+    Translucent     = BIT(6),
+    Masked          = BIT(7),
 }
 
 // ---------------------------------------------------------------------------------
@@ -154,11 +156,20 @@ struct FSSAOSettings
     float4 Samples[SSAO_KERNEL_SIZE];
 };
 
+static const uint MatFlag_None        = 0;
+static const uint MatFlag_Masked      = BIT(0);
+static const uint MatFlag_Translucent = BIT(1);
+static const uint MatFlag_Additive    = BIT(2);
+static const uint MatFlag_Unlit       = BIT(3);
+
 struct FMaterialUniforms
 {
     float4  Vectors[MAX_VECTORS];
     float   Scalars[MAX_SCALARS];
     uint    Textures[MAX_TEXTURES];
+    uint    Flags;
+    float   OpacityClipValue;
+    uint    Padding[2];
 };
 
 struct FCustomPrimitiveData

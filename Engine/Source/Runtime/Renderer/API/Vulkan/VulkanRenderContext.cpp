@@ -710,6 +710,7 @@ namespace Lumina
         DeviceFeatures.drawIndirectFirstInstance            = VK_TRUE;
         DeviceFeatures.vertexPipelineStoresAndAtomics       = VK_TRUE; // @TODO See if we need this.
         DeviceFeatures.shaderInt16                          = VK_TRUE;
+        DeviceFeatures.independentBlend                     = VK_TRUE;
         //DeviceFeatures.shaderInt64                          = VK_TRUE;
 
         VkPhysicalDeviceVulkan11Features Features11 = {};

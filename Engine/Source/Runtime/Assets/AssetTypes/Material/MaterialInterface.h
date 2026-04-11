@@ -24,7 +24,23 @@ namespace Lumina
         PostProcess,
         UI,
     };
-    
+
+    REFLECT()
+    enum class EBlendMode : uint8
+    {
+        Opaque,
+        Masked,
+        Translucent,
+        Additive,
+    };
+
+    REFLECT()
+    enum class EMaterialShadingModel : uint8
+    {
+        Lit,
+        Unlit,
+    };
+
     REFLECT()
     class RUNTIME_API CMaterialInterface : public CObject
     {
@@ -36,10 +52,10 @@ namespace Lumina
         virtual bool SetScalarValue(const FName& Name, const float Value) { return false; }
         virtual bool GetParameterValue(EMaterialParameterType Type, const FName& Name, FMaterialParameter& Param) { return false; }
         virtual FMaterialUniforms* GetMaterialUniforms() { return nullptr; }
-        
+
         int32 GetMaterialIndex() const { return MaterialIndex; }
         void SetMaterialIndex(int32 Index) { MaterialIndex = Index; }
-        
+
         virtual FRHIVertexShader* GetVertexShader() const { return nullptr; }
         virtual FRHIPixelShader* GetPixelShader() const { return nullptr; }
 
@@ -48,7 +64,14 @@ namespace Lumina
         virtual bool DoesCastShadows() const { return false; }
         virtual bool IsTwoSided() const { return false; }
         virtual bool IsTranslucent() { return false; }
-        
+        virtual bool IsMasked() { return false; }
+        virtual bool IsAdditive() { return false; }
+        virtual bool IsOpaque() { return true; }
+        virtual bool IsUnlit() { return false; }
+        virtual bool DisableDepthTest() { return false; }
+        virtual EBlendMode GetBlendMode() { return EBlendMode::Opaque; }
+        virtual EMaterialShadingModel GetShadingModel() { return EMaterialShadingModel::Lit; }
+        virtual float GetOpacityMaskClipValue() { return 0.333f; }
 
         void SetReadyForRender(bool bReady) { bReadyForRender.store(bReady, std::memory_order_release); }
         bool IsReadyForRender() const { return bReadyForRender.load(std::memory_order_acquire); }
@@ -56,7 +79,7 @@ namespace Lumina
     protected:
 
         std::atomic_bool        bReadyForRender;
-        
+
         int32                   MaterialIndex = -1;
     };
 }

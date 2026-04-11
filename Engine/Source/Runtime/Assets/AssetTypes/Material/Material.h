@@ -46,10 +46,24 @@ namespace Lumina
         EMaterialType GetMaterialType() const override { return MaterialType; }
         bool DoesCastShadows() const override { return bCastShadows; }
         bool IsTwoSided() const override { return bTwoSided; }
-        bool IsTranslucent() override { return bTranslucent; }
-        
+        bool IsTranslucent() override { return BlendMode == EBlendMode::Translucent; }
+        bool IsMasked() override { return BlendMode == EBlendMode::Masked; }
+        bool IsAdditive() override { return BlendMode == EBlendMode::Additive; }
+        bool IsOpaque() override { return BlendMode == EBlendMode::Opaque; }
+        bool IsUnlit() override { return ShadingModel == EMaterialShadingModel::Unlit; }
+        bool DisableDepthTest() override { return bDisableDepthTest; }
+        EBlendMode GetBlendMode() override { return BlendMode; }
+        EMaterialShadingModel GetShadingModel() override { return ShadingModel; }
+        float GetOpacityMaskClipValue() override { return OpacityMaskClipValue; }
+
         PROPERTY(Editable)
         EMaterialType MaterialType;
+
+        PROPERTY(Editable)
+        EBlendMode BlendMode = EBlendMode::Opaque;
+
+        PROPERTY(Editable)
+        EMaterialShadingModel ShadingModel = EMaterialShadingModel::Lit;
 
         PROPERTY(Editable)
         bool bCastShadows = true;
@@ -58,7 +72,10 @@ namespace Lumina
         bool bTwoSided = false;
 
         PROPERTY(Editable)
-        bool bTranslucent = false;
+        bool bDisableDepthTest = false;
+
+        PROPERTY(Editable)
+        float OpacityMaskClipValue = 0.333f;
 
         
         PROPERTY()
