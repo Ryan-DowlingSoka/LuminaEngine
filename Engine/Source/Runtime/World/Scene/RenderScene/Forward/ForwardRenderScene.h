@@ -24,6 +24,47 @@ namespace Lumina
         ~FForwardRenderScene() override = default;
         LE_NO_COPYMOVE(FForwardRenderScene);
         
+        /**
+ * Per-entity output of the parallel mesh-processing phase. The hot work
+ * (transforms, bounds, material resolution, instance packing) happens on a worker thread;
+ * each item carries indices into its owning thread's local batch table so the merge phase
+ * never has to recompute or hash a batch key.
+ */
+        struct FProcessedDrawItem
+        {
+            FGPUInstance        Instance;            // DrawIDAndFlags holds only flags here; the merge fills in DrawID.
+            EInstanceFlags      Flags;
+            uint32              LocalBoneOffset;     // Offset into the owning thread's BonesData; ~0u for static meshes.
+            uint16              MaterialIndex;
+            uint16              LocalBatchIndex;     // Index into FThreadLocalDrawData::LocalBatches
+            uint16              LocalDrawIndex;      // Index into FLocalBatchEntry::LocalDraws
+        };
+
+        /**
+         * Per-thread local batch table. The worker linear-searches this small list to dedup
+         * draws against batches it has already seen. The merge phase walks these instead of
+         * walking every item, which is what makes the merge O(unique batches × threads)
+         * rather than O(num instances).
+         */
+        struct FLocalBatchEntry
+        {
+            FDrawBatchKey       Key;
+            FRHIVertexShader*   VertexShader = nullptr;
+            FRHIPixelShader*    PixelShader  = nullptr;
+            TVector<FDrawKey>   LocalDraws;
+            TVector<uint32>     LocalDrawCounts;        // instance count per local draw
+            uint32              GlobalBatchIndex = ~0u; // resolved during merge
+            TVector<uint32>     LocalToGlobalDraw;      // resolved during merge
+        };
+
+        struct FThreadLocalDrawData
+        {
+            TVector<FProcessedDrawItem> Items;
+            TVector<FLocalBatchEntry>   LocalBatches;
+            TVector<glm::mat4>          BonesData;
+            FSceneRenderStats           Stats = {};
+        };
+        
         enum class ENamedBuffer : uint8
         {
             Scene,
@@ -114,32 +155,6 @@ namespace Lumina
         void CompileDrawCommands(FRenderGraph& RenderGraph);
 
         // ~ Begin Parallel Draw Command Compilation ~
-
-        /**
-         * Per-entity output of the parallel mesh-processing phase. The expensive work
-         * (transforms, bounds, material/blendmode resolution, instance packing) happens
-         * on a worker thread; the cheap batching/dedup runs serially in MergeMeshDrawData.
-         */
-        struct FProcessedDrawItem
-        {
-            FGPUInstance        Instance;            // DrawIDAndFlags holds flags only at this point.
-            EInstanceFlags      Flags;
-            uintptr_t           MaterialID;
-            FRHIVertexShader*   VertexShader;
-            FRHIPixelShader*    PixelShader;
-            uint32              StartIndex;
-            uint32              IndexCount;
-            uint32              LocalBoneOffset;     // Offset into the owning thread's BonesData; ~0u for static meshes.
-            uint16              MaterialIndex;
-            uint8               BatchFlagsByte;      // bit0=DepthPass, bit1=Translucent, bit2=Masked, bit3=Additive
-        };
-
-        struct FThreadLocalDrawData
-        {
-            TVector<FProcessedDrawItem> Items;
-            TVector<glm::mat4>          BonesData;
-            FSceneRenderStats           Stats = {};
-        };
 
         void ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
         void ProcessSkeletalMeshEntityInternal(entt::entity Entity, const SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);

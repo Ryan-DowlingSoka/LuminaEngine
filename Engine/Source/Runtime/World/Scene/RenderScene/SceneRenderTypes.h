@@ -442,4 +442,5 @@ namespace Lumina
         uint8 bUnlit:1                  = false;
         uint8 bLit:1                    = false;
     };
+    
 }

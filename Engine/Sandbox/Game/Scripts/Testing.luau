@@ -17,11 +17,11 @@ end
 
 function NewScript:Update(DeltaTime: number)
 
-    if World:GetNumEntities() > 500000 then
+    if World:GetNumEntities() > 1000000 then
         return
     end
 
-    for i = 1, 100 do
+    for i = 1, 10000 do
         local Entity = Registry:Duplicate(11)
         local Transform = Registry:Get(Entity, STransformComponent)
         Transform:SetLocation(vector.create(math.random(-1000, 1000), 0.0, math.random(-1000, 1000)))
