@@ -172,7 +172,7 @@ namespace Lumina
             IndirectDrawArguments.reserve(EstimatedProxies);
 			DrawCommands.reserve(EstimatedProxies);
             
-            TFixedHashMap<FDrawBatchKey, uint64, 4> BatchedDraws;
+            TFixedHashMap<FDrawBatchKey, uint64, 32> BatchedDraws;
             
             {
                 LUMINA_PROFILE_SECTION("Process Static Mesh Primitives");
@@ -252,7 +252,7 @@ namespace Lumina
 
                         if (bBatchInserted)
                         {
-                            TFixedHashMap<FDrawKey, uint32, 4> Map;
+                            TFixedHashMap<FDrawKey, uint32, 16> Map;
                             DrawCommands.emplace_back(Move(Map), Material->GetVertexShader(), Material->GetPixelShader(), 0, 0, bDrawInDepthPass, bIsTranslucent, bIsMasked, bIsAdditive);
                         }
 
@@ -358,7 +358,7 @@ namespace Lumina
 
                         if (bBatchInserted)
                         {
-                            TFixedHashMap<FDrawKey, uint32, 4> Map;
+                            TFixedHashMap<FDrawKey, uint32, 16> Map;
                             DrawCommands.emplace_back(Move(Map), Material->GetVertexShader(), Material->GetPixelShader(), 0, 0, bDrawInDepthPass, bIsTranslucent, bIsMasked, bIsAdditive);
                         }
 
@@ -439,12 +439,17 @@ namespace Lumina
             
                 RenderStats.NumBatches = DrawCommands.size();
 
+                OpaqueDrawList.reserve(DrawCommands.size());
                 TranslucentDrawList.reserve(DrawCommands.size());
                 for (uint32 i = 0; i < (uint32)DrawCommands.size(); ++i)
                 {
                     if (DrawCommands[i].bTranslucent)
                     {
                         TranslucentDrawList.push_back(i);
+                    }
+                    else
+                    {
+                        OpaqueDrawList.push_back(i);
                     }
                 }
             }
@@ -981,6 +986,7 @@ namespace Lumina
     {
         SimpleVertices.clear();
         DrawCommands.clear();
+        OpaqueDrawList.clear();
         TranslucentDrawList.clear();
         IndirectDrawArguments.clear();
         InstanceData.clear();
@@ -1066,12 +1072,9 @@ namespace Lumina
             
             FRHIVertexShaderRef DepthOnlyVertexShader = FShaderLibrary::GetVertexShader("DepthPrePass.slang");
 
-            for (const FMeshDrawCommand& Batch : DrawCommands)
+            for (uint32 Idx : OpaqueDrawList)
             {
-                if (Batch.bTranslucent)
-                {
-                    continue;
-                }
+                const FMeshDrawCommand& Batch = DrawCommands[Idx];
 
                 FGraphicsPipelineDesc Desc; Desc
                     .SetRenderState(RenderState)
@@ -1122,17 +1125,25 @@ namespace Lumina
             FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("DepthPyramidMips.slang");
             int MipCount = DepthPyramid->GetDescription().NumMips;
 
+            // Create binding layout and pipeline once, reused for all mip levels
+            FBindingLayoutDesc LayoutDesc;
+            LayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0));
+            LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(1));
+            LayoutDesc.SetVisibility(ERHIShaderType::Compute);
+            FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
+
+            FComputePipelineDesc PipelineDesc;
+            PipelineDesc.AddBindingLayout(Layout);
+            PipelineDesc.CS = ComputeShader;
+            PipelineDesc.DebugName = "Depth Pyramid Mips";
+            FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
             CmdList.SetEnableUavBarriersForImage(DepthPyramid, false);
 
             for (int i = 0; i < MipCount; ++i)
             {
                 LUMINA_PROFILE_SECTION_COLORED("Process Mip", tracy::Color::Yellow4);
 
-                FBindingLayoutDesc LayoutDesc;
-                LayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0));
-                LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(1));
-                LayoutDesc.SetVisibility(ERHIShaderType::Compute);
-                
                 FBindingSetDesc SetDesc;
                 if (i == 0)
                 {
@@ -1145,16 +1156,8 @@ namespace Lumina
                 }
 
                 SetDesc.AddItem(FBindingSetItem::TextureUAV(1, DepthPyramid, DepthPyramid->GetFormat(), FTextureSubresourceSet(i, 1, 0, 1)));
-                
-                FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
+
                 FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
-
-                FComputePipelineDesc PipelineDesc;
-                PipelineDesc.AddBindingLayout(Layout);
-                PipelineDesc.CS = ComputeShader;
-                PipelineDesc.DebugName = "Depth Pyramid Mips";
-
-                FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
                 FComputeState State;
                 State.AddBindingSet(Set);
@@ -1167,13 +1170,13 @@ namespace Lumina
 
                 LevelWidth = std::max(LevelWidth, 1u);
                 LevelHeight = std::max(LevelHeight, 1u);
-                
+
                 glm::vec2 Data(LevelWidth,LevelHeight);
                 CmdList.SetPushConstants(&Data, sizeof(glm::vec2));
 
                 uint32 GroupsX = RenderUtils::GetGroupCount(LevelWidth, 32);
                 uint32 GroupsY = RenderUtils::GetGroupCount(LevelHeight, 32);
-                
+
                 CmdList.Dispatch(GroupsX, GroupsY, 1);
             }
 
@@ -1291,26 +1294,37 @@ namespace Lumina
                 .SetViewMask(RenderUtils::CreateViewMask<0u, 1u, 2u, 3u, 4u, 5u>())
                 .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
             
+            FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
+
+            FGraphicsPipelineDesc Desc; Desc
+                .SetDebugName("Point Light Shadow Pass")
+                .SetRenderState(RenderState)
+                .AddBindingLayout(SceneBindingLayout)
+                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
+                .SetVertexShader(VertexShader)
+                .SetPixelShader(PixelShader);
+
+            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
             FGraphicsState GraphicsState; GraphicsState
                 .SetRenderPass(Move(RenderPass))
+                .SetPipeline(Pipeline)
                 .AddBindingSet(SceneBindingSet)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                 .SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect));
-                    
-            
+
+
             const TVector<FLightShadow>& PointShadows = PackedShadows[(uint32)ELightType::Point];
-            
-            FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
-            
+
             for (const FLightShadow& LightShadow : PointShadows)
             {
                 LUMINA_PROFILE_SECTION_COLORED("Process Point Light", tracy::Color::DeepPink2);
-                
+
                 const FShadowTile& Tile = ShadowAtlas.GetTile(LightShadow.ShadowMapIndex);
                 uint32 TilePixelX       = static_cast<uint32>(Tile.UVOffset.x * GShadowAtlasResolution);
                 uint32 TilePixelY       = static_cast<uint32>(Tile.UVOffset.y * GShadowAtlasResolution);
                 uint32 TileSize         = static_cast<uint32>(Tile.UVScale.x * GShadowAtlasResolution);
-                
+
                 FViewport Viewport
                 (
                     (float)TilePixelX,
@@ -1318,9 +1332,9 @@ namespace Lumina
                     (float)TilePixelY,
                     (float)TilePixelY + TileSize,
                     0.0f,
-                    1.0f 
+                    1.0f
                 );
-                
+
                 // FRect(minX, maxX, minY, maxY)
                 FRect Scissor
                 (
@@ -1329,30 +1343,15 @@ namespace Lumina
                     (int)TilePixelY,
                     (int)TilePixelY + TileSize
                 );
-                
+
                 GraphicsState.SetViewportState(FViewportState(Viewport, Scissor));
 
-                for (const FMeshDrawCommand& Batch : DrawCommands)
+                for (uint32 OpaqueIdx : OpaqueDrawList)
                 {
-                    if (Batch.bTranslucent)
-                    {
-                        continue;
-                    }
+                    const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
 
-                    FGraphicsPipelineDesc Desc; Desc
-                        .SetDebugName("Point Light Shadow Pass")
-                        .SetRenderState(RenderState)
-                        .AddBindingLayout(SceneBindingLayout)
-                        .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                        .SetVertexShader(VertexShader)
-                        .SetPixelShader(PixelShader);
-                    
-                    FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-                    
-                    GraphicsState.SetPipeline(Pipeline);
-                    
                     CmdList.SetGraphicsState(GraphicsState);
-                    
+
                     CmdList.SetPushConstants(&LightShadow.LightIndex, sizeof(uint32));
                     CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
                 }
@@ -1386,8 +1385,16 @@ namespace Lumina
             
             
             const TVector<FLightShadow>& SpotShadows = PackedShadows[(uint32)ELightType::Spot];
-            
+
             FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
+
+            FGraphicsPipelineDesc PipelineDesc; PipelineDesc
+                .SetDebugName("Spot Shadow Pass")
+                .SetRenderState(RenderState)
+                .AddBindingLayout(SceneBindingLayout)
+                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
+                .SetVertexShader(VertexShader)
+                .SetPixelShader(PixelShader);
 
             for (const FLightShadow& Shadow : SpotShadows)
             {
@@ -1397,17 +1404,19 @@ namespace Lumina
                 uint32 TilePixelX = static_cast<uint32>(Tile.UVOffset.x * GShadowAtlasResolution);
                 uint32 TilePixelY = static_cast<uint32>(Tile.UVOffset.y * GShadowAtlasResolution);
                 uint32 TileSize = static_cast<uint32>(Tile.UVScale.x * GShadowAtlasResolution);
-                
+
                 FRenderPassDesc::FAttachment Depth; Depth
                     .SetLoadOp(ERenderLoadOp::Clear)
                     .SetDepthClearValue(1.0f)
                     .SetImage(ShadowAtlas.GetImage())
                         .SetArraySlice(6);
-                
+
                 FRenderPassDesc RenderPass; RenderPass
                     .SetDepthAttachment(Depth)
                     .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
-                
+
+                FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(PipelineDesc, RenderPass);
+
                 FViewportState ViewportState;
                 ViewportState.SetViewport((FViewport
                 (
@@ -1416,9 +1425,9 @@ namespace Lumina
                     (float)TilePixelY,
                     (float)TilePixelY + TileSize,
                     0.0f,
-                    1.0f 
+                    1.0f
                 )));
-                
+
                 ViewportState.SetScissorRect(FRect
                 (
                     (int)TilePixelX,
@@ -1426,35 +1435,21 @@ namespace Lumina
                     (int)TilePixelY,
                     (int)TilePixelY + TileSize
                 ));
-                
+
                 FGraphicsState GraphicsState; GraphicsState
                     .SetRenderPass(RenderPass)
                     .SetViewportState(ViewportState)
+                    .SetPipeline(Pipeline)
                     .AddBindingSet(SceneBindingSet)
                     .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect));                    
-                
-                
-                for (const FMeshDrawCommand& Batch : DrawCommands)
+                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect));
+
+                for (uint32 OpaqueIdx : OpaqueDrawList)
                 {
-                    if (Batch.bTranslucent)
-                    {
-                        continue;
-                    }
+                    const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
 
-                    FGraphicsPipelineDesc Desc; Desc
-                        .SetDebugName("Spot Shadow Pass")
-                        .SetRenderState(RenderState)
-                        .AddBindingLayout(SceneBindingLayout)
-                        .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                        .SetVertexShader(VertexShader)
-                        .SetPixelShader(PixelShader);
-
-                    FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-                    
-                    GraphicsState.SetPipeline(Pipeline);
                     CmdList.SetGraphicsState(GraphicsState);
-                    
+
                     CmdList.SetPushConstants(&Shadow.LightIndex, sizeof(uint32));
                     CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
                 }
@@ -1496,35 +1491,32 @@ namespace Lumina
             
             
             FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
-            
-            for (const FMeshDrawCommand& Batch : DrawCommands)
+
+            FGraphicsPipelineDesc Desc; Desc
+                .SetDebugName("Cascaded Shadow Maps")
+                .SetRenderState(RenderState)
+                .AddBindingLayout(SceneBindingLayout)
+                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
+                .SetVertexShader(VertexShader);
+
+            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+            FGraphicsState GraphicsState; GraphicsState
+                .SetRenderPass(RenderPass)
+                .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::Cascade)))
+                .SetPipeline(Pipeline)
+                .AddBindingSet(SceneBindingSet)
+                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
+                .SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect));
+
+            CmdList.SetGraphicsState(GraphicsState);
+
+            uint32 LightIndex = 0;
+            CmdList.SetPushConstants(&LightIndex, sizeof(uint32));
+
+            for (uint32 OpaqueIdx : OpaqueDrawList)
             {
-                if (Batch.bTranslucent)
-                {
-                    continue;
-                }
-
-                FGraphicsPipelineDesc Desc; Desc
-                    .SetDebugName("Cascaded Shadow Maps")
-                    .SetRenderState(RenderState)
-                    .AddBindingLayout(SceneBindingLayout)
-                    .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                    .SetVertexShader(VertexShader);
-                
-                FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-                FGraphicsState GraphicsState; GraphicsState
-                    .SetRenderPass(RenderPass)
-                    .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::Cascade)))
-                    .SetPipeline(Pipeline)
-                    .AddBindingSet(SceneBindingSet)
-                    .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect));
-                
-                CmdList.SetGraphicsState(GraphicsState);
-        
-                uint32 LightIndex = 0;
-                CmdList.SetPushConstants(&LightIndex, sizeof(uint32));
+                const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
                 CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
             }
         });
@@ -1575,12 +1567,9 @@ namespace Lumina
                 .SetRasterState(RasterState)
                 .SetDepthStencilState(DepthState);
             
-            for (const FMeshDrawCommand& Batch : DrawCommands)
+            for (uint32 Idx : OpaqueDrawList)
             {
-                if (Batch.bTranslucent)
-                {
-                    continue;
-                }
+                const FMeshDrawCommand& Batch = DrawCommands[Idx];
 
                 FGraphicsPipelineDesc Desc; Desc
                     .SetDebugName("Forward Base Pass")
@@ -1597,7 +1586,7 @@ namespace Lumina
                     .SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect))
                     .AddBindingSet(SceneBindingSet)
                     .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-                
+
                 CmdList.SetGraphicsState(GraphicsState);
                 CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
             }

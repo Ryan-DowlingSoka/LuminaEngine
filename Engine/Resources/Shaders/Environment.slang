@@ -194,8 +194,14 @@ float3 RenderSun(float3 RayDir, float3 SunColor)
     float3 SunDir  = GetSunDirection();
     float  SunDot  = dot(RayDir, SunDir);
 
-    float SunDisc  = smoothstep(cos(uSunSize * 1.4), cos(uSunSize * 0.5), SunDot);
-    float SunGlow  = pow(smoothstep(cos(uSunSize * 1.8), cos(uSunSize * 1.1), SunDot), 3.0);
+    float CosDiscOuter = cos(uSunSize * 1.4);
+    float CosDiscInner = cos(uSunSize * 0.5);
+    float CosGlowOuter = cos(uSunSize * 1.8);
+    float CosGlowInner = cos(uSunSize * 1.1);
+
+    float SunDisc  = smoothstep(CosDiscOuter, CosDiscInner, SunDot);
+    float GlowBase = smoothstep(CosGlowOuter, CosGlowInner, SunDot);
+    float SunGlow  = GlowBase * GlowBase * GlowBase;
     float SunFade  = smoothstep(0.0, 2.5, SunDir.y);
 
     return SunColor * (SunDisc * 0.8 + SunGlow * 0.3) * SunFade;

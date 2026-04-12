@@ -2,7 +2,6 @@
 
 #include "TaskScheduler.h"
 #include "TaskTypes.h"
-#include "Core/Templates/LuminaTemplate.h"
 #include "Core/Threading/Thread.h"
 #include "Memory/Memory.h"
 #include "Platform/GenericPlatform.h"

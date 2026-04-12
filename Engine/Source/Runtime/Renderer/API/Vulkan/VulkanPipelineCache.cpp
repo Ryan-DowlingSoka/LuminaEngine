@@ -11,7 +11,7 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        size_t Hash;
+        size_t Hash = 0;
         Hash::HashCombine(Hash, InDesc);
         Hash::HashCombine(Hash, RenderPassDesc);
         

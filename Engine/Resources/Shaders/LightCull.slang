@@ -34,11 +34,11 @@ void ComputeMain(uint3 WorkGroupID : SV_GroupID, uint3 LocalID : SV_GroupThreadI
 
     uClusters[Index].Count = 0;
 
-    for (uint i = 0; i < LightCount; ++i)
-    {
-        if (HasFlag(uLightData[0].Lights[i].Flags, LIGHT_FLAG_TYPE_DIRECTIONAL))
-            continue;
+    // Directional light is always at index 0 when present — skip it since it applies globally
+    uint StartIndex = (LightCount > 0 && HasFlag(uLightData[0].Lights[0].Flags, LIGHT_FLAG_TYPE_DIRECTIONAL)) ? 1u : 0u;
 
+    for (uint i = StartIndex; i < LightCount; ++i)
+    {
         if (TestSphereAABB(i, uClusters[Index]) && uClusters[Index].Count < LIGHTS_PER_CLUSTER)
         {
             uint Slot = uClusters[Index].Count;

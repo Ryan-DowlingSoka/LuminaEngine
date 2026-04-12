@@ -59,21 +59,22 @@ float GeometrySmith(float3 N, float3 V, float3 L, float Roughness)
 
 float3 FresnelSchlick(float CosTheta, float3 F0)
 {
-    return F0 + (1.0 - F0) * pow(1.0 - CosTheta, 5.0);
+    float x = saturate(1.0 - CosTheta);
+    float x2 = x * x;
+    return F0 + (1.0 - F0) * (x2 * x2 * x);
 }
 
 float3 GetWorldNormal(float3 FragNormal, float2 UV, float3 FragPos, float3 TangentSpaceNormal)
 {
-    float3 N = normalize(FragNormal);
     float3 Q1 = ddx(FragPos);
     float3 Q2 = ddy(FragPos);
     float2 St1 = ddx(UV);
     float2 St2 = ddy(UV);
 
     float3 T = normalize(Q1 * St2.y - Q2 * St1.y);
-    float3 B = normalize(cross(N, T));
+    float3 B = normalize(cross(FragNormal, T));
 
-    float3x3 TBN = float3x3(T, B, N);
+    float3x3 TBN = float3x3(T, B, FragNormal);
 
     return normalize(mul(TangentSpaceNormal, TBN));
 }
@@ -200,7 +201,7 @@ float ComputeShadowBias(FLight Light, float3 Normal, float3 LightDir, float Casc
 }
 
 
-float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3 V, float3 Albedo, float Roughness, float Metallic, float3 F0)
+float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3 V, float3 Albedo, float Roughness, float Metallic, float3 F0, float3 PrecomputedL, float PrecomputedDist)
 {
     bool bSpotLight   = Light.Flags == LIGHT_FLAG_TYPE_SPOT;
     bool bDirectional = Light.Flags == LIGHT_FLAG_TYPE_DIRECTIONAL;
@@ -216,10 +217,9 @@ float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3
     }
     else
     {
-        float3 LightToFrag = Light.Position - Position;
-        float  Distance    = length(LightToFrag);
-        L                  = LightToFrag / Distance;
-        Attenuation        = 1.0 / (Distance * Distance);
+        float Distance = PrecomputedDist;
+        L              = PrecomputedL;
+        Attenuation    = 1.0 / (Distance * Distance);
 
         float DistRatio = Distance / Light.Radius;
         Attenuation    *= 1.0 - smoothstep(clamp(Light.Falloff, 0.0, 1.0), 1.0, DistRatio);
@@ -255,7 +255,6 @@ PSOutput FragmentMain(PSInput Input)
 
     uint EntityID           = InstanceData.EntityID;
     uint MaterialIndex      = InstanceData.MaterialIndex;
-    float3 ViewNormal       = normalize(Input.NormalVS.xyz);
     float3 WorldNormal      = normalize(Input.NormalWS.xyz);
     float3 ViewPosition     = Input.FragPos.xyz;
     float3 WorldPosition    = mul(GetInverseCameraView(), float4(Input.FragPos.xyz, 1.0)).xyz;
@@ -288,15 +287,11 @@ PSOutput FragmentMain(PSInput Input)
 
 #else
 
-    float3 Position  = mul(GetInverseCameraView(), float4(ViewPosition, 1.0)).xyz;
-
     float3 N  = GetWorldNormal(WorldNormal, Input.UV, WorldPosition, Normal);
     float3 V  = normalize(GetCameraPosition() - WorldPosition);
 
-    float3 IOR = float3(0.5);
-    float3 F0  = abs((1.0 - IOR) / (1.0 + IOR));
-    F0         = F0 * F0;
-    F0         = lerp(F0, Albedo, Metallic);
+    static const float3 F0_DIELECTRIC = float3(0.04);
+    float3 F0 = lerp(F0_DIELECTRIC, Albedo, Metallic);
 
     float  ZNear      = GetNearPlane();
     float  ZFar       = GetFarPlane();
@@ -315,7 +310,7 @@ PSOutput FragmentMain(PSInput Input)
     {
         FLight Light        = GetLightAt(0);
         float  Shadow       = ComputeShadowFactor(Light, WorldPosition, 0.0005, ViewPosition, InstanceData.HasFlag(EInstanceFlags::ReceiveShadow));
-        Lo                  += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0) * Shadow;
+        Lo                  += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, float3(0.0), 0.0) * Shadow;
     }
 
     for (uint i = 0; i < LightCount; ++i)
@@ -323,19 +318,20 @@ PSOutput FragmentMain(PSInput Input)
         uint   LightIndex = uClusters[TileIndex].LightIndices[i];
         FLight Light      = GetLightAt(LightIndex);
 
+        float3 LightToFrag = Light.Position - WorldPosition;
+        float  DistToLight = length(LightToFrag);
+        float3 L           = LightToFrag / max(DistToLight, 0.0001);
+
         float Shadow = 1.0;
         if (Light.Shadow[0].ShadowMapIndex != INDEX_NONE)
         {
-            float3 L                    = WorldPosition - Light.Position;
-            float3 DirectionToLight     = normalize(L);
-            float  DistToLight          = length(L);
             float  AttenuationFactor    = 1.0 / (DistToLight * DistToLight);
             float  BiasScale            = lerp(0.1, 1.0, AttenuationFactor);
-            float Bias                  = ComputeShadowBias(Light, N, DirectionToLight, 0) * BiasScale;
+            float Bias                  = ComputeShadowBias(Light, N, -L, 0) * BiasScale;
             Shadow                      = ComputeShadowFactor(Light, WorldPosition, Bias, ViewPosition, InstanceData.HasFlag(EInstanceFlags::ReceiveShadow));
         }
 
-        Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0) * Shadow;
+        Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight) * Shadow;
     }
 
     float3 Ambient = GetAmbientLightColor() * GetAmbientLightIntensity() * AO;
@@ -347,7 +343,9 @@ PSOutput FragmentMain(PSInput Input)
 
 #ifdef TRANSLUCENT
 
-    float Weight = clamp(pow(min(1.0, Alpha * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - Input.Position.z * 0.9, 3.0), 1e-2, 3e3);
+    float AlphaFactor = min(1.0, Alpha * 10.0) + 0.01;
+    float DepthFactor = 1.0 - Input.Position.z * 0.9;
+    float Weight = clamp(AlphaFactor * AlphaFactor * AlphaFactor * 1e8 * DepthFactor * DepthFactor * DepthFactor, 1e-2, 3e3);
     Output.Accum = float4(Color.rgb * Alpha, Alpha) * Weight;
     Output.Revealage = Alpha;
 

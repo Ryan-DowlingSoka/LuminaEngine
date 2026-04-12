@@ -30,10 +30,10 @@ static const float2 UVs[6] =
 
 struct VertexOutput
 {
-    float2 UV                         : TEXCOORD0;
-    float3 ColorTint                  : COLORTINT;
-    nointerpolation uint TextureIndex : TEXTURE_INDEX;
-    nointerpolation uint EntityID     : ENTITY_ID;
+    float2 UV                                    : TEXCOORD0;
+    nointerpolation float3 ColorTint             : COLORTINT;
+    nointerpolation uint TextureIndex            : TEXTURE_INDEX;
+    nointerpolation uint EntityID                : ENTITY_ID;
     float4 Position                   : SV_Position;
 };
 

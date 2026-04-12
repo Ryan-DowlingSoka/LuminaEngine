@@ -48,7 +48,8 @@ float4 FragmentMain(VSOutput Input, uniform FPushConstants PC) : SV_Target0
     float3 Tonemapped = ACESFilm(HDRColor);
 
     // Gamma correction
-    Tonemapped = pow(Tonemapped, float3(1.0 / 2.2));
+    static const float INV_GAMMA = 1.0 / 2.2;
+    Tonemapped = pow(Tonemapped, float3(INV_GAMMA));
 
     // Dither
     Tonemapped += ScreenSpaceDither(Input.Position.xy, PC.Time);

@@ -21,11 +21,6 @@ namespace Lumina
         ~FForwardRenderScene() override = default;
         LE_NO_COPYMOVE(FForwardRenderScene);
         
-        struct FMeshPassDrawList
-        {
-            TVector<uint32> DrawCommandIndices;
-        };
-        
         enum class ENamedBuffer : uint8
         {
             Scene,
@@ -155,10 +150,11 @@ namespace Lumina
         
         FShadowAtlas                            ShadowAtlas;
         
-        FMeshPassDrawList                       PassDrawLists;
-        
         /** Packed array of all cached mesh draw commands */
         TVector<FMeshDrawCommand>               DrawCommands;
+
+        /** Indices into DrawCommands for opaque batches */
+        TVector<uint32>                         OpaqueDrawList;
 
         /** Indices into DrawCommands for translucent batches, rendered after opaque */
         TVector<uint32>                         TranslucentDrawList;

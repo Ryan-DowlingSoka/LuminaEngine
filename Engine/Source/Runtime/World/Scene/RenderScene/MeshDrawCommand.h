@@ -68,7 +68,7 @@ namespace Lumina
 	 */
 	struct FMeshDrawCommand
 	{
-		TFixedHashMap<FDrawKey, uint32, 4>	DrawArgumentIndexMap;
+		TFixedHashMap<FDrawKey, uint32, 16>	DrawArgumentIndexMap;
 		FRHIVertexShader*					VertexShader = nullptr;
 		FRHIPixelShader*					PixelShader = nullptr;
 		uint32                      		IndirectDrawOffset = 0;
