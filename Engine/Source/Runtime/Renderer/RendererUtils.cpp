@@ -7,17 +7,24 @@
 
 namespace Lumina::RenderUtils
 {
-    bool ResizeBufferIfNeeded(FRHIBufferRef& Buffer, uint32 DesiredSize, int GrowthFactor)
+    bool ResizeBufferIfNeeded(FRHIBufferRef& Buffer, uint32 DesiredSize, float GrowthFactor)
     {
-        if (Buffer->GetSize() < DesiredSize)
+        const uint32 CurrentCapacity = (uint32)Buffer->GetSize();
+
+        if (CurrentCapacity >= DesiredSize)
         {
-            FRHIBufferDesc Desc = Buffer->GetDescription();
-            Desc.Size = DesiredSize * GrowthFactor;
-            Buffer = GRenderContext->CreateBuffer(Desc);
-            return true;
+            return false;
         }
+
+        uint32 NewCapacity = std::max(DesiredSize,static_cast<uint32>(static_cast<float>(CurrentCapacity) * GrowthFactor));
+
+        FRHIBufferDesc Desc = Buffer->GetDescription();
+        Desc.Size = NewCapacity;
+
+        FRHIBufferRef OldBuffer = Buffer;
+        Buffer = GRenderContext->CreateBuffer(Desc);
         
-        return false;
+        return true;
     }
 
     FRHIImageRef CreateImageFromPixels(TSpan<uint8> PixelData, bool bFlipVertically, glm::uvec2 Size)

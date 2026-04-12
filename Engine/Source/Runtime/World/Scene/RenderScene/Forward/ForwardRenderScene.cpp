@@ -1,8 +1,6 @@
 #include "pch.h"
 #include "ForwardRenderScene.h"
-
 #include <execution>
-
 #include "Assets/AssetTypes/Material/Material.h"
 #include "Assets/AssetTypes/Mesh/SkeletalMesh/SkeletalMesh.h"
 #include "assets/assettypes/mesh/skeleton/skeleton.h"
@@ -14,6 +12,8 @@
 #include "Renderer/RHIStaticStates.h"
 #include "Renderer/ShaderCompiler.h"
 #include "Renderer/RenderGraph/RenderGraphDescriptor.h"
+#include "TaskSystem/TaskGraph.h"
+#include "TaskSystem/TaskSystem.h"
 #include "Tools/Import/ImportHelpers.h"
 #include "World/World.h"
 #include "World/Entity/Components/BillboardComponent.h"
@@ -150,7 +150,6 @@ namespace Lumina
         
         SceneViewport = GRenderContext->CreateViewport(NewSize, "Forward Renderer Viewport");
         
-        InitBuffers();
         InitFrameResources();
     }
 
@@ -162,731 +161,529 @@ namespace Lumina
         {
             LUMINA_PROFILE_SECTION("Compile Draw Commands");
             
-            auto StaticView = World->GetEntityRegistry().view<SStaticMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+
+            auto StaticView   = World->GetEntityRegistry().view<SStaticMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto SkeletalView = World->GetEntityRegistry().view<SSkeletalMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
 
-            const size_t EntityCount = StaticView.size_hint() + SkeletalView.size_hint();
-            const size_t EstimatedProxies = EntityCount * 2;
+            // Snapshot entities into linear arrays so the parallel-for can address them by index.
+            TVector<entt::entity> StaticEntities;
+            StaticEntities.reserve(StaticView.size_hint());
+            for (entt::entity Entity : StaticView)
+            {
+                StaticEntities.push_back(Entity);
+            }
+
+            TVector<entt::entity> SkeletalEntities;
+            SkeletalEntities.reserve(SkeletalView.size_hint());
+            for (entt::entity Entity : SkeletalView)
+            {
+                SkeletalEntities.push_back(Entity);
+            }
+
+            const size_t EntityCount       = StaticEntities.size() + SkeletalEntities.size();
+            const size_t EstimatedProxies  = EntityCount * 2;
 
             InstanceData.reserve(EstimatedProxies);
             IndirectDrawArguments.reserve(EstimatedProxies);
-			DrawCommands.reserve(EstimatedProxies);
-            
-            TFixedHashMap<FDrawBatchKey, uint64, 32> BatchedDraws;
-            
+            DrawCommands.reserve(EstimatedProxies);
+
+            // One thread-local accumulator per scheduler thread (workers + the calling thread).
+            const uint32 NumThreads = GTaskSystem->GetScheduler().GetNumTaskThreads();
+            TVector<FThreadLocalDrawData> ThreadLocal(NumThreads);
+            const uint32 ReservePerThread = (uint32)((EstimatedProxies + NumThreads - 1) / std::max(1u, NumThreads));
+            for (FThreadLocalDrawData& Local : ThreadLocal)
             {
-                LUMINA_PROFILE_SECTION("Process Static Mesh Primitives");
-                StaticView.each([&](entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent)
+                Local.Items.reserve(ReservePerThread);
+            }
+
+            auto TransformView   = World->GetEntityRegistry().view<STransformComponent, FNeedsTransformUpdate>();
+            TransformView.each([](STransformComponent& Transform)
+            {
+                (void)Transform.GetWorldMatrix(); // Will resolve. 
+            });
+            
+            // Build the parallel compile graph: static + skeletal fan into a serial merge.
+            FTaskGraph Graph;
+            
+            
+            FTaskGraph::FNodeHandle StaticNode = Graph.AddParallelFor((uint32)StaticEntities.size(), 64, [&](const Task::FParallelRange& Range)
+            {
+                LUMINA_PROFILE_SECTION("Process Static Mesh Range");
+                FThreadLocalDrawData& Local = ThreadLocal[Range.Thread];
+                for (uint32 i = Range.Start; i < Range.End; ++i)
                 {
-                    LUMINA_PROFILE_SECTION("Process Static Mesh");
-                    CMesh* Mesh = MeshComponent.StaticMesh;
-                    if (!IsValid(Mesh))
+                    const entt::entity Entity = StaticEntities[i];
+                    const SStaticMeshComponent& MeshComponent      = StaticView.get<SStaticMeshComponent>(Entity);
+                    const STransformComponent&  TransformComponent = StaticView.get<STransformComponent>(Entity);
+                    ProcessStaticMeshEntityInternal(Entity, MeshComponent, TransformComponent, Local);
+                }
+            });
+
+            FTaskGraph::FNodeHandle SkeletalNode = Graph.AddParallelFor((uint32)SkeletalEntities.size(), 32, [&](const Task::FParallelRange& Range)
+            {
+                LUMINA_PROFILE_SECTION("Process Skeletal Mesh Range");
+                FThreadLocalDrawData& Local = ThreadLocal[Range.Thread];
+                for (uint32 i = Range.Start; i < Range.End; ++i)
+                {
+                    const entt::entity Entity = SkeletalEntities[i];
+                    const SSkeletalMeshComponent& MeshComponent      = SkeletalView.get<SSkeletalMeshComponent>(Entity);
+                    const STransformComponent&    TransformComponent = SkeletalView.get<STransformComponent>(Entity);
+                    ProcessSkeletalMeshEntityInternal(Entity, MeshComponent, TransformComponent, Local);
+                }
+            });
+
+            FTaskGraph::FNodeHandle MergeNode = Graph.Add([&]
+            {
+                MergeMeshDrawData(ThreadLocal);
+            });
+            
+            Graph.Add([&]
+            {
+                LUMINA_PROFILE_SECTION("Environment Processing");
+                RenderSettings.bHasEnvironment = false;
+                LightData.AmbientLight = glm::vec4(0.0f);
+                RenderSettings.bSSAO = false;
+                auto View = World->GetEntityRegistry().view<SEnvironmentComponent>(entt::exclude<SDisabledTag>);
+                View.each([this] (const SEnvironmentComponent& EnvironmentComponent)
+                {
+                    LightData.AmbientLight          = glm::vec4(EnvironmentComponent.AmbientColor, EnvironmentComponent.Intensity);
+                    RenderSettings.bHasEnvironment  = true;
+                    RenderSettings.bSSAO            = false;
+                }); 
+            });
+            
+            Graph.Add([&]
+            {
+                LUMINA_PROFILE_SECTION("Batched Line Processing");
+
+                auto View = World->GetEntityRegistry().view<FLineBatcherComponent>();
+                View.each([&](FLineBatcherComponent& LineBatcherComponent)
+                {
+                    if (LineBatcherComponent.Lines.empty())
                     {
                         return;
                     }
-        
-                    const FMeshResource& Resource = Mesh->GetMeshResource();
-                    uint64 VBAddress = Mesh->GetVertexBuffer()->GetAddress();
-                    uint64 IBAddress = Mesh->GetIndexBuffer()->GetAddress();
-                    
-                    RenderStats.NumVertices += Resource.GetNumVertices();
-                    RenderStats.NumTriangles += Resource.GetNumTriangles();
-                    
-                    glm::mat4 TransformMatrix = TransformComponent.GetWorldMatrix();
-                    
-                    FAABB BoundingBox       = Mesh->GetAABB().ToWorld(TransformMatrix);
-                    glm::vec3 Center        = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
-                    glm::vec3 Extents       = BoundingBox.Max - Center;
-                    float Radius            = glm::length(Extents);
-                    glm::vec4 SphereBounds  = glm::vec4(Center, Radius);
-                    
-                    EInstanceFlags Flags = EInstanceFlags::None;
-                    if (MeshComponent.bReceiveShadow)
-                    {
-                        Flags |= EInstanceFlags::ReceiveShadow;
-                    }
-                    if (MeshComponent.bIgnoreOcclusionCulling)
-                    {
-                        Flags |= EInstanceFlags::IgnoreOcclusionCulling;
-                    }
-                    for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
-                    {
-                        CMaterialInterface* Material = nullptr;
-                        Material = MeshComponent.GetMaterialForSlot(Surface.MaterialIndex);
-                        if (!IsValid(Material) || !IsValid(Material->GetMaterial()) || !Material->IsReadyForRender())
-                        {
-                            Material = CMaterial::GetDefaultMaterial();
-                        }
-                        
-                        if (MeshComponent.bCastShadow && Material->DoesCastShadows())
-                        {
-                            Flags |= EInstanceFlags::CastShadow;
-                        }
-
-                        EBlendMode BlendMode = Material->GetBlendMode();
-                        bool bIsTranslucent = BlendMode == EBlendMode::Translucent || BlendMode == EBlendMode::Additive;
-                        bool bIsMasked = BlendMode == EBlendMode::Masked;
-                        bool bIsAdditive = BlendMode == EBlendMode::Additive;
-                        bool bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bIsTranslucent;
-
-                        if (bIsTranslucent)
-                        {
-                            Flags |= EInstanceFlags::Translucent;
-                        }
-                        if (bIsMasked)
-                        {
-                            Flags |= EInstanceFlags::Masked;
-                        }
-
-                        FDrawBatchKey BatchKey
-                        {
-                            .MaterialID         = (uintptr_t)Material->GetMaterial(),
-                            .bDrawInDepthPass   = bDrawInDepthPass,
-                            .bTranslucent       = bIsTranslucent,
-                            .bMasked            = bIsMasked,
-                            .bAdditive          = bIsAdditive,
-                        };
-
-                        auto [BatchIt, bBatchInserted] = BatchedDraws.try_emplace(BatchKey, DrawCommands.size());
-                        uint64 DrawID = BatchIt->second;
-
-                        if (bBatchInserted)
-                        {
-                            TFixedHashMap<FDrawKey, uint32, 16> Map;
-                            DrawCommands.emplace_back(Move(Map), Material->GetVertexShader(), Material->GetPixelShader(), 0, 0, bDrawInDepthPass, bIsTranslucent, bIsMasked, bIsAdditive);
-                        }
-
-                        auto& DrawArguments = DrawCommands[DrawID].DrawArgumentIndexMap;
-
-                        auto [DrawIt, bDrawInserted] = DrawArguments.try_emplace(FDrawKey{Surface.StartIndex, Surface.IndexCount}, IndirectDrawArguments.size());
-
-                        if (bDrawInserted)
-                        {
-                            IndirectDrawArguments.emplace_back(Surface.IndexCount, 0, Surface.StartIndex, 0);
-                        }
-
-                        IndirectDrawArguments[DrawIt->second].InstanceCount++;
-
-                        InstanceData.emplace_back(FGPUInstance
-                        {
-                            .Transform                  = TransformMatrix,
-                            .SphereBounds               = SphereBounds,
-                            .VBAddress                  = VBAddress,
-                            .IBAddress                  = IBAddress,
-                            .EntityID                   = entt::to_integral(Entity),
-                            .DrawIDAndFlags             = PackDrawIDAndFlags(DrawIt->second, Flags),
-                            .BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex()),
-                            .CustomData                 = MeshComponent.CustomPrimitiveData.Data.Packed  
-                        });
-                    }
-                });
-            }
-            
-            {
-                LUMINA_PROFILE_SECTION("Process Skeletal Mesh Primitives");
-
-                SkeletalView.each([&](entt::entity Entity, const SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent)
-                {
-                    CMesh* Mesh = MeshComponent.SkeletalMesh;
-                    if (!IsValid(Mesh))
-                    {
-                        return;
-                    }
-        
-                    const FMeshResource& Resource = Mesh->GetMeshResource();
-                    
-                    uint32 BoneDataOffset = static_cast<uint32>(BonesData.size());
-                    BonesData.insert(BonesData.end(), MeshComponent.BoneTransforms.begin(), MeshComponent.BoneTransforms.end());
-                    
-                    RenderStats.NumVertices += Resource.GetNumVertices();
-                    RenderStats.NumTriangles += Resource.GetNumTriangles();
-
-                    glm::mat4 TransformMatrix = TransformComponent.GetWorldMatrix();
-                    
-                    FAABB BoundingBox       = Mesh->GetAABB().ToWorld(TransformMatrix);
-                    glm::vec3 Center        = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
-                    glm::vec3 Extents       = BoundingBox.Max - Center;
-                    float Radius            = glm::length(Extents);
-                    glm::vec4 SphereBounds  = glm::vec4(Center, Radius);
-                    
-                    EInstanceFlags Flags = EInstanceFlags::Skinned;
-                    if (MeshComponent.bReceiveShadow)
-                    {
-                        Flags |= EInstanceFlags::ReceiveShadow;
-                    }
-                    
-                    for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
-                    {
-                        CMaterialInterface* Material = MeshComponent.GetMaterialForSlot(Surface.MaterialIndex);
-                    
-                        if (!IsValid(Material) || !IsValid(Material->GetMaterial()) || !Material->IsReadyForRender())
-                        {
-                            Material = CMaterial::GetDefaultMaterial();
-                        }
-                        
-                        if (MeshComponent.bCastShadow && Material->DoesCastShadows())
-                        {
-                            Flags |= EInstanceFlags::CastShadow;
-                        }
-
-                        EBlendMode BlendMode = Material->GetBlendMode();
-                        bool bIsTranslucent = BlendMode == EBlendMode::Translucent || BlendMode == EBlendMode::Additive;
-                        bool bIsMasked = BlendMode == EBlendMode::Masked;
-                        bool bIsAdditive = BlendMode == EBlendMode::Additive;
-                        bool bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bIsTranslucent;
-
-                        if (bIsTranslucent)
-                        {
-                            Flags |= EInstanceFlags::Translucent;
-                        }
-                        if (bIsMasked)
-                        {
-                            Flags |= EInstanceFlags::Masked;
-                        }
-
-                        FDrawBatchKey BatchKey
-                        {
-                            .MaterialID = (uintptr_t)Material->GetMaterial(),
-                            .bDrawInDepthPass = bDrawInDepthPass,
-                            .bTranslucent = bIsTranslucent,
-                            .bMasked = bIsMasked,
-                            .bAdditive = bIsAdditive,
-                        };
-
-                        auto [BatchIt, bBatchInserted] = BatchedDraws.try_emplace(BatchKey, DrawCommands.size());
-                        uint64 DrawID = BatchIt->second;
-
-                        if (bBatchInserted)
-                        {
-                            TFixedHashMap<FDrawKey, uint32, 16> Map;
-                            DrawCommands.emplace_back(Move(Map), Material->GetVertexShader(), Material->GetPixelShader(), 0, 0, bDrawInDepthPass, bIsTranslucent, bIsMasked, bIsAdditive);
-                        }
-
-                        auto& DrawArguments = DrawCommands[DrawID].DrawArgumentIndexMap;
-
-                        auto [DrawIt, bDrawInserted] = DrawArguments.try_emplace(FDrawKey{Surface.StartIndex, Surface.IndexCount}, IndirectDrawArguments.size());
-
-                        if (bDrawInserted)
-                        {
-                            IndirectDrawArguments.emplace_back(FDrawIndirectArguments
-                            {
-                                .VertexCount            = (uint32)Surface.IndexCount,
-                                .InstanceCount          = 0,
-                                .StartVertexLocation    = Surface.StartIndex,
-                                .StartInstanceLocation  = 0,
-                            });
-                        }
-
-                        IndirectDrawArguments[DrawIt->second].InstanceCount++;
-                        
-                        InstanceData.emplace_back(FGPUInstance
-                        {
-                            .Transform                  = TransformMatrix,
-                            .SphereBounds               = SphereBounds,
-                            .VBAddress                  = Mesh->GetVertexBuffer()->GetAddress(),
-                            .IBAddress                  = Mesh->GetIndexBuffer()->GetAddress(),
-                            .EntityID                   = entt::to_integral(Entity),
-                            .DrawIDAndFlags             = PackDrawIDAndFlags(DrawIt->second, Flags),
-                            .BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(BoneDataOffset, (uint16)Material->GetMaterialIndex()),
-                            .CustomData                 = MeshComponent.CustomPrimitiveData.Data.Packed 
-                        });
-                    }
-                });
-            }
-            
-            
-            {
-                LUMINA_PROFILE_SECTION("Reorder Instances and Draw Args");
-
-                TVector<uint32> IndexRemap(IndirectDrawArguments.size());
-                TVector<FDrawIndirectArguments> ReorderedIndirectDrawArguments;
-                ReorderedIndirectDrawArguments.reserve(IndirectDrawArguments.size());
-
-                uint32 Counter = 0;
-                uint32 CumulativeInstanceCount = 0;
-                for (FMeshDrawCommand& DrawCommand : DrawCommands)
-                {
-                    DrawCommand.DrawCount           = (uint32)DrawCommand.DrawArgumentIndexMap.size();
-                    DrawCommand.IndirectDrawOffset  = Counter;
                 
-                    RenderStats.NumDraws            += DrawCommand.DrawCount;
-
-                    for (auto& [Key, OldIndex] : DrawCommand.DrawArgumentIndexMap)
+                    for (FLineBatcherComponent::FLineInstance& Line : LineBatcherComponent.Lines)
                     {
-                        IndexRemap[OldIndex] = Counter;
-        
-                        FDrawIndirectArguments Args = IndirectDrawArguments[OldIndex];
-                        Args.StartInstanceLocation = CumulativeInstanceCount;
-                        CumulativeInstanceCount += Args.InstanceCount;
-                    
-                        RenderStats.NumInstances += Args.InstanceCount;
-                    
-                        Args.InstanceCount = 0;
-        
-                        ReorderedIndirectDrawArguments.push_back(Args);
-                        Counter++;
-                    }
-                }
-
-                IndirectDrawArguments = Move(ReorderedIndirectDrawArguments);
-
-                for (FGPUInstance& Instance : InstanceData)
-                {
-                    uint32 Flags = Instance.DrawIDAndFlags & 0xFF000000u;
-                    uint32 NewDrawID = IndexRemap[Instance.DrawIDAndFlags & 0x00FFFFFFu];
-                    Instance.DrawIDAndFlags = (NewDrawID & 0x00FFFFFFu) | Flags;
-                }
-            
-                RenderStats.NumBatches = DrawCommands.size();
-
-                OpaqueDrawList.reserve(DrawCommands.size());
-                TranslucentDrawList.reserve(DrawCommands.size());
-                for (uint32 i = 0; i < (uint32)DrawCommands.size(); ++i)
-                {
-                    if (DrawCommands[i].bTranslucent)
-                    {
-                        TranslucentDrawList.push_back(i);
-                    }
-                    else
-                    {
-                        OpaqueDrawList.push_back(i);
-                    }
-                }
-            }
-        }
-        
-        //========================================================================================================================
-        
-        {
-            LUMINA_PROFILE_SECTION("Process Billboard Primitives");
-            auto View = World->GetEntityRegistry().view<SBillboardComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-            View.each([this](entt::entity Entity, const SBillboardComponent& BillboardComponent, const STransformComponent& TransformComponent)
-            {
-                if (!BillboardComponent.Texture.IsValid() || !BillboardComponent.Texture->GetRHIRef()->IsValid())
-                {
-                    return;
-                }
-                
-                FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                Billboard.TextureIndex          = BillboardComponent.Texture->GetRHIRef()->GetTextureCacheIndex();
-                Billboard.Position              = TransformComponent.GetWorldLocation();
-                Billboard.Size                  = BillboardComponent.Scale;
-                Billboard.EntityID              = entt::to_integral(Entity);
-
-                RenderStats.NumVertices         += 6;
-            });
-        }
-        
-        {
-            LUMINA_PROFILE_SECTION("Directional Light Processing");
-
-            LightData.bHasSun = false;
-            auto View = World->GetEntityRegistry().view<SDirectionalLightComponent>(entt::exclude<SDisabledTag>);
-            View.each([this](entt::entity Entity, const SDirectionalLightComponent& DirectionalLightComponent)
-            {
-                LightData.bHasSun = true;
-                const FViewVolume& ViewVolume = SceneViewport->GetViewVolume();
-                
-                float NearClip          = ViewVolume.GetNear();
-
-                FLight Light            = {};
-                Light.Flags             = LIGHT_TYPE_DIRECTIONAL;
-                Light.Color             = PackColor(glm::vec4(DirectionalLightComponent.Color, 1.0));
-                Light.Intensity         = DirectionalLightComponent.Intensity;
-                Light.Direction         = glm::normalize(DirectionalLightComponent.Direction);
-                LightData.SunDirection  = Light.Direction;
-                
-                LightData.CascadeSplits[0] = 35.0f;
-                LightData.CascadeSplits[1] = 100.0f;
-                LightData.CascadeSplits[2] = 400.0f;
-
-                for (int i = 0; i < NumCascades; ++i)
-                {
-                    float CascadeFar = LightData.CascadeSplits[i];
-                    
-                    glm::mat4 ViewProjection        = glm::perspective(glm::radians(ViewVolume.GetFOV()), ViewVolume.GetAspectRatio(), NearClip, CascadeFar);
-                    glm::mat4 ViewProjectionMatrix  = ViewProjection * ViewVolume.GetViewMatrix();
-                    
-                    glm::vec3 FrustumCorners[8];
-                    FFrustum::ComputeFrustumCorners(ViewProjectionMatrix, FrustumCorners);
-                    
-                    glm::vec3 FrustumCenter = std::reduce(std::begin(FrustumCorners), std::end(FrustumCorners)) / 8.0f;
-                    glm::mat4 LightView     = glm::lookAt(FrustumCenter + Light.Direction, FrustumCenter, FViewVolume::UpAxis);
-                    
-                    float MinX = eastl::numeric_limits<float>::max();
-                    float MaxX = eastl::numeric_limits<float>::lowest();
-                    float MinY = eastl::numeric_limits<float>::max();
-                    float MaxY = eastl::numeric_limits<float>::lowest();
-                    float MinZ = eastl::numeric_limits<float>::max();
-                    float MaxZ = eastl::numeric_limits<float>::lowest();
-                    for (const auto& V : FrustumCorners)
-                    {
-                        const auto TRF = LightView * glm::vec4(V, 1.0f);
-                        MinX = eastl::min(MinX, TRF.x);
-                        MaxX = eastl::max(MaxX, TRF.x);
-                        MinY = eastl::min(MinY, TRF.y);
-                        MaxY = eastl::max(MaxY, TRF.y);
-                        MinZ = eastl::min(MinZ, TRF.z);
-                        MaxZ = eastl::max(MaxZ, TRF.z);
-                    }
-                    
-                    constexpr float zMult = 10.0f;
-                    if (MinZ < 0)
-                    {
-                        MinZ *= zMult;
-                    }
-                    else
-                    {
-                        MinZ /= zMult;
-                    }
-                    if (MaxZ < 0)
-                    {
-                        MaxZ /= zMult;
-                    }
-                    else
-                    {
-                        MaxZ *= zMult;
-                    }
-                    
-                    glm::mat4 LightProjection       = glm::ortho(MinX, MaxX, MinY, MaxY, MinZ, MaxZ);
-                    Light.ViewProjection[i]         = LightProjection * LightView;
-                }
-                
-                LightData.Lights[0] = Light;
-                LightData.NumLights++;
-            });
-        }
-        
-        //========================================================================================================================
-        
-        {
-            LUMINA_PROFILE_SECTION("Point Light Processing");
-
-            auto View = World->GetEntityRegistry().view<SPointLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-            View.each([&] (entt::entity Entity, const SPointLightComponent& PointLightComponent, const STransformComponent& TransformComponent)
-            {
-                FLight Light;
-                Light.Flags                 = LIGHT_TYPE_POINT;
-                Light.Falloff               = PointLightComponent.Falloff;
-                Light.Color                 = PackColor(glm::vec4(PointLightComponent.LightColor, 1.0));
-                Light.Intensity             = PointLightComponent.Intensity;
-                Light.Radius                = PointLightComponent.Attenuation;
-                Light.Position              = TransformComponent.WorldTransform.Location;
-                
-                #if USING(WITH_EDITOR)
-                if (!World->IsGameWorld())
-                {
-                    FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                    Billboard.TextureIndex          = GetNamedImage(ENamedImage::PointLightIcon)->GetTextureCacheIndex();
-                    Billboard.ColorPack             = Light.Color;
-                    Billboard.Position              = TransformComponent.GetWorldLocation();
-                    Billboard.Size                  = 0.35f;
-                    Billboard.EntityID              = entt::to_integral(Entity);
-                }
-                #endif
-                
-                FViewVolume LightView(90.0f, 1.0f, 0.01f, Light.Radius);
-                
-                auto SetView = [&Light](FViewVolume& View, uint32 Index)
-                {
-                    switch (Index)
-                    {
-                    case 0: // +X
-                        View.SetView(Light.Position, FViewVolume::RightAxis, FViewVolume::DownAxis);
-                        break;
-                    case 1: // -X
-                        View.SetView(Light.Position, FViewVolume::LeftAxis, FViewVolume::DownAxis);
-                        break;
-                    case 2: // +Y
-                        View.SetView(Light.Position, FViewVolume::UpAxis, FViewVolume::ForwardAxis);
-                        break;
-                    case 3: // -Y
-                        View.SetView(Light.Position, FViewVolume::DownAxis, FViewVolume::BackwardAxis);
-                        break;
-                    case 4: // +Z
-                        View.SetView(Light.Position, FViewVolume::ForwardAxis, FViewVolume::DownAxis);
-                        break;
-                    case 5: // -Z
-                        View.SetView(Light.Position, FViewVolume::BackwardAxis, FViewVolume::DownAxis);
-                        break;
-                    default:
-                        UNREACHABLE();
-                    }
-                };
-
-                if (PointLightComponent.bCastShadows)
-                {
-                    int32 TileIndex = ShadowAtlas.AllocateTile();
-                    
-                    if (TileIndex != INDEX_NONE)
-                    {
-                        const FShadowTile& Tile = ShadowAtlas.GetTile(TileIndex);
-
-                        for (int Face = 0; Face < 6; ++Face)
+                        if (!Line.bSingleFrame && Line.RemainingLifetime >= 0.0f)
                         {
-                            SetView(LightView, Face);
-                            
-                            Light.ViewProjection[Face]              = LightView.ToReverseDepthViewProjectionMatrix();
-                            Light.Shadow[Face].ShadowMapIndex       = TileIndex;
-                            Light.Shadow[Face].ShadowMapLayer       = Face;
-                            Light.Shadow[Face].AtlasUVOffset        = Tile.UVOffset;
-                            Light.Shadow[Face].AtlasUVScale         = Tile.UVScale;
-                            Light.Shadow[Face].LightIndex           = (int32)LightData.NumLights;
+                            Line.RemainingLifetime -= SceneGlobalData.DeltaTime;
                         }
-                        
-                        PackedShadows[(uint32)ELightType::Point].push_back(Light.Shadow[0]);
                     }
-                }
-                else
-                {
-                    Light.Shadow[0].ShadowMapIndex = INDEX_NONE;
-                }
                 
-                LightData.Lights[LightData.NumLights++] = Light;
-            });
-        }
-        
-        //========================================================================================================================
-        
-        {
-            LUMINA_PROFILE_SECTION("Spot Light Processing");
-
-            auto View = World->GetEntityRegistry().view<SSpotLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-            View.each([&] (entt::entity Entity, SSpotLightComponent& SpotLightComponent, STransformComponent& Transform)
-            {
-        
-                glm::vec3 UpdatedForward    = Transform.GetRotation() * FViewVolume::ForwardAxis;
-                glm::vec3 UpdatedUp         = Transform.GetRotation() * FViewVolume::UpAxis;
-        
-                float InnerDegrees = SpotLightComponent.InnerConeAngle;
-                float OuterDegrees = SpotLightComponent.OuterConeAngle;
-        
-                float InnerCos = glm::cos(glm::radians(InnerDegrees));
-                float OuterCos = glm::cos(glm::radians(OuterDegrees));
+                    struct FLineWithVertices
+                    {
+                        FLineBatcherComponent::FLineInstance Line;
+                        FSimpleElementVertex Vertex0;
+                        FSimpleElementVertex Vertex1;
+                    };
                 
-                FViewVolume ViewVolume(OuterDegrees * 2.00f, 1.0f, 0.01f, SpotLightComponent.Attenuation);
-                ViewVolume.SetView(Transform.GetWorldLocation(), -UpdatedForward, UpdatedUp);
+                    TVector<FLineWithVertices> AliveLinesWithVertices;
+                    AliveLinesWithVertices.reserve(LineBatcherComponent.Lines.size());
                 
-                FLight Light;
-                Light.Flags                 = LIGHT_TYPE_SPOT;
-                Light.Position              = Transform.GetWorldLocation();
-                Light.Direction             = glm::normalize(UpdatedForward);
-                Light.Falloff               = SpotLightComponent.Falloff;
-                Light.Color                 = PackColor(glm::vec4(SpotLightComponent.LightColor, 1.0));
-                Light.Intensity             = SpotLightComponent.Intensity;
-                Light.Radius                = SpotLightComponent.Attenuation;
-                Light.Angles                = glm::vec2(InnerCos, OuterCos);
-                Light.ViewProjection[0]     = ViewVolume.ToReverseDepthViewProjectionMatrix();
+                    TVector<FLineBatcherComponent::FLineInstance> NewLines;
+                    TVector<FSimpleElementVertex> NewVertices;
+                    NewLines.reserve(LineBatcherComponent.Lines.size());
+                    NewVertices.reserve(LineBatcherComponent.Vertices.size());
                 
-                #if USING(WITH_EDITOR)
-                if (!World->IsGameWorld())
-                {
-                    FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                    Billboard.TextureIndex          = GetNamedImage(ENamedImage::SpotLightIcon)->GetTextureCacheIndex();
-                    Billboard.ColorPack             = Light.Color;
-                    Billboard.Position              = Transform.GetWorldLocation();
-                    Billboard.Size                  = 0.35f;
-                    Billboard.EntityID              = entt::to_integral(Entity);
-                }
-                #endif    
-        
-                if (SpotLightComponent.bCastShadows)
-                {
-                    int32 TileIndex = ShadowAtlas.AllocateTile();
-                    if (TileIndex != INDEX_NONE)
+                    for (const FLineBatcherComponent::FLineInstance& Line : LineBatcherComponent.Lines)
                     {
-                        const FShadowTile& Tile             = ShadowAtlas.GetTile(TileIndex);
-                        Light.Shadow[0].ShadowMapIndex      = TileIndex;
-                        Light.Shadow[0].ShadowMapLayer      = 6;
-                        Light.Shadow[0].AtlasUVOffset       = Tile.UVOffset;
-                        Light.Shadow[0].AtlasUVScale        = Tile.UVScale;
-                        Light.Shadow[0].LightIndex          = (int32)LightData.NumLights;
-
+                        FLineWithVertices LineData;
+                        LineData.Line = Line;
+                        LineData.Vertex0 = LineBatcherComponent.Vertices[Line.StartVertexIndex];
+                        LineData.Vertex1 = LineBatcherComponent.Vertices[Line.StartVertexIndex + 1];
+                        AliveLinesWithVertices.emplace_back(LineData);
                     }
-                    
-                    PackedShadows[(uint32)ELightType::Spot].push_back(Light.Shadow[0]);
-                }
-                else
-                {
-                    Light.Shadow[0].ShadowMapIndex = INDEX_NONE;
-                }
-        
-                LightData.Lights[LightData.NumLights++] = Light;
-            });
-        }
-        
-        //========================================================================================================================
-        {
-            LUMINA_PROFILE_SECTION("Batched Line Processing");
-
-            auto View = World->GetEntityRegistry().view<FLineBatcherComponent>();
-            View.each([&](FLineBatcherComponent& LineBatcherComponent)
-            {
-                if (LineBatcherComponent.Lines.empty())
-                {
-                    return;
-                }
-
-                for (FLineBatcherComponent::FLineInstance& Line : LineBatcherComponent.Lines)
-                {
-                    if (!Line.bSingleFrame && Line.RemainingLifetime >= 0.0f)
+                
+                    eastl::sort(AliveLinesWithVertices.begin(), AliveLinesWithVertices.end(), [](const FLineWithVertices& A, const FLineWithVertices& B)
                     {
-                        Line.RemainingLifetime -= SceneGlobalData.DeltaTime;
-                    }
-                }
-
-                struct FLineWithVertices
-                {
-                    FLineBatcherComponent::FLineInstance Line;
-                    FSimpleElementVertex Vertex0;
-                    FSimpleElementVertex Vertex1;
-                };
-
-                TVector<FLineWithVertices> AliveLinesWithVertices;
-                AliveLinesWithVertices.reserve(LineBatcherComponent.Lines.size());
-
-                TVector<FLineBatcherComponent::FLineInstance> NewLines;
-                TVector<FSimpleElementVertex> NewVertices;
-                NewLines.reserve(LineBatcherComponent.Lines.size());
-                NewVertices.reserve(LineBatcherComponent.Vertices.size());
-
-                for (const FLineBatcherComponent::FLineInstance& Line : LineBatcherComponent.Lines)
-                {
-                    FLineWithVertices LineData;
-                    LineData.Line = Line;
-                    LineData.Vertex0 = LineBatcherComponent.Vertices[Line.StartVertexIndex];
-                    LineData.Vertex1 = LineBatcherComponent.Vertices[Line.StartVertexIndex + 1];
-                    AliveLinesWithVertices.emplace_back(LineData);
-                }
-
-                eastl::sort(AliveLinesWithVertices.begin(), AliveLinesWithVertices.end(), [](const FLineWithVertices& A, const FLineWithVertices& B)
-                {
-                    if (A.Line.bDepthTest != B.Line.bDepthTest)
-                    {
-                        return A.Line.bDepthTest < B.Line.bDepthTest;
-                    }
-                    return A.Line.Thickness < B.Line.Thickness;
-                });
-
-                uint32 CurrentVertexIndex = 0;
-                for (const FLineWithVertices& LineData : AliveLinesWithVertices)
-                {
-                    FLineBatcherComponent::FLineInstance NewLine = LineData.Line;
-                    NewLine.StartVertexIndex = CurrentVertexIndex;
-
-                    if (!LineData.Line.bSingleFrame && LineData.Line.RemainingLifetime > 0.0f)
-                    {
-                        NewLines.emplace_back(NewLine);
-                        NewVertices.emplace_back(LineData.Vertex0);
-                        NewVertices.emplace_back(LineData.Vertex1);
-                        CurrentVertexIndex += 2;
-                    }
-                }
-
-                LineBatcherComponent.Lines = std::move(NewLines);
-                LineBatcherComponent.Vertices = std::move(NewVertices);
-
-                if (!AliveLinesWithVertices.empty())
-                {
-                    SimpleVertices.clear();
-                    SimpleVertices.reserve(AliveLinesWithVertices.size() * 2);
+                        if (A.Line.bDepthTest != B.Line.bDepthTest)
+                        {
+                            return A.Line.bDepthTest < B.Line.bDepthTest;
+                        }
+                        return A.Line.Thickness < B.Line.Thickness;
+                    });
+                
+                    uint32 CurrentVertexIndex = 0;
                     for (const FLineWithVertices& LineData : AliveLinesWithVertices)
                     {
-                        SimpleVertices.emplace_back(LineData.Vertex0);
-                        SimpleVertices.emplace_back(LineData.Vertex1);
-                    }
-
-                    LineBatches.clear();
-
-                    FLineBatch CurrentBatch;
-                    CurrentBatch.StartVertex = 0;
-                    CurrentBatch.VertexCount = 2;
-                    CurrentBatch.Thickness = AliveLinesWithVertices[0].Line.Thickness;
-                    CurrentBatch.bDepthTest = AliveLinesWithVertices[0].Line.bDepthTest;
-
-                    for (size_t i = 1; i < AliveLinesWithVertices.size(); ++i)
-                    {
-                        const auto& LineData = AliveLinesWithVertices[i];
-
-                        if (glm::epsilonEqual(LineData.Line.Thickness, CurrentBatch.Thickness, LE_SMALL_NUMBER) &&
-                            LineData.Line.bDepthTest == CurrentBatch.bDepthTest)
+                        FLineBatcherComponent::FLineInstance NewLine = LineData.Line;
+                        NewLine.StartVertexIndex = CurrentVertexIndex;
+                
+                        if (!LineData.Line.bSingleFrame && LineData.Line.RemainingLifetime > 0.0f)
                         {
-                            CurrentBatch.VertexCount += 2;
+                            NewLines.emplace_back(NewLine);
+                            NewVertices.emplace_back(LineData.Vertex0);
+                            NewVertices.emplace_back(LineData.Vertex1);
+                            CurrentVertexIndex += 2;
+                        }
+                    }
+                
+                    LineBatcherComponent.Lines = std::move(NewLines);
+                    LineBatcherComponent.Vertices = std::move(NewVertices);
+                
+                    if (!AliveLinesWithVertices.empty())
+                    {
+                        SimpleVertices.clear();
+                        SimpleVertices.reserve(AliveLinesWithVertices.size() * 2);
+                        for (const FLineWithVertices& LineData : AliveLinesWithVertices)
+                        {
+                            SimpleVertices.emplace_back(LineData.Vertex0);
+                            SimpleVertices.emplace_back(LineData.Vertex1);
+                        }
+                
+                        LineBatches.clear();
+                
+                        FLineBatch CurrentBatch;
+                        CurrentBatch.StartVertex = 0;
+                        CurrentBatch.VertexCount = 2;
+                        CurrentBatch.Thickness = AliveLinesWithVertices[0].Line.Thickness;
+                        CurrentBatch.bDepthTest = AliveLinesWithVertices[0].Line.bDepthTest;
+                
+                        for (size_t i = 1; i < AliveLinesWithVertices.size(); ++i)
+                        {
+                            const auto& LineData = AliveLinesWithVertices[i];
+                
+                            if (glm::epsilonEqual(LineData.Line.Thickness, CurrentBatch.Thickness, LE_SMALL_NUMBER) &&
+                                LineData.Line.bDepthTest == CurrentBatch.bDepthTest)
+                            {
+                                CurrentBatch.VertexCount += 2;
+                            }
+                            else
+                            {
+                                RenderStats.NumVertices += CurrentBatch.VertexCount;
+                                LineBatches.emplace_back(CurrentBatch);
+                
+                                CurrentBatch.StartVertex = (uint32)SimpleVertices.size() - (uint32)AliveLinesWithVertices.size() * 2 + (uint32)(i * 2);
+                                CurrentBatch.VertexCount = 2;
+                                CurrentBatch.Thickness = LineData.Line.Thickness;
+                                CurrentBatch.bDepthTest = LineData.Line.bDepthTest;
+                            }
+                        }
+                
+                        RenderStats.NumVertices += CurrentBatch.VertexCount;
+                        LineBatches.emplace_back(CurrentBatch);
+                    }
+                }); 
+            });
+            
+            Graph.Add([&]
+            {
+                LUMINA_PROFILE_SECTION("Process Billboard Primitives");
+                auto View = World->GetEntityRegistry().view<SBillboardComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+                View.each([this](entt::entity Entity, const SBillboardComponent& BillboardComponent, const STransformComponent& TransformComponent)
+                {
+                    if (!BillboardComponent.Texture.IsValid() || !BillboardComponent.Texture->GetRHIRef()->IsValid())
+                    {
+                        return;
+                    }
+                    
+                    FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
+                    Billboard.TextureIndex          = BillboardComponent.Texture->GetRHIRef()->GetTextureCacheIndex();
+                    Billboard.Position              = TransformComponent.WorldTransform.Location;
+                    Billboard.Size                  = BillboardComponent.Scale;
+                    Billboard.EntityID              = entt::to_integral(Entity);
+                
+                    //RenderStats.NumVertices         += 6;
+                });
+                
+                #if USING(WITH_EDITOR)
+                {
+                    if (!World->IsGameWorld())
+                    {
+                        auto CView = World->GetEntityRegistry().view<SCameraComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+                        CView.each([this](entt::entity Entity, SCameraComponent& Camera, STransformComponent& Transform)
+                        {
+                            if (World->GetEntityRegistry().all_of<FEditorComponent>(Entity))
+                            {
+                                return;
+                            }
+                            
+                            FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
+                            Billboard.TextureIndex          = GetNamedImage(ENamedImage::CameraIcon)->GetTextureCacheIndex();
+                            Billboard.ColorPack             = PackColor(FColor::White);
+                            Billboard.Position              = Transform.WorldTransform.Location;
+                            Billboard.Size                  = 0.35f;
+                            Billboard.EntityID              = entt::to_integral(Entity);
+                        });
+                    }
+                }
+                
+                {
+                    auto CCView = World->GetEntityRegistry().view<SCharacterControllerComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+                    CCView.each([this](entt::entity Entity, SCharacterControllerComponent&, STransformComponent& Transform)
+                    {
+                        if (!World->IsGameWorld())
+                        {
+                            FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
+                            Billboard.TextureIndex          = GetNamedImage(ENamedImage::CharacterIcon)->GetTextureCacheIndex();
+                            Billboard.ColorPack             = PackColor(FColor::White);
+                            Billboard.Position              = Transform.WorldTransform.Location;
+                            Billboard.Size                  = 0.35f;
+                            Billboard.EntityID              = entt::to_integral(Entity);
+                        }
+                    });
+                }
+                
+                auto PLView = World->GetEntityRegistry().view<SPointLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+                PLView.each([&] (entt::entity Entity, const SPointLightComponent& PointLightComponent, const STransformComponent& TransformComponent)
+                {
+                    if (!World->IsGameWorld())
+                    {
+                        FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
+                        Billboard.TextureIndex          = GetNamedImage(ENamedImage::PointLightIcon)->GetTextureCacheIndex();
+                        Billboard.ColorPack             = PackColor({PointLightComponent.LightColor, 1.0f});
+                        Billboard.Position              = TransformComponent.WorldTransform.Location;
+                        Billboard.Size                  = 0.35f;
+                        Billboard.EntityID              = entt::to_integral(Entity);
+                    }
+                });
+                
+                auto SLView = World->GetEntityRegistry().view<SSpotLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+                SLView.each([&] (entt::entity Entity, SSpotLightComponent& SpotLightComponent, STransformComponent& Transform)
+                {
+                    if (!World->IsGameWorld())
+                    {
+                        FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
+                        Billboard.TextureIndex          = GetNamedImage(ENamedImage::PointLightIcon)->GetTextureCacheIndex();
+                        Billboard.ColorPack             = PackColor({SpotLightComponent.LightColor, 1.0f});
+                        Billboard.Position              = Transform.WorldTransform.Location;
+                        Billboard.Size                  = 0.35f;
+                        Billboard.EntityID              = entt::to_integral(Entity);
+                    }
+                });
+                
+                #endif 
+            });
+            
+            Graph.Add([&]
+            {
+                LUMINA_PROFILE_SECTION("Light Processing");
+
+                {
+                    LUMINA_PROFILE_SECTION("Directional Light Processing");
+                
+                    LightData.bHasSun = false;
+                    auto View = World->GetEntityRegistry().view<SDirectionalLightComponent>(entt::exclude<SDisabledTag>);
+                    View.each([this](const SDirectionalLightComponent& DirectionalLightComponent)
+                    {
+                        LightData.bHasSun = true;
+                        const FViewVolume& ViewVolume = SceneViewport->GetViewVolume();
+                        
+                        float NearClip          = ViewVolume.GetNear();
+                
+                        FLight Light            = {};
+                        Light.Flags             = LIGHT_TYPE_DIRECTIONAL;
+                        Light.Color             = PackColor(glm::vec4(DirectionalLightComponent.Color, 1.0));
+                        Light.Intensity         = DirectionalLightComponent.Intensity;
+                        Light.Direction         = glm::normalize(DirectionalLightComponent.Direction);
+                        LightData.SunDirection  = Light.Direction;
+                        
+                        LightData.CascadeSplits[0] = 35.0f;
+                        LightData.CascadeSplits[1] = 100.0f;
+                        LightData.CascadeSplits[2] = 400.0f;
+                
+                        for (int i = 0; i < NumCascades; ++i)
+                        {
+                            float CascadeFar = LightData.CascadeSplits[i];
+                            
+                            glm::mat4 ViewProjection        = glm::perspective(glm::radians(ViewVolume.GetFOV()), ViewVolume.GetAspectRatio(), NearClip, CascadeFar);
+                            glm::mat4 ViewProjectionMatrix  = ViewProjection * ViewVolume.GetViewMatrix();
+                            
+                            glm::vec3 FrustumCorners[8];
+                            FFrustum::ComputeFrustumCorners(ViewProjectionMatrix, FrustumCorners);
+                            
+                            glm::vec3 FrustumCenter = std::reduce(std::begin(FrustumCorners), std::end(FrustumCorners)) / 8.0f;
+                            glm::mat4 LightView     = glm::lookAt(FrustumCenter + Light.Direction, FrustumCenter, FViewVolume::UpAxis);
+                            
+                            float MinX = eastl::numeric_limits<float>::max();
+                            float MaxX = eastl::numeric_limits<float>::lowest();
+                            float MinY = eastl::numeric_limits<float>::max();
+                            float MaxY = eastl::numeric_limits<float>::lowest();
+                            float MinZ = eastl::numeric_limits<float>::max();
+                            float MaxZ = eastl::numeric_limits<float>::lowest();
+                            for (const auto& V : FrustumCorners)
+                            {
+                                const auto TRF = LightView * glm::vec4(V, 1.0f);
+                                MinX = eastl::min(MinX, TRF.x);
+                                MaxX = eastl::max(MaxX, TRF.x);
+                                MinY = eastl::min(MinY, TRF.y);
+                                MaxY = eastl::max(MaxY, TRF.y);
+                                MinZ = eastl::min(MinZ, TRF.z);
+                                MaxZ = eastl::max(MaxZ, TRF.z);
+                            }
+                            
+                            constexpr float zMult = 10.0f;
+                            if (MinZ < 0)
+                            {
+                                MinZ *= zMult;
+                            }
+                            else
+                            {
+                                MinZ /= zMult;
+                            }
+                            if (MaxZ < 0)
+                            {
+                                MaxZ /= zMult;
+                            }
+                            else
+                            {
+                                MaxZ *= zMult;
+                            }
+                            
+                            glm::mat4 LightProjection       = glm::ortho(MinX, MaxX, MinY, MaxY, MinZ, MaxZ);
+                            Light.ViewProjection[i]         = LightProjection * LightView;
+                        }
+                        
+                        LightData.Lights[0] = Light;
+                        LightData.NumLights++;
+                    });
+                }
+                
+                //========================================================================================================================
+                
+                {
+                    LUMINA_PROFILE_SECTION("Point Light Processing");
+                
+                    auto View = World->GetEntityRegistry().view<SPointLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+                    View.each([&] (const SPointLightComponent& PointLightComponent, const STransformComponent& TransformComponent)
+                    {
+                        FLight Light;
+                        Light.Flags                 = LIGHT_TYPE_POINT;
+                        Light.Falloff               = PointLightComponent.Falloff;
+                        Light.Color                 = PackColor(glm::vec4(PointLightComponent.LightColor, 1.0));
+                        Light.Intensity             = PointLightComponent.Intensity;
+                        Light.Radius                = PointLightComponent.Attenuation;
+                        Light.Position              = TransformComponent.WorldTransform.Location;
+                        
+                        FViewVolume LightView(90.0f, 1.0f, 0.01f, Light.Radius);
+                        
+                        auto SetView = [&Light](FViewVolume& View, uint32 Index)
+                        {
+                            switch (Index)
+                            {
+                            case 0: // +X
+                                View.SetView(Light.Position, FViewVolume::RightAxis, FViewVolume::DownAxis);
+                                break;
+                            case 1: // -X
+                                View.SetView(Light.Position, FViewVolume::LeftAxis, FViewVolume::DownAxis);
+                                break;
+                            case 2: // +Y
+                                View.SetView(Light.Position, FViewVolume::UpAxis, FViewVolume::ForwardAxis);
+                                break;
+                            case 3: // -Y
+                                View.SetView(Light.Position, FViewVolume::DownAxis, FViewVolume::BackwardAxis);
+                                break;
+                            case 4: // +Z
+                                View.SetView(Light.Position, FViewVolume::ForwardAxis, FViewVolume::DownAxis);
+                                break;
+                            case 5: // -Z
+                                View.SetView(Light.Position, FViewVolume::BackwardAxis, FViewVolume::DownAxis);
+                                break;
+                            default:
+                                UNREACHABLE();
+                            }
+                        };
+                
+                        if (PointLightComponent.bCastShadows)
+                        {
+                            int32 TileIndex = ShadowAtlas.AllocateTile();
+                            
+                            if (TileIndex != INDEX_NONE)
+                            {
+                                const FShadowTile& Tile = ShadowAtlas.GetTile(TileIndex);
+                
+                                for (int Face = 0; Face < 6; ++Face)
+                                {
+                                    SetView(LightView, Face);
+                                    
+                                    Light.ViewProjection[Face]              = LightView.ToReverseDepthViewProjectionMatrix();
+                                    Light.Shadow[Face].ShadowMapIndex       = TileIndex;
+                                    Light.Shadow[Face].ShadowMapLayer       = Face;
+                                    Light.Shadow[Face].AtlasUVOffset        = Tile.UVOffset;
+                                    Light.Shadow[Face].AtlasUVScale         = Tile.UVScale;
+                                    Light.Shadow[Face].LightIndex           = (int32)LightData.NumLights;
+                                }
+                                
+                                PackedShadows[(uint32)ELightType::Point].push_back(Light.Shadow[0]);
+                            }
                         }
                         else
                         {
-                            RenderStats.NumVertices += CurrentBatch.VertexCount;
-                            LineBatches.emplace_back(CurrentBatch);
-
-                            CurrentBatch.StartVertex = (uint32)SimpleVertices.size() - (uint32)AliveLinesWithVertices.size() * 2 + (uint32)(i * 2);
-                            CurrentBatch.VertexCount = 2;
-                            CurrentBatch.Thickness = LineData.Line.Thickness;
-                            CurrentBatch.bDepthTest = LineData.Line.bDepthTest;
+                            Light.Shadow[0].ShadowMapIndex = INDEX_NONE;
                         }
-                    }
-
-                    RenderStats.NumVertices += CurrentBatch.VertexCount;
-                    LineBatches.emplace_back(CurrentBatch);
+                        
+                        LightData.Lights[LightData.NumLights++] = Light;
+                    });
+                }
+                
+                //========================================================================================================================
+                
+                {
+                    LUMINA_PROFILE_SECTION("Spot Light Processing");
+                
+                    auto View = World->GetEntityRegistry().view<SSpotLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+                    View.each([&] (entt::entity Entity, SSpotLightComponent& SpotLightComponent, STransformComponent& Transform)
+                    {
+                
+                        glm::vec3 UpdatedForward    = Transform.GetRotation() * FViewVolume::ForwardAxis;
+                        glm::vec3 UpdatedUp         = Transform.GetRotation() * FViewVolume::UpAxis;
+                
+                        float InnerDegrees = SpotLightComponent.InnerConeAngle;
+                        float OuterDegrees = SpotLightComponent.OuterConeAngle;
+                
+                        float InnerCos = glm::cos(glm::radians(InnerDegrees));
+                        float OuterCos = glm::cos(glm::radians(OuterDegrees));
+                        
+                        FViewVolume ViewVolume(OuterDegrees * 2.00f, 1.0f, 0.01f, SpotLightComponent.Attenuation);
+                        ViewVolume.SetView(Transform.WorldTransform.Location, -UpdatedForward, UpdatedUp);
+                        
+                        FLight Light;
+                        Light.Flags                 = LIGHT_TYPE_SPOT;
+                        Light.Position              = Transform.WorldTransform.Location;
+                        Light.Direction             = glm::normalize(UpdatedForward);
+                        Light.Falloff               = SpotLightComponent.Falloff;
+                        Light.Color                 = PackColor(glm::vec4(SpotLightComponent.LightColor, 1.0));
+                        Light.Intensity             = SpotLightComponent.Intensity;
+                        Light.Radius                = SpotLightComponent.Attenuation;
+                        Light.Angles                = glm::vec2(InnerCos, OuterCos);
+                        Light.ViewProjection[0]     = ViewVolume.ToReverseDepthViewProjectionMatrix();
+                        
+                        if (SpotLightComponent.bCastShadows)
+                        {
+                            int32 TileIndex = ShadowAtlas.AllocateTile();
+                            if (TileIndex != INDEX_NONE)
+                            {
+                                const FShadowTile& Tile             = ShadowAtlas.GetTile(TileIndex);
+                                Light.Shadow[0].ShadowMapIndex      = TileIndex;
+                                Light.Shadow[0].ShadowMapLayer      = 6;
+                                Light.Shadow[0].AtlasUVOffset       = Tile.UVOffset;
+                                Light.Shadow[0].AtlasUVScale        = Tile.UVScale;
+                                Light.Shadow[0].LightIndex          = (int32)LightData.NumLights;
+                
+                            }
+                            
+                            PackedShadows[(uint32)ELightType::Spot].push_back(Light.Shadow[0]);
+                        }
+                        else
+                        {
+                            Light.Shadow[0].ShadowMapIndex = INDEX_NONE;
+                        }
+                
+                        LightData.Lights[LightData.NumLights++] = Light;
+                    });
                 }
             });
+
+            Graph.AddDependency(MergeNode, StaticNode);
+            Graph.AddDependency(MergeNode, SkeletalNode);
+
+            Graph.Dispatch();
+            Graph.Wait();
         }
         
         //========================================================================================================================
-        
-        #if USING(WITH_EDITOR)
-        {
-            if (!World->IsGameWorld())
-            {
-                auto View = World->GetEntityRegistry().view<SCameraComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-                View.each([this](entt::entity Entity, SCameraComponent& Camera, STransformComponent& Transform)
-                {
-                    if (World->GetEntityRegistry().all_of<FEditorComponent>(Entity))
-                    {
-                        return;
-                    }
-                    
-                    FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                    Billboard.TextureIndex          = GetNamedImage(ENamedImage::CameraIcon)->GetTextureCacheIndex();
-                    Billboard.ColorPack             = PackColor(FColor::White);
-                    Billboard.Position              = Transform.GetWorldLocation();
-                    Billboard.Size                  = 0.35f;
-                    Billboard.EntityID              = entt::to_integral(Entity);
-                });
-            }
-        }
-        
-        {
-            auto View = World->GetEntityRegistry().view<SCharacterControllerComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-            View.each([this](entt::entity Entity, SCharacterControllerComponent&, STransformComponent& Transform)
-            {
-                if (!World->IsGameWorld())
-                {
-                    FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                    Billboard.TextureIndex          = GetNamedImage(ENamedImage::CharacterIcon)->GetTextureCacheIndex();
-                    Billboard.ColorPack             = PackColor(FColor::White);
-                    Billboard.Position              = Transform.GetWorldLocation();
-                    Billboard.Size                  = 0.35f;
-                    Billboard.EntityID              = entt::to_integral(Entity);
-                }
-            });
-        }
-        
-        #endif 
-        
-        {
-            LUMINA_PROFILE_SECTION("Environment Processing");
-
-            RenderSettings.bHasEnvironment = false;
-            LightData.AmbientLight = glm::vec4(0.0f);
-            RenderSettings.bSSAO = false;
-            auto View = World->GetEntityRegistry().view<SEnvironmentComponent>(entt::exclude<SDisabledTag>);
-            View.each([this] (const SEnvironmentComponent& EnvironmentComponent)
-            {
-                LightData.AmbientLight          = glm::vec4(EnvironmentComponent.AmbientColor, EnvironmentComponent.Intensity);
-                RenderSettings.bHasEnvironment  = true;
-                RenderSettings.bSSAO            = false;
-            });
-        }
         
         {
             FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
@@ -906,37 +703,37 @@ namespace Lumina
                 
                 bool bAnyBufferResized = false;
                 
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Instance], (uint32)InstanceDataSize, 2))
+                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Instance], (uint32)InstanceDataSize, 1.2f))
                 {
                     bAnyBufferResized = true;
                 }
                 
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMapping], sizeof(uint32) * InstanceData.size(), 2))
+                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMapping], sizeof(uint32) * InstanceData.size(), 1.2f))
                 {
                     bAnyBufferResized = true;
                 }
                 
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::SimpleVertex], (uint32)SimpleVertexSize, 2))
+                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::SimpleVertex], (uint32)SimpleVertexSize, 1.2f))
                 {
                     bAnyBufferResized = true;
                 }
                 
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Bone], (uint32)BoneDataSize, 2))
+                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Bone], (uint32)BoneDataSize, 1.2f))
                 {
                     bAnyBufferResized = true;
                 }
                 
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Indirect], (uint32)IndirectArgsSize, 2))
+                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Indirect], (uint32)IndirectArgsSize, 1.2f))
                 {
                     bAnyBufferResized = true;
                 }
                 
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Light], (uint32)LightUploadSize, 2))
+                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Light], (uint32)LightUploadSize, 1.2f))
                 {
                     bAnyBufferResized = true;
                 }
                 
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Billboards], (uint32)BillboardSize, 2))
+                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Billboards], (uint32)BillboardSize, 1.2f))
                 {
                     bAnyBufferResized = true;
                 }
@@ -965,6 +762,308 @@ namespace Lumina
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Billboards), BillboardInstances.data(), BillboardSize);
                 CmdList.EnableAutomaticBarriers();
             });
+        }
+    }
+
+    void FForwardRenderScene::ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local)
+    {
+        CMesh* Mesh = MeshComponent.StaticMesh;
+        if (!IsValid(Mesh))
+        {
+            return;
+        }
+
+        const FMeshResource& Resource = Mesh->GetMeshResource();
+        const uint64 VBAddress = Mesh->GetVertexBuffer()->GetAddress();
+        const uint64 IBAddress = Mesh->GetIndexBuffer()->GetAddress();
+
+        Local.Stats.NumVertices  += Resource.GetNumVertices();
+        Local.Stats.NumTriangles += Resource.GetNumTriangles();
+
+        const glm::mat4& TransformMatrix = TransformComponent.CachedMatrix;
+
+        const FAABB     BoundingBox = Mesh->GetAABB().ToWorld(TransformMatrix);
+        const glm::vec3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
+        const glm::vec3 Extents     = BoundingBox.Max - Center;
+        const float     Radius      = glm::length(Extents);
+        const glm::vec4 SphereBounds = glm::vec4(Center, Radius);
+
+        EInstanceFlags BaseFlags = EInstanceFlags::None;
+        if (MeshComponent.bReceiveShadow)
+        {
+            BaseFlags |= EInstanceFlags::ReceiveShadow;
+        }
+        if (MeshComponent.bIgnoreOcclusionCulling)
+        {
+            BaseFlags |= EInstanceFlags::IgnoreOcclusionCulling;
+        }
+
+        for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
+        {
+            CMaterialInterface* Material = MeshComponent.GetMaterialForSlot(Surface.MaterialIndex);
+            if (!IsValid(Material) || !IsValid(Material->GetMaterial()) || !Material->IsReadyForRender())
+            {
+                Material = CMaterial::GetDefaultMaterial();
+            }
+
+            EInstanceFlags Flags = BaseFlags;
+            if (MeshComponent.bCastShadow && Material->DoesCastShadows())
+            {
+                Flags |= EInstanceFlags::CastShadow;
+            }
+
+            const EBlendMode BlendMode      = Material->GetBlendMode();
+            const bool bIsTranslucent       = BlendMode == EBlendMode::Translucent || BlendMode == EBlendMode::Additive;
+            const bool bIsMasked            = BlendMode == EBlendMode::Masked;
+            const bool bIsAdditive          = BlendMode == EBlendMode::Additive;
+            const bool bDrawInDepthPass     = MeshComponent.bUseAsOccluder && !bIsTranslucent;
+
+            if (bIsTranslucent)
+            {
+                Flags |= EInstanceFlags::Translucent;
+            }
+            if (bIsMasked)
+            {
+                Flags |= EInstanceFlags::Masked;
+            }
+
+            FProcessedDrawItem& Item = Local.Items.emplace_back();
+            Item.Instance.Transform                  = TransformMatrix;
+            Item.Instance.SphereBounds               = SphereBounds;
+            Item.Instance.VBAddress                  = VBAddress;
+            Item.Instance.IBAddress                  = IBAddress;
+            Item.Instance.EntityID                   = entt::to_integral(Entity);
+            Item.Instance.DrawIDAndFlags             = PackDrawIDAndFlags(0, Flags);
+            Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
+            Item.Instance.CustomData                 = MeshComponent.CustomPrimitiveData.Data.Packed;
+
+            Item.Flags          = Flags;
+            Item.MaterialID     = (uintptr_t)Material->GetMaterial();
+            Item.VertexShader   = Material->GetVertexShader();
+            Item.PixelShader    = Material->GetPixelShader();
+            Item.StartIndex     = Surface.StartIndex;
+            Item.IndexCount     = Surface.IndexCount;
+            Item.MaterialIndex  = (uint16)Material->GetMaterialIndex();
+            Item.BatchFlagsByte = (uint8)((bDrawInDepthPass ? 0x1u : 0u)
+                                       |  (bIsTranslucent   ? 0x2u : 0u)
+                                       |  (bIsMasked        ? 0x4u : 0u)
+                                       |  (bIsAdditive      ? 0x8u : 0u));
+            Item.LocalBoneOffset = ~0u;
+        }
+    }
+
+    void FForwardRenderScene::ProcessSkeletalMeshEntityInternal(entt::entity Entity, const SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local)
+    {
+        CMesh* Mesh = MeshComponent.SkeletalMesh;
+        if (!IsValid(Mesh))
+        {
+            return;
+        }
+
+        const FMeshResource& Resource = Mesh->GetMeshResource();
+
+        const uint32 LocalBoneOffset = (uint32)Local.BonesData.size();
+        Local.BonesData.insert(Local.BonesData.end(), MeshComponent.BoneTransforms.begin(), MeshComponent.BoneTransforms.end());
+
+        Local.Stats.NumVertices  += Resource.GetNumVertices();
+        Local.Stats.NumTriangles += Resource.GetNumTriangles();
+
+        const glm::mat4 TransformMatrix = TransformComponent.GetWorldMatrix();
+
+        const FAABB     BoundingBox = Mesh->GetAABB().ToWorld(TransformMatrix);
+        const glm::vec3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
+        const glm::vec3 Extents     = BoundingBox.Max - Center;
+        const float     Radius      = glm::length(Extents);
+        const glm::vec4 SphereBounds = glm::vec4(Center, Radius);
+
+        EInstanceFlags BaseFlags = EInstanceFlags::Skinned;
+        if (MeshComponent.bReceiveShadow)
+        {
+            BaseFlags |= EInstanceFlags::ReceiveShadow;
+        }
+
+        const uint64 VBAddress = Mesh->GetVertexBuffer()->GetAddress();
+        const uint64 IBAddress = Mesh->GetIndexBuffer()->GetAddress();
+
+        for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
+        {
+            CMaterialInterface* Material = MeshComponent.GetMaterialForSlot(Surface.MaterialIndex);
+            if (!IsValid(Material) || !IsValid(Material->GetMaterial()) || !Material->IsReadyForRender())
+            {
+                Material = CMaterial::GetDefaultMaterial();
+            }
+
+            EInstanceFlags Flags = BaseFlags;
+            if (MeshComponent.bCastShadow && Material->DoesCastShadows())
+            {
+                Flags |= EInstanceFlags::CastShadow;
+            }
+
+            const EBlendMode BlendMode      = Material->GetBlendMode();
+            const bool bIsTranslucent       = BlendMode == EBlendMode::Translucent || BlendMode == EBlendMode::Additive;
+            const bool bIsMasked            = BlendMode == EBlendMode::Masked;
+            const bool bIsAdditive          = BlendMode == EBlendMode::Additive;
+            const bool bDrawInDepthPass     = MeshComponent.bUseAsOccluder && !bIsTranslucent;
+
+            if (bIsTranslucent)
+            {
+                Flags |= EInstanceFlags::Translucent;
+            }
+            if (bIsMasked)
+            {
+                Flags |= EInstanceFlags::Masked;
+            }
+
+            FProcessedDrawItem& Item = Local.Items.emplace_back();
+            Item.Instance.Transform                  = TransformMatrix;
+            Item.Instance.SphereBounds               = SphereBounds;
+            Item.Instance.VBAddress                  = VBAddress;
+            Item.Instance.IBAddress                  = IBAddress;
+            Item.Instance.EntityID                   = entt::to_integral(Entity);
+            Item.Instance.DrawIDAndFlags             = PackDrawIDAndFlags(0, Flags);
+            Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
+            Item.Instance.CustomData                 = MeshComponent.CustomPrimitiveData.Data.Packed;
+
+            Item.Flags          = Flags;
+            Item.MaterialID     = (uintptr_t)Material->GetMaterial();
+            Item.VertexShader   = Material->GetVertexShader();
+            Item.PixelShader    = Material->GetPixelShader();
+            Item.StartIndex     = Surface.StartIndex;
+            Item.IndexCount     = Surface.IndexCount;
+            Item.MaterialIndex  = (uint16)Material->GetMaterialIndex();
+            Item.BatchFlagsByte = (uint8)((bDrawInDepthPass ? 0x1u : 0u)
+                                       |  (bIsTranslucent   ? 0x2u : 0u)
+                                       |  (bIsMasked        ? 0x4u : 0u)
+                                       |  (bIsAdditive      ? 0x8u : 0u));
+            Item.LocalBoneOffset = LocalBoneOffset;
+        }
+    }
+
+    void FForwardRenderScene::MergeMeshDrawData(TVector<FThreadLocalDrawData>& ThreadLocal)
+    {
+        LUMINA_PROFILE_SECTION("Merge Mesh Draw Data");
+
+        TFixedHashMap<FDrawBatchKey, uint64, 32> BatchedDraws;
+
+        // Walk every thread-local accumulator, deduplicating into the scene's batch table.
+        for (FThreadLocalDrawData& Local : ThreadLocal)
+        {
+            const uint32 BoneBase = (uint32)BonesData.size();
+            BonesData.insert(BonesData.end(), Local.BonesData.begin(), Local.BonesData.end());
+
+            RenderStats.NumVertices  += Local.Stats.NumVertices;
+            RenderStats.NumTriangles += Local.Stats.NumTriangles;
+
+            for (FProcessedDrawItem& Item : Local.Items)
+            {
+                FDrawBatchKey BatchKey
+                {
+                    .MaterialID         = Item.MaterialID,
+                    .bDrawInDepthPass   = (uint32)((Item.BatchFlagsByte >> 0) & 1u),
+                    .bTranslucent       = (uint32)((Item.BatchFlagsByte >> 1) & 1u),
+                    .bMasked            = (uint32)((Item.BatchFlagsByte >> 2) & 1u),
+                    .bAdditive          = (uint32)((Item.BatchFlagsByte >> 3) & 1u),
+                };
+
+                auto [BatchIt, bBatchInserted] = BatchedDraws.try_emplace(BatchKey, DrawCommands.size());
+                const uint64 DrawID = BatchIt->second;
+
+                if (bBatchInserted)
+                {
+                    TFixedHashMap<FDrawKey, uint32, 16> Map;
+                    DrawCommands.emplace_back(FMeshDrawCommand{Move(Map), Item.VertexShader, Item.PixelShader, 0u, 0u,
+                        BatchKey.bDrawInDepthPass, BatchKey.bTranslucent, BatchKey.bMasked, BatchKey.bAdditive});
+                }
+
+                auto& DrawArguments = DrawCommands[DrawID].DrawArgumentIndexMap;
+                auto [DrawIt, bDrawInserted] = DrawArguments.try_emplace(FDrawKey{Item.StartIndex, Item.IndexCount}, IndirectDrawArguments.size());
+
+                if (bDrawInserted)
+                {
+                    IndirectDrawArguments.emplace_back(FDrawIndirectArguments
+                    {
+                        .VertexCount            = Item.IndexCount,
+                        .InstanceCount          = 0u,
+                        .StartVertexLocation    = Item.StartIndex,
+                        .StartInstanceLocation  = 0u,
+                    });
+                }
+
+                IndirectDrawArguments[DrawIt->second].InstanceCount++;
+
+                // Patch the placeholder DrawID into the precomputed instance.
+                Item.Instance.DrawIDAndFlags = PackDrawIDAndFlags(DrawIt->second, Item.Flags);
+
+                // Patch the bone offset for skinned items now that we know this thread's base.
+                if (Item.LocalBoneOffset != ~0u)
+                {
+                    Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(
+                        (uint16)(BoneBase + Item.LocalBoneOffset),
+                        Item.MaterialIndex);
+                }
+
+                InstanceData.push_back(Item.Instance);
+            }
+        }
+
+        // Reorder draw arguments so each batch's args are contiguous, and remap instance DrawIDs.
+        {
+            LUMINA_PROFILE_SECTION("Reorder Instances and Draw Args");
+
+            TVector<uint32> IndexRemap(IndirectDrawArguments.size());
+            TVector<FDrawIndirectArguments> ReorderedIndirectDrawArguments;
+            ReorderedIndirectDrawArguments.reserve(IndirectDrawArguments.size());
+
+            uint32 Counter = 0;
+            uint32 CumulativeInstanceCount = 0;
+            for (FMeshDrawCommand& DrawCommand : DrawCommands)
+            {
+                DrawCommand.DrawCount          = (uint32)DrawCommand.DrawArgumentIndexMap.size();
+                DrawCommand.IndirectDrawOffset = Counter;
+
+                RenderStats.NumDraws += DrawCommand.DrawCount;
+
+                for (auto& [Key, OldIndex] : DrawCommand.DrawArgumentIndexMap)
+                {
+                    IndexRemap[OldIndex] = Counter;
+
+                    FDrawIndirectArguments Args = IndirectDrawArguments[OldIndex];
+                    Args.StartInstanceLocation = CumulativeInstanceCount;
+                    CumulativeInstanceCount += Args.InstanceCount;
+
+                    RenderStats.NumInstances += Args.InstanceCount;
+
+                    Args.InstanceCount = 0;
+
+                    ReorderedIndirectDrawArguments.push_back(Args);
+                    Counter++;
+                }
+            }
+
+            IndirectDrawArguments = Move(ReorderedIndirectDrawArguments);
+
+            for (FGPUInstance& Instance : InstanceData)
+            {
+                const uint32 Flags = Instance.DrawIDAndFlags & 0xFF000000u;
+                const uint32 NewDrawID = IndexRemap[Instance.DrawIDAndFlags & 0x00FFFFFFu];
+                Instance.DrawIDAndFlags = (NewDrawID & 0x00FFFFFFu) | Flags;
+            }
+
+            RenderStats.NumBatches = (uint32)DrawCommands.size();
+
+            OpaqueDrawList.reserve(DrawCommands.size());
+            TranslucentDrawList.reserve(DrawCommands.size());
+            for (uint32 i = 0; i < (uint32)DrawCommands.size(); ++i)
+            {
+                if (DrawCommands[i].bTranslucent)
+                {
+                    TranslucentDrawList.push_back(i);
+                }
+                else
+                {
+                    OpaqueDrawList.push_back(i);
+                }
+            }
         }
     }
 

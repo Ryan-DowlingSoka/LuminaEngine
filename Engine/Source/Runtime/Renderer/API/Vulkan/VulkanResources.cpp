@@ -431,16 +431,16 @@ namespace Lumina
     TSharedPtr<FBufferChunk> FUploadManager::CreateChunk(uint64 Size) const
     {
         LUMINA_PROFILE_SCOPE();
-        
+
         TSharedPtr<FBufferChunk> Chunk = MakeShared<FBufferChunk>();
-        
+
         if (bIsScratchBuffer)
         {
             FRHIBufferDesc Desc;
             Desc.Size = Size;
             Desc.DebugName = "ScratchBufferChunk";
             Chunk->Buffer = Context->CreateBuffer(Desc);
-            
+
             Chunk->MappedMemory = nullptr;
             Chunk->BufferSize = Size;
         }
@@ -448,7 +448,10 @@ namespace Lumina
         {
             FRHIBufferDesc Desc;
             Desc.Size = Size;
-            Desc.Usage.SetMultipleFlags(EBufferUsageFlags::CPUWritable, EBufferUsageFlags::StagingBuffer);
+            // Transient flag routes the underlying VMA allocation through the linear-algorithm
+            // upload pool. Allocations are O(1) bump-pointer regardless of chunk size, so chunks
+            // can grow well past the old ~13 MiB stall threshold without paying free-list search cost.
+            Desc.Usage.SetMultipleFlags(EBufferUsageFlags::CPUWritable, EBufferUsageFlags::StagingBuffer, EBufferUsageFlags::Transient);
             Desc.DebugName = FString("UploadChunk [ " + eastl::to_string(Size) + " ]");
 
             Chunk->Buffer       = Context->CreateBuffer(Desc);
@@ -457,6 +460,19 @@ namespace Lumina
         }
 
         return Chunk;
+    }
+
+    static uint64 NextPow2_u64(uint64 v)
+    {
+        if (v <= 1) return 1;
+        v--;
+        v |= v >> 1;
+        v |= v >> 2;
+        v |= v >> 4;
+        v |= v >> 8;
+        v |= v >> 16;
+        v |= v >> 32;
+        return v + 1;
     }
 
     bool FUploadManager::SuballocateBuffer(uint64 Size, FRHIBuffer*& Buffer, uint64& Offset, void*& CpuVA, uint64 CurrentVersion, uint32 Alignment)
@@ -494,20 +510,32 @@ namespace Lumina
         FQueue* Queue = Context->GetQueue(queue);
         uint64 CompletedInstance = Queue->GetCompletedInstance();
 
-        for (auto It = ChunkPool.begin(), ItEnd = ChunkPool.end(); It != ItEnd; ++It)
+        // First pass: retire any chunks the GPU is done with so they're reusable.
+        for (auto& Chunk : ChunkPool)
         {
-            TSharedPtr<FBufferChunk>& Chunk = *It;
             if (VersionGetSubmitted(Chunk->Version) && VersionGetInstance(Chunk->Version) <= CompletedInstance)
             {
                 Chunk->Version = 0;
             }
+        }
 
+        // Second pass: pick the smallest free chunk that fits, so we don't waste a 32 MiB chunk on a 1 KiB upload.
+        TSharedPtr<FBufferChunk> BestFit;
+        for (auto& Chunk : ChunkPool)
+        {
             if (Chunk->Version == 0 && Chunk->BufferSize >= Size)
             {
-                CurrentChunk = Chunk;
-                ChunkPool.remove(Chunk);
-                break;
+                if (!BestFit || Chunk->BufferSize < BestFit->BufferSize)
+                {
+                    BestFit = Chunk;
+                }
             }
+        }
+
+        if (BestFit)
+        {
+            CurrentChunk = BestFit;
+            ChunkPool.remove(BestFit);
         }
 
         if (ChunkToRetire)
@@ -517,14 +545,39 @@ namespace Lumina
 
         if (!CurrentChunk)
         {
-            uint64 SizeToAllocate = Align(std::max(Size, DefaultChunkSize), FBufferChunk::GSizeAlignment);
+            // Geometric, power-of-2 chunk sizing. Once we've ever needed N bytes, future chunks
+            // round up to the next pow2 >= max(N, DefaultChunkSize, LargestSeen). This dramatically
+            // increases pool reuse — most subsequent allocations hit a cached chunk instead of
+            // calling vmaCreateBuffer at all.
+            uint64 Target = std::max<uint64>(Size, DefaultChunkSize);
+            Target = std::max<uint64>(Target, LargestChunkSize);
+            uint64 SizeToAllocate = NextPow2_u64(Target);
+            SizeToAllocate = Align(SizeToAllocate, FBufferChunk::GSizeAlignment);
 
             if ((MemoryLimit > 0) && (AllocatedMemory + SizeToAllocate > MemoryLimit))
             {
                 return false;
             }
 
+            // Evict idle chunks that are smaller than half the new target — they'll never be reused
+            // now that callers are demanding bigger buffers, and they're just consuming pool slots
+            // and host-visible memory budget.
+            const uint64 EvictBelow = SizeToAllocate / 2;
+            for (auto It = ChunkPool.begin(); It != ChunkPool.end(); )
+            {
+                if ((*It)->Version == 0 && (*It)->BufferSize < EvictBelow)
+                {
+                    It = ChunkPool.erase(It);
+                }
+                else
+                {
+                    ++It;
+                }
+            }
+
+            LargestChunkSize = SizeToAllocate;
             CurrentChunk = CreateChunk(SizeToAllocate);
+            AllocatedMemory += SizeToAllocate;
         }
 
         CurrentChunk->Version       = CurrentVersion;
@@ -647,8 +700,18 @@ namespace Lumina
         BufferCreateInfo.sharingMode    = VK_SHARING_MODE_EXCLUSIVE;
         BufferCreateInfo.usage          = ToVkBufferUsage(InDescription.Usage);
         BufferCreateInfo.flags          = 0;
-        
-        Allocation = Device->GetAllocator().AllocateBuffer(&BufferCreateInfo, VmaFlags, &Buffer, Description.DebugName.c_str());
+
+        if (InDescription.Usage.IsFlagSet(EBufferUsageFlags::Transient))
+        {
+            // Transient/upload chunks live for one or two frames and are freed in roughly FIFO order.
+            // Route them through the dedicated linear-algorithm pool, O(1) bump-pointer allocations
+            // that can never fragment, regardless of how large individual chunks grow.
+            Allocation = Device->GetAllocator().AllocateUploadBuffer(&BufferCreateInfo, &Buffer, Description.DebugName.c_str());
+        }
+        else
+        {
+            Allocation = Device->GetAllocator().AllocateBuffer(&BufferCreateInfo, VmaFlags, &Buffer, Description.DebugName.c_str());
+        }
         
         
         static_cast<FVulkanRenderContext*>(GRenderContext)->SetVulkanObjectName(Description.DebugName, VK_OBJECT_TYPE_BUFFER, (uintptr_t)Buffer);

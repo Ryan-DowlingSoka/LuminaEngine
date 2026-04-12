@@ -37,7 +37,7 @@ namespace Lumina
     {
         GRenderContext = Memory::New<FVulkanRenderContext>();
         
-        GRenderContext->Initialize(FRenderContextDesc{true, true});
+        GRenderContext->Initialize(FRenderContextDesc{false, false});
         
         #if WITH_EDITOR
         ImGuiRenderer = Memory::New<FVulkanImGuiRender>();

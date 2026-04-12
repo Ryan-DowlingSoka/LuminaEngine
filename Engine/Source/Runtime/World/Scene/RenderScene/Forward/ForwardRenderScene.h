@@ -9,6 +9,9 @@
 namespace Lumina
 {
     class CWorld;
+    struct SStaticMeshComponent;
+    struct SSkeletalMeshComponent;
+    struct STransformComponent;
 
     /**
      * Scene rendering via Clustered Forward Rendering.
@@ -109,9 +112,48 @@ namespace Lumina
         //~ End Render Passes
         
         void CompileDrawCommands(FRenderGraph& RenderGraph);
-    
+
+        // ~ Begin Parallel Draw Command Compilation ~
+
+        /**
+         * Per-entity output of the parallel mesh-processing phase. The expensive work
+         * (transforms, bounds, material/blendmode resolution, instance packing) happens
+         * on a worker thread; the cheap batching/dedup runs serially in MergeMeshDrawData.
+         */
+        struct FProcessedDrawItem
+        {
+            FGPUInstance        Instance;            // DrawIDAndFlags holds flags only at this point.
+            EInstanceFlags      Flags;
+            uintptr_t           MaterialID;
+            FRHIVertexShader*   VertexShader;
+            FRHIPixelShader*    PixelShader;
+            uint32              StartIndex;
+            uint32              IndexCount;
+            uint32              LocalBoneOffset;     // Offset into the owning thread's BonesData; ~0u for static meshes.
+            uint16              MaterialIndex;
+            uint8               BatchFlagsByte;      // bit0=DepthPass, bit1=Translucent, bit2=Masked, bit3=Additive
+        };
+
+        struct FThreadLocalDrawData
+        {
+            TVector<FProcessedDrawItem> Items;
+            TVector<glm::mat4>          BonesData;
+            FSceneRenderStats           Stats = {};
+        };
+
+        void ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
+        void ProcessSkeletalMeshEntityInternal(entt::entity Entity, const SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
+        void MergeMeshDrawData(TVector<FThreadLocalDrawData>& ThreadLocal);
+
+        // ~ End Parallel Draw Command Compilation ~
+
     private:
         
+        TArray<FRHIBufferRef, (int)ENamedBuffer::Num>   NamedBuffers = {};
+        TArray<FRHIImageRef, (int)ENamedImage::Num>     NamedImages = {};
+        
+        /** Packed array of all light shadows in the scene */
+        TArray<TVector<FLightShadow>, (uint32)ELightType::Num>    PackedShadows;
         
         FViewportState                      SceneViewportState;
         FDelegateHandle                     SwapchainResizedHandle;
@@ -120,9 +162,6 @@ namespace Lumina
         FSceneRenderStats                   RenderStats;
         FSceneRenderSettings                RenderSettings;
         FSceneLightData                     LightData;
-
-        /** Packed array of all light shadows in the scene */
-        TArray<TVector<FLightShadow>, (uint32)ELightType::Num>    PackedShadows;
         
 
         FBindingCache                       BindingCache;
@@ -139,10 +178,7 @@ namespace Lumina
         FRHIInputLayoutRef                  SimpleVertexLayoutInput;
         TVector<FLineBatch>                 LineBatches;
 
-        TVector<FBillboardInstance>                 BillboardInstances;
-        
-        TArray<FRHIBufferRef, (int)ENamedBuffer::Num>   NamedBuffers = {};
-        TArray<FRHIImageRef, (int)ENamedImage::Num>     NamedImages = {};
+        TVector<FBillboardInstance>             BillboardInstances;
         
         /** Packed array of per-instance data */
         TVector<FGPUInstance>                   InstanceData;

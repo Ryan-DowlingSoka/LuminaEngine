@@ -11,7 +11,7 @@ namespace Lumina
     class CMaterialInterface;
     
     REFLECT()
-    struct RUNTIME_API ALIGN_FOR_FALSE_SHARING SMeshComponent
+    struct RUNTIME_API SMeshComponent
     {
         GENERATED_BODY()
         

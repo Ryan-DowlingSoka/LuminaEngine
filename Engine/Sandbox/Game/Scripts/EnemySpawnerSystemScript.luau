@@ -18,9 +18,9 @@ function NewScript:Update(DeltaTime: number)
     local Enemy = World:GetEntityByTag("Enemy") -- Will just find the first one.
     local Location = Registry:Get(Enemy, STransformComponent):GetLocation()
 
-    Registry:Duplicate(Enemy)
+    --Registry:Duplicate(Enemy)
 
-    Engine.Audio.PlaySoundAtLocation("/Game/Content/Spawn.wav", Location)
+    --Engine.Audio.PlaySoundAtLocation("/Game/Content/Spawn.wav", Location)
 
 end
             

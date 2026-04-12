@@ -123,6 +123,7 @@ namespace Lumina
         StagingBuffer,
         CPUWritable,
         CPUReadable,
+        Transient,
     };
     
     ENUM_CLASS_FLAGS(EBufferUsageFlags);

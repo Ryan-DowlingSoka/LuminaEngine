@@ -3,74 +3,167 @@
 #define VMA_IMPLEMENTATION
 #include <volk/volk.h>
 #include "vk_mem_alloc.h"
-#include "Renderer/RHIGlobals.h"
 #include "VulkanMacros.h"
 #include "VulkanRenderContext.h"
 #include "VulkanResources.h"
 #include "Core/Profiler/Profile.h"
+#include "TaskSystem/TaskSystem.h"
 
 
 namespace Lumina
 {
     constexpr uint64 DEDICATED_MEMORY_THRESHOLD = 2048llu * 2048;
+    constexpr VkDeviceSize UPLOAD_POOL_BLOCK_SIZE = 128llu * 1024 * 1024;
 
     FVulkanMemoryAllocator::FVulkanMemoryAllocator(FVulkanRenderContext* InCxt, VkInstance Instance, VkPhysicalDevice PhysicalDevice, VkDevice Device)
+        : RenderContext(InCxt)
     {
         VmaVulkanFunctions Functions = {};
         Functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
         Functions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
-    
+
         VmaAllocatorCreateInfo Info = {};
-        Info.vulkanApiVersion = VK_API_VERSION_1_3;
-        Info.instance = Instance;
-        Info.physicalDevice = PhysicalDevice;
-        Info.device = Device;
-        Info.pVulkanFunctions = &Functions;
-        Info.pAllocationCallbacks = VK_ALLOC_CALLBACK;
-        
+        Info.vulkanApiVersion       = VK_API_VERSION_1_3;
+        Info.instance               = Instance;
+        Info.physicalDevice         = PhysicalDevice;
+        Info.device                 = Device;
+        Info.pVulkanFunctions       = &Functions;
+        Info.pAllocationCallbacks   = VK_ALLOC_CALLBACK;
+
         Info.flags = VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT | VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT | VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
-        
+
         VK_CHECK(vmaCreateAllocator(&Info, &Allocator));
-        RenderContext = InCxt;
+
+        InitUploadPool(PhysicalDevice);
     }
 
-    void FVulkanMemoryAllocator::Shutdown() const
+    void FVulkanMemoryAllocator::InitUploadPool(VkPhysicalDevice /*PhysicalDevice*/)
     {
+        // Build a sample VkBufferCreateInfo that matches every usage flag a staging/upload chunk
+        // can ever take, so VMA can pick a memory type that satisfies all of them at once.
+        VkBufferCreateInfo SampleInfo = {};
+        SampleInfo.sType  = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        SampleInfo.size   = 1024;
+        SampleInfo.usage  = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+                          | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                          | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+                          | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+                          | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
+                          | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                          | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        SampleInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo SampleAlloc = {};
+        SampleAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+        SampleAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+        uint32_t MemoryTypeIndex = UINT32_MAX;
+        if (vmaFindMemoryTypeIndexForBufferInfo(Allocator, &SampleInfo, &SampleAlloc, &MemoryTypeIndex) != VK_SUCCESS)
+        {
+            LOG_WARN("FVulkanMemoryAllocator: failed to find memory type for upload pool, falling back to default allocator for upload chunks.");
+            return;
+        }
+
+        UploadBlockSize = UPLOAD_POOL_BLOCK_SIZE;
+
+        VmaPoolCreateInfo PoolInfo = {};
+        PoolInfo.memoryTypeIndex = MemoryTypeIndex;
+        // Linear algorithm: bump-allocate, never search a free list, never fragment.
+        // Perfect for FIFO transient resources like per-frame upload buffers.
+        PoolInfo.flags          = VMA_POOL_CREATE_LINEAR_ALGORITHM_BIT;
+        PoolInfo.blockSize      = UploadBlockSize;
+        PoolInfo.minBlockCount  = 1; // pre-warm one block so first frames don't pay vkAllocateMemory cost
+        PoolInfo.maxBlockCount  = 0; // unlimited
+
+        if (vmaCreatePool(Allocator, &PoolInfo, &UploadPool) != VK_SUCCESS)
+        {
+            LOG_WARN("FVulkanMemoryAllocator: vmaCreatePool failed for upload pool, falling back to default allocator for upload chunks.");
+            UploadPool = VK_NULL_HANDLE;
+            UploadBlockSize = 0;
+        }
+    }
+
+    void FVulkanMemoryAllocator::Shutdown()
+    {
+        GTaskSystem->WaitForAll();
+        if (UploadPool != VK_NULL_HANDLE)
+        {
+            vmaDestroyPool(Allocator, UploadPool);
+            UploadPool = VK_NULL_HANDLE;
+        }
         vmaDestroyAllocator(Allocator);
     }
 
     VmaAllocation FVulkanMemoryAllocator::AllocateBuffer(const VkBufferCreateInfo* CreateInfo, VmaAllocationCreateFlags Flags, VkBuffer* vkBuffer, const char* AllocationName) const
     {
         LUMINA_PROFILE_SCOPE();
-        
+        LUMINA_PROFILE_TAG(std::format("Size: {}", StringUtils::FormatSize(CreateInfo->size)).c_str());
+
         VmaAllocationCreateInfo Info = {};
         Info.usage = VMA_MEMORY_USAGE_AUTO;
-        Info.flags = Flags;
-        
-        if (CreateInfo->size > DEDICATED_MEMORY_THRESHOLD)
-        {
-            Info.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-            Info.priority = 1.0f;
-        }
-        
+        Info.flags = Flags | VMA_ALLOCATION_CREATE_STRATEGY_MIN_TIME_BIT;
+
         if (Flags & VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT)
         {
             Info.flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
         }
-    
+
         VmaAllocation Allocation = nullptr;
         VmaAllocationInfo AllocationInfo;
-        
+
         VK_CHECK(vmaCreateBuffer(Allocator, CreateInfo, &Info, vkBuffer, &Allocation, &AllocationInfo));
         DEBUG_ASSERT(Allocation, "Vulkan failed to allocate buffer memory!");
-    
+
     #if LE_DEBUG
         if (AllocationName)
         {
             vmaSetAllocationName(Allocator, Allocation, AllocationName);
         }
     #endif
-        
+
+        return Allocation;
+    }
+
+    VmaAllocation FVulkanMemoryAllocator::AllocateUploadBuffer(const VkBufferCreateInfo* CreateInfo, VkBuffer* vkBuffer, const char* AllocationName) const
+    {
+        LUMINA_PROFILE_SCOPE();
+        LUMINA_PROFILE_TAG(std::format("UploadSize: {}", StringUtils::FormatSize(CreateInfo->size)).c_str());
+
+        VmaAllocation Allocation     = nullptr;
+        VmaAllocationInfo AllocInfo  = {};
+        VkResult Result              = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+
+        // Fast path: linear-algorithm pool. O(1) bump-pointer allocation, no fragmentation.
+        // Only attempt if the buffer fits in a single pool block.
+        if (UploadPool != VK_NULL_HANDLE && CreateInfo->size <= UploadBlockSize)
+        {
+            VmaAllocationCreateInfo Info = {};
+            Info.pool  = UploadPool;
+            Info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            Result = vmaCreateBuffer(Allocator, CreateInfo, &Info, vkBuffer, &Allocation, &AllocInfo);
+        }
+
+        // Fallback: dedicated allocation with min-time strategy. Used for outsized one-shot uploads.
+        if (Result != VK_SUCCESS)
+        {
+            VmaAllocationCreateInfo Info = {};
+            Info.usage = VMA_MEMORY_USAGE_AUTO;
+            Info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                       | VMA_ALLOCATION_CREATE_MAPPED_BIT
+                       | VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT
+                       | VMA_ALLOCATION_CREATE_STRATEGY_MIN_TIME_BIT;
+            VK_CHECK(vmaCreateBuffer(Allocator, CreateInfo, &Info, vkBuffer, &Allocation, &AllocInfo));
+        }
+
+        DEBUG_ASSERT(Allocation, "Vulkan failed to allocate upload buffer memory!");
+
+    #if LE_DEBUG
+        if (AllocationName)
+        {
+            vmaSetAllocationName(Allocator, Allocation, AllocationName);
+        }
+    #endif
+
         return Allocation;
     }
     
@@ -82,14 +175,14 @@ namespace Lumina
     
         VmaAllocationCreateInfo Info = {};
         Info.usage = VMA_MEMORY_USAGE_AUTO;
-        Info.flags = Flags;
-        
+        Info.flags = Flags | VMA_ALLOCATION_CREATE_STRATEGY_MIN_TIME_BIT;
+
         VkDeviceSize ImageSize = (uint64)CreateInfo->extent.width * CreateInfo->extent.height * CreateInfo->extent.depth * CreateInfo->arrayLayers;
-        
+
         if (ImageSize > DEDICATED_MEMORY_THRESHOLD)
         {
             Info.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-            Info.priority = 0.75f;
+            Info.priority = 1.00f;
         }
     
         VmaAllocation Allocation;
@@ -111,18 +204,20 @@ namespace Lumina
     
     void FVulkanMemoryAllocator::DestroyBuffer(VkBuffer Buffer, VmaAllocation Allocation) const
     {
-        LUMINA_PROFILE_SCOPE();
-        DEBUG_ASSERT(Buffer);
-        
-        vmaDestroyBuffer(Allocator, Buffer, Allocation);
+        Task::AsyncTask(1, 1, [this, Buffer, Allocation](uint32, uint32, uint32)
+        {
+            LUMINA_PROFILE_SCOPE();
+            vmaDestroyBuffer(Allocator, Buffer, Allocation);
+        });
     }
     
     void FVulkanMemoryAllocator::DestroyImage(VkImage Image, VmaAllocation Allocation) const
     {
-        LUMINA_PROFILE_SCOPE();
-        DEBUG_ASSERT(Image);
-        
-        vmaDestroyImage(Allocator, Image, Allocation);
+        Task::AsyncTask(1, 1, [this, Image, Allocation](uint32, uint32, uint32)
+        {
+            LUMINA_PROFILE_SCOPE();
+            vmaDestroyImage(Allocator, Image, Allocation);
+        });
     }
     
     void* FVulkanMemoryAllocator::GetMappedMemory(const FVulkanBuffer* Buffer) const
@@ -183,4 +278,5 @@ namespace Lumina
         LOG_INFO("Total Block Count: %u", Stats.total.statistics.blockCount);
         LOG_INFO("Allocation Count: %u", Stats.total.statistics.allocationCount);
     }
+
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <random>
+#include "Core/Assertions/Assert.h"
 #include <eastl/type_traits.h>
 #include <glm/glm.hpp>
 #include "eastl/utility.h"
@@ -18,6 +19,12 @@ namespace Lumina::Math
         v |= v >> 16;
         v++;
         return v;
+    }
+    
+    template <typename T>
+    [[nodiscard]] constexpr T AlignUp(T InV, uint64 InAlignment)
+    {
+        return T((static_cast<uint64>(InV) + InAlignment - 1) & ~(InAlignment - 1));
     }
     
     template<typename T>

@@ -39,7 +39,7 @@ function NewScript:OnReady()
     CharacterPhysicsComponent       = World:GetEntityRegistry():Get(self.Entity, SCharacterPhysicsComponent)
     CharacterMovementComponent      = World:GetEntityRegistry():Get(self.Entity, SCharacterMovementComponent)
 
-    Input.SetMouseMode(EMouseMode.Captured)
+    --Input.SetMouseMode(EMouseMode.Captured)
 end
 
 function NewScript:Update(DeltaTime: number)

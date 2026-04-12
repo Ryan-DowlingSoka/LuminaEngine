@@ -30,6 +30,23 @@ namespace Lumina
         inline FWString ToWideString(FStringView str) { return FWString(FWString::CtorConvert(), str.begin(), str.end()); }
         inline FWString ToWideString(const char* pStr) { return FWString(FWString::CtorConvert(), pStr); }
         inline FString FromWideString(const FWString& Str) { return FString(FString::CtorConvert(), Str); }
+        
+        inline FString FormatSize(size_t Bytes)
+        {
+            const char* Suffixes[] = { "B", "KB", "MB", "GB" };
+            double Size = static_cast<double>(Bytes);
+            int Suffix = 0;
+
+            while (Size >= 1024.0 && Suffix < 3)
+            {
+                Size /= 1024.0;
+                ++Suffix;
+            }
+            FString Value;
+            std::format_to(std::back_inserter(Value), "{:.2f} {}", Size, Suffixes[Suffix]);
+            return Value;
+        }
+
     }
 }
 

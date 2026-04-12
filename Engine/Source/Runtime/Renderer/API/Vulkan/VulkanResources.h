@@ -79,16 +79,17 @@ namespace Lumina
         TSharedPtr<FBufferChunk> CreateChunk(uint64 Size) const;
 
     private:
-        
-        TFixedList<TSharedPtr<FBufferChunk>, 4>     ChunkPool;
+
+        TFixedList<TSharedPtr<FBufferChunk>, 8>     ChunkPool;
         TSharedPtr<FBufferChunk>                    CurrentChunk;
-        
+
         FVulkanRenderContext*                       Context;
         uint64                                      DefaultChunkSize = 0;
         uint64                                      MemoryLimit = 0;
         uint64                                      AllocatedMemory = 0;
+        uint64                                      LargestChunkSize = 0;
         bool                                        bIsScratchBuffer = false;
-        
+
     };
     
     class FVulkanEventQuery : public IEventQuery

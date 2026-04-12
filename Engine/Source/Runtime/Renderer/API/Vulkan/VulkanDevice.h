@@ -8,6 +8,7 @@
 
 namespace Lumina
 {
+    class ICommandList;
     class FVulkanBuffer;
     class FRHIBuffer;
     class IDeviceChild;
@@ -21,23 +22,21 @@ namespace Lumina
     {
     public:
 
-        struct PoolConfig
-        {
-            VmaPool Pool = VK_NULL_HANDLE;
-            uint32 BlockSize = 0;
-        };
-
-
         FVulkanMemoryAllocator(FVulkanRenderContext* InCxt, VkInstance Instance, VkPhysicalDevice PhysicalDevice, VkDevice Device);
         ~FVulkanMemoryAllocator() = default;
         LE_NO_COPYMOVE(FVulkanMemoryAllocator);
         
-        void Shutdown() const;
+        void Shutdown();
         void GetMemoryBudget(VmaBudget* OutBudgets);
         void LogMemoryStats();
-        
+
         VmaAllocation AllocateBuffer(const VkBufferCreateInfo* CreateInfo, VmaAllocationCreateFlags Flags, VkBuffer* vkBuffer, const char* AllocationName) const;
         VmaAllocation AllocateImage(const VkImageCreateInfo* CreateInfo, VmaAllocationCreateFlags Flags, VkImage* vkImage, const char* AllocationName) const;
+
+        // Fast-path allocation for transient/upload buffers. Uses a dedicated linear-algorithm pool
+        // so allocations are O(1) bump-pointer and never fragment. Falls back to a dedicated allocation
+        // if the buffer is larger than the pool block size.
+        VmaAllocation AllocateUploadBuffer(const VkBufferCreateInfo* CreateInfo, VkBuffer* vkBuffer, const char* AllocationName) const;
 
         VmaAllocator GetVMA() const { return Allocator; }
 
@@ -51,9 +50,13 @@ namespace Lumina
 
     
     private:
-        
-        VmaAllocator Allocator = nullptr;
-        FVulkanRenderContext* RenderContext = nullptr;
+
+        void InitUploadPool(VkPhysicalDevice PhysicalDevice);
+
+        VmaAllocator           Allocator       = nullptr;
+        VmaPool                UploadPool      = VK_NULL_HANDLE;
+        VkDeviceSize           UploadBlockSize = 0;
+        FVulkanRenderContext*  RenderContext   = nullptr;
     };
     
     class FVulkanDevice
@@ -66,7 +69,7 @@ namespace Lumina
         NODISCARD FVulkanMemoryAllocator& GetAllocator() { return Allocator; }
         NODISCARD VkPhysicalDevice GetPhysicalDevice() const { return PhysicalDevice; }
         NODISCARD VkDevice GetDevice() const { return Device; }
-
+        
         NODISCARD const VkPhysicalDeviceFeatures& GetFeatures10() const { return Features10; }
         NODISCARD const VkPhysicalDeviceVulkan11Features& GetFeatures11() const { return Features11; }
         NODISCARD const VkPhysicalDeviceVulkan12Features& GetFeatures12() const { return Features12; }
