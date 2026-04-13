@@ -4,6 +4,8 @@
 #include "Core/Assertions/Assert.h"
 #include <eastl/type_traits.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+
 #include "eastl/utility.h"
 #include "Platform/GenericPlatform.h"
 
@@ -110,5 +112,9 @@ namespace Lumina::Math
         return Distribution(Random);
     }
 
-    RUNTIME_API glm::quat FindLookAtRotation(const glm::vec3& Target, const glm::vec3& From);
+    [[nodiscard]] inline glm::quat FindLookAtRotation(const glm::vec3& Target, const glm::vec3& From)
+    {
+        glm::vec3 ForwardDirection = glm::normalize(Target - From);
+        return glm::quatLookAt(ForwardDirection, glm::vec3(0.0f, 1.0f, 0.0f));
+    }
 }

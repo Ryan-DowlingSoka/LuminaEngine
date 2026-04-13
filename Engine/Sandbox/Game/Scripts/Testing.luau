@@ -16,7 +16,7 @@ function NewScript:OnReady()
 end
 
 function NewScript:Update(DeltaTime: number)
-
+    --Registry:Duplicate(36)
 end
             
 function NewScript:OnDetach()

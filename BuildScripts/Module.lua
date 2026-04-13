@@ -132,6 +132,7 @@ function LuminaModule(Def)
         kind(Def.Kind)
         rtti "off"
         staticruntime "Off"
+        vectorextensions "AVX2"
 
     -- Force-include the universal ModuleAPI.h
     forceincludes

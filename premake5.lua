@@ -6,7 +6,7 @@ include "BuildScripts/Actions/Reflection"
 workspace "Lumina"
 	language "C++"
 	cppdialect "C++latest"
-	--staticruntime "Off"
+	architecture "x86_64"
     warnings "Default"
     targetdir (LuminaConfig.GetTargetDirectory())
     objdir (LuminaConfig.GetObjDirectory())
@@ -14,6 +14,8 @@ workspace "Lumina"
     fastuptodate "On"
     multiprocessorcompile "On"
 	startproject "Lumina"
+    vectorextensions "AVX2"
+
 
     configurations 
     { 
@@ -44,6 +46,7 @@ workspace "Lumina"
 	defines
 	{
         "JPH_OBJECT_LAYER_BITS=32",
+        ---"JPH_USE_AVX2",
         "EASTL_USER_DEFINED_ALLOCATOR=1",
 		"_CRT_SECURE_NO_WARNINGS",
         "_SILENCE_CXX23_ALIGNED_UNION_DEPRECATION_WARNING",
@@ -51,6 +54,8 @@ workspace "Lumina"
 		"GLM_FORCE_DEPTH_ZERO_TO_ONE",
 		"GLM_FORCE_LEFT_HANDED",
         "GLM_ENABLE_EXPERIMENTAL",
+        "GLM_FORCE_AVX2",
+        "GLM_FORCE_INTRINSICS",
 		"IMGUI_DEFINE_MATH_OPERATORS",
         "IMGUI_IMPL_VULKAN_USE_VOLK",
         
@@ -81,9 +86,6 @@ workspace "Lumina"
     filter "kind:SharedLib"
         defines { "%{prj.name:upper()}_EXPORTS"}
     filter {}
-
-    filter "language:C++ or language:C"
-		architecture "x86_64"
         
     filter "architecture:64"
         defines { "LUMINA_PLATFORM_CPU_X86_64" }
@@ -96,13 +98,15 @@ workspace "Lumina"
             "LE_PLATFORM_WINDOWS",
             "DLL_EXPORT=__declspec(dllexport)",
             "DLL_IMPORT=__declspec(dllimport)",
+            "__AVX2__",
         }
         buildoptions 
         {
+            "/arch:AVX2",
             "/Zc:preprocessor",
             "/Zc:inline",
             "/Zc:__cplusplus",
-            "/bigobj"
+            "/bigobj",
         }
 
     filter {}

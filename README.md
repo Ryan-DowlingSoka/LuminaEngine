@@ -185,9 +185,10 @@ setx LUMINA_DIR "C:\path\to\lumina"
 * **MeshOptimizer** - Mesh optimization library providing vertex cache optimization, overdraw reduction, and vertex/index buffer compression
 * **Miniaudio** - Audio playback and capture library in a single file
 * **NlohmannJson** - Modern JSON library with intuitive syntax and full STL compatibility
+* **OpenFBX** - Lightweight FBX loader for importing geometry, skeletons, and animation data without Autodesk SDK dependencies.
 * **RPMalloc** - Lock-free thread-caching memory allocator with high scalability and low overhead
 * **RenderDoc** - Graphics debugging tool integration for frame capture and analysis
-* **SLang** - GLSL to SPIR-V compiler with optimization passes and shader reflection capabilities
+* **SLang** - Modern shader language and compiler for GPU programming with cross-platform SPIR-V/HLSL output.
 * **SPDLog** - Fast C++ logging library with async mode, custom formatting, and multiple sink support
 * **STBImage** - Single-header image loading library supporting multiple common formats
 * **TinyObjLoader** - Lightweight OBJ file parser with MTL material support
