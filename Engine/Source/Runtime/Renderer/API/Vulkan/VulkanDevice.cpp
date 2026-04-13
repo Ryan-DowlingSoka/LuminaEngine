@@ -7,6 +7,7 @@
 #include "VulkanRenderContext.h"
 #include "VulkanResources.h"
 #include "Core/Profiler/Profile.h"
+#include "Renderer/RHIGlobals.h"
 #include "TaskSystem/TaskSystem.h"
 
 

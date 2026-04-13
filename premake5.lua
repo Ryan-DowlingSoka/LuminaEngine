@@ -141,6 +141,10 @@ workspace "Lumina"
     
     filter {}
 
+    group "Tests"
+        include "Engine/Tests"
+    group ""
+
     group "Engine"
 		include "Engine/Source/Runtime"
         include "Engine/Editor"
@@ -180,6 +184,7 @@ workspace "Lumina"
         include "Engine/Source/ThirdParty/OpenFBX"
         include "Engine/Source/ThirdParty/basis_universal"
         include "Engine/Source/ThirdParty/SLang"
+        include "Engine/Source/ThirdParty/GoogleTest"
 	group ""
 
     group "Build"

@@ -142,46 +142,7 @@ namespace Lumina
         {
             return c_str();
         }
-
-        FName operator+(const FName& Other) const
-        {
-            return FString(c_str()) + FString(Other.c_str());
-        }
     
-        FName operator+(const FString& Str) const
-        {
-            return FString(c_str()) + Str;
-        }
-    
-        FName operator+(const char* Str) const
-        {
-            return FString(c_str()) + FString(Str);
-        }
-    
-        FName operator+(char Ch) const
-        {
-            FString Result(c_str());
-            Result += Ch;
-            return Result;
-        }
-    
-        friend FName operator+(const FString& Lhs, const FName& Rhs)
-        {
-            return Lhs + FString(Rhs.c_str());
-        }
-    
-        friend FName operator+(const char* Lhs, const FName& Rhs)
-        {
-            return FString(Lhs) + FString(Rhs.c_str());
-        }
-    
-        friend FName operator+(char Lhs, const FName& Rhs)
-        {
-            FString Result;
-            Result += Lhs;
-            Result += Rhs.c_str();
-            return Result;
-        }
     
     private:
         

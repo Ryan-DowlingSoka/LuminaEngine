@@ -1,8 +1,45 @@
-#include <EASTL/internal/config.h>
-#include <EASTL/allocator.h>
-#include <EASTL/string.h>
+﻿
+
+
+#include "gtest/gtest.h"
+#include "Containers/Name.h"
+#include "Core/Object/ObjectBase.h"
+#include "EASTL/allocator.h"
+#include "Log/Log.h"
 #include "Memory/Memory.h"
 
+class EngineTestEnvironment : public ::testing::Environment
+{
+public:
+    void SetUp() override
+    {
+        Lumina::Memory::Initialize();
+        Lumina::Threading::Initialize("Main Thread");
+        Lumina::FName::Initialize();
+        Lumina::Logging::Init();
+
+        Lumina::InitializeCObjectSystem();
+    }
+
+    void TearDown() override
+    {
+        Lumina::Logging::Shutdown();
+        Lumina::FName::Shutdown();
+        Lumina::Threading::Shutdown();
+        Lumina::Memory::Shutdown();
+        
+        Lumina::ShutdownCObjectSystem();
+    }
+};
+
+
+
+int main(int Argc, char** Argv)
+{
+    ::testing::InitGoogleTest(&Argc, Argv);
+    ::testing::AddGlobalTestEnvironment(new EngineTestEnvironment());
+    return RUN_ALL_TESTS();
+}
 
 namespace eastl
 {
@@ -24,23 +61,23 @@ namespace eastl
 
     allocator::allocator(const char* EASTL_NAME(pName))
     {
-        #if LE_DEBUG
+#if LE_DEBUG
         mpName = pName;
-        #endif
+#endif
     }
 
     allocator::allocator(const allocator& EASTL_NAME(alloc))
     {
-        #if LE_DEBUG
+#if LE_DEBUG
         mpName = EASTL_ALLOCATOR_DEFAULT_NAME;
-        #endif
+#endif
     }
 
     allocator::allocator(const allocator&, const char* EASTL_NAME(pName))
     {
-        #if LE_DEBUG
+#if LE_DEBUG
         mpName = pName;
-        #endif
+#endif
     }
 
     allocator& allocator::operator=(const allocator& EASTL_NAME(alloc))
@@ -60,47 +97,19 @@ namespace eastl
 
     void* allocator::allocate(size_t n, int flags)
     {
-        return Lumina::Memory::Malloc(n, EASTL_ALLOCATOR_MIN_ALIGNMENT);
+        return malloc(n);
     }
 
     void* allocator::allocate(size_t n, size_t alignment, size_t offset, int flags)
     {
-        return Lumina::Memory::Malloc(n, alignment);
+        return malloc(n);
     }
 
     void allocator::deallocate(void* p, size_t)
     {
-        Lumina::Memory::Free(p);
+        free(p);
     }
 
     bool operator==( allocator const&, allocator const& ) { return true; }
     bool operator!=( allocator const&, allocator const& ) { return false; }
-}
-
-
-// Required for EASTL debug operator new[]
-void* operator new[](size_t size, const char* pName, int flags, unsigned int debugFlags, const char* file, int line) 
-{
-    return Lumina::Memory::Malloc(size);
-}
-
-// Custom definition of aligned new[] operator for EASTL
-void* operator new[](size_t size, size_t alignment, size_t /*alignmentOffset*/, const char* /*pName*/, int /*flags*/, unsigned /*debugFlags*/, const char* /*file*/, int /*line*/)
-{
-    EASTL_ASSERT(alignment <= 8);
-    return Lumina::Memory::Malloc(size, alignment);
-}
-
-namespace eastl
-{
-    void AssertionFailure(const char* expression)
-    {
-        ASSERT(expression);
-    }
-}
-
-int Vsnprintf8(char* dest, size_t n, const char* fmt, char* argPtr)
-{
-    va_list args = *reinterpret_cast<va_list*>(&argPtr);
-    return vsnprintf(dest, n, fmt, args);
 }

@@ -169,33 +169,34 @@ setx LUMINA_DIR "C:\path\to\lumina"
 
 ---
 
-### Third Party Dependencies
-- **GLFW** - A multi-platform library for OpenGL, OpenGL ES, Vulkan, window and input
-- **Luau** - An efficient, optionally typed scripting language built from Lua. 
-- **ImGui** - Immediate mode graphical user interface for rapid tool development with minimal dependencies
-- **Tracy** - Real-time frame profiler with GPU profiling, memory tracking, and remote access capabilities
-- **SPDLog** - Fast C++ logging library with async mode, custom formatting, and multiple sink support
-- **NlohmannJson** - Modern JSON library with intuitive syntax and full STL compatibility
-- **Miniaudio** - An audio playback and capture library in a single source file.
-- **XXHash** - Extremely fast non-cryptographic hash algorithm optimized for speed over collision resistance
-- **ConcurrentQueue** - Industrial-strength lock-free queue supporting multiple producers and consumers
-- **EASTL** - Electronic Arts Standard Template Library optimized for game development with custom allocators
-- **EnkiTS** - Lightweight task scheduler for creating parallel-for, task sets, and dependency graphs across multiple threads
-- **EnTT** - Fast and reliable entity component system with sparse set implementation and signal/delegate support
-- **FastGLTF** - High-performance GLTF 2.0 parser with complete specification support and efficient memory handling
-- **GLM** - Header-only C++ mathematics library designed for graphics programming with GLSL-compatible syntax
-- **JoltPhysics** - High-performance multi-threaded physics engine with continuous collision detection and ragdoll support
-- **Sol2** - Modern C++/Lua binding library with compile-time safety and automatic type conversions
-- **MeshOptimizer** - Mesh optimization library providing vertex cache optimization, overdraw reduction, and vertex/index buffer compression
-- **RenderDoc** - Graphics debugging tool integration for frame capture and analysis
-- **RPMalloc** - Lock-free thread-caching memory allocator providing 10-thread scalability with minimal overhead
-- **STBImage** - Public domain image loading library supporting PNG, JPG, TGA, BMP, PSD, GIF, HDR, and PIC formats
-- **TinyObjLoader** - Lightweight single-header OBJ file parser with MTL material support
-- **ShaderC** - Google's GLSL to SPIR-V compiler with optimization passes and shader reflection capabilities
-- **Vulkan** - Modern low-level graphics API providing explicit control over GPU resources and high-performance rendering
-- **VKBootsrap** - Simplifies Vulkan initialization with sensible defaults and reduced boilerplate code
-- **Volk** - Meta-loader for Vulkan that eliminates linking issues and enables runtime API loading
-- **VulkanMemoryAllocator** - Production-ready memory management for Vulkan with defragmentation and optimal allocation strategies
+### Third Party Dependencies (Alphabetical)
+
+* **ConcurrentQueue** - Industrial-strength lock-free queue supporting multiple producers and consumers
+* **EASTL** - Electronic Arts Standard Template Library optimized for game development with custom allocators
+* **EnkiTS** - Lightweight task scheduler for creating parallel-for, task sets, and dependency graphs across multiple threads
+* **EnTT** - Fast and reliable entity component system with sparse set implementation and signal/delegate support
+* **FastGLTF** - High-performance GLTF 2.0 parser with complete specification support and efficient memory handling
+* **GLFW** - A multi-platform library for OpenGL, OpenGL ES, Vulkan, window and input
+* **GLM** - Header-only C++ mathematics library designed for graphics programming with GLSL-compatible syntax
+* **GTest** - C++ testing framework providing assertions, fixtures, and test discovery for unit testing
+* **ImGui** - Immediate mode graphical interface for rapid tool development with minimal dependencies
+* **JoltPhysics** - High-performance multi-threaded physics engine with continuous collision detection and ragdoll support
+* **Luau** - An efficient, optionally typed scripting language built from Lua
+* **MeshOptimizer** - Mesh optimization library providing vertex cache optimization, overdraw reduction, and vertex/index buffer compression
+* **Miniaudio** - Audio playback and capture library in a single file
+* **NlohmannJson** - Modern JSON library with intuitive syntax and full STL compatibility
+* **RPMalloc** - Lock-free thread-caching memory allocator with high scalability and low overhead
+* **RenderDoc** - Graphics debugging tool integration for frame capture and analysis
+* **ShaderC** - GLSL to SPIR-V compiler with optimization passes and shader reflection capabilities
+* **Sol2** - Modern C++/Lua binding library with compile-time safety and automatic type conversions
+* **SPDLog** - Fast C++ logging library with async mode, custom formatting, and multiple sink support
+* **STBImage** - Single-header image loading library supporting multiple common formats
+* **TinyObjLoader** - Lightweight OBJ file parser with MTL material support
+* **Vulkan** - Low-level graphics API providing explicit GPU control and high-performance rendering
+* **VKBootstrap** - Simplifies Vulkan initialization with reduced boilerplate
+* **Volk** - Vulkan meta-loader for runtime function loading without linker dependency issues
+* **VulkanMemoryAllocator** - Memory management library for Vulkan with defragmentation and optimal allocation strategies
+
 
 
 ---
