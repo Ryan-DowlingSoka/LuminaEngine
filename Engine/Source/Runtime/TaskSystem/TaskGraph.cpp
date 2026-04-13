@@ -12,8 +12,6 @@ namespace Lumina
 
         void ExecuteRange(enki::TaskSetPartition Range, uint32_t ThreadNum) override
         {
-            LUMINA_PROFILE_SECTION("FTaskGraph::Node");
-
             if (bIsParallelFor)
             {
                 if (ParallelForFunc)

@@ -161,7 +161,6 @@ namespace Lumina
         {
             LUMINA_PROFILE_SECTION("Compile Draw Commands");
             
-
             auto StaticView   = World->GetEntityRegistry().view<SStaticMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto SkeletalView = World->GetEntityRegistry().view<SSkeletalMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
 
@@ -179,6 +178,12 @@ namespace Lumina
             {
                 SkeletalEntities.push_back(Entity);
             }
+            
+            auto TransformView   = World->GetEntityRegistry().view<STransformComponent, FNeedsTransformUpdate>();
+            TransformView.each([](STransformComponent& Transform)
+            {
+                (void)Transform.GetWorldMatrix(); // Will resolve. 
+            });
 
             const size_t EntityCount       = StaticEntities.size() + SkeletalEntities.size();
             const size_t EstimatedProxies  = EntityCount * 2;
@@ -195,16 +200,9 @@ namespace Lumina
             {
                 Local.Items.reserve(ReservePerThread);
             }
-
-            auto TransformView   = World->GetEntityRegistry().view<STransformComponent, FNeedsTransformUpdate>();
-            TransformView.each([](STransformComponent& Transform)
-            {
-                (void)Transform.GetWorldMatrix(); // Will resolve. 
-            });
             
             // Build the parallel compile graph: static + skeletal fan into a serial merge.
             FTaskGraph Graph;
-            
             
             FTaskGraph::FNodeHandle StaticNode = Graph.AddParallelFor((uint32)StaticEntities.size(), 64, [&](const Task::FParallelRange& Range)
             {
@@ -240,6 +238,7 @@ namespace Lumina
             Graph.Add([&]
             {
                 LUMINA_PROFILE_SECTION("Environment Processing");
+                
                 RenderSettings.bHasEnvironment = false;
                 LightData.AmbientLight = glm::vec4(0.0f);
                 RenderSettings.bSSAO = false;
@@ -371,6 +370,7 @@ namespace Lumina
             Graph.Add([&]
             {
                 LUMINA_PROFILE_SECTION("Process Billboard Primitives");
+                
                 auto View = World->GetEntityRegistry().view<SBillboardComponent, STransformComponent>(entt::exclude<SDisabledTag>);
                 View.each([this](entt::entity Entity, const SBillboardComponent& BillboardComponent, const STransformComponent& TransformComponent)
                 {
@@ -470,72 +470,117 @@ namespace Lumina
                     {
                         LightData.bHasSun = true;
                         const FViewVolume& ViewVolume = SceneViewport->GetViewVolume();
-                        
-                        float NearClip          = ViewVolume.GetNear();
-                
+
+                        const float NearClip = ViewVolume.GetNear();
+                        const float FarClip  = ViewVolume.GetFar();
+
                         FLight Light            = {};
                         Light.Flags             = LIGHT_TYPE_DIRECTIONAL;
                         Light.Color             = PackColor(glm::vec4(DirectionalLightComponent.Color, 1.0));
                         Light.Intensity         = DirectionalLightComponent.Intensity;
                         Light.Direction         = glm::normalize(DirectionalLightComponent.Direction);
                         LightData.SunDirection  = Light.Direction;
-                        
-                        LightData.CascadeSplits[0] = 35.0f;
-                        LightData.CascadeSplits[1] = 100.0f;
-                        LightData.CascadeSplits[2] = 400.0f;
-                
+
+                        // (logarithmic + uniform blend, Lambda = 0.92).
+                        // Caps shadow distance so the last cascade still has usable resolution.
+                        constexpr float CascadeSplitLambda  = 0.92f;
+                        constexpr float ShadowMaxDistance   = 1000.0f;
+
+                        const float ShadowFar  = glm::min(FarClip, ShadowMaxDistance);
+                        const float ClipRange  = ShadowFar - NearClip;
+                        const float MinDepth   = NearClip;
+                        const float MaxDepth   = ShadowFar;
+                        const float DepthRatio = MaxDepth / glm::max(MinDepth, 0.0001f);
+
+                        float CascadeFarDistances[NumCascades];
                         for (int i = 0; i < NumCascades; ++i)
                         {
-                            float CascadeFar = LightData.CascadeSplits[i];
-                            
-                            glm::mat4 ViewProjection        = glm::perspective(glm::radians(ViewVolume.GetFOV()), ViewVolume.GetAspectRatio(), NearClip, CascadeFar);
-                            glm::mat4 ViewProjectionMatrix  = ViewProjection * ViewVolume.GetViewMatrix();
-                            
-                            glm::vec3 FrustumCorners[8];
-                            FFrustum::ComputeFrustumCorners(ViewProjectionMatrix, FrustumCorners);
-                            
-                            glm::vec3 FrustumCenter = std::reduce(std::begin(FrustumCorners), std::end(FrustumCorners)) / 8.0f;
-                            glm::mat4 LightView     = glm::lookAt(FrustumCenter + Light.Direction, FrustumCenter, FViewVolume::UpAxis);
-                            
-                            float MinX = eastl::numeric_limits<float>::max();
-                            float MaxX = eastl::numeric_limits<float>::lowest();
-                            float MinY = eastl::numeric_limits<float>::max();
-                            float MaxY = eastl::numeric_limits<float>::lowest();
-                            float MinZ = eastl::numeric_limits<float>::max();
-                            float MaxZ = eastl::numeric_limits<float>::lowest();
-                            for (const auto& V : FrustumCorners)
-                            {
-                                const auto TRF = LightView * glm::vec4(V, 1.0f);
-                                MinX = eastl::min(MinX, TRF.x);
-                                MaxX = eastl::max(MaxX, TRF.x);
-                                MinY = eastl::min(MinY, TRF.y);
-                                MaxY = eastl::max(MaxY, TRF.y);
-                                MinZ = eastl::min(MinZ, TRF.z);
-                                MaxZ = eastl::max(MaxZ, TRF.z);
-                            }
-                            
-                            constexpr float zMult = 10.0f;
-                            if (MinZ < 0)
-                            {
-                                MinZ *= zMult;
-                            }
-                            else
-                            {
-                                MinZ /= zMult;
-                            }
-                            if (MaxZ < 0)
-                            {
-                                MaxZ /= zMult;
-                            }
-                            else
-                            {
-                                MaxZ *= zMult;
-                            }
-                            
-                            glm::mat4 LightProjection       = glm::ortho(MinX, MaxX, MinY, MaxY, MinZ, MaxZ);
-                            Light.ViewProjection[i]         = LightProjection * LightView;
+                            const float P       = (float)(i + 1) / (float)NumCascades;
+                            const float LogD    = MinDepth * glm::pow(DepthRatio, P);
+                            const float UniD    = MinDepth + ClipRange * P;
+                            const float D       = CascadeSplitLambda * (LogD - UniD) + UniD;
+                            CascadeFarDistances[i]      = D;
+                            LightData.CascadeSplits[i]  = D; // World-distance, view-space Z.
                         }
-                        
+
+                        const glm::mat4& CamView   = ViewVolume.GetViewMatrix();
+                        const float      CamFOV    = ViewVolume.GetFOV();
+                        const float      CamAspect = ViewVolume.GetAspectRatio();
+                        const glm::vec3  LightDir  = Light.Direction; // Toward the sun.
+
+                        float LastSplitDistance = NearClip;
+                        for (int i = 0; i < NumCascades; ++i)
+                        {
+                            const float SplitNear = LastSplitDistance;
+                            const float SplitFar  = CascadeFarDistances[i];
+
+                            // World-space corners of the camera sub-frustum [SplitNear, SplitFar].
+                            // Use a standard-Z perspective so ComputeFrustumCorners can un-project the
+                            // canonical NDC cube without caring about the engine's reverse-Z convention.
+                            const glm::mat4 SliceProj = glm::perspective(glm::radians(CamFOV), CamAspect, SplitNear, SplitFar);
+                            const glm::mat4 SliceVP   = SliceProj * CamView;
+
+                            glm::vec3 Corners[8];
+                            FFrustum::ComputeFrustumCorners(SliceVP, Corners);
+
+                            // Bound the slice with a sphere, rotation-invariant, so the cascade
+                            // size doesn't pulse as the camera turns.
+                            glm::vec3 SphereCenter(0.0f);
+                            for (int j = 0; j < 8; ++j)
+                            {
+                                SphereCenter += Corners[j];
+                            }
+                            SphereCenter /= 8.0f;
+
+                            float Radius = 0.0f;
+                            for (int j = 0; j < 8; ++j)
+                            {
+                                Radius = glm::max(Radius, glm::length(Corners[j] - SphereCenter));
+                            }
+                            // Round up to prevent radius jitter from sub-pixel camera movement.
+                            Radius = std::ceil(Radius * 16.0f) / 16.0f;
+
+                            // Build a light-space view centered on the sphere. BackDistance pushes
+                            // the light eye behind the cascade volume so off-screen occluders
+                            // (e.g. things directly above the cascade) still write into the depth
+                            // texture.
+                            constexpr float BackDistance = 100.0f;
+                            const float     OrthoRange   = Radius * 2.0f + BackDistance;
+
+                            glm::mat4 LightView = glm::lookAt(
+                                SphereCenter + LightDir * (Radius + BackDistance),
+                                SphereCenter,
+                                FViewVolume::UpAxis);
+
+                            // Project the cascade origin into light space, snap the
+                            // XY components to the shadow texel grid, and rebuild the view from the
+                            // snapped origin. Without this, sub-texel camera motion makes shadow
+                            // edges crawl/shimmer along their length.
+                            {
+                                const glm::vec4 OriginLS = LightView * glm::vec4(SphereCenter, 1.0f);
+                                const float     TexelSize = (Radius * 2.0f) / (float)GCSMResolution;
+                                glm::vec4 SnappedOriginLS = OriginLS;
+                                SnappedOriginLS.x = std::floor(OriginLS.x / TexelSize) * TexelSize;
+                                SnappedOriginLS.y = std::floor(OriginLS.y / TexelSize) * TexelSize;
+                                const glm::vec4 SnappedOriginWS = glm::inverse(LightView) * SnappedOriginLS;
+                                const glm::vec3 SnappedCenter   = glm::vec3(SnappedOriginWS);
+                                LightView = glm::lookAt(
+                                    SnappedCenter + LightDir * (Radius + BackDistance),
+                                    SnappedCenter,
+                                    FViewVolume::UpAxis);
+                            }
+
+                            // Standard-Z [0,1] LH ortho. Near plane is at the eye (0), far at the
+                            // far face of the slab (OrthoRange). The full sphere fits inside.
+                            const glm::mat4 LightProjection = glm::ortho(
+                                -Radius, +Radius,
+                                -Radius, +Radius,
+                                0.0f, OrthoRange);
+
+                            Light.ViewProjection[i] = LightProjection * LightView;
+                            LastSplitDistance = SplitFar;
+                        }
+
                         LightData.Lights[0] = Light;
                         LightData.NumLights++;
                     });
@@ -1416,14 +1461,19 @@ namespace Lumina
             {
                 LUMINA_PROFILE_SECTION_COLORED("Process Mip", tracy::Color::Yellow4);
 
+                // Both paths need a min-reduction clamp sampler so that a single
+                // bilinear tap collapses the 2x2 footprint to the farthest depth
+                // (min value in reverse-Z). For mip 0 the source is 1:1 with the
+                // destination so the reduction is a no-op but the sampler type
+                // must still be explicit.
+                FRHISamplerRef Sampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Minimum>::GetRHI();
                 FBindingSetDesc SetDesc;
                 if (i == 0)
                 {
-                    SetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::DepthAttachment)));
+                    SetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::DepthAttachment), Sampler));
                 }
                 else
                 {
-                    FRHISamplerRef Sampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Minimum>::GetRHI();
                     SetDesc.AddItem(FBindingSetItem::TextureSRV(0, DepthPyramid, Sampler, DepthPyramid->GetFormat(), FTextureSubresourceSet(i - 1, 1, 0, 1)));
                 }
 
@@ -1754,7 +1804,7 @@ namespace Lumina
                 .SetLoadOp(ERenderLoadOp::Clear)
                 .SetDepthClearValue(1.0)
                 .SetImage(GetNamedImage(ENamedImage::Cascade))
-                    .SetNumSlices(NumCascades - 1);
+                    .SetNumSlices(NumCascades);
             
             FRenderPassDesc RenderPass; RenderPass
                 .SetDepthAttachment(Depth)
@@ -2697,7 +2747,10 @@ namespace Lumina
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(9, GetNamedImage(ENamedImage::Cascade)));
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(10, ShadowAtlas.GetImage()));
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(11, GetNamedImage(ENamedImage::Picker), TStaticRHISampler<false, false>::GetRHI()));
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(12, GetNamedImage(ENamedImage::DepthPyramid), TStaticRHISampler<false, false>::GetRHI()));
+            // Min-reduction clamp sampler: a single bilinear tap on the depth pyramid
+            // returns the minimum of the 2x2 footprint (farthest depth in reverse-Z).
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(12, GetNamedImage(ENamedImage::DepthPyramid),
+                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Minimum>::GetRHI()));
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(13, GetNamedImage(ENamedImage::HDR)));
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(14, GetNamedImage(ENamedImage::Accum)));
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(15, GetNamedImage(ENamedImage::Revealage)));

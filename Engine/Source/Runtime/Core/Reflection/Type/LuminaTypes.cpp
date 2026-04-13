@@ -61,6 +61,22 @@ namespace Lumina
 
         return Display;
     }
+    
+    void FProperty::CallSetter(void* Container, const void* InValue) const
+    {
+        if (!HasSetter())
+        {
+            LOG_CRITICAL("Calling a setter but the property has no setter defined.");
+        }
+    }
+
+    void FProperty::CallGetter(const void* Container, void* OutValue) const
+    {
+        if (!HasGetter())
+        {
+            LOG_CRITICAL("Calling a getter but the property has no getter defined.");
+        }
+    }
 
     void* FProperty::GetValuePtrInternal(void* ContainerPtr, int64 ArrayIndex) const
     {

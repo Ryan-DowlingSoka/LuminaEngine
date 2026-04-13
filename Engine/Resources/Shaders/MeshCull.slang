@@ -3,60 +3,60 @@
 
 #define LOCAL_SIZE 256
 
-
-
 bool IsInFrustum(uint Index)
 {
     float4 SphereBounds = uInstanceData[Index].SphereBounds;
     float3 Center       = SphereBounds.xyz;
     float  Radius       = SphereBounds.w;
 
-    float d0 = dot(uSceneData.CullData.Frustum.Planes[0].xyz, Center) + uSceneData.CullData.Frustum.Planes[0].w;
-    float d1 = dot(uSceneData.CullData.Frustum.Planes[1].xyz, Center) + uSceneData.CullData.Frustum.Planes[1].w;
-    float d2 = dot(uSceneData.CullData.Frustum.Planes[2].xyz, Center) + uSceneData.CullData.Frustum.Planes[2].w;
-    float d3 = dot(uSceneData.CullData.Frustum.Planes[3].xyz, Center) + uSceneData.CullData.Frustum.Planes[3].w;
-    float d4 = dot(uSceneData.CullData.Frustum.Planes[4].xyz, Center) + uSceneData.CullData.Frustum.Planes[4].w;
-    float d5 = dot(uSceneData.CullData.Frustum.Planes[5].xyz, Center) + uSceneData.CullData.Frustum.Planes[5].w;
-
-    float Inside = step(-Radius, d0) *
-                   step(-Radius, d1) *
-                   step(-Radius, d2) *
-                   step(-Radius, d3) *
-                   step(-Radius, d4) *
-                   step(-Radius, d5);
-
-    return Inside > 0.5;
+    [unroll]
+    for (int i = 0; i < 6; ++i)
+    {
+        float4 Plane = uSceneData.CullData.Frustum.Planes[i];
+        float  Dist  = dot(Plane.xyz, Center) + Plane.w;
+        if (Dist < -Radius)
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
-// 2D Polyhedral Bounds of a Clipped, Perspective-Projected 3D Sphere.
-// Michael Mara, Morgan McGuire. 2013
-bool ProjectSphere(float3 C, float R, float ZNear, float P00, float P11, out float4 AABB)
+// 2D polyhedral bounds of a clipped perspective-projected sphere.
+// Michael Mara, Morgan McGuire (2013), adapted for left-handed view space
+// where the camera looks down +Z (visible points have C.z > 0).
+//
+// On success, ClipAABB = (minClipX, minClipY, maxClipX, maxClipY) with each
+// component already divided by clip.w. Returns false if the sphere clips the
+// near plane, in which case the caller should treat the object as visible.
+bool ProjectSphereClip(float3 C, float R, float ZNear, float P00, float P11, out float4 ClipAABB)
 {
-    if (C.z < R + ZNear)
+    ClipAABB = float4(-1.0, -1.0, 1.0, 1.0);
+
+    // Sphere straddles (or is behind) the near plane, don't occlusion cull.
+    if (C.z - R < ZNear)
     {
-        AABB = float4(0.0, 0.0, 1.0, 1.0);
-        return false;
+      return false;
     }
+    
+    float2 cx = float2(C.x, C.z);
+    float  tx = sqrt(dot(cx, cx) - R * R);
 
-    float2 CX   = -C.xz;
-    float2 VX = float2(sqrt(dot(CX, CX) - R * R), R);
-    float2 MinX = mul(CX, float2x2(VX.x, VX.y, -VX.y, VX.x));
-    float2 MaxX = mul(CX, float2x2(VX.x, -VX.y,  VX.y, VX.x));
+    float2 minX = float2(tx * cx.x - R  * cx.y,  R  * cx.x + tx * cx.y);
+    float2 maxX = float2(tx * cx.x + R  * cx.y, -R  * cx.x + tx * cx.y);
 
-    float2 CY   = -C.yz;
-    float2 VY = float2(sqrt(dot(CY, CY) - R * R), R);
-    float2 MinY = mul(CY, float2x2(VY.x,  VY.y, -VY.y, VY.x));
-    float2 MaxY = mul(float2x2(VY.x, -VY.y,  VY.y, VY.x), CY);
+    float2 cy = float2(C.y, C.z);
+    float  ty = sqrt(dot(cy, cy) - R * R);
 
-    AABB = float4(
-        MinX.x / MinX.y * P00,
-        MinY.x / MinY.y * P11,
-        MaxX.x / MaxX.y * P00,
-        MaxY.x / MaxY.y * P11
+    float2 minY = float2(ty * cy.x - R  * cy.y,  R  * cy.x + ty * cy.y);
+    float2 maxY = float2(ty * cy.x + R  * cy.y, -R  * cy.x + ty * cy.y);
+
+    ClipAABB = float4(
+        (minX.x / minX.y) * P00,
+        (minY.x / minY.y) * P11,
+        (maxX.x / maxX.y) * P00,
+        (maxY.x / maxY.y) * P11
     );
-
-    // Clip space -> UV space
-    AABB = AABB.xwzy * float4(0.5f, -0.5f, 0.5f, -0.5f) + float4(0.5f, 0.5f, 0.5f, 0.5f);
 
     return true;
 }
@@ -75,52 +75,63 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID)
     float ZFar  = uSceneData.CullData.zFar;
 
     bool bVisible = true;
+
     if (uSceneData.CullData.bFrustumCull != 0)
     {
         bVisible = IsInFrustum(GID);
-
     }
 
-    bool bSkipCull = uInstanceData[GID].HasFlag(EInstanceFlags::NoCull);
+    bool bSkipOcclusion = uInstanceData[GID].HasFlag(EInstanceFlags::NoCull);
 
-    #if 0
-    if (!bSkipCull && bVisible && uSceneData.CullData.bOcclusionCull != 0)
+    if (bVisible && !bSkipOcclusion && uSceneData.CullData.bOcclusionCull != 0)
     {
-        float4 SphereBounds = uInstanceData[GID].SphereBounds;
-        float3 Center       = mul(uSceneData.CullData.View, float4(SphereBounds.xyz, 1.0)).xyz;
-        float  Radius       = SphereBounds.w;
+        float4 SphereWS = uInstanceData[GID].SphereBounds;
 
-        float Dist  = length(Center);
-        Radius     += Dist * 0.05f;
+        // Transform world-space bounding sphere into view space.
+        float3 Center = mul(uSceneData.CullData.View, float4(SphereWS.xyz, 1.0)).xyz;
+        float  Radius = SphereWS.w * 1.02; // Tiny dilation for conservatism.
 
-        Center.y   *= -1.0;
-
-        float4 AABB;
-        if (ProjectSphere(Center, Radius, ZNear,
-                          uSceneData.CullData.P00,
-                          uSceneData.CullData.P11,
-                          AABB))
+        float4 ClipAABB;
+        if (ProjectSphereClip(Center, Radius, ZNear,
+                              uSceneData.CullData.P00,
+                              uSceneData.CullData.P11,
+                              ClipAABB))
         {
-            float Width  = (AABB.z - AABB.x) * uSceneData.CullData.PyramidWidth;
-            float Height = (AABB.w - AABB.y) * uSceneData.CullData.PyramidHeight;
-            float Level  = floor(log2(max(Width, Height)));
+            // Clip [-1,1] -> Vulkan UV [0,1].
+            float4 UvAABB = saturate(ClipAABB * 0.5 + 0.5);
 
-            float2 UV  = float2(AABB.x, AABB.y);
-            float2 UV2 = float2(AABB.z, AABB.w);
+            float Width  = (UvAABB.z - UvAABB.x) * uSceneData.CullData.PyramidWidth;
+            float Height = (UvAABB.w - UvAABB.y) * uSceneData.CullData.PyramidHeight;
 
-            float Depth       = uDepthPyramid.SampleLevel((UV + UV2) * 0.5, Level).x;
-            float DepthSphere = ZNear / (Center.z - Radius);
+            // Pick a mip where a single bilinear tap (2x2) covers the AABB.
+            float Level = ceil(log2(max(Width, Height) * 0.5));
+            Level = max(Level, 0.0);
 
-            bVisible = bVisible && DepthSphere >= Depth;
+            float2 SampleUV = (UvAABB.xy + UvAABB.zw) * 0.5;
+
+            // uDepthPyramid uses a MIN-reduction sampler, so this tap returns the
+            // minimum depth of the 2x2 footprint. In reverse-Z, min == farthest.
+            float PyramidDepth = uDepthPyramid.SampleLevel(SampleUV, Level).x;
+
+            // Nearest point of the sphere toward the camera.
+            float FrontZ = Center.z - Radius;
+
+            // Exact reverse-Z depth matching glm::perspective(fov, asp, Far, Near):
+            // depth(z) = (N * F / z - N) / (F - N)
+            float DepthSphere = (ZNear * ZFar / FrontZ - ZNear) / (ZFar - ZNear);
+
+            // Reverse-Z: larger depth == closer. Sphere is visible iff its
+            // nearest point is at least as close as the farthest occluder.
+            bVisible = bVisible && (DepthSphere >= PyramidDepth);
         }
     }
-#endif
+
     if (bVisible)
     {
-        uint BatchID            = uInstanceData[GID].DrawID;
-        uint InstanceCount      = 0;
+        uint BatchID       = uInstanceData[GID].DrawID;
+        uint InstanceCount = 0;
         InterlockedAdd(uIndirectDrawData[BatchID].InstanceCount, 1, InstanceCount);
-        uint InstanceIndex      = uIndirectDrawData[BatchID].FirstInstance + InstanceCount;
+        uint InstanceIndex = uIndirectDrawData[BatchID].FirstInstance + InstanceCount;
 
         uMappingData[InstanceIndex] = GID;
     }

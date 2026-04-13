@@ -43,7 +43,7 @@ namespace Lumina
         void Init();
 
         RUNTIME_API size_t GetElementSize() const { return ElementSize; }
-        RUNTIME_API void SetElementSize(size_t Size) { ElementSize = Size; }
+        RUNTIME_API void SetElementSize(size_t Size) { ElementSize = (uint32)Size; }
         RUNTIME_API virtual EPropertyTypeFlags GetType() { return TypeFlags; }
 
         template<typename ValueType>
@@ -124,27 +124,17 @@ namespace Lumina
         void OnMetadataFinalized();
         static FString MakeDisplayNameFromName(EPropertyTypeFlags TypeFlags, const FName& InName);
 
+        RUNTIME_API virtual FString ToString(const void* Data) const { return "<unknown>"; }
+        
         virtual bool HasSetter() const { return false; }
 
         virtual bool HasGetter() const { return false; }
 
         virtual bool HasSetterOrGetter() const { return false; }
 
-        virtual void CallSetter(void* Container, const void* InValue) const
-        {
-            if (!HasSetter())
-            {
-                LOG_CRITICAL("Calling a setter but the property has no setter defined.");
-            }
-        }
+        virtual void CallSetter(void* Container, const void* InValue) const;
 
-        virtual void CallGetter(const void* Container, void* OutValue) const
-        {
-            if (!HasGetter())
-            {
-                LOG_CRITICAL("Calling a getter but the property has no getter defined.");
-            }
-        }
+        virtual void CallGetter(const void* Container, void* OutValue) const;
 
         
     private:
@@ -316,10 +306,10 @@ namespace Lumina
             :Super(InOwner, Params)
         {}
 
+        virtual FString ToString(const void* Data) const;
+        
         virtual void SetIntPropertyValue(void* Data, uint64 Value) const override;
         virtual void SetIntPropertyValue(void* Data, int64 Value) const override;
-
-        
         
         virtual int64 GetSignedIntPropertyValue(void const* Data) const override;
         virtual int64 GetSignedIntPropertyValue_InContainer(void const* Container) const override;
@@ -329,6 +319,12 @@ namespace Lumina
 
         
     };
+    
+    template <typename TCPPType> requires eastl::is_arithmetic_v<TCPPType>
+    FString TProperty_Numeric<TCPPType>::ToString(const void* Data) const
+    {
+        return eastl::to_string(TTypeInfo::GetPropertyValue(Data));
+    }
 
     template <typename TCPPType> requires eastl::is_arithmetic_v<TCPPType>
     void TProperty_Numeric<TCPPType>::SetIntPropertyValue(void* Data, uint64 Value) const
