@@ -8,6 +8,9 @@
 
 namespace Lumina
 {
+    struct SDirectionalLightComponent;
+    struct SSpotLightComponent;
+    struct SPointLightComponent;
     class CWorld;
     struct SStaticMeshComponent;
     struct SSkeletalMeshComponent;
@@ -159,6 +162,11 @@ namespace Lumina
         void ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
         void ProcessSkeletalMeshEntityInternal(entt::entity Entity, const SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
         void MergeMeshDrawData(TVector<FThreadLocalDrawData>& ThreadLocal);
+        
+        void ProcessPointLight(const SPointLightComponent& PointLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount);
+        void ProcessSpotLight(const SSpotLightComponent& SpotLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount);
+        void ProcessDirectionalLight(const SDirectionalLightComponent& DirectionalLight, TAtomic<uint32>& LightCount);
+        
 
         // ~ End Parallel Draw Command Compilation ~
 

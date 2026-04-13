@@ -161,6 +161,8 @@ namespace Lumina
         {
             LUMINA_PROFILE_SECTION("Compile Draw Commands");
             
+            TAtomic<uint32> LightCount{0};
+
             auto DirectionalView    = World->GetEntityRegistry().view<SDirectionalLightComponent>(entt::exclude<SDisabledTag>);
             auto SpotLightView      = World->GetEntityRegistry().view<SSpotLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto PointLightView     = World->GetEntityRegistry().view<SPointLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
@@ -172,28 +174,13 @@ namespace Lumina
             auto TransformView      = World->GetEntityRegistry().view<STransformComponent, FNeedsTransformUpdate>();
             auto StaticView         = World->GetEntityRegistry().view<SStaticMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto SkeletalView       = World->GetEntityRegistry().view<SSkeletalMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-
-            // Snapshot entities into linear arrays so the parallel-for can address them by index.
-            TVector<entt::entity> StaticEntities;
-            StaticEntities.reserve(StaticView.size_hint());
-            for (entt::entity Entity : StaticView)
-            {
-                StaticEntities.push_back(Entity);
-            }
-
-            TVector<entt::entity> SkeletalEntities;
-            SkeletalEntities.reserve(SkeletalView.size_hint());
-            for (entt::entity Entity : SkeletalView)
-            {
-                SkeletalEntities.push_back(Entity);
-            }
             
             TransformView.each([](STransformComponent& Transform)
             {
                 (void)Transform.GetWorldMatrix(); // Will resolve. 
             });
 
-            const size_t EntityCount       = StaticEntities.size() + SkeletalEntities.size();
+            const size_t EntityCount       = StaticView.size_hint() + SkeletalView.size_hint();
             const size_t EstimatedProxies  = EntityCount * 2;
 
             InstanceData.reserve(EstimatedProxies);
@@ -209,32 +196,40 @@ namespace Lumina
                 Local.Items.reserve(ReservePerThread);
             }
             
-            // Build the parallel compile graph: static + skeletal fan into a serial merge.
+            
             FTaskGraph Graph;
             
-            FTaskGraph::FNodeHandle StaticNode = Graph.AddParallelFor((uint32)StaticEntities.size(), 64, [&](const Task::FParallelRange& Range)
+            FTaskGraph::FNodeHandle StaticNode = Graph.AddParallelFor((uint32)StaticView.handle()->size(), 64, [&](const Task::FParallelRange& Range)
             {
                 LUMINA_PROFILE_SECTION("Process Static Mesh Range");
                 FThreadLocalDrawData& Local = ThreadLocal[Range.Thread];
+                auto Handle = StaticView.handle();
                 for (uint32 i = Range.Start; i < Range.End; ++i)
                 {
-                    const entt::entity Entity = StaticEntities[i];
-                    const SStaticMeshComponent& MeshComponent      = StaticView.get<SStaticMeshComponent>(Entity);
-                    const STransformComponent&  TransformComponent = StaticView.get<STransformComponent>(Entity);
-                    ProcessStaticMeshEntityInternal(Entity, MeshComponent, TransformComponent, Local);
+                    entt::entity Entity = (*Handle)[i];
+                    if (Handle->contains(Entity))
+                    {
+                        const SStaticMeshComponent& MeshComponent      = StaticView.get<SStaticMeshComponent>(Entity);
+                        const STransformComponent&  TransformComponent = StaticView.get<STransformComponent>(Entity);
+                        ProcessStaticMeshEntityInternal(Entity, MeshComponent, TransformComponent, Local);
+                    }
                 }
             });
 
-            FTaskGraph::FNodeHandle SkeletalNode = Graph.AddParallelFor((uint32)SkeletalEntities.size(), 32, [&](const Task::FParallelRange& Range)
+            FTaskGraph::FNodeHandle SkeletalNode = Graph.AddParallelFor((uint32)SkeletalView.handle()->size(), 32, [&](const Task::FParallelRange& Range)
             {
                 LUMINA_PROFILE_SECTION("Process Skeletal Mesh Range");
                 FThreadLocalDrawData& Local = ThreadLocal[Range.Thread];
+                auto Handle = SkeletalView.handle();
                 for (uint32 i = Range.Start; i < Range.End; ++i)
                 {
-                    const entt::entity Entity = SkeletalEntities[i];
-                    const SSkeletalMeshComponent& MeshComponent      = SkeletalView.get<SSkeletalMeshComponent>(Entity);
-                    const STransformComponent&    TransformComponent = SkeletalView.get<STransformComponent>(Entity);
-                    ProcessSkeletalMeshEntityInternal(Entity, MeshComponent, TransformComponent, Local);
+                    entt::entity Entity = (*Handle)[i];
+                    if (Handle->contains(Entity))
+                    {
+                        const SSkeletalMeshComponent& MeshComponent    = SkeletalView.get<SSkeletalMeshComponent>(Entity);
+                        const STransformComponent&  TransformComponent = SkeletalView.get<STransformComponent>(Entity);
+                        ProcessSkeletalMeshEntityInternal(Entity, MeshComponent, TransformComponent, Local);
+                    }
                 }
             });
 
@@ -456,273 +451,67 @@ namespace Lumina
                 #endif 
             });
             
-            Graph.Add([&]
+            auto DLightTask = Graph.AddParallelFor(DirectionalView.handle()->size(), 32, [&](Task::FParallelRange Range)
             {
-                LUMINA_PROFILE_SECTION("Light Processing");
-
+                LUMINA_PROFILE_SECTION("Process Directional Light");
+                auto Handle = DirectionalView.handle();
+                for (uint32 i = Range.Start; i < Range.End; ++i)
                 {
-                    LUMINA_PROFILE_SECTION("Directional Light Processing");
-                
-                    LightData.bHasSun = false;
-                    DirectionalView.each([this](const SDirectionalLightComponent& DirectionalLightComponent)
+                    entt::entity Entity = (*Handle)[i];
+                    if (Handle->contains(Entity))
                     {
-                        LightData.bHasSun = true;
-                        const FViewVolume& ViewVolume = SceneViewport->GetViewVolume();
-
-                        const float NearClip = ViewVolume.GetNear();
-                        const float FarClip  = ViewVolume.GetFar();
-
-                        FLight Light            = {};
-                        Light.Flags             = LIGHT_TYPE_DIRECTIONAL;
-                        Light.Color             = PackColor(glm::vec4(DirectionalLightComponent.Color, 1.0));
-                        Light.Intensity         = DirectionalLightComponent.Intensity;
-                        Light.Direction         = glm::normalize(DirectionalLightComponent.Direction);
-                        LightData.SunDirection  = Light.Direction;
-
-                        // (logarithmic + uniform blend, Lambda = 0.92).
-                        // Caps shadow distance so the last cascade still has usable resolution.
-                        constexpr float CascadeSplitLambda  = 0.92f;
-                        constexpr float ShadowMaxDistance   = 1000.0f;
-
-                        const float ShadowFar  = glm::min(FarClip, ShadowMaxDistance);
-                        const float ClipRange  = ShadowFar - NearClip;
-                        const float MinDepth   = NearClip;
-                        const float MaxDepth   = ShadowFar;
-                        const float DepthRatio = MaxDepth / glm::max(MinDepth, 0.0001f);
-
-                        float CascadeFarDistances[NumCascades];
-                        for (int i = 0; i < NumCascades; ++i)
-                        {
-                            const float P       = (float)(i + 1) / (float)NumCascades;
-                            const float LogD    = MinDepth * glm::pow(DepthRatio, P);
-                            const float UniD    = MinDepth + ClipRange * P;
-                            const float D       = CascadeSplitLambda * (LogD - UniD) + UniD;
-                            CascadeFarDistances[i]      = D;
-                            LightData.CascadeSplits[i]  = D; // World-distance, view-space Z.
-                        }
-
-                        const glm::mat4& CamView   = ViewVolume.GetViewMatrix();
-                        const float      CamFOV    = ViewVolume.GetFOV();
-                        const float      CamAspect = ViewVolume.GetAspectRatio();
-                        const glm::vec3  LightDir  = Light.Direction; // Toward the sun.
-
-                        float LastSplitDistance = NearClip;
-                        for (int i = 0; i < NumCascades; ++i)
-                        {
-                            const float SplitNear = LastSplitDistance;
-                            const float SplitFar  = CascadeFarDistances[i];
-
-                            // World-space corners of the camera sub-frustum [SplitNear, SplitFar].
-                            // Use a standard-Z perspective so ComputeFrustumCorners can un-project the
-                            // canonical NDC cube without caring about the engine's reverse-Z convention.
-                            const glm::mat4 SliceProj = glm::perspective(glm::radians(CamFOV), CamAspect, SplitNear, SplitFar);
-                            const glm::mat4 SliceVP   = SliceProj * CamView;
-
-                            glm::vec3 Corners[8];
-                            FFrustum::ComputeFrustumCorners(SliceVP, Corners);
-
-                            // Bound the slice with a sphere, rotation-invariant, so the cascade
-                            // size doesn't pulse as the camera turns.
-                            glm::vec3 SphereCenter(0.0f);
-                            for (int j = 0; j < 8; ++j)
-                            {
-                                SphereCenter += Corners[j];
-                            }
-                            SphereCenter /= 8.0f;
-
-                            float Radius = 0.0f;
-                            for (int j = 0; j < 8; ++j)
-                            {
-                                Radius = glm::max(Radius, glm::length(Corners[j] - SphereCenter));
-                            }
-                            // Round up to prevent radius jitter from sub-pixel camera movement.
-                            Radius = std::ceil(Radius * 16.0f) / 16.0f;
-
-                            // Build a light-space view centered on the sphere. BackDistance pushes
-                            // the light eye behind the cascade volume so off-screen occluders
-                            // (e.g. things directly above the cascade) still write into the depth
-                            // texture.
-                            constexpr float BackDistance = 100.0f;
-                            const float     OrthoRange   = Radius * 2.0f + BackDistance;
-
-                            glm::mat4 LightView = glm::lookAt(
-                                SphereCenter + LightDir * (Radius + BackDistance),
-                                SphereCenter,
-                                FViewVolume::UpAxis);
-
-                            // Project the cascade origin into light space, snap the
-                            // XY components to the shadow texel grid, and rebuild the view from the
-                            // snapped origin. Without this, sub-texel camera motion makes shadow
-                            // edges crawl/shimmer along their length.
-                            {
-                                const glm::vec4 OriginLS = LightView * glm::vec4(SphereCenter, 1.0f);
-                                const float     TexelSize = (Radius * 2.0f) / (float)GCSMResolution;
-                                glm::vec4 SnappedOriginLS = OriginLS;
-                                SnappedOriginLS.x = std::floor(OriginLS.x / TexelSize) * TexelSize;
-                                SnappedOriginLS.y = std::floor(OriginLS.y / TexelSize) * TexelSize;
-                                const glm::vec4 SnappedOriginWS = glm::inverse(LightView) * SnappedOriginLS;
-                                const glm::vec3 SnappedCenter   = glm::vec3(SnappedOriginWS);
-                                LightView = glm::lookAt(
-                                    SnappedCenter + LightDir * (Radius + BackDistance),
-                                    SnappedCenter,
-                                    FViewVolume::UpAxis);
-                            }
-
-                            // Standard-Z [0,1] LH ortho. Near plane is at the eye (0), far at the
-                            // far face of the slab (OrthoRange). The full sphere fits inside.
-                            const glm::mat4 LightProjection = glm::ortho(
-                                -Radius, +Radius,
-                                -Radius, +Radius,
-                                0.0f, OrthoRange);
-
-                            Light.ViewProjection[i] = LightProjection * LightView;
-                            LastSplitDistance = SplitFar;
-                        }
-
-                        LightData.Lights[0] = Light;
-                        LightData.NumLights++;
-                    });
-                }
-                
-                //========================================================================================================================
-                
-                {
-                    LUMINA_PROFILE_SECTION("Point Light Processing");
-                
-                    PointLightView.each([&] (const SPointLightComponent& PointLightComponent, const STransformComponent& TransformComponent)
-                    {
-                        FLight Light;
-                        Light.Flags                 = LIGHT_TYPE_POINT;
-                        Light.Falloff               = PointLightComponent.Falloff;
-                        Light.Color                 = PackColor(glm::vec4(PointLightComponent.LightColor, 1.0));
-                        Light.Intensity             = PointLightComponent.Intensity;
-                        Light.Radius                = PointLightComponent.Attenuation;
-                        Light.Position              = TransformComponent.WorldTransform.Location;
-                        
-                        FViewVolume LightView(90.0f, 1.0f, 0.01f, Light.Radius);
-                        
-                        auto SetView = [&Light](FViewVolume& View, uint32 Index)
-                        {
-                            switch (Index)
-                            {
-                            case 0: // +X
-                                View.SetView(Light.Position, FViewVolume::RightAxis, FViewVolume::DownAxis);
-                                break;
-                            case 1: // -X
-                                View.SetView(Light.Position, FViewVolume::LeftAxis, FViewVolume::DownAxis);
-                                break;
-                            case 2: // +Y
-                                View.SetView(Light.Position, FViewVolume::UpAxis, FViewVolume::ForwardAxis);
-                                break;
-                            case 3: // -Y
-                                View.SetView(Light.Position, FViewVolume::DownAxis, FViewVolume::BackwardAxis);
-                                break;
-                            case 4: // +Z
-                                View.SetView(Light.Position, FViewVolume::ForwardAxis, FViewVolume::DownAxis);
-                                break;
-                            case 5: // -Z
-                                View.SetView(Light.Position, FViewVolume::BackwardAxis, FViewVolume::DownAxis);
-                                break;
-                            default:
-                                UNREACHABLE();
-                            }
-                        };
-                
-                        if (PointLightComponent.bCastShadows)
-                        {
-                            int32 TileIndex = ShadowAtlas.AllocateTile();
-                            
-                            if (TileIndex != INDEX_NONE)
-                            {
-                                const FShadowTile& Tile = ShadowAtlas.GetTile(TileIndex);
-                
-                                for (int Face = 0; Face < 6; ++Face)
-                                {
-                                    SetView(LightView, Face);
-                                    
-                                    Light.ViewProjection[Face]              = LightView.ToReverseDepthViewProjectionMatrix();
-                                    Light.Shadow[Face].ShadowMapIndex       = TileIndex;
-                                    Light.Shadow[Face].ShadowMapLayer       = Face;
-                                    Light.Shadow[Face].AtlasUVOffset        = Tile.UVOffset;
-                                    Light.Shadow[Face].AtlasUVScale         = Tile.UVScale;
-                                    Light.Shadow[Face].LightIndex           = (int32)LightData.NumLights;
-                                }
-                                
-                                PackedShadows[(uint32)ELightType::Point].push_back(Light.Shadow[0]);
-                            }
-                        }
-                        else
-                        {
-                            Light.Shadow[0].ShadowMapIndex = INDEX_NONE;
-                        }
-                        
-                        LightData.Lights[LightData.NumLights++] = Light;
-                    });
-                }
-                
-                //========================================================================================================================
-                
-                {
-                    LUMINA_PROFILE_SECTION("Spot Light Processing");
-                
-                    SpotLightView.each([&] (entt::entity Entity, SSpotLightComponent& SpotLightComponent, STransformComponent& Transform)
-                    {
-                
-                        glm::vec3 UpdatedForward    = Transform.GetRotation() * FViewVolume::ForwardAxis;
-                        glm::vec3 UpdatedUp         = Transform.GetRotation() * FViewVolume::UpAxis;
-                
-                        float InnerDegrees = SpotLightComponent.InnerConeAngle;
-                        float OuterDegrees = SpotLightComponent.OuterConeAngle;
-                
-                        float InnerCos = glm::cos(glm::radians(InnerDegrees));
-                        float OuterCos = glm::cos(glm::radians(OuterDegrees));
-                        
-                        FViewVolume ViewVolume(OuterDegrees * 2.00f, 1.0f, 0.01f, SpotLightComponent.Attenuation);
-                        ViewVolume.SetView(Transform.WorldTransform.Location, -UpdatedForward, UpdatedUp);
-                        
-                        FLight Light;
-                        Light.Flags                 = LIGHT_TYPE_SPOT;
-                        Light.Position              = Transform.WorldTransform.Location;
-                        Light.Direction             = glm::normalize(UpdatedForward);
-                        Light.Falloff               = SpotLightComponent.Falloff;
-                        Light.Color                 = PackColor(glm::vec4(SpotLightComponent.LightColor, 1.0));
-                        Light.Intensity             = SpotLightComponent.Intensity;
-                        Light.Radius                = SpotLightComponent.Attenuation;
-                        Light.Angles                = glm::vec2(InnerCos, OuterCos);
-                        Light.ViewProjection[0]     = ViewVolume.ToReverseDepthViewProjectionMatrix();
-                        
-                        if (SpotLightComponent.bCastShadows)
-                        {
-                            int32 TileIndex = ShadowAtlas.AllocateTile();
-                            if (TileIndex != INDEX_NONE)
-                            {
-                                const FShadowTile& Tile             = ShadowAtlas.GetTile(TileIndex);
-                                Light.Shadow[0].ShadowMapIndex      = TileIndex;
-                                Light.Shadow[0].ShadowMapLayer      = 6;
-                                Light.Shadow[0].AtlasUVOffset       = Tile.UVOffset;
-                                Light.Shadow[0].AtlasUVScale        = Tile.UVScale;
-                                Light.Shadow[0].LightIndex          = (int32)LightData.NumLights;
-                
-                            }
-                            
-                            PackedShadows[(uint32)ELightType::Spot].push_back(Light.Shadow[0]);
-                        }
-                        else
-                        {
-                            Light.Shadow[0].ShadowMapIndex = INDEX_NONE;
-                        }
-                
-                        LightData.Lights[LightData.NumLights++] = Light;
-                    });
+                        auto& DirectionalLight = DirectionalView.get<SDirectionalLightComponent>(Entity);
+                        ProcessDirectionalLight(DirectionalLight, LightCount);
+                    }
                 }
             });
+            
+            auto PointLightTask = Graph.AddParallelFor(PointLightView.handle()->size(), 32, [&](Task::FParallelRange Range)
+            {
+                LUMINA_PROFILE_SECTION("Process Point Light Range");
 
+                auto Handle = PointLightView.handle();
+                for (uint32 i = Range.Start; i < Range.End; ++i)
+                {
+                    entt::entity Entity = (*Handle)[i];
+                    if (Handle->contains(Entity))
+                    {
+                        auto& PointLight = PointLightView.get<SPointLightComponent>(Entity);
+                        auto& Transform = PointLightView.get<STransformComponent>(Entity);
+                        ProcessPointLight(PointLight, Transform, LightCount);
+                    }
+                }
+            });
+            
+            auto SpotLightTask = Graph.AddParallelFor(SpotLightView.handle()->size(), 32, [&](Task::FParallelRange Range)
+            {
+                LUMINA_PROFILE_SECTION("Process Spot Light Range");
+
+                auto Handle = SpotLightView.handle();
+                for (uint32 i = Range.Start; i < Range.End; ++i)
+                {
+                    entt::entity Entity = (*Handle)[i];
+                    if (Handle->contains(Entity))
+                    {
+                        auto& SpotLight = SpotLightView.get<SSpotLightComponent>(Entity);
+                        auto& Transform = SpotLightView.get<STransformComponent>(Entity);
+                        ProcessSpotLight(SpotLight, Transform, LightCount);
+                    }
+                }
+            });
+            
+            Graph.AddDependency(PointLightTask, DLightTask);
+            Graph.AddDependency(SpotLightTask, DLightTask);
             Graph.AddDependency(MergeNode, StaticNode);
             Graph.AddDependency(MergeNode, SkeletalNode);
 
             Graph.Dispatch();
             Graph.Wait();
+            
+            
+            LightData.NumLights = LightCount.load(std::memory_order_acquire);
         }
+        
         
         //========================================================================================================================
         
@@ -1279,6 +1068,247 @@ namespace Lumina
                 OpaqueDrawList.push_back(i);
             }
         }
+    }
+
+    void FForwardRenderScene::ProcessPointLight(const SPointLightComponent& PointLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount)
+    {
+        FLight Light;
+        Light.Flags                 = LIGHT_TYPE_POINT;
+        Light.Falloff               = PointLight.Falloff;
+        Light.Color                 = PackColor(glm::vec4(PointLight.LightColor, 1.0));
+        Light.Intensity             = PointLight.Intensity;
+        Light.Radius                = PointLight.Attenuation;
+        Light.Position              = TransformComponent.WorldTransform.Location;
+        
+        FViewVolume LightView(90.0f, 1.0f, 0.01f, Light.Radius);
+        
+        auto SetView = [&Light](FViewVolume& View, uint32 Index)
+        {
+            switch (Index)
+            {
+            case 0: // +X
+                View.SetView(Light.Position, FViewVolume::RightAxis, FViewVolume::DownAxis);
+                break;
+            case 1: // -X
+                View.SetView(Light.Position, FViewVolume::LeftAxis, FViewVolume::DownAxis);
+                break;
+            case 2: // +Y
+                View.SetView(Light.Position, FViewVolume::UpAxis, FViewVolume::ForwardAxis);
+                break;
+            case 3: // -Y
+                View.SetView(Light.Position, FViewVolume::DownAxis, FViewVolume::BackwardAxis);
+                break;
+            case 4: // +Z
+                View.SetView(Light.Position, FViewVolume::ForwardAxis, FViewVolume::DownAxis);
+                break;
+            case 5: // -Z
+                View.SetView(Light.Position, FViewVolume::BackwardAxis, FViewVolume::DownAxis);
+                break;
+            default:
+                UNREACHABLE();
+            }
+        };
+        
+        auto Lights = LightCount.fetch_add(1, std::memory_order_acquire);
+        
+        if (PointLight.bCastShadows)
+        {
+            int32 TileIndex = ShadowAtlas.AllocateTile();
+            
+            if (TileIndex != INDEX_NONE)
+            {
+                const FShadowTile& Tile = ShadowAtlas.GetTile(TileIndex);
+        
+                for (int Face = 0; Face < 6; ++Face)
+                {
+                    SetView(LightView, Face);
+                    
+                    Light.ViewProjection[Face]              = LightView.ToReverseDepthViewProjectionMatrix();
+                    Light.Shadow[Face].ShadowMapIndex       = TileIndex;
+                    Light.Shadow[Face].ShadowMapLayer       = Face;
+                    Light.Shadow[Face].AtlasUVOffset        = Tile.UVOffset;
+                    Light.Shadow[Face].AtlasUVScale         = Tile.UVScale;
+                    Light.Shadow[Face].LightIndex           = (int32)Lights;
+                }
+                
+                PackedShadows[(uint32)ELightType::Point].push_back(Light.Shadow[0]);
+            }
+        }
+        else
+        {
+            Light.Shadow[0].ShadowMapIndex = INDEX_NONE;
+        }
+        
+        LightData.Lights[Lights] = Light;
+    }
+
+    void FForwardRenderScene::ProcessSpotLight(const SSpotLightComponent& SpotLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount)
+    {
+        glm::vec3 UpdatedForward    = TransformComponent.GetRotation() * FViewVolume::ForwardAxis;
+        glm::vec3 UpdatedUp         = TransformComponent.GetRotation() * FViewVolume::UpAxis;
+                
+        float InnerDegrees = SpotLight.InnerConeAngle;
+        float OuterDegrees = SpotLight.OuterConeAngle;
+        
+        float InnerCos = glm::cos(glm::radians(InnerDegrees));
+        float OuterCos = glm::cos(glm::radians(OuterDegrees));
+        
+        FViewVolume ViewVolume(OuterDegrees * 2.00f, 1.0f, 0.01f, SpotLight.Attenuation);
+        ViewVolume.SetView(TransformComponent.WorldTransform.Location, -UpdatedForward, UpdatedUp);
+        
+        FLight Light;
+        Light.Flags                 = LIGHT_TYPE_SPOT;
+        Light.Position              = TransformComponent.WorldTransform.Location;
+        Light.Direction             = glm::normalize(UpdatedForward);
+        Light.Falloff               = SpotLight.Falloff;
+        Light.Color                 = PackColor(glm::vec4(SpotLight.LightColor, 1.0));
+        Light.Intensity             = SpotLight.Intensity;
+        Light.Radius                = SpotLight.Attenuation;
+        Light.Angles                = glm::vec2(InnerCos, OuterCos);
+        Light.ViewProjection[0]     = ViewVolume.ToReverseDepthViewProjectionMatrix();
+        
+        auto Lights = LightCount.fetch_add(1, std::memory_order_acquire);
+        
+        if (SpotLight.bCastShadows)
+        {
+            int32 TileIndex = ShadowAtlas.AllocateTile();
+            if (TileIndex != INDEX_NONE)
+            {
+                const FShadowTile& Tile             = ShadowAtlas.GetTile(TileIndex);
+                Light.Shadow[0].ShadowMapIndex      = TileIndex;
+                Light.Shadow[0].ShadowMapLayer      = 6;
+                Light.Shadow[0].AtlasUVOffset       = Tile.UVOffset;
+                Light.Shadow[0].AtlasUVScale        = Tile.UVScale;
+                Light.Shadow[0].LightIndex          = (int32)Lights;
+        
+            }
+            
+            PackedShadows[(uint32)ELightType::Spot].push_back(Light.Shadow[0]);
+        }
+        else
+        {
+            Light.Shadow[0].ShadowMapIndex = INDEX_NONE;
+        }
+        
+        LightData.Lights[Lights] = Light;
+    }
+
+    void FForwardRenderScene::ProcessDirectionalLight(const SDirectionalLightComponent& DirectionalLight, TAtomic<uint32>& LightCount)
+    {
+        LightData.bHasSun = true;
+        const FViewVolume& ViewVolume = SceneViewport->GetViewVolume();
+        
+        const float NearClip = ViewVolume.GetNear();
+        const float FarClip  = ViewVolume.GetFar();
+        
+        FLight Light            = {};
+        Light.Flags             = LIGHT_TYPE_DIRECTIONAL;
+        Light.Color             = PackColor(glm::vec4(DirectionalLight.Color, 1.0));
+        Light.Intensity         = DirectionalLight.Intensity;
+        Light.Direction         = glm::normalize(DirectionalLight.Direction);
+        LightData.SunDirection  = Light.Direction;
+        
+        // (logarithmic + uniform blend, Lambda = 0.92).
+        // Caps shadow distance so the last cascade still has usable resolution.
+        constexpr float CascadeSplitLambda  = 0.92f;
+        constexpr float ShadowMaxDistance   = 1000.0f;
+        
+        const float ShadowFar  = glm::min(FarClip, ShadowMaxDistance);
+        const float ClipRange  = ShadowFar - NearClip;
+        const float MinDepth   = NearClip;
+        const float MaxDepth   = ShadowFar;
+        const float DepthRatio = MaxDepth / glm::max(MinDepth, 0.0001f);
+        
+        float CascadeFarDistances[NumCascades];
+        for (int i = 0; i < NumCascades; ++i)
+        {
+            const float P       = (float)(i + 1) / (float)NumCascades;
+            const float LogD    = MinDepth * glm::pow(DepthRatio, P);
+            const float UniD    = MinDepth + ClipRange * P;
+            const float D       = CascadeSplitLambda * (LogD - UniD) + UniD;
+            CascadeFarDistances[i]      = D;
+            LightData.CascadeSplits[i]  = D; // World-distance, view-space Z.
+        }
+        
+        const glm::mat4& CamView   = ViewVolume.GetViewMatrix();
+        const float      CamFOV    = ViewVolume.GetFOV();
+        const float      CamAspect = ViewVolume.GetAspectRatio();
+        const glm::vec3  LightDir  = Light.Direction; // Toward the sun.
+        
+        float LastSplitDistance = NearClip;
+        for (int i = 0; i < NumCascades; ++i)
+        {
+            const float SplitNear = LastSplitDistance;
+            const float SplitFar  = CascadeFarDistances[i];
+        
+            // World-space corners of the camera sub-frustum [SplitNear, SplitFar].
+            // Use a standard-Z perspective so ComputeFrustumCorners can un-project the
+            // canonical NDC cube without caring about the engine's reverse-Z convention.
+            const glm::mat4 SliceProj = glm::perspective(glm::radians(CamFOV), CamAspect, SplitNear, SplitFar);
+            const glm::mat4 SliceVP   = SliceProj * CamView;
+        
+            glm::vec3 Corners[8];
+            FFrustum::ComputeFrustumCorners(SliceVP, Corners);
+        
+            // Bound the slice with a sphere, rotation-invariant, so the cascade
+            // size doesn't pulse as the camera turns.
+            glm::vec3 SphereCenter(0.0f);
+            for (int j = 0; j < 8; ++j)
+            {
+                SphereCenter += Corners[j];
+            }
+            SphereCenter /= 8.0f;
+        
+            float Radius = 0.0f;
+            for (int j = 0; j < 8; ++j)
+            {
+                Radius = glm::max(Radius, glm::length(Corners[j] - SphereCenter));
+            }
+            // Round up to prevent radius jitter from sub-pixel camera movement.
+            Radius = std::ceil(Radius * 16.0f) / 16.0f;
+        
+            // Build a light-space view centered on the sphere. BackDistance pushes
+            // the light eye behind the cascade volume so off-screen occluders
+            // (e.g. things directly above the cascade) still write into the depth
+            // texture.
+            constexpr float BackDistance = 100.0f;
+            const float     OrthoRange   = Radius * 2.0f + BackDistance;
+        
+            glm::mat4 LightView = glm::lookAt(
+                SphereCenter + LightDir * (Radius + BackDistance),
+                SphereCenter,
+                FViewVolume::UpAxis);
+        
+            // Project the cascade origin into light space, snap the
+            // XY components to the shadow texel grid, and rebuild the view from the
+            // snapped origin.
+            {
+                const glm::vec4 OriginLS = LightView * glm::vec4(SphereCenter, 1.0f);
+                const float     TexelSize = (Radius * 2.0f) / (float)GCSMResolution;
+                glm::vec4 SnappedOriginLS = OriginLS;
+                SnappedOriginLS.x = std::floor(OriginLS.x / TexelSize) * TexelSize;
+                SnappedOriginLS.y = std::floor(OriginLS.y / TexelSize) * TexelSize;
+                const glm::vec4 SnappedOriginWS = glm::inverse(LightView) * SnappedOriginLS;
+                const glm::vec3 SnappedCenter   = glm::vec3(SnappedOriginWS);
+                LightView = glm::lookAt(
+                    SnappedCenter + LightDir * (Radius + BackDistance),
+                    SnappedCenter,
+                    FViewVolume::UpAxis);
+            }
+        
+            // Standard-Z [0,1] LH ortho. Near plane is at the eye (0), far at the
+            // far face of the slab (OrthoRange). The full sphere fits inside.
+            const glm::mat4 LightProjection = glm::ortho(
+                -Radius, +Radius,
+                -Radius, +Radius,
+                0.0f, OrthoRange);
+        
+            Light.ViewProjection[i] = LightProjection * LightView;
+            LastSplitDistance = SplitFar;
+        }
+        
+        LightCount.fetch_add(1, std::memory_order_acquire);
+        LightData.Lights[0] = Light;
     }
 
     void FForwardRenderScene::DrawBillboard(FRHIImage* Image, const glm::vec3& Location, float Scale)
