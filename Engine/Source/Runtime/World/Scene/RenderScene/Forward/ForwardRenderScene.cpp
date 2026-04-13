@@ -161,8 +161,17 @@ namespace Lumina
         {
             LUMINA_PROFILE_SECTION("Compile Draw Commands");
             
-            auto StaticView   = World->GetEntityRegistry().view<SStaticMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-            auto SkeletalView = World->GetEntityRegistry().view<SSkeletalMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            auto DirectionalView    = World->GetEntityRegistry().view<SDirectionalLightComponent>(entt::exclude<SDisabledTag>);
+            auto SpotLightView      = World->GetEntityRegistry().view<SSpotLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            auto PointLightView     = World->GetEntityRegistry().view<SPointLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            auto CharacterView      = World->GetEntityRegistry().view<SCharacterControllerComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            auto CameraView         = World->GetEntityRegistry().view<SCameraComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            auto BillboardView      = World->GetEntityRegistry().view<SBillboardComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            auto LineBatcherView    = World->GetEntityRegistry().view<FLineBatcherComponent>();
+            auto EnvironmentView    = World->GetEntityRegistry().view<SEnvironmentComponent>(entt::exclude<SDisabledTag>);
+            auto TransformView      = World->GetEntityRegistry().view<STransformComponent, FNeedsTransformUpdate>();
+            auto StaticView         = World->GetEntityRegistry().view<SStaticMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            auto SkeletalView       = World->GetEntityRegistry().view<SSkeletalMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
 
             // Snapshot entities into linear arrays so the parallel-for can address them by index.
             TVector<entt::entity> StaticEntities;
@@ -179,7 +188,6 @@ namespace Lumina
                 SkeletalEntities.push_back(Entity);
             }
             
-            auto TransformView   = World->GetEntityRegistry().view<STransformComponent, FNeedsTransformUpdate>();
             TransformView.each([](STransformComponent& Transform)
             {
                 (void)Transform.GetWorldMatrix(); // Will resolve. 
@@ -242,8 +250,7 @@ namespace Lumina
                 RenderSettings.bHasEnvironment = false;
                 LightData.AmbientLight = glm::vec4(0.0f);
                 RenderSettings.bSSAO = false;
-                auto View = World->GetEntityRegistry().view<SEnvironmentComponent>(entt::exclude<SDisabledTag>);
-                View.each([this] (const SEnvironmentComponent& EnvironmentComponent)
+                EnvironmentView.each([this] (const SEnvironmentComponent& EnvironmentComponent)
                 {
                     LightData.AmbientLight          = glm::vec4(EnvironmentComponent.AmbientColor, EnvironmentComponent.Intensity);
                     RenderSettings.bHasEnvironment  = true;
@@ -255,8 +262,7 @@ namespace Lumina
             {
                 LUMINA_PROFILE_SECTION("Batched Line Processing");
 
-                auto View = World->GetEntityRegistry().view<FLineBatcherComponent>();
-                View.each([&](FLineBatcherComponent& LineBatcherComponent)
+                LineBatcherView.each([&](FLineBatcherComponent& LineBatcherComponent)
                 {
                     if (LineBatcherComponent.Lines.empty())
                     {
@@ -371,8 +377,7 @@ namespace Lumina
             {
                 LUMINA_PROFILE_SECTION("Process Billboard Primitives");
                 
-                auto View = World->GetEntityRegistry().view<SBillboardComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-                View.each([this](entt::entity Entity, const SBillboardComponent& BillboardComponent, const STransformComponent& TransformComponent)
+                BillboardView.each([this](entt::entity Entity, const SBillboardComponent& BillboardComponent, const STransformComponent& TransformComponent)
                 {
                     if (!BillboardComponent.Texture.IsValid() || !BillboardComponent.Texture->GetRHIRef()->IsValid())
                     {
@@ -392,8 +397,7 @@ namespace Lumina
                 {
                     if (!World->IsGameWorld())
                     {
-                        auto CView = World->GetEntityRegistry().view<SCameraComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-                        CView.each([this](entt::entity Entity, SCameraComponent& Camera, STransformComponent& Transform)
+                        CameraView.each([this](entt::entity Entity, SCameraComponent& Camera, STransformComponent& Transform)
                         {
                             if (World->GetEntityRegistry().all_of<FEditorComponent>(Entity))
                             {
@@ -410,24 +414,20 @@ namespace Lumina
                     }
                 }
                 
+                CharacterView.each([this](entt::entity Entity, SCharacterControllerComponent&, STransformComponent& Transform)
                 {
-                    auto CCView = World->GetEntityRegistry().view<SCharacterControllerComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-                    CCView.each([this](entt::entity Entity, SCharacterControllerComponent&, STransformComponent& Transform)
+                    if (!World->IsGameWorld())
                     {
-                        if (!World->IsGameWorld())
-                        {
-                            FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                            Billboard.TextureIndex          = GetNamedImage(ENamedImage::CharacterIcon)->GetTextureCacheIndex();
-                            Billboard.ColorPack             = PackColor(FColor::White);
-                            Billboard.Position              = Transform.WorldTransform.Location;
-                            Billboard.Size                  = 0.35f;
-                            Billboard.EntityID              = entt::to_integral(Entity);
-                        }
-                    });
-                }
+                        FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
+                        Billboard.TextureIndex          = GetNamedImage(ENamedImage::CharacterIcon)->GetTextureCacheIndex();
+                        Billboard.ColorPack             = PackColor(FColor::White);
+                        Billboard.Position              = Transform.WorldTransform.Location;
+                        Billboard.Size                  = 0.35f;
+                        Billboard.EntityID              = entt::to_integral(Entity);
+                    }
+                });
                 
-                auto PLView = World->GetEntityRegistry().view<SPointLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-                PLView.each([&] (entt::entity Entity, const SPointLightComponent& PointLightComponent, const STransformComponent& TransformComponent)
+                PointLightView.each([&] (entt::entity Entity, const SPointLightComponent& PointLightComponent, const STransformComponent& TransformComponent)
                 {
                     if (!World->IsGameWorld())
                     {
@@ -440,8 +440,7 @@ namespace Lumina
                     }
                 });
                 
-                auto SLView = World->GetEntityRegistry().view<SSpotLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-                SLView.each([&] (entt::entity Entity, SSpotLightComponent& SpotLightComponent, STransformComponent& Transform)
+                SpotLightView.each([&] (entt::entity Entity, SSpotLightComponent& SpotLightComponent, STransformComponent& Transform)
                 {
                     if (!World->IsGameWorld())
                     {
@@ -465,8 +464,7 @@ namespace Lumina
                     LUMINA_PROFILE_SECTION("Directional Light Processing");
                 
                     LightData.bHasSun = false;
-                    auto View = World->GetEntityRegistry().view<SDirectionalLightComponent>(entt::exclude<SDisabledTag>);
-                    View.each([this](const SDirectionalLightComponent& DirectionalLightComponent)
+                    DirectionalView.each([this](const SDirectionalLightComponent& DirectionalLightComponent)
                     {
                         LightData.bHasSun = true;
                         const FViewVolume& ViewVolume = SceneViewport->GetViewVolume();
@@ -591,8 +589,7 @@ namespace Lumina
                 {
                     LUMINA_PROFILE_SECTION("Point Light Processing");
                 
-                    auto View = World->GetEntityRegistry().view<SPointLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-                    View.each([&] (const SPointLightComponent& PointLightComponent, const STransformComponent& TransformComponent)
+                    PointLightView.each([&] (const SPointLightComponent& PointLightComponent, const STransformComponent& TransformComponent)
                     {
                         FLight Light;
                         Light.Flags                 = LIGHT_TYPE_POINT;
@@ -668,8 +665,7 @@ namespace Lumina
                 {
                     LUMINA_PROFILE_SECTION("Spot Light Processing");
                 
-                    auto View = World->GetEntityRegistry().view<SSpotLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-                    View.each([&] (entt::entity Entity, SSpotLightComponent& SpotLightComponent, STransformComponent& Transform)
+                    SpotLightView.each([&] (entt::entity Entity, SSpotLightComponent& SpotLightComponent, STransformComponent& Transform)
                     {
                 
                         glm::vec3 UpdatedForward    = Transform.GetRotation() * FViewVolume::ForwardAxis;

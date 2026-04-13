@@ -4,6 +4,7 @@
 #include "Subsystems/Subsystem.h"
 #include <entt/entt.hpp>
 #include "Core/Delegates/Delegate.h"
+#include "Memory/SmartPtr.h"
 
 
 namespace Lumina

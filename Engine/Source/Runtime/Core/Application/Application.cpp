@@ -28,7 +28,7 @@ namespace Lumina
         PreInitStartup();
         CreateApplicationWindow();
         GEngine->Init();
-
+        
         EventProcessor.RegisterEventHandler(&FInputProcessor::Get());
         
         //---------------------------------------------------------------

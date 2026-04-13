@@ -5,6 +5,7 @@
 #include "Tools/UI/ImGui/Vulkan/VulkanImGuiRender.h"
 
 #include "RHIGlobals.h"
+#include "Core/Application/Application.h"
 #include "Core/Profiler/Profile.h"
 #include "Tools/UI/ImGui/ImGuiRenderer.h"
 
@@ -63,10 +64,13 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
         
+        
         #if WITH_EDITOR
         ImGuiRenderer->EndFrame(UpdateContext, RenderGraph);
         #endif
 
+        GApp->GetPrismApp().GetRenderer().AddPassToRenderGraph(RenderGraph, FEngine::GetEngineViewport()->GetRenderTarget());
+        
         // Internally executes the render graph.
         GRenderContext->FrameEnd(UpdateContext, RenderGraph);
         

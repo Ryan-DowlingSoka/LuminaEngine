@@ -18,6 +18,7 @@
 #include "Paths/Paths.h"
 #include "Physics/Physics.h"
 #include "Platform/Filesystem/FileHelper.h"
+#include "Prism/WidgetDeclaration.h"
 #include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
 #include "Renderer/RenderResource.h"
@@ -27,6 +28,7 @@
 #include "TaskSystem/ThreadedCallback.h"
 #include "Tools/UI/DevelopmentToolUI.h"
 #include "World/WorldManager.h"
+#include "Prism/Prism.h"
 
 #define SANDBOX_PROJECT_ID "C9396E54-2E00-4874-B051-FCD1792359AC"
 
@@ -75,6 +77,8 @@ namespace Lumina
         
         FCoreDelegates::OnPostEngineInit.BroadcastAndClear();
         
+        GApp->GetPrismApp().SetWindowSize(GetEngineViewport()->GetSize());
+        
         return true;
     }
 
@@ -97,6 +101,8 @@ namespace Lumina
 		GWorldManager = nullptr;
         
         ShutdownCObjectSystem();
+        
+        GApp->GetPrismApp().Shutdown();
         
         EngineViewport.SafeRelease();
         
@@ -226,6 +232,8 @@ namespace Lumina
                 #if USING(WITH_EDITOR)
                 DeveloperToolUI->EndFrame(UpdateContext);
                 #endif
+                
+                GApp->GetPrismApp().Tick((float)GEngine->GetDeltaTime());
                 
                 GRenderManager->FrameEnd(UpdateContext, RenderGraph);
                 

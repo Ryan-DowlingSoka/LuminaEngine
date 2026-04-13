@@ -109,60 +109,94 @@ FCubemapCoord DirectionToCubemapCoord(float3 Dir)
     return Result;
 }
 
-float ComputeShadowFactor(FLight Light, float3 FragmentPos, float Bias, float3 ViewPosition, bool ReceiveShadow)
+float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int CascadeIndex)
+{
+    float NdotL       = saturate(dot(Normal, LightDir));
+    float SlopeFactor = sqrt(max(1.0 - NdotL * NdotL, 0.0));
+
+    if (LightFlags == LIGHT_FLAG_TYPE_DIRECTIONAL)
+    {
+        // Bias is in NDC-z space [0,1].
+        float Bias = 0.0005 + 0.0015 * SlopeFactor;
+        Bias *= lerp(1.0, 4.0, float(CascadeIndex) / float(max(NUM_CASCADES - 1, 1)));
+        return Bias;
+    }
+
+    // Point/spot: CurrentDepth is DistToLight/Radius, linear [0,1].
+    return 0.0015 + 0.004 * SlopeFactor;
+}
+
+float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float3 ViewPosition, float2 ScreenPos, bool ReceiveShadow)
 {
     if (!ReceiveShadow)
     {
         return 1.0;
     }
 
-    bool IsPointLight       = Light.Flags == LIGHT_FLAG_TYPE_POINT;
     bool IsSpotLight        = Light.Flags == LIGHT_FLAG_TYPE_SPOT;
     bool IsDirectionalLight = Light.Flags == LIGHT_FLAG_TYPE_DIRECTIONAL;
 
-    int ViewProjectionIndex = 0;
+    // Pick cascade. Only NUM_CASCADES matrices are written on the C++ side; if
+    // the fragment falls past the last split we're outside shadow coverage and
+    // should return fully lit rather than sampling an undefined matrix slot.
+    int CascadeIndex = 0;
     if (IsDirectionalLight)
     {
         for (int i = 0; i < NUM_CASCADES; ++i)
         {
             if (ViewPosition.z > uLightData[0].CascadeSplits[i])
-                ViewProjectionIndex = i + 1;
+                CascadeIndex = i + 1;
         }
-        ViewProjectionIndex = clamp(ViewProjectionIndex, 0, 3);
+        if (CascadeIndex >= NUM_CASCADES)
+            return 1.0;
     }
 
-    float4 ShadowCoord  = mul(Light.ViewProjection[ViewProjectionIndex], float4(FragmentPos, 1.0));
-    float3 ProjCoords   = ShadowCoord.xyz / ShadowCoord.w;
-    ProjCoords          = ProjCoords * 0.5 + 0.5;
-    float2 ProjectionUV = ProjCoords.xy;
+    float3 LightDirToFrag = IsDirectionalLight
+        ? -normalize(Light.Direction)
+        : normalize(Light.Position - FragmentPos);
+    float  Bias = ComputeShadowBias(Light.Flags, Normal, LightDirToFrag, CascadeIndex);
 
-    float3 L              = FragmentPos - Light.Position;
-    float  DistToLight    = length(L);
-    float  CurrentDepth   = DistToLight / max(Light.Radius, 1.0);
-    float3 Dir            = normalize(L);
+    float4 ShadowCoord  = mul(Light.ViewProjection[CascadeIndex], float4(FragmentPos, 1.0));
+    float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
+    float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
+
+    float3 L            = FragmentPos - Light.Position;
+    float  DistToLight  = length(L);
+    float  CurrentDepth = DistToLight / max(Light.Radius, 1.0);
+    float3 Dir          = normalize(L);
 
     FCubemapCoord Coord = DirectionToCubemapCoord(Dir);
     Coord.UV   = lerp(Coord.UV, ProjectionUV, float(IsSpotLight));
     Coord.Face = int(lerp(float(Coord.Face), 0.0, float(IsSpotLight)));
 
     FLightShadow ShadowTile = Light.Shadow[Coord.Face];
-    float Angle = frac(sin(dot(FragmentPos.xy, float2(12.9898, 78.233))) * 43758.5453) * TWO_PI;
 
-    float BlockerDepth = 0.0;
+    // Early-out for fragments outside the shadow frustum, prevents sampler
+    // clamp-to-edge from bleeding a single shadow edge across the whole scene.
     if (IsDirectionalLight)
     {
-        CurrentDepth = (ShadowCoord.xyz / ShadowCoord.w).z;
-        BlockerDepth = uShadowCascade.Sample(float3(ProjectionUV, ViewProjectionIndex)).r;
+        CurrentDepth = ProjCoords.z;
+        if (any(ProjectionUV < 0.0) || any(ProjectionUV > 1.0) ||
+            CurrentDepth < 0.0 || CurrentDepth > 1.0)
+        {
+            return 1.0;
+        }
     }
-    else
+    else if (IsSpotLight)
     {
-        float2 ClampedUV = clamp(Coord.UV, 0.001, 0.999);
-        float2 SampleUV  = ShadowTile.AtlasUVOffset + (ClampedUV * ShadowTile.AtlasUVScale);
-        BlockerDepth     = uShadowAtlas.Sample(float3(SampleUV, ShadowTile.ShadowMapLayer)).r;
+        if (any(ProjectionUV < 0.0) || any(ProjectionUV > 1.0))
+            return 1.0;
     }
 
-    float DepthDiff    = abs(CurrentDepth - BlockerDepth);
-    float FilterRadius = lerp(0.0, 0.0009, pow(DepthDiff, 0.025));
+    // Interleaved gradient noise in screen space, stable per pixel, well
+    // decorrelated between neighbours, no shimmering as the camera moves.
+    float IGN   = frac(52.9829189 * frac(dot(ScreenPos, float2(0.06711056, 0.00583715))));
+    float Angle = IGN * TWO_PI;
+
+    // PCF radius expressed in *atlas/cascade* UV. The non-directional branch
+    // divides by the tile scale below, so both branches end up sampling an
+    // equivalent texel footprint regardless of tile size.
+    float FilterRadius = IsDirectionalLight ? 0.0012 : 0.002;
 
     float Shadow = 0.0;
     for (int i = 0; i < SHADOW_SAMPLE_COUNT; i++)
@@ -171,33 +205,21 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float Bias, float3 V
 
         if (IsDirectionalLight)
         {
-            float2 CascadeUV = ProjectionUV + Offset;
-            float  Depth     = uShadowCascade.Sample(float3(CascadeUV, ViewProjectionIndex)).r;
-            Shadow += Depth < CurrentDepth ? 0.0 : 1.0;
+            float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
+            float  Depth     = uShadowCascade.Sample(float3(CascadeUV, CascadeIndex)).r;
+            Shadow += step(CurrentDepth - Bias, Depth);
         }
         else
         {
-            float2 ClampedUV = clamp(Coord.UV + (Offset / ShadowTile.AtlasUVScale), 0.001, 0.999);
-            float2 SampleUV  = ShadowTile.AtlasUVOffset + (ClampedUV * ShadowTile.AtlasUVScale);
-            float  Depth     = uShadowAtlas.Sample(float3(SampleUV, ShadowTile.ShadowMapLayer)).r;
+            float2 TileOffset = Offset / max(ShadowTile.AtlasUVScale, float2(1e-6));
+            float2 ClampedUV  = clamp(Coord.UV + TileOffset, 0.001, 0.999);
+            float2 SampleUV   = ShadowTile.AtlasUVOffset + (ClampedUV * ShadowTile.AtlasUVScale);
+            float  Depth      = uShadowAtlas.Sample(float3(SampleUV, ShadowTile.ShadowMapLayer)).r;
             Shadow += step(CurrentDepth - Bias, Depth);
         }
     }
 
     return Shadow / float(SHADOW_SAMPLE_COUNT);
-}
-
-float ComputeShadowBias(FLight Light, float3 Normal, float3 LightDir, float CascadeIndex)
-{
-    float ConstBias     = 0.000025;
-    float SlopeBias     = 0.00001;
-    float DiffuseFactor = clamp(dot(Normal, LightDir), 0.0, 1.0);
-    float Bias          = lerp(ConstBias, SlopeBias, DiffuseFactor);
-
-    if (HasFlag(Light.Flags, LIGHT_FLAG_TYPE_DIRECTIONAL))
-        Bias *= lerp(1.0, 2.0, CascadeIndex / 3.0);
-
-    return 0.0;
 }
 
 
@@ -309,7 +331,7 @@ PSOutput FragmentMain(PSInput Input)
     if (uLightData[0].bHasSun != 0)
     {
         FLight Light        = GetLightAt(0);
-        float  Shadow       = ComputeShadowFactor(Light, WorldPosition, 0.0005, ViewPosition, InstanceData.HasFlag(EInstanceFlags::ReceiveShadow));
+        float  Shadow       = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, InstanceData.HasFlag(EInstanceFlags::ReceiveShadow));
         Lo                  += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, float3(0.0), 0.0) * Shadow;
     }
 
@@ -325,10 +347,7 @@ PSOutput FragmentMain(PSInput Input)
         float Shadow = 1.0;
         if (Light.Shadow[0].ShadowMapIndex != INDEX_NONE)
         {
-            float  AttenuationFactor    = 1.0 / (DistToLight * DistToLight);
-            float  BiasScale            = lerp(0.1, 1.0, AttenuationFactor);
-            float Bias                  = ComputeShadowBias(Light, N, -L, 0) * BiasScale;
-            Shadow                      = ComputeShadowFactor(Light, WorldPosition, Bias, ViewPosition, InstanceData.HasFlag(EInstanceFlags::ReceiveShadow));
+            Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, InstanceData.HasFlag(EInstanceFlags::ReceiveShadow));
         }
 
         Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight) * Shadow;

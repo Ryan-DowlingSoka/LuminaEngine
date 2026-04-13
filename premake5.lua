@@ -112,7 +112,7 @@ workspace "Lumina"
     filter {}
     
     filter "platforms:Game"
-        defines { "WITH_EDITOR=0" }
+        defines { "WITH_EDITOR=0" } 
 
     filter "platforms:Editor"
         defines { "WITH_EDITOR=1" }
