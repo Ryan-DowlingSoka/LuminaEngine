@@ -85,8 +85,8 @@ namespace Lumina::Prism
 
 // Single-child slot, injected via `[ Child ]` syntax.
 #define PRISM_DEFAULT_SLOT(Name)                                                \
-        ::Lumina::TSharedPtr<::Lumina::Prism::SWidget> _##Name;                 \
-        WidgetArgsType& operator[](const ::Lumina::TSharedPtr<::Lumina::Prism::SWidget>& InChild) \
+        ::Lumina::TSharedPtr<::Lumina::Prism::PWidget> _##Name;                 \
+        WidgetArgsType& operator[](const ::Lumina::TSharedPtr<::Lumina::Prism::PWidget>& InChild) \
         {                                                                       \
             _##Name = InChild;                                                  \
             return *this;                                                       \
@@ -94,8 +94,8 @@ namespace Lumina::Prism
 
 // Named child slot; multiple per widget, set via `Name##Slot(Child)`.
 #define PRISM_NAMED_SLOT(Name)                                                  \
-        ::Lumina::TSharedPtr<::Lumina::Prism::SWidget> _##Name;                 \
-        WidgetArgsType& Name##Slot(const ::Lumina::TSharedPtr<::Lumina::Prism::SWidget>& InChild) \
+        ::Lumina::TSharedPtr<::Lumina::Prism::PWidget> _##Name;                 \
+        WidgetArgsType& Name##Slot(const ::Lumina::TSharedPtr<::Lumina::Prism::PWidget>& InChild) \
         {                                                                       \
             _##Name = InChild;                                                  \
             return *this;                                                       \

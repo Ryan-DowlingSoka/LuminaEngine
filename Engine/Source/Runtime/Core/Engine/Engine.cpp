@@ -59,11 +59,12 @@ namespace Lumina
         Audio::Initialize();
         Task::Initialize();
         Physics::Initialize();
-        Lua::Initialize();
         
         GRenderManager = Memory::New<FRenderManager>();
         GRenderManager->Initialize();
         EngineViewport = GRenderContext->CreateViewport(Windowing::GetPrimaryWindowHandle()->GetExtent(), "Engine Viewport");
+        
+        Lua::Initialize();
 
         ProcessNewlyLoadedCObjects();
         
@@ -106,11 +107,12 @@ namespace Lumina
         
         EngineViewport.SafeRelease();
         
+        Lua::Shutdown();
+        
         Memory::Delete(GRenderManager);
         GRenderManager = nullptr;
 
         Physics::Shutdown();
-        Lua::Shutdown();
         Task::Shutdown();
         Audio::Shutdown();
         
@@ -278,6 +280,14 @@ namespace Lumina
         return true;
     }
 
+    void FEngine::OnUpdateStage(const FUpdateContext& Context)
+    {
+        if (ModuleUpdateFunc.IsValid())
+        {
+            ModuleUpdateFunc(Context.GetDeltaTime());
+        }
+    }
+
     entt::meta_ctx& FEngine::GetEngineMetaContext() const
     {
         return entt::locator<entt::meta_ctx>::value_or();
@@ -354,7 +364,35 @@ namespace Lumina
         
         FAssetRegistry::Get().RunInitialDiscovery();
         
+        FString ModuleFile = GConfig->Get<std::string>("Project.LuaModuleFile").c_str();
+        LoadProjectScript(ModuleFile);
+        
         OnProjectLoaded.Broadcast();
+    }
+
+    void FEngine::LoadProjectScript(FStringView Path)
+    {
+        if (ProjectScript)
+        {
+            if (auto Ref = ProjectScript->Reference["OnUnload"])
+            {
+                Ref(Ref);
+            }
+            
+            ModuleUpdateFunc = {};
+        }
+        
+        ProjectScript = Lua::FScriptingContext::Get().LoadUniqueScriptPath(Path);
+        
+        if (ProjectScript)
+        {
+            if (auto Ref = ProjectScript->Reference["OnLoad"])
+            {
+                Ref(Ref);
+            }
+            
+            ModuleUpdateFunc = ProjectScript->Reference["OnUpdate"];
+        }
     }
 
     FFixedString FEngine::GetProjectScriptDirectory() const

@@ -10,7 +10,7 @@ namespace Lumina::Prism
     // a text draw element with a logical font size, and the renderer resolves
     // that to an atlas sample during submission. For desired-size calculation
     // we use a cheap heuristic so layouts still compose;
-    class STextBlock : public SWidget
+    class PTextBlock : public PWidget
     {
     public:
         PRISM_BEGIN_ARGS(STextBlock)

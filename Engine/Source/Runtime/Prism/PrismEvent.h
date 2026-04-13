@@ -5,7 +5,7 @@
 
 namespace Lumina::Prism
 {
-    class SWidget;
+    class PWidget;
 
     enum class EPrismMouseButton : uint8
     {
@@ -62,24 +62,24 @@ namespace Lumina::Prism
         static FPrismReply Handled()   { FPrismReply R; R.bHandled = true;  return R; }
         static FPrismReply Unhandled() { FPrismReply R; R.bHandled = false; return R; }
 
-        FPrismReply& CaptureMouse(const TSharedPtr<SWidget>& Widget)  { MouseCapture = Widget;  return *this; }
+        FPrismReply& CaptureMouse(const TSharedPtr<PWidget>& Widget)  { MouseCapture = Widget;  return *this; }
         FPrismReply& ReleaseMouseCapture()                            { bReleaseCapture = true; return *this; }
-        FPrismReply& SetUserFocus(const TSharedPtr<SWidget>& Widget)  { FocusTarget = Widget;   return *this; }
+        FPrismReply& SetUserFocus(const TSharedPtr<PWidget>& Widget)  { FocusTarget = Widget;   return *this; }
         FPrismReply& UseCursor(EPrismCursor C)                        { Cursor = C; bHasCursor = true; return *this; }
 
         bool                  IsHandled()       const { return bHandled; }
         bool                  WantsReleaseCapture() const { return bReleaseCapture; }
         bool                  HasCursor()       const { return bHasCursor; }
         EPrismCursor          GetCursor()       const { return Cursor; }
-        const TSharedPtr<SWidget>& GetMouseCapture() const { return MouseCapture; }
-        const TSharedPtr<SWidget>& GetFocusTarget()  const { return FocusTarget; }
+        const TSharedPtr<PWidget>& GetMouseCapture() const { return MouseCapture; }
+        const TSharedPtr<PWidget>& GetFocusTarget()  const { return FocusTarget; }
 
     private:
         bool                 bHandled        = false;
         bool                 bReleaseCapture = false;
         bool                 bHasCursor      = false;
         EPrismCursor         Cursor          = EPrismCursor::Default;
-        TSharedPtr<SWidget>  MouseCapture;
-        TSharedPtr<SWidget>  FocusTarget;
+        TSharedPtr<PWidget>  MouseCapture;
+        TSharedPtr<PWidget>  FocusTarget;
     };
 }

@@ -10,15 +10,15 @@
 #include "WidgetDeclaration.h"
 #include "PrismApplication.h"
 
-#include "Widgets/SBox.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SBorder.h"
-#include "Widgets/STextBlock.h"
-#include "Widgets/SButton.h"
+#include "Widgets/PBox.h"
+#include "Widgets/PBoxPanel.h"
+#include "Widgets/PBorder.h"
+#include "Widgets/PTextBlock.h"
+#include "Widgets/PButton.h"
 
 namespace Lumina::Prism
 {
-    class SWidget;
+    class PWidget;
     class SBox;
     class SBorder;
     class SBoxPanel;

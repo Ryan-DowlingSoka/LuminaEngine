@@ -49,13 +49,10 @@ project "$PROJECTNAME"
 
 	links
 	{
-		"Runtime",
-		"ImGui",
-		"RPMalloc",
-    	"EA",
-    	"EnkiTS",
-		"Tracy",
-		"lua54",
+        "MiniAudio", "GLFW", "ImGui", "EA", "Tracy", "Luau", "EnkiTS",
+        "JoltPhysics", "RPMalloc", "XXHash", "Volk", "VKBootstrap",
+        "TinyOBJLoader", "MeshOptimizer", "SPIRV-Reflect", "FastGLTF",
+        "OpenFBX", "BasicUniversal",
 	}
 	 
 	files

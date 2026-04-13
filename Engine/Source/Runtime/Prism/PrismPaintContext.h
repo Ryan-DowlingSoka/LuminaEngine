@@ -5,7 +5,7 @@
 
 namespace Lumina::Prism
 {
-    // Context handed to SWidget::OnPaint. It forwards all drawing to a shared
+    // Context handed to PWidget::OnPaint. It forwards all drawing to a shared
     // FPrismDrawList owned by the application and tracks the current clipping
     // rectangle / layer depth so child widgets automatically render above their
     // parent without the caller needing to manage layer bookkeeping.

@@ -5,10 +5,16 @@
 #include <entt/entt.hpp>
 #include "Core/Delegates/Delegate.h"
 #include "Memory/SmartPtr.h"
+#include "Scripting/Lua/Reference.h"
 
 
 namespace Lumina
 {
+    namespace Lua
+    {
+        struct FScript;
+    }
+
     class FRHIViewport;
     class FWorldManager;
     class FAssetRegistry;
@@ -41,7 +47,7 @@ namespace Lumina
         RUNTIME_API virtual bool Init();
         RUNTIME_API virtual bool Shutdown();
         RUNTIME_API bool Update(bool bApplicationWantsExit);
-        RUNTIME_API virtual void OnUpdateStage(const FUpdateContext& Context) { }
+        RUNTIME_API virtual void OnUpdateStage(const FUpdateContext& Context);
 
         RUNTIME_API static FRHIViewport* GetEngineViewport();
         
@@ -49,6 +55,9 @@ namespace Lumina
         
         /** Used to optionally load a project as a DLL from the command line */
         RUNTIME_API virtual void LoadProject(FStringView Path);
+        
+        /** Loads the project's script module */
+        RUNTIME_API void LoadProjectScript(FStringView Path);
 
         #if WITH_EDITOR
         RUNTIME_API virtual IDevelopmentToolUI* CreateDevelopmentTools() = 0;
@@ -77,6 +86,7 @@ namespace Lumina
         RUNTIME_API NODISCARD FFixedString GetProjectGameDirectory() const;
         RUNTIME_API NODISCARD FFixedString GetProjectContentDirectory() const;
     
+    
     protected:
         
         FUpdateContext          UpdateContext;
@@ -85,8 +95,10 @@ namespace Lumina
         IDevelopmentToolUI*     DeveloperToolUI =       nullptr;
         #endif
         
-        FString                 ProjectName;
-        FFixedString            ProjectPath;
+        FString                     ProjectName;
+        FFixedString                ProjectPath;
+        TSharedPtr<Lua::FScript>    ProjectScript;
+        Lua::FRef                   ModuleUpdateFunc;
         
 
         FProjectLoadedDelegate  OnProjectLoaded;

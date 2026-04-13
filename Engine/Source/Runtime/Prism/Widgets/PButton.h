@@ -10,7 +10,7 @@ namespace Lumina::Prism
     // Click delivery is eager, the delegate fires on mouse-up if the cursor
     // is still over the button. A release outside the button cancels the
     // press.
-    class SButton : public SWidget
+    class PButton : public PWidget
     {
     public:
         using FOnClicked = TFunction<FPrismReply()>;

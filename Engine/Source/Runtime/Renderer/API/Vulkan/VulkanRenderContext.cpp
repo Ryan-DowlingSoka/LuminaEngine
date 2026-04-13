@@ -647,12 +647,34 @@ namespace Lumina
 
     uint64 FVulkanRenderContext::GetAllocatedMemory() const
     {
-        return 0;
+        VmaBudget budgets[VK_MAX_MEMORY_HEAPS];
+        vmaGetHeapBudgets(GetDevice()->GetAllocator().GetVMA(), budgets);
+
+        uint64 Used = 0;
+
+        for (uint32 i = 0; i < VK_MAX_MEMORY_HEAPS; i++)
+        {
+            Used += budgets[i].usage;
+        }
+
+        return Used;
     }
 
     uint64 FVulkanRenderContext::GetAvailableMemory() const
     {
-        return 0;
+        VmaBudget budgets[VK_MAX_MEMORY_HEAPS];
+        vmaGetHeapBudgets(GetDevice()->GetAllocator().GetVMA(), budgets);
+
+        uint64 Budget = 0;
+        uint64 Usage  = 0;
+
+        for (uint32 i = 0; i < VK_MAX_MEMORY_HEAPS; i++)
+        {
+            Budget += budgets[i].budget;
+            Usage  += budgets[i].usage;
+        }
+
+        return (Budget > Usage) ? (Budget - Usage) : 0;
     }
 
     void FVulkanRenderContext::ClearCommandListCache()

@@ -198,6 +198,8 @@ namespace Lumina::Lua
     template <auto TFunc, typename TClass>
     void FRef::SetFunction(FStringView Key, TClass* Instance)
     {
+        using ClassT = eastl::decay_t<TClass>;
+        
         if (!Push())
         {
             return;
@@ -212,7 +214,7 @@ namespace Lumina::Lua
         }
         else
         {
-            lua_pushlightuserdatatagged(State, Instance, TClassTraits<TClass>::Tag());
+            lua_pushlightuserdatatagged(State, Instance, TClassTraits<ClassT>::Tag());
             lua_pushcclosure(State, [](lua_State* L)
             {
                 return InvokerWithInstance<TFunc>(L);

@@ -2322,7 +2322,16 @@ namespace Lumina
         {
             return;
         }
-
+        
+        if (GEngine->HasLoadedProject())
+        {
+            if (ImGui::MenuItem(LE_ICON_LANGUAGE_LUA " Reload Project Module"))
+            {
+                FString ModuleFile = GConfig->Get<std::string>("Project.LuaModuleFile").c_str();
+                GEngine->LoadProjectScript(ModuleFile);
+            }
+        }
+        
         //if (ImGui::MenuItem(LE_ICON_FOLDER_OPEN " Open Project...", "Ctrl+O"))
         //{
         //    OpenProjectDialog();

@@ -10,7 +10,7 @@ namespace Lumina::Prism
     // slot can be either "auto-sized" (take the child's desired size) or
     // "filled" with a stretch factor that divides the remaining space among
     // greedy children proportionally.
-    class SBoxPanel : public SWidget
+    class PBoxPanel : public PWidget
     {
     public:
         struct FSlot
@@ -31,7 +31,7 @@ namespace Lumina::Prism
             FSlot& operator[](const FWidgetPtr& In)   { Widget = In; return *this; }
         };
 
-        explicit SBoxPanel(EPrismOrientation InOrient) : Orientation(InOrient) {}
+        explicit PBoxPanel(EPrismOrientation InOrient) : Orientation(InOrient) {}
 
         FSlot& AddSlot()
         {
@@ -193,19 +193,19 @@ namespace Lumina::Prism
         TVector<FSlot>    Slots;
     };
 
-    class SHorizontalBox : public SBoxPanel
+    class PHorizontalBox : public PBoxPanel
     {
     public:
-        SHorizontalBox() : SBoxPanel(EPrismOrientation::Horizontal) {}
+        PHorizontalBox() : PBoxPanel(EPrismOrientation::Horizontal) {}
         PRISM_BEGIN_ARGS(SHorizontalBox) PRISM_END_ARGS()
         void Construct(const FArguments&) {}
         static FSlot Slot() { return FSlot{}; }
     };
 
-    class SVerticalBox : public SBoxPanel
+    class PVerticalBox : public PBoxPanel
     {
     public:
-        SVerticalBox() : SBoxPanel(EPrismOrientation::Vertical) {}
+        PVerticalBox() : PBoxPanel(EPrismOrientation::Vertical) {}
         PRISM_BEGIN_ARGS(SVerticalBox) PRISM_END_ARGS()
         void Construct(const FArguments&) {}
         static FSlot Slot() { return FSlot{}; }

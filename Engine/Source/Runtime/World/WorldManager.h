@@ -15,14 +15,16 @@ namespace Lumina
     class RUNTIME_API FWorldManager
     {
     public:
-
+        
         struct FManagedWorld
         {
             EWorldType          Type;
             TObjectPtr<CWorld>  World;
         };
 
+        FWorldManager() = default;
         ~FWorldManager();
+        LE_NO_COPYMOVE(FWorldManager);
         
         void UpdateWorlds(const FUpdateContext& UpdateContext);
         void RenderWorlds(FRenderGraph& RenderGraph);

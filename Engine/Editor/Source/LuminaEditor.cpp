@@ -40,6 +40,34 @@ namespace Lumina
     {
         return Memory::New<FEditorUI>();
     }
+    
+    static void ReplaceProjectTokens(FString& Text, FStringView ProjectName)
+    {
+        FString Name(ProjectName.data(), ProjectName.size());
+
+        FString NameUpper = Name;
+        eastl::transform(
+            NameUpper.begin(),
+            NameUpper.end(),
+            NameUpper.begin(),
+            [](unsigned char c)
+            {
+                return static_cast<char>(std::toupper(c));
+            });
+
+        auto ReplaceAll = [](FString& Str, const FString& From, const FString& To)
+        {
+            size_t Pos = 0;
+            while ((Pos = Str.find(From, Pos)) != std::string::npos)
+            {
+                Str.replace(Pos, From.size(), To);
+                Pos += To.size();
+            }
+        };
+
+        ReplaceAll(Text, "$PROJECTNAMEUPPER", NameUpper);
+        ReplaceAll(Text, "$PROJECTNAME", Name);
+    }
 
     void FEditorEngine::CreateProject(FStringView NewProjectName, FStringView NewProjectPath)
     {
@@ -52,16 +80,10 @@ namespace Lumina
         {
             std::filesystem::path RelativePath = std::filesystem::relative(Entry.path(), BlankProjectPath.c_str());
             
-            FFixedString RelativePathStr = RelativePath.string().c_str();
+            FString RelativePathStr = RelativePath.string().c_str();
             eastl::replace(RelativePathStr.begin(), RelativePathStr.end(), '\\', '/');
             
-            size_t Pos = 0;
-            while ((Pos = RelativePathStr.find("$PROJECTNAME", Pos)) != FFixedString::npos)
-            {
-                RelativePathStr.replace(Pos, 12, NewProjectName.data());
-                Pos += NewProjectName.size();
-            }
-            
+            ReplaceProjectTokens(RelativePathStr, NewProjectName);
             FFixedString DestPath = Paths::Combine(Combined, RelativePathStr);
             
             if (Entry.is_directory())
@@ -79,20 +101,16 @@ namespace Lumina
                     continue;
                 }
     
-                std::string FileContent((std::istreambuf_iterator<char>(InputFile)), std::istreambuf_iterator<char>());
+                std::string FileContentStr((std::istreambuf_iterator<char>(InputFile)), std::istreambuf_iterator<char>());
                 InputFile.close();
                 
-                Pos = 0;
-                while ((Pos = FileContent.find("$PROJECTNAME", Pos)) != std::string::npos)
-                {
-                    FileContent.replace(Pos, 12, NewProjectName.data());
-                    Pos += NewProjectName.size();
-                }
+                FString FileContents = FileContentStr.c_str();
+                ReplaceProjectTokens(FileContents, NewProjectName);
                 
                 std::ofstream OutputFile(DestPath.c_str(), std::ios::binary);
                 if (OutputFile.is_open())
                 {
-                    OutputFile.write(FileContent.data(), FileContent.size());
+                    OutputFile.write(FileContents.data(), FileContents.size());
                     OutputFile.close();
                 }
             }

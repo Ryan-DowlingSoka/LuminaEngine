@@ -13,6 +13,8 @@
 #include "Input/InputProcessor.h"
 #include "Luau/include/lua.h"
 #include "Memory/SmartPtr.h"
+#include "Paths/Paths.h"
+#include "Platform/Filesystem/FileHelper.h"
 #include "World/World.h"
 #include "World/Entity/Systems/SystemContext.h"
 
@@ -101,11 +103,64 @@ namespace Lumina::Lua
         
         CWorld::RegisterLuaModule(GlobalsRef);
         
-        FRef EngineTable    = GlobalsRef.NewTable("Engine");
-        FRef MathTable      = EngineTable.NewTable("Math");
-        FRef AudioTable     = EngineTable.NewTable("Audio");
-        
+        FRef EngineTable        = GlobalsRef.NewTable("Engine");
+        FRef VFSTable           = EngineTable.NewTable("VFS");
+        FRef MathTable          = EngineTable.NewTable("Math");
+        FRef AudioTable         = EngineTable.NewTable("Audio");
+        FRef FileHelperTable    = EngineTable.NewTable("FileHelper");
+        FRef PathTable          = EngineTable.NewTable("Paths");
+        FRef RHITable           = EngineTable.NewTable("RHI");
+
         EngineTable.SetFunction<[](FStringView Name) { return StaticLoadObject(Name); } >("LoadObject");
+        EngineTable.SetFunction<&FEngine::GetProjectName>("GetProjectName", GEngine);
+        EngineTable.SetFunction<&FEngine::GetProjectPath>("GetProjectPath", GEngine);
+        
+        VFSTable.SetFunction<&VFS::Exists>("Exists");
+        VFSTable.SetFunction<&VFS::CreateDir>("CreateDir");
+        VFSTable.SetFunction<&VFS::FileName>("FileName");
+        VFSTable.SetFunction<&VFS::IsDirectory>("IsDirectory");
+        VFSTable.SetFunction<&VFS::IsEmpty>("IsEmpty");
+        VFSTable.SetFunction<&VFS::PlatformOpen>("PlatformOpen");
+        VFSTable.SetFunction<&VFS::Rename>("Rename");
+        VFSTable.SetFunction<&VFS::Remove>("Remove");
+        VFSTable.SetFunction<&VFS::Parent>("Parent");
+        VFSTable.SetFunction<&VFS::IsUnderDirectory>("IsUnderDirectory");
+        VFSTable.SetFunction<[](FStringView Path)
+        {
+            FString Data;
+            VFS::ReadFile(Data, Path);
+            return Data;
+        }>("ReadFileString");
+        VFSTable.SetFunction<[](FStringView Path)
+        {
+            TVector<uint8> Data;
+            VFS::ReadFile(Data, Path);
+            return Data;
+        }>("ReadFileArray");
+        VFSTable.SetFunction<[](FStringView Path, TVector<uint8> Data)
+        {
+            return VFS::WriteFile(Path, Data);
+        }>("WriteFileArray");
+        VFSTable.SetFunction<[](FStringView Path, FStringView Data)
+        {
+            return VFS::WriteFile(Path, Data);
+        }>("WriteFileString");
+        
+        
+        RHITable.SetFunction<&IRenderContext::CompileEngineShaders>("CompileEngineShaders", GRenderContext);
+        RHITable.SetFunction<&IRenderContext::WaitIdle>("WaitIdle", GRenderContext);
+        RHITable.SetFunction<&IRenderContext::GetAllocatedMemory>("GetAllocatedMemory", GRenderContext);
+        RHITable.SetFunction<&IRenderContext::GetAvailableMemory>("GetAvailableMemory", GRenderContext);
+        RHITable.SetFunction<&IRenderContext::SetVSyncEnabled>("SetVSyncEnabled");
+        RHITable.SetFunction<&IRenderContext::IsVSyncEnabled>("IsVSyncEnabled");
+        
+        FileHelperTable.SetFunction<&FileHelper::CreateNewFile>("CreateNewFile");
+        
+        PathTable.SetFunction<&Paths::Exists>("Exists");
+        PathTable.SetFunction<&Paths::GetEngineContentDirectory>("GetEngineContentDirectory");
+        PathTable.SetFunction<&Paths::GetEngineConfigDirectory>("GetEngineConfigDirectory");
+        PathTable.SetFunction<&Paths::GetEngineShadersDirectory>("GetEngineShadersDirectory");
+
         
         MathTable.Set("Pi",        glm::pi<float>());
         MathTable.Set("TwoPi",     glm::two_pi<float>());
@@ -333,7 +388,13 @@ namespace Lumina::Lua
         LUMINA_PROFILE_SCOPE();
         
         size_t BytecodeSize = 0;
-        char* Bytecode = luau_compile(Code.data(), Code.length(), nullptr, &BytecodeSize);
+        lua_CompileOptions Options{};
+        Options.debugLevel = 2;
+        #ifndef DEBUG
+        Options.optimizationLevel = 2;
+        Options.debugLevel = 0;
+        #endif
+        char* Bytecode = luau_compile(Code.data(), Code.length(), &Options, &BytecodeSize);
 
         if (!Bytecode)
         {

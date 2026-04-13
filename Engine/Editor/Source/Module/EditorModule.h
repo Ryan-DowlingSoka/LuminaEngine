@@ -3,11 +3,5 @@
 
 namespace Lumina
 {
-    class FEditorModule : public IModuleInterface
-    {
-    public:
-        
-        
-    
-    };
+    class FEditorModule : public IModuleInterface {};
 }

@@ -3,7 +3,7 @@
 
 namespace Lumina
 {
-    class $PROJECTNAME_API F$PROJECTNAMEModule : public IModuleInterface
+    class $PROJECTNAMEUPPER_API F$PROJECTNAMEModule : public IModuleInterface
     {
     public:
         

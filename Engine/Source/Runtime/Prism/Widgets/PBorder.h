@@ -7,7 +7,7 @@ namespace Lumina::Prism
 {
     // Single-child decorator that paints a filled background and an optional
     // outline before drawing its content.
-    class SBorder : public SWidget
+    class PBorder : public PWidget
     {
     public:
         PRISM_BEGIN_ARGS(SBorder)

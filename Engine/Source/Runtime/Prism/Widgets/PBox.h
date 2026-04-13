@@ -7,7 +7,7 @@ namespace Lumina::Prism
 {
     // Single-child container that injects padding, min/max size clamping and
     // alignment for its content.
-    class SBox : public SWidget
+    class PBox : public PWidget
     {
     public:
         PRISM_BEGIN_ARGS(SBox)
@@ -100,7 +100,7 @@ namespace Lumina::Prism
             glm::vec2 Inner{0.0f};
             if (Child && Child->IsVisible())
             {
-                // SWidget::CacheDesiredSize is non-const; traversal is done
+                // PWidget::CacheDesiredSize is non-const; traversal is done
                 // from the application before paint, so here we only read the
                 // cached value.
                 Inner = Child->GetDesiredSize();

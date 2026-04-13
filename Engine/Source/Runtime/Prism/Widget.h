@@ -8,8 +8,8 @@
 
 namespace Lumina::Prism
 {
-    class SWidget;
-    using FWidgetPtr = TSharedPtr<SWidget>;
+    class PWidget;
+    using FWidgetPtr = TSharedPtr<PWidget>;
 
     // Base class for every Prism widget. Widgets are owned via TSharedPtr and
     // follow a two-phase layout protocol:
@@ -21,15 +21,12 @@ namespace Lumina::Prism
     //
     // Painting walks the resolved tree and emits draw elements into a draw
     // list via the FPrismPaintContext handed in from the parent.
-    class SWidget : public TSharedFromThis<SWidget>
+    class PWidget : public TSharedFromThis<PWidget>
     {
     public:
-        SWidget() = default;
-        virtual ~SWidget() = default;
-
-        // ------------------------------------------------------------------
-        // Layout
-        // ------------------------------------------------------------------
+        PWidget() = default;
+        virtual ~PWidget() = default;
+        
         const glm::vec2&     GetDesiredSize() const { return CachedDesiredSize; }
         const FPrismGeometry& GetGeometry()   const { return Geometry; }
 
@@ -45,13 +42,8 @@ namespace Lumina::Prism
 
         virtual void ArrangeChildren(const FPrismGeometry& /*Allotted*/) {}
         
-        // Returns the max layer the widget emitted to, so siblings can stack
-        // above it. Default implementation paints nothing.
-        virtual uint16 OnPaint(const FPrismPaintContext& /*Context*/) const { return 0; }
-
-        // ------------------------------------------------------------------
-        // Input
-        // ------------------------------------------------------------------
+        virtual uint16 OnPaint([[maybe_unused]] const FPrismPaintContext& Context) const { return 0; }
+        
         virtual FPrismReply OnMouseButtonDown(const FPrismPointerEvent&) { return FPrismReply::Unhandled(); }
         virtual FPrismReply OnMouseButtonUp  (const FPrismPointerEvent&) { return FPrismReply::Unhandled(); }
         virtual FPrismReply OnMouseMove      (const FPrismPointerEvent&) { return FPrismReply::Unhandled(); }
@@ -62,8 +54,6 @@ namespace Lumina::Prism
         virtual FPrismReply OnKeyUp          (const FPrismKeyEvent&)     { return FPrismReply::Unhandled(); }
         virtual FPrismReply OnChar           (const FPrismKeyEvent&)     { return FPrismReply::Unhandled(); }
         
-        // Called when the widget is discovered at a hit-test point. Returns
-        // true if traversal should descend into the widget's children.
         virtual bool HitTest(const glm::vec2& AbsolutePoint) const
         {
             return Visibility != EPrismVisibility::Collapsed
@@ -71,9 +61,7 @@ namespace Lumina::Prism
                 && Visibility != EPrismVisibility::HitTestInvisible
                 && Geometry.ContainsAbsolute(AbsolutePoint);
         }
-
-        // Allow parents to visit children without knowing the concrete type.
-        // Default is a leaf widget; containers override to expose children.
+        
         virtual size_t      GetChildCount() const          { return 0; }
         virtual FWidgetPtr  GetChildAt(size_t) const       { return nullptr; }
         

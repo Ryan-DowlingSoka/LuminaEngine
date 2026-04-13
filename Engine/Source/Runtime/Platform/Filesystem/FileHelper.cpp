@@ -26,7 +26,7 @@ namespace Lumina::FileHelper
         return true;
     }
 
-    bool LoadFileToArray(TVector<uint8>& Result, FStringView Path, uint32 ReadFlags)
+    bool LoadFileToArray(TVector<uint8>& Result, FStringView Path)
     {
         Result.clear();
         
@@ -168,7 +168,7 @@ namespace Lumina::FileHelper
         return std::filesystem::exists(FilePath.data());
     }
 
-    bool CreateNewFile(FStringView FilePath, bool bBinary, uint32 Flags)
+    bool CreateNewFile(FStringView FilePath, bool bBinary)
     {
         if (std::filesystem::exists(FilePath.data())) 
         {
