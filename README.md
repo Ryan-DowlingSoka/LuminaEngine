@@ -187,8 +187,7 @@ setx LUMINA_DIR "C:\path\to\lumina"
 * **NlohmannJson** - Modern JSON library with intuitive syntax and full STL compatibility
 * **RPMalloc** - Lock-free thread-caching memory allocator with high scalability and low overhead
 * **RenderDoc** - Graphics debugging tool integration for frame capture and analysis
-* **ShaderC** - GLSL to SPIR-V compiler with optimization passes and shader reflection capabilities
-* **Sol2** - Modern C++/Lua binding library with compile-time safety and automatic type conversions
+* **SLang** - GLSL to SPIR-V compiler with optimization passes and shader reflection capabilities
 * **SPDLog** - Fast C++ logging library with async mode, custom formatting, and multiple sink support
 * **STBImage** - Single-header image loading library supporting multiple common formats
 * **TinyObjLoader** - Lightweight OBJ file parser with MTL material support
