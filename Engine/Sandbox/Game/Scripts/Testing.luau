@@ -12,11 +12,13 @@ function NewScript:OnAttach()
 end
 
 function NewScript:OnReady()
-    local Thingy = CMaterial.Load("/Game/Content/M_Enemy")
 end
 
 function NewScript:Update(DeltaTime: number)
-    --Registry:Duplicate(36)
+
+    for i = 1, 1 do
+        Registry:Get(Registry:Duplicate(15), STransformComponent):SetLocation(vector.create(math.random(-1000, 1000), 0.0, math.random(-1000, 1000)))
+    end
 end
             
 function NewScript:OnDetach()

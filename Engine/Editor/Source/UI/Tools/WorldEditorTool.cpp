@@ -2675,7 +2675,7 @@ namespace Lumina
         
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::LargeBold);
             ImGui::AlignTextToFramePadding();
-            ImGuiX::Text("Entity: {}", EntityName);
+            ImGuiX::Text("Entity: {} (ID: ({})", EntityName, entt::to_integral(Entity));
             ImGui::PopFont();
 
             ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(35, 35, 35, 255));

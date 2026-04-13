@@ -8,6 +8,7 @@
 
 namespace Lumina
 {
+    struct FLineBatcherComponent;
     struct SDirectionalLightComponent;
     struct SSpotLightComponent;
     struct SPointLightComponent;
@@ -167,6 +168,7 @@ namespace Lumina
         void ProcessSpotLight(const SSpotLightComponent& SpotLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount);
         void ProcessDirectionalLight(const SDirectionalLightComponent& DirectionalLight, TAtomic<uint32>& LightCount);
         
+        void ProcessBatchedLines(FLineBatcherComponent& Batcher);
 
         // ~ End Parallel Draw Command Compilation ~
 
