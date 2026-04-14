@@ -126,7 +126,7 @@ namespace Lumina::Prism
         EnsureBuffers((uint32)VertexStream.Vertices.size(), (uint32)VertexStream.Indices.size());
 
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Prism UI"), Descriptor, [this, Target](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Prism UI", Descriptor, [this, Target](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Prism UI", tracy::Color::MediumPurple);
 

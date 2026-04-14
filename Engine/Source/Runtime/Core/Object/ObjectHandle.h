@@ -51,7 +51,7 @@ namespace eastl
     {
         size_t operator()(const Lumina::FObjectHandle& Object) const noexcept
         {
-            size_t Seed;
+            size_t Seed = 0;
             Lumina::Hash::HashCombine(Seed, Object.Index);
             Lumina::Hash::HashCombine(Seed, Object.Generation);
             return Seed;

@@ -1879,12 +1879,12 @@ namespace eastl
 	{
 		size_t operator()(const FBindingLayoutItem& Item) const
 		{
-			size_t hash = 0;
-			Hash::HashCombine(hash, Item.Size);
-			Hash::HashCombine(hash, Item.Slot);
-			Hash::HashCombine(hash, Item.Type);
+			size_t Hash = 0;
+			Hash::HashCombine(Hash, Item.Size);
+			Hash::HashCombine(Hash, Item.Slot);
+			Hash::HashCombine(Hash, Item.Type);
 
-			return hash;
+			return Hash;
 		}
 	};
 
@@ -1893,15 +1893,15 @@ namespace eastl
 	{
 		size_t operator()(const FBindingLayoutDesc& Item) const
 		{
-			size_t hash = 0;
-			Hash::HashCombine(hash, Item.Index);
-			Hash::HashCombine(hash, Item.StageFlags.Get());
+			size_t Hash = 0;
+			Hash::HashCombine(Hash, Item.Index);
+			Hash::HashCombine(Hash, Item.StageFlags.Get());
 			for (const FBindingLayoutItem& LayoutItem : Item.Bindings)
 			{
-				Hash::HashCombine(hash, LayoutItem);
+				Hash::HashCombine(Hash, LayoutItem);
 			}
 
-			return hash;
+			return Hash;
 		}
 	};
 

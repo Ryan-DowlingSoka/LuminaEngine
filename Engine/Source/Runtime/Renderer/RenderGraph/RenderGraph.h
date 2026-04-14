@@ -50,12 +50,8 @@ namespace Lumina
         LE_NO_COPYMOVE(FRenderGraph);
         
         template <Concept::TExecutor ExecutorType>
-        FRGPassHandle AddPass(ERGPassFlags PassFlags, FRGEvent&& Event, const FRGPassDescriptor* Parameters, ExecutorType&& Executor);
-
-        template<typename ... TSpecs>
-        void AddParallelPasses(TSpecs&&... Specs);
+        FRGPassHandle AddPass(ERGPassFlags PassFlags, FStringView EventName, const FRGPassDescriptor* Parameters, ExecutorType&& Executor);
         
-
         FRGPassDescriptor* AllocDescriptor();
 
         void Execute();
@@ -67,12 +63,6 @@ namespace Lumina
         }
     
     
-    private:
-
-        template <Concept::TExecutor ExecutorType>
-        FRGPassHandle AddPassToGroup(TVector<FRGPassHandle>& Group, ERGPassFlags PassFlags, FRGEvent&& Event, const FRGPassDescriptor* Parameters, ExecutorType&& Executor);
-        
-
     private:
         
         

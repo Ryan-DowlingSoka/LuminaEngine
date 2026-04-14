@@ -412,7 +412,7 @@ namespace Lumina
         
         {
             FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-            RenderGraph.AddPass(RG_Raster, FRGEvent("Write Scene Buffers"), Descriptor, [this](ICommandList& CmdList)
+            RenderGraph.AddPass(RG_Raster, "Write Scene Buffers", Descriptor, [this](ICommandList& CmdList)
             {
                 LUMINA_PROFILE_SECTION_COLORED("Write Scene Buffers", tracy::Color::OrangeRed3);
                 
@@ -967,6 +967,13 @@ namespace Lumina
 
     void FForwardRenderScene::ProcessPointLight(const SPointLightComponent& PointLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount)
     {
+        auto Lights = LightCount.fetch_add(1, std::memory_order_acquire);
+        if (LightCount >= MAX_LIGHTS - 1)
+        {
+            NotifyMaxLightsHit();
+            return;
+        }
+        
         FLight Light;
         Light.Flags                 = LIGHT_TYPE_POINT;
         Light.Falloff               = PointLight.Falloff;
@@ -1004,8 +1011,6 @@ namespace Lumina
             }
         };
         
-        auto Lights = LightCount.fetch_add(1, std::memory_order_acquire);
-        
         if (PointLight.bCastShadows)
         {
             int32 TileIndex = ShadowAtlas.AllocateTile();
@@ -1039,6 +1044,13 @@ namespace Lumina
 
     void FForwardRenderScene::ProcessSpotLight(const SSpotLightComponent& SpotLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount)
     {
+        auto Lights = LightCount.fetch_add(1, std::memory_order_acquire);
+        if (LightCount >= MAX_LIGHTS - 1)
+        {
+            NotifyMaxLightsHit();
+            return;
+        }
+        
         glm::vec3 UpdatedForward    = TransformComponent.GetRotation() * FViewVolume::ForwardAxis;
         glm::vec3 UpdatedUp         = TransformComponent.GetRotation() * FViewVolume::UpAxis;
                 
@@ -1061,8 +1073,6 @@ namespace Lumina
         Light.Radius                = SpotLight.Attenuation;
         Light.Angles                = glm::vec2(InnerCos, OuterCos);
         Light.ViewProjection[0]     = ViewVolume.ToReverseDepthViewProjectionMatrix();
-        
-        auto Lights = LightCount.fetch_add(1, std::memory_order_acquire);
         
         if (SpotLight.bCastShadows)
         {
@@ -1316,6 +1326,11 @@ namespace Lumina
         }
     }
 
+    void FForwardRenderScene::NotifyMaxLightsHit()
+    {
+        LOG_WARN("[Rendering] - Maximum Lights Hit! {}", MAX_LIGHTS);
+    }
+
     void FForwardRenderScene::DrawBillboard(FRHIImage* Image, const glm::vec3& Location, float Scale)
     {
         if (Image->GetTextureCacheIndex() == -1)
@@ -1352,7 +1367,7 @@ namespace Lumina
         if (DrawCommands.empty())
         {
             FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-            RenderGraph.AddPass(RG_Compute, FRGEvent("Clear Depth Pass"), Descriptor, [&] (ICommandList& CmdList)
+            RenderGraph.AddPass(RG_Compute, "Clear Depth Pass", Descriptor, [&] (ICommandList& CmdList)
             {
                CmdList.ClearImageUInt(GetNamedImage(ENamedImage::DepthAttachment), AllSubresources, 0); 
             });
@@ -1367,7 +1382,7 @@ namespace Lumina
         }
         
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Compute, FRGEvent("Cull Pass"), Descriptor, [&] (ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Compute, "Cull Pass", Descriptor, [&] (ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Cull Pass", tracy::Color::Pink2);
                 
@@ -1402,7 +1417,7 @@ namespace Lumina
         }
         
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Pre-Depth Pass"), Descriptor, [&] (ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Pre-Depth Pass", Descriptor, [&] (ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Pre-Depth Pass", tracy::Color::Orange);
         
@@ -1465,7 +1480,7 @@ namespace Lumina
 
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
         Descriptor->SetFlag(ERGExecutionFlags::Async);
-        RenderGraph.AddPass(RG_Compute, FRGEvent("Depth Pyramid Pass"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Compute, "Depth Pyramid Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Depth Pyramid Pass", tracy::Color::Orange);
 
@@ -1546,7 +1561,7 @@ namespace Lumina
         }
 
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Compute, FRGEvent("Cluster Build Pass"), Descriptor, [&] (ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Compute, "Cluster Build Pass", Descriptor, [&] (ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Cluster Build Pass", tracy::Color::Pink2);
                 
@@ -1586,7 +1601,7 @@ namespace Lumina
         }
 
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Compute, FRGEvent("Light Cull Pass"), Descriptor, [&] (ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Compute, "Light Cull Pass", Descriptor, [&] (ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Light Cull Pass", tracy::Color::Pink2);
                 
@@ -1622,7 +1637,7 @@ namespace Lumina
         }
         
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Point Light Shadow Pass"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Point Light Shadow Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Point Light Shadow Pass", tracy::Color::DeepPink2);
             
@@ -1722,7 +1737,7 @@ namespace Lumina
         }
         
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Spot Shadow Pass"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Spot Shadow Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Spot Shadow Pass", tracy::Color::DeepPink4);
             
@@ -1821,7 +1836,7 @@ namespace Lumina
         }
         
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Cascaded Shadow Map Pass"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Cascaded Shadow Map Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Cascaded Shadow Map Pass", tracy::Color::DeepPink2);
             
@@ -1883,7 +1898,7 @@ namespace Lumina
         }
         
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Forward Base Pass"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Forward Base Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Forward Base Pass", tracy::Color::Red);
             
@@ -1954,7 +1969,7 @@ namespace Lumina
         }
         
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Billboard Pass"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Billboard Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Billboard Pass", tracy::Color::Red);
             
@@ -2017,7 +2032,7 @@ namespace Lumina
         }
 
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Transparent Pass"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Transparent Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Transparent Pass", tracy::Color::CadetBlue);
 
@@ -2120,7 +2135,7 @@ namespace Lumina
         }
 
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("OIT Resolve Pass"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "OIT Resolve Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("OIT Resolve Pass", tracy::Color::GreenYellow);
             
@@ -2193,7 +2208,7 @@ namespace Lumina
         }
 
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Environment Pass"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Environment Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Environment Pass", tracy::Color::Green3);
         
@@ -2249,7 +2264,7 @@ namespace Lumina
         }
     
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Batched Line Draw"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Batched Line Draw", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Batched Line Draw", tracy::Color::Red2);
     
@@ -2332,7 +2347,7 @@ namespace Lumina
             return;
         }
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Selection Post Process Pass"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Selection Post Process Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Selection Post Process Pass", tracy::Color::Red2);
             
@@ -2402,7 +2417,7 @@ namespace Lumina
     void FForwardRenderScene::ToneMappingPass(FRenderGraph& RenderGraph)
     {
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Tone Mapping Pass"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Tone Mapping Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Tone Mapping Pass", tracy::Color::Red2);
             
@@ -2468,7 +2483,7 @@ namespace Lumina
         }
         
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Debug Draw Pass"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Debug Draw Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Debug Draw Pass", tracy::Color::Red2);
         

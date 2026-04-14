@@ -20,52 +20,55 @@ namespace Lumina
         PANIC("{}", pMessage);
     }
     
-    struct FMalloc
+    namespace
     {
-        FMalloc* operator ->() const
+        struct FMalloc
         {
-            static FMalloc Malloc;
-            return &Malloc;
-        }
+            FMalloc* operator ->() const
+            {
+                static FMalloc Malloc;
+                return &Malloc;
+            }
         
-        FMalloc()
-        {
-            rpmalloc_config_t Config = {};
-            Config.error_callback = RPMallocAssert;
-            Config.enable_huge_pages = true;
-            rpmalloc_initialize_config(&Config);
-        }
+            FMalloc() noexcept
+            {
+                rpmalloc_config_t Config = {};
+                Config.error_callback = RPMallocAssert;
+                Config.enable_huge_pages = true;
+                rpmalloc_initialize_config(&Config);
+            }
         
-        ~FMalloc()
-        {
-            rpmalloc_finalize();
-        }
+            ~FMalloc()
+            {
+                rpmalloc_finalize();
+            }
         
-        LE_NO_COPYMOVE(FMalloc);
+            LE_NO_COPYMOVE(FMalloc);
         
-        void* Malloc(size_t Size, size_t Alignment)
-        {
-            DEBUG_ASSERT(Alignment >= sizeof(void*));
-            DEBUG_ASSERT((Alignment & (Alignment - 1)) == 0);
-            DEBUG_ASSERT(Alignment % sizeof(void*) == 0);
+            void* Malloc(size_t Size, size_t Alignment)
+            {
+                DEBUG_ASSERT(Alignment >= sizeof(void*));
+                DEBUG_ASSERT((Alignment & (Alignment - 1)) == 0);
+                DEBUG_ASSERT(Alignment % sizeof(void*) == 0);
             
-            return rpaligned_alloc(Alignment, Size);
-        }
+                return rpaligned_alloc(Alignment, Size);
+            }
         
-        void* Realloc(void* Memory, size_t NewSize, size_t Alignment)
-        {
-            DEBUG_ASSERT(Alignment >= sizeof(void*));
-            DEBUG_ASSERT((Alignment & (Alignment - 1)) == 0);
-            DEBUG_ASSERT(Alignment % sizeof(void*) == 0);
+            void* Realloc(void* Memory, size_t NewSize, size_t Alignment)
+            {
+                DEBUG_ASSERT(Alignment >= sizeof(void*));
+                DEBUG_ASSERT((Alignment & (Alignment - 1)) == 0);
+                DEBUG_ASSERT(Alignment % sizeof(void*) == 0);
             
-            return rpaligned_realloc(Memory, Alignment, NewSize, 0, 0);
-        }
+                return rpaligned_realloc(Memory, Alignment, NewSize, 0, 0);
+            }
         
-        void Free(void* Memory)
-        {
-            rpfree(Memory);
-        }
-    };
+            void Free(void* Memory)
+            {
+                rpfree(Memory);
+            }
+        };
+    }
     
     static FMalloc GMalloc;
 

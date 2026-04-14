@@ -19,7 +19,7 @@ namespace Lumina
         }
 
         FRHIBindingLayoutRef Layout = GRenderContext->CreateBindingLayout(Desc);
-        BindingLayouts.insert_or_assign(Hash, Layout);
+        BindingLayouts.emplace(Hash, Layout);
         
         return Layout;
     }
@@ -37,7 +37,7 @@ namespace Lumina
         }
 
         FRHIBindingSetRef Set = GRenderContext->CreateBindingSet(Desc, Layout);
-        BindingSets.insert_or_assign(Hash, Set);
+        BindingSets.emplace(Hash, Set);
         
         return Set;
     }

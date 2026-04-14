@@ -15,8 +15,8 @@ namespace Lumina
         template<typename T, typename... Args>
         T* TAlloc(Args&&... args)
         {
-            void* mem = Allocate(sizeof(T), alignof(T));
-            return new (mem) T(std::forward<Args>(args)...);
+            void* Mem = Allocate(sizeof(T), alignof(T));
+            return new (Mem) T(Forward<Args>(args)...);
         } 
         
         // Allocates memory of specified size and alignment.

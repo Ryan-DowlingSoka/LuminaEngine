@@ -633,7 +633,7 @@ namespace Lumina
         LUMINA_PROFILE_SCOPE();
 
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, FRGEvent("Swapchain Copy"), Descriptor, [&](ICommandList& CmdList)
+        RenderGraph.AddPass(RG_Raster, "Swapchain Copy", Descriptor, [&](ICommandList& CmdList)
         {
             CmdList.CopyImage(FEngine::GetEngineViewport()->GetRenderTarget(), FTextureSlice(), Swapchain->GetCurrentImage(), FTextureSlice());
         });
@@ -647,14 +647,14 @@ namespace Lumina
 
     uint64 FVulkanRenderContext::GetAllocatedMemory() const
     {
-        VmaBudget budgets[VK_MAX_MEMORY_HEAPS];
-        vmaGetHeapBudgets(GetDevice()->GetAllocator().GetVMA(), budgets);
+        VmaBudget Budgets[VK_MAX_MEMORY_HEAPS];
+        vmaGetHeapBudgets(GetDevice()->GetAllocator().GetVMA(), Budgets);
 
         uint64 Used = 0;
 
         for (uint32 i = 0; i < VK_MAX_MEMORY_HEAPS; i++)
         {
-            Used += budgets[i].usage;
+            Used += Budgets[i].usage;
         }
 
         return Used;

@@ -184,7 +184,7 @@ namespace Lumina
     	LUMINA_PROFILE_SCOPE();
 		
 		FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-		RenderGraph.AddPass(RG_Raster, FRGEvent("ImGui Render"), Descriptor, [&] (ICommandList& CmdList)
+		RenderGraph.AddPass(RG_Raster, "ImGui Render", Descriptor, [&] (ICommandList& CmdList)
 		{
 			LUMINA_PROFILE_SECTION_COLORED("ImGui Render", tracy::Color::Aquamarine3);
 

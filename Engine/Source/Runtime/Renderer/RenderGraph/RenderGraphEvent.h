@@ -12,14 +12,11 @@ namespace Lumina
         explicit FRGEvent(const char* InEventName)
             : StaticName(InEventName)
         {}
-
-        template<typename... Args>
-        requires (sizeof ... (Args) > 0)
-        FRGEvent(FStringView FormatString, Args&&... FormatArgs)
-        {
-            FormattedName = std::format(FormatString, std::forward<Args>(FormatArgs)...);
-        }
-
+        
+        explicit FRGEvent(FStringView InEventName)
+            : StaticName(InEventName.data())
+        {}
+        
         const char* Get() const
         {
             return StaticName;
@@ -27,12 +24,10 @@ namespace Lumina
 
         bool IsValid() const
         {
-            return StaticName != nullptr || !FormattedName.empty();
+            return StaticName != nullptr;
         }
 
     private:
-        
         const char* StaticName = nullptr;
-        FString FormattedName;
     };
 }

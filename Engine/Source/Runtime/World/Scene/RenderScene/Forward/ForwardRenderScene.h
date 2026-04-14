@@ -169,6 +169,8 @@ namespace Lumina
         void ProcessDirectionalLight(const SDirectionalLightComponent& DirectionalLight, TAtomic<uint32>& LightCount);
         
         void ProcessBatchedLines(FLineBatcherComponent& Batcher);
+        
+        void NotifyMaxLightsHit();
 
         // ~ End Parallel Draw Command Compilation ~
 
