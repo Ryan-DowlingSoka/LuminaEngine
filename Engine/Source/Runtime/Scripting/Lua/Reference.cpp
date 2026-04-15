@@ -154,7 +154,11 @@ namespace Lumina::Lua
             return FNil{};
         }
         
-        DEBUG_ASSERT(lua_istable(State, -1), "Attempted to get key {} on a lua object that is not a table.", Key);
+        if (!lua_istable(State, -1))
+        {
+            return FNil{};
+        }
+        
         int Type = lua_getfield(State, -1, Key.data());
         if (Type <= LUA_TNIL)
         {

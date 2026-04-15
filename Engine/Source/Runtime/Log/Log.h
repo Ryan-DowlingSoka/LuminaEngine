@@ -19,11 +19,9 @@ namespace Lumina::Logging
 	using FLogQueue = TRingBuffer<FConsoleMessage>;
 
 	RUNTIME_API void ClearLogQueue();
-	RUNTIME_API const FLogQueue& GetConsoleLogQueue();
+	RUNTIME_API FLogQueue& GetConsoleLogQueue();
 	RUNTIME_API const std::shared_ptr<spdlog::logger>& GetLogger();
 	RUNTIME_API const std::shared_ptr<spdlog::sinks::sink>& GetSink();
-	
-
 	
 }
 

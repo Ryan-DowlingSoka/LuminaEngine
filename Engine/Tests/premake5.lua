@@ -5,7 +5,7 @@ LuminaModule({
     EditorModuleDependencies = { "Editor" },
     Dependencies =
     {
-        "GoogleTest", "ImGui", "RPMalloc", "EA", "EnkiTS", "Tracy", "Luau",
+        "GoogleTest", "ImGui", "RPMalloc", "EA", "EnkiTS", "Tracy", "Luau", "EnTT",
     },
     PrivateIncludeDirs = 
     { 

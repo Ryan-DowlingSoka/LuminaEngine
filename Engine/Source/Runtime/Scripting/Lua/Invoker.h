@@ -57,7 +57,7 @@ namespace Lumina::Lua
     }
     
     template<auto TFunc>
-    auto Invoker(lua_State* L)
+    auto LightInvoker(lua_State* L)
     {
         using TraitsT = TFunctionTraits<decltype(TFunc)>;
         using ReturnT = TraitsT::ReturnType;
@@ -69,16 +69,7 @@ namespace Lumina::Lua
             {
                 using ClassT  = TraitsT::ClassType;
                 
-                ClassT* Self = nullptr;
-                if (lua_islightuserdata(L, 1))
-                {
-                    Self = static_cast<ClassT*>(lua_tolightuserdata(L, 1));
-                }
-                else
-                {
-                    Self = TStack<ClassT*>::Get(L, 1);
-                }
-                
+                ClassT* Self = static_cast<ClassT*>(lua_tolightuserdata(L, 1));
                 if (Self == nullptr)
                 {
                     luaL_errorL(L, "[%s]", "Cannot invoke lua function with incorrect usertype.");
@@ -112,7 +103,56 @@ namespace Lumina::Lua
             }
         };
         
-        LUMINA_PROFILE_SCOPE();
+        return Dispatch(eastl::make_index_sequence<TraitsT::ArgCount>{});
+    }
+    
+    template<auto TFunc>
+    auto Invoker(lua_State* L)
+    {
+        using TraitsT = TFunctionTraits<decltype(TFunc)>;
+        using ReturnT = TraitsT::ReturnType;
+        using ArgsT   = TraitsT::ArgsTuple;
+        
+        auto Dispatch = [&]<size_t... Is>(eastl::index_sequence<Is...>)
+        {
+            if constexpr (eastl::is_member_function_pointer_v<decltype(TFunc)>)
+            {
+                using ClassT  = TraitsT::ClassType;
+                
+                ClassT* Self = TStack<ClassT*>::Get(L, 1);
+                if (Self == nullptr)
+                {
+                    luaL_errorL(L, "[%s]", "Cannot invoke lua function with incorrect usertype.");
+                }
+                
+                if constexpr (eastl::is_void_v<ReturnT>)
+                {
+                    (Self->*TFunc)(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 2)...);
+                    return 0;
+                }
+                else
+                {
+                    decltype(auto) Ret = (Self->*TFunc)(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 2)...);
+                    PushArg(L, eastl::forward<decltype(Ret)>(Ret));
+                    return 1;
+                }
+            }
+            else
+            {
+                if constexpr (eastl::is_void_v<ReturnT>)
+                {
+                    TFunc(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 1)...);
+                    return 0;
+                }
+                else
+                {
+                    decltype(auto) Ret = TFunc(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 1)...);
+                    PushArg(L, eastl::forward<decltype(Ret)>(Ret));
+                    return 1;
+                }
+            }
+        };
+        
         return Dispatch(eastl::make_index_sequence<TraitsT::ArgCount>{});
     }
     
@@ -163,7 +203,6 @@ namespace Lumina::Lua
             }
         };
     
-        LUMINA_PROFILE_SCOPE();
         return Dispatch(eastl::make_index_sequence<TraitsT::ArgCount>{});
     }
 }

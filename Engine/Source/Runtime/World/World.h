@@ -75,10 +75,28 @@ namespace Lumina
         FEntityRegistry& GetEntityRegistry() { return EntityRegistry; }
         
         FUNCTION(Script)
+        Physics::IPhysicsScene* GetPhysicsScene() const { return PhysicsScene.get(); }
+        
+        FUNCTION(Script)
+        STransformComponent& GetEntityTransform(entt::entity Entity);
+        
+        FUNCTION(Script)
+        glm::vec3 GetEntityLocation(entt::entity Entity);
+        
+        FUNCTION(Script)
+        void SetEntityLocation(entt::entity Entity, glm::vec3 Location);
+        
+        FUNCTION(Script)
+        void SetEntityRotation(entt::entity Entity, glm::quat Rotation);
+        
+        FUNCTION(Script)
         uint32 GetNumEntities() const;
         
         FUNCTION(Script)
         SDefaultWorldSettings& GetDefaultWorldSettings();
+        
+        FUNCTION(Script)
+        bool EntityHasTag(entt::entity Entity, const FName& Tag);
         
         FUNCTION(Script)
         entt::entity GetEntityByTag(const FName& Tag);
@@ -91,6 +109,7 @@ namespace Lumina
 
         FUNCTION(Script)
         TVector<SRayResult> CastSphere(const SSphereCastSettings& Settings) const;
+        
         
         NODISCARD EWorldType GetWorldType() const { return WorldType; }
         
@@ -123,7 +142,6 @@ namespace Lumina
         static CWorld* DuplicateWorld(CWorld* OwningWorld);
 
         IRenderScene* GetRenderer() const { return RenderScene.get(); }
-        Physics::IPhysicsScene* GetPhysicsScene() const { return PhysicsScene.get(); }
 
         const TVector<FSystemVariant>& GetSystemsForUpdateStage(EUpdateStage Stage);
 

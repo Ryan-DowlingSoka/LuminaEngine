@@ -110,6 +110,7 @@ namespace Lumina::Lua
         FRef FileHelperTable    = EngineTable.NewTable("FileHelper");
         FRef PathTable          = EngineTable.NewTable("Paths");
         FRef RHITable           = EngineTable.NewTable("RHI");
+        FRef ECSTable           = EngineTable.NewTable("ECS");
 
         EngineTable.SetFunction<[](FStringView Name) { return StaticLoadObject(Name); } >("LoadObject");
         EngineTable.SetFunction<&FEngine::GetProjectName>("GetProjectName", GEngine);
@@ -160,6 +161,21 @@ namespace Lumina::Lua
         PathTable.SetFunction<&Paths::GetEngineContentDirectory>("GetEngineContentDirectory");
         PathTable.SetFunction<&Paths::GetEngineConfigDirectory>("GetEngineConfigDirectory");
         PathTable.SetFunction<&Paths::GetEngineShadersDirectory>("GetEngineShadersDirectory");
+        
+        ECSTable.SetFunction<&ECS::Utils::IsParent>("IsParent");
+        
+        ECSTable.SetFunction<&ECS::Utils::DuplicateEntity>("DuplicateEntity");
+        ECSTable.SetFunction<&ECS::Utils::DestroyEntity>("DestroyEntity");
+        
+        ECSTable.SetFunction<&ECS::Utils::TranslateEntity>("TranslateEntity");
+        ECSTable.SetFunction<&ECS::Utils::GetDirectionVector>("GetDirectionVector");
+
+        ECSTable.SetFunction<&ECS::Utils::GetEntityLocation>("GetEntityLocation");
+        ECSTable.SetFunction<&ECS::Utils::GetEntityRotation>("GetEntityRotation");
+
+        ECSTable.SetFunction<&ECS::Utils::SetEntityLocation>("SetEntityLocation");
+        ECSTable.SetFunction<&ECS::Utils::SetEntityRotation>("SetEntityRotation");
+
 
         
         MathTable.Set("Pi",        glm::pi<float>());

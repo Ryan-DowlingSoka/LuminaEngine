@@ -50,6 +50,18 @@ namespace Lumina
         }
         
         FUNCTION(Script)
+        glm::vec3 GetLookRight() const
+        {
+            float Yaw = glm::radians(LookInput.x);
+        
+            return glm::normalize(glm::vec3(
+                glm::cos(Yaw),
+                0.0f,
+                -glm::sin(Yaw)
+            ));
+        }
+        
+        FUNCTION(Script)
         void Jump() { bJumpPressed = true; }
         
         PROPERTY(Script, ReadOnly)

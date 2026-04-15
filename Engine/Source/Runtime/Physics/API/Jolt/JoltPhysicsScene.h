@@ -85,6 +85,8 @@ namespace Lumina::Physics
     	
     	void SyncTransforms() const;
     	
+    	uint32 GetEntityBodyID(entt::entity Entity) override;
+    	
     	TOptional<SRayResult> CastRay(const SRayCastSettings& Settings) override;
 		TVector<SRayResult> CastSphere(const SSphereCastSettings& Settings) override;
     	
@@ -97,15 +99,15 @@ namespace Lumina::Physics
     	void OnColliderComponentAdded(entt::registry& Registry, entt::entity Entity);
     	void OnColliderComponentRemoved(entt::registry& Registry, entt::entity Entity);
     	
-    	void OnImpulseEvent(const SImpulseEvent& Impulse);
-        void OnForceEvent(const SForceEvent& Force);
-        void OnTorqueEvent(const STorqueEvent& Torque);
-        void OnAngularImpulseEvent(const SAngularImpulseEvent& AngularImpulse);
-        void OnSetVelocityEvent(const SSetVelocityEvent& Velocity);
-        void OnSetAngularVelocityEvent(const SSetAngularVelocityEvent& AngularVelocity);
-        void OnAddImpulseAtPositionEvent(const SAddImpulseAtPositionEvent& Event);
-        void OnAddForceAtPositionEvent(const SAddForceAtPositionEvent& Event);
-        void OnSetGravityFactorEvent(const SSetGravityFactorEvent& Event);
+    	void OnImpulseEvent(const SImpulseEvent& Impulse) override;
+        void OnForceEvent(const SForceEvent& Force) override;
+        void OnTorqueEvent(const STorqueEvent& Torque) override;
+        void OnAngularImpulseEvent(const SAngularImpulseEvent& AngularImpulse) override;
+        void OnSetVelocityEvent(const SSetVelocityEvent& Velocity) override;
+        void OnSetAngularVelocityEvent(const SSetAngularVelocityEvent& AngularVelocity) override;
+        void OnAddImpulseAtPositionEvent(const SAddImpulseAtPositionEvent& Event) override;
+        void OnAddForceAtPositionEvent(const SAddForceAtPositionEvent& Event) override;
+        void OnSetGravityFactorEvent(const SSetGravityFactorEvent& Event) override;
     	
     	JPH::PhysicsSystem* GetPhysicsSystem() const { return JoltSystem.get(); }
 

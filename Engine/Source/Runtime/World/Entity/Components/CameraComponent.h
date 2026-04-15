@@ -52,7 +52,7 @@ namespace Lumina
         glm::vec3 GetRightVector() const { return ViewVolume.GetRightVector(); }
 
         PROPERTY(Editable, Category = "Camera")
-        float FOV = 0.0f;
+        float FOV = 90.0f;
 
         PROPERTY(Editable, Category = "Camera")
         bool bAutoActivate = false;

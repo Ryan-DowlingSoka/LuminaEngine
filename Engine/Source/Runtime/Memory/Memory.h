@@ -6,40 +6,53 @@
 #include <rpmalloc.h>
 #include <utility>
 #include <EASTL/type_traits.h>
+
+#include "Core/LuminaMacros.h"
 #include "Core/Math/Math.h"
-#include "Platform/Platform.h"
 #include "Platform/GenericPlatform.h"
+#include "Platform/Platform.h"
 #include "tracy/TracyC.h"
 
 
-#define LUMINA_PROFILE_ALLOC(p, size) TracyCAllocS(p, size, 12)
-#define LUMINA_PROFILE_FREE(p) TracyCFreeS(p, 12)
+#define LUMINA_PROFILE_ALLOC(p, size)   TracyCAllocS(p, size, 12)
+#define LUMINA_PROFILE_FREE(p)          TracyCFreeS(p, 12)
 
 constexpr size_t DEFAULT_ALIGNMENT = 16;
 
 namespace Lumina::Memory
 {
-    inline void Memzero(void* ptr, size_t size)
+    struct FMalloc
     {
-        memset(ptr, 0, size);
+        FMalloc() noexcept;
+        ~FMalloc() = default;
+        LE_NO_COPYMOVE(FMalloc);
+
+        void* Malloc(size_t Size, size_t Alignment);
+        void* Realloc(void* Memory, size_t NewSize, size_t Alignment);
+        void Free(void* Memory);
+    };
+    
+    RUNTIME_API extern FMalloc* GMalloc;
+    
+    
+    inline void Memzero(void* Ptr, size_t Size)
+    {
+        std::memset(Ptr, 0, Size);
     }
     
     template <typename T>
-    void Memzero(T* ptr)
+    void Memzero(T* Ptr)
     {
-        memset(ptr, 0, sizeof(T));
+        std::memset(Ptr, 0, sizeof(T));
     }
 
     inline void Memset(void* Ptr, int Val, size_t Size)
     {
         std::memset(Ptr, Val, Size);
     }
-    
 
     RUNTIME_API void Initialize();
-
-    RUNTIME_API void Shutdown();
-
+    
     RUNTIME_API void InitializeThreadHeap();
 
     NODISCARD inline bool IsThreadHeapInitialized()
@@ -161,17 +174,21 @@ namespace Lumina::Memory
     template<typename T>
     FORCEINLINE void DeleteArray(T* Array)
     {
-        const size_t RequiredAlignment = std::max(alignof(T), size_t(16));
-        const size_t RequiredExtraMemory = std::max(RequiredAlignment, size_t(4));
+        const size_t RequiredAlignment = std::max(alignof(T), static_cast<size_t>(16));
+        const size_t RequiredExtraMemory = std::max(RequiredAlignment, static_cast<size_t>(4));
 
         const uint32 NumElements = *(reinterpret_cast<uint32*>(Array) - 1);
-        for (uint32 i = 0; i < NumElements; i++)
+        
+        if (!eastl::is_trivially_destructible_v<T>)
         {
-            Array[i].~T();
+            for (uint32 i = 0; i < NumElements; i++)
+            {
+                Array[i].~T();
+            }
         }
 
-        uint8* pOriginalAddress = reinterpret_cast<uint8*>(Array) - RequiredExtraMemory;
-        Free((void*&) pOriginalAddress);
+        uint8* OriginalAddress = reinterpret_cast<uint8*>(Array) - RequiredExtraMemory;
+        Free((void*&)OriginalAddress);
     }
     
     template<typename T>

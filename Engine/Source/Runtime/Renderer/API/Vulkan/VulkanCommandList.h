@@ -127,7 +127,6 @@ namespace Lumina
         void RequireBufferState(FRHIBuffer* Buffer, EResourceStates StateBits);
         
         
-        void* GetAPIResourceImpl(EAPIResourceType) override;
         const FCommandListInfo& GetCommandListInfo() const override { return Info; }
 
         FPendingCommandState& GetPendingCommandState() override { return PendingState; }
@@ -135,6 +134,10 @@ namespace Lumina
         const FCommandListStatTracker& GetCommandListStats() const override { return CommandListStatLastFrame; }
                 
 
+    protected:
+        
+        void* GetAPIResourceImpl(EAPIResourceType) override;
+        
     private:
         
         TFixedHashMap<FRHIBufferRef, FDynamicBufferWrite, 2>    DynamicBufferWrites;

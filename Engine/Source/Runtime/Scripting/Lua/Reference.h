@@ -191,7 +191,7 @@ namespace Lumina::Lua
         
 
         TStack<T>::Push(State, eastl::forward<T>(Value));
-        lua_setfield(State, -2, Key.data());
+        lua_rawsetfield(State, -2, Key.data());
         lua_pop(State, 1);
     }
 
@@ -209,7 +209,7 @@ namespace Lumina::Lua
         {
             lua_pushcfunction(State, [](lua_State* L)
             {
-                return Invoker<TFunc>(L);
+                return LightInvoker<TFunc>(L);
             }, Key.data());
         }
         else
@@ -220,7 +220,7 @@ namespace Lumina::Lua
                 return InvokerWithInstance<TFunc>(L);
             }, Key.data(), 1);
         }
-        lua_setfield(State, -2, Key.data());
+        lua_rawsetfield(State, -2, Key.data());
         lua_pop(State, 1);
     }
 

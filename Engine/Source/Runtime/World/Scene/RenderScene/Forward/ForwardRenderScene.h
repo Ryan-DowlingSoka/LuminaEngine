@@ -29,11 +29,11 @@ namespace Lumina
         LE_NO_COPYMOVE(FForwardRenderScene);
         
         /**
- * Per-entity output of the parallel mesh-processing phase. The hot work
- * (transforms, bounds, material resolution, instance packing) happens on a worker thread;
- * each item carries indices into its owning thread's local batch table so the merge phase
- * never has to recompute or hash a batch key.
- */
+        * Per-entity output of the parallel mesh-processing phase. The hot work
+        * (transforms, bounds, material resolution, instance packing) happens on a worker thread;
+        * each item carries indices into its owning thread's local batch table so the merge phase
+        * never has to recompute or hash a batch key.
+        */
         struct FProcessedDrawItem
         {
             FGPUInstance        Instance;            // DrawIDAndFlags holds only flags here; the merge fills in DrawID.
@@ -61,7 +61,7 @@ namespace Lumina
             TVector<uint32>     LocalToGlobalDraw;      // resolved during merge
         };
 
-        struct FThreadLocalDrawData
+        struct alignas(Threading::GCacheLineSize) FThreadLocalDrawData
         {
             TVector<FProcessedDrawItem> Items;
             TVector<FLocalBatchEntry>   LocalBatches;
@@ -158,7 +158,7 @@ namespace Lumina
         
         void CompileDrawCommands(FRenderGraph& RenderGraph);
 
-        // ~ Begin Parallel Draw Command Compilation ~
+        void ResolveDirtyTransforms();
 
         void ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
         void ProcessSkeletalMeshEntityInternal(entt::entity Entity, const SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
@@ -172,7 +172,6 @@ namespace Lumina
         
         void NotifyMaxLightsHit();
 
-        // ~ End Parallel Draw Command Compilation ~
 
     private:
         

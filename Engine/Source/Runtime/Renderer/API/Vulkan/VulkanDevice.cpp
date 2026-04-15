@@ -35,10 +35,10 @@ namespace Lumina
 
         VK_CHECK(vmaCreateAllocator(&Info, &Allocator));
 
-        InitUploadPool(PhysicalDevice);
+        InitUploadPool();
     }
 
-    void FVulkanMemoryAllocator::InitUploadPool(VkPhysicalDevice /*PhysicalDevice*/)
+    void FVulkanMemoryAllocator::InitUploadPool()
     {
         // Build a sample VkBufferCreateInfo that matches every usage flag a staging/upload chunk
         // can ever take, so VMA can pick a memory type that satisfies all of them at once.

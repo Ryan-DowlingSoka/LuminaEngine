@@ -148,7 +148,12 @@ namespace Lumina::Lua
             {
                 return A.Atom < B.Atom;
             });
-    
+
+            eastl::sort(Properties.begin(), Properties.end(), [](const FPropertyEntry& A, const FPropertyEntry& B)
+            {
+                return A.Atom < B.Atom;
+            });
+            
             if constexpr (NMethods > 0)
             {
                 using TMethodStorage  = eastl::array<FMethodEntry, NMethods>;
@@ -159,7 +164,7 @@ namespace Lumina::Lua
                 lua_pushcclosure(L, [](lua_State* State) -> int
                 {
                     int32 RawAtom = 0;
-                    const char* AtomName = lua_namecallatom(State, &RawAtom);
+                    lua_namecallatom(State, &RawAtom);
                     int16 Atom = static_cast<int16>(RawAtom);
     
                     auto* BoundMethods = static_cast<TMethodStorage*>(lua_touserdata(State, lua_upvalueindex(1)));
@@ -174,8 +179,6 @@ namespace Lumina::Lua
                         return It->Invoke(State);
                     }
                     
-    
-                    LOG_ERROR("Failed to find method: {} ({})", AtomName, Atom);
                     return 0;
                 }, "__namecall", 1);
     
@@ -196,13 +199,15 @@ namespace Lumina::Lua
                     int16 Atom = static_cast<int16>(RawAtom);
     
                     auto* BoundProperties = static_cast<TPropertyStorage*>(lua_touserdata(State, lua_upvalueindex(1)));
-    
-                    for (auto& Entry : *BoundProperties)
+                    
+                    auto It = eastl::lower_bound(BoundProperties->begin(), BoundProperties->end(), Atom, [](const FPropertyEntry& Entry, int16 Value)
                     {
-                        if (Entry.Atom == Atom)
-                        {
-                            return Entry.Getter(State);
-                        }
+                        return Entry.Atom < Value;
+                    });
+
+                    if (It != BoundProperties->end() && It->Atom == Atom)
+                    {
+                        return It->Getter(State);
                     }
     
                     return 0;
@@ -220,13 +225,15 @@ namespace Lumina::Lua
                     int16 Atom = static_cast<int16>(RawAtom);
     
                     auto* BoundProperties = static_cast<TPropertyStorage*>(lua_touserdata(State, lua_upvalueindex(1)));
-    
-                    for (auto& Entry : *BoundProperties)
+                    
+                    auto It = eastl::lower_bound(BoundProperties->begin(), BoundProperties->end(), Atom, [](const FPropertyEntry& Entry, int16 Value)
                     {
-                        if (Entry.Atom == Atom)
-                        {
-                            return Entry.Setter(State);
-                        }
+                        return Entry.Atom < Value;
+                    });
+
+                    if (It != BoundProperties->end() && It->Atom == Atom)
+                    {
+                        return It->Setter(State);
                     }
     
                     return 0;
@@ -240,6 +247,9 @@ namespace Lumina::Lua
                 lua_pushcfunction(L, Entry.Invoke, Entry.Name.data());
                 lua_setfield(L, MetaTableIdx, Entry.Name.data());
             }
+            
+            lua_newtable(L);
+            lua_setglobal(L, Name.data());
             
             lua_setuserdatametatable(L, TClassTraits<ClassT>::Tag());
         }

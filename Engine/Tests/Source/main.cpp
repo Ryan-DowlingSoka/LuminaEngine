@@ -1,7 +1,4 @@
-﻿
-
-
-#include "gtest/gtest.h"
+﻿#include "gtest/gtest.h"
 #include "Containers/Name.h"
 #include "Core/Object/ObjectBase.h"
 #include "EASTL/allocator.h"
@@ -14,6 +11,7 @@ public:
     void SetUp() override
     {
         Lumina::Memory::Initialize();
+        
         Lumina::Threading::Initialize("Main Thread");
         Lumina::FName::Initialize();
         Lumina::Logging::Init();
@@ -26,9 +24,9 @@ public:
         Lumina::Logging::Shutdown();
         Lumina::FName::Shutdown();
         Lumina::Threading::Shutdown();
-        Lumina::Memory::Shutdown();
-        
         Lumina::ShutdownCObjectSystem();
+        
+        Lumina::Memory::Shutdown();
     }
 };
 
@@ -113,3 +111,5 @@ namespace eastl
     bool operator==( allocator const&, allocator const& ) { return true; }
     bool operator!=( allocator const&, allocator const& ) { return false; }
 }
+
+DECLARE_MODULE_ALLOCATOR_OVERRIDES();

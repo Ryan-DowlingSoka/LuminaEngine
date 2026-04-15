@@ -17,6 +17,7 @@
 #include "entity/components/entitytags.h"
 #include "Entity/Components/LineBatcherComponent.h"
 #include "Entity/Components/NameComponent.h"
+#include "Entity/Components/PhysicsComponent.h"
 #include "Entity/Components/ScriptComponent.h"
 #include "Entity/Components/SingletonEntityComponent.h"
 #include "entity/components/tagcomponent.h"
@@ -100,6 +101,14 @@ namespace Lumina
                     {
                         RuntimeView.iterate(*Storage);
                     }
+                    else if (Args.Is<FStringView>(i))
+                    {
+                        entt::hashed_string Hash(Args.Get<FStringView>(i).data());
+                        if (entt::basic_sparse_set<>* Set = Registry.storage(Hash))
+                        {
+                            RuntimeView.iterate(*Set);
+                        }
+                    }
                 }
                 else if (entt::basic_sparse_set<>* Storage = Registry.storage(Meta.info().hash()))
                 {
@@ -139,46 +148,6 @@ namespace Lumina
             auto Meta = ECS::Utils::InvokeMetaFunc(Type, "enqueue_lua"_hs, entt::forward_as_meta(Registry), entt::forward_as_meta(Ref));
         }
         
-        static entt::entity DuplicateEntity_Lua(FEntityRegistry& Registry, entt::entity Entity)
-        {
-            auto DuplicateRecursive = [&](auto& Self, entt::entity Source, entt::entity NewParent) -> entt::entity
-            {
-                entt::entity To = Registry.create();
-
-                for (auto&& [ID, Storage] : Registry.storage())
-                {
-                    if (Storage.contains(Source) && !Storage.contains(To))
-                    {
-                        if (ID != entt::type_hash<FRelationshipComponent>::value())
-                        {
-                            Storage.push(To, Storage.value(Source));
-                        }
-                    }
-                }
-
-                if (NewParent != entt::null)
-                {
-                    ECS::Utils::ReparentEntity(Registry, To, NewParent);
-                }
-                else if (FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Source))
-                {
-                    if (Rel->Parent != entt::null)
-                    {
-                        ECS::Utils::ReparentEntity(Registry, To, Rel->Parent);
-                    }
-                }
-
-                // Recursively duplicate children parented to new duplicate
-                ECS::Utils::ForEachChild(Registry, Source, [&](entt::entity Child)
-                {
-                    Self(Self, Child, To);
-                });
-
-                return To;
-            };
-
-            return DuplicateRecursive(DuplicateRecursive, Entity, entt::null);
-        }
         
         static void ForEachInRuntimeView_Lua(entt::runtime_view& View, Lua::FRef Func)
         {
@@ -188,6 +157,20 @@ namespace Lumina
             {
                 Func(Entity);
             });
+        }
+        
+        static TVector<entt::entity> RuntimeViewGetEntities_Lua(entt::runtime_view& View)
+        {
+            LUMINA_PROFILE_SCOPE();
+            
+            TVector<entt::entity> Entities;
+            Entities.reserve(View.size_hint());
+            View.each([&](entt::entity Entity)
+            {
+                Entities.emplace_back(Entity);
+            });
+            
+            return Entities;
         }
         
         static size_t RuntimeViewSizeHint_Lua(entt::runtime_view& View)
@@ -217,16 +200,29 @@ namespace Lumina
             .AddFunction<&FLuaEventBus::ClearEvent>("ClearEvent")
             .AddFunction<&FLuaEventBus::GetSubscriberCount>("GetSubscriberCount")
             .Register();
-
+        
+        
         GlobalRef.NewClass<Physics::IPhysicsScene>("PhysicsScene")
+            .AddFunction<&Physics::IPhysicsScene::GetEntityBodyID>("GetEntityBodyID")
             .AddFunction<&Physics::IPhysicsScene::ActivateBody>("ActivateBody")
             .AddFunction<&Physics::IPhysicsScene::DeactivateBody>("DeactivateBody")
+            .AddFunction<&Physics::IPhysicsScene::OnImpulseEvent>("ApplyImpulse")
+            .AddFunction<&Physics::IPhysicsScene::OnForceEvent>("ApplyForce")
+            .AddFunction<&Physics::IPhysicsScene::OnTorqueEvent>("ApplyTorque")
+            .AddFunction<&Physics::IPhysicsScene::OnAngularImpulseEvent>("ApplyAngularImpulse")
+            .AddFunction<&Physics::IPhysicsScene::OnSetVelocityEvent>("SetVelocity")
+            .AddFunction<&Physics::IPhysicsScene::OnSetAngularVelocityEvent>("SetAngularVelocity")
+            .AddFunction<&Physics::IPhysicsScene::OnAddImpulseAtPositionEvent>("AddImpulseAtPosition")
+            .AddFunction<&Physics::IPhysicsScene::OnAddForceAtPositionEvent>("AddForceAtPosition")
+            .AddFunction<&Physics::IPhysicsScene::OnAddImpulseAtPositionEvent>("AddImpulseAtPosition")
+            .AddFunction<&Physics::IPhysicsScene::OnSetGravityFactorEvent>("SetGravityFactor")
             .Register();
         
         GlobalRef.NewClass<entt::runtime_view>("RuntimeView")
             .AddFunction<&entt::runtime_view::contains>("Contains")
             .AddFunction<&LuaBinds::ForEachInRuntimeView_Lua>("Each")
             .AddFunction<&LuaBinds::RuntimeViewSizeHint_Lua>("SizeHint")
+            .AddFunction<&LuaBinds::RuntimeViewGetEntities_Lua>("GetEntities")
             .Register();
         
         GlobalRef.NewClass<FEntityRegistry>("FEntityRegistry")
@@ -236,7 +232,6 @@ namespace Lumina
             .AddFunction<&LuaBinds::EntityCount_Lua>("EntityCount")
             .AddFunction<&LuaBinds::RemoveComponent_Lua>("Remove")
             .AddFunction<&LuaBinds::CreateEntity_Lua>("Create")
-            .AddFunction<&LuaBinds::DuplicateEntity_Lua>("Duplicate")
             .AddFunction<&LuaBinds::DestroyEntity_Lua>("Destroy")
             .AddFunction<&LuaBinds::HasComponent_Lua>("Has")
             .AddFunction<&LuaBinds::EmplaceComponent_Lua>("Emplace")
@@ -635,6 +630,26 @@ namespace Lumina
         EntityRegistry.destroy(Entity);
     }
 
+    STransformComponent& CWorld::GetEntityTransform(entt::entity Entity)
+    {
+        return EntityRegistry.get<STransformComponent>(Entity);
+    }
+
+    glm::vec3 CWorld::GetEntityLocation(entt::entity Entity)
+    {
+        return GetEntityTransform(Entity).GetWorldLocation();
+    }
+
+    void CWorld::SetEntityLocation(entt::entity Entity, glm::vec3 Location)
+    {
+        GetEntityTransform(Entity).SetLocation(Location);
+    }
+
+    void CWorld::SetEntityRotation(entt::entity Entity, glm::quat Rotation)
+    {
+        GetEntityTransform(Entity).SetRotation(Rotation);
+    }
+
     uint32 CWorld::GetNumEntities() const
     {
         return (uint32)EntityRegistry.view<entt::entity>().size();
@@ -671,6 +686,16 @@ namespace Lumina
     SDefaultWorldSettings& CWorld::GetDefaultWorldSettings()
     {
         return EntityRegistry.get<SDefaultWorldSettings>(SingletonEntity);
+    }
+
+    bool CWorld::EntityHasTag(entt::entity Entity, const FName& Tag)
+    {
+        if (auto Storage = EntityRegistry.storage(entt::hashed_string(Tag.c_str())))
+        {
+            return Storage->contains(Entity);
+        }
+        
+        return false;
     }
 
     void CWorld::CreateRenderer()
@@ -910,18 +935,18 @@ namespace Lumina
             if (Result.has_value())
             {
                 SRayResult RayResult = Result.value();
-                DrawLine(Settings.Start, RayResult.Location, FColor(Settings.DebugMissColor), 1.0f, true, Settings.DebugDuration);
+                DrawLine(Settings.Start, RayResult.Location, FColor(Settings.DebugMissColor), 3.0f, true, Settings.DebugDuration);
                 
                 glm::vec3 NormalEnd = RayResult.Location + RayResult.Normal * 0.5f;
-                DrawLine(RayResult.Location, NormalEnd, FColor::Blue, 1.0f,true, Settings.DebugDuration);
+                DrawLine(RayResult.Location, NormalEnd, FColor::Blue, 3.0f,true, Settings.DebugDuration);
                 
-                DrawBox(RayResult.Location, glm::vec3(0.05f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), FColor::Yellow, 1.0, true, Settings.DebugDuration);
+                DrawBox(RayResult.Location, glm::vec3(0.05f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), FColor::Yellow, 3.0, true, Settings.DebugDuration);
                 
-                DrawLine(RayResult.Location, Settings.End, FColor(Settings.DebugHitColor), 1.0f, true, Settings.DebugDuration);
+                DrawLine(RayResult.Location, Settings.End, FColor(Settings.DebugHitColor), 3.0f, true, Settings.DebugDuration);
             }
             else
             {
-                DrawLine(Settings.Start, Settings.End, FColor(Settings.DebugMissColor), 1.0f, true, Settings.DebugDuration);
+                DrawLine(Settings.Start, Settings.End, FColor(Settings.DebugMissColor), 3.0f, true, Settings.DebugDuration);
             }
         }
         

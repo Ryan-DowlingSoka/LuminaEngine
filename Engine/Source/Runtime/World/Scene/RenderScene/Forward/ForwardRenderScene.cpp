@@ -175,10 +175,7 @@ namespace Lumina
             auto StaticView         = Registry.view<SStaticMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto SkeletalView       = Registry.view<SSkeletalMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             
-            TransformView.each([](STransformComponent& Transform)
-            {
-                (void)Transform.GetWorldMatrix(); // Will resolve. 
-            });
+            ResolveDirtyTransforms();
 
             const size_t EntityCount       = StaticView.size_hint() + SkeletalView.size_hint();
             const size_t EstimatedProxies  = EntityCount * 2;
@@ -207,7 +204,7 @@ namespace Lumina
                 for (uint32 i = Range.Start; i < Range.End; ++i)
                 {
                     entt::entity Entity = (*Handle)[i];
-                    if (Handle->contains(Entity))
+                    if (StaticView.contains(Entity))
                     {
                         const SStaticMeshComponent& MeshComponent      = StaticView.get<SStaticMeshComponent>(Entity);
                         const STransformComponent&  TransformComponent = StaticView.get<STransformComponent>(Entity);
@@ -224,7 +221,7 @@ namespace Lumina
                 for (uint32 i = Range.Start; i < Range.End; ++i)
                 {
                     entt::entity Entity = (*Handle)[i];
-                    if (Handle->contains(Entity))
+                    if (SkeletalView.contains(Entity))
                     {
                         const SSkeletalMeshComponent& MeshComponent    = SkeletalView.get<SSkeletalMeshComponent>(Entity);
                         const STransformComponent&  TransformComponent = SkeletalView.get<STransformComponent>(Entity);
@@ -353,7 +350,7 @@ namespace Lumina
                 for (uint32 i = Range.Start; i < Range.End; ++i)
                 {
                     entt::entity Entity = (*Handle)[i];
-                    if (Handle->contains(Entity))
+                    if (DirectionalView.contains(Entity))
                     {
                         auto& DirectionalLight = DirectionalView.get<SDirectionalLightComponent>(Entity);
                         ProcessDirectionalLight(DirectionalLight, LightCount);
@@ -369,7 +366,7 @@ namespace Lumina
                 for (uint32 i = Range.Start; i < Range.End; ++i)
                 {
                     entt::entity Entity = (*Handle)[i];
-                    if (Handle->contains(Entity))
+                    if (PointLightView.contains(Entity))
                     {
                         auto& PointLight = PointLightView.get<SPointLightComponent>(Entity);
                         auto& Transform = PointLightView.get<STransformComponent>(Entity);
@@ -386,7 +383,7 @@ namespace Lumina
                 for (uint32 i = Range.Start; i < Range.End; ++i)
                 {
                     entt::entity Entity = (*Handle)[i];
-                    if (Handle->contains(Entity))
+                    if (SpotLightView.contains(Entity))
                     {
                         auto& SpotLight = SpotLightView.get<SSpotLightComponent>(Entity);
                         auto& Transform = SpotLightView.get<STransformComponent>(Entity);
@@ -490,10 +487,110 @@ namespace Lumina
         }
     }
 
+    void FForwardRenderScene::ResolveDirtyTransforms()
+    {
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        auto SingleView = Registry.view<FNeedsTransformUpdate, STransformComponent>(entt::exclude<FRelationshipComponent>);
+        auto RelationshipGroup = Registry.group<FNeedsTransformUpdate, FRelationshipComponent>(entt::get<STransformComponent>);
+        
+        if (!RelationshipGroup.empty())
+        {
+            TFixedVector<entt::entity, 100> DirtyEntities;
+            DirtyEntities.reserve(RelationshipGroup.size());
+            for (auto entity : RelationshipGroup)
+            {
+                DirtyEntities.push_back(entity);
+            }
+            
+            auto RelationshipTransformCallable = [&](uint32 Index)
+            {
+                entt::entity DirtyEntity = DirtyEntities[Index];
+                
+                auto& DirtyTransform = RelationshipGroup.get<STransformComponent>(DirtyEntity);
+                auto& DirtyRelationship = RelationshipGroup.get<FRelationshipComponent>(DirtyEntity);
+                
+                if (DirtyRelationship.Parent != entt::null && Registry.valid(DirtyRelationship.Parent))
+                {
+                    glm::mat4 ParentWorldTransform         = Registry.get<STransformComponent>(DirtyRelationship.Parent).WorldTransform.GetMatrix();
+                    glm::mat4 LocalTransform               = DirtyTransform.LocalTransform.GetMatrix();
+                    DirtyTransform.WorldTransform          = FTransform(ParentWorldTransform * LocalTransform);
+                }
+                else
+                {
+                    DirtyTransform.WorldTransform = DirtyTransform.LocalTransform;
+                }
+                
+                DirtyTransform.CachedMatrix = DirtyTransform.WorldTransform.GetMatrix();
+                
+                TFunction<void(entt::entity)> UpdateChildrenRecursive;
+                UpdateChildrenRecursive = [&](entt::entity ParentEntity)
+                {
+                    ECS::Utils::ForEachChild(Registry, ParentEntity, [&](entt::entity Child)
+                    {
+                        auto& ParentTransform = Registry.get<STransformComponent>(ParentEntity);
+                        auto& ChildTransform = Registry.get<STransformComponent>(Child);
+
+                        glm::mat4 ParentWorldTransform = ParentTransform.WorldTransform.GetMatrix();
+                        glm::mat4 ChildLocalTransform = ChildTransform.LocalTransform.GetMatrix();
+                        
+                        ChildTransform.WorldTransform = FTransform(ParentWorldTransform * ChildLocalTransform);
+                        ChildTransform.CachedMatrix = ChildTransform.WorldTransform.GetMatrix();
+                        
+                        UpdateChildrenRecursive(Child);
+                    });
+                };
+                
+                UpdateChildrenRecursive(DirtyEntity);
+            };
+            
+            if (DirtyEntities.size() > 1000)
+            {
+                Task::ParallelFor((uint32)DirtyEntities.size(), RelationshipTransformCallable);
+            }
+            else
+            {
+                for (uint32 i = 0; i < (uint32)DirtyEntities.size(); ++i)
+                {
+                    RelationshipTransformCallable(i);
+                }
+            }
+        }
+
+        if (SingleView.size_hint() < 1000)
+        {
+            SingleView.each([&](STransformComponent& TransformComponent)
+            {
+                TransformComponent.WorldTransform = TransformComponent.LocalTransform;
+                TransformComponent.CachedMatrix = TransformComponent.WorldTransform.GetMatrix();  
+            });
+        }
+        else
+        {
+            auto WorkFunctor = [](STransformComponent& Transform)
+            {
+                Transform.WorldTransform = Transform.LocalTransform;
+                Transform.CachedMatrix = Transform.WorldTransform.GetMatrix();
+            };
+
+            auto Handle = SingleView.handle();
+            Task::ParallelFor(Handle->size(), [&](uint32 Index)
+            {
+                entt::entity Entity = (*Handle)[Index];
+                
+                if (SingleView.contains(Entity))
+                {
+                    std::apply(WorkFunctor, SingleView.get(Entity));
+                }
+            });
+        }
+        
+        Registry.clear<FNeedsTransformUpdate>();
+    }
+
     static uint16 FindOrAddLocalBatch(FForwardRenderScene::FThreadLocalDrawData& Local, const FDrawBatchKey& Key, FRHIVertexShader* VS, FRHIPixelShader* PS)
     {
         // Linear scan: per-thread batch counts are tiny (typically <30) and the table is hot in L1.
-        // A hash map would be slower at this size and would also fragment the cache.
+        // A hash map would probably (maybe?) be slower at this size and would also fragment the cache.
         const uint32 Count = (uint32)Local.LocalBatches.size();
         for (uint32 i = 0; i < Count; ++i)
         {
@@ -502,10 +599,12 @@ namespace Lumina
                 return (uint16)i;
             }
         }
+        
         FForwardRenderScene::FLocalBatchEntry& Entry = Local.LocalBatches.emplace_back();
         Entry.Key          = Key;
         Entry.VertexShader = VS;
         Entry.PixelShader  = PS;
+        
         return (uint16)Count;
     }
 
@@ -817,11 +916,11 @@ namespace Lumina
         uint32 TotalDrawArgs = 0;
         for (uint32 b = 0; b < NumBatches; ++b)
         {
-            BatchDrawArgBase[b]            = TotalDrawArgs;
-            DrawCommands[b].IndirectDrawOffset = TotalDrawArgs;
-            DrawCommands[b].DrawCount          = (uint32)GlobalDrawsPerBatch[b].size();
-            RenderStats.NumDraws              += DrawCommands[b].DrawCount;
-            TotalDrawArgs                     += (uint32)GlobalDrawsPerBatch[b].size();
+            BatchDrawArgBase[b]                 = TotalDrawArgs;
+            DrawCommands[b].IndirectDrawOffset  = TotalDrawArgs;
+            DrawCommands[b].DrawCount           = (uint32)GlobalDrawsPerBatch[b].size();
+            RenderStats.NumDraws                += DrawCommands[b].DrawCount;
+            TotalDrawArgs                       += (uint32)GlobalDrawsPerBatch[b].size();
         }
 
         IndirectDrawArguments.resize(TotalDrawArgs);
@@ -860,7 +959,7 @@ namespace Lumina
                 DrawInstanceOffsets[d] = Running;
                 Running += DrawInstanceCounts[d];
             }
-            ASSERT(Running == TotalInstances);
+            DEBUG_ASSERT(Running == TotalInstances);
         }
 
         TVector<uint32> ThreadDrawWriteBase((size_t)NumThreads * TotalDrawArgs);

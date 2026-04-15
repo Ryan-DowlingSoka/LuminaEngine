@@ -13,7 +13,7 @@ using namespace entt::literals;
 
 namespace Lumina::ECS::Utils
 {
-    bool SerializeEntity(FArchive& Ar, FEntityRegistry& Registry, entt::entity& Entity)
+    bool SerializeEntity(FArchive& RESTRICT Ar, FEntityRegistry& RESTRICT Registry, entt::entity& Entity)
     {
         using namespace entt::literals;
         
@@ -613,6 +613,85 @@ namespace Lumina::ECS::Utils
         };
     
         UpdateChildrenRecursive(Entity);
+    }
+
+    glm::vec3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity)
+    {
+        return Registry.get<STransformComponent>(Entity).GetWorldLocation();
+    }
+
+    glm::quat GetEntityRotation(FEntityRegistry& Registry, entt::entity Entity)
+    {
+        return Registry.get<STransformComponent>(Entity).GetWorldRotation();
+    }
+
+    void SetEntityLocation(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Location)
+    {
+        Registry.get<STransformComponent>(Entity).SetLocation(Location);
+    }
+
+    void SetEntityRotation(FEntityRegistry& Registry, entt::entity Entity, const glm::quat& Rotation)
+    {
+        Registry.get<STransformComponent>(Entity).SetRotation(Rotation);
+    }
+
+    glm::vec3 TranslateEntity(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Translation)
+    {
+        return Registry.get<STransformComponent>(Entity).Translate(Translation);
+    }
+
+    entt::entity DuplicateEntity(FEntityRegistry& Registry, entt::entity Entity)
+    {
+        auto DuplicateRecursive = [&](auto& Self, entt::entity Source, entt::entity NewParent) -> entt::entity
+        {
+            entt::entity To = Registry.create();
+
+            for (auto&& [ID, Storage] : Registry.storage())
+            {
+                if (Storage.contains(Source) && !Storage.contains(To))
+                {
+                    if (ID != entt::type_hash<FRelationshipComponent>::value())
+                    {
+                        Storage.push(To, Storage.value(Source));
+                    }
+                }
+            }
+
+            if (NewParent != entt::null)
+            {
+                ECS::Utils::ReparentEntity(Registry, To, NewParent);
+            }
+            else if (FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Source))
+            {
+                if (Rel->Parent != entt::null)
+                {
+                    ECS::Utils::ReparentEntity(Registry, To, Rel->Parent);
+                }
+            }
+
+            // Recursively duplicate children parented to new duplicate
+            ECS::Utils::ForEachChild(Registry, Source, [&](entt::entity Child)
+            {
+                Self(Self, Child, To);
+            });
+
+            return To;
+        };
+
+        return DuplicateRecursive(DuplicateRecursive, Entity, entt::null);
+    }
+
+    glm::vec3 GetDirectionVector(FEntityRegistry& Registry, entt::entity To, entt::entity From)
+    {
+        glm::vec3 ToLoc = GetEntityLocation(Registry, To);
+        glm::vec3 FromLoc = GetEntityLocation(Registry, From);
+        glm::vec3 Direction = glm::normalize(ToLoc - FromLoc);
+        return Direction;
+    }
+
+    void DestroyEntity(FEntityRegistry& Registry, entt::entity Entity)
+    {
+        Registry.destroy(Entity);
     }
 
     entt::id_type GetTypeID(FStringView Name)

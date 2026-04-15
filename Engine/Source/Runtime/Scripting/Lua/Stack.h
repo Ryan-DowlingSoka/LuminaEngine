@@ -322,6 +322,101 @@ namespace Lumina::Lua
         }
     };
     
+    template<typename... T>
+    struct TStack<TTuple<T...>>
+    {
+        static FStringView TypeName(lua_State* State)
+        {
+            return lua_typename(State, LUA_TTABLE);
+        }
+
+        static void Push(lua_State* State, const TTuple<T...>& Value)
+        {
+            lua_createtable(State, sizeof...(T), 0);
+
+            auto Dispatch = [&]<size_t... Is>(eastl::index_sequence<Is...>)
+            {
+                ((
+                    TStack<eastl::tuple_element_t<Is, TTuple<T...>>>::Push(State, eastl::get<Is>(Value)),
+                    lua_rawseti(State, -2, static_cast<lua_Integer>(Is + 1))
+                ), ...);
+            };
+
+            Dispatch(eastl::make_index_sequence<sizeof...(T)>{});
+        }
+
+        static TTuple<T...> Get(lua_State* State, int Index)
+        {
+            luaL_checktype(State, Index, LUA_TTABLE);
+
+            return GetImpl(State, Index, eastl::make_index_sequence<sizeof...(T)>{});
+        }
+
+    private:
+        template<size_t... Is>
+        static TTuple<T...> GetImpl(lua_State* State, int Index, eastl::index_sequence<Is...>)
+        {
+            return TTuple<T...>{(GetElement<Is>(State, Index))...};
+        }
+
+        template<size_t I>
+        static auto GetElement(lua_State* State, int Index)
+        {
+            lua_rawgeti(State, Index, static_cast<lua_Integer>(I + 1));
+            using ElemT = eastl::tuple_element_t<I, TTuple<T...>>;
+            auto value = TStack<ElemT>::Get(State, -1);
+            lua_pop(State, 1);
+            return value;
+        }
+
+        static bool Check(lua_State* State, int Index)
+        {
+            return lua_istable(State, Index);
+        }
+    };
+    
+    template<typename T>
+    requires(!eastl::is_arithmetic_v<T>)
+    struct TStack<TVector<T>>
+    {
+        static FStringView TypeName(lua_State* State) { return lua_typename(State, LUA_TTABLE); }
+        
+        static void Push(lua_State* State, const TVector<T>& Value)
+        {
+            lua_createtable(State, static_cast<int>(Value.size()), 0);
+            for (std::size_t i = 0; i < Value.size(); ++i)
+            {
+                TStack<T>::Push(State, Value[i]);
+                lua_rawseti(State, -2, static_cast<lua_Integer>(i + 1));
+            }
+        }
+        
+        static TVector<T> Get(lua_State* State, int Index)
+        {
+            if (!lua_istable(State, Index))
+            {
+                luaL_error(State, "#%d Argument must be a table", Index);
+            }
+
+            TVector<T> Vector;
+            Vector.reserve(static_cast<std::size_t>(lua_objlen(State, Index)));
+
+            int const ABSIndex = lua_absindex(State, Index);
+            lua_pushnil(State);
+            while (lua_next(State, ABSIndex) != 0)
+            {
+                Vector.push_back(TStack<T>::Get(State, -1));
+                lua_pop(State, 1);
+            }
+            return Vector;
+        }
+        
+        static bool Check(lua_State* State, int Index)
+        {
+            return lua_istable(State, Index);
+        }
+    };
+    
     template<typename T>
     requires(eastl::is_arithmetic_v<T>)
     struct TStack<TVector<T>>
@@ -330,7 +425,6 @@ namespace Lumina::Lua
         
         static void Push(lua_State* State, const TVector<T>& Value)
         {
-            LUMINA_PROFILE_SCOPE();
             void* Buffer = lua_newbuffer(State, Value.size());
             Memory::Memcpy(Buffer, Value.data(), Value.size() * sizeof(T));
         }
@@ -364,7 +458,6 @@ namespace Lumina::Lua
         requires(eastl::is_constructible_v<RawT, TArgs...>)
         static void Push(lua_State* State, TArgs&&... Args)
         {
-            LUMINA_PROFILE_SCOPE();
             void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(StorageT), TClassTraits<RawT>::Tag());
             auto* Header = new (Block) StorageT{};
             Header->Emplace(eastl::forward<TArgs>(Args)...);
@@ -372,7 +465,6 @@ namespace Lumina::Lua
 
         static RawT& Get(lua_State* State, int Index)
         {
-            LUMINA_PROFILE_SCOPE();
             auto* Userdata = static_cast<TUserdataHeader<RawT>*>(lua_touserdatatagged(State, Index, TClassTraits<RawT>::Tag()));
             DEBUG_ASSERT(Userdata, "Tagged userdata not found!");
             return *Userdata->Underlying();
@@ -394,8 +486,6 @@ namespace Lumina::Lua
 
         static void Push(lua_State* State, T* Ptr)
         {
-            LUMINA_PROFILE_SCOPE();
-
             void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(StorageT), TClassTraits<RawT>::Tag());
             auto* Header = new (Block) StorageT{};
             Header->SetExternal(Ptr);
@@ -403,8 +493,6 @@ namespace Lumina::Lua
 
         static RawT* Get(lua_State* State, int Index)
         {
-            LUMINA_PROFILE_SCOPE();
-            
             auto* Header = static_cast<StorageT*>(lua_touserdatatagged(State, Index, TClassTraits<RawT>::Tag()));
             if (!ALERT_IF_NOT(Header, "Type is not registered as a userdata for Luau"))
             {

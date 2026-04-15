@@ -41,7 +41,7 @@ namespace Lumina
         return dimension;
     }
 
-    FVulkanCommandList::FVulkanCommandList(FVulkanRenderContext* InContext, const FCommandListInfo& InInfo)
+    FVulkanCommandList::FVulkanCommandList(FVulkanRenderContext* RESTRICT InContext, const FCommandListInfo& RESTRICT InInfo)
         : RenderContext(InContext)
         , UploadManager(MakeUnique<FUploadManager>(InContext, InInfo.UploadChunkSize, 0, false))
         , ScratchManager(MakeUnique<FUploadManager>(InContext, InInfo.ScratchChunkSize, InInfo.ScratchMaxMemory, true))
@@ -123,7 +123,7 @@ namespace Lumina
         DynamicBufferWrites.clear();
     }
 
-    void FVulkanCommandList::CopyImage(FRHIImage* RESTRICT Src, const FTextureSlice& SrcSlice, FRHIImage* RESTRICT Dst, const FTextureSlice& DstSlice)
+    void FVulkanCommandList::CopyImage(FRHIImage* RESTRICT Src, const FTextureSlice& RESTRICT SrcSlice, FRHIImage* RESTRICT Dst, const FTextureSlice& RESTRICT DstSlice)
     {
         LUMINA_PROFILE_SCOPE();
         ASSERT(Src != nullptr && Dst != nullptr);
@@ -178,7 +178,7 @@ namespace Lumina
         vkCmdBlitImage2(CurrentCommandBuffer->CommandBuffer, &BlitInfo);
     }
 
-    void FVulkanCommandList::CopyImage(FRHIImage* RESTRICT Src, const FTextureSlice& SrcSlice, FRHIStagingImage* RESTRICT Dst, const FTextureSlice& DstSlice)
+    void FVulkanCommandList::CopyImage(FRHIImage* RESTRICT Src, const FTextureSlice& RESTRICT SrcSlice, FRHIStagingImage* RESTRICT Dst, const FTextureSlice& RESTRICT DstSlice)
     {
         FVulkanImage* Source = static_cast<FVulkanImage*>(Src);
         FVulkanStagingImage* Destination = static_cast<FVulkanStagingImage*>(Dst);
@@ -226,7 +226,7 @@ namespace Lumina
         CommandListStats.NumCopies++;
     }
 
-    void FVulkanCommandList::CopyImage(FRHIStagingImage* RESTRICT Src, const FTextureSlice& SrcSlice, FRHIImage* RESTRICT Dst, const FTextureSlice& DstSlice)
+    void FVulkanCommandList::CopyImage(FRHIStagingImage* RESTRICT Src, const FTextureSlice& RESTRICT SrcSlice, FRHIImage* RESTRICT Dst, const FTextureSlice& RESTRICT DstSlice)
     {
         FVulkanStagingImage* Source = static_cast<FVulkanStagingImage*>(Src);
         FVulkanImage* Destination = static_cast<FVulkanImage*>(Dst);
@@ -275,7 +275,7 @@ namespace Lumina
         CommandListStats.NumCopies++;
     }
 
-    static void ComputeMipLevelInformation(const FRHIImageDesc& Desc, uint32 MipLevel, uint32* WidthOut, uint32* HeightOut, uint32* DepthOut)
+    static void ComputeMipLevelInformation(const FRHIImageDesc& RESTRICT Desc, uint32 MipLevel, uint32* RESTRICT WidthOut, uint32* RESTRICT HeightOut, uint32* RESTRICT DepthOut)
     {
         uint32 Width    = std::max((uint32)Desc.Extent.x >> MipLevel, uint32(1));
         uint32 Height   = std::max((uint32)Desc.Extent.y >> MipLevel, uint32(1));
@@ -372,7 +372,7 @@ namespace Lumina
 
     }
 
-    void FVulkanCommandList::ResolveImage(FRHIImage* Src, const FTextureSubresourceSet& SrcSubresources, FRHIImage* Dst, const FTextureSubresourceSet& DstSubresources)
+    void FVulkanCommandList::ResolveImage(FRHIImage* RESTRICT Src, const FTextureSubresourceSet& RESTRICT SrcSubresources, FRHIImage* RESTRICT Dst, const FTextureSubresourceSet& RESTRICT DstSubresources)
     {
         LUMINA_PROFILE_SCOPE();
         
@@ -427,7 +427,7 @@ namespace Lumina
         vkCmdResolveImage(CurrentCommandBuffer->CommandBuffer, Source->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, Destination->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, Regions.size(), Regions.data());
     }
 
-    void FVulkanCommandList::ClearImageFloat(FRHIImage* Image, FTextureSubresourceSet Subresource, const FColor& Color)
+    void FVulkanCommandList::ClearImageFloat(FRHIImage* RESTRICT Image, FTextureSubresourceSet Subresource, const FColor& RESTRICT Color)
     {
         EndRenderPass();
         
@@ -462,7 +462,7 @@ namespace Lumina
 
     }
 
-    void FVulkanCommandList::ClearImageUInt(FRHIImage* Image, FTextureSubresourceSet Subresource, uint32 Color)
+    void FVulkanCommandList::ClearImageUInt(FRHIImage* RESTRICT Image, FTextureSubresourceSet Subresource, uint32 Color)
     {
         EndRenderPass();
 
@@ -1071,7 +1071,7 @@ namespace Lumina
         VulkanQuery->bStarted = true;
     }
 
-    void FVulkanCommandList::AddMarker(const char* Name, const FColor& Color)
+    void FVulkanCommandList::AddMarker(const char* RESTRICT Name, const FColor& RESTRICT Color)
     {
         if (PendingState.IsRecording() && GRenderContext->GetRenderContextDescription().bDebugUtils)
         {
@@ -1222,7 +1222,7 @@ namespace Lumina
         }
     }
 
-    void FVulkanCommandList::ClearImageColor(FRHIImage* Image, const FColor& Color)
+    void FVulkanCommandList::ClearImageColor(FRHIImage* RESTRICT Image, const FColor& RESTRICT Color)
     {
         LUMINA_PROFILE_SCOPE();
         ASSERT(Image != nullptr);

@@ -30,7 +30,7 @@ namespace Lumina
     };
 
     FTaskGraph::FTaskGraph()
-        :Allocator(1024 * 4)
+        :Allocator(1024llu * 4)
     {}
 
     FTaskGraph::~FTaskGraph()

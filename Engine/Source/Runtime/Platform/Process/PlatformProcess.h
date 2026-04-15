@@ -42,6 +42,7 @@ namespace Lumina::Platform
     
 
     
+    
     template<typename TCall>
     requires(std::is_pointer_v<TCall> && std::is_function_v<std::remove_pointer_t<TCall>>)
     TCall LumGetProcAddress(void* Handle, const char* Procedure)

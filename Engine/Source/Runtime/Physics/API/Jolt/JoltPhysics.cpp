@@ -13,7 +13,7 @@ static_assert(sizeof(JPH::ObjectLayer) == 4);
 namespace Lumina::Physics
 {
     static TUniquePtr<FJoltData> JoltData;
-    #if JPH_EXTERNAL_PROFILE
+    #if JPH_DEBUG_RENDERER
     static JPH::BodyManager::DrawSettings DebugDrawSettings;
 
     static TConsoleVar CVarJoltDebug("Jolt.Debug.Draw", false, "Toggles debug drawing for Jolt Physics, has severe performance impact.");

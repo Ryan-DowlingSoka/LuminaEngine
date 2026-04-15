@@ -1,12 +1,9 @@
 #include "pch.h"
 #include "Memory.h"
-
 #include "Core/LuminaMacros.h"
 #include "Core/Assertions/Assert.h"
 #include "Core/Profiler/Profile.h"
 #include "Core/Templates/Align.h"
-
-//#undef LUMINA_RPMALLOC
 
 namespace Lumina
 {
@@ -20,70 +17,52 @@ namespace Lumina
         PANIC("{}", pMessage);
     }
     
-    namespace
-    {
-        struct FMalloc
-        {
-            FMalloc* operator ->() const
-            {
-                static FMalloc Malloc;
-                return &Malloc;
-            }
-        
-            FMalloc() noexcept
-            {
-                rpmalloc_config_t Config = {};
-                Config.error_callback = RPMallocAssert;
-                Config.enable_huge_pages = true;
-                rpmalloc_initialize_config(&Config);
-            }
-        
-            ~FMalloc()
-            {
-                rpmalloc_finalize();
-            }
-        
-            LE_NO_COPYMOVE(FMalloc);
-        
-            void* Malloc(size_t Size, size_t Alignment)
-            {
-                DEBUG_ASSERT(Alignment >= sizeof(void*));
-                DEBUG_ASSERT((Alignment & (Alignment - 1)) == 0);
-                DEBUG_ASSERT(Alignment % sizeof(void*) == 0);
-            
-                return rpaligned_alloc(Alignment, Size);
-            }
-        
-            void* Realloc(void* Memory, size_t NewSize, size_t Alignment)
-            {
-                DEBUG_ASSERT(Alignment >= sizeof(void*));
-                DEBUG_ASSERT((Alignment & (Alignment - 1)) == 0);
-                DEBUG_ASSERT(Alignment % sizeof(void*) == 0);
-            
-                return rpaligned_realloc(Memory, Alignment, NewSize, 0, 0);
-            }
-        
-            void Free(void* Memory)
-            {
-                rpfree(Memory);
-            }
-        };
-    }
+    RUNTIME_API Memory::FMalloc* Memory::GMalloc = nullptr;
     
-    static FMalloc GMalloc;
+    Memory::FMalloc::FMalloc() noexcept
+    {
+        rpmalloc_config_t Config = {};
+        Config.error_callback = RPMallocAssert;
+        Config.enable_huge_pages = true;
+        rpmalloc_initialize_config(&Config);
+    }
+
+    void* Memory::FMalloc::Malloc(size_t Size, size_t Alignment)
+    {
+        DEBUG_ASSERT(Alignment >= sizeof(void*));
+        DEBUG_ASSERT((Alignment & (Alignment - 1)) == 0);
+        DEBUG_ASSERT(Alignment % sizeof(void*) == 0);
+        
+        return rpaligned_alloc(Alignment, Size);
+    }
+
+    void* Memory::FMalloc::Realloc(void* Memory, size_t NewSize, size_t Alignment)
+    {
+        DEBUG_ASSERT(Alignment >= sizeof(void*));
+        DEBUG_ASSERT((Alignment & (Alignment - 1)) == 0);
+        DEBUG_ASSERT(Alignment % sizeof(void*) == 0);
+        
+        return rpaligned_realloc(Memory, Alignment, NewSize, 0, 0);
+    }
+
+    void Memory::FMalloc::Free(void* Memory)
+    {
+        rpfree(Memory);
+    }
 
     void Memory::Initialize()
     {
-        // ...
-    }
-
-    void Memory::Shutdown()
-    {
-        //GMalloc->Shutdown();
+        void* Mem = std::malloc(sizeof(FMalloc));
+        new(Mem) FMalloc{};
     }
 
     void Memory::InitializeThreadHeap()
     {
+        if (GMalloc == nullptr)
+        {
+            Initialize();
+        }
+        
         rpmalloc_thread_initialize();
     }
     

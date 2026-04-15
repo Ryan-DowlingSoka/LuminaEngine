@@ -32,10 +32,10 @@ workspace "Lumina"
 
     defaultplatform ("Editor")
 
+
     filter "configurations:Debug"
         defines
         {
-            "JPH_DEBUG_RENDERER",
             "JPH_FLOATING_POINT_EXCEPTIONS_ENABLED",
             "JPH_EXTERNAL_PROFILE",
             "JPH_ENABLE_ASSERTS",
@@ -46,7 +46,7 @@ workspace "Lumina"
 	defines
 	{
         "JPH_OBJECT_LAYER_BITS=32",
-        ---"JPH_USE_AVX2",
+        "JPH_DEBUG_RENDERER",
         "EASTL_USER_DEFINED_ALLOCATOR=1",
 		"_CRT_SECURE_NO_WARNINGS",
         "_SILENCE_CXX23_ALIGNED_UNION_DEPRECATION_WARNING",

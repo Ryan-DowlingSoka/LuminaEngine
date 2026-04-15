@@ -14,17 +14,7 @@ namespace Lumina::Logging
 {
 
 	static std::shared_ptr<spdlog::logger> Logger;
-	static FLogQueue Logs(300);
-
-
-	TConsoleVar CVarLogBufferSize(
-		"Log.BufferSize",
-		300,
-		"Sets the size of the log buffer for the console sink.",
-		[](const CVarValueType& Var)
-		{
-			Logs.resize(eastl::get<int32>(Var));
-		});
+	
 	
 	bool IsInitialized()
 	{
@@ -35,7 +25,7 @@ namespace Lumina::Logging
 	{
 		spdlog::set_pattern("%^[%T] %n: %v%$");
 		Logger = spdlog::stdout_color_mt("Lumina");
-		Logger->sinks().push_back(std::make_shared<FConsoleSink>(Logs));
+		Logger->sinks().push_back(std::make_shared<FConsoleSink>(GetConsoleLogQueue()));
 		Logger->set_level(spdlog::level::trace);
 	
 		LOG_TRACE("------- Log Initialized -------");
@@ -50,11 +40,12 @@ namespace Lumina::Logging
 
 	void ClearLogQueue()
 	{
-		Logs.clear();
+		GetConsoleLogQueue().clear();
 	}
 
-	const FLogQueue& GetConsoleLogQueue()
+	FLogQueue& GetConsoleLogQueue()
 	{
+		static FLogQueue Logs(300);
 		return Logs;
 	}
 

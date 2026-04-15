@@ -92,7 +92,7 @@ namespace Lumina
     {
     public:
 
-        using FConsoleContainer = THashMap<FStringView, FConsoleVariable>;
+        using FConsoleContainer = TFixedHashMap<FStringView, FConsoleVariable, 100>;
 
         
         static FConsoleRegistry& Get();

@@ -116,6 +116,30 @@ namespace Lumina::Physics
             return (MaskA & LayerB) != (ECollisionProfiles)0 || (MaskB & LayerA) != (ECollisionProfiles)0;
         }
     };
+    
+    class FIgnoreFilter : public JPH::BodyFilter
+    {
+    public:
+        
+        FIgnoreFilter(TSpan<const int64> InIgnoreBodies)
+            : IgnoreBodies(InIgnoreBodies)
+        {}
+        
+        bool ShouldCollide(const JPH::BodyID& inBodyID) const override
+        {
+            const int64 Key = inBodyID.GetIndexAndSequenceNumber();
+            for (std::size_t i = 0; i < IgnoreBodies.size(); i++)
+            {
+                if (IgnoreBodies[i] == Key)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+    
+        TSpan<const int64> IgnoreBodies;
+    };
 
     static FLayerInterfaceImpl                  GJoltLayerInterface;
     static FObjectLayerPairFilterImpl           GObjectVsObjectLayerFilter;
@@ -454,6 +478,12 @@ namespace Lumina::Physics
         });
     }
 
+    uint32 FJoltPhysicsScene::GetEntityBodyID(entt::entity Entity)
+    {
+        auto* RigidBody = World->GetEntityRegistry().try_get<SRigidBodyComponent>(Entity);
+        return RigidBody ? RigidBody->BodyID : JPH::BodyID::cInvalidBodyID;
+    }
+
     TOptional<SRayResult> FJoltPhysicsScene::CastRay(const SRayCastSettings& Settings)
     {
         LUMINA_PROFILE_SCOPE();
@@ -491,29 +521,7 @@ namespace Lumina::Physics
             uint32 LayerMask;
         };
         
-        class IgnoreFilter : public JPH::BodyFilter
-        {
-        public:
-            IgnoreFilter(TSpan<const int64> InIgnoreBodies)
-            {
-                eastl::transform(
-                         InIgnoreBodies.begin(), 
-                         InIgnoreBodies.end(),
-                         eastl::insert_iterator(IgnoreBodies, IgnoreBodies.end()),
-                         [](const int64& Body) { return Body; }
-                     );
-            }
-        
-            bool ShouldCollide(const JPH::BodyID& inBodyID) const override
-            {
-                return IgnoreBodies.find(inBodyID.GetIndexAndSequenceNumber()) == IgnoreBodies.end();
-            }
-
-            TFixedHashSet<int64, 4> IgnoreBodies;
-        };
-        
-        IgnoreFilter IgnoreFilter{Settings.IgnoreBodies};
-        
+        FIgnoreFilter IgnoreFilter{Settings.IgnoreBodies};
         
         JPH::RayCastResult Hit;
         
@@ -552,54 +560,57 @@ namespace Lumina::Physics
     TVector<SRayResult> FJoltPhysicsScene::CastSphere(const SSphereCastSettings& Settings)
     {
         LUMINA_PROFILE_SCOPE();
+        TVector<SRayResult> Results;
 
         JPH::RVec3 JPHStart  = JoltUtils::ToJPHRVec3(Settings.Start);
         JPH::RVec3 JPHEnd    = JoltUtils::ToJPHRVec3(Settings.End);
         JPH::Vec3 Direction = (JPHEnd - JPHStart);
         
-        class IgnoreFilter : public JPH::BodyFilter
+        class FMyCollector : public JPH::CastShapeCollector
         {
         public:
-            IgnoreFilter(TSpan<const int64> InIgnoreBodies)
-            {
-                eastl::transform(
-                    InIgnoreBodies.begin(), 
-                    InIgnoreBodies.end(),
-                    eastl::insert_iterator(IgnoreBodies, IgnoreBodies.end()),
-                    [](const int64& Body) { return Body; }
-                );
-            }
-        
-            bool ShouldCollide(const JPH::BodyID& inBodyID) const override
-            {
-                return IgnoreBodies.find(inBodyID.GetIndexAndSequenceNumber()) == IgnoreBodies.end();
-            }
-    
-            TFixedHashSet<int64, 4> IgnoreBodies;
-        };
-        
-        IgnoreFilter Filter{Settings.IgnoreBodies};
-    
-        class MyCollector : public JPH::CastShapeCollector
-        {
-        public:
-            TFixedVector<JPH::ShapeCastResult, 10> Results;
             
-            void AddHit(const JPH::ShapeCastResult& inResult) override
+            FMyCollector(TVector<SRayResult>& OutResults, const SSphereCastSettings& InSettings, const JPH::BodyLockInterfaceNoLock& NoLock)
+                : Out(OutResults)
+                , Settings(InSettings)
+                , Lock(NoLock)
+            {}
+            
+            TVector<SRayResult>& Out;
+            const SSphereCastSettings& Settings;
+            const JPH::BodyLockInterfaceNoLock& Lock;
+            
+            void AddHit(const JPH::ShapeCastResult& Hit) override
             {
-                Results.push_back(inResult);
+                const JPH::Body* Body = Lock.TryGetBody(Hit.mBodyID2);
+                
+                SRayResult R;
+                R.BodyID   = Hit.mBodyID2.GetIndexAndSequenceNumber();
+                R.Entity   = (uint32)Body->GetUserData();
+                R.Start    = Settings.Start;
+                R.End      = Settings.End;
+                R.Location = JoltUtils::FromJPHVec3(Hit.mContactPointOn2);
+                R.Normal   = glm::normalize(JoltUtils::FromJPHVec3(Hit.mPenetrationAxis.Normalized()));
+                R.Fraction = Hit.mFraction;
+
+                Out.emplace_back(Move(R));
             }
         };
         
-        MyCollector Collector;
-        JPH::SphereShape QuerySphere(Settings.Radius);
+        const JPH::BodyLockInterfaceNoLock& Lock = JoltSystem->GetBodyLockInterfaceNoLock();
         
+        
+        FMyCollector Collector(Results, Settings, Lock);
+        FIgnoreFilter Filter{Settings.IgnoreBodies};
+        
+        JPH::SphereShape QuerySphere(Settings.Radius);
         JPH::RShapeCast ShapeCast = JPH::RShapeCast::sFromWorldTransform(&QuerySphere, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sTranslation(JPHStart), Direction);
         
         JPH::ShapeCastSettings ShapeSettings;
         ShapeSettings.mBackFaceModeTriangles    = JPH::EBackFaceMode::CollideWithBackFaces;
         ShapeSettings.mBackFaceModeConvex       = JPH::EBackFaceMode::CollideWithBackFaces;
         ShapeSettings.mReturnDeepestPoint       = false;
+        
         
         JoltSystem->GetNarrowPhaseQuery().CastShape(
             ShapeCast,
@@ -621,21 +632,6 @@ namespace Lumina::Physics
         FJoltPhysicsContext::GetDebugRenderer()->SetWorld(World);
         FJoltPhysicsContext::GetDebugRenderer()->SetDrawDuration(Settings.DebugDuration);
         
-        if (Collector.Results.empty())
-        {
-            if (Settings.bDrawDebug)
-            {
-                QuerySphere.Draw(FJoltPhysicsContext::GetDebugRenderer(),
-                    JPH::RMat44::sTranslation(JPHStart), 
-                    JPH::Vec3::sReplicate(1.0f), 
-                    JPH::Color(255, 0, 0, 255),
-                    false, 
-                    true);
-            }
-            
-            return {};
-        }
-        
         if (Settings.bDrawDebug)
         {
             QuerySphere.Draw(FJoltPhysicsContext::GetDebugRenderer(),
@@ -644,45 +640,20 @@ namespace Lumina::Physics
                 JPH::Color(0, 255, 0, 255),
                 false, 
                 true);
+            
+            if (Results.empty())
+            {
+                QuerySphere.Draw(FJoltPhysicsContext::GetDebugRenderer(),
+                JPH::RMat44::sTranslation(JPHStart), 
+                JPH::Vec3::sReplicate(1.0f), 
+                JPH::Color(255, 0, 0, 255),
+                false, 
+                true);
+            
+                return Results;
+            }
         }
         #endif
-        
-        const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
-        
-        TVector<SRayResult> Results;
-        Results.reserve(Collector.Results.size());
-        
-        for (const JPH::ShapeCastResult& Hit : Collector.Results)
-        {
-            JPH::Body* Body = LockInterface.TryGetBody(Hit.mBodyID2);
-            if (!Body)
-            {
-                continue;
-            }
-            
-            JPH::RVec3 ContactPoint = Hit.mContactPointOn2;
-            JPH::Vec3 SurfaceNormal = Hit.mPenetrationAxis.Normalized();
-            
-            
-            SRayResult Result
-            {
-                .BodyID     = Hit.mBodyID2.GetIndexAndSequenceNumber(),
-                .Entity     = static_cast<uint32>(Body->GetUserData()),
-                .Start      = Settings.Start,
-                .End        = Settings.End,
-                .Location   = JoltUtils::FromJPHVec3(ContactPoint),
-                .Normal     = glm::normalize(JoltUtils::FromJPHVec3(SurfaceNormal)),
-                .Fraction   = Hit.mFraction
-            };
-            
-            #if JPH_DEBUG_RENDERER
-            if (Settings.bDrawDebug)
-            {
-                FJoltPhysicsContext::GetDebugRenderer()->DrawLine(Hit.mContactPointOn1, Hit.mContactPointOn2, JPH::Color(255, 0, 0, 255));
-            }
-            #endif
-            Results.push_back(Result);
-        }
         
         eastl::sort(Results.begin(), Results.end(), [](const SRayResult& A, const SRayResult& B)
         {

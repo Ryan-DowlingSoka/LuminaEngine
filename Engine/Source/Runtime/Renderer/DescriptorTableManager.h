@@ -24,7 +24,14 @@ namespace Lumina
         ~FDescriptorHandle();
 
         NODISCARD bool IsValid() const { return DescriptorIndex >= 0 && !Manager.expired(); }
-        NODISCARD int64 Get() const { if (DescriptorIndex >= 0) ASSERT(!Manager.expired()); return DescriptorIndex; }
+        NODISCARD int64 Get() const 
+        { 
+            if (DescriptorIndex >= 0)
+            {
+                ASSERT(!Manager.expired());
+            }
+            return DescriptorIndex; 
+        }
 
         NODISCARD int64 GetIndexInHeap() const;
         void Reset() { DescriptorIndex = -1; Manager.reset(); }

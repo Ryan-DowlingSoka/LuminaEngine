@@ -177,7 +177,7 @@ namespace Lumina::Reflection
         for (const FConstant& Constant : Constants)
         {
             Stream += "\tlua_pushinteger(L, static_cast<int>(" + QualifiedName + "::" + Constant.Label + "));\n";
-            Stream += "\tlua_setfield(L, -2, \"" + Constant.Label + "\");\n";
+            Stream += "\tlua_rawsetfield(L, -2, \"" + Constant.Label + "\");\n";
         }
         
         Stream += "\tlua_setglobal(L, \"" + DisplayName + "\");\n";
@@ -500,7 +500,7 @@ namespace Lumina::Reflection
         
             Stream += "\t}, \"__namecall\");\n";
             
-            Stream += "\tlua_setfield(L, MetaTableIdx, \"__namecall\");\n";
+            Stream += "\tlua_rawsetfield(L, MetaTableIdx, \"__namecall\");\n";
         }
         
         Stream += "\n";
@@ -539,7 +539,7 @@ namespace Lumina::Reflection
         
             Stream += "\t\treturn 1;\n";
             Stream += "\t}, \"__index\");\n";
-            Stream += "\tlua_setfield(L, MetaTableIdx, \"__index\");\n";
+            Stream += "\tlua_rawsetfield(L, MetaTableIdx, \"__index\");\n";
             Stream += "\n";
             
             Stream += "\tlua_pushcfunction(L, +[](lua_State* VM) -> int\n";
@@ -570,7 +570,7 @@ namespace Lumina::Reflection
             Stream += "\t\t}\n";
             Stream += "\t\treturn 0;\n";
             Stream += "\t}, \"__newindex\");\n";
-            Stream += "\tlua_setfield(L, MetaTableIdx, \"__newindex\");\n";
+            Stream += "\tlua_rawsetfield(L, MetaTableIdx, \"__newindex\");\n";
         }
         
         Stream += "\n";
@@ -596,7 +596,7 @@ namespace Lumina::Reflection
             Stream += "\t\tlua_pushnil(State);\n";
             Stream += "\t\treturn 1;\n";
             Stream += "\t}, \"Get\");\n";
-            Stream += "\tlua_setfield(L, -2, \"Get\");\n\n";
+            Stream += "\tlua_rawsetfield(L, -2, \"Get\");\n\n";
 
             Stream += "\tlua_pushcfunction(L, +[](lua_State* State) -> int\n";
             Stream += "\t{\n";
@@ -606,7 +606,7 @@ namespace Lumina::Reflection
             Stream += "\t\tlua_pushboolean(State, Registry->all_of<" + QualifiedName + ">(Entity));\n";
             Stream += "\t\treturn 1;\n";
             Stream += "\t}, \"Has\");\n";
-            Stream += "\tlua_setfield(L, -2, \"Has\");\n\n";
+            Stream += "\tlua_rawsetfield(L, -2, \"Has\");\n\n";
 
             Stream += "\tlua_pushcfunction(L, +[](lua_State* State) -> int\n";
             Stream += "\t{\n";
@@ -616,11 +616,11 @@ namespace Lumina::Reflection
             Stream += "\t\tRegistry->remove<" + QualifiedName + ">(Entity);\n";
             Stream += "\t\treturn 0;\n";
             Stream += "\t}, \"Remove\");\n";
-            Stream += "\tlua_setfield(L, -2, \"Remove\");\n\n"; 
+            Stream += "\tlua_rawsetfield(L, -2, \"Remove\");\n\n"; 
         }
         
         Stream += "\tlua_pushunsigned(L, entt::hashed_string(\"" + DisplayName + "\"));\n";
-        Stream += "\tlua_setfield(L, MetaTableIdx, \"__type_id\");\n";
+        Stream += "\tlua_rawsetfield(L, MetaTableIdx, \"__type_id\");\n";
         Stream += "\n";
         
         //@TODO Find a better way.
@@ -634,7 +634,7 @@ namespace Lumina::Reflection
             Stream += "\t\tHeader->Emplace(Instance);\n";
             Stream += "\t\treturn 1;\n";
             Stream += "\t}, \"new\");\n";
-            Stream += "\tlua_setfield(L, -2, \"new\");\n";
+            Stream += "\tlua_rawsetfield(L, -2, \"new\");\n";
         }
         
         if (dynamic_cast<FReflectedClass*>(this))
@@ -655,7 +655,7 @@ namespace Lumina::Reflection
             Stream += "\t\t}\n";
             Stream += "\t\treturn 1;\n";            
             Stream += "\t}, \"Load\");\n";
-            Stream += "\tlua_setfield(L, -2, \"Load\");\n";
+            Stream += "\tlua_rawsetfield(L, -2, \"Load\");\n";
         }
         
         Stream += "\n";

@@ -33,6 +33,7 @@ namespace Lumina
         auto View = SystemContext.CreateView<SCameraComponent, STransformComponent>();
         View.each([](SCameraComponent& CameraComponent, const STransformComponent& TransformComponent)
         {
+            CameraComponent.SetFOV(CameraComponent.GetFOV());
             CameraComponent.SetView(TransformComponent.GetWorldLocation(), TransformComponent.GetWorldRotation() * glm::vec3(0.0, 0.0, 1.0), TransformComponent.GetWorldRotation() * glm::vec3(0.0, 1.0, 0.0));
         });
     }

@@ -51,7 +51,7 @@ namespace Lumina
     
     private:
 
-        void InitUploadPool(VkPhysicalDevice PhysicalDevice);
+        void InitUploadPool();
 
         VmaAllocator           Allocator       = nullptr;
         VmaPool                UploadPool      = VK_NULL_HANDLE;
