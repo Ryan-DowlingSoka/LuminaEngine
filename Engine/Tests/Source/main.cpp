@@ -26,7 +26,6 @@ public:
         Lumina::Threading::Shutdown();
         Lumina::ShutdownCObjectSystem();
         
-        Lumina::Memory::Shutdown();
     }
 };
 

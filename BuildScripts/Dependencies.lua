@@ -22,7 +22,11 @@ ArchBits =
     ["ARM64"]   = "ARM64"
 }
 
-LuminaConfig.EngineDirectory        = "%{wks.location}"
+-- External game projects set LUMINA_DIR env var; use it when present so that
+-- all EnginePath() calls resolve to the actual engine install rather than the
+-- game project's workspace location.
+local _LuminaEnvDir = os.getenv("LUMINA_DIR")
+LuminaConfig.EngineDirectory        = _LuminaEnvDir or "%{wks.location}"
 LuminaConfig.OutputDirectory        = "%{capitalize(cfg.system)}%{ArchBits[cfg.architecture]}"
 LuminaConfig.ProjectFilesDirectory  = "%{wks.location}/Intermediates/ProjectFiles/%{prj.name}"
 LuminaConfig.ReflectionDirectory    = "%{wks.location}/Intermediates/Reflection/%{prj.name}"

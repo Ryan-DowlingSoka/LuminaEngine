@@ -1,6 +1,7 @@
 {
     "Project": {
         "EditorStartupMap": "",
-        "GameStartupMap": ""
+        "GameStartupMap": "",
+        "LuaModuleFile": ""
     }
 }

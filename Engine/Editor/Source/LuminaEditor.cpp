@@ -5,7 +5,9 @@
 #include <Tools/UI/DevelopmentToolUI.h>
 #include "Config/Config.h"
 #include "FileSystem/FileSystem.h"
+#include "GUID/GUID.h"
 #include "Paths/Paths.h"
+#include "Platform/Process/PlatformProcess.h"
 #include "UI/EditorUI.h"
 #include "World/WorldManager.h"
 
@@ -41,22 +43,22 @@ namespace Lumina
         return Memory::New<FEditorUI>();
     }
     
-    static void ReplaceProjectTokens(FString& Text, FStringView ProjectName)
+    struct FProjectTemplateContext
     {
-        FString Name(ProjectName.data(), ProjectName.size());
+        FString Name;
+        FString NameUpper;
+        FString Guid;
+        FString Description;
+    };
 
-        FString NameUpper = Name;
-        eastl::transform(
-            NameUpper.begin(),
-            NameUpper.end(),
-            NameUpper.begin(),
-            [](unsigned char c)
-            {
-                return static_cast<char>(std::toupper(c));
-            });
-
+    static void ReplaceProjectTokens(FString& Text, const FProjectTemplateContext& Ctx)
+    {
         auto ReplaceAll = [](FString& Str, const FString& From, const FString& To)
         {
+            if (From.empty())
+            {
+                return;
+            }
             size_t Pos = 0;
             while ((Pos = Str.find(From, Pos)) != std::string::npos)
             {
@@ -65,27 +67,45 @@ namespace Lumina
             }
         };
 
-        ReplaceAll(Text, "$PROJECTNAMEUPPER", NameUpper);
-        ReplaceAll(Text, "$PROJECTNAME", Name);
+        // Longer tokens must be replaced first so that $PROJECTNAME doesn't
+        // eat the prefix of $PROJECTNAMEUPPER.
+        ReplaceAll(Text, "$PROJECTNAMEUPPER", Ctx.NameUpper);
+        ReplaceAll(Text, "$PROJECTDESCRIPTION", Ctx.Description);
+        ReplaceAll(Text, "$PROJECTGUID", Ctx.Guid);
+        ReplaceAll(Text, "$PROJECTNAME", Ctx.Name);
     }
 
     void FEditorEngine::CreateProject(FStringView NewProjectName, FStringView NewProjectPath)
     {
+        FProjectTemplateContext Ctx;
+        Ctx.Name.assign(NewProjectName.data(), NewProjectName.size());
+        Ctx.NameUpper = Ctx.Name;
+        eastl::transform(
+            Ctx.NameUpper.begin(),
+            Ctx.NameUpper.end(),
+            Ctx.NameUpper.begin(),
+            [](unsigned char c)
+            {
+                return static_cast<char>(std::toupper(c));
+            });
+        Ctx.Guid = FGuid::New().ToString(true, true);
+        Ctx.Description = "A Lumina game project";
+
         FFixedString BlankProjectPath = Paths::Combine(Paths::GetEngineInstallDirectory(), "Templates", "Blank");
-        
+
         FFixedString Combined = Paths::Combine(NewProjectPath, NewProjectName);
         std::filesystem::create_directories(Combined.c_str());
         
         for (auto& Entry : std::filesystem::recursive_directory_iterator(BlankProjectPath.c_str()))
         {
             std::filesystem::path RelativePath = std::filesystem::relative(Entry.path(), BlankProjectPath.c_str());
-            
+
             FString RelativePathStr = RelativePath.string().c_str();
             eastl::replace(RelativePathStr.begin(), RelativePathStr.end(), '\\', '/');
-            
-            ReplaceProjectTokens(RelativePathStr, NewProjectName);
+
+            ReplaceProjectTokens(RelativePathStr, Ctx);
             FFixedString DestPath = Paths::Combine(Combined, RelativePathStr);
-            
+
             if (Entry.is_directory())
             {
                 std::filesystem::create_directories(DestPath.c_str());
@@ -94,19 +114,40 @@ namespace Lumina
             {
                 std::filesystem::path DestPathFS(DestPath.c_str());
                 std::filesystem::create_directories(DestPathFS.parent_path());
-                
-                std::ifstream InputFile(Entry.path(), std::ios::binary);
+
+                const std::filesystem::path SourcePath = Entry.path();
+                const std::string Ext = SourcePath.extension().string();
+
+                // Binary files (e.g. premake5.exe) must be copied verbatim.
+                // Only run token replacement on text files.
+                const bool bIsTextFile =
+                    Ext == ".h"     || Ext == ".hpp"        || Ext == ".cpp"    ||
+                    Ext == ".c"     || Ext == ".inl"        || Ext == ".lua"    ||
+                    Ext == ".json"  || Ext == ".lproject"   || Ext == ".luau"   ||
+                    Ext == ".bat"   || Ext == ".py"         || Ext == ".md"     ||
+                    Ext == ".txt";
+
+                if (!bIsTextFile)
+                {
+                    std::filesystem::copy_file(
+                        SourcePath,
+                        DestPath.c_str(),
+                        std::filesystem::copy_options::overwrite_existing);
+                    continue;
+                }
+
+                std::ifstream InputFile(SourcePath, std::ios::binary);
                 if (!InputFile.is_open())
                 {
                     continue;
                 }
-    
+
                 std::string FileContentStr((std::istreambuf_iterator<char>(InputFile)), std::istreambuf_iterator<char>());
                 InputFile.close();
-                
+
                 FString FileContents = FileContentStr.c_str();
-                ReplaceProjectTokens(FileContents, NewProjectName);
-                
+                ReplaceProjectTokens(FileContents, Ctx);
+
                 std::ofstream OutputFile(DestPath.c_str(), std::ios::binary);
                 if (OutputFile.is_open())
                 {
@@ -115,5 +156,8 @@ namespace Lumina
                 }
             }
         }
+        
+        Platform::LaunchURL(UTF8_TO_TCHAR(Combined.c_str()));
+        
     }
 }

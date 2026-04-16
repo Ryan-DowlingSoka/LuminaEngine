@@ -1,79 +1,25 @@
 local LuminaDir = os.getenv("LUMINA_DIR")
-print(LuminaDir)
+if not LuminaDir then
+    error("LUMINA_DIR environment variable is not set. Please run the engine's Setup.py first.")
+end
 
 include (path.join(LuminaDir, "BuildScripts/Dependencies"))
 include (path.join(LuminaDir, "BuildScripts/Actions/Reflection"))
+include (path.join(LuminaDir, "BuildScripts/GameProject"))
 
-workspace "$PROJECTNAME"
-	language "C++"
-	cppdialect "C++latest"
-    warnings "Default"
-    targetdir (LuminaConfig.GetTargetDirectory())
-    objdir (LuminaConfig.GetObjDirectory())
-    enableunitybuild "Off"
-    fastuptodate "On"
-    multiprocessorcompile "On"
-	startproject "$PROJECTNAME"
+LuminaGameProject({
+    Name = "$PROJECTNAME",
 
-	configurations 
-    { 
-        "Debug",
-        "Development",
-        "Shipping",
-    }
-
-	platforms
+    -- Third-party libs this project links directly. Engine headers
+    -- transitively include these, so they must be link-compatible with
+    -- the Runtime DLL build. Add more libs here as needed.
+    Dependencies =
     {
-        "Editor",
-        "Game",
-    }
-
-
-project "$PROJECTNAME"
-	kind "SharedLib"
-	rtti "off"
-	enablereflection "On"
-
-	libdirs
-	{
-		LuminaConfig.EnginePath("Engine/Source/ThirdParty/lua"),
-	}
-
-	filter "platforms:Editor"
-		links "Editor"
-		includedirs
-		{
-			LuminaConfig.EnginePath("Engine/Editor/Source")
-		}
-	filter {}
-
-	links
-	{
-        "MiniAudio", "GLFW", "ImGui", "EA", "Tracy", "Luau", "EnkiTS",
-        "JoltPhysics", "RPMalloc", "XXHash", "Volk", "VKBootstrap",
-        "TinyOBJLoader", "MeshOptimizer", "SPIRV-Reflect", "FastGLTF",
-        "OpenFBX", "BasicUniversal",
-	}
-	 
-	files
-	{
-		"Source/**.h",
-		"Source/**.cpp",
-		LuminaConfig.GetReflectionFiles(),
-		"**.lua",
-		"**.lproject",
-		"**.json",
-	}
-
-	forceincludes
-	{
-		"$PROJECTNAMEAPI.h"
-	}
-
-	includedirs
-	{
-		"Source",
-	    LuminaConfig.GetPublicIncludeDirectories(),
-	}
-	 
-
+        "ImGui",
+        "RPMalloc",
+        "EA",
+        "EnkiTS",
+        "Tracy",
+        "Luau",
+    },
+})

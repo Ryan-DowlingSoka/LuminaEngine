@@ -7,7 +7,9 @@
             "Sandbox",
             "MyProject",
             "TopDownRPG",
-            "LuminaBonk"
+            "LuminaBonk",
+            "TestProject",
+            "BonkBonk"
         ],
         "StartupProject": "NULL",
         "WorldEditorTool": {

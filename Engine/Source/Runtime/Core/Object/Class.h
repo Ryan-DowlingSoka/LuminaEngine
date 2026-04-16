@@ -117,12 +117,12 @@ namespace Lumina
         //~ End Internal Use Only Constructors
     
         /** Sets the parent struct this struct inherits from. */
-        virtual void SetSuperStruct(CStruct* InSuper);
+        RUNTIME_API virtual void SetSuperStruct(CStruct* InSuper);
         
-        void RegisterDependencies() override;
+        RUNTIME_API void RegisterDependencies() override;
         
         /** Returns the parent struct in the inheritance chain, or null if this is a root struct. */
-        CStruct* GetSuperStruct() const { return SuperStruct; }
+        RUNTIME_API CStruct* GetSuperStruct() const { return SuperStruct; }
     
         /** Returns the property with the given name, searching the full inheritance chain. Returns null if not found. */
         RUNTIME_API FProperty* GetProperty(const FName& Name) const;
@@ -184,7 +184,7 @@ namespace Lumina
          */
         RUNTIME_API virtual void Link();
         
-        FFixedString MakeDisplayName() const override;
+        RUNTIME_API FFixedString MakeDisplayName() const override;
         
     private:
     

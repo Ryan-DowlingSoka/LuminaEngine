@@ -560,8 +560,13 @@ namespace Lumina::Physics
     TVector<SRayResult> FJoltPhysicsScene::CastSphere(const SSphereCastSettings& Settings)
     {
         LUMINA_PROFILE_SCOPE();
+        
         TVector<SRayResult> Results;
-
+        if (Math::IsNearlyEqual(Settings.Radius, 0.0f, LE_SMALL_NUMBER))
+        {
+            return Results;
+        }
+        
         JPH::RVec3 JPHStart  = JoltUtils::ToJPHRVec3(Settings.Start);
         JPH::RVec3 JPHEnd    = JoltUtils::ToJPHRVec3(Settings.End);
         JPH::Vec3 Direction = (JPHEnd - JPHStart);

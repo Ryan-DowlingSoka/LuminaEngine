@@ -38,7 +38,7 @@ namespace Lumina
         };
     }
     
-    class FSlotPosition
+    class RUNTIME_API FSlotPosition
     {
     public:
         FSlotPosition() = default;
@@ -103,7 +103,7 @@ namespace Lumina
         IStructuredArchive& StructuredArchive;
     };
 
-    class FArchiveRecord : protected FSlotPosition
+    class RUNTIME_API FArchiveRecord : protected FSlotPosition
     {
         friend class FArchiveSlot;
         friend class FArchiveArray;
@@ -116,7 +116,7 @@ namespace Lumina
 
         ~FArchiveRecord();
 
-        RUNTIME_API FArchiveSlot EnterField(FName FieldName);
+        FArchiveSlot EnterField(FName FieldName);
 
         template<typename T>
         FORCEINLINE void operator<<(StructuredArchive::TNamedValue<T> Item)
@@ -141,7 +141,7 @@ namespace Lumina
 
         ~FArchiveArray();
 
-        RUNTIME_API FArchiveSlot EnterElement();
+        FArchiveSlot EnterElement();
 
     protected:
         
@@ -160,7 +160,7 @@ namespace Lumina
 
         ~FArchiveStream();
 
-        RUNTIME_API FArchiveSlot EnterElement();
+        FArchiveSlot EnterElement();
 
     protected:
         IStructuredArchive& StructuredArchive;
