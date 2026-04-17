@@ -11,37 +11,37 @@
 using namespace Lumina;
 
 
-int GuardedMain(int ArgC, char** ArgV)  // NOLINT(misc-use-internal-linkage)
+int LuminaMain(int ArgC, char** ArgV)  // NOLINT(misc-use-internal-linkage)
 {
     int Result = 0;
-        FApplicationGlobalState GlobalState;
+    FApplicationGlobalState GlobalState;
+    
+    FCommandLine Parsed{ArgC, ArgV};
+    GCommandLine = &Parsed;
+    
+    FApplication Application{};
+    GApp = &Application;
+    
+    FConfig Config{};
+    GConfig = &Config;
         
-        FCommandLine Parsed{ArgC, ArgV};
-        GCommandLine = &Parsed;
+    #if WITH_EDITOR
+    FEditorEngine EdEngine{};
+    GEditorEngine = &EdEngine;
+    GEngine = GEditorEngine;
+    #else
+    FEngine Engine{};
+    GEngine = &Engine;
+    #endif
         
-        FApplication Application{};
-        GApp = &Application;
+    Result = Application.Run(ArgC, ArgV);
         
-        FConfig Config{};
-        GConfig = &Config;
+    #if WITH_EDITOR
+    GEditorEngine   = nullptr;
+    #endif
+    GApp            = nullptr;
+    GCommandLine    = nullptr;
+    GConfig         = nullptr;
         
-#if WITH_EDITOR
-        FEditorEngine EdEngine{};
-        GEditorEngine = &EdEngine;
-        GEngine = GEditorEngine;
-#else
-        FEngine Engine{};
-        GEngine = &Engine;
-#endif
-        
-        Result = Application.Run(ArgC, ArgV);
-        
-#if WITH_EDITOR
-        GEditorEngine   = nullptr;
-#endif
-        GApp            = nullptr;
-        GCommandLine    = nullptr;
-        GConfig         = nullptr;
-        
-        return Result;
+    return Result;
 }
