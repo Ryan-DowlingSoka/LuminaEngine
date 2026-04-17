@@ -1,6 +1,8 @@
 ﻿#pragma once
 
 #include "EdGraphNode.h"
+#include "EdGraphSchema.h"
+#include "GraphActionMenu.h"
 #include "Containers/Array.h"
 #include "Containers/Function.h"
 #include "Containers/String.h"
@@ -11,6 +13,7 @@
 namespace Lumina
 {
     class CEdGraphNode;
+    class CPackage;
 }
 
 namespace Lumina
@@ -21,12 +24,6 @@ namespace Lumina
         GENERATED_BODY()
         
     public:
-        
-        struct FAction
-        {
-            FString             ActionName;
-            TFunction<void()>   ActionCallback;
-        };
 
         struct FNodeFactory
         {
@@ -42,22 +39,28 @@ namespace Lumina
         virtual void Initialize();
         virtual void Shutdown();
         void Serialize(FArchive& Ar) override;
-        
+        void PostLoad() override;
+
         void DrawGraph();
         virtual void DrawGraphContextMenu();
         virtual void DrawNodeContextMenu(CEdGraphNode* Node);
         virtual void DrawPinContextMenu(CEdNodeGraphPin* Pin);
-        
+
         virtual void ValidateGraph()  { }
-        
+
         virtual CEdGraphNode* CreateNode(CClass* NodeClass);
 
         virtual CEdGraphNode* OnNodeRemoved(CEdGraphNode* Node) { return nullptr; }
 
         void SetNodeSelectedCallback(const TFunction<void(CEdGraphNode*)>& Callback) { NodeSelectedCallback = Callback; }
         void SetPreNodeDeletedCallback(const TFunction<void(CEdGraphNode*)>& Callback) { PreNodeDeletedCallback = Callback; }
-        
-        virtual bool CanCreateConnection(CEdNodeGraphPin* A, CEdNodeGraphPin* B) { return true; }
+
+        // Schema that governs what connections are allowed in this graph.
+        virtual const FEdGraphSchema& GetSchema() const { return GetDefaultEdGraphSchema(); }
+
+        // Package under which newly constructed nodes are allocated. Defaults to this graph's package,
+        // so nodes live alongside the asset that owns the graph.
+        virtual CPackage* GetNodeOuter();
 
 
     private:
@@ -81,15 +84,14 @@ namespace Lumina
         FString GraphSaveData;
         
         THashSet<CClass*>                               SupportedNodes;
-        
+
         TFunction<void(CEdGraphNode*)>                  NodeSelectedCallback;
         TFunction<void(CEdGraphNode*)>                  PreNodeDeletedCallback;
 
         int64                                           NextID = 0;
 
-        
-        ImGuiTextFilter                                 Filter;
-    
+        FGraphActionMenu                                ActionMenu;
+
         TVector<CEdGraphNode*>                          CopiedNodes;
         
         bool                                            bFirstDraw = true;

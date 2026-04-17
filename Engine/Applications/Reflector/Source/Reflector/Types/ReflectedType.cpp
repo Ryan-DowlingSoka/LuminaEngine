@@ -481,7 +481,6 @@ namespace Lumina::Reflection
         {
             Stream += "\tlua_pushcfunction(L, +[](lua_State* VM) -> int\n";
             Stream += "\t{\n";
-            Stream += "\t\tLUMINA_PROFILE_SECTION(\"" + QualifiedName + " | __namecall\");\n";
             Stream += "\t\tint Atom = 0;\n";
             Stream += "\t\tlua_namecallatom(VM, &Atom);\n";
             
@@ -509,7 +508,6 @@ namespace Lumina::Reflection
         {
             Stream += "\tlua_pushcfunction(L, +[](lua_State* VM) -> int\n";
             Stream += "\t{\n";
-            Stream += "\t\tLUMINA_PROFILE_SECTION(\"" + QualifiedName + " | __index\");\n";
             Stream += "\t\tif(!Lumina::Lua::TStack<" + QualifiedName + "*>::Check(VM, 1)) return 0;\n";
             Stream += "\t\t" + QualifiedName + "* ThisType = Lumina::Lua::TStack<" + QualifiedName + "*>::Get(VM, 1);\n";
             Stream += "\t\tconst char* Key = lua_tostring(VM, 2);\n";
@@ -544,7 +542,6 @@ namespace Lumina::Reflection
             
             Stream += "\tlua_pushcfunction(L, +[](lua_State* VM) -> int\n";
             Stream += "\t{\n";
-            Stream += "\t\tLUMINA_PROFILE_SECTION(\"" + QualifiedName + " | __newindex\");\n";
             Stream += "\t\tif(!Lumina::Lua::TStack<" + QualifiedName + "*>::Check(VM, 1)) return 0;\n";
             Stream += "\t\t" + QualifiedName + "* ThisType = Lumina::Lua::TStack<" + QualifiedName + "*>::Get(VM, 1);\n";
             Stream += "\t\tconst char* Key = lua_tostring(VM, 2);\n";
@@ -578,46 +575,6 @@ namespace Lumina::Reflection
         Stream += "\n\n";
             
         Stream += "\tlua_newtable(L);\n";
-        
-        if (bIsComponent)
-        {
-            Stream += "\tlua_pushcfunction(L, +[](lua_State* State) -> int\n";
-            Stream += "\t{\n";
-            Stream += "\t\tif constexpr (!eastl::is_empty_v<" + QualifiedName + ">)\n";
-            Stream += "\t\t{\n";
-            Stream += "\t\t\tentt::registry* Registry = Lumina::Lua::TStack<entt::registry*>::Get(State, 1);\n";
-            Stream += "\t\t\tif (!Registry) { lua_pushnil(State); return 1; }\n";
-            Stream += "\t\t\tentt::entity Entity = Lumina::Lua::TStack<entt::entity>::Get(State, 2);\n";
-            Stream += "\t\t\t" + QualifiedName + "* Comp = Registry->try_get<" + QualifiedName + ">(Entity);\n";
-            Stream += "\t\t\tif (!Comp) { lua_pushnil(State); return 1; }\n";
-            Stream += "\t\t\tLumina::Lua::TStack<" + QualifiedName + "*>::Push(State, Comp);\n";
-            Stream += "\t\t\treturn 1;\n";
-            Stream += "\t\t}\n";
-            Stream += "\t\tlua_pushnil(State);\n";
-            Stream += "\t\treturn 1;\n";
-            Stream += "\t}, \"Get\");\n";
-            Stream += "\tlua_rawsetfield(L, -2, \"Get\");\n\n";
-
-            Stream += "\tlua_pushcfunction(L, +[](lua_State* State) -> int\n";
-            Stream += "\t{\n";
-            Stream += "\t\tentt::registry* Registry = Lumina::Lua::TStack<entt::registry*>::Get(State, 1);\n";
-            Stream += "\t\t\tif (!Registry) { lua_pushnil(State); return 1; }\n";
-            Stream += "\t\tentt::entity Entity = Lumina::Lua::TStack<entt::entity>::Get(State, 2);\n";
-            Stream += "\t\tlua_pushboolean(State, Registry->all_of<" + QualifiedName + ">(Entity));\n";
-            Stream += "\t\treturn 1;\n";
-            Stream += "\t}, \"Has\");\n";
-            Stream += "\tlua_rawsetfield(L, -2, \"Has\");\n\n";
-
-            Stream += "\tlua_pushcfunction(L, +[](lua_State* State) -> int\n";
-            Stream += "\t{\n";
-            Stream += "\t\tentt::registry* Registry = Lumina::Lua::TStack<entt::registry*>::Get(State, 1);\n";
-            Stream += "\t\t\tif (!Registry) return 0;\n";
-            Stream += "\t\tentt::entity Entity = Lumina::Lua::TStack<entt::entity>::Get(State, 2);\n";
-            Stream += "\t\tRegistry->remove<" + QualifiedName + ">(Entity);\n";
-            Stream += "\t\treturn 0;\n";
-            Stream += "\t}, \"Remove\");\n";
-            Stream += "\tlua_rawsetfield(L, -2, \"Remove\");\n\n"; 
-        }
         
         Stream += "\tlua_pushunsigned(L, entt::hashed_string(\"" + DisplayName + "\"));\n";
         Stream += "\tlua_rawsetfield(L, MetaTableIdx, \"__type_id\");\n";

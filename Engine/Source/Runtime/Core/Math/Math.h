@@ -5,7 +5,7 @@
 #include <eastl/type_traits.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
-
+#include "Core/LuminaMacros.h"
 #include "eastl/utility.h"
 #include "Platform/GenericPlatform.h"
 
@@ -71,9 +71,14 @@ namespace Lumina::Math
         return A + (B - A) * Alpha;
     }
     
-    [[nodiscard]] constexpr bool IsNearlyEqual(float LHS, float RHS, float Epsilon)
+    [[nodiscard]] constexpr bool IsNearlyEqual(float LHS, float RHS, float Epsilon = LE_KINDA_SMALL_NUMBER)
     {
         return Abs(LHS - RHS) <= Epsilon;
+    }
+    
+    [[nodiscard]] constexpr bool IsNearlyZero(float Value, float Epsilon = LE_KINDA_SMALL_NUMBER)
+    {
+        return Abs(Value) <= Epsilon;
     }
     
     [[nodiscard]] constexpr uint64 CountTrailingZeros64(uint64 Value)

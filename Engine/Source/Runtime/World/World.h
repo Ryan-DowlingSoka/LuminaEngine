@@ -25,6 +25,8 @@ namespace Lumina
     struct SScriptComponent;
     struct SDefaultWorldSettings;
     struct FLineBatcherComponent;
+    struct FWorldContext;
+    enum class ENetMode : uint8;
 }
 
 namespace Lumina
@@ -90,6 +92,9 @@ namespace Lumina
         void SetEntityRotation(entt::entity Entity, glm::quat Rotation);
         
         FUNCTION(Script)
+        glm::vec3 TranslateEntity(entt::entity Entity, glm::vec3 Translation);
+        
+        FUNCTION(Script)
         uint32 GetNumEntities() const;
         
         FUNCTION(Script)
@@ -112,6 +117,12 @@ namespace Lumina
         
         
         NODISCARD EWorldType GetWorldType() const { return WorldType; }
+
+        /** The context this world belongs to. Non-null once the world has been registered via FWorldManager::CreateWorldContext. */
+        NODISCARD FWorldContext* GetWorldContext() const { return OwningContext; }
+
+        /** Shorthand for GetWorldContext()->NetMode; returns Standalone when no context is set. */
+        NODISCARD ENetMode GetNetMode() const;
         
         entt::entity GetFirstEntityWith(entt::id_type Type);
         
@@ -199,7 +210,7 @@ namespace Lumina
 
         FLineBatcherComponent*                              LineBatcherComponent;
         
-        int64                                               WorldIndex = -1;
+        FWorldContext*                                      OwningContext = nullptr;
         double                                              DeltaTime = 0.0;
         double                                              TimeSinceCreation = 0.0;
         

@@ -30,14 +30,8 @@ namespace Lumina
         void SetMaterial(CMaterial* InMaterial);
         CMaterial* GetMaterial() const { return Material; }
 
-        CEdGraphNode* CreateNode(CClass* NodeClass) override;
-
-        
     private:
 
-        static CEdGraphNode* TopologicalSort(const TVector<TObjectPtr<CEdGraphNode>>& Nodes, TVector<CEdGraphNode*>& SortedNodes);
-
-        
         TObjectPtr<CMaterial> Material;
     };
 }

@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "WorldManager.h"
 #include "Core/Profiler/Profile.h"
 
@@ -9,67 +9,152 @@ namespace Lumina
 
     FWorldManager::~FWorldManager()
     {
-        for (FManagedWorld& World : Worlds)
+        // Tear down in reverse so PIE/derived contexts go before their source.
+        for (auto It = Contexts.rbegin(); It != Contexts.rend(); ++It)
         {
-            World.World->TeardownWorld();
+            if ((*It)->World.IsValid())
+            {
+                (*It)->World->TeardownWorld();
+            }
         }
+        Contexts.clear();
     }
 
-    void FWorldManager::UpdateWorlds(const FUpdateContext& UpdateContext) 
-    { 
-        LUMINA_PROFILE_SCOPE(); 
-        
-        for (FManagedWorld& World : Worlds) 
-        { 
-            if (World.World->IsSuspended()) 
-            { 
+    void FWorldManager::UpdateWorlds(const FUpdateContext& UpdateContext)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        for (const TUniquePtr<FWorldContext>& Context : Contexts)
+        {
+            CWorld* World = Context->World.Get();
+            if (World == nullptr || World->IsSuspended())
+            {
                 continue;
             }
-            
-            World.World->Update(UpdateContext);
-        } 
+
+            World->Update(UpdateContext);
+        }
     }
 
     void FWorldManager::RenderWorlds(FRenderGraph& RenderGraph)
     {
         LUMINA_PROFILE_SCOPE();
-        
-        for (FManagedWorld& World : Worlds)
+
+        for (const TUniquePtr<FWorldContext>& Context : Contexts)
         {
-            if (World.World->IsSuspended())
+            CWorld* World = Context->World.Get();
+            if (World == nullptr || World->IsSuspended())
             {
                 continue;
             }
-            
-            World.World->Render(RenderGraph);
+
+            World->Render(RenderGraph);
         }
     }
 
-    void FWorldManager::RemoveWorld(CWorld* World)
+    FWorldContext* FWorldManager::CreateWorldContext(CWorld* World, EWorldType Type, ENetMode NetMode)
     {
-        if (Worlds.empty())
+        if (World == nullptr)
+        {
+            return nullptr;
+        }
+
+        if (FWorldContext* Existing = FindContext(World))
+        {
+            return Existing;
+        }
+
+        TUniquePtr<FWorldContext> Context = MakeUnique<FWorldContext>();
+        Context->World   = World;
+        Context->Type    = Type;
+        Context->NetMode = NetMode;
+
+        FWorldContext* Raw = Context.get();
+        Contexts.push_back(Move(Context));
+
+        World->OwningContext = Raw;
+        World->InitializeWorld(Type);
+
+        return Raw;
+    }
+
+    void FWorldManager::DestroyWorldContext(CWorld* World)
+    {
+        if (World == nullptr)
         {
             return;
         }
 
-        size_t idx  = World->WorldIndex;
-        size_t last = Worlds.size() - 1;
-
-        if (idx != last)
+        for (size_t i = 0; i < Contexts.size(); ++i)
         {
-            eastl::swap(Worlds[idx], Worlds[last]);
-            Worlds[idx].World->WorldIndex = idx;
+            if (Contexts[i]->World.Get() == World)
+            {
+                World->TeardownWorld();
+                World->OwningContext = nullptr;
+
+                size_t Last = Contexts.size() - 1;
+                if (i != Last)
+                {
+                    eastl::swap(Contexts[i], Contexts[Last]);
+                }
+                Contexts.pop_back();
+                return;
+            }
         }
 
-        Worlds.pop_back();
+        // Not registered — tear down anyway so the caller's expectations hold.
+        World->TeardownWorld();
     }
 
-    
-    void FWorldManager::AddWorld(CWorld* World)
+    FWorldContext* FWorldManager::FindContext(CWorld* World)
     {
-        FManagedWorld MWorld;
-        MWorld.World = World;
-        World->WorldIndex = Worlds.size(); 
-        Worlds.push_back(MWorld);
+        for (const TUniquePtr<FWorldContext>& Context : Contexts)
+        {
+            if (Context->World.Get() == World)
+            {
+                return Context.get();
+            }
+        }
+        return nullptr;
+    }
+
+    FWorldContext* FWorldManager::GetPrimaryGameContext()
+    {
+        for (const TUniquePtr<FWorldContext>& Context : Contexts)
+        {
+            if (Context->Type == EWorldType::Game)
+            {
+                return Context.get();
+            }
+        }
+        return nullptr;
+    }
+
+    CWorld* FWorldManager::StartPIE(CWorld* SourceWorld, EWorldType SessionType, ENetMode NetMode)
+    {
+        if (SourceWorld == nullptr)
+        {
+            return nullptr;
+        }
+
+        CWorld* PIEWorld = CWorld::DuplicateWorld(SourceWorld);
+        if (PIEWorld == nullptr)
+        {
+            return nullptr;
+        }
+
+        FWorldContext* Ctx = CreateWorldContext(PIEWorld, SessionType, NetMode);
+        if (Ctx != nullptr)
+        {
+            Ctx->bPIE = true;
+            Ctx->SourceWorld = SourceWorld;
+        }
+
+        return PIEWorld;
+    }
+
+    void FWorldManager::StopPIE(CWorld* PIEWorld)
+    {
+        DestroyWorldContext(PIEWorld);
     }
 }

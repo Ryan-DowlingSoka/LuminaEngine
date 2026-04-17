@@ -76,6 +76,70 @@ namespace Lumina
         Super::Serialize(Ar);
     }
 
+    void CEdNodeGraph::PostLoad()
+    {
+        Super::PostLoad();
+
+        // Pins are not serialized — they're reconstructed by each node's BuildNode() during AddNode().
+        // So after load we move the deserialized Nodes and Connections aside, re-add the nodes (which
+        // rebuilds pin IDs via HashPinID), then walk the saved uint16 pin-ID pair list to reconnect.
+        TVector<TObjectPtr<CEdGraphNode>> SavedNodes = Move(Nodes);
+        TVector<uint16> SavedConnections = Move(Connections);
+        Nodes.clear();
+        Connections.clear();
+
+        for (const TObjectPtr<CEdGraphNode>& Node : SavedNodes)
+        {
+            if (Node.IsValid())
+            {
+                AddNode(Node.Get());
+            }
+        }
+
+        for (size_t i = 0; i + 1 < SavedConnections.size(); i += 2)
+        {
+            uint16 InputID = SavedConnections[i];
+            uint16 OutputID = SavedConnections[i + 1];
+
+            CEdNodeGraphPin* InputPin = nullptr;
+            CEdNodeGraphPin* OutputPin = nullptr;
+
+            for (CEdGraphNode* Node : Nodes)
+            {
+                if (!InputPin)
+                {
+                    InputPin = Node->GetPin(InputID, ENodePinDirection::Input);
+                }
+                if (!OutputPin)
+                {
+                    OutputPin = Node->GetPin(OutputID, ENodePinDirection::Output);
+                }
+                if (InputPin && OutputPin)
+                {
+                    break;
+                }
+            }
+
+            if (!InputPin || !OutputPin || InputPin->OwningNode == OutputPin->OwningNode)
+            {
+                continue;
+            }
+
+            if (InputPin->HasConnection() && !GetSchema().AllowsMultipleConnections(InputPin))
+            {
+                continue;
+            }
+
+            OutputPin->AddConnection(InputPin);
+            InputPin->AddConnection(OutputPin);
+        }
+    }
+
+    CPackage* CEdNodeGraph::GetNodeOuter()
+    {
+        return GetPackage();
+    }
+
     void CEdNodeGraph::DrawGraph()
     {
         LUMINA_PROFILE_SCOPE();
@@ -224,9 +288,10 @@ namespace Lumina
             
             if (NodeEditor::ShowBackgroundContextMenu())
             {
+                ActionMenu.Reset();
                 ImGui::OpenPopup("Create New Node");
             }
-            
+
             if (ImGui::BeginPopup("Create New Node"))
             {
                 DrawGraphContextMenu();
@@ -408,19 +473,21 @@ namespace Lumina
                             }
                         }
                         
-                        if (CanCreateConnection(StartPin, EndPin))
+                        const FEdGraphSchema& Schema = GetSchema();
+                        if (Schema.CanCreateConnection(StartPin, EndPin))
                         {
-                            bool bValid = StartPin && EndPin && 
-                                          StartPin != EndPin && 
-                                          StartPin->OwningNode != EndPin->OwningNode &&
-                                          !EndPin->HasConnection();
-    
-                            if (bValid)
+                            if (EndPin->HasConnection() && !Schema.AllowsMultipleConnections(EndPin))
                             {
-                                StartPin->AddConnection(EndPin);
-                                EndPin->AddConnection(StartPin);
-                                ValidateGraph();
+                                TVector<CEdNodeGraphPin*> Existing = EndPin->GetConnections();
+                                for (CEdNodeGraphPin* ConnectedPin : Existing)
+                                {
+                                    EndPin->DisconnectFrom(ConnectedPin);
+                                }
                             }
+
+                            StartPin->AddConnection(EndPin);
+                            EndPin->AddConnection(StartPin);
+                            ValidateGraph();
                         }
                     }
                 }
@@ -519,216 +586,10 @@ namespace Lumina
 
     void CEdNodeGraph::DrawGraphContextMenu()
     {
-        constexpr ImVec2 PopupSize(320, 450);
-        constexpr ImVec2 SearchBarPadding(12, 10);
-        constexpr ImVec2 CategoryPadding(8, 6);
-        constexpr float CategorySpacing = 4.0f;
-        const float ItemHeight = 28.0f;
-
-        ImGui::SetNextWindowSize(PopupSize, ImGuiCond_Always);
-        
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 1));
+        if (ActionMenu.Draw(this))
         {
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, SearchBarPadding);
-            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.12f, 0.12f, 0.14f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.14f, 0.14f, 0.16f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.16f, 0.16f, 0.18f, 1.0f));
-            
-            ImGui::SetCursorPos(ImVec2(12, 12));
-            ImGui::PushItemWidth(PopupSize.x - 24);
-
-            Filter.Draw("##NodeFilter");
-            
-            if (ImGui::IsWindowAppearing())
-            {
-                ImGui::SetKeyboardFocusHere(-1);
-            }
-            
-            ImGui::PopItemWidth();
-            ImGui::PopStyleColor(3);
-            ImGui::PopStyleVar();
+            ImGui::CloseCurrentPopup();
         }
-        
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8);
-        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.25f, 0.25f, 0.27f, 1.0f));
-        ImGui::Separator();
-        ImGui::PopStyleColor();
-        
-        
-        THashMap<FName, TVector<CEdGraphNode*>> CategoryMap;
-        TVector<FName> SortedCategories;
-        int TotalMatches = 0;
-        
-        for (CClass* NodeClass : SupportedNodes)
-        {
-            CEdGraphNode* CDO = Cast<CEdGraphNode>(NodeClass->GetDefaultObject());
-            
-            if (!Filter.PassFilter(CDO->GetNodeDisplayName().c_str()))
-            {
-                continue;
-            }
-            
-            FName Category = CDO->GetNodeCategory().c_str();
-            auto It = CategoryMap.find(Category);
-            if (It == CategoryMap.end())
-            {
-                SortedCategories.emplace_back(Category);
-                CategoryMap[Category].emplace_back(CDO);
-            }
-            else
-            {
-                It->second.emplace_back(CDO);
-            }
-            
-            TotalMatches++;
-        }
-        
-        eastl::sort(SortedCategories.begin(), SortedCategories.end(), [](const FName& LHS, const FName& RHS)
-        {
-            return LHS.ToString() < RHS.ToString(); 
-        });
-        
-        for (auto& [Category, NodesInMap] : CategoryMap)
-        {
-            eastl::sort(NodesInMap.begin(), NodesInMap.end(), [](const CEdGraphNode* A, const CEdGraphNode* B)
-            {
-                return A->GetNodeDisplayName() < B->GetNodeDisplayName();
-            });
-        }
-
-        constexpr float HeaderHeight = 54;
-        constexpr float FooterHeight = 32;
-        ImVec2 ChildSize = ImVec2(PopupSize.x, PopupSize.y - HeaderHeight - FooterHeight);
-        
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, CategorySpacing));
-        
-        if (ImGui::BeginChild("##NodeList", ChildSize, false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
-        {
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0.08f, 0.08f, 0.10f, 0.9f));
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImVec4(0.25f, 0.25f, 0.27f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ImVec4(0.35f, 0.35f, 0.37f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, ImVec4(0.45f, 0.45f, 0.47f, 1.0f));
-            
-            if (ImGui::BeginChild("##ScrollRegion", ImVec2(0, 0), false))
-            {
-                bool IsFirstCategory = true;
-                
-                for (const FName& Category : SortedCategories)
-                {
-                    const TVector<CEdGraphNode*>& NodesInCategory = CategoryMap[Category];
-                    
-                    if (!IsFirstCategory)
-                    {
-                        ImGui::Dummy(ImVec2(0, CategorySpacing));
-                    }
-                    IsFirstCategory = false;
-                    
-                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, CategoryPadding);
-                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.18f, 0.18f, 0.20f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.20f, 0.20f, 0.22f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.22f, 0.22f, 0.24f, 1.0f));
-                    
-                    ImGui::SetCursorPosX(4);
-                    bool IsOpen = ImGui::CollapsingHeader(Category.c_str(), ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
-                    
-                    ImGui::PopStyleColor(3);
-                    ImGui::PopStyleVar();
-                    
-                    if (IsOpen)
-                    {
-                        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 1));
-                        ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
-                        
-                        for (const CEdGraphNode* Node : NodesInCategory)
-                        {
-                            ImGui::PushID(Node);
-                            
-                            ImVec4 AccentColor = ImVec4(0.8f, 0.4f, 0.2f, 1.0f);
-                            
-                            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.12f, 0.12f, 0.14f, 1.0f));
-                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.16f, 0.16f, 0.18f, 1.0f));
-                            ImGui::PushStyleColor(ImGuiCol_HeaderActive, AccentColor * ImVec4(1, 1, 1, 0.3f));
-                            
-                            ImGui::SetCursorPosX(16);
-                            
-                            ImDrawList* DrawList = ImGui::GetWindowDrawList();
-                            ImVec2 CursorPos = ImGui::GetCursorScreenPos();
-                            DrawList->AddRectFilled(ImVec2(CursorPos.x - 8, CursorPos.y + ItemHeight * 0.3f), ImVec2(CursorPos.x - 5, CursorPos.y + ItemHeight * 0.7f),
-                                ImGui::GetColorU32(AccentColor),
-                                2.0f
-                            );
-                            
-                            if (ImGui::Selectable(Node->GetNodeDisplayName().c_str(), false, ImGuiSelectableFlags_SpanAvailWidth, ImVec2(0, ItemHeight)))
-                            {
-                                CEdGraphNode* NewNode = CreateNode(Node->GetClass());
-                                ax::NodeEditor::SetNodePosition(NewNode->GetNodeID(), ax::NodeEditor::ScreenToCanvas(ImGui::GetMousePosOnOpeningCurrentPopup()));
-                                ImGui::CloseCurrentPopup();
-                            }
-                            
-                            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-                            {
-                                ImGui::BeginTooltip();
-                                ImGui::PushStyleColor(ImGuiCol_Text, AccentColor);
-                                ImGui::TextUnformatted(Node->GetNodeDisplayName().c_str());
-                                ImGui::PopStyleColor();
-                                
-                                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-                                ImGui::TextWrapped("%s", Node->GetNodeTooltip().c_str());
-                                ImGui::PopStyleColor();
-                                ImGui::EndTooltip();
-                            }
-                            
-                            ImGui::PopStyleColor(3);
-                            ImGui::PopID();
-                        }
-                        
-                        ImGui::PopStyleVar(2);
-                    }
-                }
-                
-                if (TotalMatches == 0)
-                {
-                    ImGui::SetCursorPosY(ChildSize.y * 0.4f);
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
-                    
-                    const char* NoResultsText = "No nodes found";
-                    float TextWidth = ImGui::CalcTextSize(NoResultsText).x;
-                    ImGui::SetCursorPosX((PopupSize.x - TextWidth) * 0.5f);
-                    ImGui::Text("%s", NoResultsText);
-                    
-                    ImGui::PopStyleColor();
-                }
-                
-                ImGui::EndChild();
-            }
-            
-            ImGui::PopStyleColor(4);
-            ImGui::EndChild();
-        }
-        
-        ImGui::PopStyleVar(2);
-        
-        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.25f, 0.25f, 0.27f, 1.0f));
-        ImGui::Separator();
-        ImGui::PopStyleColor();
-        
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
-        ImGui::SetCursorPos(ImVec2(12, PopupSize.y - 24));
-        
-        if (TotalMatches > 0)
-        {
-            ImGui::Text("%d node%s found", TotalMatches, TotalMatches == 1 ? "" : "s");
-        }
-        else if (Filter.IsActive())
-        {
-            ImGui::Text("%d node%s available", (int)SupportedNodes.size(), SupportedNodes.size() == 1 ? "" : "s");
-        }
-        
-        ImGui::PopStyleColor();
-        
-        ImGui::PopStyleVar(2);
     }
 
     void CEdNodeGraph::DrawNodeContextMenu(CEdGraphNode* Node)
@@ -773,7 +634,7 @@ namespace Lumina
 
     CEdGraphNode* CEdNodeGraph::CreateNode(CClass* NodeClass)
     {
-        CEdGraphNode* NewNode = NewObject<CEdGraphNode>(NodeClass);
+        CEdGraphNode* NewNode = NewObject<CEdGraphNode>(NodeClass, GetNodeOuter());
         AddNode(NewNode);
         return NewNode;
     }

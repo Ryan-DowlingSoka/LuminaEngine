@@ -84,7 +84,7 @@ namespace Lumina
                 TComponent* New = nullptr;
                 if (Ref.Is<TComponent>())
                 {
-                    New = &Registry.emplace_or_replace<TComponent>(Entity, Ref.Get<TComponent>());
+                    New = &Registry.emplace_or_replace<TComponent>(Entity, Ref.As<TComponent>().value());
                 }
                 else
                 {

@@ -60,7 +60,7 @@ namespace Lumina
                 return;
             }
             size_t Pos = 0;
-            while ((Pos = Str.find(From, Pos)) != std::string::npos)
+            while ((Pos = Str.find(From, Pos)) != FString::npos)
             {
                 Str.replace(Pos, From.size(), To);
                 Pos += To.size();

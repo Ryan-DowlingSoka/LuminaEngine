@@ -14,8 +14,6 @@ using namespace Lumina;
 int GuardedMain(int ArgC, char** ArgV)  // NOLINT(misc-use-internal-linkage)
 {
     int Result = 0;
-    try
-    {
         FApplicationGlobalState GlobalState;
         
         FCommandLine Parsed{ArgC, ArgV};
@@ -46,13 +44,4 @@ int GuardedMain(int ArgC, char** ArgV)  // NOLINT(misc-use-internal-linkage)
         GConfig         = nullptr;
         
         return Result;
-    }
-    catch (std::exception& Error)
-    {
-        PANIC("Fatal Error {}", Error.what());
-    }
-    catch (...)
-    {
-        PANIC("Unknown fatal error");
-    }
 }

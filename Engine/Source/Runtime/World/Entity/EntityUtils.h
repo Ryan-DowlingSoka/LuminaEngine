@@ -35,6 +35,8 @@ namespace Lumina::ECS::Utils
 	RUNTIME_API void SetEntityLocation(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Location);
 	RUNTIME_API void SetEntityRotation(FEntityRegistry& Registry, entt::entity Entity, const glm::quat& Rotation);
 	
+	RUNTIME_API bool IsEntityValid(FEntityRegistry& Registry, entt::entity Entity);
+	
 	RUNTIME_API glm::vec3 TranslateEntity(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Translation);
 	
 	RUNTIME_API entt::entity DuplicateEntity(FEntityRegistry& Registry, entt::entity Entity);

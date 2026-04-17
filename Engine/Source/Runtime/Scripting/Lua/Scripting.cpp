@@ -162,7 +162,9 @@ namespace Lumina::Lua
         PathTable.SetFunction<&Paths::GetEngineConfigDirectory>("GetEngineConfigDirectory");
         PathTable.SetFunction<&Paths::GetEngineShadersDirectory>("GetEngineShadersDirectory");
         
-        ECSTable.SetFunction<&ECS::Utils::IsParent>("IsParent");
+        ECSTable.SetFunction<&ECS::Utils::IsParent>("IsEntityParent");
+        
+        ECSTable.SetFunction<&ECS::Utils::IsEntityValid>("IsEntityValid");
         
         ECSTable.SetFunction<&ECS::Utils::DuplicateEntity>("DuplicateEntity");
         ECSTable.SetFunction<&ECS::Utils::DestroyEntity>("DestroyEntity");
@@ -269,8 +271,12 @@ namespace Lumina::Lua
         InputTable.SetFunction<&FInputProcessor::SetMouseMode>("SetMouseMode", &FInputProcessor::Get());
         
         
-        AudioTable.SetFunction<[](FStringView File, glm::vec3 Location) { GAudioContext->PlaySoundFromFileAtPosition(File, Location); }>("PlaySoundAtLocation");
+        AudioTable.SetFunction<[](FStringView File, glm::vec3 Location) { (void)GAudioContext->PlaySoundAtLocation(File, Location); }>("PlaySoundAtLocation");
+        AudioTable.SetFunction<[](FStringView File) { (void)GAudioContext->PlaySound2D(File); }>("PlaySound2D");
         
+        GlobalsRef.NewClass<FAudioHandle>("AudioHandle")
+            .AddFunction<&FAudioHandle::IsValid>("IsValid")
+            .Register();
         
         GlobalsRef.NewClass<glm::mat4>("Mat4")
             .Register();
@@ -304,6 +310,7 @@ namespace Lumina::Lua
             .AddFunction<[](float Angle, glm::vec3 Axis) { return glm::angleAxis(Angle, Axis); }>("FromAngleAxis")
             .AddFunction<[](glm::quat& Self, glm::vec3 V) { return Self * V; }>("RotateVector")
             .Register();
+        
 
     }
 
@@ -420,23 +427,15 @@ namespace Lumina::Lua
         int StackBefore = lua_gettop(L);
         lua_State* Thread = lua_newthread(L);
         FRef ThreadRef(L, -1);
-        luaL_sandboxthread(Thread);
-        lua_pop(L, 1); // We have to pop off the main lua state.
         
-        // Push a copy since FRef pops internally.
-        lua_pushvalue(Thread, LUA_GLOBALSINDEX);
-        lua_pushvalue(Thread, -1);
-        FRef Environment(Thread, -1);
-        lua_pop(Thread, 1); // Pops the copy.
+        luaL_sandboxthread(Thread);
         
         int LoadResult = luau_load(Thread, Name.data(), Bytecode, BytecodeSize, 0);
         free(Bytecode);
-        
 
         if (LoadResult != LUA_OK)
         {
             LOG_ERROR("Lua - Failed to load: {}", lua_tostring(Thread, -1));
-            lua_pop(Thread, 1);
             return {};
         }
 
@@ -444,17 +443,17 @@ namespace Lumina::Lua
         if (CallResult != LUA_OK)
         {
             LOG_ERROR("Runtime Error {}", lua_tostring(Thread, -1));
-            lua_pop(Thread, 1);
             return {};
         }
-
+        
         auto NewScript = MakeShared<FScript>();
         NewScript->Name         = Name;
         NewScript->Path         = "";
         NewScript->Reference    = FRef(Thread, -1);
-        NewScript->Environment  = Environment;
+        
+        lua_pushvalue(Thread, LUA_GLOBALSINDEX);
+        NewScript->Environment  = FRef(Thread, -1);
         NewScript->Thread       = ThreadRef;
-        lua_pop(Thread, 1);
         
         int StackAfter = lua_gettop(L);
 

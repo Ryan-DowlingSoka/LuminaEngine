@@ -11,87 +11,35 @@
 
 #include "UI/Tools/NodeGraph/EdNodeGraphPin.h"
 #include "UI/Tools/NodeGraph/EdNode_Reroute.h"
+#include "UI/Tools/NodeGraph/GraphAlgorithms.h"
 
 
 namespace Lumina
 {
     CMaterialNodeGraph::CMaterialNodeGraph()
     {
-        
+
     }
 
     void CMaterialNodeGraph::Initialize()
     {
         Super::Initialize();
-        
+
         bool bHasOutputNode = false;
-        auto NewNodes = Move(Nodes);
-        auto NewConnections = Move(Connections);
-        Nodes.clear();
-        Connections.clear();
-        
-        for (CObject* Object : NewNodes)
+        for (const TObjectPtr<CEdGraphNode>& Node : Nodes)
         {
-            CEdGraphNode* Node = Cast<CEdGraphNode>(Object);
-            if (Node == nullptr)
-            {
-                continue;
-            }
-            
-            if (Node->IsA<CMaterialOutputNode>())
+            if (Node.IsValid() && Node->IsA<CMaterialOutputNode>())
             {
                 bHasOutputNode = true;
+                break;
             }
-            
-            AddNode(Node);
         }
 
         if (!bHasOutputNode)
         {
             CreateNode(CMaterialOutputNode::StaticClass());
         }
-        
-        for (size_t i = 0; i < NewConnections.size(); i += 2)
-        {
-            uint16 FirstConnection = NewConnections[i];
-            uint16 SecondConnection = NewConnections[i + 1];
-            
-            CEdNodeGraphPin* StartPin = nullptr;
-            CEdNodeGraphPin* EndPin = nullptr;
 
-            for (CEdGraphNode* Node : Nodes)
-            {
-                EndPin = Node->GetPin(FirstConnection, ENodePinDirection::Input);
-                if (EndPin)
-                {
-                    break;
-                }
-            }
-            
-            for (CEdGraphNode* Node : Nodes)
-            {
-                StartPin = Node->GetPin(SecondConnection, ENodePinDirection::Output);
-                if (StartPin)
-                {
-                    break;
-                }
-            }
-
-            if (!StartPin || !EndPin || StartPin == EndPin || StartPin->OwningNode == EndPin->OwningNode)
-            {
-                continue;
-            }
-
-            if (EndPin->HasConnection())
-            {
-                continue; // Disallow connection if the input pin is already occupied
-            }
-
-            // Allow the connection
-            StartPin->AddConnection(EndPin);
-            EndPin->AddConnection(StartPin);
-        }
-        
         //RegisterGraphNode(CEdNode_Reroute::StaticClass());
 
         RegisterGraphNode(CMaterialExpression_SmoothStep::StaticClass());
@@ -168,7 +116,10 @@ namespace Lumina
             Node->ClearError();
         }
         
-        CEdGraphNode* CyclicNode = TopologicalSort(Nodes, SortedNodes);
+        CEdGraphNode* CyclicNode = GraphAlgorithms::TopologicalSortFromRoot(Nodes, SortedNodes, [](CEdGraphNode* Node)
+        {
+            return Cast<CMaterialOutputNode>(Node) != nullptr;
+        });
 
         if (CyclicNode != nullptr)
         {
@@ -233,131 +184,4 @@ namespace Lumina
         Material = InMaterial;
     }
 
-    CEdGraphNode* CMaterialNodeGraph::CreateNode(CClass* NodeClass)
-    {
-        CEdGraphNode* NewNode = NewObject<CEdGraphNode>(NodeClass, Material->GetPackage());
-        AddNode(NewNode);
-        return NewNode;
-    }
-    
-    CEdGraphNode* CMaterialNodeGraph::TopologicalSort(const TVector<TObjectPtr<CEdGraphNode>>& NodesToSort, TVector<CEdGraphNode*>& SortedNodes)
-    {
-        THashMap<CEdGraphNode*, uint32> InDegree;
-        TQueue<CEdGraphNode*> ReadyQueue;
-        THashSet<CEdGraphNode*> ReachableNodes;
-        uint32 ProcessedNodeCount = 0;
-    
-        CEdGraphNode* RootNode = nullptr;
-        for (CEdGraphNode* Node : NodesToSort)
-        {
-            if (Cast<CMaterialOutputNode>(Node))
-            {
-                RootNode = Node;
-                break;
-            }
-        }
-    
-        if (!RootNode)
-        {
-            SortedNodes.clear();
-            return nullptr;
-        }
-    
-        TQueue<CEdGraphNode*> ReverseQueue;
-        ReverseQueue.push(RootNode);
-        ReachableNodes.insert(RootNode);
-    
-        while (!ReverseQueue.empty())
-        {
-            CEdGraphNode* Node = ReverseQueue.front();
-            ReverseQueue.pop();
-    
-            for (CEdNodeGraphPin* InputPin : Node->GetInputPins())
-            {
-                for (CEdNodeGraphPin* ConnectedPin : InputPin->GetConnections())
-                {
-                    CEdGraphNode* ConnectedNode = ConnectedPin->GetOwningNode();
-                    if (ReachableNodes.insert(ConnectedNode).second)
-                    {
-                        ReverseQueue.push(ConnectedNode);
-                    }
-                }
-            }
-        }
-    
-        for (CEdGraphNode* Node : NodesToSort)
-        {
-            if (ReachableNodes.find(Node) != ReachableNodes.end())
-            {
-                InDegree[Node] = 0;
-            }
-        }
-    
-        for (CEdGraphNode* Node : NodesToSort)
-        {
-            if (ReachableNodes.find(Node) == ReachableNodes.end())
-            {
-                continue;
-            }
-
-            for (CEdNodeGraphPin* OutputPin : Node->GetOutputPins())
-            {
-                for (CEdNodeGraphPin* ConnectedPin : OutputPin->GetConnections())
-                {
-                    CEdGraphNode* ConnectedNode = ConnectedPin->GetOwningNode();
-                    if (ReachableNodes.find(ConnectedNode) != ReachableNodes.end())
-                    {
-                        InDegree[ConnectedNode]++;
-                    }
-                }
-            }
-        }
-    
-        for (auto& Pair : InDegree)
-        {
-            if (Pair.second == 0)
-            {
-                ReadyQueue.push(Pair.first);
-            }
-        }
-    
-        while (!ReadyQueue.empty())
-        {
-            CEdGraphNode* Node = ReadyQueue.front();
-            ReadyQueue.pop();
-            SortedNodes.push_back(Node);
-            ProcessedNodeCount++;
-    
-            for (CEdNodeGraphPin* OutputPin : Node->GetOutputPins())
-            {
-                for (CEdNodeGraphPin* ConnectedPin : OutputPin->GetConnections())
-                {
-                    CEdGraphNode* ConnectedNode = ConnectedPin->GetOwningNode();
-                    if (ReachableNodes.find(ConnectedNode) == ReachableNodes.end())
-                    {
-                        continue;
-                    }
-
-                    if (--InDegree[ConnectedNode] == 0)
-                    {
-                        ReadyQueue.push(ConnectedNode);
-                    }
-                }
-            }
-        }
-    
-        if (ProcessedNodeCount != ReachableNodes.size())
-        {
-            for (auto& Pair : InDegree)
-            {
-                if (Pair.second > 0)
-                {
-                    SortedNodes.clear();
-                    return Pair.first;
-                }
-            }
-        }
-    
-        return nullptr;
-    }
 }

@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "AudioContext.h"
 
 #include "AudioGlobals.h"
@@ -7,13 +7,14 @@
 
 namespace Lumina
 {
-    void Audio::Initialize()
-    {
-        GAudioContext = new FMiniaudioContext{};
-    }
+	void Audio::Initialize()
+	{
+		GAudioContext = new FMiniaudioContext{};
+	}
 
-    void Audio::Shutdown()
-    {
-        delete GAudioContext;
-    }
+	void Audio::Shutdown()
+	{
+		delete GAudioContext;
+		GAudioContext = nullptr;
+	}
 }

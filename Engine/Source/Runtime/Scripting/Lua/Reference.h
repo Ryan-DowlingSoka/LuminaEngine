@@ -96,6 +96,10 @@ namespace Lumina::Lua
         requires(!eastl::is_function_v<T> && !eastl::is_member_function_pointer_v<T>)
         void Set(FStringView Key, T Value);
         
+        template<typename T>
+        requires(!eastl::is_function_v<T> && !eastl::is_member_function_pointer_v<T>)
+        void RawSet(FStringView Key, T Value);
+        
         template<auto TFunc, typename TClass = void>
         void SetFunction(FStringView Key, TClass* Instance = nullptr);
         
@@ -106,16 +110,16 @@ namespace Lumina::Lua
         NODISCARD bool Is() const;
         
         template<typename T>
-        NODISCARD T Get() const;
+        NODISCARD TOptional<T> As() const;
         
         template<typename T>
-        NODISCARD T GetOr(const T& Default);
+        NODISCARD TOptional<T> Get(FStringView Key);
+        
+        template<typename T>
+        NODISCARD TOptional<T> GetI(int Index); 
         
         template<typename... TArgs>
         NODISCARD FRef Invoke(TArgs&& ... Args);
-        
-        template<typename T, typename... TArgs>
-        NODISCARD T InvokeGet(TArgs&& ... Args);
         
         template<typename T>
         NODISCARD TClass<T> NewClass(FStringView Name);
@@ -125,10 +129,13 @@ namespace Lumina::Lua
         
         NODISCARD FString ToString() const;
         NODISCARD EType GetType() const;
-        NODISCARD bool Push() const;
+        NODISCARD void Push() const;
         NODISCARD FRef NewTable(FStringView Key) const;
         NODISCARD bool IsValid() const;
         NODISCARD FRef GetField(FStringView Key) const;
+        NODISCARD FRef GetIndex(int Index) const;
+
+        NODISCARD FRef RawGetField(FStringView Key) const;
         NODISCARD bool IsInvokable() const;
         NODISCARD bool IsTable() const;
         NODISCARD bool IsUserdata(int Tag) const;
@@ -158,6 +165,11 @@ namespace Lumina::Lua
             return GetField(Key);
         }
         
+        FRef operator [](int Index) const
+        {
+            return GetIndex(Index);
+        }
+        
         explicit operator bool() const { return IsValid(); }
 
         bool operator==(const FRef& Other) const
@@ -167,8 +179,8 @@ namespace Lumina::Lua
                 return false;
             }
             
-            (void)Push();
-            (void)Other.Push();
+            Push();
+            Other.Push();
             bool Result = lua_rawequal(State, -1, -2);
             lua_pop(State, 2);
             return Result;
@@ -184,12 +196,16 @@ namespace Lumina::Lua
     requires(!eastl::is_function_v<T> && !eastl::is_member_function_pointer_v<T>)
     void FRef::Set(FStringView Key, T Value)
     {
-        if (!Push())
-        {
-            return;
-        }
-        
+        Push();
+        TStack<T>::Push(State, eastl::forward<T>(Value));
+        lua_setfield(State, -2, Key.data());
+        lua_pop(State, 1);
+    }
 
+    template <typename T> requires (!eastl::is_function_v<T> && !eastl::is_member_function_pointer_v<T>)
+    void FRef::RawSet(FStringView Key, T Value)
+    {
+        Push();
         TStack<T>::Push(State, eastl::forward<T>(Value));
         lua_rawsetfield(State, -2, Key.data());
         lua_pop(State, 1);
@@ -200,10 +216,7 @@ namespace Lumina::Lua
     {
         using ClassT = eastl::decay_t<TClass>;
         
-        if (!Push())
-        {
-            return;
-        }
+        Push();
         
         if constexpr (eastl::is_void_v<TClass>)
         {
@@ -220,6 +233,7 @@ namespace Lumina::Lua
                 return InvokerWithInstance<TFunc>(L);
             }, Key.data(), 1);
         }
+        
         lua_rawsetfield(State, -2, Key.data());
         lua_pop(State, 1);
     }
@@ -233,10 +247,7 @@ namespace Lumina::Lua
     template <typename T>
     bool FRef::Is() const
     {
-        if (!Push())
-        {
-            return false;
-        }
+        Push();
         
         bool Result = TStack<T>::Check(State, -1);
         lua_pop(State, 1);
@@ -244,36 +255,49 @@ namespace Lumina::Lua
     }
 
     template <typename T>
-    T FRef::Get() const
+    TOptional<T> FRef::As() const
     {
-        DEBUG_ASSERT(Push());
-        T Result = TStack<T>::Get(State, -1);
-        lua_pop(State, 1);
-        return Result;
+        Push();
+        return TStack<T>::Get(State, -1);
     }
 
     template <typename T>
-    T FRef::GetOr(const T& Default)
+    TOptional<T> FRef::Get(FStringView Key)
     {
-        if(!Push())
-        {
-            return Default;
-        }
         
-        T Result = TStack<T>::Get(State, -1);
-        lua_pop(State, 1);
-        return Result;
+        Push();
+        lua_getfield(State, -1, Key.data());
+        lua_remove(State, -2);
+        
+        TOptional<T> Value;
+        if (TStack<T>::Check(State, -1))
+        {
+            Value = TStack<T>::Get(State, -1);
+        }
+        return Value;
     }
+
+    template <typename T>
+    TOptional<T> FRef::GetI(int Index)
+    {
+        Push();
+        lua_rawgeti(State, -1, Index);
+        lua_remove(State, -2);
+        
+        TOptional<T> Value;
+        if (TStack<T>::Check(State, -1))
+        {
+            Value = TStack<T>::Get(State, -1);
+        }
+        return Value;    }
 
     template <typename ... TArgs>
     FRef FRef::Invoke(TArgs&&... Args)
     {
         LUMINA_PROFILE_SCOPE();
         
-        if (!Push())
-        {
-            return {};
-        }
+        Push();
+        DEBUG_ASSERT(lua_type(State, -1) == LUA_TFUNCTION);
         
         (TStack<eastl::decay_t<TArgs>>::Push(State, eastl::forward<TArgs>(Args)), ...);
         
@@ -288,38 +312,13 @@ namespace Lumina::Lua
         }
         
         FRef Result(State, -1);
-        lua_pop(State, 1);
-        return Result;
-    }
-
-    template <typename T, typename ... TArgs>
-    T FRef::InvokeGet(TArgs&&... Args)
-    {
-        lua_checkstack(State, sizeof...(Args) + 2);
-        
-        if (!Push())
-        {
-            return T{};
-        }
-        
-        (TStack<eastl::decay_t<TArgs>>::Push(State, eastl::forward<TArgs>(Args)), ...);
-
-        if (lua_pcall(State, sizeof...(Args), 1, 0) != LUA_OK)
-        {
-            LOG_ERROR("[Lua] - Invoke Failed {}", lua_tostring(State, -1));
-            lua_pop(State, 1);
-            return T{};
-        }
-
-        T Result = TStack<T>::Get(State, -1);
-        lua_pop(State, 1);
         return Result;
     }
 
     template <typename T>
     TClass<T> FRef::NewClass(FStringView Name)
     {
-        DEBUG_ASSERT(Push());
+        Push();
         TClass<T> Class(State, Name);
         return Class;
     }
@@ -334,8 +333,8 @@ namespace Lumina::Lua
                 lua_pushnil(State);
                 return;
             }
-        
-            (void)Value.Push();
+            
+            Value.Push();
         }
 
         static bool Check(lua_State* State, int Index)
@@ -345,12 +344,8 @@ namespace Lumina::Lua
 
         static FRef Get(lua_State* State, int Index)
         {
-            if (lua_isnoneornil(State, Index))
-            {
-                return {};
-            }
-        
-            return FRef(State, Index);
+            lua_pushvalue(State, Index);
+            return FRef(State, -1);
         }
     };
     

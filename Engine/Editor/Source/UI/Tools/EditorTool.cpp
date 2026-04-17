@@ -126,11 +126,11 @@ namespace Lumina
         {
             if (World->GetPhysicsScene() == nullptr)
             {
-                World->InitializeWorld(EWorldType::Editor);
+                GWorldManager->CreateWorldContext(World, EWorldType::Editor);
             }
-            
+
             SetupWorldForTool();
-            
+
             Internal_CreateViewportTool();
         }
 
@@ -145,11 +145,11 @@ namespace Lumina
         
         if (HasWorld())
         {
-            World->TeardownWorld();
+            GWorldManager->DestroyWorldContext(World);
             World->ForceDestroyNow();
             World = nullptr;
         }
-        
+
         ToolWindows.clear();
     }
 
@@ -170,16 +170,16 @@ namespace Lumina
         
         if (World.IsValid())
         {
-            World->TeardownWorld();
+            GWorldManager->DestroyWorldContext(World);
             World->ForceDestroyNow();
             World = nullptr;
         }
-        
+
         World = InWorld;
 
         if (World->GetPhysicsScene() == nullptr)
         {
-            World->InitializeWorld(EWorldType::Editor);
+            GWorldManager->CreateWorldContext(World, EWorldType::Editor);
         }
         
         SetupWorldForTool();

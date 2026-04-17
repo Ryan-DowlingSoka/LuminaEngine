@@ -21,7 +21,7 @@ namespace Lumina::Meta
     {
         if (Ref.Is<TEvent>())
         {
-            Registry.ctx().get<entt::dispatcher&>().trigger(Ref.Get<TEvent>());
+            Registry.ctx().get<entt::dispatcher&>().trigger(Ref.As<TEvent>().value());
         }
     }
     
@@ -30,7 +30,7 @@ namespace Lumina::Meta
     {
         if (Ref.Is<TEvent>())
         {
-            Registry.ctx().get<entt::dispatcher&>().enqueue(Ref.Get<TEvent>());
+            Registry.ctx().get<entt::dispatcher&>().enqueue(Ref.As<TEvent>().value());
         }
     }
     

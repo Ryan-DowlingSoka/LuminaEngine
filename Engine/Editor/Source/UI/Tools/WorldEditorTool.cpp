@@ -2105,10 +2105,9 @@ namespace Lumina
 
             World->SetActive(false);
             ProxyWorld = World;
-            
-            World = CWorld::DuplicateWorld(ProxyWorld);
-            World->InitializeWorld(EWorldType::Game);
-            
+
+            World = GWorldManager->StartPIE(ProxyWorld, EWorldType::Game, ENetMode::Standalone);
+
             WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
             
             OutlinerListView.ClearTree();
@@ -2161,8 +2160,7 @@ namespace Lumina
 
             World->SetActive(false);
             ProxyWorld = World;
-            World = CWorld::DuplicateWorld(ProxyWorld);
-            World->InitializeWorld(EWorldType::Simulation);
+            World = GWorldManager->StartPIE(ProxyWorld, EWorldType::Simulation, ENetMode::Standalone);
 
             ProxyWorld->DestroyEntity(EditorEntity);
             EditorEntity = entt::null;

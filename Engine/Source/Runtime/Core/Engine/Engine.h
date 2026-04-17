@@ -24,6 +24,7 @@ namespace Lumina
     class FAssetManager;
     class FApplication;
     class FWindow;
+    class CGameInstance;
 }
 
 namespace Lumina
@@ -85,8 +86,20 @@ namespace Lumina
         RUNTIME_API NODISCARD FFixedString GetProjectScriptDirectory() const;
         RUNTIME_API NODISCARD FFixedString GetProjectGameDirectory() const;
         RUNTIME_API NODISCARD FFixedString GetProjectContentDirectory() const;
-    
-    
+
+        RUNTIME_API CGameInstance* GetGameInstance() const { return GameInstance; }
+
+    protected:
+
+        /** Constructs the CGameInstance subclass named by Project.GameInstanceClass (or the base if unset) and calls Init. */
+        RUNTIME_API virtual void CreateGameInstance();
+
+        /** Loads Project.GameStartupMap as a Game world context. Editor overrides to no-op. */
+        RUNTIME_API virtual void LoadStartupMap();
+
+        /** Destroys the GameInstance. Called during Shutdown. */
+        RUNTIME_API virtual void DestroyGameInstance();
+
     protected:
         
         FUpdateContext          UpdateContext;
@@ -99,6 +112,7 @@ namespace Lumina
         FFixedString                ProjectPath;
         TSharedPtr<Lua::FScript>    ProjectScript;
         Lua::FRef                   ModuleUpdateFunc;
+        CGameInstance*              GameInstance = nullptr;
         
 
         FProjectLoadedDelegate  OnProjectLoaded;

@@ -635,6 +635,11 @@ namespace Lumina::ECS::Utils
         Registry.get<STransformComponent>(Entity).SetRotation(Rotation);
     }
 
+    bool IsEntityValid(FEntityRegistry& Registry, entt::entity Entity)
+    {
+        return Registry.valid(Entity);
+    }
+
     glm::vec3 TranslateEntity(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Translation)
     {
         return Registry.get<STransformComponent>(Entity).Translate(Translation);
@@ -709,7 +714,7 @@ namespace Lumina::ECS::Utils
         auto Ref = Obj["__type_id"];
         if (Ref.IsValid())
         {
-            return Ref.Get<entt::id_type>();
+            return Ref.As<entt::id_type>().value();
         }
         
         return entt::id_type{};

@@ -9,6 +9,7 @@ namespace Lumina::Lua
     {
         using RawT = eastl::remove_pointer_t<eastl::decay_t<T>>;
         
+        
         template<typename... TArgs>
         void Emplace(TArgs&&... Args)
         {
@@ -32,7 +33,14 @@ namespace Lumina::Lua
         
         void InvokeDtor()
         {
-            //Storage = {};
+            if constexpr (!eastl::is_trivially_destructible_v<RawT>)
+            {
+                if (External)
+                {
+                    return;
+                }
+                reinterpret_cast<RawT*>(Buffer)->~RawT();
+            }
         }
         
         alignas(RawT) unsigned char Buffer[sizeof(RawT)];

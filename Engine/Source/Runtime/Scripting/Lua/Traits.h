@@ -1,5 +1,5 @@
 ﻿#pragma once
-#include "lua.h"
+
 #include "Core/Math/Hash/Hash.h"
 #include "Containers/String.h"
 #include "Containers/Tuple.h"

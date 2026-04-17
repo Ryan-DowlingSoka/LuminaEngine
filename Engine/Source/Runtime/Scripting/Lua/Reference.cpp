@@ -5,15 +5,13 @@
 namespace Lumina::Lua
 {
     FRef::FRef(FNil)
-        : State(nullptr)
-        , Ref(LUA_NOREF)
-    {
-    }
+    { }
 
     FRef::FRef(lua_State* L, int Index)
-    : State(L)
+        : State(L)
     {
         Ref = lua_ref(L, Index);
+        lua_pop(L, 1);
     }
 
     FRef::~FRef()
@@ -89,11 +87,8 @@ namespace Lumina::Lua
 
     FString FRef::ToString() const
     {
-        if (!Push())
-        {
-            return {};
-        }
-        
+        Push();
+
         size_t Length = 0;
         FString View = luaL_tolstring(State, -1, &Length);
         lua_pop(State, 2);
@@ -102,10 +97,7 @@ namespace Lumina::Lua
 
     EType FRef::GetType() const
     {
-        if (!Push())
-        {
-            return {};
-        }
+        Push();
         
         int Type = lua_type(State, -1);
         
@@ -113,71 +105,55 @@ namespace Lumina::Lua
         return (EType)Type;
     }
 
-    bool FRef::Push() const
+    void FRef::Push() const
     {
-        if (!IsValid())
-        {
-            LOG_ERROR("[Lua] - Attempted to push an invalid lua reference");
-            return false;
-        }
-            
+        DEBUG_ASSERT(IsValid());
         lua_getref(State, Ref);
-        return true;
     }
 
     FRef FRef::NewTable(FStringView Key) const
     {
-        if (!Push())
-        {
-            return {};
-        }
-        
+        Push();
         lua_newtable(State);
-        
         lua_pushvalue(State, -1);
-        lua_setfield(State, -3, Key.data());
-        
-        FRef Result(State, -1);
-        lua_pop(State, 2);
-        return Result;
+        lua_rawsetfield(State, -3, Key.data());
+        lua_remove(State, -2);
+        return FRef(State, -1);
     }
 
     bool FRef::IsValid() const
     {
-        return State != nullptr && Ref != LUA_NOREF;
+        return State != nullptr && Ref != LUA_NOREF && Ref != LUA_REFNIL;
     }
 
     FRef FRef::GetField(FStringView Key) const
     {
-        if (!Push())
-        {
-            return FNil{};
-        }
-        
-        if (!lua_istable(State, -1))
-        {
-            return FNil{};
-        }
-        
-        int Type = lua_getfield(State, -1, Key.data());
-        if (Type <= LUA_TNIL)
-        {
-            lua_pop(State, 2);
-            return FNil{};
-        }
-        
-        FRef Result(State, -1);
-        lua_pop(State, 2); // Pop value and table.
-        return Result;
+        Push();
+        lua_getfield(State, -1, Key.data());
+        lua_remove(State, -2);
+        return FRef(State, -1);
+    }
+
+    FRef FRef::GetIndex(int Index) const
+    {
+        Push();
+        lua_rawgeti(State, -1, Index);
+        lua_remove(State, -2);
+        return FRef(State, -1);
+    }
+
+    FRef FRef::RawGetField(FStringView Key) const
+    {
+        Push();
+        lua_rawgetfield(State, -1, Key.data());
+        lua_remove(State, -2);
+        return FRef(State, -1);
     }
 
     bool FRef::IsInvokable() const
     {
-        if (!Push())
-        {
-            return false;
-        }
-        
+        Push();
+
         bool Result = lua_isfunction(State, -1);
         lua_pop(State, 1);
         return Result;
@@ -185,10 +161,7 @@ namespace Lumina::Lua
 
     bool FRef::IsTable() const
     {
-        if (!Push())
-        {
-            return false;
-        }
+        Push();
         
         bool Result = lua_istable(State, -1);
         lua_pop(State, 1);
@@ -197,10 +170,7 @@ namespace Lumina::Lua
 
     bool FRef::IsUserdata(int Tag) const
     {
-        if (!Push())
-        {
-            return false;
-        }
+        Push();
         
         bool bResult = lua_userdatatag(State, -1) == Tag;
         lua_pop(State, 1);

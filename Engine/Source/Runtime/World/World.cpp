@@ -3,6 +3,7 @@
 #include <utility>
 #include "lua.h"
 #include "WorldManager.h"
+#include "WorldContext.h"
 #include "Audio/AudioGlobals.h"
 #include "Core/Delegates/CoreDelegates.h"
 #include "Core/Engine/Engine.h"
@@ -17,7 +18,6 @@
 #include "entity/components/entitytags.h"
 #include "Entity/Components/LineBatcherComponent.h"
 #include "Entity/Components/NameComponent.h"
-#include "Entity/Components/PhysicsComponent.h"
 #include "Entity/Components/ScriptComponent.h"
 #include "Entity/Components/SingletonEntityComponent.h"
 #include "entity/components/tagcomponent.h"
@@ -179,6 +179,11 @@ namespace Lumina
 
             return View.size_hint();
         }
+        
+        static entt::entity DuplicateEntity_Lua(FEntityRegistry& Registry, entt::entity Entity)
+        {
+            return ECS::Utils::DuplicateEntity(Registry, Entity);
+        }
     }
     
     
@@ -200,7 +205,6 @@ namespace Lumina
             .AddFunction<&FLuaEventBus::ClearEvent>("ClearEvent")
             .AddFunction<&FLuaEventBus::GetSubscriberCount>("GetSubscriberCount")
             .Register();
-        
         
         GlobalRef.NewClass<Physics::IPhysicsScene>("PhysicsScene")
             .AddFunction<&Physics::IPhysicsScene::GetEntityBodyID>("GetEntityBodyID")
@@ -230,6 +234,7 @@ namespace Lumina
             .AddFunction<&FEntityRegistry::orphan>("Orphan")
             .AddFunction<&FEntityRegistry::compact<>>("Compact")
             .AddFunction<&LuaBinds::EntityCount_Lua>("EntityCount")
+            .AddFunction<&LuaBinds::DuplicateEntity_Lua>("Duplicate")
             .AddFunction<&LuaBinds::RemoveComponent_Lua>("Remove")
             .AddFunction<&LuaBinds::CreateEntity_Lua>("Create")
             .AddFunction<&LuaBinds::DestroyEntity_Lua>("Destroy")
@@ -273,8 +278,7 @@ namespace Lumina
         using namespace entt::literals;
         
         WorldType = InWorldType;
-        GWorldManager->AddWorld(this);
-        
+
         EntityRegistry.swap(RegistryPending);
         RegistryPending = {};
 
@@ -360,7 +364,7 @@ namespace Lumina
     
     void CWorld::TeardownWorld()
     {
-        GAudioContext->StopSounds();
+        GAudioContext->StopAllSounds();
         
         EntityRegistry.on_destroy<FRelationshipComponent>().disconnect<&ThisClass::OnRelationshipComponentDestroyed>(this);
         EntityRegistry.on_destroy<SScriptComponent>().disconnect<&ThisClass::OnScriptComponentConstruct>(this);
@@ -383,9 +387,7 @@ namespace Lumina
         DestroyRenderer();
         
         FCoreDelegates::PostWorldUnload.Broadcast();
-        
-        GWorldManager->RemoveWorld(this);
-        
+
         Lua::FScriptingContext::Get().RunGC();
     }
     
@@ -650,6 +652,11 @@ namespace Lumina
         GetEntityTransform(Entity).SetRotation(Rotation);
     }
 
+    glm::vec3 CWorld::TranslateEntity(entt::entity Entity, glm::vec3 Translation)
+    {
+        return GetEntityTransform(Entity).Translate(Translation);
+    }
+
     uint32 CWorld::GetNumEntities() const
     {
         return (uint32)EntityRegistry.view<entt::entity>().size();
@@ -732,6 +739,11 @@ namespace Lumina
                 DestroyRenderer();
             }
         }
+    }
+
+    ENetMode CWorld::GetNetMode() const
+    {
+        return OwningContext ? OwningContext->NetMode : ENetMode::Standalone;
     }
 
     CWorld* CWorld::DuplicateWorld(CWorld* OwningWorld)
@@ -824,14 +836,14 @@ namespace Lumina
             return;
         }
         
-        ScriptComponent.Script->Environment.Set("World", this);
-        ScriptComponent.Script->Environment.Set("Registry", &EntityRegistry);
-        ScriptComponent.Script->Environment.Set("Physics", PhysicsScene.get());
-        ScriptComponent.Script->Environment.Set("Events", &LuaEventBus);
+        ScriptComponent.Script->Environment.RawSet("World", this);
+        ScriptComponent.Script->Environment.RawSet("Registry", &EntityRegistry);
+        ScriptComponent.Script->Environment.RawSet("Physics", PhysicsScene.get());
+        ScriptComponent.Script->Environment.RawSet("Events", &LuaEventBus);
         
-        ScriptComponent.Script->Reference.Set("Entity", Entity);
-        ScriptComponent.Script->Reference.Set("Transform", &EntityRegistry.get<STransformComponent>(Entity));
-        ScriptComponent.Script->Reference.Set("Name", EntityRegistry.get<SNameComponent>(Entity).Name);
+        ScriptComponent.Script->Reference.RawSet("Entity", Entity);
+        ScriptComponent.Script->Reference.RawSet("Transform", &EntityRegistry.get<STransformComponent>(Entity));
+        ScriptComponent.Script->Reference.RawSet("Name", EntityRegistry.get<SNameComponent>(Entity).Name);
         
         ScriptComponent.ScriptMetaTable = ScriptComponent.Script->Reference["__meta"];
         ScriptComponent.AttachFunc      = ScriptComponent.Script->Reference["OnAttach"];
@@ -841,17 +853,11 @@ namespace Lumina
         
         if (ScriptComponent.ScriptMetaTable.IsValid())
         {
-            Lua::FRef RunInEditor = ScriptComponent.ScriptMetaTable.GetField("bRunInEditor");
-            if (RunInEditor.IsValid())
-            {
-                ScriptComponent.bRunInEditor = RunInEditor.GetOr(false);
-            }
+            auto MaybeRunInEditor = ScriptComponent.ScriptMetaTable.Get<bool>("bRunInEditor");
+            ScriptComponent.bRunInEditor = MaybeRunInEditor ? MaybeRunInEditor.value() : false;
             
-            Lua::FRef TickRate = ScriptComponent.ScriptMetaTable.GetField("TickRate");
-            if (TickRate.IsValid())
-            {
-                ScriptComponent.TickRate = TickRate.GetOr(0.0f);
-            }
+            auto MaybeTickRate = ScriptComponent.ScriptMetaTable.Get<float>("TickRate");
+            ScriptComponent.TickRate = MaybeTickRate ? MaybeTickRate.value() : 0.0f;
         }
         
         if ((WorldType == EWorldType::Editor) == ScriptComponent.bRunInEditor)

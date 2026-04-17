@@ -28,6 +28,10 @@
 #include "TaskSystem/ThreadedCallback.h"
 #include "Tools/UI/DevelopmentToolUI.h"
 #include "World/WorldManager.h"
+#include "GameInstance.h"
+#include "Core/Object/Cast.h"
+#include "Core/Object/Class.h"
+#include "Core/Object/ObjectCore.h"
 #include "Prism/Prism.h"
 
 #define SANDBOX_PROJECT_ID "C9396E54-2E00-4874-B051-FCD1792359AC"
@@ -98,9 +102,11 @@ namespace Lumina
         delete DeveloperToolUI;
         #endif
 
+        DestroyGameInstance();
+
         Memory::Delete(GWorldManager);
 		GWorldManager = nullptr;
-        
+
         ShutdownCObjectSystem();
         
         GApp->GetPrismApp().Shutdown();
@@ -239,8 +245,6 @@ namespace Lumina
                 
                 GRenderManager->FrameEnd(UpdateContext, RenderGraph);
                 
-                GAudioContext->Update();
-                
                 Lua::FScriptingContext::Get().ProcessDeferredActions();
 
                 OnUpdateStage(UpdateContext);
@@ -366,8 +370,64 @@ namespace Lumina
         
         FString ModuleFile = GConfig->Get<std::string>("Project.LuaModuleFile").c_str();
         LoadProjectScript(ModuleFile);
-        
+
+        CreateGameInstance();
+        LoadStartupMap();
+
         OnProjectLoaded.Broadcast();
+    }
+
+    void FEngine::CreateGameInstance()
+    {
+        const FString ClassName = GConfig->Get<std::string>("Project.GameInstanceClass").c_str();
+
+        CClass* InstanceClass = nullptr;
+        if (!ClassName.empty())
+        {
+            InstanceClass = FindObject<CClass>(FName(ClassName.c_str()));
+            if (InstanceClass == nullptr)
+            {
+                LOG_WARN("Project.GameInstanceClass '{}' not found; falling back to CGameInstance.", ClassName.c_str());
+            }
+        }
+
+        if (InstanceClass == nullptr)
+        {
+            InstanceClass = CGameInstance::StaticClass();
+        }
+
+        GameInstance = Cast<CGameInstance>(NewObject(InstanceClass, nullptr, NAME_None, FGuid::New(), OF_Transient));
+        GameInstance->Init();
+    }
+
+    void FEngine::LoadStartupMap()
+    {
+        const FString MapName = GConfig->Get<std::string>("Project.GameStartupMap").c_str();
+        if (MapName.empty())
+        {
+            LOG_WARN("No Project.GameStartupMap configured; runtime has no world to run.");
+            return;
+        }
+
+        CWorld* StartupWorld = LoadObject<CWorld>(FStringView(MapName.c_str()));
+        if (StartupWorld == nullptr)
+        {
+            LOG_ERROR("Failed to load startup map '{}'.", MapName.c_str());
+            return;
+        }
+
+        GWorldManager->CreateWorldContext(StartupWorld, EWorldType::Game, ENetMode::Standalone);
+    }
+
+    void FEngine::DestroyGameInstance()
+    {
+        if (GameInstance == nullptr)
+        {
+            return;
+        }
+
+        GameInstance->Shutdown();
+        GameInstance = nullptr;
     }
 
     void FEngine::LoadProjectScript(FStringView Path)

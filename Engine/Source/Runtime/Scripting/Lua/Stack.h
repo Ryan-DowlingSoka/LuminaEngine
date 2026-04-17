@@ -57,6 +57,8 @@ namespace Lumina::Lua
         static FStringView TypeName(lua_State* State)       { return lua_typename(State, LUA_TNIL); }
         static void Push(lua_State* State, FNil)            { lua_pushnil(State); }
         static FNil  Get(lua_State* State, int Index)       { return {}; }
+        static TOptional<FNil>  TryGet(lua_State* State, int Index)       { return eastl::nullopt; }
+
         static bool Check(lua_State* State, int Index)      { return lua_isnil(State, Index); }
     };
     

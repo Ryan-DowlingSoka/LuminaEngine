@@ -562,7 +562,7 @@ namespace Lumina::Physics
         LUMINA_PROFILE_SCOPE();
         
         TVector<SRayResult> Results;
-        if (Math::IsNearlyEqual(Settings.Radius, 0.0f, LE_SMALL_NUMBER))
+        if (Math::IsNearlyZero(Settings.Radius))
         {
             return Results;
         }

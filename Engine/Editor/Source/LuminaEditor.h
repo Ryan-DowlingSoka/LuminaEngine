@@ -17,15 +17,19 @@ namespace Lumina
     public:
         bool Init() override;
         bool Shutdown() override;
-        
+
         CWorld* GetCurrentEditorWorld() const;
-        
+
         #if WITH_EDITOR
         IDevelopmentToolUI* CreateDevelopmentTools() override;
         #endif
-        
+
         void CreateProject(FStringView NewProjectName, FStringView NewProjectPath);
-        
+
+    protected:
+
+        /** Editor doesn't auto-load a runtime world; the user picks one via the editor UI. */
+        void LoadStartupMap() override {}
     };
     
     
