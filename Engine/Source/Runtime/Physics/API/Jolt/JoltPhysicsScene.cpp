@@ -225,8 +225,19 @@ namespace Lumina::Physics
         // velocity-matched motion lands exactly in one sub-step, regardless of
         // the current frame's wall-clock delta.
         auto BodySyncView = Registry.view<SRigidBodyComponent, STransformComponent, FNeedsPhysicsBodyUpdate>();
-        BodySyncView.each([&](SRigidBodyComponent& BodyComponent, const STransformComponent& TransformComponent, const FNeedsPhysicsBodyUpdate& Update)
+        auto Handle = BodySyncView.handle();
+        Task::ParallelFor(Handle->size(), [&] (uint32 Index)
         {
+            entt::entity Entity = (*Handle)[Index];
+            if (!BodySyncView.contains(Entity))
+            {
+                return;
+            }
+         
+            const auto& BodyComponent       = BodySyncView.get<SRigidBodyComponent>(Entity);
+            const auto& TransformComponent  = BodySyncView.get<STransformComponent>(Entity);
+            const auto& Update              = BodySyncView.get<FNeedsPhysicsBodyUpdate>(Entity);
+
             JPH::BodyID BodyID = JPH::BodyID(BodyComponent.BodyID);
             
             const JPH::Body* Body = LockInterface.TryGetBody(BodyID);
@@ -290,8 +301,9 @@ namespace Lumina::Physics
                     }
                 }
             }
+            
         });
-
+        
         // Reset character interpolation after manual transform edits. The
         // character needs to snap to the new pose instead of sweeping through.
         auto CharacterResetView = Registry.view<SCharacterPhysicsComponent, FNeedsPhysicsBodyUpdate>();

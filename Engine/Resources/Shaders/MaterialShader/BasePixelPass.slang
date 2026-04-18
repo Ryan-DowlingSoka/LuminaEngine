@@ -126,6 +126,42 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
     return 0.0015 + 0.004 * SlopeFactor;
 }
 
+// PCF-filtered sample of a single directional cascade. Returns 1.0 if the
+// fragment falls outside the cascade's projected UV / depth range so the
+// caller can decide to fall back to another cascade (or to fully-lit).
+float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float Bias, float2 ScreenPos, out bool Inside)
+{
+    float4 ShadowCoord  = mul(Light.ViewProjection[CascadeIndex], float4(FragmentPos, 1.0));
+    float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
+    float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
+    float  CurrentDepth = ProjCoords.z;
+
+    Inside = !(any(ProjectionUV < 0.0) || any(ProjectionUV > 1.0) ||
+               CurrentDepth < 0.0 || CurrentDepth > 1.0);
+    if (!Inside)
+    {
+        return 1.0;
+    }
+
+    float IGN   = frac(52.9829189 * frac(dot(ScreenPos, float2(0.06711056, 0.00583715))));
+    float Angle = IGN * TWO_PI;
+
+    // PCF footprint scales with cascade size so outer cascades get a wider
+    // filter in world space. Counteracts the visible resolution cliff at the
+    // boundary between the penultimate and last cascade.
+    float FilterRadius = 0.0012 * (1.0 + 0.6 * float(CascadeIndex));
+
+    float Shadow = 0.0;
+    for (int i = 0; i < SHADOW_SAMPLE_COUNT; i++)
+    {
+        float2 Offset    = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle) * FilterRadius;
+        float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
+        float  Depth     = uShadowCascade.Sample(float3(CascadeUV, CascadeIndex)).r;
+        Shadow += step(CurrentDepth - Bias, Depth);
+    }
+    return Shadow / float(SHADOW_SAMPLE_COUNT);
+}
+
 float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float3 ViewPosition, float2 ScreenPos, bool ReceiveShadow)
 {
     if (!ReceiveShadow)
@@ -136,12 +172,10 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
     bool IsSpotLight        = Light.Flags == LIGHT_FLAG_TYPE_SPOT;
     bool IsDirectionalLight = Light.Flags == LIGHT_FLAG_TYPE_DIRECTIONAL;
 
-    // Pick cascade. Only NUM_CASCADES matrices are written on the C++ side; if
-    // the fragment falls past the last split we're outside shadow coverage and
-    // should return fully lit rather than sampling an undefined matrix slot.
-    int CascadeIndex = 0;
     if (IsDirectionalLight)
     {
+        // Pick current cascade based on view-space Z against the split table.
+        int CascadeIndex = 0;
         for (int i = 0; i < NUM_CASCADES; ++i)
         {
             if (ViewPosition.z > uLightData[0].CascadeSplits[i])
@@ -149,14 +183,46 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         }
         if (CascadeIndex >= NUM_CASCADES)
             return 1.0;
+
+        float3 LightDirToFrag = -normalize(Light.Direction);
+        float  Bias           = ComputeShadowBias(Light.Flags, Normal, LightDirToFrag, CascadeIndex);
+
+        bool  InsideA;
+        float ShadowA = SampleDirectionalCascade(Light, CascadeIndex, FragmentPos, Bias, ScreenPos, InsideA);
+
+        // Blend into the next cascade near the split boundary so the
+        // transition between sharp/near and blurry/far cascades is smooth
+        // rather than a hard seam.
+        float CascadeNear = (CascadeIndex == 0)
+            ? 0.0
+            : uLightData[0].CascadeSplits[CascadeIndex - 1];
+        float CascadeFar  = uLightData[0].CascadeSplits[CascadeIndex];
+        float CascadeLen  = max(CascadeFar - CascadeNear, 1e-4);
+        float LocalT      = saturate((ViewPosition.z - CascadeNear) / CascadeLen);
+
+        const float BlendStart = 0.80;
+        if (LocalT > BlendStart && CascadeIndex + 1 < NUM_CASCADES)
+        {
+            float BlendT  = saturate((LocalT - BlendStart) / (1.0 - BlendStart));
+            float BiasB   = ComputeShadowBias(Light.Flags, Normal, LightDirToFrag, CascadeIndex + 1);
+
+            bool  InsideB;
+            float ShadowB = SampleDirectionalCascade(Light, CascadeIndex + 1, FragmentPos, BiasB, ScreenPos, InsideB);
+
+            if (InsideB)
+            {
+                return lerp(ShadowA, ShadowB, BlendT);
+            }
+        }
+
+        return ShadowA;
     }
 
-    float3 LightDirToFrag = IsDirectionalLight
-        ? -normalize(Light.Direction)
-        : normalize(Light.Position - FragmentPos);
-    float  Bias = ComputeShadowBias(Light.Flags, Normal, LightDirToFrag, CascadeIndex);
+    // ----- Spot / point lights (atlas-based) -----
+    float3 LightDirToFrag = normalize(Light.Position - FragmentPos);
+    float  Bias           = ComputeShadowBias(Light.Flags, Normal, LightDirToFrag, 0);
 
-    float4 ShadowCoord  = mul(Light.ViewProjection[CascadeIndex], float4(FragmentPos, 1.0));
+    float4 ShadowCoord  = mul(Light.ViewProjection[0], float4(FragmentPos, 1.0));
     float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
     float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
 
@@ -171,52 +237,25 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
 
     FLightShadow ShadowTile = Light.Shadow[Coord.Face];
 
-    // Early-out for fragments outside the shadow frustum, prevents sampler
-    // clamp-to-edge from bleeding a single shadow edge across the whole scene.
-    if (IsDirectionalLight)
-    {
-        CurrentDepth = ProjCoords.z;
-        if (any(ProjectionUV < 0.0) || any(ProjectionUV > 1.0) ||
-            CurrentDepth < 0.0 || CurrentDepth > 1.0)
-        {
-            return 1.0;
-        }
-    }
-    else if (IsSpotLight)
+    if (IsSpotLight)
     {
         if (any(ProjectionUV < 0.0) || any(ProjectionUV > 1.0))
             return 1.0;
     }
 
-    // Interleaved gradient noise in screen space, stable per pixel, well
-    // decorrelated between neighbours, no shimmering as the camera moves.
     float IGN   = frac(52.9829189 * frac(dot(ScreenPos, float2(0.06711056, 0.00583715))));
     float Angle = IGN * TWO_PI;
-
-    // PCF radius expressed in *atlas/cascade* UV. The non-directional branch
-    // divides by the tile scale below, so both branches end up sampling an
-    // equivalent texel footprint regardless of tile size.
-    float FilterRadius = IsDirectionalLight ? 0.0012 : 0.002;
+    float FilterRadius = 0.002;
 
     float Shadow = 0.0;
     for (int i = 0; i < SHADOW_SAMPLE_COUNT; i++)
     {
-        float2 Offset = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle) * FilterRadius;
-
-        if (IsDirectionalLight)
-        {
-            float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
-            float  Depth     = uShadowCascade.Sample(float3(CascadeUV, CascadeIndex)).r;
-            Shadow += step(CurrentDepth - Bias, Depth);
-        }
-        else
-        {
-            float2 TileOffset = Offset / max(ShadowTile.AtlasUVScale, float2(1e-6));
-            float2 ClampedUV  = clamp(Coord.UV + TileOffset, 0.001, 0.999);
-            float2 SampleUV   = ShadowTile.AtlasUVOffset + (ClampedUV * ShadowTile.AtlasUVScale);
-            float  Depth      = uShadowAtlas.Sample(float3(SampleUV, ShadowTile.ShadowMapLayer)).r;
-            Shadow += step(CurrentDepth - Bias, Depth);
-        }
+        float2 Offset     = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle) * FilterRadius;
+        float2 TileOffset = Offset / max(ShadowTile.AtlasUVScale, float2(1e-6));
+        float2 ClampedUV  = clamp(Coord.UV + TileOffset, 0.001, 0.999);
+        float2 SampleUV   = ShadowTile.AtlasUVOffset + (ClampedUV * ShadowTile.AtlasUVScale);
+        float  Depth      = uShadowAtlas.Sample(float3(SampleUV, ShadowTile.ShadowMapLayer)).r;
+        Shadow += step(CurrentDepth - Bias, Depth);
     }
 
     return Shadow / float(SHADOW_SAMPLE_COUNT);

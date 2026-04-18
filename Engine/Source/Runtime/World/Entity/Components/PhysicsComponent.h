@@ -7,7 +7,7 @@
 namespace Lumina
 {
     REFLECT(Component)
-    struct RUNTIME_API SRigidBodyComponent
+    struct RUNTIME_API alignas(Threading::GCacheLineSize) SRigidBodyComponent
     {
         GENERATED_BODY()
 
@@ -19,7 +19,6 @@ namespace Lumina
         
         PROPERTY(Script, Editable, Category = "Physics")
         FCollisionProfile CollisionProfile;
-        
         
         PROPERTY(Script, Editable, Category = "Physics")
         uint32 NumVelocityStepsOverride = 0;

@@ -55,6 +55,34 @@ namespace Lumina
             return true;
         }
 
+        /**
+         * Returns a frustum that bounds the Minkowski sum of this frustum and the
+         * line segment { t * SweepDir : 0 <= t <= SweepDistance }. In practice:
+         * takes this (camera) frustum and extends it along the sun-light
+         * direction so shadow casters sitting *outside* the camera view but
+         * *between* the sun and the camera view still get included in the
+         * shadow-cull pass. Planes whose outward-facing normal has a component
+         * into -SweepDir are pushed outward by that component's length.
+         *
+         * SweepDir should point from the shadow caster toward the light (i.e.
+         * the sun direction vector, same convention as FLight::Direction).
+         */
+        NODISCARD FFrustum Extruded(const glm::vec3& SweepDir, float SweepDistance) const
+        {
+            FFrustum Out;
+            for (int i = 0; i < NUM; ++i)
+            {
+                const glm::vec4& P = Planes[i];
+                const glm::vec3 N(P.x, P.y, P.z);
+                // Inside half-space is N.X + d >= 0. For points in the swept
+                // volume (X or X + t*SweepDir), worst-case is X - max(0, t * dot(N, -SweepDir)).
+                // So relax d by max(0, SweepDistance * dot(N, -SweepDir)).
+                const float Push = glm::max(0.0f, SweepDistance * glm::dot(N, -SweepDir));
+                Out.Planes[i] = glm::vec4(N, P.w + Push);
+            }
+            return Out;
+        }
+
         static void ComputeFrustumCorners(const glm::mat4& ViewProjection, glm::vec3 OutCorners[8])
         {
             LUMINA_PROFILE_SCOPE();

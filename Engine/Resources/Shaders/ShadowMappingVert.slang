@@ -17,7 +17,7 @@ struct VSOutput
 [shader("vertex")]
 VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint InstanceIndex: SV_VulkanInstanceID, uint ViewIndex : SV_ViewID, uniform FPushConstants PC)
 {
-    FGPUInstance InstanceData = GetInstanceData(InstanceIndex);
+    FGPUInstance InstanceData = GetShadowInstanceData(InstanceIndex);
 
     FVertexData VertexData;
     if (InstanceData.HasFlag(EInstanceFlags::Skinned))
@@ -36,7 +36,7 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint InstanceIndex: SV_
             VertexIndex);
     }
 
-    float4x4 ModelMatrix = GetModelMatrix(InstanceIndex);
+    float4x4 ModelMatrix = GetShadowModelMatrix(InstanceIndex);
     float4   WorldPos    = mul(ModelMatrix, float4(VertexData.Position, 1.0));
 
     VSOutput Output;

@@ -1,10 +1,6 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-// ============================================================================
-//  Push Constants
-// ============================================================================
-
 struct FPushConstants
 {
     float4x4 InverseProjection;
@@ -12,10 +8,6 @@ struct FPushConstants
     uint2    ScreenSize;
     uint4    GridSize;
 };
-
-// ============================================================================
-//  Helpers
-// ============================================================================
 
 float3 ScreenToView(float2 ScreenCoord, FPushConstants PC)
 {
@@ -34,28 +26,34 @@ float3 LineIntersectionWithZPlane(float3 StartPoint, float3 EndPoint, float ZDis
     return StartPoint + T * Direction;
 }
 
-// ============================================================================
-//  Main
-// ============================================================================
-
 [shader("compute")]
-[numthreads(1, 1, 1)]
-void ComputeMain(uint3 WorkGroupID : SV_GroupID, uniform FPushConstants PC)
+[numthreads(64, 1, 1)]
+void ComputeMain(uint3 DispatchID : SV_DispatchThreadID, uniform FPushConstants PC)
 {
+    uint TileIndex  = DispatchID.x;
+    uint TotalTiles = PC.GridSize.x * PC.GridSize.y * PC.GridSize.z;
+    if (TileIndex >= TotalTiles)
+        return;
+
+    uint SliceSize = PC.GridSize.x * PC.GridSize.y;
+    uint3 Tile;
+    Tile.z = TileIndex / SliceSize;
+    uint SliceRem = TileIndex - Tile.z * SliceSize;
+    Tile.y = SliceRem / PC.GridSize.x;
+    Tile.x = SliceRem - Tile.y * PC.GridSize.x;
+
     float ZNear = PC.ZNearFar.x;
     float ZFar  = PC.ZNearFar.y;
 
-    uint  TileIndex = WorkGroupID.x + (WorkGroupID.y * PC.GridSize.x) + (WorkGroupID.z * PC.GridSize.x * PC.GridSize.y);
-
     float2 TileSize   = float2(PC.ScreenSize) / float2(PC.GridSize.xy);
-    float2 MinTileSS  = float2(WorkGroupID.xy) * TileSize;
-    float2 MaxTileSS  = float2(WorkGroupID.xy + 1) * TileSize;
+    float2 MinTileSS  = float2(Tile.xy) * TileSize;
+    float2 MaxTileSS  = float2(Tile.xy + 1) * TileSize;
 
     float3 MinTile = ScreenToView(MinTileSS, PC);
     float3 MaxTile = ScreenToView(MaxTileSS, PC);
 
-    float PlaneNear = -ZNear * pow(ZFar / ZNear,  float(WorkGroupID.z)      / float(PC.GridSize.z));
-    float PlaneFar  = -ZNear * pow(ZFar / ZNear,  float(WorkGroupID.z + 1)  / float(PC.GridSize.z));
+    float PlaneNear = -ZNear * pow(ZFar / ZNear,  float(Tile.z)      / float(PC.GridSize.z));
+    float PlaneFar  = -ZNear * pow(ZFar / ZNear,  float(Tile.z + 1)  / float(PC.GridSize.z));
 
     float3 MinPointNear = LineIntersectionWithZPlane(float3(0.0), MinTile, PlaneNear);
     float3 MinPointFar  = LineIntersectionWithZPlane(float3(0.0), MinTile, PlaneFar);

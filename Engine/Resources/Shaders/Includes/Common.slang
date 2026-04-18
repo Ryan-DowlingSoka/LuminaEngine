@@ -298,6 +298,7 @@ struct FFrustum
 struct FCullData
 {
     FFrustum Frustum;
+    FFrustum ShadowFrustum;
     float4x4 View;
     float    P00;
     float    P11;
@@ -306,9 +307,10 @@ struct FCullData
     uint     bFrustumCull;
     uint     bOcclusionCull;
     uint     InstanceNum;
-    uint     Padding0;
+    uint     bHasDirectional;
     float    PyramidWidth;
     float    PyramidHeight;
+    uint     Padding1[2];
 };
 
 struct FSceneGlobalData

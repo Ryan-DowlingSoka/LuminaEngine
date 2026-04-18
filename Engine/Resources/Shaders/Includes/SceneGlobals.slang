@@ -30,6 +30,12 @@ struct SkinnedVertexBuffer
 [[vk::binding(14, 0)]] Sampler2D                                    uAccum;
 [[vk::binding(15, 0)]] Sampler2D                                    uRevealage;
 
+// Parallel shadow-caster indirect/mapping buffers. The shadow cull pass writes
+// these, and every shadow-map rendering pass (CSM, spot, point) consumes them,
+// so that casters outside the camera frustum still produce shadows.
+[[vk::binding(16, 0)]] RWStructuredBuffer<uint>                     uMappingDataShadow;
+[[vk::binding(17, 0)]] RWStructuredBuffer<FDrawIndirectArguments>   uIndirectDrawDataShadow;
+
 // ---------------------------------------------------------------------------------
 //  Binding Set 1
 // ---------------------------------------------------------------------------------
@@ -113,6 +119,24 @@ float3 GetModelLocation(uint Index)
 uint GetEntityID(uint Index)
 {
     return uInstanceData[DrawIDToInstanceID(Index)].EntityID;
+}
+
+// Shadow-pass accessors. Shadow draws are indexed from a dedicated mapping
+// buffer populated by ShadowMeshCull.slang. The underlying instance buffer is
+// shared with the camera pass.
+uint ShadowDrawIDToInstanceID(uint ID)
+{
+    return uMappingDataShadow[ID];
+}
+
+FGPUInstance GetShadowInstanceData(uint Index)
+{
+    return uInstanceData[ShadowDrawIDToInstanceID(Index)];
+}
+
+float4x4 GetShadowModelMatrix(uint Index)
+{
+    return uInstanceData[ShadowDrawIDToInstanceID(Index)].ModelMatrix;
 }
 
 // ---------------------------------------------------------------------------------

@@ -104,6 +104,8 @@ namespace Lumina
         SceneGlobalData.FarPlane                        = SceneViewport->GetViewVolume().GetFar();
         SceneGlobalData.NearPlane                       = SceneViewport->GetViewVolume().GetNear();
         SceneGlobalData.CullData.Frustum                = SceneViewport->GetViewVolume().GetFrustum();
+        SceneGlobalData.CullData.ShadowFrustum          = SceneGlobalData.CullData.Frustum; // Rebuilt after directional light is processed.
+        SceneGlobalData.CullData.bHasDirectional        = 0u;
         SceneGlobalData.CullData.ViewMatrix             = SceneViewport->GetViewVolume().GetViewMatrix();
         SceneGlobalData.CullData.P00                    = SceneViewport->GetViewVolume().GetProjectionMatrix()[0][0];
         SceneGlobalData.CullData.P11                    = SceneViewport->GetViewVolume().GetProjectionMatrix()[1][1];
@@ -414,6 +416,24 @@ namespace Lumina
                 LUMINA_PROFILE_SECTION_COLORED("Write Scene Buffers", tracy::Color::OrangeRed3);
                 
                 SceneGlobalData.CullData.InstanceNum = (uint32)InstanceData.size();
+
+                // Build the shadow-cull frustum: the camera frustum swept along the sun
+                // direction so casters behind / above / beside the camera still write into
+                // the shadow indirect buffer. Distance is matched to the CSM far plane used
+                // in ProcessDirectionalLight (ShadowMaxDistance = 1000) with headroom for the
+                // cascade pullback.
+                if (LightData.bHasSun)
+                {
+                    const glm::vec3 SunDir = glm::normalize(LightData.SunDirection);
+                    constexpr float ShadowSweepDistance = 2000.0f;
+                    SceneGlobalData.CullData.ShadowFrustum   = SceneGlobalData.CullData.Frustum.Extruded(SunDir, ShadowSweepDistance);
+                    SceneGlobalData.CullData.bHasDirectional = 1u;
+                }
+                else
+                {
+                    SceneGlobalData.CullData.ShadowFrustum   = SceneGlobalData.CullData.Frustum;
+                    SceneGlobalData.CullData.bHasDirectional = 0u;
+                }
                 
                 const SIZE_T SimpleVertexSize   = SimpleVertices.size() * sizeof(FSimpleElementVertex);
                 const SIZE_T InstanceDataSize   = InstanceData.size() * sizeof(FGPUInstance);
@@ -434,6 +454,11 @@ namespace Lumina
                 {
                     bAnyBufferResized = true;
                 }
+
+                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMappingShadow], sizeof(uint32) * InstanceData.size(), 1.2f))
+                {
+                    bAnyBufferResized = true;
+                }
                 
                 if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::SimpleVertex], (uint32)SimpleVertexSize, 1.2f))
                 {
@@ -446,6 +471,11 @@ namespace Lumina
                 }
                 
                 if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Indirect], (uint32)IndirectArgsSize, 1.2f))
+                {
+                    bAnyBufferResized = true;
+                }
+
+                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::IndirectShadow], (uint32)IndirectArgsSize, 1.2f))
                 {
                     bAnyBufferResized = true;
                 }
@@ -469,6 +499,7 @@ namespace Lumina
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Instance), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Bone), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Indirect), EResourceStates::CopyDest);
+                CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::IndirectShadow), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::SimpleVertex), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Light), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Billboards), EResourceStates::CopyDest);
@@ -479,6 +510,10 @@ namespace Lumina
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Instance), InstanceData.data(), InstanceDataSize);
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Bone), BonesData.data(),  BoneDataSize);
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Indirect), IndirectDrawArguments.data(), IndirectArgsSize);
+                // Shadow indirect buffer uses the identical per-batch layout (same FirstInstance
+                // offsets, InstanceCount == 0) so ShadowMeshCull.slang can atomically fill it
+                // in parallel with the camera-view cull pass.
+                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::IndirectShadow), IndirectDrawArguments.data(), IndirectArgsSize);
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::SimpleVertex), SimpleVertices.data(), SimpleVertexSize);
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Light), &LightData, LightUploadSize);
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Billboards), BillboardInstances.data(), BillboardSize);
@@ -1212,14 +1247,22 @@ namespace Lumina
         Light.Direction         = glm::normalize(DirectionalLight.Direction);
         LightData.SunDirection  = Light.Direction;
         
-        // (logarithmic + uniform blend, Lambda = 0.92).
-        // Caps shadow distance so the last cascade still has usable resolution.
-        constexpr float CascadeSplitLambda  = 0.92f;
-        constexpr float ShadowMaxDistance   = 1000.0f;
-        
+        // (logarithmic + uniform blend). Lambda tuned so the last cascade
+        // does not dwarf the preceding ones: at Lambda=0.92 + far=1000 the
+        // final slice was ~10x the previous, producing the visible "hard
+        // morph" from sharp to very blurry shadows. 0.75 gives a smoother
+        // progression while still concentrating resolution near the camera.
+        //
+        // ShadowNear is clamped above the camera near so the log term does
+        // not bunch the first couple of splits into a tiny sliver.
+        constexpr float CascadeSplitLambda  = 0.75f;
+        constexpr float ShadowMaxDistance   = 300.0f;
+        constexpr float ShadowMinDistance   = 1.0f;
+
         const float ShadowFar  = glm::min(FarClip, ShadowMaxDistance);
-        const float ClipRange  = ShadowFar - NearClip;
-        const float MinDepth   = NearClip;
+        const float ShadowNear = glm::max(NearClip, ShadowMinDistance);
+        const float ClipRange  = ShadowFar - ShadowNear;
+        const float MinDepth   = ShadowNear;
         const float MaxDepth   = ShadowFar;
         const float DepthRatio = MaxDepth / glm::max(MinDepth, 0.0001f);
         
@@ -1239,7 +1282,7 @@ namespace Lumina
         const float      CamAspect = ViewVolume.GetAspectRatio();
         const glm::vec3  LightDir  = Light.Direction; // Toward the sun.
         
-        float LastSplitDistance = NearClip;
+        float LastSplitDistance = ShadowNear;
         for (int i = 0; i < NumCascades; ++i)
         {
             const float SplitNear = LastSplitDistance;
@@ -1479,32 +1522,57 @@ namespace Lumina
         {
             return;
         }
-        
+
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
         RenderGraph.AddPass(RG_Compute, "Cull Pass", Descriptor, [&] (ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Cull Pass", tracy::Color::Pink2);
-                
-            FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("MeshCull.slang");
 
-            FComputePipelineDesc PipelineDesc;
-            PipelineDesc.SetComputeShader(ComputeShader);
-            PipelineDesc.AddBindingLayout(SceneBindingLayout);
-            PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-                    
-            FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-            
-            FComputeState State;
-            State.SetPipeline(Pipeline);
-            State.AddBindingSet(SceneBindingSet);
-            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            CmdList.SetComputeState(State);
-            
-            uint32 Num = (uint32)InstanceData.size();
-            uint32 NumWorkGroups = (Num + 255) / 256;
-                
-            CmdList.Dispatch(NumWorkGroups, 1, 1);
-            
+            const uint32 Num           = (uint32)InstanceData.size();
+            const uint32 NumWorkGroups = (Num + 255) / 256;
+
+            // Camera-view culling (frustum + occlusion). Fills the main indirect buffer
+            // used by the depth pre-pass, base pass, billboards, etc.
+            {
+                FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("MeshCull.slang");
+
+                FComputePipelineDesc PipelineDesc;
+                PipelineDesc.SetComputeShader(ComputeShader);
+                PipelineDesc.AddBindingLayout(SceneBindingLayout);
+                PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+
+                FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+                FComputeState State;
+                State.SetPipeline(Pipeline);
+                State.AddBindingSet(SceneBindingSet);
+                State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+                CmdList.SetComputeState(State);
+
+                CmdList.Dispatch(NumWorkGroups, 1, 1);
+            }
+
+            // Shadow-caster culling. Writes a parallel indirect buffer consumed by
+            // the CSM, spot, and point shadow passes so casters outside the camera
+            // frustum still produce shadows that fall back into the camera view.
+            {
+                FRHIComputeShaderRef ShadowCullShader = FShaderLibrary::GetComputeShader("ShadowMeshCull.slang");
+
+                FComputePipelineDesc PipelineDesc;
+                PipelineDesc.SetComputeShader(ShadowCullShader);
+                PipelineDesc.AddBindingLayout(SceneBindingLayout);
+                PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+
+                FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+                FComputeState State;
+                State.SetPipeline(Pipeline);
+                State.AddBindingSet(SceneBindingSet);
+                State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+                CmdList.SetComputeState(State);
+
+                CmdList.Dispatch(NumWorkGroups, 1, 1);
+            }
         });
     }
 
@@ -1687,7 +1755,9 @@ namespace Lumina
                 
             CmdList.SetPushConstants(&ClusterPC, sizeof(FLightClusterPC));
                 
-            CmdList.Dispatch(ClusterGridSizeX, ClusterGridSizeY, ClusterGridSizeZ);
+            constexpr uint32 ClusterBuildGroupSize = 64;
+            constexpr uint32 ClusterDispatchGroups = (NumClusters + ClusterBuildGroupSize - 1) / ClusterBuildGroupSize;
+            CmdList.Dispatch(ClusterDispatchGroups, 1, 1);
                 
         });
     }
@@ -1778,7 +1848,7 @@ namespace Lumina
                 .SetPipeline(Pipeline)
                 .AddBindingSet(SceneBindingSet)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                .SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect));
+                .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectShadow));
 
 
             const TVector<FLightShadow>& PointShadows = PackedShadows[(uint32)ELightType::Point];
@@ -1909,7 +1979,7 @@ namespace Lumina
                     .SetPipeline(Pipeline)
                     .AddBindingSet(SceneBindingSet)
                     .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect));
+                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectShadow));
 
                 for (uint32 OpaqueIdx : OpaqueDrawList)
                 {
@@ -1974,7 +2044,7 @@ namespace Lumina
                 .SetPipeline(Pipeline)
                 .AddBindingSet(SceneBindingSet)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                .SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect));
+                .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectShadow));
 
             CmdList.SetGraphicsState(GraphicsState);
 
@@ -2683,6 +2753,16 @@ namespace Lumina
 
         {
             FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(uint32);
+            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
+            BufferDesc.DebugName = "Instance Mapping (Shadow)";
+            NamedBuffers[(int)ENamedBuffer::InstanceMappingShadow] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        {
+            FRHIBufferDesc BufferDesc;
             BufferDesc.Size = offsetof(FSceneLightData, Lights);
             BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
             BufferDesc.bKeepInitialState = true;
@@ -2720,6 +2800,17 @@ namespace Lumina
             BufferDesc.bKeepInitialState = true;
             BufferDesc.DebugName = "Indirect Draw Buffer";
             NamedBuffers[(int)ENamedBuffer::Indirect] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FDrawIndirectArguments);
+            BufferDesc.Stride = sizeof(FDrawIndirectArguments);
+            BufferDesc.Usage.SetMultipleFlags(BUF_Indirect, BUF_StorageBuffer);
+            BufferDesc.InitialState = EResourceStates::IndirectArgument;
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.DebugName = "Indirect Draw Buffer (Shadow)";
+            NamedBuffers[(int)ENamedBuffer::IndirectShadow] = GRenderContext->CreateBuffer(BufferDesc);
         }
         
         {
@@ -2899,6 +2990,8 @@ namespace Lumina
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(13, GetNamedImage(ENamedImage::HDR)));
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(14, GetNamedImage(ENamedImage::Accum)));
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(15, GetNamedImage(ENamedImage::Revealage)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(16, GetNamedBuffer(ENamedBuffer::InstanceMappingShadow)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(17, GetNamedBuffer(ENamedBuffer::IndirectShadow)));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);

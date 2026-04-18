@@ -368,6 +368,11 @@ namespace Lumina
     struct FCullData
     {
         FFrustum Frustum;
+        // Extruded camera frustum swept along the sun light direction. Used by
+        // the shadow-cull compute pass so casters outside the camera frustum
+        // still get written into the shadow indirect buffer. If there is no
+        // directional light in the scene this mirrors Frustum (unused).
+        FFrustum ShadowFrustum;
         glm::mat4 ViewMatrix;   // View matrix (not view-projection!)
 
         float P00;              // projection[0][0]
@@ -378,10 +383,11 @@ namespace Lumina
         uint32 bFrustumCull;
         uint32 bOcclusionCull;
         uint32 InstanceNum;
-        uint32 Padding0;
+        uint32 bHasDirectional;
 
         float PyramidWidth;
         float PyramidHeight;
+        uint32 Padding1[2];
     };
     
     
