@@ -10,6 +10,7 @@
 #include "Entity/Systems/SystemContext.h"
 #include "Scene/RenderScene/RenderScene.h"
 #include "Subsystems/FCameraManager.h"
+#include "Subsystems/TimerManager.h"
 #include "Physics/Ray/RayCast.h"
 #include "Renderer/PrimitiveDrawInterface.h"
 #include "WorldTypes.h"
@@ -114,8 +115,10 @@ namespace Lumina
 
         FUNCTION(Script)
         TVector<SRayResult> CastSphere(const SSphereCastSettings& Settings) const;
-        
-        
+
+        FTimerManager& GetTimerManager() { return TimerManager; }
+        const FTimerManager& GetTimerManager() const { return TimerManager; }
+
         NODISCARD EWorldType GetWorldType() const { return WorldType; }
 
         /** The context this world belongs to. Non-null once the world has been registered via FWorldManager::CreateWorldContext. */
@@ -207,6 +210,7 @@ namespace Lumina
         TVector<FSystemVariant>                             SystemUpdateList[(int32)EUpdateStage::Max];
 
         FLuaEventBus                                        LuaEventBus;
+        FTimerManager                                       TimerManager;
 
         FLineBatcherComponent*                              LineBatcherComponent;
         

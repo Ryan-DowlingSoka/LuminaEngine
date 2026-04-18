@@ -170,7 +170,8 @@ namespace Lumina
             
             ImGui::Separator();
             
-            if (ScriptComponent->Script && ScriptComponent->Script->Reference.IsValid())
+            if (ScriptComponent->Script && ScriptComponent->Script->Reference.IsValid()
+                && ScriptComponent->Script->Reference.IsTable())
             {
                 if (ImGui::BeginTable("ScriptReference", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
                 {

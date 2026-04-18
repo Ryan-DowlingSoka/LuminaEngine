@@ -1,30 +1,23 @@
 ﻿#include "pch.h"
 #include "ThreadedCallback.h"
-
+#include "Containers/Array.h"
 #include "Core/Templates/LuminaTemplate.h"
 
 namespace Lumina::MainThread
 {
-    static TFixedVector<TMoveOnlyFunction<void()>, 8> Callbacks;
-    static FMutex Mutex;
+    static TConcurrentQueue<TMoveOnlyFunction<void()>> Callbacks;
     
     void ProcessQueue()
     {
-        FScopeLock Lock(Mutex);
-
-        for (auto& Callback : Callbacks)
+        TMoveOnlyFunction<void()> Callback;
+        while (Callbacks.try_dequeue(Callback))
         {
             Callback();
         }
-        
-        Callbacks.clear();
     }
 
     void Enqueue(TMoveOnlyFunction<void()>&& Callback)
     {
-        FScopeLock Lock(Mutex);
-
-        Callbacks.emplace_back(Move(Callback));
-        
+        Callbacks.enqueue(Move(Callback));
     }
 }

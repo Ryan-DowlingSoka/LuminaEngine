@@ -196,6 +196,8 @@ namespace Lumina
 
     void CWorld::RegisterLuaModule(Lua::FRef& GlobalRef)
     {
+        FTimerManager::RegisterLuaModule(GlobalRef);
+
         GlobalRef.NewClass<FLuaEventBus>("EventBus")
             .AddFunction<&FLuaEventBus::Subscribe>("Subscribe")
             .AddFunction<&FLuaEventBus::SubscribeEntity>("SubscribeEntity")
@@ -380,6 +382,7 @@ namespace Lumina
         }
         
         LuaEventBus.Clear();
+        TimerManager.Clear();
 
         RegistryPending.clear<>();
         EntityRegistry.clear<>();
@@ -422,6 +425,7 @@ namespace Lumina
         if (Stage == EUpdateStage::FrameStart)
         {
             LuaEventBus.ProcessDeferred();
+            TimerManager.Tick(static_cast<float>(DeltaTime));
         }
 
         TickSystems(SystemContext);
@@ -840,6 +844,7 @@ namespace Lumina
         ScriptComponent.Script->Environment.RawSet("Registry", &EntityRegistry);
         ScriptComponent.Script->Environment.RawSet("Physics", PhysicsScene.get());
         ScriptComponent.Script->Environment.RawSet("Events", &LuaEventBus);
+        ScriptComponent.Script->Environment.RawSet("Timer", &TimerManager);
         
         ScriptComponent.Script->Reference.RawSet("Entity", Entity);
         ScriptComponent.Script->Reference.RawSet("Transform", &EntityRegistry.get<STransformComponent>(Entity));
@@ -878,6 +883,7 @@ namespace Lumina
     {
         // Auto-remove all event bus subscriptions owned by this entity.
         LuaEventBus.UnsubscribeEntity(Entity);
+        TimerManager.ClearTimersForEntity(Entity);
 
         SScriptComponent& ScriptComponent = Registry.get<SScriptComponent>(Entity);
         if (ScriptComponent.Script == nullptr || !ScriptComponent.DetachFunc.IsValid())

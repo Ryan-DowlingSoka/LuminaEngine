@@ -8,7 +8,7 @@ namespace Lumina
     {
         if (!Callback.IsInvokable())
         {
-            LOG_WARN("[EventBus] Subscribe('{}') received a non-callable value — ignored.", EventName);
+            LOG_WARN("[EventBus] Subscribe('{}') received a non-callable value - ignored.", EventName);
             return;
         }
 
