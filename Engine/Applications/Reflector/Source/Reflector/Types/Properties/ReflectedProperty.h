@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <EASTL/string.h>
 #include "EASTL/vector.h"
@@ -10,33 +10,55 @@
 namespace Lumina::Reflection
 {
     class FReflectedType;
+    class FCodeWriter;
 }
 
 namespace Lumina
 {
+    /**
+     * Base for every reflected property kind (numeric, string, struct, object, array, etc.).
+     *
+     * Subclass contract — override these to add a new property type:
+     *   - GetPropertyParamType()  : the FXxxPropertyParams struct name emitted into the .cpp
+     *   - GetTypeName()           : friendly display name (used for logs / Lua fallback)
+     *   - GetLuaType()            : Luau type string (returned when emitting the .d.luau)
+     *   - AppendDefinition(...)   : writes the FXxxPropertyParams initializer
+     *
+     * Optional overrides for property kinds that need accessor wrappers or cross-module
+     * construct_* forward declarations:
+     *   - HasAccessors / DeclareAccessors / DefineAccessors
+     *   - CanDeclareCrossModuleReferences / DeclareCrossModuleReference
+     *
+     * The base class handles Getter/Setter wrappers driven by metadata, so most simple
+     * property types only need to implement the four required hooks above.
+     */
     class FReflectedProperty : public IStructReflectable
     {
     public:
 
-        virtual void AppendDefinition(eastl::string& Stream) const = 0;
-        void AppendPropertyDef(eastl::string& Stream, const char* PropertyFlagsStr, const char* TypeFlags, const eastl::string& CustomData = "") const;
-        
+        virtual ~FReflectedProperty() = default;
+
         virtual const char* GetPropertyParamType() const { return "FPropertyParams"; }
-        
         virtual const char* GetTypeName() = 0;
         virtual eastl::string_view GetLuaType() = 0;
-        
-        eastl::string GetDisplayName() const { return Name; }
-        void GenerateMetadata(const eastl::string& InMetadata) override;
+
+        virtual void AppendDefinition(Reflection::FCodeWriter& Writer) const = 0;
 
         virtual bool CanDeclareCrossModuleReferences() const { return false; }
-        virtual void DeclareCrossModuleReference(const eastl::string& API, eastl::string& Stream) { }
+        virtual void DeclareCrossModuleReference(const eastl::string& API, Reflection::FCodeWriter& Writer) { }
 
-        bool GenerateLuaBinding(eastl::string& Stream) override;
-        
         virtual bool HasAccessors();
-        virtual bool DeclareAccessors(eastl::string& Stream, const eastl::string& FileID);
-        virtual bool DefineAccessors(eastl::string& Stream, Reflection::FReflectedType* ReflectedType);
+        virtual bool DeclareAccessors(Reflection::FCodeWriter& Writer, const eastl::string& FileID);
+        virtual bool DefineAccessors(Reflection::FCodeWriter& Writer, Reflection::FReflectedType* ReflectedType);
+
+        bool GenerateLuaBinding(Reflection::FCodeWriter& Writer) override;
+        void GenerateMetadata(const eastl::string& InMetadata) override;
+
+        eastl::string GetDisplayName() const { return Name; }
+
+        // Emits the trailing `{ "Name", Flags, TypeFlags, Setter, Getter, Offset[, CustomData][, METADATA_PARAMS] };`
+        // shared by every property kind.
+        void AppendPropertyDef(Reflection::FCodeWriter& Writer, const char* PropertyFlagsStr, const char* TypeFlags, const eastl::string& CustomData = "") const;
 
         eastl::vector<FMetadataPair>    Metadata;
         EPropertyFlags                  PropertyFlags;
@@ -47,7 +69,7 @@ namespace Lumina
         eastl::string                   Outer;
         eastl::string                   GetterFunc;
         eastl::string                   SetterFunc;
-        
+
         bool                            bInner = false;
     };
 }

@@ -45,15 +45,15 @@ namespace Lumina
         void Rescore();
         void ClampSelection();
 
-        char                QueryBuffer[128] = {};
-        FString             CachedQueryForScore;
-        TVector<FGraphAction> Actions;
-        TVector<int32>      VisibleIndices;
-        int32               SelectedIndex = 0;
-        int32               LastSelectedIndex = -1;
-        bool                bActionsDirty = true;
-        bool                bFocusInput = false;
-        bool                bPendingScrollToSelected = false;
+        char                    QueryBuffer[128] = {};
+        FString                 CachedQueryForScore;
+        TVector<FGraphAction>   Actions;
+        TVector<int32>          VisibleIndices;
+        int32                   SelectedIndex = 0;
+        int32                   LastSelectedIndex = -1;
+        bool                    bActionsDirty = true;
+        bool                    bFocusInput = false;
+        bool                    bPendingScrollToSelected = false;
     };
 
     // Fuzzy subsequence match. Returns whether every query character was found in Target (in order,

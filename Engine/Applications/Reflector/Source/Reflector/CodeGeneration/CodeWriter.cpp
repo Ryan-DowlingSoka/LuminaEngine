@@ -6,8 +6,8 @@ namespace Lumina::Reflection
 {
     namespace
     {
-        constexpr size_t kDefaultCapacity = 16 * 1024;
-        constexpr size_t kSmallBufferSize = 512;
+        constexpr size_t kDefaultCapacity = 16llu * 1024;
+        constexpr size_t kSmallBufferSize = 512llu;
     }
 
     FCodeWriter::FCodeWriter()

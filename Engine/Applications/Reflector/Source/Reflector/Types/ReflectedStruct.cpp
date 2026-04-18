@@ -78,16 +78,18 @@ namespace Lumina::Reflection
 
     void FReflectedStruct::EmitPropertyDefinitions(FCodeWriter& Writer, eastl::string_view StaticsName)
     {
+        // Accessor function bodies first (Getter/Setter wrappers + array wrappers).
         for (const auto& Prop : Props)
         {
-            Prop->DefineAccessors(Writer.MutableString(), this);
+            Prop->DefineAccessors(Writer, this);
         }
 
+        // Then the FXxxPropertyParams literal for each property.
         for (const auto& Prop : Props)
         {
             Writer.Appendf("const Lumina::%s %s::%s = ",
                 Prop->GetPropertyParamType(), eastl::string(StaticsName).c_str(), Prop->Name.c_str());
-            Prop->AppendDefinition(Writer.MutableString());
+            Prop->AppendDefinition(Writer);
         }
     }
 

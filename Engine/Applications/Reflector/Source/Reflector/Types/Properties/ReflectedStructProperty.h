@@ -1,6 +1,7 @@
-﻿#pragma once
+#pragma once
 #include "ReflectedProperty.h"
 #include "Reflector/Clang/Utils.h"
+#include "Reflector/CodeGeneration/CodeWriter.h"
 
 namespace Lumina
 {
@@ -8,23 +9,18 @@ namespace Lumina
     {
     public:
 
-        const char* GetTypeName() override
-        {
-            return "Struct";
-        }
-        
-        void AppendDefinition(eastl::string& Stream) const override;
-
+        const char* GetTypeName() override { return "Struct"; }
         const char* GetPropertyParamType() const override { return "FStructPropertyParams"; }
         eastl::string_view GetLuaType() override;
 
+        void AppendDefinition(Reflection::FCodeWriter& Writer) const override;
+
         bool CanDeclareCrossModuleReferences() const override { return true; }
-        void DeclareCrossModuleReference(const eastl::string& API, eastl::string& Stream) override
+        void DeclareCrossModuleReference(const eastl::string& API, Reflection::FCodeWriter& Writer) override
         {
-            Stream += API;
-            Stream += " Lumina::CStruct* Construct_CStruct_";
-            Stream += ClangUtils::MakeCodeFriendlyNamespace(TypeName);
-            Stream += "();\n";
+            Writer.Linef("%s Lumina::CStruct* Construct_CStruct_%s();",
+                API.c_str(),
+                ClangUtils::MakeCodeFriendlyNamespace(TypeName).c_str());
         }
     };
 }

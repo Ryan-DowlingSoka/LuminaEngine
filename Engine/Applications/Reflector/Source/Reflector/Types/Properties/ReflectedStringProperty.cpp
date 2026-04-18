@@ -1,13 +1,14 @@
-﻿#include "ReflectedStringProperty.h"
+#include "ReflectedStringProperty.h"
+
+#include "Reflector/CodeGeneration/CodeWriter.h"
 
 
 namespace Lumina
 {
-    bool FReflectedStringProperty::GenerateLuaBinding(eastl::string& Stream)
+    bool FReflectedStringProperty::GenerateLuaBinding(Reflection::FCodeWriter& Writer)
     {
-        Stream += "\t\t\"" + GetDisplayName() + "\", "
-        "sol::property([](" + Outer + "& Self) { return ""; })";
-
+        Writer.Appendf("\t\t\"%s\", sol::property([](%s& Self) { return \"\"; })",
+            GetDisplayName().c_str(), Outer.c_str());
         return true;
     }
 }

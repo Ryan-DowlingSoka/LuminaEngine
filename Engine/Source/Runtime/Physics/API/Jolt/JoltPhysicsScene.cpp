@@ -12,6 +12,8 @@
 #include <Jolt/Renderer/DebugRendererSimple.h>
 #include "Core/Utils/Defer.h"
 #endif
+#include <glm/gtx/norm.hpp>
+
 #include "JoltPhysics.h"
 #include "JoltUtils.h"
 #include "Core/Console/ConsoleVariable.h"
@@ -22,6 +24,7 @@
 #include "Renderer/RendererUtils.h"
 #include "World/World.h"
 #include "World/Entity/Components/CharacterComponent.h"
+#include "World/Entity/Components/CharacterControllerComponent.h"
 #include "World/Entity/Components/DirtyComponent.h"
 #include "World/Entity/Components/PhysicsComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
@@ -202,102 +205,136 @@ namespace Lumina::Physics
 
     void FJoltPhysicsScene::PreUpdate()
     {
-        entt::registry& Registry = World->GetEntityRegistry();
         
-        double DeltaTime = GEngine->GetUpdateContext().GetDeltaTime();
-
-        const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
-        JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
-        
-        auto BodySyncView = Registry.view<SRigidBodyComponent, STransformComponent, FNeedsPhysicsBodyUpdate>();
-        BodySyncView.each([&](const SRigidBodyComponent& BodyComponent, const STransformComponent& TransformComponent, const FNeedsPhysicsBodyUpdate& Update)
-        {
-            JPH::BodyID BodyID = JPH::BodyID(BodyComponent.BodyID);
-
-            JPH::BodyLockRead Lock(LockInterface, BodyID);
-            if (Lock.Succeeded())
-            {
-                const JPH::Body& Body = Lock.GetBody();
-                
-                JPH::RVec3 Location = JoltUtils::ToJPHRVec3(TransformComponent.GetLocation());
-                JPH::Quat Rotation = JoltUtils::ToJPHQuat(TransformComponent.GetRotation());
-                JPH::EActivation Activation = Update.bActivate ? JPH::EActivation::Activate : JPH::EActivation::DontActivate;
-                
-                if (Body.IsStatic())
-                {
-                    BodyInterface.SetPositionAndRotationWhenChanged(BodyID, Location, Rotation, Activation);
-                }
-                else if (Body.IsKinematic())
-                {
-                    BodyInterface.MoveKinematic(BodyID, Location, Rotation, static_cast<float>(DeltaTime));
-                }
-                else if (Body.IsDynamic())
-                {
-                    switch (Update.MoveMode)
-                    {
-                        case EMoveMode::Teleport:
-                        {
-                            BodyInterface.SetPositionAndRotation(BodyID, Location, Rotation, Activation);
-                            break;   
-                        }
-                        case EMoveMode::MoveKinematic:
-                        {
-                            JPH::RVec3 CurrentPos = Body.GetPosition();
-                            JPH::Quat CurrentRot = Body.GetRotation();
-                            
-                            JPH::Vec3 LinearVel = (Location - CurrentPos) / static_cast<float>(DeltaTime);
-                            BodyInterface.SetLinearVelocity(BodyID, LinearVel);
-                            
-                            JPH::Quat DeltaRot = Rotation * CurrentRot.Conjugated();
-                            JPH::Vec3 Axis;
-                            float Angle;
-                            DeltaRot.GetAxisAngle(Axis, Angle);
-                            
-                            if (Angle > JPH::JPH_PI)
-                            {
-                                Angle -= 2.0f * JPH::JPH_PI;
-                            }
-                                
-                            JPH::Vec3 AngularVel = Axis * (Angle / static_cast<float>(DeltaTime));
-                            BodyInterface.SetAngularVelocity(BodyID, AngularVel);
-                                
-                            if (Update.bActivate)
-                            {
-                                BodyInterface.ActivateBody(BodyID);
-                            }
-                            break;
-                        }
-                        case EMoveMode::ActivateOnly:
-                        {
-                            BodyInterface.ActivateBody(BodyID);
-                            break;
-                        }
-                    }
-                }
-            }
-        });
     }
 
     void FJoltPhysicsScene::PostUpdate()
     {
+    }
 
+    void FJoltPhysicsScene::ApplyDirtyTransforms(float FixedDt)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        entt::registry& Registry = World->GetEntityRegistry();
+
+        const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
+        JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
+
+        // Jolt bodies are moved using the fixed step duration so kinematic /
+        // velocity-matched motion lands exactly in one sub-step, regardless of
+        // the current frame's wall-clock delta.
+        auto BodySyncView = Registry.view<SRigidBodyComponent, STransformComponent, FNeedsPhysicsBodyUpdate>();
+        BodySyncView.each([&](SRigidBodyComponent& BodyComponent, const STransformComponent& TransformComponent, const FNeedsPhysicsBodyUpdate& Update)
+        {
+            JPH::BodyID BodyID = JPH::BodyID(BodyComponent.BodyID);
+            
+            const JPH::Body* Body = LockInterface.TryGetBody(BodyID);
+            if (Body == nullptr)
+            {
+                return;
+            }
+            
+            JPH::RVec3 Location = JoltUtils::ToJPHRVec3(TransformComponent.GetLocation());
+            JPH::Quat  Rotation = JoltUtils::ToJPHQuat(TransformComponent.GetRotation());
+            JPH::EActivation Activation = Update.bActivate ? JPH::EActivation::Activate : JPH::EActivation::DontActivate;
+
+            if (Body->IsStatic())
+            {
+                BodyInterface.SetPositionAndRotationWhenChanged(BodyID, Location, Rotation, Activation);
+            }
+            else if (Body->IsKinematic())
+            {
+                BodyInterface.MoveKinematic(BodyID, Location, Rotation, FixedDt);
+            }
+            else if (Body->IsDynamic())
+            {
+                switch (Update.MoveMode)
+                {
+                    case EMoveMode::Teleport:
+                    {
+                        BodyInterface.SetPositionAndRotation(BodyID, Location, Rotation, Activation);
+                        break;
+                    }
+                    case EMoveMode::MoveKinematic:
+                    {
+                        JPH::RVec3 CurrentPos = Body->GetPosition();
+                        JPH::Quat  CurrentRot = Body->GetRotation();
+
+                        JPH::Vec3 LinearVel = (Location - CurrentPos) / FixedDt;
+                        BodyInterface.SetLinearVelocity(BodyID, LinearVel);
+
+                        JPH::Quat DeltaRot = Rotation * CurrentRot.Conjugated();
+                        JPH::Vec3 Axis;
+                        float Angle;
+                        DeltaRot.GetAxisAngle(Axis, Angle);
+
+                        if (Angle > JPH::JPH_PI)
+                        {
+                            Angle -= 2.0f * JPH::JPH_PI;
+                        }
+
+                        JPH::Vec3 AngularVel = Axis * (Angle / FixedDt);
+                        BodyInterface.SetAngularVelocity(BodyID, AngularVel);
+
+                        if (Update.bActivate)
+                        {
+                            BodyInterface.ActivateBody(BodyID);
+                        }
+                        break;
+                    }
+                    case EMoveMode::ActivateOnly:
+                    {
+                        BodyInterface.ActivateBody(BodyID);
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Reset character interpolation after manual transform edits. The
+        // character needs to snap to the new pose instead of sweeping through.
+        auto CharacterResetView = Registry.view<SCharacterPhysicsComponent, FNeedsPhysicsBodyUpdate>();
+        CharacterResetView.each([&](SCharacterPhysicsComponent& CharacterComponent, FNeedsPhysicsBodyUpdate&)
+        {
+            CharacterComponent.bInterpolationValid = false;
+        });
+
+        Registry.clear<FNeedsPhysicsBodyUpdate>();
+    }
+
+    void FJoltPhysicsScene::StorePreviousTransforms()
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        entt::registry& Registry = World->GetEntityRegistry();
+
+        auto CharacterView = Registry.view<SCharacterPhysicsComponent>();
+        CharacterView.each([&](SCharacterPhysicsComponent& CharacterComponent)
+        {
+            if (CharacterComponent.Character == nullptr)
+            {
+                return;
+            }
+
+            CharacterComponent.PreviousLocation = JoltUtils::FromJPHRVec3(CharacterComponent.Character->GetPosition());
+            CharacterComponent.PreviousRotation = JoltUtils::FromJPHQuat(CharacterComponent.Character->GetRotation());
+            CharacterComponent.bInterpolationValid = true;
+        });
     }
 
     void FJoltPhysicsScene::Update(double DeltaTime)
     {
         LUMINA_PROFILE_SCOPE();
 
-        constexpr double MaxDeltaTime = 0.25;
-        constexpr int MaxSteps = 5;
-    
-        DeltaTime = eastl::min(DeltaTime, MaxDeltaTime);
-        Accumulator += DeltaTime;
-        
-        float FixedTimeStep = 1.0f / World->GetDefaultWorldSettings().FixedPhysicsTimestep;
+        constexpr double MaxDeltaTime = 0.25;   // clamp to avoid spiral of death on giant hitches
+        constexpr int    MaxSubSteps  = 5;
 
-        CollisionSteps = static_cast<int>(Accumulator / FixedTimeStep);
-        CollisionSteps = eastl::min(CollisionSteps, MaxSteps);
-        
+        DeltaTime = eastl::min(DeltaTime, MaxDeltaTime);
+
+        const float PhysicsRateHz = eastl::max(10.0f, World->GetDefaultWorldSettings().FixedPhysicsTimestep);
+        const float FixedDt       = 1.0f / PhysicsRateHz;
+
         #if JPH_DEBUG_RENDERER
         if (FConsoleRegistry::Get().GetAs<bool>("Jolt.Debug.Draw"))
         {
@@ -305,37 +342,58 @@ namespace Lumina::Physics
             DebugRenderer->DrawBodies(JoltSystem.get(), World);
         }
         #endif
-        
+
+        // Resolve deferred rigid-body creations (colliders that arrived before
+        // a shape was attached).
         while (!PendingRigidBodyCreations.empty())
         {
             entt::entity Entity = PendingRigidBodyCreations.front();
             PendingRigidBodyCreations.pop();
-            
+
             if (World->GetEntityRegistry().valid(Entity))
             {
                 OnRigidBodyComponentConstructed(World->GetEntityRegistry(), Entity);
             }
         }
-        
-        if (CollisionSteps > 0)
-        {
-            PreUpdate();
 
-            JoltSystem->Update(FixedTimeStep, CollisionSteps, &Allocator, FJoltPhysicsContext::GetThreadPool());
-        
-            PostUpdate();
-            
-            Accumulator -= static_cast<double>(CollisionSteps) * FixedTimeStep;
-        
-            // Clamp accumulator if we hit max steps
-            if (CollisionSteps >= MaxSteps)
-            {
-                Accumulator = eastl::min(Accumulator, (double)FixedTimeStep);
-            }
+        // Push any per-frame transform edits from game/script code into Jolt
+        // bodies before stepping. This runs once per frame, kinematic bodies
+        // are authored with FixedDt so their velocity lands in one sub-step.
+        ApplyDirtyTransforms(FixedDt);
+
+        // Latch controller input into movement components once per frame. Every
+        // substep below reads the same latched state, so a frame with multiple
+        // substeps doesn't starve itself of input after the first iteration.
+        LatchCharacterInput();
+
+        // Fixed-step loop. We snapshot the pre-step pose, update characters
+        // and the rigid-body world with exactly one fixed step, then do it
+        // again until we've drained the accumulator.
+        Accumulator += DeltaTime;
+
+        int NumSteps = 0;
+        while (Accumulator >= FixedDt && NumSteps < MaxSubSteps)
+        {
+            LUMINA_PROFILE_SECTION("Physics Sub-Step");
+
+            StorePreviousTransforms();
+            UpdateCharacters(FixedDt);
+            JoltSystem->Update(FixedDt, 1, &Allocator, FJoltPhysicsContext::GetThreadPool());
+
+            Accumulator -= FixedDt;
+            ++NumSteps;
         }
-        
-        SyncTransforms();
-        
+
+        // If we blew through the sub-step cap, drop the remaining time on
+        // the floor, better to briefly slow simulation than to spiral.
+        if (NumSteps >= MaxSubSteps && Accumulator >= FixedDt)
+        {
+            Accumulator = 0.0;
+        }
+
+        InterpolationAlpha = static_cast<float>(Accumulator / FixedDt);
+        InterpolateVisualTransforms(InterpolationAlpha);
+
         #if JPH_DEBUG_RENDERER
         FJoltPhysicsContext::GetDebugRenderer()->NextFrame();
         #endif
@@ -426,55 +484,268 @@ namespace Lumina::Physics
         BodyInterface.SetMotionType(JPH::BodyID(BodyID), JoltUtils::ToJoltMotionType(NewType), JPH::EActivation::Activate);
     }
 
-    void FJoltPhysicsScene::SyncTransforms() const
+    void FJoltPhysicsScene::InterpolateVisualTransforms(float Alpha)
     {
         LUMINA_PROFILE_SCOPE();
-        
-        float KillHeight = World->GetDefaultWorldSettings().WorldKillHeight;
+
+        const float KillHeight = World->GetDefaultWorldSettings().WorldKillHeight;
+        const float ClampedAlpha = glm::clamp(Alpha, 0.0f, 1.0f);
 
         const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
         entt::registry& Registry = World->GetEntityRegistry();
+        
+        TVector<entt::entity> PendingDestroy;
 
         auto View = Registry.view<SRigidBodyComponent, STransformComponent>();
-        View.each([&](entt::entity EntityID, const SRigidBodyComponent& BodyComponent, STransformComponent& TransformComponent)
+        View.each([&](entt::entity EntityID, SRigidBodyComponent& BodyComponent, STransformComponent& TransformComponent)
         {
             const JPH::Body* Body = LockInterface.TryGetBody(JPH::BodyID(BodyComponent.BodyID));
-            if (Body == nullptr || !Body->IsActive() || Body->IsStatic())
+            if (Body == nullptr || Body->IsStatic())
             {
                 return;
             }
-            
-            JPH::RVec3 Pos = Body->GetPosition();
-            
-            if (Pos.GetY() < KillHeight)
+
+            // Sleeping dynamic bodies still need to sit at their final resting
+            // pose but don't need interpolation, their previous snapshot is
+            // equal to their current pose anyway.
+            const JPH::RVec3 CurrentPos = Body->GetPosition();
+
+            if (CurrentPos.GetY() < KillHeight)
             {
-                Registry.destroy(EntityID);
+                PendingDestroy.push_back(EntityID);
                 return;
             }
-            
-            JPH::Quat Rot = Body->GetRotation();
-            TransformComponent.SetLocation(JoltUtils::FromJPHRVec3(Pos));
-            TransformComponent.SetRotation(JoltUtils::FromJPHQuat(Rot));
-            
-            Registry.emplace_or_replace<FNeedsTransformUpdate>(EntityID);
+
+            const JPH::Quat CurrentRot = Body->GetRotation();
+            glm::vec3 Location = JoltUtils::FromJPHRVec3(CurrentPos);
+            glm::quat Rotation = JoltUtils::FromJPHQuat(CurrentRot);
+
+            TransformComponent.SetLocation(Location);
+            TransformComponent.SetRotation(Rotation);
         });
 
         auto CharacterView = Registry.view<SCharacterPhysicsComponent, STransformComponent>();
-        CharacterView.each([&](entt::entity Entity, const SCharacterPhysicsComponent& CharacterComponent, STransformComponent& TransformComponent)
+        CharacterView.each([&](entt::entity Entity, SCharacterPhysicsComponent& CharacterComponent, STransformComponent& TransformComponent)
         {
-            JPH::Vec3 Pos = CharacterComponent.Character->GetPosition();
-            JPH::Quat Rot = CharacterComponent.Character->GetRotation();
-            
-            if (Pos.GetY() < KillHeight)
+            if (CharacterComponent.Character == nullptr)
             {
-                Registry.destroy(Entity);
                 return;
             }
-        
-            TransformComponent.SetLocation(JoltUtils::FromJPHRVec3(Pos));
-            TransformComponent.SetRotation(JoltUtils::FromJPHQuat(Rot));
-            
-            Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);   
+
+            const JPH::Vec3 CurrentPos = CharacterComponent.Character->GetPosition();
+
+            if (CurrentPos.GetY() < KillHeight)
+            {
+                PendingDestroy.push_back(Entity);
+                return;
+            }
+
+            const JPH::Quat CurrentRot = CharacterComponent.Character->GetRotation();
+            glm::vec3 Location = JoltUtils::FromJPHVec3(CurrentPos);
+            glm::quat Rotation = JoltUtils::FromJPHQuat(CurrentRot);
+
+            if (CharacterComponent.bInterpolationValid)
+            {
+                Location = glm::mix(CharacterComponent.PreviousLocation, Location, ClampedAlpha);
+                Rotation = glm::normalize(glm::slerp(CharacterComponent.PreviousRotation, Rotation, ClampedAlpha));
+            }
+
+            TransformComponent.SetLocation(Location);
+            TransformComponent.SetRotation(Rotation);
+
+            // The game code just placed this body. We already applied the
+            // transform above, so clear the marker so ApplyDirtyTransforms
+            // doesn't stomp the physics body next frame.
+            Registry.remove<FNeedsPhysicsBodyUpdate>(Entity);
+        });
+
+        for (entt::entity Entity : PendingDestroy)
+        {
+            if (Registry.valid(Entity))
+            {
+                Registry.destroy(Entity);
+            }
+        }
+    }
+
+    void FJoltPhysicsScene::LatchCharacterInput()
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        entt::registry& Registry = World->GetEntityRegistry();
+        auto View = Registry.view<SCharacterControllerComponent, SCharacterMovementComponent>();
+
+        View.each([&](SCharacterControllerComponent& Controller, SCharacterMovementComponent& Movement)
+        {
+            if (glm::length2(Controller.MoveInput) > LE_SMALL_NUMBER)
+            {
+                glm::vec3 Forward = RenderUtils::GetForwardVector(Controller.LookInput.x, 0.0f);
+                glm::vec3 Right   = RenderUtils::GetRightVector(Controller.LookInput.x);
+                glm::vec3 Up      = glm::cross(Right, Forward);
+
+                glm::vec3 Direction = Right * Controller.MoveInput.x + Up * Controller.MoveInput.y + Forward * Controller.MoveInput.z;
+                if (glm::length2(Direction) > LE_SMALL_NUMBER)
+                {
+                    Movement.PendingMoveDirection = glm::normalize(Direction);
+                    Movement.bHasPendingMoveInput = true;
+                }
+                else
+                {
+                    Movement.PendingMoveDirection = glm::vec3(0.0f);
+                    Movement.bHasPendingMoveInput = false;
+                }
+            }
+            else
+            {
+                Movement.PendingMoveDirection = glm::vec3(0.0f);
+                Movement.bHasPendingMoveInput = false;
+            }
+
+            Movement.PendingLookYaw = Controller.LookInput.x;
+            Controller.MoveInput    = {};
+
+            // Jump is a one-shot edge, latch it as pending so the first
+            // substep that sees it consumes the impulse, then both the
+            // controller and pending flag are cleared.
+            if (Controller.bJumpPressed)
+            {
+                Movement.bPendingJump    = true;
+                Controller.bJumpPressed  = false;
+            }
+        });
+    }
+
+    void FJoltPhysicsScene::UpdateCharacters(float FixedDt)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        entt::registry& Registry = World->GetEntityRegistry();
+        JPH::PhysicsSystem* PhysicsSystem = JoltSystem.get();
+
+        auto View = Registry.view<SCharacterPhysicsComponent, SCharacterMovementComponent>();
+
+        View.each([&](SCharacterPhysicsComponent& Physics, SCharacterMovementComponent& Movement)
+        {
+            LUMINA_PROFILE_SECTION("Character Sub-Step");
+
+            JPH::CharacterVirtual* Character = Physics.Character;
+            if (Character == nullptr)
+            {
+                return;
+            }
+
+            // Input was latched once per frame in LatchCharacterInput(). Every
+            // substep sees the same intent, which is what we want for multi-
+            // substep frames.
+            const bool bHasMovementInput = Movement.bHasPendingMoveInput;
+            const glm::vec3 DesiredDirection = Movement.PendingMoveDirection;
+
+            const float    TargetSpeed    = bHasMovementInput ? Movement.MoveSpeed : 0.0f;
+            const glm::vec3 TargetVelocity = DesiredDirection * TargetSpeed;
+
+            JPH::CharacterVirtual::ExtendedUpdateSettings UpdateSettings;
+            UpdateSettings.mStickToFloorStepDown = JPH::Vec3(0.0f, -0.5f, 0.0f);
+            UpdateSettings.mWalkStairsStepUp     = JPH::Vec3(0.0f, Physics.StepHeight, 0.0f);
+
+            const JPH::CharacterVirtual::EGroundState GroundState = Character->GetGroundState();
+            const bool bWasGrounded = Movement.bGrounded;
+            Movement.bGrounded = (GroundState == JPH::CharacterVirtual::EGroundState::OnGround);
+
+            if (!bWasGrounded && Movement.bGrounded)
+            {
+                Movement.JumpCount = 0;
+            }
+
+            // Rotation: keep orientation work in the fixed step so slerp is
+            // frame-rate independent.
+            glm::quat TargetRotation = JoltUtils::FromJPHQuat(Character->GetRotation());
+            if (Movement.bUseControllerRotation)
+            {
+                TargetRotation = glm::quat(glm::vec3(0.0f, glm::radians(Movement.PendingLookYaw), 0.0f));
+            }
+            else if (Movement.bOrientRotationToMovement && bHasMovementInput)
+            {
+                float TargetYaw    = glm::atan(DesiredDirection.x, DesiredDirection.z);
+                glm::quat Rotation = glm::quat(glm::vec3(0.0f, TargetYaw, 0.0f));
+                TargetRotation     = glm::slerp(TargetRotation, Rotation, glm::clamp(Movement.RotationRate * FixedDt, 0.0f, 1.0f));
+            }
+
+            // Horizontal velocity integration with accel / friction / air drag.
+            glm::vec3 HorizontalVelocity(Movement.Velocity.x, 0.0f, Movement.Velocity.z);
+            const float CurrentSpeed = glm::length(HorizontalVelocity);
+
+            if (bHasMovementInput)
+            {
+                const float Blend = glm::clamp(Movement.Acceleration * FixedDt, 0.0f, 1.0f);
+                HorizontalVelocity = glm::mix(HorizontalVelocity, TargetVelocity, Blend);
+            }
+            else if (Movement.bGrounded)
+            {
+                const float DecelerationAmount = Movement.Deceleration * FixedDt;
+                const float NewSpeed           = glm::max(0.0f, CurrentSpeed - DecelerationAmount);
+
+                if (CurrentSpeed > 0.001f)
+                {
+                    HorizontalVelocity = glm::normalize(HorizontalVelocity) * NewSpeed;
+                }
+                else
+                {
+                    HorizontalVelocity = glm::vec3(0.0f);
+                }
+
+                const float Friction = glm::max(0.0f, 1.0f - Movement.GroundFriction * FixedDt);
+                HorizontalVelocity *= Friction;
+            }
+            else
+            {
+                const float AirFriction = glm::max(0.0f, 1.0f - (Movement.GroundFriction * 0.1f) * FixedDt);
+                HorizontalVelocity *= AirFriction;
+            }
+
+            Movement.Velocity.x = HorizontalVelocity.x;
+            Movement.Velocity.z = HorizontalVelocity.z;
+
+            if (Movement.bGrounded)
+            {
+                // Inherit moving-platform velocity so the character isn't
+                // left behind when standing on a kinematic lift etc.
+                const JPH::Vec3 GroundVelocity = Character->GetGroundVelocity();
+                Movement.Velocity.x += GroundVelocity.GetX();
+                Movement.Velocity.y  = GroundVelocity.GetY();
+                Movement.Velocity.z += GroundVelocity.GetZ();
+            }
+            else
+            {
+                Movement.Velocity.y += Movement.Gravity * FixedDt;
+            }
+
+            if (Movement.bPendingJump)
+            {
+                Movement.bPendingJump = false;
+
+                if (Movement.JumpCount != Movement.MaxJumpCount)
+                {
+                    Movement.Velocity.y = Movement.JumpSpeed;
+                    Movement.JumpCount++;
+                }
+            }
+
+            Character->SetRotation(JoltUtils::ToJPHQuat(TargetRotation));
+            Character->SetLinearVelocity(JoltUtils::ToJPHVec3(Movement.Velocity));
+
+            const JPH::ObjectLayer Layer = JoltUtils::PackToObjectLayer(Physics.CollisionProfile);
+
+            Character->ExtendedUpdate(
+                FixedDt,
+                JPH::Vec3(0.0f, Movement.Gravity, 0.0f),
+                UpdateSettings,
+                PhysicsSystem->GetDefaultBroadPhaseLayerFilter(Layer),
+                PhysicsSystem->GetDefaultLayerFilter(Layer),
+                {},
+                {},
+                Allocator);
+
+            Movement.Velocity = JoltUtils::FromJPHVec3(Character->GetLinearVelocity());
         });
     }
 

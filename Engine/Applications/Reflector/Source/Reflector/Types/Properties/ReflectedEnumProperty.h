@@ -1,7 +1,8 @@
-﻿#pragma once
+#pragma once
 
 #include "ReflectedProperty.h"
 #include "Reflector/Clang/Utils.h"
+#include "Reflector/CodeGeneration/CodeWriter.h"
 
 
 namespace Lumina
@@ -9,32 +10,24 @@ namespace Lumina
     class FReflectedEnumProperty : public FReflectedProperty
     {
     public:
-        
-        const char* GetTypeName() override
-        {
-            return "Enum";
-        }
-        
-        void AppendDefinition(eastl::string& Stream) const override
-        {
-            eastl::string PropertyFlagStr = PropertyFlagsToString(PropertyFlags);
 
-            eastl::string CustomData = "Construct_CEnum_" + ClangUtils::MakeCodeFriendlyNamespace(TypeName);
-            AppendPropertyDef(Stream, PropertyFlagStr.c_str(), "Lumina::EPropertyTypeFlags::Enum", CustomData);
-        }
-
+        const char* GetTypeName() override { return "Enum"; }
         const char* GetPropertyParamType() const override { return "FEnumPropertyParams"; }
         eastl::string_view GetLuaType() override { return "number"; }
 
-        bool CanDeclareCrossModuleReferences() const override { return true; }
-        void DeclareCrossModuleReference(const eastl::string& API, eastl::string& Stream) override
+        void AppendDefinition(Reflection::FCodeWriter& Writer) const override
         {
-            Stream += API;
-            Stream += " Lumina::CEnum* Construct_CEnum_";
-            Stream += ClangUtils::MakeCodeFriendlyNamespace(TypeName);
-            Stream += "();\n";
+            const eastl::string PropertyFlagStr = PropertyFlagsToString(PropertyFlags);
+            const eastl::string CustomData = "Construct_CEnum_" + ClangUtils::MakeCodeFriendlyNamespace(TypeName);
+            AppendPropertyDef(Writer, PropertyFlagStr.c_str(), "Lumina::EPropertyTypeFlags::Enum", CustomData);
         }
 
+        bool CanDeclareCrossModuleReferences() const override { return true; }
+        void DeclareCrossModuleReference(const eastl::string& API, Reflection::FCodeWriter& Writer) override
+        {
+            Writer.Linef("%s Lumina::CEnum* Construct_CEnum_%s();",
+                API.c_str(),
+                ClangUtils::MakeCodeFriendlyNamespace(TypeName).c_str());
+        }
     };
-    
 }

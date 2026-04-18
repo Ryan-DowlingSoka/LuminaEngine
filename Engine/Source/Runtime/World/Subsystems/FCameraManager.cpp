@@ -1,18 +1,16 @@
 #include "pch.h"
 #include "FCameraManager.h"
-
 #include "World/World.h"
 
 namespace Lumina
 {
+    FCameraManager::FCameraManager(CWorld* InWorld)
+        : Registry(InWorld->GetEntityRegistry())
+    {
+    }
+
     SCameraComponent* FCameraManager::GetCameraComponent() const
     {
-        CWorld* World = WeakWorld.Lock();
-        if (World == nullptr)
-        {
-            return nullptr;
-        }
-        
-        return World->GetEntityRegistry().try_get<SCameraComponent>(ActiveCameraEntity);
+        return Registry.try_get<SCameraComponent>(ActiveCameraEntity);
     }
 }

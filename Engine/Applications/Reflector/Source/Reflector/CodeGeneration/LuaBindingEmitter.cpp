@@ -45,7 +45,6 @@ namespace Lumina::Reflection
             Writer.EndBlock();
             Writer.PopIndent();
             Writer.Line("}, \"__namecall\");");
-            Writer.PushIndent();
             Writer.Line("lua_rawsetfield(L, MetaTableIdx, \"__namecall\");");
         }
 
@@ -91,7 +90,6 @@ namespace Lumina::Reflection
             Writer.Line("return 1;");
             Writer.PopIndent();
             Writer.Line("}, \"__index\");");
-            Writer.PushIndent();
             Writer.Line("lua_rawsetfield(L, MetaTableIdx, \"__index\");");
         }
 
@@ -135,7 +133,6 @@ namespace Lumina::Reflection
             Writer.Line("return 0;");
             Writer.PopIndent();
             Writer.Line("}, \"__newindex\");");
-            Writer.PushIndent();
             Writer.Line("lua_rawsetfield(L, MetaTableIdx, \"__newindex\");");
         }
 
@@ -152,7 +149,6 @@ namespace Lumina::Reflection
             Writer.Line("return 1;");
             Writer.PopIndent();
             Writer.Line("}, \"new\");");
-            Writer.PushIndent();
             Writer.Line("lua_rawsetfield(L, -2, \"new\");");
         }
 
@@ -177,7 +173,6 @@ namespace Lumina::Reflection
             Writer.Line("return 1;");
             Writer.PopIndent();
             Writer.Line("}, \"Load\");");
-            Writer.PushIndent();
             Writer.Line("lua_rawsetfield(L, -2, \"Load\");");
         }
 

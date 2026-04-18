@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "Core/Object/ObjectHandleTyped.h"
 #include "World/Entity/Components/CameraComponent.h"
+#include "World/Entity/Registry/EntityRegistry.h"
 
 
 namespace Lumina
@@ -11,11 +12,7 @@ namespace Lumina
     {
     public:
 
-        FCameraManager(CWorld* InWorld)
-            : WeakWorld(InWorld)
-        {
-            
-        }
+        FCameraManager(CWorld* InWorld);
         
         FORCEINLINE void SetActiveCamera(entt::entity InEntity) { ActiveCameraEntity = InEntity; }
         
@@ -25,8 +22,7 @@ namespace Lumina
 
     private:
 
-        TWeakObjectPtr<CWorld> WeakWorld;
+        FEntityRegistry& Registry;
         entt::entity ActiveCameraEntity = entt::null;
-    
     };
 }

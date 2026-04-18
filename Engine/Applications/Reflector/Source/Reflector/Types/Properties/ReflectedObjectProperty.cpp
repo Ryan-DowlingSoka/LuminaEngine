@@ -1,24 +1,20 @@
-﻿#include "ReflectedObjectProperty.h"
+#include "ReflectedObjectProperty.h"
+
+#include "Reflector/CodeGeneration/CodeWriter.h"
 #include "Reflector/Types/ReflectedType.h"
 
 namespace Lumina
 {
-    void FReflectedObjectProperty::AppendDefinition(eastl::string& Stream) const
+    void FReflectedObjectProperty::AppendDefinition(Reflection::FCodeWriter& Writer) const
     {
-        eastl::string PropertyFlagStr = PropertyFlagsToString(PropertyFlags); \
-
-        eastl::string CustomData = "Construct_CClass_" + ClangUtils::MakeCodeFriendlyNamespace(TypeName);
-        AppendPropertyDef(Stream, PropertyFlagStr.c_str(), "Lumina::EPropertyTypeFlags::Object", CustomData);
-    }
-
-    bool FReflectedObjectProperty::GenerateLuaBinding(eastl::string& Stream)
-    {
-        return true;
+        const eastl::string PropertyFlagStr = PropertyFlagsToString(PropertyFlags);
+        const eastl::string CustomData = "Construct_CClass_" + ClangUtils::MakeCodeFriendlyNamespace(TypeName);
+        AppendPropertyDef(Writer, PropertyFlagStr.c_str(), "Lumina::EPropertyTypeFlags::Object", CustomData);
     }
 
     eastl::string_view FReflectedObjectProperty::GetLuaType()
     {
-        size_t Pos = TypeName.find_last_of(':');
+        const size_t Pos = TypeName.find_last_of(':');
         if (Pos != eastl::string::npos)
         {
             return eastl::string_view(TypeName).substr(Pos + 1);

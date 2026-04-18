@@ -2,9 +2,12 @@
 
 #include "Memory/Memory.h"
 #include "Platform/GenericPlatform.h"
+#include "Object/ObjectMacros.h"
+#include "UpdateStage.generated.h"
 
 namespace Lumina
 {
+    REFLECT()
     enum class EUpdateStage : uint8
     {
         FrameStart,
@@ -15,6 +18,13 @@ namespace Lumina
         Paused,
         Max,
     };
+    
+    struct FUpdateStage_FrameStart      {};
+    struct FUpdateStage_PrePhysics      {};
+    struct FUpdateStage_DuringPhysics   {};
+    struct FUpdateStage_PostPhysics     {};
+    struct FUpdateStage_FrameEnd        {};
+    struct FUpdateStage_Paused          {};
     
     constexpr const char* GUpdateStageNames[] = 
     {

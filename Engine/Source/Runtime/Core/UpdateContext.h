@@ -16,13 +16,16 @@ namespace Lumina
         
         FORCEINLINE void MarkFrameStart(double InStart)
         {
+            if (LastFrameStart > 0.0)
+            {
+                DeltaTime = InStart - LastFrameStart;
+            }
+            LastFrameStart = InStart;
             FrameStart = InStart;
         }
-        
+
         FORCEINLINE void MarkFrameEnd(double InTime)
         {
-            DeltaTime = InTime - LastFrameTime;
-            LastFrameTime = InTime;
             Frame++;
             Time = InTime;
         }
@@ -39,8 +42,8 @@ namespace Lumina
 
         double              Time = 0;
         double              FrameStart = 0;
-        double              DeltaTime = 60.0f;
-        double              LastFrameTime = 0.0;
+        double              DeltaTime = 1.0 / 60.0;
+        double              LastFrameStart = 0.0;
         float               FrameRateLimit = 144.0f;
         uint64              Frame = 0;
         EUpdateStage        UpdateStage = EUpdateStage::Max;

@@ -18,8 +18,6 @@ namespace Lumina
         
     public:
         
-        CMaterialNodeGraph();
-
         void Initialize() override;
         void Shutdown() override;
         

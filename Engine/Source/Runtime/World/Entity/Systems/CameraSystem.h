@@ -8,7 +8,7 @@ namespace Lumina
     struct SCameraSystem
     {
         GENERATED_BODY()
-        ENTITY_SYSTEM(RequiresUpdate(EUpdateStage::PostPhysics), RequiresUpdate(EUpdateStage::Paused))
+        ENTITY_SYSTEM(RequiresUpdate(EUpdateStage::DuringPhysics), RequiresUpdate(EUpdateStage::Paused))
 
         static void Startup(const FSystemContext& Context) noexcept;
         static void Update(const FSystemContext& Context) noexcept;

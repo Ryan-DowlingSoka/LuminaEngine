@@ -1363,8 +1363,6 @@ namespace Lumina
 
     void FWorldEditorTool::DrawSimulationControls(float ButtonSize)
     {
-        const ImVec4 ActiveColor = ImVec4(0.2f, 0.6f, 1.0f, 1.0f);
-        const ImVec4 InactiveColor = ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
         const ImVec2 BtnSize = ImVec2(ButtonSize, ButtonSize);
         
         if (!bGamePreviewRunning)
@@ -1501,11 +1499,8 @@ namespace Lumina
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 1.0f, 0.7f, 1.0f));
             ImGui::TextUnformatted(LE_ICON_ROTATE_360);
             ImGui::PopStyleColor();
-        
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-            {
-                ImGui::SetTooltip("Rotation (Euler Angles)");
-            }
+            
+            ImGuiX::TextTooltip("Rotation (Euler Angles)");
         
             ImGui::SameLine();
         
@@ -1544,10 +1539,8 @@ namespace Lumina
             FocusViewportToEntity(GetLastSelectedEntity());
         }
     
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-        {
-            ImGui::SetTooltip("Focus on Selection (F)");
-        }
+        ImGuiX::TextTooltip("Focus on Selection (F)");
+        
     }
 
     void FWorldEditorTool::DrawViewportOptions(float ButtonSize)

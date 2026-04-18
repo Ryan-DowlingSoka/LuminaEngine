@@ -55,7 +55,6 @@ workspace "Lumina"
 		"GLM_FORCE_LEFT_HANDED",
         "GLM_ENABLE_EXPERIMENTAL",
         "GLM_FORCE_AVX2",
-        "GLM_FORCE_INTRINSICS",
 		"IMGUI_DEFINE_MATH_OPERATORS",
         "IMGUI_IMPL_VULKAN_USE_VOLK",
         

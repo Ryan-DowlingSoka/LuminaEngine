@@ -1,4 +1,4 @@
-#include "ReflectedType.h"
+﻿#include "ReflectedType.h"
 
 #include <EASTL/algorithm.h>
 
@@ -31,32 +31,31 @@ namespace Lumina::Reflection
 
         switch (Fnv1aLike(Name))
         {
-            case Fnv1aLike("bool"):                      return EPropertyTypeFlags::Bool;
-            case Fnv1aLike("uint8"):                     return EPropertyTypeFlags::UInt8;
-            case Fnv1aLike("uint16"):                    return EPropertyTypeFlags::UInt16;
-            case Fnv1aLike("uint32"):                    return EPropertyTypeFlags::UInt32;
-            case Fnv1aLike("uint64"):                    return EPropertyTypeFlags::UInt64;
-            case Fnv1aLike("int8"):                      return EPropertyTypeFlags::Int8;
-            case Fnv1aLike("int16"):                     return EPropertyTypeFlags::Int16;
-            case Fnv1aLike("int32"):                     return EPropertyTypeFlags::Int32;
-            case Fnv1aLike("int64"):                     return EPropertyTypeFlags::Int64;
-            case Fnv1aLike("float"):                     return EPropertyTypeFlags::Float;
-            case Fnv1aLike("double"):                    return EPropertyTypeFlags::Double;
-            case Fnv1aLike("entt::entity"):              return EPropertyTypeFlags::Int32;
-            case Fnv1aLike("Lumina::CClass"):            return EPropertyTypeFlags::Class;
-            case Fnv1aLike("Lumina::FName"):             return EPropertyTypeFlags::Name;
-            case Fnv1aLike("Lumina::FString"):           return EPropertyTypeFlags::String;
-            case Fnv1aLike("Lumina::TVector"):           return EPropertyTypeFlags::Vector;
-            case Fnv1aLike("Lumina::TObjectPtr"):        return EPropertyTypeFlags::Object;
-            case Fnv1aLike("Lumina::TWeakObjectPtr"):    return EPropertyTypeFlags::Object;
-            case Fnv1aLike("Lumina::CObject"):           return EPropertyTypeFlags::Object;
-            default:                                     return EPropertyTypeFlags::None;
+            case Fnv1aLike("bool"):                     return EPropertyTypeFlags::Bool;
+            case Fnv1aLike("uint8"):                    return EPropertyTypeFlags::UInt8;
+            case Fnv1aLike("uint16"):                   return EPropertyTypeFlags::UInt16;
+            case Fnv1aLike("uint32"):                   return EPropertyTypeFlags::UInt32;
+            case Fnv1aLike("uint64"):                   return EPropertyTypeFlags::UInt64;
+            case Fnv1aLike("int8"):                     return EPropertyTypeFlags::Int8;
+            case Fnv1aLike("int16"):                    return EPropertyTypeFlags::Int16;
+            case Fnv1aLike("int32"):                    return EPropertyTypeFlags::Int32;
+            case Fnv1aLike("int64"):                    return EPropertyTypeFlags::Int64;
+            case Fnv1aLike("float"):                    return EPropertyTypeFlags::Float;
+            case Fnv1aLike("double"):                   return EPropertyTypeFlags::Double;
+            case Fnv1aLike("entt::entity"):             return EPropertyTypeFlags::Int32;
+            case Fnv1aLike("Lumina::CClass"):           return EPropertyTypeFlags::Class;
+            case Fnv1aLike("Lumina::FName"):            return EPropertyTypeFlags::Name;
+            case Fnv1aLike("Lumina::FString"):          return EPropertyTypeFlags::String;
+            case Fnv1aLike("Lumina::FFixedString"):     return EPropertyTypeFlags::String;
+            case Fnv1aLike("Lumina::TVector"):          return EPropertyTypeFlags::Vector;
+            case Fnv1aLike("Lumina::TFixedVector"):     return EPropertyTypeFlags::Vector;
+            case Fnv1aLike("Lumina::TObjectPtr"):       return EPropertyTypeFlags::Object;
+            case Fnv1aLike("Lumina::TWeakObjectPtr"):   return EPropertyTypeFlags::Object;
+            case Fnv1aLike("Lumina::CObject"):          return EPropertyTypeFlags::Object;
+            default:                                       return EPropertyTypeFlags::None;
         }
     }
-
-    //-------------------------------------------------------------------------
-    // FReflectedType
-
+    
     bool FReflectedType::HasMetadata(const eastl::string& Meta) const
     {
         return eastl::any_of(Metadata.begin(), Metadata.end(),
@@ -79,26 +78,15 @@ namespace Lumina::Reflection
             return false;
         }
 
-        Writer.Linef("#define %s_%u_ACCESSORS \\",
-            FileID.c_str(), GeneratedBodyLineNumber);
+        Writer.Linef("#define %s_%u_ACCESSORS \\", FileID.c_str(), GeneratedBodyLineNumber);
 
         for (const auto& Prop : Props)
         {
-            Prop->DeclareAccessors(Writer.MutableString(), FileID);
+            Prop->DeclareAccessors(Writer, FileID);
         }
 
-        // The legacy property emitter terminates every line it writes with " \\\n".
-        // Strip that off the final entry so the macro closes cleanly.
-        eastl::string& Buffer = Writer.MutableString();
-        if (Buffer.size() >= 3 &&
-            Buffer[Buffer.size() - 3] == ' ' &&
-            Buffer[Buffer.size() - 2] == '\\' &&
-            Buffer[Buffer.size() - 1] == '\n')
-        {
-            Buffer.resize(Buffer.size() - 3);
-            Buffer.push_back('\n');
-        }
-
+        // Close the #define cleanly: the last Macro line still ends with " \\\n", strip it.
+        Writer.FinalizeMacro();
         Writer.Line();
 
         return true;

@@ -1,38 +1,37 @@
-﻿#include "ReflectedProperty.h"
+#include "ReflectedProperty.h"
 
+#include "Reflector/CodeGeneration/CodeWriter.h"
 #include "Reflector/Types/PropertyFlags.h"
 #include "Reflector/Types/ReflectedType.h"
 #include "Reflector/Utils/MetadataUtils.h"
 
 namespace Lumina
 {
-    void FReflectedProperty::AppendPropertyDef(eastl::string& Stream, const char* PropertyFlagsStr, const char* TypeFlags, const eastl::string& CustomData) const
+    void FReflectedProperty::AppendPropertyDef(Reflection::FCodeWriter& Writer, const char* PropertyFlagsStr, const char* TypeFlags, const eastl::string& CustomData) const
     {
-        eastl::string GetterFunctionName = GetterFunc.empty() ? "nullptr" : Outer + "::" + GetterFunc + "_WrapperImpl";
-        eastl::string SetterFunctionName = SetterFunc.empty() ? "nullptr" : Outer + + "::" + SetterFunc + "_WrapperImpl";
+        const eastl::string GetterFunctionName = GetterFunc.empty() ? "nullptr" : (Outer + "::" + GetterFunc + "_WrapperImpl");
+        const eastl::string SetterFunctionName = SetterFunc.empty() ? "nullptr" : (Outer + "::" + SetterFunc + "_WrapperImpl");
+        const eastl::string Offset = bInner ? eastl::string("0") : ("offsetof(" + Outer + ", " + Name + ")");
 
-        Stream += "{ \"" + Name + "\", " + PropertyFlagsStr + ", " + TypeFlags + ", " + SetterFunctionName + ", " + GetterFunctionName + ", ";
-
-        if (bInner)
-        {
-            Stream += "0";
-        }
-        else
-        {
-            Stream += "offsetof(" + Outer + ", " + Name + ")";
-        }
+        Writer.Appendf("{ \"%s\", %s, %s, %s, %s, %s",
+            Name.c_str(),
+            PropertyFlagsStr,
+            TypeFlags,
+            SetterFunctionName.c_str(),
+            GetterFunctionName.c_str(),
+            Offset.c_str());
 
         if (!CustomData.empty())
         {
-            Stream += ", " + CustomData;
+            Writer.Appendf(", %s", CustomData.c_str());
         }
 
         if (!Metadata.empty())
         {
-            Stream += ", METADATA_PARAMS(std::size(" + Name + "_Metadata), " + Name + "_Metadata)";
+            Writer.Appendf(", METADATA_PARAMS(std::size(%s_Metadata), %s_Metadata)", Name.c_str(), Name.c_str());
         }
 
-        Stream += " };\n";
+        Writer.Line(" };");
     }
 
     void FReflectedProperty::GenerateMetadata(const eastl::string& InMetadata)
@@ -51,53 +50,32 @@ namespace Lumina
             {
                 PropertyFlags |= EPropertyFlags::ReadOnly;
             }
-            
-            if (MetadataPair.Key == "NoSerialize")
+            else if (MetadataPair.Key == "NoSerialize")
             {
                 PropertyFlags |= EPropertyFlags::NoSerialize;
             }
-            
-            if (MetadataPair.Key == "Editable")
+            else if (MetadataPair.Key == "Editable")
             {
                 PropertyFlags |= EPropertyFlags::Editable;
             }
-            
-            if (MetadataPair.Key == "Script")
+            else if (MetadataPair.Key == "Script")
             {
                 PropertyFlags |= EPropertyFlags::Script;
             }
-            
-            
-            if (MetadataPair.Key == "Getter")
+            else if (MetadataPair.Key == "Getter")
             {
-                if (MetadataPair.Value.empty())
-                {
-                    GetterFunc = "Get" + Name;
-                }
-                else
-                {
-                    GetterFunc = MetadataPair.Value;
-                }
+                GetterFunc = MetadataPair.Value.empty() ? ("Get" + Name) : MetadataPair.Value;
             }
-
-            if (MetadataPair.Key == "Setter")
+            else if (MetadataPair.Key == "Setter")
             {
-                if (MetadataPair.Value.empty())
-                {
-                    SetterFunc = "Set" + Name;
-                }
-                else
-                {
-                    SetterFunc = MetadataPair.Value;
-                }
+                SetterFunc = MetadataPair.Value.empty() ? ("Set" + Name) : MetadataPair.Value;
             }
         }
     }
 
-    bool FReflectedProperty::GenerateLuaBinding(eastl::string& Stream)
+    bool FReflectedProperty::GenerateLuaBinding(Reflection::FCodeWriter& Writer)
     {
-        Stream += "\t\t\"" + GetDisplayName() + "\", &" + Outer + "::" + GetDisplayName();
-
+        Writer.Appendf("\t\t\"%s\", &%s::%s", GetDisplayName().c_str(), Outer.c_str(), GetDisplayName().c_str());
         return true;
     }
 
@@ -106,41 +84,43 @@ namespace Lumina
         return !GetterFunc.empty() || !SetterFunc.empty();
     }
 
-    bool FReflectedProperty::DeclareAccessors(eastl::string& Stream, const eastl::string& FileID)
+    bool FReflectedProperty::DeclareAccessors(Reflection::FCodeWriter& Writer, const eastl::string& FileID)
     {
         if (!GetterFunc.empty())
         {
-            Stream += "static void " + GetterFunc + "_WrapperImpl(const void* Object, void* OutValue); \\\n";
+            Writer.Macrof("static void %s_WrapperImpl(const void* Object, void* OutValue);", GetterFunc.c_str());
         }
 
         if (!SetterFunc.empty())
         {
-            Stream += "static void " + SetterFunc + "_WrapperImpl(void* Object, const void* InValue); \\\n";
+            Writer.Macrof("static void %s_WrapperImpl(void* Object, const void* InValue);", SetterFunc.c_str());
         }
-        
+
         return HasAccessors();
     }
 
-    bool FReflectedProperty::DefineAccessors(eastl::string& Stream, Reflection::FReflectedType* ReflectedType)
+    bool FReflectedProperty::DefineAccessors(Reflection::FCodeWriter& Writer, Reflection::FReflectedType* ReflectedType)
     {
         if (!GetterFunc.empty())
         {
-            Stream += "void " + ReflectedType->QualifiedName + "::" + GetterFunc + "_WrapperImpl(const void* Object, void* OutValue)\n";
-            Stream += "{\n";
-            Stream += "\tconst " + ReflectedType->DisplayName + "* Obj = (const " + ReflectedType->DisplayName + "*)Object;\n";
-            Stream += "\t" + RawTypeName + "& Result = *(" + RawTypeName + "*)OutValue;\n";
-            Stream += "\tResult = (" + RawTypeName + ")Obj->" + GetterFunc + "();\n";
-            Stream += "}\n";
+            Writer.Linef("void %s::%s_WrapperImpl(const void* Object, void* OutValue)", ReflectedType->QualifiedName.c_str(), GetterFunc.c_str());
+            Writer.BeginBlock();
+            Writer.Linef("const %s* Obj = (const %s*)Object;", ReflectedType->DisplayName.c_str(), ReflectedType->DisplayName.c_str());
+            Writer.Linef("%s& Result = *(%s*)OutValue;", RawTypeName.c_str(), RawTypeName.c_str());
+            Writer.Linef("Result = (%s)Obj->%s();", RawTypeName.c_str(), GetterFunc.c_str());
+            Writer.EndBlock();
+            Writer.Line();
         }
-        
+
         if (!SetterFunc.empty())
         {
-            Stream += "void " + ReflectedType->QualifiedName + "::" + SetterFunc + "_WrapperImpl(void* Object, const void* InValue)\n";
-            Stream += "{\n";
-            Stream += "\t" + ReflectedType->QualifiedName + "* " + "Obj = (" + ReflectedType->QualifiedName + "*)Object;\n";
-            Stream += "\tconst " + RawTypeName + "& Value = *(const " + RawTypeName + "*)InValue;\n";
-            Stream += "\tObj->" + SetterFunc + "(Value);\n";
-            Stream += "}\n";
+            Writer.Linef("void %s::%s_WrapperImpl(void* Object, const void* InValue)", ReflectedType->QualifiedName.c_str(), SetterFunc.c_str());
+            Writer.BeginBlock();
+            Writer.Linef("%s* Obj = (%s*)Object;", ReflectedType->QualifiedName.c_str(), ReflectedType->QualifiedName.c_str());
+            Writer.Linef("const %s& Value = *(const %s*)InValue;", RawTypeName.c_str(), RawTypeName.c_str());
+            Writer.Linef("Obj->%s(Value);", SetterFunc.c_str());
+            Writer.EndBlock();
+            Writer.Line();
         }
 
         return true;

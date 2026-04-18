@@ -1,12 +1,17 @@
-﻿#pragma once
+#pragma once
 #include "EASTL/string.h"
 
+
+namespace Lumina::Reflection
+{
+    class FCodeWriter;
+}
 
 namespace Lumina
 {
     class IStructReflectable
     {
         virtual void GenerateMetadata(const eastl::string& InMetadata) = 0;
-        virtual bool GenerateLuaBinding(eastl::string& Stream) {return false; }
+        virtual bool GenerateLuaBinding(Reflection::FCodeWriter& Writer) { return false; }
     };
 }

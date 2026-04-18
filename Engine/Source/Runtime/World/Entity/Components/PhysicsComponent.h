@@ -10,7 +10,7 @@ namespace Lumina
     struct RUNTIME_API SRigidBodyComponent
     {
         GENERATED_BODY()
-        
+
         PROPERTY(Script, ReadOnly, Category = "Physics")
         uint32 BodyID = 0xFFFFFFFF;
         

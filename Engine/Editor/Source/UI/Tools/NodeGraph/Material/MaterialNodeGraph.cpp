@@ -1,14 +1,11 @@
 ﻿#include "MaterialNodeGraph.h"
-
 #include "MaterialCompiler.h"
-#include "Assets/AssetTypes/Material/Material.h"
 #include "Core/Object/Cast.h"
 #include "Nodes/MaterialNodeExpression.h"
 #include "Nodes/MaterialNodeGetTime.h"
 #include "Nodes/MaterialNode_PrimitiveData.h"
 #include "Nodes/MaterialNode_TextureSample.h"
 #include "Nodes/MaterialOutputNode.h"
-
 #include "UI/Tools/NodeGraph/EdNodeGraphPin.h"
 #include "UI/Tools/NodeGraph/EdNode_Reroute.h"
 #include "UI/Tools/NodeGraph/GraphAlgorithms.h"
@@ -16,11 +13,6 @@
 
 namespace Lumina
 {
-    CMaterialNodeGraph::CMaterialNodeGraph()
-    {
-
-    }
-
     void CMaterialNodeGraph::Initialize()
     {
         Super::Initialize();
@@ -102,9 +94,6 @@ namespace Lumina
     
     void CMaterialNodeGraph::CompileGraph(FMaterialCompiler& Compiler)
     {
-        TVector<CEdGraphNode*> SortedNodes;
-        TVector<CEdGraphNode*> NodesToEvaluate;
-        TSet<CEdGraphNode*> ReachableNodes;
         
         if (Nodes.empty())
         {
@@ -116,6 +105,7 @@ namespace Lumina
             Node->ClearError();
         }
         
+        TVector<CEdGraphNode*> SortedNodes;
         CEdGraphNode* CyclicNode = GraphAlgorithms::TopologicalSortFromRoot(Nodes, SortedNodes, [](CEdGraphNode* Node)
         {
             return Cast<CMaterialOutputNode>(Node) != nullptr;
@@ -165,6 +155,7 @@ namespace Lumina
     void CMaterialNodeGraph::ValidateGraph()
     {
         Connections.clear();
+        Connections.reserve(16);
         
         for (CEdGraphNode* Node : Nodes)
         {

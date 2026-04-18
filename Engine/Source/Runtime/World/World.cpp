@@ -435,10 +435,18 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        SCameraComponent* CameraComponent = GetActiveCamera();
-        const FViewVolume& ViewVolume = CameraComponent ? CameraComponent->GetViewVolume() : FViewVolume();
+        entt::entity CameraEntity = GetActiveCameraEntity();
+        if (EntityRegistry.valid(CameraEntity))
+        {
+            // Force an update now.
+            (void)EntityRegistry.get<STransformComponent>(CameraEntity).GetWorldMatrix();
+            const SCameraComponent& Camera = EntityRegistry.get<SCameraComponent>(CameraEntity);
+            RenderScene->RenderView(RenderGraph, Camera.GetViewVolume());
+            
+            return;
+        }
         
-        RenderScene->RenderView(RenderGraph, ViewVolume);
+        RenderScene->RenderView(RenderGraph, FViewVolume{});
     }
 
     void CWorld::OnScriptComponentPendingReady(const FScriptComponentPendingReady& Event)
@@ -863,6 +871,40 @@ namespace Lumina
             
             auto MaybeTickRate = ScriptComponent.ScriptMetaTable.Get<float>("TickRate");
             ScriptComponent.TickRate = MaybeTickRate ? MaybeTickRate.value() : 0.0f;
+            
+            auto MaybeUpdateStage = ScriptComponent.ScriptMetaTable.Get<EUpdateStage>("UpdateStage");
+            ScriptComponent.UpdateStage = MaybeUpdateStage ? MaybeUpdateStage.value() : EUpdateStage::PrePhysics;
+        }
+        
+        EntityRegistry.remove<FUpdateStage_FrameStart>(Entity);
+        EntityRegistry.remove<FUpdateStage_PrePhysics>(Entity);
+        EntityRegistry.remove<FUpdateStage_DuringPhysics>(Entity);
+        EntityRegistry.remove<FUpdateStage_PostPhysics>(Entity);
+        EntityRegistry.remove<FUpdateStage_FrameEnd>(Entity);
+        EntityRegistry.remove<FUpdateStage_Paused>(Entity);
+
+        switch (ScriptComponent.UpdateStage)
+        {
+        case EUpdateStage::FrameStart:
+            EntityRegistry.emplace_or_replace<FUpdateStage_FrameStart>(Entity);
+            break;
+        case EUpdateStage::PrePhysics:
+            EntityRegistry.emplace_or_replace<FUpdateStage_PrePhysics>(Entity);
+            break;
+        case EUpdateStage::DuringPhysics:
+            EntityRegistry.emplace_or_replace<FUpdateStage_DuringPhysics>(Entity);
+            break;
+        case EUpdateStage::PostPhysics:
+            EntityRegistry.emplace_or_replace<FUpdateStage_PostPhysics>(Entity);
+            break;
+        case EUpdateStage::FrameEnd:
+            EntityRegistry.emplace_or_replace<FUpdateStage_FrameEnd>(Entity);
+            break;
+        case EUpdateStage::Paused:
+            EntityRegistry.emplace_or_replace<FUpdateStage_Paused>(Entity);
+            break;
+        case EUpdateStage::Max:
+            break;
         }
         
         if ((WorldType == EWorldType::Editor) == ScriptComponent.bRunInEditor)

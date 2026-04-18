@@ -1,25 +1,44 @@
-﻿#include "ReflectedArrayProperty.h"
+#include "ReflectedArrayProperty.h"
 
+#include <cstdio>
+
+#include "Reflector/CodeGeneration/CodeWriter.h"
 #include "Reflector/Types/ReflectedType.h"
 
 namespace Lumina
 {
-    void FReflectedArrayProperty::AppendDefinition(eastl::string& Stream) const
+    namespace
+    {
+        // The fat-tail of FArrayPropertyParams: function-pointer suffixes appended after
+        // the common FPropertyParams fields. Order must match the runtime struct layout.
+        constexpr const char* kArrayFatTailSuffixes[] =
+        {
+            "ArrayPushBack_WrapperImpl",
+            "ArrayGetNum_WrapperImpl",
+            "ArrayRemoveAt_WrapperImpl",
+            "ArrayClear_WrapperImpl",
+            "ArrayGetAt_WrapperImpl",
+            "ArrayResize_WrapperImpl",
+            "ArrayReserve_WrapperImpl",
+            "ArraySwap_WrapperImpl",
+        };
+    }
+
+    void FReflectedArrayProperty::AppendDefinition(Reflection::FCodeWriter& Writer) const
     {
         eastl::string CustomData;
+        constexpr size_t kNumSuffixes = std::size(kArrayFatTailSuffixes);
+        for (size_t i = 0; i < kNumSuffixes; ++i)
+        {
+            if (i > 0)
+            {
+                CustomData += ", ";
+            }
+            CustomData += Outer + "::" + Name + kArrayFatTailSuffixes[i];
+        }
 
-        // Add function pointers for array access
-        CustomData += Outer + "::" + Name + "ArrayPushBack_WrapperImpl, ";
-        CustomData += Outer + "::" + Name + "ArrayGetNum_WrapperImpl, ";
-        CustomData += Outer + "::" + Name + "ArrayRemoveAt_WrapperImpl, ";
-        CustomData += Outer + "::" + Name + "ArrayClear_WrapperImpl, ";
-        CustomData += Outer + "::" + Name + "ArrayGetAt_WrapperImpl, ";
-        CustomData += Outer + "::" + Name + "ArrayResize_WrapperImpl, ";
-        CustomData += Outer + "::" + Name + "ArrayReserve_WrapperImpl, ";
-        CustomData += Outer + "::" + Name + "ArraySwap_WrapperImpl";
-
-        eastl::string PropertyFlagStr = PropertyFlagsToString(PropertyFlags);
-        AppendPropertyDef(Stream, PropertyFlagStr.c_str(), "Lumina::EPropertyTypeFlags::Vector", CustomData);
+        const eastl::string PropertyFlagStr = PropertyFlagsToString(PropertyFlags);
+        AppendPropertyDef(Writer, PropertyFlagStr.c_str(), "Lumina::EPropertyTypeFlags::Vector", CustomData);
     }
 
     bool FReflectedArrayProperty::HasAccessors()
@@ -27,106 +46,95 @@ namespace Lumina
         return true;
     }
 
-    bool FReflectedArrayProperty::DeclareAccessors(eastl::string& Stream, const eastl::string& FileID)
+    bool FReflectedArrayProperty::DeclareAccessors(Reflection::FCodeWriter& Writer, const eastl::string& FileID)
     {
-        FReflectedProperty::DeclareAccessors(Stream, FileID);
+        FReflectedProperty::DeclareAccessors(Writer, FileID);
 
-        // Array-specific accessors
-        Stream += "static void " + Name + "ArrayGetter_WrapperImpl(const void* Object, void* OutValue); \\\n";
-        Stream += "static void " + Name + "ArrayPushBack_WrapperImpl(void* Object, const void* InValue); \\\n";
-        Stream += "static size_t " + Name + "ArrayGetNum_WrapperImpl(const void* Object); \\\n";
-        Stream += "static void " + Name + "ArrayRemoveAt_WrapperImpl(void* Object, size_t Index); \\\n";
-        Stream += "static void " + Name + "ArrayClear_WrapperImpl(void* Object); \\\n";
-        Stream += "static void* " + Name + "ArrayGetAt_WrapperImpl(void* Object, size_t Index);\\\n";
-        Stream += "static void " + Name + "ArrayResize_WrapperImpl(void* Object, size_t Size);\\\n";
-        Stream += "static void " + Name + "ArrayReserve_WrapperImpl(void* Object, size_t Size);\\\n";
-        Stream += "static void " + Name + "ArraySwap_WrapperImpl(void* Object, size_t LHS, size_t RHS);\\\n";
+        Writer.Macrof("static void %sArrayGetter_WrapperImpl(const void* Object, void* OutValue);", Name.c_str());
+        Writer.Macrof("static void %sArrayPushBack_WrapperImpl(void* Object, const void* InValue);", Name.c_str());
+        Writer.Macrof("static size_t %sArrayGetNum_WrapperImpl(const void* Object);", Name.c_str());
+        Writer.Macrof("static void %sArrayRemoveAt_WrapperImpl(void* Object, size_t Index);", Name.c_str());
+        Writer.Macrof("static void %sArrayClear_WrapperImpl(void* Object);", Name.c_str());
+        Writer.Macrof("static void* %sArrayGetAt_WrapperImpl(void* Object, size_t Index);", Name.c_str());
+        Writer.Macrof("static void %sArrayResize_WrapperImpl(void* Object, size_t Size);", Name.c_str());
+        Writer.Macrof("static void %sArrayReserve_WrapperImpl(void* Object, size_t Size);", Name.c_str());
+        Writer.Macrof("static void %sArraySwap_WrapperImpl(void* Object, size_t LHS, size_t RHS);", Name.c_str());
 
         return true;
     }
 
-    bool FReflectedArrayProperty::DefineAccessors(eastl::string& Stream, Reflection::FReflectedType* ReflectedType)
+    bool FReflectedArrayProperty::DefineAccessors(Reflection::FCodeWriter& Writer, Reflection::FReflectedType* ReflectedType)
     {
-        FReflectedProperty::DefineAccessors(Stream, ReflectedType);
-        
-        // Array Getter
-        Stream += "void " + ReflectedType->QualifiedName + "::" + Name + "ArrayGetter_WrapperImpl(const void* Object, void* OutValue)\n";
-        Stream += "{\n";
-        Stream += "\tconst " + ReflectedType->DisplayName + "* Obj = (const " + ReflectedType->DisplayName + "*)Object;\n";
-        Stream += "\tauto& Result = *(" + RawTypeName + "*)OutValue;\n";
-        Stream += "\tResult = Obj->" + Name + ";\n";
-        Stream += "}\n\n";
-    
-        // Array PushBack
-        Stream += "void " + ReflectedType->QualifiedName + "::" + Name + "ArrayPushBack_WrapperImpl(void* Object, const void* InValue)\n";
-        Stream += "{\n";
-        Stream += "\t" + ReflectedType->DisplayName + "* Obj = (" + ReflectedType->DisplayName + "*)Object;\n";
-        Stream += "\tif(InValue)\n";
-        Stream += "\t{\n";
-        Stream += "\t\tObj->" + Name + ".push_back(*(const " + ElementTypeName + "*)InValue);\n";
-        Stream += "\t}\n";
-        Stream += "\telse\n";
-        Stream += "\t{\n";
-        Stream += "\t\tObj->" + Name + ".emplace_back();\n";
-        Stream += "\t}\n";
-        Stream += "}\n\n";
-    
-        // Array GetNum
-        Stream += "size_t " + ReflectedType->QualifiedName + "::" + Name + "ArrayGetNum_WrapperImpl(const void* Object)\n";
-        Stream += "{\n";
-        Stream += "\tconst " + ReflectedType->DisplayName + "* Obj = (const " + ReflectedType->DisplayName + "*)Object;\n";
-        Stream += "\treturn Obj->" + Name + ".size();\n";
-        Stream += "}\n\n";
-    
-        // Array RemoveAt
-        Stream += "void " + ReflectedType->QualifiedName + "::" + Name + "ArrayRemoveAt_WrapperImpl(void* Object, size_t Index)\n";
-        Stream += "{\n";
-        Stream += "\t" + ReflectedType->DisplayName + "* Obj = (" + ReflectedType->DisplayName + "*)Object;\n";
-        Stream += "\tObj->" + Name + ".erase(Obj->" + Name + ".begin() + Index);\n";
-        Stream += "}\n\n";
-    
-        // Array Clear
-        Stream += "void " + ReflectedType->QualifiedName + "::" + Name + "ArrayClear_WrapperImpl(void* Object)\n";
-        Stream += "{\n";
-        Stream += "\t" + ReflectedType->DisplayName + "* Obj = (" + ReflectedType->DisplayName + "*)Object;\n";
-        Stream += "\tObj->" + Name + ".clear();\n";
-        Stream += "}\n\n";
-    
-        // Array GetAt (mutable)
-        Stream += "void* " + ReflectedType->QualifiedName + "::" + Name + "ArrayGetAt_WrapperImpl(void* Object, size_t Index)\n";
-        Stream += "{\n";
-        Stream += "\t" + ReflectedType->DisplayName + "* Obj = (" + ReflectedType->DisplayName + "*)Object;\n";
-        Stream += "\treturn &Obj->" + Name + "[Index];\n";
-        Stream += "}\n\n";
-        
-        // Array Resize
-        Stream += "void " + ReflectedType->QualifiedName + "::" + Name + "ArrayResize_WrapperImpl(void* Object, size_t Size)\n";
-        Stream += "{\n";
-        Stream += "\t" + ReflectedType->DisplayName + "* Obj = (" + ReflectedType->DisplayName + "*)Object;\n";
-        Stream += "\tObj->" + Name + ".resize(Size);\n";
-        Stream += "}\n\n";
-        
-        // Array Reserve
-        Stream += "void " + ReflectedType->QualifiedName + "::" + Name + "ArrayReserve_WrapperImpl(void* Object, size_t Size)\n";
-        Stream += "{\n";
-        Stream += "\t" + ReflectedType->DisplayName + "* Obj = (" + ReflectedType->DisplayName + "*)Object;\n";
-        Stream += "\tObj->" + Name + ".reserve(Size);\n";
-        Stream += "}\n\n";
-        
-        // Array Swap
-        Stream += "void " + ReflectedType->QualifiedName + "::" + Name + "ArraySwap_WrapperImpl(void* Object, size_t RHS, size_t LHS)\n";
-        Stream += "{\n";
-        Stream += "\t" + ReflectedType->DisplayName + "* Obj = (" + ReflectedType->DisplayName + "*)Object;\n";
-        Stream += "\tstd::swap(Obj->" + Name + "[RHS], Obj->" + Name + "[LHS]);\n";
-        Stream += "}\n\n";
-    
+        FReflectedProperty::DefineAccessors(Writer, ReflectedType);
+
+        const eastl::string& Q = ReflectedType->QualifiedName;
+        const eastl::string& D = ReflectedType->DisplayName;
+        const char* N = Name.c_str();
+
+        // Getter (exposes the raw vector pointer for debug / inspection).
+        Writer.Linef("void %s::%sArrayGetter_WrapperImpl(const void* Object, void* OutValue)", Q.c_str(), N);
+        Writer.BeginBlock();
+        Writer.Linef("const %s* Obj = (const %s*)Object;", D.c_str(), D.c_str());
+        Writer.Linef("*(const %s**)OutValue = &Obj->%s;", RawTypeName.c_str(), N);
+        Writer.EndBlock();
+        Writer.Line();
+
+        // PushBack: copy-emplace when given a value, default-construct when null.
+        Writer.Linef("void %s::%sArrayPushBack_WrapperImpl(void* Object, const void* InValue)", Q.c_str(), N);
+        Writer.BeginBlock();
+        Writer.Linef("%s* Obj = (%s*)Object;", D.c_str(), D.c_str());
+        Writer.Line("if (InValue)");
+        Writer.BeginBlock();
+        Writer.Linef("Obj->%s.push_back(*(const %s*)InValue);", N, ElementTypeName.c_str());
+        Writer.EndBlock();
+        Writer.Line("else");
+        Writer.BeginBlock();
+        Writer.Linef("Obj->%s.emplace_back();", N);
+        Writer.EndBlock();
+        Writer.EndBlock();
+        Writer.Line();
+
+        // Single-line wrappers: (ReturnType, function-name-suffix + signature, body printf).
+        // Body gets Name printf'd in up to twice.
+        struct FSimple
+        {
+            const char* Return;
+            const char* Suffix;    // "ArrayGetNum_WrapperImpl(const void* Object)"
+            bool        bConstObj;
+            const char* BodyFmt;
+        };
+        const FSimple Simples[] =
+        {
+            { "size_t", "ArrayGetNum_WrapperImpl(const void* Object)",                  true,  "return Obj->%s.size();" },
+            { "void",   "ArrayRemoveAt_WrapperImpl(void* Object, size_t Index)",        false, "Obj->%s.erase(Obj->%s.begin() + Index);" },
+            { "void",   "ArrayClear_WrapperImpl(void* Object)",                         false, "Obj->%s.clear();" },
+            { "void*",  "ArrayGetAt_WrapperImpl(void* Object, size_t Index)",           false, "return &Obj->%s[Index];" },
+            { "void",   "ArrayResize_WrapperImpl(void* Object, size_t Size)",           false, "Obj->%s.resize(Size);" },
+            { "void",   "ArrayReserve_WrapperImpl(void* Object, size_t Size)",          false, "Obj->%s.reserve(Size);" },
+            { "void",   "ArraySwap_WrapperImpl(void* Object, size_t RHS, size_t LHS)",  false, "std::swap(Obj->%s[RHS], Obj->%s[LHS]);" },
+        };
+
+        for (const FSimple& S : Simples)
+        {
+            Writer.Linef("%s %s::%s%s", S.Return, Q.c_str(), N, S.Suffix);
+            Writer.BeginBlock();
+            Writer.Linef("%s%s* Obj = (%s%s*)Object;",
+                S.bConstObj ? "const " : "", D.c_str(),
+                S.bConstObj ? "const " : "", D.c_str());
+
+            char Formatted[256];
+            std::snprintf(Formatted, sizeof(Formatted), S.BodyFmt, N, N);
+            Writer.Line(Formatted);
+
+            Writer.EndBlock();
+            Writer.Line();
+        }
+
         return true;
     }
 
-    bool FReflectedArrayProperty::GenerateLuaBinding(eastl::string& Stream)
+    bool FReflectedArrayProperty::GenerateLuaBinding(Reflection::FCodeWriter& Writer)
     {
-        Stream += "\t\t\"" + GetDisplayName() + "\", sol::property([]() { })";
-
         return true;
     }
 }

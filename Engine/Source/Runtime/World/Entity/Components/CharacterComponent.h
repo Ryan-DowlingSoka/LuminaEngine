@@ -13,9 +13,15 @@ namespace Lumina
     struct RUNTIME_API SCharacterPhysicsComponent
     {
         GENERATED_BODY()
-    
+
         JPH::Ref<JPH::CharacterVirtual> Character;
-        
+
+        // Interpolation state: pose before the most recent fixed step.
+        // Read/written by the physics scene; not reflected.
+        glm::vec3 PreviousLocation = glm::vec3(0.0f);
+        glm::quat PreviousRotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        bool bInterpolationValid   = false;
+
         PROPERTY(Script, Editable, Category = "Physics")
         FCollisionProfile CollisionProfile;
     
@@ -122,9 +128,16 @@ namespace Lumina
 
         PROPERTY(Script, ReadOnly, Category = "Movement")
         bool bGrounded = false;
-        
+
         PROPERTY(Script, ReadOnly, Category = "Movement")
         int JumpCount = 0;
+
+        // Internal staging: input is latched from the controller once per
+        // frame in PrePhysics, then consumed at fixed-step rate in physics.
+        glm::vec3 PendingMoveDirection = glm::vec3(0.0f);
+        float     PendingLookYaw       = 0.0f;
+        bool      bHasPendingMoveInput = false;
+        bool      bPendingJump         = false;
     };
 
     

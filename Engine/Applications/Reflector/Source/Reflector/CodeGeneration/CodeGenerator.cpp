@@ -211,7 +211,7 @@ namespace Lumina::Reflection
                         if (const auto* PropType = Db.GetReflectedType<FReflectedType>(FStringHash(Property->TypeName)))
                         {
                             const eastl::string PropApi = Names::ProjectApiMacro(PropType->Header->Project->Name);
-                            Property->DeclareCrossModuleReference(PropApi, Writer.MutableString());
+                            Property->DeclareCrossModuleReference(PropApi, Writer);
                         }
                     }
                 }

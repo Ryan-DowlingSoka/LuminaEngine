@@ -1,5 +1,6 @@
-﻿#pragma once
+#pragma once
 #include "ReflectedProperty.h"
+#include "Reflector/CodeGeneration/CodeWriter.h"
 #include "Reflector/Types/ReflectedType.h"
 
 namespace Lumina
@@ -9,20 +10,16 @@ namespace Lumina
     public:
 
         const char* GetTypeName() override { return "FString"; }
-
-        void AppendDefinition(eastl::string& Stream) const override
-        {
-            eastl::string PropertyFlagStr = PropertyFlagsToString(PropertyFlags);
-
-            AppendPropertyDef(Stream, PropertyFlagStr.c_str(), "Lumina::EPropertyTypeFlags::String");
-        }
-
-        bool GenerateLuaBinding(eastl::string& Stream) override;
-        
         const char* GetPropertyParamType() const override { return "FStringPropertyParams"; }
         eastl::string_view GetLuaType() override { return "string"; }
 
+        void AppendDefinition(Reflection::FCodeWriter& Writer) const override
+        {
+            const eastl::string PropertyFlagStr = PropertyFlagsToString(PropertyFlags);
+            AppendPropertyDef(Writer, PropertyFlagStr.c_str(), "Lumina::EPropertyTypeFlags::String");
+        }
 
+        bool GenerateLuaBinding(Reflection::FCodeWriter& Writer) override;
     };
 
     class FReflectedNameProperty : public FReflectedProperty
@@ -30,15 +27,13 @@ namespace Lumina
     public:
 
         const char* GetTypeName() override { return "FName"; }
-
-        void AppendDefinition(eastl::string& Stream) const override
-        {
-            eastl::string PropertyFlagStr = PropertyFlagsToString(PropertyFlags);
-
-            AppendPropertyDef(Stream, PropertyFlagStr.c_str(), "Lumina::EPropertyTypeFlags::Name");
-        }
-
         const char* GetPropertyParamType() const override { return "FNamePropertyParams"; }
         eastl::string_view GetLuaType() override { return "string"; }
+
+        void AppendDefinition(Reflection::FCodeWriter& Writer) const override
+        {
+            const eastl::string PropertyFlagStr = PropertyFlagsToString(PropertyFlags);
+            AppendPropertyDef(Writer, PropertyFlagStr.c_str(), "Lumina::EPropertyTypeFlags::Name");
+        }
     };
 }

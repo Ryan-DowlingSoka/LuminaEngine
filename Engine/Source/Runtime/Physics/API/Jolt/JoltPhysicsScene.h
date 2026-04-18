@@ -78,12 +78,31 @@ namespace Lumina::Physics
         void PostUpdate() override;
         void Simulate() override;
         void StopSimulate() override;
-    	
+
     	void ActivateBody(uint32 BodyID) override;
     	void DeactivateBody(uint32 BodyID) override;
     	void ChangeBodyMotionType(uint32 BodyID, EBodyType NewType) override;
-    	
-    	void SyncTransforms() const;
+
+    	// Push game-thread transform edits into Jolt bodies once per frame,
+    	// before the fixed-step loop.
+    	void ApplyDirtyTransforms(float FixedDt);
+
+    	// Snapshot the current Jolt pose for every body/character so the
+    	// following fixed step can be interpolated against it.
+    	void StorePreviousTransforms();
+
+    	// Step every CharacterVirtual on the fixed timestep, alongside the
+    	// Jolt rigid-body update.
+    	void UpdateCharacters(float FixedDt);
+
+    	// Pull per-frame controller input into SCharacterMovementComponent's
+    	// pending fields. Runs once per Update() so every substep in the frame
+    	// observes the same input.
+    	void LatchCharacterInput();
+
+    	// Write interpolated pose (Previous <-> current Jolt pose) back into
+    	// TransformComponents for rendering. Alpha is (accumulator / fixedDt).
+    	void InterpolateVisualTransforms(float Alpha);
     	
     	uint32 GetEntityBodyID(entt::entity Entity) override;
     	
@@ -119,8 +138,11 @@ namespace Lumina::Physics
         TUniquePtr<JPH::PhysicsSystem>		JoltSystem;
         CWorld*								World = nullptr;
 
+        // Leftover time that hasn't been consumed by a fixed step yet.
         double Accumulator = 0.0;
-        int CollisionSteps = 1;
-    
+
+        // Cached interpolation alpha from the most recent Update(), used by
+        // InterpolateVisualTransforms and any other consumers that need it.
+        float  InterpolationAlpha = 0.0f;
     };
 }
