@@ -46,7 +46,7 @@ namespace Lumina
         RUNTIME_API uint32 GetAlignment() const { return Alignment; }
         
         RUNTIME_API bool HasMeta(const FName& Key) const;
-        RUNTIME_API const FName& GetMeta(const FName& Key) const;
+        RUNTIME_API const FString& GetMeta(const FName& Key) const;
 
         
         uint32 Size = 0;

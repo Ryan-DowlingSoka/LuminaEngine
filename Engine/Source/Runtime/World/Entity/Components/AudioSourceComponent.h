@@ -11,24 +11,31 @@ namespace Lumina
 	{
 		GENERATED_BODY()
 
+		/** Path to the audio file asset to play. */
 		PROPERTY(Script, Editable)
 		FString SoundFile;
 
+		/** Playback volume multiplier (1.0 = full volume). */
 		PROPERTY(Script, Editable)
 		float Volume = 1.0f;
 
+		/** Playback pitch multiplier (1.0 = original pitch). */
 		PROPERTY(Script, Editable)
 		float Pitch = 1.0f;
 
+		/** Distance (meters) at which the sound begins to attenuate. */
 		PROPERTY(Script, Editable)
 		float MinDistance = 1.0f;
 
+		/** Distance (meters) beyond which the sound is inaudible. */
 		PROPERTY(Script, Editable)
 		float MaxDistance = 50.0f;
 
+		/** When true, the sound restarts automatically upon completion. */
 		PROPERTY(Script, Editable)
 		bool bLooping = false;
 
+		/** When true, playback starts automatically once the component is initialized. */
 		PROPERTY(Script, Editable)
 		bool bPlayOnReady = false;
 		

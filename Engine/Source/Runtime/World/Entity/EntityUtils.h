@@ -3,6 +3,7 @@
 #include "Core/Serialization/Archiver.h"
 #include "Registry/EntityRegistry.h"
 #include "Scripting/Lua/Reference.h"
+#include "TaskSystem/TaskSystem.h"
 
 
 namespace Lumina
@@ -49,6 +50,26 @@ namespace Lumina::ECS::Utils
 	NODISCARD RUNTIME_API entt::id_type GetTypeID(const CStruct* Type);
 	NODISCARD RUNTIME_API entt::id_type GetTypeID(const Lua::FRef& Obj);
 
+	
+	template<typename... Ts, typename TFunc, typename... TArgs>
+	void ParallelForEach(FEntityRegistry& Registry, TFunc&& Function, TArgs&&... Args)
+	{
+		auto View = Registry.view<Ts...>(eastl::forward<TArgs>(Args)...);
+		const auto* Entities = View.handle();
+
+		Task::ParallelFor((uint32)Entities->size(), [&](uint32 Index)
+		{
+			entt::entity EntityID = (*Entities)[Index];
+
+			if (View.contains(EntityID))
+			{
+				std::apply([&](auto&... Components)
+				{
+					Function(EntityID, Components...);
+				}, View.get(EntityID));
+			}
+		});
+	}
 
 	template<typename ... TArgs>
 	entt::meta_any InvokeMetaFunc(const entt::meta_type& MetaType, entt::id_type FunctionID, TArgs&&... Args)

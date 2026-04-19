@@ -74,12 +74,15 @@ namespace Lumina
         
         uint64 AddNode(CEdGraphNode* InNode);
 
+        /** All nodes currently in this graph. */
         PROPERTY()
         TVector<TObjectPtr<CEdGraphNode>>               Nodes;
-        
+
+        /** Serialized connection data encoding pin-to-pin links. */
         PROPERTY()
         TVector<uint16>                                 Connections;
 
+        /** Serialized node editor layout state (positions, zoom, etc.). */
         PROPERTY()
         FString GraphSaveData;
         

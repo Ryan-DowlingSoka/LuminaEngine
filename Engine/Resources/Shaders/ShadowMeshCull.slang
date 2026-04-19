@@ -13,8 +13,10 @@
 //   - Any shadow-casting spot light's cone (approximated by its bounding sphere)
 //     contains the instance's bounds.
 //
-// Survivors are compacted into the shadow indirect/mapping buffers that mirror
-// the camera-view buffers but have their own per-batch instance counts.
+// Additional culls applied after the above:
+//   - Distance: instances farther than ShadowMaxDistance from the camera are dropped.
+//   - Hi-Z occlusion: instances inside the camera frustum that are fully occluded
+//     in the camera's depth pyramid are dropped (they cannot cast visible shadows).
 
 #define LOCAL_SIZE 256
 
@@ -44,6 +46,33 @@ bool InSphere(float3 LightPos, float LightRadius, float3 Center, float BoundsRad
     return dot(D, D) <= R * R;
 }
 
+// Projects a view-space bounding sphere to a clip-space AABB for Hi-Z sampling.
+// Returns false if the sphere straddles the near plane (treat as visible).
+bool ProjectSphereClip(float3 C, float R, float ZNear, float P00, float P11, out float4 ClipAABB)
+{
+    ClipAABB = float4(-1.0, -1.0, 1.0, 1.0);
+    if (C.z - R < ZNear)
+        return false;
+
+    float2 cx = float2(C.x, C.z);
+    float  tx = sqrt(dot(cx, cx) - R * R);
+    float2 minX = float2(tx * cx.x - R * cx.y,  R * cx.x + tx * cx.y);
+    float2 maxX = float2(tx * cx.x + R * cx.y, -R * cx.x + tx * cx.y);
+
+    float2 cy = float2(C.y, C.z);
+    float  ty = sqrt(dot(cy, cy) - R * R);
+    float2 minY = float2(ty * cy.x - R * cy.y,  R * cy.x + ty * cy.y);
+    float2 maxY = float2(ty * cy.x + R * cy.y, -R * cy.x + ty * cy.y);
+
+    ClipAABB = float4(
+        (minX.x / minX.y) * P00,
+        (minY.x / minY.y) * P11,
+        (maxX.x / maxX.y) * P00,
+        (maxY.x / maxY.y) * P11
+    );
+    return true;
+}
+
 [shader("compute")]
 [numthreads(LOCAL_SIZE, 1, 1)]
 void ComputeMain(uint3 GlobalID : SV_DispatchThreadID)
@@ -56,15 +85,18 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID)
 
     FGPUInstance Instance = uInstanceData[GID];
 
-    // Non-caster: never emit. The camera cull pass already handled this
-    // instance for visible draws.
+    // Non-caster: never emit.
     if (!Instance.HasFlag(EInstanceFlags::CastShadow))
-    {
         return;
-    }
 
     float3 Center = Instance.BoundsCenter;
     float  Radius = Instance.BoundsRadius;
+
+    // Distance cull: skip any caster too far from the camera to matter.
+    float3 CamPos        = GetCameraPosition();
+    float  DistToCamera  = length(Center - CamPos);
+    if (DistToCamera - Radius > uSceneData.CullData.ShadowMaxDistance)
+        return;
 
     bool bVisible = false;
 
@@ -72,13 +104,10 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID)
     if (uSceneData.CullData.bHasDirectional != 0)
     {
         if (InFrustum(uSceneData.CullData.ShadowFrustum, Center, Radius))
-        {
             bVisible = true;
-        }
     }
 
-    // Point + spot lights: check each shadow-casting light's bounds. Lights
-    // whose ShadowMapIndex is -1 do not own a tile and can be skipped.
+    // Point + spot lights: check each shadow-casting light's bounds.
     if (!bVisible)
     {
         uint NumLights = uLightData[0].NumLights;
@@ -86,13 +115,9 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID)
         {
             FLight L = uLightData[0].Lights[LightIdx];
             if (L.Flags == LIGHT_FLAG_TYPE_DIRECTIONAL)
-            {
                 continue;
-            }
             if (L.Shadow[0].ShadowMapIndex < 0)
-            {
                 continue;
-            }
             if (InSphere(L.Position, L.Radius, Center, Radius))
             {
                 bVisible = true;
@@ -102,8 +127,43 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID)
     }
 
     if (!bVisible)
-    {
         return;
+
+    // Camera-space Hi-Z occlusion: if this caster is fully inside the camera
+    // frustum and fully occluded from the camera's perspective, it cannot cast
+    // any visible shadow on camera-visible geometry, skip it.
+    if (uSceneData.CullData.bShadowOcclusionCull != 0 &&
+        !Instance.HasFlag(EInstanceFlags::NoCull) &&
+        InFrustum(uSceneData.CullData.Frustum, Center, Radius))
+    {
+        float3 ViewCenter = mul(uSceneData.CullData.View, float4(Center, 1.0)).xyz;
+        float  ViewRadius = Radius * 1.02;
+
+        float4 ClipAABB;
+        if (ProjectSphereClip(ViewCenter, ViewRadius,
+                              uSceneData.CullData.zNear,
+                              uSceneData.CullData.P00,
+                              uSceneData.CullData.P11,
+                              ClipAABB))
+        {
+            float4 UvAABB = saturate(ClipAABB * 0.5 + 0.5);
+
+            float Width  = (UvAABB.z - UvAABB.x) * uSceneData.CullData.PyramidWidth;
+            float Height = (UvAABB.w - UvAABB.y) * uSceneData.CullData.PyramidHeight;
+            float Level  = max(ceil(log2(max(Width, Height) * 0.5)), 0.0);
+
+            float2 SampleUV    = (UvAABB.xy + UvAABB.zw) * 0.5;
+            float  PyramidDepth = uDepthPyramid.SampleLevel(SampleUV, Level).x;
+
+            float FrontZ      = ViewCenter.z - ViewRadius;
+            float ZNear       = uSceneData.CullData.zNear;
+            float ZFar        = uSceneData.CullData.zFar;
+            float DepthSphere = (ZNear * ZFar / FrontZ - ZNear) / (ZFar - ZNear);
+
+            // Reverse-Z: occluded if sphere's nearest depth is farther than pyramid min.
+            if (DepthSphere < PyramidDepth)
+                return;
+        }
     }
 
     uint BatchID       = uInstanceData[GID].DrawID;

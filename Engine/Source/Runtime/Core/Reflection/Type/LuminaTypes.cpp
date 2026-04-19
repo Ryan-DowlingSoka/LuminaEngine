@@ -21,9 +21,9 @@ namespace Lumina
     
     void FProperty::OnMetadataFinalized()
     {
-        if (Metadata.HasMetadata("DisplayName"))
+        if (const FString* MaybeDisplayName = Metadata.TryGetMetadata("DisplayName"))
         {
-            DisplayName = Metadata.GetMetadata("DisplayName").ToString();
+            DisplayName = *MaybeDisplayName;
         }
         else
         {

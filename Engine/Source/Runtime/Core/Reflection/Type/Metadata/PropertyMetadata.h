@@ -9,16 +9,16 @@ namespace Lumina
     {
     public:
 
-        void AddValue(const FName& Key, const FName& Value);
+        void AddValue(const FName& Key, const FString& Value);
 
         bool HasMetadata(const FName& Key) const;
         
-        const FName* TryGetMetadata(const FName& Key) const;
-        const FName& GetMetadata(const FName& Key) const;
+        const FString* TryGetMetadata(const FName& Key) const;
+        const FString& GetMetadata(const FName& Key) const;
     
 
     private:
 
-        THashMap<FName, FName> PairParams;
+        THashMap<FName, FString> PairParams;
     };
 }

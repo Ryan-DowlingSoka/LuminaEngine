@@ -20,6 +20,7 @@ namespace Lumina
         void SetNodeValue(void* Value) override;
         void DrawNodeBody() override;
 
+        /** The texture asset to sample in this node. */
         PROPERTY(Editable, Category = "Texture")
         TObjectPtr<CTexture> Texture;
 

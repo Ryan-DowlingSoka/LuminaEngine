@@ -180,9 +180,39 @@ namespace Lumina::Physics
         JoltSystem = MakeUnique<JPH::PhysicsSystem>();
         
         JoltSystem->Init(65536, 0, 131072, 262144, GJoltLayerInterface, GObjectVsBroadPhaseLayerFilter, GObjectVsObjectLayerFilter);
-        JoltSystem->SetGravity(JPH::Vec3Arg(0.0f, GEarthGravity * World->GetDefaultWorldSettings().GravityScale, 0.0f));
+
+        const SDefaultWorldSettings& InitSettings = World->GetDefaultWorldSettings();
+        glm::vec3 GravityDir = glm::length2(InitSettings.GravityDirection) > 0.0f
+            ? glm::normalize(InitSettings.GravityDirection) : glm::vec3(0.0f, -1.0f, 0.0f);
+        JoltSystem->SetGravity(JoltUtils::ToJPHVec3(GravityDir * glm::abs(GEarthGravity) * InitSettings.GravityScale));
 
         JPH::PhysicsSettings JoltSettings;
+        JoltSettings.mDeterministicSimulation                   = InitSettings.bDeterministicSimulation;
+        JoltSettings.mNumVelocitySteps                          = InitSettings.NumVelocitySteps;
+        JoltSettings.mNumPositionSteps                          = InitSettings.NumPositionSteps;
+        JoltSettings.mBaumgarte                                 = InitSettings.BaumgarteStabilizationFactor;
+        JoltSettings.mSpeculativeContactDistance                = InitSettings.SpeculativeContactDistance;
+        JoltSettings.mPenetrationSlop                           = InitSettings.PenetrationSlop;
+        JoltSettings.mMaxPenetrationDistance                    = InitSettings.MaxPenetrationDistance;
+        JoltSettings.mLinearCastThreshold                       = InitSettings.LinearCastThreshold;
+        JoltSettings.mLinearCastMaxPenetration                  = InitSettings.LinearCastMaxPenetration;
+        JoltSettings.mManifoldTolerance                         = InitSettings.ManifoldTolerance;
+        JoltSettings.mMinVelocityForRestitution                 = InitSettings.MinVelocityForRestitution;
+        JoltSettings.mTimeBeforeSleep                           = InitSettings.TimeBeforeSleep;
+        JoltSettings.mPointVelocitySleepThreshold               = InitSettings.SleepVelocityThreshold;
+        JoltSettings.mBodyPairCacheMaxDeltaPositionSq           = InitSettings.BodyPairCacheMaxDeltaPositionSq;
+        JoltSettings.mBodyPairCacheCosMaxDeltaRotationDiv2      = InitSettings.BodyPairCacheCosMaxDeltaRotationDiv2;
+        JoltSettings.mContactNormalCosMaxDeltaRotation          = InitSettings.ContactNormalCosMaxDeltaRotation;
+        JoltSettings.mContactPointPreserveLambdaMaxDistSq       = InitSettings.ContactPointPreserveLambdaMaxDistSq;
+        JoltSettings.mMaxInFlightBodyPairs                      = InitSettings.MaxInFlightBodyPairs;
+        JoltSettings.mStepListenersBatchSize                    = InitSettings.StepListenersBatchSize;
+        JoltSettings.mStepListenerBatchesPerJob                 = InitSettings.StepListenerBatchesPerJob;
+        JoltSettings.mConstraintWarmStart                       = InitSettings.bConstraintWarmStart;
+        JoltSettings.mUseBodyPairContactCache                   = InitSettings.bUseBodyPairContactCache;
+        JoltSettings.mUseManifoldReduction                      = InitSettings.bUseManifoldReduction;
+        JoltSettings.mUseLargeIslandSplitter                    = InitSettings.bUseLargeIslandSplitter;
+        JoltSettings.mAllowSleeping                             = InitSettings.bAllowSleeping;
+        JoltSettings.mCheckActiveEdges                          = InitSettings.bCheckActiveEdges;
         JoltSystem->SetPhysicsSettings(JoltSettings);
         
         entt::dispatcher& Dispatcher = World->GetEntityRegistry().ctx().get<entt::dispatcher&>();
@@ -304,59 +334,14 @@ namespace Lumina::Physics
             
         });
         
-        // Reset character interpolation after manual transform edits. The
-        // character needs to snap to the new pose instead of sweeping through.
-        auto CharacterResetView = Registry.view<SCharacterPhysicsComponent, FNeedsPhysicsBodyUpdate>();
-        CharacterResetView.each([&](SCharacterPhysicsComponent& CharacterComponent, FNeedsPhysicsBodyUpdate&)
-        {
-            CharacterComponent.bInterpolationValid = false;
-        });
-
         Registry.clear<FNeedsPhysicsBodyUpdate>();
     }
-
-    void FJoltPhysicsScene::StorePreviousTransforms()
-    {
-        LUMINA_PROFILE_SCOPE();
-
-        entt::registry& Registry = World->GetEntityRegistry();
-
-        auto CharacterView = Registry.view<SCharacterPhysicsComponent>();
-        CharacterView.each([&](SCharacterPhysicsComponent& CharacterComponent)
-        {
-            if (CharacterComponent.Character == nullptr)
-            {
-                return;
-            }
-
-            CharacterComponent.PreviousLocation = JoltUtils::FromJPHRVec3(CharacterComponent.Character->GetPosition());
-            CharacterComponent.PreviousRotation = JoltUtils::FromJPHQuat(CharacterComponent.Character->GetRotation());
-            CharacterComponent.bInterpolationValid = true;
-        });
-    }
+    
 
     void FJoltPhysicsScene::Update(double DeltaTime)
     {
         LUMINA_PROFILE_SCOPE();
-
-        constexpr double MaxDeltaTime = 0.25;   // clamp to avoid spiral of death on giant hitches
-        constexpr int    MaxSubSteps  = 5;
-
-        DeltaTime = eastl::min(DeltaTime, MaxDeltaTime);
-
-        const float PhysicsRateHz = eastl::max(10.0f, World->GetDefaultWorldSettings().FixedPhysicsTimestep);
-        const float FixedDt       = 1.0f / PhysicsRateHz;
-
-        #if JPH_DEBUG_RENDERER
-        if (FConsoleRegistry::Get().GetAs<bool>("Jolt.Debug.Draw"))
-        {
-            FJoltDebugRenderer* DebugRenderer = FJoltPhysicsContext::GetDebugRenderer();
-            DebugRenderer->DrawBodies(JoltSystem.get(), World);
-        }
-        #endif
-
-        // Resolve deferred rigid-body creations (colliders that arrived before
-        // a shape was attached).
+        
         while (!PendingRigidBodyCreations.empty())
         {
             entt::entity Entity = PendingRigidBodyCreations.front();
@@ -367,44 +352,99 @@ namespace Lumina::Physics
                 OnRigidBodyComponentConstructed(World->GetEntityRegistry(), Entity);
             }
         }
+        
+        const SDefaultWorldSettings& WorldSettings = World->GetDefaultWorldSettings();
 
-        // Push any per-frame transform edits from game/script code into Jolt
-        // bodies before stepping. This runs once per frame, kinematic bodies
-        // are authored with FixedDt so their velocity lands in one sub-step.
-        ApplyDirtyTransforms(FixedDt);
-
-        // Latch controller input into movement components once per frame. Every
-        // substep below reads the same latched state, so a frame with multiple
-        // substeps doesn't starve itself of input after the first iteration.
-        LatchCharacterInput();
-
-        // Fixed-step loop. We snapshot the pre-step pose, update characters
-        // and the rigid-body world with exactly one fixed step, then do it
-        // again until we've drained the accumulator.
-        Accumulator += DeltaTime;
-
-        int NumSteps = 0;
-        while (Accumulator >= FixedDt && NumSteps < MaxSubSteps)
+        // Re-apply global physics settings each frame so editor changes take effect immediately.
         {
-            LUMINA_PROFILE_SECTION("Physics Sub-Step");
+            glm::vec3 GravityDir = glm::length2(WorldSettings.GravityDirection) > 0.0f
+                ? glm::normalize(WorldSettings.GravityDirection) : glm::vec3(0.0f, -1.0f, 0.0f);
+            JoltSystem->SetGravity(JoltUtils::ToJPHVec3(GravityDir * glm::abs(GEarthGravity) * WorldSettings.GravityScale));
 
-            StorePreviousTransforms();
-            UpdateCharacters(FixedDt);
-            JoltSystem->Update(FixedDt, 1, &Allocator, FJoltPhysicsContext::GetThreadPool());
-
-            Accumulator -= FixedDt;
-            ++NumSteps;
+            JPH::PhysicsSettings JoltSettings                           = JoltSystem->GetPhysicsSettings();
+            JoltSettings.mDeterministicSimulation                       = WorldSettings.bDeterministicSimulation;
+            JoltSettings.mNumVelocitySteps                              = WorldSettings.NumVelocitySteps;
+            JoltSettings.mNumPositionSteps                              = WorldSettings.NumPositionSteps;
+            JoltSettings.mBaumgarte                                     = WorldSettings.BaumgarteStabilizationFactor;
+            JoltSettings.mSpeculativeContactDistance                    = WorldSettings.SpeculativeContactDistance;
+            JoltSettings.mPenetrationSlop                               = WorldSettings.PenetrationSlop;
+            JoltSettings.mMaxPenetrationDistance                        = WorldSettings.MaxPenetrationDistance;
+            JoltSettings.mLinearCastThreshold                           = WorldSettings.LinearCastThreshold;
+            JoltSettings.mLinearCastMaxPenetration                      = WorldSettings.LinearCastMaxPenetration;
+            JoltSettings.mManifoldTolerance                             = WorldSettings.ManifoldTolerance;
+            JoltSettings.mMinVelocityForRestitution                     = WorldSettings.MinVelocityForRestitution;
+            JoltSettings.mTimeBeforeSleep                               = WorldSettings.TimeBeforeSleep;
+            JoltSettings.mPointVelocitySleepThreshold                   = WorldSettings.SleepVelocityThreshold;
+            JoltSettings.mBodyPairCacheMaxDeltaPositionSq               = WorldSettings.BodyPairCacheMaxDeltaPositionSq;
+            JoltSettings.mBodyPairCacheCosMaxDeltaRotationDiv2          = WorldSettings.BodyPairCacheCosMaxDeltaRotationDiv2;
+            JoltSettings.mContactNormalCosMaxDeltaRotation              = WorldSettings.ContactNormalCosMaxDeltaRotation;
+            JoltSettings.mContactPointPreserveLambdaMaxDistSq           = WorldSettings.ContactPointPreserveLambdaMaxDistSq;
+            JoltSettings.mMaxInFlightBodyPairs                          = WorldSettings.MaxInFlightBodyPairs;
+            JoltSettings.mStepListenersBatchSize                        = WorldSettings.StepListenersBatchSize;
+            JoltSettings.mStepListenerBatchesPerJob                     = WorldSettings.StepListenerBatchesPerJob;
+            JoltSettings.mConstraintWarmStart                           = WorldSettings.bConstraintWarmStart;
+            JoltSettings.mUseBodyPairContactCache                       = WorldSettings.bUseBodyPairContactCache;
+            JoltSettings.mUseManifoldReduction                          = WorldSettings.bUseManifoldReduction;
+            JoltSettings.mUseLargeIslandSplitter                        = WorldSettings.bUseLargeIslandSplitter;
+            JoltSettings.mAllowSleeping                                 = WorldSettings.bAllowSleeping;
+            JoltSettings.mCheckActiveEdges                              = WorldSettings.bCheckActiveEdges;
+            JoltSystem->SetPhysicsSettings(JoltSettings);
         }
 
-        // If we blew through the sub-step cap, drop the remaining time on
-        // the floor, better to briefly slow simulation than to spiral.
-        if (NumSteps >= MaxSubSteps && Accumulator >= FixedDt)
+        const float PhysicsRateHz  = eastl::max(10.0f, WorldSettings.PhysicsHz);
+        const float FixedTimestep  = 1.0f / PhysicsRateHz;
+        const float MaxAccumulation = (float)WorldSettings.MaxPhysicsSteps * FixedTimestep;
+
+        Accumulator += static_cast<float>(DeltaTime);
+
+        // Clamp to prevent spiral-of-death on heavy frames.
+        if (Accumulator > MaxAccumulation)
         {
-            Accumulator = 0.0;
+            Accumulator = MaxAccumulation;
         }
 
-        InterpolationAlpha = static_cast<float>(Accumulator / FixedDt);
-        InterpolateVisualTransforms(InterpolationAlpha);
+        if (Accumulator >= FixedTimestep)
+        {
+            // Cap at MaxPhysicsSteps to bound work per frame.
+            CollisionSteps = Math::Min((uint32)WorldSettings.MaxPhysicsSteps,
+                                       (uint32)(Accumulator / FixedTimestep));
+        }
+        else
+        {
+            CollisionSteps = 0;
+        }
+
+        #if JPH_DEBUG_RENDERER
+        if (FConsoleRegistry::Get().GetAs<bool>("Jolt.Debug.Draw"))
+        {
+            FJoltDebugRenderer* DebugRenderer = FJoltPhysicsContext::GetDebugRenderer();
+            DebugRenderer->DrawBodies(JoltSystem.get(), World);
+        }
+        #endif
+
+        if (CollisionSteps > 0)
+        {
+            // Save positions before stepping so SyncPhysicsTransforms can
+            // interpolate smoothly between the previous and current states.
+            SnapshotBodyStates();
+
+            ApplyDirtyTransforms(FixedTimestep);
+            LatchCharacterInput();
+
+            JoltSystem->Update(FixedTimestep, (int)CollisionSteps, &Allocator, FJoltPhysicsContext::GetThreadPool());
+            UpdateCharacters(FixedTimestep);
+
+            Accumulator -= (float)CollisionSteps * FixedTimestep;
+        }
+
+        // Sub-frame interpolation: how far into the current physics interval we are.
+        // Prev = positions before the last step, Curr = positions after.
+        // Alpha 0 == just stepped, 1 == next step due now.
+        const float InterpolationAlpha = WorldSettings.bEnablePhysicsInterpolation
+            ? glm::clamp(Accumulator / FixedTimestep, 0.0f, 1.0f)
+            : 1.0f;
+
+        SyncPhysicsTransforms(InterpolationAlpha);
 
         #if JPH_DEBUG_RENDERER
         FJoltPhysicsContext::GetDebugRenderer()->NextFrame();
@@ -496,41 +536,73 @@ namespace Lumina::Physics
         BodyInterface.SetMotionType(JPH::BodyID(BodyID), JoltUtils::ToJoltMotionType(NewType), JPH::EActivation::Activate);
     }
 
-    void FJoltPhysicsScene::InterpolateVisualTransforms(float Alpha)
+    void FJoltPhysicsScene::SnapshotBodyStates()
     {
         LUMINA_PROFILE_SCOPE();
 
-        const float KillHeight = World->GetDefaultWorldSettings().WorldKillHeight;
-        const float ClampedAlpha = glm::clamp(Alpha, 0.0f, 1.0f);
-
         const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
         entt::registry& Registry = World->GetEntityRegistry();
-        
-        TVector<entt::entity> PendingDestroy;
 
-        auto View = Registry.view<SRigidBodyComponent, STransformComponent>();
-        View.each([&](entt::entity EntityID, SRigidBodyComponent& BodyComponent, STransformComponent& TransformComponent)
+        auto RigidView = Registry.view<SRigidBodyComponent>();
+        RigidView.each([&](SRigidBodyComponent& BodyComponent)
         {
             const JPH::Body* Body = LockInterface.TryGetBody(JPH::BodyID(BodyComponent.BodyID));
             if (Body == nullptr || Body->IsStatic())
             {
                 return;
             }
+            
+            BodyComponent.LastBodyPosition = JoltUtils::FromJPHVec3(Body->GetPosition());
+            BodyComponent.LastBodyRotation = JoltUtils::FromJPHQuat(Body->GetRotation());
+        });
 
-            // Sleeping dynamic bodies still need to sit at their final resting
-            // pose but don't need interpolation, their previous snapshot is
-            // equal to their current pose anyway.
-            const JPH::RVec3 CurrentPos = Body->GetPosition();
-
-            if (CurrentPos.GetY() < KillHeight)
+        auto CharView = Registry.view<SCharacterPhysicsComponent>();
+        CharView.each([&](SCharacterPhysicsComponent& CharComponent)
+        {
+            if (CharComponent.Character == nullptr)
             {
-                PendingDestroy.push_back(EntityID);
                 return;
             }
 
-            const JPH::Quat CurrentRot = Body->GetRotation();
-            glm::vec3 Location = JoltUtils::FromJPHRVec3(CurrentPos);
-            glm::quat Rotation = JoltUtils::FromJPHQuat(CurrentRot);
+            CharComponent.LastBodyPosition = JoltUtils::FromJPHVec3(CharComponent.Character->GetPosition());
+            CharComponent.LastBodyRotation = JoltUtils::FromJPHQuat(CharComponent.Character->GetRotation());
+        });
+    }
+
+    void FJoltPhysicsScene::SyncPhysicsTransforms(float Alpha)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        const float KillHeight = World->GetDefaultWorldSettings().WorldKillHeight;
+
+        const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
+        entt::registry& Registry = World->GetEntityRegistry();
+        
+        auto View = Registry.view<SRigidBodyComponent, STransformComponent>();
+        View.each([&](entt::entity EntityID, SRigidBodyComponent& BodyComponent, STransformComponent& TransformComponent)
+        {
+            const JPH::Body* Body = LockInterface.TryGetBody(JPH::BodyID(BodyComponent.BodyID));
+            if (Body == nullptr || Body->IsStatic() || !Body->IsActive())
+            {
+                return;
+            }
+
+            const JPH::RVec3 CurrPos = Body->GetPosition();
+            const JPH::Quat  CurrRot = Body->GetRotation();
+
+            if (CurrPos.GetY() < KillHeight)
+            {
+                Registry.destroy(EntityID);
+                return;
+            }
+
+            // Interpolate between the pre-step snapshot and the current physics state.
+            // Falls back to the current state on the first frame (no snapshot yet).
+            const glm::vec3 PrevPos    = BodyComponent.LastBodyPosition;
+            const glm::quat PrevRot    = BodyComponent.LastBodyRotation;
+
+            glm::vec3 Location = glm::mix(PrevPos, JoltUtils::FromJPHVec3(CurrPos), Alpha);
+            glm::quat Rotation = glm::normalize(glm::slerp(PrevRot, JoltUtils::FromJPHQuat(CurrRot), Alpha));
 
             TransformComponent.SetLocation(Location);
             TransformComponent.SetRotation(Rotation);
@@ -544,40 +616,27 @@ namespace Lumina::Physics
                 return;
             }
 
-            const JPH::Vec3 CurrentPos = CharacterComponent.Character->GetPosition();
+            const JPH::RVec3 CurrPos = CharacterComponent.Character->GetPosition();
+            const JPH::Quat  CurrRot = CharacterComponent.Character->GetRotation();
 
-            if (CurrentPos.GetY() < KillHeight)
+            if (CurrPos.GetY() < KillHeight)
             {
-                PendingDestroy.push_back(Entity);
+                Registry.destroy(Entity);
                 return;
             }
 
-            const JPH::Quat CurrentRot = CharacterComponent.Character->GetRotation();
-            glm::vec3 Location = JoltUtils::FromJPHVec3(CurrentPos);
-            glm::quat Rotation = JoltUtils::FromJPHQuat(CurrentRot);
+            const glm::vec3 PrevPos = CharacterComponent.LastBodyPosition;
+            const glm::quat PrevRot = CharacterComponent.LastBodyRotation;
 
-            if (CharacterComponent.bInterpolationValid)
-            {
-                Location = glm::mix(CharacterComponent.PreviousLocation, Location, ClampedAlpha);
-                Rotation = glm::normalize(glm::slerp(CharacterComponent.PreviousRotation, Rotation, ClampedAlpha));
-            }
+            glm::vec3 Location = glm::mix(PrevPos, JoltUtils::FromJPHVec3(CurrPos), Alpha);
+            glm::quat Rotation = glm::normalize(glm::slerp(PrevRot, JoltUtils::FromJPHQuat(CurrRot), Alpha));
 
             TransformComponent.SetLocation(Location);
             TransformComponent.SetRotation(Rotation);
 
-            // The game code just placed this body. We already applied the
-            // transform above, so clear the marker so ApplyDirtyTransforms
-            // doesn't stomp the physics body next frame.
             Registry.remove<FNeedsPhysicsBodyUpdate>(Entity);
         });
-
-        for (entt::entity Entity : PendingDestroy)
-        {
-            if (Registry.valid(Entity))
-            {
-                Registry.destroy(Entity);
-            }
-        }
+        
     }
 
     void FJoltPhysicsScene::LatchCharacterInput()
@@ -996,8 +1055,12 @@ namespace Lumina::Physics
         
         JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
         BodyInterface.SetUserData(Character->GetInnerBodyID(), entt::to_integral(Entity));
-        
-        CharacterComponent.Character = Move(Character);
+
+        CharacterComponent.Character        = Move(Character);
+
+        // Seed interpolation state so the first frame blends from a valid quaternion.
+        CharacterComponent.LastBodyPosition = TransformComponent.GetLocation();
+        CharacterComponent.LastBodyRotation = TransformComponent.GetRotation();
     }
 
     void FJoltPhysicsScene::OnCharacterComponentDestroyed(entt::registry& Registry, entt::entity Entity)
@@ -1109,7 +1172,12 @@ namespace Lumina::Physics
         
         Body->SetUserData(static_cast<uint64>(Entity));
         RigidBodyComponent.BodyID           = Body->GetID().GetIndexAndSequenceNumber();
-        
+
+        // Seed interpolation state so the first frame blends correctly instead of
+        // snapping from an uninitialized quaternion (which produces NaN on normalize).
+        RigidBodyComponent.LastBodyPosition = Position;
+        RigidBodyComponent.LastBodyRotation = Rotation;
+
         BodyInterface.AddBody(Body->GetID(), JPH::EActivation::Activate);
     }
 
@@ -1123,7 +1191,7 @@ namespace Lumina::Physics
         {
             return;
         }
-        
+
         BodyInterface.RemoveBody(BodyID);
         BodyInterface.DestroyBody(BodyID);
     }

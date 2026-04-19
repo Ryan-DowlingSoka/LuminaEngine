@@ -15,12 +15,15 @@ namespace Lumina
     {
         GENERATED_BODY()
     
+        /** World or local position of the transform. */
 		PROPERTY(Script, Editable)
         glm::vec3 Location;
 
+        /** Orientation of the transform as a unit quaternion. */
         PROPERTY(Script, Editable)
         glm::quat Rotation;
 
+        /** Non-uniform scale applied to the entity. */
         PROPERTY(Script, Editable)
         glm::vec3 Scale;
         

@@ -13,12 +13,15 @@ namespace Lumina
     {
         GENERATED_BODY()
 
+        /** Local-space transform the entity interpolates from. */
         PROPERTY(Editable, Category = "Interp")
         FTransform Start;
-        
+
+        /** Local-space transform the entity interpolates toward. */
         PROPERTY(Editable, Category = "Interp")
         FTransform End;
 
+        /** Normalized speed of interpolation (1.0 completes a full cycle per second). */
         PROPERTY(Editable, Category = "Interp")
         float Speed = 1.0f;
 
@@ -32,58 +35,71 @@ namespace Lumina
     {
         GENERATED_BODY()
     
-        // Wave Parameters
+        /** World-space axis the entity oscillates along. */
         PROPERTY(Editable, Category = "Wave")
         glm::vec3 Axis = glm::vec3(0.0f, 1.0f, 0.0f);
-    
+
+        /** Peak displacement distance from the rest position (meters). */
         PROPERTY(Editable, Category = "Wave")
         float Amplitude = 1.0f;
-    
+
+        /** Oscillation cycles per second. */
         PROPERTY(Editable, Category = "Wave")
         float Frequency = 1.0f;
-    
+
+        /** Starting phase offset in radians. */
         PROPERTY(Editable, Category = "Wave")
         float PhaseOffset = 0.0f;
-    
-        // Optional Multi-Axis Movement
+
+        /** When true, a second axis wave is layered on top of the primary. */
         PROPERTY(Editable, Category = "Multi-Axis")
         bool bEnableSecondaryAxis = false;
-    
+
+        /** World-space axis for the secondary wave. */
         PROPERTY(Editable, Category = "Multi-Axis")
         glm::vec3 SecondaryAxis = glm::vec3(1.0f, 0.0f, 0.0f);
-    
+
+        /** Peak displacement of the secondary wave (meters). */
         PROPERTY(Editable, Category = "Multi-Axis")
         float SecondaryAmplitude = 0.5f;
-    
+
+        /** Cycles per second for the secondary wave. */
         PROPERTY(Editable, Category = "Multi-Axis")
         float SecondaryFrequency = 1.5f;
-    
+
+        /** Phase offset for the secondary wave (radians). */
         PROPERTY(Editable, Category = "Multi-Axis")
         float SecondaryPhaseOffset = 0.0f;
-    
-        // Wave Modifiers
+
+        /** Waveform shape applied to the oscillation (Sine, Square, Sawtooth, etc.). */
         PROPERTY(Editable, Category = "Modifiers")
         ESineWaveType WaveType = ESineWaveType::Sine;
-    
+
+        /** When true, amplitude decays exponentially over time. */
         PROPERTY(Editable, Category = "Modifiers")
         bool bDampingEnabled = false;
-    
+
+        /** Exponential decay rate when damping is enabled (higher = faster decay). */
         PROPERTY(Editable, Category = "Modifiers")
         float DampingFactor = 0.1f;
-    
+
+        /** When true, amplitude is modulated by a secondary low-frequency oscillator. */
         PROPERTY(Editable, Category = "Modifiers")
         bool bAmplitudeModulation = false;
-    
+
+        /** Frequency of the amplitude modulation envelope (Hz). */
         PROPERTY(Editable, Category = "Modifiers")
         float AmplitudeModulationFrequency = 0.5f;
-    
-        // Behavior
+
+        /** When true, offsets are relative to the entity's initial transform rather than world origin. */
         PROPERTY(Editable, Category = "Behavior")
         bool bUseRelativeMovement = true;
-    
+
+        /** When true, oscillation begins immediately when the entity is spawned. */
         PROPERTY(Editable, Category = "Behavior")
         bool bAutoStart = true;
-    
+
+        /** Seconds to wait before the oscillation begins. */
         PROPERTY(Editable, Category = "Behavior")
         float StartDelay = 0.0f;
     

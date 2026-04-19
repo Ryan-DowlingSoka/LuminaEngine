@@ -163,6 +163,9 @@ namespace Lumina
                 ScriptComponent->UpdateFunc = {};
                 ScriptComponent->DetachFunc = {};
                 ScriptComponent->ScriptPath = {};
+                ScriptComponent->ScriptMetaTable = {};
+                ScriptComponent->TickRate = 0.0f;
+                ScriptComponent->bRunInEditor = false;
                 bWasChanged = true;
             }
             
@@ -179,14 +182,15 @@ namespace Lumina
                     ImGui::TableSetupColumn("Value");
                     ImGui::TableHeadersRow();
 
-                    for (auto&& [Key, Value] : ScriptComponent->Script->Reference)
-                    {
-                        ImGui::TableNextRow();
-                        ImGui::TableSetColumnIndex(0);
-                        ImGui::TextUnformatted(Key.ToString().c_str());
-                        ImGui::TableSetColumnIndex(1);
-                        ImGui::TextUnformatted(Value.ToString().c_str());
-                    }
+                    // @TODO Figure out why iterators broke.
+                    //for (auto&& [Key, Value] : ScriptComponent->Script->Reference)
+                    //{
+                    //    ImGui::TableNextRow();
+                    //    ImGui::TableSetColumnIndex(0);
+                    //    ImGui::TextUnformatted(Key.ToString().c_str());
+                    //    ImGui::TableSetColumnIndex(1);
+                    //    ImGui::TextUnformatted(Value.ToString().c_str());
+                    //}
 
                     ImGui::EndTable();
                 }

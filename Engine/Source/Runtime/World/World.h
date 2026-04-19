@@ -115,6 +115,9 @@ namespace Lumina
 
         FUNCTION(Script)
         TVector<SRayResult> CastSphere(const SSphereCastSettings& Settings) const;
+        
+        FUNCTION(Script)
+        EUpdateStage GetUpdateStage() const;
 
         FTimerManager& GetTimerManager() { return TimerManager; }
         const FTimerManager& GetTimerManager() const { return TimerManager; }

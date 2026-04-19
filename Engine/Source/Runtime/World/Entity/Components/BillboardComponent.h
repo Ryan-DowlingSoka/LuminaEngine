@@ -13,12 +13,15 @@ namespace Lumina
     {
         GENERATED_BODY()
         
+        /** Texture displayed on the billboard quad. */
         PROPERTY(Editable)
         TObjectPtr<CTexture> Texture;
-        
+
+        /** Uniform scale of the billboard quad in world space. */
         PROPERTY(Editable)
         float Scale = 1.0f;
-        
+
+        /** RGBA tint multiplied with the billboard texture color. */
         PROPERTY(Editable, Color)
         glm::vec4 Tint;
     };

@@ -387,7 +387,10 @@ namespace Lumina
 
         float PyramidWidth;
         float PyramidHeight;
-        uint32 Padding1[2];
+
+        // Shadow-caster culling extensions.
+        float  ShadowMaxDistance;       // Casters beyond this distance are skipped entirely.
+        uint32 bShadowOcclusionCull;    // Enable camera Hi-Z test for in-frustum casters.
     };
     
     
@@ -443,10 +446,12 @@ namespace Lumina
         uint8 bSSAO:1                   = false;
         uint8 bFrustumCull:1            = true;
         uint8 bOcclusionCull:1          = true;
+        uint8 bShadowOcclusionCull:1    = true;
         uint8 bWireframe:1              = false;
         uint8 bDrawBillboards:1         = true;
         uint8 bUnlit:1                  = false;
         uint8 bLit:1                    = false;
+        float ShadowMaxDistance         = 2000.0f;
     };
     
 }

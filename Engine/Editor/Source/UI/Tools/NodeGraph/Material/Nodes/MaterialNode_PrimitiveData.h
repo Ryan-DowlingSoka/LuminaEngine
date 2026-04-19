@@ -19,6 +19,7 @@ namespace Lumina
         FString GetNodeTooltip() const override;
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
         
+        /** Data type of the custom primitive data slot to read from the instance. */
         PROPERTY(Editable)
         ECustomPrimitiveDataType Type = ECustomPrimitiveDataType::Float;
         

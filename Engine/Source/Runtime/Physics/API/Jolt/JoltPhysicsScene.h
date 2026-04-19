@@ -87,10 +87,6 @@ namespace Lumina::Physics
     	// before the fixed-step loop.
     	void ApplyDirtyTransforms(float FixedDt);
 
-    	// Snapshot the current Jolt pose for every body/character so the
-    	// following fixed step can be interpolated against it.
-    	void StorePreviousTransforms();
-
     	// Step every CharacterVirtual on the fixed timestep, alongside the
     	// Jolt rigid-body update.
     	void UpdateCharacters(float FixedDt);
@@ -99,10 +95,8 @@ namespace Lumina::Physics
     	// pending fields. Runs once per Update() so every substep in the frame
     	// observes the same input.
     	void LatchCharacterInput();
-
-    	// Write interpolated pose (Previous <-> current Jolt pose) back into
-    	// TransformComponents for rendering. Alpha is (accumulator / fixedDt).
-    	void InterpolateVisualTransforms(float Alpha);
+    	
+    	void SyncPhysicsTransforms(float Alpha);
     	
     	uint32 GetEntityBodyID(entt::entity Entity) override;
     	
@@ -131,18 +125,18 @@ namespace Lumina::Physics
     	JPH::PhysicsSystem* GetPhysicsSystem() const { return JoltSystem.get(); }
 
     private:
-    	
+
+    	// Snapshot all active body positions before stepping, used as the
+    	// interpolation "previous" endpoint in SyncPhysicsTransforms.
+    	void SnapshotBodyStates();
+
     	TQueue<entt::entity>				PendingRigidBodyCreations;
     	JPH::TempAllocatorImpl				Allocator;
     	TUniquePtr<FJoltContactListener>	ContactListener;
         TUniquePtr<JPH::PhysicsSystem>		JoltSystem;
         CWorld*								World = nullptr;
 
-        // Leftover time that hasn't been consumed by a fixed step yet.
-        double Accumulator = 0.0;
-
-        // Cached interpolation alpha from the most recent Update(), used by
-        // InterpolateVisualTransforms and any other consumers that need it.
-        float  InterpolationAlpha = 0.0f;
+    	float	Accumulator = 0.0f;
+    	uint32	CollisionSteps = 0;
     };
 }

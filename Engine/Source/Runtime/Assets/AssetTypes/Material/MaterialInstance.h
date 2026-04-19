@@ -31,6 +31,7 @@ namespace Lumina
 
         void PostLoad() override;
 
+        /** The parent material this instance overrides parameters for. */
         PROPERTY(ReadOnly, Category = "Material")
         TObjectPtr<CMaterial> Material;
 

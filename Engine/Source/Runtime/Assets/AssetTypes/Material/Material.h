@@ -56,37 +56,47 @@ namespace Lumina
         EMaterialShadingModel GetShadingModel() override { return ShadingModel; }
         float GetOpacityMaskClipValue() override { return OpacityMaskClipValue; }
 
+        /** Domain of the material (Surface, PostProcess, etc.). */
         PROPERTY(Editable)
         EMaterialType MaterialType;
 
+        /** Controls how the material composites with the scene (Opaque, Masked, Translucent, Additive). */
         PROPERTY(Editable)
         EBlendMode BlendMode = EBlendMode::Opaque;
 
+        /** Lighting model used during shading (Lit, Unlit, etc.). */
         PROPERTY(Editable)
         EMaterialShadingModel ShadingModel = EMaterialShadingModel::Lit;
 
+        /** When true, objects using this material write to the shadow map. */
         PROPERTY(Editable)
         bool bCastShadows = true;
 
+        /** When true, back faces are rendered as well as front faces. */
         PROPERTY(Editable)
         bool bTwoSided = false;
 
+        /** When true, the depth test is skipped for surfaces using this material. */
         PROPERTY(Editable)
         bool bDisableDepthTest = false;
 
+        /** Opacity threshold for Masked blend mode — pixels below this value are discarded. */
         PROPERTY(Editable)
         float OpacityMaskClipValue = 0.333f;
 
-        
+        /** Texture slots bound to this material, indexed by the Parameters list. */
         PROPERTY()
         TVector<TObjectPtr<CTexture>>           Textures;
-        
+
+        /** Compiled SPIR-V bytecode for the pixel shader. */
         PROPERTY()
         TVector<uint32>                         PixelShaderBinaries;
 
+        /** Compiled SPIR-V bytecode for the vertex shader. */
         PROPERTY()
         TVector<uint32>                         VertexShaderBinaries;
-        
+
+        /** Declared material parameters (scalars, vectors, textures) with their slot indices. */
         PROPERTY()
         TVector<FMaterialParameter>             Parameters;
         

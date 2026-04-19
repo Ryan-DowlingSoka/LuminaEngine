@@ -1,7 +1,6 @@
 #include "pch.h"
 #include "SystemContext.h"
 #include "World/World.h"
-#include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/DirtyComponent.h"
 #include "World/Entity/Components/LifetimeComponent.h"
 #include "world/entity/components/namecomponent.h"

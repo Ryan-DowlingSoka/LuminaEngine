@@ -100,6 +100,8 @@ namespace Lumina::Reflection
         constexpr uint32_t ClangOptions = 
             CXTranslationUnit_DetailedPreprocessingRecord |
             CXTranslationUnit_SkipFunctionBodies | 
+            CXTranslationUnit_CacheCompletionResults |
+            CXTranslationUnit_IncludeBriefCommentsInCodeCompletion |
             CXTranslationUnit_KeepGoing;
         
         CXErrorCode Result = clang_parseTranslationUnit2(

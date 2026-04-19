@@ -117,6 +117,7 @@ namespace Lumina
         float GetDuration() const { return AnimationResource->Duration; }
         FAnimationResource* GetAnimationResource() const { return AnimationResource.get(); }
         
+        /** The skeleton asset this animation targets. */
         PROPERTY(Editable, Category = "Skeleton")
         TObjectPtr<CSkeleton> Skeleton;
         

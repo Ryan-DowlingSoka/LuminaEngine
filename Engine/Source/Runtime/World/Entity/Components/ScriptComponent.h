@@ -15,6 +15,7 @@ namespace Lumina
     {
         GENERATED_BODY()
         
+        /** Path to the Luau script file to execute on this entity. */
         PROPERTY(Editable)
         FScriptPath ScriptPath;
         

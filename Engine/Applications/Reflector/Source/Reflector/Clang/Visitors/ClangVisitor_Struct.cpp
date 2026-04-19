@@ -3,6 +3,8 @@
 #include <clang-c/Index.h>
 #include <EASTL/optional.h>
 #include <EASTL/string.h>
+#include <EASTL/vector.h>
+#include <string>
 #include <Reflector/Types/ReflectedType.h>
 #include <spdlog/spdlog.h>
 #include "Reflector/Clang/ClangParserContext.h"
@@ -18,6 +20,39 @@
 
 namespace Lumina::Reflection::Visitor
 {
+	// Extract the brief doc comment above a cursor, escaping characters that would
+	// break a C string literal in the generated output (\, ").
+	static eastl::string GetCursorComment(const CXCursor& Cursor)
+	{
+		const CXString CommentString = clang_Cursor_getBriefCommentText(Cursor);
+		eastl::string Result;
+		spdlog::warn("ToolTip {}", CommentString.data ? "Valid" : "Null");
+		if (CommentString.data != nullptr)
+		{
+			const char* Raw = clang_getCString(CommentString);
+			if (Raw && Raw[0] != '\0')
+			{
+				for (const char* P = Raw; *P; ++P)
+				{
+					if (*P == '\\')
+					{
+						Result += "\\\\";
+					}
+					else if (*P == '"')
+					{
+						Result += "\\\"";
+					}
+					else
+					{
+						Result += *P;
+					}
+				}
+			}
+		}
+		clang_disposeString(CommentString);
+		return Result;
+	}
+
 	static eastl::optional<FFieldInfo> CreateFieldInfo(FClangParserContext* Context, const CXCursor& Cursor)
 	{
 		eastl::string CursorName = ClangUtils::GetCursorDisplayName(Cursor);
@@ -456,6 +491,12 @@ namespace Lumina::Reflection::Visitor
 			FReflectedProperty* NewProperty;
 			CreatePropertyForType(Context, Type, NewProperty, FieldInfo.value());
 			NewProperty->GenerateMetadata(Macro.MacroContents);
+
+			eastl::string Comment = GetCursorComment(Cursor);
+			if (!Comment.empty())
+			{
+				NewProperty->Metadata.push_back({"ToolTip", eastl::move(Comment)});
+			}
 		}
 		break;
 		case(CXCursor_CXXMethod):
@@ -469,6 +510,12 @@ namespace Lumina::Reflection::Visitor
 			FReflectedFunction* NewFunction;
 			CreateFunctionForType(Cursor, Context, Type, NewFunction);
 			NewFunction->GenerateMetadata(Macro.MacroContents);
+
+			eastl::string Comment = GetCursorComment(Cursor);
+			if (!Comment.empty())
+			{
+				NewFunction->Metadata.push_back({"ToolTip", eastl::move(Comment)});
+			}
 		}
 		break;
 		}
@@ -514,6 +561,12 @@ namespace Lumina::Reflection::Visitor
 		if (!Context->CurrentNamespace.empty())
 		{
 			ReflectedStruct->Namespace = Context->CurrentNamespace;
+		}
+
+		eastl::string StructComment = GetCursorComment(Cursor);
+		if (!StructComment.empty())
+		{
+			ReflectedStruct->Metadata.push_back({"ToolTip", eastl::move(StructComment)});
 		}
 
 		FReflectedType* PreviousType = Context->ParentReflectedType;
@@ -564,6 +617,12 @@ namespace Lumina::Reflection::Visitor
 		if (!Context->CurrentNamespace.empty())
 		{
 			ReflectedClass->Namespace = Context->CurrentNamespace;
+		}
+
+		eastl::string ClassComment = GetCursorComment(Cursor);
+		if (!ClassComment.empty())
+		{
+			ReflectedClass->Metadata.push_back({"ToolTip", eastl::move(ClassComment)});
 		}
 
 		FReflectedType* PreviousType = Context->ParentReflectedType;

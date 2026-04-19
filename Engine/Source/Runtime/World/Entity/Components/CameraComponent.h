@@ -51,9 +51,11 @@ namespace Lumina
         FUNCTION(Script)
         glm::vec3 GetRightVector() const { return ViewVolume.GetRightVector(); }
 
+        /** Vertical field of view in degrees. */
         PROPERTY(Editable, Category = "Camera")
         float FOV = 90.0f;
 
+        /** When true, this camera activates automatically when the entity is spawned. */
         PROPERTY(Editable, Category = "Camera")
         bool bAutoActivate = false;
         

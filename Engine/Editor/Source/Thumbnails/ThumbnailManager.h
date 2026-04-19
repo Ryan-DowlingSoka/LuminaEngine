@@ -29,12 +29,15 @@ namespace Lumina
         
         void OnPackageDestroyed(FName Package);
         
+        /** Unit cube mesh used to render thumbnail previews for cube-shaped assets. */
         PROPERTY(NotSerialized)
         TObjectPtr<CStaticMesh> CubeMesh;
 
+        /** Unit sphere mesh used to render thumbnail previews for sphere-shaped assets. */
         PROPERTY(NotSerialized)
         TObjectPtr<CStaticMesh> SphereMesh;
 
+        /** Unit plane mesh used to render thumbnail previews for flat assets. */
         PROPERTY(NotSerialized)
         TObjectPtr<CStaticMesh> PlaneMesh;
         

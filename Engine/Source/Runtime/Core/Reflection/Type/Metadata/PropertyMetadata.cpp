@@ -3,7 +3,7 @@
 
 namespace Lumina
 {
-    void FMetaDataPair::AddValue(const FName& Key, const FName& Value)
+    void FMetaDataPair::AddValue(const FName& Key, const FString& Value)
     {
         PairParams.emplace(Key, Value);
     }
@@ -13,7 +13,7 @@ namespace Lumina
         return PairParams.find(Key) != PairParams.end();
     }
 
-    const FName* FMetaDataPair::TryGetMetadata(const FName& Key) const
+    const FString* FMetaDataPair::TryGetMetadata(const FName& Key) const
     {
         auto It = PairParams.find(Key);
         if (It != PairParams.end())
@@ -24,7 +24,7 @@ namespace Lumina
         return nullptr;
     }
 
-    const FName& FMetaDataPair::GetMetadata(const FName& Key) const
+    const FString& FMetaDataPair::GetMetadata(const FName& Key) const
     {
         return PairParams.at(Key);
     }

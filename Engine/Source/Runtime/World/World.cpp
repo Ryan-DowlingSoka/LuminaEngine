@@ -402,7 +402,7 @@ namespace Lumina
         
         if (Stage == EUpdateStage::FrameStart)
         {
-            DeltaTime = Context.GetDeltaTime();
+            DeltaTime = Context.GetDeltaTime() * GetDefaultWorldSettings().DeltaTimeScale;
             TimeSinceCreation += DeltaTime;
         }
         
@@ -413,7 +413,7 @@ namespace Lumina
         
         if (Stage == EUpdateStage::DuringPhysics)
         {
-            PhysicsScene->Update(Context.GetDeltaTime());
+            PhysicsScene->Update(DeltaTime);
         }
 
         SystemContext.DeltaTime     = DeltaTime;
@@ -854,6 +854,9 @@ namespace Lumina
         ScriptComponent.Script->Environment.RawSet("Events", &LuaEventBus);
         ScriptComponent.Script->Environment.RawSet("Timer", &TimerManager);
         
+        auto DrawInterface = ScriptComponent.Script->Environment.NewTable("DrawInterface");
+        DrawInterface.SetFunction<&IPrimitiveDrawInterface::DrawSphere>("DrawSphere", static_cast<IPrimitiveDrawInterface*>(this));
+        
         ScriptComponent.Script->Reference.RawSet("Entity", Entity);
         ScriptComponent.Script->Reference.RawSet("Transform", &EntityRegistry.get<STransformComponent>(Entity));
         ScriptComponent.Script->Reference.RawSet("Name", EntityRegistry.get<SNameComponent>(Entity).Name);
@@ -1019,6 +1022,11 @@ namespace Lumina
         return PhysicsScene->CastSphere(Settings);
         
         
+    }
+
+    EUpdateStage CWorld::GetUpdateStage() const
+    {
+        return SystemContext.GetUpdateStage();
     }
 
     entt::entity CWorld::GetEntityByTag(const FName& Tag)

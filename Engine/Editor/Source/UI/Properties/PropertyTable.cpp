@@ -292,6 +292,14 @@ namespace Lumina
         
         FString DisplayName = IsArrayElementProperty() ? eastl::to_string(PropertyHandle->Index) : PropertyHandle->Property->GetPropertyDisplayName();
         ImGui::TextUnformatted(DisplayName.c_str());
+        
+        const FString* Tooltip = PropertyHandle->Property->TryGetMetadata("ToolTip");
+        if (Tooltip == nullptr)
+        {
+            Tooltip = &PropertyHandle->Property->GetPropertyDisplayName();
+        }
+        
+        ImGuiX::TextTooltip("{}", *Tooltip);
     }
 
     void FPropertyPropertyRow::DrawEditor(bool bReadOnly)
@@ -395,6 +403,14 @@ namespace Lumina
         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0);
         ImGuiTreeNodeFlags Flags = ArrayProperty->GetNum(GetPropertyHandle()->ContainerPtr) ? 0 : ImGuiTreeNodeFlags_Leaf;
         bExpanded = ImGui::CollapsingHeader(ArrayProperty->GetPropertyDisplayName().c_str(), Flags);
+        
+        const FString* Tooltip = ArrayProperty->TryGetMetadata("ToolTip");
+        if (Tooltip == nullptr)
+        {
+            Tooltip = &ArrayProperty->GetPropertyDisplayName();
+        }
+        
+        ImGuiX::TextTooltip("{}", *Tooltip);
         ImGui::PopStyleColor(3);
     }
 
@@ -548,6 +564,15 @@ namespace Lumina
         ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0);
         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0);
         bExpanded = ImGui::CollapsingHeader(StructProperty->GetPropertyDisplayName().c_str(), ImGuiTreeNodeFlags_Leaf);
+        
+        const FString* Tooltip = StructProperty->TryGetMetadata("ToolTip");
+        if (Tooltip == nullptr)
+        {
+            Tooltip = &StructProperty->GetPropertyDisplayName();
+        }
+        
+        ImGuiX::TextTooltip("{}", *Tooltip);
+        
         ImGui::PopStyleColor(3);
     }
 

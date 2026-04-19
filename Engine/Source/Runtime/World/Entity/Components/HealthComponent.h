@@ -16,9 +16,11 @@ namespace Lumina
         FUNCTION(Script)
         void GiveHealth(float NewHealth) { Health = glm::clamp(Health + NewHealth, 0.0f, MaxHealth); }
         
+        /** Current health points of the entity. */
         PROPERTY(Script, Editable, Category = "Health")
         float Health = 100.0f;
-        
+
+        /** Maximum health capacity. Health is clamped to this value. */
         PROPERTY(Script, Editable, Category = "Health")
         float MaxHealth = 100.0f;
     };

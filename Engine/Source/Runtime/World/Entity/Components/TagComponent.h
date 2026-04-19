@@ -9,6 +9,7 @@ namespace Lumina
     {
         GENERATED_BODY()
 
+        /** String identifier used to categorize or query this entity. */
         PROPERTY(Script)
         FName Tag;
     };

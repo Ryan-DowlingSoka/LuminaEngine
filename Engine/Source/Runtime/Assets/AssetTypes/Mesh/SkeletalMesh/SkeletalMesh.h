@@ -19,6 +19,7 @@ namespace Lumina
         bool IsSkinned() const override { return true; }
         
         
+        /** The skeleton asset that defines the bone hierarchy for this mesh. */
         PROPERTY(Editable, Category = "Skeleton")
         TObjectPtr<CSkeleton> Skeleton;
     };

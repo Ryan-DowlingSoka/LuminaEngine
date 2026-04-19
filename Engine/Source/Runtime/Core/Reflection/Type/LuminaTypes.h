@@ -118,7 +118,8 @@ namespace Lumina
         NODISCARD bool CanBeBulkSerialized() const  { return EnumHasAnyFlags(Flags, EPropertyFlags::BulkSerialize); }
 
         
-        FName GetMetadata(const FName& Key) const { return Metadata.GetMetadata(Key); }
+        const FString* TryGetMetadata(const FName& Key) const { return Metadata.TryGetMetadata(Key); }
+        const FString& GetMetadata(const FName& Key) const { return Metadata.GetMetadata(Key); }
         bool HasMetadata(const FName& Key) const { return Metadata.HasMetadata(Key); }
 
         void OnMetadataFinalized();

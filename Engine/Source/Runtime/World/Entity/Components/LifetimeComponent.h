@@ -9,6 +9,7 @@ namespace Lumina
     {
         GENERATED_BODY()
         
+        /** Time in seconds before the entity is automatically destroyed (0 = never). */
         PROPERTY(Script)
         float Lifetime = 0.0f;
     };

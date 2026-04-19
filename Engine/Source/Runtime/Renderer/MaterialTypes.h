@@ -47,12 +47,15 @@ namespace Lumina
     {
         GENERATED_BODY()
         
+        /** Name key used to look up this parameter in the material. */
         PROPERTY()
         FName ParameterName;
 
+        /** Data type of the parameter (Scalar, Vector, or Texture). */
         PROPERTY()
         EMaterialParameterType Type;
 
+        /** Slot index within the appropriate uniform array for this parameter type. */
         PROPERTY()
         uint16 Index;
     };

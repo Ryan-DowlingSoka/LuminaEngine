@@ -310,7 +310,8 @@ struct FCullData
     uint     bHasDirectional;
     float    PyramidWidth;
     float    PyramidHeight;
-    uint     Padding1[2];
+    float    ShadowMaxDistance;
+    uint     bShadowOcclusionCull;
 };
 
 struct FSceneGlobalData

@@ -116,6 +116,8 @@ namespace Lumina
         SceneGlobalData.CullData.bOcclusionCull         = RenderSettings.bOcclusionCull;
         SceneGlobalData.CullData.PyramidWidth           = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
         SceneGlobalData.CullData.PyramidHeight          = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeY();
+        SceneGlobalData.CullData.ShadowMaxDistance      = RenderSettings.ShadowMaxDistance;
+        SceneGlobalData.CullData.bShadowOcclusionCull   = RenderSettings.bShadowOcclusionCull;
         
         
         // Wait for shader tasks.
@@ -1814,7 +1816,7 @@ namespace Lumina
             
             FRenderState RenderState; RenderState
                     .SetDepthStencilState(FDepthStencilState()
-                    .SetDepthFunc(EComparisonFunc::LessOrEqual))
+                    .SetDepthFunc(EComparisonFunc::Less))
                     .SetRasterState(FRasterState()
                         .SetSlopeScaleDepthBias(1.75f)
                         .SetDepthBias(100)
@@ -1914,7 +1916,7 @@ namespace Lumina
             
             FRenderState RenderState; RenderState
                 .SetDepthStencilState(FDepthStencilState()
-                    .SetDepthFunc(EComparisonFunc::LessOrEqual))
+                    .SetDepthFunc(EComparisonFunc::Less))
                     .SetRasterState(FRasterState()
                         .SetSlopeScaleDepthBias(1.75f)
                         .SetDepthBias(100)
@@ -2011,7 +2013,7 @@ namespace Lumina
             
             FRenderState RenderState; RenderState
                 .SetDepthStencilState(FDepthStencilState()
-                    .SetDepthFunc(EComparisonFunc::LessOrEqual))
+                    .SetDepthFunc(EComparisonFunc::Less))
                     .SetRasterState(FRasterState().SetCullFront());
             
             

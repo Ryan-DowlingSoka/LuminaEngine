@@ -46,7 +46,7 @@ namespace Lumina
         return Metadata.HasMetadata(Key);
     }
 
-    const FName& CField::GetMeta(const FName& Key) const
+    const FString& CField::GetMeta(const FName& Key) const
     {
         return Metadata.GetMetadata(Key);
     }

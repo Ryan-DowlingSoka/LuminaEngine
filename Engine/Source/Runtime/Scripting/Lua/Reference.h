@@ -25,14 +25,12 @@ namespace Lumina::Lua
         {
         public:
             
-            FIterator(lua_State* L, int InTableRef, bool bEnd = false)
+            FIterator(lua_State* L, bool bEnd = false)
                 : State(L)
-                , TableRef(InTableRef)
                 , bAtEnd(bEnd)
             {
                 if (!bAtEnd)
                 {
-                    lua_rawgeti(L, LUA_REGISTRYINDEX, TableRef);
                     lua_pushnil(L);
                     Advance();
                 }
@@ -55,8 +53,13 @@ namespace Lumina::Lua
             
             FIterator& operator++()
             {
-                lua_pop(State, 1);
                 Advance();
+                
+                if (bAtEnd)
+                {
+                    lua_pop(State, 2);
+                }
+                
                 return *this;
             }
 
@@ -77,7 +80,6 @@ namespace Lumina::Lua
             }
             
             lua_State* State = nullptr;
-            int TableRef = 0;
             bool bAtEnd = false;
         };
         
@@ -143,13 +145,13 @@ namespace Lumina::Lua
     
         NODISCARD FIterator begin() const
         {
-            DEBUG_ASSERT(IsTable());
-            return {State, Ref, false};
+            Push();
+            return {State, false};
         }
         
         NODISCARD FIterator end() const
         {
-            return {State, Ref, true};
+            return {State, true};
         }
         
     public:

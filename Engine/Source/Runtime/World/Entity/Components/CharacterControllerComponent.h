@@ -64,15 +64,19 @@ namespace Lumina
         FUNCTION(Script)
         void Jump() { bJumpPressed = true; }
         
+        /** Accumulated movement input vector, consumed each physics frame. */
         PROPERTY(Script, ReadOnly)
         glm::vec3 MoveInput;
 
+        /** Accumulated look input (X = yaw degrees, Y = pitch degrees). */
         PROPERTY(Script, ReadOnly)
         glm::vec2 LookInput;
-        
+
+        /** Minimum and maximum pitch angles (degrees) the look input is clamped to. */
         PROPERTY(Script, Editable)
         glm::vec2 PitchClamp = glm::vec2(-89.9, 89.9);
 
+        /** True for one frame after Jump() is called; consumed by the movement system. */
         PROPERTY(Script, ReadOnly)
         bool bJumpPressed = false;
     };

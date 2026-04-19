@@ -87,12 +87,15 @@ namespace Lumina
 
         CEdNodeGraphPin* CreatePin(CClass* InClass, const FString& Name, ENodePinDirection Direction);
 
+        /** Horizontal position of the node in the graph canvas. */
         PROPERTY(DuplicateTransient)
         float GridX;
 
+        /** Vertical position of the node in the graph canvas. */
         PROPERTY(DuplicateTransient)
         float GridY;
 
+        /** Unique identifier for this node within the graph. */
         PROPERTY(DuplicateTransient)
         int64 NodeID = 0;
         

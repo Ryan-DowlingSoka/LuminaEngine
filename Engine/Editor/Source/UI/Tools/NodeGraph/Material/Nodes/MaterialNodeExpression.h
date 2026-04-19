@@ -18,6 +18,7 @@ namespace Lumina
         
         CMaterialOutput* Output;
 
+        /** When true, this expression's result varies per-instance at runtime via dynamic parameters. */
         PROPERTY(Editable, Category = "Dynamic")
         bool bDynamic = false;
         
@@ -36,9 +37,11 @@ namespace Lumina
         CMaterialInput* A = nullptr;
         CMaterialInput* B = nullptr;
 
+        /** Constant value used for the A input when no pin is connected. */
         PROPERTY(Editable, Category = "Value")
         float ConstA = 0;
 
+        /** Constant value used for the B input when no pin is connected. */
         PROPERTY(Editable, Category = "Value")
         float ConstB = 0;
     };
@@ -165,6 +168,7 @@ namespace Lumina
         CMaterialInput* C = nullptr;
 
 
+        /** Constant smoothstep position used when the C input pin is not connected. */
         PROPERTY(Editable, Category = "Value")
         float X = 0.5f;
 
@@ -375,6 +379,7 @@ namespace Lumina
         void* GetNodeDefaultValue() override { return &ConstA; }
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
 
+        /** Constant alpha used for the C input when the pin is not connected (0 = A, 1 = B). */
         PROPERTY(Editable, Category = "Value")
         float Alpha = 0;
 
@@ -418,15 +423,19 @@ namespace Lumina
 
         CMaterialInput* InputPin = nullptr;
 
+        /** Pass the R channel through to the output. */
         PROPERTY(Editable)
         bool R = true;
 
+        /** Pass the G channel through to the output. */
         PROPERTY(Editable)
         bool G = true;
 
+        /** Pass the B channel through to the output. */
         PROPERTY(Editable)
         bool B = true;
 
+        /** Pass the A channel through to the output. */
         PROPERTY(Editable)
         bool A = true;
 
@@ -650,9 +659,11 @@ namespace Lumina
         CMaterialInput* Time = nullptr;
         CMaterialInput* Speed = nullptr;
 
+        /** Constant U-axis scroll speed used when the Speed pin is not connected. */
         PROPERTY(Editable)
         float SpeedX = 1.0f;
 
+        /** Constant V-axis scroll speed used when the Speed pin is not connected. */
         PROPERTY(Editable)
         float SpeedY = 1.0f;
     };
@@ -669,12 +680,15 @@ namespace Lumina
         void* GetNodeDefaultValue() override { return nullptr; }
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
 
+        /** Index of the UV set to sample from the mesh. */
         PROPERTY(Editable)
         uint32 TextureIndex = 0;
 
+        /** Tiling multiplier applied to the U axis of the UV coordinates. */
         PROPERTY(Editable)
         float UTiling = 1.0f;
 
+        /** Tiling multiplier applied to the V axis of the UV coordinates. */
         PROPERTY(Editable)
         float VTiling = 1.0f;
     };
@@ -696,9 +710,11 @@ namespace Lumina
         
         void* GetNodeDefaultValue() override { return &Value.r; }
 
+        /** Name used to expose this constant as a material parameter for instancing. */
         PROPERTY(Editable, Category = "Parameter")
         FName               ParameterName;
 
+        /** Default value of the constant, also used as the parameter default. */
         PROPERTY(Editable, Color, Category = "Value")
         glm::vec4           Value = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         

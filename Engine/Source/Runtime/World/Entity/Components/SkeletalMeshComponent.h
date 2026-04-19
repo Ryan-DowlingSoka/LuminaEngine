@@ -21,12 +21,15 @@ namespace Lumina
         FUNCTION(Script)
         FAABB GetAABB() const;
         
+        /** The skeletal mesh asset to render and animate for this component. */
         PROPERTY(Editable, Category = "Mesh")
         TObjectPtr<CSkeletalMesh> SkeletalMesh;
-        
+
+        /** When true, this mesh writes to the shadow map. */
         PROPERTY(Editable, Category = "Shadow")
         bool bCastShadow = true;
 
+        /** When true, this mesh receives shadowing from shadow-casting lights. */
         PROPERTY(Editable, Category = "Shadow")
         bool bReceiveShadow = true;
         
