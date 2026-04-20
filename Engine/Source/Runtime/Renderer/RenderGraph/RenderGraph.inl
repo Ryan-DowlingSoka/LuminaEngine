@@ -8,9 +8,13 @@ namespace Lumina
     template <Concept::TExecutor ExecutorType>
     FRGPassHandle FRenderGraph::AddPass(ERGPassFlags PassFlags, FStringView EventName, const FRGPassDescriptor* Parameters, ExecutorType&& Executor)
     {
-        FRGPassHandle Pass =  GraphAllocator.TAlloc<TRGPass<ExecutorType>>(FRGEvent(EventName), PassFlags, Parameters, Forward<ExecutorType>(Executor));
-        PassGroups.emplace_back().push_back(Pass);
+        FRGPassHandle Pass = GraphAllocator.TAlloc<TRGPass<ExecutorType>>(
+            FRGEvent(EventName),
+            PassFlags,
+            Parameters,
+            Forward<ExecutorType>(Executor));
 
+        Passes.push_back(Pass);
         return Pass;
     }
 }

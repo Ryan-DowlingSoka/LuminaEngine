@@ -309,6 +309,7 @@ namespace Lumina
         CMaterial* Material = Cast<CMaterial>(Asset.Get());
 
         FMaterialCompiler Compiler;
+        Compiler.SetMaterialType(Material->GetMaterialType());
         NodeGraph->CompileGraph(Compiler);
         Material->SetReadyForRender(false);
 
@@ -324,14 +325,16 @@ namespace Lumina
         }
         else
         {
-            Tree = Compiler.BuildTree(ReplacementStart, ReplacementEnd);
+            Tree = Compiler.BuildTree(ReplacementStart, ReplacementEnd, Material->GetMaterialType());
             CompilationResult.CompilationLog = "Generated GLSL: \n \n \n";
             CompilationResult.bIsError = false;
             bGLSLPreviewDirty = true;
-            
+
             IShaderCompiler* ShaderCompiler = GRenderContext->GetShaderCompiler();
-            
-            FString VertexPath = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/BaseVertexPass.slang";
+
+            const bool bIsTerrainMaterial = Material->GetMaterialType() == EMaterialType::Terrain;
+            FString VertexPath = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/"
+                + (bIsTerrainMaterial ? "TerrainBaseVertexPass.slang" : "BaseVertexPass.slang");
             FString LoadedVertexString;
             if (!FileHelper::LoadFileIntoString(LoadedVertexString, VertexPath))
             {

@@ -1,8 +1,6 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-
-
 struct FragmentInput
 {
     float2 UV                           : TEXCOORD0;

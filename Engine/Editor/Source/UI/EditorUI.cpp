@@ -43,6 +43,7 @@
 #include "Assets/AssetTypes/Mesh/SkeletalMesh/SkeletalMesh.h"
 #include "Assets/AssetTypes/Mesh/Skeleton/Skeleton.h"
 #include "Assets/AssetTypes/Mesh/StaticMesh/StaticMesh.h"
+#include "Assets/AssetTypes/ParticleSystem/ParticleSystem.h"
 #include "Assets/AssetTypes/Prefabs/Prefab.h"
 #include "Assets/AssetTypes/Textures/Texture.h"
 #include "Config/Config.h"
@@ -81,6 +82,7 @@
 #include "Tools/AssetEditors/MeshEditor/MeshEditorTool.h"
 #include "Tools/AssetEditors/MeshEditor/SkeletalMeshEditorTool.h"
 #include "Tools/AssetEditors/MeshEditor/SkeletonEditorTool.h"
+#include "Tools/AssetEditors/ParticleSystemEditor/ParticleSystemEditorTool.h"
 #include "Tools/AssetEditors/PrefabEditor/PrefabEditorTool.h"
 #include "Tools/AssetEditors/TextureEditor/TextureEditorTool.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
@@ -653,7 +655,11 @@ namespace Lumina
         }
         
         FEditorTool* NewTool = nullptr;
-        if (Asset->IsA<CMaterial>())
+        if (Asset->IsA<CParticleSystem>())
+        {
+            NewTool = CreateTool<FParticleSystemEditorTool>(this, Asset);
+        }
+        else if (Asset->IsA<CMaterial>())
         {
             NewTool = CreateTool<FMaterialEditorTool>(this, Asset);
         }

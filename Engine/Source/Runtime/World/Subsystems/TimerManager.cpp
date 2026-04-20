@@ -15,7 +15,7 @@ namespace Lumina
 
     void FTimerManager::RegisterLuaModule(Lua::FRef& GlobalRef)
     {
-        GlobalRef.NewClass<FTimerManager>("Timer")
+        GlobalRef.NewClass<FTimerManager>("TimerManager")
             .AddFunction<&FTimerManager::Delay_Lua>("Delay")
             .AddFunction<&FTimerManager::SetTimer_Lua>("SetTimer")
             .AddFunction<&FTimerManager::SetEntityTimer_Lua>("SetEntityTimer")

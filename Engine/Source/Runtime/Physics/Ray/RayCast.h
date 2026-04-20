@@ -2,6 +2,7 @@
 
 #include "Platform/GenericPlatform.h"
 #include "Core/Object/ObjectMacros.h"
+#include "Physics/PhysicsTypes.h"
 #include "RayCast.generated.h"
 
 namespace Lumina

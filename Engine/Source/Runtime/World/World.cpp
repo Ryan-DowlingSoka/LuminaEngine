@@ -852,7 +852,7 @@ namespace Lumina
         ScriptComponent.Script->Environment.RawSet("Registry", &EntityRegistry);
         ScriptComponent.Script->Environment.RawSet("Physics", PhysicsScene.get());
         ScriptComponent.Script->Environment.RawSet("Events", &LuaEventBus);
-        ScriptComponent.Script->Environment.RawSet("Timer", &TimerManager);
+        ScriptComponent.Script->Environment.RawSet("TimerManager", &TimerManager);
         
         auto DrawInterface = ScriptComponent.Script->Environment.NewTable("DrawInterface");
         DrawInterface.SetFunction<&IPrimitiveDrawInterface::DrawSphere>("DrawSphere", static_cast<IPrimitiveDrawInterface*>(this));

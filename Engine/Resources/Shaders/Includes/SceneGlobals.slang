@@ -23,12 +23,7 @@ struct SkinnedVertexBuffer
 
 [[vk::binding(9,  0)]] Sampler2DArray                               uShadowCascade;
 [[vk::binding(10, 0)]] Sampler2DArray                               uShadowAtlas;
-[[vk::binding(11, 0)]] Texture2D<uint>                              uSelectionTexture;
 [[vk::binding(12, 0)]] Sampler2D                                    uDepthPyramid;
-[[vk::binding(13, 0)]] Sampler2D                                    uHDRSceneColor;
-
-[[vk::binding(14, 0)]] Sampler2D                                    uAccum;
-[[vk::binding(15, 0)]] Sampler2D                                    uRevealage;
 
 // Parallel shadow-caster indirect/mapping buffers. The shadow cull pass writes
 // these, and every shadow-map rendering pass (CSM, spot, point) consumes them,

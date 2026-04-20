@@ -333,13 +333,13 @@ namespace Lumina
         
             Slang::ComPtr<slang::IModule> SlangModule;
             SlangModule = Session->loadModuleFromSourceString("RawShader", "RawShader.slang", ShaderString.c_str(), Diagnostics.writeRef());
-        
+
             if (Diagnostics)
             {
                 LOG_WARN("Slang diagnostics: {}", (const char*)Diagnostics->getBufferPointer());
                 Diagnostics = nullptr;
             }
-        
+
             if (!SlangModule)
             {
                 LOG_ERROR("Slang: Failed to load shader module");

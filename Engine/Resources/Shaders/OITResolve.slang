@@ -1,5 +1,8 @@
 #pragma once
-#include "Includes/SceneGlobals.slang"
+#include "Includes/Common.slang"
+
+[[vk::binding(0, 0)]] Sampler2D uAccum;
+[[vk::binding(1, 0)]] Sampler2D uRevealage;
 
 struct FSInput
 {

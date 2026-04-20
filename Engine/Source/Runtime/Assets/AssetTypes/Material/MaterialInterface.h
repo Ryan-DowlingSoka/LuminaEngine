@@ -23,6 +23,7 @@ namespace Lumina
         PBR,
         PostProcess,
         UI,
+        Terrain,
     };
 
     REFLECT()

@@ -1,0 +1,136 @@
+#include "ParticleNodeGraph.h"
+#include "ParticleCompiler.h"
+#include "Core/Object/Cast.h"
+#include "Nodes/ParticleOutputNode.h"
+#include "Nodes/ParticleExpressionNodes.h"
+#include "UI/Tools/NodeGraph/GraphAlgorithms.h"
+
+namespace Lumina
+{
+    void CParticleNodeGraph::Initialize()
+    {
+        Super::Initialize();
+
+        bool bHasOutputNode = false;
+        for (const TObjectPtr<CEdGraphNode>& Node : Nodes)
+        {
+            if (Node.IsValid() && Node->IsA<CParticleOutputNode>())
+            {
+                bHasOutputNode = true;
+                break;
+            }
+        }
+
+        if (!bHasOutputNode)
+        {
+            CreateNode(CParticleOutputNode::StaticClass());
+        }
+
+        RegisterGraphNode(CParticleExpression_ConstantFloat::StaticClass());
+        RegisterGraphNode(CParticleExpression_ConstantFloat3::StaticClass());
+        RegisterGraphNode(CParticleExpression_ConstantFloat4::StaticClass());
+        RegisterGraphNode(CParticleExpression_Time::StaticClass());
+        RegisterGraphNode(CParticleExpression_ParticleAge::StaticClass());
+        RegisterGraphNode(CParticleExpression_LifeRatio::StaticClass());
+        RegisterGraphNode(CParticleExpression_Add::StaticClass());
+        RegisterGraphNode(CParticleExpression_Subtract::StaticClass());
+        RegisterGraphNode(CParticleExpression_Multiply::StaticClass());
+        RegisterGraphNode(CParticleExpression_Divide::StaticClass());
+        RegisterGraphNode(CParticleExpression_Lerp::StaticClass());
+        RegisterGraphNode(CParticleExpression_Saturate::StaticClass());
+        RegisterGraphNode(CParticleExpression_Sin::StaticClass());
+        RegisterGraphNode(CParticleExpression_Cos::StaticClass());
+        RegisterGraphNode(CParticleExpression_Normalize::StaticClass());
+        RegisterGraphNode(CParticleExpression_MakeFloat3::StaticClass());
+        RegisterGraphNode(CParticleExpression_MakeFloat4::StaticClass());
+
+        ValidateGraph();
+    }
+
+    void CParticleNodeGraph::Shutdown()
+    {
+        CEdNodeGraph::Shutdown();
+    }
+
+    void CParticleNodeGraph::CompileGraph(FParticleCompiler& Compiler)
+    {
+        if (Nodes.empty())
+        {
+            return;
+        }
+
+        for (CEdGraphNode* Node : Nodes)
+        {
+            Node->ClearError();
+        }
+
+        // Cycle detection only. Emission itself is demand-driven from the output
+        // node, so we don't need the sorted list.
+        TVector<CEdGraphNode*> SortedNodes;
+        CEdGraphNode* CyclicNode = GraphAlgorithms::TopologicalSortFromRoot(Nodes, SortedNodes, [](CEdGraphNode* Node)
+        {
+            return Cast<CParticleOutputNode>(Node) != nullptr;
+        });
+
+        if (CyclicNode != nullptr)
+        {
+            EdNodeGraph::FError Error;
+            Error.Name          = "Cyclic";
+            Error.Description   = "Cycle detected in particle node graph!";
+            Error.Node          = CyclicNode;
+            Compiler.AddError(Error);
+            return;
+        }
+
+        for (size_t i = 0; i < SortedNodes.size(); ++i)
+        {
+            SortedNodes[i]->SetDebugExecutionOrder((uint32)i);
+        }
+
+        CParticleOutputNode* OutputNode = nullptr;
+        for (const TObjectPtr<CEdGraphNode>& Node : Nodes)
+        {
+            if (CParticleOutputNode* Out = Cast<CParticleOutputNode>(Node.Get()))
+            {
+                OutputNode = Out;
+                break;
+            }
+        }
+
+        if (OutputNode == nullptr)
+        {
+            EdNodeGraph::FError Error;
+            Error.Name          = "NoOutput";
+            Error.Description   = "Particle graph is missing an Output node.";
+            Compiler.AddError(Error);
+            return;
+        }
+
+        // Emit the output node once per context. Each call walks its inputs, which
+        // triggers EnsureEmitted on upstream nodes — so any node referenced from
+        // both halves of the graph emits the right variable in each scope exactly once.
+        Compiler.SetContext(EParticleContext::Spawn);
+        OutputNode->GenerateDefinition(Compiler);
+
+        Compiler.SetContext(EParticleContext::Update);
+        OutputNode->GenerateDefinition(Compiler);
+    }
+
+    void CParticleNodeGraph::ValidateGraph()
+    {
+        Connections.clear();
+        Connections.reserve(16);
+
+        for (CEdGraphNode* Node : Nodes)
+        {
+            for (CEdNodeGraphPin* InputPin : Node->GetInputPins())
+            {
+                for (CEdNodeGraphPin* Connection : InputPin->GetConnections())
+                {
+                    Connections.push_back(InputPin->PinID);
+                    Connections.push_back(Connection->PinID);
+                }
+            }
+        }
+    }
+}

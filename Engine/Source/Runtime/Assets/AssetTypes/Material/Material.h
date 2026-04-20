@@ -40,8 +40,10 @@ namespace Lumina
         FRHIVertexShader* GetVertexShader() const override;
         FRHIPixelShader* GetPixelShader() const override;
         static CMaterial* GetDefaultMaterial();
+        static CMaterial* GetDefaultTerrainMaterial();
 
         static void CreateDefaultMaterial();
+        static void CreateDefaultTerrainMaterial();
 
         EMaterialType GetMaterialType() const override { return MaterialType; }
         bool DoesCastShadows() const override { return bCastShadows; }

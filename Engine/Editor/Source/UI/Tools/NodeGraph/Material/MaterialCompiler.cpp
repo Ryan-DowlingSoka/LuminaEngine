@@ -14,14 +14,17 @@ namespace Lumina
 		ShaderChunks.reserve(2000);
 	}
 
-	FString FMaterialCompiler::BuildTree(size_t& StartReplacement, size_t& EndReplacement) const
+	FString FMaterialCompiler::BuildTree(size_t& StartReplacement, size_t& EndReplacement, EMaterialType MaterialType) const
 	{
-		FString FragmentPath = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/BasePixelPass.slang";
+		const FString BasePath = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/";
+		const FString FragmentPath = (MaterialType == EMaterialType::Terrain)
+			? BasePath + "TerrainBasePixelPass.slang"
+			: BasePath + "BasePixelPass.slang";
 
 		FString LoadedString;
 		if (!FileHelper::LoadFileIntoString(LoadedString, FragmentPath))
 		{
-			LOG_ERROR("Failed to find BasePixelPass.slang!");
+			LOG_ERROR("Failed to find {}!", FragmentPath);
 			return LoadedString;
 		}
 
@@ -969,6 +972,101 @@ namespace Lumina
 		FString TypeStr = GetVectorType(AValue.Type);
 
 		ShaderChunks.append(TypeStr + " " + OwningNode + " = abs(" + AValue.Value + ");\n");
+	}
+
+	void FMaterialCompiler::TerrainLayerWeight(const FString& ID, uint32 LayerIndex, CMaterialGraphNode* Node)
+	{
+		if (CurrentMaterialType != EMaterialType::Terrain)
+		{
+			EdNodeGraph::FError Error;
+			Error.Node = Node;
+			Error.Name = "Invalid Material Type";
+			Error.Description = "TerrainLayerWeight is only usable in Terrain materials.";
+			AddError(Error);
+			ShaderChunks.append("float " + ID + " = 0.0;\n");
+			return;
+		}
+
+		if (LayerIndex > 3)
+		{
+			LayerIndex = 3;
+		}
+
+		const char* Swizzle = "x";
+		switch (LayerIndex)
+		{
+			case 0: Swizzle = "x"; break;
+			case 1: Swizzle = "y"; break;
+			case 2: Swizzle = "z"; break;
+			case 3: Swizzle = "w"; break;
+		}
+		ShaderChunks.append("float " + ID + " = GetTerrainLayerWeights4(HeightUV)." + FString(Swizzle) + ";\n");
+	}
+
+	void FMaterialCompiler::TerrainLayerWeights(const FString& ID, CMaterialGraphNode* Node)
+	{
+		if (CurrentMaterialType != EMaterialType::Terrain)
+		{
+			EdNodeGraph::FError Error;
+			Error.Node = Node;
+			Error.Name = "Invalid Material Type";
+			Error.Description = "TerrainLayerWeights is only usable in Terrain materials.";
+			AddError(Error);
+			ShaderChunks.append("float4 " + ID + " = float4(1.0, 0.0, 0.0, 0.0);\n");
+			return;
+		}
+
+		ShaderChunks.append("float4 " + ID + " = GetTerrainLayerWeights4(HeightUV);\n");
+	}
+
+	void FMaterialCompiler::TerrainLayerBlend(CMaterialInput* Layer0, CMaterialInput* Layer1, CMaterialInput* Layer2, CMaterialInput* Layer3)
+	{
+		FString OwningNode = Layer0->GetOwningNode()->GetNodeFullName();
+
+		if (CurrentMaterialType != EMaterialType::Terrain)
+		{
+			EdNodeGraph::FError Error;
+			Error.Node = Layer0->GetOwningNode<CMaterialGraphNode>();
+			Error.Name = "Invalid Material Type";
+			Error.Description = "TerrainLayerBlend is only usable in Terrain materials.";
+			AddError(Error);
+			ShaderChunks.append("float3 " + OwningNode + " = float3(0.0);\n");
+			return;
+		}
+
+		FInputValue L0 = GetTypedInputValue(Layer0, "float3(0.0)");
+		FInputValue L1 = GetTypedInputValue(Layer1, "float3(0.0)");
+		FInputValue L2 = GetTypedInputValue(Layer2, "float3(0.0)");
+		FInputValue L3 = GetTypedInputValue(Layer3, "float3(0.0)");
+
+		auto Coerce = [](const FInputValue& V) -> FString
+		{
+			if (V.ComponentCount >= 4)
+			{
+				return "float3(" + V.Value + GetSwizzleForMask(V.Mask) + ".xyz)";
+			}
+			if (V.ComponentCount == 3)
+			{
+				return V.Value + GetSwizzleForMask(V.Mask);
+			}
+			if (V.ComponentCount == 2)
+			{
+				return "float3(" + V.Value + GetSwizzleForMask(V.Mask) + ", 0.0)";
+			}
+			return "float3(" + V.Value + GetSwizzleForMask(V.Mask) + ")";
+		};
+
+		FString L0Str = Coerce(L0);
+		FString L1Str = Coerce(L1);
+		FString L2Str = Coerce(L2);
+		FString L3Str = Coerce(L3);
+
+		ShaderChunks.append("float4 " + OwningNode + "_W = GetTerrainLayerWeights4(HeightUV);\n");
+		ShaderChunks.append("float3 " + OwningNode + " = "
+			+ L0Str + " * " + OwningNode + "_W.x + "
+			+ L1Str + " * " + OwningNode + "_W.y + "
+			+ L2Str + " * " + OwningNode + "_W.z + "
+			+ L3Str + " * " + OwningNode + "_W.w;\n");
 	}
 
 	void FMaterialCompiler::GetBoundTextures(TVector<TObjectPtr<CTexture>>& Images)

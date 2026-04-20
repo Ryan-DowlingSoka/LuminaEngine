@@ -6,6 +6,7 @@
 #include "ImGuizmo.h"
 #include "Core/Delegates/Delegate.h"
 #include "Core/Object/Class.h"
+#include "TerrainEditMode.h"
 #include "Tools/UI/ImGui/Widgets/TreeListView.h"
 #include "UI/Properties/PropertyTable.h"
 #include "World/Entity/Components/NameComponent.h"
@@ -169,6 +170,8 @@ namespace Lumina
         TQueue<entt::entity>                    EntityDestroyRequests;
         TVector<TUniquePtr<FPropertyTable>>     PropertyTables;
         TUniquePtr<FPropertyTable>              WorldSettingsPropertyTable;
+
+        FTerrainEditMode                        TerrainEditMode;
         
 
         float                                   GuizmoSnapTranslate = 0.1f;

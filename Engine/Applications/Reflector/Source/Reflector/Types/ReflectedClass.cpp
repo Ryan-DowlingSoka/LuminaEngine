@@ -72,7 +72,7 @@ namespace Lumina::Reflection
             else
             {
                 Writer.Line("\tnullptr,");
-                Writer.Append("\t0");
+                Writer.Append("\t0,");
             }
 
             if (!Class.Metadata.empty())

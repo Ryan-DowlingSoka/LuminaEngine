@@ -1,5 +1,7 @@
 #pragma once
-#include "Includes/SceneGlobals.slang"
+#include "Includes/Common.slang"
+
+[[vk::binding(0, 2)]] Sampler2D uHDRSceneColor;
 
 struct FPushConstants
 {

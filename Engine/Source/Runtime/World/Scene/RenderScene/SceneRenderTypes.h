@@ -368,7 +368,7 @@ namespace Lumina
     struct FCullData
     {
         FFrustum Frustum;
-        // Extruded camera frustum swept along the sun light direction. Used by
+        // Extruded camera frustum swept along the sunlight direction. Used by
         // the shadow-cull compute pass so casters outside the camera frustum
         // still get written into the shadow indirect buffer. If there is no
         // directional light in the scene this mirrors Frustum (unused).
@@ -393,6 +393,43 @@ namespace Lumina
         uint32 bShadowOcclusionCull;    // Enable camera Hi-Z test for in-frustum casters.
     };
     
+    
+    // Sim flag bitmask, must match constants in ParticleSimulate(.Template).slang
+    static constexpr uint32 PARTICLE_SIM_FLAG_LOOP          = 1u << 0;
+    static constexpr uint32 PARTICLE_SIM_FLAG_BURST_PENDING = 1u << 1;
+
+    // 288 byte layout, must match FParticleSimParams in ParticleSimulate.slang / ParticleSimulateTemplate.slang.
+    struct alignas(16) FParticleSimParamsGPU
+    {
+        glm::vec4  EmitterPosition;
+        glm::vec4  EmitterForward;
+        glm::vec4  EmitterRight;
+        glm::vec4  EmitterUp;
+        glm::uvec4 Counts;              // x=MaxParticles, y=SpawnCount, z=FrameSeed, w=SimFlags
+        glm::uvec4 Modes;               // x=Shape, y=VelocityMode
+        glm::vec4  ShapeSize;           // xyz dims; w=cone half-angle (radians)
+        glm::vec4  VelocityMin;
+        glm::vec4  VelocityMax;
+        glm::vec4  SpeedAndLifetime;    // x=speedMin, y=speedMax, z=lifeMin, w=lifeMax
+        glm::vec4  Gravity;             // xyz=gravity, w=drag
+        glm::vec4  StartColor;
+        glm::vec4  EndColor;
+        glm::vec4  SizeRange;           // xy=start(min,max); zw=end(min,max)
+        glm::vec4  RotationRange;       // xy=rot(min,max); zw=rotSpeed(min,max)
+        glm::vec4  NoiseStrength;       // xyz=strength; w=scale
+        glm::vec4  NoiseParams;         // x=speed
+        glm::vec4  Timing;              // x=DeltaTime, y=TotalTime, z=SystemAge
+    };
+    static_assert(sizeof(FParticleSimParamsGPU) == 288, "FParticleSimParamsGPU layout must match shader");
+
+    // 48 byte layout. must match FParticleRenderParams in ParticleVertex.slang.
+    struct alignas(16) FParticleRenderParamsGPU
+    {
+        glm::uvec4 Flags;       // x=TextureIndex, y=BillboardToCamera
+        glm::vec4  Tint;        // xyz=color, w=intensity
+        glm::vec4  UVParams;    // reserved
+    };
+    static_assert(sizeof(FParticleRenderParamsGPU) == 48, "FParticleRenderParamsGPU layout must match shader");
     
     struct FGPUSceneSettings
     {

@@ -12,7 +12,8 @@
 namespace Lumina
 {
     static CMaterial* DefaultMaterial = nullptr;
-    
+    static CMaterial* DefaultTerrainMaterial = nullptr;
+
     CMaterial::CMaterial()
     {
         MaterialType = EMaterialType::PBR;
@@ -29,6 +30,10 @@ namespace Lumina
         if (DefaultMaterial == nullptr)
         {
             CreateDefaultMaterial();
+        }
+        if (DefaultTerrainMaterial == nullptr)
+        {
+            CreateDefaultTerrainMaterial();
         }
     }
 
@@ -183,6 +188,11 @@ namespace Lumina
         return DefaultMaterial;
     }
 
+    CMaterial* CMaterial::GetDefaultTerrainMaterial()
+    {
+        return DefaultTerrainMaterial;
+    }
+
     void CMaterial::CreateDefaultMaterial()
     {
         IShaderCompiler* ShaderCompiler = GRenderContext->GetShaderCompiler();
@@ -257,5 +267,92 @@ namespace Lumina
         ShaderCompiler->Flush();
 
         DefaultMaterial->PostLoad();
+    }
+
+    void CMaterial::CreateDefaultTerrainMaterial()
+    {
+        IShaderCompiler* ShaderCompiler = GRenderContext->GetShaderCompiler();
+
+        ShaderCompiler->Flush();
+
+        FString PixelPath  = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/TerrainBasePixelPass.slang";
+        FString VertexPath = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/TerrainBaseVertexPass.slang";
+
+        if (DefaultTerrainMaterial)
+        {
+            DefaultTerrainMaterial->RemoveFromRoot();
+            DefaultTerrainMaterial->ConditionalBeginDestroy();
+            DefaultTerrainMaterial = nullptr;
+        }
+
+        DefaultTerrainMaterial = NewObject<CMaterial>(nullptr, "DefaultTerrainMaterial");
+        DefaultTerrainMaterial->AddToRoot();
+        DefaultTerrainMaterial->MaterialType = EMaterialType::Terrain;
+
+        FString LoadedPixelString;
+        if (!FileHelper::LoadFileIntoString(LoadedPixelString, PixelPath))
+        {
+            LOG_ERROR("Failed to find TerrainBasePixelPass.slang!");
+            return;
+        }
+
+        // Default terrain material: 4-layer weighted albedo with hardcoded defaults,
+        // so an unassigned terrain still reads as distinct painted regions rather
+        // than a single flat color. A user-authored CMaterial replaces this via its
+        // own graph-compiled $MATERIAL_INPUTS.
+        const char* Token = "$MATERIAL_INPUTS";
+        size_t PixelPos = LoadedPixelString.find(Token);
+
+        // Layer palette: dry earth / grass / rock / sand. Slang rejects typed array
+        // initializers here, so the blend is expanded into a straight weighted sum.
+        FString PixelReplacement;
+        PixelReplacement += "\tfloat4 _LayerW = GetTerrainLayerWeights4(HeightUV);\n";
+        PixelReplacement += "\tfloat3 _TerrainAlbedo = float3(0.45, 0.40, 0.30) * _LayerW.x\n";
+        PixelReplacement += "\t                     + float3(0.25, 0.45, 0.15) * _LayerW.y\n";
+        PixelReplacement += "\t                     + float3(0.55, 0.55, 0.55) * _LayerW.z\n";
+        PixelReplacement += "\t                     + float3(0.85, 0.80, 0.60) * _LayerW.w;\n";
+        PixelReplacement += "\tFMaterialPixelInputs Material;\n";
+        PixelReplacement += "\tMaterial.Diffuse               = _TerrainAlbedo;\n";
+        PixelReplacement += "\tMaterial.Metallic              = 0.0;\n";
+        PixelReplacement += "\tMaterial.Roughness             = 0.9;\n";
+        PixelReplacement += "\tMaterial.Specular              = 0.5;\n";
+        PixelReplacement += "\tMaterial.Emissive              = float3(0.0);\n";
+        PixelReplacement += "\tMaterial.AmbientOcclusion      = 1.0;\n";
+        PixelReplacement += "\tMaterial.Normal                = float3(0.0, 0.0, 1.0);\n";
+        PixelReplacement += "\tMaterial.Opacity               = 1.0;\n";
+
+        if (PixelPos != FString::npos)
+        {
+            LoadedPixelString.replace(PixelPos, strlen(Token), PixelReplacement);
+        }
+        else
+        {
+            LOG_ERROR("Missing [$MATERIAL_INPUTS] in terrain base shader!");
+        }
+
+        FString LoadedVertexString;
+        if (!FileHelper::LoadFileIntoString(LoadedVertexString, VertexPath))
+        {
+            LOG_ERROR("Failed to find TerrainBaseVertexPass.slang!");
+            return;
+        }
+
+        ShaderCompiler->CompilerShaderRaw(Move(LoadedPixelString), {}, [](const FShaderHeader& Header) mutable
+        {
+            DefaultTerrainMaterial->PixelShader = GRenderContext->CreatePixelShader(Header);
+            DefaultTerrainMaterial->PixelShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+            GRenderContext->OnShaderCompiled(DefaultTerrainMaterial->PixelShader, false, true);
+        });
+
+        ShaderCompiler->CompilerShaderRaw(Move(LoadedVertexString), {}, [](const FShaderHeader& Header) mutable
+        {
+            DefaultTerrainMaterial->VertexShader = GRenderContext->CreateVertexShader(Header);
+            DefaultTerrainMaterial->VertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+            GRenderContext->OnShaderCompiled(DefaultTerrainMaterial->VertexShader, false, true);
+        });
+
+        ShaderCompiler->Flush();
+
+        DefaultTerrainMaterial->PostLoad();
     }
 }

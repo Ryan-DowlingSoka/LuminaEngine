@@ -508,13 +508,18 @@ namespace Lumina
         }
         
         SCameraComponent& CameraComponent = World->GetEntityRegistry().get<SCameraComponent>(EditorEntity);
-    
+
         glm::mat4 ViewMatrix = CameraComponent.GetViewMatrix();
         glm::mat4 ProjectionMatrix = CameraComponent.GetProjectionMatrix();
         ProjectionMatrix[1][1] *= -1.0f;
-        
+
+        const ImVec2 ViewportOrigin = ImGui::GetCursorScreenPos();
+
         ImGuizmo::SetDrawlist(ImGui::GetCurrentWindow()->DrawList);
-        ImGuizmo::SetRect(ImGui::GetCursorScreenPos().x, ImGui::GetCursorScreenPos().y, ViewportSize.x, ViewportSize.y);
+        ImGuizmo::SetRect(ViewportOrigin.x, ViewportOrigin.y, ViewportSize.x, ViewportSize.y);
+
+        TerrainEditMode.Tick(World, (float)World->GetWorldDeltaTime(), CameraComponent, bViewportHovered, ViewportOrigin, ViewportSize);
+        TerrainEditMode.DrawOverlay(World, ViewportOrigin, ViewportSize, CameraComponent);
 
         auto SelectionView = World->GetEntityRegistry().view<FSelectedInEditorComponent, STransformComponent>();
         
@@ -723,6 +728,7 @@ namespace Lumina
                     SelectionBox.Current = MousePosInViewport;
                 }
                 
+#if 0
                 if (SelectionBox.bActive)
                 {
                     ImDrawList* DrawList = ImGui::GetWindowDrawList();
@@ -734,7 +740,7 @@ namespace Lumina
                     DrawList->AddRectFilled(ScreenStart, ScreenEnd, IM_COL32(100, 150, 255, 50));
                     DrawList->AddRect(ScreenStart, ScreenEnd, IM_COL32(100, 150, 255, 255), 0.0f, 0, 2.0f);
                 }
-            
+#endif
                 if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && SelectionBox.bActive)
                 {
                     ImVec2 Start = SelectionBox.Start;
@@ -763,8 +769,8 @@ namespace Lumina
                         {
                             AddSelectedEntity(Entity, true);
                         }
-#endif
 						ImGuiX::Notifications::NotifyInfo("{}", "This functionality is temporarily disabled as the current implementation is too slow. We are working on a more efficient solution that should be available in a future update.");
+#endif
                     } 
     
                     SelectionBox.bActive = false;
@@ -961,12 +967,14 @@ namespace Lumina
                 ImGui::SameLine();
         
                 DrawViewportOptions(ButtonSize);
+
+                TerrainEditMode.DrawToolbar(World, ButtonSize);
             }
-            
+
             ImGui::EndGroup();
         }
         ImGui::End();
-    
+
         ImGui::PopStyleVar(4);
     }
 

@@ -23,9 +23,12 @@
 #include "world/entity/components/environmentcomponent.h"
 #include "world/entity/components/lightcomponent.h"
 #include "World/Entity/Components/LineBatcherComponent.h"
+#include "World/Entity/Components/ParticleSystemComponent.h"
 #include "World/Entity/Components/SkeletalMeshComponent.h"
 #include "world/entity/components/staticmeshcomponent.h"
+#include "World/Entity/Components/TerrainComponent.h"
 #include "World/Scene/RenderScene/MeshDrawCommand.h"
+#include "World/Scene/RenderScene/TerrainRenderTypes.h"
 
 namespace Lumina
 {
@@ -137,10 +140,14 @@ namespace Lumina
         SpotShadowPass(RenderGraph);
         CascadedShowPass(RenderGraph);
         EnvironmentPass(RenderGraph);
+        TerrainUpdatePass(RenderGraph);
         BasePass(RenderGraph);
+        TerrainRenderPass(RenderGraph);
         TransparentPass(RenderGraph);
         OITResolvePass(RenderGraph);
         BatchedLineDraw(RenderGraph);
+        ParticleSimulatePass(RenderGraph);
+        ParticleRenderPass(RenderGraph);
         BillboardPass(RenderGraph);
         ToneMappingPass(RenderGraph);
         DebugDrawPass(RenderGraph);
@@ -410,93 +417,65 @@ namespace Lumina
         
         
         //========================================================================================================================
-        
+
+        // All CPU-side state mutation (buffer resize, binding-set recreation, scene-global
+        // finalization) must happen BEFORE any pass lambdas run. The render graph records
+        // batches in parallel, so a pass in a later batch (e.g. CSM) may capture its buffer
+        // handles concurrently with an earlier batch's "Write Scene Buffers" lambda. If the
+        // resize is done inside that lambda, later batches can latch the old undersized
+        // buffer handle and fire a validation error (or crash) on draw recording.
+
+        SceneGlobalData.CullData.InstanceNum = (uint32)InstanceData.size();
+
+        // Build the shadow-cull frustum: the camera frustum swept along the sun
+        // direction so casters behind / above / beside the camera still write into
+        // the shadow indirect buffer. Distance is matched to the CSM far plane used
+        // in ProcessDirectionalLight (ShadowMaxDistance = 1000) with headroom for the
+        // cascade pullback.
+        if (LightData.bHasSun)
+        {
+            const glm::vec3 SunDir = glm::normalize(LightData.SunDirection);
+            constexpr float ShadowSweepDistance = 2000.0f;
+            SceneGlobalData.CullData.ShadowFrustum   = SceneGlobalData.CullData.Frustum.Extruded(SunDir, ShadowSweepDistance);
+            SceneGlobalData.CullData.bHasDirectional = 1u;
+        }
+        else
+        {
+            SceneGlobalData.CullData.ShadowFrustum   = SceneGlobalData.CullData.Frustum;
+            SceneGlobalData.CullData.bHasDirectional = 0u;
+        }
+
+        const SIZE_T SimpleVertexSize   = SimpleVertices.size() * sizeof(FSimpleElementVertex);
+        const SIZE_T InstanceDataSize   = InstanceData.size() * sizeof(FGPUInstance);
+        const SIZE_T BoneDataSize       = BonesData.size() * sizeof(glm::mat4);
+        const SIZE_T IndirectArgsSize   = IndirectDrawArguments.size() * sizeof(FDrawIndirectArguments);
+        const SIZE_T ActiveLightsSize   = LightData.NumLights * sizeof(FLight);
+        const SIZE_T LightUploadSize    = offsetof(FSceneLightData, Lights) + ActiveLightsSize;
+        const SIZE_T BillboardSize      = BillboardInstances.size() * sizeof(FBillboardInstance);
+
+        bool bAnyBufferResized = false;
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Instance], (uint32)InstanceDataSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMapping], sizeof(uint32) * InstanceData.size(), 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMappingShadow], sizeof(uint32) * InstanceData.size(), 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::SimpleVertex], (uint32)SimpleVertexSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Bone], (uint32)BoneDataSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Indirect], (uint32)IndirectArgsSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::IndirectShadow], (uint32)IndirectArgsSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Light], (uint32)LightUploadSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Billboards], (uint32)BillboardSize, 1.2f);
+
+        if (bAnyBufferResized)
+        {
+            CreateLayouts();
+        }
+
         {
             FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-            RenderGraph.AddPass(RG_Raster, "Write Scene Buffers", Descriptor, [this](ICommandList& CmdList)
+            RenderGraph.AddPass(RG_Raster, "Write Scene Buffers", Descriptor,
+                [this, SimpleVertexSize, InstanceDataSize, BoneDataSize, IndirectArgsSize, LightUploadSize, BillboardSize](ICommandList& CmdList)
             {
                 LUMINA_PROFILE_SECTION_COLORED("Write Scene Buffers", tracy::Color::OrangeRed3);
-                
-                SceneGlobalData.CullData.InstanceNum = (uint32)InstanceData.size();
 
-                // Build the shadow-cull frustum: the camera frustum swept along the sun
-                // direction so casters behind / above / beside the camera still write into
-                // the shadow indirect buffer. Distance is matched to the CSM far plane used
-                // in ProcessDirectionalLight (ShadowMaxDistance = 1000) with headroom for the
-                // cascade pullback.
-                if (LightData.bHasSun)
-                {
-                    const glm::vec3 SunDir = glm::normalize(LightData.SunDirection);
-                    constexpr float ShadowSweepDistance = 2000.0f;
-                    SceneGlobalData.CullData.ShadowFrustum   = SceneGlobalData.CullData.Frustum.Extruded(SunDir, ShadowSweepDistance);
-                    SceneGlobalData.CullData.bHasDirectional = 1u;
-                }
-                else
-                {
-                    SceneGlobalData.CullData.ShadowFrustum   = SceneGlobalData.CullData.Frustum;
-                    SceneGlobalData.CullData.bHasDirectional = 0u;
-                }
-                
-                const SIZE_T SimpleVertexSize   = SimpleVertices.size() * sizeof(FSimpleElementVertex);
-                const SIZE_T InstanceDataSize   = InstanceData.size() * sizeof(FGPUInstance);
-                const SIZE_T BoneDataSize       = BonesData.size() * sizeof(glm::mat4);
-                const SIZE_T IndirectArgsSize   = IndirectDrawArguments.size() * sizeof(FDrawIndirectArguments);
-                const SIZE_T ActiveLightsSize   = LightData.NumLights * sizeof(FLight);
-                const SIZE_T LightUploadSize    = offsetof(FSceneLightData, Lights) + ActiveLightsSize;
-                const SIZE_T BillboardSize      = BillboardInstances.size() * sizeof(FBillboardInstance);
-                
-                bool bAnyBufferResized = false;
-                
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Instance], (uint32)InstanceDataSize, 1.2f))
-                {
-                    bAnyBufferResized = true;
-                }
-                
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMapping], sizeof(uint32) * InstanceData.size(), 1.2f))
-                {
-                    bAnyBufferResized = true;
-                }
-
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMappingShadow], sizeof(uint32) * InstanceData.size(), 1.2f))
-                {
-                    bAnyBufferResized = true;
-                }
-                
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::SimpleVertex], (uint32)SimpleVertexSize, 1.2f))
-                {
-                    bAnyBufferResized = true;
-                }
-                
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Bone], (uint32)BoneDataSize, 1.2f))
-                {
-                    bAnyBufferResized = true;
-                }
-                
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Indirect], (uint32)IndirectArgsSize, 1.2f))
-                {
-                    bAnyBufferResized = true;
-                }
-
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::IndirectShadow], (uint32)IndirectArgsSize, 1.2f))
-                {
-                    bAnyBufferResized = true;
-                }
-                
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Light], (uint32)LightUploadSize, 1.2f))
-                {
-                    bAnyBufferResized = true;
-                }
-                
-                if (RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Billboards], (uint32)BillboardSize, 1.2f))
-                {
-                    bAnyBufferResized = true;
-                }
-                
-                if (bAnyBufferResized)
-                {
-                    CreateLayouts();
-                }
-                
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Scene), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Instance), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Bone), EResourceStates::CopyDest);
@@ -506,7 +485,7 @@ namespace Lumina
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Light), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Billboards), EResourceStates::CopyDest);
                 CmdList.CommitBarriers();
-                
+
                 CmdList.DisableAutomaticBarriers();
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Scene), &SceneGlobalData, sizeof(FSceneGlobalData));
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Instance), InstanceData.data(), InstanceDataSize);
@@ -699,6 +678,15 @@ namespace Lumina
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
         {
             CMaterialInterface* Material = MeshComponent.GetMaterialForSlot(Surface.MaterialIndex);
+            // Terrain-typed materials compile against TerrainBaseVertexPass, which
+            // references the terrain-only set 2 bindings (uHeightmap etc.). Letting
+            // one feed a mesh draw here would route its vertex shader through the
+            // BasePass pipeline layout (Scene + texture manager only) and fail
+            // pipeline-layout validation. Fall back to the default PBR material.
+            if (IsValid(Material) && Material->GetMaterialType() == EMaterialType::Terrain)
+            {
+                Material = nullptr;
+            }
             if (!IsValid(Material) || !IsValid(Material->GetMaterial()) || !Material->IsReadyForRender())
             {
                 Material = CMaterial::GetDefaultMaterial();
@@ -791,6 +779,15 @@ namespace Lumina
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
         {
             CMaterialInterface* Material = MeshComponent.GetMaterialForSlot(Surface.MaterialIndex);
+            // Terrain-typed materials compile against TerrainBaseVertexPass, which
+            // references the terrain-only set 2 bindings (uHeightmap etc.). Letting
+            // one feed a mesh draw here would route its vertex shader through the
+            // BasePass pipeline layout (Scene + texture manager only) and fail
+            // pipeline-layout validation. Fall back to the default PBR material.
+            if (IsValid(Material) && Material->GetMaterialType() == EMaterialType::Terrain)
+            {
+                Material = nullptr;
+            }
             if (!IsValid(Material) || !IsValid(Material->GetMaterial()) || !Material->IsReadyForRender())
             {
                 Material = CMaterial::GetDefaultMaterial();
@@ -2132,6 +2129,783 @@ namespace Lumina
         });
     }
 
+    void FForwardRenderScene::ParticleSimulatePass(FRenderGraph& RenderGraph)
+    {
+        FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
+        RenderGraph.AddPass(RG_Compute, "Particle Simulate", Descriptor, [&](ICommandList& CmdList)
+        {
+            LUMINA_PROFILE_SECTION_COLORED("Particle Simulate", tracy::Color::Orange);
+
+            const float DeltaTime = (float)World->GetWorldDeltaTime();
+
+            FEntityRegistry& Registry = World->GetEntityRegistry();
+
+            auto ParticleView = Registry.view<SParticleSystemComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            ParticleView.each([&](entt::entity Entity, SParticleSystemComponent& Component, const STransformComponent& Transform)
+            {
+                CParticleSystem* PS = Component.ParticleSystem.Get();
+                if (!PS || !PS->IsReadyForSimulation())
+                {
+                    return;
+                }
+
+                const uint32 MaxParticles = (uint32)PS->MaxParticles;
+                if (MaxParticles == 0)
+                {
+                    return;
+                }
+
+                FParticleGPUState& State = Component.GPUState;
+
+                const bool bNeedsAlloc = (!State.ParticleBuffer) || (State.AllocatedMax != MaxParticles);
+                if (bNeedsAlloc)
+                {
+                    const FString AssetName = PS->GetName().ToString();
+
+                    FRHIBufferDesc ParticleDesc;
+                    ParticleDesc.Size       = (uint64)MaxParticles * 64ull;
+                    ParticleDesc.Stride     = 64u;
+                    ParticleDesc.DebugName  = AssetName + "_Particles";
+                    ParticleDesc.bKeepInitialState = true;
+                    ParticleDesc.InitialState = EResourceStates::UnorderedAccess;
+                    ParticleDesc.Usage.SetFlag(BUF_StorageBuffer);
+                    State.ParticleBuffer = GRenderContext->CreateBuffer(ParticleDesc);
+
+                    FRHIBufferDesc SimParamsDesc;
+                    SimParamsDesc.Size      = sizeof(FParticleSimParamsGPU);
+                    SimParamsDesc.DebugName = AssetName + "_SimParams";
+                    SimParamsDesc.bKeepInitialState = true;
+                    SimParamsDesc.InitialState = EResourceStates::UnorderedAccess;
+                    SimParamsDesc.Usage.SetFlag(BUF_UniformBuffer);
+                    State.SimParamsBuffer = GRenderContext->CreateBuffer(SimParamsDesc);
+
+                    FRHIBufferDesc RenderParamsDesc;
+                    RenderParamsDesc.Size       = sizeof(FParticleRenderParamsGPU);
+                    RenderParamsDesc.DebugName  = AssetName + "_RenderParams";
+                    RenderParamsDesc.Usage.SetFlag(BUF_UniformBuffer);
+                    RenderParamsDesc.bKeepInitialState = true;
+                    RenderParamsDesc.InitialState = EResourceStates::UnorderedAccess;
+                    State.RenderParamsBuffer = GRenderContext->CreateBuffer(RenderParamsDesc);
+
+                    FRHIBufferDesc SpawnCounterDesc;
+                    SpawnCounterDesc.Size       = sizeof(uint32);
+                    SpawnCounterDesc.Stride     = sizeof(uint32);
+                    SpawnCounterDesc.DebugName  = AssetName + "_SpawnCounter";
+                    SpawnCounterDesc.Usage.SetFlag(BUF_StorageBuffer);
+                    SpawnCounterDesc.bKeepInitialState = true;
+                    SpawnCounterDesc.InitialState = EResourceStates::UnorderedAccess;
+                    State.SpawnCounterBuffer = GRenderContext->CreateBuffer(SpawnCounterDesc);
+
+                    // Zero-fill the particle buffer so all entries start dead.
+                    CmdList.FillBuffer(State.ParticleBuffer, 0u);
+
+                    State.AllocatedMax      = MaxParticles;
+                    State.SpawnAccumulator  = 0.0f;
+                    State.SystemAge         = 0.0f;
+                    State.bBurstPending     = true;
+                }
+
+                // Zero the spawn counter every frame before dispatch. @TODO see if needed.
+                CmdList.FillBuffer(State.SpawnCounterBuffer, 0u);
+                
+                if (State.bPendingReset)
+                {
+                    CmdList.FillBuffer(State.ParticleBuffer, 0u);
+                    State.bPendingReset = false;
+                }
+
+                const float ScaledDelta = DeltaTime * Component.TimeScale;
+                State.TotalTime += DeltaTime;
+                State.SystemAge += ScaledDelta;
+
+                const bool bDurationExpired = (PS->Duration > 0.0f) && (State.SystemAge >= PS->Duration);
+                if (bDurationExpired)
+                {
+                    if (PS->bLooping)
+                    {
+                        State.SystemAge = fmodf(State.SystemAge, PS->Duration);
+                        State.bBurstPending = true;
+                    }
+                }
+
+                const bool bEmitActive = Component.bEmit && !(bDurationExpired && !PS->bLooping);
+
+                uint32 SpawnCount = 0;
+                if (bEmitActive && PS->SpawnRate > 0.0f && Component.SpawnRateMultiplier > 0.0f)
+                {
+                    State.SpawnAccumulator += DeltaTime * PS->SpawnRate * Component.SpawnRateMultiplier;
+                    SpawnCount = (uint32)State.SpawnAccumulator;
+                    State.SpawnAccumulator -= (float)SpawnCount;
+                }
+                else
+                {
+                    State.SpawnAccumulator = 0.0f;
+                }
+
+                const bool bDoBurst = bEmitActive && Component.bBurstOnSpawn && State.bBurstPending && PS->BurstCount > 0;
+                if (bDoBurst)
+                {
+                    SpawnCount += (uint32)PS->BurstCount;
+                    State.bBurstPending = false;
+                }
+                else if (!Component.bBurstOnSpawn)
+                {
+                    State.bBurstPending = false;
+                }
+
+                SpawnCount = eastl::min(SpawnCount, MaxParticles);
+
+                const glm::mat4 WorldMat = Transform.GetWorldMatrix();
+                const glm::vec3 EmitterWorld = glm::vec3(WorldMat * glm::vec4(Component.EmitterOffset, 1.0f));
+                const glm::vec3 EmitterRight   = glm::normalize(glm::vec3(WorldMat[0]));
+                const glm::vec3 EmitterUp      = glm::normalize(glm::vec3(WorldMat[1]));
+                const glm::vec3 EmitterForward = glm::normalize(glm::vec3(WorldMat[2]));
+                
+                glm::vec3 EmitterVelocity(0.0f);
+                if (State.bHasPrevPosition && DeltaTime > 0.0f)
+                {
+                    EmitterVelocity = (EmitterWorld - State.PrevEmitterPosition) / DeltaTime;
+                }
+                State.PrevEmitterPosition = EmitterWorld;
+                State.bHasPrevPosition    = true;
+
+                const float InheritFactor = glm::clamp(PS->InheritEmitterVelocity, 0.0f, 1.0f);
+
+                State.FrameSeed = (State.FrameSeed + 2654435761u) ^ (uint32)Entity;
+
+                uint32 SimFlags = 0u;
+                if (PS->bLooping)
+                {
+                    SimFlags |= PARTICLE_SIM_FLAG_LOOP;
+                }
+                if (State.bBurstPending)
+                {
+                    SimFlags |= PARTICLE_SIM_FLAG_BURST_PENDING;
+                }
+
+                FParticleSimParamsGPU SimParams{};
+                // Pack EmitterVelocity.xyz into the w components of the basis vectors to
+                // avoid growing the CBV layout. The shader reconstructs it from these slots.
+                SimParams.EmitterPosition   = glm::vec4(EmitterWorld, 1.0f);
+                SimParams.EmitterForward    = glm::vec4(EmitterForward, EmitterVelocity.x);
+                SimParams.EmitterRight      = glm::vec4(EmitterRight,   EmitterVelocity.y);
+                SimParams.EmitterUp         = glm::vec4(EmitterUp,      EmitterVelocity.z);
+                SimParams.Counts            = glm::uvec4(MaxParticles, SpawnCount, State.FrameSeed, SimFlags);
+                SimParams.Modes             = glm::uvec4((uint32)PS->Shape, (uint32)PS->VelocityMode, 0u, 0u);
+                SimParams.ShapeSize         = glm::vec4(PS->ShapeSize, glm::radians(PS->ShapeAngle));
+                SimParams.VelocityMin       = glm::vec4(PS->VelocityMin, 0.0f);
+                SimParams.VelocityMax       = glm::vec4(PS->VelocityMax, 0.0f);
+                SimParams.SpeedAndLifetime  = glm::vec4(PS->SpeedRange.x, PS->SpeedRange.y, PS->LifetimeRange.x, PS->LifetimeRange.y);
+                SimParams.Gravity           = glm::vec4(PS->Gravity, PS->Drag);
+                SimParams.StartColor        = PS->StartColor;
+                SimParams.EndColor          = PS->EndColor;
+                SimParams.SizeRange         = glm::vec4(PS->StartSizeRange.x, PS->StartSizeRange.y, PS->EndSizeRange.x, PS->EndSizeRange.y);
+                SimParams.RotationRange     = glm::vec4(PS->RotationRange.x, PS->RotationRange.y, PS->RotationSpeedRange.x, PS->RotationSpeedRange.y);
+                SimParams.NoiseStrength     = glm::vec4(PS->NoiseStrength, PS->NoiseScale);
+                SimParams.NoiseParams       = glm::vec4(PS->NoiseSpeed, InheritFactor, 0.0f, 0.0f);
+                SimParams.Timing            = glm::vec4(ScaledDelta, State.TotalTime, State.SystemAge, 0.0f);
+
+                CmdList.WriteBuffer(State.SimParamsBuffer, &SimParams, sizeof(SimParams));
+
+                FRHIComputeShaderRef ComputeShader;
+                if (PS->UsesCustomShader())
+                {
+                    ComputeShader = PS->GetCustomComputeShader();
+                }
+                else
+                {
+                    ComputeShader = FShaderLibrary::GetComputeShader("ParticleSimulate.slang");
+                }
+
+                if (!ComputeShader)
+                {
+                    return;
+                }
+
+                FBindingLayoutDesc LayoutDesc;
+                LayoutDesc.SetBindingIndex(0)
+                    .SetVisibility(ERHIShaderType::Compute)
+                    .AddItem(FBindingLayoutItem::Buffer_UAV(0))
+                    .AddItem(FBindingLayoutItem::Buffer_CBV(1))
+                    .AddItem(FBindingLayoutItem::Buffer_UAV(2));
+                FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
+
+                FBindingSetDesc SetDesc;
+                SetDesc.AddItem(FBindingSetItem::BufferUAV(0, State.ParticleBuffer))
+                       .AddItem(FBindingSetItem::BufferCBV(1, State.SimParamsBuffer))
+                       .AddItem(FBindingSetItem::BufferUAV(2, State.SpawnCounterBuffer));
+                FRHIBindingSetRef BindingSet = GRenderContext->CreateBindingSet(SetDesc, Layout);
+
+                FComputePipelineDesc PipelineDesc;
+                PipelineDesc.SetComputeShader(ComputeShader)
+                            .AddBindingLayout(Layout);
+                FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+                FComputeState ComputeState;
+                ComputeState.SetPipeline(Pipeline)
+                            .AddBindingSet(BindingSet);
+
+                CmdList.SetComputeState(ComputeState);
+                CmdList.Dispatch((MaxParticles + 63u) / 64u, 1, 1);
+            });
+        });
+    }
+
+    static FBlendState::RenderTarget MakeParticleBlendTarget(EParticleBlendMode Mode)
+    {
+        FBlendState::RenderTarget RT;
+        RT.SetBlendEnable(true);
+
+        switch (Mode)
+        {
+        case EParticleBlendMode::Additive:
+            RT.SetSrcBlend(EBlendFactor::SrcAlpha)
+              .SetDestBlend(EBlendFactor::One)
+              .SetBlendOp(EBlendOp::Add)
+              .SetSrcBlendAlpha(EBlendFactor::One)
+              .SetDestBlendAlpha(EBlendFactor::One)
+              .SetBlendOpAlpha(EBlendOp::Add);
+            break;
+
+        case EParticleBlendMode::PreMultiplied:
+            RT.SetSrcBlend(EBlendFactor::One)
+              .SetDestBlend(EBlendFactor::InvSrcAlpha)
+              .SetBlendOp(EBlendOp::Add)
+              .SetSrcBlendAlpha(EBlendFactor::One)
+              .SetDestBlendAlpha(EBlendFactor::InvSrcAlpha)
+              .SetBlendOpAlpha(EBlendOp::Add);
+            break;
+
+        case EParticleBlendMode::Multiply:
+            RT.SetSrcBlend(EBlendFactor::DstColor)
+              .SetDestBlend(EBlendFactor::Zero)
+              .SetBlendOp(EBlendOp::Add)
+              .SetSrcBlendAlpha(EBlendFactor::One)
+              .SetDestBlendAlpha(EBlendFactor::Zero)
+              .SetBlendOpAlpha(EBlendOp::Add);
+            break;
+
+        case EParticleBlendMode::Alpha:
+        default:
+            RT.SetSrcBlend(EBlendFactor::SrcAlpha)
+              .SetDestBlend(EBlendFactor::InvSrcAlpha)
+              .SetBlendOp(EBlendOp::Add)
+              .SetSrcBlendAlpha(EBlendFactor::One)
+              .SetDestBlendAlpha(EBlendFactor::InvSrcAlpha)
+              .SetBlendOpAlpha(EBlendOp::Add);
+            break;
+        }
+        return RT;
+    }
+
+    void FForwardRenderScene::ParticleRenderPass(FRenderGraph& RenderGraph)
+    {
+        FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
+        RenderGraph.AddPass(RG_Raster, "Particle Render", Descriptor, [&](ICommandList& CmdList)
+        {
+            LUMINA_PROFILE_SECTION_COLORED("Particle Render", tracy::Color::OrangeRed);
+
+            FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ParticleVertex.slang");
+            FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader("ParticlePixel.slang");
+            if (!VertexShader || !PixelShader)
+            {
+                return;
+            }
+
+            // Only Load when an earlier pass actually wrote to these targets. In the
+            // particle editor's preview world (no meshes, no environment) BasePass and
+            // DepthPrePass both early-return, so the first pass to touch HDR/Depth has
+            // to clear them itself, or it'll sample uninitialized memory.
+            const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment;
+
+            FRenderPassDesc::FAttachment RenderTarget;
+            RenderTarget.SetImage(GetNamedImage(ENamedImage::HDR));
+            if (bHDRWasWritten)
+            {
+                RenderTarget.SetLoadOp(ERenderLoadOp::Load);
+            }
+
+            FRenderPassDesc::FAttachment Depth;
+            Depth.SetImage(GetNamedImage(ENamedImage::DepthAttachment))
+                .SetDepthClearValue(0.0f);
+            if (!DrawCommands.empty())
+            {
+                Depth.SetLoadOp(ERenderLoadOp::Load);
+            }
+
+            FRenderPassDesc RenderPass;
+            RenderPass.AddColorAttachment(RenderTarget)
+                .SetDepthAttachment(Depth)
+                .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+
+            FRasterState RasterState;
+            RasterState.EnableDepthClip()
+                       .SetCullMode(ERasterCullMode::None);
+
+            FBindingLayoutDesc ParticleLayoutDesc;
+            ParticleLayoutDesc.SetBindingIndex(2)
+                .SetVisibility(ERHIShaderType::Vertex)
+                .AddItem(FBindingLayoutItem::Buffer_SRV(0))
+                .AddItem(FBindingLayoutItem::Buffer_CBV(1));
+            FRHIBindingLayout* ParticleLayout = BindingCache.GetOrCreateBindingLayout(ParticleLayoutDesc);
+
+            FEntityRegistry& Registry = World->GetEntityRegistry();
+            auto ParticleView = Registry.view<SParticleSystemComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+
+            ParticleView.each([&](SParticleSystemComponent& Component, const STransformComponent&)
+            {
+                CParticleSystem* PS = Component.ParticleSystem.Get();
+                if (!PS || !PS->IsReadyForSimulation())
+                {
+                    return;
+                }
+
+                FParticleGPUState& State = Component.GPUState;
+                if (!State.ParticleBuffer || !State.RenderParamsBuffer)
+                {
+                    return;
+                }
+
+                uint32 TextureIndex = 0u;
+                if (CTexture* Tex = PS->Texture.Get())
+                {
+                    if (FRHIImage* Image = Tex->GetRHIRef())
+                    {
+                        const int32 CacheIdx = Image->GetTextureCacheIndex();
+                        if (CacheIdx > 0)
+                        {
+                            TextureIndex = (uint32)CacheIdx;
+                        }
+                    }
+                }
+
+                FParticleRenderParamsGPU RenderParams{};
+                RenderParams.Flags      = glm::uvec4(TextureIndex, PS->bBillboardToCamera ? 1u : 0u, 0u, 0u);
+                RenderParams.Tint       = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+                RenderParams.UVParams   = glm::vec4(0.0f);
+                CmdList.WriteBuffer(State.RenderParamsBuffer, &RenderParams, sizeof(RenderParams));
+
+                FBlendState BlendState;
+                BlendState.SetRenderTarget(0, MakeParticleBlendTarget(PS->BlendMode));
+
+                FDepthStencilState DepthState;
+                DepthState.SetDepthFunc(EComparisonFunc::GreaterOrEqual);
+                if (PS->bWriteDepth)
+                {
+                    DepthState.EnableDepthWrite();
+                }
+                else
+                {
+                    DepthState.DisableDepthWrite();
+                }
+
+                FRenderState RenderState;
+                RenderState.SetRasterState(RasterState)
+                           .SetDepthStencilState(DepthState)
+                           .SetBlendState(BlendState);
+
+                FGraphicsPipelineDesc Desc;
+                Desc.SetDebugName("Particle Render")
+                    .SetRenderState(RenderState)
+                    .SetVertexShader(VertexShader)
+                    .SetPixelShader(PixelShader)
+                    .AddBindingLayout(SceneBindingLayout)
+                    .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
+                    .AddBindingLayout(ParticleLayout);
+
+                FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+                FBindingSetDesc ParticleSetDesc;
+                ParticleSetDesc.AddItem(FBindingSetItem::BufferSRV(0, State.ParticleBuffer))
+                               .AddItem(FBindingSetItem::BufferCBV(1, State.RenderParamsBuffer));
+                FRHIBindingSetRef ParticleSet = GRenderContext->CreateBindingSet(ParticleSetDesc, ParticleLayout);
+
+                FGraphicsState GraphicsState;
+                GraphicsState.SetRenderPass(RenderPass)
+                    .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
+                    .SetPipeline(Pipeline)
+                    .AddBindingSet(SceneBindingSet)
+                    .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
+                    .AddBindingSet(ParticleSet);
+
+                CmdList.SetGraphicsState(GraphicsState);
+                CmdList.Draw(6u * State.AllocatedMax, 1u, 0u, 0u);
+            });
+        });
+    }
+
+    namespace
+    {
+        // Ensure the component's CPU backing stores match the declared dimensions.
+        // Called lazily on the render thread so designers can tweak Resolution and
+        // LayerCount in the inspector without rebooting.
+        static void EnsureTerrainCpuBuffers(STerrainComponent& Terrain)
+        {
+            const size_t NeededHeights = size_t(Terrain.Resolution) * size_t(Terrain.Resolution);
+            if (Terrain.Heightmap.size() != NeededHeights)
+            {
+                Terrain.Heightmap.assign(NeededHeights, 0.0f);
+                Terrain.GPUState.bFullHeightmapDirty = true;
+            }
+            const size_t NeededWeights = size_t(Terrain.Layers.size()) * NeededHeights;
+            if (Terrain.LayerWeights.size() != NeededWeights)
+            {
+                Terrain.LayerWeights.resize(NeededWeights, 0u);
+                Terrain.GPUState.bFullWeightsDirty = true;
+            }
+        }
+
+        static FRHIImageRef CreateTerrainImage(const FString& DebugName, uint32 Size, uint16 ArraySize, EFormat Format, bool bUav, bool bArrayView = false)
+        {
+            FRHIImageDesc Desc;
+            Desc.Extent       = glm::uvec2(Size, Size);
+            Desc.ArraySize    = ArraySize;
+            // Shader samples weight maps as Sampler2DArray; Texture2D collapses array slices
+            // in FTextureSubresourceSet::Resolve, breaking per-slice state tracking.
+            Desc.Dimension    = (bArrayView || ArraySize > 1) ? EImageDimension::Texture2DArray : EImageDimension::Texture2D;
+            Desc.Format       = Format;
+            Desc.DebugName    = DebugName;
+            Desc.bKeepInitialState = true;
+            Desc.InitialState = EResourceStates::ShaderResource;
+            Desc.Flags.SetFlag(EImageCreateFlags::ShaderResource);
+            if (bUav)
+            {
+                Desc.Flags.SetFlag(EImageCreateFlags::Storage);
+            }
+            return GRenderContext->CreateImage(Desc);
+        }
+    }
+
+    void FForwardRenderScene::TerrainUpdatePass(FRenderGraph& RenderGraph)
+    {
+        FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
+        RenderGraph.AddPass(RG_Compute, "Terrain Update", Descriptor, [&](ICommandList& CmdList)
+        {
+            LUMINA_PROFILE_SECTION_COLORED("Terrain Update", tracy::Color::SeaGreen);
+
+            FRHIComputeShaderRef NormalShader = FShaderLibrary::GetComputeShader("TerrainNormalCompute.slang");
+
+            FEntityRegistry& Registry = World->GetEntityRegistry();
+            auto TerrainView = Registry.view<STerrainComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+
+            TerrainView.each([&](entt::entity Entity, STerrainComponent& Terrain, const STransformComponent&)
+            {
+                if (Terrain.Resolution < 2 || Terrain.ChunkResolution < 2)
+                {
+                    return;
+                }
+
+                EnsureTerrainCpuBuffers(Terrain);
+
+                FTerrainGPUState& State = Terrain.GPUState;
+                const uint32 Res        = (uint32)Terrain.Resolution;
+                const uint32 LayerCount = (uint32)std::max<size_t>(Terrain.Layers.size(), 1u);
+
+                // (Re)allocate GPU textures if the CPU dimensions drifted.
+                if (Terrain.NeedsReallocation())
+                {
+                    const FString Name = FString("Terrain_") + std::to_string((uint32)Entity).c_str();
+                    State.HeightmapTexture   = CreateTerrainImage(Name + "_Height",  Res, 1u,          EFormat::R32_FLOAT, false);
+                    State.NormalTexture      = CreateTerrainImage(Name + "_Normal",  Res, 1u,          EFormat::RGBA8_UNORM, true);
+                    State.LayerWeightTexture = CreateTerrainImage(Name + "_Weights", Res, (uint16)std::max(LayerCount, 1u), EFormat::R8_UNORM, false, true);
+                    State.AllocatedResolution = Res;
+                    State.AllocatedLayerCount = LayerCount;
+                    State.bFullHeightmapDirty = true;
+                    State.bFullWeightsDirty   = true;
+
+                    // Vulkan does not zero newly-allocated image memory. If a layer
+                    // slice is never written before a sampler reads it, the read
+                    // returns undefined data — historically ~0.5, producing a uniform
+                    // blend of every layer across the terrain. Upload every slice
+                    // directly from the CPU buffer here so there is never a window
+                    // where any slice is undefined. This does not depend on barrier
+                    // automation around a clear, and clears State's dirty flags so
+                    // the follow-up blocks don't redundantly re-upload.
+                    if (!Terrain.LayerWeights.empty())
+                    {
+                        const size_t SlicePixels = size_t(Res) * size_t(Res);
+                        for (uint32 L = 0; L < LayerCount && (size_t(L + 1) * SlicePixels) <= Terrain.LayerWeights.size(); ++L)
+                        {
+                            const uint8* Slice = Terrain.LayerWeights.data() + L * SlicePixels;
+                            CmdList.WriteImage(State.LayerWeightTexture, L, 0u, Slice, Res, 0u);
+                        }
+                        State.bFullWeightsDirty    = false;
+                        State.WeightDirtyLayerMask = 0u;
+                    }
+                    else
+                    {
+                        // No CPU data yet — zero every slice so a sampler can't read
+                        // garbage. The next paint/sculpt tick will populate properly.
+                        CmdList.ClearImageFloat(
+                            State.LayerWeightTexture,
+                            FTextureSubresourceSet(0u, 1u, 0u, (uint16)std::max(LayerCount, 1u)),
+                            FColor(0.0f, 0.0f, 0.0f, 0.0f));
+                    }
+                }
+
+                bool bHeightDirty = false;
+                if (State.bFullHeightmapDirty)
+                {
+                    CmdList.WriteImage(State.HeightmapTexture, 0u, 0u, Terrain.Heightmap.data(), Res * (uint32)sizeof(float), 0u);
+                    State.bFullHeightmapDirty = false;
+                    bHeightDirty = true;
+                }
+                else if (State.HeightDirtyMax.x >= State.HeightDirtyMin.x)
+                {
+                    CmdList.WriteImage(State.HeightmapTexture, 0u, 0u, Terrain.Heightmap.data(), Res * (uint32)sizeof(float), 0u);
+                    bHeightDirty = true;
+                }
+
+                if (State.bFullWeightsDirty && !Terrain.LayerWeights.empty())
+                {
+                    const size_t SlicePixels = size_t(Res) * size_t(Res);
+                    for (uint32 L = 0; L < LayerCount && (size_t(L + 1) * SlicePixels) <= Terrain.LayerWeights.size(); ++L)
+                    {
+                        const uint8* Slice = Terrain.LayerWeights.data() + L * SlicePixels;
+                        CmdList.WriteImage(State.LayerWeightTexture, L, 0u, Slice, Res, 0u);
+                    }
+                    State.bFullWeightsDirty   = false;
+                    State.WeightDirtyLayerMask = 0u;
+                }
+                else if (State.WeightDirtyLayerMask != 0u && !Terrain.LayerWeights.empty())
+                {
+                    const size_t SlicePixels = size_t(Res) * size_t(Res);
+                    for (uint32 L = 0; L < LayerCount; ++L)
+                    {
+                        if ((State.WeightDirtyLayerMask & (1u << L)) == 0u)
+                        {
+                            continue;
+                        }
+                        if ((size_t(L + 1) * SlicePixels) > Terrain.LayerWeights.size())
+                        {
+                            continue;
+                        }
+                        const uint8* Slice = Terrain.LayerWeights.data() + L * SlicePixels;
+                        CmdList.WriteImage(State.LayerWeightTexture, L, 0u, Slice, Res, 0u);
+                    }
+                    State.WeightDirtyLayerMask = 0u;
+                }
+
+                if (bHeightDirty && NormalShader)
+                {
+                    FTerrainNormalParams NormalParams{};
+                    NormalParams.Resolution    = (int32)Res;
+                    NormalParams.RegionMinX    = 0;
+                    NormalParams.RegionMinY    = 0;
+                    NormalParams.RegionSizeX   = (int32)Res;
+                    NormalParams.RegionSizeY   = (int32)Res;
+                    NormalParams.TileWorldSize = Terrain.TileWorldSize;
+                    NormalParams.MaxHeight     = Terrain.MaxHeight;
+
+                    FRHIBufferDesc NormalCBDesc;
+                    NormalCBDesc.Size      = sizeof(FTerrainNormalParams);
+                    NormalCBDesc.DebugName = "TerrainNormalParams";
+                    NormalCBDesc.Usage.SetFlag(BUF_UniformBuffer);
+                    NormalCBDesc.bKeepInitialState = true;
+                    NormalCBDesc.InitialState = EResourceStates::ConstantBuffer;
+                    FRHIBufferRef NormalCB = GRenderContext->CreateBuffer(NormalCBDesc);
+                    CmdList.WriteBuffer(NormalCB, &NormalParams, sizeof(NormalParams));
+
+                    FRHISamplerRef ClampSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+                    
+                    FBindingLayoutDesc NormalLayoutDesc;
+                    NormalLayoutDesc.SetBindingIndex(0)
+                        .SetVisibility(ERHIShaderType::Compute)
+                        .AddItem(FBindingLayoutItem::Texture_SRV(0))
+                        .AddItem(FBindingLayoutItem::Texture_UAV(1))
+                        .AddItem(FBindingLayoutItem::Buffer_CBV(2));
+                    FRHIBindingLayout* NormalLayout = BindingCache.GetOrCreateBindingLayout(NormalLayoutDesc);
+
+                    FBindingSetDesc NormalSetDesc;
+                    NormalSetDesc.AddItem(FBindingSetItem::TextureSRV(0, State.HeightmapTexture, ClampSampler))
+                                 .AddItem(FBindingSetItem::TextureUAV(1, State.NormalTexture))
+                                 .AddItem(FBindingSetItem::BufferCBV(2, NormalCB));
+                    FRHIBindingSetRef NormalSet = GRenderContext->CreateBindingSet(NormalSetDesc, NormalLayout);
+
+                    FComputePipelineDesc NormalPipelineDesc;
+                    NormalPipelineDesc.SetComputeShader(NormalShader)
+                                      .AddBindingLayout(NormalLayout);
+                    FRHIComputePipelineRef NormalPipeline = GRenderContext->CreateComputePipeline(NormalPipelineDesc);
+
+                    FComputeState NormalComputeState;
+                    NormalComputeState.SetPipeline(NormalPipeline)
+                                      .AddBindingSet(NormalSet);
+
+                    CmdList.SetComputeState(NormalComputeState);
+                    CmdList.Dispatch((Res + 7u) / 8u, (Res + 7u) / 8u, 1u);
+
+                    State.HeightDirtyMin = glm::ivec2(INT32_MAX);
+                    State.HeightDirtyMax = glm::ivec2(INT32_MIN);
+                }
+            });
+        });
+    }
+
+    void FForwardRenderScene::TerrainRenderPass(FRenderGraph& RenderGraph)
+    {
+        FEntityRegistry& PreCheckRegistry = World->GetEntityRegistry();
+        auto PreCheckView = PreCheckRegistry.view<STerrainComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+        if (PreCheckView.begin() == PreCheckView.end())
+        {
+            return;
+        }
+
+        FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
+        RenderGraph.AddPass(RG_Raster, "Terrain Render", Descriptor, [&](ICommandList& CmdList)
+        {
+            LUMINA_PROFILE_SECTION_COLORED("Terrain Render", tracy::Color::SeaGreen);
+
+            FEntityRegistry& Registry = World->GetEntityRegistry();
+            auto TerrainView = Registry.view<STerrainComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+
+            TerrainView.each([&](entt::entity Entity, STerrainComponent& Terrain, const STransformComponent& Transform)
+            {
+                if (Terrain.Resolution < 2 || Terrain.ChunkResolution < 2)
+                {
+                    return;
+                }
+
+                FTerrainGPUState& State = Terrain.GPUState;
+                if (!State.HeightmapTexture || !State.NormalTexture || !State.LayerWeightTexture)
+                {
+                    return;
+                }
+
+
+                CMaterialInterface* MaterialInterface = Terrain.Material.Get();
+                if (MaterialInterface && MaterialInterface->GetMaterialType() != EMaterialType::Terrain)
+                {
+                    MaterialInterface = nullptr;
+                }
+                if (!MaterialInterface || !MaterialInterface->IsReadyForRender())
+                {
+                    MaterialInterface = CMaterial::GetDefaultTerrainMaterial();
+                }
+
+                FRHIVertexShader* VertexShader = MaterialInterface->GetVertexShader();
+                FRHIPixelShader*  PixelShader  = MaterialInterface->GetPixelShader();
+                if (!VertexShader || !PixelShader)
+                {
+                    return;
+                }
+
+                const uint32 Res = (uint32)Terrain.Resolution;
+
+                const glm::mat4 WorldMat = Transform.GetWorldMatrix();
+                const glm::vec3 WorldOrigin = glm::vec3(WorldMat[3]);
+                const float HalfSize = Terrain.TileWorldSize * 0.5f;
+
+                FTerrainRenderParams RenderParams{};
+                RenderParams.OriginXZ        = glm::vec2(WorldOrigin.x - HalfSize, WorldOrigin.z - HalfSize);
+                RenderParams.TileWorldSize   = Terrain.TileWorldSize;
+                RenderParams.MaxHeight       = Terrain.MaxHeight;
+                RenderParams.Resolution      = (int32)Res;
+                RenderParams.ChunkResolution = Terrain.ChunkResolution;
+                const int32 QuadsPerChunk    = std::max(1, Terrain.ChunkResolution - 1);
+                RenderParams.ChunksPerSide   = std::max(1, ((int32)Res - 1) / QuadsPerChunk);
+                RenderParams.LayerCount      = (int32)Terrain.Layers.size();
+                RenderParams.WorldOriginY    = glm::vec3(WorldOrigin.y, 0.0f, 0.0f);
+                RenderParams.EntityID        = (uint32)Entity;
+                RenderParams.MaterialIndex   = (uint32)std::max(MaterialInterface->GetMaterialIndex(), 0);
+
+                FRHIBufferDesc RenderCBDesc;
+                RenderCBDesc.Size      = sizeof(FTerrainRenderParams);
+                RenderCBDesc.DebugName = "TerrainRenderParams";
+                RenderCBDesc.Usage.SetFlag(BUF_UniformBuffer);
+                RenderCBDesc.bKeepInitialState = true;
+                RenderCBDesc.InitialState = EResourceStates::ConstantBuffer;
+                FRHIBufferRef RenderCB = GRenderContext->CreateBuffer(RenderCBDesc);
+                CmdList.WriteBuffer(RenderCB, &RenderParams, sizeof(RenderParams));
+                
+                const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment;
+
+                FRenderPassDesc::FAttachment RenderTarget;
+                RenderTarget.SetImage(GetNamedImage(ENamedImage::HDR));
+                if (bHDRWasWritten)
+                {
+                    RenderTarget.SetLoadOp(ERenderLoadOp::Load);
+                }
+                
+                FRenderPassDesc::FAttachment PickerAttachment;
+                PickerAttachment.SetImage(GetNamedImage(ENamedImage::Picker));
+                if (!DrawCommands.empty())
+                {
+                    PickerAttachment.SetLoadOp(ERenderLoadOp::Load);
+                }
+
+                FRenderPassDesc::FAttachment Depth;
+                Depth.SetImage(GetNamedImage(ENamedImage::DepthAttachment))
+                     .SetDepthClearValue(0.0f);
+                if (!DrawCommands.empty())
+                {
+                    Depth.SetLoadOp(ERenderLoadOp::Load);
+                }
+
+                FRenderPassDesc RenderPass;
+                RenderPass.AddColorAttachment(RenderTarget)
+                    .AddColorAttachment(PickerAttachment)
+                    .SetDepthAttachment(Depth)
+                    .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+
+                FRasterState RasterState;
+                RasterState.EnableDepthClip()
+                           .SetCullMode(ERasterCullMode::None);
+
+                FDepthStencilState DepthState;
+                DepthState.SetDepthFunc(EComparisonFunc::GreaterOrEqual)
+                          .EnableDepthWrite();
+
+                FRenderState RenderState;
+                RenderState.SetRasterState(RasterState)
+                           .SetDepthStencilState(DepthState);
+
+                FRHISamplerRef HeightSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+                
+                FBindingLayoutDesc TerrainLayoutDesc;
+                TerrainLayoutDesc.SetBindingIndex(2)
+                    .SetVisibility(ERHIShaderType::Vertex)
+                    .SetVisibility(ERHIShaderType::Fragment)
+                    .AddItem(FBindingLayoutItem::Texture_SRV(0))
+                    .AddItem(FBindingLayoutItem::Texture_SRV(1))
+                    .AddItem(FBindingLayoutItem::Texture_SRV(2))
+                    .AddItem(FBindingLayoutItem::Buffer_CBV(3));
+                FRHIBindingLayout* TerrainLayout = BindingCache.GetOrCreateBindingLayout(TerrainLayoutDesc);
+
+                FBindingSetDesc TerrainSetDesc;
+                TerrainSetDesc.AddItem(FBindingSetItem::TextureSRV(0, State.HeightmapTexture, HeightSampler))
+                              .AddItem(FBindingSetItem::TextureSRV(1, State.NormalTexture,    HeightSampler))
+                              .AddItem(FBindingSetItem::TextureSRV(2, State.LayerWeightTexture, HeightSampler))
+                              .AddItem(FBindingSetItem::BufferCBV(3, RenderCB));
+                FRHIBindingSetRef TerrainSet = GRenderContext->CreateBindingSet(TerrainSetDesc, TerrainLayout);
+
+                FGraphicsPipelineDesc Desc;
+                Desc.SetDebugName("Terrain")
+                    .SetRenderState(RenderState)
+                    .SetVertexShader(VertexShader)
+                    .SetPixelShader(PixelShader)
+                    .AddBindingLayout(SceneBindingLayout)
+                    .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
+                    .AddBindingLayout(TerrainLayout);
+
+                FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+                FGraphicsState GraphicsState;
+                GraphicsState.SetRenderPass(RenderPass)
+                    .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
+                    .SetPipeline(Pipeline)
+                    .AddBindingSet(SceneBindingSet)
+                    .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
+                    .AddBindingSet(TerrainSet);
+
+                CmdList.SetGraphicsState(GraphicsState);
+
+                const uint32 VertsPerChunk = uint32(QuadsPerChunk) * uint32(QuadsPerChunk) * 6u;
+                const uint32 NumChunks     = uint32(RenderParams.ChunksPerSide) * uint32(RenderParams.ChunksPerSide);
+                CmdList.Draw(VertsPerChunk, NumChunks, 0u, 0u);
+            });
+        });
+    }
+
     void FForwardRenderScene::BillboardPass(FRenderGraph& RenderGraph)
     {
         if (BillboardInstances.empty() || !RenderSettings.bDrawBillboards)
@@ -2351,16 +3125,14 @@ namespace Lumina
             FGraphicsPipelineDesc Desc;
             Desc.SetDebugName("OITResolve Pass");
             Desc.SetRenderState(RenderState);
-            Desc.AddBindingLayout(SceneBindingLayout);
-            Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+            Desc.AddBindingLayout(OITBindingLayout);
             Desc.SetVertexShader(VertexShader);
             Desc.SetPixelShader(PixelShader);
-        
+
             FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-        
+
             FGraphicsState GraphicsState;
-            GraphicsState.AddBindingSet(SceneBindingSet);
-            GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            GraphicsState.AddBindingSet(OITBindingSet);
             GraphicsState.SetPipeline(Pipeline);
             GraphicsState.SetRenderPass(RenderPass);
             GraphicsState.SetViewportState(SceneViewportState);
@@ -2623,16 +3395,18 @@ namespace Lumina
             Desc.SetRenderState(RenderState);
             Desc.AddBindingLayout(SceneBindingLayout);
             Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+            Desc.AddBindingLayout(ComposeBindingLayout);
             Desc.SetVertexShader(VertexShader);
             Desc.SetPixelShader(PixelShader);
-        
+
             FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-        
+
             FGraphicsState GraphicsState;
             GraphicsState.SetPipeline(Pipeline);
             GraphicsState.AddBindingSet(SceneBindingSet);
             GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            GraphicsState.SetRenderPass(RenderPass);               
+            GraphicsState.AddBindingSet(ComposeBindingSet);
+            GraphicsState.SetRenderPass(RenderPass);
             GraphicsState.SetViewportState(MakeViewportStateFromImage(GetRenderTarget()));
         
             CmdList.SetGraphicsState(GraphicsState);
@@ -2845,6 +3619,7 @@ namespace Lumina
         {
             FRHIImageDesc ImageDesc = GetRenderTarget()->GetDescription();
             ImageDesc.Format = EFormat::RGBA16_FLOAT;
+            ImageDesc.DebugName = "HDR";
             NamedImages[(int)ENamedImage::HDR] = GRenderContext->CreateImage(ImageDesc);
         }
         
@@ -2984,20 +3759,37 @@ namespace Lumina
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(8, GetNamedBuffer(ENamedBuffer::Billboards)));
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(9, GetNamedImage(ENamedImage::Cascade)));
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(10, ShadowAtlas.GetImage()));
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(11, GetNamedImage(ENamedImage::Picker), TStaticRHISampler<false, false>::GetRHI()));
             // Min-reduction clamp sampler: a single bilinear tap on the depth pyramid
             // returns the minimum of the 2x2 footprint (farthest depth in reverse-Z).
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(12, GetNamedImage(ENamedImage::DepthPyramid),
                 TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Minimum>::GetRHI()));
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(13, GetNamedImage(ENamedImage::HDR)));
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(14, GetNamedImage(ENamedImage::Accum)));
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(15, GetNamedImage(ENamedImage::Revealage)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(16, GetNamedBuffer(ENamedBuffer::InstanceMappingShadow)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(17, GetNamedBuffer(ENamedBuffer::IndirectShadow)));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
             GRenderContext->CreateBindingSetAndLayout(Visibility, 0, BindingSetDesc, SceneBindingLayout, SceneBindingSet);
+        }
+
+        // Standalone set-0 layout for ToneMapping (uHDRSceneColor at binding 0).
+        {
+            FBindingSetDesc ComposeSetDesc;
+            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::HDR)));
+
+            TBitFlags<ERHIShaderType> Visibility;
+            Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
+            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, ComposeSetDesc, ComposeBindingLayout, ComposeBindingSet);
+        }
+
+        // Standalone set-0 layout for OITResolve (uAccum at 0, uRevealage at 1).
+        {
+            FBindingSetDesc OITSetDesc;
+            OITSetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::Accum)));
+            OITSetDesc.AddItem(FBindingSetItem::TextureSRV(1, GetNamedImage(ENamedImage::Revealage)));
+
+            TBitFlags<ERHIShaderType> Visibility;
+            Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
+            GRenderContext->CreateBindingSetAndLayout(Visibility, 0, OITSetDesc, OITBindingLayout, OITBindingSet);
         }
     }
 

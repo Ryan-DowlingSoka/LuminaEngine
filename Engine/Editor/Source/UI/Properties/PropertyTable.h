@@ -50,18 +50,22 @@ namespace Lumina
         virtual bool HasExtraControls() const { return false; }
         virtual void DrawExtraControlsSection() { }
         virtual float GetExtraControlsSectionWidth() { return 0; }
-        
+
         void DestroyChildren();
 
         virtual void Update() { }
         void UpdateRow();
         void DrawRow(float Offset, bool bReadOnly);
+        virtual void DrawChildren(float ChildOffset, bool bReadOnly);
         bool IsReadOnly() const;
-         
+
         void SetIsArrayElement(bool bTrue) { bArrayElement = bTrue; }
         bool IsArrayElementProperty() const { return bArrayElement; }
-        
+
     protected:
+
+        void DispatchChange(EPropertyChangeOp Op);
+
         
         FPropertyChangedEventCallbacks          Callbacks;
         
@@ -85,29 +89,37 @@ namespace Lumina
         void DrawHeader(float Offset) override;
         void DrawEditor(bool bReadOnly) override;
         bool HasExtraControls() const override;
+        float GetExtraControlsSectionWidth() override;
         void DrawExtraControlsSection() override;
 
         TSharedPtr<FPropertyHandle> GetPropertyHandle() const { return PropertyHandle; }
-        
+
     };
 
     class FArrayPropertyRow : public FPropertyRow
     {
     public:
-        
+
         FArrayPropertyRow(const TSharedPtr<FPropertyHandle>& InPropHandle, FPropertyRow* InParentRow, const FPropertyChangedEventCallbacks& Callbacks);
         void Update() override;
         void DrawHeader(float Offset) override;
         void DrawEditor(bool bReadOnly) override;
+        void DrawChildren(float ChildOffset, bool bReadOnly) override;
         void RebuildChildren();
         bool HasExtraControls() const override { return true; }
         float GetExtraControlsSectionWidth() override;
         void DrawExtraControlsSection() override;
         TSharedPtr<FPropertyHandle> GetPropertyHandle() const { return PropertyHandle; }
 
+        bool IsInnerFixedHeight() const;
 
         FArrayProperty*             ArrayProperty = nullptr;
 
+    private:
+
+        void DrawTruncationRow(float Offset, int HiddenCount);
+
+        bool                        bShowAllElements = false;
     };
 
     class FStructPropertyRow : public FPropertyRow

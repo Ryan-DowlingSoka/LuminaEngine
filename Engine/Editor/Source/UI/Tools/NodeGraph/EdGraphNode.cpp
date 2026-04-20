@@ -85,6 +85,7 @@ namespace Lumina
     CEdNodeGraphPin* CEdGraphNode::CreatePin(CClass* InClass, const FString& Name, ENodePinDirection Direction)
     {
         CEdNodeGraphPin* NewPin = NewObject<CEdNodeGraphPin>(InClass);
+        NewPin->SetPinName(Name);
         NewPin->PinID = HashPinID(FullName, Name, Direction);
         NewPin->bInputPin = (Direction == ENodePinDirection::Input);
         NewPin->OwningNode = this;

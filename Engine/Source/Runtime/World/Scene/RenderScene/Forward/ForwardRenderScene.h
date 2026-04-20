@@ -16,6 +16,7 @@ namespace Lumina
     struct SStaticMeshComponent;
     struct SSkeletalMeshComponent;
     struct STransformComponent;
+    struct STerrainComponent;
 
     /**
      * Scene rendering via Clustered Forward Rendering.
@@ -149,6 +150,10 @@ namespace Lumina
         void CascadedShowPass(FRenderGraph& RenderGraph);
         void BasePass(FRenderGraph& RenderGraph);
         void BillboardPass(FRenderGraph& RenderGraph);
+        void ParticleSimulatePass(FRenderGraph& RenderGraph);
+        void ParticleRenderPass(FRenderGraph& RenderGraph);
+        void TerrainUpdatePass(FRenderGraph& RenderGraph);
+        void TerrainRenderPass(FRenderGraph& RenderGraph);
         void TransparentPass(FRenderGraph& RenderGraph);
         void OITResolvePass(FRenderGraph& RenderGraph);
         void EnvironmentPass(FRenderGraph& RenderGraph);
@@ -183,28 +188,33 @@ namespace Lumina
         /** Packed array of all light shadows in the scene */
         TArray<TVector<FLightShadow>, (uint32)ELightType::Num>    PackedShadows;
         
-        FViewportState                      SceneViewportState;
-        FDelegateHandle                     SwapchainResizedHandle;
-        CWorld*                             World = nullptr;
+        FViewportState                          SceneViewportState;
+        FDelegateHandle                         SwapchainResizedHandle;
+        CWorld*                                 World = nullptr;
         
-        FSceneRenderStats                   RenderStats;
-        FSceneRenderSettings                RenderSettings;
-        FSceneLightData                     LightData;
+        FSceneRenderStats                       RenderStats;
+        FSceneRenderSettings                    RenderSettings;
+        FSceneLightData                         LightData;
         
+        FBindingCache                           BindingCache;
 
-        FBindingCache                       BindingCache;
+        FRHIViewportRef                         SceneViewport;
+        
+        FSceneGlobalData                        SceneGlobalData;
+        
+        FRHIBindingSetRef                       SceneBindingSet;
+        FRHIBindingLayoutRef                    SceneBindingLayout;
+        
+        FRHIBindingSetRef                       ComposeBindingSet;
+        FRHIBindingLayoutRef                    ComposeBindingLayout;
 
-        FRHIViewportRef                     SceneViewport;
+        FRHIBindingSetRef                       OITBindingSet;
+        FRHIBindingLayoutRef                    OITBindingLayout;
         
-        FSceneGlobalData                    SceneGlobalData;
+        TVector<FSimpleElementVertex>           SimpleVertices;
         
-        FRHIBindingSetRef                   SceneBindingSet;
-        FRHIBindingLayoutRef                SceneBindingLayout;
-        
-        TVector<FSimpleElementVertex>       SimpleVertices;
-        
-        FRHIInputLayoutRef                  SimpleVertexLayoutInput;
-        TVector<FLineBatch>                 LineBatches;
+        FRHIInputLayoutRef                      SimpleVertexLayoutInput;
+        TVector<FLineBatch>                     LineBatches;
 
         TVector<FBillboardInstance>             BillboardInstances;
         
@@ -225,5 +235,6 @@ namespace Lumina
 
         /** Packed indirect draw arguments, gets sent directly to the GPU */
         TVector<FDrawIndirectArguments>         IndirectDrawArguments;
+
     };
 }

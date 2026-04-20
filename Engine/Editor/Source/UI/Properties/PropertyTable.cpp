@@ -1,4 +1,4 @@
-﻿#include "PropertyTable.h"
+#include "PropertyTable.h"
 
 #include "Core/Engine/Engine.h"
 #include "Core/Object/Class.h"
@@ -13,33 +13,42 @@
 
 namespace Lumina
 {
-    
+    static constexpr int        ComplexArrayDisplayLimit = 32;
+    static constexpr float      ChildIndentStep = 8.0f;
+    static constexpr uint32     ArrayControlSeed = 428768833;
+
+    static bool IsFixedHeightPropertyType(EPropertyTypeFlags Type)
+    {
+        switch (Type)
+        {
+        case EPropertyTypeFlags::Struct:
+        case EPropertyTypeFlags::Vector:
+            return false;
+        default:
+            return true;
+        }
+    }
+
     static TUniquePtr<FPropertyRow> CreatePropertyRow(const TSharedPtr<FPropertyHandle>& InPropHandle, FPropertyRow* InParentRow, const FPropertyChangedEventCallbacks& InCallbacks)
     {
-        TUniquePtr<FPropertyRow> NewRow;
-        if (InPropHandle->Property->GetType() == EPropertyTypeFlags::Vector)
+        switch (InPropHandle->Property->GetType())
         {
-            NewRow = MakeUnique<FArrayPropertyRow>(InPropHandle, InParentRow, InCallbacks);
+        case EPropertyTypeFlags::Vector:
+            return MakeUnique<FArrayPropertyRow>(InPropHandle, InParentRow, InCallbacks);
+        case EPropertyTypeFlags::Struct:
+            return MakeUnique<FStructPropertyRow>(InPropHandle, InParentRow, InCallbacks);
+        default:
+            return MakeUnique<FPropertyPropertyRow>(InPropHandle, InParentRow, InCallbacks);
         }
-        else if (InPropHandle->Property->GetType() == EPropertyTypeFlags::Struct)
-        {
-            NewRow = MakeUnique<FStructPropertyRow>(InPropHandle, InParentRow, InCallbacks);
-        }
-        else
-        {
-            NewRow = MakeUnique<FPropertyPropertyRow>(InPropHandle, InParentRow, InCallbacks);
-        }
-
-        return NewRow;
     }
-    
+
     FPropertyRow::FPropertyRow(const TSharedPtr<FPropertyHandle>& InPropHandle, FPropertyRow* InParentRow, const FPropertyChangedEventCallbacks& InCallbacks)
         : Callbacks(InCallbacks)
         , PropertyHandle(InPropHandle)
         , ParentRow(InParentRow)
     {
     }
-    
+
     void FPropertyRow::DestroyChildren()
     {
         Children.clear();
@@ -47,50 +56,92 @@ namespace Lumina
 
     void FPropertyRow::UpdateRow()
     {
-        for (const TUniquePtr<FPropertyRow>& Child : Children)
+        Update();
+
+        // Children can only accumulate a ChangeOp if they were drawn last frame,
+        // which only happens when we are expanded. Skipping collapsed subtrees
+        // keeps property grids with huge arrays cheap.
+        if (bExpanded)
         {
-            Child->UpdateRow();
+            for (const TUniquePtr<FPropertyRow>& Child : Children)
+            {
+                Child->UpdateRow();
+            }
+        }
+    }
+
+    void FPropertyRow::DispatchChange(EPropertyChangeOp Op)
+    {
+        if (Op == EPropertyChangeOp::None || PropertyHandle == nullptr || PropertyHandle->Property == nullptr)
+        {
+            return;
         }
 
-        Update();
+        const FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
+
+        if (Op == EPropertyChangeOp::Started && Callbacks.StartChangeCallback)
+        {
+            Callbacks.StartChangeCallback(Event);
+        }
+
+        if (Callbacks.PreChangeCallback)
+        {
+            Callbacks.PreChangeCallback(Event);
+        }
+
+        if (Customization)
+        {
+            Customization->UpdatePropertyValue(PropertyHandle);
+        }
+
+        if (Callbacks.PostChangeCallback)
+        {
+            Callbacks.PostChangeCallback(Event);
+        }
+
+        if (Op == EPropertyChangeOp::Finished && Callbacks.FinishChangeCallback)
+        {
+            Callbacks.FinishChangeCallback(Event);
+        }
     }
 
     void FPropertyRow::DrawRow(float Offset, bool bReadOnly)
     {
         ImGui::PushID(this);
-        
+
         ImGui::TableNextRow();
 
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
         DrawHeader(Offset);
-        
+
         ImGui::TableNextColumn();
         {
+            const bool bHasExtras = HasExtraControls();
+            const int ColumnCount = bHasExtras ? 3 : 2;
+
             constexpr ImGuiTableFlags Flags = ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_SizingFixedFit;
             ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(2, 0));
-            if (ImGui::BeginTable("GridTable", HasExtraControls() ? 3 : 2, Flags))
+            if (ImGui::BeginTable("EditorRow", ColumnCount, Flags))
             {
                 ImGui::TableSetupColumn("##Editor", ImGuiTableColumnFlags_WidthStretch);
-
-                if (HasExtraControls())
+                if (bHasExtras)
                 {
                     ImGui::TableSetupColumn("##Extra", ImGuiTableColumnFlags_WidthFixed, GetExtraControlsSectionWidth());
                 }
-                
                 ImGui::TableSetupColumn("##Reset", ImGuiTableColumnFlags_WidthFixed, 24);
+
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
                 ImGui::AlignTextToFramePadding();
-                
                 DrawEditor(bReadOnly);
 
-                if (HasExtraControls())
+                if (bHasExtras)
                 {
                     ImGui::TableNextColumn();
                     DrawExtraControlsSection();
                 }
-                
+
                 ImGui::TableNextColumn();
 
                 ImGui::EndTable();
@@ -99,16 +150,19 @@ namespace Lumina
         }
         ImGui::PopID();
 
-        if (bExpanded)
+        if (bExpanded && !Children.empty())
         {
             ImGui::BeginDisabled(IsReadOnly());
-            const float ChildHeaderOffset = Offset + 8;
-            
-            for (TUniquePtr<FPropertyRow>& Row : Children)
-            {
-                Row->DrawRow(ChildHeaderOffset, bReadOnly);
-            }
+            DrawChildren(Offset + ChildIndentStep, bReadOnly);
             ImGui::EndDisabled();
+        }
+    }
+
+    void FPropertyRow::DrawChildren(float ChildOffset, bool bReadOnly)
+    {
+        for (const TUniquePtr<FPropertyRow>& Row : Children)
+        {
+            Row->DrawRow(ChildOffset, bReadOnly);
         }
     }
 
@@ -116,172 +170,80 @@ namespace Lumina
     {
         return PropertyHandle == nullptr ? false : PropertyHandle->Property->IsReadOnly();
     }
-    
+
+    static void DrawPropertyTooltip(const FProperty* Property)
+    {
+        if (!ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        {
+            return;
+        }
+
+        const FString* Tooltip = Property->TryGetMetadata("ToolTip");
+        if (Tooltip == nullptr)
+        {
+            Tooltip = &Property->GetPropertyDisplayName();
+        }
+        ImGuiX::TextTooltip_Internal(*Tooltip);
+    }
+
     FPropertyPropertyRow::FPropertyPropertyRow(const TSharedPtr<FPropertyHandle>& InPropHandle, FPropertyRow* InParentRow, const FPropertyChangedEventCallbacks& InCallbacks)
         : FPropertyRow(InPropHandle, InParentRow, InCallbacks)
     {
-        
         switch (PropertyHandle->Property->GetType())
         {
-        case EPropertyTypeFlags::None:
-            break;
         case EPropertyTypeFlags::Int8:
-            {
-                Customization = FNumericPropertyCustomization<int8, ImGuiDataType_S8>::MakeInstance();
-            }
+            Customization = FNumericPropertyCustomization<int8, ImGuiDataType_S8>::MakeInstance();
             break;
         case EPropertyTypeFlags::Int16:
-            {
-                Customization = FNumericPropertyCustomization<int16, ImGuiDataType_S16>::MakeInstance();
-            }
+            Customization = FNumericPropertyCustomization<int16, ImGuiDataType_S16>::MakeInstance();
             break;
         case EPropertyTypeFlags::Int32:
-            {
-                Customization = FNumericPropertyCustomization<int32, ImGuiDataType_S32>::MakeInstance();
-            }
+            Customization = FNumericPropertyCustomization<int32, ImGuiDataType_S32>::MakeInstance();
             break;
         case EPropertyTypeFlags::Int64:
-            {
-                Customization = FNumericPropertyCustomization<int64, ImGuiDataType_S64>::MakeInstance();
-            }
+            Customization = FNumericPropertyCustomization<int64, ImGuiDataType_S64>::MakeInstance();
             break;
         case EPropertyTypeFlags::UInt8:
-            {
-                Customization = FNumericPropertyCustomization<uint8, ImGuiDataType_U8>::MakeInstance();
-            }
+            Customization = FNumericPropertyCustomization<uint8, ImGuiDataType_U8>::MakeInstance();
             break;
         case EPropertyTypeFlags::UInt16:
-            {
-                Customization = FNumericPropertyCustomization<uint16, ImGuiDataType_U16>::MakeInstance();
-            }
+            Customization = FNumericPropertyCustomization<uint16, ImGuiDataType_U16>::MakeInstance();
             break;
         case EPropertyTypeFlags::UInt32:
-            {
-                Customization = FNumericPropertyCustomization<uint32, ImGuiDataType_U32>::MakeInstance();
-            }
+            Customization = FNumericPropertyCustomization<uint32, ImGuiDataType_U32>::MakeInstance();
             break;
         case EPropertyTypeFlags::UInt64:
-            {
-                Customization = FNumericPropertyCustomization<uint64, ImGuiDataType_U64>::MakeInstance();
-            }
+            Customization = FNumericPropertyCustomization<uint64, ImGuiDataType_U64>::MakeInstance();
             break;
         case EPropertyTypeFlags::Float:
-            {
-                Customization = FNumericPropertyCustomization<float, ImGuiDataType_Float>::MakeInstance();
-            }
+            Customization = FNumericPropertyCustomization<float, ImGuiDataType_Float>::MakeInstance();
             break;
         case EPropertyTypeFlags::Double:
-            {
-                Customization = FNumericPropertyCustomization<double, ImGuiDataType_Double>::MakeInstance();
-            }
+            Customization = FNumericPropertyCustomization<double, ImGuiDataType_Double>::MakeInstance();
             break;
         case EPropertyTypeFlags::Bool:
-            {
-                Customization = FBoolPropertyCustomization::MakeInstance();
-            }
+            Customization = FBoolPropertyCustomization::MakeInstance();
             break;
         case EPropertyTypeFlags::Object:
-            {
-                Customization = FCObjectPropertyCustomization::MakeInstance();
-            }
-            break;
-        case EPropertyTypeFlags::Class:
+            Customization = FCObjectPropertyCustomization::MakeInstance();
             break;
         case EPropertyTypeFlags::Name:
-            {
-                Customization = FNamePropertyCustomization::MakeInstance();
-            }
+            Customization = FNamePropertyCustomization::MakeInstance();
             break;
         case EPropertyTypeFlags::String:
-            {
-                Customization = FStringPropertyCustomization::MakeInstance();
-            }
+            Customization = FStringPropertyCustomization::MakeInstance();
             break;
         case EPropertyTypeFlags::Enum:
-            {
-                Customization = FEnumPropertyCustomization::MakeInstance();
-            }
+            Customization = FEnumPropertyCustomization::MakeInstance();
             break;
-        case EPropertyTypeFlags::Vector:
-            break;
-        case EPropertyTypeFlags::Struct:
-            break;
-        case EPropertyTypeFlags::Count:
+        default:
             break;
         }
     }
 
     void FPropertyPropertyRow::Update()
     {
-        switch (ChangeOp)
-        {
-        case EPropertyChangeOp::None:
-            break;
-        case EPropertyChangeOp::Updated:
-            {
-                if (Callbacks.PreChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.PreChangeCallback(Move(Event));
-                }
-                
-                Customization->UpdatePropertyValue(PropertyHandle);
-
-                if (Callbacks.PostChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.PostChangeCallback(Move(Event));
-                }
-            }
-            break;
-        case EPropertyChangeOp::Started:
-            {
-                if (Callbacks.StartChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.StartChangeCallback(Move(Event));
-                }
-             
-                if (Callbacks.PreChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.PreChangeCallback(Move(Event));
-                }
-                
-                Customization->UpdatePropertyValue(PropertyHandle);
-
-                if (Callbacks.PostChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.PostChangeCallback(Move(Event));
-                }
-            }
-            break;
-        case EPropertyChangeOp::Finished:
-            {
-                if (Callbacks.PreChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.PreChangeCallback(Move(Event));
-                }
-                
-                Customization->UpdatePropertyValue(PropertyHandle);
-
-                if (Callbacks.PostChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.PostChangeCallback(Move(Event));
-                }
-                
-                if (Callbacks.FinishChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.FinishChangeCallback(Move(Event));
-                }
-            }
-            break;
-        }
-
+        DispatchChange(ChangeOp);
         ChangeOp = EPropertyChangeOp::None;
     }
 
@@ -289,17 +251,17 @@ namespace Lumina
     {
         ImGui::Dummy(ImVec2(Offset, 0));
         ImGui::SameLine();
-        
-        FString DisplayName = IsArrayElementProperty() ? eastl::to_string(PropertyHandle->Index) : PropertyHandle->Property->GetPropertyDisplayName();
-        ImGui::TextUnformatted(DisplayName.c_str());
-        
-        const FString* Tooltip = PropertyHandle->Property->TryGetMetadata("ToolTip");
-        if (Tooltip == nullptr)
+
+        if (IsArrayElementProperty())
         {
-            Tooltip = &PropertyHandle->Property->GetPropertyDisplayName();
+            ImGui::Text("%lld", static_cast<long long>(PropertyHandle->Index));
         }
-        
-        ImGuiX::TextTooltip("{}", *Tooltip);
+        else
+        {
+            ImGui::TextUnformatted(PropertyHandle->Property->GetPropertyDisplayName().c_str());
+        }
+
+        DrawPropertyTooltip(PropertyHandle->Property);
     }
 
     void FPropertyPropertyRow::DrawEditor(bool bReadOnly)
@@ -312,9 +274,9 @@ namespace Lumina
         }
         else
         {
-            ImGui::Text(LE_ICON_EXCLAMATION "Missing Property Customization");
+            ImGui::TextUnformatted(LE_ICON_EXCLAMATION "Missing Property Customization");
         }
-        
+
         ImGui::EndDisabled();
     }
 
@@ -323,61 +285,56 @@ namespace Lumina
         return bArrayElement;
     }
 
+    float FPropertyPropertyRow::GetExtraControlsSectionWidth()
+    {
+        return bArrayElement ? 22.0f : 0.0f;
+    }
+
     void FPropertyPropertyRow::DrawExtraControlsSection()
     {
         FArrayPropertyRow* ArrayRow = static_cast<FArrayPropertyRow*>(ParentRow);
-        FArrayProperty* ArrayProperty = static_cast<FArrayPropertyRow*>(ParentRow)->ArrayProperty;
+        FArrayProperty* ArrayProperty = ArrayRow->ArrayProperty;
         void* ContainerPtr = ArrayRow->GetPropertyHandle()->ContainerPtr;
-        size_t ArrayNum = ArrayProperty->GetNum(ContainerPtr);
-        
+        const size_t ArrayNum = ArrayProperty->GetNum(ContainerPtr);
+        const int64 Index = PropertyHandle->Index;
+
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 4));
-        ImGuiX::FlatButton(LE_ICON_DOTS_HORIZONTAL, ImVec2(18, 24), 428768833);
+        ImGuiX::FlatButton(LE_ICON_DOTS_HORIZONTAL, ImVec2(18, 24), ArrayControlSeed);
         ImGui::PopStyleVar();
 
         if (ImGui::BeginPopupContextItem(nullptr, ImGuiPopupFlags_MouseButtonLeft))
         {
-            if (ImGui::MenuItem(LE_ICON_PLUS" Insert New Element"))
+            if (ImGui::MenuItem(LE_ICON_PLUS " Insert New Element"))
             {
                 ArrayProperty->PushBack(ContainerPtr, nullptr);
                 ArrayRow->RebuildChildren();
             }
 
-            if (PropertyHandle->Index > 0)
+            if (Index > 0 && ImGui::MenuItem(LE_ICON_ARROW_UP " Move Element Up"))
             {
-                if (ImGui::MenuItem(LE_ICON_ARROW_UP" Move Element Up"))
-                {
-                    ArrayProperty->Swap(ContainerPtr, PropertyHandle->Index, PropertyHandle->Index - 1);
-                    ArrayRow->RebuildChildren();
-                }
-                
-                ImGuiX::TextTooltip("Move the element up the array (lower index)");
-            }
-            
-            
-            if (std::cmp_less(PropertyHandle->Index, (ArrayNum - 1)))
-            {
-                if (ImGui::MenuItem(LE_ICON_ARROW_DOWN" Move Element Down"))
-                {
-                    ArrayProperty->Swap(ContainerPtr, PropertyHandle->Index, PropertyHandle->Index + 1);
-                    ArrayRow->RebuildChildren();
-                }
-                
-                ImGuiX::TextTooltip("Move the element down the array (higher index)");
-
-            }
-
-            if (ImGui::MenuItem(LE_ICON_TRASH_CAN" Remove Element"))
-            {
-                ArrayProperty->RemoveAt(ContainerPtr, PropertyHandle->Index);
+                ArrayProperty->Swap(ContainerPtr, Index, Index - 1);
                 ArrayRow->RebuildChildren();
             }
-            
-            ImGuiX::TextTooltip("Remove the element.");
+
+            if (ArrayNum > 0 && std::cmp_less(Index, ArrayNum - 1) && ImGui::MenuItem(LE_ICON_ARROW_DOWN " Move Element Down"))
+            {
+                ArrayProperty->Swap(ContainerPtr, Index, Index + 1);
+                ArrayRow->RebuildChildren();
+            }
+
+            if (ImGui::MenuItem(LE_ICON_TRASH_CAN " Remove Element"))
+            {
+                ArrayProperty->RemoveAt(ContainerPtr, Index);
+                ArrayRow->RebuildChildren();
+            }
 
             ImGui::EndPopup();
         }
 
-        ImGuiX::TextTooltip("Array Element Options");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        {
+            ImGuiX::TextTooltip_Internal("Array Element Options");
+        }
     }
 
     FArrayPropertyRow::FArrayPropertyRow(const TSharedPtr<FPropertyHandle>& InPropHandle, FPropertyRow* InParentRow, const FPropertyChangedEventCallbacks& InCallbacks)
@@ -397,28 +354,92 @@ namespace Lumina
         ImGui::Dummy(ImVec2(Offset, 0));
         ImGui::SameLine();
 
+        const size_t ElementCount = ArrayProperty->GetNum(GetPropertyHandle()->ContainerPtr);
+
         ImGui::SetNextItemOpen(bExpanded);
         ImGui::PushStyleColor(ImGuiCol_Header, 0);
         ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0);
         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0);
-        ImGuiTreeNodeFlags Flags = ArrayProperty->GetNum(GetPropertyHandle()->ContainerPtr) ? 0 : ImGuiTreeNodeFlags_Leaf;
+        const ImGuiTreeNodeFlags Flags = ElementCount ? 0 : ImGuiTreeNodeFlags_Leaf;
         bExpanded = ImGui::CollapsingHeader(ArrayProperty->GetPropertyDisplayName().c_str(), Flags);
-        
-        const FString* Tooltip = ArrayProperty->TryGetMetadata("ToolTip");
-        if (Tooltip == nullptr)
-        {
-            Tooltip = &ArrayProperty->GetPropertyDisplayName();
-        }
-        
-        ImGuiX::TextTooltip("{}", *Tooltip);
         ImGui::PopStyleColor(3);
+
+        DrawPropertyTooltip(ArrayProperty);
     }
 
     void FArrayPropertyRow::DrawEditor(bool bReadOnly)
     {
-        size_t ElementCount = ArrayProperty->GetNum(GetPropertyHandle()->ContainerPtr);
-        
-        ImGui::TextColored(ImVec4(0.24f, 0.24f, 0.24f, 1.0f), "%llu Elements", ElementCount);
+        const size_t ElementCount = ArrayProperty->GetNum(GetPropertyHandle()->ContainerPtr);
+        ImGui::TextColored(ImVec4(0.24f, 0.24f, 0.24f, 1.0f), "%llu Elements", static_cast<unsigned long long>(ElementCount));
+    }
+
+    bool FArrayPropertyRow::IsInnerFixedHeight() const
+    {
+        if (ArrayProperty == nullptr)
+        {
+            return false;
+        }
+
+        FProperty* Inner = ArrayProperty->GetInternalProperty();
+        if (Inner == nullptr)
+        {
+            return false;
+        }
+
+        return IsFixedHeightPropertyType(Inner->GetType());
+    }
+
+    void FArrayPropertyRow::DrawChildren(float ChildOffset, bool bReadOnly)
+    {
+        const int ChildCount = static_cast<int>(Children.size());
+        if (ChildCount == 0)
+        {
+            return;
+        }
+
+        if (IsInnerFixedHeight())
+        {
+            // All elements render as a single fixed-height table row, so the clipper
+            // can skip offscreen rows entirely. Critical for arrays with thousands of entries.
+            ImGuiListClipper Clipper;
+            Clipper.Begin(ChildCount);
+            while (Clipper.Step())
+            {
+                for (int i = Clipper.DisplayStart; i < Clipper.DisplayEnd; ++i)
+                {
+                    Children[i]->DrawRow(ChildOffset, bReadOnly);
+                }
+            }
+            return;
+        }
+
+        // Complex element types (struct/nested array) have variable height due to
+        // independent expansion state, so the clipper can't be used.
+        const int DisplayCount = bShowAllElements ? ChildCount : std::min(ChildCount, ComplexArrayDisplayLimit);
+        for (int i = 0; i < DisplayCount; ++i)
+        {
+            Children[i]->DrawRow(ChildOffset, bReadOnly);
+        }
+
+        if (DisplayCount < ChildCount)
+        {
+            DrawTruncationRow(ChildOffset, ChildCount - DisplayCount);
+        }
+    }
+
+    void FArrayPropertyRow::DrawTruncationRow(float Offset, int HiddenCount)
+    {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Dummy(ImVec2(Offset, 0));
+        ImGui::SameLine();
+        ImGui::TextDisabled("%d more element%s hidden", HiddenCount, HiddenCount == 1 ? "" : "s");
+
+        ImGui::TableNextColumn();
+        if (ImGui::SmallButton("Show All"))
+        {
+            bShowAllElements = true;
+        }
     }
 
     void FArrayPropertyRow::RebuildChildren()
@@ -426,15 +447,20 @@ namespace Lumina
         DestroyChildren();
 
         void* ContainerPtr = GetPropertyHandle()->ContainerPtr;
-        size_t ElementCount = ArrayProperty->GetNum(ContainerPtr);
-        
+        const size_t ElementCount = ArrayProperty->GetNum(ContainerPtr);
+
+        // Reset the truncation override whenever the array shape changes, so a
+        // resize or clear does not leave a stale "show all" flag in place.
+        bShowAllElements = false;
+
+        Children.reserve(ElementCount);
+        FProperty* InnerProperty = ArrayProperty->GetInternalProperty();
         for (size_t i = 0; i < ElementCount; ++i)
         {
-            TSharedPtr<FPropertyHandle> ElementPropHandle = MakeShared<FPropertyHandle>(ArrayProperty->GetAt(ContainerPtr, i), ArrayProperty->GetInternalProperty(), i);
+            TSharedPtr<FPropertyHandle> ElementPropHandle = MakeShared<FPropertyHandle>(ArrayProperty->GetAt(ContainerPtr, i), InnerProperty, static_cast<int64>(i));
             TUniquePtr<FPropertyRow> NewRow = CreatePropertyRow(ElementPropHandle, this, Callbacks);
             NewRow->SetIsArrayElement(true);
-            
-            Children.emplace_back(Move(NewRow));
+            Children.push_back(Move(NewRow));
         }
     }
 
@@ -446,25 +472,29 @@ namespace Lumina
     void FArrayPropertyRow::DrawExtraControlsSection()
     {
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 4));
-        if (ImGuiX::FlatButton(LE_ICON_PLUS, ImVec2(18, 24), 428768833))
+        if (ImGuiX::FlatButton(LE_ICON_PLUS, ImVec2(18, 24), ArrayControlSeed))
         {
             ArrayProperty->PushBack(PropertyHandle->ContainerPtr, nullptr);
             RebuildChildren();
         }
         ImGui::PopStyleVar();
-        ImGuiX::TextTooltip("Add array element");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        {
+            ImGuiX::TextTooltip_Internal("Add array element");
+        }
 
         ImGui::SameLine();
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 4));
-        if (ImGuiX::FlatButton(LE_ICON_TRASH_CAN, ImVec2(18, 24), 428768833))
+        if (ImGuiX::FlatButton(LE_ICON_TRASH_CAN, ImVec2(18, 24), ArrayControlSeed))
         {
             ArrayProperty->Clear(PropertyHandle->ContainerPtr);
             RebuildChildren();
-            
         }
         ImGui::PopStyleVar();
-        ImGuiX::TextTooltip("Remove all array elements");
-
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        {
+            ImGuiX::TextTooltip_Internal("Remove all array elements");
+        }
     }
 
     FStructPropertyRow::FStructPropertyRow(const TSharedPtr<FPropertyHandle>& InPropHandle, FPropertyRow* InParentRow, const FPropertyChangedEventCallbacks& InCallbacks)
@@ -473,7 +503,7 @@ namespace Lumina
     {
         FPropertyCustomizationRegistry* Registry = GEngine->GetDevelopmentToolsUI()->GetPropertyCustomizationRegistry();
         Customization = Registry->GetPropertyCustomizationForType(StructProperty->GetStruct()->GetName());
-        
+
         if (!Customization)
         {
             RebuildChildren();
@@ -482,75 +512,7 @@ namespace Lumina
 
     void FStructPropertyRow::Update()
     {
-        switch (ChangeOp)
-        {
-        case EPropertyChangeOp::None:
-            break;
-        case EPropertyChangeOp::Updated:
-            {
-                if (Callbacks.PreChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.PreChangeCallback(Move(Event));
-                }
-                
-                Customization->UpdatePropertyValue(PropertyHandle);
-
-                if (Callbacks.PostChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.PostChangeCallback(Move(Event));
-                }
-            }
-            break;
-        case EPropertyChangeOp::Started:
-            {
-                if (Callbacks.StartChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.StartChangeCallback(Move(Event));
-                }
-             
-                if (Callbacks.PreChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.PreChangeCallback(Move(Event));
-                }
-                
-                Customization->UpdatePropertyValue(PropertyHandle);
-
-                if (Callbacks.PostChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.PostChangeCallback(Move(Event));
-                }
-            }
-            break;
-        case EPropertyChangeOp::Finished:
-            {
-                if (Callbacks.PreChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.PreChangeCallback(Move(Event));
-                }
-                
-                Customization->UpdatePropertyValue(PropertyHandle);
-
-                if (Callbacks.PostChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.PostChangeCallback(Move(Event));
-                }
-                
-                if (Callbacks.FinishChangeCallback)
-                {
-                    FPropertyChangedEvent Event{Callbacks.Type, PropertyHandle->Property, PropertyHandle->Property->Name};
-                    Callbacks.FinishChangeCallback(Move(Event));
-                }
-            }
-            break;
-        }
-
+        DispatchChange(ChangeOp);
         ChangeOp = EPropertyChangeOp::None;
     }
 
@@ -564,34 +526,29 @@ namespace Lumina
         ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0);
         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0);
         bExpanded = ImGui::CollapsingHeader(StructProperty->GetPropertyDisplayName().c_str(), ImGuiTreeNodeFlags_Leaf);
-        
-        const FString* Tooltip = StructProperty->TryGetMetadata("ToolTip");
-        if (Tooltip == nullptr)
-        {
-            Tooltip = &StructProperty->GetPropertyDisplayName();
-        }
-        
-        ImGuiX::TextTooltip("{}", *Tooltip);
-        
         ImGui::PopStyleColor(3);
+
+        DrawPropertyTooltip(StructProperty);
     }
 
     void FStructPropertyRow::DrawEditor(bool bReadOnly)
     {
-        ImGui::BeginDisabled(IsReadOnly());
-        
-        if (bExpanded)
+        if (!bExpanded)
         {
-            if (Customization)
-            {
-                ChangeOp = Customization->UpdateAndDraw(PropertyHandle, bReadOnly);    
-            }
-            else if (PropertyTable)
-            {
-                PropertyTable->DrawTree(bReadOnly);
-            }
+            return;
         }
-        
+
+        ImGui::BeginDisabled(IsReadOnly());
+
+        if (Customization)
+        {
+            ChangeOp = Customization->UpdateAndDraw(PropertyHandle, bReadOnly);
+        }
+        else if (PropertyTable)
+        {
+            PropertyTable->DrawTree(bReadOnly);
+        }
+
         ImGui::EndDisabled();
     }
 
@@ -645,7 +602,7 @@ namespace Lumina
         {
             return;
         }
-        
+
         FProperty* Current = Struct->LinkedProperty;
         while (Current != nullptr)
         {
@@ -656,13 +613,13 @@ namespace Lumina
                 {
                     Category = Current->Metadata.GetMetadata("Category");
                 }
-                
+
                 FCategoryPropertyRow* CategoryRow = FindOrCreateCategoryRow(Category);
 
                 TSharedPtr<FPropertyHandle> Property = MakeShared<FPropertyHandle>(Object, Current);
                 CategoryRow->AddProperty(Property);
             }
-            
+
             Current = static_cast<FProperty*>(Current->Next);
         }
     }
@@ -678,45 +635,42 @@ namespace Lumina
         {
             FPropertyCustomizationRegistry* Registry = GEngine->GetDevelopmentToolsUI()->GetPropertyCustomizationRegistry();
             Customization = Registry->GetPropertyCustomizationForType(Struct->GetName());
-            
+
             if (Customization == nullptr)
             {
                 RebuildTree();
             }
             bDirty = false;
         }
-        
+
         if (Customization)
         {
             if (PropertyHandle == nullptr)
             {
                 PropertyHandle = MakeShared<FPropertyHandle>(Object, nullptr);
             }
-            
-            EPropertyChangeOp ChangeOp = Customization->UpdateAndDraw(PropertyHandle, bReadOnly);
+
+            const EPropertyChangeOp ChangeOp = Customization->UpdateAndDraw(PropertyHandle, bReadOnly);
             if (ChangeOp == EPropertyChangeOp::Updated)
             {
                 Customization->UpdatePropertyValue(PropertyHandle);
             }
-            
-            bDirty = false;
             return;
         }
-        
-        
-        constexpr ImGuiTableFlags Flags = 
-            ImGuiTableFlags_BordersOuter | 
-            ImGuiTableFlags_NoBordersInBodyUntilResize | 
+
+        constexpr ImGuiTableFlags Flags =
+            ImGuiTableFlags_BordersOuter |
+            ImGuiTableFlags_NoBordersInBodyUntilResize |
             ImGuiTableFlags_SizingStretchSame;
-        
+
         ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0, 2));
         ImGui::PushID(this);
-        
+
         if (ImGui::BeginTable("GridTable", 2, Flags))
         {
             ImGui::TableSetupColumn("##Header", ImGuiTableColumnFlags_WidthStretch, 0.4f);
             ImGui::TableSetupColumn("##Editor", ImGuiTableColumnFlags_WidthStretch, 0.6f);
-            
+
             for (auto& [Name, Row] : CategoryMap)
             {
                 Row->UpdateRow();
@@ -726,8 +680,8 @@ namespace Lumina
             ImGui::EndTable();
         }
 
-        ImGui::PopStyleVar();
         ImGui::PopID();
+        ImGui::PopStyleVar();
     }
 
     void FPropertyTable::SetObject(void* InObject, CStruct* StructType)
@@ -760,12 +714,12 @@ namespace Lumina
 
     FCategoryPropertyRow* FPropertyTable::FindOrCreateCategoryRow(const FName& CategoryName)
     {
-        if (CategoryMap.find(CategoryName) == CategoryMap.end())
+        auto It = CategoryMap.find(CategoryName);
+        if (It == CategoryMap.end())
         {
             auto NewRow = MakeUnique<FCategoryPropertyRow>(Object, CategoryName, ChangeEventCallbacks);
-            CategoryMap.emplace(CategoryName, Move(NewRow));
+            It = CategoryMap.emplace(CategoryName, Move(NewRow)).first;
         }
-        
-        return CategoryMap[CategoryName].get();
+        return It->second.get();
     }
 }

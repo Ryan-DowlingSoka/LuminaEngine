@@ -83,6 +83,10 @@ namespace Lumina
         
         RegisterGraphNode(CMaterialExpression_TextureSample::StaticClass());
 
+        RegisterGraphNode(CMaterialExpression_TerrainLayerWeight::StaticClass());
+        RegisterGraphNode(CMaterialExpression_TerrainLayerWeights::StaticClass());
+        RegisterGraphNode(CMaterialExpression_TerrainLayerBlend::StaticClass());
+
         ValidateGraph();
         
     }

@@ -1,5 +1,6 @@
 ﻿#pragma once
 #include "MaterialInput.h"
+#include "Assets/AssetTypes/Material/MaterialInterface.h"
 #include "Containers/Array.h"
 #include "Containers/String.h"
 #include "Core/Object/ObjectHandleTyped.h"
@@ -52,7 +53,7 @@ namespace Lumina
     public:
         FMaterialCompiler();
 
-        FString BuildTree(size_t& StartReplacement, size_t& EndReplacement) const;
+        FString BuildTree(size_t& StartReplacement, size_t& EndReplacement, EMaterialType MaterialType = EMaterialType::PBR) const;
         
         // Parameter definitions
         void DefineFloatParameter(const FString& NodeID, const FName& ParamID, float Value);
@@ -116,6 +117,14 @@ namespace Lumina
         void Distance(CMaterialInput* A, CMaterialInput* B);
         void Abs(CMaterialInput* A, CMaterialInput* B);
 
+        // Terrain-only helpers (emit an error on non-terrain materials so the graph reports it).
+        void TerrainLayerWeight(const FString& ID, uint32 LayerIndex, CMaterialGraphNode* Node);
+        void TerrainLayerWeights(const FString& ID, CMaterialGraphNode* Node);
+        void TerrainLayerBlend(CMaterialInput* Layer0, CMaterialInput* Layer1, CMaterialInput* Layer2, CMaterialInput* Layer3);
+
+        void SetMaterialType(EMaterialType InType) { CurrentMaterialType = InType; }
+        EMaterialType GetMaterialType() const { return CurrentMaterialType; }
+
         void NewLine();
         void AddRaw(const FString& Raw);
 
@@ -151,5 +160,7 @@ namespace Lumina
         uint16 NumScalarParams = 0;
         uint16 NumVectorParams = 0;
         uint16 NumTextureParams = 0;
+
+        EMaterialType CurrentMaterialType = EMaterialType::PBR;
     };
 }
