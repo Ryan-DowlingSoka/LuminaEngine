@@ -85,6 +85,10 @@ namespace Lumina
             Cluster,
             SimpleVertex,
             Billboards,
+            MeshletDrawList,
+            MeshletIndirect,
+            MeshletDrawListCascade,
+            MeshletIndirectCascade,
 
             Num,
         };
@@ -248,6 +252,23 @@ namespace Lumina
          * so the cascade mapping buffer can be bound as a single flat UAV.
          */
         TVector<FDrawIndirectArguments>         IndirectDrawArgumentsCascade;
+
+        /**
+         * Per-draw meshlet indirect args. VertexCount = MESHLET_VERTICES_PER_DRAW
+         * (372), InstanceCount starts at 0 (incremented by MeshletCull), and
+         * FirstInstance is the prefix-summed offset into uMeshletDrawList where
+         * this draw's meshlet slots live.
+         */
+        TVector<FDrawIndirectArguments>         IndirectDrawArgumentsMeshlet;
+
+        /** Cascade-major: [c * NumDraws + d]. FirstInstance pre-shifted by c * TotalMeshletBound. */
+        TVector<FDrawIndirectArguments>         IndirectDrawArgumentsMeshletCascade;
+
+        /** Peak SurfaceMeshletCount across all instances this frame; sets MeshletCull's dispatch X. */
+        uint32                                  MaxMeshletsPerInstance = 0;
+
+        /** Per-cascade stride in uMeshletDrawListCascade. */
+        uint32                                  TotalMeshletBound = 0;
 
     };
 }

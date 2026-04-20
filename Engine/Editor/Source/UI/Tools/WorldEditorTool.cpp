@@ -1693,7 +1693,7 @@ namespace Lumina
             
             if (ImGui::BeginMenu("Rendering"))
             {
-                if (ImGui::BeginMenu("Shadows"))
+                if (ImGui::BeginMenu("Debug View"))
                 {
                     ERenderSceneDebugFlags CurrentFlag = RenderScene->GetSceneRenderSettings().Flags;
                     FStringView Value = RenderFlagsAsString(CurrentFlag);

@@ -11,8 +11,12 @@ namespace Lumina
     // Meshlet sizing — 64 verts / 124 tris is the AMD/NV mesh-shader sweet spot
     // and satisfies meshoptimizer limits (max_vertices <= 256, max_triangles <=
     // 512, max_triangles divisible by 4).
-    constexpr uint32 MESHLET_MAX_VERTICES  = 64;
-    constexpr uint32 MESHLET_MAX_TRIANGLES = 124;
+    constexpr uint32 MESHLET_MAX_VERTICES       = 64;
+    constexpr uint32 MESHLET_MAX_TRIANGLES      = 124;
+    // Vertex count per meshlet draw invocation — the base VS walks TriangleCount*3
+    // verts and emits degenerates for the remaining slots so every meshlet
+    // shares the same VertexCount in its indirect args.
+    constexpr uint32 MESHLET_VERTICES_PER_DRAW  = MESHLET_MAX_TRIANGLES * 3;
 
     // Single meshlet descriptor — offsets into the flat arrays on FMeshletData.
     // VertexOffset indexes into FMeshletData::MeshletVertices which in turn
@@ -58,6 +62,18 @@ namespace Lumina
         }
     };
 
+    // GPU-side descriptor for one mesh's meshlet data. Uploaded once per mesh
+    // into a tiny per-mesh SSBO; FGPUInstance carries the buffer-device address
+    // so the meshlet cull pass and base VS can reach all four flat arrays with
+    // a single pointer indirection.
+    struct alignas(16) FMeshletHeaderGPU
+    {
+        uint64 MeshletsAddress;           // FMeshlet*
+        uint64 BoundsAddress;             // FMeshletBounds*
+        uint64 VerticesAddress;           // uint32*
+        uint64 TrianglesAddress;          // uint32* (packed 4x uint8)
+    };
+
     struct FGeometrySurface final
     {
         FName   ID;
@@ -92,6 +108,14 @@ namespace Lumina
             FRHIBufferRef VertexBuffer;
             FRHIBufferRef IndexBuffer;
             FRHIBufferRef ShadowIndexBuffer;
+
+            // Meshlet data uploaded once per mesh. MeshletHeader stores BDAs to
+            // the four arrays so FGPUInstance can reach them with one pointer.
+            FRHIBufferRef MeshletBuffer;          // TVector<FMeshlet>
+            FRHIBufferRef MeshletBoundsBuffer;    // TVector<FMeshletBounds>
+            FRHIBufferRef MeshletVertexBuffer;    // TVector<uint32>
+            FRHIBufferRef MeshletTriangleBuffer;  // Packed TVector<uint8> (4 per uint32)
+            FRHIBufferRef MeshletHeaderBuffer;    // FMeshletHeaderGPU[1]
         };
         
         FName                       Name;

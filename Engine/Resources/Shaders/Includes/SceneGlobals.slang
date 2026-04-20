@@ -39,6 +39,18 @@ struct SkinnedVertexBuffer
 [[vk::binding(18, 0)]] RWStructuredBuffer<uint>                     uMappingDataCascade;
 [[vk::binding(19, 0)]] RWStructuredBuffer<FDrawIndirectArguments>   uIndirectDrawDataCascade;
 
+// Meshlet-driven camera-pass rendering. MeshletCull.slang atomically appends
+// surviving meshlets to uMeshletDrawList and increments InstanceCount in
+// uIndirectDrawDataMeshlet. The base vertex shader uses SV_InstanceID to look
+// up (InstanceID, MeshletLocalIndex) and pull vertices through the meshlet
+// header rather than the flat index buffer.
+[[vk::binding(20, 0)]] RWStructuredBuffer<FMeshletDraw>             uMeshletDrawList;
+[[vk::binding(21, 0)]] RWStructuredBuffer<FDrawIndirectArguments>   uIndirectDrawDataMeshlet;
+
+// Per-cascade meshlet draw list + indirect for the CSM pass.
+[[vk::binding(22, 0)]] RWStructuredBuffer<FMeshletDraw>             uMeshletDrawListCascade;
+[[vk::binding(23, 0)]] RWStructuredBuffer<FDrawIndirectArguments>   uIndirectDrawDataMeshletCascade;
+
 // ---------------------------------------------------------------------------------
 //  Binding Set 1
 // ---------------------------------------------------------------------------------
@@ -87,6 +99,45 @@ FVertexData LoadSkinnedVertex(uint* VBO, uint* IBO, uint VertexID, uint BoneOffs
     return Data;
 }
 
+// Meshlet-driven vertex fetch. The meshlet path has already resolved the final
+// vertex index (via the meshlet header's Vertices array), so these helpers skip
+// the IBO indirection and pull the vertex record directly.
+FVertexData LoadStaticVertexByIndex(uint* VBO, uint Index)
+{
+    FVertex V = reinterpret<FVertex*>(VBO)[Index];
+
+    FVertexData Data;
+    Data.Position = V.Position;
+    Data.Normal   = UnpackNormal(V.Normal);
+    Data.UV       = UnpackUV(V.UV);
+    Data.Color    = UnpackColor(V.Color);
+    return Data;
+}
+
+FVertexData LoadSkinnedVertexByIndex(uint* VBO, uint Index, uint BoneOffset)
+{
+    FSkinnedVertex V = reinterpret<FSkinnedVertex*>(VBO)[Index];
+
+    float3 LocalPos    = V.Position;
+    float3 LocalNormal = UnpackNormal(V.Normal);
+
+    uint4  JointIndices = UnpackUIntToUVec4(V.JointIndices);
+    float4 Weights      = unpack_u8u32(V.JointWeights) / float4(255.0);
+
+    float4x4 SkinMatrix =
+        uBoneMatrices[BoneOffset + JointIndices.x] * Weights.x +
+        uBoneMatrices[BoneOffset + JointIndices.y] * Weights.y +
+        uBoneMatrices[BoneOffset + JointIndices.z] * Weights.z +
+        uBoneMatrices[BoneOffset + JointIndices.w] * Weights.w;
+
+    FVertexData Data;
+    Data.Position = mul(SkinMatrix, float4(LocalPos, 1.0)).xyz;
+    Data.Normal   = normalize(mul((float3x3)SkinMatrix, LocalNormal));
+    Data.UV       = UnpackUV(V.UV);
+    Data.Color    = UnpackColor(V.Color);
+    return Data;
+}
+
 // ---------------------------------------------------------------------------------
 //  Material Accessors
 // ---------------------------------------------------------------------------------
@@ -107,6 +158,13 @@ uint DrawIDToInstanceID(uint ID)
 FGPUInstance GetInstanceData(uint Index)
 {
     return uInstanceData[DrawIDToInstanceID(Index)];
+}
+
+// Meshlet-pass accessor: the vertex shader resolves the absolute instance
+// index directly from the meshlet draw list, bypassing the DrawID mapping.
+FGPUInstance GetInstanceDataByID(uint InstanceID)
+{
+    return uInstanceData[InstanceID];
 }
 
 float4x4 GetModelMatrix(uint Index)

@@ -88,10 +88,19 @@ namespace Lumina
                 TargetDesc.format  = SLANG_SPIRV;
                 TargetDesc.profile = SLangGlobalSession->findProfile("spirv_1_5");
                 TargetDesc.flags   = SLANG_TARGET_FLAG_GENERATE_SPIRV_DIRECTLY | SLANG_TARGET_FLAG_GENERATE_WHOLE_PROGRAM;
-                
+
+                // Emit NonSemantic.Shader.DebugInfo into SPIR-V so Aftermath / Nsight can
+                // map GPU faults back to slang source lines in crash dumps.
+                slang::CompilerOptionEntry TargetOptions[1] = {};
+                TargetOptions[0].name = slang::CompilerOptionName::DebugInformation;
+                TargetOptions[0].value.kind = slang::CompilerOptionValueKind::Int;
+                TargetOptions[0].value.intValue0 = SLANG_DEBUG_INFO_LEVEL_STANDARD;
+                TargetDesc.compilerOptionEntries = TargetOptions;
+                TargetDesc.compilerOptionEntryCount = 1;
+
                 SessionDesc.targets     = &TargetDesc;
                 SessionDesc.targetCount = 1;
-                
+
                 FString ShaderDir = Paths::GetEngineResourceDirectory() + "/Shaders";
                 const char* SearchPaths[] = { ShaderDir.c_str() };
                 SessionDesc.searchPaths     = SearchPaths;
@@ -295,7 +304,14 @@ namespace Lumina
             TargetDesc.format  = SLANG_SPIRV;
             TargetDesc.profile = SLangGlobalSession->findProfile("spirv_1_5");
             TargetDesc.flags   = SLANG_TARGET_FLAG_GENERATE_SPIRV_DIRECTLY | SLANG_TARGET_FLAG_GENERATE_WHOLE_PROGRAM;
-        
+
+            slang::CompilerOptionEntry TargetOptions[1] = {};
+            TargetOptions[0].name = slang::CompilerOptionName::DebugInformation;
+            TargetOptions[0].value.kind = slang::CompilerOptionValueKind::Int;
+            TargetOptions[0].value.intValue0 = SLANG_DEBUG_INFO_LEVEL_STANDARD;
+            TargetDesc.compilerOptionEntries = TargetOptions;
+            TargetDesc.compilerOptionEntryCount = 1;
+
             SessionDesc.targets     = &TargetDesc;
             SessionDesc.targetCount = 1;
         

@@ -8,8 +8,27 @@ struct PSInput
     float4 FragPos      : FRAG_POS;
     float2 UV           : TEXCOORD0;
     uint InstanceIndex  : INSTANCE;
+    nointerpolation uint MeshletIndex : MESHLET_INDEX;
     float4 Position     : SV_Position;
 };
+
+// Hash-to-color used by the meshlet debug visualization. Good spread from a
+// few mix-and-shift rounds; produces stable per-meshlet hues across frames.
+float3 MeshletDebugColor(uint Index)
+{
+    uint H = Index * 2654435761u;
+    H ^= H >> 16;
+    H *= 2246822519u;
+    H ^= H >> 13;
+    H *= 3266489917u;
+    H ^= H >> 16;
+
+    return float3(
+        float( H         & 0xFFu) / 255.0,
+        float((H >>  8)  & 0xFFu) / 255.0,
+        float((H >> 16)  & 0xFFu) / 255.0
+    );
+}
 
 struct PSOutput
 {   
@@ -316,7 +335,7 @@ float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3
 [shader("fragment")]
 PSOutput FragmentMain(PSInput Input)
 {
-    FGPUInstance InstanceData = GetInstanceData(Input.InstanceIndex);
+    FGPUInstance InstanceData = GetInstanceDataByID(Input.InstanceIndex);
 
     uint EntityID           = InstanceData.EntityID;
     uint MaterialIndex      = InstanceData.MaterialIndex;
@@ -400,6 +419,11 @@ PSOutput FragmentMain(PSInput Input)
     float3 Color   = Ambient + Lo + Material.Emissive;
 
 #endif // UNLIT
+
+    if (uSceneData.CullData.DebugMode == DEBUG_MODE_MESHLETS)
+    {
+        Color = MeshletDebugColor(Input.MeshletIndex);
+    }
 
     PSOutput Output;
 

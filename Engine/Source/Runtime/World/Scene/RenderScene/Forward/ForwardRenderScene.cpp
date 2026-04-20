@@ -33,7 +33,7 @@
 namespace Lumina
 {
     static TConsoleVar CVarSelectionThickness("r.SelectionThickness", 5, "Changes thickness of entity selection.");
-    
+
     FForwardRenderScene::FForwardRenderScene(CWorld* InWorld)
         : World(InWorld)
         , LightData()
@@ -121,6 +121,7 @@ namespace Lumina
         SceneGlobalData.CullData.PyramidHeight          = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeY();
         SceneGlobalData.CullData.ShadowMaxDistance      = RenderSettings.ShadowMaxDistance;
         SceneGlobalData.CullData.bShadowOcclusionCull   = RenderSettings.bShadowOcclusionCull;
+        SceneGlobalData.CullData.DebugMode              = (uint32)RenderSettings.Flags;
         
         
         // Wait for shader tasks.
@@ -485,6 +486,12 @@ namespace Lumina
         const SIZE_T LightUploadSize    = offsetof(FSceneLightData, Shadows) + ShadowsUploadSize;
         const SIZE_T BillboardSize      = BillboardInstances.size() * sizeof(FBillboardInstance);
 
+        // TotalMeshletBound set by MergeMeshDrawData prefix sum.
+        const SIZE_T MeshletDrawListSize        = glm::max<SIZE_T>(sizeof(uint32) * 2, (SIZE_T)TotalMeshletBound * sizeof(uint32) * 2);
+        const SIZE_T MeshletIndirectSize        = glm::max<SIZE_T>(sizeof(FDrawIndirectArguments), (SIZE_T)IndirectArgsSize);
+        const SIZE_T MeshletDrawListCascadeSize = glm::max<SIZE_T>(sizeof(uint32) * 2, (SIZE_T)NumCascades * (SIZE_T)TotalMeshletBound * sizeof(uint32) * 2);
+        const SIZE_T MeshletIndirectCascadeSize = glm::max<SIZE_T>(sizeof(FDrawIndirectArguments), (SIZE_T)IndirectDrawArgumentsMeshletCascade.size() * sizeof(FDrawIndirectArguments));
+
         bool bAnyBufferResized = false;
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Instance], (uint32)InstanceDataSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMapping], sizeof(uint32) * InstanceData.size(), 1.2f);
@@ -497,6 +504,10 @@ namespace Lumina
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMappingCascade], (uint32)CascadeMappingSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Light], (uint32)LightUploadSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Billboards], (uint32)BillboardSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletDrawList], (uint32)MeshletDrawListSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletIndirect], (uint32)MeshletIndirectSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletDrawListCascade], (uint32)MeshletDrawListCascadeSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletIndirectCascade], (uint32)MeshletIndirectCascadeSize, 1.2f);
 
         if (bAnyBufferResized)
         {
@@ -517,9 +528,14 @@ namespace Lumina
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Bone), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Indirect), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::IndirectShadow), EResourceStates::CopyDest);
+                CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::MeshletIndirect), EResourceStates::CopyDest);
                 if (IndirectCascadeUploadSize > 0)
                 {
                     CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::IndirectCascade), EResourceStates::CopyDest);
+                }
+                if (!IndirectDrawArgumentsMeshletCascade.empty())
+                {
+                    CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::MeshletIndirectCascade), EResourceStates::CopyDest);
                 }
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::SimpleVertex), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Light), EResourceStates::CopyDest);
@@ -535,9 +551,22 @@ namespace Lumina
                 // offsets, InstanceCount == 0) so ShadowMeshCull.slang can atomically fill it
                 // in parallel with the camera-view cull pass.
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::IndirectShadow), IndirectDrawArguments.data(), IndirectArgsSize);
+                // Meshlet indirect: FirstInstance pre-populated with the prefix-sum slot
+                // into uMeshletDrawList; InstanceCount starts at 0 and is atomically
+                // incremented by MeshletCull per surviving meshlet.
+                const SIZE_T MeshletIndirectUploadSize = IndirectDrawArgumentsMeshlet.size() * sizeof(FDrawIndirectArguments);
+                if (MeshletIndirectUploadSize > 0)
+                {
+                    CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::MeshletIndirect), IndirectDrawArgumentsMeshlet.data(), MeshletIndirectUploadSize);
+                }
                 if (IndirectCascadeUploadSize > 0)
                 {
                     CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::IndirectCascade), IndirectDrawArgumentsCascade.data(), IndirectCascadeUploadSize);
+                }
+                const SIZE_T MeshletIndirectCascadeUploadSize = IndirectDrawArgumentsMeshletCascade.size() * sizeof(FDrawIndirectArguments);
+                if (MeshletIndirectCascadeUploadSize > 0)
+                {
+                    CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::MeshletIndirectCascade), IndirectDrawArgumentsMeshletCascade.data(), MeshletIndirectCascadeUploadSize);
                 }
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::SimpleVertex), SimpleVertices.data(), SimpleVertexSize);
                 // Upload only the populated prefix of the light buffer: the
@@ -703,6 +732,9 @@ namespace Lumina
         const uint64 VBAddress = Mesh->GetVertexBuffer()->GetAddress();
         const uint64 IBAddress = Mesh->GetIndexBuffer()->GetAddress();
         const uint64 ShadowIBAddress = Mesh->GetShadowIndexBuffer()->GetAddress();
+        const uint64 MeshletHeaderAddress = Mesh->GetMeshBuffers().MeshletHeaderBuffer
+            ? Mesh->GetMeshBuffers().MeshletHeaderBuffer->GetAddress()
+            : 0ull;
 
         Local.Stats.NumVertices  += Resource.GetNumVertices();
         Local.Stats.NumTriangles += Resource.GetNumTriangles();
@@ -786,6 +818,12 @@ namespace Lumina
             Item.Instance.DrawIDAndFlags             = PackDrawIDAndFlags(0, Flags); // DrawID patched at write-out
             Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
             Item.Instance.CustomData                 = MeshComponent.CustomPrimitiveData.Data.Packed;
+            Item.Instance.MeshletHeaderAddress       = MeshletHeaderAddress;
+            Item.Instance.SurfaceMeshletOffset       = Surface.MeshletOffset;
+            // Meshlet cull + base VS both deref MeshletHeader unconditionally when
+            // SurfaceMeshletCount > 0; zero the count when no header was uploaded
+            // so an inconsistent asset can't produce a null-pointer GPU fault.
+            Item.Instance.SurfaceMeshletCount        = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
 
             Item.Flags           = Flags;
             Item.MaterialIndex   = (uint16)Material->GetMaterialIndex();
@@ -828,6 +866,9 @@ namespace Lumina
         const uint64 VBAddress = Mesh->GetVertexBuffer()->GetAddress();
         const uint64 IBAddress = Mesh->GetIndexBuffer()->GetAddress();
         const uint64 ShadowIBAddress = Mesh->GetShadowIndexBuffer()->GetAddress();
+        const uint64 MeshletHeaderAddress = Mesh->GetMeshBuffers().MeshletHeaderBuffer
+            ? Mesh->GetMeshBuffers().MeshletHeaderBuffer->GetAddress()
+            : 0ull;
         const uint32 EntityIDPacked = entt::to_integral(Entity);
 
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
@@ -889,6 +930,13 @@ namespace Lumina
             Item.Instance.DrawIDAndFlags             = PackDrawIDAndFlags(0, Flags);
             Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
             Item.Instance.CustomData                 = MeshComponent.CustomPrimitiveData.Data.Packed;
+            // Skinned still gets its real meshlet header; the meshlet cull pass
+            // skips per-meshlet frustum/occlusion on skinned (bind-pose bounds
+            // aren't valid for deformed geometry) but still emits every meshlet
+            // so the vertex shader can pull them.
+            Item.Instance.MeshletHeaderAddress       = MeshletHeaderAddress;
+            Item.Instance.SurfaceMeshletOffset       = Surface.MeshletOffset;
+            Item.Instance.SurfaceMeshletCount        = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
 
             Item.Flags           = Flags;
             Item.MaterialIndex   = (uint16)Material->GetMaterialIndex();
@@ -1088,6 +1136,11 @@ namespace Lumina
             }
         }
 
+        // Mirror layout for meshlet-indirect: each draw gets VertexCount=372
+        // and FirstInstance = meshlet-prefix-sum. InstanceCount stays zero and
+        // MeshletCull atomic-appends into uMeshletDrawList[FirstInstance..].
+        IndirectDrawArgumentsMeshlet.resize(TotalDrawArgs);
+
         // Each thread owns a disjoint set of (thread, draw) slices in the global InstanceData,
         // so there are no atomics. Cursors are local to each worker.
         InstanceData.resize(TotalInstances);
@@ -1135,6 +1188,53 @@ namespace Lumina
             });
             WriteGraph.Dispatch();
             WriteGraph.Wait();
+        }
+
+        // Meshlet-indirect prefix sum. Walk the final InstanceData (now with
+        // DrawID patched in) to accumulate meshlet counts per draw, then turn
+        // that into FirstInstance offsets. Also tracks the peak per-instance
+        // meshlet count so the compute dispatch can size its X dimension.
+        {
+            LUMINA_PROFILE_SECTION("Meshlet Indirect Prefix Sum");
+
+            TVector<uint32> MeshletCountsPerDraw(TotalDrawArgs, 0u);
+            MaxMeshletsPerInstance = 0u;
+            for (const FGPUInstance& Inst : InstanceData)
+            {
+                const uint32 DrawID = Inst.DrawIDAndFlags & 0x00FFFFFFu;
+                MeshletCountsPerDraw[DrawID] += Inst.SurfaceMeshletCount;
+                if (Inst.SurfaceMeshletCount > MaxMeshletsPerInstance)
+                {
+                    MaxMeshletsPerInstance = Inst.SurfaceMeshletCount;
+                }
+            }
+
+            uint32 MeshletRunning = 0u;
+            for (uint32 d = 0; d < TotalDrawArgs; ++d)
+            {
+                FDrawIndirectArguments& Args = IndirectDrawArgumentsMeshlet[d];
+                Args.VertexCount           = MESHLET_VERTICES_PER_DRAW;
+                Args.InstanceCount         = 0u;
+                Args.StartVertexLocation   = 0u;
+                Args.StartInstanceLocation = MeshletRunning;
+                MeshletRunning            += MeshletCountsPerDraw[d];
+            }
+
+            TotalMeshletBound = MeshletRunning;
+
+            // Cascade-major mirror with FirstInstance shifted by c * TotalMeshletBound.
+            IndirectDrawArgumentsMeshletCascade.resize((size_t)NumCascades * TotalDrawArgs);
+            for (uint32 c = 0; c < (uint32)NumCascades; ++c)
+            {
+                const uint32 CascadeMeshletBase = c * TotalMeshletBound;
+                for (uint32 d = 0; d < TotalDrawArgs; ++d)
+                {
+                    FDrawIndirectArguments Args = IndirectDrawArgumentsMeshlet[d];
+                    Args.InstanceCount         = 0u;
+                    Args.StartInstanceLocation += CascadeMeshletBase;
+                    IndirectDrawArgumentsMeshletCascade[c * TotalDrawArgs + d] = Args;
+                }
+            }
         }
 
         RenderStats.NumBatches = NumBatches;
@@ -1571,6 +1671,10 @@ namespace Lumina
         OpaqueDrawList.clear();
         TranslucentDrawList.clear();
         IndirectDrawArguments.clear();
+        IndirectDrawArgumentsMeshlet.clear();
+        IndirectDrawArgumentsMeshletCascade.clear();
+        MaxMeshletsPerInstance = 0;
+        TotalMeshletBound = 0;
         InstanceData.clear();
         LightData = {};
         ShadowDataCount.store(0, std::memory_order_release);
@@ -1651,6 +1755,52 @@ namespace Lumina
 
                 CmdList.Dispatch(NumWorkGroups, 1, 1);
             }
+
+            // Per-meshlet culling. Each (instance, meshlet) is tested against the
+            // camera frustum + Hi-Z and survivors are atomically appended to
+            // uMeshletDrawList with per-draw offsets seeded by the CPU prefix-sum.
+            if (MaxMeshletsPerInstance > 0 && Num > 0)
+            {
+                FRHIComputeShaderRef MeshletCullShader = FShaderLibrary::GetComputeShader("MeshletCull.slang");
+
+                FComputePipelineDesc PipelineDesc;
+                PipelineDesc.SetComputeShader(MeshletCullShader);
+                PipelineDesc.AddBindingLayout(SceneBindingLayout);
+                PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+
+                FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+                FComputeState State;
+                State.SetPipeline(Pipeline);
+                State.AddBindingSet(SceneBindingSet);
+                State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+                CmdList.SetComputeState(State);
+
+                const uint32 MeshletGroupsX = (MaxMeshletsPerInstance + 63) / 64;
+                CmdList.Dispatch(MeshletGroupsX, Num, 1);
+            }
+
+            // Per-cascade meshlet cull. Skipped when no sun is active.
+            if (LightData.bHasSun && MaxMeshletsPerInstance > 0 && Num > 0)
+            {
+                FRHIComputeShaderRef CascadeMeshletCullShader = FShaderLibrary::GetComputeShader("CascadeMeshletCull.slang");
+
+                FComputePipelineDesc PipelineDesc;
+                PipelineDesc.SetComputeShader(CascadeMeshletCullShader);
+                PipelineDesc.AddBindingLayout(SceneBindingLayout);
+                PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+
+                FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+                FComputeState State;
+                State.SetPipeline(Pipeline);
+                State.AddBindingSet(SceneBindingSet);
+                State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+                CmdList.SetComputeState(State);
+
+                const uint32 MeshletGroupsX = (MaxMeshletsPerInstance + 63) / 64;
+                CmdList.Dispatch(MeshletGroupsX, Num, 1);
+            }
         });
     }
 
@@ -1708,7 +1858,11 @@ namespace Lumina
                 GraphicsState.SetPipeline(Pipeline);
                 GraphicsState.AddBindingSet(SceneBindingSet);
                 GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-                GraphicsState.SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect));
+                // Meshlet-driven: consume MeshletIndirect (VertexCount = MESHLET_VERTICES_PER_DRAW,
+                // InstanceCount = surviving meshlets for this draw range). Both the
+                // depth-only and masked-material VS resolve meshlets identically,
+                // so the base pass depth-equal test stays correct.
+                GraphicsState.SetIndirectParams(GetNamedBuffer(ENamedBuffer::MeshletIndirect));
 
                 CmdList.SetGraphicsState(GraphicsState);
                 CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
@@ -2121,13 +2275,14 @@ namespace Lumina
 
                 FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
+                // Meshlet-driven: one indirect "instance" per surviving meshlet.
                 FGraphicsState GraphicsState; GraphicsState
                     .SetRenderPass(RenderPass)
                     .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::Cascade)))
                     .SetPipeline(Pipeline)
                     .AddBindingSet(SceneBindingSet)
                     .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectCascade));
+                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::MeshletIndirectCascade));
 
                 CmdList.SetGraphicsState(GraphicsState);
 
@@ -2203,11 +2358,16 @@ namespace Lumina
                     .AddBindingLayout(SceneBindingLayout)
                     .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
+                // Base pass consumes the meshlet-culled indirect buffer: each
+                // surviving meshlet becomes one instance with VertexCount =
+                // MESHLET_VERTICES_PER_DRAW (124 tris * 3). Depth pre-pass
+                // consumes the same buffer so both passes rasterize the same
+                // meshlet set and the depth-equal test here is exact.
                 FGraphicsState GraphicsState; GraphicsState
                     .SetRenderPass(RenderPass)
                     .SetViewportState(SceneViewportState)
                     .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect))
+                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::MeshletIndirect))
                     .AddBindingSet(SceneBindingSet)
                     .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
 
@@ -3707,6 +3867,54 @@ namespace Lumina
             BufferDesc.DebugName = "Billboard Data";
             NamedBuffers[(int)ENamedBuffer::Billboards] = GRenderContext->CreateBuffer(BufferDesc);
         }
+
+        // Meshlet-driven draws. MeshletDrawList is atomically appended to by
+        // MeshletCull.slang — each surviving meshlet writes (InstanceID,
+        // MeshletLocalIndex). MeshletIndirect mirrors the main Indirect layout
+        // (one FDrawIndirectArguments per draw range) but its InstanceCount
+        // counts meshlets, not instances.
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(uint32) * 2;
+            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
+            BufferDesc.DebugName = "Meshlet Draw List";
+            NamedBuffers[(int)ENamedBuffer::MeshletDrawList] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FDrawIndirectArguments);
+            BufferDesc.Stride = sizeof(FDrawIndirectArguments);
+            BufferDesc.Usage.SetMultipleFlags(BUF_Indirect, BUF_StorageBuffer);
+            BufferDesc.InitialState = EResourceStates::IndirectArgument;
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.DebugName = "Indirect Draw Buffer (Meshlet)";
+            NamedBuffers[(int)ENamedBuffer::MeshletIndirect] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        // Cascade meshlet draw list + indirect for CSM.
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(uint32) * 2;
+            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
+            BufferDesc.DebugName = "Meshlet Draw List (Cascade)";
+            NamedBuffers[(int)ENamedBuffer::MeshletDrawListCascade] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FDrawIndirectArguments);
+            BufferDesc.Stride = sizeof(FDrawIndirectArguments);
+            BufferDesc.Usage.SetMultipleFlags(BUF_Indirect, BUF_StorageBuffer);
+            BufferDesc.InitialState = EResourceStates::IndirectArgument;
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.DebugName = "Indirect Draw Buffer (Meshlet Cascade)";
+            NamedBuffers[(int)ENamedBuffer::MeshletIndirectCascade] = GRenderContext->CreateBuffer(BufferDesc);
+        }
     }
 
     static uint32 PreviousPow2(uint32 v)
@@ -3881,6 +4089,10 @@ namespace Lumina
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(17, GetNamedBuffer(ENamedBuffer::IndirectShadow)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(18, GetNamedBuffer(ENamedBuffer::InstanceMappingCascade)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(19, GetNamedBuffer(ENamedBuffer::IndirectCascade)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(20, GetNamedBuffer(ENamedBuffer::MeshletDrawList)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(21, GetNamedBuffer(ENamedBuffer::MeshletIndirect)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(22, GetNamedBuffer(ENamedBuffer::MeshletDrawListCascade)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(23, GetNamedBuffer(ENamedBuffer::MeshletIndirectCascade)));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);

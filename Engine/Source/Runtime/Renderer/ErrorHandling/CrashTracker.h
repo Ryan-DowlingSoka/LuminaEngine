@@ -19,6 +19,10 @@ namespace Lumina::RHI
         virtual void OnDeviceLost() = 0;
     
         virtual void RegisterShader(const TVector<uint32>& SPRIV, const FString& Name) = 0;
+        
+        virtual void GPUCrashDumpCallback(const void* GPUCrashDump, uint32 CrashDumpSize) = 0;
+        
+        virtual void OnShaderDebugInfo(const void* ShaderDebugInfo, uint32 ShaderDebugInfoSize) = 0;
     
         virtual void SetMarker(RHICommandBuffer cmdBuffer, const char* markerName) = 0;
         virtual void BeginMarker(RHICommandBuffer cmdBuffer, const char* markerName) = 0;

@@ -183,6 +183,51 @@ struct FCustomPrimitiveData
     property float4 AsFloat4    { get { return float4(unpack_u8u32(Packed)) / 255.0; } }
 }
 
+// Meshlet limits must match Lumina::MESHLET_MAX_VERTICES / MAX_TRIANGLES.
+#define MESHLET_MAX_VERTICES  64
+#define MESHLET_MAX_TRIANGLES 124
+#define MESHLET_VERTICES_PER_DRAW (MESHLET_MAX_TRIANGLES * 3)  // 372
+
+// Mirror of Lumina::FMeshlet.
+struct FMeshlet
+{
+    uint VertexOffset;
+    uint TriangleOffset;
+    uint VertexCount;
+    uint TriangleCount;
+};
+
+// Mirror of Lumina::FMeshletBounds. 16-byte aligned to match std430.
+struct FMeshletBounds
+{
+    float3 Center;
+    float  Radius;
+    float3 ConeApex;
+    float  ConeCutoff;
+    float3 ConeAxis;
+    float  _Pad0;
+};
+
+// Mirror of Lumina::FMeshletHeaderGPU. One entry per mesh; FGPUInstance carries
+// a pointer to it so the cull pass and base VS can reach the four flat arrays
+// through a single indirection.
+struct FMeshletHeader
+{
+    FMeshlet*       Meshlets;
+    FMeshletBounds* Bounds;
+    uint*           Vertices;    // Indices into FMeshResource::Vertices
+    uint*           Triangles;   // Packed 4x uint8 per uint32
+};
+
+// One entry per surviving meshlet emitted by MeshletCull.slang. The vertex
+// shader uses SV_InstanceID to index into the MeshletDrawList slice owned by
+// its draw (per-draw StartInstanceLocation + atomic-append counter).
+struct FMeshletDraw
+{
+    uint InstanceID;         // Into uInstanceData
+    uint MeshletLocalIndex;  // Local offset inside instance's surface meshlet range
+};
+
 struct FGPUInstance
 {
     float4x4                ModelMatrix;
@@ -199,7 +244,13 @@ struct FGPUInstance
 
     private uint            BoneOffsetAndMaterialIndex;
     FCustomPrimitiveData    CustomData;
-    private uint2           Padding;
+
+    // Meshlet header pointer (zero when this instance skips meshlet culling,
+    // e.g. skinned meshes). SurfaceMeshletOffset/Count index the surface's
+    // meshlet slice inside the mesh's meshlet arrays.
+    FMeshletHeader*         MeshletHeader;
+    uint                    SurfaceMeshletOffset;
+    uint                    SurfaceMeshletCount;
 
     bool HasFlag(EInstanceFlags Flag)
     {
@@ -332,7 +383,14 @@ struct FCullData
     float    ShadowMaxDistance;
     uint     bShadowOcclusionCull;
     uint     NumDraws;
+    // Debug visualization mode. Values mirror Lumina::ERenderSceneDebugFlags —
+    // keep DEBUG_MODE_* constants below in sync with the C++ enum.
+    uint     DebugMode;
 };
+
+// Debug visualization modes. Must match Lumina::ERenderSceneDebugFlags.
+#define DEBUG_MODE_NONE     0u
+#define DEBUG_MODE_MESHLETS 1u
 
 struct FSceneGlobalData
 {

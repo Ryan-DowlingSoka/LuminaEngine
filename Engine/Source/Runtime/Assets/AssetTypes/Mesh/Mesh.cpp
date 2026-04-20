@@ -169,6 +169,113 @@ namespace Lumina
             MeshResources->MeshBuffers.ShadowIndexBuffer = MeshResources->MeshBuffers.IndexBuffer;
         }
 
+        // Upload meshlet data. Four flat SSBOs + a tiny header SSBO whose entry
+        // holds BDAs to the four so FGPUInstance can carry one pointer and the
+        // shader can reach them via a single indirection.
+        if (!MeshResources->MeshletData.IsEmpty())
+        {
+            const FMeshletData& MData = MeshResources->MeshletData;
+
+            // Re-pack meshopt's byte-per-corner triangle stream into one uint32
+            // per triangle (3 corner bytes + 1 pad) so the shader can index by
+            // triangle with `Triangles[TriangleOffset + TriIdx]`. Update each
+            // meshlet's TriangleOffset to the corresponding dword index.
+            TVector<FMeshlet> RemappedMeshlets = MData.Meshlets;
+            TVector<uint32>   PackedTris;
+            {
+                size_t TotalTriangles = 0;
+                for (const FMeshlet& M : MData.Meshlets)
+                {
+                    TotalTriangles += M.TriangleCount;
+                }
+                PackedTris.reserve(TotalTriangles);
+
+                for (FMeshlet& M : RemappedMeshlets)
+                {
+                    const uint32 DwordStart = (uint32)PackedTris.size();
+                    const uint8* Src        = MData.MeshletTriangles.data() + M.TriangleOffset;
+                    for (uint32 t = 0; t < M.TriangleCount; ++t)
+                    {
+                        const uint32 Packed =
+                              (uint32)Src[t * 3 + 0]
+                            | ((uint32)Src[t * 3 + 1] << 8)
+                            | ((uint32)Src[t * 3 + 2] << 16);
+                        PackedTris.push_back(Packed);
+                    }
+                    M.TriangleOffset = DwordStart;
+                }
+
+                if (PackedTris.empty())
+                {
+                    PackedTris.push_back(0u);
+                }
+            }
+
+            const uint64 MeshletsSize = sizeof(FMeshlet) * RemappedMeshlets.size();
+            FRHIBufferDesc MeshletsDesc;
+            MeshletsDesc.Size       = MeshletsSize;
+            MeshletsDesc.Stride     = sizeof(FMeshlet);
+            MeshletsDesc.Usage.SetFlag(BUF_StorageBuffer);
+            MeshletsDesc.DebugName  = GetName().ToString() + " Meshlets";
+            MeshResources->MeshBuffers.MeshletBuffer = GRenderContext->CreateBuffer(MeshletsDesc);
+
+            CommandList->BeginTrackingBufferState(MeshResources->MeshBuffers.MeshletBuffer, EResourceStates::CopyDest);
+            CommandList->WriteBuffer(MeshResources->MeshBuffers.MeshletBuffer, RemappedMeshlets.data(), MeshletsSize);
+            CommandList->SetPermanentBufferState(MeshResources->MeshBuffers.MeshletBuffer, EResourceStates::ShaderResource);
+
+            const uint64 BoundsSize = sizeof(FMeshletBounds) * MData.MeshletBounds.size();
+            FRHIBufferDesc BoundsDesc;
+            BoundsDesc.Size       = BoundsSize;
+            BoundsDesc.Stride     = sizeof(FMeshletBounds);
+            BoundsDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BoundsDesc.DebugName  = GetName().ToString() + " Meshlet Bounds";
+            MeshResources->MeshBuffers.MeshletBoundsBuffer = GRenderContext->CreateBuffer(BoundsDesc);
+
+            CommandList->BeginTrackingBufferState(MeshResources->MeshBuffers.MeshletBoundsBuffer, EResourceStates::CopyDest);
+            CommandList->WriteBuffer(MeshResources->MeshBuffers.MeshletBoundsBuffer, MData.MeshletBounds.data(), BoundsSize);
+            CommandList->SetPermanentBufferState(MeshResources->MeshBuffers.MeshletBoundsBuffer, EResourceStates::ShaderResource);
+
+            const uint64 VertsSize = sizeof(uint32) * MData.MeshletVertices.size();
+            FRHIBufferDesc VertsDesc;
+            VertsDesc.Size       = VertsSize;
+            VertsDesc.Stride     = sizeof(uint32);
+            VertsDesc.Usage.SetFlag(BUF_StorageBuffer);
+            VertsDesc.DebugName  = GetName().ToString() + " Meshlet Vertices";
+            MeshResources->MeshBuffers.MeshletVertexBuffer = GRenderContext->CreateBuffer(VertsDesc);
+
+            CommandList->BeginTrackingBufferState(MeshResources->MeshBuffers.MeshletVertexBuffer, EResourceStates::CopyDest);
+            CommandList->WriteBuffer(MeshResources->MeshBuffers.MeshletVertexBuffer, MData.MeshletVertices.data(), VertsSize);
+            CommandList->SetPermanentBufferState(MeshResources->MeshBuffers.MeshletVertexBuffer, EResourceStates::ShaderResource);
+
+            const uint64 TrisSize = sizeof(uint32) * PackedTris.size();
+            FRHIBufferDesc TrisDesc;
+            TrisDesc.Size       = TrisSize;
+            TrisDesc.Stride     = sizeof(uint32);
+            TrisDesc.Usage.SetFlag(BUF_StorageBuffer);
+            TrisDesc.DebugName  = GetName().ToString() + " Meshlet Triangles";
+            MeshResources->MeshBuffers.MeshletTriangleBuffer = GRenderContext->CreateBuffer(TrisDesc);
+
+            CommandList->BeginTrackingBufferState(MeshResources->MeshBuffers.MeshletTriangleBuffer, EResourceStates::CopyDest);
+            CommandList->WriteBuffer(MeshResources->MeshBuffers.MeshletTriangleBuffer, PackedTris.data(), TrisSize);
+            CommandList->SetPermanentBufferState(MeshResources->MeshBuffers.MeshletTriangleBuffer, EResourceStates::ShaderResource);
+
+            FMeshletHeaderGPU Header;
+            Header.MeshletsAddress  = MeshResources->MeshBuffers.MeshletBuffer->GetAddress();
+            Header.BoundsAddress    = MeshResources->MeshBuffers.MeshletBoundsBuffer->GetAddress();
+            Header.VerticesAddress  = MeshResources->MeshBuffers.MeshletVertexBuffer->GetAddress();
+            Header.TrianglesAddress = MeshResources->MeshBuffers.MeshletTriangleBuffer->GetAddress();
+
+            FRHIBufferDesc HeaderDesc;
+            HeaderDesc.Size       = sizeof(FMeshletHeaderGPU);
+            HeaderDesc.Stride     = sizeof(FMeshletHeaderGPU);
+            HeaderDesc.Usage.SetFlag(BUF_StorageBuffer);
+            HeaderDesc.DebugName  = GetName().ToString() + " Meshlet Header";
+            MeshResources->MeshBuffers.MeshletHeaderBuffer = GRenderContext->CreateBuffer(HeaderDesc);
+
+            CommandList->BeginTrackingBufferState(MeshResources->MeshBuffers.MeshletHeaderBuffer, EResourceStates::CopyDest);
+            CommandList->WriteBuffer(MeshResources->MeshBuffers.MeshletHeaderBuffer, &Header, sizeof(FMeshletHeaderGPU));
+            CommandList->SetPermanentBufferState(MeshResources->MeshBuffers.MeshletHeaderBuffer, EResourceStates::ShaderResource);
+        }
 
         CommandList->Close();
         GRenderContext->ExecuteCommandList(CommandList, ECommandQueue::Graphics);

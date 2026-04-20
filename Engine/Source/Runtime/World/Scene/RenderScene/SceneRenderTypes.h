@@ -51,40 +51,25 @@ namespace Lumina
     template<typename T>
     using TRenderVector = TFixedVector<T, 100>;
     
+    // Mutually-exclusive debug visualization mode for the forward scene. The
+    // enum value is forwarded to the GPU via FCullData::DebugMode; keep the
+    // numeric values in sync with DEBUG_MODE_* in Common.slang.
     enum class ERenderSceneDebugFlags : uint8
     {
-        None                = 0,
-        Position            = 1,
-        Normals             = 2,
-        Albedo              = 3,
-        SSAO                = 4,
-		AmbientOcclusion    = 5,
-		Roughness           = 6,
-		Metallic            = 7,
-		Specular            = 8,
-        Depth               = 9,
-        ShadowAtlas		    = 10,
-        Cascade             = 11,
-        Num                 = 12,
+        None        = 0,
+        // Override base-pass color with a per-meshlet hash color so meshlet
+        // coverage and the meshlet-cull path can be verified visually.
+        Meshlets    = 1,
+        Num         = 2,
     };
-    
+
     constexpr FStringView RenderFlagsAsString(ERenderSceneDebugFlags Flags)
     {
         switch (Flags)
         {
-            case ERenderSceneDebugFlags::None: return "None";
-            case ERenderSceneDebugFlags::Position: return "Position";
-            case ERenderSceneDebugFlags::Normals: return "Normals";
-            case ERenderSceneDebugFlags::Albedo: return "Albedo";
-            case ERenderSceneDebugFlags::SSAO: return "SSAO";
-            case ERenderSceneDebugFlags::AmbientOcclusion: return "Ambient Occlusion";
-            case ERenderSceneDebugFlags::Roughness: return "Roughness";
-            case ERenderSceneDebugFlags::Metallic: return "Metallic";
-            case ERenderSceneDebugFlags::Specular: return "Specular";
-            case ERenderSceneDebugFlags::Depth: return "Depth";
-            case ERenderSceneDebugFlags::ShadowAtlas: return "Shadow Atlas";
-            case ERenderSceneDebugFlags::Cascade: return "Cascades";
-            default: return "None";
+            case ERenderSceneDebugFlags::None:     return "None";
+            case ERenderSceneDebugFlags::Meshlets: return "Meshlets";
+            default:                               return "None";
         }
     }
 
@@ -368,10 +353,17 @@ namespace Lumina
 
         uint32          BoneOffsetAndMaterialIndex;
         uint32          CustomData;
-        uint32          Padding[2];
+
+        // Meshlet header BDA for this mesh; SurfaceMeshletOffset / Count select
+        // this instance's surface slice within the mesh's meshlet array. Zero
+        // MeshletHeaderAddress means this instance doesn't participate in the
+        // meshlet-cull path (skinned meshes, legacy assets without meshlets).
+        uint64          MeshletHeaderAddress;
+        uint32          SurfaceMeshletOffset;
+        uint32          SurfaceMeshletCount;
     };
 
-    static_assert(sizeof(FGPUInstance) == 128, "FGPUInstance layout must match shader");
+    static_assert(sizeof(FGPUInstance) == 144, "FGPUInstance layout must match shader");
     VERIFY_SSBO_ALIGNMENT(FGPUInstance)
     
     constexpr uint32 PackDrawIDAndFlags(uint32 DrawID, EInstanceFlags Flags)
@@ -419,6 +411,11 @@ namespace Lumina
         // cascade indirect buffer. Used by ShadowMeshCull to index into the
         // right cascade stride.
         uint32 NumDraws;
+
+        // Active debug visualization mode, mirroring ERenderSceneDebugFlags.
+        // Consumed by the base pixel shader to override lit output (e.g. with
+        // per-meshlet colors). Zero (None) disables all overrides.
+        uint32 DebugMode;
     };
     
     

@@ -140,7 +140,7 @@ namespace Lumina::Import::Mesh
         // culling efficiency. Pure size packing would use 0.
         constexpr float  ConeWeight   = 0.25f;
 
-        // Build per-surface so meshlets never cross material boundaries —
+        // Build per-surface so meshlets never cross material boundaries
         // each meshlet corresponds to one draw slot.
         for (FGeometrySurface& Section : MeshResource.GeometrySurfaces)
         {
