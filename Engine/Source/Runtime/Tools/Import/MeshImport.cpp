@@ -110,6 +110,131 @@ namespace Lumina::Import::Mesh
         }
     }
 
+    void GenerateMeshlets(FMeshResource& MeshResource)
+    {
+        MeshResource.MeshletData.Clear();
+
+        const size_t NumVertices = MeshResource.GetNumVertices();
+        const size_t NumIndices  = MeshResource.Indices.size();
+        const size_t VertexSize  = MeshResource.GetVertexTypeSize();
+
+        if (NumVertices == 0 || NumIndices == 0)
+        {
+            for (FGeometrySurface& Section : MeshResource.GeometrySurfaces)
+            {
+                Section.MeshletOffset = 0;
+                Section.MeshletCount  = 0;
+            }
+            return;
+        }
+
+        // FVertex places Position in its first 12 bytes (static_assert guards
+        // this in Vertex.h) so the vertex pointer doubles as the position
+        // pointer meshoptimizer expects.
+        const float* VertexPositions = static_cast<const float*>(MeshResource.GetVertexData());
+
+        constexpr size_t MaxVertices  = MESHLET_MAX_VERTICES;
+        constexpr size_t MaxTriangles = MESHLET_MAX_TRIANGLES;
+        // 0.25 is the cone_weight used by meshoptimizer's own demo; trades a
+        // small amount of cluster-size uniformity for better backface cone
+        // culling efficiency. Pure size packing would use 0.
+        constexpr float  ConeWeight   = 0.25f;
+
+        // Build per-surface so meshlets never cross material boundaries —
+        // each meshlet corresponds to one draw slot.
+        for (FGeometrySurface& Section : MeshResource.GeometrySurfaces)
+        {
+            Section.MeshletOffset = (uint32)MeshResource.MeshletData.Meshlets.size();
+            Section.MeshletCount  = 0;
+
+            if (Section.IndexCount == 0)
+            {
+                continue;
+            }
+
+            const uint32* SurfaceIndices = &MeshResource.Indices[Section.StartIndex];
+            const size_t  MaxMeshlets    = meshopt_buildMeshletsBound(Section.IndexCount, MaxVertices, MaxTriangles);
+
+            TVector<meshopt_Meshlet> LocalMeshlets(MaxMeshlets);
+            TVector<uint32>          LocalMeshletVertices(MaxMeshlets * MaxVertices);
+            TVector<uint8>           LocalMeshletTriangles(MaxMeshlets * MaxTriangles * 3);
+
+            const size_t MeshletCount = meshopt_buildMeshlets(
+                LocalMeshlets.data(),
+                LocalMeshletVertices.data(),
+                LocalMeshletTriangles.data(),
+                SurfaceIndices, Section.IndexCount,
+                VertexPositions, NumVertices, VertexSize,
+                MaxVertices, MaxTriangles, ConeWeight);
+
+            if (MeshletCount == 0)
+            {
+                continue;
+            }
+
+            LocalMeshlets.resize(MeshletCount);
+
+            // Trim the flat arrays to exactly what buildMeshlets produced.
+            // The triangle buffer is padded to a multiple of 4 per meshlet
+            // (documented meshopt invariant) so we align the tail the same way.
+            const meshopt_Meshlet& Last = LocalMeshlets.back();
+            LocalMeshletVertices.resize(Last.vertex_offset + Last.vertex_count);
+            LocalMeshletTriangles.resize(Last.triangle_offset + ((Last.triangle_count * 3 + 3) & ~3u));
+
+            // Reorder inside each meshlet for rasterizer locality. Safe to do
+            // before bounds because optimizeMeshlet only permutes indices.
+            for (const meshopt_Meshlet& M : LocalMeshlets)
+            {
+                meshopt_optimizeMeshlet(
+                    &LocalMeshletVertices[M.vertex_offset],
+                    &LocalMeshletTriangles[M.triangle_offset],
+                    M.triangle_count, M.vertex_count);
+            }
+
+            // Offsets into the global flat arrays — used to rebase the
+            // per-surface meshlets before appending.
+            const uint32 GlobalVertexBase   = (uint32)MeshResource.MeshletData.MeshletVertices.size();
+            const uint32 GlobalTriangleBase = (uint32)MeshResource.MeshletData.MeshletTriangles.size();
+
+            MeshResource.MeshletData.MeshletVertices.insert(
+                MeshResource.MeshletData.MeshletVertices.end(),
+                LocalMeshletVertices.begin(), LocalMeshletVertices.end());
+
+            MeshResource.MeshletData.MeshletTriangles.insert(
+                MeshResource.MeshletData.MeshletTriangles.end(),
+                LocalMeshletTriangles.begin(), LocalMeshletTriangles.end());
+
+            MeshResource.MeshletData.Meshlets.reserve(MeshResource.MeshletData.Meshlets.size() + MeshletCount);
+            MeshResource.MeshletData.MeshletBounds.reserve(MeshResource.MeshletData.MeshletBounds.size() + MeshletCount);
+
+            for (const meshopt_Meshlet& M : LocalMeshlets)
+            {
+                FMeshlet Out{};
+                Out.VertexOffset   = GlobalVertexBase   + M.vertex_offset;
+                Out.TriangleOffset = GlobalTriangleBase + M.triangle_offset;
+                Out.VertexCount    = M.vertex_count;
+                Out.TriangleCount  = M.triangle_count;
+                MeshResource.MeshletData.Meshlets.push_back(Out);
+
+                const meshopt_Bounds B = meshopt_computeMeshletBounds(
+                    &LocalMeshletVertices[M.vertex_offset],
+                    &LocalMeshletTriangles[M.triangle_offset],
+                    M.triangle_count,
+                    VertexPositions, NumVertices, VertexSize);
+
+                FMeshletBounds Bounds{};
+                Bounds.Center     = glm::vec3(B.center[0],    B.center[1],    B.center[2]);
+                Bounds.Radius     = B.radius;
+                Bounds.ConeApex   = glm::vec3(B.cone_apex[0], B.cone_apex[1], B.cone_apex[2]);
+                Bounds.ConeAxis   = glm::vec3(B.cone_axis[0], B.cone_axis[1], B.cone_axis[2]);
+                Bounds.ConeCutoff = B.cone_cutoff;
+                MeshResource.MeshletData.MeshletBounds.push_back(Bounds);
+            }
+
+            Section.MeshletCount = (uint32)MeshletCount;
+        }
+    }
+
     void AnalyzeMeshStatistics(FMeshResource& MeshResource, FMeshStatistics& OutMeshStats)
     {
         OutMeshStats.VertexFetchStatics.emplace_back(meshopt_analyzeVertexFetch(MeshResource.Indices.data(), MeshResource.Indices.size(), MeshResource.GetNumVertices(), MeshResource.GetVertexTypeSize()));

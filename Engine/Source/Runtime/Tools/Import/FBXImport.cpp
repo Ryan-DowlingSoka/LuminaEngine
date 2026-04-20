@@ -650,8 +650,9 @@ namespace Lumina::Import::Mesh::FBX
             {
                 OptimizeNewlyImportedMesh(*Resource);
             }
-        
+
             GenerateShadowBuffers(*Resource);
+            GenerateMeshlets(*Resource);
             AnalyzeMeshStatistics(*Resource, ImportData.MeshStatistics);
             
             ImportData.Resources.push_back(std::move(Resource));

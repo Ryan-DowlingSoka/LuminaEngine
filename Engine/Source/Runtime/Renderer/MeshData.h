@@ -8,12 +8,69 @@
 
 namespace Lumina
 {
+    // Meshlet sizing — 64 verts / 124 tris is the AMD/NV mesh-shader sweet spot
+    // and satisfies meshoptimizer limits (max_vertices <= 256, max_triangles <=
+    // 512, max_triangles divisible by 4).
+    constexpr uint32 MESHLET_MAX_VERTICES  = 64;
+    constexpr uint32 MESHLET_MAX_TRIANGLES = 124;
+
+    // Single meshlet descriptor — offsets into the flat arrays on FMeshletData.
+    // VertexOffset indexes into FMeshletData::MeshletVertices which in turn
+    // indexes FMeshResource::Vertices. TriangleOffset indexes into
+    // FMeshletData::MeshletTriangles which is packed 3 bytes per triangle with
+    // the meshlet-local (0..VertexCount-1) vertex index.
+    struct FMeshlet
+    {
+        uint32 VertexOffset;
+        uint32 TriangleOffset;
+        uint32 VertexCount;
+        uint32 TriangleCount;
+    };
+
+    // Per-meshlet culling volumes. Bounding sphere for frustum/occlusion,
+    // cone for backface culling. 16-byte alignment keeps a future GPU upload
+    // aligned with a tight std430 layout.
+    struct alignas(16) FMeshletBounds
+    {
+        glm::vec3 Center;
+        float     Radius;
+        glm::vec3 ConeApex;
+        float     ConeCutoff;   // = cos(angle / 2)
+        glm::vec3 ConeAxis;
+        float     _Pad0;
+    };
+
+    struct FMeshletData
+    {
+        TVector<FMeshlet>        Meshlets;
+        TVector<uint32>          MeshletVertices;    // indices into FMeshResource::Vertices
+        TVector<uint8>           MeshletTriangles;   // micro-indices into the meshlet's vertex slice
+        TVector<FMeshletBounds>  MeshletBounds;
+
+        FORCEINLINE bool IsEmpty() const { return Meshlets.empty(); }
+
+        FORCEINLINE void Clear()
+        {
+            Meshlets.clear();
+            MeshletVertices.clear();
+            MeshletTriangles.clear();
+            MeshletBounds.clear();
+        }
+    };
+
     struct FGeometrySurface final
     {
         FName   ID;
         uint32  IndexCount = 0;
         uint32  StartIndex = 0;
         int16   MaterialIndex = -1;
+
+        // Per-surface meshlet range into FMeshResource::MeshletData.Meshlets.
+        // Runtime-only — regenerated in PostLoad alongside the meshlet arrays,
+        // same pattern as ShadowIndices. Not written into the archive stream
+        // so existing assets on disk keep deserializing unchanged.
+        uint32  MeshletOffset = 0;
+        uint32  MeshletCount  = 0;
 
         friend FArchive& operator << (FArchive& Ar, FGeometrySurface& Data)
         {
@@ -29,7 +86,7 @@ namespace Lumina
     struct RUNTIME_API FMeshResource : INonCopyable
     {
         using FVertexVariant = TVariant<TVector<FVertex>, TVector<FSkinnedVertex>>;
-        
+
         struct FMeshBuffers
         {
             FRHIBufferRef VertexBuffer;
@@ -42,6 +99,7 @@ namespace Lumina
         TVector<uint32>             Indices;
         TVector<uint32>             ShadowIndices;
         TVector<FGeometrySurface>   GeometrySurfaces;
+        FMeshletData                MeshletData;
         FMeshBuffers                MeshBuffers;
         bool                        bSkinnedMesh = false;
         FRHIInputLayoutRef          VertexLayout;

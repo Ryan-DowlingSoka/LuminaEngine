@@ -519,6 +519,7 @@ namespace Lumina::Import::Mesh::GLTF
                 }
 
                 GenerateShadowBuffers(*Resource);
+                GenerateMeshlets(*Resource);
                 AnalyzeMeshStatistics(*Resource, ImportData.MeshStatistics);
 
                 ImportData.Resources.push_back(eastl::move(Resource));

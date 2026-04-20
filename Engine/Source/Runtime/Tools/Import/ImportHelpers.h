@@ -122,6 +122,7 @@ namespace Lumina::Import
         
         void OptimizeNewlyImportedMesh(FMeshResource& MeshResource);
         void GenerateShadowBuffers(FMeshResource& MeshResource);
+        void GenerateMeshlets(FMeshResource& MeshResource);
         void AnalyzeMeshStatistics(FMeshResource& MeshResource, FMeshStatistics& OutMeshStats);
         
         namespace OBJ

@@ -26,13 +26,15 @@ namespace Lumina
     void CMesh::PostLoad()
     {
         GenerateBoundingBox();
-        // ShadowIndices are not serialized (see FMeshResource::operator<<).
-        // Regenerate from Indices + positions so the dedicated shadow index
-        // buffer gets a real, position-only-deduped stream instead of
-        // aliasing the regular index buffer.
+
         if (MeshResources && MeshResources->ShadowIndices.empty())
         {
             Import::Mesh::GenerateShadowBuffers(*MeshResources);
+        }
+
+        if (MeshResources && MeshResources->MeshletData.IsEmpty())
+        {
+            Import::Mesh::GenerateMeshlets(*MeshResources);
         }
         GenerateGPUBuffers();
     }
@@ -66,6 +68,10 @@ namespace Lumina
         if (MeshResources && MeshResources->ShadowIndices.empty())
         {
             Import::Mesh::GenerateShadowBuffers(*MeshResources);
+        }
+        if (MeshResources && MeshResources->MeshletData.IsEmpty())
+        {
+            Import::Mesh::GenerateMeshlets(*MeshResources);
         }
         GenerateGPUBuffers();
     }
