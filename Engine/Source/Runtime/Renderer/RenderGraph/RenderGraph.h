@@ -41,8 +41,9 @@ namespace Lumina
      *   1. Compile()  - Derives per-pass queue, builds batches of consecutive same-queue
      *                   passes. Optionally uses declared resource accesses for dependency
      *                   analysis and reordering opportunities.
-     *   2. Record()   - Records every pass onto its own command list in parallel using the
-     *                   task system.
+     *   2. Record()   - Records every batch onto its own command list in parallel using
+     *                   the task system. Within a batch, all passes share a single CL so
+     *                   the state tracker carries resource state across them.
      *   3. Submit()   - Submits command lists in batch order per queue, inserting timeline
      *                   semaphore waits at cross-queue boundaries via AddCommandQueueWait.
      *

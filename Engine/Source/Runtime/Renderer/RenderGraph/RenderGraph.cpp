@@ -24,8 +24,7 @@ namespace Lumina
         Descriptors.reserve(64);
         Batches.reserve(16);
     }
-
-
+    
     FRenderGraph::~FRenderGraph()
     {
         // The linear allocator only frees its backing memory; it does not invoke destructors.
@@ -41,8 +40,7 @@ namespace Lumina
             Descriptor->~FRGPassDescriptor();
         }
     }
-
-
+    
     FRGPassDescriptor* FRenderGraph::AllocDescriptor()
     {
         FRGPassDescriptor* Descriptor = GraphAllocator.TAlloc<FRGPassDescriptor>();
@@ -50,12 +48,8 @@ namespace Lumina
         return Descriptor;
     }
 
-
     ECommandQueue FRenderGraph::DeriveQueue(ERGPassFlags PassFlags, const FRGPassDescriptor* Descriptor)
     {
-        // Routing is opt-in per pass via the ExecutionFlags on the descriptor.
-        // Without the async flag, compute/transfer work stays on the graphics queue to keep
-        // resource sharing safe (Vulkan images are currently VK_SHARING_MODE_EXCLUSIVE).
         if (Descriptor != nullptr)
         {
             if (EnumHasAnyFlags(PassFlags, ERGPassFlags::Compute) && Descriptor->HasAnyFlag(ERGExecutionFlags::AsyncCompute))
@@ -71,8 +65,7 @@ namespace Lumina
 
         return ECommandQueue::Graphics;
     }
-
-
+    
     void FRenderGraph::Compile()
     {
         LUMINA_PROFILE_SCOPE();
@@ -89,11 +82,7 @@ namespace Lumina
 
             const bool bIsAsync = Pass->Descriptor != nullptr
                 && Pass->Descriptor->HasAnyFlag(ERGExecutionFlags::Async);
-
-            // A batch is a run of passes that share a single command list. We must start a new
-            // batch when the queue changes (different CL type) or when the pass is flagged Async
-            // (contract: runs on its own CL, no shared state tracking). Async passes never
-            // absorb following passes either — they are always singleton batches.
+            
             const bool bStartNewBatch = Batches.empty()
                 || Batches.back().Queue != Pass->Queue
                 || Batches.back().bIsAsync
@@ -112,8 +101,7 @@ namespace Lumina
             Batches.back().Passes.push_back(Pass);
         }
     }
-
-
+    
     void FRenderGraph::Record()
     {
         LUMINA_PROFILE_SCOPE();
@@ -125,7 +113,7 @@ namespace Lumina
         }
 
         // One command list per batch. All passes in the batch record to the same CL, so state
-        // tracking (image layouts, barrier source stages) composes correctly across them — the
+        // tracking (image layouts, barrier source stages) composes correctly across them, the
         // same guarantee the old single-CL RenderGraph provided.
         //
         // Parallelism: batches are independent (different queues, or explicit Async), so we can
@@ -176,7 +164,7 @@ namespace Lumina
             const uint32 BatchQueueIdx = (uint32)Batch.Queue;
 
             // Async batches opt out of cross-queue waits per the ERGExecutionFlags::Async
-            // contract — the caller has promised the pass has no dependencies on prior work.
+            // contract, the caller has promised the pass has no dependencies on prior work.
             if (!Batch.bIsAsync)
             {
                 // Any other queue that submitted after our last submission on this queue must be
