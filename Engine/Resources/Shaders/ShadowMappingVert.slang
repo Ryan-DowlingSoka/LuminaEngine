@@ -1,30 +1,67 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
+// Unified shadow vertex shader, compiled twice:
+//
+//   Default (spot + point)
+//     - Push constant: { LightIndex, ShadowDataIndex }.
+//     - Face/cascade index comes from SV_ViewID (multiview) — 6 faces for a
+//       point light, 1 for a spot light.
+//     - Instance lookups go through uMappingDataShadow (shared across all
+//       non-directional shadow casters).
+//     - Outputs WorldPos + LightPos so ShadowMappingPixel.slang can write
+//       linearized distance to depth for point lights.
+//
+//   With SHADOW_CSM defined (directional cascades)
+//     - Push constant: { ShadowDataIndex, CascadeIndex }.
+//     - The CSM path issues NUM_CASCADES separate DrawIndirect calls against
+//       per-cascade slices, so the cascade index arrives via push constant
+//       rather than SV_ViewID.
+//     - Instance lookups go through uMappingDataCascade.
+//     - Depth-only — no pixel shader is bound, so no varyings are emitted.
+//
+// Both paths pull vertices through ShadowIBAddress (position-only, deduped
+// index stream built at import time) so fewer unique vertices visit the
+// vertex shader and VPC throughput on shadow passes drops directly.
 
 struct FPushConstants
 {
+#if SHADOW_CSM
+    int ShadowDataIndex;
+    int CascadeIndex;
+#else
     uint LightIndex;
     int  ShadowDataIndex;
+#endif
 };
 
 struct VSOutput
 {
+#if !SHADOW_CSM
     float3 WorldPos : TEXCOORD0;
     float3 LightPos : TEXCOORD1;
+#endif
     float4 Position : SV_Position;
 };
 
 [shader("vertex")]
-VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint InstanceIndex: SV_VulkanInstanceID, uint ViewIndex : SV_ViewID, uniform FPushConstants PC)
+VSOutput VertexMain(
+    uint VertexIndex   : SV_VulkanVertexID,
+    uint InstanceIndex : SV_VulkanInstanceID,
+#if !SHADOW_CSM
+    uint ViewIndex     : SV_ViewID,
+#endif
+    uniform FPushConstants PC)
 {
+#if SHADOW_CSM
+    FGPUInstance InstanceData = GetCascadeInstanceData(InstanceIndex);
+    float4x4     ModelMatrix  = GetCascadeModelMatrix(InstanceIndex);
+    uint         ViewIndex    = (uint)PC.CascadeIndex;
+#else
     FGPUInstance InstanceData = GetShadowInstanceData(InstanceIndex);
+    float4x4     ModelMatrix  = GetShadowModelMatrix(InstanceIndex);
+#endif
 
-    // Shadow passes pull through ShadowIBAddress — a position-only, deduped
-    // index stream built at import time. Fewer unique vertices visit the
-    // vertex shader, so VPC throughput on the CSM/spot/point shadow passes
-    // drops directly. Aliases IBAddress for legacy assets without shadow
-    // indices (see Mesh.cpp::GenerateGPUBuffers).
     FVertexData VertexData;
     if (InstanceData.HasFlag(EInstanceFlags::Skinned))
     {
@@ -42,12 +79,13 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint InstanceIndex: SV_
             VertexIndex);
     }
 
-    float4x4 ModelMatrix = GetShadowModelMatrix(InstanceIndex);
-    float4   WorldPos    = mul(ModelMatrix, float4(VertexData.Position, 1.0));
+    float4 WorldPos = mul(ModelMatrix, float4(VertexData.Position, 1.0));
 
     VSOutput Output;
-    Output.WorldPos  = WorldPos.xyz;
-    Output.LightPos  = uLightData[0].Lights[PC.LightIndex].Position;
-    Output.Position  = mul(GetShadowViewProjection(PC.ShadowDataIndex, ViewIndex), WorldPos);
+#if !SHADOW_CSM
+    Output.WorldPos = WorldPos.xyz;
+    Output.LightPos = uLightData[0].Lights[PC.LightIndex].Position;
+#endif
+    Output.Position = mul(GetShadowViewProjection(PC.ShadowDataIndex, ViewIndex), WorldPos);
     return Output;
 }

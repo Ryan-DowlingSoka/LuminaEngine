@@ -2095,7 +2095,8 @@ namespace Lumina
                     .SetDepthFunc(EComparisonFunc::Less))
                     .SetRasterState(FRasterState().SetCullFront());
 
-            FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("CSMShadowMappingVert.slang");
+            FString CSMDefine = "SHADOW_CSM";
+            FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang", TSpan<FString>(&CSMDefine, 1));
 
             FGraphicsPipelineDesc Desc; Desc
                 .SetDebugName("Cascaded Shadow Maps")
