@@ -113,7 +113,8 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
 
 float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float Bias, float2 ScreenPos, out bool Inside)
 {
-    float4 ShadowCoord  = mul(Light.ViewProjection[CascadeIndex], float4(FragmentPos, 1.0));
+    float4x4 CascadeVP  = GetShadowViewProjection(Light.ShadowDataIndex, CascadeIndex);
+    float4 ShadowCoord  = mul(CascadeVP, float4(FragmentPos, 1.0));
     float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
     float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
     float  CurrentDepth = ProjCoords.z;
@@ -129,13 +130,14 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     float Angle = IGN * TWO_PI;
     float FilterRadius = 0.0012 * (1.0 + 0.6 * float(CascadeIndex));
 
+    float RefDepth = CurrentDepth - Bias;
+
     float Shadow = 0.0;
     for (int i = 0; i < SHADOW_SAMPLE_COUNT; i++)
     {
         float2 Offset    = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle) * FilterRadius;
         float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
-        float  Depth     = uShadowCascade.Sample(float3(CascadeUV, CascadeIndex)).r;
-        Shadow += step(CurrentDepth - Bias, Depth);
+        Shadow += uShadowCascade.SampleCmp(float3(CascadeUV, CascadeIndex), RefDepth);
     }
     return Shadow / float(SHADOW_SAMPLE_COUNT);
 }

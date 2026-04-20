@@ -27,7 +27,7 @@ namespace Lumina
      *
      * - NeverCull        : Pass is always executed even if its outputs are not consumed.
      */
-    enum class ERGExecutionFlags : uint16
+    enum class ERGExecutionFlags : uint8
     {
         None            = 0,
         Async           = 1 << 0,
@@ -63,12 +63,12 @@ namespace Lumina
 
         // Resource access declarations. Optional but enables dependency analysis.
 
-        FRGPassDescriptor& Read(FRHIImage* Image)           { AddAccess(reinterpret_cast<IRHIResource*>(Image),  ERGAccess::Read); return *this; }
-        FRGPassDescriptor& Read(FRHIBuffer* Buffer)         { AddAccess(reinterpret_cast<IRHIResource*>(Buffer), ERGAccess::Read); return *this; }
-        FRGPassDescriptor& Write(FRHIImage* Image)          { AddAccess(reinterpret_cast<IRHIResource*>(Image),  ERGAccess::Write); return *this; }
-        FRGPassDescriptor& Write(FRHIBuffer* Buffer)        { AddAccess(reinterpret_cast<IRHIResource*>(Buffer), ERGAccess::Write); return *this; }
-        FRGPassDescriptor& ReadWrite(FRHIImage* Image)      { AddAccess(reinterpret_cast<IRHIResource*>(Image),  ERGAccess::ReadWrite); return *this; }
-        FRGPassDescriptor& ReadWrite(FRHIBuffer* Buffer)    { AddAccess(reinterpret_cast<IRHIResource*>(Buffer), ERGAccess::ReadWrite); return *this; }
+        FRGPassDescriptor& Read(FRHIImage* Image)           { AddAccess(Image,  ERGAccess::Read); return *this; }
+        FRGPassDescriptor& Read(FRHIBuffer* Buffer)         { AddAccess(Buffer, ERGAccess::Read); return *this; }
+        FRGPassDescriptor& Write(FRHIImage* Image)          { AddAccess(Image,  ERGAccess::Write); return *this; }
+        FRGPassDescriptor& Write(FRHIBuffer* Buffer)        { AddAccess(Buffer, ERGAccess::Write); return *this; }
+        FRGPassDescriptor& ReadWrite(FRHIImage* Image)      { AddAccess(Image,  ERGAccess::ReadWrite); return *this; }
+        FRGPassDescriptor& ReadWrite(FRHIBuffer* Buffer)    { AddAccess(Buffer, ERGAccess::ReadWrite); return *this; }
 
         const TVector<FRGResourceAccess>& GetAccesses() const { return Accesses; }
         bool HasDeclaredAccesses() const { return !Accesses.empty(); }

@@ -503,22 +503,29 @@ namespace Lumina::Import::Mesh::GLTF
                 NewResource->GeometrySurfaces.push_back(NewSurface);
             }
             
-            if (ImportOptions.bOptimize)
+            // Optimize and emit every resource that actually received vertices.
+            // Previously only the resource handled by the LAST primitive was
+            // optimized, and the other (static/skinned) was shipped unmodified.
+            auto FinalizeResource = [&](TUniquePtr<FMeshResource>& Resource)
             {
-                OptimizeNewlyImportedMesh(*NewResource);
-            }
-        
-            GenerateShadowBuffers(*NewResource);
-            AnalyzeMeshStatistics(*NewResource, ImportData.MeshStatistics);
-            
-            if (StaticMesh->GetNumVertices())
-            {
-                ImportData.Resources.push_back(eastl::move(StaticMesh));
-            }
-            else
-            {
-                ImportData.Resources.push_back(eastl::move(SkinnedMesh));
-            }
+                if (!Resource || Resource->GetNumVertices() == 0)
+                {
+                    return;
+                }
+
+                if (ImportOptions.bOptimize)
+                {
+                    OptimizeNewlyImportedMesh(*Resource);
+                }
+
+                GenerateShadowBuffers(*Resource);
+                AnalyzeMeshStatistics(*Resource, ImportData.MeshStatistics);
+
+                ImportData.Resources.push_back(eastl::move(Resource));
+            };
+
+            FinalizeResource(StaticMesh);
+            FinalizeResource(SkinnedMesh);
         }
 
         return Move(ImportData);

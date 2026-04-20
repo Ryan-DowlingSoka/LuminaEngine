@@ -131,7 +131,8 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
 // caller can decide to fall back to another cascade (or to fully-lit).
 float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float Bias, float2 ScreenPos, out bool Inside)
 {
-    float4 ShadowCoord  = mul(Light.ViewProjection[CascadeIndex], float4(FragmentPos, 1.0));
+    float4x4 CascadeVP  = GetShadowViewProjection(Light.ShadowDataIndex, CascadeIndex);
+    float4 ShadowCoord  = mul(CascadeVP, float4(FragmentPos, 1.0));
     float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
     float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
     float  CurrentDepth = ProjCoords.z;
@@ -151,13 +152,14 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     // boundary between the penultimate and last cascade.
     float FilterRadius = 0.0012 * (1.0 + 0.6 * float(CascadeIndex));
 
+    float RefDepth = CurrentDepth - Bias;
+
     float Shadow = 0.0;
     for (int i = 0; i < SHADOW_SAMPLE_COUNT; i++)
     {
         float2 Offset    = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle) * FilterRadius;
         float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
-        float  Depth     = uShadowCascade.Sample(float3(CascadeUV, CascadeIndex)).r;
-        Shadow += step(CurrentDepth - Bias, Depth);
+        Shadow += uShadowCascade.SampleCmp(float3(CascadeUV, CascadeIndex), RefDepth);
     }
     return Shadow / float(SHADOW_SAMPLE_COUNT);
 }
@@ -222,7 +224,8 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
     float3 LightDirToFrag = normalize(Light.Position - FragmentPos);
     float  Bias           = ComputeShadowBias(Light.Flags, Normal, LightDirToFrag, 0);
 
-    float4 ShadowCoord  = mul(Light.ViewProjection[0], float4(FragmentPos, 1.0));
+    float4x4 SpotVP     = GetShadowViewProjection(Light.ShadowDataIndex, 0);
+    float4 ShadowCoord  = mul(SpotVP, float4(FragmentPos, 1.0));
     float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
     float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
 
@@ -235,7 +238,7 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
     Coord.UV   = lerp(Coord.UV, ProjectionUV, float(IsSpotLight));
     Coord.Face = int(lerp(float(Coord.Face), 0.0, float(IsSpotLight)));
 
-    FLightShadow ShadowTile = Light.Shadow[Coord.Face];
+    FLightShadow ShadowTile = GetShadowTile(Light.ShadowDataIndex, Coord.Face);
 
     if (IsSpotLight)
     {
@@ -247,6 +250,8 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
     float Angle = IGN * TWO_PI;
     float FilterRadius = 0.002;
 
+    float RefDepth = CurrentDepth - Bias;
+
     float Shadow = 0.0;
     for (int i = 0; i < SHADOW_SAMPLE_COUNT; i++)
     {
@@ -254,8 +259,7 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         float2 TileOffset = Offset / max(ShadowTile.AtlasUVScale, float2(1e-6));
         float2 ClampedUV  = clamp(Coord.UV + TileOffset, 0.001, 0.999);
         float2 SampleUV   = ShadowTile.AtlasUVOffset + (ClampedUV * ShadowTile.AtlasUVScale);
-        float  Depth      = uShadowAtlas.Sample(float3(SampleUV, ShadowTile.ShadowMapLayer)).r;
-        Shadow += step(CurrentDepth - Bias, Depth);
+        Shadow += uShadowAtlas.SampleCmp(float3(SampleUV, ShadowTile.ShadowMapLayer), RefDepth);
     }
 
     return Shadow / float(SHADOW_SAMPLE_COUNT);
@@ -384,7 +388,7 @@ PSOutput FragmentMain(PSInput Input)
         float3 L           = LightToFrag / max(DistToLight, 0.0001);
 
         float Shadow = 1.0;
-        if (Light.Shadow[0].ShadowMapIndex != INDEX_NONE)
+        if (Light.ShadowDataIndex != INDEX_NONE)
         {
             Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, InstanceData.HasFlag(EInstanceFlags::ReceiveShadow));
         }

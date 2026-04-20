@@ -39,7 +39,7 @@ namespace Lumina
      * Independent batches (distinct queues, or passes flagged Async) get their own CLs and
      * can be recorded in parallel.
      */
-    struct FRGBatch
+    struct alignas(64) FRGBatch
     {
         ECommandQueue                       Queue = ECommandQueue(0);
         bool                                bIsAsync = false;
@@ -47,7 +47,7 @@ namespace Lumina
         TVector<FRenderGraphPass*>          Passes;
     };
 
-    enum class RUNTIME_API ERGPassFlags : uint16
+    enum class RUNTIME_API ERGPassFlags : uint8
     {
         None        = 0,
 

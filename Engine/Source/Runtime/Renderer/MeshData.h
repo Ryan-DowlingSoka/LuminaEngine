@@ -227,7 +227,10 @@ namespace Lumina
             }
             
             Ar << Data.Indices;
-            Ar << Data.ShadowIndices;
+            // ShadowIndices intentionally NOT serialized: it is derivable from
+            // Indices + vertex positions, and inserting it into the archive
+            // stream would break backwards compatibility with every mesh on
+            // disk. Regenerated in CMesh::PostLoad via GenerateShadowBuffers.
             Ar << Data.GeometrySurfaces;
 
             return Ar;

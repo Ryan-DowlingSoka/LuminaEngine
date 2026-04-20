@@ -1206,8 +1206,6 @@ namespace Lumina::Physics
 
     void FJoltPhysicsScene::OnImpulseEvent(const SImpulseEvent& Impulse)
     {
-        LUMINA_PROFILE_SCOPE();
-
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID BodyID = JPH::BodyID(Impulse.BodyID);
         JPH::RVec3 VecImpulse = JoltUtils::ToJPHRVec3(Impulse.Impulse);
@@ -1222,8 +1220,6 @@ namespace Lumina::Physics
     
     void FJoltPhysicsScene::OnForceEvent(const SForceEvent& Force)
     {
-        LUMINA_PROFILE_SCOPE();
-
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID BodyID = JPH::BodyID(Force.BodyID);
         
@@ -1232,8 +1228,6 @@ namespace Lumina::Physics
     
     void FJoltPhysicsScene::OnTorqueEvent(const STorqueEvent& Torque)
     {
-        LUMINA_PROFILE_SCOPE();
-
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID BodyID = JPH::BodyID(Torque.BodyID);
         
@@ -1242,8 +1236,6 @@ namespace Lumina::Physics
     
     void FJoltPhysicsScene::OnAngularImpulseEvent(const SAngularImpulseEvent& AngularImpulse)
     {
-        LUMINA_PROFILE_SCOPE();
-
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID BodyID = JPH::BodyID(AngularImpulse.BodyID);
         
@@ -1252,8 +1244,6 @@ namespace Lumina::Physics
     
     void FJoltPhysicsScene::OnSetVelocityEvent(const SSetVelocityEvent& Velocity)
     {
-        LUMINA_PROFILE_SCOPE();
-
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID BodyID = JPH::BodyID(Velocity.BodyID);
         
@@ -1262,8 +1252,6 @@ namespace Lumina::Physics
     
     void FJoltPhysicsScene::OnSetAngularVelocityEvent(const SSetAngularVelocityEvent& AngularVelocity)
     {
-        LUMINA_PROFILE_SCOPE();
-
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID BodyID = JPH::BodyID(AngularVelocity.BodyID);
         
@@ -1272,8 +1260,6 @@ namespace Lumina::Physics
     
     void FJoltPhysicsScene::OnAddImpulseAtPositionEvent(const SAddImpulseAtPositionEvent& Event)
     {
-        LUMINA_PROFILE_SCOPE();
-
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID BodyID = JPH::BodyID(Event.BodyID);
         
@@ -1282,8 +1268,6 @@ namespace Lumina::Physics
     
     void FJoltPhysicsScene::OnAddForceAtPositionEvent(const SAddForceAtPositionEvent& Event)
     {
-        LUMINA_PROFILE_SCOPE();
-
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID BodyID = JPH::BodyID(Event.BodyID);
         
@@ -1292,8 +1276,6 @@ namespace Lumina::Physics
     
     void FJoltPhysicsScene::OnSetGravityFactorEvent(const SSetGravityFactorEvent& Event)
     {
-        LUMINA_PROFILE_SCOPE();
-
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID BodyID = JPH::BodyID(Event.BodyID);
         

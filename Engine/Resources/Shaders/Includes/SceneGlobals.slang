@@ -25,11 +25,19 @@ struct SkinnedVertexBuffer
 [[vk::binding(10, 0)]] Sampler2DArray                               uShadowAtlas;
 [[vk::binding(12, 0)]] Sampler2D                                    uDepthPyramid;
 
-// Parallel shadow-caster indirect/mapping buffers. The shadow cull pass writes
-// these, and every shadow-map rendering pass (CSM, spot, point) consumes them,
-// so that casters outside the camera frustum still produce shadows.
+// Parallel shadow-caster indirect/mapping buffers for point + spot lights.
+// Directional uses the per-cascade buffers below.
 [[vk::binding(16, 0)]] RWStructuredBuffer<uint>                     uMappingDataShadow;
 [[vk::binding(17, 0)]] RWStructuredBuffer<FDrawIndirectArguments>   uIndirectDrawDataShadow;
+
+// Per-cascade directional-shadow indirect/mapping buffers. Laid out cascade-major
+// so each cascade's FDrawIndirectArguments slice is contiguous and can be issued
+// with a single DrawIndirect + byte offset. Stride = CullData.NumDraws for the
+// indirect buffer, CullData.InstanceNum for the mapping buffer. FirstInstance in
+// each cascade's args is pre-adjusted so the shader does not need to add the
+// cascade offset at sample time.
+[[vk::binding(18, 0)]] RWStructuredBuffer<uint>                     uMappingDataCascade;
+[[vk::binding(19, 0)]] RWStructuredBuffer<FDrawIndirectArguments>   uIndirectDrawDataCascade;
 
 // ---------------------------------------------------------------------------------
 //  Binding Set 1
@@ -134,6 +142,23 @@ float4x4 GetShadowModelMatrix(uint Index)
     return uInstanceData[ShadowDrawIDToInstanceID(Index)].ModelMatrix;
 }
 
+// Cascade-pass accessors. Each cascade's mapping slice is pre-offset by the
+// indirect args' FirstInstance, so callers just hand us the SV_InstanceID.
+uint CascadeDrawIDToInstanceID(uint ID)
+{
+    return uMappingDataCascade[ID];
+}
+
+FGPUInstance GetCascadeInstanceData(uint Index)
+{
+    return uInstanceData[CascadeDrawIDToInstanceID(Index)];
+}
+
+float4x4 GetCascadeModelMatrix(uint Index)
+{
+    return uInstanceData[CascadeDrawIDToInstanceID(Index)].ModelMatrix;
+}
+
 // ---------------------------------------------------------------------------------
 //  Light Accessors
 // ---------------------------------------------------------------------------------
@@ -143,6 +168,19 @@ uint   GetNumLights()               { return uLightData[0].NumLights;     }
 float3 GetSunDirection()            { return uLightData[0].SunDirection;  }
 float3 GetAmbientLightColor()       { return uLightData[0].AmbientLight.xyz; }
 float  GetAmbientLightIntensity()   { return uLightData[0].AmbientLight.w;   }
+
+// Cold shadow-data accessors. Callers must check Light.ShadowDataIndex != INDEX_NONE
+// before calling. Keeping the fetch behind a helper makes it easy to later move
+// the shadow table to a dedicated binding without touching callsites.
+float4x4 GetShadowViewProjection(int ShadowDataIndex, uint ViewIndex)
+{
+    return uLightData[0].Shadows[ShadowDataIndex].ViewProjection[ViewIndex];
+}
+
+FLightShadow GetShadowTile(int ShadowDataIndex, uint Face)
+{
+    return uLightData[0].Shadows[ShadowDataIndex].Shadow[Face];
+}
 
 // ---------------------------------------------------------------------------------
 //  Scene / Camera Accessors

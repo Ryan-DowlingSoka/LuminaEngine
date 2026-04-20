@@ -8,6 +8,7 @@
 struct FPushConstants
 {
     uint LightIndex;
+    int  ShadowDataIndex;
 };
 
 // ============================================================================

@@ -232,57 +232,69 @@ namespace Lumina
     {
         glm::vec2   AtlasUVOffset;
         glm::vec2   AtlasUVScale;
-        
+
         int32       ShadowMapIndex;
         int32       ShadowMapLayer;
         int32       LightIndex;
-        int32       Padding;
+        int32       ShadowDataIndex;    // Index into FSceneLightData::Shadows[]
     };
-    
+
     VERIFY_SSBO_ALIGNMENT(FLightShadow)
     
+    // Hot per-light data. Keeping it at 64 bytes cuts the L2 footprint of the inner loop ~10x.
     struct FLight
     {
         glm::vec3       Position;
         uint32          Color;
-        
-        float           Intensity;
-        uint32          Padding0[3];
-        
+
         glm::vec3       Direction;
         float           Radius;
 
-        glm::mat4       ViewProjection[6];
-        
-        glm::vec2       Angles;
-        uint32          Flags;
+        float           Intensity;
         float           Falloff;
+        glm::vec2       Angles;
 
-        FLightShadow    Shadow[6];
+        uint32          Flags;
+        int32           ShadowDataIndex;    // INDEX_NONE if no shadow
+        uint32          Padding0[2];
     };
 
+    static_assert(sizeof(FLight) == 64, "FLight hot struct must fit a cache line");
     static_assert(eastl::is_trivially_copyable_v<FLight>);
 
     VERIFY_SSBO_ALIGNMENT(FLight)
-    
+
+    // Cold shadow-caster data. Only shadow-rendering passes and the lit
+    // pixel shader's shadow branch touch this, so the hot lighting loop
+    // never pays the miss.
+    struct FLightShadowData
+    {
+        glm::mat4       ViewProjection[6];  // 384 B
+        FLightShadow    Shadow[6];          // 192 B
+    };
+
+    static_assert(sizeof(FLightShadowData) == 576, "FLightShadowData layout must match shader");
+    VERIFY_SSBO_ALIGNMENT(FLightShadowData)
+
     struct FSkyLight
     {
         glm::vec4 Color;
     };
-    
+
     struct FSceneLightData
     {
-        uint32          NumLights;
-        uint32          Padding0[3];
+        uint32              NumLights{};
+        uint32              Padding0[3];
 
-        glm::vec3       SunDirection;
-        uint32          bHasSun;
+        glm::vec3           SunDirection{};
+        uint32              bHasSun{};
 
-        glm::vec4       CascadeSplits;
+        glm::vec4           CascadeSplits{};
 
-        glm::vec4       AmbientLight;
-        
-        FLight          Lights[MAX_LIGHTS];
+        glm::vec4           AmbientLight{};
+
+        FLight              Lights[MAX_LIGHTS]{};
+        FLightShadowData    Shadows[MAX_SHADOWS]{};
     };
     
     struct FLineBatch
@@ -343,16 +355,23 @@ namespace Lumina
     {
         glm::mat4x4     Transform;
         glm::vec4       SphereBounds;
-        
+
         uint64          VBAddress;
         uint64          IBAddress;
 
+        // Position-only shadow index stream. Shadow vertex pulling pulls through
+        // this pointer so each shadow draw issues fewer unique VS invocations.
+        // Aliases IBAddress for legacy assets imported without shadow indices.
+        uint64          ShadowIBAddress;
         uint32          EntityID;
         uint32          DrawIDAndFlags;
+
         uint32          BoneOffsetAndMaterialIndex;
         uint32          CustomData;
+        uint32          Padding[2];
     };
-    
+
+    static_assert(sizeof(FGPUInstance) == 128, "FGPUInstance layout must match shader");
     VERIFY_SSBO_ALIGNMENT(FGPUInstance)
     
     constexpr uint32 PackDrawIDAndFlags(uint32 DrawID, EInstanceFlags Flags)
@@ -368,11 +387,15 @@ namespace Lumina
     struct FCullData
     {
         FFrustum Frustum;
-        // Extruded camera frustum swept along the sunlight direction. Used by
-        // the shadow-cull compute pass so casters outside the camera frustum
-        // still get written into the shadow indirect buffer. If there is no
-        // directional light in the scene this mirrors Frustum (unused).
+        // Extruded camera frustum swept along the sunlight direction. Kept
+        // alongside CascadeFrustum for point/spot reuse and as a belt-and-braces
+        // fallback; directional culling uses the per-cascade frustums below.
         FFrustum ShadowFrustum;
+        // Per-cascade world-space frustums. Directional shadow culling tests
+        // casters against each cascade independently so small casters that only
+        // touch cascade 0 don't pay VPC cost on cascades 1/2. Mirrors
+        // FLightShadowData::ViewProjection[c] for the active directional light.
+        FFrustum CascadeFrustum[NumCascades];
         glm::mat4 ViewMatrix;   // View matrix (not view-projection!)
 
         float P00;              // projection[0][0]
@@ -391,6 +414,11 @@ namespace Lumina
         // Shadow-caster culling extensions.
         float  ShadowMaxDistance;       // Casters beyond this distance are skipped entirely.
         uint32 bShadowOcclusionCull;    // Enable camera Hi-Z test for in-frustum casters.
+
+        // Number of FDrawIndirectArguments entries per cascade slice in the
+        // cascade indirect buffer. Used by ShadowMeshCull to index into the
+        // right cascade stride.
+        uint32 NumDraws;
     };
     
     

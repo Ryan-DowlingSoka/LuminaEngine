@@ -8,8 +8,8 @@
 namespace Lumina
 {
     class FRGPassDescriptor;
-    enum class ERGPassFlags : uint16;
-    enum class ERGExecutionFlags : uint16;
+    enum class ERGPassFlags : uint8;
+    enum class ERGExecutionFlags : uint8;
 }
 
 namespace Lumina
@@ -21,14 +21,14 @@ namespace Lumina
      * The render graph compiles all passes into batches, records them in parallel, and
      * submits them per-queue with cross-queue synchronization inserted automatically.
      */
-    class RUNTIME_API FRenderGraphPass
+    class RUNTIME_API alignas(64) FRenderGraphPass
     {
         friend class FRenderGraph;
 
     public:
 
         FRenderGraphPass(FRGEvent&& InEvent, ERGPassFlags InFlags, const FRGPassDescriptor* InDescriptor)
-            : Event(std::move(InEvent))
+            : Event(InEvent)
             , PassFlags(InFlags)
             , Descriptor(InDescriptor)
         {}

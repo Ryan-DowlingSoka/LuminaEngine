@@ -6,6 +6,7 @@
 #include "Renderer/RenderContext.h"
 #include "Renderer/RHIGlobals.h"
 #include "Renderer/Vertex.h"
+#include "Tools/Import/ImportHelpers.h"
 
 
 namespace Lumina
@@ -25,6 +26,14 @@ namespace Lumina
     void CMesh::PostLoad()
     {
         GenerateBoundingBox();
+        // ShadowIndices are not serialized (see FMeshResource::operator<<).
+        // Regenerate from Indices + positions so the dedicated shadow index
+        // buffer gets a real, position-only-deduped stream instead of
+        // aliasing the regular index buffer.
+        if (MeshResources && MeshResources->ShadowIndices.empty())
+        {
+            Import::Mesh::GenerateShadowBuffers(*MeshResources);
+        }
         GenerateGPUBuffers();
     }
 
@@ -54,6 +63,10 @@ namespace Lumina
     {
         MeshResources = eastl::move(NewResource);
         GenerateBoundingBox();
+        if (MeshResources && MeshResources->ShadowIndices.empty())
+        {
+            Import::Mesh::GenerateShadowBuffers(*MeshResources);
+        }
         GenerateGPUBuffers();
     }
 
@@ -125,9 +138,32 @@ namespace Lumina
         CommandList->WriteBuffer(MeshResources->MeshBuffers.IndexBuffer, MeshResources->Indices.data(), IndexBufferDesc.Size);
         CommandList->SetPermanentBufferState(MeshResources->MeshBuffers.IndexBuffer, EResourceStates::IndexBuffer);
 
-        MeshResources->MeshBuffers.ShadowIndexBuffer = MeshResources->MeshBuffers.IndexBuffer;
+        // Position-only shadow index buffer: shadow passes pull through this
+        // buffer via vertex pulling, so depth-only draws hit fewer unique
+        // vertex-shader invocations (see MeshImport::GenerateShadowBuffers).
+        // Legacy assets imported before shadow indices were generated fall
+        // back to aliasing the regular index buffer so rendering stays
+        // correct without a reimport.
+        if (!MeshResources->ShadowIndices.empty())
+        {
+            const uint64 ShadowIndexSize = sizeof(uint32) * MeshResources->ShadowIndices.size();
 
-        
+            FRHIBufferDesc ShadowIndexBufferDesc;
+            ShadowIndexBufferDesc.Size      = ShadowIndexSize;
+            ShadowIndexBufferDesc.Usage.SetFlag(BUF_IndexBuffer);
+            ShadowIndexBufferDesc.DebugName = GetName().ToString() + " Shadow Index Buffer";
+            MeshResources->MeshBuffers.ShadowIndexBuffer = GRenderContext->CreateBuffer(ShadowIndexBufferDesc);
+
+            CommandList->BeginTrackingBufferState(MeshResources->MeshBuffers.ShadowIndexBuffer, EResourceStates::CopyDest);
+            CommandList->WriteBuffer(MeshResources->MeshBuffers.ShadowIndexBuffer, MeshResources->ShadowIndices.data(), ShadowIndexSize);
+            CommandList->SetPermanentBufferState(MeshResources->MeshBuffers.ShadowIndexBuffer, EResourceStates::IndexBuffer);
+        }
+        else
+        {
+            MeshResources->MeshBuffers.ShadowIndexBuffer = MeshResources->MeshBuffers.IndexBuffer;
+        }
+
+
         CommandList->Close();
         GRenderContext->ExecuteCommandList(CommandList, ECommandQueue::Graphics);
         

@@ -449,8 +449,40 @@ namespace Lumina
         const SIZE_T InstanceDataSize   = InstanceData.size() * sizeof(FGPUInstance);
         const SIZE_T BoneDataSize       = BonesData.size() * sizeof(glm::mat4);
         const SIZE_T IndirectArgsSize   = IndirectDrawArguments.size() * sizeof(FDrawIndirectArguments);
+
+        // Cascade-major duplicate of IndirectDrawArguments. Each cascade slice
+        // has FirstInstance shifted by `c * NumInstances` so the cascade mapping
+        // buffer can be a flat UAV indexed by absolute FirstInstance + counter.
+        const uint32 NumDraws             = (uint32)IndirectDrawArguments.size();
+        const uint32 NumInstances         = (uint32)InstanceData.size();
+        const SIZE_T IndirectCascadeSize  = (SIZE_T)NumCascades * NumDraws * sizeof(FDrawIndirectArguments);
+        const SIZE_T CascadeMappingSize   = (SIZE_T)NumCascades * NumInstances * sizeof(uint32);
+        SceneGlobalData.CullData.NumDraws = NumDraws;
+
+        IndirectDrawArgumentsCascade.clear();
+        if (LightData.bHasSun && NumDraws > 0)
+        {
+            IndirectDrawArgumentsCascade.resize((size_t)NumCascades * NumDraws);
+            for (uint32 c = 0; c < (uint32)NumCascades; ++c)
+            {
+                const uint32 CascadeInstanceBase = c * NumInstances;
+                for (uint32 d = 0; d < NumDraws; ++d)
+                {
+                    FDrawIndirectArguments Args                  = IndirectDrawArguments[d];
+                    Args.InstanceCount                           = 0u;
+                    Args.StartInstanceLocation                  += CascadeInstanceBase;
+                    IndirectDrawArgumentsCascade[c * NumDraws + d] = Args;
+                }
+            }
+        }
         const SIZE_T ActiveLightsSize   = LightData.NumLights * sizeof(FLight);
-        const SIZE_T LightUploadSize    = offsetof(FSceneLightData, Lights) + ActiveLightsSize;
+        const SIZE_T LightsUploadSize   = offsetof(FSceneLightData, Lights) + ActiveLightsSize;
+        const uint32 ActiveShadowCount  = glm::min<uint32>(ShadowDataCount.load(std::memory_order_acquire), (uint32)MAX_SHADOWS);
+        const SIZE_T ShadowsUploadSize  = ActiveShadowCount * sizeof(FLightShadowData);
+        // Buffer must be sized to cover the shadow suffix even when uploading
+        // only the active slice; otherwise WriteBuffer at ShadowsOffset would
+        // overrun a buffer sized only to LightsUploadSize.
+        const SIZE_T LightUploadSize    = offsetof(FSceneLightData, Shadows) + ShadowsUploadSize;
         const SIZE_T BillboardSize      = BillboardInstances.size() * sizeof(FBillboardInstance);
 
         bool bAnyBufferResized = false;
@@ -461,6 +493,8 @@ namespace Lumina
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Bone], (uint32)BoneDataSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Indirect], (uint32)IndirectArgsSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::IndirectShadow], (uint32)IndirectArgsSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::IndirectCascade], (uint32)IndirectCascadeSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMappingCascade], (uint32)CascadeMappingSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Light], (uint32)LightUploadSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Billboards], (uint32)BillboardSize, 1.2f);
 
@@ -469,10 +503,12 @@ namespace Lumina
             CreateLayouts();
         }
 
+        const SIZE_T IndirectCascadeUploadSize = IndirectDrawArgumentsCascade.size() * sizeof(FDrawIndirectArguments);
+
         {
             FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
             RenderGraph.AddPass(RG_Raster, "Write Scene Buffers", Descriptor,
-                [this, SimpleVertexSize, InstanceDataSize, BoneDataSize, IndirectArgsSize, LightUploadSize, BillboardSize](ICommandList& CmdList)
+                [this, SimpleVertexSize, InstanceDataSize, BoneDataSize, IndirectArgsSize, IndirectCascadeUploadSize, LightsUploadSize, ShadowsUploadSize, BillboardSize](ICommandList& CmdList)
             {
                 LUMINA_PROFILE_SECTION_COLORED("Write Scene Buffers", tracy::Color::OrangeRed3);
 
@@ -481,6 +517,10 @@ namespace Lumina
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Bone), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Indirect), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::IndirectShadow), EResourceStates::CopyDest);
+                if (IndirectCascadeUploadSize > 0)
+                {
+                    CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::IndirectCascade), EResourceStates::CopyDest);
+                }
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::SimpleVertex), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Light), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Billboards), EResourceStates::CopyDest);
@@ -495,8 +535,19 @@ namespace Lumina
                 // offsets, InstanceCount == 0) so ShadowMeshCull.slang can atomically fill it
                 // in parallel with the camera-view cull pass.
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::IndirectShadow), IndirectDrawArguments.data(), IndirectArgsSize);
+                if (IndirectCascadeUploadSize > 0)
+                {
+                    CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::IndirectCascade), IndirectDrawArgumentsCascade.data(), IndirectCascadeUploadSize);
+                }
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::SimpleVertex), SimpleVertices.data(), SimpleVertexSize);
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Light), &LightData, LightUploadSize);
+                // Upload only the populated prefix of the light buffer: the
+                // header + active hot FLight entries, and the active FLightShadowData
+                // entries. The unused middle region is never read by shaders.
+                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Light), &LightData, LightsUploadSize, 0);
+                if (ShadowsUploadSize > 0)
+                {
+                    CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Light), &LightData.Shadows[0], ShadowsUploadSize, offsetof(FSceneLightData, Shadows));
+                }
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Billboards), BillboardInstances.data(), BillboardSize);
                 CmdList.EnableAutomaticBarriers();
             });
@@ -651,6 +702,7 @@ namespace Lumina
         const FMeshResource& Resource = Mesh->GetMeshResource();
         const uint64 VBAddress = Mesh->GetVertexBuffer()->GetAddress();
         const uint64 IBAddress = Mesh->GetIndexBuffer()->GetAddress();
+        const uint64 ShadowIBAddress = Mesh->GetShadowIndexBuffer()->GetAddress();
 
         Local.Stats.NumVertices  += Resource.GetNumVertices();
         Local.Stats.NumTriangles += Resource.GetNumTriangles();
@@ -729,6 +781,7 @@ namespace Lumina
             Item.Instance.SphereBounds               = SphereBounds;
             Item.Instance.VBAddress                  = VBAddress;
             Item.Instance.IBAddress                  = IBAddress;
+            Item.Instance.ShadowIBAddress            = ShadowIBAddress;
             Item.Instance.EntityID                   = EntityIDPacked;
             Item.Instance.DrawIDAndFlags             = PackDrawIDAndFlags(0, Flags); // DrawID patched at write-out
             Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
@@ -774,6 +827,7 @@ namespace Lumina
 
         const uint64 VBAddress = Mesh->GetVertexBuffer()->GetAddress();
         const uint64 IBAddress = Mesh->GetIndexBuffer()->GetAddress();
+        const uint64 ShadowIBAddress = Mesh->GetShadowIndexBuffer()->GetAddress();
         const uint32 EntityIDPacked = entt::to_integral(Entity);
 
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
@@ -830,6 +884,7 @@ namespace Lumina
             Item.Instance.SphereBounds               = SphereBounds;
             Item.Instance.VBAddress                  = VBAddress;
             Item.Instance.IBAddress                  = IBAddress;
+            Item.Instance.ShadowIBAddress            = ShadowIBAddress;
             Item.Instance.EntityID                   = EntityIDPacked;
             Item.Instance.DrawIDAndFlags             = PackDrawIDAndFlags(0, Flags);
             Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
@@ -1106,17 +1161,18 @@ namespace Lumina
             NotifyMaxLightsHit();
             return;
         }
-        
-        FLight Light;
+
+        FLight Light                = {};
         Light.Flags                 = LIGHT_TYPE_POINT;
         Light.Falloff               = PointLight.Falloff;
         Light.Color                 = PackColor(glm::vec4(PointLight.LightColor, 1.0));
         Light.Intensity             = PointLight.Intensity;
         Light.Radius                = PointLight.Attenuation;
         Light.Position              = TransformComponent.WorldTransform.Location;
-        
+        Light.ShadowDataIndex       = INDEX_NONE;
+
         FViewVolume LightView(90.0f, 1.0f, 0.01f, Light.Radius);
-        
+
         auto SetView = [&Light](FViewVolume& View, uint32 Index)
         {
             switch (Index)
@@ -1143,35 +1199,35 @@ namespace Lumina
                 UNREACHABLE();
             }
         };
-        
+
         if (PointLight.bCastShadows)
         {
             int32 TileIndex = ShadowAtlas.AllocateTile();
-            
-            if (TileIndex != INDEX_NONE)
+            uint32 ShadowSlot = ShadowDataCount.fetch_add(1, std::memory_order_acquire);
+
+            if (TileIndex != INDEX_NONE && ShadowSlot < (uint32)MAX_SHADOWS)
             {
                 const FShadowTile& Tile = ShadowAtlas.GetTile(TileIndex);
-        
+                FLightShadowData& ShadowData = LightData.Shadows[ShadowSlot];
+
                 for (int Face = 0; Face < 6; ++Face)
                 {
                     SetView(LightView, Face);
-                    
-                    Light.ViewProjection[Face]              = LightView.ToReverseDepthViewProjectionMatrix();
-                    Light.Shadow[Face].ShadowMapIndex       = TileIndex;
-                    Light.Shadow[Face].ShadowMapLayer       = Face;
-                    Light.Shadow[Face].AtlasUVOffset        = Tile.UVOffset;
-                    Light.Shadow[Face].AtlasUVScale         = Tile.UVScale;
-                    Light.Shadow[Face].LightIndex           = (int32)Lights;
+
+                    ShadowData.ViewProjection[Face]         = LightView.ToReverseDepthViewProjectionMatrix();
+                    ShadowData.Shadow[Face].ShadowMapIndex  = TileIndex;
+                    ShadowData.Shadow[Face].ShadowMapLayer  = Face;
+                    ShadowData.Shadow[Face].AtlasUVOffset   = Tile.UVOffset;
+                    ShadowData.Shadow[Face].AtlasUVScale    = Tile.UVScale;
+                    ShadowData.Shadow[Face].LightIndex      = (int32)Lights;
+                    ShadowData.Shadow[Face].ShadowDataIndex = (int32)ShadowSlot;
                 }
-                
-                PackedShadows[(uint32)ELightType::Point].push_back(Light.Shadow[0]);
+
+                Light.ShadowDataIndex = (int32)ShadowSlot;
+                PackedShadows[(uint32)ELightType::Point].push_back(ShadowData.Shadow[0]);
             }
         }
-        else
-        {
-            Light.Shadow[0].ShadowMapIndex = INDEX_NONE;
-        }
-        
+
         LightData.Lights[Lights] = Light;
     }
 
@@ -1183,20 +1239,20 @@ namespace Lumina
             NotifyMaxLightsHit();
             return;
         }
-        
+
         glm::vec3 UpdatedForward    = TransformComponent.GetRotation() * FViewVolume::ForwardAxis;
         glm::vec3 UpdatedUp         = TransformComponent.GetRotation() * FViewVolume::UpAxis;
-                
+
         float InnerDegrees = SpotLight.InnerConeAngle;
         float OuterDegrees = SpotLight.OuterConeAngle;
-        
+
         float InnerCos = glm::cos(glm::radians(InnerDegrees));
         float OuterCos = glm::cos(glm::radians(OuterDegrees));
-        
+
         FViewVolume ViewVolume(OuterDegrees * 2.00f, 1.0f, 0.01f, SpotLight.Attenuation);
         ViewVolume.SetView(TransformComponent.WorldTransform.Location, -UpdatedForward, UpdatedUp);
-        
-        FLight Light;
+
+        FLight Light                = {};
         Light.Flags                 = LIGHT_TYPE_SPOT;
         Light.Position              = TransformComponent.WorldTransform.Location;
         Light.Direction             = glm::normalize(UpdatedForward);
@@ -1205,29 +1261,31 @@ namespace Lumina
         Light.Intensity             = SpotLight.Intensity;
         Light.Radius                = SpotLight.Attenuation;
         Light.Angles                = glm::vec2(InnerCos, OuterCos);
-        Light.ViewProjection[0]     = ViewVolume.ToReverseDepthViewProjectionMatrix();
-        
+        Light.ShadowDataIndex       = INDEX_NONE;
+
         if (SpotLight.bCastShadows)
         {
             int32 TileIndex = ShadowAtlas.AllocateTile();
-            if (TileIndex != INDEX_NONE)
+            uint32 ShadowSlot = ShadowDataCount.fetch_add(1, std::memory_order_acquire);
+
+            if (TileIndex != INDEX_NONE && ShadowSlot < (uint32)MAX_SHADOWS)
             {
-                const FShadowTile& Tile             = ShadowAtlas.GetTile(TileIndex);
-                Light.Shadow[0].ShadowMapIndex      = TileIndex;
-                Light.Shadow[0].ShadowMapLayer      = 6;
-                Light.Shadow[0].AtlasUVOffset       = Tile.UVOffset;
-                Light.Shadow[0].AtlasUVScale        = Tile.UVScale;
-                Light.Shadow[0].LightIndex          = (int32)Lights;
-        
+                const FShadowTile& Tile         = ShadowAtlas.GetTile(TileIndex);
+                FLightShadowData& ShadowData    = LightData.Shadows[ShadowSlot];
+
+                ShadowData.ViewProjection[0]            = ViewVolume.ToReverseDepthViewProjectionMatrix();
+                ShadowData.Shadow[0].ShadowMapIndex     = TileIndex;
+                ShadowData.Shadow[0].ShadowMapLayer     = 6;
+                ShadowData.Shadow[0].AtlasUVOffset      = Tile.UVOffset;
+                ShadowData.Shadow[0].AtlasUVScale       = Tile.UVScale;
+                ShadowData.Shadow[0].LightIndex         = (int32)Lights;
+                ShadowData.Shadow[0].ShadowDataIndex    = (int32)ShadowSlot;
+
+                Light.ShadowDataIndex = (int32)ShadowSlot;
+                PackedShadows[(uint32)ELightType::Spot].push_back(ShadowData.Shadow[0]);
             }
-            
-            PackedShadows[(uint32)ELightType::Spot].push_back(Light.Shadow[0]);
         }
-        else
-        {
-            Light.Shadow[0].ShadowMapIndex = INDEX_NONE;
-        }
-        
+
         LightData.Lights[Lights] = Light;
     }
 
@@ -1244,7 +1302,18 @@ namespace Lumina
         Light.Color             = PackColor(glm::vec4(DirectionalLight.Color, 1.0));
         Light.Intensity         = DirectionalLight.Intensity;
         Light.Direction         = glm::normalize(DirectionalLight.Direction);
+        Light.ShadowDataIndex   = INDEX_NONE;
         LightData.SunDirection  = Light.Direction;
+
+        // Directional CSM always allocates a shadow slot; the cascade VPs live
+        // in FLightShadowData and are looked up by the PS/VS via ShadowDataIndex.
+        uint32 ShadowSlot = ShadowDataCount.fetch_add(1, std::memory_order_acquire);
+        FLightShadowData* CascadeShadowData = nullptr;
+        if (ShadowSlot < (uint32)MAX_SHADOWS)
+        {
+            Light.ShadowDataIndex = (int32)ShadowSlot;
+            CascadeShadowData     = &LightData.Shadows[ShadowSlot];
+        }
         
         // (logarithmic + uniform blend). Lambda tuned so the last cascade
         // does not dwarf the preceding ones: at Lambda=0.92 + far=1000 the
@@ -1349,10 +1418,19 @@ namespace Lumina
                 -Radius, +Radius,
                 0.0f, OrthoRange);
         
-            Light.ViewProjection[i] = LightProjection * LightView;
+            const glm::mat4 CascadeVP = LightProjection * LightView;
+            if (CascadeShadowData)
+            {
+                CascadeShadowData->ViewProjection[i] = CascadeVP;
+            }
+
+            // Feed this cascade's frustum to the shadow cull pass so small casters
+            // that only touch cascade 0 don't pay VPC cost on cascades 1/2.
+            SceneGlobalData.CullData.CascadeFrustum[i] = FFrustum::FromViewProjection(CascadeVP);
+
             LastSplitDistance = SplitFar;
         }
-        
+
         LightCount.fetch_add(1, std::memory_order_acquire);
         LightData.Lights[0] = Light;
     }
@@ -1494,7 +1572,8 @@ namespace Lumina
         TranslucentDrawList.clear();
         IndirectDrawArguments.clear();
         InstanceData.clear();
-        LightData.NumLights = 0;
+        LightData = {};
+        ShadowDataCount.store(0, std::memory_order_release);
         ShadowAtlas.FreeTiles();
         BonesData.clear();
         BillboardInstances.clear();
@@ -1888,7 +1967,10 @@ namespace Lumina
 
                     CmdList.SetGraphicsState(GraphicsState);
 
-                    CmdList.SetPushConstants(&LightShadow.LightIndex, sizeof(uint32));
+                    // Shader FPushConstants = { uint LightIndex; int ShadowDataIndex; }
+                    // FLightShadow stores them adjacent at offsets 24 and 28, so a
+                    // single 8-byte push covers both.
+                    CmdList.SetPushConstants(&LightShadow.LightIndex, sizeof(int32) * 2);
                     CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
                 }
             }
@@ -1986,7 +2068,7 @@ namespace Lumina
 
                     CmdList.SetGraphicsState(GraphicsState);
 
-                    CmdList.SetPushConstants(&Shadow.LightIndex, sizeof(uint32));
+                    CmdList.SetPushConstants(&Shadow.LightIndex, sizeof(int32) * 2);
                     CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
                 }
             }
@@ -2002,31 +2084,18 @@ namespace Lumina
         {
             return;
         }
-        
+
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
         RenderGraph.AddPass(RG_Raster, "Cascaded Shadow Map Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Cascaded Shadow Map Pass", tracy::Color::DeepPink2);
-            
+
             FRenderState RenderState; RenderState
                 .SetDepthStencilState(FDepthStencilState()
                     .SetDepthFunc(EComparisonFunc::Less))
                     .SetRasterState(FRasterState().SetCullFront());
-            
-            
-            FRenderPassDesc::FAttachment Depth; Depth
-                .SetLoadOp(ERenderLoadOp::Clear)
-                .SetDepthClearValue(1.0)
-                .SetImage(GetNamedImage(ENamedImage::Cascade))
-                    .SetNumSlices(NumCascades);
-            
-            FRenderPassDesc RenderPass; RenderPass
-                .SetDepthAttachment(Depth)
-                .SetViewMask(RenderUtils::CreateViewMask<0u, 1u, 2u>()) // Must match NUM_CASCADES
-                .SetRenderArea(glm::uvec2(GCSMResolution, GCSMResolution));
-            
-            
-            FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
+
+            FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("CSMShadowMappingVert.slang");
 
             FGraphicsPipelineDesc Desc; Desc
                 .SetDebugName("Cascaded Shadow Maps")
@@ -2034,26 +2103,44 @@ namespace Lumina
                 .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
                 .SetVertexShader(VertexShader);
+            
+            const uint32 NumDraws = (uint32)IndirectDrawArguments.size();
 
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-            FGraphicsState GraphicsState; GraphicsState
-                .SetRenderPass(RenderPass)
-                .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::Cascade)))
-                .SetPipeline(Pipeline)
-                .AddBindingSet(SceneBindingSet)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectShadow));
-
-            CmdList.SetGraphicsState(GraphicsState);
-
-            uint32 LightIndex = 0;
-            CmdList.SetPushConstants(&LightIndex, sizeof(uint32));
-
-            for (uint32 OpaqueIdx : OpaqueDrawList)
+            for (uint32 c = 0; c < (uint32)NumCascades; ++c)
             {
-                const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
-                CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
+                FRenderPassDesc::FAttachment Depth; Depth
+                    .SetLoadOp(ERenderLoadOp::Clear)
+                    .SetDepthClearValue(1.0f)
+                    .SetImage(GetNamedImage(ENamedImage::Cascade))
+                        .SetArraySlice((uint16)c);
+
+                FRenderPassDesc RenderPass; RenderPass
+                    .SetDepthAttachment(Depth)
+                    .SetRenderArea(glm::uvec2(GCSMResolution, GCSMResolution));
+
+                FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+                FGraphicsState GraphicsState; GraphicsState
+                    .SetRenderPass(RenderPass)
+                    .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::Cascade)))
+                    .SetPipeline(Pipeline)
+                    .AddBindingSet(SceneBindingSet)
+                    .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
+                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectCascade));
+
+                CmdList.SetGraphicsState(GraphicsState);
+
+                struct { int32 ShadowDataIndex; int32 CascadeIndex; } CascadePush;
+                CascadePush.ShadowDataIndex = LightData.Lights[0].ShadowDataIndex;
+                CascadePush.CascadeIndex    = (int32)c;
+                CmdList.SetPushConstants(&CascadePush, sizeof(CascadePush));
+
+                const uint32 CascadeBase = c * NumDraws;
+                for (uint32 OpaqueIdx : OpaqueDrawList)
+                {
+                    const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
+                    CmdList.DrawIndirect(Batch.DrawCount, (CascadeBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
+                }
             }
         });
     }
@@ -3539,6 +3626,16 @@ namespace Lumina
 
         {
             FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(uint32);
+            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
+            BufferDesc.DebugName = "Instance Mapping (Cascade)";
+            NamedBuffers[(int)ENamedBuffer::InstanceMappingCascade] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        {
+            FRHIBufferDesc BufferDesc;
             BufferDesc.Size = offsetof(FSceneLightData, Lights);
             BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
             BufferDesc.bKeepInitialState = true;
@@ -3587,6 +3684,17 @@ namespace Lumina
             BufferDesc.bKeepInitialState = true;
             BufferDesc.DebugName = "Indirect Draw Buffer (Shadow)";
             NamedBuffers[(int)ENamedBuffer::IndirectShadow] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FDrawIndirectArguments);
+            BufferDesc.Stride = sizeof(FDrawIndirectArguments);
+            BufferDesc.Usage.SetMultipleFlags(BUF_Indirect, BUF_StorageBuffer);
+            BufferDesc.InitialState = EResourceStates::IndirectArgument;
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.DebugName = "Indirect Draw Buffer (Cascade)";
+            NamedBuffers[(int)ENamedBuffer::IndirectCascade] = GRenderContext->CreateBuffer(BufferDesc);
         }
         
         {
@@ -3757,14 +3865,21 @@ namespace Lumina
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(6, GetNamedBuffer(ENamedBuffer::Cluster)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(7, GRenderManager->GetMaterialManager().GetMaterialBuffer()));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(8, GetNamedBuffer(ENamedBuffer::Billboards)));
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(9, GetNamedImage(ENamedImage::Cascade)));
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(10, ShadowAtlas.GetImage()));
+            // Comparison sampler enables hardware PCF: SampleCmp returns a 4-tap
+            // bilinear-filtered shadow term in one texture fetch, replacing the
+            // old manual Sample + step path.
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(9, GetNamedImage(ENamedImage::Cascade),
+                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(10, ShadowAtlas.GetImage(),
+                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
             // Min-reduction clamp sampler: a single bilinear tap on the depth pyramid
             // returns the minimum of the 2x2 footprint (farthest depth in reverse-Z).
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(12, GetNamedImage(ENamedImage::DepthPyramid),
                 TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Minimum>::GetRHI()));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(16, GetNamedBuffer(ENamedBuffer::InstanceMappingShadow)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(17, GetNamedBuffer(ENamedBuffer::IndirectShadow)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(18, GetNamedBuffer(ENamedBuffer::InstanceMappingCascade)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(19, GetNamedBuffer(ENamedBuffer::IndirectCascade)));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);

@@ -83,6 +83,32 @@ namespace Lumina
             return Out;
         }
 
+        // Extract the 6 world-space planes from a view-projection matrix. Planes
+        // are normalized and oriented so that points inside the frustum produce
+        // a non-negative signed distance (matching the convention used by
+        // IsInside / the GPU InFrustum helper in ShadowMeshCull.slang).
+        static FFrustum FromViewProjection(const glm::mat4& VP)
+        {
+            FFrustum Out = {};
+            Out.Planes[LEFT]   = glm::vec4(VP[0].w + VP[0].x, VP[1].w + VP[1].x, VP[2].w + VP[2].x, VP[3].w + VP[3].x);
+            Out.Planes[RIGHT]  = glm::vec4(VP[0].w - VP[0].x, VP[1].w - VP[1].x, VP[2].w - VP[2].x, VP[3].w - VP[3].x);
+            Out.Planes[TOP]    = glm::vec4(VP[0].w - VP[0].y, VP[1].w - VP[1].y, VP[2].w - VP[2].y, VP[3].w - VP[3].y);
+            Out.Planes[BOTTOM] = glm::vec4(VP[0].w + VP[0].y, VP[1].w + VP[1].y, VP[2].w + VP[2].y, VP[3].w + VP[3].y);
+            Out.Planes[BACK]   = glm::vec4(VP[0].w + VP[0].z, VP[1].w + VP[1].z, VP[2].w + VP[2].z, VP[3].w + VP[3].z);
+            Out.Planes[FRONT]  = glm::vec4(VP[0].w - VP[0].z, VP[1].w - VP[1].z, VP[2].w - VP[2].z, VP[3].w - VP[3].z);
+
+            for (int i = 0; i < NUM; ++i)
+            {
+                const glm::vec3 N(Out.Planes[i].x, Out.Planes[i].y, Out.Planes[i].z);
+                const float Length = glm::length(N);
+                if (Length > 0.0f)
+                {
+                    Out.Planes[i] /= Length;
+                }
+            }
+            return Out;
+        }
+
         static void ComputeFrustumCorners(const glm::mat4& ViewProjection, glm::vec3 OutCorners[8])
         {
             LUMINA_PROFILE_SCOPE();

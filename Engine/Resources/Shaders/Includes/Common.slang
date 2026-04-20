@@ -13,7 +13,7 @@ static const int SSAO_KERNEL_SIZE = 32;
 #define LIGHT_INDEX_MASK 0x1FFFu
 #define LIGHTS_PER_UINT  2
 #define LIGHTS_PER_CLUSTER 100
-#define SHADOW_SAMPLE_COUNT 14
+#define SHADOW_SAMPLE_COUNT 8
 
 #define INDEX_NONE -1
 
@@ -191,10 +191,15 @@ struct FGPUInstance
     uint*                   VBAddress;
     uint*                   IBAddress;
 
+    // Position-only shadow index stream. Shadow vertex pulling pulls through
+    // this pointer so each shadow draw issues fewer unique VS invocations.
+    uint*                   ShadowIBAddress;
     uint                    EntityID;
     private uint            DrawIDAndFlags;
+
     private uint            BoneOffsetAndMaterialIndex;
     FCustomPrimitiveData    CustomData;
+    private uint2           Padding;
 
     bool HasFlag(EInstanceFlags Flag)
     {
@@ -236,7 +241,7 @@ struct FLightShadow
     int    ShadowMapIndex;
     int    ShadowMapLayer;
     int    LightIndex;
-    int    Pad;
+    int    ShadowDataIndex;
 };
 
 struct FBillboardInstance
@@ -251,23 +256,35 @@ struct FBillboardInstance
     property float3 ColorTint { get { return UnpackColor(ColorPack).rgb; }}
 };
 
+// Hot per-light data. Sized to a single 64B cache line so the lighting loop
+// can stream lights with one L2 miss per light instead of reading through the
+// old 640B struct (which wasted ~90% of each fetched cache line on data only
+// used by the shadow passes). ShadowDataIndex points into the cold
+// FLightShadowData[] table, or INDEX_NONE if this light has no shadow.
 struct FLight
 {
     float3 Position;
     uint   Color;
 
-    float  Intensity;
-    float  Padding[3];
-
     float3 Direction;
     float  Radius;
 
-    float4x4 ViewProjection[6];
-
-    float2 Angles;
-    uint   Flags;
+    float  Intensity;
     float  Falloff;
+    float2 Angles;
 
+    uint   Flags;
+    int    ShadowDataIndex;
+    uint   Padding[2];
+};
+
+// Cold shadow data. Only fetched by the shadow rendering passes and by the
+// lit pixel shader *after* we know a light actually has a shadow
+// (`ShadowDataIndex != INDEX_NONE`), so it stays out of the hot loop's cache
+// footprint. One entry per shadow-casting light, capped at MAX_SHADOWS.
+struct FLightShadowData
+{
+    float4x4     ViewProjection[6];
     FLightShadow Shadow[6];
 };
 
@@ -280,6 +297,7 @@ struct FLightData
     float4 CascadeSplits;
     float4 AmbientLight;
     FLight Lights[MAX_LIGHTS];
+    FLightShadowData Shadows[MAX_SHADOWS];
 };
 
 struct FCluster
@@ -299,6 +317,7 @@ struct FCullData
 {
     FFrustum Frustum;
     FFrustum ShadowFrustum;
+    FFrustum CascadeFrustum[NUM_CASCADES];
     float4x4 View;
     float    P00;
     float    P11;
@@ -312,6 +331,7 @@ struct FCullData
     float    PyramidHeight;
     float    ShadowMaxDistance;
     uint     bShadowOcclusionCull;
+    uint     NumDraws;
 };
 
 struct FSceneGlobalData

@@ -77,13 +77,15 @@ namespace Lumina
             Instance,
             InstanceMapping,
             InstanceMappingShadow,
+            InstanceMappingCascade,
             Indirect,
             IndirectShadow,
+            IndirectCascade,
             Bone,
             Cluster,
             SimpleVertex,
             Billboards,
-            
+
             Num,
         };
         
@@ -187,6 +189,9 @@ namespace Lumina
         
         /** Packed array of all light shadows in the scene */
         TArray<TVector<FLightShadow>, (uint32)ELightType::Num>    PackedShadows;
+
+        /** Atomic cursor into FSceneLightData::Shadows[]. Reset every frame. */
+        TAtomic<uint32>                         ShadowDataCount = 0;
         
         FViewportState                          SceneViewportState;
         FDelegateHandle                         SwapchainResizedHandle;
@@ -235,6 +240,14 @@ namespace Lumina
 
         /** Packed indirect draw arguments, gets sent directly to the GPU */
         TVector<FDrawIndirectArguments>         IndirectDrawArguments;
+
+        /**
+         * Cascade-major duplicate of IndirectDrawArguments. Layout:
+         *   [c * NumDraws + d] = args for draw d in cascade c.
+         * FirstInstance in each cascade slice is pre-shifted by c * NumInstances
+         * so the cascade mapping buffer can be bound as a single flat UAV.
+         */
+        TVector<FDrawIndirectArguments>         IndirectDrawArgumentsCascade;
 
     };
 }

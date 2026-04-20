@@ -5,6 +5,7 @@
 struct FPushConstants
 {
     uint LightIndex;
+    int  ShadowDataIndex;
 };
 
 struct VSOutput
@@ -19,12 +20,17 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint InstanceIndex: SV_
 {
     FGPUInstance InstanceData = GetShadowInstanceData(InstanceIndex);
 
+    // Shadow passes pull through ShadowIBAddress — a position-only, deduped
+    // index stream built at import time. Fewer unique vertices visit the
+    // vertex shader, so VPC throughput on the CSM/spot/point shadow passes
+    // drops directly. Aliases IBAddress for legacy assets without shadow
+    // indices (see Mesh.cpp::GenerateGPUBuffers).
     FVertexData VertexData;
     if (InstanceData.HasFlag(EInstanceFlags::Skinned))
     {
         VertexData = LoadSkinnedVertex(
             InstanceData.VBAddress,
-            InstanceData.IBAddress,
+            InstanceData.ShadowIBAddress,
             VertexIndex,
             InstanceData.BoneOffset);
     }
@@ -32,7 +38,7 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint InstanceIndex: SV_
     {
         VertexData = LoadStaticVertex(
             InstanceData.VBAddress,
-            InstanceData.IBAddress,
+            InstanceData.ShadowIBAddress,
             VertexIndex);
     }
 
@@ -42,6 +48,6 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint InstanceIndex: SV_
     VSOutput Output;
     Output.WorldPos  = WorldPos.xyz;
     Output.LightPos  = uLightData[0].Lights[PC.LightIndex].Position;
-    Output.Position  = mul(uLightData[0].Lights[PC.LightIndex].ViewProjection[ViewIndex], WorldPos);
+    Output.Position  = mul(GetShadowViewProjection(PC.ShadowDataIndex, ViewIndex), WorldPos);
     return Output;
 }

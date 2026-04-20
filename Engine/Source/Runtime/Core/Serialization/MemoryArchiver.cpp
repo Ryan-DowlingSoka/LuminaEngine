@@ -83,8 +83,23 @@ namespace Lumina
     void FBufferReader::Serialize(void* Data, int64 Size)
     {
         DEBUG_ASSERT(ReaderPos >= 0);
-        DEBUG_ASSERT(ReaderPos + Size <= ReaderSize);
-        Memory::Memcpy(Data, static_cast<uint8*>(ReaderData) + ReaderPos, Size);
+        DEBUG_ASSERT(Size >= 0);
+
+        if (Size == 0)
+        {
+            return;
+        }
+
+        // Check for overflow and out-of-bounds
+        if (Size < 0 || ReaderPos + Size > ReaderSize)
+        {
+            SetHasError(true);
+            Memory::Memzero(Data, Size > 0 ? Size : 0);
+            LOG_ERROR("FBufferReader: Attempted to read {0} bytes at position {1}, but buffer size is {2}", Size, ReaderPos, ReaderSize);
+            return;
+        }
+
+        Memory::Memcpy(Data, static_cast<const uint8*>(ReaderData) + ReaderPos, Size);
         ReaderPos += Size;
     }
     
