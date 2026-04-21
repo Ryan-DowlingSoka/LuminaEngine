@@ -44,11 +44,11 @@ namespace Lumina
         PROPERTY(Editable, Category = "Light", ClampMin = 0.0f, ClampMax = 1000.0f)
         float Intensity = 10.0f;
 
-        /** Angle (degrees) of the fully-lit inner cone — no falloff inside this region. */
+        /** Angle (degrees) of the fully-lit inner cone, no falloff inside this region. */
         PROPERTY(Editable, Category = "Light", ClampMin = 0.0f)
         float InnerConeAngle = 20.0f;
 
-        /** Angle (degrees) of the outer cone edge — light fades from inner to outer. */
+        /** Angle (degrees) of the outer cone edge, light fades from inner to outer. */
         PROPERTY(Editable, Category = "Light", ClampMin = 0.0f)
         float OuterConeAngle = 30.0f;
 
@@ -80,8 +80,7 @@ namespace Lumina
         PROPERTY(Editable, Category = "Advanced")
         float VolumetricIntensity = 0.5f;
 
-        /** Index into the shadow map atlas — managed by the renderer, not user-editable. */
-        PROPERTY(NotSerialized)
+        /** Index into the shadow map atlas, managed by the renderer. */
         int32 ShadowMapIndex = -1;
     };
 

@@ -15,7 +15,7 @@ namespace Lumina
         glm::vec3 LastBodyPosition;
         glm::quat LastBodyRotation;
         
-        /** Internal Jolt body ID — read-only, assigned by the physics system. */
+        /** Internal Jolt body ID, read-only, assigned by the physics system. */
         PROPERTY(Script, ReadOnly, Category = "Physics")
         uint32 BodyID = 0xFFFFFFFF;
 

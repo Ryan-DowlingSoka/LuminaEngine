@@ -22,8 +22,10 @@ LuminaModule({
     },
     ExtraLinks =
     {
-        "slang", "slang-compiler",
-        "GFSDK_Aftermath_Lib.lib", "GFSDK_Aftermath_Lib.x64.dll",
+        "slang", 
+        "slang-compiler",
+        "GFSDK_Aftermath_Lib.lib", 
+        "GFSDK_Aftermath_Lib.x64.dll",
     },
     LibDirs =
     {

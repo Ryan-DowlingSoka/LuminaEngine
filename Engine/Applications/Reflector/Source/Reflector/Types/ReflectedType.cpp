@@ -9,8 +9,6 @@ namespace Lumina::Reflection
 {
     namespace
     {
-        // Small string hash used only inside GetCoreTypeFromName. Kept private — it's
-        // not a project-wide hash and nobody outside this file needs it.
         constexpr uint32_t Fnv1aLike(const char* Str)
         {
             uint32_t Hash = 5381;

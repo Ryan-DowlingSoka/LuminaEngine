@@ -44,7 +44,7 @@ namespace Lumina
         PROPERTY(Script, Editable, Category = "Physics")
         float HitReductionCosMaxAngle = 0.999f;
 
-        /** Fraction of penetration resolved per step — higher values snap out of geometry faster. */
+        /** Fraction of penetration resolved per step, higher values snap out of geometry faster. */
         PROPERTY(Script, Editable, Category = "Physics")
         float PenetrationRecoverySpeed = 1.0f;
 

@@ -191,7 +191,7 @@ namespace Lumina::Import::Mesh
                     M.triangle_count, M.vertex_count);
             }
 
-            // Offsets into the global flat arrays — used to rebase the
+            // Offsets into the global flat arrays, used to rebase the
             // per-surface meshlets before appending.
             const uint32 GlobalVertexBase   = (uint32)MeshResource.MeshletData.MeshletVertices.size();
             const uint32 GlobalTriangleBase = (uint32)MeshResource.MeshletData.MeshletTriangles.size();

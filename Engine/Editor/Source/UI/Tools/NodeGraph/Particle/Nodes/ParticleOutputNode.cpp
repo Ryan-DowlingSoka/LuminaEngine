@@ -30,9 +30,6 @@ namespace Lumina
 
     void CParticleOutputNode::GenerateDefinition(FParticleCompiler& Compiler)
     {
-        // The output node is emitted twice — once per context. Each branch only
-        // resolves the pins it needs, so upstream nodes only emit into the contexts
-        // where they're actually referenced.
         if (Compiler.GetContext() == EParticleContext::Spawn)
         {
             const FParticleInputValue Velocity = Compiler.GetInputFloat3(InitialVelocityPin, glm::vec3(0.0f, 2.0f, 0.0f));

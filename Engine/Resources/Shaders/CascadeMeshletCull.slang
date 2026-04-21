@@ -10,7 +10,8 @@
 [numthreads(LOCAL_SIZE_X, 1, 1)]
 void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupID)
 {
-    uint InstanceID      = GroupID.y;
+    // CPU splits instance count across Y/Z when Num > 65535 (Vulkan groupCountY limit).
+    uint InstanceID      = GroupID.y + GroupID.z * 65535;
     uint MeshletLocalIdx = GlobalID.x;
     uint NumInstances    = uSceneData.CullData.InstanceNum;
 

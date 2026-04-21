@@ -8,17 +8,17 @@
 
 namespace Lumina
 {
-    // Meshlet sizing — 64 verts / 124 tris is the AMD/NV mesh-shader sweet spot
+    // Meshlet sizing, 64 verts / 124 tris is the AMD/NV mesh-shader sweet spot
     // and satisfies meshoptimizer limits (max_vertices <= 256, max_triangles <=
     // 512, max_triangles divisible by 4).
     constexpr uint32 MESHLET_MAX_VERTICES       = 64;
     constexpr uint32 MESHLET_MAX_TRIANGLES      = 124;
-    // Vertex count per meshlet draw invocation — the base VS walks TriangleCount*3
+    // Vertex count per meshlet draw invocation, the base VS walks TriangleCount*3
     // verts and emits degenerates for the remaining slots so every meshlet
     // shares the same VertexCount in its indirect args.
     constexpr uint32 MESHLET_VERTICES_PER_DRAW  = MESHLET_MAX_TRIANGLES * 3;
 
-    // Single meshlet descriptor — offsets into the flat arrays on FMeshletData.
+    // Single meshlet descriptor, offsets into the flat arrays on FMeshletData.
     // VertexOffset indexes into FMeshletData::MeshletVertices which in turn
     // indexes FMeshResource::Vertices. TriangleOffset indexes into
     // FMeshletData::MeshletTriangles which is packed 3 bytes per triangle with
@@ -82,9 +82,6 @@ namespace Lumina
         int16   MaterialIndex = -1;
 
         // Per-surface meshlet range into FMeshResource::MeshletData.Meshlets.
-        // Runtime-only — regenerated in PostLoad alongside the meshlet arrays,
-        // same pattern as ShadowIndices. Not written into the archive stream
-        // so existing assets on disk keep deserializing unchanged.
         uint32  MeshletOffset = 0;
         uint32  MeshletCount  = 0;
 

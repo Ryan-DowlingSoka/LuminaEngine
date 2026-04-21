@@ -82,7 +82,7 @@ namespace Lumina
         PROPERTY(Editable)
         bool bDisableDepthTest = false;
 
-        /** Opacity threshold for Masked blend mode — pixels below this value are discarded. */
+        /** Opacity threshold for Masked blend mode, pixels below this value are discarded. */
         PROPERTY(Editable)
         float OpacityMaskClipValue = 0.333f;
 

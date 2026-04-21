@@ -34,7 +34,7 @@ namespace Lumina
     {
         GENERATED_BODY()
         
-        /** Collision layer this body belongs to — determines which layers can see it. */
+        /** Collision layer this body belongs to, determines which layers can see it. */
         PROPERTY(Script, Editable)
         ECollisionProfiles Layer    = ECollisionProfiles::Dynamic;
 

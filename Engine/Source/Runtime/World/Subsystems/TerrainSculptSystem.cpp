@@ -296,8 +296,8 @@ namespace Lumina
                         continue;
                     }
 
-                    // Paint nudges only the active layer — toward 1.0 normally,
-                    // toward 0.0 while Shift is held (erase). The shader normalises
+                    // Paint nudges only the active layer, toward 1.0 normally,
+                    // toward 0.0 while Shift is held (erase). The shader normalizes
                     // weights at sample time so the visual blend with every other
                     // layer is purely a function of relative weight.
                     const size_t Pixel = size_t(Y) * size_t(Res) + size_t(X);

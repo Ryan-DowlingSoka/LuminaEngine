@@ -6,16 +6,7 @@ namespace Lumina::Reflection
     class FReflectedWorkspace;
     class FReflectedDatabase;
     class FCodeWriter;
-
-    /**
-     * Top-level orchestrator. Walks the reflection database and produces, for each
-     * header that contains reflected types:
-     *   - <name>.generated.h   — public macros: forward decls, GENERATED_BODY, etc.
-     *   - <name>.generated.cpp — the Construct_* statics, singletons, Lua bindings.
-     * And per-project:
-     *   - ReflectionUnity.gen.cpp        — #includes every .generated.cpp in the project.
-     *   - Game/Scripts/Definitions/GlobalDefs.d.luau — Luau type definitions.
-     */
+    
     class FCodeGenerator
     {
     public:

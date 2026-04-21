@@ -17,8 +17,7 @@ namespace Lumina
     /**
      * Transient component that exists on a scratch entity only while the world
      * editor's terrain edit mode is active. It carries the live brush cursor
-     * state consumed by the async sculpt task each tick. Not serialized — the
-     * editor adds and removes it as the user enters / exits the mode.
+     * state consumed by the async sculpt task each tick.
      */
     REFLECT(Component, Transient)
     struct RUNTIME_API STerrainBrushComponent
@@ -37,7 +36,7 @@ namespace Lumina
         PROPERTY(Editable, Category = "Brush", ClampMin = 0.0f)
         float Strength = 1.0f;
 
-        /** Soft edge falloff — 0 gives a hard disk, 1 a full cosine taper. */
+        /** Soft edge falloff, 0 gives a hard disk, 1 a full cosine taper. */
         PROPERTY(Editable, Category = "Brush", ClampMin = 0.0f, ClampMax = 1.0f)
         float Falloff = 0.5f;
 
@@ -52,7 +51,7 @@ namespace Lumina
         /** World-space brush center raycast from the viewport cursor each frame. */
         glm::vec3 WorldPosition = glm::vec3(0.0f);
 
-        /** True while the mouse button is held — consumed by the sculpt task. */
+        /** True while the mouse button is held, consumed by the sculpt task. */
         bool bStrokeActive = false;
 
         /** True when WorldPosition is a valid terrain hit this frame. */

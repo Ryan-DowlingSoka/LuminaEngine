@@ -99,7 +99,7 @@ namespace Lumina
         /** Descriptors issued via AllocDescriptor. Tracked so destructors run at graph teardown. */
         TVector<FRGPassDescriptor*>     Descriptors;
 
-        /** Compiled batches — runs of consecutive same-queue passes. */
+        /** Compiled batches, runs of consecutive same-queue passes. */
         TVector<FRGBatch>               Batches;
     };
 }

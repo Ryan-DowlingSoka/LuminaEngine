@@ -144,7 +144,7 @@ namespace Lumina
     
         /**
          * Returns the property with the given name, cast to the specified property type.
-         * No type safety check is performed — caller must ensure the cast is valid.
+         * No type safety check is performed, caller must ensure the cast is valid.
          */
         template<typename PropertyType>
         PropertyType* GetProperty(const FName& Name)

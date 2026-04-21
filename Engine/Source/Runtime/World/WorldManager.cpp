@@ -102,7 +102,7 @@ namespace Lumina
             }
         }
 
-        // Not registered — tear down anyway so the caller's expectations hold.
+        // Not registered, tear down anyway so the caller's expectations hold.
         World->TeardownWorld();
     }
 

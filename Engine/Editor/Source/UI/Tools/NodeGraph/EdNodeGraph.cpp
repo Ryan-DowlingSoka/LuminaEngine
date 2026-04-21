@@ -79,10 +79,7 @@ namespace Lumina
     void CEdNodeGraph::PostLoad()
     {
         Super::PostLoad();
-
-        // Pins are not serialized — they're reconstructed by each node's BuildNode() during AddNode().
-        // So after load we move the deserialized Nodes and Connections aside, re-add the nodes (which
-        // rebuilds pin IDs via HashPinID), then walk the saved uint16 pin-ID pair list to reconnect.
+        
         TVector<TObjectPtr<CEdGraphNode>> SavedNodes = Move(Nodes);
         TVector<uint16> SavedConnections = Move(Connections);
         Nodes.clear();

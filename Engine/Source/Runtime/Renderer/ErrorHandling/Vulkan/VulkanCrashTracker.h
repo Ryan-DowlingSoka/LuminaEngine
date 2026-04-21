@@ -2,6 +2,7 @@
 
 #include <volk/volk.h>
 #include "VkBootstrap.h"
+#if WITH_AFTERMATH
 // Aftermath's decoding header exposes its SPIR-V helpers only when VULKAN_H_ is defined.
 // volk includes vulkan_core.h directly (not vulkan.h), so VULKAN_H_ is not set - declare it
 // manually so GFSDK_Aftermath_GetShaderHashSpirv and friends are visible.
@@ -9,6 +10,7 @@
 #define VULKAN_H_ 1
 #endif
 #include <NvidiaAftermath/GFSDK_Aftermath_GpuCrashDumpDecoding.h>
+#endif
 #include "Containers/Name.h"
 #include "Renderer/ErrorHandling/CrashTracker.h"
 
@@ -41,11 +43,13 @@ namespace Lumina::RHI
 
         const FString& GetCrashDumpDirectory() const { return CrashDumpDirectory; }
 
+        #if WITH_AFTERMATH
         // Decoder lookup handlers (called from static callback shims)
         void OnShaderDebugInfoLookup(const GFSDK_Aftermath_ShaderDebugInfoIdentifier& Identifier, PFN_GFSDK_Aftermath_SetData SetShaderDebugInfo) const;
         void OnShaderLookup(const GFSDK_Aftermath_ShaderBinaryHash& ShaderHash, PFN_GFSDK_Aftermath_SetData SetShaderBinary) const;
         void OnShaderSourceDebugInfoLookup(const GFSDK_Aftermath_ShaderDebugName& DebugName, PFN_GFSDK_Aftermath_SetData SetShaderBinary) const;
-
+        #endif
+        
     private:
 
         struct FRegisteredShader

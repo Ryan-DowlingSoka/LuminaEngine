@@ -64,7 +64,7 @@ namespace Lumina
 
         
         
-        /** Material slots for this mesh — one entry per geometry surface. */
+        /** Material slots for this mesh, one entry per geometry surface. */
         PROPERTY(Editable, Category = "Materials")
         TVector<TObjectPtr<CMaterialInterface>> Materials;
 

@@ -547,7 +547,7 @@ namespace Lumina
         {
             // Geometric, power-of-2 chunk sizing. Once we've ever needed N bytes, future chunks
             // round up to the next pow2 >= max(N, DefaultChunkSize, LargestSeen). This dramatically
-            // increases pool reuse — most subsequent allocations hit a cached chunk instead of
+            // increases pool reuse, most subsequent allocations hit a cached chunk instead of
             // calling vmaCreateBuffer at all.
             uint64 Target = std::max<uint64>(Size, DefaultChunkSize);
             Target = std::max<uint64>(Target, LargestChunkSize);
@@ -559,7 +559,7 @@ namespace Lumina
                 return false;
             }
 
-            // Evict idle chunks that are smaller than half the new target — they'll never be reused
+            // Evict idle chunks that are smaller than half the new target, they'll never be reused
             // now that callers are demanding bigger buffers, and they're just consuming pool slots
             // and host-visible memory budget.
             const uint64 EvictBelow = SizeToAllocate / 2;

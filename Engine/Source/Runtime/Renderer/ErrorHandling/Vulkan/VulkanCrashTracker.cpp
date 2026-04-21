@@ -2,16 +2,19 @@
 #include "VulkanCrashTracker.h"
 #include <fstream>
 #include <volk/volk.h>
-#include <NvidiaAftermath/GFSDK_Aftermath_GpuCrashDump.h>
-#include "Log/Log.h"
+#if WITH_AFTERMATH
 #include "NvidiaAftermath/GFSDK_Aftermath.h"
 #include "NvidiaAftermath/GFSDK_Aftermath_GpuCrashDumpDecoding.h"
+#include <NvidiaAftermath/GFSDK_Aftermath_GpuCrashDump.h>
+#endif
+#include "Log/Log.h"
 #include "Paths/Paths.h"
 #include "Platform/Filesystem/FileHelper.h"
 #include "Platform/Process/PlatformProcess.h"
 
 namespace Lumina::RHI
 {
+#if WITH_AFTERMATH
     static FString AftermathErrorMessage(GFSDK_Aftermath_Result Result)
     {
         switch (Result)
@@ -121,6 +124,7 @@ namespace Lumina::RHI
         Hash::HashCombine(Hash, Id.id[1]);
         return static_cast<uint64>(Hash);
     }
+#endif // WITH_AFTERMATH
 
     FVulkanCrashTracker::FVulkanCrashTracker()
     {
@@ -236,6 +240,7 @@ namespace Lumina::RHI
 
     void FVulkanCrashTracker::GPUCrashDumpCallback(const void* GPUCrashDump, uint32 CrashDumpSize)
     {
+        #if WITH_AFTERMATH
         LOG_ERROR("Aftermath: GPU crash dump received ({} bytes) - decoding...", CrashDumpSize);
 
         auto Now  = std::chrono::system_clock::now();
@@ -301,10 +306,12 @@ namespace Lumina::RHI
         }
 
         GFSDK_Aftermath_GpuCrashDump_DestroyDecoder(Decoder);
+        #endif
     }
 
     void FVulkanCrashTracker::OnShaderDebugInfo(const void* ShaderDebugInfo, const uint32 ShaderDebugInfoSize)
     {
+        #if WITH_AFTERMATH
         GFSDK_Aftermath_ShaderDebugInfoIdentifier Identifier = {};
         AFTERMATH_CHECK_ERROR(GFSDK_Aftermath_GetShaderDebugInfoIdentifier(GFSDK_Aftermath_Version_API, ShaderDebugInfo, ShaderDebugInfoSize, &Identifier));
 
@@ -322,6 +329,7 @@ namespace Lumina::RHI
         {
             F.write((const char*)ShaderDebugInfo, ShaderDebugInfoSize);
         }
+        #endif
     }
 
     void FVulkanCrashTracker::RegisterShader(const TVector<uint32>& SPIRV, const FString& Name)
@@ -381,6 +389,8 @@ namespace Lumina::RHI
         #endif
     }
 
+#if WITH_AFTERMATH
+
     void FVulkanCrashTracker::OnShaderDebugInfoLookup(const GFSDK_Aftermath_ShaderDebugInfoIdentifier& Identifier, PFN_GFSDK_Aftermath_SetData SetShaderDebugInfo) const
     {
         FReadScopeLock Lock(ShaderDebugInfoMutex);
@@ -430,6 +440,7 @@ namespace Lumina::RHI
         // We don't strip debug info; the full binary is its own source debug data.
         SetShaderBinary(ShaderIt->second.Binary.data(), static_cast<uint32>(ShaderIt->second.Binary.size()));
     }
+#endif
 
     const void* FVulkanCrashTracker::StoreMarker(const char* MarkerName)
     {

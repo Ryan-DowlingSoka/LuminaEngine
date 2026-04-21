@@ -37,10 +37,7 @@ namespace Lumina
         UpdateFunc += "{\n";
         UpdateFunc += UpdateChunks;
         UpdateFunc += "}\n";
-
-        // Replace every occurrence, not just the first — otherwise a stray mention
-        // of the token (e.g. in a comment) swallows the replacement and the real
-        // declaration slot survives into the Slang compile and fails to parse.
+        
         const size_t SpawnTokenLen  = strlen(SpawnToken);
         const size_t UpdateTokenLen = strlen(UpdateToken);
 

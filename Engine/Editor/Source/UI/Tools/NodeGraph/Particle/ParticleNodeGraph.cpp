@@ -106,9 +106,7 @@ namespace Lumina
             return;
         }
 
-        // Emit the output node once per context. Each call walks its inputs, which
-        // triggers EnsureEmitted on upstream nodes — so any node referenced from
-        // both halves of the graph emits the right variable in each scope exactly once.
+
         Compiler.SetContext(EParticleContext::Spawn);
         OutputNode->GenerateDefinition(Compiler);
 

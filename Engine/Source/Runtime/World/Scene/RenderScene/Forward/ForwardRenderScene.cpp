@@ -32,8 +32,6 @@
 
 namespace Lumina
 {
-    static TConsoleVar CVarSelectionThickness("r.SelectionThickness", 5, "Changes thickness of entity selection.");
-
     FForwardRenderScene::FForwardRenderScene(CWorld* InWorld)
         : World(InWorld)
         , LightData()
@@ -151,7 +149,6 @@ namespace Lumina
         ParticleRenderPass(RenderGraph);
         BillboardPass(RenderGraph);
         ToneMappingPass(RenderGraph);
-        DebugDrawPass(RenderGraph);
     }
     
     void FForwardRenderScene::SwapchainResized(glm::vec2 NewSize)
@@ -1777,7 +1774,12 @@ namespace Lumina
                 CmdList.SetComputeState(State);
 
                 const uint32 MeshletGroupsX = (MaxMeshletsPerInstance + 63) / 64;
-                CmdList.Dispatch(MeshletGroupsX, Num, 1);
+                // Vulkan caps groupCountY at 65535, so fold overflow into Z.
+                // Shader reconstructs InstanceID = GroupID.y + GroupID.z * 65535.
+                constexpr uint32 MaxDispatchY = 65535;
+                const uint32 DispatchY = Num < MaxDispatchY ? Num : MaxDispatchY;
+                const uint32 DispatchZ = (Num + MaxDispatchY - 1) / MaxDispatchY;
+                CmdList.Dispatch(MeshletGroupsX, DispatchY, DispatchZ);
             }
 
             // Per-cascade meshlet cull. Skipped when no sun is active.
@@ -1799,7 +1801,10 @@ namespace Lumina
                 CmdList.SetComputeState(State);
 
                 const uint32 MeshletGroupsX = (MaxMeshletsPerInstance + 63) / 64;
-                CmdList.Dispatch(MeshletGroupsX, Num, 1);
+                constexpr uint32 MaxDispatchY = 65535;
+                const uint32 DispatchY = Num < MaxDispatchY ? Num : MaxDispatchY;
+                const uint32 DispatchZ = (Num + MaxDispatchY - 1) / MaxDispatchY;
+                CmdList.Dispatch(MeshletGroupsX, DispatchY, DispatchZ);
             }
         });
     }
@@ -3531,80 +3536,6 @@ namespace Lumina
         });
     }
 
-    void FForwardRenderScene::SelectionPass(FRenderGraph& RenderGraph)
-    {
-        if (World->GetSelectedEntities().empty())
-        {
-            return;
-        }
-        FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, "Selection Post Process Pass", Descriptor, [&](ICommandList& CmdList)
-        {
-            LUMINA_PROFILE_SECTION_COLORED("Selection Post Process Pass", tracy::Color::Red2);
-            
-            FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-            FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("SelectionPostProcess.slang");
-            if (!VertexShader || !PixelShader)
-            {
-                return;
-            }
-            
-            FRenderPassDesc::FAttachment Attachment; Attachment
-                .SetImage(GetNamedImage(ENamedImage::HDR))
-                .SetLoadOp(ERenderLoadOp::Load);
-        
-            FRenderPassDesc RenderPass; RenderPass
-                .AddColorAttachment(Attachment)
-                .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
-            
-            FRasterState RasterState;
-            RasterState.SetCullNone();
-            
-            FDepthStencilState DepthState;
-            DepthState.DisableDepthTest();
-            DepthState.DisableDepthWrite();
-            
-            FRenderState RenderState;
-            RenderState.SetRasterState(RasterState);
-            RenderState.SetDepthStencilState(DepthState);
-            
-            FGraphicsPipelineDesc Desc;
-            Desc.SetDebugName("Selection Post Process Pass");
-            Desc.SetRenderState(RenderState);
-            Desc.AddBindingLayout(SceneBindingLayout);
-            Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-            Desc.SetVertexShader(VertexShader);
-            Desc.SetPixelShader(PixelShader);
-        
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-        
-            FGraphicsState GraphicsState;
-            GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.AddBindingSet(SceneBindingSet);
-            GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            GraphicsState.SetRenderPass(RenderPass);               
-            GraphicsState.SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)));
-        
-            CmdList.SetGraphicsState(GraphicsState);
-
-            auto Selections = World->GetSelectedEntities();
-            
-            uint32 Push[32];
-            Push[0] = PackColor(glm::vec4(255, 0, 0, 255));
-            Push[1] = CVarSelectionThickness.GetValue();
-            Push[2] = glm::min(29u, (uint32)Selections.size());
-            uint32 Start = 3;
-            
-            for (int i = 0; std::cmp_less(i, Push[2]); ++i)
-            {
-                Push[Start++] = entt::to_integral(Selections[i]);
-            }
-
-            CmdList.SetPushConstants(Push, sizeof(Push));
-            CmdList.Draw(3, 1, 0, 0); 
-        });
-    }
-
     void FForwardRenderScene::ToneMappingPass(FRenderGraph& RenderGraph)
     {
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
@@ -3665,72 +3596,6 @@ namespace Lumina
             CmdList.SetPushConstants(&PC, sizeof(glm::vec2));
             CmdList.Draw(3, 1, 0, 0); 
         });
-    }
-
-    void FForwardRenderScene::DebugDrawPass(FRenderGraph& RenderGraph)
-    {
-#if 0
-        if (RenderSettings.Flags == ERenderSceneDebugFlags::None)
-        {
-            return;
-        }
-        
-        FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, "Debug Draw Pass", Descriptor, [&](ICommandList& CmdList)
-        {
-            LUMINA_PROFILE_SECTION_COLORED("Debug Draw Pass", tracy::Color::Red2);
-        
-            FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-            FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("Debug.slang");
-            if (!VertexShader || !PixelShader)
-            {
-                return;
-            }
-        
-            FRenderPassDesc::FAttachment Attachment; Attachment
-                .SetLoadOp(ERenderLoadOp::Load)
-                .SetImage(GetRenderTarget());
-        
-            FRenderPassDesc RenderPass; RenderPass
-                .AddColorAttachment(Attachment)
-                .SetRenderArea(GetRenderTarget()->GetExtent());
-        
-        
-            FRasterState RasterState;
-            RasterState.SetCullNone();
-        
-            FDepthStencilState DepthState;
-            DepthState.DisableDepthTest();
-            DepthState.DisableDepthWrite();
-        
-            FRenderState RenderState;
-            RenderState.SetRasterState(RasterState);
-            RenderState.SetDepthStencilState(DepthState);
-        
-            FGraphicsPipelineDesc Desc;
-            Desc.SetDebugName("Debug Draw Pass");
-            Desc.SetRenderState(RenderState);
-            Desc.AddBindingLayout(SceneBindingLayout);
-            Desc.AddBindingLayout(DebugPassLayout);
-            Desc.SetVertexShader(VertexShader);
-            Desc.SetPixelShader(PixelShader);
-        
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-        
-            FGraphicsState GraphicsState;
-            GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.AddBindingSet(BindingSet);
-            GraphicsState.AddBindingSet(DebugPassSet);
-            GraphicsState.SetRenderPass(RenderPass);               
-            GraphicsState.SetViewportState(MakeViewportStateFromImage(GetRenderTarget()));
-        
-            CmdList.SetGraphicsState(GraphicsState);
-        
-            uint32 Mode = static_cast<uint32>(RenderSettings.Flags);
-            CmdList.SetPushConstants(&Mode, sizeof(uint32));
-            CmdList.Draw(3, 1, 0, 0); 
-        });
-#endif
     }
     
     void FForwardRenderScene::InitBuffers()

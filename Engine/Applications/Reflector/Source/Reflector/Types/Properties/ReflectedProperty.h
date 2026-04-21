@@ -17,21 +17,7 @@ namespace Lumina
 {
     /**
      * Base for every reflected property kind (numeric, string, struct, object, array, etc.).
-     *
-     * Subclass contract — override these to add a new property type:
-     *   - GetPropertyParamType()  : the FXxxPropertyParams struct name emitted into the .cpp
-     *   - GetTypeName()           : friendly display name (used for logs / Lua fallback)
-     *   - GetLuaType()            : Luau type string (returned when emitting the .d.luau)
-     *   - AppendDefinition(...)   : writes the FXxxPropertyParams initializer
-     *
-     * Optional overrides for property kinds that need accessor wrappers or cross-module
-     * construct_* forward declarations:
-     *   - HasAccessors / DeclareAccessors / DefineAccessors
-     *   - CanDeclareCrossModuleReferences / DeclareCrossModuleReference
-     *
-     * The base class handles Getter/Setter wrappers driven by metadata, so most simple
-     * property types only need to implement the four required hooks above.
-     */
+     * */
     class FReflectedProperty : public IStructReflectable
     {
     public:

@@ -164,9 +164,7 @@ namespace Lumina
         void OITResolvePass(FRenderGraph& RenderGraph);
         void EnvironmentPass(FRenderGraph& RenderGraph);
         void BatchedLineDraw(FRenderGraph& RenderGraph);
-        void SelectionPass(FRenderGraph& RenderGraph);
         void ToneMappingPass(FRenderGraph& RenderGraph);
-        void DebugDrawPass(FRenderGraph& RenderGraph);
         //~ End Render Passes
         
         void CompileDrawCommands(FRenderGraph& RenderGraph);

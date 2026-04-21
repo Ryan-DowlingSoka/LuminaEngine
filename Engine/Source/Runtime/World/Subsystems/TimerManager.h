@@ -9,7 +9,7 @@
 namespace Lumina
 {
     /**
-     * Opaque handle returned by FTimerManager::SetTimer. Safe to keep across frames —
+     * Opaque handle returned by FTimerManager::SetTimer. Safe to keep across frames,
      * the underlying entt::entity is generational, so a stale handle will report invalid
      * through FTimerManager::IsTimerActive even if the slot is later recycled.
      */
