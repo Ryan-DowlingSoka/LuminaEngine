@@ -1392,10 +1392,9 @@ namespace Lumina
         // ShadowNear is clamped above the camera near so the log term does
         // not bunch the first couple of splits into a tiny sliver.
         constexpr float CascadeSplitLambda  = 0.75f;
-        constexpr float ShadowMaxDistance   = 300.0f;
         constexpr float ShadowMinDistance   = 1.0f;
 
-        const float ShadowFar  = glm::min(FarClip, ShadowMaxDistance);
+        const float ShadowFar  = glm::min(FarClip, RenderSettings.ShadowMaxDistance);
         const float ShadowNear = glm::max(NearClip, ShadowMinDistance);
         const float ClipRange  = ShadowFar - ShadowNear;
         const float MinDepth   = ShadowNear;

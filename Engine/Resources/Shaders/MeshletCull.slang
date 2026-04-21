@@ -65,6 +65,64 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupI
             bVisible = FrustumContainsSphere(uSceneData.CullData.Frustum, WorldCenter, WorldRadius);
         }
 
+        // Back-face cone cull. ConeCutoff == 1.0 signals the meshlet's triangle
+        // normals span >180 deg (degenerate cone), in which case the test can't
+        // prove back-facing and we skip it. The rearranged form avoids a
+        // normalize: dot(normalize(apex - cam), axis) >= cutoff  <=>
+        // dot(apex - cam, axis) >= cutoff * length(apex - cam).
+        if (bVisible && Bounds.ConeCutoff < 1.0)
+        {
+            float3 WorldApex  = mul(Model, float4(Bounds.ConeApex, 1.0)).xyz;
+            float3 WorldAxis  = normalize(mul((float3x3)Model, Bounds.ConeAxis));
+            float3 ApexToCam  = WorldApex - GetCameraPosition();
+            float  ApexToCamLen = length(ApexToCam);
+
+            if (dot(ApexToCam, WorldAxis) >= Bounds.ConeCutoff * ApexToCamLen)
+            {
+                bVisible = false;
+            }
+        }
+
+        // Micro-poly rejection. Project the meshlet's bounding sphere to the
+        // screen and reject if its AABB contains no pixel-center sample point
+        // in either axis. D3D/Vulkan samples are at (n + 0.5, n + 0.5) for
+        // integer n; for an AABB [MinPx, MaxPx] to cover a sample its range
+        // must contain some n + 0.5, i.e. there must exist integer n in
+        // [ceil(MinPx - 0.5), floor(MaxPx - 0.5)]. That interval is empty iff
+        // floor(MinPx - 0.5) == floor(MaxPx - 0.5). If either axis is empty
+        // the meshlet lands between two pixel grids and never rasterizes.
+        //
+        // In pathologically geometry-dense scenes, the majority of meshlets
+        // project subpixel and get rejected here, saving a whole draw slot
+        // and the PS warp the rasterizer would otherwise spawn for zero
+        // coverage.
+        if (bVisible)
+        {
+            float3 ViewCenter = mul(uSceneData.CullData.View, float4(WorldCenter, 1.0)).xyz;
+            float4 ClipAABB;
+            if (ProjectSphereClip(ViewCenter, WorldRadius,
+                                  uSceneData.CullData.zNear,
+                                  uSceneData.CullData.P00,
+                                  uSceneData.CullData.P11,
+                                  ClipAABB))
+            {
+                float2 ScreenSize = float2(uSceneData.ScreenSize.xy);
+                float2 MinPx = (ClipAABB.xy * 0.5 + 0.5) * ScreenSize;
+                float2 MaxPx = (ClipAABB.zw * 0.5 + 0.5) * ScreenSize;
+
+                int2 MinI = int2(floor(MinPx - 0.5));
+                int2 MaxI = int2(floor(MaxPx - 0.5));
+
+                if (MinI.x == MaxI.x || MinI.y == MaxI.y)
+                {
+                    bVisible = false;
+                }
+            }
+            // ProjectSphereClip returning false means the sphere straddles
+            // the near plane; leave bVisible=true so we don't wrongly cull
+            // geometry the camera is inside.
+        }
+
         if (bVisible && uSceneData.CullData.bOcclusionCull != 0)
         {
             if (IsHiZOccluded(WorldCenter, WorldRadius))

@@ -3,6 +3,21 @@
 
 // Per-cascade meshlet cull for directional CSM. Mirrors MeshletCull but tests
 // each meshlet against every cascade frustum and emits per-cascade slices.
+//
+// Culls applied (cheap-to-expensive):
+//   1. Distance from camera (pre-fetch, 32B cull block only).
+//   2. Back-face cone cull against the sun. The CSM pipeline uses
+//      SetCullFront(), so only back-faces (relative to the sun) reach the
+//      rasterizer — a meshlet whose cone is entirely front-facing to the sun
+//      has all triangles front-face-culled at raster and produces no output.
+//      This fires ONCE per meshlet (the sun direction is cascade-invariant),
+//      and short-circuits every cascade at once when it hits.
+//   3. Per-cascade frustum.
+//
+// Note: Per-cascade micro-poly rejection is intentionally omitted. Meshes are
+// already binned across cascades by distance on the CPU side, so the effective
+// pixel footprint in each cascade is similar to the main view's. The cone cull
+// above (fires once across all cascades) is where the real savings come from.
 
 #define LOCAL_SIZE_X 64
 
@@ -58,6 +73,29 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupI
     float MaxScale = sqrt(max(SqScaleX, max(SqScaleY, SqScaleZ)));
     float WorldRadius = Bounds.Radius * MaxScale;
 
+    // Back-face cone cull against the sun. The CSM pipeline uses SetCullFront
+    // (standard anti-acne / peter-panning trick: render only back-faces from
+    // the light's POV so receiver depth comparisons happen against the
+    // occluder's far side). That means FRONT-facing meshlets never reach the
+    // depth buffer — we can drop them here and save a full draw slot.
+    //
+    // Convention: GetSunDirection() points from the surface TOWARD the sun
+    // (same direction Light.Direction uses for N.L in the lit pass). A
+    // triangle is front-facing to the sun iff dot(Normal, SunDir) > 0. For
+    // the whole cone to be front-facing, the worst-case normal (at angle
+    // acos(cutoff) from the axis) must also satisfy that, which gives:
+    //     dot(axis, SunDir) >= cutoff   =>   entire cone lit => cull.
+    // One-shot across all cascades (sun direction is cascade-invariant).
+    if (!bSkinned && !bNoCull && Bounds.ConeCutoff < 1.0)
+    {
+        float3 WorldAxis = normalize(mul((float3x3)Model, Bounds.ConeAxis));
+        float3 SunDir    = GetSunDirection();
+        if (dot(SunDir, WorldAxis) >= Bounds.ConeCutoff)
+        {
+            return;
+        }
+    }
+
     uint DrawID   = Cull.DrawID;
     uint NumDraws = uSceneData.CullData.NumDraws;
 
@@ -70,6 +108,10 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupI
             bVisible = FrustumContainsSphere(uSceneData.CullData.CascadeFrustum[c], WorldCenter, WorldRadius);
         }
 
+        if (!bVisible)
+        {
+            continue;
+        }
 
         uint IndirectIndex = c * NumDraws + DrawID;
         uint OldCount;
