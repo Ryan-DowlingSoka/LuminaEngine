@@ -36,13 +36,14 @@ VSOutput VertexMain(
 {
 #if SHADOW_CSM
     // Meshlet-driven CSM. Out-of-range tri invocations emit NaN to discard.
-    FMeshletDraw Draw         = uMeshletDrawListCascade[InstanceIndex];
-    FGPUInstance InstanceData = GetInstanceDataByID(Draw.InstanceID);
-    float4x4     ModelMatrix  = InstanceData.ModelMatrix;
-    uint         ViewIndex    = (uint)PC.CascadeIndex;
+    FMeshletDraw       Draw        = uMeshletDrawListCascade[InstanceIndex];
+    FGPUInstanceCull   Cull        = GetInstanceCull(Draw.InstanceID);
+    FGPUInstanceRender Render      = GetInstanceRender(Draw.InstanceID);
+    float4x4           ModelMatrix = GetInstanceTransform(Draw.InstanceID);
+    uint               ViewIndex   = (uint)PC.CascadeIndex;
 
-    uint GlobalMeshletIdx = InstanceData.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
-    FMeshlet M            = InstanceData.MeshletHeader.Meshlets[GlobalMeshletIdx];
+    uint GlobalMeshletIdx = Cull.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
+    FMeshlet M            = Render.MeshletHeader.Meshlets[GlobalMeshletIdx];
 
     uint TriIdx = VertexIndex / 3u;
     uint Corner = VertexIndex % 3u;
@@ -56,45 +57,51 @@ VSOutput VertexMain(
         return Output;
     }
 
-    uint PackedTri    = InstanceData.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
+    uint PackedTri    = Render.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
     uint LocalVertIdx = (PackedTri >> (Corner * 8u)) & 0xFFu;
-    uint VertexIdx    = InstanceData.MeshletHeader.Vertices[M.VertexOffset + LocalVertIdx];
+    uint VertexIdx    = Render.MeshletHeader.Vertices[M.VertexOffset + LocalVertIdx];
 
-    FVertexData VertexData;
-    if (InstanceData.HasFlag(EInstanceFlags::Skinned))
+    // Shadow CSM: position-only, skip Normal/UV/Color unpack.
+    float3 LocalPos;
+    if (Cull.HasFlag(EInstanceFlags::Skinned))
     {
-        VertexData = LoadSkinnedVertexByIndex(InstanceData.VBAddress, VertexIdx, InstanceData.BoneOffset);
+        LocalPos = LoadSkinnedPositionByIndex(Render.VBAddress, VertexIdx, Render.BoneOffset);
     }
     else
     {
-        VertexData = LoadStaticVertexByIndex(InstanceData.VBAddress, VertexIdx);
+        LocalPos = LoadStaticPositionByIndex(Render.VBAddress, VertexIdx);
     }
 
-    float4 WorldPos = mul(ModelMatrix, float4(VertexData.Position, 1.0));
+    float4 WorldPos = mul(ModelMatrix, float4(LocalPos, 1.0));
     Output.Position = mul(GetShadowViewProjection(PC.ShadowDataIndex, ViewIndex), WorldPos);
     return Output;
 #else
-    FGPUInstance InstanceData = GetShadowInstanceData(InstanceIndex);
-    float4x4     ModelMatrix  = GetShadowModelMatrix(InstanceIndex);
+    // Spot/point shadow pass. Index path (not meshlet-driven) — pull through
+    // the per-instance shadow index buffer.
+    uint               InstanceID  = ShadowDrawIDToInstanceID(InstanceIndex);
+    FGPUInstanceCull   Cull        = GetInstanceCull(InstanceID);
+    FGPUInstanceRender Render      = GetInstanceRender(InstanceID);
+    float4x4           ModelMatrix = GetInstanceTransform(InstanceID);
 
-    FVertexData VertexData;
-    if (InstanceData.HasFlag(EInstanceFlags::Skinned))
+    // Spot/point shadow: position-only, skip Normal/UV/Color unpack.
+    float3 LocalPos;
+    if (Cull.HasFlag(EInstanceFlags::Skinned))
     {
-        VertexData = LoadSkinnedVertex(
-            InstanceData.VBAddress,
-            InstanceData.ShadowIBAddress,
+        LocalPos = LoadSkinnedPosition(
+            Render.VBAddress,
+            Render.ShadowIBAddress,
             VertexIndex,
-            InstanceData.BoneOffset);
+            Render.BoneOffset);
     }
     else
     {
-        VertexData = LoadStaticVertex(
-            InstanceData.VBAddress,
-            InstanceData.ShadowIBAddress,
+        LocalPos = LoadStaticPosition(
+            Render.VBAddress,
+            Render.ShadowIBAddress,
             VertexIndex);
     }
 
-    float4 WorldPos = mul(ModelMatrix, float4(VertexData.Position, 1.0));
+    float4 WorldPos = mul(ModelMatrix, float4(LocalPos, 1.0));
 
     VSOutput Output;
     Output.WorldPos = WorldPos.xyz;

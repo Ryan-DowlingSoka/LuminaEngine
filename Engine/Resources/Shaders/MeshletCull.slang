@@ -1,10 +1,7 @@
 #pragma once
 #include "Includes/Culling.slang"
 
-// Meshlet-level culling. Runs after MeshCull (which fills the legacy
-// instance-mapping and indirect buffers used by depth pre-pass, shadow passes,
-// etc.) and independently emits surviving *meshlets* into uMeshletDrawList,
-// incrementing InstanceCount on uIndirectDrawDataMeshlet.
+// Meshlet-level culling.
 //
 // Each meshlet's bind-pose bounding sphere is transformed to world space via
 // the instance's ModelMatrix and tested against the camera frustum + Hi-Z
@@ -26,33 +23,40 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupI
     if (InstanceID >= NumInstances)
         return;
 
-    FGPUInstance Inst = uInstanceData[InstanceID];
+    FGPUInstanceCull Cull = GetInstanceCull(InstanceID);
 
     // Per-surface meshlet range. Instances whose mesh had no meshlets built
     // (import failure, zero-triangle surface) will short-circuit here.
-    if (Inst.SurfaceMeshletCount == 0)
+    if (Cull.SurfaceMeshletCount == 0)
         return;
 
-    if (MeshletLocalIdx >= Inst.SurfaceMeshletCount)
+    if (MeshletLocalIdx >= Cull.SurfaceMeshletCount)
         return;
 
     bool bVisible = true;
-    bool bSkinned = Inst.HasFlag(EInstanceFlags::Skinned);
-    bool bNoCull  = Inst.HasFlag(EInstanceFlags::NoCull);
+    bool bSkinned = Cull.HasFlag(EInstanceFlags::Skinned);
+    bool bNoCull  = Cull.HasFlag(EInstanceFlags::NoCull);
 
     if (!bSkinned && !bNoCull)
     {
-        uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + MeshletLocalIdx;
-        FMeshletBounds Bounds = Inst.MeshletHeader.Bounds[GlobalMeshletIdx];
+        // MeshletHeader and the model matrix only matter when we're actually
+        // going to test the meshlet bounds; reading them behind the !bSkinned
+        // guard keeps the skinned fast path from touching the Render+Transform
+        // buffers at all.
+        FGPUInstanceRender Render = GetInstanceRender(InstanceID);
+        float4x4           Model  = GetInstanceTransform(InstanceID);
+
+        uint GlobalMeshletIdx = Cull.SurfaceMeshletOffset + MeshletLocalIdx;
+        FMeshletBounds Bounds = Render.MeshletHeader.Bounds[GlobalMeshletIdx];
 
         // Meshlet bounds live in mesh-local space; lift them into world space
         // through the instance transform. Radius scales by the largest column
         // magnitude so non-uniform scales stay conservative.
-        float3 WorldCenter = mul(Inst.ModelMatrix, float4(Bounds.Center, 1.0)).xyz;
+        float3 WorldCenter = mul(Model, float4(Bounds.Center, 1.0)).xyz;
 
-        float SqScaleX = dot(Inst.ModelMatrix[0].xyz, Inst.ModelMatrix[0].xyz);
-        float SqScaleY = dot(Inst.ModelMatrix[1].xyz, Inst.ModelMatrix[1].xyz);
-        float SqScaleZ = dot(Inst.ModelMatrix[2].xyz, Inst.ModelMatrix[2].xyz);
+        float SqScaleX = dot(Model[0].xyz, Model[0].xyz);
+        float SqScaleY = dot(Model[1].xyz, Model[1].xyz);
+        float SqScaleZ = dot(Model[2].xyz, Model[2].xyz);
         float MaxScale = sqrt(max(SqScaleX, max(SqScaleY, SqScaleZ)));
         float WorldRadius = Bounds.Radius * MaxScale;
 
@@ -72,7 +76,7 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupI
 
     if (bVisible)
     {
-        uint DrawID = Inst.DrawID;
+        uint DrawID = Cull.DrawID;
         uint OldCount;
         InterlockedAdd(uIndirectDrawDataMeshlet[DrawID].InstanceCount, 1, OldCount);
         uint Slot = uIndirectDrawDataMeshlet[DrawID].FirstInstance + OldCount;

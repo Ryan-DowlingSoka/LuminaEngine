@@ -16,11 +16,12 @@ struct VertexOutput
 [shader("vertex")]
 VertexOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_VulkanInstanceID)
 {
-    FMeshletDraw Draw         = uMeshletDrawList[MeshletSlot];
-    FGPUInstance InstanceData = GetInstanceDataByID(Draw.InstanceID);
+    FMeshletDraw       Draw   = uMeshletDrawList[MeshletSlot];
+    FGPUInstanceCull   Cull   = GetInstanceCull(Draw.InstanceID);
+    FGPUInstanceRender Render = GetInstanceRender(Draw.InstanceID);
 
-    uint GlobalMeshletIdx = InstanceData.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
-    FMeshlet M            = InstanceData.MeshletHeader.Meshlets[GlobalMeshletIdx];
+    uint GlobalMeshletIdx = Cull.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
+    FMeshlet M            = Render.MeshletHeader.Meshlets[GlobalMeshletIdx];
 
     uint TriIdx = VertexIndex / 3u;
     uint Corner = VertexIndex % 3u;
@@ -34,25 +35,26 @@ VertexOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: S
         return Output;
     }
 
-    uint PackedTri    = InstanceData.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
+    uint PackedTri    = Render.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
     uint LocalVertIdx = (PackedTri >> (Corner * 8u)) & 0xFFu;
-    uint VertexIdx    = InstanceData.MeshletHeader.Vertices[M.VertexOffset + LocalVertIdx];
+    uint VertexIdx    = Render.MeshletHeader.Vertices[M.VertexOffset + LocalVertIdx];
 
-    FVertexData VertexData;
-    if (InstanceData.HasFlag(EInstanceFlags::Skinned))
+    // Depth-only pass: skip Normal/UV/Color unpack, read position directly.
+    float3 LocalPos;
+    if (Cull.HasFlag(EInstanceFlags::Skinned))
     {
-        VertexData = LoadSkinnedVertexByIndex(InstanceData.VBAddress, VertexIdx, InstanceData.BoneOffset);
+        LocalPos = LoadSkinnedPositionByIndex(Render.VBAddress, VertexIdx, Render.BoneOffset);
     }
     else
     {
-        VertexData = LoadStaticVertexByIndex(InstanceData.VBAddress, VertexIdx);
+        LocalPos = LoadStaticPositionByIndex(Render.VBAddress, VertexIdx);
     }
 
-    float4x4 ModelMatrix = InstanceData.ModelMatrix;
+    float4x4 ModelMatrix = GetInstanceTransform(Draw.InstanceID);
     float4x4 View        = GetCameraView();
     float4x4 Projection  = GetCameraProjection();
 
-    float4 WorldPos = mul(ModelMatrix, float4(VertexData.Position, 1.0));
+    float4 WorldPos = mul(ModelMatrix, float4(LocalPos, 1.0));
     float4 ViewPos  = mul(View, WorldPos);
     Output.Position = mul(Projection, ViewPos);
     return Output;

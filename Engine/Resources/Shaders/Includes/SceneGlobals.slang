@@ -13,43 +13,45 @@ struct SkinnedVertexBuffer
 
 [[vk::binding(0, 0)]] ConstantBuffer<FSceneGlobalData>              uSceneData;
 [[vk::binding(1, 0)]] StructuredBuffer<FLightData>                  uLightData;
-[[vk::binding(2, 0)]] RWStructuredBuffer<FGPUInstance>              uInstanceData;
-[[vk::binding(3, 0)]] RWStructuredBuffer<uint>                      uMappingData;
-[[vk::binding(4, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectDrawData;
-[[vk::binding(5, 0)]] StructuredBuffer<float4x4>                    uBoneMatrices;
-[[vk::binding(6, 0)]] RWStructuredBuffer<FCluster>                  uClusters;
-[[vk::binding(7, 0)]] RWStructuredBuffer<FMaterialUniforms>         uMaterialUniforms;
-[[vk::binding(8, 0)]] RWStructuredBuffer<FBillboardInstance>        uBillboards;
+// Split per-instance descriptor. See Lumina::FGPUInstanceCull for the rationale:
+// shadow-cull + pixel shader only read this 32B block instead of the former 144B
+// monolithic FGPUInstance. Transform + render-pointer blocks live at 16/17.
+[[vk::binding(2, 0)]] RWStructuredBuffer<FGPUInstanceCull>          uInstanceCull;
+[[vk::binding(3, 0)]] StructuredBuffer<float4x4>                    uBoneMatrices;
+[[vk::binding(4, 0)]] RWStructuredBuffer<FCluster>                  uClusters;
+[[vk::binding(5, 0)]] RWStructuredBuffer<FMaterialUniforms>         uMaterialUniforms;
+[[vk::binding(6, 0)]] StructuredBuffer<FBillboardInstance>          uBillboards;
 
-[[vk::binding(9,  0)]] Sampler2DArray                               uShadowCascade;
-[[vk::binding(10, 0)]] Sampler2DArray                               uShadowAtlas;
-[[vk::binding(12, 0)]] Sampler2D                                    uDepthPyramid;
+[[vk::binding(7,  0)]] Sampler2DArray                               uShadowCascade;
+[[vk::binding(8, 0)]] Sampler2DArray                                uShadowAtlas;
+[[vk::binding(9, 0)]] Sampler2D                                     uDepthPyramid;
 
 // Parallel shadow-caster indirect/mapping buffers for point + spot lights.
-// Directional uses the per-cascade buffers below.
-[[vk::binding(16, 0)]] RWStructuredBuffer<uint>                     uMappingDataShadow;
-[[vk::binding(17, 0)]] RWStructuredBuffer<FDrawIndirectArguments>   uIndirectDrawDataShadow;
-
-// Per-cascade directional-shadow indirect/mapping buffers. Laid out cascade-major
-// so each cascade's FDrawIndirectArguments slice is contiguous and can be issued
-// with a single DrawIndirect + byte offset. Stride = CullData.NumDraws for the
-// indirect buffer, CullData.InstanceNum for the mapping buffer. FirstInstance in
-// each cascade's args is pre-adjusted so the shader does not need to add the
-// cascade offset at sample time.
-[[vk::binding(18, 0)]] RWStructuredBuffer<uint>                     uMappingDataCascade;
-[[vk::binding(19, 0)]] RWStructuredBuffer<FDrawIndirectArguments>   uIndirectDrawDataCascade;
+// Directional shadows are driven by the meshlet cascade buffers below.
+[[vk::binding(10, 0)]] RWStructuredBuffer<uint>                      uMappingDataShadow;
+[[vk::binding(11, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectDrawDataShadow;
 
 // Meshlet-driven camera-pass rendering. MeshletCull.slang atomically appends
 // surviving meshlets to uMeshletDrawList and increments InstanceCount in
 // uIndirectDrawDataMeshlet. The base vertex shader uses SV_InstanceID to look
 // up (InstanceID, MeshletLocalIndex) and pull vertices through the meshlet
 // header rather than the flat index buffer.
-[[vk::binding(20, 0)]] RWStructuredBuffer<FMeshletDraw>             uMeshletDrawList;
-[[vk::binding(21, 0)]] RWStructuredBuffer<FDrawIndirectArguments>   uIndirectDrawDataMeshlet;
+[[vk::binding(12, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawList;
+[[vk::binding(13, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectDrawDataMeshlet;
 
 // Per-cascade meshlet draw list + indirect for the CSM pass.
-[[vk::binding(22, 0)]] RWStructuredBuffer<FMeshletDraw>             uMeshletDrawListCascade;
-[[vk::binding(23, 0)]] RWStructuredBuffer<FDrawIndirectArguments>   uIndirectDrawDataMeshletCascade;
+[[vk::binding(14, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawListCascade;
+[[vk::binding(15, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectDrawDataMeshletCascade;
+
+// Per-instance transform (mat4). Split out of the descriptor so the pixel
+// shader — which never reads the transform — doesn't pull 64B of matrix per
+// quad, and shadow-cull doesn't touch it at all.
+[[vk::binding(16, 0)]] RWStructuredBuffer<FGPUInstanceTransform>     uInstanceTransform;
+
+// Per-instance vertex-pulling pointers + identity fields. Accessed by base/depth/
+// shadow vertex shaders and by BasePixelPass (for EntityID/MaterialIndex).
+// Shadow-cull doesn't read this buffer at all.
+[[vk::binding(17, 0)]] RWStructuredBuffer<FGPUInstanceRender>        uInstanceRender;
 
 // ---------------------------------------------------------------------------------
 //  Binding Set 1
@@ -97,6 +99,42 @@ FVertexData LoadSkinnedVertex(uint* VBO, uint* IBO, uint VertexID, uint BoneOffs
     Data.UV       = UnpackUV(V.UV);
     Data.Color    = UnpackColor(V.Color);
     return Data;
+}
+
+// Position-only fetch. DepthPrePass / ShadowMappingVert only consume
+// VertexData.Position, so avoid loading Normal/UV/Color from the vertex record
+// and skip the unpack calls entirely. Reading just the float3 keeps the VS off
+// the Unpack* ALU path that shows up hot in profiling.
+float3 LoadStaticPositionByIndex(uint* VBO, uint Index)
+{
+    return reinterpret<FVertex*>(VBO)[Index].Position;
+}
+
+float3 LoadSkinnedPositionByIndex(uint* VBO, uint Index, uint BoneOffset)
+{
+    FSkinnedVertex V = reinterpret<FSkinnedVertex*>(VBO)[Index];
+
+    uint4  JointIndices = UnpackUIntToUVec4(V.JointIndices);
+    float4 Weights      = unpack_u8u32(V.JointWeights) / float4(255.0);
+
+    float4x4 SkinMatrix =
+        uBoneMatrices[BoneOffset + JointIndices.x] * Weights.x +
+        uBoneMatrices[BoneOffset + JointIndices.y] * Weights.y +
+        uBoneMatrices[BoneOffset + JointIndices.z] * Weights.z +
+        uBoneMatrices[BoneOffset + JointIndices.w] * Weights.w;
+
+    return mul(SkinMatrix, float4(V.Position, 1.0)).xyz;
+}
+
+// IBO-driven position-only variants for the spot/point shadow path.
+float3 LoadStaticPosition(uint* VBO, uint* IBO, uint VertexID)
+{
+    return LoadStaticPositionByIndex(VBO, IBO[VertexID]);
+}
+
+float3 LoadSkinnedPosition(uint* VBO, uint* IBO, uint VertexID, uint BoneOffset)
+{
+    return LoadSkinnedPositionByIndex(VBO, IBO[VertexID], BoneOffset);
 }
 
 // Meshlet-driven vertex fetch. The meshlet path has already resolved the final
@@ -149,72 +187,21 @@ uint   GetMaterialTexture(uint MatIndex, uint Index) { return uMaterialUniforms[
 // ---------------------------------------------------------------------------------
 //  Instance Accessors
 // ---------------------------------------------------------------------------------
+//
+// Per-instance descriptor is split across three buffers (Cull / Transform /
+// Render). Each pass reads only the blocks it needs, so e.g. ShadowMeshCull
+// only pulls 32B/instance and BasePixelPass only pulls 64B/quad instead of the
+// former monolithic 144B FGPUInstance.
 
-uint DrawIDToInstanceID(uint ID)
-{
-    return uMappingData[ID];
-}
+FGPUInstanceCull      GetInstanceCull(uint InstanceID)      { return uInstanceCull[InstanceID];      }
+FGPUInstanceRender    GetInstanceRender(uint InstanceID)    { return uInstanceRender[InstanceID];    }
+float4x4              GetInstanceTransform(uint InstanceID) { return uInstanceTransform[InstanceID].ModelMatrix; }
 
-FGPUInstance GetInstanceData(uint Index)
-{
-    return uInstanceData[DrawIDToInstanceID(Index)];
-}
-
-// Meshlet-pass accessor: the vertex shader resolves the absolute instance
-// index directly from the meshlet draw list, bypassing the DrawID mapping.
-FGPUInstance GetInstanceDataByID(uint InstanceID)
-{
-    return uInstanceData[InstanceID];
-}
-
-float4x4 GetModelMatrix(uint Index)
-{
-    return uInstanceData[DrawIDToInstanceID(Index)].ModelMatrix;
-}
-
-float3 GetModelLocation(uint Index)
-{
-    return GetModelMatrix(Index)[3].xyz;
-}
-
-uint GetEntityID(uint Index)
-{
-    return uInstanceData[DrawIDToInstanceID(Index)].EntityID;
-}
-
-// Shadow-pass accessors. Shadow draws are indexed from a dedicated mapping
-// buffer populated by ShadowMeshCull.slang. The underlying instance buffer is
-// shared with the camera pass.
+// Shadow-pass accessor. Shadow draws are indexed from a dedicated mapping
+// buffer populated by ShadowMeshCull.slang.
 uint ShadowDrawIDToInstanceID(uint ID)
 {
     return uMappingDataShadow[ID];
-}
-
-FGPUInstance GetShadowInstanceData(uint Index)
-{
-    return uInstanceData[ShadowDrawIDToInstanceID(Index)];
-}
-
-float4x4 GetShadowModelMatrix(uint Index)
-{
-    return uInstanceData[ShadowDrawIDToInstanceID(Index)].ModelMatrix;
-}
-
-// Cascade-pass accessors. Each cascade's mapping slice is pre-offset by the
-// indirect args' FirstInstance, so callers just hand us the SV_InstanceID.
-uint CascadeDrawIDToInstanceID(uint ID)
-{
-    return uMappingDataCascade[ID];
-}
-
-FGPUInstance GetCascadeInstanceData(uint Index)
-{
-    return uInstanceData[CascadeDrawIDToInstanceID(Index)];
-}
-
-float4x4 GetCascadeModelMatrix(uint Index)
-{
-    return uInstanceData[CascadeDrawIDToInstanceID(Index)].ModelMatrix;
 }
 
 // ---------------------------------------------------------------------------------

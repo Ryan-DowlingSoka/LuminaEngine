@@ -1,25 +1,20 @@
 #pragma once
 #include "Includes/Culling.slang"
 
-// Shadow-caster culling. Unlike MeshCull.slang (which uses the camera frustum
-// and the camera depth pyramid) this pass accepts any caster that can
-// influence *any* shadow view in the scene, so that objects outside the
-// camera frustum still cast shadows into it.
+// Shadow-caster culling for point + spot lights. Accepts any caster that can
+// influence a shadow view even if it sits outside the camera frustum, so
+// off-screen geometry still casts shadows into the camera view. Surviving
+// casters are emitted into uIndirectDrawDataShadow / uMappingDataShadow.
 //
-// Emission is split by light type:
-//   - Directional: each cascade is tested independently against its own
-//     frustum, and surviving casters are emitted into that cascade's slice of
-//     uIndirectDrawDataCascade / uMappingDataCascade. A small caster that
-//     only touches cascade 0 pays no VPC cost on cascades 1 and 2 — the main
-//     win vs the previous single-frustum multiview path.
-//   - Point + spot: emitted into uIndirectDrawDataShadow as before.
+// Directional casters are handled exclusively by the meshlet cascade path
+// (CascadeMeshletCull.slang) — this pass intentionally skips them.
 //
-// Additional culls applied to both paths:
-//   - Distance: instances farther than ShadowMaxDistance from the camera are
+// Additional culls:
+//   - Distance: casters farther than ShadowMaxDistance from the camera are
 //     dropped.
-//   - Hi-Z occlusion: instances inside the camera frustum that are fully
+//   - Hi-Z occlusion: casters inside the camera frustum that are fully
 //     occluded in the camera's depth pyramid are dropped (they cannot cast
-//     visible shadows).
+//     visible shadows onto camera-visible geometry).
 
 #define LOCAL_SIZE 256
 
@@ -44,14 +39,17 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID)
     if (GID >= NumInstances)
         return;
 
-    FGPUInstance Instance = uInstanceData[GID];
+    // Shadow-cull's hot path reads only the 32B Cull block — no transform, no
+    // vertex-pulling pointers. This is the pass that benefits most from the
+    // split layout.
+    FGPUInstanceCull Cull = GetInstanceCull(GID);
 
     // Non-caster: never emit.
-    if (!Instance.HasFlag(EInstanceFlags::CastShadow))
+    if (!Cull.HasFlag(EInstanceFlags::CastShadow))
         return;
 
-    float3 Center = Instance.BoundsCenter;
-    float  Radius = Instance.BoundsRadius;
+    float3 Center = Cull.BoundsCenter;
+    float  Radius = Cull.BoundsRadius;
 
     // Distance cull: skip any caster too far from the camera to matter.
     float3 CamPos       = GetCameraPosition();
@@ -65,7 +63,7 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID)
     // to every emission path below.
     bool bOccluded = false;
     if (uSceneData.CullData.bShadowOcclusionCull != 0 &&
-        !Instance.HasFlag(EInstanceFlags::NoCull) &&
+        !Cull.HasFlag(EInstanceFlags::NoCull) &&
         FrustumContainsSphere(uSceneData.CullData.Frustum, Center, Radius))
     {
         bOccluded = IsHiZOccluded(Center, Radius);
@@ -74,28 +72,7 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID)
     if (bOccluded)
         return;
 
-    const uint BatchID  = uInstanceData[GID].DrawID;
-    const uint NumDraws = uSceneData.CullData.NumDraws;
-
-    // Directional: per-cascade emission. Each cascade has its own frustum and
-    // its own indirect/mapping slice, so small casters don't fan out to every
-    // cascade.
-    if (uSceneData.CullData.bHasDirectional != 0)
-    {
-        [unroll]
-        for (int c = 0; c < NUM_CASCADES; ++c)
-        {
-            if (!FrustumContainsSphere(uSceneData.CullData.CascadeFrustum[c], Center, Radius))
-                continue;
-
-            uint IndirectIndex = c * NumDraws + BatchID;
-
-            uint CascadeCount;
-            InterlockedAdd(uIndirectDrawDataCascade[IndirectIndex].InstanceCount, 1, CascadeCount);
-            uint MappingIndex = uIndirectDrawDataCascade[IndirectIndex].FirstInstance + CascadeCount;
-            uMappingDataCascade[MappingIndex] = GID;
-        }
-    }
+    const uint BatchID = Cull.DrawID;
 
     // Point + spot: emit into the shared shadow buffer if any shadow-casting
     // light's bounding volume contains the caster.

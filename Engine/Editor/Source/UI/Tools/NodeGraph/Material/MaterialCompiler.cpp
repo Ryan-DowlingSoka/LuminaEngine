@@ -574,21 +574,21 @@ namespace Lumina
 		switch (Type)
 		{
 		case ECustomPrimitiveDataType::Float:
-			ShaderChunks.append("float " + Node->GetNodeFullName() + " = InstanceData.CustomData.AsFloat;\n");
+			ShaderChunks.append("float " + Node->GetNodeFullName() + " = Cull.CustomData.AsFloat;\n");
 			break;
 		case ECustomPrimitiveDataType::Int:
-			ShaderChunks.append("int " + Node->GetNodeFullName() + " = InstanceData.CustomData.AsInt;\n");
+			ShaderChunks.append("int " + Node->GetNodeFullName() + " = Cull.CustomData.AsInt;\n");
 			break;
 		case ECustomPrimitiveDataType::UInt:
-			ShaderChunks.append("uint " + Node->GetNodeFullName() + " = InstanceData.CustomData.AsUInt;\n");
+			ShaderChunks.append("uint " + Node->GetNodeFullName() + " = Cull.CustomData.AsUInt;\n");
 			break;
 		case ECustomPrimitiveDataType::Float4:
-			ShaderChunks.append("float4 " + Node->GetNodeFullName() + " = InstanceData.CustomData.AsFloat4;\n");
+			ShaderChunks.append("float4 " + Node->GetNodeFullName() + " = Cull.CustomData.AsFloat4;\n");
 			Node->Output->SetInputType(EMaterialInputType::Float4);
 			Node->Output->SetComponentMask(EComponentMask::RGBA);
 			break;
 		case ECustomPrimitiveDataType::Bool:
-			ShaderChunks.append("bool " + Node->GetNodeFullName() + " = InstanceData.CustomData.AsBool;\n");
+			ShaderChunks.append("bool " + Node->GetNodeFullName() + " = Cull.CustomData.AsBool;\n");
 			break;
 		}
 	}

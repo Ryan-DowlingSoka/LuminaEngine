@@ -208,9 +208,9 @@ struct FMeshletBounds
     float  _Pad0;
 };
 
-// Mirror of Lumina::FMeshletHeaderGPU. One entry per mesh; FGPUInstance carries
-// a pointer to it so the cull pass and base VS can reach the four flat arrays
-// through a single indirection.
+// Mirror of Lumina::FMeshletHeaderGPU. One entry per mesh; FGPUInstanceRender
+// carries a pointer to it so the cull pass and base VS can reach the four flat
+// arrays through a single indirection.
 struct FMeshletHeader
 {
     FMeshlet*       Meshlets;
@@ -224,37 +224,38 @@ struct FMeshletHeader
 // its draw (per-draw StartInstanceLocation + atomic-append counter).
 struct FMeshletDraw
 {
-    uint InstanceID;         // Into uInstanceData
+    uint InstanceID;         // Into uInstanceCull / uInstanceRender / uInstanceTransform
     uint MeshletLocalIndex;  // Local offset inside instance's surface meshlet range
 };
 
-struct FGPUInstance
+// Per-instance transform. Lives in its own SSBO so culling shaders that only
+// need a few columns and the pixel shader (which doesn't touch the transform
+// at all) don't drag 64B into L2 per instance.
+struct FGPUInstanceTransform
 {
-    float4x4                ModelMatrix;
+    float4x4 ModelMatrix;
+};
+
+// 32B hot cull/identity block. Mirror of Lumina::FGPUInstanceCull. CustomData
+// sits in the pad slot next to the meshlet fields; BasePixelPass already reads
+// this block for the ReceiveShadow flag so CustomPrimitiveData-node materials
+// pay no extra cache bandwidth.
+struct FGPUInstanceCull
+{
     float4                  SphereBounds;
-
-    uint*                   VBAddress;
-    uint*                   IBAddress;
-
-    // Position-only shadow index stream. Shadow vertex pulling pulls through
-    // this pointer so each shadow draw issues fewer unique VS invocations.
-    uint*                   ShadowIBAddress;
-    uint                    EntityID;
     private uint            DrawIDAndFlags;
-
-    private uint            BoneOffsetAndMaterialIndex;
-    FCustomPrimitiveData    CustomData;
-
-    // Meshlet header pointer (zero when this instance skips meshlet culling,
-    // e.g. skinned meshes). SurfaceMeshletOffset/Count index the surface's
-    // meshlet slice inside the mesh's meshlet arrays.
-    FMeshletHeader*         MeshletHeader;
     uint                    SurfaceMeshletOffset;
     uint                    SurfaceMeshletCount;
+    FCustomPrimitiveData    CustomData;
 
     bool HasFlag(EInstanceFlags Flag)
     {
-        return HasAllFlags((uint)Flags, (uint)Flag);
+        // Test directly against the packed word — going through the `Flags`
+        // property pays a shift+mask to extract the high byte only to have
+        // HasAllFlags re-mask it. Folding the shift into the test constant
+        // collapses to a single `and` + `cmp` when `Flag` is a literal.
+        uint Mask = (uint)Flag << 24;
+        return (DrawIDAndFlags & Mask) == Mask;
     }
 
     property uint DrawID
@@ -269,6 +270,22 @@ struct FGPUInstance
         set { DrawIDAndFlags = (DrawIDAndFlags & 0x00FFFFFFu) | ((newValue & 0xFFu) << 24); }
     }
 
+    property float3 BoundsCenter { get { return SphereBounds.xyz; } }
+    property float  BoundsRadius { get { return SphereBounds.w; } }
+};
+
+// 32B render/vertex-pulling block. Mirror of Lumina::FGPUInstanceRender. Not
+// touched by shadow-cull. MeshletHeader is null when the instance skips the
+// meshlet path (skinned meshes, legacy assets without meshlets).
+struct FGPUInstanceRender
+{
+    uint*                   VBAddress;
+    uint*                   ShadowIBAddress;
+    FMeshletHeader*         MeshletHeader;
+
+    private uint            BoneOffsetAndMaterialIndex;
+    uint                    EntityID;
+
     property uint BoneOffset
     {
         get { return BoneOffsetAndMaterialIndex & 0x0000FFFFu; }
@@ -280,9 +297,6 @@ struct FGPUInstance
         get { return (BoneOffsetAndMaterialIndex >> 16) & 0x0000FFFFu; }
         set { BoneOffsetAndMaterialIndex = (BoneOffsetAndMaterialIndex & 0x0000FFFFu) | ((newValue & 0x0000FFFFu) << 16); }
     }
-
-    property float3 BoundsCenter { get { return SphereBounds.xyz; } }
-    property float BoundsRadius { get { return SphereBounds.w; } }
 };
 
 struct FLightShadow
@@ -408,13 +422,14 @@ struct FSceneGlobalData
 // ---------------------------------------------------------------------------------
 //  Functions
 
+// Unpacks a signed 8-8-8-8 SNORM normal. `unpackSnorm4x8` maps to
+// GLSL.std.450 UnpackSnorm4x8 — a single hardware op that returns float4
+// through the FP pipe, off the integer shift/sign-extend path the old 10-bit
+// layout required. W is unused. Result is near-unit (SNORM8 quantization is
+// <0.8% per component) and every consumer renormalizes downstream.
 float3 UnpackNormal(uint Packed)
 {
-    float3 Normal;
-    Normal.x = float(int(Packed << 22) >> 22) / 511.0;
-    Normal.y = float(int(Packed << 12) >> 22) / 511.0;
-    Normal.z = float(int(Packed << 2)  >> 22) / 511.0;
-    return normalize(Normal);
+    return unpackSnorm4x8ToFloat(Packed).xyz;
 }
 
 float2 UnpackUV(uint Packed)

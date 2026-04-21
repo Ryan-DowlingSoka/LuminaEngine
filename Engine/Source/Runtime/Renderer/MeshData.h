@@ -63,9 +63,9 @@ namespace Lumina
     };
 
     // GPU-side descriptor for one mesh's meshlet data. Uploaded once per mesh
-    // into a tiny per-mesh SSBO; FGPUInstance carries the buffer-device address
-    // so the meshlet cull pass and base VS can reach all four flat arrays with
-    // a single pointer indirection.
+    // into a tiny per-mesh SSBO; FGPUInstanceRender carries the buffer-device
+    // address so the meshlet cull pass and base VS can reach all four flat
+    // arrays with a single pointer indirection.
     struct alignas(16) FMeshletHeaderGPU
     {
         uint64 MeshletsAddress;           // FMeshlet*
@@ -107,7 +107,7 @@ namespace Lumina
             FRHIBufferRef ShadowIndexBuffer;
 
             // Meshlet data uploaded once per mesh. MeshletHeader stores BDAs to
-            // the four arrays so FGPUInstance can reach them with one pointer.
+            // the four arrays so FGPUInstanceRender can reach them with one pointer.
             FRHIBufferRef MeshletBuffer;          // TVector<FMeshlet>
             FRHIBufferRef MeshletBoundsBuffer;    // TVector<FMeshletBounds>
             FRHIBufferRef MeshletVertexBuffer;    // TVector<uint32>

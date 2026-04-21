@@ -336,35 +336,53 @@ namespace Lumina
         glm::uvec4 GridSize;
     };
 
-    struct alignas(16) FGPUInstance
+    // Per-instance transform. Kept in its own buffer so shaders that don't need
+    // the full model matrix (shadow-caster cull, pixel shader) don't drag 64B of
+    // transform into L2 per instance. Consumed by meshlet cull, cascade cull,
+    // base/depth/shadow vertex shaders.
+    struct alignas(16) FGPUInstanceTransform
     {
         glm::mat4x4     Transform;
-        glm::vec4       SphereBounds;
-
-        uint64          VBAddress;
-        uint64          IBAddress;
-
-        // Position-only shadow index stream. Shadow vertex pulling pulls through
-        // this pointer so each shadow draw issues fewer unique VS invocations.
-        // Aliases IBAddress for legacy assets imported without shadow indices.
-        uint64          ShadowIBAddress;
-        uint32          EntityID;
-        uint32          DrawIDAndFlags;
-
-        uint32          BoneOffsetAndMaterialIndex;
-        uint32          CustomData;
-
-        // Meshlet header BDA for this mesh; SurfaceMeshletOffset / Count select
-        // this instance's surface slice within the mesh's meshlet array. Zero
-        // MeshletHeaderAddress means this instance doesn't participate in the
-        // meshlet-cull path (skinned meshes, legacy assets without meshlets).
-        uint64          MeshletHeaderAddress;
-        uint32          SurfaceMeshletOffset;
-        uint32          SurfaceMeshletCount;
     };
 
-    static_assert(sizeof(FGPUInstance) == 144, "FGPUInstance layout must match shader");
-    VERIFY_SSBO_ALIGNMENT(FGPUInstance)
+    static_assert(sizeof(FGPUInstanceTransform) == 64, "FGPUInstanceTransform layout must match shader");
+    VERIFY_SSBO_ALIGNMENT(FGPUInstanceTransform)
+
+    // Hot 32B cull/identity block. Sized to exactly one half-cache-line so the
+    // shadow-cull compute pass (the worst cache offender in the old layout)
+    // touches only 32B per caster instead of dragging the whole 144B descriptor.
+    // CustomData sits in the pad slot because BasePixelPass already reads this
+    // block for the ReceiveShadow flag — material graphs that reference the
+    // CustomPrimitiveData node pay zero extra bandwidth.
+    struct alignas(16) FGPUInstanceCull
+    {
+        glm::vec4       SphereBounds;
+
+        uint32          DrawIDAndFlags;
+        uint32          SurfaceMeshletOffset;
+        uint32          SurfaceMeshletCount;
+        uint32          CustomData;
+    };
+
+    static_assert(sizeof(FGPUInstanceCull) == 32, "FGPUInstanceCull layout must match shader");
+    VERIFY_SSBO_ALIGNMENT(FGPUInstanceCull)
+
+    // 32B block with the pointers needed to pull vertex data plus the identity
+    // fields the pixel shader emits to the picker. Shadow-cull never touches
+    // this buffer. MeshletHeaderAddress is zero when the instance skips the
+    // meshlet path (skinned meshes, legacy assets without meshlets).
+    struct alignas(16) FGPUInstanceRender
+    {
+        uint64          VBAddress;
+        uint64          ShadowIBAddress;
+        uint64          MeshletHeaderAddress;
+
+        uint32          BoneOffsetAndMaterialIndex;
+        uint32          EntityID;
+    };
+
+    static_assert(sizeof(FGPUInstanceRender) == 32, "FGPUInstanceRender layout must match shader");
+    VERIFY_SSBO_ALIGNMENT(FGPUInstanceRender)
     
     constexpr uint32 PackDrawIDAndFlags(uint32 DrawID, EInstanceFlags Flags)
     {

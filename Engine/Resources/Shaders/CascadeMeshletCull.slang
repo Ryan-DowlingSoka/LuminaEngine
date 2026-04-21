@@ -21,40 +21,44 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupI
     if (uSceneData.CullData.bHasDirectional == 0)
         return;
 
-    FGPUInstance Inst = uInstanceData[InstanceID];
+    FGPUInstanceCull Cull = GetInstanceCull(InstanceID);
 
-    if (!Inst.HasFlag(EInstanceFlags::CastShadow))
+    if (!Cull.HasFlag(EInstanceFlags::CastShadow))
         return;
 
-    if (Inst.SurfaceMeshletCount == 0)
+    if (Cull.SurfaceMeshletCount == 0)
         return;
 
-    if (MeshletLocalIdx >= Inst.SurfaceMeshletCount)
+    if (MeshletLocalIdx >= Cull.SurfaceMeshletCount)
         return;
 
-    // Distance cull against camera.
-    float3 InstCenter = Inst.BoundsCenter;
-    float  InstRadius = Inst.BoundsRadius;
+    // Distance cull against camera. Bounds live in the cheap Cull block; bail
+    // before we touch Render/Transform so distant casters don't pollute L2.
+    float3 InstCenter = Cull.BoundsCenter;
+    float  InstRadius = Cull.BoundsRadius;
     float3 CamPos     = GetCameraPosition();
     if (length(InstCenter - CamPos) - InstRadius > uSceneData.CullData.ShadowMaxDistance)
         return;
 
-    bool bSkinned = Inst.HasFlag(EInstanceFlags::Skinned);
-    bool bNoCull  = Inst.HasFlag(EInstanceFlags::NoCull);
+    bool bSkinned = Cull.HasFlag(EInstanceFlags::Skinned);
+    bool bNoCull  = Cull.HasFlag(EInstanceFlags::NoCull);
 
-    uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + MeshletLocalIdx;
-    FMeshletBounds Bounds = Inst.MeshletHeader.Bounds[GlobalMeshletIdx];
+    FGPUInstanceRender Render = GetInstanceRender(InstanceID);
+    float4x4           Model  = GetInstanceTransform(InstanceID);
+
+    uint GlobalMeshletIdx = Cull.SurfaceMeshletOffset + MeshletLocalIdx;
+    FMeshletBounds Bounds = Render.MeshletHeader.Bounds[GlobalMeshletIdx];
 
     // Meshlet bounds to world space.
-    float3 WorldCenter = mul(Inst.ModelMatrix, float4(Bounds.Center, 1.0)).xyz;
+    float3 WorldCenter = mul(Model, float4(Bounds.Center, 1.0)).xyz;
 
-    float SqScaleX = dot(Inst.ModelMatrix[0].xyz, Inst.ModelMatrix[0].xyz);
-    float SqScaleY = dot(Inst.ModelMatrix[1].xyz, Inst.ModelMatrix[1].xyz);
-    float SqScaleZ = dot(Inst.ModelMatrix[2].xyz, Inst.ModelMatrix[2].xyz);
+    float SqScaleX = dot(Model[0].xyz, Model[0].xyz);
+    float SqScaleY = dot(Model[1].xyz, Model[1].xyz);
+    float SqScaleZ = dot(Model[2].xyz, Model[2].xyz);
     float MaxScale = sqrt(max(SqScaleX, max(SqScaleY, SqScaleZ)));
     float WorldRadius = Bounds.Radius * MaxScale;
 
-    uint DrawID   = Inst.DrawID;
+    uint DrawID   = Cull.DrawID;
     uint NumDraws = uSceneData.CullData.NumDraws;
 
     [unroll]

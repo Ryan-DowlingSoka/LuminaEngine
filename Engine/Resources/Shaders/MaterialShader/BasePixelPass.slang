@@ -335,10 +335,15 @@ float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3
 [shader("fragment")]
 PSOutput FragmentMain(PSInput Input)
 {
-    FGPUInstance InstanceData = GetInstanceDataByID(Input.InstanceIndex);
+    // Pixel shader only needs the Cull block (for the ReceiveShadow flag and
+    // the CustomPrimitiveData if the material graph references it) and the
+    // Render block (for EntityID + MaterialIndex). The transform buffer is
+    // never touched here.
+    FGPUInstanceCull   Cull   = GetInstanceCull(Input.InstanceIndex);
+    FGPUInstanceRender Render = GetInstanceRender(Input.InstanceIndex);
 
-    uint EntityID           = InstanceData.EntityID;
-    uint MaterialIndex      = InstanceData.MaterialIndex;
+    uint EntityID           = Render.EntityID;
+    uint MaterialIndex      = Render.MaterialIndex;
     float3 WorldNormal      = normalize(Input.NormalWS.xyz);
     float3 ViewPosition     = Input.FragPos.xyz;
     float3 WorldPosition    = mul(GetInverseCameraView(), float4(Input.FragPos.xyz, 1.0)).xyz;
@@ -393,7 +398,7 @@ PSOutput FragmentMain(PSInput Input)
     if (uLightData[0].bHasSun != 0)
     {
         FLight Light        = GetLightAt(0);
-        float  Shadow       = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, InstanceData.HasFlag(EInstanceFlags::ReceiveShadow));
+        float  Shadow       = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, Cull.HasFlag(EInstanceFlags::ReceiveShadow));
         Lo                  += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, float3(0.0), 0.0) * Shadow;
     }
 
@@ -409,7 +414,7 @@ PSOutput FragmentMain(PSInput Input)
         float Shadow = 1.0;
         if (Light.ShadowDataIndex != INDEX_NONE)
         {
-            Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, InstanceData.HasFlag(EInstanceFlags::ReceiveShadow));
+            Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, Cull.HasFlag(EInstanceFlags::ReceiveShadow));
         }
 
         Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight) * Shadow;
@@ -442,6 +447,6 @@ PSOutput FragmentMain(PSInput Input)
 #endif // TRANSLUCENT
 
 
-    Output.Picker   = InstanceData.EntityID;
+    Output.Picker   = EntityID;
     return Output;
 }

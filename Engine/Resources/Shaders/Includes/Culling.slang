@@ -1,9 +1,9 @@
 #pragma once
 #include "SceneGlobals.slang"
 
-// Helpers shared by MeshCull.slang and ShadowMeshCull.slang. Kept in one place
-// so the two cull passes can't drift on the Hi-Z math that has to agree with
-// how the depth pyramid is generated (MIN-reduction sampler, reverse-Z).
+// Helpers shared by the GPU culling compute passes. Kept in one place so the
+// passes can't drift on the Hi-Z math that has to agree with how the depth
+// pyramid is generated (MIN-reduction sampler, reverse-Z).
 
 bool FrustumContainsSphere(FFrustum F, float3 Center, float Radius)
 {

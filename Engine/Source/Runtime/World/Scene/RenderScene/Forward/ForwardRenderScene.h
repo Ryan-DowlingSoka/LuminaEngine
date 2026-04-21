@@ -37,12 +37,17 @@ namespace Lumina
         */
         struct FProcessedDrawItem
         {
-            FGPUInstance        Instance;            // DrawIDAndFlags holds only flags here; the merge fills in DrawID.
-            EInstanceFlags      Flags;
-            uint32              LocalBoneOffset;     // Offset into the owning thread's BonesData; ~0u for static meshes.
-            uint16              MaterialIndex;
-            uint16              LocalBatchIndex;     // Index into FThreadLocalDrawData::LocalBatches
-            uint16              LocalDrawIndex;      // Index into FLocalBatchEntry::LocalDraws
+            // Scattered into the three parallel per-instance SSBOs during the
+            // merge pass. Cull.DrawIDAndFlags holds only flags here; the merge
+            // fills in DrawID once the global draw index is known.
+            FGPUInstanceTransform Transform;
+            FGPUInstanceCull      Cull;
+            FGPUInstanceRender    Render;
+            EInstanceFlags        Flags;
+            uint32                LocalBoneOffset;   // Offset into the owning thread's BonesData; ~0u for static meshes.
+            uint16                MaterialIndex;
+            uint16                LocalBatchIndex;   // Index into FThreadLocalDrawData::LocalBatches
+            uint16                LocalDrawIndex;    // Index into FLocalBatchEntry::LocalDraws
         };
 
         /**
@@ -74,13 +79,15 @@ namespace Lumina
         {
             Scene,
             Light,
-            Instance,
-            InstanceMapping,
+            // Split per-instance descriptor. Cull block (SphereBounds + flags +
+            // meshlet range + CustomData) is bound at 2 — the original slot. The
+            // transform and render-pointer blocks get their own bindings (16/17)
+            // so passes only touch the buffers they read.
+            InstanceCull,
+            InstanceTransform,
+            InstanceRender,
             InstanceMappingShadow,
-            InstanceMappingCascade,
-            Indirect,
             IndirectShadow,
-            IndirectCascade,
             Bone,
             Cluster,
             SimpleVertex,
@@ -225,8 +232,14 @@ namespace Lumina
 
         TVector<FBillboardInstance>             BillboardInstances;
         
-        /** Packed array of per-instance data */
-        TVector<FGPUInstance>                   InstanceData;
+        /**
+         * Packed arrays of per-instance data, split into three parallel buffers
+         * so each shader pass only reads the blocks it needs. Always kept at the
+         * same size and indexed by the same instance ID.
+         */
+        TVector<FGPUInstanceTransform>          InstanceTransforms;
+        TVector<FGPUInstanceCull>               InstanceCulls;
+        TVector<FGPUInstanceRender>             InstanceRenders;
         TVector<glm::mat4>                      BonesData;
         
         FShadowAtlas                            ShadowAtlas;
@@ -240,16 +253,12 @@ namespace Lumina
         /** Indices into DrawCommands for translucent batches, rendered after opaque */
         TVector<uint32>                         TranslucentDrawList;
 
-        /** Packed indirect draw arguments, gets sent directly to the GPU */
-        TVector<FDrawIndirectArguments>         IndirectDrawArguments;
-
         /**
-         * Cascade-major duplicate of IndirectDrawArguments. Layout:
-         *   [c * NumDraws + d] = args for draw d in cascade c.
-         * FirstInstance in each cascade slice is pre-shifted by c * NumInstances
-         * so the cascade mapping buffer can be bound as a single flat UAV.
+         * Packed indirect draw arguments for the shadow pass. FirstInstance
+         * points into uMappingDataShadow, populated atomically by
+         * ShadowMeshCull.slang for each surviving caster / light pair.
          */
-        TVector<FDrawIndirectArguments>         IndirectDrawArgumentsCascade;
+        TVector<FDrawIndirectArguments>         IndirectDrawArguments;
 
         /**
          * Per-draw meshlet indirect args. VertexCount = MESHLET_VERTICES_PER_DRAW

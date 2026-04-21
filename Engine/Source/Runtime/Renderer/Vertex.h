@@ -5,12 +5,15 @@
 namespace Lumina
 {
 
+    // 8-8-8-8 SNORM packing. Mirror of the shader's UnpackNormal, which uses
+    // the hardware unpackSnorm4x8 intrinsic (single FP-pipe op) instead of the
+    // manual 10-bit shift+sign-extend the old layout required. W is unused.
     inline uint32 PackNormal(glm::vec3 normal)
     {
-        int x = (int)(glm::clamp(normal.x, -1.0f, 1.0f) * 511.0f);
-        int y = (int)(glm::clamp(normal.y, -1.0f, 1.0f) * 511.0f);
-        int z = (int)(glm::clamp(normal.z, -1.0f, 1.0f) * 511.0f);
-        return ((x & 0x3FF) << 0) | ((y & 0x3FF) << 10) | ((z & 0x3FF) << 20);
+        int x = (int)(glm::clamp(normal.x, -1.0f, 1.0f) * 127.0f);
+        int y = (int)(glm::clamp(normal.y, -1.0f, 1.0f) * 127.0f);
+        int z = (int)(glm::clamp(normal.z, -1.0f, 1.0f) * 127.0f);
+        return ((uint32)(x & 0xFF) << 0) | ((uint32)(y & 0xFF) << 8) | ((uint32)(z & 0xFF) << 16);
     }
 
     inline uint32 PackColor(glm::vec4 color)
@@ -24,28 +27,11 @@ namespace Lumina
     
     inline glm::vec3 UnpackNormal(uint32 packed)
     {
-        int x = (packed >> 0) & 0x3FF;
-        int y = (packed >> 10) & 0x3FF;
-        int z = (packed >> 20) & 0x3FF;
-    
-        if (x & 0x200)
-        {
-            x |= 0xFFFFFC00;
-        }
-        if (y & 0x200)
-        {
-            y |= 0xFFFFFC00;
-        }
-        if (z & 0x200)
-        {
-            z |= 0xFFFFFC00;
-        }
+        int8 x = (int8)((packed >> 0)  & 0xFF);
+        int8 y = (int8)((packed >> 8)  & 0xFF);
+        int8 z = (int8)((packed >> 16) & 0xFF);
 
-        return glm::vec3(
-            (float)x / 511.0f,
-            (float)y / 511.0f,
-            (float)z / 511.0f
-        );
+        return glm::vec3((float)x, (float)y, (float)z) * (1.0f / 127.0f);
     }
 
     inline glm::vec4 UnpackColor(uint32 packed)

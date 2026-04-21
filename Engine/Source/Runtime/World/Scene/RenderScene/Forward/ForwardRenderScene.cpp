@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ForwardRenderScene.h"
+#include <algorithm>
 #include <execution>
 #include "Assets/AssetTypes/Material/Material.h"
 #include "Assets/AssetTypes/Mesh/SkeletalMesh/SkeletalMesh.h"
@@ -112,7 +113,7 @@ namespace Lumina
         SceneGlobalData.CullData.P11                    = SceneViewport->GetViewVolume().GetProjectionMatrix()[1][1];
         SceneGlobalData.CullData.zNear                  = SceneViewport->GetViewVolume().GetNear();
         SceneGlobalData.CullData.zFar                   = SceneViewport->GetViewVolume().GetFar();
-        SceneGlobalData.CullData.InstanceNum            = (uint32)InstanceData.size();
+        SceneGlobalData.CullData.InstanceNum            = (uint32)InstanceCulls.size();
         SceneGlobalData.CullData.bFrustumCull           = RenderSettings.bFrustumCull;
         SceneGlobalData.CullData.bOcclusionCull         = RenderSettings.bOcclusionCull;
         SceneGlobalData.CullData.PyramidWidth           = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
@@ -189,7 +190,9 @@ namespace Lumina
             const size_t EntityCount       = StaticView.size_hint() + SkeletalView.size_hint();
             const size_t EstimatedProxies  = EntityCount * 2;
 
-            InstanceData.reserve(EstimatedProxies);
+            InstanceCulls.reserve(EstimatedProxies);
+            InstanceTransforms.reserve(EstimatedProxies);
+            InstanceRenders.reserve(EstimatedProxies);
             IndirectDrawArguments.reserve(EstimatedProxies);
             DrawCommands.reserve(EstimatedProxies);
 
@@ -423,7 +426,7 @@ namespace Lumina
         // resize is done inside that lambda, later batches can latch the old undersized
         // buffer handle and fire a validation error (or crash) on draw recording.
 
-        SceneGlobalData.CullData.InstanceNum = (uint32)InstanceData.size();
+        SceneGlobalData.CullData.InstanceNum = (uint32)InstanceCulls.size();
 
         // Build the shadow-cull frustum: the camera frustum swept along the sun
         // direction so casters behind / above / beside the camera still write into
@@ -443,36 +446,16 @@ namespace Lumina
             SceneGlobalData.CullData.bHasDirectional = 0u;
         }
 
-        const SIZE_T SimpleVertexSize   = SimpleVertices.size() * sizeof(FSimpleElementVertex);
-        const SIZE_T InstanceDataSize   = InstanceData.size() * sizeof(FGPUInstance);
-        const SIZE_T BoneDataSize       = BonesData.size() * sizeof(glm::mat4);
+        const SIZE_T SimpleVertexSize      = SimpleVertices.size() * sizeof(FSimpleElementVertex);
+        const SIZE_T InstanceCullSize      = InstanceCulls.size() * sizeof(FGPUInstanceCull);
+        const SIZE_T InstanceTransformSize = InstanceTransforms.size() * sizeof(FGPUInstanceTransform);
+        const SIZE_T InstanceRenderSize    = InstanceRenders.size() * sizeof(FGPUInstanceRender);
+        const SIZE_T BoneDataSize          = BonesData.size() * sizeof(glm::mat4);
         const SIZE_T IndirectArgsSize   = IndirectDrawArguments.size() * sizeof(FDrawIndirectArguments);
 
-        // Cascade-major duplicate of IndirectDrawArguments. Each cascade slice
-        // has FirstInstance shifted by `c * NumInstances` so the cascade mapping
-        // buffer can be a flat UAV indexed by absolute FirstInstance + counter.
         const uint32 NumDraws             = (uint32)IndirectDrawArguments.size();
-        const uint32 NumInstances         = (uint32)InstanceData.size();
-        const SIZE_T IndirectCascadeSize  = (SIZE_T)NumCascades * NumDraws * sizeof(FDrawIndirectArguments);
-        const SIZE_T CascadeMappingSize   = (SIZE_T)NumCascades * NumInstances * sizeof(uint32);
         SceneGlobalData.CullData.NumDraws = NumDraws;
 
-        IndirectDrawArgumentsCascade.clear();
-        if (LightData.bHasSun && NumDraws > 0)
-        {
-            IndirectDrawArgumentsCascade.resize((size_t)NumCascades * NumDraws);
-            for (uint32 c = 0; c < (uint32)NumCascades; ++c)
-            {
-                const uint32 CascadeInstanceBase = c * NumInstances;
-                for (uint32 d = 0; d < NumDraws; ++d)
-                {
-                    FDrawIndirectArguments Args                  = IndirectDrawArguments[d];
-                    Args.InstanceCount                           = 0u;
-                    Args.StartInstanceLocation                  += CascadeInstanceBase;
-                    IndirectDrawArgumentsCascade[c * NumDraws + d] = Args;
-                }
-            }
-        }
         const SIZE_T ActiveLightsSize   = LightData.NumLights * sizeof(FLight);
         const SIZE_T LightsUploadSize   = offsetof(FSceneLightData, Lights) + ActiveLightsSize;
         const uint32 ActiveShadowCount  = glm::min<uint32>(ShadowDataCount.load(std::memory_order_acquire), (uint32)MAX_SHADOWS);
@@ -490,15 +473,13 @@ namespace Lumina
         const SIZE_T MeshletIndirectCascadeSize = glm::max<SIZE_T>(sizeof(FDrawIndirectArguments), (SIZE_T)IndirectDrawArgumentsMeshletCascade.size() * sizeof(FDrawIndirectArguments));
 
         bool bAnyBufferResized = false;
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Instance], (uint32)InstanceDataSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMapping], sizeof(uint32) * InstanceData.size(), 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMappingShadow], sizeof(uint32) * InstanceData.size(), 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceCull], (uint32)InstanceCullSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceTransform], (uint32)InstanceTransformSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceRender], (uint32)InstanceRenderSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMappingShadow], sizeof(uint32) * InstanceCulls.size(), 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::SimpleVertex], (uint32)SimpleVertexSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Bone], (uint32)BoneDataSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Indirect], (uint32)IndirectArgsSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::IndirectShadow], (uint32)IndirectArgsSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::IndirectCascade], (uint32)IndirectCascadeSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMappingCascade], (uint32)CascadeMappingSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Light], (uint32)LightUploadSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Billboards], (uint32)BillboardSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletDrawList], (uint32)MeshletDrawListSize, 1.2f);
@@ -511,25 +492,20 @@ namespace Lumina
             CreateLayouts();
         }
 
-        const SIZE_T IndirectCascadeUploadSize = IndirectDrawArgumentsCascade.size() * sizeof(FDrawIndirectArguments);
-
         {
             FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
             RenderGraph.AddPass(RG_Raster, "Write Scene Buffers", Descriptor,
-                [this, SimpleVertexSize, InstanceDataSize, BoneDataSize, IndirectArgsSize, IndirectCascadeUploadSize, LightsUploadSize, ShadowsUploadSize, BillboardSize](ICommandList& CmdList)
+                [this, SimpleVertexSize, InstanceCullSize, InstanceTransformSize, InstanceRenderSize, BoneDataSize, IndirectArgsSize, LightsUploadSize, ShadowsUploadSize, BillboardSize](ICommandList& CmdList)
             {
                 LUMINA_PROFILE_SECTION_COLORED("Write Scene Buffers", tracy::Color::OrangeRed3);
 
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Scene), EResourceStates::CopyDest);
-                CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Instance), EResourceStates::CopyDest);
+                CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::InstanceCull), EResourceStates::CopyDest);
+                CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::InstanceTransform), EResourceStates::CopyDest);
+                CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::InstanceRender), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Bone), EResourceStates::CopyDest);
-                CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Indirect), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::IndirectShadow), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::MeshletIndirect), EResourceStates::CopyDest);
-                if (IndirectCascadeUploadSize > 0)
-                {
-                    CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::IndirectCascade), EResourceStates::CopyDest);
-                }
                 if (!IndirectDrawArgumentsMeshletCascade.empty())
                 {
                     CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::MeshletIndirectCascade), EResourceStates::CopyDest);
@@ -541,12 +517,14 @@ namespace Lumina
 
                 CmdList.DisableAutomaticBarriers();
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Scene), &SceneGlobalData, sizeof(FSceneGlobalData));
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Instance), InstanceData.data(), InstanceDataSize);
+                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::InstanceCull),      InstanceCulls.data(),      InstanceCullSize);
+                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::InstanceTransform), InstanceTransforms.data(), InstanceTransformSize);
+                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::InstanceRender),    InstanceRenders.data(),    InstanceRenderSize);
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Bone), BonesData.data(),  BoneDataSize);
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Indirect), IndirectDrawArguments.data(), IndirectArgsSize);
-                // Shadow indirect buffer uses the identical per-batch layout (same FirstInstance
-                // offsets, InstanceCount == 0) so ShadowMeshCull.slang can atomically fill it
-                // in parallel with the camera-view cull pass.
+                // Shadow indirect buffer uses the same per-batch layout as the
+                // camera path (matching FirstInstance, InstanceCount == 0) so
+                // ShadowMeshCull.slang can atomically fill it in parallel with
+                // the mesh-level passes.
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::IndirectShadow), IndirectDrawArguments.data(), IndirectArgsSize);
                 // Meshlet indirect: FirstInstance pre-populated with the prefix-sum slot
                 // into uMeshletDrawList; InstanceCount starts at 0 and is atomically
@@ -555,10 +533,6 @@ namespace Lumina
                 if (MeshletIndirectUploadSize > 0)
                 {
                     CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::MeshletIndirect), IndirectDrawArgumentsMeshlet.data(), MeshletIndirectUploadSize);
-                }
-                if (IndirectCascadeUploadSize > 0)
-                {
-                    CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::IndirectCascade), IndirectDrawArgumentsCascade.data(), IndirectCascadeUploadSize);
                 }
                 const SIZE_T MeshletIndirectCascadeUploadSize = IndirectDrawArgumentsMeshletCascade.size() * sizeof(FDrawIndirectArguments);
                 if (MeshletIndirectCascadeUploadSize > 0)
@@ -727,7 +701,6 @@ namespace Lumina
 
         const FMeshResource& Resource = Mesh->GetMeshResource();
         const uint64 VBAddress = Mesh->GetVertexBuffer()->GetAddress();
-        const uint64 IBAddress = Mesh->GetIndexBuffer()->GetAddress();
         const uint64 ShadowIBAddress = Mesh->GetShadowIndexBuffer()->GetAddress();
         const uint64 MeshletHeaderAddress = Mesh->GetMeshBuffers().MeshletHeaderBuffer
             ? Mesh->GetMeshBuffers().MeshletHeaderBuffer->GetAddress()
@@ -806,21 +779,20 @@ namespace Lumina
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount });
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
-            Item.Instance.Transform                  = TransformMatrix;
-            Item.Instance.SphereBounds               = SphereBounds;
-            Item.Instance.VBAddress                  = VBAddress;
-            Item.Instance.IBAddress                  = IBAddress;
-            Item.Instance.ShadowIBAddress            = ShadowIBAddress;
-            Item.Instance.EntityID                   = EntityIDPacked;
-            Item.Instance.DrawIDAndFlags             = PackDrawIDAndFlags(0, Flags); // DrawID patched at write-out
-            Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
-            Item.Instance.CustomData                 = MeshComponent.CustomPrimitiveData.Data.Packed;
-            Item.Instance.MeshletHeaderAddress       = MeshletHeaderAddress;
-            Item.Instance.SurfaceMeshletOffset       = Surface.MeshletOffset;
+            Item.Transform.Transform             = TransformMatrix;
+            Item.Cull.SphereBounds               = SphereBounds;
+            Item.Cull.DrawIDAndFlags             = PackDrawIDAndFlags(0, Flags); // DrawID patched at write-out
+            Item.Cull.SurfaceMeshletOffset       = Surface.MeshletOffset;
             // Meshlet cull + base VS both deref MeshletHeader unconditionally when
             // SurfaceMeshletCount > 0; zero the count when no header was uploaded
             // so an inconsistent asset can't produce a null-pointer GPU fault.
-            Item.Instance.SurfaceMeshletCount        = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
+            Item.Cull.SurfaceMeshletCount        = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
+            Item.Cull.CustomData                 = MeshComponent.CustomPrimitiveData.Data.Packed;
+            Item.Render.VBAddress                  = VBAddress;
+            Item.Render.ShadowIBAddress            = ShadowIBAddress;
+            Item.Render.MeshletHeaderAddress       = MeshletHeaderAddress;
+            Item.Render.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
+            Item.Render.EntityID                   = EntityIDPacked;
 
             Item.Flags           = Flags;
             Item.MaterialIndex   = (uint16)Material->GetMaterialIndex();
@@ -861,7 +833,6 @@ namespace Lumina
         }
 
         const uint64 VBAddress = Mesh->GetVertexBuffer()->GetAddress();
-        const uint64 IBAddress = Mesh->GetIndexBuffer()->GetAddress();
         const uint64 ShadowIBAddress = Mesh->GetShadowIndexBuffer()->GetAddress();
         const uint64 MeshletHeaderAddress = Mesh->GetMeshBuffers().MeshletHeaderBuffer
             ? Mesh->GetMeshBuffers().MeshletHeaderBuffer->GetAddress()
@@ -918,22 +889,21 @@ namespace Lumina
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount });
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
-            Item.Instance.Transform                  = TransformMatrix;
-            Item.Instance.SphereBounds               = SphereBounds;
-            Item.Instance.VBAddress                  = VBAddress;
-            Item.Instance.IBAddress                  = IBAddress;
-            Item.Instance.ShadowIBAddress            = ShadowIBAddress;
-            Item.Instance.EntityID                   = EntityIDPacked;
-            Item.Instance.DrawIDAndFlags             = PackDrawIDAndFlags(0, Flags);
-            Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
-            Item.Instance.CustomData                 = MeshComponent.CustomPrimitiveData.Data.Packed;
+            Item.Transform.Transform               = TransformMatrix;
+            Item.Cull.SphereBounds                 = SphereBounds;
+            Item.Cull.DrawIDAndFlags               = PackDrawIDAndFlags(0, Flags);
+            Item.Cull.SurfaceMeshletOffset         = Surface.MeshletOffset;
             // Skinned still gets its real meshlet header; the meshlet cull pass
             // skips per-meshlet frustum/occlusion on skinned (bind-pose bounds
             // aren't valid for deformed geometry) but still emits every meshlet
             // so the vertex shader can pull them.
-            Item.Instance.MeshletHeaderAddress       = MeshletHeaderAddress;
-            Item.Instance.SurfaceMeshletOffset       = Surface.MeshletOffset;
-            Item.Instance.SurfaceMeshletCount        = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
+            Item.Cull.SurfaceMeshletCount          = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
+            Item.Cull.CustomData                   = MeshComponent.CustomPrimitiveData.Data.Packed;
+            Item.Render.VBAddress                  = VBAddress;
+            Item.Render.ShadowIBAddress            = ShadowIBAddress;
+            Item.Render.MeshletHeaderAddress       = MeshletHeaderAddress;
+            Item.Render.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
+            Item.Render.EntityID                   = EntityIDPacked;
 
             Item.Flags           = Flags;
             Item.MaterialIndex   = (uint16)Material->GetMaterialIndex();
@@ -1083,7 +1053,7 @@ namespace Lumina
             }
         }
 
-        // DrawInstanceOffsets[d] = where draw d's instances start in InstanceData.
+        // DrawInstanceOffsets[d] = where draw d's instances start in the per-instance buffers.
         // ThreadDrawWriteBase[t * TotalDrawArgs + d] = where thread t's instances for draw d start.
         TVector<uint32> DrawInstanceOffsets(TotalDrawArgs);
         {
@@ -1138,9 +1108,11 @@ namespace Lumina
         // MeshletCull atomic-appends into uMeshletDrawList[FirstInstance..].
         IndirectDrawArgumentsMeshlet.resize(TotalDrawArgs);
 
-        // Each thread owns a disjoint set of (thread, draw) slices in the global InstanceData,
-        // so there are no atomics. Cursors are local to each worker.
-        InstanceData.resize(TotalInstances);
+        // Each thread owns a disjoint set of (thread, draw) slices in the global instance
+        // buffers, so there are no atomics. Cursors are local to each worker.
+        InstanceCulls.resize(TotalInstances);
+        InstanceTransforms.resize(TotalInstances);
+        InstanceRenders.resize(TotalInstances);
 
         {
             LUMINA_PROFILE_SECTION("Parallel Instance Write");
@@ -1170,16 +1142,18 @@ namespace Lumina
 
                         const uint32 WriteIdx = Cursors[GlobalDraw]++;
 
-                        Item.Instance.DrawIDAndFlags = PackDrawIDAndFlags(GlobalDraw, Item.Flags);
+                        Item.Cull.DrawIDAndFlags = PackDrawIDAndFlags(GlobalDraw, Item.Flags);
 
                         if (Item.LocalBoneOffset != ~0u)
                         {
-                            Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(
+                            Item.Render.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(
                                 (uint16)(BoneBase + Item.LocalBoneOffset),
                                 Item.MaterialIndex);
                         }
 
-                        InstanceData[WriteIdx] = Item.Instance;
+                        InstanceCulls[WriteIdx]      = Item.Cull;
+                        InstanceTransforms[WriteIdx] = Item.Transform;
+                        InstanceRenders[WriteIdx]    = Item.Render;
                     }
                 }
             });
@@ -1187,7 +1161,7 @@ namespace Lumina
             WriteGraph.Wait();
         }
 
-        // Meshlet-indirect prefix sum. Walk the final InstanceData (now with
+        // Meshlet-indirect prefix sum. Walk the final InstanceCulls (now with
         // DrawID patched in) to accumulate meshlet counts per draw, then turn
         // that into FirstInstance offsets. Also tracks the peak per-instance
         // meshlet count so the compute dispatch can size its X dimension.
@@ -1196,14 +1170,11 @@ namespace Lumina
 
             TVector<uint32> MeshletCountsPerDraw(TotalDrawArgs, 0u);
             MaxMeshletsPerInstance = 0u;
-            for (const FGPUInstance& Inst : InstanceData)
+            for (const FGPUInstanceCull& Cull : InstanceCulls)
             {
-                const uint32 DrawID = Inst.DrawIDAndFlags & 0x00FFFFFFu;
-                MeshletCountsPerDraw[DrawID] += Inst.SurfaceMeshletCount;
-                if (Inst.SurfaceMeshletCount > MaxMeshletsPerInstance)
-                {
-                    MaxMeshletsPerInstance = Inst.SurfaceMeshletCount;
-                }
+                const uint32 DrawID = Cull.DrawIDAndFlags & 0x00FFFFFFu;
+                MeshletCountsPerDraw[DrawID] += Cull.SurfaceMeshletCount;
+                MaxMeshletsPerInstance = std::max(Cull.SurfaceMeshletCount, MaxMeshletsPerInstance);
             }
 
             uint32 MeshletRunning = 0u;
@@ -1672,7 +1643,9 @@ namespace Lumina
         IndirectDrawArgumentsMeshletCascade.clear();
         MaxMeshletsPerInstance = 0;
         TotalMeshletBound = 0;
-        InstanceData.clear();
+        InstanceCulls.clear();
+        InstanceTransforms.clear();
+        InstanceRenders.clear();
         LightData = {};
         ShadowDataCount.store(0, std::memory_order_release);
         ShadowAtlas.FreeTiles();
@@ -1707,29 +1680,8 @@ namespace Lumina
         {
             LUMINA_PROFILE_SECTION_COLORED("Cull Pass", tracy::Color::Pink2);
 
-            const uint32 Num           = (uint32)InstanceData.size();
+            const uint32 Num           = (uint32)InstanceCulls.size();
             const uint32 NumWorkGroups = (Num + 255) / 256;
-
-            // Camera-view culling (frustum + occlusion). Fills the main indirect buffer
-            // used by the depth pre-pass, base pass, billboards, etc.
-            {
-                FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("MeshCull.slang");
-
-                FComputePipelineDesc PipelineDesc;
-                PipelineDesc.SetComputeShader(ComputeShader);
-                PipelineDesc.AddBindingLayout(SceneBindingLayout);
-                PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-                FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-                FComputeState State;
-                State.SetPipeline(Pipeline);
-                State.AddBindingSet(SceneBindingSet);
-                State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-                CmdList.SetComputeState(State);
-
-                CmdList.Dispatch(NumWorkGroups, 1, 1);
-            }
 
             // Shadow-caster culling. Writes a parallel indirect buffer consumed by
             // the CSM, spot, and point shadow passes so casters outside the camera
@@ -2027,10 +1979,14 @@ namespace Lumina
             CmdList.SetComputeState(State);
                 
             glm::mat4 ViewProj = SceneViewport->GetViewVolume().GetViewMatrix();
-                
+
             CmdList.SetPushConstants(&ViewProj, sizeof(glm::mat4));
-                
-            CmdList.Dispatch(27, 1, 1);
+
+            // LightCull.slang uses LOCAL_SIZE=128 and each invocation processes
+            // one cluster, so group count = ceil(NumClusters / 128).
+            constexpr uint32 LightCullGroupSize = 128;
+            constexpr uint32 LightCullGroups    = (NumClusters + LightCullGroupSize - 1) / LightCullGroupSize;
+            CmdList.Dispatch(LightCullGroups, 1, 1);
                 
         });
     }
@@ -3315,7 +3271,7 @@ namespace Lumina
                 GraphicsState.SetRenderPass(RenderPass)
                              .SetViewportState(SceneViewportState)
                              .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-                             .SetIndirectParams(GetNamedBuffer(ENamedBuffer::Indirect))
+                             .SetIndirectParams(GetNamedBuffer(ENamedBuffer::MeshletIndirect))
                              .AddBindingSet(SceneBindingSet)
                              .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
 
@@ -3612,12 +3568,32 @@ namespace Lumina
 
         {
             FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FGPUInstance);
+            BufferDesc.Size = sizeof(FGPUInstanceCull);
             BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Instance Buffer";
-            NamedBuffers[(int)ENamedBuffer::Instance] = GRenderContext->CreateBuffer(BufferDesc);
+            BufferDesc.DebugName = "Instance Cull Buffer";
+            NamedBuffers[(int)ENamedBuffer::InstanceCull] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FGPUInstanceTransform);
+            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::ShaderResource;
+            BufferDesc.DebugName = "Instance Transform Buffer";
+            NamedBuffers[(int)ENamedBuffer::InstanceTransform] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FGPUInstanceRender);
+            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::ShaderResource;
+            BufferDesc.DebugName = "Instance Render Buffer";
+            NamedBuffers[(int)ENamedBuffer::InstanceRender] = GRenderContext->CreateBuffer(BufferDesc);
         }
         
         {
@@ -3636,28 +3612,8 @@ namespace Lumina
             BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = "Instance Mapping";
-            NamedBuffers[(int)ENamedBuffer::InstanceMapping] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(uint32);
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
             BufferDesc.DebugName = "Instance Mapping (Shadow)";
             NamedBuffers[(int)ENamedBuffer::InstanceMappingShadow] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(uint32);
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = "Instance Mapping (Cascade)";
-            NamedBuffers[(int)ENamedBuffer::InstanceMappingCascade] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
         {
@@ -3697,38 +3653,17 @@ namespace Lumina
             BufferDesc.Usage.SetMultipleFlags(BUF_Indirect, BUF_StorageBuffer);
             BufferDesc.InitialState = EResourceStates::IndirectArgument;
             BufferDesc.bKeepInitialState = true;
-            BufferDesc.DebugName = "Indirect Draw Buffer";
-            NamedBuffers[(int)ENamedBuffer::Indirect] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FDrawIndirectArguments);
-            BufferDesc.Stride = sizeof(FDrawIndirectArguments);
-            BufferDesc.Usage.SetMultipleFlags(BUF_Indirect, BUF_StorageBuffer);
-            BufferDesc.InitialState = EResourceStates::IndirectArgument;
-            BufferDesc.bKeepInitialState = true;
             BufferDesc.DebugName = "Indirect Draw Buffer (Shadow)";
             NamedBuffers[(int)ENamedBuffer::IndirectShadow] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FDrawIndirectArguments);
-            BufferDesc.Stride = sizeof(FDrawIndirectArguments);
-            BufferDesc.Usage.SetMultipleFlags(BUF_Indirect, BUF_StorageBuffer);
-            BufferDesc.InitialState = EResourceStates::IndirectArgument;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.DebugName = "Indirect Draw Buffer (Cascade)";
-            NamedBuffers[(int)ENamedBuffer::IndirectCascade] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-        
+
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(FBillboardInstance);
             BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
             BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
+            BufferDesc.InitialState = EResourceStates::ShaderResource;
             BufferDesc.DebugName = "Billboard Data";
             NamedBuffers[(int)ENamedBuffer::Billboards] = GRenderContext->CreateBuffer(BufferDesc);
         }
@@ -3932,32 +3867,30 @@ namespace Lumina
             FBindingSetDesc BindingSetDesc;
             BindingSetDesc.AddItem(FBindingSetItem::BufferCBV(0, GetNamedBuffer(ENamedBuffer::Scene)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(1, GetNamedBuffer(ENamedBuffer::Light)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(2, GetNamedBuffer(ENamedBuffer::Instance)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(3, GetNamedBuffer(ENamedBuffer::InstanceMapping)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(4, GetNamedBuffer(ENamedBuffer::Indirect)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(5, GetNamedBuffer(ENamedBuffer::Bone)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(6, GetNamedBuffer(ENamedBuffer::Cluster)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(7, GRenderManager->GetMaterialManager().GetMaterialBuffer()));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(8, GetNamedBuffer(ENamedBuffer::Billboards)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(2, GetNamedBuffer(ENamedBuffer::InstanceCull)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(3, GetNamedBuffer(ENamedBuffer::Bone)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(4, GetNamedBuffer(ENamedBuffer::Cluster)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(5, GRenderManager->GetMaterialManager().GetMaterialBuffer()));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(6, GetNamedBuffer(ENamedBuffer::Billboards)));
             // Comparison sampler enables hardware PCF: SampleCmp returns a 4-tap
             // bilinear-filtered shadow term in one texture fetch, replacing the
             // old manual Sample + step path.
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(9, GetNamedImage(ENamedImage::Cascade),
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(7, GetNamedImage(ENamedImage::Cascade),
                 TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(10, ShadowAtlas.GetImage(),
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(8, ShadowAtlas.GetImage(),
                 TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
             // Min-reduction clamp sampler: a single bilinear tap on the depth pyramid
             // returns the minimum of the 2x2 footprint (farthest depth in reverse-Z).
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(12, GetNamedImage(ENamedImage::DepthPyramid),
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(9, GetNamedImage(ENamedImage::DepthPyramid),
                 TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Minimum>::GetRHI()));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(16, GetNamedBuffer(ENamedBuffer::InstanceMappingShadow)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(17, GetNamedBuffer(ENamedBuffer::IndirectShadow)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(18, GetNamedBuffer(ENamedBuffer::InstanceMappingCascade)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(19, GetNamedBuffer(ENamedBuffer::IndirectCascade)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(20, GetNamedBuffer(ENamedBuffer::MeshletDrawList)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(21, GetNamedBuffer(ENamedBuffer::MeshletIndirect)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(22, GetNamedBuffer(ENamedBuffer::MeshletDrawListCascade)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(23, GetNamedBuffer(ENamedBuffer::MeshletIndirectCascade)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(10, GetNamedBuffer(ENamedBuffer::InstanceMappingShadow)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(11, GetNamedBuffer(ENamedBuffer::IndirectShadow)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(12, GetNamedBuffer(ENamedBuffer::MeshletDrawList)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(13, GetNamedBuffer(ENamedBuffer::MeshletIndirect)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(14, GetNamedBuffer(ENamedBuffer::MeshletDrawListCascade)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(15, GetNamedBuffer(ENamedBuffer::MeshletIndirectCascade)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(16, GetNamedBuffer(ENamedBuffer::InstanceTransform)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(17, GetNamedBuffer(ENamedBuffer::InstanceRender)));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
