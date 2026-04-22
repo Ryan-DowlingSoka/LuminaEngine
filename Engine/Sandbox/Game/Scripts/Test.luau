@@ -7,16 +7,11 @@ function NewScript:OnAttach()
 end
 
 function NewScript:OnReady()
-
-        for i = 1, 50 do
-            local Root = World:SpawnPrefab("/Game/Content/NewPrefab")
-            Engine.ECS.TranslateEntity(Registry, Root, vector.create(math.random(-20, 20), math.random(-1, 20), math.random(-20, 20)))
-        end
+    print("This is a test")
 end
 
 function NewScript:Update(DeltaTime: number)
-
-
+    -- Called every frame.
 end
             
 function NewScript:OnDetach()

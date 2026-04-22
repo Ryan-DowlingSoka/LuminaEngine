@@ -4,6 +4,10 @@
 #include "lua.h"
 #include "WorldManager.h"
 #include "WorldContext.h"
+#include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Assets/AssetTypes/Prefabs/Prefab.h"
+#include "Core/Object/Cast.h"
+#include "Core/Object/Package/Package.h"
 #include "Audio/AudioGlobals.h"
 #include "Core/Delegates/CoreDelegates.h"
 #include "Core/Engine/Engine.h"
@@ -283,6 +287,10 @@ namespace Lumina
 
         EntityRegistry.swap(RegistryPending);
         RegistryPending = {};
+
+        // Re-apply prefab asset state to any prefab instances that were serialized into this world.
+        // Keeps placed instances in sync with their source prefab whenever the prefab is edited.
+        CPrefab::RefreshAllInstancesInWorld(this);
 
         EntityRegistry.ctx().emplace<entt::dispatcher&>(SingletonDispatcher);
         
@@ -590,6 +598,25 @@ namespace Lumina
         return NewEntity;
     }
     
+    entt::entity CWorld::SpawnPrefab(const FName& Path)
+    {
+        FAssetData* AssetData = FAssetRegistry::Get().GetAssetByPath(FStringView(Path.c_str()));
+        if (AssetData == nullptr)
+        {
+            LOG_WARN("SpawnPrefab: no asset found at path '{}'", Path.c_str());
+            return entt::null;
+        }
+
+        CPrefab* Prefab = Cast<CPrefab>(LoadObject<CObject>(AssetData->AssetGUID));
+        if (Prefab == nullptr)
+        {
+            LOG_WARN("SpawnPrefab: asset '{}' is not a CPrefab", Path.c_str());
+            return entt::null;
+        }
+
+        return Prefab->Instantiate(this, FTransform(), entt::null);
+    }
+
     void CWorld::DuplicateEntity(entt::entity& To, entt::entity From, TFunctionRef<bool(entt::type_info)> Callback)
     {
         ASSERT(To != From);

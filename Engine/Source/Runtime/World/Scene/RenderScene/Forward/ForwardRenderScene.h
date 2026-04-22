@@ -61,8 +61,14 @@ namespace Lumina
             FRHIPixelShader*    PixelShader  = nullptr;
             TVector<FDrawKey>   LocalDraws;
             TVector<uint32>     LocalDrawCounts;        // instance count per local draw
+            // Sum of SurfaceMeshletCount for every instance sharing this local draw; the merge
+            // pass reduces this into the global meshlet prefix sum without walking Instances.
+            TVector<uint32>     LocalMeshletCounts;
             uint32              GlobalBatchIndex = ~0u; // resolved during merge
             TVector<uint32>     LocalToGlobalDraw;      // resolved during merge
+            // Merge stamps one write-cursor per local draw. Parallel writer increments it in
+            // place; each worker only touches its own LocalBatches so no atomics.
+            TVector<uint32>     LocalDrawWriteBase;
         };
 
         struct alignas(64) FThreadLocalDrawData
@@ -71,6 +77,7 @@ namespace Lumina
             TVector<FLocalBatchEntry>   LocalBatches;
             TVector<glm::mat4>          BonesData;
             FSceneRenderStats           Stats = {};
+            uint32                      MaxMeshletsPerInstance = 0;
         };
         
         enum class ENamedBuffer : uint8

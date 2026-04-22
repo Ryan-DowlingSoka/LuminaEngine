@@ -117,6 +117,7 @@ namespace Lumina
         void DrawFilterOptions();
         void RebuildSceneOutliner(FTreeListView& Tree);
         void HandleEntityEditorDragDrop(FTreeListView& Tree, entt::entity DropItem);
+        void HandlePrefabContentDrop(FStringView VirtualPath, entt::entity DropTarget);
 
         void DrawWorldSettings(bool bFocused);
         void DrawOutliner(bool bFocused);

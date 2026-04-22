@@ -665,7 +665,7 @@ namespace Lumina
         return (uint16)Count;
     }
 
-    static uint16 FindOrAddLocalDraw(FForwardRenderScene::FLocalBatchEntry& Batch, const FDrawKey& Key)
+    static uint16 FindOrAddLocalDraw(FForwardRenderScene::FLocalBatchEntry& Batch, const FDrawKey& Key, uint32 MeshletCount)
     {
         const uint32 Count = (uint32)Batch.LocalDraws.size();
         for (uint32 i = 0; i < Count; ++i)
@@ -673,11 +673,13 @@ namespace Lumina
             if (Batch.LocalDraws[i] == Key)
             {
                 Batch.LocalDrawCounts[i]++;
+                Batch.LocalMeshletCounts[i] += MeshletCount;
                 return (uint16)i;
             }
         }
         Batch.LocalDraws.push_back(Key);
         Batch.LocalDrawCounts.push_back(1);
+        Batch.LocalMeshletCounts.push_back(MeshletCount);
         return (uint16)Count;
     }
 
@@ -776,18 +778,20 @@ namespace Lumina
                 .bMasked          = (uint32)(bIsMasked        ? 1u : 0u),
                 .bAdditive        = (uint32)(bIsAdditive      ? 1u : 0u),
             };
+            // Meshlet cull + base VS both deref MeshletHeader unconditionally when
+            // SurfaceMeshletCount > 0; zero the count when no header was uploaded
+            // so an inconsistent asset can't produce a null-pointer GPU fault.
+            const uint32 SurfaceMeshletCount = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
             const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Material->GetVertexShader(), Material->GetPixelShader());
-            const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount });
+            const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
+            Local.MaxMeshletsPerInstance = std::max(Local.MaxMeshletsPerInstance, SurfaceMeshletCount);
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
             Item.Instance.Transform              = TransformMatrix;
             Item.Instance.SphereBounds           = SphereBounds;
             Item.Instance.DrawIDAndFlags         = PackDrawIDAndFlags(0, Flags); // DrawID patched at write-out
             Item.Instance.SurfaceMeshletOffset   = Surface.MeshletOffset;
-            // Meshlet cull + base VS both deref MeshletHeader unconditionally when
-            // SurfaceMeshletCount > 0; zero the count when no header was uploaded
-            // so an inconsistent asset can't produce a null-pointer GPU fault.
-            Item.Instance.SurfaceMeshletCount    = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
+            Item.Instance.SurfaceMeshletCount    = SurfaceMeshletCount;
             Item.Instance.CustomData             = MeshComponent.CustomPrimitiveData.Data.Packed;
             Item.Instance.VBAddress                  = VBAddress;
             Item.Instance.ShadowIBAddress            = ShadowIBAddress;
@@ -894,19 +898,21 @@ namespace Lumina
                 .bMasked          = (uint32)(bIsMasked        ? 1u : 0u),
                 .bAdditive        = (uint32)(bIsAdditive      ? 1u : 0u),
             };
+            // Skinned still gets its real meshlet header; the meshlet cull pass
+            // skips per-meshlet frustum/occlusion on skinned (bind-pose bounds
+            // aren't valid for deformed geometry) but still emits every meshlet
+            // so the vertex shader can pull them.
+            const uint32 SurfaceMeshletCount = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
             const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Material->GetVertexShader(), Material->GetPixelShader());
-            const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount });
+            const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
+            Local.MaxMeshletsPerInstance = std::max(Local.MaxMeshletsPerInstance, SurfaceMeshletCount);
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
             Item.Instance.Transform                = TransformMatrix;
             Item.Instance.SphereBounds             = SphereBounds;
             Item.Instance.DrawIDAndFlags           = PackDrawIDAndFlags(0, Flags);
             Item.Instance.SurfaceMeshletOffset     = Surface.MeshletOffset;
-            // Skinned still gets its real meshlet header; the meshlet cull pass
-            // skips per-meshlet frustum/occlusion on skinned (bind-pose bounds
-            // aren't valid for deformed geometry) but still emits every meshlet
-            // so the vertex shader can pull them.
-            Item.Instance.SurfaceMeshletCount      = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
+            Item.Instance.SurfaceMeshletCount      = SurfaceMeshletCount;
             Item.Instance.CustomData               = MeshComponent.CustomPrimitiveData.Data.Packed;
             Item.Instance.VBAddress                  = VBAddress;
             Item.Instance.ShadowIBAddress            = ShadowIBAddress;
@@ -921,7 +927,7 @@ namespace Lumina
             Item.LocalBoneOffset = LocalBoneOffset;
         }
     }
-
+    
     void FForwardRenderScene::MergeMeshDrawData(TVector<FThreadLocalDrawData>& ThreadLocal)
     {
         LUMINA_PROFILE_SECTION("Merge Mesh Draw Data");
@@ -988,43 +994,45 @@ namespace Lumina
 
         const uint32 NumBatches = (uint32)GlobalBatchKeys.size();
 
-        // For each global batch we collect the unique (StartIndex, IndexCount) draws from every thread
-        // and stamp each thread's local-draw indices with the resolved global-draw position.
-        TVector<TVector<FDrawKey>> GlobalDrawsPerBatch(NumBatches);
+        // Per-batch global draw dedupe via hash map. FDrawKey packs cleanly into a uint64 so
+        // we can key on that and skip specializing eastl::hash on FDrawKey. The previous
+        // linear search was O(threads * locals * globals) which went quadratic on scenes
+        // with many unique meshes per material.
+        TVector<TVector<FDrawKey>>          GlobalDrawsPerBatch(NumBatches);
+        TVector<THashMap<uint64, uint32>>   DrawDedupePerBatch(NumBatches);
 
         for (FThreadLocalDrawData& Local : ThreadLocal)
         {
             for (FLocalBatchEntry& LocalBatch : Local.LocalBatches)
             {
-                TVector<FDrawKey>& GlobalDraws = GlobalDrawsPerBatch[LocalBatch.GlobalBatchIndex];
                 const uint32 NumLocal = (uint32)LocalBatch.LocalDraws.size();
                 LocalBatch.LocalToGlobalDraw.resize(NumLocal);
+
+                TVector<FDrawKey>&        GlobalDraws = GlobalDrawsPerBatch[LocalBatch.GlobalBatchIndex];
+                THashMap<uint64, uint32>& Dedupe      = DrawDedupePerBatch[LocalBatch.GlobalBatchIndex];
 
                 for (uint32 ld = 0; ld < NumLocal; ++ld)
                 {
                     const FDrawKey& K = LocalBatch.LocalDraws[ld];
-                    const uint32 NumGlobal = (uint32)GlobalDraws.size();
-                    uint32 GlobalDraw = ~0u;
-                    for (uint32 g = 0; g < NumGlobal; ++g)
+                    const uint64 PackedKey = ((uint64)K.StartIndex << 32) | (uint64)K.IndexCount;
+                    uint32 GlobalDraw;
+                    auto It = Dedupe.find(PackedKey);
+                    if (It != Dedupe.end())
                     {
-                        if (GlobalDraws[g] == K)
-                        {
-                            GlobalDraw = g;
-                            break;
-                        }
+                        GlobalDraw = It->second;
                     }
-                    if (GlobalDraw == ~0u)
+                    else
                     {
-                        GlobalDraw = NumGlobal;
+                        GlobalDraw = (uint32)GlobalDraws.size();
                         GlobalDraws.push_back(K);
+                        Dedupe.emplace(PackedKey, GlobalDraw);
                     }
                     LocalBatch.LocalToGlobalDraw[ld] = GlobalDraw;
                 }
             }
         }
 
-        // Each batch gets a contiguous block of draw args. Compute a global "draw" index =
-        // batch base + draw offset within batch. Cull pass writes InstanceCount; we leave it 0.
+        // Each batch gets a contiguous block of draw args. Cull pass writes InstanceCount.
         TVector<uint32> BatchDrawArgBase(NumBatches);
         uint32 TotalDrawArgs = 0;
         for (uint32 b = 0; b < NumBatches; ++b)
@@ -1037,33 +1045,30 @@ namespace Lumina
         }
 
         IndirectDrawArguments.resize(TotalDrawArgs);
+        IndirectDrawArgumentsMeshlet.resize(TotalDrawArgs);
+        Instances.resize(TotalInstances);
 
-        // We need both totals (to compute StartInstanceLocation) and per-thread counts (so each
-        // thread knows where it can write its slice without contention in phase 6).
+        // Sparse count pass. Each LocalBatchEntry already owns an instance count and a
+        // meshlet-count sum per local draw, so we never need a T*D matrix.
         TVector<uint32> DrawInstanceCounts(TotalDrawArgs, 0u);
-        // ThreadDrawCounts[t * TotalDrawArgs + d]: how many instances thread t contributes to draw d.
-        TVector<uint32> ThreadDrawCounts((size_t)NumThreads * TotalDrawArgs, 0u);
+        TVector<uint32> MeshletCountsPerDraw(TotalDrawArgs, 0u);
 
-        for (uint32 t = 0; t < NumThreads; ++t)
+        for (FThreadLocalDrawData& Local : ThreadLocal)
         {
-            FThreadLocalDrawData& Local = ThreadLocal[t];
-            const size_t Row = (size_t)t * TotalDrawArgs;
             for (FLocalBatchEntry& LocalBatch : Local.LocalBatches)
             {
-                const uint32 BatchBase  = BatchDrawArgBase[LocalBatch.GlobalBatchIndex];
-                const uint32 NumLocal   = (uint32)LocalBatch.LocalDrawCounts.size();
+                const uint32 BatchBase = BatchDrawArgBase[LocalBatch.GlobalBatchIndex];
+                const uint32 NumLocal  = (uint32)LocalBatch.LocalDrawCounts.size();
                 for (uint32 ld = 0; ld < NumLocal; ++ld)
                 {
                     const uint32 GlobalDraw = BatchBase + LocalBatch.LocalToGlobalDraw[ld];
-                    const uint32 Count      = LocalBatch.LocalDrawCounts[ld];
-                    ThreadDrawCounts[Row + GlobalDraw] += Count;
-                    DrawInstanceCounts[GlobalDraw]      += Count;
+                    DrawInstanceCounts[GlobalDraw]   += LocalBatch.LocalDrawCounts[ld];
+                    MeshletCountsPerDraw[GlobalDraw] += LocalBatch.LocalMeshletCounts[ld];
                 }
             }
         }
 
-        // DrawInstanceOffsets[d] = where draw d's instances start in the per-instance buffers.
-        // ThreadDrawWriteBase[t * TotalDrawArgs + d] = where thread t's instances for draw d start.
+        // Prefix sum for instance offsets.
         TVector<uint32> DrawInstanceOffsets(TotalDrawArgs);
         {
             uint32 Running = 0;
@@ -1075,52 +1080,83 @@ namespace Lumina
             DEBUG_ASSERT(Running == TotalInstances);
         }
 
-        TVector<uint32> ThreadDrawWriteBase((size_t)NumThreads * TotalDrawArgs);
+        // Sparse cursor assignment: one D-sized scratch total (not T*D). Each LocalBatchEntry
+        // ends up with LocalDrawWriteBase[ld] pointing at the start of its slice, and the
+        // parallel writer advances that cursor in place (each worker only touches its own
+        // Local, so no atomics).
+        TVector<uint32> DrawCursor = DrawInstanceOffsets;
+        for (uint32 t = 0; t < NumThreads; ++t)
         {
-            // For each draw, hand each thread a slice starting at the running cursor.
-            TVector<uint32> Running(TotalDrawArgs);
-            for (uint32 d = 0; d < TotalDrawArgs; ++d)
+            FThreadLocalDrawData& Local = ThreadLocal[t];
+            for (FLocalBatchEntry& LocalBatch : Local.LocalBatches)
             {
-                Running[d] = DrawInstanceOffsets[d];
-            }
-            for (uint32 t = 0; t < NumThreads; ++t)
-            {
-                const size_t Row = (size_t)t * TotalDrawArgs;
-                for (uint32 d = 0; d < TotalDrawArgs; ++d)
+                const uint32 BatchBase = BatchDrawArgBase[LocalBatch.GlobalBatchIndex];
+                const uint32 NumLocal  = (uint32)LocalBatch.LocalDrawCounts.size();
+                LocalBatch.LocalDrawWriteBase.resize(NumLocal);
+                for (uint32 ld = 0; ld < NumLocal; ++ld)
                 {
-                    ThreadDrawWriteBase[Row + d] = Running[d];
-                    Running[d] += ThreadDrawCounts[Row + d];
+                    const uint32 GlobalDraw = BatchBase + LocalBatch.LocalToGlobalDraw[ld];
+                    LocalBatch.LocalDrawWriteBase[ld] = DrawCursor[GlobalDraw];
+                    DrawCursor[GlobalDraw] += LocalBatch.LocalDrawCounts[ld];
                 }
             }
         }
 
         // Fill IndirectDrawArguments with their final values.
         {
-            uint32 DrawCursor = 0;
+            uint32 DrawIdx = 0;
             for (uint32 b = 0; b < NumBatches; ++b)
             {
                 const TVector<FDrawKey>& GlobalDraws = GlobalDrawsPerBatch[b];
-                for (uint32 i = 0; i < GlobalDraws.size(); ++i, ++DrawCursor)
+                for (uint32 i = 0; i < GlobalDraws.size(); ++i, ++DrawIdx)
                 {
-                    FDrawIndirectArguments& Args = IndirectDrawArguments[DrawCursor];
+                    FDrawIndirectArguments& Args = IndirectDrawArguments[DrawIdx];
                     Args.VertexCount           = GlobalDraws[i].IndexCount;
                     Args.InstanceCount         = 0u; // cull pass increments
                     Args.StartVertexLocation   = GlobalDraws[i].StartIndex;
-                    Args.StartInstanceLocation = DrawInstanceOffsets[DrawCursor];
-                    RenderStats.NumInstances  += DrawInstanceCounts[DrawCursor];
+                    Args.StartInstanceLocation = DrawInstanceOffsets[DrawIdx];
+                    RenderStats.NumInstances  += DrawInstanceCounts[DrawIdx];
                 }
             }
         }
 
-        // Mirror layout for meshlet-indirect: each draw gets VertexCount=372
-        // and FirstInstance = meshlet-prefix-sum. InstanceCount stays zero and
-        // MeshletCull atomic-appends into uMeshletDrawList[FirstInstance..].
-        IndirectDrawArgumentsMeshlet.resize(TotalDrawArgs);
+        // Meshlet-indirect prefix sum. Per-draw sums were built sparsely above; no need
+        // to walk the final Instances array. MaxMeshletsPerInstance reduces from per-thread
+        // totals tracked during the processing phase.
+        MaxMeshletsPerInstance = 0u;
+        for (FThreadLocalDrawData& Local : ThreadLocal)
+        {
+            MaxMeshletsPerInstance = std::max(MaxMeshletsPerInstance, Local.MaxMeshletsPerInstance);
+        }
 
-        // Each thread owns a disjoint set of (thread, draw) slices in the global instance
-        // buffers, so there are no atomics. Cursors are local to each worker.
-        Instances.resize(TotalInstances);
+        uint32 MeshletRunning = 0u;
+        for (uint32 d = 0; d < TotalDrawArgs; ++d)
+        {
+            FDrawIndirectArguments& Args = IndirectDrawArgumentsMeshlet[d];
+            Args.VertexCount           = MESHLET_VERTICES_PER_DRAW;
+            Args.InstanceCount         = 0u;
+            Args.StartVertexLocation   = 0u;
+            Args.StartInstanceLocation = MeshletRunning;
+            MeshletRunning            += MeshletCountsPerDraw[d];
+        }
+        TotalMeshletBound = MeshletRunning;
 
+        // Cascade-major mirror with FirstInstance shifted by c * TotalMeshletBound.
+        IndirectDrawArgumentsMeshletCascade.resize((size_t)NumCascades * TotalDrawArgs);
+        for (uint32 c = 0; c < (uint32)NumCascades; ++c)
+        {
+            const uint32 CascadeMeshletBase = c * TotalMeshletBound;
+            for (uint32 d = 0; d < TotalDrawArgs; ++d)
+            {
+                FDrawIndirectArguments Args = IndirectDrawArgumentsMeshlet[d];
+                Args.InstanceCount         = 0u;
+                Args.StartInstanceLocation += CascadeMeshletBase;
+                IndirectDrawArgumentsMeshletCascade[c * TotalDrawArgs + d] = Args;
+            }
+        }
+
+        // Parallel instance write. Each worker owns its own LocalBatches, so the
+        // in-place cursor advance on LocalDrawWriteBase needs no synchronization.
         {
             LUMINA_PROFILE_SECTION("Parallel Instance Write");
 
@@ -1131,23 +1167,14 @@ namespace Lumina
                 {
                     FThreadLocalDrawData& Local = ThreadLocal[t];
                     const uint32 BoneBase = ThreadBoneBase[t];
-                    const size_t Row      = (size_t)t * TotalDrawArgs;
-
-                    // Per-thread cursors. Sized to TotalDrawArgs but the worker only ever touches
-                    // entries for draws it actually contributes to (most are read-once).
-                    TVector<uint32> Cursors(TotalDrawArgs);
-                    for (uint32 d = 0; d < TotalDrawArgs; ++d)
-                    {
-                        Cursors[d] = ThreadDrawWriteBase[Row + d];
-                    }
 
                     for (FProcessedDrawItem& Item : Local.Items)
                     {
-                        const FLocalBatchEntry& LocalBatch = Local.LocalBatches[Item.LocalBatchIndex];
+                        FLocalBatchEntry& LocalBatch = Local.LocalBatches[Item.LocalBatchIndex];
                         const uint32 GlobalDraw = BatchDrawArgBase[LocalBatch.GlobalBatchIndex]
                                                 + LocalBatch.LocalToGlobalDraw[Item.LocalDrawIndex];
 
-                        const uint32 WriteIdx = Cursors[GlobalDraw]++;
+                        const uint32 WriteIdx = LocalBatch.LocalDrawWriteBase[Item.LocalDrawIndex]++;
 
                         Item.Instance.DrawIDAndFlags = PackDrawIDAndFlags(GlobalDraw, Item.Flags);
 
@@ -1164,50 +1191,6 @@ namespace Lumina
             });
             WriteGraph.Dispatch();
             WriteGraph.Wait();
-        }
-
-        // Meshlet-indirect prefix sum. Walk the final Instances (now with
-        // DrawID patched in) to accumulate meshlet counts per draw, then turn
-        // that into FirstInstance offsets. Also tracks the peak per-instance
-        // meshlet count so the compute dispatch can size its X dimension.
-        {
-            LUMINA_PROFILE_SECTION("Meshlet Indirect Prefix Sum");
-
-            TVector<uint32> MeshletCountsPerDraw(TotalDrawArgs, 0u);
-            MaxMeshletsPerInstance = 0u;
-            for (const FGPUInstance& Inst : Instances)
-            {
-                const uint32 DrawID = Inst.DrawIDAndFlags & 0x00FFFFFFu;
-                MeshletCountsPerDraw[DrawID] += Inst.SurfaceMeshletCount;
-                MaxMeshletsPerInstance = std::max(Inst.SurfaceMeshletCount, MaxMeshletsPerInstance);
-            }
-
-            uint32 MeshletRunning = 0u;
-            for (uint32 d = 0; d < TotalDrawArgs; ++d)
-            {
-                FDrawIndirectArguments& Args = IndirectDrawArgumentsMeshlet[d];
-                Args.VertexCount           = MESHLET_VERTICES_PER_DRAW;
-                Args.InstanceCount         = 0u;
-                Args.StartVertexLocation   = 0u;
-                Args.StartInstanceLocation = MeshletRunning;
-                MeshletRunning            += MeshletCountsPerDraw[d];
-            }
-
-            TotalMeshletBound = MeshletRunning;
-
-            // Cascade-major mirror with FirstInstance shifted by c * TotalMeshletBound.
-            IndirectDrawArgumentsMeshletCascade.resize((size_t)NumCascades * TotalDrawArgs);
-            for (uint32 c = 0; c < (uint32)NumCascades; ++c)
-            {
-                const uint32 CascadeMeshletBase = c * TotalMeshletBound;
-                for (uint32 d = 0; d < TotalDrawArgs; ++d)
-                {
-                    FDrawIndirectArguments Args = IndirectDrawArgumentsMeshlet[d];
-                    Args.InstanceCount         = 0u;
-                    Args.StartInstanceLocation += CascadeMeshletBase;
-                    IndirectDrawArgumentsMeshletCascade[c * TotalDrawArgs + d] = Args;
-                }
-            }
         }
 
         RenderStats.NumBatches = NumBatches;

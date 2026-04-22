@@ -1081,14 +1081,19 @@ namespace Lumina::Physics
         glm::vec3 ColliderTranslationOffset(0.0f);
         glm::vec3 ColliderRotationOffset(0.0f);
 
-        STransformComponent& TransformComponent = Registry.get<STransformComponent>(Entity);
+        STransformComponent* TransformComponent = Registry.try_get<STransformComponent>(Entity);
+        if (!TransformComponent)
+        {
+            PendingRigidBodyCreations.push(Entity);
+            return;
+        }
         
         if (SBoxColliderComponent* BC = Registry.try_get<SBoxColliderComponent>(Entity))
         {
             ColliderTranslationOffset       = BC->TranslationOffset;
             ColliderRotationOffset          = BC->RotationOffset;
             
-            JPH::BoxShapeSettings Settings(JoltUtils::ToJPHVec3(BC->HalfExtent * TransformComponent.GetScale()));
+            JPH::BoxShapeSettings Settings(JoltUtils::ToJPHVec3(BC->HalfExtent * TransformComponent->GetScale()));
             Settings.SetEmbedded();
             auto Result = Settings.Create();
             if (Result.HasError())
@@ -1102,7 +1107,7 @@ namespace Lumina::Physics
         {
             ColliderTranslationOffset           = SC->TranslationOffset;
 
-            JPH::SphereShapeSettings Settings(SC->Radius * TransformComponent.MaxScale());
+            JPH::SphereShapeSettings Settings(SC->Radius * TransformComponent->MaxScale());
             Settings.SetEmbedded();
             auto Result = Settings.Create();
             if (Result.HasError())
@@ -1127,8 +1132,8 @@ namespace Lumina::Physics
         JPH::ObjectLayer Layer      = JoltUtils::PackToObjectLayer(RigidBodyComponent.CollisionProfile);
         JPH::EMotionType MotionType = ToJoltMotionType(RigidBodyComponent.BodyType);
 
-        glm::quat Rotation      = TransformComponent.GetRotation();
-        glm::vec3 Position      = TransformComponent.GetLocation();
+        glm::quat Rotation      = TransformComponent->GetRotation();
+        glm::vec3 Position      = TransformComponent->GetLocation();
         
         glm::quat QuatRotation(ColliderRotationOffset);
         JPH::RotatedTranslatedShapeSettings RTS(JoltUtils::ToJPHVec3(ColliderTranslationOffset), JoltUtils::ToJPHQuat(QuatRotation), Shape);

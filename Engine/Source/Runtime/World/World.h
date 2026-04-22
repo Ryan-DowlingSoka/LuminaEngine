@@ -73,6 +73,9 @@ namespace Lumina
         
         FUNCTION(Script)
         entt::entity ConstructEntity(const FName& Name, const FTransform& Transform = FTransform());
+
+        FUNCTION(Script)
+        entt::entity SpawnPrefab(const FName& Path);
         
         FUNCTION(Script)
         FEntityRegistry& GetEntityRegistry() { return EntityRegistry; }

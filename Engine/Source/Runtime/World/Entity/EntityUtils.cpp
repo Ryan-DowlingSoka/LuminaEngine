@@ -272,7 +272,8 @@ namespace Lumina::ECS::Utils
     
     void ReparentEntity(FEntityRegistry& Registry, entt::entity Child, entt::entity Parent)
     {
-        #if LE_DEBUG
+        // These guards are correctness-critical, not just debug aids: a self-parent or circular
+        // hierarchy produces an infinite loop inside ForEachChild / UpdateChildrenRecursive.
         if (Child == Parent)
         {
             LOG_ERROR("Cannot parent an entity to itself!");
@@ -285,6 +286,7 @@ namespace Lumina::ECS::Utils
             return;
         }
 
+        #if LE_DEBUG
         if (Parent != entt::null && IsDescendantOf(Registry, Parent, Child))
         {
             LOG_ERROR("Cannot create circular hierarchy - parent is a descendant of child!");
@@ -352,11 +354,20 @@ namespace Lumina::ECS::Utils
         TVector<entt::entity> ToDestroy;
         CollectDescendants(Registry, Entity, ToDestroy);
 
-        for (auto It = ToDestroy.rbegin(); It != ToDestroy.rend(); ++It)
+        // Detach from the parent's sibling list first so the parent's relationship component
+        // stops pointing at freed entities, then destroy this entity and all descendants.
+        if (Registry.any_of<FRelationshipComponent>(Entity))
         {
-            if (Registry.valid(*It) && Registry.any_of<FRelationshipComponent>(*It))
+            RemoveFromParent(Registry, Entity);
+        }
+
+        ToDestroy.push_back(Entity);
+
+        for (entt::entity E : ToDestroy)
+        {
+            if (Registry.valid(E))
             {
-                RemoveFromParent(Registry, *It);
+                Registry.destroy(E);
             }
         }
     }
@@ -617,22 +628,30 @@ namespace Lumina::ECS::Utils
 
     glm::vec3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity)
     {
-        return Registry.get<STransformComponent>(Entity).GetWorldLocation();
+        auto* Transform = Registry.try_get<STransformComponent>(Entity);
+        return Transform ? Transform->GetWorldLocation() : glm::vec3{};    
     }
 
     glm::quat GetEntityRotation(FEntityRegistry& Registry, entt::entity Entity)
     {
-        return Registry.get<STransformComponent>(Entity).GetWorldRotation();
+        auto* Transform = Registry.try_get<STransformComponent>(Entity);
+        return Transform ? Transform->GetWorldRotation() : glm::quat{};
     }
 
     void SetEntityLocation(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Location)
     {
-        Registry.get<STransformComponent>(Entity).SetLocation(Location);
+        if (auto* Transform = Registry.try_get<STransformComponent>(Entity))
+        {
+            Transform->SetLocation(Location);
+        }    
     }
 
     void SetEntityRotation(FEntityRegistry& Registry, entt::entity Entity, const glm::quat& Rotation)
     {
-        Registry.get<STransformComponent>(Entity).SetRotation(Rotation);
+        if (auto* Transform = Registry.try_get<STransformComponent>(Entity))
+        {
+            Transform->SetRotation(Rotation);
+        }
     }
 
     bool IsEntityValid(FEntityRegistry& Registry, entt::entity Entity)
@@ -642,7 +661,8 @@ namespace Lumina::ECS::Utils
 
     glm::vec3 TranslateEntity(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Translation)
     {
-        return Registry.get<STransformComponent>(Entity).Translate(Translation);
+        auto* Transform = Registry.try_get<STransformComponent>(Entity);
+        return Transform ? Transform->Translate(Translation) : glm::vec3{};
     }
 
     entt::entity DuplicateEntity(FEntityRegistry& Registry, entt::entity Entity)

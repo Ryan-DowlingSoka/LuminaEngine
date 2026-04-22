@@ -2,9 +2,13 @@
 #include <glm/gtx/string_cast.hpp>
 #include "EditorToolContext.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Assets/AssetTypes/Prefabs/Prefab.h"
+#include "Assets/AssetTypes/Prefabs/PrefabComponents.h"
 #include "Components/EditorEntityTags.h"
+#include "ContentBrowserEditorTool.h"
 #include "Config/Config.h"
 #include "Core/Console/ConsoleVariable.h"
+#include "Core/Object/Cast.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/ObjectIterator.h"
 #include "Core/Object/Package/Package.h"
@@ -40,6 +44,19 @@ namespace Lumina
 {
     static constexpr const char* WorldSettingsName = "World Settings";
     static constexpr const char* SceneGraphName = "Scene Graph";
+
+    // True when the entity is a non-root member of a prefab instance — hierarchy edits (reparent,
+    // unparent, detach, delete) are locked on these so the instance stays faithful to its source prefab.
+    // Only the instance root is user-editable (move/delete as a unit).
+    static bool IsLockedPrefabChild(const entt::registry& Registry, entt::entity Entity)
+    {
+        if (Entity == entt::null || !Registry.valid(Entity))
+        {
+            return false;
+        }
+        const SPrefabInstanceComponent* Instance = Registry.try_get<SPrefabInstanceComponent>(Entity);
+        return Instance != nullptr && !Instance->bIsRoot;
+    }
     static constexpr const char* DragDropID = "EntityDropID";
 
 
@@ -92,22 +109,30 @@ namespace Lumina
         {
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
             FEntityRegistry& Registry = World->GetEntityRegistry();
-            
+            const bool bLocked = IsLockedPrefabChild(Registry, Data.Entity);
+
+            if (bLocked)
+            {
+                ImGui::TextDisabled(LE_ICON_LOCK " Locked (Prefab Instance)");
+                ImGuiX::TextTooltip("{}", "This entity belongs to a prefab instance. Edit the source prefab to change its hierarchy.");
+                ImGui::Separator();
+            }
+
             if (ImGui::MenuItem("Add Component"))
             {
                 PushAddComponentModal(Data.Entity);
             }
             ImGuiX::TextTooltip("{}", "Add a new component to the entity");
 
-            
+
             if (ImGui::MenuItem("Copy Entity ID"))
             {
                 ImGui::SetClipboardText(eastl::to_string(entt::to_integral(Data.Entity)).c_str());
             }
-            
+
             ImGuiX::TextTooltip("{}", "Copy entity identifier to platform clipboard");
-            
-            if (ECS::Utils::IsChild(Registry, Data.Entity))
+
+            if (!bLocked && ECS::Utils::IsChild(Registry, Data.Entity))
             {
                 if (ImGui::MenuItem("Unparent"))
                 {
@@ -115,8 +140,8 @@ namespace Lumina
                     OutlinerListView.MarkTreeDirty();
                 }
             }
-            
-            if (ECS::Utils::IsParent(Registry, Data.Entity))
+
+            if (!bLocked && ECS::Utils::IsParent(Registry, Data.Entity))
             {
                 if (ImGui::MenuItem("Detach Children"))
                 {
@@ -124,24 +149,24 @@ namespace Lumina
                     OutlinerListView.MarkTreeDirty();
                 }
             }
-            
+
             if (ImGui::MenuItem("Rename"))
             {
                 PushRenameEntityModal(Data.Entity);
             }
-            
+
             if (ImGui::MenuItem("Duplicate"))
             {
                 entt::entity New = entt::null;
                 auto View = World->GetEntityRegistry().view<FSelectedInEditorComponent>();
-                
+
                 View.each([&](entt::entity Entity)
                 {
                     CopyEntity(New, Entity);
                 });
             }
-            
-            if (ImGui::MenuItem("Delete"))
+
+            if (!bLocked && ImGui::MenuItem("Delete"))
             {
                 EntityDestroyRequests.push(Data.Entity);
             }
@@ -314,6 +339,10 @@ namespace Lumina
         
                 if (bDeletePressed)
                 {
+                    if (IsLockedPrefabChild(World->GetEntityRegistry(), SelectedEntity))
+                    {
+                        return;
+                    }
                     World->DestroyEntity(SelectedEntity);
                     OutlinerListView.MarkTreeDirty();
                 }
@@ -517,6 +546,26 @@ namespace Lumina
 
         ImGuizmo::SetDrawlist(ImGui::GetCurrentWindow()->DrawList);
         ImGuizmo::SetRect(ViewportOrigin.x, ViewportOrigin.y, ViewportSize.x, ViewportSize.y);
+
+        {
+            const ImRect ViewportRect(ViewportOrigin, ImVec2(ViewportOrigin.x + ViewportSize.x, ViewportOrigin.y + ViewportSize.y));
+            if (ImGui::BeginDragDropTargetCustom(ViewportRect, ImGui::GetCurrentWindow()->ID))
+            {
+                if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(FContentBrowserEditorTool::FContentBrowserTileViewItem::DragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery))
+                {
+                    if (Payload->IsDelivery())
+                    {
+                        const uintptr_t ValuePtr = *static_cast<uintptr_t*>(Payload->Data);
+                        const auto* PayloadItem = reinterpret_cast<FContentBrowserEditorTool::FContentBrowserTileViewItem*>(ValuePtr);
+                        if (PayloadItem && PayloadItem->IsAsset())
+                        {
+                            HandlePrefabContentDrop(PayloadItem->GetVirtualPath(), entt::null);
+                        }
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
+        }
 
         TerrainEditMode.Tick(World, (float)World->GetWorldDeltaTime(), CameraComponent, bViewportHovered, ViewportOrigin, ViewportSize);
         TerrainEditMode.DrawOverlay(World, ViewportOrigin, ViewportSize, CameraComponent);
@@ -890,7 +939,9 @@ namespace Lumina
                 ImGui::PopStyleColor();
                 
                 
-                if (ECS::Utils::IsChild(Registry, LastSelectedEntity))
+                const bool bLastSelectedLocked = IsLockedPrefabChild(Registry, LastSelectedEntity);
+
+                if (!bLastSelectedLocked && ECS::Utils::IsChild(Registry, LastSelectedEntity))
                 {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 0.3f, 0.6f, 1.0f));
                     if (ImGui::MenuItem("Unparent"))
@@ -900,8 +951,8 @@ namespace Lumina
                     }
                     ImGui::PopStyleColor();
                 }
-            
-                if (ECS::Utils::IsParent(Registry, LastSelectedEntity))
+
+                if (!bLastSelectedLocked && ECS::Utils::IsParent(Registry, LastSelectedEntity))
                 {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.9f, 0.2f, 1.0f));
                     if (ImGui::MenuItem("Detach Children"))
@@ -2269,6 +2320,81 @@ namespace Lumina
             {
                 using namespace entt::literals;
 
+                if (Entity == entt::null)
+                {
+                    static const FName PrefabClassName = FName("CPrefab");
+                    TVector<FAssetData*> PrefabAssets = FAssetRegistry::Get().FindByPredicate([](const FAssetData& Data)
+                    {
+                        return Data.AssetClass == PrefabClassName;
+                    });
+
+                    if (!PrefabAssets.empty())
+                    {
+                        TVector<FAssetData*> FilteredPrefabs;
+                        FilteredPrefabs.reserve(PrefabAssets.size());
+                        for (FAssetData* Data : PrefabAssets)
+                        {
+                            if (AddEntityComponentFilter.PassFilter(Data->AssetName.c_str()))
+                            {
+                                FilteredPrefabs.push_back(Data);
+                            }
+                        }
+
+                        eastl::sort(FilteredPrefabs.begin(), FilteredPrefabs.end(), [](FAssetData* LHS, FAssetData* RHS)
+                        {
+                            return LHS->AssetName.ToString() < RHS->AssetName.ToString();
+                        });
+
+                        if (!FilteredPrefabs.empty())
+                        {
+                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.9f, 1.0f, 1.0f));
+                            ImGui::TextUnformatted(LE_ICON_PACKAGE_VARIANT_CLOSED " Prefabs");
+                            ImGui::PopStyleColor();
+                            ImGui::Separator();
+                            ImGui::Spacing();
+
+                            for (FAssetData* Data : FilteredPrefabs)
+                            {
+                                ImGui::PushID(Data);
+
+                                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.22f, 0.28f, 1.0f));
+                                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.35f, 0.5f, 1.0f));
+                                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.15f, 0.3f, 0.45f, 1.0f));
+                                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+                                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 10.0f));
+
+                                const float ButtonWidth = ImGui::GetContentRegionAvail().x;
+
+                                FFixedString Label;
+                                Label.append(LE_ICON_PACKAGE_VARIANT_CLOSED " ");
+                                Label.append(Data->AssetName.c_str());
+                                if (ImGui::Button(Label.c_str(), ImVec2(ButtonWidth, 0.0f)))
+                                {
+                                    HandlePrefabContentDrop(FStringView(Data->Path.c_str()), entt::null);
+                                    ImGui::CloseCurrentPopup();
+                                    AddEntityComponentFilter.Clear();
+                                }
+
+                                ImGui::PopStyleVar(2);
+                                ImGui::PopStyleColor(3);
+
+                                ImGui::PopID();
+                                ImGui::Spacing();
+                            }
+
+                            ImGui::Spacing();
+                            ImGui::Separator();
+                            ImGui::Spacing();
+
+                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.9f, 1.0f, 1.0f));
+                            ImGui::TextUnformatted(LE_ICON_CUBE " Components");
+                            ImGui::PopStyleColor();
+                            ImGui::Separator();
+                            ImGui::Spacing();
+                        }
+                    }
+                }
+
                 TVector<TPair<entt::meta_type, CStruct*>> SortedComponents;
                 
                 for(auto &&[ID, MetaType]: entt::resolve())
@@ -2462,14 +2588,37 @@ namespace Lumina
         AddEntityRecursive = [&](entt::entity WorldEntity, entt::entity ParentItem)
         {
             SNameComponent& NameComponent = World->GetEntityRegistry().get<SNameComponent>(WorldEntity);
+            const SPrefabInstanceComponent* PrefabInstance = World->GetEntityRegistry().try_get<SPrefabInstanceComponent>(WorldEntity);
+            const bool bIsPrefabInstanceRoot = PrefabInstance != nullptr && PrefabInstance->bIsRoot;
+            const bool bIsLockedPrefabChild = PrefabInstance != nullptr && !PrefabInstance->bIsRoot;
+
             FFixedString Name;
-            Name.append(LE_ICON_CUBE).append(" ").append(NameComponent.Name.c_str()).append_convert(FString(" - (" + eastl::to_string(entt::to_integral(WorldEntity)) + ")"));
-            
+            if (bIsPrefabInstanceRoot)
+            {
+                Name.append(LE_ICON_PACKAGE_VARIANT_CLOSED).append(" ");
+            }
+            else if (bIsLockedPrefabChild)
+            {
+                Name.append(LE_ICON_LOCK).append(" ");
+            }
+            else
+            {
+                Name.append(LE_ICON_CUBE).append(" ");
+            }
+            Name.append(NameComponent.Name.c_str()).append_convert(FString(" - (" + eastl::to_string(entt::to_integral(WorldEntity)) + ")"));
+
             entt::entity ItemEntity     = Tree.CreateNode(ParentItem, Name);
             FTreeNodeDisplay& Display   = Tree.Get<FTreeNodeDisplay>(ItemEntity);
-            Display.TooltipText         = FString("Entity: " + eastl::to_string(entt::to_integral(WorldEntity))).c_str();
+            if (bIsLockedPrefabChild)
+            {
+                Display.TooltipText = "Prefab instance child, hierarchy is locked. Edit the source prefab to change.";
+            }
+            else
+            {
+                Display.TooltipText = FString("Entity: " + eastl::to_string(entt::to_integral(WorldEntity))).c_str();
+            }
             Display.bShowDisabledIcon   = true;
-			Display.bAllowRenaming      = true;
+			Display.bAllowRenaming      = !bIsLockedPrefabChild;
             
             Tree.EmplaceUserData<FEntityListViewItemData>(ItemEntity).Entity = WorldEntity;
 
@@ -2532,17 +2681,68 @@ namespace Lumina
     
     void FWorldEditorTool::HandleEntityEditorDragDrop(FTreeListView& Tree, entt::entity DropItem)
     {
-        const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(DragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery);
-        if (Payload && Payload->IsDelivery())
+        if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(DragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery))
         {
-            entt::entity SourceEntity = *static_cast<entt::entity*>(Payload->Data);
-            
-            BeginTransaction();
-            ECS::Utils::ReparentEntity(World->GetEntityRegistry(), SourceEntity, DropItem);
-            EndTransaction("Reparent");
-            
-            OutlinerListView.MarkTreeDirty();
+            if (Payload->IsDelivery())
+            {
+                entt::entity SourceEntity = *static_cast<entt::entity*>(Payload->Data);
+                entt::registry& Registry = World->GetEntityRegistry();
+
+                if (IsLockedPrefabChild(Registry, SourceEntity) || IsLockedPrefabChild(Registry, DropItem))
+                {
+                    ImGuiX::Notifications::NotifyError("Cannot reparent prefab-instance children. Edit the source prefab instead.");
+                    return;
+                }
+
+                BeginTransaction();
+                ECS::Utils::ReparentEntity(Registry, SourceEntity, DropItem);
+                EndTransaction("Reparent");
+
+                OutlinerListView.MarkTreeDirty();
+            }
+            return;
         }
+
+        if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(FContentBrowserEditorTool::FContentBrowserTileViewItem::DragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery))
+        {
+            if (Payload->IsDelivery())
+            {
+                const uintptr_t ValuePtr = *static_cast<uintptr_t*>(Payload->Data);
+                const auto* PayloadItem = reinterpret_cast<FContentBrowserEditorTool::FContentBrowserTileViewItem*>(ValuePtr);
+                if (PayloadItem && PayloadItem->IsAsset())
+                {
+                    HandlePrefabContentDrop(PayloadItem->GetVirtualPath(), DropItem);
+                }
+            }
+        }
+    }
+
+    void FWorldEditorTool::HandlePrefabContentDrop(FStringView VirtualPath, entt::entity DropTarget)
+    {
+        FAssetData* AssetData = FAssetRegistry::Get().GetAssetByPath(VirtualPath);
+        if (AssetData == nullptr)
+        {
+            return;
+        }
+
+        CObject* Loaded = LoadObject<CObject>(AssetData->AssetGUID);
+        CPrefab* Prefab = Cast<CPrefab>(Loaded);
+        if (Prefab == nullptr)
+        {
+            return;
+        }
+
+        BeginTransaction();
+        entt::entity NewRoot = Prefab->Instantiate(World, FTransform(), DropTarget);
+        EndTransaction("Instantiate Prefab");
+
+        if (NewRoot != entt::null)
+        {
+            ClearSelectedEntities();
+            AddSelectedEntity(NewRoot, true);
+        }
+
+        OutlinerListView.MarkTreeDirty();
     }
 
     void FWorldEditorTool::DrawWorldSettings(bool bFocused)
@@ -2635,6 +2835,23 @@ namespace Lumina
             if (ImGui::BeginChild("EntityList", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar))
             {
                 OutlinerListView.Draw(OutlinerContext);
+
+                if (ImGui::BeginDragDropTargetCustom(ImGui::GetCurrentWindow()->Rect(), ImGui::GetCurrentWindow()->ID))
+                {
+                    if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(FContentBrowserEditorTool::FContentBrowserTileViewItem::DragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery))
+                    {
+                        if (Payload->IsDelivery())
+                        {
+                            const uintptr_t ValuePtr = *static_cast<uintptr_t*>(Payload->Data);
+                            const auto* PayloadItem = reinterpret_cast<FContentBrowserEditorTool::FContentBrowserTileViewItem*>(ValuePtr);
+                            if (PayloadItem && PayloadItem->IsAsset())
+                            {
+                                HandlePrefabContentDrop(PayloadItem->GetVirtualPath(), entt::null);
+                            }
+                        }
+                    }
+                    ImGui::EndDragDropTarget();
+                }
             }
             ImGui::EndChild();
             
