@@ -710,26 +710,7 @@ namespace Lumina
             void* UploadCPUVA;
             if (UploadManager->SuballocateBuffer(Size, UploadBuffer, UploadOffset, UploadCPUVA, MakeVersion(CurrentCommandBuffer->RecordingID, Info.CommandQueue, false)))
             {
-                static constexpr size_t AsyncMemcpyThreshold = 10llu * 1024 * 1024;
-                static constexpr size_t ChunkSize = 256llu * 1024;
-                
-                if (Size > AsyncMemcpyThreshold)
-                {
-                    uint64 NumChunks = (Size + ChunkSize - 1) / ChunkSize;
-                    Task::ParallelFor((uint32)NumChunks, [&](uint32 Index)
-                    {
-                        LUMINA_PROFILE_SECTION("Memcpy");
-                        uint64 ChunkOffset = Index * ChunkSize;
-                        uint64 ThisChunkSize = eastl::min(ChunkSize, Size - ChunkOffset);
-                        
-                        Memory::Memcpy((uint8*)UploadCPUVA + ChunkOffset, (const uint8*)Data + ChunkOffset, ThisChunkSize);
-                    });
-                }
-                else
-                {
-                    Memory::Memcpy(UploadCPUVA, Data, Size);
-                }
-                
+                Memory::Memcpy(UploadCPUVA, Data, Size);
                 CopyBuffer(UploadBuffer, UploadOffset, Buffer, Offset, Size);
             }
             else

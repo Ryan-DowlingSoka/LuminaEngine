@@ -9,12 +9,11 @@ struct VSOutput
     float4 FragPos                  : FRAG_POS;
     float2 UV                       : TEXCOORD0;
 
-    // Absolute index into the split per-instance buffers (uInstanceCull /
-    // uInstanceRender / uInstanceTransform). The meshlet path resolves this
-    // from uMeshletDrawList so the pixel shader can skip the DrawID mapping.
+    // Absolute index into uInstance. The meshlet path resolves this from
+    // uMeshletDrawList so the pixel shader can skip the DrawID mapping.
     uint InstanceIndex              : INSTANCE;
 
-    // Global meshlet index (Cull.SurfaceMeshletOffset + Draw.MeshletLocalIndex).
+    // Global meshlet index (Inst.SurfaceMeshletOffset + Draw.MeshletLocalIndex).
     // Consumed by the base pixel shader when r.MeshletDebug is on.
     nointerpolation uint MeshletIndex : MESHLET_INDEX;
 
@@ -35,12 +34,11 @@ struct VSOutput
 [shader("vertex")]
 VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_VulkanInstanceID)
 {
-    FMeshletDraw       Draw   = uMeshletDrawList[MeshletSlot];
-    FGPUInstanceCull   Cull   = GetInstanceCull(Draw.InstanceID);
-    FGPUInstanceRender Render = GetInstanceRender(Draw.InstanceID);
+    FMeshletDraw Draw = uMeshletDrawList[MeshletSlot];
+    FGPUInstance Inst = GetInstance(Draw.InstanceID);
 
-    uint GlobalMeshletIdx = Cull.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
-    FMeshlet M            = Render.MeshletHeader.Meshlets[GlobalMeshletIdx];
+    uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
+    FMeshlet M            = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
 
     uint TriIdx = VertexIndex / 3u;
     uint Corner = VertexIndex % 3u;
@@ -64,21 +62,21 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_Vu
 
     // Triangles are packed as 4x uint8 (three corners + pad) per uint32. The
     // meshlet's Vertices array then remaps the local index to the global VBO.
-    uint PackedTri    = Render.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
+    uint PackedTri    = Inst.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
     uint LocalVertIdx = (PackedTri >> (Corner * 8u)) & 0xFFu;
-    uint VertexIdx    = Render.MeshletHeader.Vertices[M.VertexOffset + LocalVertIdx];
+    uint VertexIdx    = Inst.MeshletHeader.Vertices[M.VertexOffset + LocalVertIdx];
 
     FVertexData VertexData;
-    if (Cull.HasFlag(EInstanceFlags::Skinned))
+    if (Inst.HasFlag(EInstanceFlags::Skinned))
     {
-        VertexData = LoadSkinnedVertexByIndex(Render.VBAddress, VertexIdx, Render.BoneOffset);
+        VertexData = LoadSkinnedVertexByIndex(Inst.VBAddress, VertexIdx, Inst.BoneOffset);
     }
     else
     {
-        VertexData = LoadStaticVertexByIndex(Render.VBAddress, VertexIdx);
+        VertexData = LoadStaticVertexByIndex(Inst.VBAddress, VertexIdx);
     }
 
-    float4x4 ModelMatrix = GetInstanceTransform(Draw.InstanceID);
+    float4x4 ModelMatrix = Inst.ModelMatrix;
     float4x4 View        = GetCameraView();
     float4x4 Projection  = GetCameraProjection();
 

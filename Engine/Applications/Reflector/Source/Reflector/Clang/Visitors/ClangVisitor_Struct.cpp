@@ -26,7 +26,6 @@ namespace Lumina::Reflection::Visitor
 	{
 		const CXString CommentString = clang_Cursor_getBriefCommentText(Cursor);
 		eastl::string Result;
-		spdlog::warn("ToolTip {}", CommentString.data ? "Valid" : "Null");
 		if (CommentString.data != nullptr)
 		{
 			const char* Raw = clang_getCString(CommentString);

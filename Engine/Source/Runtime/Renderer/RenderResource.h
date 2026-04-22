@@ -16,6 +16,8 @@
 
 namespace Lumina
 {
+	class FRHITaskShader;
+	class FRHIMeshShader;
 	struct FShaderCompileOptions;
 	class FRHIInputLayout;
 	struct FShaderHeader;
@@ -76,6 +78,8 @@ enum ERHIResourceType : uint8
 	RRT_PixelShader,
 	RRT_ComputeShader,
 	RTT_GeometryShader,
+	RRT_MeshShader,
+	RRT_TaskShader,
 	RRT_ShaderLibrary,
 	RRT_GraphicsPipeline,
 	RRT_ComputePipeline,
@@ -126,11 +130,13 @@ ENUM_CLASS_FLAGS(ERHIResourceType)
 
 enum class ERHIShaderType : uint8
 {
-	None =		ERHIResourceType::RRT_None,
-	Vertex =	ERHIResourceType::RRT_VertexShader,
-	Fragment =	ERHIResourceType::RRT_PixelShader,
-	Compute =	ERHIResourceType::RRT_ComputeShader,
-	Geometry =  ERHIResourceType::RTT_GeometryShader,
+	None =		RRT_None,
+	Vertex =	RRT_VertexShader,
+	Fragment =	RRT_PixelShader,
+	Compute =	RRT_ComputeShader,
+	Geometry =  RTT_GeometryShader,
+	Mesh =      RRT_MeshShader,
+	Task =      RRT_TaskShader,
 };
 
 ENUM_CLASS_FLAGS(ERHIShaderType)
@@ -213,6 +219,13 @@ namespace Lumina
 	{
 		return (version & GVersionSubmittedFlag) != 0;
 	}
+	
+	struct FDrawMeshTasksArguments
+	{
+		uint32 GroupCountY;
+		uint32 GroupCountX;
+		uint32 GroupCountZ;
+	};
 	
 	struct FDrawIndirectArguments
 	{
@@ -370,6 +383,8 @@ namespace Lumina
 	using FRHIPixelShaderRef        = TRefCountPtr<FRHIPixelShader>;
 	using FRHIComputeShaderRef      = TRefCountPtr<FRHIComputeShader>;
 	using FRHIGeometryShaderRef     = TRefCountPtr<FRHIGeometryShader>;
+	using FRHIMeshShaderRef         = TRefCountPtr<FRHIMeshShader>;
+	using FRHITaskShaderRef         = TRefCountPtr<FRHITaskShader>;
 	using FRHICommandListRef        = TRefCountPtr<ICommandList>;
 	using FRHIViewportRef           = TRefCountPtr<FRHIViewport>;
 	using FRHIGraphicsPipelineRef   = TRefCountPtr<FRHIGraphicsPipeline>;
@@ -893,6 +908,22 @@ namespace Lumina
 
 	};
 
+	class RUNTIME_API FRHIMeshShader : public FRHIShader
+	{
+	public:
+
+		RENDER_RESOURCE(RRT_MeshShader)
+
+	};
+
+	class RUNTIME_API FRHITaskShader : public FRHIShader
+	{
+	public:
+
+		RENDER_RESOURCE(RRT_TaskShader)
+
+	};
+
 	class RUNTIME_API FShaderLibrary : public IRHIResource
 	{
 	public:
@@ -908,6 +939,8 @@ namespace Lumina
 		static FRHIPixelShaderRef GetPixelShader(const FName& Path, TSpan<FString> Macros = {});
 		static FRHIComputeShaderRef GetComputeShader(const FName& Path, TSpan<FString> Macros = {});
 		static FRHIGeometryShaderRef GetGeometryShader(const FName& Path, TSpan<FString> Macros = {});
+		static FRHIMeshShaderRef GetMeshShader(const FName& Path, TSpan<FString> Macros = {});
+		static FRHITaskShaderRef GetTaskShader(const FName& Path, TSpan<FString> Macros = {});
 
 		template<typename T>
 		TRefCountPtr<T> GetShader(FName Key, TSpan<FString> Macros = {})
@@ -1647,16 +1680,22 @@ namespace Lumina
         FRHIVertexShaderRef						VS;
         FRHIPixelShaderRef						PS;
     	FRHIGeometryShaderRef					GS;
+        FRHIMeshShaderRef						MS;
+        FRHITaskShaderRef						TS;
         FVariableRateShadingState				ShadingRateState;
-        
+
         EPrimitiveType							PrimType = EPrimitiveType::TriangleList;
-    	
+
+		FORCEINLINE bool IsMeshShaderPipeline() const { return MS != nullptr; }
+
 		FORCEINLINE FGraphicsPipelineDesc& SetDebugName(const FString& InDebugName) { DebugName = Move(InDebugName); return *this; }
         FORCEINLINE FGraphicsPipelineDesc& SetPrimType(EPrimitiveType value) { PrimType = value; return *this; }
         FORCEINLINE FGraphicsPipelineDesc& SetInputLayout(FRHIInputLayout* value) { InputLayout = value; return *this; }
     	FORCEINLINE FGraphicsPipelineDesc& SetVertexShader(FRHIVertexShader* value) { VS = value; return *this; }
         FORCEINLINE FGraphicsPipelineDesc& SetPixelShader(FRHIPixelShader* value) { PS = value; return *this; }
     	FORCEINLINE FGraphicsPipelineDesc& SetGeometryShader(FRHIGeometryShader* value) { GS = value; return *this; }
+        FORCEINLINE FGraphicsPipelineDesc& SetMeshShader(FRHIMeshShader* value) { MS = value; return *this; }
+        FORCEINLINE FGraphicsPipelineDesc& SetTaskShader(FRHITaskShader* value) { TS = value; return *this; }
         FORCEINLINE FGraphicsPipelineDesc& SetFragmentShader(FRHIPixelShader* value) { PS = value; return *this; }
         FORCEINLINE FGraphicsPipelineDesc& SetRenderState(const FRenderState& value) { RenderState = value; return *this; }
         FORCEINLINE FGraphicsPipelineDesc& SetVariableRateShadingState(const FVariableRateShadingState& value) { ShadingRateState = value; return *this; }
@@ -1674,6 +1713,7 @@ namespace Lumina
 		FIndexBufferBinding IndexBuffer;
 
 		FRHIBuffer* IndirectParams = nullptr;
+		FRHIBuffer* CountBuffer = nullptr;
 
 		// Move semantic overloads.
 		FORCEINLINE FGraphicsState& SetRenderPass(FRenderPassDesc&& value) { RenderPass = Move(value); return *this; }
@@ -1702,6 +1742,7 @@ namespace Lumina
 		}
 		FORCEINLINE FGraphicsState& SetIndexBuffer(const FIndexBufferBinding& value) { IndexBuffer = value; return *this; }
 		FORCEINLINE FGraphicsState& SetIndirectParams(FRHIBuffer* value) { IndirectParams = value; return *this; }
+		FORCEINLINE FGraphicsState& SetIndirectCount(FRHIBuffer* Value) { CountBuffer = Value; return *this; }
 	};
 
 	struct RUNTIME_API FComputeState

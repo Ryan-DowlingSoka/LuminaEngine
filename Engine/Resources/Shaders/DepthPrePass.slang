@@ -16,12 +16,11 @@ struct VertexOutput
 [shader("vertex")]
 VertexOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_VulkanInstanceID)
 {
-    FMeshletDraw       Draw   = uMeshletDrawList[MeshletSlot];
-    FGPUInstanceCull   Cull   = GetInstanceCull(Draw.InstanceID);
-    FGPUInstanceRender Render = GetInstanceRender(Draw.InstanceID);
+    FMeshletDraw Draw = uMeshletDrawList[MeshletSlot];
+    FGPUInstance Inst = GetInstance(Draw.InstanceID);
 
-    uint GlobalMeshletIdx = Cull.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
-    FMeshlet M            = Render.MeshletHeader.Meshlets[GlobalMeshletIdx];
+    uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
+    FMeshlet M            = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
 
     uint TriIdx = VertexIndex / 3u;
     uint Corner = VertexIndex % 3u;
@@ -35,22 +34,22 @@ VertexOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: S
         return Output;
     }
 
-    uint PackedTri    = Render.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
+    uint PackedTri    = Inst.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
     uint LocalVertIdx = (PackedTri >> (Corner * 8u)) & 0xFFu;
-    uint VertexIdx    = Render.MeshletHeader.Vertices[M.VertexOffset + LocalVertIdx];
+    uint VertexIdx    = Inst.MeshletHeader.Vertices[M.VertexOffset + LocalVertIdx];
 
     // Depth-only pass: skip Normal/UV/Color unpack, read position directly.
     float3 LocalPos;
-    if (Cull.HasFlag(EInstanceFlags::Skinned))
+    if (Inst.HasFlag(EInstanceFlags::Skinned))
     {
-        LocalPos = LoadSkinnedPositionByIndex(Render.VBAddress, VertexIdx, Render.BoneOffset);
+        LocalPos = LoadSkinnedPositionByIndex(Inst.VBAddress, VertexIdx, Inst.BoneOffset);
     }
     else
     {
-        LocalPos = LoadStaticPositionByIndex(Render.VBAddress, VertexIdx);
+        LocalPos = LoadStaticPositionByIndex(Inst.VBAddress, VertexIdx);
     }
 
-    float4x4 ModelMatrix = GetInstanceTransform(Draw.InstanceID);
+    float4x4 ModelMatrix = Inst.ModelMatrix;
     float4x4 View        = GetCameraView();
     float4x4 Projection  = GetCameraProjection();
 

@@ -13,10 +13,8 @@ struct SkinnedVertexBuffer
 
 [[vk::binding(0, 0)]] ConstantBuffer<FSceneGlobalData>              uSceneData;
 [[vk::binding(1, 0)]] StructuredBuffer<FLightData>                  uLightData;
-// Split per-instance descriptor. See Lumina::FGPUInstanceCull for the rationale:
-// shadow-cull + pixel shader only read this 32B block instead of the former 144B
-// monolithic FGPUInstance. Transform + render-pointer blocks live at 16/17.
-[[vk::binding(2, 0)]] RWStructuredBuffer<FGPUInstanceCull>          uInstanceCull;
+// Unified 128B per-instance descriptor. Mirror of Lumina::FGPUInstance.
+[[vk::binding(2, 0)]] RWStructuredBuffer<FGPUInstance>              uInstance;
 [[vk::binding(3, 0)]] StructuredBuffer<float4x4>                    uBoneMatrices;
 [[vk::binding(4, 0)]] RWStructuredBuffer<FCluster>                  uClusters;
 [[vk::binding(5, 0)]] RWStructuredBuffer<FMaterialUniforms>         uMaterialUniforms;
@@ -42,16 +40,6 @@ struct SkinnedVertexBuffer
 // Per-cascade meshlet draw list + indirect for the CSM pass.
 [[vk::binding(14, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawListCascade;
 [[vk::binding(15, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectDrawDataMeshletCascade;
-
-// Per-instance transform (mat4). Split out of the descriptor so the pixel
-// shader — which never reads the transform — doesn't pull 64B of matrix per
-// quad, and shadow-cull doesn't touch it at all.
-[[vk::binding(16, 0)]] RWStructuredBuffer<FGPUInstanceTransform>     uInstanceTransform;
-
-// Per-instance vertex-pulling pointers + identity fields. Accessed by base/depth/
-// shadow vertex shaders and by BasePixelPass (for EntityID/MaterialIndex).
-// Shadow-cull doesn't read this buffer at all.
-[[vk::binding(17, 0)]] RWStructuredBuffer<FGPUInstanceRender>        uInstanceRender;
 
 // ---------------------------------------------------------------------------------
 //  Binding Set 1
@@ -187,15 +175,8 @@ uint   GetMaterialTexture(uint MatIndex, uint Index) { return uMaterialUniforms[
 // ---------------------------------------------------------------------------------
 //  Instance Accessors
 // ---------------------------------------------------------------------------------
-//
-// Per-instance descriptor is split across three buffers (Cull / Transform /
-// Render). Each pass reads only the blocks it needs, so e.g. ShadowMeshCull
-// only pulls 32B/instance and BasePixelPass only pulls 64B/quad instead of the
-// former monolithic 144B FGPUInstance.
 
-FGPUInstanceCull      GetInstanceCull(uint InstanceID)      { return uInstanceCull[InstanceID];      }
-FGPUInstanceRender    GetInstanceRender(uint InstanceID)    { return uInstanceRender[InstanceID];    }
-float4x4              GetInstanceTransform(uint InstanceID) { return uInstanceTransform[InstanceID].ModelMatrix; }
+FGPUInstance GetInstance(uint InstanceID) { return uInstance[InstanceID]; }
 
 // Shadow-pass accessor. Shadow draws are indexed from a dedicated mapping
 // buffer populated by ShadowMeshCull.slang.

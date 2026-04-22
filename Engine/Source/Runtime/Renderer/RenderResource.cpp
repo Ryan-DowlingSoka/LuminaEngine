@@ -19,6 +19,8 @@ namespace Lumina
     template class RUNTIME_API TRefCountPtr<FRHIVertexShader>;
     template class RUNTIME_API TRefCountPtr<FRHIPixelShader>;
     template class RUNTIME_API TRefCountPtr<FRHIComputeShader>;
+    template class RUNTIME_API TRefCountPtr<FRHITaskShader>;
+    template class RUNTIME_API TRefCountPtr<FRHIMeshShader>;
     template class RUNTIME_API TRefCountPtr<ICommandList>;
     template class RUNTIME_API TRefCountPtr<FRHIViewport>;
     template class RUNTIME_API TRefCountPtr<FRHIGraphicsPipeline>;

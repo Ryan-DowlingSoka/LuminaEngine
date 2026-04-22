@@ -170,7 +170,7 @@ namespace Lumina
         }
 
         // Upload meshlet data. Four flat SSBOs + a tiny header SSBO whose entry
-        // holds BDAs to the four so FGPUInstanceRender can carry one pointer and
+        // holds BDAs to the four so FGPUInstance can carry one pointer and
         // the shader can reach them via a single indirection.
         if (!MeshResources->MeshletData.IsEmpty())
         {

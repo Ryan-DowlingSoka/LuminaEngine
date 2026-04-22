@@ -113,7 +113,7 @@ namespace Lumina
         SceneGlobalData.CullData.P11                    = SceneViewport->GetViewVolume().GetProjectionMatrix()[1][1];
         SceneGlobalData.CullData.zNear                  = SceneViewport->GetViewVolume().GetNear();
         SceneGlobalData.CullData.zFar                   = SceneViewport->GetViewVolume().GetFar();
-        SceneGlobalData.CullData.InstanceNum            = (uint32)InstanceCulls.size();
+        SceneGlobalData.CullData.InstanceNum            = (uint32)Instances.size();
         SceneGlobalData.CullData.bFrustumCull           = RenderSettings.bFrustumCull;
         SceneGlobalData.CullData.bOcclusionCull         = RenderSettings.bOcclusionCull;
         SceneGlobalData.CullData.PyramidWidth           = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
@@ -133,7 +133,6 @@ namespace Lumina
         CompileDrawCommands(RenderGraph);
         CullPass(RenderGraph);
         DepthPrePass(RenderGraph);
-        DepthPyramidPass(RenderGraph);
         ClusterBuildPass(RenderGraph);
         LightCullPass(RenderGraph);
         PointShadowPass(RenderGraph);
@@ -143,6 +142,7 @@ namespace Lumina
         TerrainUpdatePass(RenderGraph);
         BasePass(RenderGraph);
         TerrainRenderPass(RenderGraph);
+        DepthPyramidPass(RenderGraph);
         TransparentPass(RenderGraph);
         OITResolvePass(RenderGraph);
         BatchedLineDraw(RenderGraph);
@@ -190,9 +190,7 @@ namespace Lumina
             const size_t EntityCount       = StaticView.size_hint() + SkeletalView.size_hint();
             const size_t EstimatedProxies  = EntityCount * 2;
 
-            InstanceCulls.reserve(EstimatedProxies);
-            InstanceTransforms.reserve(EstimatedProxies);
-            InstanceRenders.reserve(EstimatedProxies);
+            Instances.reserve(EstimatedProxies);
             IndirectDrawArguments.reserve(EstimatedProxies);
             DrawCommands.reserve(EstimatedProxies);
 
@@ -426,7 +424,7 @@ namespace Lumina
         // resize is done inside that lambda, later batches can latch the old undersized
         // buffer handle and fire a validation error (or crash) on draw recording.
 
-        SceneGlobalData.CullData.InstanceNum = (uint32)InstanceCulls.size();
+        SceneGlobalData.CullData.InstanceNum = (uint32)Instances.size();
 
         // Build the shadow-cull frustum: the camera frustum swept along the sun
         // direction so casters behind / above / beside the camera still write into
@@ -447,9 +445,7 @@ namespace Lumina
         }
 
         const SIZE_T SimpleVertexSize      = SimpleVertices.size() * sizeof(FSimpleElementVertex);
-        const SIZE_T InstanceCullSize      = InstanceCulls.size() * sizeof(FGPUInstanceCull);
-        const SIZE_T InstanceTransformSize = InstanceTransforms.size() * sizeof(FGPUInstanceTransform);
-        const SIZE_T InstanceRenderSize    = InstanceRenders.size() * sizeof(FGPUInstanceRender);
+        const SIZE_T InstanceSize          = Instances.size() * sizeof(FGPUInstance);
         const SIZE_T BoneDataSize          = BonesData.size() * sizeof(glm::mat4);
         const SIZE_T IndirectArgsSize   = IndirectDrawArguments.size() * sizeof(FDrawIndirectArguments);
 
@@ -473,10 +469,8 @@ namespace Lumina
         const SIZE_T MeshletIndirectCascadeSize = glm::max<SIZE_T>(sizeof(FDrawIndirectArguments), (SIZE_T)IndirectDrawArgumentsMeshletCascade.size() * sizeof(FDrawIndirectArguments));
 
         bool bAnyBufferResized = false;
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceCull], (uint32)InstanceCullSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceTransform], (uint32)InstanceTransformSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceRender], (uint32)InstanceRenderSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMappingShadow], sizeof(uint32) * InstanceCulls.size(), 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Instance], (uint32)InstanceSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMappingShadow], sizeof(uint32) * Instances.size(), 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::SimpleVertex], (uint32)SimpleVertexSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Bone], (uint32)BoneDataSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::IndirectShadow], (uint32)IndirectArgsSize, 1.2f);
@@ -495,14 +489,12 @@ namespace Lumina
         {
             FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
             RenderGraph.AddPass(RG_Raster, "Write Scene Buffers", Descriptor,
-                [this, SimpleVertexSize, InstanceCullSize, InstanceTransformSize, InstanceRenderSize, BoneDataSize, IndirectArgsSize, LightsUploadSize, ShadowsUploadSize, BillboardSize](ICommandList& CmdList)
+                [this, SimpleVertexSize, InstanceSize, BoneDataSize, IndirectArgsSize, LightsUploadSize, ShadowsUploadSize, BillboardSize](ICommandList& CmdList)
             {
                 LUMINA_PROFILE_SECTION_COLORED("Write Scene Buffers", tracy::Color::OrangeRed3);
 
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Scene), EResourceStates::CopyDest);
-                CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::InstanceCull), EResourceStates::CopyDest);
-                CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::InstanceTransform), EResourceStates::CopyDest);
-                CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::InstanceRender), EResourceStates::CopyDest);
+                CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Instance), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Bone), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::IndirectShadow), EResourceStates::CopyDest);
                 CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::MeshletIndirect), EResourceStates::CopyDest);
@@ -517,9 +509,7 @@ namespace Lumina
 
                 CmdList.DisableAutomaticBarriers();
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Scene), &SceneGlobalData, sizeof(FSceneGlobalData));
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::InstanceCull),      InstanceCulls.data(),      InstanceCullSize);
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::InstanceTransform), InstanceTransforms.data(), InstanceTransformSize);
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::InstanceRender),    InstanceRenders.data(),    InstanceRenderSize);
+                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Instance), Instances.data(), InstanceSize);
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Bone), BonesData.data(),  BoneDataSize);
                 // Shadow indirect buffer uses the same per-batch layout as the
                 // camera path (matching FirstInstance, InstanceCount == 0) so
@@ -717,6 +707,17 @@ namespace Lumina
         const float     Radius      = glm::length(Extents);
         const glm::vec4 SphereBounds = glm::vec4(Center, Radius);
 
+        // Screen-space coverage proxy: an object with radius r at distance d
+        // subtends angular diameter ~ 2r/d. We square both sides to skip the
+        // sqrt for distance. Threshold tuned so only meshes covering a
+        // meaningful chunk of the view end up in the depth pre-pass -- tiny
+        // props are faster to overdraw than to rasterize twice.
+        const glm::vec3 CameraPos  = glm::vec3(SceneGlobalData.CameraData.Location);
+        const glm::vec3 ToCamera   = Center - CameraPos;
+        const float     DistSq     = glm::dot(ToCamera, ToCamera);
+        constexpr float kMinAngularSize = 0.05f;
+        const bool bSignificantOccluder = (Radius * Radius) > DistSq * (kMinAngularSize * kMinAngularSize);
+
         EInstanceFlags BaseFlags = EInstanceFlags::None;
         if (MeshComponent.bReceiveShadow)
         {
@@ -756,7 +757,7 @@ namespace Lumina
             const bool bIsTranslucent   = BlendMode == EBlendMode::Translucent || BlendMode == EBlendMode::Additive;
             const bool bIsMasked        = BlendMode == EBlendMode::Masked;
             const bool bIsAdditive      = BlendMode == EBlendMode::Additive;
-            const bool bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bIsTranslucent;
+            const bool bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bIsTranslucent && bSignificantOccluder;
 
             if (bIsTranslucent)
             {
@@ -779,20 +780,20 @@ namespace Lumina
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount });
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
-            Item.Transform.Transform             = TransformMatrix;
-            Item.Cull.SphereBounds               = SphereBounds;
-            Item.Cull.DrawIDAndFlags             = PackDrawIDAndFlags(0, Flags); // DrawID patched at write-out
-            Item.Cull.SurfaceMeshletOffset       = Surface.MeshletOffset;
+            Item.Instance.Transform              = TransformMatrix;
+            Item.Instance.SphereBounds           = SphereBounds;
+            Item.Instance.DrawIDAndFlags         = PackDrawIDAndFlags(0, Flags); // DrawID patched at write-out
+            Item.Instance.SurfaceMeshletOffset   = Surface.MeshletOffset;
             // Meshlet cull + base VS both deref MeshletHeader unconditionally when
             // SurfaceMeshletCount > 0; zero the count when no header was uploaded
             // so an inconsistent asset can't produce a null-pointer GPU fault.
-            Item.Cull.SurfaceMeshletCount        = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
-            Item.Cull.CustomData                 = MeshComponent.CustomPrimitiveData.Data.Packed;
-            Item.Render.VBAddress                  = VBAddress;
-            Item.Render.ShadowIBAddress            = ShadowIBAddress;
-            Item.Render.MeshletHeaderAddress       = MeshletHeaderAddress;
-            Item.Render.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
-            Item.Render.EntityID                   = EntityIDPacked;
+            Item.Instance.SurfaceMeshletCount    = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
+            Item.Instance.CustomData             = MeshComponent.CustomPrimitiveData.Data.Packed;
+            Item.Instance.VBAddress                  = VBAddress;
+            Item.Instance.ShadowIBAddress            = ShadowIBAddress;
+            Item.Instance.MeshletHeaderAddress       = MeshletHeaderAddress;
+            Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
+            Item.Instance.EntityID                   = EntityIDPacked;
 
             Item.Flags           = Flags;
             Item.MaterialIndex   = (uint16)Material->GetMaterialIndex();
@@ -825,6 +826,14 @@ namespace Lumina
         const glm::vec3 Extents     = BoundingBox.Max - Center;
         const float     Radius      = glm::length(Extents);
         const glm::vec4 SphereBounds = glm::vec4(Center, Radius);
+
+        // See static-mesh path for the angular-size reasoning; skinned bind-
+        // pose bounds are conservative but fine for this coarse test.
+        const glm::vec3 CameraPos  = glm::vec3(SceneGlobalData.CameraData.Location);
+        const glm::vec3 ToCamera   = Center - CameraPos;
+        const float     DistSq     = glm::dot(ToCamera, ToCamera);
+        constexpr float kMinAngularSize = 0.05f;
+        const bool bSignificantOccluder = (Radius * Radius) > DistSq * (kMinAngularSize * kMinAngularSize);
 
         EInstanceFlags BaseFlags = EInstanceFlags::Skinned;
         if (MeshComponent.bReceiveShadow)
@@ -866,7 +875,7 @@ namespace Lumina
             const bool bIsTranslucent   = BlendMode == EBlendMode::Translucent || BlendMode == EBlendMode::Additive;
             const bool bIsMasked        = BlendMode == EBlendMode::Masked;
             const bool bIsAdditive      = BlendMode == EBlendMode::Additive;
-            const bool bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bIsTranslucent;
+            const bool bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bIsTranslucent && bSignificantOccluder;
 
             if (bIsTranslucent)
             {
@@ -889,21 +898,21 @@ namespace Lumina
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount });
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
-            Item.Transform.Transform               = TransformMatrix;
-            Item.Cull.SphereBounds                 = SphereBounds;
-            Item.Cull.DrawIDAndFlags               = PackDrawIDAndFlags(0, Flags);
-            Item.Cull.SurfaceMeshletOffset         = Surface.MeshletOffset;
+            Item.Instance.Transform                = TransformMatrix;
+            Item.Instance.SphereBounds             = SphereBounds;
+            Item.Instance.DrawIDAndFlags           = PackDrawIDAndFlags(0, Flags);
+            Item.Instance.SurfaceMeshletOffset     = Surface.MeshletOffset;
             // Skinned still gets its real meshlet header; the meshlet cull pass
             // skips per-meshlet frustum/occlusion on skinned (bind-pose bounds
             // aren't valid for deformed geometry) but still emits every meshlet
             // so the vertex shader can pull them.
-            Item.Cull.SurfaceMeshletCount          = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
-            Item.Cull.CustomData                   = MeshComponent.CustomPrimitiveData.Data.Packed;
-            Item.Render.VBAddress                  = VBAddress;
-            Item.Render.ShadowIBAddress            = ShadowIBAddress;
-            Item.Render.MeshletHeaderAddress       = MeshletHeaderAddress;
-            Item.Render.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
-            Item.Render.EntityID                   = EntityIDPacked;
+            Item.Instance.SurfaceMeshletCount      = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
+            Item.Instance.CustomData               = MeshComponent.CustomPrimitiveData.Data.Packed;
+            Item.Instance.VBAddress                  = VBAddress;
+            Item.Instance.ShadowIBAddress            = ShadowIBAddress;
+            Item.Instance.MeshletHeaderAddress       = MeshletHeaderAddress;
+            Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
+            Item.Instance.EntityID                   = EntityIDPacked;
 
             Item.Flags           = Flags;
             Item.MaterialIndex   = (uint16)Material->GetMaterialIndex();
@@ -1110,9 +1119,7 @@ namespace Lumina
 
         // Each thread owns a disjoint set of (thread, draw) slices in the global instance
         // buffers, so there are no atomics. Cursors are local to each worker.
-        InstanceCulls.resize(TotalInstances);
-        InstanceTransforms.resize(TotalInstances);
-        InstanceRenders.resize(TotalInstances);
+        Instances.resize(TotalInstances);
 
         {
             LUMINA_PROFILE_SECTION("Parallel Instance Write");
@@ -1142,18 +1149,16 @@ namespace Lumina
 
                         const uint32 WriteIdx = Cursors[GlobalDraw]++;
 
-                        Item.Cull.DrawIDAndFlags = PackDrawIDAndFlags(GlobalDraw, Item.Flags);
+                        Item.Instance.DrawIDAndFlags = PackDrawIDAndFlags(GlobalDraw, Item.Flags);
 
                         if (Item.LocalBoneOffset != ~0u)
                         {
-                            Item.Render.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(
+                            Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(
                                 (uint16)(BoneBase + Item.LocalBoneOffset),
                                 Item.MaterialIndex);
                         }
 
-                        InstanceCulls[WriteIdx]      = Item.Cull;
-                        InstanceTransforms[WriteIdx] = Item.Transform;
-                        InstanceRenders[WriteIdx]    = Item.Render;
+                        Instances[WriteIdx] = Item.Instance;
                     }
                 }
             });
@@ -1161,7 +1166,7 @@ namespace Lumina
             WriteGraph.Wait();
         }
 
-        // Meshlet-indirect prefix sum. Walk the final InstanceCulls (now with
+        // Meshlet-indirect prefix sum. Walk the final Instances (now with
         // DrawID patched in) to accumulate meshlet counts per draw, then turn
         // that into FirstInstance offsets. Also tracks the peak per-instance
         // meshlet count so the compute dispatch can size its X dimension.
@@ -1170,11 +1175,11 @@ namespace Lumina
 
             TVector<uint32> MeshletCountsPerDraw(TotalDrawArgs, 0u);
             MaxMeshletsPerInstance = 0u;
-            for (const FGPUInstanceCull& Cull : InstanceCulls)
+            for (const FGPUInstance& Inst : Instances)
             {
-                const uint32 DrawID = Cull.DrawIDAndFlags & 0x00FFFFFFu;
-                MeshletCountsPerDraw[DrawID] += Cull.SurfaceMeshletCount;
-                MaxMeshletsPerInstance = std::max(Cull.SurfaceMeshletCount, MaxMeshletsPerInstance);
+                const uint32 DrawID = Inst.DrawIDAndFlags & 0x00FFFFFFu;
+                MeshletCountsPerDraw[DrawID] += Inst.SurfaceMeshletCount;
+                MaxMeshletsPerInstance = std::max(Inst.SurfaceMeshletCount, MaxMeshletsPerInstance);
             }
 
             uint32 MeshletRunning = 0u;
@@ -1207,16 +1212,22 @@ namespace Lumina
 
         RenderStats.NumBatches = NumBatches;
         OpaqueDrawList.reserve(NumBatches);
+        OpaqueOccluderDrawList.reserve(NumBatches);
         TranslucentDrawList.reserve(NumBatches);
         for (uint32 i = 0; i < NumBatches; ++i)
         {
-            if (DrawCommands[i].bTranslucent)
+            const FMeshDrawCommand& Cmd = DrawCommands[i];
+            if (Cmd.bTranslucent)
             {
                 TranslucentDrawList.push_back(i);
             }
             else
             {
                 OpaqueDrawList.push_back(i);
+                if (Cmd.bDrawInDepthPass)
+                {
+                    OpaqueOccluderDrawList.push_back(i);
+                }
             }
         }
     }
@@ -1636,15 +1647,14 @@ namespace Lumina
         SimpleVertices.clear();
         DrawCommands.clear();
         OpaqueDrawList.clear();
+        OpaqueOccluderDrawList.clear();
         TranslucentDrawList.clear();
         IndirectDrawArguments.clear();
         IndirectDrawArgumentsMeshlet.clear();
         IndirectDrawArgumentsMeshletCascade.clear();
         MaxMeshletsPerInstance = 0;
         TotalMeshletBound = 0;
-        InstanceCulls.clear();
-        InstanceTransforms.clear();
-        InstanceRenders.clear();
+        Instances.clear();
         LightData = {};
         ShadowDataCount.store(0, std::memory_order_release);
         ShadowAtlas.FreeTiles();
@@ -1679,7 +1689,7 @@ namespace Lumina
         {
             LUMINA_PROFILE_SECTION_COLORED("Cull Pass", tracy::Color::Pink2);
 
-            const uint32 Num           = (uint32)InstanceCulls.size();
+            const uint32 Num           = (uint32)Instances.size();
             const uint32 NumWorkGroups = (Num + 255) / 256;
 
             // Shadow-caster culling. Writes a parallel indirect buffer consumed by
@@ -1762,7 +1772,7 @@ namespace Lumina
 
     void FForwardRenderScene::DepthPrePass(FRenderGraph& RenderGraph)
     {
-        if (DrawCommands.empty())
+        if (OpaqueOccluderDrawList.empty())
         {
             return;
         }
@@ -1771,22 +1781,22 @@ namespace Lumina
         RenderGraph.AddPass(RG_Raster, "Pre-Depth Pass", Descriptor, [&] (ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Pre-Depth Pass", tracy::Color::Orange);
-        
+
             FRenderPassDesc::FAttachment Depth; Depth
                 .SetImage(GetNamedImage(ENamedImage::DepthAttachment))
                 .SetDepthClearValue(0.0f);
-            
+
             FRenderPassDesc RenderPass; RenderPass
                 .SetDepthAttachment(Depth)
                 .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
-            
+
             FRenderState RenderState; RenderState
                 .SetDepthStencilState(FDepthStencilState().SetDepthFunc(EComparisonFunc::Greater))
                 .SetRasterState(FRasterState().EnableDepthClip());
-            
+
             FRHIVertexShaderRef DepthOnlyVertexShader = FShaderLibrary::GetVertexShader("DepthPrePass.slang");
 
-            for (uint32 Idx : OpaqueDrawList)
+            for (uint32 Idx : OpaqueOccluderDrawList)
             {
                 const FMeshDrawCommand& Batch = DrawCommands[Idx];
 
@@ -1833,8 +1843,14 @@ namespace Lumina
             return;
         }
 
+        // Ran async previously because it sat between the depth pre-pass
+        // (depth-only write) and the base pass (no depth read), so the
+        // pyramid dispatch on the compute queue overlapped cheaply. Now that
+        // it runs after base + terrain -- both of which write HDR -- keeping
+        // it on the graphics queue lets the render graph's intra-queue
+        // barriers cover the graphics -> graphics color transitions that the
+        // async path was dropping.
         FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        Descriptor->SetFlag(ERGExecutionFlags::Async);
         RenderGraph.AddPass(RG_Compute, "Depth Pyramid Pass", Descriptor, [&](ICommandList& CmdList)
         {
             LUMINA_PROFILE_SECTION_COLORED("Depth Pyramid Pass", tracy::Color::Orange);
@@ -2298,9 +2314,15 @@ namespace Lumina
                 .SetFillMode(RenderSettings.bWireframe ? ERasterFillMode::Wireframe : ERasterFillMode::Solid)
                 .SetLineWidth(5.0f);
         
+            // Pre-pass only laid down depth for the best occluders, so the
+            // base pass runs GREATER_EQUAL and writes depth for everything
+            // else. Occluder pixels hit the equality branch and re-write
+            // their already-correct depth (no-op); non-occluder fragments
+            // that survive against the occluder silhouette write their real
+            // depth so the post-pass pyramid sees the full opaque scene.
             FDepthStencilState DepthState; DepthState
-                .SetDepthFunc(RenderSettings.bWireframe ? EComparisonFunc::GreaterOrEqual : EComparisonFunc::Equal)
-                .DisableDepthWrite();
+                .SetDepthFunc(EComparisonFunc::GreaterOrEqual)
+                .EnableDepthWrite();
             
             FRenderState RenderState; RenderState
                 .SetRasterState(RasterState)
@@ -2320,9 +2342,11 @@ namespace Lumina
 
                 // Base pass consumes the meshlet-culled indirect buffer: each
                 // surviving meshlet becomes one instance with VertexCount =
-                // MESHLET_VERTICES_PER_DRAW (124 tris * 3). Depth pre-pass
-                // consumes the same buffer so both passes rasterize the same
-                // meshlet set and the depth-equal test here is exact.
+                // MESHLET_VERTICES_PER_DRAW (124 tris * 3). The pre-pass runs
+                // over a strict subset of these batches (occluders only), and
+                // the GREATER_EQUAL test here lets non-occluder fragments
+                // survive against a cleared-to-far / occluder-populated depth
+                // buffer while still being rejected by pre-pass occluders.
                 FGraphicsState GraphicsState; GraphicsState
                     .SetRenderPass(RenderPass)
                     .SetViewportState(SceneViewportState)
@@ -3567,32 +3591,12 @@ namespace Lumina
 
         {
             FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FGPUInstanceCull);
+            BufferDesc.Size = sizeof(FGPUInstance);
             BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Instance Cull Buffer";
-            NamedBuffers[(int)ENamedBuffer::InstanceCull] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FGPUInstanceTransform);
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Instance Transform Buffer";
-            NamedBuffers[(int)ENamedBuffer::InstanceTransform] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FGPUInstanceRender);
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ShaderResource;
-            BufferDesc.DebugName = "Instance Render Buffer";
-            NamedBuffers[(int)ENamedBuffer::InstanceRender] = GRenderContext->CreateBuffer(BufferDesc);
+            BufferDesc.DebugName = "Instance Buffer";
+            NamedBuffers[(int)ENamedBuffer::Instance] = GRenderContext->CreateBuffer(BufferDesc);
         }
         
         {
@@ -3866,7 +3870,7 @@ namespace Lumina
             FBindingSetDesc BindingSetDesc;
             BindingSetDesc.AddItem(FBindingSetItem::BufferCBV(0, GetNamedBuffer(ENamedBuffer::Scene)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(1, GetNamedBuffer(ENamedBuffer::Light)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(2, GetNamedBuffer(ENamedBuffer::InstanceCull)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(2, GetNamedBuffer(ENamedBuffer::Instance)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(3, GetNamedBuffer(ENamedBuffer::Bone)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(4, GetNamedBuffer(ENamedBuffer::Cluster)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(5, GRenderManager->GetMaterialManager().GetMaterialBuffer()));
@@ -3888,8 +3892,6 @@ namespace Lumina
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(13, GetNamedBuffer(ENamedBuffer::MeshletIndirect)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(14, GetNamedBuffer(ENamedBuffer::MeshletDrawListCascade)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(15, GetNamedBuffer(ENamedBuffer::MeshletIndirectCascade)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(16, GetNamedBuffer(ENamedBuffer::InstanceTransform)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(17, GetNamedBuffer(ENamedBuffer::InstanceRender)));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);

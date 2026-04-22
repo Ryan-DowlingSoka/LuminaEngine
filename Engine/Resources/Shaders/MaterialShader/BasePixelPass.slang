@@ -115,15 +115,17 @@ FCubemapCoord DirectionToCubemapCoord(float3 Dir)
     );
 
     Result.Face = int(IsXMax * FaceIndex.x + IsYMax * FaceIndex.y + IsZMax * FaceIndex.z);
-    bool bDownFace = Result.Face == 3;
 
-    float2 UVX = float2(-sign(Dir.x) * Dir.z,  Dir.y)              / AbsDir.x;
-    float2 UVY = float2( Dir.x,                 sign(Dir.y) * Dir.z) / AbsDir.y;
-    float2 UVZ = float2( sign(Dir.z) * Dir.x,   Dir.y)              / AbsDir.z;
+    // Y faces: +Y's view basis ends up with view-up = -Z world (see
+    // FViewVolume::SetView re-orthogonalization + point shadow face 2 config),
+    // and -Y's view-up = +Z world. Negating sign(Dir.y) * Dir.z produces v that
+    // matches the rendered Y axis for both top and bottom faces.
+    float2 UVX = float2(-sign(Dir.x) * Dir.z,  Dir.y)                / AbsDir.x;
+    float2 UVY = float2( Dir.x,                -sign(Dir.y) * Dir.z) / AbsDir.y;
+    float2 UVZ = float2( sign(Dir.z) * Dir.x,   Dir.y)                / AbsDir.z;
 
-    Result.UV   = IsXMax * UVX + IsYMax * UVY + IsZMax * UVZ;
-    Result.UV.y = lerp(Result.UV.y, -Result.UV.y, float(bDownFace));
-    Result.UV   = Result.UV * 0.5 + 0.5;
+    Result.UV = IsXMax * UVX + IsYMax * UVY + IsZMax * UVZ;
+    Result.UV = Result.UV * 0.5 + 0.5;
 
     return Result;
 }
@@ -335,15 +337,10 @@ float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3
 [shader("fragment")]
 PSOutput FragmentMain(PSInput Input)
 {
-    // Pixel shader only needs the Cull block (for the ReceiveShadow flag and
-    // the CustomPrimitiveData if the material graph references it) and the
-    // Render block (for EntityID + MaterialIndex). The transform buffer is
-    // never touched here.
-    FGPUInstanceCull   Cull   = GetInstanceCull(Input.InstanceIndex);
-    FGPUInstanceRender Render = GetInstanceRender(Input.InstanceIndex);
+    FGPUInstance Inst = GetInstance(Input.InstanceIndex);
 
-    uint EntityID           = Render.EntityID;
-    uint MaterialIndex      = Render.MaterialIndex;
+    uint EntityID           = Inst.EntityID;
+    uint MaterialIndex      = Inst.MaterialIndex;
     float3 WorldNormal      = normalize(Input.NormalWS.xyz);
     float3 ViewPosition     = Input.FragPos.xyz;
     float3 WorldPosition    = mul(GetInverseCameraView(), float4(Input.FragPos.xyz, 1.0)).xyz;
@@ -398,7 +395,7 @@ PSOutput FragmentMain(PSInput Input)
     if (uLightData[0].bHasSun != 0)
     {
         FLight Light        = GetLightAt(0);
-        float  Shadow       = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, Cull.HasFlag(EInstanceFlags::ReceiveShadow));
+        float  Shadow       = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, Inst.HasFlag(EInstanceFlags::ReceiveShadow));
         Lo                  += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, float3(0.0), 0.0) * Shadow;
     }
 
@@ -414,7 +411,7 @@ PSOutput FragmentMain(PSInput Input)
         float Shadow = 1.0;
         if (Light.ShadowDataIndex != INDEX_NONE)
         {
-            Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, Cull.HasFlag(EInstanceFlags::ReceiveShadow));
+            Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, Inst.HasFlag(EInstanceFlags::ReceiveShadow));
         }
 
         Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight) * Shadow;

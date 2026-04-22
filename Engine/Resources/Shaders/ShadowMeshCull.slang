@@ -39,17 +39,14 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID)
     if (GID >= NumInstances)
         return;
 
-    // Shadow-cull's hot path reads only the 32B Cull block — no transform, no
-    // vertex-pulling pointers. This is the pass that benefits most from the
-    // split layout.
-    FGPUInstanceCull Cull = GetInstanceCull(GID);
+    FGPUInstance Inst = GetInstance(GID);
 
     // Non-caster: never emit.
-    if (!Cull.HasFlag(EInstanceFlags::CastShadow))
+    if (!Inst.HasFlag(EInstanceFlags::CastShadow))
         return;
 
-    float3 Center = Cull.BoundsCenter;
-    float  Radius = Cull.BoundsRadius;
+    float3 Center = Inst.BoundsCenter;
+    float  Radius = Inst.BoundsRadius;
 
     // Distance cull: skip any caster too far from the camera to matter.
     float3 CamPos       = GetCameraPosition();
@@ -63,7 +60,7 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID)
     // to every emission path below.
     bool bOccluded = false;
     if (uSceneData.CullData.bShadowOcclusionCull != 0 &&
-        !Cull.HasFlag(EInstanceFlags::NoCull) &&
+        !Inst.HasFlag(EInstanceFlags::NoCull) &&
         FrustumContainsSphere(uSceneData.CullData.Frustum, Center, Radius))
     {
         bOccluded = IsHiZOccluded(Center, Radius);
@@ -72,7 +69,7 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID)
     if (bOccluded)
         return;
 
-    const uint BatchID = Cull.DrawID;
+    const uint BatchID = Inst.DrawID;
 
     // Point + spot: emit into the shared shadow buffer if any shadow-casting
     // light's bounding volume contains the caster.

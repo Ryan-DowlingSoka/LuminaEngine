@@ -117,7 +117,8 @@ float2 ComputeOpticalDepth(float3 RayOrigin, float3 RayDir, float RayLength)
     const int Steps    = 8;
     float     StepSize = RayLength / float(Steps);
     float2    OpticalDepth = float2(0.0, 0.0);
-
+	
+	[[unroll]]
     for (int i = 0; i < Steps; i++)
     {
         float3 SamplePoint = RayOrigin + RayDir * (float(i) + 0.5) * StepSize;
@@ -125,8 +126,7 @@ float2 ComputeOpticalDepth(float3 RayOrigin, float3 RayDir, float RayLength)
 
         if (Height < 0.0) break;
 
-        OpticalDepth += float2(exp(-Height / rayleighHeight),
-                               exp(-Height / mieHeight)) * StepSize;
+        OpticalDepth += float2(exp(-Height / rayleighHeight), exp(-Height / mieHeight)) * StepSize;
     }
 
     return OpticalDepth;
@@ -159,6 +159,7 @@ float3 ComputeAtmosphericScattering(float3 RayOrigin, float3 RayDir, float3 SunC
 
     float3 SunDir = GetSunDirection();
 
+	[[unroll]]
     for (int i = 0; i < PrimarySteps; i++)
     {
         float3 SamplePoint    = RayOrigin + RayDir * (RayStart + (float(i) + 0.5) * PrimaryStepSize);

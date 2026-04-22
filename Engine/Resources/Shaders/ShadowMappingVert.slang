@@ -36,14 +36,13 @@ VSOutput VertexMain(
 {
 #if SHADOW_CSM
     // Meshlet-driven CSM. Out-of-range tri invocations emit NaN to discard.
-    FMeshletDraw       Draw        = uMeshletDrawListCascade[InstanceIndex];
-    FGPUInstanceCull   Cull        = GetInstanceCull(Draw.InstanceID);
-    FGPUInstanceRender Render      = GetInstanceRender(Draw.InstanceID);
-    float4x4           ModelMatrix = GetInstanceTransform(Draw.InstanceID);
-    uint               ViewIndex   = (uint)PC.CascadeIndex;
+    FMeshletDraw Draw        = uMeshletDrawListCascade[InstanceIndex];
+    FGPUInstance Inst        = GetInstance(Draw.InstanceID);
+    float4x4     ModelMatrix = Inst.ModelMatrix;
+    uint         ViewIndex   = (uint)PC.CascadeIndex;
 
-    uint GlobalMeshletIdx = Cull.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
-    FMeshlet M            = Render.MeshletHeader.Meshlets[GlobalMeshletIdx];
+    uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
+    FMeshlet M            = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
 
     uint TriIdx = VertexIndex / 3u;
     uint Corner = VertexIndex % 3u;
@@ -57,19 +56,19 @@ VSOutput VertexMain(
         return Output;
     }
 
-    uint PackedTri    = Render.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
+    uint PackedTri    = Inst.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
     uint LocalVertIdx = (PackedTri >> (Corner * 8u)) & 0xFFu;
-    uint VertexIdx    = Render.MeshletHeader.Vertices[M.VertexOffset + LocalVertIdx];
+    uint VertexIdx    = Inst.MeshletHeader.Vertices[M.VertexOffset + LocalVertIdx];
 
     // Shadow CSM: position-only, skip Normal/UV/Color unpack.
     float3 LocalPos;
-    if (Cull.HasFlag(EInstanceFlags::Skinned))
+    if (Inst.HasFlag(EInstanceFlags::Skinned))
     {
-        LocalPos = LoadSkinnedPositionByIndex(Render.VBAddress, VertexIdx, Render.BoneOffset);
+        LocalPos = LoadSkinnedPositionByIndex(Inst.VBAddress, VertexIdx, Inst.BoneOffset);
     }
     else
     {
-        LocalPos = LoadStaticPositionByIndex(Render.VBAddress, VertexIdx);
+        LocalPos = LoadStaticPositionByIndex(Inst.VBAddress, VertexIdx);
     }
 
     float4 WorldPos = mul(ModelMatrix, float4(LocalPos, 1.0));
@@ -78,26 +77,25 @@ VSOutput VertexMain(
 #else
     // Spot/point shadow pass. Index path (not meshlet-driven) — pull through
     // the per-instance shadow index buffer.
-    uint               InstanceID  = ShadowDrawIDToInstanceID(InstanceIndex);
-    FGPUInstanceCull   Cull        = GetInstanceCull(InstanceID);
-    FGPUInstanceRender Render      = GetInstanceRender(InstanceID);
-    float4x4           ModelMatrix = GetInstanceTransform(InstanceID);
+    uint         InstanceID  = ShadowDrawIDToInstanceID(InstanceIndex);
+    FGPUInstance Inst        = GetInstance(InstanceID);
+    float4x4     ModelMatrix = Inst.ModelMatrix;
 
     // Spot/point shadow: position-only, skip Normal/UV/Color unpack.
     float3 LocalPos;
-    if (Cull.HasFlag(EInstanceFlags::Skinned))
+    if (Inst.HasFlag(EInstanceFlags::Skinned))
     {
         LocalPos = LoadSkinnedPosition(
-            Render.VBAddress,
-            Render.ShadowIBAddress,
+            Inst.VBAddress,
+            Inst.ShadowIBAddress,
             VertexIndex,
-            Render.BoneOffset);
+            Inst.BoneOffset);
     }
     else
     {
         LocalPos = LoadStaticPosition(
-            Render.VBAddress,
-            Render.ShadowIBAddress,
+            Inst.VBAddress,
+            Inst.ShadowIBAddress,
             VertexIndex);
     }
 

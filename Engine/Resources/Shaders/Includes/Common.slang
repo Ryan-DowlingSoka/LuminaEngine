@@ -208,9 +208,9 @@ struct FMeshletBounds
     float  _Pad0;
 };
 
-// Mirror of Lumina::FMeshletHeaderGPU. One entry per mesh; FGPUInstanceRender
-// carries a pointer to it so the cull pass and base VS can reach the four flat
-// arrays through a single indirection.
+// Mirror of Lumina::FMeshletHeaderGPU. One entry per mesh; FGPUInstance carries
+// a pointer to it so the cull pass and base VS can reach the four flat arrays
+// through a single indirection.
 struct FMeshletHeader
 {
     FMeshlet*       Meshlets;
@@ -224,36 +224,32 @@ struct FMeshletHeader
 // its draw (per-draw StartInstanceLocation + atomic-append counter).
 struct FMeshletDraw
 {
-    uint InstanceID;         // Into uInstanceCull / uInstanceRender / uInstanceTransform
+    uint InstanceID;         // Into uInstance
     uint MeshletLocalIndex;  // Local offset inside instance's surface meshlet range
 };
 
-// Per-instance transform. Lives in its own SSBO so culling shaders that only
-// need a few columns and the pixel shader (which doesn't touch the transform
-// at all) don't drag 64B into L2 per instance.
-struct FGPUInstanceTransform
+// Unified 128B per-instance descriptor. Mirror of Lumina::FGPUInstance.
+// MeshletHeader is null when the instance skips the meshlet path (skinned
+// meshes, legacy assets without meshlets).
+struct FGPUInstance
 {
-    float4x4 ModelMatrix;
-};
-
-// 32B hot cull/identity block. Mirror of Lumina::FGPUInstanceCull. CustomData
-// sits in the pad slot next to the meshlet fields; BasePixelPass already reads
-// this block for the ReceiveShadow flag so CustomPrimitiveData-node materials
-// pay no extra cache bandwidth.
-struct FGPUInstanceCull
-{
+    float4x4                ModelMatrix;
     float4                  SphereBounds;
+
+    uint*                   VBAddress;
+    uint*                   ShadowIBAddress;
+    FMeshletHeader*         MeshletHeader;
+
     private uint            DrawIDAndFlags;
     uint                    SurfaceMeshletOffset;
     uint                    SurfaceMeshletCount;
     FCustomPrimitiveData    CustomData;
 
+    private uint            BoneOffsetAndMaterialIndex;
+    uint                    EntityID;
+
     bool HasFlag(EInstanceFlags Flag)
     {
-        // Test directly against the packed word — going through the `Flags`
-        // property pays a shift+mask to extract the high byte only to have
-        // HasAllFlags re-mask it. Folding the shift into the test constant
-        // collapses to a single `and` + `cmp` when `Flag` is a literal.
         uint Mask = (uint)Flag << 24;
         return (DrawIDAndFlags & Mask) == Mask;
     }
@@ -272,19 +268,6 @@ struct FGPUInstanceCull
 
     property float3 BoundsCenter { get { return SphereBounds.xyz; } }
     property float  BoundsRadius { get { return SphereBounds.w; } }
-};
-
-// 32B render/vertex-pulling block. Mirror of Lumina::FGPUInstanceRender. Not
-// touched by shadow-cull. MeshletHeader is null when the instance skips the
-// meshlet path (skinned meshes, legacy assets without meshlets).
-struct FGPUInstanceRender
-{
-    uint*                   VBAddress;
-    uint*                   ShadowIBAddress;
-    FMeshletHeader*         MeshletHeader;
-
-    private uint            BoneOffsetAndMaterialIndex;
-    uint                    EntityID;
 
     property uint BoneOffset
     {

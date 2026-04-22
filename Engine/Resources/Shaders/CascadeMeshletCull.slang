@@ -36,33 +36,31 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupI
     if (uSceneData.CullData.bHasDirectional == 0)
         return;
 
-    FGPUInstanceCull Cull = GetInstanceCull(InstanceID);
+    FGPUInstance Inst = GetInstance(InstanceID);
 
-    if (!Cull.HasFlag(EInstanceFlags::CastShadow))
+    if (!Inst.HasFlag(EInstanceFlags::CastShadow))
         return;
 
-    if (Cull.SurfaceMeshletCount == 0)
+    if (Inst.SurfaceMeshletCount == 0)
         return;
 
-    if (MeshletLocalIdx >= Cull.SurfaceMeshletCount)
+    if (MeshletLocalIdx >= Inst.SurfaceMeshletCount)
         return;
 
-    // Distance cull against camera. Bounds live in the cheap Cull block; bail
-    // before we touch Render/Transform so distant casters don't pollute L2.
-    float3 InstCenter = Cull.BoundsCenter;
-    float  InstRadius = Cull.BoundsRadius;
+    // Distance cull against camera.
+    float3 InstCenter = Inst.BoundsCenter;
+    float  InstRadius = Inst.BoundsRadius;
     float3 CamPos     = GetCameraPosition();
     if (length(InstCenter - CamPos) - InstRadius > uSceneData.CullData.ShadowMaxDistance)
         return;
 
-    bool bSkinned = Cull.HasFlag(EInstanceFlags::Skinned);
-    bool bNoCull  = Cull.HasFlag(EInstanceFlags::NoCull);
+    bool bSkinned = Inst.HasFlag(EInstanceFlags::Skinned);
+    bool bNoCull  = Inst.HasFlag(EInstanceFlags::NoCull);
 
-    FGPUInstanceRender Render = GetInstanceRender(InstanceID);
-    float4x4           Model  = GetInstanceTransform(InstanceID);
+    float4x4 Model = Inst.ModelMatrix;
 
-    uint GlobalMeshletIdx = Cull.SurfaceMeshletOffset + MeshletLocalIdx;
-    FMeshletBounds Bounds = Render.MeshletHeader.Bounds[GlobalMeshletIdx];
+    uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + MeshletLocalIdx;
+    FMeshletBounds Bounds = Inst.MeshletHeader.Bounds[GlobalMeshletIdx];
 
     // Meshlet bounds to world space.
     float3 WorldCenter = mul(Model, float4(Bounds.Center, 1.0)).xyz;
@@ -96,7 +94,7 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupI
         }
     }
 
-    uint DrawID   = Cull.DrawID;
+    uint DrawID   = Inst.DrawID;
     uint NumDraws = uSceneData.CullData.NumDraws;
 
     [unroll]

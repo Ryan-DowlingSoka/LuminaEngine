@@ -245,6 +245,12 @@ namespace Lumina
                     case SLANG_STAGE_COMPUTE:
                         Shader.Reflection.ShaderType = ERHIShaderType::Compute;
                         break;
+                    case SLANG_STAGE_MESH:
+                        Shader.Reflection.ShaderType = ERHIShaderType::Mesh;
+                        break;
+                    case SLANG_STAGE_DISPATCH:
+                        Shader.Reflection.ShaderType = ERHIShaderType::Task;
+                        break;
                     }
                 }
             

@@ -23,31 +23,26 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupI
     if (InstanceID >= NumInstances)
         return;
 
-    FGPUInstanceCull Cull = GetInstanceCull(InstanceID);
+    FGPUInstance Inst = GetInstance(InstanceID);
 
     // Per-surface meshlet range. Instances whose mesh had no meshlets built
     // (import failure, zero-triangle surface) will short-circuit here.
-    if (Cull.SurfaceMeshletCount == 0)
+    if (Inst.SurfaceMeshletCount == 0)
         return;
 
-    if (MeshletLocalIdx >= Cull.SurfaceMeshletCount)
+    if (MeshletLocalIdx >= Inst.SurfaceMeshletCount)
         return;
 
     bool bVisible = true;
-    bool bSkinned = Cull.HasFlag(EInstanceFlags::Skinned);
-    bool bNoCull  = Cull.HasFlag(EInstanceFlags::NoCull);
+    bool bSkinned = Inst.HasFlag(EInstanceFlags::Skinned);
+    bool bNoCull  = Inst.HasFlag(EInstanceFlags::NoCull);
 
     if (!bSkinned && !bNoCull)
     {
-        // MeshletHeader and the model matrix only matter when we're actually
-        // going to test the meshlet bounds; reading them behind the !bSkinned
-        // guard keeps the skinned fast path from touching the Render+Transform
-        // buffers at all.
-        FGPUInstanceRender Render = GetInstanceRender(InstanceID);
-        float4x4           Model  = GetInstanceTransform(InstanceID);
+        float4x4 Model = Inst.ModelMatrix;
 
-        uint GlobalMeshletIdx = Cull.SurfaceMeshletOffset + MeshletLocalIdx;
-        FMeshletBounds Bounds = Render.MeshletHeader.Bounds[GlobalMeshletIdx];
+        uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + MeshletLocalIdx;
+        FMeshletBounds Bounds = Inst.MeshletHeader.Bounds[GlobalMeshletIdx];
 
         // Meshlet bounds live in mesh-local space; lift them into world space
         // through the instance transform. Radius scales by the largest column
@@ -134,7 +129,7 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupI
 
     if (bVisible)
     {
-        uint DrawID = Cull.DrawID;
+        uint DrawID = Inst.DrawID;
         uint OldCount;
         InterlockedAdd(uIndirectDrawDataMeshlet[DrawID].InstanceCount, 1, OldCount);
         uint Slot = uIndirectDrawDataMeshlet[DrawID].FirstInstance + OldCount;

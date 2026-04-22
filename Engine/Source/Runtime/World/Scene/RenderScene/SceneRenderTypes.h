@@ -336,53 +336,29 @@ namespace Lumina
         glm::uvec4 GridSize;
     };
 
-    // Per-instance transform. Kept in its own buffer so shaders that don't need
-    // the full model matrix (shadow-caster cull, pixel shader) don't drag 64B of
-    // transform into L2 per instance. Consumed by meshlet cull, cascade cull,
-    // base/depth/shadow vertex shaders.
-    struct alignas(16) FGPUInstanceTransform
+    // Unified 128B per-instance descriptor. One SSBO, one binding, one fetch per
+    // instance. MeshletHeaderAddress is zero when the instance skips the meshlet
+    // path (skinned meshes, legacy assets without meshlets).
+    struct alignas(16) FGPUInstance
     {
         glm::mat4x4     Transform;
-    };
-
-    static_assert(sizeof(FGPUInstanceTransform) == 64, "FGPUInstanceTransform layout must match shader");
-    VERIFY_SSBO_ALIGNMENT(FGPUInstanceTransform)
-
-    // Hot 32B cull/identity block. Sized to exactly one half-cache-line so the
-    // shadow-cull compute pass (the worst cache offender in the old layout)
-    // touches only 32B per caster instead of dragging the whole 144B descriptor.
-    // CustomData sits in the pad slot because BasePixelPass already reads this
-    // block for the ReceiveShadow flag — material graphs that reference the
-    // CustomPrimitiveData node pay zero extra bandwidth.
-    struct alignas(16) FGPUInstanceCull
-    {
         glm::vec4       SphereBounds;
+
+        uint64          VBAddress;
+        uint64          ShadowIBAddress;
+        uint64          MeshletHeaderAddress;
 
         uint32          DrawIDAndFlags;
         uint32          SurfaceMeshletOffset;
         uint32          SurfaceMeshletCount;
         uint32          CustomData;
-    };
-
-    static_assert(sizeof(FGPUInstanceCull) == 32, "FGPUInstanceCull layout must match shader");
-    VERIFY_SSBO_ALIGNMENT(FGPUInstanceCull)
-
-    // 32B block with the pointers needed to pull vertex data plus the identity
-    // fields the pixel shader emits to the picker. Shadow-cull never touches
-    // this buffer. MeshletHeaderAddress is zero when the instance skips the
-    // meshlet path (skinned meshes, legacy assets without meshlets).
-    struct alignas(16) FGPUInstanceRender
-    {
-        uint64          VBAddress;
-        uint64          ShadowIBAddress;
-        uint64          MeshletHeaderAddress;
 
         uint32          BoneOffsetAndMaterialIndex;
         uint32          EntityID;
     };
 
-    static_assert(sizeof(FGPUInstanceRender) == 32, "FGPUInstanceRender layout must match shader");
-    VERIFY_SSBO_ALIGNMENT(FGPUInstanceRender)
+    static_assert(sizeof(FGPUInstance) == 128, "FGPUInstance layout must match shader");
+    VERIFY_SSBO_ALIGNMENT(FGPUInstance)
     
     constexpr uint32 PackDrawIDAndFlags(uint32 DrawID, EInstanceFlags Flags)
     {

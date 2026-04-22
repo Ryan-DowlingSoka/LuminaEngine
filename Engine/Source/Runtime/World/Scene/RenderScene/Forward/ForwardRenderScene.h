@@ -37,17 +37,15 @@ namespace Lumina
         */
         struct FProcessedDrawItem
         {
-            // Scattered into the three parallel per-instance SSBOs during the
-            // merge pass. Cull.DrawIDAndFlags holds only flags here; the merge
-            // fills in DrawID once the global draw index is known.
-            FGPUInstanceTransform Transform;
-            FGPUInstanceCull      Cull;
-            FGPUInstanceRender    Render;
-            EInstanceFlags        Flags;
-            uint32                LocalBoneOffset;   // Offset into the owning thread's BonesData; ~0u for static meshes.
-            uint16                MaterialIndex;
-            uint16                LocalBatchIndex;   // Index into FThreadLocalDrawData::LocalBatches
-            uint16                LocalDrawIndex;    // Index into FLocalBatchEntry::LocalDraws
+            // Scattered into the per-instance SSBO during the merge pass.
+            // Instance.DrawIDAndFlags holds only flags here; the merge fills
+            // in DrawID once the global draw index is known.
+            FGPUInstance        Instance;
+            EInstanceFlags      Flags;
+            uint32              LocalBoneOffset;   // Offset into the owning thread's BonesData; ~0u for static meshes.
+            uint16              MaterialIndex;
+            uint16              LocalBatchIndex;   // Index into FThreadLocalDrawData::LocalBatches
+            uint16              LocalDrawIndex;    // Index into FLocalBatchEntry::LocalDraws
         };
 
         /**
@@ -56,7 +54,7 @@ namespace Lumina
          * walking every item, which is what makes the merge O(unique batches × threads)
          * rather than O(num instances).
          */
-        struct FLocalBatchEntry
+        struct alignas(64) FLocalBatchEntry
         {
             FDrawBatchKey       Key;
             FRHIVertexShader*   VertexShader = nullptr;
@@ -67,7 +65,7 @@ namespace Lumina
             TVector<uint32>     LocalToGlobalDraw;      // resolved during merge
         };
 
-        struct alignas(Threading::GCacheLineSize) FThreadLocalDrawData
+        struct alignas(64) FThreadLocalDrawData
         {
             TVector<FProcessedDrawItem> Items;
             TVector<FLocalBatchEntry>   LocalBatches;
@@ -79,13 +77,8 @@ namespace Lumina
         {
             Scene,
             Light,
-            // Split per-instance descriptor. Cull block (SphereBounds + flags +
-            // meshlet range + CustomData) is bound at 2 — the original slot. The
-            // transform and render-pointer blocks get their own bindings (16/17)
-            // so passes only touch the buffers they read.
-            InstanceCull,
-            InstanceTransform,
-            InstanceRender,
+            // Unified per-instance descriptor. Bound at binding 2.
+            Instance,
             InstanceMappingShadow,
             IndirectShadow,
             Bone,
@@ -232,14 +225,8 @@ namespace Lumina
 
         TVector<FBillboardInstance>             BillboardInstances;
         
-        /**
-         * Packed arrays of per-instance data, split into three parallel buffers
-         * so each shader pass only reads the blocks it needs. Always kept at the
-         * same size and indexed by the same instance ID.
-         */
-        TVector<FGPUInstanceTransform>          InstanceTransforms;
-        TVector<FGPUInstanceCull>               InstanceCulls;
-        TVector<FGPUInstanceRender>             InstanceRenders;
+        /** Packed array of per-instance descriptors uploaded to ENamedBuffer::Instance. */
+        TVector<FGPUInstance>                   Instances;
         TVector<glm::mat4>                      BonesData;
         
         FShadowAtlas                            ShadowAtlas;
@@ -249,6 +236,14 @@ namespace Lumina
 
         /** Indices into DrawCommands for opaque batches */
         TVector<uint32>                         OpaqueDrawList;
+
+        /**
+         * Subset of OpaqueDrawList whose batches have bDrawInDepthPass set.
+         * Only these batches are rasterized in the depth pre-pass; the full
+         * opaque set is drawn in the base pass with GREATER_EQUAL so non-
+         * occluders still contribute to the final depth buffer.
+         */
+        TVector<uint32>                         OpaqueOccluderDrawList;
 
         /** Indices into DrawCommands for translucent batches, rendered after opaque */
         TVector<uint32>                         TranslucentDrawList;
