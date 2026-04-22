@@ -225,26 +225,28 @@ namespace Lumina
             // Frame End / Render
             //-------------------------------------------------------------------
             {
-                FRenderGraph RenderGraph;
-
                 LUMINA_PROFILE_SECTION_COLORED("Frame-End", tracy::Color::Coral);
                 UpdateContext.UpdateStage = EUpdateStage::FrameEnd;
+
+                FRHICommandListRef PrimaryCommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
+                PrimaryCommandList->Open();
+                ICommandList& CmdList = *PrimaryCommandList;
 
                 #if USING(WITH_EDITOR)
                 DeveloperToolUI->Update(UpdateContext);
                 #endif
 
                 GWorldManager->UpdateWorlds(UpdateContext);
-                GWorldManager->RenderWorlds(RenderGraph);
-                
+                GWorldManager->RenderWorlds(CmdList);
+
                 #if USING(WITH_EDITOR)
                 DeveloperToolUI->EndFrame(UpdateContext);
                 #endif
-                
+
                 GApp->GetPrismApp().Tick((float)GEngine->GetDeltaTime());
-                
-                GRenderManager->FrameEnd(UpdateContext, RenderGraph);
-                
+
+                GRenderManager->FrameEnd(UpdateContext, CmdList);
+
                 Lua::FScriptingContext::Get().ProcessDeferredActions();
 
                 OnUpdateStage(UpdateContext);

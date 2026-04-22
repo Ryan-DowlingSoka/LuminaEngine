@@ -7,7 +7,7 @@
 
 namespace Lumina
 {
-    class FRenderGraph;
+    class ICommandList;
     class IImGuiRenderer;
     class IRenderContext;
 }
@@ -26,7 +26,7 @@ namespace Lumina
         void Initialize();
 
         void FrameStart(const FUpdateContext& UpdateContext);
-        void FrameEnd(const FUpdateContext& UpdateContext, FRenderGraph& RenderGraph);
+        void FrameEnd(const FUpdateContext& UpdateContext, ICommandList& CmdList);
 
         void SwapchainResized(glm::vec2 NewSize);
 

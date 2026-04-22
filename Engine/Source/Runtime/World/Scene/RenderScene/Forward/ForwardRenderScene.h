@@ -127,7 +127,7 @@ namespace Lumina
         void BeginFrame() override { }
         void EndFrame() override { }
         
-        void RenderView(FRenderGraph& RenderGraph, const FViewVolume& ViewVolume) override;
+        void RenderView(ICommandList& CmdList, const FViewVolume& ViewVolume) override;
         void SwapchainResized(glm::vec2 NewSize);
         
         void DrawBillboard(FRHIImage* Image, const glm::vec3& Location, float Scale) override;
@@ -152,29 +152,29 @@ namespace Lumina
         void CreateLayouts();
         
         //~ Begin Render Passes
-        void ResetPass(FRenderGraph& RenderGraph);
-        void CullPass(FRenderGraph& RenderGraph);
-        void DepthPrePass(FRenderGraph& RenderGraph);
-        void DepthPyramidPass(FRenderGraph& RenderGraph);
-        void ClusterBuildPass(FRenderGraph& RenderGraph);
-        void LightCullPass(FRenderGraph& RenderGraph);
-        void PointShadowPass(FRenderGraph& RenderGraph);
-        void SpotShadowPass(FRenderGraph& RenderGraph);
-        void CascadedShowPass(FRenderGraph& RenderGraph);
-        void BasePass(FRenderGraph& RenderGraph);
-        void BillboardPass(FRenderGraph& RenderGraph);
-        void ParticleSimulatePass(FRenderGraph& RenderGraph);
-        void ParticleRenderPass(FRenderGraph& RenderGraph);
-        void TerrainUpdatePass(FRenderGraph& RenderGraph);
-        void TerrainRenderPass(FRenderGraph& RenderGraph);
-        void TransparentPass(FRenderGraph& RenderGraph);
-        void OITResolvePass(FRenderGraph& RenderGraph);
-        void EnvironmentPass(FRenderGraph& RenderGraph);
-        void BatchedLineDraw(FRenderGraph& RenderGraph);
-        void ToneMappingPass(FRenderGraph& RenderGraph);
+        void ResetPass(ICommandList& CmdList);
+        void CullPass(ICommandList& CmdList);
+        void DepthPrePass(ICommandList& CmdList);
+        void DepthPyramidPass(ICommandList& CmdList);
+        void ClusterBuildPass(ICommandList& CmdList);
+        void LightCullPass(ICommandList& CmdList);
+        void PointShadowPass(ICommandList& CmdList);
+        void SpotShadowPass(ICommandList& CmdList);
+        void CascadedShowPass(ICommandList& CmdList);
+        void BasePass(ICommandList& CmdList);
+        void BillboardPass(ICommandList& CmdList);
+        void ParticleSimulatePass(ICommandList& CmdList);
+        void ParticleRenderPass(ICommandList& CmdList);
+        void TerrainUpdatePass(ICommandList& CmdList);
+        void TerrainRenderPass(ICommandList& CmdList);
+        void TransparentPass(ICommandList& CmdList);
+        void OITResolvePass(ICommandList& CmdList);
+        void EnvironmentPass(ICommandList& CmdList);
+        void BatchedLineDraw(ICommandList& CmdList);
+        void ToneMappingPass(ICommandList& CmdList);
         //~ End Render Passes
-        
-        void CompileDrawCommands(FRenderGraph& RenderGraph);
+
+        void CompileDrawCommands(ICommandList& CmdList);
 
         void ResolveDirtyTransforms();
 

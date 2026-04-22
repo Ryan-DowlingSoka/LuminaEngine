@@ -8,7 +8,6 @@
 
 namespace Lumina
 {
-    class FRenderGraph;
     class FViewVolume;
 
     class IRenderScene : public ISceneInterface, public IPrimitiveDrawInterface
@@ -23,8 +22,8 @@ namespace Lumina
         virtual void BeginFrame() = 0;
         virtual void EndFrame() = 0;
 
-        // Submit a view to be rendered into the graph
-        virtual void RenderView(FRenderGraph&, const FViewVolume&) = 0;
+        // Record this view's draws onto the provided command list.
+        virtual void RenderView(ICommandList& CmdList, const FViewVolume&) = 0;
         
         virtual entt::entity GetEntityAtPixel(uint32 X, uint32 Y) const = 0;
         

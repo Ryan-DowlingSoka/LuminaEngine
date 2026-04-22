@@ -7,14 +7,14 @@
 namespace Lumina
 {
     class FRHIImage;
-    class FRenderGraph;
+    class ICommandList;
 }
 
 namespace Lumina::Prism
 {
     // Prism renderer. Tessellates the per-frame draw list on
-    // Submit, then defers GPU work to AddPassToRenderGraph so the host can
-    // fold it into whatever render graph they're building for the frame.
+    // Submit, then records GPU work in Render so the host can
+    // fold it into whatever command list they're building for the frame.
     //
     // Buffer management is a simple "grow and stay" scheme: vertex and
     // index buffers are resized when the tessellated stream overflows the
@@ -32,11 +32,11 @@ namespace Lumina::Prism
         void Submit(const FPrismDrawList& DrawList);
         void EndFrame();
 
-        // Records the Prism draw into the supplied render graph. Target is
+        // Records the Prism draw directly into the supplied command list. Target is
         // loaded (not cleared) so Prism composites over whatever the host
         // already rendered into it. Call this after the rest of the frame's
         // passes so UI lands on top.
-        void AddPassToRenderGraph(FRenderGraph& RenderGraph, FRHIImage* Target);
+        void Render(ICommandList& CmdList, FRHIImage* Target);
 
         bool HasWork() const { return !VertexStream.Indices.empty(); }
 

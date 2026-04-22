@@ -439,7 +439,7 @@ namespace Lumina
         TickSystems(SystemContext);
     }
 
-    void CWorld::Render(FRenderGraph& RenderGraph) const
+    void CWorld::Render(ICommandList& CmdList) const
     {
         LUMINA_PROFILE_SCOPE();
 
@@ -449,12 +449,12 @@ namespace Lumina
             // Force an update now.
             (void)EntityRegistry.get<STransformComponent>(CameraEntity).GetWorldMatrix();
             const SCameraComponent& Camera = EntityRegistry.get<SCameraComponent>(CameraEntity);
-            RenderScene->RenderView(RenderGraph, Camera.GetViewVolume());
-            
+            RenderScene->RenderView(CmdList, Camera.GetViewVolume());
+
             return;
         }
-        
-        RenderScene->RenderView(RenderGraph, FViewVolume{});
+
+        RenderScene->RenderView(CmdList, FViewVolume{});
     }
 
     void CWorld::OnScriptComponentPendingReady(const FScriptComponentPendingReady& Event)

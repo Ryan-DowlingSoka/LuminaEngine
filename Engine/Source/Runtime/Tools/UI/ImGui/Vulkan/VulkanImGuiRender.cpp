@@ -12,7 +12,7 @@
 #include "Renderer/RHIStaticStates.h"
 #include "Renderer/API/Vulkan/VulkanRenderContext.h"
 #include "Renderer/API/Vulkan/VulkanSwapchain.h"
-#include "Renderer/RenderGraph/RenderGraph.h"
+#include "Renderer/CommandList.h"
 #include "Tools/Import/ImportHelpers.h"
 
 namespace Lumina
@@ -178,50 +178,43 @@ namespace Lumina
         ImGui::NewFrame();
     }
 	
-    void FVulkanImGuiRender::OnEndFrame(const FUpdateContext& UpdateContext, FRenderGraph& RenderGraph)
+    void FVulkanImGuiRender::OnEndFrame(const FUpdateContext& UpdateContext, ICommandList& CmdList)
     {
-		
-    	LUMINA_PROFILE_SCOPE();
-		
-		FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-		RenderGraph.AddPass(RG_Raster, "ImGui Render", Descriptor, [&] (ICommandList& CmdList)
+		LUMINA_PROFILE_SECTION_COLORED("ImGui Render", tracy::Color::Aquamarine3);
+
+		FRHIImage* EngineViewport = FEngine::GetEngineViewport()->GetRenderTarget();
+		CmdList.SetImageState(EngineViewport, AllSubresources, EResourceStates::RenderTarget);
+		CmdList.CommitBarriers();
+
+		if (ImDrawData* DrawData = ImGui::GetDrawData())
 		{
-			LUMINA_PROFILE_SECTION_COLORED("ImGui Render", tracy::Color::Aquamarine3);
+			CmdList.DisableAutomaticBarriers();
 
-			FRHIImage* EngineViewport = FEngine::GetEngineViewport()->GetRenderTarget();
-			CmdList.SetImageState(EngineViewport, AllSubresources, EResourceStates::RenderTarget);
-			CmdList.CommitBarriers();
-			
-			if (ImDrawData* DrawData = ImGui::GetDrawData())
+			FRenderPassDesc::FAttachment Attachment; Attachment
+				.SetImage(EngineViewport);
+
+			for (FRHIImage* Image : ReferencedImages)
 			{
-				CmdList.DisableAutomaticBarriers();
-
-				FRenderPassDesc::FAttachment Attachment; Attachment
-					.SetImage(EngineViewport);
-				
-				for (FRHIImage* Image : ReferencedImages)
+				if (Image == EngineViewport)
 				{
-					if (Image == EngineViewport)
-					{
-						continue;
-					}
-					
-					CmdList.SetImageState(Image, AllSubresources, EResourceStates::ShaderResource);
+					continue;
 				}
-			
-				CmdList.CommitBarriers();
-				
-				FRenderPassDesc RenderPass; RenderPass
-				.AddColorAttachment(Attachment)
-				.SetRenderArea(EngineViewport->GetExtent());
-		
-				CmdList.BeginRenderPass(RenderPass);
-				ImGui_ImplVulkan_RenderDrawData(DrawData, CmdList.GetAPI<VkCommandBuffer>());
-				CmdList.EndRenderPass();
 
-				CmdList.EnableAutomaticBarriers();
+				CmdList.SetImageState(Image, AllSubresources, EResourceStates::ShaderResource);
 			}
-		});
+
+			CmdList.CommitBarriers();
+
+			FRenderPassDesc RenderPass; RenderPass
+			.AddColorAttachment(Attachment)
+			.SetRenderArea(EngineViewport->GetExtent());
+
+			CmdList.BeginRenderPass(RenderPass);
+			ImGui_ImplVulkan_RenderDrawData(DrawData, CmdList.GetAPI<VkCommandBuffer>());
+			CmdList.EndRenderPass();
+
+			CmdList.EnableAutomaticBarriers();
+		}
 
         
 		uint64 CurrentFrame = GEngine->GetUpdateContext().GetFrame();

@@ -60,22 +60,21 @@ namespace Lumina
         #endif
     }
 
-    void FRenderManager::FrameEnd(const FUpdateContext& UpdateContext, FRenderGraph& RenderGraph)
+    void FRenderManager::FrameEnd(const FUpdateContext& UpdateContext, ICommandList& CmdList)
     {
         LUMINA_PROFILE_SCOPE();
-        
-        
+
         #if WITH_EDITOR
-        ImGuiRenderer->EndFrame(UpdateContext, RenderGraph);
+        ImGuiRenderer->EndFrame(UpdateContext, CmdList);
         #endif
 
-        GApp->GetPrismApp().GetRenderer().AddPassToRenderGraph(RenderGraph, FEngine::GetEngineViewport()->GetRenderTarget());
-        
-        // Internally executes the render graph.
-        GRenderContext->FrameEnd(UpdateContext, RenderGraph);
-        
+        GApp->GetPrismApp().GetRenderer().Render(CmdList, FEngine::GetEngineViewport()->GetRenderTarget());
+
+        // Records the swapchain copy, closes, executes, and presents.
+        GRenderContext->FrameEnd(UpdateContext, CmdList);
+
         GRenderContext->FlushPendingDeletes();
-        
+
         CurrentFrameIndex = (CurrentFrameIndex + 1) % FRAMES_IN_FLIGHT;
     }
 

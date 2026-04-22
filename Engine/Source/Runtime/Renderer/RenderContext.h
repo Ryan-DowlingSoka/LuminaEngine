@@ -5,7 +5,6 @@
 #include "RHIFwd.h"
 #include "Types/BitFlags.h"
 #include "Core/UpdateContext.h"
-#include "RenderGraph/RenderGraph.h"
 
 
 namespace Lumina::RHI
@@ -51,7 +50,7 @@ namespace Lumina
 
 
         virtual bool FrameStart(const FUpdateContext& UpdateContext, uint8 InCurrentFrameIndex) = 0;
-        virtual bool FrameEnd(const FUpdateContext& UpdateContext, FRenderGraph& RenderGraph) = 0;
+        virtual bool FrameEnd(const FUpdateContext& UpdateContext, ICommandList& CmdList) = 0;
         
 
         NODISCARD virtual uint64 GetAllocatedMemory() const = 0;

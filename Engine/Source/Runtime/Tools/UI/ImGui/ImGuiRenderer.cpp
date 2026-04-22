@@ -6,7 +6,7 @@
 #include "Core/Engine/Engine.h"
 #include "imgui/misc/freetype/imgui_freetype.h"
 
-#include "Renderer/RenderGraph/RenderGraph.h"
+#include "Renderer/CommandList.h"
 #include "TaskSystem/TaskSystem.h"
 #include "Tools/UI/Notification/ImGuiNotifications.h"
 #include <imgui.h>
@@ -183,10 +183,10 @@ namespace Lumina
     	OnStartFrame(UpdateContext);
     }
 
-    void IImGuiRenderer::EndFrame(const FUpdateContext& UpdateContext, FRenderGraph& RenderGraph)
+    void IImGuiRenderer::EndFrame(const FUpdateContext& UpdateContext, ICommandList& CmdList)
     {
         LUMINA_PROFILE_SCOPE();
-		
+
     	ImGuiIO& Io = ImGui::GetIO();
     	Io.DisplaySize.x = static_cast<float>(FEngine::GetEngineViewport()->GetSize().x);
     	Io.DisplaySize.y = static_cast<float>(FEngine::GetEngineViewport()->GetSize().y);
@@ -199,7 +199,7 @@ namespace Lumina
     		ImGui::UpdatePlatformWindows();
     		ImGui::RenderPlatformWindowsDefault();
     	}
-    	
-    	OnEndFrame(UpdateContext, RenderGraph);
+
+    	OnEndFrame(UpdateContext, CmdList);
     }
 }

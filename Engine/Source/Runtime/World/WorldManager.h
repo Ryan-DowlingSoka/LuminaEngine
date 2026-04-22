@@ -21,7 +21,7 @@ namespace Lumina
         LE_NO_COPYMOVE(FWorldManager);
 
         void UpdateWorlds(const FUpdateContext& UpdateContext);
-        void RenderWorlds(FRenderGraph& RenderGraph);
+        void RenderWorlds(ICommandList& CmdList);
 
         // Creates a context for an already-constructed CWorld and calls InitializeWorld on it.
         // Returns the owning context (stable pointer until DestroyWorldContext).

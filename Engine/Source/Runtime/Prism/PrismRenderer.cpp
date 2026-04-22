@@ -7,8 +7,6 @@
 #include "Renderer/TextureManager.h"
 #include "Renderer/RenderTypes.h"
 #include "Renderer/CommandList.h"
-#include "Renderer/RenderGraph/RenderGraph.h"
-#include "Renderer/RenderGraph/RenderGraphPass.h"
 
 namespace Lumina::Prism
 {
@@ -115,7 +113,7 @@ namespace Lumina::Prism
         }
     }
 
-    void FPrismRenderer::AddPassToRenderGraph(FRenderGraph& RenderGraph, FRHIImage* Target)
+    void FPrismRenderer::Render(ICommandList& CmdList, FRHIImage* Target)
     {
         if (!Target || VertexStream.Indices.empty() || CachedWindowSize.x <= 0.0f || CachedWindowSize.y <= 0.0f)
         {
@@ -125,96 +123,92 @@ namespace Lumina::Prism
         EnsureInputLayout();
         EnsureBuffers((uint32)VertexStream.Vertices.size(), (uint32)VertexStream.Indices.size());
 
-        FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, "Prism UI", Descriptor, [this, Target](ICommandList& CmdList)
+        LUMINA_PROFILE_SECTION_COLORED("Prism UI", tracy::Color::MediumPurple);
+
+        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("PrismVert.slang");
+        FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader ("PrismPixel.slang");
+        if (!VertexShader || !PixelShader)
         {
-            LUMINA_PROFILE_SECTION_COLORED("Prism UI", tracy::Color::MediumPurple);
+            return;
+        }
 
-            const uint32 VertexCount = (uint32)VertexStream.Vertices.size();
-            const uint32 IndexCount  = (uint32)VertexStream.Indices.size();
+        const uint32 VertexCount = (uint32)VertexStream.Vertices.size();
+        const uint32 IndexCount  = (uint32)VertexStream.Indices.size();
 
-            CmdList.WriteBuffer(VertexBuffer.GetReference(), VertexStream.Vertices.data(), VertexCount * sizeof(FPrismVertex));
-            CmdList.WriteBuffer(IndexBuffer.GetReference(),  VertexStream.Indices.data(),  IndexCount  * sizeof(uint32));
+        CmdList.WriteBuffer(VertexBuffer.GetReference(), VertexStream.Vertices.data(), VertexCount * sizeof(FPrismVertex));
+        CmdList.WriteBuffer(IndexBuffer.GetReference(),  VertexStream.Indices.data(),  IndexCount  * sizeof(uint32));
 
-            FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("PrismVert.slang");
-            FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader ("PrismPixel.slang");
-            if (!VertexShader || !PixelShader)
-            {
-                return;
-            }
+        FRenderPassDesc::FAttachment Attachment; Attachment
+            .SetImage(Target)
+            .SetLoadOp(ERenderLoadOp::Load);
 
-            FRenderPassDesc::FAttachment Attachment; Attachment
-                .SetImage(Target)
-                .SetLoadOp(ERenderLoadOp::Load);
+        FRenderPassDesc RenderPass; RenderPass
+            .AddColorAttachment(Attachment)
+            .SetRenderArea(Target->GetExtent());
 
-            FRenderPassDesc RenderPass; RenderPass
-                .AddColorAttachment(Attachment)
-                .SetRenderArea(Target->GetExtent());
+        // Premultiplied alpha, the tessellator folds alpha into the
+        // RGB channels so the blend is (One, OneMinusSrcAlpha).
+        FBlendState BlendState; BlendState
+            .Targets[0]
+                .SetBlendEnable(true)
+                .SetSrcBlend(EBlendFactor::One)
+                .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
+                .SetBlendOp(EBlendOp::Add)
+                .SetSrcBlendAlpha(EBlendFactor::One)
+                .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
+                .SetBlendOpAlpha(EBlendOp::Add);
 
-            // Premultiplied alpha, the tessellator folds alpha into the
-            // RGB channels so the blend is (One, OneMinusSrcAlpha).
-            FBlendState BlendState; BlendState
-                .Targets[0]
-                    .SetBlendEnable(true)
-                    .SetSrcBlend(EBlendFactor::One)
-                    .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
-                    .SetBlendOp(EBlendOp::Add)
-                    .SetSrcBlendAlpha(EBlendFactor::One)
-                    .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
-                    .SetBlendOpAlpha(EBlendOp::Add);
+        FRasterState RasterState; RasterState
+            .SetCullNone();
 
-            FRasterState RasterState; RasterState
-                .SetCullNone();
+        FDepthStencilState DepthState; DepthState
+            .DisableDepthTest()
+            .DisableDepthWrite();
 
-            FDepthStencilState DepthState; DepthState
-                .DisableDepthTest()
-                .DisableDepthWrite();
+        FRenderState RenderState; RenderState
+            .SetRasterState(RasterState)
+            .SetDepthStencilState(DepthState)
+            .SetBlendState(BlendState);
 
-            FRenderState RenderState; RenderState
-                .SetRasterState(RasterState)
-                .SetDepthStencilState(DepthState)
-                .SetBlendState(BlendState);
+        FGraphicsPipelineDesc PipelineDesc; PipelineDesc
+            .SetDebugName("Prism UI")
+            .SetPrimType(EPrimitiveType::TriangleList)
+            .SetRenderState(RenderState)
+            .SetInputLayout(InputLayout)
+            .SetVertexShader(VertexShader)
+            .SetPixelShader(PixelShader)
+            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
-            FGraphicsPipelineDesc PipelineDesc; PipelineDesc
-                .SetDebugName("Prism UI")
-                .SetPrimType(EPrimitiveType::TriangleList)
-                .SetRenderState(RenderState)
-                .SetInputLayout(InputLayout)
-                .SetVertexShader(VertexShader)
-                .SetPixelShader(PixelShader)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        FVertexBufferBinding VBinding; VBinding
+            .SetBuffer(VertexBuffer.GetReference())
+            .SetSlot(0)
+            .SetOffset(0);
 
-            FVertexBufferBinding VBinding; VBinding
-                .SetBuffer(VertexBuffer.GetReference())
-                .SetSlot(0)
-                .SetOffset(0);
+        FIndexBufferBinding IBinding; IBinding
+            .SetBuffer(IndexBuffer.GetReference())
+            .SetFormat(EFormat::R32_UINT)
+            .SetOffset(0);
 
-            FIndexBufferBinding IBinding; IBinding
-                .SetBuffer(IndexBuffer.GetReference())
-                .SetFormat(EFormat::R32_UINT)
-                .SetOffset(0);
+        const float SizeX = (float)Target->GetSizeX();
+        const float SizeY = (float)Target->GetSizeY();
+        FViewportState Viewport;
+        Viewport.Viewports.emplace_back(FViewport(SizeX, SizeY));
+        Viewport.Scissors.emplace_back(FRect((int)SizeX, (int)SizeY));
 
-            const float SizeX = (float)Target->GetSizeX();
-            const float SizeY = (float)Target->GetSizeY();
-            FViewportState Viewport;
-            Viewport.Viewports.emplace_back(FViewport(SizeX, SizeY));
-            Viewport.Scissors.emplace_back(FRect((int)SizeX, (int)SizeY));
+        FGraphicsState GraphicsState; GraphicsState
+            .SetRenderPass(RenderPass)
+            .SetViewportState(Viewport)
+            .SetPipeline(GRenderContext->CreateGraphicsPipeline(PipelineDesc, RenderPass))
+            .AddVertexBuffer(VBinding)
+            .SetIndexBuffer(IBinding)
+            .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
 
-            FGraphicsState GraphicsState; GraphicsState
-                .SetRenderPass(RenderPass)
-                .SetViewportState(Viewport)
-                .SetPipeline(GRenderContext->CreateGraphicsPipeline(PipelineDesc, RenderPass))
-                .AddVertexBuffer(VBinding)
-                .SetIndexBuffer(IBinding)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        CmdList.SetGraphicsState(GraphicsState);
 
-            CmdList.SetGraphicsState(GraphicsState);
+        FPrismPushConstants Push{};
+        Push.InvScreenSize = glm::vec2(1.0f / CachedWindowSize.x, 1.0f / CachedWindowSize.y);
+        CmdList.SetPushConstants(&Push, sizeof(Push));
 
-            FPrismPushConstants Push{};
-            Push.InvScreenSize = glm::vec2(1.0f / CachedWindowSize.x, 1.0f / CachedWindowSize.y);
-            CmdList.SetPushConstants(&Push, sizeof(Push));
-
-            CmdList.DrawIndexed(IndexCount, 1, 0, 0, 0);
-        });
+        CmdList.DrawIndexed(IndexCount, 1, 0, 0, 0);
     }
 }

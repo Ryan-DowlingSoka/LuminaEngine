@@ -4,7 +4,7 @@
 #include "Core/UpdateContext.h"
 #include "World/Entity/Components/CameraComponent.h"
 #include "Entity/Registry/EntityRegistry.h"
-#include "Renderer/RenderGraph/RenderGraph.h"
+#include "Renderer/RHIFwd.h"
 #include "Memory/SmartPtr.h"
 #include "Physics/PhysicsScene.h"
 #include "Entity/Systems/SystemContext.h"
@@ -69,7 +69,7 @@ namespace Lumina
          * Called on every update stage and runs systems attached to this world.
          */
         void Update(const FUpdateContext& Context);
-        void Render(FRenderGraph& RenderGraph) const;
+        void Render(ICommandList& CmdList) const;
         
         FUNCTION(Script)
         entt::entity ConstructEntity(const FName& Name, const FTransform& Transform = FTransform());

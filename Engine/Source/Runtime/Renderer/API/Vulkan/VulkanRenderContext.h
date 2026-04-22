@@ -146,7 +146,7 @@ namespace Lumina
         void CreateDevice(vkb::Instance Instance);
         
         bool FrameStart(const FUpdateContext& UpdateContext, uint8 InCurrentFrameIndex) override;
-        bool FrameEnd(const FUpdateContext& UpdateContext, FRenderGraph& RenderGraph) override;
+        bool FrameEnd(const FUpdateContext& UpdateContext, ICommandList& CmdList) override;
 
         uint64 GetAllocatedMemory() const override;
         uint64 GetAvailableMemory() const override;

@@ -36,7 +36,7 @@ namespace Lumina
         }
     }
 
-    void FWorldManager::RenderWorlds(FRenderGraph& RenderGraph)
+    void FWorldManager::RenderWorlds(ICommandList& CmdList)
     {
         LUMINA_PROFILE_SCOPE();
 
@@ -48,7 +48,7 @@ namespace Lumina
                 continue;
             }
 
-            World->Render(RenderGraph);
+            World->Render(CmdList);
         }
     }
 

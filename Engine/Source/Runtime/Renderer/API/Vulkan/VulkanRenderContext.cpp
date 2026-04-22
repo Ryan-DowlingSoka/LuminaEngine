@@ -16,7 +16,6 @@
 #include "Renderer/CommandList.h"
 #include "Renderer/RHIStaticStates.h"
 #include "Renderer/ShaderCompiler.h"
-#include "Renderer/RenderGraph/RenderGraphDescriptor.h"
 #include "TaskSystem/TaskSystem.h"
 #include "Renderer/ErrorHandling/Vulkan/VulkanCrashTracker.h"
 
@@ -628,20 +627,18 @@ namespace Lumina
         return bSuccess;
     }
 
-    bool FVulkanRenderContext::FrameEnd(const FUpdateContext& UpdateContext, FRenderGraph& RenderGraph)
+    bool FVulkanRenderContext::FrameEnd(const FUpdateContext& UpdateContext, ICommandList& CmdList)
     {
         LUMINA_PROFILE_SCOPE();
 
-        FRGPassDescriptor* Descriptor = RenderGraph.AllocDescriptor();
-        RenderGraph.AddPass(RG_Raster, "Swapchain Copy", Descriptor, [&](ICommandList& CmdList)
-        {
-            CmdList.CopyImage(FEngine::GetEngineViewport()->GetRenderTarget(), FTextureSlice(), Swapchain->GetCurrentImage(), FTextureSlice());
-        });
+        CmdList.CopyImage(FEngine::GetEngineViewport()->GetRenderTarget(), FTextureSlice(), Swapchain->GetCurrentImage(), FTextureSlice());
 
-        RenderGraph.Execute();
+        CmdList.Close();
+        ICommandList* CL = &CmdList;
+        ExecuteCommandLists(&CL, 1, ECommandQueue::Graphics);
 
         bool bSuccess = Swapchain->Present();
-        
+
         return bSuccess;
     }
 
