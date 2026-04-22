@@ -78,6 +78,9 @@ namespace Lumina
         entt::entity SpawnPrefab(const FName& Path);
         
         FUNCTION(Script)
+        void SpawnPrefabAsync(const FName& Path, const TFunction<void(entt::entity)>& Callback);
+        
+        FUNCTION(Script)
         FEntityRegistry& GetEntityRegistry() { return EntityRegistry; }
         
         FUNCTION(Script)

@@ -35,6 +35,7 @@ namespace Lumina
     RUNTIME_API CObject* FindObjectImpl(const FName& Name, CClass* Class);
     RUNTIME_API CObject* StaticLoadObject(const FGuid& GUID);
     RUNTIME_API void AsyncLoadObject(const FGuid& GUID, const TFunction<void(CObject*)>& Callback);
+    RUNTIME_API void AsyncLoadObject(const FName& Name, const TFunction<void(CObject*)>& Callback);
     RUNTIME_API CObject* StaticLoadObject(FStringView Name);
     RUNTIME_API FFixedString SanitizeObjectName(FStringView Name);
 

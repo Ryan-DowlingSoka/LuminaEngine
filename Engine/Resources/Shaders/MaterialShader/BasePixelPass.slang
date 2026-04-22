@@ -137,17 +137,35 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
 
     if (LightFlags == LIGHT_FLAG_TYPE_DIRECTIONAL)
     {
-        // Bias is in NDC-z space [0,1].
-        float Bias = 0.0005 + 0.0015 * SlopeFactor;
-        Bias *= lerp(1.0, 4.0, float(CascadeIndex) / float(max(NUM_CASCADES - 1, 1)));
-        return Bias;
+        // Bias is in NDC-z space [0,1]. Outer cascades have wider ortho
+        // ranges, so the same NDC bias maps to much larger world offsets;
+        // keep this value flat across cascades and let hardware slope-scale
+        // bias (set on the CSM raster state) handle per-cascade resolution.
+        return 0.0003 + 0.0008 * SlopeFactor;
     }
 
     // Point/spot: CurrentDepth is DistToLight/Radius, linear [0,1].
     return 0.0015 + 0.004 * SlopeFactor;
 }
 
-// PCF-filtered sample of a single directional cascade. Returns 1.0 if the
+// Tuning for PCSS (Percentage-Closer Soft Shadows).
+//
+// The visible gap near contact points isn't depth-bias — it's the fixed PCF
+// footprint averaging in texels that sit on the occluder, which drags the
+// shadow edge away from the mesh. PCSS fixes this by making the PCF kernel
+// contact-aware: we first search for blockers in a small region, estimate
+// the depth delta from receiver to average blocker, and scale the PCF
+// radius with that delta. At contact the delta is ~zero, so the filter
+// collapses to a near-point sample and the shadow edge stays glued to the
+// mesh; at distance the penumbra opens up to a natural soft shadow.
+#define PCSS_BLOCKER_SEARCH_TAPS   8
+static const float PCSS_BlockerSearchRadius = 0.0035;  // UV radius of blocker search
+static const float PCSS_LightSize           = 0.05;     // Tunable: larger = softer far shadows
+static const float PCSS_MinFilterRadius     = 0.00001; // Near-point sample at contact
+static const float PCSS_MaxFilterRadius     = 0.0018;  // Cap so far shadows don't over-blur
+static const float PCSS_BlockerDepthBias    = 0.0004;  // Bias for blocker classification
+
+// PCSS-filtered sample of a single directional cascade. Returns 1.0 if the
 // fragment falls outside the cascade's projected UV / depth range so the
 // caller can decide to fall back to another cascade (or to fully-lit).
 float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float Bias, float2 ScreenPos, out bool Inside)
@@ -168,17 +186,68 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     float IGN   = frac(52.9829189 * frac(dot(ScreenPos, float2(0.06711056, 0.00583715))));
     float Angle = IGN * TWO_PI;
 
-    // PCF footprint scales with cascade size so outer cascades get a wider
-    // filter in world space. Counteracts the visible resolution cliff at the
-    // boundary between the penultimate and last cascade.
-    float FilterRadius = 0.0012 * (1.0 + 0.6 * float(CascadeIndex));
-
     float RefDepth = CurrentDepth - Bias;
 
-    float Shadow = 0.0;
-    for (int i = 0; i < SHADOW_SAMPLE_COUNT; i++)
+    // --- Stage 1: blocker search -------------------------------------------------
+    //
+    // Tap the shadow map through the *point* sampler at binding 16 so each
+    // fetch is a raw texel depth (binding 7's comparison sampler would return
+    // a PCF-filtered result, useless for classifying individual texels).
+    // If no taps hit an occluder the fragment is fully lit; early-out skips
+    // the PCF pass entirely.
+    float BlockerDepthSum = 0.0;
+    int   NumBlockers     = 0;
+
+    // Outer cascades cover much more world-space per UV, so scale the search
+    // radius a little to keep it roughly scene-proportional.
+    float SearchRadius = PCSS_BlockerSearchRadius * (1.0 + 0.4 * float(CascadeIndex));
+
+    [unroll]
+    for (int s = 0; s < PCSS_BLOCKER_SEARCH_TAPS; ++s)
     {
-        float2 Offset    = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle) * FilterRadius;
+        float2 Offset   = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, Angle) * SearchRadius;
+        float2 SampleUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
+        float  Depth    = uShadowCascadePoint.SampleLevel(float3(SampleUV, float(CascadeIndex)), 0.0).r;
+
+        if (Depth < CurrentDepth - PCSS_BlockerDepthBias)
+        {
+            BlockerDepthSum += Depth;
+            NumBlockers     += 1;
+        }
+    }
+
+    if (NumBlockers == 0)
+    {
+        return 1.0;
+    }
+
+    float AvgBlockerDepth = BlockerDepthSum / float(NumBlockers);
+
+    // --- Stage 2: penumbra estimate ---------------------------------------------
+    //
+    // For an orthographic directional light the penumbra grows linearly with
+    // receiver-to-blocker distance. Depths live in NDC-z [0,1] (a fraction of
+    // the cascade's ortho range), so the delta is already normalized;
+    // PCSS_LightSize absorbs the conversion back to UV space and the sun's
+    // apparent size. At true contact the delta collapses and the filter
+    // shrinks to PCSS_MinFilterRadius — a near-point sample that keeps the
+    // shadow edge glued to the mesh.
+    float DepthDelta   = max(CurrentDepth - AvgBlockerDepth, 0.0);
+    float Penumbra     = DepthDelta * PCSS_LightSize;
+    float FilterRadius = clamp(Penumbra, PCSS_MinFilterRadius, PCSS_MaxFilterRadius);
+
+    // Low blocker coverage → partial occlusion → pull the filter in slightly.
+    // Mostly a robustness tweak so penumbra doesn't pop when the blocker
+    // count straddles the threshold across cascades.
+    float BlockerCoverage = float(NumBlockers) / float(PCSS_BLOCKER_SEARCH_TAPS);
+    FilterRadius *= lerp(0.75, 1.0, BlockerCoverage);
+
+    // --- Stage 3: PCF with contact-hardened radius ------------------------------
+    float Shadow = 0.0;
+    [unroll]
+    for (int i = 0; i < SHADOW_SAMPLE_COUNT; ++i)
+    {
+        float2 Offset    = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle + PI) * FilterRadius;
         float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
         Shadow += uShadowCascade.SampleCmp(float3(CascadeUV, CascadeIndex), RefDepth);
     }

@@ -12,6 +12,7 @@
 #include <Jolt/Renderer/DebugRendererSimple.h>
 #include "Core/Utils/Defer.h"
 #endif
+#include <algorithm>
 #include <glm/gtx/norm.hpp>
 
 #include "JoltPhysics.h"
@@ -398,16 +399,12 @@ namespace Lumina::Physics
         Accumulator += static_cast<float>(DeltaTime);
 
         // Clamp to prevent spiral-of-death on heavy frames.
-        if (Accumulator > MaxAccumulation)
-        {
-            Accumulator = MaxAccumulation;
-        }
+        Accumulator = std::min(Accumulator, MaxAccumulation);
 
         if (Accumulator >= FixedTimestep)
         {
             // Cap at MaxPhysicsSteps to bound work per frame.
-            CollisionSteps = Math::Min((uint32)WorldSettings.MaxPhysicsSteps,
-                                       (uint32)(Accumulator / FixedTimestep));
+            CollisionSteps = Math::Min((uint32)WorldSettings.MaxPhysicsSteps, (uint32)(Accumulator / FixedTimestep));
         }
         else
         {

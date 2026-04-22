@@ -19,6 +19,7 @@
 #include "Package/Package.h"
 #include "Paths/Paths.h"
 #include "Scripting/Lua/Scripting.h"
+#include "TaskSystem/ThreadedCallback.h"
 
 namespace Lumina
 {
@@ -82,7 +83,30 @@ namespace Lumina
                 {
                     if (CObject* Object = Package->LoadObject(GUID))
                     {
-                        Callback(Object);
+                        MainThread::Enqueue([Object, Callback]
+                        {
+                            Callback(Object);
+                        });
+                    }
+                }
+            }
+        });
+    }
+
+    void AsyncLoadObject(const FName& Name, const TFunction<void(CObject*)>& Callback)
+    {
+        Task::AsyncTask(1, 1, [Name, Callback](uint32, uint32, uint32)
+        {
+            if (const FAssetData* Data = FAssetRegistry::Get().GetAssetByPath(Name.c_str()))
+            {
+                if (CPackage* Package = CPackage::LoadPackage(Data->Path))
+                {
+                    if (CObject* Object = Package->LoadObject(Data->AssetGUID))
+                    {
+                        MainThread::Enqueue([Object, Callback]
+                        {
+                            Callback(Object);
+                        });
                     }
                 }
             }

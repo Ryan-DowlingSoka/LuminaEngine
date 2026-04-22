@@ -41,6 +41,10 @@ struct SkinnedVertexBuffer
 [[vk::binding(14, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawListCascade;
 [[vk::binding(15, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectDrawDataMeshletCascade;
 
+// Same cascade image as binding 7 but with a point, non-comparison sampler —
+// lets PCSS blocker search read raw depth values instead of PCF results.
+[[vk::binding(16, 0)]] Sampler2DArray                                uShadowCascadePoint;
+
 // ---------------------------------------------------------------------------------
 //  Binding Set 1
 // ---------------------------------------------------------------------------------

@@ -21,6 +21,12 @@ namespace Lumina
         /** Time dilation factor - values below 1 slow the world, above 1 speed it up. */
         PROPERTY(Editable)
         float DeltaTimeScale = 1.0f;
+        
+        PROPERTY(Editable, Category = "Rendering")
+        float CascadeSplitLambda = 0.84f;
+        
+        PROPERTY(Editable, Category = "Rendering")
+        float ShadowMaxDistance = 2000.0f;
 
         /** Normalized direction of gravity in world space. */
         PROPERTY(Editable, Category = "Physics")

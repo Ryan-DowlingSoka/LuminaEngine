@@ -1,13 +1,17 @@
 ﻿#pragma once
 #include "lua.h"
+#include "lualib.h"
 #include "Traits.h"
 #include <entt/entt.hpp>
 #include "Core/Templates/Optional.h"
 #include "UserDataHeader.h"
 #include "Containers/Array.h"
+#include "Containers/Function.h"
 #include "Containers/Name.h"
 #include "Containers/String.h"
 #include "Memory/Memcpy.h"
+#include "Memory/SmartPtr.h"
+#include "Log/Log.h"
 
 
 namespace Lumina::Lua
@@ -584,5 +588,200 @@ namespace Lumina::Lua
         static void Push(lua_State* State, T Value)     { lua_pushinteger(State, (int)Value); }
         static T  Get(lua_State* State, int Index)      { return (T)luaL_checkinteger(State, Index); }
         static bool Check(lua_State* State, int Index)  { return lua_isnumber(State, Index); }
+    };
+
+    // Forward-declared helpers used by TFunction support below.
+    template<typename TParam>
+    static decltype(auto) GetArg(lua_State* L, int Index);
+
+    template<typename TParam>
+    static void PushArg(lua_State* L, TParam&& Param);
+
+    template<typename R, typename... Args>
+    struct TLuaNativeType<TFunction<R(Args...)>> : eastl::true_type {};
+
+    namespace FunctionStack_Private
+    {
+        struct FLuaCallbackRef
+        {
+            lua_State*  State   = nullptr;
+            int         Ref     = LUA_NOREF;
+
+            FLuaCallbackRef(lua_State* L, int Index)
+                : State(L)
+            {
+                lua_pushvalue(L, Index);
+                Ref = lua_ref(L, -1);
+                lua_pop(L, 1);
+            }
+
+            ~FLuaCallbackRef()
+            {
+                if (State && Ref != LUA_NOREF && Ref != LUA_REFNIL)
+                {
+                    lua_unref(State, Ref);
+                }
+            }
+
+            FLuaCallbackRef(const FLuaCallbackRef&) = delete;
+            FLuaCallbackRef& operator=(const FLuaCallbackRef&) = delete;
+        };
+    }
+
+    template<typename R, typename... Args>
+    requires(eastl::is_void_v<R> || eastl::is_default_constructible_v<R>)
+    struct TStack<TFunction<R(Args...)>>
+    {
+        using FuncT = TFunction<R(Args...)>;
+
+        static FStringView TypeName(lua_State* State) { return lua_typename(State, LUA_TFUNCTION); }
+
+        // Thunk invoked by Lua: unpacks args from the Lua stack and calls the stored TFunction.
+        static int InvokeThunk(lua_State* L)
+        {
+            auto* Stored = static_cast<FuncT*>(lua_touserdata(L, lua_upvalueindex(1)));
+            if (Stored == nullptr || !(*Stored))
+            {
+                luaL_errorL(L, "%s", "Attempted to invoke empty TFunction.");
+            }
+
+            auto Dispatch = [&]<size_t... Is>(eastl::index_sequence<Is...>) -> int
+            {
+                if constexpr (eastl::is_void_v<R>)
+                {
+                    (*Stored)(GetArg<eastl::tuple_element_t<Is, TTuple<Args...>>>(L, static_cast<int>(Is) + 1)...);
+                    return 0;
+                }
+                else
+                {
+                    decltype(auto) Ret = (*Stored)(GetArg<eastl::tuple_element_t<Is, TTuple<Args...>>>(L, static_cast<int>(Is) + 1)...);
+                    PushArg(L, eastl::forward<decltype(Ret)>(Ret));
+                    return 1;
+                }
+            };
+
+            return Dispatch(eastl::make_index_sequence<sizeof...(Args)>{});
+        }
+
+        static void Push(lua_State* State, const FuncT& Value)
+        {
+            PushImpl(State, FuncT(Value));
+        }
+
+        static void Push(lua_State* State, FuncT&& Value)
+        {
+            PushImpl(State, eastl::move(Value));
+        }
+
+        // Pulls a Lua function off the stack and adapts it into a C++ TFunction.
+        // The resulting TFunction can be copied; all copies share the same pinned Lua reference.
+        static FuncT Get(lua_State* State, int Index)
+        {
+            if (lua_isnil(State, Index))
+            {
+                return {};
+            }
+
+            if (!lua_isfunction(State, Index))
+            {
+                luaL_typeerrorL(State, Index, "function");
+                return {};
+            }
+
+            auto Callback = MakeShared<FunctionStack_Private::FLuaCallbackRef>(State, Index);
+
+            return [Callback](Args... args) -> R
+            {
+                lua_State* L = Callback->State;
+                lua_getref(L, Callback->Ref);
+
+                (TStack<eastl::decay_t<Args>>::Push(L, eastl::forward<Args>(args)), ...);
+
+                constexpr int NumResults = eastl::is_void_v<R> ? 0 : 1;
+                int Status = lua_pcall(L, static_cast<int>(sizeof...(Args)), NumResults, 0);
+                if (Status != LUA_OK)
+                {
+                    const char* ErrMsg = lua_tostring(L, -1);
+                    LOG_ERROR("[Lua] - TFunction invocation failed: {}", ErrMsg ? ErrMsg : "<unknown>");
+                    lua_pop(L, 1);
+
+                    if constexpr (!eastl::is_void_v<R>)
+                    {
+                        return R{};
+                    }
+                    else
+                    {
+                        return;
+                    }
+                }
+
+                if constexpr (!eastl::is_void_v<R>)
+                {
+                    R Result = TStack<R>::Get(L, -1);
+                    lua_pop(L, 1);
+                    return Result;
+                }
+            };
+        }
+
+        static bool Check(lua_State* State, int Index)
+        {
+            return lua_isfunction(State, Index) || lua_isnil(State, Index);
+        }
+
+    private:
+
+        static void PushImpl(lua_State* State, FuncT Value)
+        {
+            if (!Value)
+            {
+                lua_pushnil(State);
+                return;
+            }
+
+            void* Block = lua_newuserdatadtor(State, sizeof(FuncT), [](void* UD)
+            {
+                static_cast<FuncT*>(UD)->~FuncT();
+            });
+
+            new (Block) FuncT(eastl::move(Value));
+
+            lua_pushcclosure(State, &InvokeThunk, "TFunction", 1);
+        }
+    };
+
+    // Convenience: raw function-pointer values get wrapped into a TFunction and pushed.
+    // Lets users return a plain `R(*)(Args...)` from a bound C++ function.
+    template<typename R, typename... Args>
+    struct TLuaNativeType<R(*)(Args...)> : eastl::true_type {};
+
+    template<typename R, typename... Args>
+    struct TStack<R(*)(Args...)>
+    {
+        using FnPtrT = R(*)(Args...);
+        using FuncT  = TFunction<R(Args...)>;
+
+        static FStringView TypeName(lua_State* State) { return lua_typename(State, LUA_TFUNCTION); }
+
+        static void Push(lua_State* State, FnPtrT Ptr)
+        {
+            if (Ptr == nullptr)
+            {
+                lua_pushnil(State);
+                return;
+            }
+            TStack<FuncT>::Push(State, FuncT(Ptr));
+        }
+
+        static FnPtrT Get(lua_State* State, int Index)
+        {
+            luaL_errorL(State, "%s", "Cannot convert a Lua function into a raw C++ function pointer (use TFunction instead).");
+            return nullptr;
+        }
+
+        static bool Check(lua_State* State, int Index)
+        {
+            return lua_isfunction(State, Index) || lua_isnil(State, Index);
+        }
     };
 }

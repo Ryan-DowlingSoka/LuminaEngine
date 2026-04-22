@@ -617,6 +617,21 @@ namespace Lumina
         return Prefab->Instantiate(this, FTransform(), entt::null);
     }
 
+    void CWorld::SpawnPrefabAsync(const FName& Path, const TFunction<void(entt::entity)>& Callback)
+    {
+        AsyncLoadObject(Path, [this, Callback, Path](CObject* Object)
+        {
+            CPrefab* Prefab = Cast<CPrefab>(Object);
+            if (Prefab == nullptr)
+            {
+                LOG_WARN("SpawnPrefab: asset '{}' is not a CPrefab", Path.c_str());
+                Callback(entt::null);
+            }
+            
+            Callback(Prefab->Instantiate(this, FTransform(), entt::null));
+        });
+    }
+
     void CWorld::DuplicateEntity(entt::entity& To, entt::entity From, TFunctionRef<bool(entt::type_info)> Callback)
     {
         ASSERT(To != From);

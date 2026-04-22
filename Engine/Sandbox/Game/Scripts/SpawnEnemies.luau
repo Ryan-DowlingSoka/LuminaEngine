@@ -8,9 +8,12 @@ end
 
 function NewScript:OnReady()
 
-        for i = 1, 50 do
-            local Root = World:SpawnPrefab("/Game/Content/NewPrefab")
-            Engine.ECS.TranslateEntity(Registry, Root, vector.create(math.random(-20, 20), math.random(-1, 20), math.random(-20, 20)))
+        for i = 1, 10000 do
+            World:SpawnPrefabAsync("/Game/Content/NewPrefab", function(SpawnedEntity)
+                if SpawnedEntity then
+                    Engine.ECS.TranslateEntity(Registry, SpawnedEntity, vector.create(math.random(-50, 50), math.random(-1, 50), math.random(-50, 50)))
+                end
+            end)
         end
 end
 

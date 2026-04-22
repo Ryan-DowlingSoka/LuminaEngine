@@ -30,6 +30,7 @@
 #include "World/Entity/Components/TerrainComponent.h"
 #include "World/Scene/RenderScene/MeshDrawCommand.h"
 #include "World/Scene/RenderScene/TerrainRenderTypes.h"
+#include "World/Subsystems/WorldSettings.h"
 
 namespace Lumina
 {
@@ -118,7 +119,7 @@ namespace Lumina
         SceneGlobalData.CullData.bOcclusionCull         = RenderSettings.bOcclusionCull;
         SceneGlobalData.CullData.PyramidWidth           = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
         SceneGlobalData.CullData.PyramidHeight          = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeY();
-        SceneGlobalData.CullData.ShadowMaxDistance      = RenderSettings.ShadowMaxDistance;
+        SceneGlobalData.CullData.ShadowMaxDistance      = World->GetDefaultWorldSettings().ShadowMaxDistance;
         SceneGlobalData.CullData.bShadowOcclusionCull   = RenderSettings.bShadowOcclusionCull;
         SceneGlobalData.CullData.DebugMode              = (uint32)RenderSettings.Flags;
         
@@ -1377,18 +1378,11 @@ namespace Lumina
             CascadeShadowData     = &LightData.Shadows[ShadowSlot];
         }
         
-        // (logarithmic + uniform blend). Lambda tuned so the last cascade
-        // does not dwarf the preceding ones: at Lambda=0.92 + far=1000 the
-        // final slice was ~10x the previous, producing the visible "hard
-        // morph" from sharp to very blurry shadows. 0.75 gives a smoother
-        // progression while still concentrating resolution near the camera.
-        //
-        // ShadowNear is clamped above the camera near so the log term does
-        // not bunch the first couple of splits into a tiny sliver.
-        constexpr float CascadeSplitLambda  = 0.75f;
+        float CascadeSplitLambda  = World->GetDefaultWorldSettings().CascadeSplitLambda;
+        
         constexpr float ShadowMinDistance   = 1.0f;
 
-        const float ShadowFar  = glm::min(FarClip, RenderSettings.ShadowMaxDistance);
+        const float ShadowFar  = glm::min(FarClip, World->GetDefaultWorldSettings().ShadowMaxDistance);
         const float ShadowNear = glm::max(NearClip, ShadowMinDistance);
         const float ClipRange  = ShadowFar - ShadowNear;
         const float MinDepth   = ShadowNear;
@@ -2206,7 +2200,10 @@ namespace Lumina
             FRenderState RenderState; RenderState
                 .SetDepthStencilState(FDepthStencilState()
                     .SetDepthFunc(EComparisonFunc::Less))
-                    .SetRasterState(FRasterState().SetCullFront());
+                    .SetRasterState(FRasterState()
+                        .SetCullBack()
+                        .SetDepthBias(25)
+                        .SetSlopeScaleDepthBias(0.75f));
 
             FString CSMDefine = "SHADOW_CSM";
             FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang", TSpan<FString>(&CSMDefine, 1));
@@ -3875,6 +3872,13 @@ namespace Lumina
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(13, GetNamedBuffer(ENamedBuffer::MeshletIndirect)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(14, GetNamedBuffer(ENamedBuffer::MeshletDrawListCascade)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(15, GetNamedBuffer(ENamedBuffer::MeshletIndirectCascade)));
+            // PCSS needs raw depth reads (not comparison results) during blocker
+            // search so we can check individual texels against the receiver depth.
+            // The comparison sampler at binding 7 returns a PCF-filtered result —
+            // useless for "is this texel a blocker" — so bind the same cascade
+            // image with a point/standard sampler at binding 16.
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(16, GetNamedImage(ENamedImage::Cascade),
+                TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Standard>::GetRHI()));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);

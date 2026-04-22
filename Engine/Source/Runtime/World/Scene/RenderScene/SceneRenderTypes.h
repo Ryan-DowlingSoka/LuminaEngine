@@ -373,14 +373,8 @@ namespace Lumina
     struct FCullData
     {
         FFrustum Frustum;
-        // Extruded camera frustum swept along the sunlight direction. Kept
-        // alongside CascadeFrustum for point/spot reuse and as a belt-and-braces
-        // fallback; directional culling uses the per-cascade frustums below.
         FFrustum ShadowFrustum;
-        // Per-cascade world-space frustums. Directional shadow culling tests
-        // casters against each cascade independently so small casters that only
-        // touch cascade 0 don't pay VPC cost on cascades 1/2. Mirrors
-        // FLightShadowData::ViewProjection[c] for the active directional light.
+
         FFrustum CascadeFrustum[NumCascades];
         glm::mat4 ViewMatrix;   // View matrix (not view-projection!)
 
@@ -406,9 +400,7 @@ namespace Lumina
         // right cascade stride.
         uint32 NumDraws;
 
-        // Active debug visualization mode, mirroring ERenderSceneDebugFlags.
-        // Consumed by the base pixel shader to override lit output (e.g. with
-        // per-meshlet colors). Zero (None) disables all overrides.
+
         uint32 DebugMode;
     };
     
@@ -507,7 +499,6 @@ namespace Lumina
         uint8 bDrawBillboards:1         = true;
         uint8 bUnlit:1                  = false;
         uint8 bLit:1                    = false;
-        float ShadowMaxDistance         = 2000.0f;
     };
     
 }
