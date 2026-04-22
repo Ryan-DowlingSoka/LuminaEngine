@@ -923,14 +923,36 @@ namespace Lumina
         FScopeLock Lock(SubresourceMutex);
 
         auto CacheKey = eastl::make_tuple(Subresource, ViewType, Dimension, Format, Usage);
+
+        // Inline fast path: linear scan over the last few lookups using direct
+        // equality. Avoids the 5-way HashCombine + hash_map bucket walk on the
+        // common case where the same handful of views are queried repeatedly.
+        for (const FInlineViewEntry& Entry : InlineViewCache)
+        {
+            if (Entry.Key == CacheKey)
+            {
+                return *Entry.View;
+            }
+        }
+
         auto Iter = SubresourceViews.find(CacheKey);
         if (Iter != SubresourceViews.end())
         {
+            if (InlineViewCache.full())
+            {
+                InlineViewCache.erase(InlineViewCache.begin());
+            }
+            InlineViewCache.push_back({ CacheKey, &Iter->second });
             return Iter->second;
         }
 
         auto [A, B] = SubresourceViews.emplace(CacheKey, *this);
         FTextureSubresourceView& View = A->second;
+        if (InlineViewCache.full())
+        {
+            InlineViewCache.erase(InlineViewCache.begin());
+        }
+        InlineViewCache.push_back({ CacheKey, &View });
         View.Subresource = Subresource;
 
         VkFormat VulkanFormat = ConvertFormat(Format);

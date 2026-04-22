@@ -69,14 +69,15 @@ namespace Lumina::RHI
 
     void FMaterialManager::UpdateMaterialUniforms(CMaterialInterface* Material)
     {
-        FMaterialUniforms& Uniforms = MaterialUniforms[Material->GetMaterialIndex()];
+        const int32 Index = Material->GetMaterialIndex();
+        FMaterialUniforms& Uniforms = MaterialUniforms[Index];
         Memory::Memcpy(&Uniforms, Material->GetMaterialUniforms(), sizeof(FMaterialUniforms));
-        
+
         FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
         CommandList->Open();
-        CommandList->WriteBuffer(MaterialBuffer, MaterialUniforms.data(), MaterialUniforms.size() * sizeof(FMaterialUniforms));
+        CommandList->WriteBuffer(MaterialBuffer, &Uniforms, sizeof(FMaterialUniforms), Index * sizeof(FMaterialUniforms));
         CommandList->Close();
-        
+
         GRenderContext->ExecuteCommandList(CommandList);
     }
 }

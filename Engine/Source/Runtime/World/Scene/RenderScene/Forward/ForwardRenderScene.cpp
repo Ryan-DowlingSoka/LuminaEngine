@@ -152,6 +152,10 @@ namespace Lumina
         ParticleRenderPass(CmdList);
         BillboardPass(CmdList);
         ToneMappingPass(CmdList);
+        if (World->GetDefaultWorldSettings().bUseFXAA)
+        {
+            FXAAPass(CmdList);
+        }
     }
     
     void FForwardRenderScene::SwapchainResized(glm::vec2 NewSize)
@@ -3418,33 +3422,38 @@ namespace Lumina
     void FForwardRenderScene::ToneMappingPass(ICommandList& CmdList)
     {
         LUMINA_PROFILE_SECTION_COLORED("Tone Mapping Pass", tracy::Color::Red2);
-        
+
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
         FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("ToneMapping.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
         }
-        
+
+        // When FXAA is enabled, tonemap renders into an LDR intermediate that FXAA
+        // then resolves into the final render target. Otherwise we write straight
+        // to the render target.
+        FRHIImage* OutputImage = World->GetDefaultWorldSettings().bUseFXAA ? GetNamedImage(ENamedImage::LDR) : GetRenderTarget();
+
         FRenderPassDesc::FAttachment Attachment; Attachment
-            .SetImage(GetRenderTarget());
-    
+            .SetImage(OutputImage);
+
         FRenderPassDesc RenderPass; RenderPass
             .AddColorAttachment(Attachment)
-            .SetRenderArea(GetRenderTarget()->GetExtent());
-    
-    
+            .SetRenderArea(OutputImage->GetExtent());
+
+
         FRasterState RasterState;
         RasterState.SetCullNone();
-        
+
         FDepthStencilState DepthState;
         DepthState.DisableDepthTest();
         DepthState.DisableDepthWrite();
-        
+
         FRenderState RenderState;
         RenderState.SetRasterState(RasterState);
         RenderState.SetDepthStencilState(DepthState);
-        
+
         FGraphicsPipelineDesc Desc;
         Desc.SetDebugName("Tone Mapping Pass");
         Desc.SetRenderState(RenderState);
@@ -3462,15 +3471,92 @@ namespace Lumina
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         GraphicsState.AddBindingSet(ComposeBindingSet);
         GraphicsState.SetRenderPass(RenderPass);
-        GraphicsState.SetViewportState(MakeViewportStateFromImage(GetRenderTarget()));
-    
+        GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
+
         CmdList.SetGraphicsState(GraphicsState);
 
         glm::vec2 PC;
         PC.x = 1.0;
         PC.y = SceneGlobalData.Time;
         CmdList.SetPushConstants(&PC, sizeof(glm::vec2));
-        CmdList.Draw(3, 1, 0, 0); 
+        CmdList.Draw(3, 1, 0, 0);
+    }
+
+    void FForwardRenderScene::FXAAPass(ICommandList& CmdList)
+    {
+        LUMINA_PROFILE_SECTION_COLORED("FXAA Pass", tracy::Color::Red2);
+
+        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
+        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("FXAA.slang");
+        if (!VertexShader || !PixelShader)
+        {
+            return;
+        }
+
+        FRHIImage* OutputImage = GetRenderTarget();
+
+        FRenderPassDesc::FAttachment Attachment; Attachment
+            .SetImage(OutputImage);
+
+        FRenderPassDesc RenderPass; RenderPass
+            .AddColorAttachment(Attachment)
+            .SetRenderArea(OutputImage->GetExtent());
+
+        FRasterState RasterState;
+        RasterState.SetCullNone();
+
+        FDepthStencilState DepthState;
+        DepthState.DisableDepthTest();
+        DepthState.DisableDepthWrite();
+
+        FRenderState RenderState;
+        RenderState.SetRasterState(RasterState);
+        RenderState.SetDepthStencilState(DepthState);
+
+        FGraphicsPipelineDesc Desc;
+        Desc.SetDebugName("FXAA Pass");
+        Desc.SetRenderState(RenderState);
+        Desc.AddBindingLayout(SceneBindingLayout);
+        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        Desc.AddBindingLayout(FXAABindingLayout);
+        Desc.SetVertexShader(VertexShader);
+        Desc.SetPixelShader(PixelShader);
+
+        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+        FGraphicsState GraphicsState;
+        GraphicsState.SetPipeline(Pipeline);
+        GraphicsState.AddBindingSet(SceneBindingSet);
+        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        GraphicsState.AddBindingSet(FXAABindingSet);
+        GraphicsState.SetRenderPass(RenderPass);
+        GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
+
+        CmdList.SetGraphicsState(GraphicsState);
+
+        struct FFXAAPC
+        {
+            glm::vec2 InverseScreenSize;
+            float     SubpixelBlending;
+            float     EdgeThreshold;
+            float     EdgeThresholdMin;
+            float     BlurStrength;
+            float     DebugMode;
+            float     _Pad2;
+        } PC;
+
+        const SDefaultWorldSettings& WorldSettings = World->GetDefaultWorldSettings();
+
+        PC.InverseScreenSize = glm::vec2(1.0f / (float)OutputImage->GetSizeX(), 1.0f / (float)OutputImage->GetSizeY());
+        PC.SubpixelBlending  = WorldSettings.FXAASubpixelBlending;
+        PC.EdgeThreshold     = WorldSettings.FXAAEdgeThreshold;
+        PC.EdgeThresholdMin  = WorldSettings.FXAAEdgeThresholdMin;
+        PC.BlurStrength      = WorldSettings.FXAABlurStrength;
+        PC.DebugMode         = (float)WorldSettings.FXAADebugMode;
+        PC._Pad2             = 0.0f;
+
+        CmdList.SetPushConstants(&PC, sizeof(FFXAAPC));
+        CmdList.Draw(3, 1, 0, 0);
     }
     
     void FForwardRenderScene::InitBuffers()
@@ -3637,6 +3723,14 @@ namespace Lumina
             ImageDesc.Format = EFormat::RGBA16_FLOAT;
             ImageDesc.DebugName = "HDR";
             NamedImages[(int)ENamedImage::HDR] = GRenderContext->CreateImage(ImageDesc);
+        }
+
+        //==================================================================================================
+
+        {
+            FRHIImageDesc ImageDesc = GetRenderTarget()->GetDescription();
+            ImageDesc.DebugName = "LDR";
+            NamedImages[(int)ENamedImage::LDR] = GRenderContext->CreateImage(ImageDesc);
         }
         
         //==================================================================================================
@@ -3809,6 +3903,16 @@ namespace Lumina
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
             GRenderContext->CreateBindingSetAndLayout(Visibility, 2, ComposeSetDesc, ComposeBindingLayout, ComposeBindingSet);
+        }
+
+        // FXAA reads the tonemapped LDR image and writes the final render target.
+        {
+            FBindingSetDesc FXAASetDesc;
+            FXAASetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::LDR)));
+
+            TBitFlags<ERHIShaderType> Visibility;
+            Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
+            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, FXAASetDesc, FXAABindingLayout, FXAABindingSet);
         }
 
         // Standalone set-0 layout for OITResolve (uAccum at 0, uRevealage at 1).

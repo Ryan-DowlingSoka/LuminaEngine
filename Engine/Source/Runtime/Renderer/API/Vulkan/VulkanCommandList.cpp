@@ -1633,8 +1633,8 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        TFixedVector<VkImageMemoryBarrier2, 4> ImageBarriers;
-        TFixedVector<VkBufferMemoryBarrier2, 4> BufferBarriers;
+        TFixedVector<VkImageMemoryBarrier2, 64> ImageBarriers;
+        TFixedVector<VkBufferMemoryBarrier2, 32> BufferBarriers;
 
         VkCommandBuffer CommandBuffer = CurrentCommandBuffer->CommandBuffer;
 
@@ -1669,9 +1669,9 @@ namespace Lumina
 
                 VkImageSubresourceRange SubresourceRange = {};
                 SubresourceRange.baseArrayLayer = Barrier.bEntireTexture ? 0 : Barrier.ArraySlice;
-                SubresourceRange.layerCount     = Barrier.bEntireTexture ? Image->GetDescription().ArraySize : 1;
+                SubresourceRange.layerCount     = Barrier.bEntireTexture ? Image->GetDescription().ArraySize : Barrier.NumArraySlices;
                 SubresourceRange.baseMipLevel   = Barrier.bEntireTexture ? 0 : Barrier.MipLevel;
-                SubresourceRange.levelCount     = Barrier.bEntireTexture ? Image->GetDescription().NumMips : 1;
+                SubresourceRange.levelCount     = Barrier.bEntireTexture ? Image->GetDescription().NumMips : Barrier.NumMipLevels;
                 SubresourceRange.aspectMask     = AspectMask;
 
                 VkImageMemoryBarrier2 ImageBarrier  = {};

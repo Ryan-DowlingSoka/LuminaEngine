@@ -294,7 +294,13 @@ namespace Lumina
         };
         
         using SubresourceMap = THashMap<FSubresourceViewKey, FTextureSubresourceView, Hash>;
-        
+
+        struct FInlineViewEntry
+        {
+            FSubresourceViewKey         Key;
+            FTextureSubresourceView*    View = nullptr;
+        };
+
 
         FVulkanImage(FVulkanDevice* InDevice, const FRHIImageDesc& InDescription);
         FVulkanImage(FVulkanDevice* InDevice, const FRHIImageDesc& InDescription, VkImage RawImage, EInternal);
@@ -329,7 +335,8 @@ namespace Lumina
         
         FRHIImageDesc           Description;
         SubresourceMap          SubresourceViews;
-        FMutex                  SubresourceMutex;           
+        TFixedVector<FInlineViewEntry, 4, false> InlineViewCache;
+        FMutex                  SubresourceMutex;
 
         VkImage                 Image                   = VK_NULL_HANDLE;
         VmaAllocation           Allocation              = VK_NULL_HANDLE;

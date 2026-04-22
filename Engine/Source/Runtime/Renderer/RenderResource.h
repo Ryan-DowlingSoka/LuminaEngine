@@ -2093,8 +2093,11 @@ namespace eastl
 			Hash::HashCombine(hash, Desc.ShadingRateState);
 			Hash::HashCombine(hash, Desc.VS ? Desc.VS->GetHashCode() : 0);
 			Hash::HashCombine(hash, Desc.PS ? Desc.PS->GetHashCode() : 0);
-			Hash::HashCombine(hash, Desc.RenderState);
-			
+			Hash::HashCombine(hash, Desc.GS ? Desc.GS->GetHashCode() : 0);
+			Hash::HashCombine(hash, Desc.MS ? Desc.MS->GetHashCode() : 0);
+			Hash::HashCombine(hash, Desc.TS ? Desc.TS->GetHashCode() : 0);
+			Hash::HashCombine(hash, Desc.InputLayout.GetReference());
+
 			return hash;
 		}
 	};

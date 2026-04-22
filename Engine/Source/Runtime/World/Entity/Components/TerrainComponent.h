@@ -165,8 +165,9 @@ namespace Lumina
         /** True when CPU dimensions no longer match GPU allocation, triggers a reallocate. */
         bool NeedsReallocation() const
         {
+            const uint32 ExpectedLayers = (uint32)std::max<size_t>(Layers.size(), 1u);
             return GPUState.AllocatedResolution != (uint32)Resolution
-                || GPUState.AllocatedLayerCount  != (uint32)Layers.size();
+                || GPUState.AllocatedLayerCount  != ExpectedLayers;
         }
 
         /** Mark a rectangular region of the heightmap as dirty for the next upload. */

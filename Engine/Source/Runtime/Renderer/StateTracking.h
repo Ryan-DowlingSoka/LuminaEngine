@@ -62,6 +62,11 @@ namespace Lumina
     struct FBufferState
     {
         EResourceStates State = EResourceStates::Unknown;
+        // Index of the pending barrier in FCommandListResourceStateTracker::BufferBarriers,
+        // tagged with BarrierEpoch. -1 means no pending barrier. Checked against the tracker's
+        // CurrentBarrierEpoch so a single bump invalidates all stale indices after a commit.
+        int32 PendingBarrierIndex = -1;
+        uint32 BarrierEpoch = 0;
         uint32 bEnableUavBarriers:1 = true;
         uint32 bFirstUavBarrierPlaced:1 = false;
         uint32 bPermanentTransition:1 = false;
@@ -72,6 +77,8 @@ namespace Lumina
         FTextureStateExtension* Texture = nullptr;
         uint32 MipLevel = 0;
         uint32 ArraySlice = 0;
+        uint32 NumMipLevels = 1;
+        uint32 NumArraySlices = 1;
         bool bEntireTexture = false;
         EResourceStates StateBefore = EResourceStates::Unknown;
         EResourceStates StateAfter = EResourceStates::Unknown;
@@ -111,28 +118,28 @@ namespace Lumina
         void KeepTextureInitialStates();
         void CommandListSubmitted();
 
-        NODISCARD const TFixedVector<FTextureBarrier, 24>& GetTextureBarriers() const { return TextureBarriers; }
-        NODISCARD const TFixedVector<FBufferBarrier, 24>& GetBufferBarriers() const { return BufferBarriers; }
+        NODISCARD const TFixedVector<FTextureBarrier, 128>& GetTextureBarriers() const { return TextureBarriers; }
+        NODISCARD const TFixedVector<FBufferBarrier, 64>& GetBufferBarriers() const { return BufferBarriers; }
         
-        void ClearBarriers() { TextureBarriers.clear(); BufferBarriers.clear(); }
+        void ClearBarriers() { TextureBarriers.clear(); BufferBarriers.clear(); ++CurrentBarrierEpoch; }
 
     private:
         
-        TFixedHashMap<FTextureStateExtension*, FTextureState*, 24> TextureStates;
-        TFixedHashMap<FBufferStateExtension*, FBufferState*, 24> BufferStates;
+        TFixedHashMap<FTextureStateExtension*, FTextureState*, 128> TextureStates;
+        TFixedHashMap<FBufferStateExtension*, FBufferState*, 64> BufferStates;
 
         // Deferred transitions of textures and buffers to permanent states.
         // They are executed only when the command list is executed, not when the app calls setPermanentTextureState or setPermanentBufferState.
-        TFixedVector<TPair<FTextureStateExtension*, EResourceStates>, 24> PermanentTextureStates;
-        TFixedVector<TPair<FBufferStateExtension*, EResourceStates>, 24> PermanentBufferStates;
+        TFixedVector<TPair<FTextureStateExtension*, EResourceStates>, 32> PermanentTextureStates;
+        TFixedVector<TPair<FBufferStateExtension*, EResourceStates>, 32> PermanentBufferStates;
 
-        TFixedVector<FTextureBarrier, 24> TextureBarriers;
-        TFixedVector<FBufferBarrier, 24> BufferBarriers;
+        TFixedVector<FTextureBarrier, 128> TextureBarriers;
+        TFixedVector<FBufferBarrier, 64> BufferBarriers;
 
         FTextureState* GetTextureStateTracking(FTextureStateExtension* Texture, bool bAllowCreate);
         FBufferState* GetBufferStateTracking(FBufferStateExtension* Buffer, bool bAllowCreate);
 
-
+        uint32 CurrentBarrierEpoch = 1;
         FBlockLinearAllocator LinearAllocator;
     };
     

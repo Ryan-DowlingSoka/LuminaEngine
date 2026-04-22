@@ -27,6 +27,29 @@ namespace Lumina
         
         PROPERTY(Editable, Category = "Rendering")
         float ShadowMaxDistance = 2000.0f;
+        
+        PROPERTY(Editable, Category = "Rendering")
+        bool bUseFXAA = true;
+
+        /** FXAA subpixel blending strength. 0 = off, 1 = standard max, >1 = over-blend (mild blur). */
+        PROPERTY(Editable, ClampMin = 0.0f, ClampMax = 2.0f, Category = "Rendering")
+        float FXAASubpixelBlending = 1.0f;
+
+        /** FXAA edge contrast threshold. Lower = more edges detected. 0.063 (high quality), 0.125 (default), 0.166 (performance). */
+        PROPERTY(Editable, ClampMin = 0.0f, ClampMax = 1.0f, Category = "Rendering")
+        float FXAAEdgeThreshold = 0.125f;
+
+        /** FXAA minimum edge contrast. Floor below which pixels are skipped entirely. Default 0.0312. */
+        PROPERTY(Editable, ClampMin = 0.0f, ClampMax = 1.0f, Category = "Rendering")
+        float FXAAEdgeThresholdMin = 0.0312f;
+
+        /** Extra edge-aware blur strength applied on top of FXAA. 0 = pure FXAA, 1 = noticeable blur, 2 = heavy blur. Helps with thick close-up aliasing that FXAA alone can't resolve. */
+        PROPERTY(Editable, ClampMin = 0.0f, ClampMax = 4.0f, Category = "Rendering")
+        float FXAABlurStrength = 1.0f;
+
+        /** FXAA debug visualization. 0 = off, 1 = magenta edges (is the pass running?), 2 = show FXAA delta * 10, 3 = force 3x3 box blur. */
+        PROPERTY(Editable, ClampMin = 0, ClampMax = 3, Category = "Rendering")
+        int32 FXAADebugMode = 0;
 
         /** Normalized direction of gravity in world space. */
         PROPERTY(Editable, Category = "Physics")

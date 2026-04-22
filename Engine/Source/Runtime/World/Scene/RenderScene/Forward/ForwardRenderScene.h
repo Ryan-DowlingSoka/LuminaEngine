@@ -103,6 +103,7 @@ namespace Lumina
         enum class ENamedImage : uint8
         {
             HDR,
+            LDR,
             Cascade,
             DepthAttachment,
             DepthPyramid,
@@ -172,6 +173,7 @@ namespace Lumina
         void EnvironmentPass(ICommandList& CmdList);
         void BatchedLineDraw(ICommandList& CmdList);
         void ToneMappingPass(ICommandList& CmdList);
+        void FXAAPass(ICommandList& CmdList);
         //~ End Render Passes
 
         void CompileDrawCommands(ICommandList& CmdList);
@@ -221,6 +223,9 @@ namespace Lumina
         
         FRHIBindingSetRef                       ComposeBindingSet;
         FRHIBindingLayoutRef                    ComposeBindingLayout;
+
+        FRHIBindingSetRef                       FXAABindingSet;
+        FRHIBindingLayoutRef                    FXAABindingLayout;
 
         FRHIBindingSetRef                       OITBindingSet;
         FRHIBindingLayoutRef                    OITBindingLayout;

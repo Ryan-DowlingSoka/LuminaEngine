@@ -183,12 +183,14 @@ namespace Lumina
             {
                 TextureBarriers.emplace_back(FTextureBarrier
                     {
-                        texture,
-                        0, 
-                        0, 
-                        true,
-                        Tracking->State,
-                        state
+                        .Texture        = texture,
+                        .MipLevel       = 0,
+                        .ArraySlice     = 0,
+                        .NumMipLevels   = 1,
+                        .NumArraySlices = 1,
+                        .bEntireTexture = true,
+                        .StateBefore    = Tracking->State,
+                        .StateAfter     = state
                     });
             }
 
@@ -217,45 +219,114 @@ namespace Lumina
                 Tracking->State = EResourceStates::Unknown;
                 bStateExpanded = true;
             }
-            
-            bool bAnyUavBarrier = false;
 
-            for (uint32 ArraySlice = subresources.BaseArraySlice; ArraySlice < subresources.BaseArraySlice + subresources.NumArraySlices; ArraySlice++)
+            // Fast path: if every subresource in the requested range shares the same prior
+            // state, emit a single VkImageMemoryBarrier2 covering the whole range instead
+            // of one per (mip, slice). This drops the driver-side barrier count and
+            // shrinks vkCmdPipelineBarrier2 setup.
+            const uint32 BaseArraySlice = subresources.BaseArraySlice;
+            const uint32 BaseMipLevel   = subresources.BaseMipLevel;
+            const uint32 NumArraySlices = subresources.NumArraySlices;
+            const uint32 NumMipLevels   = subresources.NumMipLevels;
+
+            bool bUniformPriorState = true;
+            const EResourceStates UniformPriorState = Tracking->SubresourceStates[CalcSubresource(BaseMipLevel, BaseArraySlice, texture->DescRef)];
+
+            for (uint32 ArraySlice = BaseArraySlice; ArraySlice < BaseArraySlice + NumArraySlices && bUniformPriorState; ArraySlice++)
             {
-                for (uint32 mipLevel = subresources.BaseMipLevel; mipLevel < subresources.BaseMipLevel + subresources.NumMipLevels; mipLevel++)
+                for (uint32 mipLevel = BaseMipLevel; mipLevel < BaseMipLevel + NumMipLevels; mipLevel++)
                 {
-                    uint32 subresourceIndex = CalcSubresource(mipLevel, ArraySlice, texture->DescRef);
-
-                    EResourceStates PriorState = Tracking->SubresourceStates[subresourceIndex];
-
-                    if (PriorState == EResourceStates::Unknown && !bStateExpanded)
+                    if (Tracking->SubresourceStates[CalcSubresource(mipLevel, ArraySlice, texture->DescRef)] != UniformPriorState)
                     {
-                        LOG_ERROR("Unknown prior state of texture \"{0}\" subresource (MipLevel = {1}, ArraySlice = {2}). Call CommandList::BeginTrackingTextureState(...) before using the texture or use the keepInitialState and initialState members of TextureDesc.",
-                                  texture->DescRef.DebugName, mipLevel, ArraySlice);
+                        bUniformPriorState = false;
+                        break;
                     }
-                    
-                    bool bTransitionNecessary = PriorState != state;
-                    bool bUAVNecessary = ((state & EResourceStates::UnorderedAccess) != EResourceStates::Unknown) && !bAnyUavBarrier && (Tracking->bEnableUavBarriers || !Tracking->bFirstUavBarrierPlaced);
+                }
+            }
 
-                    if (bTransitionNecessary || bUAVNecessary)
+            if (bUniformPriorState)
+            {
+                if (UniformPriorState == EResourceStates::Unknown && !bStateExpanded)
+                {
+                    LOG_ERROR("Unknown prior state of texture \"{0}\" subresource range (MipLevel = {1}, ArraySlice = {2}). Call CommandList::BeginTrackingTextureState(...) before using the texture or use the keepInitialState and initialState members of TextureDesc.",
+                              texture->DescRef.DebugName, BaseMipLevel, BaseArraySlice);
+                }
+
+                bool bTransitionNecessary = UniformPriorState != state;
+                bool bUAVNecessary = ((state & EResourceStates::UnorderedAccess) != EResourceStates::Unknown) && (Tracking->bEnableUavBarriers || !Tracking->bFirstUavBarrierPlaced);
+
+                if (bTransitionNecessary || bUAVNecessary)
+                {
+                    TextureBarriers.emplace_back(FTextureBarrier
                     {
-                        TextureBarriers.emplace_back(FTextureBarrier
+                        .Texture        = texture,
+                        .MipLevel       = BaseMipLevel,
+                        .ArraySlice     = BaseArraySlice,
+                        .NumMipLevels   = NumMipLevels,
+                        .NumArraySlices = NumArraySlices,
+                        .bEntireTexture = false,
+                        .StateBefore    = UniformPriorState,
+                        .StateAfter     = state
+                    });
+                }
+
+                for (uint32 ArraySlice = BaseArraySlice; ArraySlice < BaseArraySlice + NumArraySlices; ArraySlice++)
+                {
+                    for (uint32 mipLevel = BaseMipLevel; mipLevel < BaseMipLevel + NumMipLevels; mipLevel++)
+                    {
+                        Tracking->SubresourceStates[CalcSubresource(mipLevel, ArraySlice, texture->DescRef)] = state;
+                    }
+                }
+
+                if (bUAVNecessary && !bTransitionNecessary)
+                {
+                    Tracking->bFirstUavBarrierPlaced = true;
+                }
+            }
+            else
+            {
+                // Slow path: mixed prior states, emit per-subresource barriers.
+                bool bAnyUavBarrier = false;
+
+                for (uint32 ArraySlice = BaseArraySlice; ArraySlice < BaseArraySlice + NumArraySlices; ArraySlice++)
+                {
+                    for (uint32 mipLevel = BaseMipLevel; mipLevel < BaseMipLevel + NumMipLevels; mipLevel++)
+                    {
+                        uint32 subresourceIndex = CalcSubresource(mipLevel, ArraySlice, texture->DescRef);
+
+                        EResourceStates PriorState = Tracking->SubresourceStates[subresourceIndex];
+
+                        if (PriorState == EResourceStates::Unknown && !bStateExpanded)
                         {
-                            .Texture        = texture,
-                            .MipLevel       = mipLevel,
-                            .ArraySlice     = ArraySlice,
-                            .bEntireTexture = false,
-                            .StateBefore    = PriorState,
-                            .StateAfter     = state
-                        });
-                    }
+                            LOG_ERROR("Unknown prior state of texture \"{0}\" subresource (MipLevel = {1}, ArraySlice = {2}). Call CommandList::BeginTrackingTextureState(...) before using the texture or use the keepInitialState and initialState members of TextureDesc.",
+                                      texture->DescRef.DebugName, mipLevel, ArraySlice);
+                        }
 
-                    Tracking->SubresourceStates[subresourceIndex] = state;
+                        bool bTransitionNecessary = PriorState != state;
+                        bool bUAVNecessary = ((state & EResourceStates::UnorderedAccess) != EResourceStates::Unknown) && !bAnyUavBarrier && (Tracking->bEnableUavBarriers || !Tracking->bFirstUavBarrierPlaced);
 
-                    if (bUAVNecessary && !bTransitionNecessary)
-                    {
-                        bAnyUavBarrier = true;
-                        Tracking->bFirstUavBarrierPlaced = true;
+                        if (bTransitionNecessary || bUAVNecessary)
+                        {
+                            TextureBarriers.emplace_back(FTextureBarrier
+                            {
+                                .Texture        = texture,
+                                .MipLevel       = mipLevel,
+                                .ArraySlice     = ArraySlice,
+                                .NumMipLevels   = 1,
+                                .NumArraySlices = 1,
+                                .bEntireTexture = false,
+                                .StateBefore    = PriorState,
+                                .StateAfter     = state
+                            });
+                        }
+
+                        Tracking->SubresourceStates[subresourceIndex] = state;
+
+                        if (bUAVNecessary && !bTransitionNecessary)
+                        {
+                            bAnyUavBarrier = true;
+                            Tracking->bFirstUavBarrierPlaced = true;
+                        }
                     }
                 }
             }
@@ -296,25 +367,23 @@ namespace Lumina
         bool bTransitionNecessary = Tracking->State != state;
         bool bUAVNecessary = ((state & EResourceStates::UnorderedAccess) != EResourceStates::Unknown) && (Tracking->bEnableUavBarriers || !Tracking->bFirstUavBarrierPlaced);
 
-        if (bTransitionNecessary)
+        if (bTransitionNecessary
+            && Tracking->BarrierEpoch == CurrentBarrierEpoch
+            && Tracking->PendingBarrierIndex >= 0
+            && (uint32)Tracking->PendingBarrierIndex < BufferBarriers.size())
         {
-            // See if this buffer is already used for a different purpose in this batch.
-            // If it is, combine the state bits.
-            // Example: same buffer used as index and vertex buffer, or as SRV and indirect arguments.
-            // @TODO Avoid this iteration.
-            for (FBufferBarrier& barrier : BufferBarriers)
-            {
-                if (barrier.Buffer == buffer)
-                {
-                    barrier.StateAfter = EResourceStates(barrier.StateAfter | state);
-                    Tracking->State = barrier.StateAfter;
-                    return;
-                }
-            }
+            // Same buffer already has a pending barrier in this batch.
+            // Combine the state bits (e.g. same buffer used as both index and vertex buffer).
+            FBufferBarrier& Existing = BufferBarriers[Tracking->PendingBarrierIndex];
+            Existing.StateAfter = EResourceStates(Existing.StateAfter | state);
+            Tracking->State = Existing.StateAfter;
+            return;
         }
 
         if (bTransitionNecessary || bUAVNecessary)
         {
+            Tracking->PendingBarrierIndex = (int32)BufferBarriers.size();
+            Tracking->BarrierEpoch = CurrentBarrierEpoch;
             BufferBarriers.emplace_back(FBufferBarrier
             {
                 .Buffer = buffer,
@@ -327,7 +396,7 @@ namespace Lumina
         {
             Tracking->bFirstUavBarrierPlaced = true;
         }
-    
+
         Tracking->State = state;
     }
 
