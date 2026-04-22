@@ -71,24 +71,23 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupI
     float MaxScale = sqrt(max(SqScaleX, max(SqScaleY, SqScaleZ)));
     float WorldRadius = Bounds.Radius * MaxScale;
 
-    // Back-face cone cull against the sun. The CSM pipeline uses SetCullFront
-    // (standard anti-acne / peter-panning trick: render only back-faces from
-    // the light's POV so receiver depth comparisons happen against the
-    // occluder's far side). That means FRONT-facing meshlets never reach the
-    // depth buffer — we can drop them here and save a full draw slot.
+    // Cone cull against the sun. The CSM pipeline uses SetCullBack() + depth
+    // bias, so only FRONT-facing triangles (outward normals toward the sun)
+    // reach the rasterizer. A meshlet whose entire cone points AWAY from the
+    // sun produces zero raster output — drop it here.
     //
     // Convention: GetSunDirection() points from the surface TOWARD the sun
     // (same direction Light.Direction uses for N.L in the lit pass). A
-    // triangle is front-facing to the sun iff dot(Normal, SunDir) > 0. For
-    // the whole cone to be front-facing, the worst-case normal (at angle
-    // acos(cutoff) from the axis) must also satisfy that, which gives:
-    //     dot(axis, SunDir) >= cutoff   =>   entire cone lit => cull.
+    // triangle is back-facing to the sun iff dot(Normal, SunDir) < 0. For
+    // the whole cone to be back-facing, even the worst-case normal at angle
+    // acos(cutoff) off the axis must still satisfy that, which gives:
+    //     dot(axis, SunDir) <= -cutoff  =>   entire cone dark => cull.
     // One-shot across all cascades (sun direction is cascade-invariant).
     if (!bSkinned && !bNoCull && Bounds.ConeCutoff < 1.0)
     {
         float3 WorldAxis = normalize(mul((float3x3)Model, Bounds.ConeAxis));
         float3 SunDir    = GetSunDirection();
-        if (dot(SunDir, WorldAxis) >= Bounds.ConeCutoff)
+        if (dot(SunDir, WorldAxis) <= -Bounds.ConeCutoff)
         {
             return;
         }

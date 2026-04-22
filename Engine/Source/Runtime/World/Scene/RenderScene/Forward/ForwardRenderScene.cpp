@@ -32,9 +32,33 @@
 #include "World/Scene/RenderScene/MeshDrawCommand.h"
 #include "World/Scene/RenderScene/TerrainRenderTypes.h"
 #include "World/Subsystems/WorldSettings.h"
+#include "Renderer/SMAA/AreaTex.h"
+#include "Renderer/SMAA/SearchTex.h"
 
 namespace Lumina
 {
+    static FRHIImageRef CreateSMAALUTImage(const uint8* Bytes, uint32 Width, uint32 Height, EFormat Format, uint32 RowPitch, const char* DebugName)
+    {
+        FRHIImageDesc Desc;
+        Desc.Extent            = glm::uvec2(Width, Height);
+        Desc.Format            = Format;
+        Desc.Dimension         = EImageDimension::Texture2D;
+        Desc.NumMips           = 1;
+        Desc.InitialState      = EResourceStates::ShaderResource;
+        Desc.bKeepInitialState = true;
+        Desc.Flags.SetFlag(EImageCreateFlags::ShaderResource);
+        Desc.DebugName         = DebugName;
+
+        FRHIImageRef Image = GRenderContext->CreateImage(Desc);
+
+        FRHICommandListRef Transfer = GRenderContext->CreateCommandList(FCommandListInfo::Transfer());
+        Transfer->Open();
+        Transfer->WriteImage(Image, 0, 0, Bytes, RowPitch, 0);
+        Transfer->Close();
+        GRenderContext->ExecuteCommandList(Transfer, ECommandQueue::Transfer);
+
+        return Image;
+    }
     FForwardRenderScene::FForwardRenderScene(CWorld* InWorld)
         : World(InWorld)
         , LightData()
@@ -52,7 +76,13 @@ namespace Lumina
         InitBuffers();
         InitFrameResources();
 
-        SwapchainResizedHandle = FRenderManager::OnSwapchainResized.AddMember(this, &FForwardRenderScene::SwapchainResized); 
+        // Persistent SMAA LUTs - sized constants, not affected by swapchain size.
+        NamedImages[(int)ENamedImage::SMAAArea] = CreateSMAALUTImage(
+            areaTexBytes, AREATEX_WIDTH, AREATEX_HEIGHT, EFormat::RG8_UNORM, AREATEX_PITCH, "SMAA AreaTex");
+        NamedImages[(int)ENamedImage::SMAASearch] = CreateSMAALUTImage(
+            searchTexBytes, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, EFormat::R8_UNORM, SEARCHTEX_PITCH, "SMAA SearchTex");
+
+        SwapchainResizedHandle = FRenderManager::OnSwapchainResized.AddMember(this, &FForwardRenderScene::SwapchainResized);
         
         #if USING(WITH_EDITOR)
         NamedImages[(int)ENamedImage::PointLightIcon]       = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/PointLight.png", true);  
@@ -152,9 +182,11 @@ namespace Lumina
         ParticleRenderPass(CmdList);
         BillboardPass(CmdList);
         ToneMappingPass(CmdList);
-        if (World->GetDefaultWorldSettings().bUseFXAA)
+        if (World->GetDefaultWorldSettings().SMAAQuality != ESMAAQuality::Off)
         {
-            FXAAPass(CmdList);
+            SMAAEdgeDetectionPass(CmdList);
+            SMAABlendWeightPass(CmdList);
+            SMAANeighborhoodBlendPass(CmdList);
         }
     }
     
@@ -3430,10 +3462,10 @@ namespace Lumina
             return;
         }
 
-        // When FXAA is enabled, tonemap renders into an LDR intermediate that FXAA
-        // then resolves into the final render target. Otherwise we write straight
-        // to the render target.
-        FRHIImage* OutputImage = World->GetDefaultWorldSettings().bUseFXAA ? GetNamedImage(ENamedImage::LDR) : GetRenderTarget();
+        // When SMAA is enabled, tonemap renders into an LDR intermediate that the
+        // SMAA passes then resolve into the final render target. Otherwise we
+        // write straight to the render target.
+        FRHIImage* OutputImage = World->GetDefaultWorldSettings().SMAAQuality != ESMAAQuality::Off ? GetNamedImage(ENamedImage::LDR) : GetRenderTarget();
 
         FRenderPassDesc::FAttachment Attachment; Attachment
             .SetImage(OutputImage);
@@ -3482,12 +3514,162 @@ namespace Lumina
         CmdList.Draw(3, 1, 0, 0);
     }
 
-    void FForwardRenderScene::FXAAPass(ICommandList& CmdList)
+    struct FSMAAPushConstants
     {
-        LUMINA_PROFILE_SECTION_COLORED("FXAA Pass", tracy::Color::Red2);
+        glm::vec4 RTMetrics;  // x = 1/w, y = 1/h, z = w, w = h
+        float     EdgeThreshold;
+        float     DebugMode;
+        float     _Pad0;
+        float     _Pad1;
+    };
+
+    static float GetSMAAEdgeThreshold(ESMAAQuality Quality)
+    {
+        switch (Quality)
+        {
+        case ESMAAQuality::Low:    return 0.15f;
+        case ESMAAQuality::Medium: return 0.12f;
+        case ESMAAQuality::High:   return 0.10f;
+        case ESMAAQuality::Ultra:  return 0.05f;
+        default:                   return 0.10f;
+        }
+    }
+
+    static FSMAAPushConstants BuildSMAAPushConstants(const FRHIImage* Image, const SDefaultWorldSettings& Settings)
+    {
+        FSMAAPushConstants PC;
+        const float W = (float)Image->GetSizeX();
+        const float H = (float)Image->GetSizeY();
+        PC.RTMetrics      = glm::vec4(1.0f / W, 1.0f / H, W, H);
+        PC.EdgeThreshold  = GetSMAAEdgeThreshold(Settings.SMAAQuality);
+        PC.DebugMode      = 0.0f;
+        PC._Pad0 = 0.0f;
+        PC._Pad1 = 0.0f;
+        return PC;
+    }
+
+    void FForwardRenderScene::SMAAEdgeDetectionPass(ICommandList& CmdList)
+    {
+        LUMINA_PROFILE_SECTION_COLORED("SMAA Edge Detection", tracy::Color::Red2);
 
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("FXAA.slang");
+        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("SMAAEdgeDetection.slang");
+        if (!VertexShader || !PixelShader)
+        {
+            return;
+        }
+
+        FRHIImage* OutputImage = GetNamedImage(ENamedImage::SMAAEdges);
+
+        FRenderPassDesc::FAttachment Attachment; Attachment
+            .SetImage(OutputImage)
+            .SetClearColor(glm::vec4(0.0f));
+
+        FRenderPassDesc RenderPass; RenderPass
+            .AddColorAttachment(Attachment)
+            .SetRenderArea(OutputImage->GetExtent());
+
+        FRasterState RasterState;
+        RasterState.SetCullNone();
+
+        FDepthStencilState DepthState;
+        DepthState.DisableDepthTest();
+        DepthState.DisableDepthWrite();
+
+        FRenderState RenderState;
+        RenderState.SetRasterState(RasterState);
+        RenderState.SetDepthStencilState(DepthState);
+
+        FGraphicsPipelineDesc Desc;
+        Desc.SetDebugName("SMAA Edge Detection Pass");
+        Desc.SetRenderState(RenderState);
+        Desc.AddBindingLayout(SceneBindingLayout);
+        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        Desc.AddBindingLayout(SMAAEdgeBindingLayout);
+        Desc.SetVertexShader(VertexShader);
+        Desc.SetPixelShader(PixelShader);
+
+        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+        FGraphicsState GraphicsState;
+        GraphicsState.SetPipeline(Pipeline);
+        GraphicsState.AddBindingSet(SceneBindingSet);
+        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        GraphicsState.AddBindingSet(SMAAEdgeBindingSet);
+        GraphicsState.SetRenderPass(RenderPass);
+        GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
+
+        CmdList.SetGraphicsState(GraphicsState);
+
+        FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, World->GetDefaultWorldSettings());
+        CmdList.SetPushConstants(&PC, sizeof(PC));
+        CmdList.Draw(3, 1, 0, 0);
+    }
+
+    void FForwardRenderScene::SMAABlendWeightPass(ICommandList& CmdList)
+    {
+        LUMINA_PROFILE_SECTION_COLORED("SMAA Blend Weight", tracy::Color::Red2);
+
+        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
+        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("SMAABlendWeight.slang");
+        if (!VertexShader || !PixelShader)
+        {
+            return;
+        }
+
+        FRHIImage* OutputImage = GetNamedImage(ENamedImage::SMAABlend);
+
+        FRenderPassDesc::FAttachment Attachment; Attachment
+            .SetImage(OutputImage)
+            .SetClearColor(glm::vec4(0.0f));
+
+        FRenderPassDesc RenderPass; RenderPass
+            .AddColorAttachment(Attachment)
+            .SetRenderArea(OutputImage->GetExtent());
+
+        FRasterState RasterState;
+        RasterState.SetCullNone();
+
+        FDepthStencilState DepthState;
+        DepthState.DisableDepthTest();
+        DepthState.DisableDepthWrite();
+
+        FRenderState RenderState;
+        RenderState.SetRasterState(RasterState);
+        RenderState.SetDepthStencilState(DepthState);
+
+        FGraphicsPipelineDesc Desc;
+        Desc.SetDebugName("SMAA Blend Weight Pass");
+        Desc.SetRenderState(RenderState);
+        Desc.AddBindingLayout(SceneBindingLayout);
+        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        Desc.AddBindingLayout(SMAABlendWeightBindingLayout);
+        Desc.SetVertexShader(VertexShader);
+        Desc.SetPixelShader(PixelShader);
+
+        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+        FGraphicsState GraphicsState;
+        GraphicsState.SetPipeline(Pipeline);
+        GraphicsState.AddBindingSet(SceneBindingSet);
+        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        GraphicsState.AddBindingSet(SMAABlendWeightBindingSet);
+        GraphicsState.SetRenderPass(RenderPass);
+        GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
+
+        CmdList.SetGraphicsState(GraphicsState);
+
+        FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, World->GetDefaultWorldSettings());
+        CmdList.SetPushConstants(&PC, sizeof(PC));
+        CmdList.Draw(3, 1, 0, 0);
+    }
+
+    void FForwardRenderScene::SMAANeighborhoodBlendPass(ICommandList& CmdList)
+    {
+        LUMINA_PROFILE_SECTION_COLORED("SMAA Neighborhood Blend", tracy::Color::Red2);
+
+        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
+        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("SMAANeighborhoodBlend.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
@@ -3514,11 +3696,11 @@ namespace Lumina
         RenderState.SetDepthStencilState(DepthState);
 
         FGraphicsPipelineDesc Desc;
-        Desc.SetDebugName("FXAA Pass");
+        Desc.SetDebugName("SMAA Neighborhood Blend Pass");
         Desc.SetRenderState(RenderState);
         Desc.AddBindingLayout(SceneBindingLayout);
         Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.AddBindingLayout(FXAABindingLayout);
+        Desc.AddBindingLayout(SMAANeighborhoodBindingLayout);
         Desc.SetVertexShader(VertexShader);
         Desc.SetPixelShader(PixelShader);
 
@@ -3528,34 +3710,14 @@ namespace Lumina
         GraphicsState.SetPipeline(Pipeline);
         GraphicsState.AddBindingSet(SceneBindingSet);
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        GraphicsState.AddBindingSet(FXAABindingSet);
+        GraphicsState.AddBindingSet(SMAANeighborhoodBindingSet);
         GraphicsState.SetRenderPass(RenderPass);
         GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
 
         CmdList.SetGraphicsState(GraphicsState);
 
-        struct FFXAAPC
-        {
-            glm::vec2 InverseScreenSize;
-            float     SubpixelBlending;
-            float     EdgeThreshold;
-            float     EdgeThresholdMin;
-            float     BlurStrength;
-            float     DebugMode;
-            float     _Pad2;
-        } PC;
-
-        const SDefaultWorldSettings& WorldSettings = World->GetDefaultWorldSettings();
-
-        PC.InverseScreenSize = glm::vec2(1.0f / (float)OutputImage->GetSizeX(), 1.0f / (float)OutputImage->GetSizeY());
-        PC.SubpixelBlending  = WorldSettings.FXAASubpixelBlending;
-        PC.EdgeThreshold     = WorldSettings.FXAAEdgeThreshold;
-        PC.EdgeThresholdMin  = WorldSettings.FXAAEdgeThresholdMin;
-        PC.BlurStrength      = WorldSettings.FXAABlurStrength;
-        PC.DebugMode         = (float)WorldSettings.FXAADebugMode;
-        PC._Pad2             = 0.0f;
-
-        CmdList.SetPushConstants(&PC, sizeof(FFXAAPC));
+        FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, World->GetDefaultWorldSettings());
+        CmdList.SetPushConstants(&PC, sizeof(PC));
         CmdList.Draw(3, 1, 0, 0);
     }
     
@@ -3732,7 +3894,33 @@ namespace Lumina
             ImageDesc.DebugName = "LDR";
             NamedImages[(int)ENamedImage::LDR] = GRenderContext->CreateImage(ImageDesc);
         }
-        
+
+        //==================================================================================================
+
+        {
+            FRHIImageDesc ImageDesc;
+            ImageDesc.Extent            = Extent;
+            ImageDesc.Format            = EFormat::RG8_UNORM;
+            ImageDesc.Dimension         = EImageDimension::Texture2D;
+            ImageDesc.InitialState      = EResourceStates::RenderTarget;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
+            ImageDesc.DebugName         = "SMAA Edges";
+            NamedImages[(int)ENamedImage::SMAAEdges] = GRenderContext->CreateImage(ImageDesc);
+        }
+
+        {
+            FRHIImageDesc ImageDesc;
+            ImageDesc.Extent            = Extent;
+            ImageDesc.Format            = EFormat::RGBA8_UNORM;
+            ImageDesc.Dimension         = EImageDimension::Texture2D;
+            ImageDesc.InitialState      = EResourceStates::RenderTarget;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
+            ImageDesc.DebugName         = "SMAA Blend";
+            NamedImages[(int)ENamedImage::SMAABlend] = GRenderContext->CreateImage(ImageDesc);
+        }
+
         //==================================================================================================
         
         {
@@ -3905,14 +4093,46 @@ namespace Lumina
             GRenderContext->CreateBindingSetAndLayout(Visibility, 2, ComposeSetDesc, ComposeBindingLayout, ComposeBindingSet);
         }
 
-        // FXAA reads the tonemapped LDR image and writes the final render target.
+        // SMAA Pass 1 (Edge Detection): reads LDR tonemapped color with point-clamp,
+        // writes 2-channel edges texture.
         {
-            FBindingSetDesc FXAASetDesc;
-            FXAASetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::LDR)));
+            FRHISamplerRef PointClamp  = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+            FBindingSetDesc SetDesc;
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::LDR), PointClamp));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
-            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, FXAASetDesc, FXAABindingLayout, FXAABindingSet);
+            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, SetDesc, SMAAEdgeBindingLayout, SMAAEdgeBindingSet);
+        }
+
+        // SMAA Pass 2 (Blend Weight): reads edges, AreaTex, SearchTex. SearchTex
+        // uses linear-clamp even though it's an integer-coded packed texture - the
+        // technique relies on bilinear filtering for the packed-pair encoding.
+        {
+            FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+            FBindingSetDesc SetDesc;
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::SMAAEdges), LinearClamp));
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(1, GetNamedImage(ENamedImage::SMAAArea), LinearClamp));
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(2, GetNamedImage(ENamedImage::SMAASearch), LinearClamp));
+
+            TBitFlags<ERHIShaderType> Visibility;
+            Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
+            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, SetDesc, SMAABlendWeightBindingLayout, SMAABlendWeightBindingSet);
+        }
+
+        // SMAA Pass 3 (Neighborhood Blend): reads LDR color and blend weights, both linear-clamp.
+        {
+            FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+            FBindingSetDesc SetDesc;
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::LDR), LinearClamp));
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(1, GetNamedImage(ENamedImage::SMAABlend), LinearClamp));
+
+            TBitFlags<ERHIShaderType> Visibility;
+            Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
+            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, SetDesc, SMAANeighborhoodBindingLayout, SMAANeighborhoodBindingSet);
         }
 
         // Standalone set-0 layout for OITResolve (uAccum at 0, uRevealage at 1).

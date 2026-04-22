@@ -68,16 +68,16 @@ bool CullMeshletForCascade(uint InstanceID, uint MeshletLocalIdx,
     float MaxScale = sqrt(max(SqScaleX, max(SqScaleY, SqScaleZ)));
     float WorldRadius = Bounds.Radius * MaxScale;
 
-    // Back-face cone cull against the sun. CSM pipeline uses SetCullFront()
-    // (anti-acne / peter-panning standard). A meshlet whose entire cone is
-    // front-facing to the sun produces zero raster output, so drop it here.
-    // Sun direction is cascade-invariant so the same test fires every cascade
-    // with the same result; the compiler sees it as uniform so no manual hoist.
+    // Cone cull against the sun. CSM pipeline uses SetCullBack() + depth bias,
+    // so only FRONT-facing triangles (outward normals toward the sun) reach the
+    // rasterizer. A meshlet whose entire cone points AWAY from the sun produces
+    // zero raster output, so drop it here. Sun direction is cascade-invariant
+    // so the same test fires every cascade with the same result.
     if (!bSkinned && !bNoCull && Bounds.ConeCutoff < 1.0)
     {
         float3 WorldAxis = normalize(mul((float3x3)Model, Bounds.ConeAxis));
         float3 SunDir    = GetSunDirection();
-        if (dot(SunDir, WorldAxis) >= Bounds.ConeCutoff)
+        if (dot(SunDir, WorldAxis) <= -Bounds.ConeCutoff)
         {
             return false;
         }

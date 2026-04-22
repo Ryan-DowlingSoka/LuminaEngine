@@ -104,6 +104,10 @@ namespace Lumina
         {
             HDR,
             LDR,
+            SMAAEdges,
+            SMAABlend,
+            SMAAArea,
+            SMAASearch,
             Cascade,
             DepthAttachment,
             DepthPyramid,
@@ -173,7 +177,9 @@ namespace Lumina
         void EnvironmentPass(ICommandList& CmdList);
         void BatchedLineDraw(ICommandList& CmdList);
         void ToneMappingPass(ICommandList& CmdList);
-        void FXAAPass(ICommandList& CmdList);
+        void SMAAEdgeDetectionPass(ICommandList& CmdList);
+        void SMAABlendWeightPass(ICommandList& CmdList);
+        void SMAANeighborhoodBlendPass(ICommandList& CmdList);
         //~ End Render Passes
 
         void CompileDrawCommands(ICommandList& CmdList);
@@ -224,8 +230,14 @@ namespace Lumina
         FRHIBindingSetRef                       ComposeBindingSet;
         FRHIBindingLayoutRef                    ComposeBindingLayout;
 
-        FRHIBindingSetRef                       FXAABindingSet;
-        FRHIBindingLayoutRef                    FXAABindingLayout;
+        FRHIBindingSetRef                       SMAAEdgeBindingSet;
+        FRHIBindingLayoutRef                    SMAAEdgeBindingLayout;
+
+        FRHIBindingSetRef                       SMAABlendWeightBindingSet;
+        FRHIBindingLayoutRef                    SMAABlendWeightBindingLayout;
+
+        FRHIBindingSetRef                       SMAANeighborhoodBindingSet;
+        FRHIBindingLayoutRef                    SMAANeighborhoodBindingLayout;
 
         FRHIBindingSetRef                       OITBindingSet;
         FRHIBindingLayoutRef                    OITBindingLayout;
