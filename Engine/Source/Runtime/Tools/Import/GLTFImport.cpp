@@ -245,20 +245,97 @@ namespace Lumina::Import::Mesh::GLTF
             ImportData.Skeletons.push_back(Move(NewSkeleton));
         }
         
+        // Texture extraction must run once per asset, NOT once per mesh. The
+        // previous code nested this inside the mesh loop, so a glTF with N
+        // meshes loaded the same image N times, prefixed each entry with the
+        // current mesh name (making real deduplication impossible), and did
+        // a CPU->GPU upload per copy for the dialog preview.
+        if (ImportOptions.bImportTextures)
+        {
+            uint32 ImageCounter = 0;
+            for (auto& Image : Asset.images)
+            {
+                FMeshImportImage GLTFImage;
+
+                auto AssignFallbackName = [&]()
+                {
+                    if (!Image.name.empty())
+                    {
+                        GLTFImage.RelativePath = Image.name.c_str();
+                    }
+                    else
+                    {
+                        GLTFImage.RelativePath.append(Name.begin(), Name.end())
+                                              .append("_Image_")
+                                              .append_convert(eastl::to_string(ImageCounter));
+                    }
+                };
+
+                if (auto* URI = std::get_if<fastgltf::sources::URI>(&Image.data))
+                {
+                    GLTFImage.RelativePath = URI->uri.c_str();
+                    FFixedString FullPath = Paths::Combine(VFS::Parent(FilePath), GLTFImage.RelativePath);
+                    GLTFImage.DisplayImage = Textures::CreateTextureFromImport(FullPath, true, glm::uvec2(128, 128));
+                    ImportData.Textures.emplace(Move(GLTFImage));
+                }
+                else if (auto* BufferView = std::get_if<fastgltf::sources::BufferView>(&Image.data))
+                {
+                    const fastgltf::BufferView& View = Asset.bufferViews[BufferView->bufferViewIndex];
+                    const fastgltf::Buffer& Buffer   = Asset.buffers[View.bufferIndex];
+
+                    if (auto* BufferArray = std::get_if<fastgltf::sources::Array>(&Buffer.data))
+                    {
+                        const uint8* Start = BufferArray->bytes.data() + View.byteOffset;
+                        GLTFImage.Bytes.assign(Start, Start + View.byteLength);
+                    }
+
+                    AssignFallbackName();
+                    GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                    ImportData.Textures.emplace(Move(GLTFImage));
+                }
+                else if (auto* Array = std::get_if<fastgltf::sources::Array>(&Image.data))
+                {
+                    const uint8* Start = Array->bytes.data();
+                    GLTFImage.Bytes.assign(Start, Start + Array->bytes.size());
+                    AssignFallbackName();
+                    GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                    ImportData.Textures.emplace(Move(GLTFImage));
+                }
+                else if (auto* Vector = std::get_if<fastgltf::sources::Vector>(&Image.data))
+                {
+                    const uint8* Start = Vector->bytes.data();
+                    GLTFImage.Bytes.assign(Start, Start + Vector->bytes.size());
+                    AssignFallbackName();
+                    GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                    ImportData.Textures.emplace(Move(GLTFImage));
+                }
+                else if (auto* ByteView = std::get_if<fastgltf::sources::ByteView>(&Image.data))
+                {
+                    const uint8* Start = reinterpret_cast<const uint8*>(ByteView->bytes.data());
+                    GLTFImage.Bytes.assign(Start, Start + ByteView->bytes.size());
+                    AssignFallbackName();
+                    GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                    ImportData.Textures.emplace(Move(GLTFImage));
+                }
+
+                ImageCounter++;
+            }
+        }
+
         THashSet<FString> SeenMeshes;
         for (const fastgltf::Mesh& Mesh : Asset.meshes)
         {
             FString SanitizedMeshName = Mesh.name.c_str();
             eastl::replace(SanitizedMeshName.begin(), SanitizedMeshName.end(), '.', '_');
-            
+
             auto It = SeenMeshes.find(SanitizedMeshName.c_str());
             if (It != SeenMeshes.end())
             {
                 continue;
             }
-            
+
             SeenMeshes.emplace(SanitizedMeshName);
-            
+
             FFixedString MeshName;
             if (Mesh.name.empty())
             {
@@ -268,118 +345,16 @@ namespace Lumina::Import::Mesh::GLTF
             {
                 MeshName.append_convert(SanitizedMeshName);
             }
-            
+
             auto StaticMesh = MakeUnique<FMeshResource>();
             StaticMesh->Vertices = TVector<FVertex>();
             StaticMesh->Name = FString(MeshName) + "_Mesh";
-        
+
             auto SkinnedMesh = MakeUnique<FMeshResource>();
             SkinnedMesh->Vertices = TVector<FSkinnedVertex>();
             SkinnedMesh->bSkinnedMesh = true;
             SkinnedMesh->Name = FString(MeshName) + "_SkeletalMesh";
-            
-            
-            for (auto& Material : Asset.materials)
-            {
-                //FGLTFMaterial NewMaterial;
-                //NewMaterial.Name = Material.name.c_str();
-                //
-                //OutData.Materials[OutData.Resources.size()].push_back(NewMaterial);
-            }
 
-            if (ImportOptions.bImportTextures)
-            {
-                uint32 ImageCounter = 0;
-                for (auto& Image : Asset.images)
-                {
-                    FMeshImportImage GLTFImage;
-                    if (auto* URI = std::get_if<fastgltf::sources::URI>(&Image.data))
-                    {
-                        GLTFImage.RelativePath = URI->uri.c_str();
-                        FFixedString FullPath = Paths::Combine(VFS::Parent(FilePath), GLTFImage.RelativePath);
-                        GLTFImage.DisplayImage = Textures::CreateTextureFromImport(FullPath, true, glm::uvec2(128, 128));
-                        
-                        ImportData.Textures.emplace(Move(GLTFImage));
-                    }
-                    else if (auto* BufferView = std::get_if<fastgltf::sources::BufferView>(&Image.data))
-                    {
-                        const fastgltf::BufferView& View = Asset.bufferViews[BufferView->bufferViewIndex];
-                        const fastgltf::Buffer& Buffer   = Asset.buffers[View.bufferIndex];
-
-                        if (auto* BufferArray = std::get_if<fastgltf::sources::Array>(&Buffer.data))
-                        {
-                            const uint8* Start = BufferArray->bytes.data() + View.byteOffset;
-                            GLTFImage.Bytes.assign(Start, Start + View.byteLength);
-                        }
-                        
-                        if (!Image.name.empty())
-                        {
-                            GLTFImage.RelativePath = Image.name.c_str();
-                        }
-                        else
-                        {
-                            GLTFImage.RelativePath.assign(MeshName + "Image_").append_convert(eastl::to_string(ImageCounter));
-                        }
-                        
-                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true , glm::uvec2(128, 128));
-                        ImportData.Textures.emplace(Move(GLTFImage));
-                    }
-                    else if (auto* Array = std::get_if<fastgltf::sources::Array>(&Image.data))
-                    {
-                        const uint8* Start = Array->bytes.data();
-                        GLTFImage.Bytes.assign(Start, Start + Array->bytes.size());
-
-                        if (!Image.name.empty())
-                        {
-                            GLTFImage.RelativePath = Image.name.c_str();
-                        }
-                        else
-                        {
-                            GLTFImage.RelativePath.assign(MeshName + "Image_").append_convert(eastl::to_string(ImageCounter));
-                        }
-                        
-                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true , glm::uvec2(128, 128));
-                        ImportData.Textures.emplace(Move(GLTFImage));
-                    }
-                    else if (auto* Vector = std::get_if<fastgltf::sources::Vector>(&Image.data))
-                    {
-                        const uint8* Start = Vector->bytes.data();
-                        GLTFImage.Bytes.assign(Start, Start + Vector->bytes.size());
-                        
-                        if (!Image.name.empty())
-                        {
-                            GLTFImage.RelativePath = Image.name.c_str();
-                        }
-                        else
-                        {
-                            GLTFImage.RelativePath.assign(MeshName + "Image_").append_convert(eastl::to_string(ImageCounter));
-                        }
-
-                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true , glm::uvec2(128, 128));
-                        ImportData.Textures.emplace(Move(GLTFImage));
-                    }
-                    else if (auto* ByteView = std::get_if<fastgltf::sources::ByteView>(&Image.data))
-                    {
-                        const uint8* Start = reinterpret_cast<const uint8*>(ByteView->bytes.data());
-                        GLTFImage.Bytes.assign(Start, Start + ByteView->bytes.size());
-
-                        if (!Image.name.empty())
-                        {
-                            GLTFImage.RelativePath = Image.name.c_str();
-                        }
-                        else
-                        {
-                            GLTFImage.RelativePath.assign(MeshName + "Image_").append_convert(eastl::to_string(ImageCounter));
-                        }
-                        
-                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true , glm::uvec2(128, 128));
-                        ImportData.Textures.emplace(Move(GLTFImage));
-                    }
-                    
-                    ImageCounter++;
-                }
-            }
-            
             FMeshResource* NewResource = nullptr;
             for (auto& Primitive : Mesh.primitives)
             {

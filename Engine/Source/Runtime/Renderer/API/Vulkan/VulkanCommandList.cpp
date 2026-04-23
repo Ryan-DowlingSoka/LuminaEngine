@@ -1045,10 +1045,46 @@ namespace Lumina
         DEBUG_ASSERT(!VulkanQuery->bStarted);
         DEBUG_ASSERT(!VulkanQuery->bResolved);
         DEBUG_ASSERT(CurrentCommandBuffer);
-        
+
         auto VulkanContext = static_cast<FVulkanRenderContext*>(GRenderContext);
 
         vkCmdWriteTimestamp(CurrentCommandBuffer->CommandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VulkanContext->GetTimerQueryPool(), VulkanQuery->EndQueryIndex);
+        VulkanQuery->bStarted = true;
+    }
+
+    void FVulkanCommandList::BeginPipelineStatsQuery(IPipelineStatsQuery* Query)
+    {
+        // vkCmdBeginQuery(PIPELINE_STATISTICS) is invalid inside a render
+        // pass started with begin/end-rendering (dynamic rendering); match
+        // the timer-query convention and flush any in-flight pass first.
+        EndRenderPass();
+
+        FVulkanPipelineStatsQuery* VulkanQuery = static_cast<FVulkanPipelineStatsQuery*>(Query);
+        DEBUG_ASSERT(VulkanQuery->QueryIndex >= 0);
+        DEBUG_ASSERT(!VulkanQuery->bStarted);
+        DEBUG_ASSERT(CurrentCommandBuffer);
+
+        VulkanQuery->bResolved = false;
+
+        auto VulkanContext = static_cast<FVulkanRenderContext*>(GRenderContext);
+
+        vkCmdResetQueryPool(CurrentCommandBuffer->CommandBuffer, VulkanContext->GetPipelineStatsQueryPool(), VulkanQuery->QueryIndex, 1);
+        vkCmdBeginQuery(CurrentCommandBuffer->CommandBuffer, VulkanContext->GetPipelineStatsQueryPool(), VulkanQuery->QueryIndex, 0);
+    }
+
+    void FVulkanCommandList::EndPipelineStatsQuery(IPipelineStatsQuery* Query)
+    {
+        EndRenderPass();
+
+        FVulkanPipelineStatsQuery* VulkanQuery = static_cast<FVulkanPipelineStatsQuery*>(Query);
+        DEBUG_ASSERT(VulkanQuery->QueryIndex >= 0);
+        DEBUG_ASSERT(!VulkanQuery->bStarted);
+        DEBUG_ASSERT(!VulkanQuery->bResolved);
+        DEBUG_ASSERT(CurrentCommandBuffer);
+
+        auto VulkanContext = static_cast<FVulkanRenderContext*>(GRenderContext);
+
+        vkCmdEndQuery(CurrentCommandBuffer->CommandBuffer, VulkanContext->GetPipelineStatsQueryPool(), VulkanQuery->QueryIndex);
         VulkanQuery->bStarted = true;
     }
 

@@ -108,18 +108,34 @@ namespace Lumina
     {
     public:
         RENDER_RESOURCE(RTT_TimerQuery)
-        
+
         FVulkanTimerQuery(FBitSetAllocator& InAllocator);
         ~FVulkanTimerQuery() override;
-        
-        
+
+
         FBitSetAllocator& Allocator;
         int32 BeginQueryIndex = -1;
         int32 EndQueryIndex = -1;
-        
+
         bool bStarted = false;
         bool bResolved = false;
         float Time = 0.0f;
+    };
+
+    class FVulkanPipelineStatsQuery : public IPipelineStatsQuery
+    {
+    public:
+        RENDER_RESOURCE(RTT_PipelineStatsQuery)
+
+        FVulkanPipelineStatsQuery(FBitSetAllocator& InAllocator);
+        ~FVulkanPipelineStatsQuery() override;
+
+        FBitSetAllocator& Allocator;
+        int32               QueryIndex = -1;
+
+        bool                bStarted   = false;
+        bool                bResolved  = false;
+        FPipelineStats      Stats;
     };
     
     class FVulkanViewport : public FRHIViewport

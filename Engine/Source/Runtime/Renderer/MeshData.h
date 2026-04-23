@@ -339,6 +339,11 @@ namespace Lumina
         FName Name;
         TVector<FBoneInfo> Bones;
         THashMap<FName, int32> BoneNameToIndex;
+
+        // Transient: set in the import dialog so the user can deselect a
+        // specific skeleton (e.g. an FBX with multiple rigs where only one
+        // is wanted). Intentionally not serialized.
+        bool bShouldImport = true;
         
         FORCEINLINE int32 GetNumBones() const 
         { 

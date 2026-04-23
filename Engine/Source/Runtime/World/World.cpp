@@ -11,6 +11,7 @@
 #include "Audio/AudioGlobals.h"
 #include "Core/Delegates/CoreDelegates.h"
 #include "Core/Engine/Engine.h"
+#include "Core/Profiler/CPUProfiler.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/ObjectIterator.h"
 #include "Core/Serialization/MemoryArchiver.h"
@@ -402,41 +403,73 @@ namespace Lumina
         Lua::FScriptingContext::Get().RunGC();
     }
     
+    static const char* StageName(EUpdateStage Stage)
+    {
+        switch (Stage)
+        {
+        case EUpdateStage::FrameStart:    return "FrameStart";
+        case EUpdateStage::PrePhysics:    return "PrePhysics";
+        case EUpdateStage::DuringPhysics: return "DuringPhysics";
+        case EUpdateStage::PostPhysics:   return "PostPhysics";
+        case EUpdateStage::FrameEnd:      return "FrameEnd";
+        case EUpdateStage::Paused:        return "Paused";
+        default:                          return "Unknown";
+        }
+    }
+
     void CWorld::Update(const FUpdateContext& Context)
     {
         LUMINA_PROFILE_SCOPE();
 
         const EUpdateStage Stage = Context.GetUpdateStage();
-        
+
+        FCPUProfiler::Get().PushWorldTarget(this);
+        struct FPopGuard { ~FPopGuard() { FCPUProfiler::Get().PopTarget(); } } PopGuard;
+
+        CPU_PROFILE_SCOPE(StageName(Stage));
+
         if (Stage == EUpdateStage::FrameStart)
         {
             DeltaTime = Context.GetDeltaTime() * GetDefaultWorldSettings().DeltaTimeScale;
             TimeSinceCreation += DeltaTime;
         }
-        
+
         if (bPaused && Stage != EUpdateStage::Paused || (!bPaused && Stage == EUpdateStage::Paused))
         {
             return;
         }
-        
+
         if (Stage == EUpdateStage::DuringPhysics)
         {
+            CPU_PROFILE_SCOPE_COLOR("Physics", FColor(0.20f, 0.75f, 0.90f));
             PhysicsScene->Update(DeltaTime);
         }
 
         SystemContext.DeltaTime     = DeltaTime;
         SystemContext.Time          = TimeSinceCreation;
         SystemContext.UpdateStage   = Stage;
-        
-        SingletonDispatcher.update<FScriptComponentPendingReady>();
+
+        {
+            CPU_PROFILE_SCOPE("PendingReady Dispatch");
+            SingletonDispatcher.update<FScriptComponentPendingReady>();
+        }
 
         if (Stage == EUpdateStage::FrameStart)
         {
-            LuaEventBus.ProcessDeferred();
-            TimerManager.Tick(static_cast<float>(DeltaTime));
+            {
+                CPU_PROFILE_SCOPE_COLOR("Lua Events (Deferred)", FColor(0.95f, 0.70f, 0.25f));
+                LuaEventBus.ProcessDeferred();
+            }
+            {
+                CPU_PROFILE_SCOPE("Timers");
+                TimerManager.Tick(static_cast<float>(DeltaTime));
+            }
         }
 
-        TickSystems(SystemContext);
+        {
+            CPU_PROFILE_SCOPE("Systems");
+            TickSystems(SystemContext);
+        }
     }
 
     void CWorld::Render(ICommandList& CmdList) const

@@ -56,20 +56,38 @@ namespace Lumina
     // numeric values in sync with DEBUG_MODE_* in Common.slang.
     enum class ERenderSceneDebugFlags : uint8
     {
-        None        = 0,
-        // Override base-pass color with a per-meshlet hash color so meshlet
-        // coverage and the meshlet-cull path can be verified visually.
-        Meshlets    = 1,
-        Num         = 2,
+        None                = 0,    // Normal lit rendering.
+        Unlit               = 1,    // Albedo + emissive only, skip lighting.
+        Meshlets            = 2,    // Per-meshlet hash color.
+        WorldNormal         = 3,    // World-space geometric normal remapped to [0,1].
+        ShadingNormal       = 4,    // World-space normal-mapped shading normal.
+        BaseColor           = 5,    // Raw albedo with no lighting or emissive.
+        Roughness           = 6,    // Roughness as greyscale.
+        Metallic            = 7,    // Metallic as greyscale.
+        AmbientOcclusion    = 8,    // Material AO as greyscale.
+        Emissive            = 9,    // Emissive term only.
+        UV                  = 10,   // frac(UV0) -> rg channels.
+        LightComplexity     = 11,   // Cluster light count heatmap.
+        Num                 = 12,
     };
 
     constexpr FStringView RenderFlagsAsString(ERenderSceneDebugFlags Flags)
     {
         switch (Flags)
         {
-            case ERenderSceneDebugFlags::None:     return "None";
-            case ERenderSceneDebugFlags::Meshlets: return "Meshlets";
-            default:                               return "None";
+            case ERenderSceneDebugFlags::None:              return "Lit";
+            case ERenderSceneDebugFlags::Unlit:             return "Unlit";
+            case ERenderSceneDebugFlags::Meshlets:          return "Meshlets";
+            case ERenderSceneDebugFlags::WorldNormal:       return "World Normal";
+            case ERenderSceneDebugFlags::ShadingNormal:     return "Shading Normal";
+            case ERenderSceneDebugFlags::BaseColor:         return "Base Color";
+            case ERenderSceneDebugFlags::Roughness:         return "Roughness";
+            case ERenderSceneDebugFlags::Metallic:          return "Metallic";
+            case ERenderSceneDebugFlags::AmbientOcclusion:  return "Ambient Occlusion";
+            case ERenderSceneDebugFlags::Emissive:          return "Emissive";
+            case ERenderSceneDebugFlags::UV:                return "UV";
+            case ERenderSceneDebugFlags::LightComplexity:   return "Light Complexity";
+            default:                                        return "Lit";
         }
     }
 
@@ -275,6 +293,11 @@ namespace Lumina
         uint32              bHasSun{};
 
         glm::vec4           CascadeSplits{};
+        // World-space half-extent (sphere radius) of each CSM cascade. Pixel
+        // shaders use this to convert a shadow texel into a world-space length
+        // for normal-offset bias — the offset must shrink as the cascade
+        // tightens or it grows visibly large in cascade 0.
+        glm::vec4           CascadeRadii{};
 
         glm::vec4           AmbientLight{};
 
@@ -376,12 +399,6 @@ namespace Lumina
         FFrustum ShadowFrustum;
 
         FFrustum CascadeFrustum[NumCascades];
-        glm::mat4 ViewMatrix;   // View matrix (not view-projection!)
-
-        float P00;              // projection[0][0]
-        float P11;              // projection[1][1]
-        float zNear;
-        float zFar;
 
         uint32 bFrustumCull;
         uint32 bOcclusionCull;
@@ -391,17 +408,12 @@ namespace Lumina
         float PyramidWidth;
         float PyramidHeight;
 
-        // Shadow-caster culling extensions.
-        float  ShadowMaxDistance;       // Casters beyond this distance are skipped entirely.
-        uint32 bShadowOcclusionCull;    // Enable camera Hi-Z test for in-frustum casters.
+        float  ShadowMaxDistance;
+        uint32 bShadowOcclusionCull;
 
-        // Number of FDrawIndirectArguments entries per cascade slice in the
-        // cascade indirect buffer. Used by ShadowMeshCull to index into the
-        // right cascade stride.
         uint32 NumDraws;
-
-
         uint32 DebugMode;
+        uint32 Padding[2];
     };
     
     
@@ -469,19 +481,19 @@ namespace Lumina
         uint32 IndirectDrawOffset;
     };
     
+    // CPU-side scene stats. Only tracks counters the GPU can't see directly
+    // (batch/cull/material bookkeeping); draw-time counters like triangles,
+    // VS/FS invocations, and draw/instance counts now come from Vulkan
+    // pipeline-statistics queries — see FPipelineStats / FGPUProfileFrame.
     struct FSceneRenderStats
     {
-        uint64 NumVertices = 0;
-        uint64 NumBatches = 0;
-        uint64 NumDraws = 0;
-        uint64 NumTriangles = 0;          // Total triangles submitted
-        uint64 NumInstances = 0;          // Total instances rendered
-        uint64 NumMeshes = 0;             // Unique meshes
-        uint64 NumMaterials = 0;          // Unique materials used
-        uint64 NumDrawCallsCulled = 0;    // Draws culled by frustum/occlusion
+        uint64 NumBatches = 0;            // Unique pipeline/material batches built this frame
+        uint64 NumMeshes = 0;             // Unique meshes referenced
+        uint64 NumMaterials = 0;          // Unique materials referenced
+        uint64 NumDrawCallsCulled = 0;    // Draws culled by frustum/occlusion (CPU path)
         uint64 NumInstancesCulled = 0;    // Instances culled
         uint64 NumShadowDraws = 0;        // Shadow pass draws
-        uint64 NumSkinnedMeshes = 0;      // Skinned vs static count
+        uint64 NumSkinnedMeshes = 0;
         uint64 NumStaticMeshes = 0;
     };
     
@@ -497,8 +509,6 @@ namespace Lumina
         uint8 bShadowOcclusionCull:1    = true;
         uint8 bWireframe:1              = false;
         uint8 bDrawBillboards:1         = true;
-        uint8 bUnlit:1                  = false;
-        uint8 bLit:1                    = false;
     };
     
 }

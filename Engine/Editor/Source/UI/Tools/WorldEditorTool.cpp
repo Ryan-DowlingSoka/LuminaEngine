@@ -101,8 +101,8 @@ namespace Lumina
         {
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
 
-            uint32 Integral = entt::to_integral(Data.Entity);
-            ImGui::SetDragDropPayload(DragDropID, &Integral, sizeof(uintptr_t));  
+            entt::entity Payload = Data.Entity;
+            ImGui::SetDragDropPayload(DragDropID, &Payload, sizeof(Payload));
         };
 
         OutlinerContext.ItemContextMenuFunction = [this](FTreeListView& Tree, entt::entity Item)
@@ -155,15 +155,10 @@ namespace Lumina
                 PushRenameEntityModal(Data.Entity);
             }
 
-            if (ImGui::MenuItem("Duplicate"))
+            if (!bLocked && ImGui::MenuItem("Duplicate"))
             {
                 entt::entity New = entt::null;
-                auto View = World->GetEntityRegistry().view<FSelectedInEditorComponent>();
-
-                View.each([&](entt::entity Entity)
-                {
-                    CopyEntity(New, Entity);
-                });
+                CopyEntity(New, Data.Entity);
             }
 
             if (!bLocked && ImGui::MenuItem("Delete"))
@@ -288,15 +283,15 @@ namespace Lumina
 
         while (!ComponentDestroyRequests.empty())
         {
-            FComponentDestroyRequest Request = ComponentDestroyRequests.back();
+            FComponentDestroyRequest Request = ComponentDestroyRequests.front();
             ComponentDestroyRequests.pop();
-            
+
             RemoveComponent(Request.EntityID, Request.Type);
         }
-        
+
         while (!EntityDestroyRequests.empty())
         {
-            entt::entity Entity = EntityDestroyRequests.back();
+            entt::entity Entity = EntityDestroyRequests.front();
             EntityDestroyRequests.pop();
             
             if (!World->GetEntityRegistry().valid(Entity))
@@ -326,23 +321,21 @@ namespace Lumina
             {
                 World->GetEntityRegistry().emplace_or_replace<FNeedsTransformUpdate>(SelectedEntity);
                 
+                const bool bLocked = IsLockedPrefabChild(World->GetEntityRegistry(), SelectedEntity);
+
                 if (bCopyPressed)
                 {
                     AddEntityToCopies(SelectedEntity);
                 }
-    
-                if (bDuplicatePressed)
+
+                if (bDuplicatePressed && !bLocked)
                 {
                     entt::entity New = entt::null;
                     CopyEntity(New, SelectedEntity);
                 }
-        
-                if (bDeletePressed)
+
+                if (bDeletePressed && !bLocked)
                 {
-                    if (IsLockedPrefabChild(World->GetEntityRegistry(), SelectedEntity))
-                    {
-                        return;
-                    }
                     World->DestroyEntity(SelectedEntity);
                     OutlinerListView.MarkTreeDirty();
                 }
@@ -365,15 +358,23 @@ namespace Lumina
             }
         });
         
-        auto CopyView = World->GetEntityRegistry().view<FCopiedTag>();
-        CopyView.each([&](entt::entity Entity)
+        const bool bPastePressed = bViewportHovered
+            && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)
+            && ImGui::IsKeyPressed(ImGuiKey_V, false);
+
+        if (bPastePressed)
         {
-            if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_V) && bViewportHovered)
+            auto CopyView = World->GetEntityRegistry().view<FCopiedTag>();
+            CopyView.each([&](entt::entity Entity)
             {
+                if (IsLockedPrefabChild(World->GetEntityRegistry(), Entity))
+                {
+                    return;
+                }
                 entt::entity New = entt::null;
                 CopyEntity(New, Entity);
-            }
-        });
+            });
+        }
         
         if (ImGui::IsKeyPressed(ImGuiKey_F))
         {
@@ -381,23 +382,23 @@ namespace Lumina
         }
         
         
-        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_Z))
+        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_Z, false))
         {
             if (World->GetWorldType() == EWorldType::Editor)
             {
                 Undo();
             }
         }
-        
-        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_Y))
+
+        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_Y, false))
         {
             if (World->GetWorldType() == EWorldType::Editor)
             {
                 Redo();
             }
         }
-        
-        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_S))
+
+        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_S, false))
         {
             OnSave();
         }
@@ -459,23 +460,6 @@ namespace Lumina
     void FWorldEditorTool::DrawToolMenu(const FUpdateContext& UpdateContext)
     {
         FEditorTool::DrawToolMenu(UpdateContext);
-        
-        if (ImGui::BeginMenu(LE_ICON_CHART_HISTOGRAM " Render Stats"))
-        {
-            const FSceneRenderStats& Stats = World->GetRenderer()->GetRenderStats();
-            
-            ImGui::SeparatorText("Geometry");
-            ImGuiX::Text("Vertices:  {:L}", Stats.NumVertices);
-            ImGuiX::Text("Triangles: {:L}", Stats.NumTriangles);
-            ImGuiX::Text("Instances: {:L}", Stats.NumInstances);
-        
-            ImGui::SeparatorText("Draw Calls");
-            ImGuiX::Text("Batches:   {:L}", Stats.NumBatches);
-            ImGuiX::Text("Draws:     {:L}", Stats.NumDraws);
-            ImGuiX::Text("Materials: {:L}", Stats.NumMaterials);
-            
-            ImGui::EndMenu();
-        }
         
         if (ImGui::BeginMenu(LE_ICON_LANGUAGE_LUA " Lua"))
         {
@@ -551,18 +535,7 @@ namespace Lumina
             const ImRect ViewportRect(ViewportOrigin, ImVec2(ViewportOrigin.x + ViewportSize.x, ViewportOrigin.y + ViewportSize.y));
             if (ImGui::BeginDragDropTargetCustom(ViewportRect, ImGui::GetCurrentWindow()->ID))
             {
-                if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(FContentBrowserEditorTool::FContentBrowserTileViewItem::DragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery))
-                {
-                    if (Payload->IsDelivery())
-                    {
-                        const uintptr_t ValuePtr = *static_cast<uintptr_t*>(Payload->Data);
-                        const auto* PayloadItem = reinterpret_cast<FContentBrowserEditorTool::FContentBrowserTileViewItem*>(ValuePtr);
-                        if (PayloadItem && PayloadItem->IsAsset())
-                        {
-                            HandlePrefabContentDrop(PayloadItem->GetVirtualPath(), entt::null);
-                        }
-                    }
-                }
+                AcceptContentBrowserPrefabPayload(entt::null);
                 ImGui::EndDragDropTarget();
             }
         }
@@ -829,45 +802,44 @@ namespace Lumina
         
         if (ImGui::BeginPopup("EntityContextMenu"))
         {
-            auto LastSelectedView = World->GetEntityRegistry().view<FLastSelectedTag>();
-            entt::entity LastSelectedEntity = entt::null;
-            LastSelectedView.each([&](entt::entity Entity)
-            {
-               LastSelectedEntity = Entity; 
-            });
-            
+            const entt::entity LastSelectedEntity = GetLastSelectedEntity();
+
             if (World->GetEntityRegistry().valid(LastSelectedEntity))
             {
                 entt::registry& Registry = World->GetEntityRegistry();
-                
+                const bool bLastSelectedLocked = IsLockedPrefabChild(Registry, LastSelectedEntity);
+
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
                 ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 4));
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 4));
-                
+
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
                 ImGui::TextUnformatted("ENTITY");
                 ImGui::PopStyleColor();
-                
+
                 ImGui::SameLine();
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
                 ImGui::Text("%u", (uint32)LastSelectedEntity);
                 ImGui::PopStyleColor();
-                
+
                 ImGui::Spacing();
                 ImGui::Separator();
                 ImGui::Spacing();
-                
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
-                if (ImGui::MenuItem(LE_ICON_TRASH_CAN" Delete Entity", "Del"))
+
+                if (!bLastSelectedLocked)
                 {
-                    if (Dialogs::Confirmation("Confirm Deletion", "Are you sure you want to delete entity \"{0}\"?\n\nThis action cannot be undone.", entt::to_integral(LastSelectedEntity)))
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+                    if (ImGui::MenuItem(LE_ICON_TRASH_CAN" Delete Entity", "Del"))
                     {
-                        EntityDestroyRequests.push(LastSelectedEntity);
+                        if (Dialogs::Confirmation("Confirm Deletion", "Are you sure you want to delete entity \"{0}\"?\n\nThis action cannot be undone.", entt::to_integral(LastSelectedEntity)))
+                        {
+                            EntityDestroyRequests.push(LastSelectedEntity);
+                        }
+
+                        ImGui::CloseCurrentPopup();
                     }
-                    
-                    ImGui::CloseCurrentPopup();
+                    ImGui::PopStyleColor();
                 }
-                ImGui::PopStyleColor();
                 
                 ImGui::Spacing();
                 ImGui::Separator();
@@ -912,14 +884,17 @@ namespace Lumina
                 ImGui::Separator();
                 ImGui::Spacing();
                 
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.8f, 1.0f, 1.0f));
-                if (ImGui::MenuItem("Duplicate", "Ctrl+D"))
+                if (!bLastSelectedLocked)
                 {
-                    entt::entity To;
-                    CopyEntity(To, LastSelectedEntity);
-                    ImGui::CloseCurrentPopup();
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.8f, 1.0f, 1.0f));
+                    if (ImGui::MenuItem("Duplicate", "Ctrl+D"))
+                    {
+                        entt::entity To = entt::null;
+                        CopyEntity(To, LastSelectedEntity);
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::PopStyleColor();
                 }
-                ImGui::PopStyleColor();
                 
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.8f, 0.6f, 1.0f));
                 if (ImGui::MenuItem("Copy", "Ctrl+C"))
@@ -937,9 +912,6 @@ namespace Lumina
                     ImGui::CloseCurrentPopup();
                 }
                 ImGui::PopStyleColor();
-                
-                
-                const bool bLastSelectedLocked = IsLockedPrefabChild(Registry, LastSelectedEntity);
 
                 if (!bLastSelectedLocked && ECS::Utils::IsChild(Registry, LastSelectedEntity))
                 {
@@ -1744,53 +1716,86 @@ namespace Lumina
             
             if (ImGui::BeginMenu("Rendering"))
             {
-                if (ImGui::BeginMenu("Debug View"))
+                FSceneRenderSettings& Settings = RenderScene->GetSceneRenderSettings();
+
+                if (ImGui::BeginMenu("View Mode"))
                 {
-                    ERenderSceneDebugFlags CurrentFlag = RenderScene->GetSceneRenderSettings().Flags;
-                    FStringView Value = RenderFlagsAsString(CurrentFlag);
-                    if (ImGui::BeginCombo("##", Value.data()))
+                    // View-mode groups. Keep the grouping aligned with the
+                    // ERenderSceneDebugFlags enum so adding a new visualization
+                    // is a one-liner here plus the enum/shader entry.
+                    struct FViewModeEntry
                     {
-                        for (int i = 0; i < (int)ERenderSceneDebugFlags::Num; ++i)
+                        ERenderSceneDebugFlags Mode;
+                        const char* Label;
+                    };
+
+                    static const FViewModeEntry Shading[] =
+                    {
+                        { ERenderSceneDebugFlags::None,  "Lit"   },
+                        { ERenderSceneDebugFlags::Unlit, "Unlit" },
+                    };
+
+                    static const FViewModeEntry Buffers[] =
+                    {
+                        { ERenderSceneDebugFlags::BaseColor,         "Base Color"        },
+                        { ERenderSceneDebugFlags::WorldNormal,       "World Normal"      },
+                        { ERenderSceneDebugFlags::ShadingNormal,     "Shading Normal"    },
+                        { ERenderSceneDebugFlags::Roughness,         "Roughness"         },
+                        { ERenderSceneDebugFlags::Metallic,          "Metallic"          },
+                        { ERenderSceneDebugFlags::AmbientOcclusion,  "Ambient Occlusion" },
+                        { ERenderSceneDebugFlags::Emissive,          "Emissive"          },
+                        { ERenderSceneDebugFlags::UV,                "UV"                },
+                    };
+
+                    static const FViewModeEntry Geometry[] =
+                    {
+                        { ERenderSceneDebugFlags::Meshlets,        "Meshlets"         },
+                        { ERenderSceneDebugFlags::LightComplexity, "Light Complexity" },
+                    };
+
+                    auto DrawGroup = [&](const char* Header, const FViewModeEntry* Entries, size_t Count)
+                    {
+                        ImGui::TextDisabled("%s", Header);
+                        ImGui::Separator();
+                        for (size_t i = 0; i < Count; ++i)
                         {
-                            ERenderSceneDebugFlags Flag = static_cast<ERenderSceneDebugFlags>(i);
-                            FStringView Name = RenderFlagsAsString(Flag);
-                            bool bSelected = Flag == CurrentFlag;
-                            if (ImGui::Selectable(Name.data(), &bSelected))
+                            bool bSelected = Settings.Flags == Entries[i].Mode;
+                            if (ImGui::MenuItem(Entries[i].Label, nullptr, bSelected))
                             {
-                                RenderScene->GetSceneRenderSettings().Flags = Flag;
+                                Settings.Flags = Entries[i].Mode;
                             }
                         }
-                        
-                        ImGui::EndCombo();
-                    }
-                    
+                    };
+
+                    DrawGroup("Shading", Shading, sizeof(Shading) / sizeof(Shading[0]));
+                    ImGui::Spacing();
+                    DrawGroup("Buffers", Buffers, sizeof(Buffers) / sizeof(Buffers[0]));
+                    ImGui::Spacing();
+                    DrawGroup("Geometry", Geometry, sizeof(Geometry) / sizeof(Geometry[0]));
+
                     ImGui::EndMenu();
                 }
-                
-                bool bLit = RenderScene->GetSceneRenderSettings().bLit;
-                if (ImGui::MenuItem("Lit", nullptr, &bLit))
+
+                ImGui::Separator();
+
+                bool bWireframe = Settings.bWireframe;
+                if (ImGui::MenuItem("Wireframe", nullptr, &bWireframe))
                 {
-                    RenderScene->GetSceneRenderSettings().bLit = bLit;
+                    Settings.bWireframe = bWireframe;
                 }
-                
-                bool bUnlit = RenderScene->GetSceneRenderSettings().bUnlit;
-                if (ImGui::MenuItem("Unlit", nullptr, &bUnlit))
-                {
-                    RenderScene->GetSceneRenderSettings().bUnlit = bUnlit;
-                }
-                
-                bool bValue = RenderScene->GetSceneRenderSettings().bWireframe;
-                if (ImGui::MenuItem("Wireframe", nullptr, &bValue))
-                {
-                    RenderScene->GetSceneRenderSettings().bWireframe = bValue;
-                }
-                
-                bool bDrawBillboards = RenderScene->GetSceneRenderSettings().bDrawBillboards;
+
+                bool bDrawBillboards = Settings.bDrawBillboards;
                 if (ImGui::MenuItem("Draw Billboards", nullptr, &bDrawBillboards))
                 {
-                    RenderScene->GetSceneRenderSettings().bDrawBillboards = bDrawBillboards;
+                    Settings.bDrawBillboards = bDrawBillboards;
                 }
-                
+
+                bool bDrawAABB = Settings.bDrawAABB;
+                if (ImGui::MenuItem("Draw Bounds", nullptr, &bDrawAABB))
+                {
+                    Settings.bDrawAABB = bDrawAABB;
+                }
+
                 ImGui::EndMenu();
             }
             
@@ -2090,11 +2095,11 @@ namespace Lumina
             return;
         }
         
-        if (World->GetEntityRegistry().valid(Entity))
+        if (!World->GetEntityRegistry().valid(Entity))
         {
             return;
         }
-        
+
         if (World->GetEntityRegistry().any_of<FSelectedInEditorComponent>(Entity))
         {
             World->GetEntityRegistry().remove<FSelectedInEditorComponent>(Entity);
@@ -2148,9 +2153,24 @@ namespace Lumina
         World->GetEntityRegistry().clear<FCopiedTag>();
     }
 
+    void FWorldEditorTool::RebindRegistryObservers()
+    {
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        Registry.on_construct<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
+        Registry.on_destroy<entt::entity>().disconnect<&FWorldEditorTool::OnEntityDestroyed>(this);
+
+        Registry.on_construct<entt::entity>().connect<&FWorldEditorTool::OnEntityCreated>(this);
+        Registry.on_destroy<entt::entity>().connect<&FWorldEditorTool::OnEntityDestroyed>(this);
+    }
+
     void FWorldEditorTool::SetWorldPlayInEditor(bool bShouldPlay)
     {
-        if (bShouldPlay != bGamePreviewRunning && bShouldPlay == true)
+        if (bShouldPlay == bGamePreviewRunning)
+        {
+            return;
+        }
+
+        if (bShouldPlay)
         {
             bGamePreviewRunning = true;
             PropertyTables.clear();
@@ -2161,54 +2181,51 @@ namespace Lumina
             World = GWorldManager->StartPIE(ProxyWorld, EWorldType::Game, ENetMode::Standalone);
 
             WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
-            
+
             OutlinerListView.ClearTree();
             OutlinerListView.MarkTreeDirty();
 
-            World->GetEntityRegistry().on_construct<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
-            World->GetEntityRegistry().on_destroy<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
-
-            World->GetEntityRegistry().on_construct<entt::entity>().connect<&FWorldEditorTool::OnEntityCreated>(this);
-            World->GetEntityRegistry().on_destroy<entt::entity>().connect<&FWorldEditorTool::OnEntityDestroyed>(this);
+            RebindRegistryObservers();
         }
-        else if (bShouldPlay != bGamePreviewRunning && bShouldPlay == false)
+        else
         {
             PropertyTables.clear();
             World->SetPaused(true);
             bGamePreviewRunning = false;
-            
+
             ProxyWorld->DestroyEntity(EditorEntity);
             EditorEntity = entt::null;
-            
+
             SetWorld(ProxyWorld);
             ProxyWorld->SetActive(true);
-            
+
             WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
-            
+
             ProxyWorld = nullptr;
-            
+
             OutlinerListView.ClearTree();
             OutlinerListView.MarkTreeDirty();
-            
-            World->GetEntityRegistry().on_construct<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
-            World->GetEntityRegistry().on_destroy<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
 
-            World->GetEntityRegistry().on_construct<entt::entity>().connect<&FWorldEditorTool::OnEntityCreated>(this);
-            World->GetEntityRegistry().on_destroy<entt::entity>().connect<&FWorldEditorTool::OnEntityDestroyed>(this);
-            
+            RebindRegistryObservers();
+
             FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
         }
     }
 
     void FWorldEditorTool::SetWorldNewSimulate(bool bShouldSimulate)
     {
-        if (bShouldSimulate != bSimulatingWorld && bShouldSimulate == true)
+        if (bShouldSimulate == bSimulatingWorld)
+        {
+            return;
+        }
+
+        if (bShouldSimulate)
         {
             PropertyTables.clear();
             bSimulatingWorld = true;
-            
+
             FTransform TransformCopy = World->GetEntityRegistry().get<STransformComponent>(EditorEntity).GetWorldTransform();
-            SCameraComponent CameraCopy =  World->GetEntityRegistry().get<SCameraComponent>(EditorEntity);
+            SCameraComponent CameraCopy = World->GetEntityRegistry().get<SCameraComponent>(EditorEntity);
 
             World->SetActive(false);
             ProxyWorld = World;
@@ -2216,59 +2233,53 @@ namespace Lumina
 
             ProxyWorld->DestroyEntity(EditorEntity);
             EditorEntity = entt::null;
-            
+
             SetupWorldForTool();
             ASSERT(World->GetEntityRegistry().valid(EditorEntity));
-            
+
             WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
 
             World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetLocalTransform(TransformCopy);
-            
+
             World->GetEntityRegistry().patch<SCameraComponent>(EditorEntity, [CameraCopy](SCameraComponent& Patch)
             {
                 Patch = CameraCopy;
             });
-            
-            
+
             OutlinerListView.ClearTree();
             OutlinerListView.MarkTreeDirty();
-            
-            World->GetEntityRegistry().on_construct<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
-            World->GetEntityRegistry().on_destroy<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
 
-            World->GetEntityRegistry().on_construct<entt::entity>().connect<&FWorldEditorTool::OnEntityCreated>(this);
-            World->GetEntityRegistry().on_destroy<entt::entity>().connect<&FWorldEditorTool::OnEntityDestroyed>(this);
-
+            RebindRegistryObservers();
         }
-        else if (bShouldSimulate != bSimulatingWorld && bShouldSimulate == false)
+        else
         {
             PropertyTables.clear();
             bSimulatingWorld = false;
 
             FTransform TransformCopy = World->GetEntityRegistry().get<STransformComponent>(EditorEntity).GetWorldTransform();
-            SCameraComponent CameraCopy =  World->GetEntityRegistry().get<SCameraComponent>(EditorEntity);
-            
+            SCameraComponent CameraCopy = World->GetEntityRegistry().get<SCameraComponent>(EditorEntity);
+
             World->DestroyEntity(EditorEntity);
             EditorEntity = entt::null;
-            
+
             SetWorld(ProxyWorld);
             ProxyWorld->SetActive(true);
             ASSERT(World->GetEntityRegistry().valid(EditorEntity));
-            
+
             WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
-            
+
             World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetLocalTransform(TransformCopy);
-            
+
             World->GetEntityRegistry().patch<SCameraComponent>(EditorEntity, [CameraCopy](SCameraComponent& Patch)
             {
                 Patch = CameraCopy;
             });
-            
+
             ProxyWorld = nullptr;
-            
+
             OutlinerListView.ClearTree();
             OutlinerListView.MarkTreeDirty();
-            
+
             FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
         }
     }
@@ -2703,17 +2714,25 @@ namespace Lumina
             return;
         }
 
-        if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(FContentBrowserEditorTool::FContentBrowserTileViewItem::DragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery))
+        AcceptContentBrowserPrefabPayload(DropItem);
+    }
+
+    void FWorldEditorTool::AcceptContentBrowserPrefabPayload(entt::entity DropTarget)
+    {
+        const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(
+            FContentBrowserEditorTool::FContentBrowserTileViewItem::DragDropID,
+            ImGuiDragDropFlags_AcceptBeforeDelivery);
+
+        if (Payload == nullptr || !Payload->IsDelivery())
         {
-            if (Payload->IsDelivery())
-            {
-                const uintptr_t ValuePtr = *static_cast<uintptr_t*>(Payload->Data);
-                const auto* PayloadItem = reinterpret_cast<FContentBrowserEditorTool::FContentBrowserTileViewItem*>(ValuePtr);
-                if (PayloadItem && PayloadItem->IsAsset())
-                {
-                    HandlePrefabContentDrop(PayloadItem->GetVirtualPath(), DropItem);
-                }
-            }
+            return;
+        }
+
+        const uintptr_t ValuePtr = *static_cast<uintptr_t*>(Payload->Data);
+        const auto* PayloadItem = reinterpret_cast<FContentBrowserEditorTool::FContentBrowserTileViewItem*>(ValuePtr);
+        if (PayloadItem && PayloadItem->IsAsset())
+        {
+            HandlePrefabContentDrop(PayloadItem->GetVirtualPath(), DropTarget);
         }
     }
 
@@ -2838,18 +2857,7 @@ namespace Lumina
 
                 if (ImGui::BeginDragDropTargetCustom(ImGui::GetCurrentWindow()->Rect(), ImGui::GetCurrentWindow()->ID))
                 {
-                    if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(FContentBrowserEditorTool::FContentBrowserTileViewItem::DragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery))
-                    {
-                        if (Payload->IsDelivery())
-                        {
-                            const uintptr_t ValuePtr = *static_cast<uintptr_t*>(Payload->Data);
-                            const auto* PayloadItem = reinterpret_cast<FContentBrowserEditorTool::FContentBrowserTileViewItem*>(ValuePtr);
-                            if (PayloadItem && PayloadItem->IsAsset())
-                            {
-                                HandlePrefabContentDrop(PayloadItem->GetVirtualPath(), entt::null);
-                            }
-                        }
-                    }
+                    AcceptContentBrowserPrefabPayload(entt::null);
                     ImGui::EndDragDropTarget();
                 }
             }

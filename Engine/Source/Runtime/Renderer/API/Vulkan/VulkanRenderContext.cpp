@@ -241,27 +241,40 @@ namespace Lumina
     void FQueue::RetireCommandBuffers()
     {
         LUMINA_PROFILE_SCOPE();
-        
-        auto Submissions = Move(CommandBuffersInFlight);
+
         uint64 LastFinish = UpdateLastFinishID();
-        
-        TFixedVector<TRefCountPtr<FTrackedCommandBuffer>, 4> ToEnqueue;
-        for (const TRefCountPtr<FTrackedCommandBuffer>& Submission : Submissions)
+
+        TFixedVector<TRefCountPtr<FTrackedCommandBuffer>, 16> ToEnqueue;
+
+        // In-place two-pointer compaction: finished submissions move out to
+        // ToEnqueue, unfinished ones stay packed at the front. Avoids the Move
+        // + re-emplace pattern which, on a list, allocated a node per entry.
+        uint32 WriteIdx = 0;
+        for (uint32 ReadIdx = 0, Count = (uint32)CommandBuffersInFlight.size(); ReadIdx < Count; ++ReadIdx)
         {
-            if (Submission->SubmissionID <= LastFinish)
+            TRefCountPtr<FTrackedCommandBuffer>& Slot = CommandBuffersInFlight[ReadIdx];
+            if (Slot->SubmissionID <= LastFinish)
             {
-                Submission->ClearReferencedResources();
-                Submission->SubmissionID = 0;
-                ToEnqueue.emplace_back(Move(Submission));
+                Slot->ClearReferencedResources();
+                Slot->SubmissionID = 0;
+                ToEnqueue.emplace_back(Move(Slot));
             }
             else
             {
-                CommandBuffersInFlight.emplace_back(Move(Submission));
+                if (WriteIdx != ReadIdx)
+                {
+                    CommandBuffersInFlight[WriteIdx] = Move(Slot);
+                }
+                ++WriteIdx;
             }
         }
-        
-        CommandBufferPool.enqueue_bulk(ToEnqueue.begin(), ToEnqueue.size());
 
+        CommandBuffersInFlight.resize(WriteIdx);
+
+        if (!ToEnqueue.empty())
+        {
+            CommandBufferPool.enqueue_bulk(ToEnqueue.begin(), ToEnqueue.size());
+        }
     }
 
     uint64 FQueue::GetCompletedInstance() const
@@ -279,9 +292,16 @@ namespace Lumina
         std::scoped_lock Lock(Mutex);
         LockMark(Mutex);
         LastSubmittedID++;
-        
-        LUMINA_PROFILE_TAG(std::format("Last Submit ID: {0} - Num Command Lists {1}", LastSubmittedID, NumCommandLists).c_str());
-        
+
+#if TRACY_ENABLE
+        {
+            char TagBuf[96];
+            auto Result = std::format_to_n(TagBuf, sizeof(TagBuf) - 1, "Submit ID: {} - CLs: {}", LastSubmittedID, NumCommandLists);
+            *Result.out = '\0';
+            ZoneText(TagBuf, (size_t)(Result.out - TagBuf));
+        }
+#endif
+
         TFixedVector<VkCommandBuffer, 4> CommandBuffers(NumCommandLists);
         
         for (uint32 i = 0; i < NumCommandLists; ++i)
@@ -402,7 +422,14 @@ namespace Lumina
         WaitInfo.pSemaphores            = &TimelineSemaphore;
         WaitInfo.pValues                = &CommandListID;
 
-        LUMINA_PROFILE_TAG(std::format("Waiting on command list ID: {} | Last Submitted ID {}", CommandListID, LastSubmittedID).c_str());
+#if TRACY_ENABLE
+        {
+            char TagBuf[96];
+            auto Result = std::format_to_n(TagBuf, sizeof(TagBuf) - 1, "Wait CL ID: {} | Last Submitted: {}", CommandListID, LastSubmittedID);
+            *Result.out = '\0';
+            ZoneText(TagBuf, (size_t)(Result.out - TagBuf));
+        }
+#endif
 
         {
             LUMINA_PROFILE_SECTION("vkWaitSemaphores");
@@ -463,6 +490,7 @@ namespace Lumina
     
     FVulkanRenderContext::FVulkanRenderContext()
         : TimerQueryAllocator(1024)
+        , PipelineStatsAllocator(1024)
         , CurrentFrameIndex(0)
     {
     }
@@ -579,7 +607,19 @@ namespace Lumina
         IRHIResource::ReleaseAllRHIResources();
 
         CrashTracker->Shutdown();
-        
+
+        if (TimerQueryPool != VK_NULL_HANDLE)
+        {
+            vkDestroyQueryPool(VulkanDevice->GetDevice(), TimerQueryPool, VK_ALLOC_CALLBACK);
+            TimerQueryPool = VK_NULL_HANDLE;
+        }
+
+        if (PipelineStatsQueryPool != VK_NULL_HANDLE)
+        {
+            vkDestroyQueryPool(VulkanDevice->GetDevice(), PipelineStatsQueryPool, VK_ALLOC_CALLBACK);
+            PipelineStatsQueryPool = VK_NULL_HANDLE;
+        }
+
         Memory::Delete(VulkanDevice);
         VulkanDevice = nullptr;
 
@@ -730,6 +770,7 @@ namespace Lumina
         DeviceFeatures.vertexPipelineStoresAndAtomics       = VK_TRUE; // @TODO See if we need this.
         DeviceFeatures.shaderInt16                          = VK_TRUE;
         DeviceFeatures.independentBlend                     = VK_TRUE;
+        DeviceFeatures.pipelineStatisticsQuery              = VK_TRUE;
         //DeviceFeatures.shaderInt64                          = VK_TRUE;
 
         VkPhysicalDeviceVulkan11Features Features11 = {};
@@ -1285,6 +1326,113 @@ namespace Lumina
         VulkanTimerQuery->bStarted = false;
         VulkanTimerQuery->bResolved = false;
         VulkanTimerQuery->Time = 0.0f;
+    }
+
+    // Counter bits enabled on the pipeline-statistics pool. Keep these in
+    // lock-step with the read-back struct below — result size, slot count and
+    // field order are all derived from the bit order in this mask.
+    static constexpr VkQueryPipelineStatisticFlags GPipelineStatsFlags =
+        VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT       |
+        VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT     |
+        VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT     |
+        VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT          |
+        VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT           |
+        VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT   |
+        VK_QUERY_PIPELINE_STATISTIC_COMPUTE_SHADER_INVOCATIONS_BIT;
+
+    static constexpr uint32 GPipelineStatsCounterCount = 7;
+
+    FRHIPipelineStatsQueryRef FVulkanRenderContext::CreatePipelineStatsQuery()
+    {
+        if (PipelineStatsQueryPool == VK_NULL_HANDLE)
+        {
+            VkQueryPoolCreateInfo QueryPoolInfo = {};
+            QueryPoolInfo.sType                 = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+            QueryPoolInfo.queryCount            = PipelineStatsAllocator.GetCapacity();
+            QueryPoolInfo.queryType             = VK_QUERY_TYPE_PIPELINE_STATISTICS;
+            QueryPoolInfo.pipelineStatistics    = GPipelineStatsFlags;
+            VK_CHECK(vkCreateQueryPool(GetDevice()->GetDevice(), &QueryPoolInfo, VK_ALLOC_CALLBACK, &PipelineStatsQueryPool));
+        }
+
+        int32 Slot = PipelineStatsAllocator.Allocate();
+        if (Slot < 0)
+        {
+            LOG_ERROR("Insufficient pipeline-stats query pool space");
+            return nullptr;
+        }
+
+        auto Query = MakeRefCount<FVulkanPipelineStatsQuery>(PipelineStatsAllocator);
+        Query->QueryIndex = Slot;
+        return Query;
+    }
+
+    bool FVulkanRenderContext::PollPipelineStatsQuery(IPipelineStatsQuery* Query)
+    {
+        FVulkanPipelineStatsQuery* VulkanQuery = static_cast<FVulkanPipelineStatsQuery*>(Query);
+
+        if (!VulkanQuery->bStarted)
+        {
+            return false;
+        }
+
+        if (VulkanQuery->bResolved)
+        {
+            return true;
+        }
+
+        uint64 Results[GPipelineStatsCounterCount] = {};
+        VkResult Result = vkGetQueryPoolResults(
+            GetDevice()->GetDevice(),
+            PipelineStatsQueryPool,
+            VulkanQuery->QueryIndex, 1,
+            sizeof(Results), Results, sizeof(Results),
+            VK_QUERY_RESULT_64_BIT);
+
+        if (Result == VK_NOT_READY)
+        {
+            return false;
+        }
+
+        // Bit order here must match GPipelineStatsFlags — Vulkan writes one
+        // uint64 per enabled bit, in the bit's declared order.
+        VulkanQuery->Stats.InputAssemblyVertices     = Results[0];
+        VulkanQuery->Stats.InputAssemblyPrimitives   = Results[1];
+        VulkanQuery->Stats.VertexShaderInvocations   = Results[2];
+        VulkanQuery->Stats.ClippingInvocations       = Results[3];
+        VulkanQuery->Stats.ClippingPrimitives        = Results[4];
+        VulkanQuery->Stats.FragmentShaderInvocations = Results[5];
+        VulkanQuery->Stats.ComputeShaderInvocations  = Results[6];
+        VulkanQuery->bResolved = true;
+        return true;
+    }
+
+    FPipelineStats FVulkanRenderContext::GetPipelineStats(IPipelineStatsQuery* Query)
+    {
+        FVulkanPipelineStatsQuery* VulkanQuery = static_cast<FVulkanPipelineStatsQuery*>(Query);
+
+        if (!VulkanQuery->bStarted)
+        {
+            return {};
+        }
+
+        if (!VulkanQuery->bResolved)
+        {
+            while (!PollPipelineStatsQuery(Query))
+            {
+                // Spin-wait — callers that care about latency should Poll first.
+            }
+        }
+
+        VulkanQuery->bStarted = false;
+        return VulkanQuery->Stats;
+    }
+
+    void FVulkanRenderContext::ResetPipelineStatsQuery(IPipelineStatsQuery* Query)
+    {
+        FVulkanPipelineStatsQuery* VulkanQuery = static_cast<FVulkanPipelineStatsQuery*>(Query);
+        VulkanQuery->bStarted = false;
+        VulkanQuery->bResolved = false;
+        VulkanQuery->Stats = {};
     }
 
     void FVulkanRenderContext::AddCommandQueueWait(ECommandQueue Waiting, ECommandQueue WaitOn)

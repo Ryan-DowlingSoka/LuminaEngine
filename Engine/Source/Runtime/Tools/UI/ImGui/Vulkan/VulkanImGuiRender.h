@@ -28,6 +28,9 @@ namespace Lumina
             TAtomic<ETextureState> State = ETextureState::Empty;
             FRHIImageRef RHIImage;
             ImTextureRef ImTexture;
+            // Cached view used to create the descriptor set. If the image's view
+            // for this subresource ever changes, we rebuild the entry.
+            VkImageView CachedView = VK_NULL_HANDLE;
         };
         
         void Initialize() override;
@@ -75,7 +78,6 @@ namespace Lumina
         FGraphicsPipelineDesc BasePSODesc;
 
         FRHIGraphicsPipelineRef Pipeline;
-        THashMap<FRHIImage*, FRHIBindingSetRef> BindingsCache;
 
         TVector<ImDrawVert> VTXBuffer;
         TVector<ImDrawIdx> IDXBuffer;
@@ -84,7 +86,11 @@ namespace Lumina
         mutable FRecursiveMutex                 Mutex;
 
         THashMap<uint64, TUniquePtr<FEntry>>    Images;
-        
+
+        // Frame of the last stale-entry sweep; the sweep is amortized so we
+        // don't walk the entire map every frame.
+        uint64                                  LastCleanupFrame = 0;
+
         TPair<FName, FEntry*>                   SquareWhiteTexture;
         
         VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;

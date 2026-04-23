@@ -30,6 +30,18 @@ float3 MeshletDebugColor(uint Index)
     );
 }
 
+// Discrete heatmap used for the light-complexity visualization. Bands chosen
+// so the transition between step counts reads at a glance.
+float3 LightComplexityColor(uint Count)
+{
+    if (Count == 0u)  return float3(0.0, 0.0, 0.0);
+    if (Count <= 2u)  return float3(0.0, 0.25, 0.6);
+    if (Count <= 4u)  return float3(0.0, 0.6, 0.3);
+    if (Count <= 8u)  return float3(0.7, 0.8, 0.0);
+    if (Count <= 16u) return float3(1.0, 0.5, 0.0);
+    return float3(1.0, 0.0, 0.0);
+}
+
 struct PSOutput
 {   
     #ifdef TRANSLUCENT
@@ -137,15 +149,36 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
 
     if (LightFlags == LIGHT_FLAG_TYPE_DIRECTIONAL)
     {
-        // Bias is in NDC-z space [0,1]. Outer cascades have wider ortho
-        // ranges, so the same NDC bias maps to much larger world offsets;
-        // keep this value flat across cascades and let hardware slope-scale
-        // bias (set on the CSM raster state) handle per-cascade resolution.
-        return 0.0003 + 0.0008 * SlopeFactor;
+        // Constant safety bias only — most slope-driven acne is removed by the
+        // normal-offset push in NormalOffsetWS() below, so we don't need a
+        // large slope term here (which would cause peter-panning).
+        return 0.00015 + 0.0003 * SlopeFactor;
     }
 
     // Point/spot: CurrentDepth is DistToLight/Radius, linear [0,1].
     return 0.0015 + 0.004 * SlopeFactor;
+}
+
+// Normal-offset bias (Daniel Holbert, GDC 2011). Push the receiver position
+// along its surface normal by ~one shadow texel before projecting into shadow
+// space, scaled by (1 - NdotL) so it only kicks in at grazing angles where
+// shadow acne lives.
+
+// Returns the offset in world space; caller adds it to the fragment position.
+float3 NormalOffsetWS(float3 Normal, float3 LightDir, int CascadeIndex)
+{
+    float NdotL       = saturate(dot(Normal, LightDir));
+    float OffsetScale = saturate(1.0 - NdotL);
+
+    // World-space size of one shadow texel for this cascade. Cascade ortho
+    // width is 2 * Radius and resolution is GCSM_RESOLUTION.
+    float Radius    = uLightData[0].CascadeRadii[CascadeIndex];
+    float TexelSize = (2.0 * Radius) / float(GCSM_RESOLUTION);
+
+    // 1.4 ≈ sqrt(2) — push by one diagonal texel at maximum slope, which is
+    // the minimum that reliably clears self-intersection from depth-map
+    // quantization. Larger values cause visible peter-panning at contact.
+    return Normal * (TexelSize * 1.4 * OffsetScale);
 }
 
 // Tuning for PCSS (Percentage-Closer Soft Shadows).
@@ -168,10 +201,16 @@ static const float PCSS_BlockerDepthBias    = 0.0004;  // Bias for blocker class
 // PCSS-filtered sample of a single directional cascade. Returns 1.0 if the
 // fragment falls outside the cascade's projected UV / depth range so the
 // caller can decide to fall back to another cascade (or to fully-lit).
-float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float Bias, float2 ScreenPos, out bool Inside)
+float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float3 Normal, float3 LightDir, float Bias, float2 ScreenPos, out bool Inside)
 {
+    // Push the receiver off the surface along its normal before projecting,
+    // sized to one shadow texel of the chosen cascade. This is what removes
+    // the harsh self-shadow banding on detailed meshes — depth bias alone
+    // cannot fix it without trading acne for peter-panning.
+    float3 OffsetPos = FragmentPos + NormalOffsetWS(Normal, LightDir, CascadeIndex);
+
     float4x4 CascadeVP  = GetShadowViewProjection(Light.ShadowDataIndex, CascadeIndex);
-    float4 ShadowCoord  = mul(CascadeVP, float4(FragmentPos, 1.0));
+    float4 ShadowCoord  = mul(CascadeVP, float4(OffsetPos, 1.0));
     float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
     float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
     float  CurrentDepth = ProjCoords.z;
@@ -280,7 +319,7 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         float  Bias           = ComputeShadowBias(Light.Flags, Normal, LightDirToFrag, CascadeIndex);
 
         bool  InsideA;
-        float ShadowA = SampleDirectionalCascade(Light, CascadeIndex, FragmentPos, Bias, ScreenPos, InsideA);
+        float ShadowA = SampleDirectionalCascade(Light, CascadeIndex, FragmentPos, Normal, LightDirToFrag, Bias, ScreenPos, InsideA);
 
         // Blend into the next cascade near the split boundary so the
         // transition between sharp/near and blurry/far cascades is smooth
@@ -299,7 +338,7 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
             float BiasB   = ComputeShadowBias(Light.Flags, Normal, LightDirToFrag, CascadeIndex + 1);
 
             bool  InsideB;
-            float ShadowB = SampleDirectionalCascade(Light, CascadeIndex + 1, FragmentPos, BiasB, ScreenPos, InsideB);
+            float ShadowB = SampleDirectionalCascade(Light, CascadeIndex + 1, FragmentPos, Normal, LightDirToFrag, BiasB, ScreenPos, InsideB);
 
             if (InsideB)
             {
@@ -491,9 +530,62 @@ PSOutput FragmentMain(PSInput Input)
 
 #endif // UNLIT
 
-    if (uSceneData.CullData.DebugMode == DEBUG_MODE_MESHLETS)
+    uint DebugMode = uSceneData.CullData.DebugMode;
+    if (DebugMode != DEBUG_MODE_NONE)
     {
-        Color = MeshletDebugColor(Input.MeshletIndex);
+        switch (DebugMode)
+        {
+            case DEBUG_MODE_UNLIT:
+                Color = Albedo + Material.Emissive;
+                break;
+            case DEBUG_MODE_MESHLETS:
+                Color = MeshletDebugColor(Input.MeshletIndex);
+                break;
+            case DEBUG_MODE_WORLD_NORMAL:
+                Color = WorldNormal * 0.5 + 0.5;
+                break;
+            case DEBUG_MODE_SHADING_NORMAL:
+            {
+            #ifdef UNLIT
+                float3 DebugN = GetWorldNormal(WorldNormal, Input.UV, WorldPosition, Material.Normal);
+            #else
+                float3 DebugN = N;
+            #endif
+                Color = DebugN * 0.5 + 0.5;
+                break;
+            }
+            case DEBUG_MODE_BASE_COLOR:
+                Color = Albedo;
+                break;
+            case DEBUG_MODE_ROUGHNESS:
+                Color = float3(Roughness, Roughness, Roughness);
+                break;
+            case DEBUG_MODE_METALLIC:
+                Color = float3(Metallic, Metallic, Metallic);
+                break;
+            case DEBUG_MODE_AMBIENT_OCCLUSION:
+                Color = float3(AO, AO, AO);
+                break;
+            case DEBUG_MODE_EMISSIVE:
+                Color = Material.Emissive;
+                break;
+            case DEBUG_MODE_UV:
+                Color = float3(frac(UV0), 0.0);
+                break;
+            case DEBUG_MODE_LIGHT_COMPLEXITY:
+            {
+                float DbgZN       = GetNearPlane();
+                float DbgZF       = GetFarPlane();
+                uint3 DbgGrid     = uSceneData.GridSize.xyz;
+                uint2 DbgScreen   = uSceneData.ScreenSize.xy;
+                uint  DbgZTile    = uint((log(abs(ViewPosition.z) / DbgZN) * float(DbgGrid.z)) / log(DbgZF / DbgZN));
+                float2 DbgTile    = float2(DbgScreen) / float2(DbgGrid.xy);
+                uint3 DbgTileIdx  = uint3(uint2(divide(Input.Position.xy, DbgTile)), DbgZTile);
+                uint DbgIndex     = DbgTileIdx.x + (DbgTileIdx.y * DbgGrid.x) + (DbgTileIdx.z * DbgGrid.x * DbgGrid.y);
+                Color = LightComplexityColor(uClusters[DbgIndex].Count);
+                break;
+            }
+        }
     }
 
     PSOutput Output;

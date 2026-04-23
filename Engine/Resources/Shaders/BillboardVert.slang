@@ -48,9 +48,16 @@ VertexOutput VertexMain(uint VertexIndex : SV_VulkanVertexID, uint InstanceIndex
     float3 CameraRight_WS   = float3(ViewMatrix[0][0], ViewMatrix[0][1], ViewMatrix[0][2]);
     float3 CameraUp_WS      = -float3(ViewMatrix[1][0], ViewMatrix[1][1], ViewMatrix[1][2]);
 
+    const float BillboardGrowStart = 15.0;
+    const float MaxGrowth          = 12.0;
+
+    float Distance   = distance(GetCameraPosition(), Billboard.Position);
+    float GrowScale  = clamp(Distance / BillboardGrowStart, 1.0, MaxGrowth);
+    float SizeScaled = Billboard.Size * GrowScale;
+
     float3 WorldPos = Billboard.Position
-                    + CameraRight_WS * QuadPos.x * Billboard.Size
-                    + CameraUp_WS    * QuadPos.y * Billboard.Size;
+                    + CameraRight_WS * QuadPos.x * SizeScaled
+                    + CameraUp_WS    * QuadPos.y * SizeScaled;
 
     VertexOutput Output;
     Output.UV           = UVs[VertexIndex];

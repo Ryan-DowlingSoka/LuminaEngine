@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 #include "ScriptSystem.h"
+#include "Core/Profiler/CPUProfiler.h"
 #include "World/World.h"
 #include "world/entity/components/entitytags.h"
 #include "World/Entity/Components/ScriptComponent.h"
@@ -9,8 +10,9 @@ namespace Lumina
 {
     void SScriptSystem::Update(const FSystemContext& Context) noexcept
     {
-        LUMINA_PROFILE_SCOPE(); 
-        
+        LUMINA_PROFILE_SCOPE();
+        CPU_PROFILE_SCOPE_COLOR("Lua Scripts", FColor(0.95f, 0.70f, 0.25f));
+
         auto IterateGroup = [&](entt::entity, SScriptComponent& ScriptComponent)
         {
             if (const TSharedPtr<Lua::FScript>& Script = ScriptComponent.Script)

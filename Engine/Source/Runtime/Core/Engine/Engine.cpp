@@ -9,6 +9,7 @@
 #include "Core/Delegates/CoreDelegates.h"
 #include "Core/Module/ModuleManager.h"
 #include "Core/Object/ObjectIterator.h"
+#include "Core/Profiler/CPUProfiler.h"
 #include "Core/Profiler/Profile.h"
 #include "Core/Windows/Window.h"
 #include "encoder/basisu_enc.h"
@@ -19,6 +20,7 @@
 #include "Physics/Physics.h"
 #include "Platform/Filesystem/FileHelper.h"
 #include "Prism/WidgetDeclaration.h"
+#include "Renderer/GPUProfiler/GPUProfiler.h"
 #include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
 #include "Renderer/RenderResource.h"
@@ -139,7 +141,9 @@ namespace Lumina
         bCloseRequested = bApplicationWantsExit;
         
         UpdateContext.MarkFrameStart(glfwGetTime());
-        
+
+        FCPUProfiler::Get().BeginFrame();
+
         if (!Windowing::GetPrimaryWindowHandle()->IsWindowMinimized())
         {
             // Frame Start
@@ -232,18 +236,27 @@ namespace Lumina
                 PrimaryCommandList->Open();
                 ICommandList& CmdList = *PrimaryCommandList;
 
-                #if USING(WITH_EDITOR)
-                DeveloperToolUI->Update(UpdateContext);
-                #endif
+                // GPU scopes must close before GRenderManager->FrameEnd() — that call closes/submits
+                // the command list and advances the GPU profiler ring slot, after which EndScope is a no-op.
+                {
+                    GPU_PROFILE_SCOPE(&CmdList, "Frame");
 
-                GWorldManager->UpdateWorlds(UpdateContext);
-                GWorldManager->RenderWorlds(CmdList);
+                    #if USING(WITH_EDITOR)
+                    DeveloperToolUI->Update(UpdateContext);
+                    #endif
 
-                #if USING(WITH_EDITOR)
-                DeveloperToolUI->EndFrame(UpdateContext);
-                #endif
+                    {
+                        GPU_PROFILE_SCOPE_COLOR(&CmdList, "World Render", FColor(0.20f, 0.55f, 0.90f));
+                        GWorldManager->UpdateWorlds(UpdateContext);
+                        GWorldManager->RenderWorlds(CmdList);
+                    }
 
-                GApp->GetPrismApp().Tick((float)GEngine->GetDeltaTime());
+                    #if USING(WITH_EDITOR)
+                    DeveloperToolUI->EndFrame(UpdateContext);
+                    #endif
+
+                    GApp->GetPrismApp().Tick((float)GEngine->GetDeltaTime());
+                }
 
                 GRenderManager->FrameEnd(UpdateContext, CmdList);
 
@@ -254,6 +267,8 @@ namespace Lumina
             }
         }
         
+        FCPUProfiler::Get().EndFrame();
+
         UpdateContext.MarkFrameEnd(glfwGetTime());
 
         

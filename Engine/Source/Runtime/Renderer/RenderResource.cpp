@@ -12,6 +12,7 @@ namespace Lumina
     template class RUNTIME_API TRefCountPtr<IRHIResource>;
     template class RUNTIME_API TRefCountPtr<IEventQuery>;
     template class RUNTIME_API TRefCountPtr<ITimerQuery>;
+    template class RUNTIME_API TRefCountPtr<IPipelineStatsQuery>;
     template class RUNTIME_API TRefCountPtr<FRHIBuffer>;
     template class RUNTIME_API TRefCountPtr<FRHIImage>;
     template class RUNTIME_API TRefCountPtr<FRHISampler>;

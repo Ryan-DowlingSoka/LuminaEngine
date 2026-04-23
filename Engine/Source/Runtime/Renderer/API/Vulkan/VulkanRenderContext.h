@@ -90,7 +90,8 @@ namespace Lumina
         uint64                              LastSubmittedID = 0;
         uint64                              LastFinishedID = 0;
     
-        TList<TRefCountPtr<FTrackedCommandBuffer>> CommandBuffersInFlight;
+
+        TFixedVector<TRefCountPtr<FTrackedCommandBuffer>, 32> CommandBuffersInFlight;
         TConcurrentQueue<TRefCountPtr<FTrackedCommandBuffer>> CommandBufferPool;
     
         TFixedVector<VkSemaphore, 4>            WaitSemaphores;
@@ -175,6 +176,11 @@ namespace Lumina
         float GetTimerQueryTime(ITimerQuery* Query) override;
         void ResetTimerQuery(ITimerQuery* Query) override;
 
+        FRHIPipelineStatsQueryRef CreatePipelineStatsQuery() override;
+        bool PollPipelineStatsQuery(IPipelineStatsQuery* Query) override;
+        FPipelineStats GetPipelineStats(IPipelineStatsQuery* Query) override;
+        void ResetPipelineStatsQuery(IPipelineStatsQuery* Query) override;
+
         void AddCommandQueueWait(ECommandQueue Waiting, ECommandQueue WaitOn) override;
         
         //-------------------------------------------------------------------------------------
@@ -231,6 +237,7 @@ namespace Lumina
         RHI::ICrashTracker& GetCrashTracker() const override;
         
         NODISCARD VkQueryPool GetTimerQueryPool() const { return TimerQueryPool; }
+        NODISCARD VkQueryPool GetPipelineStatsQueryPool() const { return PipelineStatsQueryPool; }
 
         //-------------------------------------------------------------------------------------
 
@@ -243,8 +250,11 @@ namespace Lumina
     
     private:
 
-        FBitSetAllocator                                    TimerQueryAllocator;      
+        FBitSetAllocator                                    TimerQueryAllocator;
         VkQueryPool                                         TimerQueryPool = VK_NULL_HANDLE;
+
+        FBitSetAllocator                                    PipelineStatsAllocator;
+        VkQueryPool                                         PipelineStatsQueryPool = VK_NULL_HANDLE;
 
         FVulkanSwapchain*                                   Swapchain = nullptr;
         FVulkanDevice*                                      VulkanDevice = nullptr;

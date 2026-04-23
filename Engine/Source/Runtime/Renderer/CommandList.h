@@ -288,6 +288,9 @@ namespace Lumina
         
         virtual void BeginTimerQuery(ITimerQuery* Query) = 0;
         virtual void EndTimerQuery(ITimerQuery* Query) = 0;
+
+        virtual void BeginPipelineStatsQuery(IPipelineStatsQuery* Query) = 0;
+        virtual void EndPipelineStatsQuery(IPipelineStatsQuery* Query) = 0;
         
         /**
          * Begins a debug marker region for GPU profiling/debugging

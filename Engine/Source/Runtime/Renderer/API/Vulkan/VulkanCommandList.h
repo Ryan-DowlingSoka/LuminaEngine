@@ -93,6 +93,8 @@ namespace Lumina
 
         void BeginTimerQuery(ITimerQuery* Query) override;
         void EndTimerQuery(ITimerQuery* Query) override;
+        void BeginPipelineStatsQuery(IPipelineStatsQuery* Query) override;
+        void EndPipelineStatsQuery(IPipelineStatsQuery* Query) override;
         void AddMarker(const char* Name, const FColor& Color = FColor::Red) override;
         void PopMarker() override;
 

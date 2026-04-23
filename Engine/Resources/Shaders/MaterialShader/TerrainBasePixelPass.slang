@@ -103,18 +103,30 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
 
     if (LightFlags == LIGHT_FLAG_TYPE_DIRECTIONAL)
     {
-        float Bias = 0.0005 + 0.0015 * SlopeFactor;
-        Bias *= lerp(1.0, 4.0, float(CascadeIndex) / float(max(NUM_CASCADES - 1, 1)));
-        return Bias;
+        // Constant safety bias only — normal-offset (NormalOffsetWS below)
+        // handles the slope-driven acne, so a large slope term here would
+        // only buy peter-panning.
+        return 0.00015 + 0.0003 * SlopeFactor;
     }
 
     return 0.0015 + 0.004 * SlopeFactor;
 }
 
-float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float Bias, float2 ScreenPos, out bool Inside)
+// See BasePixelPass.slang::NormalOffsetWS for the full rationale.
+float3 NormalOffsetWS(float3 Normal, float3 LightDir, int CascadeIndex)
 {
+    float NdotL       = saturate(dot(Normal, LightDir));
+    float OffsetScale = saturate(1.0 - NdotL);
+    float Radius      = uLightData[0].CascadeRadii[CascadeIndex];
+    float TexelSize   = (2.0 * Radius) / float(GCSM_RESOLUTION);
+    return Normal * (TexelSize * 1.4 * OffsetScale);
+}
+
+float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float3 Normal, float3 LightDir, float Bias, float2 ScreenPos, out bool Inside)
+{
+    float3 OffsetPos    = FragmentPos + NormalOffsetWS(Normal, LightDir, CascadeIndex);
     float4x4 CascadeVP  = GetShadowViewProjection(Light.ShadowDataIndex, CascadeIndex);
-    float4 ShadowCoord  = mul(CascadeVP, float4(FragmentPos, 1.0));
+    float4 ShadowCoord  = mul(CascadeVP, float4(OffsetPos, 1.0));
     float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
     float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
     float  CurrentDepth = ProjCoords.z;
@@ -168,7 +180,7 @@ float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal
     float  Bias           = ComputeShadowBias(Light.Flags, Normal, LightDirToFrag, CascadeIndex);
 
     bool  InsideA;
-    float ShadowA = SampleDirectionalCascade(Light, CascadeIndex, FragmentPos, Bias, ScreenPos, InsideA);
+    float ShadowA = SampleDirectionalCascade(Light, CascadeIndex, FragmentPos, Normal, LightDirToFrag, Bias, ScreenPos, InsideA);
 
     float CascadeNear = (CascadeIndex == 0)
         ? 0.0
@@ -184,7 +196,7 @@ float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal
         float BiasB   = ComputeShadowBias(Light.Flags, Normal, LightDirToFrag, CascadeIndex + 1);
 
         bool  InsideB;
-        float ShadowB = SampleDirectionalCascade(Light, CascadeIndex + 1, FragmentPos, BiasB, ScreenPos, InsideB);
+        float ShadowB = SampleDirectionalCascade(Light, CascadeIndex + 1, FragmentPos, Normal, LightDirToFrag, BiasB, ScreenPos, InsideB);
 
         if (InsideB)
         {

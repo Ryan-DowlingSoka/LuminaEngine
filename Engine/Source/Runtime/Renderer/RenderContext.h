@@ -75,6 +75,11 @@ namespace Lumina
         NODISCARD virtual float GetTimerQueryTime(ITimerQuery* Query) = 0;
         virtual void ResetTimerQuery(ITimerQuery* Query) = 0;
 
+        NODISCARD virtual FRHIPipelineStatsQueryRef CreatePipelineStatsQuery() = 0;
+        NODISCARD virtual bool PollPipelineStatsQuery(IPipelineStatsQuery* Query) = 0;
+        NODISCARD virtual FPipelineStats GetPipelineStats(IPipelineStatsQuery* Query) = 0;
+        virtual void ResetPipelineStatsQuery(IPipelineStatsQuery* Query) = 0;
+
         virtual void AddCommandQueueWait(ECommandQueue Waiting, ECommandQueue WaitOn) = 0;
         
         //-------------------------------------------------------------------------------------

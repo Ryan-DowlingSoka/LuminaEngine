@@ -18,6 +18,8 @@ namespace Lumina
     class FRendererInfoEditorTool;
     class FPrimitiveDrawManager;
     class FConsoleLogEditorTool;
+    class FGPUProfilerEditorTool;
+    class FCPUProfilerEditorTool;
     class FWorldEditorTool;
     class FEditorTool;
 }
@@ -102,6 +104,8 @@ namespace Lumina
 
         FConsoleLogEditorTool*                          ConsoleLogTool = nullptr;
         FContentBrowserEditorTool*                      ContentBrowser = nullptr;
+        FGPUProfilerEditorTool*                         GPUProfilerTool = nullptr;
+        FCPUProfilerEditorTool*                         CPUProfilerTool = nullptr;
         TVector<FEditorTool*>                           EditorTools;
         FEditorTool*                                    LastActiveTool = nullptr;
         FString                                         FocusTargetWindowName; // If this is set we need to switch focus to this window

@@ -383,10 +383,10 @@ namespace Lumina
                         ImGui::PushID(Skeleton.get());
                         
                         ImGui::TableNextColumn();
-                        bool bImport = true;//Skeleton->bShouldImport;
+                        bool bImport = Skeleton->bShouldImport;
                         if (ImGui::Checkbox("##import", &bImport))
                         {
-                            //Skeleton->bShouldImport = bImport;
+                            Skeleton->bShouldImport = bImport;
                         }
                         
                         ImGui::TableNextColumn();
@@ -577,68 +577,191 @@ namespace Lumina
     
     void CMeshFactory::TryImport(const FFixedString& RawPath, const FFixedString& DestinationPath, const Import::FImportSettings* Settings)
     {
-        uint32 Counter = 0;
-        
         using namespace Import::Mesh;
 
         const FMeshImportData& ImportData = Settings->As<FMeshImportData>();
         
-        TObjectPtr<CSkeleton> MaybeSkeleton;
-        
-        if (!ImportData.Skeletons.empty())
+        FFixedString DestinationDir;
+        FFixedString BaseName;
+        const size_t LastSlashPos = DestinationPath.find_last_of('/');
+        if (LastSlashPos == FFixedString::npos)
         {
-            uint32 WorkSize = (uint32)ImportData.Skeletons.size();
-            Task::ParallelFor(WorkSize, [&](uint32 Index)
-            {
-                TUniquePtr<FSkeletonResource>& Skeleton = const_cast<TUniquePtr<FSkeletonResource>&>(ImportData.Skeletons[Index]);
-                    
-                size_t Pos = DestinationPath.find_last_of('/');
-                FFixedString SkeletonPath = DestinationPath.substr(0, Pos + 1).append_convert(Skeleton->Name.ToString());
-                
-                CSkeleton* NewSkeleton = CreateNewOf<CSkeleton>(SkeletonPath);
-                NewSkeleton->SetFlag(OF_NeedsPostLoad);
-                
-                NewSkeleton->SkeletonResource = Move(Skeleton);
-                    
-                CPackage* NewPackage = NewSkeleton->GetPackage();
-                CPackage::SavePackage(NewPackage, NewPackage->GetPackagePath());
-                FAssetRegistry::Get().AssetCreated(NewSkeleton);
-                MaybeSkeleton = NewSkeleton;
-            });
+            BaseName = DestinationPath;
         }
-        
-        if (!ImportData.Animations.empty())
+        else
         {
-            uint32 WorkSize = (uint32)ImportData.Animations.size();
-            Task::ParallelFor(WorkSize, [&](uint32 Index)
-            {
-                TUniquePtr<FAnimationResource>& Clip = const_cast<TUniquePtr<FAnimationResource>&>(ImportData.Animations[Index]);
-                    
-                size_t Pos = DestinationPath.find_last_of('/');
-                FFixedString AnimationPath = DestinationPath.substr(0, Pos + 1).append_convert(Clip->Name.ToString());
-                    
-                CAnimation* NewAnimation = CreateNewOf<CAnimation>(AnimationPath);
-                NewAnimation->SetFlag(OF_NeedsPostLoad);
+            DestinationDir = DestinationPath.substr(0, LastSlashPos + 1);
+            BaseName       = DestinationPath.substr(LastSlashPos + 1, FFixedString::npos);
+        }
+        // Strip the source-file extension (.fbx/.gltf/...) from BaseName so
+        // the resulting asset paths don't end up with the wrong extension.
+        const size_t DotPos = BaseName.find_last_of('.');
+        if (DotPos != FFixedString::npos)
+        {
+            BaseName = BaseName.substr(0, DotPos);
+        }
 
-                NewAnimation->AnimationResource = Move(Clip);
-                NewAnimation->Skeleton = MaybeSkeleton;
-                    
-                CPackage* NewPackage = NewAnimation->GetPackage();
-                CPackage::SavePackage(NewPackage, NewPackage->GetPackagePath());
-                FAssetRegistry::Get().AssetCreated(NewAnimation);
-                NewAnimation->ForceDestroyNow();
-            });
+        auto BuildPath = [&](FStringView Suffix) -> FFixedString
+        {
+            FFixedString Path = DestinationDir;
+            Path.append(BaseName);
+            if (!Suffix.empty())
+            {
+                Path.append("_");
+                Path.append_convert(Suffix.data(), Suffix.length());
+            }
+            return Path;
+        };
+
+        // Avoid clobbering existing assets when the user is reimporting next
+        // to a previous import, or when sub-asset names happen to collide.
+        auto EnsureUniquePath = [](FFixedString Path) -> FFixedString
+        {
+            if (FindObject<CPackage>(Path) == nullptr)
+            {
+                return Path;
+            }
+            for (uint32 N = 1; N < 10000; ++N)
+            {
+                FFixedString Candidate = Path;
+                Candidate.append("_");
+                Candidate.append_convert(eastl::to_string(N));
+                if (FindObject<CPackage>(Candidate) == nullptr)
+                {
+                    return Candidate;
+                }
+            }
+            return Path;
+        };
+
+        // ---- Phase 1: create CObjects in memory and wire cross-references.
+        //
+        // Everything used to run inside Task::ParallelFor, which:
+        //   - raced on the shared MaybeSkeleton write,
+        //   - called CreateNewOf / SavePackage / FAssetRegistry from worker
+        //     threads despite none of those being documented as thread-safe,
+        //   - destroyed the freshly-imported mesh before the skeleton's
+        //     PreviewMesh reference to it was ever serialised.
+        // The work is sequential now; imports are rare and the bottleneck is
+        // disk I/O / parsing inside the format-specific importers, not this
+        // top-level orchestration.
+
+        TVector<CObject*> CreatedObjects;
+        CreatedObjects.reserve(ImportData.Skeletons.size() + ImportData.Resources.size() + ImportData.Animations.size());
+
+        TObjectPtr<CSkeleton> PrimarySkeleton;
+        const bool bMultipleSkeletons = ImportData.Skeletons.size() > 1;
+
+        for (size_t i = 0; i < ImportData.Skeletons.size(); ++i)
+        {
+            TUniquePtr<FSkeletonResource>& SkeletonRes = const_cast<TUniquePtr<FSkeletonResource>&>(ImportData.Skeletons[i]);
+            if (!SkeletonRes || !SkeletonRes->bShouldImport)
+            {
+                continue;
+            }
+
+            // Multiple skeletons in one source file is rare but legal (e.g.
+            // an FBX with several rigs); disambiguate by internal name.
+            FFixedString SkeletonPath = bMultipleSkeletons
+                ? BuildPath(SkeletonRes->Name.ToString())
+                : BuildPath("Skeleton");
+            SkeletonPath = EnsureUniquePath(SkeletonPath);
+
+            CSkeleton* NewSkeleton = CreateNewOf<CSkeleton>(SkeletonPath);
+            NewSkeleton->SetFlag(OF_NeedsPostLoad);
+            NewSkeleton->SkeletonResource = Move(SkeletonRes);
+
+            if (!PrimarySkeleton)
+            {
+                PrimarySkeleton = NewSkeleton;
+            }
+            CreatedObjects.push_back(NewSkeleton);
         }
-        
+
+        const bool bMultipleMeshes = ImportData.Resources.size() > 1;
+        for (size_t i = 0; i < ImportData.Resources.size(); ++i)
+        {
+            TUniquePtr<FMeshResource>& MeshResource = const_cast<TUniquePtr<FMeshResource>&>(ImportData.Resources[i]);
+            if (!MeshResource)
+            {
+                continue;
+            }
+
+            // Single mesh: use the user's name verbatim. Multiple meshes:
+            // suffix with the source-mesh internal name to avoid collisions.
+            FFixedString MeshPath = bMultipleMeshes
+                ? BuildPath(MeshResource->Name.ToString())
+                : BuildPath({});
+            MeshPath = EnsureUniquePath(MeshPath);
+
+            CMesh* NewMesh = nullptr;
+            if (!MeshResource->bSkinnedMesh)
+            {
+                NewMesh = CreateNewOf<CStaticMesh>(MeshPath);
+            }
+            else
+            {
+                CSkeletalMesh* NewSkeletalMesh = CreateNewOf<CSkeletalMesh>(MeshPath);
+                if (PrimarySkeleton)
+                {
+                    NewSkeletalMesh->Skeleton = PrimarySkeleton;
+                    if (!PrimarySkeleton->PreviewMesh)
+                    {
+                        PrimarySkeleton->PreviewMesh = NewSkeletalMesh;
+                    }
+                }
+                NewMesh = NewSkeletalMesh;
+            }
+
+            NewMesh->SetFlag(OF_NeedsPostLoad);
+
+            // Pre-allocate one material slot per geometry surface. Slots are
+            // left null on purpose: ForwardRenderScene falls back to
+            // CMaterial::GetDefaultMaterial() for null entries, so the mesh
+            // renders out of the box, and the editor inspector shows the
+            // slots so the user can drop a real material onto each.
+            NewMesh->Materials.clear();
+            NewMesh->Materials.resize(MeshResource->GeometrySurfaces.size());
+
+            NewMesh->MeshResources = Move(MeshResource);
+            CreatedObjects.push_back(NewMesh);
+        }
+
+        const bool bMultipleAnims = ImportData.Animations.size() > 1;
+        for (size_t i = 0; i < ImportData.Animations.size(); ++i)
+        {
+            TUniquePtr<FAnimationResource>& Clip = const_cast<TUniquePtr<FAnimationResource>&>(ImportData.Animations[i]);
+            if (!Clip)
+            {
+                continue;
+            }
+
+            FFixedString AnimPath = bMultipleAnims
+                ? BuildPath(Clip->Name.ToString())
+                : BuildPath("Animation");
+            AnimPath = EnsureUniquePath(AnimPath);
+
+            CAnimation* NewAnimation = CreateNewOf<CAnimation>(AnimPath);
+            NewAnimation->SetFlag(OF_NeedsPostLoad);
+            NewAnimation->AnimationResource = Move(Clip);
+            NewAnimation->Skeleton = PrimarySkeleton;
+
+            CreatedObjects.push_back(NewAnimation);
+        }
+
+        // ---- Phase 2: textures.
+        //
+        // Run before the save phase so a texture asset is on disk when a
+        // future material extraction step (Group B) hooks them into material
+        // instances. Sequential to dodge the same thread-safety concerns as
+        // the rest of the pipeline.
         if (!ImportData.Textures.empty())
         {
             TVector<FMeshImportImage> Images(ImportData.Textures.begin(), ImportData.Textures.end());
-            uint32 WorkSize = (uint32)Images.size();
-            Task::ParallelFor(WorkSize, [&](uint32 Index)
+            CTextureFactory* TextureFactory = CTextureFactory::StaticClass()->GetDefaultObject<CTextureFactory>();
+
+            for (const FMeshImportImage& Texture : Images)
             {
-                const FMeshImportImage& Texture = Images[Index];
-                CTextureFactory* TextureFactory = CTextureFactory::StaticClass()->GetDefaultObject<CTextureFactory>();
-                
                 if (Texture.IsBytes())
                 {
                     FFixedString QualifiedPath = Paths::Combine(Paths::Parent(DestinationPath), Texture.RelativePath);
@@ -650,64 +773,42 @@ namespace Lumina
                 }
                 else
                 {
-                
                     FStringView ParentPath = VFS::Parent(RawPath, true);
                     FFixedString TexturePath;
                     TexturePath.append_convert(ParentPath.data(), ParentPath.length()).append("/").append_convert(Texture.RelativePath);
                     FStringView TextureFileName = VFS::FileName(TexturePath, true);
-                    
-                    size_t LastSlashPos = DestinationPath.find_last_of('/');
-                    FFixedString QualifiedPath = DestinationPath.substr(0, LastSlashPos + 1).append_convert(TextureFileName.data(), TextureFileName.length());
-                    
+
+                    FFixedString QualifiedPath = DestinationDir;
+                    QualifiedPath.append_convert(TextureFileName.data(), TextureFileName.length());
+
                     if (!FindObject<CPackage>(QualifiedPath))
                     {
                         CPackage::AddPackageExt(QualifiedPath);
                         TextureFactory->Import(TexturePath, QualifiedPath, nullptr);
-                    }   
+                    }
                 }
-            });
+            }
         }
-        
-        if (!ImportData.Resources.empty())
+
+        // ---- Phase 3: save and register every CObject we built.
+        //
+        // Saving happens while every cross-referenced object is still alive
+        // (skeleton, preview mesh, animation -> skeleton). The previous code
+        // tore down the skeletal mesh between assignment and the skeleton's
+        // second save, so PreviewMesh on disk was always dangling.
+        for (CObject* Obj : CreatedObjects)
         {
-            uint32 WorkSize = (uint32)ImportData.Resources.size();
-            Task::ParallelFor(WorkSize, [&](uint32 Index)
-            {
-                TUniquePtr<FMeshResource>& MeshResource = const_cast<TUniquePtr<FMeshResource>&>(ImportData.Resources[Index]);
-                size_t LastSlashPos = DestinationPath.find_last_of('/');
-                FFixedString QualifiedPath = DestinationPath.substr(0, LastSlashPos + 1).append_convert(MeshResource->Name.ToString());
-                
-                CMesh* NewMesh = nullptr;
-            
-                if (!MeshResource->bSkinnedMesh)
-                {
-                    NewMesh = CreateNewOf<CStaticMesh>(QualifiedPath);
-                }
-                else
-                {
-                    CSkeletalMesh* NewSkeletalMesh = CreateNewOf<CSkeletalMesh>(QualifiedPath);
-                    NewSkeletalMesh->Skeleton = MaybeSkeleton;
-                    MaybeSkeleton->PreviewMesh = NewSkeletalMesh;
-                    NewMesh = NewSkeletalMesh;
-                }
-            
-                NewMesh->SetFlag(OF_NeedsPostLoad);
-                NewMesh->MeshResources = Move(MeshResource);
-            
-                CPackage* NewPackage = NewMesh->GetPackage();
-                CPackage::SavePackage(NewPackage, NewPackage->GetPackagePath());
-                FAssetRegistry::Get().AssetCreated(NewMesh);
-            
-                NewMesh->ForceDestroyNow();
-            
-                Counter++;
-            });
+            CPackage* Package = Obj->GetPackage();
+            CPackage::SavePackage(Package, Package->GetPackagePath());
+            FAssetRegistry::Get().AssetCreated(Obj);
         }
-        
-        if (MaybeSkeleton)
+
+        // ---- Phase 4: tear down. The on-disk packages are the source of
+        // truth from here; any consumer that needs these assets at runtime
+        // will re-load them through the registry.
+        for (auto It = CreatedObjects.rbegin(); It != CreatedObjects.rend(); ++It)
         {
-            CPackage::SavePackage(MaybeSkeleton->GetPackage(), MaybeSkeleton->GetPackage()->GetPackagePath());
-            MaybeSkeleton->ForceDestroyNow();
+            (*It)->ForceDestroyNow();
         }
     }
 }

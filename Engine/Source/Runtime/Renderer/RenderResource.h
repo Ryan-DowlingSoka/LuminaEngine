@@ -94,6 +94,7 @@ enum ERHIResourceType : uint8
 	RRT_DescriptorTable,
 	RTT_EventQuery,
 	RTT_TimerQuery,
+	RTT_PipelineStatsQuery,
 
 	RRT_Num
 };
@@ -371,8 +372,37 @@ namespace Lumina
 	class IEventQuery : public IRHIResource { };
 	class ITimerQuery : public IRHIResource { };
 
+	// Hardware pipeline-statistics counters collected between BeginPipelineStats
+	// and EndPipelineStats on a command list. Values reflect exactly what the
+	// GPU saw — no CPU-side approximation. A missing feature (e.g. a counter
+	// the driver doesn't expose) reads back as 0.
+	struct FPipelineStats
+	{
+		uint64 InputAssemblyVertices    = 0;
+		uint64 InputAssemblyPrimitives  = 0;
+		uint64 VertexShaderInvocations  = 0;
+		uint64 ClippingInvocations      = 0;
+		uint64 ClippingPrimitives       = 0;
+		uint64 FragmentShaderInvocations= 0;
+		uint64 ComputeShaderInvocations = 0;
+
+		void operator += (const FPipelineStats& Other)
+		{
+			InputAssemblyVertices     += Other.InputAssemblyVertices;
+			InputAssemblyPrimitives   += Other.InputAssemblyPrimitives;
+			VertexShaderInvocations   += Other.VertexShaderInvocations;
+			ClippingInvocations       += Other.ClippingInvocations;
+			ClippingPrimitives        += Other.ClippingPrimitives;
+			FragmentShaderInvocations += Other.FragmentShaderInvocations;
+			ComputeShaderInvocations  += Other.ComputeShaderInvocations;
+		}
+	};
+
+	class IPipelineStatsQuery : public IRHIResource { };
+
 	using FRHIEventQueryRef         = TRefCountPtr<IEventQuery>;
 	using FRHITimerQueryRef			= TRefCountPtr<ITimerQuery>;
+	using FRHIPipelineStatsQueryRef = TRefCountPtr<IPipelineStatsQuery>;
 	using FRHIResourceRef           = TRefCountPtr<IRHIResource>;
 	using FRHIBufferRef             = TRefCountPtr<FRHIBuffer>;
 	using FRHIImageRef              = TRefCountPtr<FRHIImage>;

@@ -13,7 +13,8 @@ static const int SSAO_KERNEL_SIZE = 32;
 #define LIGHT_INDEX_MASK 0x1FFFu
 #define LIGHTS_PER_UINT  2
 #define LIGHTS_PER_CLUSTER 100
-#define SHADOW_SAMPLE_COUNT 8
+#define SHADOW_SAMPLE_COUNT 16
+#define GCSM_RESOLUTION     4096
 
 #define INDEX_NONE -1
 
@@ -343,6 +344,7 @@ struct FLightData
     float3 SunDirection;
     uint   bHasSun;
     float4 CascadeSplits;
+    float4 CascadeRadii;
     float4 AmbientLight;
     FLight Lights[MAX_LIGHTS];
     FLightShadowData Shadows[MAX_SHADOWS];
@@ -366,11 +368,6 @@ struct FCullData
     FFrustum Frustum;
     FFrustum ShadowFrustum;
     FFrustum CascadeFrustum[NUM_CASCADES];
-    float4x4 View;
-    float    P00;
-    float    P11;
-    float    zNear;
-    float    zFar;
     uint     bFrustumCull;
     uint     bOcclusionCull;
     uint     InstanceNum;
@@ -383,11 +380,22 @@ struct FCullData
     // Debug visualization mode. Values mirror Lumina::ERenderSceneDebugFlags —
     // keep DEBUG_MODE_* constants below in sync with the C++ enum.
     uint     DebugMode;
+    uint     _Pad0[2];
 };
 
 // Debug visualization modes. Must match Lumina::ERenderSceneDebugFlags.
-#define DEBUG_MODE_NONE     0u
-#define DEBUG_MODE_MESHLETS 1u
+#define DEBUG_MODE_NONE                 0u
+#define DEBUG_MODE_UNLIT                1u
+#define DEBUG_MODE_MESHLETS             2u
+#define DEBUG_MODE_WORLD_NORMAL         3u
+#define DEBUG_MODE_SHADING_NORMAL       4u
+#define DEBUG_MODE_BASE_COLOR           5u
+#define DEBUG_MODE_ROUGHNESS            6u
+#define DEBUG_MODE_METALLIC             7u
+#define DEBUG_MODE_AMBIENT_OCCLUSION    8u
+#define DEBUG_MODE_EMISSIVE             9u
+#define DEBUG_MODE_UV                   10u
+#define DEBUG_MODE_LIGHT_COMPLEXITY     11u
 
 struct FSceneGlobalData
 {

@@ -136,11 +136,11 @@ namespace Lumina
 		TUniquePtr<FEntry> Entry	= MakeUnique<FEntry>();
 		SquareWhiteTexture.first	= SquareTexturePath;
 		SquareWhiteTexture.second	= Entry.get();
-		Entry->Name					= SquareTexturePath; 
+		Entry->Name					= SquareTexturePath;
 		Entry->RHIImage				= RHI;
 		Entry->ImTexture			= ImTex;
 		Entry->State				= ETextureState::Ready;
-        
+
 		Images.emplace(SquareTexturePath, Move(Entry));
 		
     }
@@ -216,33 +216,44 @@ namespace Lumina
 			CmdList.EnableAutomaticBarriers();
 		}
 
-        
+
+		// Amortize the stale-entry sweep. With a content browser open, Images
+		// can easily hold dozens of thumbnails; walking the whole map every
+		// frame burns measurable CPU for a tiny payoff. Once a second is plenty
+		// (entries keep FRHIImage refs alive, so this only affects reclamation
+		// latency, not correctness).
+		constexpr uint64 CleanupIntervalFrames = 60;
+		constexpr uint64 UnusedFrameThreshold = 60;
+
 		uint64 CurrentFrame = GEngine->GetUpdateContext().GetFrame();
-		TFixedVector<uint64, 1> ToDelete;
-
-		FRecursiveScopeLock Lock(Mutex);
-		for (auto& KVP : Images)
+		if (CurrentFrame - LastCleanupFrame >= CleanupIntervalFrames)
 		{
-			FEntry* Entry = KVP.second.get();
+			LastCleanupFrame = CurrentFrame;
 
-			if (Entry == SquareWhiteTexture.second)
+			TFixedVector<uint64, 8> ToDelete;
+
+			FRecursiveScopeLock Lock(Mutex);
+			for (auto& KVP : Images)
 			{
-				continue;
+				FEntry* Entry = KVP.second.get();
+
+				if (Entry == SquareWhiteTexture.second)
+				{
+					continue;
+				}
+
+				uint64 LastUse = Entry->LastUseFrame.load(std::memory_order_acquire);
+				if (CurrentFrame - LastUse > UnusedFrameThreshold)
+				{
+					ToDelete.push_back(KVP.first);
+				}
 			}
 
-			uint64 LastUse = Entry->LastUseFrame.load(std::memory_order_acquire);
-			if (CurrentFrame - LastUse > 3)
+			for (uint64 Delete : ToDelete)
 			{
-				ToDelete.push_back(KVP.first);
+				DestroyImTexture(Delete);
 			}
 		}
-		
-		for (uint64 Delete : ToDelete)
-		{
-			DestroyImTexture(Delete);
-		}
-		
-		ToDelete.clear();
     }
 
 	void FVulkanImGuiRender::DrawRenderDebugInformationWindow(bool* bOpen, const FUpdateContext&)
@@ -362,24 +373,35 @@ namespace Lumina
     		return 0;
     	}
 
+		// Fast key: (FRHIImage*, subresource). Avoids the per-frame
+		// GetSubresourceView call (which takes its own mutex + cache walk) on
+		// the warm path. We only resolve the VkImageView on cache miss, or if
+		// the image's view for this subresource has changed under us.
+		uint64 Key = (uintptr_t)Image;
+		Hash::HashCombine(Key, Subresources.BaseMipLevel);
+		Hash::HashCombine(Key, Subresources.NumMipLevels);
+		Hash::HashCombine(Key, Subresources.BaseArraySlice);
+		Hash::HashCombine(Key, Subresources.NumArraySlices);
+
+		const uint64 Frame = GEngine->GetUpdateContext().GetFrame();
+
 		FRecursiveScopeLock Lock(Mutex);
-		ReferencedImages.push_back(Image);
-		
+
+		auto It = Images.find(Key);
+		if (It != Images.end())
+		{
+			FEntry* Entry = It->second.get();
+			Entry->LastUseFrame.store(Frame, std::memory_order_relaxed);
+			ReferencedImages.push_back(Entry->RHIImage);
+			return Entry->ImTexture.GetTexID();
+		}
+
+		// Miss: resolve the view and register a descriptor set.
 		FVulkanImage::ESubresourceViewType ViewType = GetTextureViewType(EFormat::UNKNOWN, Image->GetDescription().Format);
 		VkImageView View = static_cast<FVulkanImage*>(Image)->GetSubresourceView(Subresources, Image->GetDescription().Dimension, Image->GetDescription().Format, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, ViewType).View;
 
-		uintptr_t HashPtr = (uintptr_t)View;
-		
-    	auto It = Images.find(HashPtr);
-		
-    	if (It != Images.end())
-    	{
-    		It->second->LastUseFrame = GEngine->GetUpdateContext().GetFrame();
-    		return It->second->ImTexture.GetTexID();
-    	}
-
-    	FRHISamplerRef Sampler = TStaticRHISampler<>::GetRHI();
-    	VkSampler VulkanSampler = Sampler->GetAPI<VkSampler>();
+		FRHISamplerRef Sampler = TStaticRHISampler<>::GetRHI();
+		VkSampler VulkanSampler = Sampler->GetAPI<VkSampler>();
 
 		ImTextureID NewTextureID = (ImTextureID)ImGui_ImplVulkan_AddTexture(VulkanSampler, View, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
@@ -387,11 +409,13 @@ namespace Lumina
 		NewEntry->State				= ETextureState::Ready;
 		NewEntry->RHIImage			= Image;
 		NewEntry->ImTexture._TexID	= NewTextureID;
-		NewEntry->LastUseFrame.exchange(GEngine->GetUpdateContext().GetFrame(), std::memory_order_relaxed);
+		NewEntry->CachedView		= View;
+		NewEntry->LastUseFrame.store(Frame, std::memory_order_relaxed);
 
-    	Images.insert_or_assign(HashPtr, Move(NewEntry));
+		ReferencedImages.push_back(NewEntry->RHIImage);
+		Images.insert_or_assign(Key, Move(NewEntry));
 
-    	return NewTextureID;
+		return NewTextureID;
     }
 
     void FVulkanImGuiRender::DestroyImTexture(uint64 Hash)

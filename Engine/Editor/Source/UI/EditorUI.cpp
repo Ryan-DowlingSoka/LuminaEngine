@@ -72,6 +72,8 @@
 #include "Tools/ConsoleLogEditorTool.h"
 #include "Tools/ContentBrowserEditorTool.h"
 #include "Tools/EditorTool.h"
+#include "Tools/CPUProfilerEditorTool.h"
+#include "Tools/GPUProfilerEditorTool.h"
 #include "Tools/EditorToolModal.h"
 #include "Tools/GamePreviewTool.h"
 #include "Tools/ToolFlags.h"
@@ -154,6 +156,8 @@ namespace Lumina
         WorldEditorTool = CreateTool<FWorldEditorTool>(this, NewObject<CWorld>(nullptr, "Transient World", FGuid::New(), OF_Transient));
         ConsoleLogTool = CreateTool<FConsoleLogEditorTool>(this);
         ContentBrowser = CreateTool<FContentBrowserEditorTool>(this);
+        GPUProfilerTool = CreateTool<FGPUProfilerEditorTool>(this);
+        CPUProfilerTool = CreateTool<FCPUProfilerEditorTool>(this);
         
         if (GEditorEngine->GetProjectName().empty())
         {
@@ -171,6 +175,8 @@ namespace Lumina
         
         WorldEditorTool = nullptr;
         ConsoleLogTool = nullptr;
+        GPUProfilerTool = nullptr;
+        CPUProfilerTool = nullptr;
         ImGui::SetCurrentContext(nullptr);
     }
 
@@ -2395,6 +2401,16 @@ namespace Lumina
         ImGui::MenuItem(LE_ICON_LANGUAGE_LUA " Scripts Info", nullptr, &bShowScriptsDebug);
         
         ImGui::MenuItem(LE_ICON_CHART_LINE " Renderer Info", nullptr, &bShowRenderDebug);
+
+        if (ImGui::MenuItem(LE_ICON_CHART_TIMELINE " GPU Profiler", nullptr, false))
+        {
+            FocusTargetWindowName = "GPU Profiler";
+        }
+
+        if (ImGui::MenuItem(LE_ICON_CHART_BAR " CPU Profiler", nullptr, false))
+        {
+            FocusTargetWindowName = "CPU Profiler";
+        }
         
         if (ImGui::MenuItem(LE_ICON_MEMORY " Memory Info", nullptr, nullptr))
         {

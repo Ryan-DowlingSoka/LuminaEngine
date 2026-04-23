@@ -67,16 +67,16 @@ float SphereFrontDepth(float FrontZ, float ZNear, float ZFar)
 // Returns true if the sphere is fully occluded and can be skipped.
 bool IsHiZOccluded(float3 CenterWS, float RadiusWS)
 {
-    float  ZNear = uSceneData.CullData.zNear;
-    float  ZFar  = uSceneData.CullData.zFar;
+    float  ZNear = uSceneData.NearPlane;
+    float  ZFar  = uSceneData.FarPlane;
 
-    float3 ViewCenter = mul(uSceneData.CullData.View, float4(CenterWS, 1.0)).xyz;
+    float3 ViewCenter = mul(uSceneData.CameraView.CameraView, float4(CenterWS, 1.0)).xyz;
     float  ViewRadius = RadiusWS * 1.02; // Tiny dilation for conservatism.
 
     float4 ClipAABB;
     if (!ProjectSphereClip(ViewCenter, ViewRadius, ZNear,
-                           uSceneData.CullData.P00,
-                           uSceneData.CullData.P11,
+                           uSceneData.CameraView.CameraProjection[0][0],
+                           uSceneData.CameraView.CameraProjection[1][1],
                            ClipAABB))
     {
         // Sphere straddles the near plane: treat as visible.

@@ -11,6 +11,8 @@
 namespace Lumina::Lua
 {
     enum class EType : uint8;
+    
+    
     /**
      * A reference to a lua object.
      *
@@ -296,8 +298,6 @@ namespace Lumina::Lua
     template <typename ... TArgs>
     FRef FRef::Invoke(TArgs&&... Args)
     {
-        LUMINA_PROFILE_SCOPE();
-        
         Push();
         DEBUG_ASSERT(lua_type(State, -1) == LUA_TFUNCTION);
         

@@ -113,6 +113,12 @@ namespace Lumina
         void SetWorldPlayInEditor(bool bShouldPlay);
         void SetWorldNewSimulate(bool bShouldSimulate);
 
+        /** Rebind OnEntityCreated/OnEntityDestroyed observers to the current World's registry. */
+        void RebindRegistryObservers();
+
+        /** Accept a content-browser drag payload in the current scope and, if it's a prefab, instantiate it under DropTarget. */
+        void AcceptContentBrowserPrefabPayload(entt::entity DropTarget);
+
         void DrawAddToEntityOrWorldPopup(entt::entity Entity = entt::null);
         void DrawFilterOptions();
         void RebuildSceneOutliner(FTreeListView& Tree);

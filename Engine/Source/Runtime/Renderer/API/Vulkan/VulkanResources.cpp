@@ -627,6 +627,19 @@ namespace Lumina
         Allocator.Release(BeginQueryIndex / 2);
     }
 
+    FVulkanPipelineStatsQuery::FVulkanPipelineStatsQuery(FBitSetAllocator& InAllocator)
+        : Allocator(InAllocator)
+    {
+    }
+
+    FVulkanPipelineStatsQuery::~FVulkanPipelineStatsQuery()
+    {
+        if (QueryIndex >= 0)
+        {
+            Allocator.Release(QueryIndex);
+        }
+    }
+
     FVulkanBuffer::FVulkanBuffer(FVulkanDevice* InDevice, const FRHIBufferDesc& InDescription)
         : IDeviceChild(InDevice)
         , FBufferStateExtension(Description)

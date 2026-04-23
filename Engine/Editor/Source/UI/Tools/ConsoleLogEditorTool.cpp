@@ -73,7 +73,6 @@ namespace Lumina
             
             ImGui::SeparatorText("Display");
             ImGui::Checkbox("Auto Scroll", &Settings.bAutoScroll);
-            ImGui::Checkbox("Color Whole Row", &Settings.bColorWholeRow);
             ImGui::Checkbox("Show Timestamps", &Settings.bShowTimestamps);
             ImGui::Checkbox("Show Logger", &Settings.bShowLogger);
             ImGui::Checkbox("Show Icons", &Settings.bShowIcons);
@@ -120,16 +119,18 @@ namespace Lumina
 
         ImGui::Spacing();
 
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.08f, 0.08f, 0.95f));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
-        
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.04f, 0.04f, 0.05f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.82f, 0.82f, 0.78f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 4));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 1));
+
         const float LogHeight = ImGui::GetContentRegionAvail().y - InputHeight;
-        ImGui::BeginChild("##LogMessages", ImVec2(0, LogHeight), true, 
-            ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-        
+        ImGui::BeginChild("##LogMessages", ImVec2(0, LogHeight), true,
+            ImGuiWindowFlags_HorizontalScrollbar);
+
         const Logging::FLogQueue& Messages = Logging::GetConsoleLogQueue();
         size_t NewMessageSize = Messages.size();
-        
+
         if (NewMessageSize > PreviousMessageSize)
         {
             bNeedsScrollToBottom = Settings.bAutoScroll;
@@ -142,165 +143,108 @@ namespace Lumina
             ImGui::PushFontSize(ImGui::GetFontSize() * Settings.FontScale);
         }
 
-        ImGuiTableFlags TableFlags = 
-            ImGuiTableFlags_Resizable | 
-            ImGuiTableFlags_RowBg | 
-            ImGuiTableFlags_BordersInnerV |
-            ImGuiTableFlags_ScrollY;
-
-        if (Settings.bShowTimestamps || Settings.bShowLogger)
+        // Build filtered index list (cheap: just indices, no allocs per frame beyond vector growth)
+        TVector<uint32> VisibleIndices;
+        VisibleIndices.reserve(Messages.size());
+        for (size_t i = 0; i < Messages.size(); ++i)
         {
-            TableFlags |= ImGuiTableFlags_Hideable;
+            if (Filter.PassesFilter(Messages[i]))
+            {
+                VisibleIndices.push_back((uint32)i);
+            }
         }
+        FilteredMessageCount = (uint32)VisibleIndices.size();
 
-        int ColumnCount = 1;
-        if (Settings.bShowTimestamps)
-        {
-            ColumnCount++;
-        }
-        if (Settings.bShowLogger)
-        {
-            ColumnCount++;
-        }
+        // When wrap is on we can't use clipper — fall back to full iteration but it's still
+        // far cheaper than a table. Terminal feel favors non-wrap anyway.
+        const bool bUseClipper = !Settings.bWordWrap;
 
-        if (ImGui::BeginTable("##LogTable", ColumnCount, TableFlags))
+        auto DrawLine = [&](uint32 Index)
         {
+            const FConsoleMessage& Message = Messages[Index];
+            const ImVec4 Color = GetColorForLevel(Message.Level);
+
             if (Settings.bShowTimestamps)
             {
-                ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoHide, 80.0f * Settings.FontScale);
+                ImGui::TextColored(ImVec4(0.45f, 0.45f, 0.45f, 1.0f), "[%s]", Message.Time.c_str());
+                ImGui::SameLine(0, 6);
             }
+
+            if (Settings.bShowIcons)
+            {
+                ImGui::TextColored(Color, "%s", GetLevelIcon(Message.Level));
+                ImGui::SameLine(0, 4);
+            }
+
             if (Settings.bShowLogger)
             {
-                ImGui::TableSetupColumn("Logger", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoHide, 100.0f * Settings.FontScale);
+                ImGui::TextColored(ImVec4(0.55f, 0.70f, 0.90f, 1.0f), "%s:", Message.LoggerName.data());
+                ImGui::SameLine(0, 6);
             }
-            ImGui::TableSetupColumn("Message", ImGuiTableColumnFlags_WidthStretch | ImGuiTableColumnFlags_NoHide);
 
-            ImGui::TableHeadersRow();
-
-			FilteredMessageCount = 0;
-            for (size_t i = 0; i < Messages.size(); ++i)
+            if (Settings.bWordWrap)
             {
-                const FConsoleMessage& Message = Messages[i];
-
-                if (!Filter.PassesFilter(Message))
-                {
-                    continue;
-                }
-
-                FilteredMessageCount++;
-
-                ImGui::TableNextRow();
-                ImGui::PushID((int)i);
-
-                const ImVec4 Color = GetColorForLevel(Message.Level);
-                const char* Icon = GetLevelIcon(Message.Level);
-                const bool bIsError = (Message.Level == spdlog::level::err || Message.Level == spdlog::level::critical);
-
-                if (bIsError && Settings.bColorWholeRow)
-                {
-                    ImU32 ErrorBgColor = ImGui::ColorConvertFloat4ToU32(ImVec4(0.3f, 0.1f, 0.1f, 0.3f));
-                    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ErrorBgColor);
-                }
-
-                if (Settings.bShowTimestamps)
-                {
-                    ImGui::TableSetColumnIndex(0);
-                    if (Settings.bColorWholeRow)
-                    {
-                        ImGui::PushStyleColor(ImGuiCol_Text, Color);
-                    }
-                    ImGui::TextUnformatted(Message.Time.c_str());
-                    if (Settings.bColorWholeRow)
-                    {
-                        ImGui::PopStyleColor();
-                    }
-                }
-
-                if (Settings.bShowLogger)
-                {
-                    ImGui::TableSetColumnIndex(Settings.bShowTimestamps ? 1 : 0);
-                    if (Settings.bColorWholeRow)
-                    {
-                        ImGui::PushStyleColor(ImGuiCol_Text, Color);
-                    }
-                    ImGui::TextUnformatted(Message.LoggerName.data());
-                    if (Settings.bColorWholeRow)
-                    {
-                        ImGui::PopStyleColor();
-                    }
-                }
-
-                ImGui::TableSetColumnIndex(ColumnCount - 1);
-                
-                if (Settings.bColorWholeRow)
-                {
-                    ImGui::PushStyleColor(ImGuiCol_Text, Color);
-                }
-                
-                if (Settings.bShowIcons)
-                {
-                    ImGui::TextColored(Color, "%s", Icon);
-                    ImGui::SameLine(0, 4);
-                }
-
-                if (Settings.bWordWrap)
-                {
-                    ImGui::PushTextWrapPos(0.0f);
-                    if (!Settings.bColorWholeRow)
-                    {
-                        ImGui::TextColored(Color, "%s", Message.Message.c_str());
-                    }
-                    else
-                    {
-                        ImGui::TextUnformatted(Message.Message.c_str());
-                    }
-                    ImGui::PopTextWrapPos();
-                }
-                else
-                {
-                    if (!Settings.bColorWholeRow)
-                    {
-                        ImGui::TextColored(Color, "%s", Message.Message.c_str());
-                    }
-                    else
-                    {
-                        ImGui::TextUnformatted(Message.Message.c_str());
-                    }
-                }
-
-                if (Settings.bColorWholeRow)
-                {
-                    ImGui::PopStyleColor();
-                }
-
-                ImGui::PopID();
+                ImGui::PushStyleColor(ImGuiCol_Text, Color);
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextUnformatted(Message.Message.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::PopStyleColor();
             }
-
-            if (bNeedsScrollToBottom)
+            else
             {
-                ImGui::SetScrollHereY(1.0f);
-                bNeedsScrollToBottom = false;
+                ImGui::TextColored(Color, "%s", Message.Message.c_str());
             }
-            
-            ImGui::EndTable();
+        };
+
+        if (bUseClipper)
+        {
+            ImGuiListClipper Clipper;
+            Clipper.Begin((int)VisibleIndices.size());
+            while (Clipper.Step())
+            {
+                for (int Row = Clipper.DisplayStart; Row < Clipper.DisplayEnd; ++Row)
+                {
+                    DrawLine(VisibleIndices[Row]);
+                }
+            }
+            Clipper.End();
+        }
+        else
+        {
+            for (uint32 Idx : VisibleIndices)
+            {
+                DrawLine(Idx);
+            }
+        }
+
+        if (bNeedsScrollToBottom)
+        {
+            ImGui::SetScrollHereY(1.0f);
+            bNeedsScrollToBottom = false;
         }
 
         if (Settings.FontScale != 1.0f)
         {
             ImGui::PopFontSize();
         }
-    
+
         ImGui::EndChild();
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor();
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(2);
     
         ImGui::Spacing();
+
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.04f, 0.04f, 0.05f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.95f, 0.85f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 4));
+
+        ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.45f, 1.0f), ">");
+        ImGui::SameLine(0, 6);
         ImGui::SetNextItemWidth(-1);
-       
 
         ImGuiInputTextFlags InputFlags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_EscapeClearsAll;
 
-        bool bExecuteCommand = ImGui::InputTextWithHint("##CommandInput", "> Enter command or console variable...", CurrentCommand.data(), CurrentCommand.max_size(), InputFlags);
+        bool bExecuteCommand = ImGui::InputTextWithHint("##CommandInput", "enter command or console variable...", CurrentCommand.data(), CurrentCommand.max_size(), InputFlags);
         CurrentCommand = FFixedString(CurrentCommand.data(), strlen(CurrentCommand.data()));
 
         if (ImGui::IsItemEdited())
@@ -318,6 +262,10 @@ namespace Lumina
         }
 
         bool bInputFocused = ImGui::IsItemFocused();
+
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(2);
+
         if (bInputFocused && bShowAutoComplete && !AutoCompleteCandidates.empty())
         {
             if (ImGui::IsKeyPressed(ImGuiKey_Tab))

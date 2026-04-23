@@ -93,12 +93,12 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupI
         // coverage.
         if (bVisible)
         {
-            float3 ViewCenter = mul(uSceneData.CullData.View, float4(WorldCenter, 1.0)).xyz;
+            float3 ViewCenter = mul(uSceneData.CameraView.CameraView, float4(WorldCenter, 1.0)).xyz;
             float4 ClipAABB;
             if (ProjectSphereClip(ViewCenter, WorldRadius,
-                                  uSceneData.CullData.zNear,
-                                  uSceneData.CullData.P00,
-                                  uSceneData.CullData.P11,
+                                  uSceneData.NearPlane,
+                                  uSceneData.CameraView.CameraProjection[0][0],
+                                  uSceneData.CameraView.CameraProjection[1][1],
                                   ClipAABB))
             {
                 float2 ScreenSize = float2(uSceneData.ScreenSize.xy);

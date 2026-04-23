@@ -9,6 +9,7 @@
 #include "Core/Console/ConsoleVariable.h"
 #include "Core/Windows/Window.h"
 #include "Paths/Paths.h"
+#include "Renderer/GPUProfiler/GPUProfiler.h"
 #include "Renderer/RendererUtils.h"
 #include "Renderer/RHIStaticStates.h"
 #include "Renderer/ShaderCompiler.h"
@@ -140,11 +141,6 @@ namespace Lumina
         SceneGlobalData.CullData.Frustum                = SceneViewport->GetViewVolume().GetFrustum();
         SceneGlobalData.CullData.ShadowFrustum          = SceneGlobalData.CullData.Frustum; // Rebuilt after directional light is processed.
         SceneGlobalData.CullData.bHasDirectional        = 0u;
-        SceneGlobalData.CullData.ViewMatrix             = SceneViewport->GetViewVolume().GetViewMatrix();
-        SceneGlobalData.CullData.P00                    = SceneViewport->GetViewVolume().GetProjectionMatrix()[0][0];
-        SceneGlobalData.CullData.P11                    = SceneViewport->GetViewVolume().GetProjectionMatrix()[1][1];
-        SceneGlobalData.CullData.zNear                  = SceneViewport->GetViewVolume().GetNear();
-        SceneGlobalData.CullData.zFar                   = SceneViewport->GetViewVolume().GetFar();
         SceneGlobalData.CullData.InstanceNum            = (uint32)Instances.size();
         SceneGlobalData.CullData.bFrustumCull           = RenderSettings.bFrustumCull;
         SceneGlobalData.CullData.bOcclusionCull         = RenderSettings.bOcclusionCull;
@@ -161,32 +157,125 @@ namespace Lumina
             return;
         }
 
+        GPU_PROFILE_SCOPE_COLOR(&CmdList, "RenderView", FColor(0.30f, 0.65f, 1.00f));
+
         ResetPass(CmdList);
         CompileDrawCommands(CmdList);
-        CullPass(CmdList);
-        DepthPrePass(CmdList);
-        ClusterBuildPass(CmdList);
-        LightCullPass(CmdList);
-        PointShadowPass(CmdList);
-        SpotShadowPass(CmdList);
-        CascadedShowPass(CmdList);
-        EnvironmentPass(CmdList);
-        TerrainUpdatePass(CmdList);
-        BasePass(CmdList);
-        TerrainRenderPass(CmdList);
-        DepthPyramidPass(CmdList);
-        TransparentPass(CmdList);
-        OITResolvePass(CmdList);
-        BatchedLineDraw(CmdList);
-        ParticleSimulatePass(CmdList);
-        ParticleRenderPass(CmdList);
-        BillboardPass(CmdList);
-        ToneMappingPass(CmdList);
+        
+        { 
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cull", FColor(1.00f, 0.40f, 0.70f)); 
+            CullPass(CmdList); 
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth PrePass", FColor(1.00f, 0.55f, 0.20f)); 
+            DepthPrePass(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cluster Build", FColor(0.95f, 0.30f, 0.55f)); 
+            ClusterBuildPass(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Light Cull", FColor(0.95f, 0.30f, 0.55f)); 
+            LightCullPass(CmdList);
+        }
+        
+        { 
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Point Shadows", FColor(0.85f, 0.10f, 0.55f));
+            PointShadowPass(CmdList); 
+        
+        }
+        
+        { 
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Spot Shadows", FColor(0.75f, 0.10f, 0.55f)); 
+            SpotShadowPass(CmdList); 
+        
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cascaded Shadows", FColor(0.85f, 0.10f, 0.55f)); 
+            CascadedShowPass(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Environment", FColor(0.20f, 0.80f, 0.30f)); 
+            EnvironmentPass(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Update", FColor(0.20f, 0.70f, 0.50f)); 
+            TerrainUpdatePass(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Base Pass", FColor(0.95f, 0.20f, 0.20f));
+            BasePass(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Render", FColor(0.20f, 0.70f, 0.50f)); 
+            TerrainRenderPass(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth Pyramid", FColor(1.00f, 0.55f, 0.20f)); 
+            DepthPyramidPass(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Transparent", FColor(0.40f, 0.60f, 0.85f)); 
+            TransparentPass(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "OIT Resolve", FColor(0.55f, 0.85f, 0.30f)); 
+            OITResolvePass(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Batched Lines", FColor(0.95f, 0.20f, 0.20f)); 
+            BatchedLineDraw(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Particles Simulate", FColor(1.00f, 0.55f, 0.20f)); 
+            ParticleSimulatePass(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Particles Render", FColor(1.00f, 0.40f, 0.20f)); 
+            ParticleRenderPass(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Billboards", FColor(0.95f, 0.20f, 0.20f)); 
+            BillboardPass(CmdList);
+        }
+        
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Tone Mapping", FColor(0.95f, 0.20f, 0.20f)); 
+            ToneMappingPass(CmdList);
+        }
+        
         if (World->GetDefaultWorldSettings().SMAAQuality != ESMAAQuality::Off)
         {
-            SMAAEdgeDetectionPass(CmdList);
-            SMAABlendWeightPass(CmdList);
-            SMAANeighborhoodBlendPass(CmdList);
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "SMAA", FColor(0.95f, 0.20f, 0.20f));
+            {
+                GPU_PROFILE_SCOPE(&CmdList, "Edge Detection"); 
+                SMAAEdgeDetectionPass(CmdList);
+            }
+            
+            {
+                GPU_PROFILE_SCOPE(&CmdList, "Blend Weight"); 
+                SMAABlendWeightPass(CmdList);
+            }
+            
+            {
+                GPU_PROFILE_SCOPE(&CmdList, "Neighborhood Blend");   
+                SMAANeighborhoodBlendPass(CmdList);
+            }
         }
     }
     
@@ -324,8 +413,6 @@ namespace Lumina
                     Billboard.Position              = TransformComponent.WorldTransform.Location;
                     Billboard.Size                  = BillboardComponent.Scale;
                     Billboard.EntityID              = entt::to_integral(Entity);
-                
-                    //RenderStats.NumVertices         += 6;
                 });
                 
                 #if USING(WITH_EDITOR)
@@ -731,9 +818,6 @@ namespace Lumina
             ? Mesh->GetMeshBuffers().MeshletHeaderBuffer->GetAddress()
             : 0ull;
 
-        Local.Stats.NumVertices  += Resource.GetNumVertices();
-        Local.Stats.NumTriangles += Resource.GetNumTriangles();
-
         const glm::mat4& TransformMatrix = TransformComponent.CachedMatrix;
 
         const FAABB     BoundingBox = Mesh->GetAABB().ToWorld(TransformMatrix);
@@ -852,9 +936,6 @@ namespace Lumina
 
         const uint32 LocalBoneOffset = (uint32)Local.BonesData.size();
         Local.BonesData.insert(Local.BonesData.end(), MeshComponent.BoneTransforms.begin(), MeshComponent.BoneTransforms.end());
-
-        Local.Stats.NumVertices  += Resource.GetNumVertices();
-        Local.Stats.NumTriangles += Resource.GetNumTriangles();
 
         const glm::mat4 TransformMatrix = TransformComponent.GetWorldMatrix();
 
@@ -976,8 +1057,6 @@ namespace Lumina
             FThreadLocalDrawData& Local = ThreadLocal[t];
             ThreadBoneBase[t] = (uint32)BonesData.size();
             BonesData.insert(BonesData.end(), Local.BonesData.begin(), Local.BonesData.end());
-            RenderStats.NumVertices  += Local.Stats.NumVertices;
-            RenderStats.NumTriangles += Local.Stats.NumTriangles;
             TotalInstances += (uint32)Local.Items.size();
         }
 
@@ -1073,7 +1152,6 @@ namespace Lumina
             BatchDrawArgBase[b]                 = TotalDrawArgs;
             DrawCommands[b].IndirectDrawOffset  = TotalDrawArgs;
             DrawCommands[b].DrawCount           = (uint32)GlobalDrawsPerBatch[b].size();
-            RenderStats.NumDraws                += DrawCommands[b].DrawCount;
             TotalDrawArgs                       += (uint32)GlobalDrawsPerBatch[b].size();
         }
 
@@ -1148,7 +1226,6 @@ namespace Lumina
                     Args.InstanceCount         = 0u; // cull pass increments
                     Args.StartVertexLocation   = GlobalDraws[i].StartIndex;
                     Args.StartInstanceLocation = DrawInstanceOffsets[DrawIdx];
-                    RenderStats.NumInstances  += DrawInstanceCounts[DrawIdx];
                 }
             }
         }
@@ -1511,6 +1588,11 @@ namespace Lumina
                 CascadeShadowData->ViewProjection[i] = CascadeVP;
             }
 
+            // Expose this cascade's world-space half-extent so the lit pixel
+            // shader can convert a shadow texel into a world-space length for
+            // normal-offset bias.
+            LightData.CascadeRadii[i] = Radius;
+
             // Feed this cascade's frustum to the shadow cull pass so small casters
             // that only touch cascade 0 don't pay VPC cost on cascades 1/2.
             SceneGlobalData.CullData.CascadeFrustum[i] = FFrustum::FromViewProjection(CascadeVP);
@@ -1617,17 +1699,15 @@ namespace Lumina
                 }
                 else
                 {
-                    RenderStats.NumVertices += CurrentBatch.VertexCount;
                     LineBatches.emplace_back(CurrentBatch);
-        
+
                     CurrentBatch.StartVertex = (uint32)SimpleVertices.size() - (uint32)AliveLinesWithVertices.size() * 2 + (uint32)(i * 2);
                     CurrentBatch.VertexCount = 2;
                     CurrentBatch.Thickness = LineData.Line.Thickness;
                     CurrentBatch.bDepthTest = LineData.Line.bDepthTest;
                 }
             }
-        
-            RenderStats.NumVertices += CurrentBatch.VertexCount;
+
             LineBatches.emplace_back(CurrentBatch);
         }
     }
