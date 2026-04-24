@@ -48,9 +48,8 @@ namespace Lumina
         void*               Key                 = nullptr;
         ECPUTargetKind      Kind                = ECPUTargetKind::Custom;
 
-        // World metadata — populated for world targets. Exposed so the editor
-        // panel can badge net-role (client/server) and PIE status without
-        // chasing the CWorld pointer (which may have been destroyed).
+        // World metadata for world targets; lets the editor panel badge
+        // net-role and PIE without chasing a possibly-destroyed CWorld*.
         EWorldType          WorldType           = EWorldType{};
         ENetMode            NetMode             = ENetMode{};
         bool                bPIE                = false;
@@ -79,7 +78,7 @@ namespace Lumina
 
         bool IsEnabled() const;
 
-        // Engine frame boundary — rolls all targets: Current -> Latest, starts a new Current.
+        // Engine frame boundary: rolls targets Current -> Latest and starts a new Current.
         void BeginFrame();
         void EndFrame();
 

@@ -159,7 +159,7 @@ namespace Lumina
 #else
 
     template <size_t N> using TBitSet = std::bitset<N>;
-    // no direct std::bitvector equivalent → fallback to vector<bool>
+    // no direct std::bitvector equivalent; fallback to vector<bool>
     using TBitVector = std::vector<bool>;
     template <typename T> using TVector = std::vector<T>;
     template <typename T> using TSpan = std::span<T>;

@@ -509,8 +509,7 @@ namespace Lumina::Lua
             lua_pushvector(State, Value.AsVec.x, Value.AsVec.y, Value.AsVec.z, Value.AsVec.w);
             return;
         case EScriptExportKind::UnknownUserdata:
-            // Not editable in v1 — leave the existing table slot alone by pushing nil and letting
-            // the caller decide not to assign. Instead we signal unsupported by pushing nothing.
+            // Not editable in v1; push nil to signal unsupported.
             lua_pushnil(State);
             return;
         case EScriptExportKind::Array:

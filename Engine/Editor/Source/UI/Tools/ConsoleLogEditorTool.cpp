@@ -155,8 +155,7 @@ namespace Lumina
         }
         FilteredMessageCount = (uint32)VisibleIndices.size();
 
-        // When wrap is on we can't use clipper — fall back to full iteration but it's still
-        // far cheaper than a table. Terminal feel favors non-wrap anyway.
+        // Wrap disables clipper; full iteration is still cheaper than a table.
         const bool bUseClipper = !Settings.bWordWrap;
 
         auto DrawLine = [&](uint32 Index)

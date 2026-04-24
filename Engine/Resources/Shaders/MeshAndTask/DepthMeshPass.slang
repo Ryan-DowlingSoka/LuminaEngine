@@ -1,11 +1,10 @@
 #include "Includes/SceneGlobals.slang"
 #include "Includes/MeshletPayload.slang"
 
-// Position-only mesh shader for the depth pre-pass. Mirrors DepthPrePass.slang's
-// role in the legacy VS path. The clip-space math is kept bit-for-bit identical
-// to BaseMeshPass.slang (sequential M->V->P muls, same operand order) because
-// BasePass runs with EComparisonFunc::Equal against this pass's output. Any
-// drift in floating-point order produces Z-equal misses → black pixels.
+// Position-only mesh shader for the depth pre-pass. Clip-space math is kept
+// bit-for-bit identical to BaseMeshPass.slang because BasePass runs with
+// Equal depth test against this pass's output; any FP drift produces black
+// pixels from Z-equal misses.
 //
 // What this shader DOES skip vs BaseMeshPass:
 //   - Normal / UV / Color unpack from the vertex record (LoadStaticPositionByIndex

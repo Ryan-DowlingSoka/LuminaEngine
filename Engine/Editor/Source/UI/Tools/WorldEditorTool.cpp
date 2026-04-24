@@ -45,9 +45,8 @@ namespace Lumina
     static constexpr const char* WorldSettingsName = "World Settings";
     static constexpr const char* SceneGraphName = "Scene Graph";
 
-    // True when the entity is a non-root member of a prefab instance — hierarchy edits (reparent,
-    // unparent, detach, delete) are locked on these so the instance stays faithful to its source prefab.
-    // Only the instance root is user-editable (move/delete as a unit).
+    // Non-root prefab-instance members are locked against hierarchy edits so
+    // the instance stays faithful to its source. Only the root moves/deletes.
     static bool IsLockedPrefabChild(const entt::registry& Registry, entt::entity Entity)
     {
         if (Entity == entt::null || !Registry.valid(Entity))

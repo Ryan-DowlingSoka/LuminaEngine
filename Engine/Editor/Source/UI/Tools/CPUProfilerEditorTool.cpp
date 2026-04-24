@@ -140,7 +140,7 @@ namespace Lumina
 
         if (Targets.empty())
         {
-            ImGui::TextDisabled("No targets yet — scopes appear when a world ticks.");
+            ImGui::TextDisabled("No targets yet; scopes appear when a world ticks.");
             return;
         }
 

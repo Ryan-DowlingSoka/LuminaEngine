@@ -236,8 +236,8 @@ namespace Lumina
                 PrimaryCommandList->Open();
                 ICommandList& CmdList = *PrimaryCommandList;
 
-                // GPU scopes must close before GRenderManager->FrameEnd() — that call closes/submits
-                // the command list and advances the GPU profiler ring slot, after which EndScope is a no-op.
+                // GPU scopes must close before GRenderManager->FrameEnd(); it submits
+                // the command list and advances the profiler ring, after which EndScope is a no-op.
                 {
                     GPU_PROFILE_SCOPE(&CmdList, "Frame");
 

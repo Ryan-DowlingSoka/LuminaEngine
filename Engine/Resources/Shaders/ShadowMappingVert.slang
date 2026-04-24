@@ -3,16 +3,16 @@
 
 // Unified shadow vertex shader.
 //
-// One vertex shader for every shadow view type — CSM cascade, point face, spot.
+// One vertex shader for every shadow view type: CSM cascade, point face, spot.
 // The CPU builds a per-view entry in uCullViews and promotes surviving meshlets
 // into uMeshletDrawList[View.DrawListOffset + ...]. The indirect draw points at
 // uIndirectArgs[View.IndirectArgsOffset + DrawID] so SV_InstanceID indexes
 // directly into the per-view slice with no extra mapping buffer.
 //
-// Multiview is intentionally not used for point cube faces — we emit six
-// separate views and six indirect draws, and each face draws only the meshlets
-// the cull pass proved visible to that face (the whole point of this refactor).
-// The ShadowDataIndex/ViewIndex push reaches the right ViewProjection[] slot.
+// Point cube faces emit six separate views and six indirect draws instead of
+// using multiview, so each face draws only the meshlets the cull pass proved
+// visible to that face. ShadowDataIndex/ViewIndex reaches the right
+// ViewProjection[] slot.
 
 struct FPushConstants
 {

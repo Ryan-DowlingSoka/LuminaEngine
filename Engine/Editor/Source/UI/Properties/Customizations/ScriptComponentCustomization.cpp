@@ -82,7 +82,7 @@ namespace Lumina
                 bChanged = ImGui::DragFloat4(HL, &Value.AsVec.x, 0.1f);
                 break;
             case EScriptExportKind::UnknownUserdata:
-                ImGui::TextDisabled("(%s — not yet editable)", Value.UserdataTypeName.ToString().c_str());
+                ImGui::TextDisabled("(%s: not yet editable)", Value.UserdataTypeName.ToString().c_str());
                 break;
             default:
                 break;

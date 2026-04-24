@@ -115,68 +115,11 @@ namespace Lumina
 
     void FConsoleRegistry::SaveToConfig()
     {
-        using json = nlohmann::json;
-        
-        //FString EngineConfigDir = Paths::GetEngineDirectory() + "/Config/ConsoleSave.json";
-        //if (!Paths::Exists(EngineConfigDir))
-        //{
-        //    std::filesystem::create_directories(std::filesystem::path(EngineConfigDir.data()).parent_path());
-        //    FileHelper::CreateNewFile(EngineConfigDir);
-        //}
-        //
-        //
-        //json J;
-        //
-        //for (auto& [Name, Value] : ConsoleVariables)
-        //{
-        //    TOptional<FString> ValueOpt = GetValueAsString(Name);
-        //    if (!ValueOpt.has_value())
-        //    {
-        //        continue;
-        //    }
-        //
-        //    J[Name.data()] = ValueOpt.value().c_str();
-        //}
-        //
-        //FileHelper::SaveStringToFile(J.dump(4).c_str(), EngineConfigDir);
-        
+        // TODO: serialize console variables to Config/ConsoleSave.json.
     }
 
     void FConsoleRegistry::LoadFromConfig()
     {
-        using json = nlohmann::json;
-
-        //FString EngineConfigDir = Paths::GetEngineDirectory() + "/Config/ConsoleSave.json";
-        //
-        //if (!Paths::Exists(EngineConfigDir))
-        //{
-        //    return;
-        //}
-        //
-        //FString FileContents;
-        //FileHelper::LoadFileIntoString(FileContents, EngineConfigDir);
-        //
-        //if (FileContents.empty())
-        //{
-        //    return;
-        //}
-        //
-        //json j = json::parse(FileContents.c_str(), nullptr, false);
-        //if (j.is_discarded())
-        //{
-        //    return;
-        //}
-        //
-        //for (auto& [Name, Var] : ConsoleVariables)
-        //{
-        //    if (!j.contains(Name.data()))
-        //    {
-        //        continue;
-        //    }
-        //
-        //    FString ValueString = j[Name.data()].get<std::string>().c_str();
-        //
-        //    SetValueFromString(Name, ValueString);
-        //}
+        // TODO: restore console variables from Config/ConsoleSave.json.
     }
 }

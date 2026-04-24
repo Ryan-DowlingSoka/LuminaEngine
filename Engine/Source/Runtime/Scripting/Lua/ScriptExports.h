@@ -99,11 +99,11 @@ namespace Lumina::Lua
     /**
      * Walks the live `Exports` table once to infer the schema AND read the defaults.
      *
-     * Duck-typing rules: booleans→Bool, integral numbers→Int, fractional→Double, strings→String,
-     * Luau vectors→Vec3, registered userdata→UnknownUserdata (type taken from metatable's
-     * `__typename` field stamped by TClass), integer-keyed tables→Array, string-keyed tables→NestedStruct.
+     * Duck-typing rules: booleans=>Bool, integral=>Int, fractional=>Double, strings=>String,
+     * Luau vectors=>Vec3, registered userdata=>UnknownUserdata (type from metatable `__typename`
+     * stamped by TClass), integer-keyed tables=>Array, string-keyed tables=>NestedStruct.
      *
-     * The user must provide a non-nil default for each field — nil has no usable type information.
+     * The user must provide a non-nil default for each field; nil has no type info.
      */
     RUNTIME_API bool BuildSchemaFromExportsTable(
         lua_State* State,

@@ -165,8 +165,8 @@ namespace Lumina
         DL->AddRectFilled(Origin, ImVec2(Origin.x + Size.x, Origin.y + Size.y), IM_COL32(20, 20, 22, 255));
         DL->AddRect(Origin, ImVec2(Origin.x + Size.x, Origin.y + Size.y), IM_COL32(120, 120, 120, 255));
 
-        // Subdivision grid at the MaxTileResolution step — makes fragmentation
-        // obvious and lines up with the top-level free-list grid.
+        // Subdivision grid at MaxTileResolution; matches the top-level
+        // free-list grid and makes fragmentation obvious.
         if (bShowGrid)
         {
             const uint32 GridDivs = Cfg.AtlasResolution / Cfg.MaxTileResolution;

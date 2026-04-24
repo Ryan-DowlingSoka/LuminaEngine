@@ -86,7 +86,7 @@ namespace Lumina::Prism
 
     void FPrismTessellator::EmitImage(FPrismVertexStream& Out, const FPrismDrawElement& E) const
     {
-        const uint32    TexIdx = (uint32)E.TextureHandle; // backend maps atlas → index
+        const uint32    TexIdx = (uint32)E.TextureHandle; // backend maps atlas to index
         const glm::vec4 Params(0.0f, 0.0f, float(EPrismPrimType::Image), float(TexIdx));
         AppendQuad(Out,
             E.Rect.Min, E.Rect.Max,

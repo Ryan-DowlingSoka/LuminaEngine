@@ -20,9 +20,7 @@ bool FrustumContainsSphere(FFrustum F, float3 Center, float Radius)
     return true;
 }
 
-// Overload for FCullView-style flat plane arrays. FCullView stores its six
-// planes inline (float4 Planes[6]) so it can be read as a direct field without
-// an extra struct indirection — this helper accepts that layout.
+// Overload for FCullView-style flat plane arrays (float4 Planes[6]).
 bool FrustumContainsSphere(float4 Planes[6], float3 Center, float Radius)
 {
     [unroll]

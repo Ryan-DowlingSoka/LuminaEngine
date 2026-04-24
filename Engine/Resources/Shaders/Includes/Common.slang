@@ -30,15 +30,12 @@ static const int SSAO_KERNEL_SIZE = 32;
 #define MAX_CULL_VIEWS  128
 
 // Bits inside FCullView.Flags. Controls which culling stages run for the view.
-//   Frustum       — plane cull against FrustumPlanes[6].
-//   ConeCull      — meshlet backface cone test using ViewOrigin (camera/point
-//                   light origin) or SunDirection (see SunAligned).
-//   Occlusion     — Hi-Z occlusion test (camera view only; shadow views have
-//                   no depth pyramid).
-//   Distance      — drop instances outside FCullData.ShadowMaxDistance.
-//   CastShadowOnly— skip instances without EInstanceFlags::CastShadow.
-//   SunAligned    — cone cull uses SunDirection from FLightData instead of
-//                   (Center - ViewOrigin). Used by directional cascade views.
+//   Frustum:        plane cull against FrustumPlanes[6].
+//   ConeCull:       meshlet backface cone test using ViewOrigin or SunDirection.
+//   Occlusion:      Hi-Z occlusion test (camera view only).
+//   Distance:       drop instances outside FCullData.ShadowMaxDistance.
+//   CastShadowOnly: skip instances without EInstanceFlags::CastShadow.
+//   SunAligned:     cone cull uses SunDirection from FLightData (CSM views).
 #define CULL_VIEW_FLAG_FRUSTUM          BIT(0)
 #define CULL_VIEW_FLAG_CONE             BIT(1)
 #define CULL_VIEW_FLAG_OCCLUSION        BIT(2)
@@ -391,7 +388,7 @@ struct FFrustum
 struct FCullView
 {
     float4 FrustumPlanes[6];   // 96B
-    float4 ViewOriginAndFlags; // 16B — xyz=origin (camera / light pos), w=asuint(flags)
+    float4 ViewOriginAndFlags; // 16B: xyz=origin (camera / light pos), w=asuint(flags)
     uint   DrawListOffset;     // Into uMeshletDrawList
     uint   DrawListCapacity;   // Max FMeshletDraw entries this view may emit
     uint   IndirectArgsOffset; // Into uIndirectArgs (v * NumDraws)
@@ -417,8 +414,8 @@ struct FCullData
     float    ShadowMaxDistance;
     uint     bShadowOcclusionCull;
     uint     NumDraws;
-    // Debug visualization mode. Values mirror Lumina::ERenderSceneDebugFlags —
-    // keep DEBUG_MODE_* constants below in sync with the C++ enum.
+    // Debug visualization mode. Mirrors Lumina::ERenderSceneDebugFlags; keep
+    // DEBUG_MODE_* constants below in sync with the C++ enum.
     uint     DebugMode;
     uint     _Pad0[2];
 };
@@ -453,11 +450,9 @@ struct FSceneGlobalData
 // ---------------------------------------------------------------------------------
 //  Functions
 
-// Unpacks a signed 8-8-8-8 SNORM normal. `unpackSnorm4x8` maps to
-// GLSL.std.450 UnpackSnorm4x8 — a single hardware op that returns float4
-// through the FP pipe, off the integer shift/sign-extend path the old 10-bit
-// layout required. W is unused. Result is near-unit (SNORM8 quantization is
-// <0.8% per component) and every consumer renormalizes downstream.
+// Unpacks a signed 8-8-8-8 SNORM normal via UnpackSnorm4x8. W is unused.
+// Result is near-unit (SNORM8 quantization is <0.8% per component); every
+// consumer renormalizes downstream.
 float3 UnpackNormal(uint Packed)
 {
     return unpackSnorm4x8ToFloat(Packed).xyz;

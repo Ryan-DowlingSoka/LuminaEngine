@@ -97,7 +97,7 @@ namespace Lumina
             // Shared meshlet draw list. Sized NumViews * TotalMeshletBound;
             // each view owns a slice addressed by FCullView.DrawListOffset.
             MeshletDrawList,
-            // Shared indirect draw args. NumViews * NumDraws slots — each
+            // Shared indirect draw args (NumViews * NumDraws slots); each
             // view addresses its own range via FCullView.IndirectArgsOffset.
             IndirectArgs,
 
@@ -201,8 +201,8 @@ namespace Lumina
          * the parallel mesh gather so the context is immutable during the
          * parallel phase.
          *
-         * Thread-safe reads of ECS components — this is called on the render
-         * thread while no ECS mutation is in flight.
+         * Thread-safe reads of ECS components: called on the render thread
+         * while no ECS mutation is in flight.
          */
         void BuildSceneCullContext();
         void MergeMeshDrawData(TVector<FThreadLocalDrawData>& ThreadLocal);
@@ -213,7 +213,7 @@ namespace Lumina
 
         /**
          * Serial post-pass: fits every accumulated shadow request into the atlas
-         * budget (shrinks the largest desired tiles until Σ area ≤ capacity) then
+         * budget (shrinks the largest desired tiles until sum(area) <= capacity) then
          * allocates tiles and populates FLightShadowData / PackedShadows. Runs
          * after the parallel Process*Light tasks have written into ShadowRequests.
          */
@@ -226,10 +226,10 @@ namespace Lumina
          * scene buffer upload so CullMeshlets has everything it needs.
          *
          * View layout:
-         *   0              — main camera (frustum + cone + occlusion + micropoly)
-         *   1..NumCascades — CSM cascade views (frustum + sun-aligned cone, cast-shadow-only, distance)
-         *   N..            — 6 views per shadow-casting point light
-         *   ...            — 1 view per shadow-casting spot light
+         *   0:              main camera (frustum + cone + occlusion + micropoly)
+         *   1..NumCascades: CSM cascade views (frustum + sun-aligned cone, cast-shadow-only, distance)
+         *   N..:            6 views per shadow-casting point light
+         *   ...:            1 view per shadow-casting spot light
          */
         void BuildCullViews(const FViewVolume& ViewVolume);
         
@@ -240,8 +240,7 @@ namespace Lumina
         /**
          * CPU-side early-out for shadow requests. Returns false when the
          * light's attenuation sphere falls entirely outside the camera
-         * frustum — nothing the camera can see would be shadowed by the light,
-         * so the shadow view, atlas tile and draw-list slice are all skipped.
+         * frustum, skipping the shadow view, atlas tile, and draw-list slice.
          */
         bool ShouldRequestShadow(const glm::vec3& LightPosition, float LightRadius) const;
 
@@ -262,9 +261,8 @@ namespace Lumina
          * processing. Finalized into ShadowAtlas tiles + FLightShadowData by
          * AllocateShadowTiles after Graph.Wait. Request capture has to be
          * deferred so we can fit the whole set against the atlas budget and
-         * shrink the largest tiles uniformly when over budget — the old greedy
-         * first-come allocator failed the Nth light the moment the 4×2048 atlas
-         * was full, no matter how close it was.
+         * shrink the largest tiles uniformly when over budget. The old
+         * greedy allocator failed the Nth light once the atlas was full.
          */
         struct FShadowRequest
         {
@@ -326,9 +324,9 @@ namespace Lumina
 
         /**
          * Per-frame CPU reject volumes. Built at the top of CompileDrawCommands
-         * (serially, fast — only needs the sun direction and shadow-caster
-         * positions) and consumed by the parallel Process*Mesh tasks. Entries
-         * are read-only during parallel gather.
+         * (serially; only needs sun direction and shadow-caster positions)
+         * and consumed by the parallel Process*Mesh tasks. Entries are
+         * read-only during parallel gather.
          */
         FSceneCullContext                       SceneCullContext;
         

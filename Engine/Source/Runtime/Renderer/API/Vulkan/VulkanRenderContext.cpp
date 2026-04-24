@@ -1328,9 +1328,9 @@ namespace Lumina
         VulkanTimerQuery->Time = 0.0f;
     }
 
-    // Counter bits enabled on the pipeline-statistics pool. Keep these in
-    // lock-step with the read-back struct below — result size, slot count and
-    // field order are all derived from the bit order in this mask.
+    // Counter bits enabled on the pipeline-statistics pool. Keep in lock-step
+    // with the read-back struct below; result size, slot count and field
+    // order all derive from this mask's bit order.
     static constexpr VkQueryPipelineStatisticFlags GPipelineStatsFlags =
         VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT       |
         VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT     |
@@ -1393,8 +1393,8 @@ namespace Lumina
             return false;
         }
 
-        // Bit order here must match GPipelineStatsFlags — Vulkan writes one
-        // uint64 per enabled bit, in the bit's declared order.
+        // Bit order must match GPipelineStatsFlags; Vulkan writes one uint64
+        // per enabled bit in declared order.
         VulkanQuery->Stats.InputAssemblyVertices     = Results[0];
         VulkanQuery->Stats.InputAssemblyPrimitives   = Results[1];
         VulkanQuery->Stats.VertexShaderInvocations   = Results[2];
@@ -1419,7 +1419,7 @@ namespace Lumina
         {
             while (!PollPipelineStatsQuery(Query))
             {
-                // Spin-wait — callers that care about latency should Poll first.
+                // Spin-wait; callers that care about latency should Poll first.
             }
         }
 

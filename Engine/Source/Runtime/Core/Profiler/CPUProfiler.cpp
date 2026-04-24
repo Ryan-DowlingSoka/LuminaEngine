@@ -210,7 +210,7 @@ namespace Lumina
         FString NameStr = World->GetName().c_str();
         FCPUProfileTarget* Target = FindOrCreate(World, NameStr.c_str(), ECPUTargetKind::World);
 
-        // Refresh metadata each push — world context can be reassigned (PIE / duplication).
+        // Refresh metadata each push; world context can be reassigned (PIE / duplication).
         if (GWorldManager != nullptr)
         {
             if (FWorldContext* Ctx = GWorldManager->FindContext(World))

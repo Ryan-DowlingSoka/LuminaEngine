@@ -24,18 +24,18 @@ struct SkinnedVertexBuffer
 [[vk::binding(8, 0)]] Sampler2DArray                                uShadowAtlas;
 [[vk::binding(9, 0)]] Sampler2D                                     uDepthPyramid;
 
-// Unified per-view culling system. The CPU builds one FCullView per logical
-// render view (main camera, each CSM cascade, each point face, each spot
-// light) and packs them into uCullViews. CullMeshlets.slang loops every
-// surviving meshlet against every view and emits into per-view slices of
-// uMeshletDrawList / uIndirectArgs — addressed through FCullView.DrawListOffset
-// and .IndirectArgsOffset so each draw pass indirect-draws only its own view.
+// Unified per-view culling. CPU builds one FCullView per logical render view
+// (main camera, each CSM cascade, each point face, each spot light) and
+// packs them into uCullViews. CullMeshlets.slang tests each meshlet against
+// every view and emits into per-view slices of uMeshletDrawList /
+// uIndirectArgs, addressed through FCullView.DrawListOffset and
+// IndirectArgsOffset so each draw pass sees only its own view.
 [[vk::binding(10, 0)]] StructuredBuffer<FCullView>                   uCullViews;
 [[vk::binding(11, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawList;
 [[vk::binding(12, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectArgs;
 
-// Same cascade image as binding 7 but with a point, non-comparison sampler —
-// lets PCSS blocker search read raw depth values instead of PCF results.
+// Same cascade image as binding 7 but with a point, non-comparison sampler
+// so PCSS blocker search can read raw depth instead of PCF results.
 [[vk::binding(13, 0)]] Sampler2DArray                                uShadowCascadePoint;
 
 // ---------------------------------------------------------------------------------

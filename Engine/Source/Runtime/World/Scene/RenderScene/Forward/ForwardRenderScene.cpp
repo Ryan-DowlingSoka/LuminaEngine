@@ -544,8 +544,8 @@ namespace Lumina
             LightData.NumLights = LightCount.load(std::memory_order_acquire);
 
             // Serial fit + allocate. Runs after the parallel light pass so the
-            // whole shadow request set is visible and we can shrink proportionally
-            // when Σ(area) exceeds the atlas budget.
+            // whole shadow request set is visible and we can shrink
+            // proportionally when sum(area) exceeds the atlas budget.
             AllocateShadowTiles();
         }
         
@@ -969,10 +969,10 @@ namespace Lumina
 
         const glm::mat4 TransformMatrix = TransformComponent.GetWorldMatrix();
 
-        // Reject before uploading per-bone data — the bone copy below is the
+        // Reject before uploading per-bone data; the bone copy below is the
         // biggest per-entity cost for skeletal paths. Bind-pose AABB is a
-        // conservative envelope of typical animation; BoundsScale can inflate
-        // it when animations push geometry outside the asset bounds.
+        // conservative envelope; BoundsScale can inflate it when animations
+        // push geometry outside the asset bounds.
         const float     CullScale   = glm::max(MeshComponent.BoundsScale, 1.0f);
         const FAABB     BoundingBox = Mesh->GetAABB().ToWorld(TransformMatrix);
         const glm::vec3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
@@ -1365,10 +1365,9 @@ namespace Lumina
 
         FEntityRegistry& Registry = World->GetEntityRegistry();
 
-        // Sun direction — serialized lookup of the first enabled directional
-        // light. Matches the behavior of ProcessDirectionalLight (last-writer
-        // wins, which is fine for a single scene sun). Using a non-normalized
-        // value produces a degenerate sweep, so guard against that.
+        // Sun direction: serial lookup of the first enabled directional
+        // light. Matches ProcessDirectionalLight (last-writer wins, fine for
+        // a single scene sun). Guard against non-normalized values.
         auto DirectionalView = Registry.view<SDirectionalLightComponent>(entt::exclude<SDisabledTag>);
         for (entt::entity Entity : DirectionalView)
         {
@@ -1395,13 +1394,10 @@ namespace Lumina
                 SceneCullContext.SunDirection, ShadowSweepDistance);
         }
 
-        // Shadow-casting local lights. Their influence region is a sphere
-        // around the light position with the attenuation radius; any mesh
-        // inside that sphere could cast a shadow for this light, regardless
-        // of whether it's in the camera frustum. Only collect lights whose
-        // shadow sphere itself intersects the camera frustum — a shadow
-        // caster outside the camera view casting for a light also outside
-        // the view can't affect any visible pixel.
+        // Shadow-casting local lights. Influence region is a sphere around
+        // the light with attenuation radius. Only collect lights whose shadow
+        // sphere intersects the camera frustum; casters outside for lights
+        // also outside can't affect any visible pixel.
         auto PointView = Registry.view<SPointLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
         for (entt::entity Entity : PointView)
         {
@@ -1544,17 +1540,15 @@ namespace Lumina
             return;
 
         // ----- View-budget fit -------------------------------------------------
-        // CullMeshlets.slang reads from a fixed-size FCullView array sized
-        // GMaxCullViews. View 0 is the camera; 1..NumCascades are cascades
-        // (when a directional light is present); every remaining slot is a
-        // shadow view — 6 per point light, 1 per spot. Overflowing this budget
-        // used to recorded out-of-range base indices in BuildCullViews and
-        // crashed the GPU when a draw pass read past the end of IndirectArgs.
+        // CullMeshlets.slang reads a fixed-size FCullView array (GMaxCullViews).
+        // View 0 is the camera; 1..NumCascades are cascades (if a directional
+        // light exists); remaining slots are shadow views (6 per point, 1 per
+        // spot). Overflow would record out-of-range base indices and crash
+        // the GPU when a draw pass read past IndirectArgs.
         //
-        // Farthest-first is the stable drop order: nearby shadows dominate the
-        // visible image, distant ones contribute less perceived resolution and
-        // have already been shrunk to near-min tiles by the projected-radius
-        // heuristic, so dropping them loses the least quality.
+        // Farthest-first drop order: nearby shadows dominate the image;
+        // distant ones are already shrunk to near-min tiles and lose the
+        // least perceived quality when dropped.
         {
             const uint32 SunViews        = LightData.bHasSun ? (uint32)NumCascades : 0u;
             const uint32 ReservedViews   = 1u + SunViews;                     // Camera + CSM cascades.
@@ -1621,8 +1615,8 @@ namespace Lumina
         const uint32 MaxTile   = AtlasConfig.MaxTileResolution;
         const uint32 AtlasSize = AtlasConfig.AtlasResolution;
 
-        // pow2 area budget — all tiles are pow2 so Σ area ≤ AtlasSize² is a
-        // sufficient packing guarantee for the quad-tree allocator.
+        // pow2 area budget: all tiles are pow2 so sum(area) <= AtlasSize^2
+        // is a sufficient packing guarantee for the quad-tree allocator.
         const uint64 Budget = (uint64)AtlasSize * (uint64)AtlasSize;
 
         const uint32 NumRequests = (uint32)ShadowRequests.size();
@@ -1660,10 +1654,9 @@ namespace Lumina
             return S;
         };
 
-        // Iteratively halve the current largest tile until the set fits the
-        // budget. Halving the largest is optimal for pow2 area reduction —
-        // it drops the summed area by 3/4 of the shrunk tile's area, which is
-        // the biggest single-step reduction available.
+        // Iteratively halve the current largest tile until the set fits
+        // budget. Halving the largest drops summed area by 3/4 of its own
+        // area, the biggest single-step reduction available.
         while (AreaSum() > Budget)
         {
             uint32 LargestIdx = 0;
@@ -1678,9 +1671,9 @@ namespace Lumina
             }
             if (LargestVal <= MinTile)
             {
-                // Everyone is already at the floor and still over budget —
-                // AllocateTile on the overflow will return INDEX_NONE and the
-                // request will simply drop, which is preferable to spinning.
+                // Everyone is already at the floor and still over budget.
+                // AllocateTile returns INDEX_NONE and the overflow request
+                // drops, which is preferable to spinning.
                 break;
             }
             Sizes[LargestIdx] = LargestVal >> 1;
@@ -1719,9 +1712,9 @@ namespace Lumina
             if (Req.Type == ELightType::Point)
             {
                 // Cube map: 6 faces share the tile's UV rect across layers 0-5.
-                // Near plane scales with radius — a fixed 0.01 collapses NDC z
-                // into the last ~0.001 of the depth buffer for any realistically
-                // sized light, leaving no precision for the PCF compare.
+                // Near plane scales with radius; a fixed 0.01 collapses NDC z
+                // into the last ~0.001 of the depth buffer for any realistic
+                // light, leaving no precision for the PCF compare.
                 const float ShadowNear = glm::max(Req.Attenuation * 0.01f, 0.1f);
                 FViewVolume LightView(90.0f, 1.0f, ShadowNear, Req.Attenuation);
 
@@ -1799,7 +1792,7 @@ namespace Lumina
             {
                 View.FrustumPlanes[p] = Frustum.Planes[p];
             }
-            // Reinterpret the flag bits through the w channel — matches the
+            // Reinterpret flag bits through the w channel; matches the
             // shader's asuint(ViewOriginAndFlags.w) unpack.
             float FlagsAsFloat;
             std::memcpy(&FlagsAsFloat, &Flags, sizeof(float));
@@ -1844,7 +1837,7 @@ namespace Lumina
         SpotShadowCullViewBases.clear();
         SpotShadowCullViewBases.reserve(PackedShadows[(uint32)ELightType::Spot].size());
 
-        // View 0 — main camera. Frustum + cone + occlusion (Hi-Z + micro-poly).
+        // View 0: main camera. Frustum + cone + occlusion (Hi-Z + micro-poly).
         {
             const glm::mat4 CameraVP = ViewVolume.GetProjectionMatrix() * ViewVolume.GetViewMatrix();
             const uint32 CameraFlags =
@@ -1878,9 +1871,9 @@ namespace Lumina
             }
         }
 
-        // Point lights — 6 views each (one per cube face). Cone cull uses the
-        // light's world-space position as the apex. Parallel array records each
-        // point shadow's face-0 view index for draw-pass lookup.
+        // Point lights: 6 views each (one per cube face). Cone cull uses
+        // the light's world-space position as the apex. Parallel array
+        // records each point shadow's face-0 view index for draw-pass lookup.
         for (const FLightShadow& PointShadow : PackedShadows[(uint32)ELightType::Point])
         {
             if (PointShadow.ShadowDataIndex < 0)
@@ -1903,7 +1896,7 @@ namespace Lumina
             }
         }
 
-        // Spot lights — one view each.
+        // Spot lights: one view each.
         for (const FLightShadow& SpotShadow : PackedShadows[(uint32)ELightType::Spot])
         {
             if (SpotShadow.ShadowDataIndex < 0)
@@ -2508,9 +2501,9 @@ namespace Lumina
 
         FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("ShadowMappingPixel.slang");
 
-        // Bias values are tuned for the NDC-z atlas (near/far ≈ radius*0.01 / radius).
-        // The CSM pass uses larger values because its depth is more uniformly spread;
-        // here the z range is compressed near 1.0 so slope-scale has to be gentle or
+        // Bias tuned for the NDC-z atlas (near/far ~ radius*0.01 / radius).
+        // CSM uses larger values since its depth spreads uniformly; here the
+        // z range is compressed near 1.0, so slope-scale must be gentle or
         // it pushes occluder depth past the receiver.
         FRenderState RenderState; RenderState
                 .SetDepthStencilState(FDepthStencilState()
@@ -2522,12 +2515,8 @@ namespace Lumina
 
         // Per-face render pass: one clear per atlas layer, all point lights
         // draw into that layer through their own per-tile viewport/scissor.
-        //
-        // Flipped from the old per-light-per-face structure because the
-        // render pass's clear loadop clears the full 4096² layer every time
-        // it's begun, so restarting it once per light wiped every previously
-        // drawn tile and left only the last light's shadow intact. Now each
-        // layer is cleared exactly once and every light's tile survives.
+        // The old per-light-per-face structure had clear loadop wiping the
+        // full layer every light, leaving only the last light's tile intact.
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
 
         const TVector<FLightShadow>& PointShadows = PackedShadows[(uint32)ELightType::Point];
@@ -2599,7 +2588,7 @@ namespace Lumina
                     .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
 
                 // ShadowMappingVert push = { int ShadowDataIndex; int ViewIndex; }.
-                // ViewIndex indexes ShadowData.ViewProjection[] — here the cube face.
+                // ViewIndex indexes ShadowData.ViewProjection[]; here the cube face.
                 struct { int32 ShadowDataIndex; int32 ViewIndex; } PointPush;
                 PointPush.ShadowDataIndex = LightShadow.ShadowDataIndex;
                 PointPush.ViewIndex       = Face;
@@ -2617,9 +2606,8 @@ namespace Lumina
                 }
             }
 
-            // The face may have no lights (all dropped or pre-fit empty) —
-            // still need to clear the layer so stale depth from previous
-            // frames doesn't leak through during sampling.
+            // The face may have no lights (all dropped or pre-fit empty);
+            // still clear the layer so stale depth doesn't leak during sampling.
             if (!bPassBegun)
             {
                 CmdList.BeginRenderPass(RenderPass);
@@ -3371,14 +3359,11 @@ namespace Lumina
                 State.bFullHeightmapDirty = true;
                 State.bFullWeightsDirty   = true;
 
-                // Vulkan does not zero newly-allocated image memory. If a layer
-                // slice is never written before a sampler reads it, the read
-                // returns undefined data — historically ~0.5, producing a uniform
-                // blend of every layer across the terrain. Upload every slice
-                // directly from the CPU buffer here so there is never a window
-                // where any slice is undefined. This does not depend on barrier
-                // automation around a clear, and clears State's dirty flags so
-                // the follow-up blocks don't redundantly re-upload.
+                // Vulkan does not zero new image memory. Unwritten slices
+                // return undefined data (~0.5 historically, producing uniform
+                // layer blends). Upload every slice from the CPU buffer so
+                // no slice is ever undefined; also clears dirty flags to
+                // skip redundant re-upload below.
                 if (!Terrain.LayerWeights.empty())
                 {
                     const size_t SlicePixels = size_t(Res) * size_t(Res);
@@ -3392,8 +3377,8 @@ namespace Lumina
                 }
                 else
                 {
-                    // No CPU data yet — zero every slice so a sampler can't read
-                    // garbage. The next paint/sculpt tick will populate properly.
+                    // No CPU data yet: zero every slice so a sampler can't
+                    // read garbage; next paint/sculpt tick populates.
                     CmdList.ClearImageFloat(
                         State.LayerWeightTexture,
                         FTextureSubresourceSet(0u, 1u, 0u, (uint16)std::max(LayerCount, 1u)),
@@ -4375,11 +4360,10 @@ namespace Lumina
             NamedBuffers[(int)ENamedBuffer::CullView] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
-        // Unified meshlet draw list. Sized NumViews * TotalMeshletBound —
-        // CullMeshlets.slang atomically appends surviving meshlets into the
-        // view's slice addressed by FCullView.DrawListOffset, and the draw
-        // passes indirect-draw using FCullView.IndirectArgsOffset to pull
-        // the right per-view InstanceCount + FirstInstance pair.
+        // Unified meshlet draw list (NumViews * TotalMeshletBound).
+        // CullMeshlets.slang appends surviving meshlets into each view's
+        // slice via FCullView.DrawListOffset; draw passes read through
+        // FCullView.IndirectArgsOffset for the per-view InstanceCount pair.
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(uint32) * 2;
@@ -4611,11 +4595,10 @@ namespace Lumina
             BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(10, GetNamedBuffer(ENamedBuffer::CullView)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(11, GetNamedBuffer(ENamedBuffer::MeshletDrawList)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(12, GetNamedBuffer(ENamedBuffer::IndirectArgs)));
-            // PCSS needs raw depth reads (not comparison results) during blocker
-            // search so we can check individual texels against the receiver depth.
-            // The comparison sampler at binding 7 returns a PCF-filtered result —
-            // useless for "is this texel a blocker" — so bind the same cascade
-            // image with a point/standard sampler at binding 13.
+            // PCSS needs raw depth (not PCF results) during blocker search so
+            // individual texels can be classified against the receiver depth.
+            // Binding 7 returns filtered compares; bind the same cascade with
+            // a point/standard sampler at binding 13.
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(13, GetNamedImage(ENamedImage::Cascade),
                 TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Standard>::GetRHI()));
 

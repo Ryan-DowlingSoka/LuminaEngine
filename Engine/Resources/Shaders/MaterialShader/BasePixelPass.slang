@@ -149,9 +149,8 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
 
     if (LightFlags == LIGHT_FLAG_TYPE_DIRECTIONAL)
     {
-        // Constant safety bias only — most slope-driven acne is removed by the
-        // normal-offset push in NormalOffsetWS() below, so we don't need a
-        // large slope term here (which would cause peter-panning).
+        // Constant safety bias only; NormalOffsetWS() below removes most
+        // slope-driven acne, so a large slope term would only cause peter-panning.
         return 0.00015 + 0.0003 * SlopeFactor;
     }
 
@@ -176,22 +175,17 @@ float3 NormalOffsetWS(float3 Normal, float3 LightDir, int CascadeIndex)
     float Radius    = uLightData[0].CascadeRadii[CascadeIndex];
     float TexelSize = (2.0 * Radius) / float(GCSM_RESOLUTION);
 
-    // 1.4 ≈ sqrt(2) — push by one diagonal texel at maximum slope, which is
-    // the minimum that reliably clears self-intersection from depth-map
+    // 1.4 ~= sqrt(2): push by one diagonal texel at maximum slope, the
+    // minimum that reliably clears self-intersection from depth-map
     // quantization. Larger values cause visible peter-panning at contact.
     return Normal * (TexelSize * 1.4 * OffsetScale);
 }
 
-// Tuning for PCSS (Percentage-Closer Soft Shadows).
-//
-// The visible gap near contact points isn't depth-bias — it's the fixed PCF
-// footprint averaging in texels that sit on the occluder, which drags the
-// shadow edge away from the mesh. PCSS fixes this by making the PCF kernel
-// contact-aware: we first search for blockers in a small region, estimate
-// the depth delta from receiver to average blocker, and scale the PCF
-// radius with that delta. At contact the delta is ~zero, so the filter
-// collapses to a near-point sample and the shadow edge stays glued to the
-// mesh; at distance the penumbra opens up to a natural soft shadow.
+// PCSS (Percentage-Closer Soft Shadows) tuning. The contact gap is caused
+// by the fixed PCF footprint averaging in texels on the occluder; PCSS
+// scales the PCF radius by receiver-to-blocker depth so the kernel
+// collapses to a near-point sample at contact and opens to a soft penumbra
+// at distance.
 #define PCSS_BLOCKER_SEARCH_TAPS   8
 static const float PCSS_BlockerSearchRadius = 0.0035;  // UV radius of blocker search
 static const float PCSS_LightSize           = 0.05;     // Tunable: larger = softer far shadows
@@ -204,10 +198,10 @@ static const float PCSS_BlockerDepthBias    = 0.0004;  // Bias for blocker class
 // caller can decide to fall back to another cascade (or to fully-lit).
 float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float3 Normal, float3 LightDir, float Bias, float2 ScreenPos, out bool Inside)
 {
-    // Push the receiver off the surface along its normal before projecting,
-    // sized to one shadow texel of the chosen cascade. This is what removes
-    // the harsh self-shadow banding on detailed meshes — depth bias alone
-    // cannot fix it without trading acne for peter-panning.
+    // Push receiver off the surface along its normal before projecting,
+    // sized to one cascade shadow texel. Removes harsh self-shadow banding
+    // on detailed meshes that depth bias alone cannot fix without
+    // trading acne for peter-panning.
     float3 OffsetPos = FragmentPos + NormalOffsetWS(Normal, LightDir, CascadeIndex);
 
     float4x4 CascadeVP  = GetShadowViewProjection(Light.ShadowDataIndex, CascadeIndex);
@@ -266,19 +260,16 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     // --- Stage 2: penumbra estimate ---------------------------------------------
     //
     // For an orthographic directional light the penumbra grows linearly with
-    // receiver-to-blocker distance. Depths live in NDC-z [0,1] (a fraction of
-    // the cascade's ortho range), so the delta is already normalized;
-    // PCSS_LightSize absorbs the conversion back to UV space and the sun's
-    // apparent size. At true contact the delta collapses and the filter
-    // shrinks to PCSS_MinFilterRadius — a near-point sample that keeps the
-    // shadow edge glued to the mesh.
+    // receiver-to-blocker distance. Depths are NDC-z [0,1] so the delta is
+    // already normalized; PCSS_LightSize absorbs the conversion to UV space
+    // and sun apparent size. At contact the delta collapses and the filter
+    // shrinks to PCSS_MinFilterRadius, keeping the edge glued to the mesh.
     float DepthDelta   = max(CurrentDepth - AvgBlockerDepth, 0.0);
     float Penumbra     = DepthDelta * PCSS_LightSize;
     float FilterRadius = clamp(Penumbra, PCSS_MinFilterRadius, PCSS_MaxFilterRadius);
 
-    // Low blocker coverage → partial occlusion → pull the filter in slightly.
-    // Mostly a robustness tweak so penumbra doesn't pop when the blocker
-    // count straddles the threshold across cascades.
+    // Low blocker coverage means partial occlusion, so pull the filter in
+    // slightly to keep penumbra stable across cascades.
     float BlockerCoverage = float(NumBlockers) / float(PCSS_BLOCKER_SEARCH_TAPS);
     FilterRadius *= lerp(0.75, 1.0, BlockerCoverage);
 
@@ -351,9 +342,8 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
     }
 
     // ----- Spot / point lights (atlas-based) -----
-    // Atlas stores rasterized NDC z from the shadow VS (PS is a no-op that
-    // lets early-Z reject occluded fragments). Sampling must project through
-    // the same face VP and use ProjCoords.xy/z — not cubemap-direction UV.
+    // Atlas stores rasterized NDC z from the shadow VS. Sampling must project
+    // through the same face VP and use ProjCoords.xy/z, not cubemap UV.
     float3 LightDirToFrag = normalize(Light.Position - FragmentPos);
 
     // Pick the cube face for point lights; spot lights always use face 0.
@@ -380,12 +370,10 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
     float  OffsetScale      = saturate(1.0 - NdotL);
     float3 OffsetPos        = FragmentPos + Normal * (WorldTexel * 1.4 * OffsetScale);
 
-    // Receiver bias: constant + slope + a tile-quantization term. The
-    // rasterized NDC z at a pixel quantizes to ~2/AtlasTileTexels in depth
-    // space, so a fixed 0.00005 that holds at 4096 texels lets the face-lit
-    // receiver self-shadow against its own rasterized triangle at 512 and
-    // below — producing a dimmer square exactly the shape of the face rect
-    // (outside the rect we sample the cleared edge texel and come out lit).
+    // Receiver bias: constant + slope + tile-quantization term. NDC z at a
+    // pixel quantizes to ~2/AtlasTileTexels in depth, so a fixed 0.00005
+    // tuned for 4096 texels self-shadows against its own rasterized
+    // triangle at 512 and below, producing a dimmer face-shaped square.
     float SlopeFactor = sqrt(max(1.0 - NdotL * NdotL, 0.0));
     float Bias        = 0.00005 + 0.0003 * SlopeFactor + 1.5 / max(AtlasTileTexels, 1.0);
 
@@ -394,11 +382,10 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
     float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
     float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
 
-    // Only early-out on z: fragments past the light's far plane aren't lit by
-    // the light anyway. A UV early-out on [0,1] was creating a visible square
-    // where the picked face's cone met the receiver — outside returned fully
-    // lit while inside ran PCF. The atlas sampler (AM_Clamp) already handles
-    // taps that stray beyond the tile.
+    // Only early-out on z: fragments past the light's far plane aren't lit
+    // anyway. A UV early-out on [0,1] created a visible square where the
+    // picked face's cone met the receiver; the atlas sampler (AM_Clamp)
+    // already handles taps that stray beyond the tile.
     if (ProjCoords.z < 0.0 || ProjCoords.z > 1.0)
         return 1.0;
 
@@ -406,11 +393,9 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
 
     float IGN   = frac(52.9829189 * frac(dot(ScreenPos, float2(0.06711056, 0.00583715))));
     float Angle = IGN * TWO_PI;
-    // Filter radius is in atlas UV, but scale it down when the tile is tiny so
-    // the Vogel disk stays inside the face rect. Without the cap, small tiles
-    // see every tap fall outside [0,1] — clamping piled them on the edge texel
-    // (hard square), and skipping dropped them all (the whole face fell back
-    // to a constant). Cap at 30% of the tile's atlas UV extent.
+    // Filter radius is in atlas UV; scale down for tiny tiles so the Vogel
+    // disk stays inside the face rect. Without the cap, small tiles see
+    // every tap fall outside [0,1]. Cap at 30% of the tile's atlas UV extent.
     float TileUVExtent  = min(ShadowTile.AtlasUVScale.x, ShadowTile.AtlasUVScale.y);
     float FilterRadius  = min(0.002, TileUVExtent * 0.3);
 
@@ -423,9 +408,9 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         float2 Offset     = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle) * FilterRadius;
         float2 TileOffset = Offset / max(ShadowTile.AtlasUVScale, float2(1e-6));
         float2 TapUV      = SafeUV + TileOffset;
-        // Skip taps that leave the face rect — under atlas packing those texels
-        // belong to a different light's tile. Falling back to a clamped center
-        // tap below guarantees we always produce at least one valid sample.
+        // Skip taps that leave the face rect: those atlas texels belong to
+        // a different light's tile. The clamped center tap below guarantees
+        // at least one valid sample.
         if (any(TapUV < 0.0) || any(TapUV > 1.0))
         {
             continue;

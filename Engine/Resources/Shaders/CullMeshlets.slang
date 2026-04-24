@@ -95,10 +95,8 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID  : SV_Group
                 continue;
         }
 
-        // Cone cull (cheapest reject before frustum). Sun-aligned views test
-        // against the sun direction with the "entire cone faces away from light"
-        // sign convention; camera/point/spot views test against apex→origin with
-        // the "entire cone faces away from viewer" convention.
+        // Cone cull (cheapest reject before frustum). Sun views test against the
+        // sun direction; camera/point/spot test against apex-to-origin.
         if (!bSkinned && !bNoCull && bHasCone && View.HasFlag(CULL_VIEW_FLAG_CONE))
         {
             if (View.HasFlag(CULL_VIEW_FLAG_SUN_ALIGNED))

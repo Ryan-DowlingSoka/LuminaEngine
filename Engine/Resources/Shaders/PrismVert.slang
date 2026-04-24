@@ -38,11 +38,9 @@ VSOutput VertexMain(VSInput Input)
 {
     VSOutput Output;
 
-    // Pixels -> NDC. Vulkan's native NDC has +Y pointing down, so a
-    // straight [0,size] -> [-1,1] mapping already puts pixel (0,0) at
-    // the top-left. Previously we flipped Y here, which left rectangles
-    // looking correct (they're symmetric) but rendered any asymmetric
-    // content — text glyphs especially — upside down.
+    // Pixels -> NDC. Vulkan's native NDC has +Y pointing down, so a direct
+    // [0,size] -> [-1,1] mapping puts pixel (0,0) at the top-left without a
+    // Y flip. Flipping here inverted asymmetric content like text glyphs.
     float2 Ndc = Input.Position * uPush.InvScreenSize * 2.0 - 1.0;
 
     Output.Position  = float4(Ndc, 0.0, 1.0);

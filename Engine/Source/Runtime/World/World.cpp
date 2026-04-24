@@ -942,10 +942,8 @@ namespace Lumina
         ScriptComponent.UpdateFunc      = ScriptComponent.Script->Reference["Update"];
         ScriptComponent.DetachFunc      = ScriptComponent.Script->Reference["OnDetach"];
 
-        // Bring this entity's per-instance overrides into sync with the current schema — drops
-        // stale fields, inserts missing ones pre-filled with the defaults read from the script.
-        // Then apply the overrides by mutating the `Exports` table the script holds a reference
-        // to; user code reading `Exports.Foo` will observe the override.
+        // Sync per-instance overrides with the current schema, then apply them
+        // by mutating the Exports table the script references.
         if (ScriptComponent.Script->ExportsSchema.IsValid())
         {
             Lua::ReconcileOverrides(

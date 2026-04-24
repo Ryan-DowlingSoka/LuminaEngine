@@ -372,10 +372,8 @@ namespace Lumina
 	class IEventQuery : public IRHIResource { };
 	class ITimerQuery : public IRHIResource { };
 
-	// Hardware pipeline-statistics counters collected between BeginPipelineStats
-	// and EndPipelineStats on a command list. Values reflect exactly what the
-	// GPU saw — no CPU-side approximation. A missing feature (e.g. a counter
-	// the driver doesn't expose) reads back as 0.
+	// Hardware pipeline-statistics counters collected between Begin/EndPipelineStats.
+	// Values reflect exactly what the GPU saw; missing counters read back as 0.
 	struct FPipelineStats
 	{
 		uint64 InputAssemblyVertices    = 0;

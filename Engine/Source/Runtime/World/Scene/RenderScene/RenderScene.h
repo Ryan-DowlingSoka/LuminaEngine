@@ -32,9 +32,8 @@ namespace Lumina
         virtual const FSceneRenderStats&  GetRenderStats() const = 0;
         virtual FSceneRenderSettings&     GetSceneRenderSettings() = 0;
 
-        // Returns the scene's shadow atlas if the scene has one. Forward
-        // rendering owns an atlas; deferred does not (yet) — debug tools
-        // must check for null.
+        // Returns the scene's shadow atlas, or null if the scene has none
+        // (forward has one, deferred does not yet).
         virtual const FShadowAtlas* GetShadowAtlas() const { return nullptr; }
     };
 }

@@ -234,8 +234,8 @@ namespace Lumina
                 {
                     continue;
                 }
-                // Preserve the placed root's world transform — the prefab's source transform is
-                // the authoring-time default and would stomp the placement offset on PIE/refresh.
+                // Preserve the placed root's world transform; the prefab's
+                // source transform would stomp placement on PIE/refresh.
                 if (bIsRoot && ID == entt::type_hash<STransformComponent>::value())
                 {
                     continue;

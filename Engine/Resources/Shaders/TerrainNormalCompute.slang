@@ -1,10 +1,8 @@
-// Standalone compute shader — intentionally does NOT include SceneGlobals.slang.
-// Pulling in scene bindings forces the compute pipeline layout to declare the
-// scene + texture-manager sets (so NormalLayout lands at set 2), and the
-// implicit uHDRSceneColor sampler in that set gets transitioned to SHADER_READ
-// every dispatch, which collides with later LoadOp::Load color-attachment uses
-// of the same image (sync hazard under the Billboard pass). Keeping the shader
-// standalone lets NormalLayout live alone at set 0.
+// Standalone compute shader: does NOT include SceneGlobals.slang.
+// Including scene bindings forces scene + texture-manager sets into the
+// compute layout, causing uHDRSceneColor to transition to SHADER_READ each
+// dispatch and collide with later LoadOp::Load color-attachment uses.
+// Keeping standalone lets NormalLayout live alone at set 0.
 
 // Matches FTerrainNormalParams in TerrainRenderTypes.h.
 struct FTerrainNormalParams
@@ -50,7 +48,7 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
     // Surface tangents T=(1,dHdx,0), B=(0,dHdz,1). Cross = (-dHdx, 1, -dHdz) * norm.
     float3 Normal = normalize(float3(-dHdx, 1.0, -dHdz));
 
-    // Pack XZ slope into [0,1] — Y is reconstructed in the vertex shader.
+    // Pack XZ slope into [0,1]; Y is reconstructed in the vertex shader.
     float2 Packed = Normal.xz * 0.5 + 0.5;
     uNormalOut[int2(X, Y)] = float4(Packed.x, Packed.y, 0.0, 1.0);
 }

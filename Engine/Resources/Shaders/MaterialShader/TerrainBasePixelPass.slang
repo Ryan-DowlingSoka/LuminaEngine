@@ -103,9 +103,8 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
 
     if (LightFlags == LIGHT_FLAG_TYPE_DIRECTIONAL)
     {
-        // Constant safety bias only — normal-offset (NormalOffsetWS below)
-        // handles the slope-driven acne, so a large slope term here would
-        // only buy peter-panning.
+        // Constant safety bias only; NormalOffsetWS below handles the
+        // slope-driven acne, so a large slope term would only cause peter-panning.
         return 0.00015 + 0.0003 * SlopeFactor;
     }
 

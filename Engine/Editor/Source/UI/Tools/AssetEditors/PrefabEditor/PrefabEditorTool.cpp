@@ -338,7 +338,7 @@ namespace Lumina
                 continue;
             }
 
-            // Don't allow destroying the prefab root — a prefab must always have one.
+            // Don't allow destroying the prefab root; a prefab must have one.
             const entt::entity Root = FindPrefabRoot();
             if (Entity == Root)
             {
@@ -386,9 +386,9 @@ namespace Lumina
     {
         entt::registry& WorldRegistry = World->GetEntityRegistry();
 
-        // Resolve the parent root BEFORE creating the new entity — otherwise the freshly created
-        // entity (which already has SPrefabComponent and no parent) would be picked as its own root,
-        // producing a self-parented node that infinite-loops ForEachChild during transform resolve.
+        // Resolve parent root BEFORE creating the new entity. Otherwise the
+        // fresh entity (has SPrefabComponent, no parent) becomes its own root,
+        // self-parenting into an infinite ForEachChild loop.
         const entt::entity Root = FindPrefabRoot();
 
         entt::entity NewEntity = WorldRegistry.create();
@@ -529,7 +529,7 @@ namespace Lumina
                     entt::registry& Registry = World->GetEntityRegistry();
                     if (Registry.valid(Source) && (DropItem == entt::null || Registry.valid(DropItem)))
                     {
-                        // Don't let the user reparent the prefab root — prefab hierarchy stays single-rooted.
+                        // Don't reparent the prefab root; hierarchy stays single-rooted.
                         if (Source != FindPrefabRoot() && DropItem != entt::null)
                         {
                             ECS::Utils::ReparentEntity(Registry, Source, DropItem);

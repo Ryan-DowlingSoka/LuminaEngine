@@ -376,10 +376,9 @@ namespace Lumina
         uint32              bHasSun{};
 
         glm::vec4           CascadeSplits{};
-        // World-space half-extent (sphere radius) of each CSM cascade. Pixel
-        // shaders use this to convert a shadow texel into a world-space length
-        // for normal-offset bias — the offset must shrink as the cascade
-        // tightens or it grows visibly large in cascade 0.
+        // World-space half-extent (sphere radius) of each CSM cascade. Used
+        // to convert a shadow texel into world-space length for normal-offset
+        // bias; must shrink with the cascade or grows large in cascade 0.
         glm::vec4           CascadeRadii{};
 
         glm::vec4           AmbientLight{};
@@ -522,7 +521,7 @@ namespace Lumina
     struct alignas(16) FCullView
     {
         glm::vec4   FrustumPlanes[6];           // 96 B
-        glm::vec4   ViewOriginAndFlags;         // 16 B — xyz=origin, w=asfloat(flags)
+        glm::vec4   ViewOriginAndFlags;         // 16 B: xyz=origin, w=asfloat(flags)
         uint32      DrawListOffset;             // Into uMeshletDrawList
         uint32      DrawListCapacity;           // Max FMeshletDraw entries this view may emit
         uint32      IndirectArgsOffset;         // v * NumDraws
@@ -597,10 +596,9 @@ namespace Lumina
         uint32 IndirectDrawOffset;
     };
     
-    // CPU-side scene stats. Only tracks counters the GPU can't see directly
-    // (batch/cull/material bookkeeping); draw-time counters like triangles,
-    // VS/FS invocations, and draw/instance counts now come from Vulkan
-    // pipeline-statistics queries — see FPipelineStats / FGPUProfileFrame.
+    // CPU-side scene stats (batch/cull/material bookkeeping). Draw-time
+    // counters like triangles and VS/FS invocations come from Vulkan
+    // pipeline-statistics queries: see FPipelineStats / FGPUProfileFrame.
     struct FSceneRenderStats
     {
         uint64 NumBatches = 0;            // Unique pipeline/material batches built this frame
