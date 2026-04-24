@@ -16,8 +16,6 @@ namespace Lumina
 
         NODISCARD bool IsInside(const glm::vec3& Point)
         {
-            LUMINA_PROFILE_SCOPE();
-            
             for (int i = 0; i < NUM; i++)
             {
                 const glm::vec4& p = Planes[i];
@@ -36,8 +34,6 @@ namespace Lumina
         // used for cheap broad-phase culling, not exact visibility.
         NODISCARD bool IntersectsSphere(const glm::vec3& Center, float Radius) const
         {
-            LUMINA_PROFILE_SCOPE();
-
             for (int i = 0; i < NUM; ++i)
             {
                 const glm::vec4& P = Planes[i];
@@ -52,8 +48,6 @@ namespace Lumina
 
         NODISCARD bool IsInside(const FAABB& aabb)
         {
-            LUMINA_PROFILE_SCOPE();
-
             for (int i = 0; i < NUM; i++)
             {
                 const glm::vec4& p = Planes[i];

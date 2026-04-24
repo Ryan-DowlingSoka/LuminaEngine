@@ -322,19 +322,66 @@ namespace Lumina::Import::Mesh::GLTF
             }
         }
 
+        // Optimize and emit every resource that actually received vertices.
+        // Previously only the resource handled by the LAST primitive was
+        // optimized, and the other (static/skinned) was shipped unmodified.
+        auto FinalizeResource = [&](TUniquePtr<FMeshResource>& Resource)
+        {
+            if (!Resource || Resource->GetNumVertices() == 0)
+            {
+                return;
+            }
+
+            if (ImportOptions.bOptimize)
+            {
+                OptimizeNewlyImportedMesh(*Resource);
+            }
+
+            GenerateShadowBuffers(*Resource);
+            GenerateMeshlets(*Resource);
+            AnalyzeMeshStatistics(*Resource, ImportData.MeshStatistics);
+
+            ImportData.Resources.push_back(eastl::move(Resource));
+        };
+
+        // Merge mode collapses every GLTF mesh into a single static/skinned
+        // pair. Primitives that reference the same GLTF material are folded
+        // onto one local material slot so the final asset has the minimum
+        // number of slots rather than one per primitive.
+        TUniquePtr<FMeshResource> MergedStaticMesh;
+        TUniquePtr<FMeshResource> MergedSkinnedMesh;
+        THashMap<int16, int16>    MergedMaterialRemap;
+
+        if (ImportOptions.bMergeMeshes)
+        {
+            MergedStaticMesh = MakeUnique<FMeshResource>();
+            MergedStaticMesh->Vertices = TVector<FVertex>();
+            MergedStaticMesh->Name = FString(Name.begin(), Name.end()) + "_Mesh";
+
+            MergedSkinnedMesh = MakeUnique<FMeshResource>();
+            MergedSkinnedMesh->Vertices = TVector<FSkinnedVertex>();
+            MergedSkinnedMesh->bSkinnedMesh = true;
+            MergedSkinnedMesh->Name = FString(Name.begin(), Name.end()) + "_SkeletalMesh";
+        }
+
         THashSet<FString> SeenMeshes;
         for (const fastgltf::Mesh& Mesh : Asset.meshes)
         {
             FString SanitizedMeshName = Mesh.name.c_str();
             eastl::replace(SanitizedMeshName.begin(), SanitizedMeshName.end(), '.', '_');
 
-            auto It = SeenMeshes.find(SanitizedMeshName.c_str());
-            if (It != SeenMeshes.end())
+            // When every mesh lands in the same asset there is no path
+            // collision to defend against, so skipping same-named meshes
+            // would just drop geometry.
+            if (!ImportOptions.bMergeMeshes)
             {
-                continue;
+                auto It = SeenMeshes.find(SanitizedMeshName.c_str());
+                if (It != SeenMeshes.end())
+                {
+                    continue;
+                }
+                SeenMeshes.emplace(SanitizedMeshName);
             }
-
-            SeenMeshes.emplace(SanitizedMeshName);
 
             FFixedString MeshName;
             if (Mesh.name.empty())
@@ -346,14 +393,30 @@ namespace Lumina::Import::Mesh::GLTF
                 MeshName.append_convert(SanitizedMeshName);
             }
 
-            auto StaticMesh = MakeUnique<FMeshResource>();
-            StaticMesh->Vertices = TVector<FVertex>();
-            StaticMesh->Name = FString(MeshName) + "_Mesh";
+            TUniquePtr<FMeshResource> LocalStaticMesh;
+            TUniquePtr<FMeshResource> LocalSkinnedMesh;
+            FMeshResource* StaticTarget = nullptr;
+            FMeshResource* SkinnedTarget = nullptr;
 
-            auto SkinnedMesh = MakeUnique<FMeshResource>();
-            SkinnedMesh->Vertices = TVector<FSkinnedVertex>();
-            SkinnedMesh->bSkinnedMesh = true;
-            SkinnedMesh->Name = FString(MeshName) + "_SkeletalMesh";
+            if (ImportOptions.bMergeMeshes)
+            {
+                StaticTarget  = MergedStaticMesh.get();
+                SkinnedTarget = MergedSkinnedMesh.get();
+            }
+            else
+            {
+                LocalStaticMesh = MakeUnique<FMeshResource>();
+                LocalStaticMesh->Vertices = TVector<FVertex>();
+                LocalStaticMesh->Name = FString(MeshName) + "_Mesh";
+
+                LocalSkinnedMesh = MakeUnique<FMeshResource>();
+                LocalSkinnedMesh->Vertices = TVector<FSkinnedVertex>();
+                LocalSkinnedMesh->bSkinnedMesh = true;
+                LocalSkinnedMesh->Name = FString(MeshName) + "_SkeletalMesh";
+
+                StaticTarget  = LocalStaticMesh.get();
+                SkinnedTarget = LocalSkinnedMesh.get();
+            }
 
             FMeshResource* NewResource = nullptr;
             for (auto& Primitive : Mesh.primitives)
@@ -362,16 +425,16 @@ namespace Lumina::Import::Mesh::GLTF
                 auto Weights = Primitive.findAttribute("WEIGHTS_0");
                 if (Joints != Primitive.attributes.end() && Weights != Primitive.attributes.end())
                 {
-                    NewResource = SkinnedMesh.get();
+                    NewResource = SkinnedTarget;
                 }
                 else
                 {
-                    NewResource = StaticMesh.get();
+                    NewResource = StaticTarget;
                 }
-                
+
                 FGeometrySurface NewSurface;
                 NewSurface.StartIndex = (uint32)NewResource->GetNumIndices();
-                
+
                 FFixedString PrimitiveName;
                 if (Mesh.name.empty())
                 {
@@ -380,13 +443,36 @@ namespace Lumina::Import::Mesh::GLTF
                 else
                 {
                     PrimitiveName.append_convert(Mesh.name);
+                    if (ImportOptions.bMergeMeshes)
+                    {
+                        PrimitiveName.append("_");
+                        PrimitiveName.append_convert(eastl::to_string(NewResource->GetNumSurfaces()));
+                    }
                 }
-                
+
                 NewSurface.ID = PrimitiveName;
-                
+
                 if (Primitive.materialIndex.has_value())
                 {
-                    NewSurface.MaterialIndex = (int16)Primitive.materialIndex.value();
+                    const int16 SourceMaterialIndex = (int16)Primitive.materialIndex.value();
+                    if (ImportOptions.bMergeMeshes)
+                    {
+                        auto MatIt = MergedMaterialRemap.find(SourceMaterialIndex);
+                        if (MatIt == MergedMaterialRemap.end())
+                        {
+                            const int16 NewSlot = (int16)MergedMaterialRemap.size();
+                            MergedMaterialRemap.emplace(SourceMaterialIndex, NewSlot);
+                            NewSurface.MaterialIndex = NewSlot;
+                        }
+                        else
+                        {
+                            NewSurface.MaterialIndex = MatIt->second;
+                        }
+                    }
+                    else
+                    {
+                        NewSurface.MaterialIndex = SourceMaterialIndex;
+                    }
                 }
                 
                 size_t InitialIndex = NewResource->GetNumIndices();
@@ -474,34 +560,21 @@ namespace Lumina::Import::Mesh::GLTF
                 }
                 
                 NewSurface.IndexCount = (uint32)NewResource->GetNumIndices() - NewSurface.StartIndex;
-                
+
                 NewResource->GeometrySurfaces.push_back(NewSurface);
             }
-            
-            // Optimize and emit every resource that actually received vertices.
-            // Previously only the resource handled by the LAST primitive was
-            // optimized, and the other (static/skinned) was shipped unmodified.
-            auto FinalizeResource = [&](TUniquePtr<FMeshResource>& Resource)
+
+            if (!ImportOptions.bMergeMeshes)
             {
-                if (!Resource || Resource->GetNumVertices() == 0)
-                {
-                    return;
-                }
+                FinalizeResource(LocalStaticMesh);
+                FinalizeResource(LocalSkinnedMesh);
+            }
+        }
 
-                if (ImportOptions.bOptimize)
-                {
-                    OptimizeNewlyImportedMesh(*Resource);
-                }
-
-                GenerateShadowBuffers(*Resource);
-                GenerateMeshlets(*Resource);
-                AnalyzeMeshStatistics(*Resource, ImportData.MeshStatistics);
-
-                ImportData.Resources.push_back(eastl::move(Resource));
-            };
-
-            FinalizeResource(StaticMesh);
-            FinalizeResource(SkinnedMesh);
+        if (ImportOptions.bMergeMeshes)
+        {
+            FinalizeResource(MergedStaticMesh);
+            FinalizeResource(MergedSkinnedMesh);
         }
 
         return Move(ImportData);

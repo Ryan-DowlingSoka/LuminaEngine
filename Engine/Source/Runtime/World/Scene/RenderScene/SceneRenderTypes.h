@@ -625,6 +625,11 @@ namespace Lumina
         uint8 bShadowOcclusionCull:1    = true;
         uint8 bWireframe:1              = false;
         uint8 bDrawBillboards:1         = true;
+        // CPU-side pre-upload reject of instances that fall outside every
+        // possible contributing view (camera + sun-swept shadow frustum +
+        // shadow-casting light spheres). Saves per-surface batch work and
+        // shrinks the Instance SSBO upload; GPU meshlet cull still runs.
+        uint8 bCPUInstanceCull:1        = true;
     };
     
 }

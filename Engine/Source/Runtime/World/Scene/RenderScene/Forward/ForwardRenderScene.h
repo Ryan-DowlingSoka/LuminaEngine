@@ -4,6 +4,7 @@
 #include "Renderer/Vertex.h"
 #include "World/Scene/RenderScene/MeshDrawCommand.h"
 #include "World/Scene/RenderScene/RenderScene.h"
+#include "World/Scene/RenderScene/SceneCullContext.h"
 
 
 namespace Lumina
@@ -192,6 +193,18 @@ namespace Lumina
 
         void ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
         void ProcessSkeletalMeshEntityInternal(entt::entity Entity, const SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
+
+        /**
+         * Populates SceneCullContext with the main camera frustum, the sun-
+         * swept shadow frustum (if a directional light is present), and one
+         * sphere per shadow-casting point / spot light. Runs serially before
+         * the parallel mesh gather so the context is immutable during the
+         * parallel phase.
+         *
+         * Thread-safe reads of ECS components — this is called on the render
+         * thread while no ECS mutation is in flight.
+         */
+        void BuildSceneCullContext();
         void MergeMeshDrawData(TVector<FThreadLocalDrawData>& ThreadLocal);
         
         void ProcessPointLight(const SPointLightComponent& PointLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount);
@@ -310,6 +323,14 @@ namespace Lumina
         /** Packed array of per-instance descriptors uploaded to ENamedBuffer::Instance. */
         TVector<FGPUInstance>                   Instances;
         TVector<glm::mat4>                      BonesData;
+
+        /**
+         * Per-frame CPU reject volumes. Built at the top of CompileDrawCommands
+         * (serially, fast — only needs the sun direction and shadow-caster
+         * positions) and consumed by the parallel Process*Mesh tasks. Entries
+         * are read-only during parallel gather.
+         */
+        FSceneCullContext                       SceneCullContext;
         
         FShadowAtlas                            ShadowAtlas;
         

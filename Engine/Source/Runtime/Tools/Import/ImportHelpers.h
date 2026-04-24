@@ -67,6 +67,7 @@ namespace Lumina::Import
             bool bImportSkeleton    = true;
             bool bFlipNormals       = false;
             bool bFlipUVs           = false;
+            bool bMergeMeshes       = false;
             float Scale             = 1.0f;
         };
 

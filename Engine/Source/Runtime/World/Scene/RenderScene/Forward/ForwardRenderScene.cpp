@@ -314,6 +314,11 @@ namespace Lumina
             
             ResolveDirtyTransforms();
 
+            // Build the per-frame CPU reject volumes (camera frustum, sun-
+            // swept shadow frustum, shadow-casting light spheres) before any
+            // parallel gather fires so each worker can query it lock-free.
+            BuildSceneCullContext();
+
             const size_t EntityCount       = StaticView.size_hint() + SkeletalView.size_hint();
             const size_t EstimatedProxies  = EntityCount * 2;
 
@@ -824,20 +829,37 @@ namespace Lumina
             return;
         }
 
+        const glm::mat4& TransformMatrix = TransformComponent.CachedMatrix;
+
+        // Compute world bounds first so we can reject before paying the cost
+        // of resolving mesh addresses, iterating surfaces, looking up batches
+        // and emplacing FProcessedDrawItem entries. BoundsScale lets assets
+        // inflate the cull sphere when animation or displacement pushes
+        // geometry beyond the asset-baked AABB.
+        const float     CullScale   = glm::max(MeshComponent.BoundsScale, 1.0f);
+        const FAABB     BoundingBox = Mesh->GetAABB().ToWorld(TransformMatrix);
+        const glm::vec3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
+        const glm::vec3 Extents     = BoundingBox.Max - Center;
+        const float     Radius      = glm::length(Extents) * CullScale;
+        const glm::vec4 SphereBounds = glm::vec4(Center, Radius);
+
+        if (!SceneCullContext.ShouldKeep(
+                Center,
+                Radius,
+                MeshComponent.bCastShadow,
+                MeshComponent.MaxDrawDistance,
+                glm::vec3(SceneGlobalData.CameraData.Location)))
+        {
+            ++Local.Stats.NumInstancesCulled;
+            return;
+        }
+
         const FMeshResource& Resource = Mesh->GetMeshResource();
         const uint64 VBAddress = Mesh->GetVertexBuffer()->GetAddress();
         const uint64 ShadowIBAddress = Mesh->GetShadowIndexBuffer()->GetAddress();
         const uint64 MeshletHeaderAddress = Mesh->GetMeshBuffers().MeshletHeaderBuffer
             ? Mesh->GetMeshBuffers().MeshletHeaderBuffer->GetAddress()
             : 0ull;
-
-        const glm::mat4& TransformMatrix = TransformComponent.CachedMatrix;
-
-        const FAABB     BoundingBox = Mesh->GetAABB().ToWorld(TransformMatrix);
-        const glm::vec3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
-        const glm::vec3 Extents     = BoundingBox.Max - Center;
-        const float     Radius      = glm::length(Extents);
-        const glm::vec4 SphereBounds = glm::vec4(Center, Radius);
 
         // Screen-space coverage proxy: an object with radius r at distance d
         // subtends angular diameter ~ 2r/d. We square both sides to skip the
@@ -945,18 +967,34 @@ namespace Lumina
             return;
         }
 
+        const glm::mat4 TransformMatrix = TransformComponent.GetWorldMatrix();
+
+        // Reject before uploading per-bone data — the bone copy below is the
+        // biggest per-entity cost for skeletal paths. Bind-pose AABB is a
+        // conservative envelope of typical animation; BoundsScale can inflate
+        // it when animations push geometry outside the asset bounds.
+        const float     CullScale   = glm::max(MeshComponent.BoundsScale, 1.0f);
+        const FAABB     BoundingBox = Mesh->GetAABB().ToWorld(TransformMatrix);
+        const glm::vec3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
+        const glm::vec3 Extents     = BoundingBox.Max - Center;
+        const float     Radius      = glm::length(Extents) * CullScale;
+        const glm::vec4 SphereBounds = glm::vec4(Center, Radius);
+
+        if (!SceneCullContext.ShouldKeep(
+                Center,
+                Radius,
+                MeshComponent.bCastShadow,
+                MeshComponent.MaxDrawDistance,
+                glm::vec3(SceneGlobalData.CameraData.Location)))
+        {
+            ++Local.Stats.NumInstancesCulled;
+            return;
+        }
+
         const FMeshResource& Resource = Mesh->GetMeshResource();
 
         const uint32 LocalBoneOffset = (uint32)Local.BonesData.size();
         Local.BonesData.insert(Local.BonesData.end(), MeshComponent.BoneTransforms.begin(), MeshComponent.BoneTransforms.end());
-
-        const glm::mat4 TransformMatrix = TransformComponent.GetWorldMatrix();
-
-        const FAABB     BoundingBox = Mesh->GetAABB().ToWorld(TransformMatrix);
-        const glm::vec3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
-        const glm::vec3 Extents     = BoundingBox.Max - Center;
-        const float     Radius      = glm::length(Extents);
-        const glm::vec4 SphereBounds = glm::vec4(Center, Radius);
 
         // See static-mesh path for the angular-size reasoning; skinned bind-
         // pose bounds are conservative but fine for this coarse test.
@@ -1065,13 +1103,16 @@ namespace Lumina
         // It's a few KB even at 500K instances, so it's fine.
         TVector<uint32> ThreadBoneBase(NumThreads, 0u);
         uint32 TotalInstances = 0;
+        uint64 TotalInstancesCulled = 0;
         for (uint32 t = 0; t < NumThreads; ++t)
         {
             FThreadLocalDrawData& Local = ThreadLocal[t];
             ThreadBoneBase[t] = (uint32)BonesData.size();
             BonesData.insert(BonesData.end(), Local.BonesData.begin(), Local.BonesData.end());
             TotalInstances += (uint32)Local.Items.size();
+            TotalInstancesCulled += Local.Stats.NumInstancesCulled;
         }
+        RenderStats.NumInstancesCulled += TotalInstancesCulled;
 
         if (TotalInstances == 0)
         {
@@ -1307,6 +1348,95 @@ namespace Lumina
     bool FForwardRenderScene::ShouldRequestShadow(const glm::vec3& LightPosition, float LightRadius) const
     {
         return SceneGlobalData.CullData.Frustum.IntersectsSphere(LightPosition, LightRadius);
+    }
+
+    void FForwardRenderScene::BuildSceneCullContext()
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        SceneCullContext.Reset();
+        SceneCullContext.bEnabled = RenderSettings.bCPUInstanceCull;
+        SceneCullContext.Frustum  = SceneGlobalData.CullData.Frustum;
+
+        if (!SceneCullContext.bEnabled)
+        {
+            return;
+        }
+
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+
+        // Sun direction — serialized lookup of the first enabled directional
+        // light. Matches the behavior of ProcessDirectionalLight (last-writer
+        // wins, which is fine for a single scene sun). Using a non-normalized
+        // value produces a degenerate sweep, so guard against that.
+        auto DirectionalView = Registry.view<SDirectionalLightComponent>(entt::exclude<SDisabledTag>);
+        for (entt::entity Entity : DirectionalView)
+        {
+            const SDirectionalLightComponent& Light = DirectionalView.get<SDirectionalLightComponent>(Entity);
+            const float DirLenSq = glm::dot(Light.Direction, Light.Direction);
+            if (DirLenSq > 0.0001f)
+            {
+                SceneCullContext.SunDirection = glm::normalize(Light.Direction);
+                SceneCullContext.bHasSun      = true;
+                break;
+            }
+        }
+
+        if (SceneCullContext.bHasSun)
+        {
+            // Sweep the camera frustum along the sun direction so casters that
+            // live outside the camera view but between sun and view still get
+            // kept. Distance must match the ShadowSweepDistance used when
+            // CullData.ShadowFrustum is built (see CompileDrawCommands), or
+            // instances near the sweep boundary get dropped here while the
+            // GPU cull pass still wants them.
+            constexpr float ShadowSweepDistance = 2000.0f;
+            SceneCullContext.SunShadowFrustum = SceneCullContext.Frustum.Extruded(
+                SceneCullContext.SunDirection, ShadowSweepDistance);
+        }
+
+        // Shadow-casting local lights. Their influence region is a sphere
+        // around the light position with the attenuation radius; any mesh
+        // inside that sphere could cast a shadow for this light, regardless
+        // of whether it's in the camera frustum. Only collect lights whose
+        // shadow sphere itself intersects the camera frustum — a shadow
+        // caster outside the camera view casting for a light also outside
+        // the view can't affect any visible pixel.
+        auto PointView = Registry.view<SPointLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+        for (entt::entity Entity : PointView)
+        {
+            const SPointLightComponent& Light    = PointView.get<SPointLightComponent>(Entity);
+            if (!Light.bCastShadows)
+            {
+                continue;
+            }
+            const STransformComponent&  Transform = PointView.get<STransformComponent>(Entity);
+            const glm::vec3 Position = Transform.WorldTransform.Location;
+            const float     Radius   = Light.Attenuation;
+            if (!SceneCullContext.Frustum.IntersectsSphere(Position, Radius))
+            {
+                continue;
+            }
+            SceneCullContext.ShadowLights.push_back({ Position, Radius });
+        }
+
+        auto SpotView = Registry.view<SSpotLightComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+        for (entt::entity Entity : SpotView)
+        {
+            const SSpotLightComponent& Light    = SpotView.get<SSpotLightComponent>(Entity);
+            if (!Light.bCastShadows)
+            {
+                continue;
+            }
+            const STransformComponent& Transform = SpotView.get<STransformComponent>(Entity);
+            const glm::vec3 Position = Transform.WorldTransform.Location;
+            const float     Radius   = Light.Attenuation;
+            if (!SceneCullContext.Frustum.IntersectsSphere(Position, Radius))
+            {
+                continue;
+            }
+            SceneCullContext.ShadowLights.push_back({ Position, Radius });
+        }
     }
 
     void FForwardRenderScene::ProcessPointLight(const SPointLightComponent& PointLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount)

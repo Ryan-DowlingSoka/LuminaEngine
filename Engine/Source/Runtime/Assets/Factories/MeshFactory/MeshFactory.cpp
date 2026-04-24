@@ -225,7 +225,14 @@ namespace Lumina
                 Options.bFlipNormals);
             
             AddSectionHeader("Advanced");
-        
+
+            AddCheckboxRow(LE_ICON_ANIMATION, "Merge Meshes",
+                "Combine every mesh in the source file into a single asset. "
+                "Primitives that share a source material are folded onto the "
+                "same material slot. Ideal for kit-bash scenes where thousands "
+                "of parts should import as one unit.",
+                Options.bMergeMeshes);
+
             ImGui::EndTable();
         }
         ImGui::PopStyleVar();
@@ -703,8 +710,26 @@ namespace Lumina
             NewMesh->SetFlag(OF_NeedsPostLoad);
 
 
+            // Size the material slot array from the highest referenced
+            // surface index, not the surface count: merge-mode imports
+            // dedup primitives onto shared slots, and any importer that
+            // references a sparse source index needs every slot up to it.
+            size_t MaterialSlotCount = 0;
+            bool   bAnyExplicitMaterial = false;
+            for (const FGeometrySurface& Surface : MeshResource->GeometrySurfaces)
+            {
+                if (Surface.MaterialIndex >= 0)
+                {
+                    bAnyExplicitMaterial = true;
+                    MaterialSlotCount = eastl::max(MaterialSlotCount, (size_t)Surface.MaterialIndex + 1);
+                }
+            }
+            if (!bAnyExplicitMaterial)
+            {
+                MaterialSlotCount = MeshResource->GeometrySurfaces.size();
+            }
             NewMesh->Materials.clear();
-            NewMesh->Materials.resize(MeshResource->GeometrySurfaces.size());
+            NewMesh->Materials.resize(MaterialSlotCount);
 
             NewMesh->MeshResources = Move(MeshResource);
             CreatedObjects.push_back(NewMesh);
