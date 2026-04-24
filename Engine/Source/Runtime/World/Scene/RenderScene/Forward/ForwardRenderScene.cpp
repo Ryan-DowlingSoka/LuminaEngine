@@ -162,65 +162,80 @@ namespace Lumina
         ResetPass(CmdList);
         CompileDrawCommands(CmdList);
         
-        { 
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cull", FColor(1.00f, 0.40f, 0.70f)); 
-            CullPass(CmdList); 
-        }
-        
         {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth PrePass", FColor(1.00f, 0.55f, 0.20f)); 
-            DepthPrePass(CmdList);
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cull Early", FColor(1.00f, 0.40f, 0.70f));
+            CullPassEarly(CmdList);
         }
-        
+
         {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cluster Build", FColor(0.95f, 0.30f, 0.55f)); 
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth PrePass Early", FColor(1.00f, 0.55f, 0.20f));
+            DepthPrePassEarly(CmdList);
+        }
+
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth Pyramid (Mid)", FColor(1.00f, 0.75f, 0.30f));
+            DepthPyramidPass(CmdList);
+        }
+
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cull Late", FColor(1.00f, 0.30f, 0.55f));
+            CullPassLate(CmdList);
+        }
+
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth PrePass Late", FColor(1.00f, 0.65f, 0.30f));
+            DepthPrePassLate(CmdList);
+        }
+
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cluster Build", FColor(0.95f, 0.30f, 0.55f));
             ClusterBuildPass(CmdList);
         }
-        
+
         {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Light Cull", FColor(0.95f, 0.30f, 0.55f)); 
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Light Cull", FColor(0.95f, 0.30f, 0.55f));
             LightCullPass(CmdList);
         }
-        
-        { 
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Point Shadows", FColor(0.85f, 0.10f, 0.55f));
-            PointShadowPass(CmdList); 
-        
-        }
-        
-        { 
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Spot Shadows", FColor(0.75f, 0.10f, 0.55f)); 
-            SpotShadowPass(CmdList); 
-        
-        }
-        
+
         {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cascaded Shadows", FColor(0.85f, 0.10f, 0.55f)); 
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Point Shadows", FColor(0.85f, 0.10f, 0.55f));
+            PointShadowPass(CmdList);
+
+        }
+
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Spot Shadows", FColor(0.75f, 0.10f, 0.55f));
+            SpotShadowPass(CmdList);
+
+        }
+
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cascaded Shadows", FColor(0.85f, 0.10f, 0.55f));
             CascadedShowPass(CmdList);
         }
-        
+
         {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Environment", FColor(0.20f, 0.80f, 0.30f)); 
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Environment", FColor(0.20f, 0.80f, 0.30f));
             EnvironmentPass(CmdList);
         }
-        
+
         {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Update", FColor(0.20f, 0.70f, 0.50f)); 
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Update", FColor(0.20f, 0.70f, 0.50f));
             TerrainUpdatePass(CmdList);
         }
-        
+
         {
             GPU_PROFILE_SCOPE_COLOR(&CmdList, "Base Pass", FColor(0.95f, 0.20f, 0.20f));
             BasePass(CmdList);
         }
-        
+
         {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Render", FColor(0.20f, 0.70f, 0.50f)); 
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Render", FColor(0.20f, 0.70f, 0.50f));
             TerrainRenderPass(CmdList);
         }
-        
+
         {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth Pyramid", FColor(1.00f, 0.55f, 0.20f)); 
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth Pyramid (End)", FColor(1.00f, 0.55f, 0.20f));
             DepthPyramidPass(CmdList);
         }
         
@@ -606,7 +621,9 @@ namespace Lumina
 
         // Shared meshlet draw list: NumViews * TotalMeshletBound FMeshletDraw
         // entries (sizeof(FMeshletDraw) == 2 * sizeof(uint32)). Each view owns
-        // a disjoint slice addressed by FCullView.DrawListOffset.
+        // a disjoint slice addressed by FCullView.DrawListOffset. NumCullViews
+        // here already includes the appended camera-late view, so its slice is
+        // pre-allocated contiguously after the last shadow view.
         const SIZE_T MeshletDrawListSize = glm::max<SIZE_T>(
             sizeof(uint32) * 2,
             (SIZE_T)NumCullViews * (SIZE_T)TotalMeshletBound * sizeof(uint32) * 2);
@@ -620,6 +637,14 @@ namespace Lumina
             sizeof(FCullView),
             (SIZE_T)NumCullViews * sizeof(FCullView));
 
+        // Worst-case defer list: every camera meshlet is HZB-occluded in
+        // phase 0 (e.g. first frame where previous HZB is cleared). Sizing to
+        // TotalMeshletBound entries (sizeof(FMeshletDeferred) == 4 * uint32)
+        // matches CullMeshlets.slang's FMeshletDeferred stride.
+        const SIZE_T DeferListSize = glm::max<SIZE_T>(
+            sizeof(uint32) * 4,
+            (SIZE_T)TotalMeshletBound * sizeof(uint32) * 4);
+
         bool bAnyBufferResized = false;
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Instance], (uint32)InstanceSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::SimpleVertex], (uint32)SimpleVertexSize, 1.2f);
@@ -629,6 +654,7 @@ namespace Lumina
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::CullView], (uint32)CullViewSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletDrawList], (uint32)MeshletDrawListSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::IndirectArgs], (uint32)IndirectArgsSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletDeferList], (uint32)DeferListSize, 1.2f);
 
         if (bAnyBufferResized)
         {
@@ -1819,12 +1845,16 @@ namespace Lumina
 
         // Pre-size IndirectArgs to exact view count. AllocateShadowTiles has
         // already guaranteed NumViews <= GMaxCullViews by dropping far shadow
-        // requests, so no clamp is needed here.
+        // requests, so no clamp is needed here. We also budget +1 view for
+        // the camera-late phase (two-pass occlusion re-test); it's appended
+        // last so existing CascadeViewBase / PointShadowCullViewBases /
+        // SpotShadowCullViewBases indices stay valid.
         const uint32 NumViews =
-            1u +                                                        // Camera
+            1u +                                                        // Camera (early)
             (LightData.bHasSun ? (uint32)NumCascades : 0u) +            // CSM cascades
             (uint32)PackedShadows[(uint32)ELightType::Point].size() * 6u +
-            (uint32)PackedShadows[(uint32)ELightType::Spot].size();
+            (uint32)PackedShadows[(uint32)ELightType::Spot].size() +
+            1u;                                                         // Camera (late, phase 1)
 
         ASSERT(NumViews <= (uint32)GMaxCullViews);
 
@@ -1832,6 +1862,7 @@ namespace Lumina
         IndirectArgs.assign((size_t)NumViews * (size_t)NumDraws, FDrawIndirectArguments{});
 
         CascadeViewBase = ~0u;
+        CameraLateViewIndex = ~0u;
         PointShadowCullViewBases.clear();
         PointShadowCullViewBases.reserve(PackedShadows[(uint32)ELightType::Point].size());
         SpotShadowCullViewBases.clear();
@@ -1914,6 +1945,22 @@ namespace Lumina
 
             SpotShadowCullViewBases.push_back((uint32)CullViews.size());
             PushView(ShadowData.ViewProjection[0], Light.Position, SpotFlags);
+        }
+
+        // Camera-late view. Phase 1 (CullPassLate) re-tests the defer list
+        // against the rebuilt Hi-Z pyramid and emits survivors into this
+        // view's slice. PhaseLate flag tells CullMeshlets phase 0 to skip
+        // it (phase 1 owns it) and the flag set excludes Frustum/Cone
+        // because those already ran on the defer-list entries in phase 0.
+        // Only the Occlusion flag's accompanying HZB test matters here.
+        {
+            const glm::mat4 CameraVP = ViewVolume.GetProjectionMatrix() * ViewVolume.GetViewMatrix();
+            const uint32 CameraLateFlags =
+                ECullViewFlags::Occlusion |
+                ECullViewFlags::PhaseLate;
+
+            CameraLateViewIndex = (uint32)CullViews.size();
+            PushView(CameraVP, ViewVolume.GetViewPosition(), CameraLateFlags);
         }
     }
 
@@ -2200,6 +2247,7 @@ namespace Lumina
         MaxMeshletsPerInstance = 0;
         TotalMeshletBound = 0;
         NumDrawsPerView = 0;
+        CameraLateViewIndex = ~0u;
         Instances.clear();
         LightData = {};
         ShadowDataCount.store(0, std::memory_order_release);
@@ -2220,14 +2268,27 @@ namespace Lumina
         }
     }
 
-    void FForwardRenderScene::CullPass(ICommandList& CmdList)
+    // Shared push-constant block consumed by CullMeshlets.slang. Phase
+    // selects early vs late; NumViews is only read by the early path and
+    // CameraLateViewIndex is only read by the late path. Padding matches
+    // the shader so the driver can hand us back a stable layout even if
+    // later flags get added.
+    struct FCullMeshletPushConstants
+    {
+        uint32 NumViews;
+        uint32 Phase;
+        uint32 CameraLateViewIndex;
+        uint32 _Pad;
+    };
+
+    void FForwardRenderScene::CullPassEarly(ICommandList& CmdList)
     {
         if (DrawCommands.empty() || CullViews.empty() || MaxMeshletsPerInstance == 0)
         {
             return;
         }
 
-        LUMINA_PROFILE_SECTION_COLORED("Cull Pass", tracy::Color::Pink2);
+        LUMINA_PROFILE_SECTION_COLORED("Cull Pass (Early)", tracy::Color::Pink2);
 
         const uint32 Num = (uint32)Instances.size();
         if (Num == 0)
@@ -2235,11 +2296,16 @@ namespace Lumina
             return;
         }
 
-        // One dispatch owns every view (camera + CSM cascades + per-face point
-        // + per-spot). CullMeshlets tests each (instance, meshlet) against
-        // every FCullView, and surviving pairs are atomically appended into
-        // that view's private slice of uMeshletDrawList with InstanceCount
-        // incremented at uIndirectArgs[View.IndirectArgsOffset + DrawID].
+        // Zero the defer counter before any thread appends. DeferList entries
+        // beyond uDeferCount are garbage; phase 1 threads past the counter
+        // early-out without reading them, so only the counter needs wiping.
+        CmdList.FillBuffer(GetNamedBuffer(ENamedBuffer::DeferCount), 0u);
+
+        // One dispatch owns every non-late view (camera-early, CSM cascades,
+        // per-face point, per-spot). Camera meshlets that fail the stale HZB
+        // don't drop; they queue on uMeshletDeferList for phase 1 to retry
+        // against the rebuilt HZB. Shadow views have no Occlusion flag, so
+        // they emit directly without touching the defer path.
         FRHIComputeShaderRef CullShader = FShaderLibrary::GetComputeShader("CullMeshlets.slang");
 
         FComputePipelineDesc PipelineDesc;
@@ -2255,8 +2321,10 @@ namespace Lumina
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         CmdList.SetComputeState(State);
 
-        struct { uint32 NumViews; } PC;
-        PC.NumViews = (uint32)CullViews.size();
+        FCullMeshletPushConstants PC = {};
+        PC.NumViews            = (uint32)CullViews.size();
+        PC.Phase               = (uint32)ECullPhase::Early;
+        PC.CameraLateViewIndex = CameraLateViewIndex;
         CmdList.SetPushConstants(&PC, sizeof(PC));
 
         const uint32 MeshletGroupsX = (MaxMeshletsPerInstance + 63) / 64;
@@ -2268,28 +2336,84 @@ namespace Lumina
         CmdList.Dispatch(MeshletGroupsX, DispatchY, DispatchZ);
     }
 
-    void FForwardRenderScene::DepthPrePass(ICommandList& CmdList)
+    void FForwardRenderScene::CullPassLate(ICommandList& CmdList)
     {
-        if (OpaqueOccluderDrawList.empty())
+        if (DrawCommands.empty() || CullViews.empty() || TotalMeshletBound == 0)
         {
             return;
         }
-        
-        LUMINA_PROFILE_SECTION_COLORED("Pre-Depth Pass", tracy::Color::Orange);
 
+        if (CameraLateViewIndex == ~0u)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Cull Pass (Late)", tracy::Color::Pink3);
+
+        // Dispatch covers the worst case: every camera meshlet was deferred.
+        // Threads past uDeferCount (a GPU value) early-out; we don't have an
+        // indirect-dispatch readback here because it would cost a round-trip
+        // and the dispatch is tiny anyway at typical occlusion rates.
+        FRHIComputeShaderRef CullShader = FShaderLibrary::GetComputeShader("CullMeshlets.slang");
+
+        FComputePipelineDesc PipelineDesc;
+        PipelineDesc.SetComputeShader(CullShader);
+        PipelineDesc.AddBindingLayout(SceneBindingLayout);
+        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+
+        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+        FComputeState State;
+        State.SetPipeline(Pipeline);
+        State.AddBindingSet(SceneBindingSet);
+        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        CmdList.SetComputeState(State);
+
+        FCullMeshletPushConstants PC = {};
+        PC.NumViews            = (uint32)CullViews.size();
+        PC.Phase               = (uint32)ECullPhase::Late;
+        PC.CameraLateViewIndex = CameraLateViewIndex;
+        CmdList.SetPushConstants(&PC, sizeof(PC));
+
+        const uint32 MeshletGroupsX = (TotalMeshletBound + 63) / 64;
+        CmdList.Dispatch(MeshletGroupsX, 1, 1);
+    }
+
+    // Shared depth-only batch emission. Selects the camera (view 0 / early
+    // or view CameraLateViewIndex / late) slice of IndirectArgs and issues
+    // one draw per opaque-occluder batch. LoadOp = Clear for the early
+    // pass (first writer into the target) and Load for the late pass
+    // (appends to the early-phase depth buffer before the base pass reads it).
+    static void RecordDepthPrePassSlice(
+        ICommandList& CmdList,
+        const TVector<FMeshDrawCommand>& DrawCommands,
+        const TVector<uint32>& OpaqueOccluderDrawList,
+        FRHIImage* DepthImage,
+        FRHIImage* SizedToImage,
+        FRHIBindingLayout* SceneBindingLayout,
+        FRHIBindingSet* SceneBindingSet,
+        FViewportState SceneViewportState,
+        FRHIBuffer* IndirectArgsBuffer,
+        uint32 ViewIndex,
+        uint32 NumDrawsPerView,
+        bool bClearDepth)
+    {
         FRenderPassDesc::FAttachment Depth; Depth
-            .SetImage(GetNamedImage(ENamedImage::DepthAttachment))
+            .SetImage(DepthImage)
+            .SetLoadOp(bClearDepth ? ERenderLoadOp::Clear : ERenderLoadOp::Load)
             .SetDepthClearValue(0.0f);
 
         FRenderPassDesc RenderPass; RenderPass
             .SetDepthAttachment(Depth)
-            .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+            .SetRenderArea(SizedToImage->GetExtent());
 
         FRenderState RenderState; RenderState
             .SetDepthStencilState(FDepthStencilState().SetDepthFunc(EComparisonFunc::Greater))
             .SetRasterState(FRasterState().EnableDepthClip());
 
         FRHIVertexShaderRef DepthOnlyVertexShader = FShaderLibrary::GetVertexShader("DepthPrePass.slang");
+
+        const uint32 ViewBase = ViewIndex * NumDrawsPerView;
 
         for (uint32 Idx : OpaqueOccluderDrawList)
         {
@@ -2302,7 +2426,6 @@ namespace Lumina
 
             if (Batch.bMasked)
             {
-                // Masked materials need the full material shader for alpha clip
                 Desc.SetVertexShader(Batch.VertexShader);
                 Desc.SetPixelShader(Batch.PixelShader);
             }
@@ -2319,17 +2442,65 @@ namespace Lumina
             GraphicsState.SetPipeline(Pipeline);
             GraphicsState.AddBindingSet(SceneBindingSet);
             GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            // Meshlet-driven: consume the view-0 (camera) slice of the unified
-            // IndirectArgs buffer. VertexCount = MESHLET_VERTICES_PER_DRAW,
-            // InstanceCount = surviving meshlets for this draw range. Both the
-            // depth-only and masked-material VS resolve meshlets identically,
-            // so the base pass depth-equal test stays correct.
-            GraphicsState.SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
+            GraphicsState.SetIndirectParams(IndirectArgsBuffer);
 
             CmdList.SetGraphicsState(GraphicsState);
-            // View 0 = camera, so offset is simply the per-draw slot.
-            CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
+            CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
         }
+    }
+
+    void FForwardRenderScene::DepthPrePassEarly(ICommandList& CmdList)
+    {
+        if (OpaqueOccluderDrawList.empty())
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Pre-Depth (Early)", tracy::Color::Orange);
+
+        // View 0 = camera-early. Rasterizes the slice populated by phase 1's
+        // input (meshlets that passed HZB against last-frame pyramid).
+        RecordDepthPrePassSlice(
+            CmdList,
+            DrawCommands,
+            OpaqueOccluderDrawList,
+            GetNamedImage(ENamedImage::DepthAttachment),
+            GetNamedImage(ENamedImage::HDR),
+            SceneBindingLayout,
+            SceneBindingSet,
+            SceneViewportState,
+            GetNamedBuffer(ENamedBuffer::IndirectArgs),
+            0u,                                    // ViewIndex: camera-early
+            NumDrawsPerView,
+            true);                                 // bClearDepth: first writer
+    }
+
+    void FForwardRenderScene::DepthPrePassLate(ICommandList& CmdList)
+    {
+        if (OpaqueOccluderDrawList.empty() || CameraLateViewIndex == ~0u)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Pre-Depth (Late)", tracy::Color::Orange2);
+
+        // View = CameraLateViewIndex. Rasterizes the meshlets that phase 1
+        // un-occluded against the rebuilt HZB -- so occluder geometry that
+        // disoccluded this frame gets its depth into the buffer before the
+        // base pass reads it.
+        RecordDepthPrePassSlice(
+            CmdList,
+            DrawCommands,
+            OpaqueOccluderDrawList,
+            GetNamedImage(ENamedImage::DepthAttachment),
+            GetNamedImage(ENamedImage::HDR),
+            SceneBindingLayout,
+            SceneBindingSet,
+            SceneViewportState,
+            GetNamedBuffer(ENamedBuffer::IndirectArgs),
+            CameraLateViewIndex,
+            NumDrawsPerView,
+            false);                                // bClearDepth: appends to early depth
     }
 
     void FForwardRenderScene::DepthPyramidPass(ICommandList& CmdList)
@@ -2865,13 +3036,13 @@ namespace Lumina
                 .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
-            // Base pass consumes the view-0 slice of the unified IndirectArgs
-            // buffer: each surviving meshlet becomes one instance with
-            // VertexCount = MESHLET_VERTICES_PER_DRAW (124 tris * 3). The
-            // pre-pass runs over a strict subset of these batches (occluders
-            // only), and the GREATER_EQUAL test here lets non-occluder
-            // fragments survive against a cleared-to-far / occluder-populated
-            // depth buffer while still being rejected by pre-pass occluders.
+            // The camera's visible meshlets are split across two slices:
+            //   * view 0              : passed HZB against last-frame pyramid (early phase)
+            //   * CameraLateViewIndex : failed early HZB but passed rebuilt HZB (late phase)
+            // Both slices feed the same pipeline / same shaders; only the
+            // IndirectArgs offset differs. GREATER_EQUAL still lets non-
+            // occluder fragments write real depth against the pre-pass
+            // occluder-populated depth buffer.
             FGraphicsState GraphicsState; GraphicsState
                 .SetRenderPass(RenderPass)
                 .SetViewportState(SceneViewportState)
@@ -2881,8 +3052,18 @@ namespace Lumina
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
 
             CmdList.SetGraphicsState(GraphicsState);
-            // View 0 = camera.
+
+            // View 0 = camera-early.
             CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
+
+            // Camera-late. Empty slice when no meshlets were deferred or all
+            // deferred meshlets were genuinely occluded; the per-draw
+            // InstanceCount reads 0 and GPU short-circuits with no perf hit.
+            if (CameraLateViewIndex != ~0u)
+            {
+                const uint32 LateBase = CameraLateViewIndex * NumDrawsPerView;
+                CmdList.DrawIndirect(Batch.DrawCount, (LateBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
+            }
         }
     }
 
@@ -4385,6 +4566,34 @@ namespace Lumina
             BufferDesc.DebugName = "Indirect Args";
             NamedBuffers[(int)ENamedBuffer::IndirectArgs] = GRenderContext->CreateBuffer(BufferDesc);
         }
+
+        // Two-pass cull defer list. Phase 0 appends camera meshlets that
+        // failed the previous-frame HZB test; phase 1 pops them and
+        // re-tests against the rebuilt HZB. Stride matches FMeshletDeferred
+        // (4x uint32).
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(uint32) * 4;
+            BufferDesc.Stride = sizeof(uint32) * 4;
+            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
+            BufferDesc.DebugName = "Meshlet Defer List";
+            NamedBuffers[(int)ENamedBuffer::MeshletDeferList] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        // Atomic counter paired with MeshletDeferList. ResetPass zeroes it
+        // every frame via FillBuffer before phase 0 runs.
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(uint32);
+            BufferDesc.Stride = sizeof(uint32);
+            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
+            BufferDesc.DebugName = "Meshlet Defer Count";
+            NamedBuffers[(int)ENamedBuffer::DeferCount] = GRenderContext->CreateBuffer(BufferDesc);
+        }
     }
 
     static uint32 PreviousPow2(uint32 v)
@@ -4601,6 +4810,11 @@ namespace Lumina
             // a point/standard sampler at binding 13.
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(13, GetNamedImage(ENamedImage::Cascade),
                 TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Standard>::GetRHI()));
+            // Two-pass cull defer list + atomic counter. CullMeshlets phase 0
+            // writes meshlets occluded by the stale HZB here; phase 1 pops
+            // them and re-tests against the rebuilt HZB.
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(14, GetNamedBuffer(ENamedBuffer::MeshletDeferList)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(15, GetNamedBuffer(ENamedBuffer::DeferCount)));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);

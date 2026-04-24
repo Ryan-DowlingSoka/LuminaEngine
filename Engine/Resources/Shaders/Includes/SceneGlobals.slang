@@ -38,6 +38,13 @@ struct SkinnedVertexBuffer
 // so PCSS blocker search can read raw depth instead of PCF results.
 [[vk::binding(13, 0)]] Sampler2DArray                                uShadowCascadePoint;
 
+// Two-pass occlusion culling defer list. Phase 0 populates it with camera
+// meshlets that failed the previous-frame HZB; phase 1 pops them and tests
+// against the rebuilt current-frame HZB before emitting into the
+// camera-late view slice of uMeshletDrawList / uIndirectArgs.
+[[vk::binding(14, 0)]] RWStructuredBuffer<FMeshletDeferred>          uMeshletDeferList;
+[[vk::binding(15, 0)]] globallycoherent RWStructuredBuffer<uint>     uDeferCount;
+
 // ---------------------------------------------------------------------------------
 //  Binding Set 1
 // ---------------------------------------------------------------------------------

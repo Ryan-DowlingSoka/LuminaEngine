@@ -36,12 +36,23 @@ static const int SSAO_KERNEL_SIZE = 32;
 //   Distance:       drop instances outside FCullData.ShadowMaxDistance.
 //   CastShadowOnly: skip instances without EInstanceFlags::CastShadow.
 //   SunAligned:     cone cull uses SunDirection from FLightData (CSM views).
+//   PhaseLate:      view is emitted in the late-phase pass (re-tests the
+//                   last-frame HZB-occluded defer list against the rebuilt
+//                   current-frame HZB). Shadow/camera-early views skip this.
 #define CULL_VIEW_FLAG_FRUSTUM          BIT(0)
 #define CULL_VIEW_FLAG_CONE             BIT(1)
 #define CULL_VIEW_FLAG_OCCLUSION        BIT(2)
 #define CULL_VIEW_FLAG_DISTANCE         BIT(3)
 #define CULL_VIEW_FLAG_CAST_SHADOW_ONLY BIT(4)
 #define CULL_VIEW_FLAG_SUN_ALIGNED      BIT(5)
+#define CULL_VIEW_FLAG_PHASE_LATE       BIT(6)
+
+// Phase push-constant values for CullMeshlets.slang. Phase 0 walks every
+// instance/meshlet pair and either emits surviving camera meshlets or
+// defers HZB-occluded ones. Phase 1 walks only the defer list and re-tests
+// it against the freshly-built HZB.
+#define CULL_PHASE_EARLY 0u
+#define CULL_PHASE_LATE  1u
 
 #define MAX_SCALARS  24
 #define MAX_VECTORS  24
@@ -242,6 +253,21 @@ struct FMeshletDraw
 {
     uint InstanceID;         // Into uInstance
     uint MeshletLocalIndex;  // Local offset inside instance's surface meshlet range
+};
+
+// One entry per camera meshlet that the early pass rejected via Hi-Z against
+// the previous frame's pyramid. The late pass pops these and re-tests them
+// against the pyramid rebuilt from the current-frame pre-pass depth; survivors
+// flow into the camera-late view slice so the base pass picks them up.
+// DrawID is captured at defer time because the instance DrawIDAndFlags pack
+// is touched by neither phase but the late pass has to atomically increment
+// uIndirectArgs[CameraLate.IndirectArgsOffset + DrawID].InstanceCount.
+struct FMeshletDeferred
+{
+    uint InstanceID;
+    uint MeshletLocalIndex;
+    uint DrawID;
+    uint _Pad;
 };
 
 // Unified 128B per-instance descriptor. Mirror of Lumina::FGPUInstance.

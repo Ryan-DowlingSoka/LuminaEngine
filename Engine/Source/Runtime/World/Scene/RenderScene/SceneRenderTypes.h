@@ -510,6 +510,17 @@ namespace Lumina
             Distance        = BIT(3),
             CastShadowOnly  = BIT(4),
             SunAligned      = BIT(5),
+            PhaseLate       = BIT(6),
+        };
+    }
+
+    // Phase push-constant values. Must match CULL_PHASE_* in Common.slang.
+    namespace ECullPhase
+    {
+        enum Type : uint32
+        {
+            Early = 0,
+            Late  = 1,
         };
     }
 

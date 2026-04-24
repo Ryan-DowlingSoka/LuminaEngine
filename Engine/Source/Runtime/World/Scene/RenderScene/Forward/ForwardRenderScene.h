@@ -96,10 +96,20 @@ namespace Lumina
             CullView,
             // Shared meshlet draw list. Sized NumViews * TotalMeshletBound;
             // each view owns a slice addressed by FCullView.DrawListOffset.
+            // NumViews includes the camera-late phase view, so a camera
+            // meshlet deferred by phase 1 lands in its own disjoint slice.
             MeshletDrawList,
             // Shared indirect draw args (NumViews * NumDraws slots); each
             // view addresses its own range via FCullView.IndirectArgsOffset.
             IndirectArgs,
+            // Two-pass culling defer list. Phase 0 appends camera meshlets
+            // rejected by the *previous-frame* Hi-Z; phase 1 pops them and
+            // re-tests against the rebuilt current-frame Hi-Z. Sized for the
+            // worst case (every camera meshlet occluded).
+            MeshletDeferList,
+            // Single-uint atomic counter paired with MeshletDeferList. Reset
+            // to zero every frame by ResetPass.
+            DeferCount,
 
             Num,
         };
@@ -163,8 +173,20 @@ namespace Lumina
         
         //~ Begin Render Passes
         void ResetPass(ICommandList& CmdList);
-        void CullPass(ICommandList& CmdList);
-        void DepthPrePass(ICommandList& CmdList);
+        // Two-phase meshlet cull. Early dispatch runs every (instance,
+        // meshlet) pair against every non-late view; camera meshlets that
+        // fail the *previous-frame* Hi-Z are routed to the defer list
+        // instead of being dropped. Late dispatch pops the defer list and
+        // re-tests against the freshly built Hi-Z so disoccluded geometry
+        // (fast camera motion) still reaches the base pass.
+        void CullPassEarly(ICommandList& CmdList);
+        void CullPassLate(ICommandList& CmdList);
+        // Depth-only rasterization of opaque occluders. Early runs over the
+        // camera (view 0) slice right after CullEarly; late runs over the
+        // camera-late slice after CullLate so re-added meshlets contribute
+        // to the final depth buffer before the base pass draws lighting.
+        void DepthPrePassEarly(ICommandList& CmdList);
+        void DepthPrePassLate(ICommandList& CmdList);
         void DepthPyramidPass(ICommandList& CmdList);
         void ClusterBuildPass(ICommandList& CmdList);
         void LightCullPass(ICommandList& CmdList);
@@ -400,6 +422,16 @@ namespace Lumina
 
         /** View index of each spot shadow. Indexed parallel to PackedShadows[Spot]. */
         TVector<uint32>                         SpotShadowCullViewBases;
+
+        /**
+         * Index of the camera-late cull view. Phase 1 (CullPassLate) emits
+         * into this view's slice after re-testing the defer list against
+         * the rebuilt Hi-Z; DepthPrePassLate and BasePass each issue a
+         * second DrawIndirect per batch against this offset to pick up the
+         * meshlets that the early HZB pass mis-occluded. UINT32_MAX when
+         * no cull is active (no instances this frame).
+         */
+        uint32                                  CameraLateViewIndex = ~0u;
 
     };
 }

@@ -1,34 +1,81 @@
 #pragma once
 #include "Includes/Culling.slang"
 
-// Unified meshlet culling.
+// Two-phase meshlet culling. Follows the Ubisoft GPU-driven (SIGGRAPH 2015) /
+// UE5 Nanite approach: the early phase runs against the *previous frame's*
+// Hi-Z pyramid (stale but cheap), then the pipeline renders depth for the
+// survivors, rebuilds the HZB from current-frame depth, and the late phase
+// re-tests only the meshlets the early phase rejected as occluded.
 //
-// Each thread owns one (instance, meshlet-local) pair
-// and tests its world-space bounding sphere against every active FCullView.
-// Surviving meshlets are atomically appended into the slice of uMeshletDrawList
-// owned by that view (View.DrawListOffset + atomic counter), with the per-view
-// indirect slot in uIndirectArgs[View.IndirectArgsOffset + DrawID] tracking the
-// instance count the draw pass will consume.
+// Why split:
+//   Single-pass against last-frame HZB mis-occludes disoccluded geometry
+//   (fast camera motion, uncovered surfaces) because last frame's pyramid
+//   doesn't know about those pixels yet. Meshlets being ~124 tris each, a
+//   false-occlusion shows up as visible pop-in/pop-out at the meshlet
+//   granularity. Two phases get the throughput win of conservative early
+//   rejection without sacrificing correctness on disocclusion.
 //
-// The cone cull fires ONCE per meshlet against whichever axis the view asks for
-// (view origin for point/spot/camera, sun direction for directional cascades)
-// and short-circuits all that view's tests when it hits.
+// Per-phase behaviour:
 //
-// One shader owns every view, so adding a new light type or changing the main
-// camera's cull policy only touches the FCullView flags the CPU writes.
+//   Phase 0 (EARLY):
+//     * Each thread owns one (instance, meshlet-local) pair.
+//     * For every non-late view (camera, cascades, spot/point faces), runs
+//       distance/frustum/cone tests. Shadow views' camera-occlusion flag is
+//       NOT set, so they only pay frustum+cone here and emit straight into
+//       their own slice.
+//     * For the camera view, HZB-visible meshlets emit to uMeshletDrawList;
+//       HZB-occluded meshlets append to uMeshletDeferList for phase 1.
+//     * Skips the camera-late view entirely (phase 1 owns it).
+//
+//   Phase 1 (LATE):
+//     * One thread per deferred entry. Dispatch X = ceil(DeferCount / 64),
+//       but DeferCount is a GPU value so the CPU dispatches the worst-case
+//       (ceil(TotalMeshletBound / 64)) and threads beyond DeferCount early-out.
+//     * Re-tests the defer entry's meshlet against the freshly-built HZB.
+//       Survivors emit into the camera-late view slice. No frustum/cone
+//       retest -- those already passed in phase 0, and transforms do not
+//       change between phases.
+//     * Reads only the camera-late view; shadow views ignored.
+//
+// One compute shader owns both phases so the cull logic doesn't drift
+// between two parallel pipelines. The Phase push-constant branch is
+// uniform across a warp so the cost is a single jump.
 
 #define LOCAL_SIZE_X 64
 
-// Push constant: NumViews (uniform, matches uSceneData view count but kept in
-// push so the shader doesn't pay a scene fetch per thread).
 struct FPushConstants
 {
     uint NumViews;
+    uint Phase;              // CULL_PHASE_EARLY or CULL_PHASE_LATE
+    uint CameraLateViewIndex; // Only consumed in LATE; index into uCullViews.
+    uint _Pad;
 };
 
-[shader("compute")]
-[numthreads(LOCAL_SIZE_X, 1, 1)]
-void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID  : SV_GroupID, uniform FPushConstants PC)
+// -----------------------------------------------------------------------------
+// Emit helper. Appends a surviving meshlet into the given view's slice.
+// Centralized so phase 0 (camera + shadow views) and phase 1 (camera-late)
+// share the atomic protocol exactly.
+// -----------------------------------------------------------------------------
+void EmitMeshlet(FCullView View, uint DrawID, uint InstanceID, uint MeshletLocalIdx)
+{
+    uint IndirectIndex = View.IndirectArgsOffset + DrawID;
+    uint OldCount;
+    InterlockedAdd(uIndirectArgs[IndirectIndex].InstanceCount, 1, OldCount);
+
+    uint Slot = uIndirectArgs[IndirectIndex].FirstInstance + OldCount;
+
+    FMeshletDraw Draw;
+    Draw.InstanceID        = InstanceID;
+    Draw.MeshletLocalIndex = MeshletLocalIdx;
+    uMeshletDrawList[Slot] = Draw;
+}
+
+// -----------------------------------------------------------------------------
+// Phase 0. Walks every (instance, meshlet) pair and routes each survivor
+// either into a view's draw list (shadow views, camera-visible) or the
+// defer list (camera + HZB-occluded).
+// -----------------------------------------------------------------------------
+void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
 {
     // CPU splits instance count across Y/Z when Num > 65535 (Vulkan groupCountY limit).
     uint InstanceID      = GroupID.y + GroupID.z * 65535;
@@ -64,15 +111,11 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID  : SV_Group
     float MaxScale = sqrt(max(SqScaleX, max(SqScaleY, SqScaleZ)));
     float WorldRadius = Bounds.Radius * MaxScale;
 
-    // Cone cull wants the world-space apex + axis but only when the view asks
-    // for it, so derive them lazily (most shadow views enable cone cull, the
-    // camera view enables cone+micro-poly, cascades skip per-cascade cone).
     float3 WorldApex = mul(Model, float4(Bounds.ConeApex, 1.0)).xyz;
     float3 WorldAxis = normalize(mul((float3x3)Model, Bounds.ConeAxis));
     bool   bHasCone  = Bounds.ConeCutoff < 1.0;
 
     uint DrawID = Inst.DrawID;
-    uint NumViews = PC.NumViews;
 
     // Instance-level camera distance reused for CastShadowOnly views.
     float3 CamPos        = GetCameraPosition();
@@ -84,7 +127,11 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID  : SV_Group
     for (uint v = 0; v < NumViews; ++v)
     {
         FCullView View = uCullViews[v];
-        uint Flags = View.Flags;
+
+        // Camera-late view is owned by phase 1; skip in phase 0 so we don't
+        // emit doubles when a meshlet passes both HZB tests.
+        if (View.HasFlag(CULL_VIEW_FLAG_PHASE_LATE))
+            continue;
 
         if (View.HasFlag(CULL_VIEW_FLAG_CAST_SHADOW_ONLY) && !bCaster)
             continue;
@@ -104,12 +151,12 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID  : SV_Group
                 float3 SunDir = GetSunDirection();
                 if (dot(SunDir, WorldAxis) <= -Bounds.ConeCutoff)
                 {
-                  continue;
+                    continue;
                 }
             }
             else
             {
-                float3 ApexToOrigin   = WorldApex - View.ViewOrigin;
+                float3 ApexToOrigin    = WorldApex - View.ViewOrigin;
                 float  ApexToOriginLen = length(ApexToOrigin);
                 if (dot(ApexToOrigin, WorldAxis) >= Bounds.ConeCutoff * ApexToOriginLen)
                     continue;
@@ -122,15 +169,13 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID  : SV_Group
                 continue;
         }
 
-        // Hi-Z camera occlusion, only meaningful for view 0 (camera) since
-        // the depth pyramid tracks the camera's depth buffer. Shadow views
-        // either skip this or rely on the camera occlusion flag on the main
-        // view having already filtered the caster before promotion.
+        // Hi-Z occlusion only runs on the camera view (uDepthPyramid tracks the
+        // camera). Shadow views skip this block entirely. On an early-phase
+        // occluded meshlet we defer it to phase 1 instead of dropping.
         if (!bSkinned && !bNoCull && View.HasFlag(CULL_VIEW_FLAG_OCCLUSION))
         {
-            // Micro-poly reject for camera view: if the meshlet projects
-            // sub-pixel we can drop it entirely. Packaged with occlusion so
-            // shadow views (which don't set OCCLUSION) don't pay this.
+            // Micro-poly reject: if the meshlet projects sub-pixel we can drop
+            // it entirely. Packaged with occlusion so shadow views don't pay.
             float3 ViewCenter = mul(uSceneData.CameraView.CameraView, float4(WorldCenter, 1.0)).xyz;
             float4 ClipAABB;
             if (ProjectSphereClip(ViewCenter, WorldRadius,
@@ -151,19 +196,81 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID  : SV_Group
             }
 
             if (IsHiZOccluded(WorldCenter, WorldRadius))
+            {
+                // Defer to phase 1. Phase 1 owns the camera-late view slice
+                // and re-tests against the rebuilt HZB before emitting.
+                uint DeferSlot;
+                InterlockedAdd(uDeferCount[0], 1, DeferSlot);
+
+                FMeshletDeferred Entry;
+                Entry.InstanceID        = InstanceID;
+                Entry.MeshletLocalIndex = MeshletLocalIdx;
+                Entry.DrawID            = DrawID;
+                Entry._Pad              = 0u;
+                uMeshletDeferList[DeferSlot] = Entry;
                 continue;
+            }
         }
 
-        // Emit into this view's slice.
-        uint IndirectIndex = View.IndirectArgsOffset + DrawID;
-        uint OldCount;
-        InterlockedAdd(uIndirectArgs[IndirectIndex].InstanceCount, 1, OldCount);
+        EmitMeshlet(View, DrawID, InstanceID, MeshletLocalIdx);
+    }
+}
 
-        uint Slot = uIndirectArgs[IndirectIndex].FirstInstance + OldCount;
+// -----------------------------------------------------------------------------
+// Phase 1. One thread per deferred entry. No scene walk, no per-view loop --
+// every survivor goes to the single camera-late view.
+// -----------------------------------------------------------------------------
+void RunLatePhase(uint3 GlobalID, uint CameraLateViewIndex)
+{
+    uint ThreadIdx = GlobalID.x;
+    uint Count     = uDeferCount[0];
 
-        FMeshletDraw Draw;
-        Draw.InstanceID        = InstanceID;
-        Draw.MeshletLocalIndex = MeshletLocalIdx;
-        uMeshletDrawList[Slot] = Draw;
+    if (ThreadIdx >= Count)
+        return;
+
+    FMeshletDeferred Entry = uMeshletDeferList[ThreadIdx];
+
+    // Reconstruct world-space bounds the same way phase 0 did. Transforms
+    // can't change between phases (they're baked into the Instance buffer
+    // that was uploaded before phase 0) so re-deriving is stable.
+    FGPUInstance Inst = GetInstance(Entry.InstanceID);
+    if (Inst.SurfaceMeshletCount == 0)
+        return;
+
+    uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + Entry.MeshletLocalIndex;
+    FMeshletBounds Bounds = Inst.MeshletHeader.Bounds[GlobalMeshletIdx];
+
+    float4x4 Model = Inst.ModelMatrix;
+    float3 WorldCenter = mul(Model, float4(Bounds.Center, 1.0)).xyz;
+
+    float SqScaleX = dot(Model[0].xyz, Model[0].xyz);
+    float SqScaleY = dot(Model[1].xyz, Model[1].xyz);
+    float SqScaleZ = dot(Model[2].xyz, Model[2].xyz);
+    float MaxScale = sqrt(max(SqScaleX, max(SqScaleY, SqScaleZ)));
+    float WorldRadius = Bounds.Radius * MaxScale;
+
+    // Re-test against the rebuilt HZB. A deferred meshlet that is still
+    // occluded against the fresh pyramid is genuinely behind an occluder in
+    // this frame and can be dropped; a meshlet that now passes was hidden
+    // by a stale pyramid and has to reach the base pass. The micro-poly
+    // reject already fired in phase 0; no need to rerun it.
+    if (IsHiZOccluded(WorldCenter, WorldRadius))
+        return;
+
+    FCullView CameraLate = uCullViews[CameraLateViewIndex];
+    EmitMeshlet(CameraLate, Entry.DrawID, Entry.InstanceID, Entry.MeshletLocalIndex);
+}
+
+[shader("compute")]
+[numthreads(LOCAL_SIZE_X, 1, 1)]
+void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupID, uniform FPushConstants PC)
+{
+    if (PC.Phase == CULL_PHASE_LATE)
+    {
+        RunLatePhase(GlobalID, PC.CameraLateViewIndex);
+    }
+    else
+    {
+        RunEarlyPhase(GlobalID, GroupID, PC.NumViews);
     }
 }
