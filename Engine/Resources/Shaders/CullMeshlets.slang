@@ -3,8 +3,7 @@
 
 // Unified meshlet culling.
 //
-// Replaces MeshletCull / CascadeMeshletCull / ShadowMeshCull / ShadowMeshletCull
-// with a single dispatch. Each thread owns one (instance, meshlet-local) pair
+// Each thread owns one (instance, meshlet-local) pair
 // and tests its world-space bounding sphere against every active FCullView.
 // Surviving meshlets are atomically appended into the slice of uMeshletDrawList
 // owned by that view (View.DrawListOffset + atomic counter), with the per-view
@@ -29,10 +28,7 @@ struct FPushConstants
 
 [shader("compute")]
 [numthreads(LOCAL_SIZE_X, 1, 1)]
-void ComputeMain(
-    uint3 GlobalID : SV_DispatchThreadID,
-    uint3 GroupID  : SV_GroupID,
-    uniform FPushConstants PC)
+void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID  : SV_GroupID, uniform FPushConstants PC)
 {
     // CPU splits instance count across Y/Z when Num > 65535 (Vulkan groupCountY limit).
     uint InstanceID      = GroupID.y + GroupID.z * 65535;
@@ -109,7 +105,9 @@ void ComputeMain(
             {
                 float3 SunDir = GetSunDirection();
                 if (dot(SunDir, WorldAxis) <= -Bounds.ConeCutoff)
-                    continue;
+                {
+                  continue;
+                }
             }
             else
             {
@@ -126,7 +124,7 @@ void ComputeMain(
                 continue;
         }
 
-        // Hi-Z camera occlusion — only meaningful for view 0 (camera) since
+        // Hi-Z camera occlusion, only meaningful for view 0 (camera) since
         // the depth pyramid tracks the camera's depth buffer. Shadow views
         // either skip this or rely on the camera occlusion flag on the main
         // view having already filtered the caster before promotion.

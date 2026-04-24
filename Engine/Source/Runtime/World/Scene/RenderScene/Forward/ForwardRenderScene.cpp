@@ -1306,11 +1306,6 @@ namespace Lumina
 
     bool FForwardRenderScene::ShouldRequestShadow(const glm::vec3& LightPosition, float LightRadius) const
     {
-        // Sphere-vs-camera-frustum: a point/spot light only shadows pixels the
-        // camera can see, so if the attenuation sphere doesn't touch the view
-        // there's nothing to shadow. Skipping here spares an atlas tile, a
-        // shadow slot, 6 (point) or 1 (spot) view-budget entries and the
-        // matching indirect-draw slices.
         return SceneGlobalData.CullData.Frustum.IntersectsSphere(LightPosition, LightRadius);
     }
 
@@ -1334,11 +1329,6 @@ namespace Lumina
 
         if (PointLight.bCastShadows && ShouldRequestShadow(Light.Position, Light.Radius))
         {
-            // Projected-radius sizing: a 10m-radius light at 10m gets the full
-            // max tile; the same light at 100m collapses to min size. The fit
-            // pass in AllocateShadowTiles clamps and shrinks once all requests
-            // are in — allocating here would lose lights to first-come-first-
-            // served ordering instead of rescaling the whole set.
             const glm::vec3 CamPos = SceneViewport->GetViewVolume().GetViewPosition();
             const float Dist = glm::distance(CamPos, Light.Position);
             constexpr float ResolutionScale = 2048.0f;
