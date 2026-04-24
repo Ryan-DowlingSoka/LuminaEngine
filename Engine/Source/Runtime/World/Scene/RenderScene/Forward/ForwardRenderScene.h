@@ -86,16 +86,19 @@ namespace Lumina
             Light,
             // Unified per-instance descriptor. Bound at binding 2.
             Instance,
-            InstanceMappingShadow,
-            IndirectShadow,
             Bone,
             Cluster,
             SimpleVertex,
             Billboards,
+            // Per-view cull descriptors. One entry per logical render view
+            // (main camera, each CSM cascade, each point face, each spot).
+            CullView,
+            // Shared meshlet draw list. Sized NumViews * TotalMeshletBound;
+            // each view owns a slice addressed by FCullView.DrawListOffset.
             MeshletDrawList,
-            MeshletIndirect,
-            MeshletDrawListCascade,
-            MeshletIndirectCascade,
+            // Shared indirect draw args. NumViews * NumDraws slots — each
+            // view addresses its own range via FCullView.IndirectArgsOffset.
+            IndirectArgs,
 
             Num,
         };
@@ -147,6 +150,7 @@ namespace Lumina
         const FSceneRenderStats& GetRenderStats() const override;
         FSceneRenderSettings& GetSceneRenderSettings() override;
         entt::entity GetEntityAtPixel(uint32 X, uint32 Y) const override;
+        const FShadowAtlas* GetShadowAtlas() const override { return &ShadowAtlas; }
         
         
     private:
@@ -193,10 +197,40 @@ namespace Lumina
         void ProcessPointLight(const SPointLightComponent& PointLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount);
         void ProcessSpotLight(const SSpotLightComponent& SpotLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount);
         void ProcessDirectionalLight(const SDirectionalLightComponent& DirectionalLight, TAtomic<uint32>& LightCount);
+
+        /**
+         * Serial post-pass: fits every accumulated shadow request into the atlas
+         * budget (shrinks the largest desired tiles until Σ area ≤ capacity) then
+         * allocates tiles and populates FLightShadowData / PackedShadows. Runs
+         * after the parallel Process*Light tasks have written into ShadowRequests.
+         */
+        void AllocateShadowTiles();
+
+        /**
+         * Builds the per-frame FCullView array and seeds IndirectArgs for every
+         * view's indirect-draw slice. Runs after AllocateShadowTiles (so every
+         * shadow-casting light has its ViewProjection[6] filled) and before the
+         * scene buffer upload so CullMeshlets has everything it needs.
+         *
+         * View layout:
+         *   0              — main camera (frustum + cone + occlusion + micropoly)
+         *   1..NumCascades — CSM cascade views (frustum + sun-aligned cone, cast-shadow-only, distance)
+         *   N..            — 6 views per shadow-casting point light
+         *   ...            — 1 view per shadow-casting spot light
+         */
+        void BuildCullViews(const FViewVolume& ViewVolume);
         
         void ProcessBatchedLines(FLineBatcherComponent& Batcher);
         
         void NotifyMaxLightsHit();
+
+        /**
+         * CPU-side early-out for shadow requests. Returns false when the
+         * light's attenuation sphere falls entirely outside the camera
+         * frustum — nothing the camera can see would be shadowed by the light,
+         * so the shadow view, atlas tile and draw-list slice are all skipped.
+         */
+        bool ShouldRequestShadow(const glm::vec3& LightPosition, float LightRadius) const;
 
 
     private:
@@ -209,6 +243,30 @@ namespace Lumina
 
         /** Atomic cursor into FSceneLightData::Shadows[]. Reset every frame. */
         TAtomic<uint32>                         ShadowDataCount = 0;
+
+        /**
+         * Pending per-light shadow tile requests queued during parallel light
+         * processing. Finalized into ShadowAtlas tiles + FLightShadowData by
+         * AllocateShadowTiles after Graph.Wait. Request capture has to be
+         * deferred so we can fit the whole set against the atlas budget and
+         * shrink the largest tiles uniformly when over budget — the old greedy
+         * first-come allocator failed the Nth light the moment the 4×2048 atlas
+         * was full, no matter how close it was.
+         */
+        struct FShadowRequest
+        {
+            uint32      LightIndex;        // Into LightData.Lights
+            ELightType  Type;
+            uint32      DesiredPixels;     // Unclamped; clamped + shrunk by the fit pass
+            float       DistanceToCamera;  // Used by the view-budget drop pass (farthest first)
+            glm::vec3   Position;
+            glm::vec3   Direction;         // Spot only
+            glm::vec3   Up;                // Spot only
+            float       Attenuation;       // Spot far plane
+            float       OuterFOVDegrees;   // Spot
+        };
+        TVector<FShadowRequest>                 ShadowRequests;
+        FMutex                                  ShadowRequestMutex;
         
         FViewportState                          SceneViewportState;
         FDelegateHandle                         SwapchainResizedHandle;
@@ -273,28 +331,56 @@ namespace Lumina
         TVector<uint32>                         TranslucentDrawList;
 
         /**
-         * Packed indirect draw arguments for the shadow pass. FirstInstance
-         * points into uMappingDataShadow, populated atomically by
-         * ShadowMeshCull.slang for each surviving caster / light pair.
+         * Per-view indirect draw arguments. Sized NumCullViews * NumDraws,
+         * view-major: slot (v, d) = v * NumDraws + d. VertexCount =
+         * MESHLET_VERTICES_PER_DRAW (372), InstanceCount starts at 0 (incremented
+         * by CullMeshlets), FirstInstance = v * TotalMeshletBound + prefix[d] so
+         * each per-view atomic append stays inside that view's draw-list slice.
          */
-        TVector<FDrawIndirectArguments>         IndirectDrawArguments;
+        TVector<FDrawIndirectArguments>         IndirectArgs;
 
         /**
-         * Per-draw meshlet indirect args. VertexCount = MESHLET_VERTICES_PER_DRAW
-         * (372), InstanceCount starts at 0 (incremented by MeshletCull), and
-         * FirstInstance is the prefix-summed offset into uMeshletDrawList where
-         * this draw's meshlet slots live.
+         * Per-view cull descriptors. One FCullView per logical render view
+         * (main camera at 0, then NumCascades CSM views, then 6 per point
+         * light, then 1 per spot). Packed tightly into the CullView SSBO
+         * and consumed by CullMeshlets.slang.
          */
-        TVector<FDrawIndirectArguments>         IndirectDrawArgumentsMeshlet;
+        TVector<FCullView>                      CullViews;
 
-        /** Cascade-major: [c * NumDraws + d]. FirstInstance pre-shifted by c * TotalMeshletBound. */
-        TVector<FDrawIndirectArguments>         IndirectDrawArgumentsMeshletCascade;
+        /**
+         * Per-draw meshlet start offset (prefix sum of meshlet counts).
+         * IndirectArgs for view v, draw d is seeded with
+         *   FirstInstance = v * TotalMeshletBound + DrawMeshletStartOffsets[d]
+         * so every view writes into its own disjoint slice of uMeshletDrawList.
+         * Filled by MergeMeshDrawData; consumed by BuildCullViews.
+         */
+        TVector<uint32>                         DrawMeshletStartOffsets;
 
-        /** Peak SurfaceMeshletCount across all instances this frame; sets MeshletCull's dispatch X. */
+        /** Peak SurfaceMeshletCount across all instances this frame; sets CullMeshlets' dispatch X. */
         uint32                                  MaxMeshletsPerInstance = 0;
 
-        /** Per-cascade stride in uMeshletDrawListCascade. */
+        /** Per-view stride in uMeshletDrawList (CullMeshlets atomic writes stay within this span). */
         uint32                                  TotalMeshletBound = 0;
+
+        /** Per-view stride into IndirectArgs (NumDraws). Cached so draw passes can index without recomputing. */
+        uint32                                  NumDrawsPerView = 0;
+
+        /**
+         * View index of the first CSM cascade. Only valid if bHasSun and the
+         * sun has a valid ShadowDataIndex; otherwise UINT32_MAX. Cascade c's
+         * view index is CascadeViewBase + c.
+         */
+        uint32                                  CascadeViewBase = ~0u;
+
+        /**
+         * View index of each point shadow's first (face 0) view. Indexed
+         * parallel to PackedShadows[Point]; face F's view index is
+         * PointShadowCullViewBases[i] + F.
+         */
+        TVector<uint32>                         PointShadowCullViewBases;
+
+        /** View index of each spot shadow. Indexed parallel to PackedShadows[Spot]. */
+        TVector<uint32>                         SpotShadowCullViewBases;
 
     };
 }

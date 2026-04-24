@@ -155,8 +155,9 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
         return 0.00015 + 0.0003 * SlopeFactor;
     }
 
-    // Point/spot: CurrentDepth is DistToLight/Radius, linear [0,1].
-    return 0.0015 + 0.004 * SlopeFactor;
+    // Point/spot: RefDepth is NDC z from the face VP, which clusters near 1.0
+    // and needs a much smaller bias than the old linear DistToLight/Radius.
+    return 0.00005 + 0.0003 * SlopeFactor;
 }
 
 // Normal-offset bias (Daniel Holbert, GDC 2011). Push the receiver position
@@ -350,48 +351,96 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
     }
 
     // ----- Spot / point lights (atlas-based) -----
+    // Atlas stores rasterized NDC z from the shadow VS (PS is a no-op that
+    // lets early-Z reject occluded fragments). Sampling must project through
+    // the same face VP and use ProjCoords.xy/z — not cubemap-direction UV.
     float3 LightDirToFrag = normalize(Light.Position - FragmentPos);
-    float  Bias           = ComputeShadowBias(Light.Flags, Normal, LightDirToFrag, 0);
 
-    float4x4 SpotVP     = GetShadowViewProjection(Light.ShadowDataIndex, 0);
-    float4 ShadowCoord  = mul(SpotVP, float4(FragmentPos, 1.0));
+    // Pick the cube face for point lights; spot lights always use face 0.
+    int Face = 0;
+    if (!IsSpotLight)
+    {
+        float3 L   = FragmentPos - Light.Position;
+        float3 Dir = normalize(L);
+        Face = DirectionToCubemapCoord(Dir).Face;
+    }
+
+    // Push the receiver a shadow-texel along its surface normal before
+    // projecting. Without this the wall self-shadows at grazing angles inside
+    // the face's visible cone, producing a dimmer square centred on the light
+    // where outside the cone the UV early-out returns fully-lit.
+    FLightShadow ShadowTile = GetShadowTile(Light.ShadowDataIndex, Face);
+
+    uint AtlasW, AtlasH, AtlasLayers;
+    uShadowAtlas.GetDimensions(AtlasW, AtlasH, AtlasLayers);
+
+    float  AtlasTileTexels  = max(ShadowTile.AtlasUVScale.x, 1e-6) * float(AtlasW);
+    float  WorldTexel       = (Light.Radius * 2.0) / max(AtlasTileTexels, 1.0);
+    float  NdotL            = saturate(dot(Normal, LightDirToFrag));
+    float  OffsetScale      = saturate(1.0 - NdotL);
+    float3 OffsetPos        = FragmentPos + Normal * (WorldTexel * 1.4 * OffsetScale);
+
+    // Receiver bias: constant + slope + a tile-quantization term. The
+    // rasterized NDC z at a pixel quantizes to ~2/AtlasTileTexels in depth
+    // space, so a fixed 0.00005 that holds at 4096 texels lets the face-lit
+    // receiver self-shadow against its own rasterized triangle at 512 and
+    // below — producing a dimmer square exactly the shape of the face rect
+    // (outside the rect we sample the cleared edge texel and come out lit).
+    float SlopeFactor = sqrt(max(1.0 - NdotL * NdotL, 0.0));
+    float Bias        = 0.00005 + 0.0003 * SlopeFactor + 1.5 / max(AtlasTileTexels, 1.0);
+
+    float4x4 ShadowVP   = GetShadowViewProjection(Light.ShadowDataIndex, Face);
+    float4 ShadowCoord  = mul(ShadowVP, float4(OffsetPos, 1.0));
     float3 ProjCoords   = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
     float2 ProjectionUV = ProjCoords.xy * 0.5 + 0.5;
 
-    float3 L            = FragmentPos - Light.Position;
-    float  DistToLight  = length(L);
-    float  CurrentDepth = DistToLight / max(Light.Radius, 1.0);
-    float3 Dir          = normalize(L);
+    // Only early-out on z: fragments past the light's far plane aren't lit by
+    // the light anyway. A UV early-out on [0,1] was creating a visible square
+    // where the picked face's cone met the receiver — outside returned fully
+    // lit while inside ran PCF. The atlas sampler (AM_Clamp) already handles
+    // taps that stray beyond the tile.
+    if (ProjCoords.z < 0.0 || ProjCoords.z > 1.0)
+        return 1.0;
 
-    FCubemapCoord Coord = DirectionToCubemapCoord(Dir);
-    Coord.UV   = lerp(Coord.UV, ProjectionUV, float(IsSpotLight));
-    Coord.Face = int(lerp(float(Coord.Face), 0.0, float(IsSpotLight)));
-
-    FLightShadow ShadowTile = GetShadowTile(Light.ShadowDataIndex, Coord.Face);
-
-    if (IsSpotLight)
-    {
-        if (any(ProjectionUV < 0.0) || any(ProjectionUV > 1.0))
-            return 1.0;
-    }
+    float2 SafeUV = saturate(ProjectionUV);
 
     float IGN   = frac(52.9829189 * frac(dot(ScreenPos, float2(0.06711056, 0.00583715))));
     float Angle = IGN * TWO_PI;
-    float FilterRadius = 0.002;
+    // Filter radius is in atlas UV, but scale it down when the tile is tiny so
+    // the Vogel disk stays inside the face rect. Without the cap, small tiles
+    // see every tap fall outside [0,1] — clamping piled them on the edge texel
+    // (hard square), and skipping dropped them all (the whole face fell back
+    // to a constant). Cap at 30% of the tile's atlas UV extent.
+    float TileUVExtent  = min(ShadowTile.AtlasUVScale.x, ShadowTile.AtlasUVScale.y);
+    float FilterRadius  = min(0.002, TileUVExtent * 0.3);
 
-    float RefDepth = CurrentDepth - Bias;
+    float RefDepth = ProjCoords.z - Bias;
 
     float Shadow = 0.0;
+    float Weight = 0.0;
     for (int i = 0; i < SHADOW_SAMPLE_COUNT; i++)
     {
         float2 Offset     = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle) * FilterRadius;
         float2 TileOffset = Offset / max(ShadowTile.AtlasUVScale, float2(1e-6));
-        float2 ClampedUV  = clamp(Coord.UV + TileOffset, 0.001, 0.999);
-        float2 SampleUV   = ShadowTile.AtlasUVOffset + (ClampedUV * ShadowTile.AtlasUVScale);
+        float2 TapUV      = SafeUV + TileOffset;
+        // Skip taps that leave the face rect — under atlas packing those texels
+        // belong to a different light's tile. Falling back to a clamped center
+        // tap below guarantees we always produce at least one valid sample.
+        if (any(TapUV < 0.0) || any(TapUV > 1.0))
+        {
+            continue;
+        }
+        float2 SampleUV = ShadowTile.AtlasUVOffset + (TapUV * ShadowTile.AtlasUVScale);
         Shadow += uShadowAtlas.SampleCmp(float3(SampleUV, ShadowTile.ShadowMapLayer), RefDepth);
+        Weight += 1.0;
     }
 
-    return Shadow / float(SHADOW_SAMPLE_COUNT);
+    if (Weight <= 0.0)
+    {
+        float2 CenterUV = ShadowTile.AtlasUVOffset + (SafeUV * ShadowTile.AtlasUVScale);
+        return uShadowAtlas.SampleCmp(float3(CenterUV, ShadowTile.ShadowMapLayer), RefDepth);
+    }
+    return Shadow / Weight;
 }
 
 

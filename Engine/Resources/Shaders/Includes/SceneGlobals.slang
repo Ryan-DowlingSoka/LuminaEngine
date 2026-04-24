@@ -24,26 +24,19 @@ struct SkinnedVertexBuffer
 [[vk::binding(8, 0)]] Sampler2DArray                                uShadowAtlas;
 [[vk::binding(9, 0)]] Sampler2D                                     uDepthPyramid;
 
-// Parallel shadow-caster indirect/mapping buffers for point + spot lights.
-// Directional shadows are driven by the meshlet cascade buffers below.
-[[vk::binding(10, 0)]] RWStructuredBuffer<uint>                      uMappingDataShadow;
-[[vk::binding(11, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectDrawDataShadow;
-
-// Meshlet-driven camera-pass rendering. MeshletCull.slang atomically appends
-// surviving meshlets to uMeshletDrawList and increments InstanceCount in
-// uIndirectDrawDataMeshlet. The base vertex shader uses SV_InstanceID to look
-// up (InstanceID, MeshletLocalIndex) and pull vertices through the meshlet
-// header rather than the flat index buffer.
-[[vk::binding(12, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawList;
-[[vk::binding(13, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectDrawDataMeshlet;
-
-// Per-cascade meshlet draw list + indirect for the CSM pass.
-[[vk::binding(14, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawListCascade;
-[[vk::binding(15, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectDrawDataMeshletCascade;
+// Unified per-view culling system. The CPU builds one FCullView per logical
+// render view (main camera, each CSM cascade, each point face, each spot
+// light) and packs them into uCullViews. CullMeshlets.slang loops every
+// surviving meshlet against every view and emits into per-view slices of
+// uMeshletDrawList / uIndirectArgs — addressed through FCullView.DrawListOffset
+// and .IndirectArgsOffset so each draw pass indirect-draws only its own view.
+[[vk::binding(10, 0)]] StructuredBuffer<FCullView>                   uCullViews;
+[[vk::binding(11, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawList;
+[[vk::binding(12, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectArgs;
 
 // Same cascade image as binding 7 but with a point, non-comparison sampler —
 // lets PCSS blocker search read raw depth values instead of PCF results.
-[[vk::binding(16, 0)]] Sampler2DArray                                uShadowCascadePoint;
+[[vk::binding(13, 0)]] Sampler2DArray                                uShadowCascadePoint;
 
 // ---------------------------------------------------------------------------------
 //  Binding Set 1
@@ -181,13 +174,6 @@ uint   GetMaterialTexture(uint MatIndex, uint Index) { return uMaterialUniforms[
 // ---------------------------------------------------------------------------------
 
 FGPUInstance GetInstance(uint InstanceID) { return uInstance[InstanceID]; }
-
-// Shadow-pass accessor. Shadow draws are indexed from a dedicated mapping
-// buffer populated by ShadowMeshCull.slang.
-uint ShadowDrawIDToInstanceID(uint ID)
-{
-    return uMappingDataShadow[ID];
-}
 
 // ---------------------------------------------------------------------------------
 //  Light Accessors

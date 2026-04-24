@@ -633,19 +633,7 @@ namespace Lumina
             }
             return Path;
         };
-
-        // ---- Phase 1: create CObjects in memory and wire cross-references.
-        //
-        // Everything used to run inside Task::ParallelFor, which:
-        //   - raced on the shared MaybeSkeleton write,
-        //   - called CreateNewOf / SavePackage / FAssetRegistry from worker
-        //     threads despite none of those being documented as thread-safe,
-        //   - destroyed the freshly-imported mesh before the skeleton's
-        //     PreviewMesh reference to it was ever serialised.
-        // The work is sequential now; imports are rare and the bottleneck is
-        // disk I/O / parsing inside the format-specific importers, not this
-        // top-level orchestration.
-
+        
         TVector<CObject*> CreatedObjects;
         CreatedObjects.reserve(ImportData.Skeletons.size() + ImportData.Resources.size() + ImportData.Animations.size());
 
@@ -687,8 +675,7 @@ namespace Lumina
                 continue;
             }
 
-            // Single mesh: use the user's name verbatim. Multiple meshes:
-            // suffix with the source-mesh internal name to avoid collisions.
+
             FFixedString MeshPath = bMultipleMeshes
                 ? BuildPath(MeshResource->Name.ToString())
                 : BuildPath({});
@@ -715,11 +702,7 @@ namespace Lumina
 
             NewMesh->SetFlag(OF_NeedsPostLoad);
 
-            // Pre-allocate one material slot per geometry surface. Slots are
-            // left null on purpose: ForwardRenderScene falls back to
-            // CMaterial::GetDefaultMaterial() for null entries, so the mesh
-            // renders out of the box, and the editor inspector shows the
-            // slots so the user can drop a real material onto each.
+
             NewMesh->Materials.clear();
             NewMesh->Materials.resize(MeshResource->GeometrySurfaces.size());
 
@@ -748,13 +731,7 @@ namespace Lumina
 
             CreatedObjects.push_back(NewAnimation);
         }
-
-        // ---- Phase 2: textures.
-        //
-        // Run before the save phase so a texture asset is on disk when a
-        // future material extraction step (Group B) hooks them into material
-        // instances. Sequential to dodge the same thread-safety concerns as
-        // the rest of the pipeline.
+        
         if (!ImportData.Textures.empty())
         {
             TVector<FMeshImportImage> Images(ImportData.Textures.begin(), ImportData.Textures.end());
@@ -789,23 +766,14 @@ namespace Lumina
                 }
             }
         }
-
-        // ---- Phase 3: save and register every CObject we built.
-        //
-        // Saving happens while every cross-referenced object is still alive
-        // (skeleton, preview mesh, animation -> skeleton). The previous code
-        // tore down the skeletal mesh between assignment and the skeleton's
-        // second save, so PreviewMesh on disk was always dangling.
+        
         for (CObject* Obj : CreatedObjects)
         {
             CPackage* Package = Obj->GetPackage();
             CPackage::SavePackage(Package, Package->GetPackagePath());
             FAssetRegistry::Get().AssetCreated(Obj);
         }
-
-        // ---- Phase 4: tear down. The on-disk packages are the source of
-        // truth from here; any consumer that needs these assets at runtime
-        // will re-load them through the registry.
+        
         for (auto It = CreatedObjects.rbegin(); It != CreatedObjects.rend(); ++It)
         {
             (*It)->ForceDestroyNow();

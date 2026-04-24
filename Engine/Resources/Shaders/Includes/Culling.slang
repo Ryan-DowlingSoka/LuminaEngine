@@ -20,6 +20,23 @@ bool FrustumContainsSphere(FFrustum F, float3 Center, float Radius)
     return true;
 }
 
+// Overload for FCullView-style flat plane arrays. FCullView stores its six
+// planes inline (float4 Planes[6]) so it can be read as a direct field without
+// an extra struct indirection — this helper accepts that layout.
+bool FrustumContainsSphere(float4 Planes[6], float3 Center, float Radius)
+{
+    [unroll]
+    for (int i = 0; i < 6; ++i)
+    {
+        float Dist = dot(Planes[i].xyz, Center) + Planes[i].w;
+        if (Dist < -Radius)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 // 2D polyhedral bounds of a clipped perspective-projected sphere.
 // Michael Mara, Morgan McGuire (2013), adapted for left-handed view space
 // where the camera looks down +Z (visible points have C.z > 0).

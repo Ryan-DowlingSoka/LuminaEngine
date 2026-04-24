@@ -30,6 +30,26 @@ namespace Lumina
             return true;
         }
 
+        // Conservative sphere-vs-frustum: returns true unless the sphere is
+        // entirely outside at least one plane (i.e. signed distance < -Radius
+        // for some plane). False positives near corners are fine; the test is
+        // used for cheap broad-phase culling, not exact visibility.
+        NODISCARD bool IntersectsSphere(const glm::vec3& Center, float Radius) const
+        {
+            LUMINA_PROFILE_SCOPE();
+
+            for (int i = 0; i < NUM; ++i)
+            {
+                const glm::vec4& P = Planes[i];
+                const float Dist = P.x * Center.x + P.y * Center.y + P.z * Center.z + P.w;
+                if (Dist < -Radius)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         NODISCARD bool IsInside(const FAABB& aabb)
         {
             LUMINA_PROFILE_SCOPE();

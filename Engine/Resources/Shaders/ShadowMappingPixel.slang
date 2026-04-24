@@ -1,35 +1,19 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-// ============================================================================
-//  Push Constants
-// ============================================================================
+// Depth-only point/spot shadow PS. Emits nothing so the rasterizer's NDC z is
+// stored directly — an SV_Depth export disables early-Z and forces the PS to
+// run for every covered fragment, which scales with tile pixels × 6 multiview
+// layers and blows up once the quad-tree promotes close lights to 2048 tiles.
 
 struct FPushConstants
 {
-    uint LightIndex;
-    int  ShadowDataIndex;
+    int ShadowDataIndex;
+    int ViewIndex;
 };
 
-// ============================================================================
-//  Input
-// ============================================================================
-
-struct PSInput
-{
-    float3 WorldPos : TEXCOORD0;
-    float3 LightPos : TEXCOORD1;
-    float4 Position : SV_Position;
-};
-
-// ============================================================================
-//  Main
-// ============================================================================
-
+[earlydepthstencil]
 [shader("fragment")]
-float FragmentMain(PSInput Input, uniform FPushConstants PC) : SV_Depth
+void FragmentMain(uniform FPushConstants PC)
 {
-    FLight Light    = GetLightAt(PC.LightIndex);
-    float  Distance = length(Input.WorldPos - Input.LightPos);
-    return Distance / Light.Radius;
 }

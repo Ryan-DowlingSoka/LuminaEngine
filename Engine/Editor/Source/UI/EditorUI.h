@@ -106,6 +106,7 @@ namespace Lumina
         FContentBrowserEditorTool*                      ContentBrowser = nullptr;
         FGPUProfilerEditorTool*                         GPUProfilerTool = nullptr;
         FCPUProfilerEditorTool*                         CPUProfilerTool = nullptr;
+        class FShadowAtlasEditorTool*                   ShadowAtlasTool = nullptr;
         TVector<FEditorTool*>                           EditorTools;
         FEditorTool*                                    LastActiveTool = nullptr;
         FString                                         FocusTargetWindowName; // If this is set we need to switch focus to this window

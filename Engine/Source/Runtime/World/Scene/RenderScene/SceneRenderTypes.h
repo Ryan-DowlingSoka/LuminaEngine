@@ -3,13 +3,14 @@
 #include <glm/glm.hpp>
 
 #include "Containers/Array.h"
+#include "Core/Threading/Thread.h"
 #include "Platform/GenericPlatform.h"
 #include "Renderer/RenderContext.h"
 #include "Renderer/RenderResource.h"
 #include "Renderer/RHIGlobals.h"
 
 #define MAX_LIGHTS 1728
-#define MAX_SHADOWS 100
+#define MAX_SHADOWS 256
 #define SSAO_KERNEL_SIZE 32
 #define LIGHT_INDEX_MASK 0x1FFFu
 #define LIGHTS_PER_UINT 2
@@ -35,6 +36,11 @@ constexpr int NumClusters = ClusterGridSizeX * ClusterGridSizeY * ClusterGridSiz
 
 constexpr int GCSMResolution            = 4096;
 constexpr int GShadowAtlasResolution    = 4096;
+
+// Hard cap on simultaneous cull views. One main camera + NumCascades CSM
+// slices + 6 per point light + 1 per spot light. 128 leaves room for ~20
+// local shadow lights after cascades, which matches GShadowAtlas layer budget.
+constexpr int GMaxCullViews             = 128;
 
 namespace Lumina
 {
@@ -146,24 +152,33 @@ namespace Lumina
 
     struct FShadowAtlasConfig
     {
-        uint32 AtlasResolution = GShadowAtlasResolution;
-        uint32 TileResolution = 512;
-        uint32 NumLayers = 7;
-
-        constexpr uint32 TilesPerRow() const { return AtlasResolution / TileResolution; }
-        constexpr uint32 MaxTiles() const { return TilesPerRow() * TilesPerRow(); }
+        uint32 AtlasResolution    = GShadowAtlasResolution;    // Atlas is square: AtlasResolution x AtlasResolution.
+        uint32 MaxTileResolution  = 2048;                      // Largest tile a single shadow can claim. Must be pow2.
+        uint32 MinTileResolution  = 128;                       // Smallest leaf the quad-tree will subdivide to. Must be pow2.
+        uint32 NumLayers          = 7;                         // Shared across all layers; tiles occupy the same UV rect on every layer.
     };
 
     struct FShadowTile
     {
-        glm::vec2 UVOffset;     // Normalized offset (0-1 range)
-        glm::vec2 UVScale;      // Normalized scale (1.0 / TilesPerRow)
+        glm::vec2 UVOffset;     // Normalized origin (0-1 range) of this tile in the atlas.
+        glm::vec2 UVScale;      // Normalized size (square: UVScale.x == UVScale.y).
     };
-    
+
+    // Quad-tree shadow atlas allocator.
+    //
+    // The atlas is subdivided on-demand into power-of-two tiles between
+    // [MinTileResolution, MaxTileResolution]. Each frame the allocator is
+    // reset via FreeTiles(); callers request a tile sized from the shadow's
+    // on-screen importance (projected radius), so distant shadows consume
+    // 16x-256x less atlas area than near ones and many more shadow-casters
+    // fit in the same budget.
+    //
+    // Returned handles index into Tiles[]; UV offset/scale are ready to pass
+    // straight to FLightShadow with no further conversion.
     class FShadowAtlas
     {
     public:
-        
+
         FShadowAtlas(const FShadowAtlasConfig& InConfig)
             : Config(InConfig)
         {
@@ -178,56 +193,124 @@ namespace Lumina
             ImageDesc.DebugName         = "Shadow Atlas";
 
             ShadowAtlas = GRenderContext->CreateImage(ImageDesc);
-            
-            Tiles.resize(Config.MaxTiles());
-            float Scale = 1.0f / Config.TilesPerRow();
-        
-            for (uint32 y = 0; y < Config.TilesPerRow(); ++y)
+
+            MinLevel = Log2Floor(Config.MinTileResolution);
+            MaxLevel = Log2Floor(Config.MaxTileResolution);
+            NumLevels = (MaxLevel - MinLevel) + 1;
+            FreeLists.resize(NumLevels);
+
+            FreeTiles();
+        }
+
+        // Allocate a square tile of at least DesiredPixels on a side. The grant
+        // is quantized up to the next power of two and clamped to the configured
+        // [Min, Max] range. Returns INDEX_NONE if the atlas is full at every
+        // size >= DesiredPixels.
+        int32 AllocateTile(uint32 DesiredPixels)
+        {
+            // Point/spotlight processing runs across parallel tasks, so the
+            // allocator has to be thread-safe. Contention is trivial in practice
+            // (tens of shadow casters per frame) so a plain mutex is fine.
+            FScopeLock Lock(AllocMutex);
+
+            const uint32 ClampedSize = glm::clamp(RoundUpPow2(DesiredPixels), Config.MinTileResolution, Config.MaxTileResolution);
+            const uint32 StartLevel  = Log2Floor(ClampedSize) - MinLevel;
+
+            // Walk upward until we find a level that has (or can split to yield) a free tile.
+            for (uint32 Level = StartLevel; Level < NumLevels; ++Level)
             {
-                for (uint32 x = 0; x < Config.TilesPerRow(); ++x)
+                if (!FreeLists[Level].empty())
                 {
-                    uint32 Index = y * Config.TilesPerRow() + x;
-                    Tiles[Index].UVOffset = glm::vec2(x * Scale, y * Scale);
-                    Tiles[Index].UVScale = glm::vec2(Scale, Scale);
-                    Free.push((int32)Index);
+                    FTileRect Rect = FreeLists[Level].front();
+                    FreeLists[Level].pop();
+
+                    // Split down to StartLevel, returning the last quadrant and
+                    // pushing its three siblings back for future allocations.
+                    while (Level > StartLevel)
+                    {
+                        const uint32 Half = Rect.Size / 2;
+                        const uint32 ChildLevel = Level - 1;
+                        FreeLists[ChildLevel].push({ Rect.X + Half, Rect.Y,        Half });
+                        FreeLists[ChildLevel].push({ Rect.X,        Rect.Y + Half, Half });
+                        FreeLists[ChildLevel].push({ Rect.X + Half, Rect.Y + Half, Half });
+                        Rect = { Rect.X, Rect.Y, Half };
+                        --Level;
+                    }
+
+                    const int32 Handle = (int32)Tiles.size();
+                    const float InvAtlas = 1.0f / (float)Config.AtlasResolution;
+                    FShadowTile Tile;
+                    Tile.UVOffset = glm::vec2(Rect.X * InvAtlas, Rect.Y * InvAtlas);
+                    Tile.UVScale  = glm::vec2(Rect.Size * InvAtlas);
+                    Tiles.push_back(Tile);
+                    return Handle;
+                }
+            }
+            return INDEX_NONE;
+        }
+
+        // Reset state at the start of a frame. Reseeds the top-level free list
+        // with a grid of MaxTileResolution roots covering the whole atlas.
+        void FreeTiles()
+        {
+            Tiles.clear();
+            for (TQueue<FTileRect>& Q : FreeLists)
+            {
+                TQueue<FTileRect> Empty;
+                std::swap(Q, Empty);
+            }
+
+            const uint32 RootSize = Config.MaxTileResolution;
+            for (uint32 Y = 0; Y < Config.AtlasResolution; Y += RootSize)
+            {
+                for (uint32 X = 0; X < Config.AtlasResolution; X += RootSize)
+                {
+                    FreeLists[NumLevels - 1].push({ X, Y, RootSize });
                 }
             }
         }
-    
-        int32 AllocateTile()
-        {
-            if (Free.empty())
-            {
-                return INDEX_NONE;
-            }
-            
-            int32 TileIndex = Free.front();
-            Free.pop();
-            return TileIndex;
-        }
 
-        void FreeTiles()
-        {
-            while (!Free.empty())
-            {
-                Free.pop();
-            }
-            
-            for (uint32 i = 0; i < Tiles.size(); ++i)
-            {
-                Free.push(i);
-            }
-        }
-        
         const FShadowTile& GetTile(int32 TileIndex) const { return Tiles[TileIndex]; }
         FRHIImageRef GetImage() const { return ShadowAtlas; }
 
+        // Debug-only accessors. Safe to call from the UI thread between frames;
+        // reads a stable snapshot of the previous frame's allocation.
+        const FShadowAtlasConfig& GetConfig() const { return Config; }
+        const TVector<FShadowTile>& GetAllocatedTiles() const { return Tiles; }
+
     private:
+
+        struct FTileRect
+        {
+            uint32 X;
+            uint32 Y;
+            uint32 Size;
+        };
+
+        static constexpr uint32 Log2Floor(uint32 V)
+        {
+            uint32 R = 0;
+            while (V >>= 1) { ++R; }
+            return R;
+        }
+
+        static constexpr uint32 RoundUpPow2(uint32 V)
+        {
+            if (V <= 1) return 1;
+            --V;
+            V |= V >> 1;  V |= V >> 2;  V |= V >> 4;
+            V |= V >> 8;  V |= V >> 16;
+            return V + 1;
+        }
 
         FRHIImageRef ShadowAtlas;
         FShadowAtlasConfig Config;
         TVector<FShadowTile> Tiles;
-        TQueue<int32> Free;
+        TVector<TQueue<FTileRect>> FreeLists;   // Indexed by (log2(size) - MinLevel).
+        FMutex AllocMutex;
+        uint32 MinLevel  = 0;
+        uint32 MaxLevel  = 0;
+        uint32 NumLevels = 0;
     };
     
 
@@ -415,8 +498,41 @@ namespace Lumina
         uint32 DebugMode;
         uint32 Padding[2];
     };
-    
-    
+
+    // Bits inside FCullView::Flags. Must match CULL_VIEW_FLAG_* in Common.slang.
+    namespace ECullViewFlags
+    {
+        enum Type : uint32
+        {
+            None            = 0,
+            Frustum         = BIT(0),
+            Cone            = BIT(1),
+            Occlusion       = BIT(2),
+            Distance        = BIT(3),
+            CastShadowOnly  = BIT(4),
+            SunAligned      = BIT(5),
+        };
+    }
+
+    // Mirror of FCullView in Common.slang. One entry per logical render view
+    // (main camera, each CSM cascade, each point-light face, each spot light).
+    // The unified cull compute pass walks every surviving meshlet and tests it
+    // against every view, emitting per-view draw lists into shared storage
+    // sliced by DrawListOffset / IndirectArgsOffset.
+    struct alignas(16) FCullView
+    {
+        glm::vec4   FrustumPlanes[6];           // 96 B
+        glm::vec4   ViewOriginAndFlags;         // 16 B — xyz=origin, w=asfloat(flags)
+        uint32      DrawListOffset;             // Into uMeshletDrawList
+        uint32      DrawListCapacity;           // Max FMeshletDraw entries this view may emit
+        uint32      IndirectArgsOffset;         // v * NumDraws
+        uint32      NumDraws;                   // Number of indirect slots owned by this view
+    };
+
+    static_assert(sizeof(FCullView) == 128, "FCullView layout must match shader");
+    VERIFY_SSBO_ALIGNMENT(FCullView)
+
+
     // Sim flag bitmask, must match constants in ParticleSimulate(.Template).slang
     static constexpr uint32 PARTICLE_SIM_FLAG_LOOP          = 1u << 0;
     static constexpr uint32 PARTICLE_SIM_FLAG_BURST_PENDING = 1u << 1;

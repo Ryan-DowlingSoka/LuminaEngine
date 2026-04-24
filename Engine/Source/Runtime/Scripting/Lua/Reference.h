@@ -33,55 +33,56 @@ namespace Lumina::Lua
             {
                 if (!bAtEnd)
                 {
+                    TableIdx = lua_gettop(L);
                     lua_pushnil(L);
                     Advance();
                 }
             }
-            
+
             ~FIterator()
             {
                 if (!bAtEnd)
                 {
-                    lua_pop(State, 2);
+                    lua_pop(State, 3);
                 }
             }
-            
+
             LE_NO_COPYMOVE(FIterator);
-            
+
             TPair<FRef, FRef> operator*() const
             {
-                return eastl::make_pair(FRef(State, -2), FRef(State, -1));
+                lua_pushvalue(State, -2);
+                FRef Key(State, -1);
+                lua_pushvalue(State, -1);
+                FRef Value(State, -1);
+                return eastl::make_pair(eastl::move(Key), eastl::move(Value));
             }
-            
+
             FIterator& operator++()
             {
+                lua_pop(State, 1);
                 Advance();
-                
-                if (bAtEnd)
-                {
-                    lua_pop(State, 2);
-                }
-                
                 return *this;
             }
 
-            
+
             bool operator==(const FIterator& Other) const { return bAtEnd == Other.bAtEnd; }
             bool operator!=(const FIterator& Other) const { return !(*this == Other); }
-            
-            
+
+
         private:
-            
+
             void Advance()
             {
-                if (!lua_next(State, -2))
+                if (!lua_next(State, TableIdx))
                 {
                     bAtEnd = true;
                     lua_pop(State, 1);
                 }
             }
-            
+
             lua_State* State = nullptr;
+            int TableIdx = 0;
             bool bAtEnd = false;
         };
         

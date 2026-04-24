@@ -24,9 +24,27 @@ static const int SSAO_KERNEL_SIZE = 32;
 #define COL_A_SHIFT 24
 #define COL_A_MASK  0xFF000000
 
-#define MAX_LIGHTS   1728
-#define MAX_SHADOWS  100
-#define NUM_CASCADES 3
+#define MAX_LIGHTS      1728
+#define MAX_SHADOWS     256
+#define NUM_CASCADES    3
+#define MAX_CULL_VIEWS  128
+
+// Bits inside FCullView.Flags. Controls which culling stages run for the view.
+//   Frustum       — plane cull against FrustumPlanes[6].
+//   ConeCull      — meshlet backface cone test using ViewOrigin (camera/point
+//                   light origin) or SunDirection (see SunAligned).
+//   Occlusion     — Hi-Z occlusion test (camera view only; shadow views have
+//                   no depth pyramid).
+//   Distance      — drop instances outside FCullData.ShadowMaxDistance.
+//   CastShadowOnly— skip instances without EInstanceFlags::CastShadow.
+//   SunAligned    — cone cull uses SunDirection from FLightData instead of
+//                   (Center - ViewOrigin). Used by directional cascade views.
+#define CULL_VIEW_FLAG_FRUSTUM          BIT(0)
+#define CULL_VIEW_FLAG_CONE             BIT(1)
+#define CULL_VIEW_FLAG_OCCLUSION        BIT(2)
+#define CULL_VIEW_FLAG_DISTANCE         BIT(3)
+#define CULL_VIEW_FLAG_CAST_SHADOW_ONLY BIT(4)
+#define CULL_VIEW_FLAG_SUN_ALIGNED      BIT(5)
 
 #define MAX_SCALARS  24
 #define MAX_VECTORS  24
@@ -361,6 +379,28 @@ struct FCluster
 struct FFrustum
 {
     float4 Planes[6];
+};
+
+// Unified per-view culling descriptor. The CPU builds one of these per logical
+// render view (main camera, each CSM cascade, each point-light face, each
+// spot light) and the single cull compute pass tests every surviving meshlet
+// against every active view. Each view owns its own slice of the shared
+// MeshletDrawList and IndirectArgs buffers, addressed by DrawListOffset /
+// IndirectArgsOffset. That way a point light's +X face draws only its own
+// culled casters instead of the union across every shadow view.
+struct FCullView
+{
+    float4 FrustumPlanes[6];   // 96B
+    float4 ViewOriginAndFlags; // 16B — xyz=origin (camera / light pos), w=asuint(flags)
+    uint   DrawListOffset;     // Into uMeshletDrawList
+    uint   DrawListCapacity;   // Max FMeshletDraw entries this view may emit
+    uint   IndirectArgsOffset; // Into uIndirectArgs (v * NumDraws)
+    uint   NumDraws;           // Number of indirect slots owned by this view
+
+    property float3 ViewOrigin { get { return ViewOriginAndFlags.xyz; } }
+    property uint   Flags      { get { return asuint(ViewOriginAndFlags.w); } }
+
+    bool HasFlag(uint Flag) { return (Flags & Flag) == Flag; }
 };
 
 struct FCullData

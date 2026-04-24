@@ -74,6 +74,7 @@
 #include "Tools/EditorTool.h"
 #include "Tools/CPUProfilerEditorTool.h"
 #include "Tools/GPUProfilerEditorTool.h"
+#include "Tools/ShadowAtlasEditorTool.h"
 #include "Tools/EditorToolModal.h"
 #include "Tools/GamePreviewTool.h"
 #include "Tools/ToolFlags.h"
@@ -158,6 +159,7 @@ namespace Lumina
         ContentBrowser = CreateTool<FContentBrowserEditorTool>(this);
         GPUProfilerTool = CreateTool<FGPUProfilerEditorTool>(this);
         CPUProfilerTool = CreateTool<FCPUProfilerEditorTool>(this);
+        ShadowAtlasTool = CreateTool<FShadowAtlasEditorTool>(this);
         
         if (GEditorEngine->GetProjectName().empty())
         {
@@ -177,6 +179,7 @@ namespace Lumina
         ConsoleLogTool = nullptr;
         GPUProfilerTool = nullptr;
         CPUProfilerTool = nullptr;
+        ShadowAtlasTool = nullptr;
         ImGui::SetCurrentContext(nullptr);
     }
 
@@ -2410,6 +2413,11 @@ namespace Lumina
         if (ImGui::MenuItem(LE_ICON_CHART_BAR " CPU Profiler", nullptr, false))
         {
             FocusTargetWindowName = "CPU Profiler";
+        }
+
+        if (ImGui::MenuItem(LE_ICON_GRID " Shadow Atlas", nullptr, false))
+        {
+            FocusTargetWindowName = "Shadow Atlas";
         }
         
         if (ImGui::MenuItem(LE_ICON_MEMORY " Memory Info", nullptr, nullptr))

@@ -3,7 +3,227 @@
 #include "World/World.h"
 #include "Platform/Process/PlatformProcess.h"
 #include "Scripting/Lua/Scripting.h"
+#include "Scripting/Lua/ScriptExports.h"
 #include "UI/Tools/ContentBrowserEditorTool.h"
+
+namespace Lumina
+{
+    namespace
+    {
+        bool DrawScriptPropertyValue(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value, const char* Label);
+
+        // Draws "Name | widget" as a row; returns whether the widget changed.
+        bool DrawScalarValue(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value, const char* Label)
+        {
+            using namespace Lua;
+            bool bChanged = false;
+
+            ImGui::PushID(Label);
+
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(Label);
+            ImGui::SameLine();
+
+            const float LabelColumnEnd = 180.0f;
+            if (ImGui::GetCursorPosX() < LabelColumnEnd)
+            {
+                ImGui::SetCursorPosX(LabelColumnEnd);
+            }
+            ImGui::SetNextItemWidth(-FLT_MIN);
+
+            FFixedString HiddenLabel;
+            HiddenLabel.append("##").append(Label);
+            const char* HL = HiddenLabel.c_str();
+
+            switch (Type.Kind)
+            {
+            case EScriptExportKind::Bool:
+                bChanged = ImGui::Checkbox(HL, &Value.AsBool);
+                break;
+            case EScriptExportKind::Int:
+            {
+                int Tmp = (int)Value.AsInt;
+                if (ImGui::DragInt(HL, &Tmp, 1.0f))
+                {
+                    Value.AsInt = Tmp;
+                    bChanged = true;
+                }
+                break;
+            }
+            case EScriptExportKind::Double:
+            {
+                float Tmp = (float)Value.AsDouble;
+                if (ImGui::DragFloat(HL, &Tmp, 0.1f))
+                {
+                    Value.AsDouble = (double)Tmp;
+                    bChanged = true;
+                }
+                break;
+            }
+            case EScriptExportKind::String:
+            {
+                char Buffer[1024] = {0};
+                size_t Copy = Value.AsString.size() < sizeof(Buffer) - 1 ? Value.AsString.size() : sizeof(Buffer) - 1;
+                memcpy(Buffer, Value.AsString.c_str(), Copy);
+                if (ImGui::InputText(HL, Buffer, sizeof(Buffer)))
+                {
+                    Value.AsString = Buffer;
+                    bChanged = true;
+                }
+                break;
+            }
+            case EScriptExportKind::Vec2:
+                bChanged = ImGui::DragFloat2(HL, &Value.AsVec.x, 0.1f);
+                break;
+            case EScriptExportKind::Vec3:
+                bChanged = ImGui::DragFloat3(HL, &Value.AsVec.x, 0.1f);
+                break;
+            case EScriptExportKind::Vec4:
+                bChanged = ImGui::DragFloat4(HL, &Value.AsVec.x, 0.1f);
+                break;
+            case EScriptExportKind::UnknownUserdata:
+                ImGui::TextDisabled("(%s — not yet editable)", Value.UserdataTypeName.ToString().c_str());
+                break;
+            default:
+                break;
+            }
+
+            ImGui::PopID();
+            return bChanged;
+        }
+
+        bool DrawArrayValue(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value, const char* Label)
+        {
+            using namespace Lua;
+            if (!Type.ElementType) return false;
+
+            bool bChanged = false;
+            ImGui::PushID(Label);
+
+            if (ImGui::TreeNodeEx(Label, ImGuiTreeNodeFlags_DefaultOpen, "%s [%u]", Label, (uint32)Value.Items.size()))
+            {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("+"))
+                {
+                    Value.Items.emplace_back(FScriptPropertyValue::FromType(*Type.ElementType));
+                    bChanged = true;
+                }
+
+                for (size_t i = 0; i < Value.Items.size(); )
+                {
+                    ImGui::PushID((int)i);
+                    char RowLabel[32];
+                    snprintf(RowLabel, sizeof(RowLabel), "[%zu]", i);
+
+                    bool bRemoved = false;
+                    if (ImGui::SmallButton("x"))
+                    {
+                        Value.Items.erase(Value.Items.begin() + i);
+                        bChanged = true;
+                        bRemoved = true;
+                    }
+                    else
+                    {
+                        ImGui::SameLine();
+                        bChanged |= DrawScriptPropertyValue(*Type.ElementType, Value.Items[i], RowLabel);
+                    }
+
+                    ImGui::PopID();
+                    if (!bRemoved) ++i;
+                }
+                ImGui::TreePop();
+            }
+
+            ImGui::PopID();
+            return bChanged;
+        }
+
+        bool DrawStructValue(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value, const char* Label)
+        {
+            using namespace Lua;
+            bool bChanged = false;
+            ImGui::PushID(Label);
+
+            if (ImGui::TreeNodeEx(Label, ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                for (const FScriptExportField& Field : Type.Fields)
+                {
+                    if (!Field.Type) continue;
+                    FScriptPropertyValue* FieldValue = nullptr;
+                    for (FScriptPropertyEntry& Entry : Value.StructFields)
+                    {
+                        if (Entry.Name == Field.Name) { FieldValue = &Entry.Value; break; }
+                    }
+                    if (!FieldValue)
+                    {
+                        FScriptPropertyEntry Entry;
+                        Entry.Name = Field.Name;
+                        Entry.Value = FScriptPropertyValue::FromType(*Field.Type);
+                        Value.StructFields.emplace_back(eastl::move(Entry));
+                        FieldValue = &Value.StructFields.back().Value;
+                    }
+                    FString FieldLabel = Field.Name.ToString();
+                    bChanged |= DrawScriptPropertyValue(*Field.Type, *FieldValue, FieldLabel.c_str());
+                }
+                ImGui::TreePop();
+            }
+
+            ImGui::PopID();
+            return bChanged;
+        }
+
+        bool DrawScriptPropertyValue(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value, const char* Label)
+        {
+            using namespace Lua;
+            switch (Type.Kind)
+            {
+            case EScriptExportKind::Array:
+                return DrawArrayValue(Type, Value, Label);
+            case EScriptExportKind::NestedStruct:
+                return DrawStructValue(Type, Value, Label);
+            default:
+                return DrawScalarValue(Type, Value, Label);
+            }
+        }
+
+        void DrawExportsSection(SScriptComponent& Component, bool& bOutChanged)
+        {
+            if (!Component.Script || !Component.Script->ExportsSchema.IsValid())
+            {
+                return;
+            }
+
+            // Keep overrides in sync with the schema in case the script just changed.
+            Lua::ReconcileOverrides(
+                Component.Script->ExportsSchema,
+                Component.Script->ExportDefaults,
+                Component.PropertyOverrides.Items);
+
+            if (!ImGui::CollapsingHeader("Exports", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                return;
+            }
+
+            for (const Lua::FScriptExportField& Field : Component.Script->ExportsSchema.Fields)
+            {
+                if (!Field.Type) continue;
+
+                Lua::FScriptPropertyValue* Value = nullptr;
+                for (Lua::FScriptPropertyEntry& Entry : Component.PropertyOverrides.Items)
+                {
+                    if (Entry.Name == Field.Name) { Value = &Entry.Value; break; }
+                }
+                if (!Value) continue;
+
+                FString Label = Field.Name.ToString();
+                if (DrawScriptPropertyValue(*Field.Type, *Value, Label.c_str()))
+                {
+                    bOutChanged = true;
+                }
+            }
+        }
+    }
+}
 
 namespace Lumina
 {
@@ -182,22 +402,23 @@ namespace Lumina
                     ImGui::TableSetupColumn("Value");
                     ImGui::TableHeadersRow();
 
-                    // @TODO Figure out why iterators broke.
-                    //for (auto&& [Key, Value] : ScriptComponent->Script->Reference)
-                    //{
-                    //    ImGui::TableNextRow();
-                    //    ImGui::TableSetColumnIndex(0);
-                    //    ImGui::TextUnformatted(Key.ToString().c_str());
-                    //    ImGui::TableSetColumnIndex(1);
-                    //    ImGui::TextUnformatted(Value.ToString().c_str());
-                    //}
+                    for (auto&& [Key, Value] : ScriptComponent->Script->Reference)
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::TextUnformatted(Key.ToString().c_str());
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::TextUnformatted(Value.ToString().c_str());
+                    }
 
                     ImGui::EndTable();
                 }
             }
             
             ImGui::PopStyleColor(3);
-            
+
+            DrawExportsSection(*ScriptComponent, bWasChanged);
+
             ImGui::EndGroup();
         }
         ImGui::EndChild();

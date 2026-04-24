@@ -446,11 +446,27 @@ namespace Lumina::Lua
             return {};
         }
         
+        // Duck-type the schema + defaults by walking the `Exports` field of the returned module
+        // table. We do this while the module table is still on top of the Thread stack.
+        FScriptExportSchema Schema;
+        TVector<FScriptPropertyEntry> Defaults;
+        if (lua_istable(Thread, -1))
+        {
+            lua_getfield(Thread, -1, "Exports");
+            if (lua_istable(Thread, -1))
+            {
+                BuildSchemaFromExportsTable(Thread, -1, Schema, Defaults);
+            }
+            lua_pop(Thread, 1);
+        }
+
         auto NewScript = MakeShared<FScript>();
-        NewScript->Name         = Name;
-        NewScript->Path         = "";
-        NewScript->Reference    = FRef(Thread, -1);
-        
+        NewScript->Name             = Name;
+        NewScript->Path             = "";
+        NewScript->Reference        = FRef(Thread, -1);
+        NewScript->ExportsSchema    = eastl::move(Schema);
+        NewScript->ExportDefaults   = eastl::move(Defaults);
+
         lua_pushvalue(Thread, LUA_GLOBALSINDEX);
         NewScript->Environment  = FRef(Thread, -1);
         NewScript->Thread       = ThreadRef;

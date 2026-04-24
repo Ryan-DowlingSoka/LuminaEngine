@@ -34,6 +34,12 @@ namespace Lumina::Lua
             , Name(InName)
         {
             luaL_newmetatable(L, InName.data()); // [MT]
+
+            // Stamp the metatable with its own registered name so the editor
+            // duck-typer (and anyone debugging) can recover it in O(1).
+            lua_pushstring(L, InName.data());
+            lua_rawsetfield(L, -2, "__typename");
+
             lua_newtable(L); // [MT] | [__index]
             lua_newtable(L); // [MT] | [__index] | [__newindex]
             

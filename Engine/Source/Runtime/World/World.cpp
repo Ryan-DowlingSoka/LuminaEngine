@@ -941,6 +941,33 @@ namespace Lumina
         ScriptComponent.ReadyFunc       = ScriptComponent.Script->Reference["OnReady"];
         ScriptComponent.UpdateFunc      = ScriptComponent.Script->Reference["Update"];
         ScriptComponent.DetachFunc      = ScriptComponent.Script->Reference["OnDetach"];
+
+        // Bring this entity's per-instance overrides into sync with the current schema — drops
+        // stale fields, inserts missing ones pre-filled with the defaults read from the script.
+        // Then apply the overrides by mutating the `Exports` table the script holds a reference
+        // to; user code reading `Exports.Foo` will observe the override.
+        if (ScriptComponent.Script->ExportsSchema.IsValid())
+        {
+            Lua::ReconcileOverrides(
+                ScriptComponent.Script->ExportsSchema,
+                ScriptComponent.Script->ExportDefaults,
+                ScriptComponent.PropertyOverrides.Items);
+
+            lua_State* ScriptState = ScriptComponent.Script->Reference.GetState();
+            if (ScriptState)
+            {
+                ScriptComponent.Script->Reference.Push();
+                lua_getfield(ScriptState, -1, "Exports");
+                if (lua_istable(ScriptState, -1))
+                {
+                    Lua::ApplyOverridesToExportsTable(
+                        ScriptState, -1,
+                        ScriptComponent.Script->ExportsSchema,
+                        ScriptComponent.PropertyOverrides.Items);
+                }
+                lua_pop(ScriptState, 2);
+            }
+        }
         
         if (ScriptComponent.ScriptMetaTable.IsValid())
         {

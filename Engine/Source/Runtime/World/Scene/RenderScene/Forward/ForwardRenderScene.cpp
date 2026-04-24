@@ -318,7 +318,7 @@ namespace Lumina
             const size_t EstimatedProxies  = EntityCount * 2;
 
             Instances.reserve(EstimatedProxies);
-            IndirectDrawArguments.reserve(EstimatedProxies);
+            DrawMeshletStartOffsets.reserve(EstimatedProxies);
             DrawCommands.reserve(EstimatedProxies);
 
             // One thread-local accumulator per scheduler thread (workers + the calling thread).
@@ -534,9 +534,14 @@ namespace Lumina
 
             Graph.Dispatch();
             Graph.Wait();
-            
-            
+
+
             LightData.NumLights = LightCount.load(std::memory_order_acquire);
+
+            // Serial fit + allocate. Runs after the parallel light pass so the
+            // whole shadow request set is visible and we can shrink proportionally
+            // when Σ(area) exceeds the atlas budget.
+            AllocateShadowTiles();
         }
         
         
@@ -569,42 +574,56 @@ namespace Lumina
             SceneGlobalData.CullData.bHasDirectional = 0u;
         }
 
-        const SIZE_T SimpleVertexSize      = SimpleVertices.size() * sizeof(FSimpleElementVertex);
-        const SIZE_T InstanceSize          = Instances.size() * sizeof(FGPUInstance);
-        const SIZE_T BoneDataSize          = BonesData.size() * sizeof(glm::mat4);
-        const SIZE_T IndirectArgsSize   = IndirectDrawArguments.size() * sizeof(FDrawIndirectArguments);
+        // BuildCullViews populates CullViews[] and IndirectArgs[] (indexed
+        // v * NumDraws + d with FirstInstance = v * TotalMeshletBound + prefix[d])
+        // and must run after AllocateShadowTiles so every shadow view's VP
+        // matrix is settled. Everything downstream (size calcs, upload) reads
+        // the array lengths it produced.
+        BuildCullViews(SceneViewport->GetViewVolume());
 
-        const uint32 NumDraws             = (uint32)IndirectDrawArguments.size();
+        const uint32 NumCullViews         = (uint32)CullViews.size();
+        const uint32 NumDraws             = NumDrawsPerView;
         SceneGlobalData.CullData.NumDraws = NumDraws;
 
-        const SIZE_T ActiveLightsSize   = LightData.NumLights * sizeof(FLight);
-        const SIZE_T LightsUploadSize   = offsetof(FSceneLightData, Lights) + ActiveLightsSize;
-        const uint32 ActiveShadowCount  = glm::min<uint32>(ShadowDataCount.load(std::memory_order_acquire), (uint32)MAX_SHADOWS);
-        const SIZE_T ShadowsUploadSize  = ActiveShadowCount * sizeof(FLightShadowData);
+        const SIZE_T SimpleVertexSize     = SimpleVertices.size() * sizeof(FSimpleElementVertex);
+        const SIZE_T InstanceSize         = Instances.size() * sizeof(FGPUInstance);
+        const SIZE_T BoneDataSize         = BonesData.size() * sizeof(glm::mat4);
+
+        const SIZE_T ActiveLightsSize  = LightData.NumLights * sizeof(FLight);
+        const SIZE_T LightsUploadSize  = offsetof(FSceneLightData, Lights) + ActiveLightsSize;
+        const uint32 ActiveShadowCount = glm::min<uint32>(ShadowDataCount.load(std::memory_order_acquire), (uint32)MAX_SHADOWS);
+        const SIZE_T ShadowsUploadSize = ActiveShadowCount * sizeof(FLightShadowData);
         // Buffer must be sized to cover the shadow suffix even when uploading
         // only the active slice; otherwise WriteBuffer at ShadowsOffset would
         // overrun a buffer sized only to LightsUploadSize.
-        const SIZE_T LightUploadSize    = offsetof(FSceneLightData, Shadows) + ShadowsUploadSize;
-        const SIZE_T BillboardSize      = BillboardInstances.size() * sizeof(FBillboardInstance);
+        const SIZE_T LightUploadSize   = offsetof(FSceneLightData, Shadows) + ShadowsUploadSize;
+        const SIZE_T BillboardSize     = BillboardInstances.size() * sizeof(FBillboardInstance);
 
-        // TotalMeshletBound set by MergeMeshDrawData prefix sum.
-        const SIZE_T MeshletDrawListSize        = glm::max<SIZE_T>(sizeof(uint32) * 2, (SIZE_T)TotalMeshletBound * sizeof(uint32) * 2);
-        const SIZE_T MeshletIndirectSize        = glm::max<SIZE_T>(sizeof(FDrawIndirectArguments), (SIZE_T)IndirectArgsSize);
-        const SIZE_T MeshletDrawListCascadeSize = glm::max<SIZE_T>(sizeof(uint32) * 2, (SIZE_T)NumCascades * (SIZE_T)TotalMeshletBound * sizeof(uint32) * 2);
-        const SIZE_T MeshletIndirectCascadeSize = glm::max<SIZE_T>(sizeof(FDrawIndirectArguments), (SIZE_T)IndirectDrawArgumentsMeshletCascade.size() * sizeof(FDrawIndirectArguments));
+        // Shared meshlet draw list: NumViews * TotalMeshletBound FMeshletDraw
+        // entries (sizeof(FMeshletDraw) == 2 * sizeof(uint32)). Each view owns
+        // a disjoint slice addressed by FCullView.DrawListOffset.
+        const SIZE_T MeshletDrawListSize = glm::max<SIZE_T>(
+            sizeof(uint32) * 2,
+            (SIZE_T)NumCullViews * (SIZE_T)TotalMeshletBound * sizeof(uint32) * 2);
+
+        // Shared indirect args: NumViews * NumDraws FDrawIndirectArguments.
+        const SIZE_T IndirectArgsSize = glm::max<SIZE_T>(
+            sizeof(FDrawIndirectArguments),
+            IndirectArgs.size() * sizeof(FDrawIndirectArguments));
+
+        const SIZE_T CullViewSize = glm::max<SIZE_T>(
+            sizeof(FCullView),
+            (SIZE_T)NumCullViews * sizeof(FCullView));
 
         bool bAnyBufferResized = false;
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Instance], (uint32)InstanceSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMappingShadow], sizeof(uint32) * Instances.size(), 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::SimpleVertex], (uint32)SimpleVertexSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Bone], (uint32)BoneDataSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::IndirectShadow], (uint32)IndirectArgsSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Light], (uint32)LightUploadSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Billboards], (uint32)BillboardSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::CullView], (uint32)CullViewSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletDrawList], (uint32)MeshletDrawListSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletIndirect], (uint32)MeshletIndirectSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletDrawListCascade], (uint32)MeshletDrawListCascadeSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletIndirectCascade], (uint32)MeshletIndirectCascadeSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::IndirectArgs], (uint32)IndirectArgsSize, 1.2f);
 
         if (bAnyBufferResized)
         {
@@ -617,12 +636,8 @@ namespace Lumina
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Scene), EResourceStates::CopyDest);
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Instance), EResourceStates::CopyDest);
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Bone), EResourceStates::CopyDest);
-            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::IndirectShadow), EResourceStates::CopyDest);
-            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::MeshletIndirect), EResourceStates::CopyDest);
-            if (!IndirectDrawArgumentsMeshletCascade.empty())
-            {
-                CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::MeshletIndirectCascade), EResourceStates::CopyDest);
-            }
+            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::CullView), EResourceStates::CopyDest);
+            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::IndirectArgs), EResourceStates::CopyDest);
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::SimpleVertex), EResourceStates::CopyDest);
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Light), EResourceStates::CopyDest);
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Billboards), EResourceStates::CopyDest);
@@ -632,24 +647,22 @@ namespace Lumina
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Scene), &SceneGlobalData, sizeof(FSceneGlobalData));
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Instance), Instances.data(), InstanceSize);
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Bone), BonesData.data(),  BoneDataSize);
-            // Shadow indirect buffer uses the same per-batch layout as the
-            // camera path (matching FirstInstance, InstanceCount == 0) so
-            // ShadowMeshCull.slang can atomically fill it in parallel with
-            // the mesh-level passes.
-            CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::IndirectShadow), IndirectDrawArguments.data(), IndirectArgsSize);
-            // Meshlet indirect: FirstInstance pre-populated with the prefix-sum slot
-            // into uMeshletDrawList; InstanceCount starts at 0 and is atomically
-            // incremented by MeshletCull per surviving meshlet.
-            const SIZE_T MeshletIndirectUploadSize = IndirectDrawArgumentsMeshlet.size() * sizeof(FDrawIndirectArguments);
-            if (MeshletIndirectUploadSize > 0)
+
+            // Per-view descriptors (camera + every shadow view) the unified
+            // CullMeshlets pass iterates.
+            if (!CullViews.empty())
             {
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::MeshletIndirect), IndirectDrawArgumentsMeshlet.data(), MeshletIndirectUploadSize);
+                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::CullView), CullViews.data(), CullViews.size() * sizeof(FCullView));
             }
-            const SIZE_T MeshletIndirectCascadeUploadSize = IndirectDrawArgumentsMeshletCascade.size() * sizeof(FDrawIndirectArguments);
-            if (MeshletIndirectCascadeUploadSize > 0)
+
+            // Per-view indirect args with FirstInstance pre-seeded so each
+            // atomic append in CullMeshlets lands inside its own slice.
+            // InstanceCount starts at 0 and is atomically incremented.
+            if (!IndirectArgs.empty())
             {
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::MeshletIndirectCascade), IndirectDrawArgumentsMeshletCascade.data(), MeshletIndirectCascadeUploadSize);
+                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::IndirectArgs), IndirectArgs.data(), IndirectArgs.size() * sizeof(FDrawIndirectArguments));
             }
+
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::SimpleVertex), SimpleVertices.data(), SimpleVertexSize);
             // Upload only the populated prefix of the light buffer: the
             // header + active hot FLight entries, and the active FLightShadowData
@@ -1155,9 +1168,9 @@ namespace Lumina
             TotalDrawArgs                       += (uint32)GlobalDrawsPerBatch[b].size();
         }
 
-        IndirectDrawArguments.resize(TotalDrawArgs);
-        IndirectDrawArgumentsMeshlet.resize(TotalDrawArgs);
+        DrawMeshletStartOffsets.resize(TotalDrawArgs);
         Instances.resize(TotalInstances);
+        NumDrawsPerView = TotalDrawArgs;
 
         // Sparse count pass. Each LocalBatchEntry already owns an instance count and a
         // meshlet-count sum per local draw, so we never need a T*D matrix.
@@ -1213,26 +1226,10 @@ namespace Lumina
             }
         }
 
-        // Fill IndirectDrawArguments with their final values.
-        {
-            uint32 DrawIdx = 0;
-            for (uint32 b = 0; b < NumBatches; ++b)
-            {
-                const TVector<FDrawKey>& GlobalDraws = GlobalDrawsPerBatch[b];
-                for (uint32 i = 0; i < GlobalDraws.size(); ++i, ++DrawIdx)
-                {
-                    FDrawIndirectArguments& Args = IndirectDrawArguments[DrawIdx];
-                    Args.VertexCount           = GlobalDraws[i].IndexCount;
-                    Args.InstanceCount         = 0u; // cull pass increments
-                    Args.StartVertexLocation   = GlobalDraws[i].StartIndex;
-                    Args.StartInstanceLocation = DrawInstanceOffsets[DrawIdx];
-                }
-            }
-        }
-
-        // Meshlet-indirect prefix sum. Per-draw sums were built sparsely above; no need
-        // to walk the final Instances array. MaxMeshletsPerInstance reduces from per-thread
-        // totals tracked during the processing phase.
+        // Per-draw meshlet prefix sum. CullMeshlets atomically appends into the
+        // slice [v * TotalMeshletBound + DrawMeshletStartOffsets[d], ...), and
+        // BuildCullViews seeds IndirectArgs[v * NumDraws + d].FirstInstance with
+        // exactly that base so every view writes into its own disjoint slice.
         MaxMeshletsPerInstance = 0u;
         for (FThreadLocalDrawData& Local : ThreadLocal)
         {
@@ -1242,28 +1239,10 @@ namespace Lumina
         uint32 MeshletRunning = 0u;
         for (uint32 d = 0; d < TotalDrawArgs; ++d)
         {
-            FDrawIndirectArguments& Args = IndirectDrawArgumentsMeshlet[d];
-            Args.VertexCount           = MESHLET_VERTICES_PER_DRAW;
-            Args.InstanceCount         = 0u;
-            Args.StartVertexLocation   = 0u;
-            Args.StartInstanceLocation = MeshletRunning;
+            DrawMeshletStartOffsets[d] = MeshletRunning;
             MeshletRunning            += MeshletCountsPerDraw[d];
         }
         TotalMeshletBound = MeshletRunning;
-
-        // Cascade-major mirror with FirstInstance shifted by c * TotalMeshletBound.
-        IndirectDrawArgumentsMeshletCascade.resize((size_t)NumCascades * TotalDrawArgs);
-        for (uint32 c = 0; c < (uint32)NumCascades; ++c)
-        {
-            const uint32 CascadeMeshletBase = c * TotalMeshletBound;
-            for (uint32 d = 0; d < TotalDrawArgs; ++d)
-            {
-                FDrawIndirectArguments Args = IndirectDrawArgumentsMeshlet[d];
-                Args.InstanceCount         = 0u;
-                Args.StartInstanceLocation += CascadeMeshletBase;
-                IndirectDrawArgumentsMeshletCascade[c * TotalDrawArgs + d] = Args;
-            }
-        }
 
         // Parallel instance write. Each worker owns its own LocalBatches, so the
         // in-place cursor advance on LocalDrawWriteBase needs no synchronization.
@@ -1325,6 +1304,16 @@ namespace Lumina
         }
     }
 
+    bool FForwardRenderScene::ShouldRequestShadow(const glm::vec3& LightPosition, float LightRadius) const
+    {
+        // Sphere-vs-camera-frustum: a point/spot light only shadows pixels the
+        // camera can see, so if the attenuation sphere doesn't touch the view
+        // there's nothing to shadow. Skipping here spares an atlas tile, a
+        // shadow slot, 6 (point) or 1 (spot) view-budget entries and the
+        // matching indirect-draw slices.
+        return SceneGlobalData.CullData.Frustum.IntersectsSphere(LightPosition, LightRadius);
+    }
+
     void FForwardRenderScene::ProcessPointLight(const SPointLightComponent& PointLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount)
     {
         auto Lights = LightCount.fetch_add(1, std::memory_order_acquire);
@@ -1343,60 +1332,31 @@ namespace Lumina
         Light.Position              = TransformComponent.WorldTransform.Location;
         Light.ShadowDataIndex       = INDEX_NONE;
 
-        FViewVolume LightView(90.0f, 1.0f, 0.01f, Light.Radius);
-
-        auto SetView = [&Light](FViewVolume& View, uint32 Index)
+        if (PointLight.bCastShadows && ShouldRequestShadow(Light.Position, Light.Radius))
         {
-            switch (Index)
+            // Projected-radius sizing: a 10m-radius light at 10m gets the full
+            // max tile; the same light at 100m collapses to min size. The fit
+            // pass in AllocateShadowTiles clamps and shrinks once all requests
+            // are in — allocating here would lose lights to first-come-first-
+            // served ordering instead of rescaling the whole set.
+            const glm::vec3 CamPos = SceneViewport->GetViewVolume().GetViewPosition();
+            const float Dist = glm::distance(CamPos, Light.Position);
+            constexpr float ResolutionScale = 2048.0f;
+            const uint32 DesiredPixels = (uint32)((Light.Radius / glm::max(Dist, 0.01f)) * ResolutionScale);
+
+            FShadowRequest Req;
+            Req.LightIndex      = Lights;
+            Req.Type            = ELightType::Point;
+            Req.DesiredPixels   = DesiredPixels;
+            Req.DistanceToCamera = Dist;
+            Req.Position        = Light.Position;
+            Req.Direction       = glm::vec3(0.0f);
+            Req.Up              = glm::vec3(0.0f);
+            Req.Attenuation     = Light.Radius;
+            Req.OuterFOVDegrees = 0.0f;
             {
-            case 0: // +X
-                View.SetView(Light.Position, FViewVolume::RightAxis, FViewVolume::DownAxis);
-                break;
-            case 1: // -X
-                View.SetView(Light.Position, FViewVolume::LeftAxis, FViewVolume::DownAxis);
-                break;
-            case 2: // +Y
-                View.SetView(Light.Position, FViewVolume::UpAxis, FViewVolume::ForwardAxis);
-                break;
-            case 3: // -Y
-                View.SetView(Light.Position, FViewVolume::DownAxis, FViewVolume::BackwardAxis);
-                break;
-            case 4: // +Z
-                View.SetView(Light.Position, FViewVolume::ForwardAxis, FViewVolume::DownAxis);
-                break;
-            case 5: // -Z
-                View.SetView(Light.Position, FViewVolume::BackwardAxis, FViewVolume::DownAxis);
-                break;
-            default:
-                UNREACHABLE();
-            }
-        };
-
-        if (PointLight.bCastShadows)
-        {
-            int32 TileIndex = ShadowAtlas.AllocateTile();
-            uint32 ShadowSlot = ShadowDataCount.fetch_add(1, std::memory_order_acquire);
-
-            if (TileIndex != INDEX_NONE && ShadowSlot < (uint32)MAX_SHADOWS)
-            {
-                const FShadowTile& Tile = ShadowAtlas.GetTile(TileIndex);
-                FLightShadowData& ShadowData = LightData.Shadows[ShadowSlot];
-
-                for (int Face = 0; Face < 6; ++Face)
-                {
-                    SetView(LightView, Face);
-
-                    ShadowData.ViewProjection[Face]         = LightView.ToReverseDepthViewProjectionMatrix();
-                    ShadowData.Shadow[Face].ShadowMapIndex  = TileIndex;
-                    ShadowData.Shadow[Face].ShadowMapLayer  = Face;
-                    ShadowData.Shadow[Face].AtlasUVOffset   = Tile.UVOffset;
-                    ShadowData.Shadow[Face].AtlasUVScale    = Tile.UVScale;
-                    ShadowData.Shadow[Face].LightIndex      = (int32)Lights;
-                    ShadowData.Shadow[Face].ShadowDataIndex = (int32)ShadowSlot;
-                }
-
-                Light.ShadowDataIndex = (int32)ShadowSlot;
-                PackedShadows[(uint32)ELightType::Point].push_back(ShadowData.Shadow[0]);
+                FScopeLock Lock(ShadowRequestMutex);
+                ShadowRequests.push_back(Req);
             }
         }
 
@@ -1421,9 +1381,6 @@ namespace Lumina
         float InnerCos = glm::cos(glm::radians(InnerDegrees));
         float OuterCos = glm::cos(glm::radians(OuterDegrees));
 
-        FViewVolume ViewVolume(OuterDegrees * 2.00f, 1.0f, 0.01f, SpotLight.Attenuation);
-        ViewVolume.SetView(TransformComponent.WorldTransform.Location, -UpdatedForward, UpdatedUp);
-
         FLight Light                = {};
         Light.Flags                 = LIGHT_TYPE_SPOT;
         Light.Position              = TransformComponent.WorldTransform.Location;
@@ -1435,30 +1392,416 @@ namespace Lumina
         Light.Angles                = glm::vec2(InnerCos, OuterCos);
         Light.ShadowDataIndex       = INDEX_NONE;
 
-        if (SpotLight.bCastShadows)
+        if (SpotLight.bCastShadows && ShouldRequestShadow(Light.Position, Light.Radius))
         {
-            int32 TileIndex = ShadowAtlas.AllocateTile();
-            uint32 ShadowSlot = ShadowDataCount.fetch_add(1, std::memory_order_acquire);
+            const glm::vec3 CamPos = SceneViewport->GetViewVolume().GetViewPosition();
+            const float Dist = glm::distance(CamPos, Light.Position);
+            constexpr float ResolutionScale = 2048.0f;
+            const uint32 DesiredPixels = (uint32)((Light.Radius / glm::max(Dist, 0.01f)) * ResolutionScale);
 
-            if (TileIndex != INDEX_NONE && ShadowSlot < (uint32)MAX_SHADOWS)
+            FShadowRequest Req;
+            Req.LightIndex      = Lights;
+            Req.Type            = ELightType::Spot;
+            Req.DesiredPixels   = DesiredPixels;
+            Req.DistanceToCamera = Dist;
+            Req.Position        = Light.Position;
+            Req.Direction       = UpdatedForward;
+            Req.Up              = UpdatedUp;
+            Req.Attenuation     = SpotLight.Attenuation;
+            Req.OuterFOVDegrees = OuterDegrees;
             {
-                const FShadowTile& Tile         = ShadowAtlas.GetTile(TileIndex);
-                FLightShadowData& ShadowData    = LightData.Shadows[ShadowSlot];
-
-                ShadowData.ViewProjection[0]            = ViewVolume.ToReverseDepthViewProjectionMatrix();
-                ShadowData.Shadow[0].ShadowMapIndex     = TileIndex;
-                ShadowData.Shadow[0].ShadowMapLayer     = 6;
-                ShadowData.Shadow[0].AtlasUVOffset      = Tile.UVOffset;
-                ShadowData.Shadow[0].AtlasUVScale       = Tile.UVScale;
-                ShadowData.Shadow[0].LightIndex         = (int32)Lights;
-                ShadowData.Shadow[0].ShadowDataIndex    = (int32)ShadowSlot;
-
-                Light.ShadowDataIndex = (int32)ShadowSlot;
-                PackedShadows[(uint32)ELightType::Spot].push_back(ShadowData.Shadow[0]);
+                FScopeLock Lock(ShadowRequestMutex);
+                ShadowRequests.push_back(Req);
             }
         }
 
         LightData.Lights[Lights] = Light;
+    }
+
+    void FForwardRenderScene::AllocateShadowTiles()
+    {
+        if (ShadowRequests.empty())
+            return;
+
+        // ----- View-budget fit -------------------------------------------------
+        // CullMeshlets.slang reads from a fixed-size FCullView array sized
+        // GMaxCullViews. View 0 is the camera; 1..NumCascades are cascades
+        // (when a directional light is present); every remaining slot is a
+        // shadow view — 6 per point light, 1 per spot. Overflowing this budget
+        // used to recorded out-of-range base indices in BuildCullViews and
+        // crashed the GPU when a draw pass read past the end of IndirectArgs.
+        //
+        // Farthest-first is the stable drop order: nearby shadows dominate the
+        // visible image, distant ones contribute less perceived resolution and
+        // have already been shrunk to near-min tiles by the projected-radius
+        // heuristic, so dropping them loses the least quality.
+        {
+            const uint32 SunViews        = LightData.bHasSun ? (uint32)NumCascades : 0u;
+            const uint32 ReservedViews   = 1u + SunViews;                     // Camera + CSM cascades.
+            const uint32 AvailableViews  = (ReservedViews >= (uint32)GMaxCullViews)
+                                         ? 0u
+                                         : ((uint32)GMaxCullViews - ReservedViews);
+
+            auto ViewCost = [](const FShadowRequest& Req)
+            {
+                return Req.Type == ELightType::Point ? 6u : 1u;
+            };
+
+            uint32 UsedViews = 0u;
+            for (const FShadowRequest& Req : ShadowRequests)
+            {
+                UsedViews += ViewCost(Req);
+            }
+
+            if (UsedViews > AvailableViews)
+            {
+                // Sort descending by distance; stable eastl::sort so equal-distance
+                // requests keep their input order (deterministic across frames).
+                TVector<uint32> Order;
+                Order.resize(ShadowRequests.size());
+                for (uint32 i = 0; i < (uint32)ShadowRequests.size(); ++i)
+                {
+                    Order[i] = i;
+                }
+                eastl::stable_sort(Order.begin(), Order.end(),
+                    [&](uint32 A, uint32 B)
+                    {
+                        return ShadowRequests[A].DistanceToCamera > ShadowRequests[B].DistanceToCamera;
+                    });
+
+                TVector<bool> Drop;
+                Drop.assign(ShadowRequests.size(), false);
+                for (uint32 i = 0; i < (uint32)Order.size() && UsedViews > AvailableViews; ++i)
+                {
+                    const uint32 Idx = Order[i];
+                    Drop[Idx] = true;
+                    UsedViews -= ViewCost(ShadowRequests[Idx]);
+                }
+
+                TVector<FShadowRequest> Kept;
+                Kept.reserve(ShadowRequests.size());
+                for (uint32 i = 0; i < (uint32)ShadowRequests.size(); ++i)
+                {
+                    if (!Drop[i])
+                    {
+                        Kept.push_back(ShadowRequests[i]);
+                    }
+                }
+                ShadowRequests = std::move(Kept);
+            }
+        }
+
+        if (ShadowRequests.empty())
+        {
+            return;
+        }
+
+        const FShadowAtlasConfig& AtlasConfig = ShadowAtlas.GetConfig();
+        const uint32 MinTile   = AtlasConfig.MinTileResolution;
+        const uint32 MaxTile   = AtlasConfig.MaxTileResolution;
+        const uint32 AtlasSize = AtlasConfig.AtlasResolution;
+
+        // pow2 area budget — all tiles are pow2 so Σ area ≤ AtlasSize² is a
+        // sufficient packing guarantee for the quad-tree allocator.
+        const uint64 Budget = (uint64)AtlasSize * (uint64)AtlasSize;
+
+        const uint32 NumRequests = (uint32)ShadowRequests.size();
+
+        // Round-up-pow2 clamped to [Min, Max]. Matches FShadowAtlas::AllocateTile's
+        // internal quantization so the area sum we reason about is the same area
+        // the allocator will actually consume.
+        TVector<uint32> Sizes;
+        Sizes.resize(NumRequests);
+        for (uint32 i = 0; i < NumRequests; ++i)
+        {
+            uint32 V = ShadowRequests[i].DesiredPixels;
+            // Round up to pow2.
+            if (V <= 1)
+            {
+                V = 1;
+            }
+            else
+            {
+                --V;
+                V |= V >> 1;  V |= V >> 2;  V |= V >> 4;
+                V |= V >> 8;  V |= V >> 16;
+                ++V;
+            }
+            Sizes[i] = glm::clamp(V, MinTile, MaxTile);
+        }
+
+        auto AreaSum = [&]() -> uint64
+        {
+            uint64 S = 0;
+            for (uint32 i = 0; i < NumRequests; ++i)
+            {
+                S += (uint64)Sizes[i] * (uint64)Sizes[i];
+            }
+            return S;
+        };
+
+        // Iteratively halve the current largest tile until the set fits the
+        // budget. Halving the largest is optimal for pow2 area reduction —
+        // it drops the summed area by 3/4 of the shrunk tile's area, which is
+        // the biggest single-step reduction available.
+        while (AreaSum() > Budget)
+        {
+            uint32 LargestIdx = 0;
+            uint32 LargestVal = Sizes[0];
+            for (uint32 i = 1; i < NumRequests; ++i)
+            {
+                if (Sizes[i] > LargestVal)
+                {
+                    LargestVal = Sizes[i];
+                    LargestIdx = i;
+                }
+            }
+            if (LargestVal <= MinTile)
+            {
+                // Everyone is already at the floor and still over budget —
+                // AllocateTile on the overflow will return INDEX_NONE and the
+                // request will simply drop, which is preferable to spinning.
+                break;
+            }
+            Sizes[LargestIdx] = LargestVal >> 1;
+        }
+
+        // Largest-first allocation keeps the quad-tree from fragmenting: big
+        // tiles get a root split, small tiles fall into whatever quadrants
+        // remain. Allocating small-first wastes root splits on leaves.
+        TVector<uint32> SortedIndices;
+        SortedIndices.resize(NumRequests);
+        for (uint32 i = 0; i < NumRequests; ++i)
+        {
+            SortedIndices[i] = i;
+        }
+        eastl::sort(SortedIndices.begin(), SortedIndices.end(),
+            [&](uint32 A, uint32 B) { return Sizes[A] > Sizes[B]; });
+
+        for (uint32 SortedI = 0; SortedI < NumRequests; ++SortedI)
+        {
+            const uint32 ReqIdx       = SortedIndices[SortedI];
+            const FShadowRequest& Req = ShadowRequests[ReqIdx];
+            const uint32 TileSize     = Sizes[ReqIdx];
+
+            const int32 TileIndex = ShadowAtlas.AllocateTile(TileSize);
+            if (TileIndex == INDEX_NONE)
+                continue;
+
+            const uint32 ShadowSlot = ShadowDataCount.fetch_add(1, std::memory_order_acquire);
+            if (ShadowSlot >= (uint32)MAX_SHADOWS)
+                continue;
+
+            LightData.Lights[Req.LightIndex].ShadowDataIndex = (int32)ShadowSlot;
+            FLightShadowData& ShadowData = LightData.Shadows[ShadowSlot];
+            const FShadowTile& Tile      = ShadowAtlas.GetTile(TileIndex);
+
+            if (Req.Type == ELightType::Point)
+            {
+                // Cube map: 6 faces share the tile's UV rect across layers 0-5.
+                // Near plane scales with radius — a fixed 0.01 collapses NDC z
+                // into the last ~0.001 of the depth buffer for any realistically
+                // sized light, leaving no precision for the PCF compare.
+                const float ShadowNear = glm::max(Req.Attenuation * 0.01f, 0.1f);
+                FViewVolume LightView(90.0f, 1.0f, ShadowNear, Req.Attenuation);
+
+                auto SetFace = [&](uint32 Face)
+                {
+                    switch (Face)
+                    {
+                        case 0: LightView.SetView(Req.Position, FViewVolume::RightAxis,    FViewVolume::DownAxis);     break;
+                        case 1: LightView.SetView(Req.Position, FViewVolume::LeftAxis,     FViewVolume::DownAxis);     break;
+                        case 2: LightView.SetView(Req.Position, FViewVolume::UpAxis,       FViewVolume::ForwardAxis);  break;
+                        case 3: LightView.SetView(Req.Position, FViewVolume::DownAxis,     FViewVolume::BackwardAxis); break;
+                        case 4: LightView.SetView(Req.Position, FViewVolume::ForwardAxis,  FViewVolume::DownAxis);     break;
+                        case 5: LightView.SetView(Req.Position, FViewVolume::BackwardAxis, FViewVolume::DownAxis);     break;
+                    }
+                };
+
+                for (uint32 Face = 0; Face < 6; ++Face)
+                {
+                    SetFace(Face);
+                    ShadowData.ViewProjection[Face] = LightView.ToReverseDepthViewProjectionMatrix();
+
+                    FLightShadow& Shadow   = ShadowData.Shadow[Face];
+                    Shadow.AtlasUVOffset   = Tile.UVOffset;
+                    Shadow.AtlasUVScale    = Tile.UVScale;
+                    Shadow.ShadowMapIndex  = TileIndex;
+                    Shadow.ShadowMapLayer  = (int32)Face;
+                    Shadow.LightIndex      = (int32)Req.LightIndex;
+                    Shadow.ShadowDataIndex = (int32)ShadowSlot;
+                }
+
+                PackedShadows[(uint32)ELightType::Point].push_back(ShadowData.Shadow[0]);
+            }
+            else // Spot
+            {
+                const float ShadowNear = glm::max(Req.Attenuation * 0.01f, 0.1f);
+                FViewVolume ViewVolume(Req.OuterFOVDegrees * 2.0f, 1.0f, ShadowNear, Req.Attenuation);
+                ViewVolume.SetView(Req.Position, Req.Direction, Req.Up);
+                ShadowData.ViewProjection[0] = ViewVolume.ToReverseDepthViewProjectionMatrix();
+
+                FLightShadow& Shadow   = ShadowData.Shadow[0];
+                Shadow.AtlasUVOffset   = Tile.UVOffset;
+                Shadow.AtlasUVScale    = Tile.UVScale;
+                Shadow.ShadowMapIndex  = TileIndex;
+                Shadow.ShadowMapLayer  = 6; // Spot lights live on the dedicated 2D layer.
+                Shadow.LightIndex      = (int32)Req.LightIndex;
+                Shadow.ShadowDataIndex = (int32)ShadowSlot;
+
+                PackedShadows[(uint32)ELightType::Spot].push_back(Shadow);
+            }
+        }
+    }
+
+    void FForwardRenderScene::BuildCullViews(const FViewVolume& ViewVolume)
+    {
+        // Shared per-view layout:
+        //   MeshletDrawList slice v  = [v * TotalMeshletBound, (v+1) * TotalMeshletBound)
+        //   IndirectArgs    slot (v, d) = v * NumDraws + d
+        //   IndirectArgs[(v,d)].FirstInstance = v * TotalMeshletBound + DrawMeshletStartOffsets[d]
+        //
+        // CullMeshlets owns all atomic appends into the draw list and all
+        // InstanceCount increments, so InstanceCount starts at 0 every frame
+        // and each draw pass indirect-draws out of its own (v, d) slot.
+
+        const uint32 NumDraws = NumDrawsPerView;
+
+        auto PushView = [&](const glm::mat4& ViewProjection, const glm::vec3& Origin, uint32 Flags)
+        {
+            // AllocateShadowTiles guarantees the total view count fits in
+            // GMaxCullViews before we get here, so no runtime clamp is needed.
+            const uint32 ViewIndex = (uint32)CullViews.size();
+            FFrustum Frustum = FFrustum::FromViewProjection(ViewProjection);
+
+            FCullView View = {};
+            for (int p = 0; p < 6; ++p)
+            {
+                View.FrustumPlanes[p] = Frustum.Planes[p];
+            }
+            // Reinterpret the flag bits through the w channel — matches the
+            // shader's asuint(ViewOriginAndFlags.w) unpack.
+            float FlagsAsFloat;
+            std::memcpy(&FlagsAsFloat, &Flags, sizeof(float));
+            View.ViewOriginAndFlags = glm::vec4(Origin, FlagsAsFloat);
+            View.DrawListOffset     = ViewIndex * TotalMeshletBound;
+            View.DrawListCapacity   = TotalMeshletBound;
+            View.IndirectArgsOffset = ViewIndex * NumDraws;
+            View.NumDraws           = NumDraws;
+            CullViews.push_back(View);
+
+            // Seed this view's indirect slice. FirstInstance lands inside the
+            // view's draw-list slice so the atomic-append in CullMeshlets can
+            // never overflow into another view.
+            const uint32 ViewDrawListBase = ViewIndex * TotalMeshletBound;
+            for (uint32 d = 0; d < NumDraws; ++d)
+            {
+                FDrawIndirectArguments& Arg = IndirectArgs[ViewIndex * NumDraws + d];
+                Arg.VertexCount           = MESHLET_VERTICES_PER_DRAW;
+                Arg.InstanceCount         = 0u;
+                Arg.StartVertexLocation   = 0u;
+                Arg.StartInstanceLocation = ViewDrawListBase + DrawMeshletStartOffsets[d];
+            }
+        };
+
+        // Pre-size IndirectArgs to exact view count. AllocateShadowTiles has
+        // already guaranteed NumViews <= GMaxCullViews by dropping far shadow
+        // requests, so no clamp is needed here.
+        const uint32 NumViews =
+            1u +                                                        // Camera
+            (LightData.bHasSun ? (uint32)NumCascades : 0u) +            // CSM cascades
+            (uint32)PackedShadows[(uint32)ELightType::Point].size() * 6u +
+            (uint32)PackedShadows[(uint32)ELightType::Spot].size();
+
+        ASSERT(NumViews <= (uint32)GMaxCullViews);
+
+        CullViews.reserve(NumViews);
+        IndirectArgs.assign((size_t)NumViews * (size_t)NumDraws, FDrawIndirectArguments{});
+
+        CascadeViewBase = ~0u;
+        PointShadowCullViewBases.clear();
+        PointShadowCullViewBases.reserve(PackedShadows[(uint32)ELightType::Point].size());
+        SpotShadowCullViewBases.clear();
+        SpotShadowCullViewBases.reserve(PackedShadows[(uint32)ELightType::Spot].size());
+
+        // View 0 — main camera. Frustum + cone + occlusion (Hi-Z + micro-poly).
+        {
+            const glm::mat4 CameraVP = ViewVolume.GetProjectionMatrix() * ViewVolume.GetViewMatrix();
+            const uint32 CameraFlags =
+                ECullViewFlags::Frustum |
+                ECullViewFlags::Cone |
+                ECullViewFlags::Occlusion;
+            PushView(CameraVP, ViewVolume.GetViewPosition(), CameraFlags);
+        }
+
+        // CSM cascades. Sun-aligned cone + cast-shadow-only + distance (match
+        // ShadowMaxDistance). Frustum still cheap and catches casters completely
+        // outside the cascade volume.
+        if (LightData.bHasSun)
+        {
+            const int32 SunShadowIndex = LightData.Lights[0].ShadowDataIndex;
+            if (SunShadowIndex != INDEX_NONE)
+            {
+                const FLightShadowData& SunShadow = LightData.Shadows[SunShadowIndex];
+                const uint32 CascadeFlags =
+                    ECullViewFlags::Frustum |
+                    ECullViewFlags::Cone |
+                    ECullViewFlags::SunAligned |
+                    ECullViewFlags::CastShadowOnly |
+                    ECullViewFlags::Distance;
+
+                CascadeViewBase = (uint32)CullViews.size();
+                for (int32 c = 0; c < NumCascades; ++c)
+                {
+                    PushView(SunShadow.ViewProjection[c], ViewVolume.GetViewPosition(), CascadeFlags);
+                }
+            }
+        }
+
+        // Point lights — 6 views each (one per cube face). Cone cull uses the
+        // light's world-space position as the apex. Parallel array records each
+        // point shadow's face-0 view index for draw-pass lookup.
+        for (const FLightShadow& PointShadow : PackedShadows[(uint32)ELightType::Point])
+        {
+            if (PointShadow.ShadowDataIndex < 0)
+            {
+                PointShadowCullViewBases.push_back(~0u);
+                continue;
+            }
+
+            const FLightShadowData& ShadowData = LightData.Shadows[PointShadow.ShadowDataIndex];
+            const FLight& Light = LightData.Lights[PointShadow.LightIndex];
+            const uint32 FaceFlags =
+                ECullViewFlags::Frustum |
+                ECullViewFlags::Cone |
+                ECullViewFlags::CastShadowOnly;
+
+            PointShadowCullViewBases.push_back((uint32)CullViews.size());
+            for (int32 Face = 0; Face < 6; ++Face)
+            {
+                PushView(ShadowData.ViewProjection[Face], Light.Position, FaceFlags);
+            }
+        }
+
+        // Spot lights — one view each.
+        for (const FLightShadow& SpotShadow : PackedShadows[(uint32)ELightType::Spot])
+        {
+            if (SpotShadow.ShadowDataIndex < 0)
+            {
+                SpotShadowCullViewBases.push_back(~0u);
+                continue;
+            }
+
+            const FLightShadowData& ShadowData = LightData.Shadows[SpotShadow.ShadowDataIndex];
+            const FLight& Light = LightData.Lights[SpotShadow.LightIndex];
+            const uint32 SpotFlags =
+                ECullViewFlags::Frustum |
+                ECullViewFlags::Cone |
+                ECullViewFlags::CastShadowOnly;
+
+            SpotShadowCullViewBases.push_back((uint32)CullViews.size());
+            PushView(ShadowData.ViewProjection[0], Light.Position, SpotFlags);
+        }
     }
 
     void FForwardRenderScene::ProcessDirectionalLight(const SDirectionalLightComponent& DirectionalLight, TAtomic<uint32>& LightCount)
@@ -1738,15 +2081,17 @@ namespace Lumina
         OpaqueDrawList.clear();
         OpaqueOccluderDrawList.clear();
         TranslucentDrawList.clear();
-        IndirectDrawArguments.clear();
-        IndirectDrawArgumentsMeshlet.clear();
-        IndirectDrawArgumentsMeshletCascade.clear();
+        DrawMeshletStartOffsets.clear();
+        IndirectArgs.clear();
+        CullViews.clear();
         MaxMeshletsPerInstance = 0;
         TotalMeshletBound = 0;
+        NumDrawsPerView = 0;
         Instances.clear();
         LightData = {};
         ShadowDataCount.store(0, std::memory_order_release);
         ShadowAtlas.FreeTiles();
+        ShadowRequests.clear();
         BonesData.clear();
         BillboardInstances.clear();
         RenderStats = {};
@@ -1764,91 +2109,50 @@ namespace Lumina
 
     void FForwardRenderScene::CullPass(ICommandList& CmdList)
     {
-        if (DrawCommands.empty())
+        if (DrawCommands.empty() || CullViews.empty() || MaxMeshletsPerInstance == 0)
         {
             return;
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Cull Pass", tracy::Color::Pink2);
 
-        const uint32 Num           = (uint32)Instances.size();
-        const uint32 NumWorkGroups = (Num + 255) / 256;
-
-        // Shadow-caster culling. Writes a parallel indirect buffer consumed by
-        // the CSM, spot, and point shadow passes so casters outside the camera
-        // frustum still produce shadows that fall back into the camera view.
+        const uint32 Num = (uint32)Instances.size();
+        if (Num == 0)
         {
-            FRHIComputeShaderRef ShadowCullShader = FShaderLibrary::GetComputeShader("ShadowMeshCull.slang");
-
-            FComputePipelineDesc PipelineDesc;
-            PipelineDesc.SetComputeShader(ShadowCullShader);
-            PipelineDesc.AddBindingLayout(SceneBindingLayout);
-            PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-            FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-            FComputeState State;
-            State.SetPipeline(Pipeline);
-            State.AddBindingSet(SceneBindingSet);
-            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            CmdList.SetComputeState(State);
-
-            CmdList.Dispatch(NumWorkGroups, 1, 1);
+            return;
         }
 
-        // Per-meshlet culling. Each (instance, meshlet) is tested against the
-        // camera frustum + Hi-Z and survivors are atomically appended to
-        // uMeshletDrawList with per-draw offsets seeded by the CPU prefix-sum.
-        if (MaxMeshletsPerInstance > 0 && Num > 0)
-        {
-            FRHIComputeShaderRef MeshletCullShader = FShaderLibrary::GetComputeShader("MeshletCull.slang");
+        // One dispatch owns every view (camera + CSM cascades + per-face point
+        // + per-spot). CullMeshlets tests each (instance, meshlet) against
+        // every FCullView, and surviving pairs are atomically appended into
+        // that view's private slice of uMeshletDrawList with InstanceCount
+        // incremented at uIndirectArgs[View.IndirectArgsOffset + DrawID].
+        FRHIComputeShaderRef CullShader = FShaderLibrary::GetComputeShader("CullMeshlets.slang");
 
-            FComputePipelineDesc PipelineDesc;
-            PipelineDesc.SetComputeShader(MeshletCullShader);
-            PipelineDesc.AddBindingLayout(SceneBindingLayout);
-            PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        FComputePipelineDesc PipelineDesc;
+        PipelineDesc.SetComputeShader(CullShader);
+        PipelineDesc.AddBindingLayout(SceneBindingLayout);
+        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
-            FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
-            FComputeState State;
-            State.SetPipeline(Pipeline);
-            State.AddBindingSet(SceneBindingSet);
-            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            CmdList.SetComputeState(State);
+        FComputeState State;
+        State.SetPipeline(Pipeline);
+        State.AddBindingSet(SceneBindingSet);
+        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        CmdList.SetComputeState(State);
 
-            const uint32 MeshletGroupsX = (MaxMeshletsPerInstance + 63) / 64;
-            // Vulkan caps groupCountY at 65535, so fold overflow into Z.
-            // Shader reconstructs InstanceID = GroupID.y + GroupID.z * 65535.
-            constexpr uint32 MaxDispatchY = 65535;
-            const uint32 DispatchY = Num < MaxDispatchY ? Num : MaxDispatchY;
-            const uint32 DispatchZ = (Num + MaxDispatchY - 1) / MaxDispatchY;
-            CmdList.Dispatch(MeshletGroupsX, DispatchY, DispatchZ);
-        }
+        struct { uint32 NumViews; } PC;
+        PC.NumViews = (uint32)CullViews.size();
+        CmdList.SetPushConstants(&PC, sizeof(PC));
 
-        // Per-cascade meshlet cull. Skipped when no sun is active.
-        if (LightData.bHasSun && MaxMeshletsPerInstance > 0 && Num > 0)
-        {
-            FRHIComputeShaderRef CascadeMeshletCullShader = FShaderLibrary::GetComputeShader("CascadeMeshletCull.slang");
-
-            FComputePipelineDesc PipelineDesc;
-            PipelineDesc.SetComputeShader(CascadeMeshletCullShader);
-            PipelineDesc.AddBindingLayout(SceneBindingLayout);
-            PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-
-            FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
-            FComputeState State;
-            State.SetPipeline(Pipeline);
-            State.AddBindingSet(SceneBindingSet);
-            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            CmdList.SetComputeState(State);
-
-            const uint32 MeshletGroupsX = (MaxMeshletsPerInstance + 63) / 64;
-            constexpr uint32 MaxDispatchY = 65535;
-            const uint32 DispatchY = Num < MaxDispatchY ? Num : MaxDispatchY;
-            const uint32 DispatchZ = (Num + MaxDispatchY - 1) / MaxDispatchY;
-            CmdList.Dispatch(MeshletGroupsX, DispatchY, DispatchZ);
-        }
+        const uint32 MeshletGroupsX = (MaxMeshletsPerInstance + 63) / 64;
+        // Vulkan caps groupCountY at 65535, so fold instance overflow into Z.
+        // Shader reconstructs InstanceID = GroupID.y + GroupID.z * 65535.
+        constexpr uint32 MaxDispatchY = 65535;
+        const uint32 DispatchY = Num < MaxDispatchY ? Num : MaxDispatchY;
+        const uint32 DispatchZ = (Num + MaxDispatchY - 1) / MaxDispatchY;
+        CmdList.Dispatch(MeshletGroupsX, DispatchY, DispatchZ);
     }
 
     void FForwardRenderScene::DepthPrePass(ICommandList& CmdList)
@@ -1902,13 +2206,15 @@ namespace Lumina
             GraphicsState.SetPipeline(Pipeline);
             GraphicsState.AddBindingSet(SceneBindingSet);
             GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            // Meshlet-driven: consume MeshletIndirect (VertexCount = MESHLET_VERTICES_PER_DRAW,
-            // InstanceCount = surviving meshlets for this draw range). Both the
+            // Meshlet-driven: consume the view-0 (camera) slice of the unified
+            // IndirectArgs buffer. VertexCount = MESHLET_VERTICES_PER_DRAW,
+            // InstanceCount = surviving meshlets for this draw range. Both the
             // depth-only and masked-material VS resolve meshlets identically,
             // so the base pass depth-equal test stays correct.
-            GraphicsState.SetIndirectParams(GetNamedBuffer(ENamedBuffer::MeshletIndirect));
+            GraphicsState.SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
 
             CmdList.SetGraphicsState(GraphicsState);
+            // View 0 = camera, so offset is simply the per-draw slot.
             CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
         }
     }
@@ -2077,97 +2383,130 @@ namespace Lumina
         {
             return;
         }
-        
+
         LUMINA_PROFILE_SECTION_COLORED("Point Light Shadow Pass", tracy::Color::DeepPink2);
-        
+
         FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("ShadowMappingPixel.slang");
-        
+
+        // Bias values are tuned for the NDC-z atlas (near/far ≈ radius*0.01 / radius).
+        // The CSM pass uses larger values because its depth is more uniformly spread;
+        // here the z range is compressed near 1.0 so slope-scale has to be gentle or
+        // it pushes occluder depth past the receiver.
         FRenderState RenderState; RenderState
                 .SetDepthStencilState(FDepthStencilState()
                 .SetDepthFunc(EComparisonFunc::Less))
                 .SetRasterState(FRasterState()
-                    .SetSlopeScaleDepthBias(1.75f)
-                    .SetDepthBias(100)
-                    .SetCullFront());
-        
-        FRenderPassDesc::FAttachment Depth; Depth
-            .SetLoadOp(ERenderLoadOp::Clear)
-            .SetDepthClearValue(1.0)
-            .SetImage(ShadowAtlas.GetImage())
-                .SetNumSlices(6);
-        
-        FRenderPassDesc RenderPass; RenderPass
-            .SetDepthAttachment(Depth)
-            .SetViewMask(RenderUtils::CreateViewMask<0u, 1u, 2u, 3u, 4u, 5u>())
-            .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
-        
+                    .SetSlopeScaleDepthBias(1.5f)
+                    .SetDepthBias(1)
+                    .SetCullBack());
+
+        // Per-face render pass: one clear per atlas layer, all point lights
+        // draw into that layer through their own per-tile viewport/scissor.
+        //
+        // Flipped from the old per-light-per-face structure because the
+        // render pass's clear loadop clears the full 4096² layer every time
+        // it's begun, so restarting it once per light wiped every previously
+        // drawn tile and left only the last light's shadow intact. Now each
+        // layer is cleared exactly once and every light's tile survives.
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
-
-        FGraphicsPipelineDesc Desc; Desc
-            .SetDebugName("Point Light Shadow Pass")
-            .SetRenderState(RenderState)
-            .AddBindingLayout(SceneBindingLayout)
-            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-            .SetVertexShader(VertexShader)
-            .SetPixelShader(PixelShader);
-
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-        FGraphicsState GraphicsState; GraphicsState
-            .SetRenderPass(Move(RenderPass))
-            .SetPipeline(Pipeline)
-            .AddBindingSet(SceneBindingSet)
-            .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-            .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectShadow));
-
 
         const TVector<FLightShadow>& PointShadows = PackedShadows[(uint32)ELightType::Point];
 
-        for (const FLightShadow& LightShadow : PointShadows)
+        for (int32 Face = 0; Face < 6; ++Face)
         {
-            LUMINA_PROFILE_SECTION_COLORED("Process Point Light", tracy::Color::DeepPink2);
+            LUMINA_PROFILE_SECTION_COLORED("Point Shadow Face", tracy::Color::DeepPink2);
 
-            const FShadowTile& Tile = ShadowAtlas.GetTile(LightShadow.ShadowMapIndex);
-            uint32 TilePixelX       = static_cast<uint32>(Tile.UVOffset.x * GShadowAtlasResolution);
-            uint32 TilePixelY       = static_cast<uint32>(Tile.UVOffset.y * GShadowAtlasResolution);
-            uint32 TileSize         = static_cast<uint32>(Tile.UVScale.x * GShadowAtlasResolution);
+            FRenderPassDesc::FAttachment Depth; Depth
+                .SetLoadOp(ERenderLoadOp::Clear)
+                .SetDepthClearValue(1.0)
+                .SetImage(ShadowAtlas.GetImage())
+                    .SetArraySlice((uint16)Face);
 
-            FViewport Viewport
-            (
-                (float)TilePixelX,
-                (float)TilePixelX + TileSize,
-                (float)TilePixelY,
-                (float)TilePixelY + TileSize,
-                0.0f,
-                1.0f
-            );
+            FRenderPassDesc RenderPass; RenderPass
+                .SetDepthAttachment(Depth)
+                .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
 
-            // FRect(minX, maxX, minY, maxY)
-            FRect Scissor
-            (
-                (int)TilePixelX,
-                (int)TilePixelX + TileSize,
-                (int)TilePixelY,
-                (int)TilePixelY + TileSize
-            );
+            FGraphicsPipelineDesc Desc; Desc
+                .SetDebugName("Point Light Shadow Pass")
+                .SetRenderState(RenderState)
+                .AddBindingLayout(SceneBindingLayout)
+                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
+                .SetVertexShader(VertexShader)
+                .SetPixelShader(PixelShader);
 
-            GraphicsState.SetViewportState(FViewportState(Viewport, Scissor));
+            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
-            for (uint32 OpaqueIdx : OpaqueDrawList)
+            bool bPassBegun = false;
+
+            for (uint32 LightIdx = 0; LightIdx < PointShadows.size(); ++LightIdx)
             {
-                const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
+                const FLightShadow& LightShadow = PointShadows[LightIdx];
+                const uint32 ViewBase = PointShadowCullViewBases[LightIdx];
+                if (ViewBase == ~0u)
+                {
+                    continue;
+                }
 
-                CmdList.SetGraphicsState(GraphicsState);
+                const FShadowTile& Tile = ShadowAtlas.GetTile(LightShadow.ShadowMapIndex);
+                uint32 TilePixelX       = static_cast<uint32>(Tile.UVOffset.x * GShadowAtlasResolution);
+                uint32 TilePixelY       = static_cast<uint32>(Tile.UVOffset.y * GShadowAtlasResolution);
+                uint32 TileSize         = static_cast<uint32>(Tile.UVScale.x * GShadowAtlasResolution);
 
-                // Shader FPushConstants = { uint LightIndex; int ShadowDataIndex; }
-                // FLightShadow stores them adjacent at offsets 24 and 28, so a
-                // single 8-byte push covers both.
-                CmdList.SetPushConstants(&LightShadow.LightIndex, sizeof(int32) * 2);
-                CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
+                FViewport Viewport
+                (
+                    (float)TilePixelX,
+                    (float)TilePixelX + TileSize,
+                    (float)TilePixelY,
+                    (float)TilePixelY + TileSize,
+                    0.0f,
+                    1.0f
+                );
+
+                FRect Scissor
+                (
+                    (int)TilePixelX,
+                    (int)TilePixelX + TileSize,
+                    (int)TilePixelY,
+                    (int)TilePixelY + TileSize
+                );
+
+                FGraphicsState GraphicsState; GraphicsState
+                    .SetRenderPass(RenderPass)
+                    .SetViewportState(FViewportState(Viewport, Scissor))
+                    .SetPipeline(Pipeline)
+                    .AddBindingSet(SceneBindingSet)
+                    .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
+                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
+
+                // ShadowMappingVert push = { int ShadowDataIndex; int ViewIndex; }.
+                // ViewIndex indexes ShadowData.ViewProjection[] — here the cube face.
+                struct { int32 ShadowDataIndex; int32 ViewIndex; } PointPush;
+                PointPush.ShadowDataIndex = LightShadow.ShadowDataIndex;
+                PointPush.ViewIndex       = Face;
+
+                const uint32 FaceViewIndex = ViewBase + (uint32)Face;
+                const uint32 FaceBase      = FaceViewIndex * NumDrawsPerView;
+
+                for (uint32 OpaqueIdx : OpaqueDrawList)
+                {
+                    const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
+                    CmdList.SetGraphicsState(GraphicsState);
+                    CmdList.SetPushConstants(&PointPush, sizeof(PointPush));
+                    CmdList.DrawIndirect(Batch.DrawCount, (FaceBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
+                    bPassBegun = true;
+                }
             }
-        }
 
-        CmdList.EndRenderPass();
+            // The face may have no lights (all dropped or pre-fit empty) —
+            // still need to clear the layer so stale depth from previous
+            // frames doesn't leak through during sampling.
+            if (!bPassBegun)
+            {
+                CmdList.BeginRenderPass(RenderPass);
+            }
+
+            CmdList.EndRenderPass();
+        }
     }
 
     void FForwardRenderScene::SpotShadowPass(ICommandList& CmdList)
@@ -2181,16 +2520,28 @@ namespace Lumina
         
         FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("ShadowMappingPixel.slang");
         
+        // See PointShadowPass for why these bias values are lower than the CSM pass.
         FRenderState RenderState; RenderState
             .SetDepthStencilState(FDepthStencilState()
                 .SetDepthFunc(EComparisonFunc::Less))
                 .SetRasterState(FRasterState()
-                    .SetSlopeScaleDepthBias(1.75f)
-                    .SetDepthBias(100)
-                    .SetCullFront());
-        
-        
-        const TVector<FLightShadow>& SpotShadows = PackedShadows[(uint32)ELightType::Spot];
+                    .SetSlopeScaleDepthBias(1.5f)
+                    .SetDepthBias(1)
+                    .SetCullBack());
+
+
+        // Render pass + pipeline are built ONCE outside the per-light loop.
+        // Building them inside would re-clear the atlas layer between lights,
+        // wiping every spot's shadow except the last.
+        FRenderPassDesc::FAttachment Depth; Depth
+            .SetLoadOp(ERenderLoadOp::Clear)
+            .SetDepthClearValue(1.0f)
+            .SetImage(ShadowAtlas.GetImage())
+                .SetArraySlice(6);
+
+        FRenderPassDesc RenderPass; RenderPass
+            .SetDepthAttachment(Depth)
+            .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
 
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
 
@@ -2202,29 +2553,34 @@ namespace Lumina
             .SetVertexShader(VertexShader)
             .SetPixelShader(PixelShader);
 
-        for (const FLightShadow& Shadow : SpotShadows)
+        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(PipelineDesc, RenderPass);
+
+        FGraphicsState GraphicsState; GraphicsState
+            .SetRenderPass(Move(RenderPass))
+            .SetPipeline(Pipeline)
+            .AddBindingSet(SceneBindingSet)
+            .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
+            .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
+
+        const TVector<FLightShadow>& SpotShadows = PackedShadows[(uint32)ELightType::Spot];
+
+        for (uint32 SpotIdx = 0; SpotIdx < SpotShadows.size(); ++SpotIdx)
         {
+            const FLightShadow& Shadow  = SpotShadows[SpotIdx];
+            const uint32 ViewIndex      = SpotShadowCullViewBases[SpotIdx];
+            if (ViewIndex == ~0u)
+            {
+                continue;
+            }
+
             LUMINA_PROFILE_SECTION_COLORED("Process Spot Light", tracy::Color::DeepPink);
 
             const FShadowTile& Tile = ShadowAtlas.GetTile(Shadow.ShadowMapIndex);
             uint32 TilePixelX = static_cast<uint32>(Tile.UVOffset.x * GShadowAtlasResolution);
             uint32 TilePixelY = static_cast<uint32>(Tile.UVOffset.y * GShadowAtlasResolution);
-            uint32 TileSize = static_cast<uint32>(Tile.UVScale.x * GShadowAtlasResolution);
+            uint32 TileSize   = static_cast<uint32>(Tile.UVScale.x * GShadowAtlasResolution);
 
-            FRenderPassDesc::FAttachment Depth; Depth
-                .SetLoadOp(ERenderLoadOp::Clear)
-                .SetDepthClearValue(1.0f)
-                .SetImage(ShadowAtlas.GetImage())
-                    .SetArraySlice(6);
-
-            FRenderPassDesc RenderPass; RenderPass
-                .SetDepthAttachment(Depth)
-                .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
-
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(PipelineDesc, RenderPass);
-
-            FViewportState ViewportState;
-            ViewportState.SetViewport((FViewport
+            FViewport Viewport
             (
                 (float)TilePixelX,
                 (float)TilePixelX + TileSize,
@@ -2232,37 +2588,36 @@ namespace Lumina
                 (float)TilePixelY + TileSize,
                 0.0f,
                 1.0f
-            )));
+            );
 
-            ViewportState.SetScissorRect(FRect
+            FRect Scissor
             (
                 (int)TilePixelX,
                 (int)TilePixelX + TileSize,
                 (int)TilePixelY,
                 (int)TilePixelY + TileSize
-            ));
+            );
 
-            FGraphicsState GraphicsState; GraphicsState
-                .SetRenderPass(RenderPass)
-                .SetViewportState(ViewportState)
-                .SetPipeline(Pipeline)
-                .AddBindingSet(SceneBindingSet)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectShadow));
+            GraphicsState.SetViewportState(FViewportState(Viewport, Scissor));
 
+            // ShadowMappingVert push = { int ShadowDataIndex; int ViewIndex; }.
+            // Spot lights only use ViewProjection[0], so ViewIndex is 0.
+            struct { int32 ShadowDataIndex; int32 ViewIndex; } SpotPush;
+            SpotPush.ShadowDataIndex = Shadow.ShadowDataIndex;
+            SpotPush.ViewIndex       = 0;
+
+            const uint32 ViewBase = ViewIndex * NumDrawsPerView;
             for (uint32 OpaqueIdx : OpaqueDrawList)
             {
                 const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
 
                 CmdList.SetGraphicsState(GraphicsState);
-
-                CmdList.SetPushConstants(&Shadow.LightIndex, sizeof(int32) * 2);
-                CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
+                CmdList.SetPushConstants(&SpotPush, sizeof(SpotPush));
+                CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
             }
         }
 
         CmdList.EndRenderPass();
-
     }
 
     void FForwardRenderScene::CascadedShowPass(ICommandList& CmdList)
@@ -2291,8 +2646,14 @@ namespace Lumina
             .AddBindingLayout(SceneBindingLayout)
             .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
             .SetVertexShader(VertexShader);
-        
-        const uint32 NumDraws = (uint32)IndirectDrawArguments.size();
+
+        // Each cascade maps to its own cull view; BuildCullViews recorded the
+        // base index. Bail early if the sun didn't get a shadow data slot (rare:
+        // happens when MaxShadows was exceeded).
+        if (CascadeViewBase == ~0u)
+        {
+            return;
+        }
 
         for (uint32 c = 0; c < (uint32)NumCascades; ++c)
         {
@@ -2308,14 +2669,16 @@ namespace Lumina
 
             FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
-            // Meshlet-driven: one indirect "instance" per surviving meshlet.
+            // Meshlet-driven: one indirect "instance" per surviving meshlet,
+            // indirects sourced from this cascade's slice of the unified
+            // IndirectArgs buffer.
             FGraphicsState GraphicsState; GraphicsState
                 .SetRenderPass(RenderPass)
                 .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::Cascade)))
                 .SetPipeline(Pipeline)
                 .AddBindingSet(SceneBindingSet)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                .SetIndirectParams(GetNamedBuffer(ENamedBuffer::MeshletIndirectCascade));
+                .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
 
             CmdList.SetGraphicsState(GraphicsState);
 
@@ -2324,11 +2687,12 @@ namespace Lumina
             CascadePush.CascadeIndex    = (int32)c;
             CmdList.SetPushConstants(&CascadePush, sizeof(CascadePush));
 
-            const uint32 CascadeBase = c * NumDraws;
+            const uint32 ViewIndex = CascadeViewBase + c;
+            const uint32 ViewBase  = ViewIndex * NumDrawsPerView;
             for (uint32 OpaqueIdx : OpaqueDrawList)
             {
                 const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
-                CmdList.DrawIndirect(Batch.DrawCount, (CascadeBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
+                CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
             }
         }
     }
@@ -2393,22 +2757,23 @@ namespace Lumina
                 .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
-            // Base pass consumes the meshlet-culled indirect buffer: each
-            // surviving meshlet becomes one instance with VertexCount =
-            // MESHLET_VERTICES_PER_DRAW (124 tris * 3). The pre-pass runs
-            // over a strict subset of these batches (occluders only), and
-            // the GREATER_EQUAL test here lets non-occluder fragments
-            // survive against a cleared-to-far / occluder-populated depth
-            // buffer while still being rejected by pre-pass occluders.
+            // Base pass consumes the view-0 slice of the unified IndirectArgs
+            // buffer: each surviving meshlet becomes one instance with
+            // VertexCount = MESHLET_VERTICES_PER_DRAW (124 tris * 3). The
+            // pre-pass runs over a strict subset of these batches (occluders
+            // only), and the GREATER_EQUAL test here lets non-occluder
+            // fragments survive against a cleared-to-far / occluder-populated
+            // depth buffer while still being rejected by pre-pass occluders.
             FGraphicsState GraphicsState; GraphicsState
                 .SetRenderPass(RenderPass)
                 .SetViewportState(SceneViewportState)
                 .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-                .SetIndirectParams(GetNamedBuffer(ENamedBuffer::MeshletIndirect))
+                .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs))
                 .AddBindingSet(SceneBindingSet)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
 
             CmdList.SetGraphicsState(GraphicsState);
+            // View 0 = camera.
             CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
         }
     }
@@ -3323,11 +3688,12 @@ namespace Lumina
             GraphicsState.SetRenderPass(RenderPass)
                          .SetViewportState(SceneViewportState)
                          .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-                         .SetIndirectParams(GetNamedBuffer(ENamedBuffer::MeshletIndirect))
+                         .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs))
                          .AddBindingSet(SceneBindingSet)
                          .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
 
             CmdList.SetGraphicsState(GraphicsState);
+            // View 0 = camera.
             CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
         }
     }
@@ -3835,16 +4201,6 @@ namespace Lumina
 
         {
             FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(uint32);
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = "Instance Mapping (Shadow)";
-            NamedBuffers[(int)ENamedBuffer::InstanceMappingShadow] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
             BufferDesc.Size = offsetof(FSceneLightData, Lights);
             BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
             BufferDesc.bKeepInitialState = true;
@@ -3875,18 +4231,6 @@ namespace Lumina
 
         {
             FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FDrawIndirectArguments);
-            BufferDesc.Stride = sizeof(FDrawIndirectArguments);
-            BufferDesc.Usage.SetMultipleFlags(BUF_Indirect, BUF_StorageBuffer);
-            BufferDesc.InitialState = EResourceStates::IndirectArgument;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.DebugName = "Indirect Draw Buffer (Shadow)";
-            NamedBuffers[(int)ENamedBuffer::IndirectShadow] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-
-        {
-            FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(FBillboardInstance);
             BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
             BufferDesc.bKeepInitialState = true;
@@ -3895,11 +4239,27 @@ namespace Lumina
             NamedBuffers[(int)ENamedBuffer::Billboards] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
-        // Meshlet-driven draws. MeshletDrawList is atomically appended to by
-        // MeshletCull.slang — each surviving meshlet writes (InstanceID,
-        // MeshletLocalIndex). MeshletIndirect mirrors the main Indirect layout
-        // (one FDrawIndirectArguments per draw range) but its InstanceCount
-        // counts meshlets, not instances.
+        // Per-view cull descriptors. CullMeshlets.slang reads this SSBO to
+        // test each meshlet against every active view's frustum / cone /
+        // occlusion / distance policy. One FCullView per logical render
+        // view: main camera at index 0, followed by CSM cascades, then 6
+        // views per shadow-casting point light, then 1 per shadow-casting
+        // spot light.
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FCullView);
+            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::ShaderResource;
+            BufferDesc.DebugName = "Cull View Buffer";
+            NamedBuffers[(int)ENamedBuffer::CullView] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        // Unified meshlet draw list. Sized NumViews * TotalMeshletBound —
+        // CullMeshlets.slang atomically appends surviving meshlets into the
+        // view's slice addressed by FCullView.DrawListOffset, and the draw
+        // passes indirect-draw using FCullView.IndirectArgsOffset to pull
+        // the right per-view InstanceCount + FirstInstance pair.
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(uint32) * 2;
@@ -3910,6 +4270,7 @@ namespace Lumina
             NamedBuffers[(int)ENamedBuffer::MeshletDrawList] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
+        // Unified indirect draw args. Sized NumViews * NumDraws.
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(FDrawIndirectArguments);
@@ -3917,30 +4278,8 @@ namespace Lumina
             BufferDesc.Usage.SetMultipleFlags(BUF_Indirect, BUF_StorageBuffer);
             BufferDesc.InitialState = EResourceStates::IndirectArgument;
             BufferDesc.bKeepInitialState = true;
-            BufferDesc.DebugName = "Indirect Draw Buffer (Meshlet)";
-            NamedBuffers[(int)ENamedBuffer::MeshletIndirect] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        // Cascade meshlet draw list + indirect for CSM.
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(uint32) * 2;
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = "Meshlet Draw List (Cascade)";
-            NamedBuffers[(int)ENamedBuffer::MeshletDrawListCascade] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FDrawIndirectArguments);
-            BufferDesc.Stride = sizeof(FDrawIndirectArguments);
-            BufferDesc.Usage.SetMultipleFlags(BUF_Indirect, BUF_StorageBuffer);
-            BufferDesc.InitialState = EResourceStates::IndirectArgument;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.DebugName = "Indirect Draw Buffer (Meshlet Cascade)";
-            NamedBuffers[(int)ENamedBuffer::MeshletIndirectCascade] = GRenderContext->CreateBuffer(BufferDesc);
+            BufferDesc.DebugName = "Indirect Args";
+            NamedBuffers[(int)ENamedBuffer::IndirectArgs] = GRenderContext->CreateBuffer(BufferDesc);
         }
     }
 
@@ -4144,18 +4483,20 @@ namespace Lumina
             // returns the minimum of the 2x2 footprint (farthest depth in reverse-Z).
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(9, GetNamedImage(ENamedImage::DepthPyramid),
                 TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Minimum>::GetRHI()));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(10, GetNamedBuffer(ENamedBuffer::InstanceMappingShadow)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(11, GetNamedBuffer(ENamedBuffer::IndirectShadow)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(12, GetNamedBuffer(ENamedBuffer::MeshletDrawList)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(13, GetNamedBuffer(ENamedBuffer::MeshletIndirect)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(14, GetNamedBuffer(ENamedBuffer::MeshletDrawListCascade)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(15, GetNamedBuffer(ENamedBuffer::MeshletIndirectCascade)));
+            // Unified per-view culling: CullMeshlets.slang reads FCullView entries
+            // from uCullViews and atomically appends surviving meshlets into the
+            // owning view's slice of uMeshletDrawList / uIndirectArgs. Every shadow
+            // / camera draw pass uses the same two buffers, addressed through each
+            // view's DrawListOffset / IndirectArgsOffset.
+            BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(10, GetNamedBuffer(ENamedBuffer::CullView)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(11, GetNamedBuffer(ENamedBuffer::MeshletDrawList)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(12, GetNamedBuffer(ENamedBuffer::IndirectArgs)));
             // PCSS needs raw depth reads (not comparison results) during blocker
             // search so we can check individual texels against the receiver depth.
             // The comparison sampler at binding 7 returns a PCF-filtered result —
             // useless for "is this texel a blocker" — so bind the same cascade
-            // image with a point/standard sampler at binding 16.
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(16, GetNamedImage(ENamedImage::Cascade),
+            // image with a point/standard sampler at binding 13.
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(13, GetNamedImage(ENamedImage::Cascade),
                 TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Standard>::GetRHI()));
 
             TBitFlags<ERHIShaderType> Visibility;
