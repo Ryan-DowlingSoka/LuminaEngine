@@ -8,7 +8,7 @@ end
 
 function NewScript:OnReady()
 
-        for i = 1, 50000 do
+        for i = 1, 500 do
             local Entity = Registry:Duplicate(61)
             Engine.ECS.TranslateEntity(Registry, Entity, vector.create(math.random(-500, 500), math.random(50, 150), math.random(-500, 500)))
         end

@@ -65,8 +65,8 @@ namespace Lumina
             // Sum of SurfaceMeshletCount for every instance sharing this local draw; the merge
             // pass reduces this into the global meshlet prefix sum without walking Instances.
             TVector<uint32>     LocalMeshletCounts;
-            uint32              GlobalBatchIndex = ~0u; // resolved during merge
-            TVector<uint32>     LocalToGlobalDraw;      // resolved during merge
+            uint32              GlobalBatchIndex = ~0u; // resolved during merge.
+            TVector<uint32>     LocalToGlobalDraw;      // resolved during merge.
             // Merge stamps one write-cursor per local draw. Parallel writer increments it in
             // place; each worker only touches its own LocalBatches so no atomics.
             TVector<uint32>     LocalDrawWriteBase;
@@ -110,6 +110,12 @@ namespace Lumina
             // Single-uint atomic counter paired with MeshletDeferList. Reset
             // to zero every frame by ResetPass.
             DeferCount,
+            // Single-uint atomic counter for the Single-Pass Downsampler that
+            // builds the depth pyramid. Each phase-1 SPD workgroup increments
+            // it; the last one to do so runs phase 2. FillBuffer zeros it at
+            // the top of DepthPyramidPass; phase 2 also resets it before the
+            // dispatch ends, so a single zero either way keeps it clean.
+            SpdCounter,
 
             Num,
         };
@@ -173,6 +179,7 @@ namespace Lumina
         
         //~ Begin Render Passes
         void ResetPass(ICommandList& CmdList);
+        
         // Two-phase meshlet cull. Early dispatch runs every (instance,
         // meshlet) pair against every non-late view; camera meshlets that
         // fail the *previous-frame* Hi-Z are routed to the defer list
@@ -185,6 +192,7 @@ namespace Lumina
         // camera (view 0) slice right after CullEarly; late runs over the
         // camera-late slice after CullLate so re-added meshlets contribute
         // to the final depth buffer before the base pass draws lighting.
+        
         void DepthPrePassEarly(ICommandList& CmdList);
         void DepthPrePassLate(ICommandList& CmdList);
         void DepthPyramidPass(ICommandList& CmdList);
@@ -246,12 +254,6 @@ namespace Lumina
          * view's indirect-draw slice. Runs after AllocateShadowTiles (so every
          * shadow-casting light has its ViewProjection[6] filled) and before the
          * scene buffer upload so CullMeshlets has everything it needs.
-         *
-         * View layout:
-         *   0:              main camera (frustum + cone + occlusion + micropoly)
-         *   1..NumCascades: CSM cascade views (frustum + sun-aligned cone, cast-shadow-only, distance)
-         *   N..:            6 views per shadow-casting point light
-         *   ...:            1 view per shadow-casting spot light
          */
         void BuildCullViews(const FViewVolume& ViewVolume);
         

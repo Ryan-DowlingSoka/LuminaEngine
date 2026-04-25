@@ -60,6 +60,8 @@ namespace Lumina
 
         return Image;
     }
+    
+    
     FForwardRenderScene::FForwardRenderScene(CWorld* InWorld)
         : World(InWorld)
         , LightData()
@@ -77,11 +79,9 @@ namespace Lumina
         InitBuffers();
         InitFrameResources();
 
-        // Persistent SMAA LUTs - sized constants, not affected by swapchain size.
-        NamedImages[(int)ENamedImage::SMAAArea] = CreateSMAALUTImage(
-            areaTexBytes, AREATEX_WIDTH, AREATEX_HEIGHT, EFormat::RG8_UNORM, AREATEX_PITCH, "SMAA AreaTex");
-        NamedImages[(int)ENamedImage::SMAASearch] = CreateSMAALUTImage(
-            searchTexBytes, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, EFormat::R8_UNORM, SEARCHTEX_PITCH, "SMAA SearchTex");
+        // Persistent SMAA LUTs, sized constants, not affected by swapchain size.
+        NamedImages[(int)ENamedImage::SMAAArea] = CreateSMAALUTImage(areaTexBytes, AREATEX_WIDTH, AREATEX_HEIGHT, EFormat::RG8_UNORM, AREATEX_PITCH, "SMAA AreaTex");
+        NamedImages[(int)ENamedImage::SMAASearch] = CreateSMAALUTImage(searchTexBytes, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, EFormat::R8_UNORM, SEARCHTEX_PITCH, "SMAA SearchTex");
 
         SwapchainResizedHandle = FRenderManager::OnSwapchainResized.AddMember(this, &FForwardRenderScene::SwapchainResized);
         
@@ -1927,7 +1927,7 @@ namespace Lumina
             }
         }
 
-        // Spot lights: one view each.
+        // Spotlights: one view each.
         for (const FLightShadow& SpotShadow : PackedShadows[(uint32)ELightType::Spot])
         {
             if (SpotShadow.ShadowDataIndex < 0)
@@ -2268,11 +2268,7 @@ namespace Lumina
         }
     }
 
-    // Shared push-constant block consumed by CullMeshlets.slang. Phase
-    // selects early vs late; NumViews is only read by the early path and
-    // CameraLateViewIndex is only read by the late path. Padding matches
-    // the shader so the driver can hand us back a stable layout even if
-    // later flags get added.
+
     struct FCullMeshletPushConstants
     {
         uint32 NumViews;
@@ -2296,16 +2292,9 @@ namespace Lumina
             return;
         }
 
-        // Zero the defer counter before any thread appends. DeferList entries
-        // beyond uDeferCount are garbage; phase 1 threads past the counter
-        // early-out without reading them, so only the counter needs wiping.
-        CmdList.FillBuffer(GetNamedBuffer(ENamedBuffer::DeferCount), 0u);
 
-        // One dispatch owns every non-late view (camera-early, CSM cascades,
-        // per-face point, per-spot). Camera meshlets that fail the stale HZB
-        // don't drop; they queue on uMeshletDeferList for phase 1 to retry
-        // against the rebuilt HZB. Shadow views have no Occlusion flag, so
-        // they emit directly without touching the defer path.
+        CmdList.FillBuffer(GetNamedBuffer(ENamedBuffer::DeferCount), 0u);
+        
         FRHIComputeShaderRef CullShader = FShaderLibrary::GetComputeShader("CullMeshlets.slang");
 
         FComputePipelineDesc PipelineDesc;
@@ -2379,11 +2368,7 @@ namespace Lumina
         CmdList.Dispatch(MeshletGroupsX, 1, 1);
     }
 
-    // Shared depth-only batch emission. Selects the camera (view 0 / early
-    // or view CameraLateViewIndex / late) slice of IndirectArgs and issues
-    // one draw per opaque-occluder batch. LoadOp = Clear for the early
-    // pass (first writer into the target) and Load for the late pass
-    // (appends to the early-phase depth buffer before the base pass reads it).
+
     static void RecordDepthPrePassSlice(
         ICommandList& CmdList,
         const TVector<FMeshDrawCommand>& DrawCommands,
@@ -2392,7 +2377,7 @@ namespace Lumina
         FRHIImage* SizedToImage,
         FRHIBindingLayout* SceneBindingLayout,
         FRHIBindingSet* SceneBindingSet,
-        FViewportState SceneViewportState,
+        const FViewportState& SceneViewportState,
         FRHIBuffer* IndirectArgsBuffer,
         uint32 ViewIndex,
         uint32 NumDrawsPerView,
@@ -2457,9 +2442,7 @@ namespace Lumina
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Pre-Depth (Early)", tracy::Color::Orange);
-
-        // View 0 = camera-early. Rasterizes the slice populated by phase 1's
-        // input (meshlets that passed HZB against last-frame pyramid).
+        
         RecordDepthPrePassSlice(
             CmdList,
             DrawCommands,
@@ -2470,9 +2453,9 @@ namespace Lumina
             SceneBindingSet,
             SceneViewportState,
             GetNamedBuffer(ENamedBuffer::IndirectArgs),
-            0u,                                    // ViewIndex: camera-early
+            0u,
             NumDrawsPerView,
-            true);                                 // bClearDepth: first writer
+            true);
     }
 
     void FForwardRenderScene::DepthPrePassLate(ICommandList& CmdList)
@@ -2483,11 +2466,7 @@ namespace Lumina
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Pre-Depth (Late)", tracy::Color::Orange2);
-
-        // View = CameraLateViewIndex. Rasterizes the meshlets that phase 1
-        // un-occluded against the rebuilt HZB -- so occluder geometry that
-        // disoccluded this frame gets its depth into the buffer before the
-        // base pass reads it.
+        
         RecordDepthPrePassSlice(
             CmdList,
             DrawCommands,
@@ -2500,7 +2479,7 @@ namespace Lumina
             GetNamedBuffer(ENamedBuffer::IndirectArgs),
             CameraLateViewIndex,
             NumDrawsPerView,
-            false);                                // bClearDepth: appends to early depth
+            false);
     }
 
     void FForwardRenderScene::DepthPyramidPass(ICommandList& CmdList)
@@ -2509,82 +2488,83 @@ namespace Lumina
         {
             return;
         }
-
-        // Ran async previously because it sat between the depth pre-pass
-        // (depth-only write) and the base pass (no depth read), so the
-        // pyramid dispatch on the compute queue overlapped cheaply. Now that
-        // it runs after base + terrain -- both of which write HDR -- keeping
-        // it on the graphics queue lets the render graph's intra-queue
-        // barriers cover the graphics -> graphics color transitions that the
-        // async path was dropping.
-        LUMINA_PROFILE_SECTION_COLORED("Depth Pyramid Pass", tracy::Color::Orange);
+        
+        LUMINA_PROFILE_SECTION_COLORED("Depth Pyramid Pass (SPD)", tracy::Color::Orange);
 
         FRHIImage* DepthPyramid = GetNamedImage(ENamedImage::DepthPyramid);
-        FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("DepthPyramidMips.slang");
-        int MipCount = DepthPyramid->GetDescription().NumMips;
+        FRHIImage* DepthSource  = GetNamedImage(ENamedImage::DepthAttachment);
+        FRHIBuffer* SpdCounter  = GetNamedBuffer(ENamedBuffer::SpdCounter);
 
-        // Create binding layout and pipeline once, reused for all mip levels
+        const uint32 PyramidW = DepthPyramid->GetSizeX();
+        const uint32 PyramidH = DepthPyramid->GetSizeY();
+        const uint32 MipCount = (uint32)DepthPyramid->GetDescription().NumMips;
+
+        constexpr uint32 SpdMaxMips = 12;
+        const uint32 NumMips = std::min(MipCount, SpdMaxMips);
+
+        CmdList.FillBuffer(SpdCounter, 0u);
+
         FBindingLayoutDesc LayoutDesc;
         LayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0));
-        LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(1));
+        for (uint32 i = 0; i < SpdMaxMips; ++i)
+        {
+            LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(1 + i));
+        }
+        LayoutDesc.AddItem(FBindingLayoutItem::Buffer_UAV(13));
         LayoutDesc.SetVisibility(ERHIShaderType::Compute);
         FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
 
+        FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("DepthPyramidSPD.slang");
         FComputePipelineDesc PipelineDesc;
         PipelineDesc.AddBindingLayout(Layout);
         PipelineDesc.CS = ComputeShader;
-        PipelineDesc.DebugName = "Depth Pyramid Mips";
+        PipelineDesc.DebugName = "Depth Pyramid SPD";
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
-        CmdList.SetEnableUavBarriersForImage(DepthPyramid, false);
 
-        for (int i = 0; i < MipCount; ++i)
+        FRHISamplerRef MinSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Minimum>::GetRHI();
+
+        FBindingSetDesc SetDesc;
+        SetDesc.AddItem(FBindingSetItem::TextureSRV(0, DepthSource, MinSampler));
+
+        for (uint32 i = 0; i < SpdMaxMips; ++i)
         {
-            LUMINA_PROFILE_SECTION_COLORED("Process Mip", tracy::Color::Yellow4);
-
-            // Both paths need a min-reduction clamp sampler so that a single
-            // bilinear tap collapses the 2x2 footprint to the farthest depth
-            // (min value in reverse-Z). For mip 0 the source is 1:1 with the
-            // destination so the reduction is a no-op but the sampler type
-            // must still be explicit.
-            FRHISamplerRef Sampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Minimum>::GetRHI();
-            FBindingSetDesc SetDesc;
-            if (i == 0)
-            {
-                SetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::DepthAttachment), Sampler));
-            }
-            else
-            {
-                SetDesc.AddItem(FBindingSetItem::TextureSRV(0, DepthPyramid, Sampler, DepthPyramid->GetFormat(), FTextureSubresourceSet(i - 1, 1, 0, 1)));
-            }
-
-            SetDesc.AddItem(FBindingSetItem::TextureUAV(1, DepthPyramid, DepthPyramid->GetFormat(), FTextureSubresourceSet(i, 1, 0, 1)));
-
-            FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
-
-            FComputeState State;
-            State.AddBindingSet(Set);
-            State.SetPipeline(Pipeline);
-
-            CmdList.SetComputeState(State);
-
-            uint32 LevelWidth = DepthPyramid->GetSizeX() >> i;
-            uint32 LevelHeight = DepthPyramid->GetSizeY() >> i;
-
-            LevelWidth = std::max(LevelWidth, 1u);
-            LevelHeight = std::max(LevelHeight, 1u);
-
-            glm::vec2 Data(LevelWidth,LevelHeight);
-            CmdList.SetPushConstants(&Data, sizeof(glm::vec2));
-
-            uint32 GroupsX = RenderUtils::GetGroupCount(LevelWidth, 32);
-            uint32 GroupsY = RenderUtils::GetGroupCount(LevelHeight, 32);
-
-            CmdList.Dispatch(GroupsX, GroupsY, 1);
+            const uint32 SrcMip = (i < MipCount) ? i : 0u;
+            SetDesc.AddItem(FBindingSetItem::TextureUAV(1 + i, DepthPyramid, DepthPyramid->GetFormat(),
+                FTextureSubresourceSet(SrcMip, 1, 0, 1)));
         }
 
-        CmdList.SetEnableUavBarriersForImage(DepthPyramid, true);
+        SetDesc.AddItem(FBindingSetItem::BufferUAV(13, SpdCounter));
 
+        FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
+
+        FComputeState State;
+        State.AddBindingSet(Set);
+        State.SetPipeline(Pipeline);
+        CmdList.SetComputeState(State);
+
+        struct FSpdPushConstants
+        {
+            uint32 PyramidSize[2];
+            uint32 NumMips;
+            uint32 NumWorkGroups;
+            float  InvPyramidSize[2];
+        } PC = {};
+
+        constexpr uint32 SpdTileSize = 32;
+        const uint32 DispatchX = RenderUtils::GetGroupCount(PyramidW, SpdTileSize);
+        const uint32 DispatchY = RenderUtils::GetGroupCount(PyramidH, SpdTileSize);
+        const uint32 TotalGroups = DispatchX * DispatchY;
+
+        PC.PyramidSize[0]     = PyramidW;
+        PC.PyramidSize[1]     = PyramidH;
+        PC.NumMips            = NumMips;
+        PC.NumWorkGroups      = TotalGroups;
+        PC.InvPyramidSize[0]  = 1.0f / (float)PyramidW;
+        PC.InvPyramidSize[1]  = 1.0f / (float)PyramidH;
+        CmdList.SetPushConstants(&PC, sizeof(PC));
+
+        CmdList.Dispatch(DispatchX, DispatchY, 1);
     }
 
     void FForwardRenderScene::ClusterBuildPass(ICommandList& CmdList)
@@ -4593,6 +4573,21 @@ namespace Lumina
             BufferDesc.InitialState = EResourceStates::UnorderedAccess;
             BufferDesc.DebugName = "Meshlet Defer Count";
             NamedBuffers[(int)ENamedBuffer::DeferCount] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        // Atomic counter used by the Single-Pass Downsampler to hand off from
+        // phase 1 (per-tile mips 0..5) to phase 2 (last workgroup generates
+        // mips 6..11). DepthPyramidPass zeroes it before each dispatch; SPD
+        // phase 2 also resets it so either writer leaves the buffer at zero.
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(uint32);
+            BufferDesc.Stride = sizeof(uint32);
+            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
+            BufferDesc.DebugName = "SPD Counter";
+            NamedBuffers[(int)ENamedBuffer::SpdCounter] = GRenderContext->CreateBuffer(BufferDesc);
         }
     }
 

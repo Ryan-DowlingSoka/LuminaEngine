@@ -335,8 +335,6 @@ namespace Lumina
 
     void FCommandListResourceStateTracker::RequireBufferState(FBufferStateExtension* buffer, EResourceStates state)
     {
-        LUMINA_PROFILE_SCOPE();
-
         if (buffer->DescRef.Usage.IsFlagSet(EBufferUsageFlags::Dynamic))
         {
             return;
