@@ -208,7 +208,7 @@ namespace Lumina
 		}
 
 		FString IndexString = eastl::to_string(ScalarParameters[ParamID].Index);
-		ShaderChunks.append("float " + NodeID + " = GetMaterialScalar(" + IndexString + ");\n");
+		ShaderChunks.append("float " + NodeID + " = GetMaterialScalar(MaterialIndex, " + IndexString + ");\n");
 	}
 
 	void FMaterialCompiler::DefineFloat2Parameter(const FString& NodeID, const FName& ParamID, float Value[2])
@@ -220,7 +220,7 @@ namespace Lumina
 		}
 
 		FString IndexString = eastl::to_string(VectorParameters[ParamID].Index);
-		ShaderChunks.append("float2 " + NodeID + " = GetMaterialVec4(" + IndexString + ").xy;\n");
+		ShaderChunks.append("float2 " + NodeID + " = GetMaterialVec4(MaterialIndex, " + IndexString + ").xy;\n");
 	}
 
 	void FMaterialCompiler::DefineFloat3Parameter(const FString& NodeID, const FName& ParamID, float Value[3])
@@ -232,7 +232,7 @@ namespace Lumina
 		}
 
 		FString IndexString = eastl::to_string(VectorParameters[ParamID].Index);
-		ShaderChunks.append("float3 " + NodeID + " = GetMaterialVec4(" + IndexString + ").xyz;\n");
+		ShaderChunks.append("float3 " + NodeID + " = GetMaterialVec4(MaterialIndex, " + IndexString + ").xyz;\n");
 	}
 
 	void FMaterialCompiler::DefineFloat4Parameter(const FString& NodeID, const FName& ParamID, float Value[4])
@@ -244,7 +244,7 @@ namespace Lumina
 		}
 
 		FString IndexString = eastl::to_string(VectorParameters[ParamID].Index);
-		ShaderChunks.append("float4 " + NodeID + " = GetMaterialVec4(" + IndexString + ");\n");
+		ShaderChunks.append("float4 " + NodeID + " = GetMaterialVec4(MaterialIndex, " + IndexString + ");\n");
 	}
 
 	void FMaterialCompiler::DefineConstantFloat(const FString& ID, float Value)
@@ -516,6 +516,77 @@ namespace Lumina
 		}
 
 		ShaderChunks.append("float4 " + ID + " = uGlobalTextures[GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + ")].Sample(" + UVStr + ");\n");
+	}
+
+	void FMaterialCompiler::TextureSampleParameter(const FString& ID, const FName& ParamID, CTexture* Texture, CMaterialInput* Input)
+	{
+		FInputValue UVValue = GetTypedInputValue(Input, "float2(UV0)");
+
+		FString UVStr;
+		if (UVValue.ComponentCount >= 2)
+		{
+			UVStr = UVValue.Value + ".xy";
+		}
+		else
+		{
+			UVStr = "float2(" + UVValue.Value + ")";
+		}
+
+		int32 Index;
+		auto Existing = TextureParameters.find(ParamID);
+		if (Existing != TextureParameters.end())
+		{
+			Index = (int32)Existing->second.Index;
+		}
+		else
+		{
+			Index = (int32)BoundImages.size();
+			BoundImages.push_back(Texture);
+			TextureParameters[ParamID] = FTextureParam{ (uint16)Index, Texture };
+			NumTextureParams++;
+		}
+
+		ShaderChunks.append("float4 " + ID + " = uGlobalTextures[GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + ")].Sample(" + UVStr + ");\n");
+	}
+
+	void FMaterialCompiler::GetParameters(TVector<FMaterialParameter>& OutParams, FMaterialUniforms& OutUniforms) const
+	{
+		for (const auto& Pair : ScalarParameters)
+		{
+			FMaterialParameter Out;
+			Out.ParameterName = Pair.first;
+			Out.Type = EMaterialParameterType::Scalar;
+			Out.Index = Pair.second.Index;
+			OutParams.push_back(Out);
+
+			if (Pair.second.Index < MAX_SCALARS)
+			{
+				OutUniforms.Scalars[Pair.second.Index] = Pair.second.Value;
+			}
+		}
+
+		for (const auto& Pair : VectorParameters)
+		{
+			FMaterialParameter Out;
+			Out.ParameterName = Pair.first;
+			Out.Type = EMaterialParameterType::Vector;
+			Out.Index = Pair.second.Index;
+			OutParams.push_back(Out);
+
+			if (Pair.second.Index < MAX_VECTORS)
+			{
+				OutUniforms.Vectors[Pair.second.Index] = Pair.second.Value;
+			}
+		}
+
+		for (const auto& Pair : TextureParameters)
+		{
+			FMaterialParameter Out;
+			Out.ParameterName = Pair.first;
+			Out.Type = EMaterialParameterType::Texture;
+			Out.Index = Pair.second.Index;
+			OutParams.push_back(Out);
+		}
 	}
 
 	void FMaterialCompiler::NewLine()

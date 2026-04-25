@@ -69,6 +69,13 @@ namespace Lumina::Import
             bool bFlipUVs           = false;
             bool bMergeMeshes       = false;
             float Scale             = 1.0f;
+            // Skip the heavy CPU finalization (vertex remap, cache reorder,
+            // shadow buffer, meshlet build, statistics) and the user-facing
+            // transforms (scale, flip-uvs, flip-normals, merge). The dialog
+            // uses this to parse the source file once for preview and defer
+            // the expensive work to commit time, so toggling options no
+            // longer triggers a full re-parse.
+            bool bSkipFinalization  = false;
         };
 
         struct FMeshImportImage : FImportSettings
@@ -119,12 +126,24 @@ namespace Lumina::Import
             TVector<TUniquePtr<FMeshResource>>          Resources;
             TVector<TUniquePtr<FAnimationResource>>     Animations;
             TVector<TUniquePtr<FSkeletonResource>>      Skeletons;
+            // The dialog populates this when the user commits and TryImport
+            // reads it to drive FinalizeMeshImportData and the per-asset
+            // creation gates. Defaults are safe for any importer that builds
+            // FMeshImportData without going through the dialog.
+            FMeshImportOptions                          CommitOptions;
         };
         
         void OptimizeNewlyImportedMesh(FMeshResource& MeshResource);
         void GenerateShadowBuffers(FMeshResource& MeshResource);
         void GenerateMeshlets(FMeshResource& MeshResource);
         void AnalyzeMeshStatistics(FMeshResource& MeshResource, FMeshStatistics& OutMeshStats);
+
+        // Apply user-facing transforms (Scale, FlipUVs, FlipNormals, optional
+        // merge) and run the heavy finalize passes (optimize, shadow, meshlets,
+        // stats) on a previously parsed FMeshImportData. Used by the import
+        // dialog to defer all expensive post-processing to commit time so
+        // toggling options doesn't trigger a re-parse.
+        RUNTIME_API void FinalizeMeshImportData(FMeshImportData& Data, const FMeshImportOptions& Options);
         
         namespace OBJ
         {

@@ -19,6 +19,7 @@
 #include "Renderer/RendererUtils.h"
 #include "Renderer/RenderResource.h"
 #include "Renderer/Vertex.h"
+#include "TaskSystem/TaskSystem.h"
 
 namespace Lumina::Import::Mesh::GLTF
 {
@@ -322,102 +323,17 @@ namespace Lumina::Import::Mesh::GLTF
             }
         }
 
-        // Optimize and emit every resource that actually received vertices.
-        // Previously only the resource handled by the LAST primitive was
-        // optimized, and the other (static/skinned) was shipped unmodified.
-        auto FinalizeResource = [&](TUniquePtr<FMeshResource>& Resource)
+        // Per-mesh primitive extraction. Captures the loop variables but does
+        // NOT touch ImportData, so multiple invocations on different mesh
+        // resources can run concurrently. Merge mode shares the targets and
+        // MergedMaterialRemap, which is why merge mode stays serial below.
+        auto ProcessMeshPrimitives = [&](
+            const fastgltf::Mesh& Mesh,
+            const FFixedString&   MeshName,
+            FMeshResource*        StaticTarget,
+            FMeshResource*        SkinnedTarget,
+            THashMap<int16, int16>* MergedMaterialRemapPtr)
         {
-            if (!Resource || Resource->GetNumVertices() == 0)
-            {
-                return;
-            }
-
-            if (ImportOptions.bOptimize)
-            {
-                OptimizeNewlyImportedMesh(*Resource);
-            }
-
-            GenerateShadowBuffers(*Resource);
-            GenerateMeshlets(*Resource);
-            AnalyzeMeshStatistics(*Resource, ImportData.MeshStatistics);
-
-            ImportData.Resources.push_back(eastl::move(Resource));
-        };
-
-        // Merge mode collapses every GLTF mesh into a single static/skinned
-        // pair. Primitives that reference the same GLTF material are folded
-        // onto one local material slot so the final asset has the minimum
-        // number of slots rather than one per primitive.
-        TUniquePtr<FMeshResource> MergedStaticMesh;
-        TUniquePtr<FMeshResource> MergedSkinnedMesh;
-        THashMap<int16, int16>    MergedMaterialRemap;
-
-        if (ImportOptions.bMergeMeshes)
-        {
-            MergedStaticMesh = MakeUnique<FMeshResource>();
-            MergedStaticMesh->Vertices = TVector<FVertex>();
-            MergedStaticMesh->Name = FString(Name.begin(), Name.end()) + "_Mesh";
-
-            MergedSkinnedMesh = MakeUnique<FMeshResource>();
-            MergedSkinnedMesh->Vertices = TVector<FSkinnedVertex>();
-            MergedSkinnedMesh->bSkinnedMesh = true;
-            MergedSkinnedMesh->Name = FString(Name.begin(), Name.end()) + "_SkeletalMesh";
-        }
-
-        THashSet<FString> SeenMeshes;
-        for (const fastgltf::Mesh& Mesh : Asset.meshes)
-        {
-            FString SanitizedMeshName = Mesh.name.c_str();
-            eastl::replace(SanitizedMeshName.begin(), SanitizedMeshName.end(), '.', '_');
-
-            // When every mesh lands in the same asset there is no path
-            // collision to defend against, so skipping same-named meshes
-            // would just drop geometry.
-            if (!ImportOptions.bMergeMeshes)
-            {
-                auto It = SeenMeshes.find(SanitizedMeshName.c_str());
-                if (It != SeenMeshes.end())
-                {
-                    continue;
-                }
-                SeenMeshes.emplace(SanitizedMeshName);
-            }
-
-            FFixedString MeshName;
-            if (Mesh.name.empty())
-            {
-                MeshName.append(Name.begin(), Name.end()).append_convert(eastl::to_string(ImportData.Resources.size()));
-            }
-            else
-            {
-                MeshName.append_convert(SanitizedMeshName);
-            }
-
-            TUniquePtr<FMeshResource> LocalStaticMesh;
-            TUniquePtr<FMeshResource> LocalSkinnedMesh;
-            FMeshResource* StaticTarget = nullptr;
-            FMeshResource* SkinnedTarget = nullptr;
-
-            if (ImportOptions.bMergeMeshes)
-            {
-                StaticTarget  = MergedStaticMesh.get();
-                SkinnedTarget = MergedSkinnedMesh.get();
-            }
-            else
-            {
-                LocalStaticMesh = MakeUnique<FMeshResource>();
-                LocalStaticMesh->Vertices = TVector<FVertex>();
-                LocalStaticMesh->Name = FString(MeshName) + "_Mesh";
-
-                LocalSkinnedMesh = MakeUnique<FMeshResource>();
-                LocalSkinnedMesh->Vertices = TVector<FSkinnedVertex>();
-                LocalSkinnedMesh->bSkinnedMesh = true;
-                LocalSkinnedMesh->Name = FString(MeshName) + "_SkeletalMesh";
-
-                StaticTarget  = LocalStaticMesh.get();
-                SkinnedTarget = LocalSkinnedMesh.get();
-            }
-
             FMeshResource* NewResource = nullptr;
             for (auto& Primitive : Mesh.primitives)
             {
@@ -443,7 +359,7 @@ namespace Lumina::Import::Mesh::GLTF
                 else
                 {
                     PrimitiveName.append_convert(Mesh.name);
-                    if (ImportOptions.bMergeMeshes)
+                    if (MergedMaterialRemapPtr != nullptr)
                     {
                         PrimitiveName.append("_");
                         PrimitiveName.append_convert(eastl::to_string(NewResource->GetNumSurfaces()));
@@ -455,13 +371,14 @@ namespace Lumina::Import::Mesh::GLTF
                 if (Primitive.materialIndex.has_value())
                 {
                     const int16 SourceMaterialIndex = (int16)Primitive.materialIndex.value();
-                    if (ImportOptions.bMergeMeshes)
+                    if (MergedMaterialRemapPtr != nullptr)
                     {
-                        auto MatIt = MergedMaterialRemap.find(SourceMaterialIndex);
-                        if (MatIt == MergedMaterialRemap.end())
+                        THashMap<int16, int16>& Remap = *MergedMaterialRemapPtr;
+                        auto MatIt = Remap.find(SourceMaterialIndex);
+                        if (MatIt == Remap.end())
                         {
-                            const int16 NewSlot = (int16)MergedMaterialRemap.size();
-                            MergedMaterialRemap.emplace(SourceMaterialIndex, NewSlot);
+                            const int16 NewSlot = (int16)Remap.size();
+                            Remap.emplace(SourceMaterialIndex, NewSlot);
                             NewSurface.MaterialIndex = NewSlot;
                         }
                         else
@@ -474,7 +391,7 @@ namespace Lumina::Import::Mesh::GLTF
                         NewSurface.MaterialIndex = SourceMaterialIndex;
                     }
                 }
-                
+
                 size_t InitialIndex = NewResource->GetNumIndices();
                 size_t InitialVert = NewResource->GetNumVertices();
                 size_t VertexCount = Asset.accessors[Primitive.findAttribute("POSITION")->second].count;
@@ -483,7 +400,7 @@ namespace Lumina::Import::Mesh::GLTF
                 {
                     Vector.resize(InitialVert + VertexCount);
                 }, NewResource->Vertices);
-                
+
                 for (size_t i = InitialVert; i < NewResource->GetNumVertices(); ++i)
                 {
                     NewResource->SetNormalAt(i, PackNormal(FViewVolume::UpAxis));
@@ -495,22 +412,22 @@ namespace Lumina::Import::Mesh::GLTF
                         NewResource->SetJointWeightsAt(i, glm::u8vec4(0));
                     }
                 }
-                
+
                 const fastgltf::Accessor& PosAccessor = Asset.accessors[Primitive.findAttribute("POSITION")->second];
                 fastgltf::iterateAccessorWithIndex<glm::vec3>(Asset, PosAccessor, [&](glm::vec3 Value, size_t Index)
                 {
                     Value *= ImportScale;
                     NewResource->SetPositionAt(InitialVert + Index, Value);
                 });
-                
+
                 const fastgltf::Accessor& IndexAccessor = Asset.accessors[Primitive.indicesAccessor.value()];
                 NewResource->Indices.reserve(InitialIndex + IndexAccessor.count);
 
                 fastgltf::iterateAccessor<uint32>(Asset, IndexAccessor, [&](uint32 Index)
                 {
-                    NewResource->Indices.push_back(InitialVert + Index);
+                    NewResource->Indices.push_back((uint32)(InitialVert + Index));
                 });
-                
+
                 auto Normals = Primitive.findAttribute("NORMAL");
                 if (Normals != Primitive.attributes.end())
                 {
@@ -519,7 +436,7 @@ namespace Lumina::Import::Mesh::GLTF
                         NewResource->SetNormalAt(InitialVert + Index, PackNormal(glm::normalize(Value)));
                     });
                 }
-                
+
                 auto UV = Primitive.findAttribute("TEXCOORD_0");
                 if (UV != Primitive.attributes.end())
                 {
@@ -533,7 +450,7 @@ namespace Lumina::Import::Mesh::GLTF
                         NewResource->SetUVAt(InitialVert + Index, Value);
                     });
                 }
-                
+
                 auto Colors = Primitive.findAttribute("COLOR_0");
                 if (Colors != Primitive.attributes.end())
                 {
@@ -542,7 +459,7 @@ namespace Lumina::Import::Mesh::GLTF
                         NewResource->SetColorAt(InitialVert + Index, PackColor(Value));
                     });
                 }
-                
+
                 if (Joints != Primitive.attributes.end())
                 {
                     fastgltf::iterateAccessorWithIndex<glm::u8vec4>(Asset, Asset.accessors[Joints->second], [&](glm::u8vec4 Value, size_t Index)
@@ -558,23 +475,210 @@ namespace Lumina::Import::Mesh::GLTF
                         NewResource->SetJointWeightsAt(InitialVert + Index, glm::u8vec4(Value * 255.0f));
                     });
                 }
-                
+
                 NewSurface.IndexCount = (uint32)NewResource->GetNumIndices() - NewSurface.StartIndex;
 
                 NewResource->GeometrySurfaces.push_back(NewSurface);
             }
+        };
 
-            if (!ImportOptions.bMergeMeshes)
+        // Heavy CPU finalization (vertex remap, cache reorder, shadow buffer,
+        // meshlet build) is independent per FMeshResource. AnalyzeMeshStatistics
+        // appends to a shared vector so it stays serial. When bSkipFinalization
+        // is set the dialog has asked for a raw preview parse and will run
+        // the heavy passes itself at commit time via FinalizeMeshImportData,
+        // so we can skip them here.
+        const bool bSkipFinalize = ImportOptions.bSkipFinalization;
+        auto FinalizeResource = [&](FMeshResource& Resource)
+        {
+            if (bSkipFinalize)
             {
-                FinalizeResource(LocalStaticMesh);
-                FinalizeResource(LocalSkinnedMesh);
+                return;
             }
-        }
+            if (ImportOptions.bOptimize)
+            {
+                OptimizeNewlyImportedMesh(Resource);
+            }
+            GenerateShadowBuffers(Resource);
+            GenerateMeshlets(Resource);
+        };
 
         if (ImportOptions.bMergeMeshes)
         {
-            FinalizeResource(MergedStaticMesh);
-            FinalizeResource(MergedSkinnedMesh);
+            // Merge mode collapses every GLTF mesh into a single static/skinned
+            // pair. Primitives that reference the same GLTF material are folded
+            // onto one local material slot so the final asset has the minimum
+            // number of slots rather than one per primitive.
+            TUniquePtr<FMeshResource> MergedStaticMesh = MakeUnique<FMeshResource>();
+            MergedStaticMesh->Vertices = TVector<FVertex>();
+            MergedStaticMesh->Name = FString(Name.begin(), Name.end()) + "_Mesh";
+
+            TUniquePtr<FMeshResource> MergedSkinnedMesh = MakeUnique<FMeshResource>();
+            MergedSkinnedMesh->Vertices = TVector<FSkinnedVertex>();
+            MergedSkinnedMesh->bSkinnedMesh = true;
+            MergedSkinnedMesh->Name = FString(Name.begin(), Name.end()) + "_SkeletalMesh";
+
+            THashMap<int16, int16> MergedMaterialRemap;
+
+            // Merge mode mutates shared targets; keep the per-primitive walk
+            // serial. The dominant cost (FinalizeResource) still parallelizes
+            // internally via per-surface meshlet/optimize passes.
+            for (const fastgltf::Mesh& Mesh : Asset.meshes)
+            {
+                FString SanitizedMeshName = Mesh.name.c_str();
+                eastl::replace(SanitizedMeshName.begin(), SanitizedMeshName.end(), '.', '_');
+
+                FFixedString MeshName;
+                if (Mesh.name.empty())
+                {
+                    MeshName.append(Name.begin(), Name.end()).append_convert(eastl::to_string(ImportData.Resources.size()));
+                }
+                else
+                {
+                    MeshName.append_convert(SanitizedMeshName);
+                }
+
+                ProcessMeshPrimitives(Mesh, MeshName, MergedStaticMesh.get(), MergedSkinnedMesh.get(), &MergedMaterialRemap);
+            }
+
+            TVector<FMeshResource*> ToFinalize;
+            if (MergedStaticMesh && MergedStaticMesh->GetNumVertices() > 0)
+            {
+                ToFinalize.push_back(MergedStaticMesh.get());
+            }
+            if (MergedSkinnedMesh && MergedSkinnedMesh->GetNumVertices() > 0)
+            {
+                ToFinalize.push_back(MergedSkinnedMesh.get());
+            }
+
+            Task::ParallelFor((uint32)ToFinalize.size(), [&](uint32 i)
+            {
+                FinalizeResource(*ToFinalize[i]);
+            });
+
+            for (FMeshResource* Res : ToFinalize)
+            {
+                AnalyzeMeshStatistics(*Res, ImportData.MeshStatistics);
+            }
+
+            if (MergedStaticMesh && MergedStaticMesh->GetNumVertices() > 0)
+            {
+                ImportData.Resources.push_back(eastl::move(MergedStaticMesh));
+            }
+            if (MergedSkinnedMesh && MergedSkinnedMesh->GetNumVertices() > 0)
+            {
+                ImportData.Resources.push_back(eastl::move(MergedSkinnedMesh));
+            }
+        }
+        else
+        {
+            // Non-merge mode: one local static + skinned pair per source mesh.
+            // The target buffers are exclusive per slot, so primitive extraction
+            // and finalization both parallelize at the mesh granularity. The
+            // SeenMeshes dedup runs serially first to avoid losing geometry to
+            // a hashset race.
+            TVector<size_t>     UniqueMeshIndices;
+            TVector<FFixedString> UniqueMeshNames;
+            UniqueMeshIndices.reserve(Asset.meshes.size());
+            UniqueMeshNames.reserve(Asset.meshes.size());
+
+            THashSet<FString> SeenMeshes;
+            for (size_t MeshIdx = 0; MeshIdx < Asset.meshes.size(); ++MeshIdx)
+            {
+                const fastgltf::Mesh& Mesh = Asset.meshes[MeshIdx];
+
+                FString SanitizedMeshName = Mesh.name.c_str();
+                eastl::replace(SanitizedMeshName.begin(), SanitizedMeshName.end(), '.', '_');
+
+                auto It = SeenMeshes.find(SanitizedMeshName.c_str());
+                if (It != SeenMeshes.end())
+                {
+                    continue;
+                }
+                SeenMeshes.emplace(SanitizedMeshName);
+
+                FFixedString MeshName;
+                if (Mesh.name.empty())
+                {
+                    // Use the source mesh index so the fallback name is stable
+                    // regardless of which thread finishes first.
+                    MeshName.append(Name.begin(), Name.end()).append_convert(eastl::to_string(MeshIdx));
+                }
+                else
+                {
+                    MeshName.append_convert(SanitizedMeshName);
+                }
+
+                UniqueMeshIndices.push_back(MeshIdx);
+                UniqueMeshNames.push_back(MeshName);
+            }
+
+            struct FMeshSlot
+            {
+                TUniquePtr<FMeshResource> Static;
+                TUniquePtr<FMeshResource> Skinned;
+            };
+
+            TVector<FMeshSlot> Slots(UniqueMeshIndices.size());
+
+            // Phase 1: extract per-mesh vertex/index data in parallel.
+            Task::ParallelFor((uint32)UniqueMeshIndices.size(), [&](uint32 SlotIdx)
+            {
+                const fastgltf::Mesh& Mesh   = Asset.meshes[UniqueMeshIndices[SlotIdx]];
+                const FFixedString&   MeshNm = UniqueMeshNames[SlotIdx];
+
+                FMeshSlot& Slot = Slots[SlotIdx];
+
+                Slot.Static = MakeUnique<FMeshResource>();
+                Slot.Static->Vertices = TVector<FVertex>();
+                Slot.Static->Name = FString(MeshNm) + "_Mesh";
+
+                Slot.Skinned = MakeUnique<FMeshResource>();
+                Slot.Skinned->Vertices = TVector<FSkinnedVertex>();
+                Slot.Skinned->bSkinnedMesh = true;
+                Slot.Skinned->Name = FString(MeshNm) + "_SkeletalMesh";
+
+                ProcessMeshPrimitives(Mesh, MeshNm, Slot.Static.get(), Slot.Skinned.get(), nullptr);
+            });
+
+            // Phase 2: collect every non-empty resource and finalize them all
+            // in parallel. Each FMeshResource is touched by exactly one task so
+            // optimize/shadow/meshlet passes are race-free across resources.
+            TVector<FMeshResource*> ToFinalize;
+            ToFinalize.reserve(Slots.size() * 2);
+            for (FMeshSlot& Slot : Slots)
+            {
+                if (Slot.Static && Slot.Static->GetNumVertices() > 0)
+                {
+                    ToFinalize.push_back(Slot.Static.get());
+                }
+                if (Slot.Skinned && Slot.Skinned->GetNumVertices() > 0)
+                {
+                    ToFinalize.push_back(Slot.Skinned.get());
+                }
+            }
+
+            Task::ParallelFor((uint32)ToFinalize.size(), [&](uint32 i)
+            {
+                FinalizeResource(*ToFinalize[i]);
+            });
+
+            // Phase 3: serial collect into ImportData (push_back + stats are
+            // not threadsafe). The actual cost here is trivial relative to the
+            // CPU work above.
+            for (FMeshSlot& Slot : Slots)
+            {
+                if (Slot.Static && Slot.Static->GetNumVertices() > 0)
+                {
+                    AnalyzeMeshStatistics(*Slot.Static, ImportData.MeshStatistics);
+                    ImportData.Resources.push_back(eastl::move(Slot.Static));
+                }
+                if (Slot.Skinned && Slot.Skinned->GetNumVertices() > 0)
+                {
+                    AnalyzeMeshStatistics(*Slot.Skinned, ImportData.MeshStatistics);
+                    ImportData.Resources.push_back(eastl::move(Slot.Skinned));
+                }
+            }
         }
 
         return Move(ImportData);

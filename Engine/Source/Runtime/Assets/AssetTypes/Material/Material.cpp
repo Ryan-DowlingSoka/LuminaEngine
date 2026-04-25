@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 #include "Material.h"
+#include "Assets/AssetTypes/Material/MaterialInstance.h"
 #include "Assets/AssetTypes/Textures/Texture.h"
 #include "Paths/Paths.h"
 #include "Platform/Filesystem/FileHelper.h"
@@ -34,6 +35,70 @@ namespace Lumina
         if (DefaultTerrainMaterial == nullptr)
         {
             CreateDefaultTerrainMaterial();
+        }
+    }
+
+    void CMaterial::RegisterInstance(CMaterialInstance* Instance)
+    {
+        if (Instance == nullptr)
+        {
+            return;
+        }
+        // Linear scan to avoid double-registration (instance count is bounded by what references this material).
+        for (CMaterialInstance* Existing : Instances)
+        {
+            if (Existing == Instance)
+            {
+                return;
+            }
+        }
+        Instances.push_back(Instance);
+    }
+
+    void CMaterial::UnregisterInstance(CMaterialInstance* Instance)
+    {
+        if (Instance == nullptr)
+        {
+            return;
+        }
+        for (auto It = Instances.begin(); It != Instances.end(); ++It)
+        {
+            if (*It == Instance)
+            {
+                Instances.erase(It);
+                return;
+            }
+        }
+    }
+
+    void CMaterial::NotifyInstancesParentChanged()
+    {
+        // Live instances cached our Parameters/MaterialUniforms at their own PostLoad time.
+        // After a recompile (or first-time load when an instance loaded before us) they're
+        // stale, so refresh every registered instance.
+        for (CMaterialInstance* Instance : Instances)
+        {
+            if (Instance == nullptr || Instance->Material.Get() != this)
+            {
+                // Defensive: stale entry. Skip; OnDestroy / re-parent should clean these up.
+                continue;
+            }
+
+            Instance->RebuildUniformsFromOverrides();
+            if (Instance->GetMaterialIndex() != -1)
+            {
+                GRenderManager->GetMaterialManager().UpdateMaterialUniforms(Instance);
+            }
+        }
+    }
+
+    void CMaterial::RebuildParameterLookup()
+    {
+        ParameterLookup.clear();
+        ParameterLookup.reserve(Parameters.size());
+        for (const FMaterialParameter& Param : Parameters)
+        {
+            ParameterLookup[Param.ParameterName] = Param;
         }
     }
 
@@ -85,6 +150,9 @@ namespace Lumina
             MaterialUniforms.Flags = (uint32)GPUFlags;
             MaterialUniforms.OpacityClipValue = OpacityMaskClipValue;
 
+            // Rebuild O(1) parameter lookup before any instance asks via GetParameterValue.
+            RebuildParameterLookup();
+
             if (GetMaterialIndex() == -1)
             {
                 GRenderManager->GetMaterialManager().AddMaterial(this);
@@ -95,6 +163,11 @@ namespace Lumina
             }
 
             SetReadyForRender(true);
+
+            // Refresh every live instance that references us (their cached Parameters/MaterialUniforms
+            // are now stale after a recompile, or were never populated if the instance loaded first).
+            // O(instances-of-this-material) instead of an O(all-objects) global iterator scan.
+            NotifyInstancesParentChanged();
         }
     }
 
@@ -110,61 +183,47 @@ namespace Lumina
 
     bool CMaterial::SetScalarValue(const FName& Name, const float Value)
     {
-        auto* Itr = eastl::find_if(Parameters.begin(), Parameters.end(), [Name](const FMaterialParameter& Param)
+        auto It = ParameterLookup.find(Name);
+        if (It != ParameterLookup.end() && It->second.Type == EMaterialParameterType::Scalar)
         {
-           return Param.ParameterName == Name && Param.Type == EMaterialParameterType::Scalar; 
-        });
-
-        if (Itr != Parameters.end())
-        {
-            const FMaterialParameter& Param = *Itr;
-            
-            MaterialUniforms.Scalars[Param.Index] = Value;
+            const FMaterialParameter& Param = It->second;
+            if (Param.Index < MAX_SCALARS)
+            {
+                MaterialUniforms.Scalars[Param.Index] = Value;
+            }
             return true;
         }
-        else
-        {
-            LOG_ERROR("Failed to find material scalar parameter {}", Name);
-        }
 
+        LOG_ERROR("Failed to find material scalar parameter {}", Name);
         return false;
     }
 
     bool CMaterial::SetVectorValue(const FName& Name, const glm::vec4& Value)
     {
-        auto* Itr = eastl::find_if(Parameters.begin(), Parameters.end(), [Name](const FMaterialParameter& Param)
+        auto It = ParameterLookup.find(Name);
+        if (It != ParameterLookup.end() && It->second.Type == EMaterialParameterType::Vector)
         {
-           return Param.ParameterName == Name && Param.Type == EMaterialParameterType::Vector; 
-        });
-
-        if (Itr != Parameters.end())
-        {
-            const FMaterialParameter& Param = *Itr;
-            MaterialUniforms.Vectors[Param.Index] = Value;
+            const FMaterialParameter& Param = It->second;
+            if (Param.Index < MAX_VECTORS)
+            {
+                MaterialUniforms.Vectors[Param.Index] = Value;
+            }
             return true;
         }
-        else
-        {
-            LOG_ERROR("Failed to find material vector parameter {}", Name);
-        }
 
+        LOG_ERROR("Failed to find material vector parameter {}", Name);
         return false;
     }
 
     bool CMaterial::GetParameterValue(EMaterialParameterType Type, const FName& Name, FMaterialParameter& Param)
     {
         Param = {};
-        auto* Itr = eastl::find_if(Parameters.begin(), Parameters.end(), [Type, Name](const FMaterialParameter& Param)
+        auto It = ParameterLookup.find(Name);
+        if (It != ParameterLookup.end() && It->second.Type == Type)
         {
-           return Param.ParameterName == Name && Param.Type == Type; 
-        });
-
-        if (Itr != Parameters.end())
-        {
-            Param = *Itr;
+            Param = It->second;
             return true;
         }
-        
         return false;
     }
 

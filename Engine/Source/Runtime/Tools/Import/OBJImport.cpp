@@ -223,15 +223,19 @@ namespace Lumina::Import::Mesh::OBJ
             }
         }
         
-        if (ImportOptions.bOptimize)
+        // Skip the heavy passes when the dialog has asked for a raw preview
+        // parse; FinalizeMeshImportData runs them at commit time.
+        if (!ImportOptions.bSkipFinalization)
         {
-            OptimizeNewlyImportedMesh(*MeshResource);
+            if (ImportOptions.bOptimize)
+            {
+                OptimizeNewlyImportedMesh(*MeshResource);
+            }
+            GenerateShadowBuffers(*MeshResource);
+            GenerateMeshlets(*MeshResource);
         }
-
-        GenerateShadowBuffers(*MeshResource);
-        GenerateMeshlets(*MeshResource);
         AnalyzeMeshStatistics(*MeshResource, ImportData.MeshStatistics);
-        
+
         ImportData.Resources.push_back(Move(MeshResource));
         
         return Move(ImportData);

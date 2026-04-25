@@ -374,10 +374,12 @@ namespace Lumina
             ShaderCompiler->Flush();
 
             Compiler.GetBoundTextures(Material->Textures);
-                
+
             Memory::Memzero(&Material->MaterialUniforms, sizeof(FMaterialUniforms));
             Material->Parameters.clear();
-                
+
+            Compiler.GetParameters(Material->Parameters, Material->MaterialUniforms);
+
             Material->PostLoad();
             Material->GetPackage()->MarkDirty();
         }

@@ -5,6 +5,7 @@
 #include "Containers/String.h"
 #include "Core/Object/ObjectHandleTyped.h"
 #include "Renderer/CustomPrimitiveData.h"
+#include "Renderer/MaterialTypes.h"
 
 namespace Lumina
 {
@@ -14,6 +15,8 @@ namespace Lumina
     class CMaterialGraphNode;
     class CMaterialInput;
     class CMaterialOutput;
+    struct FMaterialUniforms;
+    struct FMaterialParameter;
 }
 
 
@@ -33,6 +36,12 @@ namespace Lumina
         {
             uint16 Index;
             glm::vec4 Value;
+        };
+
+        struct FTextureParam
+        {
+            uint16 Index;
+            TObjectPtr<CTexture> Texture;
         };
 
         struct FNodeOutputInfo
@@ -81,6 +90,7 @@ namespace Lumina
         // Texture operations
         void DefineTextureSample(const FString& ID);
         void TextureSample(const FString& ID, CTexture* Texture, CMaterialInput* Input);
+        void TextureSampleParameter(const FString& ID, const FName& ParamID, CTexture* Texture, CMaterialInput* Input);
 
         // Built-in inputs
         void VertexNormal(const FString& ID);
@@ -129,6 +139,9 @@ namespace Lumina
         void AddRaw(const FString& Raw);
 
         void GetBoundTextures(TVector<TObjectPtr<CTexture>>& Images);
+
+        /** Export the dynamic parameter manifest discovered during compile and seed default values into the uniform block. */
+        void GetParameters(TVector<FMaterialParameter>& OutParams, FMaterialUniforms& OutUniforms) const;
         
         FORCEINLINE bool HasErrors() const { return !Errors.empty(); }
         FORCEINLINE void AddError(const EdNodeGraph::FError& Error) { Errors.push_back(Error); }
@@ -154,9 +167,10 @@ namespace Lumina
         TVector<TObjectPtr<CTexture>> BoundImages;
         TVector<EdNodeGraph::FError> Errors;
         
-        THashMap<FName, FScalarParam> ScalarParameters;
-        THashMap<FName, FVectorParam> VectorParameters;
-        
+        THashMap<FName, FScalarParam>  ScalarParameters;
+        THashMap<FName, FVectorParam>  VectorParameters;
+        THashMap<FName, FTextureParam> TextureParameters;
+
         uint16 NumScalarParams = 0;
         uint16 NumVectorParams = 0;
         uint16 NumTextureParams = 0;

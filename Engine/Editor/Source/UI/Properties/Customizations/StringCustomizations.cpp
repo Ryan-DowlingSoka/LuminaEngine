@@ -8,13 +8,12 @@ namespace Lumina
     {
         ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
 
-        // We have to modify a copy here because modifying FName::c_str() will directly modify the global value in the name hash.
-        FString NameCopy = DisplayValue.ToString();
-        
-        if (ImGui::InputText("##Name", const_cast<char*>(NameCopy.c_str()), 256))
+        char Buffer[256];
+        strncpy(Buffer, DisplayValue.c_str(), sizeof(Buffer));
+        Buffer[sizeof(Buffer) - 1] = '\0';
+        if (ImGui::InputText("##ParamName", Buffer, sizeof(Buffer)))
         {
-            DisplayValue = FName(NameCopy);
-            return EPropertyChangeOp::Updated;
+            DisplayValue = FName(Buffer);
         }
 
         ImGui::PopItemWidth();

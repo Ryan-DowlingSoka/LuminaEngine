@@ -1,6 +1,7 @@
-﻿#pragma once
+#pragma once
 #include "Assets/AssetTypes/Material/MaterialInstance.h"
 #include "Assets/Factories/Factory.h"
+#include "GUID/GUID.h"
 #include "MaterialInstanceFactory.generated.h"
 
 
@@ -18,12 +19,12 @@ namespace Lumina
         FStringView GetDefaultAssetCreationName() override { return "NewMaterialInstance"; }
 
         FString GetAssetDescription() const override { return "An instance of a material."; }
-        
+
         bool HasCreationDialogue() const override;
         bool DrawCreationDialogue(FStringView Path, bool& bShouldClose) override;
 
     private:
 
-        CMaterial* SelectedMaterial = nullptr;
+        FGuid SelectedMaterialGUID;
     };
 }

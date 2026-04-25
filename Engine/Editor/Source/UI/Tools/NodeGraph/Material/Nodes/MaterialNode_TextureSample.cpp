@@ -46,7 +46,14 @@ namespace Lumina
 
     void CMaterialExpression_TextureSample::GenerateDefinition(FMaterialCompiler& Compiler)
     {
-        Compiler.TextureSample(FullName, Texture, UV);
+        if (bDynamic && !ParameterName.IsNone())
+        {
+            Compiler.TextureSampleParameter(FullName, ParameterName, Texture, UV);
+        }
+        else
+        {
+            Compiler.TextureSample(FullName, Texture, UV);
+        }
     }
 
     void CMaterialExpression_TextureSample::SetNodeValue(void* Value)
@@ -59,6 +66,39 @@ namespace Lumina
         if (Texture.IsValid() && Texture->TextureResource && Texture->TextureResource->RHIImage.IsValid())
         {
             ImGui::Image(ImGuiX::ToImTextureRef(Texture->TextureResource->RHIImage), ImVec2(126.0f, 126.f));
+        }
+    }
+
+    void CMaterialExpression_TextureSample::DrawContextMenu()
+    {
+        const char* MenuItem = bDynamic ? "Make Static Texture" : "Make Texture Parameter";
+        if (ImGui::MenuItem(MenuItem))
+        {
+            bDynamic = !bDynamic;
+            if (bDynamic && ParameterName.IsNone())
+            {
+                ParameterName = "TextureParam";
+            }
+        }
+    }
+
+    void CMaterialExpression_TextureSample::DrawNodeTitleBar()
+    {
+        if (bDynamic)
+        {
+            ImGui::SetNextItemWidth(125);
+
+            char Buffer[256];
+            strncpy(Buffer, ParameterName.c_str(), sizeof(Buffer));
+            Buffer[sizeof(Buffer) - 1] = '\0';
+            if (ImGui::InputText("##ParamName", Buffer, sizeof(Buffer)))
+            {
+                ParameterName = FName(Buffer);
+            }
+        }
+        else
+        {
+            CMaterialExpression::DrawNodeTitleBar();
         }
     }
 }

@@ -71,18 +71,22 @@ namespace Lumina
         bool bShouldClose = false;
         if (Factory->DrawCreationDialogue(Path, bShouldClose))
         {
-            Task::AsyncTask(1, 1, [Factory, Path = Move(Path)](uint32, uint32, uint32)
+            // Path points into the modal lambda's capture; that capture is destroyed the
+            // instant the modal closes. The async task below outlives it, so own a copy.
+            FFixedString OwnedPath(Path.data(), Path.size());
+            Task::AsyncTask(1, 1, [Factory, OwnedPath = Move(OwnedPath)](uint32, uint32, uint32)
             {
-                CObject* NewAsset = Factory->TryCreateNew(Path);
+                CObject* NewAsset = Factory->TryCreateNew(OwnedPath);
                 if (NewAsset == nullptr)
                 {
                     return;
                 }
-                
+
                 CPackage* Package = NewAsset->GetPackage();
-                CPackage::SavePackage(Package, Path);
+                CPackage::SavePackage(Package, OwnedPath);
+                FAssetRegistry::Get().AssetCreated(NewAsset);
             });
-            
+
             return true;
         }
 

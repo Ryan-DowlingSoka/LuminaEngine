@@ -12,6 +12,7 @@
 namespace Lumina
 {
     class CTexture;
+    class CMaterialInstance;
 }
 
 namespace Lumina
@@ -20,10 +21,19 @@ namespace Lumina
     class RUNTIME_API CMaterial : public CMaterialInterface
     {
         GENERATED_BODY()
-        
+
     public:
 
         CMaterial();
+
+        /** Register a live instance whose parent is this material. Called by CMaterialInstance::PostLoad. */
+        void RegisterInstance(CMaterialInstance* Instance);
+
+        /** Unregister a live instance. Called by CMaterialInstance::OnDestroy or when the parent reference changes. */
+        void UnregisterInstance(CMaterialInstance* Instance);
+
+        /** Refresh all registered instances after a recompile (calls RebuildUniformsFromOverrides + UpdateMaterialUniforms). */
+        void NotifyInstancesParentChanged();
 
         void Serialize(FArchive& Ar) override;
         bool IsAsset() const override { return true; }
@@ -101,12 +111,23 @@ namespace Lumina
         /** Declared material parameters (scalars, vectors, textures) with their slot indices. */
         PROPERTY()
         TVector<FMaterialParameter>             Parameters;
-        
+
         FMaterialUniforms                       MaterialUniforms;
-        
+
         FRHIVertexShaderRef                     VertexShader;
         FRHIPixelShaderRef                      PixelShader;
 
+    private:
+
+        /** Rebuilds ParameterLookup from Parameters. Called after PostLoad / recompile. */
+        void RebuildParameterLookup();
+
+        /** Live instance back-reference list. Built at runtime by CMaterialInstance::PostLoad / OnDestroy.
+         *  Raw pointers are safe because the instance pre-emptively unregisters in its OnDestroy. */
+        TVector<CMaterialInstance*>             Instances;
+
+        /** O(1) parameter lookup by name. Rebuilt in PostLoad / on recompile. */
+        THashMap<FName, FMaterialParameter>     ParameterLookup;
     };
     
 }

@@ -22,47 +22,70 @@ namespace Lumina
     bool CMeshFactory::DrawImportDialogue(const FFixedString& RawPath, const FFixedString& DestinationPath, TUniquePtr<Import::FImportSettings>& ImportSettings, bool& bShouldClose)
     {
         using namespace Import::Mesh;
-        
+
         static FMeshImportOptions Options;
-        
+
         FMeshImportData* ImportedData = nullptr;
-        
+
         if (ImportSettings.get())
         {
             ImportedData = static_cast<FMeshImportData*>(ImportSettings.get());
         }
-        
+
         bool bShouldImport = false;
+
+        // Preview parse runs the source file once with neutral options:
+        // user transforms (Scale, FlipUVs, FlipNormals) and the heavy
+        // optimize/shadow/meshlet passes are deferred to commit time so that
+        // toggling options in the dialog never triggers another full re-parse.
+        // Texture/skeleton/animation flags are forced on for the preview so the
+        // user can see everything regardless of what they want to commit, and
+        // bMergeMeshes is left off so we always have the unmerged source data
+        // available — merging is reapplied as a cheap post-process at commit.
         auto Reimport = [&]()
         {
             ImportSettings  = MakeUnique<FMeshImportData>();
             ImportedData    = static_cast<FMeshImportData*>(ImportSettings.get());
-            
+
+            FMeshImportOptions PreviewOptions;
+            PreviewOptions.bOptimize         = false;
+            PreviewOptions.bImportMaterials  = true;
+            PreviewOptions.bImportTextures   = true;
+            PreviewOptions.bImportMeshes     = true;
+            PreviewOptions.bImportAnimations = true;
+            PreviewOptions.bImportSkeleton   = true;
+            PreviewOptions.bFlipNormals      = false;
+            PreviewOptions.bFlipUVs          = false;
+            PreviewOptions.bMergeMeshes      = false;
+            PreviewOptions.Scale             = 1.0f;
+            PreviewOptions.bSkipFinalization = true;
+
             FName FileExtension = VFS::Extension(RawPath);
             TExpected<FMeshImportData, FString> Expected;
             if (FileExtension == ".obj")
             {
-                Expected = OBJ::ImportOBJ(Options, RawPath);
+                Expected = OBJ::ImportOBJ(PreviewOptions, RawPath);
             }
             else if (FileExtension == ".gltf" || FileExtension == ".glb")
             {
-                Expected = GLTF::ImportGLTF(Options, RawPath);
+                Expected = GLTF::ImportGLTF(PreviewOptions, RawPath);
             }
             else if (FileExtension == ".fbx")
             {
-                Expected = FBX::ImportFBX(Options, RawPath);
+                Expected = FBX::ImportFBX(PreviewOptions, RawPath);
             }
-            
+
             if (!Expected)
             {
-                LOG_ERROR("Encountered problem importing GLTF: {0}", Expected.Error());
+                LOG_ERROR("Encountered problem importing source file: {0}", Expected.Error());
                 bShouldImport = false;
                 bShouldClose = true;
+                return;
             }
-                
+
             *ImportedData = Move(Expected.Value());
         };
-        
+
         if (ImGui::IsWindowAppearing())
         {
             Reimport();
@@ -116,10 +139,9 @@ namespace Lumina
                 
                 ImGui::TableSetColumnIndex(1);
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 4);
-                if (ImGui::Checkbox(("##" + FString(Label)).c_str(), &Option))
-                {
-                    Reimport();
-                }
+                // No Reimport() here: option toggles never trigger a re-parse;
+                // they're applied as a post-process at commit time.
+                ImGui::Checkbox(("##" + FString(Label)).c_str(), &Option);
             };
         
             auto AddSliderRow = [&](const char* Icon, const char* Label, const char* Description, 
@@ -140,13 +162,9 @@ namespace Lumina
                 
                 ImGui::TableSetColumnIndex(1);
                 ImGui::PushItemWidth(-1);
-                if (ImGui::DragFloat(("##" + FString(Label)).c_str(), &Value, 0.001f, Min, Max, Format))
-                {
-                    if (ImGui::IsItemDeactivatedAfterEdit())
-                    {
-                        Reimport();
-                    }
-                }
+                // Slider edits no longer trigger a re-parse; the value is
+                // applied to the cached preview data at commit time.
+                ImGui::DragFloat(("##" + FString(Label)).c_str(), &Value, 0.001f, Min, Max, Format);
                 ImGui::PopItemWidth();
             };
         
@@ -168,10 +186,8 @@ namespace Lumina
                 
                 ImGui::TableSetColumnIndex(1);
                 ImGui::PushItemWidth(-1);
-                if (ImGui::Combo(("##" + FString(Label)).c_str(), &CurrentItem, Items, ItemCount))
-                {
-                    Reimport();
-                }
+                // Combo selection no longer triggers a re-parse.
+                ImGui::Combo(("##" + FString(Label)).c_str(), &CurrentItem, Items, ItemCount);
                 ImGui::PopItemWidth();
             };
             
@@ -557,6 +573,12 @@ namespace Lumina
         
         if (ImGui::Button("Import", ImVec2(buttonWidth, 0)))
         {
+            // Hand the user's chosen options off to TryImport via the
+            // settings payload so commit-time finalization can apply them.
+            if (ImportedData != nullptr)
+            {
+                ImportedData->CommitOptions = Options;
+            }
             bShouldImport = true;
             bShouldClose = true;
         }
@@ -586,8 +608,14 @@ namespace Lumina
     {
         using namespace Import::Mesh;
 
-        const FMeshImportData& ImportData = Settings->As<FMeshImportData>();
-        
+        // The settings payload holds the raw preview parse plus the user's
+        // final options (CommitOptions). Finalize in place: apply user
+        // transforms, optionally merge, then run the heavy optimize/shadow/
+        // meshlet/stats passes once with the final geometry.
+        FMeshImportData& ImportData = const_cast<FMeshImportData&>(Settings->As<FMeshImportData>());
+        const FMeshImportOptions& Options = ImportData.CommitOptions;
+        FinalizeMeshImportData(ImportData, Options);
+
         FFixedString DestinationDir;
         FFixedString BaseName;
         const size_t LastSlashPos = DestinationPath.find_last_of('/');
@@ -647,7 +675,7 @@ namespace Lumina
         TObjectPtr<CSkeleton> PrimarySkeleton;
         const bool bMultipleSkeletons = ImportData.Skeletons.size() > 1;
 
-        for (size_t i = 0; i < ImportData.Skeletons.size(); ++i)
+        for (size_t i = 0; Options.bImportSkeleton && i < ImportData.Skeletons.size(); ++i)
         {
             TUniquePtr<FSkeletonResource>& SkeletonRes = const_cast<TUniquePtr<FSkeletonResource>&>(ImportData.Skeletons[i]);
             if (!SkeletonRes || !SkeletonRes->bShouldImport)
@@ -674,7 +702,7 @@ namespace Lumina
         }
 
         const bool bMultipleMeshes = ImportData.Resources.size() > 1;
-        for (size_t i = 0; i < ImportData.Resources.size(); ++i)
+        for (size_t i = 0; Options.bImportMeshes && i < ImportData.Resources.size(); ++i)
         {
             TUniquePtr<FMeshResource>& MeshResource = const_cast<TUniquePtr<FMeshResource>&>(ImportData.Resources[i]);
             if (!MeshResource)
@@ -736,7 +764,7 @@ namespace Lumina
         }
 
         const bool bMultipleAnims = ImportData.Animations.size() > 1;
-        for (size_t i = 0; i < ImportData.Animations.size(); ++i)
+        for (size_t i = 0; Options.bImportAnimations && i < ImportData.Animations.size(); ++i)
         {
             TUniquePtr<FAnimationResource>& Clip = const_cast<TUniquePtr<FAnimationResource>&>(ImportData.Animations[i]);
             if (!Clip)
@@ -757,7 +785,7 @@ namespace Lumina
             CreatedObjects.push_back(NewAnimation);
         }
         
-        if (!ImportData.Textures.empty())
+        if (Options.bImportTextures && !ImportData.Textures.empty())
         {
             TVector<FMeshImportImage> Images(ImportData.Textures.begin(), ImportData.Textures.end());
             CTextureFactory* TextureFactory = CTextureFactory::StaticClass()->GetDefaultObject<CTextureFactory>();

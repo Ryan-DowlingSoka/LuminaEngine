@@ -328,9 +328,14 @@ namespace Lumina
         if (bDynamic)
         {
             ImGui::SetNextItemWidth(125);
-            if (ImGui::InputText("##", const_cast<char*>(ParameterName.c_str()), 256))
+            // FName::c_str() returns a pointer into the global name table; writing through it
+            // corrupts every FName sharing that ID. Edit a stack copy and rehash on commit.
+            char Buffer[256];
+            strncpy(Buffer, ParameterName.c_str(), sizeof(Buffer));
+            Buffer[sizeof(Buffer) - 1] = '\0';
+            if (ImGui::InputText("##ParamName", Buffer, sizeof(Buffer)))
             {
-                
+                ParameterName = FName(Buffer);
             }
         }
         else

@@ -19,10 +19,16 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
         void SetNodeValue(void* Value) override;
         void DrawNodeBody() override;
+        void DrawContextMenu() override;
+        void DrawNodeTitleBar() override;
 
         /** The texture asset to sample in this node. */
         PROPERTY(Editable, Category = "Texture")
         TObjectPtr<CTexture> Texture;
+
+        /** Name used to expose this texture as a material parameter for instancing (only used when bDynamic). */
+        PROPERTY(Editable, Category = "Parameter")
+        FName ParameterName;
 
         CMaterialInput* UV = nullptr;
     };

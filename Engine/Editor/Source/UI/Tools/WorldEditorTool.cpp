@@ -56,6 +56,38 @@ namespace Lumina
         const SPrefabInstanceComponent* Instance = Registry.try_get<SPrefabInstanceComponent>(Entity);
         return Instance != nullptr && !Instance->bIsRoot;
     }
+
+    // Viewport picks should always resolve to the prefab root so the user
+    // selects the prefab as a unit. The outliner still allows sub-entity picks.
+    static entt::entity ResolvePrefabRootForViewportPick(entt::registry& Registry, entt::entity Entity)
+    {
+        if (Entity == entt::null || !Registry.valid(Entity))
+        {
+            return Entity;
+        }
+
+        const SPrefabInstanceComponent* Instance = Registry.try_get<SPrefabInstanceComponent>(Entity);
+        if (Instance == nullptr || Instance->bIsRoot)
+        {
+            return Entity;
+        }
+
+        const FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity);
+        while (Relationship != nullptr && Relationship->Parent != entt::null)
+        {
+            entt::entity Parent = Relationship->Parent;
+            if (const SPrefabInstanceComponent* ParentInstance = Registry.try_get<SPrefabInstanceComponent>(Parent))
+            {
+                if (ParentInstance->bIsRoot)
+                {
+                    return Parent;
+                }
+            }
+            Relationship = Registry.try_get<FRelationshipComponent>(Parent);
+        }
+
+        return Entity;
+    }
     static constexpr const char* DragDropID = "EntityDropID";
 
 
@@ -733,7 +765,8 @@ namespace Lumina
                     if (bRightDragging)
                     {
                         entt::entity EntityHandle = World->GetRenderer()->GetEntityAtPixel(TexX, TexY);
-                        
+                        EntityHandle = ResolvePrefabRootForViewportPick(World->GetEntityRegistry(), EntityHandle);
+
                         ClearSelectedEntities();
                         AddSelectedEntity(EntityHandle, true);
             
@@ -770,12 +803,13 @@ namespace Lumina
                     if (!bLeftDragging)
                     {
                         entt::entity EntityHandle = World->GetRenderer()->GetEntityAtPixel(TexX, TexY);
-                        
+                        EntityHandle = ResolvePrefabRootForViewportPick(World->GetEntityRegistry(), EntityHandle);
+
                         if (!ImGui::GetIO().KeyCtrl)
                         {
                             ClearSelectedEntities();
                         }
-                        
+
                         AddSelectedEntity(EntityHandle, true);
                     }
                     else
