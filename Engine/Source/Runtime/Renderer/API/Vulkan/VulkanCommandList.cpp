@@ -126,8 +126,7 @@ namespace Lumina
     void FVulkanCommandList::CopyImage(FRHIImage* RESTRICT Src, const FTextureSlice& RESTRICT SrcSlice, FRHIImage* RESTRICT Dst, const FTextureSlice& RESTRICT DstSlice)
     {
         LUMINA_PROFILE_SCOPE();
-        ASSERT(Src != nullptr && Dst != nullptr);
-        
+
         CurrentCommandBuffer->AddReferencedResource(Src);
         CurrentCommandBuffer->AddReferencedResource(Dst);
 
@@ -188,8 +187,7 @@ namespace Lumina
         FTextureSlice ResolvedSrcSlice = SrcSlice.Resolve(Destination->GetDesc());
 
         auto DstRegion = Destination->GetSliceRegion(ResolvedDstSlice.MipLevel, ResolvedDstSlice.ArraySlice, ResolvedDstSlice.Z);
-        ASSERT((DstRegion.Offset & 0x3) == 0); // per vulkan spec
-        
+
         FTextureSubresourceSet SrcSubresource = FTextureSubresourceSet(ResolvedSrcSlice.MipLevel, 1, ResolvedSrcSlice.ArraySlice, 1);
 
         VkBufferImageCopy ImageCopy     = {};
@@ -236,8 +234,6 @@ namespace Lumina
 
         auto SrcRegion = Source->GetSliceRegion(ResolvedSrcSlice.MipLevel, ResolvedSrcSlice.ArraySlice, ResolvedSrcSlice.Z);
 
-        ASSERT((SrcRegion.Offset & 0x3) == 0); // per vulkan spec
-        
         FTextureSubresourceSet DstSubresource = FTextureSubresourceSet(ResolvedDstSlice.MipLevel, 1, ResolvedDstSlice.ArraySlice, 1);
 
 
@@ -298,13 +294,7 @@ namespace Lumina
     void FVulkanCommandList::WriteImage(FRHIImage* RESTRICT Dst, uint32 ArraySlice, uint32 MipLevel, const void* RESTRICT Data, uint32 RowPitch, uint32 DepthPitch)
     {
         LUMINA_PROFILE_SCOPE();
-        ASSERT(Dst != nullptr && Data != nullptr);
-        
-        if (Dst->GetDescription().Extent.y > 1 && RowPitch == 0)
-        {
-            LOG_ERROR("WriteImage: RowPitch is 0 but dest has multiple rows");
-        }
-        
+
         uint32 MipWidth, MipHeight, MipDepth;
         ComputeMipLevelInformation(Dst->GetDescription(), MipLevel, &MipWidth, &MipHeight, &MipDepth);
 
@@ -383,12 +373,6 @@ namespace Lumina
 
         FTextureSubresourceSet DestSR = DstSubresources.Resolve(Destination->GetDescription(), false);
         FTextureSubresourceSet SourceSR = SrcSubresources.Resolve(Source->GetDescription(), false);
-
-        if (DestSR.NumArraySlices != SourceSR.NumArraySlices || DestSR.NumMipLevels != SourceSR.NumMipLevels)
-        {
-            LOG_ERROR("Mismatched subresources during image resolve!");
-            return;
-        }
 
         TFixedVector<VkImageResolve, 4> Regions;
 
@@ -515,12 +499,7 @@ namespace Lumina
     void FVulkanCommandList::CopyBuffer(FRHIBuffer* RESTRICT Source, uint64 SrcOffset, FRHIBuffer* RESTRICT Destination, uint64 DstOffset, uint64 CopySize)
     {
         LUMINA_PROFILE_SCOPE();
-        
-        ASSERT(Source);
-        ASSERT(Destination);
-        ASSERT(DstOffset + CopySize <= Destination->GetDescription().Size);
-        ASSERT(SrcOffset + CopySize <= Source->GetDescription().Size);
-        
+
         bool bStagingDestination    = Destination->IsStagingBuffer();
         bool bStagingSource         = Source->IsStagingBuffer();
 
@@ -668,8 +647,6 @@ namespace Lumina
             // For ease of use, we make trying to write a size of 0 technically a silent fail, so you can just blindly upload and not need to worry about it.
             return;
         }
-        
-        ASSERT(Size <= Buffer->GetSize());
 
         CommandListStats.NumBufferWrites++;
         
@@ -703,7 +680,6 @@ namespace Lumina
         else
         {
             LUMINA_PROFILE_SECTION("VkCopyBuffer");
-            ASSERT(Buffer->GetUsage().IsFlagCleared(EBufferUsageFlags::CPUWritable));
 
             FRHIBuffer* UploadBuffer;
             uint64 UploadOffset;
@@ -947,7 +923,6 @@ namespace Lumina
     void FVulkanCommandList::SetResourceStatesForBindingSet(FRHIBindingSet* BindingSet)
     {
         LUMINA_PROFILE_SCOPE();
-        DEBUG_ASSERT(BindingSet);
 
         if (BindingSet->GetDesc() == nullptr)
         {
@@ -1026,10 +1001,7 @@ namespace Lumina
         EndRenderPass();
         
         FVulkanTimerQuery* VulkanQuery = static_cast<FVulkanTimerQuery*>(Query);
-        DEBUG_ASSERT(VulkanQuery->BeginQueryIndex >= 0);
-        DEBUG_ASSERT(!VulkanQuery->bStarted);
-        DEBUG_ASSERT(CurrentCommandBuffer);
-        
+
         VulkanQuery->bResolved = false;
         
         auto VulkanContext = static_cast<FVulkanRenderContext*>(GRenderContext);
@@ -1041,10 +1013,6 @@ namespace Lumina
     void FVulkanCommandList::EndTimerQuery(ITimerQuery* Query)
     {
         FVulkanTimerQuery* VulkanQuery = static_cast<FVulkanTimerQuery*>(Query);
-        DEBUG_ASSERT(VulkanQuery->EndQueryIndex >= 0);
-        DEBUG_ASSERT(!VulkanQuery->bStarted);
-        DEBUG_ASSERT(!VulkanQuery->bResolved);
-        DEBUG_ASSERT(CurrentCommandBuffer);
 
         auto VulkanContext = static_cast<FVulkanRenderContext*>(GRenderContext);
 
@@ -1060,9 +1028,6 @@ namespace Lumina
         EndRenderPass();
 
         FVulkanPipelineStatsQuery* VulkanQuery = static_cast<FVulkanPipelineStatsQuery*>(Query);
-        DEBUG_ASSERT(VulkanQuery->QueryIndex >= 0);
-        DEBUG_ASSERT(!VulkanQuery->bStarted);
-        DEBUG_ASSERT(CurrentCommandBuffer);
 
         VulkanQuery->bResolved = false;
 
@@ -1077,10 +1042,6 @@ namespace Lumina
         EndRenderPass();
 
         FVulkanPipelineStatsQuery* VulkanQuery = static_cast<FVulkanPipelineStatsQuery*>(Query);
-        DEBUG_ASSERT(VulkanQuery->QueryIndex >= 0);
-        DEBUG_ASSERT(!VulkanQuery->bStarted);
-        DEBUG_ASSERT(!VulkanQuery->bResolved);
-        DEBUG_ASSERT(CurrentCommandBuffer);
 
         auto VulkanContext = static_cast<FVulkanRenderContext*>(GRenderContext);
 
@@ -1242,8 +1203,7 @@ namespace Lumina
     void FVulkanCommandList::ClearImageColor(FRHIImage* RESTRICT Image, const FColor& RESTRICT Color)
     {
         LUMINA_PROFILE_SCOPE();
-        ASSERT(Image != nullptr);
-        
+
         CurrentCommandBuffer->AddReferencedResource(Image);
 
         if (PendingState.IsInState(EPendingCommandState::AutomaticBarriers))
@@ -1285,8 +1245,7 @@ namespace Lumina
         {
             SIZE_T SetIndex = i;
             FRHIBindingSet* Set = BindingSets[SetIndex];
-            ASSERT(Set);
-    
+
             if (CurrentBatchStart == UINT32_MAX)
             {
                 CurrentBatchStart = (uint32)i;
@@ -1300,17 +1259,9 @@ namespace Lumina
                 for (FRHIBuffer* DynamicBuffer : VulkanSet->DynamicBuffers)
                 {
                     auto Found = DynamicBufferWrites.find(DynamicBuffer);
-                    if (Found == DynamicBufferWrites.end())
-                    {
-                        LOG_ERROR("Binding [Dynamic Buffer] \"{0}\" before writing is invalid!", DynamicBuffer->GetDescription().DebugName);
-                        DynamicOffsets.push_back(0);
-                    }
-                    else
-                    {
-                        uint32 Version = (uint32)Found->second.LatestVersion;
-                        uint64 Offset = Version * DynamicBuffer->GetDescription().Size;
-                        DynamicOffsets.push_back(static_cast<uint32>(Offset));
-                    }
+                    uint32 Version = (Found != DynamicBufferWrites.end()) ? (uint32)Found->second.LatestVersion : 0;
+                    uint64 Offset = Version * DynamicBuffer->GetDescription().Size;
+                    DynamicOffsets.push_back(static_cast<uint32>(Offset));
                 }
 
                 CurrentCommandBuffer->AddReferencedResource(VulkanSet);

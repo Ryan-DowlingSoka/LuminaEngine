@@ -86,7 +86,13 @@ namespace Lumina
     
         ICommandList() = default;
         virtual ~ICommandList() override = default;
-    
+
+        /**
+         * Returns the underlying command list. Validation wrappers override this
+         * to return their inner command list; concrete backends return themselves.
+         */
+        virtual ICommandList* GetUnwrappedCommandList() { return this; }
+
         /**
          * Opens the command list for recording commands
          */

@@ -14,6 +14,7 @@
 #include "Core/Windows/Window.h"
 #include "Paths/Paths.h"
 #include "Renderer/CommandList.h"
+#include "Renderer/CommandListValidator.h"
 #include "Renderer/RHIStaticStates.h"
 #include "Renderer/ShaderCompiler.h"
 #include "TaskSystem/TaskSystem.h"
@@ -306,7 +307,7 @@ namespace Lumina
         
         for (uint32 i = 0; i < NumCommandLists; ++i)
         {
-            FVulkanCommandList* VulkanCommandList = static_cast<FVulkanCommandList*>(CommandLists[i]);
+            FVulkanCommandList* VulkanCommandList = static_cast<FVulkanCommandList*>(CommandLists[i]->GetUnwrappedCommandList());
             ECommandQueue CommandListType = VulkanCommandList->GetCommandListInfo().CommandQueue;
             if (CommandListType != Type)
             {
@@ -721,7 +722,12 @@ namespace Lumina
 
     FRHICommandListRef FVulkanRenderContext::CreateCommandList(const FCommandListInfo& Info)
     {
-        return MakeRefCount<FVulkanCommandList>(this, Info); //CommandListManager.GetOrCreateCommandList(this, Info);
+        auto* Inner = new FVulkanCommandList(this, Info);
+        if (Description.bValidation)
+        {
+            return MakeRefCount<FCommandListValidator>(Inner);
+        }
+        return Inner;
     }
     
     uint64 FVulkanRenderContext::ExecuteCommandLists(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType)
@@ -736,20 +742,18 @@ namespace Lumina
         {
             Task::ParallelFor(NumCommandLists, [&](uint32 Index)
             {
-                FVulkanCommandList* CommandList = static_cast<FVulkanCommandList*>(CommandLists[Index]);
-                CommandList->Executed(Queue.get(), SubmissionID);   
+                FVulkanCommandList* CommandList = static_cast<FVulkanCommandList*>(CommandLists[Index]->GetUnwrappedCommandList());
+                CommandList->Executed(Queue.get(), SubmissionID);
             });
         }
         else
         {
             for (uint32 i = 0; i < NumCommandLists; ++i)
             {
-                FVulkanCommandList* CommandList = static_cast<FVulkanCommandList*>(CommandLists[i]);
-                CommandList->Executed(Queue.get(), SubmissionID);   
+                FVulkanCommandList* CommandList = static_cast<FVulkanCommandList*>(CommandLists[i]->GetUnwrappedCommandList());
+                CommandList->Executed(Queue.get(), SubmissionID);
             }
         }
-        
-        //CommandListManager.BulkEnqueue(CommandLists, NumCommandLists, QueueType);
         
         return SubmissionID;
     }

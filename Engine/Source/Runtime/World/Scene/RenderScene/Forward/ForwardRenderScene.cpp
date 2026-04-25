@@ -2046,38 +2046,48 @@ namespace Lumina
             {
                 Radius = glm::max(Radius, glm::length(Corners[j] - SphereCenter));
             }
-            // Round up to prevent radius jitter from sub-pixel camera movement.
-            Radius = std::ceil(Radius * 16.0f) / 16.0f;
-        
-            // Build a light-space view centered on the sphere. BackDistance pushes
-            // the light eye behind the cascade volume so off-screen occluders
-            // (e.g. things directly above the cascade) still write into the depth
-            // texture.
-            constexpr float BackDistance = 100.0f;
+            // Quantize the radius to whole texels. Sub-texel jitter in the
+            // radius would change TexelSize between frames, defeating the
+            // snap below. Rounding up at texel granularity keeps the world-
+            // space texel size constant across small camera motions.
+            const float QuantStep = 1.0f / (float)GCSMResolution;
+            Radius = std::ceil(Radius / QuantStep) * QuantStep;
+            const float TexelSize = (Radius * 2.0f) / (float)GCSMResolution;
+
+            // BackDistance pushes the light eye behind the cascade volume so
+            // off-screen occluders (e.g. things directly above the cascade)
+            // still write into the depth texture.
+            constexpr float BackDistance = 200.0f;
             const float     OrthoRange   = Radius * 2.0f + BackDistance;
-        
-            glm::mat4 LightView = glm::lookAt(
-                SphereCenter + LightDir * (Radius + BackDistance),
-                SphereCenter,
+
+            // Build a *fixed-orientation* reference view. Critically, the
+            // lookAt target is the world origin, not SphereCenter — that
+            // makes the rotation depend only on LightDir, so projecting any
+            // world point through this view gives a stable XY that we can
+            // round to the texel grid. Building lookAt with target =
+            // SphereCenter (as the previous code did) trivially projects
+            // SphereCenter to (0, 0), making the snap a no-op and producing
+            // the per-frame shadow crawl.
+            const glm::mat4 LightRotation = glm::lookAt(
+                LightDir * (Radius + BackDistance),
+                glm::vec3(0.0f),
                 FViewVolume::UpAxis);
-        
-            // Project the cascade origin into light space, snap the
-            // XY components to the shadow texel grid, and rebuild the view from the
-            // snapped origin.
-            {
-                const glm::vec4 OriginLS = LightView * glm::vec4(SphereCenter, 1.0f);
-                const float     TexelSize = (Radius * 2.0f) / (float)GCSMResolution;
-                glm::vec4 SnappedOriginLS = OriginLS;
-                SnappedOriginLS.x = std::floor(OriginLS.x / TexelSize) * TexelSize;
-                SnappedOriginLS.y = std::floor(OriginLS.y / TexelSize) * TexelSize;
-                const glm::vec4 SnappedOriginWS = glm::inverse(LightView) * SnappedOriginLS;
-                const glm::vec3 SnappedCenter   = glm::vec3(SnappedOriginWS);
-                LightView = glm::lookAt(
-                    SnappedCenter + LightDir * (Radius + BackDistance),
-                    SnappedCenter,
-                    FViewVolume::UpAxis);
-            }
-        
+
+            // Snap the sphere center to the nearest whole texel in light
+            // space. As the camera moves continuously, SnappedCenter moves
+            // in discrete one-texel jumps perpendicular to LightDir, so
+            // every world point projects to the same shadow texel until the
+            // grid actually advances by a step.
+            glm::vec4 CenterLS = LightRotation * glm::vec4(SphereCenter, 1.0f);
+            CenterLS.x = std::round(CenterLS.x / TexelSize) * TexelSize;
+            CenterLS.y = std::round(CenterLS.y / TexelSize) * TexelSize;
+            const glm::vec3 SnappedCenter = glm::vec3(glm::inverse(LightRotation) * CenterLS);
+
+            const glm::mat4 LightView = glm::lookAt(
+                SnappedCenter + LightDir * (Radius + BackDistance),
+                SnappedCenter,
+                FViewVolume::UpAxis);
+
             // Standard-Z [0,1] LH ortho. Near plane is at the eye (0), far at the
             // far face of the slab (OrthoRange). The full sphere fits inside.
             const glm::mat4 LightProjection = glm::ortho(
