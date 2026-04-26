@@ -110,6 +110,8 @@ namespace Lumina
             return;
         }
 
+        FScopeLock Lock(Mutex);
+        
         FGPUProfileFrame& Frame = Frames[RecordingSlot];
 
         if (Frame.Scopes.size() >= MaxScopesPerFrame)
@@ -187,6 +189,8 @@ namespace Lumina
         {
             return;
         }
+
+        FScopeLock Lock(Mutex);
 
         FGPUProfileFrame& Frame = Frames[RecordingSlot];
         if (Frame.ScopeStack.empty())

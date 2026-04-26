@@ -63,8 +63,6 @@ namespace Lumina
 
     void FCommandListResourceStateTracker::BeginTrackingTextureState(FTextureStateExtension* texture, FTextureSubresourceSet subresources, EResourceStates stateBits)
     {
-        LUMINA_PROFILE_SCOPE();
-
         const FRHIImageDesc& desc = texture->DescRef;
 
         FTextureState* tracking = GetTextureStateTracking(texture, true);
@@ -160,8 +158,6 @@ namespace Lumina
 
     void FCommandListResourceStateTracker::RequireTextureState(FTextureStateExtension* texture, FTextureSubresourceSet subresources, EResourceStates state)
     {
-        LUMINA_PROFILE_SCOPE();
-
         if (texture->PermanentState != EResourceStates::Unknown)
         {
             VkStateTracking::VerifyPermanentResourceState(texture->PermanentState, state, true, texture->DescRef.DebugName);
@@ -400,8 +396,6 @@ namespace Lumina
 
     void FCommandListResourceStateTracker::KeepBufferInitialStates()
     {
-        LUMINA_PROFILE_SCOPE();
-        
         for (auto& [buffer, tracking] : BufferStates)
         {
             if (buffer->DescRef.bKeepInitialState && !buffer->PermanentState && !buffer->DescRef.Usage.IsFlagSet(EBufferUsageFlags::Dynamic) &&!tracking->bPermanentTransition)
@@ -413,8 +407,6 @@ namespace Lumina
 
     void FCommandListResourceStateTracker::KeepTextureInitialStates()
     {
-        LUMINA_PROFILE_SCOPE();
-
         for (auto& [texture, tracking] : TextureStates)
         {
             if (texture->DescRef.bKeepInitialState && !texture->PermanentState && !tracking->bPermanentTransition)
@@ -426,8 +418,6 @@ namespace Lumina
 
     void FCommandListResourceStateTracker::CommandListSubmitted()
     {
-        LUMINA_PROFILE_SCOPE();
-
         for (auto& [texture, state] : PermanentTextureStates)
         {
             if (texture->PermanentState != EResourceStates::Unknown && texture->PermanentState != state)

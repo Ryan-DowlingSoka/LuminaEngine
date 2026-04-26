@@ -125,7 +125,7 @@ namespace Lumina
     void FForwardRenderScene::RenderView(ICommandList& CmdList, const FViewVolume& ViewVolume)
     {
         LUMINA_PROFILE_SCOPE();
-        
+
         SceneViewport->SetViewVolume(ViewVolume);
         
         SceneGlobalData.CameraData.Location             = glm::vec4(SceneViewport->GetViewVolume().GetViewPosition(), 1.0f);
@@ -167,144 +167,147 @@ namespace Lumina
         CompileDrawCommands(CmdList);
         
         {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cull Early", FColor(1.00f, 0.40f, 0.70f));
-            CullPassEarly(CmdList);
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth PrePass Early", FColor(1.00f, 0.55f, 0.20f));
-            DepthPrePassEarly(CmdList);
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth Pyramid (Mid)", FColor(1.00f, 0.75f, 0.30f));
-            DepthPyramidPass(CmdList);
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cull Late", FColor(1.00f, 0.30f, 0.55f));
-            CullPassLate(CmdList);
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth PrePass Late", FColor(1.00f, 0.65f, 0.30f));
-            DepthPrePassLate(CmdList);
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cluster Build", FColor(0.95f, 0.30f, 0.55f));
-            ClusterBuildPass(CmdList);
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Light Cull", FColor(0.95f, 0.30f, 0.55f));
-            LightCullPass(CmdList);
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Point Shadows", FColor(0.85f, 0.10f, 0.55f));
-            PointShadowPass(CmdList);
-
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Spot Shadows", FColor(0.75f, 0.10f, 0.55f));
-            SpotShadowPass(CmdList);
-
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cascaded Shadows", FColor(0.85f, 0.10f, 0.55f));
-            CascadedShowPass(CmdList);
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Environment", FColor(0.20f, 0.80f, 0.30f));
-            EnvironmentPass(CmdList);
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Update", FColor(0.20f, 0.70f, 0.50f));
-            TerrainUpdatePass(CmdList);
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Base Pass", FColor(0.95f, 0.20f, 0.20f));
-            BasePass(CmdList);
-        }
-
-        // The pyramid that the meshlet cull pass built from the early depth
-        // pre-pass plus the base pass is the freshest occlusion data the
-        // terrain can see, so the terrain cull dispatches between the base
-        // pass and the terrain render. This is the same Hi-Z the second
-        // DepthPyramidPass below would rebuild for transparency, just used
-        // one frame stage earlier.
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Cull", FColor(0.20f, 0.85f, 0.50f));
-            TerrainCullPass(CmdList);
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Render", FColor(0.20f, 0.70f, 0.50f));
-            TerrainRenderPass(CmdList);
-        }
-
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth Pyramid (End)", FColor(1.00f, 0.55f, 0.20f));
-            DepthPyramidPass(CmdList);
-        }
+            LUMINA_PROFILE_SECTION("RenderPasses");
         
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Transparent", FColor(0.40f, 0.60f, 0.85f)); 
-            TransparentPass(CmdList);
-        }
-        
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "OIT Resolve", FColor(0.55f, 0.85f, 0.30f)); 
-            OITResolvePass(CmdList);
-        }
-        
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Batched Lines", FColor(0.95f, 0.20f, 0.20f)); 
-            BatchedLineDraw(CmdList);
-        }
-        
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Particles Simulate", FColor(1.00f, 0.55f, 0.20f)); 
-            ParticleSimulatePass(CmdList);
-        }
-        
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Particles Render", FColor(1.00f, 0.40f, 0.20f)); 
-            ParticleRenderPass(CmdList);
-        }
-        
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Billboards", FColor(0.95f, 0.20f, 0.20f)); 
-            BillboardPass(CmdList);
-        }
-        
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Tone Mapping", FColor(0.95f, 0.20f, 0.20f)); 
-            ToneMappingPass(CmdList);
-        }
-        
-        if (World->GetDefaultWorldSettings().SMAAQuality != ESMAAQuality::Off)
-        {
-            GPU_PROFILE_SCOPE_COLOR(&CmdList, "SMAA", FColor(0.95f, 0.20f, 0.20f));
             {
-                GPU_PROFILE_SCOPE(&CmdList, "Edge Detection"); 
-                SMAAEdgeDetectionPass(CmdList);
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cull Early", FColor(1.00f, 0.40f, 0.70f));
+                CullPassEarly(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth PrePass Early", FColor(1.00f, 0.55f, 0.20f));
+                DepthPrePassEarly(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth Pyramid (Mid)", FColor(1.00f, 0.75f, 0.30f));
+                DepthPyramidPass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cull Late", FColor(1.00f, 0.30f, 0.55f));
+                CullPassLate(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth PrePass Late", FColor(1.00f, 0.65f, 0.30f));
+                DepthPrePassLate(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cluster Build", FColor(0.95f, 0.30f, 0.55f));
+                ClusterBuildPass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Light Cull", FColor(0.95f, 0.30f, 0.55f));
+                LightCullPass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Point Shadows", FColor(0.85f, 0.10f, 0.55f));
+                PointShadowPass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Spot Shadows", FColor(0.75f, 0.10f, 0.55f));
+                SpotShadowPass(CmdList);
+
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cascaded Shadows", FColor(0.85f, 0.10f, 0.55f));
+                CascadedShowPass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Environment", FColor(0.20f, 0.80f, 0.30f));
+                EnvironmentPass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Update", FColor(0.20f, 0.70f, 0.50f));
+                TerrainUpdatePass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Base Pass", FColor(0.95f, 0.20f, 0.20f));
+                BasePass(CmdList);
+            }
+
+            // The pyramid that the meshlet cull pass built from the early depth
+            // pre-pass plus the base pass is the freshest occlusion data the
+            // terrain can see, so the terrain cull dispatches between the base
+            // pass and the terrain render. This is the same Hi-Z the second
+            // DepthPyramidPass below would rebuild for transparency, just used
+            // one frame stage earlier.
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Cull", FColor(0.20f, 0.85f, 0.50f));
+                TerrainCullPass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Render", FColor(0.20f, 0.70f, 0.50f));
+                TerrainRenderPass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth Pyramid (End)", FColor(1.00f, 0.55f, 0.20f));
+                DepthPyramidPass(CmdList);
             }
             
             {
-                GPU_PROFILE_SCOPE(&CmdList, "Blend Weight"); 
-                SMAABlendWeightPass(CmdList);
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Transparent", FColor(0.40f, 0.60f, 0.85f)); 
+                TransparentPass(CmdList);
             }
-            
+        
             {
-                GPU_PROFILE_SCOPE(&CmdList, "Neighborhood Blend");   
-                SMAANeighborhoodBlendPass(CmdList);
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "OIT Resolve", FColor(0.55f, 0.85f, 0.30f)); 
+                OITResolvePass(CmdList);
+            }
+        
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Batched Lines", FColor(0.95f, 0.20f, 0.20f)); 
+                BatchedLineDraw(CmdList);
+            }
+        
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Particles Simulate", FColor(1.00f, 0.55f, 0.20f)); 
+                ParticleSimulatePass(CmdList);
+            }
+        
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Particles Render", FColor(1.00f, 0.40f, 0.20f)); 
+                ParticleRenderPass(CmdList);
+            }
+        
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Billboards", FColor(0.95f, 0.20f, 0.20f)); 
+                BillboardPass(CmdList);
+            }
+        
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Tone Mapping", FColor(0.95f, 0.20f, 0.20f)); 
+                ToneMappingPass(CmdList);
+            }
+        
+            if (World->GetDefaultWorldSettings().SMAAQuality != ESMAAQuality::Off)
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "SMAA", FColor(0.95f, 0.20f, 0.20f));
+                {
+                    GPU_PROFILE_SCOPE(&CmdList, "Edge Detection"); 
+                    SMAAEdgeDetectionPass(CmdList);
+                }
+            
+                {
+                    GPU_PROFILE_SCOPE(&CmdList, "Blend Weight"); 
+                    SMAABlendWeightPass(CmdList);
+                }
+            
+                {
+                    GPU_PROFILE_SCOPE(&CmdList, "Neighborhood Blend");   
+                    SMAANeighborhoodBlendPass(CmdList);
+                }
             }
         }
     }

@@ -99,6 +99,7 @@ namespace Lumina
 
         void TryResolveFrame(FGPUProfileFrame& Frame);
 
+        FMutex              Mutex;
         FGPUProfileFrame    Frames[MaxFramesInFlight];
         uint32              RecordingSlot          = 0;
         int32               LatestResolvedSlot     = -1;
