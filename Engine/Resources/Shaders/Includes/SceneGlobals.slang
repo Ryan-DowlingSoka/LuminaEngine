@@ -13,16 +13,20 @@
 [[vk::binding(5, 0)]] RWStructuredBuffer<FMaterialUniforms>         uMaterialUniforms;
 [[vk::binding(6, 0)]] StructuredBuffer<FBillboardInstance>          uBillboards;
 
-[[vk::binding(7,  0)]] Sampler2DArray                               uShadowCascade;
-[[vk::binding(8, 0)]] Sampler2DArray                                uShadowAtlas;
-[[vk::binding(9, 0)]] Sampler2D                                     uDepthPyramid;
+// Cascades pack into a single 2D atlas (see GCSMCascadeSizes / atlas layout
+// in SceneRenderTypes.h), so the binding is Sampler2D, not Sampler2DArray.
+// The pixel shader applies a per-cascade UV transform from FLightShadow
+// to land its sample inside the right atlas tile.
+[[vk::binding(7,  0)]] Sampler2D                                     uShadowCascade;
+[[vk::binding(8, 0)]] Sampler2DArray                                 uShadowAtlas;
+[[vk::binding(9, 0)]] Sampler2D                                      uDepthPyramid;
 
 [[vk::binding(10, 0)]] StructuredBuffer<FCullView>                   uCullViews;
 [[vk::binding(11, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawList;
 [[vk::binding(12, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectArgs;
 
-// Same cascade image as binding 7, point-sampler for raw depth (PCSS blocker).
-[[vk::binding(13, 0)]] Sampler2DArray                                uShadowCascadePoint;
+// Same cascade atlas as binding 7, point-sampler for raw depth (PCSS blocker).
+[[vk::binding(13, 0)]] Sampler2D                                     uShadowCascadePoint;
 
 // Phase-0 deferred camera meshlets, retested by phase 1 against the rebuilt HZB.
 [[vk::binding(14, 0)]] RWStructuredBuffer<FMeshletDeferred>          uMeshletDeferList;

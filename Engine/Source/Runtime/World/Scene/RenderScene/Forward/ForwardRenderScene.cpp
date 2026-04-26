@@ -30,7 +30,9 @@
 #include "World/Entity/Components/SkeletalMeshComponent.h"
 #include "world/entity/components/staticmeshcomponent.h"
 #include "World/Entity/Components/TerrainComponent.h"
+#include "World/Scene/RenderScene/EnvironmentRenderTypes.h"
 #include "World/Scene/RenderScene/MeshDrawCommand.h"
+#include "World/Scene/RenderScene/TerrainMeshletBuilder.h"
 #include "World/Scene/RenderScene/TerrainRenderTypes.h"
 #include "World/Subsystems/WorldSettings.h"
 #include "Renderer/SMAA/AreaTex.h"
@@ -231,6 +233,17 @@ namespace Lumina
             BasePass(CmdList);
         }
 
+        // The pyramid that the meshlet cull pass built from the early depth
+        // pre-pass plus the base pass is the freshest occlusion data the
+        // terrain can see, so the terrain cull dispatches between the base
+        // pass and the terrain render. This is the same Hi-Z the second
+        // DepthPyramidPass below would rebuild for transparency, just used
+        // one frame stage earlier.
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Cull", FColor(0.20f, 0.85f, 0.50f));
+            TerrainCullPass(CmdList);
+        }
+
         {
             GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Render", FColor(0.20f, 0.70f, 0.50f));
             TerrainRenderPass(CmdList);
@@ -325,7 +338,6 @@ namespace Lumina
             auto BillboardView      = Registry.view<SBillboardComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto LineBatcherView    = Registry.view<FLineBatcherComponent>();
             auto EnvironmentView    = Registry.view<SEnvironmentComponent>(entt::exclude<SDisabledTag>);
-            auto TransformView      = Registry.view<STransformComponent, FNeedsTransformUpdate>();
             auto StaticView         = Registry.view<SStaticMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto SkeletalView       = Registry.view<SSkeletalMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             
@@ -417,20 +429,10 @@ namespace Lumina
                 MergeMeshDrawData(ThreadLocal);
             });
             
-            Graph.Add([&]
-            {
-                LUMINA_PROFILE_SECTION("Environment Processing");
-                
-                RenderSettings.bHasEnvironment = false;
-                LightData.AmbientLight = glm::vec4(0.0f);
-                RenderSettings.bSSAO = false;
-                EnvironmentView.each([this] (const SEnvironmentComponent& EnvironmentComponent)
-                {
-                    LightData.AmbientLight          = glm::vec4(EnvironmentComponent.AmbientColor, EnvironmentComponent.Intensity);
-                    RenderSettings.bHasEnvironment  = true;
-                    RenderSettings.bSSAO            = false;
-                }); 
-            });
+            // Environment processing is intentionally NOT in the parallel
+            // graph: bAmbientFromSky reads LightData.SunDirection which is
+            // populated by ProcessDirectionalLight. Running it serially after
+            // Graph.Wait() guarantees the sun is settled before we sample it.
             
             Graph.Add([&]
             {
@@ -584,28 +586,91 @@ namespace Lumina
             LightData.NumLights = LightCount.load(std::memory_order_acquire);
 
             // Serial fit + allocate. Runs after the parallel light pass so the
-            // whole shadow request set is visible and we can shrink
+            // whole shadow request set is visible, and we can shrink
             // proportionally when sum(area) exceeds the atlas budget.
             AllocateShadowTiles();
+
+            // Environment processing. Serial so bAmbientFromSky in Dynamic
+            // mode reads the freshly-populated LightData.SunDirection from
+            // ProcessDirectionalLight. Sized to one component per scene; the
+            // last enabled SEnvironmentComponent wins.
+            {
+                LUMINA_PROFILE_SECTION("Environment Processing");
+
+                RenderSettings.bHasEnvironment = false;
+                RenderSettings.bSSAO           = false;
+                LightData.AmbientLight         = glm::vec4(0.0f);
+                EnvironmentParams              = FEnvironmentParams{};
+
+                EnvironmentView.each([this] (const SEnvironmentComponent& Env)
+                {
+                    // bRenderSky gates the EnvironmentPass entirely; it stays
+                    // distinct from "is there an env component at all" so
+                    // ambient + skylight params still flow even when the sky
+                    // background is off (e.g. an indoor scene that wants
+                    // skylight ambient without seeing the sky).
+                    RenderSettings.bHasEnvironment = Env.bRenderSky;
+
+                    // Pack the GPU params. Misc.x carries the sky mode as a
+                    // float-cast uint; the shader pulls it back via asuint().
+                    const uint32 SkyModeBits = (Env.SkyMode == ESkyMode::SolidColor) ? GSkyMode_SolidColor
+                                            : (Env.SkyMode == ESkyMode::Gradient)   ? GSkyMode_Gradient
+                                                                                    : GSkyMode_Dynamic;
+                    float SkyModeAsFloat;
+                    std::memcpy(&SkyModeAsFloat, &SkyModeBits, sizeof(float));
+
+                    EnvironmentParams.SolidSkyColor = glm::vec4(Env.SolidSkyColor, 0.0f);
+                    EnvironmentParams.ZenithColor   = glm::vec4(Env.ZenithColor, Env.HorizonExponent);
+                    EnvironmentParams.HorizonColor  = glm::vec4(Env.HorizonColor, 0.0f);
+                    EnvironmentParams.GroundColor   = glm::vec4(Env.GroundColor, 0.0f);
+                    EnvironmentParams.SunTint       = glm::vec4(Env.SunColorTint, Env.SunIntensity);
+                    EnvironmentParams.Misc          = glm::vec4(SkyModeAsFloat,
+                                                                Env.SunDiscScale,
+                                                                Env.SkyExposure,
+                                                                Env.MieAnisotropy);
+
+                    // Ambient skylight. AmbientFromSky derives the color from
+                    // the active sky mode so artists can dial in "the sky lit
+                    // it" without keeping two color pickers in sync.
+                    glm::vec3 AmbientRGB = Env.AmbientColor;
+                    if (Env.bAmbientFromSky)
+                    {
+                        if (Env.SkyMode == ESkyMode::SolidColor)
+                        {
+                            AmbientRGB = Env.SolidSkyColor;
+                        }
+                        else if (Env.SkyMode == ESkyMode::Gradient)
+                        {
+                            // 70/30 zenith/horizon mix matches what an upward-
+                            // facing surface would integrate from the gradient.
+                            AmbientRGB = Env.ZenithColor * 0.7f + Env.HorizonColor * 0.3f;
+                        }
+                        else // Dynamic
+                        {
+                            // Coarse sun-height-driven approximation. Daytime
+                            // skies bias toward the (roughly Rayleigh-blue)
+                            // zenith term; twilight collapses toward warmer
+                            // horizon. Cheap, and stays consistent with the
+                            // shader's sun-color curve. SunDirection points
+                            // FROM surface TO sun, so SunDirection.y is the
+                            // sun's elevation directly.
+                            const float SunHeight = LightData.bHasSun
+                                ? glm::clamp(LightData.SunDirection.y, -1.0f, 1.0f)
+                                : 0.5f;
+                            const float Day = glm::clamp(SunHeight * 2.0f + 0.2f, 0.0f, 1.0f);
+                            AmbientRGB = glm::mix(glm::vec3(0.05f, 0.06f, 0.10f),
+                                                  glm::vec3(0.40f, 0.55f, 0.85f),
+                                                  Day);
+                        }
+                    }
+                    LightData.AmbientLight = glm::vec4(AmbientRGB, Env.AmbientIntensity);
+                });
+            }
         }
         
         
-        //========================================================================================================================
-
-        // All CPU-side state mutation (buffer resize, binding-set recreation, scene-global
-        // finalization) must happen BEFORE any pass lambdas run. The render graph records
-        // batches in parallel, so a pass in a later batch (e.g. CSM) may capture its buffer
-        // handles concurrently with an earlier batch's "Write Scene Buffers" lambda. If the
-        // resize is done inside that lambda, later batches can latch the old undersized
-        // buffer handle and fire a validation error (or crash) on draw recording.
-
         SceneGlobalData.CullData.InstanceNum = (uint32)Instances.size();
 
-        // Build the shadow-cull frustum: the camera frustum swept along the sun
-        // direction so casters behind / above / beside the camera still write into
-        // the shadow indirect buffer. Distance is matched to the CSM far plane used
-        // in ProcessDirectionalLight (ShadowMaxDistance = 1000) with headroom for the
-        // cascade pullback.
         if (LightData.bHasSun)
         {
             const glm::vec3 SunDir = glm::normalize(LightData.SunDirection);
@@ -697,6 +762,7 @@ namespace Lumina
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::SimpleVertex), EResourceStates::CopyDest);
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Light), EResourceStates::CopyDest);
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Billboards), EResourceStates::CopyDest);
+            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Environment), EResourceStates::CopyDest);
             CmdList.CommitBarriers();
 
             CmdList.DisableAutomaticBarriers();
@@ -729,6 +795,7 @@ namespace Lumina
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Light), &LightData.Shadows[0], ShadowsUploadSize, offsetof(FSceneLightData, Shadows));
             }
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Billboards), BillboardInstances.data(), BillboardSize);
+            CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Environment), &EnvironmentParams, sizeof(FEnvironmentParams));
             CmdList.EnableAutomaticBarriers();
         }
     }
@@ -2098,16 +2165,23 @@ namespace Lumina
         {
             const float SplitNear = LastSplitDistance;
             const float SplitFar  = CascadeFarDistances[i];
-        
+
+            // Per-cascade resolution. Outer cascades drop to a smaller
+            // texture; texel-size math below reads this so the snap step
+            // and world-space texel pitch shift accordingly.
+            const int   CascadeRes        = GCSMCascadeSizes[i];
+            const float CascadeResFloat   = (float)CascadeRes;
+            LightData.CascadeResolutions[i] = CascadeResFloat;
+
             // World-space corners of the camera sub-frustum [SplitNear, SplitFar].
             // Use a standard-Z perspective so ComputeFrustumCorners can un-project the
             // canonical NDC cube without caring about the engine's reverse-Z convention.
             const glm::mat4 SliceProj = glm::perspective(glm::radians(CamFOV), CamAspect, SplitNear, SplitFar);
             const glm::mat4 SliceVP   = SliceProj * CamView;
-        
+
             glm::vec3 Corners[8];
             FFrustum::ComputeFrustumCorners(SliceVP, Corners);
-        
+
             // Bound the slice with a sphere, rotation-invariant, so the cascade
             // size doesn't pulse as the camera turns.
             glm::vec3 SphereCenter(0.0f);
@@ -2116,7 +2190,7 @@ namespace Lumina
                 SphereCenter += Corners[j];
             }
             SphereCenter /= 8.0f;
-        
+
             float Radius = 0.0f;
             for (int j = 0; j < 8; ++j)
             {
@@ -2126,9 +2200,9 @@ namespace Lumina
             // radius would change TexelSize between frames, defeating the
             // snap below. Rounding up at texel granularity keeps the world-
             // space texel size constant across small camera motions.
-            const float QuantStep = 1.0f / (float)GCSMResolution;
+            const float QuantStep = 1.0f / CascadeResFloat;
             Radius = std::ceil(Radius / QuantStep) * QuantStep;
-            const float TexelSize = (Radius * 2.0f) / (float)GCSMResolution;
+            const float TexelSize = (Radius * 2.0f) / CascadeResFloat;
 
             // BackDistance pushes the light eye behind the cascade volume so
             // off-screen occluders (e.g. things directly above the cascade)
@@ -2175,6 +2249,23 @@ namespace Lumina
             if (CascadeShadowData)
             {
                 CascadeShadowData->ViewProjection[i] = CascadeVP;
+
+                // Atlas UV transform for this cascade. The pixel shader
+                // takes the per-cascade UV in [0,1] and remaps it into the
+                // packed atlas region. Origin/size come from the constant
+                // packing table so the shader doesn't need to know the
+                // atlas layout, just the per-cascade transform.
+                FLightShadow& CascadeTile = CascadeShadowData->Shadow[i];
+                CascadeTile.AtlasUVOffset = glm::vec2(
+                    (float)GCSMCascadeOriginX[i] / (float)GCSMAtlasWidth,
+                    (float)GCSMCascadeOriginY[i] / (float)GCSMAtlasHeight);
+                CascadeTile.AtlasUVScale = glm::vec2(
+                    (float)GCSMCascadeSizes[i]  / (float)GCSMAtlasWidth,
+                    (float)GCSMCascadeSizes[i]  / (float)GCSMAtlasHeight);
+                CascadeTile.ShadowMapIndex  = INDEX_NONE;
+                CascadeTile.ShadowMapLayer  = 0;
+                CascadeTile.LightIndex      = 0;
+                CascadeTile.ShadowDataIndex = (int32)ShadowSlot;
             }
 
             // Expose this cascade's world-space half-extent so the lit pixel
@@ -3002,24 +3093,38 @@ namespace Lumina
 
         for (uint32 c = 0; c < (uint32)NumCascades; ++c)
         {
+            // Cascade 0's pass clears the entire atlas (depth = 1.0). The
+            // outer cascades load the existing depth so their viewport
+            // region overwrites only itself, leaving the inner cascade's
+            // pixels and the unrendered atlas margin untouched.
             FRenderPassDesc::FAttachment Depth; Depth
-                .SetLoadOp(ERenderLoadOp::Clear)
+                .SetLoadOp(c == 0u ? ERenderLoadOp::Clear : ERenderLoadOp::Load)
                 .SetDepthClearValue(1.0f)
-                .SetImage(GetNamedImage(ENamedImage::Cascade))
-                    .SetArraySlice((uint16)c);
+                .SetImage(GetNamedImage(ENamedImage::Cascade));
 
             FRenderPassDesc RenderPass; RenderPass
                 .SetDepthAttachment(Depth)
-                .SetRenderArea(glm::uvec2(GCSMResolution, GCSMResolution));
+                .SetRenderArea(glm::uvec2(GCSMAtlasWidth, GCSMAtlasHeight));
 
             FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+            // Per-cascade viewport: only this cascade's atlas tile rasterizes.
+            // Pixel coordinates come straight from the GCSMCascadeOrigin /
+            // GCSMCascadeSizes packing table. FViewport's Y range is
+            // (MinY, MaxY) which matches Vulkan after the engine's flip.
+            const float TileX = (float)GCSMCascadeOriginX[c];
+            const float TileY = (float)GCSMCascadeOriginY[c];
+            const float TileW = (float)GCSMCascadeSizes[c];
+
+            FViewport Viewport(TileX, TileX + TileW, TileY, TileY + TileW, 0.0f, 1.0f);
+            FRect     Scissor((int)TileX, (int)(TileX + TileW), (int)TileY, (int)(TileY + TileW));
 
             // Meshlet-driven: one indirect "instance" per surviving meshlet,
             // indirects sourced from this cascade's slice of the unified
             // IndirectArgs buffer.
             FGraphicsState GraphicsState; GraphicsState
                 .SetRenderPass(RenderPass)
-                .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::Cascade)))
+                .SetViewportState(FViewportState(Viewport, Scissor))
                 .SetPipeline(Pipeline)
                 .AddBindingSet(SceneBindingSet)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
@@ -3581,7 +3686,7 @@ namespace Lumina
         FEntityRegistry& Registry = World->GetEntityRegistry();
         auto TerrainView = Registry.view<STerrainComponent, STransformComponent>(entt::exclude<SDisabledTag>);
 
-        TerrainView.each([&](entt::entity Entity, STerrainComponent& Terrain, const STransformComponent&)
+        TerrainView.each([&](entt::entity Entity, STerrainComponent& Terrain, const STransformComponent& Transform)
         {
             if (Terrain.Resolution < 2 || Terrain.ChunkResolution < 2)
             {
@@ -3605,6 +3710,9 @@ namespace Lumina
                 State.AllocatedLayerCount = LayerCount;
                 State.bFullHeightmapDirty = true;
                 State.bFullWeightsDirty   = true;
+                // New texture geometry implies fresh chunk bounds; force a rebuild
+                // so the chunk/meshlet metadata uses the right Resolution/ChunkRes.
+                State.bChunksDirty        = true;
 
                 // Vulkan does not zero new image memory. Unwritten slices
                 // return undefined data (~0.5 historically, producing uniform
@@ -3727,6 +3835,140 @@ namespace Lumina
                 State.HeightDirtyMin = glm::ivec2(INT32_MAX);
                 State.HeightDirtyMax = glm::ivec2(INT32_MIN);
             }
+
+            // Rebuild chunk + meshlet metadata whenever the heightmap geometry
+            // shifted. The cull pass tests against tight world-space AABBs
+            // computed here, so this has to fire before the next cull dispatch.
+            if (State.bChunksDirty)
+            {
+                const glm::vec3 WorldOrigin = glm::vec3(Transform.GetWorldMatrix()[3]);
+                TerrainMeshletBuilder::Build(Terrain, WorldOrigin);
+
+                const uint32 ChunkCount   = (uint32)State.Chunks.size();
+                const uint32 MeshletCount = (uint32)State.Meshlets.size();
+
+                if (ChunkCount > 0 && MeshletCount > 0)
+                {
+                    const FString DebugBase = FString("Terrain_") + std::to_string((uint32)Entity).c_str();
+
+                    auto AllocSSBO = [&](FRHIBufferRef& Buffer, uint64 SizeBytes, const FString& Name, bool bIndirect)
+                    {
+                        if (!Buffer || Buffer->GetDescription().Size < SizeBytes)
+                        {
+                            FRHIBufferDesc Desc;
+                            Desc.Size      = std::max<uint64>(SizeBytes, 16ull);
+                            Desc.DebugName = Name;
+                            Desc.Stride    = 0u;
+                            Desc.Usage.SetFlag(BUF_StorageBuffer);
+                            if (bIndirect)
+                            {
+                                Desc.Usage.SetFlag(BUF_Indirect);
+                            }
+                            // bKeepInitialState pins the Common state so the
+                            // automatic state tracker can move the buffer
+                            // freely between SRV/UAV/Indirect at use sites.
+                            Desc.bKeepInitialState = true;
+                            Desc.InitialState      = EResourceStates::Common;
+                            Buffer = GRenderContext->CreateBuffer(Desc);
+                        }
+                    };
+
+                    AllocSSBO(State.ChunkInfoBuffer,      uint64(ChunkCount)   * sizeof(FTerrainChunkInfo),      DebugBase + "_Chunks",   false);
+                    AllocSSBO(State.MeshletInfoBuffer,    uint64(MeshletCount) * sizeof(FTerrainMeshletInfo),    DebugBase + "_Meshlets", false);
+                    AllocSSBO(State.VisibleMeshletBuffer, uint64(MeshletCount) * sizeof(FTerrainVisibleMeshlet), DebugBase + "_Visible",  false);
+                    AllocSSBO(State.IndirectDrawBuffer,   sizeof(FDrawIndirectArguments),                        DebugBase + "_Indirect", true);
+
+                    CmdList.WriteBuffer(State.ChunkInfoBuffer,   State.Chunks.data(),   ChunkCount * sizeof(FTerrainChunkInfo));
+                    CmdList.WriteBuffer(State.MeshletInfoBuffer, State.Meshlets.data(), MeshletCount * sizeof(FTerrainMeshletInfo));
+
+                    State.AllocatedChunkCount   = ChunkCount;
+                    State.AllocatedMeshletCount = MeshletCount;
+                }
+
+                State.bChunksDirty = false;
+            }
+        });
+    }
+
+    void FForwardRenderScene::TerrainCullPass(ICommandList& CmdList)
+    {
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        auto TerrainView = Registry.view<STerrainComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+        if (TerrainView.begin() == TerrainView.end())
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Terrain Cull", tracy::Color::SeaGreen);
+
+        FRHIComputeShaderRef CullShader = FShaderLibrary::GetComputeShader("TerrainCull.slang");
+        if (!CullShader)
+        {
+            return;
+        }
+
+        FBindingLayoutDesc CullLayoutDesc;
+        CullLayoutDesc.SetBindingIndex(2)
+            .SetVisibility(ERHIShaderType::Compute)
+            .AddItem(FBindingLayoutItem::Buffer_SRV(0))
+            .AddItem(FBindingLayoutItem::Buffer_SRV(1))
+            .AddItem(FBindingLayoutItem::Buffer_UAV(2))
+            .AddItem(FBindingLayoutItem::Buffer_UAV(3));
+        FRHIBindingLayout* CullLayout = BindingCache.GetOrCreateBindingLayout(CullLayoutDesc);
+
+        FComputePipelineDesc PipelineDesc;
+        PipelineDesc.SetComputeShader(CullShader)
+                    .AddBindingLayout(SceneBindingLayout)
+                    .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
+                    .AddBindingLayout(CullLayout);
+        FRHIComputePipelineRef CullPipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+        TerrainView.each([&](STerrainComponent& Terrain, const STransformComponent&)
+        {
+            FTerrainGPUState& State = Terrain.GPUState;
+            if (!State.ChunkInfoBuffer || !State.MeshletInfoBuffer || !State.VisibleMeshletBuffer || !State.IndirectDrawBuffer)
+            {
+                return;
+            }
+            if (State.AllocatedChunkCount == 0u || State.AllocatedMeshletCount == 0u)
+            {
+                return;
+            }
+
+            // Seed the indirect args slot. Six verts per quad * meshletQuads^2
+            // is the per-meshlet vertex count the terrain VS expects.
+            FDrawIndirectArguments InitialArgs{};
+            InitialArgs.VertexCount           = (uint32)(GTerrainMeshletMaxQuads * 6);
+            InitialArgs.InstanceCount         = 0u;
+            InitialArgs.StartVertexLocation   = 0u;
+            InitialArgs.StartInstanceLocation = 0u;
+            CmdList.WriteBuffer(State.IndirectDrawBuffer, &InitialArgs, sizeof(InitialArgs));
+
+            FBindingSetDesc CullSetDesc;
+            CullSetDesc
+                .AddItem(FBindingSetItem::BufferSRV(0, State.ChunkInfoBuffer))
+                .AddItem(FBindingSetItem::BufferSRV(1, State.MeshletInfoBuffer))
+                .AddItem(FBindingSetItem::BufferUAV(2, State.VisibleMeshletBuffer))
+                .AddItem(FBindingSetItem::BufferUAV(3, State.IndirectDrawBuffer));
+            FRHIBindingSetRef CullSet = GRenderContext->CreateBindingSet(CullSetDesc, CullLayout);
+
+            FComputeState ComputeState;
+            ComputeState.SetPipeline(CullPipeline)
+                        .AddBindingSet(SceneBindingSet)
+                        .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
+                        .AddBindingSet(CullSet);
+            CmdList.SetComputeState(ComputeState);
+
+            FTerrainCullPushConstants Push{};
+            Push.ChunkCount   = State.AllocatedChunkCount;
+            Push.MeshletCount = State.AllocatedMeshletCount;
+            CmdList.SetPushConstants(&Push, sizeof(Push));
+
+            // One workgroup per chunk, one thread per meshlet inside that
+            // chunk. The shader's chunk-level test fires on thread 0 and
+            // gates every other thread via groupshared, so dispatch sizes
+            // up to MeshletsPerChunk (default 81) without wasting threads.
+            CmdList.Dispatch(State.AllocatedChunkCount, 1u, 1u);
         });
     }
 
@@ -3756,6 +3998,17 @@ namespace Lumina
             {
                 return;
             }
+            // Cull pass output is what makes the indirect draw legal; bail
+            // when it hasn't been built yet (first frame, or heightmap dirty
+            // but TerrainUpdatePass has not run since).
+            if (!State.ChunkInfoBuffer || !State.MeshletInfoBuffer || !State.VisibleMeshletBuffer || !State.IndirectDrawBuffer)
+            {
+                return;
+            }
+            if (State.AllocatedMeshletCount == 0u)
+            {
+                return;
+            }
 
 
             CMaterialInterface* MaterialInterface = Terrain.Material.Get();
@@ -3781,18 +4034,23 @@ namespace Lumina
             const glm::vec3 WorldOrigin = glm::vec3(WorldMat[3]);
             const float HalfSize = Terrain.TileWorldSize * 0.5f;
 
+            const int32 QuadsPerChunk        = std::max(1, Terrain.ChunkResolution - 1);
+            const int32 ChunksPerSide        = std::max(1, ((int32)Res - 1) / QuadsPerChunk);
+            const int32 MeshletsPerChunkSide = (QuadsPerChunk + GTerrainMeshletQuads - 1) / GTerrainMeshletQuads;
+
             FTerrainRenderParams RenderParams{};
-            RenderParams.OriginXZ        = glm::vec2(WorldOrigin.x - HalfSize, WorldOrigin.z - HalfSize);
-            RenderParams.TileWorldSize   = Terrain.TileWorldSize;
-            RenderParams.MaxHeight       = Terrain.MaxHeight;
-            RenderParams.Resolution      = (int32)Res;
-            RenderParams.ChunkResolution = Terrain.ChunkResolution;
-            const int32 QuadsPerChunk    = std::max(1, Terrain.ChunkResolution - 1);
-            RenderParams.ChunksPerSide   = std::max(1, ((int32)Res - 1) / QuadsPerChunk);
-            RenderParams.LayerCount      = (int32)Terrain.Layers.size();
-            RenderParams.WorldOriginY    = glm::vec3(WorldOrigin.y, 0.0f, 0.0f);
-            RenderParams.EntityID        = (uint32)Entity;
-            RenderParams.MaterialIndex   = (uint32)std::max(MaterialInterface->GetMaterialIndex(), 0);
+            RenderParams.OriginXZ             = glm::vec2(WorldOrigin.x - HalfSize, WorldOrigin.z - HalfSize);
+            RenderParams.TileWorldSize        = Terrain.TileWorldSize;
+            RenderParams.MaxHeight            = Terrain.MaxHeight;
+            RenderParams.Resolution           = (int32)Res;
+            RenderParams.ChunkResolution      = Terrain.ChunkResolution;
+            RenderParams.ChunksPerSide        = ChunksPerSide;
+            RenderParams.LayerCount           = (int32)Terrain.Layers.size();
+            RenderParams.WorldOriginY         = glm::vec3(WorldOrigin.y, 0.0f, 0.0f);
+            RenderParams.EntityID             = (uint32)Entity;
+            RenderParams.MaterialIndex        = (uint32)std::max(MaterialInterface->GetMaterialIndex(), 0);
+            RenderParams.MeshletsPerChunkSide = MeshletsPerChunkSide;
+            RenderParams.MeshletQuadSide      = GTerrainMeshletQuads;
 
             FRHIBufferDesc RenderCBDesc;
             RenderCBDesc.Size      = sizeof(FTerrainRenderParams);
@@ -3802,7 +4060,7 @@ namespace Lumina
             RenderCBDesc.InitialState = EResourceStates::ConstantBuffer;
             FRHIBufferRef RenderCB = GRenderContext->CreateBuffer(RenderCBDesc);
             CmdList.WriteBuffer(RenderCB, &RenderParams, sizeof(RenderParams));
-            
+
             const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment;
 
             FRenderPassDesc::FAttachment RenderTarget;
@@ -3811,7 +4069,7 @@ namespace Lumina
             {
                 RenderTarget.SetLoadOp(ERenderLoadOp::Load);
             }
-            
+
             FRenderPassDesc::FAttachment PickerAttachment;
             PickerAttachment.SetImage(GetNamedImage(ENamedImage::Picker));
             if (!DrawCommands.empty())
@@ -3846,7 +4104,11 @@ namespace Lumina
                        .SetDepthStencilState(DepthState);
 
             FRHISamplerRef HeightSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-            
+
+            // Bind set 2 = terrain-local resources. Slots 0..3 are the same
+            // texture/CB layout the legacy direct draw used; 4..6 are the
+            // chunk + meshlet metadata + cull-output draw list the new
+            // indirect path consumes via SV_InstanceID.
             FBindingLayoutDesc TerrainLayoutDesc;
             TerrainLayoutDesc.SetBindingIndex(2)
                 .SetVisibility(ERHIShaderType::Vertex)
@@ -3854,14 +4116,20 @@ namespace Lumina
                 .AddItem(FBindingLayoutItem::Texture_SRV(0))
                 .AddItem(FBindingLayoutItem::Texture_SRV(1))
                 .AddItem(FBindingLayoutItem::Texture_SRV(2))
-                .AddItem(FBindingLayoutItem::Buffer_CBV(3));
+                .AddItem(FBindingLayoutItem::Buffer_CBV(3))
+                .AddItem(FBindingLayoutItem::Buffer_SRV(4))
+                .AddItem(FBindingLayoutItem::Buffer_SRV(5))
+                .AddItem(FBindingLayoutItem::Buffer_SRV(6));
             FRHIBindingLayout* TerrainLayout = BindingCache.GetOrCreateBindingLayout(TerrainLayoutDesc);
 
             FBindingSetDesc TerrainSetDesc;
             TerrainSetDesc.AddItem(FBindingSetItem::TextureSRV(0, State.HeightmapTexture, HeightSampler))
                           .AddItem(FBindingSetItem::TextureSRV(1, State.NormalTexture,    HeightSampler))
                           .AddItem(FBindingSetItem::TextureSRV(2, State.LayerWeightTexture, HeightSampler))
-                          .AddItem(FBindingSetItem::BufferCBV(3, RenderCB));
+                          .AddItem(FBindingSetItem::BufferCBV(3, RenderCB))
+                          .AddItem(FBindingSetItem::BufferSRV(4, State.ChunkInfoBuffer))
+                          .AddItem(FBindingSetItem::BufferSRV(5, State.MeshletInfoBuffer))
+                          .AddItem(FBindingSetItem::BufferSRV(6, State.VisibleMeshletBuffer));
             FRHIBindingSetRef TerrainSet = GRenderContext->CreateBindingSet(TerrainSetDesc, TerrainLayout);
 
             FGraphicsPipelineDesc Desc;
@@ -3881,13 +4149,15 @@ namespace Lumina
                 .SetPipeline(Pipeline)
                 .AddBindingSet(SceneBindingSet)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                .AddBindingSet(TerrainSet);
+                .AddBindingSet(TerrainSet)
+                .SetIndirectParams(State.IndirectDrawBuffer);
 
             CmdList.SetGraphicsState(GraphicsState);
 
-            const uint32 VertsPerChunk = uint32(QuadsPerChunk) * uint32(QuadsPerChunk) * 6u;
-            const uint32 NumChunks     = uint32(RenderParams.ChunksPerSide) * uint32(RenderParams.ChunksPerSide);
-            CmdList.Draw(VertsPerChunk, NumChunks, 0u, 0u);
+            // The cull pass populated the single FDrawIndirectArguments slot
+            // with VertexCount = MeshletQuads^2 * 6 and InstanceCount =
+            // (number of surviving meshlets). One draw, GPU-driven.
+            CmdList.DrawIndirect(1u, 0u);
         });
     }
 
@@ -4125,48 +4395,61 @@ namespace Lumina
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Environment Pass", tracy::Color::Green3);
-    
+
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
         FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("Environment.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
         }
-    
+
         FRenderPassDesc::FAttachment Attachment; Attachment
             .SetImage(GetNamedImage(ENamedImage::HDR));
-        
+
         FRenderPassDesc RenderPass; RenderPass
             .AddColorAttachment(Attachment)
             .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
-    
+
         FRasterState RasterState;
         RasterState.SetCullNone();
-        
+
         FRenderState RenderState;
         RenderState.SetRasterState(RasterState);
-    
+
+        // Set 2 carries the env params CB. Lives at slot 0; the shader reads
+        // it as ConstantBuffer<FEnvironmentParams> uEnvironment.
+        FBindingLayoutDesc EnvLayoutDesc;
+        EnvLayoutDesc.SetBindingIndex(2)
+            .SetVisibility(ERHIShaderType::Fragment)
+            .AddItem(FBindingLayoutItem::Buffer_CBV(0));
+        FRHIBindingLayout* EnvLayout = BindingCache.GetOrCreateBindingLayout(EnvLayoutDesc);
+
+        FBindingSetDesc EnvSetDesc;
+        EnvSetDesc.AddItem(FBindingSetItem::BufferCBV(0, GetNamedBuffer(ENamedBuffer::Environment)));
+        FRHIBindingSetRef EnvSet = GRenderContext->CreateBindingSet(EnvSetDesc, EnvLayout);
+
         FGraphicsPipelineDesc Desc;
         Desc.SetDebugName("Environment Pass");
         Desc.SetRenderState(RenderState);
         Desc.AddBindingLayout(SceneBindingLayout);
         Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        Desc.AddBindingLayout(EnvLayout);
         Desc.SetVertexShader(VertexShader);
         Desc.SetPixelShader(PixelShader);
-    
+
         FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-    
+
         FGraphicsState GraphicsState;
         GraphicsState.AddBindingSet(SceneBindingSet);
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        GraphicsState.AddBindingSet(EnvSet);
         GraphicsState.SetPipeline(Pipeline);
         GraphicsState.SetRenderPass(RenderPass);
         GraphicsState.SetViewportState(SceneViewportState);
-        
-    
+
         CmdList.SetGraphicsState(GraphicsState);
-    
-        CmdList.Draw(3, 1, 0, 0); 
+
+        CmdList.Draw(3, 1, 0, 0);
     }
 
     void FForwardRenderScene::BatchedLineDraw(ICommandList& CmdList)
@@ -4675,6 +4958,19 @@ namespace Lumina
             BufferDesc.DebugName = "SPD Counter";
             NamedBuffers[(int)ENamedBuffer::SpdCounter] = GRenderContext->CreateBuffer(BufferDesc);
         }
+
+        // Per-frame environment params consumed by Environment.slang. Sized
+        // for one FEnvironmentParams; the EnvironmentPass writes a fresh
+        // copy each frame from the active SEnvironmentComponent.
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FEnvironmentParams);
+            BufferDesc.Usage.SetFlag(BUF_UniformBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::ConstantBuffer;
+            BufferDesc.DebugName = "Environment Params";
+            NamedBuffers[(int)ENamedBuffer::Environment] = GRenderContext->CreateBuffer(BufferDesc);
+        }
     }
 
     static uint32 PreviousPow2(uint32 v)
@@ -4754,17 +5050,23 @@ namespace Lumina
         {
             uint32 Width = PreviousPow2(Extent.x);
             uint32 Height = PreviousPow2(Extent.y);
-            
+
+            // R16_FLOAT is enough for the HZB occlusion test: depth is in
+            // [0,1] (reverse-Z), the test compares a single-tap min-reduced
+            // sample against a sphere depth, and any quantization error is
+            // conservative (overly visible, never falsely occluded). 32-bit
+            // float doubles the pyramid's memory footprint for no extra cull
+            // accuracy at typical scene scales.
             FRHIImageDesc ImageDesc;
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage);
             ImageDesc.Extent            = glm::uvec2(Width, Height);
-            ImageDesc.Format            = EFormat::R32_FLOAT;
+            ImageDesc.Format            = EFormat::R16_FLOAT;
             ImageDesc.NumMips           = (uint8)RenderUtils::CalculateMipCount(Width, Height);
             ImageDesc.InitialState      = EResourceStates::ShaderResource;
             ImageDesc.bKeepInitialState = true;
             ImageDesc.Dimension         = EImageDimension::Texture2D;
             ImageDesc.DebugName         = "Depth Pyramid";
-            
+
             NamedImages[(int)ENamedImage::DepthPyramid] = GRenderContext->CreateImage(ImageDesc);
         }
 
@@ -4786,16 +5088,20 @@ namespace Lumina
         //==================================================================================================
         
         {
+            // Progressive cascade atlas. Cascades 0/1/2 pack into a single
+            // 2D depth target (see GCSMAtlasWidth/Height) instead of the
+            // previous 4096x4096x3 array. Cascade 0 still gets the 2048x2048
+            // close-up resolution; outer cascades drop to 1024x1024 each
+            // since they cover much more world area per texel.
             FRHIImageDesc ImageDesc = {};
-            ImageDesc.Extent = glm::uvec2(GCSMResolution, GCSMResolution);
+            ImageDesc.Extent = glm::uvec2(GCSMAtlasWidth, GCSMAtlasHeight);
             ImageDesc.Format = EFormat::D32;
-            ImageDesc.Dimension = EImageDimension::Texture2DArray;
+            ImageDesc.Dimension = EImageDimension::Texture2D;
             ImageDesc.InitialState = EResourceStates::DepthWrite;
             ImageDesc.bKeepInitialState = true;
-            ImageDesc.ArraySize = NumCascades;
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::DepthAttachment, EImageCreateFlags::ShaderResource);
-            ImageDesc.DebugName = "ShadowCascadeMap";
-            
+            ImageDesc.DebugName = "ShadowCascadeAtlas";
+
             NamedImages[(int)ENamedImage::Cascade] = GRenderContext->CreateImage(ImageDesc);
         }
         
@@ -4813,15 +5119,22 @@ namespace Lumina
         }
         
         {
+            // Weighted-blended OIT revealage stores the multiplicative
+            // product of (1 - alpha_i) across transparent fragments -- a
+            // single value in [0, 1]. R16_FLOAT preserves the cleared-to-1
+            // value exactly and gives ~10-bit mantissa precision for the
+            // running product, which is the format every reference WBOIT
+            // implementation uses. R32_FLOAT was 2x the memory for no
+            // visible quality difference.
             FRHIImageDesc ImageDesc = {};
             ImageDesc.Extent = Extent;
-            ImageDesc.Format = EFormat::R32_FLOAT;
+            ImageDesc.Format = EFormat::R16_FLOAT;
             ImageDesc.Dimension = EImageDimension::Texture2D;
             ImageDesc.InitialState = EResourceStates::RenderTarget;
             ImageDesc.bKeepInitialState = true;
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
             ImageDesc.DebugName = "Revealage";
-            
+
             NamedImages[(int)ENamedImage::Revealage] = GRenderContext->CreateImage(ImageDesc);
         }
         

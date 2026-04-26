@@ -2,8 +2,8 @@
 
 #include "Assets/AssetTypes/Material/MaterialInterface.h"
 #include "Core/Object/ObjectHandleTyped.h"
-#include "World/Scene/RenderScene/MeshBatch.h"
 #include "Renderer/CustomPrimitiveData.h"
+#include "Containers/Array.h"
 #include "MeshComponent.generated.h"
 
 namespace Lumina

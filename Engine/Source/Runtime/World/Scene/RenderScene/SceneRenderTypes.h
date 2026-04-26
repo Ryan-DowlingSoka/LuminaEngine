@@ -34,7 +34,29 @@ constexpr int ClusterGridSizeZ = 24;
 
 constexpr int NumClusters = ClusterGridSizeX * ClusterGridSizeY * ClusterGridSizeZ;
 
-constexpr int GCSMResolution            = 4096;
+// Per-cascade resolutions. Cascade 0 covers the closest split and gets the
+// largest texture; outer cascades cover much more world area each so spending
+// the same texel budget on them is wasted. The atlas packs all three into a
+// single Texture2D, which cuts the previous 4096x4096x3 D32 array (192 MB)
+// down to a 3072x2048 atlas (~24 MB) with no visible quality loss on the near
+// cascade.
+//
+// Layout in the atlas:
+//   +-----------+--------+
+//   |           |   C1   |   1024x1024
+//   |    C0     | 1024sq |   (top-right)
+//   |  2048x    +--------+
+//   |   2048    |   C2   |   1024x1024
+//   |           | 1024sq |   (bottom-right)
+//   +-----------+--------+
+//   0         2048      3072
+constexpr int GCSMCascadeSizes[3]       = { 2048, 1024, 1024 };
+constexpr int GCSMAtlasWidth            = 3072;  // C0(2048) + C1/C2 column(1024)
+constexpr int GCSMAtlasHeight           = 2048;  // max(C0, C1+C2)
+// Per-cascade origin (top-left pixel) in the atlas. Index parallels GCSMCascadeSizes.
+constexpr int GCSMCascadeOriginX[3]     = { 0,    2048, 2048 };
+constexpr int GCSMCascadeOriginY[3]     = { 0,    0,    1024 };
+
 constexpr int GShadowAtlasResolution    = 4096;
 
 // Hard cap on simultaneous cull views. One main camera + NumCascades CSM
@@ -44,7 +66,6 @@ constexpr int GMaxCullViews             = 128;
 
 namespace Lumina
 {
-    class FDeferredRenderScene;
     class CMaterialInterface;
     struct FVertex;
     class CMaterial;
@@ -380,6 +401,11 @@ namespace Lumina
         // to convert a shadow texel into world-space length for normal-offset
         // bias; must shrink with the cascade or grows large in cascade 0.
         glm::vec4           CascadeRadii{};
+        // Per-cascade shadow-map resolution. Cascades pack into a single
+        // atlas with progressive sizes (see GCSMCascadeSizes), so the pixel
+        // shader can't assume one constant resolution when computing texel
+        // size. xyzw correspond to cascades 0..3.
+        glm::vec4           CascadeResolutions{};
 
         glm::vec4           AmbientLight{};
 

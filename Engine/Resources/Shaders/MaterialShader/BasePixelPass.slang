@@ -171,14 +171,24 @@ float3 NormalOffsetWS(float3 Normal, float3 LightDir, int CascadeIndex)
     float OffsetScale = saturate(1.0 - NdotL);
 
     // World-space size of one shadow texel for this cascade. Cascade ortho
-    // width is 2 * Radius and resolution is GCSM_RESOLUTION.
-    float Radius    = uLightData[0].CascadeRadii[CascadeIndex];
-    float TexelSize = (2.0 * Radius) / float(GCSM_RESOLUTION);
+    // width is 2 * Radius; resolution is per-cascade because the atlas
+    // packs progressive sizes.
+    float Radius     = uLightData[0].CascadeRadii[CascadeIndex];
+    float Resolution = max(uLightData[0].CascadeResolutions[CascadeIndex], 1.0);
+    float TexelSize  = (2.0 * Radius) / Resolution;
 
     // 1.4 ~= sqrt(2): push by one diagonal texel at maximum slope, the
     // minimum that reliably clears self-intersection from depth-map
     // quantization. Larger values cause visible peter-panning at contact.
     return Normal * (TexelSize * 1.4 * OffsetScale);
+}
+
+// Pack a per-cascade UV [0,1] into the shared cascade atlas. The atlas tile
+// for this cascade is described by FLightShadow.AtlasUVOffset/Scale.
+float2 CascadeAtlasUV(int ShadowDataIndex, int CascadeIndex, float2 CascadeUV)
+{
+    FLightShadow Tile = GetShadowTile(ShadowDataIndex, CascadeIndex);
+    return CascadeUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
 }
 
 // PCSS (Percentage-Closer Soft Shadows) tuning. The contact gap is caused
@@ -241,7 +251,8 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     {
         float2 Offset   = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, Angle) * SearchRadius;
         float2 SampleUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
-        float  Depth    = uShadowCascadePoint.SampleLevel(float3(SampleUV, float(CascadeIndex)), 0.0).r;
+        float2 AtlasUV  = CascadeAtlasUV(Light.ShadowDataIndex, CascadeIndex, SampleUV);
+        float  Depth    = uShadowCascadePoint.SampleLevel(AtlasUV, 0.0).r;
 
         if (Depth < CurrentDepth - PCSS_BlockerDepthBias)
         {
@@ -280,7 +291,8 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     {
         float2 Offset    = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle + PI) * FilterRadius;
         float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
-        Shadow += uShadowCascade.SampleCmp(float3(CascadeUV, CascadeIndex), RefDepth);
+        float2 AtlasUV   = CascadeAtlasUV(Light.ShadowDataIndex, CascadeIndex, CascadeUV);
+        Shadow += uShadowCascade.SampleCmp(AtlasUV, RefDepth);
     }
     return Shadow / float(SHADOW_SAMPLE_COUNT);
 }

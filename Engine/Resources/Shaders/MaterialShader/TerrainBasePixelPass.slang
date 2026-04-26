@@ -16,9 +16,9 @@ struct FTerrainRenderParams
     uint    EntityID;
 
     uint    MaterialIndex;
+    int     MeshletsPerChunkSide;
+    int     MeshletQuadSide;
     uint    _Pad0;
-    uint    _Pad1;
-    uint    _Pad2;
 };
 
 [[vk::binding(0, 2)]] Sampler2D                            uHeightmap;
@@ -35,8 +35,10 @@ struct PSInput
     float2 UV                       : TEXCOORD0;
     float2 HeightUV                 : HEIGHT_UV;
 
-    nointerpolation uint EntityID   : ENTITY_ID;
+    nointerpolation uint EntityID      : ENTITY_ID;
     nointerpolation uint MaterialIndex : MATERIAL_INDEX;
+    // Stable per-meshlet ID, hashed to a color for the meshlet debug view.
+    nointerpolation uint MeshletIndex  : MESHLET_INDEX;
 
     float4 Position                 : SV_Position;
 };
@@ -117,8 +119,16 @@ float3 NormalOffsetWS(float3 Normal, float3 LightDir, int CascadeIndex)
     float NdotL       = saturate(dot(Normal, LightDir));
     float OffsetScale = saturate(1.0 - NdotL);
     float Radius      = uLightData[0].CascadeRadii[CascadeIndex];
-    float TexelSize   = (2.0 * Radius) / float(GCSM_RESOLUTION);
+    float Resolution  = max(uLightData[0].CascadeResolutions[CascadeIndex], 1.0);
+    float TexelSize   = (2.0 * Radius) / Resolution;
     return Normal * (TexelSize * 1.4 * OffsetScale);
+}
+
+// Per-cascade UV -> shared atlas UV. Mirrors BasePixelPass.slang::CascadeAtlasUV.
+float2 TerrainCascadeAtlasUV(int ShadowDataIndex, int CascadeIndex, float2 CascadeUV)
+{
+    FLightShadow Tile = GetShadowTile(ShadowDataIndex, CascadeIndex);
+    return CascadeUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
 }
 
 float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float3 Normal, float3 LightDir, float Bias, float2 ScreenPos, out bool Inside)
@@ -148,7 +158,8 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     {
         float2 Offset    = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle) * FilterRadius;
         float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
-        Shadow += uShadowCascade.SampleCmp(float3(CascadeUV, CascadeIndex), RefDepth);
+        float2 AtlasUV   = TerrainCascadeAtlasUV(Light.ShadowDataIndex, CascadeIndex, CascadeUV);
+        Shadow += uShadowCascade.SampleCmp(AtlasUV, RefDepth);
     }
     return Shadow / float(SHADOW_SAMPLE_COUNT);
 }
@@ -258,6 +269,25 @@ float GetTerrainLayerWeight(float2 HeightUV, int i)
     return uLayerWeights.Sample(float3(HeightUV, float(i))).r;
 }
 
+// Hash-to-color used by the meshlet debug visualization. Mirrors
+// MeshletDebugColor in BasePixelPass.slang so meshes and terrain colorize
+// identically under the same debug mode.
+float3 TerrainMeshletDebugColor(uint Index)
+{
+    uint H = Index * 2654435761u;
+    H ^= H >> 16;
+    H *= 2246822519u;
+    H ^= H >> 13;
+    H *= 3266489917u;
+    H ^= H >> 16;
+
+    return float3(
+        float( H         & 0xFFu) / 255.0,
+        float((H >>  8)  & 0xFFu) / 255.0,
+        float((H >> 16)  & 0xFFu) / 255.0
+    );
+}
+
 // Layer 0 implicitly fills any unpainted weight so brushes blend smoothly
 // over a base layer. Without this, a tiny painted weight at a brush edge
 // would renormalise to 100%, producing hard stroke boundaries.
@@ -365,6 +395,47 @@ PSOutput FragmentMain(PSInput Input)
     float3 Color   = Ambient + Lo + Material.Emissive;
 
 #endif // UNLIT
+
+    // Debug overrides. Kept in sync with BasePixelPass.slang so toggling a
+    // mode lights up meshes and terrain together; the meshlet hue uses the
+    // same hash so two meshlet IDs colliding (rare) at least look identical
+    // across mesh and terrain surfaces.
+    uint DebugMode = uSceneData.CullData.DebugMode;
+    if (DebugMode != DEBUG_MODE_NONE)
+    {
+        switch (DebugMode)
+        {
+            case DEBUG_MODE_UNLIT:
+                Color = Albedo + Material.Emissive;
+                break;
+            case DEBUG_MODE_MESHLETS:
+                Color = TerrainMeshletDebugColor(Input.MeshletIndex);
+                break;
+            case DEBUG_MODE_WORLD_NORMAL:
+                Color = normalize(Input.NormalWS.xyz) * 0.5 + 0.5;
+                break;
+            case DEBUG_MODE_BASE_COLOR:
+                Color = Albedo;
+                break;
+            case DEBUG_MODE_ROUGHNESS:
+                Color = float3(Roughness, Roughness, Roughness);
+                break;
+            case DEBUG_MODE_METALLIC:
+                Color = float3(Metallic, Metallic, Metallic);
+                break;
+            case DEBUG_MODE_AMBIENT_OCCLUSION:
+                Color = float3(AO, AO, AO);
+                break;
+            case DEBUG_MODE_EMISSIVE:
+                Color = Material.Emissive;
+                break;
+            case DEBUG_MODE_UV:
+                Color = float3(frac(Input.UV), 0.0);
+                break;
+            default:
+                break;
+        }
+    }
 
     PSOutput Output;
     Output.Color  = float4(Color, Alpha);

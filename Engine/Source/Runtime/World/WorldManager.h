@@ -7,11 +7,6 @@
 
 namespace Lumina
 {
-    class FDeferredRenderScene;
-}
-
-namespace Lumina
-{
     class RUNTIME_API FWorldManager
     {
     public:

@@ -14,7 +14,6 @@ static const int SSAO_KERNEL_SIZE = 32;
 #define LIGHTS_PER_UINT  2
 #define LIGHTS_PER_CLUSTER 100
 #define SHADOW_SAMPLE_COUNT 16
-#define GCSM_RESOLUTION     4096
 
 #define INDEX_NONE -1
 
@@ -378,6 +377,10 @@ struct FLightData
     uint   bHasSun;
     float4 CascadeSplits;
     float4 CascadeRadii;
+    // Per-cascade atlas resolution (pixels per side). With progressive
+    // cascade packing each cascade has a different texel size, so the
+    // pixel shader can't fall back to a single GCSM_RESOLUTION constant.
+    float4 CascadeResolutions;
     float4 AmbientLight;
     FLight Lights[MAX_LIGHTS];
     FLightShadowData Shadows[MAX_SHADOWS];

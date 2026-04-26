@@ -3,6 +3,7 @@
 #include "Assets/AssetTypes/Material/MaterialInterface.h"
 #include "Core/Object/ObjectHandleTyped.h"
 #include "Renderer/RenderResource.h"
+#include "World/Scene/RenderScene/TerrainRenderTypes.h"
 #include "TerrainComponent.generated.h"
 
 namespace Lumina
@@ -38,19 +39,29 @@ namespace Lumina
         /** R8_UNORM array, one slice per layer, painted weight maps mirrored from CPU. */
         FRHIImageRef    LayerWeightTexture;
 
-        /** Per-chunk AABB + LOD info consumed by the cull pass. */
+        /** SSBO of FTerrainChunkInfo, one entry per chunk. Cull + render read this. */
         FRHIBufferRef   ChunkInfoBuffer;
 
-        /** Indirect draw arguments produced by chunk culling, consumed by terrain render. */
+        /** SSBO of FTerrainMeshletInfo, one entry per meshlet across all chunks. Cull + render read this. */
+        FRHIBufferRef   MeshletInfoBuffer;
+
+        /** SSBO of FTerrainVisibleMeshlet, written by cull, read by render. Sized to total meshlet count. */
+        FRHIBufferRef   VisibleMeshletBuffer;
+
+        /** Single FDrawIndirectArguments slot. Cull pass atomic-increments InstanceCount; render reads it. */
         FRHIBufferRef   IndirectDrawBuffer;
 
         uint32  AllocatedResolution = 0;
         uint32  AllocatedLayerCount = 0;
         uint32  AllocatedChunkCount = 0;
+        uint32  AllocatedMeshletCount = 0;
 
         /** Full reupload scheduled for the next simulate tick (resize / load / clear). */
         bool    bFullHeightmapDirty = true;
         bool    bFullWeightsDirty   = true;
+
+        /** When true, the chunk + meshlet metadata buffers need rebuild before the next cull. */
+        bool    bChunksDirty = true;
 
         /** Inclusive dirty rect on the CPU heightmap awaiting partial upload this frame. */
         glm::ivec2  HeightDirtyMin = glm::ivec2(INT32_MAX);
@@ -60,6 +71,12 @@ namespace Lumina
         glm::ivec2  WeightDirtyMin = glm::ivec2(INT32_MAX);
         glm::ivec2  WeightDirtyMax = glm::ivec2(INT32_MIN);
         uint32      WeightDirtyLayerMask = 0u;
+
+        /** CPU mirror of ChunkInfoBuffer, sized to ChunksPerSide^2. Rebuilt when bChunksDirty. */
+        TVector<FTerrainChunkInfo>      Chunks;
+
+        /** CPU mirror of MeshletInfoBuffer, sized to total meshlet count. Rebuilt when bChunksDirty. */
+        TVector<FTerrainMeshletInfo>    Meshlets;
     };
 
     /**
@@ -175,6 +192,9 @@ namespace Lumina
         {
             GPUState.HeightDirtyMin = glm::min(GPUState.HeightDirtyMin, Min);
             GPUState.HeightDirtyMax = glm::max(GPUState.HeightDirtyMax, Max);
+            // Heights drive chunk/meshlet bounds; flag a rebuild so the cull
+            // pass tests against the freshly-sculpted geometry.
+            GPUState.bChunksDirty = true;
         }
 
         /** Mark a rectangular region of a single layer's weights as dirty for the next upload. */

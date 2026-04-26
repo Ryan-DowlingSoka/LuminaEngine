@@ -4,6 +4,7 @@
 #include "Memory/SmartPtr.h"
 #include "Renderer/BindingCache.h"
 #include "Renderer/Vertex.h"
+#include "World/Scene/RenderScene/EnvironmentRenderTypes.h"
 #include "World/Scene/RenderScene/MeshDrawCommand.h"
 #include "World/Scene/RenderScene/RenderScene.h"
 #include "World/Scene/RenderScene/SceneCullContext.h"
@@ -146,6 +147,11 @@ namespace Lumina
             // the top of DepthPyramidPass; phase 2 also resets it before the
             // dispatch ends, so a single zero either way keeps it clean.
             SpdCounter,
+            // Per-frame environment params (sky mode, gradient/dynamic
+            // colors, sun cosmetics, exposure). Read by Environment.slang
+            // at binding (2, 0); written once per frame from the active
+            // SEnvironmentComponent.
+            Environment,
 
             Num,
         };
@@ -236,6 +242,11 @@ namespace Lumina
         void ParticleSimulatePass(ICommandList& CmdList);
         void ParticleRenderPass(ICommandList& CmdList);
         void TerrainUpdatePass(ICommandList& CmdList);
+        // Per-terrain GPU cull. One dispatch per active terrain entity, one
+        // workgroup per chunk, one thread per meshlet. Survivors land in
+        // FTerrainGPUState::VisibleMeshletBuffer + IndirectDrawBuffer; the
+        // render pass consumes both via DrawIndirect.
+        void TerrainCullPass(ICommandList& CmdList);
         void TerrainRenderPass(ICommandList& CmdList);
         void TransparentPass(ICommandList& CmdList);
         void OITResolvePass(ICommandList& CmdList);
@@ -340,6 +351,10 @@ namespace Lumina
         FSceneRenderStats                       RenderStats;
         FSceneRenderSettings                    RenderSettings;
         FSceneLightData                         LightData;
+        // Per-frame copy of the active SEnvironmentComponent's GPU params.
+        // Populated during environment processing, uploaded with the scene
+        // buffers, and read by Environment.slang at binding (2, 0).
+        FEnvironmentParams                      EnvironmentParams;
         
         FBindingCache                           BindingCache;
 
