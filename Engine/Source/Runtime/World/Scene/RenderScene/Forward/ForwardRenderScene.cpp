@@ -1130,7 +1130,6 @@ namespace Lumina
             const uint32 SurfaceMeshletCount = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
             const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot.VertexShader, Slot.PixelShader);
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
-            Local.MaxMeshletsPerInstance = std::max(Local.MaxMeshletsPerInstance, SurfaceMeshletCount);
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
             Item.EntityRecordIndex    = EntityRecordIdx;
@@ -1228,7 +1227,6 @@ namespace Lumina
             const uint32 SurfaceMeshletCount = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
             const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot.VertexShader, Slot.PixelShader);
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
-            Local.MaxMeshletsPerInstance = std::max(Local.MaxMeshletsPerInstance, SurfaceMeshletCount);
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
             Item.EntityRecordIndex    = EntityRecordIdx;
@@ -1452,12 +1450,6 @@ namespace Lumina
         // slice [v * TotalMeshletBound + DrawMeshletStartOffsets[d], ...), and
         // BuildCullViews seeds IndirectArgs[v * NumDraws + d].FirstInstance with
         // exactly that base so every view writes into its own disjoint slice.
-        MaxMeshletsPerInstance = 0u;
-        for (FThreadLocalDrawData& Local : ThreadLocal)
-        {
-            MaxMeshletsPerInstance = std::max(MaxMeshletsPerInstance, Local.MaxMeshletsPerInstance);
-        }
-
         uint32 MeshletRunning = 0u;
         for (uint32 d = 0; d < TotalDrawArgs; ++d)
         {
@@ -2467,7 +2459,6 @@ namespace Lumina
         DrawMeshletStartOffsets.clear();
         IndirectArgs.clear();
         CullViews.clear();
-        MaxMeshletsPerInstance = 0;
         TotalMeshletBound = 0;
         NumDrawsPerView = 0;
         CameraLateViewIndex = ~0u;

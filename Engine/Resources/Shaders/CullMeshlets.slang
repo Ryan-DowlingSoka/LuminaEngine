@@ -71,12 +71,11 @@ void EmitMeshlet(FCullView View, uint DrawID, uint InstanceID, uint MeshletLocal
 }
 
 // -----------------------------------------------------------------------------
-// Prefix-sum work expansion (per Lukas Pinkowski / foundation-engine pattern).
+// Prefix-sum work expansion.
 // Given a flat thread index and an inclusive per-instance meshlet prefix sum,
 // recover (InstanceID, MeshletLocalIdx) such that prefix[InstanceID] <=
 // flat_idx < prefix[InstanceID + 1]. Binary search is O(log NumInstances) and
-// keeps every active wave doing real work, where the old (X = MaxMeshlets,
-// Y = NumInstances) layout left half the lanes early-outing.
+// keeps every active wave doing real work.
 // -----------------------------------------------------------------------------
 bool ResolveInstanceFromFlatIndex(uint flat_idx, out uint InstanceID, out uint MeshletLocalIdx)
 {

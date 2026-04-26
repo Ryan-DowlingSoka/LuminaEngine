@@ -105,7 +105,6 @@ namespace Lumina
             TFrameVector<glm::mat4>             BonesData;
             FFrameArenaAllocator                Arena;
             FSceneRenderStats                   Stats = {};
-            uint32                              MaxMeshletsPerInstance = 0;
 
             FThreadLocalDrawData() = default;
             explicit FThreadLocalDrawData(FFrameArenaAllocator A)
@@ -456,9 +455,6 @@ namespace Lumina
          * Filled by MergeMeshDrawData; consumed by BuildCullViews.
          */
         TVector<uint32>                         DrawMeshletStartOffsets;
-
-        /** Peak SurfaceMeshletCount across all instances this frame; sets CullMeshlets' dispatch X. */
-        uint32                                  MaxMeshletsPerInstance = 0;
 
         /** Per-view stride in uMeshletDrawList (CullMeshlets atomic writes stay within this span). */
         uint32                                  TotalMeshletBound = 0;
