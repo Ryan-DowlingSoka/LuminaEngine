@@ -116,16 +116,14 @@ namespace Lumina
             return;
         }
 
-        // Vertices is transient. For loaded assets, fall back to the union
-        // of per-meshlet AABBs.
-        if (MeshResources && !MeshResources->MeshletData.MeshletBounds.empty())
+        // Vertices is transient. For loaded assets, fall back to the
+        // mesh-global quantization basis stored on FMeshletData.
+        if (MeshResources && !MeshResources->MeshletData.IsEmpty())
         {
-            for (const FMeshletBounds& B : MeshResources->MeshletData.MeshletBounds)
-            {
-                const glm::vec3 Hi = B.AABBMin + B.AABBScale * 1023.0f;
-                BoundingBox.Min = glm::min(BoundingBox.Min, B.AABBMin);
-                BoundingBox.Max = glm::max(BoundingBox.Max, Hi);
-            }
+            const glm::vec3 Lo = MeshResources->MeshletData.MeshAABBMin;
+            const glm::vec3 Hi = Lo + MeshResources->MeshletData.MeshAABBScale * 65535.0f;
+            BoundingBox.Min = glm::min(BoundingBox.Min, Lo);
+            BoundingBox.Max = glm::max(BoundingBox.Max, Hi);
         }
     }
 
@@ -191,10 +189,12 @@ namespace Lumina
             CommandList->SetPermanentBufferState(MeshResources->MeshBuffers.MeshletTriangleBuffer, EResourceStates::ShaderResource);
 
             FMeshletHeaderGPU Header;
-            Header.MeshletsAddress  = MeshResources->MeshBuffers.MeshletBuffer->GetAddress();
-            Header.BoundsAddress    = MeshResources->MeshBuffers.MeshletBoundsBuffer->GetAddress();
-            Header.VerticesAddress  = MeshResources->MeshBuffers.MeshletVertexBuffer->GetAddress();
-            Header.TrianglesAddress = MeshResources->MeshBuffers.MeshletTriangleBuffer->GetAddress();
+            Header.MeshletsAddress     = MeshResources->MeshBuffers.MeshletBuffer->GetAddress();
+            Header.BoundsAddress       = MeshResources->MeshBuffers.MeshletBoundsBuffer->GetAddress();
+            Header.VerticesAddress     = MeshResources->MeshBuffers.MeshletVertexBuffer->GetAddress();
+            Header.TrianglesAddress    = MeshResources->MeshBuffers.MeshletTriangleBuffer->GetAddress();
+            Header.MeshAABBMinAndPad   = glm::vec4(MData.MeshAABBMin,   0.0f);
+            Header.MeshAABBScaleAndPad = glm::vec4(MData.MeshAABBScale, 0.0f);
 
             FRHIBufferDesc HeaderDesc;
             HeaderDesc.Size       = sizeof(FMeshletHeaderGPU);

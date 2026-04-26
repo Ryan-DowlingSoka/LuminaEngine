@@ -38,8 +38,9 @@ namespace Lumina
         }
     };
 
-    // Sphere is for frustum/occlusion, cone for backface; AABBMin and
-    // AABBScale (= (max-min)/1023) drive the 10-10-10 position dequant.
+    // Sphere is for frustum/occlusion, cone for backface culling. The
+    // 16-16-16 position dequant basis is mesh-global and lives on
+    // FMeshletData / FMeshletHeaderGPU, not here.
     struct alignas(16) FMeshletBounds
     {
         glm::vec3 Center;
@@ -48,10 +49,6 @@ namespace Lumina
         float     ConeCutoff;   // = cos(angle / 2)
         glm::vec3 ConeAxis;
         float     _Pad0;
-        glm::vec3 AABBMin;
-        float     _Pad1;
-        glm::vec3 AABBScale;
-        float     _Pad2;
 
         friend FArchive& operator<<(FArchive& Ar, FMeshletBounds& Data)
         {
@@ -61,10 +58,6 @@ namespace Lumina
             Ar << Data.ConeCutoff;
             Ar << Data.ConeAxis;
             Ar << Data._Pad0;
-            Ar << Data.AABBMin;
-            Ar << Data._Pad1;
-            Ar << Data.AABBScale;
-            Ar << Data._Pad2;
             return Ar;
         }
     };
@@ -79,6 +72,12 @@ namespace Lumina
         TVector<uint32>                 MeshletTriangles;
         TVector<FMeshletBounds>         MeshletBounds;
 
+        // Mesh-global 16-16-16 position dequant basis. Shared by every
+        // meshlet so vertices duplicated at meshlet seams reconstruct to
+        // the same world position. MeshAABBScale = (max - min) / 65535.
+        glm::vec3                       MeshAABBMin   = glm::vec3(0.0f);
+        glm::vec3                       MeshAABBScale = glm::vec3(0.0f);
+
         FORCEINLINE bool IsEmpty() const { return Meshlets.empty(); }
 
         FORCEINLINE void Clear()
@@ -88,6 +87,8 @@ namespace Lumina
             MeshletSkinnedVertices.clear();
             MeshletTriangles.clear();
             MeshletBounds.clear();
+            MeshAABBMin   = glm::vec3(0.0f);
+            MeshAABBScale = glm::vec3(0.0f);
         }
 
         friend FArchive& operator<<(FArchive& Ar, FMeshletData& Data)
@@ -97,6 +98,8 @@ namespace Lumina
             Ar << Data.MeshletSkinnedVertices;
             Ar << Data.MeshletTriangles;
             Ar << Data.MeshletBounds;
+            Ar << Data.MeshAABBMin;
+            Ar << Data.MeshAABBScale;
             return Ar;
         }
     };
@@ -104,13 +107,16 @@ namespace Lumina
     // GPU-side descriptor for one mesh's meshlet data. Uploaded once per mesh
     // into a tiny per-mesh SSBO; FGPUInstance carries the buffer-device
     // address so the meshlet cull pass and base VS can reach all four flat
-    // arrays with a single pointer indirection.
+    // arrays with a single pointer indirection. MeshAABBMin/Scale carry the
+    // 16-16-16 position dequant basis shared by every meshlet of this mesh.
     struct alignas(16) FMeshletHeaderGPU
     {
-        uint64 MeshletsAddress;           // FMeshlet*
-        uint64 BoundsAddress;             // FMeshletBounds*
-        uint64 VerticesAddress;           // uint32*
-        uint64 TrianglesAddress;          // uint32* (packed 4x uint8)
+        uint64    MeshletsAddress;           // FMeshlet*
+        uint64    BoundsAddress;             // FMeshletBounds*
+        uint64    VerticesAddress;           // uint32*
+        uint64    TrianglesAddress;          // uint32* (packed 4x uint8)
+        glm::vec4 MeshAABBMinAndPad;         // xyz = mesh-global AABB min
+        glm::vec4 MeshAABBScaleAndPad;       // xyz = (max - min) / 65535
     };
 
     struct FGeometrySurface final

@@ -42,8 +42,7 @@ void MeshMain(uint GroupID   : SV_GroupID,
 
     FGPUInstance Inst = GetInstance(InstanceID);
 
-    FMeshlet       M = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
-    FMeshletBounds B = Inst.MeshletHeader.Bounds[GlobalMeshletIdx];
+    FMeshlet M = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
 
     SetMeshOutputCounts(M.VertexCount, M.TriangleCount);
 
@@ -60,11 +59,11 @@ void MeshMain(uint GroupID   : SV_GroupID,
         float3 LocalPos;
         if (bSkinned)
         {
-            LocalPos = LoadSkinnedPosition(Inst.MeshletHeader, M, B, ThreadID, Inst.BoneOffset);
+            LocalPos = LoadSkinnedPosition(Inst.MeshletHeader, M, ThreadID, Inst.BoneOffset);
         }
         else
         {
-            LocalPos = LoadStaticPosition(Inst.MeshletHeader, M, B, ThreadID);
+            LocalPos = LoadStaticPosition(Inst.MeshletHeader, M, ThreadID);
         }
 
         // Same three sequential muls as BaseMeshPass. Do not fuse.

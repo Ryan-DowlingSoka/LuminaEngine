@@ -216,9 +216,34 @@ namespace Lumina::Import::Mesh
             }
         });
 
-        // Phase 2: per meshlet, compute a tight AABB, emit a packed FMeshlet
-        // (Skinned)Vertex slice with positions quantized against that AABB
-        // and normals octahedral-encoded, then repack triangle micro-indices
+        // Mesh-global quantization basis. Shared across every meshlet so
+        // vertices duplicated at meshlet seams map to the same dequantized
+        // world position; per-meshlet AABBs would T-junction along seams.
+        glm::vec3 MeshLo( FLT_MAX);
+        glm::vec3 MeshHi(-FLT_MAX);
+        eastl::visit([&](const auto& Vec)
+        {
+            for (const auto& V : Vec)
+            {
+                MeshLo = glm::min(MeshLo, V.Position);
+                MeshHi = glm::max(MeshHi, V.Position);
+            }
+        }, MeshResource.Vertices);
+
+        // Degenerate axis (extent==0) gets a zero scale; the dequant then
+        // returns MeshAABBMin exactly for any quantized value on that axis.
+        const glm::vec3 MeshExtent = MeshHi - MeshLo;
+        glm::vec3 MeshScale(0.0f);
+        if (MeshExtent.x > 0.0f) MeshScale.x = MeshExtent.x / 65535.0f;
+        if (MeshExtent.y > 0.0f) MeshScale.y = MeshExtent.y / 65535.0f;
+        if (MeshExtent.z > 0.0f) MeshScale.z = MeshExtent.z / 65535.0f;
+
+        MeshResource.MeshletData.MeshAABBMin   = MeshLo;
+        MeshResource.MeshletData.MeshAABBScale = MeshScale;
+
+        // Phase 2: emit a packed FMeshlet(Skinned)Vertex slice for each
+        // meshlet with positions quantized against the mesh-global AABB and
+        // normals octahedral-encoded, then repack triangle micro-indices
         // into one dword per triangle.
         size_t TotalMeshlets  = 0;
         size_t TotalVertices  = 0;
@@ -245,24 +270,6 @@ namespace Lumina::Import::Mesh
             MeshResource.MeshletData.MeshletVertices.reserve(TotalVertices);
         }
 
-        // Helper: read a raw vertex (full precision) by global index.
-        auto ReadRawVertex = [&](uint32 GlobalIdx) -> const FVertex&
-        {
-            return eastl::visit([&](const auto& Vec) -> const FVertex&
-            {
-                using TVec = eastl::decay_t<decltype(Vec)>;
-                using VertexT = typename TVec::value_type;
-                if constexpr (eastl::is_same_v<VertexT, FSkinnedVertex>)
-                {
-                    return static_cast<const FVertex&>(Vec[GlobalIdx]);
-                }
-                else
-                {
-                    return Vec[GlobalIdx];
-                }
-            }, MeshResource.Vertices);
-        };
-
         for (uint32 SurfaceIdx = 0; SurfaceIdx < NumSurfaces; ++SurfaceIdx)
         {
             FGeometrySurface&       Section = MeshResource.GeometrySurfaces[SurfaceIdx];
@@ -281,27 +288,6 @@ namespace Lumina::Import::Mesh
                 FMeshlet         Out    = Result.OutMeshlets[MeshletIdx];
                 FMeshletBounds   Bounds = Result.Bounds[MeshletIdx];
 
-                glm::vec3 Lo( FLT_MAX);
-                glm::vec3 Hi(-FLT_MAX);
-                for (uint32 i = 0; i < Out.VertexCount; ++i)
-                {
-                    const uint32 SrcIdx = Result.Vertices[Out.VertexOffset + i];
-                    const glm::vec3 P   = ReadRawVertex(SrcIdx).Position;
-                    Lo = glm::min(Lo, P);
-                    Hi = glm::max(Hi, P);
-                }
-
-                // Degenerate axis (extent==0) gets a zero scale; the dequant
-                // then returns AABBMin exactly for any quantized value.
-                const glm::vec3 Extent = Hi - Lo;
-                glm::vec3 Scale(0.0f);
-                if (Extent.x > 0.0f) Scale.x = Extent.x / 1023.0f;
-                if (Extent.y > 0.0f) Scale.y = Extent.y / 1023.0f;
-                if (Extent.z > 0.0f) Scale.z = Extent.z / 1023.0f;
-
-                Bounds.AABBMin   = Lo;
-                Bounds.AABBScale = Scale;
-
                 const uint32 PackedVertexStart = MeshResource.bSkinnedMesh
                     ? (uint32)MeshResource.MeshletData.MeshletSkinnedVertices.size()
                     : (uint32)MeshResource.MeshletData.MeshletVertices.size();
@@ -314,8 +300,11 @@ namespace Lumina::Import::Mesh
                         const uint32         SrcIdx = Result.Vertices[Out.VertexOffset + i];
                         const FSkinnedVertex& V     = Verts[SrcIdx];
 
+                        const FPackedMeshletPosition PP = PackMeshletPosition(V.Position, MeshLo, MeshExtent);
+
                         FMeshletSkinnedVertex Packed{};
-                        Packed.Position     = PackMeshletPosition(V.Position, Lo, Extent);
+                        Packed.PositionXY   = PP.XY;
+                        Packed.PositionZ    = PP.Z;
                         Packed.Normal       = V.Normal;
                         Packed.UV           = V.UV;
                         Packed.Color        = V.Color;
@@ -338,11 +327,14 @@ namespace Lumina::Import::Mesh
                         const uint32   SrcIdx = Result.Vertices[Out.VertexOffset + i];
                         const FVertex& V      = Verts[SrcIdx];
 
+                        const FPackedMeshletPosition PP = PackMeshletPosition(V.Position, MeshLo, MeshExtent);
+
                         FMeshletVertex Packed{};
-                        Packed.Position = PackMeshletPosition(V.Position, Lo, Extent);
-                        Packed.Normal   = V.Normal;
-                        Packed.UV       = V.UV;
-                        Packed.Color    = V.Color;
+                        Packed.PositionXY = PP.XY;
+                        Packed.PositionZ  = PP.Z;
+                        Packed.Normal     = V.Normal;
+                        Packed.UV         = V.UV;
+                        Packed.Color      = V.Color;
                         MeshResource.MeshletData.MeshletVertices.push_back(Packed);
                     }
                 }

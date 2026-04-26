@@ -20,8 +20,7 @@ VertexOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: S
     FGPUInstance Inst = GetInstance(Draw.InstanceID);
 
     uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
-    FMeshlet       M = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
-    FMeshletBounds B = Inst.MeshletHeader.Bounds[GlobalMeshletIdx];
+    FMeshlet M = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
 
     uint TriIdx = VertexIndex / 3u;
     uint Corner = VertexIndex % 3u;
@@ -39,15 +38,16 @@ VertexOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: S
     uint LocalVertIdx = (PackedTri >> (Corner * 8u)) & 0xFFu;
 
     // Depth-only pass: skip Normal/UV/Color unpack, read position directly
-    // from the meshlet's packed vertex slice and dequantize via its AABB.
+    // from the meshlet's packed vertex slice and dequantize via the
+    // mesh-global AABB on the header.
     float3 LocalPos;
     if (Inst.HasFlag(EInstanceFlags::Skinned))
     {
-        LocalPos = LoadSkinnedPosition(Inst.MeshletHeader, M, B, LocalVertIdx, Inst.BoneOffset);
+        LocalPos = LoadSkinnedPosition(Inst.MeshletHeader, M, LocalVertIdx, Inst.BoneOffset);
     }
     else
     {
-        LocalPos = LoadStaticPosition(Inst.MeshletHeader, M, B, LocalVertIdx);
+        LocalPos = LoadStaticPosition(Inst.MeshletHeader, M, LocalVertIdx);
     }
 
     float4x4 ModelMatrix = Inst.ModelMatrix;

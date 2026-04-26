@@ -38,8 +38,7 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_Vu
     FGPUInstance Inst = GetInstance(Draw.InstanceID);
 
     uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
-    FMeshlet       M = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
-    FMeshletBounds B = Inst.MeshletHeader.Bounds[GlobalMeshletIdx];
+    FMeshlet M = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
 
     uint TriIdx = VertexIndex / 3u;
     uint Corner = VertexIndex % 3u;
@@ -63,18 +62,19 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_Vu
 
     // Triangles are packed as 3x uint8 micro-indices per dword. The local
     // index addresses the meshlet's private packed-vertex slice; loaders
-    // dequantize position via the meshlet AABB and decode the oct normal.
+    // dequantize position via the mesh-global AABB on the header and
+    // decode the oct normal.
     uint PackedTri    = Inst.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
     uint LocalVertIdx = (PackedTri >> (Corner * 8u)) & 0xFFu;
 
     FVertexData VertexData;
     if (Inst.HasFlag(EInstanceFlags::Skinned))
     {
-        VertexData = LoadSkinnedVertex(Inst.MeshletHeader, M, B, LocalVertIdx, Inst.BoneOffset);
+        VertexData = LoadSkinnedVertex(Inst.MeshletHeader, M, LocalVertIdx, Inst.BoneOffset);
     }
     else
     {
-        VertexData = LoadStaticVertex(Inst.MeshletHeader, M, B, LocalVertIdx);
+        VertexData = LoadStaticVertex(Inst.MeshletHeader, M, LocalVertIdx);
     }
 
     float4x4 ModelMatrix = Inst.ModelMatrix;

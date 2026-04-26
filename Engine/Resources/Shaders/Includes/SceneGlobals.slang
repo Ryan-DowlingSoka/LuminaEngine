@@ -47,26 +47,27 @@
 
 // ---------------------------------------------------------------------------------
 //  Vertex Loading. Each meshlet owns a packed vertex slice in
-//  MeshletHeader.Vertices; loaders dequantize position via the meshlet bounds.
+//  MeshletHeader.Vertices; loaders dequantize position via the mesh-global
+//  AABB carried on the header.
 // ---------------------------------------------------------------------------------
 
-FVertexData LoadStaticVertex(FMeshletHeader* Header, FMeshlet M, FMeshletBounds B, uint VertexLocalIdx)
+FVertexData LoadStaticVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx)
 {
     FVertex V = reinterpret<FVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
 
     FVertexData Data;
-    Data.Position = UnpackMeshletPosition(V.Position, B.AABBMin, B.AABBScale);
+    Data.Position = UnpackMeshletPosition(V.PositionXY, V.PositionZ, Header.MeshAABBMin.xyz, Header.MeshAABBScale.xyz);
     Data.Normal   = UnpackNormal(V.Normal);
     Data.UV       = UnpackUV(V.UV);
     Data.Color    = UnpackColor(V.Color);
     return Data;
 }
 
-FVertexData LoadSkinnedVertex(FMeshletHeader* Header, FMeshlet M, FMeshletBounds B, uint VertexLocalIdx, uint BoneOffset)
+FVertexData LoadSkinnedVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx, uint BoneOffset)
 {
     FSkinnedVertex V = reinterpret<FSkinnedVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
 
-    float3 LocalPos    = UnpackMeshletPosition(V.Position, B.AABBMin, B.AABBScale);
+    float3 LocalPos    = UnpackMeshletPosition(V.PositionXY, V.PositionZ, Header.MeshAABBMin.xyz, Header.MeshAABBScale.xyz);
     float3 LocalNormal = UnpackNormal(V.Normal);
 
     uint4  JointIndices = UnpackUIntToUVec4(V.JointIndices);
@@ -87,17 +88,17 @@ FVertexData LoadSkinnedVertex(FMeshletHeader* Header, FMeshlet M, FMeshletBounds
 }
 
 // Position-only variants for depth and shadow passes.
-float3 LoadStaticPosition(FMeshletHeader* Header, FMeshlet M, FMeshletBounds B, uint VertexLocalIdx)
+float3 LoadStaticPosition(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx)
 {
-    uint PackedPos = reinterpret<FVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx].Position;
-    return UnpackMeshletPosition(PackedPos, B.AABBMin, B.AABBScale);
+    FVertex V = reinterpret<FVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
+    return UnpackMeshletPosition(V.PositionXY, V.PositionZ, Header.MeshAABBMin.xyz, Header.MeshAABBScale.xyz);
 }
 
-float3 LoadSkinnedPosition(FMeshletHeader* Header, FMeshlet M, FMeshletBounds B, uint VertexLocalIdx, uint BoneOffset)
+float3 LoadSkinnedPosition(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx, uint BoneOffset)
 {
     FSkinnedVertex V = reinterpret<FSkinnedVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
 
-    float3 LocalPos = UnpackMeshletPosition(V.Position, B.AABBMin, B.AABBScale);
+    float3 LocalPos = UnpackMeshletPosition(V.PositionXY, V.PositionZ, Header.MeshAABBMin.xyz, Header.MeshAABBScale.xyz);
 
     uint4  JointIndices = UnpackUIntToUVec4(V.JointIndices);
     float4 Weights      = unpack_u8u32(V.JointWeights) / float4(255.0);

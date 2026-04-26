@@ -91,11 +91,12 @@ enum EInstanceFlags
 // ---------------------------------------------------------------------------------
 //  Structs
 
-// Mirror of Lumina::FMeshletVertex. Position is 10-10-10 quantized to the
-// meshlet's AABB (in FMeshletBounds), Normal is octahedral 16-16.
+// Mirror of Lumina::FMeshletVertex. Position is 16-16-16 quantized to a
+// mesh-global AABB (in FMeshletHeader), Normal is octahedral 16-16.
 struct FVertex
 {
-    uint    Position;
+    uint    PositionXY;
+    uint    PositionZ;
     uint    Normal;
     uint    UV;
     uint    Color;
@@ -103,7 +104,8 @@ struct FVertex
 
 struct FSkinnedVertex
 {
-    uint    Position;
+    uint    PositionXY;
+    uint    PositionZ;
     uint    Normal;
     uint    UV;
     uint    Color;
@@ -223,8 +225,9 @@ struct FMeshlet
     uint TriangleCount;
 };
 
-// Mirror of Lumina::FMeshletBounds. AABBMin + AABBScale drive 10-10-10
-// position dequant; Center/Radius and the cone are for culling.
+// Mirror of Lumina::FMeshletBounds. Center/Radius and the cone drive
+// culling; the 16-16-16 position dequant basis is mesh-global and lives
+// on FMeshletHeader instead.
 struct FMeshletBounds
 {
     float3 Center;
@@ -233,21 +236,20 @@ struct FMeshletBounds
     float  ConeCutoff;
     float3 ConeAxis;
     float  _Pad0;
-    float3 AABBMin;
-    float  _Pad1;
-    float3 AABBScale;     // = (AABBMax - AABBMin) / 1023.0
-    float  _Pad2;
 };
 
 // Mirror of Lumina::FMeshletHeaderGPU. One entry per mesh; FGPUInstance carries
 // a pointer to it so the cull pass and base VS can reach the four flat arrays
-// through a single indirection.
+// through a single indirection. MeshAABBMin/Scale carry the 16-16-16 position
+// dequant basis shared by every meshlet of this mesh.
 struct FMeshletHeader
 {
     FMeshlet*       Meshlets;
     FMeshletBounds* Bounds;
-    uint*           Vertices;    // Indices into FMeshResource::Vertices
-    uint*           Triangles;   // Packed 4x uint8 per uint32
+    uint*           Vertices;     // Packed FMeshletVertex / FMeshletSkinnedVertex
+    uint*           Triangles;    // Packed 4x uint8 per uint32
+    float4          MeshAABBMin;  // xyz = mesh-global AABB min
+    float4          MeshAABBScale;// xyz = (max - min) / 65535
 };
 
 // One entry per surviving meshlet emitted by MeshletCull.slang. The vertex
@@ -498,11 +500,11 @@ float3 UnpackNormal(uint Packed)
     return normalize(n);
 }
 
-float3 UnpackMeshletPosition(uint Packed, float3 AABBMin, float3 AABBScale)
+float3 UnpackMeshletPosition(uint PackedXY, uint PackedZ, float3 AABBMin, float3 AABBScale)
 {
-    float qx = float(Packed         & 0x3FFu);
-    float qy = float((Packed >> 10u) & 0x3FFu);
-    float qz = float((Packed >> 20u) & 0x3FFu);
+    float qx = float( PackedXY        & 0xFFFFu);
+    float qy = float((PackedXY >> 16u) & 0xFFFFu);
+    float qz = float( PackedZ         & 0xFFFFu);
     return AABBMin + float3(qx, qy, qz) * AABBScale;
 }
 

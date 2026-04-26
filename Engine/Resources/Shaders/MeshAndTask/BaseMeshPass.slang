@@ -45,8 +45,7 @@ void MeshMain(uint GroupID   : SV_GroupID,
 
     FGPUInstance Inst = GetInstance(InstanceID);
 
-    FMeshlet       M = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
-    FMeshletBounds B = Inst.MeshletHeader.Bounds[GlobalMeshletIdx];
+    FMeshlet M = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
 
     SetMeshOutputCounts(M.VertexCount, M.TriangleCount);
 
@@ -64,11 +63,11 @@ void MeshMain(uint GroupID   : SV_GroupID,
         FVertexData VertexData;
         if (bSkinned)
         {
-            VertexData = LoadSkinnedVertex(Inst.MeshletHeader, M, B, ThreadID, Inst.BoneOffset);
+            VertexData = LoadSkinnedVertex(Inst.MeshletHeader, M, ThreadID, Inst.BoneOffset);
         }
         else
         {
-            VertexData = LoadStaticVertex(Inst.MeshletHeader, M, B, ThreadID);
+            VertexData = LoadStaticVertex(Inst.MeshletHeader, M, ThreadID);
         }
 
         float4 WorldPos  = mul(ModelMatrix, float4(VertexData.Position, 1.0));

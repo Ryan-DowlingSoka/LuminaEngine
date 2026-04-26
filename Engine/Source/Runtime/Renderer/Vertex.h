@@ -61,24 +61,32 @@ namespace Lumina
         return glm::normalize(n);
     }
 
-    // 10-10-10 unsigned position pack relative to a per-meshlet AABB.
-    // AABBScale = (max - min) / 1023 lets the shader dequant collapse to
-    // one MAD per axis. Top 2 bits reserved.
-    inline uint32 PackMeshletPosition(glm::vec3 P, glm::vec3 AABBMin, glm::vec3 AABBExtent)
+    // 16-16-16 unsigned position pack relative to a mesh-global AABB.
+    // AABBScale = (max - min) / 65535 so the shader dequant collapses to a
+    // MAD per axis. The basis is shared across every meshlet of a mesh, so
+    // vertices duplicated at meshlet seams quantize to the same world
+    // position; per-meshlet AABBs would T-junction along seams.
+    struct FPackedMeshletPosition
+    {
+        uint32 XY; // X in low 16, Y in high 16
+        uint32 Z;  // Z in low 16, high 16 reserved (zero)
+    };
+
+    inline FPackedMeshletPosition PackMeshletPosition(glm::vec3 P, glm::vec3 AABBMin, glm::vec3 AABBExtent)
     {
         glm::vec3 Norm = (P - AABBMin) / glm::max(AABBExtent, glm::vec3(1e-12f));
         Norm = glm::clamp(Norm, glm::vec3(0.0f), glm::vec3(1.0f));
-        uint32 qx = (uint32)glm::round(Norm.x * 1023.0f) & 0x3FF;
-        uint32 qy = (uint32)glm::round(Norm.y * 1023.0f) & 0x3FF;
-        uint32 qz = (uint32)glm::round(Norm.z * 1023.0f) & 0x3FF;
-        return qx | (qy << 10) | (qz << 20);
+        uint32 qx = (uint32)glm::round(Norm.x * 65535.0f) & 0xFFFFu;
+        uint32 qy = (uint32)glm::round(Norm.y * 65535.0f) & 0xFFFFu;
+        uint32 qz = (uint32)glm::round(Norm.z * 65535.0f) & 0xFFFFu;
+        return { qx | (qy << 16), qz };
     }
 
-    inline glm::vec3 UnpackMeshletPosition(uint32 packed, glm::vec3 AABBMin, glm::vec3 AABBScale)
+    inline glm::vec3 UnpackMeshletPosition(uint32 PackedXY, uint32 PackedZ, glm::vec3 AABBMin, glm::vec3 AABBScale)
     {
-        uint32 qx = packed & 0x3FF;
-        uint32 qy = (packed >> 10) & 0x3FF;
-        uint32 qz = (packed >> 20) & 0x3FF;
+        uint32 qx =  PackedXY        & 0xFFFFu;
+        uint32 qy = (PackedXY >> 16) & 0xFFFFu;
+        uint32 qz =  PackedZ         & 0xFFFFu;
         return AABBMin + glm::vec3((float)qx, (float)qy, (float)qz) * AABBScale;
     }
 
@@ -119,12 +127,13 @@ namespace Lumina
         }
     };
 
-    // 16-byte runtime vertex stored per-meshlet. Position is 10-10-10
-    // quantized to its meshlet's AABB (carried in FMeshletBounds), Normal
-    // is octahedral 16-16. Mirrored by the shader-side FVertex struct.
+    // 20-byte runtime vertex stored per-meshlet. Position is 16-16-16
+    // quantized to a mesh-global AABB (carried in FMeshletHeaderGPU),
+    // Normal is octahedral 16-16. Mirrored by the shader-side FVertex.
     struct FMeshletVertex
     {
-        uint32 Position;
+        uint32 PositionXY;
+        uint32 PositionZ;
         uint32 Normal;
         uint32 UV;
         uint32 Color;
@@ -150,8 +159,8 @@ namespace Lumina
 
     static_assert(sizeof(FVertex) == 24);
     static_assert(sizeof(FSkinnedVertex) == 32);
-    static_assert(sizeof(FMeshletVertex) == 16);
-    static_assert(sizeof(FMeshletSkinnedVertex) == 24);
+    static_assert(sizeof(FMeshletVertex) == 20);
+    static_assert(sizeof(FMeshletSkinnedVertex) == 28);
     static_assert(offsetof(FVertex, Position) == 0);
     static_assert(TCanBulkSerialize<FVertex>::value);
     static_assert(TCanBulkSerialize<FSkinnedVertex>::value);
