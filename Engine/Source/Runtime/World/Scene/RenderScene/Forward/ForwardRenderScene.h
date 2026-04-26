@@ -152,6 +152,14 @@ namespace Lumina
             // at binding (2, 0); written once per frame from the active
             // SEnvironmentComponent.
             Environment,
+            // Inclusive prefix sum of per-instance SurfaceMeshletCount.
+            // Sized [InstanceNum + 1]; entry [i] is the running total of
+            // meshlets across instances [0..i). The cull pass dispatches a
+            // flat thread-per-meshlet layout sized to TotalMeshletBound and
+            // binary-searches this buffer to recover (InstanceID,
+            // MeshletLocalIdx) without the old per-instance over-dispatch
+            // and thread-bounds early-outs.
+            InstanceMeshletPrefix,
 
             Num,
         };
@@ -457,6 +465,16 @@ namespace Lumina
 
         /** Per-view stride into IndirectArgs (NumDraws). Cached so draw passes can index without recomputing. */
         uint32                                  NumDrawsPerView = 0;
+
+        /**
+         * Inclusive prefix sum of per-instance SurfaceMeshletCount.
+         * Sized [Instances.size() + 1]; entry [i] is the running total of
+         * meshlets across instances [0..i). Built on CPU after the parallel
+         * instance write, uploaded to ENamedBuffer::InstanceMeshletPrefix
+         * each frame, and used by the cull pass to recover (InstanceID,
+         * MeshletLocalIdx) from a flat thread index.
+         */
+        TVector<uint32>                         InstanceMeshletPrefix;
 
         /**
          * View index of the first CSM cascade. Only valid if bHasSun and the

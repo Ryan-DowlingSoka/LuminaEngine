@@ -32,6 +32,13 @@
 [[vk::binding(14, 0)]] RWStructuredBuffer<FMeshletDeferred>          uMeshletDeferList;
 [[vk::binding(15, 0)]] globallycoherent RWStructuredBuffer<uint>     uDeferCount;
 
+// Inclusive per-instance meshlet prefix sum, sized [InstanceNum + 1].
+// Entry [i] is the running total of meshlets across instances [0..i). The
+// cull pass binary-searches this to recover (InstanceID, MeshletLocalIdx)
+// from a flat thread index, sidestepping the old per-instance over-dispatch
+// and the thread-bounds early-outs that wasted lanes on it.
+[[vk::binding(16, 0)]] StructuredBuffer<uint>                        uInstanceMeshletPrefix;
+
 // ---------------------------------------------------------------------------------
 //  Binding Set 1
 // ---------------------------------------------------------------------------------

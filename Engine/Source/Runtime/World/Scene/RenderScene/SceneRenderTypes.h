@@ -524,7 +524,11 @@ namespace Lumina
 
         uint32 NumDraws;
         uint32 DebugMode;
-        uint32 Padding[2];
+        // Total meshlets across every instance this frame; the cull's flat
+        // thread-per-meshlet dispatch reads this for the tail-thread cutoff
+        // and the dispatch sizing.
+        uint32 TotalMeshletBound;
+        uint32 Padding;
     };
 
     // Bits inside FCullView::Flags. Must match CULL_VIEW_FLAG_* in Common.slang.

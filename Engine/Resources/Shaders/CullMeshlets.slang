@@ -71,27 +71,70 @@ void EmitMeshlet(FCullView View, uint DrawID, uint InstanceID, uint MeshletLocal
 }
 
 // -----------------------------------------------------------------------------
+// Prefix-sum work expansion (per Lukas Pinkowski / foundation-engine pattern).
+// Given a flat thread index and an inclusive per-instance meshlet prefix sum,
+// recover (InstanceID, MeshletLocalIdx) such that prefix[InstanceID] <=
+// flat_idx < prefix[InstanceID + 1]. Binary search is O(log NumInstances) and
+// keeps every active wave doing real work, where the old (X = MaxMeshlets,
+// Y = NumInstances) layout left half the lanes early-outing.
+// -----------------------------------------------------------------------------
+bool ResolveInstanceFromFlatIndex(uint flat_idx, out uint InstanceID, out uint MeshletLocalIdx)
+{
+    InstanceID      = 0u;
+    MeshletLocalIdx = 0u;
+
+    uint TotalWork = uSceneData.CullData.TotalMeshletBound;
+    if (flat_idx >= TotalWork)
+    {
+        return false;
+    }
+
+    // Binary search: find the largest i with uInstanceMeshletPrefix[i] <= flat_idx.
+    // Invariant: prefix[lo] <= flat_idx, prefix[hi] > flat_idx (or hi is the
+    // sentinel index NumInstances). prefix[0] is always 0, so the lo=0 base
+    // case never violates the invariant.
+    uint Lo = 0u;
+    uint Hi = uSceneData.CullData.InstanceNum;
+    while (Hi - Lo > 1u)
+    {
+        uint Mid = (Lo + Hi) >> 1u;
+        if (uInstanceMeshletPrefix[Mid] <= flat_idx)
+        {
+            Lo = Mid;
+        }
+        else
+        {
+            Hi = Mid;
+        }
+    }
+
+    InstanceID      = Lo;
+    MeshletLocalIdx = flat_idx - uInstanceMeshletPrefix[Lo];
+    return true;
+}
+
+// -----------------------------------------------------------------------------
 // Phase 0. Walks every (instance, meshlet) pair and routes each survivor
 // either into a view's draw list (shadow views, camera-visible) or the
 // defer list (camera + HZB-occluded).
+//
+// Thread layout: flat 1D dispatch sized to TotalMeshletBound. Each thread
+// owns exactly one meshlet -- no over-dispatch, no per-instance wave slop.
+// Vulkan's per-axis 65535 workgroup limit is folded into Y on the C++ side;
+// the shader reconstructs the flat index here.
 // -----------------------------------------------------------------------------
 void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
 {
-    // CPU splits instance count across Y/Z when Num > 65535 (Vulkan groupCountY limit).
-    uint InstanceID      = GroupID.y + GroupID.z * 65535;
-    uint MeshletLocalIdx = GlobalID.x;
-    uint NumInstances    = uSceneData.CullData.InstanceNum;
+    const uint flat_idx = GlobalID.x + GroupID.y * 65535u * 64u;
 
-    if (InstanceID >= NumInstances)
+    uint InstanceID;
+    uint MeshletLocalIdx;
+    if (!ResolveInstanceFromFlatIndex(flat_idx, InstanceID, MeshletLocalIdx))
+    {
         return;
+    }
 
     FGPUInstance Inst = GetInstance(InstanceID);
-
-    if (Inst.SurfaceMeshletCount == 0)
-        return;
-
-    if (MeshletLocalIdx >= Inst.SurfaceMeshletCount)
-        return;
 
     // Per-instance / per-meshlet data reused across every view.
     bool bSkinned  = Inst.HasFlag(EInstanceFlags::Skinned);
@@ -221,9 +264,12 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
 // Phase 1. One thread per deferred entry. No scene walk, no per-view loop --
 // every survivor goes to the single camera-late view.
 // -----------------------------------------------------------------------------
-void RunLatePhase(uint3 GlobalID, uint CameraLateViewIndex)
+void RunLatePhase(uint3 GlobalID, uint3 GroupID, uint CameraLateViewIndex)
 {
-    uint ThreadIdx = GlobalID.x;
+    // Same flat-index reconstruction as RunEarlyPhase: GlobalID.x already
+    // covers ((GroupID.x * 64) + ThreadID.x), and the C++ side folds large
+    // dispatches into Y, so the late phase reads the same fold here.
+    uint ThreadIdx = GlobalID.x + GroupID.y * 65535u * 64u;
     uint Count     = uDeferCount[0];
 
     if (ThreadIdx >= Count)
@@ -268,7 +314,7 @@ void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupI
 {
     if (PC.Phase == CULL_PHASE_LATE)
     {
-        RunLatePhase(GlobalID, PC.CameraLateViewIndex);
+        RunLatePhase(GlobalID, GroupID, PC.CameraLateViewIndex);
     }
     else
     {

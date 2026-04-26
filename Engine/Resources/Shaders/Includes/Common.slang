@@ -434,7 +434,10 @@ struct FCullData
     // Debug visualization mode. Mirrors Lumina::ERenderSceneDebugFlags; keep
     // DEBUG_MODE_* constants below in sync with the C++ enum.
     uint     DebugMode;
-    uint     _Pad0[2];
+    // Total meshlets across every instance this frame. The cull's flat
+    // thread-per-meshlet dispatch reads this for the tail-thread cutoff.
+    uint     TotalMeshletBound;
+    uint     _Pad0;
 };
 
 // Debug visualization modes. Must match Lumina::ERenderSceneDebugFlags.
@@ -467,19 +470,28 @@ struct FSceneGlobalData
 // ---------------------------------------------------------------------------------
 //  Functions
 
-// Octahedral 16-16 unit-normal decode. Sign-extend via shift pair (Slang
-// lacks unpackSnorm2x16).
+// Octahedral 16-16 unit-normal decode (Slang lacks unpackSnorm2x16).
+//
+// Branchless wrap follows Cigolle et al, "A Survey of Efficient
+// Representations for Independent Unit Vectors" (2014). The old outer
+// `if (n.z < 0.0)` diverged any warp that straddled a hemisphere boundary
+// -- common on every curved surface -- forcing the wave to serialize. The
+// closed form `n.xy -= signNotZero(n.xy) * max(-n.z, 0)` produces the same
+// result without control flow; when n.z >= 0 the offset is zero, when
+// n.z < 0 it's algebraically equal to the original mirror.
 float3 UnpackNormal(uint Packed)
 {
-    int sx = (int(Packed) << 16) >> 16;
-    int sy =  int(Packed)        >> 16;
-    float2 e = float2(sx, sy) * (1.0 / 32767.0);
-    float3 n = float3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
-    if (n.z < 0.0)
-    {
-        float2 sgn = float2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
-        n.xy = (1.0 - abs(float2(n.y, n.x))) * sgn;
-    }
+    // BFE folds to a single sign-extending bitfield op per channel rather
+    // than relying on the compiler to recognize the shift-pair idiom.
+    int2 i = int2(bitfieldExtract(int(Packed),  0, 16),
+                  bitfieldExtract(int(Packed), 16, 16));
+    float2 e = float2(i) * (1.0 / 32767.0);
+
+    float3 n = float3(e, 1.0 - abs(e.x) - abs(e.y));
+
+    float t = max(-n.z, 0.0);
+    n.xy -= float2(n.x >= 0.0 ? t : -t, n.y >= 0.0 ? t : -t);
+
     return normalize(n);
 }
 

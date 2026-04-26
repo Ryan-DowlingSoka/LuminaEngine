@@ -694,9 +694,10 @@ namespace Lumina
         // the array lengths it produced.
         BuildCullViews(SceneViewport->GetViewVolume());
 
-        const uint32 NumCullViews         = (uint32)CullViews.size();
-        const uint32 NumDraws             = NumDrawsPerView;
-        SceneGlobalData.CullData.NumDraws = NumDraws;
+        const uint32 NumCullViews                  = (uint32)CullViews.size();
+        const uint32 NumDraws                      = NumDrawsPerView;
+        SceneGlobalData.CullData.NumDraws          = NumDraws;
+        SceneGlobalData.CullData.TotalMeshletBound = TotalMeshletBound;
 
         const SIZE_T SimpleVertexSize     = SimpleVertices.size() * sizeof(FSimpleElementVertex);
         const SIZE_T InstanceSize         = Instances.size() * sizeof(FGPUInstance);
@@ -711,6 +712,14 @@ namespace Lumina
         // overrun a buffer sized only to LightsUploadSize.
         const SIZE_T LightUploadSize   = offsetof(FSceneLightData, Shadows) + ShadowsUploadSize;
         const SIZE_T BillboardSize     = BillboardInstances.size() * sizeof(FBillboardInstance);
+
+        // Per-instance meshlet prefix sum: one uint per instance plus one
+        // sentinel. Cull pass binary-searches this; bounds-checked by
+        // TotalMeshletBound on the GPU side so the buffer never needs to be
+        // re-bound or recreated mid-frame.
+        const SIZE_T InstanceMeshletPrefixSize = glm::max<SIZE_T>(
+            sizeof(uint32),
+            InstanceMeshletPrefix.size() * sizeof(uint32));
 
         // Shared meshlet draw list: NumViews * TotalMeshletBound FMeshletDraw
         // entries (sizeof(FMeshletDraw) == 2 * sizeof(uint32)). Each view owns
@@ -748,6 +757,7 @@ namespace Lumina
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletDrawList], (uint32)MeshletDrawListSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::IndirectArgs], (uint32)IndirectArgsSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletDeferList], (uint32)DeferListSize, 1.2f);
+        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMeshletPrefix], (uint32)InstanceMeshletPrefixSize, 1.2f);
 
         if (bAnyBufferResized)
         {
@@ -766,6 +776,7 @@ namespace Lumina
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Light), EResourceStates::CopyDest);
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Billboards), EResourceStates::CopyDest);
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Environment), EResourceStates::CopyDest);
+            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::InstanceMeshletPrefix), EResourceStates::CopyDest);
             CmdList.CommitBarriers();
 
             CmdList.DisableAutomaticBarriers();
@@ -799,6 +810,12 @@ namespace Lumina
             }
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Billboards), BillboardInstances.data(), BillboardSize);
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Environment), &EnvironmentParams, sizeof(FEnvironmentParams));
+            if (!InstanceMeshletPrefix.empty())
+            {
+                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::InstanceMeshletPrefix),
+                                    InstanceMeshletPrefix.data(),
+                                    InstanceMeshletPrefix.size() * sizeof(uint32));
+            }
             CmdList.EnableAutomaticBarriers();
         }
     }
@@ -1493,6 +1510,32 @@ namespace Lumina
             });
             WriteGraph.Dispatch();
             WriteGraph.Wait();
+        }
+
+        // Per-instance meshlet prefix sum. Building this here -- after the
+        // parallel instance write fills SurfaceMeshletCount -- lets the cull
+        // pass dispatch a flat thread-per-meshlet layout instead of the old
+        // (X = MaxMeshletsPerInstance, Y = NumInstances) over-dispatch that
+        // wasted lanes on (MeshletLocalIdx >= SurfaceMeshletCount) and
+        // (SurfaceMeshletCount == 0) early-outs. Entry [i] is the running
+        // total of meshlets across instances [0..i); entry [N] is the same
+        // value as TotalMeshletBound and acts as the upper sentinel for the
+        // shader's binary search.
+        {
+            const size_t NumInstancesLocal = Instances.size();
+            InstanceMeshletPrefix.resize(NumInstancesLocal + 1);
+            uint32 RunningInstanceMeshlets = 0u;
+            for (size_t i = 0; i < NumInstancesLocal; ++i)
+            {
+                InstanceMeshletPrefix[i] = RunningInstanceMeshlets;
+                RunningInstanceMeshlets += Instances[i].SurfaceMeshletCount;
+            }
+            InstanceMeshletPrefix[NumInstancesLocal] = RunningInstanceMeshlets;
+            // RunningInstanceMeshlets and TotalMeshletBound (= sum over draw
+            // batches) must agree -- both are the same set of meshlets
+            // counted differently. Asserting cheaply guards against a future
+            // path that splits the two.
+            DEBUG_ASSERT(RunningInstanceMeshlets == TotalMeshletBound);
         }
 
         RenderStats.NumBatches = NumBatches;
@@ -2429,6 +2472,7 @@ namespace Lumina
         NumDrawsPerView = 0;
         CameraLateViewIndex = ~0u;
         Instances.clear();
+        InstanceMeshletPrefix.clear();
         LightData = {};
         ShadowDataCount.store(0, std::memory_order_release);
         ShadowAtlas.FreeTiles();
@@ -2459,22 +2503,15 @@ namespace Lumina
 
     void FForwardRenderScene::CullPassEarly(ICommandList& CmdList)
     {
-        if (DrawCommands.empty() || CullViews.empty() || MaxMeshletsPerInstance == 0)
+        if (DrawCommands.empty() || CullViews.empty() || TotalMeshletBound == 0u)
         {
             return;
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Cull Pass (Early)", tracy::Color::Pink2);
 
-        const uint32 Num = (uint32)Instances.size();
-        if (Num == 0)
-        {
-            return;
-        }
-
-
         CmdList.FillBuffer(GetNamedBuffer(ENamedBuffer::DeferCount), 0u);
-        
+
         FRHIComputeShaderRef CullShader = FShaderLibrary::GetComputeShader("CullMeshlets.slang");
 
         FComputePipelineDesc PipelineDesc;
@@ -2496,13 +2533,21 @@ namespace Lumina
         PC.CameraLateViewIndex = CameraLateViewIndex;
         CmdList.SetPushConstants(&PC, sizeof(PC));
 
-        const uint32 MeshletGroupsX = (MaxMeshletsPerInstance + 63) / 64;
-        // Vulkan caps groupCountY at 65535, so fold instance overflow into Z.
-        // Shader reconstructs InstanceID = GroupID.y + GroupID.z * 65535.
-        constexpr uint32 MaxDispatchY = 65535;
-        const uint32 DispatchY = Num < MaxDispatchY ? Num : MaxDispatchY;
-        const uint32 DispatchZ = (Num + MaxDispatchY - 1) / MaxDispatchY;
-        CmdList.Dispatch(MeshletGroupsX, DispatchY, DispatchZ);
+        // Flat thread-per-meshlet dispatch. Total threads = TotalMeshletBound,
+        // so the shader's only early-out is the tail of the last workgroup
+        // (~63 threads max). The old (X = MaxMeshletsPerInstance,
+        // Y = NumInstances) layout dispatched MaxMeshlets * NumInstances
+        // threads with most early-outing on (MeshletLocalIdx >=
+        // SurfaceMeshletCount); on a typical scene that was 5-10x the work.
+        //
+        // Vulkan's groupCountX minimum is 65535, so workgroups beyond that
+        // fold into Y. The shader reconstructs the flat thread index as
+        // GroupID.x * 64 + ThreadID.x + GroupID.y * 65535 * 64.
+        const uint32 NumWorkgroups = (TotalMeshletBound + 63u) / 64u;
+        constexpr uint32 MaxDispatchAxis = 65535u;
+        const uint32 DispatchX = NumWorkgroups < MaxDispatchAxis ? NumWorkgroups : MaxDispatchAxis;
+        const uint32 DispatchY = (NumWorkgroups + MaxDispatchAxis - 1u) / MaxDispatchAxis;
+        CmdList.Dispatch(DispatchX, DispatchY, 1u);
     }
 
     void FForwardRenderScene::CullPassLate(ICommandList& CmdList)
@@ -2544,8 +2589,14 @@ namespace Lumina
         PC.CameraLateViewIndex = CameraLateViewIndex;
         CmdList.SetPushConstants(&PC, sizeof(PC));
 
-        const uint32 MeshletGroupsX = (TotalMeshletBound + 63) / 64;
-        CmdList.Dispatch(MeshletGroupsX, 1, 1);
+        // Worst-case dispatch: every camera meshlet was deferred. Same X/Y
+        // fold as CullPassEarly so Vulkan's 65535 per-axis workgroup limit
+        // doesn't cap us on very large scenes.
+        const uint32 NumWorkgroups = (TotalMeshletBound + 63u) / 64u;
+        constexpr uint32 MaxDispatchAxis = 65535u;
+        const uint32 DispatchX = NumWorkgroups < MaxDispatchAxis ? NumWorkgroups : MaxDispatchAxis;
+        const uint32 DispatchY = (NumWorkgroups + MaxDispatchAxis - 1u) / MaxDispatchAxis;
+        CmdList.Dispatch(DispatchX, DispatchY, 1u);
     }
 
 
@@ -4974,6 +5025,19 @@ namespace Lumina
             BufferDesc.DebugName = "Environment Params";
             NamedBuffers[(int)ENamedBuffer::Environment] = GRenderContext->CreateBuffer(BufferDesc);
         }
+
+        // Per-instance meshlet prefix sum. Initial size is one entry; the
+        // upload site grows it as Instances grows.
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(uint32);
+            BufferDesc.Stride = sizeof(uint32);
+            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::ShaderResource;
+            BufferDesc.DebugName = "Instance Meshlet Prefix";
+            NamedBuffers[(int)ENamedBuffer::InstanceMeshletPrefix] = GRenderContext->CreateBuffer(BufferDesc);
+        }
     }
 
     static uint32 PreviousPow2(uint32 v)
@@ -5212,6 +5276,11 @@ namespace Lumina
             // them and re-tests against the rebuilt HZB.
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(14, GetNamedBuffer(ENamedBuffer::MeshletDeferList)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(15, GetNamedBuffer(ENamedBuffer::DeferCount)));
+            // Per-instance meshlet prefix sum used by the cull pass to map a
+            // flat thread index to (InstanceID, MeshletLocalIdx) without the
+            // per-instance over-dispatch the old (X = MaxMeshletsPerInstance,
+            // Y = NumInstances) layout produced.
+            BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(16, GetNamedBuffer(ENamedBuffer::InstanceMeshletPrefix)));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
