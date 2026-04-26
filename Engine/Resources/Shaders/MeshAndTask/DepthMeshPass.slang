@@ -1,30 +1,16 @@
 #include "Includes/SceneGlobals.slang"
 #include "Includes/MeshletPayload.slang"
 
-// Position-only mesh shader for the depth pre-pass. Clip-space math is kept
-// bit-for-bit identical to BaseMeshPass.slang because BasePass runs with
-// Equal depth test against this pass's output; any FP drift produces black
-// pixels from Z-equal misses.
-//
-// What this shader DOES skip vs BaseMeshPass:
-//   - Normal / UV / Color unpack from the vertex record (LoadStaticPositionByIndex
-//     reads only the float3 Position field and skips the Unpack* ALU).
-//   - NormalMatrix build and normal transform.
-//   - ViewPos / Normal / UV / Color interpolant writes.
-//
-// Masked materials still route through BaseMeshPass (the material PS needs UV
-// for alpha clip); only fully-opaque draws pick this shader.
+// Position-only mesh shader for the depth pre-pass. Opaque only; masked
+// materials route through BaseMeshPass.
 
 struct MSOutput
 {
-    // IMPORTANT: position math must stay in lockstep with BaseMeshPass.slang
-    // and BaseVertexPass.slang / DepthPrePass.slang. Diverging produces
-    // Z-fighting against BasePass's depth-equal test.
+    // Position math must match BaseMeshPass / BaseVertexPass / DepthPrePass
+    // for the equal-depth test.
     precise float4 Position : SV_Position;
 };
 
-// Workgroup covers max(vertCount=64, triCount=124). 128 threads matches
-// BaseMeshPass so the backend can share pipeline-stage resources.
 #define MESH_GROUP_SIZE 128
 
 [shader("mesh")]
@@ -46,27 +32,18 @@ void MeshMain(uint GroupID   : SV_GroupID,
 
     SetMeshOutputCounts(M.VertexCount, M.TriangleCount);
 
-    // Hoist transform/projection reads outside the predicate so every lane in
-    // the vertex range shares the same matrices.
     float4x4 ModelMatrix = Inst.ModelMatrix;
     float4x4 View        = GetCameraView();
     float4x4 Projection  = GetCameraProjection();
     bool     bSkinned    = Inst.HasFlag(EInstanceFlags::Skinned);
 
-    // Vertex lane: first VertexCount threads each emit one vertex.
     if (ThreadID < M.VertexCount)
     {
-        float3 LocalPos;
-        if (bSkinned)
-        {
-            LocalPos = LoadSkinnedPosition(Inst.MeshletHeader, M, ThreadID, Inst.BoneOffset);
-        }
-        else
-        {
-            LocalPos = LoadStaticPosition(Inst.MeshletHeader, M, ThreadID);
-        }
+        float3 LocalPos = bSkinned
+            ? LoadSkinnedPosition(Inst.MeshletHeader, M, ThreadID, Inst.BoneOffset)
+            : LoadStaticPosition(Inst.MeshletHeader, M, ThreadID);
 
-        // Same three sequential muls as BaseMeshPass. Do not fuse.
+        // Sequential muls must match BaseMeshPass; do not fuse.
         float4 WorldPos = mul(ModelMatrix, float4(LocalPos, 1.0));
         float4 ViewPos  = mul(View, WorldPos);
 
@@ -75,14 +52,9 @@ void MeshMain(uint GroupID   : SV_GroupID,
         OutVertices[ThreadID] = V;
     }
 
-    // Primitive lane: first TriangleCount threads each emit one triangle.
-    // Triangles are packed as 4x uint8 (three corners + pad) per uint32.
     if (ThreadID < M.TriangleCount)
     {
         uint PackedTri = Inst.MeshletHeader.Triangles[M.TriangleOffset + ThreadID];
-        uint I0 =  PackedTri        & 0xFFu;
-        uint I1 = (PackedTri >>  8) & 0xFFu;
-        uint I2 = (PackedTri >> 16) & 0xFFu;
-        OutTriangles[ThreadID] = uint3(I0, I1, I2);
+        OutTriangles[ThreadID] = uint3(PackedTri & 0xFFu, (PackedTri >> 8) & 0xFFu, (PackedTri >> 16) & 0xFFu);
     }
 }

@@ -1,14 +1,8 @@
 #include "Includes/SceneGlobals.slang"
 #include "Includes/MeshletPayload.slang"
 
-// Position-only mesh shader for directional-light cascade shadow maps.
-// Counterpart to the SHADOW_CSM variant of ShadowMappingVert.slang. The task
-// shader (CascadeMeshletTask.slang) already filtered meshlets against this
-// cascade's frustum, so every survivor rasterizes (no degenerate-NaN padding).
-//
-// Push constants match ShadowMappingVert's SHADOW_CSM layout so we can share
-// push layouts across the task/mesh pair without duplicating structs on the
-// command-list side.
+// Position-only mesh shader for CSM shadow maps. Cascade-frustum cull
+// already happened in CascadeMeshletTask, so no NaN padding here.
 
 struct FCascadePush
 {
@@ -49,37 +43,23 @@ void MeshMain(uint GroupID   : SV_GroupID,
                                                         (uint)uCascadePush.CascadeIndex);
     bool     bSkinned         = Inst.HasFlag(EInstanceFlags::Skinned);
 
-    // Vertex lane.
     if (ThreadID < M.VertexCount)
     {
-        float3 LocalPos;
-        if (bSkinned)
-        {
-            LocalPos = LoadSkinnedPosition(Inst.MeshletHeader, M, ThreadID, Inst.BoneOffset);
-        }
-        else
-        {
-            LocalPos = LoadStaticPosition(Inst.MeshletHeader, M, ThreadID);
-        }
+        float3 LocalPos = bSkinned
+            ? LoadSkinnedPosition(Inst.MeshletHeader, M, ThreadID, Inst.BoneOffset)
+            : LoadStaticPosition(Inst.MeshletHeader, M, ThreadID);
 
-        // Same sequential M -> VP as ShadowMappingVert's SHADOW_CSM path. Do
-        // not fuse into a single MVP mul: the legacy VS path (used as fallback
-        // when mesh shaders are unavailable) writes into the same shadow map,
-        // and diverging floating-point order would break cross-path consistency
-        // when a frame switches paths.
+        // Sequential M -> VP must match ShadowMappingVert's SHADOW_CSM path
+        // for cross-path FP consistency; do not fuse.
         float4 WorldPos = mul(Model, float4(LocalPos, 1.0));
         MSOutput V;
         V.Position = mul(CascadeViewProj, WorldPos);
         OutVertices[ThreadID] = V;
     }
 
-    // Primitive lane.
     if (ThreadID < M.TriangleCount)
     {
         uint PackedTri = Inst.MeshletHeader.Triangles[M.TriangleOffset + ThreadID];
-        uint I0 =  PackedTri        & 0xFFu;
-        uint I1 = (PackedTri >>  8) & 0xFFu;
-        uint I2 = (PackedTri >> 16) & 0xFFu;
-        OutTriangles[ThreadID] = uint3(I0, I1, I2);
+        OutTriangles[ThreadID] = uint3(PackedTri & 0xFFu, (PackedTri >> 8) & 0xFFu, (PackedTri >> 16) & 0xFFu);
     }
 }

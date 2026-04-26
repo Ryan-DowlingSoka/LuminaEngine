@@ -19,9 +19,7 @@ namespace Lumina::Import::Mesh
             return;
         }
 
-        // 1) Vertex dedup + index remap. meshoptimizer expects this as step one:
-        // identical-attribute vertices collapse, which directly reduces VPC /
-        // vertex-shader invocations for every subsequent pass.
+        // Vertex dedup + index remap.
         {
             TVector<uint32> Remap(NumVertices);
             const size_t UniqueVerts = meshopt_generateVertexRemap(
@@ -46,11 +44,8 @@ namespace Lumina::Import::Mesh
             }
         }
 
-        // 2) Per-surface vertex-cache + overdraw reorder. Each surface owns a
-        // disjoint slice [StartIndex, StartIndex+IndexCount) of the index
-        // buffer and meshoptimizer's reorder is in-place on that slice, so
-        // surfaces can run on different threads without aliasing. The vertex
-        // buffer is read-only here; only indices are mutated.
+        // Per-surface vertex-cache + overdraw reorder. Surfaces own disjoint
+        // index slices, so the in-place reorder is thread-safe.
         const uint32 NumSurfaces = (uint32)MeshResource.GeometrySurfaces.size();
         if (NumSurfaces > 0)
         {
@@ -69,7 +64,7 @@ namespace Lumina::Import::Mesh
                     &MeshResource.Indices[Section.StartIndex],
                     Section.IndexCount, NumVertices);
 
-                // 1.05 ACMR threshold: up to 5% worse cache ratio for overdraw wins.
+                // 5% ACMR slack for overdraw wins.
                 constexpr float Threshold = 1.05f;
                 meshopt_optimizeOverdraw(
                     &MeshResource.Indices[Section.StartIndex],
@@ -80,9 +75,7 @@ namespace Lumina::Import::Mesh
             });
         }
 
-        // 3) Global vertex-fetch reorder. Must be last because it depends on the
-        // final index order; reorders the vertex buffer so the GPU prefetcher
-        // streams sequentially as the IA walks the index buffer.
+        // Vertex-fetch reorder must be last (depends on final index order).
         meshopt_optimizeVertexFetch(
             MeshResource.GetVertexData(),
             MeshResource.Indices.data(), NumIndices,
@@ -108,31 +101,39 @@ namespace Lumina::Import::Mesh
             return;
         }
 
-        // FVertex places Position in its first 12 bytes (static_assert guards
-        // this in Vertex.h) so the vertex pointer doubles as the position
-        // pointer meshoptimizer expects.
+        // FVertex / FSkinnedVertex both place Position at offset 0
+        // (static_assert in Vertex.h), so the vertex pointer doubles as
+        // meshopt's position pointer.
         const float* VertexPositions = static_cast<const float*>(MeshResource.GetVertexData());
+
+        // Typed position fetch by global vertex index.
+        auto ReadPosition = [&](uint32 GlobalIdx) -> glm::vec3
+        {
+            return eastl::visit([&](const auto& Vec) -> glm::vec3
+            {
+                return Vec[GlobalIdx].Position;
+            }, MeshResource.Vertices);
+        };
 
         constexpr size_t MaxVertices  = MESHLET_MAX_VERTICES;
         constexpr size_t MaxTriangles = MESHLET_MAX_TRIANGLES;
-        // 0.25 is the cone_weight used by meshoptimizer's own demo; trades a
-        // small amount of cluster-size uniformity for better backface cone
-        // culling efficiency. Pure size packing would use 0.
+        // meshopt's recommended cone_weight; trades cluster uniformity for
+        // tighter backface cones.
         constexpr float  ConeWeight   = 0.25f;
 
         const uint32 NumSurfaces = (uint32)MeshResource.GeometrySurfaces.size();
 
-        // Phase 1: build per-surface meshlets in parallel. Each surface owns a
-        // disjoint slice of MeshResource.Indices and writes only into its own
-        // entry of Results, so there is no synchronization needed inside the
-        // parallel loop. Bounds + per-meshlet optimize are batched here while
-        // the surface's local arrays are still hot.
+        // Phase 1: per-surface meshlet build in parallel. Per-meshlet AABB
+        // is computed here (vertices are already hot in cache from the
+        // bounds call) so phase 2 can derive LoInt closed-form.
         struct FSurfaceMeshletResult
         {
-            TVector<uint32>             Vertices;       // local meshlet vertex indices
-            TVector<uint8>              Triangles;      // local micro-indices
-            TVector<FMeshlet>           OutMeshlets;    // per-meshlet header (local offsets)
-            TVector<FMeshletBounds>     Bounds;
+            TVector<uint32>          Vertices;       // local meshlet vertex indices
+            TVector<uint8>           Triangles;      // local micro-indices
+            TVector<FMeshlet>        OutMeshlets;    // local offsets
+            TVector<FMeshletBounds>  Bounds;
+            TVector<glm::vec3>       MeshletLo;      // per-meshlet world-space min P
+            glm::vec3                MaxExtent = glm::vec3(0.0f);
         };
 
         TVector<FSurfaceMeshletResult> Results(NumSurfaces);
@@ -171,14 +172,12 @@ namespace Lumina::Import::Mesh
 
             LocalMeshlets.resize(MeshletCount);
 
-            // Trim the flat arrays to exactly what buildMeshlets produced.
-            // The triangle buffer is padded to a multiple of 4 per meshlet
-            // (documented meshopt invariant) so we align the tail the same way.
+            // Trim flat arrays; meshopt pads triangles to a multiple of 4.
             const meshopt_Meshlet& Last = LocalMeshlets.back();
             Result.Vertices.resize(Last.vertex_offset + Last.vertex_count);
             Result.Triangles.resize(Last.triangle_offset + ((Last.triangle_count * 3 + 3) & ~3u));
 
-            // Reorder inside each meshlet for rasterizer locality.
+            // In-meshlet reorder for rasterizer locality.
             for (const meshopt_Meshlet& M : LocalMeshlets)
             {
                 meshopt_optimizeMeshlet(
@@ -189,11 +188,11 @@ namespace Lumina::Import::Mesh
 
             Result.OutMeshlets.reserve(MeshletCount);
             Result.Bounds.reserve(MeshletCount);
+            Result.MeshletLo.reserve(MeshletCount);
 
             for (const meshopt_Meshlet& M : LocalMeshlets)
             {
                 FMeshlet Out{};
-                // Local offsets — phase 2 rebases them onto the global arrays.
                 Out.VertexOffset   = M.vertex_offset;
                 Out.TriangleOffset = M.triangle_offset;
                 Out.VertexCount    = M.vertex_count;
@@ -213,12 +212,21 @@ namespace Lumina::Import::Mesh
                 Bounds.ConeAxis   = glm::vec3(B.cone_axis[0], B.cone_axis[1], B.cone_axis[2]);
                 Bounds.ConeCutoff = B.cone_cutoff;
                 Result.Bounds.push_back(Bounds);
+
+                glm::vec3 Lo( FLT_MAX);
+                glm::vec3 Hi(-FLT_MAX);
+                for (uint32 i = 0; i < M.vertex_count; ++i)
+                {
+                    const glm::vec3 P = ReadPosition(Result.Vertices[M.vertex_offset + i]);
+                    Lo = glm::min(Lo, P);
+                    Hi = glm::max(Hi, P);
+                }
+                Result.MeshletLo.push_back(Lo);
+                Result.MaxExtent = glm::max(Result.MaxExtent, Hi - Lo);
             }
         });
 
-        // Mesh-global quantization basis. Shared across every meshlet so
-        // vertices duplicated at meshlet seams map to the same dequantized
-        // world position; per-meshlet AABBs would T-junction along seams.
+        // Mesh AABB + per-axis max meshlet extent (reduce across surfaces).
         glm::vec3 MeshLo( FLT_MAX);
         glm::vec3 MeshHi(-FLT_MAX);
         eastl::visit([&](const auto& Vec)
@@ -230,21 +238,28 @@ namespace Lumina::Import::Mesh
             }
         }, MeshResource.Vertices);
 
-        // Degenerate axis (extent==0) gets a zero scale; the dequant then
-        // returns MeshAABBMin exactly for any quantized value on that axis.
-        const glm::vec3 MeshExtent = MeshHi - MeshLo;
-        glm::vec3 MeshScale(0.0f);
-        if (MeshExtent.x > 0.0f) MeshScale.x = MeshExtent.x / 65535.0f;
-        if (MeshExtent.y > 0.0f) MeshScale.y = MeshExtent.y / 65535.0f;
-        if (MeshExtent.z > 0.0f) MeshScale.z = MeshExtent.z / 65535.0f;
+        glm::vec3 MaxMeshletExtent(0.0f);
+        for (const FSurfaceMeshletResult& R : Results)
+        {
+            MaxMeshletExtent = glm::max(MaxMeshletExtent, R.MaxExtent);
+        }
 
-        MeshResource.MeshletData.MeshAABBMin   = MeshLo;
-        MeshResource.MeshletData.MeshAABBScale = MeshScale;
+        // GridStep / 1022 (not 1023): round() can introduce a +1 fudge in
+        // the integer diff, so 1022 keeps q in [0, 1023].
+        glm::vec3 GridStep(0.0f);
+        glm::vec3 InvGridStep(0.0f);
+        if (MaxMeshletExtent.x > 0.0f) { GridStep.x = MaxMeshletExtent.x / 1022.0f; InvGridStep.x = 1.0f / GridStep.x; }
+        if (MaxMeshletExtent.y > 0.0f) { GridStep.y = MaxMeshletExtent.y / 1022.0f; InvGridStep.y = 1.0f / GridStep.y; }
+        if (MaxMeshletExtent.z > 0.0f) { GridStep.z = MaxMeshletExtent.z / 1022.0f; InvGridStep.z = 1.0f / GridStep.z; }
 
-        // Phase 2: emit a packed FMeshlet(Skinned)Vertex slice for each
-        // meshlet with positions quantized against the mesh-global AABB and
-        // normals octahedral-encoded, then repack triangle micro-indices
-        // into one dword per triangle.
+        MeshResource.MeshletData.MeshOrigin   = MeshLo;
+        MeshResource.MeshletData.MeshGridStep = GridStep;
+
+        auto GridIndex = [&](glm::vec3 P) -> glm::ivec3
+        {
+            return glm::ivec3(glm::round((P - MeshLo) * InvGridStep));
+        };
+
         size_t TotalMeshlets  = 0;
         size_t TotalVertices  = 0;
         size_t TotalTriangles = 0;
@@ -285,8 +300,11 @@ namespace Lumina::Import::Mesh
 
             for (size_t MeshletIdx = 0; MeshletIdx < Result.OutMeshlets.size(); ++MeshletIdx)
             {
-                FMeshlet         Out    = Result.OutMeshlets[MeshletIdx];
-                FMeshletBounds   Bounds = Result.Bounds[MeshletIdx];
+                FMeshlet Out = Result.OutMeshlets[MeshletIdx];
+
+                // round() of the meshlet's min P equals the per-vertex Q
+                // floor across the meshlet (round is monotonic).
+                Out.LoInt = GridIndex(Result.MeshletLo[MeshletIdx]);
 
                 const uint32 PackedVertexStart = MeshResource.bSkinnedMesh
                     ? (uint32)MeshResource.MeshletData.MeshletSkinnedVertices.size()
@@ -297,25 +315,17 @@ namespace Lumina::Import::Mesh
                     const auto& Verts = eastl::get<TVector<FSkinnedVertex>>(MeshResource.Vertices);
                     for (uint32 i = 0; i < Out.VertexCount; ++i)
                     {
-                        const uint32         SrcIdx = Result.Vertices[Out.VertexOffset + i];
-                        const FSkinnedVertex& V     = Verts[SrcIdx];
+                        const FSkinnedVertex& V = Verts[Result.Vertices[Out.VertexOffset + i]];
 
-                        const FPackedMeshletPosition PP = PackMeshletPosition(V.Position, MeshLo, MeshExtent);
-
-                        FMeshletSkinnedVertex Packed{};
-                        Packed.PositionXY   = PP.XY;
-                        Packed.PositionZ    = PP.Z;
-                        Packed.Normal       = V.Normal;
-                        Packed.UV           = V.UV;
-                        Packed.Color        = V.Color;
-                        Packed.JointIndices = (uint32)V.JointIndices.x
-                                            | ((uint32)V.JointIndices.y << 8)
-                                            | ((uint32)V.JointIndices.z << 16)
-                                            | ((uint32)V.JointIndices.w << 24);
-                        Packed.JointWeights = (uint32)V.JointWeights.x
-                                            | ((uint32)V.JointWeights.y << 8)
-                                            | ((uint32)V.JointWeights.z << 16)
-                                            | ((uint32)V.JointWeights.w << 24);
+                        FMeshletSkinnedVertex Packed;
+                        Packed.Position = PackMeshletPosition(GridIndex(V.Position) - Out.LoInt);
+                        Packed.Normal   = V.Normal;
+                        Packed.UV       = V.UV;
+                        Packed.Color    = V.Color;
+                        // glm::u8vec4 is x..w in bytes 0..3; on little-endian
+                        // its in-memory layout is already the packed uint32.
+                        memcpy(&Packed.JointIndices, &V.JointIndices, sizeof(uint32));
+                        memcpy(&Packed.JointWeights, &V.JointWeights, sizeof(uint32));
                         MeshResource.MeshletData.MeshletSkinnedVertices.push_back(Packed);
                     }
                 }
@@ -324,22 +334,18 @@ namespace Lumina::Import::Mesh
                     const auto& Verts = eastl::get<TVector<FVertex>>(MeshResource.Vertices);
                     for (uint32 i = 0; i < Out.VertexCount; ++i)
                     {
-                        const uint32   SrcIdx = Result.Vertices[Out.VertexOffset + i];
-                        const FVertex& V      = Verts[SrcIdx];
+                        const FVertex& V = Verts[Result.Vertices[Out.VertexOffset + i]];
 
-                        const FPackedMeshletPosition PP = PackMeshletPosition(V.Position, MeshLo, MeshExtent);
-
-                        FMeshletVertex Packed{};
-                        Packed.PositionXY = PP.XY;
-                        Packed.PositionZ  = PP.Z;
-                        Packed.Normal     = V.Normal;
-                        Packed.UV         = V.UV;
-                        Packed.Color      = V.Color;
+                        FMeshletVertex Packed;
+                        Packed.Position = PackMeshletPosition(GridIndex(V.Position) - Out.LoInt);
+                        Packed.Normal   = V.Normal;
+                        Packed.UV       = V.UV;
+                        Packed.Color    = V.Color;
                         MeshResource.MeshletData.MeshletVertices.push_back(Packed);
                     }
                 }
 
-                // (3) Repack triangle micro-indices.
+                // Pack triangle micro-indices, 3 per dword.
                 const uint32 PackedDwordStart = (uint32)MeshResource.MeshletData.MeshletTriangles.size();
                 const uint8* TriSrc           = Result.Triangles.data() + Out.TriangleOffset;
                 for (uint32 t = 0; t < Out.TriangleCount; ++t)
@@ -354,11 +360,11 @@ namespace Lumina::Import::Mesh
                 Out.VertexOffset   = PackedVertexStart;
                 Out.TriangleOffset = PackedDwordStart;
                 MeshResource.MeshletData.Meshlets.push_back(Out);
-                MeshResource.MeshletData.MeshletBounds.push_back(Bounds);
+                MeshResource.MeshletData.MeshletBounds.push_back(Result.Bounds[MeshletIdx]);
             }
         }
 
-        // Avoid a zero-byte SSBO upload for empty meshes.
+        // Avoid a zero-byte SSBO upload.
         if (MeshResource.MeshletData.MeshletTriangles.empty())
         {
             MeshResource.MeshletData.MeshletTriangles.push_back(0u);
@@ -373,14 +379,9 @@ namespace Lumina::Import::Mesh
 
     namespace
     {
-        // Concatenate Src into Dst. Indices are rebased by Dst's current vertex
-        // count, surface StartIndex by Dst's current index count. Material
-        // indices are folded onto a unique-slot remap so primitives sharing
-        // the same source material end up on the same slot in the merged asset.
-        // Src.ImportTransform is the source asset's scene-graph world transform
-        // for this mesh; it is baked into positions and normals as we copy so
-        // each merged primitive lands at its authored world placement instead
-        // of collapsing onto its mesh-local origin.
+        // Concatenate Src into Dst with index/material rebase. Src.ImportTransform
+        // is baked into positions/normals so merged geometry keeps its authored
+        // world placement.
         void MergeResourceInto(FMeshResource& Src, FMeshResource& Dst, THashMap<int16, int16>& MaterialRemap)
         {
             const uint32 BaseVert = (uint32)Dst.GetNumVertices();
@@ -462,8 +463,7 @@ namespace Lumina::Import::Mesh
         const bool  bFlipUVs       = Options.bFlipUVs;
         const bool  bFlipNormals   = Options.bFlipNormals;
 
-        // 1) Per-mesh transform application. Walking each FMeshResource in
-        // parallel is safe: each resource owns its own vertex buffer.
+        // Per-mesh transforms (each resource owns its own vertex buffer).
         if (bScaleEnabled || bFlipUVs || bFlipNormals)
         {
             Task::ParallelFor((uint32)Data.Resources.size(), [&](uint32 ResIdx)
@@ -498,10 +498,8 @@ namespace Lumina::Import::Mesh
             });
         }
 
-        // 2) Skeletons. The bind matrix translation column scales like the
-        // vertex positions: scaling the joint world transform by S changes its
-        // inverse's translation column by the same S (the rotation half is
-        // unaffected because a uniform scale commutes with R^T).
+        // Skeleton bind/local translations scale like positions; rotation
+        // is untouched because uniform scale commutes with R^T.
         if (bScaleEnabled)
         {
             for (TUniquePtr<FSkeletonResource>& SkelPtr : Data.Skeletons)
@@ -522,8 +520,7 @@ namespace Lumina::Import::Mesh
             }
         }
 
-        // 3) Animation translations. Rotation/scale keys are unitless so
-        // user scale only touches Translation channels.
+        // Animation translation channels (rotation/scale are unitless).
         if (bScaleEnabled)
         {
             for (TUniquePtr<FAnimationResource>& AnimPtr : Data.Animations)
@@ -545,8 +542,8 @@ namespace Lumina::Import::Mesh
             }
         }
 
-        // 4) Optional merge into a single static + skinned pair. Done before
-        // optimize/meshlets so the heavy passes run on the merged geometry.
+        // Merge into static + skinned pair before optimize/meshlets so the
+        // heavy passes run on the merged geometry.
         if (Options.bMergeMeshes && Data.Resources.size() > 1)
         {
             TUniquePtr<FMeshResource> MergedStatic = MakeUnique<FMeshResource>();
@@ -556,7 +553,7 @@ namespace Lumina::Import::Mesh
             MergedSkinned->Vertices = TVector<FSkinnedVertex>();
             MergedSkinned->bSkinnedMesh = true;
 
-            // Inherit a sensible name from the first matching source resource.
+            // Inherit name from first matching source.
             for (const TUniquePtr<FMeshResource>& Res : Data.Resources)
             {
                 if (!Res) continue;
@@ -601,11 +598,8 @@ namespace Lumina::Import::Mesh
             Data.Resources = eastl::move(NewResources);
         }
 
-        // 5) Heavy CPU finalize. Stats are appended to a shared vector so the
-        // parallel pass only runs the resource-local optimize/shadow/meshlet
-        // work; AnalyzeMeshStatistics runs serially afterwards. Clear any
-        // stats from the preview parse first so the indices line up with
-        // the (possibly merged) resource list.
+        // Heavy CPU finalize. Stats run serially afterwards so the parallel
+        // pass writes only resource-local data.
         Data.MeshStatistics.OverdrawStatics.clear();
         Data.MeshStatistics.VertexFetchStatics.clear();
 

@@ -3,16 +3,11 @@
 
 struct VertexOutput
 {
-    // IMPORTANT: Position math must stay in lockstep with BaseVertexPass.slang so
-    // the base pass's depth-equal test holds. Any change here must be mirrored
-    // there (and vice versa).
+    // Position math must match BaseVertexPass.slang for the equal-depth test.
     precise float4 Position : SV_Position;
 };
 
-// Meshlet-driven depth-only vertex shader. SV_VulkanInstanceID indexes into
-// uMeshletDrawList (populated by MeshletCull.slang), matching BaseVertexPass.
-// Padding invocations (TriIdx >= M.TriangleCount) emit a NaN triangle so the
-// rasterizer discards them.
+// Depth-only meshlet VS. Padding invocations emit NaN triangles for discard.
 [shader("vertex")]
 VertexOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_VulkanInstanceID)
 {
@@ -37,9 +32,6 @@ VertexOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: S
     uint PackedTri    = Inst.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
     uint LocalVertIdx = (PackedTri >> (Corner * 8u)) & 0xFFu;
 
-    // Depth-only pass: skip Normal/UV/Color unpack, read position directly
-    // from the meshlet's packed vertex slice and dequantize via the
-    // mesh-global AABB on the header.
     float3 LocalPos;
     if (Inst.HasFlag(EInstanceFlags::Skinned))
     {

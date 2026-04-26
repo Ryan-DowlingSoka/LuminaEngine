@@ -28,8 +28,7 @@ namespace Lumina
         );
     }
 
-    // Octahedral 16-16 normal pack. 16 bits per axis fits the same uint slot
-    // as the old 8-8-8 SNORM but matches SNORM 16-16-16 quality.
+    // Octahedral 16-16 unit-normal pack.
     inline uint32 PackNormal(glm::vec3 n)
     {
         n /= glm::abs(n.x) + glm::abs(n.y) + glm::abs(n.z) + 1e-12f;
@@ -61,38 +60,16 @@ namespace Lumina
         return glm::normalize(n);
     }
 
-    // 16-16-16 unsigned position pack relative to a mesh-global AABB.
-    // AABBScale = (max - min) / 65535 so the shader dequant collapses to a
-    // MAD per axis. The basis is shared across every meshlet of a mesh, so
-    // vertices duplicated at meshlet seams quantize to the same world
-    // position; per-meshlet AABBs would T-junction along seams.
-    struct FPackedMeshletPosition
+    // 10-10-10 pack of a meshlet-local integer offset. Dequant is
+    // MeshOrigin + (LoInt + q) * GridStep.
+    inline uint32 PackMeshletPosition(glm::ivec3 q)
     {
-        uint32 XY; // X in low 16, Y in high 16
-        uint32 Z;  // Z in low 16, high 16 reserved (zero)
-    };
-
-    inline FPackedMeshletPosition PackMeshletPosition(glm::vec3 P, glm::vec3 AABBMin, glm::vec3 AABBExtent)
-    {
-        glm::vec3 Norm = (P - AABBMin) / glm::max(AABBExtent, glm::vec3(1e-12f));
-        Norm = glm::clamp(Norm, glm::vec3(0.0f), glm::vec3(1.0f));
-        uint32 qx = (uint32)glm::round(Norm.x * 65535.0f) & 0xFFFFu;
-        uint32 qy = (uint32)glm::round(Norm.y * 65535.0f) & 0xFFFFu;
-        uint32 qz = (uint32)glm::round(Norm.z * 65535.0f) & 0xFFFFu;
-        return { qx | (qy << 16), qz };
+        return  (uint32(q.x) & 0x3FFu)
+             | ((uint32(q.y) & 0x3FFu) << 10)
+             | ((uint32(q.z) & 0x3FFu) << 20);
     }
 
-    inline glm::vec3 UnpackMeshletPosition(uint32 PackedXY, uint32 PackedZ, glm::vec3 AABBMin, glm::vec3 AABBScale)
-    {
-        uint32 qx =  PackedXY        & 0xFFFFu;
-        uint32 qy = (PackedXY >> 16) & 0xFFFFu;
-        uint32 qz =  PackedZ         & 0xFFFFu;
-        return AABBMin + glm::vec3((float)qx, (float)qy, (float)qz) * AABBScale;
-    }
-
-    // Import-time, full-precision vertex. Importers and ThumbnailManager
-    // populate these; GenerateMeshlets converts them into the per-meshlet
-    // packed FMeshletVertex stream and the array is dropped from disk.
+    // Full-precision import-time vertex. Dropped after meshlet generation.
     struct FVertex
     {
         glm::vec3       Position;
@@ -127,13 +104,10 @@ namespace Lumina
         }
     };
 
-    // 20-byte runtime vertex stored per-meshlet. Position is 16-16-16
-    // quantized to a mesh-global AABB (carried in FMeshletHeaderGPU),
-    // Normal is octahedral 16-16. Mirrored by the shader-side FVertex.
+    // 16-byte runtime vertex. Position is 10-10-10 q (see PackMeshletPosition).
     struct FMeshletVertex
     {
-        uint32 PositionXY;
-        uint32 PositionZ;
+        uint32 Position;
         uint32 Normal;
         uint32 UV;
         uint32 Color;
@@ -159,8 +133,8 @@ namespace Lumina
 
     static_assert(sizeof(FVertex) == 24);
     static_assert(sizeof(FSkinnedVertex) == 32);
-    static_assert(sizeof(FMeshletVertex) == 20);
-    static_assert(sizeof(FMeshletSkinnedVertex) == 28);
+    static_assert(sizeof(FMeshletVertex) == 16);
+    static_assert(sizeof(FMeshletSkinnedVertex) == 24);
     static_assert(offsetof(FVertex, Position) == 0);
     static_assert(TCanBulkSerialize<FVertex>::value);
     static_assert(TCanBulkSerialize<FSkinnedVertex>::value);

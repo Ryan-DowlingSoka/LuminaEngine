@@ -7,7 +7,6 @@
 
 [[vk::binding(0, 0)]] ConstantBuffer<FSceneGlobalData>              uSceneData;
 [[vk::binding(1, 0)]] StructuredBuffer<FLightData>                  uLightData;
-// Unified 128B per-instance descriptor. Mirror of Lumina::FGPUInstance.
 [[vk::binding(2, 0)]] RWStructuredBuffer<FGPUInstance>              uInstance;
 [[vk::binding(3, 0)]] StructuredBuffer<float4x4>                    uBoneMatrices;
 [[vk::binding(4, 0)]] RWStructuredBuffer<FCluster>                  uClusters;
@@ -18,24 +17,14 @@
 [[vk::binding(8, 0)]] Sampler2DArray                                uShadowAtlas;
 [[vk::binding(9, 0)]] Sampler2D                                     uDepthPyramid;
 
-// Unified per-view culling. CPU builds one FCullView per logical render view
-// (main camera, each CSM cascade, each point face, each spot light) and
-// packs them into uCullViews. CullMeshlets.slang tests each meshlet against
-// every view and emits into per-view slices of uMeshletDrawList /
-// uIndirectArgs, addressed through FCullView.DrawListOffset and
-// IndirectArgsOffset so each draw pass sees only its own view.
 [[vk::binding(10, 0)]] StructuredBuffer<FCullView>                   uCullViews;
 [[vk::binding(11, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawList;
 [[vk::binding(12, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectArgs;
 
-// Same cascade image as binding 7 but with a point, non-comparison sampler
-// so PCSS blocker search can read raw depth instead of PCF results.
+// Same cascade image as binding 7, point-sampler for raw depth (PCSS blocker).
 [[vk::binding(13, 0)]] Sampler2DArray                                uShadowCascadePoint;
 
-// Two-pass occlusion culling defer list. Phase 0 populates it with camera
-// meshlets that failed the previous-frame HZB; phase 1 pops them and tests
-// against the rebuilt current-frame HZB before emitting into the
-// camera-late view slice of uMeshletDrawList / uIndirectArgs.
+// Phase-0 deferred camera meshlets, retested by phase 1 against the rebuilt HZB.
 [[vk::binding(14, 0)]] RWStructuredBuffer<FMeshletDeferred>          uMeshletDeferList;
 [[vk::binding(15, 0)]] globallycoherent RWStructuredBuffer<uint>     uDeferCount;
 
@@ -45,18 +34,14 @@
 
 [[vk::binding(0, 1)]] Sampler2D uGlobalTextures[];
 
-// ---------------------------------------------------------------------------------
-//  Vertex Loading. Each meshlet owns a packed vertex slice in
-//  MeshletHeader.Vertices; loaders dequantize position via the mesh-global
-//  AABB carried on the header.
-// ---------------------------------------------------------------------------------
+// Vertex loaders.
 
 FVertexData LoadStaticVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx)
 {
     FVertex V = reinterpret<FVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
 
     FVertexData Data;
-    Data.Position = UnpackMeshletPosition(V.PositionXY, V.PositionZ, Header.MeshAABBMin.xyz, Header.MeshAABBScale.xyz);
+    Data.Position = UnpackMeshletPosition(V.Position, M.LoInt, Header.MeshOrigin.xyz, Header.MeshGridStep.xyz);
     Data.Normal   = UnpackNormal(V.Normal);
     Data.UV       = UnpackUV(V.UV);
     Data.Color    = UnpackColor(V.Color);
@@ -67,7 +52,7 @@ FVertexData LoadSkinnedVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLoc
 {
     FSkinnedVertex V = reinterpret<FSkinnedVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
 
-    float3 LocalPos    = UnpackMeshletPosition(V.PositionXY, V.PositionZ, Header.MeshAABBMin.xyz, Header.MeshAABBScale.xyz);
+    float3 LocalPos    = UnpackMeshletPosition(V.Position, M.LoInt, Header.MeshOrigin.xyz, Header.MeshGridStep.xyz);
     float3 LocalNormal = UnpackNormal(V.Normal);
 
     uint4  JointIndices = UnpackUIntToUVec4(V.JointIndices);
@@ -87,18 +72,17 @@ FVertexData LoadSkinnedVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLoc
     return Data;
 }
 
-// Position-only variants for depth and shadow passes.
 float3 LoadStaticPosition(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx)
 {
     FVertex V = reinterpret<FVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
-    return UnpackMeshletPosition(V.PositionXY, V.PositionZ, Header.MeshAABBMin.xyz, Header.MeshAABBScale.xyz);
+    return UnpackMeshletPosition(V.Position, M.LoInt, Header.MeshOrigin.xyz, Header.MeshGridStep.xyz);
 }
 
 float3 LoadSkinnedPosition(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx, uint BoneOffset)
 {
     FSkinnedVertex V = reinterpret<FSkinnedVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
 
-    float3 LocalPos = UnpackMeshletPosition(V.PositionXY, V.PositionZ, Header.MeshAABBMin.xyz, Header.MeshAABBScale.xyz);
+    float3 LocalPos = UnpackMeshletPosition(V.Position, M.LoInt, Header.MeshOrigin.xyz, Header.MeshGridStep.xyz);
 
     uint4  JointIndices = UnpackUIntToUVec4(V.JointIndices);
     float4 Weights      = unpack_u8u32(V.JointWeights) / float4(255.0);
@@ -136,9 +120,7 @@ float3 GetSunDirection()            { return uLightData[0].SunDirection;  }
 float3 GetAmbientLightColor()       { return uLightData[0].AmbientLight.xyz; }
 float  GetAmbientLightIntensity()   { return uLightData[0].AmbientLight.w;   }
 
-// Cold shadow-data accessors. Callers must check Light.ShadowDataIndex != INDEX_NONE
-// before calling. Keeping the fetch behind a helper makes it easy to later move
-// the shadow table to a dedicated binding without touching callsites.
+// Callers must check Light.ShadowDataIndex != INDEX_NONE first.
 float4x4 GetShadowViewProjection(int ShadowDataIndex, uint ViewIndex)
 {
     return uLightData[0].Shadows[ShadowDataIndex].ViewProjection[ViewIndex];

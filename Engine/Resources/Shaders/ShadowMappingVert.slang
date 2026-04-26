@@ -1,23 +1,13 @@
 #pragma once
 #include "Includes/SceneGlobals.slang"
 
-// Unified shadow vertex shader.
-//
-// One vertex shader for every shadow view type: CSM cascade, point face, spot.
-// The CPU builds a per-view entry in uCullViews and promotes surviving meshlets
-// into uMeshletDrawList[View.DrawListOffset + ...]. The indirect draw points at
-// uIndirectArgs[View.IndirectArgsOffset + DrawID] so SV_InstanceID indexes
-// directly into the per-view slice with no extra mapping buffer.
-//
-// Point cube faces emit six separate views and six indirect draws instead of
-// using multiview, so each face draws only the meshlets the cull pass proved
-// visible to that face. ShadowDataIndex/ViewIndex reaches the right
-// ViewProjection[] slot.
+// Unified shadow VS for CSM / point / spot. SV_InstanceID indexes the
+// per-view slice of uMeshletDrawList; PC.ViewIndex picks the ViewProjection.
 
 struct FPushConstants
 {
     int ShadowDataIndex;
-    int ViewIndex;          // 0..NumCascades-1 for CSM, 0..5 for point, 0 for spot.
+    int ViewIndex;  // CSM cascade, point face, or 0 for spot.
 };
 
 struct VSOutput
@@ -54,7 +44,6 @@ VSOutput VertexMain(
     uint PackedTri    = Inst.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
     uint LocalVertIdx = (PackedTri >> (Corner * 8u)) & 0xFFu;
 
-    // Position-only; skip Normal/UV/Color unpack.
     float3 LocalPos;
     if (Inst.HasFlag(EInstanceFlags::Skinned))
     {

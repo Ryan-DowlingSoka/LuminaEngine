@@ -91,12 +91,10 @@ enum EInstanceFlags
 // ---------------------------------------------------------------------------------
 //  Structs
 
-// Mirror of Lumina::FMeshletVertex. Position is 16-16-16 quantized to a
-// mesh-global AABB (in FMeshletHeader), Normal is octahedral 16-16.
+// Mirror of Lumina::FMeshletVertex. Position: 10-10-10 q (see UnpackMeshletPosition).
 struct FVertex
 {
-    uint    PositionXY;
-    uint    PositionZ;
+    uint    Position;
     uint    Normal;
     uint    UV;
     uint    Color;
@@ -104,8 +102,7 @@ struct FVertex
 
 struct FSkinnedVertex
 {
-    uint    PositionXY;
-    uint    PositionZ;
+    uint    Position;
     uint    Normal;
     uint    UV;
     uint    Color;
@@ -216,18 +213,18 @@ struct FCustomPrimitiveData
 #define MESHLET_MAX_TRIANGLES 124
 #define MESHLET_VERTICES_PER_DRAW (MESHLET_MAX_TRIANGLES * 3)  // 372
 
-// Mirror of Lumina::FMeshlet.
+// Mirror of Lumina::FMeshlet. LoInt: meshlet quantization origin in grid units.
 struct FMeshlet
 {
     uint VertexOffset;
     uint TriangleOffset;
     uint VertexCount;
     uint TriangleCount;
+    int3 LoInt;
+    uint _Pad0;
 };
 
-// Mirror of Lumina::FMeshletBounds. Center/Radius and the cone drive
-// culling; the 16-16-16 position dequant basis is mesh-global and lives
-// on FMeshletHeader instead.
+// Mirror of Lumina::FMeshletBounds. Sphere + cone drive culling.
 struct FMeshletBounds
 {
     float3 Center;
@@ -238,36 +235,27 @@ struct FMeshletBounds
     float  _Pad0;
 };
 
-// Mirror of Lumina::FMeshletHeaderGPU. One entry per mesh; FGPUInstance carries
-// a pointer to it so the cull pass and base VS can reach the four flat arrays
-// through a single indirection. MeshAABBMin/Scale carry the 16-16-16 position
-// dequant basis shared by every meshlet of this mesh.
+// Mirror of Lumina::FMeshletHeaderGPU.
 struct FMeshletHeader
 {
     FMeshlet*       Meshlets;
     FMeshletBounds* Bounds;
-    uint*           Vertices;     // Packed FMeshletVertex / FMeshletSkinnedVertex
-    uint*           Triangles;    // Packed 4x uint8 per uint32
-    float4          MeshAABBMin;  // xyz = mesh-global AABB min
-    float4          MeshAABBScale;// xyz = (max - min) / 65535
+    uint*           Vertices;
+    uint*           Triangles;
+    float4          MeshOrigin;     // xyz: grid origin
+    float4          MeshGridStep;   // xyz: grid cell size
 };
 
-// One entry per surviving meshlet emitted by MeshletCull.slang. The vertex
-// shader uses SV_InstanceID to index into the MeshletDrawList slice owned by
-// its draw (per-draw StartInstanceLocation + atomic-append counter).
+// One entry per surviving meshlet emitted by MeshletCull.slang.
 struct FMeshletDraw
 {
     uint InstanceID;         // Into uInstance
-    uint MeshletLocalIndex;  // Local offset inside instance's surface meshlet range
+    uint MeshletLocalIndex;  // Local offset inside instance's surface range
 };
 
-// One entry per camera meshlet that the early pass rejected via Hi-Z against
-// the previous frame's pyramid. The late pass pops these and re-tests them
-// against the pyramid rebuilt from the current-frame pre-pass depth; survivors
-// flow into the camera-late view slice so the base pass picks them up.
-// DrawID is captured at defer time because the instance DrawIDAndFlags pack
-// is touched by neither phase but the late pass has to atomically increment
-// uIndirectArgs[CameraLate.IndirectArgsOffset + DrawID].InstanceCount.
+// Camera meshlets the early pass deferred via Hi-Z; the late pass re-tests
+// against the rebuilt HZB. DrawID is captured at defer time because the
+// late pass increments uIndirectArgs[...DrawID].InstanceCount.
 struct FMeshletDeferred
 {
     uint InstanceID;
@@ -276,18 +264,14 @@ struct FMeshletDeferred
     uint _Pad;
 };
 
-// Unified 128B per-instance descriptor. Mirror of Lumina::FGPUInstance.
-// MeshletHeader is null when the instance skips the meshlet path (skinned
-// meshes, legacy assets without meshlets).
+// Mirror of Lumina::FGPUInstance.
 struct FGPUInstance
 {
     float4x4                ModelMatrix;
     float4                  SphereBounds;
 
     uint*                   VBAddress;
-    // Reserved slot. Was ShadowIBAddress before shadow passes moved to the
-    // meshlet path; kept as a typed pointer to preserve struct layout.
-    uint*                   _ReservedAddress;
+    uint*                   _ReservedAddress;  // Layout pad.
     FMeshletHeader*         MeshletHeader;
 
     private uint            DrawIDAndFlags;
@@ -412,13 +396,9 @@ struct FFrustum
     float4 Planes[6];
 };
 
-// Unified per-view culling descriptor. The CPU builds one of these per logical
-// render view (main camera, each CSM cascade, each point-light face, each
-// spot light) and the single cull compute pass tests every surviving meshlet
-// against every active view. Each view owns its own slice of the shared
-// MeshletDrawList and IndirectArgs buffers, addressed by DrawListOffset /
-// IndirectArgsOffset. That way a point light's +X face draws only its own
-// culled casters instead of the union across every shadow view.
+// Per-view cull descriptor. One per render view (main camera, each cascade,
+// each point face, each spot). Each view owns a slice of MeshletDrawList /
+// IndirectArgs via DrawListOffset / IndirectArgsOffset.
 struct FCullView
 {
     float4 FrustumPlanes[6];   // 96B
@@ -484,8 +464,8 @@ struct FSceneGlobalData
 // ---------------------------------------------------------------------------------
 //  Functions
 
-// Octahedral 16-16 normal decode. Mirror of Lumina::UnpackNormal.
-// Sign-extend via left-then-arithmetic-right shift; Slang lacks unpackSnorm2x16.
+// Octahedral 16-16 unit-normal decode. Sign-extend via shift pair (Slang
+// lacks unpackSnorm2x16).
 float3 UnpackNormal(uint Packed)
 {
     int sx = (int(Packed) << 16) >> 16;
@@ -500,12 +480,13 @@ float3 UnpackNormal(uint Packed)
     return normalize(n);
 }
 
-float3 UnpackMeshletPosition(uint PackedXY, uint PackedZ, float3 AABBMin, float3 AABBScale)
+float3 UnpackMeshletPosition(uint Packed, int3 LoInt, float3 MeshOrigin, float3 GridStep)
 {
-    float qx = float( PackedXY        & 0xFFFFu);
-    float qy = float((PackedXY >> 16u) & 0xFFFFu);
-    float qz = float( PackedZ         & 0xFFFFu);
-    return AABBMin + float3(qx, qy, qz) * AABBScale;
+    int qx = int( Packed        & 0x3FFu);
+    int qy = int((Packed >> 10u) & 0x3FFu);
+    int qz = int((Packed >> 20u) & 0x3FFu);
+    float3 Q = float3(LoInt + int3(qx, qy, qz));
+    return MeshOrigin + Q * GridStep;
 }
 
 float2 UnpackUV(uint Packed)

@@ -9,27 +9,12 @@ struct VSOutput
     float4 FragPos                  : FRAG_POS;
     float2 UV                       : TEXCOORD0;
 
-    // Absolute index into uInstance. The meshlet path resolves this from
-    // uMeshletDrawList so the pixel shader can skip the DrawID mapping.
     uint InstanceIndex              : INSTANCE;
-
-    // Global meshlet index (Inst.SurfaceMeshletOffset + Draw.MeshletLocalIndex).
-    // Consumed by the base pixel shader when r.MeshletDebug is on.
     nointerpolation uint MeshletIndex : MESHLET_INDEX;
 
-    // IMPORTANT: Changes to position calculations must be exactly
-    // reflected in DepthPrePass.slang
+    // Position math must match DepthPrePass.slang for the equal-depth test.
     precise float4 Position         : SV_Position;
 };
-
-// ============================================================================
-//  Main
-// ============================================================================
-//
-// Meshlet-driven draw. Each indirect-draw "instance" (SV_VulkanInstanceID) is a
-// slot in uMeshletDrawList produced by MeshletCull.slang, and VertexIndex runs
-// 0..MESHLET_VERTICES_PER_DRAW-1 (124 tris * 3). Out-of-range invocations emit
-// a degenerate triangle (NaN position) so the rasterizer culls them.
 
 [shader("vertex")]
 VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_VulkanInstanceID)
@@ -49,7 +34,6 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_Vu
 
     if (TriIdx >= M.TriangleCount)
     {
-        // Pad invocations, collapse to NaN so the triangle is discarded.
         const float NaN     = 0.0f / 0.0f;
         Output.Position     = float4(NaN, NaN, NaN, 1.0);
         Output.UV           = float2(0, 0);
@@ -60,10 +44,6 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_Vu
         return Output;
     }
 
-    // Triangles are packed as 3x uint8 micro-indices per dword. The local
-    // index addresses the meshlet's private packed-vertex slice; loaders
-    // dequantize position via the mesh-global AABB on the header and
-    // decode the oct normal.
     uint PackedTri    = Inst.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
     uint LocalVertIdx = (PackedTri >> (Corner * 8u)) & 0xFFu;
 

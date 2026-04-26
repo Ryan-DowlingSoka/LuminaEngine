@@ -1,10 +1,7 @@
 #include "Includes/SceneGlobals.slang"
 #include "Includes/MeshletPayload.slang"
 
-// Mesh-shader counterpart to BaseVertexPass.slang. Produces the exact same
-// MSOutput-per-vertex payload so BasePixelPass.slang can consume either path
-// unchanged. The (InstanceID, MeshletLocalIndex) tuple comes from the
-// amplification task payload instead of uMeshletDrawList.
+// Mesh-shader counterpart to BaseVertexPass.slang.
 
 struct MSOutput
 {
@@ -17,17 +14,12 @@ struct MSOutput
     uint InstanceIndex              : INSTANCE;
     nointerpolation uint MeshletIndex : MESHLET_INDEX;
 
-    // IMPORTANT: position math must stay in lockstep with BaseVertexPass.slang
-    // and DepthPrePass.slang; diverging produces Z-fighting between the two
-    // paths on hybrid fallbacks.
+    // Position math must match BaseVertexPass / DepthPrePass.
     precise float4 Position         : SV_Position;
 };
 
-// Workgroup has to cover max(vertCount, triCount). MESHLET_MAX_VERTICES == 64
-// and MESHLET_MAX_TRIANGLES == 124, so 128 threads lets each thread cover one
-// slot of each on its single pass without any striding loop. The unused
-// 128-vertex lanes idle; that's still a win vs the VS emulation path which
-// burned 248 padding invocations per meshlet (372 - 124).
+// 128 threads = max(MESHLET_MAX_VERTICES, MESHLET_MAX_TRIANGLES) rounded up,
+// so vertex and primitive lanes both fit without striding.
 #define MESH_GROUP_SIZE 128
 
 [shader("mesh")]
@@ -49,15 +41,13 @@ void MeshMain(uint GroupID   : SV_GroupID,
 
     SetMeshOutputCounts(M.VertexCount, M.TriangleCount);
 
-    // Cache transform lookups in registers so the compiler can hoist the
-    // structured buffer fetches out of the predicate body.
-    float4x4 ModelMatrix = Inst.ModelMatrix;
-    float4x4 View        = GetCameraView();
-    float4x4 Projection  = GetCameraProjection();
+    // Hoist uniforms outside the predicate.
+    float4x4 ModelMatrix    = Inst.ModelMatrix;
+    float4x4 View           = GetCameraView();
+    float4x4 Projection     = GetCameraProjection();
     float3x3 NormalMatrixWS = CalculateNormalMatrix(ModelMatrix);
-    bool     bSkinned    = Inst.HasFlag(EInstanceFlags::Skinned);
+    bool     bSkinned       = Inst.HasFlag(EInstanceFlags::Skinned);
 
-    // Vertex lane: first VertexCount threads each emit one vertex.
     if (ThreadID < M.VertexCount)
     {
         FVertexData VertexData;
@@ -88,15 +78,9 @@ void MeshMain(uint GroupID   : SV_GroupID,
         OutVertices[ThreadID] = V;
     }
 
-    // Primitive lane: first TriangleCount threads each emit one triangle.
-    // Triangles are packed as 4x uint8 (three local corner indices + pad) per
-    // uint32: pull the packed word, slice the three bytes, write the prim.
     if (ThreadID < M.TriangleCount)
     {
         uint PackedTri = Inst.MeshletHeader.Triangles[M.TriangleOffset + ThreadID];
-        uint I0 =  PackedTri        & 0xFFu;
-        uint I1 = (PackedTri >>  8) & 0xFFu;
-        uint I2 = (PackedTri >> 16) & 0xFFu;
-        OutTriangles[ThreadID] = uint3(I0, I1, I2);
+        OutTriangles[ThreadID] = uint3(PackedTri & 0xFFu, (PackedTri >> 8) & 0xFFu, (PackedTri >> 16) & 0xFFu);
     }
 }

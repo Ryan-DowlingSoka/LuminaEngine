@@ -8,25 +8,22 @@
 
 namespace Lumina
 {
-    // Meshlet sizing, 64 verts / 124 tris is the AMD/NV mesh-shader sweet spot
-    // and satisfies meshoptimizer limits (max_vertices <= 256, max_triangles <=
-    // 512, max_triangles divisible by 4).
+    // 64 verts / 124 tris = AMD/NV mesh-shader sweet spot, satisfies meshopt
+    // limits, and TriangleCount*3 fits the VS-emulation indirect arg count.
     constexpr uint32 MESHLET_MAX_VERTICES       = 64;
     constexpr uint32 MESHLET_MAX_TRIANGLES      = 124;
-    // Vertex count per meshlet draw invocation, the base VS walks TriangleCount*3
-    // verts and emits degenerates for the remaining slots so every meshlet
-    // shares the same VertexCount in its indirect args.
     constexpr uint32 MESHLET_VERTICES_PER_DRAW  = MESHLET_MAX_TRIANGLES * 3;
 
-    // VertexOffset indexes FMeshletData::MeshletVertices/MeshletSkinnedVertices.
-    // TriangleOffset is in dword units of FMeshletData::MeshletTriangles, each
-    // dword packing three meshlet-local micro-indices in its low 24 bits.
-    struct FMeshlet
+    // LoInt: meshlet's quantization origin in mesh-global grid units.
+    // TriangleOffset is in dwords (3 micro-indices per dword).
+    struct alignas(16) FMeshlet
     {
-        uint32 VertexOffset;
-        uint32 TriangleOffset;
-        uint32 VertexCount;
-        uint32 TriangleCount;
+        uint32     VertexOffset;
+        uint32     TriangleOffset;
+        uint32     VertexCount;
+        uint32     TriangleCount;
+        glm::ivec3 LoInt;
+        uint32     _Pad0;
 
         friend FArchive& operator<<(FArchive& Ar, FMeshlet& Data)
         {
@@ -34,13 +31,13 @@ namespace Lumina
             Ar << Data.TriangleOffset;
             Ar << Data.VertexCount;
             Ar << Data.TriangleCount;
+            Ar << Data.LoInt;
+            Ar << Data._Pad0;
             return Ar;
         }
     };
 
-    // Sphere is for frustum/occlusion, cone for backface culling. The
-    // 16-16-16 position dequant basis is mesh-global and lives on
-    // FMeshletData / FMeshletHeaderGPU, not here.
+    // Sphere for frustum/occlusion, cone for backface culling.
     struct alignas(16) FMeshletBounds
     {
         glm::vec3 Center;
@@ -65,18 +62,16 @@ namespace Lumina
     struct FMeshletData
     {
         TVector<FMeshlet>               Meshlets;
-        // Per-meshlet packed vertex stream — only one array is populated
-        // per mesh, picked by FMeshResource::bSkinnedMesh.
+        // Exactly one of these is populated, selected by bSkinnedMesh.
         TVector<FMeshletVertex>         MeshletVertices;
         TVector<FMeshletSkinnedVertex>  MeshletSkinnedVertices;
         TVector<uint32>                 MeshletTriangles;
         TVector<FMeshletBounds>         MeshletBounds;
 
-        // Mesh-global 16-16-16 position dequant basis. Shared by every
-        // meshlet so vertices duplicated at meshlet seams reconstruct to
-        // the same world position. MeshAABBScale = (max - min) / 65535.
-        glm::vec3                       MeshAABBMin   = glm::vec3(0.0f);
-        glm::vec3                       MeshAABBScale = glm::vec3(0.0f);
+        // Mesh-global integer-grid basis. GridStep sized so any meshlet's
+        // extent fits in <=1023 cells per axis.
+        glm::vec3                       MeshOrigin   = glm::vec3(0.0f);
+        glm::vec3                       MeshGridStep = glm::vec3(0.0f);
 
         FORCEINLINE bool IsEmpty() const { return Meshlets.empty(); }
 
@@ -87,8 +82,8 @@ namespace Lumina
             MeshletSkinnedVertices.clear();
             MeshletTriangles.clear();
             MeshletBounds.clear();
-            MeshAABBMin   = glm::vec3(0.0f);
-            MeshAABBScale = glm::vec3(0.0f);
+            MeshOrigin   = glm::vec3(0.0f);
+            MeshGridStep = glm::vec3(0.0f);
         }
 
         friend FArchive& operator<<(FArchive& Ar, FMeshletData& Data)
@@ -98,25 +93,21 @@ namespace Lumina
             Ar << Data.MeshletSkinnedVertices;
             Ar << Data.MeshletTriangles;
             Ar << Data.MeshletBounds;
-            Ar << Data.MeshAABBMin;
-            Ar << Data.MeshAABBScale;
+            Ar << Data.MeshOrigin;
+            Ar << Data.MeshGridStep;
             return Ar;
         }
     };
 
-    // GPU-side descriptor for one mesh's meshlet data. Uploaded once per mesh
-    // into a tiny per-mesh SSBO; FGPUInstance carries the buffer-device
-    // address so the meshlet cull pass and base VS can reach all four flat
-    // arrays with a single pointer indirection. MeshAABBMin/Scale carry the
-    // 16-16-16 position dequant basis shared by every meshlet of this mesh.
+    // Per-mesh GPU header. Reached through FGPUInstance's MeshletHeader BDA.
     struct alignas(16) FMeshletHeaderGPU
     {
         uint64    MeshletsAddress;           // FMeshlet*
         uint64    BoundsAddress;             // FMeshletBounds*
         uint64    VerticesAddress;           // uint32*
-        uint64    TrianglesAddress;          // uint32* (packed 4x uint8)
-        glm::vec4 MeshAABBMinAndPad;         // xyz = mesh-global AABB min
-        glm::vec4 MeshAABBScaleAndPad;       // xyz = (max - min) / 65535
+        uint64    TrianglesAddress;          // uint32*
+        glm::vec4 MeshOriginAndPad;          // xyz = grid origin
+        glm::vec4 MeshGridStepAndPad;        // xyz = grid cell size
     };
 
     struct FGeometrySurface final
@@ -126,8 +117,7 @@ namespace Lumina
         uint32  StartIndex = 0;
         int16   MaterialIndex = -1;
 
-        // Per-surface meshlet range into FMeshResource::MeshletData.Meshlets;
-        // read by the cull pass through FGPUInstance::SurfaceMeshlet*.
+        // Range into FMeshResource::MeshletData.Meshlets.
         uint32  MeshletOffset = 0;
         uint32  MeshletCount  = 0;
 
@@ -148,8 +138,6 @@ namespace Lumina
     {
         using FVertexVariant = TVariant<TVector<FVertex>, TVector<FSkinnedVertex>>;
 
-        // MeshletHeader carries BDAs to the four other meshlet SSBOs so an
-        // FGPUInstance can reach them through one pointer.
         struct FMeshBuffers
         {
             FRHIBufferRef MeshletBuffer;
@@ -160,10 +148,7 @@ namespace Lumina
         };
 
         FName                       Name;
-        // Vertices and Indices are import-time scratch only — populated by
-        // importers, consumed by GenerateMeshlets, then dropped. Neither is
-        // serialized; the renderer reads vertex data exclusively through
-        // the per-meshlet packed stream in MeshletData.
+        // Import-time scratch; not serialized. Dropped after GenerateMeshlets.
         FVertexVariant              Vertices;
         TVector<uint32>             Indices;
         TVector<FGeometrySurface>   GeometrySurfaces;
@@ -171,9 +156,7 @@ namespace Lumina
         FMeshBuffers                MeshBuffers;
         bool                        bSkinnedMesh = false;
 
-        // Source asset's scene-graph world transform. Baked into vertices by
-        // MergeResourceInto at commit time so merged geometry lands at its
-        // authored placement instead of the mesh-local origin. Not serialized.
+        // Source scene-graph world transform; baked into vertices at merge time.
         glm::mat4                   ImportTransform = glm::mat4(1.0f);
         
         FORCEINLINE size_t GetNumSurfaces() const { return GeometrySurfaces.size(); }
