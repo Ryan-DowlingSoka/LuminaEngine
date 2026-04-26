@@ -40,6 +40,12 @@ namespace Lumina
         // the mesh a surface covers.
         int32 SelectedSurfaceIndex = -1;
 
+        // Preview LOD override pushed onto the mesh component each frame:
+        // -1 = automatic (distance-driven), 0..MAX_MESH_LODS-1 = forced.
+        // Lets the user inspect each LOD's geometry independent of camera
+        // distance.
+        int32 PreviewLODIndex = -1;
+
         ImGuizmo::OPERATION GuizmoOp = ImGuizmo::TRANSLATE;
         entt::entity DirectionalLightEntity = entt::null;
         entt::entity MeshEntity = entt::null;

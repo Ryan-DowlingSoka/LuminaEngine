@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include "PCH.h"
 #include "ImportHelpers.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
@@ -83,49 +85,23 @@ namespace Lumina::Import::Mesh
             NumVertices, VertexSize);
     }
 
-    void GenerateMeshlets(FMeshResource& MeshResource)
+    namespace
     {
-        MeshResource.MeshletData.Clear();
+        // Default ratios (vs LOD0 index count) for the simplification ladder.
+        // 50% / 25% / 12.5% triangles is the textbook ramp; meshopt's
+        // welded-collapse simplifier keeps surface direction surprisingly
+        // well at these targets so the silhouette holds at typical viewing
+        // distances.
+        constexpr float kLODRatios[MAX_MESH_LODS]            = { 1.0f, 0.5f, 0.25f, 0.125f };
+        // distance/radius ratio at which each LOD becomes the chosen LOD.
+        // index 0 unused (LOD 0 is the default). 8/16/32 means LOD 1 kicks
+        // in at ~12% of screen, LOD 2 at ~6%, LOD 3 at ~3%.
+        constexpr float kLODScreenThresholds[MAX_MESH_LODS]  = { 0.0f, 8.0f, 16.0f, 32.0f };
+        // Target error fed to meshopt_simplify (model-AABB-relative). Larger
+        // values let the simplifier hit lower index counts on noisy meshes
+        // at the cost of silhouette fidelity.
+        constexpr float kLODTargetError                      = 0.05f;
 
-        const size_t NumVertices = MeshResource.GetNumVertices();
-        const size_t NumIndices  = MeshResource.Indices.size();
-        const size_t VertexSize  = MeshResource.GetVertexTypeSize();
-
-        if (NumVertices == 0 || NumIndices == 0)
-        {
-            for (FGeometrySurface& Section : MeshResource.GeometrySurfaces)
-            {
-                Section.MeshletOffset = 0;
-                Section.MeshletCount  = 0;
-            }
-            return;
-        }
-
-        // FVertex / FSkinnedVertex both place Position at offset 0
-        // (static_assert in Vertex.h), so the vertex pointer doubles as
-        // meshopt's position pointer.
-        const float* VertexPositions = static_cast<const float*>(MeshResource.GetVertexData());
-
-        // Typed position fetch by global vertex index.
-        auto ReadPosition = [&](uint32 GlobalIdx) -> glm::vec3
-        {
-            return eastl::visit([&](const auto& Vec) -> glm::vec3
-            {
-                return Vec[GlobalIdx].Position;
-            }, MeshResource.Vertices);
-        };
-
-        constexpr size_t MaxVertices  = MESHLET_MAX_VERTICES;
-        constexpr size_t MaxTriangles = MESHLET_MAX_TRIANGLES;
-        // meshopt's recommended cone_weight; trades cluster uniformity for
-        // tighter backface cones.
-        constexpr float  ConeWeight   = 0.25f;
-
-        const uint32 NumSurfaces = (uint32)MeshResource.GeometrySurfaces.size();
-
-        // Phase 1: per-surface meshlet build in parallel. Per-meshlet AABB
-        // is computed here (vertices are already hot in cache from the
-        // bounds call) so phase 2 can derive LoInt closed-form.
         struct FSurfaceMeshletResult
         {
             TVector<uint32>          Vertices;       // local meshlet vertex indices
@@ -134,22 +110,31 @@ namespace Lumina::Import::Mesh
             TVector<FMeshletBounds>  Bounds;
             TVector<glm::vec3>       MeshletLo;      // per-meshlet world-space min P
             glm::vec3                MaxExtent = glm::vec3(0.0f);
+            bool                     bHasData  = false;
         };
 
-        TVector<FSurfaceMeshletResult> Results(NumSurfaces);
-
-        Task::ParallelFor(NumSurfaces, [&](uint32 SurfaceIdx)
+        // Build meshlets for one (LOD, Surface) cell from a (possibly
+        // simplified) index range. Writes into Result; sets bHasData=true on
+        // success. Position quantization is *not* done here -- the global
+        // grid is sized after every LOD's meshlets exist, then a serial pack
+        // pass turns Result into appended FMeshletData entries.
+        template<typename TReadPos>
+        void BuildLODMeshletsForRange(
+            const uint32* SrcIndices, size_t SrcIndexCount,
+            const float*  VertexPositions, size_t NumVertices, size_t VertexSize,
+            TReadPos&&    ReadPosition,
+            FSurfaceMeshletResult& Result)
         {
-            const FGeometrySurface& Section = MeshResource.GeometrySurfaces[SurfaceIdx];
-            FSurfaceMeshletResult&  Result  = Results[SurfaceIdx];
+            constexpr size_t MaxVertices  = MESHLET_MAX_VERTICES;
+            constexpr size_t MaxTriangles = MESHLET_MAX_TRIANGLES;
+            constexpr float  ConeWeight   = 0.25f;
 
-            if (Section.IndexCount == 0)
+            if (SrcIndexCount < 3)
             {
                 return;
             }
 
-            const uint32* SurfaceIndices = &MeshResource.Indices[Section.StartIndex];
-            const size_t  MaxMeshlets    = meshopt_buildMeshletsBound(Section.IndexCount, MaxVertices, MaxTriangles);
+            const size_t MaxMeshlets = meshopt_buildMeshletsBound(SrcIndexCount, MaxVertices, MaxTriangles);
 
             TVector<meshopt_Meshlet> LocalMeshlets(MaxMeshlets);
             Result.Vertices.resize(MaxMeshlets * MaxVertices);
@@ -159,7 +144,7 @@ namespace Lumina::Import::Mesh
                 LocalMeshlets.data(),
                 Result.Vertices.data(),
                 Result.Triangles.data(),
-                SurfaceIndices, Section.IndexCount,
+                SrcIndices, SrcIndexCount,
                 VertexPositions, NumVertices, VertexSize,
                 MaxVertices, MaxTriangles, ConeWeight);
 
@@ -177,7 +162,6 @@ namespace Lumina::Import::Mesh
             Result.Vertices.resize(Last.vertex_offset + Last.vertex_count);
             Result.Triangles.resize(Last.triangle_offset + ((Last.triangle_count * 3 + 3) & ~3u));
 
-            // In-meshlet reorder for rasterizer locality.
             for (const meshopt_Meshlet& M : LocalMeshlets)
             {
                 meshopt_optimizeMeshlet(
@@ -224,9 +208,143 @@ namespace Lumina::Import::Mesh
                 Result.MeshletLo.push_back(Lo);
                 Result.MaxExtent = glm::max(Result.MaxExtent, Hi - Lo);
             }
+
+            Result.bHasData = !Result.OutMeshlets.empty();
+        }
+    } // namespace
+
+    void GenerateMeshlets(FMeshResource& MeshResource)
+    {
+        MeshResource.MeshletData.Clear();
+
+        const size_t NumVertices = MeshResource.GetNumVertices();
+        const size_t NumIndices  = MeshResource.Indices.size();
+        const size_t VertexSize  = MeshResource.GetVertexTypeSize();
+
+        if (NumVertices == 0 || NumIndices == 0)
+        {
+            for (FGeometrySurface& Section : MeshResource.GeometrySurfaces)
+            {
+                Section.MeshletOffset = 0;
+                Section.MeshletCount  = 0;
+                Section.NumLODs       = 1;
+                for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
+                {
+                    Section.LODMeshletOffset[i]   = 0;
+                    Section.LODMeshletCount[i]    = 0;
+                    Section.LODScreenThreshold[i] = i == 0 ? 0.0f : FLT_MAX;
+                }
+            }
+            return;
+        }
+
+        // FVertex / FSkinnedVertex both place Position at offset 0
+        // (static_assert in Vertex.h), so the vertex pointer doubles as
+        // meshopt's position pointer.
+        const float* VertexPositions = static_cast<const float*>(MeshResource.GetVertexData());
+
+        // Typed position fetch by global vertex index.
+        auto ReadPosition = [&](uint32 GlobalIdx) -> glm::vec3
+        {
+            return eastl::visit([&](const auto& Vec) -> glm::vec3
+            {
+                return Vec[GlobalIdx].Position;
+            }, MeshResource.Vertices);
+        };
+
+        const uint32 NumSurfaces = (uint32)MeshResource.GeometrySurfaces.size();
+
+        // Phase 1: per-surface parallel build of every LOD. Each cell
+        // [LOD * NumSurfaces + SurfaceIdx] is owned exclusively by one
+        // worker, so the parallel writes are race-free without a barrier.
+        TVector<FSurfaceMeshletResult> Results(MAX_MESH_LODS * NumSurfaces);
+
+        // Per-surface count of LODs that produced usable meshlets. LOD 0
+        // always succeeds when the surface has indices; later LODs may
+        // bail out if simplification can't make further progress.
+        TVector<uint32> PerSurfaceNumLODs(NumSurfaces, 0u);
+
+        Task::ParallelFor(NumSurfaces, [&](uint32 SurfaceIdx)
+        {
+            const FGeometrySurface& Section = MeshResource.GeometrySurfaces[SurfaceIdx];
+            if (Section.IndexCount == 0)
+            {
+                PerSurfaceNumLODs[SurfaceIdx] = 0;
+                return;
+            }
+
+            const uint32* SurfaceIndices = &MeshResource.Indices[Section.StartIndex];
+
+            // LOD 0: build directly from the optimized source slice.
+            FSurfaceMeshletResult& LOD0 = Results[0 * NumSurfaces + SurfaceIdx];
+            BuildLODMeshletsForRange(
+                SurfaceIndices, Section.IndexCount,
+                VertexPositions, NumVertices, VertexSize,
+                ReadPosition, LOD0);
+
+            uint32 LODsBuilt = LOD0.bHasData ? 1u : 0u;
+
+            // Scratch buffer reused across LODs of this surface.
+            TVector<uint32> Simplified(Section.IndexCount);
+            size_t LastIndexCount = Section.IndexCount;
+
+            for (uint32 lod = 1; lod < MAX_MESH_LODS; ++lod)
+            {
+                // Target index count, snapped to a multiple of 3 (must be
+                // whole triangles). meshopt clamps internally too, but we
+                // also reject anything below a 2-triangle floor.
+                size_t TargetIndices = (size_t)((float)Section.IndexCount * kLODRatios[lod]);
+                TargetIndices = (TargetIndices / 3u) * 3u;
+                if (TargetIndices < 6u)
+                {
+                    break;
+                }
+
+                float ResultError = 0.0f;
+                const size_t NewCount = meshopt_simplify(
+                    Simplified.data(),
+                    SurfaceIndices, Section.IndexCount,
+                    VertexPositions, NumVertices, VertexSize,
+                    TargetIndices, kLODTargetError,
+                    meshopt_SimplifyLockBorder,
+                    &ResultError);
+
+                // Bail out once the simplifier stops making meaningful
+                // progress -- duplicating LOD0 burns memory and bandwidth.
+                // A 5% reduction floor catches the "topology forced us to
+                // stop" case where the next ratio would also fail.
+                if (NewCount < 6u || (float)NewCount > (float)LastIndexCount * 0.95f)
+                {
+                    break;
+                }
+                LastIndexCount = NewCount;
+
+                // Restore vertex-cache locality on the simplified output;
+                // simplification reorders triangles by collapse priority.
+                meshopt_optimizeVertexCache(
+                    Simplified.data(),
+                    Simplified.data(),
+                    NewCount, NumVertices);
+
+                FSurfaceMeshletResult& LODi = Results[lod * NumSurfaces + SurfaceIdx];
+                BuildLODMeshletsForRange(
+                    Simplified.data(), NewCount,
+                    VertexPositions, NumVertices, VertexSize,
+                    ReadPosition, LODi);
+
+                if (!LODi.bHasData)
+                {
+                    break;
+                }
+                LODsBuilt = lod + 1u;
+            }
+
+            PerSurfaceNumLODs[SurfaceIdx] = LODsBuilt;
         });
 
-        // Mesh AABB + per-axis max meshlet extent (reduce across surfaces).
+        // Mesh AABB + per-axis max meshlet extent. Reduce extents across
+        // *every* (LOD, surface) cell so the global quantization grid is
+        // sized for the coarsest LOD's largest meshlet.
         glm::vec3 MeshLo( FLT_MAX);
         glm::vec3 MeshHi(-FLT_MAX);
         eastl::visit([&](const auto& Vec)
@@ -241,7 +359,10 @@ namespace Lumina::Import::Mesh
         glm::vec3 MaxMeshletExtent(0.0f);
         for (const FSurfaceMeshletResult& R : Results)
         {
-            MaxMeshletExtent = glm::max(MaxMeshletExtent, R.MaxExtent);
+            if (R.bHasData)
+            {
+                MaxMeshletExtent = glm::max(MaxMeshletExtent, R.MaxExtent);
+            }
         }
 
         // GridStep / 1022 (not 1023): round() can introduce a +1 fudge in
@@ -260,13 +381,18 @@ namespace Lumina::Import::Mesh
             return glm::ivec3(glm::round((P - MeshLo) * InvGridStep));
         };
 
+        // Reserve totals across every LOD.
         size_t TotalMeshlets  = 0;
         size_t TotalVertices  = 0;
         size_t TotalTriangles = 0;
         for (const FSurfaceMeshletResult& R : Results)
         {
-            TotalMeshlets  += R.OutMeshlets.size();
-            TotalVertices  += R.Vertices.size();
+            if (!R.bHasData)
+            {
+                continue;
+            }
+            TotalMeshlets += R.OutMeshlets.size();
+            TotalVertices += R.Vertices.size();
             for (const FMeshlet& M : R.OutMeshlets)
             {
                 TotalTriangles += M.TriangleCount;
@@ -285,82 +411,121 @@ namespace Lumina::Import::Mesh
             MeshResource.MeshletData.MeshletVertices.reserve(TotalVertices);
         }
 
-        for (uint32 SurfaceIdx = 0; SurfaceIdx < NumSurfaces; ++SurfaceIdx)
+        // Initialize per-surface LOD descriptors. Defaults: LOD 0 active,
+        // higher LODs marked unavailable (FLT_MAX threshold).
+        for (FGeometrySurface& Section : MeshResource.GeometrySurfaces)
         {
-            FGeometrySurface&       Section = MeshResource.GeometrySurfaces[SurfaceIdx];
-            FSurfaceMeshletResult&  Result  = Results[SurfaceIdx];
-
-            Section.MeshletOffset = (uint32)MeshResource.MeshletData.Meshlets.size();
-            Section.MeshletCount  = (uint32)Result.OutMeshlets.size();
-
-            if (Result.OutMeshlets.empty())
+            Section.NumLODs       = 1;
+            Section.MeshletOffset = 0;
+            Section.MeshletCount  = 0;
+            for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
             {
-                continue;
+                Section.LODMeshletOffset[i]   = 0;
+                Section.LODMeshletCount[i]    = 0;
+                Section.LODScreenThreshold[i] = i == 0 ? 0.0f : FLT_MAX;
             }
+        }
 
-            for (size_t MeshletIdx = 0; MeshletIdx < Result.OutMeshlets.size(); ++MeshletIdx)
+        // Phase 3: serial pack. Iterate LOD-major so the legacy
+        // (MeshletOffset, MeshletCount) range that mirrors LOD 0 is at the
+        // front of the buffer -- keeps any code that reads only those
+        // legacy fields well-defined.
+        for (uint32 lod = 0; lod < MAX_MESH_LODS; ++lod)
+        {
+            for (uint32 SurfaceIdx = 0; SurfaceIdx < NumSurfaces; ++SurfaceIdx)
             {
-                FMeshlet Out = Result.OutMeshlets[MeshletIdx];
+                FGeometrySurface&      Section = MeshResource.GeometrySurfaces[SurfaceIdx];
+                FSurfaceMeshletResult& Result  = Results[lod * NumSurfaces + SurfaceIdx];
 
-                // round() of the meshlet's min P equals the per-vertex Q
-                // floor across the meshlet (round is monotonic).
-                Out.LoInt = GridIndex(Result.MeshletLo[MeshletIdx]);
-
-                const uint32 PackedVertexStart = MeshResource.bSkinnedMesh
-                    ? (uint32)MeshResource.MeshletData.MeshletSkinnedVertices.size()
-                    : (uint32)MeshResource.MeshletData.MeshletVertices.size();
-
-                if (MeshResource.bSkinnedMesh)
+                if (!Result.bHasData)
                 {
-                    const auto& Verts = eastl::get<TVector<FSkinnedVertex>>(MeshResource.Vertices);
-                    for (uint32 i = 0; i < Out.VertexCount; ++i)
+                    continue;
+                }
+
+                // Surfaces that bailed out earlier than this LOD index
+                // shouldn't have it counted. Guard against simplification
+                // succeeding non-monotonically (e.g. LOD 1 fails but LOD 2
+                // happens to fit); we treat per-surface NumLODs as a dense
+                // run from 0 to PerSurfaceNumLODs[i].
+                if (lod >= PerSurfaceNumLODs[SurfaceIdx])
+                {
+                    continue;
+                }
+
+                const uint32 LODOffset = (uint32)MeshResource.MeshletData.Meshlets.size();
+                const uint32 LODCount  = (uint32)Result.OutMeshlets.size();
+
+                Section.LODMeshletOffset[lod] = LODOffset;
+                Section.LODMeshletCount[lod]  = LODCount;
+                Section.LODScreenThreshold[lod] = kLODScreenThresholds[lod];
+
+                if (lod == 0)
+                {
+                    Section.MeshletOffset = LODOffset;
+                    Section.MeshletCount  = LODCount;
+                }
+
+                Section.NumLODs = std::max(lod + 1u, Section.NumLODs);
+
+                for (size_t MeshletIdx = 0; MeshletIdx < Result.OutMeshlets.size(); ++MeshletIdx)
+                {
+                    FMeshlet Out = Result.OutMeshlets[MeshletIdx];
+
+                    Out.LoInt = GridIndex(Result.MeshletLo[MeshletIdx]);
+
+                    const uint32 PackedVertexStart = MeshResource.bSkinnedMesh
+                        ? (uint32)MeshResource.MeshletData.MeshletSkinnedVertices.size()
+                        : (uint32)MeshResource.MeshletData.MeshletVertices.size();
+
+                    if (MeshResource.bSkinnedMesh)
                     {
-                        const FSkinnedVertex& V = Verts[Result.Vertices[Out.VertexOffset + i]];
+                        const auto& Verts = eastl::get<TVector<FSkinnedVertex>>(MeshResource.Vertices);
+                        for (uint32 i = 0; i < Out.VertexCount; ++i)
+                        {
+                            const FSkinnedVertex& V = Verts[Result.Vertices[Out.VertexOffset + i]];
 
-                        FMeshletSkinnedVertex Packed;
-                        Packed.Position = PackMeshletPosition(GridIndex(V.Position) - Out.LoInt);
-                        Packed.Normal   = V.Normal;
-                        Packed.UV       = V.UV;
-                        Packed.Color    = V.Color;
-                        // glm::u8vec4 is x..w in bytes 0..3; on little-endian
-                        // its in-memory layout is already the packed uint32.
-                        memcpy(&Packed.JointIndices, &V.JointIndices, sizeof(uint32));
-                        memcpy(&Packed.JointWeights, &V.JointWeights, sizeof(uint32));
-                        MeshResource.MeshletData.MeshletSkinnedVertices.push_back(Packed);
+                            FMeshletSkinnedVertex Packed;
+                            Packed.Position = PackMeshletPosition(GridIndex(V.Position) - Out.LoInt);
+                            Packed.Normal   = V.Normal;
+                            Packed.UV       = V.UV;
+                            Packed.Color    = V.Color;
+                            memcpy(&Packed.JointIndices, &V.JointIndices, sizeof(uint32));
+                            memcpy(&Packed.JointWeights, &V.JointWeights, sizeof(uint32));
+                            MeshResource.MeshletData.MeshletSkinnedVertices.push_back(Packed);
+                        }
                     }
-                }
-                else
-                {
-                    const auto& Verts = eastl::get<TVector<FVertex>>(MeshResource.Vertices);
-                    for (uint32 i = 0; i < Out.VertexCount; ++i)
+                    else
                     {
-                        const FVertex& V = Verts[Result.Vertices[Out.VertexOffset + i]];
+                        const auto& Verts = eastl::get<TVector<FVertex>>(MeshResource.Vertices);
+                        for (uint32 i = 0; i < Out.VertexCount; ++i)
+                        {
+                            const FVertex& V = Verts[Result.Vertices[Out.VertexOffset + i]];
 
-                        FMeshletVertex Packed;
-                        Packed.Position = PackMeshletPosition(GridIndex(V.Position) - Out.LoInt);
-                        Packed.Normal   = V.Normal;
-                        Packed.UV       = V.UV;
-                        Packed.Color    = V.Color;
-                        MeshResource.MeshletData.MeshletVertices.push_back(Packed);
+                            FMeshletVertex Packed;
+                            Packed.Position = PackMeshletPosition(GridIndex(V.Position) - Out.LoInt);
+                            Packed.Normal   = V.Normal;
+                            Packed.UV       = V.UV;
+                            Packed.Color    = V.Color;
+                            MeshResource.MeshletData.MeshletVertices.push_back(Packed);
+                        }
                     }
-                }
 
-                // Pack triangle micro-indices, 3 per dword.
-                const uint32 PackedDwordStart = (uint32)MeshResource.MeshletData.MeshletTriangles.size();
-                const uint8* TriSrc           = Result.Triangles.data() + Out.TriangleOffset;
-                for (uint32 t = 0; t < Out.TriangleCount; ++t)
-                {
-                    const uint32 Packed =
-                          (uint32)TriSrc[t * 3 + 0]
-                        | ((uint32)TriSrc[t * 3 + 1] << 8)
-                        | ((uint32)TriSrc[t * 3 + 2] << 16);
-                    MeshResource.MeshletData.MeshletTriangles.push_back(Packed);
-                }
+                    const uint32 PackedDwordStart = (uint32)MeshResource.MeshletData.MeshletTriangles.size();
+                    const uint8* TriSrc           = Result.Triangles.data() + Out.TriangleOffset;
+                    for (uint32 t = 0; t < Out.TriangleCount; ++t)
+                    {
+                        const uint32 Packed =
+                              (uint32)TriSrc[t * 3 + 0]
+                            | ((uint32)TriSrc[t * 3 + 1] << 8)
+                            | ((uint32)TriSrc[t * 3 + 2] << 16);
+                        MeshResource.MeshletData.MeshletTriangles.push_back(Packed);
+                    }
 
-                Out.VertexOffset   = PackedVertexStart;
-                Out.TriangleOffset = PackedDwordStart;
-                MeshResource.MeshletData.Meshlets.push_back(Out);
-                MeshResource.MeshletData.MeshletBounds.push_back(Result.Bounds[MeshletIdx]);
+                    Out.VertexOffset   = PackedVertexStart;
+                    Out.TriangleOffset = PackedDwordStart;
+                    MeshResource.MeshletData.Meshlets.push_back(Out);
+                    MeshResource.MeshletData.MeshletBounds.push_back(Result.Bounds[MeshletIdx]);
+                }
             }
         }
 

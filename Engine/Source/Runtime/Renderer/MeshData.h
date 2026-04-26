@@ -14,6 +14,11 @@ namespace Lumina
     constexpr uint32 MESHLET_MAX_TRIANGLES      = 124;
     constexpr uint32 MESHLET_VERTICES_PER_DRAW  = MESHLET_MAX_TRIANGLES * 3;
 
+    // Hard cap on per-surface LODs. LOD 0 is full detail; subsequent LODs
+    // are progressively simplified copies. CPU instance build picks one LOD
+    // per instance per frame from a distance-to-radius ratio.
+    constexpr uint32 MAX_MESH_LODS              = 4;
+
     // LoInt: meshlet's quantization origin in mesh-global grid units.
     // TriangleOffset is in dwords (3 micro-indices per dword).
     struct alignas(16) FMeshlet
@@ -117,9 +122,23 @@ namespace Lumina
         uint32  StartIndex = 0;
         int16   MaterialIndex = -1;
 
-        // Range into FMeshResource::MeshletData.Meshlets.
+        // LOD 0 range into FMeshResource::MeshletData.Meshlets. Mirrors
+        // LODMeshletOffset[0] / LODMeshletCount[0]; kept as standalone fields
+        // so non-LOD callers (thumbnails, debug rendering, legacy paths) keep
+        // working with no awareness of the LOD array.
         uint32  MeshletOffset = 0;
         uint32  MeshletCount  = 0;
+
+        // Per-LOD meshlet ranges. LOD 0 is full detail; LOD i (i>=1) covers
+        // simplified geometry produced by meshopt_simplify and packed into
+        // the same MeshletData arrays. NumLODs is at least 1.
+        uint32  NumLODs                              = 1;
+        uint32  LODMeshletOffset[MAX_MESH_LODS]      = {};
+        uint32  LODMeshletCount[MAX_MESH_LODS]       = {};
+        // Distance-to-radius ratio (length(InstanceCenter - Camera) / Radius)
+        // at which LOD i becomes the active LOD. Index 0 is unused (LOD 0 is
+        // the default), entries are monotonically increasing.
+        float   LODScreenThreshold[MAX_MESH_LODS]    = {};
 
         friend FArchive& operator << (FArchive& Ar, FGeometrySurface& Data)
         {
@@ -313,6 +332,21 @@ namespace Lumina
             Ar << Data.bSkinnedMesh;
             Ar << Data.GeometrySurfaces;
             Ar << Data.MeshletData;
+
+            // Per-surface LOD payload. Always present -- assets older than
+            // the LOD addition are intentionally unsupported and need to be
+            // re-imported (or deleted).
+            for (FGeometrySurface& Surface : Data.GeometrySurfaces)
+            {
+                Ar << Surface.NumLODs;
+                for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
+                {
+                    Ar << Surface.LODMeshletOffset[i];
+                    Ar << Surface.LODMeshletCount[i];
+                    Ar << Surface.LODScreenThreshold[i];
+                }
+            }
+
             return Ar;
         }
     };

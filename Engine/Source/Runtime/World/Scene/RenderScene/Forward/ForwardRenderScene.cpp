@@ -1037,6 +1037,30 @@ namespace Lumina
         return NewIdx;
     }
 
+    // Pick the LOD index whose threshold the instance has crossed. Thresholds
+    // are stored in (distance / radius) ratio: small numbers = close-up = use
+    // LOD 0; thresholds grow monotonically so we can stop at the first ratio
+    // that doesn't qualify. Clamped to the surface's actual NumLODs since
+    // some surfaces simplify fewer times than others (small geometry hits a
+    // floor before the full ladder).
+    static uint32 SelectLODIndex(const FGeometrySurface& Surface, float DistanceOverRadius)
+    {
+        uint32 Picked = 0;
+        const uint32 LastLOD = Surface.NumLODs > 0 ? Surface.NumLODs - 1u : 0u;
+        for (uint32 i = 1; i <= LastLOD; ++i)
+        {
+            if (DistanceOverRadius >= Surface.LODScreenThreshold[i])
+            {
+                Picked = i;
+            }
+            else
+            {
+                break;
+            }
+        }
+        return Picked;
+    }
+
     void FForwardRenderScene::ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local)
     {
         CMesh* Mesh = MeshComponent.StaticMesh;
@@ -1086,6 +1110,12 @@ namespace Lumina
         constexpr float kMinAngularSize = 0.05f;
         const bool bSignificantOccluder = (Radius * Radius) > DistSq * (kMinAngularSize * kMinAngularSize);
 
+        // Per-instance LOD pick scalar: distance in radii. One sqrt + divide
+        // here saves the per-surface variants in the loop below.
+        const float DistanceOverRadius = (Radius > 0.0f)
+            ? (glm::sqrt(DistSq) / Radius)
+            : 0.0f;
+
         EInstanceFlags BaseFlags = EInstanceFlags::None;
         if (MeshComponent.bReceiveShadow)
         {
@@ -1125,15 +1155,36 @@ namespace Lumina
                 .bMasked          = (uint32)(Slot.bMasked          ? 1u : 0u),
                 .bAdditive        = (uint32)(Slot.bAdditive        ? 1u : 0u),
             };
+            // CPU-side LOD pick. The chosen meshlet range replaces the LOD0
+            // (Surface.MeshletOffset/Count) range -- it lives in the same
+            // per-mesh buffers, just at a different slice. Smaller ranges
+            // shrink TotalMeshletBound, which directly cuts cull-pass cost.
+            // ForcedLODIndex (-1 default) lets the mesh editor preview a
+            // specific LOD on the active instance regardless of distance.
+            uint32 LODIndex = 0u;
+            if (Surface.NumLODs > 1)
+            {
+                if (MeshComponent.ForcedLODIndex >= 0)
+                {
+                    LODIndex = (uint32)glm::min((int32)Surface.NumLODs - 1, MeshComponent.ForcedLODIndex);
+                }
+                else if (RenderSettings.bUseLODs)
+                {
+                    LODIndex = SelectLODIndex(Surface, DistanceOverRadius);
+                }
+            }
+
             // Zero SurfaceMeshletCount when no header was uploaded so the cull
             // shader's MeshletHeader deref is gated.
-            const uint32 SurfaceMeshletCount = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
+            const uint32 SurfaceMeshletCount  = MeshletHeaderAddress ? Surface.LODMeshletCount[LODIndex]  : 0u;
+            const uint32 SurfaceMeshletOffset = Surface.LODMeshletOffset[LODIndex];
+
             const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot.VertexShader, Slot.PixelShader);
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
             Item.EntityRecordIndex    = EntityRecordIdx;
-            Item.SurfaceMeshletOffset = Surface.MeshletOffset;
+            Item.SurfaceMeshletOffset = SurfaceMeshletOffset;
             Item.SurfaceMeshletCount  = SurfaceMeshletCount;
             Item.Flags                = Flags;
             Item.MaterialIndex        = Slot.MaterialIdx;
@@ -1188,6 +1239,11 @@ namespace Lumina
         constexpr float kMinAngularSize = 0.05f;
         const bool bSignificantOccluder = (Radius * Radius) > DistSq * (kMinAngularSize * kMinAngularSize);
 
+        // Per-instance LOD pick scalar; same convention as the static path.
+        const float DistanceOverRadius = (Radius > 0.0f)
+            ? (glm::sqrt(DistSq) / Radius)
+            : 0.0f;
+
         EInstanceFlags BaseFlags = EInstanceFlags::Skinned;
         if (MeshComponent.bReceiveShadow)
         {
@@ -1224,13 +1280,32 @@ namespace Lumina
                 .bMasked          = (uint32)(Slot.bMasked          ? 1u : 0u),
                 .bAdditive        = (uint32)(Slot.bAdditive        ? 1u : 0u),
             };
-            const uint32 SurfaceMeshletCount = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
+            // CPU-side LOD pick; mirrors the static path. Skinned bounds are
+            // bind-pose so the threshold is a coarse approximation when a
+            // large animation pushes geometry well outside the AABB, but
+            // BoundsScale on the component already handles those cases.
+            uint32 LODIndex = 0u;
+            if (Surface.NumLODs > 1)
+            {
+                if (MeshComponent.ForcedLODIndex >= 0)
+                {
+                    LODIndex = (uint32)glm::min((int32)Surface.NumLODs - 1, MeshComponent.ForcedLODIndex);
+                }
+                else if (RenderSettings.bUseLODs)
+                {
+                    LODIndex = SelectLODIndex(Surface, DistanceOverRadius);
+                }
+            }
+
+            const uint32 SurfaceMeshletCount  = MeshletHeaderAddress ? Surface.LODMeshletCount[LODIndex]  : 0u;
+            const uint32 SurfaceMeshletOffset = Surface.LODMeshletOffset[LODIndex];
+
             const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot.VertexShader, Slot.PixelShader);
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
             Item.EntityRecordIndex    = EntityRecordIdx;
-            Item.SurfaceMeshletOffset = Surface.MeshletOffset;
+            Item.SurfaceMeshletOffset = SurfaceMeshletOffset;
             Item.SurfaceMeshletCount  = SurfaceMeshletCount;
             Item.Flags                = Flags;
             Item.MaterialIndex        = Slot.MaterialIdx;
@@ -1239,7 +1314,7 @@ namespace Lumina
             Item._Pad                 = 0;
         }
     }
-    
+
     void FForwardRenderScene::MergeMeshDrawData(TVector<FThreadLocalDrawData>& ThreadLocal)
     {
         LUMINA_PROFILE_SECTION("Merge Mesh Draw Data");

@@ -46,6 +46,15 @@ namespace Lumina
         /** When true, this mesh samples and applies shadowing from shadow-casting lights. */
         PROPERTY(Editable, Category = "Shadows")
         bool bReceiveShadow = true;
-        
+
+        /**
+         * LOD override. -1 = automatic (distance/radius pick); 0 or higher
+         * pins the instance to that LOD regardless of camera distance. The
+         * renderer clamps to the surface's actual NumLODs, so values past
+         * the available LOD count are safe -- they degrade to the coarsest
+         * LOD the asset has.
+         */
+        PROPERTY(Editable, Category = "Rendering")
+        int32 ForcedLODIndex = -1;
     };
 }

@@ -672,6 +672,11 @@ namespace Lumina
         // shadow-casting light spheres). Saves per-surface batch work and
         // shrinks the Instance SSBO upload; GPU meshlet cull still runs.
         uint8 bCPUInstanceCull:1        = true;
+        // Enable distance-based LOD picking on the CPU during the per-frame
+        // instance build. Disabled = always use LOD 0 (full detail) -- handy
+        // for A/B comparisons or pinning quality regardless of camera
+        // distance. The actual LOD ladder is baked at import time.
+        uint8 bUseLODs:1                = true;
     };
     
 }

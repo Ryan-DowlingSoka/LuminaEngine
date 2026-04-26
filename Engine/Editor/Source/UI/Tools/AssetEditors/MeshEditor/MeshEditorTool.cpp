@@ -65,6 +65,15 @@ namespace Lumina
                 PropertyRow("Vertices", eastl::to_string(Resource.GetNumVertices()));
                 PropertyRow("Meshlets", eastl::to_string(Resource.MeshletData.Meshlets.size()));
                 PropertyRow("Surfaces", eastl::to_string(Resource.GetNumSurfaces()));
+
+                // Maximum NumLODs across surfaces -- thumbnail-style summary
+                // for the LOD ladder. Per-surface detail lives below.
+                uint32 MaxLODsAcrossSurfaces = 0;
+                for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
+                {
+                    MaxLODsAcrossSurfaces = glm::max(MaxLODsAcrossSurfaces, Surface.NumLODs);
+                }
+                PropertyRow("LOD Levels", eastl::to_string(MaxLODsAcrossSurfaces));
                 
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
@@ -274,7 +283,200 @@ namespace Lumina
             
             ImGui::Spacing();
             ImGui::Spacing();
-    
+
+            // ----------------------------------------------------------------
+            // LOD configuration + visualization. Lets the user override which
+            // LOD the preview entity renders (forces all surfaces to the
+            // chosen LOD) and tune per-LOD distance thresholds. The forced
+            // LOD is pushed onto the SStaticMeshComponent each frame in
+            // Update(); thresholds live on FGeometrySurface and persist with
+            // the asset.
+            // ----------------------------------------------------------------
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
+            ImGui::SeparatorText("Levels of Detail");
+            ImGuiX::Font::PopFont();
+
+            ImGui::Spacing();
+
+            {
+                // Preview combo: -1 = automatic, 0..MAX-1 = forced index.
+                const char* PreviewItems[MAX_MESH_LODS + 1] =
+                {
+                    "Automatic (distance)",
+                    "LOD 0 (full detail)",
+                    "LOD 1",
+                    "LOD 2",
+                    "LOD 3",
+                };
+                int PreviewItem = (PreviewLODIndex < 0) ? 0 : PreviewLODIndex + 1;
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::Combo("Preview LOD", &PreviewItem, PreviewItems, IM_ARRAYSIZE(PreviewItems)))
+                {
+                    PreviewLODIndex = (PreviewItem == 0) ? -1 : PreviewItem - 1;
+                }
+                ImGuiX::TextTooltip("Force the viewport mesh to a specific LOD regardless of camera distance.");
+            }
+
+            ImGui::Spacing();
+
+            // Per-LOD aggregate stats across surfaces. Sums let you see how
+            // much geometry each LOD costs at a glance without expanding
+            // every surface.
+            uint32 LODAggMeshlets[MAX_MESH_LODS]  = { 0 };
+            uint32 LODAggTriangles[MAX_MESH_LODS] = { 0 };
+            uint32 LODAggSurfaces[MAX_MESH_LODS]  = { 0 };
+            for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
+            {
+                for (uint32 lod = 0; lod < Surface.NumLODs; ++lod)
+                {
+                    const uint32 MOff = Surface.LODMeshletOffset[lod];
+                    const uint32 MCnt = Surface.LODMeshletCount[lod];
+                    LODAggMeshlets[lod] += MCnt;
+                    LODAggSurfaces[lod] += (MCnt > 0) ? 1u : 0u;
+
+                    const uint32 End = MOff + MCnt;
+                    for (uint32 m = MOff; m < End && m < Resource.MeshletData.Meshlets.size(); ++m)
+                    {
+                        LODAggTriangles[lod] += Resource.MeshletData.Meshlets[m].TriangleCount;
+                    }
+                }
+            }
+
+            const uint32 LOD0Tris = LODAggTriangles[0];
+
+            if (ImGui::BeginTable("##LODSummary", 5,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
+            {
+                ImGui::TableSetupColumn("LOD",       ImGuiTableColumnFlags_WidthFixed, 50.0f);
+                ImGui::TableSetupColumn("Surfaces",  ImGuiTableColumnFlags_WidthFixed, 70.0f);
+                ImGui::TableSetupColumn("Meshlets",  ImGuiTableColumnFlags_WidthFixed, 80.0f);
+                ImGui::TableSetupColumn("Triangles", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+                ImGui::TableSetupColumn("vs LOD 0",  ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableHeadersRow();
+
+                for (uint32 lod = 0; lod < MAX_MESH_LODS; ++lod)
+                {
+                    if (LODAggSurfaces[lod] == 0)
+                    {
+                        continue;
+                    }
+
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0); ImGui::Text("%u", lod);
+                    ImGui::TableSetColumnIndex(1); ImGui::Text("%u", LODAggSurfaces[lod]);
+                    ImGui::TableSetColumnIndex(2); ImGui::Text("%u", LODAggMeshlets[lod]);
+                    ImGui::TableSetColumnIndex(3); ImGui::Text("%u", LODAggTriangles[lod]);
+                    ImGui::TableSetColumnIndex(4);
+                    if (LOD0Tris > 0)
+                    {
+                        const float Ratio = (float)LODAggTriangles[lod] / (float)LOD0Tris;
+                        ImGui::Text("%.1f%%", Ratio * 100.0f);
+                    }
+                    else
+                    {
+                        ImGui::TextDisabled("--");
+                    }
+                }
+                ImGui::EndTable();
+            }
+
+            ImGui::Spacing();
+            ImGui::TextDisabled("Distance thresholds (distance / radius). The renderer picks the highest LOD whose threshold the instance has exceeded.");
+            ImGui::Spacing();
+
+            // Aggregate threshold editor. Most assets share the same threshold
+            // ramp across surfaces, so editing once here writes to every
+            // surface in lockstep -- much faster than expanding each surface
+            // to tweak separately. Per-surface customization still works via
+            // the surface details panel below.
+            {
+                static float SharedThresholds[MAX_MESH_LODS] = { 0.0f, 8.0f, 16.0f, 32.0f };
+                if (!Resource.GeometrySurfaces.empty())
+                {
+                    for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
+                    {
+                        SharedThresholds[i] = Resource.GeometrySurfaces[0].LODScreenThreshold[i];
+                    }
+                }
+
+                bool bThresholdChanged = false;
+                if (ImGui::BeginTable("##LODThresholds", 3,
+                    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
+                {
+                    ImGui::TableSetupColumn("LOD",       ImGuiTableColumnFlags_WidthFixed, 50.0f);
+                    ImGui::TableSetupColumn("Threshold", ImGuiTableColumnFlags_WidthStretch);
+                    ImGui::TableSetupColumn("Notes",     ImGuiTableColumnFlags_WidthFixed, 220.0f);
+                    ImGui::TableHeadersRow();
+
+                    for (uint32 lod = 0; lod < MAX_MESH_LODS; ++lod)
+                    {
+                        if (LODAggSurfaces[lod] == 0)
+                        {
+                            continue;
+                        }
+
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0); ImGui::Text("%u", lod);
+                        ImGui::TableSetColumnIndex(1);
+
+                        ImGui::PushID((int)lod);
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+
+                        if (lod == 0)
+                        {
+                            ImGui::TextDisabled("0  (always active)");
+                        }
+                        else
+                        {
+                            float Value = SharedThresholds[lod];
+                            // Min clamp = previous LOD's threshold + tiny
+                            // epsilon to keep the ramp monotonic. Avoids the
+                            // pick loop's "first miss wins" rule degenerating.
+                            const float MinValue = SharedThresholds[lod - 1] + 0.01f;
+                            if (ImGui::DragFloat("##Threshold", &Value, 0.5f, MinValue, 1024.0f, "%.2f"))
+                            {
+                                SharedThresholds[lod] = glm::max(Value, MinValue);
+                                bThresholdChanged = true;
+                            }
+                        }
+
+                        ImGui::PopID();
+
+                        ImGui::TableSetColumnIndex(2);
+                        if (lod == 0)
+                        {
+                            ImGui::TextDisabled("close-up");
+                        }
+                        else
+                        {
+                            // Approximate screen-coverage hint: at threshold T,
+                            // the radius covers ~ 1 / T of the view's screen-
+                            // height tangent (for a 60-deg fov ~ tan(30) = 0.577).
+                            // It's a rough number, but it gives the user a feel.
+                            const float ApproxScreenPct = 100.0f / glm::max(1.0f, SharedThresholds[lod]);
+                            ImGui::TextDisabled("~%.1f%% screen size", ApproxScreenPct);
+                        }
+                    }
+                    ImGui::EndTable();
+                }
+
+                if (bThresholdChanged)
+                {
+                    // Replicate to every surface; persist via package dirty.
+                    for (FGeometrySurface& Surface : Resource.GeometrySurfaces)
+                    {
+                        for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
+                        {
+                            Surface.LODScreenThreshold[i] = SharedThresholds[i];
+                        }
+                    }
+                    Asset->GetPackage()->MarkDirty();
+                }
+            }
+
+            ImGui::Spacing();
+            ImGui::Spacing();
+
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
             ImGui::SeparatorText("Geometry Surfaces");
             ImGuiX::Font::PopFont();
@@ -331,12 +533,74 @@ namespace Lumina
                             DetailRow("Start Index:",    eastl::to_string(Surface.StartIndex));
                             DetailRow("Index Count:",    eastl::to_string(Surface.IndexCount));
                             DetailRow("Triangles:",      eastl::to_string(Surface.IndexCount / 3));
-                            DetailRow("Meshlet Range:",  eastl::to_string(Surface.MeshletOffset)
+                            DetailRow("LOD 0 Range:",    eastl::to_string(Surface.MeshletOffset)
                                                        + " .. " + eastl::to_string(Surface.MeshletOffset + Surface.MeshletCount));
-                            DetailRow("Meshlets:",       eastl::to_string(Surface.MeshletCount));
+                            DetailRow("LOD 0 Meshlets:", eastl::to_string(Surface.MeshletCount));
+                            DetailRow("LOD Levels:",     eastl::to_string(Surface.NumLODs));
 
                             ImGui::EndTable();
                         }
+
+                        // Per-LOD breakdown for this surface, with per-surface
+                        // threshold overrides. Useful when one surface should
+                        // pop to a coarser LOD earlier than the rest of the
+                        // mesh (e.g. a small bolt vs. a big hull).
+                        ImGui::Spacing();
+                        if (ImGui::BeginTable("##SurfaceLODs", 5,
+                            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
+                        {
+                            ImGui::TableSetupColumn("LOD",       ImGuiTableColumnFlags_WidthFixed, 50.0f);
+                            ImGui::TableSetupColumn("Meshlets",  ImGuiTableColumnFlags_WidthFixed, 80.0f);
+                            ImGui::TableSetupColumn("Triangles", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+                            ImGui::TableSetupColumn("Range",     ImGuiTableColumnFlags_WidthStretch);
+                            ImGui::TableSetupColumn("Threshold", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+                            ImGui::TableHeadersRow();
+
+                            FMeshResource&         ResourceRW = StaticMesh->GetMeshResource();
+                            FGeometrySurface&      SurfaceRW  = ResourceRW.GeometrySurfaces[i];
+                            const TVector<FMeshlet>& Meshlets2 = ResourceRW.MeshletData.Meshlets;
+
+                            for (uint32 lod = 0; lod < SurfaceRW.NumLODs; ++lod)
+                            {
+                                const uint32 MOff = SurfaceRW.LODMeshletOffset[lod];
+                                const uint32 MCnt = SurfaceRW.LODMeshletCount[lod];
+
+                                uint32 Tris = 0;
+                                const uint32 End = MOff + MCnt;
+                                for (uint32 m = MOff; m < End && m < Meshlets2.size(); ++m)
+                                {
+                                    Tris += Meshlets2[m].TriangleCount;
+                                }
+
+                                ImGui::TableNextRow();
+                                ImGui::TableSetColumnIndex(0); ImGui::Text("%u", lod);
+                                ImGui::TableSetColumnIndex(1); ImGui::Text("%u", MCnt);
+                                ImGui::TableSetColumnIndex(2); ImGui::Text("%u", Tris);
+                                ImGui::TableSetColumnIndex(3); ImGui::Text("%u .. %u", MOff, MOff + MCnt);
+                                ImGui::TableSetColumnIndex(4);
+
+                                if (lod == 0)
+                                {
+                                    ImGui::TextDisabled("0");
+                                }
+                                else
+                                {
+                                    ImGui::PushID((int)lod);
+                                    ImGui::SetNextItemWidth(-FLT_MIN);
+                                    float Value = SurfaceRW.LODScreenThreshold[lod];
+                                    const float MinValue = SurfaceRW.LODScreenThreshold[lod - 1] + 0.01f;
+                                    if (ImGui::DragFloat("##SurfaceThreshold", &Value, 0.5f, MinValue, 1024.0f, "%.2f"))
+                                    {
+                                        SurfaceRW.LODScreenThreshold[lod] = glm::max(Value, MinValue);
+                                        Asset->GetPackage()->MarkDirty();
+                                    }
+                                    ImGui::PopID();
+                                }
+                            }
+
+                            ImGui::EndTable();
+                        }
+
                         ImGui::Unindent(16.0f);
                     }
 
@@ -399,6 +663,12 @@ namespace Lumina
         SStaticMeshComponent& StaticMeshComponent = World->GetEntityRegistry().get<SStaticMeshComponent>(MeshEntity);
         STransformComponent&  Transform           = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
 
+        // Push the editor's preview override onto the component every frame.
+        // The renderer reads ForcedLODIndex during instance build, so this is
+        // the cheapest way to keep the viewport in sync with the LOD combo
+        // even as the user scrubs through values.
+        StaticMeshComponent.ForcedLODIndex = PreviewLODIndex;
+
         if (bShowAABB)
         {
             FAABB AABB = StaticMeshComponent.StaticMesh->GetAABB().ToWorld(Transform.GetWorldMatrix());
@@ -406,7 +676,9 @@ namespace Lumina
         }
 
         // Highlight the selected surface by deriving its AABB from the per-
-        // meshlet LoInt range and drawing it as a yellow wireframe box.
+        // meshlet LoInt range of whichever LOD is *currently being rendered*.
+        // Forcing the LOD changes the meshlet set in the viewport, so the
+        // overlay should follow -- LOD 0's bounds will look stale otherwise.
         if (SelectedSurfaceIndex >= 0 && IsValid(StaticMeshComponent.StaticMesh))
         {
             const FMeshResource& Resource = StaticMeshComponent.StaticMesh->GetMeshResource();
@@ -415,12 +687,22 @@ namespace Lumina
                 const FGeometrySurface& Surface = Resource.GeometrySurfaces[SelectedSurfaceIndex];
                 const FMeshletData&     MD      = Resource.MeshletData;
 
-                if (Surface.MeshletCount > 0 && !MD.Meshlets.empty())
+                // Pick the LOD whose meshlet range we'll bound. Auto preview
+                // shows LOD 0; forced preview shows that LOD (clamped to
+                // what the surface actually has).
+                const uint32 OverlayLOD = (PreviewLODIndex >= 0 && Surface.NumLODs > 0)
+                    ? (uint32)glm::min((int32)Surface.NumLODs - 1, PreviewLODIndex)
+                    : 0u;
+
+                const uint32 OverlayOffset = Surface.LODMeshletOffset[OverlayLOD];
+                const uint32 OverlayCount  = Surface.LODMeshletCount[OverlayLOD];
+
+                if (OverlayCount > 0 && !MD.Meshlets.empty())
                 {
                     glm::vec3 Lo( FLT_MAX);
                     glm::vec3 Hi(-FLT_MAX);
-                    const uint32 End = Surface.MeshletOffset + Surface.MeshletCount;
-                    for (uint32 m = Surface.MeshletOffset; m < End; ++m)
+                    const uint32 End = OverlayOffset + OverlayCount;
+                    for (uint32 m = OverlayOffset; m < End; ++m)
                     {
                         const FMeshlet& Mesh = MD.Meshlets[m];
                         const glm::vec3 BoxLo = MD.MeshOrigin + glm::vec3(Mesh.LoInt) * MD.MeshGridStep;
