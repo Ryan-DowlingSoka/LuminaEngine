@@ -94,9 +94,10 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
         return;
 
     // Per-instance / per-meshlet data reused across every view.
-    bool bSkinned = Inst.HasFlag(EInstanceFlags::Skinned);
-    bool bNoCull  = Inst.HasFlag(EInstanceFlags::NoCull);
-    bool bCaster  = Inst.HasFlag(EInstanceFlags::CastShadow);
+    bool bSkinned  = Inst.HasFlag(EInstanceFlags::Skinned);
+    bool bNoCull   = Inst.HasFlag(EInstanceFlags::NoCull);
+    bool bCaster   = Inst.HasFlag(EInstanceFlags::CastShadow);
+    bool bTwoSided = Inst.HasFlag(EInstanceFlags::TwoSided);
 
     float4x4 Model = Inst.ModelMatrix;
 
@@ -142,9 +143,9 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
                 continue;
         }
 
-        // Cone cull (cheapest reject before frustum). Sun views test against the
-        // sun direction; camera/point/spot test against apex-to-origin.
-        if (!bSkinned && !bNoCull && bHasCone && View.HasFlag(CULL_VIEW_FLAG_CONE))
+        // Cone cull (skipped for skinned/two-sided/NoCull). Sun views test
+        // against sun direction; camera/point/spot against apex-to-origin.
+        if (!bSkinned && !bNoCull && !bTwoSided && bHasCone && View.HasFlag(CULL_VIEW_FLAG_CONE))
         {
             if (View.HasFlag(CULL_VIEW_FLAG_SUN_ALIGNED))
             {

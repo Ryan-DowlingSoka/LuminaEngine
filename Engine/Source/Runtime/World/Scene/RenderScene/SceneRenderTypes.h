@@ -122,7 +122,7 @@ namespace Lumina
         Skinned                 = BIT(1),
         CastShadow              = BIT(2),
         ReceiveShadow           = BIT(3),
-		Occluder                = BIT(4),
+        TwoSided                = BIT(4),  // Skip backface cone cull.
         IgnoreOcclusionCulling  = BIT(5),
         Translucent             = BIT(6),
         Masked                  = BIT(7),
@@ -442,17 +442,17 @@ namespace Lumina
     };
 
     // Unified 128B per-instance descriptor. One SSBO, one binding, one fetch per
-    // instance. MeshletHeaderAddress is zero when the instance skips the meshlet
-    // path (skinned meshes, legacy assets without meshlets).
+    // instance. The empty default constructor lets eastl::vector<FGPUInstance>
+    // skip zero-init on resize() — every byte is overwritten by the parallel
+    // writer anyway, and 100k instances × 128B is ~12 MB of pointless writes.
     struct alignas(16) FGPUInstance
     {
+        FGPUInstance() noexcept {}
+
         glm::mat4x4     Transform;
         glm::vec4       SphereBounds;
 
         uint64          VBAddress;
-        // Reserved slot. Was ShadowIBAddress before the renderer became
-        // fully meshlet-driven; kept as a typed pointer-sized field so the
-        // C++/shader struct layout stays byte-identical.
         uint64          _ReservedAddress;
         uint64          MeshletHeaderAddress;
 

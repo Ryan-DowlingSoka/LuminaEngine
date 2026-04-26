@@ -231,158 +231,45 @@ namespace Lumina
             }
             ImGuiX::TextTooltip("Reset rotation values to zero.");
             
-            ImGui::SeparatorText("Geometry Data");
-            
+            ImGui::SeparatorText("Meshlets");
             ImGui::Spacing();
-            
-            if (ImGui::BeginTabBar("##GeometryTabs"))
+
+            const TVector<FMeshlet>&       Meshlets = Resource.MeshletData.Meshlets;
+            const TVector<FMeshletBounds>& Bounds   = Resource.MeshletData.MeshletBounds;
+            ImGui::Text("Total Meshlets: %zu", Meshlets.size());
+            ImGui::Spacing();
+
+            if (ImGui::BeginTable("##Meshlets", 4,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit,
+                ImVec2(0, 300)))
             {
-                if (ImGui::BeginTabItem("Vertices"))
+                ImGui::TableSetupColumn("Index",     ImGuiTableColumnFlags_WidthFixed, 50.0f);
+                ImGui::TableSetupColumn("Verts",     ImGuiTableColumnFlags_WidthFixed, 50.0f);
+                ImGui::TableSetupColumn("Tris",      ImGuiTableColumnFlags_WidthFixed, 50.0f);
+                ImGui::TableSetupColumn("Bounds (center, radius)", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableHeadersRow();
+
+                ImGuiListClipper Clipper;
+                Clipper.Begin((int)Meshlets.size());
+                while (Clipper.Step())
                 {
-                    ImGui::Text("Total Vertices: %zu", Resource.GetNumVertices());
-                    ImGui::Spacing();
-                    
-                    if (ImGui::BeginTable("##Vertices", 5, 
-                        ImGuiTableFlags_Borders | 
-                        ImGuiTableFlags_RowBg | 
-                        ImGuiTableFlags_ScrollY | 
-                        ImGuiTableFlags_SizingFixedFit,
-                        ImVec2(0, 400)))
+                    for (int i = Clipper.DisplayStart; i < Clipper.DisplayEnd; ++i)
                     {
-                        ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-                        ImGui::TableSetupColumn("Position", ImGuiTableColumnFlags_WidthFixed, 250.0f);
-                        ImGui::TableSetupColumn("Normal", ImGuiTableColumnFlags_WidthFixed, 250.0f);
-                        ImGui::TableSetupColumn("UV", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-                        ImGui::TableSetupColumn("Color", ImGuiTableColumnFlags_WidthFixed, 250.0f);
-                        ImGui::TableHeadersRow();
-                        
-                        ImGuiListClipper clipper;
-                        clipper.Begin(static_cast<int>(Resource.GetNumVertices()));
-                        
-                        while (clipper.Step())
+                        const FMeshlet& M = Meshlets[i];
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0); ImGui::Text("%d", i);
+                        ImGui::TableSetColumnIndex(1); ImGui::Text("%u", M.VertexCount);
+                        ImGui::TableSetColumnIndex(2); ImGui::Text("%u", M.TriangleCount);
+                        ImGui::TableSetColumnIndex(3);
+                        if (i < (int)Bounds.size())
                         {
-                            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++)
-                            {
-                                const glm::vec3& Position = Resource.GetPositionAt(i);
-                                glm::vec3 Normal = UnpackNormal(Resource.GetNormalAt(i));
-                                glm::vec2 UV = Resource.GetUVAt(i);
-                                glm::vec4 Color = UnpackColor(Resource.GetColorAt(i));
-                                
-                                ImGui::TableNextRow();
-                                ImGui::TableSetColumnIndex(0);
-                                ImGui::Text("%d", i);
-                                
-                                ImGui::TableSetColumnIndex(1);
-                                ImGui::Text("%.3f, %.3f, %.3f", Position.x, Position.y, Position.z);
-                                
-                                ImGui::TableSetColumnIndex(2);
-                                ImGui::Text("%.3f, %.3f, %.3f", Normal.x, Normal.y, Normal.z);
-                                
-                                ImGui::TableSetColumnIndex(3);
-                                ImGui::Text("%.3f, %.3f", UV.x, UV.y);
-                                
-                                ImGui::TableSetColumnIndex(4);
-                                ImGui::Text("%f, %f, %f", Color.x, Color.y, Color.z);  
-                            }
+                            const FMeshletBounds& B = Bounds[i];
+                            ImGui::Text("(%.2f, %.2f, %.2f)  r=%.2f", B.Center.x, B.Center.y, B.Center.z, B.Radius);
                         }
-                        
-                        ImGui::EndTable();
                     }
-                    
-                    ImGui::EndTabItem();
                 }
-                
-                if (ImGui::BeginTabItem("Indices"))
-                {
-                    ImGui::Text("Total Indices: %zu (Triangles: %zu)", 
-                        Resource.Indices.size(), Resource.Indices.size() / 3);
-                    ImGui::Spacing();
-                    
-                    static bool bShowAsTriangles = true;
-                    ImGui::Checkbox("Show as Triangles", &bShowAsTriangles);
-                    ImGui::Spacing();
-                    
-                    if (bShowAsTriangles)
-                    {
-                        if (ImGui::BeginTable("##Triangles", 4,
-                            ImGuiTableFlags_Borders | 
-                            ImGuiTableFlags_RowBg | 
-                            ImGuiTableFlags_ScrollY | 
-                            ImGuiTableFlags_SizingFixedFit,
-                            ImVec2(0, 400)))
-                        {
-                            ImGui::TableSetupColumn("Triangle", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-                            ImGui::TableSetupColumn("Index 0", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-                            ImGui::TableSetupColumn("Index 1", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-                            ImGui::TableSetupColumn("Index 2", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-                            ImGui::TableHeadersRow();
-                            
-                            const int triangleCount = static_cast<int>(Resource.Indices.size() / 3);
-                            ImGuiListClipper clipper;
-                            clipper.Begin(triangleCount);
-                            
-                            while (clipper.Step())
-                            {
-                                for (int tri = clipper.DisplayStart; tri < clipper.DisplayEnd; tri++)
-                                {
-                                    const int baseIdx = tri * 3;
-                                    
-                                    ImGui::TableNextRow();
-                                    ImGui::TableSetColumnIndex(0);
-                                    ImGui::Text("%d", tri);
-                                    
-                                    ImGui::TableSetColumnIndex(1);
-                                    ImGui::Text("%u", Resource.Indices[baseIdx + 0]);
-                                    
-                                    ImGui::TableSetColumnIndex(2);
-                                    ImGui::Text("%u", Resource.Indices[baseIdx + 1]);
-                                    
-                                    ImGui::TableSetColumnIndex(3);
-                                    ImGui::Text("%u", Resource.Indices[baseIdx + 2]);
-                                }
-                            }
-                            
-                            ImGui::EndTable();
-                        }
-                    }
-                    else
-                    {
-                        // Show raw index list
-                        if (ImGui::BeginTable("##IndicesList", 2,
-                            ImGuiTableFlags_Borders | 
-                            ImGuiTableFlags_RowBg | 
-                            ImGuiTableFlags_ScrollY | 
-                            ImGuiTableFlags_SizingFixedFit,
-                            ImVec2(0, 400)))
-                        {
-                            ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-                            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-                            ImGui::TableHeadersRow();
-                            
-                            ImGuiListClipper clipper;
-                            clipper.Begin(static_cast<int>(Resource.Indices.size()));
-                            
-                            while (clipper.Step())
-                            {
-                                for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++)
-                                {
-                                    ImGui::TableNextRow();
-                                    ImGui::TableSetColumnIndex(0);
-                                    ImGui::Text("%d", i);
-                                    
-                                    ImGui::TableSetColumnIndex(1);
-                                    ImGui::Text("%u", Resource.Indices[i]);
-                                }
-                            }
-                            
-                            ImGui::EndTable();
-                        }
-                    }
-                    
-                    ImGui::EndTabItem();
-                }
-                
-                ImGui::EndTabBar();
+                ImGui::EndTable();
             }
             
             ImGui::Spacing();
@@ -400,21 +287,36 @@ namespace Lumina
             }
             else
             {
+                ImGui::TextDisabled("Click a surface to highlight its bounds in the viewport.");
+                ImGui::Spacing();
+
                 for (size_t i = 0; i < Resource.GeometrySurfaces.size(); ++i)
                 {
                     const FGeometrySurface& Surface = Resource.GeometrySurfaces[i];
-                    ImGui::PushID(&Surface);
-                    
-                    FString HeaderLabel = "Surface " + eastl::to_string(i) + ": " + Surface.ID.ToString();
-                    if (ImGui::CollapsingHeader(HeaderLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+                    ImGui::PushID((int)i);
+
+                    CMaterialInterface* Mat        = StaticMesh->GetMaterialAtSlot((size_t)Surface.MaterialIndex);
+                    const FString       MaterialName = IsValid(Mat) ? Mat->GetName().ToString() : FString("(none)");
+
+                    const bool bSelected = ((int32)i == SelectedSurfaceIndex);
+                    FString    Label     = "Surface " + eastl::to_string(i)
+                                         + "  |  " + MaterialName
+                                         + "  |  " + eastl::to_string(Surface.IndexCount / 3) + " tris, "
+                                         + eastl::to_string(Surface.MeshletCount) + " meshlets";
+
+                    if (ImGui::Selectable(Label.c_str(), bSelected, ImGuiSelectableFlags_SpanAllColumns))
+                    {
+                        SelectedSurfaceIndex = bSelected ? -1 : (int32)i;
+                    }
+
+                    if (bSelected)
                     {
                         ImGui::Indent(16.0f);
-                        
                         if (ImGui::BeginTable("##SurfaceDetails", 2, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp))
                         {
                             ImGui::TableSetupColumn("##Label", ImGuiTableColumnFlags_WidthFixed, 120.0f);
                             ImGui::TableSetupColumn("##Value", ImGuiTableColumnFlags_WidthStretch);
-                            
+
                             auto DetailRow = [](const char* label, const FString& value)
                             {
                                 ImGui::TableNextRow();
@@ -423,19 +325,29 @@ namespace Lumina
                                 ImGui::TableSetColumnIndex(1);
                                 ImGui::TextUnformatted(value.c_str());
                             };
-                            
+
+                            DetailRow("Material:",       MaterialName);
                             DetailRow("Material Index:", eastl::to_string(Surface.MaterialIndex));
-                            DetailRow("Start Index:", eastl::to_string(Surface.StartIndex));
-                            DetailRow("Index Count:", eastl::to_string(Surface.IndexCount));
-                            DetailRow("Triangle Count:", eastl::to_string(Surface.IndexCount / 3));
-                            
+                            DetailRow("Start Index:",    eastl::to_string(Surface.StartIndex));
+                            DetailRow("Index Count:",    eastl::to_string(Surface.IndexCount));
+                            DetailRow("Triangles:",      eastl::to_string(Surface.IndexCount / 3));
+                            DetailRow("Meshlet Range:",  eastl::to_string(Surface.MeshletOffset)
+                                                       + " .. " + eastl::to_string(Surface.MeshletOffset + Surface.MeshletCount));
+                            DetailRow("Meshlets:",       eastl::to_string(Surface.MeshletCount));
+
                             ImGui::EndTable();
                         }
-                        
                         ImGui::Unindent(16.0f);
                     }
-                    
+
                     ImGui::PopID();
+                }
+
+                // Defensive: an asset reload may shrink the surface list below
+                // our selection. Clear it rather than draw garbage.
+                if (SelectedSurfaceIndex >= (int32)Resource.GeometrySurfaces.size())
+                {
+                    SelectedSurfaceIndex = -1;
                 }
             }
     
@@ -478,15 +390,52 @@ namespace Lumina
     void FStaticMeshEditorTool::Update(const FUpdateContext& UpdateContext)
     {
         FAssetEditorTool::Update(UpdateContext);
-        
-        if (bShowAABB && World.IsValid())
-        {
-            SStaticMeshComponent& StaticMeshComponent = World->GetEntityRegistry().get<SStaticMeshComponent>(MeshEntity);
-            STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
 
+        if (!World.IsValid())
+        {
+            return;
+        }
+
+        SStaticMeshComponent& StaticMeshComponent = World->GetEntityRegistry().get<SStaticMeshComponent>(MeshEntity);
+        STransformComponent&  Transform           = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
+
+        if (bShowAABB)
+        {
             FAABB AABB = StaticMeshComponent.StaticMesh->GetAABB().ToWorld(Transform.GetWorldMatrix());
-            
             World->DrawBox(AABB.GetCenter(), AABB.GetSize() * 0.5f, glm::quat(1, 0, 0, 0), FColor::Green);
+        }
+
+        // Highlight the selected surface by deriving its AABB from the per-
+        // meshlet LoInt range and drawing it as a yellow wireframe box.
+        if (SelectedSurfaceIndex >= 0 && IsValid(StaticMeshComponent.StaticMesh))
+        {
+            const FMeshResource& Resource = StaticMeshComponent.StaticMesh->GetMeshResource();
+            if (SelectedSurfaceIndex < (int32)Resource.GeometrySurfaces.size())
+            {
+                const FGeometrySurface& Surface = Resource.GeometrySurfaces[SelectedSurfaceIndex];
+                const FMeshletData&     MD      = Resource.MeshletData;
+
+                if (Surface.MeshletCount > 0 && !MD.Meshlets.empty())
+                {
+                    glm::vec3 Lo( FLT_MAX);
+                    glm::vec3 Hi(-FLT_MAX);
+                    const uint32 End = Surface.MeshletOffset + Surface.MeshletCount;
+                    for (uint32 m = Surface.MeshletOffset; m < End; ++m)
+                    {
+                        const FMeshlet& Mesh = MD.Meshlets[m];
+                        const glm::vec3 BoxLo = MD.MeshOrigin + glm::vec3(Mesh.LoInt) * MD.MeshGridStep;
+                        const glm::vec3 BoxHi = BoxLo + glm::vec3(1023.0f) * MD.MeshGridStep;
+                        Lo = glm::min(Lo, BoxLo);
+                        Hi = glm::max(Hi, BoxHi);
+                    }
+
+                    FAABB SurfaceAABB;
+                    SurfaceAABB.Min = Lo;
+                    SurfaceAABB.Max = Hi;
+                    SurfaceAABB     = SurfaceAABB.ToWorld(Transform.GetWorldMatrix());
+                    World->DrawBox(SurfaceAABB.GetCenter(), SurfaceAABB.GetSize() * 0.5f, glm::quat(1, 0, 0, 0), FColor::Yellow, 2.0f);
+                }
+            }
         }
     }
 

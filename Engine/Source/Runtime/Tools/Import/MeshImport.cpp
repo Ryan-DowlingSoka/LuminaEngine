@@ -379,6 +379,98 @@ namespace Lumina::Import::Mesh
 
     namespace
     {
+        // Coalesce surfaces that share a MaterialIndex into one surface each.
+        // Importers (especially glTF) emit one FGeometrySurface per source
+        // primitive, which can blow up to thousands of surfaces sharing a
+        // handful of materials and quadratically inflate scene-prep CPU.
+        // We rebuild the index buffer so each material's indices are
+        // contiguous, then collapse the surface list.
+        void MergeSurfacesByMaterial(FMeshResource& MeshResource)
+        {
+            const TVector<FGeometrySurface>& OldSurfaces = MeshResource.GeometrySurfaces;
+            if (OldSurfaces.size() <= 1 || MeshResource.Indices.empty())
+            {
+                return;
+            }
+
+            // First-seen MaterialIndex order. Stable so material slot indices
+            // line up with the order downstream code expects.
+            THashMap<int16, uint32> MaterialToNewIdx;
+            TVector<int16>          MaterialOrder;
+            MaterialOrder.reserve(OldSurfaces.size());
+
+            for (const FGeometrySurface& S : OldSurfaces)
+            {
+                if (MaterialToNewIdx.find(S.MaterialIndex) == MaterialToNewIdx.end())
+                {
+                    MaterialToNewIdx.emplace(S.MaterialIndex, (uint32)MaterialOrder.size());
+                    MaterialOrder.push_back(S.MaterialIndex);
+                }
+            }
+
+            if (MaterialOrder.size() == OldSurfaces.size())
+            {
+                return; // Already 1:1.
+            }
+
+            const uint32 NumMerged = (uint32)MaterialOrder.size();
+
+            // Per-merged-surface index totals + start offsets.
+            TVector<uint32> CountPerMerged(NumMerged, 0u);
+            for (const FGeometrySurface& S : OldSurfaces)
+            {
+                CountPerMerged[MaterialToNewIdx[S.MaterialIndex]] += S.IndexCount;
+            }
+
+            TVector<uint32> StartPerMerged(NumMerged, 0u);
+            uint32 Running = 0;
+            for (uint32 i = 0; i < NumMerged; ++i)
+            {
+                StartPerMerged[i] = Running;
+                Running += CountPerMerged[i];
+            }
+
+            // Scatter old slices into their merged contiguous range.
+            TVector<uint32> NewIndices(MeshResource.Indices.size());
+            TVector<uint32> WriteCursor = StartPerMerged;
+            for (const FGeometrySurface& S : OldSurfaces)
+            {
+                if (S.IndexCount == 0)
+                {
+                    continue;
+                }
+                const uint32 NewIdx = MaterialToNewIdx[S.MaterialIndex];
+                memcpy(NewIndices.data() + WriteCursor[NewIdx],
+                       MeshResource.Indices.data() + S.StartIndex,
+                       S.IndexCount * sizeof(uint32));
+                WriteCursor[NewIdx] += S.IndexCount;
+            }
+
+            // Build the new surface list. Inherit the first source surface's
+            // ID so re-imports keep stable surface identities.
+            TVector<FGeometrySurface> NewSurfaces;
+            NewSurfaces.reserve(NumMerged);
+            for (uint32 i = 0; i < NumMerged; ++i)
+            {
+                FGeometrySurface NewSurface;
+                for (const FGeometrySurface& Old : OldSurfaces)
+                {
+                    if (Old.MaterialIndex == MaterialOrder[i])
+                    {
+                        NewSurface.ID = Old.ID;
+                        break;
+                    }
+                }
+                NewSurface.IndexCount    = CountPerMerged[i];
+                NewSurface.StartIndex    = StartPerMerged[i];
+                NewSurface.MaterialIndex = MaterialOrder[i];
+                NewSurfaces.push_back(NewSurface);
+            }
+
+            MeshResource.Indices          = Move(NewIndices);
+            MeshResource.GeometrySurfaces = Move(NewSurfaces);
+        }
+
         // Concatenate Src into Dst with index/material rebase. Src.ImportTransform
         // is baked into positions/normals so merged geometry keeps its authored
         // world placement.
@@ -611,6 +703,10 @@ namespace Lumina::Import::Mesh
                 return;
             }
             FMeshResource& M = *MeshPtr;
+            // Coalesce surfaces by material first so the optimize pass operates
+            // on the bigger contiguous slices and the renderer iterates one
+            // FGeometrySurface per material instead of per source primitive.
+            MergeSurfacesByMaterial(M);
             if (Options.bOptimize)
             {
                 OptimizeNewlyImportedMesh(M);

@@ -82,7 +82,7 @@ enum EInstanceFlags
     Skinned         = BIT(1),
     CastShadow      = BIT(2),
     ReceiveShadow   = BIT(3),
-    Occluder        = BIT(4),
+    TwoSided        = BIT(4),  // Skip backface cone cull.
     NoCull          = BIT(5),
     Translucent     = BIT(6),
     Masked          = BIT(7),

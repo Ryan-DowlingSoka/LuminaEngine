@@ -146,33 +146,30 @@ namespace Lumina
             //... Unsupported.
         }
          
-        void* Allocate(SIZE_T Size, SIZE_T Alignment) override 
+        void* Allocate(SIZE_T Size, SIZE_T Alignment) override
         {
             ASSERT(Size < GetUsableBlockSize());
-    
-            SIZE_T CurrentPtr = reinterpret_cast<SIZE_T>(CurrentBlock->GetData() + CurrentOffset); 
-            SIZE_T AlignedPtr = (CurrentPtr + Alignment - 1) & ~(Alignment - 1); 
-            SIZE_T NextOffset = AlignedPtr - reinterpret_cast<SIZE_T>(CurrentBlock->GetData()) + Size; 
-            
-            // Check if we need a new block
+
+            SIZE_T CurrentPtr = reinterpret_cast<SIZE_T>(CurrentBlock->GetData() + CurrentOffset);
+            SIZE_T AlignedPtr = (CurrentPtr + Alignment - 1) & ~(Alignment - 1);
+            SIZE_T NextOffset = AlignedPtr - reinterpret_cast<SIZE_T>(CurrentBlock->GetData()) + Size;
+
             if (NextOffset > GetUsableBlockSize())
-            { 
-                // Allocate new block and switch to it
+            {
                 AllocateNewBlock();
                 CurrentOffset = 0;
-                
-                // Recalculate with new block
-                CurrentPtr = reinterpret_cast<SIZE_T>(CurrentBlock->GetData() + CurrentOffset); 
-                AlignedPtr = (CurrentPtr + Alignment - 1) & ~(Alignment - 1); 
-                NextOffset = AlignedPtr - reinterpret_cast<SIZE_T>(CurrentBlock->GetData()) + Size; 
-                
+
+                CurrentPtr = reinterpret_cast<SIZE_T>(CurrentBlock->GetData() + CurrentOffset);
+                AlignedPtr = (CurrentPtr + Alignment - 1) & ~(Alignment - 1);
+                NextOffset = AlignedPtr - reinterpret_cast<SIZE_T>(CurrentBlock->GetData()) + Size;
+
                 ASSERT(NextOffset <= GetUsableBlockSize());
-            } 
-             
-            void* Result = CurrentBlock->GetData() + (AlignedPtr - reinterpret_cast<SIZE_T>(CurrentBlock->GetData())); 
-            CurrentOffset = NextOffset; 
-            return Result; 
-        } 
+            }
+
+            void* Result = CurrentBlock->GetData() + (AlignedPtr - reinterpret_cast<SIZE_T>(CurrentBlock->GetData()));
+            CurrentOffset = NextOffset;
+            return Result;
+        }
     
         void Free(void* Data) override 
         { 
@@ -256,11 +253,19 @@ namespace Lumina
         
         void AllocateNewBlock()
         {
+            // Reuse a chained block left over from before Reset(); only allocate
+            // a fresh one when we're at the tail of the list.
+            if (CurrentBlock && CurrentBlock->Next)
+            {
+                CurrentBlock = CurrentBlock->Next;
+                return;
+            }
+
             Block* NewBlock = (Block*)Memory::Malloc(BlockSize);
             ASSERT(NewBlock != nullptr);
-            
+
             NewBlock->Next = nullptr;
-            
+
             if (CurrentBlock)
             {
                 CurrentBlock->Next = NewBlock;
@@ -269,7 +274,7 @@ namespace Lumina
             {
                 FirstBlock = NewBlock;
             }
-            
+
             CurrentBlock = NewBlock;
             BlockCount++;
         }
@@ -280,6 +285,50 @@ namespace Lumina
         SIZE_T CurrentOffset;
         SIZE_T BlockCount;
     };
-    
+
+
+    /**
+     * EASTL-compatible adapter that delegates to an external FBlockLinearAllocator.
+     * The adapter is a small, copyable handle (just an arena pointer + name);
+     * the underlying arena is owned elsewhere and reset between frames.
+     *
+     * Containers built with this allocator must not outlive the arena; their
+     * memory is reclaimed wholesale by FBlockLinearAllocator::Reset().
+     */
+    class FFrameArenaAllocator
+    {
+    public:
+        FFrameArenaAllocator(const char* InName = "frame") noexcept
+            : Arena(nullptr), Name(InName) {}
+
+        explicit FFrameArenaAllocator(FBlockLinearAllocator* InArena, const char* InName = "frame") noexcept
+            : Arena(InArena), Name(InName) {}
+
+        void* allocate(size_t n, int /*flags*/ = 0)
+        {
+            ASSERT(Arena != nullptr);
+            return Arena->Allocate(n, 16);
+        }
+
+        void* allocate(size_t n, size_t alignment, size_t /*offset*/, int /*flags*/ = 0)
+        {
+            ASSERT(Arena != nullptr);
+            return Arena->Allocate(n, alignment);
+        }
+
+        void deallocate(void* /*p*/, size_t /*n*/) noexcept {}
+
+        const char* get_name() const           { return Name; }
+        void        set_name(const char* InN)  { Name = InN; }
+
+        FBlockLinearAllocator* GetArena() const { return Arena; }
+
+        bool operator==(const FFrameArenaAllocator& Other) const { return Arena == Other.Arena; }
+        bool operator!=(const FFrameArenaAllocator& Other) const { return Arena != Other.Arena; }
+
+    private:
+        FBlockLinearAllocator* Arena;
+        const char*            Name;
+    };
 
 }

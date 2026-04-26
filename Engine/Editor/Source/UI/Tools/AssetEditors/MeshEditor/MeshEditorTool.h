@@ -34,7 +34,12 @@ namespace Lumina
         bool bShowWireframe = false;
         bool bShowNormals = false;
         bool bShowTangents = false;
-        
+
+        // Selected surface in the Geometry Surfaces UI; -1 = none. Drawn as a
+        // colored AABB overlay in Update() so the user can see which part of
+        // the mesh a surface covers.
+        int32 SelectedSurfaceIndex = -1;
+
         ImGuizmo::OPERATION GuizmoOp = ImGuizmo::TRANSLATE;
         entt::entity DirectionalLightEntity = entt::null;
         entt::entity MeshEntity = entt::null;

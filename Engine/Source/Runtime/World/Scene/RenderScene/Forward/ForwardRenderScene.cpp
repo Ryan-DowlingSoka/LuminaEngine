@@ -74,6 +74,7 @@ namespace Lumina
     {
         LOG_TRACE("Initializing Forward Render Scene");
         
+        GRenderContext->WaitIdle();
         SceneViewport = GRenderContext->CreateViewport(Windowing::GetPrimaryWindowHandle()->GetExtent(), "Forward Renderer Viewport");
 
         InitBuffers();
@@ -102,6 +103,7 @@ namespace Lumina
 
     void FForwardRenderScene::Shutdown()
     {
+        GRenderContext->WaitIdle();
         GRenderContext->ClearCommandListCache();
         GRenderContext->ClearBindingCaches();
 
@@ -341,9 +343,32 @@ namespace Lumina
             DrawMeshletStartOffsets.reserve(EstimatedProxies);
             DrawCommands.reserve(EstimatedProxies);
 
-            // One thread-local accumulator per scheduler thread (workers + the calling thread).
+            // One thread-local accumulator per scheduler thread.
             const uint32 NumThreads = GTaskSystem->GetScheduler().GetNumTaskThreads();
-            TVector<FThreadLocalDrawData> ThreadLocal(NumThreads);
+
+            // Frame arenas back every per-thread TFrameVector/TFrameHashMap.
+            // 4 MB block size handles a single TFrameVector growth doubling
+            // up to ~1 MB without overflow.
+            constexpr SIZE_T kArenaBlockSize = 4 * 1024 * 1024;
+            if (FrameArenas.size() < NumThreads)
+            {
+                FrameArenas.reserve(NumThreads);
+                while (FrameArenas.size() < NumThreads)
+                {
+                    FrameArenas.push_back(MakeUnique<FBlockLinearAllocator>(kArenaBlockSize));
+                }
+            }
+            for (uint32 t = 0; t < NumThreads; ++t)
+            {
+                FrameArenas[t]->Reset();
+            }
+
+            TVector<FThreadLocalDrawData> ThreadLocal;
+            ThreadLocal.reserve(NumThreads);
+            for (uint32 t = 0; t < NumThreads; ++t)
+            {
+                ThreadLocal.emplace_back(FFrameArenaAllocator(FrameArenas[t].get()));
+            }
             const uint32 ReservePerThread = (uint32)((EstimatedProxies + NumThreads - 1) / std::max(1u, NumThreads));
             for (FThreadLocalDrawData& Local : ThreadLocal)
             {
@@ -808,10 +833,85 @@ namespace Lumina
         Registry.clear<FNeedsTransformUpdate>();
     }
 
+    // Resolved view of a material slot. The per-surface flag derivation
+    // depends only on (MaterialIndex, MeshComponent flags, bSignificantOccluder),
+    // all entity-constant; cache once per entity and skip ~9 virtual calls
+    // per repeat lookup.
+    struct FResolvedSlot
+    {
+        FRHIVertexShader*   VertexShader;
+        FRHIPixelShader*    PixelShader;
+        uint64              MaterialID;
+        EInstanceFlags      ExtraFlags;
+        uint16              MaterialIdx;
+        int16               SlotIdx;
+        uint8               bTranslucent     : 1;
+        uint8               bMasked          : 1;
+        uint8               bAdditive        : 1;
+        uint8               bDrawInDepthPass : 1;
+    };
+
+    template <typename TComponent>
+    static const FResolvedSlot& LookupOrResolveSlot(
+        TFixedVector<FResolvedSlot, 16>& Cache,
+        const TComponent&                MeshComponent,
+        int16                            SlotIdx,
+        bool                             bSignificantOccluder)
+    {
+        // Fast path: the most-recently-resolved slot is at the back. Mesh
+        // surfaces are typically grouped by material slot, so this hits often.
+        if (!Cache.empty() && Cache.back().SlotIdx == SlotIdx)
+        {
+            return Cache.back();
+        }
+        for (const FResolvedSlot& C : Cache)
+        {
+            if (C.SlotIdx == SlotIdx)
+            {
+                return C;
+            }
+        }
+
+        CMaterialInterface* Material = MeshComponent.GetMaterialForSlot(SlotIdx);
+        // Terrain materials route through the wrong pipeline layout; fall back.
+        if (IsValid(Material) && Material->GetMaterialType() == EMaterialType::Terrain)
+        {
+            Material = nullptr;
+        }
+        if (!IsValid(Material) || !IsValid(Material->GetMaterial()) || !Material->IsReadyForRender())
+        {
+            Material = CMaterial::GetDefaultMaterial();
+        }
+
+        const EBlendMode BlendMode    = Material->GetBlendMode();
+        const bool       bTranslucent = BlendMode == EBlendMode::Translucent || BlendMode == EBlendMode::Additive;
+        const bool       bMasked      = BlendMode == EBlendMode::Masked;
+        const bool       bAdditive    = BlendMode == EBlendMode::Additive;
+        const bool       bTwoSided    = bTranslucent || Material->IsTwoSided();
+
+        EInstanceFlags Extra = EInstanceFlags::None;
+        if (MeshComponent.bCastShadow && Material->DoesCastShadows()) Extra |= EInstanceFlags::CastShadow;
+        if (bTranslucent)                                              Extra |= EInstanceFlags::Translucent;
+        if (bMasked)                                                   Extra |= EInstanceFlags::Masked;
+        if (bTwoSided)                                                 Extra |= EInstanceFlags::TwoSided;
+
+        FResolvedSlot& C = Cache.emplace_back();
+        C.VertexShader     = Material->GetVertexShader();
+        C.PixelShader      = Material->GetPixelShader();
+        C.MaterialID       = (uint64)Material->GetMaterial();
+        C.ExtraFlags       = Extra;
+        C.MaterialIdx      = (uint16)Material->GetMaterialIndex();
+        C.SlotIdx          = SlotIdx;
+        C.bTranslucent     = bTranslucent;
+        C.bMasked          = bMasked;
+        C.bAdditive        = bAdditive;
+        C.bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bTranslucent && bSignificantOccluder;
+        return C;
+    }
+
     static uint16 FindOrAddLocalBatch(FForwardRenderScene::FThreadLocalDrawData& Local, const FDrawBatchKey& Key, FRHIVertexShader* VS, FRHIPixelShader* PS)
     {
-        // Linear scan: per-thread batch counts are tiny (typically <30) and the table is hot in L1.
-        // A hash map would probably (maybe?) be slower at this size and would also fragment the cache.
+        // Linear scan: per-thread batch counts are tiny (typically <30).
         const uint32 Count = (uint32)Local.LocalBatches.size();
         for (uint32 i = 0; i < Count; ++i)
         {
@@ -820,31 +920,34 @@ namespace Lumina
                 return (uint16)i;
             }
         }
-        
-        FForwardRenderScene::FLocalBatchEntry& Entry = Local.LocalBatches.emplace_back();
+
+        // Pass the arena explicitly so the new entry's inner TFrameVectors
+        // bind to the same per-thread arena.
+        FForwardRenderScene::FLocalBatchEntry& Entry = Local.LocalBatches.emplace_back(Local.Arena);
         Entry.Key          = Key;
         Entry.VertexShader = VS;
         Entry.PixelShader  = PS;
-        
+
         return (uint16)Count;
     }
 
     static uint16 FindOrAddLocalDraw(FForwardRenderScene::FLocalBatchEntry& Batch, const FDrawKey& Key, uint32 MeshletCount)
     {
-        const uint32 Count = (uint32)Batch.LocalDraws.size();
-        for (uint32 i = 0; i < Count; ++i)
+        auto It = Batch.DrawIndexByKey.find(Key);
+        if (It != Batch.DrawIndexByKey.end())
         {
-            if (Batch.LocalDraws[i] == Key)
-            {
-                Batch.LocalDrawCounts[i]++;
-                Batch.LocalMeshletCounts[i] += MeshletCount;
-                return (uint16)i;
-            }
+            const uint16 Idx = It->second;
+            Batch.LocalDrawCounts[Idx]++;
+            Batch.LocalMeshletCounts[Idx] += MeshletCount;
+            return Idx;
         }
+
+        const uint16 NewIdx = (uint16)Batch.LocalDraws.size();
         Batch.LocalDraws.push_back(Key);
         Batch.LocalDrawCounts.push_back(1);
         Batch.LocalMeshletCounts.push_back(MeshletCount);
-        return (uint16)Count;
+        Batch.DrawIndexByKey.emplace(Key, NewIdx);
+        return NewIdx;
     }
 
     void FForwardRenderScene::ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local)
@@ -906,80 +1009,51 @@ namespace Lumina
             BaseFlags |= EInstanceFlags::IgnoreOcclusionCulling;
         }
 
-        const uint32 EntityIDPacked = entt::to_integral(Entity);
+        // One shared FEntityRecord; every surface item references it by index.
+        const uint32 EntityRecordIdx = (uint32)Local.EntityRecords.size();
+        FEntityRecord& EntityRecord = Local.EntityRecords.emplace_back();
+        EntityRecord.Transform            = TransformMatrix;
+        EntityRecord.SphereBounds         = SphereBounds;
+        EntityRecord.MeshletHeaderAddress = MeshletHeaderAddress;
+        EntityRecord.CustomData           = MeshComponent.CustomPrimitiveData.Data.Packed;
+        EntityRecord.EntityID             = entt::to_integral(Entity);
+        EntityRecord.LocalBoneOffset      = ~0u;
+        EntityRecord._Pad                 = 0u;
+
+        // Per-entity cache; the slot resolution chain (~9 virtual calls) only
+        // fires the first time we see each unique MaterialIndex.
+        TFixedVector<FResolvedSlot, 16> SlotCache;
 
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
         {
-            CMaterialInterface* Material = MeshComponent.GetMaterialForSlot(Surface.MaterialIndex);
-            // Terrain-typed materials compile against TerrainBaseVertexPass, which
-            // references the terrain-only set 2 bindings (uHeightmap etc.). Letting
-            // one feed a mesh draw here would route its vertex shader through the
-            // BasePass pipeline layout (Scene + texture manager only) and fail
-            // pipeline-layout validation. Fall back to the default PBR material.
-            if (IsValid(Material) && Material->GetMaterialType() == EMaterialType::Terrain)
-            {
-                Material = nullptr;
-            }
-            if (!IsValid(Material) || !IsValid(Material->GetMaterial()) || !Material->IsReadyForRender())
-            {
-                Material = CMaterial::GetDefaultMaterial();
-            }
+            const FResolvedSlot& Slot = LookupOrResolveSlot(SlotCache, MeshComponent, Surface.MaterialIndex, bSignificantOccluder);
 
-            EInstanceFlags Flags = BaseFlags;
-            if (MeshComponent.bCastShadow && Material->DoesCastShadows())
-            {
-                Flags |= EInstanceFlags::CastShadow;
-            }
-
-            const EBlendMode BlendMode  = Material->GetBlendMode();
-            const bool bIsTranslucent   = BlendMode == EBlendMode::Translucent || BlendMode == EBlendMode::Additive;
-            const bool bIsMasked        = BlendMode == EBlendMode::Masked;
-            const bool bIsAdditive      = BlendMode == EBlendMode::Additive;
-            const bool bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bIsTranslucent && bSignificantOccluder;
-
-            if (bIsTranslucent)
-            {
-                Flags |= EInstanceFlags::Translucent;
-            }
-            if (bIsMasked)
-            {
-                Flags |= EInstanceFlags::Masked;
-            }
+            const EInstanceFlags Flags = BaseFlags | Slot.ExtraFlags;
 
             FDrawBatchKey BatchKey
             {
-                .MaterialID       = (uint64)Material->GetMaterial(),
-                .bDrawInDepthPass = (uint32)(bDrawInDepthPass ? 1u : 0u),
-                .bTranslucent     = (uint32)(bIsTranslucent   ? 1u : 0u),
-                .bMasked          = (uint32)(bIsMasked        ? 1u : 0u),
-                .bAdditive        = (uint32)(bIsAdditive      ? 1u : 0u),
+                .MaterialID       = Slot.MaterialID,
+                .bDrawInDepthPass = (uint32)(Slot.bDrawInDepthPass ? 1u : 0u),
+                .bTranslucent     = (uint32)(Slot.bTranslucent     ? 1u : 0u),
+                .bMasked          = (uint32)(Slot.bMasked          ? 1u : 0u),
+                .bAdditive        = (uint32)(Slot.bAdditive        ? 1u : 0u),
             };
-            // Meshlet cull + base VS both deref MeshletHeader unconditionally when
-            // SurfaceMeshletCount > 0; zero the count when no header was uploaded
-            // so an inconsistent asset can't produce a null-pointer GPU fault.
+            // Zero SurfaceMeshletCount when no header was uploaded so the cull
+            // shader's MeshletHeader deref is gated.
             const uint32 SurfaceMeshletCount = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
-            const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Material->GetVertexShader(), Material->GetPixelShader());
+            const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot.VertexShader, Slot.PixelShader);
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
             Local.MaxMeshletsPerInstance = std::max(Local.MaxMeshletsPerInstance, SurfaceMeshletCount);
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
-            Item.Instance.Transform              = TransformMatrix;
-            Item.Instance.SphereBounds           = SphereBounds;
-            Item.Instance.DrawIDAndFlags         = PackDrawIDAndFlags(0, Flags); // DrawID patched at write-out
-            Item.Instance.SurfaceMeshletOffset   = Surface.MeshletOffset;
-            Item.Instance.SurfaceMeshletCount    = SurfaceMeshletCount;
-            Item.Instance.CustomData             = MeshComponent.CustomPrimitiveData.Data.Packed;
-            Item.Instance.VBAddress                  = 0ull;
-            Item.Instance._ReservedAddress           = 0ull;
-            Item.Instance.MeshletHeaderAddress       = MeshletHeaderAddress;
-            Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
-            Item.Instance.EntityID                   = EntityIDPacked;
-
-            Item.Flags           = Flags;
-            Item.MaterialIndex   = (uint16)Material->GetMaterialIndex();
-            Item.LocalBatchIndex = LocalBatchIdx;
-            Item.LocalDrawIndex  = LocalDrawIdx;
-            Item.LocalBoneOffset = ~0u;
+            Item.EntityRecordIndex    = EntityRecordIdx;
+            Item.SurfaceMeshletOffset = Surface.MeshletOffset;
+            Item.SurfaceMeshletCount  = SurfaceMeshletCount;
+            Item.Flags                = Flags;
+            Item.MaterialIndex        = Slot.MaterialIdx;
+            Item.LocalBatchIndex      = LocalBatchIdx;
+            Item.LocalDrawIndex       = LocalDrawIdx;
+            Item._Pad                 = 0;
         }
     }
 
@@ -1037,81 +1111,47 @@ namespace Lumina
         const uint64 MeshletHeaderAddress = Mesh->GetMeshBuffers().MeshletHeaderBuffer
             ? Mesh->GetMeshBuffers().MeshletHeaderBuffer->GetAddress()
             : 0ull;
-        const uint32 EntityIDPacked = entt::to_integral(Entity);
+
+        const uint32 EntityRecordIdx = (uint32)Local.EntityRecords.size();
+        FEntityRecord& EntityRecord = Local.EntityRecords.emplace_back();
+        EntityRecord.Transform            = TransformMatrix;
+        EntityRecord.SphereBounds         = SphereBounds;
+        EntityRecord.MeshletHeaderAddress = MeshletHeaderAddress;
+        EntityRecord.CustomData           = MeshComponent.CustomPrimitiveData.Data.Packed;
+        EntityRecord.EntityID             = entt::to_integral(Entity);
+        EntityRecord.LocalBoneOffset      = LocalBoneOffset;
+        EntityRecord._Pad                 = 0u;
+
+        TFixedVector<FResolvedSlot, 16> SlotCache;
 
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
         {
-            CMaterialInterface* Material = MeshComponent.GetMaterialForSlot(Surface.MaterialIndex);
-            // Terrain-typed materials compile against TerrainBaseVertexPass, which
-            // references the terrain-only set 2 bindings (uHeightmap etc.). Letting
-            // one feed a mesh draw here would route its vertex shader through the
-            // BasePass pipeline layout (Scene + texture manager only) and fail
-            // pipeline-layout validation. Fall back to the default PBR material.
-            if (IsValid(Material) && Material->GetMaterialType() == EMaterialType::Terrain)
-            {
-                Material = nullptr;
-            }
-            if (!IsValid(Material) || !IsValid(Material->GetMaterial()) || !Material->IsReadyForRender())
-            {
-                Material = CMaterial::GetDefaultMaterial();
-            }
+            const FResolvedSlot& Slot = LookupOrResolveSlot(SlotCache, MeshComponent, Surface.MaterialIndex, bSignificantOccluder);
 
-            EInstanceFlags Flags = BaseFlags;
-            if (MeshComponent.bCastShadow && Material->DoesCastShadows())
-            {
-                Flags |= EInstanceFlags::CastShadow;
-            }
-
-            const EBlendMode BlendMode  = Material->GetBlendMode();
-            const bool bIsTranslucent   = BlendMode == EBlendMode::Translucent || BlendMode == EBlendMode::Additive;
-            const bool bIsMasked        = BlendMode == EBlendMode::Masked;
-            const bool bIsAdditive      = BlendMode == EBlendMode::Additive;
-            const bool bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bIsTranslucent && bSignificantOccluder;
-
-            if (bIsTranslucent)
-            {
-                Flags |= EInstanceFlags::Translucent;
-            }
-            if (bIsMasked)
-            {
-                Flags |= EInstanceFlags::Masked;
-            }
+            const EInstanceFlags Flags = BaseFlags | Slot.ExtraFlags;
 
             FDrawBatchKey BatchKey
             {
-                .MaterialID       = (uint64)Material->GetMaterial(),
-                .bDrawInDepthPass = (uint32)(bDrawInDepthPass ? 1u : 0u),
-                .bTranslucent     = (uint32)(bIsTranslucent   ? 1u : 0u),
-                .bMasked          = (uint32)(bIsMasked        ? 1u : 0u),
-                .bAdditive        = (uint32)(bIsAdditive      ? 1u : 0u),
+                .MaterialID       = Slot.MaterialID,
+                .bDrawInDepthPass = (uint32)(Slot.bDrawInDepthPass ? 1u : 0u),
+                .bTranslucent     = (uint32)(Slot.bTranslucent     ? 1u : 0u),
+                .bMasked          = (uint32)(Slot.bMasked          ? 1u : 0u),
+                .bAdditive        = (uint32)(Slot.bAdditive        ? 1u : 0u),
             };
-            // Skinned still gets its real meshlet header; the meshlet cull pass
-            // skips per-meshlet frustum/occlusion on skinned (bind-pose bounds
-            // aren't valid for deformed geometry) but still emits every meshlet
-            // so the vertex shader can pull them.
             const uint32 SurfaceMeshletCount = MeshletHeaderAddress ? Surface.MeshletCount : 0u;
-            const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Material->GetVertexShader(), Material->GetPixelShader());
+            const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot.VertexShader, Slot.PixelShader);
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
             Local.MaxMeshletsPerInstance = std::max(Local.MaxMeshletsPerInstance, SurfaceMeshletCount);
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
-            Item.Instance.Transform                = TransformMatrix;
-            Item.Instance.SphereBounds             = SphereBounds;
-            Item.Instance.DrawIDAndFlags           = PackDrawIDAndFlags(0, Flags);
-            Item.Instance.SurfaceMeshletOffset     = Surface.MeshletOffset;
-            Item.Instance.SurfaceMeshletCount      = SurfaceMeshletCount;
-            Item.Instance.CustomData               = MeshComponent.CustomPrimitiveData.Data.Packed;
-            Item.Instance.VBAddress                  = 0ull;
-            Item.Instance._ReservedAddress           = 0ull;
-            Item.Instance.MeshletHeaderAddress       = MeshletHeaderAddress;
-            Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
-            Item.Instance.EntityID                   = EntityIDPacked;
-
-            Item.Flags           = Flags;
-            Item.MaterialIndex   = (uint16)Material->GetMaterialIndex();
-            Item.LocalBatchIndex = LocalBatchIdx;
-            Item.LocalDrawIndex  = LocalDrawIdx;
-            Item.LocalBoneOffset = LocalBoneOffset;
+            Item.EntityRecordIndex    = EntityRecordIdx;
+            Item.SurfaceMeshletOffset = Surface.MeshletOffset;
+            Item.SurfaceMeshletCount  = SurfaceMeshletCount;
+            Item.Flags                = Flags;
+            Item.MaterialIndex        = Slot.MaterialIdx;
+            Item.LocalBatchIndex      = LocalBatchIdx;
+            Item.LocalDrawIndex       = LocalDrawIdx;
+            Item._Pad                 = 0;
         }
     }
     
@@ -1182,45 +1222,64 @@ namespace Lumina
 
         const uint32 NumBatches = (uint32)GlobalBatchKeys.size();
 
-        // Per-batch global draw dedupe via hash map. FDrawKey packs cleanly into a uint64 so
-        // we can key on that and skip specializing eastl::hash on FDrawKey. The previous
-        // linear search was O(threads * locals * globals) which went quadratic on scenes
-        // with many unique meshes per material.
-        TVector<TVector<FDrawKey>>          GlobalDrawsPerBatch(NumBatches);
-        TVector<THashMap<uint64, uint32>>   DrawDedupePerBatch(NumBatches);
-
+        // Group LocalBatches by their resolved global batch so the heavy
+        // per-batch passes below can fan out over batches in parallel.
+        // Pre-resize the per-LocalBatch output vectors here too: the parallel
+        // tasks below would otherwise race on each thread's frame arena.
+        TVector<TVector<FLocalBatchEntry*>> BatchToLocals(NumBatches);
         for (FThreadLocalDrawData& Local : ThreadLocal)
         {
             for (FLocalBatchEntry& LocalBatch : Local.LocalBatches)
             {
+                BatchToLocals[LocalBatch.GlobalBatchIndex].push_back(&LocalBatch);
+
                 const uint32 NumLocal = (uint32)LocalBatch.LocalDraws.size();
                 LocalBatch.LocalToGlobalDraw.resize(NumLocal);
-
-                TVector<FDrawKey>&        GlobalDraws = GlobalDrawsPerBatch[LocalBatch.GlobalBatchIndex];
-                THashMap<uint64, uint32>& Dedupe      = DrawDedupePerBatch[LocalBatch.GlobalBatchIndex];
-
-                for (uint32 ld = 0; ld < NumLocal; ++ld)
-                {
-                    const FDrawKey& K = LocalBatch.LocalDraws[ld];
-                    const uint64 PackedKey = ((uint64)K.StartIndex << 32) | (uint64)K.IndexCount;
-                    uint32 GlobalDraw;
-                    auto It = Dedupe.find(PackedKey);
-                    if (It != Dedupe.end())
-                    {
-                        GlobalDraw = It->second;
-                    }
-                    else
-                    {
-                        GlobalDraw = (uint32)GlobalDraws.size();
-                        GlobalDraws.push_back(K);
-                        Dedupe.emplace(PackedKey, GlobalDraw);
-                    }
-                    LocalBatch.LocalToGlobalDraw[ld] = GlobalDraw;
-                }
+                LocalBatch.LocalDrawWriteBase.resize(NumLocal);
             }
         }
 
-        // Each batch gets a contiguous block of draw args. Cull pass writes InstanceCount.
+        // Phase C: per-batch draw dedupe. Each task owns its batch's
+        // GlobalDrawsPerBatch[b] slot and its own scratch hash map; batches
+        // are independent so no synchronization is needed.
+        TVector<TVector<FDrawKey>> GlobalDrawsPerBatch(NumBatches);
+        {
+            FTaskGraph DedupGraph;
+            DedupGraph.AddParallelFor(NumBatches, 1, [&](const Task::FParallelRange& Range)
+            {
+                for (uint32 b = Range.Start; b < Range.End; ++b)
+                {
+                    THashMap<uint64, uint32> Dedupe;
+                    TVector<FDrawKey>&       Globals = GlobalDrawsPerBatch[b];
+                    for (FLocalBatchEntry* LB : BatchToLocals[b])
+                    {
+                        const uint32 NumLocal = (uint32)LB->LocalDraws.size();
+                        for (uint32 ld = 0; ld < NumLocal; ++ld)
+                        {
+                            const FDrawKey& K = LB->LocalDraws[ld];
+                            const uint64 PackedKey = ((uint64)K.StartIndex << 32) | (uint64)K.IndexCount;
+                            uint32 GlobalDraw;
+                            auto It = Dedupe.find(PackedKey);
+                            if (It != Dedupe.end())
+                            {
+                                GlobalDraw = It->second;
+                            }
+                            else
+                            {
+                                GlobalDraw = (uint32)Globals.size();
+                                Globals.push_back(K);
+                                Dedupe.emplace(PackedKey, GlobalDraw);
+                            }
+                            LB->LocalToGlobalDraw[ld] = GlobalDraw;
+                        }
+                    }
+                }
+            });
+            DedupGraph.Dispatch();
+            DedupGraph.Wait();
+        }
+
+        // Each batch gets a contiguous block of draw args.
         TVector<uint32> BatchDrawArgBase(NumBatches);
         uint32 TotalDrawArgs = 0;
         for (uint32 b = 0; b < NumBatches; ++b)
@@ -1235,27 +1294,36 @@ namespace Lumina
         Instances.resize(TotalInstances);
         NumDrawsPerView = TotalDrawArgs;
 
-        // Sparse count pass. Each LocalBatchEntry already owns an instance count and a
-        // meshlet-count sum per local draw, so we never need a T*D matrix.
         TVector<uint32> DrawInstanceCounts(TotalDrawArgs, 0u);
         TVector<uint32> MeshletCountsPerDraw(TotalDrawArgs, 0u);
 
-        for (FThreadLocalDrawData& Local : ThreadLocal)
+        // Phase E: per-batch sparse count. Each batch's GlobalDraw range is
+        // disjoint (BatchDrawArgBase prefix sum), so per-batch tasks write
+        // into non-overlapping slices of DrawInstanceCounts/MeshletCountsPerDraw.
         {
-            for (FLocalBatchEntry& LocalBatch : Local.LocalBatches)
+            FTaskGraph CountGraph;
+            CountGraph.AddParallelFor(NumBatches, 1, [&](const Task::FParallelRange& Range)
             {
-                const uint32 BatchBase = BatchDrawArgBase[LocalBatch.GlobalBatchIndex];
-                const uint32 NumLocal  = (uint32)LocalBatch.LocalDrawCounts.size();
-                for (uint32 ld = 0; ld < NumLocal; ++ld)
+                for (uint32 b = Range.Start; b < Range.End; ++b)
                 {
-                    const uint32 GlobalDraw = BatchBase + LocalBatch.LocalToGlobalDraw[ld];
-                    DrawInstanceCounts[GlobalDraw]   += LocalBatch.LocalDrawCounts[ld];
-                    MeshletCountsPerDraw[GlobalDraw] += LocalBatch.LocalMeshletCounts[ld];
+                    const uint32 BatchBase = BatchDrawArgBase[b];
+                    for (FLocalBatchEntry* LB : BatchToLocals[b])
+                    {
+                        const uint32 NumLocal = (uint32)LB->LocalDrawCounts.size();
+                        for (uint32 ld = 0; ld < NumLocal; ++ld)
+                        {
+                            const uint32 GlobalDraw = BatchBase + LB->LocalToGlobalDraw[ld];
+                            DrawInstanceCounts[GlobalDraw]   += LB->LocalDrawCounts[ld];
+                            MeshletCountsPerDraw[GlobalDraw] += LB->LocalMeshletCounts[ld];
+                        }
+                    }
                 }
-            }
+            });
+            CountGraph.Dispatch();
+            CountGraph.Wait();
         }
 
-        // Prefix sum for instance offsets.
+        // Prefix sum for instance offsets (serial; data dependency).
         TVector<uint32> DrawInstanceOffsets(TotalDrawArgs);
         {
             uint32 Running = 0;
@@ -1267,26 +1335,30 @@ namespace Lumina
             DEBUG_ASSERT(Running == TotalInstances);
         }
 
-        // Sparse cursor assignment: one D-sized scratch total (not T*D). Each LocalBatchEntry
-        // ends up with LocalDrawWriteBase[ld] pointing at the start of its slice, and the
-        // parallel writer advances that cursor in place (each worker only touches its own
-        // Local, so no atomics).
+        // Phase G: per-batch cursor assignment. Like phase E, batches own
+        // disjoint DrawCursor slices so per-batch parallelism is race-free.
         TVector<uint32> DrawCursor = DrawInstanceOffsets;
-        for (uint32 t = 0; t < NumThreads; ++t)
         {
-            FThreadLocalDrawData& Local = ThreadLocal[t];
-            for (FLocalBatchEntry& LocalBatch : Local.LocalBatches)
+            FTaskGraph CursorGraph;
+            CursorGraph.AddParallelFor(NumBatches, 1, [&](const Task::FParallelRange& Range)
             {
-                const uint32 BatchBase = BatchDrawArgBase[LocalBatch.GlobalBatchIndex];
-                const uint32 NumLocal  = (uint32)LocalBatch.LocalDrawCounts.size();
-                LocalBatch.LocalDrawWriteBase.resize(NumLocal);
-                for (uint32 ld = 0; ld < NumLocal; ++ld)
+                for (uint32 b = Range.Start; b < Range.End; ++b)
                 {
-                    const uint32 GlobalDraw = BatchBase + LocalBatch.LocalToGlobalDraw[ld];
-                    LocalBatch.LocalDrawWriteBase[ld] = DrawCursor[GlobalDraw];
-                    DrawCursor[GlobalDraw] += LocalBatch.LocalDrawCounts[ld];
+                    const uint32 BatchBase = BatchDrawArgBase[b];
+                    for (FLocalBatchEntry* LB : BatchToLocals[b])
+                    {
+                        const uint32 NumLocal = (uint32)LB->LocalDrawCounts.size();
+                        for (uint32 ld = 0; ld < NumLocal; ++ld)
+                        {
+                            const uint32 GlobalDraw = BatchBase + LB->LocalToGlobalDraw[ld];
+                            LB->LocalDrawWriteBase[ld] = DrawCursor[GlobalDraw];
+                            DrawCursor[GlobalDraw] += LB->LocalDrawCounts[ld];
+                        }
+                    }
                 }
-            }
+            });
+            CursorGraph.Dispatch();
+            CursorGraph.Wait();
         }
 
         // Per-draw meshlet prefix sum. CullMeshlets atomically appends into the
@@ -1307,8 +1379,9 @@ namespace Lumina
         }
         TotalMeshletBound = MeshletRunning;
 
-        // Parallel instance write. Each worker owns its own LocalBatches, so the
-        // in-place cursor advance on LocalDrawWriteBase needs no synchronization.
+        // Parallel instance write. Each worker only touches its own Local data,
+        // so the in-place cursor advance needs no synchronization. FGPUInstance
+        // is composed here from the per-entity FEntityRecord + per-surface item.
         {
             LUMINA_PROFILE_SECTION("Parallel Instance Write");
 
@@ -1327,17 +1400,24 @@ namespace Lumina
                                                 + LocalBatch.LocalToGlobalDraw[Item.LocalDrawIndex];
 
                         const uint32 WriteIdx = LocalBatch.LocalDrawWriteBase[Item.LocalDrawIndex]++;
+                        const FEntityRecord& Entity = Local.EntityRecords[Item.EntityRecordIndex];
 
-                        Item.Instance.DrawIDAndFlags = PackDrawIDAndFlags(GlobalDraw, Item.Flags);
+                        const uint16 BoneOffset = Entity.LocalBoneOffset != ~0u
+                            ? (uint16)(BoneBase + Entity.LocalBoneOffset)
+                            : (uint16)0;
 
-                        if (Item.LocalBoneOffset != ~0u)
-                        {
-                            Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(
-                                (uint16)(BoneBase + Item.LocalBoneOffset),
-                                Item.MaterialIndex);
-                        }
-
-                        Instances[WriteIdx] = Item.Instance;
+                        FGPUInstance& Out = Instances[WriteIdx];
+                        Out.Transform                  = Entity.Transform;
+                        Out.SphereBounds               = Entity.SphereBounds;
+                        Out.VBAddress                  = 0ull;
+                        Out._ReservedAddress           = 0ull;
+                        Out.MeshletHeaderAddress       = Entity.MeshletHeaderAddress;
+                        Out.DrawIDAndFlags             = PackDrawIDAndFlags(GlobalDraw, Item.Flags);
+                        Out.SurfaceMeshletOffset       = Item.SurfaceMeshletOffset;
+                        Out.SurfaceMeshletCount        = Item.SurfaceMeshletCount;
+                        Out.CustomData                 = Entity.CustomData;
+                        Out.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(BoneOffset, Item.MaterialIndex);
+                        Out.EntityID                   = Entity.EntityID;
                     }
                 }
             });

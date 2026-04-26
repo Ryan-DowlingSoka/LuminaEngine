@@ -43,8 +43,9 @@ bool CullMeshletForCascade(uint InstanceID, uint MeshletLocalIdx,
         return false;
     }
 
-    bool bSkinned = Inst.HasFlag(EInstanceFlags::Skinned);
-    bool bNoCull  = Inst.HasFlag(EInstanceFlags::NoCull);
+    bool bSkinned  = Inst.HasFlag(EInstanceFlags::Skinned);
+    bool bNoCull   = Inst.HasFlag(EInstanceFlags::NoCull);
+    bool bTwoSided = Inst.HasFlag(EInstanceFlags::TwoSided);
 
     // Instance-level distance cull. Meshes past ShadowMaxDistance never cast
     // visible shadows, so every meshlet on them is dead.
@@ -68,12 +69,10 @@ bool CullMeshletForCascade(uint InstanceID, uint MeshletLocalIdx,
     float MaxScale = sqrt(max(SqScaleX, max(SqScaleY, SqScaleZ)));
     float WorldRadius = Bounds.Radius * MaxScale;
 
-    // Cone cull against the sun. CSM pipeline uses SetCullBack() + depth bias,
-    // so only FRONT-facing triangles (outward normals toward the sun) reach the
-    // rasterizer. A meshlet whose entire cone points AWAY from the sun produces
-    // zero raster output, so drop it here. Sun direction is cascade-invariant
-    // so the same test fires every cascade with the same result.
-    if (!bSkinned && !bNoCull && Bounds.ConeCutoff < 1.0)
+    // Sun-direction cone cull. CSM uses SetCullBack(), so meshlets pointing
+    // entirely AWAY from the sun produce no raster output. Skip for two-sided
+    // (those keep both faces on the rasterizer).
+    if (!bSkinned && !bNoCull && !bTwoSided && Bounds.ConeCutoff < 1.0)
     {
         float3 WorldAxis = normalize(mul((float3x3)Model, Bounds.ConeAxis));
         float3 SunDir    = GetSunDirection();

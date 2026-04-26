@@ -23,17 +23,15 @@
 
 groupshared FMeshTaskPayload SharedPayload;
 
-// Returns true if the meshlet survives all culling tests. Mirrors the logic in
-// MeshletCull.slang verbatim; if the two ever drift the task-shader path will
-// silently over/under-draw. Keep changes symmetric.
+// Mirrors the logic in CullMeshlets.slang. Keep symmetric or the task-shader
+// path will silently over/under-draw vs the compute fallback.
 bool CullMeshletForCamera(uint InstanceID, uint MeshletLocalIdx, FGPUInstance Inst)
 {
-    bool bSkinned = Inst.HasFlag(EInstanceFlags::Skinned);
-    bool bNoCull  = Inst.HasFlag(EInstanceFlags::NoCull);
+    bool bSkinned  = Inst.HasFlag(EInstanceFlags::Skinned);
+    bool bNoCull   = Inst.HasFlag(EInstanceFlags::NoCull);
+    bool bTwoSided = Inst.HasFlag(EInstanceFlags::TwoSided);
 
-    // Skinned meshes keep bind-pose bounds that don't match the deformed
-    // geometry, so every meshlet has to render. NoCull opts the instance out
-    // of culling entirely (editor gizmos, debug volumes).
+    // Skinned: bind-pose bounds don't match deformed geometry. NoCull: opt-out.
     if (bSkinned || bNoCull)
     {
         return true;
@@ -60,10 +58,9 @@ bool CullMeshletForCamera(uint InstanceID, uint MeshletLocalIdx, FGPUInstance In
         }
     }
 
-    // Back-face cone cull. Rearranged to avoid the normalize on
-    // `apex - cam`: dot(normalize(apex - cam), axis) >= cutoff  <=>
-    // dot(apex - cam, axis) >= cutoff * length(apex - cam).
-    if (Bounds.ConeCutoff < 1.0)
+    // Back-face cone cull (skipped for two-sided). Rearranged to avoid the
+    // normalize on `apex - cam`.
+    if (!bTwoSided && Bounds.ConeCutoff < 1.0)
     {
         float3 WorldApex    = mul(Model, float4(Bounds.ConeApex, 1.0)).xyz;
         float3 WorldAxis    = normalize(mul((float3x3)Model, Bounds.ConeAxis));

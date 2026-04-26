@@ -1,5 +1,7 @@
 ﻿#pragma once
 #include "Core/Delegates/Delegate.h"
+#include "Memory/Allocators/Allocator.h"
+#include "Memory/SmartPtr.h"
 #include "Renderer/BindingCache.h"
 #include "Renderer/Vertex.h"
 #include "World/Scene/RenderScene/MeshDrawCommand.h"
@@ -9,6 +11,12 @@
 
 namespace Lumina
 {
+    template <typename T>
+    using TFrameVector = TVector<T, FFrameArenaAllocator>;
+
+    template <typename K, typename V>
+    using TFrameHashMap = THashMap<K, V, eastl::hash<K>, eastl::equal_to<K>, FFrameArenaAllocator>;
+
     struct FLineBatcherComponent;
     struct SDirectionalLightComponent;
     struct SSpotLightComponent;
@@ -31,22 +39,35 @@ namespace Lumina
         LE_NO_COPYMOVE(FForwardRenderScene);
         
         /**
-        * Per-entity output of the parallel mesh-processing phase. The hot work
-        * (transforms, bounds, material resolution, instance packing) happens on a worker thread;
-        * each item carries indices into its owning thread's local batch table so the merge phase
-        * never has to recompute or hash a batch key.
-        */
+         * Per-entity shared data. One record per processed entity; surface-level
+         * FProcessedDrawItem entries carry an EntityRecordIndex into this table
+         * so we don't duplicate Transform/Bounds/etc. for every surface.
+         */
+        struct FEntityRecord
+        {
+            glm::mat4               Transform;
+            glm::vec4               SphereBounds;
+            uint64                  MeshletHeaderAddress;
+            uint32                  CustomData;
+            uint32                  EntityID;
+            uint32                  LocalBoneOffset;  // ~0u for static meshes.
+            uint32                  _Pad;
+        };
+
+        /**
+         * Per-(entity, surface) item. Composed into a full FGPUInstance during
+         * the parallel write phase by reading the shared FEntityRecord.
+         */
         struct FProcessedDrawItem
         {
-            // Scattered into the per-instance SSBO during the merge pass.
-            // Instance.DrawIDAndFlags holds only flags here; the merge fills
-            // in DrawID once the global draw index is known.
-            FGPUInstance        Instance;
+            uint32              EntityRecordIndex;
+            uint32              SurfaceMeshletOffset;
+            uint32              SurfaceMeshletCount;
             EInstanceFlags      Flags;
-            uint32              LocalBoneOffset;   // Offset into the owning thread's BonesData; ~0u for static meshes.
             uint16              MaterialIndex;
-            uint16              LocalBatchIndex;   // Index into FThreadLocalDrawData::LocalBatches
-            uint16              LocalDrawIndex;    // Index into FLocalBatchEntry::LocalDraws
+            uint16              LocalBatchIndex;
+            uint16              LocalDrawIndex;
+            uint16              _Pad;
         };
 
         /**
@@ -57,28 +78,37 @@ namespace Lumina
          */
         struct alignas(64) FLocalBatchEntry
         {
-            FDrawBatchKey       Key;
-            FRHIVertexShader*   VertexShader = nullptr;
-            FRHIPixelShader*    PixelShader  = nullptr;
-            TVector<FDrawKey>   LocalDraws;
-            TVector<uint32>     LocalDrawCounts;        // instance count per local draw
-            // Sum of SurfaceMeshletCount for every instance sharing this local draw; the merge
-            // pass reduces this into the global meshlet prefix sum without walking Instances.
-            TVector<uint32>     LocalMeshletCounts;
-            uint32              GlobalBatchIndex = ~0u; // resolved during merge.
-            TVector<uint32>     LocalToGlobalDraw;      // resolved during merge.
-            // Merge stamps one write-cursor per local draw. Parallel writer increments it in
-            // place; each worker only touches its own LocalBatches so no atomics.
-            TVector<uint32>     LocalDrawWriteBase;
+            FDrawBatchKey                       Key;
+            FRHIVertexShader*                   VertexShader = nullptr;
+            FRHIPixelShader*                    PixelShader  = nullptr;
+            TFrameVector<FDrawKey>              LocalDraws;
+            TFrameVector<uint32>                LocalDrawCounts;
+            TFrameVector<uint32>                LocalMeshletCounts;
+            // O(1) lookup into LocalDraws.
+            TFrameHashMap<FDrawKey, uint16>     DrawIndexByKey;
+            uint32                              GlobalBatchIndex = ~0u;
+            TFrameVector<uint32>                LocalToGlobalDraw;
+            TFrameVector<uint32>                LocalDrawWriteBase;
+
+            FLocalBatchEntry() = default;
+            explicit FLocalBatchEntry(FFrameArenaAllocator A)
+                : LocalDraws(A), LocalDrawCounts(A), LocalMeshletCounts(A)
+                , DrawIndexByKey(A), LocalToGlobalDraw(A), LocalDrawWriteBase(A) {}
         };
 
         struct alignas(64) FThreadLocalDrawData
         {
-            TVector<FProcessedDrawItem> Items;
-            TVector<FLocalBatchEntry>   LocalBatches;
-            TVector<glm::mat4>          BonesData;
-            FSceneRenderStats           Stats = {};
-            uint32                      MaxMeshletsPerInstance = 0;
+            TFrameVector<FProcessedDrawItem>    Items;
+            TFrameVector<FEntityRecord>         EntityRecords;
+            TFrameVector<FLocalBatchEntry>      LocalBatches;
+            TFrameVector<glm::mat4>             BonesData;
+            FFrameArenaAllocator                Arena;
+            FSceneRenderStats                   Stats = {};
+            uint32                              MaxMeshletsPerInstance = 0;
+
+            FThreadLocalDrawData() = default;
+            explicit FThreadLocalDrawData(FFrameArenaAllocator A)
+                : Items(A), EntityRecords(A), LocalBatches(A), BonesData(A), Arena(A) {}
         };
         
         enum class ENamedBuffer : uint8
@@ -353,9 +383,14 @@ namespace Lumina
          * read-only during parallel gather.
          */
         FSceneCullContext                       SceneCullContext;
-        
+
         FShadowAtlas                            ShadowAtlas;
-        
+
+        // One bump arena per worker thread. Lifetime is the scene; reset at
+        // the start of every BuildPerFrameRenderData. Backs all per-frame
+        // TFrameVector / TFrameHashMap members on FThreadLocalDrawData.
+        TVector<TUniquePtr<FBlockLinearAllocator>> FrameArenas;
+
         /** Packed array of all cached mesh draw commands */
         TVector<FMeshDrawCommand>               DrawCommands;
 
