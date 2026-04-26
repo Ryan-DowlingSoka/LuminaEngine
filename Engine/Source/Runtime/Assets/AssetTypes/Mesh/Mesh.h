@@ -43,17 +43,8 @@ namespace Lumina
         void SetMeshResource(TUniquePtr<FMeshResource>&& NewResource);
         
         FORCEINLINE const FMeshResource::FMeshBuffers& GetMeshBuffers() const { return MeshResources->MeshBuffers; }
-        FORCEINLINE const FRHIBufferRef& GetVertexBuffer() const { return MeshResources->MeshBuffers.VertexBuffer; }
-        FORCEINLINE const FRHIBufferRef& GetIndexBuffer() const { return MeshResources->MeshBuffers.IndexBuffer; }
-        FORCEINLINE const FRHIBufferRef& GetShadowIndexBuffer() const { return MeshResources->MeshBuffers.ShadowIndexBuffer; }
         
         virtual bool IsSkinned() const { return false; }
-        
-        FUNCTION(Script)
-        FORCEINLINE SIZE_T GetNumVertices() const { return MeshResources->GetNumVertices(); }
-        
-        FUNCTION(Script)
-        FORCEINLINE SIZE_T GetNumIndices() const { return MeshResources->GetNumIndices(); }
         
         FUNCTION(Script)
         FORCEINLINE const FAABB& GetAABB() const { return BoundingBox; }

@@ -91,25 +91,24 @@ enum EInstanceFlags
 // ---------------------------------------------------------------------------------
 //  Structs
 
+// Mirror of Lumina::FMeshletVertex. Position is 10-10-10 quantized to the
+// meshlet's AABB (in FMeshletBounds), Normal is octahedral 16-16.
 struct FVertex
 {
-    float3  Position;
+    uint    Position;
     uint    Normal;
     uint    UV;
     uint    Color;
-    uint2   Padding;
 };
 
 struct FSkinnedVertex
 {
-    float3 Position;
-    uint   Normal;
-    uint   UV;
-    uint   Color;
-    uint   JointIndices;
-    uint   JointWeights;
-
-    uint2   Padding;
+    uint    Position;
+    uint    Normal;
+    uint    UV;
+    uint    Color;
+    uint    JointIndices;
+    uint    JointWeights;
 };
 
 struct FVertexData
@@ -224,7 +223,8 @@ struct FMeshlet
     uint TriangleCount;
 };
 
-// Mirror of Lumina::FMeshletBounds. 16-byte aligned to match std430.
+// Mirror of Lumina::FMeshletBounds. AABBMin + AABBScale drive 10-10-10
+// position dequant; Center/Radius and the cone are for culling.
 struct FMeshletBounds
 {
     float3 Center;
@@ -233,6 +233,10 @@ struct FMeshletBounds
     float  ConeCutoff;
     float3 ConeAxis;
     float  _Pad0;
+    float3 AABBMin;
+    float  _Pad1;
+    float3 AABBScale;     // = (AABBMax - AABBMin) / 1023.0
+    float  _Pad2;
 };
 
 // Mirror of Lumina::FMeshletHeaderGPU. One entry per mesh; FGPUInstance carries
@@ -279,7 +283,9 @@ struct FGPUInstance
     float4                  SphereBounds;
 
     uint*                   VBAddress;
-    uint*                   ShadowIBAddress;
+    // Reserved slot. Was ShadowIBAddress before shadow passes moved to the
+    // meshlet path; kept as a typed pointer to preserve struct layout.
+    uint*                   _ReservedAddress;
     FMeshletHeader*         MeshletHeader;
 
     private uint            DrawIDAndFlags;
@@ -476,12 +482,28 @@ struct FSceneGlobalData
 // ---------------------------------------------------------------------------------
 //  Functions
 
-// Unpacks a signed 8-8-8-8 SNORM normal via UnpackSnorm4x8. W is unused.
-// Result is near-unit (SNORM8 quantization is <0.8% per component); every
-// consumer renormalizes downstream.
+// Octahedral 16-16 normal decode. Mirror of Lumina::UnpackNormal.
+// Sign-extend via left-then-arithmetic-right shift; Slang lacks unpackSnorm2x16.
 float3 UnpackNormal(uint Packed)
 {
-    return unpackSnorm4x8ToFloat(Packed).xyz;
+    int sx = (int(Packed) << 16) >> 16;
+    int sy =  int(Packed)        >> 16;
+    float2 e = float2(sx, sy) * (1.0 / 32767.0);
+    float3 n = float3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if (n.z < 0.0)
+    {
+        float2 sgn = float2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+        n.xy = (1.0 - abs(float2(n.y, n.x))) * sgn;
+    }
+    return normalize(n);
+}
+
+float3 UnpackMeshletPosition(uint Packed, float3 AABBMin, float3 AABBScale)
+{
+    float qx = float(Packed         & 0x3FFu);
+    float qy = float((Packed >> 10u) & 0x3FFu);
+    float qz = float((Packed >> 20u) & 0x3FFu);
+    return AABBMin + float3(qx, qy, qz) * AABBScale;
 }
 
 float2 UnpackUV(uint Packed)

@@ -231,7 +231,6 @@ namespace Lumina::Import::Mesh::OBJ
             {
                 OptimizeNewlyImportedMesh(*MeshResource);
             }
-            GenerateShadowBuffers(*MeshResource);
             GenerateMeshlets(*MeshResource);
         }
         AnalyzeMeshStatistics(*MeshResource, ImportData.MeshStatistics);

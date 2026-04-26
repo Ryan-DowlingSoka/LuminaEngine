@@ -450,7 +450,10 @@ namespace Lumina
         glm::vec4       SphereBounds;
 
         uint64          VBAddress;
-        uint64          ShadowIBAddress;
+        // Reserved slot. Was ShadowIBAddress before the renderer became
+        // fully meshlet-driven; kept as a typed pointer-sized field so the
+        // C++/shader struct layout stays byte-identical.
+        uint64          _ReservedAddress;
         uint64          MeshletHeaderAddress;
 
         uint32          DrawIDAndFlags;

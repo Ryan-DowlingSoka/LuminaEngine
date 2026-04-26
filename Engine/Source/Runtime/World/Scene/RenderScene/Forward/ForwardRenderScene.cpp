@@ -881,8 +881,6 @@ namespace Lumina
         }
 
         const FMeshResource& Resource = Mesh->GetMeshResource();
-        const uint64 VBAddress = Mesh->GetVertexBuffer()->GetAddress();
-        const uint64 ShadowIBAddress = Mesh->GetShadowIndexBuffer()->GetAddress();
         const uint64 MeshletHeaderAddress = Mesh->GetMeshBuffers().MeshletHeaderBuffer
             ? Mesh->GetMeshBuffers().MeshletHeaderBuffer->GetAddress()
             : 0ull;
@@ -971,8 +969,8 @@ namespace Lumina
             Item.Instance.SurfaceMeshletOffset   = Surface.MeshletOffset;
             Item.Instance.SurfaceMeshletCount    = SurfaceMeshletCount;
             Item.Instance.CustomData             = MeshComponent.CustomPrimitiveData.Data.Packed;
-            Item.Instance.VBAddress                  = VBAddress;
-            Item.Instance.ShadowIBAddress            = ShadowIBAddress;
+            Item.Instance.VBAddress                  = 0ull;
+            Item.Instance._ReservedAddress           = 0ull;
             Item.Instance.MeshletHeaderAddress       = MeshletHeaderAddress;
             Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
             Item.Instance.EntityID                   = EntityIDPacked;
@@ -1036,8 +1034,6 @@ namespace Lumina
             BaseFlags |= EInstanceFlags::ReceiveShadow;
         }
 
-        const uint64 VBAddress = Mesh->GetVertexBuffer()->GetAddress();
-        const uint64 ShadowIBAddress = Mesh->GetShadowIndexBuffer()->GetAddress();
         const uint64 MeshletHeaderAddress = Mesh->GetMeshBuffers().MeshletHeaderBuffer
             ? Mesh->GetMeshBuffers().MeshletHeaderBuffer->GetAddress()
             : 0ull;
@@ -1105,8 +1101,8 @@ namespace Lumina
             Item.Instance.SurfaceMeshletOffset     = Surface.MeshletOffset;
             Item.Instance.SurfaceMeshletCount      = SurfaceMeshletCount;
             Item.Instance.CustomData               = MeshComponent.CustomPrimitiveData.Data.Packed;
-            Item.Instance.VBAddress                  = VBAddress;
-            Item.Instance.ShadowIBAddress            = ShadowIBAddress;
+            Item.Instance.VBAddress                  = 0ull;
+            Item.Instance._ReservedAddress           = 0ull;
             Item.Instance.MeshletHeaderAddress       = MeshletHeaderAddress;
             Item.Instance.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(0, (uint16)Material->GetMaterialIndex());
             Item.Instance.EntityID                   = EntityIDPacked;

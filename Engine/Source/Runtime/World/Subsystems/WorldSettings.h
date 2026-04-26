@@ -33,10 +33,10 @@ namespace Lumina
         float DeltaTimeScale = 1.0f;
         
         PROPERTY(Editable, Category = "Rendering")
-        float CascadeSplitLambda = 0.84f;
+        float CascadeSplitLambda = 0.97f;
         
         PROPERTY(Editable, Category = "Rendering")
-        float ShadowMaxDistance = 2000.0f;
+        float ShadowMaxDistance = 500.0f;
         
         /** Anti-aliasing quality. Off disables SMAA; higher qualities detect more edges at higher GPU cost. */
         PROPERTY(Editable, Category = "Rendering")

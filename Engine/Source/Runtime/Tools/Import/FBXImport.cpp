@@ -442,6 +442,26 @@ namespace Lumina::Import::Mesh::FBX
             const ofbx::Vec2Attributes   UVs       = Geometry.getUVs();
             const ofbx::Vec4Attributes   Colors    = Geometry.getColors();
 
+            // Bake the mesh's full FBX transform chain into vertex data:
+            //
+            //   WorldVertex = GlobalTransform * GeometricMatrix * LocalVertex
+            //
+            // GlobalTransform is the node->world transform. GeometricMatrix
+            // is an FBX-specific per-mesh transform that sits between the
+            // geometry data and the node, set independently when artists
+            // freeze transforms at different times. Different meshes in the
+            // same scene routinely carry different geometric transforms,
+            // which manifests as "some meshes vertical, others horizontal"
+            // when the merged buffer ignores it. SceneScale is applied as a
+            // uniform outer scale; uniform scale does not affect normal
+            // direction, so the normal matrix is built from the rotation/
+            // scale 3x3 of the FBX transform alone.
+            const glm::mat4 GlobalMatrix    = ConvertMatrix(Mesh->getGlobalTransform());
+            const glm::mat4 GeometricMatrix = ConvertMatrix(Mesh->getGeometricMatrix());
+            const glm::mat4 MeshToWorld     = GlobalMatrix * GeometricMatrix;
+            const glm::mat4 PosMatrix       = glm::scale(glm::mat4(1.0f), glm::vec3(SceneScale)) * MeshToWorld;
+            const glm::mat3 NormalMatrix    = glm::transpose(glm::inverse(glm::mat3(MeshToWorld)));
+
             const int CPCount = Mesh->getGeometry()->getGeometryData().getPositions().count;
 
             struct FSkin
@@ -562,15 +582,14 @@ namespace Lumina::Import::Mesh::FBX
                         else
                         {
                             ofbx::Vec3 Position = Positions.get(Index);
-                            glm::vec3 Pos(Position.x, Position.y, Position.z);
+                            glm::vec3 PosLocal(Position.x, Position.y, Position.z);
+                            glm::vec3 Pos = glm::vec3(PosMatrix * glm::vec4(PosLocal, 1.0f));
 
-                            Pos *= SceneScale;
-
-                            glm::vec3 Normal(0, 1, 0);
+                            glm::vec3 Normal = glm::normalize(NormalMatrix * glm::vec3(0.0f, 1.0f, 0.0f));
                             if (Normals.values)
                             {
                                 ofbx::Vec3 N = Normals.get(Index);
-                                Normal = glm::vec3(N.x, N.y, N.z);
+                                Normal = glm::normalize(NormalMatrix * glm::vec3(N.x, N.y, N.z));
                             }
 
                             glm::vec2 UV(0, 0);
@@ -751,7 +770,6 @@ namespace Lumina::Import::Mesh::FBX
                 {
                     OptimizeNewlyImportedMesh(*Res);
                 }
-                GenerateShadowBuffers(*Res);
                 GenerateMeshlets(*Res);
             });
         }

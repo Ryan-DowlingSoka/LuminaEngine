@@ -36,7 +36,8 @@ VSOutput VertexMain(
     float4x4     ModelMatrix = Inst.ModelMatrix;
 
     uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
-    FMeshlet M            = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
+    FMeshlet       M = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
+    FMeshletBounds B = Inst.MeshletHeader.Bounds[GlobalMeshletIdx];
 
     uint TriIdx = VertexIndex / 3u;
     uint Corner = VertexIndex % 3u;
@@ -53,17 +54,16 @@ VSOutput VertexMain(
 
     uint PackedTri    = Inst.MeshletHeader.Triangles[M.TriangleOffset + TriIdx];
     uint LocalVertIdx = (PackedTri >> (Corner * 8u)) & 0xFFu;
-    uint VertexIdx    = Inst.MeshletHeader.Vertices[M.VertexOffset + LocalVertIdx];
 
     // Position-only; skip Normal/UV/Color unpack.
     float3 LocalPos;
     if (Inst.HasFlag(EInstanceFlags::Skinned))
     {
-        LocalPos = LoadSkinnedPositionByIndex(Inst.VBAddress, VertexIdx, Inst.BoneOffset);
+        LocalPos = LoadSkinnedPosition(Inst.MeshletHeader, M, B, LocalVertIdx, Inst.BoneOffset);
     }
     else
     {
-        LocalPos = LoadStaticPositionByIndex(Inst.VBAddress, VertexIdx);
+        LocalPos = LoadStaticPosition(Inst.MeshletHeader, M, B, LocalVertIdx);
     }
 
     float4 WorldPos = mul(ModelMatrix, float4(LocalPos, 1.0));

@@ -323,17 +323,38 @@ namespace Lumina::Import::Mesh::GLTF
             }
         }
 
+        auto NodeLocalMatrix = [](const fastgltf::Node& Node) -> glm::mat4
+        {
+            if (auto* Trs = std::get_if<fastgltf::TRS>(&Node.transform))
+            {
+                glm::mat4 T = glm::translate(glm::mat4(1.0f), glm::vec3(Trs->translation[0], Trs->translation[1], Trs->translation[2]));
+                glm::quat R(Trs->rotation[3], Trs->rotation[0], Trs->rotation[1], Trs->rotation[2]);
+                glm::mat4 S = glm::scale(glm::mat4(1.0f), glm::vec3(Trs->scale[0], Trs->scale[1], Trs->scale[2]));
+                return T * glm::mat4_cast(R) * S;
+            }
+            if (auto* Mat = std::get_if<fastgltf::Node::TransformMatrix>(&Node.transform))
+            {
+                return glm::make_mat4(Mat->data());
+            }
+            return glm::mat4(1.0f);
+        };
+
         // Per-mesh primitive extraction. Captures the loop variables but does
         // NOT touch ImportData, so multiple invocations on different mesh
         // resources can run concurrently. Merge mode shares the targets and
         // MergedMaterialRemap, which is why merge mode stays serial below.
+        // WorldMatrix is the node->world transform for the mesh instance;
+        // identity when extracting a mesh in isolation (non-merge mode).
         auto ProcessMeshPrimitives = [&](
             const fastgltf::Mesh& Mesh,
             const FFixedString&   MeshName,
             FMeshResource*        StaticTarget,
             FMeshResource*        SkinnedTarget,
-            THashMap<int16, int16>* MergedMaterialRemapPtr)
+            THashMap<int16, int16>* MergedMaterialRemapPtr,
+            const glm::mat4&      WorldMatrix)
         {
+            const glm::mat4 PosMatrix    = glm::scale(glm::mat4(1.0f), glm::vec3(ImportScale)) * WorldMatrix;
+            const glm::mat3 NormalMatrix = glm::transpose(glm::inverse(glm::mat3(WorldMatrix)));
             FMeshResource* NewResource = nullptr;
             for (auto& Primitive : Mesh.primitives)
             {
@@ -401,9 +422,10 @@ namespace Lumina::Import::Mesh::GLTF
                     Vector.resize(InitialVert + VertexCount);
                 }, NewResource->Vertices);
 
+                const glm::vec3 DefaultNormal = glm::normalize(NormalMatrix * FViewVolume::UpAxis);
                 for (size_t i = InitialVert; i < NewResource->GetNumVertices(); ++i)
                 {
-                    NewResource->SetNormalAt(i, PackNormal(FViewVolume::UpAxis));
+                    NewResource->SetNormalAt(i, PackNormal(DefaultNormal));
                     NewResource->SetUVAt(i, glm::u16vec2(0, 0));
                     NewResource->SetColorAt(i, 0xFFFFFFFF);
                     if (NewResource->IsSkinnedMesh())
@@ -416,8 +438,8 @@ namespace Lumina::Import::Mesh::GLTF
                 const fastgltf::Accessor& PosAccessor = Asset.accessors[Primitive.findAttribute("POSITION")->second];
                 fastgltf::iterateAccessorWithIndex<glm::vec3>(Asset, PosAccessor, [&](glm::vec3 Value, size_t Index)
                 {
-                    Value *= ImportScale;
-                    NewResource->SetPositionAt(InitialVert + Index, Value);
+                    glm::vec3 P = glm::vec3(PosMatrix * glm::vec4(Value, 1.0f));
+                    NewResource->SetPositionAt(InitialVert + Index, P);
                 });
 
                 const fastgltf::Accessor& IndexAccessor = Asset.accessors[Primitive.indicesAccessor.value()];
@@ -433,7 +455,8 @@ namespace Lumina::Import::Mesh::GLTF
                 {
                     fastgltf::iterateAccessorWithIndex<glm::vec3>(Asset, Asset.accessors[Normals->second], [&](glm::vec3 Value, size_t Index)
                     {
-                        NewResource->SetNormalAt(InitialVert + Index, PackNormal(glm::normalize(Value)));
+                        glm::vec3 N = glm::normalize(NormalMatrix * Value);
+                        NewResource->SetNormalAt(InitialVert + Index, PackNormal(N));
                     });
                 }
 
@@ -499,7 +522,6 @@ namespace Lumina::Import::Mesh::GLTF
             {
                 OptimizeNewlyImportedMesh(Resource);
             }
-            GenerateShadowBuffers(Resource);
             GenerateMeshlets(Resource);
         };
 
@@ -523,8 +545,16 @@ namespace Lumina::Import::Mesh::GLTF
             // Merge mode mutates shared targets; keep the per-primitive walk
             // serial. The dominant cost (FinalizeResource) still parallelizes
             // internally via per-surface meshlet/optimize passes.
-            for (const fastgltf::Mesh& Mesh : Asset.meshes)
+            //
+            // Walk the scene graph rather than iterating Asset.meshes directly:
+            // a glTF mesh has no inherent placement, only nodes do. Without
+            // accumulating each node's world transform, every primitive lands
+            // at its local origin and the merged result has all geometry
+            // collapsed onto a single point.
+            auto VisitMeshInstance = [&](size_t MeshIdx, const glm::mat4& WorldMatrix)
             {
+                const fastgltf::Mesh& Mesh = Asset.meshes[MeshIdx];
+
                 FString SanitizedMeshName = Mesh.name.c_str();
                 eastl::replace(SanitizedMeshName.begin(), SanitizedMeshName.end(), '.', '_');
 
@@ -538,7 +568,53 @@ namespace Lumina::Import::Mesh::GLTF
                     MeshName.append_convert(SanitizedMeshName);
                 }
 
-                ProcessMeshPrimitives(Mesh, MeshName, MergedStaticMesh.get(), MergedSkinnedMesh.get(), &MergedMaterialRemap);
+                ProcessMeshPrimitives(Mesh, MeshName, MergedStaticMesh.get(), MergedSkinnedMesh.get(), &MergedMaterialRemap, WorldMatrix);
+            };
+
+            const size_t SceneIdx = Asset.defaultScene.has_value() ? Asset.defaultScene.value()
+                                                                   : (Asset.scenes.empty() ? size_t(-1) : 0);
+
+            if (SceneIdx != size_t(-1))
+            {
+                struct FStackEntry
+                {
+                    size_t    NodeIdx;
+                    glm::mat4 ParentWorld;
+                };
+                TVector<FStackEntry> Stack;
+                for (size_t Root : Asset.scenes[SceneIdx].nodeIndices)
+                {
+                    Stack.push_back({Root, glm::mat4(1.0f)});
+                }
+
+                while (!Stack.empty())
+                {
+                    FStackEntry Entry = Stack.back();
+                    Stack.pop_back();
+
+                    const fastgltf::Node& Node = Asset.nodes[Entry.NodeIdx];
+                    glm::mat4 World = Entry.ParentWorld * NodeLocalMatrix(Node);
+
+                    if (Node.meshIndex.has_value())
+                    {
+                        VisitMeshInstance(Node.meshIndex.value(), World);
+                    }
+
+                    for (size_t Child : Node.children)
+                    {
+                        Stack.push_back({Child, World});
+                    }
+                }
+            }
+            else
+            {
+                // glTF without scene/node info: fall back to iterating meshes
+                // directly with identity transforms (preserves prior behavior
+                // for malformed assets).
+                for (size_t MeshIdx = 0; MeshIdx < Asset.meshes.size(); ++MeshIdx)
+                {
+                    VisitMeshInstance(MeshIdx, glm::mat4(1.0f));
+                }
             }
 
             TVector<FMeshResource*> ToFinalize;
@@ -572,36 +648,39 @@ namespace Lumina::Import::Mesh::GLTF
         }
         else
         {
-            // Non-merge mode: one local static + skinned pair per source mesh.
-            // The target buffers are exclusive per slot, so primitive extraction
-            // and finalization both parallelize at the mesh granularity. The
-            // SeenMeshes dedup runs serially first to avoid losing geometry to
-            // a hashset race.
-            TVector<size_t>     UniqueMeshIndices;
-            TVector<FFixedString> UniqueMeshNames;
-            UniqueMeshIndices.reserve(Asset.meshes.size());
-            UniqueMeshNames.reserve(Asset.meshes.size());
+            // Non-merge mode: walk the scene graph and emit one resource per
+            // node->mesh reference. Vertices stay in mesh-local space; the
+            // node's world transform is stamped onto FMeshResource::Import-
+            // Transform so commit-time merging in MergeResourceInto can bake
+            // it into positions and normals. Without this, the editor's
+            // "parse once, merge cheaply at commit" flow ends up concatenating
+            // local-space vertex buffers and every primitive collapses onto
+            // its mesh-local origin.
+            //
+            // A single glTF mesh can be referenced by multiple nodes; each
+            // reference becomes its own FMeshResource instance with a unique
+            // ImportTransform so instanced layouts (columns, props, etc.)
+            // come through correctly when merged.
+            struct FInstance
+            {
+                size_t       MeshIdx;
+                glm::mat4    World;
+                FFixedString MeshName;
+            };
 
-            THashSet<FString> SeenMeshes;
-            for (size_t MeshIdx = 0; MeshIdx < Asset.meshes.size(); ++MeshIdx)
+            TVector<FInstance> Instances;
+            THashMap<size_t, uint32> InstanceCountPerMesh;
+
+            auto EmitInstance = [&](size_t MeshIdx, const glm::mat4& World)
             {
                 const fastgltf::Mesh& Mesh = Asset.meshes[MeshIdx];
 
                 FString SanitizedMeshName = Mesh.name.c_str();
                 eastl::replace(SanitizedMeshName.begin(), SanitizedMeshName.end(), '.', '_');
 
-                auto It = SeenMeshes.find(SanitizedMeshName.c_str());
-                if (It != SeenMeshes.end())
-                {
-                    continue;
-                }
-                SeenMeshes.emplace(SanitizedMeshName);
-
                 FFixedString MeshName;
                 if (Mesh.name.empty())
                 {
-                    // Use the source mesh index so the fallback name is stable
-                    // regardless of which thread finishes first.
                     MeshName.append(Name.begin(), Name.end()).append_convert(eastl::to_string(MeshIdx));
                 }
                 else
@@ -609,8 +688,62 @@ namespace Lumina::Import::Mesh::GLTF
                     MeshName.append_convert(SanitizedMeshName);
                 }
 
-                UniqueMeshIndices.push_back(MeshIdx);
-                UniqueMeshNames.push_back(MeshName);
+                // Disambiguate when the same mesh is referenced by multiple
+                // nodes so the resulting asset names don't collide.
+                uint32& Count = InstanceCountPerMesh[MeshIdx];
+                if (Count > 0)
+                {
+                    MeshName.append("_");
+                    MeshName.append_convert(eastl::to_string(Count));
+                }
+                ++Count;
+
+                Instances.push_back({MeshIdx, World, MeshName});
+            };
+
+            const size_t SceneIdx = Asset.defaultScene.has_value() ? Asset.defaultScene.value()
+                                                                   : (Asset.scenes.empty() ? size_t(-1) : 0);
+
+            if (SceneIdx != size_t(-1))
+            {
+                struct FStackEntry
+                {
+                    size_t    NodeIdx;
+                    glm::mat4 ParentWorld;
+                };
+                TVector<FStackEntry> Stack;
+                for (size_t Root : Asset.scenes[SceneIdx].nodeIndices)
+                {
+                    Stack.push_back({Root, glm::mat4(1.0f)});
+                }
+
+                while (!Stack.empty())
+                {
+                    FStackEntry Entry = Stack.back();
+                    Stack.pop_back();
+
+                    const fastgltf::Node& Node = Asset.nodes[Entry.NodeIdx];
+                    glm::mat4 World = Entry.ParentWorld * NodeLocalMatrix(Node);
+
+                    if (Node.meshIndex.has_value())
+                    {
+                        EmitInstance(Node.meshIndex.value(), World);
+                    }
+
+                    for (size_t Child : Node.children)
+                    {
+                        Stack.push_back({Child, World});
+                    }
+                }
+            }
+            else
+            {
+                // glTF without scene/node info: fall back to one instance per
+                // mesh with identity transform.
+                for (size_t MeshIdx = 0; MeshIdx < Asset.meshes.size(); ++MeshIdx)
+                {
+                    EmitInstance(MeshIdx, glm::mat4(1.0f));
+                }
             }
 
             struct FMeshSlot
@@ -619,26 +752,32 @@ namespace Lumina::Import::Mesh::GLTF
                 TUniquePtr<FMeshResource> Skinned;
             };
 
-            TVector<FMeshSlot> Slots(UniqueMeshIndices.size());
+            TVector<FMeshSlot> Slots(Instances.size());
 
-            // Phase 1: extract per-mesh vertex/index data in parallel.
-            Task::ParallelFor((uint32)UniqueMeshIndices.size(), [&](uint32 SlotIdx)
+            // Phase 1: extract per-instance vertex/index data in parallel. We
+            // pass identity to ProcessMeshPrimitives so vertices remain in
+            // mesh-local space; ImportTransform carries the world placement
+            // for the merger to apply at commit time.
+            Task::ParallelFor((uint32)Instances.size(), [&](uint32 SlotIdx)
             {
-                const fastgltf::Mesh& Mesh   = Asset.meshes[UniqueMeshIndices[SlotIdx]];
-                const FFixedString&   MeshNm = UniqueMeshNames[SlotIdx];
+                const FInstance&      Inst   = Instances[SlotIdx];
+                const fastgltf::Mesh& Mesh   = Asset.meshes[Inst.MeshIdx];
+                const FFixedString&   MeshNm = Inst.MeshName;
 
                 FMeshSlot& Slot = Slots[SlotIdx];
 
                 Slot.Static = MakeUnique<FMeshResource>();
                 Slot.Static->Vertices = TVector<FVertex>();
                 Slot.Static->Name = FString(MeshNm) + "_Mesh";
+                Slot.Static->ImportTransform = Inst.World;
 
                 Slot.Skinned = MakeUnique<FMeshResource>();
                 Slot.Skinned->Vertices = TVector<FSkinnedVertex>();
                 Slot.Skinned->bSkinnedMesh = true;
                 Slot.Skinned->Name = FString(MeshNm) + "_SkeletalMesh";
+                Slot.Skinned->ImportTransform = Inst.World;
 
-                ProcessMeshPrimitives(Mesh, MeshNm, Slot.Static.get(), Slot.Skinned.get(), nullptr);
+                ProcessMeshPrimitives(Mesh, MeshNm, Slot.Static.get(), Slot.Skinned.get(), nullptr, glm::mat4(1.0f));
             });
 
             // Phase 2: collect every non-empty resource and finalize them all

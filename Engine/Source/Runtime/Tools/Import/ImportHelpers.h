@@ -134,15 +134,14 @@ namespace Lumina::Import
         };
         
         void OptimizeNewlyImportedMesh(FMeshResource& MeshResource);
-        void GenerateShadowBuffers(FMeshResource& MeshResource);
         void GenerateMeshlets(FMeshResource& MeshResource);
         void AnalyzeMeshStatistics(FMeshResource& MeshResource, FMeshStatistics& OutMeshStats);
 
         // Apply user-facing transforms (Scale, FlipUVs, FlipNormals, optional
-        // merge) and run the heavy finalize passes (optimize, shadow, meshlets,
-        // stats) on a previously parsed FMeshImportData. Used by the import
-        // dialog to defer all expensive post-processing to commit time so
-        // toggling options doesn't trigger a re-parse.
+        // merge) and run the heavy finalize passes (optimize, meshlets, stats)
+        // on a previously parsed FMeshImportData. Used by the import dialog to
+        // defer all expensive post-processing to commit time so toggling
+        // options doesn't trigger a re-parse.
         RUNTIME_API void FinalizeMeshImportData(FMeshImportData& Data, const FMeshImportOptions& Options);
         
         namespace OBJ

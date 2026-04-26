@@ -80,22 +80,23 @@ namespace Lumina
     
                 // Geometry counts
                 PropertyRow("Vertices", eastl::to_string(Resource.GetNumVertices()));
-                PropertyRow("Triangles", eastl::to_string(Resource.Indices.size() / 3));
-                PropertyRow("Indices", eastl::to_string(Resource.Indices.size()));
-                PropertyRow("Shadow Indices", eastl::to_string(Resource.ShadowIndices.size()));
+                PropertyRow("Meshlets", eastl::to_string(Resource.MeshletData.Meshlets.size()));
                 PropertyRow("Surfaces", eastl::to_string(Resource.GetNumSurfaces()));
-                
+
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
                 ImGui::Dummy(ImVec2(0, 4));
-                
+
                 // Memory usage
-                const float vertexSizeKB = (Resource.GetNumVertices() * Resource.GetVertexTypeSize()) / 1024.0f;
-                const float indexSizeKB = (Resource.Indices.size() * sizeof(uint32_t)) / 1024.0f;
-                const float totalSizeKB = vertexSizeKB + indexSizeKB;
-                
+                const float vertexSizeKB  = (Resource.GetNumVertices() * Resource.GetVertexTypeSize()) / 1024.0f;
+                const float meshletSizeKB = (Resource.MeshletData.Meshlets.size() * sizeof(FMeshlet)
+                                           + Resource.MeshletData.MeshletBounds.size() * sizeof(FMeshletBounds)
+                                           + Resource.MeshletData.MeshletVertices.size() * sizeof(uint32)
+                                           + Resource.MeshletData.MeshletTriangles.size() * sizeof(uint32)) / 1024.0f;
+                const float totalSizeKB   = vertexSizeKB + meshletSizeKB;
+
                 PropertyRow("Vertex Buffer", eastl::to_string(static_cast<int>(vertexSizeKB)) + " KB");
-                PropertyRow("Index Buffer", eastl::to_string(static_cast<int>(indexSizeKB)) + " KB");
+                PropertyRow("Meshlet Data",  eastl::to_string(static_cast<int>(meshletSizeKB)) + " KB");
                 
                 ImVec4 totalColor = totalSizeKB > 1024 ? ImVec4(1.0f, 0.7f, 0.3f, 1.0f) : ImVec4(0.7f, 1.0f, 0.7f, 1.0f);
                 PropertyRow("Total Memory", eastl::to_string(static_cast<int>(totalSizeKB)) + " KB", &totalColor);

@@ -90,51 +90,6 @@ namespace Lumina::Import::Mesh
             NumVertices, VertexSize);
     }
 
-    void GenerateShadowBuffers(FMeshResource& MeshResource)
-    {
-        const size_t NumIndices  = MeshResource.Indices.size();
-        const size_t NumVertices = MeshResource.GetNumVertices();
-        if (NumIndices == 0 || NumVertices == 0)
-        {
-            MeshResource.ShadowIndices.clear();
-            return;
-        }
-
-        MeshResource.ShadowIndices.resize(NumIndices);
-
-        // Position-only dedup: shadow passes write only depth so two vertices
-        // with identical positions can share the same index even if they
-        // differ in normal / UV / color / skinning. Hashing only the first
-        // sizeof(vec3) bytes collapses the maximum number of vertices and
-        // gives the shadow pass a smaller VPC working set.
-        meshopt_generateShadowIndexBuffer(
-            MeshResource.ShadowIndices.data(),
-            MeshResource.Indices.data(), NumIndices,
-            MeshResource.GetVertexData(),
-            NumVertices,
-            sizeof(glm::vec3),
-            MeshResource.GetVertexTypeSize());
-
-        // Per-surface cache optimization on the shadow indices. Surface slices
-        // are disjoint so the in-place reorder parallelizes across threads.
-        const uint32 NumSurfaces = (uint32)MeshResource.GeometrySurfaces.size();
-        if (NumSurfaces > 0)
-        {
-            Task::ParallelFor(NumSurfaces, [&](uint32 SurfaceIdx)
-            {
-                const FGeometrySurface& Section = MeshResource.GeometrySurfaces[SurfaceIdx];
-                if (Section.IndexCount == 0)
-                {
-                    return;
-                }
-                meshopt_optimizeVertexCache(
-                    &MeshResource.ShadowIndices[Section.StartIndex],
-                    &MeshResource.ShadowIndices[Section.StartIndex],
-                    Section.IndexCount, NumVertices);
-            });
-        }
-    }
-
     void GenerateMeshlets(FMeshResource& MeshResource)
     {
         MeshResource.MeshletData.Clear();
@@ -261,8 +216,10 @@ namespace Lumina::Import::Mesh
             }
         });
 
-        // Phase 2: serial merge. Order-preserving append into the mesh's flat
-        // arrays, rebasing the per-surface local offsets onto the global ones.
+        // Phase 2: per meshlet, compute a tight AABB, emit a packed FMeshlet
+        // (Skinned)Vertex slice with positions quantized against that AABB
+        // and normals octahedral-encoded, then repack triangle micro-indices
+        // into one dword per triangle.
         size_t TotalMeshlets  = 0;
         size_t TotalVertices  = 0;
         size_t TotalTriangles = 0;
@@ -270,13 +227,41 @@ namespace Lumina::Import::Mesh
         {
             TotalMeshlets  += R.OutMeshlets.size();
             TotalVertices  += R.Vertices.size();
-            TotalTriangles += R.Triangles.size();
+            for (const FMeshlet& M : R.OutMeshlets)
+            {
+                TotalTriangles += M.TriangleCount;
+            }
         }
 
         MeshResource.MeshletData.Meshlets.reserve(TotalMeshlets);
         MeshResource.MeshletData.MeshletBounds.reserve(TotalMeshlets);
-        MeshResource.MeshletData.MeshletVertices.reserve(TotalVertices);
         MeshResource.MeshletData.MeshletTriangles.reserve(TotalTriangles);
+        if (MeshResource.bSkinnedMesh)
+        {
+            MeshResource.MeshletData.MeshletSkinnedVertices.reserve(TotalVertices);
+        }
+        else
+        {
+            MeshResource.MeshletData.MeshletVertices.reserve(TotalVertices);
+        }
+
+        // Helper: read a raw vertex (full precision) by global index.
+        auto ReadRawVertex = [&](uint32 GlobalIdx) -> const FVertex&
+        {
+            return eastl::visit([&](const auto& Vec) -> const FVertex&
+            {
+                using TVec = eastl::decay_t<decltype(Vec)>;
+                using VertexT = typename TVec::value_type;
+                if constexpr (eastl::is_same_v<VertexT, FSkinnedVertex>)
+                {
+                    return static_cast<const FVertex&>(Vec[GlobalIdx]);
+                }
+                else
+                {
+                    return Vec[GlobalIdx];
+                }
+            }, MeshResource.Vertices);
+        };
 
         for (uint32 SurfaceIdx = 0; SurfaceIdx < NumSurfaces; ++SurfaceIdx)
         {
@@ -291,27 +276,100 @@ namespace Lumina::Import::Mesh
                 continue;
             }
 
-            const uint32 GlobalVertexBase   = (uint32)MeshResource.MeshletData.MeshletVertices.size();
-            const uint32 GlobalTriangleBase = (uint32)MeshResource.MeshletData.MeshletTriangles.size();
-
-            MeshResource.MeshletData.MeshletVertices.insert(
-                MeshResource.MeshletData.MeshletVertices.end(),
-                Result.Vertices.begin(), Result.Vertices.end());
-
-            MeshResource.MeshletData.MeshletTriangles.insert(
-                MeshResource.MeshletData.MeshletTriangles.end(),
-                Result.Triangles.begin(), Result.Triangles.end());
-
-            for (FMeshlet Out : Result.OutMeshlets)
+            for (size_t MeshletIdx = 0; MeshletIdx < Result.OutMeshlets.size(); ++MeshletIdx)
             {
-                Out.VertexOffset   += GlobalVertexBase;
-                Out.TriangleOffset += GlobalTriangleBase;
-                MeshResource.MeshletData.Meshlets.push_back(Out);
-            }
+                FMeshlet         Out    = Result.OutMeshlets[MeshletIdx];
+                FMeshletBounds   Bounds = Result.Bounds[MeshletIdx];
 
-            MeshResource.MeshletData.MeshletBounds.insert(
-                MeshResource.MeshletData.MeshletBounds.end(),
-                Result.Bounds.begin(), Result.Bounds.end());
+                glm::vec3 Lo( FLT_MAX);
+                glm::vec3 Hi(-FLT_MAX);
+                for (uint32 i = 0; i < Out.VertexCount; ++i)
+                {
+                    const uint32 SrcIdx = Result.Vertices[Out.VertexOffset + i];
+                    const glm::vec3 P   = ReadRawVertex(SrcIdx).Position;
+                    Lo = glm::min(Lo, P);
+                    Hi = glm::max(Hi, P);
+                }
+
+                // Degenerate axis (extent==0) gets a zero scale; the dequant
+                // then returns AABBMin exactly for any quantized value.
+                const glm::vec3 Extent = Hi - Lo;
+                glm::vec3 Scale(0.0f);
+                if (Extent.x > 0.0f) Scale.x = Extent.x / 1023.0f;
+                if (Extent.y > 0.0f) Scale.y = Extent.y / 1023.0f;
+                if (Extent.z > 0.0f) Scale.z = Extent.z / 1023.0f;
+
+                Bounds.AABBMin   = Lo;
+                Bounds.AABBScale = Scale;
+
+                const uint32 PackedVertexStart = MeshResource.bSkinnedMesh
+                    ? (uint32)MeshResource.MeshletData.MeshletSkinnedVertices.size()
+                    : (uint32)MeshResource.MeshletData.MeshletVertices.size();
+
+                if (MeshResource.bSkinnedMesh)
+                {
+                    const auto& Verts = eastl::get<TVector<FSkinnedVertex>>(MeshResource.Vertices);
+                    for (uint32 i = 0; i < Out.VertexCount; ++i)
+                    {
+                        const uint32         SrcIdx = Result.Vertices[Out.VertexOffset + i];
+                        const FSkinnedVertex& V     = Verts[SrcIdx];
+
+                        FMeshletSkinnedVertex Packed{};
+                        Packed.Position     = PackMeshletPosition(V.Position, Lo, Extent);
+                        Packed.Normal       = V.Normal;
+                        Packed.UV           = V.UV;
+                        Packed.Color        = V.Color;
+                        Packed.JointIndices = (uint32)V.JointIndices.x
+                                            | ((uint32)V.JointIndices.y << 8)
+                                            | ((uint32)V.JointIndices.z << 16)
+                                            | ((uint32)V.JointIndices.w << 24);
+                        Packed.JointWeights = (uint32)V.JointWeights.x
+                                            | ((uint32)V.JointWeights.y << 8)
+                                            | ((uint32)V.JointWeights.z << 16)
+                                            | ((uint32)V.JointWeights.w << 24);
+                        MeshResource.MeshletData.MeshletSkinnedVertices.push_back(Packed);
+                    }
+                }
+                else
+                {
+                    const auto& Verts = eastl::get<TVector<FVertex>>(MeshResource.Vertices);
+                    for (uint32 i = 0; i < Out.VertexCount; ++i)
+                    {
+                        const uint32   SrcIdx = Result.Vertices[Out.VertexOffset + i];
+                        const FVertex& V      = Verts[SrcIdx];
+
+                        FMeshletVertex Packed{};
+                        Packed.Position = PackMeshletPosition(V.Position, Lo, Extent);
+                        Packed.Normal   = V.Normal;
+                        Packed.UV       = V.UV;
+                        Packed.Color    = V.Color;
+                        MeshResource.MeshletData.MeshletVertices.push_back(Packed);
+                    }
+                }
+
+                // (3) Repack triangle micro-indices.
+                const uint32 PackedDwordStart = (uint32)MeshResource.MeshletData.MeshletTriangles.size();
+                const uint8* TriSrc           = Result.Triangles.data() + Out.TriangleOffset;
+                for (uint32 t = 0; t < Out.TriangleCount; ++t)
+                {
+                    const uint32 Packed =
+                          (uint32)TriSrc[t * 3 + 0]
+                        | ((uint32)TriSrc[t * 3 + 1] << 8)
+                        | ((uint32)TriSrc[t * 3 + 2] << 16);
+                    MeshResource.MeshletData.MeshletTriangles.push_back(Packed);
+                }
+
+                Out.VertexOffset   = PackedVertexStart;
+                Out.TriangleOffset = PackedDwordStart;
+                MeshResource.MeshletData.Meshlets.push_back(Out);
+                MeshResource.MeshletData.MeshletBounds.push_back(Bounds);
+            }
+        }
+
+        // Avoid a zero-byte SSBO upload for empty meshes.
+        if (MeshResource.MeshletData.MeshletTriangles.empty())
+        {
+            MeshResource.MeshletData.MeshletTriangles.push_back(0u);
         }
     }
 
@@ -327,22 +385,53 @@ namespace Lumina::Import::Mesh
         // count, surface StartIndex by Dst's current index count. Material
         // indices are folded onto a unique-slot remap so primitives sharing
         // the same source material end up on the same slot in the merged asset.
+        // Src.ImportTransform is the source asset's scene-graph world transform
+        // for this mesh; it is baked into positions and normals as we copy so
+        // each merged primitive lands at its authored world placement instead
+        // of collapsing onto its mesh-local origin.
         void MergeResourceInto(FMeshResource& Src, FMeshResource& Dst, THashMap<int16, int16>& MaterialRemap)
         {
             const uint32 BaseVert = (uint32)Dst.GetNumVertices();
             const uint32 BaseIdx  = (uint32)Dst.Indices.size();
 
+            const glm::mat4 PosMatrix    = Src.ImportTransform;
+            const glm::mat3 NormalMatrix = glm::transpose(glm::inverse(glm::mat3(PosMatrix)));
+            const bool bIdentity         = PosMatrix == glm::mat4(1.0f);
+
+            auto TransformVertex = [&](FVertex& V)
+            {
+                V.Position = glm::vec3(PosMatrix * glm::vec4(V.Position, 1.0f));
+                glm::vec3 N = glm::normalize(NormalMatrix * UnpackNormal(V.Normal));
+                V.Normal = PackNormal(N);
+            };
+
             if (Src.bSkinnedMesh)
             {
                 auto& DstVec = eastl::get<TVector<FSkinnedVertex>>(Dst.Vertices);
                 auto& SrcVec = eastl::get<TVector<FSkinnedVertex>>(Src.Vertices);
+                const size_t Start = DstVec.size();
                 DstVec.insert(DstVec.end(), SrcVec.begin(), SrcVec.end());
+                if (!bIdentity)
+                {
+                    for (size_t i = Start; i < DstVec.size(); ++i)
+                    {
+                        TransformVertex(DstVec[i]);
+                    }
+                }
             }
             else
             {
                 auto& DstVec = eastl::get<TVector<FVertex>>(Dst.Vertices);
                 auto& SrcVec = eastl::get<TVector<FVertex>>(Src.Vertices);
+                const size_t Start = DstVec.size();
                 DstVec.insert(DstVec.end(), SrcVec.begin(), SrcVec.end());
+                if (!bIdentity)
+                {
+                    for (size_t i = Start; i < DstVec.size(); ++i)
+                    {
+                        TransformVertex(DstVec[i]);
+                    }
+                }
             }
 
             Dst.Indices.reserve(Dst.Indices.size() + Src.Indices.size());
@@ -540,7 +629,6 @@ namespace Lumina::Import::Mesh
             {
                 OptimizeNewlyImportedMesh(M);
             }
-            GenerateShadowBuffers(M);
             GenerateMeshlets(M);
         });
 

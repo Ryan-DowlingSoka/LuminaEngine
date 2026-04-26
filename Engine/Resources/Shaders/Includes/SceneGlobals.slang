@@ -1,12 +1,6 @@
 #pragma once
 #include "Common.slang"
 
-
-struct SkinnedVertexBuffer
-{
-    FSkinnedVertex* Vertices;
-};
-
 // ---------------------------------------------------------------------------------
 //  Binding Set 0
 // ---------------------------------------------------------------------------------
@@ -52,28 +46,27 @@ struct SkinnedVertexBuffer
 [[vk::binding(0, 1)]] Sampler2D uGlobalTextures[];
 
 // ---------------------------------------------------------------------------------
-//  Vertex Loading
+//  Vertex Loading. Each meshlet owns a packed vertex slice in
+//  MeshletHeader.Vertices; loaders dequantize position via the meshlet bounds.
 // ---------------------------------------------------------------------------------
 
-FVertexData LoadStaticVertex(uint* VBO, uint* IBO, uint VertexID)
+FVertexData LoadStaticVertex(FMeshletHeader* Header, FMeshlet M, FMeshletBounds B, uint VertexLocalIdx)
 {
-    uint Index = IBO[VertexID];
-    FVertex V = reinterpret<FVertex*>(VBO)[Index];
+    FVertex V = reinterpret<FVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
 
     FVertexData Data;
-    Data.Position = V.Position;
+    Data.Position = UnpackMeshletPosition(V.Position, B.AABBMin, B.AABBScale);
     Data.Normal   = UnpackNormal(V.Normal);
     Data.UV       = UnpackUV(V.UV);
     Data.Color    = UnpackColor(V.Color);
     return Data;
 }
 
-FVertexData LoadSkinnedVertex(uint* VBO, uint* IBO, uint VertexID, uint BoneOffset)
+FVertexData LoadSkinnedVertex(FMeshletHeader* Header, FMeshlet M, FMeshletBounds B, uint VertexLocalIdx, uint BoneOffset)
 {
-    uint Index = IBO[VertexID];
-    FSkinnedVertex V = reinterpret<FSkinnedVertex*>(VBO)[Index];
+    FSkinnedVertex V = reinterpret<FSkinnedVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
 
-    float3 LocalPos    = V.Position;
+    float3 LocalPos    = UnpackMeshletPosition(V.Position, B.AABBMin, B.AABBScale);
     float3 LocalNormal = UnpackNormal(V.Normal);
 
     uint4  JointIndices = UnpackUIntToUVec4(V.JointIndices);
@@ -93,18 +86,18 @@ FVertexData LoadSkinnedVertex(uint* VBO, uint* IBO, uint VertexID, uint BoneOffs
     return Data;
 }
 
-// Position-only fetch. DepthPrePass / ShadowMappingVert only consume
-// VertexData.Position, so avoid loading Normal/UV/Color from the vertex record
-// and skip the unpack calls entirely. Reading just the float3 keeps the VS off
-// the Unpack* ALU path that shows up hot in profiling.
-float3 LoadStaticPositionByIndex(uint* VBO, uint Index)
+// Position-only variants for depth and shadow passes.
+float3 LoadStaticPosition(FMeshletHeader* Header, FMeshlet M, FMeshletBounds B, uint VertexLocalIdx)
 {
-    return reinterpret<FVertex*>(VBO)[Index].Position;
+    uint PackedPos = reinterpret<FVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx].Position;
+    return UnpackMeshletPosition(PackedPos, B.AABBMin, B.AABBScale);
 }
 
-float3 LoadSkinnedPositionByIndex(uint* VBO, uint Index, uint BoneOffset)
+float3 LoadSkinnedPosition(FMeshletHeader* Header, FMeshlet M, FMeshletBounds B, uint VertexLocalIdx, uint BoneOffset)
 {
-    FSkinnedVertex V = reinterpret<FSkinnedVertex*>(VBO)[Index];
+    FSkinnedVertex V = reinterpret<FSkinnedVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
+
+    float3 LocalPos = UnpackMeshletPosition(V.Position, B.AABBMin, B.AABBScale);
 
     uint4  JointIndices = UnpackUIntToUVec4(V.JointIndices);
     float4 Weights      = unpack_u8u32(V.JointWeights) / float4(255.0);
@@ -115,57 +108,7 @@ float3 LoadSkinnedPositionByIndex(uint* VBO, uint Index, uint BoneOffset)
         uBoneMatrices[BoneOffset + JointIndices.z] * Weights.z +
         uBoneMatrices[BoneOffset + JointIndices.w] * Weights.w;
 
-    return mul(SkinMatrix, float4(V.Position, 1.0)).xyz;
-}
-
-// IBO-driven position-only variants for the spot/point shadow path.
-float3 LoadStaticPosition(uint* VBO, uint* IBO, uint VertexID)
-{
-    return LoadStaticPositionByIndex(VBO, IBO[VertexID]);
-}
-
-float3 LoadSkinnedPosition(uint* VBO, uint* IBO, uint VertexID, uint BoneOffset)
-{
-    return LoadSkinnedPositionByIndex(VBO, IBO[VertexID], BoneOffset);
-}
-
-// Meshlet-driven vertex fetch. The meshlet path has already resolved the final
-// vertex index (via the meshlet header's Vertices array), so these helpers skip
-// the IBO indirection and pull the vertex record directly.
-FVertexData LoadStaticVertexByIndex(uint* VBO, uint Index)
-{
-    FVertex V = reinterpret<FVertex*>(VBO)[Index];
-
-    FVertexData Data;
-    Data.Position = V.Position;
-    Data.Normal   = UnpackNormal(V.Normal);
-    Data.UV       = UnpackUV(V.UV);
-    Data.Color    = UnpackColor(V.Color);
-    return Data;
-}
-
-FVertexData LoadSkinnedVertexByIndex(uint* VBO, uint Index, uint BoneOffset)
-{
-    FSkinnedVertex V = reinterpret<FSkinnedVertex*>(VBO)[Index];
-
-    float3 LocalPos    = V.Position;
-    float3 LocalNormal = UnpackNormal(V.Normal);
-
-    uint4  JointIndices = UnpackUIntToUVec4(V.JointIndices);
-    float4 Weights      = unpack_u8u32(V.JointWeights) / float4(255.0);
-
-    float4x4 SkinMatrix =
-        uBoneMatrices[BoneOffset + JointIndices.x] * Weights.x +
-        uBoneMatrices[BoneOffset + JointIndices.y] * Weights.y +
-        uBoneMatrices[BoneOffset + JointIndices.z] * Weights.z +
-        uBoneMatrices[BoneOffset + JointIndices.w] * Weights.w;
-
-    FVertexData Data;
-    Data.Position = mul(SkinMatrix, float4(LocalPos, 1.0)).xyz;
-    Data.Normal   = normalize(mul((float3x3)SkinMatrix, LocalNormal));
-    Data.UV       = UnpackUV(V.UV);
-    Data.Color    = UnpackColor(V.Color);
-    return Data;
+    return mul(SkinMatrix, float4(LocalPos, 1.0)).xyz;
 }
 
 // ---------------------------------------------------------------------------------
