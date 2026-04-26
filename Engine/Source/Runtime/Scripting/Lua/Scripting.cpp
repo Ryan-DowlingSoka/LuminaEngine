@@ -174,9 +174,11 @@ namespace Lumina::Lua
 
         ECSTable.SetFunction<&ECS::Utils::GetEntityLocation>("GetEntityLocation");
         ECSTable.SetFunction<&ECS::Utils::GetEntityRotation>("GetEntityRotation");
+        ECSTable.SetFunction<&ECS::Utils::GetEntityScale>("GetEntityScale");
 
         ECSTable.SetFunction<&ECS::Utils::SetEntityLocation>("SetEntityLocation");
         ECSTable.SetFunction<&ECS::Utils::SetEntityRotation>("SetEntityRotation");
+        ECSTable.SetFunction<&ECS::Utils::SetEntityScale>("SetEntityScale");
 
 
         

@@ -33,8 +33,11 @@ namespace Lumina::ECS::Utils
 	
 	RUNTIME_API glm::vec3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity);
 	RUNTIME_API glm::quat GetEntityRotation(FEntityRegistry& Registry, entt::entity Entity);
+	RUNTIME_API glm::vec3 GetEntityScale(FEntityRegistry& Registry, entt::entity Entity);
+
 	RUNTIME_API void SetEntityLocation(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Location);
 	RUNTIME_API void SetEntityRotation(FEntityRegistry& Registry, entt::entity Entity, const glm::quat& Rotation);
+	RUNTIME_API void SetEntityScale(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Scale);
 	
 	RUNTIME_API bool IsEntityValid(FEntityRegistry& Registry, entt::entity Entity);
 	

@@ -25,7 +25,13 @@ VSOutput VertexMain(
     FGPUInstance Inst        = GetInstance(Draw.InstanceID);
     float4x4     ModelMatrix = Inst.ModelMatrix;
 
-    uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + Draw.MeshletLocalIndex;
+    // Shadow VS uses the shadow LOD's meshlet range. The cull shader emitted
+    // (InstanceID, MeshletLocalIndex) where MeshletLocalIndex indexes into
+    // the *shadow* range, not the camera range -- so we must use
+    // ShadowMeshletOffset here, not SurfaceMeshletOffset. With ShadowLODBias
+    // > 0 this lets shadow draws iterate fewer / coarser meshlets than the
+    // base pass without shader-side branching.
+    uint GlobalMeshletIdx = Inst.ShadowMeshletOffset + Draw.MeshletLocalIndex;
     FMeshlet M = Inst.MeshletHeader.Meshlets[GlobalMeshletIdx];
 
     uint TriIdx = VertexIndex / 3u;

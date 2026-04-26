@@ -17,7 +17,19 @@ namespace Lumina
     // Hard cap on per-surface LODs. LOD 0 is full detail; subsequent LODs
     // are progressively simplified copies. CPU instance build picks one LOD
     // per instance per frame from a distance-to-radius ratio.
-    constexpr uint32 MAX_MESH_LODS              = 4;
+    //
+    // The default ladder mixes meshopt_simplify (topology-preserving) for
+    // the first four levels with meshopt_simplifySloppy (clustering) for
+    // the last two; sloppy lets us reach near-billboard triangle counts on
+    // distant geometry where silhouette is sub-pixel anyway.
+    constexpr uint32 MAX_MESH_LODS              = 6;
+
+    // Highest LOD the shadow / cascaded-shadow paths may use. Sloppy LODs
+    // (4, 5 in the default ladder) can introduce holes in the simplified
+    // topology -- harmless when seen at distance, but for shadow casters
+    // those holes turn into light leaks. Cap to topology-preserving LODs.
+    // Bump only if the LOD ladder no longer puts sloppy at >= this index.
+    constexpr uint32 MAX_SHADOW_LOD             = 3;
 
     // LoInt: meshlet's quantization origin in mesh-global grid units.
     // TriangleOffset is in dwords (3 micro-indices per dword).
@@ -122,16 +134,10 @@ namespace Lumina
         uint32  StartIndex = 0;
         int16   MaterialIndex = -1;
 
-        // LOD 0 range into FMeshResource::MeshletData.Meshlets. Mirrors
-        // LODMeshletOffset[0] / LODMeshletCount[0]; kept as standalone fields
-        // so non-LOD callers (thumbnails, debug rendering, legacy paths) keep
-        // working with no awareness of the LOD array.
-        uint32  MeshletOffset = 0;
-        uint32  MeshletCount  = 0;
-
-        // Per-LOD meshlet ranges. LOD 0 is full detail; LOD i (i>=1) covers
-        // simplified geometry produced by meshopt_simplify and packed into
-        // the same MeshletData arrays. NumLODs is at least 1.
+        // Per-LOD meshlet ranges into FMeshResource::MeshletData.Meshlets.
+        // LOD 0 is full detail; LOD i (i>=1) covers simplified geometry
+        // produced by meshopt_simplify and packed into the same MeshletData
+        // arrays. NumLODs is at least 1.
         uint32  NumLODs                              = 1;
         uint32  LODMeshletOffset[MAX_MESH_LODS]      = {};
         uint32  LODMeshletCount[MAX_MESH_LODS]       = {};
@@ -146,8 +152,6 @@ namespace Lumina
             Ar << Data.IndexCount;
             Ar << Data.StartIndex;
             Ar << Data.MaterialIndex;
-            Ar << Data.MeshletOffset;
-            Ar << Data.MeshletCount;
 
             return Ar;
         }

@@ -64,6 +64,8 @@ namespace Lumina
             uint32              EntityRecordIndex;
             uint32              SurfaceMeshletOffset;
             uint32              SurfaceMeshletCount;
+            uint32              ShadowMeshletOffset;
+            uint32              ShadowMeshletCount;
             EInstanceFlags      Flags;
             uint16              MaterialIndex;
             uint16              LocalBatchIndex;

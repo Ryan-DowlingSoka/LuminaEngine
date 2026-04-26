@@ -638,6 +638,12 @@ namespace Lumina::ECS::Utils
         return Transform ? Transform->GetWorldRotation() : glm::quat{};
     }
 
+    glm::vec3 GetEntityScale(FEntityRegistry& Registry, entt::entity Entity)
+    {
+        auto* Transform = Registry.try_get<STransformComponent>(Entity);
+        return Transform ? Transform->GetWorldScale() : glm::vec3{};
+    }
+
     void SetEntityLocation(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Location)
     {
         if (auto* Transform = Registry.try_get<STransformComponent>(Entity))
@@ -651,6 +657,14 @@ namespace Lumina::ECS::Utils
         if (auto* Transform = Registry.try_get<STransformComponent>(Entity))
         {
             Transform->SetRotation(Rotation);
+        }
+    }
+
+    void SetEntityScale(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Scale)
+    {
+        if (auto* Transform = Registry.try_get<STransformComponent>(Entity))
+        {
+            Transform->SetScale(Scale);
         }
     }
 

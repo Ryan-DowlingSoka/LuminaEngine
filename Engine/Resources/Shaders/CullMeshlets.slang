@@ -143,20 +143,23 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
 
     float4x4 Model = Inst.ModelMatrix;
 
+    // Camera-LOD bounds. Used by the camera view and any non-shadow view.
+    // Shadow-only views fetch their own bounds from the shadow LOD inside
+    // the per-view loop below, since the shadow LOD's meshlet at the same
+    // local index is a different geometric primitive with different bounds.
     uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + MeshletLocalIdx;
     FMeshletBounds Bounds = Inst.MeshletHeader.Bounds[GlobalMeshletIdx];
-
-    float3 WorldCenter = mul(Model, float4(Bounds.Center, 1.0)).xyz;
 
     float SqScaleX = dot(Model[0].xyz, Model[0].xyz);
     float SqScaleY = dot(Model[1].xyz, Model[1].xyz);
     float SqScaleZ = dot(Model[2].xyz, Model[2].xyz);
     float MaxScale = sqrt(max(SqScaleX, max(SqScaleY, SqScaleZ)));
-    float WorldRadius = Bounds.Radius * MaxScale;
 
-    float3 WorldApex = mul(Model, float4(Bounds.ConeApex, 1.0)).xyz;
-    float3 WorldAxis = normalize(mul((float3x3)Model, Bounds.ConeAxis));
-    bool   bHasCone  = Bounds.ConeCutoff < 1.0;
+    float3 WorldCenter = mul(Model, float4(Bounds.Center, 1.0)).xyz;
+    float  WorldRadius = Bounds.Radius * MaxScale;
+    float3 WorldApex   = mul(Model, float4(Bounds.ConeApex, 1.0)).xyz;
+    float3 WorldAxis   = normalize(mul((float3x3)Model, Bounds.ConeAxis));
+    bool   bHasCone    = Bounds.ConeCutoff < 1.0;
 
     uint DrawID = Inst.DrawID;
 
@@ -185,30 +188,57 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
                 continue;
         }
 
+        // Pick the bounds this view should test against. Shadow-only views
+        // test the shadow LOD's meshlet, which has its own (Center, Radius,
+        // Cone). Threads beyond the shadow LOD's per-instance count have
+        // no shadow meshlet at this local index -- skip the view entirely.
+        bool bShadowView = View.HasFlag(CULL_VIEW_FLAG_CAST_SHADOW_ONLY);
+
+        FMeshletBounds VBounds      = Bounds;
+        float3         VWorldCenter = WorldCenter;
+        float          VWorldRadius = WorldRadius;
+        float3         VWorldApex   = WorldApex;
+        float3         VWorldAxis   = WorldAxis;
+        bool           VHasCone     = bHasCone;
+
+        if (bShadowView)
+        {
+            if (MeshletLocalIdx >= Inst.ShadowMeshletCount)
+                continue;
+
+            uint ShadowGlobalIdx = Inst.ShadowMeshletOffset + MeshletLocalIdx;
+            VBounds      = Inst.MeshletHeader.Bounds[ShadowGlobalIdx];
+            VWorldCenter = mul(Model, float4(VBounds.Center, 1.0)).xyz;
+            VWorldRadius = VBounds.Radius * MaxScale;
+            VWorldApex   = mul(Model, float4(VBounds.ConeApex, 1.0)).xyz;
+            VWorldAxis   = normalize(mul((float3x3)Model, VBounds.ConeAxis));
+            VHasCone     = VBounds.ConeCutoff < 1.0;
+        }
+
         // Cone cull (skipped for skinned/two-sided/NoCull). Sun views test
         // against sun direction; camera/point/spot against apex-to-origin.
-        if (!bSkinned && !bNoCull && !bTwoSided && bHasCone && View.HasFlag(CULL_VIEW_FLAG_CONE))
+        if (!bSkinned && !bNoCull && !bTwoSided && VHasCone && View.HasFlag(CULL_VIEW_FLAG_CONE))
         {
             if (View.HasFlag(CULL_VIEW_FLAG_SUN_ALIGNED))
             {
                 float3 SunDir = GetSunDirection();
-                if (dot(SunDir, WorldAxis) <= -Bounds.ConeCutoff)
+                if (dot(SunDir, VWorldAxis) <= -VBounds.ConeCutoff)
                 {
                     continue;
                 }
             }
             else
             {
-                float3 ApexToOrigin    = WorldApex - View.ViewOrigin;
+                float3 ApexToOrigin    = VWorldApex - View.ViewOrigin;
                 float  ApexToOriginLen = length(ApexToOrigin);
-                if (dot(ApexToOrigin, WorldAxis) >= Bounds.ConeCutoff * ApexToOriginLen)
+                if (dot(ApexToOrigin, VWorldAxis) >= VBounds.ConeCutoff * ApexToOriginLen)
                     continue;
             }
         }
 
         if (!bSkinned && !bNoCull && View.HasFlag(CULL_VIEW_FLAG_FRUSTUM))
         {
-            if (!FrustumContainsSphere(View.FrustumPlanes, WorldCenter, WorldRadius))
+            if (!FrustumContainsSphere(View.FrustumPlanes, VWorldCenter, VWorldRadius))
                 continue;
         }
 

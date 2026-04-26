@@ -270,7 +270,11 @@ struct FGPUInstance
     float4                  SphereBounds;
 
     uint*                   VBAddress;
-    uint*                   _ReservedAddress;  // Layout pad.
+    // Shadow LOD's meshlet range. CullMeshlets uses these for shadow-only
+    // views; ShadowMappingVert reads ShadowMeshletOffset to locate the
+    // emitted meshlet. Camera-side passes keep using SurfaceMeshlet*.
+    uint                    ShadowMeshletOffset;
+    uint                    ShadowMeshletCount;
     FMeshletHeader*         MeshletHeader;
 
     private uint            DrawIDAndFlags;

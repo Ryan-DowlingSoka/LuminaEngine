@@ -15,6 +15,20 @@
 
 namespace Lumina
 {
+    // Sum the triangle counts of meshlets in [Offset, Offset + Count). Bounded
+    // by Meshlets.size() defensively so a malformed asset can't run off the
+    // end while we're rendering the editor UI.
+    static uint32 SumTrianglesInRange(const TVector<FMeshlet>& Meshlets, uint32 Offset, uint32 Count)
+    {
+        uint32 Tris = 0;
+        const uint32 End = glm::min(Offset + Count, (uint32)Meshlets.size());
+        for (uint32 m = Offset; m < End; ++m)
+        {
+            Tris += Meshlets[m].TriangleCount;
+        }
+        return Tris;
+    }
+
     FStaticMeshEditorTool::FStaticMeshEditorTool(IEditorToolContext* Context, CObject* InAsset)
         : FAssetEditorTool(Context, InAsset->GetName().c_str(), InAsset, NewObject<CWorld>())
     {
@@ -300,14 +314,24 @@ namespace Lumina
 
             {
                 // Preview combo: -1 = automatic, 0..MAX-1 = forced index.
-                const char* PreviewItems[MAX_MESH_LODS + 1] =
+                // Names built at runtime so the combo tracks MAX_MESH_LODS
+                // without a parallel hand-maintained string list.
+                char        LODNames[MAX_MESH_LODS][24];
+                const char* PreviewItems[MAX_MESH_LODS + 1];
+                PreviewItems[0] = "Automatic (distance)";
+                for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
                 {
-                    "Automatic (distance)",
-                    "LOD 0 (full detail)",
-                    "LOD 1",
-                    "LOD 2",
-                    "LOD 3",
-                };
+                    if (i == 0)
+                    {
+                        snprintf(LODNames[i], sizeof(LODNames[i]), "LOD %u (full detail)", i);
+                    }
+                    else
+                    {
+                        snprintf(LODNames[i], sizeof(LODNames[i]), "LOD %u", i);
+                    }
+                    PreviewItems[i + 1] = LODNames[i];
+                }
+
                 int PreviewItem = (PreviewLODIndex < 0) ? 0 : PreviewLODIndex + 1;
                 ImGui::SetNextItemWidth(220.0f);
                 if (ImGui::Combo("Preview LOD", &PreviewItem, PreviewItems, IM_ARRAYSIZE(PreviewItems)))
@@ -329,16 +353,10 @@ namespace Lumina
             {
                 for (uint32 lod = 0; lod < Surface.NumLODs; ++lod)
                 {
-                    const uint32 MOff = Surface.LODMeshletOffset[lod];
                     const uint32 MCnt = Surface.LODMeshletCount[lod];
-                    LODAggMeshlets[lod] += MCnt;
-                    LODAggSurfaces[lod] += (MCnt > 0) ? 1u : 0u;
-
-                    const uint32 End = MOff + MCnt;
-                    for (uint32 m = MOff; m < End && m < Resource.MeshletData.Meshlets.size(); ++m)
-                    {
-                        LODAggTriangles[lod] += Resource.MeshletData.Meshlets[m].TriangleCount;
-                    }
+                    LODAggMeshlets[lod]  += MCnt;
+                    LODAggSurfaces[lod]  += (MCnt > 0) ? 1u : 0u;
+                    LODAggTriangles[lod] += SumTrianglesInRange(Resource.MeshletData.Meshlets, Surface.LODMeshletOffset[lod], MCnt);
                 }
             }
 
@@ -386,26 +404,22 @@ namespace Lumina
 
             // Aggregate threshold editor. Most assets share the same threshold
             // ramp across surfaces, so editing once here writes to every
-            // surface in lockstep -- much faster than expanding each surface
-            // to tweak separately. Per-surface customization still works via
+            // surface in lockstep. Per-surface customization still works via
             // the surface details panel below.
+            if (!Resource.GeometrySurfaces.empty())
             {
-                static float SharedThresholds[MAX_MESH_LODS] = { 0.0f, 8.0f, 16.0f, 32.0f };
-                if (!Resource.GeometrySurfaces.empty())
+                float SharedThresholds[MAX_MESH_LODS];
+                for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
                 {
-                    for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
-                    {
-                        SharedThresholds[i] = Resource.GeometrySurfaces[0].LODScreenThreshold[i];
-                    }
+                    SharedThresholds[i] = Resource.GeometrySurfaces[0].LODScreenThreshold[i];
                 }
 
                 bool bThresholdChanged = false;
-                if (ImGui::BeginTable("##LODThresholds", 3,
+                if (ImGui::BeginTable("##LODThresholds", 2,
                     ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
                 {
                     ImGui::TableSetupColumn("LOD",       ImGuiTableColumnFlags_WidthFixed, 50.0f);
                     ImGui::TableSetupColumn("Threshold", ImGuiTableColumnFlags_WidthStretch);
-                    ImGui::TableSetupColumn("Notes",     ImGuiTableColumnFlags_WidthFixed, 220.0f);
                     ImGui::TableHeadersRow();
 
                     for (uint32 lod = 0; lod < MAX_MESH_LODS; ++lod)
@@ -419,43 +433,27 @@ namespace Lumina
                         ImGui::TableSetColumnIndex(0); ImGui::Text("%u", lod);
                         ImGui::TableSetColumnIndex(1);
 
-                        ImGui::PushID((int)lod);
-                        ImGui::SetNextItemWidth(-FLT_MIN);
-
                         if (lod == 0)
                         {
                             ImGui::TextDisabled("0  (always active)");
+                            continue;
                         }
-                        else
+
+                        ImGui::PushID((int)lod);
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+
+                        float Value = SharedThresholds[lod];
+                        // Min clamp = previous LOD's threshold + epsilon to
+                        // keep the ramp monotonic. The pick loop's
+                        // "first-miss-wins" rule degenerates without it.
+                        const float MinValue = SharedThresholds[lod - 1] + 0.01f;
+                        if (ImGui::DragFloat("##Threshold", &Value, 0.5f, MinValue, 1024.0f, "%.2f"))
                         {
-                            float Value = SharedThresholds[lod];
-                            // Min clamp = previous LOD's threshold + tiny
-                            // epsilon to keep the ramp monotonic. Avoids the
-                            // pick loop's "first miss wins" rule degenerating.
-                            const float MinValue = SharedThresholds[lod - 1] + 0.01f;
-                            if (ImGui::DragFloat("##Threshold", &Value, 0.5f, MinValue, 1024.0f, "%.2f"))
-                            {
-                                SharedThresholds[lod] = glm::max(Value, MinValue);
-                                bThresholdChanged = true;
-                            }
+                            SharedThresholds[lod] = glm::max(Value, MinValue);
+                            bThresholdChanged = true;
                         }
 
                         ImGui::PopID();
-
-                        ImGui::TableSetColumnIndex(2);
-                        if (lod == 0)
-                        {
-                            ImGui::TextDisabled("close-up");
-                        }
-                        else
-                        {
-                            // Approximate screen-coverage hint: at threshold T,
-                            // the radius covers ~ 1 / T of the view's screen-
-                            // height tangent (for a 60-deg fov ~ tan(30) = 0.577).
-                            // It's a rough number, but it gives the user a feel.
-                            const float ApproxScreenPct = 100.0f / glm::max(1.0f, SharedThresholds[lod]);
-                            ImGui::TextDisabled("~%.1f%% screen size", ApproxScreenPct);
-                        }
                     }
                     ImGui::EndTable();
                 }
@@ -500,11 +498,12 @@ namespace Lumina
                     CMaterialInterface* Mat        = StaticMesh->GetMaterialAtSlot((size_t)Surface.MaterialIndex);
                     const FString       MaterialName = IsValid(Mat) ? Mat->GetName().ToString() : FString("(none)");
 
-                    const bool bSelected = ((int32)i == SelectedSurfaceIndex);
-                    FString    Label     = "Surface " + eastl::to_string(i)
-                                         + "  |  " + MaterialName
-                                         + "  |  " + eastl::to_string(Surface.IndexCount / 3) + " tris, "
-                                         + eastl::to_string(Surface.MeshletCount) + " meshlets";
+                    const bool   bSelected     = ((int32)i == SelectedSurfaceIndex);
+                    const uint32 LOD0Meshlets  = Surface.LODMeshletCount[0];
+                    FString      Label         = "Surface " + eastl::to_string(i)
+                                               + "  |  " + MaterialName
+                                               + "  |  " + eastl::to_string(Surface.IndexCount / 3) + " tris, "
+                                               + eastl::to_string(LOD0Meshlets) + " meshlets";
 
                     if (ImGui::Selectable(Label.c_str(), bSelected, ImGuiSelectableFlags_SpanAllColumns))
                     {
@@ -528,14 +527,16 @@ namespace Lumina
                                 ImGui::TextUnformatted(value.c_str());
                             };
 
+                            const uint32 LOD0Off = Surface.LODMeshletOffset[0];
+                            const uint32 LOD0Cnt = Surface.LODMeshletCount[0];
+
                             DetailRow("Material:",       MaterialName);
                             DetailRow("Material Index:", eastl::to_string(Surface.MaterialIndex));
                             DetailRow("Start Index:",    eastl::to_string(Surface.StartIndex));
                             DetailRow("Index Count:",    eastl::to_string(Surface.IndexCount));
                             DetailRow("Triangles:",      eastl::to_string(Surface.IndexCount / 3));
-                            DetailRow("LOD 0 Range:",    eastl::to_string(Surface.MeshletOffset)
-                                                       + " .. " + eastl::to_string(Surface.MeshletOffset + Surface.MeshletCount));
-                            DetailRow("LOD 0 Meshlets:", eastl::to_string(Surface.MeshletCount));
+                            DetailRow("LOD 0 Range:",    eastl::to_string(LOD0Off) + " .. " + eastl::to_string(LOD0Off + LOD0Cnt));
+                            DetailRow("LOD 0 Meshlets:", eastl::to_string(LOD0Cnt));
                             DetailRow("LOD Levels:",     eastl::to_string(Surface.NumLODs));
 
                             ImGui::EndTable();
@@ -556,21 +557,14 @@ namespace Lumina
                             ImGui::TableSetupColumn("Threshold", ImGuiTableColumnFlags_WidthFixed, 120.0f);
                             ImGui::TableHeadersRow();
 
-                            FMeshResource&         ResourceRW = StaticMesh->GetMeshResource();
-                            FGeometrySurface&      SurfaceRW  = ResourceRW.GeometrySurfaces[i];
-                            const TVector<FMeshlet>& Meshlets2 = ResourceRW.MeshletData.Meshlets;
+                            FGeometrySurface&        SurfaceRW = Resource.GeometrySurfaces[i];
+                            const TVector<FMeshlet>& MeshletsRef = Resource.MeshletData.Meshlets;
 
                             for (uint32 lod = 0; lod < SurfaceRW.NumLODs; ++lod)
                             {
                                 const uint32 MOff = SurfaceRW.LODMeshletOffset[lod];
                                 const uint32 MCnt = SurfaceRW.LODMeshletCount[lod];
-
-                                uint32 Tris = 0;
-                                const uint32 End = MOff + MCnt;
-                                for (uint32 m = MOff; m < End && m < Meshlets2.size(); ++m)
-                                {
-                                    Tris += Meshlets2[m].TriangleCount;
-                                }
+                                const uint32 Tris = SumTrianglesInRange(MeshletsRef, MOff, MCnt);
 
                                 ImGui::TableNextRow();
                                 ImGui::TableSetColumnIndex(0); ImGui::Text("%u", lod);

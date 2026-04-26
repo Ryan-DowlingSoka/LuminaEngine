@@ -232,6 +232,14 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
 
     float RefDepth = CurrentDepth - Bias;
 
+    // Outer cascades cover proportionally more world per shadow texel, so a
+    // fixed-UV kernel under-blurs them and texel-boundary blockiness shows
+    // through. Scale the search and the filter cap by the same factor so
+    // outer cascades blur to a wider, scene-proportional penumbra. The
+    // multiplier is a single tuning knob (smaller = sharper outer shadows
+    // but more blockiness, larger = softer but distant edges lose contact).
+    float CascadeScale = 1.0 + 1.5 * float(CascadeIndex);
+
     // --- Stage 1: blocker search -------------------------------------------------
     //
     // Tap the shadow map through the *point* sampler at binding 16 so each
@@ -242,9 +250,7 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     float BlockerDepthSum = 0.0;
     int   NumBlockers     = 0;
 
-    // Outer cascades cover much more world-space per UV, so scale the search
-    // radius a little to keep it roughly scene-proportional.
-    float SearchRadius = PCSS_BlockerSearchRadius * (1.0 + 0.4 * float(CascadeIndex));
+    float SearchRadius = PCSS_BlockerSearchRadius * CascadeScale;
 
     [unroll]
     for (int s = 0; s < PCSS_BLOCKER_SEARCH_TAPS; ++s)
@@ -277,7 +283,8 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     // shrinks to PCSS_MinFilterRadius, keeping the edge glued to the mesh.
     float DepthDelta   = max(CurrentDepth - AvgBlockerDepth, 0.0);
     float Penumbra     = DepthDelta * PCSS_LightSize;
-    float FilterRadius = clamp(Penumbra, PCSS_MinFilterRadius, PCSS_MaxFilterRadius);
+    float MaxRadius    = PCSS_MaxFilterRadius * CascadeScale;
+    float FilterRadius = clamp(Penumbra, PCSS_MinFilterRadius, MaxRadius);
 
     // Low blocker coverage means partial occlusion, so pull the filter in
     // slightly to keep penumbra stable across cascades.

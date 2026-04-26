@@ -1061,6 +1061,42 @@ namespace Lumina
         return Picked;
     }
 
+    // Resolve the LOD that should drive this instance's meshlet range.
+    // Component override beats global setting, both clamped to what the
+    // surface actually has. NumLODs<=1 short-circuits to LOD 0 for
+    // assets without a simplification ladder.
+    static uint32 ResolveSurfaceLOD(const FGeometrySurface& Surface, int32 ForcedLODIndex, bool bUseLODs, float DistanceOverRadius)
+    {
+        if (Surface.NumLODs <= 1)
+        {
+            return 0u;
+        }
+        if (ForcedLODIndex >= 0)
+        {
+            return (uint32)glm::min((int32)Surface.NumLODs - 1, ForcedLODIndex);
+        }
+        if (bUseLODs)
+        {
+            return SelectLODIndex(Surface, DistanceOverRadius);
+        }
+        return 0u;
+    }
+
+    // Pick the surface's shadow-only LOD. Camera LOD plus ShadowLODBias,
+    // capped at MAX_SHADOW_LOD so sloppy LODs are never selected for
+    // shadows -- their topology breaks would surface as light leaks
+    // through what should be solid casters.
+    static uint32 ResolveShadowLOD(const FGeometrySurface& Surface, uint32 CameraLOD, int32 ShadowLODBias)
+    {
+        if (Surface.NumLODs == 0)
+        {
+            return 0u;
+        }
+        const int32 Biased = (int32)CameraLOD + ShadowLODBias;
+        const int32 MaxLOD = (int32)glm::min<uint32>(Surface.NumLODs - 1u, MAX_SHADOW_LOD);
+        return (uint32)glm::clamp(Biased, 0, MaxLOD);
+    }
+
     void FForwardRenderScene::ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local)
     {
         CMesh* Mesh = MeshComponent.StaticMesh;
@@ -1155,29 +1191,19 @@ namespace Lumina
                 .bMasked          = (uint32)(Slot.bMasked          ? 1u : 0u),
                 .bAdditive        = (uint32)(Slot.bAdditive        ? 1u : 0u),
             };
-            // CPU-side LOD pick. The chosen meshlet range replaces the LOD0
-            // (Surface.MeshletOffset/Count) range -- it lives in the same
-            // per-mesh buffers, just at a different slice. Smaller ranges
-            // shrink TotalMeshletBound, which directly cuts cull-pass cost.
-            // ForcedLODIndex (-1 default) lets the mesh editor preview a
-            // specific LOD on the active instance regardless of distance.
-            uint32 LODIndex = 0u;
-            if (Surface.NumLODs > 1)
-            {
-                if (MeshComponent.ForcedLODIndex >= 0)
-                {
-                    LODIndex = (uint32)glm::min((int32)Surface.NumLODs - 1, MeshComponent.ForcedLODIndex);
-                }
-                else if (RenderSettings.bUseLODs)
-                {
-                    LODIndex = SelectLODIndex(Surface, DistanceOverRadius);
-                }
-            }
+            // CPU-side LOD pick. The chosen meshlet range -- a slice of the
+            // same per-mesh buffers -- replaces LOD 0 in the instance.
+            // Smaller ranges shrink TotalMeshletBound, which directly cuts
+            // cull-pass cost.
+            const uint32 LODIndex       = ResolveSurfaceLOD(Surface, MeshComponent.ForcedLODIndex, RenderSettings.bUseLODs, DistanceOverRadius);
+            const uint32 ShadowLODIndex = ResolveShadowLOD(Surface, LODIndex, RenderSettings.ShadowLODBias);
 
             // Zero SurfaceMeshletCount when no header was uploaded so the cull
             // shader's MeshletHeader deref is gated.
-            const uint32 SurfaceMeshletCount  = MeshletHeaderAddress ? Surface.LODMeshletCount[LODIndex]  : 0u;
+            const uint32 SurfaceMeshletCount  = MeshletHeaderAddress ? Surface.LODMeshletCount[LODIndex]       : 0u;
             const uint32 SurfaceMeshletOffset = Surface.LODMeshletOffset[LODIndex];
+            const uint32 ShadowMeshletCount   = MeshletHeaderAddress ? Surface.LODMeshletCount[ShadowLODIndex] : 0u;
+            const uint32 ShadowMeshletOffset  = Surface.LODMeshletOffset[ShadowLODIndex];
 
             const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot.VertexShader, Slot.PixelShader);
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
@@ -1186,6 +1212,8 @@ namespace Lumina
             Item.EntityRecordIndex    = EntityRecordIdx;
             Item.SurfaceMeshletOffset = SurfaceMeshletOffset;
             Item.SurfaceMeshletCount  = SurfaceMeshletCount;
+            Item.ShadowMeshletOffset  = ShadowMeshletOffset;
+            Item.ShadowMeshletCount   = ShadowMeshletCount;
             Item.Flags                = Flags;
             Item.MaterialIndex        = Slot.MaterialIdx;
             Item.LocalBatchIndex      = LocalBatchIdx;
@@ -1280,25 +1308,17 @@ namespace Lumina
                 .bMasked          = (uint32)(Slot.bMasked          ? 1u : 0u),
                 .bAdditive        = (uint32)(Slot.bAdditive        ? 1u : 0u),
             };
-            // CPU-side LOD pick; mirrors the static path. Skinned bounds are
-            // bind-pose so the threshold is a coarse approximation when a
-            // large animation pushes geometry well outside the AABB, but
-            // BoundsScale on the component already handles those cases.
-            uint32 LODIndex = 0u;
-            if (Surface.NumLODs > 1)
-            {
-                if (MeshComponent.ForcedLODIndex >= 0)
-                {
-                    LODIndex = (uint32)glm::min((int32)Surface.NumLODs - 1, MeshComponent.ForcedLODIndex);
-                }
-                else if (RenderSettings.bUseLODs)
-                {
-                    LODIndex = SelectLODIndex(Surface, DistanceOverRadius);
-                }
-            }
+            // CPU-side LOD pick; same resolution rules as the static path.
+            // Skinned bounds are bind-pose so the threshold is approximate
+            // when a large animation pushes geometry well outside the AABB,
+            // but BoundsScale on the component already handles those cases.
+            const uint32 LODIndex       = ResolveSurfaceLOD(Surface, MeshComponent.ForcedLODIndex, RenderSettings.bUseLODs, DistanceOverRadius);
+            const uint32 ShadowLODIndex = ResolveShadowLOD(Surface, LODIndex, RenderSettings.ShadowLODBias);
 
-            const uint32 SurfaceMeshletCount  = MeshletHeaderAddress ? Surface.LODMeshletCount[LODIndex]  : 0u;
+            const uint32 SurfaceMeshletCount  = MeshletHeaderAddress ? Surface.LODMeshletCount[LODIndex]       : 0u;
             const uint32 SurfaceMeshletOffset = Surface.LODMeshletOffset[LODIndex];
+            const uint32 ShadowMeshletCount   = MeshletHeaderAddress ? Surface.LODMeshletCount[ShadowLODIndex] : 0u;
+            const uint32 ShadowMeshletOffset  = Surface.LODMeshletOffset[ShadowLODIndex];
 
             const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot.VertexShader, Slot.PixelShader);
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
@@ -1307,6 +1327,8 @@ namespace Lumina
             Item.EntityRecordIndex    = EntityRecordIdx;
             Item.SurfaceMeshletOffset = SurfaceMeshletOffset;
             Item.SurfaceMeshletCount  = SurfaceMeshletCount;
+            Item.ShadowMeshletOffset  = ShadowMeshletOffset;
+            Item.ShadowMeshletCount   = ShadowMeshletCount;
             Item.Flags                = Flags;
             Item.MaterialIndex        = Slot.MaterialIdx;
             Item.LocalBatchIndex      = LocalBatchIdx;
@@ -1564,7 +1586,8 @@ namespace Lumina
                         Out.Transform                  = Entity.Transform;
                         Out.SphereBounds               = Entity.SphereBounds;
                         Out.VBAddress                  = 0ull;
-                        Out._ReservedAddress           = 0ull;
+                        Out.ShadowMeshletOffset        = Item.ShadowMeshletOffset;
+                        Out.ShadowMeshletCount         = Item.ShadowMeshletCount;
                         Out.MeshletHeaderAddress       = Entity.MeshletHeaderAddress;
                         Out.DrawIDAndFlags             = PackDrawIDAndFlags(GlobalDraw, Item.Flags);
                         Out.SurfaceMeshletOffset       = Item.SurfaceMeshletOffset;

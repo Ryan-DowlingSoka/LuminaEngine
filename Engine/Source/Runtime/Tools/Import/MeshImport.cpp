@@ -1,5 +1,3 @@
-#include <algorithm>
-
 #include "PCH.h"
 #include "ImportHelpers.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
@@ -87,20 +85,45 @@ namespace Lumina::Import::Mesh
 
     namespace
     {
-        // Default ratios (vs LOD0 index count) for the simplification ladder.
-        // 50% / 25% / 12.5% triangles is the textbook ramp; meshopt's
-        // welded-collapse simplifier keeps surface direction surprisingly
-        // well at these targets so the silhouette holds at typical viewing
-        // distances.
-        constexpr float kLODRatios[MAX_MESH_LODS]            = { 1.0f, 0.5f, 0.25f, 0.125f };
-        // distance/radius ratio at which each LOD becomes the chosen LOD.
-        // index 0 unused (LOD 0 is the default). 8/16/32 means LOD 1 kicks
-        // in at ~12% of screen, LOD 2 at ~6%, LOD 3 at ~3%.
-        constexpr float kLODScreenThresholds[MAX_MESH_LODS]  = { 0.0f, 8.0f, 16.0f, 32.0f };
-        // Target error fed to meshopt_simplify (model-AABB-relative). Larger
-        // values let the simplifier hit lower index counts on noisy meshes
-        // at the cost of silhouette fidelity.
-        constexpr float kLODTargetError                      = 0.05f;
+        struct FLODSettings
+        {
+            // Target index count as a fraction of LOD 0's index count.
+            float Ratio;
+            // distance/radius ratio at which this LOD becomes active. Index
+            // 0 is unused (LOD 0 is the default). Ramp must be monotonic.
+            float Threshold;
+            // Target error fed to the simplifier (model-AABB-relative).
+            // Sloppy LODs use much higher error to actually hit the target.
+            float TargetError;
+            // True = use meshopt_simplifySloppy (clustering, topology-
+            // breaking). False = use meshopt_simplify (edge-collapse,
+            // topology-preserving).
+            bool  bSloppy;
+        };
+
+        // The LOD ladder. First four levels are topology-preserving and
+        // hold up under typical viewing distances; the last two use sloppy
+        // simplification to reach near-billboard triangle counts at
+        // distances where silhouette accuracy is invisible anyway.
+        //
+        // 50% / 25% / 12.5% is the textbook regular-simplify ramp.
+        // 3% / 0.5% are sloppy targets -- regular simplify would bail out
+        // on the 95% progress floor long before hitting these.
+        constexpr FLODSettings kLODs[MAX_MESH_LODS] =
+        {
+            { 1.0f,     0.0f,  0.05f, false },  // LOD 0 -- full detail
+            { 0.5f,     8.0f,  0.05f, false },  // LOD 1
+            { 0.25f,   16.0f,  0.05f, false },  // LOD 2
+            { 0.125f,  32.0f,  0.05f, false },  // LOD 3
+            { 0.03f,   64.0f,  0.50f, true  },  // LOD 4 (sloppy, distant)
+            { 0.005f, 128.0f,  1.00f, true  },  // LOD 5 (sloppy, near-quad)
+        };
+
+        // Sloppy simplification can degenerate to a few triangles or even
+        // zero. Below this index floor (= ~5 tris) we treat the LOD as
+        // unusable and stop the per-surface ladder; the renderer will fall
+        // back to the next-coarsest available LOD on those surfaces.
+        constexpr size_t kLODMinIndices = 15u;
 
         struct FSurfaceMeshletResult
         {
@@ -225,9 +248,7 @@ namespace Lumina::Import::Mesh
         {
             for (FGeometrySurface& Section : MeshResource.GeometrySurfaces)
             {
-                Section.MeshletOffset = 0;
-                Section.MeshletCount  = 0;
-                Section.NumLODs       = 1;
+                Section.NumLODs = 1;
                 for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
                 {
                     Section.LODMeshletOffset[i]   = 0;
@@ -290,37 +311,55 @@ namespace Lumina::Import::Mesh
 
             for (uint32 lod = 1; lod < MAX_MESH_LODS; ++lod)
             {
-                // Target index count, snapped to a multiple of 3 (must be
-                // whole triangles). meshopt clamps internally too, but we
-                // also reject anything below a 2-triangle floor.
-                size_t TargetIndices = (size_t)((float)Section.IndexCount * kLODRatios[lod]);
+                const FLODSettings& Cfg = kLODs[lod];
+
+                // Target index count, snapped to a multiple of 3 (whole
+                // triangles). Floor at kLODMinIndices so sloppy LODs don't
+                // collapse to zero on tiny surfaces.
+                size_t TargetIndices = (size_t)((float)Section.IndexCount * Cfg.Ratio);
                 TargetIndices = (TargetIndices / 3u) * 3u;
-                if (TargetIndices < 6u)
+                if (TargetIndices < kLODMinIndices)
                 {
                     break;
                 }
 
-                float ResultError = 0.0f;
-                const size_t NewCount = meshopt_simplify(
-                    Simplified.data(),
-                    SurfaceIndices, Section.IndexCount,
-                    VertexPositions, NumVertices, VertexSize,
-                    TargetIndices, kLODTargetError,
-                    meshopt_SimplifyLockBorder,
-                    &ResultError);
+                float        ResultError = 0.0f;
+                const size_t NewCount    = Cfg.bSloppy
+                    ? meshopt_simplifySloppy(
+                        Simplified.data(),
+                        SurfaceIndices, Section.IndexCount,
+                        VertexPositions, NumVertices, VertexSize,
+                        nullptr, // vertex_lock
+                        TargetIndices, Cfg.TargetError,
+                        &ResultError)
+                    : meshopt_simplify(
+                        Simplified.data(),
+                        SurfaceIndices, Section.IndexCount,
+                        VertexPositions, NumVertices, VertexSize,
+                        TargetIndices, Cfg.TargetError,
+                        meshopt_SimplifyLockBorder,
+                        &ResultError);
 
-                // Bail out once the simplifier stops making meaningful
-                // progress -- duplicating LOD0 burns memory and bandwidth.
-                // A 5% reduction floor catches the "topology forced us to
-                // stop" case where the next ratio would also fail.
-                if (NewCount < 6u || (float)NewCount > (float)LastIndexCount * 0.95f)
+                if (NewCount < kLODMinIndices)
+                {
+                    break;
+                }
+
+                // Topology-preserving simplify can hit a hard floor where
+                // the next ratio also won't help; the 5% progress check
+                // catches that case so we stop emitting near-duplicates of
+                // the previous LOD. Sloppy can't get stuck the same way --
+                // it always reaches its target -- so this gate is regular-
+                // only.
+                if (!Cfg.bSloppy && (float)NewCount > (float)LastIndexCount * 0.95f)
                 {
                     break;
                 }
                 LastIndexCount = NewCount;
 
                 // Restore vertex-cache locality on the simplified output;
-                // simplification reorders triangles by collapse priority.
+                // both simplifiers reorder triangles by collapse / cluster
+                // priority, leaving fetch patterns ugly.
                 meshopt_optimizeVertexCache(
                     Simplified.data(),
                     Simplified.data(),
@@ -411,13 +450,12 @@ namespace Lumina::Import::Mesh
             MeshResource.MeshletData.MeshletVertices.reserve(TotalVertices);
         }
 
-        // Initialize per-surface LOD descriptors. Defaults: LOD 0 active,
-        // higher LODs marked unavailable (FLT_MAX threshold).
+        // Initialize per-surface LOD descriptors. NumLODs grows monotonically
+        // in the pack loop below; unused slots keep their FLT_MAX threshold
+        // so the renderer's "first-miss-wins" pick can never select them.
         for (FGeometrySurface& Section : MeshResource.GeometrySurfaces)
         {
-            Section.NumLODs       = 1;
-            Section.MeshletOffset = 0;
-            Section.MeshletCount  = 0;
+            Section.NumLODs = 0;
             for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
             {
                 Section.LODMeshletOffset[i]   = 0;
@@ -426,10 +464,9 @@ namespace Lumina::Import::Mesh
             }
         }
 
-        // Phase 3: serial pack. Iterate LOD-major so the legacy
-        // (MeshletOffset, MeshletCount) range that mirrors LOD 0 is at the
-        // front of the buffer -- keeps any code that reads only those
-        // legacy fields well-defined.
+        // Phase 3: serial pack. Iterate LOD-major so LOD 0 across all
+        // surfaces lands at the front of the meshlet buffer -- compact, and
+        // makes hot-path (LOD 0) accesses contiguous in memory.
         for (uint32 lod = 0; lod < MAX_MESH_LODS; ++lod)
         {
             for (uint32 SurfaceIdx = 0; SurfaceIdx < NumSurfaces; ++SurfaceIdx)
@@ -437,35 +474,16 @@ namespace Lumina::Import::Mesh
                 FGeometrySurface&      Section = MeshResource.GeometrySurfaces[SurfaceIdx];
                 FSurfaceMeshletResult& Result  = Results[lod * NumSurfaces + SurfaceIdx];
 
+                // bHasData is set only for the dense run [0, PerSurfaceNumLODs[s]).
                 if (!Result.bHasData)
                 {
                     continue;
                 }
 
-                // Surfaces that bailed out earlier than this LOD index
-                // shouldn't have it counted. Guard against simplification
-                // succeeding non-monotonically (e.g. LOD 1 fails but LOD 2
-                // happens to fit); we treat per-surface NumLODs as a dense
-                // run from 0 to PerSurfaceNumLODs[i].
-                if (lod >= PerSurfaceNumLODs[SurfaceIdx])
-                {
-                    continue;
-                }
-
-                const uint32 LODOffset = (uint32)MeshResource.MeshletData.Meshlets.size();
-                const uint32 LODCount  = (uint32)Result.OutMeshlets.size();
-
-                Section.LODMeshletOffset[lod] = LODOffset;
-                Section.LODMeshletCount[lod]  = LODCount;
-                Section.LODScreenThreshold[lod] = kLODScreenThresholds[lod];
-
-                if (lod == 0)
-                {
-                    Section.MeshletOffset = LODOffset;
-                    Section.MeshletCount  = LODCount;
-                }
-
-                Section.NumLODs = std::max(lod + 1u, Section.NumLODs);
+                Section.LODMeshletOffset[lod]   = (uint32)MeshResource.MeshletData.Meshlets.size();
+                Section.LODMeshletCount[lod]    = (uint32)Result.OutMeshlets.size();
+                Section.LODScreenThreshold[lod] = kLODs[lod].Threshold;
+                Section.NumLODs                 = lod + 1u;
 
                 for (size_t MeshletIdx = 0; MeshletIdx < Result.OutMeshlets.size(); ++MeshletIdx)
                 {

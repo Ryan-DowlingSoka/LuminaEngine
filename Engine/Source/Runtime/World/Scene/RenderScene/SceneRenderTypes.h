@@ -479,7 +479,15 @@ namespace Lumina
         glm::vec4       SphereBounds;
 
         uint64          VBAddress;
-        uint64          _ReservedAddress;
+        // Shadow LOD's meshlet range. Lives per-instance because LOD ranges
+        // are per-*surface* (not per-mesh), and an FGPUInstance already
+        // corresponds 1:1 with a (entity, surface) pair -- so this is the
+        // place the per-surface data lives. Occupies a slot that used to
+        // hold a reserved BDA; total instance size unchanged. The cull
+        // shader uses these for shadow-only views; the camera path keeps
+        // using SurfaceMeshlet*.
+        uint32          ShadowMeshletOffset;
+        uint32          ShadowMeshletCount;
         uint64          MeshletHeaderAddress;
 
         uint32          DrawIDAndFlags;
@@ -677,6 +685,14 @@ namespace Lumina
         // for A/B comparisons or pinning quality regardless of camera
         // distance. The actual LOD ladder is baked at import time.
         uint8 bUseLODs:1                = true;
+
+        // Bias added to each instance's camera LOD to pick its shadow LOD.
+        // Shadow casters render at this offset for cascaded / point / spot
+        // shadow passes. Capped at MAX_SHADOW_LOD so sloppy LODs never reach
+        // shadows (their topology breaks would manifest as light leaks).
+        // 0 = use the same LOD as the camera (no shadow saving).
+        // 1-2 = typical sweet spot.
+        int8  ShadowLODBias             = 1;
     };
     
 }
