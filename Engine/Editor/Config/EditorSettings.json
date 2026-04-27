@@ -3,7 +3,9 @@
         "ContentBrowser": {
             "TileSize": 136.5
         },
-        "RecentProjects": [],
+        "RecentProjects": [
+            "Sandbox"
+        ],
         "StartupProject": "NULL",
         "WorldEditorTool": {
             "GuizmoSnapEnabled": false,

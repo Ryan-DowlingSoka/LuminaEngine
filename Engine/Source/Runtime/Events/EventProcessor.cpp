@@ -12,13 +12,17 @@ namespace Lumina
             LOG_ERROR("Event Handler Already Registered!");
             return;
         }
-        
+
         EventHandlers.push_back(InHandler);
     }
 
     void FEventProcessor::UnregisterEventHandler(IEventHandler* InHandler)
     {
-        EventHandlers.push_back(InHandler);
+        auto It = eastl::find(EventHandlers.begin(), EventHandlers.end(), InHandler);
+        if (It != EventHandlers.end())
+        {
+            EventHandlers.erase(It);
+        }
     }
 
     void FEventProcessor::Clear()
@@ -26,14 +30,50 @@ namespace Lumina
         EventHandlers.clear();
     }
 
+    void FEventProcessor::SetInputMode(EInputMode Mode)
+    {
+        InputMode = Mode;
+    }
+
+    bool FEventProcessor::ShouldRouteTo(IEventHandler* Handler) const
+    {
+        const EInputCategory Category = Handler->GetInputCategory();
+        if (Category == EInputCategory::Editor)
+        {
+            return true;
+        }
+
+        switch (InputMode)
+        {
+        case EInputMode::Game:      return Category == EInputCategory::Game;
+        case EInputMode::UI:        return Category == EInputCategory::UI;
+        case EInputMode::GameAndUI: return true;
+        }
+        return false;
+    }
+
     void FEventProcessor::DispatchEvent(FEvent& Event)
     {
+        // GameAndUI: UI gets first crack so it can intercept before game.
+        if (InputMode == EInputMode::GameAndUI)
+        {
+            for (IEventHandler* Handler : EventHandlers)
+            {
+                if (Handler->GetInputCategory() != EInputCategory::UI) continue;
+                if (Handler->OnEvent(Event)) return;
+            }
+            for (IEventHandler* Handler : EventHandlers)
+            {
+                if (Handler->GetInputCategory() == EInputCategory::UI) continue;
+                if (Handler->OnEvent(Event)) return;
+            }
+            return;
+        }
+
         for (IEventHandler* Handler : EventHandlers)
         {
-            if (Handler->OnEvent(Event))
-            {
-                break;
-            }
+            if (!ShouldRouteTo(Handler)) continue;
+            if (Handler->OnEvent(Event)) return;
         }
     }
 }

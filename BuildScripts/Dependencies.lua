@@ -128,6 +128,21 @@ function LuminaConfig.CopyFile(Source, Destination)
     return "{COPYFILE} " .. Quote(Source) .. " " .. Quote(Destination)
 end
 
+-- Same as CopyFile but suppresses failure (returns success even if the copy
+-- bombed). Use this for stable third-party DLLs (slang, aftermath) that may
+-- be locked by an already-running editor when packaging triggers a Game
+-- build. The locked DLL is the same version we'd be copying anyway, so
+-- silently succeeding is the right behavior.
+function LuminaConfig.CopyFileIgnoreErrors(Source, Destination)
+    if not Source or not Destination then
+        error("CopyFileIgnoreErrors requires source and Destination")
+    end
+
+    local Quote = function(s) return "\"" .. s .. "\"" end
+
+    return "{COPYFILE} " .. Quote(Source) .. " " .. Quote(Destination) .. " || ver >NUL"
+end
+
 function LuminaConfig.MakeDirectory(Path)
 
     local Quote =  function(s) return "\"" .. s .. "\"" end
@@ -170,3 +185,5 @@ LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/Th
 LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/concurrentqueue"))
 LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/JoltPhysics"))
 LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/luau/include"))
+LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/RmlUi/Include"))
+LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/FreeType/include"))

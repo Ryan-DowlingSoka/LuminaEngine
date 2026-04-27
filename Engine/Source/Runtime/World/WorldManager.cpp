@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "WorldManager.h"
 #include "Core/Profiler/Profile.h"
+#include "UI/RmlUiBridge.h"
 
 
 namespace Lumina
@@ -73,6 +74,13 @@ namespace Lumina
         Contexts.push_back(Move(Context));
 
         World->OwningContext = Raw;
+
+        // Spin up the per-world Rml::Context BEFORE InitializeWorld so scripts
+        // firing during entity init (OnReady -> UI.LoadDocument) resolve to
+        // the new world's context. The bridge sizes against the real RT later
+        // inside TickAll once it exists.
+        RmlUi::OnWorldInitialized(World);
+
         World->InitializeWorld(Type);
 
         return Raw;
@@ -89,6 +97,10 @@ namespace Lumina
         {
             if (Contexts[i]->World.Get() == World)
             {
+                // Tear down RmlUi context BEFORE the world goes away; the
+                // bridge needs the live World pointer for its listener-detach walk.
+                RmlUi::OnWorldTornDown(World);
+
                 World->TeardownWorld();
                 World->OwningContext = nullptr;
 
@@ -103,6 +115,7 @@ namespace Lumina
         }
 
         // Not registered, tear down anyway so the caller's expectations hold.
+        RmlUi::OnWorldTornDown(World);
         World->TeardownWorld();
     }
 

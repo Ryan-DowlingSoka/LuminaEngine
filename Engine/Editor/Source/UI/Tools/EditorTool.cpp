@@ -5,6 +5,9 @@
 #include "Core/Object/Package/Package.h"
 #include "Thumbnails/ThumbnailManager.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
+#include "Core/Application/Application.h"
+#include "UI/RmlUiBridge.h"
+#include <RmlUi/Core/Input.h>
 #include "World/WorldManager.h"
 #include "World/Entity/Components/CameraComponent.h"
 #include "World/Entity/Components/EditorComponent.h"
@@ -306,6 +309,64 @@ namespace Lumina
             ImVec2(0, 0), ImVec2(1, 1),
             IM_COL32_WHITE
         );
+
+        // RmlUi mouse forwarding. Translate screen mouse to panel-local
+        // fraction to world-RT pixel space. ImGui would otherwise eat events
+        // before our auto handler sees them. Suppressed in Game-only mode.
+        const EInputMode CurrentInputMode = GApp ? GApp->GetEventProcessor().GetInputMode() : EInputMode::Game;
+        const bool bForwardToUi = (CurrentInputMode == EInputMode::UI || CurrentInputMode == EInputMode::GameAndUI);
+        if (World != nullptr && bForwardToUi)
+        {
+            const ImVec2 PanelMin = CursorScreenPos;
+            const ImVec2 PanelMax(PanelMin.x + ViewportSize.x, PanelMin.y + ViewportSize.y);
+            const bool bHoveringPanel = ImGui::IsMouseHoveringRect(PanelMin, PanelMax, /*clip=*/false);
+
+            if (bHoveringPanel)
+            {
+                int RTW = int(ViewportSize.x);
+                int RTH = int(ViewportSize.y);
+                if (IRenderScene* Scene = World->GetRenderer())
+                {
+                    if (FRHIImage* RT = Scene->GetRenderTarget())
+                    {
+                        RTW = int(RT->GetSizeX());
+                        RTH = int(RT->GetSizeY());
+                    }
+                }
+
+                const ImVec2 Mouse = ImGui::GetMousePos();
+                const float U = (Mouse.x - PanelMin.x) / std::max(1.0f, ViewportSize.x);
+                const float V = (Mouse.y - PanelMin.y) / std::max(1.0f, ViewportSize.y);
+                const int CtxX = int(U * float(RTW));
+                const int CtxY = int(V * float(RTH));
+
+                int Mods = 0;
+                using namespace Rml::Input;
+                if (ImGui::GetIO().KeyCtrl)  Mods |= KM_CTRL;
+                if (ImGui::GetIO().KeyShift) Mods |= KM_SHIFT;
+                if (ImGui::GetIO().KeyAlt)   Mods |= KM_ALT;
+                if (ImGui::GetIO().KeySuper) Mods |= KM_META;
+
+                RmlUi::ForwardMouseMove(World, CtxX, CtxY, Mods);
+
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))    RmlUi::ForwardMouseButton(World, 0, true,  Mods);
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))   RmlUi::ForwardMouseButton(World, 0, false, Mods);
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))   RmlUi::ForwardMouseButton(World, 1, true,  Mods);
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Right))  RmlUi::ForwardMouseButton(World, 1, false, Mods);
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle))  RmlUi::ForwardMouseButton(World, 2, true,  Mods);
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Middle)) RmlUi::ForwardMouseButton(World, 2, false, Mods);
+
+                const float Wheel = ImGui::GetIO().MouseWheel;
+                if (Wheel != 0.0f)
+                {
+                    RmlUi::ForwardMouseWheel(World, -Wheel, Mods);
+                }
+            }
+            else
+            {
+                RmlUi::ForwardMouseLeave(World);
+            }
+        }
 
         const ImGuiStyle& ImStyle = ImGui::GetStyle();
 

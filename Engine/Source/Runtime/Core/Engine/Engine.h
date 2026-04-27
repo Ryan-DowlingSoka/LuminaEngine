@@ -55,9 +55,18 @@ namespace Lumina
         
         /** Used to optionally load a project as a DLL from the command line */
         RUNTIME_API virtual void LoadProject(FStringView Path);
-        
+
         /** Loads the project's script module */
         RUNTIME_API void LoadProjectScript(FStringView Path);
+
+        /**
+         * Cooked-runtime entry point. Mounts the .pak located alongside the
+         * executable, loads project config from inside it, runs asset
+         * discovery, loads the project's script module + DLL (if alongside),
+         * spawns the game instance, and loads the configured startup map.
+         * Returns false if no .pak could be found or it failed to mount.
+         */
+        RUNTIME_API bool LoadCookedRuntime();
 
         #if WITH_EDITOR
         RUNTIME_API virtual IDevelopmentToolUI* CreateDevelopmentTools() = 0;
@@ -90,6 +99,18 @@ namespace Lumina
 
         RUNTIME_API CGameInstance* GetGameInstance() const { return GameInstance; }
 
+        /**
+         * Queues a world travel to the asset at WorldPath. The actual swap
+         * runs at the start of the next frame so calls from gameplay code,
+         * scripts, or UI never tear down a world mid-tick.
+         *
+         * Targets the running Game-type world, preferring PIE when one exists.
+         * The editor proxy world is preserved so exiting PIE restores the
+         * original map. In packaged builds with no Game world yet, Travel
+         * creates one.
+         */
+        RUNTIME_API void Travel(FStringView WorldPath);
+
     protected:
 
         /** Constructs the CGameInstance subclass named by Project.GameInstanceClass (or the base if unset) and calls Init. */
@@ -101,9 +122,15 @@ namespace Lumina
         /** Destroys the GameInstance. Called during Shutdown. */
         RUNTIME_API virtual void DestroyGameInstance();
 
+        /** Drains a queued Travel request. Called once per frame at FrameStart. */
+        RUNTIME_API void ProcessPendingTravel();
+
     protected:
-        
+
         FUpdateContext          UpdateContext;
+
+        FString                 PendingTravelPath;
+        bool                    bHasPendingTravel = false;
 
         #if WITH_EDITOR
         IDevelopmentToolUI*     DeveloperToolUI =       nullptr;

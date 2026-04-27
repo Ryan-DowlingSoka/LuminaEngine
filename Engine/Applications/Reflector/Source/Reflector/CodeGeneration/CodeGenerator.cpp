@@ -119,6 +119,34 @@ namespace Lumina::Reflection
         {
             WriteUnityBuildFile(DirtyProject, UnityPerProject[DirtyProject]);
         }
+
+        // Stub guard: every reflection-enabled project lists ReflectionUnity.gen.cpp
+        // in its vcxproj sources, so the file MUST exist on disk even if the
+        // project has zero reflected types (e.g. a freshly-templated game project).
+        // We only write the stub if no file exists yet — this keeps incremental
+        // builds fast (no mtime touch) and lets the dirty path above overwrite
+        // it the moment the project actually gets reflected types.
+        //
+        // The __has_include guard makes the same stub work whether the host
+        // project has a PCH (Runtime/Editor/Lumina include "pch.h") or not
+        // (game-template projects don't set one up).
+        for (auto& Project : Workspace->ReflectedProjects)
+        {
+            const eastl::string Path = MakeUnityPath(Workspace->GetPath(), *Project);
+            if (std::filesystem::exists(std::filesystem::path(Path.c_str())))
+            {
+                continue;
+            }
+
+            WriteTextFile(Path,
+                "// Reflection unity stub.\n"
+                "// This project has no reflected types yet; this file exists\n"
+                "// only so the vcxproj's source list resolves. The Reflector\n"
+                "// will overwrite it the moment a reflected type appears.\n"
+                "#if __has_include(\"pch.h\")\n"
+                "    #include \"pch.h\"\n"
+                "#endif\n");
+        }
     }
 
     //-------------------------------------------------------------------------

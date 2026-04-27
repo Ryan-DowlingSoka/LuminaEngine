@@ -2,7 +2,6 @@
 #include "Engine.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Audio/AudioContext.h"
-#include "Audio/AudioGlobals.h"
 #include "Config/Config.h"
 #include "Core/Application/Application.h"
 #include "Core/Console/ConsoleVariable.h"
@@ -14,27 +13,31 @@
 #include "Core/Windows/Window.h"
 #include "encoder/basisu_enc.h"
 #include "FileSystem/FileSystem.h"
+#include "FileSystem/PakFileSystem.h"
+#include "Pak/PakArchive.h"
+#include "Platform/Process/PlatformProcess.h"
+#include "TaskSystem/TaskSystem.h"
 #include "Input/InputProcessor.h"
 #include "nlohmann/json.hpp"
 #include "Paths/Paths.h"
 #include "Physics/Physics.h"
 #include "Platform/Filesystem/FileHelper.h"
-#include "Prism/WidgetDeclaration.h"
 #include "Renderer/GPUProfiler/GPUProfiler.h"
 #include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
 #include "Renderer/RenderResource.h"
 #include "Renderer/RHIGlobals.h"
 #include "Scripting/Lua/Scripting.h"
-#include "TaskSystem/TaskSystem.h"
 #include "TaskSystem/ThreadedCallback.h"
 #include "Tools/UI/DevelopmentToolUI.h"
 #include "World/WorldManager.h"
+#include "World/World.h"
+#include "World/WorldContext.h"
+#include "UI/RmlUiBridge.h"
 #include "GameInstance.h"
 #include "Core/Object/Cast.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/ObjectCore.h"
-#include "Prism/Prism.h"
 
 #define SANDBOX_PROJECT_ID "C9396E54-2E00-4874-B051-FCD1792359AC"
 
@@ -83,9 +86,11 @@ namespace Lumina
         #endif
         
         FCoreDelegates::OnPostEngineInit.BroadcastAndClear();
-        
-        GApp->GetPrismApp().SetWindowSize(GetEngineViewport()->GetSize());
-        
+
+        // RmlUi needs CompileEngineShaders done and the engine viewport alive;
+        // both are true by the time OnPostEngineInit has fired.
+        RmlUi::Initialise();
+
         return true;
     }
 
@@ -99,6 +104,10 @@ namespace Lumina
         // Shutdown core engine state.
         //-------------------------------------------------------------------------
 
+        // UI before renderer: RmlUi's shutdown releases resources through
+        // our render interface.
+        RmlUi::Shutdown();
+
         #if USING(WITH_EDITOR)
         DeveloperToolUI->Deinitialize(UpdateContext);
         delete DeveloperToolUI;
@@ -110,9 +119,7 @@ namespace Lumina
 		GWorldManager = nullptr;
 
         ShutdownCObjectSystem();
-        
-        GApp->GetPrismApp().Shutdown();
-        
+
         EngineViewport.SafeRelease();
         
         Lua::Shutdown();
@@ -151,18 +158,26 @@ namespace Lumina
             {
                 LUMINA_PROFILE_SECTION_COLORED("FrameStart", tracy::Color::Red);
                 UpdateContext.UpdateStage = EUpdateStage::FrameStart;
-                
+
                 MainThread::ProcessQueue();
-                
+
+                // Drain pending Travel requests before any world ticks; tearing
+                // down a world from inside its own update is unsafe.
+                ProcessPendingTravel();
+
                 GRenderManager->FrameStart(UpdateContext);
 
                 #if USING(WITH_EDITOR)
                 DeveloperToolUI->StartFrame(UpdateContext);
                 DeveloperToolUI->Update(UpdateContext);
                 #endif
-                
+
+                // Tick UI before world updates so game-side queries see fresh
+                // layout. TickAll handles per-context resize internally.
+                RmlUi::TickAll();
+
                 GWorldManager->UpdateWorlds(UpdateContext);
-                
+
                 OnUpdateStage(UpdateContext);
             }
             
@@ -251,11 +266,13 @@ namespace Lumina
                         GWorldManager->RenderWorlds(CmdList);
                     }
 
+                    // RmlUi composites between world render and editor ImGui:
+                    // game UI overlays the world, editor chrome stays on top.
+                    RmlUi::RenderAll(CmdList);
+
                     #if USING(WITH_EDITOR)
                     DeveloperToolUI->EndFrame(UpdateContext);
                     #endif
-
-                    GApp->GetPrismApp().Tick((float)GEngine->GetDeltaTime());
                 }
 
                 GRenderManager->FrameEnd(UpdateContext, CmdList);
@@ -437,21 +454,256 @@ namespace Lumina
 
     void FEngine::LoadStartupMap()
     {
-        const FString MapName = GConfig->Get<std::string>("Project.GameStartupMap").c_str();
-        if (MapName.empty())
+        const FString RawMapName = GConfig->Get<std::string>("Project.GameStartupMap").c_str();
+        if (RawMapName.empty())
         {
             LOG_WARN("No Project.GameStartupMap configured; runtime has no world to run.");
             return;
         }
 
-        CWorld* StartupWorld = LoadObject<CWorld>(FStringView(MapName.c_str()));
+        // Tolerate legacy absolute paths saved before the path resolver landed.
+        const FFixedString MapName = VFS::ResolveToVirtualPath(RawMapName);
+
+        CWorld* StartupWorld = LoadObject<CWorld>(FStringView(MapName.c_str(), MapName.size()));
         if (StartupWorld == nullptr)
         {
-            LOG_ERROR("Failed to load startup map '{}'.", MapName.c_str());
+            LOG_ERROR("Failed to load startup map '{}' (resolved to '{}').", RawMapName.c_str(), MapName.c_str());
             return;
         }
 
         GWorldManager->CreateWorldContext(StartupWorld, EWorldType::Game, ENetMode::Standalone);
+    }
+
+    void FEngine::Travel(FStringView WorldPath)
+    {
+        // Defer the swap; it's unsafe to tear down a world from inside its own tick,
+        // and Travel is typically called from gameplay/script code that runs during
+        // world updates. ProcessPendingTravel drains this at the next FrameStart.
+        PendingTravelPath.assign(WorldPath.data(), WorldPath.size());
+        bHasPendingTravel = true;
+    }
+
+    void FEngine::ProcessPendingTravel()
+    {
+        if (!bHasPendingTravel)
+        {
+            return;
+        }
+        bHasPendingTravel = false;
+
+        const FString RawPath = Move(PendingTravelPath);
+        PendingTravelPath.clear();
+
+        if (RawPath.empty())
+        {
+            LOG_ERROR("FEngine::Travel: empty world path.");
+            return;
+        }
+
+        if (GWorldManager == nullptr)
+        {
+            LOG_ERROR("FEngine::Travel: WorldManager not initialized.");
+            return;
+        }
+
+        const FFixedString MapName = VFS::ResolveToVirtualPath(RawPath);
+
+        CWorld* WorldAsset = LoadObject<CWorld>(FStringView(MapName.c_str(), MapName.size()));
+        if (WorldAsset == nullptr)
+        {
+            LOG_ERROR("FEngine::Travel: failed to load world '{}' (resolved to '{}').", RawPath.c_str(), MapName.c_str());
+            return;
+        }
+
+        // Find the running game context. Prefer a PIE Game context (editor case)
+        // so that Travel always replaces the *running* world, never the editor
+        // proxy world we want to restore on PIE exit. Falls back to any Game
+        // context (packaged build), and finally any Simulation if no Game exists.
+        FWorldContext* OldContext = nullptr;
+        for (const TUniquePtr<FWorldContext>& Ctx : GWorldManager->GetContexts())
+        {
+            if (Ctx->Type == EWorldType::Game)
+            {
+                OldContext = Ctx.get();
+                if (Ctx->bPIE)
+                {
+                    break;
+                }
+            }
+        }
+
+        // No running game world yet (cold-boot or pre-startup-map call):
+        // spawn a fresh game context. No source to duplicate from here.
+        if (OldContext == nullptr)
+        {
+            FWorldContext* NewContext = GWorldManager->CreateWorldContext(WorldAsset, EWorldType::Game, ENetMode::Standalone);
+            if (NewContext != nullptr)
+            {
+                NewContext->GameInstance = GameInstance;
+            }
+            FCoreDelegates::OnWorldTravelled.Broadcast(nullptr, WorldAsset);
+            return;
+        }
+
+        // Snapshot role-state we need to reapply to the replacement context.
+        const EWorldType                Type           = OldContext->Type;
+        const ENetMode                  NetMode        = OldContext->NetMode;
+        const bool                      bPIE           = OldContext->bPIE;
+        const TWeakObjectPtr<CWorld>    SourceWorldRef = OldContext->SourceWorld;
+        CGameInstance* const            SavedInstance  = OldContext->GameInstance != nullptr
+                                                            ? OldContext->GameInstance
+                                                            : GameInstance;
+        CWorld* const                   OldWorld       = OldContext->World.Get();
+
+        // Always duplicate the loaded asset. Two reasons:
+        //   1) PIE semantics: never run on the cached source asset.
+        //   2) Travel-to-same-map: LoadObject returns the cached CWorld; if
+        //      we then DestroyWorldContext on it we'd be tearing down the very
+        //      world we just intended to spin up.
+        CWorld* NewWorld = CWorld::DuplicateWorld(WorldAsset);
+        if (NewWorld == nullptr)
+        {
+            LOG_ERROR("FEngine::Travel: DuplicateWorld failed for '{}'.", MapName.c_str());
+            return;
+        }
+
+        GWorldManager->DestroyWorldContext(OldWorld);
+
+        FWorldContext* NewContext = GWorldManager->CreateWorldContext(NewWorld, Type, NetMode);
+        if (NewContext != nullptr)
+        {
+            NewContext->bPIE         = bPIE;
+            NewContext->SourceWorld  = SourceWorldRef;
+            NewContext->GameInstance = SavedInstance;
+        }
+
+        // Subscribers compare against OldWorld for identity. CObject memory
+        // is still alive (only TeardownWorld has run); safe to compare but
+        // state must not be inspected.
+        FCoreDelegates::OnWorldTravelled.Broadcast(OldWorld, NewWorld);
+    }
+
+    bool FEngine::LoadCookedRuntime()
+    {
+        // Looks for a single .pak alongside the executable. We don't try to
+        // pick "the right one" by name — there should only be one in a
+        // shipped game folder. Platform::BaseDir returns wide on Windows;
+        // convert before slicing.
+        const FString ExeFullPath = StringUtils::FromWideString(Platform::BaseDir());
+        const size_t LastSlash = ExeFullPath.find_last_of("/\\");
+        const FString ExeDir = (LastSlash == FString::npos)
+            ? ExeFullPath
+            : ExeFullPath.substr(0, LastSlash);
+
+        FFixedString PakPath;
+        for (const auto& Entry : std::filesystem::directory_iterator(ExeDir.c_str()))
+        {
+            if (!Entry.is_regular_file())
+            {
+                continue;
+            }
+            if (Entry.path().extension() == ".pak")
+            {
+                PakPath.assign_convert(Entry.path().generic_string().c_str());
+                break;
+            }
+        }
+
+        if (PakPath.empty())
+        {
+            LOG_ERROR("FEngine::LoadCookedRuntime: no .pak file found next to '{}'.", ExeDir.c_str());
+            return false;
+        }
+
+        TSharedPtr<FPakArchive> Archive = FPakArchive::Open(PakPath);
+        if (!Archive)
+        {
+            LOG_ERROR("FEngine::LoadCookedRuntime: failed to open '{}'.", PakPath.c_str());
+            return false;
+        }
+
+        // Mount the archive under each top-level alias the TOC contains. The
+        // PAK shipped by the editor cooker carries entries like "/Engine/...",
+        // "/Game/...", and "/Config/..." — each becomes a VFS mount sharing
+        // the same FPakArchive instance via TSharedPtr.
+        TVector<FString> Aliases = Archive->GetTopLevelAliases();
+        for (const FString& Alias : Aliases)
+        {
+            FFixedString AliasFixed(Alias.c_str(), Alias.size());
+            VFS::Mount<VFS::FPakFileSystem>(AliasFixed, Archive);
+            LOG_INFO("FEngine::LoadCookedRuntime: mounted PAK at '{}'", Alias.c_str());
+        }
+
+        // Loose-files overlay. The packager can be configured to extract
+        // /Game/Scripts/ (or other content) as editable files next to the
+        // exe instead of bundling them in the PAK. Mounting this AFTER the
+        // PAK means lookups walk the loose folder first (most-recently-mounted
+        // wins per VFS dispatch order) — users can tweak scripts in the
+        // shipped game without re-cooking.
+        const FString LooseGameDir = ExeDir + "/Game";
+        if (std::filesystem::exists(LooseGameDir.c_str()))
+        {
+            VFS::Mount<VFS::FNativeFileSystem>("/Game", LooseGameDir);
+            LOG_INFO("FEngine::LoadCookedRuntime: mounted loose overlay at '/Game' -> {}", LooseGameDir.c_str());
+        }
+
+        // Project config is *inside* the PAK, written there by the cooker.
+        if (Archive->HasEntry("/Config/GameSettings.json"))
+        {
+            GConfig->LoadPath("/Config");
+        }
+        else
+        {
+            LOG_WARN("FEngine::LoadCookedRuntime: no /Config/GameSettings.json in PAK; using defaults.");
+        }
+
+        // The asset registry already iterates /Engine/Resources/Content and
+        // /Game/Content via VFS — those calls now hit the PAK transparently.
+        // Discovery is async; we MUST wait before LoadStartupMap or the
+        // GetAssetByPath lookup hits an empty registry and silently fails.
+        FAssetRegistry::Get().RunInitialDiscovery();
+        if (GTaskSystem != nullptr)
+        {
+            GTaskSystem->WaitForAll();
+        }
+        LOG_INFO("FEngine::LoadCookedRuntime: asset discovery complete.");
+
+        // Project script (Lua) — load from PAK if the path is set.
+        const FString ScriptPath = GConfig->Get<std::string>("Project.LuaModuleFile").c_str();
+        if (!ScriptPath.empty())
+        {
+            LoadProjectScript(ScriptPath);
+        }
+
+        // Project DLL — the cooker stashes "Project.Name" in config so we can
+        // resolve "<ProjectName>-<Config>.dll" sitting next to the exe. We
+        // skip silently if it's missing; bare projects without a C++ module
+        // can still boot.
+        ProjectName = GConfig->Get<std::string>("Project.Name").c_str();
+        if (!ProjectName.empty())
+        {
+            const FFixedString DLLName = FFixedString(FFixedString::CtorSprintf(),
+                "%s-%s%s",
+                ProjectName.c_str(),
+                LUMINA_CONFIGURATION_NAME,
+                LUMINA_SHAREDLIB_EXT_NAME);
+            FFixedString DLLPath = Paths::Combine(ExeDir, DLLName);
+            if (Paths::Exists(DLLPath))
+            {
+                if (FModuleManager::Get().LoadModule(DLLPath))
+                {
+                    ProcessNewlyLoadedCObjects();
+                }
+            }
+            else
+            {
+                LOG_INFO("FEngine::LoadCookedRuntime: no project DLL at '{}' (ok if project has no C++ module)", DLLPath.c_str());
+            }
+        }
+
+        CreateGameInstance();
+        LoadStartupMap();
+        return true;
     }
 
     void FEngine::DestroyGameInstance()

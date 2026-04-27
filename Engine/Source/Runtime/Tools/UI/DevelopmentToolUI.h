@@ -19,7 +19,11 @@ namespace Lumina
         IDevelopmentToolUI() = default;
         IDevelopmentToolUI(const IDevelopmentToolUI&) = default;
         virtual ~IDevelopmentToolUI() = default;
-        
+
+        // Editor chrome always processes events; otherwise Input.SetMode("Game")
+        // would lock the user out of dev menus.
+        EInputCategory GetInputCategory() const override { return EInputCategory::Editor; }
+
         virtual void Initialize(const FUpdateContext& UpdateContext) = 0;
         virtual void Deinitialize(const FUpdateContext& UpdateContext) = 0;
 

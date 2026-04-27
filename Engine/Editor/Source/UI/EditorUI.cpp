@@ -82,6 +82,7 @@
 #include "Tools/Debug/AboutEditorTool.h"
 #include "Tools/Debug/MemoryProfilerEditorTool.h"
 #include "Tools/Debug/ObjectBrowserEditorTool.h"
+#include "Tools/Debug/ProjectPackagerEditorTool.h"
 #include "Tools/Debug/ProjectSettingsEditorTool.h"
 #include "Tools/Debug/RendererInfoEditorTool.h"
 #include "Tools/Debug/ScriptsInfoEditorTool.h"
@@ -1292,28 +1293,8 @@ namespace Lumina
     
         ImGui::Separator();
     
-        if (ImGui::BeginMenu(LE_ICON_HAMMER " Build"))
-        {
-            if (ImGui::MenuItem(LE_ICON_PLAY " Build Project", "Ctrl+B"))
-            {
-                // Build project
-            }
-        
-            if (ImGui::MenuItem(LE_ICON_BROOM " Clean Build", "Ctrl+Shift+B"))
-            {
-                // Clean build
-            }
-        
-            ImGui::Separator();
-        
-            if (ImGui::MenuItem(LE_ICON_MICROSOFT_WINDOWS " Package for Windows"))
-            {
-                // Package
-            }
-        
-            ImGui::EndMenu();
-        }
-    
+        DrawToolMenuItem<FProjectPackagerEditorTool>(LE_ICON_PACKAGE_VARIANT " Package Project...", this);
+
         ImGui::EndMenu();
     }
 
@@ -1682,7 +1663,9 @@ namespace Lumina
         //@TODO TEMP, maybe just wait until finished to load startup.
         GTaskSystem->WaitForAll();
         
-        FString EditorStartupMap = GConfig->Get<std::string>("Project.EditorStartupMap").c_str();
+        const FString RawEditorStartupMap = GConfig->Get<std::string>("Project.EditorStartupMap").c_str();
+        const FFixedString EditorStartupMapFixed = VFS::ResolveToVirtualPath(RawEditorStartupMap);
+        const FString EditorStartupMap(EditorStartupMapFixed.c_str(), EditorStartupMapFixed.size());
         if (FAssetData* Data = FAssetRegistry::Get().GetAssetByPath(EditorStartupMap))
         {
             OpenAssetEditor(Data->AssetGUID);

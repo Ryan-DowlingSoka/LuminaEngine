@@ -1,0 +1,454 @@
+#include "ProjectPackagerEditorTool.h"
+
+#include <filesystem>
+
+#include "Config/Config.h"
+#include "Cooker/AssetCooker.h"
+#include "Cooker/ProjectPackager.h"
+#include "Core/Engine/Engine.h"
+#include "Platform/Process/PlatformProcess.h"
+
+namespace Lumina
+{
+    FProjectPackagerEditorTool::~FProjectPackagerEditorTool()
+    {
+        if (Worker.joinable())
+        {
+            Worker.detach();
+        }
+    }
+
+    void FProjectPackagerEditorTool::OnInitialize()
+    {
+        CreateToolWindow("Package Project", [this](bool bIsFocused)
+        {
+            DrawWindow(bIsFocused);
+        });
+    }
+
+    void FProjectPackagerEditorTool::OnDeinitialize(const FUpdateContext& UpdateContext)
+    {
+    }
+
+    void FProjectPackagerEditorTool::AppendLog(FStringView Line)
+    {
+        LogLines.emplace_back(Line.data(), Line.size());
+        if ((int32)LogLines.size() > MaxLogLines)
+        {
+            LogLines.erase(LogLines.begin(), LogLines.begin() + (LogLines.size() - MaxLogLines));
+        }
+    }
+
+    void FProjectPackagerEditorTool::ClearLog()
+    {
+        LogLines.clear();
+        LastError.clear();
+        LastPakPath.clear();
+        LastOutputDir.clear();
+        bLastSuccess = false;
+    }
+
+    void FProjectPackagerEditorTool::DrainSession()
+    {
+        if (!Session)
+        {
+            return;
+        }
+
+        // Pull whatever the worker has produced since last frame. We swap the
+        // pending vector with an empty one to minimize lock hold time.
+        TVector<FString> Drained;
+        {
+            std::lock_guard<std::mutex> Lock(Session->PendingMutex);
+            Drained.swap(Session->PendingLines);
+        }
+        for (FString& Line : Drained)
+        {
+            AppendLog(Line);
+        }
+
+        // If the worker has finished, capture its result and reset.
+        if (Session->bDone.load(std::memory_order_acquire) && Stage == EStage::Building)
+        {
+            bLastSuccess = Session->bSuccess.load(std::memory_order_acquire);
+            LastError = Session->ErrorMessage;
+            LastOutputDir = Session->OutputDirectory;
+            LastPakPath = Session->PakPath;
+
+            if (bLastSuccess)
+            {
+                AppendLog(FString("DONE: ") + LastOutputDir);
+            }
+            else
+            {
+                AppendLog(FString("FAILED: ") + LastError);
+            }
+
+            // Worker is finished — join (instant) before releasing our handle.
+            if (Worker.joinable())
+            {
+                Worker.join();
+            }
+            Session.reset();
+            Stage = EStage::Done;
+        }
+    }
+
+    void FProjectPackagerEditorTool::RunCookOnly()
+    {
+        if (Stage != EStage::Idle && Stage != EStage::Done)
+        {
+            return;
+        }
+        if (GEngine == nullptr || GEngine->GetProjectName().empty())
+        {
+            AppendLog("[error] No project loaded.");
+            return;
+        }
+
+        ClearLog();
+        Stage = EStage::Cooking;
+
+        const FString ProjectName(GEngine->GetProjectName().data(), GEngine->GetProjectName().size());
+
+        FString PakDir = OutputDir.empty()
+            ? FString(GEngine->GetProjectPath().data(), GEngine->GetProjectPath().size()) + "/Build/" + ProjectName
+            : OutputDir;
+
+        std::filesystem::create_directories(PakDir.c_str());
+
+        const FString PakPath = PakDir + "/" + ProjectName + ".pak";
+
+        FCookOptions CookOpts;
+        CookOpts.bExtractScriptsAsLooseFiles = bExtractScriptsLoose;
+
+        const FCookResult Result = FAssetCooker::Cook(PakPath, CookOpts, [this](FStringView Line)
+        {
+            AppendLog(Line);
+        });
+
+        if (Result.bSuccess)
+        {
+            // Loose-script extraction has to happen here on the UI thread —
+            // it walks the VFS, which the editor's other systems may mutate
+            // from the main thread.
+            if (bExtractScriptsLoose)
+            {
+                AppendLog("Extracting loose scripts...");
+                const size_t Extracted = FProjectPackager::ExtractLooseScripts(PakDir,
+                    [this](FStringView Line) { AppendLog(Line); });
+                AppendLog(FString().sprintf("Extracted %zu loose script files.", Extracted).c_str());
+            }
+
+            bLastSuccess = true;
+            LastPakPath = PakPath;
+            LastOutputDir = PakDir;
+            AppendLog(FString().sprintf("DONE: %zu assets, %zu bytes -> %s",
+                Result.NumAssetsCooked, Result.TotalBytes, PakPath.c_str()).c_str());
+        }
+        else
+        {
+            LastError = Result.ErrorMessage;
+            AppendLog(FString("FAILED: ") + Result.ErrorMessage);
+        }
+
+        Stage = EStage::Done;
+    }
+
+    void FProjectPackagerEditorTool::RunFullPackage()
+    {
+        if (Stage != EStage::Idle && Stage != EStage::Done)
+        {
+            return;
+        }
+        if (GEngine == nullptr || GEngine->GetProjectName().empty())
+        {
+            AppendLog("[error] No project loaded.");
+            return;
+        }
+        if (Worker.joinable())
+        {
+            // Previous worker still alive (e.g. user closed and reopened during a build).
+            AppendLog("[error] A previous build is still running; wait for it to finish.");
+            return;
+        }
+
+        ClearLog();
+
+        // 1) Cook synchronously on the main thread. Touches engine state, but
+        //    fast — typically sub-second for a small project.
+        Stage = EStage::Cooking;
+
+        const FString ProjectName(GEngine->GetProjectName().data(), GEngine->GetProjectName().size());
+
+        FString PakDir = OutputDir.empty()
+            ? FString(GEngine->GetProjectPath().data(), GEngine->GetProjectPath().size()) + "/Build/" + ProjectName
+            : OutputDir;
+
+        std::filesystem::create_directories(PakDir.c_str());
+
+        const FString PakPath = PakDir + "/" + ProjectName + ".pak";
+
+        FCookOptions CookOpts;
+        CookOpts.bExtractScriptsAsLooseFiles = bExtractScriptsLoose;
+
+        const FCookResult Cook = FAssetCooker::Cook(PakPath, CookOpts, [this](FStringView Line)
+        {
+            AppendLog(Line);
+        });
+
+        if (!Cook.bSuccess)
+        {
+            LastError = Cook.ErrorMessage;
+            bLastSuccess = false;
+            AppendLog(FString("FAILED (cook): ") + Cook.ErrorMessage);
+            Stage = EStage::Done;
+            return;
+        }
+
+        AppendLog(FString().sprintf("Cook OK: %zu assets, %zu bytes",
+            Cook.NumAssetsCooked, Cook.TotalBytes).c_str());
+
+        // 1.5) Loose-script extraction must run on the main thread (uses VFS).
+        if (bExtractScriptsLoose)
+        {
+            AppendLog("Extracting loose scripts...");
+            const size_t Extracted = FProjectPackager::ExtractLooseScripts(PakDir,
+                [this](FStringView Line) { AppendLog(Line); });
+            AppendLog(FString().sprintf("Extracted %zu loose script files.", Extracted).c_str());
+        }
+
+        // 2) Build + Copy on a worker thread. Captures everything by value so
+        //    the worker is independent of any UI state.
+        Stage = EStage::Building;
+
+        Session = MakeShared<FBuildSession>();
+        Session->PakPath = PakPath;
+        Session->OutputDirectory = PakDir;
+
+        FPackageBuildOptions Opts;
+        Opts.OutputDirectory                = PakDir;
+        Opts.MSBuildPath                    = MSBuildPath;
+        Opts.bBuildExecutable               = true;
+        Opts.bExtractScriptsAsLooseFiles    = bExtractScriptsLoose;
+        Opts.MSBuildConfiguration           = (ConfigIndex == 0) ? FString("Shipping")
+                                            : (ConfigIndex == 1) ? FString("Development")
+                                                                 : FString("Debug");
+
+        TSharedPtr<FBuildSession> WorkerSession = Session;
+
+        Worker = std::thread([WorkerSession, Opts, ProjectName, PakPath]()
+        {
+            // The log callback runs on this thread; push lines into the
+            // mutex-protected pending buffer. The UI thread drains it each
+            // frame in DrainSession().
+            auto LogFunc = [WorkerSession](FStringView Line)
+            {
+                std::lock_guard<std::mutex> Lock(WorkerSession->PendingMutex);
+                WorkerSession->PendingLines.emplace_back(Line.data(), Line.size());
+            };
+
+            const FPackageBuildResult Result = FProjectPackager::BuildAndCopyOnly(
+                Opts,
+                FStringView(ProjectName.c_str(), ProjectName.size()),
+                FStringView(PakPath.c_str(), PakPath.size()),
+                LogFunc);
+
+            WorkerSession->bSuccess.store(Result.bSuccess, std::memory_order_release);
+            WorkerSession->ErrorMessage = Result.ErrorMessage;
+            WorkerSession->OutputDirectory = Result.OutputDirectory.empty()
+                ? WorkerSession->OutputDirectory
+                : Result.OutputDirectory;
+            WorkerSession->bDone.store(true, std::memory_order_release);
+        });
+    }
+
+    void FProjectPackagerEditorTool::DrawWindow(bool bIsFocused)
+    {
+        if (GEngine == nullptr || GEngine->GetProjectName().empty())
+        {
+            ImGui::TextDisabled("No project loaded.");
+            return;
+        }
+
+        // Pull worker output into the displayed log every frame.
+        DrainSession();
+
+        // Lazy-init defaults so they reflect the current project.
+        if (OutputDir.empty())
+        {
+            const FString ProjectName(GEngine->GetProjectName().data(), GEngine->GetProjectName().size());
+            OutputDir = FString(GEngine->GetProjectPath().data(), GEngine->GetProjectPath().size())
+                + "/Build/" + ProjectName;
+        }
+        if (MSBuildPath.empty())
+        {
+            MSBuildPath = FProjectPackager::DefaultMSBuildPath();
+        }
+
+        // Project + startup-map summary.
+        ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), LE_ICON_PACKAGE_VARIANT " Package Project");
+        ImGui::Separator();
+
+        const FString StartupMap = GConfig->Get<std::string>("Project.GameStartupMap").c_str();
+        ImGui::Text("Project:    %.*s", (int)GEngine->GetProjectName().size(), GEngine->GetProjectName().data());
+        if (StartupMap.empty())
+        {
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+                "Startup Map: <not set — go to Project Settings -> Project / Maps>");
+        }
+        else
+        {
+            ImGui::Text("Startup Map: %s", StartupMap.c_str());
+        }
+
+        // Status badge — visible at a glance while a build is running.
+        const bool bIsRunning = (Stage == EStage::Cooking || Stage == EStage::Building || Stage == EStage::Copying);
+        if (bIsRunning)
+        {
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 200);
+            const char* StageName = (Stage == EStage::Cooking)  ? "COOKING"
+                                  : (Stage == EStage::Building) ? "BUILDING"
+                                  : (Stage == EStage::Copying)  ? "COPYING"
+                                                                : "WORKING";
+            ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.25f, 1.0f), LE_ICON_PROGRESS_CLOCK " %s...", StageName);
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Editable fields.
+        char OutBuf[512]; std::snprintf(OutBuf, sizeof(OutBuf), "%s", OutputDir.c_str());
+        ImGui::Text("Output Directory");
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("##out", OutBuf, sizeof(OutBuf)))
+        {
+            OutputDir = OutBuf;
+        }
+
+        char MSBuf[512]; std::snprintf(MSBuf, sizeof(MSBuf), "%s", MSBuildPath.c_str());
+        ImGui::Text("MSBuild Path");
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("##msb", MSBuf, sizeof(MSBuf)))
+        {
+            MSBuildPath = MSBuf;
+        }
+
+        ImGui::Text("Build Configuration");
+        const char* Configs[] = { "Shipping", "Development", "Debug" };
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::Combo("##cfg", &ConfigIndex, Configs, IM_ARRAYSIZE(Configs));
+
+        ImGui::Spacing();
+
+        ImGui::Checkbox("Expose scripts as loose files (modder-friendly)", &bExtractScriptsLoose);
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "When enabled, /Game/Scripts/ is mirrored as editable .luau files\n"
+                "next to the cooked exe instead of being bundled in the PAK.\n"
+                "End users (or you, post-ship) can tweak gameplay without\n"
+                "re-cooking. The runtime mounts the loose folder over the PAK\n"
+                "so loose copies take priority on lookups.");
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Action buttons.
+        ImGui::BeginDisabled(bIsRunning || StartupMap.empty());
+        {
+            if (ImGui::Button(LE_ICON_PACKAGE_VARIANT " Cook + Build", ImVec2(180, 32)))
+            {
+                RunFullPackage();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(LE_ICON_FILE_OUTLINE " Cook PAK Only", ImVec2(180, 32)))
+            {
+                RunCookOnly();
+            }
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (ImGui::Button(LE_ICON_BROOM " Clear Log", ImVec2(120, 32)))
+        {
+            ClearLog();
+        }
+
+        if (bLastSuccess && !LastOutputDir.empty())
+        {
+            ImGui::SameLine();
+            if (ImGui::Button(LE_ICON_FOLDER_OPEN " Open Output", ImVec2(140, 32)))
+            {
+                Platform::LaunchURL(StringUtils::ToWideString(LastOutputDir).c_str());
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Checkbox("Auto-scroll log", &bAutoScroll);
+
+        ImGui::Separator();
+
+        // Console-style log panel. Near-black background, subtle border,
+        // generous padding so lines don't feel cramped against the edge.
+        ImGui::PushStyleColor(ImGuiCol_ChildBg,    ImVec4(0.06f, 0.06f, 0.07f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Border,     ImVec4(0.20f, 0.20f, 0.22f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0.04f, 0.04f, 0.05f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 2.0f));
+
+        if (ImGui::BeginChild("##log", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar))
+        {
+            const ImVec4 ColDefault(0.85f, 0.85f, 0.88f, 1.0f);
+            const ImVec4 ColMSBuild(0.55f, 0.65f, 0.80f, 1.0f);
+            const ImVec4 ColCookEntry(0.65f, 0.82f, 0.55f, 1.0f);
+            const ImVec4 ColError  (1.00f, 0.40f, 0.40f, 1.0f);
+            const ImVec4 ColWarn   (1.00f, 0.78f, 0.35f, 1.0f);
+            const ImVec4 ColSuccess(0.45f, 1.00f, 0.55f, 1.0f);
+
+            for (const FString& Line : LogLines)
+            {
+                ImVec4 Color = ColDefault;
+                if (Line.find("[error]") != FString::npos || Line.find("FAILED") != FString::npos
+                    || Line.find(" error ") != FString::npos || Line.find("error C") != FString::npos
+                    || Line.find("error LNK") != FString::npos)
+                {
+                    Color = ColError;
+                }
+                else if (Line.find("[warn]") != FString::npos || Line.find(" warning ") != FString::npos)
+                {
+                    Color = ColWarn;
+                }
+                else if (Line.find("DONE") != FString::npos)
+                {
+                    Color = ColSuccess;
+                }
+                else if (Line.size() >= 4 && Line[0] == ' ' && Line[1] == ' ' && Line[2] == '+')
+                {
+                    Color = ColCookEntry;
+                }
+                else if (Line.size() >= 4 && Line[0] == ' ' && Line[1] == ' ' && Line[2] == '|')
+                {
+                    Color = ColMSBuild;
+                }
+
+                ImGui::PushStyleColor(ImGuiCol_Text, Color);
+                ImGui::TextUnformatted(Line.c_str());
+                ImGui::PopStyleColor();
+            }
+            if (bAutoScroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 10.0f)
+            {
+                ImGui::SetScrollHereY(1.0f);
+            }
+        }
+        ImGui::EndChild();
+
+        ImGui::PopStyleVar(4);
+        ImGui::PopStyleColor(3);
+    }
+}

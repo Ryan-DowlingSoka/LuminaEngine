@@ -69,6 +69,11 @@ namespace Lumina
         FEditorTool(IEditorToolContext* Context, const FString& DisplayName, CWorld* InWorld = nullptr);
         virtual ~FEditorTool() = default;
         LE_NO_COPYMOVE(FEditorTool);
+
+        // Editor tools belong to editor chrome — they must keep working in
+        // any input mode so the user can still operate the IDE while game/UI
+        // input is gated.
+        EInputCategory GetInputCategory() const override { return EInputCategory::Editor; }
         
 
         virtual void Initialize();

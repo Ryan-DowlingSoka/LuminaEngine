@@ -14,13 +14,23 @@ namespace Lumina
     
     FViewVolume::FViewVolume(float fov, float aspect, float InNear, float InFar)
         : ViewPosition(glm::vec3(1.0))
+        // ForwardVector / UpVector / RightVector intentionally seeded here so
+        // SetView's normalize-then-cross chain below never touches uninitialized
+        // memory. Older code passed the still-garbage `ForwardVector` member as
+        // the direction argument, which silently worked in Debug (uninitialized
+        // patterns happened to normalize to something view-shaped under no
+        // optimization) and caught fire in Shipping (LTO + release heap = garbage
+        // forward → NaN view matrix → black screen).
+        , ForwardVector(ForwardAxis)
+        , UpVector(UpAxis)
+        , RightVector(RightAxis)
         , Near(InNear)
         , Far(InFar)
         , FOV(fov)
         , AspectRatio(aspect)
     {
         SetPerspective(fov, aspect);
-        SetView(glm::vec3(0.0), ForwardVector, UpAxis);
+        SetView(glm::vec3(0.0), ForwardAxis, UpAxis);
     }
 
     FViewVolume& FViewVolume::SetNear(float InNear)

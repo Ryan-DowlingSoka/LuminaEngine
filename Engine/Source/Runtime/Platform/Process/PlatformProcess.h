@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Containers/Array.h"
+#include "Containers/Function.h"
 #include "Containers/String.h"
 #include "Platform/GenericPlatform.h"
 #include "Platform/Platform.h"
@@ -27,6 +28,26 @@ namespace Lumina::Platform
 
 	RUNTIME_API int LaunchProcess(const TCHAR* URL, const TCHAR* Params = nullptr, bool bLaunchDetached = true);
     RUNTIME_API void LaunchURL(const TCHAR* URL);
+
+    /**
+     * Synchronously runs a command line. The child process gets its own
+     * console window so the user can watch output (handy for MSBuild). This
+     * call blocks until the process exits and returns its exit code; -1
+     * means the process failed to spawn.
+     */
+    RUNTIME_API int RunProcessAndWait(const TCHAR* Executable, const TCHAR* Params, const TCHAR* WorkingDirectory = nullptr);
+
+    /**
+     * Like RunProcessAndWait, but no console pops up — the child's stdout
+     * AND stderr are merged and streamed back through LineCallback, one
+     * complete line per call. Useful when the editor needs to display a
+     * subprocess's output inline (cooker, build pipeline).
+     *
+     * The callback runs on the calling thread between line boundaries, so
+     * it's safe to push into UI state without locks. Returns the exit code,
+     * or -1 if the process failed to spawn.
+     */
+    RUNTIME_API int RunProcessAndWaitCapture(const TCHAR* Executable, const TCHAR* Params, const TCHAR* WorkingDirectory, const TFunction<void(FStringView)>& LineCallback);
 
     RUNTIME_API const TCHAR* ExecutableName(bool bRemoveExtension = true);
 

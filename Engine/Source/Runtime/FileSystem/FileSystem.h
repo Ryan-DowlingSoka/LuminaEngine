@@ -58,4 +58,20 @@ namespace Lumina::VFS
     RUNTIME_API bool Exists(FStringView Path);
 
     RUNTIME_API bool HasExtension(FStringView Path, FStringView Ext);
+
+    /**
+     * Best-effort canonical conversion from any path the editor might hand us
+     * back (absolute Windows path from a file dialog, mixed slashes, an
+     * already-virtual path) into the VFS form ("/Game/Content/Foo.lasset")
+     * that the asset registry / LoadObject expect.
+     *
+     * Strategy:
+     *   1. If the input already starts with '/' it's treated as VFS already,
+     *      just normalized for slashes and returned.
+     *   2. Otherwise the input is matched against the BasePath of every native
+     *      mount; the first hit is rewritten as `<alias>/<tail>`.
+     *   3. If nothing matches, returns the input verbatim (with slashes
+     *      normalized) — caller decides whether to treat that as failure.
+     */
+    RUNTIME_API FFixedString ResolveToVirtualPath(FStringView InputPath);
 }

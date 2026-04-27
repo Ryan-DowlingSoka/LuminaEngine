@@ -4,6 +4,7 @@
 #include <glm/glm.hpp>
 
 #include "Config/Config.h"
+#include "FileSystem/FileSystem.h"
 #include "Platform/Process/PlatformProcess.h"
 
 namespace Lumina
@@ -266,7 +267,12 @@ namespace Lumina
                 const char* Filter = Setting.FileFilter.empty() ? nullptr : Setting.FileFilter.c_str();
                 if (Platform::OpenFileDialogue(Picked, Setting.Key.c_str(), Filter))
                 {
-                    GConfig->Set(Setting.Key, std::string(Picked.c_str()));
+                    // The dialog returns an absolute Windows path; convert to
+                    // a VFS path so the value matches what the asset registry,
+                    // LoadObject, and the cooker all key on. Falls back to the
+                    // raw path if no mount matches.
+                    const FFixedString Virtual = VFS::ResolveToVirtualPath(FStringView(Picked.c_str(), Picked.size()));
+                    GConfig->Set(Setting.Key, std::string(Virtual.c_str()));
                 }
             }
             break;

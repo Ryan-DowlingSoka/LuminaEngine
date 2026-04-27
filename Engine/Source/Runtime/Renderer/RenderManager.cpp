@@ -5,10 +5,15 @@
 #include "Tools/UI/ImGui/Vulkan/VulkanImGuiRender.h"
 
 #include "RHIGlobals.h"
+#include "CommandList.h"
 #include "Core/Application/Application.h"
+#include "Core/Engine/Engine.h"
 #include "Core/Profiler/Profile.h"
 #include "GPUProfiler/GPUProfiler.h"
 #include "Tools/UI/ImGui/ImGuiRenderer.h"
+#include "World/World.h"
+#include "World/WorldManager.h"
+#include "World/Scene/RenderScene/RenderScene.h"
 
 namespace Lumina
 {
@@ -43,7 +48,11 @@ namespace Lumina
     {
         GRenderContext = Memory::New<FVulkanRenderContext>();
         
+        #if LUMINA_SHIPPING
+        GRenderContext->Initialize(FRenderContextDesc{false, false});
+        #else
         GRenderContext->Initialize(FRenderContextDesc{false, true});
+        #endif
         
         #if WITH_EDITOR
         ImGuiRenderer = Memory::New<FVulkanImGuiRender>();
@@ -73,10 +82,26 @@ namespace Lumina
 
         #if WITH_EDITOR
         ImGuiRenderer->EndFrame(UpdateContext, CmdList);
+        #else
+        
+        if (FWorldContext* Ctx = GWorldManager->GetPrimaryGameContext())
+        {
+            if (CWorld* World = Ctx->World.Get())
+            {
+                if (IRenderScene* Scene = World->GetRenderer())
+                {
+                    if (FRHIImage* WorldRT = Scene->GetRenderTarget())
+                    {
+                        if (FRHIImage* ViewportRT = FEngine::GetEngineViewport()->GetRenderTarget())
+                        {
+                            CmdList.CopyImage(WorldRT, FTextureSlice(), ViewportRT, FTextureSlice());
+                        }
+                    }
+                }
+            }
+        }
         #endif
-
-        GApp->GetPrismApp().GetRenderer().Render(CmdList, FEngine::GetEngineViewport()->GetRenderTarget());
-
+        
         // Records the swapchain copy, closes, executes, and presents.
         GRenderContext->FrameEnd(UpdateContext, CmdList);
 

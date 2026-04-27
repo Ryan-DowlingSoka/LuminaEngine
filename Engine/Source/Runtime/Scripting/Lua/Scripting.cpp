@@ -16,6 +16,10 @@
 #include "Paths/Paths.h"
 #include "Platform/Filesystem/FileHelper.h"
 #include "World/World.h"
+#include "UI/RmlUiBridge.h"
+#include "Core/Application/Application.h"
+#include "Events/EventProcessor.h"
+#include "Input/InputMode.h"
 #include "World/Entity/Systems/SystemContext.h"
 
 namespace Lumina::Lua
@@ -102,6 +106,7 @@ namespace Lumina::Lua
         FRef GlobalsRef(L, -1);
         
         CWorld::RegisterLuaModule(GlobalsRef);
+        RmlUi::RegisterLuaModule(GlobalsRef);
         
         FRef EngineTable        = GlobalsRef.NewTable("Engine");
         FRef VFSTable           = EngineTable.NewTable("VFS");
@@ -270,9 +275,59 @@ namespace Lumina::Lua
         InputTable.SetFunction<&FInputProcessor::GetMouseZ>("GetMouseZ", &FInputProcessor::Get());
         InputTable.SetFunction<&FInputProcessor::GetMouseDeltaX>("GetMouseDeltaX", &FInputProcessor::Get());
         InputTable.SetFunction<&FInputProcessor::GetMouseDeltaY>("GetMouseDeltaY", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::SetMouseMode>("SetMouseMode", &FInputProcessor::Get());
-        
-        
+        // Accept strings so scripts read naturally: "Hidden", "Normal", "Captured".
+        InputTable.SetFunction<[](FStringView Mode)
+        {
+            if      (Mode == "Hidden")
+            {
+                FInputProcessor::Get().SetMouseMode(EMouseMode::Hidden);
+            }
+            else if (Mode == "Normal")
+            {
+                FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
+            }
+            else if (Mode == "Captured")
+            {
+                FInputProcessor::Get().SetMouseMode(EMouseMode::Captured);
+            }
+            else
+            {
+                LOG_WARN("[Input] SetMouseMode: unknown mode '{}'. Use 'Hidden', 'Normal', or 'Captured'.",
+                         FString(Mode.data(), Mode.size()).c_str());
+            }
+        }>("SetMouseMode");
+
+
+        InputTable.SetFunction<[](FStringView Mode)
+        {
+            EInputMode Out = EInputMode::Game;
+            if      (Mode == "Game")
+            {
+                Out = EInputMode::Game;
+            }
+            else if (Mode == "UI")
+            {
+                Out = EInputMode::UI;
+            }
+            else if (Mode == "GameAndUI" || Mode == "Both")
+            {
+                Out = EInputMode::GameAndUI;
+            }
+            else
+            {
+                LOG_WARN("[Input] SetMode: unknown mode '{}'. Use 'Game', 'UI', or 'GameAndUI'.",
+                         FString(Mode.data(), Mode.size()).c_str());
+                return;
+            }
+            GApp->GetEventProcessor().SetInputMode(Out);
+            LOG_INFO("[Input] Mode -> {}", InputModeToString(Out));
+        }>("SetMode");
+        InputTable.SetFunction<[]() -> FString
+        {
+            return FString(InputModeToString(GApp->GetEventProcessor().GetInputMode()));
+        }>("GetMode");
+
+
         AudioTable.SetFunction<[](FStringView File, glm::vec3 Location) { (void)GAudioContext->PlaySoundAtLocation(File, Location); }>("PlaySoundAtLocation");
         AudioTable.SetFunction<[](FStringView File) { (void)GAudioContext->PlaySound2D(File); }>("PlaySound2D");
         

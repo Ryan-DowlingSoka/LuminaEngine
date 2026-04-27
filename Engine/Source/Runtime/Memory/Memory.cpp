@@ -18,7 +18,7 @@ namespace Lumina
     }
     
     RUNTIME_API Memory::FMalloc* Memory::GMalloc = nullptr;
-    
+
     Memory::FMalloc::FMalloc() noexcept
     {
         rpmalloc_config_t Config = {};
@@ -27,12 +27,31 @@ namespace Lumina
         rpmalloc_initialize_config(&Config);
     }
 
+    namespace
+    {
+        // Lazy global allocator bootstrap. Magic-static gives us thread-safe
+        // exactly-once construction; the assignment publishes the same pointer
+        // for the legacy GMalloc extern. Lets statics that allocate during
+        // dynamic init bring the system up cleanly.
+        Memory::FMalloc& EnsureAllocator()
+        {
+            static Memory::FMalloc Instance;
+            Memory::GMalloc = &Instance;
+            return Instance;
+        }
+    }
+
     void* Memory::FMalloc::Malloc(size_t Size, size_t Alignment)
     {
         DEBUG_ASSERT(Alignment >= sizeof(void*));
         DEBUG_ASSERT((Alignment & (Alignment - 1)) == 0);
         DEBUG_ASSERT(Alignment % sizeof(void*) == 0);
         
+        if (!rpmalloc_is_thread_initialized())
+        {
+            rpmalloc_thread_initialize();
+        }
+
         return rpaligned_alloc(Alignment, Size);
     }
 
@@ -41,7 +60,12 @@ namespace Lumina
         DEBUG_ASSERT(Alignment >= sizeof(void*));
         DEBUG_ASSERT((Alignment & (Alignment - 1)) == 0);
         DEBUG_ASSERT(Alignment % sizeof(void*) == 0);
-        
+
+        if (!rpmalloc_is_thread_initialized())
+        {
+            rpmalloc_thread_initialize();
+        }
+
         return rpaligned_realloc(Memory, Alignment, NewSize, 0, 0);
     }
 
@@ -52,36 +76,34 @@ namespace Lumina
 
     void Memory::Initialize()
     {
-        void* Mem = std::malloc(sizeof(FMalloc));
-        new(Mem) FMalloc{};
+        (void)EnsureAllocator();
     }
 
     void Memory::InitializeThreadHeap()
     {
-        if (GMalloc == nullptr)
-        {
-            Initialize();
-        }
-        
+        (void)EnsureAllocator();
         rpmalloc_thread_initialize();
     }
-    
+
     void* Memory::Malloc(size_t Size, size_t Alignment)
     {
-        void* pMemory = GMalloc->Malloc(Size, Align<size_t>(Alignment, 16));
+        FMalloc& Allocator = (GMalloc != nullptr) ? *GMalloc : EnsureAllocator();
+        void* pMemory = Allocator.Malloc(Size, Align<size_t>(Alignment, 16));
         LUMINA_PROFILE_ALLOC(pMemory, Size);
         return pMemory;
     }
 
     void* Memory::Realloc(void* Memory, size_t NewSize, size_t Alignment)
     {
-        return GMalloc->Realloc(Memory, NewSize, Align<size_t>(Alignment, 16));
+        FMalloc& Allocator = (GMalloc != nullptr) ? *GMalloc : EnsureAllocator();
+        return Allocator.Realloc(Memory, NewSize, Align<size_t>(Alignment, 16));
     }
 
     void Memory::Free(void*& Memory)
     {
         LUMINA_PROFILE_FREE(Memory);
-        GMalloc->Free(Memory);
+        FMalloc& Allocator = (GMalloc != nullptr) ? *GMalloc : EnsureAllocator();
+        Allocator.Free(Memory);
         Memory = nullptr;
     }
 }

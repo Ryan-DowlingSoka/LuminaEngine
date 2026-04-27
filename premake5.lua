@@ -62,6 +62,8 @@ workspace "Lumina"
         "GLM_FORCE_AVX2",
 		"IMGUI_DEFINE_MATH_OPERATORS",
         "IMGUI_IMPL_VULKAN_USE_VOLK",
+
+        "RMLUI_STATIC_LIB",
         
         "LUA_VECTOR_SIZE=4",
         "LUA_UTAG_LIMIT=1000",
@@ -140,6 +142,7 @@ workspace "Lumina"
         defines { "NDEBUG", "LE_DEVELOPMENT", "LUMINA_DEVELOPMENT", }
 
     filter "configurations:Shipping"
+        targetsuffix "-Shipping"
         linktimeoptimization "On"
         optimize "Full"
         symbols "Off"
@@ -193,6 +196,8 @@ workspace "Lumina"
         include "Engine/Source/ThirdParty/basis_universal"
         include "Engine/Source/ThirdParty/SLang"
         include "Engine/Source/ThirdParty/GoogleTest"
+        include "Engine/Source/ThirdParty/FreeType"
+        include "Engine/Source/ThirdParty/RmlUi"
 	group ""
 
     group "Build"

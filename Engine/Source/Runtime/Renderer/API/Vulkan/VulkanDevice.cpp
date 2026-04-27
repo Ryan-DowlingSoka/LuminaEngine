@@ -14,7 +14,14 @@
 namespace Lumina
 {
     constexpr uint64 DEDICATED_MEMORY_THRESHOLD = 2048llu * 2048;
-    constexpr VkDeviceSize UPLOAD_POOL_BLOCK_SIZE = 128llu * 1024 * 1024;
+
+    // 32 MiB per VMA pool block. Previously 128 MiB, which routinely failed
+    // vmaCreatePool with VK_ERROR_OUT_OF_DEVICE_MEMORY on the host-visible
+    // device-local "BAR" heap that VMA picks for upload buffers — that heap
+    // is 256 MiB on cards without Resizable BAR. 32 MiB still amortizes
+    // vkAllocateMemory cost well across hundreds of small upload buffers
+    // and lets the pool grow elastically (maxBlockCount = 0).
+    constexpr VkDeviceSize UPLOAD_POOL_BLOCK_SIZE = 32llu * 1024 * 1024;
 
     FVulkanMemoryAllocator::FVulkanMemoryAllocator(FVulkanRenderContext* InCxt, VkInstance Instance, VkPhysicalDevice PhysicalDevice, VkDevice Device)
         : RenderContext(InCxt)
@@ -73,12 +80,23 @@ namespace Lumina
         // Perfect for FIFO transient resources like per-frame upload buffers.
         PoolInfo.flags          = VMA_POOL_CREATE_LINEAR_ALGORITHM_BIT;
         PoolInfo.blockSize      = UploadBlockSize;
-        PoolInfo.minBlockCount  = 1; // pre-warm one block so first frames don't pay vkAllocateMemory cost
+        // Lazy-allocate: don't claim a block at init. The first upload buffer
+        // request triggers the first block alloc, which is cheap enough to
+        // happen during normal frame flow. Pre-warming used to fail outright
+        // when the host-visible heap couldn't satisfy a 128 MiB request at
+        // startup, which is why we landed in the warn-and-fallback path
+        // every launch.
+        PoolInfo.minBlockCount  = 0;
         PoolInfo.maxBlockCount  = 0; // unlimited
 
-        if (vmaCreatePool(Allocator, &PoolInfo, &UploadPool) != VK_SUCCESS)
+        const VkResult PoolResult = vmaCreatePool(Allocator, &PoolInfo, &UploadPool);
+        if (PoolResult != VK_SUCCESS)
         {
-            LOG_WARN("FVulkanMemoryAllocator: vmaCreatePool failed for upload pool, falling back to default allocator for upload chunks.");
+            // Surface the actual VkResult so future regressions don't go
+            // unexplained. The fallback to the default allocator is
+            // functionally fine but slower under sustained upload load.
+            LOG_WARN("FVulkanMemoryAllocator: vmaCreatePool failed (VkResult={}, memoryTypeIndex={}, blockSize={} MiB); falling back to default allocator for upload chunks.",
+                (int)PoolResult, MemoryTypeIndex, UploadBlockSize / (1024 * 1024));
             UploadPool = VK_NULL_HANDLE;
             UploadBlockSize = 0;
         }

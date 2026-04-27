@@ -89,19 +89,51 @@ namespace Lumina::Assert
     { \
         LUMINA_ASSERTION_BODY(Expr, Type, __VA_ARGS__) \
     } while(0)
-    
+
 #define LUMINA_ALERT_IF_NOT_INVOKE(Expr, ...) \
     [&]() \
     { \
-        LUMINA_ASSERTION_BODY(Expr, Alert, __VA_ARGS__) \
-        return Expr; \
+        auto _LuminaAlertResult_ = (Expr); \
+        if (!_LuminaAlertResult_) [[unlikely]] \
+        { \
+            EASTL_DEBUG_BREAK(); \
+            using namespace Lumina::Assert; \
+            LUMINA_HANDLE_ASSERTION_HEADER \
+            { \
+                __VA_OPT__(.Message = std::format(__VA_ARGS__).c_str(),) \
+                .Location = std::source_location::current(), \
+                .Expression = #Expr, \
+                .Type = EAssertionType::Alert \
+            }); \
+            if (Detail::ShouldAbortOnAssertion(EAssertionType::Alert)) \
+            { \
+                Detail::Abort(); \
+            } \
+        } \
+        return _LuminaAlertResult_; \
     }()
-    
-    #define LUMINA_ALERT_IF_INVOKE(Expr, ...) \
+
+#define LUMINA_ALERT_IF_INVOKE(Expr, ...) \
     [&]() \
     { \
-        LUMINA_ASSERTION_BODY(!(Expr), Alert, __VA_ARGS__) \
-        return Expr; \
+        auto _LuminaAlertResult_ = (Expr); \
+        if (_LuminaAlertResult_) [[unlikely]] \
+        { \
+            EASTL_DEBUG_BREAK(); \
+            using namespace Lumina::Assert; \
+            LUMINA_HANDLE_ASSERTION_HEADER \
+            { \
+                __VA_OPT__(.Message = std::format(__VA_ARGS__).c_str(),) \
+                .Location = std::source_location::current(), \
+                .Expression = #Expr, \
+                .Type = EAssertionType::Alert \
+            }); \
+            if (Detail::ShouldAbortOnAssertion(EAssertionType::Alert)) \
+            { \
+                Detail::Abort(); \
+            } \
+        } \
+        return _LuminaAlertResult_; \
     }()
     
 

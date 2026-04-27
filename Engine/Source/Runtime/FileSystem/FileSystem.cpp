@@ -361,6 +361,59 @@ namespace Lumina::VFS
         return {};
     }
 
+    FFixedString ResolveToVirtualPath(FStringView InputPath)
+    {
+        if (InputPath.empty())
+        {
+            return {};
+        }
+
+        // Normalize slashes once up front. Both branches need it.
+        FFixedString Normalized = Paths::Normalize(InputPath);
+
+        // Case 1: already a virtual path.
+        if (!Normalized.empty() && Normalized.front() == '/')
+        {
+            return Normalized;
+        }
+
+        // Case 2: walk all native mounts, find one whose BasePath is a prefix.
+        // Native FS BasePaths are absolute, normalized at construction time.
+        FStringView NormalizedView(Normalized.data(), Normalized.size());
+
+        FFixedString Best;
+        size_t BestBaseLen = 0;
+
+        for (const auto& [Alias, MountList] : Detail::FileSystemStorage)
+        {
+            for (const TUniquePtr<IFileSystem>& FS : MountList)
+            {
+                FStringView Base = FS->GetBasePath();
+                if (Base.empty() || Base.size() > NormalizedView.size())
+                {
+                    continue;
+                }
+                // Prefer the longest match (more specific mount wins for nested
+                // mounts like /Engine vs /Engine/Editor).
+                if (NormalizedView.starts_with(Base) && Base.size() > BestBaseLen)
+                {
+                    FStringView Tail = NormalizedView.substr(Base.size());
+                    if (!Tail.empty() && Tail.front() != '/')
+                    {
+                        // Base happens to be a prefix but not on a path boundary —
+                        // skip (e.g. "/Foo" matching "/FooBar/...").
+                        continue;
+                    }
+                    Best.assign(Alias.data(), Alias.size());
+                    Best.append(Tail.data(), Tail.size());
+                    BestBaseLen = Base.size();
+                }
+            }
+        }
+
+        return BestBaseLen > 0 ? Best : Normalized;
+    }
+
     bool HasExtension(FStringView Path, FStringView Ext)
     {
         Path = Paths::Normalize(Path);

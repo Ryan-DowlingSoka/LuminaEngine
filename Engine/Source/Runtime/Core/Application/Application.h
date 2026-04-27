@@ -3,7 +3,6 @@
 #include "Core/LuminaMacros.h"
 #include "Core/Engine/Engine.h"
 #include "Events/EventProcessor.h"
-#include "Prism/PrismApplication.h"
 
 namespace Lumina
 {
@@ -41,7 +40,6 @@ namespace Lumina
 		static void RequestExit();
 
 		FEventProcessor& GetEventProcessor()	{ return EventProcessor; }
-		Prism::FPrismApplication& GetPrismApp() { return PrismApplication; }
 	
 	private:
 
@@ -52,7 +50,6 @@ namespace Lumina
 		
 	protected:
 
-		Prism::FPrismApplication	PrismApplication;
 		FEventProcessor				EventProcessor;
 		FWindow*					MainWindow = nullptr;
 		

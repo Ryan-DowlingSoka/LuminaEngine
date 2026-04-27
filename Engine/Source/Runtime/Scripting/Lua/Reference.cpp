@@ -8,7 +8,7 @@ namespace Lumina::Lua
     { }
 
     FRef::FRef(lua_State* L, int Index)
-        : State(L)
+        : State(lua_mainthread(L))
     {
         Ref = lua_ref(L, Index);
         lua_pop(L, 1);

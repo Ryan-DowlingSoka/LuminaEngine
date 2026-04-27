@@ -7,7 +7,9 @@
 #include "Components/EditorEntityTags.h"
 #include "ContentBrowserEditorTool.h"
 #include "Config/Config.h"
+#include "Core/Application/Application.h"
 #include "Core/Console/ConsoleVariable.h"
+#include "Core/Delegates/CoreDelegates.h"
 #include "Core/Object/Cast.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/ObjectIterator.h"
@@ -306,15 +308,20 @@ namespace Lumina
         //------------------------------------------------------------------------------------------------------
 
         RebindRegistryObservers();
+
+        WorldTravelledHandle = FCoreDelegates::OnWorldTravelled.AddMember(this, &FWorldEditorTool::OnWorldTravelled);
     }
 
     void FWorldEditorTool::OnDeinitialize(const FUpdateContext& UpdateContext)
     {
+        FCoreDelegates::OnWorldTravelled.Remove(WorldTravelledHandle);
+        WorldTravelledHandle = FDelegateHandle{};
+
         if (bSimulatingWorld)
         {
             SetWorldNewSimulate(false);
         }
-        
+
         if (bGamePreviewRunning)
         {
             OnGamePreviewStopRequested.Broadcast();
@@ -2251,6 +2258,36 @@ namespace Lumina
         Registry.on_destroy<SNameComponent>().connect<&FWorldEditorTool::OnOutlinerEntityDestroyed>(this);
     }
 
+    void FWorldEditorTool::OnWorldTravelled(CWorld* OldWorld, CWorld* NewWorld)
+    {
+        // Only react if Travel swapped the world this tool is displaying.
+        if (OldWorld != World.Get() || NewWorld == nullptr)
+        {
+            return;
+        }
+
+        // Drop pointers into the torn-down world before rebinding: property
+        // tables hold raw registry pointers, observers are connected to the
+        // old registry, the outliner caches handles from it.
+        PropertyTables.clear();
+        WorldSettingsPropertyTable.reset();
+
+        World = NewWorld;
+        EditorEntity = entt::null;
+
+        WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
+
+        OutlinerListView.ClearTree();
+        OutlinerListView.MarkTreeDirty();
+        EntityToTreeNode.clear();
+        PendingOutlinerAdds.clear();
+
+        RebindRegistryObservers();
+
+        // ProxyWorld stays as-is so SetWorldPlayInEditor(false) can restore
+        // the editor onto its original map.
+    }
+
     void FWorldEditorTool::SetWorldPlayInEditor(bool bShouldPlay)
     {
         if (bShouldPlay == bGamePreviewRunning)
@@ -2297,6 +2334,7 @@ namespace Lumina
             RebindRegistryObservers();
 
             FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
+            GApp->GetEventProcessor().SetInputMode(EInputMode::Game);
         }
     }
 
@@ -2369,6 +2407,7 @@ namespace Lumina
             OutlinerListView.MarkTreeDirty();
 
             FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
+            GApp->GetEventProcessor().SetInputMode(EInputMode::Game);
         }
     }
 

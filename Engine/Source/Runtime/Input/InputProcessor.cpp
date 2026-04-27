@@ -26,12 +26,6 @@ namespace Lumina
 			MouseDeltaY += MouseEvent.GetDeltaY();
 			MouseX = MouseEvent.GetX();
 			MouseY = MouseEvent.GetY();
-			
-			GApp->GetPrismApp().DispatchMouseMove(Prism::FPrismPointerEvent
-			{
-				.ScreenPosition = glm::vec2(MouseX, MouseY),
-				.Delta = glm::vec2(MouseDeltaX, MouseDeltaY)
-			});
 		}
 		else if (Event.IsA<FMouseButtonPressedEvent>())
 		{
@@ -39,12 +33,6 @@ namespace Lumina
 			uint32 MouseCode = static_cast<uint32>(MouseButtonEvent.GetButton());
 			MouseStates[MouseCode]			= Input::EMouseState::Pressed;
 			MouseKeyDownTimes[MouseCode]	= 0.0f;
-			
-			GApp->GetPrismApp().DispatchMouseButtonDown(Prism::FPrismPointerEvent
-			{
-				.ScreenPosition = glm::vec2(MouseX, MouseY),
-				.Button = static_cast<Prism::EPrismMouseButton>(MouseCode)
-			});
 		}
 		else if (Event.IsA<FMouseButtonReleasedEvent>())
 		{
@@ -52,12 +40,6 @@ namespace Lumina
 			uint32 MouseCode = static_cast<uint32>(MouseButtonEvent.GetButton());
 			MouseStates[MouseCode]			= Input::EMouseState::Released;
 			MouseKeyDownTimes[MouseCode]	= -1.0f;
-			
-			GApp->GetPrismApp().DispatchMouseButtonUp(Prism::FPrismPointerEvent
-			{
-				.ScreenPosition = glm::vec2(MouseX, MouseY),
-				.Button = static_cast<Prism::EPrismMouseButton>(MouseCode)
-			});
 		}
 		else if (Event.IsA<FKeyPressedEvent>())
 		{

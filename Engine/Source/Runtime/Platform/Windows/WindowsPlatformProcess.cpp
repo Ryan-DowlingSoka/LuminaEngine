@@ -157,6 +157,194 @@ namespace Lumina::Platform
         ShellExecuteW(nullptr, TEXT("open"), URL, nullptr, nullptr, SW_SHOWNORMAL);
     }
 
+    int RunProcessAndWaitCapture(const TCHAR* Executable, const TCHAR* Params, const TCHAR* WorkingDirectory, const TFunction<void(FStringView)>& LineCallback)
+    {
+        if (!Executable)
+        {
+            return -1;
+        }
+
+        // Build command line.
+        FWString CmdLine = TEXT("\"");
+        CmdLine += Executable;
+        CmdLine += TEXT("\"");
+        if (Params && Params[0])
+        {
+            CmdLine += TEXT(" ");
+            CmdLine += Params;
+        }
+
+        TVector<wchar_t> CmdBuffer(CmdLine.begin(), CmdLine.end());
+        CmdBuffer.push_back(L'\0');
+
+        // Pipe for child stdout+stderr. Only the read end stays in the parent;
+        // the write end is inheritable so the child can use it as both
+        // stdout and stderr. Stderr-into-stdout means MSBuild diagnostics
+        // appear inline with regular log output, which is what we want for
+        // a build log.
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+        sa.lpSecurityDescriptor = nullptr;
+
+        HANDLE ReadEnd = nullptr;
+        HANDLE WriteEnd = nullptr;
+        if (!CreatePipe(&ReadEnd, &WriteEnd, &sa, 0))
+        {
+            return -1;
+        }
+        // The parent's read end must NOT be inherited by the child.
+        SetHandleInformation(ReadEnd, HANDLE_FLAG_INHERIT, 0);
+
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput  = nullptr;
+        si.hStdOutput = WriteEnd;
+        si.hStdError  = WriteEnd;
+
+        PROCESS_INFORMATION pi{};
+
+        // CREATE_NO_WINDOW: the editor isn't a console app, and we're capturing
+        // output anyway; suppressing the popup keeps the experience clean.
+        const DWORD CreationFlags = CREATE_NO_WINDOW;
+
+        BOOL ok = CreateProcessW(
+            nullptr,
+            CmdBuffer.data(),
+            nullptr,
+            nullptr,
+            TRUE,                     // bInheritHandles must be TRUE for pipe
+            CreationFlags,
+            nullptr,
+            WorkingDirectory,
+            &si,
+            &pi);
+
+        // Drop our copy of the write end immediately — only the child should
+        // hold it open. Without this, ReadFile below blocks forever after the
+        // child exits because the OS still sees a writer.
+        CloseHandle(WriteEnd);
+
+        if (!ok)
+        {
+            CloseHandle(ReadEnd);
+            return -1;
+        }
+
+        // Stream the pipe one chunk at a time, splitting on '\n' and emitting
+        // each complete line through the callback. Carries any partial trailing
+        // line across reads.
+        FString Pending;
+        char ReadBuf[4096];
+        DWORD BytesRead = 0;
+
+        while (ReadFile(ReadEnd, ReadBuf, sizeof(ReadBuf), &BytesRead, nullptr) && BytesRead > 0)
+        {
+            Pending.append(ReadBuf, BytesRead);
+
+            size_t Cursor = 0;
+            for (;;)
+            {
+                const size_t NewlineIdx = Pending.find('\n', Cursor);
+                if (NewlineIdx == FString::npos)
+                {
+                    break;
+                }
+
+                size_t LineEnd = NewlineIdx;
+                // Strip trailing CR for CRLF lines.
+                if (LineEnd > Cursor && Pending[LineEnd - 1] == '\r')
+                {
+                    --LineEnd;
+                }
+
+                if (LineCallback)
+                {
+                    LineCallback(FStringView(Pending.data() + Cursor, LineEnd - Cursor));
+                }
+                Cursor = NewlineIdx + 1;
+            }
+
+            if (Cursor > 0)
+            {
+                Pending.erase(0, Cursor);
+            }
+        }
+
+        // Final partial line (no trailing newline).
+        if (!Pending.empty() && LineCallback)
+        {
+            LineCallback(FStringView(Pending.data(), Pending.size()));
+        }
+
+        CloseHandle(ReadEnd);
+
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD ExitCode = 1;
+        GetExitCodeProcess(pi.hProcess, &ExitCode);
+
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+
+        return (int)ExitCode;
+    }
+
+    int RunProcessAndWait(const TCHAR* Executable, const TCHAR* Params, const TCHAR* WorkingDirectory)
+    {
+        if (!Executable)
+        {
+            return -1;
+        }
+
+        FWString CmdLine = TEXT("\"");
+        CmdLine += Executable;
+        CmdLine += TEXT("\"");
+        if (Params && Params[0])
+        {
+            CmdLine += TEXT(" ");
+            CmdLine += Params;
+        }
+
+        TVector<wchar_t> CmdBuffer(CmdLine.begin(), CmdLine.end());
+        CmdBuffer.push_back(L'\0');
+
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+
+        // CREATE_NEW_CONSOLE keeps the child's stdout out of our window so
+        // it doesn't garble the editor; the user can watch the spawned
+        // console for build progress.
+        const DWORD CreationFlags = CREATE_NEW_CONSOLE;
+
+        BOOL ok = CreateProcessW(
+            nullptr,
+            CmdBuffer.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            CreationFlags,
+            nullptr,
+            WorkingDirectory,
+            &si,
+            &pi);
+
+        if (!ok)
+        {
+            return -1;
+        }
+
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD ExitCode = 1;
+        GetExitCodeProcess(pi.hProcess, &ExitCode);
+
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+
+        return (int)ExitCode;
+    }
+
     const TCHAR* ExecutableName(bool bRemoveExtension)
     {
         static TCHAR ExecutablePath[MAX_PATH];

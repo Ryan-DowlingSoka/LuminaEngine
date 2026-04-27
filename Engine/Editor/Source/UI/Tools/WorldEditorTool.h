@@ -116,6 +116,9 @@ namespace Lumina
         /** Rebind OnEntityCreated/OnEntityDestroyed observers to the current World's registry. */
         void RebindRegistryObservers();
 
+        /** Engine-driven world travel: drop everything tied to OldWorld and re-bind to NewWorld. ProxyWorld is preserved. */
+        void OnWorldTravelled(CWorld* OldWorld, CWorld* NewWorld);
+
         /** Accept a content-browser drag payload in the current scope and, if it's a prefab, instantiate it under DropTarget. */
         void AcceptContentBrowserPrefabPayload(entt::entity DropTarget);
 
@@ -226,6 +229,8 @@ namespace Lumina
 		bool									bGuizmoSnapEnabled = true;
         bool                                    bGamePreviewRunning = false;
         bool                                    bSimulatingWorld = false;
+
+        FDelegateHandle                         WorldTravelledHandle;
         
         /** IDK, this thing will return IsUsing = true always if it's never been used */
         bool                                    bImGuizmoUsedOnce = false;
