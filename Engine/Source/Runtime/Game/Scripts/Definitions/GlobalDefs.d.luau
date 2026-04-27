@@ -1,263 +1,89 @@
 
-declare CTexture: { }
-declare class CTexture
+declare SCharacterPhysicsComponent: { }
+declare class SCharacterPhysicsComponent
+	CollisionProfile: FCollisionProfile
+	HalfHeight: number
+	Radius: number
+	Mass: number
+	Padding: number
+	HitReductionCosMaxAngle: number
+	PenetrationRecoverySpeed: number
+	PredictiveContactDistance: number
+	MaxStrength: number
+	MaxSlopeAngle: number
+	StepHeight: number
+	MaxCollisionIterations: number
+	MaxConstraintIterations: number
+	MinTimeRemaining: number
+	CollisionTolerance: number
+	MaxNumHits: number
+	function GetBodyID(self): any
+end
+declare SCharacterMovementComponent: { }
+declare class SCharacterMovementComponent
+	MoveSpeed: number
+	Acceleration: number
+	Deceleration: number
+	AirControl: number
+	GroundFriction: number
+	JumpSpeed: number
+	RotationRate: number
+	MaxJumpCount: number
+	Gravity: number
+	Velocity: vec3
+	bUseControllerRotation: boolean
+	bOrientRotationToMovement: boolean
+	bGrounded: boolean
+	JumpCount: number
 end
 
-declare CAudioStream: { }
-declare class CAudioStream
-end
+declare EKey: number
 
-declare SPrefabComponent: { }
-declare class SPrefabComponent
-	StableID: string
-end
-declare SPrefabInstanceComponent: { }
-declare class SPrefabInstanceComponent
-	SourcePrefab: CPrefab
-	StableID: string
-	bIsRoot: boolean
-end
-
-declare ESineWaveType: number
-
-declare ESMAAQuality: number
-declare SDefaultWorldSettings: { }
-declare class SDefaultWorldSettings
-	WorldKillHeight: number
-	GravityScale: number
-	DeltaTimeScale: number
-	CascadeSplitLambda: number
-	ShadowMaxDistance: number
-	SMAAQuality: number
-	GravityDirection: vec3
-	PhysicsHz: number
-	MaxPhysicsSteps: number
-	bEnablePhysicsInterpolation: boolean
-	bDeterministicSimulation: boolean
-	NumVelocitySteps: number
-	NumPositionSteps: number
-	BaumgarteStabilizationFactor: number
-	SpeculativeContactDistance: number
-	PenetrationSlop: number
-	MaxPenetrationDistance: number
-	LinearCastThreshold: number
-	LinearCastMaxPenetration: number
-	ManifoldTolerance: number
-	MinVelocityForRestitution: number
-	TimeBeforeSleep: number
-	SleepVelocityThreshold: number
-	BodyPairCacheMaxDeltaPositionSq: number
-	BodyPairCacheCosMaxDeltaRotationDiv2: number
-	ContactNormalCosMaxDeltaRotation: number
-	ContactPointPreserveLambdaMaxDistSq: number
-	MaxInFlightBodyPairs: number
-	StepListenersBatchSize: number
-	StepListenerBatchesPerJob: number
-	bConstraintWarmStart: boolean
-	bUseBodyPairContactCache: boolean
-	bUseManifoldReduction: boolean
-	bUseLargeIslandSplitter: boolean
-	bAllowSleeping: boolean
-	bCheckActiveEdges: boolean
+declare CParticleOutputNode: { }
+declare class CParticleOutputNode
 end
 
 declare CMeshFactory: { }
 declare class CMeshFactory
 end
 
-declare CParticleExpression_ConstantFloat: { }
-declare class CParticleExpression_ConstantFloat
-	Value: number
+declare SPointLightComponent: { }
+declare class SPointLightComponent
+	LightColor: vec3
+	Intensity: number
+	Attenuation: number
+	Falloff: number
+	bCastShadows: boolean
 end
-declare CParticleExpression_ConstantFloat3: { }
-declare class CParticleExpression_ConstantFloat3
-	Value: vec3
+declare SSpotLightComponent: { }
+declare class SSpotLightComponent
+	LightColor: vec3
+	Intensity: number
+	InnerConeAngle: number
+	OuterConeAngle: number
+	Attenuation: number
+	Falloff: number
+	bCastShadows: boolean
+	ShadowBias: number
+	ShadowRadius: number
+	bVolumetric: boolean
+	VolumetricIntensity: number
 end
-declare CParticleExpression_ConstantFloat4: { }
-declare class CParticleExpression_ConstantFloat4
-	Value: vec4
-end
-declare CParticleExpression_Time: { }
-declare class CParticleExpression_Time
-end
-declare CParticleExpression_ParticleAge: { }
-declare class CParticleExpression_ParticleAge
-end
-declare CParticleExpression_LifeRatio: { }
-declare class CParticleExpression_LifeRatio
-end
-declare CParticleExpression_BinaryOp: { }
-declare class CParticleExpression_BinaryOp
-end
-declare CParticleExpression_Add: { }
-declare class CParticleExpression_Add
-end
-declare CParticleExpression_Subtract: { }
-declare class CParticleExpression_Subtract
-end
-declare CParticleExpression_Multiply: { }
-declare class CParticleExpression_Multiply
-end
-declare CParticleExpression_Divide: { }
-declare class CParticleExpression_Divide
-end
-declare CParticleExpression_Lerp: { }
-declare class CParticleExpression_Lerp
-end
-declare CParticleExpression_Saturate: { }
-declare class CParticleExpression_Saturate
-end
-declare CParticleExpression_Sin: { }
-declare class CParticleExpression_Sin
-end
-declare CParticleExpression_Cos: { }
-declare class CParticleExpression_Cos
-end
-declare CParticleExpression_Normalize: { }
-declare class CParticleExpression_Normalize
-end
-declare CParticleExpression_MakeFloat3: { }
-declare class CParticleExpression_MakeFloat3
-end
-declare CParticleExpression_MakeFloat4: { }
-declare class CParticleExpression_MakeFloat4
+declare SDirectionalLightComponent: { }
+declare class SDirectionalLightComponent
+	Color: vec3
+	Direction: vec3
+	Intensity: number
+	bCastShadows: boolean
 end
 
-declare EMaterialParameterType: number
-declare FMaterialParameter: { }
-declare class FMaterialParameter
-	ParameterName: string
-	Type: number
-	Index: number
+declare CSkeletalMesh: { }
+declare class CSkeletalMesh
+	Skeleton: CSkeleton
 end
 
-declare SParticleSystemComponent: { }
-declare class SParticleSystemComponent
-	ParticleSystem: CParticleSystem
-	EmitterOffset: vec3
-	SpawnRateMultiplier: number
-	TimeScale: number
-	bEmit: boolean
-	bBurstOnSpawn: boolean
-	function Activate(self, bReset: boolean)
-	function Deactivate(self): any
-	function IsActive(self): any
-end
-
-declare SUpdateTransformEntitySystem: { }
-declare class SUpdateTransformEntitySystem
-end
-
-declare CStaticMesh: { }
-declare class CStaticMesh
-end
-
-declare CMaterialNodeGetTime: { }
-declare class CMaterialNodeGetTime
-end
-
-declare FMaterialParameterOverride: { }
-declare class FMaterialParameterOverride
-	ParameterName: string
-	Type: number
-	Scalar: number
-	Vector: vec4
-	Texture: CTexture
-end
-declare CMaterialInstance: { }
-declare class CMaterialInstance
-	Material: CMaterial
-end
-
-declare SSimpleAnimationComponent: { }
-declare class SSimpleAnimationComponent
-	Animation: CAnimation
-	CurrentTime: number
-	PlaybackSpeed: number
-	bLooping: boolean
-	bPlaying: boolean
-end
-
-declare CFactoryRegistry: { }
-declare class CFactoryRegistry
-end
-declare CFactory: { }
-declare class CFactory
-end
-
-declare CTextureFactory: { }
-declare class CTextureFactory
-end
-
-declare SRigidBodyComponent: { }
-declare class SRigidBodyComponent
-	BodyID: number
-	Mass: number
-	CollisionProfile: FCollisionProfile
-	NumVelocityStepsOverride: number
-	NumPositionStepsOverride: number
-	MaxLinearVelocity: number
-	MaxAngularVelocity: number
-	RestitutionOverride: number
-	FrictionOverride: number
-	LinearDamping: number
-	AngularDamping: number
-	MotionQualityLevel: number
-	BodyType: number
-	bIsSensor: boolean
-	bUseManifoldReduction: boolean
-	bApplyGyroscopicForce: boolean
-	bAllowSleeping: boolean
-	bUseGravity: boolean
-end
-declare SBoxColliderComponent: { }
-declare class SBoxColliderComponent
-	HalfExtent: vec3
-	TranslationOffset: vec3
-	RotationOffset: vec3
-end
-declare SSphereColliderComponent: { }
-declare class SSphereColliderComponent
-	Radius: number
-	TranslationOffset: vec3
-end
-
-declare CMesh: { }
-declare class CMesh
-	BoundingBox: FAABB
-	function GetAABB(self): any
-end
-
-declare SHealthComponent: { }
-declare class SHealthComponent
-	Health: number
-	MaxHealth: number
-	function ApplyDamage(self, Damage: number): number
-	function GiveHealth(self, NewHealth: number)
-end
-
-declare CWorldFactory: { }
-declare class CWorldFactory
-end
-
-declare SMeshComponent: { }
-declare class SMeshComponent
-	CustomPrimitiveData: SCustomPrimitiveData
-	MaxDrawDistance: number
-	BoundsScale: number
-	bUseAsOccluder: boolean
-	bIgnoreOcclusionCulling: boolean
-	bCastShadow: boolean
-	bReceiveShadow: boolean
-	ForcedLODIndex: number
-end
-
-declare CGameInstance: { }
-declare class CGameInstance
-end
-
-declare SAudioSystem: { }
-declare class SAudioSystem
+declare SLifetimeSystem: { }
+declare class SLifetimeSystem
 end
 
 declare CMaterialExpression: { }
@@ -413,45 +239,372 @@ declare CMaterialExpression_ConstantFloat4: { }
 declare class CMaterialExpression_ConstantFloat4
 end
 
+declare CAnimation: { }
+declare class CAnimation
+	Skeleton: CSkeleton
+end
+
+declare EMaterialType: number
+declare EBlendMode: number
+declare EMaterialShadingModel: number
+declare CMaterialInterface: { }
+declare class CMaterialInterface
+end
+
+declare ESkyMode: number
+declare SEnvironmentComponent: { }
+declare class SEnvironmentComponent
+	bRenderSky: boolean
+	SkyMode: number
+	SolidSkyColor: vec3
+	ZenithColor: vec3
+	HorizonColor: vec3
+	GroundColor: vec3
+	HorizonExponent: number
+	SunDiscScale: number
+	SunIntensity: number
+	SunColorTint: vec3
+	SkyExposure: number
+	MieAnisotropy: number
+	AmbientColor: vec3
+	AmbientIntensity: number
+	bAmbientFromSky: boolean
+end
+
+declare SSimpleAnimationSystem: { }
+declare class SSimpleAnimationSystem
+end
+
+declare CMaterialNodeGraph: { }
+declare class CMaterialNodeGraph
+end
+
 declare CEdNode_Reroute: { }
 declare class CEdNode_Reroute
 end
 
-declare SInterpolatingMovementComponent: { }
-declare class SInterpolatingMovementComponent
-	Start: FTransform
-	End: FTransform
-	Speed: number
-end
-declare SSineWaveMovementComponent: { }
-declare class SSineWaveMovementComponent
-	Axis: vec3
-	Amplitude: number
-	Frequency: number
-	PhaseOffset: number
-	bEnableSecondaryAxis: boolean
-	SecondaryAxis: vec3
-	SecondaryAmplitude: number
-	SecondaryFrequency: number
-	SecondaryPhaseOffset: number
-	WaveType: number
-	bDampingEnabled: boolean
-	DampingFactor: number
-	bAmplitudeModulation: boolean
-	AmplitudeModulationFrequency: number
-	bUseRelativeMovement: boolean
-	bAutoStart: boolean
-	StartDelay: number
+declare CSkeleton: { }
+declare class CSkeleton
+	PreviewMesh: CSkeletalMesh
 end
 
-declare ECollisionProfiles: number
-declare FCollisionProfile: { }
-declare class FCollisionProfile
-	Layer: number
-	Mask: number
+declare SUpdateTransformEntitySystem: { }
+declare class SUpdateTransformEntitySystem
 end
-declare EMoveMode: number
-declare EBodyType: number
+
+declare SHealthComponent: { }
+declare class SHealthComponent
+	Health: number
+	MaxHealth: number
+	function ApplyDamage(self, Damage: number): number
+	function GiveHealth(self, NewHealth: number)
+end
+
+declare SDisabledTag: { }
+declare class SDisabledTag
+end
+
+declare ESMAAQuality: number
+declare SDefaultWorldSettings: { }
+declare class SDefaultWorldSettings
+	WorldKillHeight: number
+	GravityScale: number
+	DeltaTimeScale: number
+	CascadeSplitLambda: number
+	ShadowMaxDistance: number
+	SMAAQuality: number
+	GravityDirection: vec3
+	PhysicsHz: number
+	MaxPhysicsSteps: number
+	bEnablePhysicsInterpolation: boolean
+	bDeterministicSimulation: boolean
+	NumVelocitySteps: number
+	NumPositionSteps: number
+	BaumgarteStabilizationFactor: number
+	SpeculativeContactDistance: number
+	PenetrationSlop: number
+	MaxPenetrationDistance: number
+	LinearCastThreshold: number
+	LinearCastMaxPenetration: number
+	ManifoldTolerance: number
+	MinVelocityForRestitution: number
+	TimeBeforeSleep: number
+	SleepVelocityThreshold: number
+	BodyPairCacheMaxDeltaPositionSq: number
+	BodyPairCacheCosMaxDeltaRotationDiv2: number
+	ContactNormalCosMaxDeltaRotation: number
+	ContactPointPreserveLambdaMaxDistSq: number
+	MaxInFlightBodyPairs: number
+	StepListenersBatchSize: number
+	StepListenerBatchesPerJob: number
+	bConstraintWarmStart: boolean
+	bUseBodyPairContactCache: boolean
+	bUseManifoldReduction: boolean
+	bUseLargeIslandSplitter: boolean
+	bAllowSleeping: boolean
+	bCheckActiveEdges: boolean
+end
+
+declare CMesh: { }
+declare class CMesh
+	BoundingBox: FAABB
+	function GetAABB(self): any
+end
+
+declare EWorldType: number
+
+declare SParticleSystemComponent: { }
+declare class SParticleSystemComponent
+	ParticleSystem: CParticleSystem
+	EmitterOffset: vec3
+	SpawnRateMultiplier: number
+	TimeScale: number
+	bEmit: boolean
+	bBurstOnSpawn: boolean
+	function Activate(self, bReset: boolean)
+	function Deactivate(self): any
+	function IsActive(self): any
+end
+
+declare SInputComponent: { }
+declare class SInputComponent
+end
+
+declare CTexture: { }
+declare class CTexture
+end
+
+declare CEdNodeGraph: { }
+declare class CEdNodeGraph
+	GraphSaveData: string
+end
+
+declare STerrainLayer: { }
+declare class STerrainLayer
+	UVScale: number
+	Name: string
+end
+declare STerrainComponent: { }
+declare class STerrainComponent
+	Material: CMaterialInterface
+	Resolution: number
+	ChunkResolution: number
+	TileWorldSize: number
+	MaxHeight: number
+	bCastShadow: boolean
+	bReceiveShadow: boolean
+end
+
+declare EMaterialParameterType: number
+declare FMaterialParameter: { }
+declare class FMaterialParameter
+	ParameterName: string
+	Type: number
+	Index: number
+end
+
+declare CEdGraphNode: { }
+declare class CEdGraphNode
+	GridX: number
+	GridY: number
+	NodeID: number
+end
+
+declare CParticleInput: { }
+declare class CParticleInput
+end
+declare CParticleOutput: { }
+declare class CParticleOutput
+end
+
+declare CFactoryRegistry: { }
+declare class CFactoryRegistry
+end
+declare CFactory: { }
+declare class CFactory
+end
+
+declare STagComponent: { }
+declare class STagComponent
+	Tag: string
+end
+
+declare FMaterialParameterOverride: { }
+declare class FMaterialParameterOverride
+	ParameterName: string
+	Type: number
+	Scalar: number
+	Vector: vec4
+	Texture: CTexture
+end
+declare CMaterialInstance: { }
+declare class CMaterialInstance
+	Material: CMaterial
+end
+
+declare SRayResult: { }
+declare class SRayResult
+	BodyID: number
+	Entity: number
+	Start: vec3
+	End: vec3
+	Location: vec3
+	Normal: vec3
+	Fraction: number
+end
+declare SRayCastSettings: { }
+declare class SRayCastSettings
+	Start: vec3
+	End: vec3
+	bDrawDebug: boolean
+	DebugDuration: number
+	DebugHitColor: vec3
+	DebugMissColor: vec3
+	LayerMask: number
+end
+declare SSphereCastSettings: { }
+declare class SSphereCastSettings
+	Start: vec3
+	End: vec3
+	Radius: number
+	bDrawDebug: boolean
+	DebugDuration: number
+	DebugHitColor: vec3
+	DebugMissColor: vec3
+	LayerMask: number
+end
+
+declare CMaterialInput: { }
+declare class CMaterialInput
+end
+
+declare SPrefabComponent: { }
+declare class SPrefabComponent
+	StableID: string
+end
+declare SPrefabInstanceComponent: { }
+declare class SPrefabInstanceComponent
+	SourcePrefab: CPrefab
+	StableID: string
+	bIsRoot: boolean
+end
+
+declare SNameComponent: { }
+declare class SNameComponent
+	Name: string
+end
+
+declare CMaterialOutput: { }
+declare class CMaterialOutput
+end
+
+declare SScriptSystem: { }
+declare class SScriptSystem
+end
+
+declare CPrefab: { }
+declare class CPrefab
+end
+
+declare SAudioSystem: { }
+declare class SAudioSystem
+end
+
+declare SSpringArmComponent: { }
+declare class SSpringArmComponent
+	TargetArmLength: number
+	SocketOffset: vec3
+	ProbeSize: number
+	bDoCollisionTest: boolean
+	bUseControlRotation: boolean
+end
+
+declare SScriptComponent: { }
+declare class SScriptComponent
+	ScriptPath: FScriptPath
+	PropertyOverrides: FScriptPropertyOverrides
+end
+
+declare CStaticMesh: { }
+declare class CStaticMesh
+end
+
+declare CComponentVisualizerRegistry: { }
+declare class CComponentVisualizerRegistry
+end
+declare CComponentVisualizer: { }
+declare class CComponentVisualizer
+end
+declare CComponentVisualizer_PointLight: { }
+declare class CComponentVisualizer_PointLight
+end
+declare CComponentVisualizer_SpotLight: { }
+declare class CComponentVisualizer_SpotLight
+end
+declare CComponentVisualizer_SphereCollider: { }
+declare class CComponentVisualizer_SphereCollider
+end
+declare CComponentVisualizer_BoxCollider: { }
+declare class CComponentVisualizer_BoxCollider
+end
+declare CComponentVisualizer_CharacterPhysics: { }
+declare class CComponentVisualizer_CharacterPhysics
+end
+declare CComponentVisualizer_Camera: { }
+declare class CComponentVisualizer_Camera
+end
+
+declare ECustomPrimitiveDataType: number
+declare SCustomPrimitiveData: { }
+declare class SCustomPrimitiveData
+	Type: number
+	function AsFloat(self): any
+	function AsInt(self): any
+	function AsBool(self): any
+	function AsFloat4(self): any
+	function SetAsFloat(self, X: number)
+	function SetAsInt(self, X: number)
+	function SetAsBool(self, X: boolean)
+	function SetAsFloat4(self, Bytes: vec4)
+end
+
+declare vec2: { }
+declare class vec2
+	x: number
+	y: number
+end
+declare vec3: { }
+declare class vec3
+	x: number
+	y: number
+	z: number
+end
+declare vec4: { }
+declare class vec4
+	x: number
+	y: number
+	z: number
+	w: number
+end
+declare quat: { }
+declare class quat
+	x: number
+	y: number
+	z: number
+	w: number
+end
+
+declare SStaticMeshComponent: { }
+declare class SStaticMeshComponent
+	StaticMesh: CStaticMesh
+	function GetAABB(self): any
+	function SetStaticMesh(self, InMesh: CStaticMesh)
+	function GetStaticMesh(self): any
+end
+
+declare CGameInstance: { }
+declare class CGameInstance
+end
 
 declare SImpulseEvent: { }
 declare class SImpulseEvent
@@ -501,65 +654,45 @@ declare class SSetGravityFactorEvent
 	GravityFactor: number
 end
 
-declare CAudioStreamFactory: { }
-declare class CAudioStreamFactory
+declare SCharacterControllerComponent: { }
+declare class SCharacterControllerComponent
+	MoveInput: vec3
+	LookInput: vec2
+	PitchClamp: vec2
+	bJumpPressed: boolean
+	function AddMovementInput(self, Move: vec3)
+	function AddLookInput(self, Look: vec2)
+	function AddPitch(self, Degrees: number)
+	function AddYaw(self, Degrees: number)
+	function GetLookForward(self): any
+	function GetLookRight(self): any
+	function Jump(self): any
 end
 
-declare CMaterialOutputNode: { }
-declare class CMaterialOutputNode
+declare SLifetimeComponent: { }
+declare class SLifetimeComponent
+	Lifetime: number
 end
 
-declare CMaterialInstanceFactory: { }
-declare class CMaterialInstanceFactory
+declare CAudioStream: { }
+declare class CAudioStream
 end
 
-declare CThumbnailManager: { }
-declare class CThumbnailManager
-	CubeMesh: CStaticMesh
-	SphereMesh: CStaticMesh
-	PlaneMesh: CStaticMesh
+declare CMaterialExpression_CustomPrimitiveData: { }
+declare class CMaterialExpression_CustomPrimitiveData
+	Type: number
 end
 
-declare SCharacterPhysicsComponent: { }
-declare class SCharacterPhysicsComponent
-	CollisionProfile: FCollisionProfile
-	HalfHeight: number
-	Radius: number
-	Mass: number
-	Padding: number
-	HitReductionCosMaxAngle: number
-	PenetrationRecoverySpeed: number
-	PredictiveContactDistance: number
-	MaxStrength: number
-	MaxSlopeAngle: number
-	StepHeight: number
-	MaxCollisionIterations: number
-	MaxConstraintIterations: number
-	MinTimeRemaining: number
-	CollisionTolerance: number
-	MaxNumHits: number
-	function GetBodyID(self): any
-end
-declare SCharacterMovementComponent: { }
-declare class SCharacterMovementComponent
-	MoveSpeed: number
-	Acceleration: number
-	Deceleration: number
-	AirControl: number
-	GroundFriction: number
-	JumpSpeed: number
-	RotationRate: number
-	MaxJumpCount: number
-	Gravity: number
-	Velocity: vec3
-	bUseControllerRotation: boolean
-	bOrientRotationToMovement: boolean
-	bGrounded: boolean
-	JumpCount: number
+declare FScriptPropertyOverrides: { }
+declare class FScriptPropertyOverrides
 end
 
-declare CParticleNodeGraph: { }
-declare class CParticleNodeGraph
+declare CPrefabFactory: { }
+declare class CPrefabFactory
+end
+
+declare SEditorEntityMovementSystem: { }
+declare class SEditorEntityMovementSystem
 end
 
 declare FAABB: { }
@@ -571,36 +704,23 @@ declare class FAABB
 	function GetCenter(self): any
 end
 
-declare EMouseMode: number
-declare EMouseKey: number
-
-declare ESkyMode: number
-declare SEnvironmentComponent: { }
-declare class SEnvironmentComponent
-	bRenderSky: boolean
-	SkyMode: number
-	SolidSkyColor: vec3
-	ZenithColor: vec3
-	HorizonColor: vec3
-	GroundColor: vec3
-	HorizonExponent: number
-	SunDiscScale: number
-	SunIntensity: number
-	SunColorTint: vec3
-	SkyExposure: number
-	MieAnisotropy: number
-	AmbientColor: vec3
-	AmbientIntensity: number
-	bAmbientFromSky: boolean
-end
-
-declare CMaterialGraphNode: { }
-declare class CMaterialGraphNode
+declare CMaterialOutputNode: { }
+declare class CMaterialOutputNode
 end
 
 declare FScriptPath: { }
 declare class FScriptPath
 	Path: string
+end
+
+declare CMaterialExpression_TextureSample: { }
+declare class CMaterialExpression_TextureSample
+	Texture: CTexture
+	ParameterName: string
+end
+
+declare CTextureFactory: { }
+declare class CTextureFactory
 end
 
 declare CMaterial: { }
@@ -614,37 +734,28 @@ declare class CMaterial
 	OpacityMaskClipValue: number
 end
 
-declare EWorldType: number
-
-declare EUpdateStage: number
-
-declare CParticleGraphNode: { }
-declare class CParticleGraphNode
+declare SSkeletalMeshComponent: { }
+declare class SSkeletalMeshComponent
+	SkeletalMesh: CSkeletalMesh
+	bCastShadow: boolean
+	bReceiveShadow: boolean
+	function GetAABB(self): any
 end
 
-declare ECustomPrimitiveDataType: number
-declare SCustomPrimitiveData: { }
-declare class SCustomPrimitiveData
-	Type: number
-	function AsFloat(self): any
-	function AsInt(self): any
-	function AsBool(self): any
-	function AsFloat4(self): any
-	function SetAsFloat(self, X: number)
-	function SetAsInt(self, X: number)
-	function SetAsBool(self, X: boolean)
-	function SetAsFloat4(self, Bytes: vec4)
+declare SVelocityComponent: { }
+declare class SVelocityComponent
+	Velocity: vec3
+	Speed: number
+	Scale: number
 end
 
-declare CAnimation: { }
-declare class CAnimation
-	Skeleton: CSkeleton
-end
-
-declare CMaterialExpression_TextureSample: { }
-declare class CMaterialExpression_TextureSample
-	Texture: CTexture
-	ParameterName: string
+declare SCameraComponent: { }
+declare class SCameraComponent
+	FOV: number
+	bAutoActivate: boolean
+	function GetPosition(self): any
+	function GetForwardVector(self): any
+	function GetRightVector(self): any
 end
 
 declare SAudioSourceComponent: { }
@@ -661,66 +772,93 @@ declare SAudioListenerComponent: { }
 declare class SAudioListenerComponent
 end
 
-declare CEdNodeGraph: { }
-declare class CEdNodeGraph
-	GraphSaveData: string
+declare CParticleExpression_ConstantFloat: { }
+declare class CParticleExpression_ConstantFloat
+	Value: number
+end
+declare CParticleExpression_ConstantFloat3: { }
+declare class CParticleExpression_ConstantFloat3
+	Value: vec3
+end
+declare CParticleExpression_ConstantFloat4: { }
+declare class CParticleExpression_ConstantFloat4
+	Value: vec4
+end
+declare CParticleExpression_Time: { }
+declare class CParticleExpression_Time
+end
+declare CParticleExpression_ParticleAge: { }
+declare class CParticleExpression_ParticleAge
+end
+declare CParticleExpression_LifeRatio: { }
+declare class CParticleExpression_LifeRatio
+end
+declare CParticleExpression_BinaryOp: { }
+declare class CParticleExpression_BinaryOp
+end
+declare CParticleExpression_Add: { }
+declare class CParticleExpression_Add
+end
+declare CParticleExpression_Subtract: { }
+declare class CParticleExpression_Subtract
+end
+declare CParticleExpression_Multiply: { }
+declare class CParticleExpression_Multiply
+end
+declare CParticleExpression_Divide: { }
+declare class CParticleExpression_Divide
+end
+declare CParticleExpression_Lerp: { }
+declare class CParticleExpression_Lerp
+end
+declare CParticleExpression_Saturate: { }
+declare class CParticleExpression_Saturate
+end
+declare CParticleExpression_Sin: { }
+declare class CParticleExpression_Sin
+end
+declare CParticleExpression_Cos: { }
+declare class CParticleExpression_Cos
+end
+declare CParticleExpression_Normalize: { }
+declare class CParticleExpression_Normalize
+end
+declare CParticleExpression_MakeFloat3: { }
+declare class CParticleExpression_MakeFloat3
+end
+declare CParticleExpression_MakeFloat4: { }
+declare class CParticleExpression_MakeFloat4
 end
 
-declare SPointLightComponent: { }
-declare class SPointLightComponent
-	LightColor: vec3
-	Intensity: number
-	Attenuation: number
-	Falloff: number
-	bCastShadows: boolean
+declare SInterpolatingMovementComponent: { }
+declare class SInterpolatingMovementComponent
+	Start: FTransform
+	End: FTransform
+	Speed: number
 end
-declare SSpotLightComponent: { }
-declare class SSpotLightComponent
-	LightColor: vec3
-	Intensity: number
-	InnerConeAngle: number
-	OuterConeAngle: number
-	Attenuation: number
-	Falloff: number
-	bCastShadows: boolean
-	ShadowBias: number
-	ShadowRadius: number
-	bVolumetric: boolean
-	VolumetricIntensity: number
-end
-declare SDirectionalLightComponent: { }
-declare class SDirectionalLightComponent
-	Color: vec3
-	Direction: vec3
-	Intensity: number
-	bCastShadows: boolean
+declare SSineWaveMovementComponent: { }
+declare class SSineWaveMovementComponent
+	Axis: vec3
+	Amplitude: number
+	Frequency: number
+	PhaseOffset: number
+	bEnableSecondaryAxis: boolean
+	SecondaryAxis: vec3
+	SecondaryAmplitude: number
+	SecondaryFrequency: number
+	SecondaryPhaseOffset: number
+	WaveType: number
+	bDampingEnabled: boolean
+	DampingFactor: number
+	bAmplitudeModulation: boolean
+	AmplitudeModulationFrequency: number
+	bUseRelativeMovement: boolean
+	bAutoStart: boolean
+	StartDelay: number
 end
 
-declare CMaterialExpression_CustomPrimitiveData: { }
-declare class CMaterialExpression_CustomPrimitiveData
-	Type: number
-end
-
-declare SCharacterControllerComponent: { }
-declare class SCharacterControllerComponent
-	MoveInput: vec3
-	LookInput: vec2
-	PitchClamp: vec2
-	bJumpPressed: boolean
-	function AddMovementInput(self, Move: vec3)
-	function AddLookInput(self, Look: vec2)
-	function AddPitch(self, Degrees: number)
-	function AddYaw(self, Degrees: number)
-	function GetLookForward(self): any
-	function GetLookRight(self): any
-	function Jump(self): any
-end
-
-declare FTransform: { }
-declare class FTransform
-	Location: vec3
-	Rotation: quat
-	Scale: vec3
+declare CMaterialInstanceFactory: { }
+declare class CMaterialInstanceFactory
 end
 
 declare EParticleEmitterShape: number
@@ -761,19 +899,73 @@ declare class CParticleSystem
 	bWriteDepth: boolean
 end
 
-declare CMaterialNodeGraph: { }
-declare class CMaterialNodeGraph
-end
-
-declare EMaterialType: number
-declare EBlendMode: number
-declare EMaterialShadingModel: number
-declare CMaterialInterface: { }
-declare class CMaterialInterface
+declare FTransform: { }
+declare class FTransform
+	Location: vec3
+	Rotation: quat
+	Scale: vec3
 end
 
 declare SCameraSystem: { }
 declare class SCameraSystem
+end
+
+declare SSimpleAnimationComponent: { }
+declare class SSimpleAnimationComponent
+	Animation: CAnimation
+	CurrentTime: number
+	PlaybackSpeed: number
+	bLooping: boolean
+	bPlaying: boolean
+end
+
+declare CWorldFactory: { }
+declare class CWorldFactory
+end
+
+declare CParticleNodeGraph: { }
+declare class CParticleNodeGraph
+end
+
+declare CAudioStreamFactory: { }
+declare class CAudioStreamFactory
+end
+
+declare ECollisionProfiles: number
+declare FCollisionProfile: { }
+declare class FCollisionProfile
+	Layer: number
+	Mask: number
+end
+declare EMoveMode: number
+declare EBodyType: number
+
+declare CWorld: { }
+declare class CWorld
+	function ConstructEntity(self, Name: string, Transform: FTransform): number
+	function SpawnPrefab(self, Path: string): number
+	function SpawnPrefabAsync(self, Path: string)
+	function GetEntityRegistry(self): any
+	function GetPhysicsScene(self): any
+	function GetEntityTransform(self, Entity: number): STransformComponent
+	function GetEntityLocation(self, Entity: number): vec3
+	function SetEntityLocation(self, Entity: number, Location: vec3)
+	function SetEntityRotation(self, Entity: number, Rotation: quat)
+	function TranslateEntity(self, Entity: number, Translation: vec3): vec3
+	function GetNumEntities(self): any
+	function GetDefaultWorldSettings(self): any
+	function EntityHasTag(self, Entity: number, Tag: string): boolean
+	function GetEntityByTag(self, Tag: string): number
+	function GetEntityByName(self, Name: string): number
+	function CastRay(self, Settings: SRayCastSettings): any
+	function CastSphere(self, Settings: SSphereCastSettings): any
+	function GetUpdateStage(self): any
+end
+
+declare EUpdateStage: number
+
+declare CMaterialGraphNode: { }
+declare class CMaterialGraphNode
 end
 
 declare ETerrainBrushMode: number
@@ -787,20 +979,44 @@ declare class STerrainBrushComponent
 	ActiveLayer: number
 end
 
-declare SSimpleAnimationSystem: { }
-declare class SSimpleAnimationSystem
+declare CParticleSystemFactory: { }
+declare class CParticleSystemFactory
 end
 
-declare CParticleOutputNode: { }
-declare class CParticleOutputNode
+declare CThumbnailManager: { }
+declare class CThumbnailManager
+	CubeMesh: CStaticMesh
+	SphereMesh: CStaticMesh
+	PlaneMesh: CStaticMesh
+end
+
+declare CParticleGraphNode: { }
+declare class CParticleGraphNode
+end
+
+declare EMouseMode: number
+declare EMouseKey: number
+
+declare SMeshComponent: { }
+declare class SMeshComponent
+	CustomPrimitiveData: SCustomPrimitiveData
+	MaxDrawDistance: number
+	BoundsScale: number
+	bUseAsOccluder: boolean
+	bIgnoreOcclusionCulling: boolean
+	bCastShadow: boolean
+	bReceiveShadow: boolean
+	ForcedLODIndex: number
 end
 
 declare CEdNodeGraphPin: { }
 declare class CEdNodeGraphPin
 end
 
-declare CPrefabFactory: { }
-declare class CPrefabFactory
+declare ESineWaveType: number
+
+declare CMaterialNodeGetTime: { }
+declare class CMaterialNodeGetTime
 end
 
 declare STransformComponent: { }
@@ -843,55 +1059,6 @@ declare class STransformComponent
 	function GetRotationAsEuler(self): any
 end
 
-declare SEditorEntityMovementSystem: { }
-declare class SEditorEntityMovementSystem
-end
-
-declare CMaterialFactory: { }
-declare class CMaterialFactory
-end
-
-declare SLifetimeSystem: { }
-declare class SLifetimeSystem
-end
-
-declare SInputComponent: { }
-declare class SInputComponent
-end
-
-declare STagComponent: { }
-declare class STagComponent
-	Tag: string
-end
-
-declare CMaterialInput: { }
-declare class CMaterialInput
-end
-
-declare EKey: number
-
-declare SCameraComponent: { }
-declare class SCameraComponent
-	FOV: number
-	bAutoActivate: boolean
-	function GetPosition(self): any
-	function GetForwardVector(self): any
-	function GetRightVector(self): any
-end
-
-declare CSkeleton: { }
-declare class CSkeleton
-	PreviewMesh: CSkeletalMesh
-end
-
-declare SSkeletalMeshComponent: { }
-declare class SSkeletalMeshComponent
-	SkeletalMesh: CSkeletalMesh
-	bCastShadow: boolean
-	bReceiveShadow: boolean
-	function GetAABB(self): any
-end
-
 declare SBillboardComponent: { }
 declare class SBillboardComponent
 	Texture: CTexture
@@ -899,206 +1066,39 @@ declare class SBillboardComponent
 	Tint: vec4
 end
 
-declare SVelocityComponent: { }
-declare class SVelocityComponent
-	Velocity: vec3
-	Speed: number
-	Scale: number
+declare CMaterialFactory: { }
+declare class CMaterialFactory
 end
 
-declare STerrainLayer: { }
-declare class STerrainLayer
-	UVScale: number
-	Name: string
-end
-declare STerrainComponent: { }
-declare class STerrainComponent
-	Material: CMaterialInterface
-	Resolution: number
-	ChunkResolution: number
-	TileWorldSize: number
-	MaxHeight: number
-	bCastShadow: boolean
-	bReceiveShadow: boolean
-end
-
-declare CMaterialOutput: { }
-declare class CMaterialOutput
-end
-
-declare SDisabledTag: { }
-declare class SDisabledTag
-end
-
-declare SScriptComponent: { }
-declare class SScriptComponent
-	ScriptPath: FScriptPath
-	PropertyOverrides: FScriptPropertyOverrides
-end
-
-declare SRayResult: { }
-declare class SRayResult
+declare SRigidBodyComponent: { }
+declare class SRigidBodyComponent
 	BodyID: number
-	Entity: number
-	Start: vec3
-	End: vec3
-	Location: vec3
-	Normal: vec3
-	Fraction: number
+	Mass: number
+	CollisionProfile: FCollisionProfile
+	NumVelocityStepsOverride: number
+	NumPositionStepsOverride: number
+	MaxLinearVelocity: number
+	MaxAngularVelocity: number
+	RestitutionOverride: number
+	FrictionOverride: number
+	LinearDamping: number
+	AngularDamping: number
+	MotionQualityLevel: number
+	BodyType: number
+	bIsSensor: boolean
+	bUseManifoldReduction: boolean
+	bApplyGyroscopicForce: boolean
+	bAllowSleeping: boolean
+	bUseGravity: boolean
 end
-declare SRayCastSettings: { }
-declare class SRayCastSettings
-	Start: vec3
-	End: vec3
-	bDrawDebug: boolean
-	DebugDuration: number
-	DebugHitColor: vec3
-	DebugMissColor: vec3
-	LayerMask: number
+declare SBoxColliderComponent: { }
+declare class SBoxColliderComponent
+	HalfExtent: vec3
+	TranslationOffset: vec3
+	RotationOffset: vec3
 end
-declare SSphereCastSettings: { }
-declare class SSphereCastSettings
-	Start: vec3
-	End: vec3
+declare SSphereColliderComponent: { }
+declare class SSphereColliderComponent
 	Radius: number
-	bDrawDebug: boolean
-	DebugDuration: number
-	DebugHitColor: vec3
-	DebugMissColor: vec3
-	LayerMask: number
-end
-
-declare SSpringArmComponent: { }
-declare class SSpringArmComponent
-	TargetArmLength: number
-	SocketOffset: vec3
-	ProbeSize: number
-	bDoCollisionTest: boolean
-	bUseControlRotation: boolean
-end
-
-declare CEdGraphNode: { }
-declare class CEdGraphNode
-	GridX: number
-	GridY: number
-	NodeID: number
-end
-
-declare CPrefab: { }
-declare class CPrefab
-end
-
-declare SScriptSystem: { }
-declare class SScriptSystem
-end
-
-declare CWorld: { }
-declare class CWorld
-	function ConstructEntity(self, Name: string, Transform: FTransform): number
-	function SpawnPrefab(self, Path: string): number
-	function SpawnPrefabAsync(self, Path: string)
-	function GetEntityRegistry(self): any
-	function GetPhysicsScene(self): any
-	function GetEntityTransform(self, Entity: number): STransformComponent
-	function GetEntityLocation(self, Entity: number): vec3
-	function SetEntityLocation(self, Entity: number, Location: vec3)
-	function SetEntityRotation(self, Entity: number, Rotation: quat)
-	function TranslateEntity(self, Entity: number, Translation: vec3): vec3
-	function GetNumEntities(self): any
-	function GetDefaultWorldSettings(self): any
-	function EntityHasTag(self, Entity: number, Tag: string): boolean
-	function GetEntityByTag(self, Tag: string): number
-	function GetEntityByName(self, Name: string): number
-	function CastRay(self, Settings: SRayCastSettings): any
-	function CastSphere(self, Settings: SSphereCastSettings): any
-	function GetUpdateStage(self): any
-end
-
-declare SNameComponent: { }
-declare class SNameComponent
-	Name: string
-end
-
-declare FScriptPropertyOverrides: { }
-declare class FScriptPropertyOverrides
-end
-
-declare CParticleInput: { }
-declare class CParticleInput
-end
-declare CParticleOutput: { }
-declare class CParticleOutput
-end
-
-declare CComponentVisualizerRegistry: { }
-declare class CComponentVisualizerRegistry
-end
-declare CComponentVisualizer: { }
-declare class CComponentVisualizer
-end
-declare CComponentVisualizer_PointLight: { }
-declare class CComponentVisualizer_PointLight
-end
-declare CComponentVisualizer_SpotLight: { }
-declare class CComponentVisualizer_SpotLight
-end
-declare CComponentVisualizer_SphereCollider: { }
-declare class CComponentVisualizer_SphereCollider
-end
-declare CComponentVisualizer_BoxCollider: { }
-declare class CComponentVisualizer_BoxCollider
-end
-declare CComponentVisualizer_CharacterPhysics: { }
-declare class CComponentVisualizer_CharacterPhysics
-end
-declare CComponentVisualizer_Camera: { }
-declare class CComponentVisualizer_Camera
-end
-
-declare SStaticMeshComponent: { }
-declare class SStaticMeshComponent
-	StaticMesh: CStaticMesh
-	function GetAABB(self): any
-	function SetStaticMesh(self, InMesh: CStaticMesh)
-	function GetStaticMesh(self): any
-end
-
-declare CParticleSystemFactory: { }
-declare class CParticleSystemFactory
-end
-
-declare vec2: { }
-declare class vec2
-	x: number
-	y: number
-end
-declare vec3: { }
-declare class vec3
-	x: number
-	y: number
-	z: number
-end
-declare vec4: { }
-declare class vec4
-	x: number
-	y: number
-	z: number
-	w: number
-end
-declare quat: { }
-declare class quat
-	x: number
-	y: number
-	z: number
-	w: number
-end
-
-declare SLifetimeComponent: { }
-declare class SLifetimeComponent
-	Lifetime: number
-end
-
-declare CSkeletalMesh: { }
-declare class CSkeletalMesh
-	Skeleton: CSkeleton
+	TranslationOffset: vec3
 end

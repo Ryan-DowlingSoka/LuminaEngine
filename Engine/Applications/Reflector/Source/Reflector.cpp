@@ -2,6 +2,7 @@
 #include <print>
 #include "StringHash.h"
 #include "nlohmann/json.hpp"
+#include "Reflector/Diagnostics/LRTDiagnostics.h"
 #include "Reflector/ProjectSolution.h"
 #include "Reflector/Clang/ClangParser.h"
 #include "Reflector/CodeGeneration/CodeGenerator.h"
@@ -84,14 +85,18 @@ int main(int argc, char* argv[])
 
     if (!bParseResult)
     {
+        FDiagnostics::Get().PrintSummary();
         return 1;
     }
-    
+
     FCodeGenerator CodeGenerator(&Workspace, Parser.ParsingContext.ReflectionDatabase);
-    
+
     CodeGenerator.GenerateCode();
 
     Lumina::FStringHash::Shutdown();
-    
-    return 0;
+
+    // If any LRT diagnostics fired we surface a non-zero exit so the build
+    // halts; the diagnostic lines themselves were already printed when emitted.
+    FDiagnostics::Get().PrintSummary();
+    return FDiagnostics::Get().GetErrorCount() == 0 ? 0 : 1;
 }

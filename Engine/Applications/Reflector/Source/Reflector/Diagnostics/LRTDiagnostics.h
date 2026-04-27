@@ -1,0 +1,73 @@
+#pragma once
+
+#include <clang-c/Index.h>
+#include <EASTL/string.h>
+#include <cstdarg>
+#include <cstdint>
+
+namespace Lumina::Reflection
+{
+    // Stable, grep-able error codes for LRT (Lumina Reflection Tool) diagnostics.
+    // Ranges:
+    //   1xxx -> property type errors (unsupported types, mis-used pointers, etc.)
+    //   2xxx -> macro / declaration errors (missing GENERATED_BODY, etc.) -- reserved
+    //   3xxx -> function signature errors -- reserved
+    enum class EDiagId : uint32_t
+    {
+        UnknownPropertyType   = 1000,   // PROPERTY field has a type the reflector cannot map.
+        RawObjectPointer      = 1001,   // raw pointer to a CObject; caller must use TObjectPtr.
+        ArrayElementUnknown   = 1002,   // element type of TVector<T> couldn't be resolved.
+        OptionalElementUnknown= 1003,   // element type of TOptional<T> couldn't be resolved.
+        FieldQualifyFailed    = 1004,   // clang couldn't qualify the field's type.
+        FunctionFieldFailed   = 1005,   // function argument/return type couldn't be reflected.
+    };
+
+    struct FDiagLocation
+    {
+        eastl::string File;     // absolute path with forward slashes
+        uint32_t      Line   = 0;
+        uint32_t      Column = 0;
+    };
+
+    // Build a location from a clang cursor. Returns an empty File on failure.
+    FDiagLocation MakeLocationFromCursor(const CXCursor& Cursor);
+
+    // Singleton diagnostic sink. Errors emitted here are formatted in MSBuild's
+    // expected `path(line,col): error LRTxxxx: message` form so they show up in
+    // the IDE problem list and are counted toward the build's failure status.
+    class FDiagnostics
+    {
+    public:
+
+        static FDiagnostics& Get();
+
+        void Errorf  (const FDiagLocation& Loc, EDiagId Id, const char* Fmt, ...);
+        void Warningf(const FDiagLocation& Loc, EDiagId Id, const char* Fmt, ...);
+
+        uint32_t GetErrorCount()   const { return ErrorCount; }
+        uint32_t GetWarningCount() const { return WarningCount; }
+
+        // Print a one-line summary like "[LRT] 3 error(s), 1 warning(s)".
+        // No-op if both counters are zero.
+        void PrintSummary() const;
+
+    private:
+
+        FDiagnostics() = default;
+
+        void Emit(const char* Severity, const FDiagLocation& Loc, EDiagId Id, const char* Message);
+
+        uint32_t ErrorCount   = 0;
+        uint32_t WarningCount = 0;
+    };
+}
+
+// Convenience macros so callsites stay short. Prefer these over hitting
+// FDiagnostics::Get() directly.
+#define LRT_ERROR(Cursor, Id, Fmt, ...) \
+    ::Lumina::Reflection::FDiagnostics::Get().Errorf( \
+        ::Lumina::Reflection::MakeLocationFromCursor(Cursor), (Id), Fmt, ##__VA_ARGS__)
+
+#define LRT_WARNING(Cursor, Id, Fmt, ...) \
+    ::Lumina::Reflection::FDiagnostics::Get().Warningf( \
+        ::Lumina::Reflection::MakeLocationFromCursor(Cursor), (Id), Fmt, ##__VA_ARGS__)

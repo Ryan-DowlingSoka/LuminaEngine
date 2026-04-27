@@ -9,6 +9,10 @@ namespace Lumina
     struct FFieldInfo
     {
         CXType                              Type;
+        // Cursor of the originating field declaration. Carried through sub-field
+        // creation so diagnostics emitted while building inner properties (array
+        // elements, optional payloads) still point at the user-facing source line.
+        CXCursor                            OwningCursor = clang_getNullCursor();
         EPropertyTypeFlags                  Flags;
         EPropertyFlags                      PropertyFlags = EPropertyFlags::None;
         eastl::string                       Name;

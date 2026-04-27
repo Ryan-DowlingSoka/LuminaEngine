@@ -247,6 +247,7 @@ namespace Lumina::Reflection
                 return nullptr; // caller should fall back to the stripped type name
             case EPropertyTypeFlags::None:
             case EPropertyTypeFlags::Vector:
+            case EPropertyTypeFlags::Optional:
                 return "any";
             }
             return "any";

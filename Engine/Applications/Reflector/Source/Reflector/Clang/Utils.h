@@ -244,6 +244,11 @@ namespace Lumina::ClangUtils
             QualifiedName = "Lumina::TVector";
         }
 
+        if (QualifiedName == "eastl::optional")
+        {
+            QualifiedName = "Lumina::TOptional";
+        }
+
         if (QualifiedName == "eastl::basic_string")
         {
             QualifiedName = "Lumina::FString";

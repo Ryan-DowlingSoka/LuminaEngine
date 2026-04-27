@@ -1,4 +1,9 @@
 
+-- Setup action runs without the engine tree; load it first and bail out before
+-- workspace evaluation when invoked. (Setup.bat orchestrates `setup` -> `vs2022`.)
+include "BuildScripts/Actions/Setup"
+if _ACTION == "setup" then return end
+
 include "BuildScripts/Dependencies"
 include "BuildScripts/Module"
 include "BuildScripts/Actions/Reflection"

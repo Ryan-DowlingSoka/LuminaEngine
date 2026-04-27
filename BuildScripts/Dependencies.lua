@@ -32,7 +32,7 @@ LuminaConfig.ProjectFilesDirectory  = "%{wks.location}/Intermediates/ProjectFile
 LuminaConfig.ReflectionDirectory    = "%{wks.location}/Intermediates/Reflection/%{prj.name}"
 
 if not LuminaConfig.EngineDirectory then
-    error("LUMINA_DIR environment variable not set. Run Setup.py first")
+    error("LUMINA_DIR environment variable not set. Run Setup.bat first.")
 end
 
 function LuminaConfig.GetSystem()

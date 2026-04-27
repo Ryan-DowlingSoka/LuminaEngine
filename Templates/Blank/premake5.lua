@@ -1,6 +1,6 @@
 local LuminaDir = os.getenv("LUMINA_DIR")
 if not LuminaDir then
-    error("LUMINA_DIR environment variable is not set. Please run the engine's Setup.py first.")
+    error("LUMINA_DIR environment variable is not set. Please run the engine's Setup.bat first.")
 end
 
 include (path.join(LuminaDir, "BuildScripts/Dependencies"))

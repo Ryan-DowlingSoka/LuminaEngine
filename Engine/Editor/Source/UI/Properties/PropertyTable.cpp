@@ -5,6 +5,7 @@
 #include "Core/Reflection/PropertyCustomization/PropertyCustomization.h"
 #include "Core/Reflection/Type/LuminaTypes.h"
 #include "Core/Reflection/Type/Properties/ArrayProperty.h"
+#include "Core/Reflection/Type/Properties/OptionalProperty.h"
 #include "Core/Reflection/Type/Properties/StructProperty.h"
 #include "Customizations/CoreTypeCustomization.h"
 #include "Tools/UI/DevelopmentToolUI.h"
@@ -23,6 +24,7 @@ namespace Lumina
         {
         case EPropertyTypeFlags::Struct:
         case EPropertyTypeFlags::Vector:
+        case EPropertyTypeFlags::Optional:
             return false;
         default:
             return true;
@@ -37,6 +39,8 @@ namespace Lumina
             return MakeUnique<FArrayPropertyRow>(InPropHandle, InParentRow, InCallbacks);
         case EPropertyTypeFlags::Struct:
             return MakeUnique<FStructPropertyRow>(InPropHandle, InParentRow, InCallbacks);
+        case EPropertyTypeFlags::Optional:
+            return MakeUnique<FOptionalPropertyRow>(InPropHandle, InParentRow, InCallbacks);
         default:
             return MakeUnique<FPropertyPropertyRow>(InPropHandle, InParentRow, InCallbacks);
         }
@@ -556,6 +560,96 @@ namespace Lumina
     {
         PropertyTable = MakeUnique<FPropertyTable>(PropertyHandle->Property->GetValuePtr<void>(PropertyHandle->ContainerPtr), StructProperty->GetStruct());
         PropertyTable->RebuildTree();
+    }
+
+    FOptionalPropertyRow::FOptionalPropertyRow(const TSharedPtr<FPropertyHandle>& InPropHandle, FPropertyRow* InParentRow, const FPropertyChangedEventCallbacks& InCallbacks)
+        : FPropertyRow(InPropHandle, InParentRow, InCallbacks)
+        , OptionalProperty(static_cast<FOptionalProperty*>(InPropHandle->Property))
+    {
+        bWasEngaged = OptionalProperty->HasValue(GetPropertyHandle()->ContainerPtr);
+        RebuildChildren();
+    }
+
+    void FOptionalPropertyRow::Update()
+    {
+        // Detect external mutations of the engaged state (e.g. gameplay code or
+        // an undo) and rebuild the child tree to match before drawing.
+        const bool bEngagedNow = OptionalProperty->HasValue(GetPropertyHandle()->ContainerPtr);
+        if (bEngagedNow != bWasEngaged)
+        {
+            bWasEngaged = bEngagedNow;
+            RebuildChildren();
+        }
+
+        DispatchChange(ChangeOp);
+        ChangeOp = EPropertyChangeOp::None;
+    }
+
+    void FOptionalPropertyRow::DrawHeader(float Offset)
+    {
+        ImGui::Dummy(ImVec2(Offset, 0));
+        ImGui::SameLine();
+        ImGui::TextUnformatted(OptionalProperty->GetPropertyDisplayName().c_str());
+        DrawPropertyTooltip(OptionalProperty);
+    }
+
+    void FOptionalPropertyRow::DrawEditor(bool bReadOnly)
+    {
+        void* ContainerPtr = GetPropertyHandle()->ContainerPtr;
+        bool bEngaged = OptionalProperty->HasValue(ContainerPtr);
+
+        ImGui::BeginDisabled(bReadOnly || IsReadOnly());
+        if (ImGui::Checkbox("##OptionalSet", &bEngaged))
+        {
+            // Toggling switches the engaged state; engaging default-constructs
+            // the payload, disengaging discards it. Children are rebuilt next
+            // frame in Update() (or right now to keep the UI in sync).
+            if (bEngaged)
+            {
+                OptionalProperty->SetValue(ContainerPtr, nullptr);
+            }
+            else
+            {
+                OptionalProperty->Reset(ContainerPtr);
+            }
+
+            bWasEngaged = bEngaged;
+            RebuildChildren();
+            ChangeOp = EPropertyChangeOp::Updated;
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (bEngaged)
+        {
+            ImGui::TextDisabled("set");
+        }
+        else
+        {
+            ImGui::TextDisabled("(none)");
+        }
+    }
+
+    void FOptionalPropertyRow::RebuildChildren()
+    {
+        DestroyChildren();
+
+        void* ContainerPtr = GetPropertyHandle()->ContainerPtr;
+        if (!OptionalProperty->HasValue(ContainerPtr))
+        {
+            return;
+        }
+
+        FProperty* Inner = OptionalProperty->GetInternalProperty();
+        if (Inner == nullptr)
+        {
+            return;
+        }
+
+        // The optional owns the storage for T; pass &T directly as the child's
+        // container pointer so the inner row's customization edits in-place.
+        TSharedPtr<FPropertyHandle> InnerHandle = MakeShared<FPropertyHandle>(OptionalProperty->GetValue(ContainerPtr), Inner);
+        Children.push_back(CreatePropertyRow(InnerHandle, this, Callbacks));
     }
 
     FCategoryPropertyRow::FCategoryPropertyRow(void* InObj, const FName& InCategory, const FPropertyChangedEventCallbacks& InCallbacks)

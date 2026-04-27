@@ -154,12 +154,13 @@ namespace Lumina
         Enum,
         Vector,
         Struct,
+        Optional,
 
         Count,
     };
 
     ENUM_CLASS_FLAGS(EPropertyTypeFlags);
-    
+
     inline constexpr const char* PropertyTypeFlagNames[] =
     {
         "None",
@@ -183,7 +184,8 @@ namespace Lumina
         "StringProperty",
         "EnumProperty",
         "VectorProperty",
-        "StructProperty"
+        "StructProperty",
+        "OptionalProperty"
     };
 
     static_assert(std::size(PropertyTypeFlagNames) == (size_t)EPropertyTypeFlags::Count, "PropertyTypeFlagStrings must match number of flags in EPropertyTypeFlags");
@@ -248,6 +250,21 @@ namespace Lumina
     
     // Swap two elements of the array.
     typedef void (*ArraySwapPtr)(void* InContainer, size_t LHS, size_t RHS);
+
+    // ---------- Optional (TOptional<T>) -------------------------------------
+
+    // Has the optional been engaged?
+    typedef bool (*OptionalHasValuePtr)(const void* InContainer);
+
+    // Pointer to the held value (only valid if HasValue returned true).
+    typedef void* (*OptionalGetValuePtr)(void* InContainer);
+
+    // Engage the optional, copying InValue (if non-null) or default-constructing
+    // (if null).
+    typedef void (*OptionalSetValuePtr)(void* InContainer, const void* InValue);
+
+    // Disengage the optional.
+    typedef void (*OptionalResetPtr)(void* InContainer);
 
 
     struct FPropertyParams
@@ -320,7 +337,18 @@ namespace Lumina
         ArrayResizePtr      ResizeFn;
         ArrayReservePtr     ReserveFn;
         ArraySwapPtr        SwapFn;
-        
+
+        uint16 NumMetaData;
+        const FMetaDataPairParam* MetaDataArray;
+    };
+
+    struct FOptionalPropertyParams : FPropertyParams
+    {
+        OptionalHasValuePtr HasValueFn;
+        OptionalGetValuePtr GetValueFn;
+        OptionalSetValuePtr SetValueFn;
+        OptionalResetPtr    ResetFn;
+
         uint16 NumMetaData;
         const FMetaDataPairParam* MetaDataArray;
     };

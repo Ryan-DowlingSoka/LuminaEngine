@@ -14,6 +14,7 @@
 #include "Core/Reflection/Type/Properties/ArrayProperty.h"
 #include "Core/Reflection/Type/Properties/EnumProperty.h"
 #include "Core/Reflection/Type/Properties/ObjectProperty.h"
+#include "Core/Reflection/Type/Properties/OptionalProperty.h"
 #include "Core/Reflection/Type/Properties/StringProperty.h"
 #include "Core/Reflection/Type/Properties/StructProperty.h"
 #include "Package/Package.h"
@@ -383,6 +384,16 @@ namespace Lumina
         case EPropertyTypeFlags::Vector:
             {
                 NewProperty = NewFProperty<FArrayProperty, FArrayPropertyParams>(FieldOwner, Param);
+
+                ReadMore = 1;
+            }
+            break;
+        case EPropertyTypeFlags::Optional:
+            {
+                // Optionals are layout-equivalent to "one bool + one payload",
+                // so like Vector/Enum we read the next FPropertyParams as the
+                // inner property describing the payload.
+                NewProperty = NewFProperty<FOptionalProperty, FOptionalPropertyParams>(FieldOwner, Param);
 
                 ReadMore = 1;
             }

@@ -12,6 +12,7 @@ namespace Lumina
     class CStruct;
     class FPropertyHandle;
     class FArrayProperty;
+    class FOptionalProperty;
     class FProperty;
     struct IPropertyTypeCustomization;
     class CObject;
@@ -125,10 +126,10 @@ namespace Lumina
     class FStructPropertyRow : public FPropertyRow
     {
     public:
-        
+
         FStructPropertyRow(const TSharedPtr<FPropertyHandle>& InPropHandle, FPropertyRow* InParentRow, const FPropertyChangedEventCallbacks& InCallbacks);
         ~FStructPropertyRow() override = default;
-        
+
         void Update() override;
         void DrawHeader(float Offset) override;
         void DrawEditor(bool bReadOnly) override;
@@ -136,9 +137,38 @@ namespace Lumina
         void RebuildChildren();
 
     private:
-        
+
         FStructProperty*            StructProperty = nullptr;
         TUniquePtr<FPropertyTable>  PropertyTable;
+    };
+
+    /**
+     * Editor row for TOptional<T>. The header is the property name; the
+     * editor cell hosts a "Set" checkbox plus a small status label. When
+     * engaged, the inner T property renders as a single child row beneath,
+     * reusing whichever PropertyRow class fits T's type.
+     */
+    class FOptionalPropertyRow : public FPropertyRow
+    {
+    public:
+
+        FOptionalPropertyRow(const TSharedPtr<FPropertyHandle>& InPropHandle, FPropertyRow* InParentRow, const FPropertyChangedEventCallbacks& InCallbacks);
+
+        void Update() override;
+        void DrawHeader(float Offset) override;
+        void DrawEditor(bool bReadOnly) override;
+
+        // Rebuilds the (0-or-1) child row to match the optional's current
+        // engaged state. Called after the user toggles the checkbox or when
+        // an external mutation flips it underneath us.
+        void RebuildChildren();
+
+        TSharedPtr<FPropertyHandle> GetPropertyHandle() const { return PropertyHandle; }
+
+    private:
+
+        FOptionalProperty*  OptionalProperty = nullptr;
+        bool                bWasEngaged = false;
     };
     
     class FCategoryPropertyRow : public FPropertyRow

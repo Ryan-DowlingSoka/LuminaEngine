@@ -124,11 +124,19 @@ newaction
         Logger.Info("Executing Command Line " .. CmdLine)
         local Result = os.execute(CmdLine)
 
-        if Result == 0 or Result == true then
+        -- Lua's os.execute returns either an integer exit code or a boolean
+        -- (older Lua) -- normalise both into a "did this succeed?" check.
+        local bOk = (Result == 0) or (Result == true)
+
+        if bOk then
             Logger.Success("Reflection completed successfully!")
             os.remove("Reflection_Files.json")
         else
-            Logger.Error("Reflection failed - keeping JSON file for debugging")
+            -- The Reflector already emitted MSBuild-formatted error lines to
+            -- stderr; we just need to fail the action so ReflectionRunner.bat
+            -- forwards a non-zero exit to MSBuild and the build halts.
+            Logger.Error("Reflection failed - keeping Reflection_Files.json for debugging")
+            os.exit(1)
         end
     end,
 

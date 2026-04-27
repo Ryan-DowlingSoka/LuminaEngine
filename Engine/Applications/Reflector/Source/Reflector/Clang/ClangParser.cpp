@@ -72,9 +72,16 @@ namespace Lumina::Reflection
                 ParsingContext.NumHeadersReflected++;
             }
         }
-    
-        AmalgamationFile.close();   
-        AppendArg("-includeCore/Object/ManualReflectTypes.h");
+
+        AmalgamationFile.close();
+
+        // Force-include ManualReflectTypes.h with an absolute path. Using a
+        // relative path (e.g. "Core/Object/ManualReflectTypes.h") makes clang
+        // report the cursor's file path as the same relative form, which never
+        // matches the absolute paths stored in AllHeaders, so the manual glm
+        // type stubs end up silently dropped from the reflection database.
+        eastl::string ManualReflectPath = LuminaDirectory + "/Engine/Source/Runtime/Core/Object/ManualReflectTypes.h";
+        AppendArg("-include" + ManualReflectPath);
         AppendArg("-x");
         AppendArg("c++");
         AppendArg("-std=c++23");

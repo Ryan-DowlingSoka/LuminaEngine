@@ -1,15 +1,17 @@
 project "BuildScripts"
-	kind "None"    
-	
+	kind "None"
+
 	files
 	{
 		"**.lua",
-        "**.py",
-        "../premake5.lua",
+		"**.bat",
+		"../premake5.lua",
+		"../Setup.bat",
+		"../GenerateProjectFiles.bat",
 	}
 
 	vpaths
 	{
-		["Lua"] 	= {"**.lua", "../premake5.lua" },
-		["Python"] 	= "**.py",
+		["Lua"]   = { "**.lua", "../premake5.lua" },
+		["Batch"] = { "**.bat", "../*.bat" },
 	}

@@ -96,13 +96,11 @@ Contributions to Lumina are recognized in several ways, including Steam keys for
 ## Quick Start
 
 ### What You Need
-- **Windows 10/11** (64-bit)
-- **Visual Studio 2022 or 2019** with MSVC v143 toolset (17.8+)
-- **Python 3.8+** added to your system PATH
-
+- **Windows 10 (1803+) or Windows 11** (64-bit)
+- **Visual Studio 2022** with MSVC v143 toolset (17.8+)
 
 > [!NOTE]
-> [Jetbrains Rider](https://www.jetbrains.com/rider/) is the recommended IDE for Lumina development (but it is not required) 
+> [JetBrains Rider](https://www.jetbrains.com/rider/) is the recommended IDE for Lumina development (not required).
 
 ### Installation Steps
 
@@ -112,43 +110,42 @@ Contributions to Lumina are recognized in several ways, including Steam keys for
    cd LuminaEngine
    ```
 
-2. **Run the setup script**
-   ```bash
-   python Setup.py
+2. **Run setup**
    ```
-   - This downloads and extracts all dependencies automatically
-   - If the download fails, manually download [External.7z](https://www.dropbox.com/scl/fi/xkgu0zkwcza98ovobind5/External.zip?rlkey=a7mf53v9ywn0f60c8tzvdk0vd&st=2iexb83z&dl=0) and extract it to the `LuminaEngine` folder
+   Setup.bat
+   ```
+   - Downloads and extracts all external dependencies, persists `LUMINA_DIR`, configures git hooks, and generates `Lumina.sln`
+   - No Python required — uses `curl.exe` and `tar.exe` bundled with Windows
+   - If the download fails, manually grab [External.zip](https://www.dropbox.com/scl/fi/mzad6ruqibzsmam30npju/External.zip?rlkey=egj0adfoytpjydnhbs53qd3lh&st=pw81jqsw&dl=0) and extract it into the `LuminaEngine/` folder, then run `GenerateProjectFiles.bat`
 
 3. **Open the solution**
    - Open `Lumina.sln` in Visual Studio
 
 4. **Build and run Lumina**
-   - Select "Lumina" in the list of runnable configurations
-   - Select `Development` or `Debug` configuration (Debug will be vastly slower, but with debugger functionality)
-   - **Note** You will see two different platforms, `Game` and `Editor`, by default this will be set to `Editor`. Selecting game will launch without any tooling.
-   - Press F5 or click Build -> Run
+   - Set `Lumina` as the startup project
+   - Pick `Development` or `Debug` (Debug is far slower but enables full debugger functionality)
+   - Two platforms are exposed: `Editor` (default, includes editor tooling) and `Game` (runtime only, no editor)
+   - Press F5 or **Build -> Run**
 
-6. **Start developing**
+5. **Start developing**
    - Open the `Sandbox` project to experiment
-   - (TEMPORARILY NOT-WORKING) Or run `Tools/ProjectConfigurator.py` to create a new project
+   - Or copy `Templates/Blank/` to create a new project (run its `GenerateProject.bat` to produce a solution)
 
 > [!TIP]
->  **Missing v143 toolset?** Install it via Visual Studio Installer -> Individual Components -> MSVC v143 Build Tools
-> **"Cannot find .generated.h" error?** Build again - Visual Studio sometimes needs a second pass to detect new files
-> **Python not found?** Ensure Python is added to PATH during installation (check "Add Python to PATH" when installing)
-> **Error C1076 compiler limit: internal heap limit reached** - Try again, this is currently an issue with a font file.
-> **Build fails?** [Submit an issue](https://github.com/mrdrelliot/LuminaEngine/issues) or contact me on Discord
-> **An application control policy has blocked this file** - Garbage Windows 11 feature, disable "Smart App Control"
-> **After every pull/merge, delete all Binaires, Intermediates, and "Clean" the build.
+> - **Missing v143 toolset?** Install it via Visual Studio Installer -> Individual Components -> MSVC v143 Build Tools.
+> - **"Cannot find .generated.h" error?** Build again — Visual Studio sometimes needs a second pass to pick up generated files.
+> - **C1076 compiler limit reached?** Retry the build; this is a known intermittent issue with a font file.
+> - **"Application control policy blocked this file"?** Disable Windows 11 *Smart App Control*.
+> - **Build fails?** [Submit an issue](https://github.com/mrdrelliot/LuminaEngine/issues) or reach out on Discord.
 
 > [!NOTE]
-> The `LUMINA_DIR` environment variable is set automatically during build. If needed, set it manually:
-```bash
-setx LUMINA_DIR "C:\path\to\lumina"
-```
+> `Setup.bat` persists `LUMINA_DIR` automatically (via `setx`). If you need to set it manually:
+> ```bash
+> setx LUMINA_DIR "C:\path\to\lumina"
+> ```
 
 > [!CAUTION]
-> Everytime you sync to the engine, you **must** delete your Intermediates and Binaries directories, and rerun `Scripts/GenerateProjectFiles.py`
+> After pulling or merging, delete `Binaries/` and `Intermediates/` and run `GenerateProjectFiles.bat` to regenerate the solution.
 
 ---
 
@@ -171,31 +168,36 @@ setx LUMINA_DIR "C:\path\to\lumina"
 
 ### Third Party Dependencies (Alphabetical)
 
+* **basis_universal** - GPU texture compression supporting transcoding to BC7/ETC/ASTC at runtime
 * **ConcurrentQueue** - Industrial-strength lock-free queue supporting multiple producers and consumers
 * **EASTL** - Electronic Arts Standard Template Library optimized for game development with custom allocators
-* **EnkiTS** - Lightweight task scheduler for creating parallel-for, task sets, and dependency graphs across multiple threads
-* **EnTT** - Fast and reliable entity component system with sparse set implementation and signal/delegate support
-* **FastGLTF** - High-performance GLTF 2.0 parser with complete specification support and efficient memory handling
-* **GLFW** - A multi-platform library for OpenGL, OpenGL ES, Vulkan, window and input
-* **GLM** - Header-only C++ mathematics library designed for graphics programming with GLSL-compatible syntax
-* **GTest** - C++ testing framework providing assertions, fixtures, and test discovery for unit testing
-* **ImGui** - Immediate mode graphical interface for rapid tool development with minimal dependencies
-* **JoltPhysics** - High-performance multi-threaded physics engine with continuous collision detection and ragdoll support
-* **Luau** - An efficient, optionally typed scripting language built from Lua
-* **MeshOptimizer** - Mesh optimization library providing vertex cache optimization, overdraw reduction, and vertex/index buffer compression
-* **Miniaudio** - Audio playback and capture library in a single file
-* **NlohmannJson** - Modern JSON library with intuitive syntax and full STL compatibility
-* **OpenFBX** - Lightweight FBX loader for importing geometry, skeletons, and animation data without Autodesk SDK dependencies.
-* **RPMalloc** - Lock-free thread-caching memory allocator with high scalability and low overhead
-* **RenderDoc** - Graphics debugging tool integration for frame capture and analysis
-* **SLang** - Modern shader language and compiler for GPU programming with cross-platform SPIR-V/HLSL output.
-* **SPDLog** - Fast C++ logging library with async mode, custom formatting, and multiple sink support
-* **STBImage** - Single-header image loading library supporting multiple common formats
-* **TinyObjLoader** - Lightweight OBJ file parser with MTL material support
-* **Vulkan** - Low-level graphics API providing explicit GPU control and high-performance rendering
-* **VKBootstrap** - Simplifies Vulkan initialization with reduced boilerplate
-* **Volk** - Vulkan meta-loader for runtime function loading without linker dependency issues
-* **VulkanMemoryAllocator** - Memory management library for Vulkan with defragmentation and optimal allocation strategies
+* **EnkiTS** - Lightweight task scheduler for parallel-for, task sets, and dependency graphs across threads
+* **EnTT** - Fast entity component system with sparse-set storage and signal/delegate support
+* **FastGLTF** - High-performance GLTF 2.0 parser with complete specification support
+* **GLFW** - Multi-platform window and input library for OpenGL, OpenGL ES, and Vulkan
+* **GLM** - Header-only C++ mathematics library with GLSL-compatible syntax
+* **GoogleTest** - C++ testing framework providing assertions, fixtures, and test discovery
+* **ImGui** - Immediate-mode GUI for rapid tool development with minimal dependencies
+* **JoltPhysics** - High-performance multi-threaded physics engine with continuous collision detection
+* **Luau** - Efficient, optionally-typed scripting language derived from Lua
+* **MeshOptimizer** - Mesh optimization for vertex cache, overdraw, and vertex/index buffer compression
+* **Miniaudio** - Single-file audio playback and capture library
+* **Nlohmann JSON** - Modern JSON library with intuitive syntax and STL compatibility
+* **NVIDIA Aftermath** - GPU crash debugging and post-mortem dump analysis
+* **OpenFBX** - Lightweight FBX loader for geometry, skeletons, and animation (no Autodesk SDK)
+* **RenderDoc** - Graphics debugger integration for frame capture and analysis
+* **RPMalloc** - Lock-free thread-caching memory allocator
+* **Slang** - Modern shader language and compiler with SPIR-V / HLSL output
+* **SPDLog** - Fast C++ logging library with async mode and multiple sinks
+* **SPIRV-Reflect** - Runtime reflection for SPIR-V shader binaries
+* **stb_image** - Single-header image loading library for common formats
+* **TinyObjLoader** - Lightweight OBJ parser with MTL material support
+* **Tracy** - Real-time frame profiler with sampling, GPU zones, and lock contention tracking
+* **vk-bootstrap** - Vulkan initialization helper that reduces boilerplate
+* **Volk** - Vulkan meta-loader for runtime function loading
+* **Vulkan** - Low-level graphics API providing explicit GPU control
+* **VulkanMemoryAllocator** - Memory management library for Vulkan with defragmentation
+* **xxHash** - Extremely fast non-cryptographic hash algorithm
 
 
 

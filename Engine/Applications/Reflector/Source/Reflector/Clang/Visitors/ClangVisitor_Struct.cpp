@@ -9,12 +9,14 @@
 #include <spdlog/spdlog.h>
 #include "Reflector/Clang/ClangParserContext.h"
 #include "Reflector/Clang/Utils.h"
+#include "Reflector/Diagnostics/LRTDiagnostics.h"
 #include "Reflector/ReflectionCore/ReflectionMacro.h"
 #include "Reflector/Types/Functions/ReflectedFunction.h"
 #include "Reflector/Types/Properties/ReflectedArrayProperty.h"
 #include "Reflector/Types/Properties/ReflectedEnumProperty.h"
 #include "Reflector/Types/Properties/ReflectedNumericProperty.h"
 #include "Reflector/Types/Properties/ReflectedObjectProperty.h"
+#include "Reflector/Types/Properties/ReflectedOptionalProperty.h"
 #include "Reflector/Types/Properties/ReflectedStringProperty.h"
 #include "Reflector/Types/Properties/ReflectedStructProperty.h"
 
@@ -60,15 +62,18 @@ namespace Lumina::Reflection::Visitor
 		clang::QualType FieldQualType = ClangUtils::GetQualType(FieldType);
 		if (FieldQualType.isNull())
 		{
-			spdlog::error("Failed to qualify typename for member: {} in class: {}", CursorName.c_str(), Context->ParentReflectedType->GetTypeName().c_str());
+			LRT_ERROR(Cursor, Reflection::EDiagId::FieldQualifyFailed,
+				"Failed to qualify the type of property '%s' in '%s'.",
+				CursorName.c_str(),
+				Context->ParentReflectedType->GetTypeName().c_str());
 			return eastl::nullopt;
 		}
 
 		eastl::string TypeSpelling;
 		ClangUtils::GetQualifiedNameForType(FieldQualType, TypeSpelling);
 		EPropertyTypeFlags PropFlags = GetCoreTypeFromName(TypeSpelling.c_str());
-		
-		
+
+
 		// Is not a core type.
 		if (PropFlags == EPropertyTypeFlags::None)
 		{
@@ -82,7 +87,9 @@ namespace Lumina::Reflection::Visitor
 			}
 			else if (FieldQualType->isPointerType())
 			{
-				spdlog::error("{}, Object properties as pointer are not supported, use TObjectPtr instead", CursorName.c_str());
+				LRT_ERROR(Cursor, Reflection::EDiagId::RawObjectPointer,
+					"Property '%s' is a raw pointer ('%s'). Raw pointers to CObject are not reflectable; use TObjectPtr<T> instead.",
+					CursorName.c_str(), TypeSpelling.c_str());
 				return eastl::nullopt;
 			}
 		}
@@ -113,13 +120,14 @@ namespace Lumina::Reflection::Visitor
 		
 		Info.Flags			= PropFlags;
 		Info.Type			= FieldType;
+		Info.OwningCursor	= Cursor;
 		Info.Name			= CursorName;
 		Info.TypeName		= TypeSpelling;
 		Info.RawFieldType	= FieldQualType.getAsString().c_str();
 
 		return Info;
 	}
-	
+
 	static eastl::optional<FFieldInfo> CreateFuncField(FClangParserContext* Context, const CXType& FieldType)
 	{
 		clang::QualType FieldQualType = ClangUtils::GetQualType(FieldType);
@@ -193,7 +201,10 @@ namespace Lumina::Reflection::Visitor
 		clang::QualType FieldQualType = ClangUtils::GetQualType(FieldType);
 		if (FieldQualType.isNull())
 		{
-			spdlog::error("Failed to qualify typename for member: {} in class: {}", ParentField.Name.c_str(), Context->ParentReflectedType->GetTypeName().c_str());
+			LRT_ERROR(ParentField.OwningCursor, Reflection::EDiagId::FieldQualifyFailed,
+				"Failed to qualify the inner type of property '%s' in '%s'.",
+				ParentField.Name.c_str(),
+				Context->ParentReflectedType->GetTypeName().c_str());
 			return eastl::nullopt;
 		}
 
@@ -215,7 +226,9 @@ namespace Lumina::Reflection::Visitor
 			}
 			else if (FieldQualType->isPointerType())
 			{
-				spdlog::error("[{}] Object properties as pointers are *NOT* supported, use TObjectPtr instead", FieldName.c_str());
+				LRT_ERROR(ParentField.OwningCursor, Reflection::EDiagId::RawObjectPointer,
+					"Inner element of property '%s' is a raw pointer ('%s'). Use TObjectPtr<T> instead.",
+					ParentField.Name.c_str(), FieldName.c_str());
 				return eastl::nullopt;
 			}
 		}
@@ -239,6 +252,7 @@ namespace Lumina::Reflection::Visitor
 		
 		Info.Flags			= PropFlags;
 		Info.Type			= FieldType;
+		Info.OwningCursor	= ParentField.OwningCursor;
 		Info.TypeName		= FieldName;
 		Info.RawFieldType	= ParentField.RawFieldType;
 		return Info;
@@ -387,7 +401,9 @@ namespace Lumina::Reflection::Visitor
 			CreatePropertyForType(Context, Struct, FieldProperty, ParamFieldInfo.value());
 			if (FieldProperty == nullptr)
 			{
-				spdlog::error("Failed to create property for array. {} [{}]", FieldInfo.Name.c_str(), ParamFieldInfo->Name.c_str());
+				LRT_ERROR(FieldInfo.OwningCursor, Reflection::EDiagId::ArrayElementUnknown,
+					"Array property '%s' has element type '%s' which is not reflectable.",
+					FieldInfo.Name.c_str(), ParamFieldInfo->TypeName.c_str());
 				return false;
 			}
 
@@ -397,9 +413,49 @@ namespace Lumina::Reflection::Visitor
 			FieldProperty->bInner = true; // This property "belongs" to the array.
 		}
 		break;
+		case EPropertyTypeFlags::Optional:
+		{
+			auto OptionalProperty = CreateProperty<FReflectedOptionalProperty>(FieldInfo);
+
+			// TOptional<T> exposes T as the first template argument, same shape
+			// as TVector<T>. Fail loudly when the payload type isn't reflectable.
+			const CXType ArgType = clang_Type_getTemplateArgumentAsType(FieldInfo.Type, 0);
+			eastl::optional<FFieldInfo> ParamFieldInfo = CreateSubFieldInfo(Context, ArgType, FieldInfo);
+			if (!ParamFieldInfo.has_value())
+			{
+				return false;
+			}
+
+			ParamFieldInfo->Name = FieldInfo.Name + "_Inner";
+			ParamFieldInfo->PropertyFlags |= EPropertyFlags::SubField;
+
+			FReflectedProperty* FieldProperty;
+			CreatePropertyForType(Context, Struct, FieldProperty, ParamFieldInfo.value());
+			if (FieldProperty == nullptr)
+			{
+				LRT_ERROR(FieldInfo.OwningCursor, Reflection::EDiagId::OptionalElementUnknown,
+					"Optional property '%s' has payload type '%s' which is not reflectable.",
+					FieldInfo.Name.c_str(), ParamFieldInfo->TypeName.c_str());
+				return false;
+			}
+
+			OptionalProperty->ElementTypeName = clang_getCString(clang_getTypeSpelling(ArgType));
+			NewProperty = eastl::move(OptionalProperty);
+
+			FieldProperty->bInner = true; // Inner T is owned by the optional.
+		}
+		break;
 		default:
 		{
-
+			// Catch-all for any field whose type slipped past every classifier
+			// above. Without this error the property would be silently dropped
+			// from the reflection database, leaving the runtime under the
+			// impression the field doesn't exist.
+			LRT_ERROR(FieldInfo.OwningCursor, Reflection::EDiagId::UnknownPropertyType,
+				"Property '%s' has type '%s' which is not supported by the reflector. "
+				"Supported kinds: numeric, bool, FString/FName, enum, struct (REFLECT'd), "
+				"TObjectPtr<T>, TVector<T>, TOptional<T>.",
+				FieldInfo.Name.c_str(), FieldInfo.TypeName.c_str());
 		}
 		break;
 		}
@@ -432,12 +488,18 @@ namespace Lumina::Reflection::Visitor
 			auto Field = CreateFuncField(Context, FieldType);
 			if (Field.has_value() && Field->Flags != EPropertyTypeFlags::None)
 			{
-				Field->Name		= eastl::move(ArgName);
+				Field->OwningCursor = ArgCursor;
+				Field->Name			= eastl::move(ArgName);
 				NewFunction->AddArgument(eastl::move(Field.value()));
 			}
 			else
 			{
-				spdlog::error("Failed to create function field for {}", NewFunction->Name.c_str());
+				// Soft-fail: a missing arg doesn't corrupt memory layout, only
+				// the Lua binding shape (the function will still link from
+				// C++). Warn loudly so this still shows up in the build log.
+				LRT_WARNING(ArgCursor, Reflection::EDiagId::FunctionFieldFailed,
+					"Argument '%s' of function '%s' has an unsupported type and will be omitted from the script binding. Reflected function args accept core types, structs, enums, and TObjectPtr<T>.",
+					ArgName.c_str(), NewFunction->Name.c_str());
 			}
 		}
 		
