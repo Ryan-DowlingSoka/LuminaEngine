@@ -111,6 +111,12 @@ namespace Lumina::Lua
         lua_getref(State, Ref);
     }
 
+    void FRef::Push(lua_State* TargetState) const
+    {
+        DEBUG_ASSERT(IsValid());
+        lua_getref(TargetState, Ref);
+    }
+
     FRef FRef::NewTable(FStringView Key) const
     {
         Push();
@@ -152,6 +158,11 @@ namespace Lumina::Lua
 
     bool FRef::IsInvokable() const
     {
+        if (!IsValid())
+        {
+            return false;
+        }
+
         Push();
 
         bool Result = lua_isfunction(State, -1);

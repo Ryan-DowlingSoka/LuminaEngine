@@ -121,7 +121,35 @@ namespace Lumina
 
         void DrawAddToEntityOrWorldPopup(entt::entity Entity = entt::null);
         void DrawFilterOptions();
+
+        // -- Incremental scene outliner --
+        // Initial population (called on tree dirty); just enumerates roots and lets lazy children
+        // build subtrees on first expand.
         void RebuildSceneOutliner(FTreeListView& Tree);
+
+        // Build the immediate component nodes + child entity nodes for one entity row when
+        // it's expanded for the first time (or after a reset).
+        void BuildEntityChildren(FTreeListView& Tree, FTreeNodeID Item);
+
+        // Add a single entity to the outliner under its current world parent (if that parent
+        // already has a tree node), or as a root. Returns the new tree node, or InvalidTreeNode
+        // if the entity should not appear (hidden / no name component).
+        FTreeNodeID AddEntityToOutliner(entt::entity Entity);
+
+        // Drop a single entity from the outliner if present (also removes its child rows).
+        void RemoveEntityFromOutliner(entt::entity Entity);
+
+        // Re-attach an existing tree node to its world entity's current parent. Used when the
+        // hierarchy changes (drag-drop, unparent).
+        void ReparentEntityInOutliner(entt::entity Entity);
+
+        // EnTT signal handlers wired to the world's SNameComponent storage.
+        void OnOutlinerEntityConstructed(entt::registry& Registry, entt::entity Entity);
+        void OnOutlinerEntityDestroyed(entt::registry& Registry, entt::entity Entity);
+
+        // Drains PendingOutlinerAdds before the outliner draws.
+        void FlushOutlinerPending();
+
         void HandleEntityEditorDragDrop(FTreeListView& Tree, entt::entity DropItem);
         void HandlePrefabContentDrop(FStringView VirtualPath, entt::entity DropTarget);
 
@@ -172,6 +200,14 @@ namespace Lumina
         
         FTreeListView                           OutlinerListView;
         FTreeListViewContext                    OutlinerContext;
+
+        // World entity → outliner tree node. Populated incrementally as entities are created
+        // and torn down via the on_construct/on_destroy hooks for SNameComponent.
+        THashMap<entt::entity, FTreeNodeID>     EntityToTreeNode;
+
+        // Entities created since last outliner flush, queued because their FRelationshipComponent
+        // may not be set yet at on_construct time. Drained at the top of DrawOutliner.
+        TVector<entt::entity>                   PendingOutlinerAdds;
 
         TQueue<FComponentDestroyRequest>        ComponentDestroyRequests;
         TQueue<entt::entity>                    EntityDestroyRequests;

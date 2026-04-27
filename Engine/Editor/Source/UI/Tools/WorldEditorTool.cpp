@@ -128,7 +128,7 @@ namespace Lumina
         
         WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
         
-        OutlinerContext.SetDragDropFunction = [this] (FTreeListView& Tree, entt::entity Item)
+        OutlinerContext.SetDragDropFunction = [this] (FTreeListView& Tree, FTreeNodeID Item)
         {
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
 
@@ -136,7 +136,7 @@ namespace Lumina
             ImGui::SetDragDropPayload(DragDropID, &Payload, sizeof(Payload));
         };
 
-        OutlinerContext.ItemContextMenuFunction = [this](FTreeListView& Tree, entt::entity Item)
+        OutlinerContext.ItemContextMenuFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
             FEntityRegistry& Registry = World->GetEntityRegistry();
@@ -168,7 +168,7 @@ namespace Lumina
                 if (ImGui::MenuItem("Unparent"))
                 {
                     ECS::Utils::RemoveFromParent(Registry, Data.Entity);
-                    OutlinerListView.MarkTreeDirty();
+                    ReparentEntityInOutliner(Data.Entity);
                 }
             }
 
@@ -176,8 +176,14 @@ namespace Lumina
             {
                 if (ImGui::MenuItem("Detach Children"))
                 {
+                    // Snapshot child IDs before mutating relationships, then move each in the tree.
+                    TVector<entt::entity> Children;
+                    ECS::Utils::ForEachChild(Registry, Data.Entity, [&](entt::entity Child) { Children.push_back(Child); });
                     ECS::Utils::DetachImmediateChildren(Registry, Data.Entity);
-                    OutlinerListView.MarkTreeDirty();
+                    for (entt::entity Child : Children)
+                    {
+                        ReparentEntityInOutliner(Child);
+                    }
                 }
             }
 
@@ -198,7 +204,7 @@ namespace Lumina
             }
         };
         
-        OutlinerContext.VisibilityToggleFunction = [this](FTreeListView& Tree, entt::entity Item)
+        OutlinerContext.VisibilityToggleFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
             FTreeNodeState& State = Tree.Get<FTreeNodeState>(Item);
@@ -218,7 +224,12 @@ namespace Lumina
             RebuildSceneOutliner(Tree);
         };
 
-        OutlinerContext.RenameFunction = [this](FTreeListView& Tree, entt::entity Item, FStringView NewName)
+        OutlinerContext.BuildChildrenFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
+        {
+            BuildEntityChildren(Tree, Item);
+        };
+
+        OutlinerContext.RenameFunction = [this](FTreeListView& Tree, FTreeNodeID Item, FStringView NewName)
         {
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
 
@@ -232,18 +243,18 @@ namespace Lumina
             NameComponent.Name = NewName;
 		};
         
-        OutlinerContext.ItemSelectedFunction = [this](FTreeListView& Tree, entt::entity Item, bool bShouldClear)
+        OutlinerContext.ItemSelectedFunction = [this](FTreeListView& Tree, FTreeNodeID Item, bool bShouldClear)
         {
             if (bShouldClear)
             {
                 ClearSelectedEntities();
             }
 
-            if (Item == entt::null)
+            if (!Item.IsValid())
             {
                 return;
             }
-            
+
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
             
             if (World->GetEntityRegistry().any_of<FSelectedInEditorComponent>(Data.Entity))
@@ -257,14 +268,14 @@ namespace Lumina
             RebuildPropertyTables(Data.Entity);
         };
 
-        OutlinerContext.DragDropFunction = [this](FTreeListView& Tree, entt::entity Item)
+        OutlinerContext.DragDropFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
 
-            HandleEntityEditorDragDrop(Tree, Data.Entity);  
+            HandleEntityEditorDragDrop(Tree, Data.Entity);
         };
-        
-        OutlinerContext.FilterFunction = [&](FTreeListView& Tree, entt::entity Item)
+
+        OutlinerContext.FilterFunction = [&](FTreeListView& Tree, FTreeNodeID Item)
         {
             using namespace entt::literals;
             
@@ -291,8 +302,10 @@ namespace Lumina
             return bPasses;
         };
 
-        
+
         //------------------------------------------------------------------------------------------------------
+
+        RebindRegistryObservers();
     }
 
     void FWorldEditorTool::OnDeinitialize(const FUpdateContext& UpdateContext)
@@ -332,7 +345,7 @@ namespace Lumina
             }
             
             World->DestroyEntity(Entity);
-            OutlinerListView.MarkTreeDirty();
+            // OutlinerListView is updated via OnOutlinerEntityDestroyed.
         }
 
         auto View = World->GetEntityRegistry().view<FSelectedInEditorComponent>();
@@ -368,7 +381,7 @@ namespace Lumina
                 if (bDeletePressed && !bLocked)
                 {
                     World->DestroyEntity(SelectedEntity);
-                    OutlinerListView.MarkTreeDirty();
+                    // OutlinerListView is updated via OnOutlinerEntityDestroyed.
                 }
             });
         }
@@ -952,7 +965,7 @@ namespace Lumina
                     if (ImGui::MenuItem("Unparent"))
                     {
                         ECS::Utils::RemoveFromParent(Registry, LastSelectedEntity);
-                        OutlinerListView.MarkTreeDirty();
+                        ReparentEntityInOutliner(LastSelectedEntity);
                     }
                     ImGui::PopStyleColor();
                 }
@@ -962,8 +975,13 @@ namespace Lumina
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.9f, 0.2f, 1.0f));
                     if (ImGui::MenuItem("Detach Children"))
                     {
+                        TVector<entt::entity> Children;
+                        ECS::Utils::ForEachChild(Registry, LastSelectedEntity, [&](entt::entity Child) { Children.push_back(Child); });
                         ECS::Utils::DetachImmediateChildren(Registry, LastSelectedEntity);
-                        OutlinerListView.MarkTreeDirty();
+                        for (entt::entity Child : Children)
+                        {
+                            ReparentEntityInOutliner(Child);
+                        }
                     }
                     ImGui::PopStyleColor();
                 }
@@ -1355,7 +1373,17 @@ namespace Lumina
             if (ImGui::Button("OK", ImVec2(ButtonWidth, 0.0f)) || bShouldClose)
             {
                 NameComponent.Name = FName(InputBuffer.c_str());
-                OutlinerListView.MarkTreeDirty();
+
+                // Update just this entity's row label rather than rebuilding the whole tree.
+                auto It = EntityToTreeNode.find(Entity);
+                if (It != EntityToTreeNode.end())
+                {
+                    FFixedString Label;
+                    Label.append(LE_ICON_CUBE).append(" ")
+                        .append(NameComponent.Name.c_str())
+                        .append_convert(FString(" - (" + eastl::to_string(entt::to_integral(Entity)) + ")"));
+                    OutlinerListView.Get<FTreeNodeDisplay>(It->second).DisplayName.assign(Label.data(), Label.length());
+                }
                 return true;
             }
     
@@ -1411,12 +1439,21 @@ namespace Lumina
 
     void FWorldEditorTool::SetWorld(CWorld* InWorld)
     {
-        World->GetEntityRegistry().clear<FSelectedInEditorComponent>();
-        
+        if (World)
+        {
+            FEntityRegistry& OldRegistry = World->GetEntityRegistry();
+            OldRegistry.on_construct<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
+            OldRegistry.on_destroy<entt::entity>().disconnect<&FWorldEditorTool::OnEntityDestroyed>(this);
+            OldRegistry.on_construct<SNameComponent>().disconnect<&FWorldEditorTool::OnOutlinerEntityConstructed>(this);
+            OldRegistry.on_destroy<SNameComponent>().disconnect<&FWorldEditorTool::OnOutlinerEntityDestroyed>(this);
+            OldRegistry.clear<FSelectedInEditorComponent>();
+        }
+
         FEditorTool::SetWorld(InWorld);
-        
+
         WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
-        
+
+        RebindRegistryObservers();
         OutlinerListView.MarkTreeDirty();
     }
 
@@ -2114,10 +2151,16 @@ namespace Lumina
         World->GetEntityRegistry().emplace_or_replace<FLastSelectedTag>(Entity);
         World->GetEntityRegistry().emplace_or_replace<FSelectedInEditorComponent>(Entity);
         RebuildPropertyTables(Entity);
-        
+
         if (bRebuild)
         {
-            OutlinerListView.MarkTreeDirty();
+            // Reflect selection in the outliner row, if it has one. No tree topology changed,
+            // so this is just a per-node state flip — no rebuild needed.
+            auto It = EntityToTreeNode.find(Entity);
+            if (It != EntityToTreeNode.end())
+            {
+                OutlinerListView.Get<FTreeNodeState>(It->second).bSelected = true;
+            }
         }
     }
 
@@ -2127,7 +2170,7 @@ namespace Lumina
         {
             return;
         }
-        
+
         if (!World->GetEntityRegistry().valid(Entity))
         {
             return;
@@ -2137,13 +2180,17 @@ namespace Lumina
         {
             World->GetEntityRegistry().remove<FSelectedInEditorComponent>(Entity);
         }
-        
+
         ClearLastSelectedEntity();
-        
+
         if (bRebuild)
         {
             RebuildPropertyTables(Entity);
-            OutlinerListView.MarkTreeDirty();
+            auto It = EntityToTreeNode.find(Entity);
+            if (It != EntityToTreeNode.end())
+            {
+                OutlinerListView.Get<FTreeNodeState>(It->second).bSelected = false;
+            }
         }
     }
 
@@ -2191,9 +2238,17 @@ namespace Lumina
         FEntityRegistry& Registry = World->GetEntityRegistry();
         Registry.on_construct<entt::entity>().disconnect<&FWorldEditorTool::OnEntityCreated>(this);
         Registry.on_destroy<entt::entity>().disconnect<&FWorldEditorTool::OnEntityDestroyed>(this);
+        Registry.on_construct<SNameComponent>().disconnect<&FWorldEditorTool::OnOutlinerEntityConstructed>(this);
+        Registry.on_destroy<SNameComponent>().disconnect<&FWorldEditorTool::OnOutlinerEntityDestroyed>(this);
 
         Registry.on_construct<entt::entity>().connect<&FWorldEditorTool::OnEntityCreated>(this);
         Registry.on_destroy<entt::entity>().connect<&FWorldEditorTool::OnEntityDestroyed>(this);
+        // SNameComponent is the canonical "this entity should appear in the outliner" marker;
+        // ConstructEntity always emplaces it, and we also exclude FHideInSceneOutliner inside
+        // the handler. Hooking it (rather than entt::entity) means we don't add a row before
+        // the entity has a name to display.
+        Registry.on_construct<SNameComponent>().connect<&FWorldEditorTool::OnOutlinerEntityConstructed>(this);
+        Registry.on_destroy<SNameComponent>().connect<&FWorldEditorTool::OnOutlinerEntityDestroyed>(this);
     }
 
     void FWorldEditorTool::SetWorldPlayInEditor(bool bShouldPlay)
@@ -2626,74 +2681,13 @@ namespace Lumina
     void FWorldEditorTool::RebuildSceneOutliner(FTreeListView& Tree)
     {
         LUMINA_PROFILE_SCOPE();
-        
-        TFunction<void(entt::entity, entt::entity)> AddEntityRecursive;
-        
-        AddEntityRecursive = [&](entt::entity WorldEntity, entt::entity ParentItem)
-        {
-            SNameComponent& NameComponent = World->GetEntityRegistry().get<SNameComponent>(WorldEntity);
-            const SPrefabInstanceComponent* PrefabInstance = World->GetEntityRegistry().try_get<SPrefabInstanceComponent>(WorldEntity);
-            const bool bIsPrefabInstanceRoot = PrefabInstance != nullptr && PrefabInstance->bIsRoot;
-            const bool bIsLockedPrefabChild = PrefabInstance != nullptr && !PrefabInstance->bIsRoot;
 
-            FFixedString Name;
-            if (bIsPrefabInstanceRoot)
-            {
-                Name.append(LE_ICON_PACKAGE_VARIANT_CLOSED).append(" ");
-            }
-            else if (bIsLockedPrefabChild)
-            {
-                Name.append(LE_ICON_LOCK).append(" ");
-            }
-            else
-            {
-                Name.append(LE_ICON_CUBE).append(" ");
-            }
-            Name.append(NameComponent.Name.c_str()).append_convert(FString(" - (" + eastl::to_string(entt::to_integral(WorldEntity)) + ")"));
+        // The outliner is now incremental. A "rebuild" just resets the local map and re-adds the
+        // root entities; component lists and child entity rows are produced lazily when each row
+        // is first expanded (BuildEntityChildren).
+        EntityToTreeNode.clear();
+        PendingOutlinerAdds.clear();
 
-            entt::entity ItemEntity     = Tree.CreateNode(ParentItem, Name);
-            FTreeNodeDisplay& Display   = Tree.Get<FTreeNodeDisplay>(ItemEntity);
-            if (bIsLockedPrefabChild)
-            {
-                Display.TooltipText = "Prefab instance child, hierarchy is locked. Edit the source prefab to change.";
-            }
-            else
-            {
-                Display.TooltipText = FString("Entity: " + eastl::to_string(entt::to_integral(WorldEntity))).c_str();
-            }
-            Display.bShowDisabledIcon   = true;
-			Display.bAllowRenaming      = !bIsLockedPrefabChild;
-            
-            Tree.EmplaceUserData<FEntityListViewItemData>(ItemEntity).Entity = WorldEntity;
-
-            if (World->GetEntityRegistry().any_of<FSelectedInEditorComponent>(WorldEntity))
-            {
-                FTreeNodeState& State = Tree.Get<FTreeNodeState>(ItemEntity);
-                State.bSelected = true;
-            }
-            
-            if (World->GetEntityRegistry().any_of<SDisabledTag>(WorldEntity))
-            {
-                FTreeNodeState& State = Tree.Get<FTreeNodeState>(ItemEntity);
-                State.bDisabled = true;
-            }
-            
-            ECS::Utils::ForEachComponent(World->GetEntityRegistry(), WorldEntity, [&](void* Component, entt::basic_sparse_set<>& Set, entt::meta_type Meta)
-            {
-                FFixedString NameString;
-                NameString.assign(LE_ICON_PUZZLE).append(" ").append(Meta.name());
-                entt::entity ComponentEntity = Tree.CreateNode(ItemEntity, NameString);
-                
-                Tree.Get<FTreeNodeDisplay>(ComponentEntity).TooltipText = Meta.name();
-                Tree.EmplaceUserData<FEntityListViewItemData>(ComponentEntity).Entity = WorldEntity;
-            });
-            
-            ECS::Utils::ForEachChild(World->GetEntityRegistry(), WorldEntity, [&](entt::entity Child)
-            {
-                AddEntityRecursive(Child, ItemEntity);
-            });
-        };
-        
         TFixedVector<entt::entity, 1000> Roots;
         auto View = World->GetEntityRegistry().view<SNameComponent>(entt::exclude<FHideInSceneOutliner>);
         for (entt::entity Entity : View)
@@ -2708,21 +2702,218 @@ namespace Lumina
 
             Roots.push_back(Entity);
         }
-        
+
         eastl::sort(Roots.begin(), Roots.end(), [&](entt::entity LHS, entt::entity RHS)
         {
             const FFixedString A = View.get<SNameComponent>(LHS).Name.c_str();
             const FFixedString B = View.get<SNameComponent>(RHS).Name.c_str();
-            
+
             return std::tie(A, LHS) < std::tie(B, RHS);
         });
-        
+
         for (entt::entity Root : Roots)
         {
-            AddEntityRecursive(Root, entt::null);
+            AddEntityToOutliner(Root);
         }
     }
-    
+
+    FTreeNodeID FWorldEditorTool::AddEntityToOutliner(entt::entity Entity)
+    {
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        if (!Registry.valid(Entity) || Registry.any_of<FHideInSceneOutliner>(Entity))
+        {
+            return InvalidTreeNode;
+        }
+        if (!Registry.all_of<SNameComponent>(Entity))
+        {
+            return InvalidTreeNode;
+        }
+
+        // Don't double-insert.
+        auto Existing = EntityToTreeNode.find(Entity);
+        if (Existing != EntityToTreeNode.end())
+        {
+            return Existing->second;
+        }
+
+        // If this entity has a parent and that parent is in the tree, attach there.
+        FTreeNodeID ParentNode = InvalidTreeNode;
+        if (FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity))
+        {
+            if (Rel->Parent != entt::null)
+            {
+                auto ParentIt = EntityToTreeNode.find(Rel->Parent);
+                if (ParentIt != EntityToTreeNode.end())
+                {
+                    ParentNode = ParentIt->second;
+                }
+                else
+                {
+                    // Parent isn't in the tree yet; defer until it is. Avoid attaching as a
+                    // root only to relocate a moment later when the parent's row is built.
+                    return InvalidTreeNode;
+                }
+            }
+        }
+
+        SNameComponent& NameComponent = Registry.get<SNameComponent>(Entity);
+        const SPrefabInstanceComponent* PrefabInstance = Registry.try_get<SPrefabInstanceComponent>(Entity);
+        const bool bIsPrefabInstanceRoot = PrefabInstance != nullptr && PrefabInstance->bIsRoot;
+        const bool bIsLockedPrefabChild = PrefabInstance != nullptr && !PrefabInstance->bIsRoot;
+
+        FFixedString Name;
+        if (bIsPrefabInstanceRoot)
+        {
+            Name.append(LE_ICON_PACKAGE_VARIANT_CLOSED).append(" ");
+        }
+        else if (bIsLockedPrefabChild)
+        {
+            Name.append(LE_ICON_LOCK).append(" ");
+        }
+        else
+        {
+            Name.append(LE_ICON_CUBE).append(" ");
+        }
+        Name.append(NameComponent.Name.c_str()).append_convert(FString(" - (" + eastl::to_string(entt::to_integral(Entity)) + ")"));
+
+        FTreeNodeID ItemEntity = OutlinerListView.CreateNode(ParentNode, FStringView(Name.data(), Name.length()));
+        EntityToTreeNode[Entity] = ItemEntity;
+
+        FTreeNodeDisplay& Display = OutlinerListView.Get<FTreeNodeDisplay>(ItemEntity);
+        if (bIsLockedPrefabChild)
+        {
+            Display.TooltipText = "Prefab instance child, hierarchy is locked. Edit the source prefab to change.";
+        }
+        else
+        {
+            Display.TooltipText = FString("Entity: " + eastl::to_string(entt::to_integral(Entity))).c_str();
+        }
+        Display.bShowDisabledIcon = true;
+        Display.bAllowRenaming = !bIsLockedPrefabChild;
+
+        OutlinerListView.EmplaceUserData<FEntityListViewItemData>(ItemEntity).Entity = Entity;
+
+        if (Registry.any_of<FSelectedInEditorComponent>(Entity))
+        {
+            OutlinerListView.Get<FTreeNodeState>(ItemEntity).bSelected = true;
+        }
+
+        if (Registry.any_of<SDisabledTag>(Entity))
+        {
+            OutlinerListView.Get<FTreeNodeState>(ItemEntity).bDisabled = true;
+        }
+
+        // Components and child entities are populated on demand via BuildChildrenFunction.
+        OutlinerListView.MarkHasLazyChildren(ItemEntity);
+
+        return ItemEntity;
+    }
+
+    void FWorldEditorTool::RemoveEntityFromOutliner(entt::entity Entity)
+    {
+        auto It = EntityToTreeNode.find(Entity);
+        if (It == EntityToTreeNode.end())
+        {
+            return;
+        }
+
+        // RemoveNode tears down the subtree, but EntityToTreeNode also points at descendants;
+        // walk the world hierarchy first and erase those map entries so we don't leak stale ids.
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        if (Registry.valid(Entity))
+        {
+            ECS::Utils::ForEachChild(Registry, Entity, [&](entt::entity Child)
+            {
+                RemoveEntityFromOutliner(Child);
+            });
+        }
+
+        OutlinerListView.RemoveNode(It->second);
+        EntityToTreeNode.erase(It);
+    }
+
+    void FWorldEditorTool::ReparentEntityInOutliner(entt::entity Entity)
+    {
+        // Cheapest correct option: drop the row and re-add it. The lazy children of the new
+        // parent will rebuild on the next expand. This avoids a generic "MoveSubtree" API
+        // on the tree widget for a path that only fires on user-initiated drags.
+        RemoveEntityFromOutliner(Entity);
+        AddEntityToOutliner(Entity);
+    }
+
+    void FWorldEditorTool::BuildEntityChildren(FTreeListView& Tree, FTreeNodeID Item)
+    {
+        FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        if (!Registry.valid(Data.Entity))
+        {
+            return;
+        }
+
+        // 1. Component rows. These don't get incremental hooks; they're fully rebuilt each
+        //    time the parent's lazy children fire. Component add/remove during a session is rare
+        //    enough that re-expanding the parent is acceptable.
+        ECS::Utils::ForEachComponent(Registry, Data.Entity, [&](void* Component, entt::basic_sparse_set<>& Set, entt::meta_type Meta)
+        {
+            FFixedString NameString;
+            NameString.assign(LE_ICON_PUZZLE).append(" ").append(Meta.name());
+            FTreeNodeID ComponentEntity = Tree.CreateNode(Item, FStringView(NameString.data(), NameString.length()));
+
+            Tree.Get<FTreeNodeDisplay>(ComponentEntity).TooltipText = Meta.name();
+            Tree.EmplaceUserData<FEntityListViewItemData>(ComponentEntity).Entity = Data.Entity;
+        });
+
+        // 2. Child entity rows. Skip any that are already present (e.g. spawned-while-parent-
+        //    -expanded races where the on_construct hook beat us to it).
+        ECS::Utils::ForEachChild(Registry, Data.Entity, [&](entt::entity Child)
+        {
+            if (Registry.any_of<FHideInSceneOutliner>(Child))
+            {
+                return;
+            }
+            if (EntityToTreeNode.find(Child) != EntityToTreeNode.end())
+            {
+                return;
+            }
+
+            // Reuse the same path as on_construct so display setup stays consistent.
+            AddEntityToOutliner(Child);
+        });
+    }
+
+    void FWorldEditorTool::OnOutlinerEntityConstructed(entt::registry& Registry, entt::entity Entity)
+    {
+        if (Registry.any_of<FHideInSceneOutliner>(Entity))
+        {
+            return;
+        }
+        // Defer to next flush — FRelationshipComponent may not be set yet at this point.
+        PendingOutlinerAdds.push_back(Entity);
+    }
+
+    void FWorldEditorTool::OnOutlinerEntityDestroyed(entt::registry& Registry, entt::entity Entity)
+    {
+        (void)Registry;
+        RemoveEntityFromOutliner(Entity);
+        PendingOutlinerAdds.erase(eastl::remove(PendingOutlinerAdds.begin(), PendingOutlinerAdds.end(), Entity), PendingOutlinerAdds.end());
+    }
+
+    void FWorldEditorTool::FlushOutlinerPending()
+    {
+        if (PendingOutlinerAdds.empty())
+        {
+            return;
+        }
+
+        // Iterate by index because AddEntityToOutliner may indirectly grow the queue in pathological
+        // cases (it doesn't today, but be defensive).
+        for (int32 i = 0; i < static_cast<int32>(PendingOutlinerAdds.size()); ++i)
+        {
+            AddEntityToOutliner(PendingOutlinerAdds[i]);
+        }
+        PendingOutlinerAdds.clear();
+    }
+
     void FWorldEditorTool::HandleEntityEditorDragDrop(FTreeListView& Tree, entt::entity DropItem)
     {
         if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(DragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery))
@@ -2742,7 +2933,7 @@ namespace Lumina
                 ECS::Utils::ReparentEntity(Registry, SourceEntity, DropItem);
                 EndTransaction("Reparent");
 
-                OutlinerListView.MarkTreeDirty();
+                ReparentEntityInOutliner(SourceEntity);
             }
             return;
         }
@@ -2886,6 +3077,7 @@ namespace Lumina
             ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
             if (ImGui::BeginChild("EntityList", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar))
             {
+                FlushOutlinerPending();
                 OutlinerListView.Draw(OutlinerContext);
 
                 if (ImGui::BeginDragDropTargetCustom(ImGui::GetCurrentWindow()->Rect(), ImGui::GetCurrentWindow()->ID))
@@ -3563,21 +3755,20 @@ namespace Lumina
             {
                 AddSelectedEntity(CreatedEntity, true);
             }
-            OutlinerListView.MarkTreeDirty();
+            // Outliner row appears via OnOutlinerEntityConstructed → FlushOutlinerPending.
         }
     }
 
     void FWorldEditorTool::CreateEntity()
     {
         entt::entity NewEntity = World->ConstructEntity("Entity");
-        
+
         auto View = GetWorld()->GetEntityRegistry().view<FSelectedInEditorComponent>();
         if (!View.empty())
         {
             AddSelectedEntity(NewEntity, true);
         }
-        
-        OutlinerListView.MarkTreeDirty();
+        // Outliner row appears via OnOutlinerEntityConstructed → FlushOutlinerPending.
     }
 
     void FWorldEditorTool::CopyEntity(entt::entity& To, entt::entity From)

@@ -174,7 +174,7 @@ namespace Lumina
     struct FShadowAtlasConfig
     {
         uint32 AtlasResolution    = GShadowAtlasResolution;    // Atlas is square: AtlasResolution x AtlasResolution.
-        uint32 MaxTileResolution  = 2048;                      // Largest tile a single shadow can claim. Must be pow2.
+        uint32 MaxTileResolution  = 1024;                      // Largest tile a single shadow can claim. Must be pow2.
         uint32 MinTileResolution  = 128;                       // Smallest leaf the quad-tree will subdivide to. Must be pow2.
         uint32 NumLayers          = 7;                         // Shared across all layers; tiles occupy the same UV rect on every layer.
     };

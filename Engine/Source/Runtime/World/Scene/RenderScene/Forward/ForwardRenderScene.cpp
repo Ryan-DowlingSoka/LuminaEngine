@@ -920,10 +920,6 @@ namespace Lumina
         Registry.clear<FNeedsTransformUpdate>();
     }
 
-    // Resolved view of a material slot. The per-surface flag derivation
-    // depends only on (MaterialIndex, MeshComponent flags, bSignificantOccluder),
-    // all entity-constant; cache once per entity and skip ~9 virtual calls
-    // per repeat lookup.
     struct FResolvedSlot
     {
         FRHIVertexShader*   VertexShader;
@@ -931,7 +927,6 @@ namespace Lumina
         uint64              MaterialID;
         EInstanceFlags      ExtraFlags;
         uint16              MaterialIdx;
-        int16               SlotIdx;
         uint8               bTranslucent     : 1;
         uint8               bMasked          : 1;
         uint8               bAdditive        : 1;
@@ -939,26 +934,8 @@ namespace Lumina
     };
 
     template <typename TComponent>
-    static const FResolvedSlot& LookupOrResolveSlot(
-        TFixedVector<FResolvedSlot, 16>& Cache,
-        const TComponent&                MeshComponent,
-        int16                            SlotIdx,
-        bool                             bSignificantOccluder)
+    static FResolvedSlot ResolveSlot(const TComponent& MeshComponent, int16 SlotIdx, bool bSignificantOccluder)
     {
-        // Fast path: the most-recently-resolved slot is at the back. Mesh
-        // surfaces are typically grouped by material slot, so this hits often.
-        if (!Cache.empty() && Cache.back().SlotIdx == SlotIdx)
-        {
-            return Cache.back();
-        }
-        for (const FResolvedSlot& C : Cache)
-        {
-            if (C.SlotIdx == SlotIdx)
-            {
-                return C;
-            }
-        }
-
         CMaterialInterface* Material = MeshComponent.GetMaterialForSlot(SlotIdx);
         // Terrain materials route through the wrong pipeline layout; fall back.
         if (IsValid(Material) && Material->GetMaterialType() == EMaterialType::Terrain)
@@ -982,18 +959,17 @@ namespace Lumina
         if (bMasked)                                                   Extra |= EInstanceFlags::Masked;
         if (bTwoSided)                                                 Extra |= EInstanceFlags::TwoSided;
 
-        FResolvedSlot& C = Cache.emplace_back();
-        C.VertexShader     = Material->GetVertexShader();
-        C.PixelShader      = Material->GetPixelShader();
-        C.MaterialID       = (uint64)Material->GetMaterial();
-        C.ExtraFlags       = Extra;
-        C.MaterialIdx      = (uint16)Material->GetMaterialIndex();
-        C.SlotIdx          = SlotIdx;
-        C.bTranslucent     = bTranslucent;
-        C.bMasked          = bMasked;
-        C.bAdditive        = bAdditive;
-        C.bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bTranslucent && bSignificantOccluder;
-        return C;
+        FResolvedSlot R;
+        R.VertexShader     = Material->GetVertexShader();
+        R.PixelShader      = Material->GetPixelShader();
+        R.MaterialID       = (uint64)Material->GetMaterial();
+        R.ExtraFlags       = Extra;
+        R.MaterialIdx      = (uint16)Material->GetMaterialIndex();
+        R.bTranslucent     = bTranslucent;
+        R.bMasked          = bMasked;
+        R.bAdditive        = bAdditive;
+        R.bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bTranslucent && bSignificantOccluder;
+        return R;
     }
 
     static uint16 FindOrAddLocalBatch(FForwardRenderScene::FThreadLocalDrawData& Local, const FDrawBatchKey& Key, FRHIVertexShader* VS, FRHIPixelShader* PS)
@@ -1173,23 +1149,19 @@ namespace Lumina
         EntityRecord.LocalBoneOffset      = ~0u;
         EntityRecord._Pad                 = 0u;
 
-        // Per-entity cache; the slot resolution chain (~9 virtual calls) only
-        // fires the first time we see each unique MaterialIndex.
-        TFixedVector<FResolvedSlot, 16> SlotCache;
-
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
         {
-            const FResolvedSlot& Slot = LookupOrResolveSlot(SlotCache, MeshComponent, Surface.MaterialIndex, bSignificantOccluder);
+            const FResolvedSlot Slot = ResolveSlot(MeshComponent, Surface.MaterialIndex, bSignificantOccluder);
 
             const EInstanceFlags Flags = BaseFlags | Slot.ExtraFlags;
 
             FDrawBatchKey BatchKey
             {
                 .MaterialID       = Slot.MaterialID,
-                .bDrawInDepthPass = (uint32)(Slot.bDrawInDepthPass ? 1u : 0u),
-                .bTranslucent     = (uint32)(Slot.bTranslucent     ? 1u : 0u),
-                .bMasked          = (uint32)(Slot.bMasked          ? 1u : 0u),
-                .bAdditive        = (uint32)(Slot.bAdditive        ? 1u : 0u),
+                .bDrawInDepthPass = (Slot.bDrawInDepthPass ? 1u : 0u),
+                .bTranslucent     = (Slot.bTranslucent     ? 1u : 0u),
+                .bMasked          = (Slot.bMasked          ? 1u : 0u),
+                .bAdditive        = (Slot.bAdditive        ? 1u : 0u),
             };
             // CPU-side LOD pick. The chosen meshlet range -- a slice of the
             // same per-mesh buffers -- replaces LOD 0 in the instance.
@@ -1292,11 +1264,9 @@ namespace Lumina
         EntityRecord.LocalBoneOffset      = LocalBoneOffset;
         EntityRecord._Pad                 = 0u;
 
-        TFixedVector<FResolvedSlot, 16> SlotCache;
-
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
         {
-            const FResolvedSlot& Slot = LookupOrResolveSlot(SlotCache, MeshComponent, Surface.MaterialIndex, bSignificantOccluder);
+            const FResolvedSlot Slot = ResolveSlot(MeshComponent, Surface.MaterialIndex, bSignificantOccluder);
 
             const EInstanceFlags Flags = BaseFlags | Slot.ExtraFlags;
 

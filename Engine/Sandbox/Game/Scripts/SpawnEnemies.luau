@@ -7,12 +7,11 @@ function NewScript:OnAttach()
 end
 
 function NewScript:OnReady()
-
 end
 
 function NewScript:Update(DeltaTime: number)
 
-        for i = 1, 100 do
+        for i = 1, 10 do
             local Entity = Registry:Duplicate(2)
             Engine.ECS.TranslateEntity(Registry, Entity, vector.create(math.random(-5000, 5000), math.random(50, 1500), math.random(-5000, 5000)))
 

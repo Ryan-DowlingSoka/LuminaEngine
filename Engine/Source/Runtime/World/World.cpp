@@ -507,7 +507,7 @@ namespace Lumina
             
         if (ScriptComponent->ReadyFunc.IsValid())
         {
-            ScriptComponent->ReadyFunc(ScriptComponent->Script->Reference);
+            ScriptComponent->ReadyFunc.InvokeAsCoroutine(ScriptComponent->Script->Reference);
         }
     }
 
@@ -531,11 +531,11 @@ namespace Lumina
             {
                 if (ScriptComponent.ReadyFunc.IsValid())
                 {
-                    ScriptComponent.ReadyFunc(ScriptComponent.Script->Reference);
+                    ScriptComponent.ReadyFunc.InvokeAsCoroutine(ScriptComponent.Script->Reference);
                 }
             }
         });
-        
+
         auto RelationshipView = EntityRegistry.view<SScriptComponent, FRelationshipComponent>(entt::exclude<SDisabledTag>);
         RelationshipView.each([&](entt::entity Entity, SScriptComponent& Script, const FRelationshipComponent& Relationship)
         {
@@ -554,7 +554,7 @@ namespace Lumina
                         {
                             if (ScriptComp->ReadyFunc.IsValid())
                             {
-                                ScriptComp->ReadyFunc(ScriptComp->Script->Reference);
+                                ScriptComp->ReadyFunc.InvokeAsCoroutine(ScriptComp->Script->Reference);
                             }
                         }
                     }
@@ -569,7 +569,7 @@ namespace Lumina
                 {
                     if (Script.ReadyFunc.IsValid())
                     {
-                        Script.ReadyFunc(Script.Script->Reference);
+                        Script.ReadyFunc.InvokeAsCoroutine(Script.Script->Reference);
                     }
                 }
             }
@@ -922,7 +922,17 @@ namespace Lumina
         {
             return;
         }
-        
+
+        // Publish per-thread context so yield-aware Lua APIs (e.g. TimerManager:Wait)
+        // can scope themselves to this entity. The address is stable for the script's
+        // lifetime since FScript is held by shared_ptr.
+        ScriptComponent.Script->ThreadData.Entity = Entity;
+        ScriptComponent.Script->ThreadData.World  = this;
+        if (lua_State* ScriptThread = ScriptComponent.Script->Reference.GetState())
+        {
+            lua_setthreaddata(ScriptThread, &ScriptComponent.Script->ThreadData);
+        }
+
         ScriptComponent.Script->Environment.RawSet("World", this);
         ScriptComponent.Script->Environment.RawSet("Registry", &EntityRegistry);
         ScriptComponent.Script->Environment.RawSet("Physics", PhysicsScene.get());
@@ -1014,7 +1024,7 @@ namespace Lumina
         {
             if (ScriptComponent.AttachFunc.IsValid())
             {
-                ScriptComponent.AttachFunc(ScriptComponent.Script->Reference);
+                ScriptComponent.AttachFunc.InvokeAsCoroutine(ScriptComponent.Script->Reference);
             }
             
             if (bRunReady)
@@ -1038,7 +1048,7 @@ namespace Lumina
 
         if ((WorldType == EWorldType::Editor) == ScriptComponent.bRunInEditor)
         {
-            ScriptComponent.DetachFunc(ScriptComponent.Script->Reference);
+            ScriptComponent.DetachFunc.InvokeAsCoroutine(ScriptComponent.Script->Reference);
         }
     }
 

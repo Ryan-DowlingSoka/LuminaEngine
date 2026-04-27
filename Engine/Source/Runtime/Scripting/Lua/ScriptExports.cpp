@@ -552,7 +552,10 @@ namespace Lumina::Lua
 
     static bool SameShape(const FScriptExportType& Type, const FScriptPropertyValue& Value)
     {
-        if (Type.Kind != Value.Kind) return false;
+        if (Type.Kind != Value.Kind)
+        {
+            return false;
+        }
         if (Type.Kind == EScriptExportKind::Array)
         {
             // Element-type mismatch is handled on reapply (we filled with defaults anyway); shape OK.

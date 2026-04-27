@@ -6,54 +6,68 @@
 
 namespace Lumina
 {
+    namespace
+    {
+        constexpr float kRowHeight = 25.0f;
+        constexpr float kIndentPerDepth = 21.0f;
+    }
+
+    FTreeListView::~FTreeListView()
+    {
+        for (FNode& Node : Nodes)
+        {
+            if (Node.bAlive && Node.UserData != nullptr && Node.UserDataDeleter != nullptr)
+            {
+                Node.UserDataDeleter(Node.UserData);
+                Node.UserData = nullptr;
+            }
+        }
+    }
+
     void FTreeListView::Draw(const FTreeListViewContext& Context)
     {
         LUMINA_PROFILE_SCOPE();
 
         if (bDirty)
         {
-            RebuildTree(Context);
-            return;
+            RebuildTreeNow(Context);
         }
-        
+
+        if (bVisibleListDirty)
+        {
+            RebuildVisibleList();
+        }
+
         ImGuiTableFlags TableFlags = ImGuiTableFlags_Resizable | ImGuiTableFlags_NoPadOuterX | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX
         | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuterH | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_BordersV;
-        
+
+        bool bAnyRowExpansionChanged = false;
+
         ImGui::PushID(this);
         ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(2, 2));
         if (ImGui::BeginTable("TreeViewTable", 1, TableFlags))
         {
             ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthStretch);
 
-            auto View = Registry.view<FTreeNode, FRootNode>();
             ImGuiListClipper Clipper;
-            
-            Clipper.Begin(static_cast<int>(View.size_hint()), 25.0f);
+            Clipper.Begin(static_cast<int>(VisibleList.size()), kRowHeight);
             while (Clipper.Step())
             {
                 for (int i = Clipper.DisplayStart; i < Clipper.DisplayEnd; ++i)
                 {
-                    const entt::basic_sparse_set<>* Set = View.handle();
+                    int32 NodeIdx = VisibleList[i];
 
-                    entt::entity ItemEntity = (*Set)[i];
-                    
-                    if (!Set->contains(ItemEntity))
-                    {
-                        continue;
-                    }
-                    
                     if (Context.FilterFunction)
                     {
-                        if (!Context.FilterFunction(*this, ItemEntity))
+                        if (!Context.FilterFunction(*this, FTreeNodeID{NodeIdx}))
                         {
                             continue;
                         }
                     }
-                    
+
                     ImGui::TableNextRow();
                     ImGui::TableSetColumnIndex(0);
-
-                    DrawListItem(ItemEntity, Context);
+                    DrawSingleRow(NodeIdx, Context, bAnyRowExpansionChanged);
                 }
             }
 
@@ -64,60 +78,117 @@ namespace Lumina
         {
             ClearSelections(Context);
         }
-        
+
         ImGui::PopStyleVar();
         ImGui::PopID();
+
+        if (bAnyRowExpansionChanged)
+        {
+            bVisibleListDirty = true;
+        }
     }
 
     void FTreeListView::ClearTree()
     {
-        Registry.clear<>();
+        for (FNode& Node : Nodes)
+        {
+            if (Node.bAlive && Node.UserData != nullptr && Node.UserDataDeleter != nullptr)
+            {
+                Node.UserDataDeleter(Node.UserData);
+            }
+        }
+        Nodes.clear();
+        FreeList.clear();
+        Roots.clear();
+        VisibleList.clear();
+        AliveCount = 0;
+        bVisibleListDirty = true;
     }
 
-    void FTreeListView::RebuildTree(const FTreeListViewContext& Context)
+    void FTreeListView::RebuildTreeNow(const FTreeListViewContext& Context)
     {
         DEBUG_ASSERT(Context.RebuildTreeFunction);
         DEBUG_ASSERT(bDirty);
-        
+
+        // Snapshot expansion state by hash so users keep their open subtrees across rebuilds.
         THashSet<uint64> CachedExpandedItems;
-        auto BeforeView = Registry.view<FTreeNodeState, FTreeNode>();
-        BeforeView.each([&](const FTreeNodeState& State, const FTreeNode& Node)
+        CachedExpandedItems.reserve(AliveCount);
+        for (const FNode& Node : Nodes)
         {
-            if (State.bExpanded)
+            if (Node.bAlive && Node.State.bExpanded)
             {
                 CachedExpandedItems.emplace(Node.Hash);
             }
-        });
+        }
 
         ClearSelections(Context);
         ClearTree();
-        
+
         Context.RebuildTreeFunction(*this);
-        
-        auto AfterView = Registry.view<FTreeNodeState, FTreeNode>();
-        AfterView.each([&](FTreeNodeState& State, const FTreeNode& Node)
+
+        for (FNode& Node : Nodes)
         {
-            if (CachedExpandedItems.find(Node.Hash) != CachedExpandedItems.end())
+            if (Node.bAlive && CachedExpandedItems.find(Node.Hash) != CachedExpandedItems.end())
             {
-                State.bExpanded = true;
+                Node.State.bExpanded = true;
             }
-        });
+        }
 
         bDirty = false;
+        bVisibleListDirty = true;
     }
 
-    void FTreeListView::DrawListItem(entt::entity Entity, const FTreeListViewContext& Context)
+    void FTreeListView::RebuildVisibleList()
     {
-        const FTreeNode& TreeNode       = Registry.get<FTreeNode>(Entity);
-        FTreeNodeDisplay& Display = Registry.get<FTreeNodeDisplay>(Entity);
-        FTreeNodeState& State           = Registry.get<FTreeNodeState>(Entity);
-        bool bHasChildren               = !TreeNode.Children.empty();
-        
-        ImGui::PushID(static_cast<int>(entt::to_integral(Entity)));
+        LUMINA_PROFILE_SCOPE();
 
-        ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_DrawLinesFull | ImGuiTreeNodeFlags_AllowOverlap;
+        VisibleList.clear();
+        VisibleList.reserve(AliveCount);
 
-        if (!bHasChildren)
+        for (int32 RootIdx : Roots)
+        {
+            AppendVisibleSubtree(RootIdx);
+        }
+
+        bVisibleListDirty = false;
+    }
+
+    void FTreeListView::AppendVisibleSubtree(int32 NodeIdx)
+    {
+        VisibleList.push_back(NodeIdx);
+        const FNode& Node = Nodes[NodeIdx];
+        if (!Node.State.bExpanded)
+        {
+            return;
+        }
+
+        // Snapshot the children indices because callbacks during draw aren't supposed to mutate
+        // the tree, but defensively iterate by index to avoid iterator-invalidation bugs.
+        const int32 NumChildren = static_cast<int32>(Node.Children.size());
+        for (int32 i = 0; i < NumChildren; ++i)
+        {
+            AppendVisibleSubtree(Nodes[NodeIdx].Children[i]);
+        }
+    }
+
+    void FTreeListView::DrawSingleRow(int32 NodeIdx, const FTreeListViewContext& Context, bool& bAnyRowExpansionChanged)
+    {
+        FNode& Node = Nodes[NodeIdx];
+        FTreeNodeDisplay& Display = Node.Display;
+        FTreeNodeState& State = Node.State;
+        const bool bDeclaresChildren = !Node.Children.empty() || Node.bHasLazyChildren;
+
+        ImGui::PushID(NodeIdx);
+
+        if (Node.Depth > 0)
+        {
+            ImGui::Indent(Node.Depth * kIndentPerDepth);
+        }
+
+        ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_DrawLinesFull
+            | ImGuiTreeNodeFlags_AllowOverlap | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+
+        if (!bDeclaresChildren)
         {
             Flags |= ImGuiTreeNodeFlags_Leaf;
         }
@@ -131,19 +202,29 @@ namespace Lumina
         {
             Flags |= ImGuiTreeNodeFlags_Selected;
         }
-        
+
         ImVec4 TextColor = Display.DisplayColor;
         if (State.bDisabled)
         {
             TextColor.w *= 0.4f;
         }
-        
+
         ImGui::PushStyleColor(ImGuiCol_Text, TextColor);
-        
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.22f, 0.52f, 0.22f, 0.40f));
 
-        State.bExpanded = ImGui::TreeNodeEx("##TreeNode", Flags, "%s", Display.DisplayName.c_str());
-        
+        const bool bNowExpanded = ImGui::TreeNodeEx("##TreeNode", Flags, "%s", Display.DisplayName.c_str());
+
+        if (bDeclaresChildren && bNowExpanded != State.bExpanded)
+        {
+            State.bExpanded = bNowExpanded;
+            bAnyRowExpansionChanged = true;
+
+            if (bNowExpanded && Node.bHasLazyChildren && !Node.bChildrenBuilt)
+            {
+                EnsureChildrenBuilt(NodeIdx, Context);
+            }
+        }
+
         if (State.bEditingText && Display.bAllowRenaming)
         {
             ImVec2 ItemMin = ImGui::GetItemRectMin();
@@ -164,7 +245,7 @@ namespace Lumina
                 State.bEditingText = false;
                 if (Context.RenameFunction)
                 {
-                    Context.RenameFunction(*this, Entity, EditBuffer);
+                    Context.RenameFunction(*this, FTreeNodeID{NodeIdx}, EditBuffer);
                 }
 
 				EditBuffer[0] = '\0';
@@ -178,10 +259,10 @@ namespace Lumina
             }
         }
 
-        ImGui::PopStyleColor();
+        ImGui::PopStyleColor(); // text color
 
         bool bTreeNodeClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen();
-        
+
         if (ImGui::IsItemHovered())
         {
             if (ImGui::IsKeyDown(ImGuiKey_F2) && Display.bAllowRenaming)
@@ -193,21 +274,21 @@ namespace Lumina
             {
                 if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(Key)))
                 {
-                    if (HandleKeyPressed(Context, Entity, (ImGuiKey)Key))
+                    if (HandleKeyPressed(Context, FTreeNodeID{NodeIdx}, (ImGuiKey)Key))
                     {
                         break;
                     }
                 }
             }
         }
-        
+
         if (ImGui::BeginDragDropSource())
         {
             if (Context.SetDragDropFunction)
             {
-                Context.SetDragDropFunction(*this, Entity);
+                Context.SetDragDropFunction(*this, FTreeNodeID{NodeIdx});
             }
-            
+
             ImGui::TextUnformatted(Display.DisplayName.c_str());
             ImGui::EndDragDropSource();
         }
@@ -216,28 +297,23 @@ namespace Lumina
         {
             if (Context.DragDropFunction)
             {
-                Context.DragDropFunction(*this, Entity);
+                Context.DragDropFunction(*this, FTreeNodeID{NodeIdx});
             }
 
             ImGui::EndDragDropTarget();
         }
-        
+
         ImGuiX::TextTooltip("{}", Display.TooltipText);
-        
 
         if (Context.ItemContextMenuFunction)
         {
             if (ImGui::BeginPopupContextItem("ItemContextMenu"))
             {
-                if (Context.ItemContextMenuFunction)
-                {
-                    Context.ItemContextMenuFunction(*this, Entity);
-                }
-                
+                Context.ItemContextMenuFunction(*this, FTreeNodeID{NodeIdx});
                 ImGui::EndPopup();
             }
         }
-        
+
         bool bMouseOverVisibilityButton = false;
         if (Display.bShowDisabledIcon)
         {
@@ -246,7 +322,7 @@ namespace Lumina
             float ButtonWidth = 40.0f;
 
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + AvailableWidth - ButtonWidth + ImGui::GetStyle().FramePadding.x);
-        
+
             const char* Icon = State.bDisabled ? LE_ICON_EYE_OFF : LE_ICON_EYE;
             bool bSmallButtonClicked = ImGui::SmallButton(Icon);
 			bMouseOverVisibilityButton = ImGui::IsItemHovered();
@@ -254,110 +330,218 @@ namespace Lumina
             if(bSmallButtonClicked)
             {
                 State.bDisabled = ~State.bDisabled;
-                
-                TVector<entt::entity> Stack(TreeNode.Children.begin(), TreeNode.Children.end());
+
+                // Cascade disabled state down the subtree iteratively.
+                TVector<int32> Stack(Nodes[NodeIdx].Children.begin(), Nodes[NodeIdx].Children.end());
                 while (!Stack.empty())
                 {
-                    entt::entity Current = Stack.back();
+                    int32 Current = Stack.back();
                     Stack.pop_back();
 
-                    FTreeNodeState& ChildState = Registry.get<FTreeNodeState>(Current);
-                    ChildState.bDisabled = State.bDisabled;
-
-                    FTreeNode& ChildNode = Registry.get<FTreeNode>(Current);
-                    for (entt::entity Grandchild : ChildNode.Children)
+                    Nodes[Current].State.bDisabled = State.bDisabled;
+                    for (int32 Grandchild : Nodes[Current].Children)
                     {
                         Stack.push_back(Grandchild);
                     }
                 }
-                
+
                 if (Context.VisibilityToggleFunction)
                 {
-                    Context.VisibilityToggleFunction(*this, Entity);
+                    Context.VisibilityToggleFunction(*this, FTreeNodeID{NodeIdx});
                 }
             }
         }
 
-        if(bTreeNodeClicked && !bMouseOverVisibilityButton)
+        if (bTreeNodeClicked && !bMouseOverVisibilityButton)
         {
             const bool bShift = ImGui::GetIO().KeyShift;
             const bool bCtrl  = ImGui::GetIO().KeyCtrl;
-            SetSelection(Entity, Context, !bCtrl);
+            (void)bShift;
+            SetSelection(FTreeNodeID{NodeIdx}, Context, !bCtrl);
 		}
-        
-        if (State.bExpanded)
-        {
-            for (entt::entity Child : TreeNode.Children)
-            {
-                ImGui::Indent(8);
 
-                DrawListItem(Child, Context);
-                
-                ImGui::Unindent(8);
-            }
-            
-            ImGui::TreePop();
+        ImGui::PopStyleColor(); // header color
+
+        if (Node.Depth > 0)
+        {
+            ImGui::Unindent(Node.Depth * kIndentPerDepth);
         }
-        
-        ImGui::PopStyleColor();
-        
+
         ImGui::PopID();
-        
     }
 
-    entt::entity FTreeListView::CreateNode(entt::entity Parent, const FFixedString& Name, uint64 Hash)
+    void FTreeListView::EnsureChildrenBuilt(int32 NodeIdx, const FTreeListViewContext& Context)
     {
-        entt::entity NewNode = Registry.create();
-        FTreeNode& TreeNode = Registry.emplace<FTreeNode>(NewNode);
-        TreeNode.Hash = (Hash == 0) ? Hash::GetHash64(Name) : Hash;
-        TreeNode.Parent = Parent;
-        
-        bool bShouldBeDisabled = false;
-        if (Parent != entt::null && Registry.valid(Parent))
+        if (!Context.BuildChildrenFunction)
         {
-            FTreeNode& ParentNode = Registry.get<FTreeNode>(Parent);
-            FTreeNodeState& ParentState = Registry.get<FTreeNodeState>(Parent);
-            ParentNode.Children.push_back(NewNode);
-            bShouldBeDisabled = ParentState.bDisabled;
+            Nodes[NodeIdx].bChildrenBuilt = true;
+            return;
         }
-        
-        FTreeNodeDisplay& Display = Registry.emplace<FTreeNodeDisplay>(NewNode);
-        Display.DisplayName = Name;
-        Display.TooltipText = Name;
-        FTreeNodeState& State = Registry.emplace<FTreeNodeState>(NewNode);
-        State.bDisabled = bShouldBeDisabled;
-        
-        if (Parent == entt::null)
+
+        Context.BuildChildrenFunction(*this, FTreeNodeID{NodeIdx});
+        Nodes[NodeIdx].bChildrenBuilt = true;
+    }
+
+    int32 FTreeListView::AllocNode()
+    {
+        int32 Idx;
+        if (!FreeList.empty())
         {
-            Registry.emplace<FRootNode>(NewNode);
+            Idx = FreeList.back();
+            FreeList.pop_back();
+            Nodes[Idx] = FNode{};
         }
         else
         {
-            Registry.emplace<FLeafNode>(NewNode);            
+            Idx = static_cast<int32>(Nodes.size());
+            Nodes.emplace_back();
         }
-        
-        return NewNode;
+        Nodes[Idx].bAlive = true;
+        ++AliveCount;
+        return Idx;
     }
 
-    void FTreeListView::SetSelection(entt::entity Item, const FTreeListViewContext& Context, bool bShouldClear)
+    FTreeNodeID FTreeListView::CreateNode(FTreeNodeID Parent, FStringView Name, uint64 Hash)
     {
-        auto View = Registry.view<FTreeNodeState>();
-        View.each([&](entt::entity ViewEntity, FTreeNodeState& State)
+        const int32 Idx = AllocNode();
+
+        // Compute hash before any further mutation so we don't hold a reference across grow.
+        const uint64 NodeHash = (Hash == 0) ? Hash::GetHash64(Name.data(), Name.length()) : Hash;
+
+        bool bShouldBeDisabled = false;
+        int32 ParentDepth = -1;
+        if (Parent.IsValid() && Parent.Index < static_cast<int32>(Nodes.size()) && Nodes[Parent.Index].bAlive)
         {
-            if (ViewEntity == Item)
-            {
-                State.bSelected = true;
-                if (Context.ItemSelectedFunction)
-                {
-                    Context.ItemSelectedFunction(*this, Item, bShouldClear);
-                }
-                return;
-            }
-            State.bSelected = false;
-        });
+            ParentDepth = Nodes[Parent.Index].Depth;
+            bShouldBeDisabled = Nodes[Parent.Index].State.bDisabled;
+            Nodes[Parent.Index].Children.push_back(Idx);
+            // Note: we deliberately do NOT set bChildrenBuilt here. Callers can mix explicit
+            // CreateNode calls with lazy BuildChildrenFunction; the lazy callback is responsible
+            // for being idempotent (skipping already-present children) if both are used.
+        }
+        else
+        {
+            Roots.push_back(Idx);
+        }
+
+        FNode& Node = Nodes[Idx];
+        Node.Hash = NodeHash;
+        Node.ParentIdx = (ParentDepth >= 0) ? Parent.Index : -1;
+        Node.Depth = ParentDepth + 1;
+        Node.Display.DisplayName.assign(Name.data(), Name.length());
+        Node.Display.TooltipText.assign(Name.data(), Name.length());
+        Node.State.bDisabled = bShouldBeDisabled;
+
+        bVisibleListDirty = true;
+        return FTreeNodeID{Idx};
     }
 
-    bool FTreeListView::HandleKeyPressed(const FTreeListViewContext& Context, entt::entity Item, ImGuiKey Key)
+    void FTreeListView::RemoveNode(FTreeNodeID Handle)
+    {
+        if (!IsValid(Handle))
+        {
+            return;
+        }
+
+        UnlinkFromParent(Handle.Index);
+        RemoveSubtree(Handle.Index);
+
+        bVisibleListDirty = true;
+    }
+
+    void FTreeListView::UnlinkFromParent(int32 Idx)
+    {
+        const int32 ParentIdx = Nodes[Idx].ParentIdx;
+        if (ParentIdx >= 0)
+        {
+            auto& Children = Nodes[ParentIdx].Children;
+            Children.erase(eastl::remove(Children.begin(), Children.end(), Idx), Children.end());
+        }
+        else
+        {
+            Roots.erase(eastl::remove(Roots.begin(), Roots.end(), Idx), Roots.end());
+        }
+    }
+
+    void FTreeListView::RemoveSubtree(int32 RootIdx)
+    {
+        TVector<int32> Stack;
+        Stack.push_back(RootIdx);
+        while (!Stack.empty())
+        {
+            const int32 Cur = Stack.back();
+            Stack.pop_back();
+
+            // Push children first so we can free them too.
+            for (int32 Child : Nodes[Cur].Children)
+            {
+                Stack.push_back(Child);
+            }
+
+            DestroyNodeData(Cur);
+        }
+    }
+
+    void FTreeListView::DestroyNodeData(int32 Idx)
+    {
+        FNode& Node = Nodes[Idx];
+        if (Node.UserData != nullptr && Node.UserDataDeleter != nullptr)
+        {
+            Node.UserDataDeleter(Node.UserData);
+            Node.UserData = nullptr;
+            Node.UserDataDeleter = nullptr;
+        }
+        Node.Children.clear();
+        Node.bAlive = false;
+        Node.bChildrenBuilt = false;
+        Node.bHasLazyChildren = false;
+        FreeList.push_back(Idx);
+        --AliveCount;
+    }
+
+    void FTreeListView::MarkHasLazyChildren(FTreeNodeID Handle, bool bHasLazy)
+    {
+        if (!IsValid(Handle))
+        {
+            return;
+        }
+        FNode& Node = Nodes[Handle.Index];
+        Node.bHasLazyChildren = bHasLazy;
+        if (bHasLazy)
+        {
+            Node.bChildrenBuilt = false;
+        }
+    }
+
+    bool FTreeListView::IsValid(FTreeNodeID Handle) const
+    {
+        return Handle.IsValid()
+            && Handle.Index < static_cast<int32>(Nodes.size())
+            && Nodes[Handle.Index].bAlive;
+    }
+
+    void FTreeListView::SetSelection(FTreeNodeID Item, const FTreeListViewContext& Context, bool bShouldClear)
+    {
+        for (FNode& Node : Nodes)
+        {
+            if (Node.bAlive)
+            {
+                Node.State.bSelected = false;
+            }
+        }
+
+        if (IsValid(Item))
+        {
+            Nodes[Item.Index].State.bSelected = true;
+        }
+
+        if (Context.ItemSelectedFunction)
+        {
+            Context.ItemSelectedFunction(*this, Item, bShouldClear);
+        }
+    }
+
+    bool FTreeListView::HandleKeyPressed(const FTreeListViewContext& Context, FTreeNodeID Item, ImGuiKey Key)
     {
         if (Context.KeyPressedFunction)
         {
@@ -366,18 +550,25 @@ namespace Lumina
 
         return false;
     }
-    
+
     void FTreeListView::ClearSelections(const FTreeListViewContext& Context)
     {
-        auto View = Registry.view<FTreeNodeState>();
-        View.each([&](entt::entity ViewEntity, FTreeNodeState& State)
+        for (FNode& Node : Nodes)
         {
-            State.bSelected = false;
-
-            if (Context.ItemSelectedFunction)
+            if (Node.bAlive)
             {
-                //Context.ItemSelectedFunction(*this, entt::null);
+                Node.State.bSelected = false;
             }
-        });
+        }
+        (void)Context;
+    }
+
+    void FTreeListView::RecomputeDepthsRecursive(int32 NodeIdx, int32 Depth)
+    {
+        Nodes[NodeIdx].Depth = Depth;
+        for (int32 Child : Nodes[NodeIdx].Children)
+        {
+            RecomputeDepthsRecursive(Child, Depth + 1);
+        }
     }
 }

@@ -81,14 +81,37 @@ namespace Lumina::Lua
             {
                 return Invoker<TFunc>(State);
             };
-    
+
             TArray<FMethodEntry, NMethods + 1> NewMethods;
             for (size_t i = 0; i < NMethods; ++i)
             {
                 NewMethods[i] = Methods[i];
             }
             NewMethods[NMethods] = Entry;
-    
+
+            return TClass<T, NMethods + 1>(L, Name, NewMethods);
+        }
+
+        /**
+         * Register a raw lua_CFunction as a method. Use this for methods that need
+         * direct access to lua_State* (e.g. functions that yield via lua_yield),
+         * since the templated AddFunction path can't represent those.
+         *
+         * The raw function receives the standard __namecall stack: [self, args...].
+         */
+        auto AddRawFunction(FStringView FuncName, lua_CFunction Func)
+        {
+            FMethodEntry Entry;
+            Entry.Name   = FuncName;
+            Entry.Invoke = Func;
+
+            TArray<FMethodEntry, NMethods + 1> NewMethods;
+            for (size_t i = 0; i < NMethods; ++i)
+            {
+                NewMethods[i] = Methods[i];
+            }
+            NewMethods[NMethods] = Entry;
+
             return TClass<T, NMethods + 1>(L, Name, NewMethods);
         }
         

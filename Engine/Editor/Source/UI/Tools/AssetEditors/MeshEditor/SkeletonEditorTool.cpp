@@ -86,48 +86,48 @@ namespace Lumina
         
         
                 
-        BoneListContext.ItemContextMenuFunction = [this](FTreeListView& Tree, entt::entity Item)
+        BoneListContext.ItemContextMenuFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
-            
+
         };
 
-        BoneListContext.DragDropFunction = [this](FTreeListView& Tree, entt::entity Item)
+        BoneListContext.DragDropFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
-           
+
         };
-        
+
         BoneListContext.RebuildTreeFunction = [this](FTreeListView& Tree)
         {
             CSkeleton* Skeleton = GetAsset<CSkeleton>();
-            TFunction<void(entt::entity, const FSkeletonResource::FBoneInfo&)> AddChildrenRecursive;
-            
-            AddChildrenRecursive = [&](entt::entity ParentItem, const FSkeletonResource::FBoneInfo& Bone)
+            TFunction<void(FTreeNodeID, const FSkeletonResource::FBoneInfo&)> AddChildrenRecursive;
+
+            AddChildrenRecursive = [&](FTreeNodeID ParentItem, const FSkeletonResource::FBoneInfo& Bone)
             {
                 int32 Index = Skeleton->GetSkeletonResource()->FindBoneIndex(Bone.Name);
-                
+
                 for (int32 Child : Skeleton->GetSkeletonResource()->GetChildBones(Index))
                 {
                     const FSkeletonResource::FBoneInfo& ChildBone = Skeleton->GetSkeletonResource()->GetBone(Child);
 
-                    entt::entity NewNode = Tree.CreateNode(ParentItem, ChildBone.Name.c_str());
+                    FTreeNodeID NewNode = Tree.CreateNode(ParentItem, FStringView(ChildBone.Name.c_str()));
                     Tree.Get<FTreeNodeState>(NewNode).bExpanded = true;
                     AddChildrenRecursive(NewNode, ChildBone);
                 }
             };
-            
+
             for (int32 BoneIndex : Skeleton->GetSkeletonResource()->GetRootBones())
             {
                 const FSkeletonResource::FBoneInfo& Bone = Skeleton->GetSkeletonResource()->GetBone(BoneIndex);
-                entt::entity RootItem = Tree.CreateNode(entt::null, Bone.Name.c_str());
+                FTreeNodeID RootItem = Tree.CreateNode(InvalidTreeNode, FStringView(Bone.Name.c_str()));
                 Tree.Get<FTreeNodeState>(RootItem).bExpanded = true;
 
                 AddChildrenRecursive(RootItem, Bone);
             }
         };
 
-        BoneListContext.ItemSelectedFunction = [this] (FTreeListView& Tree, entt::entity Item, bool)
+        BoneListContext.ItemSelectedFunction = [this] (FTreeListView& Tree, FTreeNodeID Item, bool)
         {
-            if (Item == entt::null)
+            if (!Item.IsValid())
             {
                 SelectedBone = NAME_None;
             }
@@ -137,7 +137,7 @@ namespace Lumina
             }
         };
 
-        BoneListContext.KeyPressedFunction = [this] (FTreeListView& Tree, entt::entity Item, ImGuiKey Key) -> bool
+        BoneListContext.KeyPressedFunction = [this] (FTreeListView& Tree, FTreeNodeID Item, ImGuiKey Key) -> bool
         {
             return false;
         };

@@ -57,14 +57,14 @@ namespace Lumina
             RebuildOutlinerTree(Tree);
         };
 
-        OutlinerContext.ItemSelectedFunction = [this](FTreeListView& Tree, entt::entity Item, bool bShouldClear)
+        OutlinerContext.ItemSelectedFunction = [this](FTreeListView& Tree, FTreeNodeID Item, bool bShouldClear)
         {
             if (bShouldClear)
             {
                 ClearSelectedEntities();
             }
 
-            if (Item == entt::null)
+            if (!Item.IsValid())
             {
                 return;
             }
@@ -78,7 +78,7 @@ namespace Lumina
             AddSelectedEntity(Data.Entity, false);
         };
 
-        OutlinerContext.ItemContextMenuFunction = [this](FTreeListView& Tree, entt::entity Item)
+        OutlinerContext.ItemContextMenuFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
             entt::registry& Registry = World->GetEntityRegistry();
@@ -104,20 +104,20 @@ namespace Lumina
             }
         };
 
-        OutlinerContext.SetDragDropFunction = [this](FTreeListView& Tree, entt::entity Item)
+        OutlinerContext.SetDragDropFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
             entt::entity Source = Data.Entity;
             ImGui::SetDragDropPayload(PrefabDragDropID, &Source, sizeof(entt::entity));
         };
 
-        OutlinerContext.DragDropFunction = [this](FTreeListView& Tree, entt::entity Item)
+        OutlinerContext.DragDropFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
             HandleOutlinerDragDrop(Tree, Data.Entity);
         };
 
-        OutlinerContext.KeyPressedFunction = [this](FTreeListView& Tree, entt::entity Item, ImGuiKey Key) -> bool
+        OutlinerContext.KeyPressedFunction = [this](FTreeListView& Tree, FTreeNodeID Item, ImGuiKey Key) -> bool
         {
             if (Key == ImGuiKey_Delete)
             {
@@ -471,8 +471,8 @@ namespace Lumina
     {
         entt::registry& Registry = World->GetEntityRegistry();
 
-        TFunction<void(entt::entity, entt::entity)> AddRecursive;
-        AddRecursive = [&](entt::entity WorldEntity, entt::entity ParentItem)
+        TFunction<void(entt::entity, FTreeNodeID)> AddRecursive;
+        AddRecursive = [&](entt::entity WorldEntity, FTreeNodeID ParentItem)
         {
             SNameComponent* NameComp = Registry.try_get<SNameComponent>(WorldEntity);
             FFixedString DisplayName;
@@ -480,7 +480,7 @@ namespace Lumina
                 .append(NameComp ? NameComp->Name.c_str() : "<unnamed>")
                 .append_convert(FString(" - (" + eastl::to_string(entt::to_integral(WorldEntity)) + ")"));
 
-            entt::entity ItemEntity = Tree.CreateNode(ParentItem, DisplayName);
+            FTreeNodeID ItemEntity = Tree.CreateNode(ParentItem, FStringView(DisplayName.data(), DisplayName.length()));
             FTreeNodeDisplay& Display = Tree.Get<FTreeNodeDisplay>(ItemEntity);
             Display.TooltipText = FString("Entity: " + eastl::to_string(entt::to_integral(WorldEntity))).c_str();
             Display.bAllowRenaming = false;
@@ -513,7 +513,7 @@ namespace Lumina
 
         for (entt::entity Root : Roots)
         {
-            AddRecursive(Root, entt::null);
+            AddRecursive(Root, InvalidTreeNode);
         }
     }
 

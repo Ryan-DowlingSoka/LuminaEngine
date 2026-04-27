@@ -23,14 +23,14 @@ namespace Lumina
                 
                     if (ScriptComponent.TickRate <= 0.0f)
                     {
-                        ScriptComponent.UpdateFunc(Script->Reference, DeltaTime);
+                        (void)ScriptComponent.UpdateFunc.Invoke(Script->Reference, DeltaTime);
                     }
                     else
                     {
                         ScriptComponent.AccumulatedTime += DeltaTime;
                         if (ScriptComponent.AccumulatedTime >= ScriptComponent.TickRate)
                         {
-                            ScriptComponent.UpdateFunc(Script->Reference, ScriptComponent.AccumulatedTime);
+                            (void)ScriptComponent.UpdateFunc.Invoke(Script->Reference, ScriptComponent.AccumulatedTime);
                             ScriptComponent.AccumulatedTime = 0.0f;
                         }
                     }

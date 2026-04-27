@@ -35,6 +35,11 @@ namespace Lumina
      *   Timer:ClearTimer(h)
      *   Timer:PauseTimer(h, true)
      *   local remaining = Timer:GetTimerRemaining(h)
+     *
+     *   -- Coroutine: yield the current script coroutine for `seconds`. Must be called
+     *   -- from a script lifecycle entry point (Update/OnReady/OnAttach/OnDetach) or a
+     *   -- coroutine spawned from one. The wait is auto-cleared if the owning entity dies.
+     *   Timer:Wait(seconds)
      */
     class RUNTIME_API FTimerManager
     {
@@ -87,6 +92,11 @@ namespace Lumina
         bool         IsTimerActive_Lua(entt::entity Handle) const;
         float        GetTimerRemaining_Lua(entt::entity Handle) const;
         void         PauseTimer_Lua(entt::entity Handle, bool bPause);
+
+        // Raw lua_CFunction: yields the calling coroutine and schedules a one-shot timer
+        // that resumes it after `seconds`. Bound via TClass::AddRawFunction since the
+        // templated Invoker path can't represent functions that yield.
+        static int   Wait_Lua(struct lua_State* L);
 
         entt::entity CreateTimer(float Rate, bool bLoop, float FirstDelay, entt::entity Owner, FTimerCallback NativeCallback, Lua::FRef LuaCallback);
 

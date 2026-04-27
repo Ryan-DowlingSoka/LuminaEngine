@@ -3,8 +3,13 @@
 
 #include <algorithm>
 
+#include "lua.h"
+#include "lualib.h"
 #include "Log/Log.h"
+#include "Memory/SmartPtr.h"
 #include "Scripting/Lua/Class.h"
+#include "Scripting/Lua/ScriptTypes.h"
+#include "Scripting/Lua/Stack.h"
 
 namespace Lumina
 {
@@ -15,7 +20,11 @@ namespace Lumina
 
     void FTimerManager::RegisterLuaModule(Lua::FRef& GlobalRef)
     {
-        GlobalRef.NewClass<FTimerManager>("TimerManager")
+        // Register the metatable under a name that does NOT collide with the script-side
+        // binding "TimerManager". TClass also writes an empty table into the parent globals
+        // under this name, and Luau caches it as the GETIMPORT constant for any matching
+        // identifier — which would shadow the per-script userdata bound via Environment.RawSet.
+        GlobalRef.NewClass<FTimerManager>("FTimerManager")
             .AddFunction<&FTimerManager::Delay_Lua>("Delay")
             .AddFunction<&FTimerManager::SetTimer_Lua>("SetTimer")
             .AddFunction<&FTimerManager::SetEntityTimer_Lua>("SetEntityTimer")
@@ -23,6 +32,7 @@ namespace Lumina
             .AddFunction<&FTimerManager::IsTimerActive_Lua>("IsTimerActive")
             .AddFunction<&FTimerManager::GetTimerRemaining_Lua>("GetTimerRemaining")
             .AddFunction<&FTimerManager::PauseTimer_Lua>("PauseTimer")
+            .AddRawFunction("Wait", &FTimerManager::Wait_Lua)
             .Register();
     }
 
@@ -294,5 +304,78 @@ namespace Lumina
     void FTimerManager::PauseTimer_Lua(entt::entity Handle, bool bPause)
     {
         SetTimerPaused(FTimerHandle{ Handle }, bPause);
+    }
+
+    int FTimerManager::Wait_Lua(lua_State* L)
+    {
+        // __namecall stack: [self][seconds]
+        FTimerManager* Self = Lua::TStack<FTimerManager*>::Get(L, 1);
+        if (Self == nullptr)
+        {
+            luaL_errorL(L, "TimerManager:Wait called with invalid self");
+        }
+
+        if (!lua_isnumber(L, 2))
+        {
+            luaL_typeerrorL(L, 2, "number");
+        }
+
+        const float Seconds = static_cast<float>(lua_tonumber(L, 2));
+
+        if (!lua_isyieldable(L))
+        {
+            luaL_errorL(L, "TimerManager:Wait can only be called from a coroutine "
+                           "(spawn from a script lifecycle hook or coroutine.wrap).");
+        }
+
+        // Pin the calling thread in the registry so it survives until the timer resumes it.
+        // Refs are global to the lua_State family — we record the main state for the eventual
+        // unref so the unref happens on a state that's guaranteed to outlive the sub-thread.
+        lua_State* MainState = lua_mainthread(L);
+        lua_pushthread(L);
+        const int ThreadRef = lua_ref(L, -1);
+        lua_pop(L, 1);
+
+        // Resolve owning entity (if any) so the timer is tied to the script's lifetime —
+        // ClearTimersForEntity will then auto-clean if the entity dies during the wait.
+        const auto* ThreadData = static_cast<const Lua::FScriptThreadData*>(lua_getthreaddata(L));
+        const entt::entity Owner = ThreadData ? ThreadData->Entity : entt::null;
+
+        // RAII holder so the registry pin is released whether the timer fires normally or
+        // is cleared early (e.g. entity destroyed mid-wait). Captured by-shared-ptr in the
+        // timer lambda; destruction of the lambda destructs the holder.
+        struct FWaitState
+        {
+            lua_State* MainState = nullptr;
+            int        ThreadRef = LUA_NOREF;
+
+            ~FWaitState()
+            {
+                if (MainState && ThreadRef != LUA_NOREF)
+                {
+                    lua_unref(MainState, ThreadRef);
+                }
+            }
+        };
+
+        auto State = MakeShared<FWaitState>();
+        State->MainState = MainState;
+        State->ThreadRef = ThreadRef;
+
+        // Capture L (the sub-coroutine to resume). It's kept alive by ThreadRef until the
+        // lambda destructs, so the pointer is safe for the lifetime of the timer.
+        Self->CreateTimer(Seconds, /*bLoop=*/false, /*FirstDelay=*/-1.0f, Owner,
+            [State, L]()
+            {
+                int Status = lua_resume(L, nullptr, 0);
+                if (Status != LUA_OK && Status != LUA_YIELD)
+                {
+                    const char* ErrMsg = lua_tostring(L, -1);
+                    LOG_ERROR("[Lua] - TimerManager:Wait resume failed: {}", ErrMsg ? ErrMsg : "<unknown>");
+                }
+            },
+            Lua::FRef());
+
+        return lua_yield(L, 0);
     }
 }

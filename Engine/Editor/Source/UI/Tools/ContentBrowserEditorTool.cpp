@@ -388,12 +388,12 @@ namespace Lumina
             return false;
         };
         
-        DirectoryContext.ItemContextMenuFunction = [this](FTreeListView& Tree, entt::entity Item)
+        DirectoryContext.ItemContextMenuFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
-            
+
         };
 
-        DirectoryContext.DragDropFunction = [this](FTreeListView& Tree, entt::entity Item)
+        DirectoryContext.DragDropFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
             FContentBrowserListViewItemData& Data = Tree.Get<FContentBrowserListViewItemData>(Item);
             const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(FContentBrowserTileViewItem::DragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery);
@@ -418,65 +418,81 @@ namespace Lumina
             }
         };
         
-        DirectoryContext.RebuildTreeFunction = [this](FTreeListView& Tree)
+        // Helper: add a single folder node, flag it as having lazy children if it actually has subdirectories.
+        auto AddFolderNode = [this](FTreeListView& Tree, FTreeNodeID Parent, const VFS::FFileInfo& Info)
         {
-            TFunction<void(entt::entity, FStringView)> AddChildrenRecursive;
-            
-            AddChildrenRecursive = [&](entt::entity ParentItem, FStringView CurrentPath)
+            FFixedString DisplayName;
+            DisplayName.append(LE_ICON_FOLDER).append(" ").append(Info.Name.begin(), Info.Name.end());
+
+            FTreeNodeID ItemEntity = Tree.CreateNode(Parent, FStringView(DisplayName.data(), DisplayName.length()), Hash::GetHash64(Info.PathSource));
+            Tree.EmplaceUserData<FContentBrowserListViewItemData>(ItemEntity).Path.assign(Info.VirtualPath.begin(), Info.VirtualPath.end());
+
+            if (Info.VirtualPath == SelectedPath)
             {
-                VFS::DirectoryIterator(CurrentPath, [&](const VFS::FFileInfo& Info)
+                FTreeNodeState& State = Tree.Get<FTreeNodeState>(ItemEntity);
+                State.bSelected = true;
+            }
+
+            // Probe for at least one subdirectory; if any exists, mark lazy so the arrow appears.
+            bool bHasSubdirs = false;
+            VFS::DirectoryIterator(Info.VirtualPath, [&](const VFS::FFileInfo& Child)
+            {
+                if (Child.IsDirectory())
                 {
-                    if (!Info.IsDirectory())
-                    {
-                        return;
-                    }
-                    
-                    FFixedString DisplayName;
-                    DisplayName.append(LE_ICON_FOLDER).append(" ").append(Info.Name.begin(), Info.Name.end());
-            
-                    entt::entity ItemEntity = Tree.CreateNode(ParentItem, DisplayName, Hash::GetHash64(Info.PathSource));
-                    Tree.EmplaceUserData<FContentBrowserListViewItemData>(ItemEntity).Path.assign(Info.VirtualPath.begin(), Info.VirtualPath.end());
-                    
-                    if (Info.VirtualPath == SelectedPath)
-                    {
-                        FTreeNodeState& State = Tree.Get<FTreeNodeState>(ItemEntity);
-                        State.bSelected = true;
-                    }
-            
-                    AddChildrenRecursive(ItemEntity, Info.VirtualPath); 
-                });
-            };
-            
-            
-            FFixedString Name;
-            Name.assign(LE_ICON_FOLDER).append(" Game");
-            entt::entity RootItem = Tree.CreateNode(entt::null, Name);
-            Tree.EmplaceUserData<FContentBrowserListViewItemData>(RootItem).Path = "/Game";
-            
-            AddChildrenRecursive(RootItem, "/Game");
-            
-            Name.assign(LE_ICON_FOLDER).append(" Engine");
-            RootItem = Tree.CreateNode(entt::null, Name);
-            Tree.EmplaceUserData<FContentBrowserListViewItemData>(RootItem).Path = "/Engine/Resources/Content";
-            
-            AddChildrenRecursive(RootItem, "/Engine/Resources/Content");
+                    bHasSubdirs = true;
+                }
+            });
+            if (bHasSubdirs)
+            {
+                Tree.MarkHasLazyChildren(ItemEntity);
+            }
+            return ItemEntity;
         };
 
-        DirectoryContext.ItemSelectedFunction = [this] (FTreeListView& Tree, entt::entity Item, bool)
+        DirectoryContext.RebuildTreeFunction = [this, AddFolderNode](FTreeListView& Tree)
         {
-            if (Item == entt::null)
+            // Roots are always built; their immediate children are loaded on first expand.
+            auto AddRoot = [&](const char* Path, const char* Label)
+            {
+                FFixedString Name;
+                Name.assign(LE_ICON_FOLDER).append(" ").append(Label);
+                FTreeNodeID RootItem = Tree.CreateNode(InvalidTreeNode, FStringView(Name.data(), Name.length()), Hash::GetHash64(FStringView(Path).data(), FStringView(Path).length()));
+                Tree.EmplaceUserData<FContentBrowserListViewItemData>(RootItem).Path = Path;
+                Tree.MarkHasLazyChildren(RootItem);
+                return RootItem;
+            };
+            AddRoot("/Game", "Game");
+            AddRoot("/Engine/Resources/Content", "Engine");
+        };
+
+        DirectoryContext.BuildChildrenFunction = [this, AddFolderNode](FTreeListView& Tree, FTreeNodeID Parent)
+        {
+            FContentBrowserListViewItemData& Data = Tree.Get<FContentBrowserListViewItemData>(Parent);
+            VFS::DirectoryIterator(FStringView(Data.Path.data(), Data.Path.length()), [&](const VFS::FFileInfo& Info)
+            {
+                if (!Info.IsDirectory())
+                {
+                    return;
+                }
+                AddFolderNode(Tree, Parent, Info);
+            });
+        };
+
+        DirectoryContext.ItemSelectedFunction = [this] (FTreeListView& Tree, FTreeNodeID Item, bool)
+        {
+            if (!Item.IsValid())
             {
                 return;
             }
-            
+
             FContentBrowserListViewItemData& Data = Tree.Get<FContentBrowserListViewItemData>(Item);
-            
+
             SelectedPath = Data.Path;
 
             RefreshContentBrowser();
         };
 
-        DirectoryContext.KeyPressedFunction = [this] (FTreeListView& Tree, entt::entity Item, ImGuiKey Key) -> bool
+        DirectoryContext.KeyPressedFunction = [this] (FTreeListView& Tree, FTreeNodeID Item, ImGuiKey Key) -> bool
         {
             return false;
         };
