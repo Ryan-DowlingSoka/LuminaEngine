@@ -1,5 +1,8 @@
 ﻿#pragma once
 
+// Jolt/Jolt.h must precede every other Jolt subheader; previously inherited
+// from pch.h which is being slimmed.
+#include <Jolt/Jolt.h>
 #include <Jolt/Core/Color.h>
 #include <Jolt/Physics/Body/MotionType.h>
 #include "Jolt/Physics/Collision/ObjectLayer.h"

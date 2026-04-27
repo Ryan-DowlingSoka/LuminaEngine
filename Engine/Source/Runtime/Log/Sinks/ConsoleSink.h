@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include "Core/DisableAllWarnings.h"
 #include "Log/Log.h"
 PRAGMA_DISABLE_ALL_WARNINGS

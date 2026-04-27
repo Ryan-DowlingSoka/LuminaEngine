@@ -256,71 +256,44 @@ namespace Lumina
 		}
     }
 
-	void FVulkanImGuiRender::DrawRenderDebugInformationWindow(bool* bOpen, const FUpdateContext&)
+	void FVulkanImGuiRender::DrawRenderDebugContents(const FUpdateContext&)
 	{
-		ImGui::SetNextWindowSize(ImVec2(1400, 950), ImGuiCond_FirstUseEver);
-		if (!ImGui::Begin("Vulkan Render Diagnostics", bOpen, ImGuiWindowFlags_MenuBar))
-		{
-			ImGui::End();
-			return;
-		}
-
-		static int selectedTab = 0;
-		if (ImGui::BeginMenuBar())
-		{
-			if (ImGui::MenuItem("Overview", nullptr, selectedTab == 0))
-			{
-				selectedTab = 0;
-			}
-			if (ImGui::MenuItem("Memory", nullptr, selectedTab == 1))
-			{
-				selectedTab = 1;
-			}
-			if (ImGui::MenuItem("Resources", nullptr, selectedTab == 2))
-			{
-				selectedTab = 2;
-			}
-			if (ImGui::MenuItem("Device Info", nullptr, selectedTab == 3))
-			{
-				selectedTab = 3;
-			}
-			ImGui::EndMenuBar();
-		}
-
 		VkPhysicalDevice physicalDevice = VulkanRenderContext->GetDevice()->GetPhysicalDevice();
 		VkPhysicalDeviceFeatures Features;
-		
+
 		vkGetPhysicalDeviceFeatures(physicalDevice, &Features);
 		VkPhysicalDeviceProperties props{};
-		
+
 		vkGetPhysicalDeviceProperties(physicalDevice, &props);
 		VkPhysicalDeviceMemoryProperties memProps{};
-		
+
 		vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
 		VmaAllocator Allocator = VulkanRenderContext->GetDevice()->GetAllocator().GetVMA();
-		
-		ImGui::BeginChild("ContentArea");
-		
 
-		if (selectedTab == 0)
+		if (ImGui::BeginTabBar("##RendererInfoTabs"))
 		{
-			DrawOverviewTab(props, memProps, Allocator);
+			if (ImGui::BeginTabItem("Overview"))
+			{
+				DrawOverviewTab(props, memProps, Allocator);
+				ImGui::EndTabItem();
+			}
+			if (ImGui::BeginTabItem("Memory"))
+			{
+				DrawMemoryTab(memProps, Allocator);
+				ImGui::EndTabItem();
+			}
+			if (ImGui::BeginTabItem("Resources"))
+			{
+				DrawResourcesTab();
+				ImGui::EndTabItem();
+			}
+			if (ImGui::BeginTabItem("Device Info"))
+			{
+				DrawDeviceInfoTab(props, Features);
+				ImGui::EndTabItem();
+			}
+			ImGui::EndTabBar();
 		}
-		else if (selectedTab == 1)
-		{
-			DrawMemoryTab(memProps, Allocator);
-		}
-		else if (selectedTab == 2)
-		{
-			DrawResourcesTab();
-		}
-		else if (selectedTab == 3)
-		{
-			DrawDeviceInfoTab(props, Features);
-		}
-
-		ImGui::EndChild();
-		ImGui::End();
 	}
 
 	ImTextureID FVulkanImGuiRender::GetOrCreateImTexture(FStringView Path)

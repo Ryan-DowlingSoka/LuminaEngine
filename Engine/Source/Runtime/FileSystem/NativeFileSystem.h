@@ -1,51 +1,41 @@
-﻿#pragma once
-#include "Containers/Name.h"
-#include "Containers/String.h"
-#include "Containers/Array.h"
-#include "Containers/Function.h"
+#pragma once
+#include "IFileSystem.h"
 
 namespace Lumina::VFS
 {
-    struct FFileInfo;
-
-    class RUNTIME_API FNativeFileSystem
+    class RUNTIME_API FNativeFileSystem : public IFileSystem
     {
     public:
-        FNativeFileSystem(const FFixedString& InAliasPath, FStringView InBasePath) noexcept;
-        
+        FNativeFileSystem(const FFixedString& InAliasPath, FStringView InBasePath);
+
         FFixedString ResolveVirtualPath(FStringView Path) const;
-        
-        bool ReadFile(TVector<uint8>& Result, FStringView Path);
-        bool ReadFile(FString& OutString, FStringView Path);
-        
-        bool WriteFile(FStringView Path, FStringView Data);
-        bool WriteFile(FStringView Path, TSpan<const uint8> Data);
-        
-        bool Exists(FStringView Path) const;
-        bool IsDirectory(FStringView Path) const;
-        size_t Size(FStringView Path) const;
 
-        bool CreateDir(FStringView Path) const;
-        
-        bool Remove(FStringView Path) const;
-        bool RemoveAll(FStringView Path) const;
-        
-        bool Rename(FStringView Old, FStringView New) const;
-        
-        bool IsEmpty(FStringView Path) const;
-        
-        void PlatformOpen(FStringView Path) const;
-        
-        void DirectoryIterator(FStringView Path, const TFunction<void(const FFileInfo&)>& Callback) const;
-        void RecursiveDirectoryIterator(FStringView Path, const TFunction<void(const FFileInfo&)>& Callback) const;
+        bool ReadFile(TVector<uint8>& Result, FStringView Path) override;
+        bool ReadFile(FString& OutString, FStringView Path) override;
 
-        
-    
-        FStringView GetAliasPath() const { return AliasPath; }
-        FStringView GetBasePath() const { return BasePath; }
-        
+        bool WriteFile(FStringView Path, FStringView Data) override;
+        bool WriteFile(FStringView Path, TSpan<const uint8> Data) override;
+
+        bool Exists(FStringView Path) const override;
+        bool IsDirectory(FStringView Path) const override;
+        bool IsEmpty(FStringView Path) const override;
+        size_t Size(FStringView Path) const override;
+
+        bool CreateDir(FStringView Path) override;
+        bool Remove(FStringView Path) override;
+        bool RemoveAll(FStringView Path) override;
+        bool Rename(FStringView Old, FStringView New) override;
+
+        void PlatformOpen(FStringView Path) const override;
+
+        void DirectoryIterator(FStringView Path, const TFunction<void(const FFileInfo&)>& Callback) const override;
+        void RecursiveDirectoryIterator(FStringView Path, const TFunction<void(const FFileInfo&)>& Callback) const override;
+
+        FStringView GetAliasPath() const override { return AliasPath; }
+        FStringView GetBasePath() const override { return BasePath; }
+
     private:
-        
+
         FFixedString AliasPath;
         FFixedString BasePath;
     };

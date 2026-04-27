@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "JoltPhysicsScene.h"
+#include "JoltCharacterHandle.h"
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
@@ -561,8 +562,8 @@ namespace Lumina::Physics
                 return;
             }
 
-            CharComponent.LastBodyPosition = JoltUtils::FromJPHVec3(CharComponent.Character->GetPosition());
-            CharComponent.LastBodyRotation = JoltUtils::FromJPHQuat(CharComponent.Character->GetRotation());
+            CharComponent.LastBodyPosition = JoltUtils::FromJPHVec3(CharComponent.Character->Ref->GetPosition());
+            CharComponent.LastBodyRotation = JoltUtils::FromJPHQuat(CharComponent.Character->Ref->GetRotation());
         });
     }
 
@@ -613,8 +614,8 @@ namespace Lumina::Physics
                 return;
             }
 
-            const JPH::RVec3 CurrPos = CharacterComponent.Character->GetPosition();
-            const JPH::Quat  CurrRot = CharacterComponent.Character->GetRotation();
+            const JPH::RVec3 CurrPos = CharacterComponent.Character->Ref->GetPosition();
+            const JPH::Quat  CurrRot = CharacterComponent.Character->Ref->GetRotation();
 
             if (CurrPos.GetY() < KillHeight)
             {
@@ -696,7 +697,7 @@ namespace Lumina::Physics
         {
             LUMINA_PROFILE_SECTION("Character Sub-Step");
 
-            JPH::CharacterVirtual* Character = Physics.Character;
+            JPH::CharacterVirtual* Character = Physics.Character ? Physics.Character->Ref.GetPtr() : nullptr;
             if (Character == nullptr)
             {
                 return;
@@ -1044,16 +1045,19 @@ namespace Lumina::Physics
         Settings->mPredictiveContactDistance    = CharacterComponent.PredictiveContactDistance;
         Settings->mSupportingVolume             = JPH::Plane(JPH::Vec3::sAxisY(), 0.0f);
         
-        JPH::Ref Character = Memory::New<JPH::CharacterVirtual>(Settings,
+        JPH::Ref<JPH::CharacterVirtual> Character = Memory::New<JPH::CharacterVirtual>(Settings,
             JoltUtils::ToJPHRVec3(TransformComponent.GetLocation()),
             JoltUtils::ToJPHQuat(TransformComponent.GetRotation()),
             0,
             JoltSystem.get());
-        
+
         JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
         BodyInterface.SetUserData(Character->GetInnerBodyID(), entt::to_integral(Entity));
 
-        CharacterComponent.Character        = Move(Character);
+        // Wrap into the pimpl handle the component owns (component header
+        // doesn't see <Jolt/...> directly).
+        CharacterComponent.Character        = MakeShared<FJoltCharacterHandle>();
+        CharacterComponent.Character->Ref   = Move(Character);
 
         // Seed interpolation state so the first frame blends from a valid quaternion.
         CharacterComponent.LastBodyPosition = TransformComponent.GetLocation();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Engine/Engine.h"
+#include "Core/Engine/EngineMetaContext.h"
 #include "Core/Object/Class.h"
 #include "Core/Serialization/Archiver.h"
 #include "Scripting/Lua/Reference.h"
@@ -114,7 +115,7 @@ namespace Lumina
         void RegisterComponentMeta()
         {
             using namespace entt::literals;
-            auto Meta = entt::meta_factory<TComponent>(GEngine->GetEngineMetaContext())
+            auto Meta = entt::meta_factory<TComponent>(GetEngineMetaContext())
                 .type(TComponent::StaticStruct()->GetName().c_str())
                 .traits(ECS::ETraits::Component)
                 .template func<&GetStructType<TComponent>>("static_struct"_hs);

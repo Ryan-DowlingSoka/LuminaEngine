@@ -6,7 +6,12 @@
 #include "Containers/Function.h"
 #include "Core/LuminaMacros.h"
 #include "Platform/GenericPlatform.h"
-#include <lua.h>
+
+// Forward-declare lua_State instead of pulling in <lua.h>. lua_State only
+// appears as a pointer in the function-pointer typedefs below, so no
+// definition is needed here. The handful of files that actually call into
+// Lua include <lua.h> directly.
+extern "C" { struct lua_State; }
 
 
 namespace Lumina

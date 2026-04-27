@@ -1,98 +1,32 @@
-﻿#pragma once
+#pragma once
 
 #include "FileInfo.h"
+#include "IFileSystem.h"
+#include "MemoryFileSystem.h"
 #include "NativeFileSystem.h"
 #include "Containers/Function.h"
 #include "Containers/Name.h"
 #include "Containers/String.h"
 #include "Core/Templates/LuminaTemplate.h"
-#include "Core/Templates/SameAs.h"
-#include "Core/Variant/Variant.h"
+#include "Memory/SmartPtr.h"
 
 namespace Lumina::VFS
 {
-    template<typename T>
-    concept CFileSystem = requires(T FS,    TVector<uint8>& OutBytes, FString& OutStr, 
-                                            FStringView Path, TSpan<const uint8> Data,
-                                            const TFunction<void(const FFileInfo&)>& Callback)
-    {
-        { FS.ReadFile(OutBytes, Path) }                         -> Concept::TSameAs<bool>;
-        { FS.ReadFile(OutStr, Path) }                           -> Concept::TSameAs<bool>;
-        { FS.WriteFile(Path, Path) }                            -> Concept::TSameAs<bool>;
-        { FS.WriteFile(Path, Data) }                            -> Concept::TSameAs<bool>;
-        { FS.IsEmpty(Path) }                                    -> Concept::TSameAs<bool>;
-        { FS.Exists(Path) }                                     -> Concept::TSameAs<bool>;
-        { FS.CreateDir(Path) }                                  -> Concept::TSameAs<bool>;
-        { FS.Remove(Path) }                                     -> Concept::TSameAs<bool>;
-        { FS.RemoveAll(Path) }                                  -> Concept::TSameAs<bool>;
-        { FS.Rename(Path, Path) }                               -> Concept::TSameAs<bool>;
-        { FS.Size(Path) }                                       -> Concept::TSameAs<size_t>;
-        { FS.DirectoryIterator(Path, Callback) }                -> Concept::TSameAs<void>;
-        { FS.RecursiveDirectoryIterator(Path, Callback) }       -> Concept::TSameAs<void>;
-        { FS.GetAliasPath() }                                   -> std::convertible_to<FStringView>;
-        { FS.GetBasePath() }                                    -> std::convertible_to<FStringView>;
-        { FS.PlatformOpen(Path) }                               -> Concept::TSameAs<void>;
-    };
-    
-    class RUNTIME_API FFileSystem
-    {
-    public:
-        
-        template<CFileSystem T>
-        explicit FFileSystem(T&& FS) 
-            : Storage(Move(FS)) 
-        {}
-        
-        bool ReadFile(TVector<uint8>& Result, FStringView Path);
-        bool ReadFile(FString& OutString, FStringView Path);
-        bool WriteFile(FStringView Path, FStringView Data);
-        bool WriteFile(FStringView Path, TSpan<const uint8> Data);
-        bool Exists(FStringView Path) const;
-        bool IsDirectory(FStringView Path) const;
-        bool CreateDir(FStringView Path) const;
-        bool Remove(FStringView Path) const;
-        size_t Size(FStringView Path) const;
-        bool RemoveAll(FStringView Path) const;
-        bool Rename(FStringView Old, FStringView New) const;
-        void DirectoryIterator(FStringView Path, const TFunction<void(const FFileInfo&)>& Callback) const;
-        void RecursiveDirectoryIterator(FStringView Path, const TFunction<void(const FFileInfo&)>& Callback) const;
-        bool IsEmpty(FStringView Path) const;
-        void PlatformOpen(FStringView Path) const;
-        
-        FStringView GetAliasPath() const;
-        FStringView GetBasePath() const;
-        
-    private:
-        
-        TVariant<FNativeFileSystem> Storage;
-        
-        ////
-        
-        template<CFileSystem T, typename... TArgs>
-        requires(eastl::is_nothrow_constructible_v<T, FFixedString, TArgs...>)
-        friend T& Mount(const FFixedString& Alias, TArgs&&... Args);
-    };
-    
-    static void Initialize();
-    static void Shutdown();
-    
     namespace Detail
     {
-        RUNTIME_API FFileSystem& AddFileSystemImpl(const FFixedString& Alias, FFileSystem&& System);
-        RUNTIME_API TVector<FFileSystem>* GetFileSystems(const FFixedString& Alias);
+        RUNTIME_API IFileSystem& AddFileSystemImpl(const FFixedString& Alias, TUniquePtr<IFileSystem> System);
     }
-    
-    template<CFileSystem T, typename... TArgs>
-    requires(eastl::is_nothrow_constructible_v<T, FFixedString, TArgs...>)
+
+    template<typename T, typename... TArgs>
+    requires std::derived_from<T, IFileSystem> && std::constructible_from<T, FFixedString, TArgs...>
     T& Mount(const FFixedString& Alias, TArgs&&... Args)
     {
-        T TypeT(Alias, Forward<TArgs>(Args)...);
-        FFileSystem FS(TypeT);
-        
-        FFileSystem& Result = Detail::AddFileSystemImpl(Alias, Move(FS));
-        return eastl::get<T>(Result.Storage);
+        TUniquePtr<T> Owned = MakeUnique<T>(Alias, Forward<TArgs>(Args)...);
+        T& Result = *Owned;
+        Detail::AddFileSystemImpl(Alias, TUniquePtr<IFileSystem>(Owned.release()));
+        return Result;
     }
-    
+
     RUNTIME_API void DirectoryIterator(FStringView Path, const TFunction<void(const FFileInfo&)>& Callback);
     RUNTIME_API void RecursiveDirectoryIterator(FStringView Path, const TFunction<void(const FFileInfo&)>& Callback);
 
@@ -113,16 +47,15 @@ namespace Lumina::VFS
     RUNTIME_API bool IsLuaAsset(FStringView Path);
     RUNTIME_API bool IsLuminaAsset(FStringView Path);
     RUNTIME_API FStringView Parent(FStringView Path, bool bRemoveTrailingSlash = false);
-    
+
     RUNTIME_API bool ReadFile(TVector<uint8>& Result, FStringView Path);
     RUNTIME_API bool ReadFile(FString& OutString, FStringView Path);
     RUNTIME_API bool WriteFile(FStringView Path, FStringView Data);
     RUNTIME_API bool WriteFile(FStringView Path, TSpan<const uint8> Data);
-    
+
     RUNTIME_API void PlatformOpen(FStringView Path);
-    
+
     RUNTIME_API bool Exists(FStringView Path);
-    
+
     RUNTIME_API bool HasExtension(FStringView Path, FStringView Ext);
-    
 }

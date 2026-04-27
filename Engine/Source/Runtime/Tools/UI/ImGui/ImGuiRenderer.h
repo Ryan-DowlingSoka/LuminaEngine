@@ -34,7 +34,9 @@ namespace Lumina
         virtual ImTextureID GetOrCreateImTexture(FRHIImage* Image, const FTextureSubresourceSet& Subresources = AllSubresources) = 0;
         virtual void DestroyImTexture(uint64 Hash) = 0;
 
-        virtual void DrawRenderDebugInformationWindow(bool* bOpen, const FUpdateContext& Context) = 0;
+        // Draws the renderer-debug body (tabs + content) into the current ImGui window.
+        // Caller owns the surrounding window — this just emits content.
+        virtual void DrawRenderDebugContents(const FUpdateContext& Context) = 0;
         
         RUNTIME_API ImGuiContext* GetImGuiContext() const { return Context; }
         RUNTIME_API ImPlotContext* GetImPlotContext() const { return ImPlotContext; }

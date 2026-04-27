@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "Name.h"
 
+#include <iostream>
 #include "Memory/Memory.h"
 
 

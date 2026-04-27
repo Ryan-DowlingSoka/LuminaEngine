@@ -1,6 +1,8 @@
 #include "LuminaEditor.h"
+#include <filesystem>
 #include <fstream>
 #include <Core/Engine/Engine.h>
+#include <Core/Engine/EngineMetaContext.h>
 #include <Memory/Memory.h>
 #include <Tools/UI/DevelopmentToolUI.h>
 #include "Config/Config.h"
@@ -15,15 +17,69 @@ namespace Lumina
 {
     EDITOR_API FEditorEngine* GEditorEngine = nullptr;
     
+    static void RegisterEditorSettings()
+    {
+        const FStringView EditorFile = "/Editor/Config/EditorSettings.json";
+
+        // World editor — gizmo snapping
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.WorldEditorTool.GuizmoSnapEnabled", EConfigValueType::Bool)
+            .WithCategory("Editor/World Tool")
+            .WithDescription("Whether transform gizmo snapping is enabled by default")
+            .WithDefault(false)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.WorldEditorTool.GuizmoSnapTranslate", EConfigValueType::Float)
+            .WithCategory("Editor/World Tool")
+            .WithDescription("Snap step (units) for the translate gizmo")
+            .WithDefault(0.1f)
+            .WithRange(0.001, 100.0)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.WorldEditorTool.GuizmoSnapRotate", EConfigValueType::Float)
+            .WithCategory("Editor/World Tool")
+            .WithDescription("Snap step (degrees) for the rotate gizmo")
+            .WithDefault(5.0f)
+            .WithRange(0.1, 90.0)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.WorldEditorTool.GuizmoSnapScale", EConfigValueType::Float)
+            .WithCategory("Editor/World Tool")
+            .WithDescription("Snap step (scale factor) for the scale gizmo")
+            .WithDefault(0.1f)
+            .WithRange(0.001, 10.0)
+            .WithOwnerFile(EditorFile));
+
+        // Content browser
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.ContentBrowser.TileSize", EConfigValueType::Float)
+            .WithCategory("Editor/Content Browser")
+            .WithDescription("Pixel size of asset tiles in the content browser")
+            .WithDefault(86.0f)
+            .WithRange(32.0, 256.0)
+            .WithOwnerFile(EditorFile));
+
+        // Recents — typed as a string list of project names
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RecentProjects", EConfigValueType::StringArray)
+            .WithCategory("Editor/General")
+            .WithDescription("Recently opened projects (most recent appended last)")
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.StartupProject", EConfigValueType::String)
+            .WithCategory("Editor/General")
+            .WithDescription("Project to load automatically on editor launch (\"NULL\" to disable)")
+            .WithDefault(std::string("NULL"))
+            .WithOwnerFile(EditorFile));
+    }
+
     bool FEditorEngine::Init()
     {
         VFS::Mount<VFS::FNativeFileSystem>("/Editor", Paths::Combine(Paths::GetEngineDirectory(), "Editor"));
-        
+
         GConfig->LoadPath("/Editor/Config");
-        
+        RegisterEditorSettings();
+
         bool bSuccess = FEngine::Init();
-        
-        entt::locator<entt::meta_ctx>::reset(GetEngineMetaService());
+
+        entt::locator<entt::meta_ctx>::reset(Lumina::GetEngineMetaService());
 
         return bSuccess;
     }

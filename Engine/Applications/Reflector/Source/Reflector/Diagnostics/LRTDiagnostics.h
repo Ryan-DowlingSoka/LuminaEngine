@@ -20,6 +20,7 @@ namespace Lumina::Reflection
         OptionalElementUnknown= 1003,   // element type of TOptional<T> couldn't be resolved.
         FieldQualifyFailed    = 1004,   // clang couldn't qualify the field's type.
         FunctionFieldFailed   = 1005,   // function argument/return type couldn't be reflected.
+        CircularHeaderInclude = 1006,   // header A includes B (transitively) which includes A.
     };
 
     struct FDiagLocation

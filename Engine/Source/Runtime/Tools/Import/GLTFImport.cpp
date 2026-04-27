@@ -1,5 +1,6 @@
 #include "pch.h"
 
+#include <filesystem>
 #include <meshoptimizer.h>
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>

@@ -2,6 +2,7 @@
 #include <print>
 #include "StringHash.h"
 #include "nlohmann/json.hpp"
+#include "Reflector/Diagnostics/HeaderIncludeGraph.h"
 #include "Reflector/Diagnostics/LRTDiagnostics.h"
 #include "Reflector/ProjectSolution.h"
 #include "Reflector/Clang/ClangParser.h"
@@ -78,6 +79,51 @@ int main(int argc, char* argv[])
         }
         
         Workspace.AddReflectedProject(eastl::move(ReflectedProject));
+    }
+
+    // Static include-graph pass. We run this BEFORE handing the workspace to
+    // libclang because cycles can produce confusing downstream parse errors
+    // (forward declarations resolving in the wrong order, ambiguous names),
+    // and surfacing them up front gives the user a clean LRT error to act on.
+    {
+        FHeaderIncludeGraph Graph;
+        Graph.BuildFromWorkspace(&Workspace);
+
+        const auto Cycles = Graph.DetectCycles();
+        for (const FHeaderCycle& Cycle : Cycles)
+        {
+            // Build a "A.h -> B.h -> A.h" arrow chain for the message body.
+            eastl::string Arrow;
+            for (size_t i = 0; i < Cycle.size(); ++i)
+            {
+                if (i > 0)
+                {
+                    Arrow += " -> ";
+                }
+                Arrow += Cycle[i];
+            }
+
+            // Anchor the diagnostic at the first include edge of the cycle so
+            // double-clicking the error in the build log opens the source line
+            // that triggers the loop.
+            FDiagLocation Loc;
+            Loc.File = Cycle.front();
+            if (Cycle.size() >= 2)
+            {
+                Loc.Line = Graph.GetIncludeLine(Cycle[0], Cycle[1]);
+            }
+
+            FDiagnostics::Get().Errorf(Loc, EDiagId::CircularHeaderInclude,
+                "Circular header include: %s", Arrow.c_str());
+        }
+
+        if (!Cycles.empty())
+        {
+            // Bail before parsing -- clang would otherwise spend tens of
+            // seconds chewing on a workspace that has a structural defect.
+            FDiagnostics::Get().PrintSummary();
+            return 1;
+        }
     }
 
     FClangParser Parser;

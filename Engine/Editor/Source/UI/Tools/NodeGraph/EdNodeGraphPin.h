@@ -1,6 +1,5 @@
 ﻿#pragma once
 
-#include "EdGraphNode.h"
 #include "imgui.h"
 #include "Containers/Array.h"
 #include "Containers/String.h"
@@ -10,6 +9,11 @@
 
 namespace Lumina
 {
+    // Forward decl breaks the EdGraphNode.h <-> EdNodeGraphPin.h include cycle.
+    // Only pointers / templates need the type here; full def is required at the
+    // call site of the templated GetOwningNode<T>() and is pulled in by the .cpp.
+    class CEdGraphNode;
+
     REFLECT()
     class CEdNodeGraphPin : public CObject
     {

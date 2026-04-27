@@ -2,6 +2,7 @@
 
 #include "SystemContext.h"
 #include "Core/Engine/Engine.h"
+#include "Core/Engine/EngineMetaContext.h"
 #include "Scripting/Lua/ScriptTypes.h"
 #include "World/Entity/Traits.h"
 
@@ -39,7 +40,7 @@ namespace Lumina
         void RegisterECSSystem()
         {
             using namespace entt::literals;
-            auto Meta = entt::meta_factory<TSystem>(GEngine->GetEngineMetaContext())
+            auto Meta = entt::meta_factory<TSystem>(GetEngineMetaContext())
                 .type(TSystem::StaticStruct()->GetName().c_str())
                 .traits(ECS::ETraits::System)
                 .template data<&TSystem::PriorityList, entt::as_is_t>("PriorityList"_hs);

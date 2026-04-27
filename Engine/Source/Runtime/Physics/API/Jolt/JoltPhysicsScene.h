@@ -1,5 +1,8 @@
 ﻿#pragma once
 
+// Jolt/Jolt.h must come first -- it sets up the JPH_* macros every other
+// Jolt header expects, and was previously force-included via pch.h.
+#include <Jolt/Jolt.h>
 #include "Jolt/Physics/PhysicsSystem.h"
 #include "Memory/SmartPtr.h"
 #include "Physics/PhysicsScene.h"

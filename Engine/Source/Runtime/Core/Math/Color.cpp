@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Color.h"
+#include <random>
 
 namespace Lumina
 {

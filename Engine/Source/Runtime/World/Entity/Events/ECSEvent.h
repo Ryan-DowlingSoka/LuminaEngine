@@ -2,6 +2,7 @@
 
 #include "entt/entt.hpp"
 #include "Core/Engine/Engine.h"
+#include "Core/Engine/EngineMetaContext.h"
 #include "World/Entity/Traits.h"
 #include "World/Entity/Registry/EntityRegistry.h"
 
@@ -38,7 +39,7 @@ namespace Lumina::Meta
     void RegisterECSEvent()
     {
         using namespace entt::literals;
-        auto Meta = entt::meta_factory<TEvent>(GEngine->GetEngineMetaContext())
+        auto Meta = entt::meta_factory<TEvent>(GetEngineMetaContext())
             .type(TEvent::StaticStruct()->GetName().c_str())
             .traits(ECS::ETraits::Event)
             .template func<&DispatchEvent_Lua<TEvent>>("dispatch_lua"_hs)

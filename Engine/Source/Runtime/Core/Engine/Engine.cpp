@@ -309,15 +309,7 @@ namespace Lumina
         }
     }
 
-    entt::meta_ctx& FEngine::GetEngineMetaContext() const
-    {
-        return entt::locator<entt::meta_ctx>::value_or();
-    }
-
-    entt::locator<entt::meta_ctx>::node_type FEngine::GetEngineMetaService() const
-    {
-        return entt::locator<entt::meta_ctx>::handle();
-    }
+    // Meta-context accessors moved to EngineMetaContext.cpp.
 
     FRHIViewport* FEngine::GetEngineViewport()
     {
@@ -356,6 +348,32 @@ namespace Lumina
         VFS::Mount<VFS::FNativeFileSystem>("/Config", ConfigDir);
 
         GConfig->LoadPath("/Config");
+
+        // Project-side settings. Game projects can register additional ones from
+        // their module init; these three are read by the engine itself.
+        const FStringView ProjectFile = "/Config/GameSettings.json";
+        GConfig->RegisterSetting(FConfigSetting::Make("Project.LuaModuleFile", EConfigValueType::Path)
+            .WithCategory("Project/Scripting")
+            .WithDescription("Lua module loaded after the project DLL is loaded.")
+            .WithFileFilter("Luau Script (*.luau)\0*.luau\0All Files (*.*)\0*.*\0")
+            .WithOwnerFile(ProjectFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Project.GameInstanceClass", EConfigValueType::String)
+            .WithCategory("Project/Scripting")
+            .WithDescription("Reflected CGameInstance subclass to instantiate at runtime. Empty = base CGameInstance.")
+            .WithOwnerFile(ProjectFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Project.GameStartupMap", EConfigValueType::Path)
+            .WithCategory("Project/Maps")
+            .WithDescription("World loaded when the standalone game starts.")
+            .WithFileFilter("Lumina Asset (*.lasset)\0*.lasset\0")
+            .WithOwnerFile(ProjectFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Project.EditorStartupMap", EConfigValueType::Path)
+            .WithCategory("Project/Maps")
+            .WithDescription("World opened automatically when the editor finishes loading the project.")
+            .WithFileFilter("Lumina Asset (*.lasset)\0*.lasset\0")
+            .WithOwnerFile(ProjectFile));
         
         FFixedString DLLPath;
         

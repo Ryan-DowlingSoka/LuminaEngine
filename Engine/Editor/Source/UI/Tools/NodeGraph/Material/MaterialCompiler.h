@@ -1,5 +1,6 @@
 ﻿#pragma once
 #include "MaterialInput.h"
+#include "UI/Tools/NodeGraph/EdGraphNode.h"
 #include "Assets/AssetTypes/Material/MaterialInterface.h"
 #include "Containers/Array.h"
 #include "Containers/String.h"

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Core/Object/ObjectMacros.h"
-#include "Jolt/Physics/Character/CharacterVirtual.h"
+#include "Memory/SmartPtr.h"
 #include "Physics/Physics.h"
 #include "Physics/PhysicsTypes.h"
 #include "CharacterComponent.generated.h"
@@ -9,13 +9,31 @@
 
 namespace Lumina
 {
-    REFLECT(Component)
+    // Pimpl-forward decl so this header does NOT pull <Jolt/...> into every
+    // ECS-touching translation unit. Defined in
+    // Physics/API/Jolt/JoltCharacterHandle.h.
+    struct FJoltCharacterHandle;
+
+    // NoLua: physics characters aren't script-creatable; the engine
+    // constructs them from the physics scene side.
+    REFLECT(Component, NoLua)
     struct RUNTIME_API SCharacterPhysicsComponent
     {
         GENERATED_BODY()
 
-        JPH::Ref<JPH::CharacterVirtual> Character;
-        
+        SCharacterPhysicsComponent();
+        ~SCharacterPhysicsComponent();
+        SCharacterPhysicsComponent(const SCharacterPhysicsComponent&);
+        SCharacterPhysicsComponent& operator=(const SCharacterPhysicsComponent&);
+        SCharacterPhysicsComponent(SCharacterPhysicsComponent&&) noexcept;
+        SCharacterPhysicsComponent& operator=(SCharacterPhysicsComponent&&) noexcept;
+
+        // Pimpl: TSharedPtr keeps the component copyable (entt's component
+        // emplace machinery instantiates a copy path even when not used),
+        // while the underlying Jolt CharacterVirtual still has exactly one
+        // physical instance reachable through ref counting.
+        TSharedPtr<FJoltCharacterHandle> Character;
+
         // Snapshots for interpolation.
         glm::vec3 LastBodyPosition;
         glm::quat LastBodyRotation;
@@ -87,16 +105,8 @@ namespace Lumina
         
         
         FUNCTION(Script)
-        uint32 GetBodyID() const
-        {
-            if (Character == nullptr)
-            {
-                return 0xFFFFFFFF;
-            }
-            
-            return Character->GetInnerBodyID().GetIndexAndSequenceNumber();
-        }
-        
+        uint32 GetBodyID() const;
+
     };
 
     REFLECT(Component)

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "VulkanCrashTracker.h"
+#include <filesystem>
 #include <fstream>
 #include <volk/volk.h>
 #if WITH_AFTERMATH

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Paths.h"
+#include <filesystem>
 #include "Core/Assertions/Assert.h"
 
 namespace Lumina::Paths

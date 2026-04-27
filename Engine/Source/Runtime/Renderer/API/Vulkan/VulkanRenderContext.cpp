@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "VulkanRenderContext.h"
+#include <filesystem>
 #define VOLK_IMPLEMENTATION
 #include <volk/volk.h>
 #include "Convert.h"

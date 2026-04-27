@@ -3,14 +3,7 @@
         "ContentBrowser": {
             "TileSize": 136.5
         },
-        "RecentProjects": [
-            "Sandbox",
-            "MyProject",
-            "TopDownRPG",
-            "LuminaBonk",
-            "TestProject",
-            "BonkBonk"
-        ],
+        "RecentProjects": [],
         "StartupProject": "NULL",
         "WorldEditorTool": {
             "GuizmoSnapEnabled": false,

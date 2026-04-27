@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 #include "NativeFileSystem.h"
+#include <filesystem>
 #include <fstream>
 
 #include "FileInfo.h"
@@ -9,7 +10,7 @@
 
 namespace Lumina::VFS
 {
-    FNativeFileSystem::FNativeFileSystem(const FFixedString& InAliasPath, FStringView InBasePath) noexcept
+    FNativeFileSystem::FNativeFileSystem(const FFixedString& InAliasPath, FStringView InBasePath)
         : AliasPath(Paths::Normalize(InAliasPath))
         , BasePath(Paths::Normalize(InBasePath))
     {
@@ -141,22 +142,22 @@ namespace Lumina::VFS
         return std::filesystem::file_size(ResolveVirtualPath(Path).c_str());
     }
 
-    bool FNativeFileSystem::CreateDir(FStringView Path) const
+    bool FNativeFileSystem::CreateDir(FStringView Path)
     {
         return std::filesystem::create_directories(ResolveVirtualPath(Path).c_str());
     }
 
-    bool FNativeFileSystem::Remove(FStringView Path) const
+    bool FNativeFileSystem::Remove(FStringView Path)
     {
         return std::filesystem::remove(ResolveVirtualPath(Path).c_str());
     }
 
-    bool FNativeFileSystem::RemoveAll(FStringView Path) const
+    bool FNativeFileSystem::RemoveAll(FStringView Path)
     {
         return std::filesystem::remove_all(ResolveVirtualPath(Path).c_str());
     }
 
-    bool FNativeFileSystem::Rename(FStringView Old, FStringView New) const
+    bool FNativeFileSystem::Rename(FStringView Old, FStringView New)
     {
         FFixedString OldResolvedPath = ResolveVirtualPath(Old);
         FFixedString NewResolvedPath = ResolveVirtualPath(New);

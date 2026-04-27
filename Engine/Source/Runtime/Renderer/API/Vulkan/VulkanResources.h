@@ -1,8 +1,8 @@
 ﻿#pragma once
 
+#include <volk/volk.h>
 #include "VulkanDevice.h"
 #include "VulkanMacros.h"
-#include "VulkanRenderContext.h"
 #include "Containers/Tuple.h"
 #include "Memory/SmartPtr.h"
 #include "Renderer/RenderResource.h"
@@ -12,6 +12,10 @@
 namespace Lumina
 {
     class FBitSetAllocator;
+    // Forward decl breaks the VulkanRenderContext.h <-> VulkanResources.h
+    // include cycle. All uses below are pointer/reference; the .cpp pulls in
+    // the full definition.
+    class FVulkanRenderContext;
 
     // ----------------------------------------------------------------------------------
     // GLSL / GLM Type       | Vulkan VkFormat Equivalent         | Size (Bytes) | Notes

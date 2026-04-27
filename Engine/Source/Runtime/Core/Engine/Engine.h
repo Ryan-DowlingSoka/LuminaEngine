@@ -2,7 +2,6 @@
 
 #include "Core/UpdateContext.h"
 #include "Subsystems/Subsystem.h"
-#include <entt/entt.hpp>
 #include "Core/Delegates/Delegate.h"
 #include "Memory/SmartPtr.h"
 #include "Scripting/Lua/Reference.h"
@@ -65,8 +64,10 @@ namespace Lumina
         RUNTIME_API IDevelopmentToolUI* GetDevelopmentToolsUI() const { return DeveloperToolUI; }
         #endif
 
-        RUNTIME_API entt::meta_ctx& GetEngineMetaContext() const;
-        RUNTIME_API entt::locator<entt::meta_ctx>::node_type GetEngineMetaService() const;
+        // Cross-DLL meta plumbing has moved to Core/Engine/EngineMetaContext.h
+        // (free functions Lumina::GetEngineMetaContext / GetEngineMetaService)
+        // so Engine.h doesn't have to drag <entt/entt.hpp> into ~22 transitive
+        // include sites that don't actually touch entt.
 
         RUNTIME_API void SetReadyToClose(bool bReadyToClose) { bEngineReadyToClose = bReadyToClose; }
         

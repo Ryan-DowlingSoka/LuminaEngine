@@ -3,11 +3,14 @@
 // ===================
 // Standard Library
 // ===================
-#include <iostream>
-#include <iomanip>
+// Kept: small, used everywhere, or required by EASTL/glm/etc. transitively.
+// Removed (moved to direct includes in their few users):
+//   <iostream> <iomanip> <sstream> -- 0 uses anywhere.
+//   <variant> <span> <bitset> <random> <stdexcept> -- <=7 uses, low fan-out.
+//   <thread> <mutex> -- prefer Core/Threading primitives; drop from PCH.
+//   <filesystem> -- ~14 files use it; they include it directly now.
 #include <memory>
 #include <string>
-#include <sstream>
 #include <utility>
 #include <cstdint>
 #include <cstddef>
@@ -19,23 +22,15 @@
 #include <unordered_map>
 #include <set>
 #include <unordered_set>
-#include <bitset>
 #include <algorithm>
 #include <functional>
 #include <cmath>
 #include <numeric>
-#include <random>
 #include <chrono>
-#include <thread>
-#include <mutex>
 #include <atomic>
 #include <type_traits>
 #include <optional>
-#include <filesystem>
-#include <variant>
-#include <span>
 #include <limits>
-#include <stdexcept>
 #include <cassert>
 
 // ===================
@@ -79,8 +74,15 @@
 // ===================
 // Third-Party Libraries
 // ===================
+// Kept here:
+//   glm     - vec/mat types are used in nearly every TU.
+//   entt    - 48+ files reach into entt:: directly via component / system
+//             headers; pulling it out of the PCH would just shift the parse
+//             cost from "once" to "48+ times".
+//   spdlog  - logging hits every TU.
+//   xxhash  - small, heavily used.
+// Removed: <Jolt/Jolt.h> -- only ~7 files use Jolt; they include it directly.
 #include <glm/glm.hpp>
 #include <entt/entt.hpp>
 #include <spdlog/spdlog.h>
 #include <xxhash.h>
-#include <Jolt/Jolt.h>

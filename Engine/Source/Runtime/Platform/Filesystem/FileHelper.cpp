@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "FileHelper.h"
+#include <filesystem>
 #include <fstream>
 #include "Containers/Array.h"
 #include "Log/Log.h"
