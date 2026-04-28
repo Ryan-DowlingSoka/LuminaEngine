@@ -7,6 +7,7 @@
 #include "Containers/Function.h"
 #include "Containers/String.h"
 #include "Events/EventProcessor.h"
+#include "Memory/SmartPtr.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "World/World.h"
 
@@ -16,6 +17,7 @@ namespace Lumina
     enum class EEditorToolFlags : uint8;
     class IEditorToolContext;
     class FUpdateContext;
+    class FInputViewport;
 }
 
 namespace Lumina
@@ -67,14 +69,8 @@ namespace Lumina
     public:
 
         FEditorTool(IEditorToolContext* Context, const FString& DisplayName, CWorld* InWorld = nullptr);
-        virtual ~FEditorTool() = default;
+        virtual ~FEditorTool();
         LE_NO_COPYMOVE(FEditorTool);
-
-        // Editor tools belong to editor chrome — they must keep working in
-        // any input mode so the user can still operate the IDE while game/UI
-        // input is gated.
-        EInputCategory GetInputCategory() const override { return EInputCategory::Editor; }
-        
 
         virtual void Initialize();
         virtual void Deinitialize(const FUpdateContext& UpdateContext);
@@ -109,8 +105,11 @@ namespace Lumina
         // Get the unique typename for this tool to be used for docking
         NODISCARD virtual char const* GetUniqueTypeName() const = 0;
 
-        /** Sets and inits a world for the editor tool */
+        /** Replaces the world: destroys the old, creates a fresh editor context, sets up entities. */
         virtual void SetWorld(CWorld* InWorld);
+
+        /** Pointer-only swap. World lifetime is owned elsewhere (e.g. PIE). */
+        virtual void RebindToWorld(CWorld* InWorld);
 
         /** Called to set up the world for the tool */
         virtual void SetupWorldForTool();
@@ -231,6 +230,8 @@ namespace Lumina
         TObjectPtr<CWorld>                  World;
         entt::entity                        EditorEntity;
         ImTextureID                         SceneViewportTexture = 0;
+
+        TUniquePtr<FInputViewport>          InputViewport;
 
         EEditorToolFlags                    ToolFlags = EEditorToolFlags::Tool_WantsToolbar;
 

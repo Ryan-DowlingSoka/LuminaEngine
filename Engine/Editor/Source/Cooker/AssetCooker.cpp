@@ -1,4 +1,6 @@
 #include "AssetCooker.h"
+#include <filesystem>
+#include <fstream>
 #include <nlohmann/json.hpp>
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Assets/AssetRegistry/AssetData.h"
@@ -100,23 +102,121 @@ namespace Lumina
             }
         }
 
-        // Bundle the Lua scripts under /Game/Scripts/. The Luau loader walks
-        // require()s at runtime; rather than tracing them (no deps machinery
-        // for Lua) we just ship the whole tree. Tens-of-KB; cheap.
-        size_t BundleScripts(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
+        // True if VirtualPath ends in ".lasset" (case-insensitive enough — VFS
+        // paths are normalized lowercase on the extension end).
+        bool IsLAssetPath(FStringView VirtualPath)
+        {
+            static constexpr FStringView Ext = ".lasset";
+            if (VirtualPath.size() < Ext.size())
+            {
+                return false;
+            }
+            FStringView Tail = VirtualPath.substr(VirtualPath.size() - Ext.size());
+            for (size_t i = 0; i < Ext.size(); ++i)
+            {
+                char a = Tail[i]; char b = Ext[i];
+                if (a >= 'A' && a <= 'Z') a = char(a - 'A' + 'a');
+                if (a != b) return false;
+            }
+            return true;
+        }
+
+        // Bundle every non-.lasset file under /Game (scripts, .rml, JSON, etc).
+        // .lasset files are pulled in via the asset reference graph instead.
+        // Tracing require()/href dependencies isn't feasible across our mix of
+        // languages, so we just ship the whole tree; it's tens of KB, cheap.
+        size_t BundleGameLooseFiles(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
         {
             size_t Count = 0;
-            VFS::RecursiveDirectoryIterator("/Game/Scripts", [&](const VFS::FFileInfo& Info)
+            VFS::RecursiveDirectoryIterator("/Game", [&](const VFS::FFileInfo& Info)
             {
                 if (Info.IsDirectory())
                 {
                     return;
                 }
-                if (BundleVfsFile(Writer, Info.VirtualPath, LogFunc))
+                FStringView Vp(Info.VirtualPath.c_str(), Info.VirtualPath.size());
+                if (IsLAssetPath(Vp))
+                {
+                    return;
+                }
+                if (BundleVfsFile(Writer, Vp, LogFunc))
                 {
                     ++Count;
                 }
             });
+            return Count;
+        }
+
+        bool BundleDiskFile(FPakWriter& Writer, const std::filesystem::path& DiskPath, FStringView VirtualPath, const TFunction<void(FStringView)>& LogFunc)
+        {
+            std::ifstream In(DiskPath, std::ios::binary | std::ios::ate);
+            if (!In)
+            {
+                Log(LogFunc, FString().sprintf("  [skip] missing extra: %s", DiskPath.string().c_str()).c_str());
+                return false;
+            }
+            const std::streamsize Size = In.tellg();
+            In.seekg(0, std::ios::beg);
+            TVector<uint8> Bytes((size_t)Size);
+            if (Size > 0 && !In.read(reinterpret_cast<char*>(Bytes.data()), Size))
+            {
+                Log(LogFunc, FString().sprintf("  [skip] read failed: %s", DiskPath.string().c_str()).c_str());
+                return false;
+            }
+            Writer.AddEntry(VirtualPath, TSpan<const uint8>(Bytes.data(), Bytes.size()));
+            Log(LogFunc, FString().sprintf("  + %.*s (%zu bytes, extra)",
+                (int)VirtualPath.size(), VirtualPath.data(), Bytes.size()).c_str());
+            return true;
+        }
+
+        size_t BundleExtras(FPakWriter& Writer, const FCookOptions& Options, const TFunction<void(FStringView)>& LogFunc)
+        {
+            size_t Count = 0;
+            std::error_code Ec;
+
+            for (const FString& File : Options.ExtraFiles)
+            {
+                std::filesystem::path P(File.c_str());
+                if (!std::filesystem::exists(P, Ec) || !std::filesystem::is_regular_file(P, Ec))
+                {
+                    Log(LogFunc, FString().sprintf("  [skip] extra file not found: %s", File.c_str()).c_str());
+                    continue;
+                }
+                FString Vp = FString("/Extras/") + P.filename().string().c_str();
+                if (BundleDiskFile(Writer, P, FStringView(Vp.c_str(), Vp.size()), LogFunc))
+                {
+                    ++Count;
+                }
+            }
+
+            for (const FString& Dir : Options.ExtraDirectories)
+            {
+                std::filesystem::path Root(Dir.c_str());
+                if (!std::filesystem::exists(Root, Ec) || !std::filesystem::is_directory(Root, Ec))
+                {
+                    Log(LogFunc, FString().sprintf("  [skip] extra dir not found: %s", Dir.c_str()).c_str());
+                    continue;
+                }
+                const std::string RootName = Root.filename().string();
+                for (const auto& Entry : std::filesystem::recursive_directory_iterator(Root, Ec))
+                {
+                    if (Ec || !Entry.is_regular_file())
+                    {
+                        continue;
+                    }
+                    std::filesystem::path Rel = std::filesystem::relative(Entry.path(), Root, Ec);
+                    if (Ec)
+                    {
+                        continue;
+                    }
+                    std::string RelStr = Rel.generic_string();
+                    FString Vp = FString("/Extras/") + RootName.c_str() + "/" + RelStr.c_str();
+                    if (BundleDiskFile(Writer, Entry.path(), FStringView(Vp.c_str(), Vp.size()), LogFunc))
+                    {
+                        ++Count;
+                    }
+                }
+            }
             return Count;
         }
 
@@ -212,18 +312,27 @@ namespace Lumina
             ++Result.NumExtraFiles;
         }
 
-        // 4) Lua scripts. Skipped when the caller wants them shipped as
-        //    loose files (the packager copies them next to the exe instead).
+        // 4) Loose /Game files (.luau, .rml, JSON, etc). Skipped when the
+        //    caller wants them shipped as loose files (the packager copies
+        //    them next to the exe instead). .lasset files come in via the
+        //    asset graph above and are de-duped by the writer.
         if (!Options.bExtractScriptsAsLooseFiles)
         {
-            Result.NumExtraFiles += BundleScripts(Writer, LogFunc);
+            Result.NumExtraFiles += BundleGameLooseFiles(Writer, LogFunc);
         }
         else
         {
-            Log(LogFunc, "Skipping /Game/Scripts in PAK (loose-script mode).");
+            Log(LogFunc, "Skipping loose /Game files in PAK (loose mode).");
         }
 
-        // 5) Write the .pak.
+        // 5) User-specified extras (files + directories) — always in the PAK.
+        if (!Options.ExtraFiles.empty() || !Options.ExtraDirectories.empty())
+        {
+            Log(LogFunc, "Bundling extras...");
+            Result.NumExtraFiles += BundleExtras(Writer, Options, LogFunc);
+        }
+
+        // 6) Write the .pak.
         Result.TotalBytes = Writer.TotalEntryBytes();
         if (!Writer.Finalize(OutputPakPath))
         {

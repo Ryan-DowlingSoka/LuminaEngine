@@ -14,11 +14,6 @@
 #include <RmlUi/Core/SystemInterface.h>
 #include <RmlUi/Debugger.h>
 
-#include "Core/Application/Application.h"
-#include "Events/Event.h"
-#include "Events/EventProcessor.h"
-#include "Events/KeyCodes.h"
-#include "Events/MouseCodes.h"
 #include "Log/Log.h"
 #include "Memory/SmartPtr.h"
 #include "Renderer/RenderResource.h"
@@ -70,109 +65,6 @@ namespace Lumina::RmlUi
             std::chrono::steady_clock::time_point StartTime;
         };
 
-        Rml::Input::KeyIdentifier ToRmlKey(EKey Key)
-        {
-            using K = Rml::Input::KeyIdentifier;
-            switch (Key)
-            {
-            case EKey::A: return K::KI_A;  case EKey::B: return K::KI_B;
-            case EKey::C: return K::KI_C;  case EKey::D: return K::KI_D;
-            case EKey::E: return K::KI_E;  case EKey::F: return K::KI_F;
-            case EKey::G: return K::KI_G;  case EKey::H: return K::KI_H;
-            case EKey::I: return K::KI_I;  case EKey::J: return K::KI_J;
-            case EKey::K: return K::KI_K;  case EKey::L: return K::KI_L;
-            case EKey::M: return K::KI_M;  case EKey::N: return K::KI_N;
-            case EKey::O: return K::KI_O;  case EKey::P: return K::KI_P;
-            case EKey::Q: return K::KI_Q;  case EKey::R: return K::KI_R;
-            case EKey::S: return K::KI_S;  case EKey::T: return K::KI_T;
-            case EKey::U: return K::KI_U;  case EKey::V: return K::KI_V;
-            case EKey::W: return K::KI_W;  case EKey::X: return K::KI_X;
-            case EKey::Y: return K::KI_Y;  case EKey::Z: return K::KI_Z;
-            case EKey::D0: return K::KI_0; case EKey::D1: return K::KI_1;
-            case EKey::D2: return K::KI_2; case EKey::D3: return K::KI_3;
-            case EKey::D4: return K::KI_4; case EKey::D5: return K::KI_5;
-            case EKey::D6: return K::KI_6; case EKey::D7: return K::KI_7;
-            case EKey::D8: return K::KI_8; case EKey::D9: return K::KI_9;
-            case EKey::F1:  return K::KI_F1;  case EKey::F2:  return K::KI_F2;
-            case EKey::F3:  return K::KI_F3;  case EKey::F4:  return K::KI_F4;
-            case EKey::F5:  return K::KI_F5;  case EKey::F6:  return K::KI_F6;
-            case EKey::F7:  return K::KI_F7;  case EKey::F8:  return K::KI_F8;
-            case EKey::F9:  return K::KI_F9;  case EKey::F10: return K::KI_F10;
-            case EKey::F11: return K::KI_F11; case EKey::F12: return K::KI_F12;
-            case EKey::Space:     return K::KI_SPACE;
-            case EKey::Enter:     return K::KI_RETURN;
-            case EKey::Tab:       return K::KI_TAB;
-            case EKey::Backspace: return K::KI_BACK;
-            case EKey::Escape:    return K::KI_ESCAPE;
-            case EKey::Delete:    return K::KI_DELETE;
-            case EKey::Insert:    return K::KI_INSERT;
-            case EKey::Home:      return K::KI_HOME;
-            case EKey::End:       return K::KI_END;
-            case EKey::PageUp:    return K::KI_PRIOR;
-            case EKey::PageDown:  return K::KI_NEXT;
-            case EKey::Up:        return K::KI_UP;
-            case EKey::Down:      return K::KI_DOWN;
-            case EKey::Left:      return K::KI_LEFT;
-            case EKey::Right:     return K::KI_RIGHT;
-            case EKey::LeftShift:    return K::KI_LSHIFT;
-            case EKey::RightShift:   return K::KI_RSHIFT;
-            case EKey::LeftControl:  return K::KI_LCONTROL;
-            case EKey::RightControl: return K::KI_RCONTROL;
-            case EKey::LeftAlt:      return K::KI_LMENU;
-            case EKey::RightAlt:     return K::KI_RMENU;
-            case EKey::Comma:        return K::KI_OEM_COMMA;
-            case EKey::Period:       return K::KI_OEM_PERIOD;
-            case EKey::Minus:        return K::KI_OEM_MINUS;
-            case EKey::Equal:        return K::KI_OEM_PLUS;
-            case EKey::Slash:        return K::KI_OEM_2;
-            case EKey::Backslash:    return K::KI_OEM_5;
-            case EKey::Apostrophe:   return K::KI_OEM_7;
-            case EKey::Semicolon:    return K::KI_OEM_1;
-            case EKey::LeftBracket:  return K::KI_OEM_4;
-            case EKey::RightBracket: return K::KI_OEM_6;
-            case EKey::GraveAccent:  return K::KI_OEM_3;
-            default:
-                return K::KI_UNKNOWN;
-            }
-        }
-
-        int ToRmlMouseButton(EMouseKey Button)
-        {
-            switch (Button)
-            {
-            case EMouseKey::ButtonLeft:   return 0;
-            case EMouseKey::ButtonRight:  return 1;
-            case EMouseKey::ButtonMiddle: return 2;
-            default:                      return int(Button);
-            }
-        }
-
-        Rml::Context* ResolveActiveContext();
-
-        // Forwards window events to the active context (non-editor path).
-        class FRmlUiInputHandler final : public IEventHandler
-        {
-        public:
-            int  CachedModifierState = 0;
-            int  LastMouseX = 0;
-            int  LastMouseY = 0;
-
-            EInputCategory GetInputCategory() const override { return EInputCategory::UI; }
-
-            void UpdateModifiersFromKeyEvent(const FKeyEvent& KeyEvent)
-            {
-                using namespace Rml::Input;
-                CachedModifierState = 0;
-                if (KeyEvent.IsCtrlDown())  CachedModifierState |= KM_CTRL;
-                if (KeyEvent.IsShiftDown()) CachedModifierState |= KM_SHIFT;
-                if (KeyEvent.IsAltDown())   CachedModifierState |= KM_ALT;
-                if (KeyEvent.IsSuperDown()) CachedModifierState |= KM_META;
-            }
-
-            bool OnEvent(FEvent& Event) override;
-        };
-
-        // Wraps a Lua::FRef so Rml events can fire script callbacks.
         class FLuaEventListener final : public Rml::EventListener
         {
         public:
@@ -180,24 +72,40 @@ namespace Lumina::RmlUi
 
             void ProcessEvent(Rml::Event& /*Event*/) override
             {
-                if (Cb.IsInvokable())
+                if (!Cb.IsInvokable())
                 {
-                    Cb();
+                    return;
                 }
+                // Stack-local copy keeps a lua ref alive even if the callback
+                // destroys this listener (e.g. UI.UnloadDocument from inside
+                // the click handler) — FRef::Invoke would otherwise read a
+                // nulled State after pcall returns.
+                Lua::FRef Local = Cb;
+                Local();
+            }
+
+            // RmlUi calls OnDetach when the element is destroyed (during
+            // ReleaseUnloadedDocuments) or when the listener is explicitly
+            // removed. Self-deleting here matches RmlUi's view of the
+            // listener exactly — Context::UnloadDocument is deferred, so any
+            // external owner that erased earlier would leave RmlUi walking
+            // dangling pointers in DetachAllEvents.
+            void OnDetach(Rml::Element* /*element*/) override
+            {
+                delete this;
             }
 
         private:
             Lua::FRef Cb;
         };
 
-        // 1:1 with CWorld. Documents and listeners hang off the entry so
-        // unloading a world's context cleans up its UI state in one shot.
+        // 1:1 with CWorld. Listener lifetime is owned by RmlUi (FLuaEventListener
+        // self-deletes in OnDetach), so we only track documents here.
         struct FWorldEntry
         {
             CWorld*       World = nullptr;
             Rml::Context* Context = nullptr;
-            THashMap<FString, Rml::ElementDocument*>                   Documents;
-            THashMap<FString, TVector<TUniquePtr<FLuaEventListener>>>  Listeners;
+            THashMap<FString, Rml::ElementDocument*> Documents;
         };
 
         struct FState
@@ -205,7 +113,6 @@ namespace Lumina::RmlUi
             TUniquePtr<FLuminaSystemInterface>  System;
             TUniquePtr<FRmlUiFileInterface>     Files;
             TUniquePtr<FRmlUiRenderer>          Renderer;
-            TUniquePtr<FRmlUiInputHandler>      Input;
             TVector<TUniquePtr<FWorldEntry>>    Worlds;
             Rml::Context*                       ActiveContext = nullptr;
 
@@ -246,12 +153,6 @@ namespace Lumina::RmlUi
             return State.Worlds.empty() ? nullptr : State.Worlds.front().get();
         }
 
-        Rml::Context* ResolveActiveContext()
-        {
-            FWorldEntry* E = GetActiveEntry();
-            return E ? E->Context : nullptr;
-        }
-        
         void SyncDebuggerToActiveContext()
         {
             FState& State = S();
@@ -313,79 +214,6 @@ namespace Lumina::RmlUi
         }
     }
 
-    bool FRmlUiInputHandler::OnEvent(FEvent& Event)
-    {
-        Rml::Context* Ctx = ResolveActiveContext();
-        if (Ctx == nullptr)
-        {
-            return false;
-        }
-
-#if WITH_EDITOR
-        // Mouse events are forwarded explicitly from EditorTool::DrawViewport
-        // because the viewport panel coords don't match window pixels. Keys
-        // still flow through here.
-        if (Event.IsA<FMouseMovedEvent>() || Event.IsA<FMouseButtonPressedEvent>()
-            || Event.IsA<FMouseButtonReleasedEvent>() || Event.IsA<FMouseScrolledEvent>())
-        {
-            return false;
-        }
-#endif
-
-        if (Event.IsA<FMouseMovedEvent>())
-        {
-            FMouseMovedEvent& E = Event.As<FMouseMovedEvent>();
-            LastMouseX = int(E.GetX());
-            LastMouseY = int(E.GetY());
-            const bool NotConsumed = Ctx->ProcessMouseMove(LastMouseX, LastMouseY, CachedModifierState);
-            return !NotConsumed;
-        }
-        if (Event.IsA<FMouseButtonPressedEvent>())
-        {
-            FMouseButtonEvent& E = Event.As<FMouseButtonPressedEvent>();
-            const bool NotConsumed = Ctx->ProcessMouseButtonDown(ToRmlMouseButton(E.GetButton()), CachedModifierState);
-            return !NotConsumed;
-        }
-        if (Event.IsA<FMouseButtonReleasedEvent>())
-        {
-            FMouseButtonEvent& E = Event.As<FMouseButtonReleasedEvent>();
-            const bool NotConsumed = Ctx->ProcessMouseButtonUp(ToRmlMouseButton(E.GetButton()), CachedModifierState);
-            return !NotConsumed;
-        }
-        if (Event.IsA<FMouseScrolledEvent>())
-        {
-            FMouseScrolledEvent& E = Event.As<FMouseScrolledEvent>();
-            const bool NotConsumed = Ctx->ProcessMouseWheel(-E.GetOffset(), CachedModifierState);
-            return !NotConsumed;
-        }
-        if (Event.IsA<FKeyPressedEvent>())
-        {
-            FKeyPressedEvent& E = Event.As<FKeyPressedEvent>();
-            UpdateModifiersFromKeyEvent(E);
-            const Rml::Input::KeyIdentifier RmlKey = ToRmlKey(E.GetKeyCode());
-            if (RmlKey == Rml::Input::KI_UNKNOWN) return false;
-            const bool NotConsumed = Ctx->ProcessKeyDown(RmlKey, CachedModifierState);
-            return !NotConsumed;
-        }
-        if (Event.IsA<FKeyReleasedEvent>())
-        {
-            FKeyReleasedEvent& E = Event.As<FKeyReleasedEvent>();
-            UpdateModifiersFromKeyEvent(E);
-            const Rml::Input::KeyIdentifier RmlKey = ToRmlKey(E.GetKeyCode());
-            if (RmlKey == Rml::Input::KI_UNKNOWN) return false;
-            const bool NotConsumed = Ctx->ProcessKeyUp(RmlKey, CachedModifierState);
-            return !NotConsumed;
-        }
-        if (Event.IsA<FCharInputEvent>())
-        {
-            FCharInputEvent& E = Event.As<FCharInputEvent>();
-            const bool NotConsumed = Ctx->ProcessTextInput(Rml::Character(E.GetCodepoint()));
-            return !NotConsumed;
-        }
-
-        return false;
-    }
-
     bool Initialise()
     {
         FState& State = S();
@@ -394,7 +222,6 @@ namespace Lumina::RmlUi
         State.System   = MakeUnique<FLuminaSystemInterface>();
         State.Files    = MakeUnique<FRmlUiFileInterface>();
         State.Renderer = MakeUnique<FRmlUiRenderer>();
-        State.Input    = MakeUnique<FRmlUiInputHandler>();
 
         Rml::SetSystemInterface(State.System.get());
         Rml::SetFileInterface(State.Files.get());
@@ -426,11 +253,6 @@ namespace Lumina::RmlUi
             LOG_WARN("[RmlUi] Default font LatoLatin-Regular.ttf failed to load; text may not render.");
         }
 
-        if (GApp != nullptr)
-        {
-            GApp->GetEventProcessor().RegisterEventHandler(State.Input.get());
-        }
-
         State.Initialised = true;
         LOG_INFO("[RmlUi] Initialised. Per-world contexts will be created as worlds come up.");
         return true;
@@ -440,11 +262,6 @@ namespace Lumina::RmlUi
     {
         FState& State = S();
         if (!State.Initialised && !State.System) return;
-
-        if (GApp != nullptr && State.Input)
-        {
-            GApp->GetEventProcessor().UnregisterEventHandler(State.Input.get());
-        }
 
         // Detach the debugger before its host context dies. Keeping our
         // DebuggerHost tracking honest matters if Shutdown is followed by a
@@ -482,8 +299,14 @@ namespace Lumina::RmlUi
     void OnWorldInitialized(CWorld* World)
     {
         FState& State = S();
-        if (!State.Initialised || World == nullptr) return;
-        if (FindEntryByWorld(World) != nullptr) return;
+        if (!State.Initialised || World == nullptr)
+        {
+            return;
+        }
+        if (FindEntryByWorld(World) != nullptr)
+        {
+            return;
+        }
 
         // TickAll resizes from the real RT every frame; this initial value
         // is just to let layout run until the first RenderAll.
@@ -512,19 +335,24 @@ namespace Lumina::RmlUi
         State.ActiveContext = Ctx;
         SyncDebuggerToActiveContext();
 
-        LOG_INFO("[RmlUi] Created context '{}' for world {} (initial {}x{}).",
-                 NameBuf, static_cast<void*>(World), InitialSize.x, InitialSize.y);
+        LOG_INFO("[RmlUi] Created context '{}' for world {} (initial {}x{}).", NameBuf, static_cast<void*>(World), InitialSize.x, InitialSize.y);
     }
 
     void OnWorldTornDown(CWorld* World)
     {
         FState& State = S();
-        if (World == nullptr) return;
+        if (World == nullptr)
+        {
+            return;
+        }
 
         for (size_t i = 0; i < State.Worlds.size(); ++i)
         {
             FWorldEntry* E = State.Worlds[i].get();
-            if (E->World != World) continue;
+            if (E->World != World)
+            {
+                continue;
+            }
 
             // Detach the debugger before removing its host; otherwise
             // Debugger::Shutdown would walk a freed element tree.
@@ -544,10 +372,16 @@ namespace Lumina::RmlUi
                 Rml::RemoveContext(E->Context->GetName());
                 E->Context = nullptr;
             }
-            if (State.ActiveContext == DyingContext) State.ActiveContext = nullptr;
+            if (State.ActiveContext == DyingContext)
+            {
+                State.ActiveContext = nullptr;
+            }
 
             const size_t Last = State.Worlds.size() - 1;
-            if (i != Last) eastl::swap(State.Worlds[i], State.Worlds[Last]);
+            if (i != Last)
+            {
+                eastl::swap(State.Worlds[i], State.Worlds[Last]);
+            }
             State.Worlds.pop_back();
 
             if (State.ActiveContext == nullptr && !State.Worlds.empty())
@@ -563,15 +397,19 @@ namespace Lumina::RmlUi
     void TickAll()
     {
         FState& State = S();
-        if (!State.Initialised) return;
+        if (!State.Initialised)
+        {
+            return;
+        }
 
-        // 1080p baseline: dp ratio scales with RT height so a UI written
-        // against a 1080 panel looks the same on higher-res / super-sampled RTs.
         constexpr float NominalHeight = 1080.0f;
 
         for (auto& E : State.Worlds)
         {
-            if (E->Context == nullptr) continue;
+            if (E->Context == nullptr)
+            {
+                continue;
+            }
             const FWorldTarget Tgt = GetWorldTarget(E->World);
             if (Tgt.Image != nullptr)
             {
@@ -591,9 +429,15 @@ namespace Lumina::RmlUi
 
         for (auto& E : State.Worlds)
         {
-            if (E->Context == nullptr) continue;
+            if (E->Context == nullptr)
+            {
+                continue;
+            }
             const FWorldTarget Tgt = GetWorldTarget(E->World);
-            if (Tgt.Image == nullptr) continue;
+            if (Tgt.Image == nullptr)
+            {
+                continue;
+            }
 
             State.Renderer->BeginFrame(CmdList, Tgt.Image, Tgt.Size);
             E->Context->Render();
@@ -604,35 +448,14 @@ namespace Lumina::RmlUi
     Rml::Context*   GetActiveContext() { return S().ActiveContext; }
     FRmlUiRenderer* GetRenderer()      { return S().Renderer.get(); }
 
-    // Editor mouse forwarding bypasses the FInputProcessor chain so ImGui
-    // can't eat events before they reach the right context.
-    void ForwardMouseMove(CWorld* World, int X, int Y, int KeyModifierState)
+    Rml::Context* GetContextForWorld(CWorld* World)
     {
+        if (World == nullptr)
+        {
+            return nullptr;
+        }
         FWorldEntry* E = FindEntryByWorld(World);
-        if (E == nullptr || E->Context == nullptr) return;
-        E->Context->ProcessMouseMove(X, Y, KeyModifierState);
-    }
-
-    void ForwardMouseButton(CWorld* World, int Button, bool bPressed, int KeyModifierState)
-    {
-        FWorldEntry* E = FindEntryByWorld(World);
-        if (E == nullptr || E->Context == nullptr) return;
-        if (bPressed) E->Context->ProcessMouseButtonDown(Button, KeyModifierState);
-        else          E->Context->ProcessMouseButtonUp(Button, KeyModifierState);
-    }
-
-    void ForwardMouseWheel(CWorld* World, float Delta, int KeyModifierState)
-    {
-        FWorldEntry* E = FindEntryByWorld(World);
-        if (E == nullptr || E->Context == nullptr) return;
-        E->Context->ProcessMouseWheel(Delta, KeyModifierState);
-    }
-
-    void ForwardMouseLeave(CWorld* World)
-    {
-        FWorldEntry* E = FindEntryByWorld(World);
-        if (E == nullptr || E->Context == nullptr) return;
-        E->Context->ProcessMouseLeave();
+        return E ? E->Context : nullptr;
     }
 
     // `UI.*` Lua module. Operates on the active world's context.
@@ -644,8 +467,7 @@ namespace Lumina::RmlUi
             FWorldEntry* Entry = GetActiveEntry();
             if (!State.Initialised || Entry == nullptr || Entry->Context == nullptr)
             {
-                LOG_WARN("[RmlUi] UI.LoadDocument('{}') has no active world context yet.",
-                         FString(Path.data(), Path.size()).c_str());
+                LOG_WARN("[RmlUi] UI.LoadDocument('{}') has no active world context yet.", FString(Path.data(), Path.size()).c_str());
                 return false;
             }
 
@@ -676,16 +498,19 @@ namespace Lumina::RmlUi
         void UnloadDocument(FStringView Path)
         {
             FWorldEntry* Entry = GetActiveEntry();
-            if (Entry == nullptr || Entry->Context == nullptr) return;
+            if (Entry == nullptr || Entry->Context == nullptr)
+            {
+                return;
+            }
 
             const FString Key(Path.data(), Path.size());
             auto It = Entry->Documents.find(Key);
             if (It == Entry->Documents.end()) return;
 
-            // RmlUi detaches listeners before we delete the wrappers.
+            // RmlUi defers actual destruction until ReleaseUnloadedDocuments;
+            // OnDetach (and FLuaEventListener::delete this) fires then.
             Entry->Context->UnloadDocument(It->second);
             Entry->Documents.erase(It);
-            Entry->Listeners.erase(Key);
         }
 
         void Show(FStringView Path)        { if (auto* D = FindDoc(Path)) D->Show(); }
@@ -788,10 +613,9 @@ namespace Lumina::RmlUi
                 return;
             }
 
-            const FString Key(Path.data(), Path.size());
-            TUniquePtr<FLuaEventListener> Listener = MakeUnique<FLuaEventListener>(Move(Callback));
-            Target->AddEventListener(EventStr, Listener.get());
-            Entry->Listeners[Key].push_back(Move(Listener));
+            // Ownership transfers to RmlUi; the listener self-deletes in
+            // OnDetach when the element/document is destroyed.
+            Target->AddEventListener(EventStr, new FLuaEventListener(Move(Callback)));
         }
     }
 

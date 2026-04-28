@@ -1,7 +1,6 @@
 ﻿#pragma once
 
 #include "Core/UpdateContext.h"
-#include "Subsystems/Subsystem.h"
 #include "Core/Delegates/Delegate.h"
 #include "Memory/SmartPtr.h"
 #include "Scripting/Lua/Reference.h"
@@ -93,8 +92,6 @@ namespace Lumina
         
         RUNTIME_API NODISCARD FStringView GetProjectName() const { return ProjectName; }
         RUNTIME_API NODISCARD FStringView GetProjectPath() const { return ProjectPath; }
-        RUNTIME_API NODISCARD FFixedString GetProjectScriptDirectory() const;
-        RUNTIME_API NODISCARD FFixedString GetProjectGameDirectory() const;
         RUNTIME_API NODISCARD FFixedString GetProjectContentDirectory() const;
 
         RUNTIME_API CGameInstance* GetGameInstance() const { return GameInstance; }

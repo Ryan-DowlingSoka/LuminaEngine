@@ -59,11 +59,11 @@ namespace Lumina
 			}
 			if (FInputProcessor::Get().IsKeyDown(EKey::D))
 			{
-				Acceleration -= Right; // D = right (+X)
+				Acceleration += Right; // D = right (+X)
 			}
 			if (FInputProcessor::Get().IsKeyDown(EKey::A))
 			{
-				Acceleration += Right; // A = left (-X)
+				Acceleration -= Right; // A = left (-X)
 			}
 			if (FInputProcessor::Get().IsKeyDown(EKey::E))
 			{
@@ -95,7 +95,7 @@ namespace Lumina
 				double MouseDeltaX = FInputProcessor::Get().GetMouseDeltaX();
 				double MouseDeltaY = FInputProcessor::Get().GetMouseDeltaY();
 
-				Transform.AddYaw(static_cast<float>(-MouseDeltaX * 0.1));
+				Transform.AddYaw(static_cast<float>(MouseDeltaX * 0.1));
 				Transform.AddPitch(static_cast<float>(MouseDeltaY * 0.1));
 
 				Velocity.Scale += Math::Pow(1.05f, Velocity.Scale) * static_cast<float>(MouseDeltaZ);

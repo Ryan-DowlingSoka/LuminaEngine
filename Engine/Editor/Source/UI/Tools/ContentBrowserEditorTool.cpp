@@ -195,6 +195,10 @@ namespace Lumina
             {
                 ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/LuaScript.png");
             }
+            else if (ContentItem->GetExtension() == ".rml")
+            {
+                ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/rmlui.png");
+            }
             
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.16f, 0.17f, 1.0f)); 
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.22f, 0.24f, 1.0f));
@@ -277,9 +281,9 @@ namespace Lumina
                     ToolContext->OpenAssetEditor(Asset->AssetGUID);
                 }
             }
-            else if (ContentItem->IsLuaScript())
+            else
             {
-                ToolContext->OpenScriptEditor(ContentItem->GetPathSource());
+                Platform::LaunchURL(UTF8_TO_TCHAR(ContentItem->GetPathSource().data()));
             }
         };
         
@@ -301,24 +305,13 @@ namespace Lumina
                     continue;
                 }
 
-                if (ContentItem->IsAsset())
-                {
-                    DrawAssetContextMenu(ContentItem);
-                }
-                else if (ContentItem->IsLuaScript())
-                {
-                    DrawLuaScriptContextMenu(ContentItem);
-                }
-                else if (ContentItem->IsDirectory())
-                {
-                    DrawDirectoryContextMenu(ContentItem);
-                }
+                DrawAssetContextMenu(ContentItem);
+
             }
         };
 
         ContentBrowserTileViewContext.RebuildTreeFunction = [this] (FTileViewWidget* Tree)
         {
-            
             TVector<VFS::FFileInfo> SortedPaths;
             
             VFS::DirectoryIterator(SelectedPath, [&](const VFS::FFileInfo& FileInfo)
@@ -326,14 +319,6 @@ namespace Lumina
                 if (FileInfo.IsHidden())
                 {
                     return;
-                }
-                
-                if (!FileInfo.IsDirectory())
-                {
-                    if (!FileInfo.IsLAsset() && !FileInfo.IsLua())
-                    {
-                        return;
-                    }
                 }
 
                 SortedPaths.emplace_back(FileInfo);
@@ -351,7 +336,7 @@ namespace Lumina
             
             for (const VFS::FFileInfo& Info : SortedPaths)
             {
-                if (Info.VirtualPath == "/Game/Content" || Info.VirtualPath == "/Game/Scripts")
+                if (Info.VirtualPath == "/Game")
                 {
                     ContentBrowserTileView.AddItemToTree<FContentBrowserTileViewItem>(nullptr, Info, true);
                 }
@@ -684,7 +669,7 @@ namespace Lumina
 
     void FContentBrowserEditorTool::OnProjectLoaded()
     {
-        FFixedString ScriptPath = GEditorEngine->GetProjectScriptDirectory();
+        FFixedString ScriptPath = GEditorEngine->GetProjectContentDirectory();
         
         Watcher.Stop();
         Watcher.Watch(ScriptPath, [&](const FFileEvent& Event)
@@ -694,7 +679,7 @@ namespace Lumina
                 return;
             }
             
-            FStringView Prefix = "/Game/Scripts";
+            FStringView Prefix = "/Game";
             size_t Pos = Event.Path.find(Prefix.data(), 0, Prefix.size());
             if (Pos == FString::npos)
             {
@@ -1039,14 +1024,7 @@ namespace Lumina
                 RefreshContentBrowser();
             }
             
-            if (SelectedPath.find("/Game/Scripts") != FString::npos)
-            {
-                DrawScriptsDirectoryContextMenu();
-            }
-            else
-            {
-                DrawContentDirectoryContextMenu();
-            }
+            DrawContentDirectoryContextMenu();
             
             ImGui::EndPopup();
         }
@@ -1137,79 +1115,6 @@ namespace Lumina
     
     }
 
-    void FContentBrowserEditorTool::DrawDirectoryContextMenu(FContentBrowserTileViewItem* ContentItem)
-    {
-        ImGui::Separator();
-        
-        if (!ContentItem->IsProtected())
-        {
-            if (ImGui::MenuItem(LE_ICON_ARCHIVE_EDIT " Rename", "F2"))
-            {
-                PushRenameModal(ContentItem);
-            }
-        }
-        
-        if (ImGui::MenuItem(LE_ICON_FOLDER " Show in Explorer", nullptr, false))
-        {
-            FStringView VirtualPath = ContentItem->GetVirtualPath();
-            FStringView Parent = VFS::Parent(VirtualPath);
-            Platform::LaunchURL(StringUtils::ToWideString(Parent).c_str());
-        }
-
-        if (ImGui::MenuItem(LE_ICON_CONTENT_COPY " Copy Path", nullptr, false))
-        {
-            ImGui::SetClipboardText(ContentItem->GetVirtualPath().data());
-            ImGuiX::Notifications::NotifyInfo("Path copied to clipboard");
-        }
-
-        if (!ContentItem->IsProtected())
-        {
-            ImGui::Separator();
-
-            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 100, 100, 255));
-            bool bDeleteClicked = ImGui::MenuItem(LE_ICON_ALERT_OCTAGON " Delete", "Del");
-            ImGui::PopStyleColor();
-
-            if (bDeleteClicked)
-            {
-                OpenDeletionWarningPopup(ContentItem);
-            }
-        }
-    }
-
-    void FContentBrowserEditorTool::DrawLuaScriptContextMenu(FContentBrowserTileViewItem* ContentItem)
-    {
-        ImGui::Separator();
-
-        if (ImGui::MenuItem(LE_ICON_ARCHIVE_EDIT " Rename", "F2"))
-        {
-            PushRenameModal(ContentItem);
-        }
-        
-        if (ImGui::MenuItem(LE_ICON_FOLDER " Show in Explorer", nullptr, false))
-        {
-            FStringView Parent = Paths::Parent(ContentItem->GetVirtualPath());
-            Platform::LaunchURL(StringUtils::ToWideString(Parent).c_str());
-        }
-        
-        if (ImGui::MenuItem(LE_ICON_CONTENT_COPY " Copy Path", nullptr, false))
-        {
-            ImGui::SetClipboardText(ContentItem->GetVirtualPath().data());
-            ImGuiX::Notifications::NotifyInfo("Path copied to clipboard");
-        }
-        
-        ImGui::Separator();
-
-        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 100, 100, 255));
-        bool bDeleteClicked = ImGui::MenuItem(LE_ICON_ALERT_OCTAGON " Delete", "Del");
-        ImGui::PopStyleColor();
-
-        if (bDeleteClicked)
-        {
-            OpenDeletionWarningPopup(ContentItem);
-        }
-    }
-
     void FContentBrowserEditorTool::DrawAssetContextMenu(FContentBrowserTileViewItem* ContentItem)
     {
         if (ImGui::MenuItem(LE_ICON_ARCHIVE_EDIT " Rename", "F2"))
@@ -1221,7 +1126,7 @@ namespace Lumina
         
         if (ImGui::MenuItem(LE_ICON_FOLDER " Show in Explorer", nullptr, false))
         {
-            FStringView Parent = Paths::Parent(ContentItem->GetVirtualPath());
+            FString Parent = Paths::Parent(ContentItem->GetPathSource());
             Platform::LaunchURL(StringUtils::ToWideString(Parent).c_str());
         }
         
@@ -1254,41 +1159,15 @@ namespace Lumina
             }
             ImGui::Separator();
         }
-    }
-
-
-    void FContentBrowserEditorTool::DrawScriptsDirectoryContextMenu()
-    {
-        if (ImGui::MenuItem(LE_ICON_OPEN_IN_NEW " New Script"))
+        else if (!ContentItem->IsDirectory())
         {
-            FFixedString NewScriptPath = SelectedPath + "/" + "NewScript.luau";
-            VFS::WriteFile(NewScriptPath, R"(
-NewScript = { }
-
-
-function NewScript:OnAttach()
-    -- Called when the entity is created
-end
-
-function NewScript:OnReady()
-    -- Called when the entity hierarchy is initialized
-end
-
-function NewScript:Update(DeltaTime: number)
-    -- Called every frame.
-end
-            
-function NewScript:OnDetach()
-    -- Called when the entity is destroyed.
-end
-
-
-return NewScript
-)");
-            
+            if (ImGui::MenuItem(LE_ICON_FOLDER_OPEN " Open", "Double-Click"))
+            {
+                Platform::LaunchURL(UTF8_TO_TCHAR(ContentItem->GetPathSource().data()));
+            }
         }
     }
-
+    
     void FContentBrowserEditorTool::DrawContentDirectoryContextMenu()
     {
         const char* ImportIcon = LE_ICON_FILE_IMPORT;
@@ -1301,6 +1180,13 @@ return NewScript
             {
                 TryImport(SelectedFile);
             }
+        }
+        
+        if (ImGui::MenuItem(LE_ICON_LANGUAGE_LUA " New Script"))
+        {
+            FFixedString NewScriptPath = SelectedPath + "/" + "NewScript.luau";
+            NewScriptPath = VFS::MakeUniqueFilePath(NewScriptPath);
+            VFS::WriteFile(NewScriptPath, "");
         }
 
         const char* FileIcon = LE_ICON_PLUS;

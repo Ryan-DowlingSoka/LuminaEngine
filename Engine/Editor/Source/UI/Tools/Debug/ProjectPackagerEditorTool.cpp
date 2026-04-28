@@ -121,6 +121,8 @@ namespace Lumina
 
         FCookOptions CookOpts;
         CookOpts.bExtractScriptsAsLooseFiles = bExtractScriptsLoose;
+        CookOpts.ExtraFiles                  = ExtraFiles;
+        CookOpts.ExtraDirectories            = ExtraDirectories;
 
         const FCookResult Result = FAssetCooker::Cook(PakPath, CookOpts, [this](FStringView Line)
         {
@@ -191,6 +193,8 @@ namespace Lumina
 
         FCookOptions CookOpts;
         CookOpts.bExtractScriptsAsLooseFiles = bExtractScriptsLoose;
+        CookOpts.ExtraFiles                  = ExtraFiles;
+        CookOpts.ExtraDirectories            = ExtraDirectories;
 
         const FCookResult Cook = FAssetCooker::Cook(PakPath, CookOpts, [this](FStringView Line)
         {
@@ -231,6 +235,8 @@ namespace Lumina
         Opts.MSBuildPath                    = MSBuildPath;
         Opts.bBuildExecutable               = true;
         Opts.bExtractScriptsAsLooseFiles    = bExtractScriptsLoose;
+        Opts.ExtraFiles                     = ExtraFiles;
+        Opts.ExtraDirectories               = ExtraDirectories;
         Opts.MSBuildConfiguration           = (ConfigIndex == 0) ? FString("Shipping")
                                             : (ConfigIndex == 1) ? FString("Development")
                                                                  : FString("Debug");
@@ -342,17 +348,19 @@ namespace Lumina
 
         ImGui::Spacing();
 
-        ImGui::Checkbox("Expose scripts as loose files (modder-friendly)", &bExtractScriptsLoose);
+        ImGui::Checkbox("Expose /Game files as loose (modder-friendly)", &bExtractScriptsLoose);
         if (ImGui::IsItemHovered())
         {
             ImGui::SetTooltip(
-                "When enabled, /Game/Scripts/ is mirrored as editable .luau files\n"
-                "next to the cooked exe instead of being bundled in the PAK.\n"
-                "End users (or you, post-ship) can tweak gameplay without\n"
-                "re-cooking. The runtime mounts the loose folder over the PAK\n"
-                "so loose copies take priority on lookups.");
+                "When enabled, every non-.lasset file under /Game/ (.luau, .rml,\n"
+                "JSON, etc) is mirrored next to the cooked exe instead of being\n"
+                "bundled in the PAK. End users (or you, post-ship) can tweak\n"
+                "gameplay and UI without re-cooking. The runtime mounts the\n"
+                "loose folder over the PAK so loose copies take priority.");
         }
 
+        ImGui::Spacing();
+        DrawExtrasSection();
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
@@ -450,5 +458,80 @@ namespace Lumina
 
         ImGui::PopStyleVar(4);
         ImGui::PopStyleColor(3);
+    }
+
+    void FProjectPackagerEditorTool::DrawExtrasSection()
+    {
+        const FString ProjectPath(GEngine->GetProjectPath().data(), GEngine->GetProjectPath().size());
+
+        ImGui::TextColored(ImVec4(0.85f, 0.85f, 0.55f, 1.0f), LE_ICON_PACKAGE_VARIANT_CLOSED " Extras (manually included in PAK)");
+        ImGui::Spacing();
+
+        // Extra files
+        ImGui::TextDisabled("Extra Files");
+        if (ImGui::BeginListBox("##extra_files", ImVec2(-1, 80)))
+        {
+            for (int32 i = 0; i < (int32)ExtraFiles.size(); ++i)
+            {
+                const bool bSelected = (SelectedExtraFile == i);
+                if (ImGui::Selectable(ExtraFiles[i].c_str(), bSelected))
+                {
+                    SelectedExtraFile = i;
+                }
+            }
+            ImGui::EndListBox();
+        }
+        if (ImGui::Button(LE_ICON_FILE_PLUS " Add File...", ImVec2(140, 0)))
+        {
+            FFixedString Picked;
+            // Filter is "Display\0Pattern\0Display\0Pattern\0\0"; pass a generic All Files match.
+            static const char Filter[] = "All Files\0*.*\0";
+            if (Platform::OpenFileDialogue(Picked, "Add Extra File", Filter, ProjectPath.c_str()))
+            {
+                ExtraFiles.emplace_back(Picked.c_str(), Picked.size());
+            }
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(SelectedExtraFile < 0 || SelectedExtraFile >= (int32)ExtraFiles.size());
+        if (ImGui::Button(LE_ICON_MINUS " Remove File", ImVec2(140, 0)))
+        {
+            ExtraFiles.erase(ExtraFiles.begin() + SelectedExtraFile);
+            SelectedExtraFile = -1;
+        }
+        ImGui::EndDisabled();
+
+        ImGui::Spacing();
+
+        // Extra directories
+        ImGui::TextDisabled("Extra Directories");
+        if (ImGui::BeginListBox("##extra_dirs", ImVec2(-1, 80)))
+        {
+            for (int32 i = 0; i < (int32)ExtraDirectories.size(); ++i)
+            {
+                const bool bSelected = (SelectedExtraDirectory == i);
+                if (ImGui::Selectable(ExtraDirectories[i].c_str(), bSelected))
+                {
+                    SelectedExtraDirectory = i;
+                }
+            }
+            ImGui::EndListBox();
+        }
+        if (ImGui::Button(LE_ICON_FOLDER_PLUS " Add Directory...", ImVec2(180, 0)))
+        {
+            FFixedString Picked;
+            // Null filter = folder picker (see WindowsPlatformProcess::OpenFileDialogue).
+            if (Platform::OpenFileDialogue(Picked, "Add Extra Directory", nullptr, ProjectPath.c_str()))
+            {
+                ExtraDirectories.emplace_back(Picked.c_str(), Picked.size());
+            }
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(SelectedExtraDirectory < 0 || SelectedExtraDirectory >= (int32)ExtraDirectories.size());
+        if (ImGui::Button(LE_ICON_MINUS " Remove Directory", ImVec2(180, 0)))
+        {
+            ExtraDirectories.erase(ExtraDirectories.begin() + SelectedExtraDirectory);
+            SelectedExtraDirectory = -1;
+        }
+        ImGui::EndDisabled();
     }
 }

@@ -82,6 +82,7 @@
 #include "Tools/Debug/AboutEditorTool.h"
 #include "Tools/Debug/MemoryProfilerEditorTool.h"
 #include "Tools/Debug/ObjectBrowserEditorTool.h"
+#include "Tools/Debug/InputActionEditorTool.h"
 #include "Tools/Debug/ProjectPackagerEditorTool.h"
 #include "Tools/Debug/ProjectSettingsEditorTool.h"
 #include "Tools/Debug/RendererInfoEditorTool.h"
@@ -105,6 +106,32 @@ namespace Lumina
 {
     bool FEditorUI::OnEvent(FEvent& Event)
     {
+        // Consume input ImGui owns so it doesn't fall through; pass everything
+        // else to tools (file drops, etc.).
+        const bool bIsMouseEvent =
+               Event.IsA<FMouseMovedEvent>()
+            || Event.IsA<FMouseButtonPressedEvent>()
+            || Event.IsA<FMouseButtonReleasedEvent>()
+            || Event.IsA<FMouseScrolledEvent>();
+
+        const bool bIsKeyEvent =
+               Event.IsA<FKeyPressedEvent>()
+            || Event.IsA<FKeyReleasedEvent>()
+            || Event.IsA<FCharInputEvent>();
+
+        if (bIsMouseEvent || bIsKeyEvent)
+        {
+            const ImGuiIO& IO = ImGui::GetIO();
+            if (bIsMouseEvent && IO.WantCaptureMouse)
+            {
+                return true;
+            }
+            if (bIsKeyEvent && IO.WantCaptureKeyboard)
+            {
+                return true;
+            }
+        }
+
         for (FEditorTool* Tool : EditorTools)
         {
             if (Tool->OnEvent(Event))
@@ -1308,6 +1335,7 @@ namespace Lumina
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.62f, 1.0f), "Debug Windows");
         ImGui::Separator();
 
+        DrawToolMenuItem<FInputActionEditorTool>(LE_ICON_KEYBOARD " Input Actions", this);
         DrawToolMenuItem<FScriptsInfoEditorTool>(LE_ICON_LANGUAGE_LUA " Scripts Info", this);
         DrawToolMenuItem<FRendererInfoEditorTool>(LE_ICON_CHART_LINE " Renderer Info", this);
         DrawToolMenuItem<FGPUProfilerEditorTool>(LE_ICON_CHART_TIMELINE " GPU Profiler", this);

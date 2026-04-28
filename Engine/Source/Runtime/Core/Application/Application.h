@@ -3,10 +3,12 @@
 #include "Core/LuminaMacros.h"
 #include "Core/Engine/Engine.h"
 #include "Events/EventProcessor.h"
+#include "Memory/SmartPtr.h"
 
 namespace Lumina
 {
 	struct FWindowSpecs;
+	class  FInputViewport;
 
 	enum class RUNTIME_API EApplicationFlags : uint32
 	{
@@ -27,8 +29,8 @@ namespace Lumina
 	{
 	public:
 
-		FApplication() = default;
-		~FApplication() = default;
+		FApplication();
+		~FApplication();
 		LE_NO_COPYMOVE(FApplication);
 		
 		int32 Run(int argc, char** argv);
@@ -40,19 +42,23 @@ namespace Lumina
 		static void RequestExit();
 
 		FEventProcessor& GetEventProcessor()	{ return EventProcessor; }
-	
+
+		// Null in editor builds; per-tool viewports own input there.
+		FInputViewport* GetPrimaryViewport()	{ return PrimaryViewport.get(); }
+
 	private:
 
 		void PreInitStartup();
 		bool CreateApplicationWindow();
-		
+
 		bool ShouldExit() const;
-		
+
 	protected:
 
 		FEventProcessor				EventProcessor;
 		FWindow*					MainWindow = nullptr;
-		
+		TUniquePtr<FInputViewport>	PrimaryViewport;
+
 		bool bExitRequested			= false;
 	
 	public:

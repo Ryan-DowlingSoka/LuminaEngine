@@ -67,6 +67,7 @@ namespace Lumina
         };
 
         void DrawWindow(bool bIsFocused);
+        void DrawExtrasSection();
         void RunCookOnly();
         void RunFullPackage();
 
@@ -81,6 +82,10 @@ namespace Lumina
         FString             MSBuildPath;        // editable
         int32               ConfigIndex     = 0; // 0=Shipping, 1=Development, 2=Debug
         bool                bExtractScriptsLoose = false;
+        TVector<FString>    ExtraFiles;
+        TVector<FString>    ExtraDirectories;
+        int32               SelectedExtraFile      = -1;
+        int32               SelectedExtraDirectory = -1;
         EStage              Stage           = EStage::Idle;
         bool                bLastSuccess    = false;
         FString             LastError;

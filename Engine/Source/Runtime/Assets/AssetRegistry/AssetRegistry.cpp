@@ -39,7 +39,7 @@ namespace Lumina
         };
         
         VFS::RecursiveDirectoryIterator("/Engine/Resources/Content", Callback);
-        VFS::RecursiveDirectoryIterator("/Game/Content", Callback);
+        VFS::RecursiveDirectoryIterator("/Game", Callback);
 
         
         uint32 NumPackages = (uint32)PackagePaths.size();

@@ -1,7 +1,7 @@
 {
     "Project": {
         "EditorStartupMap": "",
-        "GameStartupMap": "/Game/Content/NewWorld.lasset",
+        "GameStartupMap": "/Game/NewWorld.lasset",
         "LuaModuleFile": "/Game/Scripts/SandboxModule.luau"
     }
 }

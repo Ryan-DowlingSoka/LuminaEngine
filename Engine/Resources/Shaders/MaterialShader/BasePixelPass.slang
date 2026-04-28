@@ -128,13 +128,9 @@ FCubemapCoord DirectionToCubemapCoord(float3 Dir)
 
     Result.Face = int(IsXMax * FaceIndex.x + IsYMax * FaceIndex.y + IsZMax * FaceIndex.z);
 
-    // Y faces: +Y's view basis ends up with view-up = -Z world (see
-    // FViewVolume::SetView re-orthogonalization + point shadow face 2 config),
-    // and -Y's view-up = +Z world. Negating sign(Dir.y) * Dir.z produces v that
-    // matches the rendered Y axis for both top and bottom faces.
-    float2 UVX = float2(-sign(Dir.x) * Dir.z,  Dir.y)                / AbsDir.x;
-    float2 UVY = float2( Dir.x,                -sign(Dir.y) * Dir.z) / AbsDir.y;
-    float2 UVZ = float2( sign(Dir.z) * Dir.x,   Dir.y)                / AbsDir.z;
+    float2 UVX = float2( sign(Dir.x) * Dir.z,  Dir.y)                / AbsDir.x;
+    float2 UVY = float2(-Dir.x,                -sign(Dir.y) * Dir.z) / AbsDir.y;
+    float2 UVZ = float2(-sign(Dir.z) * Dir.x,   Dir.y)                / AbsDir.z;
 
     Result.UV = IsXMax * UVX + IsYMax * UVY + IsZMax * UVZ;
     Result.UV = Result.UV * 0.5 + 0.5;

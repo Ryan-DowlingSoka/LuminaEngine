@@ -5,23 +5,39 @@
 
 namespace Lumina
 {
-    void FEventProcessor::RegisterEventHandler(IEventHandler* InHandler)
+    void FEventProcessor::RegisterEventHandler(IEventHandler* InHandler, int32 Priority)
     {
-        if (eastl::find(EventHandlers.begin(), EventHandlers.end(), InHandler) != EventHandlers.end())
+        for (const FEntry& E : EventHandlers)
         {
-            LOG_ERROR("Event Handler Already Registered!");
-            return;
+            if (E.Handler == InHandler)
+            {
+                LOG_ERROR("Event Handler Already Registered!");
+                return;
+            }
         }
 
-        EventHandlers.push_back(InHandler);
+        // Sorted descending; equal priorities preserve registration order.
+        FEntry NewEntry{ InHandler, Priority };
+        auto It = EventHandlers.begin();
+        for (; It != EventHandlers.end(); ++It)
+        {
+            if (It->Priority < Priority)
+            {
+                break;
+            }
+        }
+        EventHandlers.insert(It, NewEntry);
     }
 
     void FEventProcessor::UnregisterEventHandler(IEventHandler* InHandler)
     {
-        auto It = eastl::find(EventHandlers.begin(), EventHandlers.end(), InHandler);
-        if (It != EventHandlers.end())
+        for (auto It = EventHandlers.begin(); It != EventHandlers.end(); ++It)
         {
-            EventHandlers.erase(It);
+            if (It->Handler == InHandler)
+            {
+                EventHandlers.erase(It);
+                return;
+            }
         }
     }
 
@@ -30,50 +46,16 @@ namespace Lumina
         EventHandlers.clear();
     }
 
-    void FEventProcessor::SetInputMode(EInputMode Mode)
-    {
-        InputMode = Mode;
-    }
-
-    bool FEventProcessor::ShouldRouteTo(IEventHandler* Handler) const
-    {
-        const EInputCategory Category = Handler->GetInputCategory();
-        if (Category == EInputCategory::Editor)
-        {
-            return true;
-        }
-
-        switch (InputMode)
-        {
-        case EInputMode::Game:      return Category == EInputCategory::Game;
-        case EInputMode::UI:        return Category == EInputCategory::UI;
-        case EInputMode::GameAndUI: return true;
-        }
-        return false;
-    }
-
     void FEventProcessor::DispatchEvent(FEvent& Event)
     {
-        // GameAndUI: UI gets first crack so it can intercept before game.
-        if (InputMode == EInputMode::GameAndUI)
+        // Handlers may unregister mid-dispatch; iterate a snapshot.
+        TVector<FEntry> Snapshot = EventHandlers;
+        for (const FEntry& Entry : Snapshot)
         {
-            for (IEventHandler* Handler : EventHandlers)
+            if (Entry.Handler->OnEvent(Event))
             {
-                if (Handler->GetInputCategory() != EInputCategory::UI) continue;
-                if (Handler->OnEvent(Event)) return;
+                return;
             }
-            for (IEventHandler* Handler : EventHandlers)
-            {
-                if (Handler->GetInputCategory() == EInputCategory::UI) continue;
-                if (Handler->OnEvent(Event)) return;
-            }
-            return;
-        }
-
-        for (IEventHandler* Handler : EventHandlers)
-        {
-            if (!ShouldRouteTo(Handler)) continue;
-            if (Handler->OnEvent(Event)) return;
         }
     }
 }

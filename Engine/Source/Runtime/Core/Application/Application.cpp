@@ -5,35 +5,48 @@
 #include "Core/Module/ModuleManager.h"
 #include "Core/Windows/Window.h"
 #include "Core/Windows/WindowTypes.h"
+#include "Events/Event.h"
 #include "FileSystem/FileSystem.h"
-#include "Input/InputProcessor.h"
+#include "Input/InputContext.h"
+#include "Input/InputViewport.h"
 #include "Paths/Paths.h"
 
 namespace Lumina
 {
     RUNTIME_API FApplication* GApp;
 
+    // Out-of-line so unique_ptr<FInputViewport> can see the full type.
+    FApplication::FApplication() = default;
+    FApplication::~FApplication() = default;
+
     int32 FApplication::Run(int argc, char** argv)
     {
         LUMINA_PROFILE_SCOPE();
-        
+
         ASSERT(GEngine);
-        
+
         LOG_TRACE("Initializing Lumina");
-        
-        //---------------------------------------------------------------
-        // Application initialization.
-        //--------------------------------------------------------------
 
         PreInitStartup();
         CreateApplicationWindow();
+
+        EventProcessor.RegisterEventHandler(&FInputViewportRegistry::Get(), (int32)EInputLayer::Viewport);
+
+        #if !WITH_EDITOR
+        PrimaryViewport = MakeUnique<FInputViewport>();
+        const glm::uvec2 WinExtent = MainWindow->GetExtent();
+        PrimaryViewport->SetWindowRect(0, 0, int(WinExtent.x), int(WinExtent.y));
+        PrimaryViewport->SetRenderTargetSize(WinExtent.x, WinExtent.y);
+        PrimaryViewport->SetHovered(true);
+        PrimaryViewport->SetFocused(true);
+
+        FInputViewportRegistry::Get().Register(PrimaryViewport.get());
+        FInputViewportRegistry::Get().SetActiveViewport(PrimaryViewport.get());
+        FInputViewportRegistry::Get().SetHoveredViewport(PrimaryViewport.get());
+        FInputViewportRegistry::Get().SetFocusedViewport(PrimaryViewport.get());
+        #endif
+
         GEngine->Init();
-        
-        EventProcessor.RegisterEventHandler(&FInputProcessor::Get());
-        
-        //---------------------------------------------------------------
-        // Core application loop.
-        //--------------------------------------------------------------
 
         bool bEngineWantsExit = false;
         while(!bEngineWantsExit)
@@ -42,36 +55,47 @@ namespace Lumina
 
             MainWindow->ProcessMessages();
 
+            // Run before the world ticks so script OnUpdate observes handler effects.
+            FInputViewportRegistry::Get().DispatchActions();
+
             bool bApplicationWantsExit = ShouldExit();
-            
+
             bEngineWantsExit = !GEngine->Update(bApplicationWantsExit);
 
-            FInputProcessor::Get().EndFrame();
+            FInputViewportRegistry::Get().EndFrame(GEngine->GetDeltaTime());
         }
-        
-        //---------------------------------------------------------------
-        // Application shutdown.
-        //--------------------------------------------------------------
 
         LOG_TRACE("Shutting down Lumina");
-        
+
         GEngine->Shutdown();
-        
+
+        if (PrimaryViewport)
+        {
+            FInputViewportRegistry::Get().Unregister(PrimaryViewport.get());
+            PrimaryViewport.reset();
+        }
+
         Shutdown();
-        
+
         return 0;
     }
 
     void FApplication::Shutdown()
     {
-        
+
     }
-    
+
     void FApplication::WindowResized(FWindow* Window, const glm::uvec2& Extent)
     {
         if (!Window->IsWindowMinimized())
         {
             GEngine->SetEngineViewportSize(Extent);
+
+            if (PrimaryViewport)
+            {
+                PrimaryViewport->SetWindowRect(0, 0, int(Extent.x), int(Extent.y));
+                PrimaryViewport->SetRenderTargetSize(Extent.x, Extent.y);
+            }
         }
     }
 
@@ -79,28 +103,28 @@ namespace Lumina
     {
         GApp->bExitRequested = true;
     }
-    
+
     void FApplication::PreInitStartup()
     {
         InitializeCObjectSystem();
-        
+
         Paths::InitializePaths();
-        
+
         if (TOptional<FFixedString> Project = GCommandLine->Get("Project"))
         {
             GEngine->LoadProject(Project.value());
         }
-        
+
     }
 
     bool FApplication::CreateApplicationWindow()
     {
         (void)FWindow::OnWindowResized.AddMember(this, &FApplication::WindowResized);
-        
+
         MainWindow = new FWindow(FWindowSpecs{});
-        
+
         Windowing::SetPrimaryWindowHandle(MainWindow);
-        
+
         return true;
     }
 

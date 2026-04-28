@@ -3,11 +3,12 @@
 #include "imgui_internal.h"
 #include "ToolFlags.h"
 #include "Core/Object/Package/Package.h"
+#include "Core/Windows/Window.h"
 #include "Thumbnails/ThumbnailManager.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "Core/Application/Application.h"
-#include "UI/RmlUiBridge.h"
-#include <RmlUi/Core/Input.h>
+#include "Input/InputContext.h"
+#include "Input/InputViewport.h"
 #include "World/WorldManager.h"
 #include "World/Entity/Components/CameraComponent.h"
 #include "World/Entity/Components/EditorComponent.h"
@@ -27,6 +28,8 @@ namespace Lumina
     {
         ToolFlags |= EEditorToolFlags::Tool_WantsToolbar;
     }
+
+    FEditorTool::~FEditorTool() = default;
 
     void FEditorTool::InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const
     {
@@ -135,6 +138,11 @@ namespace Lumina
             SetupWorldForTool();
 
             Internal_CreateViewportTool();
+
+            InputViewport = MakeUnique<FInputViewport>();
+            InputViewport->SetWorld(World);
+            InputViewport->GetContext().SetInputMode(EInputMode::Game);
+            FInputViewportRegistry::Get().Register(InputViewport.get());
         }
 
         OnInitialize();
@@ -143,9 +151,15 @@ namespace Lumina
     void FEditorTool::Deinitialize(const FUpdateContext& UpdateContext)
     {
         OnDeinitialize(UpdateContext);
-        
+
         ToolWindows.clear();
-        
+
+        if (InputViewport)
+        {
+            FInputViewportRegistry::Get().Unregister(InputViewport.get());
+            InputViewport.reset();
+        }
+
         if (HasWorld())
         {
             GWorldManager->DestroyWorldContext(World);
@@ -170,7 +184,7 @@ namespace Lumina
         {
             return;
         }
-        
+
         if (World.IsValid())
         {
             GWorldManager->DestroyWorldContext(World);
@@ -184,8 +198,22 @@ namespace Lumina
         {
             GWorldManager->CreateWorldContext(World, EWorldType::Editor);
         }
-        
+
+        if (InputViewport)
+        {
+            InputViewport->SetWorld(World);
+        }
+
         SetupWorldForTool();
+    }
+
+    void FEditorTool::RebindToWorld(CWorld* InWorld)
+    {
+        World = InWorld;
+        if (InputViewport)
+        {
+            InputViewport->SetWorld(InWorld);
+        }
     }
 
     void FEditorTool::SetupWorldForTool()
@@ -310,61 +338,49 @@ namespace Lumina
             IM_COL32_WHITE
         );
 
-        // RmlUi mouse forwarding. Translate screen mouse to panel-local
-        // fraction to world-RT pixel space. ImGui would otherwise eat events
-        // before our auto handler sees them. Suppressed in Game-only mode.
-        const EInputMode CurrentInputMode = GApp ? GApp->GetEventProcessor().GetInputMode() : EInputMode::Game;
-        const bool bForwardToUi = (CurrentInputMode == EInputMode::UI || CurrentInputMode == EInputMode::GameAndUI);
-        if (World != nullptr && bForwardToUi)
+        if (InputViewport)
         {
-            const ImVec2 PanelMin = CursorScreenPos;
-            const ImVec2 PanelMax(PanelMin.x + ViewportSize.x, PanelMin.y + ViewportSize.y);
-            const bool bHoveringPanel = ImGui::IsMouseHoveringRect(PanelMin, PanelMax, /*clip=*/false);
+            // ImGui multi-viewport returns absolute monitor coords; GLFW events use
+            // window-relative coords. Subtract the window origin so they match.
+            int WindowX = 0;
+            int WindowY = 0;
+            Windowing::GetPrimaryWindowHandle()->GetWindowPosition(WindowX, WindowY);
 
-            if (bHoveringPanel)
+            const ImVec2 PanelMin(CursorScreenPos.x - float(WindowX), CursorScreenPos.y - float(WindowY));
+            const ImVec2 PanelMax(PanelMin.x + ViewportSize.x, PanelMin.y + ViewportSize.y);
+            InputViewport->SetWindowRect(int(PanelMin.x), int(PanelMin.y), int(PanelMax.x), int(PanelMax.y));
+
+            uint32 RTW = uint32(eastl::max(ViewportSize.x, 1.0f));
+            uint32 RTH = uint32(eastl::max(ViewportSize.y, 1.0f));
+            if (World != nullptr)
             {
-                int RTW = int(ViewportSize.x);
-                int RTH = int(ViewportSize.y);
                 if (IRenderScene* Scene = World->GetRenderer())
                 {
                     if (FRHIImage* RT = Scene->GetRenderTarget())
                     {
-                        RTW = int(RT->GetSizeX());
-                        RTH = int(RT->GetSizeY());
+                        RTW = RT->GetSizeX();
+                        RTH = RT->GetSizeY();
                     }
                 }
-
-                const ImVec2 Mouse = ImGui::GetMousePos();
-                const float U = (Mouse.x - PanelMin.x) / std::max(1.0f, ViewportSize.x);
-                const float V = (Mouse.y - PanelMin.y) / std::max(1.0f, ViewportSize.y);
-                const int CtxX = int(U * float(RTW));
-                const int CtxY = int(V * float(RTH));
-
-                int Mods = 0;
-                using namespace Rml::Input;
-                if (ImGui::GetIO().KeyCtrl)  Mods |= KM_CTRL;
-                if (ImGui::GetIO().KeyShift) Mods |= KM_SHIFT;
-                if (ImGui::GetIO().KeyAlt)   Mods |= KM_ALT;
-                if (ImGui::GetIO().KeySuper) Mods |= KM_META;
-
-                RmlUi::ForwardMouseMove(World, CtxX, CtxY, Mods);
-
-                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))    RmlUi::ForwardMouseButton(World, 0, true,  Mods);
-                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))   RmlUi::ForwardMouseButton(World, 0, false, Mods);
-                if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))   RmlUi::ForwardMouseButton(World, 1, true,  Mods);
-                if (ImGui::IsMouseReleased(ImGuiMouseButton_Right))  RmlUi::ForwardMouseButton(World, 1, false, Mods);
-                if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle))  RmlUi::ForwardMouseButton(World, 2, true,  Mods);
-                if (ImGui::IsMouseReleased(ImGuiMouseButton_Middle)) RmlUi::ForwardMouseButton(World, 2, false, Mods);
-
-                const float Wheel = ImGui::GetIO().MouseWheel;
-                if (Wheel != 0.0f)
-                {
-                    RmlUi::ForwardMouseWheel(World, -Wheel, Mods);
-                }
             }
-            else
+            InputViewport->SetRenderTargetSize(RTW, RTH);
+
+            InputViewport->SetHovered(bViewportHovered);
+            InputViewport->SetFocused(bViewportFocused);
+
+            if (bViewportHovered)
             {
-                RmlUi::ForwardMouseLeave(World);
+                FInputViewportRegistry::Get().SetHoveredViewport(InputViewport.get());
+            }
+            else if (FInputViewportRegistry::Get().GetHoveredViewport() == InputViewport.get())
+            {
+                FInputViewportRegistry::Get().SetHoveredViewport(nullptr);
+            }
+
+            if (bViewportFocused)
+            {
+                FInputViewportRegistry::Get().SetFocusedViewport(InputViewport.get());
+                FInputViewportRegistry::Get().SetActiveViewport(InputViewport.get());
             }
         }
 

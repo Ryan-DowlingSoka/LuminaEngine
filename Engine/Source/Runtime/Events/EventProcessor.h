@@ -2,34 +2,33 @@
 
 #include "Containers/Array.h"
 #include "Events/Event.h"
-#include "Input/InputMode.h"
 
 namespace Lumina
 {
+    // Standard layer priorities. Higher = runs first; first handler to return true stops propagation.
+    enum class EInputLayer : int32
+    {
+        Viewport     = 1000,
+        EditorChrome = 500,
+        Default      = 0,
+    };
+
     class IEventHandler
     {
     public:
+        virtual ~IEventHandler() = default;
 
-        /** Called when an event is received, return true to stop propagation and mark as handled. */
         virtual bool OnEvent(FEvent& Event) { return false; }
-
-        /** Routing tag used by FEventProcessor to gate dispatch by input mode.
-            Editor handlers ignore the mode and always dispatch. */
-        virtual EInputCategory GetInputCategory() const { return EInputCategory::Game; }
     };
 
     class FEventProcessor
     {
     public:
 
-        void RegisterEventHandler(IEventHandler* InHandler);
-        void UnregisterEventHandler(IEventHandler* InHandler);
+        RUNTIME_API void RegisterEventHandler(IEventHandler* InHandler, int32 Priority = (int32)EInputLayer::Default);
+        RUNTIME_API void UnregisterEventHandler(IEventHandler* InHandler);
 
-        void Clear();
-
-        RUNTIME_API void SetInputMode(EInputMode Mode);
-        RUNTIME_API EInputMode GetInputMode() const { return InputMode; }
-
+        RUNTIME_API void Clear();
 
         template<typename TEvent, typename... Args>
         requires(eastl::is_base_of_v<FEvent, TEvent> && eastl::is_constructible_v<TEvent, Args&&...>)
@@ -39,13 +38,16 @@ namespace Lumina
             DispatchEvent(Event);
         }
 
-
     private:
 
-        void DispatchEvent(FEvent& Event);
-        bool ShouldRouteTo(IEventHandler* Handler) const;
+        struct FEntry
+        {
+            IEventHandler* Handler;
+            int32          Priority;
+        };
 
-        TVector<IEventHandler*> EventHandlers;
-        EInputMode              InputMode = EInputMode::Game;
+        void DispatchEvent(FEvent& Event);
+
+        TVector<FEntry> EventHandlers;
     };
 }

@@ -1,0 +1,208 @@
+<rml>
+<head>
+    <title>Lumina UI - Test Widget</title>
+    <style>
+        /* ---------- Stage ---------- */
+        /* Sizing notes:
+           The bridge sets a per-context dp ratio = max(1, RT.height / 1080),
+           so values below are tuned for a 1080 baseline and stay readable on
+           higher-res render targets. Bump these by 25-50% relative to a
+           "desktop" web design baseline because the editor downscales the
+           viewport for display, and the eye wants a bit of headroom.        */
+        body
+        {
+            font-family: LatoLatin;
+            font-size: 22dp;
+            color: #e6e8ee;
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(8, 10, 18, 200);
+        }
+
+        /* Decorative: faint accent strip down the side so the body is obviously a UI surface,
+           not a leaked render-target colour. */
+        #accent
+        {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 4dp;
+            height: 100%;
+            background-color: #00d68f;
+        }
+
+        /* ---------- Card ---------- */
+        #card
+        {
+            position: absolute;
+            left: 64dp;
+            top: 64dp;
+            width: 700dp;
+            background-color: rgba(22, 26, 38, 235);
+            border: 2dp #2c3346;
+            border-radius: 14dp;
+            padding: 32dp 36dp 28dp 36dp;
+            box-sizing: border-box;
+        }
+
+        /* Header row: badge pill + title. Float the badge right of the title baseline. */
+        h1
+        {
+            display: inline;
+            font-size: 36dp;
+            font-weight: bold;
+            color: #ffffff;
+            margin: 0;
+        }
+        #pill
+        {
+            display: inline;
+            font-size: 14dp;
+            font-weight: bold;
+            color: #082a1e;
+            background-color: #00d68f;
+            border-radius: 5dp;
+            padding: 4dp 10dp;
+            margin-left: 14dp;
+            vertical-align: middle;
+        }
+
+        #subtitle
+        {
+            display: block;
+            color: #97a0b6;
+            font-size: 18dp;
+            margin: 8dp 0 24dp 0;
+        }
+
+        /* ---------- Stat tile ---------- */
+        #counter-tile
+        {
+            display: block;
+            background-color: #0f1320;
+            border: 1dp #232a3d;
+            border-radius: 8dp;
+            padding: 18dp 22dp;
+            margin: 0 0 20dp 0;
+        }
+        #counter-tile .label
+        {
+            display: block;
+            font-size: 14dp;
+            font-weight: bold;
+            color: #6b7894;
+            margin-bottom: 6dp;
+        }
+        #counter-value
+        {
+            display: block;
+            font-size: 48dp;
+            font-weight: bold;
+            color: #00d68f;
+        }
+
+        /* ---------- Diagnostic line ---------- */
+        #diag
+        {
+            display: block;
+            color: #c8d0e0;
+            font-size: 17dp;
+            background-color: #11151f;
+            border-left: 4dp #00d68f;
+            padding: 12dp 16dp;
+            margin: 0 0 22dp 0;
+        }
+
+        /* ---------- Action row ---------- */
+        #actions
+        {
+            display: block;
+        }
+
+        /* RmlUi defaults <button> to inline-block; give it visible hover
+           and active states so click feedback is obvious. */
+        button
+        {
+            display: inline-block;
+            font-family: LatoLatin;
+            font-size: 18dp;
+            font-weight: bold;
+            color: #0a0e1a;
+            background-color: #00d68f;
+            border: 0;
+            border-radius: 8dp;
+            padding: 12dp 20dp;
+            margin-right: 12dp;
+            cursor: pointer;
+        }
+        button:hover
+        {
+            background-color: #2cf2a5;
+        }
+        button:active
+        {
+            background-color: #00b377;
+        }
+        button.secondary
+        {
+            background-color: transparent;
+            color: #c8d0e0;
+            border: 1dp #2c3346;
+        }
+        button.secondary:hover
+        {
+            background-color: #1a2030;
+            color: #ffffff;
+        }
+        button.secondary:active
+        {
+            background-color: #0f1320;
+        }
+
+        /* ---------- Footer hint ---------- */
+        #hint
+        {
+            display: block;
+            margin-top: 24dp;
+            color: #5a6478;
+            font-size: 15dp;
+        }
+        #hint code
+        {
+            color: #97a0b6;
+            background-color: #0f1320;
+            border: 1dp #232a3d;
+            border-radius: 4dp;
+            padding: 2dp 6dp;
+        }
+    </style>
+</head>
+<body>
+    <div id="accent"/>
+
+    <div id="card">
+        <h1>Lumina UI</h1><span id="pill">RMLUI 6.0</span>
+        <span id="subtitle">RmlUi rendering through Lumina's RHI. Per-world context, hot-reloadable RML/RCSS.</span>
+
+        <div id="counter-tile">
+            <span class="label">CLICKS</span>
+            <span id="counter-value">0</span>
+        </div>
+
+        <span id="diag">Diagnostic line; replace from script via UI.SetText.</span>
+
+        <div id="actions">
+            <button id="bump">+1</button>
+            <button id="reset" class="secondary">Reset</button>
+            <button id="toggle-debugger" class="secondary">Toggle debugger</button>
+            <button id="close" class="secondary">Close menu</button>
+        </div>
+
+        <span id="hint">
+            Try <code>UI.SetText(path, "diag", "...")</code> from a script to mutate the diag line live.
+        </span>
+    </div>
+</body>
+</rml>

@@ -61,11 +61,16 @@ bool ProjectSphereClip(float3 C, float R, float ZNear, float P00, float P11, out
     float2 minY = float2(ty * cy.x - R * cy.y,  R * cy.x + ty * cy.y);
     float2 maxY = float2(ty * cy.x + R * cy.y, -R * cy.x + ty * cy.y);
 
+    float2 xPair = float2(minX.x / minX.y, maxX.x / maxX.y) * P00;
+    float2 yPair = float2(minY.x / minY.y, maxY.x / maxY.y) * P11;
+
+    // P11 is negative (Vulkan +Y-down projection), which inverts the order of
+    // the y-axis pair. Sort so callers can always assume xy = min, zw = max.
     ClipAABB = float4(
-        (minX.x / minX.y) * P00,
-        (minY.x / minY.y) * P11,
-        (maxX.x / maxX.y) * P00,
-        (maxY.x / maxY.y) * P11
+        min(xPair.x, xPair.y),
+        min(yPair.x, yPair.y),
+        max(xPair.x, xPair.y),
+        max(yPair.x, yPair.y)
     );
 
     return true;
@@ -98,7 +103,8 @@ bool IsHiZOccluded(float3 CenterWS, float RadiusWS)
         return false;
     }
 
-    // Clip [-1,1] -> Vulkan UV [0,1].
+    // Clip [-1,1] -> Vulkan UV [0,1]. The camera projection bakes Vulkan
+    // +Y-down NDC, so this is a direct mapping with no per-axis swap.
     float4 UvAABB = saturate(ClipAABB * 0.5 + 0.5);
 
     float Width  = (UvAABB.z - UvAABB.x) * uSceneData.CullData.PyramidWidth;

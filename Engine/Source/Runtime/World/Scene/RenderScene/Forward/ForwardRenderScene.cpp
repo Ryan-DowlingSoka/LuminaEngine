@@ -89,14 +89,16 @@ namespace Lumina
         SwapchainResizedHandle = FRenderManager::OnSwapchainResized.AddMember(this, &FForwardRenderScene::SwapchainResized);
         
         #if USING(WITH_EDITOR)
-        NamedImages[(int)ENamedImage::PointLightIcon]       = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/PointLight.png", true);  
-        NamedImages[(int)ENamedImage::DirectionalLightIcon] = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/SkyLight.png", true);  
-        NamedImages[(int)ENamedImage::SpotLightIcon]        = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/SpotLight.png", true);  
-        NamedImages[(int)ENamedImage::CameraIcon]           = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/CameraIcon.png", true);  
-        NamedImages[(int)ENamedImage::CharacterIcon]        = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/PersonIcon.png", true);  
+        NamedImages[(int)ENamedImage::PointLightIcon]       = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/PointLight.png", false);  
+        NamedImages[(int)ENamedImage::DirectionalLightIcon] = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/DirectionalLight.png", false);  
+        NamedImages[(int)ENamedImage::SkyLightIcon]         = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/SkyLight.png", false);  
+        NamedImages[(int)ENamedImage::SpotLightIcon]        = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/SpotLight.png", false);  
+        NamedImages[(int)ENamedImage::CameraIcon]           = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/CameraIcon.png", false);  
+        NamedImages[(int)ENamedImage::CharacterIcon]        = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/PersonIcon.png", false);  
 
         GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::PointLightIcon]);
         GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::DirectionalLightIcon]);
+        GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::SkyLightIcon]);
         GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::SpotLightIcon]);
         GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::CameraIcon]);
         GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::CharacterIcon]);
@@ -112,6 +114,7 @@ namespace Lumina
         #if USING(WITH_EDITOR)
         GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::PointLightIcon]);
         GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::DirectionalLightIcon]);
+        GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::SkyLightIcon]);
         GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::SpotLightIcon]);
         GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::CameraIcon]);
         GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::CharacterIcon]);
@@ -480,7 +483,7 @@ namespace Lumina
                             Billboard.TextureIndex          = GetNamedImage(ENamedImage::CameraIcon)->GetTextureCacheIndex();
                             Billboard.ColorPack             = PackColor(FColor::White);
                             Billboard.Position              = Transform.WorldTransform.Location;
-                            Billboard.Size                  = 0.35f;
+                            Billboard.Size                  = 0.15f;
                             Billboard.EntityID              = entt::to_integral(Entity);
                         });
                     }
@@ -494,7 +497,7 @@ namespace Lumina
                         Billboard.TextureIndex          = GetNamedImage(ENamedImage::CharacterIcon)->GetTextureCacheIndex();
                         Billboard.ColorPack             = PackColor(FColor::White);
                         Billboard.Position              = Transform.WorldTransform.Location;
-                        Billboard.Size                  = 0.35f;
+                        Billboard.Size                  = 0.15f;
                         Billboard.EntityID              = entt::to_integral(Entity);
                     }
                 });
@@ -507,7 +510,7 @@ namespace Lumina
                         Billboard.TextureIndex          = GetNamedImage(ENamedImage::PointLightIcon)->GetTextureCacheIndex();
                         Billboard.ColorPack             = PackColor({PointLightComponent.LightColor, 1.0f});
                         Billboard.Position              = TransformComponent.WorldTransform.Location;
-                        Billboard.Size                  = 0.35f;
+                        Billboard.Size                  = 0.15f;
                         Billboard.EntityID              = entt::to_integral(Entity);
                     }
                 });
@@ -517,10 +520,38 @@ namespace Lumina
                     if (!World->IsGameWorld())
                     {
                         FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                        Billboard.TextureIndex          = GetNamedImage(ENamedImage::PointLightIcon)->GetTextureCacheIndex();
+                        Billboard.TextureIndex          = GetNamedImage(ENamedImage::SpotLightIcon)->GetTextureCacheIndex();
                         Billboard.ColorPack             = PackColor({SpotLightComponent.LightColor, 1.0f});
                         Billboard.Position              = Transform.WorldTransform.Location;
-                        Billboard.Size                  = 0.35f;
+                        Billboard.Size                  = 0.15f;
+                        Billboard.EntityID              = entt::to_integral(Entity);
+                    }
+                });
+                
+                DirectionalView.each([&] (entt::entity Entity, SDirectionalLightComponent& DirectionalLight)
+                {
+                    if (!World->IsGameWorld())
+                    {
+                        auto& Transform                 = Registry.get<STransformComponent>(Entity);
+                        FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
+                        Billboard.TextureIndex          = GetNamedImage(ENamedImage::DirectionalLightIcon)->GetTextureCacheIndex();
+                        Billboard.ColorPack             = PackColor({DirectionalLight.Color, 1.0f});
+                        Billboard.Position              = Transform.WorldTransform.Location;
+                        Billboard.Size                  = 0.15f;
+                        Billboard.EntityID              = entt::to_integral(Entity);
+                    }
+                });
+                
+                EnvironmentView.each([&] (entt::entity Entity, SEnvironmentComponent& Environment)
+                {
+                    if (!World->IsGameWorld())
+                    {
+                        auto& Transform                 = Registry.get<STransformComponent>(Entity);
+                        FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
+                        Billboard.TextureIndex          = GetNamedImage(ENamedImage::SkyLightIcon)->GetTextureCacheIndex();
+                        Billboard.ColorPack             = PackColor({1.0, 1.0, 1.0, 1.0f});
+                        Billboard.Position              = Transform.WorldTransform.Location;
+                        Billboard.Size                  = 0.15f;
                         Billboard.EntityID              = entt::to_integral(Entity);
                     }
                 });
@@ -2346,11 +2377,14 @@ namespace Lumina
 
             // Standard-Z [0,1] LH ortho. Near plane is at the eye (0), far at the
             // far face of the slab (OrthoRange). The full sphere fits inside.
-            const glm::mat4 LightProjection = glm::ortho(
+            // Y-flip bakes Vulkan +Y-down NDC into the matrix so the cascade
+            // shader samples with the same NDC->UV math as everything else.
+            glm::mat4 LightProjection = glm::ortho(
                 -Radius, +Radius,
                 -Radius, +Radius,
                 0.0f, OrthoRange);
-        
+            LightProjection[1][1] *= -1.0f;
+
             const glm::mat4 CascadeVP = LightProjection * LightView;
             if (CascadeShadowData)
             {

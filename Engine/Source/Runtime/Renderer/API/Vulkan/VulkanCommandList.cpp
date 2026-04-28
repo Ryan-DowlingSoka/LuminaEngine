@@ -1299,26 +1299,18 @@ namespace Lumina
 
     VkViewport FVulkanCommandList::ToVkViewport(float MinX, float MinY, float MinZ, float MaxX, float MaxY, float MaxZ)
     {
-        
+        // Direct viewport mapping. The Vulkan +Y-down NDC convention is baked
+        // into projection matrices at construction time (see
+        // BuildVulkanReverseZPerspective in ViewVolume.cpp), the same way
+        // NVRHI's Vulkan backend handles it. Do NOT use a negative-height
+        // viewport here -- it would Y-flip a second time and undo the fix.
         VkViewport Viewport = {};
-#define FLIP 0
-
-#if FLIP
         Viewport.x        = MinX;
-        Viewport.y        = MaxY;
+        Viewport.y        = MinY;
         Viewport.width    = MaxX - MinX;
-        Viewport.height   = -(MaxY - MinY);
+        Viewport.height   = MaxY - MinY;
         Viewport.minDepth = MinZ;
         Viewport.maxDepth = MaxZ;
-#else
-        Viewport.x = MinX;
-        Viewport.y = MinY;
-        Viewport.width = MaxX - MinX;
-        Viewport.height = MaxY - MinY;
-        Viewport.minDepth = MinZ;
-        Viewport.maxDepth = MaxZ;
-#endif
-
         return Viewport;
     }
     

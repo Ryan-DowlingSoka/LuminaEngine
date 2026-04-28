@@ -10,7 +10,10 @@
 #include "Core/Utils/TimedEvent.h"
 #include "Events/KeyCodes.h"
 #include "FileSystem/FileSystem.h"
+#include "Input/InputActionMap.h"
+#include "Input/InputContext.h"
 #include "Input/InputProcessor.h"
+#include "Input/InputViewport.h"
 #include "Luau/include/lua.h"
 #include "Memory/SmartPtr.h"
 #include "Paths/Paths.h"
@@ -319,13 +322,70 @@ namespace Lumina::Lua
                          FString(Mode.data(), Mode.size()).c_str());
                 return;
             }
-            GApp->GetEventProcessor().SetInputMode(Out);
+            FInputProcessor::Get().SetInputMode(Out);
             LOG_INFO("[Input] Mode -> {}", InputModeToString(Out));
         }>("SetMode");
         InputTable.SetFunction<[]() -> FString
         {
-            return FString(InputModeToString(GApp->GetEventProcessor().GetInputMode()));
+            return FString(InputModeToString(FInputProcessor::Get().GetInputMode()));
         }>("GetMode");
+
+        // Action queries resolve against the active viewport's FInputContext.
+        InputTable.SetFunction<[](FStringView Name) -> bool
+        {
+            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
+            if (V == nullptr) return false;
+            return FInputActionMap::Get().IsActionDown(FName(FString(Name.data(), Name.size()).c_str()), V->GetContext());
+        }>("IsActionDown");
+
+        InputTable.SetFunction<[](FStringView Name) -> bool
+        {
+            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
+            if (V == nullptr) return false;
+            return FInputActionMap::Get().IsActionPressed(FName(FString(Name.data(), Name.size()).c_str()), V->GetContext());
+        }>("IsActionPressed");
+
+        InputTable.SetFunction<[](FStringView Name) -> bool
+        {
+            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
+            if (V == nullptr) return false;
+            return FInputActionMap::Get().IsActionReleased(FName(FString(Name.data(), Name.size()).c_str()), V->GetContext());
+        }>("IsActionReleased");
+
+        InputTable.SetFunction<[](FStringView Name) -> float
+        {
+            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
+            if (V == nullptr) return 0.0f;
+            return FInputActionMap::Get().GetActionAxis(FName(FString(Name.data(), Name.size()).c_str()), V->GetContext());
+        }>("GetActionAxis");
+
+        // Returns an ID for UnbindAction. Scoped to whichever context is active at call time.
+        InputTable.SetFunction<[](FStringView Name, Lua::FRef Callback) -> uint64
+        {
+            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
+            if (V == nullptr) return uint64{0};
+            return V->GetContext().RegisterActionCallback(
+                FName(FString(Name.data(), Name.size()).c_str()),
+                FInputContext::EActionTrigger::Pressed,
+                std::move(Callback));
+        }>("OnActionPressed");
+
+        InputTable.SetFunction<[](FStringView Name, Lua::FRef Callback) -> uint64
+        {
+            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
+            if (V == nullptr) return uint64{0};
+            return V->GetContext().RegisterActionCallback(
+                FName(FString(Name.data(), Name.size()).c_str()),
+                FInputContext::EActionTrigger::Released,
+                std::move(Callback));
+        }>("OnActionReleased");
+
+        InputTable.SetFunction<[](uint64 Id)
+        {
+            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
+            if (V == nullptr) return;
+            V->GetContext().UnregisterActionCallback(Id);
+        }>("UnbindAction");
 
 
         AudioTable.SetFunction<[](FStringView File, glm::vec3 Location) { (void)GAudioContext->PlaySoundAtLocation(File, Location); }>("PlaySoundAtLocation");

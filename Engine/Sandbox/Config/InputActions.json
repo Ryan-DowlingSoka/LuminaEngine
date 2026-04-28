@@ -1,0 +1,67 @@
+{
+    "Input": {
+        "Actions": {
+            "Fire": {
+                "Bindings": [
+                    {
+                        "Button": "Left",
+                        "Type": "MouseButton"
+                    }
+                ]
+            },
+            "Jump": {
+                "Bindings": [
+                    {
+                        "Key": "Space",
+                        "Type": "Key"
+                    }
+                ]
+            },
+            "MoveX": {
+                "Bindings": [
+                    {
+                        "Negative": "A",
+                        "Positive": "D",
+                        "Type": "Axis1D"
+                    }
+                ]
+            },
+            "MoveY": {
+                "Bindings": [
+                    {
+                        "Negative": "S",
+                        "Positive": "W",
+                        "Type": "Axis1D"
+                    }
+                ]
+            },
+            "Pause": {
+                "Bindings": [
+                    {
+                        "Key": "F1",
+                        "Type": "Key"
+                    }
+                ],
+                "RunsInUI": true
+            },
+            "Save": {
+                "Bindings": [
+                    {
+                        "Ctrl": true,
+                        "Key": "S",
+                        "Type": "Key"
+                    }
+                ],
+                "RunsInUI": true
+            },
+            "Sprint": {
+                "Bindings": [
+                    {
+                        "Key": "LeftShift",
+                        "Type": "Key"
+                    }
+                ]
+            }
+        }
+    }
+}

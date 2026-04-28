@@ -183,6 +183,7 @@ namespace Lumina
             #if USING(WITH_EDITOR)
             PointLightIcon,
             DirectionalLightIcon,
+            SkyLightIcon,
             SpotLightIcon,
             CameraIcon,
             CharacterIcon,

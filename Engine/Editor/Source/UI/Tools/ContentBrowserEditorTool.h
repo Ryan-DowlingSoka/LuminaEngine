@@ -2,7 +2,6 @@
 #include "EditorTool.h"
 #include "Assets/AssetRegistry/AssetData.h"
 #include "Core/LuminaCommonTypes.h"
-#include "Core/Object/Package/Package.h"
 #include "FileSystem/FileSystem.h"
 #include "Paths/Paths.h"
 #include "Platform/Filesystem/DirectoryWatcher.h"
@@ -68,7 +67,9 @@ namespace Lumina
 
             void DrawTooltip() const override
             {
-                ImGuiX::Text("{}", FileInfo.Name);
+                ImGuiX::Text("Name: {}", FileInfo.Name);
+                ImGuiX::Text("Virtual Path: {}", FileInfo.VirtualPath);
+                ImGuiX::Text("Source Path: {}", FileInfo.PathSource);
             }
             
             NODISCARD bool HasContextMenu() override { return true; }
@@ -128,12 +129,9 @@ namespace Lumina
         
         void DrawDirectoryBrowser(bool bIsFocused, ImVec2 Size);
         void DrawContentBrowser(bool bIsFocused, ImVec2 Size);
-
-        void DrawDirectoryContextMenu(FContentBrowserTileViewItem* ContentItem);
-        void DrawLuaScriptContextMenu(FContentBrowserTileViewItem* ContentItem);
+        
         void DrawAssetContextMenu(FContentBrowserTileViewItem* ContentItem);
         
-        void DrawScriptsDirectoryContextMenu();
         void DrawContentDirectoryContextMenu();
         
         float                       ContentBrowserTileSize = 84.0f;

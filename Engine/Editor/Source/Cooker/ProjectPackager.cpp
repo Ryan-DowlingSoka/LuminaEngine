@@ -33,22 +33,45 @@ namespace Lumina
             return !Ec;
         }
 
-        // Pulls every file under /Game/Scripts/ in the VFS and writes a loose
-        // mirror under <OutDir>/Game/Scripts/. Returns the number of files
+        bool EndsWithCI(FStringView Vp, FStringView Suffix)
+        {
+            if (Vp.size() < Suffix.size())
+            {
+                return false;
+            }
+            FStringView Tail = Vp.substr(Vp.size() - Suffix.size());
+            for (size_t i = 0; i < Suffix.size(); ++i)
+            {
+                char a = Tail[i]; char b = Suffix[i];
+                if (a >= 'A' && a <= 'Z') a = char(a - 'A' + 'a');
+                if (a != b) return false;
+            }
+            return true;
+        }
+
+        // Pulls every non-.lasset file under /Game/ in the VFS and writes a
+        // loose mirror under <OutDir>/Game/. Returns the number of files
         // copied. Used when bExtractScriptsAsLooseFiles is set so users can
-        // tweak script behavior in the shipped build without re-cooking.
+        // tweak game logic / UI in the shipped build without re-cooking.
+        // .lasset files always live in the PAK; only loose-friendly content
+        // (.luau, .rml, JSON, etc) is mirrored.
         size_t CopyLooseScripts(const FString& OutDir, const TFunction<void(FStringView)>& LogFunc)
         {
-            const std::filesystem::path ScriptsRoot =
-                std::filesystem::path(OutDir.c_str()) / "Game" / "Scripts";
+            const std::filesystem::path ScriptsRoot = std::filesystem::path(OutDir.c_str()) / "Game";
 
             std::error_code Ec;
             std::filesystem::create_directories(ScriptsRoot, Ec);
 
             size_t Count = 0;
-            VFS::RecursiveDirectoryIterator("/Game/Scripts", [&](const VFS::FFileInfo& Info)
+            VFS::RecursiveDirectoryIterator("/Game", [&](const VFS::FFileInfo& Info)
             {
                 if (Info.IsDirectory())
+                {
+                    return;
+                }
+
+                FStringView Vp(Info.VirtualPath.c_str(), Info.VirtualPath.size());
+                if (EndsWithCI(Vp, ".lasset"))
                 {
                     return;
                 }
@@ -60,8 +83,7 @@ namespace Lumina
                 }
 
                 // Mirror the relative directory structure.
-                FStringView Vp(Info.VirtualPath.c_str(), Info.VirtualPath.size());
-                static constexpr FStringView Prefix = "/Game/Scripts/";
+                static constexpr FStringView Prefix = "/Game/";
                 if (Vp.size() <= Prefix.size())
                 {
                     return;
@@ -81,7 +103,7 @@ namespace Lumina
                 ++Count;
                 if (LogFunc)
                 {
-                    LogFunc(FString().sprintf("  + Game/Scripts/%.*s",
+                    LogFunc(FString().sprintf("  + Game/%.*s",
                         (int)Relative.size(), Relative.data()).c_str());
                 }
             });
@@ -265,11 +287,7 @@ namespace Lumina
         const std::wstring ArgsW(Args.begin(), Args.end());
         const std::wstring CwdW(Paths::GetEngineInstallDirectory().c_str(),
             Paths::GetEngineInstallDirectory().c_str() + Paths::GetEngineInstallDirectory().size());
-
-        // Stream every MSBuild line through LogFunc so the editor can render
-        // realtime build output. The callback fires on whichever thread is
-        // running this function; the caller's LogFunc must handle that
-        // (e.g. a mutex-protected push into a UI-thread-drained queue).
+        
         const int ExitCode = Platform::RunProcessAndWaitCapture(
             MSBuildW.c_str(), ArgsW.c_str(), CwdW.c_str(),
             [&LogFunc](FStringView Line)
@@ -395,12 +413,10 @@ namespace Lumina
 
         const FString ProjectName(GEngine->GetProjectName().data(), GEngine->GetProjectName().size());
 
-        // 1) Resolve output directory. Default: <ProjectDir>/Build/<ProjectName>/.
         FString OutDir = Options.OutputDirectory;
         if (OutDir.empty())
         {
-            OutDir = FString(GEngine->GetProjectPath().data(), GEngine->GetProjectPath().size())
-                + "/Build/" + ProjectName;
+            OutDir = FString(GEngine->GetProjectPath().data(), GEngine->GetProjectPath().size()) + "/Build/" + ProjectName;
         }
 
         std::error_code Ec;
@@ -420,6 +436,8 @@ namespace Lumina
 
         FCookOptions CookOpts;
         CookOpts.bExtractScriptsAsLooseFiles = Options.bExtractScriptsAsLooseFiles;
+        CookOpts.ExtraFiles                  = Options.ExtraFiles;
+        CookOpts.ExtraDirectories            = Options.ExtraDirectories;
 
         const FCookResult Cook = FAssetCooker::Cook(PakPath, CookOpts, LogFunc);
         if (!Cook.bSuccess)
@@ -427,19 +445,17 @@ namespace Lumina
             Result.ErrorMessage = FString("Cook failed: ") + Cook.ErrorMessage;
             return Result;
         }
+        
         Result.PakPath = PakPath;
-        Log(LogFunc, FString().sprintf("Cook OK: %zu assets, %zu extras, %zu bytes",
-            Cook.NumAssetsCooked, Cook.NumExtraFiles, Cook.TotalBytes).c_str());
+        Log(LogFunc, FString().sprintf("Cook OK: %zu assets, %zu extras, %zu bytes", Cook.NumAssetsCooked, Cook.NumExtraFiles, Cook.TotalBytes).c_str());
 
-        // 2.5) Extract loose scripts mirror, if requested.
         if (Options.bExtractScriptsAsLooseFiles)
         {
-            Log(LogFunc, "Extracting loose scripts under Game/Scripts/...");
+            Log(LogFunc, "Extracting loose /Game files...");
             const size_t Extracted = CopyLooseScripts(OutDir, LogFunc);
             Log(LogFunc, FString().sprintf("Extracted %zu loose script files.", Extracted).c_str());
         }
 
-        // 3) MSBuild + binary copy. Delegated to the worker-thread-safe variant.
         if (Options.bBuildExecutable)
         {
             FPackageBuildOptions LocalOpts = Options;

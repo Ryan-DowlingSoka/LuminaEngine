@@ -8,12 +8,20 @@ namespace Lumina
 {
     struct FCookOptions
     {
-        // When true, Lua scripts under /Game/Scripts/ are NOT bundled into the
-        // PAK. The packager copies them as loose files next to the cooked exe
-        // instead, and the cooked runtime mounts that folder so loads find
-        // them. Useful for shipping moddable / tweakable game logic without
-        // requiring users to re-cook.
+        // When true, every non-.lasset file under /Game/ is NOT bundled into
+        // the PAK. The packager copies them as loose files next to the cooked
+        // exe instead, and the cooked runtime mounts that folder so loads find
+        // them. Useful for shipping moddable / tweakable game logic and UI
+        // without requiring users to re-cook.
         bool bExtractScriptsAsLooseFiles = false;
+
+        // Absolute paths to additional files to embed in the PAK. Each file
+        // lands at /Extras/<filename> in the cooked VFS.
+        TVector<FString> ExtraFiles;
+
+        // Absolute paths to additional directories to embed in the PAK,
+        // walked recursively. Files land at /Extras/<dirname>/<relative path>.
+        TVector<FString> ExtraDirectories;
     };
 
     struct FCookResult

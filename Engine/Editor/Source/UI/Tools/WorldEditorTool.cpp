@@ -19,7 +19,9 @@
 #include "EASTL/sort.h"
 #include "glm/gtc/type_ptr.hpp"
 #include "glm/gtx/matrix_decompose.hpp"
+#include "Input/InputContext.h"
 #include "Input/InputProcessor.h"
+#include "Input/InputViewport.h"
 #include "Memory/SmartPtr.h"
 #include "Tools/ComponentVisualizers/ComponentVisualizer.h"
 #include "Tools/Dialogs/Dialogs.h"
@@ -575,6 +577,8 @@ namespace Lumina
 
         glm::mat4 ViewMatrix = CameraComponent.GetViewMatrix();
         glm::mat4 ProjectionMatrix = CameraComponent.GetProjectionMatrix();
+        // Camera projection bakes Vulkan +Y-down NDC; ImGuizmo expects the
+        // GL math convention, so undo the flip on the matrix we hand it.
         ProjectionMatrix[1][1] *= -1.0f;
 
         const ImVec2 ViewportOrigin = ImGui::GetCursorScreenPos();
@@ -2303,7 +2307,8 @@ namespace Lumina
             World->SetActive(false);
             ProxyWorld = World;
 
-            World = GWorldManager->StartPIE(ProxyWorld, EWorldType::Game, ENetMode::Standalone);
+            // PIE world is owned by FWorldManager; RebindToWorld is a pointer-only swap.
+            RebindToWorld(GWorldManager->StartPIE(ProxyWorld, EWorldType::Game, ENetMode::Standalone));
 
             WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
 
@@ -2333,8 +2338,25 @@ namespace Lumina
 
             RebindRegistryObservers();
 
-            FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
-            GApp->GetEventProcessor().SetInputMode(EInputMode::Game);
+            if (InputViewport)
+            {
+                // Activate the editor viewport before adjusting mouse mode so
+                // FInputProcessor routes the change (and clears ImGui's
+                // NoMouse flag) against the right context.
+                FInputViewportRegistry::Get().SetActiveViewport(InputViewport.get());
+
+                // Drop Lua-registered action callbacks left over from the PIE
+                // session; without this they keep firing against the editor's
+                // input state every frame.
+                InputViewport->GetContext().ClearActionCallbacks();
+
+                InputViewport->GetContext().SetInputMode(EInputMode::Game);
+
+                // Go through FInputProcessor so ImGuiConfigFlags_NoMouse is
+                // cleared — setting the context field directly would leave
+                // ImGui ignoring the mouse, breaking editor clicks/hover.
+                FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
+            }
         }
     }
 
@@ -2355,7 +2377,7 @@ namespace Lumina
 
             World->SetActive(false);
             ProxyWorld = World;
-            World = GWorldManager->StartPIE(ProxyWorld, EWorldType::Simulation, ENetMode::Standalone);
+            RebindToWorld(GWorldManager->StartPIE(ProxyWorld, EWorldType::Simulation, ENetMode::Standalone));
 
             ProxyWorld->DestroyEntity(EditorEntity);
             EditorEntity = entt::null;
@@ -2406,8 +2428,13 @@ namespace Lumina
             OutlinerListView.ClearTree();
             OutlinerListView.MarkTreeDirty();
 
-            FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
-            GApp->GetEventProcessor().SetInputMode(EInputMode::Game);
+            if (InputViewport)
+            {
+                FInputViewportRegistry::Get().SetActiveViewport(InputViewport.get());
+                InputViewport->GetContext().ClearActionCallbacks();
+                InputViewport->GetContext().SetInputMode(EInputMode::Game);
+                FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
+            }
         }
     }
 

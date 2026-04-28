@@ -27,7 +27,8 @@ FragmentOutput FragmentMain(FragmentInput Input)
     }
 
     FragmentOutput Output;
-    Output.Color  = Texture * float4(Input.ColorTint, 1.0f);
+
+    Output.Color  = Texture * float4(Input.ColorTint, 1.0);
     Output.Picker = Input.EntityID;
     return Output;
 }

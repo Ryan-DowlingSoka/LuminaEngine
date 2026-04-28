@@ -287,7 +287,7 @@ namespace Lumina
 
                 if (ImGui::BeginChild("##OptList", ComboDropDownSize, false, ImGuiChildFlags_NavFlattened))
                 {
-                    VFS::RecursiveDirectoryIterator("/Game/Scripts", [&](const VFS::FFileInfo& FileInfo)
+                    VFS::RecursiveDirectoryIterator("/Game", [&](const VFS::FFileInfo& FileInfo)
                     {
                         if (!FileInfo.IsLua())
                         {

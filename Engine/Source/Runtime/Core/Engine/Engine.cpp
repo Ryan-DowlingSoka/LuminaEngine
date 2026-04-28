@@ -14,6 +14,8 @@
 #include "encoder/basisu_enc.h"
 #include "FileSystem/FileSystem.h"
 #include "FileSystem/PakFileSystem.h"
+#include "Input/InputActionMap.h"
+#include "Input/InputViewport.h"
 #include "Pak/PakArchive.h"
 #include "Platform/Process/PlatformProcess.h"
 #include "TaskSystem/TaskSystem.h"
@@ -82,14 +84,18 @@ namespace Lumina
         #if USING(WITH_EDITOR)
         DeveloperToolUI = CreateDevelopmentTools();
         DeveloperToolUI->Initialize(UpdateContext);
-        GApp->GetEventProcessor().RegisterEventHandler(DeveloperToolUI);
+        // Below the viewport router, so panel clicks reach the world first.
+        GApp->GetEventProcessor().RegisterEventHandler(DeveloperToolUI, (int32)EInputLayer::EditorChrome);
         #endif
         
-        FCoreDelegates::OnPostEngineInit.BroadcastAndClear();
-
-        // RmlUi needs CompileEngineShaders done and the engine viewport alive;
-        // both are true by the time OnPostEngineInit has fired.
+        // RmlUi needs CompileEngineShaders done and the engine viewport alive
+        // (both true by this point), AND it must be ready before
+        // OnPostEngineInit fires; in packaged builds that broadcast triggers
+        // LoadCookedRuntime, which loads worlds and runs scripts that may
+        // call UI.LoadDocument straight away.
         RmlUi::Initialise();
+
+        FCoreDelegates::OnPostEngineInit.BroadcastAndClear();
 
         return true;
     }
@@ -357,9 +363,8 @@ namespace Lumina
         ProjectName                     = Data["Name"].get<std::string>().c_str();
         
         FFixedString ConfigDir          = Paths::Combine(ProjectPath, "Config");
-        FFixedString GameDir            = Paths::Combine(ProjectPath, "Game");
+        FFixedString GameDir            = Paths::Combine(ProjectPath, "Game", "Content");
         FFixedString BinariesDirectory  = Paths::Combine(ProjectPath, "Binaries");
-        FFixedString GameScriptsDir     = Paths::Combine(ProjectPath, "Game", "Scripts");
         
         VFS::Mount<VFS::FNativeFileSystem>("/Game", GameDir);
         VFS::Mount<VFS::FNativeFileSystem>("/Config", ConfigDir);
@@ -419,9 +424,12 @@ namespace Lumina
         }
         
         FAssetRegistry::Get().RunInitialDiscovery();
-        
+
         FString ModuleFile = GConfig->Get<std::string>("Project.LuaModuleFile").c_str();
         LoadProjectScript(ModuleFile);
+
+        // Must run after GConfig->LoadPath but before any OnReady script body.
+        FInputActionMap::Get().LoadFromConfig();
 
         CreateGameInstance();
         LoadStartupMap();
@@ -472,6 +480,11 @@ namespace Lumina
         }
 
         GWorldManager->CreateWorldContext(StartupWorld, EWorldType::Game, ENetMode::Standalone);
+
+        if (FInputViewport* Primary = GApp ? GApp->GetPrimaryViewport() : nullptr)
+        {
+            Primary->SetWorld(StartupWorld);
+        }
     }
 
     void FEngine::Travel(FStringView WorldPath)
@@ -577,6 +590,11 @@ namespace Lumina
             NewContext->GameInstance = SavedInstance;
         }
 
+        if (FInputViewport* Primary = GApp ? GApp->GetPrimaryViewport() : nullptr)
+        {
+            Primary->SetWorld(NewWorld);
+        }
+
         // Subscribers compare against OldWorld for identity. CObject memory
         // is still alive (only TeardownWorld has run); safe to compare but
         // state must not be inspected.
@@ -675,6 +693,8 @@ namespace Lumina
             LoadProjectScript(ScriptPath);
         }
 
+        FInputActionMap::Get().LoadFromConfig();
+
         // Project DLL — the cooker stashes "Project.Name" in config so we can
         // resolve "<ProjectName>-<Config>.dll" sitting next to the exe. We
         // skip silently if it's missing; bare projects without a C++ module
@@ -742,27 +762,6 @@ namespace Lumina
         }
     }
 
-    FFixedString FEngine::GetProjectScriptDirectory() const
-    {
-        if (!HasLoadedProject())
-        {
-            return {};
-        }
-        
-        return Paths::Combine(ProjectPath, "Game", "Scripts");
-    }
-
-    FFixedString FEngine::GetProjectGameDirectory() const
-    {
-        if (!HasLoadedProject())
-        {
-            return {};
-        }
-        
-        return Paths::Combine(ProjectPath, "Game");
-
-    }
-
     FFixedString FEngine::GetProjectContentDirectory() const
     {
         if (!HasLoadedProject())
@@ -771,5 +770,6 @@ namespace Lumina
         }
         
         return Paths::Combine(ProjectPath, "Game", "Content");
+
     }
 }

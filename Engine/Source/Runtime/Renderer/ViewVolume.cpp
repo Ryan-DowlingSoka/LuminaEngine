@@ -33,10 +33,24 @@ namespace Lumina
         SetView(glm::vec3(0.0), ForwardAxis, UpAxis);
     }
 
+    // Single source of truth for projection construction. The Y-flip bakes the
+    // Vulkan +Y-down NDC convention into the matrix itself (same approach
+    // NVRHI takes for its Vulkan backend), so NDC->UV is the trivial
+    // `xy * 0.5 + 0.5` everywhere in shader code and the same engine code
+    // path will Just Work when a DX12 backend is added (DX12 already uses
+    // +Y-down NDC, no flip needed there). Reverse-Z lives in the Far/Near
+    // argument order to glm::perspective.
+    static glm::mat4 BuildVulkanReverseZPerspective(float FovDegrees, float Aspect, float Near, float Far)
+    {
+        glm::mat4 P = glm::perspective(glm::radians(FovDegrees), Aspect, Far, Near);
+        P[1][1] *= -1.0f;
+        return P;
+    }
+
     FViewVolume& FViewVolume::SetNear(float InNear)
     {
         Near = InNear;
-        ProjectionMatrix = glm::perspective(glm::radians(FOV), AspectRatio, Far, Near);
+        ProjectionMatrix = BuildVulkanReverseZPerspective(FOV, AspectRatio, Near, Far);
         UpdateMatrices();
 
         return *this;
@@ -45,7 +59,7 @@ namespace Lumina
     FViewVolume& FViewVolume::SetFar(float InFar)
     {
         Far = InFar;
-        ProjectionMatrix = glm::perspective(glm::radians(FOV), AspectRatio, Far, Near);
+        ProjectionMatrix = BuildVulkanReverseZPerspective(FOV, AspectRatio, Near, Far);
         UpdateMatrices();
 
         return *this;
@@ -59,14 +73,14 @@ namespace Lumina
 
         return *this;
     }
-    
+
     FViewVolume& FViewVolume::SetView(const glm::vec3& Position, const glm::vec3& ViewDirection, const glm::vec3& UpDirection)
     {
         ViewPosition    = Position;
         UpVector        = glm::normalize(UpDirection);
         ForwardVector   = glm::normalize(ViewDirection);
         RightVector     = glm::normalize(glm::cross(UpVector, ForwardVector));
-        UpVector        = glm::normalize(glm::cross(RightVector, ForwardVector));
+        UpVector        = glm::normalize(glm::cross(ForwardVector, RightVector));
 
         UpdateMatrices();
 
@@ -79,7 +93,7 @@ namespace Lumina
         FOV = fov;
         AspectRatio = aspect;
 
-        ProjectionMatrix = glm::perspective(glm::radians(FOV), AspectRatio, Far, Near);
+        ProjectionMatrix = BuildVulkanReverseZPerspective(FOV, AspectRatio, Near, Far);
         UpdateMatrices();
 
         return *this;
@@ -90,16 +104,16 @@ namespace Lumina
     {
         AspectRatio = InAspect;
 
-        ProjectionMatrix = glm::perspective(glm::radians(FOV), AspectRatio, Far, Near);
+        ProjectionMatrix = BuildVulkanReverseZPerspective(FOV, AspectRatio, Near, Far);
         UpdateMatrices();
 
         return *this;
     }
-    
+
     FViewVolume& FViewVolume::SetFOV(float InFOV)
     {
         FOV = InFOV;
-        ProjectionMatrix = glm::perspective(glm::radians(FOV), AspectRatio, Far, Near);
+        ProjectionMatrix = BuildVulkanReverseZPerspective(FOV, AspectRatio, Near, Far);
         UpdateMatrices();
 
         return *this;
@@ -121,8 +135,12 @@ namespace Lumina
 
     glm::mat4 FViewVolume::ToReverseDepthViewProjectionMatrix() const
     {
-        glm::mat4 ReverseProjectionMatrix = glm::perspective(glm::radians(FOV), AspectRatio, Near, Far);
-        return ReverseProjectionMatrix * ViewMatrix;
+        // Standard-Z (Near, Far -- not the reverse-Z swapped order used for the
+        // camera) projection used by shadow face VPs. Same Vulkan Y-flip as the
+        // camera so shadow-map sampling uses the same NDC->UV math.
+        glm::mat4 P = glm::perspective(glm::radians(FOV), AspectRatio, Near, Far);
+        P[1][1] *= -1.0f;
+        return P * ViewMatrix;
     }
 
     FFrustum FViewVolume::GetFrustum() const

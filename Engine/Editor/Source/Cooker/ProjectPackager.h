@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Containers/Array.h"
 #include "Containers/Function.h"
 #include "Containers/String.h"
 
@@ -32,6 +33,11 @@ namespace Lumina
 
         // Absolute path to MSBuild.exe. Empty = use the saved default.
         FString MSBuildPath;
+
+        // Manually-included content. Files / directories are passed through
+        // to FCookOptions and embedded in the PAK under /Extras/.
+        TVector<FString> ExtraFiles;
+        TVector<FString> ExtraDirectories;
     };
 
     /**
