@@ -95,6 +95,7 @@
 #include "Tools/AssetEditors/MeshEditor/SkeletonEditorTool.h"
 #include "Tools/AssetEditors/ParticleSystemEditor/ParticleSystemEditorTool.h"
 #include "Tools/AssetEditors/PrefabEditor/PrefabEditorTool.h"
+#include "Tools/AssetEditors/LuaEditor/LuaEditorTool.h"
 #include "Tools/AssetEditors/RmlUiEditor/RmlUiEditorTool.h"
 #include "Tools/AssetEditors/TextureEditor/TextureEditorTool.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
@@ -556,10 +557,23 @@ namespace Lumina
 
         const FStringView Ext = VFS::Extension(VirtualPath);
 
+        // Lua scripts can be routed to the platform editor via a config toggle.
+        // Default is the in-engine FLuaEditorTool.
+        const bool bIsLuaScript = (Ext == ".lua" || Ext == ".luau");
+        if (bIsLuaScript && GConfig->GetBool("Editor.LuaEditor.UsePlatformEditor"))
+        {
+            Platform::LaunchURL(StringUtils::ToWideString(VirtualPath.data()).c_str());
+            return;
+        }
+
         FEditorTool* NewTool = nullptr;
         if (Ext == ".rml")
         {
             NewTool = CreateTool<FRmlUiEditorTool>(this, VirtualPath);
+        }
+        else if (bIsLuaScript)
+        {
+            NewTool = CreateTool<FLuaEditorTool>(this, VirtualPath);
         }
 
         if (NewTool == nullptr)
@@ -829,7 +843,14 @@ namespace Lumina
         }
         
         const bool bIsLastFocusedTool = (LastActiveTool == Tool);
-        
+
+        // Ctrl+S routes to the focused tool only — checking IsKeyPressed inside
+        // each tool's Update fires for every open tool simultaneously.
+        if (bIsLastFocusedTool && ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_S, false))
+        {
+            Tool->OnSave();
+        }
+
         Tool->Update(UpdateContext);
         Tool->bViewportFocused = false;
         Tool->bViewportHovered = false;

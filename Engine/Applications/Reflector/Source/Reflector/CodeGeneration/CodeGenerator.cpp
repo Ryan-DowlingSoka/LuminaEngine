@@ -48,11 +48,6 @@ namespace Lumina::Reflection
             return WorkspacePath + R"(\Intermediates\Reflection\)" + Project.Name + R"(\ReflectionUnity.gen.cpp)";
         }
 
-        eastl::string MakeLuaDefsPath(const FReflectedProject& Project)
-        {
-            return Project.Path + R"(\Game\Scripts\Definitions\GlobalDefs.d.luau)";
-        }
-
         void WriteTextFile(const eastl::string& PathUtf8, const eastl::string& Contents)
         {
             std::filesystem::path OutputPath(PathUtf8.c_str());
@@ -76,43 +71,26 @@ namespace Lumina::Reflection
 
     void FCodeGenerator::GenerateCode()
     {
-        // Per-project accumulators:
-        //   - Unity cpp pools every dirty header's .generated.cpp include.
-        //   - Lua API string is the concatenated Luau type definitions.
+        // Per-project accumulator: unity cpp pools every dirty header's
+        // .generated.cpp include.
         eastl::hash_map<FReflectedProject*, eastl::string> UnityPerProject;
         eastl::hash_set<FReflectedProject*>                DirtyProjects;
-        eastl::string                                      LuaApiString;
 
+        for (const auto& [Header, _] : ReflectionDatabase->ReflectedTypes)
         {
-            FCodeWriter LuaWriter;
-
-            for (const auto& [Header, _] : ReflectionDatabase->ReflectedTypes)
+            eastl::string& Unity = UnityPerProject[Header->Project];
+            if (Unity.empty())
             {
-                eastl::string& Unity = UnityPerProject[Header->Project];
-                if (Unity.empty())
-                {
-                    Unity += "#include \"pch.h\"\n";
-                }
-                Unity += "#include \"" + Header->FileName + ".generated.cpp\"\n";
-
-                WriteLuaApiContent(LuaWriter, Header);
-
-                if (Header->bDirty)
-                {
-                    DirtyProjects.insert(Header->Project);
-                    GenerateHeaderFile(Header);
-                    GenerateSourceFile(Header);
-                }
+                Unity += "#include \"pch.h\"\n";
             }
+            Unity += "#include \"" + Header->FileName + ".generated.cpp\"\n";
 
-            LuaApiString = LuaWriter.Release();
-        }
-
-        // Write per-project Lua definition files. All projects share a single
-        // Lua API string today; that matches the previous behaviour.
-        for (auto& Project : Workspace->ReflectedProjects)
-        {
-            WriteLuaDefinitionsFile(Project.get(), LuaApiString);
+            if (Header->bDirty)
+            {
+                DirtyProjects.insert(Header->Project);
+                GenerateHeaderFile(Header);
+                GenerateSourceFile(Header);
+            }
         }
 
         for (auto* DirtyProject : DirtyProjects)
@@ -371,24 +349,8 @@ namespace Lumina::Reflection
         EmitStaticRegistration(Writer, FileID, Types);
     }
 
-    void FCodeGenerator::WriteLuaApiContent(FCodeWriter& Writer, FReflectedHeader* Header)
-    {
-        const auto& Types = ReflectionDatabase->ReflectedTypes.at(Header);
-        Writer.Line();
-        for (const auto& Type : Types)
-        {
-            Type->DefineLuaAPI(Writer);
-        }
-    }
-    
-
     void FCodeGenerator::WriteUnityBuildFile(FReflectedProject* Project, const eastl::string& Contents)
     {
         WriteTextFile(MakeUnityPath(Workspace->GetPath(), *Project), Contents);
-    }
-
-    void FCodeGenerator::WriteLuaDefinitionsFile(FReflectedProject* Project, const eastl::string& Contents)
-    {
-        WriteTextFile(MakeLuaDefsPath(*Project), Contents);
     }
 }

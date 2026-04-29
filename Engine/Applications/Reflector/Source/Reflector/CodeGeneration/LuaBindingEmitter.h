@@ -21,13 +21,4 @@ namespace Lumina::Reflection
         void EmitForStruct(FCodeWriter& Writer, const FReflectedStruct& Struct);
         void EmitForClass(FCodeWriter& Writer, const FReflectedClass& Class);
     }
-
-    /**
-     * Emits the `.d.luau` definition file contents for each reflected type.
-     */
-    namespace LuaApiEmitter
-    {
-        void EmitForEnum(FCodeWriter& Writer, const FReflectedEnum& Enum);
-        void EmitForStruct(FCodeWriter& Writer, const FReflectedStruct& Struct);
-    }
 }

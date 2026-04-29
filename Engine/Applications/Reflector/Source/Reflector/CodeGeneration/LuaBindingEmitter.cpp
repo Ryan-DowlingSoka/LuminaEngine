@@ -218,80 +218,6 @@ namespace Lumina::Reflection
             Writer.EndBlock();
         }
 
-        //---------------------------------------------------------------------
-        // Lua type name for a single field. "any" when we can't pin it down.
-        const char* LuaTypeForFlags(EPropertyTypeFlags Flags)
-        {
-            switch (Flags)
-            {
-            case EPropertyTypeFlags::Int8:
-            case EPropertyTypeFlags::Int16:
-            case EPropertyTypeFlags::Int32:
-            case EPropertyTypeFlags::Int64:
-            case EPropertyTypeFlags::UInt8:
-            case EPropertyTypeFlags::UInt16:
-            case EPropertyTypeFlags::UInt32:
-            case EPropertyTypeFlags::UInt64:
-            case EPropertyTypeFlags::Float:
-            case EPropertyTypeFlags::Double:
-            case EPropertyTypeFlags::Enum:
-                return "number";
-            case EPropertyTypeFlags::Bool:
-                return "boolean";
-            case EPropertyTypeFlags::Name:
-            case EPropertyTypeFlags::String:
-                return "string";
-            case EPropertyTypeFlags::Object:
-            case EPropertyTypeFlags::Class:
-            case EPropertyTypeFlags::Struct:
-                return nullptr; // caller should fall back to the stripped type name
-            case EPropertyTypeFlags::None:
-            case EPropertyTypeFlags::Vector:
-            case EPropertyTypeFlags::Optional:
-                return "any";
-            }
-            return "any";
-        }
-
-        eastl::string LuaTypeForField(const FFieldInfo& Field)
-        {
-            if (const char* Simple = LuaTypeForFlags(Field.Flags))
-            {
-                return Simple;
-            }
-            return ClangUtils::StripNamespace(Field.TypeName);
-        }
-
-        void AppendFunctionSignature(FCodeWriter& Writer, const FReflectedFunction& Function)
-        {
-            if (Function.Arguments.empty())
-            {
-                Writer.Linef("\tfunction %s(self): any", Function.Name.c_str());
-                return;
-            }
-
-            eastl::string Line = "\tfunction ";
-            Line += Function.Name;
-            Line += "(self";
-
-            for (const FFieldInfo& Arg : Function.Arguments)
-            {
-                Line += ", ";
-                Line += Arg.Name;
-                Line += ": ";
-                Line += LuaTypeForField(Arg);
-            }
-
-            Line += ")";
-
-            if (Function.Return.has_value())
-            {
-                Line += ": ";
-                Line += LuaTypeForField(*Function.Return);
-            }
-
-            Writer.Line(Line);
-        }
     }
 
     //-------------------------------------------------------------------------
@@ -322,37 +248,5 @@ namespace Lumina::Reflection
     void LuaBindingEmitter::EmitForClass(FCodeWriter& Writer, const FReflectedClass& Class)
     {
         EmitStructlikeBody(Writer, Class, /*bIsClass*/ true);
-    }
-
-    //-------------------------------------------------------------------------
-    // LuaApiEmitter
-    //-------------------------------------------------------------------------
-
-    void LuaApiEmitter::EmitForEnum(FCodeWriter& Writer, const FReflectedEnum& Enum)
-    {
-        Writer.Linef("declare %s: number", Enum.DisplayName.c_str());
-    }
-
-    void LuaApiEmitter::EmitForStruct(FCodeWriter& Writer, const FReflectedStruct& Struct)
-    {
-        Writer.Linef("declare %s: { }", Struct.DisplayName.c_str());
-        Writer.Linef("declare class %s", Struct.DisplayName.c_str());
-
-        for (const auto& Prop : Struct.Props)
-        {
-            if (Prop->bInner || Prop->GetLuaType().empty())
-            {
-                continue;
-            }
-
-            Writer.Linef("\t%s: %s", Prop->Name.c_str(), eastl::string(Prop->GetLuaType()).c_str());
-        }
-
-        for (const auto& Function : Struct.Functions)
-        {
-            AppendFunctionSignature(Writer, *Function);
-        }
-
-        Writer.Line("end");
     }
 }

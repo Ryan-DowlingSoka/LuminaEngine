@@ -215,6 +215,11 @@ namespace Lumina
         } SelectionBox;
         
         TObjectPtr<CWorld>                      ProxyWorld;
+
+        // Editor entity living in ProxyWorld. Tracked independently of EditorEntity
+        // (which always refers to the active World) so PIE/Simulate can restore the
+        // editor world cleanly even if Travel swaps the active world mid-session.
+        entt::entity                            ProxyEditorEntity = entt::null;
         
         ImGuiTextFilter                         AddEntityComponentFilter;
         FEntityListFilterState                  EntityFilterState;

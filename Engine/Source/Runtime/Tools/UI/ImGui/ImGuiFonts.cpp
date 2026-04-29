@@ -4,5 +4,5 @@
 
 namespace Lumina::ImGuiX::Font
 {
-    ImFont* GFonts[static_cast<int32>(EFont::NumFonts)] = { nullptr, nullptr, nullptr, nullptr };
+    ImFont* GFonts[static_cast<int32>(EFont::NumFonts)] = {};
 }

@@ -1523,7 +1523,7 @@ namespace Lumina
     {
 		if (!IsAssetEditorTool())
         {
-            ImGuiX::Notifications::NotifyError("Cannot save world: No associated package.");
+            ImGuiX::Notifications::NotifyWarning("Cannot save world: No associated package.");
             return;
         }
         
@@ -2633,8 +2633,14 @@ namespace Lumina
         DetailsEntity = entt::null;
         bDetailsDirty = true;
 
-        World = NewWorld;
         EditorEntity = entt::null;
+
+        // RebindToWorld updates both the World pointer and InputViewport so the
+        // tool's viewport stops dereferencing the torn-down world.
+        // ProxyWorld / ProxyEditorEntity are intentionally untouched: Travel
+        // only replaces the running game world, never the editor's source map,
+        // so SetWorldPlayInEditor(false) can still restore them on stop.
+        RebindToWorld(NewWorld);
 
         WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
 
@@ -2645,8 +2651,14 @@ namespace Lumina
 
         RebindRegistryObservers();
 
-        // ProxyWorld stays as-is so SetWorldPlayInEditor(false) can restore
-        // the editor onto its original map.
+        // Simulate mode owns the editor entity inside the active world (PIE
+        // mode does not), so the entity must be rebuilt against NewWorld; the
+        // simulate-exit path reads transform/camera from EditorEntity and
+        // would otherwise dereference entt::null.
+        if (bSimulatingWorld)
+        {
+            SetupWorldForTool();
+        }
     }
 
     void FWorldEditorTool::SetWorldPlayInEditor(bool bShouldPlay)
@@ -2667,9 +2679,11 @@ namespace Lumina
 
             World->SetActive(false);
             ProxyWorld = World;
+            ProxyEditorEntity = EditorEntity;
 
             // PIE world is owned by FWorldManager; RebindToWorld is a pointer-only swap.
             RebindToWorld(GWorldManager->StartPIE(ProxyWorld, EWorldType::Game, ENetMode::Standalone));
+            EditorEntity = entt::null;
 
             WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
 
@@ -2688,7 +2702,14 @@ namespace Lumina
             World->SetPaused(true);
             bGamePreviewRunning = false;
 
-            ProxyWorld->DestroyEntity(EditorEntity);
+            // ProxyEditorEntity is the editor-world entity captured at PIE entry;
+            // EditorEntity may be entt::null here if Travel swapped the active world
+            // mid-PIE, so we cannot rely on it to address the editor world.
+            if (ProxyEditorEntity != entt::null && ProxyWorld->GetEntityRegistry().valid(ProxyEditorEntity))
+            {
+                ProxyWorld->DestroyEntity(ProxyEditorEntity);
+            }
+            ProxyEditorEntity = entt::null;
             EditorEntity = entt::null;
 
             SetWorld(ProxyWorld);
@@ -2746,9 +2767,14 @@ namespace Lumina
 
             World->SetActive(false);
             ProxyWorld = World;
+            ProxyEditorEntity = EditorEntity;
             RebindToWorld(GWorldManager->StartPIE(ProxyWorld, EWorldType::Simulation, ENetMode::Standalone));
 
-            ProxyWorld->DestroyEntity(EditorEntity);
+            if (ProxyEditorEntity != entt::null && ProxyWorld->GetEntityRegistry().valid(ProxyEditorEntity))
+            {
+                ProxyWorld->DestroyEntity(ProxyEditorEntity);
+            }
+            ProxyEditorEntity = entt::null;
             EditorEntity = entt::null;
 
             SetupWorldForTool();
@@ -2780,8 +2806,12 @@ namespace Lumina
             FTransform TransformCopy = World->GetEntityRegistry().get<STransformComponent>(EditorEntity).GetWorldTransform();
             SCameraComponent CameraCopy = World->GetEntityRegistry().get<SCameraComponent>(EditorEntity);
 
-            World->DestroyEntity(EditorEntity);
+            if (EditorEntity != entt::null && World->GetEntityRegistry().valid(EditorEntity))
+            {
+                World->DestroyEntity(EditorEntity);
+            }
             EditorEntity = entt::null;
+            ProxyEditorEntity = entt::null;
 
             SetWorld(ProxyWorld);
             ProxyWorld->SetActive(true);

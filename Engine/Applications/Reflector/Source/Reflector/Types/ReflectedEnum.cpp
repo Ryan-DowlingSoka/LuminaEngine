@@ -138,9 +138,4 @@ namespace Lumina::Reflection
         const eastl::string ConstructFn = Names::ConstructFunction("CEnum", Namespace, DisplayName);
         Writer.Linef("\t{ %s, TEXT(\"%s\") },", ConstructFn.c_str(), DisplayName.c_str());
     }
-
-    void FReflectedEnum::DefineLuaAPI(FCodeWriter& Writer)
-    {
-        LuaApiEmitter::EmitForEnum(Writer, *this);
-    }
 }

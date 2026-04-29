@@ -3,6 +3,17 @@
         "ContentBrowser": {
             "TileSize": 190.8000030517578
         },
+        "LuaEditor": {
+            "AutoIndent": true,
+            "CompletePairs": true,
+            "FontScale": 2.0249998569488525,
+            "LineSpacing": 1.0,
+            "MatchBrackets": true,
+            "Palette": "Dark",
+            "ShowLineNumbers": true,
+            "ShowWhitespace": false,
+            "TabSize": 4
+        },
         "RecentProjects": [
             "Sandbox"
         ],

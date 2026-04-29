@@ -225,92 +225,45 @@ namespace Lumina
         FFixedString OldObjectName = SanitizeObjectName(OldPath);
         FFixedString NewObjectName = SanitizeObjectName(NewPath);
 
-        // ----- Loaded path: rename in-memory, save atomically to NewPath, then drop OldPath.
-        if (CPackage* Package = FindObject<CPackage>(OldObjectName))
+        // Always go through the loaded-rename + full re-save path. Patching an
+        // unloaded file's export table in place is unsafe: FName serializes as
+        // a length-prefixed string, so the new export table size can differ
+        // from the old, which would either clobber the trailing thumbnail
+        // block or leave stale bytes — and Header.ThumbnailDataOffset is not
+        // recomputed. A clean SavePackage rebuilds every offset from scratch.
+        CPackage* Package = FindObject<CPackage>(OldObjectName);
+        if (Package == nullptr)
         {
-            FName SavedName = Package->GetName();
-
-            if (!Package->Rename(NewObjectName, nullptr))
+            Package = LoadPackage(OldPath);
+            if (Package == nullptr)
             {
-                LOG_ERROR("RenamePackage: in-memory rename failed for {}", OldPath);
+                LOG_ERROR("RenamePackage: failed to load {} for rename", OldPath);
                 return false;
             }
-
-            if (!SavePackage(Package, NewPath))
-            {
-                LOG_ERROR("RenamePackage: atomic save to {} failed; rolling back in-memory rename", NewPath);
-                // Roll back; on-disk state at OldPath is unchanged.
-                Package->Rename(SavedName, nullptr);
-                return false;
-            }
-
-            // New file is committed. Drop the old file. If the remove fails the
-            // user just sees a stale duplicate — better than data loss.
-            if (VFS::Exists(OldPath) && !VFS::Remove(OldPath))
-            {
-                LOG_ERROR("RenamePackage: failed to remove old file {} (new file at {} is intact)", OldPath, NewPath);
-            }
-            return true;
         }
 
-        // ----- Not-loaded path: read OldPath, patch primary export name if the
-        // file name part of the path changed, then atomically write to NewPath.
-        TVector<uint8> FileBlob;
-        if (!VFS::ReadFile(FileBlob, OldPath))
+        FName SavedName = Package->GetName();
+
+        if (!Package->Rename(NewObjectName, nullptr))
         {
-            LOG_ERROR("RenamePackage: failed to read {}", OldPath);
+            LOG_ERROR("RenamePackage: in-memory rename failed for {}", OldPath);
             return false;
         }
 
-        FMemoryReader Reader(FileBlob);
-        FPackageHeader Header;
-        Reader << Header;
-
-        if (Header.Tag != PACKAGE_FILE_TAG)
+        if (!SavePackage(Package, NewPath))
         {
-            LOG_ERROR("RenamePackage: {} is not a valid Lumina package (tag mismatch)", OldPath);
+            LOG_ERROR("RenamePackage: atomic save to {} failed; rolling back in-memory rename", NewPath);
+            // Roll back; on-disk state at OldPath is unchanged.
+            Package->Rename(SavedName, nullptr);
             return false;
         }
 
-        FName NewFileName = VFS::FileName(NewPath, true);
-        FName OldFileName = VFS::FileName(OldPath, true);
-
-        if (NewFileName != OldFileName)
-        {
-            Reader.Seek(Header.ExportTableOffset);
-            TVector<FObjectExport> Exports;
-            Reader << Exports;
-
-            FObjectExport* Export = eastl::find_if(Exports.begin(), Exports.end(), [&](const FObjectExport& E)
-            {
-                return E.ObjectName == OldFileName;
-            });
-
-            if (Export == Exports.end())
-            {
-                LOG_ERROR("RenamePackage: {} contains no export matching its file name; refusing to rename", OldPath);
-                return false;
-            }
-
-            Export->ObjectName = NewFileName;
-
-            FMemoryWriter Writer(FileBlob);
-            Writer.Seek(Header.ExportTableOffset);
-            Writer << Exports;
-        }
-
-        if (!VFS::AtomicWriteFile(NewPath, FileBlob))
-        {
-            LOG_ERROR("RenamePackage: atomic write to {} failed", NewPath);
-            return false;
-        }
-
-        // New file is committed. Drop the old file.
+        // New file is committed. Drop the old file. If the remove fails the
+        // user just sees a stale duplicate — better than data loss.
         if (VFS::Exists(OldPath) && !VFS::Remove(OldPath))
         {
             LOG_ERROR("RenamePackage: failed to remove old file {} (new file at {} is intact)", OldPath, NewPath);
         }
-
         return true;
     }
 
@@ -394,14 +347,19 @@ namespace Lumina
         
                 Reader.Seek(PackageHeader.ExportTableOffset);
                 Reader << Package->ExportTable;
-        
-                int64 SizeBefore = Reader.Tell();
-                Reader.Seek(PackageHeader.ThumbnailDataOffset);
-        
-                Package->GetPackageThumbnail()->Serialize(Reader);
 
-                Reader.Seek(SizeBefore);
-        
+#if USING(WITH_EDITOR)
+                // Thumbnails are editor metadata. Files saved by a non-editor
+                // build encode this with ThumbnailDataOffset == 0.
+                if (PackageHeader.ThumbnailDataOffset != 0)
+                {
+                    int64 SizeBefore = Reader.Tell();
+                    Reader.Seek(PackageHeader.ThumbnailDataOffset);
+                    Package->GetPackageThumbnail()->Serialize(Reader);
+                    Reader.Seek(SizeBefore);
+                }
+#endif
+
                 auto End = std::chrono::high_resolution_clock::now();
                 auto Duration = std::chrono::duration_cast<std::chrono::milliseconds>(End - Start);
                 
@@ -449,8 +407,14 @@ namespace Lumina
         Header.ImportCount = static_cast<int32>(Package->ImportTable.size());
         Header.ExportCount = static_cast<int32>(Package->ExportTable.size());
 
+#if USING(WITH_EDITOR)
         Header.ThumbnailDataOffset = Writer.Tell();
         Package->GetPackageThumbnail()->Serialize(Writer);
+#else
+        // Non-editor builds never persist thumbnail data — flag the absence
+        // with a zero offset so the loader knows to skip the read.
+        Header.ThumbnailDataOffset = 0;
+#endif
 
         Writer.Seek(0);
         Writer << Header;
@@ -757,17 +721,19 @@ namespace Lumina
         return nullptr;
     }
 
+#if USING(WITH_EDITOR)
     FPackageThumbnail* CPackage::GetPackageThumbnail()
     {
         FScopeLock Lock(ThumbnailMutex);
-        
+
         if (PackageThumbnail == nullptr)
         {
             PackageThumbnail = MakeUnique<FPackageThumbnail>();
         }
-        
+
         return PackageThumbnail.get();
     }
+#endif
 
     FFixedString CPackage::GetPackagePath() const
     {

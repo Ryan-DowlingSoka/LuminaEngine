@@ -324,9 +324,4 @@ namespace Lumina::Reflection
         const eastl::string ConstructFn = Names::ConstructFunction("CStruct", Namespace, DisplayName);
         Writer.Linef("\t{ %s, TEXT(\"%s\") },", ConstructFn.c_str(), DisplayName.c_str());
     }
-
-    void FReflectedStruct::DefineLuaAPI(FCodeWriter& Writer)
-    {
-        LuaApiEmitter::EmitForStruct(Writer, *this);
-    }
 }

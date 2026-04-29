@@ -22,10 +22,8 @@ namespace Lumina::Reflection
 
         void WriteHeaderContent(FCodeWriter& Writer, FReflectedHeader* Header);
         void WriteSourceContent(FCodeWriter& Writer, FReflectedHeader* Header);
-        void WriteLuaApiContent(FCodeWriter& Writer, FReflectedHeader* Header);
 
         void WriteUnityBuildFile(FReflectedProject* Project, const eastl::string& Contents);
-        void WriteLuaDefinitionsFile(FReflectedProject* Project, const eastl::string& Contents);
 
     private:
 

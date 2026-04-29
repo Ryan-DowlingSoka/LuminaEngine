@@ -25,6 +25,8 @@ namespace Lumina
 		
 		FString FontFile_Regular = Paths::GetEngineFontDirectory() + "/Lexend/Lexend-Regular.ttf";
 		FString FontFile_Bold = Paths::GetEngineFontDirectory() + "/Lexend/Lexend-Bold.ttf";
+		FString FontFile_Mono = Paths::GetEngineFontDirectory() + "/JetbrainsMono/JetBrainsMono-Regular.ttf";
+		FString FontFile_MonoBold = Paths::GetEngineFontDirectory() + "/JetbrainsMono/JetBrainsMono-Bold.ttf";
 		FString IconFontFile = Paths::GetEngineFontDirectory() + "/materialdesignicons-webfont.ttf";
 		constexpr ImWchar IconRanges[] = { LE_ICONRANGE_MIN, LE_ICONRANGE_MAX, 0 };
 
@@ -69,6 +71,10 @@ namespace Lumina
     	CreateFontFromFile(FontFile_Regular, size24, size24, ImGuiX::Font::EFont::Large, ImVec2(0, 2));
     	CreateFontFromFile(FontFile_Bold, size24, size24, ImGuiX::Font::EFont::LargeBold, ImVec2(0, 2));
 
+    	// Monospace pair for code editors (Lua / RML / shaders).
+    	CreateFontFromFile(FontFile_Mono, size16, size18, ImGuiX::Font::EFont::Mono, ImVec2(0, 2));
+    	CreateFontFromFile(FontFile_MonoBold, size16, size18, ImGuiX::Font::EFont::MonoBold, ImVec2(0, 2));
+
     	io.Fonts->TexMinWidth = 4096;
 
     	using namespace ImGuiX::Font;
@@ -80,6 +86,8 @@ namespace Lumina
         DEBUG_ASSERT(GFonts[(uint8)EFont::MediumBold]->IsLoaded());
         DEBUG_ASSERT(GFonts[(uint8)EFont::Large]->IsLoaded());
         DEBUG_ASSERT(GFonts[(uint8)EFont::LargeBold]->IsLoaded());
+        DEBUG_ASSERT(GFonts[(uint8)EFont::Mono]->IsLoaded());
+        DEBUG_ASSERT(GFonts[(uint8)EFont::MonoBold]->IsLoaded());
 		
     	
     	io.ConfigWindowsMoveFromTitleBarOnly = true;

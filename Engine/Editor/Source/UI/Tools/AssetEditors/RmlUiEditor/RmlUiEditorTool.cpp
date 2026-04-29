@@ -231,9 +231,22 @@ namespace Lumina
             const float StatusBarHeight = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
             const ImVec2 EditorSize(Avail.x, std::max(32.0f, Avail.y - StatusBarHeight));
 
+            // Ctrl+wheel over the editor adjusts font scale. Steal the wheel
+            // so TextEditor doesn't also use it for vertical scroll.
+            const ImVec2 EditorMin = ImGui::GetCursorScreenPos();
+            const ImVec2 EditorMax(EditorMin.x + EditorSize.x, EditorMin.y + EditorSize.y);
+            ImGuiIO& Io = ImGui::GetIO();
+            if (Io.KeyCtrl && Io.MouseWheel != 0.0f && ImGui::IsMouseHoveringRect(EditorMin, EditorMax))
+            {
+                EditorFontScale = std::clamp(EditorFontScale * (1.0f + Io.MouseWheel * 0.1f), 0.5f, 4.0f);
+                Io.MouseWheel = 0.0f;
+            }
+
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Mono);
             ImGui::PushFontSize(ImGui::GetStyle().FontSizeBase * EditorFontScale);
             CodeEditor.Render("##rml_text", EditorSize);
             ImGui::PopFontSize();
+            ImGuiX::Font::PopFont();
 
             DrawEditorStatusBar();
         });

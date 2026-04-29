@@ -10,7 +10,7 @@ function Mainmenu:OnReady(entity)
     UI.OnEvent(MENU, "item-play", "click", function()
         Engine.Travel("/Game/Levels/Level_01")
     end)
-
+    
     UI.OnEvent(MENU, "item-settings", "click", function()
         UI.LoadDocument("/Game/Widgets/Settings.rml")
     end)
@@ -20,7 +20,6 @@ function Mainmenu:OnReady(entity)
 end
 
 function Mainmenu:OnDestroy(entity)
-    -- Optional. World teardown unloads the doc anyway.
 end
 
 return Mainmenu

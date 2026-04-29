@@ -306,8 +306,11 @@ namespace Lumina
         
         RUNTIME_API NODISCARD CObject* IndexToObject(const FObjectPackageIndex& Index);
 
-        /** Returns the thumbnail data for this package */
+#if USING(WITH_EDITOR)
+        /** Returns the thumbnail data for this package. Editor-only — thumbnails
+         *  are editor metadata and are not present in non-editor builds. */
         RUNTIME_API NODISCARD FPackageThumbnail* GetPackageThumbnail();
+#endif
 
         RUNTIME_API NODISCARD FFixedString GetPackagePath() const;
         
@@ -334,10 +337,12 @@ namespace Lumina
         int64       ExportIndex = 0;
         
     private:
-        
+
         TAtomic<ELoadState>             LoadState{ELoadState::Unloaded};
+#if USING(WITH_EDITOR)
         mutable FMutex                  ThumbnailMutex;
         TUniquePtr<FPackageThumbnail>   PackageThumbnail;
+#endif
     };
     
 }

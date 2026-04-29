@@ -16,6 +16,8 @@ namespace Lumina::ImGuiX::Font
         MediumBold,
         Large,
         LargeBold,
+        Mono,
+        MonoBold,
 
         NumFonts,
         Default = Medium,

@@ -51,7 +51,6 @@ namespace Lumina::Reflection
         virtual void DefineSecondaryHeader(FCodeWriter& Writer, const eastl::string& FileID) = 0;
         virtual void DeclareImplementation(FCodeWriter& Writer) = 0;
         virtual void DeclareStaticRegistration(FCodeWriter& Writer) = 0;
-        virtual void DefineLuaAPI(FCodeWriter& Writer) = 0;
 
         bool HasMetadata(const eastl::string& Meta) const;
         void GenerateMetadata(const eastl::string& InMetadata);
@@ -93,7 +92,6 @@ namespace Lumina::Reflection
         void DefineSecondaryHeader(FCodeWriter& Writer, const eastl::string& FileID) override;
         void DeclareImplementation(FCodeWriter& Writer) override;
         void DeclareStaticRegistration(FCodeWriter& Writer) override;
-        void DefineLuaAPI(FCodeWriter& Writer) override;
 
         void AddConstant(const FConstant& Constant) { Constants.push_back(Constant); }
 
@@ -117,7 +115,6 @@ namespace Lumina::Reflection
         void DefineSecondaryHeader(FCodeWriter& Writer, const eastl::string& FileID) override;
         void DeclareImplementation(FCodeWriter& Writer) override;
         void DeclareStaticRegistration(FCodeWriter& Writer) override;
-        void DefineLuaAPI(FCodeWriter& Writer) override;
 
         // Shared helpers consumed by FReflectedClass too.
         void EmitMetadataArrays(FCodeWriter& Writer) const;

@@ -634,7 +634,114 @@ namespace Lumina::Lua
 
     void FScriptingContext::ReloadScripts(FStringView Path)
     {
-        
+
         LOG_INFO("Reloaded Scripts: {}", Path);
+    }
+
+    // ------------------------------------------------------------------------
+    // Symbol harvesting
+
+    namespace
+    {
+        ELuaSymbolKind ClassifyTop(lua_State* L)
+        {
+            switch (lua_type(L, -1))
+            {
+                case LUA_TFUNCTION:    return ELuaSymbolKind::Function;
+                case LUA_TTABLE:       return ELuaSymbolKind::Table;
+                default:               return ELuaSymbolKind::Value;
+            }
+        }
+
+        // Skips Lua/Luau builtins so suggestions don't drown in `_G`, `_VERSION`,
+        // `string`, `table`, etc. We could surface these too, but for engine-script
+        // editing the noise hurts more than it helps.
+        bool IsBuiltinName(const char* Name)
+        {
+            if (Name == nullptr) return true;
+            if (Name[0] == '_') return true;  // _G, _VERSION, _ENV, _LOADED
+            const char* const Builtins[] = {
+                "string", "table", "math", "os", "io", "coroutine", "debug",
+                "bit32", "utf8", "buffer", "vector",
+                "assert", "collectgarbage", "error", "getfenv", "getmetatable",
+                "ipairs", "next", "pairs", "pcall", "rawequal", "rawget",
+                "rawset", "rawlen", "select", "setfenv", "setmetatable",
+                "tonumber", "tostring", "type", "unpack", "xpcall",
+                "newproxy", "require", "loadstring",
+            };
+            for (const char* B : Builtins)
+            {
+                if (std::strcmp(Name, B) == 0) return true;
+            }
+            return false;
+        }
+
+        void IterateTableShallow(lua_State* L, FStringView ParentPath, TVector<FLuaSymbol>& Out)
+        {
+            // Caller has the table on top of the stack.
+            lua_pushnil(L);
+            while (lua_next(L, -2) != 0)
+            {
+                // Stack: ... table key value
+                if (lua_type(L, -2) == LUA_TSTRING)
+                {
+                    const char* Key = lua_tostring(L, -2);
+
+                    FLuaSymbol Symbol;
+                    Symbol.Name.assign(Key);
+                    Symbol.Kind = ClassifyTop(L);
+                    Symbol.Parent.assign(ParentPath.data(), ParentPath.size());
+                    Symbol.Path = Symbol.Parent.empty()
+                        ? Symbol.Name
+                        : (Symbol.Parent + "." + Symbol.Name);
+                    Out.push_back(Symbol);
+                }
+                lua_pop(L, 1);  // pop value, keep key for next iter
+            }
+        }
+    }
+
+    void FScriptingContext::HarvestGlobalSymbols(TVector<FLuaSymbol>& Out)
+    {
+        Out.clear();
+        if (L == nullptr)
+        {
+            return;
+        }
+
+        FReadScopeLock Lock(SharedMutex);
+
+        const int Top = lua_gettop(L);
+
+        // Top-level pass over LUA_GLOBALSINDEX.
+        lua_pushvalue(L, LUA_GLOBALSINDEX);
+        lua_pushnil(L);
+        while (lua_next(L, -2) != 0)
+        {
+            if (lua_type(L, -2) == LUA_TSTRING)
+            {
+                const char* Key = lua_tostring(L, -2);
+                if (!IsBuiltinName(Key))
+                {
+                    FLuaSymbol Symbol;
+                    Symbol.Name.assign(Key);
+                    Symbol.Kind = ClassifyTop(L);
+                    Symbol.Path = Symbol.Name;
+                    Out.push_back(Symbol);
+
+                    // One level of nesting for tables: covers Engine.VFS,
+                    // Input.IsKeyDown, etc. Deep recursion would catch
+                    // metatables / class chains; skip for now to keep
+                    // the symbol set shallow and predictable.
+                    if (Symbol.Kind == ELuaSymbolKind::Table)
+                    {
+                        IterateTableShallow(L, Symbol.Path, Out);
+                    }
+                }
+            }
+            lua_pop(L, 1);
+        }
+
+        lua_settop(L, Top);
     }
 }

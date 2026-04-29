@@ -32,10 +32,8 @@ namespace Lumina
             bAssetLoadBroadcasted = true;
         }
 
-        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_S))
-        {
-            OnSave();
-        }
+        // Ctrl+S is dispatched centrally by FEditorUI to the focused tool only;
+        // doing it here would fire OnSave on every open tool simultaneously.
     }
 
     void FAssetEditorTool::OnSave()

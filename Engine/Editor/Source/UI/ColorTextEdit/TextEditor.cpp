@@ -1571,7 +1571,10 @@ void TextEditor::handleCharacter(ImWchar character) {
 
 	endTransaction(transaction);
 
-	if (CodePoint::isWord(character)) {
+	// Fire autocomplete on word chars and on common member-access triggers.
+	// Without this, typing `foo.` or `foo:` never opens the popup until the
+	// user types another letter — which makes `.<member>` UX feel broken.
+	if (CodePoint::isWord(character) || character == '.' || character == ':') {
 		if (autocomplete.startTyping(cursors)) {
 			makeCursorVisible();
 		}

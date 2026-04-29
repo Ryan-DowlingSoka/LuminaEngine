@@ -19,11 +19,30 @@ namespace Lumina::Lua
     class FRef;
     struct FScript;
     DECLARE_MULTICAST_DELEGATE(FScriptTransactionDelegate, FStringView);
-    
-    
+
+
     struct FLuaScriptMetadata;
     void Initialize();
     void Shutdown();
+
+    // ------------------------------------------------------------------------
+    // Symbol harvest — walks the live VM globals so the editor can offer
+    // autocomplete that stays in sync with whatever Scripting.cpp registers.
+    enum class ELuaSymbolKind : uint8
+    {
+        Table,
+        Function,
+        Value,
+    };
+
+    struct FLuaSymbol
+    {
+        FString         Name;       // Leaf name, e.g. "ReadFile"
+        FString         Path;       // Dotted path, e.g. "Engine.VFS.ReadFile"
+        FString         Parent;     // Empty for top-level, else parent path e.g. "Engine.VFS"
+        ELuaSymbolKind  Kind = ELuaSymbolKind::Value;
+    };
+
     
     class FScriptingContext
     {
@@ -75,6 +94,11 @@ namespace Lumina::Lua
         RUNTIME_API TVector<TSharedPtr<FScript>> GetAllRegisteredScripts();
         RUNTIME_API void RunGC();
         RUNTIME_API FRef GetGlobalsRef() const;
+
+        // Walks LUA_GLOBALSINDEX one level deep into nested tables and
+        // returns symbol info the editor uses for autocomplete. Stays in
+        // sync with whatever Initialize() registers — no separate manifest.
+        RUNTIME_API void HarvestGlobalSymbols(TVector<FLuaSymbol>& Out);
         
         #if LUAI_GCMETRICS
         RUNTIME_API const GCMetrics* GetGCMetrics() const;  

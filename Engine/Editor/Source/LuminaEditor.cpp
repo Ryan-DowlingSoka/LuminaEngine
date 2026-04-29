@@ -68,6 +68,71 @@ namespace Lumina
             .WithDescription("Project to load automatically on editor launch (\"NULL\" to disable)")
             .WithDefault(std::string("NULL"))
             .WithOwnerFile(EditorFile));
+
+        // Lua editor — open in-engine by default; flip this to route .lua/.luau
+        // double-clicks to the OS-registered handler instead.
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.UsePlatformEditor", EConfigValueType::Bool)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Open .lua/.luau files with the OS default editor instead of the in-engine Lua editor")
+            .WithDefault(false)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.FontScale", EConfigValueType::Float)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Font scale multiplier for the in-engine Lua editor")
+            .WithDefault(1.25f)
+            .WithRange(0.75, 3.0)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.TabSize", EConfigValueType::Int)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Tab size in spaces")
+            .WithDefault(4)
+            .WithRange(1, 8)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.LineSpacing", EConfigValueType::Float)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Line spacing multiplier")
+            .WithDefault(1.0f)
+            .WithRange(1.0, 2.0)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.ShowWhitespace", EConfigValueType::Bool)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Render whitespace glyphs (spaces and tabs)")
+            .WithDefault(false)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.ShowLineNumbers", EConfigValueType::Bool)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Show line numbers in the gutter")
+            .WithDefault(true)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.AutoIndent", EConfigValueType::Bool)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Auto-indent new lines based on surrounding scope")
+            .WithDefault(true)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.MatchBrackets", EConfigValueType::Bool)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Highlight matching brackets at the cursor")
+            .WithDefault(true)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.CompletePairs", EConfigValueType::Bool)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Auto-close paired glyphs (parentheses, brackets, quotes)")
+            .WithDefault(true)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.Palette", EConfigValueType::String)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Color palette for the Lua editor (\"Dark\" or \"Light\")")
+            .WithDefault(std::string("Dark"))
+            .WithOwnerFile(EditorFile));
     }
 
     bool FEditorEngine::Init()

@@ -371,14 +371,15 @@ namespace Lumina
         return ETextureColorSpace::SRGB;
     }
     
+#if USING(WITH_EDITOR)
     static void CreatePackageThumbnail(CTexture* Texture, const uint8* RawPixels, uint32 SourceWidth, uint32 SourceHeight)
     {
         CPackage* AssetPackage = Texture->GetPackage();
-    
+
         constexpr uint32 ThumbWidth    = 256;
         constexpr uint32 ThumbHeight   = 256;
         constexpr uint32 BytesPerPixel = 4;
-    
+
         AssetPackage->GetPackageThumbnail()->ImageWidth  = ThumbWidth;
         AssetPackage->GetPackageThumbnail()->ImageHeight = ThumbHeight;
         AssetPackage->GetPackageThumbnail()->ImageData.resize(ThumbWidth * ThumbHeight * BytesPerPixel);
@@ -422,7 +423,8 @@ namespace Lumina
             }
         }
     }
-    
+#endif
+
     void CTextureFactory::TryImport(const FFixedString& RawPath, const FFixedString& DestinationPath, const Import::FImportSettings* Settings)
     {
         CTexture* NewTexture = TryCreateNew<CTexture>(DestinationPath);
@@ -490,6 +492,7 @@ namespace Lumina
             NewTexture->ColorSpace = ETextureColorSpace::Environment;
         }
 
+#if USING(WITH_EDITOR)
         // Thumbnail generator assumes 4-byte RGBA8 strides. HDR float inputs
         // would read garbage (the first byte of each float, treated as 8-bit
         // color) and produce a broken-looking preview. Skip it for HDR;
@@ -498,6 +501,7 @@ namespace Lumina
         {
             CreatePackageThumbnail(NewTexture, Result.Pixels.data(), Result.Dimensions.x, Result.Dimensions.y);
         }
+#endif
 
         // Persist the source path so the editor's Recook button can rerun
         // compression after a ColorSpace change without forcing the user to
