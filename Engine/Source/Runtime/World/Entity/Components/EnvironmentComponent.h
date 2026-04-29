@@ -135,10 +135,7 @@ namespace Lumina
          *  drag into Environment. */
         PROPERTY(Editable, Category = "Sky|HDRI")
         TObjectPtr<CTexture> EnvironmentMap;
-
-        // ====================================================================
-        //  Ambient skylight
-        // ====================================================================
+     
 
         /** Base ambient color applied to all surfaces. Multiplied by
          *  AmbientIntensity. Treated as the skylight contribution. */
@@ -150,7 +147,7 @@ namespace Lumina
          *  visible skylight wash. Capped at 1 because anything past
          *  ~0.3 already over-fills shadowed areas. */
         PROPERTY(Editable, Category = "Ambient Light", ClampMin = 0.0f, ClampMax = 1.0f, Delta = 0.001f)
-        float AmbientIntensity = 0.05f;
+        float AmbientIntensity = 1.00f;
 
         /** When true, AmbientColor is auto-derived from the active sky each
          *  frame instead of using the manual color: a blend of zenith and

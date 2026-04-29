@@ -54,7 +54,7 @@ namespace Lumina::RmlUi
     // based DPI heuristic entirely.
     RUNTIME_API void            SetEditorContextDpiScale(Rml::Context* Context, float Scale);
 
-    // Color the RT is cleared to before each preview frame. Alpha is honoured
+    // Color the RT is cleared to before each preview frame. Alpha is honored
     // (RT is RGBA8) so a 0-alpha clear lets the editor compose its own
     // background (checker, color, image) behind the preview in ImGui.
     RUNTIME_API void            SetEditorContextClearColor(Rml::Context* Context, const glm::vec4& Color);

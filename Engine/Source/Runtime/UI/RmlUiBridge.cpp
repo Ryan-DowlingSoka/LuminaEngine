@@ -84,13 +84,7 @@ namespace Lumina::RmlUi
                 Lua::FRef Local = Cb;
                 Local();
             }
-
-            // RmlUi calls OnDetach when the element is destroyed (during
-            // ReleaseUnloadedDocuments) or when the listener is explicitly
-            // removed. Self-deleting here matches RmlUi's view of the
-            // listener exactly — Context::UnloadDocument is deferred, so any
-            // external owner that erased earlier would leave RmlUi walking
-            // dangling pointers in DetachAllEvents.
+            
             void OnDetach(Rml::Element* /*element*/) override
             {
                 delete this;
@@ -133,7 +127,7 @@ namespace Lumina::RmlUi
 
             Rml::Context*                       DebuggerHost = nullptr;
             bool                                bDebuggerVisible = false;
-            bool                                Initialised = false;
+            bool                                bInitialized = false;
         };
 
         FState& S()
@@ -232,7 +226,7 @@ namespace Lumina::RmlUi
     bool Initialise()
     {
         FState& State = S();
-        if (State.Initialised) return true;
+        if (State.bInitialized) return true;
 
         State.System   = MakeUnique<FLuminaSystemInterface>();
         State.Files    = MakeUnique<FRmlUiFileInterface>();
@@ -268,15 +262,15 @@ namespace Lumina::RmlUi
             LOG_WARN("[RmlUi] Default font LatoLatin-Regular.ttf failed to load; text may not render.");
         }
 
-        State.Initialised = true;
-        LOG_INFO("[RmlUi] Initialised. Per-world contexts will be created as worlds come up.");
+        State.bInitialized = true;
+        LOG_INFO("[RmlUi] bInitialized. Per-world contexts will be created as worlds come up.");
         return true;
     }
 
     void Shutdown()
     {
         FState& State = S();
-        if (!State.Initialised && !State.System) return;
+        if (!State.bInitialized && !State.System) return;
 
         // Detach the debugger before its host context dies. Keeping our
         // DebuggerHost tracking honest matters if Shutdown is followed by a
@@ -323,7 +317,7 @@ namespace Lumina::RmlUi
     void OnWorldInitialized(CWorld* World)
     {
         FState& State = S();
-        if (!State.Initialised || World == nullptr)
+        if (!State.bInitialized || World == nullptr)
         {
             return;
         }
@@ -421,12 +415,10 @@ namespace Lumina::RmlUi
     void TickAll()
     {
         FState& State = S();
-        if (!State.Initialised)
+        if (!State.bInitialized)
         {
             return;
         }
-
-        constexpr float NominalHeight = 1080.0f;
 
         for (auto& E : State.Worlds)
         {
@@ -437,6 +429,7 @@ namespace Lumina::RmlUi
             const FWorldTarget Tgt = GetWorldTarget(E->World);
             if (Tgt.Image != nullptr)
             {
+                constexpr float NominalHeight = 1080.0f;
                 E->Context->SetDimensions(Rml::Vector2i(int(Tgt.Size.x), int(Tgt.Size.y)));
 
                 const float DpRatio = std::max(1.0f, float(Tgt.Size.y) / NominalHeight);
@@ -454,8 +447,8 @@ namespace Lumina::RmlUi
             if (E->Size.x > 0 && E->Size.y > 0)
             {
                 E->Context->SetDimensions(Rml::Vector2i(int(E->Size.x), int(E->Size.y)));
-                // Editor contexts use the caller-supplied DPI scale directly
-                // — the auto height-based ratio used for world contexts ends
+                // Editor contexts use the caller-supplied DPI scale directly,
+                // the auto height-based ratio used for world contexts ends
                 // up at 1.0 for any preview pane shorter than 1080px, which
                 // is unreadably small for editing.
                 E->Context->SetDensityIndependentPixelRatio(std::max(0.1f, E->DpiScale));
@@ -467,7 +460,10 @@ namespace Lumina::RmlUi
     void RenderAll(ICommandList& CmdList)
     {
         FState& State = S();
-        if (!State.Initialised || State.Renderer == nullptr) return;
+        if (!State.bInitialized || State.Renderer == nullptr)
+        {
+            return;
+        }
 
         for (auto& E : State.Worlds)
         {
@@ -497,7 +493,7 @@ namespace Lumina::RmlUi
                 continue;
             }
             // Renderer uses LoadOp=Load. For an editor preview we want a fresh
-            // frame, so clear here before submitting the RmlUi pass. Honour
+            // frame, so clear here before submitting the RmlUi pass. Honor
             // the per-context clear color so the editor can render a fully
             // transparent canvas and composite its own background underneath.
             CmdList.SetImageState(E->Target, AllSubresources, EResourceStates::CopyDest);
@@ -526,7 +522,7 @@ namespace Lumina::RmlUi
     Rml::Context* CreateEditorContext(const char* Name, const glm::uvec2& InitialSize)
     {
         FState& State = S();
-        if (!State.Initialised || Name == nullptr)
+        if (!State.bInitialized || Name == nullptr)
         {
             return nullptr;
         }
@@ -703,7 +699,7 @@ namespace Lumina::RmlUi
         {
             FState& State = S();
             FWorldEntry* Entry = GetActiveEntry();
-            if (!State.Initialised || Entry == nullptr || Entry->Context == nullptr)
+            if (!State.bInitialized || Entry == nullptr || Entry->Context == nullptr)
             {
                 LOG_WARN("[RmlUi] UI.LoadDocument('{}') has no active world context yet.", FString(Path.data(), Path.size()).c_str());
                 return false;
@@ -788,7 +784,7 @@ namespace Lumina::RmlUi
         FString DescribeState()
         {
             FState& State = S();
-            if (!State.Initialised) return FString("RmlUi not initialised.");
+            if (!State.bInitialized) return FString("RmlUi not initialised.");
 
             std::string Out;
             Out.reserve(256);
