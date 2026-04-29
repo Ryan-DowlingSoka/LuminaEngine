@@ -1,6 +1,7 @@
 ﻿#include "pch.h"
 #include "ScriptSystem.h"
 #include "Core/Profiler/CPUProfiler.h"
+#include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "World/World.h"
 #include "world/entity/components/entitytags.h"
 #include "World/Entity/Components/ScriptComponent.h"
@@ -13,6 +14,17 @@ namespace Lumina
         LUMINA_PROFILE_SCOPE();
         CPU_PROFILE_SCOPE_COLOR("Lua Scripts", FColor(0.95f, 0.70f, 0.25f));
 
+        // Hold every script Update while the debugger is parked at a
+        // breakpoint. Without this, the entity that broke would re-enter
+        // Update on the next frame and re-hit the same line, plus every
+        // other entity would tick on top of the paused thread — making the
+        // pause useless. The paused thread itself stays alive (anchored by
+        // FLuaDebugger) and only resumes when the user clicks Continue.
+        if (Lua::FLuaDebugger::Get().IsPaused())
+        {
+            return;
+        }
+
         auto IterateGroup = [&](entt::entity, SScriptComponent& ScriptComponent)
         {
             if (const TSharedPtr<Lua::FScript>& Script = ScriptComponent.Script)
@@ -20,17 +32,21 @@ namespace Lumina
                 if (ScriptComponent.UpdateFunc.IsValid())
                 {
                     const float DeltaTime = static_cast<float>(Context.GetDeltaTime());
-                
+
+                    // Coroutine-resume so a breakpoint inside Update can yield
+                    // via lua_break instead of erroring out of pcall — and so
+                    // yield-aware APIs (TimerManager:Wait, etc.) work the same
+                    // here as they do in OnAttach / OnReady.
                     if (ScriptComponent.TickRate <= 0.0f)
                     {
-                        (void)ScriptComponent.UpdateFunc.Invoke(Script->Reference, DeltaTime);
+                        (void)ScriptComponent.UpdateFunc.InvokeAsCoroutine(Script->Reference, DeltaTime);
                     }
                     else
                     {
                         ScriptComponent.AccumulatedTime += DeltaTime;
                         if (ScriptComponent.AccumulatedTime >= ScriptComponent.TickRate)
                         {
-                            (void)ScriptComponent.UpdateFunc.Invoke(Script->Reference, ScriptComponent.AccumulatedTime);
+                            (void)ScriptComponent.UpdateFunc.InvokeAsCoroutine(Script->Reference, ScriptComponent.AccumulatedTime);
                             ScriptComponent.AccumulatedTime = 0.0f;
                         }
                     }

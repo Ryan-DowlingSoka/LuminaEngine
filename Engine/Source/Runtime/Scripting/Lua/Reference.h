@@ -380,9 +380,10 @@ namespace Lumina::Lua
 
         const int Status = lua_resume(SubThread, State, sizeof...(Args));
 
-        if (Status == LUA_YIELD)
+        if (Status == LUA_YIELD || Status == LUA_BREAK)
         {
-            // Whoever yielded (e.g. FTimerManager:Wait) holds its own ref to keep the
+            // Whoever yielded (e.g. FTimerManager:Wait) or broke (FLuaDebugger
+            // hitting a breakpoint via lua_break) holds its own ref to keep the
             // thread alive until resumed; release ours.
             lua_unref(State, ThreadRef);
             return ECoroutineStatus::Yielded;

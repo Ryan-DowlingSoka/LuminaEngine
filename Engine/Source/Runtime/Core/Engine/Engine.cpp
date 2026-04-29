@@ -30,6 +30,7 @@
 #include "Renderer/RenderResource.h"
 #include "Renderer/RHIGlobals.h"
 #include "Scripting/Lua/Scripting.h"
+#include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "TaskSystem/ThreadedCallback.h"
 #include "Tools/UI/DevelopmentToolUI.h"
 #include "World/WorldManager.h"
@@ -284,6 +285,12 @@ namespace Lumina
                 GRenderManager->FrameEnd(UpdateContext, CmdList);
 
                 Lua::FScriptingContext::Get().ProcessDeferredActions();
+
+                // Resume paused script threads when the user has clicked
+                // Continue / Step in the editor debugger panel. Runs after
+                // ProcessDeferredActions so a hot-reloaded script gets fresh
+                // breakpoints applied before any potential resume.
+                Lua::FLuaDebugger::Get().Tick();
 
                 OnUpdateStage(UpdateContext);
 

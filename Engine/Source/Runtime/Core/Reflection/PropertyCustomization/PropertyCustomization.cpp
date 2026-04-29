@@ -3,6 +3,7 @@
 
 #include "imgui.h"
 #include "Core/Assertions/Assert.h"
+#include "Core/Reflection/Type/LuminaTypes.h"
 
 namespace Lumina
 {
@@ -11,6 +12,32 @@ namespace Lumina
         , Property(InProperty)
         , Index(InIndex)
     {
+    }
+
+    FPropertyHandle::FPropertyHandle(void* InContainerPtr, void* InDefaultContainerPtr, FProperty* InProperty, int64 InIndex)
+        : ContainerPtr(InContainerPtr)
+        , DefaultContainerPtr(InDefaultContainerPtr)
+        , Property(InProperty)
+        , Index(InIndex)
+    {
+    }
+
+    bool FPropertyHandle::DiffersFromDefault() const
+    {
+        if (ContainerPtr == nullptr || DefaultContainerPtr == nullptr || Property == nullptr)
+        {
+            return false;
+        }
+        return !Property->Identical_InContainer(ContainerPtr, DefaultContainerPtr, Index);
+    }
+
+    void FPropertyHandle::ResetToDefault()
+    {
+        if (ContainerPtr == nullptr || DefaultContainerPtr == nullptr || Property == nullptr)
+        {
+            return;
+        }
+        Property->CopyCompleteValue_InContainer(ContainerPtr, DefaultContainerPtr, Index);
     }
 
     EPropertyChangeOp IPropertyTypeCustomization::UpdateAndDraw(const TSharedPtr<FPropertyHandle>& Property, bool bReadOnly)

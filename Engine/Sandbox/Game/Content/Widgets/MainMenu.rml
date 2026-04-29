@@ -2,13 +2,6 @@
 <head>
     <title>Lumina - Main Menu</title>
     <style>
-        /* ============================================================
-           Main menu sample. Sized for the bridge's 1080-baseline dp
-           ratio. Uses RmlUi transitions for hover micro-animation;
-           values intentionally subtle - this is a stylized AAA-flavour
-           pause/menu screen, not a flashy demo.
-           ============================================================ */
-
         body
         {
             font-family: LatoLatin;
@@ -129,9 +122,6 @@
             color: #ffffff;
             border-left: 4dp #f5f7fb;
         }
-
-        /* "Disabled" item (e.g. Continue when no save exists). Keeps the
-           hover off entirely so the visual cue is honest. */
         .item.disabled
         {
             color: #3a4257;

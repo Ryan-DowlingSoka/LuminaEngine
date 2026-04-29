@@ -46,10 +46,21 @@ namespace Lumina
 
         void RebuildSymbolIndex();
         void OnAutoCompleteRequest(TextEditor::AutoCompleteState& State);
+        void OnHoverIdentifier(const std::string& Word, const std::string& DottedPath);
+
+        // Map of dotted path → full symbol record. Built alongside the other
+        // autocomplete indices in RebuildSymbolIndex so hover lookups are O(1).
+        eastl::hash_map<eastl::string, Lua::FLuaSymbol>                         SymbolByPath;
 
         void DrawToolbar();
         void DrawStatusBar();
         void DrawSettingsPopup();
+
+        // Inline debugger overlay shown below the editor when FLuaDebugger
+        // is paused at this file. Avoids spawning a separate top-level tool
+        // that would steal layout space from the user's docking config.
+        void DrawDebuggerPanel();
+        bool IsDebuggerPausedHere() const;
 
         void ToggleBreakpoint(int Line);
 
@@ -77,15 +88,28 @@ namespace Lumina
         FDirectoryWatcher   FileWatcher;
         TAtomic<bool>       bExternalChangePending{false};
 
+        // Selected stack frame for the inline debugger panel. Re-clamped each
+        // pause so a deeper call stack from a previous break doesn't index
+        // out-of-range when the new call stack is shorter.
+        int                 DebuggerSelectedFrame = 0;
+
+        // Tracks the last line number we marked as the program-counter line
+        // so we can clear it cheaply when the debugger advances past it.
+        int                 PCMarkerLine = -1;
+
         // Autocomplete index, harvested from the live Lua VM at OnInitialize
-        // and refreshable on demand. Two flat structures:
-        //   TopLevelSymbols  — names visible at global scope
-        //   MembersByPath    — for "Foo.Bar" → ["Baz", "Qux"]; lets us
-        //                      offer table-member completions after `.`/`:`
-        eastl::vector<Lua::FLuaSymbol>                                  AllSymbols;
-        eastl::vector<eastl::string>                                    TopLevelSymbols;
-        eastl::hash_map<eastl::string, eastl::vector<eastl::string>>    MembersByPath;
-        eastl::hash_set<eastl::string>                                  TableNames;
+        // and refreshable on demand. Three flat structures:
+        //   TopLevelSymbols  — full symbol records visible at global scope
+        //   SymbolsByPath    — for "Foo.Bar" → [child symbol records]; lets
+        //                      us offer table-member completions after `.`/`:`
+        //                      and surface kind/type/value-preview metadata.
+        //   TableNames       — set of dotted paths that are tables, used for
+        //                      cheap "is this a table?" checks during prefix
+        //                      resolution.
+        eastl::vector<Lua::FLuaSymbol>                                          AllSymbols;
+        eastl::vector<Lua::FLuaSymbol>                                          TopLevelSymbols;
+        eastl::hash_map<eastl::string, eastl::vector<Lua::FLuaSymbol>>          SymbolsByPath;
+        eastl::hash_set<eastl::string>                                          TableNames;
 
         TextEditor::AutoCompleteConfig                                  AutoCompleteCfg;
     };

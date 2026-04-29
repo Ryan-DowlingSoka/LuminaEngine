@@ -306,6 +306,16 @@ public:
 	inline void ClearTextContextMenuCallback() { SetTextContextMenuCallback(nullptr); }
 	inline bool HasTextContextMenuCallback() const { return textContextMenuCallback != nullptr; }
 
+	// Hover-over-identifier callback. Fires every frame the mouse is over a
+	// word in the text area; the callback is responsible for opening an
+	// ImGui tooltip (BeginTooltip/EndTooltip) if it has anything to show.
+	//   - word: the identifier directly under the cursor
+	//   - dottedPath: word prefixed with any "Foo.Bar:" chain to its left,
+	//                 letting the host resolve member-access paths like
+	//                 "Engine.VFS.ReadFile" without re-tokenising the line.
+	inline void SetHoverCallback(std::function<void(const std::string& word, const std::string& dottedPath)> callback) { hoverCallback = callback; }
+	inline void ClearHoverCallback() { SetHoverCallback(nullptr); }
+
 	// useful functions to work on selections
 	// NOTE: functions provided to FilterSelections or FilterLines should accept and return UTF-8 encoded strings
 	inline void IndentLines() { if (!readOnly) indentLines(); }
@@ -515,6 +525,16 @@ public:
 		// this is left to the application so it can be context specific in case a language server is used
 		// a pointer to the current language definition is provided so callbacks have easy access
 		std::vector<std::string> suggestions;
+
+		// Optional per-suggestion metadata. When the app populates these
+		// parallel vectors the autocomplete popup renders each row as
+		// "[icon] name . . . . . dim-detail-text", IDE-style. Single-char
+		// icons identify the kind ('f' function, 't' table, etc.). Detail
+		// is dim text right-aligned (e.g. "string", "number = 42").
+		// Vectors may be empty or shorter than `suggestions`; missing slots
+		// just render plain.
+		std::vector<char>        suggestionKinds;
+		std::vector<std::string> suggestionDetails;
 
 		// set this to true if you are building the suggestion list asynchronously and provide it later
 		// this way autocomplete is not cancelled if the suggestion list is empty and the user hits tab or enter
@@ -1175,7 +1195,17 @@ protected:
 		AutoCompleteState state;
 		bool triggeredManually = false;
 		size_t currentSelection = 0;
-		static constexpr float suggestionWidth = 250.0f;
+
+		// Track previous selection so we only re-snap the scroll position
+		// when the user actually navigates with arrow keys, not on every
+		// render — without this the popup overrides the user's mouse-wheel
+		// scroll on the very next frame.
+		size_t previousSelection = static_cast<size_t>(-1);
+
+		// Computed per-refresh from the widest "name + detail" the current
+		// suggestion list contains. Bounded so we never produce a popup
+		// wider than the editor itself or narrower than a few words.
+		float suggestionWidth = 320.0f;
 
 		// support functions
 		void start(Cursors& cursors);
@@ -1344,6 +1374,7 @@ protected:
 
 	std::function<void(int line)> lineNumberContextMenuCallback;
 	std::function<void(int line, int column)> textContextMenuCallback;
+	std::function<void(const std::string& word, const std::string& dottedPath)> hoverCallback;
 	int contextMenuLine = 0;
 	int contextMenuColumn = 0;
 

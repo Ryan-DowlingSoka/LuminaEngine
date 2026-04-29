@@ -2,15 +2,16 @@ Mainmenu = { }
 
 local MENU = "/Game/Widgets/MainMenu.rml"
 
-function Mainmenu:OnReady(entity)
+function Mainmenu:OnReady()
     UI.LoadDocument(MENU)
     Input.SetMode("UI")
     Input.SetMouseMode("Normal")
+    
 
     UI.OnEvent(MENU, "item-play", "click", function()
         Engine.Travel("/Game/Levels/Level_01")
     end)
-    
+
     UI.OnEvent(MENU, "item-settings", "click", function()
         UI.LoadDocument("/Game/Widgets/Settings.rml")
     end)
@@ -19,7 +20,7 @@ function Mainmenu:OnReady(entity)
     end)
 end
 
-function Mainmenu:OnDestroy(entity)
+function Mainmenu:OnDestroy()
 end
 
 return Mainmenu

@@ -132,6 +132,17 @@ namespace Lumina
         
         /** Returns the struct operations for this type */
         RUNTIME_API FStructOps* GetStructOps() const { return StructOps.get(); }
+
+        /**
+         * Returns a pointer to a lazily allocated default-constructed instance
+         * of this struct, used by the property editor to detect "differs from
+         * default" state and implement reset-to-default. Returns null when the
+         * type isn't default-constructible (no Construct in FStructOps).
+         *
+         * The instance is intentionally never destructed: lifetime matches the
+         * process, mirroring how class CDOs are leaked at shutdown.
+         */
+        RUNTIME_API virtual void* GetDefaultInstance();
     
         /**
          * Serializes only the properties tagged for reflection, writing or reading their values
@@ -187,15 +198,23 @@ namespace Lumina
         RUNTIME_API FFixedString MakeDisplayName() const override;
         
     private:
-    
+
         /** Type-specific operations (construction, destruction, copy) for instances of this struct. */
         TUniquePtr<FStructOps> StructOps;
-        
+
         /** Parent struct in the inheritance chain. Null if this is a root struct. */
         CStruct* SuperStruct = nullptr;
-    
+
         /** True once Link() has been successfully called. Prevents redundant linking. */
         bool bLinked = false;
+
+        /**
+         * Lazily allocated default-constructed instance for this struct, used
+         * as the comparison target for property-editor diff/reset. Heap raw
+         * memory of size GetSize() and aligned to GetAlignment(). Allocated
+         * once on first GetDefaultInstance() call and never freed.
+         */
+        void* DefaultInstance = nullptr;
     };
 
 
@@ -228,8 +247,13 @@ namespace Lumina
         RUNTIME_API CObject* EmplaceInstance(void* Memory) const;
         
         RUNTIME_API CClass* GetSuperClass() const;
-        
+
         RUNTIME_API CObject* GetDefaultObject() const;
+
+        // The CDO is the natural default for the property editor; route
+        // GetDefaultInstance() to it so CObject details panels and plain
+        // CStruct details panels go through the same path.
+        RUNTIME_API void* GetDefaultInstance() override;
 
         template<typename T>
         T* GetDefaultObject() const

@@ -59,4 +59,37 @@ namespace Lumina
     {
         UNREACHABLE();
     }
+
+    bool FArrayProperty::Identical(const void* ValueA, const void* ValueB) const
+    {
+        const SIZE_T NumA = GetNum(ValueA);
+        const SIZE_T NumB = GetNum(ValueB);
+        if (NumA != NumB)
+        {
+            return false;
+        }
+
+        for (SIZE_T i = 0; i < NumA; ++i)
+        {
+            const void* ElemA = GetAt(const_cast<void*>(ValueA), i);
+            const void* ElemB = GetAt(const_cast<void*>(ValueB), i);
+            if (!Inner->Identical(ElemA, ElemB))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void FArrayProperty::CopyCompleteValue(void* Dst, const void* Src) const
+    {
+        const SIZE_T SrcCount = GetNum(Src);
+        Resize(Dst, SrcCount);
+        for (SIZE_T i = 0; i < SrcCount; ++i)
+        {
+            void* DstElem = GetAt(Dst, i);
+            const void* SrcElem = GetAt(const_cast<void*>(Src), i);
+            Inner->CopyCompleteValue(DstElem, SrcElem);
+        }
+    }
 }

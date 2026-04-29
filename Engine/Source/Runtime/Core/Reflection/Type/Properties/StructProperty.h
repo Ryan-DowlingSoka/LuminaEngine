@@ -25,6 +25,11 @@ namespace Lumina
         void SetStruct(CStruct* InStruct) { Struct = InStruct; }
         CStruct* GetStruct() const { return Struct; }
 
+        // Uses FStructOps::Equals/Copy when the struct opted in via operator==
+        // / CopyFrom; otherwise walks the linked property list and recurses.
+        RUNTIME_API bool Identical(const void* ValueA, const void* ValueB) const override;
+        RUNTIME_API void CopyCompleteValue(void* Dst, const void* Src) const override;
+
         
         CStruct* Struct = nullptr;
     

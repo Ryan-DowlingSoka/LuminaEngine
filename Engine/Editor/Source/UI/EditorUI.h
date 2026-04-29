@@ -135,6 +135,12 @@ namespace Lumina
         bool                                            bShowImGuiStyleEditor = false;
         bool                                            bShowImPlotDemoWindow = false;
 
+        // Last source path the debugger auto-opened. We re-open + refocus
+        // whenever the paused source changes — covers both the initial
+        // running→paused transition and the case where a step crosses into
+        // a different file, where we want the editor tab to follow.
+        FString                                         LuaDebuggerLastOpenedSource;
+
         float                                           SmoothedFPS = 60.0f;
         float                                           SmoothedFrameTime = 16.67f;
         static constexpr float                          FPSSmoothingFactor = 0.01f;

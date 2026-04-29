@@ -3,6 +3,8 @@
 #include "Config/Config.h"
 #include "FileSystem/FileSystem.h"
 #include "Log/Log.h"
+#include "Scripting/Lua/Scripting.h"
+#include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
@@ -117,6 +119,15 @@ namespace Lumina
         ApplyEditorSettings();
         LoadFromDisk();
 
+        // Re-hydrate breakpoints from the runtime debugger so they survive
+        // closing and reopening the editor. The debugger is the source of
+        // truth — the editor's THashSet just mirrors it for gutter rendering.
+        for (int Line : Lua::FLuaDebugger::Get().GetBreakpointLines(FStringView(VirtualPath.c_str(), VirtualPath.size())))
+        {
+            Breakpoints.insert(Line);
+        }
+        RefreshBreakpointMarkers();
+
         // Toggle a breakpoint by right-clicking the line number gutter.
         CodeEditor.SetLineNumberContextMenuCallback([this](int Line)
         {
@@ -126,6 +137,7 @@ namespace Lumina
             }
             if (ImGui::MenuItem("Clear all breakpoints", nullptr, false, !Breakpoints.empty()))
             {
+                Lua::FLuaDebugger::Get().ClearBreakpointsFor(FStringView(VirtualPath.c_str(), VirtualPath.size()));
                 Breakpoints.clear();
                 RefreshBreakpointMarkers();
             }
@@ -155,14 +167,30 @@ namespace Lumina
         };
         CodeEditor.SetAutoCompleteConfig(&AutoCompleteCfg);
 
+        // Hover info: identifier under the mouse → tooltip showing kind +
+        // type + value/signature, sourced from the same harvested symbol
+        // table the autocomplete uses.
+        CodeEditor.SetHoverCallback([this](const std::string& Word, const std::string& DottedPath)
+        {
+            OnHoverIdentifier(Word, DottedPath);
+        });
+
         CreateToolWindow("LuaEditor", [this](bool bFocused)
         {
             DrawToolbar();
             ImGui::Separator();
 
+            const bool bPausedHere = IsDebuggerPausedHere();
+
             const ImVec2 Avail = ImGui::GetContentRegionAvail();
             const float StatusBarHeight = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
-            const ImVec2 EditorSize(Avail.x, std::max(32.0f, Avail.y - StatusBarHeight));
+
+            // Reserve a slot under the editor for the inline debugger panel
+            // when paused at this file. Tuned to fit toolbar + a small split
+            // for call stack / locals without dwarfing the code view.
+            const float DebuggerPanelHeight = bPausedHere ? std::min(Avail.y * 0.45f, 320.0f) : 0.0f;
+            const float SpacingForPanel = bPausedHere ? ImGui::GetStyle().ItemSpacing.y : 0.0f;
+            const ImVec2 EditorSize(Avail.x, std::max(32.0f, Avail.y - StatusBarHeight - DebuggerPanelHeight - SpacingForPanel));
 
             // Ctrl+wheel over the editor adjusts font scale. Steal the wheel
             // so TextEditor doesn't also use it for vertical scroll.
@@ -183,6 +211,11 @@ namespace Lumina
             CodeEditor.Render("##lua_text", EditorSize);
             ImGui::PopFontSize();
             ImGuiX::Font::PopFont();
+
+            if (bPausedHere)
+            {
+                DrawDebuggerPanel();
+            }
 
             DrawStatusBar();
         });
@@ -208,6 +241,22 @@ namespace Lumina
                 LOG_WARN("[LuaEditor] '{}' changed on disk but buffer is dirty; ignoring.", VirtualPath.c_str());
             }
         }
+
+        // Sync the PC marker with the live debugger state. The check is cheap
+        // and runs every frame so the marker advances when the user steps to
+        // a new line. Scroll-to-line only fires when the line actually moved
+        // so the user's manual scroll is preserved between steps on the same
+        // line (e.g. immediately after they look at the locals panel).
+        const int LivePC = IsDebuggerPausedHere() ? Lua::FLuaDebugger::Get().GetPausedLineZeroBased() : -1;
+        if (LivePC != PCMarkerLine)
+        {
+            RefreshBreakpointMarkers();
+            if (LivePC >= 0)
+            {
+                CodeEditor.ScrollToLine(LivePC, TextEditor::Scroll::alignMiddle);
+                DebuggerSelectedFrame = 0;
+            }
+        }
     }
 
     void FLuaEditorTool::OnSave()
@@ -223,6 +272,13 @@ namespace Lumina
 
         LastSyncedText = Body;
         bBufferDirty = false;
+
+        // Tell FScriptingContext to recompile the source and re-bind every
+        // attached SScriptComponent referencing this path. The reload is
+        // deferred to the next ProcessDeferredActions tick on the main thread,
+        // so the editor stays in sync without re-entering the Lua VM here.
+        Lua::FScriptingContext::Get().ScriptReloaded(FStringView(VirtualPath.c_str(), VirtualPath.size()));
+
         ImGuiX::Notifications::NotifySuccess("Saved '{0}'.", VirtualPath.c_str());
     }
 
@@ -236,6 +292,17 @@ namespace Lumina
             LOG_WARN("[LuaEditor] Could not read '{}'.", VirtualPath.c_str());
             CodeEditor.SetText("");
             LastSyncedText.clear();
+            bBufferDirty = false;
+            return;
+        }
+
+        // Our own OnSave fires the directory watcher and routes back here.
+        // If the disk content matches what we last synced, the file hasn't
+        // actually changed under us — skip SetText so the user's cursor,
+        // selection, scroll, and undo/redo stack are preserved.
+        if (Body.size() == LastSyncedText.size()
+            && std::memcmp(Body.data(), LastSyncedText.data(), Body.size()) == 0)
+        {
             bBufferDirty = false;
             return;
         }
@@ -264,15 +331,23 @@ namespace Lumina
 
     void FLuaEditorTool::ToggleBreakpoint(int Line)
     {
-        auto Itr = Breakpoints.find(Line);
-        if (Itr != Breakpoints.end())
+        const bool bWasSet = Breakpoints.count(Line) > 0;
+        if (bWasSet)
         {
-            Breakpoints.erase(Itr);
+            Breakpoints.erase(Line);
         }
         else
         {
             Breakpoints.insert(Line);
         }
+
+        // Mirror to the runtime debugger so the change takes effect on every
+        // currently-loaded instance of this script — no save required.
+        Lua::FLuaDebugger::Get().SetBreakpoint(
+            FStringView(VirtualPath.c_str(), VirtualPath.size()),
+            Line,
+            !bWasSet);
+
         RefreshBreakpointMarkers();
     }
 
@@ -282,39 +357,233 @@ namespace Lumina
     {
         AllSymbols.clear();
         TopLevelSymbols.clear();
-        MembersByPath.clear();
+        SymbolsByPath.clear();
+        SymbolByPath.clear();
         TableNames.clear();
 
         Lua::FScriptingContext::Get().HarvestGlobalSymbols(AllSymbols);
 
         for (const Lua::FLuaSymbol& Symbol : AllSymbols)
         {
-            const eastl::string Name(Symbol.Name.c_str(), Symbol.Name.size());
             const eastl::string Path(Symbol.Path.c_str(), Symbol.Path.size());
+
+            // Path → symbol map serves both hover lookups (full path) and
+            // a future jump-to-definition feature.
+            SymbolByPath[Path] = Symbol;
 
             if (Symbol.Parent.empty())
             {
-                TopLevelSymbols.push_back(Name);
-                if (Symbol.Kind == Lua::ELuaSymbolKind::Table)
-                {
-                    TableNames.insert(Path);
-                }
+                TopLevelSymbols.push_back(Symbol);
             }
             else
             {
                 const eastl::string Parent(Symbol.Parent.c_str(), Symbol.Parent.size());
-                MembersByPath[Parent].push_back(Name);
-                if (Symbol.Kind == Lua::ELuaSymbolKind::Table)
-                {
-                    TableNames.insert(Path);
-                }
+                SymbolsByPath[Parent].push_back(Symbol);
             }
+
+            if (Symbol.Kind == Lua::ELuaSymbolKind::Table)
+            {
+                TableNames.insert(Path);
+            }
+        }
+    }
+
+    void FLuaEditorTool::OnHoverIdentifier(const std::string& Word, const std::string& DottedPath)
+    {
+        // Try the full dotted path first ("Engine.VFS.ReadFile") so a hover
+        // on a method shows method info rather than a top-level "ReadFile"
+        // collision. Fall back to the bare word for unqualified globals
+        // (locals like "self", or top-level functions).
+        const eastl::string FullKey(DottedPath.c_str(), DottedPath.size());
+        auto Itr = SymbolByPath.find(FullKey);
+        if (Itr == SymbolByPath.end() && Word != DottedPath)
+        {
+            const eastl::string WordKey(Word.c_str(), Word.size());
+            Itr = SymbolByPath.find(WordKey);
+        }
+        if (Itr == SymbolByPath.end())
+        {
+            return;
+        }
+
+        const Lua::FLuaSymbol& Symbol = Itr->second;
+
+        ImGui::BeginTooltip();
+        // Header: kind badge + dotted path in a contrasting color, picked
+        // to match the suggestion popup's badge color so the visual link
+        // between hover and autocomplete is obvious.
+        ImVec4 HeaderColor;
+        const char* KindLabel = "";
+        switch (Symbol.Kind)
+        {
+        case Lua::ELuaSymbolKind::Function: HeaderColor = ImVec4(0.86f, 0.71f, 0.35f, 1.0f); KindLabel = "function"; break;
+        case Lua::ELuaSymbolKind::Table:    HeaderColor = ImVec4(0.35f, 0.78f, 0.86f, 1.0f); KindLabel = "table";    break;
+        default:                             HeaderColor = ImVec4(0.63f, 0.78f, 0.55f, 1.0f); KindLabel = Symbol.TypeName.c_str(); break;
+        }
+
+        ImGui::TextColored(HeaderColor, "(%s) %s", KindLabel, Symbol.Path.c_str());
+        ImGui::Separator();
+
+        if (Symbol.Kind == Lua::ELuaSymbolKind::Function)
+        {
+            // Synthesise the same signature shape the autocomplete popup
+            // shows, scaled up for the tooltip.
+            char SigBuf[256];
+            if (Symbol.bIsCFunction)
+            {
+                std::snprintf(SigBuf, sizeof(SigBuf), "%s(...)", Symbol.Name.c_str());
+            }
+            else
+            {
+                std::string Sig;
+                Sig.reserve(64);
+                Sig.assign(Symbol.Name.c_str(), Symbol.Name.size());
+                Sig.append("(");
+                for (uint8 I = 0; I < Symbol.ParamCount; ++I)
+                {
+                    if (I > 0) Sig.append(", ");
+                    char ArgBuf[16];
+                    std::snprintf(ArgBuf, sizeof(ArgBuf), "arg%u", unsigned(I + 1));
+                    Sig.append(ArgBuf);
+                }
+                if (Symbol.bIsVararg)
+                {
+                    if (Symbol.ParamCount > 0) Sig.append(", ");
+                    Sig.append("...");
+                }
+                Sig.append(")");
+                std::snprintf(SigBuf, sizeof(SigBuf), "%s", Sig.c_str());
+            }
+            ImGui::TextUnformatted(SigBuf);
+
+            if (Symbol.bIsCFunction)
+            {
+                ImGui::Spacing();
+                ImGui::TextDisabled("Engine-bound C function (parameter names unavailable).");
+            }
+        }
+        else if (!Symbol.ValuePreview.empty())
+        {
+            ImGui::Text("= %s", Symbol.ValuePreview.c_str());
+        }
+        else
+        {
+            ImGui::TextDisabled("type: %s", Symbol.TypeName.c_str());
+        }
+
+        ImGui::EndTooltip();
+    }
+
+    namespace
+    {
+        // suggestions, suggestionKinds, and suggestionDetails are parallel
+        // arrays — sort the suggestion strings via an index permutation so
+        // the kinds and details follow the same order. std::sort on each
+        // independently would shuffle them out of sync.
+        void CoSortSuggestions(TextEditor::AutoCompleteState& State)
+        {
+            const size_t N = State.suggestions.size();
+            if (N <= 1) return;
+
+            std::vector<size_t> Perm(N);
+            for (size_t I = 0; I < N; ++I) Perm[I] = I;
+
+            std::sort(Perm.begin(), Perm.end(), [&](size_t A, size_t B)
+            {
+                return State.suggestions[A] < State.suggestions[B];
+            });
+
+            std::vector<std::string> Names(N);
+            std::vector<char>        Kinds;
+            std::vector<std::string> Details;
+            const bool bHasKinds   = State.suggestionKinds.size()   == N;
+            const bool bHasDetails = State.suggestionDetails.size() == N;
+            if (bHasKinds)   Kinds.resize(N);
+            if (bHasDetails) Details.resize(N);
+
+            for (size_t I = 0; I < N; ++I)
+            {
+                Names[I] = std::move(State.suggestions[Perm[I]]);
+                if (bHasKinds)   Kinds[I]   = State.suggestionKinds[Perm[I]];
+                if (bHasDetails) Details[I] = std::move(State.suggestionDetails[Perm[I]]);
+            }
+
+            State.suggestions       = std::move(Names);
+            if (bHasKinds)   State.suggestionKinds   = std::move(Kinds);
+            if (bHasDetails) State.suggestionDetails = std::move(Details);
+        }
+
+        // One-glyph kind tag for the suggestion popup's left badge.
+        char KindBadge(Lua::ELuaSymbolKind Kind)
+        {
+            switch (Kind)
+            {
+                case Lua::ELuaSymbolKind::Function: return 'f';
+                case Lua::ELuaSymbolKind::Table:    return 't';
+                case Lua::ELuaSymbolKind::Value:    return 'v';
+                default:                            return '?';
+            }
+        }
+
+        // Right-aligned dim text shown after the suggestion name. Three
+        // shapes depending on the symbol kind:
+        //   - Function: "function(arg1, arg2, ...)" — Luau gives us the
+        //     parameter count + vararg flag for Lua functions; C functions
+        //     come back as "(...)" because Luau can't introspect their
+        //     C++ signature.
+        //   - Primitive: "type = value" (e.g. "number = 100").
+        //   - Other:     just the type ("table", "userdata", ...).
+        std::string BuildDetail(const Lua::FLuaSymbol& Symbol)
+        {
+            if (Symbol.Kind == Lua::ELuaSymbolKind::Function)
+            {
+                std::string Out;
+                Out.reserve(48);
+                Out.assign("function(");
+                if (Symbol.bIsCFunction)
+                {
+                    // Luau can't tell us anything about a C function's args.
+                    // Render an unknown-arity placeholder so users at least
+                    // know it accepts arguments.
+                    Out.append("...");
+                }
+                else
+                {
+                    for (uint8 I = 0; I < Symbol.ParamCount; ++I)
+                    {
+                        if (I > 0) Out.append(", ");
+                        char Buf[16];
+                        std::snprintf(Buf, sizeof(Buf), "arg%u", unsigned(I + 1));
+                        Out.append(Buf);
+                    }
+                    if (Symbol.bIsVararg)
+                    {
+                        if (Symbol.ParamCount > 0) Out.append(", ");
+                        Out.append("...");
+                    }
+                }
+                Out.append(")");
+                return Out;
+            }
+
+            if (!Symbol.ValuePreview.empty())
+            {
+                std::string Out;
+                Out.reserve(Symbol.TypeName.size() + Symbol.ValuePreview.size() + 4);
+                Out.assign(Symbol.TypeName.c_str(), Symbol.TypeName.size());
+                Out.append(" = ");
+                Out.append(Symbol.ValuePreview.c_str(), Symbol.ValuePreview.size());
+                return Out;
+            }
+            return std::string(Symbol.TypeName.c_str(), Symbol.TypeName.size());
         }
     }
 
     void FLuaEditorTool::OnAutoCompleteRequest(TextEditor::AutoCompleteState& State)
     {
         State.suggestions.clear();
+        State.suggestionKinds.clear();
+        State.suggestionDetails.clear();
 
         // Use the raw character index, NOT the visible column. column is
         // tab-expanded; index is the codepoint position into the line text.
@@ -332,7 +601,7 @@ namespace Lumina
             return Out;
         }();
 
-        auto MatchesPrefix = [&](const eastl::string& Candidate)
+        auto MatchesPrefix = [&](FStringView Candidate)
         {
             if (TermLower.empty()) return true;
             if (Candidate.size() < TermLower.size()) return false;
@@ -346,42 +615,71 @@ namespace Lumina
             return true;
         };
 
+        // Helper: push a suggestion + its parallel kind/detail. Sorting later
+        // is a co-permute on indices so the parallel arrays stay aligned.
+        auto PushSymbol = [&](const Lua::FLuaSymbol& Symbol)
+        {
+            State.suggestions.emplace_back(Symbol.Name.c_str(), Symbol.Name.size());
+            State.suggestionKinds.push_back(KindBadge(Symbol.Kind));
+            State.suggestionDetails.emplace_back(BuildDetail(Symbol));
+        };
+
+        auto PushKeyword = [&](const char* Word)
+        {
+            State.suggestions.emplace_back(Word);
+            State.suggestionKinds.push_back('k');
+            State.suggestionDetails.emplace_back("keyword");
+        };
+
+        auto PushBufferIdent = [&](const std::string& Identifier)
+        {
+            State.suggestions.push_back(Identifier);
+            State.suggestionKinds.push_back('i');
+            State.suggestionDetails.emplace_back("identifier");
+        };
+
         // Member-access path: "Engine.VFS." or "Engine.VFS:". Only suggest
         // children of the resolved owner; nothing else makes sense in context.
         if (!OwnerPath.empty())
         {
-            auto Itr = MembersByPath.find(OwnerPath);
-            if (Itr != MembersByPath.end())
+            auto Itr = SymbolsByPath.find(OwnerPath);
+            if (Itr != SymbolsByPath.end())
             {
-                for (const eastl::string& Member : Itr->second)
+                for (const Lua::FLuaSymbol& Symbol : Itr->second)
                 {
-                    if (MatchesPrefix(Member))
+                    if (MatchesPrefix(FStringView(Symbol.Name.c_str(), Symbol.Name.size())))
                     {
-                        State.suggestions.emplace_back(Member.c_str(), Member.size());
+                        PushSymbol(Symbol);
                     }
                 }
             }
-            std::sort(State.suggestions.begin(), State.suggestions.end());
+            // Co-sort the three parallel arrays by suggestion name.
+            CoSortSuggestions(State);
             return;
         }
 
         // Top-level: keywords + engine globals + identifiers in the buffer.
         eastl::hash_set<eastl::string> Seen;
-        auto Push = [&](const eastl::string& Suggestion)
+        auto SeenInsert = [&](const char* Data, size_t Size) -> bool
         {
-            if (!MatchesPrefix(Suggestion)) return;
-            if (Seen.find(Suggestion) != Seen.end()) return;
-            Seen.insert(Suggestion);
-            State.suggestions.emplace_back(Suggestion.c_str(), Suggestion.size());
+            const eastl::string Key(Data, Size);
+            if (Seen.find(Key) != Seen.end()) return false;
+            Seen.insert(Key);
+            return true;
         };
 
         for (const char* Keyword : kLuauKeywords)
         {
-            Push(eastl::string(Keyword));
+            const size_t Len = std::strlen(Keyword);
+            if (!MatchesPrefix(FStringView(Keyword, Len))) continue;
+            if (!SeenInsert(Keyword, Len)) continue;
+            PushKeyword(Keyword);
         }
-        for (const eastl::string& Top : TopLevelSymbols)
+        for (const Lua::FLuaSymbol& Top : TopLevelSymbols)
         {
-            Push(Top);
+            if (!MatchesPrefix(FStringView(Top.Name.c_str(), Top.Name.size()))) continue;
+            if (!SeenInsert(Top.Name.c_str(), Top.Name.size())) continue;
+            PushSymbol(Top);
         }
 
         // Identifiers harvested from the current buffer — picks up locals,
@@ -390,23 +688,56 @@ namespace Lumina
         {
             // Don't shadow-suggest the word the user is currently typing.
             if (Identifier == Term) return;
-            Push(eastl::string(Identifier.c_str(), Identifier.size()));
+            if (!MatchesPrefix(FStringView(Identifier.c_str(), Identifier.size()))) return;
+            if (!SeenInsert(Identifier.c_str(), Identifier.size())) return;
+            PushBufferIdent(Identifier);
         });
 
-        std::sort(State.suggestions.begin(), State.suggestions.end());
+        CoSortSuggestions(State);
     }
 
     void FLuaEditorTool::RefreshBreakpointMarkers()
     {
         // TextEditor::AddMarker is additive; clear-and-readd to keep state in
-        // sync with our breakpoint set.
+        // sync with our breakpoint set AND the live PC if the debugger is
+        // paused at this file.
         CodeEditor.ClearMarkers();
-        const ImU32 Red       = IM_COL32(220, 60, 60, 255);
+        const ImU32 Red         = IM_COL32(220, 60, 60, 255);
         const ImU32 Translucent = IM_COL32(220, 60, 60, 40);
         for (int Line : Breakpoints)
         {
-            CodeEditor.AddMarker(Line, Red, Translucent, "Breakpoint", "Breakpoint (debugger not yet wired)");
+            CodeEditor.AddMarker(Line, Red, Translucent, "Breakpoint", "Breakpoint - paused on hit");
         }
+
+        // Yellow PC arrow on the line we're paused at — only if the
+        // debugger's source matches this editor's virtual path. A breakpoint
+        // marker on the same line gets overwritten visually by the PC color
+        // because addMarker is additive but draws last-writer-wins per line.
+        if (IsDebuggerPausedHere())
+        {
+            const int PCLine = Lua::FLuaDebugger::Get().GetPausedLineZeroBased();
+            if (PCLine >= 0)
+            {
+                const ImU32 Yellow      = IM_COL32(255, 200, 50, 255);
+                const ImU32 YellowFill  = IM_COL32(255, 200, 50, 60);
+                CodeEditor.AddMarker(PCLine, Yellow, YellowFill, "Paused here", "Debugger paused at this line");
+                PCMarkerLine = PCLine;
+            }
+        }
+        else
+        {
+            PCMarkerLine = -1;
+        }
+    }
+
+    bool FLuaEditorTool::IsDebuggerPausedHere() const
+    {
+        Lua::FLuaDebugger& Debugger = Lua::FLuaDebugger::Get();
+        if (!Debugger.IsPaused())
+        {
+            return false;
+        }
+        return Debugger.GetPausedSource() == FStringView(VirtualPath.c_str(), VirtualPath.size());
     }
 
     // ------------------------------------------------------------- toolbar ---
@@ -485,6 +816,9 @@ namespace Lumina
 
                     if (bRemove)
                     {
+                        Lua::FLuaDebugger::Get().SetBreakpoint(
+                            FStringView(VirtualPath.c_str(), VirtualPath.size()),
+                            Line, false);
                         Itr = Breakpoints.erase(Itr);
                     }
                     else
@@ -495,6 +829,7 @@ namespace Lumina
 
                 if (ImGui::Button("Clear all", ImVec2(-1, 0)))
                 {
+                    Lua::FLuaDebugger::Get().ClearBreakpointsFor(FStringView(VirtualPath.c_str(), VirtualPath.size()));
                     Breakpoints.clear();
                 }
             }
@@ -503,7 +838,7 @@ namespace Lumina
             RefreshBreakpointMarkers();
             ImGui::EndPopup();
         }
-        ImGuiX::TextTooltip("Manage breakpoints. Runtime debugger hookup is a follow-up.");
+        ImGuiX::TextTooltip("Manage breakpoints. Hit a breakpoint to open the debugger panel.");
 
         ImGui::SameLine();
         if (ImGui::Button(LE_ICON_COG " Settings"))
@@ -572,6 +907,136 @@ namespace Lumina
         }
 
         ImGui::EndPopup();
+    }
+
+    void FLuaEditorTool::DrawDebuggerPanel()
+    {
+        Lua::FLuaDebugger& Debugger = Lua::FLuaDebugger::Get();
+
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(28, 28, 36, 230));
+        if (!ImGui::BeginChild("##lua_inline_debugger", ImVec2(0, -ImGui::GetTextLineHeightWithSpacing() - ImGui::GetStyle().ItemSpacing.y),
+            ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding))
+        {
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
+            return;
+        }
+
+        // ---------- toolbar ----------
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), LE_ICON_PAUSE_CIRCLE " Paused at line %d", Debugger.GetPausedLineZeroBased() + 1);
+        ImGui::SameLine(0, 16);
+
+        if (ImGui::Button(LE_ICON_PLAY " Continue"))            Debugger.RequestContinue();
+        ImGui::SameLine();
+        if (ImGui::Button(LE_ICON_DEBUG_STEP_OVER " Over"))     Debugger.RequestStepOver();
+        ImGui::SameLine();
+        if (ImGui::Button(LE_ICON_DEBUG_STEP_INTO " Into"))     Debugger.RequestStepInto();
+        ImGui::SameLine();
+        if (ImGui::Button(LE_ICON_DEBUG_STEP_OUT " Out"))       Debugger.RequestStepOut();
+        ImGui::SameLine();
+        if (ImGui::Button(LE_ICON_STOP " Stop"))                Debugger.RequestStop();
+
+        // Keyboard shortcuts only fire when this editor is the focused tool —
+        // ImGui::IsWindowFocused gates them so they don't steal F5 etc. from
+        // other panels (game preview, console, etc.).
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+        {
+            if (ImGui::IsKeyPressed(ImGuiKey_F5,  false)) Debugger.RequestContinue();
+            if (ImGui::IsKeyPressed(ImGuiKey_F10, false)) Debugger.RequestStepOver();
+            if (ImGui::IsKeyPressed(ImGuiKey_F11, false))
+            {
+                if (ImGui::GetIO().KeyShift) Debugger.RequestStepOut();
+                else                          Debugger.RequestStepInto();
+            }
+        }
+
+        ImGui::Separator();
+
+        // ---------- split: call stack | locals/upvalues ----------
+        const ImVec2 Avail = ImGui::GetContentRegionAvail();
+        const float SplitW = (Avail.x - ImGui::GetStyle().ItemSpacing.x) * 0.4f;
+
+        const TVector<Lua::FStackFrame>& Stack = Debugger.GetCallStack();
+        if (DebuggerSelectedFrame >= (int)Stack.size())
+        {
+            DebuggerSelectedFrame = 0;
+        }
+
+        if (ImGui::BeginChild("##lua_inline_callstack", ImVec2(SplitW, Avail.y), ImGuiChildFlags_Borders))
+        {
+            ImGui::TextDisabled("Call Stack");
+            ImGui::Separator();
+            if (Stack.empty())
+            {
+                ImGui::TextDisabled("(empty)");
+            }
+            for (int I = 0; I < (int)Stack.size(); ++I)
+            {
+                const Lua::FStackFrame& Frame = Stack[I];
+
+                // Show only the file basename in the inline panel — full
+                // virtual paths chew up width fast in the narrow split.
+                FStringView FullSrc(Frame.Source.c_str(), Frame.Source.size());
+                FStringView Basename = VFS::FileName(FullSrc);
+
+                char Label[256];
+                std::snprintf(Label, sizeof(Label), "[%d] %s @ %.*s:%d##frm%d",
+                    I,
+                    Frame.FunctionName.empty() ? "?" : Frame.FunctionName.c_str(),
+                    int(Basename.size()), Basename.data(),
+                    Frame.Line + 1,
+                    I);
+                if (ImGui::Selectable(Label, DebuggerSelectedFrame == I))
+                {
+                    DebuggerSelectedFrame = I;
+                }
+            }
+        }
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+
+        if (ImGui::BeginChild("##lua_inline_locals", ImVec2(0, Avail.y), ImGuiChildFlags_Borders))
+        {
+            ImGui::TextDisabled("Locals / Upvalues");
+            ImGui::Separator();
+
+            if (DebuggerSelectedFrame >= 0 && DebuggerSelectedFrame < (int)Stack.size())
+            {
+                const Lua::FStackFrame& Frame = Stack[DebuggerSelectedFrame];
+
+                auto DrawTable = [&](const TVector<Lua::FStackVariable>& Vars, const char* Header)
+                {
+                    if (Vars.empty()) return;
+                    ImGui::SeparatorText(Header);
+                    if (ImGui::BeginTable(Header, 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
+                    {
+                        ImGui::TableSetupColumn("Name");
+                        ImGui::TableSetupColumn("Value");
+                        ImGui::TableSetupColumn("Type");
+                        ImGui::TableHeadersRow();
+                        for (const Lua::FStackVariable& V : Vars)
+                        {
+                            ImGui::TableNextRow();
+                            ImGui::TableNextColumn();
+                            ImGui::TextUnformatted(V.Name.c_str());
+                            ImGui::TableNextColumn();
+                            ImGui::TextUnformatted(V.Value.c_str());
+                            ImGui::TableNextColumn();
+                            ImGui::TextDisabled("%s", V.TypeName.c_str());
+                        }
+                        ImGui::EndTable();
+                    }
+                };
+
+                DrawTable(Frame.Locals,   "Locals");
+                DrawTable(Frame.Upvalues, "Upvalues");
+            }
+        }
+        ImGui::EndChild();
+
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
     }
 
     void FLuaEditorTool::DrawStatusBar()

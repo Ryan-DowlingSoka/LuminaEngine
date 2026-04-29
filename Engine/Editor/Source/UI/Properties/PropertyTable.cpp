@@ -15,8 +15,27 @@
 namespace Lumina
 {
     static constexpr int        ComplexArrayDisplayLimit = 32;
-    static constexpr float      ChildIndentStep = 8.0f;
+    static constexpr float      ChildIndentStep = 14.0f;
     static constexpr uint32     ArrayControlSeed = 428768833;
+    static constexpr float      ResetColumnWidth = 22.0f;
+    static constexpr ImU32      ModifiedMarkerColor = IM_COL32(245, 175, 0, 255);
+    static constexpr ImU32      CategoryBgColor = IM_COL32(38, 38, 42, 255);
+
+    // Renders the orange "this differs from default" indicator as a thin
+    // vertical bar at the left edge of the current table row. Caller passes
+    // explicit Y bounds since the table row's bottom isn't queryable until
+    // after the row finalizes.
+    static void DrawModifiedMarker(float RowTopY, float RowBottomY)
+    {
+        ImGuiTable* Table = ImGui::GetCurrentTable();
+        if (Table == nullptr)
+        {
+            return;
+        }
+        const float X = Table->Columns[0].MinX;
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            ImVec2(X, RowTopY), ImVec2(X + 2.5f, RowBottomY), ModifiedMarkerColor);
+    }
 
     static bool IsFixedHeightPropertyType(EPropertyTypeFlags Type)
     {
@@ -87,6 +106,34 @@ namespace Lumina
         return Width;
     }
 
+    void FPropertyRow::PerformResetToDefault()
+    {
+        if (PropertyHandle == nullptr || !PropertyHandle->HasDefault())
+        {
+            return;
+        }
+
+        DispatchChange(EPropertyChangeOp::Started);
+
+        PropertyHandle->ResetToDefault();
+
+        // The customization caches the displayed value (slider buffer, color
+        // picker swatch, etc). Without this re-sync the cache is stale and
+        // DispatchChange's UpdatePropertyValue would immediately push the
+        // stale cache back into the container, undoing the reset.
+        if (Customization)
+        {
+            Customization->HandleExternalUpdate(PropertyHandle);
+        }
+
+        OnValueResetToDefault();
+
+        ChangeOp = EPropertyChangeOp::Updated;
+        DispatchChange(EPropertyChangeOp::Updated);
+        DispatchChange(EPropertyChangeOp::Finished);
+        ChangeOp = EPropertyChangeOp::None;
+    }
+
     void FPropertyRow::DispatchChange(EPropertyChangeOp Op)
     {
         if (Op == EPropertyChangeOp::None || PropertyHandle == nullptr || PropertyHandle->Property == nullptr)
@@ -128,9 +175,37 @@ namespace Lumina
 
         ImGui::TableNextRow();
 
+        // Diff-from-default state is computed once per frame so both the marker
+        // and the reset button stay consistent within the row.
+        const bool bIsCategory = IsCategory();
+        const bool bHasDefault = !bIsCategory && PropertyHandle && PropertyHandle->HasDefault();
+        const bool bDiffers = bHasDefault && PropertyHandle->DiffersFromDefault();
+
+        // Capture row top before drawing so the modified-marker can be
+        // rendered with full row height once the bottom Y is known.
+        ImGuiTable* CurrentTable = ImGui::GetCurrentTable();
+        const float RowTopY = CurrentTable ? CurrentTable->RowPosY1 : 0.0f;
+
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
         DrawHeader(Offset);
+
+        // Right-click context menu on the header gives an alternate path to
+        // reset (more discoverable than the icon button for users who learned
+        // it once). Categories don't get a menu.
+        if (!bIsCategory && PropertyHandle && PropertyHandle->Property)
+        {
+            if (ImGui::BeginPopupContextItem("##PropCtx"))
+            {
+                ImGui::BeginDisabled(!bDiffers || bReadOnly || IsReadOnly());
+                if (ImGui::MenuItem(LE_ICON_REFRESH " Reset to Default"))
+                {
+                    PerformResetToDefault();
+                }
+                ImGui::EndDisabled();
+                ImGui::EndPopup();
+            }
+        }
 
         ImGui::TableNextColumn();
         {
@@ -146,7 +221,7 @@ namespace Lumina
                 {
                     ImGui::TableSetupColumn("##Extra", ImGuiTableColumnFlags_WidthFixed, GetExtraControlsSectionWidth());
                 }
-                ImGui::TableSetupColumn("##Reset", ImGuiTableColumnFlags_WidthFixed, 24);
+                ImGui::TableSetupColumn("##Reset", ImGuiTableColumnFlags_WidthFixed, ResetColumnWidth);
 
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
@@ -160,11 +235,31 @@ namespace Lumina
                 }
 
                 ImGui::TableNextColumn();
+                if (bDiffers && !bReadOnly && !IsReadOnly())
+                {
+                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 4));
+                    if (ImGuiX::FlatButton(LE_ICON_REFRESH "##Reset", ImVec2(ResetColumnWidth - 2, 22), ModifiedMarkerColor))
+                    {
+                        PerformResetToDefault();
+                    }
+                    ImGui::PopStyleVar();
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                    {
+                        ImGuiX::TextTooltip_Internal("Reset to default");
+                    }
+                }
 
                 ImGui::EndTable();
             }
             ImGui::PopStyleVar();
         }
+
+        if (bDiffers)
+        {
+            const float RowBottomY = ImGui::GetCursorScreenPos().y;
+            DrawModifiedMarker(RowTopY, RowBottomY);
+        }
+
         ImGui::PopID();
 
         if (bExpanded && !Children.empty())
@@ -480,7 +575,15 @@ namespace Lumina
         DestroyChildren();
 
         void* ContainerPtr = GetPropertyHandle()->ContainerPtr;
+        void* DefaultContainerPtr = GetPropertyHandle()->DefaultContainerPtr;
         const size_t ElementCount = ArrayProperty->GetNum(ContainerPtr);
+
+        // The default array may be a different length. Indices past the default's
+        // end fall back to no-default (i.e. always considered modified).
+        // We pass the *element* pointer directly as the child's container, since
+        // the inner property has Offset=0 and treats its container as the value.
+        const size_t DefaultElementCount = DefaultContainerPtr != nullptr
+            ? ArrayProperty->GetNum(DefaultContainerPtr) : 0;
 
         // Reset the truncation override whenever the array shape changes, so a
         // resize or clear does not leave a stale "show all" flag in place.
@@ -490,7 +593,14 @@ namespace Lumina
         FProperty* InnerProperty = ArrayProperty->GetInternalProperty();
         for (size_t i = 0; i < ElementCount; ++i)
         {
-            TSharedPtr<FPropertyHandle> ElementPropHandle = MakeShared<FPropertyHandle>(ArrayProperty->GetAt(ContainerPtr, i), InnerProperty, static_cast<int64>(i));
+            void* DefaultElementPtr = (i < DefaultElementCount)
+                ? ArrayProperty->GetAt(DefaultContainerPtr, i) : nullptr;
+
+            TSharedPtr<FPropertyHandle> ElementPropHandle = MakeShared<FPropertyHandle>(
+                ArrayProperty->GetAt(ContainerPtr, i),
+                DefaultElementPtr,
+                InnerProperty,
+                static_cast<int64>(i));
             TUniquePtr<FPropertyRow> NewRow = CreatePropertyRow(ElementPropHandle, this, Callbacks);
             NewRow->SetIsArrayElement(true);
             Children.push_back(Move(NewRow));
@@ -592,7 +702,13 @@ namespace Lumina
 
     void FStructPropertyRow::RebuildChildren()
     {
-        PropertyTable = MakeUnique<FPropertyTable>(PropertyHandle->Property->GetValuePtr<void>(PropertyHandle->ContainerPtr), StructProperty->GetStruct());
+        void* InstancePtr = PropertyHandle->Property->GetValuePtr<void>(PropertyHandle->ContainerPtr);
+        void* DefaultInstancePtr = nullptr;
+        if (PropertyHandle->DefaultContainerPtr != nullptr)
+        {
+            DefaultInstancePtr = PropertyHandle->Property->GetValuePtr<void>(PropertyHandle->DefaultContainerPtr);
+        }
+        PropertyTable = MakeUnique<FPropertyTable>(InstancePtr, StructProperty->GetStruct(), DefaultInstancePtr);
         PropertyTable->RebuildTree();
     }
 
@@ -669,11 +785,18 @@ namespace Lumina
         return ImGui::CalcTextSize(OptionalProperty->GetPropertyDisplayName().c_str()).x;
     }
 
+    void FOptionalPropertyRow::OnValueResetToDefault()
+    {
+        bWasEngaged = OptionalProperty->HasValue(GetPropertyHandle()->ContainerPtr);
+        RebuildChildren();
+    }
+
     void FOptionalPropertyRow::RebuildChildren()
     {
         DestroyChildren();
 
         void* ContainerPtr = GetPropertyHandle()->ContainerPtr;
+        void* DefaultContainerPtr = GetPropertyHandle()->DefaultContainerPtr;
         if (!OptionalProperty->HasValue(ContainerPtr))
         {
             return;
@@ -687,7 +810,15 @@ namespace Lumina
 
         // The optional owns the storage for T; pass &T directly as the child's
         // container pointer so the inner row's customization edits in-place.
-        TSharedPtr<FPropertyHandle> InnerHandle = MakeShared<FPropertyHandle>(OptionalProperty->GetValue(ContainerPtr), Inner);
+        // The default's payload is only meaningful when the default itself is
+        // engaged; otherwise the live engaged value is always "modified".
+        void* DefaultPayload = nullptr;
+        if (DefaultContainerPtr != nullptr && OptionalProperty->HasValue(DefaultContainerPtr))
+        {
+            DefaultPayload = OptionalProperty->GetValue(DefaultContainerPtr);
+        }
+        TSharedPtr<FPropertyHandle> InnerHandle = MakeShared<FPropertyHandle>(
+            OptionalProperty->GetValue(ContainerPtr), DefaultPayload, Inner);
         Children.push_back(CreatePropertyRow(InnerHandle, this, Callbacks));
     }
 
@@ -730,17 +861,21 @@ namespace Lumina
 
     void FCategoryPropertyRow::DrawHeader(float Offset)
     {
+        // Categories paint both row cells with a darker background to read as
+        // a visual section break independent of the row-bg alternation.
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, CategoryBgColor);
+        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, CategoryBgColor);
+
         ImGui::Dummy(ImVec2(Offset, 0));
         ImGui::SameLine();
 
         ImGui::SetNextItemOpen(bExpanded);
         ImGui::PushStyleColor(ImGuiCol_Header, 0);
-        ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0);
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0);
-        bExpanded = ImGui::CollapsingHeader(Category.c_str());
-        ImGui::PopStyleColor(3);
-
-        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, 0xFF1C1C1C);
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(255, 255, 255, 16));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(255, 255, 255, 12));
+        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(220, 220, 222, 255));
+        bExpanded = ImGui::CollapsingHeader(Category.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+        ImGui::PopStyleColor(4);
     }
 
     float FCategoryPropertyRow::GetMeasuredHeaderTextWidth() const
@@ -754,6 +889,47 @@ namespace Lumina
         , Object(InObject)
     {
         ChangeEventCallbacks.Type = InType;
+        // Auto-resolve a default-instance for diff/reset. Works uniformly for
+        // CObject classes (returns CDO) and plain reflected structs (returns
+        // a lazily allocated default-constructed mirror). InObject == default
+        // would compare to itself, so skip in that case.
+        if (InType != nullptr && InObject != nullptr)
+        {
+            void* MaybeDefault = InType->GetDefaultInstance();
+            if (MaybeDefault != InObject)
+            {
+                DefaultObject = MaybeDefault;
+            }
+        }
+    }
+
+    FPropertyTable::FPropertyTable(void* InObject, CStruct* InType, void* InDefaultObject)
+        : ChangeEventCallbacks()
+        , Struct(InType)
+        , Object(InObject)
+        , DefaultObject(InDefaultObject)
+    {
+        ChangeEventCallbacks.Type = InType;
+    }
+
+    FPropertyTable::FPropertyTable(CObject* InObject)
+        : ChangeEventCallbacks()
+        , Object(InObject)
+    {
+        if (InObject != nullptr)
+        {
+            CClass* Class = InObject->GetClass();
+            Struct = Class;
+            ChangeEventCallbacks.Type = Class;
+
+            // The CDO compares against itself trivially, so don't plumb one
+            // when we _are_ the CDO. Avoids a misleading "modified" indicator
+            // on the rare CDO-edit flow (e.g. project-default editor).
+            if (Class != nullptr && !InObject->HasAnyFlag(OF_DefaultObject))
+            {
+                DefaultObject = Class->GetDefaultObject();
+            }
+        }
     }
 
     void FPropertyTable::RebuildTree()
@@ -813,7 +989,7 @@ namespace Lumina
                     TargetRow = FindOrCreateCategoryRow(FName("General"));
                 }
 
-                TSharedPtr<FPropertyHandle> Property = MakeShared<FPropertyHandle>(Object, Current);
+                TSharedPtr<FPropertyHandle> Property = MakeShared<FPropertyHandle>(Object, DefaultObject, Current);
                 TargetRow->AddProperty(Property);
             }
 
@@ -858,9 +1034,12 @@ namespace Lumina
         constexpr ImGuiTableFlags Flags =
             ImGuiTableFlags_BordersOuter |
             ImGuiTableFlags_NoBordersInBodyUntilResize |
-            ImGuiTableFlags_SizingStretchSame;
+            ImGuiTableFlags_SizingStretchSame |
+            ImGuiTableFlags_RowBg;
 
-        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0, 2));
+        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4, 3));
+        ImGui::PushStyleColor(ImGuiCol_TableRowBg, IM_COL32(30, 30, 32, 255));
+        ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt, IM_COL32(34, 34, 36, 255));
         ImGui::PushID(this);
 
         // Size the header column to fit the widest visible label so short
@@ -872,7 +1051,7 @@ namespace Lumina
         {
             HeaderColumnWidth = std::max(HeaderColumnWidth, Row->ComputeRequiredHeaderWidth(0.0f));
         }
-        HeaderColumnWidth += ImGui::GetStyle().ItemSpacing.x * 4.0f + 12.0f;
+        HeaderColumnWidth += 18.0f;
 
         if (ImGui::BeginTable("GridTable", 2, Flags))
         {
@@ -889,6 +1068,7 @@ namespace Lumina
         }
 
         ImGui::PopID();
+        ImGui::PopStyleColor(2);
         ImGui::PopStyleVar();
     }
 
@@ -896,6 +1076,24 @@ namespace Lumina
     {
         Object = InObject;
         Struct = StructType;
+        DefaultObject = nullptr;
+        if (StructType != nullptr && InObject != nullptr)
+        {
+            void* MaybeDefault = StructType->GetDefaultInstance();
+            if (MaybeDefault != InObject)
+            {
+                DefaultObject = MaybeDefault;
+            }
+        }
+
+        RebuildTree();
+    }
+
+    void FPropertyTable::SetObject(void* InObject, CStruct* StructType, void* InDefaultObject)
+    {
+        Object = InObject;
+        Struct = StructType;
+        DefaultObject = InDefaultObject;
 
         RebuildTree();
     }

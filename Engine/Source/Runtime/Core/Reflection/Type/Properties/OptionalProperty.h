@@ -41,6 +41,11 @@ namespace Lumina
         void Serialize(FArchive& Ar, void* Value) override;
         void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults) override;
 
+        // Compares engaged-state, then payload via Inner. Copy mirrors the
+        // engaged state (engaging via SetValue / disengaging via Reset).
+        RUNTIME_API bool Identical(const void* ValueA, const void* ValueB) const override;
+        RUNTIME_API void CopyCompleteValue(void* Dst, const void* Src) const override;
+
     private:
 
         OptionalHasValuePtr     HasValueFn;

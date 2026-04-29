@@ -83,4 +83,28 @@ namespace Lumina
         void* PropertyPtr = (uint8*)ContainerPtr + Offset;
         return (uint8*)PropertyPtr + ArrayIndex * ElementSize;
     }
+
+    bool FProperty::Identical(const void* ValueA, const void* ValueB) const
+    {
+        return memcmp(ValueA, ValueB, ElementSize) == 0;
+    }
+
+    void FProperty::CopyCompleteValue(void* Dst, const void* Src) const
+    {
+        memcpy(Dst, Src, ElementSize);
+    }
+
+    bool FProperty::Identical_InContainer(const void* ContainerA, const void* ContainerB, int64 ArrayIndex) const
+    {
+        const void* A = GetValuePtrInternal(const_cast<void*>(ContainerA), ArrayIndex);
+        const void* B = GetValuePtrInternal(const_cast<void*>(ContainerB), ArrayIndex);
+        return Identical(A, B);
+    }
+
+    void FProperty::CopyCompleteValue_InContainer(void* DstContainer, const void* SrcContainer, int64 ArrayIndex) const
+    {
+        void* D = GetValuePtrInternal(DstContainer, ArrayIndex);
+        const void* S = GetValuePtrInternal(const_cast<void*>(SrcContainer), ArrayIndex);
+        CopyCompleteValue(D, S);
+    }
 }

@@ -22,4 +22,14 @@ namespace Lumina
         FName* StringValue = (FName*)Value;
         Ar << *StringValue;
     }
+
+    bool FStringProperty::Identical(const void* ValueA, const void* ValueB) const
+    {
+        return *static_cast<const FString*>(ValueA) == *static_cast<const FString*>(ValueB);
+    }
+
+    void FStringProperty::CopyCompleteValue(void* Dst, const void* Src) const
+    {
+        *static_cast<FString*>(Dst) = *static_cast<const FString*>(Src);
+    }
 }

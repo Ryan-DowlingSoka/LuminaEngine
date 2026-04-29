@@ -356,6 +356,8 @@ namespace Lumina
         EntityRegistry.on_destroy   <SScriptComponent>()            .connect<&ThisClass::OnScriptComponentDestroyed>(this);
         SystemContext.EventSink     <FSwitchActiveCameraEvent>()    .connect<&ThisClass::OnChangeCameraEvent>(this);
         SystemContext.EventSink     <FScriptComponentPendingReady>().connect<&ThisClass::OnScriptComponentPendingReady>(this);
+
+        ScriptReloadedHandle = Lua::FScriptingContext::Get().OnScriptLoaded.AddMember(this, &ThisClass::OnScriptSourceReloaded);
         
         auto TransformView = EntityRegistry.view<STransformComponent>();
         TransformView.each([&](entt::entity Entity, STransformComponent& TransformComponent)
@@ -386,7 +388,13 @@ namespace Lumina
     void CWorld::TeardownWorld()
     {
         GAudioContext->StopAllSounds();
-        
+
+        if (ScriptReloadedHandle.IsValid())
+        {
+            Lua::FScriptingContext::Get().OnScriptLoaded.Remove(ScriptReloadedHandle);
+            ScriptReloadedHandle = {};
+        }
+
         EntityRegistry.on_destroy<FRelationshipComponent>().disconnect<&ThisClass::OnRelationshipComponentDestroyed>(this);
         EntityRegistry.on_destroy<SScriptComponent>().disconnect<&ThisClass::OnScriptComponentConstruct>(this);
         
@@ -1171,6 +1179,50 @@ namespace Lumina
         if ((WorldType == EWorldType::Editor) == ScriptComponent.bRunInEditor)
         {
             ScriptComponent.DetachFunc.InvokeAsCoroutine(ScriptComponent.Script->Reference);
+        }
+    }
+
+    void CWorld::ReloadScriptForComponent(entt::entity Entity, SScriptComponent& ScriptComponent)
+    {
+        // Mirror the destroy path so any state owned by the old script instance
+        // gets cleared: per-entity event bus subscriptions, pending timers, the
+        // OnDetach lifecycle hook. Cached FRefs (AttachFunc/UpdateFunc/etc.)
+        // and MessageHandlers all point into the soon-to-be-discarded FScript
+        // table; reset them before LoadUniqueScriptPath returns a new instance.
+        if (ScriptComponent.Script != nullptr && ScriptComponent.DetachFunc.IsValid())
+        {
+            if ((WorldType == EWorldType::Editor) == ScriptComponent.bRunInEditor)
+            {
+                ScriptComponent.DetachFunc.InvokeAsCoroutine(ScriptComponent.Script->Reference);
+            }
+        }
+
+        LuaEventBus.UnsubscribeEntity(Entity);
+        TimerManager.ClearTimersForEntity(Entity);
+
+        ScriptComponent.Script.reset();
+        ScriptComponent.AttachFunc      = {};
+        ScriptComponent.ReadyFunc       = {};
+        ScriptComponent.UpdateFunc      = {};
+        ScriptComponent.DetachFunc      = {};
+        ScriptComponent.ScriptMetaTable = {};
+        ScriptComponent.MessageHandlers.clear();
+
+        OnScriptComponentCreated(Entity, ScriptComponent, /*bRunReady*/ true);
+    }
+
+    void CWorld::OnScriptSourceReloaded(FStringView Path)
+    {
+        // FScriptingContext fires this from ProcessDeferredActions on the main
+        // thread, so we can mutate registry-resident components directly.
+        auto View = EntityRegistry.view<SScriptComponent>();
+        for (entt::entity Entity : View)
+        {
+            SScriptComponent& Component = View.get<SScriptComponent>(Entity);
+            if (FStringView(Component.ScriptPath.Path.c_str(), Component.ScriptPath.Path.size()) == Path)
+            {
+                ReloadScriptForComponent(Entity, Component);
+            }
         }
     }
 

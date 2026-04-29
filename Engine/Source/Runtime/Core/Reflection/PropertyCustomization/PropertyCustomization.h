@@ -11,8 +11,20 @@ namespace Lumina
     public:
 
         FPropertyHandle(void* InContainerPtr, FProperty* InProperty, int64 InIndex = 0);
-        
+        FPropertyHandle(void* InContainerPtr, void* InDefaultContainerPtr, FProperty* InProperty, int64 InIndex = 0);
+
+        // True when this property differs from its default value. False if no
+        // default container is plumbed (e.g. struct edited without a CDO source).
+        bool DiffersFromDefault() const;
+
+        // Copies the default value back into the live container (no-op if no
+        // default is plumbed). Caller is responsible for change notifications.
+        void ResetToDefault();
+
+        bool HasDefault() const { return DefaultContainerPtr != nullptr; }
+
         void* ContainerPtr;
+        void* DefaultContainerPtr = nullptr;
         FProperty* Property;
         int64 Index = 0;
     };

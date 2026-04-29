@@ -38,12 +38,16 @@ namespace Lumina
 
     void FEditorTool::GenerateThumbnail(CPackage* Package)
     {
-        if (!World)
+        if (!World || !World->GetRenderer())
         {
             return;
         }
         
         FRHIImageRef RenderTarget = World->GetRenderer()->GetRenderTarget();
+        if (!RenderTarget)
+        {
+            return;
+        }
     
         FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
         CommandList->Open();

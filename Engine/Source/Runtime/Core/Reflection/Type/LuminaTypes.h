@@ -100,6 +100,21 @@ namespace Lumina
         virtual void Serialize(FArchive& Ar, void* Value) { }
         virtual void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults = nullptr) { }
 
+        // Per-property value compare. Inputs are raw value pointers (already past
+        // the property offset). Default is byte-wise memcmp on ElementSize, which
+        // is correct for trivial scalars; non-trivial types (FString, structs,
+        // arrays, optionals) override this to use type-aware equality.
+        RUNTIME_API virtual bool Identical(const void* ValueA, const void* ValueB) const;
+
+        // Per-property value copy. Inputs are raw value pointers. Default is
+        // memcpy on ElementSize; non-trivial types override.
+        RUNTIME_API virtual void CopyCompleteValue(void* Dst, const void* Src) const;
+
+        // Container-level convenience wrappers: resolve the value pointer at
+        // offset (+ optional element index) on each side and forward.
+        RUNTIME_API bool Identical_InContainer(const void* ContainerA, const void* ContainerB, int64 ArrayIndex = 0) const;
+        RUNTIME_API void CopyCompleteValue_InContainer(void* DstContainer, const void* SrcContainer, int64 ArrayIndex = 0) const;
+
         RUNTIME_API bool IsA(EPropertyTypeFlags Flag) const { return TypeFlags == Flag; }
         
         const FName& GetTypeName() const;

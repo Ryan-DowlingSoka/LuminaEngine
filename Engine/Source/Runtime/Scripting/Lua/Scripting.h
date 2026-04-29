@@ -37,10 +37,32 @@ namespace Lumina::Lua
 
     struct FLuaSymbol
     {
-        FString         Name;       // Leaf name, e.g. "ReadFile"
-        FString         Path;       // Dotted path, e.g. "Engine.VFS.ReadFile"
-        FString         Parent;     // Empty for top-level, else parent path e.g. "Engine.VFS"
+        FString         Name;          // Leaf name, e.g. "ReadFile"
+        FString         Path;          // Dotted path, e.g. "Engine.VFS.ReadFile"
+        FString         Parent;        // Empty for top-level, else parent path e.g. "Engine.VFS"
         ELuaSymbolKind  Kind = ELuaSymbolKind::Value;
+
+        // Concrete Lua type name straight from lua_typename — "function",
+        // "table", "string", "number", "boolean", "vector", etc. Distinct
+        // from Kind because Kind collapses every primitive into Value;
+        // TypeName lets the editor show the precise type.
+        FString         TypeName;
+
+        // Preview of the runtime value for primitives. Empty for tables /
+        // functions / userdata, filled with the literal text for strings,
+        // numbers, booleans. Lets the autocomplete popup show "MaxHealth = 100"
+        // instead of just "MaxHealth".
+        FString         ValuePreview;
+
+        // Function signature info, harvested via lua_getinfo "a" flag:
+        //   - Lua functions: real declared parameter count + vararg flag.
+        //   - C functions:   ParamCount = 0, bIsVararg = true (Luau can't
+        //     introspect their arity, so we render them as "function(...)").
+        // The editor formats these into "function(arg1, arg2, ...)" for the
+        // suggestion popup detail column.
+        uint8           ParamCount = 0;
+        bool            bIsVararg = false;
+        bool            bIsCFunction = false;
     };
 
     

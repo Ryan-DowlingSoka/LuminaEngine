@@ -774,6 +774,17 @@ namespace Lumina
             return;
         }
 
+        // Our own OnSave fires the directory watcher and routes back here.
+        // If the disk content matches what we last synced, the file hasn't
+        // actually changed under us — skip SetText so the user's cursor,
+        // selection, scroll, and undo/redo stack are preserved.
+        if (Body.size() == LastSyncedText.size()
+            && std::memcmp(Body.data(), LastSyncedText.data(), Body.size()) == 0)
+        {
+            bBufferDirty = false;
+            return;
+        }
+
         const std::string_view View(Body.c_str(), Body.size());
         CodeEditor.SetText(View);
         LastSyncedText.assign(Body.c_str(), Body.size());

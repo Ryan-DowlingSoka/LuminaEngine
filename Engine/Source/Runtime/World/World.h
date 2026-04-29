@@ -2,6 +2,7 @@
 
 #include "Core/Object/Object.h"
 #include "Core/UpdateContext.h"
+#include "Core/Delegates/Delegate.h"
 #include "World/Entity/Components/CameraComponent.h"
 #include "Entity/Registry/EntityRegistry.h"
 #include "Renderer/RHIFwd.h"
@@ -175,6 +176,16 @@ namespace Lumina
         void OnScriptComponentCreated(entt::entity Entity, SScriptComponent& ScriptComponent, bool bRunReady);
         void OnScriptComponentDestroyed(entt::registry& Registry, entt::entity Entity);
 
+        // Hot-reload entry point: drop the existing script binding on this component
+        // and run the OnScriptComponentCreated bind path again with the freshly
+        // compiled FScript. Called by the FScriptingContext::OnScriptLoaded
+        // multicast when an editor save reloads the source on disk.
+        void ReloadScriptForComponent(entt::entity Entity, SScriptComponent& ScriptComponent);
+
+        // Walks every script component whose ScriptPath matches Path and re-binds
+        // it. Wired to FScriptingContext::OnScriptLoaded in InitializeWorld.
+        void OnScriptSourceReloaded(FStringView Path);
+
         void RegisterSystems();
         
         //~ Begin Debug Drawing
@@ -222,6 +233,11 @@ namespace Lumina
         FLuaEventBus                                        LuaEventBus;
         FEntityMessageBus                                   MessageBus;
         FTimerManager                                       TimerManager;
+
+        // Subscription to FScriptingContext::OnScriptLoaded — populated in
+        // InitializeWorld, removed in TeardownWorld. The handler walks every
+        // SScriptComponent matching the reloaded path and re-binds it.
+        FDelegateHandle                                     ScriptReloadedHandle;
 
         FLineBatcherComponent*                              LineBatcherComponent;
         

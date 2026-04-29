@@ -69,9 +69,11 @@
 #include "Renderer/RHIGlobals.h"
 #include "Renderer/ShaderCompiler.h"
 #include "Scripting/Lua/Scripting.h"
+#include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "Tools/ConsoleLogEditorTool.h"
 #include "Tools/ContentBrowserEditorTool.h"
 #include "Tools/EditorTool.h"
+#include "Tools/LuaDebuggerEditorTool.h"
 #include "Tools/CPUProfilerEditorTool.h"
 #include "Tools/GPUProfilerEditorTool.h"
 #include "Tools/ShadowAtlasEditorTool.h"
@@ -386,7 +388,46 @@ namespace Lumina
     void FEditorUI::OnUpdate(const FUpdateContext& UpdateContext)
     {
         LUMINA_PROFILE_SCOPE();
-        
+
+        // Auto-open + focus the script editor whenever the debugger pauses
+        // at a new source. Reacting to source changes (rather than just the
+        // running→paused transition) means a Step Into that crosses into a
+        // different file follows the user with a tab switch. The inline
+        // debugger panel lives inside FLuaEditorTool, so opening the file
+        // is enough to get the toolbar, call stack, and locals on screen.
+        Lua::FLuaDebugger& Debugger = Lua::FLuaDebugger::Get();
+        if (Debugger.IsPaused())
+        {
+            const FStringView Source = Debugger.GetPausedSource();
+            const FStringView Last(LuaDebuggerLastOpenedSource.c_str(), LuaDebuggerLastOpenedSource.size());
+            if (!Source.empty() && Source != Last)
+            {
+                // OpenFileEditor — not OpenScriptEditor — routes .lua to the
+                // in-engine FLuaEditorTool. OpenScriptEditor calls LaunchURL
+                // and would shell out to VS Code instead.
+                OpenFileEditor(Source);
+
+                // Drive a real tab switch via the FocusTargetWindowName
+                // pipeline that runs in OnStartFrame. Plain ImGui::SetWindowFocus
+                // doesn't always raise a docked tab to the foreground, but the
+                // pipeline explicitly sets DockNode->TabBar->NextSelectedTabId.
+                FString Key(Source.data(), Source.size());
+                auto Itr = ActiveFileTools.find(Key);
+                if (Itr != ActiveFileTools.end())
+                {
+                    FocusTargetWindowName = Itr->second->GetToolName();
+                }
+
+                LuaDebuggerLastOpenedSource.assign(Source.data(), Source.size());
+            }
+        }
+        else
+        {
+            // Reset on resume so the next pause — even on the same file —
+            // re-fires the focus.
+            LuaDebuggerLastOpenedSource.clear();
+        }
+
         for (FEditorTool* Tool : EditorTools)
         {
             if (Tool->HasWorld())
@@ -1403,6 +1444,7 @@ namespace Lumina
 
         DrawToolMenuItem<FInputActionEditorTool>(LE_ICON_KEYBOARD " Input Actions", this);
         DrawToolMenuItem<FScriptsInfoEditorTool>(LE_ICON_LANGUAGE_LUA " Scripts Info", this);
+        DrawToolMenuItem<FLuaDebuggerEditorTool>(LE_ICON_BUG " Lua Debugger", this);
         DrawToolMenuItem<FRendererInfoEditorTool>(LE_ICON_CHART_LINE " Renderer Info", this);
         DrawToolMenuItem<FGPUProfilerEditorTool>(LE_ICON_CHART_TIMELINE " GPU Profiler", this);
         DrawToolMenuItem<FCPUProfilerEditorTool>(LE_ICON_CHART_BAR " CPU Profiler", this);

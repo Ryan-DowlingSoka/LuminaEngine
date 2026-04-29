@@ -73,6 +73,34 @@ namespace Lumina
         return ClassDefaultObject;
     }
 
+    void* CStruct::GetDefaultInstance()
+    {
+        if (DefaultInstance != nullptr)
+        {
+            return DefaultInstance;
+        }
+
+        FStructOps* Ops = GetStructOps();
+        if (Ops == nullptr || !Ops->HasConstruct())
+        {
+            return nullptr;
+        }
+
+        // Aligned raw allocation, default-construct in place. Lifetime is the
+        // process — we deliberately don't track these for cleanup, mirroring
+        // how class CDOs are AddToRoot'd and never released.
+        const uint32 InstanceSize = GetSize();
+        const uint32 InstanceAlign = GetAlignment();
+        DefaultInstance = Memory::Malloc(InstanceSize, InstanceAlign);
+        Ops->Construct(DefaultInstance);
+        return DefaultInstance;
+    }
+
+    void* CClass::GetDefaultInstance()
+    {
+        return GetDefaultObject();
+    }
+
     CObject* CClass::CreateDefaultObject()
     {
         DEBUG_ASSERT(ClassDefaultObject == nullptr);

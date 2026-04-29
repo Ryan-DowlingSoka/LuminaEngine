@@ -39,4 +39,40 @@ namespace Lumina
     {
         UNREACHABLE();
     }
+
+    bool FOptionalProperty::Identical(const void* ValueA, const void* ValueB) const
+    {
+        const bool bA = HasValue(ValueA);
+        const bool bB = HasValue(ValueB);
+        if (bA != bB)
+        {
+            return false;
+        }
+
+        if (!bA)
+        {
+            return true;
+        }
+
+        const void* PayloadA = GetValueFn(const_cast<void*>(ValueA));
+        const void* PayloadB = GetValueFn(const_cast<void*>(ValueB));
+        return Inner->Identical(PayloadA, PayloadB);
+    }
+
+    void FOptionalProperty::CopyCompleteValue(void* Dst, const void* Src) const
+    {
+        const bool bSrcEngaged = HasValue(Src);
+        if (!bSrcEngaged)
+        {
+            Reset(Dst);
+            return;
+        }
+
+        // Engage Dst with a default-constructed payload, then in-place
+        // copy the source payload into it.
+        SetValue(Dst, nullptr);
+        void* DstPayload = GetValueFn(Dst);
+        const void* SrcPayload = GetValueFn(const_cast<void*>(Src));
+        Inner->CopyCompleteValue(DstPayload, SrcPayload);
+    }
 }

@@ -35,6 +35,15 @@ namespace Lumina::Lua
         FRef                            Environment;
         FRef                            Thread;
 
+        /**
+         * Pinned reference to the module's top-level closure (the function
+         * returned by luau_load before pcall consumed it). Captured pre-pcall
+         * via lua_pushvalue so the debugger can walk its prototype tree to
+         * install line breakpoints — without it the closure would be GC'd as
+         * soon as pcall returned.
+         */
+        FRef                            MainFunction;
+
         /** Schema parsed from the `type Exports = {...}` alias; empty if none/unrecognised. */
         FScriptExportSchema             ExportsSchema;
 

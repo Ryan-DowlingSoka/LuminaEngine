@@ -15,25 +15,50 @@ namespace Lumina
         using EqualsFn      = bool(*)(const void*, const void*);
         using ToStringFn    = FString(*)(const void*);
         using LessThanFn    = bool(*)(const void*, const void*);
+        using ConstructFn   = void(*)(void*);
+        using DestructFn    = void(*)(void*);
 
         SerializeFn     Serialize   = nullptr;
         CopyFn          Copy        = nullptr;
         EqualsFn        Equals      = nullptr;
         ToStringFn      ToString    = nullptr;
         LessThanFn      LessThan    = nullptr;
+        // Construct/Destruct exist only for default-constructible reflected
+        // types. Used by CStruct::GetDefaultInstance to lazily build the
+        // default value used for diff/reset in property editors.
+        ConstructFn     Construct   = nullptr;
+        DestructFn      Destruct    = nullptr;
 
         bool HasSerializer()    const { return Serialize    != nullptr; }
         bool HasCopy()          const { return Copy         != nullptr; }
         bool HasEquality()      const { return Equals       != nullptr; }
         bool HasToString()      const { return ToString     != nullptr; }
         bool HasLessThan()      const { return LessThan     != nullptr; }
+        bool HasConstruct()     const { return Construct    != nullptr; }
+        bool HasDestruct()      const { return Destruct     != nullptr; }
     };
-    
+
     template<typename T>
     FStructOps* MakeStructOps()
     {
         FStructOps* Ops = new FStructOps{};
-        
+
+        if constexpr (eastl::is_default_constructible_v<T>)
+        {
+            Ops->Construct = +[](void* Mem)
+            {
+                new (Mem) T();
+            };
+        }
+
+        if constexpr (eastl::is_destructible_v<T>)
+        {
+            Ops->Destruct = +[](void* Mem)
+            {
+                static_cast<T*>(Mem)->~T();
+            };
+        }
+
         if constexpr (Concepts::THasSerialize<T>)
         {
             Ops->Serialize = +[](FArchive& Ar, void* Value)

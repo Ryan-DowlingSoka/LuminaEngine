@@ -28,6 +28,11 @@ namespace Lumina
         void Serialize(FArchive& Ar, void* Value) override;
         void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults) override;
 
+        // Element-count + per-element compare via Inner. CopyCompleteValue
+        // resizes Dst to match Src then element-wise copies.
+        RUNTIME_API bool Identical(const void* ValueA, const void* ValueB) const override;
+        RUNTIME_API void CopyCompleteValue(void* Dst, const void* Src) const override;
+
         FProperty* GetInternalProperty() const { return Inner.get(); }
         
         SIZE_T GetNum(const void* InContainer) const

@@ -6,6 +6,7 @@
 #include "luacode.h"
 #include "lualib.h"
 #include "ScriptTypes.h"
+#include "Debugger/LuaDebugger.h"
 #include "Audio/AudioGlobals.h"
 #include "Core/Utils/TimedEvent.h"
 #include "Events/KeyCodes.h"
@@ -95,10 +96,14 @@ namespace Lumina::Lua
     void FScriptingContext::Initialize()
     {
         L = lua_newstate(ScriptingMemoryReallocFn, this);
-        
+
         lua_Callbacks* Callbacks    = lua_callbacks(L);
         Callbacks->useratom         = AtomString;
         Callbacks->panic            = LuaPanicHandler;
+
+        // Hook the debugger before any scripts can load so its debugbreak /
+        // debugstep callbacks are visible to every coroutine spawned by the VM.
+        FLuaDebugger::Get().Initialize(L);
 
         luaL_openlibs(L);
         
@@ -439,6 +444,7 @@ namespace Lumina::Lua
 
     void FScriptingContext::Shutdown()
     {
+        FLuaDebugger::Get().Shutdown();
         lua_close(L);
         L = nullptr;
     }
@@ -512,15 +518,26 @@ namespace Lumina::Lua
             return {};
         }
         
-        FStringView FileName = VFS::FileName(Path);
-        TSharedPtr<FScript> Script = LoadUniqueScript(ScriptData, FileName);
+        // Pass the full virtual path as the Luau chunkname so debug callbacks
+        // (lua_Debug::source / short_src) carry an identifier that maps cleanly
+        // back to whatever opened the script — the editor's breakpoint keys,
+        // FScriptingContext::ScriptReloaded, and runtime stack walks all key
+        // off the same path string.
+        TSharedPtr<FScript> Script = LoadUniqueScript(ScriptData, Path);
         if (Script == nullptr)
         {
             return {};
         }
-        
+
         Script->Path = Path;
         RegisteredScripts[Path].emplace_back(Script);
+
+        // Re-install any line breakpoints the editor had set on this path.
+        // Hot-reloads (driven by ScriptReloaded → OnScriptLoaded broadcast) all
+        // funnel through here, so this is the single source of truth for
+        // breakpoint persistence across script recompiles.
+        FLuaDebugger::Get().OnScriptLoaded(*Script);
+
         return Move(Script); // Won't elide.
     }
 
@@ -530,10 +547,17 @@ namespace Lumina::Lua
         
         size_t BytecodeSize = 0;
         lua_CompileOptions Options{};
-        Options.debugLevel = 2;
-        #ifndef DEBUG
-        Options.optimizationLevel = 2;
-        Options.debugLevel = 0;
+        // Editor builds always compile with full debug info and optLevel 1 so
+        // the debugger can land breakpoints on every source line and locals
+        // keep their declared names. Optimization level 2 inlines / folds
+        // things that lua_breakpoint then can't attach to. Game / Shipping
+        // builds — where the debugger isn't shipped — get the fast path.
+        #if USING(WITH_EDITOR)
+            Options.debugLevel = 2;
+            Options.optimizationLevel = 1;
+        #else
+            Options.debugLevel = 0;
+            Options.optimizationLevel = 2;
         #endif
         char* Bytecode = luau_compile(Code.data(), Code.length(), &Options, &BytecodeSize);
 
@@ -556,6 +580,14 @@ namespace Lumina::Lua
             LOG_ERROR("Lua - Failed to load: {}", lua_tostring(Thread, -1));
             return {};
         }
+
+        // Pin a ref to the loaded module closure before pcall consumes it.
+        // The debugger uses this anchor to call lua_breakpoint, which descends
+        // into nested protos and sets break opcodes on every line that matches.
+        // Without this anchor the closure is GC-eligible the moment pcall
+        // returns its single result, so breakpoints would silently no-op.
+        lua_pushvalue(Thread, -1);
+        FRef MainFunctionRef(Thread, -1);
 
         int CallResult = lua_pcall(Thread, 0, 1, 0);
         if (CallResult != LUA_OK)
@@ -584,6 +616,7 @@ namespace Lumina::Lua
         NewScript->Reference        = FRef(Thread, -1);
         NewScript->ExportsSchema    = eastl::move(Schema);
         NewScript->ExportDefaults   = eastl::move(Defaults);
+        NewScript->MainFunction     = eastl::move(MainFunctionRef);
 
         lua_pushvalue(Thread, LUA_GLOBALSINDEX);
         NewScript->Environment  = FRef(Thread, -1);
@@ -653,6 +686,67 @@ namespace Lumina::Lua
             }
         }
 
+        // For a function on top of the stack, fill the function-shape fields
+        // on Out via lua_getinfo "a". Luau treats every C function as
+        // varargs/0-params (no introspection), so we mirror that with
+        // bIsCFunction = true so the editor can render an unknown signature.
+        // Lua functions get their real numparams + is_vararg.
+        void HarvestFunctionInfoTop(lua_State* L, FLuaSymbol& Out)
+        {
+            // lua_getinfo with negative level reads the function at top + level.
+            lua_Debug ar = {};
+            if (lua_getinfo(L, -1, "a", &ar) == 0)
+            {
+                Out.bIsVararg = true;
+                return;
+            }
+            Out.ParamCount = static_cast<uint8>(ar.nparams);
+            Out.bIsVararg  = ar.isvararg != 0;
+
+            // C functions report nparams=0, isvararg=1 unconditionally.
+            // Tag them so the formatter knows to render "(...)" instead of "()".
+            Out.bIsCFunction = (Out.ParamCount == 0 && Out.bIsVararg);
+        }
+
+        // Stringify the value at -1 for the autocomplete preview. Cheap and
+        // side-effect-free: skips __tostring metamethods (we're walking a
+        // live VM and don't want to invoke arbitrary Lua during a harvest).
+        FString PreviewTopValue(lua_State* L)
+        {
+            switch (lua_type(L, -1))
+            {
+                case LUA_TNIL:     return "nil";
+                case LUA_TBOOLEAN: return lua_toboolean(L, -1) ? "true" : "false";
+                case LUA_TNUMBER:
+                {
+                    char Buf[64];
+                    std::snprintf(Buf, sizeof(Buf), "%.14g", lua_tonumber(L, -1));
+                    return FString(Buf);
+                }
+                case LUA_TSTRING:
+                {
+                    size_t Len = 0;
+                    const char* Str = lua_tolstring(L, -1, &Len);
+                    FString Out;
+                    Out.reserve(Len + 2);
+                    Out.assign("\"");
+                    Out.append(Str ? Str : "", Len);
+                    Out.append("\"");
+                    return Out;
+                }
+                case LUA_TVECTOR:
+                {
+                    const float* V = lua_tovector(L, -1);
+                    if (!V) return "vector(?)";
+                    char Buf[96];
+                    std::snprintf(Buf, sizeof(Buf), "vec3(%.4g, %.4g, %.4g)", V[0], V[1], V[2]);
+                    return FString(Buf);
+                }
+                default:
+                    return FString();  // tables, functions, userdata — type alone is enough
+            }
+        }
+
         // Skips Lua/Luau builtins so suggestions don't drown in `_G`, `_VERSION`,
         // `string`, `table`, etc. We could surface these too, but for engine-script
         // editing the noise hurts more than it helps.
@@ -676,9 +770,33 @@ namespace Lumina::Lua
             return false;
         }
 
-        void IterateTableShallow(lua_State* L, FStringView ParentPath, TVector<FLuaSymbol>& Out)
+        // Walks the table on top of the stack and emits a symbol for each
+        // string-keyed child. Recurses into nested tables up to MaxDepth so
+        // chains like Engine.VFS.ReadFile produce three symbols, not just
+        // two. A pointer-set cycle guard handles tables that reference
+        // themselves (or each other) — common with metatable __index chains.
+        constexpr int kMaxHarvestDepth = 4;
+
+        void IterateTable(lua_State* L, FStringView ParentPath, int Depth,
+                          THashSet<const void*>& Visited, TVector<FLuaSymbol>& Out)
         {
-            // Caller has the table on top of the stack.
+            if (Depth >= kMaxHarvestDepth)
+            {
+                return;
+            }
+
+            // Caller has the table on top of the stack. Mark it visited so
+            // recursive children that loop back here just stop.
+            const void* TablePtr = lua_topointer(L, -1);
+            if (TablePtr != nullptr)
+            {
+                if (Visited.find(TablePtr) != Visited.end())
+                {
+                    return;
+                }
+                Visited.insert(TablePtr);
+            }
+
             lua_pushnil(L);
             while (lua_next(L, -2) != 0)
             {
@@ -690,11 +808,26 @@ namespace Lumina::Lua
                     FLuaSymbol Symbol;
                     Symbol.Name.assign(Key);
                     Symbol.Kind = ClassifyTop(L);
+                    Symbol.TypeName.assign(lua_typename(L, lua_type(L, -1)));
+                    Symbol.ValuePreview = PreviewTopValue(L);
+                    if (Symbol.Kind == ELuaSymbolKind::Function)
+                    {
+                        HarvestFunctionInfoTop(L, Symbol);
+                    }
                     Symbol.Parent.assign(ParentPath.data(), ParentPath.size());
                     Symbol.Path = Symbol.Parent.empty()
                         ? Symbol.Name
                         : (Symbol.Parent + "." + Symbol.Name);
                     Out.push_back(Symbol);
+
+                    // Recurse into nested tables so Engine.VFS, Engine.Math,
+                    // and similar two-level engine tables have their members
+                    // surface in the editor's autocomplete popup.
+                    if (Symbol.Kind == ELuaSymbolKind::Table)
+                    {
+                        IterateTable(L, FStringView(Symbol.Path.c_str(), Symbol.Path.size()),
+                                     Depth + 1, Visited, Out);
+                    }
                 }
                 lua_pop(L, 1);  // pop value, keep key for next iter
             }
@@ -713,6 +846,11 @@ namespace Lumina::Lua
 
         const int Top = lua_gettop(L);
 
+        // Pointer-keyed visited set shared across the whole walk. Catches
+        // tables that recursively reference themselves through __index or
+        // mutually reference each other (Engine.X.Parent = Engine).
+        THashSet<const void*> Visited;
+
         // Top-level pass over LUA_GLOBALSINDEX.
         lua_pushvalue(L, LUA_GLOBALSINDEX);
         lua_pushnil(L);
@@ -726,16 +864,19 @@ namespace Lumina::Lua
                     FLuaSymbol Symbol;
                     Symbol.Name.assign(Key);
                     Symbol.Kind = ClassifyTop(L);
+                    Symbol.TypeName.assign(lua_typename(L, lua_type(L, -1)));
+                    Symbol.ValuePreview = PreviewTopValue(L);
+                    if (Symbol.Kind == ELuaSymbolKind::Function)
+                    {
+                        HarvestFunctionInfoTop(L, Symbol);
+                    }
                     Symbol.Path = Symbol.Name;
                     Out.push_back(Symbol);
 
-                    // One level of nesting for tables: covers Engine.VFS,
-                    // Input.IsKeyDown, etc. Deep recursion would catch
-                    // metatables / class chains; skip for now to keep
-                    // the symbol set shallow and predictable.
                     if (Symbol.Kind == ELuaSymbolKind::Table)
                     {
-                        IterateTableShallow(L, Symbol.Path, Out);
+                        IterateTable(L, FStringView(Symbol.Path.c_str(), Symbol.Path.size()),
+                                     /*Depth*/ 1, Visited, Out);
                     }
                 }
             }

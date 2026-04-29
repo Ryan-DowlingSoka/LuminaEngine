@@ -898,6 +898,70 @@ void TextEditor::handleMouseInteractions() {
 			ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
 		}
 
+		// Fire the hover callback when the mouse is sitting still over an
+		// identifier in the text area. Walks left from the hovered glyph to
+		// extract both the bare word and any "Foo.Bar:" chain preceding it,
+		// so the host can resolve dotted member paths without re-tokenising.
+		// Suppressed mid-drag to avoid spamming during a selection sweep.
+		if (hoverCallback && overText && !ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+			auto& line = document.at(glyphCoordinate.line);
+			auto idx = document.getIndex(glyphCoordinate);
+
+			// Expand to word bounds at the hovered position. CodePoint::isWord
+			// follows the colorizer's identifier definition (letters, digits,
+			// underscore) — same rule the autocomplete engine uses.
+			if (idx >= 0 && idx < (int)line.size() && CodePoint::isWord(line[idx].codepoint)) {
+				int wordStart = idx;
+				while (wordStart > 0 && CodePoint::isWord(line[wordStart - 1].codepoint)) {
+					--wordStart;
+				}
+				int wordEnd = idx;
+				while (wordEnd < (int)line.size() && CodePoint::isWord(line[wordEnd].codepoint)) {
+					++wordEnd;
+				}
+
+				auto appendCP = [](std::string& out, ImWchar cp) {
+					char buf[4];
+					size_t n = TextEditor::CodePoint::write(buf, cp);
+					out.append(buf, n);
+				};
+
+				std::string word;
+				word.reserve(wordEnd - wordStart);
+				for (int i = wordStart; i < wordEnd; ++i) {
+					appendCP(word, line[i].codepoint);
+				}
+
+				// Walk further left over any "Ident.Ident:Ident" chain so
+				// the host gets enough context to look up Engine.VFS.ReadFile
+				// from a hover on "ReadFile".
+				std::string dotted = word;
+				int cursor = wordStart;
+				while (cursor > 0 && (line[cursor - 1].codepoint == '.' || line[cursor - 1].codepoint == ':')) {
+					int sepPos = cursor - 1;
+					int segEnd = sepPos;
+					int segStart = segEnd;
+					while (segStart > 0 && CodePoint::isWord(line[segStart - 1].codepoint)) {
+						--segStart;
+					}
+					if (segStart == segEnd) break;
+
+					std::string seg;
+					seg.reserve(segEnd - segStart);
+					for (int i = segStart; i < segEnd; ++i) {
+						appendCP(seg, line[i].codepoint);
+					}
+					// Always show as "." in the dotted path even if the user
+					// wrote ":". The host only cares about the symbol path,
+					// not the call style.
+					dotted = seg + "." + dotted;
+					cursor = segStart;
+				}
+
+				hoverCallback(word, dotted);
+			}
+		}
+
 		if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
 			// update selection with dragging left mouse button
 			io.WantCaptureMouse = true;
@@ -4619,7 +4683,22 @@ void TextEditor::Autocomplete::cancel() {
 //	renderSuggestion
 //
 
-static bool renderSuggestion(const std::string_view& suggestion, const std::string_view& searchTerm, float width, bool selected) {
+// Color/style of the kind tag drawn at the head of each suggestion row.
+// Lifted from VSCode's symbol palette so users coming from there read them
+// at a glance: f=function (yellow), t=table (cyan), v=value (gray),
+// k=keyword (magenta), i=identifier (white).
+static ImU32 kindBadgeColor(char kind) {
+	switch (kind) {
+		case 'f': return IM_COL32(220, 180,  90, 255); // function
+		case 't': return IM_COL32( 90, 200, 220, 255); // table
+		case 'v': return IM_COL32(160, 200, 140, 255); // value (number/string/bool)
+		case 'k': return IM_COL32(200, 130, 220, 255); // keyword
+		case 'i': return IM_COL32(180, 180, 180, 255); // identifier (buffer scrape)
+		default:  return IM_COL32(150, 150, 150, 255);
+	}
+}
+
+static bool renderSuggestion(const std::string_view& suggestion, const std::string_view& searchTerm, float width, bool selected, char kind, const std::string_view& detail) {
 	// custom widget to render an autocomplete suggestion in the style of Visual Studio Code
 	auto glyphPos = ImGui::GetCursorScreenPos();
 	auto size = ImVec2(width, ImGui::GetFrameHeightWithSpacing());
@@ -4635,8 +4714,21 @@ static bool renderSuggestion(const std::string_view& suggestion, const std::stri
 		drawList->AddRectFilled(glyphPos, glyphPos + size, ImGui::GetColorU32(ImGuiCol_Header));
 	}
 
-	// process all UTF-8 glyphs in suggestion
+	// kind badge: a single-glyph colored chip at the head of the row.
+	// Renders in roughly one glyph-width plus padding before the name.
 	glyphPos += ImGui::GetStyle().FramePadding;
+	const float badgeReserve = (kind != 0) ? (glyphWidth + ImGui::GetStyle().ItemInnerSpacing.x) : 0.0f;
+	if (kind != 0) {
+		const ImU32 badgeFill = kindBadgeColor(kind);
+		const ImVec2 badgeMin = ImVec2(glyphPos.x, glyphPos.y);
+		const ImVec2 badgeMax = ImVec2(glyphPos.x + glyphWidth, glyphPos.y + fontSize);
+		drawList->AddRectFilled(badgeMin, badgeMax, badgeFill, 2.0f);
+		const ImWchar badgeChar = static_cast<ImWchar>(kind);
+		font->RenderChar(drawList, fontSize, ImVec2(glyphPos.x + 1.0f, glyphPos.y), IM_COL32(20, 20, 25, 255), badgeChar);
+		glyphPos.x += badgeReserve;
+	}
+
+	// process all UTF-8 glyphs in suggestion
 	auto suggestionEnd = suggestion.end();
 	auto searchTermEnd = searchTerm.end();
 	auto i = TextEditor::CodePoint::skipBOM(suggestion.begin(), suggestionEnd);
@@ -4663,6 +4755,20 @@ static bool renderSuggestion(const std::string_view& suggestion, const std::stri
 		// render the glyph
 		font->RenderChar(drawList, fontSize, glyphPos, color, codepoint);
 		glyphPos.x += glyphWidth;
+	}
+
+	// dim detail text right-aligned (e.g. "function", "number = 42").
+	// Truncated if it would collide with the name; we measure conservatively
+	// so a long type string never overlaps the suggestion glyphs.
+	if (!detail.empty()) {
+		const float rowRight = ImGui::GetCursorScreenPos().x + width - ImGui::GetStyle().FramePadding.x;
+		const ImVec2 detailSize = ImGui::CalcTextSize(detail.data(), detail.data() + detail.size());
+		const float detailX = rowRight - detailSize.x;
+		// Only render if there's still horizontal space after the name.
+		if (detailX > glyphPos.x + glyphWidth) {
+			const ImU32 detailColor = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+			drawList->AddText(ImVec2(detailX, glyphPos.y), detailColor, detail.data(), detail.data() + detail.size());
+		}
 	}
 
 	return clicked;
@@ -4734,6 +4840,20 @@ bool TextEditor::Autocomplete::render(Document& document, Cursors& cursors, cons
 					refreshSuggestions();
 				}
 
+			} else if (newStart.line == currentLocation.line && newStart.column > startLocation.column) {
+				// User typed forward into a new word boundary on the same
+				// line — typically a '.' or ':' separator that starts a new
+				// member-access context (e.g. "Engine" -> "Engine."). Re-anchor
+				// the popup to the new word instead of closing it; otherwise
+				// the user has to backspace + retype to get suggestions for
+				// the new context.
+				startLocation = newStart;
+				currentLocation = newLocation;
+				currentSelection = 0;
+				previousSelection = static_cast<size_t>(-1);
+				updateState(document, language);
+				refreshSuggestions();
+
 			} else {
 				requestDeactivation = true;
 			}
@@ -4752,6 +4872,33 @@ bool TextEditor::Autocomplete::render(Document& document, Cursors& cursors, cons
 	auto visibleSuggestions = (suggestions == 0) ? 1 : std::min(static_cast<size_t>(10), suggestions);
 	auto& style = ImGui::GetStyle();
 	auto height = ImGui::GetFrameHeightWithSpacing() * visibleSuggestions + style.WindowPadding.y * 2.0f;
+
+	// Auto-size width from the widest "name + detail" so signatures like
+	// "function(arg1, arg2, ...)" stay legible without the user resizing
+	// the popup. Bounded so we don't produce a popup wider than the editor.
+	{
+		const float glyphWidth = ImGui::CalcTextSize("#").x;
+		const float badgeReserve = glyphWidth + style.ItemInnerSpacing.x;
+		const float gapBetween = glyphWidth * 2.0f;       // visual gap name<->detail
+		const float padding = style.FramePadding.x * 2.0f + style.WindowPadding.x * 2.0f;
+		// Account for vertical scrollbar so the right-aligned detail text
+		// doesn't land under the scrollbar when the list overflows.
+		const float scrollbar = (suggestions > visibleSuggestions) ? style.ScrollbarSize : 0.0f;
+
+		float widest = 320.0f; // sensible minimum
+		for (size_t i = 0; i < suggestions; ++i) {
+			const float nameW = ImGui::CalcTextSize(state.suggestions[i].c_str()).x;
+			const float detailW = (i < state.suggestionDetails.size())
+				? ImGui::CalcTextSize(state.suggestionDetails[i].c_str()).x
+				: 0.0f;
+			const float row = badgeReserve + nameW + gapBetween + detailW + padding + scrollbar;
+			if (row > widest) widest = row;
+		}
+		// Cap so a pathological detail text doesn't push the popup off-screen.
+		if (widest > 720.0f) widest = 720.0f;
+		suggestionWidth = widest;
+	}
+
 	ImGui::SetNextWindowSize(ImVec2(suggestionWidth, height));
 
 	ImGuiWindowFlags flags =
@@ -4801,6 +4948,13 @@ bool TextEditor::Autocomplete::render(Document& document, Cursors& cursors, cons
 					result = true;
 				}
 
+				// Only force-scroll when the keyboard moved the selection.
+				// Doing this every frame (the original behaviour) cancels
+				// any mouse-wheel scroll the user issues, locking the view
+				// to the selected row.
+				const bool selectionChanged = (currentSelection != previousSelection);
+				previousSelection = currentSelection;
+
 				// render suggestions
 				for (size_t i = 0; i < items; i++) {
 					// ensure unique ID
@@ -4809,11 +4963,15 @@ bool TextEditor::Autocomplete::render(Document& document, Cursors& cursors, cons
 					// scroll list to selected item (if required)
 					auto selected = i == currentSelection;
 
-					if (selected) {
+					if (selected && selectionChanged) {
 						ImGui::SetScrollHereY(1.0f);
 					}
 
-					if (renderSuggestion(state.suggestions[i].c_str(), state.searchTerm, ImGui::GetContentRegionAvail().x, selected)) {
+					const char kind = (i < state.suggestionKinds.size()) ? state.suggestionKinds[i] : char(0);
+					const std::string_view detail = (i < state.suggestionDetails.size())
+						? std::string_view(state.suggestionDetails[i])
+						: std::string_view();
+					if (renderSuggestion(state.suggestions[i].c_str(), state.searchTerm, ImGui::GetContentRegionAvail().x, selected, kind, detail)) {
 						// user clicked on a suggestion, use it
 						currentSelection = i;
 						requestDeactivation = true;

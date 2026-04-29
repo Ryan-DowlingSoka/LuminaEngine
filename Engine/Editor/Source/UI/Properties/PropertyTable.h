@@ -16,6 +16,7 @@ namespace Lumina
     class FProperty;
     struct IPropertyTypeCustomization;
     class CObject;
+    class CClass;
 }
 
 namespace Lumina
@@ -68,6 +69,12 @@ namespace Lumina
         void UpdateRow();
         void DrawRow(float Offset, bool bReadOnly);
         virtual void DrawChildren(float ChildOffset, bool bReadOnly);
+
+        // Hook fired right after PropertyHandle->ResetToDefault() runs from
+        // the row's reset button or context menu. Container-shaped properties
+        // (array, optional, struct) override this to rebuild their child rows
+        // so the UI reflects the new structure on the next frame.
+        virtual void OnValueResetToDefault() { }
         bool IsReadOnly() const;
 
         void SetIsArrayElement(bool bTrue) { bArrayElement = bTrue; }
@@ -81,6 +88,13 @@ namespace Lumina
     protected:
 
         void DispatchChange(EPropertyChangeOp Op);
+
+        // Centralised reset path used by both the toolbar button and the
+        // right-click menu. Writes the default into the container, then
+        // re-syncs the customization's cached value from the container so
+        // DispatchChange's subsequent UpdatePropertyValue doesn't immediately
+        // clobber the reset with the stale widget state.
+        void PerformResetToDefault();
 
         
         FPropertyChangedEventCallbacks          Callbacks;
@@ -127,6 +141,7 @@ namespace Lumina
         bool HasExtraControls() const override { return true; }
         float GetExtraControlsSectionWidth() override;
         void DrawExtraControlsSection() override;
+        void OnValueResetToDefault() override { RebuildChildren(); }
         TSharedPtr<FPropertyHandle> GetPropertyHandle() const { return PropertyHandle; }
 
         bool IsInnerFixedHeight() const;
@@ -151,6 +166,7 @@ namespace Lumina
         void DrawHeader(float Offset) override;
         void DrawEditor(bool bReadOnly) override;
         float GetMeasuredHeaderTextWidth() const override;
+        void OnValueResetToDefault() override { RebuildChildren(); }
 
         void RebuildChildren();
 
@@ -176,6 +192,7 @@ namespace Lumina
         void DrawHeader(float Offset) override;
         void DrawEditor(bool bReadOnly) override;
         float GetMeasuredHeaderTextWidth() const override;
+        void OnValueResetToDefault() override;
 
         // Rebuilds the (0-or-1) child row to match the optional's current
         // engaged state. Called after the user toggles the checkbox or when
@@ -225,6 +242,16 @@ namespace Lumina
         FPropertyTable() = default;
         ~FPropertyTable() = default;
         FPropertyTable(void* InObject, CStruct* InType);
+
+        // Auto-derives Type from the CObject's class and DefaultObject from
+        // the class CDO. Use this for any details panel rooted at a CObject:
+        // it enables the "modified" indicator and reset-to-default button.
+        explicit FPropertyTable(CObject* InObject);
+
+        // Explicit default-object form, for callers that have a hand-built
+        // default to compare against (e.g. nested struct rebuild paths).
+        FPropertyTable(void* InObject, CStruct* InType, void* InDefaultObject);
+
         FPropertyTable(const FPropertyTable&) = delete;
         FPropertyTable(FPropertyTable&&) = delete;
         
@@ -235,8 +262,11 @@ namespace Lumina
         void DrawTree(bool bReadOnly = false);
 
         CStruct* GetType() const { return Struct; }
+        void* GetObject() const { return Object; }
+        void* GetDefaultObject() const { return DefaultObject; }
 
         void SetObject(void* InObject, CStruct* StructType);
+        void SetObject(void* InObject, CStruct* StructType, void* InDefaultObject);
         void SetPreEditCallback(const FPropertyChangedEventFn& Callback);
         void SetPostEditCallback(const FPropertyChangedEventFn& Callback);
         void SetStartEditCallback(const FPropertyChangedEventFn& Callback);
@@ -257,6 +287,10 @@ namespace Lumina
         TSharedPtr<FPropertyHandle>                         PropertyHandle;
         CStruct*                                            Struct = nullptr;
         void*                                               Object = nullptr;
+        // Parallel pointer used to resolve a property's default value when
+        // computing diff-from-default and reset-to-default. Null when no
+        // default is plumbed in (e.g. plain struct details with no CDO).
+        void*                                               DefaultObject = nullptr;
         THashMap<FName, TUniquePtr<FCategoryPropertyRow>>   CategoryMap;
         
     };
