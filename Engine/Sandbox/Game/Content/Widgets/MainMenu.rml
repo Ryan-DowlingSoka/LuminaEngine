@@ -1,0 +1,295 @@
+<rml>
+<head>
+    <title>Lumina - Main Menu</title>
+    <style>
+        /* ============================================================
+           Main menu sample. Sized for the bridge's 1080-baseline dp
+           ratio. Uses RmlUi transitions for hover micro-animation;
+           values intentionally subtle - this is a stylized AAA-flavour
+           pause/menu screen, not a flashy demo.
+           ============================================================ */
+
+        body
+        {
+            font-family: LatoLatin;
+            color: #d6dbe6;
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            decorator: gradient(vertical #161a26 #08090f);
+        }
+
+        /* ---------- Edge ornaments ---------- */
+        /* Left rail of accent color anchors the eye and gives the screen
+           a "console UI" silhouette without dominating. */
+        #left-rail
+        {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 6dp;
+            height: 100%;
+            decorator: gradient(vertical #4ad8c5 #2a8a82);
+        }
+
+        /* Faint hairline under the title block separates the brand
+           lockup from the action list. */
+        #divider
+        {
+            position: absolute;
+            left: 96dp;
+            top: 218dp;
+            width: 360dp;
+            height: 1dp;
+            background-color: #2a3044;
+        }
+
+        /* ---------- Brand lockup ---------- */
+        #brand
+        {
+            position: absolute;
+            left: 96dp;
+            top: 110dp;
+        }
+
+        #brand-eyebrow
+        {
+            display: block;
+            font-size: 14dp;
+            font-weight: bold;
+            color: #4ad8c5;
+            letter-spacing: 4dp;
+            margin-bottom: 8dp;
+        }
+
+        #brand-title
+        {
+            display: block;
+            font-size: 76dp;
+            font-weight: bold;
+            color: #f5f7fb;
+            letter-spacing: 2dp;
+            line-height: 0.95;
+        }
+
+        #brand-subtitle
+        {
+            display: block;
+            margin-top: 14dp;
+            font-size: 16dp;
+            color: #6c7592;
+            letter-spacing: 1dp;
+        }
+
+        /* ---------- Action list ---------- */
+        /* Vertical stack of menu items. Each row is a "button" with a
+           left accent bar that slides out on hover. Width is fixed so
+           the right edges all align cleanly. */
+        #menu
+        {
+            position: absolute;
+            left: 96dp;
+            top: 260dp;
+            width: 360dp;
+        }
+
+        .item
+        {
+            display: block;
+            position: relative;
+            padding: 14dp 18dp 14dp 22dp;
+            margin-bottom: 4dp;
+            font-size: 22dp;
+            font-weight: bold;
+            color: #97a0b6;
+            letter-spacing: 2dp;
+            background-color: rgba(20, 24, 36, 0);
+            border-left: 0dp #4ad8c5;
+            cursor: pointer;
+            /* Animate every property we touch on hover so motion stays
+               coordinated rather than each easing on its own clock. */
+            transition: background-color 0.18s cubic-in-out,
+                        color 0.18s cubic-in-out,
+                        border-left-width 0.18s cubic-in-out,
+                        padding-left 0.18s cubic-in-out,
+                        letter-spacing 0.22s cubic-in-out;
+        }
+        .item:hover
+        {
+            color: #f5f7fb;
+            background-color: rgba(74, 216, 197, 30);
+            border-left: 4dp #4ad8c5;
+            padding-left: 32dp;
+            letter-spacing: 3dp;
+        }
+        .item:active
+        {
+            background-color: rgba(74, 216, 197, 60);
+            color: #ffffff;
+            border-left: 4dp #f5f7fb;
+        }
+
+        /* "Disabled" item (e.g. Continue when no save exists). Keeps the
+           hover off entirely so the visual cue is honest. */
+        .item.disabled
+        {
+            color: #3a4257;
+            cursor: unavailable;
+            transition: none;
+        }
+        .item.disabled:hover
+        {
+            color: #3a4257;
+            background-color: rgba(20, 24, 36, 0);
+            border-left: 0dp #4ad8c5;
+            padding-left: 22dp;
+            letter-spacing: 2dp;
+        }
+
+        /* Primary item (Play) gets a stronger resting accent so the
+           player's eye is led there first. */
+        .item.primary
+        {
+            color: #f5f7fb;
+            border-left: 2dp #4ad8c5;
+        }
+        .item.primary:hover
+        {
+            background-color: rgba(74, 216, 197, 45);
+            border-left: 6dp #4ad8c5;
+        }
+
+        /* Quit gets a warm accent on hover so it reads as a "leaving"
+           action rather than another navigation choice. */
+        #item-quit:hover
+        {
+            color: #ffe6b3;
+            background-color: rgba(220, 130, 60, 30);
+            border-left: 4dp #ff9a4d;
+        }
+
+        /* ---------- Footer ---------- */
+        /* Build / version chip pinned bottom-left; plain text on the
+           right with control hints. */
+        #footer
+        {
+            position: absolute;
+            left: 96dp;
+            bottom: 64dp;
+            font-size: 13dp;
+            color: #4a536a;
+            letter-spacing: 2dp;
+        }
+        #footer #version
+        {
+            display: inline;
+            color: #6c7592;
+            background-color: #11151f;
+            border: 1dp #232a3d;
+            border-radius: 4dp;
+            padding: 4dp 10dp;
+            margin-right: 14dp;
+        }
+
+        #hint
+        {
+            position: absolute;
+            right: 64dp;
+            bottom: 64dp;
+            font-size: 13dp;
+            color: #4a536a;
+            letter-spacing: 2dp;
+        }
+        #hint .key
+        {
+            display: inline;
+            color: #d6dbe6;
+            background-color: #11151f;
+            border: 1dp #2a3044;
+            border-radius: 3dp;
+            padding: 3dp 8dp;
+            margin: 0 6dp;
+        }
+
+        /* ---------- Right column: build info card ---------- */
+        /* Optional secondary panel; on a real menu this might be
+           "What's new" copy or character/save preview. Kept light so
+           the centre of attention stays on the action list. */
+        #side
+        {
+            position: absolute;
+            right: 96dp;
+            top: 110dp;
+            width: 320dp;
+            padding: 24dp 26dp;
+            background-color: rgba(22, 26, 38, 200);
+            border: 1dp #232a3d;
+            border-radius: 10dp;
+        }
+        #side .label
+        {
+            display: block;
+            font-size: 12dp;
+            font-weight: bold;
+            color: #4ad8c5;
+            letter-spacing: 3dp;
+            margin-bottom: 10dp;
+        }
+        #side .body-text
+        {
+            display: block;
+            font-size: 15dp;
+            color: #c8d0e0;
+            line-height: 1.45;
+        }
+        #side .meta
+        {
+            display: block;
+            margin-top: 18dp;
+            padding-top: 14dp;
+            border-top: 1dp #232a3d;
+            font-size: 12dp;
+            color: #6c7592;
+            letter-spacing: 1dp;
+        }
+    </style>
+</head>
+<body>
+    <div id="left-rail"/>
+
+    <div id="brand">
+        <span id="brand-eyebrow">A LUMINA TITLE</span>
+        <span id="brand-title">PROJECT&nbsp;HALCYON</span>
+        <span id="brand-subtitle">Press a key, or click a thing.</span>
+    </div>
+
+    <div id="divider"/>
+
+    <div id="menu">
+        <span class="item primary" id="item-play">PLAY</span>
+        <span class="item disabled" id="item-continue">CONTINUE</span>
+        <span class="item" id="item-loadout">LOADOUT</span>
+        <span class="item" id="item-settings">SETTINGS</span>
+        <span class="item" id="item-credits">CREDITS</span>
+        <span class="item" id="item-quit">QUIT</span>
+    </div>
+
+    <div id="side">
+        <span class="label">DEV BUILD</span>
+        <span class="body-text">Hot-reloadable RML/RCSS through Lumina's RHI. Edit this file in the engine and watch changes land instantly.</span>
+        <span class="meta">v0.1.0 &middot; built today &middot; main</span>
+    </div>
+
+    <div id="footer">
+        <span id="version">DEV</span>
+        Lumina Engine
+    </div>
+
+    <div id="hint">
+        Navigate <span class="key">&uarr;</span><span class="key">&darr;</span>
+        Select <span class="key">Enter</span>
+        Back <span class="key">Esc</span>
+    </div>
+</body>
+</rml>

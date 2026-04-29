@@ -283,7 +283,10 @@ namespace Lumina
             }
             else
             {
-                Platform::LaunchURL(UTF8_TO_TCHAR(ContentItem->GetPathSource().data()));
+                // Non-CObject files (e.g. .rml) get a file-extension dispatch;
+                // OpenFileEditor falls back to the OS launcher if no editor is
+                // registered for the extension.
+                ToolContext->OpenFileEditor(ContentItem->GetVirtualPath());
             }
         };
         
@@ -1224,7 +1227,7 @@ namespace Lumina
         if (ImGui::MenuItem(MenuItemName.c_str()))
         {
             FFixedString SelectedFile;
-            const char* Filter = "Supported Assets (*.png;*.jpg;*.fbx;*.gltf;*.glb;*.obj)\0*.png;*.jpg;*.fbx;*.gltf;*.glb;*.obj\0All Files (*.*)\0*.*\0";
+            const char* Filter = "Supported Assets (*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj)\0*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj\0All Files (*.*)\0*.*\0";
             if (Platform::OpenFileDialogue(SelectedFile, "Import Asset", Filter))
             {
                 TryImport(SelectedFile);

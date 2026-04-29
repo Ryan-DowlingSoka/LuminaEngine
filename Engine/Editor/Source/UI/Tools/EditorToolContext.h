@@ -25,6 +25,11 @@ namespace Lumina
 
         virtual void OpenAssetEditor(const FGuid& AssetGUID) = 0;
 
+        // Opens a tool for a non-CObject file (e.g. .rml). Tool selected by
+        // file extension; falls back to the platform launcher if no editor
+        // is registered for that extension.
+        virtual void OpenFileEditor(FStringView VirtualPath) = 0;
+
         virtual void OpenScriptEditor(FStringView ScriptPath) = 0;
 
         /** Called just before an asset is marked for destroy, mostly to close any asset editors that may be using it */

@@ -1,9 +1,12 @@
 #pragma once
 #include "Core/Object/ObjectMacros.h"
+#include "Core/Object/ObjectHandleTyped.h"
 #include "EnvironmentComponent.generated.h"
 
 namespace Lumina
 {
+    class CTexture;
+
     /**
      * Sky background mode for SEnvironmentComponent. Controls what the
      * EnvironmentPass writes into the HDR target before opaque geometry
@@ -25,6 +28,14 @@ namespace Lumina
         // sun color. The most expensive mode but gives a realistic sky
         // and natural twilight transitions.
         Dynamic,
+
+        // Sample the imported HDR equirectangular panorama (assigned to
+        // EnvironmentMap below) as the visible sky. The same texture
+        // drives IBL ambient + reflections, so picking this mode keeps
+        // the visible sky and the lit-surface response of the scene
+        // perfectly consistent. Falls back to black when no
+        // EnvironmentMap is set.
+        HDRI,
     };
 
     /**
@@ -107,6 +118,23 @@ namespace Lumina
          *  scatter). Drives how tight the bright halo around the sun is. */
         PROPERTY(Editable, Category = "Sky|Dynamic", ClampMin = -0.99f, ClampMax = 0.99f)
         float MieAnisotropy = 0.76f;
+
+        // -- HDRI environment --
+
+        /** Optional HDR equirectangular panorama used as the source for
+         *  IBL irradiance and prefilter convolution. When set, replaces
+         *  the procedural sky cube capture with a live equirect->cubemap
+         *  conversion, so all environment lighting (skylight ambient,
+         *  metallic reflections) reads from this texture. The visible
+         *  sky backdrop still uses the SkyMode above; assign an HDRI
+         *  here to drive only the reflected/ambient contribution.
+         *
+         *  Texture must be imported with ColorSpace = Environment so it
+         *  stays HDR (Basis-compressed LDR textures clip the highlights
+         *  and break IBL energy). The factory auto-classifies any .hdr
+         *  drag into Environment. */
+        PROPERTY(Editable, Category = "Sky|HDRI")
+        TObjectPtr<CTexture> EnvironmentMap;
 
         // ====================================================================
         //  Ambient skylight

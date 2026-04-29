@@ -44,6 +44,15 @@ namespace Lumina
         // channels. Treated as linear today; future work will switch this
         // branch to per-channel BC4 to preserve inter-channel precision.
         PackedData,
+
+        // HDR equirectangular panorama for image-based lighting. Stored
+        // uncompressed in float16 (R16G16B16A16_SFLOAT) so the values
+        // delivered to the IBL convolution are still radiances, not LDR
+        // approximations. Bypasses Basis Universal (which is LDR-only)
+        // and the BC* compressed formats. Drag a .hdr onto the editor
+        // and set ColorSpace to Environment to use it as the scene's
+        // sky source via SEnvironmentComponent::EnvironmentMap.
+        Environment,
     };
 
     REFLECT()

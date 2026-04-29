@@ -16,6 +16,7 @@
 
 #include "Log/Log.h"
 #include "Memory/SmartPtr.h"
+#include "Renderer/CommandList.h"
 #include "Renderer/RenderResource.h"
 #include "Scripting/Lua/Reference.h"
 #include "World/World.h"
@@ -108,12 +109,26 @@ namespace Lumina::RmlUi
             THashMap<FString, Rml::ElementDocument*> Documents;
         };
 
+        // Editor-side preview contexts: not bound to any world. The asset
+        // editor tool owns the FRHIImage target and pushes a new size/image
+        // pointer whenever its preview window resizes.
+        struct FEditorEntry
+        {
+            Rml::Context*         Context = nullptr;
+            FRHIImage*            Target = nullptr;
+            glm::uvec2            Size{0, 0};
+            Rml::ElementDocument* Document = nullptr;
+            float                 DpiScale = 1.0f;
+            glm::vec4             ClearColor{0.10f, 0.10f, 0.12f, 1.0f};
+        };
+
         struct FState
         {
             TUniquePtr<FLuminaSystemInterface>  System;
             TUniquePtr<FRmlUiFileInterface>     Files;
             TUniquePtr<FRmlUiRenderer>          Renderer;
             TVector<TUniquePtr<FWorldEntry>>    Worlds;
+            TVector<TUniquePtr<FEditorEntry>>   EditorContexts;
             Rml::Context*                       ActiveContext = nullptr;
 
             Rml::Context*                       DebuggerHost = nullptr;
@@ -282,9 +297,18 @@ namespace Lumina::RmlUi
                 E->Context = nullptr;
             }
         }
+        for (auto& E : State.EditorContexts)
+        {
+            if (E->Context != nullptr)
+            {
+                Rml::RemoveContext(E->Context->GetName());
+                E->Context = nullptr;
+            }
+        }
         Rml::Shutdown();
 
         State.Worlds.clear();
+        State.EditorContexts.clear();
         State.ActiveContext = nullptr;
 
         if (State.Renderer) State.Renderer->Shutdown();
@@ -420,6 +444,24 @@ namespace Lumina::RmlUi
             }
             E->Context->Update();
         }
+
+        for (auto& E : State.EditorContexts)
+        {
+            if (E->Context == nullptr)
+            {
+                continue;
+            }
+            if (E->Size.x > 0 && E->Size.y > 0)
+            {
+                E->Context->SetDimensions(Rml::Vector2i(int(E->Size.x), int(E->Size.y)));
+                // Editor contexts use the caller-supplied DPI scale directly
+                // — the auto height-based ratio used for world contexts ends
+                // up at 1.0 for any preview pane shorter than 1080px, which
+                // is unreadably small for editing.
+                E->Context->SetDensityIndependentPixelRatio(std::max(0.1f, E->DpiScale));
+            }
+            E->Context->Update();
+        }
     }
 
     void RenderAll(ICommandList& CmdList)
@@ -443,6 +485,29 @@ namespace Lumina::RmlUi
             E->Context->Render();
             State.Renderer->EndFrame();
         }
+
+        for (auto& E : State.EditorContexts)
+        {
+            if (E->Context == nullptr || E->Target == nullptr)
+            {
+                continue;
+            }
+            if (E->Size.x == 0 || E->Size.y == 0)
+            {
+                continue;
+            }
+            // Renderer uses LoadOp=Load. For an editor preview we want a fresh
+            // frame, so clear here before submitting the RmlUi pass. Honour
+            // the per-context clear color so the editor can render a fully
+            // transparent canvas and composite its own background underneath.
+            CmdList.SetImageState(E->Target, AllSubresources, EResourceStates::CopyDest);
+            CmdList.CommitBarriers();
+            CmdList.ClearImageColor(E->Target, FColor(E->ClearColor.r, E->ClearColor.g, E->ClearColor.b, E->ClearColor.a));
+
+            State.Renderer->BeginFrame(CmdList, E->Target, E->Size);
+            E->Context->Render();
+            State.Renderer->EndFrame();
+        }
     }
 
     Rml::Context*   GetActiveContext() { return S().ActiveContext; }
@@ -456,6 +521,179 @@ namespace Lumina::RmlUi
         }
         FWorldEntry* E = FindEntryByWorld(World);
         return E ? E->Context : nullptr;
+    }
+
+    Rml::Context* CreateEditorContext(const char* Name, const glm::uvec2& InitialSize)
+    {
+        FState& State = S();
+        if (!State.Initialised || Name == nullptr)
+        {
+            return nullptr;
+        }
+
+        const Rml::Vector2i Size(
+            int(InitialSize.x > 0 ? InitialSize.x : 1u),
+            int(InitialSize.y > 0 ? InitialSize.y : 1u));
+
+        Rml::Context* Ctx = Rml::CreateContext(Name, Size);
+        if (Ctx == nullptr)
+        {
+            LOG_ERROR("[RmlUi] CreateEditorContext failed for name '{}'.", Name);
+            return nullptr;
+        }
+
+        TUniquePtr<FEditorEntry> Entry = MakeUnique<FEditorEntry>();
+        Entry->Context = Ctx;
+        Entry->Size    = InitialSize;
+        State.EditorContexts.push_back(Move(Entry));
+        return Ctx;
+    }
+
+    void DestroyEditorContext(Rml::Context* Context)
+    {
+        if (Context == nullptr)
+        {
+            return;
+        }
+        FState& State = S();
+        for (size_t i = 0; i < State.EditorContexts.size(); ++i)
+        {
+            FEditorEntry* E = State.EditorContexts[i].get();
+            if (E->Context != Context)
+            {
+                continue;
+            }
+
+            if (State.DebuggerHost == E->Context)
+            {
+                Rml::Debugger::Shutdown();
+                State.DebuggerHost = nullptr;
+            }
+
+            Rml::RemoveContext(E->Context->GetName());
+            E->Context = nullptr;
+
+            const size_t Last = State.EditorContexts.size() - 1;
+            if (i != Last)
+            {
+                eastl::swap(State.EditorContexts[i], State.EditorContexts[Last]);
+            }
+            State.EditorContexts.pop_back();
+            return;
+        }
+    }
+
+    void SetEditorContextTarget(Rml::Context* Context, FRHIImage* Target, const glm::uvec2& Size)
+    {
+        if (Context == nullptr)
+        {
+            return;
+        }
+        FState& State = S();
+        for (auto& E : State.EditorContexts)
+        {
+            if (E->Context == Context)
+            {
+                E->Target = Target;
+                E->Size   = Size;
+                return;
+            }
+        }
+    }
+
+    void SetEditorContextDpiScale(Rml::Context* Context, float Scale)
+    {
+        if (Context == nullptr)
+        {
+            return;
+        }
+        FState& State = S();
+        for (auto& E : State.EditorContexts)
+        {
+            if (E->Context == Context)
+            {
+                E->DpiScale = Scale;
+                return;
+            }
+        }
+    }
+
+    void SetEditorContextClearColor(Rml::Context* Context, const glm::vec4& Color)
+    {
+        if (Context == nullptr)
+        {
+            return;
+        }
+        FState& State = S();
+        for (auto& E : State.EditorContexts)
+        {
+            if (E->Context == Context)
+            {
+                E->ClearColor = Color;
+                return;
+            }
+        }
+    }
+
+    namespace
+    {
+        FEditorEntry* FindEditorEntry(Rml::Context* Context)
+        {
+            FState& State = S();
+            for (auto& E : State.EditorContexts)
+            {
+                if (E->Context == Context)
+                {
+                    return E.get();
+                }
+            }
+            return nullptr;
+        }
+    }
+
+    bool ReplaceEditorContextDocument(Rml::Context* Context, FStringView Body, FStringView SourceUrl)
+    {
+        FEditorEntry* Entry = FindEditorEntry(Context);
+        if (Entry == nullptr || Entry->Context == nullptr)
+        {
+            return false;
+        }
+
+        if (Entry->Document != nullptr)
+        {
+            Entry->Context->UnloadDocument(Entry->Document);
+            Entry->Document = nullptr;
+        }
+
+        if (Body.empty())
+        {
+            return false;
+        }
+
+        const Rml::String BodyStr(Body.data(), Body.size());
+        const Rml::String UrlStr(SourceUrl.data(), SourceUrl.size());
+
+        Entry->Document = Entry->Context->LoadDocumentFromMemory(BodyStr, UrlStr);
+        if (Entry->Document == nullptr)
+        {
+            return false;
+        }
+        Entry->Document->Show();
+        return true;
+    }
+
+    void ClearEditorContextDocument(Rml::Context* Context)
+    {
+        FEditorEntry* Entry = FindEditorEntry(Context);
+        if (Entry == nullptr || Entry->Context == nullptr)
+        {
+            return;
+        }
+        if (Entry->Document != nullptr)
+        {
+            Entry->Context->UnloadDocument(Entry->Document);
+            Entry->Document = nullptr;
+        }
     }
 
     // `UI.*` Lua module. Operates on the active world's context.

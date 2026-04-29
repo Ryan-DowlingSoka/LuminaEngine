@@ -617,6 +617,7 @@ namespace Lumina::Import::Mesh::FBX
                                 FSkinnedVertex Vertex;
                                 Vertex.Position = Pos;
                                 Vertex.Normal   = PackNormal(Normal);
+                                Vertex.Tangent  = 0;  // Filled by MikkTSpace in GenerateMeshlets.
                                 Vertex.UV       = glm::packHalf2x16(UV);
                                 Vertex.Color    = PackColor(Col);
 
@@ -647,6 +648,7 @@ namespace Lumina::Import::Mesh::FBX
                                 FVertex Vertex;
                                 Vertex.Position = Pos;
                                 Vertex.Normal   = PackNormal(Normal);
+                                Vertex.Tangent  = 0;  // Filled by MikkTSpace in GenerateMeshlets.
                                 Vertex.UV       = glm::packHalf2x16(UV);
                                 Vertex.Color    = PackColor(Col);
 

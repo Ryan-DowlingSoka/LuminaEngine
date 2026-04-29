@@ -1,4 +1,4 @@
-﻿#include "AssetEditorTool.h"
+#include "AssetEditorTool.h"
 #include "Core/Object/Package/Package.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 
@@ -15,19 +15,23 @@ namespace Lumina
 
     FName FAssetEditorTool::GetToolName() const
     {
-        return Asset->GetName();
+        if (Asset != nullptr)
+        {
+            return Asset->GetName();
+        }
+        return ToolName;
     }
 
     void FAssetEditorTool::Update(const FUpdateContext& UpdateContext)
     {
         DrawWorldGrid();
-        
+
         if (!bAssetLoadBroadcasted && Asset != nullptr)
         {
             OnAssetLoadFinished();
             bAssetLoadBroadcasted = true;
         }
-        
+
         if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_S))
         {
             OnSave();
@@ -36,11 +40,18 @@ namespace Lumina
 
     void FAssetEditorTool::OnSave()
     {
+        // Default save path applies to CObject-backed assets only. Tools that
+        // edit raw files (e.g. .rml) override this to write through the VFS.
+        if (Asset == nullptr)
+        {
+            return;
+        }
+
         if (ShouldGenerateThumbnailOnSave() && Asset->GetPackage())
         {
             GenerateThumbnail(Asset->GetPackage());
         }
-        
+
         if (CPackage::SavePackage(Asset->GetPackage(), Asset->GetPackage()->GetPackagePath()))
         {
             FAssetRegistry::Get().AssetSaved(Asset);

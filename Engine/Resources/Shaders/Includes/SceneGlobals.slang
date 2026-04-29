@@ -71,6 +71,7 @@ FVertexData LoadStaticVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLoca
     FVertexData Data;
     Data.Position = UnpackMeshletPosition(V.Position, M.LoInt, Header.MeshOrigin.xyz, Header.MeshGridStep.xyz);
     Data.Normal   = UnpackNormal(V.Normal);
+    Data.Tangent  = UnpackTangent(V.Tangent);
     Data.UV       = UnpackUV(V.UV);
     Data.Color    = UnpackColor(V.Color);
     return Data;
@@ -80,8 +81,9 @@ FVertexData LoadSkinnedVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLoc
 {
     FSkinnedVertex V = reinterpret<FSkinnedVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
 
-    float3 LocalPos    = UnpackMeshletPosition(V.Position, M.LoInt, Header.MeshOrigin.xyz, Header.MeshGridStep.xyz);
-    float3 LocalNormal = UnpackNormal(V.Normal);
+    float3 LocalPos     = UnpackMeshletPosition(V.Position, M.LoInt, Header.MeshOrigin.xyz, Header.MeshGridStep.xyz);
+    float3 LocalNormal  = UnpackNormal(V.Normal);
+    float4 LocalTangent = UnpackTangent(V.Tangent);
 
     uint4  JointIndices = UnpackUIntToUVec4(V.JointIndices);
     float4 Weights      = unpack_u8u32(V.JointWeights) / float4(255.0);
@@ -92,9 +94,16 @@ FVertexData LoadSkinnedVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLoc
         uBoneMatrices[BoneOffset + JointIndices.z] * Weights.z +
         uBoneMatrices[BoneOffset + JointIndices.w] * Weights.w;
 
+    // Skinning is rigid (rotation + translation) per bone, so the same 3x3
+    // submatrix that takes Normal to skinned space takes Tangent there too.
+    // The handedness sign rides through unchanged -- it describes the UV
+    // parameterization, not the geometry.
+    float3x3 SkinRot = (float3x3)SkinMatrix;
+
     FVertexData Data;
     Data.Position = mul(SkinMatrix, float4(LocalPos, 1.0)).xyz;
-    Data.Normal   = normalize(mul((float3x3)SkinMatrix, LocalNormal));
+    Data.Normal   = normalize(mul(SkinRot, LocalNormal));
+    Data.Tangent  = float4(normalize(mul(SkinRot, LocalTangent.xyz)), LocalTangent.w);
     Data.UV       = UnpackUV(V.UV);
     Data.Color    = UnpackColor(V.Color);
     return Data;

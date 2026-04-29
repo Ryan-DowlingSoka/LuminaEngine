@@ -49,6 +49,7 @@ namespace Lumina
 
         void OpenScriptEditor(FStringView ScriptPath) override;
         void OpenAssetEditor(const FGuid& AssetGUID) override;
+        void OpenFileEditor(FStringView VirtualPath) override;
         void OnDestroyAsset(CObject* InAsset) override;
 
 
@@ -126,6 +127,7 @@ namespace Lumina
         FString                                         FocusTargetWindowName; // If this is set we need to switch focus to this window
 
         THashMap<CObject*, FEditorTool*>                ActiveAssetTools;
+        THashMap<FString, FEditorTool*>                 ActiveFileTools;
         TQueue<FEditorTool*>                            ToolsPendingAdd;
         TQueue<FEditorTool*>                            ToolsPendingDestroy;
 

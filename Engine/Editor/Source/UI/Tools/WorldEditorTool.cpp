@@ -437,10 +437,11 @@ namespace Lumina
 
         for (entt::entity Entity : SelectedEntities)
         {
-            if (!World->GetEntityRegistry().valid(Entity))
+            if (!World->GetEntityRegistry().valid(Entity) || bGameViewMode)
             {
                 continue;
             }
+            
             if (SStaticMeshComponent* MeshComponent = World->GetEntityRegistry().try_get<SStaticMeshComponent>(Entity))
             {
                 const STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(Entity);
@@ -2022,6 +2023,11 @@ namespace Lumina
                 if (ImGui::MenuItem("Draw Bounds", nullptr, &bDrawAABB))
                 {
                     Settings.bDrawAABB = bDrawAABB;
+                }
+                
+                if (ImGui::MenuItem("Game View", "G", &bGameViewMode))
+                {
+                    bGameViewMode = !bGameViewMode;
                 }
 
                 ImGui::EndMenu();

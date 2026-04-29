@@ -5,9 +5,102 @@
 #include "Renderer/MeshData.h"
 #include "Renderer/Vertex.h"
 #include "TaskSystem/TaskSystem.h"
+#include <mikktspace.h>
 
 namespace Lumina::Import::Mesh
 {
+    // ----------------------------------------------------------------------------
+    //  MikkTSpace tangent generation
+    //
+    //  Authored normal maps from Substance / Marmoset / UE / Unity assume the
+    //  MikkTSpace tangent basis. Generating tangents the same way here means
+    //  baked normal maps round-trip pixel-for-pixel; deviating from MikkTSpace
+    //  produces visible high-frequency error on diagonals and curves.
+    //
+    //  MikkTSpace operates per face-corner. We write into the shared vertex
+    //  array by index (last-write-wins for corners that resolve to the same
+    //  vertex). In practice every modern importer splits at UV / hard-normal
+    //  seams, so corners that share an index also share their MikkTSpace
+    //  inputs (position, normal, UV) and produce the same tangent -- the
+    //  collisions are degenerate, not lossy.
+    //
+    //  Runs inside GenerateMeshlets, after the optimize pass has deduped:
+    //  it overwrites the un-set tangents the importers left at zero, then
+    //  the meshlet pack reads V.Tangent into FMeshletVertex.
+    // ----------------------------------------------------------------------------
+    namespace
+    {
+        int Mikk_GetNumFaces(const SMikkTSpaceContext* Ctx)
+        {
+            const FMeshResource* M = static_cast<const FMeshResource*>(Ctx->m_pUserData);
+            return (int)(M->Indices.size() / 3);
+        }
+
+        int Mikk_GetNumVerticesOfFace(const SMikkTSpaceContext*, int)
+        {
+            return 3;
+        }
+
+        void Mikk_GetPosition(const SMikkTSpaceContext* Ctx, float Out[], int iFace, int iVert)
+        {
+            const FMeshResource* M = static_cast<const FMeshResource*>(Ctx->m_pUserData);
+            const uint32 Idx = M->Indices[(size_t)iFace * 3u + (size_t)iVert];
+            const glm::vec3 P = M->GetPositionAt(Idx);
+            Out[0] = P.x; Out[1] = P.y; Out[2] = P.z;
+        }
+
+        void Mikk_GetNormal(const SMikkTSpaceContext* Ctx, float Out[], int iFace, int iVert)
+        {
+            const FMeshResource* M = static_cast<const FMeshResource*>(Ctx->m_pUserData);
+            const uint32 Idx = M->Indices[(size_t)iFace * 3u + (size_t)iVert];
+            const glm::vec3 N = UnpackNormal(M->GetNormalAt(Idx));
+            Out[0] = N.x; Out[1] = N.y; Out[2] = N.z;
+        }
+
+        void Mikk_GetTexCoord(const SMikkTSpaceContext* Ctx, float Out[], int iFace, int iVert)
+        {
+            const FMeshResource* M = static_cast<const FMeshResource*>(Ctx->m_pUserData);
+            const uint32 Idx = M->Indices[(size_t)iFace * 3u + (size_t)iVert];
+            const glm::vec2 UV = M->GetUVAt(Idx);
+            Out[0] = UV.x; Out[1] = UV.y;
+        }
+
+        void Mikk_SetTSpaceBasic(const SMikkTSpaceContext* Ctx, const float Tangent[], float Sign, int iFace, int iVert)
+        {
+            FMeshResource* M = static_cast<FMeshResource*>(Ctx->m_pUserData);
+            const uint32 Idx = M->Indices[(size_t)iFace * 3u + (size_t)iVert];
+            const uint32 Packed = PackTangent(glm::vec3(Tangent[0], Tangent[1], Tangent[2]), Sign);
+            eastl::visit([&](auto& Vec) { Vec[Idx].Tangent = Packed; }, M->Vertices);
+        }
+    }
+
+    void ComputeMikkTSpaceTangents(FMeshResource& MeshResource)
+    {
+        if (MeshResource.Indices.empty() || MeshResource.GetNumVertices() == 0)
+        {
+            return;
+        }
+
+        if (MeshResource.Indices.size() / 3u == 0)
+        {
+            return;
+        }
+
+        SMikkTSpaceInterface Interface = {};
+        Interface.m_getNumFaces          = Mikk_GetNumFaces;
+        Interface.m_getNumVerticesOfFace = Mikk_GetNumVerticesOfFace;
+        Interface.m_getPosition          = Mikk_GetPosition;
+        Interface.m_getNormal            = Mikk_GetNormal;
+        Interface.m_getTexCoord          = Mikk_GetTexCoord;
+        Interface.m_setTSpaceBasic       = Mikk_SetTSpaceBasic;
+
+        SMikkTSpaceContext Ctx = {};
+        Ctx.m_pInterface = &Interface;
+        Ctx.m_pUserData  = &MeshResource;
+
+        genTangSpaceDefault(&Ctx);
+    }
+
     void OptimizeNewlyImportedMesh(FMeshResource& MeshResource)
     {
         size_t NumVertices = MeshResource.GetNumVertices();
@@ -239,6 +332,15 @@ namespace Lumina::Import::Mesh
     void GenerateMeshlets(FMeshResource& MeshResource)
     {
         MeshResource.MeshletData.Clear();
+
+        // Tangent space generation happens here -- not in the importer --
+        // so the operation runs once per finalize regardless of which
+        // importer or call path produced the indexed mesh. The dedup in
+        // OptimizeNewlyImportedMesh has already collapsed identical
+        // (pos, normal, uv, color) corners (Tangent is zero on every
+        // vertex up to this point so it doesn't influence dedup); MikkTSpace
+        // then assigns tangents on the deduped vertex array.
+        ComputeMikkTSpaceTangents(MeshResource);
 
         const size_t NumVertices = MeshResource.GetNumVertices();
         const size_t NumIndices  = MeshResource.Indices.size();
@@ -505,6 +607,7 @@ namespace Lumina::Import::Mesh
                             FMeshletSkinnedVertex Packed;
                             Packed.Position = PackMeshletPosition(GridIndex(V.Position) - Out.LoInt);
                             Packed.Normal   = V.Normal;
+                            Packed.Tangent  = V.Tangent;
                             Packed.UV       = V.UV;
                             Packed.Color    = V.Color;
                             memcpy(&Packed.JointIndices, &V.JointIndices, sizeof(uint32));
@@ -522,6 +625,7 @@ namespace Lumina::Import::Mesh
                             FMeshletVertex Packed;
                             Packed.Position = PackMeshletPosition(GridIndex(V.Position) - Out.LoInt);
                             Packed.Normal   = V.Normal;
+                            Packed.Tangent  = V.Tangent;
                             Packed.UV       = V.UV;
                             Packed.Color    = V.Color;
                             MeshResource.MeshletData.MeshletVertices.push_back(Packed);
@@ -894,6 +998,9 @@ namespace Lumina::Import::Mesh
             {
                 OptimizeNewlyImportedMesh(M);
             }
+            // GenerateMeshlets internally runs ComputeMikkTSpaceTangents
+            // before packing, so any path that builds meshlets (here or
+            // inside an importer's direct call) gets MikkTSpace tangents.
             GenerateMeshlets(M);
         });
 

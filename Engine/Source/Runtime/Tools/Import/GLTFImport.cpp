@@ -483,6 +483,7 @@ namespace Lumina::Import::Mesh::GLTF
                 for (size_t i = InitialVert; i < NewResource->GetNumVertices(); ++i)
                 {
                     NewResource->SetNormalAt(i, PackNormal(DefaultNormal));
+                    NewResource->SetTangentAt(i, 0);  // Filled by MikkTSpace in GenerateMeshlets.
                     NewResource->SetUVAt(i, glm::u16vec2(0, 0));
                     NewResource->SetColorAt(i, 0xFFFFFFFF);
                     if (NewResource->IsSkinnedMesh())

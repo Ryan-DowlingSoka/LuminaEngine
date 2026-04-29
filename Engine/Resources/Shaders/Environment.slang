@@ -11,6 +11,11 @@
 // from screen space, so it does not depend on the camera projection at all.
 
 [[vk::binding(0, 2)]] ConstantBuffer<FEnvironmentParams> uEnvironment;
+// Same SkyCube the IBL pipeline reads. SkyCubeCapturePass populates it
+// each frame -- either from the procedural sky shader or from the
+// imported HDRI via EquirectToCubemap. When SkyMode == HDRI the env
+// shader samples it directly instead of evaluating procedural sky math.
+[[vk::binding(1, 2)]] SamplerCube                        uSkyCube;
 
 struct FragmentInput  { float2 UV : TEXCOORD0; };
 struct FragmentOutput { float4 Color : SV_Target0; };
@@ -38,8 +43,22 @@ float3 GetViewRay(float2 UV)
 FragmentOutput FragmentMain(FragmentInput Input)
 {
     float3 RayDir = GetViewRay(Input.UV);
-    float3 SunDir = GetSunDirection();
-    float3 Color  = EvaluateSky(uEnvironment, SunDir, RayDir);
+
+    float3 Color;
+    uint SkyMode = asuint(uEnvironment.Misc.x);
+    if (SkyMode == SKY_MODE_HDRI)
+    {
+        // SkyCube is whatever SkyCubeCapturePass left this frame. If no
+        // HDRI is bound, the cube still holds the previous frame's
+        // procedural fill -- harmless for the brief moment between
+        // assigning an HDRI and the cube refreshing on the next frame.
+        Color = uSkyCube.SampleLevel(RayDir, 0.0).rgb;
+    }
+    else
+    {
+        float3 SunDir = GetSunDirection();
+        Color         = EvaluateSky(uEnvironment, SunDir, RayDir);
+    }
 
     FragmentOutput Output;
     Output.Color = float4(Color, 1.0);

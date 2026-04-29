@@ -95,6 +95,7 @@
 #include "Tools/AssetEditors/MeshEditor/SkeletonEditorTool.h"
 #include "Tools/AssetEditors/ParticleSystemEditor/ParticleSystemEditorTool.h"
 #include "Tools/AssetEditors/PrefabEditor/PrefabEditorTool.h"
+#include "Tools/AssetEditors/RmlUiEditor/RmlUiEditorTool.h"
 #include "Tools/AssetEditors/TextureEditor/TextureEditorTool.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "Tools/UI/ImGui/ImGuiRenderer.h"
@@ -430,6 +431,15 @@ namespace Lumina
             }
         }
 
+        for (auto MapItr = ActiveFileTools.begin(); MapItr != ActiveFileTools.end(); ++MapItr)
+        {
+            if (MapItr->second == Tool)
+            {
+                ActiveFileTools.erase(MapItr);
+                break;
+            }
+        }
+
         if (Tool == GamePreviewTool)
         {
             WorldEditorTool->NotifyPlayInEditorStop();
@@ -525,6 +535,41 @@ namespace Lumina
         {
             ActiveAssetTools.insert_or_assign(Asset, NewTool);
         }
+    }
+
+    void FEditorUI::OpenFileEditor(FStringView VirtualPath)
+    {
+        if (VirtualPath.empty())
+        {
+            return;
+        }
+
+        FString Key(VirtualPath.data(), VirtualPath.size());
+
+        auto Itr = ActiveFileTools.find(Key);
+        if (Itr != ActiveFileTools.end())
+        {
+            const char* Name = Itr->second->GetToolName().c_str();
+            ImGui::SetWindowFocus(Name);
+            return;
+        }
+
+        const FStringView Ext = VFS::Extension(VirtualPath);
+
+        FEditorTool* NewTool = nullptr;
+        if (Ext == ".rml")
+        {
+            NewTool = CreateTool<FRmlUiEditorTool>(this, VirtualPath);
+        }
+
+        if (NewTool == nullptr)
+        {
+            // No registered editor for this extension; fall back to OS default.
+            Platform::LaunchURL(StringUtils::ToWideString(VirtualPath.data()).c_str());
+            return;
+        }
+
+        ActiveFileTools.insert_or_assign(Move(Key), NewTool);
     }
 
     void FEditorUI::OnDestroyAsset(CObject* InAsset)

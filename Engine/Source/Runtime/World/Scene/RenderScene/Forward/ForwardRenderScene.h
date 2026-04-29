@@ -435,6 +435,34 @@ namespace Lumina
         // Populated during environment processing, uploaded with the scene
         // buffers, and read by Environment.slang at binding (2, 0).
         FEnvironmentParams                      EnvironmentParams;
+
+        // Resolved RHI image for SEnvironmentComponent::EnvironmentMap
+        // (the imported HDRI). Set during environment processing and
+        // consumed by SkyCubeCapturePass to drive the equirect->cube
+        // conversion. Null = no HDRI bound; SkyCubeCapturePass falls
+        // back to the procedural sky shader.
+        FRHIImage*                              EnvironmentMapImage = nullptr;
+
+        // IBL change-tracking. SkyCube / Irradiance / Prefilter outputs
+        // are persistent across frames and only need to be rebuilt when
+        // their inputs actually change. Without these snapshots the three
+        // convolution passes ran every frame -- a noticeable cost now
+        // that SkyCube is 1024 per face. The snapshot fields hold what
+        // the IBL output was last baked from; we re-bake when any of
+        // them differs. bIBLValid = false forces the first-frame bake.
+        FEnvironmentParams                      LastIBLEnvironmentParams = {};
+        FRHIImage*                              LastIBLEnvironmentMap    = nullptr;
+        glm::vec3                               LastIBLSunDirection      = glm::vec3(0.0f);
+        bool                                    bLastIBLHasSun           = false;
+        bool                                    bIBLValid                = false;
+        bool                                    bIBLDirty                = true;
+
+        // Mirrors EnvironmentParams from the last frame we uploaded. The
+        // env CB is 96 B but uploaded every frame through
+        // CompileDrawCommands; gating on a memcmp saves the WriteBuffer
+        // for the (common) case of a static environment.
+        FEnvironmentParams                      LastUploadedEnvironmentParams = {};
+        bool                                    bEnvironmentParamsUploaded    = false;
         
         FBindingCache                           BindingCache;
 

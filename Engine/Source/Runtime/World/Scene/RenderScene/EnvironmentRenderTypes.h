@@ -14,6 +14,11 @@ namespace Lumina
     constexpr uint32 GSkyMode_SolidColor = 0u;
     constexpr uint32 GSkyMode_Gradient   = 1u;
     constexpr uint32 GSkyMode_Dynamic    = 2u;
+    // Visible sky reads from the SkyCube (which itself was filled by the
+    // imported HDRI in the Equirect->Cube pass). When SkyMode is HDRI but
+    // no EnvironmentMap is bound, the env shader falls back to a black
+    // sky -- documented as such in SEnvironmentComponent.
+    constexpr uint32 GSkyMode_HDRI       = 3u;
 
     /**
      * CPU mirror of the per-frame environment constant buffer. Layout must

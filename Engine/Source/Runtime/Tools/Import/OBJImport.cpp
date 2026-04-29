@@ -187,6 +187,7 @@ namespace Lumina::Import::Mesh::OBJ
                         Surface.IndexCount++;
 
                         FSkinnedVertex Vertex;
+                        Vertex.Tangent  = 0;  // Filled by MikkTSpace in GenerateMeshlets.
                         Vertex.Position.x = Attribute.vertices[3 * Index.vertex_index + 0];
                         Vertex.Position.y = Attribute.vertices[3 * Index.vertex_index + 1];
                         Vertex.Position.z = Attribute.vertices[3 * Index.vertex_index + 2];
@@ -214,6 +215,7 @@ namespace Lumina::Import::Mesh::OBJ
                             FVertex StaticVertex;
                             StaticVertex.Position = Vertex.Position;
                             StaticVertex.Normal   = Vertex.Normal;
+                            StaticVertex.Tangent  = 0;  // Filled by MikkTSpace in GenerateMeshlets.
                             StaticVertex.UV       = Vertex.UV;
                             StaticVertex.Color    = Vertex.Color;
                             eastl::get<TVector<FVertex>>(MeshResource->Vertices).push_back(StaticVertex);

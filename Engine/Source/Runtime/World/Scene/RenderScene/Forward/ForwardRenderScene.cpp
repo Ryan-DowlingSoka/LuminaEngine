@@ -277,12 +277,7 @@ namespace Lumina
                 BasePass(CmdList);
             }
 
-            // The pyramid that the meshlet cull pass built from the early depth
-            // pre-pass plus the base pass is the freshest occlusion data the
-            // terrain can see, so the terrain cull dispatches between the base
-            // pass and the terrain render. This is the same Hi-Z the second
-            // DepthPyramidPass below would rebuild for transparency, just used
-            // one frame stage earlier.
+            // Terrain cull uses the post-base-pass Hi-Z (freshest occlusion).
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Cull", FColor(0.20f, 0.85f, 0.50f));
                 TerrainCullPass(CmdList);
@@ -684,6 +679,10 @@ namespace Lumina
                 RenderSettings.bSSAO           = false;
                 LightData.AmbientLight         = glm::vec4(0.0f);
                 EnvironmentParams              = FEnvironmentParams{};
+                EnvironmentMapImage            = nullptr;
+                // Cleared each frame, set true below if any IBL input
+                // differs from the snapshot we last baked from.
+                bIBLDirty                      = false;
 
                 EnvironmentView.each([this] (const SEnvironmentComponent& Env)
                 {
@@ -694,10 +693,23 @@ namespace Lumina
                     // skylight ambient without seeing the sky).
                     RenderSettings.bHasEnvironment = Env.bRenderSky;
 
+                    // Resolve the imported HDRI (if any). Anything other than
+                    // a fully cooked Environment-mode CTexture is silently
+                    // ignored -- the renderer can't bind a Basis-compressed
+                    // 2D color texture as an HDR equirect source.
+                    if (CTexture* EnvMap = Env.EnvironmentMap.Get())
+                    {
+                        if (EnvMap->ColorSpace == ETextureColorSpace::Environment && EnvMap->GetRHIRef())
+                        {
+                            EnvironmentMapImage = EnvMap->GetRHIRef();
+                        }
+                    }
+
                     // Pack the GPU params. Misc.x carries the sky mode as a
                     // float-cast uint; the shader pulls it back via asuint().
                     const uint32 SkyModeBits = (Env.SkyMode == ESkyMode::SolidColor) ? GSkyMode_SolidColor
                                             : (Env.SkyMode == ESkyMode::Gradient)   ? GSkyMode_Gradient
+                                            : (Env.SkyMode == ESkyMode::HDRI)       ? GSkyMode_HDRI
                                                                                     : GSkyMode_Dynamic;
                     float SkyModeAsFloat;
                     std::memcpy(&SkyModeAsFloat, &SkyModeBits, sizeof(float));
@@ -730,13 +742,7 @@ namespace Lumina
                         }
                         else // Dynamic
                         {
-                            // Coarse sun-height-driven approximation. Daytime
-                            // skies bias toward the (roughly Rayleigh-blue)
-                            // zenith term; twilight collapses toward warmer
-                            // horizon. Cheap, and stays consistent with the
-                            // shader's sun-color curve. SunDirection points
-                            // FROM surface TO sun, so SunDirection.y is the
-                            // sun's elevation directly.
+                            // SunDirection points FROM surface TO sun, so .y is elevation.
                             const float SunHeight = LightData.bHasSun
                                 ? glm::clamp(LightData.SunDirection.y, -1.0f, 1.0f)
                                 : 0.5f;
@@ -889,7 +895,34 @@ namespace Lumina
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Light), &LightData.Shadows[0], ShadowsUploadSize, offsetof(FSceneLightData, Shadows));
             }
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Billboards), BillboardInstances.data(), BillboardSize);
-            CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Environment), &EnvironmentParams, sizeof(FEnvironmentParams));
+
+            // Skip env upload + IBL convolution when nothing they depend on changed.
+            const bool bEnvParamsChanged =
+                !bEnvironmentParamsUploaded ||
+                std::memcmp(&EnvironmentParams, &LastUploadedEnvironmentParams, sizeof(FEnvironmentParams)) != 0;
+            if (bEnvParamsChanged)
+            {
+                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Environment), &EnvironmentParams, sizeof(FEnvironmentParams));
+                LastUploadedEnvironmentParams = EnvironmentParams;
+                bEnvironmentParamsUploaded   = true;
+            }
+
+            const bool bSunChanged =
+                LastIBLSunDirection != LightData.SunDirection ||
+                bLastIBLHasSun       != (LightData.bHasSun != 0);
+            const bool bMapChanged =
+                LastIBLEnvironmentMap != EnvironmentMapImage;
+
+            if (RenderSettings.bHasEnvironment &&
+                (!bIBLValid || bEnvParamsChanged || bSunChanged || bMapChanged))
+            {
+                bIBLDirty                  = true;
+                LastIBLEnvironmentParams   = EnvironmentParams;
+                LastIBLEnvironmentMap      = EnvironmentMapImage;
+                LastIBLSunDirection        = LightData.SunDirection;
+                bLastIBLHasSun             = (LightData.bHasSun != 0);
+                bIBLValid                  = true;
+            }
             if (!InstanceMeshletPrefix.empty())
             {
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::InstanceMeshletPrefix),
@@ -1652,15 +1685,8 @@ namespace Lumina
             WriteGraph.Wait();
         }
 
-        // Per-instance meshlet prefix sum. Building this here -- after the
-        // parallel instance write fills SurfaceMeshletCount -- lets the cull
-        // pass dispatch a flat thread-per-meshlet layout instead of the old
-        // (X = MaxMeshletsPerInstance, Y = NumInstances) over-dispatch that
-        // wasted lanes on (MeshletLocalIdx >= SurfaceMeshletCount) and
-        // (SurfaceMeshletCount == 0) early-outs. Entry [i] is the running
-        // total of meshlets across instances [0..i); entry [N] is the same
-        // value as TotalMeshletBound and acts as the upper sentinel for the
-        // shader's binary search.
+        // Inclusive prefix sum of per-instance meshlet counts; cull pass
+        // binary-searches this to recover (instance, meshletLocal) from a flat thread.
         {
             const size_t NumInstancesLocal = Instances.size();
             InstanceMeshletPrefix.resize(NumInstancesLocal + 1);
@@ -1904,16 +1930,8 @@ namespace Lumina
         if (ShadowRequests.empty())
             return;
 
-        // ----- View-budget fit -------------------------------------------------
-        // CullMeshlets.slang reads a fixed-size FCullView array (GMaxCullViews).
-        // View 0 is the camera; 1..NumCascades are cascades (if a directional
-        // light exists); remaining slots are shadow views (6 per point, 1 per
-        // spot). Overflow would record out-of-range base indices and crash
-        // the GPU when a draw pass read past IndirectArgs.
-        //
-        // Farthest-first drop order: nearby shadows dominate the image;
-        // distant ones are already shrunk to near-min tiles and lose the
-        // least perceived quality when dropped.
+        // Drop farthest shadow views first to fit GMaxCullViews
+        // (camera + cascades + 6/point + 1/spot). Overflow crashes the GPU.
         {
             const uint32 SunViews        = LightData.bHasSun ? (uint32)NumCascades : 0u;
             const uint32 ReservedViews   = 1u + SunViews;                     // Camera + CSM cascades.
@@ -2134,15 +2152,8 @@ namespace Lumina
 
     void FForwardRenderScene::BuildCullViews(const FViewVolume& ViewVolume)
     {
-        // Shared per-view layout:
-        //   MeshletDrawList slice v  = [v * TotalMeshletBound, (v+1) * TotalMeshletBound)
-        //   IndirectArgs    slot (v, d) = v * NumDraws + d
-        //   IndirectArgs[(v,d)].FirstInstance = v * TotalMeshletBound + DrawMeshletStartOffsets[d]
-        //
-        // CullMeshlets owns all atomic appends into the draw list and all
-        // InstanceCount increments, so InstanceCount starts at 0 every frame
-        // and each draw pass indirect-draws out of its own (v, d) slot.
-
+        // Per-view: DrawList slice v = [v*TotalMeshletBound, (v+1)*TotalMeshletBound),
+        // IndirectArgs slot (v,d) = v*NumDraws + d. CullMeshlets owns all atomic appends.
         const uint32 NumDraws = NumDrawsPerView;
 
         auto PushView = [&](const glm::mat4& ViewProjection, const glm::vec3& Origin, uint32 Flags)
@@ -2286,12 +2297,7 @@ namespace Lumina
             PushView(ShadowData.ViewProjection[0], Light.Position, SpotFlags);
         }
 
-        // Camera-late view. Phase 1 (CullPassLate) re-tests the defer list
-        // against the rebuilt Hi-Z pyramid and emits survivors into this
-        // view's slice. PhaseLate flag tells CullMeshlets phase 0 to skip
-        // it (phase 1 owns it) and the flag set excludes Frustum/Cone
-        // because those already ran on the defer-list entries in phase 0.
-        // Only the Occlusion flag's accompanying HZB test matters here.
+        // Camera-late view: phase 1 re-tests the defer list against the rebuilt HZB.
         {
             const glm::mat4 CameraVP = ViewVolume.GetProjectionMatrix() * ViewVolume.GetViewMatrix();
             const uint32 CameraLateFlags =
@@ -2411,14 +2417,8 @@ namespace Lumina
             constexpr float BackDistance = 200.0f;
             const float     OrthoRange   = Radius * 2.0f + BackDistance;
 
-            // Build a *fixed-orientation* reference view. Critically, the
-            // lookAt target is the world origin, not SphereCenter — that
-            // makes the rotation depend only on LightDir, so projecting any
-            // world point through this view gives a stable XY that we can
-            // round to the texel grid. Building lookAt with target =
-            // SphereCenter (as the previous code did) trivially projects
-            // SphereCenter to (0, 0), making the snap a no-op and producing
-            // the per-frame shadow crawl.
+            // lookAt target = origin (not SphereCenter) so the rotation
+            // depends only on LightDir; otherwise the texel snap below collapses.
             const glm::mat4 LightRotation = glm::lookAt(
                 LightDir * (Radius + BackDistance),
                 glm::vec3(0.0f),
@@ -2690,16 +2690,7 @@ namespace Lumina
         PC.CameraLateViewIndex = CameraLateViewIndex;
         CmdList.SetPushConstants(&PC, sizeof(PC));
 
-        // Flat thread-per-meshlet dispatch. Total threads = TotalMeshletBound,
-        // so the shader's only early-out is the tail of the last workgroup
-        // (~63 threads max). The old (X = MaxMeshletsPerInstance,
-        // Y = NumInstances) layout dispatched MaxMeshlets * NumInstances
-        // threads with most early-outing on (MeshletLocalIdx >=
-        // SurfaceMeshletCount); on a typical scene that was 5-10x the work.
-        //
-        // Vulkan's groupCountX minimum is 65535, so workgroups beyond that
-        // fold into Y. The shader reconstructs the flat thread index as
-        // GroupID.x * 64 + ThreadID.x + GroupID.y * 65535 * 64.
+        // Flat thread-per-meshlet; workgroups beyond the 65535 X cap fold into Y.
         const uint32 NumWorkgroups = (TotalMeshletBound + 63u) / 64u;
         constexpr uint32 MaxDispatchAxis = 65535u;
         const uint32 DispatchX = NumWorkgroups < MaxDispatchAxis ? NumWorkgroups : MaxDispatchAxis;
@@ -3392,12 +3383,7 @@ namespace Lumina
             .SetFillMode(RenderSettings.bWireframe ? ERasterFillMode::Wireframe : ERasterFillMode::Solid)
             .SetLineWidth(5.0f);
     
-        // Pre-pass only laid down depth for the best occluders, so the
-        // base pass runs GREATER_EQUAL and writes depth for everything
-        // else. Occluder pixels hit the equality branch and re-write
-        // their already-correct depth (no-op); non-occluder fragments
-        // that survive against the occluder silhouette write their real
-        // depth so the post-pass pyramid sees the full opaque scene.
+        // GREATER_EQUAL: occluders re-write their pre-pass depth; non-occluders fill the rest.
         FDepthStencilState DepthState; DepthState
             .SetDepthFunc(EComparisonFunc::GreaterOrEqual)
             .EnableDepthWrite();
@@ -3418,13 +3404,7 @@ namespace Lumina
                 .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
-            // The camera's visible meshlets are split across two slices:
-            //   * view 0              : passed HZB against last-frame pyramid (early phase)
-            //   * CameraLateViewIndex : failed early HZB but passed rebuilt HZB (late phase)
-            // Both slices feed the same pipeline / same shaders; only the
-            // IndirectArgs offset differs. GREATER_EQUAL still lets non-
-            // occluder fragments write real depth against the pre-pass
-            // occluder-populated depth buffer.
+            // GREATER_EQUAL allows non-occluder fragments to write depth atop the pre-pass.
             FGraphicsState GraphicsState; GraphicsState
                 .SetRenderPass(RenderPass)
                 .SetViewportState(SceneViewportState)
@@ -3438,9 +3418,7 @@ namespace Lumina
             // View 0 = camera-early.
             CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
 
-            // Camera-late. Empty slice when no meshlets were deferred or all
-            // deferred meshlets were genuinely occluded; the per-draw
-            // InstanceCount reads 0 and GPU short-circuits with no perf hit.
+            // Late phase: re-tested deferred meshlets (slice may be empty).
             if (CameraLateViewIndex != ~0u)
             {
                 const uint32 LateBase = CameraLateViewIndex * NumDrawsPerView;
@@ -4747,26 +4725,19 @@ namespace Lumina
         CmdList.Draw(3, 1, 0, 0);
     }
 
-    // ----- IBL pipeline tuning constants -----
-    //
-    // Mip count for the GGX-prefiltered specular cube. Roughness for mip M
-    // is M / (NumMips - 1), so 5 mips -> {0.0, 0.25, 0.5, 0.75, 1.0}. Five is
-    // the standard PBR pipeline choice (UE4, filament, learnopengl); fewer
-    // bands the sharpness/roughness transition, more is wasted memory at the
-    // smallest mip where the lobe is already fully blurred.
+    // 5 mips: roughness M/(NumMips-1) = {0, 0.25, 0.5, 0.75, 1.0}. Standard PBR choice.
     static constexpr uint32 GSkyPrefilterMipCount = 5;
-
-    // GGX prefilter sample count. Karis recommends 1024; 256 is visibly
-    // cleaner than 64 and noticeably noisier than 1024. We pay this cost
-    // every frame the sky is enabled (no dirty tracking yet), so we tilt
-    // toward the lower end and accept some shimmer for now. Irradiance
-    // convolution has its own count baked into the shader because nothing
-    // about it varies per dispatch.
+    // GGX samples per prefilter texel. 256 is the readable/cost compromise vs Karis 1024.
     static constexpr uint32 GPrefilterSampleCount = 256;
 
     void FForwardRenderScene::SkyCubeCapturePass(ICommandList& CmdList)
     {
         if (!RenderSettings.bHasEnvironment)
+        {
+            return;
+        }
+
+        if (!bIBLDirty)
         {
             return;
         }
@@ -4779,18 +4750,63 @@ namespace Lumina
             return;
         }
 
+        // HDRI path: equirect->cube replaces the procedural fill.
+        if (EnvironmentMapImage != nullptr)
+        {
+            FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("EquirectToCubemap.slang");
+            if (!ComputeShader)
+            {
+                return;
+            }
+
+            FBindingLayoutDesc LayoutDesc;
+            LayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0));
+            LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(1));
+            LayoutDesc.SetVisibility(ERHIShaderType::Compute);
+            FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
+
+            FComputePipelineDesc PipelineDesc;
+            PipelineDesc.AddBindingLayout(Layout);
+            PipelineDesc.CS = ComputeShader;
+            PipelineDesc.DebugName = "Equirect To Cubemap";
+            FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+            // Linear-clamp sampler. atan2/asin in the shader can produce UVs
+            // a hair past 1.0 from numerical noise at the wrap seam; clamp
+            // keeps the sample on the texture instead of wrapping into the
+            // wrong hemisphere.
+            FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+            FBindingSetDesc SetDesc;
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(
+                0, EnvironmentMapImage, LinearClamp, EnvironmentMapImage->GetFormat(),
+                FTextureSubresourceSet(0, 1, 0, 1),
+                EImageDimension::Texture2D));
+            SetDesc.AddItem(FBindingSetItem::TextureUAV(
+                1, SkyCube, SkyCube->GetFormat(),
+                FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
+                EImageDimension::Texture2DArray));
+            FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
+
+            FComputeState State;
+            State.AddBindingSet(Set);
+            State.SetPipeline(Pipeline);
+            CmdList.SetComputeState(State);
+
+            constexpr uint32 EquirectTile = 8u;
+            const uint32 FaceSize = SkyCube->GetSizeX();
+            const uint32 GroupsXY = RenderUtils::GetGroupCount(FaceSize, EquirectTile);
+            CmdList.Dispatch(GroupsXY, GroupsXY, 6u);
+            return;
+        }
+
         FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("SkyCubeCapture.slang");
         if (!ComputeShader)
         {
             return;
         }
 
-        // Private layout/set: the capture has no scene-data dependency beyond
-        // the sun direction (passed via push constant), so binding through
-        // SceneBindingSet would be unnecessary coupling. The cube is bound as
-        // a Texture2DArray UAV view (6 layers) so the compute writes through
-        // RWTexture2DArray<>; the same image is sampled later through its
-        // TextureCube view by IBL convolution passes.
+        // Cube bound as Texture2DArray UAV (6 layers) for write; IBL passes sample as TextureCube.
         FBindingLayoutDesc LayoutDesc;
         LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(0));
         LayoutDesc.AddItem(FBindingLayoutItem::Buffer_CBV(1));
@@ -4846,6 +4862,13 @@ namespace Lumina
     void FForwardRenderScene::IrradianceConvolutionPass(ICommandList& CmdList)
     {
         if (!RenderSettings.bHasEnvironment)
+        {
+            return;
+        }
+
+        // Skip the 1024-sample-per-texel convolution when the source cube
+        // is unchanged from last frame -- the irradiance cube is persistent.
+        if (!bIBLDirty)
         {
             return;
         }
@@ -4909,6 +4932,14 @@ namespace Lumina
     void FForwardRenderScene::PrefilterEnvMapPass(ICommandList& CmdList)
     {
         if (!RenderSettings.bHasEnvironment)
+        {
+            return;
+        }
+
+        // Same dirty gate as the irradiance pass -- the prefilter cube
+        // outlives a single frame, so re-running 256 GGX samples per
+        // texel per mip is wasted when the source cube hasn't moved.
+        if (!bIBLDirty)
         {
             return;
         }
@@ -5020,17 +5051,27 @@ namespace Lumina
         FRenderState RenderState;
         RenderState.SetRasterState(RasterState);
 
-        // Set 2 carries the env params CB. Lives at slot 0; the shader reads
-        // it as ConstantBuffer<FEnvironmentParams> uEnvironment.
+        // Set 2: the env params CB at slot 0, plus the SkyCube at slot 1
+        // for SKY_MODE_HDRI to sample by view direction. SkyCube is filled
+        // earlier this frame by SkyCubeCapturePass -- auto-barriers handle
+        // the UAV->SRV transition so the env shader sees coherent texels.
         FBindingLayoutDesc EnvLayoutDesc;
         EnvLayoutDesc.SetBindingIndex(2)
             .SetVisibility(ERHIShaderType::Fragment)
-            .AddItem(FBindingLayoutItem::Buffer_CBV(0));
+            .AddItem(FBindingLayoutItem::Buffer_CBV(0))
+            .AddItem(FBindingLayoutItem::Texture_SRV(1));
         FRHIBindingLayout* EnvLayout = BindingCache.GetOrCreateBindingLayout(EnvLayoutDesc);
+
+        FRHIImage* SkyCube = GetNamedImage(ENamedImage::SkyCube);
+        FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
         FBindingSetDesc EnvSetDesc;
         EnvSetDesc.AddItem(FBindingSetItem::BufferCBV(0, GetNamedBuffer(ENamedBuffer::Environment)));
-        FRHIBindingSetRef EnvSet = GRenderContext->CreateBindingSet(EnvSetDesc, EnvLayout);
+        EnvSetDesc.AddItem(FBindingSetItem::TextureSRV(
+            1, SkyCube, LinearClamp, SkyCube->GetFormat(),
+            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
+            EImageDimension::TextureCube));
+        FRHIBindingSet* EnvSet = BindingCache.GetOrCreateBindingSet(EnvSetDesc, EnvLayout);
 
         FGraphicsPipelineDesc Desc;
         Desc.SetDebugName("Environment Pass");
@@ -5160,12 +5201,8 @@ namespace Lumina
 
             glm::vec4 ColorFilter;
 
-            // The .a slots of Shadows / Midtones / Highlights opportunistically
-            // carry the film-grain knobs so we don't grow the push-constant
-            // block (Vulkan only guarantees 128 B; we are already at 144).
-            //   Shadows.a    = FilmGrainIntensity
-            //   Midtones.a   = FilmGrainSize (cell size in pixels)
-            //   Highlights.a = FilmGrainResponse (shadow bias)
+            // .a slots carry film-grain knobs (Shadows.a=Intensity, Midtones.a=Size,
+            // Highlights.a=Response) -- avoids growing past Vulkan's 128B push guarantee.
             glm::vec4 Shadows;
             glm::vec4 Midtones;
             glm::vec4 Highlights;
@@ -5744,12 +5781,7 @@ namespace Lumina
             NamedBuffers[(int)ENamedBuffer::Billboards] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
-        // Per-view cull descriptors. CullMeshlets.slang reads this SSBO to
-        // test each meshlet against every active view's frustum / cone /
-        // occlusion / distance policy. One FCullView per logical render
-        // view: main camera at index 0, followed by CSM cascades, then 6
-        // views per shadow-casting point light, then 1 per shadow-casting
-        // spot light.
+        // Per-view cull descriptors: camera, cascades, 6/point, 1/spot.
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(FCullView);
@@ -5971,11 +6003,7 @@ namespace Lumina
         //==================================================================================================
         
         {
-            // Progressive cascade atlas. Cascades 0/1/2 pack into a single
-            // 2D depth target (see GCSMAtlasWidth/Height) instead of the
-            // previous 4096x4096x3 array. Cascade 0 still gets the 2048x2048
-            // close-up resolution; outer cascades drop to 1024x1024 each
-            // since they cover much more world area per texel.
+            // Progressive CSM atlas: cascade 0 = 2048², 1/2 = 1024² each (see GCSMAtlasW/H).
             FRHIImageDesc ImageDesc = {};
             ImageDesc.Extent = glm::uvec2(GCSMAtlasWidth, GCSMAtlasHeight);
             ImageDesc.Format = EFormat::D32;
@@ -6002,13 +6030,7 @@ namespace Lumina
         }
         
         {
-            // Weighted-blended OIT revealage stores the multiplicative
-            // product of (1 - alpha_i) across transparent fragments -- a
-            // single value in [0, 1]. R16_FLOAT preserves the cleared-to-1
-            // value exactly and gives ~10-bit mantissa precision for the
-            // running product, which is the format every reference WBOIT
-            // implementation uses. R32_FLOAT was 2x the memory for no
-            // visible quality difference.
+            // WBOIT revealage = multiplicative product of (1-a_i); R16F is the reference format.
             FRHIImageDesc ImageDesc = {};
             ImageDesc.Extent = Extent;
             ImageDesc.Format = EFormat::R16_FLOAT;
@@ -6024,13 +6046,7 @@ namespace Lumina
         //==================================================================================================
 
         {
-            // Bloom mip chain. Half-resolution start, each subsequent mip
-            // half again. R11G11B10_FLOAT keeps the chain at 4 B/texel
-            // without losing meaningful HDR precision -- bloom is always
-            // additive on top of the scene so a tiny channel quantization
-            // is visually undetectable, and the negative-value clamp is
-            // fine because the prefilter already throws away anything
-            // below threshold.
+            // Bloom mip chain. Half-res start, R11G11B10_FLOAT (additive over scene; quantization invisible).
             uint32 W = eastl::max<uint32>(Extent.x / 2u, 1u);
             uint32 H = eastl::max<uint32>(Extent.y / 2u, 1u);
             for (uint32 i = 0; i < BLOOM_MIP_COUNT; ++i)
@@ -6124,12 +6140,8 @@ namespace Lumina
 
     void FForwardRenderScene::InitSkyCube()
     {
-        // 256 per face is enough for IBL: the irradiance / prefilter passes
-        // are heavy convolutions and prefer low-variance HDR input, not high
-        // resolution. R11G11B10_FLOAT is 4 B/texel and matches what every
-        // other HDR-color path in the engine uses; the BC6H route would
-        // require offline encoding we don't need yet.
-        constexpr uint32 SkyCubeFaceSize = 256u;
+        // 1024 per face: keeps HDRI detail when read 1:1 by Environment.slang.
+        constexpr uint32 SkyCubeFaceSize = 1024u;
 
         FRHIImageDesc ImageDesc;
         ImageDesc.Extent            = glm::uvec2(SkyCubeFaceSize, SkyCubeFaceSize);

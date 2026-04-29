@@ -6,6 +6,7 @@ struct PSInput
     float4 Color        : COLOR;
     float4 NormalVS     : NORMAL_VS;
     float4 NormalWS     : NORMAL_WS;
+    float4 TangentWS    : TANGENT_WS;
     float4 FragPos      : FRAG_POS;
     float2 UV           : TEXCOORD0;
     uint InstanceIndex  : INSTANCE;
@@ -96,58 +97,34 @@ float3 FresnelSchlick(float CosTheta, float3 F0)
     return F0 + (1.0 - F0) * (x2 * x2 * x);
 }
 
-float3 GetWorldNormal(float3 FragNormal, float2 UV, float3 FragPos, float3 TangentSpaceNormal)
+// Vertex-tangent TBN. The tangent is generated at import time by
+// MikkTSpace (matches Substance / Marmoset / UE / Unity), interpolated
+// per-pixel by the rasterizer, then Gram-Schmidt'd against the
+// interpolated shading normal here so non-uniform model scale and
+// linear-interpolation-induced skew don't tilt the basis. The
+// handedness sign on TangentWS.w preserves the bitangent direction
+// across mirrored UV islands.
+//
+// Replaces a screen-space-derivative TBN: ddx/ddy of linearly
+// interpolated attributes are constant within a triangle, which made
+// every triangle's tangent frame piecewise-flat. With normal mapping
+// applied, that flatness traced visible faceting along triangle edges
+// and a hard line at every UV mirror seam.
+float3 GetWorldNormal(float3 FragNormal, float4 FragTangent, float3 TangentSpaceNormal)
 {
-    float3 Q1  = ddx(FragPos);
-    float3 Q2  = ddy(FragPos);
-    float2 St1 = ddx(UV);
-    float2 St2 = ddy(UV);
+    float3 N = normalize(FragNormal);
 
-    // Derive T and B in world space from the screen-space derivatives.
-    // Both come from the same derivative pair so they share the sign of
-    // the UV determinant -- on UV-mirrored islands they flip together,
-    // keeping the perturbation coherent. Magnitudes scale with
-    // |ddx(P)| * |ddy(UV)| which collapses at close range, so we
-    // normalize *first*, then Gram-Schmidt against FragNormal. Doing it
-    // the other way round (orthogonalize the un-normalized vector, then
-    // check magnitude) made tiny derivatives trip a "fall back to
-    // FragNormal" early-out, which is why the bump detail visibly
-    // disappeared as the camera got close to the surface.
-    float3 T = Q1 * St2.y - Q2 * St1.y;
-    float3 B = Q2 * St1.x - Q1 * St2.x;
-
-    float TGeomLen2 = dot(T, T);
-    float BGeomLen2 = dot(B, B);
-    if (TGeomLen2 < 1e-20 || BGeomLen2 < 1e-20)
-    {
-        return FragNormal;
-    }
-    T *= rsqrt(TGeomLen2);
-    B *= rsqrt(BGeomLen2);
-
-    // Gram-Schmidt against the smoothed shading normal. The derivative-
-    // based T/B are perpendicular to the *geometric* normal of the
-    // triangle, not to the interpolated FragNormal -- the residual
-    // along-FragNormal component bleeds into the perturbed N as a
-    // directional tilt that's invisible in diffuse (averaged out by the
-    // irradiance cube) but clearly wrong in low-roughness reflections.
-    T = T - FragNormal * dot(T, FragNormal);
+    float3 T = FragTangent.xyz - N * dot(FragTangent.xyz, N);
     float TLen2 = dot(T, T);
-    if (TLen2 < 1e-6)
+    if (TLen2 < 1e-8)
     {
-        return FragNormal;
+        return N;
     }
     T *= rsqrt(TLen2);
 
-    B = B - FragNormal * dot(B, FragNormal) - T * dot(B, T);
-    float BLen2 = dot(B, B);
-    if (BLen2 < 1e-6)
-    {
-        return FragNormal;
-    }
-    B *= rsqrt(BLen2);
+    float3 B = cross(N, T) * FragTangent.w;
 
-    float3x3 TBN = float3x3(T, B, FragNormal);
+    float3x3 TBN = float3x3(T, B, N);
     return normalize(mul(TangentSpaceNormal, TBN));
 }
 
@@ -523,7 +500,7 @@ float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3
     float  G            = GeometrySmith(N, V, L, Roughness);
     float3 F            = FresnelSchlick(max(dot(H, V), 0.0), F0);
 
-    float3 Spec         = (NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001);
+    float3 Spec         = (NDF * G * F) / (4.0 * max(dot(N, V), 1e-4) * max(dot(N, L), 1e-4));
     float3 kD           = (1.0 - F) * (1.0 - Metallic);
     float  NdotL        = max(dot(N, L), 0.0);
 
@@ -551,7 +528,7 @@ PSOutput FragmentMain(PSInput Input)
     float3 Normal    = Material.Normal;
     float  Alpha     = Material.Opacity;
     float  AO        = Material.AmbientOcclusion;
-    float  Roughness = Material.Roughness;
+    float  Roughness = max(Material.Roughness, 0.045);
     float  Metallic  = Material.Metallic;
 
     uint MatFlags = uMaterialUniforms[MaterialIndex].Flags;
@@ -571,7 +548,7 @@ PSOutput FragmentMain(PSInput Input)
 
 #else
 
-    float3 N  = GetWorldNormal(WorldNormal, Input.UV, WorldPosition, Normal);
+    float3 N  = GetWorldNormal(WorldNormal, Input.TangentWS, Normal);
     float3 V  = normalize(GetCameraPosition() - WorldPosition);
 
     static const float3 F0_DIELECTRIC = float3(0.04);
@@ -645,7 +622,7 @@ PSOutput FragmentMain(PSInput Input)
             case DEBUG_MODE_SHADING_NORMAL:
             {
             #ifdef UNLIT
-                float3 DebugN = GetWorldNormal(WorldNormal, Input.UV, WorldPosition, Material.Normal);
+                float3 DebugN = GetWorldNormal(WorldNormal, Input.TangentWS, Material.Normal);
             #else
                 float3 DebugN = N;
             #endif

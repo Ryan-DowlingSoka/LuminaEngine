@@ -227,6 +227,14 @@ namespace Lumina
                 Vector[Index].Normal = Normal;
             }, Vertices);
         }
+
+        void SetTangentAt(size_t Index, uint32 Tangent)
+        {
+            eastl::visit([&]<typename T0>(T0& Vector)
+            {
+                Vector[Index].Tangent = Tangent;
+            }, Vertices);
+        }
         
         void SetUVAt(size_t Index, glm::vec2 UV)
         {

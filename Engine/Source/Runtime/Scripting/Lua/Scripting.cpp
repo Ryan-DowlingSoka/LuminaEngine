@@ -123,6 +123,7 @@ namespace Lumina::Lua
         EngineTable.SetFunction<[](FStringView Name) { return StaticLoadObject(Name); } >("LoadObject");
         EngineTable.SetFunction<&FEngine::GetProjectName>("GetProjectName", GEngine);
         EngineTable.SetFunction<&FEngine::GetProjectPath>("GetProjectPath", GEngine);
+        EngineTable.SetFunction<&FEngine::Travel>("Travel", GEngine);
         
         VFSTable.SetFunction<&VFS::Exists>("Exists");
         VFSTable.SetFunction<&VFS::CreateDir>("CreateDir");

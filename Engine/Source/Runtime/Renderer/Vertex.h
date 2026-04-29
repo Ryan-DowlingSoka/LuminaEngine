@@ -69,11 +69,70 @@ namespace Lumina
              | ((uint32(q.z) & 0x3FFu) << 20);
     }
 
+    // Octahedral 15-15 tangent direction + 1-bit handedness sign. One bit
+    // less precision per axis than PackNormal so the MikkTSpace handedness
+    // (the bitangent flip on mirrored UV islands) fits into the same uint32
+    // and FMeshletVertex stays 4-byte aligned.
+    //
+    // Layout: bits  0..14 = signed 15-bit qx
+    //         bits 15..29 = signed 15-bit qy
+    //         bit 30      = handedness (1 = +1, 0 = -1)
+    //         bit 31      = reserved (zero)
+    inline uint32 PackTangent(glm::vec3 t, float Sign)
+    {
+        t /= glm::abs(t.x) + glm::abs(t.y) + glm::abs(t.z) + 1e-12f;
+        glm::vec2 e = glm::vec2(t.x, t.y);
+        if (t.z < 0.0f)
+        {
+            e = glm::vec2(
+                (1.0f - glm::abs(e.y)) * (e.x >= 0.0f ? 1.0f : -1.0f),
+                (1.0f - glm::abs(e.x)) * (e.y >= 0.0f ? 1.0f : -1.0f));
+        }
+        int32 qx = (int32)glm::round(glm::clamp(e.x, -1.0f, 1.0f) * 16383.0f);
+        int32 qy = (int32)glm::round(glm::clamp(e.y, -1.0f, 1.0f) * 16383.0f);
+        uint32 Hand = (Sign >= 0.0f) ? 1u : 0u;
+        return ((uint32)(qx & 0x7FFFu))
+             | (((uint32)(qy & 0x7FFFu)) << 15)
+             | (Hand << 30);
+    }
+
+    inline glm::vec4 UnpackTangent(uint32 Packed)
+    {
+        // Sign-extend 15-bit fields into int32.
+        auto SignExtend15 = [](uint32 V) -> int32
+        {
+            int32 X = (int32)(V & 0x7FFFu);
+            return (X & 0x4000) ? (X | int32(0xFFFF8000u)) : X;
+        };
+        int32 sx = SignExtend15(Packed);
+        int32 sy = SignExtend15(Packed >> 15);
+        glm::vec2 e = glm::vec2((float)sx, (float)sy) / 16383.0f;
+        glm::vec3 t(e.x, e.y, 1.0f - glm::abs(e.x) - glm::abs(e.y));
+        if (t.z < 0.0f)
+        {
+            float tx = (1.0f - glm::abs(t.y)) * (t.x >= 0.0f ? 1.0f : -1.0f);
+            float ty = (1.0f - glm::abs(t.x)) * (t.y >= 0.0f ? 1.0f : -1.0f);
+            t.x = tx;
+            t.y = ty;
+        }
+        float Sign = ((Packed >> 30) & 1u) != 0u ? 1.0f : -1.0f;
+        return glm::vec4(glm::normalize(t), Sign);
+    }
+
     // Full-precision import-time vertex. Dropped after meshlet generation.
+    // Importers must explicitly zero Tangent on every vertex they produce
+    // -- MikkTSpace overwrites it inside GenerateMeshlets, but the dedup
+    // in OptimizeNewlyImportedMesh runs first and byte-compares the whole
+    // struct, so leaving Tangent uninitialized would wrongly split
+    // otherwise-identical vertices. A default member initializer would
+    // make this safe automatically but would also make FVertex
+    // non-trivially-default-constructible, breaking TCanBulkSerialize
+    // (which requires eastl::is_trivial_v).
     struct FVertex
     {
         glm::vec3       Position;
         uint32          Normal;
+        uint32          Tangent;
         uint32          UV;
         uint32          Color;
 
@@ -81,6 +140,7 @@ namespace Lumina
         {
             Ar << Data.Position;
             Ar << Data.Normal;
+            Ar << Data.Tangent;
             Ar << Data.UV;
             Ar << Data.Color;
             return Ar;
@@ -96,6 +156,7 @@ namespace Lumina
         {
             Ar << Data.Position;
             Ar << Data.Normal;
+            Ar << Data.Tangent;
             Ar << Data.UV;
             Ar << Data.Color;
             Ar << Data.JointIndices;
@@ -104,11 +165,13 @@ namespace Lumina
         }
     };
 
-    // 16-byte runtime vertex. Position is 10-10-10 q (see PackMeshletPosition).
+    // 20-byte runtime vertex. Position is 10-10-10 q (see PackMeshletPosition);
+    // Tangent is 15-15 octahedral + 1-bit handedness (PackTangent).
     struct FMeshletVertex
     {
         uint32 Position;
         uint32 Normal;
+        uint32 Tangent;
         uint32 UV;
         uint32 Color;
     };
@@ -131,10 +194,10 @@ namespace Lumina
         float       Size;
     };
 
-    static_assert(sizeof(FVertex) == 24);
-    static_assert(sizeof(FSkinnedVertex) == 32);
-    static_assert(sizeof(FMeshletVertex) == 16);
-    static_assert(sizeof(FMeshletSkinnedVertex) == 24);
+    static_assert(sizeof(FVertex) == 28);
+    static_assert(sizeof(FSkinnedVertex) == 36);
+    static_assert(sizeof(FMeshletVertex) == 20);
+    static_assert(sizeof(FMeshletSkinnedVertex) == 28);
     static_assert(offsetof(FVertex, Position) == 0);
     static_assert(TCanBulkSerialize<FVertex>::value);
     static_assert(TCanBulkSerialize<FSkinnedVertex>::value);

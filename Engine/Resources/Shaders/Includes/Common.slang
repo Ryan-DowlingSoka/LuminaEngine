@@ -91,10 +91,12 @@ enum EInstanceFlags
 //  Structs
 
 // Mirror of Lumina::FMeshletVertex. Position: 10-10-10 q (see UnpackMeshletPosition).
+// Tangent: 15-15 octahedral + 1-bit handedness (see UnpackTangent).
 struct FVertex
 {
     uint    Position;
     uint    Normal;
+    uint    Tangent;
     uint    UV;
     uint    Color;
 };
@@ -103,6 +105,7 @@ struct FSkinnedVertex
 {
     uint    Position;
     uint    Normal;
+    uint    Tangent;
     uint    UV;
     uint    Color;
     uint    JointIndices;
@@ -113,6 +116,7 @@ struct FVertexData
 {
     float3 Position;
     float3 Normal;
+    float4 Tangent;    // xyz: tangent direction; w: handedness sign for B = cross(N,T)*w
     float2 UV;
     float4 Color;
 };
@@ -502,6 +506,23 @@ float3 UnpackNormal(uint Packed)
     n.xy -= float2(n.x >= 0.0 ? t : -t, n.y >= 0.0 ? t : -t);
 
     return normalize(n);
+}
+
+// Octahedral 15-15 tangent direction + 1-bit handedness sign. Matches
+// Lumina::PackTangent. Returns (tangent.xyz, sign) where sign is +1 or -1
+// and the bitangent is reconstructed as cross(N, tangent) * sign.
+float4 UnpackTangent(uint Packed)
+{
+    int sx = bitfieldExtract(int(Packed),  0, 15);
+    int sy = bitfieldExtract(int(Packed), 15, 15);
+    float2 e = float2(sx, sy) * (1.0 / 16383.0);
+
+    float3 t = float3(e, 1.0 - abs(e.x) - abs(e.y));
+    float ht = max(-t.z, 0.0);
+    t.xy -= float2(t.x >= 0.0 ? ht : -ht, t.y >= 0.0 ? ht : -ht);
+
+    float Sign = ((Packed >> 30u) & 1u) != 0u ? 1.0 : -1.0;
+    return float4(normalize(t), Sign);
 }
 
 float3 UnpackMeshletPosition(uint Packed, int3 LoInt, float3 MeshOrigin, float3 GridStep)

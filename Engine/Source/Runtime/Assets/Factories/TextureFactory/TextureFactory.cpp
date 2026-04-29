@@ -14,12 +14,120 @@
 #include "Renderer/RenderTypes.h"
 #include "Renderer/RHIGlobals.h"
 #include "Tools/Import/ImportHelpers.h"
+#include <glm/gtc/packing.hpp>
 
 namespace Lumina
 {
     CObject* CTextureFactory::CreateNew(const FName& Name, CPackage* Package)
     {
         return NewObject<CTexture>(Package, Name);
+    }
+
+    // ----------------------------------------------------------------------------
+    //  HDR / Environment cooking path
+    //
+    //  Bypasses Basis Universal entirely: Basis is LDR-only (it expects sRGB
+    //  RGBA8 input and clamps anything beyond [0,1]), so feeding a radiance
+    //  HDR through it would burn the brightest values to white before the
+    //  IBL convolution ever sees them. Instead, store as RGBA16F: half the
+    //  memory of float32, more than enough precision for environment lighting
+    //  (the IBL pipeline takes thousands of samples per output texel and any
+    //  half-float quantization noise averages out), and natively sampled by
+    //  Vulkan without a transcode step.
+    //
+    //  No mips: the equirect is an intermediate the renderer converts to a
+    //  cubemap on first use; the cube then gets its own GGX prefilter chain
+    //  in PrefilterEnvMapPass.
+    // ----------------------------------------------------------------------------
+    static bool CookEnvironmentTexture(CTexture* Texture, const Import::Textures::FTextureImportResult& Source)
+    {
+        const uint32 Width  = Source.Dimensions.x;
+        const uint32 Height = Source.Dimensions.y;
+        const uint64 NumTexels = uint64(Width) * uint64(Height);
+        if (NumTexels == 0)
+        {
+            return false;
+        }
+
+        // Source is always float32 here -- TextureFactory routes only files
+        // that loaded as one of the float formats below into this path.
+        uint32 SrcChannels = 0;
+        switch (Source.Format)
+        {
+            case EFormat::R32_FLOAT:    SrcChannels = 1; break;
+            case EFormat::RG32_FLOAT:   SrcChannels = 2; break;
+            case EFormat::RGB32_FLOAT:  SrcChannels = 3; break;
+            case EFormat::RGBA32_FLOAT: SrcChannels = 4; break;
+            default:
+                LOG_WARN("CookEnvironmentTexture: '{0}' isn't a float source; Environment color space requires .hdr",
+                         Texture->GetName().c_str());
+                return false;
+        }
+
+        const float* SrcFloats = reinterpret_cast<const float*>(Source.Pixels.data());
+
+        // RGBA16F packed as two uint32 per pixel: low halves = (R, G), high
+        // halves = (B, A). glm::packHalf2x16 puts the first vec2 component in
+        // the low 16 bits, which matches RGBA16F's natural little-endian
+        // byte order (R first in memory). 8 bytes per pixel.
+        TVector<uint32> Halves(NumTexels * 2);
+        for (uint64 i = 0; i < NumTexels; ++i)
+        {
+            const float* Src = SrcFloats + i * SrcChannels;
+            const float R = SrcChannels >= 1 ? Src[0] : 0.0f;
+            const float G = SrcChannels >= 2 ? Src[1] : 0.0f;
+            const float B = SrcChannels >= 3 ? Src[2] : 0.0f;
+            const float A = SrcChannels >= 4 ? Src[3] : 1.0f;
+            Halves[i * 2 + 0] = glm::packHalf2x16(glm::vec2(R, G));
+            Halves[i * 2 + 1] = glm::packHalf2x16(glm::vec2(B, A));
+        }
+
+        FRHIImageDesc ImageDescription;
+        ImageDescription.Format            = EFormat::RGBA16_FLOAT;
+        ImageDescription.Extent            = glm::uvec2(Width, Height);
+        ImageDescription.Flags             .SetMultipleFlags(EImageCreateFlags::ShaderResource);
+        ImageDescription.NumMips           = 1;
+        ImageDescription.InitialState      = EResourceStates::ShaderResource;
+        ImageDescription.bKeepInitialState = true;
+
+        if (!Texture->TextureResource)
+        {
+            Texture->TextureResource = MakeUnique<FTextureResource>();
+        }
+
+        if (Texture->TextureResource->RHIImage && Texture->TextureResource->RHIImage->GetTextureCacheIndex() != -1)
+        {
+            GRenderManager->GetTextureManager().RemoveTexture(Texture->TextureResource->RHIImage);
+        }
+
+        Texture->TextureResource->ImageDescription = ImageDescription;
+        Texture->TextureResource->Mips.clear();
+        Texture->TextureResource->Mips.resize(1);
+
+        FRHIImageRef RHIImage = GRenderContext->CreateImage(ImageDescription);
+        Texture->TextureResource->RHIImage = RHIImage;
+
+        const uint32 BytesPerPixel = 8u;  // RGBA16F.
+        const uint32 RowPitch      = Width * BytesPerPixel;
+        const uint32 SlicePitch    = RowPitch * Height;
+
+        FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Compute());
+        CommandList->Open();
+        CommandList->WriteImage(RHIImage, 0, 0, Halves.data(), RowPitch, 1);
+        CommandList->Close();
+        GRenderContext->ExecuteCommandList(CommandList, ECommandQueue::Compute);
+
+        FTextureResource::FMip& Mip = Texture->TextureResource->Mips[0];
+        Mip.Width      = Width;
+        Mip.Height     = Height;
+        Mip.RowPitch   = RowPitch;
+        Mip.Depth      = 1;
+        Mip.SlicePitch = SlicePitch;
+        Mip.Pixels.assign(reinterpret_cast<uint8*>(Halves.data()),
+                          reinterpret_cast<uint8*>(Halves.data()) + SlicePitch);
+
+        GRenderManager->GetTextureManager().AddTexture(RHIImage);
+        return true;
     }
 
     // Encodes pre-loaded raw RGBA8 pixels via Basis Universal and writes the
@@ -211,16 +319,27 @@ namespace Lumina
     {
         eastl::string Stem(Path.data(), Path.size());
 
-        // Strip any extension first so the suffix match isn't fooled by ".png".
+        // Lowercase before slicing so the .hdr extension check is case-
+        // insensitive (matters: HDRIHaven and Polyhaven exports often
+        // ship as .HDR).
+        for (char& C : Stem)
+        {
+            if (C >= 'A' && C <= 'Z') C = (char)(C + ('a' - 'A'));
+        }
+
+        // .hdr is always an HDR equirectangular panorama in practice;
+        // route it to the Environment cooking path before any of the
+        // suffix-based heuristics below see it.
+        if (Stem.size() >= 4 && Stem.compare(Stem.size() - 4, 4, ".hdr") == 0)
+        {
+            return ETextureColorSpace::Environment;
+        }
+
+        // Strip any extension so the suffix match isn't fooled by ".png".
         const size_t DotPos = Stem.find_last_of('.');
         if (DotPos != eastl::string::npos)
         {
             Stem.resize(DotPos);
-        }
-        // Lowercase the comparison region.
-        for (char& C : Stem)
-        {
-            if (C >= 'A' && C <= 'Z') C = (char)(C + ('a' - 'A'));
         }
 
         auto EndsWith = [&Stem](const char* Suffix)
@@ -340,7 +459,6 @@ namespace Lumina
         }
 
         const Import::Textures::FTextureImportResult& Result = MaybeResult.value();
-        CreatePackageThumbnail(NewTexture, Result.Pixels.data(), Result.Dimensions.x, Result.Dimensions.y);
 
         // Apply mesh-importer-supplied semantic role first -- it's the most
         // accurate signal we have (came directly from glTF material slots /
@@ -356,6 +474,31 @@ namespace Lumina
             NewTexture->ColorSpace = ClassifyByFilename(RawPath.c_str());
         }
 
+        // Hard override for float-source data: Basis Universal expects
+        // 8-bit RGBA and would interpret the float bytes as garbage 8-bit
+        // pixels, producing a corrupt asset with no error. Anything that
+        // loads as a float format MUST take the Environment path. The
+        // CTexture default ColorSpace is SRGB, which would otherwise win
+        // here because the filename heuristic only fires on Auto.
+        const bool bIsFloatSource =
+            Result.Format == EFormat::R32_FLOAT    ||
+            Result.Format == EFormat::RG32_FLOAT   ||
+            Result.Format == EFormat::RGB32_FLOAT  ||
+            Result.Format == EFormat::RGBA32_FLOAT;
+        if (bIsFloatSource)
+        {
+            NewTexture->ColorSpace = ETextureColorSpace::Environment;
+        }
+
+        // Thumbnail generator assumes 4-byte RGBA8 strides. HDR float inputs
+        // would read garbage (the first byte of each float, treated as 8-bit
+        // color) and produce a broken-looking preview. Skip it for HDR;
+        // package gets a default thumbnail.
+        if (NewTexture->ColorSpace != ETextureColorSpace::Environment)
+        {
+            CreatePackageThumbnail(NewTexture, Result.Pixels.data(), Result.Dimensions.x, Result.Dimensions.y);
+        }
+
         // Persist the source path so the editor's Recook button can rerun
         // compression after a ColorSpace change without forcing the user to
         // re-drag the file. Bytes-only imports (mesh-embedded textures) leave
@@ -365,9 +508,19 @@ namespace Lumina
             NewTexture->SourcePath = FString(RawPath.c_str());
         }
 
-        TVector<uint8> Pixels = Move(Result.Pixels);
+        bool bCooked = false;
+        if (NewTexture->ColorSpace == ETextureColorSpace::Environment)
+        {
+            // Skip the Basis/BC* path entirely -- HDR data needs to stay HDR.
+            bCooked = CookEnvironmentTexture(NewTexture, Result);
+        }
+        else
+        {
+            TVector<uint8> Pixels = Move(Result.Pixels);
+            bCooked = CookTexturePixels(NewTexture, Pixels, Result.Dimensions, NewTexture->ColorSpace);
+        }
 
-        if (!CookTexturePixels(NewTexture, Pixels, Result.Dimensions, NewTexture->ColorSpace))
+        if (!bCooked)
         {
             NewTexture->ForceDestroyNow();
             return;
@@ -409,7 +562,6 @@ namespace Lumina
         }
 
         const Import::Textures::FTextureImportResult& Result = MaybeResult.value();
-        TVector<uint8> Pixels = Move(Result.Pixels);
 
         // ColorSpace::Auto on a re-cook is treated the same as a fresh
         // import: classify by filename and persist the resolved value so the
@@ -419,7 +571,31 @@ namespace Lumina
             Texture->ColorSpace = ClassifyByFilename(Texture->SourcePath);
         }
 
-        if (!CookTexturePixels(Texture, Pixels, Result.Dimensions, Texture->ColorSpace))
+        // Same hard override as TryImport: float-source data can't go
+        // through Basis. If a user manually flips ColorSpace away from
+        // Environment on an .hdr asset we still cook it correctly.
+        const bool bIsFloatSource =
+            Result.Format == EFormat::R32_FLOAT    ||
+            Result.Format == EFormat::RG32_FLOAT   ||
+            Result.Format == EFormat::RGB32_FLOAT  ||
+            Result.Format == EFormat::RGBA32_FLOAT;
+        if (bIsFloatSource)
+        {
+            Texture->ColorSpace = ETextureColorSpace::Environment;
+        }
+
+        bool bCooked = false;
+        if (Texture->ColorSpace == ETextureColorSpace::Environment)
+        {
+            bCooked = CookEnvironmentTexture(Texture, Result);
+        }
+        else
+        {
+            TVector<uint8> Pixels = Move(Result.Pixels);
+            bCooked = CookTexturePixels(Texture, Pixels, Result.Dimensions, Texture->ColorSpace);
+        }
+
+        if (!bCooked)
         {
             return false;
         }

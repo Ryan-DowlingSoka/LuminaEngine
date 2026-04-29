@@ -15,6 +15,11 @@
 #define SKY_MODE_SOLID    0u
 #define SKY_MODE_GRADIENT 1u
 #define SKY_MODE_DYNAMIC  2u
+// HDRI sky is sampled outside Sky.slang (it needs a SamplerCube binding,
+// which Sky.slang's pure-function design avoids). EvaluateSky() returns
+// black for this mode; the env shader handles HDRI as an early-out
+// before calling EvaluateSky.
+#define SKY_MODE_HDRI     3u
 
 struct FEnvironmentParams
 {

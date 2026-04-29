@@ -18,7 +18,10 @@ namespace Lumina
         FString GetAssetName() const override { return "Texture"; }
         FStringView GetDefaultAssetCreationName() override { return "NewTexture"; }
 
-        bool IsExtensionSupported(FStringView Ext) override { return Ext == ".png" || Ext == ".jpg" || Ext == ".jpeg"; }
+        bool IsExtensionSupported(FStringView Ext) override
+        {
+            return Ext == ".png" || Ext == ".jpg" || Ext == ".jpeg" || Ext == ".hdr";
+        }
         bool CanImport() override { return true; }
 
         void TryImport(const FFixedString& RawPath, const FFixedString& DestinationPath, const Import::FImportSettings* Settings) override;
