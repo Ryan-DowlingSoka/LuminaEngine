@@ -6,7 +6,7 @@ function Mainmenu:OnReady()
     UI.LoadDocument(MENU)
     Input.SetMode("UI")
     Input.SetMouseMode("Normal")
-    
+   
 
     UI.OnEvent(MENU, "item-play", "click", function()
         Engine.Travel("/Game/Levels/Level_01")

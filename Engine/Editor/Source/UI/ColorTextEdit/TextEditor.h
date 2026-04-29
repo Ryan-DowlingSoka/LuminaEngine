@@ -316,6 +316,24 @@ public:
 	inline void SetHoverCallback(std::function<void(const std::string& word, const std::string& dottedPath)> callback) { hoverCallback = callback; }
 	inline void ClearHoverCallback() { SetHoverCallback(nullptr); }
 
+	// Post-render hook fires inside the editor's BeginChild scope right
+	// before EndChild, so callers can draw inline overlays (color swatches,
+	// gutter widgets, etc.) using the editor's clip rect and the same
+	// drawlist as the text. Use GetScreenPosForCoordinate() to position
+	// content against specific (line, column) pairs.
+	inline void SetPostRenderCallback(std::function<void()> callback) { postRenderCallback = callback; }
+	inline void ClearPostRenderCallback() { SetPostRenderCallback(nullptr); }
+
+	// Returns the absolute screen position of the top-left of the glyph at
+	// (line, column). Valid only after the first Render() call. Coordinates
+	// outside the visible region are still returned as-is — ImGui clipping
+	// inside the editor's child window discards offscreen draws.
+	inline ImVec2 GetScreenPosForCoordinate(int line, int column) const {
+		return ImVec2(
+			lastRenderOrigin.x + textOffset + column * glyphSize.x,
+			lastRenderOrigin.y + line * glyphSize.y);
+	}
+
 	// useful functions to work on selections
 	// NOTE: functions provided to FilterSelections or FilterLines should accept and return UTF-8 encoded strings
 	inline void IndentLines() { if (!readOnly) indentLines(); }
@@ -1375,6 +1393,7 @@ protected:
 	std::function<void(int line)> lineNumberContextMenuCallback;
 	std::function<void(int line, int column)> textContextMenuCallback;
 	std::function<void(const std::string& word, const std::string& dottedPath)> hoverCallback;
+	std::function<void()> postRenderCallback;
 	int contextMenuLine = 0;
 	int contextMenuColumn = 0;
 

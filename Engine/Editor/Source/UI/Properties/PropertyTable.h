@@ -89,7 +89,7 @@ namespace Lumina
 
         void DispatchChange(EPropertyChangeOp Op);
 
-        // Centralised reset path used by both the toolbar button and the
+        // Centralized reset path used by both the toolbar button and the
         // right-click menu. Writes the default into the container, then
         // re-syncs the customization's cached value from the container so
         // DispatchChange's subsequent UpdatePropertyValue doesn't immediately

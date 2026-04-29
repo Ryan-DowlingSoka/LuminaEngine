@@ -84,12 +84,95 @@ namespace Lumina
 
             Lang.name = "RML/RCSS";
             Lang.caseSensitive = false;
-            Lang.commentStart = "<!--";
-            Lang.commentEnd = "-->";
+            // Use /* */ as the built-in multi-line comment so CSS comments
+            // get proper cross-line state tracking. HTML <!-- --> is handled
+            // by the custom tokenizer below for the (much more common)
+            // single-line case. A multi-line HTML comment in an RML file
+            // won't carry comment styling onto its continuation lines, but
+            // the spill-into-strings bug we'd otherwise see (apostrophes in
+            // commentary opening a quoted string) is fully avoided.
+            Lang.commentStart = "/*";
+            Lang.commentEnd = "*/";
             Lang.hasSingleQuotedStrings = true;
             Lang.hasDoubleQuotedStrings = true;
             Lang.stringEscape = '\\';
             Lang.getIdentifier = GetRmlIdentifier;
+
+            // Single-line <!-- ... --> recognition + CSS hex color literals.
+            // The hex case gives the inline color-swatch overlay a reliable
+            // anchor and stops `#abcdef` from being lexed as an identifier.
+            // The iterator only exposes ++ and comparisons, so step manually.
+            Lang.customTokenizer = [](TextEditor::Iterator start, TextEditor::Iterator end, TextEditor::Color& color) -> TextEditor::Iterator
+            {
+                // <!-- ... --> single-line HTML comment. We consume to the
+                // closing --> if it's on this line, else to end-of-line.
+                if (start != end && *start == '<')
+                {
+                    auto cursor = start;
+                    ++cursor;
+                    if (cursor != end && *cursor == '!')
+                    {
+                        ++cursor;
+                        if (cursor != end && *cursor == '-')
+                        {
+                            ++cursor;
+                            if (cursor != end && *cursor == '-')
+                            {
+                                ++cursor;
+                                while (cursor != end)
+                                {
+                                    if (*cursor == '-')
+                                    {
+                                        auto a = cursor; ++a;
+                                        if (a != end && *a == '-')
+                                        {
+                                            auto b = a; ++b;
+                                            if (b != end && *b == '>')
+                                            {
+                                                cursor = b;
+                                                ++cursor;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    ++cursor;
+                                }
+                                color = TextEditor::Color::comment;
+                                return cursor;
+                            }
+                        }
+                    }
+                }
+
+                // # followed by 3, 4, 6, or 8 hex digits — CSS color literal.
+                if (start != end && *start == '#')
+                {
+                    auto cursor = start;
+                    ++cursor;
+                    int digits = 0;
+                    while (cursor != end && digits < 8)
+                    {
+                        const auto c = *cursor;
+                        const bool isHex =
+                            (c >= '0' && c <= '9') ||
+                            (c >= 'a' && c <= 'f') ||
+                            (c >= 'A' && c <= 'F');
+                        if (!isHex)
+                        {
+                            break;
+                        }
+                        ++cursor;
+                        ++digits;
+                    }
+                    if (digits == 3 || digits == 4 || digits == 6 || digits == 8)
+                    {
+                        color = TextEditor::Color::number;
+                        return cursor;
+                    }
+                }
+
+                return start;
+            };
 
             // RML elements (HTML subset + RmlUI-specific widgets).
             static const char* const Tags[] = {
@@ -185,6 +268,7 @@ namespace Lumina
 
         ApplyEditorSettings();
         CodeEditor.SetLanguage(GetRmlLanguage());
+        CodeEditor.SetPostRenderCallback([this] { DrawInlineColorSwatches(); });
         LoadFromDisk();
 
         char NameBuf[96];
@@ -789,6 +873,204 @@ namespace Lumina
         CodeEditor.SetText(View);
         LastSyncedText.assign(Body.c_str(), Body.size());
         bBufferDirty = false;
+    }
+
+    void FRmlUiEditorTool::DrawInlineColorSwatches()
+    {
+        const int FirstLine = CodeEditor.GetFirstVisibleLine();
+        const int LastLine  = CodeEditor.GetLastVisibleLine();
+        const int LineCount = CodeEditor.GetLineCount();
+        const int TabSize   = CodeEditor.GetTabSize();
+        const float LineHeight = CodeEditor.GetLineHeight();
+        const float GlyphWidth = CodeEditor.GetGlyphWidth();
+
+        const float SwatchSize = std::max(8.0f, LineHeight - 4.0f);
+        const float SwatchPad  = 2.0f;
+
+        ImDrawList* DrawList = ImGui::GetWindowDrawList();
+
+        auto HexDigit = [](char C) -> int
+        {
+            if (C >= '0' && C <= '9') return C - '0';
+            if (C >= 'a' && C <= 'f') return 10 + (C - 'a');
+            if (C >= 'A' && C <= 'F') return 10 + (C - 'A');
+            return -1;
+        };
+
+        // Saved selection so we can restore it after ReplaceSectionText. Without
+        // this the picker drag would jump the cursor to the hex token's end.
+        const TextEditor::CursorPosition SavedCursor = CodeEditor.GetCurrentCursorPosition();
+
+        for (int Line = FirstLine; Line <= LastLine && Line < LineCount; ++Line)
+        {
+            const std::string Text = CodeEditor.GetLineText(Line);
+            const int Len = static_cast<int>(Text.size());
+
+            // Walk byte-by-byte tracking visual column so tabs map correctly.
+            int Column = 0;
+            for (int i = 0; i < Len; )
+            {
+                const char C = Text[i];
+
+                if (C == '#' && i + 1 < Len)
+                {
+                    // Count contiguous hex digits.
+                    int Digits = 0;
+                    while (i + 1 + Digits < Len && Digits < 8 && HexDigit(Text[i + 1 + Digits]) >= 0)
+                    {
+                        Digits++;
+                    }
+
+                    const bool ValidLength = (Digits == 3 || Digits == 4 || Digits == 6 || Digits == 8);
+                    // Also require that the next char (if any) isn't a hex digit
+                    // and isn't an identifier-continuation char like '_'. This
+                    // avoids matching the "#abcd" prefix of `#abcdef` etc.
+                    bool BoundaryOk = ValidLength;
+                    if (BoundaryOk && i + 1 + Digits < Len)
+                    {
+                        const char Next = Text[i + 1 + Digits];
+                        if (HexDigit(Next) >= 0 || Next == '_')
+                        {
+                            BoundaryOk = false;
+                        }
+                    }
+
+                    if (BoundaryOk)
+                    {
+                        // Decode RGBA. Short forms (3/4) expand each digit to two.
+                        auto Expand = [&](int Index) -> int
+                        {
+                            const int H = HexDigit(Text[i + 1 + Index]);
+                            return (H << 4) | H;
+                        };
+                        int R, G, B, A = 255;
+                        if (Digits == 3)
+                        {
+                            R = Expand(0); G = Expand(1); B = Expand(2);
+                        }
+                        else if (Digits == 4)
+                        {
+                            R = Expand(0); G = Expand(1); B = Expand(2); A = Expand(3);
+                        }
+                        else if (Digits == 6)
+                        {
+                            R = (HexDigit(Text[i + 1]) << 4) | HexDigit(Text[i + 2]);
+                            G = (HexDigit(Text[i + 3]) << 4) | HexDigit(Text[i + 4]);
+                            B = (HexDigit(Text[i + 5]) << 4) | HexDigit(Text[i + 6]);
+                        }
+                        else
+                        {
+                            R = (HexDigit(Text[i + 1]) << 4) | HexDigit(Text[i + 2]);
+                            G = (HexDigit(Text[i + 3]) << 4) | HexDigit(Text[i + 4]);
+                            B = (HexDigit(Text[i + 5]) << 4) | HexDigit(Text[i + 6]);
+                            A = (HexDigit(Text[i + 7]) << 4) | HexDigit(Text[i + 8]);
+                        }
+
+                        const int TokenLen = 1 + Digits;
+                        const int EndColumn = Column + TokenLen;
+                        const ImVec2 EndPos = CodeEditor.GetScreenPosForCoordinate(Line, EndColumn);
+
+                        const ImVec2 SwatchMin(EndPos.x + SwatchPad, EndPos.y + (LineHeight - SwatchSize) * 0.5f);
+                        const ImVec2 SwatchMax(SwatchMin.x + SwatchSize, SwatchMin.y + SwatchSize);
+
+                        // Stable per-token id so ImGui state survives reflow.
+                        ImGui::PushID(Line * 4096 + i);
+
+                        ImGui::SetCursorScreenPos(SwatchMin);
+                        ImGui::InvisibleButton("##sw", ImVec2(SwatchSize, SwatchSize));
+                        const bool Clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+                        const bool Hovered = ImGui::IsItemHovered();
+
+                        DrawList->AddRectFilled(SwatchMin, SwatchMax, IM_COL32(R, G, B, A), 2.0f);
+                        DrawList->AddRect(SwatchMin, SwatchMax,
+                            Hovered ? IM_COL32(255, 255, 255, 200) : IM_COL32(0, 0, 0, 200), 2.0f);
+
+                        if (Clicked)
+                        {
+                            ImGui::OpenPopup("##rml_color_picker");
+                        }
+
+                        if (ImGui::BeginPopup("##rml_color_picker"))
+                        {
+                            float Col[4] = { R / 255.0f, G / 255.0f, B / 255.0f, A / 255.0f };
+                            const ImGuiColorEditFlags Flags = (Digits == 4 || Digits == 8)
+                                ? ImGuiColorEditFlags_AlphaBar
+                                : ImGuiColorEditFlags_NoAlpha;
+
+                            if (ImGui::ColorPicker4("##picker", Col, Flags))
+                            {
+                                const int NewR = static_cast<int>(std::round(Col[0] * 255.0f));
+                                const int NewG = static_cast<int>(std::round(Col[1] * 255.0f));
+                                const int NewB = static_cast<int>(std::round(Col[2] * 255.0f));
+                                const int NewA = static_cast<int>(std::round(Col[3] * 255.0f));
+
+                                char Buf[10];
+                                if (Digits == 3 || Digits == 4)
+                                {
+                                    // Preserve short form when possible (high+low nibbles match).
+                                    auto Compress = [](int V) -> int { return ((V >> 4) == (V & 0xF)) ? (V >> 4) : -1; };
+                                    const int CR = Compress(NewR), CG = Compress(NewG), CB = Compress(NewB), CA = Compress(NewA);
+                                    if (CR >= 0 && CG >= 0 && CB >= 0 && (Digits == 3 || CA >= 0))
+                                    {
+                                        if (Digits == 3)
+                                        {
+                                            std::snprintf(Buf, sizeof(Buf), "#%01X%01X%01X", CR, CG, CB);
+                                        }
+                                        else
+                                        {
+                                            std::snprintf(Buf, sizeof(Buf), "#%01X%01X%01X%01X", CR, CG, CB, CA);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        // Couldn't preserve short form — promote to long.
+                                        if (Digits == 3)
+                                        {
+                                            std::snprintf(Buf, sizeof(Buf), "#%02X%02X%02X", NewR, NewG, NewB);
+                                        }
+                                        else
+                                        {
+                                            std::snprintf(Buf, sizeof(Buf), "#%02X%02X%02X%02X", NewR, NewG, NewB, NewA);
+                                        }
+                                    }
+                                }
+                                else if (Digits == 6)
+                                {
+                                    std::snprintf(Buf, sizeof(Buf), "#%02X%02X%02X", NewR, NewG, NewB);
+                                }
+                                else
+                                {
+                                    std::snprintf(Buf, sizeof(Buf), "#%02X%02X%02X%02X", NewR, NewG, NewB, NewA);
+                                }
+
+                                CodeEditor.ReplaceSectionText(Line, Column, Line, EndColumn, Buf);
+                                CodeEditor.SetCursor(SavedCursor.line, SavedCursor.column);
+                            }
+                            ImGui::EndPopup();
+                        }
+
+                        ImGui::PopID();
+
+                        // Advance past the entire token in one go.
+                        Column += TokenLen;
+                        i += TokenLen;
+                        continue;
+                    }
+                }
+
+                // Default advance — tabs jump to next tab stop.
+                if (C == '\t')
+                {
+                    Column += TabSize - (Column % TabSize);
+                }
+                else
+                {
+                    Column++;
+                }
+                i++;
+            }
+            (void)GlyphWidth; // silence unused
+        }
     }
 
     void FRmlUiEditorTool::ReloadDocument()

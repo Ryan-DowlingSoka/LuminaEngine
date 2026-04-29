@@ -5,12 +5,12 @@
         body
         {
             font-family: LatoLatin;
-            color: #d6dbe6;
+            color: #DBE3F4;
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
-            decorator: gradient(vertical #161a26 #08090f);
+            decorator: gradient(vertical #161a26    #0B0B0B);
         }
 
         /* ---------- Edge ornaments ---------- */
@@ -23,7 +23,7 @@
             top: 0;
             width: 6dp;
             height: 100%;
-            decorator: gradient(vertical #4ad8c5 #2a8a82);
+            decorator: gradient(vertical #4ad8c5   #2a8a82);
         }
 
         /* Faint hairline under the title block separates the brand

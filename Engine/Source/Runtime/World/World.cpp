@@ -358,6 +358,16 @@ namespace Lumina
         SystemContext.EventSink     <FScriptComponentPendingReady>().connect<&ThisClass::OnScriptComponentPendingReady>(this);
 
         ScriptReloadedHandle = Lua::FScriptingContext::Get().OnScriptLoaded.AddMember(this, &ThisClass::OnScriptSourceReloaded);
+
+        // Build the world-scoped DrawInterface table once. Per-entity setup just
+        // assigns this ref into the script's environment instead of allocating
+        // a new table + C closure for every SScriptComponent.
+        if (lua_State* VM = Lua::FScriptingContext::Get().GetVM())
+        {
+            lua_newtable(VM);
+            DrawInterfaceRef = Lua::FRef(VM, -1);
+            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawSphere>("DrawSphere", static_cast<IPrimitiveDrawInterface*>(this));
+        }
         
         auto TransformView = EntityRegistry.view<STransformComponent>();
         TransformView.each([&](entt::entity Entity, STransformComponent& TransformComponent)
@@ -1025,9 +1035,7 @@ namespace Lumina
         ScriptComponent.Script->Environment.RawSet("Events", &LuaEventBus);
         ScriptComponent.Script->Environment.RawSet("Messages", &MessageBus);
         ScriptComponent.Script->Environment.RawSet("TimerManager", &TimerManager);
-        
-        auto DrawInterface = ScriptComponent.Script->Environment.NewTable("DrawInterface");
-        DrawInterface.SetFunction<&IPrimitiveDrawInterface::DrawSphere>("DrawSphere", static_cast<IPrimitiveDrawInterface*>(this));
+        ScriptComponent.Script->Environment.RawSet("DrawInterface", DrawInterfaceRef);
         
         ScriptComponent.Script->Reference.RawSet("Entity", Entity);
         ScriptComponent.Script->Reference.RawSet("Transform", &EntityRegistry.get<STransformComponent>(Entity));
@@ -1119,12 +1127,26 @@ namespace Lumina
             ScriptComponent.UpdateStage = MaybeUpdateStage ? MaybeUpdateStage.value() : EUpdateStage::PrePhysics;
         }
         
-        EntityRegistry.remove<FUpdateStage_FrameStart>(Entity);
-        EntityRegistry.remove<FUpdateStage_PrePhysics>(Entity);
-        EntityRegistry.remove<FUpdateStage_DuringPhysics>(Entity);
-        EntityRegistry.remove<FUpdateStage_PostPhysics>(Entity);
-        EntityRegistry.remove<FUpdateStage_FrameEnd>(Entity);
-        EntityRegistry.remove<FUpdateStage_Paused>(Entity);
+        // Stage tags are runtime-only (not serialized), so fresh construct and
+        // post-deserialize paths won't have any of these. The remove dance only
+        // matters when the stage may have changed since a previous bind —
+        // hot-reload, editor path-change, etc. any_of is a cheap O(1) probe per
+        // tag and skips the per-pool remove call entirely on the common path.
+        if (EntityRegistry.any_of<
+                FUpdateStage_FrameStart,
+                FUpdateStage_PrePhysics,
+                FUpdateStage_DuringPhysics,
+                FUpdateStage_PostPhysics,
+                FUpdateStage_FrameEnd,
+                FUpdateStage_Paused>(Entity))
+        {
+            EntityRegistry.remove<FUpdateStage_FrameStart>(Entity);
+            EntityRegistry.remove<FUpdateStage_PrePhysics>(Entity);
+            EntityRegistry.remove<FUpdateStage_DuringPhysics>(Entity);
+            EntityRegistry.remove<FUpdateStage_PostPhysics>(Entity);
+            EntityRegistry.remove<FUpdateStage_FrameEnd>(Entity);
+            EntityRegistry.remove<FUpdateStage_Paused>(Entity);
+        }
 
         switch (ScriptComponent.UpdateStage)
         {

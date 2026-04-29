@@ -426,19 +426,32 @@ namespace Lumina
 
         if (Symbol.Kind == Lua::ELuaSymbolKind::Function)
         {
-            // Synthesise the same signature shape the autocomplete popup
-            // shows, scaled up for the tooltip.
-            char SigBuf[256];
-            if (Symbol.bIsCFunction)
+            // Build "name(arg1, arg2, ...)". Curated symbols supply real
+            // parameter names; bare Lua functions fall back to "argN"; opaque
+            // C functions render as "(...)".
+            std::string Sig;
+            Sig.reserve(64);
+            Sig.assign(Symbol.Name.c_str(), Symbol.Name.size());
+            Sig.append("(");
+            if (Symbol.bIsCFunction && Symbol.ParamNames.empty())
             {
-                std::snprintf(SigBuf, sizeof(SigBuf), "%s(...)", Symbol.Name.c_str());
+                Sig.append("...");
+            }
+            else if (!Symbol.ParamNames.empty())
+            {
+                for (size_t I = 0; I < Symbol.ParamNames.size(); ++I)
+                {
+                    if (I > 0) Sig.append(", ");
+                    Sig.append(Symbol.ParamNames[I].c_str(), Symbol.ParamNames[I].size());
+                }
+                if (Symbol.bIsVararg)
+                {
+                    if (!Symbol.ParamNames.empty()) Sig.append(", ");
+                    Sig.append("...");
+                }
             }
             else
             {
-                std::string Sig;
-                Sig.reserve(64);
-                Sig.assign(Symbol.Name.c_str(), Symbol.Name.size());
-                Sig.append("(");
                 for (uint8 I = 0; I < Symbol.ParamCount; ++I)
                 {
                     if (I > 0) Sig.append(", ");
@@ -451,12 +464,18 @@ namespace Lumina
                     if (Symbol.ParamCount > 0) Sig.append(", ");
                     Sig.append("...");
                 }
-                Sig.append(")");
-                std::snprintf(SigBuf, sizeof(SigBuf), "%s", Sig.c_str());
             }
-            ImGui::TextUnformatted(SigBuf);
+            Sig.append(")");
+            ImGui::TextUnformatted(Sig.c_str());
 
-            if (Symbol.bIsCFunction)
+            if (!Symbol.Description.empty())
+            {
+                ImGui::Spacing();
+                ImGui::PushTextWrapPos(420.0f);
+                ImGui::TextUnformatted(Symbol.Description.c_str());
+                ImGui::PopTextWrapPos();
+            }
+            else if (Symbol.bIsCFunction)
             {
                 ImGui::Spacing();
                 ImGui::TextDisabled("Engine-bound C function (parameter names unavailable).");
@@ -465,10 +484,24 @@ namespace Lumina
         else if (!Symbol.ValuePreview.empty())
         {
             ImGui::Text("= %s", Symbol.ValuePreview.c_str());
+            if (!Symbol.Description.empty())
+            {
+                ImGui::Spacing();
+                ImGui::PushTextWrapPos(420.0f);
+                ImGui::TextUnformatted(Symbol.Description.c_str());
+                ImGui::PopTextWrapPos();
+            }
         }
         else
         {
             ImGui::TextDisabled("type: %s", Symbol.TypeName.c_str());
+            if (!Symbol.Description.empty())
+            {
+                ImGui::Spacing();
+                ImGui::PushTextWrapPos(420.0f);
+                ImGui::TextUnformatted(Symbol.Description.c_str());
+                ImGui::PopTextWrapPos();
+            }
         }
 
         ImGui::EndTooltip();
@@ -540,11 +573,25 @@ namespace Lumina
                 std::string Out;
                 Out.reserve(48);
                 Out.assign("function(");
-                if (Symbol.bIsCFunction)
+                if (!Symbol.ParamNames.empty())
                 {
-                    // Luau can't tell us anything about a C function's args.
-                    // Render an unknown-arity placeholder so users at least
-                    // know it accepts arguments.
+                    // Curated docs: real parameter names ("x", "y", ...).
+                    for (size_t I = 0; I < Symbol.ParamNames.size(); ++I)
+                    {
+                        if (I > 0) Out.append(", ");
+                        Out.append(Symbol.ParamNames[I].c_str(), Symbol.ParamNames[I].size());
+                    }
+                    if (Symbol.bIsVararg)
+                    {
+                        if (!Symbol.ParamNames.empty()) Out.append(", ");
+                        Out.append("...");
+                    }
+                }
+                else if (Symbol.bIsCFunction)
+                {
+                    // Luau can't introspect a C function's args. Render an
+                    // unknown-arity placeholder so users at least know it
+                    // accepts arguments.
                     Out.append("...");
                 }
                 else

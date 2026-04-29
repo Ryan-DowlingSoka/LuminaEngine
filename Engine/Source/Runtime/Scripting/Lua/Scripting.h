@@ -3,6 +3,7 @@
 #include "Core/Delegates/Delegate.h"
 #include "Core/Reflection/Type/LuminaTypes.h"
 #include "Memory/SmartPtr.h"
+#include "ScriptExports.h"
 #include "Tools/Actions/DeferredActions.h"
 
 
@@ -19,6 +20,18 @@ namespace Lumina::Lua
     class FRef;
     struct FScript;
     DECLARE_MULTICAST_DELEGATE(FScriptTransactionDelegate, FStringView);
+
+    /**
+     * Per-source-file cache populated on first load. Subsequent loads of the same
+     * script path skip the file read, luau_compile, and schema build — all
+     * instances pay only luau_load + pcall to materialize a fresh module table.
+     */
+    struct FScriptCacheEntry
+    {
+        TVector<uint8>                  Bytecode;
+        FScriptExportSchema             ExportsSchema;
+        TVector<FScriptPropertyEntry>   ExportDefaults;
+    };
 
 
     struct FLuaScriptMetadata;
@@ -63,6 +76,15 @@ namespace Lumina::Lua
         uint8           ParamCount = 0;
         bool            bIsVararg = false;
         bool            bIsCFunction = false;
+
+        // Curated documentation overlay. Filled in for known standard-library
+        // symbols (math.sin, string.format, vector.create, ...) by the
+        // harvester after the live VM walk. ParamNames lets the editor
+        // render real parameter names instead of the generic "arg1, arg2";
+        // Description feeds the multi-line block at the bottom of the hover
+        // tooltip.
+        TVector<FString> ParamNames;
+        FString          Description;
     };
 
     
@@ -117,6 +139,10 @@ namespace Lumina::Lua
         RUNTIME_API void RunGC();
         RUNTIME_API FRef GetGlobalsRef() const;
 
+        // Drop the cached bytecode/schema for a path. Called when the source
+        // on disk changes so the next load re-reads + re-compiles.
+        RUNTIME_API void InvalidateScriptCache(FStringView Path);
+
         // Walks LUA_GLOBALSINDEX one level deep into nested tables and
         // returns symbol info the editor uses for autocomplete. Stays in
         // sync with whatever Initialize() registers — no separate manifest.
@@ -136,15 +162,29 @@ namespace Lumina::Lua
     private:
         
         void ReloadScripts(FStringView Path);
-    
+
+        // Cached-bytecode -> live FScript pipeline. When the Out* params are
+        // non-null they're populated by walking the freshly-loaded module —
+        // used by LoadUniqueScriptPath on a cold cache to seed the entry.
+        TSharedPtr<FScript> InstantiateFromBytecode(
+            const TVector<uint8>& Bytecode,
+            FStringView Name,
+            FScriptExportSchema* OutSchema,
+            TVector<FScriptPropertyEntry>* OutDefaults) const;
+
     private:
         
         lua_State* L = nullptr;
         
         FSharedMutex SharedMutex;
         FDeferredActionRegistry DeferredActions;
-        
+
         THashMap<FName, TVector<TWeakPtr<FScript>>> RegisteredScripts;
+
+        // Per-source-file cache of compiled bytecode + parsed schema + handler
+        // keys. Built lazily on first LoadUniqueScriptPath for a given path,
+        // dropped by InvalidateScriptCache when the source changes.
+        THashMap<FName, FScriptCacheEntry> ScriptCache;
     };
     
 }

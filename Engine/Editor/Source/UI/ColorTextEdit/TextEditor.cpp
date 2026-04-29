@@ -260,6 +260,12 @@ void TextEditor::render(const char* title, const ImVec2& size, bool border) {
 		}
 	}
 
+	// Inline-overlay hook: still inside BeginChild so the host's draw calls
+	// share the editor's clip rect and ImGui interaction context.
+	if (postRenderCallback) {
+		postRenderCallback();
+	}
+
 	ImGui::EndChild();
 	ImGui::PopStyleColor();
 	ImGui::PopStyleVar();

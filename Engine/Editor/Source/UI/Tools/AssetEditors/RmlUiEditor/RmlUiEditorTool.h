@@ -54,6 +54,13 @@ namespace Lumina
         void DrawEditorToolbar();
         void DrawEditorStatusBar();
 
+        // Inline color-swatch overlay. Walks visible lines, scans for
+        // #RRGGBB / #RRGGBBAA hex literals, draws a clickable square at the
+        // start of each one, and on click opens an ImGui color picker that
+        // commits edits back into the editor as a normal text replacement
+        // (so undo/redo, dirty tracking, and live reload all work).
+        void DrawInlineColorSwatches();
+
         FString                     VirtualPath;
         FString                     ParentDir;
 

@@ -19,6 +19,7 @@
 #include "Entity/Systems/EntitySystem.h"
 #include "Entity/Events/LuaEventBus.h"
 #include "Entity/Events/EntityMessageBus.h"
+#include "Scripting/Lua/Reference.h"
 #include "World.generated.h"
 
 
@@ -240,7 +241,14 @@ namespace Lumina
         FDelegateHandle                                     ScriptReloadedHandle;
 
         FLineBatcherComponent*                              LineBatcherComponent;
-        
+
+        // World-scoped Lua bindings hoisted off the per-script setup path.
+        // The DrawInterface table holds debug-draw functions captured against
+        // this CWorld; the ref is built once in InitializeWorld and assigned
+        // by reference to each new SScriptComponent's environment so per-entity
+        // setup avoids allocating a fresh table + C closure.
+        Lua::FRef                                           DrawInterfaceRef;
+
         FWorldContext*                                      OwningContext = nullptr;
         double                                              DeltaTime = 0.0;
         double                                              TimeSinceCreation = 0.0;

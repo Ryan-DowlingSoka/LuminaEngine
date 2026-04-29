@@ -480,7 +480,14 @@ namespace Lumina::Lua
     void FScriptingContext::ScriptReloaded(FStringView ScriptPath)
     {
         FWriteScopeLock Lock(SharedMutex);
-        
+
+        // Drop the cache entry so the next LoadUniqueScriptPath rereads from
+        // disk and recompiles. Done eagerly here (rather than at the deferred
+        // tick) because invalidate is cheap and idempotent — any in-flight
+        // ProcessDeferredActions on the main thread will pick up the cleared
+        // entry naturally.
+        ScriptCache.erase(FName(ScriptPath));
+
         DeferredActions.EnqueueAction<FScriptLoad>(ScriptPath);
     }
 
@@ -492,89 +499,146 @@ namespace Lumina::Lua
     void FScriptingContext::ScriptRenamed(FStringView NewPath, FStringView OldPath)
     {
         FWriteScopeLock Lock(SharedMutex);
-        
+
+        ScriptCache.erase(FName(OldPath));
+
         DeferredActions.EnqueueAction<FScriptRename>(NewPath, OldPath);
     }
 
     void FScriptingContext::ScriptDeleted(FStringView ScriptPath)
     {
         FWriteScopeLock Lock(SharedMutex);
-        
+
+        ScriptCache.erase(FName(ScriptPath));
+
         DeferredActions.EnqueueAction<FScriptDelete>(ScriptPath);
+    }
+
+    namespace
+    {
+        // Compile source -> Luau bytecode using the build-config-appropriate
+        // options. Returns false (and clears Out) on compile failure.
+        bool CompileSourceToBytecode(FStringView Code, TVector<uint8>& Out)
+        {
+            lua_CompileOptions Options{};
+            // Editor builds always compile with full debug info and optLevel 1 so
+            // the debugger can land breakpoints on every source line and locals
+            // keep their declared names. Optimization level 2 inlines / folds
+            // things that lua_breakpoint then can't attach to. Game / Shipping
+            // builds — where the debugger isn't shipped — get the fast path.
+            #if USING(WITH_EDITOR)
+                Options.debugLevel = 2;
+                Options.optimizationLevel = 1;
+            #else
+                Options.debugLevel = 0;
+                Options.optimizationLevel = 2;
+            #endif
+
+            size_t BytecodeSize = 0;
+            char* Bytecode = luau_compile(Code.data(), Code.length(), &Options, &BytecodeSize);
+            if (Bytecode == nullptr)
+            {
+                Out.clear();
+                return false;
+            }
+
+            Out.assign(reinterpret_cast<uint8*>(Bytecode), reinterpret_cast<uint8*>(Bytecode) + BytecodeSize);
+            free(Bytecode);
+            return true;
+        }
     }
 
     TSharedPtr<FScript> FScriptingContext::LoadUniqueScriptPath(FStringView Path)
     {
-        FString ScriptData;
-        if (!VFS::ReadFile(ScriptData, Path))
+        LUMINA_PROFILE_SCOPE();
+
+        FName PathName(Path);
+
+        // First load for this path: read source, compile to bytecode, build
+        // schema, harvest handler keys, store all of it. Subsequent calls skip
+        // straight to bytecode -> instance below.
+        auto CacheIt = ScriptCache.find(PathName);
+        if (CacheIt == ScriptCache.end())
         {
-            LOG_ERROR("Lua - Failed to read script file: {}", Path);
-            return {};
+            FString ScriptData;
+            if (!VFS::ReadFile(ScriptData, Path))
+            {
+                LOG_ERROR("Lua - Failed to read script file: {}", Path);
+                return {};
+            }
+
+            if (ScriptData.empty())
+            {
+                LOG_WARN("Lua - Script file is empty: {}", Path);
+                return {};
+            }
+
+            FScriptCacheEntry Entry;
+            if (!CompileSourceToBytecode(ScriptData, Entry.Bytecode))
+            {
+                LOG_ERROR("Lua - Compile failed for: {}", Path);
+                return {};
+            }
+
+            // Schema is derived by running the module once and inspecting the
+            // live `Exports` table. We piggyback off the first instance: build
+            // it, harvest schema from it, populate the cache, then return that
+            // very instance.
+            TSharedPtr<FScript> FirstScript = InstantiateFromBytecode(Entry.Bytecode, Path,
+                                                                      &Entry.ExportsSchema,
+                                                                      &Entry.ExportDefaults);
+            if (FirstScript == nullptr)
+            {
+                return {};
+            }
+
+            FirstScript->Path = Path;
+            RegisteredScripts[PathName].emplace_back(FirstScript);
+            ScriptCache.emplace(PathName, eastl::move(Entry));
+            FLuaDebugger::Get().OnScriptLoaded(*FirstScript);
+            return FirstScript;
         }
-        
-        if (ScriptData.empty())
-        {
-            LOG_WARN("Lua - Script file is empty: {}", Path);
-            return {};
-        }
-        
-        // Pass the full virtual path as the Luau chunkname so debug callbacks
-        // (lua_Debug::source / short_src) carry an identifier that maps cleanly
-        // back to whatever opened the script — the editor's breakpoint keys,
-        // FScriptingContext::ScriptReloaded, and runtime stack walks all key
-        // off the same path string.
-        TSharedPtr<FScript> Script = LoadUniqueScript(ScriptData, Path);
+
+        // Cache hit — fast path. luau_load + pcall on cached bytecode, copy
+        // schema/defaults onto the instance.
+        const FScriptCacheEntry& CachedEntry = CacheIt->second;
+        TSharedPtr<FScript> Script = InstantiateFromBytecode(CachedEntry.Bytecode, Path, nullptr, nullptr);
         if (Script == nullptr)
         {
             return {};
         }
 
-        Script->Path = Path;
-        RegisteredScripts[Path].emplace_back(Script);
+        Script->Path           = Path;
+        Script->ExportsSchema  = CachedEntry.ExportsSchema;
+        Script->ExportDefaults = CachedEntry.ExportDefaults;
 
-        // Re-install any line breakpoints the editor had set on this path.
-        // Hot-reloads (driven by ScriptReloaded → OnScriptLoaded broadcast) all
-        // funnel through here, so this is the single source of truth for
-        // breakpoint persistence across script recompiles.
+        RegisteredScripts[PathName].emplace_back(Script);
         FLuaDebugger::Get().OnScriptLoaded(*Script);
-
-        return Move(Script); // Won't elide.
+        return Script;
     }
 
-    TSharedPtr<FScript> FScriptingContext::LoadUniqueScript(FStringView Code, FStringView Name) const
+    TSharedPtr<FScript> FScriptingContext::InstantiateFromBytecode(
+        const TVector<uint8>& Bytecode,
+        FStringView Name,
+        FScriptExportSchema* OutSchema,
+        TVector<FScriptPropertyEntry>* OutDefaults) const
     {
         LUMINA_PROFILE_SCOPE();
-        
-        size_t BytecodeSize = 0;
-        lua_CompileOptions Options{};
-        // Editor builds always compile with full debug info and optLevel 1 so
-        // the debugger can land breakpoints on every source line and locals
-        // keep their declared names. Optimization level 2 inlines / folds
-        // things that lua_breakpoint then can't attach to. Game / Shipping
-        // builds — where the debugger isn't shipped — get the fast path.
-        #if USING(WITH_EDITOR)
-            Options.debugLevel = 2;
-            Options.optimizationLevel = 1;
-        #else
-            Options.debugLevel = 0;
-            Options.optimizationLevel = 2;
-        #endif
-        char* Bytecode = luau_compile(Code.data(), Code.length(), &Options, &BytecodeSize);
-
-        if (!Bytecode)
-        {
-            return {};
-        }
 
         int StackBefore = lua_gettop(L);
         lua_State* Thread = lua_newthread(L);
         FRef ThreadRef(L, -1);
-        
-        luaL_sandboxthread(Thread);
-        
-        int LoadResult = luau_load(Thread, Name.data(), Bytecode, BytecodeSize, 0);
-        free(Bytecode);
 
+        luaL_sandboxthread(Thread);
+
+        // Pass the full virtual path as the Luau chunkname so debug callbacks
+        // (lua_Debug::source / short_src) carry an identifier that maps cleanly
+        // back to whatever opened the script — the editor's breakpoint keys,
+        // FScriptingContext::ScriptReloaded, and runtime stack walks all key
+        // off the same path string.
+        int LoadResult = luau_load(Thread, Name.data(),
+                                   reinterpret_cast<const char*>(Bytecode.data()),
+                                   Bytecode.size(), 0);
         if (LoadResult != LUA_OK)
         {
             LOG_ERROR("Lua - Failed to load: {}", lua_tostring(Thread, -1));
@@ -595,38 +659,66 @@ namespace Lumina::Lua
             LOG_ERROR("Runtime Error {}", lua_tostring(Thread, -1));
             return {};
         }
-        
-        // Duck-type the schema + defaults by walking the `Exports` field of the returned module
-        // table. We do this while the module table is still on top of the Thread stack.
-        FScriptExportSchema Schema;
-        TVector<FScriptPropertyEntry> Defaults;
-        if (lua_istable(Thread, -1))
+
+        // First-load harvesting. The module table is on top of the Thread stack.
+        // Schema is built from the `Exports` field and written into the cache.
+        if (OutSchema != nullptr || OutDefaults != nullptr)
         {
-            lua_getfield(Thread, -1, "Exports");
             if (lua_istable(Thread, -1))
             {
-                BuildSchemaFromExportsTable(Thread, -1, Schema, Defaults);
+                lua_getfield(Thread, -1, "Exports");
+                if (lua_istable(Thread, -1))
+                {
+                    FScriptExportSchema TempSchema;
+                    TVector<FScriptPropertyEntry> TempDefaults;
+                    BuildSchemaFromExportsTable(Thread, -1, TempSchema, TempDefaults);
+                    if (OutSchema)   *OutSchema   = TempSchema;
+                    if (OutDefaults) *OutDefaults = eastl::move(TempDefaults);
+                }
+                lua_pop(Thread, 1);
             }
-            lua_pop(Thread, 1);
         }
 
         auto NewScript = MakeShared<FScript>();
         NewScript->Name             = Name;
         NewScript->Path             = "";
         NewScript->Reference        = FRef(Thread, -1);
-        NewScript->ExportsSchema    = eastl::move(Schema);
-        NewScript->ExportDefaults   = eastl::move(Defaults);
         NewScript->MainFunction     = eastl::move(MainFunctionRef);
+
+        if (OutSchema)   NewScript->ExportsSchema  = *OutSchema;
+        if (OutDefaults) NewScript->ExportDefaults = *OutDefaults;
 
         lua_pushvalue(Thread, LUA_GLOBALSINDEX);
         NewScript->Environment  = FRef(Thread, -1);
         NewScript->Thread       = ThreadRef;
-        
-        int StackAfter = lua_gettop(L);
 
+        int StackAfter = lua_gettop(L);
         DEBUG_ASSERT(StackAfter == StackBefore);
-        
+
         return NewScript;
+    }
+
+    TSharedPtr<FScript> FScriptingContext::LoadUniqueScript(FStringView Code, FStringView Name) const
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        // One-shot path used by callers that pass raw source (e.g. project
+        // boot script). No path-keyed cache, but we still go through the same
+        // bytecode -> instance pipeline so behavior matches LoadUniqueScriptPath.
+        TVector<uint8> Bytecode;
+        if (!CompileSourceToBytecode(Code, Bytecode))
+        {
+            return {};
+        }
+
+        FScriptExportSchema Schema;
+        TVector<FScriptPropertyEntry> Defaults;
+        return InstantiateFromBytecode(Bytecode, Name, &Schema, &Defaults);
+    }
+
+    void FScriptingContext::InvalidateScriptCache(FStringView Path)
+    {
+        ScriptCache.erase(FName(Path));
     }
 
     TVector<TSharedPtr<FScript>> FScriptingContext::GetAllRegisteredScripts()
@@ -747,27 +839,18 @@ namespace Lumina::Lua
             }
         }
 
-        // Skips Lua/Luau builtins so suggestions don't drown in `_G`, `_VERSION`,
-        // `string`, `table`, etc. We could surface these too, but for engine-script
-        // editing the noise hurts more than it helps.
-        bool IsBuiltinName(const char* Name)
+        // Filters only the genuinely-noisy meta-globals. Standard library
+        // tables (math, string, table, vector, ...) and base globals (print,
+        // pairs, ...) are surfaced so the editor's hover and autocomplete
+        // cover the full Lua/Luau API. The curated overlay (see
+        // ApplyCuratedDocs below) attaches parameter names and descriptions
+        // for the well-known entries.
+        bool IsHiddenGlobal(const char* Name)
         {
             if (Name == nullptr) return true;
-            if (Name[0] == '_') return true;  // _G, _VERSION, _ENV, _LOADED
-            const char* const Builtins[] = {
-                "string", "table", "math", "os", "io", "coroutine", "debug",
-                "bit32", "utf8", "buffer", "vector",
-                "assert", "collectgarbage", "error", "getfenv", "getmetatable",
-                "ipairs", "next", "pairs", "pcall", "rawequal", "rawget",
-                "rawset", "rawlen", "select", "setfenv", "setmetatable",
-                "tonumber", "tostring", "type", "unpack", "xpcall",
-                "newproxy", "require", "loadstring",
-            };
-            for (const char* B : Builtins)
-            {
-                if (std::strcmp(Name, B) == 0) return true;
-            }
-            return false;
+            // _G is the global table (recursive — would double-list everything),
+            // _ENV / _VERSION / _LOADED are runtime housekeeping.
+            return Name[0] == '_';
         }
 
         // Walks the table on top of the stack and emits a symbol for each
@@ -834,6 +917,269 @@ namespace Lumina::Lua
         }
     }
 
+    namespace
+    {
+        // Curated documentation table for Lua/Luau standard library symbols.
+        // Path is the dotted name as it appears in the harvested symbol list
+        // ("math.sin", "string.format", "vector.create", ...). Params is a
+        // pipe-separated list of parameter names, "..." marks vararg. Desc is
+        // a short single-paragraph summary shown in the hover tooltip.
+        //
+        // Keep this data-only — no logic — so adding/correcting entries is a
+        // line-edit. The order doesn't matter; lookup is O(N) but N is small
+        // and we only walk this once at harvest time.
+        struct FCuratedDoc
+        {
+            const char* Path;
+            const char* Params; // pipe-separated, "" = no args, "..." = vararg
+            const char* Desc;
+        };
+
+        const FCuratedDoc CuratedDocs[] =
+        {
+            // --- base library ---
+            { "print",          "...",                  "Writes each argument to stdout, separated by tabs, followed by a newline." },
+            { "tostring",       "v",                    "Converts v to a human-readable string. Honors the __tostring metamethod." },
+            { "tonumber",       "v|base",               "Parses v into a number using the given base (default 10). Returns nil on failure." },
+            { "type",           "v",                    "Returns the type of v as a string: \"nil\", \"number\", \"string\", \"boolean\", \"table\", \"function\", \"userdata\", \"thread\", \"vector\", \"buffer\"." },
+            { "pairs",          "t",                    "Returns an iterator that yields each (key, value) pair of table t in unspecified order." },
+            { "ipairs",         "t",                    "Returns an iterator that yields (i, t[i]) for i = 1, 2, ... until t[i] is nil." },
+            { "next",           "t|key",                "Returns the next (key, value) after the given key in table t. Pass nil to start." },
+            { "select",         "n|...",                "If n is \"#\", returns the number of varargs. Otherwise returns args from index n onward." },
+            { "unpack",         "t|i|j",                "Returns t[i], t[i+1], ..., t[j]. Defaults: i = 1, j = #t. (Luau prefers table.unpack.)" },
+            { "assert",         "v|message",            "Raises an error with the given message if v is nil or false; otherwise returns v unchanged." },
+            { "error",          "message|level",        "Raises message as an error. Level controls which call frame is reported (default 1)." },
+            { "pcall",          "f|...",                "Calls f in protected mode with the given args. Returns (true, results...) on success or (false, err) on error." },
+            { "xpcall",         "f|handler|...",        "Like pcall but routes errors through handler before returning. Use to attach a stack traceback." },
+            { "setmetatable",   "t|metatable",          "Sets the metatable of t to metatable (or nil to clear). Returns t." },
+            { "getmetatable",   "object",               "Returns the metatable of object, or nil if it has none. Honors __metatable." },
+            { "rawget",         "t|key",                "Reads t[key] without invoking the __index metamethod." },
+            { "rawset",         "t|key|value",          "Writes t[key] = value without invoking the __newindex metamethod. Returns t." },
+            { "rawequal",       "a|b",                  "Returns true if a and b are raw-equal (no __eq metamethod)." },
+            { "rawlen",         "v",                    "Returns the raw length of a string or array part of a table. Ignores the __len metamethod." },
+            { "collectgarbage", "opt|arg",              "Controls the garbage collector. opt: \"collect\", \"stop\", \"restart\", \"count\", \"step\", \"setpause\", \"setstepmul\"." },
+            { "require",        "modname",              "Loads a module by name and returns its result. Uses package.loaded as a cache." },
+            { "newproxy",       "withMeta",             "Creates a userdata proxy. If withMeta is true, the proxy has its own freshly-created metatable." },
+
+            // --- math library ---
+            { "math.pi",        "",                     "The constant 3.141592653589793." },
+            { "math.huge",      "",                     "Positive infinity. Larger than any other numeric value." },
+            { "math.abs",       "x",                    "Returns the absolute value of x." },
+            { "math.acos",      "x",                    "Returns the arc cosine of x (in radians)." },
+            { "math.asin",      "x",                    "Returns the arc sine of x (in radians)." },
+            { "math.atan",      "x",                    "Returns the arc tangent of x (in radians)." },
+            { "math.atan2",     "y|x",                  "Returns atan(y / x) using the signs of both arguments to choose the correct quadrant." },
+            { "math.ceil",      "x",                    "Returns the smallest integer >= x." },
+            { "math.floor",     "x",                    "Returns the largest integer <= x." },
+            { "math.cos",       "x",                    "Returns the cosine of x (x in radians)." },
+            { "math.sin",       "x",                    "Returns the sine of x (x in radians)." },
+            { "math.tan",       "x",                    "Returns the tangent of x (x in radians)." },
+            { "math.cosh",      "x",                    "Returns the hyperbolic cosine of x." },
+            { "math.sinh",      "x",                    "Returns the hyperbolic sine of x." },
+            { "math.tanh",      "x",                    "Returns the hyperbolic tangent of x." },
+            { "math.deg",       "x",                    "Converts radians to degrees." },
+            { "math.rad",       "x",                    "Converts degrees to radians." },
+            { "math.exp",       "x",                    "Returns e raised to the power of x." },
+            { "math.log",       "x|base",               "Returns the natural logarithm of x, or log base `base` of x if provided." },
+            { "math.log10",     "x",                    "Returns the base-10 logarithm of x." },
+            { "math.pow",       "x|y",                  "Returns x raised to the power y. (Prefer the `^` operator.)" },
+            { "math.sqrt",      "x",                    "Returns the square root of x." },
+            { "math.fmod",      "x|y",                  "Returns the remainder of x / y, with the sign of x." },
+            { "math.modf",      "x",                    "Splits x into integer and fractional parts. Returns (integer, fraction)." },
+            { "math.frexp",     "x",                    "Returns (m, e) such that x = m * 2^e and 0.5 <= |m| < 1." },
+            { "math.ldexp",     "m|e",                  "Returns m * 2^e." },
+            { "math.max",       "x|...",                "Returns the largest of its arguments." },
+            { "math.min",       "x|...",                "Returns the smallest of its arguments." },
+            { "math.random",    "m|n",                  "With no args, returns a uniform random in [0,1). With m, returns an integer in [1,m]. With m,n, returns an integer in [m,n]." },
+            { "math.randomseed","seed",                 "Seeds the pseudo-random number generator." },
+            { "math.sign",      "x",                    "Returns -1, 0, or 1 depending on the sign of x. (Luau extension.)" },
+            { "math.clamp",     "x|min|max",            "Returns x clamped to the inclusive range [min, max]. (Luau extension.)" },
+            { "math.round",     "x",                    "Returns x rounded to the nearest integer (ties away from zero). (Luau extension.)" },
+            { "math.noise",     "x|y|z",                "Perlin noise sample. 1, 2, or 3 arguments map to 1D/2D/3D noise. (Luau extension.)" },
+            { "math.lerp",      "a|b|t",                "Linear interpolation: returns a + (b - a) * t. (Luau extension.)" },
+            { "math.map",       "x|inMin|inMax|outMin|outMax", "Remaps x from [inMin, inMax] to [outMin, outMax]. (Luau extension.)" },
+
+            // --- string library ---
+            { "string.byte",    "s|i|j",                "Returns the byte values of s[i], s[i+1], ..., s[j]. Defaults: i = 1, j = i." },
+            { "string.char",    "...",                  "Returns a string built from the given byte values." },
+            { "string.find",    "s|pattern|init|plain", "Searches s for the first match of pattern. Returns (start, end[, captures...]) or nil." },
+            { "string.format",  "fmt|...",              "Returns a string formatted printf-style. Supports %d %f %s %x %q and Luau's %* for tostring." },
+            { "string.gmatch",  "s|pattern",            "Returns an iterator yielding each capture of pattern in s." },
+            { "string.gsub",    "s|pattern|repl|n",     "Replaces up to n occurrences of pattern in s. repl can be a string, table, or function." },
+            { "string.len",     "s",                    "Returns the byte length of s. Equivalent to #s." },
+            { "string.lower",   "s",                    "Returns s with all uppercase letters converted to lowercase (ASCII)." },
+            { "string.upper",   "s",                    "Returns s with all lowercase letters converted to uppercase (ASCII)." },
+            { "string.match",   "s|pattern|init",       "Returns the first capture of pattern in s, or nil. If pattern has no captures, returns the whole match." },
+            { "string.rep",     "s|n|sep",              "Returns n copies of s, optionally joined by sep." },
+            { "string.reverse", "s",                    "Returns s with its bytes reversed." },
+            { "string.sub",     "s|i|j",                "Returns the substring s[i..j]. Negative indices count from the end." },
+            { "string.split",   "s|sep",                "Splits s on sep (default \",\") and returns a table of pieces. (Luau extension.)" },
+            { "string.pack",    "fmt|...",              "Packs values into a binary string per fmt." },
+            { "string.unpack",  "fmt|s|pos",            "Unpacks values from binary string s per fmt. Returns values plus first-unread index." },
+            { "string.packsize","fmt",                  "Returns the size in bytes of strings produced by string.pack with this format." },
+
+            // --- table library ---
+            { "table.insert",   "t|pos|value",          "Inserts value at position pos in array t (default = end). Shifts later elements up by one." },
+            { "table.remove",   "t|pos",                "Removes element at position pos from array t (default = end). Returns the removed element." },
+            { "table.concat",   "t|sep|i|j",            "Concatenates t[i..j], joining adjacent elements with sep (default \"\")." },
+            { "table.sort",     "t|comp",               "Sorts t in place. comp(a,b) should return true if a precedes b. Default is the < operator." },
+            { "table.pack",     "...",                  "Returns {n = select('#', ...), ...}. Pairs with table.unpack to round-trip varargs." },
+            { "table.unpack",   "t|i|j",                "Returns t[i], t[i+1], ..., t[j]. Defaults: i = 1, j = #t (or t.n)." },
+            { "table.find",     "t|value|init",         "Returns the index of the first t[i] == value, or nil. (Luau extension.)" },
+            { "table.clone",    "t",                    "Shallow-copies the array and hash parts of t. (Luau extension.)" },
+            { "table.freeze",   "t",                    "Marks t and its current contents as read-only. Returns t. (Luau extension.)" },
+            { "table.isfrozen", "t",                    "Returns true if t has been frozen with table.freeze. (Luau extension.)" },
+            { "table.move",     "a1|f|e|t|a2",          "Copies a1[f..e] into a2[t..]. a2 defaults to a1." },
+            { "table.create",   "count|value",          "Returns an array of `count` slots, each set to value (default nil). (Luau extension.)" },
+            { "table.maxn",     "t",                    "Returns the largest positive numeric key in t, or 0 if there are none." },
+            { "table.foreach",  "t|f",                  "Iterates t calling f(k, v). Deprecated; prefer pairs." },
+            { "table.foreachi", "t|f",                  "Iterates the array part of t calling f(i, v). Deprecated; prefer ipairs." },
+            { "table.getn",     "t",                    "Returns the array length of t. Deprecated; prefer #t." },
+
+            // --- vector library (Luau native) ---
+            { "vector.create",  "x|y|z",                "Returns a vector with components (x, y, z). Equivalent to vector(x, y, z)." },
+            { "vector.zero",    "",                     "The zero vector (0, 0, 0)." },
+            { "vector.one",     "",                     "The vector (1, 1, 1)." },
+            { "vector.magnitude","v",                   "Returns the length of v: sqrt(v.x^2 + v.y^2 + v.z^2)." },
+            { "vector.normalize","v",                   "Returns v scaled to unit length, or vector.zero if v is zero." },
+            { "vector.dot",     "a|b",                  "Returns the dot product of a and b." },
+            { "vector.cross",   "a|b",                  "Returns the cross product of a and b." },
+            { "vector.angle",   "a|b|axis",             "Returns the unsigned angle between a and b in radians. axis disambiguates direction." },
+            { "vector.max",     "v|...",                "Returns the component-wise max of two or more vectors." },
+            { "vector.min",     "v|...",                "Returns the component-wise min of two or more vectors." },
+            { "vector.floor",   "v",                    "Returns v with each component floored." },
+            { "vector.ceil",    "v",                    "Returns v with each component ceilinged." },
+            { "vector.abs",     "v",                    "Returns v with each component made absolute." },
+            { "vector.sign",    "v",                    "Returns v with each component replaced by its sign (-1, 0, 1)." },
+            { "vector.clamp",   "v|min|max",            "Returns v with each component clamped to the matching component of min and max." },
+            { "vector.lerp",    "a|b|t",                "Component-wise linear interpolation between a and b." },
+
+            // --- coroutine library ---
+            { "coroutine.create",  "f",                 "Creates a new coroutine wrapping function f. Returns the coroutine handle (a thread)." },
+            { "coroutine.resume",  "co|...",            "Starts or continues co. Returns (true, yielded values) or (false, error) on failure." },
+            { "coroutine.yield",   "...",               "Suspends the current coroutine. The values become the return of the matching resume." },
+            { "coroutine.status",  "co",                "Returns the coroutine's status: \"running\", \"suspended\", \"normal\", or \"dead\"." },
+            { "coroutine.wrap",    "f",                 "Wraps f as a coroutine and returns a function that resumes it on each call." },
+            { "coroutine.running", "",                  "Returns the running coroutine plus a bool indicating whether it's the main thread." },
+            { "coroutine.isyieldable","",               "Returns true if the running coroutine can yield (false in the main thread / C call boundary)." },
+            { "coroutine.close",   "co",                "Closes coroutine co, releasing its resources. Returns (true) or (false, err)." },
+
+            // --- bit32 library ---
+            { "bit32.band",     "...",                  "Returns the bitwise AND of all arguments (32-bit unsigned)." },
+            { "bit32.bor",      "...",                  "Returns the bitwise OR of all arguments." },
+            { "bit32.bxor",     "...",                  "Returns the bitwise XOR of all arguments." },
+            { "bit32.bnot",     "x",                    "Returns the bitwise NOT of x (32-bit unsigned)." },
+            { "bit32.btest",    "...",                  "Returns true if the bitwise AND of all arguments is non-zero." },
+            { "bit32.lshift",   "x|n",                  "Shifts x left by n bits, zero-filling. Equivalent to x * 2^n mod 2^32." },
+            { "bit32.rshift",   "x|n",                  "Shifts x right by n bits, zero-filling." },
+            { "bit32.arshift",  "x|n",                  "Arithmetic right shift: shifts x right by n bits, sign-extending." },
+            { "bit32.lrotate",  "x|n",                  "Rotates x left by n bits." },
+            { "bit32.rrotate",  "x|n",                  "Rotates x right by n bits." },
+            { "bit32.extract",  "x|field|width",        "Returns the unsigned `width` bits starting at `field` (default width = 1)." },
+            { "bit32.replace",  "x|v|field|width",      "Returns x with bits [field..field+width-1] replaced by the low bits of v." },
+            { "bit32.countlz",  "x",                    "Returns the number of leading zero bits in x. (Luau extension.)" },
+            { "bit32.countrz",  "x",                    "Returns the number of trailing zero bits in x. (Luau extension.)" },
+
+            // --- buffer library (Luau) ---
+            { "buffer.create",     "size",              "Allocates a new buffer of the given size in bytes." },
+            { "buffer.fromstring", "s",                 "Creates a buffer initialized from the bytes of s." },
+            { "buffer.tostring",   "b",                 "Returns the bytes of b as a string." },
+            { "buffer.len",        "b",                 "Returns the size of b in bytes." },
+            { "buffer.copy",       "dst|dstOff|src|srcOff|count", "Copies count bytes from src[srcOff..] to dst[dstOff..]." },
+            { "buffer.fill",       "b|offset|value|count","Fills count bytes of b starting at offset with byte value." },
+            { "buffer.readi8",     "b|offset",          "Reads a signed 8-bit integer at offset." },
+            { "buffer.readu8",     "b|offset",          "Reads an unsigned 8-bit integer at offset." },
+            { "buffer.readi16",    "b|offset",          "Reads a signed 16-bit little-endian integer at offset." },
+            { "buffer.readu16",    "b|offset",          "Reads an unsigned 16-bit little-endian integer at offset." },
+            { "buffer.readi32",    "b|offset",          "Reads a signed 32-bit little-endian integer at offset." },
+            { "buffer.readu32",    "b|offset",          "Reads an unsigned 32-bit little-endian integer at offset." },
+            { "buffer.readf32",    "b|offset",          "Reads a 32-bit float at offset." },
+            { "buffer.readf64",    "b|offset",          "Reads a 64-bit float at offset." },
+            { "buffer.writei8",    "b|offset|value",    "Writes a signed 8-bit integer at offset." },
+            { "buffer.writeu8",    "b|offset|value",    "Writes an unsigned 8-bit integer at offset." },
+            { "buffer.writei16",   "b|offset|value",    "Writes a signed 16-bit little-endian integer at offset." },
+            { "buffer.writeu16",   "b|offset|value",    "Writes an unsigned 16-bit little-endian integer at offset." },
+            { "buffer.writei32",   "b|offset|value",    "Writes a signed 32-bit little-endian integer at offset." },
+            { "buffer.writeu32",   "b|offset|value",    "Writes an unsigned 32-bit little-endian integer at offset." },
+            { "buffer.writef32",   "b|offset|value",    "Writes a 32-bit float at offset." },
+            { "buffer.writef64",   "b|offset|value",    "Writes a 64-bit float at offset." },
+            { "buffer.readstring", "b|offset|count",    "Reads count bytes from b starting at offset and returns them as a string." },
+            { "buffer.writestring","b|offset|s|count",  "Writes the bytes of s into b at offset. Defaults: count = #s." },
+
+            // --- os library ---
+            { "os.time",      "table",                  "Returns the current time as a Unix timestamp, or converts a date table to a timestamp." },
+            { "os.date",      "format|time",            "Formats a timestamp using strftime-style format. Default format = \"%c\"." },
+            { "os.clock",     "",                       "Returns CPU time used by the program in seconds." },
+            { "os.difftime",  "t2|t1",                  "Returns t2 - t1 in seconds (Lua handles calendar quirks for non-Unix platforms)." },
+
+            // --- utf8 library ---
+            { "utf8.char",        "...",                "Returns a string made of the given codepoints." },
+            { "utf8.codepoint",   "s|i|j",              "Returns codepoints of s[i..j]. Defaults: i = 1, j = i." },
+            { "utf8.codes",       "s",                  "Iterator yielding (byte_offset, codepoint) for each character in s." },
+            { "utf8.len",         "s|i|j",              "Returns the number of UTF-8 characters in s[i..j], or (false, byte_pos) on bad encoding." },
+            { "utf8.offset",      "s|n|i",              "Returns the byte offset of the n-th character of s (counting from i)." },
+
+            // --- debug library ---
+            { "debug.traceback",  "thread|message|level","Returns a string with the current call stack. message and level are optional." },
+            { "debug.info",       "thread|level|what",  "Like Lua's debug.getinfo but flat — returns the requested fields directly. (Luau)" },
+            { "debug.getinfo",    "level|what",         "Returns a table describing the function at the given stack level." },
+        };
+
+        // Apply curated docs to harvested symbols. O(N*M) but both are tiny
+        // (a few hundred symbols, ~150 curated entries) and this only runs on
+        // editor focus, not per-frame.
+        void ApplyCuratedDocs(TVector<FLuaSymbol>& Symbols)
+        {
+            for (FLuaSymbol& Symbol : Symbols)
+            {
+                for (const FCuratedDoc& Doc : CuratedDocs)
+                {
+                    if (std::strcmp(Symbol.Path.c_str(), Doc.Path) != 0)
+                    {
+                        continue;
+                    }
+
+                    if (Doc.Desc != nullptr && Doc.Desc[0] != '\0')
+                    {
+                        Symbol.Description.assign(Doc.Desc);
+                    }
+
+                    // Parse pipe-separated parameter names. "..." or any
+                    // segment ending in "..." flips the vararg flag and is
+                    // not added as a named param.
+                    if (Doc.Params != nullptr && Doc.Params[0] != '\0')
+                    {
+                        Symbol.ParamNames.clear();
+                        const char* P = Doc.Params;
+                        while (*P != '\0')
+                        {
+                            const char* Start = P;
+                            while (*P != '\0' && *P != '|') ++P;
+                            const size_t Len = static_cast<size_t>(P - Start);
+                            if (Len == 3 && std::memcmp(Start, "...", 3) == 0)
+                            {
+                                Symbol.bIsVararg = true;
+                            }
+                            else if (Len > 0)
+                            {
+                                Symbol.ParamNames.emplace_back(FString(Start, Len));
+                            }
+                            if (*P == '|') ++P;
+                        }
+                        Symbol.ParamCount = static_cast<uint8>(Symbol.ParamNames.size());
+                        // A curated function with named params is not opaque,
+                        // even if Luau lua_getinfo flagged it as a C function.
+                        if (Symbol.Kind == ELuaSymbolKind::Function)
+                        {
+                            Symbol.bIsCFunction = false;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     void FScriptingContext::HarvestGlobalSymbols(TVector<FLuaSymbol>& Out)
     {
         Out.clear();
@@ -859,7 +1205,7 @@ namespace Lumina::Lua
             if (lua_type(L, -2) == LUA_TSTRING)
             {
                 const char* Key = lua_tostring(L, -2);
-                if (!IsBuiltinName(Key))
+                if (!IsHiddenGlobal(Key))
                 {
                     FLuaSymbol Symbol;
                     Symbol.Name.assign(Key);
@@ -884,5 +1230,10 @@ namespace Lumina::Lua
         }
 
         lua_settop(L, Top);
+
+        // Layer hand-authored docs (parameter names, descriptions) onto the
+        // walked symbols. Done here rather than per-lookup so the editor's
+        // hover and autocomplete paths stay simple and uniform.
+        ApplyCuratedDocs(Out);
     }
 }
