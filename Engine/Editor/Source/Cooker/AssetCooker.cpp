@@ -252,6 +252,31 @@ namespace Lumina
             Log(LogFunc, FString().sprintf("  + /Config/GameSettings.json (cooked, %zu bytes)", Out.size()).c_str());
             return true;
         }
+
+        // Bundle every other /Config/*.json (InputActions.json, etc).
+        // GameSettings.json is shipped separately by BundleConfigWithProjectName
+        // because it needs Project.Name injected.
+        size_t BundleAuxConfigFiles(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
+        {
+            size_t Count = 0;
+            VFS::DirectoryIterator("/Config", [&](const VFS::FFileInfo& Info)
+            {
+                if (Info.IsDirectory() || Info.GetExt() != ".json")
+                {
+                    return;
+                }
+                FStringView Vp(Info.VirtualPath.c_str(), Info.VirtualPath.size());
+                if (Vp == FStringView("/Config/GameSettings.json"))
+                {
+                    return;
+                }
+                if (BundleVfsFile(Writer, Vp, LogFunc))
+                {
+                    ++Count;
+                }
+            });
+            return Count;
+        }
     }
 
     FCookResult FAssetCooker::Cook(FStringView OutputPakPath, const FCookOptions& Options, const TFunction<void(FStringView)>& LogFunc)
@@ -311,6 +336,7 @@ namespace Lumina
         {
             ++Result.NumExtraFiles;
         }
+        Result.NumExtraFiles += BundleAuxConfigFiles(Writer, LogFunc);
 
         // 4) Loose /Game files (.luau, .rml, JSON, etc). Skipped when the
         //    caller wants them shipped as loose files (the packager copies

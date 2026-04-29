@@ -74,6 +74,19 @@ namespace Lumina
         }
     }
 
+    float FPropertyRow::ComputeRequiredHeaderWidth(float Offset) const
+    {
+        float Width = Offset + GetMeasuredHeaderTextWidth();
+        if (bExpanded)
+        {
+            for (const TUniquePtr<FPropertyRow>& Child : Children)
+            {
+                Width = std::max(Width, Child->ComputeRequiredHeaderWidth(Offset + ChildIndentStep));
+            }
+        }
+        return Width;
+    }
+
     void FPropertyRow::DispatchChange(EPropertyChangeOp Op)
     {
         if (Op == EPropertyChangeOp::None || PropertyHandle == nullptr || PropertyHandle->Property == nullptr)
@@ -284,6 +297,17 @@ namespace Lumina
         ImGui::EndDisabled();
     }
 
+    float FPropertyPropertyRow::GetMeasuredHeaderTextWidth() const
+    {
+        if (IsArrayElementProperty())
+        {
+            char Buf[32];
+            snprintf(Buf, sizeof(Buf), "%lld", static_cast<long long>(PropertyHandle->Index));
+            return ImGui::CalcTextSize(Buf).x;
+        }
+        return ImGui::CalcTextSize(PropertyHandle->Property->GetPropertyDisplayName().c_str()).x;
+    }
+
     bool FPropertyPropertyRow::HasExtraControls() const
     {
         return bArrayElement;
@@ -375,6 +399,11 @@ namespace Lumina
     {
         const size_t ElementCount = ArrayProperty->GetNum(GetPropertyHandle()->ContainerPtr);
         ImGui::TextColored(ImVec4(0.24f, 0.24f, 0.24f, 1.0f), "%llu Elements", static_cast<unsigned long long>(ElementCount));
+    }
+
+    float FArrayPropertyRow::GetMeasuredHeaderTextWidth() const
+    {
+        return ImGui::GetTreeNodeToLabelSpacing() + ImGui::CalcTextSize(ArrayProperty->GetPropertyDisplayName().c_str()).x;
     }
 
     bool FArrayPropertyRow::IsInnerFixedHeight() const
@@ -556,6 +585,11 @@ namespace Lumina
         ImGui::EndDisabled();
     }
 
+    float FStructPropertyRow::GetMeasuredHeaderTextWidth() const
+    {
+        return ImGui::GetTreeNodeToLabelSpacing() + ImGui::CalcTextSize(StructProperty->GetPropertyDisplayName().c_str()).x;
+    }
+
     void FStructPropertyRow::RebuildChildren()
     {
         PropertyTable = MakeUnique<FPropertyTable>(PropertyHandle->Property->GetValuePtr<void>(PropertyHandle->ContainerPtr), StructProperty->GetStruct());
@@ -630,6 +664,11 @@ namespace Lumina
         }
     }
 
+    float FOptionalPropertyRow::GetMeasuredHeaderTextWidth() const
+    {
+        return ImGui::CalcTextSize(OptionalProperty->GetPropertyDisplayName().c_str()).x;
+    }
+
     void FOptionalPropertyRow::RebuildChildren()
     {
         DestroyChildren();
@@ -665,6 +704,30 @@ namespace Lumina
         Children.emplace_back(Move(NewRow));
     }
 
+    FCategoryPropertyRow* FCategoryPropertyRow::FindOrCreateChildCategory(const FName& InCategory)
+    {
+        // First look for an already-created sub-category row so multiple
+        // properties sharing the same `Outer|Inner` prefix coalesce into a
+        // single child row. We walk Children directly because their order
+        // is the draw order and we want a stable layout.
+        for (const TUniquePtr<FPropertyRow>& Child : Children)
+        {
+            if (Child->IsCategory())
+            {
+                FCategoryPropertyRow* AsCategory = static_cast<FCategoryPropertyRow*>(Child.get());
+                if (AsCategory->GetCategoryName() == InCategory)
+                {
+                    return AsCategory;
+                }
+            }
+        }
+
+        TUniquePtr<FCategoryPropertyRow> NewRow = MakeUnique<FCategoryPropertyRow>(OwnerObject, InCategory, Callbacks);
+        FCategoryPropertyRow* RawPtr = NewRow.get();
+        Children.emplace_back(Move(NewRow));
+        return RawPtr;
+    }
+
     void FCategoryPropertyRow::DrawHeader(float Offset)
     {
         ImGui::Dummy(ImVec2(Offset, 0));
@@ -678,6 +741,11 @@ namespace Lumina
         ImGui::PopStyleColor(3);
 
         ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, 0xFF1C1C1C);
+    }
+
+    float FCategoryPropertyRow::GetMeasuredHeaderTextWidth() const
+    {
+        return ImGui::GetTreeNodeToLabelSpacing() + ImGui::CalcTextSize(Category.c_str()).x;
     }
 
     FPropertyTable::FPropertyTable(void* InObject, CStruct* InType)
@@ -702,16 +770,51 @@ namespace Lumina
         {
             if (Current->IsVisible())
             {
-                FName Category = "General";
+                FString CategoryPath = "General";
                 if (Current->Metadata.HasMetadata("Category"))
                 {
-                    Category = Current->Metadata.GetMetadata("Category");
+                    CategoryPath = Current->Metadata.GetMetadata("Category");
                 }
 
-                FCategoryPropertyRow* CategoryRow = FindOrCreateCategoryRow(Category);
+                // Split the metadata path on '|' so `Foo|Bar|Baz` walks
+                // through Foo -> Bar -> Baz as nested category rows. The
+                // leaf row owns the property; intermediate rows are reused
+                // across properties that share the prefix so we don't
+                // duplicate headers.
+                FCategoryPropertyRow* TargetRow = nullptr;
+                size_t SegmentStart = 0;
+                while (SegmentStart <= CategoryPath.length())
+                {
+                    size_t Sep = CategoryPath.find('|', SegmentStart);
+                    if (Sep == FString::npos)
+                    {
+                        Sep = CategoryPath.length();
+                    }
+
+                    if (Sep > SegmentStart)
+                    {
+                        FName SegmentName(CategoryPath.data() + SegmentStart, Sep - SegmentStart);
+                        TargetRow = (TargetRow == nullptr)
+                            ? FindOrCreateCategoryRow(SegmentName)
+                            : TargetRow->FindOrCreateChildCategory(SegmentName);
+                    }
+
+                    if (Sep == CategoryPath.length())
+                    {
+                        break;
+                    }
+                    SegmentStart = Sep + 1;
+                }
+
+                // Empty / pathological "|" or "||" -- fall back to General so
+                // the property still has a home.
+                if (TargetRow == nullptr)
+                {
+                    TargetRow = FindOrCreateCategoryRow(FName("General"));
+                }
 
                 TSharedPtr<FPropertyHandle> Property = MakeShared<FPropertyHandle>(Object, Current);
-                CategoryRow->AddProperty(Property);
+                TargetRow->AddProperty(Property);
             }
 
             Current = static_cast<FProperty*>(Current->Next);
@@ -760,10 +863,21 @@ namespace Lumina
         ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0, 2));
         ImGui::PushID(this);
 
+        // Size the header column to fit the widest visible label so short
+        // property names don't waste space and force the editor cell to be
+        // cramped. Recomputed every frame so changes in expansion state
+        // (collapsing a category, opening a struct) tighten or widen as needed.
+        float HeaderColumnWidth = 0.0f;
+        for (auto& [Name, Row] : CategoryMap)
+        {
+            HeaderColumnWidth = std::max(HeaderColumnWidth, Row->ComputeRequiredHeaderWidth(0.0f));
+        }
+        HeaderColumnWidth += ImGui::GetStyle().ItemSpacing.x * 4.0f + 12.0f;
+
         if (ImGui::BeginTable("GridTable", 2, Flags))
         {
-            ImGui::TableSetupColumn("##Header", ImGuiTableColumnFlags_WidthStretch, 0.4f);
-            ImGui::TableSetupColumn("##Editor", ImGuiTableColumnFlags_WidthStretch, 0.6f);
+            ImGui::TableSetupColumn("##Header", ImGuiTableColumnFlags_WidthFixed, HeaderColumnWidth);
+            ImGui::TableSetupColumn("##Editor", ImGuiTableColumnFlags_WidthStretch);
 
             for (auto& [Name, Row] : CategoryMap)
             {

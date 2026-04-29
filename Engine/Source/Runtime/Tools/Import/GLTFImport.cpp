@@ -254,10 +254,66 @@ namespace Lumina::Import::Mesh::GLTF
         // a CPU->GPU upload per copy for the dialog preview.
         if (ImportOptions.bImportTextures)
         {
+            // Walk every material slot and tag the underlying image with its
+            // semantic role so the texture factory can pick the right BC
+            // format and color space. Without this, normal maps and
+            // metallic-roughness packs default to SRGB and look completely
+            // wrong (the GPU's hardware sRGB->linear decode runs against
+            // values that were never sRGB-encoded). Glb assets in particular
+            // give the texture factory no filename to fall back on, so this
+            // is the only signal it has.
+            //
+            // Resolution: image[textures[T].imageIndex] gets the role chosen
+            // by whichever material slot references texture T. Roles:
+            //   baseColor          -> SRGB        (color, gamma-encoded)
+            //   normal             -> NormalMap   (BC5_UNORM + Z reconstruct)
+            //   metallicRoughness  -> PackedData  (linear, GB packed in glTF)
+            //   occlusion          -> Linear      (single-channel data)
+            //   emissive           -> SRGB        (color, gamma-encoded)
+            // If two materials disagree on a single image's role (rare), the
+            // last assignment wins -- which is fine because the heuristic
+            // below errs toward the more conservative interpretation.
+            TVector<ETextureColorSpace> ImageRoles(Asset.images.size(), ETextureColorSpace::Auto);
+
+            auto MarkImageForTexture = [&](size_t TextureIndex, ETextureColorSpace Role)
+            {
+                if (TextureIndex >= Asset.textures.size()) return;
+                const auto& Tex = Asset.textures[TextureIndex];
+                if (!Tex.imageIndex.has_value()) return;
+                const size_t ImgIdx = Tex.imageIndex.value();
+                if (ImgIdx >= ImageRoles.size()) return;
+                ImageRoles[ImgIdx] = Role;
+            };
+
+            for (const fastgltf::Material& Material : Asset.materials)
+            {
+                if (Material.pbrData.baseColorTexture.has_value())
+                {
+                    MarkImageForTexture(Material.pbrData.baseColorTexture->textureIndex, ETextureColorSpace::SRGB);
+                }
+                if (Material.pbrData.metallicRoughnessTexture.has_value())
+                {
+                    MarkImageForTexture(Material.pbrData.metallicRoughnessTexture->textureIndex, ETextureColorSpace::PackedData);
+                }
+                if (Material.normalTexture.has_value())
+                {
+                    MarkImageForTexture(Material.normalTexture->textureIndex, ETextureColorSpace::NormalMap);
+                }
+                if (Material.occlusionTexture.has_value())
+                {
+                    MarkImageForTexture(Material.occlusionTexture->textureIndex, ETextureColorSpace::Linear);
+                }
+                if (Material.emissiveTexture.has_value())
+                {
+                    MarkImageForTexture(Material.emissiveTexture->textureIndex, ETextureColorSpace::SRGB);
+                }
+            }
+
             uint32 ImageCounter = 0;
             for (auto& Image : Asset.images)
             {
                 FMeshImportImage GLTFImage;
+                GLTFImage.IntendedColorSpace = ImageRoles[ImageCounter];
 
                 auto AssignFallbackName = [&]()
                 {

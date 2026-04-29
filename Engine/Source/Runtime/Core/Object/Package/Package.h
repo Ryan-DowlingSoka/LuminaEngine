@@ -231,7 +231,28 @@ namespace Lumina
 
         RUNTIME_API static CPackage* FindPackageByPath(FStringView Path);
 
-        RUNTIME_API static void RenamePackage(FStringView OldPath, FStringView NewPath);
+        /**
+         * Canonical rename entry point. Owns both the in-memory rename and the
+         * on-disk move. Performs an atomic write of the new file then removes
+         * the old one, so a crash mid-rename leaves either the old file or the
+         * new one fully intact — never both half-written.
+         *
+         * Returns false on any failure (collision, I/O error, missing source,
+         * tag mismatch). Caller must check the return value before updating
+         * the asset registry.
+         */
+        RUNTIME_API NODISCARD static bool RenamePackage(FStringView OldPath, FStringView NewPath);
+
+        /**
+         * Notify the package layer that the .lasset file at OldPath is now at
+         * NewPath because a parent directory was renamed externally (e.g.
+         * folder rename in the content browser). Updates the in-memory
+         * CPackage's identity if loaded; does not touch disk.
+         *
+         * Assumes the file name part is unchanged — only the directory
+         * portion of the path differs.
+         */
+        RUNTIME_API static void OnPackageMovedExternally(FStringView OldPath, FStringView NewPath);
 
 
         /**

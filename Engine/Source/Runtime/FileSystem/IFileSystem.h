@@ -21,6 +21,11 @@ namespace Lumina::VFS
         virtual bool WriteFile(FStringView Path, FStringView Data) = 0;
         virtual bool WriteFile(FStringView Path, TSpan<const uint8> Data) = 0;
 
+        // Crash-safe write: either the destination ends up containing the new
+        // contents in full, or it remains untouched. Default falls back to
+        // WriteFile for backends that have no meaningful atomic primitive.
+        virtual bool AtomicWriteFile(FStringView Path, TSpan<const uint8> Data) { return WriteFile(Path, Data); }
+
         virtual bool Exists(FStringView Path) const = 0;
         virtual bool IsDirectory(FStringView Path) const = 0;
         virtual bool IsEmpty(FStringView Path) const = 0;

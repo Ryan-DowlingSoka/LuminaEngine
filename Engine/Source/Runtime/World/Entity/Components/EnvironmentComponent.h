@@ -119,8 +119,9 @@ namespace Lumina
 
         /** Brightness multiplier for the ambient term. Tiny values
          *  (~0.005) preserve the old "barely there" look; 0.05+ gives a
-         *  visible skylight wash. */
-        PROPERTY(Editable, Category = "Ambient Light", ClampMin = 0.0f)
+         *  visible skylight wash. Capped at 1 because anything past
+         *  ~0.3 already over-fills shadowed areas. */
+        PROPERTY(Editable, Category = "Ambient Light", ClampMin = 0.0f, ClampMax = 1.0f, Delta = 0.001f)
         float AmbientIntensity = 0.05f;
 
         /** When true, AmbientColor is auto-derived from the active sky each

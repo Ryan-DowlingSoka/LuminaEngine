@@ -29,6 +29,14 @@ namespace Lumina
         /** When true, this light contributes to the shadow pass. */
         PROPERTY(Editable, Category = "Shadows")
         bool bCastShadows = false;
+
+        /** When true, the light scatters through participating media (fog/atmosphere). */
+        PROPERTY(Editable, Category = "Advanced")
+        bool bVolumetric = false;
+
+        /** Strength of the volumetric scattering contribution. */
+        PROPERTY(Editable, Category = "Advanced")
+        float VolumetricIntensity = 0.5f;
     };
 
     REFLECT(Component)
@@ -105,5 +113,13 @@ namespace Lumina
         /** When true, this light contributes to the shadow pass. */
         PROPERTY(Editable)
         bool bCastShadows = true;
+
+        /** When true, the sun scatters through participating media (god rays / light shafts). */
+        PROPERTY(Editable, Category = "Advanced")
+        bool bVolumetric = false;
+
+        /** Strength of the volumetric scattering contribution. */
+        PROPERTY(Editable, Category = "Advanced")
+        float VolumetricIntensity = 0.5f;
     };
 }

@@ -10,6 +10,7 @@
 #include "Platform/Platform.h"
 #include "Renderer/Format.h"
 #include "Renderer/RenderResource.h"
+#include "Assets/AssetTypes/Textures/Texture.h"
 
 namespace Lumina
 {
@@ -83,7 +84,13 @@ namespace Lumina::Import
             FFixedString    RelativePath;
             FRHIImageRef    DisplayImage;
             TVector<uint8>  Bytes;
-            
+
+            // Semantic role inferred by the mesh importer (from glTF
+            // material slots, etc). When set to a concrete value, the
+            // texture factory uses it directly and skips the filename
+            // heuristic; Auto leaves the heuristic in charge.
+            ETextureColorSpace IntendedColorSpace = ETextureColorSpace::Auto;
+
             NODISCARD bool IsBytes() const { return !Bytes.empty(); }
 
             bool operator==(const FMeshImportImage& Other) const

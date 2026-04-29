@@ -1,4 +1,6 @@
 ﻿#pragma once
+#include "Containers/Array.h"
+#include "Containers/Name.h"
 #include "Core/Object/ObjectMacros.h"
 #include "Scripting/Lua/ScriptTypes.h"
 #include "Scripting/Lua/ScriptPath.h"
@@ -31,6 +33,14 @@ namespace Lumina
         Lua::FRef       UpdateFunc;
         Lua::FRef       DetachFunc;
         Lua::FRef       ScriptMetaTable;
+
+        /**
+         * Handlers for directed messages dispatched via FEntityMessageBus / `Messages:Send`.
+         * Populated once at script attach by walking the script table for `On*` functions
+         * (see CWorld::OnScriptComponentCreated). Cleared automatically when the component
+         * is destroyed -- FRef releases its Lua ref in its dtor.
+         */
+        THashMap<FName, Lua::FRef>  MessageHandlers;
 
         CWorld*         World           = nullptr;
         entt::entity    Entity        = entt::null;

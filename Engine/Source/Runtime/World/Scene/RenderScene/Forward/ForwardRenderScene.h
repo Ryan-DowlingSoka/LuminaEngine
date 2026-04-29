@@ -8,6 +8,7 @@
 #include "World/Scene/RenderScene/MeshDrawCommand.h"
 #include "World/Scene/RenderScene/RenderScene.h"
 #include "World/Scene/RenderScene/SceneCullContext.h"
+#include "World/Entity/Components/PostProcessSettings.h"
 
 
 namespace Lumina
@@ -179,7 +180,30 @@ namespace Lumina
             Picker,
             Accum,
             Revealage,
-            
+
+            // Pre-integrated BRDF LUT for the split-sum IBL approximation
+            // (Karis 2013). Baked once at scene init by BRDFIntegration.slang
+            // and never regenerated -- it is independent of swapchain size,
+            // sky state, and any per-frame data, so it lives outside the
+            // InitImages / SwapchainResized rebuild path.
+            BRDFLut,
+
+            // Sky captured into a cubemap by SkyCubeCapture.slang, fed into
+            // the irradiance + prefilter convolution to drive IBL ambient.
+            // Persistent image (size constant, decoupled from swapchain), but
+            // the *contents* are refreshed per frame the sky is enabled.
+            SkyCube,
+
+            // Diffuse-BRDF-convolved sky (cosine-weighted hemisphere
+            // integration). Sampled by surface normal N at runtime to
+            // compute IBL diffuse: kD * Albedo * SkyIrradiance(N) * AO.
+            SkyIrradiance,
+
+            // GGX-prefiltered sky with one mip per roughness step. Sampled
+            // by reflection vector R at mip = Roughness * (NumMips - 1) and
+            // combined with the BRDF LUT for IBL specular.
+            SkyPrefilter,
+
             #if USING(WITH_EDITOR)
             PointLightIcon,
             DirectionalLightIcon,
@@ -198,7 +222,7 @@ namespace Lumina
         void BeginFrame() override { }
         void EndFrame() override { }
         
-        void RenderView(ICommandList& CmdList, const FViewVolume& ViewVolume) override;
+        void RenderView(ICommandList& CmdList, const FViewVolume& ViewVolume, const SPostProcessSettings* PostProcess = nullptr) override;
         void SwapchainResized(glm::vec2 NewSize);
         
         void DrawBillboard(FRHIImage* Image, const glm::vec3& Location, float Scale) override;
@@ -222,6 +246,22 @@ namespace Lumina
         void InitImages();
         void InitFrameResources();
         void CreateLayouts();
+
+        // Creates the persistent BRDF integration LUT and dispatches the bake
+        // compute pass synchronously. Called once from Init(); the result is
+        // independent of viewport/sky/frame state and is reused for the life
+        // of the scene.
+        void InitBRDFLUT();
+
+        // Allocates the persistent sky cubemap. Contents are filled every
+        // frame the sky is enabled by SkyCubeCapturePass(); the image itself
+        // is created once.
+        void InitSkyCube();
+
+        // Allocates the persistent IBL convolution targets (irradiance +
+        // prefiltered specular). Filled per frame the sky is enabled by the
+        // matching convolution passes, alongside SkyCube refresh.
+        void InitIBLConvolutionTargets();
         
         //~ Begin Render Passes
         void ResetPass(ICommandList& CmdList);
@@ -260,8 +300,31 @@ namespace Lumina
         void TerrainRenderPass(ICommandList& CmdList);
         void TransparentPass(ICommandList& CmdList);
         void OITResolvePass(ICommandList& CmdList);
+        // Screen-space ray-marched scattering for lights with ELightFlags::Volumetric.
+        // Reads the opaque depth attachment, walks the camera ray to the surface,
+        // accumulates per-light Henyey-Greenstein scatter (shadowed via the cascade
+        // / spot-shadow atlas), and additively blends the result into HDR. Skipped
+        // when no light in the scene has the flag set.
+        void VolumetricLightingPass(ICommandList& CmdList);
         void EnvironmentPass(ICommandList& CmdList);
+        // Refreshes the sky cubemap. Runs every frame the sky is enabled,
+        // gated on the same RenderSettings.bHasEnvironment as EnvironmentPass.
+        // Cheap (256-cube; sub-millisecond) so per-frame is fine until a
+        // dirty-tracking optimization is added.
+        void SkyCubeCapturePass(ICommandList& CmdList);
+        // Convolves the captured sky into the diffuse irradiance cube
+        // (cosine-weighted) and the GGX-prefiltered cube (one mip per
+        // roughness). Runs after SkyCubeCapturePass; same gating.
+        void IrradianceConvolutionPass(ICommandList& CmdList);
+        void PrefilterEnvMapPass(ICommandList& CmdList);
         void BatchedLineDraw(ICommandList& CmdList);
+        // Physically-motivated bloom: COD-AW 13-tap downsample chain (with
+        // Karis-luma-weighted prefilter on mip 0 to suppress fireflies),
+        // then a 3x3 tent upsample chain additively blended back into the
+        // larger mips. The tone mapping pass samples mip 0 of the chain
+        // and adds it into HDR before grading. Skipped when the active
+        // post-process settings have BloomIntensity == 0.
+        void BloomPass(ICommandList& CmdList);
         void ToneMappingPass(ICommandList& CmdList);
         void SMAAEdgeDetectionPass(ICommandList& CmdList);
         void SMAABlendWeightPass(ICommandList& CmdList);
@@ -324,6 +387,13 @@ namespace Lumina
         
         TArray<FRHIBufferRef, (int)ENamedBuffer::Num>   NamedBuffers = {};
         TArray<FRHIImageRef, (int)ENamedImage::Num>     NamedImages = {};
+
+        // Bloom mip chain. Index [0] is the largest (1/2 HDR resolution),
+        // each successive entry is half the previous. The downsample chain
+        // walks 0->N-1; the upsample chain walks N-1 back to 0 with additive
+        // blend. Mip 0 is what the tone-mapping pass samples.
+        static constexpr uint32                         BLOOM_MIP_COUNT = 5;
+        TArray<FRHIImageRef, BLOOM_MIP_COUNT>           BloomMips = {};
         
         /** Packed array of all light shadows in the scene */
         TArray<TVector<FLightShadow>, (uint32)ELightType::Num>    PackedShadows;
@@ -371,7 +441,12 @@ namespace Lumina
         FRHIViewportRef                         SceneViewport;
         
         FSceneGlobalData                        SceneGlobalData;
-        
+
+        // Color grading + tone-mapping settings of the active camera for the
+        // frame currently being recorded. Set in RenderView() and consumed by
+        // ToneMappingPass(). Null falls back to baked defaults.
+        const SPostProcessSettings*             ActivePostProcess = nullptr;
+
         FRHIBindingSetRef                       SceneBindingSet;
         FRHIBindingLayoutRef                    SceneBindingLayout;
         

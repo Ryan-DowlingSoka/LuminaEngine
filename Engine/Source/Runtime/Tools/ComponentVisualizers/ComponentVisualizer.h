@@ -64,6 +64,17 @@ namespace Lumina
     };
     
     REFLECT()
+    class RUNTIME_API CComponentVisualizer_DirectionalLight : public CComponentVisualizer
+    {
+        GENERATED_BODY()
+    public:
+        
+        CStruct* GetSupportedComponentType() const override;
+        
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+    };
+    
+    REFLECT()
     class RUNTIME_API CComponentVisualizer_SphereCollider : public CComponentVisualizer
     {
         GENERATED_BODY()

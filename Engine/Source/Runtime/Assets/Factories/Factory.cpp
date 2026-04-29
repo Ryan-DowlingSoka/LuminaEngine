@@ -83,8 +83,14 @@ namespace Lumina
                 }
 
                 CPackage* Package = NewAsset->GetPackage();
-                CPackage::SavePackage(Package, OwnedPath);
-                FAssetRegistry::Get().AssetCreated(NewAsset);
+                if (CPackage::SavePackage(Package, OwnedPath))
+                {
+                    FAssetRegistry::Get().AssetCreated(NewAsset);
+                }
+                else
+                {
+                    LOG_ERROR("Factory: failed to save {}; asset will not be registered", OwnedPath);
+                }
             });
 
             return true;

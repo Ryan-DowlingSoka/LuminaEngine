@@ -1,4 +1,5 @@
 #include "Includes/SceneGlobals.slang"
+#include "Includes/IBLRuntime.slang"
 
 // Keep in sync with FTerrainRenderParams in TerrainRenderTypes.h.
 struct FTerrainRenderParams
@@ -85,16 +86,45 @@ float3 FresnelSchlick(float CosTheta, float3 F0)
 
 float3 GetWorldNormal(float3 FragNormal, float2 UV, float3 FragPos, float3 TangentSpaceNormal)
 {
-    float3 Q1 = ddx(FragPos);
-    float3 Q2 = ddy(FragPos);
+    float3 Q1  = ddx(FragPos);
+    float3 Q2  = ddy(FragPos);
     float2 St1 = ddx(UV);
     float2 St2 = ddy(UV);
 
-    float3 T = normalize(Q1 * St2.y - Q2 * St1.y);
-    float3 B = normalize(cross(FragNormal, T));
+    // See the matching GetWorldNormal in BasePixelPass.slang for the full
+    // rationale: normalize T/B before Gram-Schmidt so close-range tiny
+    // derivatives don't trip the "TBN collapsed, fall back" guard, and
+    // drive B from St1.x / St2.x so it follows the actual UV layout's
+    // dP/dv (cross(N, T) only matches dP/dv when T x B = N).
+    float3 T = Q1 * St2.y - Q2 * St1.y;
+    float3 B = Q2 * St1.x - Q1 * St2.x;
+
+    float TGeomLen2 = dot(T, T);
+    float BGeomLen2 = dot(B, B);
+    if (TGeomLen2 < 1e-20 || BGeomLen2 < 1e-20)
+    {
+        return FragNormal;
+    }
+    T *= rsqrt(TGeomLen2);
+    B *= rsqrt(BGeomLen2);
+
+    T = T - FragNormal * dot(T, FragNormal);
+    float TLen2 = dot(T, T);
+    if (TLen2 < 1e-6)
+    {
+        return FragNormal;
+    }
+    T *= rsqrt(TLen2);
+
+    B = B - FragNormal * dot(B, FragNormal) - T * dot(B, T);
+    float BLen2 = dot(B, B);
+    if (BLen2 < 1e-6)
+    {
+        return FragNormal;
+    }
+    B *= rsqrt(BLen2);
 
     float3x3 TBN = float3x3(T, B, FragNormal);
-
     return normalize(mul(TangentSpaceNormal, TBN));
 }
 
@@ -103,7 +133,7 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
     float NdotL       = saturate(dot(Normal, LightDir));
     float SlopeFactor = sqrt(max(1.0 - NdotL * NdotL, 0.0));
 
-    if (LightFlags == LIGHT_FLAG_TYPE_DIRECTIONAL)
+    if (HasFlag(LightFlags, ELightFlags::Directional))
     {
         // Constant safety bias only; NormalOffsetWS below handles the
         // slope-driven acne, so a large slope term would only cause peter-panning.
@@ -171,7 +201,7 @@ float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal
         return 1.0;
     }
 
-    bool IsDirectionalLight = Light.Flags == LIGHT_FLAG_TYPE_DIRECTIONAL;
+    bool IsDirectionalLight = HasFlag(Light.Flags, ELightFlags::Directional);
     if (!IsDirectionalLight)
     {
         return 1.0;
@@ -219,8 +249,8 @@ float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal
 
 float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3 V, float3 Albedo, float Roughness, float Metallic, float3 F0, float3 PrecomputedL, float PrecomputedDist)
 {
-    bool bSpotLight   = Light.Flags == LIGHT_FLAG_TYPE_SPOT;
-    bool bDirectional = Light.Flags == LIGHT_FLAG_TYPE_DIRECTIONAL;
+    bool bSpotLight   = HasFlag(Light.Flags, ELightFlags::Spot);
+    bool bDirectional = HasFlag(Light.Flags, ELightFlags::Directional);
 
     float3 L            = float3(0.0);
     float  Attenuation  = 1.0;
@@ -253,7 +283,7 @@ float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3
 
     float  NDF          = DistributionGGX(N, H, Roughness);
     float  G            = GeometrySmith(N, V, L, Roughness);
-    float3 F            = FresnelSchlick(max(dot(H, V), 0.5), F0);
+    float3 F            = FresnelSchlick(max(dot(H, V), 0.0), F0);
 
     float3 Spec         = (NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001);
     float3 kD           = (1.0 - F) * (1.0 - Metallic);
@@ -391,8 +421,12 @@ PSOutput FragmentMain(PSInput Input)
         Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight);
     }
 
-    float3 Ambient = GetAmbientLightColor() * GetAmbientLightIntensity() * AO;
-    float3 Color   = Ambient + Lo + Material.Emissive;
+    // IBL ambient: see BasePixelPass for the rationale; mirrored here so
+    // terrain reflects the same sky cube and stays visually consistent
+    // with mesh surfaces under the same lighting.
+    float3 IBLAmbient = EvaluateIBLAmbient(N, V, Albedo, F0, Roughness, Metallic);
+    float3 Ambient    = IBLAmbient * GetAmbientLightIntensity() * AO;
+    float3 Color      = Ambient + Lo + Material.Emissive;
 
 #endif // UNLIT
 

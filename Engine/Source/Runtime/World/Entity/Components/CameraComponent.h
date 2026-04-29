@@ -1,6 +1,7 @@
 #pragma once
 #include "Core/Engine/Engine.h"
 #include "Renderer/ViewVolume.h"
+#include "PostProcessSettings.h"
 #include "CameraComponent.generated.h"
 
 
@@ -58,9 +59,16 @@ namespace Lumina
         /** When true, this camera activates automatically when the entity is spawned. */
         PROPERTY(Editable, Category = "Camera")
         bool bAutoActivate = false;
-        
+
+        /** Per-camera color grading + tone mapping. The render scene reads
+         *  this from the active camera each frame and applies it during the
+         *  final composite pass. Defaults give an identity grade with AGX
+         *  tone mapping. */
+        PROPERTY(Editable, Category = "Camera")
+        SPostProcessSettings PostProcess;
+
     private:
-        
+
         FViewVolume ViewVolume;
     };
 

@@ -78,6 +78,19 @@ namespace Lumina
         PDI->DrawCone(Transform.GetWorldLocation(), -Forward, glm::radians(SpotLight.InnerConeAngle), SpotLight.Attenuation, glm::vec4(SpotLight.LightColor, 1.0f));
     }
 
+    CStruct* CComponentVisualizer_DirectionalLight::GetSupportedComponentType() const
+    {
+        return SDirectionalLightComponent::StaticStruct();
+    }
+
+    void CComponentVisualizer_DirectionalLight::Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity)
+    {
+        const auto& Light       = Registry.get<SDirectionalLightComponent>(Entity);
+        const auto& Transform   = Registry.get<STransformComponent>(Entity);
+        
+        PDI->DrawArrow(Transform.GetWorldLocation(), -Light.Direction, 1.5f, FColor::Yellow, 4.0f);
+    }
+
     CStruct* CComponentVisualizer_SphereCollider::GetSupportedComponentType() const
     {
         return SSphereColliderComponent::StaticStruct();

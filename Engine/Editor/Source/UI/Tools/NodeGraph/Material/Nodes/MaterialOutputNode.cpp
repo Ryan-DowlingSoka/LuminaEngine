@@ -147,6 +147,39 @@ namespace Lumina
         EmitMaterialInput("AmbientOcclusion", AOPin, "1.0", 1);
         EmitMaterialInput("Normal", NormalPin, "float3(0.0, 0.0, 1.0)", 3);
         EmitMaterialInput("Opacity", OpacityPin, "1.0", 1);
+
+        // Decode the connected Normal as a tangent-space normal map. Two
+        // decode paths depending on whether the upstream sample came from
+        // a NormalMap-flagged texture:
+        //
+        //  * NormalMap source (BC5_UNORM, 2-channel store): take only XY
+        //    from the sample, decode to [-1, 1], reconstruct Z from the
+        //    unit-length constraint. Works for any 2-channel tangent normal
+        //    regardless of where the missing Z came from.
+        //  * Non-NormalMap source (3-channel store, or hand-built float3):
+        //    full xyz decode + normalize, the textbook path.
+        //
+        // The unconnected default `float3(0, 0, 1)` is already in [-1, 1]
+        // so we only patch the connected case.
+        if (NormalPin->HasConnection())
+        {
+            CMaterialOutput* ConnectedPin   = NormalPin->GetConnection<CMaterialOutput>(0);
+            const FString    UpstreamName   = ConnectedPin->GetOwningNode()->GetNodeFullName();
+            const bool       bNormalMapSrc  = Compiler.IsNormalMapSampleNode(UpstreamName);
+
+            if (bNormalMapSrc)
+            {
+                // 2-channel decode + Z reconstruct. saturate() guards against
+                // floating-point overshoot from xy^2 > 1 (rare, but it gives
+                // sqrt(<0) = NaN if unguarded).
+                Output += "\tMaterial.Normal.xy = Material.Normal.xy * 2.0 - 1.0;\n";
+                Output += "\tMaterial.Normal.z  = sqrt(saturate(1.0 - dot(Material.Normal.xy, Material.Normal.xy)));\n";
+            }
+            else
+            {
+                Output += "\tMaterial.Normal = normalize(Material.Normal * 2.0 - 1.0);\n";
+            }
+        }
         //EmitMaterialInput("WorldPositionOffset", WorldPositionOffsetPin, "float3(0.0)", 3);
         
         

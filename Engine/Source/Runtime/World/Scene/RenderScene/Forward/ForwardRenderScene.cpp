@@ -80,6 +80,20 @@ namespace Lumina
         SceneViewport = GRenderContext->CreateViewport(Windowing::GetPrimaryWindowHandle()->GetExtent(), "Forward Renderer Viewport");
 
         InitBuffers();
+
+        // Bake the IBL split-sum BRDF LUT once before InitFrameResources, so
+        // CreateLayouts() picks it up when it builds the scene binding set.
+        // Independent of viewport size, sky state, and frame data, so it
+        // lives outside InitFrameResources() and survives swapchain rebuilds.
+        InitBRDFLUT();
+
+        // Allocate the persistent sky cubemap before CreateLayouts() so it
+        // can be referenced from the scene binding set. Contents are filled
+        // per-frame by SkyCubeCapturePass(); only the image lifetime is set
+        // up here.
+        InitSkyCube();
+        InitIBLConvolutionTargets();
+
         InitFrameResources();
 
         // Persistent SMAA LUTs, sized constants, not affected by swapchain size.
@@ -125,9 +139,11 @@ namespace Lumina
         LOG_TRACE("Shutting down Forward Render Scene");
     }
 
-    void FForwardRenderScene::RenderView(ICommandList& CmdList, const FViewVolume& ViewVolume)
+    void FForwardRenderScene::RenderView(ICommandList& CmdList, const FViewVolume& ViewVolume, const SPostProcessSettings* PostProcess)
     {
         LUMINA_PROFILE_SCOPE();
+
+        ActivePostProcess = PostProcess;
 
         SceneViewport->SetViewVolume(ViewVolume);
         
@@ -224,6 +240,29 @@ namespace Lumina
             }
 
             {
+                // Refresh the IBL sky cube before the fullscreen sky pass.
+                // Both sample the same FEnvironmentParams CB and the same
+                // sun direction, so doing the cube capture here keeps the
+                // captured cube in lockstep with the rendered background.
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Sky Cube Capture", FColor(0.55f, 0.85f, 0.95f));
+                SkyCubeCapturePass(CmdList);
+            }
+
+            {
+                // Convolve into the IBL diffuse irradiance + GGX-prefiltered
+                // specular cubemaps. Reads the cube SkyCubeCapturePass just
+                // wrote; auto-barriers handle the UAV->SRV transition. The
+                // base pass that follows samples both for ambient lighting.
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Sky Irradiance", FColor(0.55f, 0.75f, 0.95f));
+                IrradianceConvolutionPass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Sky Prefilter", FColor(0.55f, 0.75f, 0.85f));
+                PrefilterEnvMapPass(CmdList);
+            }
+
+            {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Environment", FColor(0.20f, 0.80f, 0.30f));
                 EnvironmentPass(CmdList);
             }
@@ -265,12 +304,17 @@ namespace Lumina
             }
         
             {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "OIT Resolve", FColor(0.55f, 0.85f, 0.30f)); 
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "OIT Resolve", FColor(0.55f, 0.85f, 0.30f));
                 OITResolvePass(CmdList);
             }
-        
+
             {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Batched Lines", FColor(0.95f, 0.20f, 0.20f)); 
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Volumetric Lighting", FColor(0.85f, 0.65f, 0.30f));
+                VolumetricLightingPass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Batched Lines", FColor(0.95f, 0.20f, 0.20f));
                 BatchedLineDraw(CmdList);
             }
         
@@ -290,7 +334,12 @@ namespace Lumina
             }
         
             {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Tone Mapping", FColor(0.95f, 0.20f, 0.20f)); 
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Bloom", FColor(0.95f, 0.75f, 0.30f));
+                BloomPass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Tone Mapping", FColor(0.95f, 0.20f, 0.20f));
                 ToneMappingPass(CmdList);
             }
         
@@ -483,7 +532,7 @@ namespace Lumina
                             Billboard.TextureIndex          = GetNamedImage(ENamedImage::CameraIcon)->GetTextureCacheIndex();
                             Billboard.ColorPack             = PackColor(FColor::White);
                             Billboard.Position              = Transform.WorldTransform.Location;
-                            Billboard.Size                  = 0.15f;
+                            Billboard.Size                  = 0.20f;
                             Billboard.EntityID              = entt::to_integral(Entity);
                         });
                     }
@@ -497,7 +546,7 @@ namespace Lumina
                         Billboard.TextureIndex          = GetNamedImage(ENamedImage::CharacterIcon)->GetTextureCacheIndex();
                         Billboard.ColorPack             = PackColor(FColor::White);
                         Billboard.Position              = Transform.WorldTransform.Location;
-                        Billboard.Size                  = 0.15f;
+                        Billboard.Size                  = 0.20f;
                         Billboard.EntityID              = entt::to_integral(Entity);
                     }
                 });
@@ -510,7 +559,7 @@ namespace Lumina
                         Billboard.TextureIndex          = GetNamedImage(ENamedImage::PointLightIcon)->GetTextureCacheIndex();
                         Billboard.ColorPack             = PackColor({PointLightComponent.LightColor, 1.0f});
                         Billboard.Position              = TransformComponent.WorldTransform.Location;
-                        Billboard.Size                  = 0.15f;
+                        Billboard.Size                  = 0.20f;
                         Billboard.EntityID              = entt::to_integral(Entity);
                     }
                 });
@@ -523,7 +572,7 @@ namespace Lumina
                         Billboard.TextureIndex          = GetNamedImage(ENamedImage::SpotLightIcon)->GetTextureCacheIndex();
                         Billboard.ColorPack             = PackColor({SpotLightComponent.LightColor, 1.0f});
                         Billboard.Position              = Transform.WorldTransform.Location;
-                        Billboard.Size                  = 0.15f;
+                        Billboard.Size                  = 0.20f;
                         Billboard.EntityID              = entt::to_integral(Entity);
                     }
                 });
@@ -537,7 +586,7 @@ namespace Lumina
                         Billboard.TextureIndex          = GetNamedImage(ENamedImage::DirectionalLightIcon)->GetTextureCacheIndex();
                         Billboard.ColorPack             = PackColor({DirectionalLight.Color, 1.0f});
                         Billboard.Position              = Transform.WorldTransform.Location;
-                        Billboard.Size                  = 0.15f;
+                        Billboard.Size                  = 0.20f;
                         Billboard.EntityID              = entt::to_integral(Entity);
                     }
                 });
@@ -551,7 +600,7 @@ namespace Lumina
                         Billboard.TextureIndex          = GetNamedImage(ENamedImage::SkyLightIcon)->GetTextureCacheIndex();
                         Billboard.ColorPack             = PackColor({1.0, 1.0, 1.0, 1.0f});
                         Billboard.Position              = Transform.WorldTransform.Location;
-                        Billboard.Size                  = 0.15f;
+                        Billboard.Size                  = 0.20f;
                         Billboard.EntityID              = entt::to_integral(Entity);
                     }
                 });
@@ -1751,13 +1800,18 @@ namespace Lumina
         }
 
         FLight Light                = {};
-        Light.Flags                 = LIGHT_TYPE_POINT;
+        Light.Flags                 = ELightFlags::Point;
         Light.Falloff               = PointLight.Falloff;
         Light.Color                 = PackColor(glm::vec4(PointLight.LightColor, 1.0));
         Light.Intensity             = PointLight.Intensity;
         Light.Radius                = PointLight.Attenuation;
         Light.Position              = TransformComponent.WorldTransform.Location;
         Light.ShadowDataIndex       = INDEX_NONE;
+        if (PointLight.bVolumetric)
+        {
+            Light.Flags             |= ELightFlags::Volumetric;
+            Light.VolumetricIntensity = PointLight.VolumetricIntensity;
+        }
 
         if (PointLight.bCastShadows && ShouldRequestShadow(Light.Position, Light.Radius))
         {
@@ -1804,7 +1858,7 @@ namespace Lumina
         float OuterCos = glm::cos(glm::radians(OuterDegrees));
 
         FLight Light                = {};
-        Light.Flags                 = LIGHT_TYPE_SPOT;
+        Light.Flags                 = ELightFlags::Spot;
         Light.Position              = TransformComponent.WorldTransform.Location;
         Light.Direction             = glm::normalize(UpdatedForward);
         Light.Falloff               = SpotLight.Falloff;
@@ -1813,6 +1867,11 @@ namespace Lumina
         Light.Radius                = SpotLight.Attenuation;
         Light.Angles                = glm::vec2(InnerCos, OuterCos);
         Light.ShadowDataIndex       = INDEX_NONE;
+        if (SpotLight.bVolumetric)
+        {
+            Light.Flags             |= ELightFlags::Volumetric;
+            Light.VolumetricIntensity = SpotLight.VolumetricIntensity;
+        }
 
         if (SpotLight.bCastShadows && ShouldRequestShadow(Light.Position, Light.Radius))
         {
@@ -2253,12 +2312,17 @@ namespace Lumina
         const float FarClip  = ViewVolume.GetFar();
         
         FLight Light            = {};
-        Light.Flags             = LIGHT_TYPE_DIRECTIONAL;
+        Light.Flags             = ELightFlags::Directional;
         Light.Color             = PackColor(glm::vec4(DirectionalLight.Color, 1.0));
         Light.Intensity         = DirectionalLight.Intensity;
         Light.Direction         = glm::normalize(DirectionalLight.Direction);
         Light.ShadowDataIndex   = INDEX_NONE;
         LightData.SunDirection  = Light.Direction;
+        if (DirectionalLight.bVolumetric)
+        {
+            Light.Flags             |= ELightFlags::Volumetric;
+            Light.VolumetricIntensity = DirectionalLight.VolumetricIntensity;
+        }
 
         // Directional CSM always allocates a shadow slot; the cascade VPs live
         // in FLightShadowData and are looked up by the PS/VS via ShadowDataIndex.
@@ -4344,10 +4408,21 @@ namespace Lumina
         FDepthStencilState DepthState; DepthState
             .DisableDepthWrite()
             .DisableDepthTest();
-        
+
+        FBlendState BlendState; BlendState
+            .Targets[0]
+                .SetBlendEnable(true)
+                .SetSrcBlend(EBlendFactor::SrcAlpha)
+                .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
+                .SetBlendOp(EBlendOp::Add)
+                .SetSrcBlendAlpha(EBlendFactor::One)
+                .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
+                .SetBlendOpAlpha(EBlendOp::Add);
+
         FRenderState RenderState; RenderState
-            .SetDepthStencilState(DepthState);
-        
+            .SetDepthStencilState(DepthState)
+            .SetBlendState(BlendState);
+
         FGraphicsPipelineDesc Desc; Desc
             .SetDebugName("Billboard Pass")
             .SetRenderState(RenderState)
@@ -4534,6 +4609,388 @@ namespace Lumina
         CmdList.Draw(3, 1, 0, 0);
     }
 
+    namespace
+    {
+        // Mirror of VolumetricLighting.slang::FPushConstants. Kept under
+        // the 128-byte Vulkan minimum guarantee.
+        struct FVolumetricLightingPushConstants
+        {
+            uint32   NumSteps;          // Ray-march sample count along the camera ray.
+            float    MaxDistance;       // Hard cap on march length (meters); shorter = cheaper, less far fog.
+            float    Density;           // Participating-media density. Scales overall scattering strength.
+            float    Anisotropy;        // Henyey-Greenstein g in [-1, 1]. Positive = forward scatter (sunbeam look).
+            uint32   ScreenSize[2];
+            float    InvScreenSize[2];
+            float    Time;              // For temporal jitter rotation.
+            float    _Pad0;
+            float    _Pad1;
+            float    _Pad2;
+        };
+        static_assert(sizeof(FVolumetricLightingPushConstants) <= 128,
+            "Volumetric push constants must stay within the 128B Vulkan minimum.");
+    }
+
+    void FForwardRenderScene::VolumetricLightingPass(ICommandList& CmdList)
+    {
+        // Cheap CPU-side early-out: skip the whole pass when no light has the
+        // volumetric flag. The walk over LightData.Lights is O(NumLights) but
+        // NumLights is typically a handful and saves a fullscreen ray-march.
+        bool bAnyVolumetric = false;
+        for (uint32 i = 0; i < LightData.NumLights; ++i)
+        {
+            if (EnumHasAnyFlags(LightData.Lights[i].Flags, ELightFlags::Volumetric))
+            {
+                bAnyVolumetric = true;
+                break;
+            }
+        }
+        if (!bAnyVolumetric)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Volumetric Lighting Pass", tracy::Color::Orange3);
+
+        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
+        FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader("VolumetricLighting.slang");
+        if (!VertexShader || !PixelShader)
+        {
+            return;
+        }
+
+        // Additive blend into HDR. The opaque + transparent scene already lives
+        // there; volumetric scattering is a separable additive term so we just
+        // accumulate on top without disturbing the existing color.
+        FBlendState::RenderTarget Blend0;
+        Blend0.SetBlendEnable(true);
+        Blend0.SetSrcBlend(EBlendFactor::One);
+        Blend0.SetDestBlend(EBlendFactor::One);
+        Blend0.SetBlendOp(EBlendOp::Add);
+        Blend0.SetSrcBlendAlpha(EBlendFactor::One);
+        Blend0.SetDestBlendAlpha(EBlendFactor::One);
+        Blend0.SetBlendOpAlpha(EBlendOp::Add);
+
+        FBlendState BlendState;
+        BlendState.SetRenderTarget(0, Blend0);
+
+        FRenderPassDesc::FAttachment Attachment; Attachment
+            .SetImage(GetNamedImage(ENamedImage::HDR))
+            .SetLoadOp(ERenderLoadOp::Load);
+
+        FRenderPassDesc RenderPass; RenderPass
+            .AddColorAttachment(Attachment)
+            .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+
+        FRasterState RasterState;
+        RasterState.SetCullNone();
+
+        FDepthStencilState DepthState;
+        DepthState.DisableDepthTest();
+        DepthState.DisableDepthWrite();
+
+        FRenderState RenderState;
+        RenderState.SetRasterState(RasterState);
+        RenderState.SetBlendState(BlendState);
+        RenderState.SetDepthStencilState(DepthState);
+
+        // Set 2: scene depth as SRV. The base pass + terrain finished writing
+        // depth before this point, so reading it here picks up every opaque
+        // surface. Transparent fragments don't write depth (WBOIT) so they
+        // don't occlude fog -- desirable for the typical "glass + light shaft"
+        // case.
+        FBindingLayoutDesc DepthLayoutDesc;
+        DepthLayoutDesc.SetBindingIndex(2)
+            .SetVisibility(ERHIShaderType::Fragment)
+            .AddItem(FBindingLayoutItem::Texture_SRV(0));
+        FRHIBindingLayout* DepthLayout = BindingCache.GetOrCreateBindingLayout(DepthLayoutDesc);
+
+        FRHISamplerRef PointClamp = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+        FBindingSetDesc DepthSetDesc;
+        DepthSetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::DepthAttachment), PointClamp));
+        FRHIBindingSetRef DepthSet = GRenderContext->CreateBindingSet(DepthSetDesc, DepthLayout);
+
+        FGraphicsPipelineDesc Desc;
+        Desc.SetDebugName("Volumetric Lighting Pass");
+        Desc.SetRenderState(RenderState);
+        Desc.AddBindingLayout(SceneBindingLayout);
+        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        Desc.AddBindingLayout(DepthLayout);
+        Desc.SetVertexShader(VertexShader);
+        Desc.SetPixelShader(PixelShader);
+
+        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+        FGraphicsState GraphicsState;
+        GraphicsState.AddBindingSet(SceneBindingSet);
+        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        GraphicsState.AddBindingSet(DepthSet);
+        GraphicsState.SetPipeline(Pipeline);
+        GraphicsState.SetRenderPass(RenderPass);
+        GraphicsState.SetViewportState(SceneViewportState);
+
+        CmdList.SetGraphicsState(GraphicsState);
+
+        FRHIImage* HDR = GetNamedImage(ENamedImage::HDR);
+        FVolumetricLightingPushConstants PC = {};
+        PC.NumSteps         = 32;
+        PC.MaxDistance      = 200.0f;
+        PC.Density          = 0.4f;
+        PC.Anisotropy       = 0.6f;
+        PC.ScreenSize[0]    = HDR->GetSizeX();
+        PC.ScreenSize[1]    = HDR->GetSizeY();
+        PC.InvScreenSize[0] = 1.0f / (float)HDR->GetSizeX();
+        PC.InvScreenSize[1] = 1.0f / (float)HDR->GetSizeY();
+        PC.Time             = SceneGlobalData.Time;
+
+        CmdList.SetPushConstants(&PC, sizeof(PC));
+        CmdList.Draw(3, 1, 0, 0);
+    }
+
+    // ----- IBL pipeline tuning constants -----
+    //
+    // Mip count for the GGX-prefiltered specular cube. Roughness for mip M
+    // is M / (NumMips - 1), so 5 mips -> {0.0, 0.25, 0.5, 0.75, 1.0}. Five is
+    // the standard PBR pipeline choice (UE4, filament, learnopengl); fewer
+    // bands the sharpness/roughness transition, more is wasted memory at the
+    // smallest mip where the lobe is already fully blurred.
+    static constexpr uint32 GSkyPrefilterMipCount = 5;
+
+    // GGX prefilter sample count. Karis recommends 1024; 256 is visibly
+    // cleaner than 64 and noticeably noisier than 1024. We pay this cost
+    // every frame the sky is enabled (no dirty tracking yet), so we tilt
+    // toward the lower end and accept some shimmer for now. Irradiance
+    // convolution has its own count baked into the shader because nothing
+    // about it varies per dispatch.
+    static constexpr uint32 GPrefilterSampleCount = 256;
+
+    void FForwardRenderScene::SkyCubeCapturePass(ICommandList& CmdList)
+    {
+        if (!RenderSettings.bHasEnvironment)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Sky Cube Capture", tracy::Color::SkyBlue);
+
+        FRHIImage* SkyCube = GetNamedImage(ENamedImage::SkyCube);
+        if (!SkyCube)
+        {
+            return;
+        }
+
+        FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("SkyCubeCapture.slang");
+        if (!ComputeShader)
+        {
+            return;
+        }
+
+        // Private layout/set: the capture has no scene-data dependency beyond
+        // the sun direction (passed via push constant), so binding through
+        // SceneBindingSet would be unnecessary coupling. The cube is bound as
+        // a Texture2DArray UAV view (6 layers) so the compute writes through
+        // RWTexture2DArray<>; the same image is sampled later through its
+        // TextureCube view by IBL convolution passes.
+        FBindingLayoutDesc LayoutDesc;
+        LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(0));
+        LayoutDesc.AddItem(FBindingLayoutItem::Buffer_CBV(1));
+        LayoutDesc.SetVisibility(ERHIShaderType::Compute);
+        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
+
+        FComputePipelineDesc PipelineDesc;
+        PipelineDesc.AddBindingLayout(Layout);
+        PipelineDesc.CS = ComputeShader;
+        PipelineDesc.DebugName = "Sky Cube Capture";
+        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+        FBindingSetDesc SetDesc;
+        SetDesc.AddItem(FBindingSetItem::TextureUAV(
+            0, SkyCube, SkyCube->GetFormat(),
+            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
+            EImageDimension::Texture2DArray));
+        SetDesc.AddItem(FBindingSetItem::BufferCBV(1, GetNamedBuffer(ENamedBuffer::Environment)));
+        FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
+
+        FComputeState State;
+        State.AddBindingSet(Set);
+        State.SetPipeline(Pipeline);
+        CmdList.SetComputeState(State);
+
+        struct FSkyCapturePC
+        {
+            glm::vec3 SunDirection;
+            float     _Pad0;
+        } PC = {};
+
+        // Same source the EnvironmentPass uses (LightData.SunDirection points
+        // FROM surface TO sun, set up wherever the directional light is
+        // processed). Falls back to a sensible day-time direction if no sun
+        // is present so the cubemap still has structure for IBL.
+        if (LightData.bHasSun)
+        {
+            PC.SunDirection = glm::normalize(LightData.SunDirection);
+        }
+        else
+        {
+            PC.SunDirection = glm::normalize(glm::vec3(0.3f, 0.8f, 0.4f));
+        }
+        CmdList.SetPushConstants(&PC, sizeof(PC));
+
+        constexpr uint32 SkyCaptureTile = 8u;
+        const uint32 FaceSize = SkyCube->GetSizeX();
+        const uint32 GroupsXY = RenderUtils::GetGroupCount(FaceSize, SkyCaptureTile);
+        // Z = 6 layers, one per cube face -- each thread owns one (face, x, y).
+        CmdList.Dispatch(GroupsXY, GroupsXY, 6u);
+    }
+
+    void FForwardRenderScene::IrradianceConvolutionPass(ICommandList& CmdList)
+    {
+        if (!RenderSettings.bHasEnvironment)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Sky Irradiance Convolution", tracy::Color::SkyBlue1);
+
+        FRHIImage* SkyCube      = GetNamedImage(ENamedImage::SkyCube);
+        FRHIImage* IrradianceCube = GetNamedImage(ENamedImage::SkyIrradiance);
+        if (!SkyCube || !IrradianceCube)
+        {
+            return;
+        }
+
+        FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("IrradianceConvolution.slang");
+        if (!ComputeShader)
+        {
+            return;
+        }
+
+        FBindingLayoutDesc LayoutDesc;
+        LayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0));
+        LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(1));
+        LayoutDesc.SetVisibility(ERHIShaderType::Compute);
+        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
+
+        FComputePipelineDesc PipelineDesc;
+        PipelineDesc.AddBindingLayout(Layout);
+        PipelineDesc.CS = ComputeShader;
+        PipelineDesc.DebugName = "Sky Irradiance Convolution";
+        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+        // Linear-clamp cube sampler. Clamp matches Vulkan cubemap edge
+        // sampling rules and avoids any face-edge bleed on the input cube.
+        FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+        FBindingSetDesc SetDesc;
+        // SkyCube is bound as a TextureCube SRV: same image, different view
+        // type from the SkyCubeCapturePass UAV write earlier this frame.
+        // Auto-barriers transition between the two states.
+        SetDesc.AddItem(FBindingSetItem::TextureSRV(
+            0, SkyCube, LinearClamp, SkyCube->GetFormat(),
+            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
+            EImageDimension::TextureCube));
+        SetDesc.AddItem(FBindingSetItem::TextureUAV(
+            1, IrradianceCube, IrradianceCube->GetFormat(),
+            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
+            EImageDimension::Texture2DArray));
+        FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
+
+        FComputeState State;
+        State.AddBindingSet(Set);
+        State.SetPipeline(Pipeline);
+        CmdList.SetComputeState(State);
+
+        constexpr uint32 IrradianceTile = 8u;
+        const uint32 FaceSize = IrradianceCube->GetSizeX();
+        const uint32 GroupsXY = RenderUtils::GetGroupCount(FaceSize, IrradianceTile);
+        CmdList.Dispatch(GroupsXY, GroupsXY, 6u);
+    }
+
+    void FForwardRenderScene::PrefilterEnvMapPass(ICommandList& CmdList)
+    {
+        if (!RenderSettings.bHasEnvironment)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Sky Prefilter Convolution", tracy::Color::SkyBlue2);
+
+        FRHIImage* SkyCube       = GetNamedImage(ENamedImage::SkyCube);
+        FRHIImage* PrefilterCube = GetNamedImage(ENamedImage::SkyPrefilter);
+        if (!SkyCube || !PrefilterCube)
+        {
+            return;
+        }
+
+        FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("PrefilterEnvMap.slang");
+        if (!ComputeShader)
+        {
+            return;
+        }
+
+        FBindingLayoutDesc LayoutDesc;
+        LayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0));
+        LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(1));
+        LayoutDesc.SetVisibility(ERHIShaderType::Compute);
+        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
+
+        FComputePipelineDesc PipelineDesc;
+        PipelineDesc.AddBindingLayout(Layout);
+        PipelineDesc.CS = ComputeShader;
+        PipelineDesc.DebugName = "Sky Prefilter Convolution";
+        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+        FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+        struct FPrefilterPC
+        {
+            float  Roughness;
+            uint32 NumSamples;
+            uint32 _Pad0;
+            uint32 _Pad1;
+        };
+
+        const uint32 NumMips     = (uint32)PrefilterCube->GetDescription().NumMips;
+        const uint32 BaseFaceSize = PrefilterCube->GetSizeX();
+
+        constexpr uint32 PrefilterTile = 8u;
+
+        // One dispatch per mip, each writing through a UAV view of just that
+        // mip. Roughness is uniform across the dispatch (same for every
+        // texel of every face at this mip), threaded in via push constant.
+        for (uint32 Mip = 0; Mip < NumMips; ++Mip)
+        {
+            FBindingSetDesc SetDesc;
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(
+                0, SkyCube, LinearClamp, SkyCube->GetFormat(),
+                FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
+                EImageDimension::TextureCube));
+            SetDesc.AddItem(FBindingSetItem::TextureUAV(
+                1, PrefilterCube, PrefilterCube->GetFormat(),
+                FTextureSubresourceSet(Mip, 1, 0, FTextureSubresourceSet::AllArraySlices),
+                EImageDimension::Texture2DArray));
+            FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
+
+            FComputeState State;
+            State.AddBindingSet(Set);
+            State.SetPipeline(Pipeline);
+            CmdList.SetComputeState(State);
+
+            FPrefilterPC PC = {};
+            // Even spacing of roughness across mips: mip 0 is mirror, last
+            // mip is fully rough. Mapping matches the runtime mip select
+            // SamplePrefilter() will use.
+            PC.Roughness  = (NumMips <= 1u) ? 0.0f
+                                            : (float)Mip / (float)(NumMips - 1u);
+            PC.NumSamples = GPrefilterSampleCount;
+            CmdList.SetPushConstants(&PC, sizeof(PC));
+
+            const uint32 MipFaceSize = eastl::max<uint32>(BaseFaceSize >> Mip, 1u);
+            const uint32 GroupsXY    = RenderUtils::GetGroupCount(MipFaceSize, PrefilterTile);
+            CmdList.Dispatch(GroupsXY, GroupsXY, 6u);
+        }
+    }
+
     void FForwardRenderScene::EnvironmentPass(ICommandList& CmdList)
     {
         if (!RenderSettings.bHasEnvironment)
@@ -4679,12 +5136,280 @@ namespace Lumina
         }
     }
 
-    void FForwardRenderScene::ToneMappingPass(ICommandList& CmdList)
+    namespace
     {
-        LUMINA_PROFILE_SECTION_COLORED("Tone Mapping Pass", tracy::Color::Red2);
+        // Mirror of ColorGrading.slang::FPushConstants. 128 bytes, std430-style
+        // packing: scalar groups are aligned in 16-byte chunks then a run of
+        // float4s. Keep the field order in lockstep with the shader.
+        struct FColorGradingPushConstants
+        {
+            float    Exposure;
+            float    Contrast;
+            float    Saturation;
+            float    Gamma;
+
+            float    WhiteTemp;
+            float    WhiteTint;
+            float    VignetteIntensity;
+            float    VignetteSmoothness;
+
+            float    VignetteRoundness;
+            uint32   TonemapMode;
+            float    Time;
+            float    BloomIntensity;     // 0 disables the bloom composite path in the shader.
+
+            glm::vec4 ColorFilter;
+
+            // The .a slots of Shadows / Midtones / Highlights opportunistically
+            // carry the film-grain knobs so we don't grow the push-constant
+            // block (Vulkan only guarantees 128 B; we are already at 144).
+            //   Shadows.a    = FilmGrainIntensity
+            //   Midtones.a   = FilmGrainSize (cell size in pixels)
+            //   Highlights.a = FilmGrainResponse (shadow bias)
+            glm::vec4 Shadows;
+            glm::vec4 Midtones;
+            glm::vec4 Highlights;
+            glm::vec4 VignetteColor;
+
+            // .rgb = bloom tint, .a = chromatic aberration intensity.
+            glm::vec4 BloomTint;
+        };
+        static_assert(sizeof(FColorGradingPushConstants) == 144,
+            "ColorGrading push constants stay within the 256B push-constant tier.");
+
+        // Build a fully-defaulted constants block (identity grade, AGX tone
+        // mapping). Used when the active camera has no post-process or
+        // grading is globally disabled.
+        FColorGradingPushConstants MakeDefaultColorGrading(float Time)
+        {
+            FColorGradingPushConstants PC{};
+            PC.Exposure           = 1.0f;
+            PC.Contrast           = 1.0f;
+            PC.Saturation         = 1.0f;
+            PC.Gamma              = 1.0f;
+            PC.WhiteTemp          = 0.0f;
+            PC.WhiteTint          = 0.0f;
+            PC.VignetteIntensity  = 0.0f;
+            PC.VignetteSmoothness = 0.5f;
+            PC.VignetteRoundness  = 1.0f;
+            PC.TonemapMode        = (uint32)EToneMapper::AGX;
+            PC.Time               = Time;
+            PC.BloomIntensity     = 0.0f;
+            PC.ColorFilter        = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+            PC.Shadows            = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
+            PC.Midtones           = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
+            PC.Highlights         = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
+            PC.VignetteColor      = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+            PC.BloomTint          = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
+            return PC;
+        }
+
+        FColorGradingPushConstants BuildColorGradingConstants(const SPostProcessSettings* Settings, float Time)
+        {
+            if (Settings == nullptr || !Settings->bEnabled)
+            {
+                return MakeDefaultColorGrading(Time);
+            }
+
+            FColorGradingPushConstants PC{};
+            // ExposureCompensation is in stops; 2^EV gives the linear
+            // multiplier the shader expects.
+            PC.Exposure           = std::exp2(Settings->ExposureCompensation);
+            PC.Contrast           = Settings->Contrast;
+            PC.Saturation         = Settings->Saturation;
+            PC.Gamma              = Settings->Gamma;
+            PC.WhiteTemp          = Settings->Temperature;
+            PC.WhiteTint          = Settings->Tint;
+            PC.VignetteIntensity  = Settings->VignetteIntensity;
+            PC.VignetteSmoothness = Settings->VignetteSmoothness;
+            PC.VignetteRoundness  = Settings->VignetteRoundness;
+            PC.TonemapMode        = (uint32)Settings->ToneMapper;
+            PC.Time               = Time;
+            PC.BloomIntensity     = Settings->BloomIntensity;
+            PC.ColorFilter        = glm::vec4(Settings->ColorFilter, Settings->ColorFilterIntensity);
+            PC.Shadows            = glm::vec4(Settings->Shadows,    Settings->FilmGrainIntensity);
+            PC.Midtones           = glm::vec4(Settings->Midtones,   std::max(Settings->FilmGrainSize, 0.0001f));
+            PC.Highlights         = glm::vec4(Settings->Highlights, Settings->FilmGrainResponse);
+            PC.VignetteColor      = glm::vec4(Settings->VignetteColor, 0.0f);
+            PC.BloomTint          = glm::vec4(Settings->BloomTint, Settings->ChromaticAberration);
+            return PC;
+        }
+    }
+
+    namespace
+    {
+        // Push constants for BloomDownsample.slang. 32 B (well under the
+        // 128B Vulkan minimum) -- a single 16-byte scalar block plus a
+        // 16-byte vec3+pad block.
+        struct FBloomDownPushConstants
+        {
+            glm::vec2 SrcTexelSize;
+            float     Threshold;
+            uint32    bIsPrefilter;
+
+            glm::vec3 KneeCurve;
+            float     _Pad0;
+        };
+        static_assert(sizeof(FBloomDownPushConstants) == 32,
+            "FBloomDownPushConstants must match BloomDownsample.slang::FPushConstants.");
+
+        // Push constants for BloomUpsample.slang. 16 B.
+        struct FBloomUpPushConstants
+        {
+            glm::vec2 SrcTexelSize;
+            float     Radius;
+            float     _Pad0;
+        };
+        static_assert(sizeof(FBloomUpPushConstants) == 16,
+            "FBloomUpPushConstants must match BloomUpsample.slang::FPushConstants.");
+    }
+
+    void FForwardRenderScene::BloomPass(ICommandList& CmdList)
+    {
+        // Cheap early-out. Skipping when bloom is disabled keeps the whole
+        // mip chain off the GPU; the tone map shader's BloomIntensity > 0
+        // branch additionally prevents it from sampling stale uBloom
+        // contents on the very first frame after disable.
+        if (ActivePostProcess == nullptr || !ActivePostProcess->bEnabled || ActivePostProcess->BloomIntensity <= 0.0f)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Bloom Pass", tracy::Color::Yellow3);
 
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("ToneMapping.slang");
+        FRHIPixelShaderRef  DownPS       = FShaderLibrary::GetPixelShader("BloomDownsample.slang");
+        FRHIPixelShaderRef  UpPS         = FShaderLibrary::GetPixelShader("BloomUpsample.slang");
+        if (!VertexShader || !DownPS || !UpPS)
+        {
+            return;
+        }
+
+        FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+        // Set 0, binding 0: the source mip / HDR scene color, sampled with
+        // a linear-clamp combined sampler so the 13-tap downsample picks
+        // up bilinear taps without manual cross-fetching.
+        FBindingLayoutDesc SrcLayoutDesc;
+        SrcLayoutDesc.SetBindingIndex(0)
+            .SetVisibility(ERHIShaderType::Fragment)
+            .AddItem(FBindingLayoutItem::Texture_SRV(0));
+        FRHIBindingLayout* SrcLayout = BindingCache.GetOrCreateBindingLayout(SrcLayoutDesc);
+
+        // Knee maps the SoftKnee 0..1 dial onto an actual knee width in HDR
+        // units. The published Jimenez form uses (Threshold - Knee, 2*Knee,
+        // 0.25 / Knee); precomputing the three terms turns the per-pixel
+        // soft threshold into a single max + saturate + multiply.
+        const float Threshold = ActivePostProcess->BloomThreshold;
+        const float Knee      = ActivePostProcess->BloomSoftKnee * Threshold + 1e-5f;
+        const glm::vec3 KneeCurve(Threshold - Knee, 2.0f * Knee, 0.25f / Knee);
+
+        FRasterState RasterState;
+        RasterState.SetCullNone();
+
+        FDepthStencilState DepthState;
+        DepthState.DisableDepthTest();
+        DepthState.DisableDepthWrite();
+
+        // Additive blend used by the upsample chain. Each upsample writes
+        // its 3x3 tent-filtered contribution on top of the larger mip the
+        // downsample chain already populated, producing the smooth halo.
+        FBlendState::RenderTarget AdditiveTarget;
+        AdditiveTarget.SetBlendEnable(true);
+        AdditiveTarget.SetSrcBlend(EBlendFactor::One);
+        AdditiveTarget.SetDestBlend(EBlendFactor::One);
+        AdditiveTarget.SetBlendOp(EBlendOp::Add);
+        AdditiveTarget.SetSrcBlendAlpha(EBlendFactor::One);
+        AdditiveTarget.SetDestBlendAlpha(EBlendFactor::One);
+        AdditiveTarget.SetBlendOpAlpha(EBlendOp::Add);
+        FBlendState AdditiveBlend;
+        AdditiveBlend.SetRenderTarget(0, AdditiveTarget);
+
+        auto RecordPass = [&](FRHIImage* Src, FRHIImage* Dst, FRHIPixelShader* PixelShader,
+                              const FBlendState* OptionalBlend, const void* PCData, uint32 PCSize,
+                              const char* DebugName)
+        {
+            FRenderPassDesc::FAttachment Attachment;
+            Attachment.SetImage(Dst);
+            if (OptionalBlend != nullptr)
+            {
+                // Additive: preserve the destination so the upsample
+                // accumulates instead of overwriting.
+                Attachment.SetLoadOp(ERenderLoadOp::Load);
+            }
+
+            FRenderPassDesc RenderPass;
+            RenderPass.AddColorAttachment(Attachment).SetRenderArea(Dst->GetExtent());
+
+            FRenderState RenderState;
+            RenderState.SetRasterState(RasterState);
+            RenderState.SetDepthStencilState(DepthState);
+            if (OptionalBlend != nullptr)
+            {
+                RenderState.SetBlendState(*OptionalBlend);
+            }
+
+            FGraphicsPipelineDesc Desc;
+            Desc.SetDebugName(DebugName);
+            Desc.SetRenderState(RenderState);
+            Desc.AddBindingLayout(SrcLayout);
+            Desc.SetVertexShader(VertexShader);
+            Desc.SetPixelShader(PixelShader);
+
+            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+            FBindingSetDesc SetDesc;
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, Src, LinearClamp));
+            FRHIBindingSetRef Set = GRenderContext->CreateBindingSet(SetDesc, SrcLayout);
+
+            FGraphicsState GraphicsState;
+            GraphicsState.AddBindingSet(Set);
+            GraphicsState.SetPipeline(Pipeline);
+            GraphicsState.SetRenderPass(RenderPass);
+            GraphicsState.SetViewportState(MakeViewportStateFromImage(Dst));
+
+            CmdList.SetGraphicsState(GraphicsState);
+            CmdList.SetPushConstants(PCData, PCSize);
+            CmdList.Draw(3, 1, 0, 0);
+        };
+
+        // ---- Downsample chain. HDR -> mip0 (with prefilter), then halve. ----
+        for (uint32 i = 0; i < BLOOM_MIP_COUNT; ++i)
+        {
+            FRHIImage* Src = (i == 0) ? GetNamedImage(ENamedImage::HDR) : (FRHIImage*)BloomMips[i - 1];
+            FRHIImage* Dst = BloomMips[i];
+
+            FBloomDownPushConstants PC = {};
+            PC.SrcTexelSize = glm::vec2(1.0f / (float)Src->GetSizeX(), 1.0f / (float)Src->GetSizeY());
+            PC.Threshold    = Threshold;
+            PC.bIsPrefilter = (i == 0) ? 1u : 0u;
+            PC.KneeCurve    = KneeCurve;
+            PC._Pad0        = 0.0f;
+
+            RecordPass(Src, Dst, DownPS, nullptr, &PC, sizeof(PC), "Bloom Downsample");
+        }
+
+        // ---- Upsample chain. Walk back to mip0, additively blending. ----
+        for (uint32 i = BLOOM_MIP_COUNT - 1; i > 0; --i)
+        {
+            FRHIImage* Src = BloomMips[i];
+            FRHIImage* Dst = BloomMips[i - 1];
+
+            FBloomUpPushConstants PC = {};
+            PC.SrcTexelSize = glm::vec2(1.0f / (float)Src->GetSizeX(), 1.0f / (float)Src->GetSizeY());
+            PC.Radius       = 1.0f;
+            PC._Pad0        = 0.0f;
+
+            RecordPass(Src, Dst, UpPS, &AdditiveBlend, &PC, sizeof(PC), "Bloom Upsample");
+        }
+    }
+
+    void FForwardRenderScene::ToneMappingPass(ICommandList& CmdList)
+    {
+        LUMINA_PROFILE_SECTION_COLORED("Color Grading + Tone Map Pass", tracy::Color::Red2);
+
+        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
+        FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("ColorGrading.slang");
         if (!VertexShader || !PixelShader)
         {
             return;
@@ -4735,10 +5460,8 @@ namespace Lumina
 
         CmdList.SetGraphicsState(GraphicsState);
 
-        glm::vec2 PC;
-        PC.x = 1.0;
-        PC.y = SceneGlobalData.Time;
-        CmdList.SetPushConstants(&PC, sizeof(glm::vec2));
+        FColorGradingPushConstants PC = BuildColorGradingConstants(ActivePostProcess, SceneGlobalData.Time);
+        CmdList.SetPushConstants(&PC, sizeof(PC));
         CmdList.Draw(3, 1, 0, 0);
     }
 
@@ -5299,7 +6022,177 @@ namespace Lumina
         }
         
         //==================================================================================================
-        
+
+        {
+            // Bloom mip chain. Half-resolution start, each subsequent mip
+            // half again. R11G11B10_FLOAT keeps the chain at 4 B/texel
+            // without losing meaningful HDR precision -- bloom is always
+            // additive on top of the scene so a tiny channel quantization
+            // is visually undetectable, and the negative-value clamp is
+            // fine because the prefilter already throws away anything
+            // below threshold.
+            uint32 W = eastl::max<uint32>(Extent.x / 2u, 1u);
+            uint32 H = eastl::max<uint32>(Extent.y / 2u, 1u);
+            for (uint32 i = 0; i < BLOOM_MIP_COUNT; ++i)
+            {
+                FRHIImageDesc ImageDesc;
+                ImageDesc.Extent            = glm::uvec2(W, H);
+                ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
+                ImageDesc.Dimension         = EImageDimension::Texture2D;
+                ImageDesc.NumMips           = 1;
+                ImageDesc.InitialState      = EResourceStates::ShaderResource;
+                ImageDesc.bKeepInitialState = true;
+                ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
+
+                FString Name = "Bloom Mip ";
+                Name.append_sprintf("%u", i);
+                ImageDesc.DebugName = Name.c_str();
+
+                BloomMips[i] = GRenderContext->CreateImage(ImageDesc);
+
+                W = eastl::max<uint32>(W / 2u, 1u);
+                H = eastl::max<uint32>(H / 2u, 1u);
+            }
+        }
+
+        //==================================================================================================
+
+    }
+
+    void FForwardRenderScene::InitBRDFLUT()
+    {
+        // 256x256 RG16_FLOAT is the standard size for Karis 2013 split-sum.
+        // R holds the F0 scale, G holds the F0 bias. RG16 is plenty -- the
+        // integrand is smooth and saturates inside [0, 1] over the whole
+        // (NdotV, Roughness) plane, so 16-bit half precision is invisible
+        // against per-frame noise from the rest of the pipeline.
+        constexpr uint32 BRDFLutSize = 256u;
+
+        FRHIImageDesc ImageDesc;
+        ImageDesc.Extent            = glm::uvec2(BRDFLutSize, BRDFLutSize);
+        ImageDesc.Format            = EFormat::RG16_FLOAT;
+        ImageDesc.Dimension         = EImageDimension::Texture2D;
+        ImageDesc.NumMips           = 1;
+        // Bake transitions us to ShaderResource at the end of the pass; from
+        // then on the LUT is read-only for the life of the scene.
+        ImageDesc.InitialState      = EResourceStates::ShaderResource;
+        ImageDesc.bKeepInitialState = true;
+        ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage);
+        ImageDesc.DebugName         = "BRDF LUT";
+
+        FRHIImageRef BRDFLut = GRenderContext->CreateImage(ImageDesc);
+        NamedImages[(int)ENamedImage::BRDFLut] = BRDFLut;
+
+        // Private layout/set for the bake -- the integrand uses no scene data,
+        // so binding it through SceneBindingSet would force CreateLayouts() to
+        // run (and reference an empty NamedImages slot) before this function
+        // runs. Standalone is the cleanest order.
+        FBindingLayoutDesc LayoutDesc;
+        LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(0));
+        LayoutDesc.SetVisibility(ERHIShaderType::Compute);
+        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
+
+        FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("BRDFIntegration.slang");
+
+        FComputePipelineDesc PipelineDesc;
+        PipelineDesc.AddBindingLayout(Layout);
+        PipelineDesc.CS = ComputeShader;
+        PipelineDesc.DebugName = "BRDF Integration";
+        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+        FBindingSetDesc SetDesc;
+        SetDesc.AddItem(FBindingSetItem::TextureUAV(0, BRDFLut, BRDFLut->GetFormat()));
+        FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
+
+        FRHICommandListRef CmdList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
+        CmdList->Open();
+
+        FComputeState State;
+        State.AddBindingSet(Set);
+        State.SetPipeline(Pipeline);
+        CmdList->SetComputeState(State);
+
+        // Tile size matches numthreads in BRDFIntegration.slang.
+        constexpr uint32 BRDFLutTile = 8u;
+        const uint32 GroupsX = RenderUtils::GetGroupCount(BRDFLutSize, BRDFLutTile);
+        const uint32 GroupsY = RenderUtils::GetGroupCount(BRDFLutSize, BRDFLutTile);
+        CmdList->Dispatch(GroupsX, GroupsY, 1);
+
+        CmdList->Close();
+        GRenderContext->ExecuteCommandList(CmdList);
+    }
+
+    void FForwardRenderScene::InitSkyCube()
+    {
+        // 256 per face is enough for IBL: the irradiance / prefilter passes
+        // are heavy convolutions and prefer low-variance HDR input, not high
+        // resolution. R11G11B10_FLOAT is 4 B/texel and matches what every
+        // other HDR-color path in the engine uses; the BC6H route would
+        // require offline encoding we don't need yet.
+        constexpr uint32 SkyCubeFaceSize = 256u;
+
+        FRHIImageDesc ImageDesc;
+        ImageDesc.Extent            = glm::uvec2(SkyCubeFaceSize, SkyCubeFaceSize);
+        ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
+        ImageDesc.Dimension         = EImageDimension::TextureCube;
+        ImageDesc.ArraySize         = 6;
+        ImageDesc.NumMips           = 1;
+        // The capture pass alternates the cube between UAV (write) and SRV
+        // (sample by IBL passes), so let the auto-barrier system track it.
+        ImageDesc.InitialState      = EResourceStates::ShaderResource;
+        ImageDesc.bKeepInitialState = true;
+        // CubeCompatible is required for the SamplerCube SRV view downstream.
+        // Vulkan does not derive VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT from
+        // Dimension::TextureCube alone -- the flag must be set explicitly or
+        // the cube view is undefined behavior (driver-dependent black/garbage).
+        ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage, EImageCreateFlags::CubeCompatible);
+        ImageDesc.DebugName         = "Sky Cube";
+
+        NamedImages[(int)ENamedImage::SkyCube] = GRenderContext->CreateImage(ImageDesc);
+    }
+
+    void FForwardRenderScene::InitIBLConvolutionTargets()
+    {
+        // Diffuse irradiance: very low frequency, 32 per face is the
+        // textbook size and indistinguishable from larger captures because
+        // the cos-weighted hemispherical integration smears everything.
+        {
+            constexpr uint32 IrradianceFaceSize = 32u;
+
+            FRHIImageDesc ImageDesc;
+            ImageDesc.Extent            = glm::uvec2(IrradianceFaceSize, IrradianceFaceSize);
+            ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
+            ImageDesc.Dimension         = EImageDimension::TextureCube;
+            ImageDesc.ArraySize         = 6;
+            ImageDesc.NumMips           = 1;
+            ImageDesc.InitialState      = EResourceStates::ShaderResource;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage, EImageCreateFlags::CubeCompatible);
+            ImageDesc.DebugName         = "Sky Irradiance";
+
+            NamedImages[(int)ENamedImage::SkyIrradiance] = GRenderContext->CreateImage(ImageDesc);
+        }
+
+        // Pre-filtered specular: 128 base size with 5 mips ({128, 64, 32,
+        // 16, 8}). The smallest mip corresponds to fully rough surfaces;
+        // the GGX lobe at roughness=1 is so wide that 8 per face is more
+        // than enough resolution.
+        {
+            constexpr uint32 PrefilterFaceSize = 128u;
+
+            FRHIImageDesc ImageDesc;
+            ImageDesc.Extent            = glm::uvec2(PrefilterFaceSize, PrefilterFaceSize);
+            ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
+            ImageDesc.Dimension         = EImageDimension::TextureCube;
+            ImageDesc.ArraySize         = 6;
+            ImageDesc.NumMips           = (uint8)GSkyPrefilterMipCount;
+            ImageDesc.InitialState      = EResourceStates::ShaderResource;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage, EImageCreateFlags::CubeCompatible);
+            ImageDesc.DebugName         = "Sky Prefilter";
+
+            NamedImages[(int)ENamedImage::SkyPrefilter] = GRenderContext->CreateImage(ImageDesc);
+        }
     }
 
     void FForwardRenderScene::InitFrameResources()
@@ -5375,15 +6268,42 @@ namespace Lumina
             // Y = NumInstances) layout produced.
             BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(16, GetNamedBuffer(ENamedBuffer::InstanceMeshletPrefix)));
 
+            // Pre-integrated BRDF LUT (Karis 2013 split-sum). Linear-clamp:
+            // the texel grid is sampled by (NdotV, Roughness) -- both in [0,1]
+            // -- and the table is smooth, so bilinear filtering is the right
+            // reconstruction filter and clamp matches the half-texel offsets
+            // baked into the LUT (so edge fetches read the boundary samples
+            // rather than wrapping or extrapolating).
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(17, GetNamedImage(ENamedImage::BRDFLut),
+                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI()));
+
+            // IBL cubemaps. Linear-clamp: the convolutions store smooth HDR
+            // values and the prefilter has a real mip chain we want filtered
+            // across (the consumer picks a mip from Roughness, but bilinear
+            // between adjacent mips smooths the roughness-step transitions).
+            FRHISamplerRef IBLCubeSampler = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(18, GetNamedImage(ENamedImage::SkyIrradiance), IBLCubeSampler,
+                EFormat::UNKNOWN, AllSubresources, EImageDimension::TextureCube));
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(19, GetNamedImage(ENamedImage::SkyPrefilter),  IBLCubeSampler,
+                EFormat::UNKNOWN, AllSubresources, EImageDimension::TextureCube));
+
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
             GRenderContext->CreateBindingSetAndLayout(Visibility, 0, BindingSetDesc, SceneBindingLayout, SceneBindingSet);
         }
 
-        // Standalone set-0 layout for ToneMapping (uHDRSceneColor at binding 0).
+        // Standalone set-2 layout for ToneMapping. Binds:
+        //   0 -- HDR scene color (input to grading + chromatic aberration)
+        //   1 -- Bloom mip 0 (output of the bloom upsample chain)
+        // Linear-clamp samplers on both: chromatic aberration offsets the
+        // HDR sample by a fraction of a UV so it must filter, and the
+        // bloom composite reads the largest mip at a different resolution.
         {
+            FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
             FBindingSetDesc ComposeSetDesc;
-            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::HDR)));
+            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::HDR), LinearClamp));
+            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(1, BloomMips[0], LinearClamp));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Fragment);

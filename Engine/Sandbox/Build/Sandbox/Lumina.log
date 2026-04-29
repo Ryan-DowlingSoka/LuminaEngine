@@ -1,61 +1,89 @@
-[2026-04-27 11:49:49.661] [trace] ------- Log Initialized -------
-[2026-04-27 11:49:49.663] [trace] Initializing Lumina
-[2026-04-27 11:49:49.724] [trace] Initializing Window: Lumina (Width: 3540p Height: 1860p)
-[2026-04-27 11:49:50.092] [trace] Vulkan Render Context - NVIDIA GeForce RTX 4080 SUPER - API: 1.4.325 - Validation: false
-[2026-04-27 11:49:50.092] [trace] Creating Vulkan Swapchain - Format VK_FORMAT_B8G8R8A8_UNORM - Width: 3540 - Height: 1860
-[2026-04-27 11:49:50.150] [info] Starting Shader Task Swarm - Num: 25
-[2026-04-27 11:49:50.234] [trace] Compiled BillboardPixel.slang in 84.71 ms (Thread 29)
-[2026-04-27 11:49:50.282] [trace] Compiled BillboardVert.slang in 132.33 ms (Thread 29)
-[2026-04-27 11:49:50.335] [trace] Compiled ClusterBuild.slang in 185.41 ms (Thread 29)
-[2026-04-27 11:49:50.468] [trace] Compiled CullMeshlets.slang in 317.92 ms (Thread 29)
-[2026-04-27 11:49:50.529] [trace] Compiled DepthPrePass.slang in 378.92 ms (Thread 29)
-[2026-04-27 11:49:50.615] [trace] Compiled DepthPyramidSPD.slang in 465.25 ms (Thread 29)
-[2026-04-27 11:49:50.692] [trace] Compiled Environment.slang in 542.42 ms (Thread 29)
-[2026-04-27 11:49:50.702] [trace] Compiled FullscreenQuad.slang in 552.12 ms (Thread 29)
-[2026-04-27 11:49:50.753] [trace] Compiled LightCull.slang in 603.29 ms (Thread 29)
-[2026-04-27 11:49:50.783] [trace] Compiled OITResolve.slang in 633.42 ms (Thread 29)
-[2026-04-27 11:49:50.820] [trace] Compiled ParticlePixel.slang in 670.27 ms (Thread 29)
-[2026-04-27 11:49:50.908] [trace] Compiled ParticleSimulate.slang in 758.64 ms (Thread 29)
-[2026-04-27 11:49:50.954] [trace] Compiled ParticleVertex.slang in 804.01 ms (Thread 29)
-[2026-04-27 11:49:50.962] [trace] Compiled RmlUiPixel.slang in 812.45 ms (Thread 29)
-[2026-04-27 11:49:50.971] [trace] Compiled RmlUiVert.slang in 821.60 ms (Thread 29)
-[2026-04-27 11:49:51.000] [trace] Compiled ShadowMappingPixel.slang in 850.25 ms (Thread 29)
-[2026-04-27 11:49:51.052] [trace] Compiled ShadowMappingVert.slang in 902.78 ms (Thread 29)
-[2026-04-27 11:49:51.083] [trace] Compiled SimpleElementPixel.slang in 933.06 ms (Thread 29)
-[2026-04-27 11:49:51.117] [trace] Compiled SimpleElementVertex.slang in 966.91 ms (Thread 29)
-[2026-04-27 11:49:51.196] [trace] Compiled SMAABlendWeight.slang in 1045.99 ms (Thread 29)
-[2026-04-27 11:49:51.223] [trace] Compiled SMAAEdgeDetection.slang in 1073.55 ms (Thread 29)
-[2026-04-27 11:49:51.251] [trace] Compiled SMAANeighborhoodBlend.slang in 1101.28 ms (Thread 29)
-[2026-04-27 11:49:51.304] [trace] Compiled TerrainCull.slang in 1154.82 ms (Thread 29)
-[2026-04-27 11:49:51.324] [trace] Compiled TerrainNormalCompute.slang in 1174.19 ms (Thread 29)
-[2026-04-27 11:49:51.356] [trace] Compiled ToneMapping.slang in 1206.89 ms (Thread 29)
-[2026-04-27 11:49:51.533] [trace] Compiled raw shader in 175.74 ms (Thread 29)
-[2026-04-27 11:49:51.601] [trace] Compiled raw shader in 65.27 ms (Thread 24)
-[2026-04-27 11:49:51.739] [trace] Compiled raw shader in 136.19 ms (Thread 24)
-[2026-04-27 11:49:51.802] [trace] Compiled raw shader in 61.69 ms (Thread 3)
-[2026-04-27 11:49:51.809] [info] FPakArchive: loaded 'H:/LuminaEngine/Engine/Sandbox/Build/Sandbox/Sandbox.pak' (10 entries, 9895872 bytes)
-[2026-04-27 11:49:51.810] [info] FEngine::LoadCookedRuntime: mounted PAK at '/Game'
-[2026-04-27 11:49:51.810] [info] FEngine::LoadCookedRuntime: mounted PAK at '/Config'
-[2026-04-27 11:49:51.811] [info] Asset Registry Finished Initial Discovery: Num [2]
-[2026-04-27 11:49:51.811] [info] FEngine::LoadCookedRuntime: asset discovery complete.
-[2026-04-27 11:49:51.812] [error] Lua - Failed to read script file: /Game/Scripts/SandboxModule.luau
-[2026-04-27 11:49:51.812] [info] Sandbox Startup Module
-[2026-04-27 11:49:51.812] [info] [Module Manager] - Successfully loaded module Sandbox-Shipping
-[2026-04-27 11:49:51.813] [info] Loaded Package: "/Game/Content/NewWorld" - ( [1] Exports | [1] Imports | [275070] Bytes | [0ms] ms)
-[2026-04-27 11:49:51.815] [info] Loaded Package: "/Game/Content/Sponza" - ( [1] Exports | [0] Imports | [9587645] Bytes | [1ms] ms)
-[2026-04-27 11:49:51.829] [trace] Initializing Forward Render Scene
-[2026-04-27 11:49:51.832] [warning] [RmlUi] UI.LoadDocument('/Engine/Resources/UI/Documents/TestWidget.rml') has no active world context yet.
-[2026-04-27 11:49:51.833] [info] [Lua] - [UI] Failed to load /Engine/Resources/UI/Documents/TestWidget.rml
-[2026-04-27 11:49:51.833] [info] Starting Shader Task Swarm - Num: 1
-[2026-04-27 11:49:51.843] [trace] Compiled RmlUiVert in 9.55 ms (Thread 3)
-[2026-04-27 11:49:51.843] [info] Starting Shader Task Swarm - Num: 1
-[2026-04-27 11:49:51.851] [trace] Compiled RmlUiPixel in 8.36 ms (Thread 28)
-[2026-04-27 11:49:51.867] [info] [RmlUi] Loaded font face 'LatoLatin' [regular] from '/Engine/Resources/UI/Fonts/LatoLatin-Regular.ttf'.
-[2026-04-27 11:49:51.867] [info] [RmlUi] Initialised. Per-world contexts will be created as worlds come up.
-[2026-04-27 11:49:51.875] [info] Starting Shader Task Swarm - Num: 1
-[2026-04-27 11:49:51.937] [trace] Compiled ShadowMappingVert.slang in 61.40 ms (Thread 25)
-[2026-04-27 11:50:36.874] [trace] Shutting down Lumina
-[2026-04-27 11:50:36.875] [trace] Shutting down Forward Render Scene
-[2026-04-27 11:50:36.941] [info] Sandbox Shutdown Module
-[2026-04-27 11:50:36.941] [info] [Module Manager] - Successfully un-loaded module Sandbox-Shipping
-[2026-04-27 11:50:36.941] [trace] ------- Log Shutdown -------
+[2026-04-28 21:04:57.135] [trace] ------- Log Initialized -------
+[2026-04-28 21:04:57.137] [trace] Initializing Lumina
+[2026-04-28 21:04:57.224] [trace] Initializing Window: Lumina (Width: 3540p Height: 1860p)
+[2026-04-28 21:04:57.643] [trace] Vulkan Render Context - NVIDIA GeForce RTX 4080 SUPER - API: 1.4.325 - Validation: false
+[2026-04-28 21:04:57.643] [trace] Creating Vulkan Swapchain - Format VK_FORMAT_B8G8R8A8_UNORM - Width: 3540 - Height: 1860
+[2026-04-28 21:04:57.723] [info] Starting Shader Task Swarm - Num: 29
+[2026-04-28 21:04:57.829] [trace] Compiled BillboardPixel.slang in 105.70 ms (Thread 30)
+[2026-04-28 21:04:57.875] [trace] Compiled BillboardVert.slang in 151.34 ms (Thread 30)
+[2026-04-28 21:04:57.898] [trace] Compiled BloomDownsample.slang in 175.07 ms (Thread 30)
+[2026-04-28 21:04:57.909] [trace] Compiled BloomUpsample.slang in 185.41 ms (Thread 30)
+[2026-04-28 21:04:57.959] [trace] Compiled ClusterBuild.slang in 236.03 ms (Thread 30)
+[2026-04-28 21:04:58.034] [trace] Compiled ColorGrading.slang in 310.35 ms (Thread 30)
+[2026-04-28 21:04:58.167] [trace] Compiled CullMeshlets.slang in 443.32 ms (Thread 30)
+[2026-04-28 21:04:58.227] [trace] Compiled DepthPrePass.slang in 503.74 ms (Thread 30)
+[2026-04-28 21:04:58.313] [trace] Compiled DepthPyramidSPD.slang in 589.60 ms (Thread 30)
+[2026-04-28 21:04:58.384] [trace] Compiled Environment.slang in 660.27 ms (Thread 30)
+[2026-04-28 21:04:58.394] [trace] Compiled FullscreenQuad.slang in 670.41 ms (Thread 30)
+[2026-04-28 21:04:58.448] [trace] Compiled LightCull.slang in 724.15 ms (Thread 30)
+[2026-04-28 21:04:58.478] [trace] Compiled OITResolve.slang in 754.71 ms (Thread 30)
+[2026-04-28 21:04:58.517] [trace] Compiled ParticlePixel.slang in 793.70 ms (Thread 30)
+[2026-04-28 21:04:58.596] [trace] Compiled ParticleSimulate.slang in 872.47 ms (Thread 30)
+[2026-04-28 21:04:58.640] [trace] Compiled ParticleVertex.slang in 917.11 ms (Thread 30)
+[2026-04-28 21:04:58.649] [trace] Compiled RmlUiPixel.slang in 925.62 ms (Thread 30)
+[2026-04-28 21:04:58.657] [trace] Compiled RmlUiVert.slang in 933.86 ms (Thread 30)
+[2026-04-28 21:04:58.687] [trace] Compiled ShadowMappingPixel.slang in 963.46 ms (Thread 30)
+[2026-04-28 21:04:58.739] [trace] Compiled ShadowMappingVert.slang in 1015.57 ms (Thread 30)
+[2026-04-28 21:04:58.769] [trace] Compiled SimpleElementPixel.slang in 1045.95 ms (Thread 30)
+[2026-04-28 21:04:58.803] [trace] Compiled SimpleElementVertex.slang in 1079.86 ms (Thread 30)
+[2026-04-28 21:04:58.879] [trace] Compiled SMAABlendWeight.slang in 1156.09 ms (Thread 30)
+[2026-04-28 21:04:58.907] [trace] Compiled SMAAEdgeDetection.slang in 1183.47 ms (Thread 30)
+[2026-04-28 21:04:58.934] [trace] Compiled SMAANeighborhoodBlend.slang in 1210.66 ms (Thread 30)
+[2026-04-28 21:04:58.986] [trace] Compiled TerrainCull.slang in 1262.99 ms (Thread 30)
+[2026-04-28 21:04:59.006] [trace] Compiled TerrainNormalCompute.slang in 1282.30 ms (Thread 30)
+[2026-04-28 21:04:59.036] [trace] Compiled ToneMapping.slang in 1312.70 ms (Thread 30)
+[2026-04-28 21:04:59.123] [trace] Compiled VolumetricLighting.slang in 1399.24 ms (Thread 30)
+[2026-04-28 21:04:59.291] [trace] Compiled raw shader in 167.04 ms (Thread 30)
+[2026-04-28 21:04:59.358] [trace] Compiled raw shader in 64.94 ms (Thread 17)
+[2026-04-28 21:04:59.469] [trace] Compiled raw shader in 108.67 ms (Thread 17)
+[2026-04-28 21:04:59.524] [trace] Compiled raw shader in 53.86 ms (Thread 9)
+[2026-04-28 21:04:59.526] [info] Starting Shader Task Swarm - Num: 1
+[2026-04-28 21:04:59.535] [trace] Compiled RmlUiVert in 8.49 ms (Thread 9)
+[2026-04-28 21:04:59.535] [info] Starting Shader Task Swarm - Num: 1
+[2026-04-28 21:04:59.542] [trace] Compiled RmlUiPixel in 7.28 ms (Thread 9)
+[2026-04-28 21:04:59.543] [info] [RmlUi] Loaded font face 'LatoLatin' [regular] from '/Engine/Resources/UI/Fonts/LatoLatin-Regular.ttf'.
+[2026-04-28 21:04:59.543] [info] [RmlUi] Initialised. Per-world contexts will be created as worlds come up.
+[2026-04-28 21:04:59.544] [info] FPakArchive: loaded 'H:/LuminaEngine/Engine/Sandbox/Build/Sandbox/Sandbox.pak' (13 entries, 582322 bytes)
+[2026-04-28 21:04:59.544] [info] FEngine::LoadCookedRuntime: mounted PAK at '/Game'
+[2026-04-28 21:04:59.544] [info] FEngine::LoadCookedRuntime: mounted PAK at '/Config'
+[2026-04-28 21:04:59.544] [info] Asset Registry Finished Initial Discovery: Num [2]
+[2026-04-28 21:04:59.544] [info] FEngine::LoadCookedRuntime: asset discovery complete.
+[2026-04-28 21:04:59.544] [error] Lua - Failed to read script file: /Game/Scripts/SandboxModule.luau
+[2026-04-28 21:04:59.544] [info] [InputActions] Loaded 7 actions.
+[2026-04-28 21:04:59.545] [info] Sandbox Startup Module
+[2026-04-28 21:04:59.545] [info] [Module Manager] - Successfully loaded module Sandbox-Shipping
+[2026-04-28 21:04:59.545] [info] Loaded Package: "/Game/NewWorld" - ( [1] Exports | [1] Imports | [278618] Bytes | [0ms] ms)
+[2026-04-28 21:04:59.545] [info] Loaded Package: "/Game/Cube" - ( [1] Exports | [0] Imports | [263504] Bytes | [0ms] ms)
+[2026-04-28 21:04:59.545] [info] [RmlUi] Loaded font face 'rmlui-debugger-font' [regular] from 'memory'.
+[2026-04-28 21:04:59.546] [info] [RmlUi] Loaded font face 'rmlui-debugger-font' [italic] from 'memory'.
+[2026-04-28 21:04:59.546] [info] [RmlUi] Created context 'world_00000251EA4B5880' for world 0x251ea4b5880 (initial 1280x720).
+[2026-04-28 21:04:59.548] [trace] Initializing Forward Render Scene
+[2026-04-28 21:04:59.552] [info] [Input] Mode -> Game
+[2026-04-28 21:04:59.568] [info] Starting Shader Task Swarm - Num: 1
+[2026-04-28 21:04:59.622] [trace] Compiled ShadowMappingVert.slang in 53.73 ms (Thread 8)
+[2026-04-28 21:05:05.446] [info] [RmlUi] Loaded '/Game/TestWidget.rml' (doc box 3540x1860, context 3540x1860).
+[2026-04-28 21:05:05.446] [info] [Input] Mode -> UI
+[2026-04-28 21:05:07.611] [info] [Input] Mode -> Game
+[2026-04-28 21:05:07.611] [info] [Lua] - [UI] Menu closed; input mode -> Game
+[2026-04-28 21:05:11.022] [info] [RmlUi] Loaded '/Game/TestWidget.rml' (doc box 3540x1860, context 3540x1860).
+[2026-04-28 21:05:11.022] [info] [Input] Mode -> UI
+[2026-04-28 21:05:17.600] [info] [RmlUi] Debugger shown.
+[2026-04-28 21:05:23.242] [info] [Input] Mode -> Game
+[2026-04-28 21:05:23.242] [info] [Lua] - [UI] Menu closed; input mode -> Game
+[2026-04-28 21:05:24.602] [info] [RmlUi] Loaded '/Game/TestWidget.rml' (doc box 3540x1860, context 3540x1860).
+[2026-04-28 21:05:24.602] [info] [Input] Mode -> UI
+[2026-04-28 21:05:25.458] [error] [Lua] - Invoke Failed [string "NewScript.luau"]:0: attempt to call a nil value
+[2026-04-28 21:05:27.170] [info] [Input] Mode -> Game
+[2026-04-28 21:05:27.170] [info] [Lua] - [UI] Menu closed; input mode -> Game
+[2026-04-28 21:05:31.971] [info] [RmlUi] Loaded '/Game/TestWidget.rml' (doc box 3540x1860, context 3540x1860).
+[2026-04-28 21:05:31.971] [info] [Input] Mode -> UI
+[2026-04-28 21:05:32.889] [info] [RmlUi] Debugger hidden.
+[2026-04-28 21:05:34.727] [info] [Input] Mode -> Game
+[2026-04-28 21:05:34.727] [info] [Lua] - [UI] Menu closed; input mode -> Game
+[2026-04-28 21:05:48.696] [info] [RmlUi] Loaded '/Game/TestWidget.rml' (doc box 3540x1860, context 3540x1860).
+[2026-04-28 21:05:48.696] [info] [Input] Mode -> UI
+[2026-04-28 21:05:50.086] [trace] Shutting down Lumina
+[2026-04-28 21:05:50.088] [trace] Shutting down Forward Render Scene
+[2026-04-28 21:05:50.158] [info] Sandbox Shutdown Module
+[2026-04-28 21:05:50.158] [info] [Module Manager] - Successfully un-loaded module Sandbox-Shipping
+[2026-04-28 21:05:50.158] [trace] ------- Log Shutdown -------

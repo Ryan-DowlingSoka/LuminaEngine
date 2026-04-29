@@ -116,11 +116,7 @@ namespace Lumina
         
         CreateToolWindow("Details", [&] (bool bFocused)
         {
-            entt::entity LastSelected = GetLastSelectedEntity();
-            if (World->GetEntityRegistry().valid(LastSelected))
-            {
-                DrawEntityEditor(bFocused, LastSelected);
-            }
+            DrawEntityEditor(bFocused, LastSelectedEntity);
         });
         
         bGuizmoSnapEnabled  = GConfig->Get("Editor.WorldEditorTool.GuizmoSnapEnabled", true);
@@ -249,27 +245,30 @@ namespace Lumina
         
         OutlinerContext.ItemSelectedFunction = [this](FTreeListView& Tree, FTreeNodeID Item, bool bShouldClear)
         {
-            if (bShouldClear)
-            {
-                ClearSelectedEntities();
-            }
-
+            // bShouldClear == true means a plain click (no Ctrl): replace the whole selection.
+            // bShouldClear == false is the Ctrl-click path: toggle this entity in/out without
+            // disturbing the others. The tree widget never writes bSelected for these rows
+            // itself; SetSingleSelectedEntity / ToggleSelectedEntity below handle it so the
+            // canonical set, registry tags, and outliner stay consistent in one place.
             if (!Item.IsValid())
             {
+                if (bShouldClear)
+                {
+                    ClearSelectedEntities();
+                }
                 return;
             }
 
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
-            
-            if (World->GetEntityRegistry().any_of<FSelectedInEditorComponent>(Data.Entity))
+
+            if (bShouldClear)
             {
-                // Already selected.
-                return;
+                SetSingleSelectedEntity(Data.Entity);
             }
-            
-            AddSelectedEntity(Data.Entity, false);
-            
-            RebuildPropertyTables(Data.Entity);
+            else
+            {
+                ToggleSelectedEntity(Data.Entity);
+            }
         };
 
         OutlinerContext.DragDropFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
@@ -364,16 +363,32 @@ namespace Lumina
             bool bCopyPressed = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_C);
             bool bDuplicatePressed = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_D);
             bool bDeletePressed = ImGui::IsKeyPressed(ImGuiKey_Delete);
-    
+
             if (bCopyPressed)
             {
                 ClearCopies();
             }
-    
-            View.each([&](entt::entity SelectedEntity)
+
+            // Snapshot the selection before mutating: duplicate and delete both walk the same
+            // set, so iterating the view directly while emitting new entities (or destroying
+            // current ones) would invalidate iterators or trip the "iterator overtook end"
+            // assertion. Capture once, then act.
+            TFixedVector<entt::entity, 64> CurrentSelection;
+            CurrentSelection.reserve(SelectedEntities.size());
+            for (entt::entity Selected : SelectedEntities)
+            {
+                if (World->GetEntityRegistry().valid(Selected))
+                {
+                    CurrentSelection.push_back(Selected);
+                }
+            }
+
+            TFixedVector<entt::entity, 64> NewlyDuplicated;
+
+            for (entt::entity SelectedEntity : CurrentSelection)
             {
                 World->GetEntityRegistry().emplace_or_replace<FNeedsTransformUpdate>(SelectedEntity);
-                
+
                 const bool bLocked = IsLockedPrefabChild(World->GetEntityRegistry(), SelectedEntity);
 
                 if (bCopyPressed)
@@ -385,56 +400,141 @@ namespace Lumina
                 {
                     entt::entity New = entt::null;
                     CopyEntity(New, SelectedEntity);
+                    if (New != entt::null)
+                    {
+                        NewlyDuplicated.push_back(New);
+                    }
                 }
 
                 if (bDeletePressed && !bLocked)
                 {
-                    World->DestroyEntity(SelectedEntity);
-                    // OutlinerListView is updated via OnOutlinerEntityDestroyed.
+                    EntityDestroyRequests.push(SelectedEntity);
+                    // Selection is cleaned up via OnEntityDestroyed when the destroy lands.
                 }
-            });
+            }
+
+            // Replace the selection with the duplicates so the user can immediately keep
+            // moving them (Ctrl+D → Ctrl+D feels right when the new copies are selected).
+            if (bDuplicatePressed && !NewlyDuplicated.empty())
+            {
+                ClearSelectedEntities();
+                for (entt::entity New : NewlyDuplicated)
+                {
+                    AddSelectedEntity(New, false);
+                }
+            }
         }
         else
         {
-            View.each([&](entt::entity SelectedEntity)
+            for (entt::entity Selected : SelectedEntities)
             {
-                World->GetEntityRegistry().emplace_or_replace<FNeedsTransformUpdate>(SelectedEntity);
-            });
+                if (World->GetEntityRegistry().valid(Selected))
+                {
+                    World->GetEntityRegistry().emplace_or_replace<FNeedsTransformUpdate>(Selected);
+                }
+            }
         }
-        
-        View.each([&](entt::entity Entity)
+
+        for (entt::entity Entity : SelectedEntities)
         {
+            if (!World->GetEntityRegistry().valid(Entity))
+            {
+                continue;
+            }
             if (SStaticMeshComponent* MeshComponent = World->GetEntityRegistry().try_get<SStaticMeshComponent>(Entity))
             {
                 const STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(Entity);
                 World->DrawBox(Transform.GetWorldLocation(), MeshComponent->GetAABB().GetSize() * 0.5f * Transform.GetWorldScale(), Transform.GetWorldRotation(), FColor::Red, 5.0f);
             }
-        });
-        
+        }
+
         const bool bPastePressed = bViewportHovered
             && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)
             && ImGui::IsKeyPressed(ImGuiKey_V, false);
 
         if (bPastePressed)
         {
-            auto CopyView = World->GetEntityRegistry().view<FCopiedTag>();
-            CopyView.each([&](entt::entity Entity)
+            // Pasting selects the new entities, mirroring duplicate. Snapshot the source
+            // entities first because CopyEntity adds new rows that the view would otherwise
+            // pick up and re-paste in the same iteration.
+            TFixedVector<entt::entity, 64> CopySources;
+            World->GetEntityRegistry().view<FCopiedTag>().each([&](entt::entity Entity)
             {
-                if (IsLockedPrefabChild(World->GetEntityRegistry(), Entity))
+                if (!IsLockedPrefabChild(World->GetEntityRegistry(), Entity))
                 {
-                    return;
+                    CopySources.push_back(Entity);
                 }
-                entt::entity New = entt::null;
-                CopyEntity(New, Entity);
             });
+
+            TFixedVector<entt::entity, 64> NewlyPasted;
+            for (entt::entity Source : CopySources)
+            {
+                entt::entity New = entt::null;
+                CopyEntity(New, Source);
+                if (New != entt::null)
+                {
+                    NewlyPasted.push_back(New);
+                }
+            }
+
+            if (!NewlyPasted.empty())
+            {
+                ClearSelectedEntities();
+                for (entt::entity New : NewlyPasted)
+                {
+                    AddSelectedEntity(New, false);
+                }
+            }
         }
         
         if (ImGui::IsKeyPressed(ImGuiKey_F))
         {
             FocusViewportToEntity(GetLastSelectedEntity());
         }
-        
-        
+
+        if (bViewportHovered && ImGui::IsKeyPressed(ImGuiKey_G, false) && !ImGui::GetIO().WantTextInput)
+        {
+            FSceneRenderSettings* Settings = nullptr;
+            if (IRenderScene* RenderScene = World ? World->GetRenderer() : nullptr)
+            {
+                Settings = &RenderScene->GetSceneRenderSettings();
+            }
+
+            if (!bGameViewMode)
+            {
+                bSavedWorldGridEnabled = bWorldGridEnabled;
+                bSavedShowComponentVisualizers = bShowComponentVisualizers;
+                if (Settings)
+                {
+                    bSavedDrawBillboards = Settings->bDrawBillboards;
+                    bSavedDrawAABB = Settings->bDrawAABB;
+                }
+
+                bWorldGridEnabled = false;
+                bShowComponentVisualizers = false;
+                if (Settings)
+                {
+                    Settings->bDrawBillboards = false;
+                    Settings->bDrawAABB = false;
+                }
+
+                bGameViewMode = true;
+            }
+            else
+            {
+                bWorldGridEnabled = bSavedWorldGridEnabled;
+                bShowComponentVisualizers = bSavedShowComponentVisualizers;
+                if (Settings)
+                {
+                    Settings->bDrawBillboards = bSavedDrawBillboards;
+                    Settings->bDrawAABB = bSavedDrawAABB;
+                }
+
+                bGameViewMode = false;
+            }
+        }
+
+
         if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_Z, false))
         {
             if (World->GetWorldType() == EWorldType::Editor)
@@ -465,6 +565,9 @@ namespace Lumina
         {
             CComponentVisualizerRegistry& ComponentVisualizerRegistry = CComponentVisualizerRegistry::Get();
 
+            // Iterate the registry view rather than SelectedEntities directly so we can use
+            // entt::exclude<SDisabledTag>. The set and the tag stay synchronized via
+            // ApplySelectionMutation, so this is consistent with the canonical selection.
             auto View = World->GetEntityRegistry().view<FSelectedInEditorComponent>(entt::exclude<SDisabledTag>);
             View.each([&] (entt::entity SelectedEntity)
             {
@@ -568,7 +671,7 @@ namespace Lumina
             }
         }
         
-        if (World->IsGameWorld())
+        if (World->IsGameWorld() || bGameViewMode)
         {
             return;
         }
@@ -578,7 +681,7 @@ namespace Lumina
         glm::mat4 ViewMatrix = CameraComponent.GetViewMatrix();
         glm::mat4 ProjectionMatrix = CameraComponent.GetProjectionMatrix();
         // Camera projection bakes Vulkan +Y-down NDC; ImGuizmo expects the
-        // GL math convention, so undo the flip on the matrix we hand it.
+        // GL math convention.
         ProjectionMatrix[1][1] *= -1.0f;
 
         const ImVec2 ViewportOrigin = ImGui::GetCursorScreenPos();
@@ -791,9 +894,8 @@ namespace Lumina
                         entt::entity EntityHandle = World->GetRenderer()->GetEntityAtPixel(TexX, TexY);
                         EntityHandle = ResolvePrefabRootForViewportPick(World->GetEntityRegistry(), EntityHandle);
 
-                        ClearSelectedEntities();
-                        AddSelectedEntity(EntityHandle, true);
-            
+                        SetSingleSelectedEntity(EntityHandle);
+
                         if (EntityHandle != entt::null)
                         {
                             ImGui::OpenPopup("EntityContextMenu");
@@ -829,12 +931,19 @@ namespace Lumina
                         entt::entity EntityHandle = World->GetRenderer()->GetEntityAtPixel(TexX, TexY);
                         EntityHandle = ResolvePrefabRootForViewportPick(World->GetEntityRegistry(), EntityHandle);
 
-                        if (!ImGui::GetIO().KeyCtrl)
+                        // Ctrl+click in the viewport mirrors the outliner: toggle the picked entity
+                        // in the existing selection. Plain click replaces.
+                        if (ImGui::GetIO().KeyCtrl)
                         {
-                            ClearSelectedEntities();
+                            if (EntityHandle != entt::null)
+                            {
+                                ToggleSelectedEntity(EntityHandle);
+                            }
                         }
-
-                        AddSelectedEntity(EntityHandle, true);
+                        else
+                        {
+                            SetSingleSelectedEntity(EntityHandle);
+                        }
                     }
                     else
                     {
@@ -1344,11 +1453,11 @@ namespace Lumina
             ImGui::PopStyleColor(3);
             ImGui::PopStyleVar(2);
             
-            if (bComponentAdded)
+            if (bComponentAdded && Entity == DetailsEntity)
             {
-                RebuildPropertyTables(Entity);
+                bDetailsDirty = true;
             }
-            
+
             return bComponentAdded || shouldClose;
         });
     }
@@ -1458,7 +1567,16 @@ namespace Lumina
             OldRegistry.on_construct<SNameComponent>().disconnect<&FWorldEditorTool::OnOutlinerEntityConstructed>(this);
             OldRegistry.on_destroy<SNameComponent>().disconnect<&FWorldEditorTool::OnOutlinerEntityDestroyed>(this);
             OldRegistry.clear<FSelectedInEditorComponent>();
+            OldRegistry.clear<FLastSelectedTag>();
         }
+
+        // Tear down anything that points at the old registry: property tables hold raw
+        // component pointers, the selection cache holds entt handles into the old domain.
+        PropertyTables.clear();
+        SelectedEntities.clear();
+        LastSelectedEntity = entt::null;
+        DetailsEntity = entt::null;
+        bDetailsDirty = true;
 
         FEditorTool::SetWorld(InWorld);
 
@@ -1470,7 +1588,36 @@ namespace Lumina
 
     void FWorldEditorTool::OnEntityDestroyed(entt::registry& Registry, entt::entity Entity)
     {
-        RemoveSelectedEntity(Entity, true);
+        // The entity is about to leave the registry. Drop it from the canonical selection
+        // set, fix up LastSelectedEntity if it was the focus, and invalidate any cached
+        // property tables that pointed at its components — those become dangling otherwise.
+        if (SelectedEntities.find(Entity) != SelectedEntities.end())
+        {
+            SelectedEntities.erase(Entity);
+        }
+
+        if (LastSelectedEntity == Entity)
+        {
+            entt::entity NewLast = entt::null;
+            for (entt::entity Candidate : SelectedEntities)
+            {
+                if (Registry.valid(Candidate))
+                {
+                    NewLast = Candidate;
+                    break;
+                }
+            }
+            LastSelectedEntity = NewLast;
+            bDetailsDirty = true;
+        }
+
+        if (DetailsEntity == Entity)
+        {
+            PropertyTables.clear();
+            DetailsEntity = entt::null;
+            bDetailsDirty = true;
+        }
+        // Outliner row removal happens in OnOutlinerEntityDestroyed.
     }
 
     void FWorldEditorTool::DrawSimulationControls(float ButtonSize)
@@ -2110,11 +2257,15 @@ namespace Lumina
         
         FMemoryReader Reader(Transaction.BeforeState);
         FObjectProxyArchiver Ar(Reader, true);
-        
+
         FEntityRegistry& Registry = World->GetEntityRegistry();
         ECS::Utils::SerializeRegistry(Ar, Registry);
-        RebuildPropertyTables(GetLastSelectedEntity());
-        
+
+        // The serialized registry is the authority on what's selected post-undo. Rebuild
+        // the cached set from FSelectedInEditorComponent / FLastSelectedTag so all three
+        // views (set, tags, outliner rows) line up.
+        ResyncSelectionFromRegistry();
+
         UndoStack.pop_back();
 
         if (World->GetPackage())
@@ -2138,10 +2289,11 @@ namespace Lumina
 
         FMemoryReader Reader(Transaction.AfterState);
         FObjectProxyArchiver Ar(Reader, true);
-        
+
         FEntityRegistry& Registry = World->GetEntityRegistry();
         ECS::Utils::SerializeRegistry(Ar, Registry);
-        RebuildPropertyTables(GetLastSelectedEntity());
+
+        ResyncSelectionFromRegistry();
 
         RedoStack.pop_back();
 
@@ -2151,82 +2303,274 @@ namespace Lumina
         }
     }
 
-    void FWorldEditorTool::AddSelectedEntity(entt::entity Entity, bool bRebuild)
+    // -- Selection plumbing -------------------------------------------------------------------
+    //
+    // The tool keeps three views of selection:
+    //   1. SelectedEntities (the authoritative set, on the tool)
+    //   2. FSelectedInEditorComponent on the registry (a projection — read by render highlight,
+    //      visualizers, prefab editor, etc.)
+    //   3. FTreeNodeState::bSelected on the outliner (a projection — driven by the tool, never
+    //      written directly by the tree widget for entries we own)
+    //
+    // ApplySelectionMutation is the single funnel that keeps all three in sync. Public mutation
+    // methods (AddSelectedEntity, RemoveSelectedEntity, etc.) update the in-memory set, then
+    // call this to propagate. Whenever LastSelectedEntity changes, the details panel is marked
+    // dirty so its property tables rebuild on the next draw.
+    namespace
     {
-        if (!World->GetEntityRegistry().valid(Entity))
+        // Pulled out so we don't have to write the same out-of-line helper for each path.
+        FORCEINLINE void SetTreeNodeSelected(FTreeListView& Tree, FTreeNodeID Node, bool bSelected)
         {
-            return;
-        }
-        
-        ClearLastSelectedEntity();
-        World->GetEntityRegistry().emplace_or_replace<FLastSelectedTag>(Entity);
-        World->GetEntityRegistry().emplace_or_replace<FSelectedInEditorComponent>(Entity);
-        RebuildPropertyTables(Entity);
-
-        if (bRebuild)
-        {
-            // Reflect selection in the outliner row, if it has one. No tree topology changed,
-            // so this is just a per-node state flip — no rebuild needed.
-            auto It = EntityToTreeNode.find(Entity);
-            if (It != EntityToTreeNode.end())
+            if (Node.IsValid() && Tree.IsValid(Node))
             {
-                OutlinerListView.Get<FTreeNodeState>(It->second).bSelected = true;
+                Tree.Get<FTreeNodeState>(Node).bSelected = bSelected;
             }
         }
     }
 
-    void FWorldEditorTool::RemoveSelectedEntity(entt::entity Entity, bool bRebuild)
+    void FWorldEditorTool::SetSingleSelectedEntity(entt::entity Entity)
     {
-        if (World == nullptr)
+        if (Entity != entt::null && !World->GetEntityRegistry().valid(Entity))
+        {
+            Entity = entt::null;
+        }
+
+        // Fast-path: clicking the already-singularly-selected entity is a no-op.
+        if (Entity == LastSelectedEntity && SelectedEntities.size() == (Entity == entt::null ? 0 : 1)
+            && (Entity == entt::null || SelectedEntities.find(Entity) != SelectedEntities.end()))
         {
             return;
         }
 
-        if (!World->GetEntityRegistry().valid(Entity))
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+
+        // Drop tags from previously-selected entities not in the new set, so render
+        // highlighting stays in lockstep with the canonical set.
+        for (entt::entity Old : SelectedEntities)
         {
-            return;
+            if (Old != Entity && Registry.valid(Old))
+            {
+                Registry.remove<FSelectedInEditorComponent>(Old);
+                auto It = EntityToTreeNode.find(Old);
+                if (It != EntityToTreeNode.end())
+                {
+                    SetTreeNodeSelected(OutlinerListView, It->second, false);
+                }
+            }
         }
+        SelectedEntities.clear();
 
-        if (World->GetEntityRegistry().any_of<FSelectedInEditorComponent>(Entity))
+        // Clear last-selected tag unconditionally — we'll re-emplace below if the new
+        // selection isn't empty. Keeps the registry in a consistent state if the caller
+        // passes entt::null (meaning "select nothing").
+        Registry.clear<FLastSelectedTag>();
+
+        if (Entity != entt::null)
         {
-            World->GetEntityRegistry().remove<FSelectedInEditorComponent>(Entity);
-        }
+            SelectedEntities.insert(Entity);
+            Registry.emplace_or_replace<FSelectedInEditorComponent>(Entity);
+            Registry.emplace_or_replace<FLastSelectedTag>(Entity);
 
-        ClearLastSelectedEntity();
-
-        if (bRebuild)
-        {
-            RebuildPropertyTables(Entity);
             auto It = EntityToTreeNode.find(Entity);
             if (It != EntityToTreeNode.end())
             {
-                OutlinerListView.Get<FTreeNodeState>(It->second).bSelected = false;
+                SetTreeNodeSelected(OutlinerListView, It->second, true);
             }
         }
+
+        if (LastSelectedEntity != Entity)
+        {
+            LastSelectedEntity = Entity;
+            bDetailsDirty = true;
+        }
+    }
+
+    void FWorldEditorTool::AddSelectedEntity(entt::entity Entity, bool /*bRebuild*/)
+    {
+        if (Entity == entt::null || !World->GetEntityRegistry().valid(Entity))
+        {
+            return;
+        }
+
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+
+        const bool bWasAlreadySelected = SelectedEntities.find(Entity) != SelectedEntities.end();
+        if (!bWasAlreadySelected)
+        {
+            SelectedEntities.insert(Entity);
+            Registry.emplace_or_replace<FSelectedInEditorComponent>(Entity);
+
+            auto It = EntityToTreeNode.find(Entity);
+            if (It != EntityToTreeNode.end())
+            {
+                SetTreeNodeSelected(OutlinerListView, It->second, true);
+            }
+        }
+
+        // Always promote to last-selected: clicking an already-selected row in a multi-select
+        // should still focus the details panel on it.
+        if (LastSelectedEntity != Entity)
+        {
+            Registry.clear<FLastSelectedTag>();
+            Registry.emplace_or_replace<FLastSelectedTag>(Entity);
+            LastSelectedEntity = Entity;
+            bDetailsDirty = true;
+        }
+    }
+
+    void FWorldEditorTool::RemoveSelectedEntity(entt::entity Entity, bool /*bRebuild*/)
+    {
+        if (World == nullptr || Entity == entt::null)
+        {
+            return;
+        }
+
+        auto SetIt = SelectedEntities.find(Entity);
+        if (SetIt == SelectedEntities.end())
+        {
+            return;
+        }
+
+        SelectedEntities.erase(SetIt);
+
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        if (Registry.valid(Entity))
+        {
+            Registry.remove<FSelectedInEditorComponent>(Entity);
+        }
+
+        auto TreeIt = EntityToTreeNode.find(Entity);
+        if (TreeIt != EntityToTreeNode.end())
+        {
+            SetTreeNodeSelected(OutlinerListView, TreeIt->second, false);
+        }
+
+        // If the entity we just deselected was the focus target, pick a new one from
+        // whatever remains so multi-select doesn't end up with a stale "last".
+        if (LastSelectedEntity == Entity)
+        {
+            Registry.clear<FLastSelectedTag>();
+            entt::entity NewLast = entt::null;
+            for (entt::entity Candidate : SelectedEntities)
+            {
+                if (Registry.valid(Candidate))
+                {
+                    NewLast = Candidate;
+                    break;
+                }
+            }
+            if (NewLast != entt::null)
+            {
+                Registry.emplace_or_replace<FLastSelectedTag>(NewLast);
+            }
+            LastSelectedEntity = NewLast;
+            bDetailsDirty = true;
+        }
+    }
+
+    void FWorldEditorTool::ToggleSelectedEntity(entt::entity Entity)
+    {
+        if (Entity == entt::null || !World->GetEntityRegistry().valid(Entity))
+        {
+            return;
+        }
+
+        if (SelectedEntities.find(Entity) != SelectedEntities.end())
+        {
+            RemoveSelectedEntity(Entity, false);
+        }
+        else
+        {
+            AddSelectedEntity(Entity, false);
+        }
+    }
+
+    void FWorldEditorTool::ResyncSelectionFromRegistry()
+    {
+        // Drop outliner row state for the old set first; we'll re-mark from the
+        // post-resync set below. Anything that's no longer selected ends up cleared
+        // because we don't visit it.
+        for (entt::entity Old : SelectedEntities)
+        {
+            auto It = EntityToTreeNode.find(Old);
+            if (It != EntityToTreeNode.end())
+            {
+                SetTreeNodeSelected(OutlinerListView, It->second, false);
+            }
+        }
+        SelectedEntities.clear();
+        LastSelectedEntity = entt::null;
+
+        if (World == nullptr)
+        {
+            bDetailsDirty = true;
+            return;
+        }
+
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+
+        Registry.view<FSelectedInEditorComponent>().each([&](entt::entity Entity)
+        {
+            SelectedEntities.insert(Entity);
+
+            auto It = EntityToTreeNode.find(Entity);
+            if (It != EntityToTreeNode.end())
+            {
+                SetTreeNodeSelected(OutlinerListView, It->second, true);
+            }
+        });
+
+        // FLastSelectedTag should ride along with the serialized state, but be defensive
+        // — if it's missing for any reason, fall back to picking the first selected.
+        Registry.view<FLastSelectedTag>().each([&](entt::entity Entity)
+        {
+            LastSelectedEntity = Entity;
+        });
+
+        if (LastSelectedEntity == entt::null && !SelectedEntities.empty())
+        {
+            entt::entity First = *SelectedEntities.begin();
+            LastSelectedEntity = First;
+            Registry.emplace_or_replace<FLastSelectedTag>(First);
+        }
+
+        bDetailsDirty = true;
     }
 
     void FWorldEditorTool::ClearSelectedEntities()
     {
-        World->GetEntityRegistry().clear<FSelectedInEditorComponent>();
-        ClearLastSelectedEntity();
-    }
-
-    entt::entity FWorldEditorTool::GetLastSelectedEntity() const
-    {
-        auto View = World->GetEntityRegistry().view<FLastSelectedTag>();
-        
-        entt::entity LastEntity = entt::null;
-        View.each([&](entt::entity Entity)
+        if (World == nullptr)
         {
-            LastEntity = Entity;
-        });
-        
-        return LastEntity;
-    }
+            SelectedEntities.clear();
+            LastSelectedEntity = entt::null;
+            bDetailsDirty = true;
+            return;
+        }
 
-    void FWorldEditorTool::ClearLastSelectedEntity() const
-    {
-        World->GetEntityRegistry().clear<FLastSelectedTag>();
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+
+        for (entt::entity Entity : SelectedEntities)
+        {
+            auto It = EntityToTreeNode.find(Entity);
+            if (It != EntityToTreeNode.end())
+            {
+                SetTreeNodeSelected(OutlinerListView, It->second, false);
+            }
+        }
+
+        SelectedEntities.clear();
+
+        // clear<>() on the registry is the bulk-erase path and matches what a multi-deselect
+        // wants — cheaper than walking SelectedEntities and removing one by one (which we
+        // already did above for the outliner, where we need the entity ids anyway).
+        Registry.clear<FSelectedInEditorComponent>();
+        Registry.clear<FLastSelectedTag>();
+
+        if (LastSelectedEntity != entt::null)
+        {
+            LastSelectedEntity = entt::null;
+            bDetailsDirty = true;
+        }
     }
 
     void FWorldEditorTool::AddEntityToCopies(entt::entity Entity)
@@ -2276,6 +2620,13 @@ namespace Lumina
         PropertyTables.clear();
         WorldSettingsPropertyTable.reset();
 
+        // Selection caches are full of entt handles from the old registry's domain;
+        // they're meaningless against the new world.
+        SelectedEntities.clear();
+        LastSelectedEntity = entt::null;
+        DetailsEntity = entt::null;
+        bDetailsDirty = true;
+
         World = NewWorld;
         EditorEntity = entt::null;
 
@@ -2303,6 +2654,10 @@ namespace Lumina
         {
             bGamePreviewRunning = true;
             PropertyTables.clear();
+            SelectedEntities.clear();
+            LastSelectedEntity = entt::null;
+            DetailsEntity = entt::null;
+            bDetailsDirty = true;
 
             World->SetActive(false);
             ProxyWorld = World;
@@ -2320,6 +2675,10 @@ namespace Lumina
         else
         {
             PropertyTables.clear();
+            SelectedEntities.clear();
+            LastSelectedEntity = entt::null;
+            DetailsEntity = entt::null;
+            bDetailsDirty = true;
             World->SetPaused(true);
             bGamePreviewRunning = false;
 
@@ -2370,6 +2729,10 @@ namespace Lumina
         if (bShouldSimulate)
         {
             PropertyTables.clear();
+            SelectedEntities.clear();
+            LastSelectedEntity = entt::null;
+            DetailsEntity = entt::null;
+            bDetailsDirty = true;
             bSimulatingWorld = true;
 
             FTransform TransformCopy = World->GetEntityRegistry().get<STransformComponent>(EditorEntity).GetWorldTransform();
@@ -2402,6 +2765,10 @@ namespace Lumina
         else
         {
             PropertyTables.clear();
+            SelectedEntities.clear();
+            LastSelectedEntity = entt::null;
+            DetailsEntity = entt::null;
+            bDetailsDirty = true;
             bSimulatingWorld = false;
 
             FTransform TransformCopy = World->GetEntityRegistry().get<STransformComponent>(EditorEntity).GetWorldTransform();
@@ -2613,16 +2980,16 @@ namespace Lumina
                         {
                             ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs, entt::forward_as_meta(World->GetEntityRegistry()), Entity, entt::forward_as_meta(entt::meta_any{}));
                             OutlinerListView.MarkTreeDirty();
-                            RebuildPropertyTables(Entity);
+                            if (Entity == DetailsEntity)
+                            {
+                                bDetailsDirty = true;
+                            }
                         }
                         else
                         {
                             BeginTransaction();
-
                             CreateEntityWithComponent(Struct);
-                            
                             EndTransaction("New Component");
-                            ClearSelectedEntities();
                         }
                         
                         ImGui::CloseCurrentPopup();
@@ -2659,12 +3026,9 @@ namespace Lumina
                     if (ImGui::Button(LE_ICON_CUBE " Empty Entity", ImVec2(-1, 0.0f)))
                     {
                         BeginTransaction();
-
                         CreateEntity();
-                        ClearSelectedEntities();
-                        
                         EndTransaction("New Entity");
-                        
+
                         ImGui::CloseCurrentPopup();
                         AddEntityComponentFilter.Clear();
                     }
@@ -3047,8 +3411,7 @@ namespace Lumina
 
         if (NewRoot != entt::null)
         {
-            ClearSelectedEntities();
-            AddSelectedEntity(NewRoot, true);
+            SetSingleSelectedEntity(NewRoot);
         }
 
         OutlinerListView.MarkTreeDirty();
@@ -3615,7 +3978,14 @@ namespace Lumina
         
         if (bWasRemoved)
         {
-            RebuildPropertyTables(Entity);
+            // The next DrawEntityEditor pass will rebuild PropertyTables from the post-removal
+            // component set. Marking dirty (instead of an inline rebuild) keeps a single
+            // rebuild pathway and avoids tearing down handles mid-frame while the panel is
+            // already drawing.
+            if (Entity == DetailsEntity)
+            {
+                bDetailsDirty = true;
+            }
         }
         else
         {
@@ -3695,10 +4065,32 @@ namespace Lumina
     {
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.08f, 0.1f, 1.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
-        
+
         ImGui::BeginChild("Property Editor", ImVec2(0, 0), true);
-    
-        if (World->GetEntityRegistry().valid(Entity))
+
+        // The details panel reads from PropertyTables, which hold raw pointers into
+        // component storage for DetailsEntity. Whenever the focused entity changes, or
+        // the entity went invalid (destroyed), or some structural change explicitly
+        // marked us dirty (component add/remove, undo/redo), rebuild before drawing.
+        const bool bEntityValid = (Entity != entt::null) && World->GetEntityRegistry().valid(Entity);
+
+        if (!bEntityValid)
+        {
+            if (DetailsEntity != entt::null || !PropertyTables.empty())
+            {
+                PropertyTables.clear();
+                DetailsEntity = entt::null;
+            }
+            bDetailsDirty = false;
+        }
+        else if (DetailsEntity != Entity || bDetailsDirty)
+        {
+            RebuildPropertyTables(Entity);
+            DetailsEntity = Entity;
+            bDetailsDirty = false;
+        }
+
+        if (bEntityValid)
         {
             DrawEntityProperties(Entity);
         }
@@ -3706,9 +4098,9 @@ namespace Lumina
         {
             DrawEmptyState();
         }
-    
+
         ImGui::EndChild();
-    
+
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
     }
@@ -3723,6 +4115,12 @@ namespace Lumina
         using namespace entt::literals;
 
         PropertyTables.clear();
+
+        // Tracking which entity these tables belong to lets DrawEntityEditor detect
+        // staleness without re-running this work every frame. Reset to null on invalid
+        // input so the next valid selection forces a full rebuild.
+        DetailsEntity = (Entity != entt::null && World->GetEntityRegistry().valid(Entity)) ? Entity : entt::null;
+        bDetailsDirty = false;
 
         if (World->GetEntityRegistry().valid(Entity))
         {
@@ -3805,34 +4203,29 @@ namespace Lumina
     void FWorldEditorTool::CreateEntityWithComponent(const CStruct* Component)
     {
         using namespace entt::literals;
-        
-        entt::entity CreatedEntity = entt::null;
 
         entt::hashed_string Hash = entt::hashed_string(Component->GetName().c_str());
         entt::meta_type MetaType = entt::resolve(Hash);
-        
-        CreatedEntity = World->ConstructEntity(Component->MakeDisplayName());
+
+        entt::entity CreatedEntity = World->ConstructEntity(Component->MakeDisplayName());
         ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs, entt::forward_as_meta(World->GetEntityRegistry()), CreatedEntity, entt::forward_as_meta(entt::meta_any{}));
 
+        // Newly-created entities always become the selection so the user immediately sees them
+        // in the details panel and the outliner highlight. Old code only auto-selected if
+        // something was already selected, which left fresh worlds with no feedback.
         if (CreatedEntity != entt::null)
         {
-            auto View = GetWorld()->GetEntityRegistry().view<FSelectedInEditorComponent>();
-            if (!View.empty())
-            {
-                AddSelectedEntity(CreatedEntity, true);
-            }
-            // Outliner row appears via OnOutlinerEntityConstructed → FlushOutlinerPending.
+            SetSingleSelectedEntity(CreatedEntity);
         }
+        // Outliner row appears via OnOutlinerEntityConstructed → FlushOutlinerPending.
     }
 
     void FWorldEditorTool::CreateEntity()
     {
         entt::entity NewEntity = World->ConstructEntity("Entity");
-
-        auto View = GetWorld()->GetEntityRegistry().view<FSelectedInEditorComponent>();
-        if (!View.empty())
+        if (NewEntity != entt::null)
         {
-            AddSelectedEntity(NewEntity, true);
+            SetSingleSelectedEntity(NewEntity);
         }
         // Outliner row appears via OnOutlinerEntityConstructed → FlushOutlinerPending.
     }
@@ -3841,17 +4234,16 @@ namespace Lumina
     {
         World->DuplicateEntity(To, From, [&](const entt::type_info& Type)
         {
-            if    (Type == entt::type_id<FRelationshipComponent>() 
+            if    (Type == entt::type_id<FRelationshipComponent>()
                 || Type == entt::type_id<FSelectedInEditorComponent>()
                 || Type == entt::type_id<FCopiedTag>()
                 || Type == entt::type_id<FLastSelectedTag>())
             {
                 return false;
             }
-            
+
             return true;
         });
-        OutlinerListView.MarkTreeDirty();
     }
 
     void FWorldEditorTool::CycleGuizmoOp()

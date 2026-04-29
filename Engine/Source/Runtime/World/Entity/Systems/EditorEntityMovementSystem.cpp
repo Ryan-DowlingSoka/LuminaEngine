@@ -99,7 +99,7 @@ namespace Lumina
 				Transform.AddPitch(static_cast<float>(MouseDeltaY * 0.1));
 
 				Velocity.Scale += Math::Pow(1.05f, Velocity.Scale) * static_cast<float>(MouseDeltaZ);
-				Velocity.Scale = Math::Clamp(Velocity.Scale, 1.0f, 50.0f);
+				Velocity.Scale = Math::Clamp(Velocity.Scale, 0.2f, 100.0f);
 			}
 
 			if (FInputProcessor::Get().IsMouseButtonUp(EMouseKey::ButtonRight))

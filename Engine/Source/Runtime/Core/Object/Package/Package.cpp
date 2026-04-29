@@ -61,10 +61,15 @@ namespace Lumina
 
     bool CPackage::Rename(const FName& NewName, CPackage* NewPackage)
     {
-		FStringView FileName = VFS::FileName(NewName.ToString(), true);
-		FStringView OldFileName = VFS::FileName(GetName().ToString(), true);
+        // Pure in-memory rename. Disk side (atomic write to new path, removal
+        // of the old file) is the responsibility of the caller — typically
+        // CPackage::RenamePackage. We deliberately do NOT destroy any exported
+        // objects here: live TObjectPtr / TObjectHandle references in the
+        // world must keep pointing at the same renamed objects.
+        FStringView FileName = VFS::FileName(NewName.ToString(), true);
+        FStringView OldFileName = VFS::FileName(GetName().ToString(), true);
         bool bFileNameDirty = FileName != OldFileName;
-     
+
         if (bFileNameDirty)
         {
             for (FObjectExport& Export : ExportTable)
@@ -82,22 +87,7 @@ namespace Lumina
             }
         }
 
-		bool bSuccess = Super::Rename(NewName, NewPackage);
-        if (bSuccess && bFileNameDirty)
-        {
-            SavePackage(this, GetPackagePath());
-
-             for (FObjectExport& Export : ExportTable)
-            {
-                if (Export.Object.Get())
-                {
-                    Export.Object.Get()->ConditionalBeginDestroy();
-                }
-            }
-        }
-
-
-        return bSuccess;
+        return Super::Rename(NewName, NewPackage);
     }
 
     CPackage* CPackage::CreatePackage(FStringView Path)
@@ -213,59 +203,135 @@ namespace Lumina
         return FindObject<CPackage>(ObjectName);
     }
 
-    void CPackage::RenamePackage(FStringView OldPath, FStringView NewPath)
+    bool CPackage::RenamePackage(FStringView OldPath, FStringView NewPath)
     {
+        if (OldPath == NewPath)
+        {
+            return true;
+        }
+
+        if (VFS::Exists(NewPath))
+        {
+            LOG_ERROR("RenamePackage: destination already exists: {}", NewPath);
+            return false;
+        }
+
+        if (!VFS::Exists(OldPath))
+        {
+            LOG_ERROR("RenamePackage: source does not exist: {}", OldPath);
+            return false;
+        }
+
         FFixedString OldObjectName = SanitizeObjectName(OldPath);
-        
+        FFixedString NewObjectName = SanitizeObjectName(NewPath);
+
+        // ----- Loaded path: rename in-memory, save atomically to NewPath, then drop OldPath.
         if (CPackage* Package = FindObject<CPackage>(OldObjectName))
         {
-            FFixedString NewObjectName = SanitizeObjectName(NewPath);
+            FName SavedName = Package->GetName();
 
-            ASSERT(Package->Rename(NewObjectName, nullptr));
-            return;
+            if (!Package->Rename(NewObjectName, nullptr))
+            {
+                LOG_ERROR("RenamePackage: in-memory rename failed for {}", OldPath);
+                return false;
+            }
+
+            if (!SavePackage(Package, NewPath))
+            {
+                LOG_ERROR("RenamePackage: atomic save to {} failed; rolling back in-memory rename", NewPath);
+                // Roll back; on-disk state at OldPath is unchanged.
+                Package->Rename(SavedName, nullptr);
+                return false;
+            }
+
+            // New file is committed. Drop the old file. If the remove fails the
+            // user just sees a stale duplicate — better than data loss.
+            if (VFS::Exists(OldPath) && !VFS::Remove(OldPath))
+            {
+                LOG_ERROR("RenamePackage: failed to remove old file {} (new file at {} is intact)", OldPath, NewPath);
+            }
+            return true;
         }
 
-		FName NewFileName = VFS::FileName(NewPath, true);
-		FName OldFileName = VFS::FileName(OldPath, true);
-        bool bFileNameDirty = NewFileName != OldFileName;
-        if (!bFileNameDirty)
-        {
-            return;
-		}
-
-		// This is kind of weird but the file has already been moved, so we need to use the new path to load it.
+        // ----- Not-loaded path: read OldPath, patch primary export name if the
+        // file name part of the path changed, then atomically write to NewPath.
         TVector<uint8> FileBlob;
-        if (!VFS::ReadFile(FileBlob, NewPath))
+        if (!VFS::ReadFile(FileBlob, OldPath))
         {
-			LOG_ERROR("Failed to load package file at path {}", NewPath);
-            return;
+            LOG_ERROR("RenamePackage: failed to read {}", OldPath);
+            return false;
         }
 
-		FMemoryReader Reader(FileBlob);
-
+        FMemoryReader Reader(FileBlob);
         FPackageHeader Header;
         Reader << Header;
-        Reader.Seek(Header.ExportTableOffset);
-        
-        TVector<FObjectExport> Exports;
-        Reader << Exports;
 
-        FObjectExport* Export = eastl::find_if(Exports.begin(), Exports.end(), [&](const FObjectExport& E)
+        if (Header.Tag != PACKAGE_FILE_TAG)
         {
-            return E.ObjectName == NewFileName;
-        });
-        
-        if (Export != Exports.end())
+            LOG_ERROR("RenamePackage: {} is not a valid Lumina package (tag mismatch)", OldPath);
+            return false;
+        }
+
+        FName NewFileName = VFS::FileName(NewPath, true);
+        FName OldFileName = VFS::FileName(OldPath, true);
+
+        if (NewFileName != OldFileName)
         {
+            Reader.Seek(Header.ExportTableOffset);
+            TVector<FObjectExport> Exports;
+            Reader << Exports;
+
+            FObjectExport* Export = eastl::find_if(Exports.begin(), Exports.end(), [&](const FObjectExport& E)
+            {
+                return E.ObjectName == OldFileName;
+            });
+
+            if (Export == Exports.end())
+            {
+                LOG_ERROR("RenamePackage: {} contains no export matching its file name; refusing to rename", OldPath);
+                return false;
+            }
+
             Export->ObjectName = NewFileName;
 
             FMemoryWriter Writer(FileBlob);
             Writer.Seek(Header.ExportTableOffset);
             Writer << Exports;
-
-            VFS::WriteFile(NewPath, FileBlob);
         }
-	}
+
+        if (!VFS::AtomicWriteFile(NewPath, FileBlob))
+        {
+            LOG_ERROR("RenamePackage: atomic write to {} failed", NewPath);
+            return false;
+        }
+
+        // New file is committed. Drop the old file.
+        if (VFS::Exists(OldPath) && !VFS::Remove(OldPath))
+        {
+            LOG_ERROR("RenamePackage: failed to remove old file {} (new file at {} is intact)", OldPath, NewPath);
+        }
+
+        return true;
+    }
+
+    void CPackage::OnPackageMovedExternally(FStringView OldPath, FStringView NewPath)
+    {
+        // Used when a parent directory was renamed: the .lasset file is already
+        // at NewPath on disk and its content is unchanged (the file name part
+        // didn't change, only the directory). We just need to update the
+        // in-memory CPackage's identity if it was loaded.
+        if (OldPath == NewPath)
+        {
+            return;
+        }
+
+        FFixedString OldObjectName = SanitizeObjectName(OldPath);
+        if (CPackage* Package = FindObject<CPackage>(OldObjectName))
+        {
+            FFixedString NewObjectName = SanitizeObjectName(NewPath);
+            Package->Rename(NewObjectName, nullptr);
+        }
+    }
 
     CPackage* CPackage::LoadPackage(FStringView Path)
     {
@@ -359,44 +425,50 @@ namespace Lumina
         ASSERT(Package != nullptr);
 
         (void)Package->FullyLoad();
-        
+
         Package->ExportTable.clear();
         Package->ImportTable.clear();
-        
+
         TVector<uint8> FileBinary;
         FPackageSaver Writer(FileBinary, Package);
-        
+
         FPackageHeader Header;
         Header.Tag = PACKAGE_FILE_TAG;
         Header.Version = GPackageFileLuminaVersion.FileVersion;
 
         // Skip the header until we've built the tables.
         Writer.Seek(sizeof(FPackageHeader));
-        
+
         // Build the save context (imports/exports)
         FSaveContext SaveContext(Package);
         Package->BuildSaveContext(SaveContext);
 
         Package->WriteImports(Writer, Header, SaveContext);
         Package->WriteExports(Writer, Header, SaveContext);
-        
+
         Header.ImportCount = static_cast<int32>(Package->ImportTable.size());
         Header.ExportCount = static_cast<int32>(Package->ExportTable.size());
 
         Header.ThumbnailDataOffset = Writer.Tell();
         Package->GetPackageThumbnail()->Serialize(Writer);
-        
+
         Writer.Seek(0);
         Writer << Header;
 
-        // Reload the package loader to match the new file binary.
-        Package->CreateLoader(FileBinary);
-        
-        if(!VFS::WriteFile(Path, FileBinary))
+        if (!VFS::AtomicWriteFile(Path, FileBinary))
         {
+            // Disk file at Path is unchanged thanks to the temp-then-rename
+            // primitive. Leave the package marked dirty so the caller (and any
+            // future save attempt) knows the on-disk copy is stale.
             LOG_ERROR("Failed to save package: {}", Path);
+            return false;
         }
-        
+
+        // Only refresh the loader once the new bytes are guaranteed to be on
+        // disk. Otherwise a failed save would leave us with a loader pointing
+        // at content that doesn't match what the file system actually holds.
+        Package->CreateLoader(FileBinary);
+
         LOG_INFO("Saved Package: \"{}\" - ( [{}] Exports | [{}] Imports | [{:.2f}] KiB)",
             Package->GetName(),
             Package->ExportTable.size(),
@@ -404,7 +476,7 @@ namespace Lumina
             static_cast<double>(FileBinary.size()) / 1024.0);
 
         Package->ClearDirty();
-        
+
         return true;
     }
 
@@ -568,15 +640,9 @@ namespace Lumina
 
                 if (Object == nullptr)
                 {
-                    // Solves a random issue of corruption, there should only be one asset per package anyway.
-                    if (ObjectClass->GetDefaultObject()->IsAsset())
-                    {
-                        Export.ObjectName = VFS::FileName(GetPackagePath(), true);
-                    }
-                    
                     Object = NewObject(ObjectClass, this, Export.ObjectName, Export.ObjectGUID);
                     Object->SetFlag(OF_NeedsLoad);
-                    
+
                     if (Object->IsAsset())
                     {
                         Object->SetFlag(OF_Public);

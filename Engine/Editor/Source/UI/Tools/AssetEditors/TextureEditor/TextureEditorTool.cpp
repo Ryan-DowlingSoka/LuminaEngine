@@ -1,6 +1,7 @@
 ﻿#include "TextureEditorTool.h"
 
 #include "Assets/AssetTypes/Textures/Texture.h"
+#include "Assets/Factories/TextureFactory/TextureFactory.h"
 #include "Core/Object/Cast.h"
 #include "Core/Object/Package/Package.h"
 #include "Core/Object/Package/Thumbnail/PackageThumbnail.h"
@@ -9,6 +10,7 @@
 #include "Renderer/RHIGlobals.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiRenderer.h"
+#include "Tools/UI/ImGui/ImGuiX.h"
 
 namespace Lumina
 {
@@ -508,9 +510,69 @@ namespace Lumina
             ImGui::Spacing();
             
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
+            ImGui::SeparatorText("Compression");
+            ImGuiX::Font::PopFont();
+
+            ImGui::Spacing();
+
+            // Color-space combo + recook. Changing ColorSpace alone doesn't
+            // re-encode the bits (the BC stream is baked at import time);
+            // the user has to click Recook for the new format/encoder mode
+            // to take effect. The active stored format is shown so the user
+            // can tell at a glance whether the asset is up-to-date.
+            {
+                static const char* ColorSpaceLabels[] =
+                {
+                    "Auto (re-classify on next recook)",
+                    "Linear (data, non-color)",
+                    "sRGB (color: albedo / emissive / UI)",
+                    "Normal Map (BC5, XY + reconstructed Z)",
+                    "Packed Data (ORM / MRA / etc.)",
+                };
+                int CurrentIndex = (int)Texture->ColorSpace;
+                ImGui::TextUnformatted("Color Space");
+                ImGui::SameLine(150);
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::Combo("##ColorSpace", &CurrentIndex, ColorSpaceLabels, IM_ARRAYSIZE(ColorSpaceLabels)))
+                {
+                    Texture->ColorSpace = (ETextureColorSpace)CurrentIndex;
+                    Asset->GetPackage()->MarkDirty();
+                }
+
+                ImGui::Spacing();
+                if (Texture->SourcePath.empty())
+                {
+                    ImGui::BeginDisabled();
+                    ImGui::Button("Recook (no source path)##Texture", ImVec2(-1, 0));
+                    ImGui::EndDisabled();
+                    ImGuiX::TextTooltip("This asset wasn't imported from a standalone file (likely embedded in a mesh import), so there's nothing on disk to re-cook from.");
+                }
+                else
+                {
+                    if (ImGui::Button("Recook##Texture", ImVec2(-1, 0)))
+                    {
+                        if (CTextureFactory::Recook(Texture))
+                        {
+                            ImGuiX::Notifications::NotifySuccess("Recooked '{0}' as {1}",
+                                Texture->GetName().c_str(), ColorSpaceLabels[(int)Texture->ColorSpace]);
+                        }
+                        else
+                        {
+                            ImGuiX::Notifications::NotifyError("Recook failed for '{0}' -- check log",
+                                Texture->GetName().c_str());
+                        }
+                    }
+                    ImGuiX::TextTooltip("Re-run Basis Universal compression with the current Color Space, picking the right BC format and encoder mode. Source: %s", Texture->SourcePath.c_str());
+                }
+            }
+
+            ImGui::Spacing();
+            ImGui::Spacing();
+
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
             ImGui::SeparatorText("Actions");
             ImGuiX::Font::PopFont();
-            
+
             ImGui::Spacing();
             ImGui::TextDisabled("Transform Tools");
             ImGui::Spacing();

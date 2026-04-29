@@ -166,10 +166,26 @@ namespace Lumina
     constexpr uint32 LIGHT_TYPE_MASK      = 0x0000FFFF; // lower 16 bits
     constexpr uint32 LIGHT_SHADOW_MASK    = 0xFFFF0000; // upper 16 bits
     constexpr int    LIGHT_SHADOW_SHIFT   = 16;
-    
-    constexpr uint32 LIGHT_TYPE_DIRECTIONAL = 1 << 0;
-    constexpr uint32 LIGHT_TYPE_POINT       = 1 << 1;
-    constexpr uint32 LIGHT_TYPE_SPOT        = 1 << 2;
+
+    // Bit flags packed into FLight::Flags. Type bits are mutually exclusive in
+    // practice but kept as bits (not a sequential enum) so feature flags like
+    // CastShadow / Volumetric can OR in without colliding. Mirror of
+    // ELightFlags in Common.slang -- keep the values in lockstep.
+    enum class ELightFlags : uint32
+    {
+        None        = 0,
+        Directional = BIT(0),
+        Point       = BIT(1),
+        Spot        = BIT(2),
+        CastShadow  = BIT(3),
+        // Set when the light should scatter through participating media. The
+        // VolumetricLightingPass walks NumLights and skips entries without
+        // this bit, so a scene with no volumetrics still pays only the empty
+        // loop.
+        Volumetric  = BIT(4),
+    };
+
+    ENUM_CLASS_FLAGS(ELightFlags);
 
     struct FShadowAtlasConfig
     {
@@ -361,9 +377,13 @@ namespace Lumina
         float           Falloff;
         glm::vec2       Angles;
 
-        uint32          Flags;
+        ELightFlags     Flags;
         int32           ShadowDataIndex;    // INDEX_NONE if no shadow
-        uint32          Padding0[2];
+
+        // Per-light scattering strength used by VolumetricLightingPass. Read
+        // by the GPU as a float; ignored unless Flags has ELightFlags::Volumetric.
+        float           VolumetricIntensity;
+        uint32          Padding0;
     };
 
     static_assert(sizeof(FLight) == 64, "FLight hot struct must fit a cache line");

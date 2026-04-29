@@ -100,11 +100,34 @@ namespace Lumina
         void Undo() override;
         void Redo() override;
         
-        void AddSelectedEntity(entt::entity Entity, bool bRebuild);
-        void RemoveSelectedEntity(entt::entity Entity, bool bRebuild);
+        // Replace the entire selection with a single entity. Use this for the most
+        // common "click an entity" path — single-select with implicit clear.
+        void SetSingleSelectedEntity(entt::entity Entity);
+
+        // Add Entity to the current selection. Becomes the new last-selected.
+        // bRebuild is retained for source compatibility but is no longer needed:
+        // outliner row state and the details panel sync automatically.
+        void AddSelectedEntity(entt::entity Entity, bool bRebuild = false);
+
+        // Remove Entity from the current selection. If it was the last-selected
+        // entity, a new one is picked from the remaining set (or null if empty).
+        void RemoveSelectedEntity(entt::entity Entity, bool bRebuild = false);
+
+        // Toggle Entity in/out of the selection set (Ctrl-click semantics).
+        void ToggleSelectedEntity(entt::entity Entity);
+
         void ClearSelectedEntities();
-        entt::entity GetLastSelectedEntity() const;
-        void ClearLastSelectedEntity() const;
+
+        // Rebuild the cached set + LastSelectedEntity from the registry tags. Used after
+        // bulk operations (undo/redo, world swap) where the registry is the authority.
+        void ResyncSelectionFromRegistry();
+
+        NODISCARD bool IsEntitySelected(entt::entity Entity) const { return SelectedEntities.find(Entity) != SelectedEntities.end(); }
+        NODISCARD const THashSet<entt::entity>& GetSelectedEntities() const { return SelectedEntities; }
+
+        // O(1) — returns the cached "last clicked / focused" entity. May be entt::null
+        // if nothing is selected or if the last-selected entity was destroyed.
+        NODISCARD entt::entity GetLastSelectedEntity() const { return LastSelectedEntity; }
         
         void AddEntityToCopies(entt::entity Entity);
         void RemoveEntityFromCopies(entt::entity Entity);
@@ -217,6 +240,22 @@ namespace Lumina
         TVector<TUniquePtr<FPropertyTable>>     PropertyTables;
         TUniquePtr<FPropertyTable>              WorldSettingsPropertyTable;
 
+        // -- Canonical selection state --
+        // SelectedEntities is the authoritative set; FSelectedInEditorComponent on the
+        // registry is mirrored from it (other systems — render highlight, prefab editor,
+        // visualizers — read the tag). LastSelectedEntity is the focus target for the
+        // gizmo pivot and details panel. FLastSelectedTag mirrors it for systems that
+        // observe via the registry. All mutations go through ApplySelectionMutation.
+        THashSet<entt::entity>                  SelectedEntities;
+        entt::entity                            LastSelectedEntity = entt::null;
+
+        // The entity whose components are currently shown in the Details panel.
+        // PropertyTables hold raw pointers into that entity's component storage and
+        // become stale whenever LastSelectedEntity changes; tracking this separately
+        // lets us rebuild lazily on draw rather than on every selection mutation.
+        entt::entity                            DetailsEntity = entt::null;
+        bool                                    bDetailsDirty = false;
+
         FTerrainEditMode                        TerrainEditMode;
         
 
@@ -229,6 +268,16 @@ namespace Lumina
 		bool									bGuizmoSnapEnabled = true;
         bool                                    bGamePreviewRunning = false;
         bool                                    bSimulatingWorld = false;
+
+        // Game view mode (toggled with G): hides grid, component visualizers, billboards
+        // and bounds so the viewport shows just what a runtime camera would see. The
+        // "Saved*" fields snapshot the user's prior toggles on enter so toggling back
+        // off restores their preferences instead of forcing everything on.
+        bool                                    bGameViewMode = false;
+        bool                                    bSavedWorldGridEnabled = true;
+        bool                                    bSavedShowComponentVisualizers = true;
+        bool                                    bSavedDrawBillboards = true;
+        bool                                    bSavedDrawAABB = true;
 
         FDelegateHandle                         WorldTravelledHandle;
         

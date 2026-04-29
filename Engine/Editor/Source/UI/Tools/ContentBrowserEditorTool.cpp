@@ -548,38 +548,87 @@ namespace Lumina
         
         ActionRegistry.ProcessAllOf<FPendingRename>([&](FPendingRename& Rename)
         {
-            VFS::Rename(Rename.OldName, Rename.NewName);
-            
             FStringView Extension = VFS::Extension(Rename.OldName);
-            
+
             if (Extension == ".lasset")
             {
-                CPackage::RenamePackage(Rename.OldName, Rename.NewName);
+                // CPackage::RenamePackage owns both the disk move (atomic
+                // tmp+rename) and the in-memory rename. Only update the
+                // registry if the move succeeded — otherwise the registry
+                // would point at a path that doesn't exist on disk.
+                if (!CPackage::RenamePackage(Rename.OldName, Rename.NewName))
+                {
+                    ImGuiX::Notifications::NotifyError("Rename Failed: {0}", Rename.OldName);
+                    return;
+                }
+
                 FAssetRegistry::Get().AssetRenamed(Rename.OldName, Rename.NewName);
+                ImGuiX::Notifications::NotifySuccess("Rename Success");
+                bWroteSomething = true;
             }
             else if (Extension.empty())
             {
-                VFS::RecursiveDirectoryIterator(Rename.NewName, [&](const VFS::FFileInfo& FileInfo)
+                // Folder rename. Snapshot the contained .lasset files BEFORE
+                // touching the filesystem so we can map old → new path for
+                // each one regardless of how the iterator orders entries.
+                struct FFolderRenameEntry
                 {
-                    if (FileInfo.IsDirectory())
+                    FFixedString OldPath;
+                    FFixedString NewPath;
+                };
+                TVector<FFolderRenameEntry> Entries;
+
+                FStringView OldFolder(Rename.OldName.data(), Rename.OldName.size());
+                FStringView NewFolder(Rename.NewName.data(), Rename.NewName.size());
+
+                VFS::RecursiveDirectoryIterator(Rename.OldName, [&](const VFS::FFileInfo& FileInfo)
+                {
+                    if (FileInfo.IsDirectory() || !FileInfo.IsLAsset())
                     {
                         return;
                     }
-                    
-                    FFixedString CurrentPath = FileInfo.VirtualPath;
-                    FFixedString OldObjectName(Rename.OldName.begin(), Rename.OldName.end());
-                    if (Rename.OldName.find(Rename.NewName.c_str()) == FString::npos)
+
+                    FStringView Old(FileInfo.VirtualPath.data(), FileInfo.VirtualPath.size());
+                    if (!Old.starts_with(OldFolder))
                     {
-                        OldObjectName.assign_convert(Rename.OldName) + (CurrentPath.substr(0, Rename.NewName.length()));
+                        return;
                     }
-                    
-                    CPackage::RenamePackage(OldObjectName, CurrentPath);
-                    FAssetRegistry::Get().AssetRenamed(OldObjectName, CurrentPath);
+
+                    FFixedString NewPath(NewFolder.data(), NewFolder.size());
+                    NewPath.append(Old.data() + OldFolder.size(), Old.size() - OldFolder.size());
+
+                    Entries.push_back({ FFixedString(Old.data(), Old.size()), Move(NewPath) });
                 });
+
+                if (!VFS::Rename(Rename.OldName, Rename.NewName))
+                {
+                    ImGuiX::Notifications::NotifyError("Folder Rename Failed: {0}", Rename.OldName);
+                    return;
+                }
+
+                // Disk side is committed. Update in-memory packages and the
+                // registry. File names didn't change (only the directory
+                // portion of the path), so no content rewrite is needed.
+                for (const FFolderRenameEntry& Entry : Entries)
+                {
+                    CPackage::OnPackageMovedExternally(Entry.OldPath, Entry.NewPath);
+                    FAssetRegistry::Get().AssetRenamed(Entry.OldPath, Entry.NewPath);
+                }
+
+                ImGuiX::Notifications::NotifySuccess("Folder Rename Success");
+                bWroteSomething = true;
             }
-            
-            ImGuiX::Notifications::NotifySuccess("Rename Success");
-            bWroteSomething = true;
+            else
+            {
+                // Plain file (non-asset) — VFS rename is enough.
+                if (!VFS::Rename(Rename.OldName, Rename.NewName))
+                {
+                    ImGuiX::Notifications::NotifyError("Rename Failed: {0}", Rename.OldName);
+                    return;
+                }
+                ImGuiX::Notifications::NotifySuccess("Rename Success");
+                bWroteSomething = true;
+            }
         });
 
 
@@ -1230,15 +1279,20 @@ namespace Lumina
                     {
                         if (CObject* Object = Factory->TryCreateNew(Path))
                         {
-                            CPackage::SavePackage(Object->GetPackage(), Path);
-                            FAssetRegistry::Get().AssetCreated(Object);
-
-                            ImGuiX::Notifications::NotifySuccess("Successfully Created: \"{0}\"", Path);
+                            if (CPackage::SavePackage(Object->GetPackage(), Path))
+                            {
+                                FAssetRegistry::Get().AssetCreated(Object);
+                                ImGuiX::Notifications::NotifySuccess("Successfully Created: \"{0}\"", Path);
+                            }
+                            else
+                            {
+                                ImGuiX::Notifications::NotifyError("Failed to save new asset: \"{0}\"", Path);
+                            }
                         }
                         else
                         {
                             ImGuiX::Notifications::NotifyError("Failed to create new: \"{0}\"", Path);
-        
+
                         }
                     }
                 }

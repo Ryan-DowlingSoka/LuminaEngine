@@ -21,7 +21,7 @@ FragmentOutput FragmentMain(FragmentInput Input)
 {
     float4 Texture = uGlobalTextures[Input.TextureIndex].Sample(Input.UV);
 
-    if (Texture.a == 0.0)
+    if (Texture.a < 0.01)
     {
         discard;
     }

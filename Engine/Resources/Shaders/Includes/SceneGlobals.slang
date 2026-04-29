@@ -39,6 +39,23 @@
 // and the thread-bounds early-outs that wasted lanes on it.
 [[vk::binding(16, 0)]] StructuredBuffer<uint>                        uInstanceMeshletPrefix;
 
+// Pre-integrated BRDF LUT (Karis 2013 split-sum). Indexed by (NdotV, Roughness),
+// returns (scale, bias) for F0. Sampled by the IBL ambient term in
+// BasePixelPass; consumers pass the result through SampleBRDFLUT() in
+// IBL.slang for clarity. Baked once at scene init.
+[[vk::binding(17, 0)]] Sampler2D                                     uBRDFLut;
+
+// IBL diffuse irradiance cube. Cosine-weighted convolution of the sky cube,
+// indexed by surface normal. Stored as Irradiance / pi -- the consumer
+// multiplies by Albedo without an extra /pi.
+[[vk::binding(18, 0)]] SamplerCube                                   uSkyIrradiance;
+
+// IBL pre-filtered specular cube. Each mip carries a different GGX roughness
+// (mip 0 = mirror, last mip = fully rough). Sampled by the reflection vector
+// at mip = Roughness * (NumMips - 1) and combined with the BRDF LUT for
+// the specular ambient term.
+[[vk::binding(19, 0)]] SamplerCube                                   uSkyPrefilter;
+
 // ---------------------------------------------------------------------------------
 //  Binding Set 1
 // ---------------------------------------------------------------------------------

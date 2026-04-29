@@ -75,14 +75,14 @@ namespace Lumina
 		const TVector<FString>& GetFailedAssets() const { return FailedAssets; }
 
 	private:
-		
-		bool TryRecoverPackage(FStringView Path, TSpan<FObjectExport> Exports);
 
 		void ProcessPackagePath(FStringView Path);
 
 		void ClearAssets();
 
 		void BroadcastRegistryUpdate();
+
+		void RecordFailedAsset(FStringView Path);
 
 
 		FAssetRegistryUpdatedDelegate	OnAssetRegistryUpdated;
@@ -91,8 +91,10 @@ namespace Lumina
 
 		/** Global hash of all registered assets */
 		FAssetDataMap 					Assets;
-		
-		/** Assets that failed to load */
+
+		mutable FSharedMutex			FailedAssetsMutex;
+
+		/** Assets that failed to load (corrupt header, version mismatch, etc.) */
 		TVector<FString>				FailedAssets;
 	};
 

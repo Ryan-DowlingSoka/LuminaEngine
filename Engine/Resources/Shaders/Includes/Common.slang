@@ -59,19 +59,19 @@ static const int SSAO_KERNEL_SIZE = 32;
 
 #define BIT(X) (1u << (X))
 
-static const uint LIGHT_FLAG_TYPE_DIRECTIONAL = BIT(0);
-static const uint LIGHT_FLAG_TYPE_POINT       = BIT(1);
-static const uint LIGHT_FLAG_TYPE_SPOT        = BIT(2);
-static const uint LIGHT_FLAG_CASTSHADOW       = BIT(3);
-
+// Bit flags packed into FLight::Flags. Mirror of ELightFlags in
+// SceneRenderTypes.h -- keep the values in lockstep. Type bits are
+// mutually exclusive in practice but kept as bits (not a sequential
+// enum) so feature flags like CastShadow / Volumetric can OR in.
 enum ELightFlags
 {
-    None            = 0,
-    Directional     = BIT(0),
-    Point           = BIT(1),
-    Spot            = BIT(2),
-    
-    Shadow          = BIT(3),
+    None        = 0,
+    Directional = BIT(0),
+    Point       = BIT(1),
+    Spot        = BIT(2),
+    CastShadow  = BIT(3),
+    // Light scatters through participating media; sampled by VolumetricLighting.slang.
+    Volumetric  = BIT(4),
 }
 
 enum EInstanceFlags
@@ -360,7 +360,12 @@ struct FLight
 
     uint   Flags;
     int    ShadowDataIndex;
-    uint   Padding[2];
+
+    // Per-light scattering strength. Only meaningful when Flags has
+    // ELightFlags::Volumetric; the volumetric pass scales each step's
+    // scattering by this value.
+    float  VolumetricIntensity;
+    uint   _Pad0;
 };
 
 // Cold shadow data. Only fetched by the shadow rendering passes and by the
@@ -583,6 +588,11 @@ float max3(float3 V)
 bool HasFlag(uint Value, uint Flag)
 {
     return (Value & Flag) != 0u;
+}
+
+bool HasFlag(uint Value, ELightFlags Flag)
+{
+    return (Value & (uint)Flag) != 0u;
 }
 
 bool HasAllFlags(uint Value, uint Flag)

@@ -15,6 +15,7 @@ namespace Lumina::VFS
 
         bool WriteFile(FStringView Path, FStringView Data) override;
         bool WriteFile(FStringView Path, TSpan<const uint8> Data) override;
+        bool AtomicWriteFile(FStringView Path, TSpan<const uint8> Data) override;
 
         bool Exists(FStringView Path) const override;
         bool IsDirectory(FStringView Path) const override;

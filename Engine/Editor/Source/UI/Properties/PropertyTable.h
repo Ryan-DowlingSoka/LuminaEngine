@@ -44,7 +44,17 @@ namespace Lumina
         virtual ~FPropertyRow() = default;
         FPropertyRow(const TSharedPtr<FPropertyHandle>& InPropHandle, FPropertyRow* InParentRow, const FPropertyChangedEventCallbacks& Callbacks);
 
-        virtual uint32 GetHeaderWidth() const { return 120; }
+        // Width of just this row's own header label (text + collapse arrow if any),
+        // not counting indent. Overridden per-row-type so the table can size its
+        // header column to fit the widest visible label instead of using a fixed
+        // proportional split.
+        virtual float GetMeasuredHeaderTextWidth() const { return 0.0f; }
+
+        // Walks this row plus its visible (expanded) children and returns the
+        // largest required header width including indent. Used by FPropertyTable
+        // to auto-size the header column each frame.
+        float ComputeRequiredHeaderWidth(float Offset) const;
+
         virtual void DrawHeader(float Offset) { }
         virtual void DrawEditor(bool bReadOnly) { }
 
@@ -62,6 +72,11 @@ namespace Lumina
 
         void SetIsArrayElement(bool bTrue) { bArrayElement = bTrue; }
         bool IsArrayElementProperty() const { return bArrayElement; }
+
+        // True only for FCategoryPropertyRow. Used by category rows to find
+        // existing nested-category children when fanning out a `Foo|Bar|Baz`
+        // metadata path into a tree of rows.
+        virtual bool IsCategory() const { return false; }
 
     protected:
 
@@ -89,6 +104,7 @@ namespace Lumina
         void Update() override;
         void DrawHeader(float Offset) override;
         void DrawEditor(bool bReadOnly) override;
+        float GetMeasuredHeaderTextWidth() const override;
         bool HasExtraControls() const override;
         float GetExtraControlsSectionWidth() override;
         void DrawExtraControlsSection() override;
@@ -105,6 +121,7 @@ namespace Lumina
         void Update() override;
         void DrawHeader(float Offset) override;
         void DrawEditor(bool bReadOnly) override;
+        float GetMeasuredHeaderTextWidth() const override;
         void DrawChildren(float ChildOffset, bool bReadOnly) override;
         void RebuildChildren();
         bool HasExtraControls() const override { return true; }
@@ -133,6 +150,7 @@ namespace Lumina
         void Update() override;
         void DrawHeader(float Offset) override;
         void DrawEditor(bool bReadOnly) override;
+        float GetMeasuredHeaderTextWidth() const override;
 
         void RebuildChildren();
 
@@ -157,6 +175,7 @@ namespace Lumina
         void Update() override;
         void DrawHeader(float Offset) override;
         void DrawEditor(bool bReadOnly) override;
+        float GetMeasuredHeaderTextWidth() const override;
 
         // Rebuilds the (0-or-1) child row to match the optional's current
         // engaged state. Called after the user toggles the checkbox or when
@@ -174,14 +193,23 @@ namespace Lumina
     class FCategoryPropertyRow : public FPropertyRow
     {
     public:
-        
+
         FCategoryPropertyRow(void* InObj, const FName& InCategory, const FPropertyChangedEventCallbacks& InCallbacks);
 
         void AddProperty(const TSharedPtr<FPropertyHandle>& InPropHandle);
+
+        // Returns the existing child category row with this name if one was
+        // already created for this row, else creates a new one and appends it
+        // to Children. Used by FPropertyTable::RebuildTree when expanding a
+        // `Outer|Inner` category path one segment at a time.
+        FCategoryPropertyRow* FindOrCreateChildCategory(const FName& InCategory);
+
         FName GetCategoryName() const { return Category; }
+        bool IsCategory() const override { return true; }
 
         void DrawHeader(float Offset) override;
-        
+        float GetMeasuredHeaderTextWidth() const override;
+
     private:
 
         void* OwnerObject = nullptr;

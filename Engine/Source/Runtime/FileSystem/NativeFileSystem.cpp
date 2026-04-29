@@ -127,6 +127,59 @@ namespace Lumina::VFS
         return true;
     }
 
+    bool FNativeFileSystem::AtomicWriteFile(FStringView Path, TSpan<const uint8> Data)
+    {
+        FFixedString FullPath = ResolveVirtualPath(Path);
+        if (FullPath.empty())
+        {
+            return false;
+        }
+
+        FFixedString TempPath = FullPath;
+        TempPath.append(".tmp");
+
+        // Make sure no orphan from a prior failed save sticks around.
+        {
+            std::error_code EC;
+            std::filesystem::remove(TempPath.c_str(), EC);
+        }
+
+        {
+            std::ofstream OutFile(TempPath.data(), std::ios::binary | std::ios::trunc);
+            if (!OutFile)
+            {
+                return false;
+            }
+
+            if (!Data.empty())
+            {
+                OutFile.write(reinterpret_cast<const char*>(Data.data()), static_cast<std::streamsize>(Data.size()));
+            }
+
+            OutFile.flush();
+            if (!OutFile.good())
+            {
+                std::error_code EC;
+                std::filesystem::remove(TempPath.c_str(), EC);
+                return false;
+            }
+        }
+
+        // std::filesystem::rename uses MoveFileExW(MOVEFILE_REPLACE_EXISTING) on
+        // Windows; same-volume replace is the OS-level atomic primitive.
+        std::error_code EC;
+        std::filesystem::rename(TempPath.c_str(), FullPath.c_str(), EC);
+        if (EC)
+        {
+            LOG_ERROR("AtomicWriteFile: rename of {0} -> {1} failed: {2}", TempPath, FullPath, EC.message());
+            std::error_code RemoveEC;
+            std::filesystem::remove(TempPath.c_str(), RemoveEC);
+            return false;
+        }
+
+        return true;
+    }
+
     bool FNativeFileSystem::Exists(FStringView Path) const
     {
         return std::filesystem::exists(ResolveVirtualPath(Path).c_str());

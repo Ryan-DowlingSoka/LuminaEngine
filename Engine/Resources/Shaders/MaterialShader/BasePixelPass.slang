@@ -1,4 +1,5 @@
 #include "Includes/SceneGlobals.slang"
+#include "Includes/IBLRuntime.slang"
 
 struct PSInput
 {
@@ -97,16 +98,56 @@ float3 FresnelSchlick(float CosTheta, float3 F0)
 
 float3 GetWorldNormal(float3 FragNormal, float2 UV, float3 FragPos, float3 TangentSpaceNormal)
 {
-    float3 Q1 = ddx(FragPos);
-    float3 Q2 = ddy(FragPos);
+    float3 Q1  = ddx(FragPos);
+    float3 Q2  = ddy(FragPos);
     float2 St1 = ddx(UV);
     float2 St2 = ddy(UV);
 
-    float3 T = normalize(Q1 * St2.y - Q2 * St1.y);
-    float3 B = normalize(cross(FragNormal, T));
+    // Derive T and B in world space from the screen-space derivatives.
+    // Both come from the same derivative pair so they share the sign of
+    // the UV determinant -- on UV-mirrored islands they flip together,
+    // keeping the perturbation coherent. Magnitudes scale with
+    // |ddx(P)| * |ddy(UV)| which collapses at close range, so we
+    // normalize *first*, then Gram-Schmidt against FragNormal. Doing it
+    // the other way round (orthogonalize the un-normalized vector, then
+    // check magnitude) made tiny derivatives trip a "fall back to
+    // FragNormal" early-out, which is why the bump detail visibly
+    // disappeared as the camera got close to the surface.
+    float3 T = Q1 * St2.y - Q2 * St1.y;
+    float3 B = Q2 * St1.x - Q1 * St2.x;
+
+    float TGeomLen2 = dot(T, T);
+    float BGeomLen2 = dot(B, B);
+    if (TGeomLen2 < 1e-20 || BGeomLen2 < 1e-20)
+    {
+        return FragNormal;
+    }
+    T *= rsqrt(TGeomLen2);
+    B *= rsqrt(BGeomLen2);
+
+    // Gram-Schmidt against the smoothed shading normal. The derivative-
+    // based T/B are perpendicular to the *geometric* normal of the
+    // triangle, not to the interpolated FragNormal -- the residual
+    // along-FragNormal component bleeds into the perturbed N as a
+    // directional tilt that's invisible in diffuse (averaged out by the
+    // irradiance cube) but clearly wrong in low-roughness reflections.
+    T = T - FragNormal * dot(T, FragNormal);
+    float TLen2 = dot(T, T);
+    if (TLen2 < 1e-6)
+    {
+        return FragNormal;
+    }
+    T *= rsqrt(TLen2);
+
+    B = B - FragNormal * dot(B, FragNormal) - T * dot(B, T);
+    float BLen2 = dot(B, B);
+    if (BLen2 < 1e-6)
+    {
+        return FragNormal;
+    }
+    B *= rsqrt(BLen2);
 
     float3x3 TBN = float3x3(T, B, FragNormal);
-
     return normalize(mul(TangentSpaceNormal, TBN));
 }
 
@@ -143,7 +184,7 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
     float NdotL       = saturate(dot(Normal, LightDir));
     float SlopeFactor = sqrt(max(1.0 - NdotL * NdotL, 0.0));
 
-    if (LightFlags == LIGHT_FLAG_TYPE_DIRECTIONAL)
+    if (HasFlag(LightFlags, ELightFlags::Directional))
     {
         // Constant safety bias only; NormalOffsetWS() below removes most
         // slope-driven acne, so a large slope term would only cause peter-panning.
@@ -307,8 +348,8 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         return 1.0;
     }
 
-    bool IsSpotLight        = Light.Flags == LIGHT_FLAG_TYPE_SPOT;
-    bool IsDirectionalLight = Light.Flags == LIGHT_FLAG_TYPE_DIRECTIONAL;
+    bool IsSpotLight        = HasFlag(Light.Flags, ELightFlags::Spot);
+    bool IsDirectionalLight = HasFlag(Light.Flags, ELightFlags::Directional);
 
     if (IsDirectionalLight)
     {
@@ -446,8 +487,8 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
 
 float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3 V, float3 Albedo, float Roughness, float Metallic, float3 F0, float3 PrecomputedL, float PrecomputedDist)
 {
-    bool bSpotLight   = Light.Flags == LIGHT_FLAG_TYPE_SPOT;
-    bool bDirectional = Light.Flags == LIGHT_FLAG_TYPE_DIRECTIONAL;
+    bool bSpotLight   = HasFlag(Light.Flags, ELightFlags::Spot);
+    bool bDirectional = HasFlag(Light.Flags, ELightFlags::Directional);
 
     float3 L            = float3(0.0);
     float  Attenuation  = 1.0;
@@ -480,7 +521,7 @@ float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3
 
     float  NDF          = DistributionGGX(N, H, Roughness);
     float  G            = GeometrySmith(N, V, L, Roughness);
-    float3 F            = FresnelSchlick(max(dot(H, V), 0.5), F0);
+    float3 F            = FresnelSchlick(max(dot(H, V), 0.0), F0);
 
     float3 Spec         = (NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001);
     float3 kD           = (1.0 - F) * (1.0 - Metallic);
@@ -574,8 +615,16 @@ PSOutput FragmentMain(PSInput Input)
         Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight) * Shadow;
     }
 
-    float3 Ambient = GetAmbientLightColor() * GetAmbientLightIntensity() * AO;
-    float3 Color   = Ambient + Lo + Material.Emissive;
+    // IBL ambient: split-sum convolutions of the captured sky cube. Diffuse
+    // term reads the cosine-convolved irradiance cube by N; specular reads
+    // the GGX-prefiltered cube by R at a roughness-driven mip and combines
+    // it with the BRDF integration LUT. Metals get colored reflections of
+    // the sky (F0 = Albedo) instead of going black in shadowed regions.
+    // GetAmbientLightIntensity() now scales the entire IBL ambient so the
+    // existing Environment.AmbientIntensity slider still drives sky strength.
+    float3 IBLAmbient = EvaluateIBLAmbient(N, V, Albedo, F0, Roughness, Metallic);
+    float3 Ambient    = IBLAmbient * GetAmbientLightIntensity() * AO;
+    float3 Color      = Ambient + Lo + Material.Emissive;
 
 #endif // UNLIT
 

@@ -516,6 +516,15 @@ namespace Lumina
 		}
 
 		ShaderChunks.append("float4 " + ID + " = uGlobalTextures[GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + ")].Sample(" + UVStr + ");\n");
+
+		// Tag the sample site if this is a normal map. The Normal pin in
+		// MaterialOutputNode queries this set to choose between the standard
+		// 3-channel decode and the 2-channel decode + Z reconstruct that BC5
+		// normals require (and that 3-channel normals tolerate fine).
+		if (Texture->ColorSpace == ETextureColorSpace::NormalMap)
+		{
+			NormalMapSampleNodes.insert(ID);
+		}
 	}
 
 	void FMaterialCompiler::TextureSampleParameter(const FString& ID, const FName& ParamID, CTexture* Texture, CMaterialInput* Input)
@@ -547,6 +556,11 @@ namespace Lumina
 		}
 
 		ShaderChunks.append("float4 " + ID + " = uGlobalTextures[GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + ")].Sample(" + UVStr + ");\n");
+
+		if (Texture && Texture->ColorSpace == ETextureColorSpace::NormalMap)
+		{
+			NormalMapSampleNodes.insert(ID);
+		}
 	}
 
 	void FMaterialCompiler::GetParameters(TVector<FMaterialParameter>& OutParams, FMaterialUniforms& OutUniforms) const

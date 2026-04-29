@@ -33,7 +33,7 @@ void ComputeMain(uint3 WorkGroupID : SV_GroupID, uint3 LocalID : SV_GroupThreadI
     uint LightCount = uLightData[0].NumLights;
 
     // Directional light is always at index 0; skip since it applies globally.
-    uint StartIndex = (LightCount > 0 && HasFlag(uLightData[0].Lights[0].Flags, LIGHT_FLAG_TYPE_DIRECTIONAL)) ? 1u : 0u;
+    uint StartIndex = (LightCount > 0 && HasFlag(uLightData[0].Lights[0].Flags, ELightFlags::Directional)) ? 1u : 0u;
 
     FCluster Cluster = uClusters[Index];
     uint VisibleCount = 0;

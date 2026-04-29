@@ -96,8 +96,14 @@ namespace Lumina::Math
         return Result;
     }
     
-    template<typename T>
-    requires(eastl::is_integral_v<T> && eastl::is_unsigned_v<T> && (sizeof(T) <= 4))
+    template<std::integral T>
+    [[nodiscard]] constexpr bool IsEven(T Val)
+    {
+        return ((Val) & 1) == 0;
+    }
+    
+    template<std::integral T>
+    requires(eastl::is_unsigned_v<T> && (sizeof(T) <= 4))
     [[nodiscard]] T RandRange(T First, T Second)
     {
         if (First > Second)

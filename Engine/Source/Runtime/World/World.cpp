@@ -18,11 +18,14 @@
 #include "Core/Serialization/ObjectArchiver.h"
 #include "EASTL/sort.h"
 #include "Entity/EntityUtils.h"
+#include "Entity/Components/CameraComponent.h"
 #include "Entity/Components/DirtyComponent.h"
 #include "Entity/Components/EditorComponent.h"
 #include "entity/components/entitytags.h"
 #include "Entity/Components/LineBatcherComponent.h"
 #include "Entity/Components/NameComponent.h"
+#include "Entity/Components/PostProcessComponent.h"
+#include "Entity/Components/TransformComponent.h"
 #include "Entity/Components/ScriptComponent.h"
 #include "Entity/Components/SingletonEntityComponent.h"
 #include "entity/components/tagcomponent.h"
@@ -212,6 +215,11 @@ namespace Lumina
             .AddFunction<&FLuaEventBus::ClearEvent>("ClearEvent")
             .AddFunction<&FLuaEventBus::GetSubscriberCount>("GetSubscriberCount")
             .Register();
+
+        GlobalRef.NewClass<FEntityMessageBus>("EntityMessageBus")
+            .AddFunction<&FEntityMessageBus::Send>("Send")
+            .AddFunction<&FEntityMessageBus::SendDeferred>("SendDeferred")
+            .Register();
         
         GlobalRef.NewClass<Physics::IPhysicsScene>("PhysicsScene")
             .AddFunction<&Physics::IPhysicsScene::GetEntityBodyID>("GetEntityBodyID")
@@ -326,6 +334,8 @@ namespace Lumina
         EntityRegistry.ctx().emplace<FSystemContext&>(SystemContext);
         EntityRegistry.ctx().emplace<CWorld*>(this);
         EntityRegistry.ctx().emplace<FLuaEventBus*>(&LuaEventBus);
+        EntityRegistry.ctx().emplace<FEntityMessageBus*>(&MessageBus);
+        MessageBus.SetWorld(this);
 
         CreateRenderer();
         RegisterSystems();
@@ -391,6 +401,7 @@ namespace Lumina
         }
         
         LuaEventBus.Clear();
+        MessageBus.Clear();
         TimerManager.Clear();
 
         RegistryPending.clear<>();
@@ -461,6 +472,10 @@ namespace Lumina
                 LuaEventBus.ProcessDeferred();
             }
             {
+                CPU_PROFILE_SCOPE_COLOR("Lua Messages (Deferred)", FColor(0.95f, 0.55f, 0.25f));
+                MessageBus.ProcessDeferred();
+            }
+            {
                 CPU_PROFILE_SCOPE("Timers");
                 TimerManager.Tick(static_cast<float>(DeltaTime));
             }
@@ -482,12 +497,75 @@ namespace Lumina
             // Force an update now.
             (void)EntityRegistry.get<STransformComponent>(CameraEntity).GetWorldMatrix();
             const SCameraComponent& Camera = EntityRegistry.get<SCameraComponent>(CameraEntity);
-            RenderScene->RenderView(CmdList, Camera.GetViewVolume());
+
+            // Resolve any SPostProcessComponent volumes the camera is inside
+            // (or that have bInfiniteExtent) into a final blended settings
+            // block. The camera's own PostProcess is the base; volumes blend
+            // on top in priority order.
+            const glm::vec3 CameraWorldPos = EntityRegistry.get<STransformComponent>(CameraEntity).GetWorldLocation();
+            SPostProcessSettings ResolvedPostProcess = Camera.PostProcess;
+
+            struct FVolumeContribution { float Weight; const SPostProcessSettings* Settings; int32 Priority; };
+            TVector<FVolumeContribution> Contributions;
+
+            auto VolumeView = EntityRegistry.view<const SPostProcessComponent, const STransformComponent>(entt::exclude<SDisabledTag>);
+            for (entt::entity VolEntity : VolumeView)
+            {
+                const SPostProcessComponent& Volume = VolumeView.get<const SPostProcessComponent>(VolEntity);
+                if (!Volume.bEnabled || Volume.BlendWeight <= 0.0f)
+                {
+                    continue;
+                }
+
+                float Weight = Volume.BlendWeight;
+
+                if (!Volume.bInfiniteExtent)
+                {
+                    // Transform the camera into the volume's local space and
+                    // measure signed distance to the box. Negative == inside,
+                    // positive == outside; values inside [0, BlendDistance]
+                    // fall off linearly so designers get a smooth on-ramp.
+                    const STransformComponent& VolXform = VolumeView.get<const STransformComponent>(VolEntity);
+                    const glm::mat4 InvWorld = glm::inverse(VolXform.GetWorldMatrix());
+                    const glm::vec3 LocalCam = glm::vec3(InvWorld * glm::vec4(CameraWorldPos, 1.0f));
+                    const glm::vec3 D = glm::abs(LocalCam) - Volume.BoxExtent;
+                    const float Outside = glm::max(D.x, glm::max(D.y, D.z));
+
+                    if (Outside > Volume.BlendDistance)
+                    {
+                        continue;
+                    }
+                    if (Outside > 0.0f && Volume.BlendDistance > 0.0001f)
+                    {
+                        Weight *= 1.0f - (Outside / Volume.BlendDistance);
+                    }
+                }
+
+                if (Weight > 0.0f)
+                {
+                    Contributions.push_back({Weight, &Volume.Settings, Volume.Priority});
+                }
+            }
+
+            // Lower priority first so higher priority volumes blend last
+            // (their weight wins ties at full strength).
+            eastl::sort(Contributions.begin(), Contributions.end(),
+                [](const FVolumeContribution& A, const FVolumeContribution& B)
+                {
+                    return A.Priority < B.Priority;
+                });
+
+            for (const FVolumeContribution& Contribution : Contributions)
+            {
+                BlendPostProcessSettings(ResolvedPostProcess, *Contribution.Settings, Contribution.Weight);
+            }
+
+            RenderScene->RenderView(CmdList, Camera.GetViewVolume(), &ResolvedPostProcess);
 
             return;
         }
 
-        RenderScene->RenderView(CmdList, FViewVolume{});
+        RenderScene->RenderView(CmdList, FViewVolume{}, nullptr);
     }
 
     void CWorld::OnScriptComponentPendingReady(const FScriptComponentPendingReady& Event)
@@ -937,6 +1015,7 @@ namespace Lumina
         ScriptComponent.Script->Environment.RawSet("Registry", &EntityRegistry);
         ScriptComponent.Script->Environment.RawSet("Physics", PhysicsScene.get());
         ScriptComponent.Script->Environment.RawSet("Events", &LuaEventBus);
+        ScriptComponent.Script->Environment.RawSet("Messages", &MessageBus);
         ScriptComponent.Script->Environment.RawSet("TimerManager", &TimerManager);
         
         auto DrawInterface = ScriptComponent.Script->Environment.NewTable("DrawInterface");
@@ -946,11 +1025,55 @@ namespace Lumina
         ScriptComponent.Script->Reference.RawSet("Transform", &EntityRegistry.get<STransformComponent>(Entity));
         ScriptComponent.Script->Reference.RawSet("Name", EntityRegistry.get<SNameComponent>(Entity).Name);
         
-        ScriptComponent.ScriptMetaTable = ScriptComponent.Script->Reference["__meta"];
+        ScriptComponent.ScriptMetaTable = ScriptComponent.Script->Reference["Meta"];
         ScriptComponent.AttachFunc      = ScriptComponent.Script->Reference["OnAttach"];
         ScriptComponent.ReadyFunc       = ScriptComponent.Script->Reference["OnReady"];
         ScriptComponent.UpdateFunc      = ScriptComponent.Script->Reference["Update"];
         ScriptComponent.DetachFunc      = ScriptComponent.Script->Reference["OnDetach"];
+
+        // Discover directed message handlers by convention. Anything in the script
+        // table named "On<Something>" that isn't a reserved lifecycle hook becomes
+        // a callable handler for `Messages:Send(target, "On<Something>", payload)`.
+        // Done once here so Send is just a hashmap lookup at runtime.
+        //
+        // Walks via raw lua_next instead of FRef::FIterator: the iterator requires
+        // the previous key to remain at the top of the stack between iterations,
+        // but FRef::As<FString> pushes without popping and would corrupt that
+        // invariant -- the next lua_next call then trips "invalid key to next".
+        ScriptComponent.MessageHandlers.clear();
+        if (lua_State* L = ScriptComponent.Script->Reference.GetState())
+        {
+            ScriptComponent.Script->Reference.Push();
+            const int TableIdx = lua_gettop(L);
+
+            lua_pushnil(L);
+            while (lua_next(L, TableIdx) != 0)
+            {
+                // Stack: [..., table, key, value]
+                if (lua_type(L, -2) == LUA_TSTRING && lua_isfunction(L, -1))
+                {
+                    size_t KeyLen = 0;
+                    const char* KeyData = lua_tolstring(L, -2, &KeyLen);
+                    FStringView KeyView(KeyData, KeyLen);
+
+                    const bool bIsOnPrefixed = KeyView.size() >= 3 && KeyView[0] == 'O' && KeyView[1] == 'n';
+                    const bool bIsLifecycle  = KeyView == "OnAttach" || KeyView == "OnReady" || KeyView == "OnDetach";
+
+                    if (bIsOnPrefixed && !bIsLifecycle)
+                    {
+                        // FRef(L, -1) refs the value at top and pops it -- leaves
+                        // [..., table, key] so the next lua_next sees the key it expects.
+                        Lua::FRef Handler(L, -1);
+                        ScriptComponent.MessageHandlers.insert(eastl::make_pair(FName(KeyView), eastl::move(Handler)));
+                        continue;
+                    }
+                }
+
+                lua_pop(L, 1); // pop value, keep key for next lua_next
+            }
+
+            lua_pop(L, 1); // pop the table
+        }
 
         // Sync per-instance overrides with the current schema, then apply them
         // by mutating the Exports table the script references.
@@ -961,8 +1084,7 @@ namespace Lumina
                 ScriptComponent.Script->ExportDefaults,
                 ScriptComponent.PropertyOverrides.Items);
 
-            lua_State* ScriptState = ScriptComponent.Script->Reference.GetState();
-            if (ScriptState)
+            if (lua_State* ScriptState = ScriptComponent.Script->Reference.GetState())
             {
                 ScriptComponent.Script->Reference.Push();
                 lua_getfield(ScriptState, -1, "Exports");

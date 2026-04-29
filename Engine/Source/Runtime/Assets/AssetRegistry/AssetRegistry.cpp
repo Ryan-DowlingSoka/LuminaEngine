@@ -85,10 +85,17 @@ namespace Lumina
         FWriteScopeLock Lock(AssetsMutex);
 
         auto It = Assets.find_as(GUID, FGuidHash(), FAssetDataGuidEqual());
-        ASSERT(It != Assets.end());
+        if (It == Assets.end())
+        {
+            // Out-of-band deletion (e.g. external file removal followed by a
+            // discovery pass that already pruned the entry). Don't crash —
+            // the desired end state (entry absent) already holds.
+            LOG_WARN("AssetRegistry::AssetDeleted: GUID not present in registry; ignoring");
+            return;
+        }
 
         Assets.erase(It);
-        
+
         GetOnAssetRegistryUpdated().Broadcast();
     }
 
@@ -101,7 +108,15 @@ namespace Lumina
             return Asset->Path == OldPath;
         });
 
-        ASSERT(It != Assets.end());
+        if (It == Assets.end())
+        {
+            // The on-disk side of the rename succeeded but our registry view
+            // is out of sync (race with discovery, or registry was rebuilt).
+            // Crashing the editor is strictly worse than logging — the next
+            // discovery pass will repair the entry.
+            LOG_WARN("AssetRegistry::AssetRenamed: no entry for {}; rename of {} -> {} not reflected in registry until next discovery", OldPath, OldPath, NewPath);
+            return;
+        }
 
         const TUniquePtr<FAssetData>& Data = *It;
         Data->Path.assign_convert(NewPath);
@@ -159,82 +174,96 @@ namespace Lumina
         return Datas;
     }
 
-    bool FAssetRegistry::TryRecoverPackage(FStringView Path, TSpan<FObjectExport> Exports)
-    {
-        bool bRecovered = false;
-        for (FObjectExport& Export : Exports)
-        {
-            CClass* Class = FindObject<CClass>(Export.ClassName);
-            if (Class && Class->GetDefaultObject()->IsAsset())
-            {
-                Export.ObjectName = VFS::FileName(Path, true);
-                bRecovered = true;
-            }
-        }
-        
-        
-        return bRecovered;
-    }
-
     void FAssetRegistry::ProcessPackagePath(FStringView Path)
     {
         TVector<uint8> Data;
         if (!VFS::ReadFile(Data, Path))
         {
-            LOG_ERROR("Failed to load package file at path {}", Path);
+            LOG_ERROR("AssetRegistry: failed to read {}", Path);
+            RecordFailedAsset(Path);
+            return;
+        }
+
+        if (Data.size() < sizeof(FPackageHeader))
+        {
+            LOG_ERROR("AssetRegistry: {} is too small to be a valid package", Path);
+            RecordFailedAsset(Path);
             return;
         }
 
         FName PackageFileName = VFS::FileName(Path, true);
-        
+
         FPackageHeader Header;
         FMemoryReader Reader(Data);
         Reader << Header;
-        
+
+        if (Header.Tag != PACKAGE_FILE_TAG)
+        {
+            LOG_ERROR("AssetRegistry: {} is not a valid Lumina package (tag mismatch)", Path);
+            RecordFailedAsset(Path);
+            return;
+        }
+
         if (Header.Version != GPackageFileLuminaVersion.FileVersion)
         {
-            LOG_WARN("Package \"{}\" was last saved with a different engine version. {}, it may be unstable.", Path, Header.Version);
+            LOG_ERROR("AssetRegistry: {} was saved with engine version {} (current {}); refusing to register until migrated", Path, Header.Version, GPackageFileLuminaVersion.FileVersion);
+            RecordFailedAsset(Path);
+            return;
+        }
+
+        if (Header.ExportTableOffset < 0 || static_cast<size_t>(Header.ExportTableOffset) > Data.size())
+        {
+            LOG_ERROR("AssetRegistry: {} has out-of-range export table offset", Path);
+            RecordFailedAsset(Path);
+            return;
         }
 
         Reader.Seek(Header.ExportTableOffset);
-        
+
         TVector<FObjectExport> Exports;
         Reader << Exports;
 
         FObjectExport* Export = eastl::find_if(Exports.begin(), Exports.end(), [&](const FObjectExport& E)
         {
-            return E.ObjectName == PackageFileName; 
+            return E.ObjectName == PackageFileName;
         });
-        
-        if (ALERT_IF(Export == Exports.end(), "Package name was not found in exports!"))
+
+        if (Export == Exports.end())
         {
-            if (!TryRecoverPackage(Path, Exports))
-            {
-                return;
-            }
-            
-            Export = eastl::find_if(Exports.begin(), Exports.end(), [&](const FObjectExport& E)
-            {
-                return E.ObjectName == PackageFileName; 
-            });
-            
-            if (Export == Exports.end())
-            {
-                LOG_ERROR("Could not recover package {}", Path);
-            }
-            
+            // The .lasset's primary export name doesn't match the file name on
+            // disk. We used to silently patch this; that hid the underlying
+            // bug (non-atomic save / rename) that left these on disk in the
+            // first place. With atomic save+rename in place this should never
+            // happen for new files, so we surface it loudly instead.
+            LOG_ERROR("AssetRegistry: {} contains no export matching its file name; refusing to register", Path);
+            RecordFailedAsset(Path);
+            return;
         }
-        
+
         auto AssetData = MakeUnique<FAssetData>();
         AssetData->AssetClass   = Export->ClassName;
         AssetData->AssetGUID    = Export->ObjectGUID;
         AssetData->AssetName    = Export->ObjectName;
         AssetData->Path         .assign_convert(Path);
-        
+
 
         FWriteScopeLock Lock(AssetsMutex);
-        ASSERT(Assets.find(AssetData) == Assets.end());
+        if (Assets.find(AssetData) != Assets.end())
+        {
+            // Duplicate GUID across two .lasset files. Discovery is racy with
+            // user-driven renames so don't assert; flag the offender so the
+            // editor can surface it.
+            LOG_ERROR("AssetRegistry: duplicate asset GUID encountered while processing {} (already registered); skipping", Path);
+            RecordFailedAsset(Path);
+            return;
+        }
         Assets.emplace(Move(AssetData));
+    }
+
+    void FAssetRegistry::RecordFailedAsset(FStringView Path)
+    {
+        FWriteScopeLock Lock(FailedAssetsMutex);
+        FailedAssets.emplace_back(Path.data(), Path.size());
     }
     
     void FAssetRegistry::ClearAssets()

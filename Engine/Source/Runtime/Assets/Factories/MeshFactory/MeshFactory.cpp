@@ -814,7 +814,13 @@ namespace Lumina
                     if (!FindObject<CPackage>(QualifiedPath))
                     {
                         CPackage::AddPackageExt(QualifiedPath);
-                        TextureFactory->Import(TexturePath, QualifiedPath, nullptr);
+                        // Pass the mesh-import metadata so IntendedColorSpace
+                        // (set by GLTFImport from material slots) survives
+                        // the trip to the texture factory. Without it, the
+                        // file-path branch was forced to fall back to the
+                        // filename heuristic, which misses glTF-style names
+                        // like "Default_metalRoughness.jpg".
+                        TextureFactory->Import(TexturePath, QualifiedPath, &Texture);
                     }
                 }
             }
@@ -823,8 +829,14 @@ namespace Lumina
         for (CObject* Obj : CreatedObjects)
         {
             CPackage* Package = Obj->GetPackage();
-            CPackage::SavePackage(Package, Package->GetPackagePath());
-            FAssetRegistry::Get().AssetCreated(Obj);
+            if (CPackage::SavePackage(Package, Package->GetPackagePath()))
+            {
+                FAssetRegistry::Get().AssetCreated(Obj);
+            }
+            else
+            {
+                LOG_ERROR("MeshFactory: failed to save {}; asset will not be registered", Package->GetPackagePath());
+            }
         }
         
         for (auto It = CreatedObjects.rbegin(); It != CreatedObjects.rend(); ++It)

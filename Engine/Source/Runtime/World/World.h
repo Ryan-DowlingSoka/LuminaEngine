@@ -17,6 +17,7 @@
 #include "Core/Functional/FunctionRef.h"
 #include "Entity/Systems/EntitySystem.h"
 #include "Entity/Events/LuaEventBus.h"
+#include "Entity/Events/EntityMessageBus.h"
 #include "World.generated.h"
 
 
@@ -219,6 +220,7 @@ namespace Lumina
         TVector<FSystemVariant>                             SystemUpdateList[(int32)EUpdateStage::Max];
 
         FLuaEventBus                                        LuaEventBus;
+        FEntityMessageBus                                   MessageBus;
         FTimerManager                                       TimerManager;
 
         FLineBatcherComponent*                              LineBatcherComponent;

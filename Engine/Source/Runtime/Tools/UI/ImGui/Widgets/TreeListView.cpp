@@ -522,17 +522,28 @@ namespace Lumina
 
     void FTreeListView::SetSelection(FTreeNodeID Item, const FTreeListViewContext& Context, bool bShouldClear)
     {
-        for (FNode& Node : Nodes)
+        // bShouldClear == true is the plain-click path: replace the selection with this one row.
+        // bShouldClear == false is the Ctrl-click (multi-select) path: toggle just this row's
+        // selected state and leave any other selected rows alone. Single-select consumers don't
+        // care: they ignore bShouldClear and treat every callback as "this is now the selection".
+        if (bShouldClear)
         {
-            if (Node.bAlive)
+            for (FNode& Node : Nodes)
             {
-                Node.State.bSelected = false;
+                if (Node.bAlive)
+                {
+                    Node.State.bSelected = false;
+                }
+            }
+
+            if (IsValid(Item))
+            {
+                Nodes[Item.Index].State.bSelected = true;
             }
         }
-
-        if (IsValid(Item))
+        else if (IsValid(Item))
         {
-            Nodes[Item.Index].State.bSelected = true;
+            Nodes[Item.Index].State.bSelected = !Nodes[Item.Index].State.bSelected;
         }
 
         if (Context.ItemSelectedFunction)
@@ -560,7 +571,14 @@ namespace Lumina
                 Node.State.bSelected = false;
             }
         }
-        (void)Context;
+
+        // Notify the client so any external selection state stays in lockstep with the
+        // visual state. Single-select consumers can ignore the InvalidTreeNode callback;
+        // multi-select consumers (e.g. the world outliner) clear their canonical set here.
+        if (Context.ItemSelectedFunction)
+        {
+            Context.ItemSelectedFunction(*this, InvalidTreeNode, true);
+        }
     }
 
     void FTreeListView::RecomputeDepthsRecursive(int32 NodeIdx, int32 Depth)

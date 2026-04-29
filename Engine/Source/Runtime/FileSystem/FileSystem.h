@@ -52,6 +52,7 @@ namespace Lumina::VFS
     RUNTIME_API bool ReadFile(FString& OutString, FStringView Path);
     RUNTIME_API bool WriteFile(FStringView Path, FStringView Data);
     RUNTIME_API bool WriteFile(FStringView Path, TSpan<const uint8> Data);
+    RUNTIME_API bool AtomicWriteFile(FStringView Path, TSpan<const uint8> Data);
 
     RUNTIME_API void PlatformOpen(FStringView Path);
 

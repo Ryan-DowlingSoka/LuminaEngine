@@ -247,6 +247,14 @@ namespace Lumina::VFS
         });
     }
 
+    bool AtomicWriteFile(FStringView Path, TSpan<const uint8> Data)
+    {
+        return Detail::VisitFileSystems(Path, [&](IFileSystem& FS)
+        {
+            return FS.AtomicWriteFile(Path, Data);
+        });
+    }
+
     void PlatformOpen(FStringView Path)
     {
         Detail::VisitFileSystems(Path, [&](IFileSystem& FS)
