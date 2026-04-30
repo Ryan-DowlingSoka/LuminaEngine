@@ -27,7 +27,10 @@ namespace Lumina
 
     static constexpr uint32 MaxRenderTargets = 8;
 	static constexpr uint32 MaxVertexAttributes = 16;
-	static constexpr uint32 MaxPushConstantSize = 128; // D3D12: root signature is 256 bytes max., Vulkan: 128 bytes of push constants guaranteed
+	// 256 B is supported on every modern desktop Vulkan implementation (and matches
+	// the D3D12 root-signature cap). Spec minimum is 128; we run on devices that
+	// advertise more, and several shaders (e.g. ColorGrading) need 144 B.
+	static constexpr uint32 MaxPushConstantSize = 256;
 	static constexpr uint32 MaxBindingLayouts = 4;
 	static constexpr uint32 MaxBindingsPerLayout = 128;
 
@@ -733,6 +736,11 @@ namespace Lumina
 		uint16							SampleCount = 1;
 
 		FORCEINLINE FRenderPassDesc& SetSampleCount(uint16 Count) { SampleCount = Count; return *this; }
+
+		/** If SampleCount is still default (1), derive it from the first attached image's NumSamples.
+		 *  Lets callers attach an MSAA image without remembering to also bump SampleCount. */
+		RUNTIME_API uint16 DeriveSampleCount() const noexcept;
+
 		FORCEINLINE FRenderPassDesc& SetViewMask(uint32 Mask) { ViewMask = Mask; return *this; }
 		FORCEINLINE FRenderPassDesc& SetRenderArea(const glm::uvec2& Area) { RenderArea = Area; return *this; }
 		FORCEINLINE FRenderPassDesc& AddColorAttachment(const FAttachment& a) { ColorAttachments.push_back(a); return *this; }

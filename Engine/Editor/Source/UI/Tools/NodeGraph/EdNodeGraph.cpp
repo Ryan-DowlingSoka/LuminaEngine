@@ -294,6 +294,30 @@ namespace Lumina
                 DrawGraphContextMenu();
                 ImGui::EndPopup();
             }
+            
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                && !NodeEditor::GetHoveredNode()
+                && !NodeEditor::GetHoveredPin()
+                && !NodeEditor::GetHoveredLink())
+            {
+                int Digit = -1;
+                for (int i = 0; i < 9; ++i)
+                {
+                    if (ImGui::IsKeyDown((ImGuiKey)(ImGuiKey_1 + i)))
+                    {
+                        Digit = i + 1;
+                        break;
+                    }
+                }
+                if (Digit < 0 && ImGui::IsKeyDown(ImGuiKey_0))
+                {
+                    Digit = 0;
+                }
+                if (Digit >= 0)
+                {
+                    HandleQuickPlace(Digit, NodeEditor::ScreenToCanvas(ImGui::GetMousePos()));
+                }
+            }
         
             if (NodeEditor::BeginShortcut())
             {

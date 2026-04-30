@@ -1,8 +1,7 @@
-﻿#include "MaterialCompiler.h"
+#include "MaterialCompiler.h"
 
 #include "Assets/AssetTypes/Textures/Texture.h"
-#include "Nodes/MaterialNodeExpression.h"
-#include "Nodes/MaterialNode_PrimitiveData.h"
+#include "Nodes/MaterialNodes.h"
 #include "Paths/Paths.h"
 #include "Platform/Filesystem/FileHelper.h"
 #include "UI/Tools/NodeGraph/EdGraphNode.h"
@@ -11,7 +10,41 @@ namespace Lumina
 {
 	FMaterialCompiler::FMaterialCompiler()
 	{
-		ShaderChunks.reserve(2000);
+		PixelChunks.reserve(2000);
+		VertexChunks.reserve(512);
+		PixelOutputChunks.reserve(512);
+		VertexOutputChunks.reserve(128);
+	}
+
+	// Vertex-stage alias preamble. The same node-emit code (e.g. `WorldNormal.xyz`,
+	// `UV0`, `WorldPosition`) is reused across stages; this block declares the
+	// pixel-stage variable names the emit code expects, mapped to the data
+	// available in the vertex stage. Pixel-only references (`Input.Position`,
+	// `Cull.CustomData`, `ViewPosition`) are stubbed to neutral values so a
+	// graph that uses those nodes can still compile in vertex stage; the
+	// emitted values are wrong but a real material wouldn't reach those nodes
+	// from WorldPositionOffset.
+	static const char* GVertexStageAliasPreamble =
+		"\t// Material graph variable aliases (vertex stage).\n"
+		"\tfloat3 WorldPosition = WorldPos.xyz;\n"
+		"\tfloat3 WorldNormal   = NormalWS;\n"
+		"\tfloat2 UV0           = VertexData.UV;\n"
+		"\tfloat4 VertexColor   = VertexData.Color;\n"
+		"\tuint   MaterialIndex = Inst.MaterialIndex;\n"
+		"\tuint   EntityID      = Inst.EntityID;\n"
+		"\tfloat3 ViewPosition  = float3(0.0);\n";
+
+	// Substitute a single token; logs and returns false if the token is missing.
+	static bool SubstituteToken(FString& Source, const char* Token, const FString& Replacement)
+	{
+		size_t Pos = Source.find(Token);
+		if (Pos == FString::npos)
+		{
+			LOG_ERROR("Missing [{}] in base shader!", Token);
+			return false;
+		}
+		Source.replace(Pos, strlen(Token), Replacement);
+		return true;
 	}
 
 	FString FMaterialCompiler::BuildTree(size_t& StartReplacement, size_t& EndReplacement, EMaterialType MaterialType) const
@@ -31,11 +64,13 @@ namespace Lumina
 		const char* Token = "$MATERIAL_INPUTS";
 		size_t Pos = LoadedString.find(Token);
 
+		FString Combined = PixelChunks + PixelOutputChunks;
+
 		if (Pos != FString::npos)
 		{
 			StartReplacement = Pos;
-			LoadedString.replace(Pos, strlen(Token), ShaderChunks);
-			EndReplacement = Pos + ShaderChunks.length();
+			LoadedString.replace(Pos, strlen(Token), Combined);
+			EndReplacement = Pos + Combined.length();
 		}
 		else
 		{
@@ -44,6 +79,46 @@ namespace Lumina
 		}
 
 		return LoadedString;
+	}
+
+	void FMaterialCompiler::BuildShaders(FString& OutPixelShader, FString& OutVertexShader, EMaterialType MaterialType) const
+	{
+		const FString BasePath = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/";
+		const bool bIsTerrain = (MaterialType == EMaterialType::Terrain);
+		const FString PixelPath  = BasePath + (bIsTerrain ? "TerrainBasePixelPass.slang"  : "BasePixelPass.slang");
+		const FString VertexPath = BasePath + (bIsTerrain ? "TerrainBaseVertexPass.slang" : "BaseVertexPass.slang");
+
+		// Pixel: existing single-stage substitution. Output node already emits
+		// its own `FMaterialPixelInputs Material;` declaration, so we just
+		// append body + output assignments.
+		OutPixelShader.clear();
+		if (FileHelper::LoadFileIntoString(OutPixelShader, PixelPath))
+		{
+			SubstituteToken(OutPixelShader, "$MATERIAL_INPUTS", PixelChunks + PixelOutputChunks);
+		}
+		else
+		{
+			LOG_ERROR("Failed to find {}!", PixelPath);
+		}
+
+		// Vertex: alias preamble + body + output assignments. The vertex
+		// template declared `FMaterialVertexInputs Material;` inline above
+		// the token, so we only emit assignments here.
+		OutVertexShader = BuildVertexShaderFromTemplate(VertexPath);
+	}
+
+	FString FMaterialCompiler::BuildVertexShaderFromTemplate(const FString& TemplateAbsolutePath) const
+	{
+		FString Loaded;
+		if (!FileHelper::LoadFileIntoString(Loaded, TemplateAbsolutePath))
+		{
+			LOG_ERROR("Failed to find {}!", TemplateAbsolutePath);
+			return Loaded;
+		}
+
+		FString Replacement = FString(GVertexStageAliasPreamble) + VertexChunks + VertexOutputChunks;
+		SubstituteToken(Loaded, "$MATERIAL_VERTEX_INPUTS", Replacement);
+		return Loaded;
 	}
 
 	static FString GetVectorType(EMaterialInputType Type)
@@ -71,6 +146,18 @@ namespace Lumina
 		}
 	}
 
+	static EComponentMask GetMaskFromComponentCount(int32 Count)
+	{
+		switch (Count)
+		{
+			case 1: return EComponentMask::R;
+			case 2: return EComponentMask::RG;
+			case 3: return EComponentMask::RGB;
+			case 4: return EComponentMask::RGBA;
+			default: return EComponentMask::None;
+		}
+	}
+
 	int32 FMaterialCompiler::GetComponentCount(EComponentMask Mask)
 	{
 		switch (Mask)
@@ -85,7 +172,7 @@ namespace Lumina
 			case EComponentMask::GB: return 2;
 			case EComponentMask::RGB: return 3;
 		}
-		
+
 		return 0;
 	}
 
@@ -113,7 +200,7 @@ namespace Lumina
 		default: return EMaterialInputType::Float;
 		}
 	}
-	
+
 	FMaterialCompiler::FInputValue FMaterialCompiler::GetTypedInputValue(CMaterialInput* Input, float DefaultValue)
 	{
 		return GetTypedInputValue(Input, eastl::to_string(DefaultValue));
@@ -127,7 +214,7 @@ namespace Lumina
 		{
 			CMaterialOutput* Conn	= Input->GetConnection<CMaterialOutput>(0);
 			FString NodeName		= Conn->GetOwningNode()->GetNodeFullName();
-			
+
 			Result.Type				= Conn->InputType;
 			Result.ComponentCount	= GetComponentCount(Result.Type);
 			Result.Value 			= NodeName;
@@ -146,6 +233,21 @@ namespace Lumina
 		return Result;
 	}
 
+	void FMaterialCompiler::SetOwningOutputType(CMaterialInput* AnyInputOnNode, EMaterialInputType Type)
+	{
+		if (!AnyInputOnNode)
+		{
+			return;
+		}
+
+		CMaterialExpression* Owner = AnyInputOnNode->GetOwningNode<CMaterialExpression>();
+		if (Owner && Owner->Output)
+		{
+			Owner->Output->SetInputType(Type);
+			Owner->Output->SetComponentMask(GetMaskFromComponentCount(GetComponentCount(Type)));
+		}
+	}
+
 	EMaterialInputType FMaterialCompiler::DetermineResultType(EMaterialInputType A, EMaterialInputType B, bool IsComponentWise)
 	{
 		int32 CountA = GetComponentCount(A);
@@ -161,7 +263,7 @@ namespace Lumina
 			{
 				return A;
 			}
-			
+
 			return CountA >= CountB ? A : B;
 		}
 		else
@@ -188,17 +290,71 @@ namespace Lumina
 			Error.Description = "Cannot perform " + Op + " between " + GetVectorType(AValue.Type) + " and " + GetVectorType(BValue.Type);
 			AddError(Error);
 
-			ShaderChunks.append("// ERROR: Type mismatch\n");
+			GetActiveChunk().append("// ERROR: Type mismatch\n");
 		}
 
 		FString RMask = GetSwizzleForMask(AValue.Mask);
 		FString GMask = GetSwizzleForMask(BValue.Mask);
-		
-		ShaderChunks.append(ResultTypeStr + " " + OwningNode + " = " + AValue.Value + RMask + " " + Op + " " + BValue.Value + GMask + ";\n");
-		
+
+		GetActiveChunk().append(ResultTypeStr + " " + OwningNode + " = " + AValue.Value + RMask + " " + Op + " " + BValue.Value + GMask + ";\n");
+
 		return ResultType;
 	}
-	
+
+	EMaterialInputType FMaterialCompiler::EmitUnaryFunc(const FString& Func, CMaterialInput* A, float DefaultA)
+	{
+		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AValue = GetTypedInputValue(A, DefaultA);
+		FString TypeStr = GetVectorType(AValue.Type);
+
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = " + Func + "(" + AValue.Value + GetSwizzleForMask(AValue.Mask) + ");\n");
+
+		SetOwningOutputType(A, AValue.Type);
+		return AValue.Type;
+	}
+
+	EMaterialInputType FMaterialCompiler::EmitBinaryFunc(const FString& Func, CMaterialInput* A, CMaterialInput* B, float DefaultA, float DefaultB)
+	{
+		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AValue = GetTypedInputValue(A, DefaultA);
+		FInputValue BValue = GetTypedInputValue(B, DefaultB);
+
+		EMaterialInputType ResultType = DetermineResultType(AValue.Type, BValue.Type, true);
+		FString TypeStr = GetVectorType(ResultType);
+
+		if (AValue.ComponentCount > 1 && BValue.ComponentCount > 1 && AValue.ComponentCount != BValue.ComponentCount)
+		{
+			EdNodeGraph::FError Error;
+			Error.Node = A->GetOwningNode<CMaterialGraphNode>();
+			Error.Name = "Type Mismatch";
+			Error.Description = "Cannot perform " + Func + " between " + GetVectorType(AValue.Type) + " and " + GetVectorType(BValue.Type);
+			AddError(Error);
+			GetActiveChunk().append("// ERROR: Type mismatch\n");
+		}
+
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = " + Func + "(" + AValue.Value + GetSwizzleForMask(AValue.Mask) + ", " + BValue.Value + GetSwizzleForMask(BValue.Mask) + ");\n");
+
+		SetOwningOutputType(A, ResultType);
+		return ResultType;
+	}
+
+	EMaterialInputType FMaterialCompiler::EmitTernaryFunc(const FString& Func, CMaterialInput* A, CMaterialInput* B, CMaterialInput* C, float DA, float DB, float DC)
+	{
+		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AValue = GetTypedInputValue(A, DA);
+		FInputValue BValue = GetTypedInputValue(B, DB);
+		FInputValue CValue = GetTypedInputValue(C, DC);
+
+		EMaterialInputType ResultType = DetermineResultType(AValue.Type, BValue.Type, true);
+		ResultType = DetermineResultType(ResultType, CValue.Type, true);
+		FString TypeStr = GetVectorType(ResultType);
+
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = " + Func + "(" + AValue.Value + ", " + BValue.Value + ", " + CValue.Value + ");\n");
+
+		SetOwningOutputType(A, ResultType);
+		return ResultType;
+	}
+
 	void FMaterialCompiler::DefineFloatParameter(const FString& NodeID, const FName& ParamID, float Value)
 	{
 		if (ScalarParameters.find(ParamID) == ScalarParameters.end())
@@ -208,7 +364,7 @@ namespace Lumina
 		}
 
 		FString IndexString = eastl::to_string(ScalarParameters[ParamID].Index);
-		ShaderChunks.append("float " + NodeID + " = GetMaterialScalar(MaterialIndex, " + IndexString + ");\n");
+		GetActiveChunk().append("float " + NodeID + " = GetMaterialScalar(MaterialIndex, " + IndexString + ");\n");
 	}
 
 	void FMaterialCompiler::DefineFloat2Parameter(const FString& NodeID, const FName& ParamID, float Value[2])
@@ -220,7 +376,7 @@ namespace Lumina
 		}
 
 		FString IndexString = eastl::to_string(VectorParameters[ParamID].Index);
-		ShaderChunks.append("float2 " + NodeID + " = GetMaterialVec4(MaterialIndex, " + IndexString + ").xy;\n");
+		GetActiveChunk().append("float2 " + NodeID + " = GetMaterialVec4(MaterialIndex, " + IndexString + ").xy;\n");
 	}
 
 	void FMaterialCompiler::DefineFloat3Parameter(const FString& NodeID, const FName& ParamID, float Value[3])
@@ -232,7 +388,7 @@ namespace Lumina
 		}
 
 		FString IndexString = eastl::to_string(VectorParameters[ParamID].Index);
-		ShaderChunks.append("float3 " + NodeID + " = GetMaterialVec4(MaterialIndex, " + IndexString + ").xyz;\n");
+		GetActiveChunk().append("float3 " + NodeID + " = GetMaterialVec4(MaterialIndex, " + IndexString + ").xyz;\n");
 	}
 
 	void FMaterialCompiler::DefineFloat4Parameter(const FString& NodeID, const FName& ParamID, float Value[4])
@@ -244,20 +400,20 @@ namespace Lumina
 		}
 
 		FString IndexString = eastl::to_string(VectorParameters[ParamID].Index);
-		ShaderChunks.append("float4 " + NodeID + " = GetMaterialVec4(MaterialIndex, " + IndexString + ");\n");
+		GetActiveChunk().append("float4 " + NodeID + " = GetMaterialVec4(MaterialIndex, " + IndexString + ");\n");
 	}
 
 	void FMaterialCompiler::DefineConstantFloat(const FString& ID, float Value)
 	{
 		FString ValueString = eastl::to_string(Value);
-		ShaderChunks.append("float " + ID + " = " + ValueString + ";\n");
+		GetActiveChunk().append("float " + ID + " = " + ValueString + ";\n");
 	}
 
 	void FMaterialCompiler::DefineConstantFloat2(const FString& ID, float Value[2])
 	{
 		FString ValueStringX = eastl::to_string(Value[0]);
 		FString ValueStringY = eastl::to_string(Value[1]);
-		ShaderChunks.append("float2 " + ID + " = float2(" + ValueStringX + ", " + ValueStringY + ");\n");
+		GetActiveChunk().append("float2 " + ID + " = float2(" + ValueStringX + ", " + ValueStringY + ");\n");
 	}
 
 	void FMaterialCompiler::DefineConstantFloat3(const FString& ID, float Value[3])
@@ -265,7 +421,7 @@ namespace Lumina
 		FString ValueStringX = eastl::to_string(Value[0]);
 		FString ValueStringY = eastl::to_string(Value[1]);
 		FString ValueStringZ = eastl::to_string(Value[2]);
-		ShaderChunks.append("float3 " + ID + " = float3(" + ValueStringX + ", " + ValueStringY + ", " + ValueStringZ + ");\n");
+		GetActiveChunk().append("float3 " + ID + " = float3(" + ValueStringX + ", " + ValueStringY + ", " + ValueStringZ + ");\n");
 	}
 
 	void FMaterialCompiler::DefineConstantFloat4(const FString& ID, float Value[4])
@@ -274,7 +430,7 @@ namespace Lumina
 		FString ValueStringY = eastl::to_string(Value[1]);
 		FString ValueStringZ = eastl::to_string(Value[2]);
 		FString ValueStringW = eastl::to_string(Value[3]);
-		ShaderChunks.append("float4 " + ID + " = float4(" + ValueStringX + ", " + ValueStringY + ", " + ValueStringZ + ", " + ValueStringW + ");\n");
+		GetActiveChunk().append("float4 " + ID + " = float4(" + ValueStringX + ", " + ValueStringY + ", " + ValueStringZ + ", " + ValueStringW + ");\n");
 	}
 
 	void FMaterialCompiler::BreakFloat2(CMaterialInput* A)
@@ -282,7 +438,7 @@ namespace Lumina
 		const FString OwningNode = A->GetOwningNode()->GetNodeFullName();
 
 		FInputValue ValueString = GetTypedInputValue(A, 0.0);
-		
+
 		const FString TypeStr = GetVectorType(EMaterialInputType::Float2);
 
 		if (ValueString.ComponentCount != 2)
@@ -292,10 +448,10 @@ namespace Lumina
 			Error.Name = "Type Mismatch";
 			Error.Description = "BreakFloat2 requires a Float2 input, got " + GetVectorType(ValueString.Type);
 			AddError(Error);
-			ShaderChunks.append("// ERROR: Type mismatch in BreakFloat2\n");
+			GetActiveChunk().append("// ERROR: Type mismatch in BreakFloat2\n");
 		}
-		
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = " + ValueString.Value + ".xy" + ";\n");
+
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = " + ValueString.Value + ".xy" + ";\n");
 	}
 
 	void FMaterialCompiler::BreakFloat3(CMaterialInput* A)
@@ -304,7 +460,7 @@ namespace Lumina
 
 		FInputValue ValueString = GetTypedInputValue(A, 0.0);
 		const FString TypeStr = GetVectorType(EMaterialInputType::Float3);
-		
+
 		if (ValueString.ComponentCount != 3)
 		{
 			EdNodeGraph::FError Error;
@@ -312,10 +468,10 @@ namespace Lumina
 			Error.Name = "Type Mismatch";
 			Error.Description = "BreakFloat3 requires a Float3 input, got " + GetVectorType(ValueString.Type);
 			AddError(Error);
-			ShaderChunks.append("// ERROR: Type mismatch in BreakFloat3\n");
+			GetActiveChunk().append("// ERROR: Type mismatch in BreakFloat3\n");
 		}
-		
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = " + ValueString.Value + ".xyz" + ";\n");
+
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = " + ValueString.Value + ".xyz" + ";\n");
 	}
 
 	void FMaterialCompiler::BreakFloat4(CMaterialInput* A)
@@ -325,7 +481,7 @@ namespace Lumina
 		FInputValue ValueString = GetTypedInputValue(A, 0.0);
 
 		const FString TypeStr = GetVectorType(EMaterialInputType::Float4);
-		
+
 		if (ValueString.ComponentCount != 4)
 		{
 			EdNodeGraph::FError Error;
@@ -333,10 +489,10 @@ namespace Lumina
 			Error.Name = "Type Mismatch";
 			Error.Description = "BreakFloat4 requires a Float4 input, got " + GetVectorType(ValueString.Type);
 			AddError(Error);
-			ShaderChunks.append("// ERROR: Type mismatch in BreakFloat4\n");
+			GetActiveChunk().append("// ERROR: Type mismatch in BreakFloat4\n");
 		}
-		
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = " + ValueString.Value + ".xyzw" + ";\n");
+
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = " + ValueString.Value + ".xyzw" + ";\n");
 	}
 
 	void FMaterialCompiler::MakeFloat2(CMaterialInput* R, CMaterialInput* G)
@@ -344,10 +500,9 @@ namespace Lumina
 		const FString OwningNode = R->GetOwningNode()->GetNodeFullName();
 		FInputValue ValueR = GetTypedInputValue(R, 0.0f);
 		FInputValue ValueG = GetTypedInputValue(G, 0.0f);
-		
+
 		const FString TypeStr = GetVectorType(EMaterialInputType::Float2);
-		
-		
+
 		if (ValueR.ComponentCount != 1 || ValueG.ComponentCount != 1)
 		{
 			EdNodeGraph::FError Error;
@@ -356,16 +511,16 @@ namespace Lumina
 			Error.Description.sprintf("MakeFloat2 requires two Float inputs, got %s and %s",
 				GetVectorType(ValueR.Type).c_str(),
 				GetVectorType(ValueG.Type).c_str());
-		
+
 			AddError(Error);
-			ShaderChunks.append("// ERROR: Type mismatch in MakeFloat2\n");
+			GetActiveChunk().append("// ERROR: Type mismatch in MakeFloat2\n");
 			return;
 		}
-		
+
 		FString RMask = GetSwizzleForMask(ValueR.Mask);
 		FString GMask = GetSwizzleForMask(ValueG.Mask);
-		
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = float2(" + ValueR.Value + RMask + ", " +  ValueG.Value + GMask + ");\n");
+
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = float2(" + ValueR.Value + RMask + ", " +  ValueG.Value + GMask + ");\n");
 	}
 
 	void FMaterialCompiler::MakeFloat3(CMaterialInput* R, CMaterialInput* G, CMaterialInput* B)
@@ -376,7 +531,7 @@ namespace Lumina
 		FInputValue ValueB = GetTypedInputValue(B, 0.0f);
 
 		const FString TypeStr = GetVectorType(EMaterialInputType::Float3);
-		
+
 		if (ValueR.ComponentCount != 1 || ValueG.ComponentCount != 1 || ValueB.ComponentCount != 1)
 		{
 			EdNodeGraph::FError Error;
@@ -386,17 +541,17 @@ namespace Lumina
 				GetVectorType(ValueR.Type).c_str(),
 				GetVectorType(ValueG.Type).c_str(),
 				GetVectorType(ValueB.Type).c_str());
-		
+
 			AddError(Error);
-			ShaderChunks.append("// ERROR: Type mismatch in MakeFloat3\n");
+			GetActiveChunk().append("// ERROR: Type mismatch in MakeFloat3\n");
 			return;
 		}
-		
+
 		FString RMask = GetSwizzleForMask(ValueR.Mask);
 		FString GMask = GetSwizzleForMask(ValueG.Mask);
 		FString BMask = GetSwizzleForMask(ValueB.Mask);
 
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = float3(" + ValueR.Value + RMask + ", " +  ValueG.Value + GMask + ", " + ValueB.Value + BMask + ");\n");
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = float3(" + ValueR.Value + RMask + ", " +  ValueG.Value + GMask + ", " + ValueB.Value + BMask + ");\n");
 	}
 
 	void FMaterialCompiler::MakeFloat4(CMaterialInput* R, CMaterialInput* G, CMaterialInput* B, CMaterialInput* A)
@@ -408,7 +563,7 @@ namespace Lumina
 		FInputValue ValueA = GetTypedInputValue(A, 0.0f);
 
 		const FString TypeStr = GetVectorType(EMaterialInputType::Float4);
-		
+
 		if (ValueR.ComponentCount != 1 || ValueG.ComponentCount != 1 || ValueB.ComponentCount != 1 || ValueA.ComponentCount != 1)
 		{
 			EdNodeGraph::FError Error;
@@ -419,35 +574,59 @@ namespace Lumina
 				GetVectorType(ValueG.Type).c_str(),
 				GetVectorType(ValueB.Type).c_str(),
 				GetVectorType(ValueA.Type).c_str());
-		
+
 			AddError(Error);
-			ShaderChunks.append("// ERROR: Type mismatch in MakeFloat4\n");
+			GetActiveChunk().append("// ERROR: Type mismatch in MakeFloat4\n");
 		}
-		
+
 		FString RMask = GetSwizzleForMask(ValueR.Mask);
 		FString GMask = GetSwizzleForMask(ValueG.Mask);
 		FString BMask = GetSwizzleForMask(ValueB.Mask);
 		FString AMask = GetSwizzleForMask(ValueA.Mask);
 
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = float4(" + ValueR.Value + RMask + ", "
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = float4(" + ValueR.Value + RMask + ", "
 			+  ValueG.Value + GMask + ", " + ValueB.Value + BMask + ", " + ValueA.Value + AMask + ");\n");
+	}
+
+	void FMaterialCompiler::Append(CMaterialInput* A, CMaterialInput* B)
+	{
+		const FString OwningNode = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AValue = GetTypedInputValue(A, 0.0f);
+		FInputValue BValue = GetTypedInputValue(B, 0.0f);
+
+		int32 TotalComponents = AValue.ComponentCount + BValue.ComponentCount;
+		if (TotalComponents > 4)
+		{
+			EdNodeGraph::FError Error;
+			Error.Node = A->GetOwningNode<CMaterialGraphNode>();
+			Error.Name = "Append Too Wide";
+			Error.Description = "Append result would have more than 4 components.";
+			AddError(Error);
+			TotalComponents = 4;
+		}
+
+		EMaterialInputType ResultType = GetTypeFromComponentCount(TotalComponents);
+		FString TypeStr = GetVectorType(ResultType);
+
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = " + TypeStr + "(" + AValue.Value + GetSwizzleForMask(AValue.Mask) + ", " + BValue.Value + GetSwizzleForMask(BValue.Mask) + ");\n");
+		SetOwningOutputType(A, ResultType);
 	}
 
 	void FMaterialCompiler::ComponentMask(CMaterialInput* A)
 	{
 		CMaterialExpression_ComponentMask* OwningNode = A->GetOwningNode<CMaterialExpression_ComponentMask>();
-		
+
 		if (!A->HasConnection())
 		{
 			EdNodeGraph::FError Error;
 			Error.Node = A->GetOwningNode<CMaterialGraphNode>();
 			Error.Name = "Invalid Action";
 			Error.Description.append("ComponentMask is required to have an input value");
-		
+
 			AddError(Error);
-			ShaderChunks.append("// ERROR: Component Mask Issue\n");
+			GetActiveChunk().append("// ERROR: Component Mask Issue\n");
 		}
-		
+
 		FString Swizzle = ".";
 		int32 ComponentCount = 0;
 		if (OwningNode->R)
@@ -470,13 +649,14 @@ namespace Lumina
 			Swizzle += "a";
 			ComponentCount++;
 		}
-		
+
 		FString VectorType = GetVectorType(ComponentCount);
 		FInputValue Value = GetTypedInputValue(A, "");
-		
-		ShaderChunks.append(VectorType + " " + OwningNode->GetNodeFullName() + " = " + Value.Value + Swizzle + ";\n");
+
+		GetActiveChunk().append(VectorType + " " + OwningNode->GetNodeFullName() + " = " + Value.Value + Swizzle + ";\n");
+		SetOwningOutputType(A, GetTypeFromComponentCount(ComponentCount));
 	}
-	
+
 	void FMaterialCompiler::DefineTextureSample(const FString& ID)
 	{
 		return;
@@ -502,7 +682,7 @@ namespace Lumina
 		}
 
 		auto It = eastl::find(BoundImages.begin(), BoundImages.end(), Texture);
-    
+
 		int32 Index;
 		if (It != BoundImages.end())
 		{
@@ -515,12 +695,8 @@ namespace Lumina
 			NumTextureParams++;
 		}
 
-		ShaderChunks.append("float4 " + ID + " = uGlobalTextures[GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + ")].Sample(" + UVStr + ");\n");
+		GetActiveChunk().append("float4 " + ID + " = uGlobalTextures[GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + ")].Sample(" + UVStr + ");\n");
 
-		// Tag the sample site if this is a normal map. The Normal pin in
-		// MaterialOutputNode queries this set to choose between the standard
-		// 3-channel decode and the 2-channel decode + Z reconstruct that BC5
-		// normals require (and that 3-channel normals tolerate fine).
 		if (Texture->ColorSpace == ETextureColorSpace::NormalMap)
 		{
 			NormalMapSampleNodes.insert(ID);
@@ -555,7 +731,7 @@ namespace Lumina
 			NumTextureParams++;
 		}
 
-		ShaderChunks.append("float4 " + ID + " = uGlobalTextures[GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + ")].Sample(" + UVStr + ");\n");
+		GetActiveChunk().append("float4 " + ID + " = uGlobalTextures[GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + ")].Sample(" + UVStr + ");\n");
 
 		if (Texture && Texture->ColorSpace == ETextureColorSpace::NormalMap)
 		{
@@ -603,329 +779,406 @@ namespace Lumina
 		}
 	}
 
+	bool FMaterialCompiler::RequirePixelStage(CMaterialGraphNode* Node, const FString& NodeKindName)
+	{
+		if (CurrentStage == EMaterialShaderStage::Pixel)
+		{
+			return true;
+		}
+
+		EdNodeGraph::FError Error;
+		Error.Node = Node;
+		Error.Name = "Stage Error";
+		Error.Description = NodeKindName + " is only available in the pixel stage and cannot feed World Position Offset.";
+		AddError(Error);
+		return false;
+	}
+
 	void FMaterialCompiler::NewLine()
 	{
-		ShaderChunks.append("\n");
+		GetActiveChunk().append("\n");
 	}
+
+	// ========================================================================
+	// Built-in scene inputs
+	// ========================================================================
 
 	void FMaterialCompiler::VertexNormal(const FString& ID)
 	{
-		ShaderChunks.append("float3 " + ID + " = WorldNormal.xyz;\n");
+		GetActiveChunk().append("float3 " + ID + " = WorldNormal.xyz;\n");
+	}
+
+	void FMaterialCompiler::VertexTangent(const FString& ID)
+	{
+		GetActiveChunk().append("float3 " + ID + " = Input.TangentWS.xyz;\n");
+	}
+
+	void FMaterialCompiler::VertexBitangent(const FString& ID)
+	{
+		GetActiveChunk().append("float3 " + ID + " = cross(WorldNormal.xyz, Input.TangentWS.xyz) * Input.TangentWS.w;\n");
+	}
+
+	void FMaterialCompiler::VertexColor(const FString& ID)
+	{
+		GetActiveChunk().append("float4 " + ID + " = VertexColor;\n");
 	}
 
 	void FMaterialCompiler::TexCoords(const FString& ID, uint32 Index, float UTiling, float VTiling)
 	{
-		ShaderChunks.append("float2 " + ID + " = UV0 * float2(" + eastl::to_string(UTiling) + ", " + eastl::to_string(VTiling) + ");\n");
+		GetActiveChunk().append("float2 " + ID + " = UV0 * float2(" + eastl::to_string(UTiling) + ", " + eastl::to_string(VTiling) + ");\n");
 	}
 
 	void FMaterialCompiler::Panner(CMaterialInput* UV, CMaterialInput* Time, CMaterialInput* Speed)
 	{
 		CMaterialExpression_Panner* PannerNode = UV->GetOwningNode<CMaterialExpression_Panner>();
-		
+
 		FInputValue UVValue = GetTypedInputValue(UV, "float2(UV0)");
 		FInputValue TimeValue = GetTypedInputValue(Time, "GetTime()");
 		FInputValue SpeedValue = GetTypedInputValue(Speed, "float2(" + eastl::to_string(PannerNode->SpeedX) + ", " + eastl::to_string(PannerNode->SpeedY) + ")");
 		const FString OwningNode = UV->GetOwningNode()->GetNodeFullName();
-		
-		ShaderChunks.append("float2 " + OwningNode + " = " + UVValue.Value + " + " + SpeedValue.Value + " * " + TimeValue.Value + ";\n");
-		
+
+		GetActiveChunk().append("float2 " + OwningNode + " = " + UVValue.Value + " + " + SpeedValue.Value + " * " + TimeValue.Value + ";\n");
+
 		PannerNode->Output->SetInputType(EMaterialInputType::Float2);
+		PannerNode->Output->SetComponentMask(EComponentMask::RG);
+	}
+
+	void FMaterialCompiler::RotateUV(CMaterialInput* UV, CMaterialInput* Center, CMaterialInput* Rotation)
+	{
+		FString OwningNode = UV->GetOwningNode()->GetNodeFullName();
+		FInputValue UVValue = GetTypedInputValue(UV, "float2(UV0)");
+		FInputValue CenterValue = GetTypedInputValue(Center, "float2(0.5, 0.5)");
+		FInputValue RotValue = GetTypedInputValue(Rotation, 0.0f);
+
+		GetActiveChunk().append("float2 " + OwningNode + "_C = " + UVValue.Value + " - " + CenterValue.Value + ";\n");
+		GetActiveChunk().append("float  " + OwningNode + "_S = sin(" + RotValue.Value + ");\n");
+		GetActiveChunk().append("float  " + OwningNode + "_K = cos(" + RotValue.Value + ");\n");
+		GetActiveChunk().append("float2 " + OwningNode + " = float2("
+			+ OwningNode + "_C.x * " + OwningNode + "_K - " + OwningNode + "_C.y * " + OwningNode + "_S, "
+			+ OwningNode + "_C.x * " + OwningNode + "_S + " + OwningNode + "_C.y * " + OwningNode + "_K) + " + CenterValue.Value + ";\n");
+
+		SetOwningOutputType(UV, EMaterialInputType::Float2);
+	}
+
+	void FMaterialCompiler::TilingAndOffset(CMaterialInput* UV, CMaterialInput* Tiling, CMaterialInput* Offset)
+	{
+		FString OwningNode = UV->GetOwningNode()->GetNodeFullName();
+		FInputValue UVValue = GetTypedInputValue(UV, "float2(UV0)");
+		FInputValue TilingValue = GetTypedInputValue(Tiling, "float2(1.0, 1.0)");
+		FInputValue OffsetValue = GetTypedInputValue(Offset, "float2(0.0, 0.0)");
+
+		GetActiveChunk().append("float2 " + OwningNode + " = " + UVValue.Value + " * " + TilingValue.Value + " + " + OffsetValue.Value + ";\n");
+		SetOwningOutputType(UV, EMaterialInputType::Float2);
+	}
+
+	void FMaterialCompiler::FlipBookUV(CMaterialInput* UV, CMaterialInput* NumCols, CMaterialInput* NumRows, CMaterialInput* Time, CMaterialInput* FPS)
+	{
+		FString OwningNode = UV->GetOwningNode()->GetNodeFullName();
+		FInputValue UVValue = GetTypedInputValue(UV, "float2(UV0)");
+		FInputValue ColsValue = GetTypedInputValue(NumCols, 1.0f);
+		FInputValue RowsValue = GetTypedInputValue(NumRows, 1.0f);
+		FInputValue TimeValue = GetTypedInputValue(Time, "GetTime()");
+		FInputValue FPSValue = GetTypedInputValue(FPS, 30.0f);
+
+		GetActiveChunk().append("float " + OwningNode + "_FN = floor((" + TimeValue.Value + ") * (" + FPSValue.Value + "));\n");
+		GetActiveChunk().append("float " + OwningNode + "_NF = max((" + ColsValue.Value + ") * (" + RowsValue.Value + "), 1.0);\n");
+		GetActiveChunk().append("float " + OwningNode + "_FI = fmod(" + OwningNode + "_FN, " + OwningNode + "_NF);\n");
+		GetActiveChunk().append("float " + OwningNode + "_CX = fmod(" + OwningNode + "_FI, max((" + ColsValue.Value + "), 1.0));\n");
+		GetActiveChunk().append("float " + OwningNode + "_CY = floor(" + OwningNode + "_FI / max((" + ColsValue.Value + "), 1.0));\n");
+		GetActiveChunk().append("float2 " + OwningNode + " = float2(((" + UVValue.Value + ").x + " + OwningNode + "_CX) / max((" + ColsValue.Value + "), 1.0), 1.0 - (((" + UVValue.Value + ").y + " + OwningNode + "_CY + 1.0) / max((" + RowsValue.Value + "), 1.0)));\n");
+		SetOwningOutputType(UV, EMaterialInputType::Float2);
+	}
+
+	void FMaterialCompiler::PolarCoordinates(CMaterialInput* UV, CMaterialInput* Center)
+	{
+		FString OwningNode = UV->GetOwningNode()->GetNodeFullName();
+		FInputValue UVValue = GetTypedInputValue(UV, "float2(UV0)");
+		FInputValue CenterValue = GetTypedInputValue(Center, "float2(0.5, 0.5)");
+
+		GetActiveChunk().append("float2 " + OwningNode + "_D = " + UVValue.Value + " - " + CenterValue.Value + ";\n");
+		GetActiveChunk().append("float2 " + OwningNode + " = float2(length(" + OwningNode + "_D), atan2(" + OwningNode + "_D.y, " + OwningNode + "_D.x) / 6.2831853 + 0.5);\n");
+		SetOwningOutputType(UV, EMaterialInputType::Float2);
+	}
+
+	void FMaterialCompiler::TwirlUV(CMaterialInput* UV, CMaterialInput* Center, CMaterialInput* Strength)
+	{
+		FString OwningNode = UV->GetOwningNode()->GetNodeFullName();
+		FInputValue UVValue = GetTypedInputValue(UV, "float2(UV0)");
+		FInputValue CenterValue = GetTypedInputValue(Center, "float2(0.5, 0.5)");
+		FInputValue StrengthValue = GetTypedInputValue(Strength, 1.0f);
+
+		GetActiveChunk().append("float2 " + OwningNode + "_O = " + UVValue.Value + " - " + CenterValue.Value + ";\n");
+		GetActiveChunk().append("float  " + OwningNode + "_R = length(" + OwningNode + "_O);\n");
+		GetActiveChunk().append("float  " + OwningNode + "_A = atan2(" + OwningNode + "_O.y, " + OwningNode + "_O.x) + " + StrengthValue.Value + " * " + OwningNode + "_R;\n");
+		GetActiveChunk().append("float2 " + OwningNode + " = " + CenterValue.Value + " + float2(cos(" + OwningNode + "_A), sin(" + OwningNode + "_A)) * " + OwningNode + "_R;\n");
+		SetOwningOutputType(UV, EMaterialInputType::Float2);
 	}
 
 	void FMaterialCompiler::WorldPos(const FString& ID)
 	{
-		ShaderChunks.append("float3 " + ID + " = WorldPosition;\n");
+		GetActiveChunk().append("float3 " + ID + " = WorldPosition;\n");
 	}
 
 	void FMaterialCompiler::CameraPos(const FString& ID)
 	{
-		ShaderChunks.append("float3 " + ID + " = GetCameraPosition();\n");
+		GetActiveChunk().append("float3 " + ID + " = GetCameraPosition();\n");
 	}
 
 	void FMaterialCompiler::EntityID(const FString& ID)
 	{
-		ShaderChunks.append("float " + ID + " = float(EntityID);\n");
+		GetActiveChunk().append("float " + ID + " = float(EntityID);\n");
 	}
 
 	void FMaterialCompiler::Time(const FString& ID)
 	{
-		ShaderChunks.append("float " + ID + " = GetTime();\n");
+		GetActiveChunk().append("float " + ID + " = GetTime();\n");
+	}
+
+	void FMaterialCompiler::ScreenPosition(const FString& ID, bool bRaw)
+	{
+		if (bRaw)
+		{
+			GetActiveChunk().append("float2 " + ID + " = Input.Position.xy;\n");
+		}
+		else
+		{
+			GetActiveChunk().append("float2 " + ID + " = Input.Position.xy / max(float2(uSceneData.ScreenSize.xy), float2(1.0, 1.0));\n");
+		}
+	}
+
+	void FMaterialCompiler::ViewDirection(const FString& ID)
+	{
+		GetActiveChunk().append("float3 " + ID + " = normalize(GetCameraPosition() - WorldPosition);\n");
+	}
+
+	void FMaterialCompiler::ReflectionVector(const FString& ID)
+	{
+		GetActiveChunk().append("float3 " + ID + " = reflect(-normalize(GetCameraPosition() - WorldPosition), normalize(WorldNormal.xyz));\n");
+	}
+
+	void FMaterialCompiler::FragmentDepth(const FString& ID, bool bLinear)
+	{
+		if (bLinear)
+		{
+			GetActiveChunk().append("float " + ID + " = abs(ViewPosition.z);\n");
+		}
+		else
+		{
+			GetActiveChunk().append("float " + ID + " = Input.Position.z;\n");
+		}
+	}
+
+	void FMaterialCompiler::ViewportSize(const FString& ID)
+	{
+		GetActiveChunk().append("float2 " + ID + " = float2(uSceneData.ScreenSize.xy);\n");
+	}
+
+	void FMaterialCompiler::AspectRatio(const FString& ID)
+	{
+		GetActiveChunk().append("float " + ID + " = float(uSceneData.ScreenSize.x) / max(float(uSceneData.ScreenSize.y), 1.0);\n");
+	}
+
+	void FMaterialCompiler::NumericConstant(const FString& ID, float Value)
+	{
+		GetActiveChunk().append("float " + ID + " = " + eastl::to_string(Value) + ";\n");
 	}
 
 	void FMaterialCompiler::CustomPrimitiveData(CMaterialExpression_CustomPrimitiveData* Node, ECustomPrimitiveDataType Type)
 	{
 		Node->Output->SetInputType(EMaterialInputType::Float);
-		
+
 		switch (Type)
 		{
 		case ECustomPrimitiveDataType::Float:
-			ShaderChunks.append("float " + Node->GetNodeFullName() + " = Cull.CustomData.AsFloat;\n");
+			GetActiveChunk().append("float " + Node->GetNodeFullName() + " = Cull.CustomData.AsFloat;\n");
 			break;
 		case ECustomPrimitiveDataType::Int:
-			ShaderChunks.append("int " + Node->GetNodeFullName() + " = Cull.CustomData.AsInt;\n");
+			GetActiveChunk().append("int " + Node->GetNodeFullName() + " = Cull.CustomData.AsInt;\n");
 			break;
 		case ECustomPrimitiveDataType::UInt:
-			ShaderChunks.append("uint " + Node->GetNodeFullName() + " = Cull.CustomData.AsUInt;\n");
+			GetActiveChunk().append("uint " + Node->GetNodeFullName() + " = Cull.CustomData.AsUInt;\n");
 			break;
 		case ECustomPrimitiveDataType::Float4:
-			ShaderChunks.append("float4 " + Node->GetNodeFullName() + " = Cull.CustomData.AsFloat4;\n");
+			GetActiveChunk().append("float4 " + Node->GetNodeFullName() + " = Cull.CustomData.AsFloat4;\n");
 			Node->Output->SetInputType(EMaterialInputType::Float4);
 			Node->Output->SetComponentMask(EComponentMask::RGBA);
 			break;
 		case ECustomPrimitiveDataType::Bool:
-			ShaderChunks.append("bool " + Node->GetNodeFullName() + " = Cull.CustomData.AsBool;\n");
+			GetActiveChunk().append("bool " + Node->GetNodeFullName() + " = Cull.CustomData.AsBool;\n");
 			break;
 		}
 	}
 
 	// ========================================================================
-	// Math Operations
+	// Math Operations - binary
 	// ========================================================================
 
 	void FMaterialCompiler::Multiply(CMaterialInput* A, CMaterialInput* B)
 	{
-		CMaterialExpression_Multiplication* Node = A->GetOwningNode<CMaterialExpression_Multiplication>();
+		CMaterialExpression_Math* Node = A->GetOwningNode<CMaterialExpression_Math>();
 		Node->Output->InputType = EmitBinaryOp("*", A, B, Node->ConstA, Node->ConstB, true);
 	}
 
 	void FMaterialCompiler::Divide(CMaterialInput* A, CMaterialInput* B)
 	{
-		CMaterialExpression_Division* Node = A->GetOwningNode<CMaterialExpression_Division>();
+		CMaterialExpression_Math* Node = A->GetOwningNode<CMaterialExpression_Math>();
 		Node->Output->InputType = EmitBinaryOp("/", A, B, Node->ConstA, Node->ConstB, true);
 	}
 
 	void FMaterialCompiler::Add(CMaterialInput* A, CMaterialInput* B)
 	{
-		CMaterialExpression_Addition* Node = A->GetOwningNode<CMaterialExpression_Addition>();
+		CMaterialExpression_Math* Node = A->GetOwningNode<CMaterialExpression_Math>();
 		Node->Output->InputType = EmitBinaryOp("+", A, B, Node->ConstA, Node->ConstB, true);
 	}
 
 	void FMaterialCompiler::Subtract(CMaterialInput* A, CMaterialInput* B)
 	{
-		CMaterialExpression_Subtraction* Node = A->GetOwningNode<CMaterialExpression_Subtraction>();
+		CMaterialExpression_Math* Node = A->GetOwningNode<CMaterialExpression_Math>();
 		Node->Output->InputType = EmitBinaryOp("-", A, B, Node->ConstA, Node->ConstB, true);
-	}
-
-	void FMaterialCompiler::Sin(CMaterialInput* A, CMaterialInput* B)
-	{
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
-		CMaterialExpression_Sin* Node = A->GetOwningNode<CMaterialExpression_Sin>();
-
-		FInputValue AValue = GetTypedInputValue(A, Node->ConstA);
-		FString TypeStr = GetVectorType(AValue.Type);
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = sin(" + AValue.Value + ");\n");
-	}
-
-	void FMaterialCompiler::Cos(CMaterialInput* A, CMaterialInput* B)
-	{
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
-		CMaterialExpression_Cosin* Node = A->GetOwningNode<CMaterialExpression_Cosin>();
-
-		FInputValue AValue = GetTypedInputValue(A, Node->ConstA);
-		FString TypeStr = GetVectorType(AValue.Type);
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = cos(" + AValue.Value + ");\n");
-	}
-
-	void FMaterialCompiler::Fract(CMaterialInput* A)
-	{
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
-		CMaterialExpression_Fract* Node = A->GetOwningNode<CMaterialExpression_Fract>();
-
-		FInputValue AValue = GetTypedInputValue(A, Node->ConstA);
-		FString TypeStr = GetVectorType(AValue.Type);
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = frac(" + AValue.Value + ");\n");
-	}
-
-	void FMaterialCompiler::Floor(CMaterialInput* A, CMaterialInput* B)
-	{
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
-		CMaterialExpression_Floor* Node = A->GetOwningNode<CMaterialExpression_Floor>();
-
-		FInputValue AValue = GetTypedInputValue(A, Node->ConstA);
-		FString TypeStr = GetVectorType(AValue.Type);
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = floor(" + AValue.Value + ");\n");
-	}
-
-	void FMaterialCompiler::Ceil(CMaterialInput* A, CMaterialInput* B)
-	{
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
-		CMaterialExpression_Ceil* Node = A->GetOwningNode<CMaterialExpression_Ceil>();
-
-		FInputValue AValue = GetTypedInputValue(A, Node->ConstA);
-		FString TypeStr = GetVectorType(AValue.Type);
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = ceil(" + AValue.Value + ");\n");
 	}
 
 	void FMaterialCompiler::Power(CMaterialInput* A, CMaterialInput* B)
 	{
-		CMaterialExpression_Power* Node = A->GetOwningNode<CMaterialExpression_Power>();
-
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
-		FInputValue AValue = GetTypedInputValue(A, Node->ConstA);
-		FInputValue BValue = GetTypedInputValue(B, Node->ConstB);
-
-		EMaterialInputType ResultType = DetermineResultType(AValue.Type, BValue.Type, true);
-		FString TypeStr = GetVectorType(ResultType);
-
-		// Check for invalid operations
-		if (AValue.ComponentCount > 1 && BValue.ComponentCount > 1 && AValue.ComponentCount != BValue.ComponentCount)
-		{
-			EdNodeGraph::FError Error;
-			Error.Node = A->GetOwningNode<CMaterialGraphNode>();
-			Error.Name = "Type Mismatch";
-			Error.Description = "Cannot perform Power between " + GetVectorType(AValue.Type) + " and " + GetVectorType(BValue.Type);
-			AddError(Error);
-
-			ShaderChunks.append("// ERROR: Type mismatch\n");
-		}
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = pow(" + AValue.Value + ", " + BValue.Value + ");\n");
-		Node->Output->SetInputType(ResultType);
+		CMaterialExpression_Math* Node = A->GetOwningNode<CMaterialExpression_Math>();
+		EmitBinaryFunc("pow", A, B, Node->ConstA, Node->ConstB);
 	}
 
 	void FMaterialCompiler::Mod(CMaterialInput* A, CMaterialInput* B)
 	{
-		CMaterialExpression_Mod* Node = A->GetOwningNode<CMaterialExpression_Mod>();
-
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
-		FInputValue AValue = GetTypedInputValue(A, Node->ConstA);
-		FInputValue BValue = GetTypedInputValue(B, Node->ConstB);
-
-		EMaterialInputType ResultType = DetermineResultType(AValue.Type, BValue.Type, true);
-		FString TypeStr = GetVectorType(ResultType);
-
-		if (AValue.ComponentCount > 1 && BValue.ComponentCount > 1 && AValue.ComponentCount != BValue.ComponentCount)
-		{
-			EdNodeGraph::FError Error;
-			Error.Node = A->GetOwningNode<CMaterialGraphNode>();
-			Error.Name = "Type Mismatch";
-			Error.Description = "Cannot perform Mod between " + GetVectorType(AValue.Type) + " and " + GetVectorType(BValue.Type);
-			AddError(Error);
-
-			ShaderChunks.append("// ERROR: Type mismatch\n");
-		}
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = fmod(" + AValue.Value + ", " + BValue.Value + ");\n");
-		Node->Output->SetInputType(ResultType);
+		CMaterialExpression_Math* Node = A->GetOwningNode<CMaterialExpression_Math>();
+		EmitBinaryFunc("fmod", A, B, Node->ConstA, Node->ConstB);
 	}
 
 	void FMaterialCompiler::Min(CMaterialInput* A, CMaterialInput* B)
 	{
-		CMaterialExpression_Min* Node = A->GetOwningNode<CMaterialExpression_Min>();
-
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
-		FInputValue AValue = GetTypedInputValue(A, Node->ConstA);
-		FInputValue BValue = GetTypedInputValue(B, Node->ConstB);
-
-		EMaterialInputType ResultType = DetermineResultType(AValue.Type, BValue.Type, true);
-		FString TypeStr = GetVectorType(ResultType);
-
-		// Check for invalid operations
-		if (AValue.ComponentCount > 1 && BValue.ComponentCount > 1 && AValue.ComponentCount != BValue.ComponentCount)
-		{
-			EdNodeGraph::FError Error;
-			Error.Node = A->GetOwningNode<CMaterialGraphNode>();
-			Error.Name = "Type Mismatch";
-			Error.Description = "Cannot perform Power between " + GetVectorType(AValue.Type) + " and " + GetVectorType(BValue.Type);
-			AddError(Error);
-
-			ShaderChunks.append("// ERROR: Type mismatch\n");
-		}
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = min(" + AValue.Value + ", " + BValue.Value + ");\n");
-		Node->Output->SetInputType(ResultType);
+		CMaterialExpression_Math* Node = A->GetOwningNode<CMaterialExpression_Math>();
+		EmitBinaryFunc("min", A, B, Node->ConstA, Node->ConstB);
 	}
 
 	void FMaterialCompiler::Max(CMaterialInput* A, CMaterialInput* B)
 	{
-		CMaterialExpression_Max* Node = A->GetOwningNode<CMaterialExpression_Max>();
-
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
-		FInputValue AValue = GetTypedInputValue(A, Node->ConstA);
-		FInputValue BValue = GetTypedInputValue(B, Node->ConstB);
-
-		EMaterialInputType ResultType = DetermineResultType(AValue.Type, BValue.Type, true);
-		FString TypeStr = GetVectorType(ResultType);
-
-		if (AValue.ComponentCount > 1 && BValue.ComponentCount > 1 && AValue.ComponentCount != BValue.ComponentCount)
-		{
-			EdNodeGraph::FError Error;
-			Error.Node = A->GetOwningNode<CMaterialGraphNode>();
-			Error.Name = "Type Mismatch";
-			Error.Description = "Cannot perform Power between " + GetVectorType(AValue.Type) + " and " + GetVectorType(BValue.Type);
-			AddError(Error);
-
-			ShaderChunks.append("// ERROR: Type mismatch\n");
-		}
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = max(" + AValue.Value + ", " + BValue.Value + ");\n");
-		Node->Output->SetInputType(ResultType);
+		CMaterialExpression_Math* Node = A->GetOwningNode<CMaterialExpression_Math>();
+		EmitBinaryFunc("max", A, B, Node->ConstA, Node->ConstB);
 	}
 
 	void FMaterialCompiler::Step(CMaterialInput* A, CMaterialInput* B)
 	{
-		CMaterialExpression_Step* Node = A->GetOwningNode<CMaterialExpression_Step>();
-
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
-		FInputValue AValue = GetTypedInputValue(A, Node->ConstA);
-		FInputValue BValue = GetTypedInputValue(B, Node->ConstB);
-
-		EMaterialInputType ResultType = DetermineResultType(AValue.Type, BValue.Type, true);
-		FString TypeStr = GetVectorType(ResultType);
-
-		if (AValue.ComponentCount > 1 && BValue.ComponentCount > 1 && AValue.ComponentCount != BValue.ComponentCount)
-		{
-			EdNodeGraph::FError Error;
-			Error.Node = A->GetOwningNode<CMaterialGraphNode>();
-			Error.Name = "Type Mismatch";
-			Error.Description = "Cannot perform Power between " + GetVectorType(AValue.Type) + " and " + GetVectorType(BValue.Type);
-			AddError(Error);
-
-			ShaderChunks.append("// ERROR: Type mismatch\n");
-		}
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = step(" + AValue.Value + ", " + BValue.Value + ");\n");
-		Node->Output->SetInputType(ResultType);
+		CMaterialExpression_Math* Node = A->GetOwningNode<CMaterialExpression_Math>();
+		EmitBinaryFunc("step", A, B, Node->ConstA, Node->ConstB);
 	}
+
+	void FMaterialCompiler::Atan2Op(CMaterialInput* Y, CMaterialInput* X)
+	{
+		CMaterialExpression_Math* Node = Y->GetOwningNode<CMaterialExpression_Math>();
+		EmitBinaryFunc("atan2", Y, X, Node->ConstA, Node->ConstB);
+	}
+
+	// ========================================================================
+	// Math Operations - unary
+	// ========================================================================
+
+	void FMaterialCompiler::Sin(CMaterialInput* A)        { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("sin", A, N->ConstA); }
+	void FMaterialCompiler::Cos(CMaterialInput* A)        { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("cos", A, N->ConstA); }
+	void FMaterialCompiler::Tan(CMaterialInput* A)        { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("tan", A, N->ConstA); }
+	void FMaterialCompiler::Asin(CMaterialInput* A)       { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("asin", A, N->ConstA); }
+	void FMaterialCompiler::Acos(CMaterialInput* A)       { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("acos", A, N->ConstA); }
+	void FMaterialCompiler::Atan(CMaterialInput* A)       { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("atan", A, N->ConstA); }
+	void FMaterialCompiler::Sinh(CMaterialInput* A)       { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("sinh", A, N->ConstA); }
+	void FMaterialCompiler::Cosh(CMaterialInput* A)       { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("cosh", A, N->ConstA); }
+	void FMaterialCompiler::Tanh(CMaterialInput* A)       { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("tanh", A, N->ConstA); }
+	void FMaterialCompiler::Sqrt(CMaterialInput* A)       { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("sqrt", A, N->ConstA); }
+	void FMaterialCompiler::Rsqrt(CMaterialInput* A)      { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("rsqrt", A, N->ConstA); }
+	void FMaterialCompiler::Log(CMaterialInput* A)        { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("log", A, N->ConstA); }
+	void FMaterialCompiler::Log2(CMaterialInput* A)       { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("log2", A, N->ConstA); }
+	void FMaterialCompiler::Log10(CMaterialInput* A)      { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("log10", A, N->ConstA); }
+	void FMaterialCompiler::Exp(CMaterialInput* A)        { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("exp", A, N->ConstA); }
+	void FMaterialCompiler::Exp2(CMaterialInput* A)       { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("exp2", A, N->ConstA); }
+	void FMaterialCompiler::Sign(CMaterialInput* A)       { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("sign", A, N->ConstA); }
+	void FMaterialCompiler::Round(CMaterialInput* A)      { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("round", A, N->ConstA); }
+	void FMaterialCompiler::Truncate(CMaterialInput* A)   { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("trunc", A, N->ConstA); }
+	void FMaterialCompiler::Fract(CMaterialInput* A)      { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("frac", A, N->ConstA); }
+	void FMaterialCompiler::Floor(CMaterialInput* A)      { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("floor", A, N->ConstA); }
+	void FMaterialCompiler::Ceil(CMaterialInput* A)       { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("ceil", A, N->ConstA); }
+	void FMaterialCompiler::Abs(CMaterialInput* A)        { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("abs", A, N->ConstA); }
+	void FMaterialCompiler::Saturate(CMaterialInput* A)   { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("saturate", A, N->ConstA); }
+
+	void FMaterialCompiler::OneMinus(CMaterialInput* A)
+	{
+		CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>();
+		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AValue = GetTypedInputValue(A, N->ConstA);
+		FString TypeStr = GetVectorType(AValue.Type);
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = 1.0 - " + AValue.Value + GetSwizzleForMask(AValue.Mask) + ";\n");
+		SetOwningOutputType(A, AValue.Type);
+	}
+
+	void FMaterialCompiler::Reciprocal(CMaterialInput* A)
+	{
+		CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>();
+		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AValue = GetTypedInputValue(A, N->ConstA);
+		FString TypeStr = GetVectorType(AValue.Type);
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = 1.0 / max(" + AValue.Value + GetSwizzleForMask(AValue.Mask) + ", " + TypeStr + "(1e-6));\n");
+		SetOwningOutputType(A, AValue.Type);
+	}
+
+	void FMaterialCompiler::Negate(CMaterialInput* A)
+	{
+		CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>();
+		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AValue = GetTypedInputValue(A, N->ConstA);
+		FString TypeStr = GetVectorType(AValue.Type);
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = -(" + AValue.Value + GetSwizzleForMask(AValue.Mask) + ");\n");
+		SetOwningOutputType(A, AValue.Type);
+	}
+
+	void FMaterialCompiler::Square(CMaterialInput* A)
+	{
+		CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>();
+		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AValue = GetTypedInputValue(A, N->ConstA);
+		FString TypeStr = GetVectorType(AValue.Type);
+		FString V = AValue.Value + GetSwizzleForMask(AValue.Mask);
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = (" + V + ") * (" + V + ");\n");
+		SetOwningOutputType(A, AValue.Type);
+	}
+
+	void FMaterialCompiler::DegreesToRadians(CMaterialInput* A)
+	{
+		CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>();
+		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AValue = GetTypedInputValue(A, N->ConstA);
+		FString TypeStr = GetVectorType(AValue.Type);
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = (" + AValue.Value + GetSwizzleForMask(AValue.Mask) + ") * 0.01745329252;\n");
+		SetOwningOutputType(A, AValue.Type);
+	}
+
+	void FMaterialCompiler::RadiansToDegrees(CMaterialInput* A)
+	{
+		CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>();
+		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AValue = GetTypedInputValue(A, N->ConstA);
+		FString TypeStr = GetVectorType(AValue.Type);
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = (" + AValue.Value + GetSwizzleForMask(AValue.Mask) + ") * 57.29577951;\n");
+		SetOwningOutputType(A, AValue.Type);
+	}
+
+	// ========================================================================
+	// Math Operations - ternary
+	// ========================================================================
 
 	void FMaterialCompiler::Lerp(CMaterialInput* A, CMaterialInput* B, CMaterialInput* C)
 	{
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
 		CMaterialExpression_Lerp* Node = A->GetOwningNode<CMaterialExpression_Lerp>();
-
-		FInputValue AValue = GetTypedInputValue(A, Node->ConstA);
-		FInputValue BValue = GetTypedInputValue(B, Node->ConstB);
-		FInputValue CValue = GetTypedInputValue(C, Node->Alpha);
-
-		EMaterialInputType ResultType = DetermineResultType(AValue.Type, BValue.Type, true);
-		FString TypeStr = GetVectorType(ResultType);
-
-		if (AValue.ComponentCount > 1 && BValue.ComponentCount > 1 && AValue.ComponentCount != BValue.ComponentCount)
-		{
-			EdNodeGraph::FError Error;
-			Error.Node = A->GetOwningNode<CMaterialGraphNode>();
-			Error.Name = "Type Mismatch";
-			Error.Description = "Cannot perform Power between " + GetVectorType(AValue.Type) + " and " + GetVectorType(BValue.Type);
-			AddError(Error);
-
-			ShaderChunks.append("// ERROR: Type mismatch\n");
-		}
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = lerp(" + AValue.Value + ", " + BValue.Value + ", " + CValue.Value + ");\n");
-		Node->Output->SetInputType(ResultType);
+		EmitTernaryFunc("lerp", A, B, C, Node->ConstA, Node->ConstB, Node->Alpha);
 	}
 
 	void FMaterialCompiler::Clamp(CMaterialInput* A, CMaterialInput* B, CMaterialInput* C)
 	{
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
 		CMaterialExpression_Clamp* Node = A->GetOwningNode<CMaterialExpression_Clamp>();
+		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
 
-		FInputValue XValue = GetTypedInputValue(C, "1.0f");
+		FInputValue XValue = GetTypedInputValue(C, "1.0");
 		FInputValue AValue = GetTypedInputValue(A, Node->ConstA);
 		FInputValue BValue = GetTypedInputValue(B, Node->ConstB);
 
@@ -933,88 +1186,58 @@ namespace Lumina
 		ResultType = DetermineResultType(ResultType, XValue.Type, true);
 		FString TypeStr = GetVectorType(ResultType);
 
-		// Check for invalid operations
-		if (AValue.ComponentCount > 1 && BValue.ComponentCount > 1 && XValue.ComponentCount > 1 && AValue.ComponentCount != BValue.ComponentCount != XValue.ComponentCount)
-		{
-			EdNodeGraph::FError Error;
-			Error.Node = A->GetOwningNode<CMaterialGraphNode>();
-			Error.Name = "Type Mismatch";
-			Error.Description = "Cannot perform clamp between " + GetVectorType(XValue.Type) + ", " + GetVectorType(AValue.Type) + " and " + GetVectorType(BValue.Type);
-			AddError(Error);
-
-			ShaderChunks.append("// ERROR: Type mismatch\n");
-		}
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = clamp(" + XValue.Value + ", " + AValue.Value + ", " + BValue.Value + ");\n");
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = clamp(" + XValue.Value + ", " + AValue.Value + ", " + BValue.Value + ");\n");
 		Node->Output->SetInputType(ResultType);
 	}
 
 	void FMaterialCompiler::SmoothStep(CMaterialInput* A, CMaterialInput* B, CMaterialInput* C)
 	{
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
 		CMaterialExpression_SmoothStep* Node = A->GetOwningNode<CMaterialExpression_SmoothStep>();
+		EmitTernaryFunc("smoothstep", A, B, C, Node->ConstA, Node->ConstB, Node->X);
+	}
 
-		FInputValue AValue = GetTypedInputValue(A, Node->ConstA);
-		FInputValue BValue = GetTypedInputValue(B, Node->ConstB);
-		FInputValue CValue = GetTypedInputValue(C, Node->X);
+	void FMaterialCompiler::Remap(CMaterialInput* X, CMaterialInput* InMin, CMaterialInput* InMax, CMaterialInput* OutMin, CMaterialInput* OutMax)
+	{
+		FString OwningNode = X->GetOwningNode()->GetNodeFullName();
+		FInputValue XV = GetTypedInputValue(X, 0.5f);
+		FInputValue InMinV = GetTypedInputValue(InMin, 0.0f);
+		FInputValue InMaxV = GetTypedInputValue(InMax, 1.0f);
+		FInputValue OutMinV = GetTypedInputValue(OutMin, 0.0f);
+		FInputValue OutMaxV = GetTypedInputValue(OutMax, 1.0f);
 
-		EMaterialInputType ResultType = DetermineResultType(AValue.Type, BValue.Type, true);
-		ResultType = DetermineResultType(ResultType, CValue.Type, true);
+		EMaterialInputType ResultType = DetermineResultType(XV.Type, OutMaxV.Type, true);
 		FString TypeStr = GetVectorType(ResultType);
 
-		// Check for invalid operations
-		if (AValue.ComponentCount > 1 && BValue.ComponentCount > 1 && AValue.ComponentCount != BValue.ComponentCount)
-		{
-			EdNodeGraph::FError Error;
-			Error.Node = A->GetOwningNode<CMaterialGraphNode>();
-			Error.Name = "Type Mismatch";
-			Error.Description = "Cannot perform smoothstep between " + GetVectorType(AValue.Type) + " and " + GetVectorType(BValue.Type);
-			AddError(Error);
-
-			ShaderChunks.append("// ERROR: Type mismatch\n");
-		}
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = smoothstep(" + AValue.Value + ", " + BValue.Value + ", " + CValue.Value + ");\n");
-		Node->Output->SetInputType(ResultType);
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = " + OutMinV.Value + " + (" + XV.Value + " - " + InMinV.Value + ") * (" + OutMaxV.Value + " - " + OutMinV.Value + ") / max(" + InMaxV.Value + " - " + InMinV.Value + ", 1e-6);\n");
+		SetOwningOutputType(X, ResultType);
 	}
 
 	// ========================================================================
-	// Vector Operations
+	// Vector operations
 	// ========================================================================
 
-	void FMaterialCompiler::Saturate(CMaterialInput* A, CMaterialInput* /*B*/)
+	void FMaterialCompiler::Normalize(CMaterialInput* A)
 	{
 		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
 
-		FInputValue AValue = GetTypedInputValue(A, "0.0");
-		FString TypeStr = GetVectorType(AValue.Type);
+		FInputValue AValue = GetTypedInputValue(A, "float3(0.0, 0.0, 1.0)");
 
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = clamp(" + AValue.Value + ", " + TypeStr + "(0.0), " + TypeStr + "(1.0));\n");
-	}
-
-	void FMaterialCompiler::Normalize(CMaterialInput* A, CMaterialInput* /*B*/)
-	{
-		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
-
-		FInputValue AValue = GetTypedInputValue(A, "vec3(0.0, 0.0, 1.0)");
-
-		// Normalize requires at least vec2
 		if (AValue.ComponentCount < 2)
 		{
 			EdNodeGraph::FError Error;
 			Error.Name = "Invalid Type";
-			Error.Description = "Normalize requires at least a vec2 input";
+			Error.Description = "Normalize requires at least a float2 input";
 			Error.Node = A->GetOwningNode<CMaterialGraphNode>();
 			AddError(Error);
 
-			// Default to vec3
-			AValue.Value = "vec3(0.0, 0.0, 1.0)";
+			AValue.Value = "float3(0.0, 0.0, 1.0)";
 			AValue.Type = EMaterialInputType::Float3;
 			AValue.ComponentCount = 3;
 		}
 
 		FString TypeStr = GetVectorType(AValue.Type);
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = normalize(" + AValue.Value + ");\n");
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = normalize(" + AValue.Value + ");\n");
+		SetOwningOutputType(A, AValue.Type);
 	}
 
 	void FMaterialCompiler::Distance(CMaterialInput* A, CMaterialInput* B)
@@ -1023,19 +1246,6 @@ namespace Lumina
 
 		FInputValue AValue = GetTypedInputValue(A, "0.0");
 		FInputValue BValue = GetTypedInputValue(B, "0.0");
-
-		// Distance requires vectors of same dimension
-		if (AValue.ComponentCount < 2)
-		{
-			AValue.Value = "vec3(" + AValue.Value + ")";
-			AValue.ComponentCount = 3;
-		}
-
-		if (BValue.ComponentCount < 2)
-		{
-			BValue.Value = "vec3(" + BValue.Value + ")";
-			BValue.ComponentCount = 3;
-		}
 
 		if (AValue.ComponentCount != BValue.ComponentCount)
 		{
@@ -1046,18 +1256,394 @@ namespace Lumina
 			AddError(Error);
 		}
 
-		ShaderChunks.append("float " + OwningNode + " = distance(" + AValue.Value + ", " + BValue.Value + ");\n");
+		GetActiveChunk().append("float " + OwningNode + " = distance(" + AValue.Value + ", " + BValue.Value + ");\n");
+		SetOwningOutputType(A, EMaterialInputType::Float);
 	}
 
-	void FMaterialCompiler::Abs(CMaterialInput* A, CMaterialInput* /*B*/)
+	void FMaterialCompiler::Length(CMaterialInput* A)
 	{
 		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
-
 		FInputValue AValue = GetTypedInputValue(A, "0.0");
-		FString TypeStr = GetVectorType(AValue.Type);
-
-		ShaderChunks.append(TypeStr + " " + OwningNode + " = abs(" + AValue.Value + ");\n");
+		GetActiveChunk().append("float " + OwningNode + " = length(" + AValue.Value + ");\n");
+		SetOwningOutputType(A, EMaterialInputType::Float);
 	}
+
+	void FMaterialCompiler::Dot(CMaterialInput* A, CMaterialInput* B)
+	{
+		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AValue = GetTypedInputValue(A, "0.0");
+		FInputValue BValue = GetTypedInputValue(B, "0.0");
+
+		if (AValue.ComponentCount != BValue.ComponentCount)
+		{
+			EdNodeGraph::FError Error;
+			Error.Name = "Type Mismatch";
+			Error.Description = "Dot product requires vectors of the same dimension.";
+			Error.Node = A->GetOwningNode<CMaterialGraphNode>();
+			AddError(Error);
+		}
+
+		GetActiveChunk().append("float " + OwningNode + " = dot(" + AValue.Value + ", " + BValue.Value + ");\n");
+		SetOwningOutputType(A, EMaterialInputType::Float);
+	}
+
+	void FMaterialCompiler::Cross(CMaterialInput* A, CMaterialInput* B)
+	{
+		FString OwningNode = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AValue = GetTypedInputValue(A, "float3(1.0, 0.0, 0.0)");
+		FInputValue BValue = GetTypedInputValue(B, "float3(0.0, 1.0, 0.0)");
+
+		GetActiveChunk().append("float3 " + OwningNode + " = cross(" + AValue.Value + ".xyz, " + BValue.Value + ".xyz);\n");
+		SetOwningOutputType(A, EMaterialInputType::Float3);
+	}
+
+	void FMaterialCompiler::Reflect(CMaterialInput* I, CMaterialInput* N)
+	{
+		FString OwningNode = I->GetOwningNode()->GetNodeFullName();
+		FInputValue IV = GetTypedInputValue(I, "float3(0.0, 0.0, -1.0)");
+		FInputValue NV = GetTypedInputValue(N, "float3(0.0, 0.0, 1.0)");
+		GetActiveChunk().append("float3 " + OwningNode + " = reflect(" + IV.Value + ".xyz, normalize(" + NV.Value + ".xyz));\n");
+		SetOwningOutputType(I, EMaterialInputType::Float3);
+	}
+
+	void FMaterialCompiler::Refract(CMaterialInput* I, CMaterialInput* N, CMaterialInput* Eta)
+	{
+		FString OwningNode = I->GetOwningNode()->GetNodeFullName();
+		FInputValue IV = GetTypedInputValue(I, "float3(0.0, 0.0, -1.0)");
+		FInputValue NV = GetTypedInputValue(N, "float3(0.0, 0.0, 1.0)");
+		FInputValue EtaV = GetTypedInputValue(Eta, 1.0f);
+		GetActiveChunk().append("float3 " + OwningNode + " = refract(" + IV.Value + ".xyz, normalize(" + NV.Value + ".xyz), " + EtaV.Value + ");\n");
+		SetOwningOutputType(I, EMaterialInputType::Float3);
+	}
+
+	void FMaterialCompiler::RotateAboutAxis(CMaterialInput* Position, CMaterialInput* Axis, CMaterialInput* Angle)
+	{
+		FString OwningNode = Position->GetOwningNode()->GetNodeFullName();
+		FInputValue PV = GetTypedInputValue(Position, "float3(1.0, 0.0, 0.0)");
+		FInputValue AV = GetTypedInputValue(Axis, "float3(0.0, 0.0, 1.0)");
+		FInputValue AngleV = GetTypedInputValue(Angle, 0.0f);
+
+		GetActiveChunk().append("float3 " + OwningNode + "_K = normalize(" + AV.Value + ".xyz);\n");
+		GetActiveChunk().append("float  " + OwningNode + "_S = sin(" + AngleV.Value + ");\n");
+		GetActiveChunk().append("float  " + OwningNode + "_C = cos(" + AngleV.Value + ");\n");
+		GetActiveChunk().append("float3 " + OwningNode + "_V = " + PV.Value + ".xyz;\n");
+		GetActiveChunk().append("float3 " + OwningNode + " = " + OwningNode + "_V * " + OwningNode + "_C + cross(" + OwningNode + "_K, " + OwningNode + "_V) * " + OwningNode + "_S + " + OwningNode + "_K * dot(" + OwningNode + "_K, " + OwningNode + "_V) * (1.0 - " + OwningNode + "_C);\n");
+		SetOwningOutputType(Position, EMaterialInputType::Float3);
+	}
+
+	// ========================================================================
+	// Color
+	// ========================================================================
+
+	void FMaterialCompiler::Luminance(CMaterialInput* Color)
+	{
+		FString OwningNode = Color->GetOwningNode()->GetNodeFullName();
+		FInputValue C = GetTypedInputValue(Color, "float3(1.0, 1.0, 1.0)");
+		GetActiveChunk().append("float " + OwningNode + " = dot(" + C.Value + ".rgb, float3(0.2126, 0.7152, 0.0722));\n");
+		SetOwningOutputType(Color, EMaterialInputType::Float);
+	}
+
+	void FMaterialCompiler::Desaturate(CMaterialInput* Color, CMaterialInput* Amount)
+	{
+		FString OwningNode = Color->GetOwningNode()->GetNodeFullName();
+		FInputValue C = GetTypedInputValue(Color, "float3(1.0, 1.0, 1.0)");
+		FInputValue A = GetTypedInputValue(Amount, 1.0f);
+		GetActiveChunk().append("float  " + OwningNode + "_L = dot(" + C.Value + ".rgb, float3(0.2126, 0.7152, 0.0722));\n");
+		GetActiveChunk().append("float3 " + OwningNode + " = lerp(" + C.Value + ".rgb, float3(" + OwningNode + "_L, " + OwningNode + "_L, " + OwningNode + "_L), saturate(" + A.Value + "));\n");
+		SetOwningOutputType(Color, EMaterialInputType::Float3);
+	}
+
+	void FMaterialCompiler::RGBToHSV(CMaterialInput* RGB)
+	{
+		FString OwningNode = RGB->GetOwningNode()->GetNodeFullName();
+		FInputValue C = GetTypedInputValue(RGB, "float3(1.0, 1.0, 1.0)");
+		FString In = C.Value + ".rgb";
+		GetActiveChunk().append("float4 " + OwningNode + "_K = float4(0.0, -1.0/3.0, 2.0/3.0, -1.0);\n");
+		GetActiveChunk().append("float4 " + OwningNode + "_P = lerp(float4((" + In + ").bg, " + OwningNode + "_K.wz), float4((" + In + ").gb, " + OwningNode + "_K.xy), step((" + In + ").b, (" + In + ").g));\n");
+		GetActiveChunk().append("float4 " + OwningNode + "_Q = lerp(float4(" + OwningNode + "_P.xyw, (" + In + ").r), float4((" + In + ").r, " + OwningNode + "_P.yzx), step(" + OwningNode + "_P.x, (" + In + ").r));\n");
+		GetActiveChunk().append("float  " + OwningNode + "_D = " + OwningNode + "_Q.x - min(" + OwningNode + "_Q.w, " + OwningNode + "_Q.y);\n");
+		GetActiveChunk().append("float3 " + OwningNode + " = float3(abs(" + OwningNode + "_Q.z + (" + OwningNode + "_Q.w - " + OwningNode + "_Q.y) / (6.0 * " + OwningNode + "_D + 1e-10)), " + OwningNode + "_D / max(" + OwningNode + "_Q.x, 1e-10), " + OwningNode + "_Q.x);\n");
+		SetOwningOutputType(RGB, EMaterialInputType::Float3);
+	}
+
+	void FMaterialCompiler::HSVToRGB(CMaterialInput* HSV)
+	{
+		FString OwningNode = HSV->GetOwningNode()->GetNodeFullName();
+		FInputValue C = GetTypedInputValue(HSV, "float3(0.0, 0.0, 1.0)");
+		FString In = C.Value + ".xyz";
+		GetActiveChunk().append("float3 " + OwningNode + "_P = abs(frac(" + In + ".xxx + float3(1.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);\n");
+		GetActiveChunk().append("float3 " + OwningNode + " = " + In + ".z * lerp(float3(1.0, 1.0, 1.0), saturate(" + OwningNode + "_P - 1.0), " + In + ".y);\n");
+		SetOwningOutputType(HSV, EMaterialInputType::Float3);
+	}
+
+	void FMaterialCompiler::Posterize(CMaterialInput* Color, CMaterialInput* Steps)
+	{
+		FString OwningNode = Color->GetOwningNode()->GetNodeFullName();
+		FInputValue C = GetTypedInputValue(Color, 0.5f);
+		FInputValue S = GetTypedInputValue(Steps, 4.0f);
+		FString TypeStr = GetVectorType(C.Type);
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = floor((" + C.Value + ") * max(" + S.Value + ", 1.0)) / max(" + S.Value + ", 1.0);\n");
+		SetOwningOutputType(Color, C.Type);
+	}
+
+	void FMaterialCompiler::GammaCorrection(CMaterialInput* Color, CMaterialInput* Gamma)
+	{
+		FString OwningNode = Color->GetOwningNode()->GetNodeFullName();
+		FInputValue C = GetTypedInputValue(Color, 1.0f);
+		FInputValue G = GetTypedInputValue(Gamma, 2.2f);
+		FString TypeStr = GetVectorType(C.Type);
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = pow(max(" + C.Value + ", " + TypeStr + "(0.0)), " + TypeStr + "(" + G.Value + "));\n");
+		SetOwningOutputType(Color, C.Type);
+	}
+
+	void FMaterialCompiler::Contrast(CMaterialInput* Color, CMaterialInput* Amount)
+	{
+		FString OwningNode = Color->GetOwningNode()->GetNodeFullName();
+		FInputValue C = GetTypedInputValue(Color, 0.5f);
+		FInputValue A = GetTypedInputValue(Amount, 1.0f);
+		FString TypeStr = GetVectorType(C.Type);
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = (" + C.Value + " - " + TypeStr + "(0.5)) * " + A.Value + " + " + TypeStr + "(0.5);\n");
+		SetOwningOutputType(Color, C.Type);
+	}
+
+	void FMaterialCompiler::Brightness(CMaterialInput* Color, CMaterialInput* Amount)
+	{
+		FString OwningNode = Color->GetOwningNode()->GetNodeFullName();
+		FInputValue C = GetTypedInputValue(Color, 0.5f);
+		FInputValue A = GetTypedInputValue(Amount, 1.0f);
+		FString TypeStr = GetVectorType(C.Type);
+		GetActiveChunk().append(TypeStr + " " + OwningNode + " = (" + C.Value + ") * (" + A.Value + ");\n");
+		SetOwningOutputType(Color, C.Type);
+	}
+
+	void FMaterialCompiler::Tint(CMaterialInput* Color, CMaterialInput* TintColor, CMaterialInput* Amount)
+	{
+		FString OwningNode = Color->GetOwningNode()->GetNodeFullName();
+		FInputValue C = GetTypedInputValue(Color, "float3(1.0, 1.0, 1.0)");
+		FInputValue T = GetTypedInputValue(TintColor, "float3(1.0, 1.0, 1.0)");
+		FInputValue A = GetTypedInputValue(Amount, 1.0f);
+		GetActiveChunk().append("float3 " + OwningNode + " = lerp(" + C.Value + ".rgb, (" + C.Value + ".rgb) * (" + T.Value + ".rgb), saturate(" + A.Value + "));\n");
+		SetOwningOutputType(Color, EMaterialInputType::Float3);
+	}
+
+	void FMaterialCompiler::LinearToSRGB(CMaterialInput* Color)
+	{
+		FString OwningNode = Color->GetOwningNode()->GetNodeFullName();
+		FInputValue C = GetTypedInputValue(Color, "float3(1.0, 1.0, 1.0)");
+		GetActiveChunk().append("float3 " + OwningNode + " = pow(max(" + C.Value + ".rgb, float3(0.0, 0.0, 0.0)), float3(1.0/2.2, 1.0/2.2, 1.0/2.2));\n");
+		SetOwningOutputType(Color, EMaterialInputType::Float3);
+	}
+
+	void FMaterialCompiler::SRGBToLinear(CMaterialInput* Color)
+	{
+		FString OwningNode = Color->GetOwningNode()->GetNodeFullName();
+		FInputValue C = GetTypedInputValue(Color, "float3(1.0, 1.0, 1.0)");
+		GetActiveChunk().append("float3 " + OwningNode + " = pow(max(" + C.Value + ".rgb, float3(0.0, 0.0, 0.0)), float3(2.2, 2.2, 2.2));\n");
+		SetOwningOutputType(Color, EMaterialInputType::Float3);
+	}
+
+	// ========================================================================
+	// Noise / procedural
+	// ========================================================================
+
+	void FMaterialCompiler::Hash11(CMaterialInput* X)
+	{
+		FString OwningNode = X->GetOwningNode()->GetNodeFullName();
+		FInputValue V = GetTypedInputValue(X, 0.0f);
+		GetActiveChunk().append("float " + OwningNode + " = frac(sin((" + V.Value + ")) * 43758.5453);\n");
+		SetOwningOutputType(X, EMaterialInputType::Float);
+	}
+
+	void FMaterialCompiler::Hash21(CMaterialInput* UV)
+	{
+		FString OwningNode = UV->GetOwningNode()->GetNodeFullName();
+		FInputValue V = GetTypedInputValue(UV, "float2(0.0, 0.0)");
+		GetActiveChunk().append("float " + OwningNode + " = frac(sin(dot((" + V.Value + ").xy, float2(127.1, 311.7))) * 43758.5453);\n");
+		SetOwningOutputType(UV, EMaterialInputType::Float);
+	}
+
+	void FMaterialCompiler::Hash22(CMaterialInput* UV)
+	{
+		FString OwningNode = UV->GetOwningNode()->GetNodeFullName();
+		FInputValue V = GetTypedInputValue(UV, "float2(0.0, 0.0)");
+		GetActiveChunk().append("float2 " + OwningNode + " = frac(sin(float2(dot((" + V.Value + ").xy, float2(127.1, 311.7)), dot((" + V.Value + ").xy, float2(269.5, 183.3)))) * 43758.5453);\n");
+		SetOwningOutputType(UV, EMaterialInputType::Float2);
+	}
+
+	void FMaterialCompiler::Hash33(CMaterialInput* P)
+	{
+		FString OwningNode = P->GetOwningNode()->GetNodeFullName();
+		FInputValue V = GetTypedInputValue(P, "float3(0.0, 0.0, 0.0)");
+		GetActiveChunk().append("float3 " + OwningNode + " = frac(sin(float3(dot((" + V.Value + ").xyz, float3(127.1, 311.7, 74.7)), dot((" + V.Value + ").xyz, float3(269.5, 183.3, 246.1)), dot((" + V.Value + ").xyz, float3(113.5, 271.9, 124.6)))) * 43758.5453);\n");
+		SetOwningOutputType(P, EMaterialInputType::Float3);
+	}
+
+	void FMaterialCompiler::ValueNoise(CMaterialInput* UV)
+	{
+		FString N = UV->GetOwningNode()->GetNodeFullName();
+		FInputValue V = GetTypedInputValue(UV, "float2(UV0)");
+		FString In = "(" + V.Value + ").xy";
+		GetActiveChunk().append("float2 " + N + "_I = floor(" + In + ");\n");
+		GetActiveChunk().append("float2 " + N + "_F = frac(" + In + ");\n");
+		GetActiveChunk().append("float2 " + N + "_U = " + N + "_F * " + N + "_F * (3.0 - 2.0 * " + N + "_F);\n");
+		GetActiveChunk().append("float  " + N + "_A = frac(sin(dot(" + N + "_I + float2(0.0, 0.0), float2(127.1, 311.7))) * 43758.5453);\n");
+		GetActiveChunk().append("float  " + N + "_B = frac(sin(dot(" + N + "_I + float2(1.0, 0.0), float2(127.1, 311.7))) * 43758.5453);\n");
+		GetActiveChunk().append("float  " + N + "_C = frac(sin(dot(" + N + "_I + float2(0.0, 1.0), float2(127.1, 311.7))) * 43758.5453);\n");
+		GetActiveChunk().append("float  " + N + "_D = frac(sin(dot(" + N + "_I + float2(1.0, 1.0), float2(127.1, 311.7))) * 43758.5453);\n");
+		GetActiveChunk().append("float " + N + " = lerp(lerp(" + N + "_A, " + N + "_B, " + N + "_U.x), lerp(" + N + "_C, " + N + "_D, " + N + "_U.x), " + N + "_U.y);\n");
+		SetOwningOutputType(UV, EMaterialInputType::Float);
+	}
+
+	void FMaterialCompiler::GradientNoise(CMaterialInput* UV)
+	{
+		FString N = UV->GetOwningNode()->GetNodeFullName();
+		FInputValue V = GetTypedInputValue(UV, "float2(UV0)");
+		FString In = "(" + V.Value + ").xy";
+		GetActiveChunk().append("float2 " + N + "_I = floor(" + In + ");\n");
+		GetActiveChunk().append("float2 " + N + "_F = frac(" + In + ");\n");
+		GetActiveChunk().append("float2 " + N + "_U = " + N + "_F * " + N + "_F * (3.0 - 2.0 * " + N + "_F);\n");
+		GetActiveChunk().append("float2 " + N + "_GA = -1.0 + 2.0 * frac(sin(float2(dot(" + N + "_I + float2(0.0, 0.0), float2(127.1, 311.7)), dot(" + N + "_I + float2(0.0, 0.0), float2(269.5, 183.3)))) * 43758.5453);\n");
+		GetActiveChunk().append("float2 " + N + "_GB = -1.0 + 2.0 * frac(sin(float2(dot(" + N + "_I + float2(1.0, 0.0), float2(127.1, 311.7)), dot(" + N + "_I + float2(1.0, 0.0), float2(269.5, 183.3)))) * 43758.5453);\n");
+		GetActiveChunk().append("float2 " + N + "_GC = -1.0 + 2.0 * frac(sin(float2(dot(" + N + "_I + float2(0.0, 1.0), float2(127.1, 311.7)), dot(" + N + "_I + float2(0.0, 1.0), float2(269.5, 183.3)))) * 43758.5453);\n");
+		GetActiveChunk().append("float2 " + N + "_GD = -1.0 + 2.0 * frac(sin(float2(dot(" + N + "_I + float2(1.0, 1.0), float2(127.1, 311.7)), dot(" + N + "_I + float2(1.0, 1.0), float2(269.5, 183.3)))) * 43758.5453);\n");
+		GetActiveChunk().append("float " + N + " = lerp(lerp(dot(" + N + "_GA, " + N + "_F - float2(0.0, 0.0)), dot(" + N + "_GB, " + N + "_F - float2(1.0, 0.0)), " + N + "_U.x), lerp(dot(" + N + "_GC, " + N + "_F - float2(0.0, 1.0)), dot(" + N + "_GD, " + N + "_F - float2(1.0, 1.0)), " + N + "_U.x), " + N + "_U.y) * 0.5 + 0.5;\n");
+		SetOwningOutputType(UV, EMaterialInputType::Float);
+	}
+
+	void FMaterialCompiler::PerlinNoise(CMaterialInput* UV)
+	{
+		// Use the gradient-noise variant which is closer to classic Perlin output.
+		GradientNoise(UV);
+	}
+
+	void FMaterialCompiler::VoronoiNoise(CMaterialInput* UV)
+	{
+		FString N = UV->GetOwningNode()->GetNodeFullName();
+		FInputValue V = GetTypedInputValue(UV, "float2(UV0)");
+		FString In = "(" + V.Value + ").xy";
+		GetActiveChunk().append("float2 " + N + "_I = floor(" + In + ");\n");
+		GetActiveChunk().append("float2 " + N + "_F = frac(" + In + ");\n");
+		GetActiveChunk().append("float  " + N + "_M = 8.0;\n");
+		GetActiveChunk().append("for (int " + N + "_y = -1; " + N + "_y <= 1; ++" + N + "_y)\n");
+		GetActiveChunk().append("for (int " + N + "_x = -1; " + N + "_x <= 1; ++" + N + "_x)\n");
+		GetActiveChunk().append("{\n");
+		GetActiveChunk().append("    float2 " + N + "_G = float2(float(" + N + "_x), float(" + N + "_y));\n");
+		GetActiveChunk().append("    float2 " + N + "_O = frac(sin(float2(dot(" + N + "_I + " + N + "_G, float2(127.1, 311.7)), dot(" + N + "_I + " + N + "_G, float2(269.5, 183.3)))) * 43758.5453);\n");
+		GetActiveChunk().append("    float2 " + N + "_R = " + N + "_G + " + N + "_O - " + N + "_F;\n");
+		GetActiveChunk().append("    float  " + N + "_DD = dot(" + N + "_R, " + N + "_R);\n");
+		GetActiveChunk().append("    " + N + "_M = min(" + N + "_M, " + N + "_DD);\n");
+		GetActiveChunk().append("}\n");
+		GetActiveChunk().append("float " + N + " = sqrt(" + N + "_M);\n");
+		SetOwningOutputType(UV, EMaterialInputType::Float);
+	}
+
+	void FMaterialCompiler::SimpleNoise(CMaterialInput* UV)
+	{
+		FString N = UV->GetOwningNode()->GetNodeFullName();
+		FInputValue V = GetTypedInputValue(UV, "float2(UV0)");
+		GetActiveChunk().append("float " + N + " = frac(sin(dot((" + V.Value + ").xy, float2(12.9898, 78.233))) * 43758.5453);\n");
+		SetOwningOutputType(UV, EMaterialInputType::Float);
+	}
+
+	void FMaterialCompiler::Checkerboard(CMaterialInput* UV)
+	{
+		FString N = UV->GetOwningNode()->GetNodeFullName();
+		FInputValue V = GetTypedInputValue(UV, "float2(UV0)");
+		GetActiveChunk().append("float2 " + N + "_C = floor((" + V.Value + ").xy);\n");
+		GetActiveChunk().append("float " + N + " = fmod(" + N + "_C.x + " + N + "_C.y, 2.0);\n");
+		SetOwningOutputType(UV, EMaterialInputType::Float);
+	}
+
+	// ========================================================================
+	// Conditional
+	// ========================================================================
+
+	void FMaterialCompiler::If(CMaterialInput* X, CMaterialInput* Y, CMaterialInput* GreaterThan, CMaterialInput* EqualTo, CMaterialInput* LessThan, float Threshold)
+	{
+		FString N = X->GetOwningNode()->GetNodeFullName();
+		FInputValue XV = GetTypedInputValue(X, 0.0f);
+		FInputValue YV = GetTypedInputValue(Y, 0.0f);
+		FInputValue GV = GetTypedInputValue(GreaterThan, 1.0f);
+		FInputValue EV = GetTypedInputValue(EqualTo, 0.5f);
+		FInputValue LV = GetTypedInputValue(LessThan, 0.0f);
+
+		EMaterialInputType ResultType = DetermineResultType(GV.Type, LV.Type, true);
+		ResultType = DetermineResultType(ResultType, EV.Type, true);
+		FString TypeStr = GetVectorType(ResultType);
+
+		GetActiveChunk().append("float " + N + "_Diff = (" + XV.Value + ") - (" + YV.Value + ");\n");
+		GetActiveChunk().append(TypeStr + " " + N + " = (abs(" + N + "_Diff) < " + eastl::to_string(Threshold) + ") ? (" + EV.Value + ") : ((" + N + "_Diff > 0.0) ? (" + GV.Value + ") : (" + LV.Value + "));\n");
+		SetOwningOutputType(X, ResultType);
+	}
+
+	void FMaterialCompiler::Compare(const FString& Op, CMaterialInput* A, CMaterialInput* B)
+	{
+		FString N = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AV = GetTypedInputValue(A, 0.0f);
+		FInputValue BV = GetTypedInputValue(B, 0.0f);
+		GetActiveChunk().append("float " + N + " = ((" + AV.Value + ") " + Op + " (" + BV.Value + ")) ? 1.0 : 0.0;\n");
+		SetOwningOutputType(A, EMaterialInputType::Float);
+	}
+
+	// ========================================================================
+	// Advanced shading helpers
+	// ========================================================================
+
+	void FMaterialCompiler::Fresnel(CMaterialInput* Exponent, CMaterialInput* BaseReflect, CMaterialInput* Normal)
+	{
+		FString N = Exponent->GetOwningNode()->GetNodeFullName();
+		FInputValue ExpV = GetTypedInputValue(Exponent, 5.0f);
+		FInputValue BaseV = GetTypedInputValue(BaseReflect, 0.04f);
+		FInputValue NV = GetTypedInputValue(Normal, "WorldNormal.xyz");
+
+		GetActiveChunk().append("float3 " + N + "_V = normalize(GetCameraPosition() - WorldPosition);\n");
+		GetActiveChunk().append("float  " + N + "_NoV = saturate(dot(normalize(" + NV.Value + ".xyz), " + N + "_V));\n");
+		GetActiveChunk().append("float " + N + " = saturate((" + BaseV.Value + ") + (1.0 - (" + BaseV.Value + ")) * pow(1.0 - " + N + "_NoV, " + ExpV.Value + "));\n");
+		SetOwningOutputType(Exponent, EMaterialInputType::Float);
+	}
+
+	void FMaterialCompiler::DepthFade(CMaterialInput* FadeDistance)
+	{
+		FString N = FadeDistance->GetOwningNode()->GetNodeFullName();
+		FInputValue F = GetTypedInputValue(FadeDistance, 100.0f);
+		GetActiveChunk().append("float " + N + " = saturate(abs(ViewPosition.z) / max((" + F.Value + "), 1e-4));\n");
+		SetOwningOutputType(FadeDistance, EMaterialInputType::Float);
+	}
+
+	void FMaterialCompiler::NormalFromHeight(CMaterialInput* Height, CMaterialInput* Strength)
+	{
+		FString N = Height->GetOwningNode()->GetNodeFullName();
+		FInputValue H = GetTypedInputValue(Height, 0.0f);
+		FInputValue S = GetTypedInputValue(Strength, 1.0f);
+		GetActiveChunk().append("float " + N + "_Hx = ddx(" + H.Value + ");\n");
+		GetActiveChunk().append("float " + N + "_Hy = ddy(" + H.Value + ");\n");
+		GetActiveChunk().append("float3 " + N + " = normalize(float3(-" + N + "_Hx * (" + S.Value + "), -" + N + "_Hy * (" + S.Value + "), 1.0));\n");
+		SetOwningOutputType(Height, EMaterialInputType::Float3);
+	}
+
+	void FMaterialCompiler::DeriveNormalZ(CMaterialInput* InputXY)
+	{
+		FString N = InputXY->GetOwningNode()->GetNodeFullName();
+		FInputValue V = GetTypedInputValue(InputXY, "float2(0.0, 0.0)");
+		GetActiveChunk().append("float2 " + N + "_XY = (" + V.Value + ").xy * 2.0 - 1.0;\n");
+		GetActiveChunk().append("float3 " + N + " = float3(" + N + "_XY, sqrt(saturate(1.0 - dot(" + N + "_XY, " + N + "_XY))));\n");
+		SetOwningOutputType(InputXY, EMaterialInputType::Float3);
+	}
+
+	void FMaterialCompiler::BlendNormals(CMaterialInput* A, CMaterialInput* B)
+	{
+		FString N = A->GetOwningNode()->GetNodeFullName();
+		FInputValue AV = GetTypedInputValue(A, "float3(0.0, 0.0, 1.0)");
+		FInputValue BV = GetTypedInputValue(B, "float3(0.0, 0.0, 1.0)");
+		GetActiveChunk().append("float3 " + N + "_A = (" + AV.Value + ").xyz * float3(2.0, 2.0, 2.0) + float3(-1.0, -1.0, 0.0);\n");
+		GetActiveChunk().append("float3 " + N + "_B = (" + BV.Value + ").xyz * float3(-2.0, -2.0, 2.0) + float3(1.0, 1.0, -1.0);\n");
+		GetActiveChunk().append("float3 " + N + " = normalize(" + N + "_A * dot(" + N + "_A, " + N + "_B) - " + N + "_B * " + N + "_A.z) * 0.5 + 0.5;\n");
+		SetOwningOutputType(A, EMaterialInputType::Float3);
+	}
+
+	// ========================================================================
+	// Terrain
+	// ========================================================================
 
 	void FMaterialCompiler::TerrainLayerWeight(const FString& ID, uint32 LayerIndex, CMaterialGraphNode* Node)
 	{
@@ -1068,7 +1654,7 @@ namespace Lumina
 			Error.Name = "Invalid Material Type";
 			Error.Description = "TerrainLayerWeight is only usable in Terrain materials.";
 			AddError(Error);
-			ShaderChunks.append("float " + ID + " = 0.0;\n");
+			GetActiveChunk().append("float " + ID + " = 0.0;\n");
 			return;
 		}
 
@@ -1085,7 +1671,7 @@ namespace Lumina
 			case 2: Swizzle = "z"; break;
 			case 3: Swizzle = "w"; break;
 		}
-		ShaderChunks.append("float " + ID + " = GetTerrainLayerWeights4(HeightUV)." + FString(Swizzle) + ";\n");
+		GetActiveChunk().append("float " + ID + " = GetTerrainLayerWeights4(HeightUV)." + FString(Swizzle) + ";\n");
 	}
 
 	void FMaterialCompiler::TerrainLayerWeights(const FString& ID, CMaterialGraphNode* Node)
@@ -1097,11 +1683,11 @@ namespace Lumina
 			Error.Name = "Invalid Material Type";
 			Error.Description = "TerrainLayerWeights is only usable in Terrain materials.";
 			AddError(Error);
-			ShaderChunks.append("float4 " + ID + " = float4(1.0, 0.0, 0.0, 0.0);\n");
+			GetActiveChunk().append("float4 " + ID + " = float4(1.0, 0.0, 0.0, 0.0);\n");
 			return;
 		}
 
-		ShaderChunks.append("float4 " + ID + " = GetTerrainLayerWeights4(HeightUV);\n");
+		GetActiveChunk().append("float4 " + ID + " = GetTerrainLayerWeights4(HeightUV);\n");
 	}
 
 	void FMaterialCompiler::TerrainLayerBlend(CMaterialInput* Layer0, CMaterialInput* Layer1, CMaterialInput* Layer2, CMaterialInput* Layer3)
@@ -1115,7 +1701,7 @@ namespace Lumina
 			Error.Name = "Invalid Material Type";
 			Error.Description = "TerrainLayerBlend is only usable in Terrain materials.";
 			AddError(Error);
-			ShaderChunks.append("float3 " + OwningNode + " = float3(0.0);\n");
+			GetActiveChunk().append("float3 " + OwningNode + " = float3(0.0);\n");
 			return;
 		}
 
@@ -1146,8 +1732,8 @@ namespace Lumina
 		FString L2Str = Coerce(L2);
 		FString L3Str = Coerce(L3);
 
-		ShaderChunks.append("float4 " + OwningNode + "_W = GetTerrainLayerWeights4(HeightUV);\n");
-		ShaderChunks.append("float3 " + OwningNode + " = "
+		GetActiveChunk().append("float4 " + OwningNode + "_W = GetTerrainLayerWeights4(HeightUV);\n");
+		GetActiveChunk().append("float3 " + OwningNode + " = "
 			+ L0Str + " * " + OwningNode + "_W.x + "
 			+ L1Str + " * " + OwningNode + "_W.y + "
 			+ L2Str + " * " + OwningNode + "_W.z + "
@@ -1161,6 +1747,6 @@ namespace Lumina
 
 	void FMaterialCompiler::AddRaw(const FString& Raw)
 	{
-		ShaderChunks.append(Raw);
+		GetActiveChunk().append(Raw);
 	}
 }

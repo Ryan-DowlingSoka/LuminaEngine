@@ -43,6 +43,10 @@ namespace Lumina
         ImGuizmo::MODE      GuizmoMode = ImGuizmo::WORLD;
         entt::entity DirectionalLightEntity = entt::null;
 
+    protected:
+
+        void OnPostUndoRedo() override;
+
     private:
 
         void DrawOutliner(bool bFocused);
@@ -58,6 +62,11 @@ namespace Lumina
         entt::entity CreateEntityAtRoot();
         void RequestDestroyEntity(entt::entity Entity);
         void ProcessDestroyRequests();
+
+        // Clipboard helpers — local to the prefab editor (shares the FCopiedTag type the
+        // world editor uses, but each tool's clipboard is scoped to its own preview world).
+        entt::entity DuplicatePrefabEntity(entt::entity Source);
+        void ProcessClipboardShortcuts();
 
         void AddSelectedEntity(entt::entity Entity, bool bRebuild);
         void ClearSelectedEntities();

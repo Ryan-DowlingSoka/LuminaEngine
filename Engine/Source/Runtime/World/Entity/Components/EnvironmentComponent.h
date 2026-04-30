@@ -60,16 +60,13 @@ namespace Lumina
          *  mode reads a different subset of the properties below. */
         PROPERTY(Editable, Category = "Sky")
         ESkyMode SkyMode = ESkyMode::Dynamic;
-
-        // -- Solid mode --
-
+     
         /** Output color when SkyMode == SolidColor. HDR-range; values above
          *  1.0 are valid and feed bloom. */
         PROPERTY(Editable, Color, Category = "Sky|Solid")
         glm::vec3 SolidSkyColor = glm::vec3(0.45f, 0.65f, 1.0f);
 
-        // -- Gradient mode --
-
+     
         /** Color directly overhead. */
         PROPERTY(Editable, Color, Category = "Sky|Gradient")
         glm::vec3 ZenithColor = glm::vec3(0.05f, 0.1f, 0.4f);
@@ -87,9 +84,7 @@ namespace Lumina
          *  and keep a wider band of horizon. */
         PROPERTY(Editable, Category = "Sky|Gradient", ClampMin = 0.05f, ClampMax = 4.0f)
         float HorizonExponent = 0.7f;
-
-        // -- Dynamic mode (and shared sun cosmetics) --
-
+     
         /** Visual scale of the sun disc + glow on the sky background, in
          *  multiples of the sun's true angular size. Doesn't affect lighting. */
         PROPERTY(Editable, Category = "Sky|Sun", ClampMin = 0.0f, ClampMax = 8.0f)
@@ -108,15 +103,82 @@ namespace Lumina
          *  scattering before write. Higher values brighten the whole sky;
          *  lower values let the sun blow out without saturating the rest. */
         PROPERTY(Editable, Category = "Sky|Dynamic", ClampMin = 0.05f, ClampMax = 8.0f)
-        float SkyExposure = 1.5f;
+        float SkyExposure = 0.5f;
 
         /** Mie phase asymmetry (0.0 = isotropic, ~0.76 = strong forward
          *  scatter). Drives how tight the bright halo around the sun is. */
         PROPERTY(Editable, Category = "Sky|Dynamic", ClampMin = -0.99f, ClampMax = 0.99f)
         float MieAnisotropy = 0.76f;
+     
+        /** Base color the sky settles to once the sun is well below the
+         *  horizon. Multiplied by NightBrightness. Pick a desaturated,
+         *  slightly-purple deep blue for a believable night. */
+        PROPERTY(Editable, Color, Category = "Sky|Night")
+        glm::vec3 NightSkyColor = glm::vec3(0.012f, 0.018f, 0.04f);
 
-        // -- HDRI environment --
+        /** Overall brightness of the night sky color + its contribution to
+         *  the atmosphere blend. Independent of star/moon brightness. */
+        PROPERTY(Editable, Category = "Sky|Night", ClampMin = 0.0f, ClampMax = 8.0f)
+        float NightBrightness = 0.01f;
+     
+        /** Fraction of cells in the procedural starfield grid that contain
+         *  a star. 0 = no stars, 1 = densely packed (overkill). The grid
+         *  resolution is fixed; density scales how many cells emit. */
+        PROPERTY(Editable, Category = "Sky|Stars", ClampMin = 0.0f, ClampMax = 1.0f)
+        float StarDensity = 0.55f;
 
+        /** Brightness scalar for the starfield. Stars are HDR so values
+         *  above 1 are fine, they will tonemap and bloom naturally. */
+        PROPERTY(Editable, Category = "Sky|Stars", ClampMin = 0.0f, ClampMax = 8.0f)
+        float StarBrightness = 0.16f;
+
+        /** Angular speed (rad/s) of the per-star twinkle modulation. Set
+         *  to 0 to freeze the starfield. */
+        PROPERTY(Editable, Category = "Sky|Stars", ClampMin = 0.0f, ClampMax = 16.0f)
+        float StarTwinkleSpeed = 2.5f;
+
+        /** Visual size of each star inside its cell. Larger values produce
+         *  visible discs; smaller values produce sharp pinpoints. */
+        PROPERTY(Editable, Category = "Sky|Stars", ClampMin = 0.05f, ClampMax = 1.0f)
+        float StarSize = 0.5f;
+
+        /** Brightness of the procedural Milky-Way band. The band is
+         *  oriented around a tilted galactic plane and fades with the
+         *  night factor. Set to 0 to disable. */
+        PROPERTY(Editable, Category = "Sky|Stars", ClampMin = 0.0f, ClampMax = 4.0f)
+        float GalaxyIntensity = 0.06f;
+
+        /** Tilt (radians) of the galactic plane relative to the world XZ
+         *  plane. Lets you reorient where the Milky Way sits in the sky. */
+        PROPERTY(Editable, Category = "Sky|Stars", ClampMin = 0.0f, ClampMax = 6.2832f)
+        float GalaxyTilt = 0.45f;
+     
+        /** Visual scale of the moon disc, in multiples of the real moon's
+         *  angular size (~0.5 degrees). 1 is realistic; 3-4 reads better
+         *  as a backdrop element. */
+        PROPERTY(Editable, Category = "Sky|Moon", ClampMin = 0.0f, ClampMax = 16.0f)
+        float MoonSize = 1.5f;
+
+        /** Multiplier on the moon's surrounding glow halo. 0 disables. */
+        PROPERTY(Editable, Category = "Sky|Moon", ClampMin = 0.0f, ClampMax = 4.0f)
+        float MoonGlowSize = 0.3f;
+
+        /** Brightness scalar for the moon disc + glow. */
+        PROPERTY(Editable, Category = "Sky|Moon", ClampMin = 0.0f, ClampMax = 8.0f)
+        float MoonBrightness = 0.6f;
+
+        /** When true, the moon is anchored opposite the sun and its phase
+         *  is shaded automatically by the sun's position. Turn off to
+         *  drive MoonDirection directly (useful for cinematics). */
+        PROPERTY(Editable, Category = "Sky|Moon")
+        bool bMoonOpposeSun = true;
+
+        /** Manual moon direction (FROM viewer TO moon, normalized) used
+         *  when bMoonOpposeSun is false. Phase is still computed from the
+         *  sun direction so moving this around walks through the phases. */
+        PROPERTY(Editable, Category = "Sky|Moon")
+        glm::vec3 MoonDirection = glm::vec3(0.0f, -1.0f, 0.0f);
+     
         /** Optional HDR equirectangular panorama used as the source for
          *  IBL irradiance and prefilter convolution. When set, replaces
          *  the procedural sky cube capture with a live equirect->cubemap

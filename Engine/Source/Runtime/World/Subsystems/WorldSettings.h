@@ -15,6 +15,27 @@ namespace Lumina
         Ultra,
     };
 
+    REFLECT()
+    enum class EMSAASampleCount : uint8
+    {
+        Off,
+        X2,
+        X4,
+        X8,
+    };
+
+    /** Map the (sequential) reflected enum to its actual GPU sample count. */
+    constexpr uint8 GetMSAASampleCount(EMSAASampleCount Quality)
+    {
+        switch (Quality)
+        {
+        case EMSAASampleCount::X2: return 2;
+        case EMSAASampleCount::X4: return 4;
+        case EMSAASampleCount::X8: return 8;
+        default:                   return 1;
+        }
+    }
+
     REFLECT(Component, HideInComponentList)
     struct RUNTIME_API SDefaultWorldSettings
     {
@@ -41,6 +62,10 @@ namespace Lumina
         /** Anti-aliasing quality. Off disables SMAA; higher qualities detect more edges at higher GPU cost. */
         PROPERTY(Editable, Category = "Rendering")
         ESMAAQuality SMAAQuality = ESMAAQuality::High;
+
+        /** MSAA sample count. Off = no multisampling. Applied at scene init; reload the world to change. */
+        PROPERTY(Editable, Category = "Rendering")
+        EMSAASampleCount MSAASampleCount = EMSAASampleCount::Off;
 
         /** Normalized direction of gravity in world space. */
         PROPERTY(Editable, Category = "Physics")

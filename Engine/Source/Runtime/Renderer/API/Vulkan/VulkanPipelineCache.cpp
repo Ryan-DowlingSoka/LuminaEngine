@@ -7,22 +7,25 @@
 namespace Lumina
 {
 
-    FRHIGraphicsPipeline* FVulkanPipelineCache::GetOrCreateGraphicsPipeline(FVulkanDevice* Device, const FGraphicsPipelineDesc& InDesc, const FRenderPassDesc& RenderPassDesc)
+    FRHIGraphicsPipeline* FVulkanPipelineCache::GetOrCreateGraphicsPipeline(FVulkanDevice* Device, const FGraphicsPipelineDesc& InDesc, const FRenderPassDesc& InRenderPassDesc)
     {
         LUMINA_PROFILE_SCOPE();
+
+        FRenderPassDesc RenderPassDesc = InRenderPassDesc;
+        RenderPassDesc.SampleCount = RenderPassDesc.DeriveSampleCount();
 
         size_t Hash = 0;
         Hash::HashCombine(Hash, InDesc);
         Hash::HashCombine(Hash, RenderPassDesc);
-        
+
         auto It = GraphicsPipelines.find(Hash);
         if (It != GraphicsPipelines.end())
         {
             return It->second;
         }
-        
+
         auto NewPipeline = TRefCountPtr<FVulkanGraphicsPipeline>::Create(Device, InDesc, RenderPassDesc);
-        
+
 
         GraphicsPipelines.emplace(Hash, NewPipeline);
         return NewPipeline;

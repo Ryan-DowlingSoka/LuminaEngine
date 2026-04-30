@@ -10,6 +10,7 @@ namespace Lumina
 
     void CMaterialExpression_CustomPrimitiveData::GenerateDefinition(FMaterialCompiler& Compiler)
     {
+        if (!Compiler.RequirePixelStage(this, "CustomPrimitiveData")) return;
         Compiler.CustomPrimitiveData(this, Type);
     }
     

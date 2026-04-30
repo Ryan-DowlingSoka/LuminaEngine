@@ -27,6 +27,7 @@ namespace Lumina
 
     void FConsoleSink::flush_()
     {
-        OutputMessages.clear();
+        // No-op: the ring buffer is the visible console history. spdlog calls flush_()
+        // on warn/err via flush_on(), which previously wiped the panel mid-session.
     }
 }

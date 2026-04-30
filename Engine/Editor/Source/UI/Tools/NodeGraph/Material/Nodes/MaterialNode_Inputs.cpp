@@ -1,0 +1,100 @@
+#include "MaterialNode_Inputs.h"
+
+#include "Core/Object/Cast.h"
+#include "UI/Tools/NodeGraph/Material/MaterialOutput.h"
+#include "UI/Tools/NodeGraph/Material/MaterialCompiler.h"
+
+namespace Lumina
+{
+    void CMaterialExpression_Panner::BuildNode()
+    {
+        Super::BuildNode();
+
+        UV = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "UV", ENodePinDirection::Input));
+        UV->SetPinColor(IM_COL32(255, 10, 10, 255));
+        UV->SetHideDuringConnection(false);
+        UV->SetPinName("UV");
+        UV->SetInputType(EMaterialInputType::Float2);
+
+        Time = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "Time", ENodePinDirection::Input));
+        Time->SetHideDuringConnection(false);
+        Time->SetPinName("Time");
+        Time->SetInputType(EMaterialInputType::Float);
+
+        Speed = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "Speed", ENodePinDirection::Input));
+        Speed->SetHideDuringConnection(false);
+        Speed->SetPinName("Speed");
+        Speed->SetInputType(EMaterialInputType::Float2);
+
+        Output->SetInputType(EMaterialInputType::Float2);
+    }
+    void CMaterialExpression_Panner::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.Panner(UV, Time, Speed); }
+
+    void CMaterialExpression_TexCoords::GenerateDefinition(FMaterialCompiler& Compiler)
+    {
+        Compiler.TexCoords(FullName, TextureIndex, UTiling, VTiling);
+    }
+
+    void CMaterialExpression_WorldPos::BuildNode()
+    {
+        Super::BuildNode();
+        Output->SetInputType(EMaterialInputType::Float3);
+        Output->SetComponentMask(EComponentMask::RGB);
+    }
+    void CMaterialExpression_WorldPos::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.WorldPos(FullName); }
+
+    void CMaterialExpression_CameraPos::BuildNode()
+    {
+        Super::BuildNode();
+        Output->SetInputType(EMaterialInputType::Float3);
+        Output->SetComponentMask(EComponentMask::RGB);
+    }
+    void CMaterialExpression_CameraPos::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.CameraPos(FullName); }
+
+    void CMaterialExpression_EntityID::BuildNode()
+    {
+        Super::BuildNode();
+        Output->SetInputType(EMaterialInputType::Float);
+    }
+    void CMaterialExpression_EntityID::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.EntityID(FullName); }
+
+    void CMaterialExpression_VertexNormal::BuildNode()
+    {
+        Super::BuildNode();
+        Output->SetInputType(EMaterialInputType::Float3);
+        Output->SetComponentMask(EComponentMask::RGB);
+    }
+    void CMaterialExpression_VertexNormal::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.VertexNormal(FullName); }
+
+    void CMaterialExpression_VertexTangent::BuildNode()
+    {
+        Super::BuildNode();
+        Output->SetInputType(EMaterialInputType::Float3);
+        Output->SetComponentMask(EComponentMask::RGB);
+    }
+    void CMaterialExpression_VertexTangent::GenerateDefinition(FMaterialCompiler& Compiler)
+    {
+        if (!Compiler.RequirePixelStage(this, "VertexTangent")) return;
+        Compiler.VertexTangent(FullName);
+    }
+
+    void CMaterialExpression_VertexBitangent::BuildNode()
+    {
+        Super::BuildNode();
+        Output->SetInputType(EMaterialInputType::Float3);
+        Output->SetComponentMask(EComponentMask::RGB);
+    }
+    void CMaterialExpression_VertexBitangent::GenerateDefinition(FMaterialCompiler& Compiler)
+    {
+        if (!Compiler.RequirePixelStage(this, "VertexBitangent")) return;
+        Compiler.VertexBitangent(FullName);
+    }
+
+    void CMaterialExpression_VertexColor::BuildNode()
+    {
+        Super::BuildNode();
+        Output->SetInputType(EMaterialInputType::Float4);
+        Output->SetComponentMask(EComponentMask::RGBA);
+    }
+    void CMaterialExpression_VertexColor::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.VertexColor(FullName); }
+}

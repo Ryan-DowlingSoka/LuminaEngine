@@ -174,6 +174,7 @@ namespace Lumina
         void OnRelationshipComponentDestroyed(entt::registry& Registry, entt::entity Entity);
         void OnTransformComponentConstruct(entt::registry& Registry, entt::entity Entity);
         void OnScriptComponentConstruct(entt::registry& Registry, entt::entity Entity);
+        void SetupScriptComponent(entt::entity Entity, SScriptComponent& ScriptComponent);
         void OnScriptComponentCreated(entt::entity Entity, SScriptComponent& ScriptComponent, bool bRunReady);
         void OnScriptComponentDestroyed(entt::registry& Registry, entt::entity Entity);
 

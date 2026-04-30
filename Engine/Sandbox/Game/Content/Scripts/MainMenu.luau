@@ -7,9 +7,9 @@ function Mainmenu:OnReady()
     Input.SetMode("UI")
     Input.SetMouseMode("Normal")
    
-
+	print("Ready!")
     UI.OnEvent(MENU, "item-play", "click", function()
-        Engine.Travel("/Game/Levels/Level_01")
+        Engine.Travel("/Game/Levels/NewWorld")
     end)
 
     UI.OnEvent(MENU, "item-settings", "click", function()

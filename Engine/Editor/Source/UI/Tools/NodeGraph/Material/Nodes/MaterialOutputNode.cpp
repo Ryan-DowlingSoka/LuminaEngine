@@ -52,115 +52,77 @@ namespace Lumina
         OpacityPin = CreatePin(CMaterialInput::StaticClass(), "Opacity", ENodePinDirection::Input);
         OpacityPin->SetPinName("Opacity");
 
-        // Opacity (For transparent materials)
-        //WorldPositionOffsetPin = CreatePin(CMaterialInput::StaticClass(), "World Position Offset (WPO)", ENodePinDirection::Input);
-        //WorldPositionOffsetPin->SetPinName("World Position Offset (WPO)");
+        // World Position Offset — vertex-stage displacement in world space.
+        // Routed through the compiler's vertex chunk; if connected, the
+        // material's vertex shader bakes in the graph emission and adds the
+        // result to WorldPos before the View/Projection transforms.
+        WorldPositionOffsetPin = CreatePin(CMaterialInput::StaticClass(), "World Position Offset (WPO)", ENodePinDirection::Input);
+        WorldPositionOffsetPin->SetPinName("World Position Offset (XYZ)");
+    }
+
+    // Build a `Material.<member> = <expression>;` line that handles component
+    // count widening / narrowing between the connected pin's value type and
+    // the expected member width. Pulled out so the same emitter serves both
+    // the pixel-stage assignments and the vertex-stage (WPO) assignment.
+    static FString EmitMaterialAssignment(const FString& MemberName, CEdNodeGraphPin* Pin, const FString& DefaultValue, int32 RequiredComponents)
+    {
+        FString Out = "\tMaterial." + MemberName + " = ";
+
+        if (!Pin || !Pin->HasConnection())
+        {
+            return Out + DefaultValue + ";\n";
+        }
+
+        CMaterialOutput* ConnectedPin = Pin->GetConnection<CMaterialOutput>(0);
+        FString NodeName              = ConnectedPin->GetOwningNode()->GetNodeFullName();
+        int32 ConnectedComponents     = FMaterialCompiler::GetComponentCount(ConnectedPin->GetComponentMask());
+        FString Swizzle               = GetSwizzleForMask(ConnectedPin->GetComponentMask());
+        if (!Swizzle.empty())
+        {
+            ConnectedComponents = (int32)Swizzle.length() - 1;
+        }
+        FString Value = NodeName + Swizzle;
+
+        if (RequiredComponents == 1)
+        {
+            if (ConnectedComponents == 1) Out += Value + ";\n";
+            else                          Out += Value + ".r;\n";
+        }
+        else if (RequiredComponents == 3)
+        {
+            if (ConnectedComponents == 3)      Out += Value + ";\n";
+            else if (ConnectedComponents == 4) Out += (Swizzle.empty() ? Value + ".rgb;\n" : Value + ";\n");
+            else if (ConnectedComponents == 2) Out += "float3(" + Value + ", 0.0);\n";
+            else                               Out += "float3(" + Value + ");\n";
+        }
+        else
+        {
+            Out += Value + ";\n";
+        }
+        return Out;
     }
 
     void CMaterialOutputNode::GenerateDefinition(FMaterialCompiler& Compiler)
     {
-        FString Output;
-        Output += "\n\n";
-    
-        Output += "\tFMaterialPixelInputs Material;\n";
-    
-        auto EmitMaterialInput = [&](const FString& InputName, CEdNodeGraphPin* Pin, const FString& DefaultValue, int32 RequiredComponents)
-        {
-            Output += "\tMaterial." + InputName + " = ";
-            
-            if (Pin->HasConnection())
-            {
-                CMaterialOutput* ConnectedPin = Pin->GetConnection<CMaterialOutput>(0);
-                FString NodeName = ConnectedPin->GetOwningNode()->GetNodeFullName();
-                
-                int32 ConnectedComponents = FMaterialCompiler::GetComponentCount(ConnectedPin->GetComponentMask());
-                
-                FString Swizzle = GetSwizzleForMask(ConnectedPin->GetComponentMask());
-                
-                if (!Swizzle.empty())
-                {
-                    ConnectedComponents = Swizzle.length() - 1;
-                }
-                
-                FString Value = NodeName + Swizzle;
-                
-                if (RequiredComponents == 1)
-                {
-                    if (ConnectedComponents == 1)
-                    {
-                        Output += Value + ";\n";
-                    }
-                    else
-                    {
-                        if (Swizzle.empty())
-                        {
-                            Output += Value + ".r;\n";
-                        }
-                        else
-                        {
-                            Output += Value + ".r;\n";
-                        }
-                    }
-                }
-                else if (RequiredComponents == 3)
-                {
-                    if (ConnectedComponents == 3)
-                    {
-                        Output += Value + ";\n";
-                    }
-                    else if (ConnectedComponents == 4)
-                    {
-                        if (Swizzle.empty())
-                        {
-                            Output += Value + ".rgb;\n";
-                        }
-                        else
-                        {
-                            Output += Value + ";\n";
-                        }
-                    }
-                    else if (ConnectedComponents == 2)
-                    {
-                        Output += "float3(" + Value + ", 0.0);\n";
-                    }
-                    else
-                    {
-                        Output += "float3(" + Value + ");\n";
-                    }
-                }
-                else
-                {
-                    Output += Value + ";\n";
-                }
-            }
-            else
-            {
-                Output += DefaultValue + ";\n";
-            }
-        };
-    
-        EmitMaterialInput("Diffuse", BaseColorPin, "float3(1.0, 1.0, 1.0)", 3);
-        EmitMaterialInput("Metallic", MetallicPin, "0.0", 1);
-        EmitMaterialInput("Roughness", RoughnessPin, "1.0", 1);
-        EmitMaterialInput("Specular", SpecularPin, "0.5", 1);
-        EmitMaterialInput("Emissive", EmissivePin, "float3(0.0, 0.0, 0.0)", 3);
-        EmitMaterialInput("AmbientOcclusion", AOPin, "1.0", 1);
-        EmitMaterialInput("Normal", NormalPin, "float3(0.0, 0.0, 1.0)", 3);
-        EmitMaterialInput("Opacity", OpacityPin, "1.0", 1);
+        // ----- Pixel stage -----
+        FString PixelOut;
+        PixelOut += "\n\n";
+        PixelOut += "\tFMaterialPixelInputs Material;\n";
 
-        // Decode the connected Normal as a tangent-space normal map. Two
-        // decode paths depending on whether the upstream sample came from
-        // a NormalMap-flagged texture:
-        //
-        //  * NormalMap source (BC5_UNORM, 2-channel store): take only XY
-        //    from the sample, decode to [-1, 1], reconstruct Z from the
-        //    unit-length constraint. Works for any 2-channel tangent normal
-        //    regardless of where the missing Z came from.
-        //  * Non-NormalMap source (3-channel store, or hand-built float3):
-        //    full xyz decode + normalize, the textbook path.
-        //
-        // The unconnected default `float3(0, 0, 1)` is already in [-1, 1]
-        // so we only patch the connected case.
+        PixelOut += EmitMaterialAssignment("Diffuse",          BaseColorPin, "float3(1.0, 1.0, 1.0)", 3);
+        PixelOut += EmitMaterialAssignment("Metallic",         MetallicPin,  "0.0",                    1);
+        PixelOut += EmitMaterialAssignment("Roughness",        RoughnessPin, "1.0",                    1);
+        PixelOut += EmitMaterialAssignment("Specular",         SpecularPin,  "0.5",                    1);
+        PixelOut += EmitMaterialAssignment("Emissive",         EmissivePin,  "float3(0.0, 0.0, 0.0)", 3);
+        PixelOut += EmitMaterialAssignment("AmbientOcclusion", AOPin,        "1.0",                    1);
+        PixelOut += EmitMaterialAssignment("Normal",           NormalPin,    "float3(0.0, 0.0, 1.0)", 3);
+        PixelOut += EmitMaterialAssignment("Opacity",          OpacityPin,   "1.0",                    1);
+
+        // Tangent-space normal-map decode. Two paths depending on whether the
+        // upstream sample came from a NormalMap-flagged texture (BC5 2-channel
+        // store -> reconstruct Z) versus a 3-channel source (textbook decode).
+        // Unconnected default `float3(0, 0, 1)` is already in [-1, 1] so only
+        // the connected case is patched.
         if (NormalPin->HasConnection())
         {
             CMaterialOutput* ConnectedPin   = NormalPin->GetConnection<CMaterialOutput>(0);
@@ -169,20 +131,23 @@ namespace Lumina
 
             if (bNormalMapSrc)
             {
-                // 2-channel decode + Z reconstruct. saturate() guards against
-                // floating-point overshoot from xy^2 > 1 (rare, but it gives
-                // sqrt(<0) = NaN if unguarded).
-                Output += "\tMaterial.Normal.xy = Material.Normal.xy * 2.0 - 1.0;\n";
-                Output += "\tMaterial.Normal.z  = sqrt(saturate(1.0 - dot(Material.Normal.xy, Material.Normal.xy)));\n";
+                PixelOut += "\tMaterial.Normal.xy = Material.Normal.xy * 2.0 - 1.0;\n";
+                PixelOut += "\tMaterial.Normal.z  = sqrt(saturate(1.0 - dot(Material.Normal.xy, Material.Normal.xy)));\n";
             }
             else
             {
-                Output += "\tMaterial.Normal = normalize(Material.Normal * 2.0 - 1.0);\n";
+                PixelOut += "\tMaterial.Normal = normalize(Material.Normal * 2.0 - 1.0);\n";
             }
         }
-        //EmitMaterialInput("WorldPositionOffset", WorldPositionOffsetPin, "float3(0.0)", 3);
-        
-        
-        Compiler.AddRaw(Output);
+
+        Compiler.AddPixelOutput(PixelOut);
+
+        // ----- Vertex stage (WPO) -----
+        // The vertex template already declares `FMaterialVertexInputs Material;`
+        // inline above the token, so we only emit the assignment here.
+        FString VertexOut;
+        VertexOut += "\n";
+        VertexOut += EmitMaterialAssignment("WorldPositionOffset", WorldPositionOffsetPin, "float3(0.0, 0.0, 0.0)", 3);
+        Compiler.AddVertexOutput(VertexOut);
     }
 }

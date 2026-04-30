@@ -111,12 +111,32 @@ namespace Lumina
             VertexHeader.Hash           = Hash::GetHash64(VertexShaderBinaries.data(), VertexShaderBinaries.size() * sizeof(uint32));
             VertexHeader.Binaries       = VertexShaderBinaries;
             VertexShader                = GRenderContext->CreateVertexShader(VertexHeader);
-            
+
             FShaderHeader PixelHeader;
             PixelHeader.DebugName       = GetName().ToString() + "_PixelShader";
             PixelHeader.Hash            = Hash::GetHash64(PixelShaderBinaries.data(), PixelShaderBinaries.size() * sizeof(uint32));
             PixelHeader.Binaries        = PixelShaderBinaries;
             PixelShader                 = GRenderContext->CreatePixelShader(PixelHeader);
+
+            // Per-material depth-prepass + shadow vertex shaders are present
+            // only for WPO-using materials. Null is the signal to the renderer
+            // to fall back to the global library shader.
+            if (!DepthPrepassVertexShaderBinaries.empty())
+            {
+                FShaderHeader Header;
+                Header.DebugName = GetName().ToString() + "_DepthPrepassVS";
+                Header.Hash      = Hash::GetHash64(DepthPrepassVertexShaderBinaries.data(), DepthPrepassVertexShaderBinaries.size() * sizeof(uint32));
+                Header.Binaries  = DepthPrepassVertexShaderBinaries;
+                DepthPrepassVertexShader = GRenderContext->CreateVertexShader(Header);
+            }
+            if (!ShadowVertexShaderBinaries.empty())
+            {
+                FShaderHeader Header;
+                Header.DebugName = GetName().ToString() + "_ShadowVS";
+                Header.Hash      = Hash::GetHash64(ShadowVertexShaderBinaries.data(), ShadowVertexShaderBinaries.size() * sizeof(uint32));
+                Header.Binaries  = ShadowVertexShaderBinaries;
+                ShadowVertexShader = GRenderContext->CreateVertexShader(Header);
+            }
 
             FBindingSetDesc SetDesc;
 
@@ -308,15 +328,29 @@ namespace Lumina
             LOG_ERROR("Failed to find BaseVertPass.slang!");
             return;
         }
-        
-        ShaderCompiler->CompilerShaderRaw(Move(LoadedPixelString), {}, [](const FShaderHeader& Header) mutable 
+
+        // Default material: substitute the vertex token with a no-op WPO so
+        // the geometry is unmodified.
+        const char* VertexToken = "$MATERIAL_VERTEX_INPUTS";
+        size_t VertexPos = LoadedVertexString.find(VertexToken);
+        FString VertexReplacement = "Material.WorldPositionOffset = float3(0.0);\n";
+        if (VertexPos != FString::npos)
+        {
+            LoadedVertexString.replace(VertexPos, strlen(VertexToken), VertexReplacement);
+        }
+        else
+        {
+            LOG_ERROR("Missing [$MATERIAL_VERTEX_INPUTS] in base vertex shader!");
+        }
+
+        ShaderCompiler->CompilerShaderRaw(Move(LoadedPixelString), {}, [](const FShaderHeader& Header) mutable
         {
             DefaultMaterial->PixelShader = GRenderContext->CreatePixelShader(Header);
             DefaultMaterial->PixelShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
             GRenderContext->OnShaderCompiled(DefaultMaterial->PixelShader, false, true);
         });
-        
-        ShaderCompiler->CompilerShaderRaw(Move(LoadedVertexString), {}, [](const FShaderHeader& Header) mutable 
+
+        ShaderCompiler->CompilerShaderRaw(Move(LoadedVertexString), {}, [](const FShaderHeader& Header) mutable
         {
             DefaultMaterial->VertexShader = GRenderContext->CreateVertexShader(Header);
             DefaultMaterial->VertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
@@ -394,6 +428,20 @@ namespace Lumina
         {
             LOG_ERROR("Failed to find TerrainBaseVertexPass.slang!");
             return;
+        }
+
+        // Default terrain material: no WPO. Substitute the vertex token with
+        // a zero-init.
+        const char* VertexToken = "$MATERIAL_VERTEX_INPUTS";
+        size_t VertexPos = LoadedVertexString.find(VertexToken);
+        FString VertexReplacement = "Material.WorldPositionOffset = float3(0.0);\n";
+        if (VertexPos != FString::npos)
+        {
+            LoadedVertexString.replace(VertexPos, strlen(VertexToken), VertexReplacement);
+        }
+        else
+        {
+            LOG_ERROR("Missing [$MATERIAL_VERTEX_INPUTS] in terrain base vertex shader!");
         }
 
         ShaderCompiler->CompilerShaderRaw(Move(LoadedPixelString), {}, [](const FShaderHeader& Header) mutable

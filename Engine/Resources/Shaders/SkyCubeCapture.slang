@@ -16,7 +16,7 @@
 struct FPushConstants
 {
     float3 SunDirection;
-    float  _Pad0;
+    float  Time;
 };
 [[vk::push_constant]] FPushConstants PC;
 
@@ -39,7 +39,7 @@ void ComputeMain(uint3 DTid : SV_DispatchThreadID)
     float2 UV = (float2(DTid.xy) + 0.5) / float2(Width, Height);
 
     float3 RayDir = CubeFaceDirection(DTid.z, UV);
-    float3 Color  = EvaluateSky(uEnvironment, PC.SunDirection, RayDir);
+    float3 Color  = EvaluateSky(uEnvironment, PC.SunDirection, RayDir, PC.Time);
 
     uSkyCube[DTid] = float4(Color, 1.0);
 }

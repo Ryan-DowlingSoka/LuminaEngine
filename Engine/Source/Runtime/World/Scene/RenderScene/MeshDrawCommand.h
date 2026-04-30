@@ -70,6 +70,13 @@ namespace Lumina
 	{
 		FRHIVertexShader*					VertexShader = nullptr;
 		FRHIPixelShader*					PixelShader = nullptr;
+		// Per-material depth-prepass / shadow vertex shaders, populated only
+		// for materials with WorldPositionOffset connected so the displaced
+		// depth in the prepass matches the base pass and shadows track the
+		// displaced geometry. Null means the renderer falls back to the
+		// global library shader.
+		FRHIVertexShader*					DepthVertexShader = nullptr;
+		FRHIVertexShader*					ShadowVertexShader = nullptr;
 		uint32                      		IndirectDrawOffset = 0;
 		uint32                      		DrawCount = 0;
 		uint32                      		bDrawInDepthPass : 1;

@@ -167,7 +167,9 @@ namespace Lumina
             {
                 if (ImGui::MenuItem("Unparent"))
                 {
+                    BeginTransaction();
                     ECS::Utils::RemoveFromParent(Registry, Data.Entity);
+                    EndTransaction("Unparent");
                     ReparentEntityInOutliner(Data.Entity);
                 }
             }
@@ -179,7 +181,9 @@ namespace Lumina
                     // Snapshot child IDs before mutating relationships, then move each in the tree.
                     TVector<entt::entity> Children;
                     ECS::Utils::ForEachChild(Registry, Data.Entity, [&](entt::entity Child) { Children.push_back(Child); });
+                    BeginTransaction();
                     ECS::Utils::DetachImmediateChildren(Registry, Data.Entity);
+                    EndTransaction("Detach Children");
                     for (entt::entity Child : Children)
                     {
                         ReparentEntityInOutliner(Child);
@@ -194,8 +198,17 @@ namespace Lumina
 
             if (!bLocked && ImGui::MenuItem("Duplicate"))
             {
+                BeginTransaction();
                 entt::entity New = entt::null;
                 CopyEntity(New, Data.Entity);
+                if (New != entt::null)
+                {
+                    EndTransaction("Duplicate");
+                }
+                else
+                {
+                    PendingBeforeState.clear();
+                }
             }
 
             if (!bLocked && ImGui::MenuItem("Delete"))
@@ -333,27 +346,48 @@ namespace Lumina
     {
         DrawWorldGrid();
 
-        while (!ComponentDestroyRequests.empty())
+        if (!ComponentDestroyRequests.empty())
         {
-            FComponentDestroyRequest Request = ComponentDestroyRequests.front();
-            ComponentDestroyRequests.pop();
+            BeginTransaction();
+            while (!ComponentDestroyRequests.empty())
+            {
+                FComponentDestroyRequest Request = ComponentDestroyRequests.front();
+                ComponentDestroyRequests.pop();
 
-            RemoveComponent(Request.EntityID, Request.Type);
+                RemoveComponent(Request.EntityID, Request.Type);
+            }
+            EndTransaction("Remove Component");
         }
 
-        while (!EntityDestroyRequests.empty())
+        if (!EntityDestroyRequests.empty())
         {
-            entt::entity Entity = EntityDestroyRequests.front();
-            EntityDestroyRequests.pop();
-            
-            if (!World->GetEntityRegistry().valid(Entity))
+            // Snapshot the registry once for the whole batch so a Delete keypress that
+            // queues several entities collapses to a single undo step.
+            BeginTransaction();
+            bool bDestroyed = false;
+            while (!EntityDestroyRequests.empty())
             {
-                LOG_WARN("Attempted to delete an invalid entity! {}", entt::to_integral(Entity));
-                continue;
+                entt::entity Entity = EntityDestroyRequests.front();
+                EntityDestroyRequests.pop();
+
+                if (!World->GetEntityRegistry().valid(Entity))
+                {
+                    LOG_WARN("Attempted to delete an invalid entity! {}", entt::to_integral(Entity));
+                    continue;
+                }
+
+                World->DestroyEntity(Entity);
+                bDestroyed = true;
+                // OutlinerListView is updated via OnOutlinerEntityDestroyed.
             }
-            
-            World->DestroyEntity(Entity);
-            // OutlinerListView is updated via OnOutlinerEntityDestroyed.
+            if (bDestroyed)
+            {
+                EndTransaction("Delete Entity");
+            }
+            else
+            {
+                PendingBeforeState.clear();
+            }
         }
 
         auto View = World->GetEntityRegistry().view<FSelectedInEditorComponent>();
@@ -384,6 +418,13 @@ namespace Lumina
             }
 
             TFixedVector<entt::entity, 64> NewlyDuplicated;
+
+            // Snapshot once if duplicate is happening so the Ctrl+D batch is a single undo.
+            const bool bWantDuplicateTransaction = bDuplicatePressed;
+            if (bWantDuplicateTransaction)
+            {
+                BeginTransaction();
+            }
 
             for (entt::entity SelectedEntity : CurrentSelection)
             {
@@ -421,6 +462,18 @@ namespace Lumina
                 for (entt::entity New : NewlyDuplicated)
                 {
                     AddSelectedEntity(New, false);
+                }
+            }
+
+            if (bWantDuplicateTransaction)
+            {
+                if (!NewlyDuplicated.empty())
+                {
+                    EndTransaction("Duplicate");
+                }
+                else
+                {
+                    PendingBeforeState.clear();
                 }
             }
         }
@@ -467,23 +520,33 @@ namespace Lumina
                 }
             });
 
-            TFixedVector<entt::entity, 64> NewlyPasted;
-            for (entt::entity Source : CopySources)
+            if (!CopySources.empty())
             {
-                entt::entity New = entt::null;
-                CopyEntity(New, Source);
-                if (New != entt::null)
-                {
-                    NewlyPasted.push_back(New);
-                }
-            }
+                BeginTransaction();
 
-            if (!NewlyPasted.empty())
-            {
-                ClearSelectedEntities();
-                for (entt::entity New : NewlyPasted)
+                TFixedVector<entt::entity, 64> NewlyPasted;
+                for (entt::entity Source : CopySources)
                 {
-                    AddSelectedEntity(New, false);
+                    entt::entity New = entt::null;
+                    CopyEntity(New, Source);
+                    if (New != entt::null)
+                    {
+                        NewlyPasted.push_back(New);
+                    }
+                }
+
+                if (!NewlyPasted.empty())
+                {
+                    ClearSelectedEntities();
+                    for (entt::entity New : NewlyPasted)
+                    {
+                        AddSelectedEntity(New, false);
+                    }
+                    EndTransaction("Paste");
+                }
+                else
+                {
+                    PendingBeforeState.clear();
                 }
             }
         }
@@ -1056,8 +1119,17 @@ namespace Lumina
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.8f, 1.0f, 1.0f));
                     if (ImGui::MenuItem("Duplicate", "Ctrl+D"))
                     {
+                        BeginTransaction();
                         entt::entity To = entt::null;
                         CopyEntity(To, LastSelectedEntity);
+                        if (To != entt::null)
+                        {
+                            EndTransaction("Duplicate");
+                        }
+                        else
+                        {
+                            PendingBeforeState.clear();
+                        }
                         ImGui::CloseCurrentPopup();
                     }
                     ImGui::PopStyleColor();
@@ -1085,7 +1157,9 @@ namespace Lumina
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 0.3f, 0.6f, 1.0f));
                     if (ImGui::MenuItem("Unparent"))
                     {
+                        BeginTransaction();
                         ECS::Utils::RemoveFromParent(Registry, LastSelectedEntity);
+                        EndTransaction("Unparent");
                         ReparentEntityInOutliner(LastSelectedEntity);
                     }
                     ImGui::PopStyleColor();
@@ -1098,7 +1172,9 @@ namespace Lumina
                     {
                         TVector<entt::entity> Children;
                         ECS::Utils::ForEachChild(Registry, LastSelectedEntity, [&](entt::entity Child) { Children.push_back(Child); });
+                        BeginTransaction();
                         ECS::Utils::DetachImmediateChildren(Registry, LastSelectedEntity);
+                        EndTransaction("Detach Children");
                         for (entt::entity Child : Children)
                         {
                             ReparentEntityInOutliner(Child);
@@ -2212,101 +2288,16 @@ namespace Lumina
         SetWorldPlayInEditor(false);
     }
 
-    void FWorldEditorTool::BeginTransaction()
+    void FWorldEditorTool::OnPostUndoRedo()
     {
-        PendingBeforeState.clear();
-
-        FMemoryWriter Writer(PendingBeforeState);
-        FObjectProxyArchiver Ar(Writer, false);
-        ECS::Utils::SerializeRegistry(Ar, World->GetEntityRegistry());
-        
-        RedoStack.clear();
-    }
-
-    void FWorldEditorTool::EndTransaction(FName Name)
-    {
-        static constexpr int32 MaxUndoHistory = 12;
-
-        TVector<uint8> AfterState;
-        FMemoryWriter Writer(AfterState);
-        FObjectProxyArchiver Ar(Writer, false);
-        ECS::Utils::SerializeRegistry(Ar, World->GetEntityRegistry());
-
-        if (UndoStack.size() >= MaxUndoHistory)
-        {
-            UndoStack.erase(UndoStack.begin());
-        }
-
-        UndoStack.push_back({ Name, PendingBeforeState, eastl::move(AfterState) });
-        PendingBeforeState.clear();
-
-        RedoStack.clear();
-
-        if (World->GetPackage())
-        {
-            World->GetPackage()->MarkDirty();
-        }
-    }
-    
-    void FWorldEditorTool::Undo()
-    {
-        if (UndoStack.empty())
-        {
-            return;
-        }
-
-        FTransaction& Transaction = UndoStack.back();
-
-        ImGuiX::Notifications::NotifyInfo("Undid {}", Transaction.Name);
-
-        RedoStack.push_back(Transaction);
-        
-        FMemoryReader Reader(Transaction.BeforeState);
-        FObjectProxyArchiver Ar(Reader, true);
-
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        ECS::Utils::SerializeRegistry(Ar, Registry);
-
         // The serialized registry is the authority on what's selected post-undo. Rebuild
         // the cached set from FSelectedInEditorComponent / FLastSelectedTag so all three
         // views (set, tags, outliner rows) line up.
         ResyncSelectionFromRegistry();
 
-        UndoStack.pop_back();
-
-        if (World->GetPackage())
-        {
-            World->GetPackage()->MarkDirty();
-        }
-    }
-
-    void FWorldEditorTool::Redo()
-    {
-        if (RedoStack.empty())
-        {
-            return;
-        }
-
-        FTransaction& Transaction = RedoStack.back();
-
-        ImGuiX::Notifications::NotifyInfo("Redid {}", Transaction.Name);
-        
-        UndoStack.push_back(Transaction);
-
-        FMemoryReader Reader(Transaction.AfterState);
-        FObjectProxyArchiver Ar(Reader, true);
-
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        ECS::Utils::SerializeRegistry(Ar, Registry);
-
-        ResyncSelectionFromRegistry();
-
-        RedoStack.pop_back();
-
-        if (World->GetPackage())
-        {
-            World->GetPackage()->MarkDirty();
-        }
+        // Outliner topology may have changed (entities created/destroyed by the undo);
+        // forcing a rebuild keeps tree rows in sync.
+        OutlinerListView.MarkTreeDirty();
     }
 
     // -- Selection plumbing -------------------------------------------------------------------
@@ -3428,29 +3419,21 @@ namespace Lumina
 
     void FWorldEditorTool::HandlePrefabContentDrop(FStringView VirtualPath, entt::entity DropTarget)
     {
-        FAssetData* AssetData = FAssetRegistry::Get().GetAssetByPath(VirtualPath);
-        if (AssetData == nullptr)
-        {
-            return;
-        }
-
-        CObject* Loaded = LoadObject<CObject>(AssetData->AssetGUID);
-        CPrefab* Prefab = Cast<CPrefab>(Loaded);
-        if (Prefab == nullptr)
-        {
-            return;
-        }
-
+        // Despite the legacy name, this dispatches every asset class via the editor drop
+        // registry (static mesh, material, prefab, ...). Spawn transform comes from the
+        // camera so dropped assets land where the user is looking, not at world origin.
         BeginTransaction();
-        entt::entity NewRoot = Prefab->Instantiate(World, FTransform(), DropTarget);
-        EndTransaction("Instantiate Prefab");
-
-        if (NewRoot != entt::null)
+        entt::entity Spawned = HandleContentBrowserAssetDrop(VirtualPath, DropTarget);
+        if (Spawned != entt::null)
         {
-            SetSingleSelectedEntity(NewRoot);
+            EndTransaction("Drop Asset");
+            SetSingleSelectedEntity(Spawned);
+            OutlinerListView.MarkTreeDirty();
         }
-
-        OutlinerListView.MarkTreeDirty();
+        else
+        {
+            PendingBeforeState.clear();
+        }
     }
 
     void FWorldEditorTool::DrawWorldSettings(bool bFocused)
@@ -4243,7 +4226,7 @@ namespace Lumina
         entt::hashed_string Hash = entt::hashed_string(Component->GetName().c_str());
         entt::meta_type MetaType = entt::resolve(Hash);
 
-        entt::entity CreatedEntity = World->ConstructEntity(Component->MakeDisplayName());
+        entt::entity CreatedEntity = World->ConstructEntity(Component->MakeDisplayName(), GetCameraSpawnTransform());
         ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs, entt::forward_as_meta(World->GetEntityRegistry()), CreatedEntity, entt::forward_as_meta(entt::meta_any{}));
 
         // Newly-created entities always become the selection so the user immediately sees them
@@ -4258,7 +4241,7 @@ namespace Lumina
 
     void FWorldEditorTool::CreateEntity()
     {
-        entt::entity NewEntity = World->ConstructEntity("Entity");
+        entt::entity NewEntity = World->ConstructEntity("Entity", GetCameraSpawnTransform());
         if (NewEntity != entt::null)
         {
             SetSingleSelectedEntity(NewEntity);

@@ -94,11 +94,8 @@ namespace Lumina
 
 
     protected:
-        
-        void BeginTransaction() override;
-        void EndTransaction(FName Name) override;
-        void Undo() override;
-        void Redo() override;
+
+        void OnPostUndoRedo() override;
         
         // Replace the entire selection with a single entity. Use this for the most
         // common "click an entity" path — single-select with implicit clear.

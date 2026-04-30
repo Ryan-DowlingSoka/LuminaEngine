@@ -18,6 +18,12 @@ namespace Lumina
         constexpr size_t vkCmdUpdateBufferLimit = 65536;
     }
     
+    static VkResolveModeFlagBits PickColorResolveMode(EFormat Format)
+    {
+        const FFormatInfo& Info = RHI::Format::Info(Format);
+        return Info.Kind == EFormatKind::Integer ? VK_RESOLVE_MODE_SAMPLE_ZERO_BIT : VK_RESOLVE_MODE_AVERAGE_BIT;
+    }
+
     static EImageDimension GetDimensionForFramebuffer(EImageDimension dimension, bool isArray)
     {
         // Can't render into cubes and 3D textures directly, convert them to 2D arrays
@@ -993,6 +999,11 @@ namespace Lumina
             {
                 SetImageState(PassInfo.DepthAttachment.Image, PassInfo.DepthAttachment.Subresources, EResourceStates::DepthRead);
             }
+
+            if (PassInfo.DepthAttachment.ResolveImage)
+            {
+                SetImageState(PassInfo.DepthAttachment.ResolveImage, PassInfo.DepthAttachment.Subresources, EResourceStates::DepthWrite);
+            }
         }
     }
 
@@ -1072,14 +1083,17 @@ namespace Lumina
         }
     }
     
-    void FVulkanCommandList::BeginRenderPass(const FRenderPassDesc& PassInfo)
+    void FVulkanCommandList::BeginRenderPass(const FRenderPassDesc& InPassInfo)
     {
         LUMINA_PROFILE_SCOPE();
-        
+
         if (CurrentGraphicsState.RenderPass.IsValid())
         {
             EndRenderPass();
         }
+
+        FRenderPassDesc PassInfo = InPassInfo;
+        PassInfo.SampleCount = PassInfo.DeriveSampleCount();
         
         TFixedVector<VkRenderingAttachmentInfo, 4> ColorAttachments(PassInfo.ColorAttachments.size());
         VkRenderingAttachmentInfo DepthAttachment = {};
@@ -1116,7 +1130,7 @@ namespace Lumina
 
                 VkImageView ResolveView = VkResolveImage->GetSubresourceView(Subresource, Dimension, Format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT).View;
 
-                Attachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+                Attachment.resolveMode = PickColorResolveMode(Format);
                 Attachment.resolveImageView = ResolveView;
                 Attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             }
@@ -1162,6 +1176,18 @@ namespace Lumina
             
             Attachment.clearValue.depthStencil.depth = PassInfo.DepthAttachment.ClearColor.r;
             Attachment.clearValue.depthStencil.stencil = (uint32)PassInfo.DepthAttachment.ClearColor.g;
+
+            if (PassInfo.DepthAttachment.ResolveImage != nullptr)
+            {
+                CurrentCommandBuffer->AddReferencedResource(PassInfo.DepthAttachment.ResolveImage);
+                FVulkanImage* VkResolveImage = static_cast<FVulkanImage*>(PassInfo.DepthAttachment.ResolveImage);
+                VkImageView ResolveView = VkResolveImage->GetSubresourceView(Subresource, Dimension, Format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT).View;
+
+                Attachment.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+                Attachment.resolveImageView = ResolveView;
+                Attachment.resolveImageLayout = PassInfo.DepthAttachment.bReadOnly ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            }
+
             DepthAttachment = Attachment;
 
             if (NumArraySlices)
@@ -1185,8 +1211,10 @@ namespace Lumina
         RenderInfo.viewMask                 = PassInfo.ViewMask;
 
         vkCmdBeginRendering(CurrentCommandBuffer->CommandBuffer, &RenderInfo);
-        CurrentGraphicsState.RenderPass = PassInfo;
-        
+        // Store the original (un-derived) pass desc so equality compares against caller-side
+        // descs in SetGraphicsState don't churn the pass when SampleCount is at default.
+        CurrentGraphicsState.RenderPass = InPassInfo;
+
     }
     
     void FVulkanCommandList::EndRenderPass()

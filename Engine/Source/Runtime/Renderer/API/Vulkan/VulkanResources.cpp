@@ -1636,7 +1636,7 @@ namespace Lumina
         }
 
         VkPushConstantRange Range = {};
-        Range.size = 128;
+        Range.size = MaxPushConstantSize;
         Range.stageFlags = VK_SHADER_STAGE_ALL;
         Range.offset = 0;
         

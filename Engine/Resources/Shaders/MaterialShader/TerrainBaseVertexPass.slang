@@ -137,6 +137,12 @@ VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_Vulk
                                        1.0,
                                        NormalSample.g * 2.0 - 1.0));
 
+    // Material vertex graph emission (WPO). Terrain typically leaves this at
+    // zero; the substitution still runs for symmetry with the base pass.
+    FMaterialVertexInputs Material;
+    $MATERIAL_VERTEX_INPUTS
+    WorldPos += Material.WorldPositionOffset;
+
     float4x4 View    = GetCameraView();
     float4   ViewPos = mul(View, float4(WorldPos, 1.0));
     float3   NormalVS = normalize(mul((float3x3)View, NormalWS));

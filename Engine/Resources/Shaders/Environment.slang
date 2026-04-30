@@ -57,7 +57,7 @@ FragmentOutput FragmentMain(FragmentInput Input)
     else
     {
         float3 SunDir = GetSunDirection();
-        Color         = EvaluateSky(uEnvironment, SunDir, RayDir);
+        Color         = EvaluateSky(uEnvironment, SunDir, RayDir, GetTime());
     }
 
     FragmentOutput Output;

@@ -13,7 +13,7 @@ using namespace entt::literals;
 
 namespace Lumina::ECS::Utils
 {
-    bool SerializeEntity(FArchive& RESTRICT Ar, FEntityRegistry& RESTRICT Registry, entt::entity& Entity)
+    bool SerializeEntity(FArchive& RESTRICT Ar, FEntityRegistry& RESTRICT Registry, entt::entity& RESTRICT Entity)
     {
         using namespace entt::literals;
         

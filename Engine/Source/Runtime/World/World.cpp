@@ -610,64 +610,79 @@ namespace Lumina
     void CWorld::InitializeScriptEntities()
     {
         auto ScriptView = EntityRegistry.view<SScriptComponent>(entt::exclude<SDisabledTag>);
+
         ScriptView.each([&](entt::entity Entity, SScriptComponent& Component)
         {
-            OnScriptComponentCreated(Entity, Component, false); 
+            SetupScriptComponent(Entity, Component);
         });
-        
-        auto RootView = EntityRegistry.view<SScriptComponent>(entt::exclude<FRelationshipComponent, SDisabledTag>);
-        RootView.each([&](entt::entity Entity, SScriptComponent& ScriptComponent)
+
+        auto Visit = [&](entt::entity Entity, const Lua::FRef SScriptComponent::*Hook)
         {
-            if (ScriptComponent.Script == nullptr)
+            if (EntityRegistry.any_of<SDisabledTag>(Entity))
             {
                 return;
             }
-            
-            if ((WorldType == EWorldType::Editor) == ScriptComponent.bRunInEditor)
+            SScriptComponent* Component = EntityRegistry.try_get<SScriptComponent>(Entity);
+            if (!Component || Component->Script == nullptr)
             {
-                if (ScriptComponent.ReadyFunc.IsValid())
-                {
-                    ScriptComponent.ReadyFunc.InvokeAsCoroutine(ScriptComponent.Script->Reference);
-                }
+                return;
+            }
+            if ((WorldType == EWorldType::Editor) != Component->bRunInEditor)
+            {
+                return;
+            }
+            const Lua::FRef& HookRef = Component->*Hook;
+            if (HookRef.IsValid())
+            {
+                HookRef.InvokeAsCoroutine(Component->Script->Reference);
+            }
+        };
+
+        auto InvokeAttach = [&](entt::entity Entity) { Visit(Entity, &SScriptComponent::AttachFunc); };
+        auto InvokeReady  = [&](entt::entity Entity) { Visit(Entity, &SScriptComponent::ReadyFunc);  };
+
+        // Walk every relationship root once. The traversal walks all descendants
+        // regardless of whether they carry a script. Visit is a no-op for the
+        // scriptless ones, but a non-script root may still have script descendants.
+        auto RelationshipRoots = EntityRegistry.view<FRelationshipComponent>(entt::exclude<SDisabledTag>);
+
+        // Phase 2: top-down OnAttach.
+        RelationshipRoots.each([&](entt::entity Entity, const FRelationshipComponent& Relationship)
+        {
+            if (Relationship.Parent != entt::null)
+            {
+                return;
+            }
+            InvokeAttach(Entity);
+            ECS::Utils::ForEachDescendant(EntityRegistry, Entity, InvokeAttach);
+        });
+        
+        // Script entities with no relationship component at all are roots with no
+        // children, they fall outside the relationship view, so handle them here.
+        ScriptView.each([&](entt::entity Entity, SScriptComponent&)
+        {
+            if (!EntityRegistry.all_of<FRelationshipComponent>(Entity))
+            {
+                InvokeAttach(Entity);
             }
         });
 
-        auto RelationshipView = EntityRegistry.view<SScriptComponent, FRelationshipComponent>(entt::exclude<SDisabledTag>);
-        RelationshipView.each([&](entt::entity Entity, SScriptComponent& Script, const FRelationshipComponent& Relationship)
+        // Phase 3: bottom-up OnReady.
+        RelationshipRoots.each([&](entt::entity Entity, const FRelationshipComponent& Relationship)
         {
-            if (Relationship.Parent == entt::null)
+            if (Relationship.Parent != entt::null)
             {
-                ECS::Utils::ForEachDescendantReverse(EntityRegistry, Entity, [&](entt::entity Descendant)
-                {
-                    if (SScriptComponent* ScriptComp = EntityRegistry.try_get<SScriptComponent>(Descendant))
-                    {
-                        if (ScriptComp->Script == nullptr)
-                        {
-                            return;
-                        }
-                        
-                        if ((WorldType == EWorldType::Editor) == ScriptComp->bRunInEditor)
-                        {
-                            if (ScriptComp->ReadyFunc.IsValid())
-                            {
-                                ScriptComp->ReadyFunc.InvokeAsCoroutine(ScriptComp->Script->Reference);
-                            }
-                        }
-                    }
-                });
-                
-                if (Script.Script == nullptr)
-                {
-                    return;
-                }
-                
-                if ((WorldType == EWorldType::Editor) == Script.bRunInEditor)
-                {
-                    if (Script.ReadyFunc.IsValid())
-                    {
-                        Script.ReadyFunc.InvokeAsCoroutine(Script.Script->Reference);
-                    }
-                }
+                return;
+            }
+            ECS::Utils::ForEachDescendantReverse(EntityRegistry, Entity, InvokeReady);
+            InvokeReady(Entity);
+        });
+        
+        ScriptView.each([&](entt::entity Entity, SScriptComponent&)
+        {
+            if (!EntityRegistry.all_of<FRelationshipComponent>(Entity))
+            {
+                InvokeReady(Entity);
             }
         });
     }
@@ -1003,7 +1018,7 @@ namespace Lumina
         OnScriptComponentCreated(Entity, ScriptComponent, true);
     }
 
-    void CWorld::OnScriptComponentCreated(entt::entity Entity, SScriptComponent& ScriptComponent, bool bRunReady)
+    void CWorld::SetupScriptComponent(entt::entity Entity, SScriptComponent& ScriptComponent)
     {
         ScriptComponent.Entity = Entity;
         ScriptComponent.World  = this;
@@ -1171,18 +1186,30 @@ namespace Lumina
         case EUpdateStage::Max:
             break;
         }
-        
-        if ((WorldType == EWorldType::Editor) == ScriptComponent.bRunInEditor)
+    }
+
+    void CWorld::OnScriptComponentCreated(entt::entity Entity, SScriptComponent& ScriptComponent, bool bRunReady)
+    {
+        SetupScriptComponent(Entity, ScriptComponent);
+
+        if (ScriptComponent.Script == nullptr)
         {
-            if (ScriptComponent.AttachFunc.IsValid())
-            {
-                ScriptComponent.AttachFunc.InvokeAsCoroutine(ScriptComponent.Script->Reference);
-            }
-            
-            if (bRunReady)
-            {
-                SingletonDispatcher.enqueue<FScriptComponentPendingReady>(Entity);
-            }
+            return;
+        }
+
+        if ((WorldType == EWorldType::Editor) != ScriptComponent.bRunInEditor)
+        {
+            return;
+        }
+
+        if (ScriptComponent.AttachFunc.IsValid())
+        {
+            ScriptComponent.AttachFunc.InvokeAsCoroutine(ScriptComponent.Script->Reference);
+        }
+
+        if (bRunReady)
+        {
+            SingletonDispatcher.enqueue<FScriptComponentPendingReady>(Entity);
         }
     }
 

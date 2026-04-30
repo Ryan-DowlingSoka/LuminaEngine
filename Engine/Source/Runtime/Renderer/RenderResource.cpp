@@ -7,6 +7,30 @@
 
 namespace Lumina
 {
+    uint16 FRenderPassDesc::DeriveSampleCount() const noexcept
+    {
+        if (SampleCount > 1)
+        {
+            return SampleCount;
+        }
+
+        for (const FAttachment& Color : ColorAttachments)
+        {
+            if (Color.Image)
+            {
+                const uint8 N = Color.Image->GetDescription().NumSamples;
+                if (N > 1) return (uint16)N;
+            }
+        }
+
+        if (DepthAttachment.Image)
+        {
+            const uint8 N = DepthAttachment.Image->GetDescription().NumSamples;
+            if (N > 1) return (uint16)N;
+        }
+
+        return 1;
+    }
 
     // DLL Template specialization exports.
     template class RUNTIME_API TRefCountPtr<IRHIResource>;

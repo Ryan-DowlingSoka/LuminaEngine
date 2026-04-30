@@ -32,6 +32,7 @@
 #include <Paths/Paths.h>
 #include <Platform/GenericPlatform.h>
 #include <Renderer/Shader.h>
+#include <Tools/Screenshot/ScreenshotCapture.h>
 #include <World/World.h>
 #include "implot.h"
 #include "lstate.h"
@@ -278,7 +279,15 @@ namespace Lumina
             GRenderContext->CompileEngineShaders();
             CMaterial::CreateDefaultMaterial();
         }
-        
+
+        if (ImGui::IsKeyPressed(ImGuiKey_F9, false))
+        {
+            const auto Source = ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift)
+                ? Screenshot::ECaptureSource::SceneHDR
+                : Screenshot::ECaptureSource::FinalLDR;
+            Screenshot::CaptureActiveWorld(Source);
+        }
+
 
         if (!FocusTargetWindowName.empty())
         {
@@ -1478,7 +1487,27 @@ namespace Lumina
         {
             FRenderDoc::Get().TriggerCapture();
         }
-        
+
+        if (ImGui::BeginMenu(LE_ICON_CAMERA " Screenshot"))
+        {
+            if (ImGui::MenuItem("Save PNG (Tonemapped)", "F9"))
+            {
+                Screenshot::CaptureActiveWorld(Screenshot::ECaptureSource::FinalLDR);
+            }
+            if (ImGui::MenuItem("Save HDR (Linear)", "Shift+F9"))
+            {
+                Screenshot::CaptureActiveWorld(Screenshot::ECaptureSource::SceneHDR);
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem(LE_ICON_FOLDER " Open Screenshots Folder"))
+            {
+                FString Folder = Paths::GetEngineDirectory() + "/Saved/Screenshots";
+                Paths::CreateDirectories(FStringView(Folder.c_str(), Folder.size()));
+                Platform::LaunchURL(StringUtils::ToWideString(Folder).c_str());
+            }
+            ImGui::EndMenu();
+        }
+
         ImGui::Spacing();
         
         // Settings

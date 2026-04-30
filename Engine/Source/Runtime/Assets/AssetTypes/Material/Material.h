@@ -49,6 +49,15 @@ namespace Lumina
         CMaterial* GetMaterial() const override;
         FRHIVertexShader* GetVertexShader() const override;
         FRHIPixelShader* GetPixelShader() const override;
+
+        // Per-material depth-prepass / shadow vertex shaders, populated only
+        // when the material's graph drives WorldPositionOffset. Null for
+        // non-WPO materials -- the renderer falls back to the global shader
+        // library's DepthPrePass.slang / ShadowMappingVert.slang in that case.
+        FRHIVertexShader* GetDepthPrepassVertexShader() const { return DepthPrepassVertexShader; }
+        FRHIVertexShader* GetShadowVertexShader() const { return ShadowVertexShader; }
+        bool UsesWorldPositionOffset() const { return bUsesWorldPositionOffset; }
+
         static CMaterial* GetDefaultMaterial();
         static CMaterial* GetDefaultTerrainMaterial();
 
@@ -108,6 +117,20 @@ namespace Lumina
         PROPERTY()
         TVector<uint32>                         VertexShaderBinaries;
 
+        /** Per-material depth-prepass vertex bytecode. Empty when bUsesWorldPositionOffset is false. */
+        PROPERTY()
+        TVector<uint32>                         DepthPrepassVertexShaderBinaries;
+
+        /** Per-material shadow vertex bytecode. Empty when bUsesWorldPositionOffset is false. */
+        PROPERTY()
+        TVector<uint32>                         ShadowVertexShaderBinaries;
+
+        /** True when the graph's WorldPositionOffset pin is connected. Drives
+         *  whether the renderer binds the per-material depth/shadow shaders or
+         *  falls back to the global ones. */
+        PROPERTY()
+        bool                                    bUsesWorldPositionOffset = false;
+
         /** Declared material parameters (scalars, vectors, textures) with their slot indices. */
         PROPERTY()
         TVector<FMaterialParameter>             Parameters;
@@ -116,6 +139,8 @@ namespace Lumina
 
         FRHIVertexShaderRef                     VertexShader;
         FRHIPixelShaderRef                      PixelShader;
+        FRHIVertexShaderRef                     DepthPrepassVertexShader;
+        FRHIVertexShaderRef                     ShadowVertexShader;
 
     private:
 

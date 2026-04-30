@@ -184,19 +184,33 @@ namespace Lumina
             return { FFixedString::CtorSprintf(), "%s##%08X", ToolWindowName, InDockspaceID };
         }
 
+    public:
+
+        /** Returns a transform placed in front of the active editor camera by the given distance. */
+        FTransform GetCameraSpawnTransform(float DistanceForward = 5.0f) const;
+
+        /** Dispatches a content-browser asset drop by asset class. Returns the spawned entity (or entt::null). */
+        entt::entity HandleContentBrowserAssetDrop(FStringView VirtualPath, entt::entity DropTarget);
+
     protected:
-        
+
         /** Called when the user begins manipulating something to be transacted. Captures the before-state for the transaction. */
-        virtual void BeginTransaction() { }
+        virtual void BeginTransaction();
 
         /** Called when the user finishes manipulating something that was transacted. Captures the after-state and pushes the transaction onto the undo stack. */
-        virtual void EndTransaction(FName Name) { }
+        virtual void EndTransaction(FName Name);
 
         /** Restores the registry to the state before the last transaction. Pushes the current state onto the redo stack. */
-        virtual void Undo() { }
+        virtual void Undo();
 
         /** Restores the registry to the state after the last undone transaction. Pushes the current state onto the undo stack. */
-        virtual void Redo() { }
+        virtual void Redo();
+
+        /** Hook called after a registry round-trip in Undo/Redo. Override to rebuild caches that mirror registry state (e.g. selection sets, outliner rows). */
+        virtual void OnPostUndoRedo() { }
+
+        /** Drops every transaction; call when the world is replaced or an asset reloads. */
+        void ClearTransactionHistory();
 
         void Internal_CreateViewportTool();
         

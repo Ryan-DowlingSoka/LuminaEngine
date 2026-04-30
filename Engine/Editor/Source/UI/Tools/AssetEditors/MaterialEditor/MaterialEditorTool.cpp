@@ -325,32 +325,24 @@ namespace Lumina
         }
         else
         {
-            Tree = Compiler.BuildTree(ReplacementStart, ReplacementEnd, Material->GetMaterialType());
+            // Single call yields both pixel and vertex shader source with their
+            // respective $MATERIAL_INPUTS / $MATERIAL_VERTEX_INPUTS tokens
+            // substituted from the per-stage compiler chunks.
+            FString VertexSource;
+            Compiler.BuildShaders(Tree, VertexSource, Material->GetMaterialType());
+
+            // ReplacementStart / ReplacementEnd power the GLSL preview's syntax
+            // highlight band. Recompute against Tree (the pixel shader) so the
+            // preview keeps highlighting the substituted region.
+            ReplacementStart = Tree.find("$MATERIAL_INPUTS");
+            ReplacementEnd   = ReplacementStart;
+
             CompilationResult.CompilationLog = "Generated GLSL: \n \n \n";
             CompilationResult.bIsError = false;
             bGLSLPreviewDirty = true;
 
             IShaderCompiler* ShaderCompiler = GRenderContext->GetShaderCompiler();
 
-            const bool bIsTerrainMaterial = Material->GetMaterialType() == EMaterialType::Terrain;
-            FString VertexPath = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/"
-                + (bIsTerrainMaterial ? "TerrainBaseVertexPass.slang" : "BaseVertexPass.slang");
-            FString LoadedVertexString;
-            if (!FileHelper::LoadFileIntoString(LoadedVertexString, VertexPath))
-            {
-                LOG_ERROR("Failed to find BaseVertPass.slang!");
-                return;
-            }
-            
-            ShaderCompiler->CompilerShaderRaw(LoadedVertexString, {}, [this](const FShaderHeader& Header) mutable 
-            {
-                CMaterial* Material = Cast<CMaterial>(Asset.Get());
-                FRHIVertexShaderRef VertexShader = GRenderContext->CreateVertexShader(Header);
-                Material->VertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
-                Material->VertexShader = VertexShader;
-                GRenderContext->OnShaderCompiled(VertexShader, false, true);
-            });
-            
             FShaderCompileOptions Options;
             if (Material->GetBlendMode() == EBlendMode::Translucent)
             {
@@ -360,8 +352,17 @@ namespace Lumina
             {
                 Options.MacroDefinitions.emplace_back("UNLIT");
             }
-            
-            ShaderCompiler->CompilerShaderRaw(Tree, Move(Options), [this](const FShaderHeader& Header) mutable 
+
+            ShaderCompiler->CompilerShaderRaw(VertexSource, {}, [this](const FShaderHeader& Header) mutable
+            {
+                CMaterial* Material = Cast<CMaterial>(Asset.Get());
+                FRHIVertexShaderRef VertexShader = GRenderContext->CreateVertexShader(Header);
+                Material->VertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+                Material->VertexShader = VertexShader;
+                GRenderContext->OnShaderCompiled(VertexShader, false, true);
+            });
+
+            ShaderCompiler->CompilerShaderRaw(Tree, Move(Options), [this](const FShaderHeader& Header) mutable
             {
                 CMaterial* Material = Cast<CMaterial>(Asset.Get());
                 FRHIPixelShaderRef PixelShader = GRenderContext->CreatePixelShader(Header);
@@ -369,8 +370,48 @@ namespace Lumina
                 Material->PixelShader = PixelShader;
                 GRenderContext->OnShaderCompiled(PixelShader, false, true);
             });
-            
-            
+
+            // Per-material depth-prepass + shadow vertex shaders are only
+            // emitted when WPO is connected. Without them, the global
+            // DepthPrePass.slang / ShadowMappingVert.slang would write
+            // un-displaced depth, causing the base pass's [earlydepthstencil]
+            // to kill displaced fragments and shadows to lag the geometry.
+            const bool bWPO = Compiler.UsesVertexStage();
+            Material->bUsesWorldPositionOffset = bWPO;
+            if (bWPO)
+            {
+                const FString MaterialShaderDir = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/";
+                const FString DepthSource  = Compiler.BuildVertexShaderFromTemplate(MaterialShaderDir + "DepthPrePass.slang");
+                const FString ShadowSource = Compiler.BuildVertexShaderFromTemplate(MaterialShaderDir + "ShadowMappingVert.slang");
+
+                ShaderCompiler->CompilerShaderRaw(DepthSource, {}, [this](const FShaderHeader& Header) mutable
+                {
+                    CMaterial* M = Cast<CMaterial>(Asset.Get());
+                    FRHIVertexShaderRef VS = GRenderContext->CreateVertexShader(Header);
+                    M->DepthPrepassVertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+                    M->DepthPrepassVertexShader = VS;
+                    GRenderContext->OnShaderCompiled(VS, false, true);
+                });
+                ShaderCompiler->CompilerShaderRaw(ShadowSource, {}, [this](const FShaderHeader& Header) mutable
+                {
+                    CMaterial* M = Cast<CMaterial>(Asset.Get());
+                    FRHIVertexShaderRef VS = GRenderContext->CreateVertexShader(Header);
+                    M->ShadowVertexShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
+                    M->ShadowVertexShader = VS;
+                    GRenderContext->OnShaderCompiled(VS, false, true);
+                });
+            }
+            else
+            {
+                // Drop any stale per-material depth/shadow shaders left over
+                // from a previous WPO-using compile so the renderer falls
+                // back to the global library.
+                Material->DepthPrepassVertexShader = nullptr;
+                Material->ShadowVertexShader = nullptr;
+                Material->DepthPrepassVertexShaderBinaries.clear();
+                Material->ShadowVertexShaderBinaries.clear();
+            }
+
             ShaderCompiler->Flush();
 
             Compiler.GetBoundTextures(Material->Textures);

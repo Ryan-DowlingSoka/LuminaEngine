@@ -143,6 +143,11 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
+        // Reconcile MSAA setting with the cached state. When the user toggles MSAA in
+        // the world settings, this allocates / frees the MS scratch images so the next
+        // frame is rendered at the new sample count without a world reload.
+        SyncMSAAState();
+
         ActivePostProcess = PostProcess;
 
         SceneViewport->SetViewVolume(ViewVolume);
@@ -696,12 +701,18 @@ namespace Lumina
                     // Resolve the imported HDRI (if any). Anything other than
                     // a fully cooked Environment-mode CTexture is silently
                     // ignored -- the renderer can't bind a Basis-compressed
-                    // 2D color texture as an HDR equirect source.
-                    if (CTexture* EnvMap = Env.EnvironmentMap.Get())
+                    // 2D color texture as an HDR equirect source. Only honor
+                    // the assignment when SkyMode is HDRI; otherwise IBL
+                    // (irradiance + prefilter) would still convolve from the
+                    // HDRI even though the visible sky is procedural.
+                    if (Env.SkyMode == ESkyMode::HDRI)
                     {
-                        if (EnvMap->ColorSpace == ETextureColorSpace::Environment && EnvMap->GetRHIRef())
+                        if (CTexture* EnvMap = Env.EnvironmentMap.Get())
                         {
-                            EnvironmentMapImage = EnvMap->GetRHIRef();
+                            if (EnvMap->ColorSpace == ETextureColorSpace::Environment && EnvMap->GetRHIRef())
+                            {
+                                EnvironmentMapImage = EnvMap->GetRHIRef();
+                            }
                         }
                     }
 
@@ -723,6 +734,18 @@ namespace Lumina
                                                                 Env.SunDiscScale,
                                                                 Env.SkyExposure,
                                                                 Env.MieAnisotropy);
+
+                    EnvironmentParams.NightSkyColor = glm::vec4(Env.NightSkyColor, Env.NightBrightness);
+                    EnvironmentParams.StarParams    = glm::vec4(Env.StarDensity,
+                                                                Env.StarBrightness,
+                                                                Env.StarTwinkleSpeed,
+                                                                Env.StarSize);
+                    EnvironmentParams.MoonParams    = glm::vec4(Env.MoonSize,
+                                                                Env.MoonGlowSize,
+                                                                Env.MoonBrightness,
+                                                                Env.bMoonOpposeSun ? 1.0f : 0.0f);
+                    EnvironmentParams.MoonDirection = glm::vec4(Env.MoonDirection, 0.0f);
+                    EnvironmentParams.GalaxyParams  = glm::vec4(Env.GalaxyIntensity, Env.GalaxyTilt, 0.0f, 0.0f);
 
                     // Ambient skylight. AmbientFromSky derives the color from
                     // the active sky mode so artists can dial in "the sky lit
@@ -1037,6 +1060,11 @@ namespace Lumina
     {
         FRHIVertexShader*   VertexShader;
         FRHIPixelShader*    PixelShader;
+        // Per-material depth-prepass / shadow vertex shaders, populated only
+        // when the material's graph drives WorldPositionOffset. Null = use
+        // the global library shader.
+        FRHIVertexShader*   DepthVertexShader  = nullptr;
+        FRHIVertexShader*   ShadowVertexShader = nullptr;
         uint64              MaterialID;
         EInstanceFlags      ExtraFlags;
         uint16              MaterialIdx;
@@ -1075,6 +1103,11 @@ namespace Lumina
         FResolvedSlot R;
         R.VertexShader     = Material->GetVertexShader();
         R.PixelShader      = Material->GetPixelShader();
+        if (CMaterial* ConcreteMaterial = Material->GetMaterial(); ConcreteMaterial && ConcreteMaterial->UsesWorldPositionOffset())
+        {
+            R.DepthVertexShader  = ConcreteMaterial->GetDepthPrepassVertexShader();
+            R.ShadowVertexShader = ConcreteMaterial->GetShadowVertexShader();
+        }
         R.MaterialID       = (uint64)Material->GetMaterial();
         R.ExtraFlags       = Extra;
         R.MaterialIdx      = (uint16)Material->GetMaterialIndex();
@@ -1085,7 +1118,7 @@ namespace Lumina
         return R;
     }
 
-    static uint16 FindOrAddLocalBatch(FForwardRenderScene::FThreadLocalDrawData& Local, const FDrawBatchKey& Key, FRHIVertexShader* VS, FRHIPixelShader* PS)
+    static uint16 FindOrAddLocalBatch(FForwardRenderScene::FThreadLocalDrawData& Local, const FDrawBatchKey& Key, const FResolvedSlot& Slot)
     {
         // Linear scan: per-thread batch counts are tiny (typically <30).
         const uint32 Count = (uint32)Local.LocalBatches.size();
@@ -1100,9 +1133,11 @@ namespace Lumina
         // Pass the arena explicitly so the new entry's inner TFrameVectors
         // bind to the same per-thread arena.
         FForwardRenderScene::FLocalBatchEntry& Entry = Local.LocalBatches.emplace_back(Local.Arena);
-        Entry.Key          = Key;
-        Entry.VertexShader = VS;
-        Entry.PixelShader  = PS;
+        Entry.Key                = Key;
+        Entry.VertexShader       = Slot.VertexShader;
+        Entry.PixelShader        = Slot.PixelShader;
+        Entry.DepthVertexShader  = Slot.DepthVertexShader;
+        Entry.ShadowVertexShader = Slot.ShadowVertexShader;
 
         return (uint16)Count;
     }
@@ -1290,7 +1325,7 @@ namespace Lumina
             const uint32 ShadowMeshletCount   = MeshletHeaderAddress ? Surface.LODMeshletCount[ShadowLODIndex] : 0u;
             const uint32 ShadowMeshletOffset  = Surface.LODMeshletOffset[ShadowLODIndex];
 
-            const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot.VertexShader, Slot.PixelShader);
+            const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot);
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
@@ -1403,7 +1438,7 @@ namespace Lumina
             const uint32 ShadowMeshletCount   = MeshletHeaderAddress ? Surface.LODMeshletCount[ShadowLODIndex] : 0u;
             const uint32 ShadowMeshletOffset  = Surface.LODMeshletOffset[ShadowLODIndex];
 
-            const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot.VertexShader, Slot.PixelShader);
+            const uint16 LocalBatchIdx = FindOrAddLocalBatch(Local, BatchKey, Slot);
             const uint16 LocalDrawIdx  = FindOrAddLocalDraw(Local.LocalBatches[LocalBatchIdx], FDrawKey{ Surface.StartIndex, Surface.IndexCount }, SurfaceMeshletCount);
 
             FProcessedDrawItem& Item = Local.Items.emplace_back();
@@ -1472,14 +1507,16 @@ namespace Lumina
                     GlobalBatchKeys.push_back(LocalBatch.Key);
 
                     FMeshDrawCommand& NewCmd = DrawCommands.emplace_back();
-                    NewCmd.VertexShader     = LocalBatch.VertexShader;
-                    NewCmd.PixelShader      = LocalBatch.PixelShader;
-                    NewCmd.IndirectDrawOffset = 0;
-                    NewCmd.DrawCount        = 0;
-                    NewCmd.bDrawInDepthPass = LocalBatch.Key.bDrawInDepthPass;
-                    NewCmd.bTranslucent     = LocalBatch.Key.bTranslucent;
-                    NewCmd.bMasked          = LocalBatch.Key.bMasked;
-                    NewCmd.bAdditive        = LocalBatch.Key.bAdditive;
+                    NewCmd.VertexShader        = LocalBatch.VertexShader;
+                    NewCmd.PixelShader         = LocalBatch.PixelShader;
+                    NewCmd.DepthVertexShader   = LocalBatch.DepthVertexShader;
+                    NewCmd.ShadowVertexShader  = LocalBatch.ShadowVertexShader;
+                    NewCmd.IndirectDrawOffset  = 0;
+                    NewCmd.DrawCount           = 0;
+                    NewCmd.bDrawInDepthPass    = LocalBatch.Key.bDrawInDepthPass;
+                    NewCmd.bTranslucent        = LocalBatch.Key.bTranslucent;
+                    NewCmd.bMasked             = LocalBatch.Key.bMasked;
+                    NewCmd.bAdditive           = LocalBatch.Key.bAdditive;
                 }
                 LocalBatch.GlobalBatchIndex = GlobalIdx;
             }
@@ -2760,10 +2797,12 @@ namespace Lumina
         FRHIBuffer* IndirectArgsBuffer,
         uint32 ViewIndex,
         uint32 NumDrawsPerView,
-        bool bClearDepth)
+        bool bClearDepth,
+        FRHIImage* DepthResolveImage = nullptr)
     {
         FRenderPassDesc::FAttachment Depth; Depth
             .SetImage(DepthImage)
+            .SetResolveImage(DepthResolveImage)
             .SetLoadOp(bClearDepth ? ERenderLoadOp::Clear : ERenderLoadOp::Load)
             .SetDepthClearValue(0.0f);
 
@@ -2790,12 +2829,18 @@ namespace Lumina
 
             if (Batch.bMasked)
             {
-                Desc.SetVertexShader(Batch.VertexShader);
+                // Masked materials need their own pixel shader to discard.
+                // If they also use WPO, prefer the per-material depth VS so
+                // the displaced + masked geometry produces matching depth.
+                Desc.SetVertexShader(Batch.DepthVertexShader ? Batch.DepthVertexShader : Batch.VertexShader);
                 Desc.SetPixelShader(Batch.PixelShader);
             }
             else
             {
-                Desc.SetVertexShader(DepthOnlyVertexShader);
+                // WPO materials get their own depth VS (writes displaced
+                // depth so [earlydepthstencil] in the base pass matches).
+                FRHIVertexShader* DepthVS = Batch.DepthVertexShader ? Batch.DepthVertexShader : DepthOnlyVertexShader.GetReference();
+                Desc.SetVertexShader(DepthVS);
             }
 
             FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
@@ -2826,7 +2871,7 @@ namespace Lumina
             CmdList,
             DrawCommands,
             OpaqueOccluderDrawList,
-            GetNamedImage(ENamedImage::DepthAttachment),
+            GetSceneDepthRT(),
             GetNamedImage(ENamedImage::HDR),
             SceneBindingLayout,
             SceneBindingSet,
@@ -2834,7 +2879,8 @@ namespace Lumina
             GetNamedBuffer(ENamedBuffer::IndirectArgs),
             0u,
             NumDrawsPerView,
-            true);
+            true,
+            GetSceneDepthResolve());
     }
 
     void FForwardRenderScene::DepthPrePassLate(ICommandList& CmdList)
@@ -2845,12 +2891,12 @@ namespace Lumina
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Pre-Depth (Late)", tracy::Color::Orange2);
-        
+
         RecordDepthPrePassSlice(
             CmdList,
             DrawCommands,
             OpaqueOccluderDrawList,
-            GetNamedImage(ENamedImage::DepthAttachment),
+            GetSceneDepthRT(),
             GetNamedImage(ENamedImage::HDR),
             SceneBindingLayout,
             SceneBindingSet,
@@ -2858,7 +2904,8 @@ namespace Lumina
             GetNamedBuffer(ENamedBuffer::IndirectArgs),
             CameraLateViewIndex,
             NumDrawsPerView,
-            false);
+            false,
+            GetSceneDepthResolve());
     }
 
     void FForwardRenderScene::DepthPyramidPass(ICommandList& CmdList)
@@ -3065,15 +3112,16 @@ namespace Lumina
                 .SetDepthAttachment(Depth)
                 .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
 
-            FGraphicsPipelineDesc Desc; Desc
+            // Pipeline desc minus the vertex shader; the per-batch loop
+            // picks either the global shadow VS or a per-material WPO
+            // variant. Pipeline cache short-circuits identical lookups.
+            FGraphicsPipelineDesc DescTemplate; DescTemplate
                 .SetDebugName("Point Light Shadow Pass")
                 .SetRenderState(RenderState)
                 .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
                 .SetVertexShader(VertexShader)
                 .SetPixelShader(PixelShader);
-
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
             bool bPassBegun = false;
 
@@ -3109,14 +3157,6 @@ namespace Lumina
                     (int)TilePixelY + TileSize
                 );
 
-                FGraphicsState GraphicsState; GraphicsState
-                    .SetRenderPass(RenderPass)
-                    .SetViewportState(FViewportState(Viewport, Scissor))
-                    .SetPipeline(Pipeline)
-                    .AddBindingSet(SceneBindingSet)
-                    .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
-
                 // ShadowMappingVert push = { int ShadowDataIndex; int ViewIndex; }.
                 // ViewIndex indexes ShadowData.ViewProjection[]; here the cube face.
                 struct { int32 ShadowDataIndex; int32 ViewIndex; } PointPush;
@@ -3129,6 +3169,25 @@ namespace Lumina
                 for (uint32 OpaqueIdx : OpaqueDrawList)
                 {
                     const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
+
+                    // Pick per-material shadow VS for WPO materials so the
+                    // shadow tracks the displaced geometry instead of the
+                    // un-displaced rest pose.
+                    FGraphicsPipelineDesc Desc = DescTemplate;
+                    if (Batch.ShadowVertexShader)
+                    {
+                        Desc.SetVertexShader(Batch.ShadowVertexShader);
+                    }
+                    FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+                    FGraphicsState GraphicsState; GraphicsState
+                        .SetRenderPass(RenderPass)
+                        .SetViewportState(FViewportState(Viewport, Scissor))
+                        .SetPipeline(Pipeline)
+                        .AddBindingSet(SceneBindingSet)
+                        .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
+                        .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
+
                     CmdList.SetGraphicsState(GraphicsState);
                     CmdList.SetPushConstants(&PointPush, sizeof(PointPush));
                     CmdList.DrawIndirect(Batch.DrawCount, (FaceBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
@@ -3183,22 +3242,15 @@ namespace Lumina
 
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
 
-        FGraphicsPipelineDesc PipelineDesc; PipelineDesc
+        // Pipeline desc reused across batches; per-batch loop swaps in a WPO
+        // VS variant when the material has WorldPositionOffset connected.
+        FGraphicsPipelineDesc PipelineDescTemplate; PipelineDescTemplate
             .SetDebugName("Spot Shadow Pass")
             .SetRenderState(RenderState)
             .AddBindingLayout(SceneBindingLayout)
             .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
             .SetVertexShader(VertexShader)
             .SetPixelShader(PixelShader);
-
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(PipelineDesc, RenderPass);
-
-        FGraphicsState GraphicsState; GraphicsState
-            .SetRenderPass(Move(RenderPass))
-            .SetPipeline(Pipeline)
-            .AddBindingSet(SceneBindingSet)
-            .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-            .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
 
         const TVector<FLightShadow>& SpotShadows = PackedShadows[(uint32)ELightType::Spot];
 
@@ -3236,8 +3288,6 @@ namespace Lumina
                 (int)TilePixelY + TileSize
             );
 
-            GraphicsState.SetViewportState(FViewportState(Viewport, Scissor));
-
             // ShadowMappingVert push = { int ShadowDataIndex; int ViewIndex; }.
             // Spot lights only use ViewProjection[0], so ViewIndex is 0.
             struct { int32 ShadowDataIndex; int32 ViewIndex; } SpotPush;
@@ -3248,6 +3298,21 @@ namespace Lumina
             for (uint32 OpaqueIdx : OpaqueDrawList)
             {
                 const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
+
+                FGraphicsPipelineDesc Desc = PipelineDescTemplate;
+                if (Batch.ShadowVertexShader)
+                {
+                    Desc.SetVertexShader(Batch.ShadowVertexShader);
+                }
+                FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+                FGraphicsState GraphicsState; GraphicsState
+                    .SetRenderPass(RenderPass)
+                    .SetViewportState(FViewportState(Viewport, Scissor))
+                    .SetPipeline(Pipeline)
+                    .AddBindingSet(SceneBindingSet)
+                    .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
+                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
 
                 CmdList.SetGraphicsState(GraphicsState);
                 CmdList.SetPushConstants(&SpotPush, sizeof(SpotPush));
@@ -3308,8 +3373,6 @@ namespace Lumina
                 .SetDepthAttachment(Depth)
                 .SetRenderArea(glm::uvec2(GCSMAtlasWidth, GCSMAtlasHeight));
 
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
             // Per-cascade viewport: only this cascade's atlas tile rasterizes.
             // Pixel coordinates come straight from the GCSMCascadeOrigin /
             // GCSMCascadeSizes packing table. FViewport's Y range is
@@ -3321,29 +3384,37 @@ namespace Lumina
             FViewport Viewport(TileX, TileX + TileW, TileY, TileY + TileW, 0.0f, 1.0f);
             FRect     Scissor((int)TileX, (int)(TileX + TileW), (int)TileY, (int)(TileY + TileW));
 
-            // Meshlet-driven: one indirect "instance" per surviving meshlet,
-            // indirects sourced from this cascade's slice of the unified
-            // IndirectArgs buffer.
-            FGraphicsState GraphicsState; GraphicsState
-                .SetRenderPass(RenderPass)
-                .SetViewportState(FViewportState(Viewport, Scissor))
-                .SetPipeline(Pipeline)
-                .AddBindingSet(SceneBindingSet)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
-
-            CmdList.SetGraphicsState(GraphicsState);
-
             struct { int32 ShadowDataIndex; int32 CascadeIndex; } CascadePush;
             CascadePush.ShadowDataIndex = LightData.Lights[0].ShadowDataIndex;
             CascadePush.CascadeIndex    = (int32)c;
-            CmdList.SetPushConstants(&CascadePush, sizeof(CascadePush));
 
             const uint32 ViewIndex = CascadeViewBase + c;
             const uint32 ViewBase  = ViewIndex * NumDrawsPerView;
+            // Meshlet-driven: one indirect "instance" per surviving meshlet,
+            // indirects sourced from this cascade's slice of the unified
+            // IndirectArgs buffer. Per-batch pipeline pick supports per-
+            // material WPO shadow VS variants.
             for (uint32 OpaqueIdx : OpaqueDrawList)
             {
                 const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
+
+                FGraphicsPipelineDesc PerBatchDesc = Desc;
+                if (Batch.ShadowVertexShader)
+                {
+                    PerBatchDesc.SetVertexShader(Batch.ShadowVertexShader);
+                }
+                FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(PerBatchDesc, RenderPass);
+
+                FGraphicsState GraphicsState; GraphicsState
+                    .SetRenderPass(RenderPass)
+                    .SetViewportState(FViewportState(Viewport, Scissor))
+                    .SetPipeline(Pipeline)
+                    .AddBindingSet(SceneBindingSet)
+                    .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
+                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
+
+                CmdList.SetGraphicsState(GraphicsState);
+                CmdList.SetPushConstants(&CascadePush, sizeof(CascadePush));
                 CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
             }
         }
@@ -3359,25 +3430,27 @@ namespace Lumina
         LUMINA_PROFILE_SECTION_COLORED("Forward Base Pass", tracy::Color::Red);
         
         FRenderPassDesc::FAttachment RenderTarget;
-        RenderTarget.SetImage(GetNamedImage(ENamedImage::HDR));
+        RenderTarget.SetImage(GetSceneColorRT()).SetResolveImage(GetSceneColorResolve());
         if (RenderSettings.bHasEnvironment)
         {
             RenderTarget.SetLoadOp(ERenderLoadOp::Load);
         }
-        
+
         FRenderPassDesc::FAttachment PickerImageAttachment; PickerImageAttachment
-            .SetImage(GetNamedImage(ENamedImage::Picker));
-        
+            .SetImage(GetPickerRT())
+            .SetResolveImage(GetPickerResolve());
+
         FRenderPassDesc::FAttachment Depth; Depth
-            .SetImage(GetNamedImage(ENamedImage::DepthAttachment))
+            .SetImage(GetSceneDepthRT())
+            .SetResolveImage(GetSceneDepthResolve())
             .SetLoadOp(ERenderLoadOp::Load);
-        
+
         FRenderPassDesc RenderPass; RenderPass
             .AddColorAttachment(RenderTarget)
             .AddColorAttachment(PickerImageAttachment)
             .SetDepthAttachment(Depth)
             .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
-        
+
         FRasterState RasterState; RasterState
             .EnableDepthClip()
             .SetFillMode(RenderSettings.bWireframe ? ERasterFillMode::Wireframe : ERasterFillMode::Solid)
@@ -4253,21 +4326,22 @@ namespace Lumina
             const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment;
 
             FRenderPassDesc::FAttachment RenderTarget;
-            RenderTarget.SetImage(GetNamedImage(ENamedImage::HDR));
+            RenderTarget.SetImage(GetSceneColorRT()).SetResolveImage(GetSceneColorResolve());
             if (bHDRWasWritten)
             {
                 RenderTarget.SetLoadOp(ERenderLoadOp::Load);
             }
 
             FRenderPassDesc::FAttachment PickerAttachment;
-            PickerAttachment.SetImage(GetNamedImage(ENamedImage::Picker));
+            PickerAttachment.SetImage(GetPickerRT()).SetResolveImage(GetPickerResolve());
             if (!DrawCommands.empty())
             {
                 PickerAttachment.SetLoadOp(ERenderLoadOp::Load);
             }
 
             FRenderPassDesc::FAttachment Depth;
-            Depth.SetImage(GetNamedImage(ENamedImage::DepthAttachment))
+            Depth.SetImage(GetSceneDepthRT())
+                 .SetResolveImage(GetSceneDepthResolve())
                  .SetDepthClearValue(0.0f);
             if (!DrawCommands.empty())
             {
@@ -4835,7 +4909,7 @@ namespace Lumina
         struct FSkyCapturePC
         {
             glm::vec3 SunDirection;
-            float     _Pad0;
+            float     Time;
         } PC = {};
 
         // Same source the EnvironmentPass uses (LightData.SunDirection points
@@ -4850,6 +4924,10 @@ namespace Lumina
         {
             PC.SunDirection = glm::normalize(glm::vec3(0.3f, 0.8f, 0.4f));
         }
+        // Star twinkle samples Time -- the cube only re-bakes when env params
+        // or sun direction change, so this freezes for IBL purposes (stars
+        // get blurred to nothing in the convolution anyway).
+        PC.Time = SceneGlobalData.Time;
         CmdList.SetPushConstants(&PC, sizeof(PC));
 
         constexpr uint32 SkyCaptureTile = 8u;
@@ -5039,7 +5117,8 @@ namespace Lumina
         }
 
         FRenderPassDesc::FAttachment Attachment; Attachment
-            .SetImage(GetNamedImage(ENamedImage::HDR));
+            .SetImage(GetSceneColorRT())
+            .SetResolveImage(GetSceneColorResolve());
 
         FRenderPassDesc RenderPass; RenderPass
             .AddColorAttachment(Attachment)
@@ -5900,10 +5979,84 @@ namespace Lumina
         return r;
     }
 
+    void FForwardRenderScene::AllocateMSAAImages(const glm::uvec2& Extent)
+    {
+        if (MSAASampleCount <= 1)
+        {
+            return;
+        }
+
+        {
+            FRHIImageDesc ImageDesc;
+            ImageDesc.Extent            = Extent;
+            ImageDesc.Format            = EFormat::RGBA16_FLOAT;
+            ImageDesc.NumSamples        = MSAASampleCount;
+            ImageDesc.Dimension         = EImageDimension::Texture2D;
+            ImageDesc.InitialState      = EResourceStates::RenderTarget;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetFlag(EImageCreateFlags::ColorAttachment);
+            ImageDesc.DebugName         = "HDR_MS";
+            NamedImages[(int)ENamedImage::HDR_MS] = GRenderContext->CreateImage(ImageDesc);
+        }
+
+        {
+            FRHIImageDesc ImageDesc;
+            ImageDesc.Extent            = Extent;
+            ImageDesc.Flags.SetFlag(EImageCreateFlags::DepthAttachment);
+            ImageDesc.Format            = EFormat::D32;
+            ImageDesc.NumSamples        = MSAASampleCount;
+            ImageDesc.InitialState      = EResourceStates::DepthRead;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Dimension         = EImageDimension::Texture2D;
+            ImageDesc.DebugName         = "Depth_MS";
+            NamedImages[(int)ENamedImage::Depth_MS] = GRenderContext->CreateImage(ImageDesc);
+        }
+
+        {
+            FRHIImageDesc ImageDesc;
+            ImageDesc.Extent            = Extent;
+            ImageDesc.Format            = EFormat::R32_UINT;
+            ImageDesc.NumSamples        = MSAASampleCount;
+            ImageDesc.Dimension         = EImageDimension::Texture2D;
+            ImageDesc.InitialState      = EResourceStates::RenderTarget;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetFlag(EImageCreateFlags::ColorAttachment);
+            ImageDesc.DebugName         = "Picker_MS";
+            NamedImages[(int)ENamedImage::Picker_MS] = GRenderContext->CreateImage(ImageDesc);
+        }
+    }
+
+    void FForwardRenderScene::SyncMSAAState()
+    {
+        const uint8 Desired = ::Lumina::GetMSAASampleCount(World->GetDefaultWorldSettings().MSAASampleCount);
+
+        if (Desired == MSAASampleCount)
+        {
+            return;
+        }
+
+        // Idle the GPU before tearing down attachments that may still be referenced by in-flight cmd lists.
+        GRenderContext->WaitIdle();
+
+        NamedImages[(int)ENamedImage::HDR_MS]    = nullptr;
+        NamedImages[(int)ENamedImage::Depth_MS]  = nullptr;
+        NamedImages[(int)ENamedImage::Picker_MS] = nullptr;
+
+        MSAASampleCount = Desired;
+
+        if (MSAASampleCount > 1)
+        {
+            AllocateMSAAImages(Windowing::GetPrimaryWindowHandle()->GetExtent());
+        }
+    }
+
     void FForwardRenderScene::InitImages()
     {
         glm::uvec2 Extent = Windowing::GetPrimaryWindowHandle()->GetExtent();
-        
+
+        // Snapshot the MSAA setting once per init. Live changes are handled by SyncMSAAState().
+        MSAASampleCount = ::Lumina::GetMSAASampleCount(World->GetDefaultWorldSettings().MSAASampleCount);
+
         {
             FRHIImageDesc ImageDesc = GetRenderTarget()->GetDescription();
             ImageDesc.Format = EFormat::RGBA16_FLOAT;
@@ -5996,9 +6149,12 @@ namespace Lumina
             ImageDesc.bKeepInitialState = true;
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ColorAttachment, EImageCreateFlags::ShaderResource);
             ImageDesc.DebugName = "Picker";
-            
+
             NamedImages[(int)ENamedImage::Picker] = GRenderContext->CreateImage(ImageDesc);
         }
+
+        // Now allocate the matching MSAA scratch images (HDR_MS, Depth_MS, Picker_MS) if enabled.
+        AllocateMSAAImages(Extent);
         
         //==================================================================================================
         

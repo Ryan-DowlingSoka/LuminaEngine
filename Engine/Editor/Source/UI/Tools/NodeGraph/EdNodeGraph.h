@@ -52,6 +52,13 @@ namespace Lumina
 
         virtual CEdGraphNode* OnNodeRemoved(CEdGraphNode* Node) { return nullptr; }
 
+        // Quick-place hook. Called when the user holds a digit key (1..9 / 0)
+        // and left-clicks empty graph background. Override in a subclass to
+        // map digits to specific node classes; default is a no-op so graphs
+        // that don't opt in simply ignore the keystroke. CanvasPos is the
+        // location to drop the new node at.
+        virtual void HandleQuickPlace(int Digit, ImVec2 CanvasPos) {}
+
         void SetNodeSelectedCallback(const TFunction<void(CEdGraphNode*)>& Callback) { NodeSelectedCallback = Callback; }
         void SetPreNodeDeletedCallback(const TFunction<void(CEdGraphNode*)>& Callback) { PreNodeDeletedCallback = Callback; }
 

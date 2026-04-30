@@ -2,18 +2,24 @@
 #include "EditorTool.h"
 #include "imgui_internal.h"
 #include "ToolFlags.h"
+#include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Core/Object/Package/Package.h"
 #include "Core/Windows/Window.h"
+#include "Core/Serialization/MemoryArchiver.h"
+#include "Core/Serialization/ObjectArchiver.h"
 #include "Thumbnails/ThumbnailManager.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
+#include "UI/Tools/EditorAssetDropHandlers.h"
 #include "Core/Application/Application.h"
 #include "Input/InputContext.h"
 #include "Input/InputViewport.h"
 #include "World/WorldManager.h"
+#include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/CameraComponent.h"
 #include "World/Entity/Components/EditorComponent.h"
 #include "World/Entity/Components/InputComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
+#include "World/Entity/Components/TransformComponent.h"
 #include "World/Entity/Components/VelocityComponent.h"
 #include "World/Entity/Systems/EditorEntityMovementSystem.h"
 
@@ -531,5 +537,178 @@ namespace Lumina
         {
             ImGui::TextUnformatted(Text);
         }
+    }
+
+    // -- Transactions ----------------------------------------------------------------------
+    //
+    // Transactions snapshot the entity registry on Begin and again on End; Undo restores the
+    // before-state, Redo restores the after. Lives on the base so every editor tool with a
+    // World (FWorldEditorTool, FAssetEditorTool subclasses with preview worlds) gets undo
+    // for free.
+
+    static constexpr int32 GMaxUndoHistory = 64;
+
+    void FEditorTool::BeginTransaction()
+    {
+        if (World == nullptr)
+        {
+            return;
+        }
+
+        PendingBeforeState.clear();
+
+        FMemoryWriter Writer(PendingBeforeState);
+        FObjectProxyArchiver Ar(Writer, false);
+        ECS::Utils::SerializeRegistry(Ar, World->GetEntityRegistry());
+
+        RedoStack.clear();
+    }
+
+    void FEditorTool::EndTransaction(FName Name)
+    {
+        if (World == nullptr)
+        {
+            return;
+        }
+
+        TVector<uint8> AfterState;
+        FMemoryWriter Writer(AfterState);
+        FObjectProxyArchiver Ar(Writer, false);
+        ECS::Utils::SerializeRegistry(Ar, World->GetEntityRegistry());
+
+        if (UndoStack.size() >= GMaxUndoHistory)
+        {
+            UndoStack.erase(UndoStack.begin());
+        }
+
+        UndoStack.push_back({ Name, PendingBeforeState, eastl::move(AfterState) });
+        PendingBeforeState.clear();
+
+        RedoStack.clear();
+
+        if (World->GetPackage())
+        {
+            World->GetPackage()->MarkDirty();
+        }
+    }
+
+    void FEditorTool::Undo()
+    {
+        if (UndoStack.empty() || World == nullptr)
+        {
+            return;
+        }
+
+        FTransaction& Transaction = UndoStack.back();
+
+        ImGuiX::Notifications::NotifyInfo("Undid {}", Transaction.Name);
+
+        RedoStack.push_back(Transaction);
+
+        FMemoryReader Reader(Transaction.BeforeState);
+        FObjectProxyArchiver Ar(Reader, true);
+
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        ECS::Utils::SerializeRegistry(Ar, Registry);
+
+        OnPostUndoRedo();
+
+        UndoStack.pop_back();
+
+        if (World->GetPackage())
+        {
+            World->GetPackage()->MarkDirty();
+        }
+    }
+
+    void FEditorTool::Redo()
+    {
+        if (RedoStack.empty() || World == nullptr)
+        {
+            return;
+        }
+
+        FTransaction& Transaction = RedoStack.back();
+
+        ImGuiX::Notifications::NotifyInfo("Redid {}", Transaction.Name);
+
+        UndoStack.push_back(Transaction);
+
+        FMemoryReader Reader(Transaction.AfterState);
+        FObjectProxyArchiver Ar(Reader, true);
+
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        ECS::Utils::SerializeRegistry(Ar, Registry);
+
+        OnPostUndoRedo();
+
+        RedoStack.pop_back();
+
+        if (World->GetPackage())
+        {
+            World->GetPackage()->MarkDirty();
+        }
+    }
+
+    void FEditorTool::ClearTransactionHistory()
+    {
+        UndoStack.clear();
+        RedoStack.clear();
+        PendingBeforeState.clear();
+    }
+
+    FTransform FEditorTool::GetCameraSpawnTransform(float DistanceForward) const
+    {
+        FTransform Result;
+        if (World == nullptr)
+        {
+            return Result;
+        }
+
+        // Prefer the world's active camera; fall back to the EditorEntity (asset editors
+        // typically own the camera there directly and may not call SetActiveCamera).
+        const SCameraComponent* Camera = World->GetActiveCamera();
+        if (Camera == nullptr && EditorEntity != entt::null && World->GetEntityRegistry().valid(EditorEntity))
+        {
+            Camera = World->GetEntityRegistry().try_get<SCameraComponent>(EditorEntity);
+        }
+
+        if (Camera == nullptr)
+        {
+            return Result;
+        }
+
+        const glm::vec3 Position = Camera->GetPosition() + Camera->GetForwardVector() * DistanceForward;
+        Result.SetLocation(Position);
+        return Result;
+    }
+
+    entt::entity FEditorTool::HandleContentBrowserAssetDrop(FStringView VirtualPath, entt::entity DropTarget)
+    {
+        if (World == nullptr || VirtualPath.empty())
+        {
+            return entt::null;
+        }
+
+        FAssetData* AssetData = FAssetRegistry::Get().GetAssetByPath(VirtualPath);
+        if (AssetData == nullptr)
+        {
+            return entt::null;
+        }
+
+        const FEditorAssetDropHandler* Handler = FEditorAssetDropRegistry::Get().FindHandler(AssetData->AssetClass);
+        if (Handler == nullptr || !*Handler)
+        {
+            return entt::null;
+        }
+
+        CObject* Loaded = LoadObject<CObject>(AssetData->AssetGUID);
+        if (Loaded == nullptr)
+        {
+            return entt::null;
+        }
+
+        const FTransform SpawnTransform = GetCameraSpawnTransform();
+        return (*Handler)(World, Loaded, SpawnTransform, DropTarget);
     }
 }

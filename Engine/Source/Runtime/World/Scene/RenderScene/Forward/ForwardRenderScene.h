@@ -85,6 +85,10 @@ namespace Lumina
             FDrawBatchKey                       Key;
             FRHIVertexShader*                   VertexShader = nullptr;
             FRHIPixelShader*                    PixelShader  = nullptr;
+            // Per-material depth-prepass / shadow vertex shaders. Null for
+            // non-WPO materials -- the renderer falls back to the global.
+            FRHIVertexShader*                   DepthVertexShader  = nullptr;
+            FRHIVertexShader*                   ShadowVertexShader = nullptr;
             TFrameVector<FDrawKey>              LocalDraws;
             TFrameVector<uint32>                LocalDrawCounts;
             TFrameVector<uint32>                LocalMeshletCounts;
@@ -181,6 +185,13 @@ namespace Lumina
             Accum,
             Revealage,
 
+            // MSAA scratch render targets. Allocated only when MSAASampleCount > 1.
+            // Geometry passes write into these and resolve into the matching 1x
+            // image (HDR / DepthAttachment / Picker) at end-of-pass.
+            HDR_MS,
+            Depth_MS,
+            Picker_MS,
+
             // Pre-integrated BRDF LUT for the split-sum IBL approximation
             // (Karis 2013). Baked once at scene init by BRDFIntegration.slang
             // and never regenerated -- it is independent of swapchain size,
@@ -232,6 +243,20 @@ namespace Lumina
         
         FRHIBuffer* GetNamedBuffer(ENamedBuffer Buffer) const { return NamedBuffers[(int)Buffer]; }
         FRHIImage* GetNamedImage(ENamedImage Image) const { return NamedImages[(int)Image];}
+
+        /** Returns the MSAA scratch RT when MSAA is enabled, otherwise the 1x image.
+         *  Use these for the *render target* binding on geometry passes that should
+         *  participate in MSAA. The 1x image is the resolve target. */
+        FRHIImage* GetSceneColorRT() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::HDR_MS) : GetNamedImage(ENamedImage::HDR); }
+        FRHIImage* GetSceneDepthRT() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::Depth_MS) : GetNamedImage(ENamedImage::DepthAttachment); }
+        FRHIImage* GetPickerRT()     const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::Picker_MS) : GetNamedImage(ENamedImage::Picker); }
+
+        /** Resolve target — null when MSAA off (no resolve needed). Caller adds via FAttachment::SetResolveImage. */
+        FRHIImage* GetSceneColorResolve() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::HDR) : nullptr; }
+        FRHIImage* GetSceneDepthResolve() const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::DepthAttachment) : nullptr; }
+        FRHIImage* GetPickerResolve()     const { return MSAASampleCount > 1 ? GetNamedImage(ENamedImage::Picker) : nullptr; }
+
+        uint8 GetMSAASampleCount() const { return MSAASampleCount; }
         
         FRHIImage* GetRenderTarget() const override;
         const FSceneRenderStats& GetRenderStats() const override;
@@ -387,6 +412,15 @@ namespace Lumina
         
         TArray<FRHIBufferRef, (int)ENamedBuffer::Num>   NamedBuffers = {};
         TArray<FRHIImageRef, (int)ENamedImage::Num>     NamedImages = {};
+
+        /** MSAA sample count cached from world settings. 1 == disabled (no overhead). */
+        uint8                                           MSAASampleCount = 1;
+
+        /** Allocate the MS-only scratch images (HDR_MS, Depth_MS, Picker_MS). No-op when MSAA is off. */
+        void AllocateMSAAImages(const glm::uvec2& Extent);
+
+        /** Reconcile cached sample count with the world setting; reallocates MS images when it changes. */
+        void SyncMSAAState();
 
         // Bloom mip chain. Index [0] is the largest (1/2 HDR resolution),
         // each successive entry is half the previous. The downsample chain

@@ -1,0 +1,22 @@
+#pragma once
+
+// Aggregates every material-graph node header in one include so callers
+// (compiler, registration, editor) don't have to track them individually.
+
+#include "MaterialGraphNode.h"
+#include "MaterialNodeExpression.h"
+#include "MaterialNode_Constants.h"
+#include "MaterialNode_Math.h"
+#include "MaterialNode_VectorOps.h"
+#include "MaterialNode_Inputs.h"
+#include "MaterialNode_Terrain.h"
+#include "MaterialNode_Color.h"
+#include "MaterialNode_Noise.h"
+#include "MaterialNode_UV.h"
+#include "MaterialNode_SceneData.h"
+#include "MaterialNode_Conditional.h"
+#include "MaterialNode_Shading.h"
+#include "MaterialNodeGetTime.h"
+#include "MaterialNode_PrimitiveData.h"
+#include "MaterialNode_TextureSample.h"
+#include "MaterialOutputNode.h"

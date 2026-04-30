@@ -26,6 +26,7 @@
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Traits.h"
 #include "World/World.h"
+#include "World/Entity/Components/StaticMeshComponent.h"
 
 
 namespace Lumina
@@ -92,9 +93,25 @@ namespace Lumina
             {
                 if (ImGui::MenuItem("Unparent"))
                 {
+                    BeginTransaction();
                     ECS::Utils::RemoveFromParent(Registry, Data.Entity);
+                    EndTransaction("Unparent");
                     OutlinerListView.MarkTreeDirty();
-                    Asset->GetPackage()->MarkDirty();
+                }
+            }
+
+            if (Data.Entity != FindPrefabRoot() && ImGui::MenuItem(LE_ICON_CONTENT_DUPLICATE " Duplicate"))
+            {
+                BeginTransaction();
+                entt::entity New = DuplicatePrefabEntity(Data.Entity);
+                if (New != entt::null)
+                {
+                    EndTransaction("Duplicate");
+                    OutlinerListView.MarkTreeDirty();
+                }
+                else
+                {
+                    PendingBeforeState.clear();
                 }
             }
 
@@ -145,6 +162,19 @@ namespace Lumina
     {
         LoadPrefabIntoPreviewWorld();
         OutlinerListView.MarkTreeDirty();
+
+        // Loading the prefab repopulates the registry; nothing before this point is meaningful
+        // to undo back into.
+        ClearTransactionHistory();
+    }
+
+    void FPrefabEditorTool::OnPostUndoRedo()
+    {
+        // Selection lives entirely in registry tags for the prefab editor, so the
+        // serialized state is already correct after the round-trip. We just need to
+        // refresh the outliner and force the property tables to rebuild.
+        OutlinerListView.MarkTreeDirty();
+        bPropertyTablesDirty = true;
     }
 
     void FPrefabEditorTool::LoadPrefabIntoPreviewWorld()
@@ -324,10 +354,19 @@ namespace Lumina
                 FocusViewportToEntity(GetLastSelectedEntity());
             }
         }
+
+        ProcessClipboardShortcuts();
     }
 
     void FPrefabEditorTool::ProcessDestroyRequests()
     {
+        if (EntityDestroyRequests.empty())
+        {
+            return;
+        }
+
+        BeginTransaction();
+        bool bDestroyed = false;
         while (!EntityDestroyRequests.empty())
         {
             entt::entity Entity = EntityDestroyRequests.back();
@@ -347,8 +386,18 @@ namespace Lumina
             }
 
             ECS::Utils::DestroyEntityHierarchy(World->GetEntityRegistry(), Entity);
+            bDestroyed = true;
             OutlinerListView.MarkTreeDirty();
             Asset->GetPackage()->MarkDirty();
+        }
+
+        if (bDestroyed)
+        {
+            EndTransaction("Delete Entity");
+        }
+        else
+        {
+            PendingBeforeState.clear();
         }
     }
 
@@ -391,6 +440,8 @@ namespace Lumina
         // self-parenting into an infinite ForEachChild loop.
         const entt::entity Root = FindPrefabRoot();
 
+        BeginTransaction();
+
         entt::entity NewEntity = WorldRegistry.create();
         WorldRegistry.emplace<SNameComponent>(NewEntity).Name = FName("NewEntity");
         WorldRegistry.emplace<STransformComponent>(NewEntity);
@@ -400,6 +451,8 @@ namespace Lumina
         {
             ECS::Utils::ReparentEntity(WorldRegistry, NewEntity, Root);
         }
+
+        EndTransaction("New Entity");
 
         Asset->GetPackage()->MarkDirty();
         OutlinerListView.MarkTreeDirty();
@@ -532,7 +585,9 @@ namespace Lumina
                         // Don't reparent the prefab root; hierarchy stays single-rooted.
                         if (Source != FindPrefabRoot() && DropItem != entt::null)
                         {
+                            BeginTransaction();
                             ECS::Utils::ReparentEntity(Registry, Source, DropItem);
+                            EndTransaction("Reparent");
                             OutlinerListView.MarkTreeDirty();
                             Asset->GetPackage()->MarkDirty();
                         }
@@ -541,14 +596,192 @@ namespace Lumina
             }
             return;
         }
+
+        // Accept content-browser asset drops (static mesh, material, ...) onto an outliner row.
+        if (const ImGuiPayload* CBPayload = ImGui::AcceptDragDropPayload(
+                FContentBrowserEditorTool::FContentBrowserTileViewItem::DragDropID,
+                ImGuiDragDropFlags_AcceptBeforeDelivery))
+        {
+            if (CBPayload->IsDelivery())
+            {
+                const uintptr_t ValuePtr = *static_cast<uintptr_t*>(CBPayload->Data);
+                const auto* PayloadItem = reinterpret_cast<FContentBrowserEditorTool::FContentBrowserTileViewItem*>(ValuePtr);
+                if (PayloadItem && PayloadItem->IsAsset())
+                {
+                    HandlePrefabContentDrop(PayloadItem->GetVirtualPath(), DropItem);
+                }
+            }
+        }
     }
 
     void FPrefabEditorTool::HandlePrefabContentDrop(FStringView VirtualPath, entt::entity DropTarget)
     {
-        // Prefab-in-prefab drops aren't a common workflow; left as a stub so the outliner still provides
-        // a drag-drop target site consistent with the world editor.
-        (void)VirtualPath;
-        (void)DropTarget;
+        // Default drop target is the prefab root so dropped meshes become prefab-owned children.
+        if (DropTarget == entt::null)
+        {
+            DropTarget = FindPrefabRoot();
+        }
+
+        BeginTransaction();
+        entt::entity Spawned = HandleContentBrowserAssetDrop(VirtualPath, DropTarget);
+        if (Spawned != entt::null && Spawned != DropTarget)
+        {
+            // Mark the freshly created entity as part of the prefab so it round-trips on save.
+            entt::registry& Registry = World->GetEntityRegistry();
+            if (!Registry.any_of<SPrefabComponent>(Spawned))
+            {
+                Registry.emplace<SPrefabComponent>(Spawned).StableID = FName(FGuid::New().ToShortString());
+            }
+            EndTransaction("Drop Asset");
+            OutlinerListView.MarkTreeDirty();
+            Asset->GetPackage()->MarkDirty();
+        }
+        else if (Spawned == DropTarget && Spawned != entt::null)
+        {
+            // Existing entity was modified in-place (e.g. material override applied to mesh slot).
+            EndTransaction("Drop Asset");
+            Asset->GetPackage()->MarkDirty();
+        }
+        else
+        {
+            PendingBeforeState.clear();
+        }
+    }
+
+    entt::entity FPrefabEditorTool::DuplicatePrefabEntity(entt::entity Source)
+    {
+        if (Source == entt::null || World == nullptr)
+        {
+            return entt::null;
+        }
+
+        entt::registry& Registry = World->GetEntityRegistry();
+        if (!Registry.valid(Source))
+        {
+            return entt::null;
+        }
+
+        entt::entity NewEntity = entt::null;
+        World->DuplicateEntity(NewEntity, Source, [](const entt::type_info& Type)
+        {
+            if (Type == entt::type_id<FRelationshipComponent>()
+                || Type == entt::type_id<FSelectedInEditorComponent>()
+                || Type == entt::type_id<FCopiedTag>()
+                || Type == entt::type_id<FLastSelectedTag>())
+            {
+                return false;
+            }
+            return true;
+        });
+
+        if (NewEntity == entt::null)
+        {
+            return entt::null;
+        }
+
+        // Force a unique stable ID so prefab round-trip sees the duplicate as a distinct entity.
+        if (SPrefabComponent* Prefab = Registry.try_get<SPrefabComponent>(NewEntity))
+        {
+            Prefab->StableID = FName(FGuid::New().ToShortString());
+        }
+
+        // Re-parent under the source's parent (or the prefab root if it had none).
+        const FRelationshipComponent* SourceRel = Registry.try_get<FRelationshipComponent>(Source);
+        entt::entity Parent = (SourceRel && SourceRel->Parent != entt::null) ? SourceRel->Parent : FindPrefabRoot();
+        if (Parent != entt::null && Parent != NewEntity)
+        {
+            ECS::Utils::ReparentEntity(Registry, NewEntity, Parent);
+        }
+
+        return NewEntity;
+    }
+
+    void FPrefabEditorTool::ProcessClipboardShortcuts()
+    {
+        if (!bViewportHovered || World == nullptr)
+        {
+            return;
+        }
+
+        const bool bCtrl = ImGui::IsKeyDown(ImGuiKey_LeftCtrl);
+        const bool bCopyPressed = bCtrl && ImGui::IsKeyPressed(ImGuiKey_C);
+        const bool bDuplicatePressed = bCtrl && ImGui::IsKeyPressed(ImGuiKey_D);
+        const bool bPastePressed = bCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false);
+
+        entt::registry& Registry = World->GetEntityRegistry();
+
+        if (bCopyPressed)
+        {
+            Registry.clear<FCopiedTag>();
+            Registry.view<FSelectedInEditorComponent>().each([&](entt::entity Selected)
+            {
+                if (Selected != FindPrefabRoot())
+                {
+                    Registry.emplace_or_replace<FCopiedTag>(Selected);
+                }
+            });
+        }
+
+        auto DuplicateBatch = [&](TFixedVector<entt::entity, 64>& Sources, FName Label)
+        {
+            if (Sources.empty())
+            {
+                return;
+            }
+
+            BeginTransaction();
+            TFixedVector<entt::entity, 64> NewlyCreated;
+            for (entt::entity Source : Sources)
+            {
+                entt::entity New = DuplicatePrefabEntity(Source);
+                if (New != entt::null)
+                {
+                    NewlyCreated.push_back(New);
+                }
+            }
+
+            if (!NewlyCreated.empty())
+            {
+                ClearSelectedEntities();
+                for (entt::entity New : NewlyCreated)
+                {
+                    AddSelectedEntity(New, false);
+                }
+                EndTransaction(Label);
+                OutlinerListView.MarkTreeDirty();
+                Asset->GetPackage()->MarkDirty();
+            }
+            else
+            {
+                PendingBeforeState.clear();
+            }
+        };
+
+        if (bDuplicatePressed)
+        {
+            TFixedVector<entt::entity, 64> Sources;
+            Registry.view<FSelectedInEditorComponent>().each([&](entt::entity Selected)
+            {
+                if (Selected != FindPrefabRoot())
+                {
+                    Sources.push_back(Selected);
+                }
+            });
+            DuplicateBatch(Sources, "Duplicate");
+        }
+
+        if (bPastePressed)
+        {
+            TFixedVector<entt::entity, 64> Sources;
+            Registry.view<FCopiedTag>().each([&](entt::entity Tagged)
+            {
+                if (Tagged != FindPrefabRoot())
+                {
+                    Sources.push_back(Tagged);
+                }
+            });
+            DuplicateBatch(Sources, "Paste");
+        }
     }
 
     void FPrefabEditorTool::DrawOutliner(bool bFocused)
@@ -619,6 +852,14 @@ namespace Lumina
             }
 
             auto Table = MakeUnique<FPropertyTable>(CompPtr, Struct);
+            Table->SetPreEditCallback([this](const FPropertyChangedEvent&)
+            {
+                BeginTransaction();
+            });
+            Table->SetFinishEditCallback([this](const FPropertyChangedEvent& Event)
+            {
+                EndTransaction(Event.PropertyName);
+            });
             Table->SetPostEditCallback([this](const FPropertyChangedEvent&)
             {
                 if (Asset && Asset->GetPackage())
@@ -719,8 +960,10 @@ namespace Lumina
                 const FString DisplayName = Struct->GetName().ToString();
                 if (ImGui::Selectable(DisplayName.c_str()))
                 {
+                    BeginTransaction();
                     ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs,
                         entt::forward_as_meta(Registry), SelectedEntity, entt::forward_as_meta(entt::meta_any{}));
+                    EndTransaction("Add Component");
                     bPropertyTablesDirty = true;
                     Asset->GetPackage()->MarkDirty();
                 }
@@ -787,6 +1030,9 @@ namespace Lumina
                 {
                     if (!bImGuizmoUsedOnce)
                     {
+                        // Snapshot before the first manipulation frame in this drag so the
+                        // entire drag collapses to a single Transform undo.
+                        BeginTransaction();
                         bImGuizmoUsedOnce = true;
                     }
 
@@ -811,6 +1057,7 @@ namespace Lumina
                 }
                 else if (bImGuizmoUsedOnce)
                 {
+                    EndTransaction("Transform");
                     bImGuizmoUsedOnce = false;
                 }
             }

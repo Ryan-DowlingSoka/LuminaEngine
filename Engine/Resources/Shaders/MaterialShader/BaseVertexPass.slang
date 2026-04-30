@@ -78,6 +78,13 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_Vu
     // NormalWS to absorb any non-uniform-scale skew.
     float3 TangentWS        = mul((float3x3)ModelMatrix, VertexData.Tangent.xyz);
 
+    // Material vertex graph emission (e.g. WorldPositionOffset). The token
+    // expands to assignments into `Material`; default substitution is a
+    // zero-init so unmodified materials produce identical geometry.
+    FMaterialVertexInputs Material;
+    $MATERIAL_VERTEX_INPUTS
+    WorldPos.xyz += Material.WorldPositionOffset;
+
     float4 ViewPos = mul(View, WorldPos);
 
     Output.UV            = VertexData.UV;
