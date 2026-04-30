@@ -106,19 +106,63 @@ namespace Lumina::Lua
         return Dispatch(eastl::make_index_sequence<TraitsT::ArgCount>{});
     }
     
+    // Variant of Invoker that pulls `self` from stack slot 1 without checking
+    // the userdata tag. The metatable dispatch that lands us here already
+    // constrains the userdata to a type whose ancestor chain includes
+    // SelfClassT — and since TUserdataHeader is laid out so External lives at
+    // a fixed offset and Buffer holds the leaf object whose first bytes are
+    // the SelfClassT subobject, reading it as SelfClassT is sound. Used by
+    // TClass<T>::AddFunction so inherited methods work on child userdata.
+    template<typename SelfClassT, auto TFunc>
+    auto InvokerSelfUntagged(lua_State* L)
+    {
+        using TraitsT = TFunctionTraits<decltype(TFunc)>;
+        using ReturnT = TraitsT::ReturnType;
+        using ArgsT   = TraitsT::ArgsTuple;
+
+        auto* Header = static_cast<TUserdataHeader<SelfClassT>*>(lua_touserdata(L, 1));
+        if (Header == nullptr)
+        {
+            luaL_errorL(L, "[%s]", "Cannot invoke lua function with incorrect usertype.");
+        }
+
+        SelfClassT* Self = Header->Underlying();
+        if (Self == nullptr)
+        {
+            luaL_errorL(L, "[%s]", "Cannot invoke lua function with incorrect usertype.");
+        }
+
+        auto Dispatch = [&]<size_t... Is>(eastl::index_sequence<Is...>)
+        {
+            if constexpr (eastl::is_void_v<ReturnT>)
+            {
+                (Self->*TFunc)(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 2)...);
+                return 0;
+            }
+            else
+            {
+                decltype(auto) Ret = (Self->*TFunc)(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 2)...);
+                PushArg(L, eastl::forward<decltype(Ret)>(Ret));
+                return 1;
+            }
+        };
+
+        return Dispatch(eastl::make_index_sequence<TraitsT::ArgCount>{});
+    }
+
     template<auto TFunc>
     auto Invoker(lua_State* L)
     {
         using TraitsT = TFunctionTraits<decltype(TFunc)>;
         using ReturnT = TraitsT::ReturnType;
         using ArgsT   = TraitsT::ArgsTuple;
-        
+
         auto Dispatch = [&]<size_t... Is>(eastl::index_sequence<Is...>)
         {
             if constexpr (eastl::is_member_function_pointer_v<decltype(TFunc)>)
             {
                 using ClassT  = TraitsT::ClassType;
-                
+
                 ClassT* Self = TStack<ClassT*>::Get(L, 1);
                 if (Self == nullptr)
                 {

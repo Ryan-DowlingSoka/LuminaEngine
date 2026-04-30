@@ -513,9 +513,6 @@ namespace Lumina
         FinalClass->StructOps.reset(Params.StructOpsFn());
         
         
-        lua_State* LuaVM = Lua::FScriptingContext::Get().GetVM();
-        Params.LuaRegisterFn(LuaVM);
-        
         *OutStruct = FinalClass;
         
         CObjectForceRegistration(FinalClass);
@@ -533,6 +530,9 @@ namespace Lumina
             CStruct* SuperStruct = Params.SuperFunc();
             FinalClass->SetSuperStruct(SuperStruct);
         }
+        
+        lua_State* LuaVM = Lua::FScriptingContext::Get().GetVM();
+        Params.LuaRegisterFn(LuaVM);
         
         FinalClass->Link();
 

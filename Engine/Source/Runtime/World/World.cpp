@@ -1044,17 +1044,26 @@ namespace Lumina
             lua_setthreaddata(ScriptThread, &ScriptComponent.Script->ThreadData);
         }
 
-        ScriptComponent.Script->Environment.RawSet("World", this);
-        ScriptComponent.Script->Environment.RawSet("Registry", &EntityRegistry);
-        ScriptComponent.Script->Environment.RawSet("Physics", PhysicsScene.get());
-        ScriptComponent.Script->Environment.RawSet("Events", &LuaEventBus);
-        ScriptComponent.Script->Environment.RawSet("Messages", &MessageBus);
-        ScriptComponent.Script->Environment.RawSet("TimerManager", &TimerManager);
-        ScriptComponent.Script->Environment.RawSet("DrawInterface", DrawInterfaceRef);
-        
-        ScriptComponent.Script->Reference.RawSet("Entity", Entity);
+        // Engine-internal services injected onto `self` (the script's
+        // Reference table). They MUST live here, not on the per-script
+        // Environment: stdlib helper functions like EntityScript:GetComponent
+        // are loaded into the main thread's globals, so their closure env
+        // doesn't see this script's per-thread globals — but `self` is a
+        // direct argument every helper receives. Underscore-prefixed so the
+        // editor harvester (which skips `_*` keys) leaves them out of
+        // autocomplete; users hit them through self:GetComponent etc.
+        ScriptComponent.Script->Reference.RawSet("_Registry", &EntityRegistry);
+        ScriptComponent.Script->Reference.RawSet("_Physics",  PhysicsScene.get());
+        ScriptComponent.Script->Reference.RawSet("_Events",   &LuaEventBus);
+        ScriptComponent.Script->Reference.RawSet("_Messages", &MessageBus);
+        ScriptComponent.Script->Reference.RawSet("_Timers",   &TimerManager);
+        ScriptComponent.Script->Reference.RawSet("_Draw",     DrawInterfaceRef);
+
+        // Per-entity fields visible to the user as `self.*`.
+        ScriptComponent.Script->Reference.RawSet("World",     this);
+        ScriptComponent.Script->Reference.RawSet("Entity",    Entity);
         ScriptComponent.Script->Reference.RawSet("Transform", &EntityRegistry.get<STransformComponent>(Entity));
-        ScriptComponent.Script->Reference.RawSet("Name", EntityRegistry.get<SNameComponent>(Entity).Name);
+        ScriptComponent.Script->Reference.RawSet("Name",      EntityRegistry.get<SNameComponent>(Entity).Name);
         
         ScriptComponent.ScriptMetaTable = ScriptComponent.Script->Reference["Meta"];
         ScriptComponent.AttachFunc      = ScriptComponent.Script->Reference["OnAttach"];

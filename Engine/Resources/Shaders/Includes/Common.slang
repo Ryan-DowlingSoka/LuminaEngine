@@ -208,7 +208,7 @@ struct FCustomPrimitiveData
     property int    AsInt       { get { return asint(Packed); } }
     property uint   AsUInt      { get { return Packed; } }
     property bool   AsBool      { get { return Packed != 0; } }
-    property float4 AsFloat4    { get { return float4(unpack_u8u32(Packed)) / 255.0; } }
+    property float4 AsColor     { get { return float4(unpack_u8u32(Packed)) / 255.0; } }
 }
 
 // Meshlet limits must match Lumina::MESHLET_MAX_VERTICES / MAX_TRIANGLES.

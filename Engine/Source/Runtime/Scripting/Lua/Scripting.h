@@ -147,6 +147,13 @@ namespace Lumina::Lua
         // returns symbol info the editor uses for autocomplete. Stays in
         // sync with whatever Initialize() registers — no separate manifest.
         RUNTIME_API void HarvestGlobalSymbols(TVector<FLuaSymbol>& Out);
+
+        // Re-runs every Lua stdlib file (Engine/Resources/Content/Scripts/Stdlib/*.luau)
+        // against the live VM. Stdlib files use `Foo = Foo or {}` for their
+        // top-level tables, so existing script instances — whose metatables
+        // point at those tables — see the updated methods immediately.
+        // Exposed to Lua as `Engine.ReloadStdlib()`.
+        RUNTIME_API void ReloadStdlib();
         
         #if LUAI_GCMETRICS
         RUNTIME_API const GCMetrics* GetGCMetrics() const;  
@@ -160,7 +167,9 @@ namespace Lumina::Lua
         RUNTIME_API lua_State* GetVM() const { return L; }
         
     private:
-        
+
+        void LoadStdlibFiles();
+
         void ReloadScripts(FStringView Path);
 
         // Cached-bytecode -> live FScript pipeline. When the Out* params are

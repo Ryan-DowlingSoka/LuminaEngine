@@ -10,17 +10,22 @@ namespace Lumina::Reflection
     // Stable, grep-able error codes for LRT (Lumina Reflection Tool) diagnostics.
     // Ranges:
     //   1xxx -> property type errors (unsupported types, mis-used pointers, etc.)
-    //   2xxx -> macro / declaration errors (missing GENERATED_BODY, etc.) -- reserved
+    //   2xxx -> macro / declaration errors (missing GENERATED_BODY, etc.)
     //   3xxx -> function signature errors -- reserved
     enum class EDiagId : uint32_t
     {
-        UnknownPropertyType   = 1000,   // PROPERTY field has a type the reflector cannot map.
-        RawObjectPointer      = 1001,   // raw pointer to a CObject; caller must use TObjectPtr.
-        ArrayElementUnknown   = 1002,   // element type of TVector<T> couldn't be resolved.
-        OptionalElementUnknown= 1003,   // element type of TOptional<T> couldn't be resolved.
-        FieldQualifyFailed    = 1004,   // clang couldn't qualify the field's type.
-        FunctionFieldFailed   = 1005,   // function argument/return type couldn't be reflected.
-        CircularHeaderInclude = 1006,   // header A includes B (transitively) which includes A.
+        UnknownPropertyType    = 1000,  // PROPERTY field has a type the reflector cannot map.
+        RawObjectPointer       = 1001,  // raw pointer to a CObject; caller must use TObjectPtr.
+        ArrayElementUnknown    = 1002,  // element type of TVector<T> couldn't be resolved.
+        OptionalElementUnknown = 1003,  // element type of TOptional<T> couldn't be resolved.
+        FieldQualifyFailed     = 1004,  // clang couldn't qualify the field's type.
+        FunctionFieldFailed    = 1005,  // function argument/return type couldn't be reflected.
+        CircularHeaderInclude  = 1006,  // header A includes B (transitively) which includes A.
+
+        MissingGeneratedHeader = 2000,  // header has REFLECT/GENERATED_BODY/PROPERTY/FUNCTION but doesn't #include its <stem>.generated.h
+        GeneratedHeaderNotLast = 2001,  // <stem>.generated.h is included but other includes follow it.
+        MissingGeneratedBody   = 2002,  // class/struct uses REFLECT() but lacks a GENERATED_BODY() inside its body.
+        WrongGeneratedHeader   = 2003,  // header includes a different file's .generated.h (copy-paste mistake).
     };
 
     struct FDiagLocation

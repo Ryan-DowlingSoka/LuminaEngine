@@ -1,5 +1,6 @@
 #include "RmlUiEditorTool.h"
 
+#include "Config/Config.h"
 #include "FileSystem/FileSystem.h"
 #include "Log/Log.h"
 #include "Renderer/CommandList.h"
@@ -46,6 +47,74 @@ namespace Lumina
             { "Custom",        0u,    0u    },
         };
         constexpr int CustomPresetIndex = (int)(sizeof(ResolutionPresets) / sizeof(ResolutionPresets[0])) - 1;
+
+        const char* kKeyFontScale       = "Editor.RmlUiEditor.FontScale";
+        const char* kKeyTabSize         = "Editor.RmlUiEditor.TabSize";
+        const char* kKeyLineSpacing     = "Editor.RmlUiEditor.LineSpacing";
+        const char* kKeyShowWhitespace  = "Editor.RmlUiEditor.ShowWhitespace";
+        const char* kKeyShowLineNumbers = "Editor.RmlUiEditor.ShowLineNumbers";
+        const char* kKeyShowMiniMap     = "Editor.RmlUiEditor.ShowMiniMap";
+        const char* kKeyAutoIndent      = "Editor.RmlUiEditor.AutoIndent";
+        const char* kKeyMatchBrackets   = "Editor.RmlUiEditor.MatchBrackets";
+        const char* kKeyCompletePairs   = "Editor.RmlUiEditor.CompletePairs";
+        const char* kKeyInsertSpaces    = "Editor.RmlUiEditor.InsertSpacesOnTabs";
+        const char* kKeyTrimOnSave      = "Editor.RmlUiEditor.TrimTrailingOnSave";
+        const char* kKeyAutoReload      = "Editor.RmlUiEditor.AutoReload";
+        const char* kKeyPalette         = "Editor.RmlUiEditor.Palette";
+
+        struct FRmlSnippet
+        {
+            const char* Label;
+            const char* Body;
+        };
+
+        const FRmlSnippet kRmlDocSnippets[] =
+        {
+            { "Document skeleton",
+                "<rml>\n"
+                "<head>\n"
+                "\t<title>Untitled</title>\n"
+                "\t<style>\n"
+                "\t\tbody { font-family: \"Source Sans Pro\"; color: #fff; }\n"
+                "\t</style>\n"
+                "</head>\n"
+                "<body>\n"
+                "\t\n"
+                "</body>\n"
+                "</rml>\n" },
+            { "Inline <style> block",   "<style>\n\t\n</style>\n" },
+            { "<link rel=\"stylesheet\">", "<link rel=\"stylesheet\" type=\"text/rcss\" href=\"\"/>\n" },
+            { "<div id=...>",           "<div id=\"\" class=\"\">\n\t\n</div>\n" },
+            { "<button>",               "<button onclick=\"\">Label</button>\n" },
+            { "<input text>",           "<input type=\"text\" name=\"\" value=\"\"/>\n" },
+            { "<input checkbox>",       "<input type=\"checkbox\" name=\"\" checked/>\n" },
+            { "<select / option>",      "<select name=\"\">\n\t<option value=\"a\">A</option>\n\t<option value=\"b\">B</option>\n</select>\n" },
+            { "<tabset / panel>",       "<tabset>\n\t<tab>One</tab>\n\t<tab>Two</tab>\n\t<panels>\n\t\t<panel>\n\t\t\t\n\t\t</panel>\n\t\t<panel>\n\t\t\t\n\t\t</panel>\n\t</panels>\n</tabset>\n" },
+            { "<progressbar>",          "<progressbar value=\"0.5\" max-value=\"1.0\"/>\n" },
+            { "<handle> (drag)",        "<handle move-target=\"#parent\">drag</handle>\n" },
+            { "<template> include",     "<template name=\"\" content=\"\" src=\"\"/>\n" },
+        };
+
+        const FRmlSnippet kRcssSnippets[] =
+        {
+            { "selector { } block",        "selector {\n\t\n}\n" },
+            { "id selector",                "#id {\n\t\n}\n" },
+            { "class selector",             ".class {\n\t\n}\n" },
+            { "Pseudo :hover",              "selector:hover {\n\t\n}\n" },
+            { "Pseudo :active",             "selector:active {\n\t\n}\n" },
+            { "Pseudo :checked",            "selector:checked {\n\t\n}\n" },
+            { "Pseudo :focus",              "selector:focus {\n\t\n}\n" },
+            { "Centered flex container",    "display: flex;\njustify-content: center;\nalign-items: center;\n" },
+            { "Vertical flex column",       "display: flex;\nflex-direction: column;\ngap: 8dp;\n" },
+            { "Absolute fill",              "position: absolute;\nleft: 0; top: 0; right: 0; bottom: 0;\n" },
+            { "Padding/margin shorthand",   "padding: 8dp 16dp;\nmargin: 4dp 0;\n" },
+            { "transition",                 "transition: background-color 0.15s linear, color 0.15s linear;\n" },
+            { "Decorator (gradient)",       "decorator: gradient( vertical #1f2a36 #0e1620 );\n" },
+            { "Border + radius",            "border: 1dp #444;\nborder-radius: 4dp;\n" },
+            { "Drop shadow font-effect",    "font-effect: shadow(0dp 1dp #000a);\n" },
+            { "Outline font-effect",        "font-effect: outline(1dp #000);\n" },
+            { "Glow font-effect",           "font-effect: glow(1dp 0dp 0dp #4af);\n" },
+        };
 
         ImU32 ToU32(const ImVec4& C) { return ImGui::ColorConvertFloat4ToU32(C); }
 
@@ -260,6 +329,22 @@ namespace Lumina
     {
         const FStringView ParentView = VFS::Parent(InVirtualPath, true);
         ParentDir = FString(ParentView.data(), ParentView.size());
+
+        // Pull persisted preferences. Defaults are registered in LuminaEditor.cpp.
+        EditorFontScale         = GConfig->GetFloat(kKeyFontScale);
+        EditorTabSize           = std::max(1, std::min(8, GConfig->GetInt(kKeyTabSize)));
+        EditorLineSpacing       = GConfig->GetFloat(kKeyLineSpacing);
+        bEditorShowWhitespace   = GConfig->GetBool(kKeyShowWhitespace);
+        bEditorShowLineNumbers  = GConfig->GetBool(kKeyShowLineNumbers);
+        bEditorShowMiniMap      = GConfig->GetBool(kKeyShowMiniMap);
+        bAutoIndent             = GConfig->GetBool(kKeyAutoIndent);
+        bShowMatchingBrackets   = GConfig->GetBool(kKeyMatchBrackets);
+        bCompletePairedGlyphs   = GConfig->GetBool(kKeyCompletePairs);
+        bInsertSpacesOnTabs     = GConfig->GetBool(kKeyInsertSpaces);
+        bTrimTrailingOnSave     = GConfig->GetBool(kKeyTrimOnSave);
+        bAutoReload             = GConfig->GetBool(kKeyAutoReload);
+        const FString PaletteStr = GConfig->GetString(kKeyPalette);
+        EditorPalette = (PaletteStr == "Light") ? EPalette::Light : EPalette::Dark;
     }
 
     void FRmlUiEditorTool::OnInitialize()
@@ -332,6 +417,11 @@ namespace Lumina
             ImGui::PopFontSize();
             ImGuiX::Font::PopFont();
 
+            if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+            {
+                HandleEditorShortcuts();
+            }
+
             DrawEditorStatusBar();
         });
 
@@ -369,6 +459,11 @@ namespace Lumina
 
     void FRmlUiEditorTool::OnSave()
     {
+        if (bTrimTrailingOnSave)
+        {
+            CodeEditor.StripTrailingWhitespaces();
+        }
+
         const std::string Body = CodeEditor.GetText();
         const FStringView View(Body.data(), Body.size());
 
@@ -397,13 +492,35 @@ namespace Lumina
     void FRmlUiEditorTool::ApplyEditorSettings()
     {
         CodeEditor.SetTabSize(std::max(1, std::min(8, EditorTabSize)));
+        CodeEditor.SetInsertSpacesOnTabs(bInsertSpacesOnTabs);
         CodeEditor.SetLineSpacing(EditorLineSpacing);
         CodeEditor.SetShowWhitespacesEnabled(bEditorShowWhitespace);
         CodeEditor.SetShowLineNumbersEnabled(bEditorShowLineNumbers);
+        CodeEditor.SetShowScrollbarMiniMapEnabled(bEditorShowMiniMap);
         CodeEditor.SetReadOnlyEnabled(bEditorReadOnly);
+        CodeEditor.SetAutoIndentEnabled(bAutoIndent);
+        CodeEditor.SetShowMatchingBrackets(bShowMatchingBrackets);
+        CodeEditor.SetCompletePairedGlyphs(bCompletePairedGlyphs);
         CodeEditor.SetPalette(EditorPalette == EPalette::Dark
             ? TextEditor::GetDarkPalette()
             : TextEditor::GetLightPalette());
+    }
+
+    void FRmlUiEditorTool::PersistSettings() const
+    {
+        GConfig->Set<float>(kKeyFontScale,       EditorFontScale);
+        GConfig->Set<int32>(kKeyTabSize,         EditorTabSize);
+        GConfig->Set<float>(kKeyLineSpacing,     EditorLineSpacing);
+        GConfig->Set<bool>(kKeyShowWhitespace,   bEditorShowWhitespace);
+        GConfig->Set<bool>(kKeyShowLineNumbers,  bEditorShowLineNumbers);
+        GConfig->Set<bool>(kKeyShowMiniMap,      bEditorShowMiniMap);
+        GConfig->Set<bool>(kKeyAutoIndent,       bAutoIndent);
+        GConfig->Set<bool>(kKeyMatchBrackets,    bShowMatchingBrackets);
+        GConfig->Set<bool>(kKeyCompletePairs,    bCompletePairedGlyphs);
+        GConfig->Set<bool>(kKeyInsertSpaces,     bInsertSpacesOnTabs);
+        GConfig->Set<bool>(kKeyTrimOnSave,       bTrimTrailingOnSave);
+        GConfig->Set<bool>(kKeyAutoReload,       bAutoReload);
+        GConfig->Set<std::string>(kKeyPalette,   std::string(EditorPalette == EPalette::Dark ? "Dark" : "Light"));
     }
 
     // ---------------------------------------------------------------- editor ---
@@ -422,14 +539,14 @@ namespace Lumina
 
         ImGui::Spacing();
 
-        if (ImGui::Button("Save"))
+        if (ImGui::Button(LE_ICON_CONTENT_SAVE " Save"))
         {
             OnSave();
         }
         ImGuiX::TextTooltip("Write the buffer to disk (Ctrl+S).");
 
         ImGui::SameLine();
-        if (ImGui::Button("Reload from Disk"))
+        if (ImGui::Button(LE_ICON_REFRESH " Reload"))
         {
             LoadFromDisk();
             ReloadDocument();
@@ -437,17 +554,77 @@ namespace Lumina
         ImGuiX::TextTooltip("Discard buffer changes and reload from disk.");
 
         ImGui::SameLine();
-        if (ImGui::Button("Re-render Preview"))
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+
+        ImGui::BeginDisabled(!CodeEditor.CanUndo());
+        if (ImGui::Button(LE_ICON_UNDO_VARIANT " Undo")) CodeEditor.Undo();
+        ImGuiX::TextTooltip("Undo last change (Ctrl+Z).");
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!CodeEditor.CanRedo());
+        if (ImGui::Button(LE_ICON_REDO_VARIANT " Redo")) CodeEditor.Redo();
+        ImGuiX::TextTooltip("Redo last undone change (Ctrl+Y).");
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+
+        if (ImGui::Button(LE_ICON_PLAY " Re-render"))
         {
             ReloadDocument();
         }
+        ImGuiX::TextTooltip("Re-parse the current buffer into the preview.");
 
         ImGui::SameLine();
-        ImGui::Checkbox("Auto-reload", &bAutoReload);
+        ImGui::Checkbox("Auto", &bAutoReload);
         ImGuiX::TextTooltip("Re-parse the buffer ~250ms after each edit.");
 
         ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_COG " Editor Settings"))
+        if (ImGui::Button(LE_ICON_MAGNIFY " Find"))
+        {
+            CodeEditor.OpenFindReplaceWindow();
+        }
+        ImGuiX::TextTooltip("Open the find/replace bar (Ctrl+F).");
+
+        ImGui::SameLine();
+        if (ImGui::Button(LE_ICON_FORMAT_LINE_SPACING " Goto"))
+        {
+            bRequestOpenGoto = true;
+        }
+        ImGuiX::TextTooltip("Jump to a specific line number (Ctrl+G).");
+
+        ImGui::SameLine();
+        if (ImGui::Button(LE_ICON_CODE_BRACES " Snippets"))
+        {
+            ImGui::OpenPopup("##rml_snippets");
+        }
+        ImGuiX::TextTooltip("Insert a tag or RCSS rule at the cursor.");
+        DrawSnippetsPopup();
+
+        ImGui::SameLine();
+        if (ImGui::Button(LE_ICON_AUTO_FIX " Format"))
+        {
+            ImGui::OpenPopup("##rml_format");
+        }
+        ImGuiX::TextTooltip("Whitespace and case transforms.");
+        DrawFormatPopup();
+
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+
+        if (ImGui::Button(LE_ICON_HELP_CIRCLE " Help"))
+        {
+            ImGui::OpenPopup("##rml_help");
+        }
+        ImGuiX::TextTooltip("Quick RML / RCSS reference.");
+        DrawHelpPopup();
+
+        ImGui::SameLine();
+        if (ImGui::Button(LE_ICON_COG " Settings"))
         {
             ImGui::OpenPopup("##rml_editor_settings");
         }
@@ -459,15 +636,25 @@ namespace Lumina
             ImGui::TextDisabled("Display");
             ImGui::Separator();
 
-            if (ImGui::SliderFloat("Font scale", &EditorFontScale, 0.75f, 3.0f, "%.2fx")) {}
+            ImGui::SliderFloat("Font scale", &EditorFontScale, 0.75f, 3.0f, "%.2fx");
+            ImGuiX::TextTooltip("Tip: Ctrl+wheel over the editor adjusts this live.");
 
             if (ImGui::SliderFloat("Line spacing", &EditorLineSpacing, 1.0f, 2.0f, "%.2f")) bDirty = true;
-
             if (ImGui::SliderInt("Tab size", &EditorTabSize, 1, 8)) bDirty = true;
+            if (ImGui::Checkbox("Show line numbers",      &bEditorShowLineNumbers)) bDirty = true;
+            if (ImGui::Checkbox("Show whitespace",        &bEditorShowWhitespace))  bDirty = true;
+            if (ImGui::Checkbox("Show scrollbar minimap", &bEditorShowMiniMap))     bDirty = true;
+            if (ImGui::Checkbox("Read-only",              &bEditorReadOnly))        bDirty = true;
 
-            if (ImGui::Checkbox("Show line numbers", &bEditorShowLineNumbers)) bDirty = true;
-            if (ImGui::Checkbox("Show whitespace",   &bEditorShowWhitespace))  bDirty = true;
-            if (ImGui::Checkbox("Read-only",         &bEditorReadOnly))        bDirty = true;
+            ImGui::Spacing();
+            ImGui::TextDisabled("Editing");
+            ImGui::Separator();
+            if (ImGui::Checkbox("Auto-indent",          &bAutoIndent))           bDirty = true;
+            if (ImGui::Checkbox("Match brackets",       &bShowMatchingBrackets)) bDirty = true;
+            if (ImGui::Checkbox("Auto-close pairs",     &bCompletePairedGlyphs)) bDirty = true;
+            if (ImGui::Checkbox("Insert spaces on Tab", &bInsertSpacesOnTabs))   bDirty = true;
+            ImGuiX::TextTooltip("When on, pressing Tab inserts spaces instead of a tab character.");
+            ImGui::Checkbox("Trim trailing whitespace on save", &bTrimTrailingOnSave);
 
             ImGui::Spacing();
             ImGui::TextDisabled("Theme");
@@ -482,6 +669,14 @@ namespace Lumina
             }
 
             ImGui::Spacing();
+            ImGui::Separator();
+
+            if (ImGui::Button("Persist as default", ImVec2(-1, 0)))
+            {
+                PersistSettings();
+                ImGuiX::Notifications::NotifySuccess("RmlUi editor settings saved.");
+            }
+
             if (ImGui::Button("Reset to defaults", ImVec2(-1, 0)))
             {
                 EditorFontScale = 1.25f;
@@ -489,7 +684,13 @@ namespace Lumina
                 EditorLineSpacing = 1.0f;
                 bEditorShowWhitespace = false;
                 bEditorShowLineNumbers = true;
+                bEditorShowMiniMap = true;
                 bEditorReadOnly = false;
+                bAutoIndent = true;
+                bShowMatchingBrackets = true;
+                bCompletePairedGlyphs = true;
+                bInsertSpacesOnTabs = false;
+                bTrimTrailingOnSave = false;
                 EditorPalette = EPalette::Dark;
                 bDirty = true;
             }
@@ -500,6 +701,230 @@ namespace Lumina
             }
 
             ImGui::EndPopup();
+        }
+
+        if (bRequestOpenGoto)
+        {
+            ImGui::OpenPopup("##rml_goto_line");
+            bRequestOpenGoto = false;
+            GotoLineBuffer = CodeEditor.GetCurrentCursorPosition().line + 1;
+        }
+        DrawGotoLinePopup();
+    }
+
+    void FRmlUiEditorTool::DrawSnippetsPopup()
+    {
+        if (!ImGui::BeginPopup("##rml_snippets"))
+        {
+            return;
+        }
+
+        ImGui::TextDisabled("RML elements");
+        ImGui::Separator();
+        for (const FRmlSnippet& Snip : kRmlDocSnippets)
+        {
+            if (ImGui::MenuItem(Snip.Label))
+            {
+                InsertSnippet(Snip.Body);
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::TextDisabled("RCSS rules");
+        ImGui::Separator();
+        for (const FRmlSnippet& Snip : kRcssSnippets)
+        {
+            if (ImGui::MenuItem(Snip.Label))
+            {
+                InsertSnippet(Snip.Body);
+            }
+        }
+
+        ImGui::EndPopup();
+    }
+
+    void FRmlUiEditorTool::InsertSnippet(const char* Snippet)
+    {
+        if (Snippet == nullptr || *Snippet == '\0')
+        {
+            return;
+        }
+        CodeEditor.ReplaceTextInCurrentCursor(std::string_view(Snippet));
+        CodeEditor.SetFocus();
+    }
+
+    void FRmlUiEditorTool::DrawFormatPopup()
+    {
+        if (!ImGui::BeginPopup("##rml_format"))
+        {
+            return;
+        }
+
+        ImGui::TextDisabled("Document");
+        ImGui::Separator();
+        if (ImGui::MenuItem("Strip trailing whitespace")) CodeEditor.StripTrailingWhitespaces();
+        if (ImGui::MenuItem("Tabs to spaces"))            CodeEditor.TabsToSpaces();
+        if (ImGui::MenuItem("Spaces to tabs"))            CodeEditor.SpacesToTabs();
+
+        ImGui::Spacing();
+        ImGui::TextDisabled("Selection");
+        ImGui::Separator();
+        const bool bHasSel = CodeEditor.AnyCursorHasSelection();
+        ImGui::BeginDisabled(!bHasSel);
+        if (ImGui::MenuItem("Indent",       "Tab"))        CodeEditor.IndentLines();
+        if (ImGui::MenuItem("Deindent",     "Shift+Tab"))  CodeEditor.DeindentLines();
+        if (ImGui::MenuItem("Move up",      "Alt+Up"))     CodeEditor.MoveUpLines();
+        if (ImGui::MenuItem("Move down",    "Alt+Down"))   CodeEditor.MoveDownLines();
+        if (ImGui::MenuItem("To upper case"))               CodeEditor.SelectionToUpperCase();
+        if (ImGui::MenuItem("To lower case"))               CodeEditor.SelectionToLowerCase();
+        ImGui::EndDisabled();
+
+        ImGui::EndPopup();
+    }
+
+    void FRmlUiEditorTool::DrawGotoLinePopup()
+    {
+        if (!ImGui::BeginPopup("##rml_goto_line"))
+        {
+            return;
+        }
+
+        ImGui::TextDisabled("Goto line (1 - %d)", CodeEditor.GetLineCount());
+        ImGui::Separator();
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SetKeyboardFocusHere();
+        const bool bSubmit = ImGui::InputInt("##rml_goto_input", &GotoLineBuffer, 1, 10, ImGuiInputTextFlags_EnterReturnsTrue);
+
+        ImGui::SameLine();
+        const bool bGo = ImGui::Button("Go");
+
+        if (bSubmit || bGo)
+        {
+            const int Target = std::max(1, std::min(CodeEditor.GetLineCount(), GotoLineBuffer)) - 1;
+            CodeEditor.SetCursor(Target, 0);
+            CodeEditor.ScrollToLine(Target, TextEditor::Scroll::alignMiddle);
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+
+    void FRmlUiEditorTool::DrawHelpPopup()
+    {
+        if (!ImGui::BeginPopup("##rml_help"))
+        {
+            return;
+        }
+
+        ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "RML / RCSS Quick Reference");
+        ImGui::Separator();
+
+        if (ImGui::CollapsingHeader("Editor shortcuts", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            if (ImGui::BeginTable("##rml_help_keys", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg))
+            {
+                auto Row = [&](const char* Key, const char* Desc)
+                {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn(); ImGui::TextColored(ImVec4(0.95f, 0.85f, 0.45f, 1.0f), "%s", Key);
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(Desc);
+                };
+                Row("Ctrl+S",        "Save");
+                Row("Ctrl+F",        "Find / replace");
+                Row("Ctrl+G",        "Goto line");
+                Row("Ctrl+Z / Y",    "Undo / redo");
+                Row("Ctrl+Wheel",    "Zoom font (in editor)");
+                Row("Tab / Shift+Tab","Indent / deindent selection");
+                Row("Alt+Up / Down", "Move line(s) up/down");
+                Row("Click swatch",  "Open color picker for #RRGGBB literal");
+                ImGui::EndTable();
+            }
+        }
+        if (ImGui::CollapsingHeader("Preview shortcuts"))
+        {
+            if (ImGui::BeginTable("##rml_help_preview", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg))
+            {
+                auto Row = [&](const char* Key, const char* Desc)
+                {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn(); ImGui::TextColored(ImVec4(0.95f, 0.85f, 0.45f, 1.0f), "%s", Key);
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(Desc);
+                };
+                Row("Ctrl+Wheel",  "Zoom canvas (centered on mouse)");
+                Row("Middle-drag", "Pan");
+                Row("Double-click","Reset view");
+                ImGui::EndTable();
+            }
+        }
+        if (ImGui::CollapsingHeader("RML basics"))
+        {
+            ImGui::TextWrapped(
+                "<rml> is the document root.\n"
+                "<head> holds <title>, <style>, <link>; <body> holds visible elements.\n"
+                "Inline RCSS goes inside a <style> block; external sheets via:\n"
+                "    <link rel=\"stylesheet\" type=\"text/rcss\" href=\"...\"/>\n"
+                "Use id=\"\" / class=\"\" to target with selectors. data-model / data-bind\n"
+                "drive Rml's data binding system.");
+        }
+        if (ImGui::CollapsingHeader("RCSS units"))
+        {
+            ImGui::TextWrapped(
+                "px - raw pixels\n"
+                "dp - density-independent (scales with DPI slider)\n"
+                "%  - percentage of parent\n"
+                "em - relative to current font size\n"
+                "vw / vh - viewport width / height percent");
+        }
+        if (ImGui::CollapsingHeader("Layout — flex"))
+        {
+            ImGui::TextWrapped(
+                "display: flex;\n"
+                "flex-direction: row | column;\n"
+                "justify-content: flex-start | center | space-between | ...\n"
+                "align-items: stretch | center | flex-start | ...\n"
+                "gap: 8dp;\n"
+                "Children: flex: 1; flex-grow / flex-shrink / flex-basis.");
+        }
+        if (ImGui::CollapsingHeader("Decorators & font effects"))
+        {
+            ImGui::TextWrapped(
+                "decorator: image( url );\n"
+                "decorator: gradient( vertical #1f2a36 #0e1620 );\n"
+                "decorator: tiled-box( ... );\n"
+                "font-effect: outline(1dp #000);\n"
+                "font-effect: shadow(0dp 1dp #000a);\n"
+                "font-effect: glow(2dp 0dp 0dp #4af);");
+        }
+        if (ImGui::CollapsingHeader("Pseudo-classes"))
+        {
+            ImGui::TextWrapped(
+                ":hover :active :focus :checked :disabled\n"
+                ":nth-child(n) :first-child :last-child\n"
+                "Combine: button:hover.primary { ... }");
+        }
+        if (ImGui::CollapsingHeader("Color literals"))
+        {
+            ImGui::TextWrapped(
+                "#rgb / #rgba / #rrggbb / #rrggbbaa hex literals.\n"
+                "Click any hex literal in the editor to pop the color picker.");
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextDisabled("Editor auto-reloads the preview ~250ms after each edit.");
+        ImGui::EndPopup();
+    }
+
+    void FRmlUiEditorTool::HandleEditorShortcuts()
+    {
+        const ImGuiIO& Io = ImGui::GetIO();
+        if (!Io.KeyCtrl)
+        {
+            return;
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_G, false))
+        {
+            bRequestOpenGoto = true;
         }
     }
 
@@ -514,6 +939,16 @@ namespace Lumina
             const size_t Bytes = Body.size();
 
             ImGui::Text("Ln %d, Col %d", Pos.line + 1, Pos.column + 1);
+
+            if (CodeEditor.AnyCursorHasSelection())
+            {
+                const TextEditor::CursorSelection Sel = CodeEditor.GetMainCursorSelection();
+                const std::string SelText = CodeEditor.GetSectionText(Sel.start.line, Sel.start.column, Sel.end.line, Sel.end.column);
+                const int SelLines = (Sel.end.line - Sel.start.line) + 1;
+                ImGui::SameLine(0, 12);
+                ImGui::TextColored(ImVec4(0.85f, 0.75f, 0.45f, 1.0f), "(sel %zu chars / %d lines)", SelText.size(), SelLines);
+            }
+
             ImGui::SameLine(0, 20);
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.65f, 1.0f), "%d lines", LineCount);
             ImGui::SameLine(0, 20);
@@ -525,6 +960,14 @@ namespace Lumina
             {
                 ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.65f, 1.0f), "%zu B", Bytes);
             }
+
+            ImGui::SameLine(0, 20);
+            ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1.0f), "RML/RCSS");
+
+            ImGui::SameLine(0, 20);
+            ImGui::TextColored(ImVec4(0.55f, 0.65f, 0.85f, 1.0f), "%s : %d",
+                bInsertSpacesOnTabs ? "Spaces" : "Tabs", EditorTabSize);
+            ImGuiX::TextTooltip("Indent mode and tab size. Toggle in Settings.");
 
             if (bEditorReadOnly)
             {
@@ -573,6 +1016,19 @@ namespace Lumina
             ImGui::SameLine();
             ImGui::SetNextItemWidth(70.0f);
             if (ImGui::DragInt("##rml_h", &H, 4.0f, 16, 4320, "H %d")) CanvasHeight = (uint32)std::max(16, H);
+        }
+
+        // Swap dimensions — handy for portrait/landscape testing without
+        // re-typing W/H. Only meaningful when both dims are set.
+        if (CanvasWidth > 0 && CanvasHeight > 0)
+        {
+            ImGui::SameLine();
+            if (ImGui::SmallButton(LE_ICON_PHONE_ROTATE_PORTRAIT "##rml_swap"))
+            {
+                std::swap(CanvasWidth, CanvasHeight);
+                ResolutionPreset = CustomPresetIndex;
+            }
+            ImGuiX::TextTooltip("Swap width and height (portrait/landscape).");
         }
 
         ImGui::SameLine();

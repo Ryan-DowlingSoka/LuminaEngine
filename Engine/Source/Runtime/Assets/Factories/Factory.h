@@ -3,8 +3,8 @@
 #include "Core/Object/ObjectMacros.h"
 #include "Core/Object/Object.h"
 #include "Core/Object/Cast.h"
-#include "Factory.generated.h"
 #include "Memory/SmartPtr.h"
+#include "Factory.generated.h"
 
 namespace Lumina
 {

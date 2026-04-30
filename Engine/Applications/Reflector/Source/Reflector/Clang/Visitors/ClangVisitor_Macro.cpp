@@ -27,6 +27,10 @@ namespace Lumina::Reflection::Visitor
         auto It = MacroMap.find(CursorName);
         if (It != MacroMap.end())
         {
+            // Record the header so the post-parse pass knows to validate its
+            // include block (must contain <stem>.generated.h, must be last).
+            Context->ReflectedHeader->bHasReflectionMacros = true;
+
             FReflectionMacro Macro(Context->ReflectedHeader->HeaderPath, Cursor, Range, It->second);
             if (It->second == EReflectionMacro::GeneratedBody)
             {

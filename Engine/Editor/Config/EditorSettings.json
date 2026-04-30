@@ -5,14 +5,19 @@
         },
         "LuaEditor": {
             "AutoIndent": true,
+            "AutoTriggerCompletion": true,
+            "AutoTriggerDelayMs": 100,
             "CompletePairs": true,
-            "FontScale": 2.0249998569488525,
+            "FontScale": 2.200000047683716,
+            "InsertSpacesOnTabs": false,
             "LineSpacing": 1.0,
             "MatchBrackets": true,
             "Palette": "Dark",
             "ShowLineNumbers": true,
-            "ShowWhitespace": false,
-            "TabSize": 4
+            "ShowMiniMap": true,
+            "ShowWhitespace": true,
+            "TabSize": 4,
+            "TrimTrailingOnSave": false
         },
         "RecentProjects": [
             "Sandbox"

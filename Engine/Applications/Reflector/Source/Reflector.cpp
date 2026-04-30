@@ -135,6 +135,114 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    // Per-header include validation: any header that contained a reflection
+    // macro must end its include block with `<stem>.generated.h`. Catches
+    // the three classic misconfigurations:
+    //   - forgot to include the generated header at all
+    //   - included it but tucked another #include after it (which usually
+    //     hides definitions emitted by the generated header from later
+    //     includes — consistent ordering matters)
+    //   - copy-pasted a different file's `.generated.h` (Bar.h includes
+    //     Foo.generated.h)
+    for (const auto& Project : Workspace.ReflectedProjects)
+    {
+        for (auto& [_, Header] : Project->Headers)
+        {
+            if (!Header->bHasReflectionMacros)
+            {
+                continue;
+            }
+
+            // ManualReflectTypes.h is force-included by ClangParser as the
+            // canonical home for reflected glm types and the like. It is not
+            // itself part of the codegen output flow and has no companion
+            // generated.h.
+            if (Header->HeaderPath.find("manualreflecttypes") != eastl::string::npos)
+            {
+                continue;
+            }
+
+            eastl::string ExpectedGenerated = Header->FileName + ".generated.h";
+            ExpectedGenerated.make_lower();
+
+            const FIncludeRef* GeneratedInclude = nullptr;
+            const FIncludeRef* WrongGenerated   = nullptr;
+
+            constexpr const char* kGeneratedSuffix = ".generated.h";
+            constexpr size_t      kGeneratedSuffixLen = 12;
+
+            for (const FIncludeRef& Inc : Header->Includes)
+            {
+                const bool bEndsWithGen = Inc.Basename.size() >= kGeneratedSuffixLen &&
+                    Inc.Basename.compare(Inc.Basename.size() - kGeneratedSuffixLen, kGeneratedSuffixLen, kGeneratedSuffix) == 0;
+                if (!bEndsWithGen)
+                {
+                    continue;
+                }
+
+                if (Inc.Basename == ExpectedGenerated)
+                {
+                    GeneratedInclude = &Inc;
+                }
+                else if (WrongGenerated == nullptr)
+                {
+                    WrongGenerated = &Inc;
+                }
+            }
+
+            FDiagLocation HeaderLoc;
+            HeaderLoc.File = Header->HeaderPath;
+
+            if (GeneratedInclude == nullptr)
+            {
+                if (WrongGenerated != nullptr)
+                {
+                    FDiagLocation Loc = HeaderLoc;
+                    Loc.Line = WrongGenerated->LineNumber;
+                    FDiagnostics::Get().Errorf(Loc, EDiagId::WrongGeneratedHeader,
+                        "Header includes '%s' but reflection expects '%s'. "
+                        "The generated header name must match the source filename stem.",
+                        WrongGenerated->Spelling.c_str(), ExpectedGenerated.c_str());
+                }
+                else
+                {
+                    HeaderLoc.Line = 1;
+                    FDiagnostics::Get().Errorf(HeaderLoc, EDiagId::MissingGeneratedHeader,
+                        "Header uses REFLECT/GENERATED_BODY/PROPERTY/FUNCTION but does not "
+                        "#include \"%s\". Add it as the last include in the file.",
+                        ExpectedGenerated.c_str());
+                }
+                continue;
+            }
+
+            // Confirmed the right generated.h is included; now verify it's
+            // the last include in the file.
+            const FIncludeRef* LaterInclude = nullptr;
+            for (const FIncludeRef& Inc : Header->Includes)
+            {
+                if (Inc.LineNumber > GeneratedInclude->LineNumber && LaterInclude == nullptr)
+                {
+                    LaterInclude = &Inc;
+                }
+            }
+
+            if (LaterInclude != nullptr)
+            {
+                FDiagLocation Loc = HeaderLoc;
+                Loc.Line = LaterInclude->LineNumber;
+                FDiagnostics::Get().Errorf(Loc, EDiagId::GeneratedHeaderNotLast,
+                    "'%s' must be the last #include in this header, but '%s' follows it.",
+                    ExpectedGenerated.c_str(), LaterInclude->Spelling.c_str());
+            }
+        }
+    }
+
+    if (FDiagnostics::Get().GetErrorCount() != 0)
+    {
+        FDiagnostics::Get().PrintSummary();
+        return 1;
+    }
+
     FCodeGenerator CodeGenerator(&Workspace, Parser.ParsingContext.ReflectionDatabase);
 
     CodeGenerator.GenerateCode();

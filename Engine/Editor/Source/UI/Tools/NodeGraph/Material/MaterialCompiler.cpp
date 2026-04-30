@@ -998,8 +998,8 @@ namespace Lumina
 		case ECustomPrimitiveDataType::UInt:
 			GetActiveChunk().append("uint " + Node->GetNodeFullName() + " = Cull.CustomData.AsUInt;\n");
 			break;
-		case ECustomPrimitiveDataType::Float4:
-			GetActiveChunk().append("float4 " + Node->GetNodeFullName() + " = Cull.CustomData.AsFloat4;\n");
+		case ECustomPrimitiveDataType::Color:
+			GetActiveChunk().append("float4 " + Node->GetNodeFullName() + " = Cull.CustomData.AsColor;\n");
 			Node->Output->SetInputType(EMaterialInputType::Float4);
 			Node->Output->SetComponentMask(EComponentMask::RGBA);
 			break;

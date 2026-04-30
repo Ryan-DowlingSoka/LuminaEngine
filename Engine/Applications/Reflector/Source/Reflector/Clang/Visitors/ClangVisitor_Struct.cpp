@@ -607,6 +607,10 @@ namespace Lumina::Reflection::Visitor
 		FReflectionMacro GeneratedBody;
 		if (!Context->TryFindGeneratedBodyMacro(Context->ReflectedHeader->HeaderPath, Cursor, GeneratedBody))
 		{
+			LRT_ERROR(Cursor, EDiagId::MissingGeneratedBody,
+				"REFLECT'd struct '%s' is missing a GENERATED_BODY() macro inside its body. "
+				"Add `GENERATED_BODY()` as the first line of the struct.",
+				CursorName.c_str());
 			return CXChildVisit_Break;
 		}
 
@@ -664,6 +668,10 @@ namespace Lumina::Reflection::Visitor
 		FReflectionMacro GeneratedBody;
 		if (!Context->TryFindGeneratedBodyMacro(Context->ReflectedHeader->HeaderPath, Cursor, GeneratedBody))
 		{
+			LRT_ERROR(Cursor, EDiagId::MissingGeneratedBody,
+				"REFLECT'd class '%s' is missing a GENERATED_BODY() macro inside its body. "
+				"Add `GENERATED_BODY()` as the first line of the class.",
+				CursorName.c_str());
 			return CXChildVisit_Break;
 		}
 

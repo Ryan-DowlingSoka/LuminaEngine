@@ -133,6 +133,119 @@ namespace Lumina
             .WithDescription("Color palette for the Lua editor (\"Dark\" or \"Light\")")
             .WithDefault(std::string("Dark"))
             .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.ShowMiniMap", EConfigValueType::Bool)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Show the scrollbar mini-map")
+            .WithDefault(true)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.InsertSpacesOnTabs", EConfigValueType::Bool)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Insert spaces when the user presses Tab instead of a tab character")
+            .WithDefault(false)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.TrimTrailingOnSave", EConfigValueType::Bool)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Strip trailing whitespace from every line on save")
+            .WithDefault(false)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.AutoTriggerCompletion", EConfigValueType::Bool)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Open the autocomplete popup automatically while typing identifiers")
+            .WithDefault(true)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.AutoTriggerDelayMs", EConfigValueType::Int)
+            .WithCategory("Editor/Lua Editor")
+            .WithDescription("Delay (ms) between the last keystroke and the autocomplete popup")
+            .WithDefault(100)
+            .WithRange(0, 1000)
+            .WithOwnerFile(EditorFile));
+
+        // RmlUi editor settings.
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.FontScale", EConfigValueType::Float)
+            .WithCategory("Editor/RmlUi Editor")
+            .WithDescription("Font scale multiplier for the in-engine RmlUi editor")
+            .WithDefault(1.25f)
+            .WithRange(0.75, 3.0)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.TabSize", EConfigValueType::Int)
+            .WithCategory("Editor/RmlUi Editor")
+            .WithDescription("Tab size in spaces")
+            .WithDefault(4)
+            .WithRange(1, 8)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.LineSpacing", EConfigValueType::Float)
+            .WithCategory("Editor/RmlUi Editor")
+            .WithDescription("Line spacing multiplier")
+            .WithDefault(1.0f)
+            .WithRange(1.0, 2.0)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.ShowWhitespace", EConfigValueType::Bool)
+            .WithCategory("Editor/RmlUi Editor")
+            .WithDescription("Render whitespace glyphs (spaces and tabs)")
+            .WithDefault(false)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.ShowLineNumbers", EConfigValueType::Bool)
+            .WithCategory("Editor/RmlUi Editor")
+            .WithDescription("Show line numbers in the gutter")
+            .WithDefault(true)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.ShowMiniMap", EConfigValueType::Bool)
+            .WithCategory("Editor/RmlUi Editor")
+            .WithDescription("Show the scrollbar mini-map")
+            .WithDefault(true)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.AutoIndent", EConfigValueType::Bool)
+            .WithCategory("Editor/RmlUi Editor")
+            .WithDescription("Auto-indent new lines based on surrounding scope")
+            .WithDefault(true)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.MatchBrackets", EConfigValueType::Bool)
+            .WithCategory("Editor/RmlUi Editor")
+            .WithDescription("Highlight matching brackets at the cursor")
+            .WithDefault(true)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.CompletePairs", EConfigValueType::Bool)
+            .WithCategory("Editor/RmlUi Editor")
+            .WithDescription("Auto-close paired glyphs (parentheses, brackets, quotes)")
+            .WithDefault(true)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.InsertSpacesOnTabs", EConfigValueType::Bool)
+            .WithCategory("Editor/RmlUi Editor")
+            .WithDescription("Insert spaces when the user presses Tab instead of a tab character")
+            .WithDefault(false)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.TrimTrailingOnSave", EConfigValueType::Bool)
+            .WithCategory("Editor/RmlUi Editor")
+            .WithDescription("Strip trailing whitespace from every line on save")
+            .WithDefault(false)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.AutoReload", EConfigValueType::Bool)
+            .WithCategory("Editor/RmlUi Editor")
+            .WithDescription("Re-parse the buffer into the preview ~250ms after each edit")
+            .WithDefault(true)
+            .WithOwnerFile(EditorFile));
+
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.Palette", EConfigValueType::String)
+            .WithCategory("Editor/RmlUi Editor")
+            .WithDescription("Color palette for the RmlUi editor (\"Dark\" or \"Light\")")
+            .WithDefault(std::string("Dark"))
+            .WithOwnerFile(EditorFile));
     }
 
     bool FEditorEngine::Init()

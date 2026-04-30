@@ -11,7 +11,7 @@ namespace Lumina
         Float,
         Int,
         UInt,
-        Float4,
+        Color,
         Bool,
     };
     
@@ -52,7 +52,7 @@ namespace Lumina
             return D;
         }
 
-        static ECustomPrimitiveDataUnion FromFloat4(glm::u8vec4 Bytes)
+        static ECustomPrimitiveDataUnion FromColor(glm::u8vec4 Bytes)
         {
             ECustomPrimitiveDataUnion D;
             D.Bytes = Bytes;
@@ -81,7 +81,7 @@ namespace Lumina
                 case ECustomPrimitiveDataType::Int:     Ar << Data.Int;   break;
                 case ECustomPrimitiveDataType::UInt:    Ar << Data.UInt;  break;
                 case ECustomPrimitiveDataType::Bool:    Ar << Data.UInt;  break;
-                case ECustomPrimitiveDataType::Float4:  Ar << Data.Bytes; break;
+                case ECustomPrimitiveDataType::Color:   Ar << Data.Bytes; break;
             }
 
             return true;
@@ -97,7 +97,7 @@ namespace Lumina
         bool AsBool() const { return Data.Bool; }
         
         FUNCTION(Script)
-        glm::vec4 AsFloat4() const { return Data.Bytes; }
+        glm::vec4 AsColor() const { return glm::vec4(Data.Bytes) / 255.0f; }
         
         FUNCTION(Script)
         void SetAsFloat(float X)
@@ -121,10 +121,10 @@ namespace Lumina
         }
         
         FUNCTION(Script)
-        void SetAsFloat4(glm::vec4 Bytes)
+        void SetAsColor(glm::vec4 Color)
         {
-            Type = ECustomPrimitiveDataType::Float4;
-            Data.Bytes = Bytes;
+            Type = ECustomPrimitiveDataType::Color;
+            Data.Bytes = glm::u8vec4(glm::clamp(Color, 0.0f, 1.0f) * 255.0f);
         }
     };
 }

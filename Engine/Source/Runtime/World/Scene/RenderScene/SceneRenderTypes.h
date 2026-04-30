@@ -489,7 +489,7 @@ namespace Lumina
 
     // Unified 128B per-instance descriptor. One SSBO, one binding, one fetch per
     // instance. The empty default constructor lets eastl::vector<FGPUInstance>
-    // skip zero-init on resize() — every byte is overwritten by the parallel
+    // skip zero-init on resize(), every byte is overwritten by the parallel
     // writer anyway, and 100k instances × 128B is ~12 MB of pointless writes.
     struct alignas(16) FGPUInstance
     {
@@ -499,13 +499,7 @@ namespace Lumina
         glm::vec4       SphereBounds;
 
         uint64          VBAddress;
-        // Shadow LOD's meshlet range. Lives per-instance because LOD ranges
-        // are per-*surface* (not per-mesh), and an FGPUInstance already
-        // corresponds 1:1 with a (entity, surface) pair -- so this is the
-        // place the per-surface data lives. Occupies a slot that used to
-        // hold a reserved BDA; total instance size unchanged. The cull
-        // shader uses these for shadow-only views; the camera path keeps
-        // using SurfaceMeshlet*.
+
         uint32          ShadowMeshletOffset;
         uint32          ShadowMeshletCount;
         uint64          MeshletHeaderAddress;

@@ -13,7 +13,7 @@ namespace Lumina
     {
         bool bWasChanged = false;
     
-        const char* TypeNames[] = { "Float", "Int", "UInt", "Bytes", "Bool" };
+        const char* TypeNames[] = { "Float", "Int", "UInt", "Color", "Bool" };
         int32 CurrentType = (int32)Value.Type;
         
         ImGui::PushItemWidth(100);
@@ -63,15 +63,15 @@ namespace Lumina
                 break;
             }
     
-            case ECustomPrimitiveDataType::Float4:
+            case ECustomPrimitiveDataType::Color:
             {
                 int32 R = Value.Data.Bytes.r;
                 int32 G = Value.Data.Bytes.g;
                 int32 B = Value.Data.Bytes.b;
                 int32 A = Value.Data.Bytes.a;
-    
+
                 float Col[4] = { R / 255.0f, G / 255.0f, B / 255.0f, A / 255.0f };
-                if (ImGui::ColorEdit4("##Bytes", Col, ImGuiColorEditFlags_Uint8 | ImGuiColorEditFlags_AlphaBar))
+                if (ImGui::ColorEdit4("##Color", Col, ImGuiColorEditFlags_Uint8 | ImGuiColorEditFlags_AlphaBar))
                 {
                     Value.Data.Bytes.r = (uint8)(Col[0] * 255);
                     Value.Data.Bytes.g = (uint8)(Col[1] * 255);

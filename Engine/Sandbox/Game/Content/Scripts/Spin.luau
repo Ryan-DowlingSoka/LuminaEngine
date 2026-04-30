@@ -1,26 +1,23 @@
-NewScript = {}
+local Script = EntityScript.new()
 
-local Exports = {
+Script.Exports = {
     TimeScale = 10.0,
 }
 
-NewScript.Exports = Exports
-
-function NewScript:OnAttach()
-end
-
-function NewScript:OnReady()
-    if Exports.TimeScale == 0.0 then
-        Exports.TimeScale = math.random(5.5, 15.0)
+function Script:OnReady()
+    if self.Exports.TimeScale == 0.0 then
+        self.Exports.TimeScale = math.random(5.5, 15.0)
     end
 end
 
-function NewScript:Update(DeltaTime: number)
-    local Spin = vector.create(0.0, Exports.TimeScale * DeltaTime, 0.0)
+function Script:Update(DeltaTime: number)
+    local Spin = vector.create(0.0, self.Exports.TimeScale * DeltaTime, 0.0)
     self.Transform:AddRotationFromEuler(Spin)
+    
+    local x = 12
+    local y = x
+    local z = y + x
+    
 end
 
-function NewScript:OnDetach()
-end
-
-return NewScript
+return Script

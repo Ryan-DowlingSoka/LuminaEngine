@@ -17,7 +17,7 @@ namespace Lumina
         // Hold every script Update while the debugger is parked at a
         // breakpoint. Without this, the entity that broke would re-enter
         // Update on the next frame and re-hit the same line, plus every
-        // other entity would tick on top of the paused thread — making the
+        // other entity would tick on top of the paused thread, making the
         // pause useless. The paused thread itself stays alive (anchored by
         // FLuaDebugger) and only resumes when the user clicks Continue.
         if (Lua::FLuaDebugger::Get().IsPaused())
@@ -39,14 +39,22 @@ namespace Lumina
                     // here as they do in OnAttach / OnReady.
                     if (ScriptComponent.TickRate <= 0.0f)
                     {
+                        #if USING(WITH_EDITOR)
                         (void)ScriptComponent.UpdateFunc.InvokeAsCoroutine(Script->Reference, DeltaTime);
+                        #else
+                        (void)ScriptComponent.UpdateFunc.Invoke(Script->Reference, DeltaTime);
+                        #endif
                     }
                     else
                     {
                         ScriptComponent.AccumulatedTime += DeltaTime;
                         if (ScriptComponent.AccumulatedTime >= ScriptComponent.TickRate)
                         {
+                            #if USING(WITH_EDITOR)
                             (void)ScriptComponent.UpdateFunc.InvokeAsCoroutine(Script->Reference, ScriptComponent.AccumulatedTime);
+                            #else
+                            (void)ScriptComponent.UpdateFunc.Invoke(Script->Reference, ScriptComponent.AccumulatedTime);
+                            #endif
                             ScriptComponent.AccumulatedTime = 0.0f;
                         }
                     }

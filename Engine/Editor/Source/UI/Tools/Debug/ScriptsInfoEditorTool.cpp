@@ -1,5 +1,6 @@
 #include "ScriptsInfoEditorTool.h"
 
+#include "lstate.h"
 #include "Scripting/Lua/Scripting.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 

@@ -759,7 +759,7 @@ namespace Lumina
         const ImGuiID NextFrameDockID = CurrentWindow ? CurrentWindow->DockId : 0;
         if (PrevFrameDockID != 0 && NextFrameDockID == 0 && CurrentWindow != nullptr)
         {
-            constexpr ImVec2 UndockedSize(1024.0f, 768.0f);
+            constexpr ImVec2 UndockedSize(1177.6f, 883.2f);
             const ImGuiViewport* MainViewport = ImGui::GetMainViewport();
             const ImVec2 UndockedPos
             {

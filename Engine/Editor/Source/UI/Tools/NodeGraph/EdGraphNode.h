@@ -6,8 +6,8 @@
 #include "Containers/Name.h"
 #include "Core/Math/Math.h"
 #include "Core/Object/Object.h"
-#include "EdGraphNode.generated.h"
 #include "Core/Object/ObjectHandleTyped.h"
+#include "EdGraphNode.generated.h"
 
 namespace Lumina
 {

@@ -22,12 +22,333 @@
 #include "World/World.h"
 #include "UI/RmlUiBridge.h"
 #include "Core/Application/Application.h"
+#include "Core/Object/Class.h"
 #include "Events/EventProcessor.h"
 #include "Input/InputMode.h"
 #include "World/Entity/Systems/SystemContext.h"
 
 namespace Lumina::Lua
 {
+    // ------------------------------------------------------------------------
+    // FClassBuilder — type-erased registration shared by every TClass<T>.
+    //
+    // Centralizing the registration body here means we only emit the metatable
+    // setup, parent-chain merge, and dispatch wiring once for the whole
+    // program — rather than once per registered C++ type, as the previous
+    // template-recursive design did. The per-type code in TClass<T> is just
+    // the small invoker/getter/setter trampolines that genuinely need T.
+
+    FClassBuilder::FClassBuilder(lua_State* InL, FStringView InName)
+        : L(InL)
+        , Name(InName)
+    {
+        luaL_newmetatable(L, InName.data()); // [MT]
+
+        lua_pushstring(L, InName.data());
+        lua_rawsetfield(L, -2, "__typename");
+    }
+
+    FClassBuilder& FClassBuilder::SetSuperClass(FStringView InParentName)
+    {
+        ParentName = InParentName;
+        return *this;
+    }
+
+    FClassBuilder& FClassBuilder::EnableTypeId()
+    {
+        bHasTypeId = true;
+        return *this;
+    }
+
+    FClassBuilder& FClassBuilder::AddMethod(FStringView FuncName, lua_CFunction Func)
+    {
+        FMethodEntry Entry;
+        Entry.Name   = FuncName;
+        Entry.Invoke = Func;
+        Methods.push_back(Entry);
+        return *this;
+    }
+
+    FClassBuilder& FClassBuilder::AddProperty(FStringView PropName, lua_CFunction Getter, lua_CFunction Setter)
+    {
+        FPropertyEntry Entry;
+        Entry.Name   = PropName;
+        Entry.Getter = Getter;
+        Entry.Setter = Setter;
+        Properties.push_back(Entry);
+        return *this;
+    }
+
+    FClassBuilder& FClassBuilder::AddMetamethod(FStringView MetaName, lua_CFunction Func)
+    {
+        // Stack on entry: [MT]
+        lua_pushcfunction(L, Func, MetaName.data()); // [MT, func]
+        lua_rawsetfield(L, -2, MetaName.data());     // [MT]
+        return *this;
+    }
+
+    FClassBuilder& FClassBuilder::Register(int UserdataTag)
+    {
+        // Stack on entry: [MT]
+
+        const uint32 TypeIdHash = bHasTypeId ? Hash::FNV1a::GetHash32(Name.data()) : 0u;
+
+        for (auto& Method : Methods)
+        {
+            Method.Atom = static_cast<int16>(Hash::FNV1a::GetHash16(Method.Name.data()));
+        }
+        for (auto& Prop   : Properties)
+        {
+            Prop.Hash   = Hash::FNV1a::GetHash32(Prop.Name.data());
+        }
+
+        // Walk the parent chain (resolved by name from the registry) and merge
+        // inherited entries. Child entries take precedence on name collisions.
+        // Parent has already done its own merge, so a single hop captures the
+        // entire ancestry.
+        TVector<FMethodEntry>   MergedMethods = Methods;
+        TVector<FPropertyEntry> MergedProps   = Properties;
+
+        if (!ParentName.empty())
+        {
+            luaL_getmetatable(L, ParentName.data()); // [MT, ParentMT|nil]
+            if (lua_istable(L, -1))
+            {
+                lua_rawgetfield(L, -1, "__lumina_methods"); // [MT, ParentMT, ParentMethods|nil]
+                if (lua_isuserdata(L, -1))
+                {
+                    const auto* ParentTable = static_cast<const Internal::FEntryTable<FMethodEntry>*>(lua_touserdata(L, -1));
+                    const FMethodEntry* B = ParentTable->Entries();
+                    const FMethodEntry* E = B + ParentTable->Count;
+                    for (const FMethodEntry* It = B; It != E; ++It)
+                    {
+                        const bool bExists = eastl::any_of(MergedMethods.begin(), MergedMethods.end(),[&](const FMethodEntry& Existing)
+                        {
+                            return Existing.Name == It->Name;
+                        });
+                        
+                        if (!bExists)
+                        {
+                            MergedMethods.push_back(*It);
+                        }
+                    }
+                }
+                lua_pop(L, 1); // [MT, ParentMT]
+
+                lua_rawgetfield(L, -1, "__lumina_properties"); // [MT, ParentMT, ParentProps|nil]
+                if (lua_isuserdata(L, -1))
+                {
+                    const auto* ParentTable = static_cast<const Internal::FEntryTable<FPropertyEntry>*>(lua_touserdata(L, -1));
+                    const FPropertyEntry* B = ParentTable->Entries();
+                    const FPropertyEntry* E = B + ParentTable->Count;
+                    for (const FPropertyEntry* It = B; It != E; ++It)
+                    {
+                        const bool bExists = eastl::any_of(MergedProps.begin(), MergedProps.end(), [&](const FPropertyEntry& Existing)
+                        {
+                            return Existing.Name == It->Name;
+                        });
+                        
+                        if (!bExists)
+                        {
+                            MergedProps.push_back(*It);
+                        }
+                    }
+                }
+                lua_pop(L, 1); // [MT, ParentMT]
+            }
+            lua_pop(L, 1); // [MT]
+        }
+
+        if (bHasTypeId)
+        {
+            // Synthetic __type_id property: reads the hash from the metatable
+            // at access time, so the dispatcher's single upvalue can stay
+            // reserved for the props table.
+            FPropertyEntry TypeIdProp;
+            TypeIdProp.Name   = FStringView("__type_id");
+            TypeIdProp.Hash   = Hash::FNV1a::GetHash32("__type_id");
+            TypeIdProp.Getter = +[](lua_State* State) -> int
+            {
+                if (!lua_getmetatable(State, 1))
+                {
+                    lua_pushnil(State); return 1;
+                }
+                
+                lua_rawgetfield(State, -1, "__type_id");
+                lua_remove(State, -2);
+                return 1;
+            };
+            MergedProps.erase(
+                eastl::remove_if(MergedProps.begin(), MergedProps.end(), [](const FPropertyEntry& E)
+                {
+                    return E.Name == FStringView("__type_id");
+                }), MergedProps.end());
+            
+            
+            MergedProps.push_back(TypeIdProp);
+        }
+
+        eastl::sort(MergedMethods.begin(), MergedMethods.end(), [](const FMethodEntry& A, const FMethodEntry& B)
+        {
+            return A.Atom < B.Atom;
+        });
+        
+        eastl::sort(MergedProps.begin(), MergedProps.end(), [](const FPropertyEntry& A, const FPropertyEntry& B)
+        {
+            return A.Hash < B.Hash;
+        });
+
+        if (!MergedMethods.empty())
+        {
+            auto* Stored = Internal::FEntryTable<FMethodEntry>::Allocate(L, static_cast<uint32>(MergedMethods.size()));
+            for (uint32 i = 0; i < MergedMethods.size(); ++i)
+            {
+                Stored->Entries()[i] = MergedMethods[i];
+            }
+
+            lua_pushvalue(L, -1); // [MT, MethodsUD, MethodsUD]
+            lua_rawsetfield(L, -3, "__lumina_methods"); // [MT, MethodsUD]
+
+            lua_pushcclosure(L, &Internal::GenericNamecall, "__namecall", 1); // [MT, NamecallClosure]
+            lua_rawsetfield(L, -2, "__namecall"); // [MT]
+        }
+
+        if (bHasTypeId || !MergedProps.empty())
+        {
+            auto* PropsUD = Internal::FEntryTable<FPropertyEntry>::Allocate(L, static_cast<uint32>(MergedProps.size())); // [MT, PropsUD]
+            for (uint32 i = 0; i < MergedProps.size(); ++i)
+            {
+                PropsUD->Entries()[i] = MergedProps[i];
+            }
+
+            lua_pushvalue(L, -1); // [MT, PropsUD, PropsUD]
+            lua_rawsetfield(L, -3, "__lumina_properties"); // [MT, PropsUD]
+
+            lua_pushvalue(L, -1); // [MT, PropsUD, PropsUD]
+            lua_pushcclosure(L, &Internal::GenericIndex, "__index", 1); // [MT, PropsUD, IndexClosure]
+            lua_rawsetfield(L, -3, "__index"); // [MT, PropsUD]
+
+            lua_pushcclosure(L, &Internal::GenericNewindex, "__newindex", 1); // [MT, NewindexClosure]
+            lua_rawsetfield(L, -2, "__newindex"); // [MT]
+        }
+
+        // Editor introspection: a plain Lua table mapping member-name ->
+        // "method"|"property" so the harvester can enumerate the inherited
+        // surface without poking at the userdata internals.
+        lua_newtable(L); // [MT, MembersTable]
+        for (const auto& M : MergedMethods)
+        {
+            lua_pushlstring(L, "method", 6);
+            lua_rawsetfield(L, -2, M.Name.data());
+        }
+        for (const auto& P : MergedProps)
+        {
+            lua_pushlstring(L, "property", 8);
+            lua_rawsetfield(L, -2, P.Name.data());
+        }
+        if (!ParentName.empty())
+        {
+            lua_pushlstring(L, ParentName.data(), ParentName.size());
+            lua_rawsetfield(L, -2, "__parentname");
+        }
+        lua_rawsetfield(L, -2, "__lumina_members"); // [MT]
+
+        if (bHasTypeId)
+        {
+            lua_pushunsigned(L, TypeIdHash);
+            lua_rawsetfield(L, -2, "__type_id"); // [MT]
+        }
+
+        InstallUserdataDestructor(UserdataTag);
+
+        lua_pushvalue(L, -1); // [MT, MTcopy]
+        lua_setuserdatametatable(L, UserdataTag); // [MT]
+
+        lua_newtable(L); // [MT, GlobalTable]
+        if (bHasTypeId)
+        {
+            lua_pushunsigned(L, TypeIdHash);
+            lua_rawsetfield(L, -2, "__type_id");
+        }
+        lua_pushstring(L, Name.data());
+        lua_rawsetfield(L, -2, "__typename");
+        lua_setglobal(L, Name.data()); // [MT]
+
+        lua_pop(L, 1); // []
+
+        return *this;
+    }
+
+    FClassBuilder& FClassBuilder::AddStaticFunction(FStringView FuncName, lua_CFunction Func)
+    {
+        lua_getglobal(L, Name.data());
+        lua_pushcfunction(L, Func, FuncName.data());
+        lua_rawsetfield(L, -2, FuncName.data());
+        lua_pop(L, 1);
+        return *this;
+    }
+
+    // ------------------------------------------------------------------------
+    // Polymorphic CObject push: route through Object->GetClass() so loaded
+    // assets carry their actual subclass's metatable, not whatever static
+    // type the caller happened to be holding.
+
+    namespace
+    {
+        // Keyed by CClass*; entries persist for the process lifetime since
+        // CClass instances are leaked-by-design CObjects.
+        THashMap<const CClass*, FUserdataLayout>& GetCObjectLayoutRegistry()
+        {
+            static THashMap<const CClass*, FUserdataLayout> Registry;
+            return Registry;
+        }
+    }
+
+    void RegisterCObjectLayout(const CClass* Class, const FUserdataLayout& Layout)
+    {
+        if (Class == nullptr) return;
+        GetCObjectLayoutRegistry()[Class] = Layout;
+    }
+
+    const FUserdataLayout* FindCObjectLayout(const CClass* Class)
+    {
+        if (Class == nullptr) return nullptr;
+        const auto& Registry = GetCObjectLayoutRegistry();
+        const auto It = Registry.find(Class);
+        return It != Registry.end() ? &It->second : nullptr;
+    }
+
+    void PushCObjectAsActualType(lua_State* L, CObject* Object)
+    {
+        if (Object == nullptr)
+        {
+            lua_pushnil(L);
+            return;
+        }
+
+        // Walk up the class chain so a subclass with no Lua bindings still
+        // resolves to its nearest bound ancestor instead of falling back to
+        // the raw lightuserdata path.
+        const FUserdataLayout* Layout = nullptr;
+        for (const CClass* Class = Object->GetClass(); Class != nullptr; Class = Class->GetSuperClass())
+        {
+            Layout = FindCObjectLayout(Class);
+            if (Layout != nullptr) break;
+        }
+
+        if (Layout == nullptr)
+        {
+            lua_pushnil(L);
+            return;
+        }
+
+        void* Block = lua_newuserdatataggedwithmetatable(L, Layout->Size, Layout->Tag);
+        Layout->Initialize(Block);
+        Layout->SetExternal(Block, Object);
+    }
+
+    // ------------------------------------------------------------------------
+
     static void* ScriptingMemoryReallocFn([[maybe_unused]] void* Caller, void* Memory, [[maybe_unused]] size_t OldSize, size_t NewSize)
     {
         if (NewSize == 0)
@@ -49,33 +370,46 @@ namespace Lumina::Lua
         return static_cast<int16>(Hash::FNV1a::GetHash16(Str)); 
     }
 
-    static int LuminaLuaPrint(lua_State* L)
+    enum class ELuaLogLevel : uint8 { Info, Warn, Error };
+
+    static int LuminaLuaLogImpl(lua_State* L, ELuaLogLevel Level)
     {
         const int32 Count = lua_gettop(L);
         FFixedString Output;
-        
+
         for (int32 Index = 1; Index <= Count; ++Index)
         {
             size_t Length = 0;
             FStringView String = luaL_tolstring(L, Index, &Length);
-            
+
             if (Index > 1)
             {
                 Output.append(" ");
             }
-            
+
             Output.append_convert(String.begin(), String.length());
-            
+
             lua_pop(L, 1);
         }
-        
-        LOG_INFO("[Lua] - {}", Output);
-        
+
+        switch (Level)
+        {
+            case ELuaLogLevel::Warn:    LOG_WARN ("[Lua] - {}", Output); break;
+            case ELuaLogLevel::Error:   LOG_ERROR("[Lua] - {}", Output); break;
+            case ELuaLogLevel::Info:
+            default:                    LOG_INFO ("[Lua] - {}", Output); break;
+        }
         return 0;
     }
+
+    static int LuminaLuaPrint(lua_State* L)    { return LuminaLuaLogImpl(L, ELuaLogLevel::Info);  }
+    static int LuminaLuaLogWarn(lua_State* L)  { return LuminaLuaLogImpl(L, ELuaLogLevel::Warn);  }
+    static int LuminaLuaLogError(lua_State* L) { return LuminaLuaLogImpl(L, ELuaLogLevel::Error); }
     
     static TUniquePtr<FScriptingContext> GScriptingContext;
-    
+
+    namespace { bool CompileSourceToBytecode(FStringView Code, TVector<uint8>& Out); }
+
     void Initialize()
     {
         GScriptingContext = MakeUnique<FScriptingContext>();
@@ -106,29 +440,66 @@ namespace Lumina::Lua
         FLuaDebugger::Get().Initialize(L);
 
         luaL_openlibs(L);
-        
+
         lua_pushcfunction(L, LuminaLuaPrint, "LuminaLuaPrint");
         lua_setglobal(L, "print");
-        
+
         lua_pushvalue(L, LUA_GLOBALSINDEX);
         FRef GlobalsRef(L, -1);
-        
+
         CWorld::RegisterLuaModule(GlobalsRef);
         RmlUi::RegisterLuaModule(GlobalsRef);
-        
-        FRef EngineTable        = GlobalsRef.NewTable("Engine");
-        FRef VFSTable           = EngineTable.NewTable("VFS");
-        FRef MathTable          = EngineTable.NewTable("Math");
-        FRef AudioTable         = EngineTable.NewTable("Audio");
-        FRef FileHelperTable    = EngineTable.NewTable("FileHelper");
-        FRef PathTable          = EngineTable.NewTable("Paths");
-        FRef RHITable           = EngineTable.NewTable("RHI");
-        FRef ECSTable           = EngineTable.NewTable("ECS");
 
-        EngineTable.SetFunction<[](FStringView Name) { return StaticLoadObject(Name); } >("LoadObject");
+        // Console — print + log levels. `print` stays globally aliased to
+        // Console.Log so existing scripts that just call print() keep working.
+        FRef ConsoleTable = GlobalsRef.NewTable("Console");
+        lua_pushcfunction(L, LuminaLuaPrint,    "Console.Log");
+        lua_setfield(L, -2, "Log");
+        lua_pushcfunction(L, LuminaLuaLogWarn,  "Console.Warn");
+        lua_setfield(L, -2, "Warn");
+        lua_pushcfunction(L, LuminaLuaLogError, "Console.Error");
+        lua_setfield(L, -2, "Error");
+
+        // Time — frame-level clock. Reads from the engine's UpdateContext so
+        // every script sees the same frame's values regardless of which world
+        // it's attached to.
+        FRef TimeTable = GlobalsRef.NewTable("Time");
+        TimeTable.SetFunction<[]() -> double { return GEngine ? GEngine->GetUpdateContext().GetDeltaTime() : 0.0; }>("DeltaTime");
+        TimeTable.SetFunction<[]() -> double { return GEngine ? GEngine->GetUpdateContext().GetTime() : 0.0; }>("Now");
+        TimeTable.SetFunction<[]() -> uint64 { return GEngine ? GEngine->GetUpdateContext().GetFrame() : uint64{0}; }>("FrameNumber");
+        TimeTable.SetFunction<[]() -> float  { return GEngine ? GEngine->GetUpdateContext().GetFPS() : 0.0f; }>("FPS");
+        
+        // Top-level service namespaces. Flat layout — no `Engine.X` subtree.
+        // The original `Engine` table stays around for true engine queries
+        // (project name / path / Travel / LoadObject) since those don't fit
+        // any of the namespace buckets below.
+        FRef EngineTable        = GlobalsRef.NewTable("Engine");
+        FRef VFSTable           = GlobalsRef.NewTable("VFS");
+        FRef MathTable          = GlobalsRef.NewTable("Math");
+        FRef AudioTable         = GlobalsRef.NewTable("Audio");
+        FRef FileHelperTable    = GlobalsRef.NewTable("FileHelper");
+        FRef PathTable          = GlobalsRef.NewTable("Paths");
+        FRef RHITable           = GlobalsRef.NewTable("RHI");
+        FRef ECSTable           = GlobalsRef.NewTable("ECS");
+
+        // Engine.LoadObject, a raw cfunction (rather than the Invoker path)
+        // because the result is polymorphic: an asset at a path may resolve to
+        // a subclass of CObject, and we want Lua to see it as that subclass
+        // (with its bound methods) rather than as a plain CObject.
+        EngineTable.Push();
+        lua_pushcfunction(L, +[](lua_State* State) -> int
+        {
+            const char* Path = luaL_checkstring(State, 1);
+            CObject* Object = StaticLoadObject(FStringView(Path));
+            PushCObjectAsActualType(State, Object);
+            return 1;
+        }, "LoadObject");
+        lua_rawsetfield(L, -2, "LoadObject");
+        lua_pop(L, 1);
         EngineTable.SetFunction<&FEngine::GetProjectName>("GetProjectName", GEngine);
         EngineTable.SetFunction<&FEngine::GetProjectPath>("GetProjectPath", GEngine);
         EngineTable.SetFunction<&FEngine::Travel>("Travel", GEngine);
+        EngineTable.SetFunction<[]() { FScriptingContext::Get().ReloadStdlib(); }>("ReloadStdlib");
         
         VFSTable.SetFunction<&VFS::Exists>("Exists");
         VFSTable.SetFunction<&VFS::CreateDir>("CreateDir");
@@ -433,8 +804,69 @@ namespace Lumina::Lua
             .AddFunction<[](float Angle, glm::vec3 Axis) { return glm::angleAxis(Angle, Axis); }>("FromAngleAxis")
             .AddFunction<[](glm::quat& Self, glm::vec3 V) { return Self * V; }>("RotateVector")
             .Register();
-        
 
+        LoadStdlibFiles();
+    }
+
+    void FScriptingContext::LoadStdlibFiles()
+    {
+        // Engine Lua stdlib. Each file runs against the main state so its
+        // globals are visible to every user-script thread spawned later.
+        // Paths are virtual — the `/Engine` mount points at the install dir,
+        // so this resolves to <LUMINA_DIR>/Engine/Resources/Content/Scripts/Stdlib/...
+        //
+        // Stdlib files use `Foo = Foo or {}` so re-running them mutates
+        // existing tables in place rather than replacing them. That keeps
+        // already-instantiated user scripts pointing at the same metatable
+        // and lets ReloadStdlib() propagate edits without respawning entities.
+        //
+        // Order matters only when one stdlib file depends on another — keep
+        // them topologically sorted.
+        static const char* const kStdlibFiles[] =
+        {
+            "/Engine/Resources/Content/Scripts/Stdlib/EntityScript.luau",
+        };
+
+        for (const char* VirtualPath : kStdlibFiles)
+        {
+            FString Source;
+            if (!VFS::ReadFile(Source, VirtualPath))
+            {
+                LOG_ERROR("Lua stdlib: failed to read {}", VirtualPath);
+                continue;
+            }
+
+            TVector<uint8> Bytecode;
+            if (!CompileSourceToBytecode(Source, Bytecode))
+            {
+                LOG_ERROR("Lua stdlib: failed to compile {}", VirtualPath);
+                continue;
+            }
+
+            const int LoadResult = luau_load(L, VirtualPath,
+                                             reinterpret_cast<const char*>(Bytecode.data()),
+                                             Bytecode.size(), 0);
+            if (LoadResult != LUA_OK)
+            {
+                LOG_ERROR("Lua stdlib: load failed for {}: {}", VirtualPath, lua_tostring(L, -1));
+                lua_pop(L, 1);
+                continue;
+            }
+
+            const int CallResult = lua_pcall(L, 0, 0, 0);
+            if (CallResult != LUA_OK)
+            {
+                LOG_ERROR("Lua stdlib: runtime error in {}: {}", VirtualPath, lua_tostring(L, -1));
+                lua_pop(L, 1);
+            }
+        }
+    }
+
+    void FScriptingContext::ReloadStdlib()
+    {
+        FWriteScopeLock Lock(SharedMutex);
+        LoadStdlibFiles();
+        LOG_INFO("Lua stdlib: reloaded");
     }
 
     void FScriptingContext::SandboxGlobals()
@@ -915,6 +1347,69 @@ namespace Lumina::Lua
                 lua_pop(L, 1);  // pop value, keep key for next iter
             }
         }
+
+        // For reflected/hand-registered C++ types, the editor-facing surface
+        // (methods + properties, including those inherited from a parent type)
+        // is stamped onto the metatable as `__lumina_members` at registration
+        // time — see TClass<T>::Register. Pull it out and emit one symbol per
+        // entry so typed-local autocomplete (`local x: STransformComponent`)
+        // and `Type.Member` lookups light up without the harvester having to
+        // know about C++ reflection.
+        void HarvestReflectedMembers(lua_State* L, FStringView TypeName, TVector<FLuaSymbol>& Out)
+        {
+            luaL_getmetatable(L, TypeName.data());
+            if (!lua_istable(L, -1))
+            {
+                lua_pop(L, 1);
+                return;
+            }
+
+            lua_rawgetfield(L, -1, "__lumina_members");
+            if (!lua_istable(L, -1))
+            {
+                lua_pop(L, 2);
+                return;
+            }
+
+            lua_pushnil(L);
+            while (lua_next(L, -2) != 0)
+            {
+                if (lua_type(L, -2) == LUA_TSTRING)
+                {
+                    const char* Key = lua_tostring(L, -2);
+                    // __parentname is bookkeeping for the chain merge, not a
+                    // member; skip it (and any other underscore-prefixed key).
+                    if (Key && Key[0] != '_')
+                    {
+                        const char* Kind = lua_isstring(L, -1) ? lua_tostring(L, -1) : "method";
+
+                        FLuaSymbol Symbol;
+                        Symbol.Name.assign(Key);
+                        Symbol.Parent.assign(TypeName.data(), TypeName.size());
+                        Symbol.Path = Symbol.Parent + "." + Symbol.Name;
+                        if (Kind && std::strcmp(Kind, "method") == 0)
+                        {
+                            Symbol.Kind = ELuaSymbolKind::Function;
+                            Symbol.TypeName.assign("function");
+                            // Reflected methods are dispatched via __namecall,
+                            // so they look opaque to lua_getinfo. Surface them
+                            // as varargs-style C functions to match.
+                            Symbol.bIsCFunction = true;
+                            Symbol.bIsVararg    = true;
+                        }
+                        else
+                        {
+                            Symbol.Kind = ELuaSymbolKind::Value;
+                            Symbol.TypeName.assign("property");
+                        }
+                        Out.push_back(Symbol);
+                    }
+                }
+                lua_pop(L, 1);
+            }
+
+            lua_pop(L, 2); // members, metatable
+        }
     }
 
     namespace
@@ -1223,6 +1718,12 @@ namespace Lumina::Lua
                     {
                         IterateTable(L, FStringView(Symbol.Path.c_str(), Symbol.Path.size()),
                                      /*Depth*/ 1, Visited, Out);
+
+                        // If this global has a registered metatable carrying a
+                        // __lumina_members table (i.e. it's a TClass<T>-bound
+                        // C++ type), surface its method + property surface so
+                        // typed-local autocomplete picks up the inherited set.
+                        HarvestReflectedMembers(L, FStringView(Symbol.Name.c_str(), Symbol.Name.size()), Out);
                     }
                 }
             }

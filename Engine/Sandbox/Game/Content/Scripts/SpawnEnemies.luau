@@ -1,28 +1,18 @@
+local Script = EntityScript.new()
 
-NewScript = { }
+function Script:Update(DeltaTime: number)
+    for i = 1, 10 do
+        local NewEntity = _Registry:Duplicate(2)
+        local NewTransform = self.World:GetEntityTransform(NewEntity)
 
+        NewTransform:SetLocalLocation(vector.create(
+            math.random(-5000, 5000),
+            math.random(50, 1500),
+            math.random(-5000, 5000)))
 
-function NewScript:OnAttach()
-    -- Called when the entity is created
+        local Random = math.random(1, 5)
+        NewTransform:SetLocalScale(vector.create(Random, Random, Random))
+    end
 end
 
-function NewScript:OnReady()
-end
-
-function NewScript:Update(DeltaTime: number)
-
-        for i = 1, 10 do
-            local Entity = Registry:Duplicate(2)
-            Engine.ECS.TranslateEntity(Registry, Entity, vector.create(math.random(-5000, 5000), math.random(50, 1500), math.random(-5000, 5000)))
-
-            local Random = math.random(1, 5)
-            Engine.ECS.SetEntityScale(Registry, Entity, vector.create(Random, Random, Random))
-        end
-end
-            
-function NewScript:OnDetach()
-    -- Called when the entity is destroyed.
-end
-
-
-return NewScript
+return Script

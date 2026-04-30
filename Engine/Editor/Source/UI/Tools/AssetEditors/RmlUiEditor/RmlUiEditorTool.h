@@ -53,6 +53,13 @@ namespace Lumina
         void DrawPreviewCanvas();
         void DrawEditorToolbar();
         void DrawEditorStatusBar();
+        void DrawSnippetsPopup();
+        void DrawFormatPopup();
+        void DrawHelpPopup();
+        void DrawGotoLinePopup();
+        void HandleEditorShortcuts();
+        void InsertSnippet(const char* Snippet);
+        void PersistSettings() const;
 
         // Inline color-swatch overlay. Walks visible lines, scans for
         // #RRGGBB / #RRGGBBAA hex literals, draws a clickable square at the
@@ -106,8 +113,17 @@ namespace Lumina
         float                       EditorLineSpacing = 1.0f;
         bool                        bEditorShowWhitespace = false;
         bool                        bEditorShowLineNumbers = true;
+        bool                        bEditorShowMiniMap = true;
         bool                        bEditorReadOnly = false;
+        bool                        bAutoIndent = true;
+        bool                        bShowMatchingBrackets = true;
+        bool                        bCompletePairedGlyphs = true;
+        bool                        bInsertSpacesOnTabs = false;
+        bool                        bTrimTrailingOnSave = false;
         EPalette                    EditorPalette = EPalette::Dark;
+
+        int                         GotoLineBuffer = 1;
+        bool                        bRequestOpenGoto = false;
 
         FDirectoryWatcher           FileWatcher;
         TAtomic<bool>               bExternalChangePending{false};

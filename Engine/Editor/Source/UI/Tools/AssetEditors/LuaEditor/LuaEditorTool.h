@@ -48,21 +48,78 @@ namespace Lumina
         void OnAutoCompleteRequest(TextEditor::AutoCompleteState& State);
         void OnHoverIdentifier(const std::string& Word, const std::string& DottedPath);
 
-        // Map of dotted path → full symbol record. Built alongside the other
+        // Walks the buffer to populate DocumentOutline with function/local
+        // declarations the user can click to navigate. Cheap regex-style scan
+        // so it can re-run on every delayed change callback.
+        void RebuildDocumentOutline();
+
+        // Re-evaluates every watch expression in the current paused frame and
+        // caches the result so the UI doesn't pay for evaluation per draw.
+        // No-op when the debugger isn't paused.
+        void RefreshWatchValues();
+
+        // Draws a context popup for a single breakpoint allowing the user to
+        // set a Lua condition, log message, hit-count ignore, and enable flag.
+        // Uses Lua::FBreakpointSettings on FLuaDebugger as the data source.
+        void DrawBreakpointSettingsPopup();
+
+        // Buffer-driven local-symbol harvest: parses the editor buffer for
+        // `local Name: Type = ...` / `local Name = ...` / `local function Name`
+        // declarations so hover tooltips can show "local Name: Type" without
+        // a full Luau type checker. Cheap and runs after each delayed change
+        // callback fires.
+        void RebuildLocalIndex();
+
+        // Free-text hover. computes the (line, col) under the mouse from the
+        // editor's screen-coord helpers and pops a tooltip when over a
+        // string / number / keyword / type annotation. Identifier hovers
+        // still go through the editor's built-in hover callback.
+        void DrawFreeFormHoverTooltip();
+
+        // Map of dotted path -> full symbol record. Built alongside the other
         // autocomplete indices in RebuildSymbolIndex so hover lookups are O(1).
         eastl::hash_map<eastl::string, Lua::FLuaSymbol>                         SymbolByPath;
 
         void DrawToolbar();
         void DrawStatusBar();
         void DrawSettingsPopup();
+        void DrawSnippetsPopup();
+        void DrawHelpPopup();
+        void DrawGotoLinePopup();
+        void DrawFormatPopup();
+        void HandleEditorShortcuts();
+        void InsertSnippet(const char* Snippet);
 
         // Inline debugger overlay shown below the editor when FLuaDebugger
         // is paused at this file. Avoids spawning a separate top-level tool
         // that would steal layout space from the user's docking config.
         void DrawDebuggerPanel();
+        void DrawDebuggerWatchSection();
+        void DrawDebuggerBreakHistorySection();
+        void DrawDebuggerHoverDuringPauseTooltip(const std::string& Word);
         bool IsDebuggerPausedHere() const;
 
+        // Recursive expandable-value row for the debugger panels.
+        void DrawExpandableValueRow(const eastl::string& Path,
+                                     const char* Key,
+                                     const char* Value,
+                                     const char* TypeName,
+                                     bool bIsExpandable,
+                                     int Frame);
+
+        // Right-side outline panel listing functions / locals / events.
+        // Toggled from the toolbar; persists between draws via bShowOutline.
+        void DrawOutlinePanel();
+
+        // Inline value annotations after each visible line during pause:
+        // walks the current frame's locals and draws "name = value"
+        // ghost-text at end-of-line where the local is referenced.
+        void DrawInlineValueOverlay();
+
         void ToggleBreakpoint(int Line);
+        void ToggleBookmark(int Line);
+        void NavigateBookmark(bool bForward);
+        void RunToCursor();
 
         FString             VirtualPath;
         FString             ParentDir;
@@ -79,11 +136,19 @@ namespace Lumina
         float               EditorLineSpacing = 1.0f;
         bool                bEditorShowWhitespace = false;
         bool                bEditorShowLineNumbers = true;
+        bool                bEditorShowMiniMap = true;
         bool                bEditorReadOnly = false;
         bool                bAutoIndent = true;
         bool                bShowMatchingBrackets = true;
         bool                bCompletePairedGlyphs = true;
+        bool                bInsertSpacesOnTabs = false;
+        bool                bTrimTrailingOnSave = false;
+        bool                bAutoTriggerCompletion = true;
+        int                 AutoTriggerDelayMs = 100;
         EPalette            EditorPalette = EPalette::Dark;
+
+        int                 GotoLineBuffer = 1;
+        bool                bRequestOpenGoto = false;
 
         FDirectoryWatcher   FileWatcher;
         TAtomic<bool>       bExternalChangePending{false};
@@ -99,11 +164,11 @@ namespace Lumina
 
         // Autocomplete index, harvested from the live Lua VM at OnInitialize
         // and refreshable on demand. Three flat structures:
-        //   TopLevelSymbols  — full symbol records visible at global scope
-        //   SymbolsByPath    — for "Foo.Bar" → [child symbol records]; lets
+        //   TopLevelSymbols . full symbol records visible at global scope
+        //   SymbolsByPath   . for "Foo.Bar" -> [child symbol records]; lets
         //                      us offer table-member completions after `.`/`:`
         //                      and surface kind/type/value-preview metadata.
-        //   TableNames       — set of dotted paths that are tables, used for
+        //   TableNames      . set of dotted paths that are tables, used for
         //                      cheap "is this a table?" checks during prefix
         //                      resolution.
         eastl::vector<Lua::FLuaSymbol>                                          AllSymbols;
@@ -111,6 +176,58 @@ namespace Lumina
         eastl::hash_map<eastl::string, eastl::vector<Lua::FLuaSymbol>>          SymbolsByPath;
         eastl::hash_set<eastl::string>                                          TableNames;
 
+        struct FLocalDecl
+        {
+            eastl::string TypeAnnotation;   // empty when the user didn't write `: T`
+            eastl::string ValueHint;        // best-effort: "table" / "number" / "string" / ...
+            eastl::string OriginName;       // when the type/hint was inherited from another local
+            int           Line = -1;        // zero-based source line of the declaration
+        };
+        eastl::hash_map<eastl::string, FLocalDecl>                              Locals;
+
         TextEditor::AutoCompleteConfig                                  AutoCompleteCfg;
+
+        // Bookmarks live in editor state alone. they're not source-of-truth
+        // anywhere else and aren't persisted across editor sessions. F2 toggles,
+        // Shift+F2 cycles through them.
+        THashSet<int>       Bookmarks;
+
+        bool                bShowOutline = false;
+        bool                bShowInlineValuesWhilePaused = true;
+        bool                bShowBreakHistory = true;
+
+        // Watch expressions evaluated against the paused frame's environment.
+        // Cleared between sessions; not persisted because an expression that
+        // worked yesterday probably won't fit today's call site.
+        struct FWatchEntry
+        {
+            eastl::string Expression;
+            eastl::string LastValue;
+            eastl::string LastType;
+            bool          bDirty = true;
+        };
+        eastl::vector<FWatchEntry>      Watches;
+        char                            WatchInputBuffer[256] = {0};
+
+        // Document outline harvested by RebuildDocumentOutline.
+        struct FOutlineItem
+        {
+            eastl::string Name;
+            eastl::string Detail;        // signature for functions, type/value for locals
+            char          Kind = 'l';    // 'f' function, 'l' local, 'e' export, 'c' comment marker
+            int           Line = -1;
+            int           Indent = 0;
+        };
+        eastl::vector<FOutlineItem>     DocumentOutline;
+        char                            OutlineFilterBuffer[64] = {0};
+
+        // Breakpoint settings popup state. RequestedBreakpointSettingsLine is
+        // set by the gutter context menu's "Configure..." entry; the popup
+        // opens on the next frame and binds against the line in question.
+        int                             RequestedBreakpointSettingsLine = -1;
+        char                            BpConditionBuffer[256] = {0};
+        char                            BpLogMessageBuffer[256] = {0};
+        int                             BpIgnoreCount = 0;
+        bool                            bBpEnabled = true;
     };
 }

@@ -35,7 +35,7 @@ namespace Lumina::Lua
     };
 
     /**
-     * Snapshot of a single Lua stack level. Captured eagerly at break time —
+     * Snapshot of a single Lua stack level. /* captured eagerly at break time
      * we never read live VM state from the editor UI thread because the VM
      * is already mid-callback and reading after we resume would race.
      */
@@ -43,10 +43,49 @@ namespace Lumina::Lua
     {
         FString Source;       // Virtual path (== Luau chunkname for path-loaded scripts).
         FString FunctionName; // Best-effort: lua_getinfo "name", or "?" / "main".
-        FString What;         // "Lua", "C", "main", "tail" — from lua_Debug::what.
+        FString What;         // "Lua", "C", "main", "tail" from lua_Debug::what.
         int     Line = -1;
         TVector<FStackVariable> Locals;
         TVector<FStackVariable> Upvalues;
+    };
+
+    /**
+     * Per-breakpoint metadata. Stored alongside the line in the Breakpoints
+     * registry. The line itself living in the THashSet indicates the breakpoint
+     * exists; this struct controls whether/when it actually pauses.
+     */
+    struct FBreakpointSettings
+    {
+        FString  Condition;            // Lua expression; pause only if it returns truthy. Empty = always pause.
+        FString  LogMessage;           // Non-empty turns this into a log point: log + continue, never pause.
+        uint32   HitCount = 0;         // Total times this breakpoint has fired this session.
+        uint32   IgnoreCount = 0;      // Skip the first N hits before pausing/logging.
+        bool     bEnabled = true;
+    };
+
+    /**
+     * A single child of an expandable value (table key or userdata field)
+     * surfaced through EnumerateChildrenInPausedFrame.
+     */
+    struct FChildEntry
+    {
+        FString Key;            // Already-formatted key, e.g. `foo` or `[1]` or `["weird key"]`.
+        FString AccessSuffix;   // What to append to the parent path to address this child:
+                                //   `.foo`, `[1]`, `["weird key"]`. Lets the editor build
+                                //   a Lua-syntax-correct path for nested expansion / watches.
+        FString Value;
+        FString TypeName;
+        bool    bIsExpandable = false;
+    };
+
+    /** A single entry in the recent break-points history. */
+    struct FBreakHistoryEntry
+    {
+        FString Source;
+        FString FunctionName;
+        int     Line = -1;
+        double  TimeSeconds = 0.0;     // Engine-time snapshot at break.
+        bool    bWasLogPoint = false;
     };
 
     /**
@@ -78,6 +117,51 @@ namespace Lumina::Lua
         void ClearBreakpointsFor(FStringView Path);
         bool HasBreakpoint(FStringView Path, int LineZeroBased) const;
         TVector<int> GetBreakpointLines(FStringView Path) const;
+
+        // Per-breakpoint metadata. SetBreakpointCondition / LogMessage / Enabled
+        // mutate the entry without removing it; if the breakpoint doesn't exist
+        // they're a no-op. GetBreakpointSettings returns nullptr when absent.
+        void SetBreakpointCondition(FStringView Path, int LineZeroBased, FStringView Condition);
+        void SetBreakpointLogMessage(FStringView Path, int LineZeroBased, FStringView Message);
+        void SetBreakpointEnabled(FStringView Path, int LineZeroBased, bool bEnabled);
+        void SetBreakpointIgnoreCount(FStringView Path, int LineZeroBased, uint32 IgnoreCount);
+        const FBreakpointSettings* GetBreakpointSettings(FStringView Path, int LineZeroBased) const;
+        FBreakpointSettings* GetBreakpointSettingsMutable(FStringView Path, int LineZeroBased);
+
+        // One-shot breakpoint cleared on first hit. Used by "run to cursor".
+        void RunToLine(FStringView Path, int LineZeroBased);
+        void ClearRunToLine();
+        bool HasRunToLine() const { return RunToTargetLine >= 0; }
+
+        // Evaluate `Expr` in the paused frame's environment. Locals + upvalues
+        // are visible by name with global fallback. OutValue receives a
+        // stringified result (or the error message); OutTypeName receives the
+        // Lua type name ("string", "number", ..., or "error" on failure).
+        // Returns false if not paused or FrameIndex is out of range.
+        bool EvaluateInPausedFrame(int FrameIndex, FStringView Expr, FString& OutValue, FString& OutTypeName);
+
+        // Like EvaluateInPausedFrame but additionally reports whether the
+        // resolved value is a container the editor can expand (table or
+        // userdata with an iterable metatable). Used by hover tooltips so
+        // they can show "{ ... 4 fields }" instead of just `table: 0x...`.
+        bool EvaluateInPausedFrameWithExpandable(int FrameIndex, FStringView Expr,
+                                                  FString& OutValue, FString& OutTypeName,
+                                                  bool& bOutExpandable);
+
+        // Enumerates the immediate children of the value reached by Expr
+        // (which is itself evaluated in the paused frame's env). Tables list
+        // their keys; userdata lists the keys of their metatable's __index
+        // table (when present). Capped at MaxChildren to bound memory and
+        // tooltip rendering cost. Children with non-string/non-number keys
+        // are skipped.
+        bool EnumerateChildrenInPausedFrame(int FrameIndex, FStringView Expr,
+                                             TVector<FChildEntry>& Out,
+                                             int MaxChildren = 256);
+
+        // Recent break-points (most recent first). Used by the editor's
+        // "Recent breaks" panel. Capped at 32 entries to bound memory.
+        const TVector<FBreakHistoryEntry>& GetBreakHistory() const { return BreakHistory; }
+        void ClearBreakHistory() { BreakHistory.clear(); }
 
         // Called by FScriptingContext::LoadUniqueScriptPath right after a
         // freshly compiled FScript is registered. Walks pending breakpoints
@@ -133,7 +217,7 @@ namespace Lumina::Lua
         // State captured at resume time so HandleDebugStep can decide whether
         // we have actually progressed to a new source line. Without these we
         // would break on every VM instruction, which is multiple times per
-        // editor line — totally unusable as a step experience.
+        // editor line, totally unusable as a step experience.
         int                                         StepBaseDepth = 0;
         int                                         StepLastLine = -1;
         FString                                     StepLastSource;
@@ -162,9 +246,34 @@ namespace Lumina::Lua
 
         TVector<FStackFrame>                        CallStack;
 
-        // Path → set of 0-based line indices.
+        // Path -> set of 0-based line indices.
         THashMap<FString, THashSet<int>>            Breakpoints;
 
+        // Path -> (line -> settings). Sparse: only lines that need non-default
+        // settings (condition / log message / disabled / hit count) get an entry.
+        THashMap<FString, THashMap<int, FBreakpointSettings>> BreakpointSettings;
+
+        // One-shot breakpoint state. RunToLine arms it; the first matching
+        // break-or-step on this path/line clears it before pausing.
+        FString                                     RunToTargetSource;
+        int                                         RunToTargetLine = -1;
+
+        TVector<FBreakHistoryEntry>                 BreakHistory;
+
         EResumeRequest                              PendingResume = EResumeRequest::None;
+
+        // Internal: filter the breakpoint hit. Returns true if execution
+        // should pause; false to continue running (disabled / condition-false /
+        // log-point / ignore-count). Logs and stamps history as a side effect.
+        bool ProcessBreakpointHit(lua_State* L, lua_Debug* ar, FStringView Source, int LineZeroBased);
+
+        // Internal: compile + run `return (Expr)` in the paused frame's env
+        // and leave the result on top of MainState's stack. On failure returns
+        // false with the error message in OutError and the stack untouched
+        // beyond StackBefore.
+        bool PushFrameEvalResult(int FrameIndex, FStringView Expr, FString& OutError);
+
+        // Internal: append a break entry, capping at 32. Most recent at front.
+        void RecordBreakHistory(FStringView Source, FStringView FunctionName, int Line, bool bLogPoint);
     };
 }

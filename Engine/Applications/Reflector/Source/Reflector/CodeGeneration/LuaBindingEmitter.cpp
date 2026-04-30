@@ -18,60 +18,24 @@ namespace Lumina::Reflection
                 [](const FMetadataPair& Pair) { return Pair.Key == "NoLua"; });
         }
 
-        // __namecall: dispatches Lua self:Foo() syntax via lua_namecallatom.
-        void EmitNamecallMetamethod(FCodeWriter& Writer, const FReflectedStruct& Struct)
+        // Emits the chained TClass builder calls (SetSuperClass, EnableTypeId,
+        // AddFunction*, AddProperty*) up to but not including .Register(). The
+        // caller closes the chain with .Register() and any constructor/loader
+        // binding so everything happens in a single stack-balanced expression.
+        void EmitTypeBindings(FCodeWriter& Writer, const FReflectedStruct& Struct)
         {
-            if (Struct.Functions.empty())
-            {
-                return;
-            }
+            Writer.Line(".EnableTypeId()");
 
-            Writer.Line("lua_pushcfunction(L, +[](lua_State* VM) -> int");
-            Writer.BeginBlock();
-            Writer.Line("int Atom = 0;");
-            Writer.Line("lua_namecallatom(VM, &Atom);");
-            Writer.Line("switch((uint16)Atom)");
-            Writer.BeginBlock();
-            Writer.PopIndent();
+            if (!Struct.Parent.empty())
+            {
+                Writer.Linef(".SetSuperClass(\"%s\")", Struct.Parent.c_str());
+            }
 
             for (const auto& Func : Struct.Functions)
             {
-                Writer.Linef("case(Lumina::Hash::FNV1a::GetHash16(\"%s\")): return Lumina::Lua::Invoker<&%s::%s>(VM);",
-                    Func->Name.c_str(), Struct.QualifiedName.c_str(), Func->Name.c_str());
+                Writer.Linef(".AddFunction<&%s::%s>(\"%s\")",
+                    Struct.QualifiedName.c_str(), Func->Name.c_str(), Func->Name.c_str());
             }
-            Writer.Line("default: return 0;");
-
-            Writer.PushIndent();
-            Writer.EndBlock();
-            Writer.PopIndent();
-            Writer.Line("}, \"__namecall\");");
-            Writer.Line("lua_rawsetfield(L, MetaTableIdx, \"__namecall\");");
-        }
-
-        // __index: reads property values (and __type_id) back out to Lua.
-        void EmitIndexMetamethod(FCodeWriter& Writer, const FReflectedStruct& Struct)
-        {
-            if (Struct.Props.empty())
-            {
-                return;
-            }
-
-            Writer.Line("lua_pushcfunction(L, +[](lua_State* VM) -> int");
-            Writer.BeginBlock();
-            Writer.Linef("if(!Lumina::Lua::TStack<%s*>::Check(VM, 1)) return 0;", Struct.QualifiedName.c_str());
-            Writer.Linef("%s* ThisType = Lumina::Lua::TStack<%s*>::Get(VM, 1);",
-                Struct.QualifiedName.c_str(), Struct.QualifiedName.c_str());
-            Writer.Line("const char* Key = lua_tostring(VM, 2);");
-            Writer.Line("uint32 Hash = Lumina::Hash::FNV1a::GetHash32(Key);");
-            Writer.Line("switch(Hash)");
-            Writer.BeginBlock();
-            Writer.PopIndent();
-
-            Writer.Line("case(Lumina::Hash::FNV1a::GetHash32(\"__type_id\")):");
-            Writer.BeginBlock();
-            Writer.Linef("Lumina::Lua::TStack<uint32>::Push(VM, entt::hashed_string(\"%s\"));", Struct.DisplayName.c_str());
-            Writer.Line("break;");
-            Writer.EndBlock();
 
             for (const auto& Prop : Struct.Props)
             {
@@ -79,106 +43,27 @@ namespace Lumina::Reflection
                 {
                     continue;
                 }
-                Writer.Linef("case(Lumina::Hash::FNV1a::GetHash32(\"%s\")): Lumina::Lua::TStack<decltype(%s::%s)>::Push(VM, ThisType->%s); break;",
-                    Prop->Name.c_str(), Struct.QualifiedName.c_str(), Prop->Name.c_str(), Prop->Name.c_str());
+                Writer.Linef(".AddProperty<&%s::%s>(\"%s\")",
+                    Struct.QualifiedName.c_str(), Prop->Name.c_str(), Prop->Name.c_str());
             }
-
-            Writer.Line("default: return 0;");
-            Writer.PushIndent();
-            Writer.EndBlock();
-
-            Writer.Line("return 1;");
-            Writer.PopIndent();
-            Writer.Line("}, \"__index\");");
-            Writer.Line("lua_rawsetfield(L, MetaTableIdx, \"__index\");");
         }
 
-        // __newindex: writes property values from Lua back into the C++ struct.
-        void EmitNewindexMetamethod(FCodeWriter& Writer, const FReflectedStruct& Struct)
-        {
-            if (Struct.Props.empty())
-            {
-                return;
-            }
-
-            Writer.Line("lua_pushcfunction(L, +[](lua_State* VM) -> int");
-            Writer.BeginBlock();
-            Writer.Linef("if(!Lumina::Lua::TStack<%s*>::Check(VM, 1)) return 0;", Struct.QualifiedName.c_str());
-            Writer.Linef("%s* ThisType = Lumina::Lua::TStack<%s*>::Get(VM, 1);",
-                Struct.QualifiedName.c_str(), Struct.QualifiedName.c_str());
-            Writer.Line("const char* Key = lua_tostring(VM, 2);");
-            Writer.Line("uint32 Hash = Lumina::Hash::FNV1a::GetHash32(Key);");
-            Writer.Line("switch(Hash)");
-            Writer.BeginBlock();
-            Writer.PopIndent();
-
-            for (const auto& Prop : Struct.Props)
-            {
-                if (Prop->bInner)
-                {
-                    continue;
-                }
-                Writer.Linef("case(Lumina::Hash::FNV1a::GetHash32(\"%s\")):", Prop->Name.c_str());
-                Writer.BeginBlock();
-                Writer.Linef("ThisType->%s = Lumina::Lua::TStack<decltype(%s::%s)>::Get(VM, 3);",
-                    Prop->Name.c_str(), Struct.QualifiedName.c_str(), Prop->Name.c_str());
-                Writer.Line("break;");
-                Writer.EndBlock();
-            }
-
-            Writer.Line("default: break;");
-            Writer.PushIndent();
-            Writer.EndBlock();
-
-            Writer.Line("return 0;");
-            Writer.PopIndent();
-            Writer.Line("}, \"__newindex\");");
-            Writer.Line("lua_rawsetfield(L, MetaTableIdx, \"__newindex\");");
-        }
-
-        // Per-struct `new` constructor exposed to Lua.
-        void EmitStructConstructor(FCodeWriter& Writer, const FReflectedStruct& Struct)
-        {
-            Writer.Line("lua_pushcfunction(L, +[](lua_State* State)");
-            Writer.BeginBlock();
-            Writer.Linef("void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(Lumina::Lua::TUserdataHeader<%s>), Lumina::Lua::TClassTraits<%s>::Tag());",
-                Struct.QualifiedName.c_str(), Struct.QualifiedName.c_str());
-            Writer.Linef("auto* Header = new (Block) Lumina::Lua::TUserdataHeader<%s>{};", Struct.QualifiedName.c_str());
-            Writer.Linef("auto Instance = %s{};", Struct.QualifiedName.c_str());
-            Writer.Line("Header->Emplace(Instance);");
-            Writer.Line("return 1;");
-            Writer.PopIndent();
-            Writer.Line("}, \"new\");");
-            Writer.Line("lua_rawsetfield(L, -2, \"new\");");
-        }
-
-        // Per-class `Load(name)` helper exposed to Lua.
+        // Reflected class: chain a `Foo.Load(path)` helper that resolves a
+        // CObject by package path. Push uses PushCObjectAsActualType so the
+        // result wears its actual subclass's metatable, not the static type
+        // we templated LoadObject on.
         void EmitClassLoader(FCodeWriter& Writer, const FReflectedStruct& Class)
         {
-            Writer.Line("lua_pushcfunction(L, +[](lua_State* State)");
+            Writer.Line(".AddStaticRawFunction(\"Load\", +[](lua_State* State) -> int");
             Writer.BeginBlock();
             Writer.Line("auto Name = lua_tostring(State, 1);");
             Writer.Linef("auto* Instance = Lumina::LoadObject<%s>(Name);", Class.QualifiedName.c_str());
-            Writer.Line("if(Instance == nullptr)");
-            Writer.BeginBlock();
-            Writer.Line("lua_pushnil(State);");
-            Writer.EndBlock();
-            Writer.Line("else");
-            Writer.BeginBlock();
-            Writer.Linef("void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(Lumina::Lua::TUserdataHeader<%s>), Lumina::Lua::TClassTraits<%s>::Tag());",
-                Class.QualifiedName.c_str(), Class.QualifiedName.c_str());
-            Writer.Linef("auto* Header = new (Block) Lumina::Lua::TUserdataHeader<%s>{};", Class.QualifiedName.c_str());
-            Writer.Line("Header->SetExternal(Instance);");
-            Writer.EndBlock();
+            Writer.Line("Lumina::Lua::PushCObjectAsActualType(State, Instance);");
             Writer.Line("return 1;");
-            Writer.PopIndent();
-            Writer.Line("}, \"Load\");");
-            Writer.Line("lua_rawsetfield(L, -2, \"Load\");");
+            Writer.EndBlock();
+            Writer.Line(");");
         }
 
-        //---------------------------------------------------------------------
-        // Shared body between FReflectedStruct and FReflectedClass. The only
-        // difference is whether we expose `new` (struct) or `Load` (class).
         void EmitStructlikeBody(FCodeWriter& Writer, const FReflectedStruct& Struct, bool bIsClass)
         {
             Writer.Line("static void SetupLuaBindings(lua_State* L)");
@@ -191,18 +76,16 @@ namespace Lumina::Reflection
             }
 
             Writer.Line("int BindingTop = lua_gettop(L);");
-            Writer.Linef("luaL_newmetatable(L, \"%s\");", Struct.DisplayName.c_str());
-            Writer.Line("int MetaTableIdx = lua_gettop(L);");
 
-            EmitNamecallMetamethod(Writer, Struct);
-            EmitIndexMetamethod(Writer, Struct);
-            EmitNewindexMetamethod(Writer, Struct);
+            // Single chained expression: construct, register methods + props,
+            // call Register() to commit the metatable, then attach the
+            // public-facing constructor or loader to the global table.
+            Writer.Linef("Lumina::Lua::TClass<%s>(L, \"%s\")",
+                Struct.QualifiedName.c_str(), Struct.DisplayName.c_str());
+            Writer.PushIndent();
 
-            Writer.Linef("lua_setuserdatametatable(L, Lumina::Lua::TClassTraits<%s>::Tag());", Struct.QualifiedName.c_str());
-
-            Writer.Line("lua_newtable(L);");
-            Writer.Linef("lua_pushunsigned(L, entt::hashed_string(\"%s\"));", Struct.DisplayName.c_str());
-            Writer.Line("lua_rawsetfield(L, MetaTableIdx, \"__type_id\");");
+            EmitTypeBindings(Writer, Struct);
+            Writer.Line(".Register()");
 
             if (bIsClass)
             {
@@ -210,10 +93,11 @@ namespace Lumina::Reflection
             }
             else
             {
-                EmitStructConstructor(Writer, Struct);
+                Writer.Linef(".AddConstructor<&Lumina::Lua::DefaultConstruct<%s>>();",
+                    Struct.QualifiedName.c_str());
             }
+            Writer.PopIndent();
 
-            Writer.Linef("lua_setglobal(L, \"%s\");", Struct.DisplayName.c_str());
             Writer.Line("DEBUG_ASSERT(BindingTop == lua_gettop(L));");
             Writer.EndBlock();
         }

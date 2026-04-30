@@ -2,10 +2,10 @@
 
 #include "Core/Object/Object.h"
 #include "Memory/RefCounted.h"
-#include "Renderer/RenderResource.h"
-#include "Texture.generated.h"
 #include "Memory/SmartPtr.h"
+#include "Renderer/RenderResource.h"
 #include "Renderer/TextureData.h"
+#include "Texture.generated.h"
 
 namespace Lumina
 {

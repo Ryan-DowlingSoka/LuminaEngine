@@ -329,6 +329,7 @@ namespace Lumina::Reflection
         Writer.Line("#include \"Core/Profiler/Profile.h\"");
         Writer.Line("#include \"Core/Math/Hash/Hash.h\"");
         Writer.Line("#include \"Scripting/Lua/Invoker.h\"");
+        Writer.Line("#include \"Scripting/Lua/Class.h\"");
         Writer.Line("#include \"Core/Object/Class.h\"");
         Writer.Line("using namespace entt::literals;");
         Writer.Line("using LuaMethodFn = int(*)(lua_State*);");
