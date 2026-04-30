@@ -32,6 +32,11 @@ namespace Lumina
         
         virtual FRHIImage* GetRenderTarget() const = 0;
 
+        // Re-create the scene's render target at a new size. Used by transient
+        // render paths (e.g. thumbnail capture) that need a fixed RT independent
+        // of the swapchain.
+        virtual void Resize(const glm::uvec2& NewSize) = 0;
+
         virtual const FSceneRenderStats&  GetRenderStats() const = 0;
         virtual FSceneRenderSettings&     GetSceneRenderSettings() = 0;
 

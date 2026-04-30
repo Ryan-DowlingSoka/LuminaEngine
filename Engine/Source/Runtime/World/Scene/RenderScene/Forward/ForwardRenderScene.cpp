@@ -103,12 +103,13 @@ namespace Lumina
         SwapchainResizedHandle = FRenderManager::OnSwapchainResized.AddMember(this, &FForwardRenderScene::SwapchainResized);
         
         #if USING(WITH_EDITOR)
-        NamedImages[(int)ENamedImage::PointLightIcon]       = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/PointLight.png", false);  
-        NamedImages[(int)ENamedImage::DirectionalLightIcon] = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/DirectionalLight.png", false);  
-        NamedImages[(int)ENamedImage::SkyLightIcon]         = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/SkyLight.png", false);  
-        NamedImages[(int)ENamedImage::SpotLightIcon]        = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/SpotLight.png", false);  
-        NamedImages[(int)ENamedImage::CameraIcon]           = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/CameraIcon.png", false);  
-        NamedImages[(int)ENamedImage::CharacterIcon]        = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/PersonIcon.png", false);  
+        NamedImages[(int)ENamedImage::PointLightIcon]       = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/PointLight.png", false);
+        NamedImages[(int)ENamedImage::DirectionalLightIcon] = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/DirectionalLight.png", false);
+        NamedImages[(int)ENamedImage::SkyLightIcon]         = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/SkyLight.png", false);
+        NamedImages[(int)ENamedImage::SpotLightIcon]        = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/SpotLight.png", false);
+        NamedImages[(int)ENamedImage::CameraIcon]           = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/CameraIcon.png", false);
+        NamedImages[(int)ENamedImage::CharacterIcon]        = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/PersonIcon.png", false);
+        NamedImages[(int)ENamedImage::ParticleSystemIcon]   = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/Molecule.png", false);
 
         GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::PointLightIcon]);
         GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::DirectionalLightIcon]);
@@ -116,6 +117,7 @@ namespace Lumina
         GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::SpotLightIcon]);
         GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::CameraIcon]);
         GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::CharacterIcon]);
+        GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::ParticleSystemIcon]);
         #endif
     }
 
@@ -132,6 +134,7 @@ namespace Lumina
         GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::SpotLightIcon]);
         GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::CameraIcon]);
         GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::CharacterIcon]);
+        GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::ParticleSystemIcon]);
         #endif
         
         FRenderManager::OnSwapchainResized.Remove(SwapchainResizedHandle);
@@ -518,94 +521,68 @@ namespace Lumina
                 });
                 
                 #if USING(WITH_EDITOR)
+                // Editor component visualizers — one billboard per editor-only
+                // component so designers can see otherwise-invisible entities
+                // (lights, cameras, sky, particles, ...). Skipped in PIE/Game
+                // worlds and in transient thumbnail worlds (which clear the
+                // bDrawBillboards flag instead of toggling per component).
+                if (!World->IsGameWorld())
                 {
-                    if (!World->IsGameWorld())
+                    auto EmplaceVisualizer = [this](entt::entity Entity, const glm::vec3& Position, ENamedImage Icon, const glm::vec4& Color, float Size = 0.20f)
                     {
-                        CameraView.each([this](entt::entity Entity, SCameraComponent&, STransformComponent& Transform)
+                        FBillboardInstance& Billboard = BillboardInstances.emplace_back();
+                        Billboard.TextureIndex        = GetNamedImage(Icon)->GetTextureCacheIndex();
+                        Billboard.ColorPack           = PackColor(Color);
+                        Billboard.Position            = Position;
+                        Billboard.Size                = Size;
+                        Billboard.EntityID            = entt::to_integral(Entity);
+                    };
+
+                    // Cameras — skip the editor's own viewport camera so the
+                    // billboard doesn't sit on top of the user's view.
+                    CameraView.each([&](entt::entity Entity, SCameraComponent&, const STransformComponent& Transform)
+                    {
+                        if (Registry.all_of<FEditorComponent>(Entity))
                         {
-                            if (World->GetEntityRegistry().all_of<FEditorComponent>(Entity))
-                            {
-                                return;
-                            }
-                            
-                            FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                            Billboard.TextureIndex          = GetNamedImage(ENamedImage::CameraIcon)->GetTextureCacheIndex();
-                            Billboard.ColorPack             = PackColor(FColor::White);
-                            Billboard.Position              = Transform.WorldTransform.Location;
-                            Billboard.Size                  = 0.20f;
-                            Billboard.EntityID              = entt::to_integral(Entity);
-                        });
-                    }
+                            return;
+                        }
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::CameraIcon, FColor::White);
+                    });
+
+                    CharacterView.each([&](entt::entity Entity, SCharacterControllerComponent&, const STransformComponent& Transform)
+                    {
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::CharacterIcon, FColor::White);
+                    });
+
+                    PointLightView.each([&](entt::entity Entity, const SPointLightComponent& Light, const STransformComponent& Transform)
+                    {
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::PointLightIcon, glm::vec4(Light.LightColor, 1.0f));
+                    });
+
+                    SpotLightView.each([&](entt::entity Entity, const SSpotLightComponent& Light, const STransformComponent& Transform)
+                    {
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::SpotLightIcon, glm::vec4(Light.LightColor, 1.0f));
+                    });
+
+                    DirectionalView.each([&](entt::entity Entity, const SDirectionalLightComponent& Light)
+                    {
+                        const auto& Transform = Registry.get<STransformComponent>(Entity);
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::DirectionalLightIcon, glm::vec4(Light.Color, 1.0f));
+                    });
+
+                    EnvironmentView.each([&](entt::entity Entity, const SEnvironmentComponent&)
+                    {
+                        const auto& Transform = Registry.get<STransformComponent>(Entity);
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::SkyLightIcon, glm::vec4(1.0f));
+                    });
+
+                    auto ParticleView = Registry.view<SParticleSystemComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+                    ParticleView.each([&](entt::entity Entity, const SParticleSystemComponent&, const STransformComponent& Transform)
+                    {
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::ParticleSystemIcon, glm::vec4(1.0f));
+                    });
                 }
-                
-                CharacterView.each([this](entt::entity Entity, SCharacterControllerComponent&, STransformComponent& Transform)
-                {
-                    if (!World->IsGameWorld())
-                    {
-                        FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                        Billboard.TextureIndex          = GetNamedImage(ENamedImage::CharacterIcon)->GetTextureCacheIndex();
-                        Billboard.ColorPack             = PackColor(FColor::White);
-                        Billboard.Position              = Transform.WorldTransform.Location;
-                        Billboard.Size                  = 0.20f;
-                        Billboard.EntityID              = entt::to_integral(Entity);
-                    }
-                });
-                
-                PointLightView.each([&] (entt::entity Entity, const SPointLightComponent& PointLightComponent, const STransformComponent& TransformComponent)
-                {
-                    if (!World->IsGameWorld())
-                    {
-                        FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                        Billboard.TextureIndex          = GetNamedImage(ENamedImage::PointLightIcon)->GetTextureCacheIndex();
-                        Billboard.ColorPack             = PackColor({PointLightComponent.LightColor, 1.0f});
-                        Billboard.Position              = TransformComponent.WorldTransform.Location;
-                        Billboard.Size                  = 0.20f;
-                        Billboard.EntityID              = entt::to_integral(Entity);
-                    }
-                });
-                
-                SpotLightView.each([&] (entt::entity Entity, SSpotLightComponent& SpotLightComponent, STransformComponent& Transform)
-                {
-                    if (!World->IsGameWorld())
-                    {
-                        FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                        Billboard.TextureIndex          = GetNamedImage(ENamedImage::SpotLightIcon)->GetTextureCacheIndex();
-                        Billboard.ColorPack             = PackColor({SpotLightComponent.LightColor, 1.0f});
-                        Billboard.Position              = Transform.WorldTransform.Location;
-                        Billboard.Size                  = 0.20f;
-                        Billboard.EntityID              = entt::to_integral(Entity);
-                    }
-                });
-                
-                DirectionalView.each([&] (entt::entity Entity, SDirectionalLightComponent& DirectionalLight)
-                {
-                    if (!World->IsGameWorld())
-                    {
-                        auto& Transform                 = Registry.get<STransformComponent>(Entity);
-                        FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                        Billboard.TextureIndex          = GetNamedImage(ENamedImage::DirectionalLightIcon)->GetTextureCacheIndex();
-                        Billboard.ColorPack             = PackColor({DirectionalLight.Color, 1.0f});
-                        Billboard.Position              = Transform.WorldTransform.Location;
-                        Billboard.Size                  = 0.20f;
-                        Billboard.EntityID              = entt::to_integral(Entity);
-                    }
-                });
-                
-                EnvironmentView.each([&] (entt::entity Entity, SEnvironmentComponent& Environment)
-                {
-                    if (!World->IsGameWorld())
-                    {
-                        auto& Transform                 = Registry.get<STransformComponent>(Entity);
-                        FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                        Billboard.TextureIndex          = GetNamedImage(ENamedImage::SkyLightIcon)->GetTextureCacheIndex();
-                        Billboard.ColorPack             = PackColor({1.0, 1.0, 1.0, 1.0f});
-                        Billboard.Position              = Transform.WorldTransform.Location;
-                        Billboard.Size                  = 0.20f;
-                        Billboard.EntityID              = entt::to_integral(Entity);
-                    }
-                });
-                
-                #endif 
+                #endif
             });
             
             auto DLightTask = Graph.AddParallelFor(DirectionalView.handle()->size(), 32, [&](Task::FParallelRange Range)

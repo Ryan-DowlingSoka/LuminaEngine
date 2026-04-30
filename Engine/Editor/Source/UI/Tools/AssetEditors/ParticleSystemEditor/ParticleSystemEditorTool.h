@@ -35,6 +35,7 @@ namespace Lumina
 
         void Compile();
         void OnSave() override;
+        bool ShouldGenerateThumbnailOnSave() const override { return true; }
 
     private:
 

@@ -36,62 +36,78 @@ namespace Lumina
             return (C >= 'a' && C <= 'z') || (C >= 'A' && C <= 'Z')
                 || (C >= '0' && C <= '9') || C == '_';
         }
-
-        // Walks left from `EndCol` over a chain of `Ident.Ident` / `Ident:`
-        // segments and returns the resolved owner path (e.g. "Engine.VFS"
-        // when the cursor is just after "Engine.VFS." or "Engine.VFS:").
-        // Returns empty if the cursor isn't sitting at a member-access spot.
-        eastl::string ResolveOwnerPath(const std::string& Line, int EndCol)
+        
+        FString ResolveOwnerPath(const std::string& Line, int EndCol)
         {
             int I = std::min(EndCol, (int)Line.size());
-            if (I <= 0) return {};
+            if (I <= 0)
+            {
+                return {};
+            }
 
             // Must be immediately preceded by '.' or ':'.
             const char Sep = Line[I - 1];
-            if (Sep != '.' && Sep != ':') return {};
+            if (Sep != '.' && Sep != ':')
+            {
+                return {};
+            }
 
             // Walk back accumulating segments separated by '.'.
             // ':' only valid as the last (closest-to-cursor) separator.
-            eastl::vector<eastl::string> SegmentsRev;
+            TVector<FString> SegmentsRev;
             int Cursor = I - 1;
             while (Cursor > 0)
             {
                 const char Here = Line[Cursor];
-                if (Here != '.' && Here != ':') break;
+                if (Here != '.' && Here != ':')
+                {
+                    break;
+                }
 
                 int End = Cursor;
                 int Start = End;
-                while (Start > 0 && IsIdentChar(Line[Start - 1])) --Start;
-                if (Start == End) return {};
+                while (Start > 0 && IsIdentChar(Line[Start - 1]))
+                {
+                    --Start;
+                }
+                if (Start == End)
+                {
+                    return {};
+                }
                 SegmentsRev.emplace_back(Line.data() + Start, Line.data() + End);
 
-                if (Here == ':' && SegmentsRev.size() != 1) return {};
+                if (Here == ':' && SegmentsRev.size() != 1)
+                {
+                    return {};
+                }
                 Cursor = Start - 1;
             }
 
-            if (SegmentsRev.empty()) return {};
+            if (SegmentsRev.empty())
+            {
+                return {};
+            }
 
-            eastl::string Path;
+            FString Path;
             for (auto Itr = SegmentsRev.rbegin(); Itr != SegmentsRev.rend(); ++Itr)
             {
-                if (!Path.empty()) Path += '.';
+                if (!Path.empty())
+                {
+                    Path += '.';
+                }
                 Path += *Itr;
             }
             return Path;
         }
-
-        // Luau-flavored superset of the bundled Lua language. Adds `continue`,
-        // `export`, `type`, `typeof`, marks built-in primitive type names so
-        // type annotations color, marks the common stdlib globals as known
-        // identifiers, and accepts backticks as another string delimiter so
-        // interpolated strings render cleanly. Compound-assign operators (
-        // `+=`, `-=`, `..=`, etc.) tokenize as standard punctuation runs and
-        // need no extra work.
+        
         const TextEditor::Language* GetLuauLanguage()
         {
             static bool Initialized = false;
             static TextEditor::Language Lang;
-            if (Initialized) return &Lang;
+            if (Initialized)
+            {
+                return &Lang;
+            }
 
             // Start from the bundled Lua language (gets number/identifier
             // tokenizers, comments, [[...]] strings) and overlay Luau on top.
@@ -214,7 +230,10 @@ namespace Lumina
         {
             auto IsDigitOrSep = [](char C) { return (C >= '0' && C <= '9') || C == '_'; };
             const int N = (int)Line.size();
-            if (Col < 0 || Col >= N) return false;
+            if (Col < 0 || Col >= N)
+            {
+                return false;
+            }
             // anchor: walk left to a digit or to '0x'/'0b' prefix
             int Start = Col;
             while (Start > 0)
@@ -229,9 +248,15 @@ namespace Lumina
                 else break;
             }
             // require Start to actually be a digit (or 0x/0b prefix start)
-            if (Start >= N) return false;
+            if (Start >= N)
+            {
+                return false;
+            }
             const char S = Line[Start];
-            if (!(S >= '0' && S <= '9')) return false;
+            if (!(S >= '0' && S <= '9'))
+            {
+                return false;
+            }
             // now scan forward through digit-ish characters
             int End = Start;
             bool SawDigit = false;
@@ -731,7 +756,7 @@ namespace Lumina
 
         for (const Lua::FLuaSymbol& Symbol : AllSymbols)
         {
-            const eastl::string Path(Symbol.Path.c_str(), Symbol.Path.size());
+            const FString Path(Symbol.Path.c_str(), Symbol.Path.size());
 
             // Path -> symbol map serves both hover lookups (full path) and
             // a future jump-to-definition feature.
@@ -743,7 +768,7 @@ namespace Lumina
             }
             else
             {
-                const eastl::string Parent(Symbol.Parent.c_str(), Symbol.Parent.size());
+                const FString Parent(Symbol.Parent.c_str(), Symbol.Parent.size());
                 SymbolsByPath[Parent].push_back(Symbol);
             }
 
@@ -802,7 +827,7 @@ namespace Lumina
             const int NameStart = I;
             while (I < N && IsIdentChar(Line[I])) ++I;
             if (I == NameStart) continue;
-            const eastl::string Name(Line.data() + NameStart, I - NameStart);
+            const FString Name(Line.data() + NameStart, I - NameStart);
 
             FLocalDecl Decl;
             Decl.Line = LineIdx;
@@ -861,7 +886,7 @@ namespace Lumina
                         // leave the hint blank rather than misreport.
                         const int RhsStart = I;
                         while (I < N && IsIdentChar(Line[I])) ++I;
-                        const eastl::string RhsName(Line.data() + RhsStart, I - RhsStart);
+                        const FString RhsName(Line.data() + RhsStart, I - RhsStart);
                         int Tail = I;
                         while (Tail < N && (Line[Tail] == ' ' || Line[Tail] == '\t')) ++Tail;
 
@@ -1192,7 +1217,7 @@ namespace Lumina
         // to be in the live VM under the same name.
         if (Word == DottedPath)
         {
-            const eastl::string WordKey(Word.c_str(), Word.size());
+            const FString WordKey(Word.c_str(), Word.size());
             auto LItr = Locals.find(WordKey);
             if (LItr != Locals.end())
             {
@@ -1232,11 +1257,11 @@ namespace Lumina
         // on a method shows method info rather than a top-level "ReadFile"
         // collision. Fall back to the bare word for unqualified globals
         // (locals like "self", or top-level functions).
-        const eastl::string FullKey(DottedPath.c_str(), DottedPath.size());
+        const FString FullKey(DottedPath.c_str(), DottedPath.size());
         auto Itr = SymbolByPath.find(FullKey);
         if (Itr == SymbolByPath.end() && Word != DottedPath)
         {
-            const eastl::string WordKey(Word.c_str(), Word.size());
+            const FString WordKey(Word.c_str(), Word.size());
             Itr = SymbolByPath.find(WordKey);
         }
         if (Itr == SymbolByPath.end())
@@ -1407,15 +1432,7 @@ namespace Lumina
                 default:                            return '?';
             }
         }
-
-        // Right-aligned dim text shown after the suggestion name. Three
-        // shapes depending on the symbol kind:
-        //   - Function: "function(arg1, arg2, ...)". Luau gives us the
-        //     parameter count + vararg flag for Lua functions; C functions
-        //     come back as "(...)" because Luau can't introspect their
-        //     C++ signature.
-        //   - Primitive: "type = value" (e.g. "number = 100").
-        //   - Other:     just the type ("table", "userdata", ...).
+        
         std::string BuildDetail(const Lua::FLuaSymbol& Symbol)
         {
             if (Symbol.Kind == Lua::ELuaSymbolKind::Function)
@@ -1487,12 +1504,12 @@ namespace Lumina
         // Mixing the two silently misaligns the dot/colon detection on any
         // line with leading tabs.
         const std::string Line = CodeEditor.GetLineText(static_cast<int>(State.line));
-        const eastl::string OwnerPath = ResolveOwnerPath(Line, static_cast<int>(State.searchTermStartIndex));
+        const FString OwnerPath = ResolveOwnerPath(Line, static_cast<int>(State.searchTermStartIndex));
 
         const std::string& Term = State.searchTerm;
-        const eastl::string TermLower = [&]
+        const FString TermLower = [&]
         {
-            eastl::string Out;
+            FString Out;
             Out.reserve(Term.size());
             for (char C : Term) Out.push_back((char)std::tolower((unsigned char)C));
             return Out;
@@ -1539,21 +1556,13 @@ namespace Lumina
         // children of the resolved owner; nothing else makes sense in context.
         if (!OwnerPath.empty())
         {
-            // Resolve the owner expression to a base type whose children we
-            // can pull from the symbol harvest. Three flavors:
-            //   1. OwnerPath itself names a global table  -> use it directly.
-            //   2. OwnerPath is a single-ident local with TypeAnnotation set
-            //      (`local Script = EntityScript.new()`) -> use that type.
-            //   3. OwnerPath is `self` inside a method body -> walk back for
-            //      the nearest `function <Ident>:` header, look up <Ident>'s
-            //      typed-local annotation, use that type.
-            eastl::string ResolvedType;
+            FString ResolvedType;
             auto Itr = SymbolsByPath.find(OwnerPath);
             if (Itr != SymbolsByPath.end())
             {
                 ResolvedType = OwnerPath;
             }
-            else if (OwnerPath.find('.') == eastl::string::npos)
+            else if (OwnerPath.find('.') == FString::npos)
             {
                 auto LocalItr = Locals.find(OwnerPath);
                 if (LocalItr != Locals.end() && !LocalItr->second.TypeAnnotation.empty())
@@ -1576,7 +1585,7 @@ namespace Lumina
                         while (End < Prev.size() && IsIdentChar(Prev[End])) ++End;
                         if (End == Start || End >= Prev.size() || Prev[End] != ':') continue;
 
-                        const eastl::string Ident(Prev.data() + Start, Prev.data() + End);
+                        const FString Ident(Prev.data() + Start, Prev.data() + End);
                         auto SelfLocal = Locals.find(Ident);
                         if (SelfLocal != Locals.end() && !SelfLocal->second.TypeAnnotation.empty())
                         {
@@ -1611,7 +1620,7 @@ namespace Lumina
             // suggestion path with a 'v' kind badge.
             if (!ResolvedType.empty())
             {
-                eastl::string ShapePath = ResolvedType;
+                FString ShapePath = ResolvedType;
                 ShapePath += "._Shape";
                 auto ShapeItr = SymbolsByPath.find(ShapePath);
                 if (ShapeItr != SymbolsByPath.end())
@@ -1635,10 +1644,10 @@ namespace Lumina
         }
 
         // Top-level: keywords + engine globals + identifiers in the buffer.
-        eastl::hash_set<eastl::string> Seen;
+        eastl::hash_set<FString> Seen;
         auto SeenInsert = [&](const char* Data, size_t Size) -> bool
         {
-            const eastl::string Key(Data, Size);
+            const FString Key(Data, Size);
             if (Seen.find(Key) != Seen.end()) return false;
             Seen.insert(Key);
             return true;
@@ -1678,16 +1687,16 @@ namespace Lumina
         // sync with our breakpoint set AND the live PC if the debugger is
         // paused at this file.
         CodeEditor.ClearMarkers();
-        const ImU32 Red          = IM_COL32(220, 60, 60, 255);
-        const ImU32 Translucent  = IM_COL32(220, 60, 60, 40);
-        const ImU32 Gray         = IM_COL32(150, 150, 150, 255);
-        const ImU32 GrayFill     = IM_COL32(150, 150, 150, 30);
-        const ImU32 Cyan         = IM_COL32(80, 200, 220, 255);
-        const ImU32 CyanFill     = IM_COL32(80, 200, 220, 40);
-        const ImU32 Magenta      = IM_COL32(220, 120, 220, 255);
-        const ImU32 MagentaFill  = IM_COL32(220, 120, 220, 40);
-        const ImU32 Cobalt       = IM_COL32(100, 140, 230, 255);
-        const ImU32 CobaltFill   = IM_COL32(100, 140, 230, 40);
+        constexpr ImU32 Red          = IM_COL32(220, 60, 60, 255);
+        constexpr ImU32 Translucent  = IM_COL32(220, 60, 60, 40);
+        constexpr ImU32 Gray         = IM_COL32(150, 150, 150, 255);
+        constexpr ImU32 GrayFill     = IM_COL32(150, 150, 150, 30);
+        constexpr ImU32 Cyan         = IM_COL32(80, 200, 220, 255);
+        constexpr ImU32 CyanFill     = IM_COL32(80, 200, 220, 40);
+        constexpr ImU32 Magenta      = IM_COL32(220, 120, 220, 255);
+        constexpr ImU32 MagentaFill  = IM_COL32(220, 120, 220, 40);
+        constexpr ImU32 Cobalt       = IM_COL32(100, 140, 230, 255);
+        constexpr ImU32 CobaltFill   = IM_COL32(100, 140, 230, 40);
 
         Lua::FLuaDebugger& Debugger = Lua::FLuaDebugger::Get();
         const FStringView SrcView(VirtualPath.c_str(), VirtualPath.size());
@@ -1803,9 +1812,18 @@ namespace Lumina
             return true;
         };
 
-        if (IEqual(A, B)) return true;
-        if (A.size() > B.size() && IEqual(A.substr(A.size() - B.size()), B)) return true;
-        if (B.size() > A.size() && IEqual(B.substr(B.size() - A.size()), A)) return true;
+        if (IEqual(A, B))
+        {
+            return true;
+        }
+        if (A.size() > B.size() && IEqual(A.substr(A.size() - B.size()), B))
+        {
+            return true;
+        }
+        if (B.size() > A.size() && IEqual(B.substr(B.size() - A.size()), A))
+        {
+            return true;
+        }
         return false;
     }
 
@@ -1843,13 +1861,19 @@ namespace Lumina
         ImGui::SameLine();
 
         ImGui::BeginDisabled(!CodeEditor.CanUndo());
-        if (ImGui::Button(LE_ICON_UNDO_VARIANT " Undo")) CodeEditor.Undo();
+        if (ImGui::Button(LE_ICON_UNDO_VARIANT " Undo"))
+        {
+            CodeEditor.Undo();
+        }
         ImGuiX::TextTooltip("Undo last change (Ctrl+Z).");
         ImGui::EndDisabled();
 
         ImGui::SameLine();
         ImGui::BeginDisabled(!CodeEditor.CanRedo());
-        if (ImGui::Button(LE_ICON_REDO_VARIANT " Redo")) CodeEditor.Redo();
+        if (ImGui::Button(LE_ICON_REDO_VARIANT " Redo"))
+        {
+            CodeEditor.Redo();
+        }
         ImGuiX::TextTooltip("Redo last undone change (Ctrl+Y).");
         ImGui::EndDisabled();
 
@@ -1906,7 +1930,10 @@ namespace Lumina
         if (ImGui::Button(LE_ICON_FORMAT_LIST_BULLETED " Outline"))
         {
             bShowOutline = !bShowOutline;
-            if (bShowOutline) RebuildDocumentOutline();
+            if (bShowOutline)
+            {
+                RebuildDocumentOutline();
+            }
         }
         ImGui::PopStyleColor();
         ImGuiX::TextTooltip("Toggle the right-side outline panel (Ctrl+\\).\nLists functions and locals in this file.");
@@ -2179,22 +2206,52 @@ namespace Lumina
 
         ImGui::TextDisabled("Document");
         ImGui::Separator();
-        if (ImGui::MenuItem("Strip trailing whitespace")) CodeEditor.StripTrailingWhitespaces();
-        if (ImGui::MenuItem("Tabs to spaces"))            CodeEditor.TabsToSpaces();
-        if (ImGui::MenuItem("Spaces to tabs"))            CodeEditor.SpacesToTabs();
+        if (ImGui::MenuItem("Strip trailing whitespace"))
+        {
+            CodeEditor.StripTrailingWhitespaces();
+        }
+        if (ImGui::MenuItem("Tabs to spaces"))
+        {
+            CodeEditor.TabsToSpaces();
+        }
+        if (ImGui::MenuItem("Spaces to tabs"))
+        {
+            CodeEditor.SpacesToTabs();
+        }
 
         ImGui::Spacing();
         ImGui::TextDisabled("Selection");
         ImGui::Separator();
         const bool bHasSel = CodeEditor.AnyCursorHasSelection();
         ImGui::BeginDisabled(!bHasSel);
-        if (ImGui::MenuItem("Indent",          "Tab"))          CodeEditor.IndentLines();
-        if (ImGui::MenuItem("Deindent",        "Shift+Tab"))    CodeEditor.DeindentLines();
-        if (ImGui::MenuItem("Move up",         "Alt+Up"))       CodeEditor.MoveUpLines();
-        if (ImGui::MenuItem("Move down",       "Alt+Down"))     CodeEditor.MoveDownLines();
-        if (ImGui::MenuItem("Toggle comments", "Ctrl+/"))       CodeEditor.ToggleComments();
-        if (ImGui::MenuItem("To upper case"))                    CodeEditor.SelectionToUpperCase();
-        if (ImGui::MenuItem("To lower case"))                    CodeEditor.SelectionToLowerCase();
+        if (ImGui::MenuItem("Indent",          "Tab"))
+        {
+            CodeEditor.IndentLines();
+        }
+        if (ImGui::MenuItem("Deindent",        "Shift+Tab"))
+        {
+            CodeEditor.DeindentLines();
+        }
+        if (ImGui::MenuItem("Move up",         "Alt+Up"))
+        {
+            CodeEditor.MoveUpLines();
+        }
+        if (ImGui::MenuItem("Move down",       "Alt+Down"))
+        {
+            CodeEditor.MoveDownLines();
+        }
+        if (ImGui::MenuItem("Toggle comments", "Ctrl+/"))
+        {
+            CodeEditor.ToggleComments();
+        }
+        if (ImGui::MenuItem("To upper case"))
+        {
+            CodeEditor.SelectionToUpperCase();
+        }
+        if (ImGui::MenuItem("To lower case"))
+        {
+            CodeEditor.SelectionToLowerCase();
+        }
         ImGui::EndDisabled();
 
         ImGui::EndPopup();
@@ -2291,9 +2348,6 @@ namespace Lumina
         if (ImGui::CollapsingHeader("Engine bindings"))
         {
             ImGui::TextWrapped(
-                "OnBeginPlay() / OnUpdate(dt) / OnEndPlay()\n"
-                "Events:Subscribe(name, fn)  -- unsubscribe by returning false\n"
-                "Events:Dispatch(name, payload)\n"
                 "Hover any identifier in the editor for kind / type / signature.");
         }
         if (ImGui::CollapsingHeader("Luau extras"))
@@ -2323,20 +2377,34 @@ namespace Lumina
             ImGui::PopStyleColor();
             return;
         }
-
-        // ---------- toolbar ----------
+        
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), LE_ICON_PAUSE_CIRCLE " Paused at line %d", Debugger.GetPausedLineZeroBased() + 1);
         ImGui::SameLine(0, 16);
 
-        if (ImGui::Button(LE_ICON_PLAY " Continue"))            Debugger.RequestContinue();
+        if (ImGui::Button(LE_ICON_PLAY " Continue"))
+        {
+            Debugger.RequestContinue();
+        }
         ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_DEBUG_STEP_OVER " Over"))     Debugger.RequestStepOver();
+        if (ImGui::Button(LE_ICON_DEBUG_STEP_OVER " Over"))
+        {
+            Debugger.RequestStepOver();
+        }
         ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_DEBUG_STEP_INTO " Into"))     Debugger.RequestStepInto();
+        if (ImGui::Button(LE_ICON_DEBUG_STEP_INTO " Into"))
+        {
+            Debugger.RequestStepInto();
+        }
         ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_DEBUG_STEP_OUT " Out"))       Debugger.RequestStepOut();
+        if (ImGui::Button(LE_ICON_DEBUG_STEP_OUT " Out"))
+        {
+            Debugger.RequestStepOut();
+        }
         ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_STOP " Stop"))                Debugger.RequestStop();
+        if (ImGui::Button(LE_ICON_STOP " Stop"))
+        {
+            Debugger.RequestStop();
+        }
 
         // Keyboard shortcuts only fire when this editor is the focused tool
         // ImGui::IsWindowFocused gates them so they don't steal F5 etc. from
@@ -2358,7 +2426,7 @@ namespace Lumina
 
         ImGui::Separator();
 
-        // ---------- split: call stack | locals/upvalues | watches ----------
+        // split: call stack | locals/upvalues | watches
         const ImVec2 Avail = ImGui::GetContentRegionAvail();
         const float Spacing = ImGui::GetStyle().ItemSpacing.x;
         const float CallStackW = (Avail.x - Spacing * 2.0f) * 0.30f;
@@ -2416,7 +2484,10 @@ namespace Lumina
 
                 auto DrawTable = [&](const TVector<Lua::FStackVariable>& Vars, const char* Header)
                 {
-                    if (Vars.empty()) return;
+                    if (Vars.empty())
+                    {
+                        return;
+                    }
                     ImGui::SeparatorText(Header);
                     if (ImGui::BeginTable(Header, 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
                     {
@@ -2428,7 +2499,7 @@ namespace Lumina
                         {
                             const bool bExpandable = (V.TypeName == "table") || (V.TypeName == "userdata");
                             DrawExpandableValueRow(
-                                eastl::string(V.Name.c_str(), V.Name.size()),
+                                FString(V.Name.c_str(), V.Name.size()),
                                 V.Name.c_str(),
                                 V.Value.c_str(),
                                 V.TypeName.c_str(),
@@ -2467,7 +2538,10 @@ namespace Lumina
         ImGui::SameLine(0, 12);
         if (ImGui::SmallButton("Refresh##wsh"))
         {
-            for (FWatchEntry& W : Watches) W.bDirty = true;
+            for (FWatchEntry& W : Watches)
+            {
+                W.bDirty = true;
+            }
             RefreshWatchValues();
         }
         ImGui::SameLine();
@@ -2529,15 +2603,24 @@ namespace Lumina
                 }
 
                 ImGui::TableNextColumn();
-                if (bError) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%s", W.LastValue.c_str());
-                else        ImGui::TextUnformatted(W.LastValue.c_str());
+                if (bError)
+                {
+                    ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%s", W.LastValue.c_str());
+                }
+                else
+                {
+                    ImGui::TextUnformatted(W.LastValue.c_str());
+                }
 
                 ImGui::TableNextColumn();
                 ImGui::TextDisabled("%s", W.LastType.c_str());
 
                 ImGui::TableNextColumn();
                 bool bRemove = false;
-                if (ImGui::SmallButton("X##rm")) bRemove = true;
+                if (ImGui::SmallButton("X##rm"))
+                {
+                    bRemove = true;
+                }
 
                 if (bExpandable && bOpen)
                 {
@@ -2548,7 +2631,7 @@ namespace Lumina
                         Children, 256);
                     for (const Lua::FChildEntry& C : Children)
                     {
-                        eastl::string ChildPath = W.Expression;
+                        FString ChildPath = W.Expression;
                         ChildPath.append(C.AccessSuffix.c_str(), C.AccessSuffix.size());
                         DrawExpandableValueRow(ChildPath, C.Key.c_str(), C.Value.c_str(),
                             C.TypeName.c_str(), C.bIsExpandable, DebuggerSelectedFrame);
@@ -2647,7 +2730,7 @@ namespace Lumina
         }
     }
 
-    void FLuaEditorTool::DrawExpandableValueRow(const eastl::string& Path,
+    void FLuaEditorTool::DrawExpandableValueRow(const FString& Path,
                                                  const char* Key,
                                                  const char* Value,
                                                  const char* TypeName,
@@ -2692,7 +2775,7 @@ namespace Lumina
 
             for (const Lua::FChildEntry& C : Children)
             {
-                eastl::string ChildPath = Path;
+                FString ChildPath = Path;
                 ChildPath.append(C.AccessSuffix.c_str(), C.AccessSuffix.size());
                 DrawExpandableValueRow(
                     ChildPath, C.Key.c_str(), C.Value.c_str(), C.TypeName.c_str(),
@@ -2711,11 +2794,17 @@ namespace Lumina
     void FLuaEditorTool::RefreshWatchValues()
     {
         Lua::FLuaDebugger& Debugger = Lua::FLuaDebugger::Get();
-        if (!Debugger.IsPaused()) return;
+        if (!Debugger.IsPaused())
+        {
+            return;
+        }
 
         for (FWatchEntry& W : Watches)
         {
-            if (!W.bDirty) continue;
+            if (!W.bDirty)
+            {
+                continue;
+            }
             FString Out, Type;
             Debugger.EvaluateInPausedFrame(DebuggerSelectedFrame,
                 FStringView(W.Expression.c_str(), W.Expression.size()),
@@ -2729,10 +2818,7 @@ namespace Lumina
     void FLuaEditorTool::HandleEditorShortcuts()
     {
         const ImGuiIO& Io = ImGui::GetIO();
-
-        // Bookmark toggle (F2) and navigation (Shift+F2 = prev, F2 alone = next
-        // when nothing is on the cursor's line). The TextEditor doesn't claim
-        // F2, so we own it cleanly.
+        
         if (ImGui::IsKeyPressed(ImGuiKey_F2, false))
         {
             const int CurLine = CodeEditor.GetCurrentCursorPosition().line;
@@ -2752,10 +2838,6 @@ namespace Lumina
             {
                 bRequestOpenGoto = true;
             }
-            // Run-to-cursor (Ctrl+F10): set a one-shot breakpoint on the
-            // cursor's line and continue. If the debugger isn't paused yet
-            // it just installs the temp breakpoint so the next break lands
-            // there.
             if (ImGui::IsKeyPressed(ImGuiKey_F10, false))
             {
                 RunToCursor();
@@ -2773,22 +2855,37 @@ namespace Lumina
     {
         Lua::FLuaDebugger& Debugger = Lua::FLuaDebugger::Get();
         const TVector<Lua::FStackFrame>& Stack = Debugger.GetCallStack();
-        if (Stack.empty()) return;
+        if (Stack.empty())
+        {
+            return;
+        }
         const int Frame = std::clamp(DebuggerSelectedFrame, 0, (int)Stack.size() - 1);
         const Lua::FStackFrame& F = Stack[Frame];
 
         // Build a name -> value/type lookup for this frame. Locals shadow
         // upvalues by name when both are present.
-        eastl::hash_map<eastl::string, const Lua::FStackVariable*> ByName;
-        for (const Lua::FStackVariable& V : F.Upvalues) ByName[eastl::string(V.Name.c_str(), V.Name.size())] = &V;
-        for (const Lua::FStackVariable& V : F.Locals)   ByName[eastl::string(V.Name.c_str(), V.Name.size())] = &V;
-        if (ByName.empty()) return;
+        THashMap<FString, const Lua::FStackVariable*> ByName;
+        for (const Lua::FStackVariable& V : F.Upvalues)
+        {
+            ByName[FString(V.Name.c_str(), V.Name.size())] = &V;
+        }
+        for (const Lua::FStackVariable& V : F.Locals)
+        {
+            ByName[FString(V.Name.c_str(), V.Name.size())] = &V;
+        }
+        if (ByName.empty())
+        {
+            return;
+        }
 
         ImDrawList* DrawList = ImGui::GetWindowDrawList();
         const ImU32 GhostColor = IM_COL32(180, 180, 120, 200);
         const float LineHeight = CodeEditor.GetLineHeight();
         const float GlyphWidth = CodeEditor.GetGlyphWidth();
-        if (LineHeight <= 0.0f || GlyphWidth <= 0.0f) return;
+        if (LineHeight <= 0.0f || GlyphWidth <= 0.0f)
+        {
+            return;
+        }
 
         const int FirstVisible = CodeEditor.GetFirstVisibleLine();
         const int LastVisible  = std::min(CodeEditor.GetLastVisibleLine(), CodeEditor.GetLineCount() - 1);
@@ -2800,7 +2897,10 @@ namespace Lumina
         {
             const std::string LineText = CodeEditor.GetLineText(LineIdx);
             const int N = (int)LineText.size();
-            if (N == 0) continue;
+            if (N == 0)
+            {
+                continue;
+            }
 
             // Find first identifier on this line that matches a known local.
             const Lua::FStackVariable* MatchVar = nullptr;
@@ -2810,12 +2910,18 @@ namespace Lumina
             while (I < N)
             {
                 const char C = LineText[I];
-                if (C == '-' && I + 1 < N && LineText[I + 1] == '-') break; // line comment
+                if (C == '-' && I + 1 < N && LineText[I + 1] == '-')
+                {
+                    break; // line comment
+                }
                 if ((C >= 'a' && C <= 'z') || (C >= 'A' && C <= 'Z') || C == '_')
                 {
                     int Start = I;
-                    while (I < N && IsIdentChar(LineText[I])) ++I;
-                    eastl::string Ident(LineText.data() + Start, I - Start);
+                    while (I < N && IsIdentChar(LineText[I]))
+                    {
+                        ++I;
+                    }
+                    FString Ident(LineText.data() + Start, I - Start);
                     auto It = ByName.find(Ident);
                     if (It != ByName.end())
                     {
@@ -3038,11 +3144,11 @@ namespace Lumina
                 if (!Filter.empty())
                 {
                     // Case-insensitive substring filter on the name.
-                    eastl::string Lower(Item.Name.c_str(), Item.Name.size());
+                    FString Lower(Item.Name.c_str(), Item.Name.size());
                     for (char& C : Lower) C = (char)std::tolower((unsigned char)C);
-                    eastl::string FLow(Filter.data(), Filter.size());
+                    FString FLow(Filter.data(), Filter.size());
                     for (char& C : FLow) C = (char)std::tolower((unsigned char)C);
-                    if (Lower.find(FLow) == eastl::string::npos) continue;
+                    if (Lower.find(FLow) == FString::npos) continue;
                 }
 
                 ImVec4 KindColor = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);

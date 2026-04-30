@@ -222,6 +222,7 @@ namespace Lumina
             SpotLightIcon,
             CameraIcon,
             CharacterIcon,
+            ParticleSystemIcon,
             #endif
             
             Num,
@@ -235,6 +236,7 @@ namespace Lumina
         
         void RenderView(ICommandList& CmdList, const FViewVolume& ViewVolume, const SPostProcessSettings* PostProcess = nullptr) override;
         void SwapchainResized(glm::vec2 NewSize);
+        void Resize(const glm::uvec2& NewSize) override { SwapchainResized(glm::vec2(NewSize)); }
         
         void DrawBillboard(FRHIImage* Image, const glm::vec3& Location, float Scale) override;
         void DrawLine(const glm::vec3& Start, const glm::vec3& End, const glm::vec4& Color, float Thickness, bool bDepthTest, float Duration) override { }

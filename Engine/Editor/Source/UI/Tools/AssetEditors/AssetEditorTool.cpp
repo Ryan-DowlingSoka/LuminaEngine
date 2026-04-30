@@ -1,5 +1,6 @@
 #include "AssetEditorTool.h"
 #include "Core/Object/Package/Package.h"
+#include "Thumbnails/ThumbnailManager.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 
 namespace Lumina
@@ -47,7 +48,13 @@ namespace Lumina
 
         if (ShouldGenerateThumbnailOnSave() && Asset->GetPackage())
         {
-            GenerateThumbnail(Asset->GetPackage());
+            // Prefer the per-asset-class transient render path; falls back to
+            // grabbing the live editor viewport when no renderer is registered
+            // for this asset type.
+            if (!CThumbnailManager::Get().GenerateThumbnail(Asset, Asset->GetPackage()))
+            {
+                GenerateThumbnail(Asset->GetPackage());
+            }
         }
 
         if (CPackage::SavePackage(Asset->GetPackage(), Asset->GetPackage()->GetPackagePath()))

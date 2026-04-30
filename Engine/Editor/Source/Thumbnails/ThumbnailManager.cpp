@@ -1,5 +1,11 @@
 ﻿#include "ThumbnailManager.h"
+#include "ThumbnailScene.h"
+#include "Assets/AssetTypes/Material/Material.h"
+#include "Assets/AssetTypes/Material/MaterialInstance.h"
 #include "Assets/AssetTypes/Mesh/StaticMesh/StaticMesh.h"
+#include "Assets/AssetTypes/ParticleSystem/ParticleSystem.h"
+#include "Core/Object/Cast.h"
+#include "Core/Object/Class.h"
 #include "Core/Object/Package/Package.h"
 #include "Core/Object/Package/Thumbnail/PackageThumbnail.h"
 #include "Paths/Paths.h"
@@ -7,6 +13,10 @@
 #include "Renderer/RHIGlobals.h"
 
 #include "TaskSystem/TaskSystem.h"
+#include "World/Entity/Components/EnvironmentComponent.h"
+#include "World/Entity/Components/LightComponent.h"
+#include "World/Entity/Components/ParticleSystemComponent.h"
+#include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Scene/RenderScene/SceneMeshes.h"
 
 
@@ -70,6 +80,101 @@ namespace Lumina
             PlaneMesh->Materials.resize(1);
             PlaneMesh->SetMeshResource(Move(Resource));
         }
+
+        // Built-in renderers. Game/editor code can call RegisterThumbnailRenderer
+        // to add or override entries for project-specific asset types.
+        // Studio framing constants. With FOV 35° and aspect 1, a sphere of
+        // radius R exactly fills the vertical at distance R / tan(17.5°) ≈
+        // R * 3.17. Multipliers below leave a deliberate margin per asset
+        // type — meshes get a wider crop, materials get a tight crop because
+        // the sphere is the subject.
+        constexpr float kThumbnailFOV       = 35.0f;
+        constexpr float kMeshFramingScale   = 3.6f;   // ~12% margin around bounds
+        constexpr float kSphereFramingScale = 5.5f;   // sphere fills ~60% of frame
+
+        // Add a directional light + sky so thumbnails sit on the engine's
+        // default skybox background. Caller supplies a tinted color so each
+        // asset class can pick a slightly different mood; defaults are mild.
+        auto SetupStudioLighting = [](CWorld* World)
+        {
+            FEntityRegistry& Registry = World->GetEntityRegistry();
+            entt::entity Light = World->ConstructEntity("StudioLight");
+            Registry.emplace<SDirectionalLightComponent>(Light);
+            Registry.emplace<SEnvironmentComponent>(Light);
+        };
+
+        RegisterThumbnailRenderer(CStaticMesh::StaticClass(), [SetupStudioLighting](FThumbnailScene& Scene, CObject* Asset)
+            {
+                CStaticMesh* Mesh = Cast<CStaticMesh>(Asset);
+                if (Mesh == nullptr)
+                {
+                    return;
+                }
+
+                CWorld* World = Scene.GetWorld();
+                FEntityRegistry& Registry = World->GetEntityRegistry();
+
+                SetupStudioLighting(World);
+
+                entt::entity MeshEntity = World->ConstructEntity("Mesh");
+                Registry.emplace<SStaticMeshComponent>(MeshEntity).StaticMesh = Mesh;
+
+                // Use the bounding-sphere radius (extent length) so wide-flat
+                // and tall-narrow meshes frame the same as cubes.
+                const FAABB Bounds   = Mesh->GetAABB();
+                const glm::vec3 Cen  = Bounds.GetCenter();
+                const float Radius   = glm::max(glm::length(Bounds.GetSize() * 0.5f), 0.5f);
+                const glm::vec3 Dir  = glm::normalize(glm::vec3(1.0f, 0.6f, 1.0f));
+                const glm::vec3 CamPos = Cen + Dir * (Radius * kMeshFramingScale);
+
+                Scene.SetCameraTransform(CamPos, Cen, kThumbnailFOV);
+            });
+
+        RegisterThumbnailRenderer(CMaterialInterface::StaticClass(), [this, SetupStudioLighting](FThumbnailScene& Scene, CObject* Asset)
+            {
+                CMaterialInterface* Material = Cast<CMaterialInterface>(Asset);
+                if (Material == nullptr)
+                {
+                    return;
+                }
+
+                CWorld* World = Scene.GetWorld();
+                FEntityRegistry& Registry = World->GetEntityRegistry();
+
+                SetupStudioLighting(World);
+
+                entt::entity MeshEntity = World->ConstructEntity("PreviewSphere");
+                SStaticMeshComponent& MeshComp = Registry.emplace<SStaticMeshComponent>(MeshEntity);
+                MeshComp.StaticMesh = SphereMesh;
+                MeshComp.MaterialOverrides.push_back(Material);
+
+                // Sphere mesh has unit radius.
+                const glm::vec3 Dir = glm::normalize(glm::vec3(0.0f, 0.25f, 1.0f));
+                Scene.SetCameraTransform(Dir * kSphereFramingScale, glm::vec3(0.0f), kThumbnailFOV);
+            });
+
+        RegisterThumbnailRenderer(CParticleSystem::StaticClass(), [SetupStudioLighting](FThumbnailScene& Scene, CObject* Asset)
+            {
+                CParticleSystem* PS = Cast<CParticleSystem>(Asset);
+                if (PS == nullptr)
+                {
+                    return;
+                }
+
+                CWorld* World = Scene.GetWorld();
+                FEntityRegistry& Registry = World->GetEntityRegistry();
+
+                SetupStudioLighting(World);
+
+                entt::entity ParticleEntity = World->ConstructEntity("ParticleSystem");
+                Registry.emplace<SParticleSystemComponent>(ParticleEntity).ParticleSystem = PS;
+
+                // Particles emit around origin; pull the camera back enough to
+                // capture a typical spawn radius without trying to derive it
+                // from the asset (no AABB on a particle system).
+                const glm::vec3 Dir = glm::normalize(glm::vec3(0.0f, 0.25f, 1.0f));
+                Scene.SetCameraTransform(Dir * 4.0f, glm::vec3(0.0f), kThumbnailFOV);
+            });
     }
 
     CThumbnailManager& CThumbnailManager::Get()
@@ -178,6 +283,62 @@ namespace Lumina
     
         AsyncLoadThumbnailsForPackage(Package);
         return nullptr;
+    }
+
+    void CThumbnailManager::RegisterThumbnailRenderer(CClass* AssetClass, FThumbnailRendererFn Renderer)
+    {
+        if (AssetClass == nullptr)
+        {
+            return;
+        }
+        ThumbnailRenderers.insert_or_assign(AssetClass, Move(Renderer));
+    }
+
+    bool CThumbnailManager::GenerateThumbnail(CObject* Asset, CPackage* Package)
+    {
+        if (Asset == nullptr || Package == nullptr)
+        {
+            return false;
+        }
+
+        // Walk up the asset's class hierarchy looking for a registered renderer.
+        // Lets a single entry on a base class (CMaterialInterface) cover all
+        // derivatives (CMaterial, CMaterialInstance) without duplicate setup.
+        FThumbnailRendererFn* Renderer = nullptr;
+        for (CClass* Klass = Asset->GetClass(); Klass != nullptr; Klass = Cast<CClass>(Klass->GetSuperClass()))
+        {
+            auto It = ThumbnailRenderers.find(Klass);
+            if (It != ThumbnailRenderers.end())
+            {
+                Renderer = &It->second;
+                break;
+            }
+        }
+
+        if (Renderer == nullptr)
+        {
+            return false;
+        }
+
+        FThumbnailScene Scene(512);
+        Scene.Begin();
+
+        if (Scene.GetWorld() == nullptr)
+        {
+            return false;
+        }
+
+        (*Renderer)(Scene, Asset);
+
+        FPackageThumbnail* Thumbnail = Package->GetPackageThumbnail();
+        if (Thumbnail == nullptr)
+        {
+            return false;
+        }
+
+        const bool bCaptured = Scene.Capture(*Thumbnail);
+        Scene.End();
+        return bCaptured;
     }
 
     void CThumbnailManager::OnPackageDestroyed(FName Package)
