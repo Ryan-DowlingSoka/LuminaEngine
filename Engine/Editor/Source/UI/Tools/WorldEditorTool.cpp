@@ -176,6 +176,127 @@ namespace Lumina
         return true;
     }
 
+    // Project a world-space point to viewport pixel coords (y-down).
+    // ViewProj is expected to use the same GL-Y-up convention as ProjectAABBToScreenRect.
+    static bool ProjectPointToScreen(const glm::vec3& WorldPos, const glm::mat4& ViewProj,
+                                     const ImVec2& ViewportSize, ImVec2& OutScreen)
+    {
+        glm::vec4 Clip = ViewProj * glm::vec4(WorldPos, 1.0f);
+        if (Clip.w <= 1e-4f)
+        {
+            return false;
+        }
+        const float NdcX = Clip.x / Clip.w;
+        const float NdcY = Clip.y / Clip.w;
+        OutScreen.x = (NdcX * 0.5f + 0.5f) * ViewportSize.x;
+        OutScreen.y = (1.0f - (NdcY * 0.5f + 0.5f)) * ViewportSize.y;
+        return true;
+    }
+
+    // Walk every LOD-0 vertex of a static mesh and call Visit(LocalPos).
+    // Runtime mesh data is quantized to a per-meshlet 10-10-10 grid;
+    // dequant is MeshOrigin + (LoInt + q) * GridStep.
+    template <typename TVisitor>
+    static void ForEachMeshVertexLocal(const CStaticMesh& Mesh, TVisitor&& Visit)
+    {
+        const FMeshResource& Resource = Mesh.GetMeshResource();
+        if (Resource.bSkinnedMesh)
+        {
+            return;
+        }
+        const FMeshletData& MeshletData = Resource.MeshletData;
+        if (MeshletData.IsEmpty())
+        {
+            return;
+        }
+        const glm::vec3 MeshOrigin = MeshletData.MeshOrigin;
+        const glm::vec3 GridStep   = MeshletData.MeshGridStep;
+        const TVector<FMeshletVertex>& Verts = MeshletData.MeshletVertices;
+        const TVector<FMeshlet>& Meshlets    = MeshletData.Meshlets;
+
+        Mesh.ForEachSurface([&](const FGeometrySurface& Surface, uint32)
+        {
+            if (Surface.NumLODs == 0)
+            {
+                return;
+            }
+            const uint32 Offset = Surface.LODMeshletOffset[0];
+            const uint32 Count  = Surface.LODMeshletCount[0];
+            for (uint32 i = 0; i < Count; ++i)
+            {
+                const FMeshlet& M = Meshlets[Offset + i];
+                for (uint32 v = 0; v < M.VertexCount; ++v)
+                {
+                    const uint32 P = Verts[M.VertexOffset + v].Position;
+                    glm::ivec3 Q;
+                    Q.x = int32( P        & 0x3FFu);
+                    Q.y = int32((P >> 10) & 0x3FFu);
+                    Q.z = int32((P >> 20) & 0x3FFu);
+                    const glm::vec3 LocalPos = MeshOrigin + glm::vec3(M.LoInt + Q) * GridStep;
+                    Visit(LocalPos);
+                }
+            }
+        });
+    }
+
+    // Find the LOD-0 vertex on Mesh closest to TargetScreenPos in pixel space.
+    // Returns true if any vertex projected within MaxScreenDistPx.
+    static bool FindClosestVertexToScreenPoint(const CStaticMesh& Mesh,
+                                               const glm::mat4& MeshWorldMatrix,
+                                               const glm::mat4& ViewProj,
+                                               const ImVec2& ViewportSize,
+                                               const ImVec2& TargetScreenPos,
+                                               float MaxScreenDistPx,
+                                               glm::vec3& OutLocalPos,
+                                               glm::vec3& OutWorldPos)
+    {
+        const FMeshResource& Resource = Mesh.GetMeshResource();
+        if (Resource.bSkinnedMesh || Resource.MeshletData.IsEmpty())
+        {
+            return false;
+        }
+
+        // Cheap whole-mesh cull against an inflated screen rect.
+        ImVec2 BoxMin, BoxMax;
+        const FAABB WorldAABB = Mesh.GetAABB().ToWorld(MeshWorldMatrix);
+        if (!ProjectAABBToScreenRect(WorldAABB, ViewProj, ViewportSize, BoxMin, BoxMax))
+        {
+            return false;
+        }
+        if (TargetScreenPos.x < BoxMin.x - MaxScreenDistPx || TargetScreenPos.x > BoxMax.x + MaxScreenDistPx ||
+            TargetScreenPos.y < BoxMin.y - MaxScreenDistPx || TargetScreenPos.y > BoxMax.y + MaxScreenDistPx)
+        {
+            return false;
+        }
+
+        const glm::mat4 MVP = ViewProj * MeshWorldMatrix;
+        float BestDistSq = MaxScreenDistPx * MaxScreenDistPx;
+        bool  bFound = false;
+
+        ForEachMeshVertexLocal(Mesh, [&](const glm::vec3& LocalPos)
+        {
+            glm::vec4 Clip = MVP * glm::vec4(LocalPos, 1.0f);
+            if (Clip.w <= 1e-4f)
+            {
+                return;
+            }
+            const float Px = (Clip.x / Clip.w * 0.5f + 0.5f) * ViewportSize.x;
+            const float Py = (1.0f - (Clip.y / Clip.w * 0.5f + 0.5f)) * ViewportSize.y;
+            const float dx = Px - TargetScreenPos.x;
+            const float dy = Py - TargetScreenPos.y;
+            const float DistSq = dx * dx + dy * dy;
+            if (DistSq < BestDistSq)
+            {
+                BestDistSq  = DistSq;
+                OutLocalPos = LocalPos;
+                OutWorldPos = glm::vec3(MeshWorldMatrix * glm::vec4(LocalPos, 1.0f));
+                bFound = true;
+            }
+        });
+
+        return bFound;
+    }
+
 
     FWorldEditorTool::FWorldEditorTool(IEditorToolContext* Context, CWorld* InWorld)
         : FEditorTool(Context, "World Editor", InWorld)
@@ -205,6 +326,8 @@ namespace Lumina
         GuizmoSnapTranslate = GConfig->Get("Editor.WorldEditorTool.GuizmoSnapTranslate", 0.1f);
         GuizmoSnapRotate    = GConfig->Get("Editor.WorldEditorTool.GuizmoSnapRotate", 5.0f);
         GuizmoSnapScale     = GConfig->Get("Editor.WorldEditorTool.GuizmoSnapScale", 0.1f);
+
+        RegisterEditorActions();
 
         //------------------------------------------------------------------------------------------------------
         
@@ -582,7 +705,7 @@ namespace Lumina
             if (SStaticMeshComponent* MeshComponent = World->GetEntityRegistry().try_get<SStaticMeshComponent>(Entity))
             {
                 const STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(Entity);
-                World->DrawBox(Transform.GetWorldLocation(), MeshComponent->GetAABB().GetSize() * 0.5f * Transform.GetWorldScale(), Transform.GetWorldRotation(), FColor::Red, 5.0f);
+                World->DrawBox(Transform.GetWorldLocation(), MeshComponent->GetAABB().GetSize() * 0.5f * Transform.GetWorldScale() * 1.2f, Transform.GetWorldRotation(), FColor::Red, 5.0f);
             }
         }
 
@@ -635,66 +758,12 @@ namespace Lumina
             }
         }
         
-        if (ImGui::IsKeyPressed(ImGuiKey_F))
-        {
-            FocusViewportToEntity(GetLastSelectedEntity());
-        }
-
-        if (bViewportHovered && ImGui::IsKeyPressed(ImGuiKey_G, false) && !ImGui::GetIO().WantTextInput
-            && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyAlt)
-        {
-            FSceneRenderSettings* Settings = nullptr;
-            if (IRenderScene* RenderScene = World ? World->GetRenderer() : nullptr)
-            {
-                Settings = &RenderScene->GetSceneRenderSettings();
-            }
-
-            if (!bGameViewMode)
-            {
-                bSavedWorldGridEnabled = bWorldGridEnabled;
-                bSavedShowComponentVisualizers = bShowComponentVisualizers;
-                if (Settings)
-                {
-                    bSavedDrawBillboards = Settings->bDrawBillboards;
-                    bSavedDrawAABB = Settings->bDrawAABB;
-                }
-
-                bWorldGridEnabled = false;
-                bShowComponentVisualizers = false;
-                if (Settings)
-                {
-                    Settings->bDrawBillboards = false;
-                    Settings->bDrawAABB = false;
-                }
-
-                bGameViewMode = true;
-            }
-            else
-            {
-                bWorldGridEnabled = bSavedWorldGridEnabled;
-                bShowComponentVisualizers = bSavedShowComponentVisualizers;
-                if (Settings)
-                {
-                    Settings->bDrawBillboards = bSavedDrawBillboards;
-                    Settings->bDrawAABB = bSavedDrawAABB;
-                }
-
-                bGameViewMode = false;
-            }
-        }
-
-
+        // Camera bookmarks: 1..9 recall, Ctrl+1..9 save. Loop-driven, so they live
+        // here rather than as N actions; help-menu entries are registered for them.
         if (bViewportHovered && !ImGui::GetIO().WantTextInput)
         {
             const ImGuiIO& IO = ImGui::GetIO();
             const bool bPlain = !IO.KeyCtrl && !IO.KeyShift && !IO.KeyAlt;
-
-            if (bPlain)
-            {
-                if      (ImGui::IsKeyPressed(ImGuiKey_W, false)) GuizmoOp = ImGuizmo::TRANSLATE;
-                else if (ImGui::IsKeyPressed(ImGuiKey_E, false)) GuizmoOp = ImGuizmo::ROTATE;
-                else if (ImGui::IsKeyPressed(ImGuiKey_R, false)) GuizmoOp = ImGuizmo::SCALE;
-            }
 
             for (int32 Slot = 0; Slot < NumCameraBookmarks; ++Slot)
             {
@@ -715,53 +784,115 @@ namespace Lumina
                     RecallCameraBookmark(Slot);
                 }
             }
-
-            if (IO.KeyCtrl && !IO.KeyShift && !IO.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_G, false))
-            {
-                GroupSelectedEntities();
-            }
-
-            if (IO.KeyCtrl && IO.KeyShift && !IO.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_C, false))
-            {
-                CopyTransformFromLastSelected();
-            }
-
-            if (IO.KeyCtrl && IO.KeyShift && !IO.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_V, false))
-            {
-                PasteTransformToSelection();
-            }
-
-            if (bPlain && ImGui::IsKeyPressed(ImGuiKey_Home, false))
-            {
-                FrameAllEntities();
-            }
-
-            if (bPlain && ImGui::IsKeyPressed(ImGuiKey_End, false))
-            {
-                DropSelectionToFloor();
-            }
         }
+    }
 
-        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_Z, false))
+    void FWorldEditorTool::ToggleGameViewMode()
+    {
+        FSceneRenderSettings* Settings = nullptr;
+        if (IRenderScene* RenderScene = World ? World->GetRenderer() : nullptr)
         {
-            if (World->GetWorldType() == EWorldType::Editor)
-            {
-                Undo();
-            }
+            Settings = &RenderScene->GetSceneRenderSettings();
         }
 
-        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_Y, false))
+        if (!bGameViewMode)
         {
-            if (World->GetWorldType() == EWorldType::Editor)
+            bSavedWorldGridEnabled = bWorldGridEnabled;
+            bSavedShowComponentVisualizers = bShowComponentVisualizers;
+            if (Settings)
             {
-                Redo();
+                bSavedDrawBillboards = Settings->bDrawBillboards;
+                bSavedDrawAABB = Settings->bDrawAABB;
             }
-        }
 
-        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_S, false))
-        {
-            OnSave();
+            bWorldGridEnabled = false;
+            bShowComponentVisualizers = false;
+            if (Settings)
+            {
+                Settings->bDrawBillboards = false;
+                Settings->bDrawAABB = false;
+            }
+
+            bGameViewMode = true;
         }
+        else
+        {
+            bWorldGridEnabled = bSavedWorldGridEnabled;
+            bShowComponentVisualizers = bSavedShowComponentVisualizers;
+            if (Settings)
+            {
+                Settings->bDrawBillboards = bSavedDrawBillboards;
+                Settings->bDrawAABB = bSavedDrawAABB;
+            }
+
+            bGameViewMode = false;
+        }
+    }
+
+    void FWorldEditorTool::RegisterEditorActions()
+    {
+        // Gates reused across actions.
+        auto Hovered      = [this]() { return bViewportHovered; };
+        auto EditorWorld  = [this]() { return World && World->GetWorldType() == EWorldType::Editor; };
+
+        // ---- Gizmo ----
+        RegisterAction({"Translate Mode", "Gizmo", "Switch the gizmo to translate (move) mode",
+            FInputChord{ImGuiKey_W}, [this]{ GuizmoOp = ImGuizmo::TRANSLATE; }, Hovered});
+
+        RegisterAction({"Rotate Mode", "Gizmo", "Switch the gizmo to rotate mode",
+            FInputChord{ImGuiKey_E}, [this]{ GuizmoOp = ImGuizmo::ROTATE; }, Hovered});
+
+        RegisterAction({"Scale Mode", "Gizmo", "Switch the gizmo to scale mode",
+            FInputChord{ImGuiKey_R}, [this]{ GuizmoOp = ImGuizmo::SCALE; }, Hovered});
+
+        // ---- View ----
+        RegisterAction({"Focus Selection", "View", "Frame the camera on the last-selected entity",
+            FInputChord{ImGuiKey_F}, [this]{ FocusViewportToEntity(GetLastSelectedEntity()); }});
+
+        RegisterAction({"Toggle Game View", "View", "Hide editor overlays so the viewport shows what a runtime camera would",
+            FInputChord{ImGuiKey_G}, [this]{ ToggleGameViewMode(); }, Hovered});
+
+        RegisterAction({"Frame All", "View", "Frame the camera on every entity in the world",
+            FInputChord{ImGuiKey_Home}, [this]{ FrameAllEntities(); }, Hovered});
+
+        // ---- Selection ----
+        RegisterAction({"Group Selected", "Selection", "Wrap the selection under a new parent entity",
+            FInputChord{ImGuiKey_G, /*Ctrl*/true}, [this]{ GroupSelectedEntities(); }, Hovered});
+
+        RegisterAction({"Drop to Floor", "Selection", "Project the selection straight down onto the nearest mesh",
+            FInputChord{ImGuiKey_End}, [this]{ DropSelectionToFloor(); }, Hovered});
+
+        RegisterAction({"Copy Transform", "Selection", "Copy the last-selected entity's transform to the clipboard",
+            FInputChord{ImGuiKey_C, true, true}, [this]{ CopyTransformFromLastSelected(); }, Hovered});
+
+        RegisterAction({"Paste Transform", "Selection", "Apply the previously-copied transform to every selected entity",
+            FInputChord{ImGuiKey_V, true, true}, [this]{ PasteTransformToSelection(); }, Hovered});
+
+        // ---- File / History ----
+        RegisterAction({"Undo", "History", "Revert the last transacted edit",
+            FInputChord{ImGuiKey_Z, true}, [this]{ Undo(); }, EditorWorld});
+
+        RegisterAction({"Redo", "History", "Re-apply the last undone edit",
+            FInputChord{ImGuiKey_Y, true}, [this]{ Redo(); }, EditorWorld});
+
+        RegisterAction({"Save World", "File", "Save the current world",
+            FInputChord{ImGuiKey_S, true}, [this]{ OnSave(); }});
+
+        // ---- Discoverable shortcuts handled inline (advisory only, no callback) ----
+        // These have intertwined logic that's awkward to call standalone; register so
+        // the shortcuts window still surfaces them.
+        RegisterAction({"Copy Entities", "Selection", "Copy the selection to the entity clipboard",
+            FInputChord{ImGuiKey_C, true}, nullptr});
+        RegisterAction({"Duplicate Entities", "Selection", "Duplicate the selection in place",
+            FInputChord{ImGuiKey_D, true}, nullptr});
+        RegisterAction({"Paste Entities", "Selection", "Paste previously-copied entities",
+            FInputChord{ImGuiKey_V, true}, nullptr});
+        RegisterAction({"Delete Selection", "Selection", "Delete every selected entity",
+            FInputChord{ImGuiKey_Delete}, nullptr});
+        RegisterAction({"Recall Camera Bookmark", "Camera", "Press 1-9 to recall a saved camera position",
+            FInputChord{}, nullptr});
+        RegisterAction({"Save Camera Bookmark", "Camera", "Ctrl+1..9 saves the camera into the matching slot",
+            FInputChord{}, nullptr});
     }
 
     void FWorldEditorTool::EndFrame()
@@ -954,9 +1085,35 @@ namespace Lumina
 
                     glm::mat4 PreManipulateMatrix = EntityMatrix;
 
+                    // Vertex-snap pre-pass: when CTRL is held in TRANSLATE mode, hover the
+                    // pivot mesh's closest vertex to the cursor as a "live anchor preview".
+                    // This runs every frame regardless of drag state so that pre-pressing
+                    // CTRL before clicking arms a valid anchor before ImGuizmo even engages.
+                    const bool bCtrlHeld = ImGui::GetIO().KeyCtrl;
+                    const bool bVertexSnapArmed = bCtrlHeld
+                                               && GuizmoOp == ImGuizmo::TRANSLATE
+                                               && !World->IsGameWorld();
+                    const glm::mat4 SnapViewProj = ProjectionMatrix * ViewMatrix;
+                    glm::vec3 PreviewAnchorLocal(0.0f);
+                    glm::vec3 PreviewAnchorWorld(0.0f);
+                    bool bPreviewAnchorValid = false;
+                    if (bVertexSnapArmed)
+                    {
+                        const SStaticMeshComponent* PivotMC = World->GetEntityRegistry().try_get<SStaticMeshComponent>(PivotEntity);
+                        if (PivotMC && PivotMC->StaticMesh)
+                        {
+                            const ImVec2 MP = ImGui::GetMousePos();
+                            const ImVec2 MouseInViewport(MP.x - ViewportOrigin.x, MP.y - ViewportOrigin.y);
+                            bPreviewAnchorValid = FindClosestVertexToScreenPoint(
+                                *PivotMC->StaticMesh.Get(), PreManipulateMatrix, SnapViewProj,
+                                ViewportSize, MouseInViewport, FLT_MAX,
+                                PreviewAnchorLocal, PreviewAnchorWorld);
+                        }
+                    }
+
                     ImGuizmo::Manipulate(glm::value_ptr(ViewMatrix), glm::value_ptr(ProjectionMatrix),
                         GuizmoOp, GuizmoMode, glm::value_ptr(EntityMatrix), nullptr, SnapValues);
-                
+
                     if (ImGuizmo::IsUsing())
                     {
                         if (!bImGuizmoUsedOnce)
@@ -964,13 +1121,84 @@ namespace Lumina
                             BeginTransaction();
                             bImGuizmoUsedOnce = true;
                         }
-                        
+
                         glm::mat4 DeltaMatrix = EntityMatrix * glm::inverse(PreManipulateMatrix);
-                
+
                         glm::vec3 DeltaTranslation, DeltaScale, DeltaSkew;
                         glm::quat DeltaRotation;
                         glm::vec4 DeltaPerspective;
                         glm::decompose(DeltaMatrix, DeltaScale, DeltaRotation, DeltaTranslation, DeltaSkew, DeltaPerspective);
+
+                        // Override DeltaTranslation so the anchor vertex aligns to the closest
+                        // vertex on a non-selected mesh in screen space.
+                        bVertexSnapApplied = false;
+                        if (bVertexSnapArmed)
+                        {
+                            // Lock in the live preview anchor on the first armed frame of the drag.
+                            if (!bVertexSnapAnchorValid && bPreviewAnchorValid)
+                            {
+                                VertexSnapAnchorLocal  = PreviewAnchorLocal;
+                                bVertexSnapAnchorValid = true;
+                            }
+
+                            if (bVertexSnapAnchorValid)
+                            {
+                                FEntityRegistry& Registry = World->GetEntityRegistry();
+                                const glm::vec3 AnchorPreWorld = glm::vec3(PreManipulateMatrix * glm::vec4(VertexSnapAnchorLocal, 1.0f));
+                                const glm::vec3 AnchorCandidateWorld = AnchorPreWorld + DeltaTranslation;
+
+                                ImVec2 AnchorScreen;
+                                if (ProjectPointToScreen(AnchorCandidateWorld, SnapViewProj, ViewportSize, AnchorScreen))
+                                {
+                                    float BestDistSq = VertexSnapPixelRadius * VertexSnapPixelRadius;
+                                    glm::vec3 BestTargetWorld(0.0f);
+                                    bool bFoundTarget = false;
+
+                                    Registry.view<SStaticMeshComponent, STransformComponent>().each(
+                                        [&](entt::entity Entity, SStaticMeshComponent& MeshComp, STransformComponent& Xform)
+                                    {
+                                        if (Entity == EditorEntity || !MeshComp.StaticMesh) return;
+                                        if (Registry.all_of<FSelectedInEditorComponent>(Entity)) return;
+
+                                        glm::vec3 LP, WP;
+                                        if (!FindClosestVertexToScreenPoint(*MeshComp.StaticMesh.Get(),
+                                                                            Xform.GetWorldMatrix(), SnapViewProj,
+                                                                            ViewportSize, AnchorScreen,
+                                                                            VertexSnapPixelRadius, LP, WP))
+                                        {
+                                            return;
+                                        }
+                                        ImVec2 HitScreen;
+                                        if (!ProjectPointToScreen(WP, SnapViewProj, ViewportSize, HitScreen)) return;
+                                        const float dx = HitScreen.x - AnchorScreen.x;
+                                        const float dy = HitScreen.y - AnchorScreen.y;
+                                        const float DistSq = dx * dx + dy * dy;
+                                        if (DistSq < BestDistSq)
+                                        {
+                                            BestDistSq      = DistSq;
+                                            BestTargetWorld = WP;
+                                            bFoundTarget    = true;
+                                        }
+                                    });
+
+                                    if (bFoundTarget)
+                                    {
+                                        DeltaTranslation       = BestTargetWorld - AnchorPreWorld;
+                                        bVertexSnapApplied     = true;
+                                        VertexSnapTargetWorld  = BestTargetWorld;
+                                        VertexSnapAnchorWorld  = BestTargetWorld;
+                                    }
+                                    else
+                                    {
+                                        VertexSnapAnchorWorld = AnchorCandidateWorld;
+                                    }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            bVertexSnapAnchorValid = false;
+                        }
 
                         glm::vec3 PivotPosition = PivotTransformComponent.WorldTransform.Location;
                         
@@ -1051,6 +1279,69 @@ namespace Lumina
                     {
                         EndTransaction("Transform");
                         bImGuizmoUsedOnce = false;
+                        bVertexSnapAnchorValid = false;
+                        bVertexSnapApplied     = false;
+                    }
+
+                    // Vertex-snap visualization: while armed, show a hint banner and a marker
+                    // on the live anchor so the user knows which vertex will snap. While snapping,
+                    // also draw the locked target.
+                    if (bVertexSnapArmed)
+                    {
+                        ImDrawList* DL = ImGui::GetCurrentWindow()->DrawList;
+
+                        const ImU32 ArmedCol = IM_COL32(120, 200, 255, 255);
+                        const ImU32 SnapCol  = IM_COL32(255, 220,   0, 255);
+
+                        // Banner top-left of viewport.
+                        const ImVec2 BannerPos(ViewportOrigin.x + 8.0f, ViewportOrigin.y + 8.0f);
+                        const char* Label = bVertexSnapApplied ? "VERTEX SNAP" : "VERTEX SNAP (armed)";
+                        const ImVec2 TextSize = ImGui::CalcTextSize(Label);
+                        DL->AddRectFilled(BannerPos,
+                            ImVec2(BannerPos.x + TextSize.x + 12.0f, BannerPos.y + TextSize.y + 6.0f),
+                            IM_COL32(0, 0, 0, 160), 3.0f);
+                        DL->AddText(ImVec2(BannerPos.x + 6.0f, BannerPos.y + 3.0f),
+                            bVertexSnapApplied ? SnapCol : ArmedCol, Label);
+
+                        // Live anchor marker (pre-drag preview, or current anchor mid-drag).
+                        glm::vec3 AnchorWorld(0.0f);
+                        bool bHaveAnchor = false;
+                        if (bVertexSnapAnchorValid)
+                        {
+                            AnchorWorld = bVertexSnapApplied
+                                ? VertexSnapAnchorWorld
+                                : glm::vec3(PivotTransformComponent.GetWorldMatrix() * glm::vec4(VertexSnapAnchorLocal, 1.0f));
+                            bHaveAnchor = true;
+                        }
+                        else if (bPreviewAnchorValid)
+                        {
+                            AnchorWorld = PreviewAnchorWorld;
+                            bHaveAnchor = true;
+                        }
+
+                        if (bHaveAnchor)
+                        {
+                            ImVec2 S;
+                            if (ProjectPointToScreen(AnchorWorld, SnapViewProj, ViewportSize, S))
+                            {
+                                const ImVec2 P(S.x + ViewportOrigin.x, S.y + ViewportOrigin.y);
+                                const ImU32 C = bVertexSnapApplied ? SnapCol : ArmedCol;
+                                DL->AddRectFilled(ImVec2(P.x - 3, P.y - 3), ImVec2(P.x + 3, P.y + 3), C);
+                                DL->AddRect(ImVec2(P.x - 7, P.y - 7), ImVec2(P.x + 7, P.y + 7), C, 0.0f, 0, 2.0f);
+                            }
+                        }
+
+                        // Snap-target marker (where the anchor will land).
+                        if (bVertexSnapApplied)
+                        {
+                            ImVec2 T;
+                            if (ProjectPointToScreen(VertexSnapTargetWorld, SnapViewProj, ViewportSize, T))
+                            {
+                                const ImVec2 P(T.x + ViewportOrigin.x, T.y + ViewportOrigin.y);
+                                DL->AddCircleFilled(P, 5.0f, SnapCol);
+                                DL->AddCircle(P, 10.0f, SnapCol, 0, 2.0f);
+                            }
+                        }
                     }
                 }
             }
@@ -2620,20 +2911,7 @@ namespace Lumina
         // forcing a rebuild keeps tree rows in sync.
         OutlinerListView.MarkTreeDirty();
     }
-
-    // -- Selection plumbing -------------------------------------------------------------------
-    //
-    // The tool keeps three views of selection:
-    //   1. SelectedEntities (the authoritative set, on the tool)
-    //   2. FSelectedInEditorComponent on the registry (a projection — read by render highlight,
-    //      visualizers, prefab editor, etc.)
-    //   3. FTreeNodeState::bSelected on the outliner (a projection — driven by the tool, never
-    //      written directly by the tree widget for entries we own)
-    //
-    // ApplySelectionMutation is the single funnel that keeps all three in sync. Public mutation
-    // methods (AddSelectedEntity, RemoveSelectedEntity, etc.) update the in-memory set, then
-    // call this to propagate. Whenever LastSelectedEntity changes, the details panel is marked
-    // dirty so its property tables rebuild on the next draw.
+    
     namespace
     {
         // Pulled out so we don't have to write the same out-of-line helper for each path.

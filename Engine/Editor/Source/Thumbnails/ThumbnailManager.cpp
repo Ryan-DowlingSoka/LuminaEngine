@@ -32,11 +32,16 @@ namespace Lumina
     void CThumbnailManager::Initialize()
     {
         (void)CPackage::OnPackageDestroyed.AddMember(this, &ThisClass::OnPackageDestroyed);
-        
+
+        // Engine primitive meshes live in the in-memory transient package with
+        // stable, deterministic GUIDs so worlds can reference them and survive
+        // a save/load cycle without needing a .lasset on disk.
+        CPackage* TransientPackage = CPackage::GetTransientPackage();
+
         {
             TUniquePtr<FMeshResource> Resource = MakeUnique<FMeshResource>();
             PrimitiveMeshes::GenerateCube(Resource->Vertices.emplace<TVector<FVertex>>(), Resource->Indices);
-            
+
             FGeometrySurface Surface;
             Surface.ID = "CubeMesh";
             Surface.IndexCount = (uint32)Resource->Indices.size();
@@ -44,7 +49,7 @@ namespace Lumina
             Surface.MaterialIndex = 0;
             Resource->GeometrySurfaces.push_back(Surface);
 
-            CubeMesh = NewObject<CStaticMesh>(nullptr, "ThumbnailCubeMesh", FGuid::New(), OF_Transient);
+            CubeMesh = NewObject<CStaticMesh>(TransientPackage, "EngineCubeMesh", FGuid::NewDeterministic("Engine.PrimitiveMesh.Cube"));
             CubeMesh->Materials.resize(1);
             CubeMesh->SetMeshResource(Move(Resource));
         }
@@ -52,7 +57,7 @@ namespace Lumina
         {
             TUniquePtr<FMeshResource> Resource = MakeUnique<FMeshResource>();
             PrimitiveMeshes::GenerateSphere(Resource->Vertices.emplace<TVector<FVertex>>(), Resource->Indices);
-            
+
             FGeometrySurface Surface;
             Surface.ID = "SphereMesh";
             Surface.IndexCount = (uint32)Resource->Indices.size();
@@ -60,7 +65,7 @@ namespace Lumina
             Surface.MaterialIndex = 0;
             Resource->GeometrySurfaces.push_back(Surface);
 
-            SphereMesh = NewObject<CStaticMesh>(nullptr, "ThumbnailSphereMesh", FGuid::New(), OF_Transient);
+            SphereMesh = NewObject<CStaticMesh>(TransientPackage, "EngineSphereMesh", FGuid::NewDeterministic("Engine.PrimitiveMesh.Sphere"));
             SphereMesh->Materials.resize(1);
             SphereMesh->SetMeshResource(Move(Resource));
         }
@@ -76,7 +81,7 @@ namespace Lumina
             Surface.MaterialIndex = 0;
             Resource->GeometrySurfaces.push_back(Surface);
 
-            PlaneMesh = NewObject<CStaticMesh>(nullptr, "ThumbnailPlaneMesh", FGuid::New(), OF_Transient);
+            PlaneMesh = NewObject<CStaticMesh>(TransientPackage, "EnginePlaneMesh", FGuid::NewDeterministic("Engine.PrimitiveMesh.Plane"));
             PlaneMesh->Materials.resize(1);
             PlaneMesh->SetMeshResource(Move(Resource));
         }
@@ -92,7 +97,7 @@ namespace Lumina
             Surface.MaterialIndex = 0;
             Resource->GeometrySurfaces.push_back(Surface);
 
-            CylinderMesh = NewObject<CStaticMesh>(nullptr, "ThumbnailCylinderMesh", FGuid::New(), OF_Transient);
+            CylinderMesh = NewObject<CStaticMesh>(TransientPackage, "EngineCylinderMesh", FGuid::NewDeterministic("Engine.PrimitiveMesh.Cylinder"));
             CylinderMesh->Materials.resize(1);
             CylinderMesh->SetMeshResource(Move(Resource));
         }
@@ -108,7 +113,7 @@ namespace Lumina
             Surface.MaterialIndex = 0;
             Resource->GeometrySurfaces.push_back(Surface);
 
-            ConeMesh = NewObject<CStaticMesh>(nullptr, "ThumbnailConeMesh", FGuid::New(), OF_Transient);
+            ConeMesh = NewObject<CStaticMesh>(TransientPackage, "EngineConeMesh", FGuid::NewDeterministic("Engine.PrimitiveMesh.Cone"));
             ConeMesh->Materials.resize(1);
             ConeMesh->SetMeshResource(Move(Resource));
         }

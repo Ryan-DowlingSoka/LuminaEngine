@@ -97,12 +97,30 @@ namespace Lumina
 
         CPackage* Package = NewObject<CPackage>(nullptr, ObjectName);
         Package->AddToRoot();
-        
+
         LOG_INFO("Created Package: \"{}\"", Path);
-        
+
         Package->MarkDirty();
-        
+
         return Package;
+    }
+
+    CPackage* CPackage::GetTransientPackage()
+    {
+        static CPackage* TransientPackage = nullptr;
+        if (TransientPackage == nullptr)
+        {
+            TransientPackage = NewObject<CPackage>(nullptr, "EngineTransient");
+            TransientPackage->AddToRoot();
+            TransientPackage->SetFlag(OF_Transient);
+            TransientPackage->LoadState.store(ELoadState::Loaded, std::memory_order_release);
+        }
+        return TransientPackage;
+    }
+
+    bool CPackage::IsTransientPackage() const
+    {
+        return HasAnyFlag(OF_Transient);
     }
     
     bool CPackage::DestroyPackage(FStringView Path)
@@ -158,6 +176,12 @@ namespace Lumina
     {
         if (PackageToDestroy == nullptr || PackageToDestroy->HasAnyFlag(OF_MarkedDestroy))
         {
+            return false;
+        }
+
+        if (PackageToDestroy->IsTransientPackage())
+        {
+            LOG_ERROR("DestroyPackage: refusing to destroy the engine transient package");
             return false;
         }
 
@@ -439,6 +463,12 @@ namespace Lumina
         LUMINA_PROFILE_SCOPE();
 
         ASSERT(Package != nullptr);
+
+        if (Package->IsTransientPackage())
+        {
+            LOG_ERROR("SavePackage: refusing to save the engine transient package to {}", Path);
+            return false;
+        }
 
         (void)Package->FullyLoad();
 

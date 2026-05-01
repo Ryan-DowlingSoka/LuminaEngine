@@ -62,7 +62,16 @@ namespace Lumina
     CObject* StaticLoadObject(const FGuid& GUID)
     {
         LUMINA_PROFILE_SCOPE();
-        
+
+        // Resolve in-memory first. Objects living in the engine-wide transient
+        // package (engine primitive meshes, default materials, etc.) have
+        // stable GUIDs but no asset-registry entry, so a save/load cycle on a
+        // world that references them only resolves through this path.
+        if (CObject* Existing = FindObjectImpl(GUID))
+        {
+            return Existing;
+        }
+
         if (const FAssetData* Data = FAssetRegistry::Get().GetAssetByGUID(GUID))
         {
             if (CPackage* Package = CPackage::LoadPackage(Data->Path))
@@ -70,7 +79,7 @@ namespace Lumina
                 return Package->LoadObject(GUID);
             }
         }
-        
+
         return nullptr;
     }
 
@@ -78,6 +87,15 @@ namespace Lumina
     {
         Task::AsyncTask(1, 1, [GUID, Callback](uint32, uint32, uint32)
         {
+            if (CObject* Existing = FindObjectImpl(GUID))
+            {
+                MainThread::Enqueue([Existing, Callback]
+                {
+                    Callback(Existing);
+                });
+                return;
+            }
+
             if (const FAssetData* Data = FAssetRegistry::Get().GetAssetByGUID(GUID))
             {
                 if (CPackage* Package = CPackage::LoadPackage(Data->Path))

@@ -215,7 +215,17 @@ namespace Lumina
         void CopyEntity(entt::entity& To, entt::entity From);
 
         void CycleGuizmoOp();
-    
+
+        /** Toggle the editor's "game view": hide grid, billboards, AABBs, gizmos so the
+         *  viewport shows only what a runtime camera would. Bound to G by default. */
+        void ToggleGameViewMode();
+
+    private:
+
+        /** Register the tool's keyboard shortcuts with the FEditorAction registry.
+         *  Called from OnInitialize. */
+        void RegisterEditorActions();
+
     private:
 
         struct FSelectionBox
@@ -310,6 +320,17 @@ namespace Lumina
         
         /** IDK, this thing will return IsUsing = true always if it's never been used */
         bool                                    bImGuizmoUsedOnce = false;
+
+        // Vertex snap (Godot-style): while CTRL is held during a translate drag,
+        // snap a chosen vertex on the dragged mesh to the nearest vertex on a
+        // non-selected mesh in screen space. AnchorLocal is captured once per
+        // drag in the pivot mesh's local frame.
+        bool                                    bVertexSnapAnchorValid = false;
+        glm::vec3                               VertexSnapAnchorLocal = glm::vec3(0.0f);
+        bool                                    bVertexSnapApplied = false;
+        glm::vec3                               VertexSnapTargetWorld = glm::vec3(0.0f);
+        glm::vec3                               VertexSnapAnchorWorld = glm::vec3(0.0f);
+        float                                   VertexSnapPixelRadius = 16.0f;
     };
     
 }

@@ -72,6 +72,7 @@
 #include "Renderer/ShaderCompiler.h"
 #include "Scripting/Lua/Scripting.h"
 #include "Scripting/Lua/Debugger/LuaDebugger.h"
+#include "Thumbnails/ThumbnailManager.h"
 #include "Tools/ConsoleLogEditorTool.h"
 #include "Tools/ContentBrowserEditorTool.h"
 #include "Tools/EditorTool.h"
@@ -154,7 +155,12 @@ namespace Lumina
         ImPlotContext* PlotContext = GRenderManager->GetImGuiRenderer()->GetImPlotContext();
         ImGui::SetCurrentContext(Context);
         ImPlot::SetCurrentContext(PlotContext);
-        
+
+        // Force ThumbnailManager init before any world load so engine primitive
+        // meshes (Cube/Sphere/etc.) are already in the transient package and
+        // resolvable when a saved world's mesh imports are deserialized.
+        (void)CThumbnailManager::Get();
+
         PropertyCustomizationRegistry = Memory::New<FPropertyCustomizationRegistry>();
         PropertyCustomizationRegistry->RegisterPropertyCustomization(TBaseStructure<glm::vec2>::Get()->GetName(), []
         {
@@ -1624,7 +1630,7 @@ namespace Lumina
         }
     
         ImGui::Separator();
-    
+
         if (ImGui::MenuItem(LE_ICON_GITHUB " GitHub Repository"))
         {
             Platform::LaunchURL(TEXT("https://github.com/MrDrElliot/LuminaEngine"));

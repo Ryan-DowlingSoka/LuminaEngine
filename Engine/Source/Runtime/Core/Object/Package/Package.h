@@ -224,7 +224,22 @@ namespace Lumina
          * @return 
          */
         RUNTIME_API static CPackage* CreatePackage(FStringView Path);
-        
+
+        /**
+         * Returns the engine-wide in-memory package that holds runtime-only
+         * objects which still need stable identity across save/load cycles.
+         * Engine primitive meshes (Cube/Sphere/etc.), default materials, and
+         * other procedurally-built assets live here so worlds can reference
+         * them by GUID without the asset registry knowing about a file.
+         *
+         * Lazily created on first call, rooted, never written to disk, and
+         * may not be passed to SavePackage / DestroyPackage.
+         */
+        RUNTIME_API static CPackage* GetTransientPackage();
+
+        /** True if this package is the engine-wide in-memory package. */
+        RUNTIME_API bool IsTransientPackage() const;
+
         RUNTIME_API static bool DestroyPackage(FStringView Path);
 
         RUNTIME_API static bool DestroyPackage(CPackage* PackageToDestroy);

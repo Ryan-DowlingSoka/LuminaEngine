@@ -13,595 +13,381 @@
 #include "Paths/Paths.h"
 #include "TaskSystem/TaskSystem.h"
 #include "Tools/Import/ImportHelpers.h"
-#include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 
 
 namespace Lumina
 {
+    namespace
+    {
+        using namespace Import::Mesh;
+
+        // Re-parses the source file with neutral options for preview. User
+        // transforms (Scale, FlipUVs, FlipNormals) and the heavy optimize/
+        // shadow/meshlet passes are deferred to commit time so toggling
+        // options in the dialog never triggers another re-parse.
+        bool PreviewParse(const FFixedString& RawPath, FMeshImportData& Out)
+        {
+            FMeshImportOptions PreviewOptions;
+            PreviewOptions.bOptimize         = false;
+            PreviewOptions.bMergeMeshes      = false;
+            PreviewOptions.bFlipNormals      = false;
+            PreviewOptions.bFlipUVs          = false;
+            PreviewOptions.Scale             = 1.0f;
+            PreviewOptions.bSkipFinalization = true;
+
+            const FName Ext = VFS::Extension(RawPath);
+            TExpected<FMeshImportData, FString> Result;
+            if (Ext == ".obj")
+            {
+                Result = OBJ::ImportOBJ(PreviewOptions, RawPath);
+            }
+            else if (Ext == ".gltf" || Ext == ".glb")
+            {
+                Result = GLTF::ImportGLTF(PreviewOptions, RawPath);
+            }
+            else if (Ext == ".fbx")
+            {
+                Result = FBX::ImportFBX(PreviewOptions, RawPath);
+            }
+
+            if (!Result)
+            {
+                LOG_ERROR("Encountered problem importing source file: {0}", Result.Error());
+                return false;
+            }
+
+            Out = Move(Result.Value());
+            return true;
+        }
+
+        constexpr float kLabelColumnWidth = 180.0f;
+
+        bool BeginPropertyTable(const char* Id)
+        {
+            if (!ImGui::BeginTable(Id, 2, ImGuiTableFlags_PadOuterX | ImGuiTableFlags_SizingFixedFit))
+            {
+                return false;
+            }
+            ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, kLabelColumnWidth);
+            ImGui::TableSetupColumn("##editor", ImGuiTableColumnFlags_WidthStretch);
+            return true;
+        }
+
+        void PropertyLabel(const char* Label, const char* Tooltip)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(Label);
+            if (Tooltip && ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("%s", Tooltip);
+            }
+            ImGui::TableSetColumnIndex(1);
+            ImGui::SetNextItemWidth(-FLT_MIN);
+        }
+
+        void CheckboxRow(const char* Label, const char* Tooltip, bool& Value)
+        {
+            PropertyLabel(Label, Tooltip);
+            ImGui::PushID(Label);
+            ImGui::Checkbox("##v", &Value);
+            ImGui::PopID();
+        }
+
+        void DragFloatRow(const char* Label, const char* Tooltip, float& Value, float Min, float Max, const char* Fmt)
+        {
+            PropertyLabel(Label, Tooltip);
+            ImGui::PushID(Label);
+            ImGui::DragFloat("##v", &Value, 0.001f, Min, Max, Fmt);
+            ImGui::PopID();
+        }
+
+        void DrawOptionsSection(FMeshImportOptions& Options)
+        {
+            if (!ImGui::CollapsingHeader("Import Options", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                return;
+            }
+
+            if (BeginPropertyTable("OptionsTable"))
+            {
+                CheckboxRow("Import Meshes",     "Import skeletal and static meshes from the source file.", Options.bImportMeshes);
+                CheckboxRow("Import Skeletons",  "Import skeleton hierarchies and bone data.",              Options.bImportSkeleton);
+                CheckboxRow("Import Animations", "Import skeletal and morph target animations.",            Options.bImportAnimations);
+                CheckboxRow("Import Materials",  "Import material definitions and create material assets.", Options.bImportMaterials);
+                if (!Options.bImportMaterials)
+                {
+                    CheckboxRow("Import Textures", "Import texture files referenced by the source.", Options.bImportTextures);
+                }
+
+                DragFloatRow("Scale", "Uniform scale factor applied to all imported geometry.",
+                             Options.Scale, 0.001f, 100.0f, "%.3f");
+                CheckboxRow("Flip UVs",     "Flip UV coordinates vertically (1 - V).",                   Options.bFlipUVs);
+                CheckboxRow("Flip Normals", "Invert mesh normals (useful for inside-out geometry).",     Options.bFlipNormals);
+
+                CheckboxRow("Optimize Mesh",
+                            "Optimize vertex cache locality and reduce overdraw for better runtime performance.",
+                            Options.bOptimize);
+                CheckboxRow("Merge Meshes",
+                            "Combine every mesh in the source file into a single asset. Primitives "
+                            "that share a source material are folded onto the same material slot.",
+                            Options.bMergeMeshes);
+
+                ImGui::EndTable();
+            }
+            ImGui::Spacing();
+        }
+
+        void DrawMeshStats(const FMeshImportData& Data)
+        {
+            if (Data.Resources.empty())
+            {
+                return;
+            }
+
+            FFixedString Header(FFixedString::CtorSprintf(), "Meshes (%zu)###MeshStats", Data.Resources.size());
+            if (!ImGui::CollapsingHeader(Header.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                return;
+            }
+
+            constexpr ImGuiTableFlags Flags =
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInner |
+                ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY;
+
+            const float Height = eastl::min<float>(180.0f, (Data.Resources.size() + 1) * ImGui::GetTextLineHeightWithSpacing() + 8.0f);
+            if (ImGui::BeginTable("MeshStatsTable", 6, Flags, ImVec2(0, Height)))
+            {
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableSetupColumn("Name",     ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn("Verts",    ImGuiTableColumnFlags_WidthFixed, 70);
+                ImGui::TableSetupColumn("Indices",  ImGuiTableColumnFlags_WidthFixed, 70);
+                ImGui::TableSetupColumn("Surfaces", ImGuiTableColumnFlags_WidthFixed, 70);
+                ImGui::TableSetupColumn("Overdraw", ImGuiTableColumnFlags_WidthFixed, 70);
+                ImGui::TableSetupColumn("V-Fetch",  ImGuiTableColumnFlags_WidthFixed, 70);
+                ImGui::TableHeadersRow();
+
+                for (size_t i = 0; i < Data.Resources.size(); ++i)
+                {
+                    const FMeshResource& R = *Data.Resources[i];
+                    const auto& Overdraw = Data.MeshStatistics.OverdrawStatics[i];
+                    const auto& Fetch    = Data.MeshStatistics.VertexFetchStatics[i];
+
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted(R.Name.c_str());
+                    ImGui::TableNextColumn(); ImGuiX::Text("{0}", ImGuiX::FormatSize(R.GetNumVertices()));
+                    ImGui::TableNextColumn(); ImGuiX::Text("{0}", ImGuiX::FormatSize(R.Indices.size()));
+                    ImGui::TableNextColumn(); ImGuiX::Text("{0}", R.GeometrySurfaces.size());
+
+                    ImGui::TableNextColumn();
+                    if (Overdraw.overdraw > 2.0f) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.55f, 0.45f, 1));
+                    ImGuiX::Text("{:.2f}", Overdraw.overdraw);
+                    if (Overdraw.overdraw > 2.0f) ImGui::PopStyleColor();
+
+                    ImGui::TableNextColumn();
+                    if (Fetch.overfetch > 2.0f) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.55f, 0.45f, 1));
+                    ImGuiX::Text("{:.2f}", Fetch.overfetch);
+                    if (Fetch.overfetch > 2.0f) ImGui::PopStyleColor();
+                }
+
+                ImGui::EndTable();
+            }
+            ImGui::Spacing();
+        }
+
+        void DrawTexturesPreview(const FMeshImportData& Data)
+        {
+            if (Data.Textures.empty())
+            {
+                return;
+            }
+
+            FFixedString Header(FFixedString::CtorSprintf(), "Textures (%zu)###Textures", Data.Textures.size());
+            if (!ImGui::CollapsingHeader(Header.c_str()))
+            {
+                return;
+            }
+
+            TVector<FMeshImportImage> Images;
+            Images.assign(Data.Textures.begin(), Data.Textures.end());
+
+            constexpr float ThumbSize = 64.0f;
+            constexpr ImGuiTableFlags Flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInner;
+            if (ImGui::BeginTable("TextureTable", 2, Flags))
+            {
+                ImGui::TableSetupColumn("##thumb", ImGuiTableColumnFlags_WidthFixed, ThumbSize + 8);
+                ImGui::TableSetupColumn("Path",    ImGuiTableColumnFlags_WidthStretch);
+
+                ImGuiListClipper Clipper;
+                Clipper.Begin((int)Images.size(), ThumbSize + 8);
+                while (Clipper.Step())
+                {
+                    for (int i = Clipper.DisplayStart; i < Clipper.DisplayEnd; ++i)
+                    {
+                        const FMeshImportImage& Img = Images[i];
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        if (Img.DisplayImage)
+                        {
+                            ImGui::Image(ImGuiX::ToImTextureRef(Img.DisplayImage), ImVec2(ThumbSize, ThumbSize));
+                        }
+                        ImGui::TableNextColumn();
+                        ImGui::AlignTextToFramePadding();
+                        ImGuiX::TextWrapped("{0}", Img.RelativePath);
+                    }
+                }
+                ImGui::EndTable();
+            }
+            ImGui::Spacing();
+        }
+
+        void DrawSkeletonsPreview(FMeshImportData& Data)
+        {
+            if (Data.Skeletons.empty())
+            {
+                return;
+            }
+
+            FFixedString Header(FFixedString::CtorSprintf(), "Skeletons (%zu)###Skeletons", Data.Skeletons.size());
+            if (!ImGui::CollapsingHeader(Header.c_str()))
+            {
+                return;
+            }
+
+            for (TUniquePtr<FSkeletonResource>& Skeleton : Data.Skeletons)
+            {
+                ImGui::PushID(Skeleton.get());
+
+                bool bImport = Skeleton->bShouldImport;
+                if (ImGui::Checkbox("##import", &bImport))
+                {
+                    Skeleton->bShouldImport = bImport;
+                }
+                ImGui::SameLine();
+                if (ImGui::TreeNodeEx(Skeleton->Name.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth))
+                {
+                    auto DrawBone = [&](int32 BoneIdx, auto& Self) -> void
+                    {
+                        const FSkeletonResource::FBoneInfo& Bone = Skeleton->Bones[BoneIdx];
+                        TVector<int32> Children = Skeleton->GetChildBones(BoneIdx);
+                        const ImGuiTreeNodeFlags Flags = Children.empty()
+                            ? ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen
+                            : ImGuiTreeNodeFlags_None;
+                        if (ImGui::TreeNodeEx(Bone.Name.c_str(), Flags))
+                        {
+                            for (int32 ChildIdx : Children)
+                            {
+                                Self(ChildIdx, Self);
+                            }
+                            if (!Children.empty())
+                            {
+                                ImGui::TreePop();
+                            }
+                        }
+                    };
+                    for (int32 RootIdx : Skeleton->GetRootBones())
+                    {
+                        DrawBone(RootIdx, DrawBone);
+                    }
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            ImGui::Spacing();
+        }
+
+        void DrawAnimationsPreview(const FMeshImportData& Data)
+        {
+            if (Data.Animations.empty())
+            {
+                return;
+            }
+
+            FFixedString Header(FFixedString::CtorSprintf(), "Animations (%zu)###Animations", Data.Animations.size());
+            if (!ImGui::CollapsingHeader(Header.c_str()))
+            {
+                return;
+            }
+
+            for (size_t i = 0; i < Data.Animations.size(); ++i)
+            {
+                const FAnimationResource& Anim = *Data.Animations[i];
+                ImGui::PushID((int)i);
+                if (ImGui::TreeNodeEx(Anim.Name.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth))
+                {
+                    ImGui::TextDisabled("Duration: %.2fs   Channels: %zu", Anim.Duration, Anim.Channels.size());
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            ImGui::Spacing();
+        }
+
+        bool DrawDialogButtons()
+        {
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            constexpr float ButtonWidth = 110.0f;
+            const float Spacing = ImGui::GetStyle().ItemSpacing.x;
+            const float Total = ButtonWidth * 2 + Spacing;
+            const float Avail = ImGui::GetContentRegionAvail().x;
+            if (Avail > Total)
+            {
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + Avail - Total);
+            }
+
+            const bool bImport = ImGui::Button("Import", ImVec2(ButtonWidth, 0));
+            ImGui::SameLine();
+            return bImport;
+        }
+    }
+
     bool CMeshFactory::DrawImportDialogue(const FFixedString& RawPath, const FFixedString& DestinationPath, TUniquePtr<Import::FImportSettings>& ImportSettings, bool& bShouldClose)
     {
         using namespace Import::Mesh;
 
         static FMeshImportOptions Options;
 
-        FMeshImportData* ImportedData = nullptr;
-
-        if (ImportSettings.get())
-        {
-            ImportedData = static_cast<FMeshImportData*>(ImportSettings.get());
-        }
-
-        bool bShouldImport = false;
-
-        // Preview parse runs the source file once with neutral options:
-        // user transforms (Scale, FlipUVs, FlipNormals) and the heavy
-        // optimize/shadow/meshlet passes are deferred to commit time so that
-        // toggling options in the dialog never triggers another full re-parse.
-        // Texture/skeleton/animation flags are forced on for the preview so the
-        // user can see everything regardless of what they want to commit, and
-        // bMergeMeshes is left off so we always have the unmerged source data
-        // available — merging is reapplied as a cheap post-process at commit.
-        auto Reimport = [&]()
-        {
-            ImportSettings  = MakeUnique<FMeshImportData>();
-            ImportedData    = static_cast<FMeshImportData*>(ImportSettings.get());
-
-            FMeshImportOptions PreviewOptions;
-            PreviewOptions.bOptimize         = false;
-            PreviewOptions.bImportMaterials  = true;
-            PreviewOptions.bImportTextures   = true;
-            PreviewOptions.bImportMeshes     = true;
-            PreviewOptions.bImportAnimations = true;
-            PreviewOptions.bImportSkeleton   = true;
-            PreviewOptions.bFlipNormals      = false;
-            PreviewOptions.bFlipUVs          = false;
-            PreviewOptions.bMergeMeshes      = false;
-            PreviewOptions.Scale             = 1.0f;
-            PreviewOptions.bSkipFinalization = true;
-
-            FName FileExtension = VFS::Extension(RawPath);
-            TExpected<FMeshImportData, FString> Expected;
-            if (FileExtension == ".obj")
-            {
-                Expected = OBJ::ImportOBJ(PreviewOptions, RawPath);
-            }
-            else if (FileExtension == ".gltf" || FileExtension == ".glb")
-            {
-                Expected = GLTF::ImportGLTF(PreviewOptions, RawPath);
-            }
-            else if (FileExtension == ".fbx")
-            {
-                Expected = FBX::ImportFBX(PreviewOptions, RawPath);
-            }
-
-            if (!Expected)
-            {
-                LOG_ERROR("Encountered problem importing source file: {0}", Expected.Error());
-                bShouldImport = false;
-                bShouldClose = true;
-                return;
-            }
-
-            *ImportedData = Move(Expected.Value());
-        };
-
         if (ImGui::IsWindowAppearing())
         {
-            Reimport();
+            ImportSettings = MakeUnique<FMeshImportData>();
+            if (!PreviewParse(RawPath, static_cast<FMeshImportData&>(*ImportSettings)))
+            {
+                bShouldClose = true;
+                return false;
+            }
         }
-        
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12, 8));
-    
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 0.9f, 1.0f));
-        ImGui::TextWrapped("Importing: %s", VFS::FileName(RawPath).data());
-        ImGui::PopStyleColor();
+
+        FMeshImportData* ImportedData = static_cast<FMeshImportData*>(ImportSettings.get());
+
+        ImGui::TextDisabled("Source");
+        ImGui::SameLine();
+        ImGui::TextUnformatted(VFS::FileName(RawPath).data());
         ImGui::Spacing();
-    
-        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.4f, 0.6f, 0.8f, 0.8f));
-        ImGui::SeparatorText("Import Options");
-        ImGui::PopStyleColor();
-        ImGui::Spacing();
-        
-        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(12, 10));
-        if (ImGui::BeginTable("MeshImportOptionsTable", 2, 
-            ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_PadOuterX))
-        {
-            ImGui::TableSetupColumn("Option", ImGuiTableColumnFlags_WidthFixed, 200.0f);
-            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
-        
-            auto AddSectionHeader = [&](const char* Label)
-            {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.9f, 1.0f, 1.0f));
-                ImGui::TextUnformatted(Label);
-                ImGui::PopStyleColor();
-                ImGui::TableSetColumnIndex(1);
-                ImGui::Separator();
-            };
-        
-            auto AddCheckboxRow = [&](const char* Icon, const char* Label, const char* Description, bool& Option)
-            {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                
-                ImGui::Text("%s  %s", Icon, Label);
-                if (Description && ImGui::IsItemHovered())
-                {
-                    ImGui::BeginTooltip();
-                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 25.0f);
-                    ImGui::TextUnformatted(Description);
-                    ImGui::PopTextWrapPos();
-                    ImGui::EndTooltip();
-                }
-                
-                ImGui::TableSetColumnIndex(1);
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 4);
-                // No Reimport() here: option toggles never trigger a re-parse;
-                // they're applied as a post-process at commit time.
-                ImGui::Checkbox(("##" + FString(Label)).c_str(), &Option);
-            };
-        
-            auto AddSliderRow = [&](const char* Icon, const char* Label, const char* Description, 
-                                    float& Value, float Min, float Max, const char* Format = "%.2f")
-            {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                
-                ImGui::Text("%s  %s", Icon, Label);
-                if (Description && ImGui::IsItemHovered())
-                {
-                    ImGui::BeginTooltip();
-                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 25.0f);
-                    ImGui::TextUnformatted(Description);
-                    ImGui::PopTextWrapPos();
-                    ImGui::EndTooltip();
-                }
-                
-                ImGui::TableSetColumnIndex(1);
-                ImGui::PushItemWidth(-1);
-                // Slider edits no longer trigger a re-parse; the value is
-                // applied to the cached preview data at commit time.
-                ImGui::DragFloat(("##" + FString(Label)).c_str(), &Value, 0.001f, Min, Max, Format);
-                ImGui::PopItemWidth();
-            };
-        
-            auto AddComboRow = [&](const char* Icon, const char* Label, const char* Description,
-                                  const char* Items[], int ItemCount, int& CurrentItem)
-            {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                
-                ImGui::Text("%s  %s", Icon, Label);
-                if (Description && ImGui::IsItemHovered())
-                {
-                    ImGui::BeginTooltip();
-                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 25.0f);
-                    ImGui::TextUnformatted(Description);
-                    ImGui::PopTextWrapPos();
-                    ImGui::EndTooltip();
-                }
-                
-                ImGui::TableSetColumnIndex(1);
-                ImGui::PushItemWidth(-1);
-                // Combo selection no longer triggers a re-parse.
-                ImGui::Combo(("##" + FString(Label)).c_str(), &CurrentItem, Items, ItemCount);
-                ImGui::PopItemWidth();
-            };
-            
-            AddSectionHeader("Geometry");
-            
-            AddCheckboxRow(LE_ICON_ANIMATION, "Import Meshes", 
-                "Import skeletal and static meshes from the FBX file", 
-                Options.bImportMeshes);
-            
-            AddCheckboxRow(LE_ICON_SKULL, "Import Skeletons", 
-                "Import skeleton hierarchies and bone data", 
-                Options.bImportSkeleton);
-            
-            AddCheckboxRow(LE_ICON_BADGE_ACCOUNT, "Optimize Mesh", 
-                "Optimize vertex cache locality and reduce overdraw for better rendering performance", 
-                Options.bOptimize);
-            
-            AddSectionHeader("Animation");
-            
-            AddCheckboxRow(LE_ICON_ANIMATION, "Import Animations", 
-                "Import skeletal and morph target animations", 
-                Options.bImportAnimations);
-            
-            
-            AddSectionHeader("Materials & Textures");
-            
-            AddCheckboxRow(LE_ICON_MATERIAL_DESIGN, "Import Materials", 
-                "Import material definitions and create material assets", 
-                Options.bImportMaterials);
-            
-            if (!Options.bImportMaterials)
-            {
-                AddCheckboxRow(LE_ICON_TEXTURE, "Import Textures", 
-                    "Import texture files referenced by the FBX", 
-                    Options.bImportTextures);
-            }
-            
-            AddSectionHeader("Transform");
-            
-            AddSliderRow(LE_ICON_RESIZE, "Scale", 
-                "Uniform scale factor applied to all imported geometry", 
-                Options.Scale, 0.001f, 100.0f, "%.3f");
-            
-            
-            AddCheckboxRow(LE_ICON_FLIP_VERTICAL, "Flip UVs", 
-                "Flip UV coordinates vertically (1 - V)", 
-                Options.bFlipUVs);
-            
-            AddCheckboxRow(LE_ICON_FLIP_HORIZONTAL, "Flip Normals", 
-                "Invert mesh normals (useful for inside-out geometry)", 
-                Options.bFlipNormals);
-            
-            AddSectionHeader("Advanced");
 
-            AddCheckboxRow(LE_ICON_ANIMATION, "Merge Meshes",
-                "Combine every mesh in the source file into a single asset. "
-                "Primitives that share a source material are folded onto the "
-                "same material slot. Ideal for kit-bash scenes where thousands "
-                "of parts should import as one unit.",
-                Options.bMergeMeshes);
+        DrawOptionsSection(Options);
+        DrawMeshStats(*ImportedData);
+        DrawTexturesPreview(*ImportedData);
+        DrawSkeletonsPreview(*ImportedData);
+        DrawAnimationsPreview(*ImportedData);
 
-            ImGui::EndTable();
-        }
-        ImGui::PopStyleVar();
-    
-        if (!ImportedData->Resources.empty())
-        {
-            ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.6f, 0.8f, 0.4f, 0.8f));
-            ImGui::SeparatorText(LE_ICON_ACCOUNT_BOX "Import Statistics");
-            ImGui::PopStyleColor();
-            ImGui::Spacing();
-    
-            ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(10, 6));
-            if (ImGui::BeginTable("ImportMeshStats", 6, 
-                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | 
-                ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0, 150)))
-            {
-                ImGui::TableSetupColumn("Mesh Name", ImGuiTableColumnFlags_WidthStretch);
-                ImGui::TableSetupColumn("Vertices", ImGuiTableColumnFlags_WidthFixed, 80);
-                ImGui::TableSetupColumn("Indices", ImGuiTableColumnFlags_WidthFixed, 80);
-                ImGui::TableSetupColumn("Surfaces", ImGuiTableColumnFlags_WidthFixed, 80);
-                ImGui::TableSetupColumn("Overdraw", ImGuiTableColumnFlags_WidthFixed, 80);
-                ImGui::TableSetupColumn("V-Fetch", ImGuiTableColumnFlags_WidthFixed, 80);
-                
-                ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, ImVec4(0.3f, 0.4f, 0.5f, 1.0f));
-                ImGui::TableHeadersRow();
-                ImGui::PopStyleColor();
-    
-                auto DrawRow = [](const FMeshResource& Resource, const auto& Overdraw, const auto& VertexFetch)
-                {
-                    ImGui::TableNextRow();
-                    
-                    auto SetColoredColumn = [&]<typename ... T>(int idx, std::format_string<T...> fmt, T&&... value)
-                    {
-                        ImGui::TableSetColumnIndex(idx);
-                        ImGuiX::Text(fmt, std::forward<T>(value)...);
-                    };
-
-                    auto SetColoredColumnWithColor = [&]<typename ... T>(int idx, ImVec4 color, std::format_string<T...> fmt, T&&... value)
-                    {
-                        ImGui::TableSetColumnIndex(idx);
-                        ImGui::PushStyleColor(ImGuiCol_Text, color);
-                        ImGuiX::Text(fmt, std::forward<T>(value)...);
-                        ImGui::PopStyleColor();
-                    };
-    
-                    SetColoredColumn(0, "{0}", Resource.Name.c_str());
-                    
-                    ImVec4 VertexColor = Resource.GetNumVertices() > 10000 ? ImVec4(1,0.7f,0.3f,1) : ImVec4(0.7f,1,0.7f,1);
-                    SetColoredColumnWithColor(1, VertexColor,  "{0}", ImGuiX::FormatSize(Resource.GetNumVertices()));
-                    SetColoredColumn(2, "{0}", ImGuiX::FormatSize(Resource.Indices.size()));
-                    SetColoredColumn(3, "{0}", Resource.GeometrySurfaces.size());
-                    
-                    ImVec4 OverdrawColor = Overdraw.overdraw > 2.0f ? ImVec4(1,0.5f,0.5f,1) : ImVec4(0.8f,0.8f,0.8f,1);
-                    SetColoredColumnWithColor(4, OverdrawColor, "{:.2f}", Overdraw.overdraw);
-                    
-                    ImVec4 FetchColor = VertexFetch.overfetch > 2.0f ? ImVec4(1,0.5f,0.5f,1) : ImVec4(0.8f,0.8f,0.8f,1);
-                    SetColoredColumnWithColor(5, FetchColor, "{:.2f}", VertexFetch.overfetch);
-                };
-    
-                for (size_t i = 0; i < ImportedData->Resources.size(); ++i)
-                {
-                    DrawRow(*ImportedData->Resources[i], ImportedData->MeshStatistics.OverdrawStatics[i], ImportedData->MeshStatistics.VertexFetchStatics[i]);
-                }
-    
-                ImGui::EndTable();
-            }
-            
-            ImGui::PopStyleVar();
-    
-            if (!ImportedData->Textures.empty())
-            {
-                ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.8f, 0.6f, 0.8f, 0.8f));
-                ImGui::SeparatorText(LE_ICON_ACCOUNT_BOX "Texture Preview");
-                ImGui::PopStyleColor();
-                ImGui::Spacing();
-                
-                ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(8, 8));
-                if (ImGui::BeginTable("ImportTextures", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
-                {
-                    ImGui::TableSetupColumn("Preview", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-                    ImGui::TableSetupColumn("Path", ImGuiTableColumnFlags_WidthStretch);
-                    
-                    ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, ImVec4(0.4f, 0.3f, 0.4f, 1.0f));
-                    ImGui::TableHeadersRow();
-                    ImGui::PopStyleColor();
-    
-                    ImGuiListClipper Clipper;
-                    Clipper.Begin(((int)ImportedData->Textures.size()));
-                    
-                    TVector<FMeshImportImage> TextureVector;
-                    TextureVector.assign(ImportedData->Textures.begin(), ImportedData->Textures.end());
-                    
-                    while (Clipper.Step())
-                    {
-                        for (int i = Clipper.DisplayStart; i < Clipper.DisplayEnd; i++)
-                        {
-                            const FMeshImportImage& Image = TextureVector[i];
-                    
-                            ImGui::TableNextRow();
-                            ImGui::TableSetColumnIndex(0);
-                        
-                            ImVec2 ImageSize(128.0f, 128.0f);
-                            ImVec2 CursorPos = ImGui::GetCursorScreenPos();
-                            ImGui::GetWindowDrawList()->AddRect(
-                                CursorPos, 
-                                ImVec2(CursorPos.x + ImageSize.x + 4, CursorPos.y + ImageSize.y + 4),
-                                IM_COL32(100, 100, 100, 255), 2.0f);
-                        
-                            ImGui::SetCursorScreenPos(ImVec2(CursorPos.x + 2, CursorPos.y + 2));
-
-                            if (Image.DisplayImage)
-                            {
-                                ImTextureRef Texture = ImGuiX::ToImTextureRef(Image.DisplayImage);
-                                ImGui::Image(Texture, ImageSize);
-                            }
-                            ImGui::Dummy({});
-                            ImGui::TableSetColumnIndex(1);
-                            
-                            if (!Image.RelativePath.empty())
-                            {
-                                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-                                ImGuiX::TextWrapped("{0}", Image.RelativePath);
-                                ImGui::PopStyleColor();
-                            }
-                        }
-                    }
-                    
-                    ImGui::EndTable();
-                    ImGui::PopStyleVar();
-                }
-            }
-            
-            if (!ImportedData->Skeletons.empty())
-            {
-                ImGui::Spacing();
-                ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.8f, 0.6f, 0.8f, 0.8f));
-                ImGui::SeparatorText(LE_ICON_ANIMATION "Skeletons Preview");
-                ImGui::PopStyleColor();
-                ImGui::Spacing();
-                
-                ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(8, 8));
-                if (ImGui::BeginTable("ImportSkeletons", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
-                {
-                    ImGui::TableSetupColumn("Import", ImGuiTableColumnFlags_WidthFixed, 40.0f);
-                    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-                    ImGui::TableSetupColumn("Bones", ImGuiTableColumnFlags_WidthStretch);
-                    
-                    ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, ImVec4(0.4f, 0.3f, 0.4f, 1.0f));
-                    ImGui::TableHeadersRow();
-                    ImGui::PopStyleColor();
-                    
-                    for (const TUniquePtr<FSkeletonResource>& Skeleton : ImportedData->Skeletons)
-                    {
-                        ImGui::TableNextRow();
-                        ImGui::PushID(Skeleton.get());
-                        
-                        ImGui::TableNextColumn();
-                        bool bImport = Skeleton->bShouldImport;
-                        if (ImGui::Checkbox("##import", &bImport))
-                        {
-                            Skeleton->bShouldImport = bImport;
-                        }
-                        
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%s", Skeleton->Name.c_str());
-                        
-                        ImGui::TableNextColumn();
-                        if (ImGui::TreeNodeEx("Bone Hierarchy", ImGuiTreeNodeFlags_Framed))
-                        {
-                            auto DisplayBoneHierarchy = [&](int32 BoneIndex, int Depth, auto& Self) -> void
-                            {
-                                const FSkeletonResource::FBoneInfo& Bone = Skeleton->Bones[BoneIndex];
-                                
-                                FFixedString NodeName(FFixedString::CtorSprintf(), "%s (Index: %d)", Bone.Name.c_str(), BoneIndex);
-                                if (ImGui::TreeNodeEx(NodeName.c_str()))
-                                {
-                                    TVector<int32> Children = Skeleton->GetChildBones(BoneIndex);
-                                    for (int32 ChildIdx : Children)
-                                    {
-                                        Self(ChildIdx, Depth + 1, Self);
-                                    }
-                                    ImGui::TreePop();
-                                }
-                            };
-                            
-                            for (int32 RootIdx : Skeleton->GetRootBones())
-                            {
-                                DisplayBoneHierarchy(RootIdx, 0, DisplayBoneHierarchy);
-                            }
-                            
-                            ImGui::TreePop();
-                        }
-                        
-                        ImGui::PopID();
-                    }
-                    
-                    ImGui::EndTable();
-                }
-                
-                ImGui::PopStyleVar();
-            }
-            
-            if (!ImportedData->Animations.empty())
-            {
-                ImGui::Spacing();
-                ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.8f, 0.6f, 0.8f, 0.8f));
-                ImGui::SeparatorText(LE_ICON_ANIMATION "Animations Preview");
-                ImGui::PopStyleColor();
-                ImGui::Spacing();
-                
-                for (size_t i = 0; i < ImportedData->Animations.size(); ++i)
-                {
-                    const TUniquePtr<FAnimationResource>& Animation = ImportedData->Animations[i];
-                    
-                    ImGui::PushID((int)i);
-                    
-                    bool bOpen = ImGui::TreeNodeEx(Animation->Name.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_AllowOverlap);
-                    
-                    if (bOpen)
-                    {
-                        ImGui::Indent();
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-                        ImGui::Text("Duration: %.2f seconds", Animation->Duration);
-                        ImGui::Text("Total Channels: %zu", Animation->Channels.size());
-                        ImGui::PopStyleColor();
-                        ImGui::Spacing();
-                        
-                        if (!Animation->Channels.empty())
-                        {
-                            ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(6, 4));
-                            if (ImGui::BeginTable("ChannelTable", 4, 
-                                ImGuiTableFlags_Borders | 
-                                ImGuiTableFlags_RowBg | 
-                                ImGuiTableFlags_SizingStretchProp))
-                            {
-                                ImGui::TableSetupColumn("Bone", ImGuiTableColumnFlags_WidthStretch);
-                                ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-                                ImGui::TableSetupColumn("Keys", ImGuiTableColumnFlags_WidthFixed, 60.0f);
-                                ImGui::TableSetupColumn("Time Range", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-                                
-                                ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, ImVec4(0.35f, 0.25f, 0.35f, 1.0f));
-                                ImGui::TableHeadersRow();
-                                ImGui::PopStyleColor();
-                                
-                                for (const auto& Channel : Animation->Channels)
-                                {
-                                    ImGui::TableNextRow();
-                                    
-                                    ImGui::TableNextColumn();
-                                    ImGui::Text("%s", Channel.TargetBone.c_str());
-                                    
-                                    ImGui::TableNextColumn();
-                                    const char* pathName = "Unknown";
-                                    ImVec4 typeColor = ImVec4(1, 1, 1, 1);
-                                    switch (Channel.TargetPath)
-                                    {
-                                        case FAnimationChannel::ETargetPath::Translation: 
-                                            pathName = "Translation"; 
-                                            typeColor = ImVec4(0.4f, 0.8f, 0.4f, 1.0f);
-                                            break;
-                                        case FAnimationChannel::ETargetPath::Rotation: 
-                                            pathName = "Rotation"; 
-                                            typeColor = ImVec4(0.4f, 0.6f, 1.0f, 1.0f);
-                                            break;
-                                        case FAnimationChannel::ETargetPath::Scale: 
-                                            pathName = "Scale"; 
-                                            typeColor = ImVec4(1.0f, 0.7f, 0.4f, 1.0f);
-                                            break;
-                                        case FAnimationChannel::ETargetPath::Weights: 
-                                            pathName = "Weights"; 
-                                            typeColor = ImVec4(1.0f, 0.4f, 0.8f, 1.0f);
-                                            break;
-                                    }
-                                    ImGui::TextColored(typeColor, "%s", pathName);
-                                    
-                                    ImGui::TableSetColumnIndex(2);
-                                    ImGui::Text("%zu", Channel.Timestamps.size());
-                                    
-                                    ImGui::TableSetColumnIndex(3);
-                                    if (!Channel.Timestamps.empty())
-                                    {
-                                        float minTime = Channel.Timestamps.front();
-                                        float maxTime = Channel.Timestamps.back();
-                                        ImGui::Text("%.2f - %.2f", minTime, maxTime);
-                                    }
-                                    else
-                                    {
-                                        ImGui::TextDisabled("N/A");
-                                    }
-                                }
-                                
-                                ImGui::EndTable();
-                            }
-                            ImGui::PopStyleVar();
-                        }
-                        
-                        ImGui::Unindent();
-                        ImGui::TreePop();
-                    }
-                    
-                    ImGui::PopID();
-                    ImGui::Spacing();
-                }
-            }
-        }
-    
-        ImGui::Separator();
-    
-        float buttonWidth = 100.0f;
-        float spacing = ImGui::GetStyle().ItemSpacing.x;
-        float totalWidth = (buttonWidth * 2) + spacing;
-        float offsetX = (ImGui::GetContentRegionAvail().x - totalWidth) * 0.5f;
-        if (offsetX > 0)
-        {
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offsetX);
-        }
-
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.7f, 0.2f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.8f, 0.3f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.1f, 0.6f, 0.1f, 1.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(20, 8));
-        
-        if (ImGui::Button("Import", ImVec2(buttonWidth, 0)))
+        const bool bImport = DrawDialogButtons();
+        if (bImport)
         {
             // Hand the user's chosen options off to TryImport via the
             // settings payload so commit-time finalization can apply them.
-            if (ImportedData != nullptr)
-            {
-                ImportedData->CommitOptions = Options;
-            }
-            bShouldImport = true;
+            ImportedData->CommitOptions = Options;
             bShouldClose = true;
+            return true;
         }
-        
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(3);
-        ImGui::SameLine();
-    
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.3f, 0.3f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.4f, 0.4f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.5f, 0.2f, 0.2f, 1.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(20, 8));
-        
-        if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0)))
+        if (ImGui::Button("Cancel", ImVec2(110.0f, 0)))
         {
-            bShouldImport = false;
             bShouldClose = true;
         }
-        
-        ImGui::PopStyleColor(3);
-        ImGui::PopStyleVar(3);
-        
-        return bShouldImport;
+        return false;
     }
     
     void CMeshFactory::TryImport(const FFixedString& RawPath, const FFixedString& DestinationPath, const Import::FImportSettings* Settings)

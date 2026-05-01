@@ -2,6 +2,7 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "EditorAction.h"
 #include "ToolFlags.h"
 #include "Containers/Array.h"
 #include "Containers/Function.h"
@@ -281,11 +282,37 @@ namespace Lumina
         
         FToolWindow* CreateToolWindow(FName InName, const TFunction<void(bool)>& DrawFunction, const ImVec2& WindowPadding = ImVec2(-1, -1), bool DisableScrolling = false);
         
-        /** Draw a help menu for this tool */
+        /** Draw a help menu for this tool. Called inside a 2-column HelpTable;
+         *  override to add tool-specific rows via DrawHelpTextRow. */
         virtual void DrawHelpMenu() { DrawHelpTextRow("No Help Available", ""); }
-        
+
         /** Helper to add a simple entry to the help menu */
         void DrawHelpTextRow(const char* Label, const char* Text) const;
+
+    private:
+
+        /** Renders the tool's registered actions as a Help > Keybinds sub-menu.
+         *  Called automatically from DrawMainToolbar; tools never invoke this. */
+        void DrawKeybindsMenu();
+
+    public:
+
+        /** Register a keybind-driven editor command. Tools should call this from
+         *  OnInitialize(). Registered actions are dispatched once per frame and
+         *  surfaced in the global Help > Keyboard Shortcuts window. */
+        void RegisterAction(FEditorAction Action) { EditorActions.push_back(eastl::move(Action)); }
+
+        const TVector<FEditorAction>& GetRegisteredActions() const { return EditorActions; }
+
+    protected:
+
+        /** Polls every registered action's chord and fires its callback when matched.
+         *  Called from FEditorTool::Update; gated against text-input focus. */
+        void TickEditorActions();
+
+    private:
+
+        TVector<FEditorAction>              EditorActions;
     
     protected:
 

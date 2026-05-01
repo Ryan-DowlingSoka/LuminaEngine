@@ -183,6 +183,59 @@ namespace Lumina
     void FEditorTool::Update(const FUpdateContext& UpdateContext)
     {
         TickEditorCamera(UpdateContext.GetDeltaTime());
+        TickEditorActions();
+    }
+
+    void FEditorTool::TickEditorActions()
+    {
+        if (EditorActions.empty())
+        {
+            return;
+        }
+
+        // Don't fire shortcuts while a text input field is active.
+        const ImGuiIO& IO = ImGui::GetIO();
+        if (IO.WantTextInput)
+        {
+            return;
+        }
+
+        for (const FEditorAction& Action : EditorActions)
+        {
+            const FInputChord& Chord = Action.DefaultChord;
+            if (!Chord.IsValid() || !Action.Callback)
+            {
+                continue;
+            }
+            if (Chord.bCtrl  != IO.KeyCtrl)  continue;
+            if (Chord.bShift != IO.KeyShift) continue;
+            if (Chord.bAlt   != IO.KeyAlt)   continue;
+
+            const bool bTriggered = ImGui::IsKeyPressed(Chord.Key, Action.bRepeatOnHold);
+            if (!bTriggered)
+            {
+                continue;
+            }
+            if (Action.CanExecute && !Action.CanExecute())
+            {
+                continue;
+            }
+            Action.Callback();
+        }
+    }
+
+    FString FInputChord::ToDisplayString() const
+    {
+        if (!IsValid())
+        {
+            return FString();
+        }
+        FString Out;
+        if (bCtrl)  Out += "Ctrl+";
+        if (bShift) Out += "Shift+";
+        if (bAlt)   Out += "Alt+";
+        Out += ImGui::GetKeyName(Key);
+        return Out;
     }
 
     ImGuiID FEditorTool::CalculateDockspaceID() const
@@ -296,6 +349,8 @@ namespace Lumina
 
         if (ImGui::BeginMenu(LE_ICON_HELP_CIRCLE_OUTLINE" Help"))
         {
+            DrawKeybindsMenu();
+
             if (ImGui::BeginTable("HelpTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
             {
                 DrawHelpMenu();
@@ -780,6 +835,64 @@ namespace Lumina
         return ToolWindows.emplace_back(Move(ToolWindow)).get();
     }
     
+    void FEditorTool::DrawKeybindsMenu()
+    {
+        const bool bDisabled = EditorActions.empty();
+        ImGui::BeginDisabled(bDisabled);
+        const bool bOpen = ImGui::BeginMenu(LE_ICON_KEYBOARD" Keybinds");
+        ImGui::EndDisabled();
+        if (!bOpen)
+        {
+            return;
+        }
+
+        // Group by category, preserve registration order within each.
+        TVector<FString> CategoryOrder;
+        THashMap<FString, TVector<const FEditorAction*>> ByCategory;
+        for (const FEditorAction& A : EditorActions)
+        {
+            if (ByCategory.find(A.Category) == ByCategory.end())
+            {
+                CategoryOrder.push_back(A.Category);
+            }
+            ByCategory[A.Category].push_back(&A);
+        }
+
+        if (ImGui::BeginTable("KeybindsTable", 2,
+            ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
+        {
+            ImGui::TableSetupColumn("Action",   ImGuiTableColumnFlags_WidthStretch, 0.6f);
+            ImGui::TableSetupColumn("Shortcut", ImGuiTableColumnFlags_WidthStretch, 0.4f);
+
+            for (const FString& Category : CategoryOrder)
+            {
+                ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("%s", Category.empty() ? "General" : Category.c_str());
+                ImGui::TableNextColumn();
+
+                for (const FEditorAction* A : ByCategory[Category])
+                {
+                    ImGui::TableNextRow();
+
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(A->Name.c_str());
+                    if (!A->Description.empty() && ImGui::IsItemHovered())
+                    {
+                        ImGui::SetTooltip("%s", A->Description.c_str());
+                    }
+
+                    ImGui::TableNextColumn();
+                    const FString Chord = A->DefaultChord.ToDisplayString();
+                    ImGui::TextUnformatted(Chord.empty() ? "—" : Chord.c_str());
+                }
+            }
+            ImGui::EndTable();
+        }
+
+        ImGui::EndMenu();
+    }
+
     void FEditorTool::DrawHelpTextRow(const char* Label, const char* Text) const
     {
         ImGui::TableNextRow();
