@@ -158,6 +158,9 @@ namespace Lumina
         RegisterGraphNode(CMaterialExpression_FragmentDepth::StaticClass());
         RegisterGraphNode(CMaterialExpression_ViewportSize::StaticClass());
         RegisterGraphNode(CMaterialExpression_AspectRatio::StaticClass());
+        RegisterGraphNode(CMaterialExpression_SceneColor::StaticClass());
+        RegisterGraphNode(CMaterialExpression_SceneDepth::StaticClass());
+        RegisterGraphNode(CMaterialExpression_SceneHDRColor::StaticClass());
 
         // ---- Conditional ----
         RegisterGraphNode(CMaterialExpression_If::StaticClass());

@@ -668,7 +668,8 @@ void TextEditor::renderPanScrollIndicator() {
 //
 
 void TextEditor::handleKeyboardInputs() {
-	if (ImGui::IsWindowFocused()) {
+	// Popup steals NavWindow; keep feeding the editor so chars aren't dropped.
+	if (ImGui::IsWindowFocused() || autocomplete.isActive()) {
 		auto& io = ImGui::GetIO();
 		io.WantCaptureKeyboard = true;
 		io.WantTextInput = true;

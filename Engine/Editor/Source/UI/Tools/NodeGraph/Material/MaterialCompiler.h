@@ -163,6 +163,9 @@ namespace Lumina
         void FragmentDepth(const FString& ID, bool bLinear);
         void ViewportSize(const FString& ID);
         void AspectRatio(const FString& ID);
+        void SceneColor(const FString& ID, CMaterialInput* UV);
+        void SceneDepth(const FString& ID, CMaterialInput* UV, bool bLinear);
+        void SceneHDRColor(const FString& ID, CMaterialInput* UV);
         void NumericConstant(const FString& ID, float Value);
         void CustomPrimitiveData(CMaterialExpression_CustomPrimitiveData* Node, ECustomPrimitiveDataType Type);
 

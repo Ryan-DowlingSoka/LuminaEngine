@@ -1,10 +1,13 @@
 #pragma once
+#include "Containers/Array.h"
+#include "Core/Object/ObjectHandleTyped.h"
 #include "Core/Object/ObjectMacros.h"
 #include "PostProcessSettings.h"
 #include "PostProcessComponent.generated.h"
 
 namespace Lumina
 {
+    class CMaterialInterface;
     /**
      * Volumetric post-process override. Add to any entity with a
      * STransformComponent. The volume's box (BoxExtent in local space,
@@ -62,5 +65,13 @@ namespace Lumina
          *  Identical layout to the camera's own PostProcess. */
         PROPERTY(Editable, Category = "Settings")
         SPostProcessSettings Settings;
+
+        /** Post-process materials this volume contributes. While the camera
+         *  is inside the volume (or always, if bInfiniteExtent) these
+         *  materials are appended to the active list and applied after the
+         *  camera's own materials. Order within the list is preserved.
+         *  Materials must have MaterialType = PostProcess. */
+        PROPERTY(Editable, Category = "Settings")
+        TVector<TObjectPtr<CMaterialInterface>> PostProcessMaterials;
     };
 }

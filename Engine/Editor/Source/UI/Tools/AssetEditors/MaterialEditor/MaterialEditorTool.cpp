@@ -15,6 +15,7 @@
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "UI/Tools/NodeGraph/Material/MaterialCompiler.h"
 #include "UI/Tools/NodeGraph/Material/MaterialNodeGraph.h"
+#include "world/entity/components/cameracomponent.h"
 #include "world/entity/components/environmentcomponent.h"
 #include "World/entity/components/lightcomponent.h"
 #include "World/entity/components/staticmeshcomponent.h"
@@ -112,12 +113,48 @@ namespace Lumina
         StaticMeshComponent.StaticMesh = CThumbnailManager::Get().SphereMesh;
 
         STransformComponent& MeshTransform = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
-        
+
         STransformComponent& EditorTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
         glm::quat Rotation = Math::FindLookAtRotation(MeshTransform.GetLocation(), EditorTransform.GetLocation());
         EditorTransform.SetRotation(Rotation);
-        
-        StaticMeshComponent.MaterialOverrides.push_back(CastAsserted<CMaterialInterface>(Asset.Get()));
+
+        ApplyMaterialToPreview();
+    }
+
+    void FMaterialEditorTool::ApplyMaterialToPreview()
+    {
+        // Route the material into the preview world based on its domain.
+        // Surface materials (PBR / UI / Unlit / etc.) override the sphere's
+        // slot 0; PostProcess materials run as a fullscreen pass and must
+        // be hung off the camera component instead -- assigning one as a
+        // surface material drives the BasePass through the wrong pipeline
+        // layout (FullscreenQuad VS, set-2 mismatch) and corrupts the view.
+        CMaterialInterface* MaterialInterface = CastAsserted<CMaterialInterface>(Asset.Get());
+        const EMaterialType MaterialType = MaterialInterface ? MaterialInterface->GetMaterialType() : EMaterialType::None;
+
+        SStaticMeshComponent& StaticMeshComponent = World->GetEntityRegistry().get<SStaticMeshComponent>(MeshEntity);
+        StaticMeshComponent.MaterialOverrides.clear();
+
+        SCameraComponent* Camera = World->GetActiveCamera();
+        if (Camera)
+        {
+            Camera->PostProcessMaterials.clear();
+        }
+
+        if (MaterialType == EMaterialType::PostProcess)
+        {
+            if (Camera)
+            {
+                Camera->PostProcessMaterials.push_back(MaterialInterface);
+            }
+            // Sphere keeps no material override -- it falls back to the
+            // default material so the scene has something for the
+            // post-process to read.
+        }
+        else
+        {
+            StaticMeshComponent.MaterialOverrides.push_back(MaterialInterface);
+        }
     }
 
     void FMaterialEditorTool::DrawHelpMenu()
@@ -382,8 +419,9 @@ namespace Lumina
             // reference mesh-only symbols (uMeshletDrawList, Inst, VertexData)
             // that the terrain vertex stage doesn't expose -- skip both for
             // terrain materials.
-            const bool bIsTerrain = Material->GetMaterialType() == EMaterialType::Terrain;
-            const bool bWPO = Compiler.UsesVertexStage() && !bIsTerrain;
+            const bool bIsTerrain     = Material->GetMaterialType() == EMaterialType::Terrain;
+            const bool bIsPostProcess = Material->GetMaterialType() == EMaterialType::PostProcess;
+            const bool bWPO = Compiler.UsesVertexStage() && !bIsTerrain && !bIsPostProcess;
             Material->bUsesWorldPositionOffset = bWPO;
             if (bWPO)
             {
@@ -430,6 +468,11 @@ namespace Lumina
 
             Material->PostLoad();
             Material->GetPackage()->MarkDirty();
+
+            // The user may have flipped MaterialType between PBR and
+            // PostProcess -- re-route the asset so the preview matches the
+            // freshly compiled domain.
+            ApplyMaterialToPreview();
         }
     }
 

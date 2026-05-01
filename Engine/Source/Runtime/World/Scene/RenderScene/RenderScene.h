@@ -9,6 +9,7 @@
 namespace Lumina
 {
     class FViewVolume;
+    class CMaterialInterface;
     struct SPostProcessSettings;
 
     class IRenderScene : public ISceneInterface, public IPrimitiveDrawInterface
@@ -22,6 +23,12 @@ namespace Lumina
         // Frame boundary, scene prepares/clears per-frame state
         virtual void BeginFrame() = 0;
         virtual void EndFrame() = 0;
+
+        // Set the chain of post-process materials to apply this frame.
+        // Resolved by the world from the active camera + any post-process
+        // volumes the camera is inside. The renderer does not retain the
+        // pointers across frames -- the world rebuilds the list each tick.
+        virtual void SetActivePostProcessMaterials(const TVector<CMaterialInterface*>& Materials) {}
 
         // Record this view's draws onto the provided command list.
         // PostProcess is the active camera's grading; pass nullptr to skip

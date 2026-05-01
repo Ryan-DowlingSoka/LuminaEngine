@@ -345,7 +345,12 @@ namespace Lumina
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Tone Mapping", FColor(0.95f, 0.20f, 0.20f));
                 ToneMappingPass(CmdList);
             }
-        
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Post Process Materials", FColor(0.85f, 0.30f, 0.85f));
+                PostProcessMaterialPass(CmdList);
+            }
+
             if (World->GetDefaultWorldSettings().SMAAQuality != ESMAAQuality::Off)
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "SMAA", FColor(0.95f, 0.20f, 0.20f));
@@ -1055,8 +1060,13 @@ namespace Lumina
     static FResolvedSlot ResolveSlot(const TComponent& MeshComponent, int16 SlotIdx, bool bSignificantOccluder)
     {
         CMaterialInterface* Material = MeshComponent.GetMaterialForSlot(SlotIdx);
-        // Terrain materials route through the wrong pipeline layout; fall back.
-        if (IsValid(Material) && Material->GetMaterialType() == EMaterialType::Terrain)
+        // Terrain and PostProcess materials use different pipeline layouts
+        // (terrain has its own pass; post-process runs as a fullscreen pass
+        // after tone mapping). Fall back to the default surface material so
+        // a misassignment doesn't drag the BasePass into garbage bindings.
+        if (IsValid(Material) &&
+            (Material->GetMaterialType() == EMaterialType::Terrain ||
+             Material->GetMaterialType() == EMaterialType::PostProcess))
         {
             Material = nullptr;
         }
@@ -5524,8 +5534,13 @@ namespace Lumina
 
         // When SMAA is enabled, tonemap renders into an LDR intermediate that the
         // SMAA passes then resolve into the final render target. Otherwise we
-        // write straight to the render target.
-        FRHIImage* OutputImage = World->GetDefaultWorldSettings().SMAAQuality != ESMAAQuality::Off ? GetNamedImage(ENamedImage::LDR) : GetRenderTarget();
+        // write straight to the render target -- unless the post-process
+        // material chain is non-empty, in which case we still need an
+        // intermediate so the chain can ping-pong against it before the
+        // final blit to RT in PostProcessMaterialPass.
+        const bool bSMAAEnabled = World->GetDefaultWorldSettings().SMAAQuality != ESMAAQuality::Off;
+        const bool bPPMaterials = !ActivePostProcessMaterials.empty();
+        FRHIImage* OutputImage = (bSMAAEnabled || bPPMaterials) ? GetNamedImage(ENamedImage::LDR) : GetRenderTarget();
 
         FRenderPassDesc::FAttachment Attachment; Attachment
             .SetImage(OutputImage);
@@ -5570,6 +5585,149 @@ namespace Lumina
         FColorGradingPushConstants PC = BuildColorGradingConstants(ActivePostProcess, SceneGlobalData.Time);
         CmdList.SetPushConstants(&PC, sizeof(PC));
         CmdList.Draw(3, 1, 0, 0);
+    }
+
+    namespace
+    {
+        // 16 B push block for the PostProcess material template.
+        // Mirrors PostProcessPixelPass.slang::FPostProcessPushConstants.
+        struct FPostProcessMaterialPushConstants
+        {
+            uint32 MaterialIndex;
+            uint32 _Pad0;
+            uint32 _Pad1;
+            uint32 _Pad2;
+        };
+        static_assert(sizeof(FPostProcessMaterialPushConstants) == 16,
+            "FPostProcessMaterialPushConstants must match the slang push block.");
+    }
+
+    void FForwardRenderScene::PostProcessMaterialPass(ICommandList& CmdList)
+    {
+        if (ActivePostProcessMaterials.empty())
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Post Process Material Pass", tracy::Color::Magenta);
+
+        // Set 2 layout for the post-process inputs. Materials see three
+        // bindings: the chain's current input (uSceneColor, the ping-pong
+        // source), the opaque depth attachment (uSceneDepth), and the
+        // pre-tone-mapping HDR scene color (uHDRSceneColor) for materials
+        // that want the unclipped data. Each material in the chain gets a
+        // fresh binding set with the current source bound; the layout
+        // itself is shared (cached via BindingCache).
+        FBindingLayoutDesc PPLayoutDesc;
+        PPLayoutDesc.SetBindingIndex(2)
+            .SetVisibility(ERHIShaderType::Fragment)
+            .AddItem(FBindingLayoutItem::Texture_SRV(0))
+            .AddItem(FBindingLayoutItem::Texture_SRV(1))
+            .AddItem(FBindingLayoutItem::Texture_SRV(2));
+        FRHIBindingLayout* PPLayout = BindingCache.GetOrCreateBindingLayout(PPLayoutDesc);
+
+        FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+        FRHISamplerRef PointClamp  = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+        FRasterState RasterState;
+        RasterState.SetCullNone();
+
+        FDepthStencilState DepthState;
+        DepthState.DisableDepthTest();
+        DepthState.DisableDepthWrite();
+
+        FRenderState RenderState;
+        RenderState.SetRasterState(RasterState);
+        RenderState.SetDepthStencilState(DepthState);
+
+        const bool bSMAAEnabled = World->GetDefaultWorldSettings().SMAAQuality != ESMAAQuality::Off;
+
+        // The chain reads from "Source" and writes to "Dest", swapping each
+        // pass. Tone mapping wrote into LDR (we forced that path in
+        // ToneMappingPass when ActivePostProcessMaterials is non-empty), so
+        // the first read is always LDR.
+        FRHIImage* Source = GetNamedImage(ENamedImage::LDR);
+        FRHIImage* Dest   = GetNamedImage(ENamedImage::PostProcessScratch);
+
+        for (CMaterialInterface* MaterialInterface : ActivePostProcessMaterials)
+        {
+            if (MaterialInterface == nullptr || !MaterialInterface->IsReadyForRender())
+            {
+                continue;
+            }
+            CMaterial* Material = MaterialInterface->GetMaterial();
+            if (Material == nullptr || Material->GetMaterialType() != EMaterialType::PostProcess)
+            {
+                continue;
+            }
+            FRHIVertexShader* VS = Material->GetVertexShader();
+            FRHIPixelShader*  PS = Material->GetPixelShader();
+            if (VS == nullptr || PS == nullptr)
+            {
+                continue;
+            }
+
+            FRenderPassDesc::FAttachment Attachment;
+            Attachment.SetImage(Dest);
+
+            FRenderPassDesc RenderPass;
+            RenderPass.AddColorAttachment(Attachment).SetRenderArea(Dest->GetExtent());
+
+            FGraphicsPipelineDesc Desc;
+            Desc.SetDebugName("Post Process Material");
+            Desc.SetRenderState(RenderState);
+            Desc.AddBindingLayout(SceneBindingLayout);
+            Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+            Desc.AddBindingLayout(PPLayout);
+            Desc.SetVertexShader(VS);
+            Desc.SetPixelShader(PS);
+
+            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+            FBindingSetDesc SetDesc;
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, Source, LinearClamp));
+            // Depth uses a point sampler -- linear filtering across a depth
+            // discontinuity returns garbage in-between depths, which any
+            // depth-based effect (DoF, distance fog, edge detection)
+            // would propagate as halos.
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(1, GetNamedImage(ENamedImage::DepthAttachment), PointClamp));
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(2, GetNamedImage(ENamedImage::HDR), LinearClamp));
+            FRHIBindingSetRef PPSet = GRenderContext->CreateBindingSet(SetDesc, PPLayout);
+
+            FGraphicsState GraphicsState;
+            GraphicsState.SetPipeline(Pipeline);
+            GraphicsState.AddBindingSet(SceneBindingSet);
+            GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            GraphicsState.AddBindingSet(PPSet);
+            GraphicsState.SetRenderPass(RenderPass);
+            GraphicsState.SetViewportState(MakeViewportStateFromImage(Dest));
+
+            CmdList.SetGraphicsState(GraphicsState);
+
+            FPostProcessMaterialPushConstants PC = {};
+            PC.MaterialIndex = (uint32)Material->GetMaterialIndex();
+            CmdList.SetPushConstants(&PC, sizeof(PC));
+            CmdList.Draw(3, 1, 0, 0);
+
+            eastl::swap(Source, Dest);
+        }
+
+        // After the loop, Source holds the latest result. SMAA reads LDR,
+        // and the no-SMAA path expects the final image in the swapchain RT
+        // (which the bypass tone-map path used to write to directly). Make
+        // sure both consumers see Source where they expect.
+        FRHIImage* LDR = GetNamedImage(ENamedImage::LDR);
+        if (bSMAAEnabled)
+        {
+            if (Source != LDR)
+            {
+                CmdList.CopyImage(Source, FTextureSlice(), LDR, FTextureSlice());
+            }
+        }
+        else
+        {
+            CmdList.CopyImage(Source, FTextureSlice(), GetRenderTarget(), FTextureSlice());
+        }
     }
 
     struct FSMAAPushConstants
@@ -6061,6 +6219,17 @@ namespace Lumina
             FRHIImageDesc ImageDesc = GetRenderTarget()->GetDescription();
             ImageDesc.DebugName = "LDR";
             NamedImages[(int)ENamedImage::LDR] = GRenderContext->CreateImage(ImageDesc);
+        }
+
+        //==================================================================================================
+
+        // Ping-pong scratch for the post-process material chain. Same
+        // description as LDR so a material's pixel shader can sample either
+        // and write the other.
+        {
+            FRHIImageDesc ImageDesc = GetRenderTarget()->GetDescription();
+            ImageDesc.DebugName = "PostProcessScratch";
+            NamedImages[(int)ENamedImage::PostProcessScratch] = GRenderContext->CreateImage(ImageDesc);
         }
 
         //==================================================================================================

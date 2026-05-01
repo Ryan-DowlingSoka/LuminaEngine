@@ -161,6 +161,14 @@ float2 TerrainCascadeAtlasUV(int ShadowDataIndex, int CascadeIndex, float2 Casca
     return CascadeUV * Tile.AtlasUVScale + Tile.AtlasUVOffset;
 }
 
+// Mirrors BasePixelPass.slang PCSS so terrain matches mesh shadow behavior.
+#define PCSS_BLOCKER_SEARCH_TAPS   8
+static const float PCSS_BlockerSearchRadius = 0.0035;
+static const float PCSS_LightSize           = 0.05;
+static const float PCSS_MinFilterRadius     = 0.00001;
+static const float PCSS_MaxFilterRadius     = 0.0018;
+static const float PCSS_BlockerDepthBias    = 0.0004;
+
 float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPos, float3 Normal, float3 LightDir, float Bias, float2 ScreenPos, out bool Inside)
 {
     float3 OffsetPos    = FragmentPos + NormalOffsetWS(Normal, LightDir, CascadeIndex);
@@ -179,14 +187,50 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
 
     float IGN   = frac(52.9829189 * frac(dot(ScreenPos, float2(0.06711056, 0.00583715))));
     float Angle = IGN * TWO_PI;
-    float FilterRadius = 0.0012 * (1.0 + 0.6 * float(CascadeIndex));
 
     float RefDepth = CurrentDepth - Bias;
 
-    float Shadow = 0.0;
-    for (int i = 0; i < SHADOW_SAMPLE_COUNT; i++)
+    float CascadeScale = 1.0 + 1.5 * float(CascadeIndex);
+
+    float BlockerDepthSum = 0.0;
+    int   NumBlockers     = 0;
+
+    float SearchRadius = PCSS_BlockerSearchRadius * CascadeScale;
+
+    [unroll]
+    for (int s = 0; s < PCSS_BLOCKER_SEARCH_TAPS; ++s)
     {
-        float2 Offset    = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle) * FilterRadius;
+        float2 Offset   = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, Angle) * SearchRadius;
+        float2 SampleUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
+        float2 AtlasUV  = TerrainCascadeAtlasUV(Light.ShadowDataIndex, CascadeIndex, SampleUV);
+        float  Depth    = uShadowCascadePoint.SampleLevel(AtlasUV, 0.0).r;
+
+        if (Depth < CurrentDepth - PCSS_BlockerDepthBias)
+        {
+            BlockerDepthSum += Depth;
+            NumBlockers     += 1;
+        }
+    }
+
+    if (NumBlockers == 0)
+    {
+        return 1.0;
+    }
+
+    float AvgBlockerDepth = BlockerDepthSum / float(NumBlockers);
+    float DepthDelta      = max(CurrentDepth - AvgBlockerDepth, 0.0);
+    float Penumbra        = DepthDelta * PCSS_LightSize;
+    float MaxRadius       = PCSS_MaxFilterRadius * CascadeScale;
+    float FilterRadius    = clamp(Penumbra, PCSS_MinFilterRadius, MaxRadius);
+
+    float BlockerCoverage = float(NumBlockers) / float(PCSS_BLOCKER_SEARCH_TAPS);
+    FilterRadius *= lerp(0.75, 1.0, BlockerCoverage);
+
+    float Shadow = 0.0;
+    [unroll]
+    for (int i = 0; i < SHADOW_SAMPLE_COUNT; ++i)
+    {
+        float2 Offset    = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle + PI) * FilterRadius;
         float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
         float2 AtlasUV   = TerrainCascadeAtlasUV(Light.ShadowDataIndex, CascadeIndex, CascadeUV);
         Shadow += uShadowCascade.SampleCmp(AtlasUV, RefDepth);

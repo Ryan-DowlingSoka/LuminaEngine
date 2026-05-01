@@ -28,6 +28,7 @@ namespace Lumina
     struct SSkeletalMeshComponent;
     struct STransformComponent;
     struct STerrainComponent;
+    class CMaterialInterface;
 
     /**
      * Scene rendering via Clustered Forward Rendering.
@@ -174,6 +175,13 @@ namespace Lumina
         {
             HDR,
             LDR,
+            // Ping-pong scratch for the post-process material chain. Same
+            // size and format as LDR; the pass alternates between LDR and
+            // this image, sampling one and writing the other so each
+            // material reads the previous output. Allocated even when no
+            // post-process materials are bound -- it's cheap and keeps the
+            // resize path simple.
+            PostProcessScratch,
             SMAAEdges,
             SMAABlend,
             SMAAArea,
@@ -235,6 +243,7 @@ namespace Lumina
         void EndFrame() override { }
         
         void RenderView(ICommandList& CmdList, const FViewVolume& ViewVolume, const SPostProcessSettings* PostProcess = nullptr) override;
+        void SetActivePostProcessMaterials(const TVector<CMaterialInterface*>& Materials) override { ActivePostProcessMaterials = Materials; }
         void SwapchainResized(glm::vec2 NewSize);
         void Resize(const glm::uvec2& NewSize) override { SwapchainResized(glm::vec2(NewSize)); }
         
@@ -353,6 +362,12 @@ namespace Lumina
         // post-process settings have BloomIntensity == 0.
         void BloomPass(ICommandList& CmdList);
         void ToneMappingPass(ICommandList& CmdList);
+        // Apply the active post-process material chain. Each material is a
+        // graph compiled to a fullscreen pixel shader; the pass ping-pongs
+        // between LDR and PostProcessScratch so each material reads the
+        // previous result via the SceneColor sampler. Skipped when the
+        // active list is empty. Runs after tone mapping, before SMAA.
+        void PostProcessMaterialPass(ICommandList& CmdList);
         void SMAAEdgeDetectionPass(ICommandList& CmdList);
         void SMAABlendWeightPass(ICommandList& CmdList);
         void SMAANeighborhoodBlendPass(ICommandList& CmdList);
@@ -510,6 +525,14 @@ namespace Lumina
         // frame currently being recorded. Set in RenderView() and consumed by
         // ToneMappingPass(). Null falls back to baked defaults.
         const SPostProcessSettings*             ActivePostProcess = nullptr;
+
+        // Resolved post-process material chain for the frame currently
+        // being recorded. Set by SetActivePostProcessMaterials() (called
+        // from CWorld::Tick after the volume blend) and consumed by
+        // PostProcessMaterialPass(). The renderer does not own the
+        // CObjects -- the world keeps them alive via TObjectPtr on the
+        // owning components. Cleared each frame the world hands a new list.
+        TVector<CMaterialInterface*>            ActivePostProcessMaterials;
 
         FRHIBindingSetRef                       SceneBindingSet;
         FRHIBindingLayoutRef                    SceneBindingLayout;

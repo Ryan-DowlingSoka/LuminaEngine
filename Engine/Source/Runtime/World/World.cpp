@@ -5,6 +5,7 @@
 #include "WorldManager.h"
 #include "WorldContext.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Assets/AssetTypes/Material/MaterialInterface.h"
 #include "Assets/AssetTypes/Prefabs/Prefab.h"
 #include "Core/Object/Cast.h"
 #include "Core/Object/Package/Package.h"
@@ -578,11 +579,70 @@ namespace Lumina
                 BlendPostProcessSettings(ResolvedPostProcess, *Contribution.Settings, Contribution.Weight);
             }
 
+            // Gather the active post-process material chain. The camera's
+            // own list runs first; each contributing volume appends its
+            // materials in priority order so the visible chain is
+            // camera-then-overrides, matching the grading blend order.
+            TVector<CMaterialInterface*> PostProcessMaterials;
+            for (const TObjectPtr<CMaterialInterface>& M : Camera.PostProcessMaterials)
+            {
+                if (M.IsValid())
+                {
+                    PostProcessMaterials.push_back(M.Get());
+                }
+            }
+            // Mirror the contributions sort -- volumes whose box test passed
+            // above are listed there in the priority order their materials
+            // should run in. We track the entity instead of a settings
+            // pointer so the lookup back to the SPostProcessComponent is
+            // structural rather than relying on offsetof on a REFLECT struct.
+            struct FMaterialVolumeRef { entt::entity Entity; int32 Priority; };
+            TVector<FMaterialVolumeRef> MaterialVolumes;
+            for (entt::entity VolEntity : VolumeView)
+            {
+                const SPostProcessComponent& Volume = VolumeView.get<const SPostProcessComponent>(VolEntity);
+                if (!Volume.bEnabled || Volume.PostProcessMaterials.empty())
+                {
+                    continue;
+                }
+                if (!Volume.bInfiniteExtent)
+                {
+                    const STransformComponent& VolXform = VolumeView.get<const STransformComponent>(VolEntity);
+                    const glm::mat4 InvWorld = glm::inverse(VolXform.GetWorldMatrix());
+                    const glm::vec3 LocalCam = glm::vec3(InvWorld * glm::vec4(CameraWorldPos, 1.0f));
+                    const glm::vec3 D = glm::abs(LocalCam) - Volume.BoxExtent;
+                    const float Outside = glm::max(D.x, glm::max(D.y, D.z));
+                    if (Outside > Volume.BlendDistance)
+                    {
+                        continue;
+                    }
+                }
+                MaterialVolumes.push_back({VolEntity, Volume.Priority});
+            }
+            eastl::sort(MaterialVolumes.begin(), MaterialVolumes.end(),
+                [](const FMaterialVolumeRef& A, const FMaterialVolumeRef& B)
+                {
+                    return A.Priority < B.Priority;
+                });
+            for (const FMaterialVolumeRef& Ref : MaterialVolumes)
+            {
+                const SPostProcessComponent& Volume = VolumeView.get<const SPostProcessComponent>(Ref.Entity);
+                for (const TObjectPtr<CMaterialInterface>& M : Volume.PostProcessMaterials)
+                {
+                    if (M.IsValid())
+                    {
+                        PostProcessMaterials.push_back(M.Get());
+                    }
+                }
+            }
+            RenderScene->SetActivePostProcessMaterials(PostProcessMaterials);
+
             RenderScene->RenderView(CmdList, Camera.GetViewVolume(), &ResolvedPostProcess);
 
             return;
         }
 
+        RenderScene->SetActivePostProcessMaterials({});
         RenderScene->RenderView(CmdList, FViewVolume{}, nullptr);
     }
 
@@ -1068,7 +1128,7 @@ namespace Lumina
         ScriptComponent.ScriptMetaTable = ScriptComponent.Script->Reference["Meta"];
         ScriptComponent.AttachFunc      = ScriptComponent.Script->Reference["OnAttach"];
         ScriptComponent.ReadyFunc       = ScriptComponent.Script->Reference["OnReady"];
-        ScriptComponent.UpdateFunc      = ScriptComponent.Script->Reference["Update"];
+        ScriptComponent.UpdateFunc      = ScriptComponent.Script->Reference["OnUpdate"];
         ScriptComponent.DetachFunc      = ScriptComponent.Script->Reference["OnDetach"];
 
         // Discover directed message handlers by convention. Anything in the script
@@ -1097,7 +1157,7 @@ namespace Lumina
                     FStringView KeyView(KeyData, KeyLen);
 
                     const bool bIsOnPrefixed = KeyView.size() >= 3 && KeyView[0] == 'O' && KeyView[1] == 'n';
-                    const bool bIsLifecycle  = KeyView == "OnAttach" || KeyView == "OnReady" || KeyView == "OnDetach";
+                    const bool bIsLifecycle  = KeyView == "OnAttach" || KeyView == "OnReady" || KeyView == "OnDetach" || KeyView == "OnUpdate";
 
                     if (bIsOnPrefixed && !bIsLifecycle)
                     {

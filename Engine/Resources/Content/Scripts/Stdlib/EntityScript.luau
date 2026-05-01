@@ -55,7 +55,7 @@ end
 -- here as no-ops so the engine's per-key dispatch never sees a nil function.
 function EntityScript:OnAttach() end
 function EntityScript:OnReady() end
-function EntityScript:Update(DeltaTime: number) end
+function EntityScript:OnUpdate(DeltaTime: number) end
 function EntityScript:OnDetach() end
 
 -- ---- Components ----------------------------------------------------------

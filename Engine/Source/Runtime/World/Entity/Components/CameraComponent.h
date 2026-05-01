@@ -1,5 +1,7 @@
 #pragma once
+#include "Containers/Array.h"
 #include "Core/Engine/Engine.h"
+#include "Core/Object/ObjectHandleTyped.h"
 #include "Renderer/ViewVolume.h"
 #include "PostProcessSettings.h"
 #include "CameraComponent.generated.h"
@@ -7,6 +9,7 @@
 
 namespace Lumina
 {
+    class CMaterialInterface;
     REFLECT(Component)
     struct RUNTIME_API SCameraComponent
     {
@@ -66,6 +69,14 @@ namespace Lumina
          *  tone mapping. */
         PROPERTY(Editable, Category = "Camera")
         SPostProcessSettings PostProcess;
+
+        /** Post-process materials applied in order after tone mapping.
+         *  Each entry runs as a fullscreen pass over the previous output;
+         *  the material's Emissive output replaces the scene color. Order
+         *  matters -- earlier entries are read by later entries via
+         *  SceneColor. Materials must have MaterialType = PostProcess. */
+        PROPERTY(Editable, Category = "Camera|Post Process")
+        TVector<TObjectPtr<CMaterialInterface>> PostProcessMaterials;
 
     private:
 

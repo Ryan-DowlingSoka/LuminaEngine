@@ -12,6 +12,7 @@
 namespace Lumina
 {
     enum class EMaterialInputType : uint8;
+    class CEdNodeGraph;
     class CEdNodeGraphPin;
     
     enum class ENodePinDirection : uint8
@@ -87,6 +88,11 @@ namespace Lumina
 
         CEdNodeGraphPin* CreatePin(CClass* InClass, const FString& Name, ENodePinDirection Direction);
 
+        // Owning graph; populated by CEdNodeGraph::AddNode. Lets nodes
+        // reach up for graph-wide context (e.g. material domain on
+        // CMaterialOutputNode) without an extra lookup pass.
+        CEdNodeGraph* GetOwningGraph() const { return OwningGraph; }
+
         /** Horizontal position of the node in the graph canvas. */
         PROPERTY(DuplicateTransient)
         float GridX;
@@ -110,6 +116,10 @@ namespace Lumina
         FString                             FullName;
         TOptional<EdNodeGraph::FError>      Error;
         bool                                bWasBuild = false;
+
+        // Set by CEdNodeGraph::AddNode. Non-owning -- the graph owns the
+        // node, not the other way around.
+        CEdNodeGraph*                       OwningGraph = nullptr;
     };
     
 }

@@ -1,5 +1,7 @@
 #include "MaterialNode_SceneData.h"
 
+#include "Core/Object/Cast.h"
+#include "UI/Tools/NodeGraph/Material/MaterialInput.h"
 #include "UI/Tools/NodeGraph/Material/MaterialOutput.h"
 #include "UI/Tools/NodeGraph/Material/MaterialCompiler.h"
 
@@ -30,4 +32,52 @@ namespace Lumina
 
     void CMaterialExpression_AspectRatio::BuildNode()       { Super::BuildNode(); Output->SetInputType(EMaterialInputType::Float); }
     void CMaterialExpression_AspectRatio::GenerateDefinition(FMaterialCompiler& C) { C.AspectRatio(FullName); }
+
+    void CMaterialExpression_SceneColor::BuildNode()
+    {
+        Super::BuildNode();
+        Output->SetInputType(EMaterialInputType::Float4);
+        Output->SetComponentMask(EComponentMask::RGBA);
+
+        UV = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "UV", ENodePinDirection::Input));
+        UV->SetHideDuringConnection(false);
+        UV->SetPinName("UV");
+    }
+    void CMaterialExpression_SceneColor::GenerateDefinition(FMaterialCompiler& C)
+    {
+        if (!C.RequirePixelStage(this, "SceneColor")) return;
+        C.SceneColor(FullName, UV);
+    }
+
+    void CMaterialExpression_SceneDepth::BuildNode()
+    {
+        Super::BuildNode();
+        Output->SetInputType(EMaterialInputType::Float);
+        Output->SetComponentMask(EComponentMask::R);
+
+        UV = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "UV", ENodePinDirection::Input));
+        UV->SetHideDuringConnection(false);
+        UV->SetPinName("UV");
+    }
+    void CMaterialExpression_SceneDepth::GenerateDefinition(FMaterialCompiler& C)
+    {
+        if (!C.RequirePixelStage(this, "SceneDepth")) return;
+        C.SceneDepth(FullName, UV, bLinear);
+    }
+
+    void CMaterialExpression_SceneHDRColor::BuildNode()
+    {
+        Super::BuildNode();
+        Output->SetInputType(EMaterialInputType::Float4);
+        Output->SetComponentMask(EComponentMask::RGBA);
+
+        UV = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "UV", ENodePinDirection::Input));
+        UV->SetHideDuringConnection(false);
+        UV->SetPinName("UV");
+    }
+    void CMaterialExpression_SceneHDRColor::GenerateDefinition(FMaterialCompiler& C)
+    {
+        if (!C.RequirePixelStage(this, "SceneHDRColor")) return;
+        C.SceneHDRColor(FullName, UV);
+    }
 }

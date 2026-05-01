@@ -207,21 +207,33 @@ namespace Lumina
                     {
                         PinColor = ImVec4(255.0f, 0.0f, 0.0f, 255.0f);
                     }
-                    
-                    DrawPinIcon(InputPin->HasConnection(), 255.0f, PinColor);
+
+                    const bool bDisabled = InputPin->IsDisabled();
+                    const float IconAlpha = bDisabled ? 80.0f : 255.0f;
+                    if (bDisabled)
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 0.6f));
+                    }
+
+                    DrawPinIcon(InputPin->HasConnection(), IconAlpha, PinColor);
                     ImGui::Spring(0);
-    
+
                     ImGui::TextUnformatted(InputPin->GetPinName().c_str());
-                    
+
                     if (bDebug)
                     {
                         ImGui::Text("(ID - %i)", InputPin->GetPinGUID());
                     }
-                    
+
                     ImGui::Spring(0);
+
+                    if (bDisabled)
+                    {
+                        ImGui::PopStyleColor();
+                    }
                 }
                 ImGui::PopID();
-                
+
                 NodeBuilder.EndInput();
             }
     
@@ -235,23 +247,33 @@ namespace Lumina
                 ImGui::PushID(OutputPin);
                 {
                     ImGui::Spring(0);
-    
+
+                    const bool bDisabledOut = OutputPin->IsDisabled();
+                    if (bDisabledOut)
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 0.6f));
+                    }
+
                     ImGui::Spring(1, 1);
                     ImGui::TextUnformatted(OutputPin->GetPinName().c_str());
                     ImGui::Spring(0);
-                    
+
                     ImVec4 PinColor = ImGui::ColorConvertU32ToFloat4(OutputPin->GetPinColor());
                     if (Node->HasError())
                     {
                         PinColor = ImVec4(255.0f, 0.0f, 0.0f, 255.0f);
                     }
-                    DrawPinIcon(OutputPin->HasConnection(), 255.0f, PinColor);
-                    
+                    DrawPinIcon(OutputPin->HasConnection(), bDisabledOut ? 80.0f : 255.0f, PinColor);
+
                     if (bDebug)
                     {
                         ImGui::Text("(ID - %i)", OutputPin->GetPinGUID());
                     }
-                    
+
+                    if (bDisabledOut)
+                    {
+                        ImGui::PopStyleColor();
+                    }
                 }
                 ImGui::PopID();
     
@@ -495,7 +517,11 @@ namespace Lumina
                         }
                         
                         const FEdGraphSchema& Schema = GetSchema();
-                        if (Schema.CanCreateConnection(StartPin, EndPin))
+                        // Disabled pins reject new links. Existing connections
+                        // remain so the user can still disconnect a stale link
+                        // after the material domain changes.
+                        const bool bAnyDisabled = (StartPin && StartPin->IsDisabled()) || (EndPin && EndPin->IsDisabled());
+                        if (!bAnyDisabled && Schema.CanCreateConnection(StartPin, EndPin))
                         {
                             if (EndPin->HasConnection() && !Schema.AllowsMultipleConnections(EndPin))
                             {
@@ -683,6 +709,7 @@ namespace Lumina
         
         InNode->FullName = InNode->GetNodeDisplayName() + "_" + eastl::to_string(NodeID);
         InNode->NodeID = NodeID;
+        InNode->OwningGraph = this;
 
         Nodes.push_back(InNode);
 

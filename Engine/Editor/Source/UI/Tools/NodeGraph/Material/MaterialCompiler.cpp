@@ -97,9 +97,11 @@ namespace Lumina
 	void FMaterialCompiler::BuildShaders(FString& OutPixelShader, FString& OutVertexShader, EMaterialType MaterialType) const
 	{
 		const FString BasePath = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/";
-		const bool bIsTerrain = (MaterialType == EMaterialType::Terrain);
-		const FString PixelPath  = BasePath + (bIsTerrain ? "TerrainBasePixelPass.slang"  : "BasePixelPass.slang");
-		const FString VertexPath = BasePath + (bIsTerrain ? "TerrainBaseVertexPass.slang" : "BaseVertexPass.slang");
+		const bool bIsTerrain     = (MaterialType == EMaterialType::Terrain);
+		const bool bIsPostProcess = (MaterialType == EMaterialType::PostProcess);
+		const FString PixelPath  = bIsPostProcess ? (BasePath + "PostProcessPixelPass.slang")
+		                                          : (bIsTerrain ? BasePath + "TerrainBasePixelPass.slang"
+		                                                        : BasePath + "BasePixelPass.slang");
 
 		// Pixel: existing single-stage substitution. Output node already emits
 		// its own `FMaterialPixelInputs Material;` declaration, so we just
@@ -114,9 +116,25 @@ namespace Lumina
 			LOG_ERROR("Failed to find {}!", PixelPath);
 		}
 
+		// Vertex: PostProcess materials run as a fullscreen pass, so the
+		// vertex stage is the shared FullscreenQuad helper -- there is no
+		// $MATERIAL_VERTEX_INPUTS substitution and no per-material vertex
+		// code. WPO is meaningless without surface geometry.
+		if (bIsPostProcess)
+		{
+			OutVertexShader.clear();
+			const FString FullscreenQuadPath = Paths::GetEngineResourceDirectory() + "/Shaders/FullscreenQuad.slang";
+			if (!FileHelper::LoadFileIntoString(OutVertexShader, FullscreenQuadPath))
+			{
+				LOG_ERROR("Failed to find {}!", FullscreenQuadPath);
+			}
+			return;
+		}
+
 		// Vertex: alias preamble + body + output assignments. The vertex
 		// template declared `FMaterialVertexInputs Material;` inline above
 		// the token, so we only emit assignments here.
+		const FString VertexPath = BasePath + (bIsTerrain ? "TerrainBaseVertexPass.slang" : "BaseVertexPass.slang");
 		OutVertexShader = BuildVertexShaderFromTemplate(VertexPath, MaterialType);
 	}
 
@@ -992,6 +1010,72 @@ namespace Lumina
 	void FMaterialCompiler::AspectRatio(const FString& ID)
 	{
 		GetActiveChunk().append("float " + ID + " = float(uSceneData.ScreenSize.x) / max(float(uSceneData.ScreenSize.y), 1.0);\n");
+	}
+
+	// SceneColor is only valid in PostProcess materials -- it samples the
+	// pass-input render target bound at set 2, binding 0. Other domains have
+	// no such binding, so emit a graph error rather than producing a shader
+	// that fails to link.
+	void FMaterialCompiler::SceneColor(const FString& ID, CMaterialInput* UV)
+	{
+		if (CurrentMaterialType != EMaterialType::PostProcess)
+		{
+			EdNodeGraph::FError Error;
+			Error.Name        = "SceneColor";
+			Error.Description = "SceneColor is only valid in materials with MaterialType = PostProcess.";
+			Error.Node        = UV ? UV->GetOwningNode() : nullptr;
+			Errors.push_back(Error);
+			GetActiveChunk().append("float4 " + ID + " = float4(0.0, 0.0, 0.0, 1.0);\n");
+			return;
+		}
+
+		FInputValue UVValue = GetTypedInputValue(UV, "UV0");
+		FString UVStr = (UV && UV->HasConnection()) ? (UVValue.Value + ".xy") : FString("UV0");
+		GetActiveChunk().append("float4 " + ID + " = uSceneColor.Sample(" + UVStr + ");\n");
+	}
+
+	void FMaterialCompiler::SceneDepth(const FString& ID, CMaterialInput* UV, bool bLinear)
+	{
+		if (CurrentMaterialType != EMaterialType::PostProcess)
+		{
+			EdNodeGraph::FError Error;
+			Error.Name        = "SceneDepth";
+			Error.Description = "SceneDepth is only valid in materials with MaterialType = PostProcess.";
+			Error.Node        = UV ? UV->GetOwningNode() : nullptr;
+			Errors.push_back(Error);
+			GetActiveChunk().append("float " + ID + " = 1.0;\n");
+			return;
+		}
+
+		FInputValue UVValue = GetTypedInputValue(UV, "UV0");
+		FString UVStr = (UV && UV->HasConnection()) ? (UVValue.Value + ".xy") : FString("UV0");
+		FString Raw = "uSceneDepth.Sample(" + UVStr + ").r";
+		if (bLinear)
+		{
+			GetActiveChunk().append("float " + ID + " = LinearizeSceneDepth(" + Raw + ");\n");
+		}
+		else
+		{
+			GetActiveChunk().append("float " + ID + " = " + Raw + ";\n");
+		}
+	}
+
+	void FMaterialCompiler::SceneHDRColor(const FString& ID, CMaterialInput* UV)
+	{
+		if (CurrentMaterialType != EMaterialType::PostProcess)
+		{
+			EdNodeGraph::FError Error;
+			Error.Name        = "SceneHDRColor";
+			Error.Description = "SceneHDRColor is only valid in materials with MaterialType = PostProcess.";
+			Error.Node        = UV ? UV->GetOwningNode() : nullptr;
+			Errors.push_back(Error);
+			GetActiveChunk().append("float4 " + ID + " = float4(0.0, 0.0, 0.0, 1.0);\n");
+			return;
+		}
+
+		FInputValue UVValue = GetTypedInputValue(UV, "UV0");
+		FString UVStr = (UV && UV->HasConnection()) ? (UVValue.Value + ".xy") : FString("UV0");
+		GetActiveChunk().append("float4 " + ID + " = uHDRSceneColor.Sample(" + UVStr + ");\n");
 	}
 
 	void FMaterialCompiler::NumericConstant(const FString& ID, float Value)

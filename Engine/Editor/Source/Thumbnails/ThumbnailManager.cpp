@@ -80,21 +80,11 @@ namespace Lumina
             PlaneMesh->Materials.resize(1);
             PlaneMesh->SetMeshResource(Move(Resource));
         }
-
-        // Built-in renderers. Game/editor code can call RegisterThumbnailRenderer
-        // to add or override entries for project-specific asset types.
-        // Studio framing constants. With FOV 35° and aspect 1, a sphere of
-        // radius R exactly fills the vertical at distance R / tan(17.5°) ≈
-        // R * 3.17. Multipliers below leave a deliberate margin per asset
-        // type — meshes get a wider crop, materials get a tight crop because
-        // the sphere is the subject.
+        
         constexpr float kThumbnailFOV       = 35.0f;
-        constexpr float kMeshFramingScale   = 3.6f;   // ~12% margin around bounds
-        constexpr float kSphereFramingScale = 5.5f;   // sphere fills ~60% of frame
-
-        // Add a directional light + sky so thumbnails sit on the engine's
-        // default skybox background. Caller supplies a tinted color so each
-        // asset class can pick a slightly different mood; defaults are mild.
+        constexpr float kMeshFramingScale   = 3.2f;   // Margin around bounds
+        constexpr float kSphereFramingScale = 5.5f;   // Sphere fills ~60% of frame
+        
         auto SetupStudioLighting = [](CWorld* World)
         {
             FEntityRegistry& Registry = World->GetEntityRegistry();

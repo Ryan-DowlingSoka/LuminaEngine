@@ -79,4 +79,49 @@ namespace Lumina
         FString GetNodeTooltip() const override { return "Returns viewport width / height."; }
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
+
+    REFLECT()
+    class CMaterialExpression_SceneColor : public CMaterialExpression
+    {
+        GENERATED_BODY()
+    public:
+        void BuildNode() override;
+        FFixedString GetNodeCategory() const override { return "Scene"; }
+        FString GetNodeDisplayName() const override { return "SceneColor"; }
+        FString GetNodeTooltip() const override { return "Samples the scene color render target. Only valid in PostProcess materials. Optional UV input defaults to the screen UV."; }
+        void GenerateDefinition(FMaterialCompiler& Compiler) override;
+
+        CMaterialInput* UV = nullptr;
+    };
+
+    REFLECT()
+    class CMaterialExpression_SceneDepth : public CMaterialExpression
+    {
+        GENERATED_BODY()
+    public:
+        void BuildNode() override;
+        FFixedString GetNodeCategory() const override { return "Scene"; }
+        FString GetNodeDisplayName() const override { return "SceneDepth"; }
+        FString GetNodeTooltip() const override { return "Samples the scene depth attachment. Linear by default (view-space distance in world units), toggle for raw [0,1] NDC z. Only valid in PostProcess materials."; }
+        void GenerateDefinition(FMaterialCompiler& Compiler) override;
+
+        /** When true, returns linear view-space distance; otherwise raw NDC z. */
+        PROPERTY(Editable) bool bLinear = true;
+
+        CMaterialInput* UV = nullptr;
+    };
+
+    REFLECT()
+    class CMaterialExpression_SceneHDRColor : public CMaterialExpression
+    {
+        GENERATED_BODY()
+    public:
+        void BuildNode() override;
+        FFixedString GetNodeCategory() const override { return "Scene"; }
+        FString GetNodeDisplayName() const override { return "SceneHDRColor"; }
+        FString GetNodeTooltip() const override { return "Samples the pre-tone-mapping HDR scene color. Useful for custom tonemapping or HDR-aware effects. Only valid in PostProcess materials."; }
+        void GenerateDefinition(FMaterialCompiler& Compiler) override;
+
+        CMaterialInput* UV = nullptr;
+    };
 }

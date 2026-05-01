@@ -146,7 +146,7 @@ namespace Lumina
          *  oriented around a tilted galactic plane and fades with the
          *  night factor. Set to 0 to disable. */
         PROPERTY(Editable, Category = "Sky|Stars", ClampMin = 0.0f, ClampMax = 4.0f)
-        float GalaxyIntensity = 0.06f;
+        float GalaxyIntensity = 0.002f;
 
         /** Tilt (radians) of the galactic plane relative to the world XZ
          *  plane. Lets you reorient where the Milky Way sits in the sky. */

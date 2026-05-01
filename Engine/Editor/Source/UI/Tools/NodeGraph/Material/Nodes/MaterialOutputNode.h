@@ -18,7 +18,13 @@ namespace Lumina
         uint32 GetNodeTitleColor() const override { return IM_COL32(35, 35, 200, 255); }
 
         void BuildNode() override;
-        
+
+        // Refresh pin enable/disable state from the current material domain
+        // before pins draw. Called by the node graph at the top of each
+        // node's per-frame draw, so the user sees the right pins lit up
+        // immediately after flipping MaterialType in the inspector.
+        void DrawNodeTitleBar() override;
+
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
 
         bool IsDeletable() const override { return false; }

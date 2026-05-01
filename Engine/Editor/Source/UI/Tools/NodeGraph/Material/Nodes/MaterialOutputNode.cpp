@@ -3,7 +3,10 @@
 
 #include "UI/Tools/NodeGraph/Material/MaterialInput.h"
 #include "UI/Tools/NodeGraph/Material/MaterialCompiler.h"
+#include "UI/Tools/NodeGraph/Material/MaterialNodeGraph.h"
 #include "UI/Tools/NodeGraph/Material/MaterialOutput.h"
+#include "Assets/AssetTypes/Material/Material.h"
+#include "Core/Object/Cast.h"
 
 namespace Lumina
 {
@@ -17,6 +20,41 @@ namespace Lumina
         return "The final output to the shader";
     }
 
+
+    void CMaterialOutputNode::DrawNodeTitleBar()
+    {
+        // Refresh per-pin disabled state from the material domain. Cheap
+        // (a handful of flag writes) and runs once per node draw, so the
+        // greyed-out state tracks MaterialType edits without a separate
+        // refresh hook.
+        EMaterialType MaterialType = EMaterialType::PBR;
+        if (CMaterialNodeGraph* Graph = Cast<CMaterialNodeGraph>(GetOwningGraph()))
+        {
+            if (CMaterial* OwningMaterial = Graph->GetMaterial())
+            {
+                MaterialType = OwningMaterial->GetMaterialType();
+            }
+        }
+
+        const bool bPostProcess = MaterialType == EMaterialType::PostProcess;
+
+        // PostProcess materials only consume Emissive; the surface attributes
+        // are inert for the fullscreen pass. WorldPositionOffset is a vertex-
+        // stage write and is meaningless without surface geometry.
+        if (BaseColorPin)            BaseColorPin->SetDisabled(bPostProcess);
+        if (MetallicPin)             MetallicPin->SetDisabled(bPostProcess);
+        if (RoughnessPin)            RoughnessPin->SetDisabled(bPostProcess);
+        if (SpecularPin)             SpecularPin->SetDisabled(bPostProcess);
+        if (AOPin)                   AOPin->SetDisabled(bPostProcess);
+        if (NormalPin)               NormalPin->SetDisabled(bPostProcess);
+        if (OpacityPin)              OpacityPin->SetDisabled(bPostProcess);
+        if (WorldPositionOffsetPin)  WorldPositionOffsetPin->SetDisabled(bPostProcess);
+
+        // Emissive is the post-process output; always enabled.
+        if (EmissivePin)             EmissivePin->SetDisabled(false);
+
+        Super::DrawNodeTitleBar();
+    }
 
     void CMaterialOutputNode::BuildNode()
     {
@@ -109,11 +147,17 @@ namespace Lumina
         PixelOut += "\n\n";
         PixelOut += "\tFMaterialPixelInputs Material;\n";
 
+        // Post-process materials use Emissive as the final scene color. An
+        // unconnected Emissive means "passthrough" (return the scene as-is)
+        // rather than "black"; surface materials keep the legacy zero default.
+        const bool bPostProcess = Compiler.GetMaterialType() == EMaterialType::PostProcess;
+        const FString EmissiveDefault = bPostProcess ? FString("SceneColor.rgb") : FString("float3(0.0, 0.0, 0.0)");
+
         PixelOut += EmitMaterialAssignment("Diffuse",          BaseColorPin, "float3(1.0, 1.0, 1.0)", 3);
         PixelOut += EmitMaterialAssignment("Metallic",         MetallicPin,  "0.0",                    1);
         PixelOut += EmitMaterialAssignment("Roughness",        RoughnessPin, "1.0",                    1);
         PixelOut += EmitMaterialAssignment("Specular",         SpecularPin,  "0.5",                    1);
-        PixelOut += EmitMaterialAssignment("Emissive",         EmissivePin,  "float3(0.0, 0.0, 0.0)", 3);
+        PixelOut += EmitMaterialAssignment("Emissive",         EmissivePin,  EmissiveDefault,          3);
         PixelOut += EmitMaterialAssignment("AmbientOcclusion", AOPin,        "1.0",                    1);
         PixelOut += EmitMaterialAssignment("Normal",           NormalPin,    "float3(0.0, 0.0, 1.0)", 3);
         PixelOut += EmitMaterialAssignment("Opacity",          OpacityPin,   "1.0",                    1);

@@ -29,6 +29,7 @@ namespace Lumina
             , bInputPin(0)
             , bDrawPinEditor(false)
             , bHidePinDuringConnection(true)
+            , bDisabled(false)
         {}
         
         virtual float DrawPin() { return 1.5f; }
@@ -57,6 +58,14 @@ namespace Lumina
 
         bool ShouldDrawEditor() const { return bDrawPinEditor; }
         void SetShouldDrawEditor(bool bNew) { bDrawPinEditor = bNew; }
+
+        // Disabled pins are drawn faded and reject new connections. Used by
+        // the material output node to grey out attributes that don't apply
+        // to the current material domain (e.g. Diffuse / Roughness on a
+        // PostProcess material). Existing connections are preserved -- the
+        // user can still disconnect a stale link.
+        bool IsDisabled() const { return bDisabled; }
+        void SetDisabled(bool bNew) { bDisabled = bNew; }
         
         template<typename T>
         requires(std::is_base_of_v<CEdGraphNode, T>)
@@ -88,5 +97,6 @@ namespace Lumina
         uint8                           bInputPin:1;
         uint8                           bDrawPinEditor:1;
         uint8                           bHidePinDuringConnection:1;
+        uint8                           bDisabled:1;
     };
 }
