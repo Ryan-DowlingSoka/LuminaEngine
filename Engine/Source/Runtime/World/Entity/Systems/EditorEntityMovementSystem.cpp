@@ -32,9 +32,15 @@ namespace Lumina
 			SVelocityComponent& Velocity = View.get<SVelocityComponent>(EditorEntity);
 			FEditorComponent& Editor = View.get<FEditorComponent>(EditorEntity);
 			
+			const bool bShouldLook = Editor.bEnabled && FInputProcessor::Get().IsMouseButtonDown(EMouseKey::ButtonRight);
+			if (!bShouldLook)
+			{
+				FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
+			}
+
 			if (!Editor.bEnabled)
 			{
-				return;
+				continue;
 			}
 			
 			glm::vec3 Forward = Transform.GetForward();
@@ -88,7 +94,7 @@ namespace Lumina
 
 			Transform.Translate(Velocity.Velocity * static_cast<float>(DeltaTime) * Velocity.Scale);
 
-			if (FInputProcessor::Get().IsMouseButtonDown(EMouseKey::ButtonRight))
+			if (bShouldLook)
 			{
 				FInputProcessor::Get().SetMouseMode(EMouseMode::Captured);
 
@@ -100,11 +106,6 @@ namespace Lumina
 
 				Velocity.Scale += Math::Pow(1.05f, Velocity.Scale) * static_cast<float>(MouseDeltaZ);
 				Velocity.Scale = Math::Clamp(Velocity.Scale, 0.2f, 100.0f);
-			}
-
-			if (FInputProcessor::Get().IsMouseButtonUp(EMouseKey::ButtonRight))
-			{
-				FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
 			}
 		}
 	}
