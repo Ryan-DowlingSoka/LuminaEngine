@@ -414,6 +414,8 @@ namespace Lumina
 
     void FMaterialInstanceEditorTool::InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const
     {
+        ImGui::DockBuilderRemoveNodeChildNodes(InDockspaceID);
+
         ImGuiID leftDockID = 0, rightDockID = 0;
         ImGui::DockBuilderSplitNode(InDockspaceID, ImGuiDir_Right, 0.4f, &rightDockID, &leftDockID);
 

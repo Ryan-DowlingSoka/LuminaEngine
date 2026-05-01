@@ -420,14 +420,17 @@ namespace Lumina
 
     void FParticleSystemEditorTool::InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const
     {
+        ImGui::DockBuilderRemoveNodeChildNodes(InDockspaceID);
+
         ImGuiID LeftDockID = 0, RightDockID = 0, RightBottomDockID = 0;
-        
         ImGui::DockBuilderSplitNode(InDockspaceID, ImGuiDir_Right, 0.3f, &RightDockID, &LeftDockID);
         ImGui::DockBuilderSplitNode(RightDockID, ImGuiDir_Down, 0.3f, &RightBottomDockID, &RightDockID);
-        
-        ImGui::DockBuilderDockWindow(GetToolWindowName(ParticleGraphName).c_str(), LeftDockID);
-        ImGui::DockBuilderDockWindow(GetToolWindowName(ViewportWindowName).c_str(), RightDockID);
-        ImGui::DockBuilderDockWindow(GetToolWindowName(ShaderPreviewName).c_str(), LeftDockID);
-        ImGui::DockBuilderDockWindow(GetToolWindowName(ParticlePropertiesName).c_str(), RightBottomDockID);
+
+        // Particle Graph and Shader Preview share the left pane as tabs (intentional -- the user
+        // toggles between authoring the graph and inspecting the generated shader).
+        ImGui::DockBuilderDockWindow(GetToolWindowName(ParticleGraphName).c_str(),       LeftDockID);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(ShaderPreviewName).c_str(),       LeftDockID);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(ViewportWindowName).c_str(),      RightDockID);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(ParticlePropertiesName).c_str(),  RightBottomDockID);
     }
 }

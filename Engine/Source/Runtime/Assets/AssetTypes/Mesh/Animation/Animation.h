@@ -112,7 +112,7 @@ namespace Lumina
         
         bool IsAsset() const override { return true; }
         
-        void SamplePose(float Time, FSkeletonResource* SkeletonResource, TArray<glm::mat4, 255>& OutBoneTransforms);
+        void SamplePose(float Time, FSkeletonResource* RESTRICT SkeletonResource, TArray<glm::mat4, 255>& RESTRICT OutBoneTransforms);
         
         float GetDuration() const { return AnimationResource->Duration; }
         FAnimationResource* GetAnimationResource() const { return AnimationResource.get(); }

@@ -50,15 +50,22 @@ namespace Lumina
 
         virtual CEdGraphNode* CreateNode(CClass* NodeClass);
 
+        // Picks a pin on NewNode that should be auto-connected to SourcePin when the user drops a
+        // drag-from-pin on empty space and creates a node from the popup. Default implementation
+        // returns the first opposite-direction pin the schema accepts. Override for type-aware matching.
+        virtual CEdNodeGraphPin* FindAutoConnectPin(CEdGraphNode* NewNode, CEdNodeGraphPin* SourcePin) const;
+
+        // Connects SourcePin to TargetPin honoring the graph schema (breaks existing single-input links
+        // first). No-op if either pin is null or the schema rejects the connection.
+        void TryAutoConnect(CEdNodeGraphPin* SourcePin, CEdNodeGraphPin* TargetPin);
+
         virtual CEdGraphNode* OnNodeRemoved(CEdGraphNode* Node) { return nullptr; }
 
-        // Quick-place hook. Called when the user holds a digit key (1..9 / 0)
-        // and left-clicks empty graph background. Override in a subclass to
-        // map digits to specific node classes; default is a no-op so graphs
-        // that don't opt in simply ignore the keystroke. CanvasPos is the
-        // location to drop the new node at.
+        // Quick-place hooks.
         virtual void HandleQuickPlace(int Digit, ImVec2 CanvasPos) {}
+        virtual void HandleQuickPlace(char Key, ImVec2 CanvasPos) {}
 
+        
         void SetNodeSelectedCallback(const TFunction<void(CEdGraphNode*)>& Callback) { NodeSelectedCallback = Callback; }
         void SetPreNodeDeletedCallback(const TFunction<void(CEdGraphNode*)>& Callback) { PreNodeDeletedCallback = Callback; }
 
@@ -102,11 +109,18 @@ namespace Lumina
 
         FGraphActionMenu                                ActionMenu;
 
+        // Pin the user dragged off when releasing on empty space. Consumed by the action menu
+        // popup to auto-connect the new node back to this pin. Cleared when the popup closes.
+        CEdNodeGraphPin*                                PendingSourcePin = nullptr;
+        bool                                            bOpenCreateFromPin = false;
+
         TVector<CEdGraphNode*>                          CopiedNodes;
         
         bool                                            bFirstDraw = true;
         bool                                            bDebug = false;
         
+        ax::NodeEditor::EditorContext* GetEditorContext() const { return Context; }
+
     private:
 
         ax::NodeEditor::EditorContext* Context = nullptr;

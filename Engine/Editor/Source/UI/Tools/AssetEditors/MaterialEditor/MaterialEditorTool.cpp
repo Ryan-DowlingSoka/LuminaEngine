@@ -1,4 +1,5 @@
 ﻿#include "MaterialEditorTool.h"
+#include "imgui-node-editor/imgui_node_editor.h"
 #include "Assets/AssetTypes/Material/Material.h"
 #include "Assets/AssetTypes/Textures/Texture.h"
 #include "Core/Engine/Engine.h"
@@ -24,7 +25,7 @@ namespace Lumina
 {
     static const char* MaterialGraphName           = "Material Graph";
     static const char* MaterialPropertiesName      = "Material Properties";
-    static const char* GLSLPreviewName             = "GLSL Preview";
+    static const char* ShaderStatsName             = "Shader Stats";
 
     FMaterialEditorTool::FMaterialEditorTool(IEditorToolContext* Context, CObject* InAsset)
         : FAssetEditorTool(Context, InAsset->GetName().c_str(), InAsset, NewObject<CWorld>())
@@ -50,9 +51,9 @@ namespace Lumina
             DrawMaterialProperties();
         });
 
-        CreateToolWindow(GLSLPreviewName, [&](bool bFocused)
+        CreateToolWindow(ShaderStatsName, [&](bool bFocused)
         {
-            DrawGLSLPreview();
+            DrawShaderStats();
         });
 
         FString GraphName = "AssetMaterialGraph";
@@ -173,7 +174,16 @@ namespace Lumina
         const ImVec2 WindowPosition = ImGui::GetWindowPos();
         const ImVec2 WindowBottomRight = { WindowPosition.x + ViewportSize.x, WindowPosition.y + ViewportSize.y };
         float AspectRatio = (ViewportSize.x / ViewportSize.y);
-        
+
+        // Enforce per-frame: setting once in SetupWorldForTool is unreliable because the renderer
+        // can be (re)created after that hook runs, leaving the default true in the new instance.
+        if (IRenderScene* Scene = World ? World->GetRenderer() : nullptr)
+        {
+            FSceneRenderSettings& Settings = Scene->GetSceneRenderSettings();
+            Settings.bDrawBillboards = false;
+            Settings.bDrawAABB       = false;
+        }
+
         SCameraComponent* CameraComponent =  World->GetActiveCamera();
         CameraComponent->SetAspectRatio(AspectRatio);
         CameraComponent->SetFOV(60.0f);
@@ -247,101 +257,228 @@ namespace Lumina
         }
     }
     
-    void FMaterialEditorTool::DrawGLSLPreview()
+    void FMaterialEditorTool::DrawShaderStats()
     {
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12, 12));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
-    
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 8));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 6));
+
         if (CompilationResult.bIsError)
         {
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.15f, 0.18f, 1.0f));
-            ImGui::BeginChild("##error_preview", ImVec2(0, 0), true);
-            
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f)); // Red for errors
-            ImGui::TextUnformatted(CompilationResult.CompilationLog.c_str());
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.10f, 0.10f, 1.0f));
+            ImGui::BeginChild("##stats_error", ImVec2(0, 0), true);
+
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.45f, 1.0f));
+            ImGui::Text("Compilation failed (%d error%s)",
+                static_cast<int>(CompilationResult.Errors.size()),
+                CompilationResult.Errors.size() == 1 ? "" : "s");
             ImGui::PopStyleColor();
-    
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            const ImVec4 TitleColor (1.00f, 0.55f, 0.55f, 1.0f);
+            const ImVec4 NodeColor  (1.00f, 0.85f, 0.55f, 1.0f);
+            const ImVec4 BodyColor  (1.00f, 0.80f, 0.80f, 1.0f);
+            const ImVec4 HintColor  (0.65f, 0.65f, 0.70f, 1.0f);
+
+            for (size_t i = 0; i < CompilationResult.Errors.size(); ++i)
+            {
+                const FCompilationError& Err = CompilationResult.Errors[i];
+
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.20f, 0.13f, 0.13f, 1.0f));
+                ImGui::BeginChild("##err_row", ImVec2(0, 0), true,
+                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_AlwaysAutoResize);
+
+                ImGui::PushStyleColor(ImGuiCol_Text, TitleColor);
+                ImGui::Text("[%s]", Err.Title.c_str());
+                ImGui::PopStyleColor();
+
+                if (Err.Node != nullptr)
+                {
+                    ImGui::SameLine();
+                    ImGui::PushStyleColor(ImGuiCol_Text, NodeColor);
+                    ImGui::Text("%s", Err.Node->GetNodeFullName().c_str());
+                    ImGui::PopStyleColor();
+                }
+
+                ImGui::PushStyleColor(ImGuiCol_Text, BodyColor);
+                ImGui::TextWrapped("%s", Err.Description.c_str());
+                ImGui::PopStyleColor();
+
+                if (Err.Node != nullptr)
+                {
+                    ImGui::Spacing();
+                    if (ImGui::SmallButton("Focus Node"))
+                    {
+                        FocusGraphNode(Err.Node);
+                    }
+                    ImGui::SameLine();
+                    ImGui::PushStyleColor(ImGuiCol_Text, HintColor);
+                    ImGui::TextUnformatted("(selects and centers in graph)");
+                    ImGui::PopStyleColor();
+                }
+
+                ImGui::EndChild();
+                ImGui::PopStyleColor();
+                ImGui::PopID();
+
+                ImGui::Spacing();
+            }
+
             ImGui::EndChild();
             ImGui::PopStyleColor();
             ImGui::PopStyleVar(2);
             return;
         }
-    
-        if (Tree.empty())
+
+        if (!bHasCompiledOnce)
         {
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.15f, 0.18f, 1.0f));
-            ImGui::BeginChild("##empty_preview", ImVec2(0, 0), true);
-    
-            ImVec2 available = ImGui::GetContentRegionAvail();
-            ImVec2 textSize = ImGui::CalcTextSize("Compile to see preview");
-            ImGui::SetCursorPos(ImVec2(
-                (available.x - textSize.x) * 0.5f,
-                (available.y - textSize.y) * 0.5f
-            ));
-    
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.13f, 0.13f, 0.16f, 1.0f));
+            ImGui::BeginChild("##stats_empty", ImVec2(0, 0), true);
+
+            const ImVec2 Avail = ImGui::GetContentRegionAvail();
+            const ImVec2 Size  = ImGui::CalcTextSize("Compile to see shader stats");
+            ImGui::SetCursorPos(ImVec2((Avail.x - Size.x) * 0.5f, (Avail.y - Size.y) * 0.5f));
+
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.65f, 1.0f));
-            ImGui::TextUnformatted("Compile to see preview");
+            ImGui::TextUnformatted("Compile to see shader stats");
             ImGui::PopStyleColor();
-    
+
             ImGui::EndChild();
             ImGui::PopStyleColor();
             ImGui::PopStyleVar(2);
             return;
         }
-    
+
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.12f, 0.15f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.35f, 1.0f));
-    
-        ImGui::BeginChild("##glsl_preview", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
-    
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.85f, 1.0f, 1.0f));
-        ImGui::TextUnformatted("GLSL Shader Tree");
+        ImGui::BeginChild("##stats_root", ImVec2(0, 0), true);
+
+        const ImVec4 LabelColor (0.65f, 0.65f, 0.72f, 1.0f);
+        const ImVec4 ValueColor (1.00f, 1.00f, 1.00f, 1.0f);
+        const ImVec4 HeaderColor(0.70f, 0.85f, 1.00f, 1.0f);
+
+        // Color the cost number based on a rough budget. Numbers picked to feel reasonable for the
+        // node graph; tweak after some real materials are profiled.
+        ImVec4 CostColor;
+        const uint32 Cost = ShaderStats.EstimatedCost;
+        if      (Cost < 50)   CostColor = ImVec4(0.40f, 1.00f, 0.45f, 1.0f);
+        else if (Cost < 150)  CostColor = ImVec4(0.95f, 0.95f, 0.40f, 1.0f);
+        else if (Cost < 300)  CostColor = ImVec4(1.00f, 0.65f, 0.30f, 1.0f);
+        else                  CostColor = ImVec4(1.00f, 0.40f, 0.40f, 1.0f);
+
+        ImGui::PushStyleColor(ImGuiCol_Text, HeaderColor);
+        ImGui::TextUnformatted("Shader Complexity");
         ImGui::PopStyleColor();
         ImGui::Separator();
         ImGui::Spacing();
-    
-        ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
-        
-        if (ReplacementStart != std::string::npos && ReplacementEnd != std::string::npos)
+
+        const float LabelWidth = 220.0f;
+
+        auto Row = [&](const char* Label, const char* Fmt, auto Value, ImVec4 ValColor)
         {
-            FString BeforeReplacement = Tree.substr(0, ReplacementStart);
-            FString ReplacedCode = Tree.substr(ReplacementStart, ReplacementEnd - ReplacementStart);
-            FString AfterReplacement = Tree.substr(ReplacementEnd);
-    
-            if (!BeforeReplacement.empty())
-            {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 0.92f, 1.0f));
-                ImGui::TextUnformatted(BeforeReplacement.c_str());
-                ImGui::PopStyleColor();
-            }
-    
-            if (!ReplacedCode.empty())
-            {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 1.0f, 0.5f, 1.0f)); // Bright green
-                ImGui::TextUnformatted(ReplacedCode.c_str());
-                ImGui::PopStyleColor();
-            }
-    
-            if (!AfterReplacement.empty())
-            {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 0.92f, 1.0f));
-                ImGui::TextUnformatted(AfterReplacement.c_str());
-                ImGui::PopStyleColor();
-            }
+            ImGui::PushStyleColor(ImGuiCol_Text, LabelColor);
+            ImGui::TextUnformatted(Label);
+            ImGui::PopStyleColor();
+            ImGui::SameLine(LabelWidth);
+            ImGui::PushStyleColor(ImGuiCol_Text, ValColor);
+            ImGui::Text(Fmt, Value);
+            ImGui::PopStyleColor();
+        };
+
+        Row("Estimated Cost",          "%u", ShaderStats.EstimatedCost,      CostColor);
+        Row("Pixel Instructions",      "%u", ShaderStats.PixelInstructions,  ValueColor);
+        if (ShaderStats.bUsesVertexStage)
+        {
+            Row("Vertex Instructions", "%u", ShaderStats.VertexInstructions, ValueColor);
         }
-        else
+        Row("Texture Samples",         "%u", ShaderStats.TextureSamples,     ValueColor);
+        Row("Math Operations",         "%u", ShaderStats.MathOps,            ValueColor);
+        Row("Noise Operations",        "%u", ShaderStats.NoiseOps,           ValueColor);
+
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, HeaderColor);
+        ImGui::TextUnformatted("Resources");
+        ImGui::PopStyleColor();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        Row("Bound Textures",          "%u", ShaderStats.BoundTextures,      ValueColor);
+        Row("Texture Parameters",      "%u", ShaderStats.TextureParameters,  ValueColor);
+        Row("Scalar Parameters",       "%u", ShaderStats.ScalarParameters,   ValueColor);
+        Row("Vector Parameters",       "%u", ShaderStats.VectorParameters,   ValueColor);
+
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, HeaderColor);
+        ImGui::TextUnformatted("Stages");
+        ImGui::PopStyleColor();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        Row("Uses Vertex Stage (WPO)", "%s", ShaderStats.bUsesVertexStage ? "Yes" : "No",
+            ShaderStats.bUsesVertexStage ? ImVec4(0.4f, 1.0f, 0.5f, 1.0f) : ValueColor);
+        Row("Pixel Source Size",       "%u chars", ShaderStats.PixelCharacters, ValueColor);
+        if (ShaderStats.bUsesVertexStage)
         {
+            Row("Vertex Source Size",  "%u chars", ShaderStats.VertexCharacters, ValueColor);
+        }
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        // Generated source is intentionally tucked behind a collapsing header so it isn't part
+        // of the main stats view -- the user has to opt in to see the raw HLSL.
+        if (ImGui::CollapsingHeader("Generated Pixel Shader (HLSL)"))
+        {
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.08f, 0.10f, 1.0f));
+            ImGui::BeginChild("##hlsl_pixel", ImVec2(0, 320), true, ImGuiWindowFlags_HorizontalScrollbar);
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 0.92f, 1.0f));
             ImGui::TextUnformatted(Tree.c_str());
             ImGui::PopStyleColor();
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
         }
-    
-        ImGui::PopFont();
-    
+
+        if (ShaderStats.bUsesVertexStage && !VertexTree.empty())
+        {
+            if (ImGui::CollapsingHeader("Generated Vertex Shader (HLSL)"))
+            {
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.08f, 0.10f, 1.0f));
+                ImGui::BeginChild("##hlsl_vertex", ImVec2(0, 320), true, ImGuiWindowFlags_HorizontalScrollbar);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 0.92f, 1.0f));
+                ImGui::TextUnformatted(VertexTree.c_str());
+                ImGui::PopStyleColor();
+                ImGui::EndChild();
+                ImGui::PopStyleColor();
+            }
+        }
+
         ImGui::EndChild();
         ImGui::PopStyleColor(2);
-    
         ImGui::PopStyleVar(2);
+    }
+
+    void FMaterialEditorTool::FocusGraphNode(CEdGraphNode* Node)
+    {
+        if (Node == nullptr || NodeGraph == nullptr)
+        {
+            return;
+        }
+
+        // The node editor's selection / navigation API requires its context to be the active one.
+        // DrawGraph rebinds it every frame, but we may be called from outside that scope (e.g. a
+        // button in the stats panel), so the safe pattern is to set, act, and clear.
+        ax::NodeEditor::EditorContext* PrevCtx = ax::NodeEditor::GetCurrentEditor();
+        ax::NodeEditor::EditorContext* OurCtx  = NodeGraph->GetEditorContext();
+        if (OurCtx == nullptr)
+        {
+            return;
+        }
+
+        ax::NodeEditor::SetCurrentEditor(OurCtx);
+        ax::NodeEditor::SelectNode(Node->GetNodeID(), false);
+        ax::NodeEditor::NavigateToSelection(false, 0.25f);
+        ax::NodeEditor::SetCurrentEditor(PrevCtx);
     }
 
     void FMaterialEditorTool::Compile()
@@ -359,10 +496,18 @@ namespace Lumina
             for (const EdNodeGraph::FError& Error : Compiler.GetErrors())
             {
                 CompilationResult.CompilationLog += "ERROR - [" + Error.Name + "]: " + Error.Description + "\n";
+
+                FCompilationError Structured;
+                Structured.Title       = Error.Name;
+                Structured.Description = Error.Description;
+                Structured.Node        = Error.Node;
+                CompilationResult.Errors.push_back(Move(Structured));
             }
-                
+
             CompilationResult.bIsError = true;
             bGLSLPreviewDirty = true;
+            bHasCompiledOnce = true;
+            ShaderStats = Compiler.GetStats();
         }
         else
         {
@@ -371,6 +516,9 @@ namespace Lumina
             // substituted from the per-stage compiler chunks.
             FString VertexSource;
             Compiler.BuildShaders(Tree, VertexSource, Material->GetMaterialType());
+            VertexTree = VertexSource;
+            ShaderStats = Compiler.GetStats();
+            bHasCompiledOnce = true;
 
             // ReplacementStart / ReplacementEnd power the GLSL preview's syntax
             // highlight band. Recompute against Tree (the pixel shader) so the
@@ -411,18 +559,7 @@ namespace Lumina
                 Material->PixelShader = PixelShader;
                 GRenderContext->OnShaderCompiled(PixelShader, false, true);
             });
-
-            // Per-material depth-prepass + shadow vertex shaders are only
-            // emitted when WPO is connected. Without them, the global
-            // DepthPrePass.slang / ShadowMappingVert.slang would write
-            // un-displaced depth, causing the base pass's [earlydepthstencil]
-            // to kill displaced fragments and shadows to lag the geometry.
-            //
-            // Terrain has its own render pass (TerrainRenderPass writes its
-            // own depth, no shadow-VS path), and DepthPrePass / ShadowMappingVert
-            // reference mesh-only symbols (uMeshletDrawList, Inst, VertexData)
-            // that the terrain vertex stage doesn't expose -- skip both for
-            // terrain materials.
+            
             const bool bIsTerrain     = Material->GetMaterialType() == EMaterialType::Terrain;
             const bool bIsPostProcess = Material->GetMaterialType() == EMaterialType::PostProcess;
             const bool bWPO = Compiler.UsesVertexStage() && !bIsTerrain && !bIsPostProcess;
@@ -487,16 +624,19 @@ namespace Lumina
 
     void FMaterialEditorTool::InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const
     {
-        ImGuiID leftDockID = 0, rightDockID = 0;
-        ImGuiID rightBottomDockID = 0;
+        ImGui::DockBuilderRemoveNodeChildNodes(InDockspaceID);
 
+        ImGuiID leftDockID = 0, rightDockID = 0, rightBottomDockID = 0;
+
+        // Outer split: 70% material graph on the left, 30% inspector column on the right.
         ImGui::DockBuilderSplitNode(InDockspaceID, ImGuiDir_Right, 0.3f, &rightDockID, &leftDockID);
 
+        // Right column: top viewport, bottom inspector (Stats + Properties tabbed).
         ImGui::DockBuilderSplitNode(rightDockID, ImGuiDir_Down, 0.3f, &rightBottomDockID, &rightDockID);
 
-        ImGui::DockBuilderDockWindow(GetToolWindowName(MaterialGraphName).c_str(), leftDockID);
-        ImGui::DockBuilderDockWindow(GetToolWindowName(ViewportWindowName).c_str(), rightDockID);
-        ImGui::DockBuilderDockWindow(GetToolWindowName(GLSLPreviewName).c_str(), rightBottomDockID);
-        ImGui::DockBuilderDockWindow(GetToolWindowName(MaterialPropertiesName).c_str(), rightBottomDockID);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(MaterialGraphName).c_str(),       leftDockID);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(ViewportWindowName).c_str(),      rightDockID);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(ShaderStatsName).c_str(),         rightBottomDockID);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(MaterialPropertiesName).c_str(),  rightBottomDockID);
     }
 }

@@ -482,9 +482,11 @@ namespace Lumina
 
     void FRmlUiEditorTool::InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const
     {
-        ImGuiID LeftDockID = 0;
-        ImGuiID RightDockID = 0;
+        ImGui::DockBuilderRemoveNodeChildNodes(InDockspaceID);
+
+        ImGuiID LeftDockID = 0, RightDockID = 0;
         ImGui::DockBuilderSplitNode(InDockspaceID, ImGuiDir_Right, 0.5f, &RightDockID, &LeftDockID);
+
         ImGui::DockBuilderDockWindow(GetToolWindowName(RmlEditorWindowName).c_str(), LeftDockID);
         ImGui::DockBuilderDockWindow(GetToolWindowName(RmlPreviewWindowName).c_str(), RightDockID);
     }

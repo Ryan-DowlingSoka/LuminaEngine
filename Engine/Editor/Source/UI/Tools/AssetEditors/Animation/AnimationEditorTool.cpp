@@ -120,11 +120,19 @@ namespace Lumina
 
     void FAnimationEditorTool::InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const
     {
+        // Always start from a clean tree -- guards against stale child nodes left over from a prior
+        // layout attempt or a stripped imgui.ini that left a partial dockspace behind.
+        ImGui::DockBuilderRemoveNodeChildNodes(InDockspaceID);
+
         ImGuiID leftDockID = 0, rightDockID = 0, bottomDockID = 0;
 
+        // Split the root: 70% viewport area on the left, 30% properties on the right.
         ImGui::DockBuilderSplitNode(InDockspaceID, ImGuiDir_Right, 0.3f, &rightDockID, &leftDockID);
 
-        ImGui::DockBuilderSplitNode(InDockspaceID, ImGuiDir_Down, 0.3f, &bottomDockID, &InDockspaceID);
+        // Sub-split the LEFT pane (not the root) into a viewport top and sequencer bottom. Splitting
+        // the root again here would attempt to split a parent node and silently drop the second
+        // split, leaving the sequencer dock target invalid.
+        ImGui::DockBuilderSplitNode(leftDockID, ImGuiDir_Down, 0.3f, &bottomDockID, &leftDockID);
 
         ImGui::DockBuilderDockWindow(GetToolWindowName(ViewportWindowName).c_str(), leftDockID);
         ImGui::DockBuilderDockWindow(GetToolWindowName(MeshPropertiesName).c_str(), rightDockID);

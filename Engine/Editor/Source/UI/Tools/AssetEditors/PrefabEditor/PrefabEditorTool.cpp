@@ -1094,8 +1094,9 @@ namespace Lumina
 
     void FPrefabEditorTool::InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const
     {
-        ImGuiID LeftDockID = 0, RightDockID = 0;
+        ImGui::DockBuilderRemoveNodeChildNodes(InDockspaceID);
 
+        ImGuiID LeftDockID = 0, RightDockID = 0;
         ImGui::DockBuilderSplitNode(InDockspaceID, ImGuiDir_Right, 0.3f, &RightDockID, &LeftDockID);
 
         ImGuiID LeftOutlinerID = 0, LeftViewportID = 0;

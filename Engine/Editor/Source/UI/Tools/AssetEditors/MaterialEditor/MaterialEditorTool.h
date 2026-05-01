@@ -2,6 +2,8 @@
 
 #include "Core/Object/ObjectHandleTyped.h"
 #include "UI/Tools/AssetEditors/AssetEditorTool.h"
+#include "UI/Tools/NodeGraph/EdGraphNode.h"
+#include "UI/Tools/NodeGraph/Material/MaterialCompiler.h"
 
 namespace Lumina
 {
@@ -16,10 +18,18 @@ namespace Lumina
     {
     public:
 
+        struct FCompilationError
+        {
+            FString             Title;
+            FString             Description;
+            CEdGraphNode*       Node = nullptr;
+        };
+
         struct FCompilationResultInfo
         {
-            FString CompilationLog;
-            bool bIsError;
+            FString                     CompilationLog;
+            TVector<FCompilationError>  Errors;
+            bool                        bIsError = false;
         };
 
         LUMINA_EDITOR_TOOL(FMaterialEditorTool)
@@ -38,10 +48,11 @@ namespace Lumina
         void DrawToolMenu(const FUpdateContext& UpdateContext) override;
         void DrawMaterialGraph();
         void DrawMaterialProperties();
-        void DrawGLSLPreview();
+        void DrawShaderStats();
 
         void Compile();
         void ApplyMaterialToPreview();
+        void FocusGraphNode(CEdGraphNode* Node);
         void OnSave() override;
         void InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const override;
 
@@ -55,6 +66,9 @@ namespace Lumina
         entt::entity                    DirectionalLightEntity;
         
         FString                         Tree;
+        FString                         VertexTree;
+        FMaterialCompiler::FShaderStats ShaderStats;
+        bool                            bHasCompiledOnce = false;
         size_t                          ReplacementStart = 0;
         size_t                          ReplacementEnd = 0;
         CEdGraphNode*                   SelectedNode = nullptr;

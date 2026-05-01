@@ -703,26 +703,28 @@ namespace Lumina
 
     void FWorldEditorTool::InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const
     {
-        ImGuiID dockLeft = 0;
-        ImGuiID dockRight = 0;
+        ImGui::DockBuilderRemoveNodeChildNodes(InDockspaceID);
 
+        // Outer split: 75% viewport on the left, 25% inspector column on the right.
+        ImGuiID dockLeft = 0, dockRight = 0;
         ImGui::DockBuilderSplitNode(InDockspaceID, ImGuiDir_Right, 0.25f, &dockRight, &dockLeft);
 
-        ImGuiID dockRightTop = 0;
-        ImGuiID dockRightBottom = 0;
+        // Right column: top scene graph, bottom details/settings strip.
+        // SplitNode's third arg is the size ratio for the node "at_dir", and the fourth/fifth args
+        // are out-pointers for at-dir and at-opposite. The previous code passed Down with a 0.25
+        // ratio but mis-named the outputs (Top/Bottom were swapped), so SceneGraph landed at the
+        // bottom and the details strip grew far too tall.
+        ImGuiID dockRightBottom = 0, dockRightTop = 0;
+        ImGui::DockBuilderSplitNode(dockRight, ImGuiDir_Down, 0.35f, &dockRightBottom, &dockRightTop);
 
-        ImGui::DockBuilderSplitNode(dockRight, ImGuiDir_Down, 0.25f, &dockRightTop, &dockRightBottom);
-
-        ImGuiID dockRightBottomLeft = 0;
-        ImGuiID dockRightBottomRight = 0;
-
+        // Bottom strip split horizontally for Details / World Settings, side by side.
+        ImGuiID dockRightBottomLeft = 0, dockRightBottomRight = 0;
         ImGui::DockBuilderSplitNode(dockRightBottom, ImGuiDir_Right, 0.5f, &dockRightBottomRight, &dockRightBottomLeft);
 
-        ImGui::DockBuilderDockWindow(GetToolWindowName(ViewportWindowName).c_str(), dockLeft);
-        ImGui::DockBuilderDockWindow(GetToolWindowName(SceneGraphName).c_str(), dockRightTop);
-        ImGui::DockBuilderDockWindow(GetToolWindowName("Details").c_str(), dockRightBottomLeft);
-        ImGui::DockBuilderDockWindow(GetToolWindowName(WorldSettingsName).c_str(), dockRightBottom);
-
+        ImGui::DockBuilderDockWindow(GetToolWindowName(ViewportWindowName).c_str(),    dockLeft);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(SceneGraphName).c_str(),        dockRightTop);
+        ImGui::DockBuilderDockWindow(GetToolWindowName("Details").c_str(),             dockRightBottomLeft);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(WorldSettingsName).c_str(),     dockRightBottomRight);
     }
 
     void FWorldEditorTool::DrawViewportOverlayElements(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture, ImVec2 ViewportSize)

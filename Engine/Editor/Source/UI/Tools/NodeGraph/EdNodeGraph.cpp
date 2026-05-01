@@ -307,6 +307,14 @@ namespace Lumina
             
             if (NodeEditor::ShowBackgroundContextMenu())
             {
+                PendingSourcePin = nullptr;
+                ActionMenu.Reset();
+                ImGui::OpenPopup("Create New Node");
+            }
+
+            if (bOpenCreateFromPin)
+            {
+                bOpenCreateFromPin = false;
                 ActionMenu.Reset();
                 ImGui::OpenPopup("Create New Node");
             }
@@ -316,12 +324,25 @@ namespace Lumina
                 DrawGraphContextMenu();
                 ImGui::EndPopup();
             }
+            else
+            {
+                PendingSourcePin = nullptr;
+            }
             
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)
                 && !NodeEditor::GetHoveredNode()
                 && !NodeEditor::GetHoveredPin()
                 && !NodeEditor::GetHoveredLink())
             {
+                
+                for (int i = ImGuiKey_A; i < ImGuiKey_Z; ++i)
+                {
+                    if (ImGui::IsKeyDown((ImGuiKey)i))
+                    {
+                        //HandleQuickPlace((char)i, NodeEditor::ScreenToCanvas(ImGui::GetMousePos()));
+                    }
+                }
+                
                 int Digit = -1;
                 for (int i = 0; i < 9; ++i)
                 {
@@ -539,6 +560,31 @@ namespace Lumina
                     }
                 }
             }
+
+            // Drag-from-pin released on empty space: capture the source pin and queue the
+            // create-node popup. The popup is opened in the Suspend block above on the next iteration.
+            NodeEditor::PinId NewNodeFromPinId;
+            if (NodeEditor::QueryNewNode(&NewNodeFromPinId))
+            {
+                if (NodeEditor::AcceptNewItem())
+                {
+                    CEdNodeGraphPin* SourcePin = nullptr;
+                    const uint16 PinGUID = static_cast<uint16>(NewNodeFromPinId.Get());
+                    for (CEdGraphNode* Node : Nodes)
+                    {
+                        SourcePin = Node->GetPin(PinGUID, ENodePinDirection::Output);
+                        if (SourcePin) break;
+                        SourcePin = Node->GetPin(PinGUID, ENodePinDirection::Input);
+                        if (SourcePin) break;
+                    }
+
+                    if (SourcePin && !SourcePin->IsDisabled())
+                    {
+                        PendingSourcePin = SourcePin;
+                        bOpenCreateFromPin = true;
+                    }
+                }
+            }
         }
 
         NodeEditor::EndCreate();
@@ -692,6 +738,68 @@ namespace Lumina
         {
             SupportedNodes.emplace(InClass);
         }
+    }
+
+    CEdNodeGraphPin* CEdNodeGraph::FindAutoConnectPin(CEdGraphNode* NewNode, CEdNodeGraphPin* SourcePin) const
+    {
+        if (NewNode == nullptr || SourcePin == nullptr)
+        {
+            return nullptr;
+        }
+
+        const FEdGraphSchema& Schema = GetSchema();
+        const bool bSourceIsInput = SourcePin->bInputPin;
+        const TVector<TObjectPtr<CEdNodeGraphPin>>& Candidates = bSourceIsInput
+            ? NewNode->GetOutputPins()
+            : NewNode->GetInputPins();
+
+        for (const TObjectPtr<CEdNodeGraphPin>& Candidate : Candidates)
+        {
+            if (!Candidate.IsValid() || Candidate->IsDisabled())
+            {
+                continue;
+            }
+
+            CEdNodeGraphPin* From = bSourceIsInput ? Candidate.Get() : SourcePin;
+            CEdNodeGraphPin* To   = bSourceIsInput ? SourcePin : Candidate.Get();
+            if (Schema.CanCreateConnection(From, To))
+            {
+                return Candidate.Get();
+            }
+        }
+
+        return nullptr;
+    }
+
+    void CEdNodeGraph::TryAutoConnect(CEdNodeGraphPin* SourcePin, CEdNodeGraphPin* TargetPin)
+    {
+        if (SourcePin == nullptr || TargetPin == nullptr)
+        {
+            return;
+        }
+
+        const bool bSourceIsInput = SourcePin->bInputPin;
+        CEdNodeGraphPin* From = bSourceIsInput ? TargetPin : SourcePin;
+        CEdNodeGraphPin* To   = bSourceIsInput ? SourcePin : TargetPin;
+
+        const FEdGraphSchema& Schema = GetSchema();
+        if (From->IsDisabled() || To->IsDisabled() || !Schema.CanCreateConnection(From, To))
+        {
+            return;
+        }
+
+        if (To->HasConnection() && !Schema.AllowsMultipleConnections(To))
+        {
+            TVector<CEdNodeGraphPin*> Existing = To->GetConnections();
+            for (CEdNodeGraphPin* ConnectedPin : Existing)
+            {
+                To->DisconnectFrom(ConnectedPin);
+            }
+        }
+
+        From->AddConnection(To);
+        To->AddConnection(From);
+        ValidateGraph();
     }
 
     uint64 CEdNodeGraph::AddNode(CEdGraphNode* InNode)

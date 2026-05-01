@@ -66,6 +66,27 @@ namespace Lumina
             int32               ComponentCount;
         };
 
+        // Aggregated cost / complexity metrics derived from the generated chunks. Computed on demand
+        // by GetStats(); not maintained incrementally so it is safe to query multiple times after compile.
+        struct FShaderStats
+        {
+            uint32 PixelInstructions     = 0;   // newline-terminated lines in the pixel chunks
+            uint32 VertexInstructions    = 0;   // newline-terminated lines in the vertex chunks
+            uint32 TextureSamples        = 0;   // count of ".Sample(" call sites
+            uint32 MathOps               = 0;   // sin/cos/lerp/normalize/dot/...
+            uint32 NoiseOps              = 0;   // value/gradient/perlin/voronoi/simple noise + hash*
+            uint32 ScalarParameters      = 0;
+            uint32 VectorParameters      = 0;
+            uint32 TextureParameters     = 0;
+            uint32 BoundTextures         = 0;   // includes static (non-parameter) texture binds
+            uint32 PixelCharacters       = 0;
+            uint32 VertexCharacters      = 0;
+            bool   bUsesVertexStage      = false;
+            // Rough relative cost: weighted sum biased toward expensive ops. Not a real GPU cycle count
+            // but useful for comparing materials side-by-side.
+            uint32 EstimatedCost         = 0;
+        };
+
     public:
         FMaterialCompiler();
 
@@ -280,6 +301,10 @@ namespace Lumina
 
         /** Export the dynamic parameter manifest discovered during compile and seed default values into the uniform block. */
         void GetParameters(TVector<FMaterialParameter>& OutParams, FMaterialUniforms& OutUniforms) const;
+
+        // Computes shader complexity / cost metrics from the current chunk state. Call after
+        // CompileGraph so the chunks are populated. Cheap (single linear scan per chunk).
+        FShaderStats GetStats() const;
 
         FORCEINLINE bool HasErrors() const { return !Errors.empty(); }
         FORCEINLINE void AddError(const EdNodeGraph::FError& Error) { Errors.push_back(Error); }

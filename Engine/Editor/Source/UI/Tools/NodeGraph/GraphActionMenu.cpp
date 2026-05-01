@@ -544,7 +544,16 @@ namespace Lumina
             {
                 ax::NodeEditor::SetNodePosition(NewNode->GetNodeID(),
                     ax::NodeEditor::ScreenToCanvas(ImGui::GetMousePosOnOpeningCurrentPopup()));
+
+                if (Graph->PendingSourcePin != nullptr)
+                {
+                    if (CEdNodeGraphPin* TargetPin = Graph->FindAutoConnectPin(NewNode, Graph->PendingSourcePin))
+                    {
+                        Graph->TryAutoConnect(Graph->PendingSourcePin, TargetPin);
+                    }
+                }
             }
+            Graph->PendingSourcePin = nullptr;
             return true;
         }
 

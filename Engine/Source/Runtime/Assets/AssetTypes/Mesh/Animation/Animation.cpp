@@ -105,7 +105,7 @@ namespace Lumina
         Ar << *AnimationResource;
     }
     
-    void CAnimation::SamplePose(float Time, FSkeletonResource* SkeletonResource, TArray<glm::mat4, 255>& OutBoneTransforms)
+    void CAnimation::SamplePose(float Time, FSkeletonResource* RESTRICT SkeletonResource, TArray<glm::mat4, 255>& RESTRICT OutBoneTransforms)
     {
         LUMINA_PROFILE_SCOPE();
         

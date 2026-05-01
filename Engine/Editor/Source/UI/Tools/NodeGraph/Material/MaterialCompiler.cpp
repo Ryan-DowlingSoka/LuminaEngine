@@ -332,6 +332,11 @@ namespace Lumina
 
 		GetActiveChunk().append(ResultTypeStr + " " + OwningNode + " = " + AValue.Value + RMask + " " + Op + " " + BValue.Value + GMask + ";\n");
 
+		// Stamp the owning node's output with the inferred result type AND mask. Previously only the
+		// caller wrote InputType, leaving Mask at its default (None). Downstream consumers that read
+		// the mask -- e.g. MaterialOutputNode::EmitMaterialAssignment -- saw component count 0 and
+		// fell into a generic float3() wrap, which fails to compile when the upstream is float4.
+		SetOwningOutputType(A, ResultType);
 		return ResultType;
 	}
 
@@ -771,6 +776,118 @@ namespace Lumina
 		{
 			NormalMapSampleNodes.insert(ID);
 		}
+	}
+
+	namespace
+	{
+		// Counts every occurrence of Needle inside Haystack. Substring-only -- does not validate that
+		// the match is at a token boundary, but the patterns we look for ('.Sample(', 'sin(', etc.)
+		// are unambiguous enough in generated shader code that this is fine.
+		uint32 CountSubstring(const FString& Haystack, const char* Needle)
+		{
+			const size_t NeedleLen = strlen(Needle);
+			if (NeedleLen == 0)
+			{
+				return 0;
+			}
+
+			uint32 Count = 0;
+			size_t Pos = 0;
+			while ((Pos = Haystack.find(Needle, Pos)) != FString::npos)
+			{
+				++Count;
+				Pos += NeedleLen;
+			}
+			return Count;
+		}
+
+		uint32 CountLines(const FString& Source)
+		{
+			if (Source.empty())
+			{
+				return 0;
+			}
+
+			uint32 Count = 0;
+			for (size_t i = 0; i < Source.size(); ++i)
+			{
+				if (Source[i] == '\n')
+				{
+					++Count;
+				}
+			}
+			return Count;
+		}
+
+		uint32 CountMathOps(const FString& Source)
+		{
+			static const char* const Patterns[] = {
+				"sin(", "cos(", "tan(", "asin(", "acos(", "atan(", "atan2(",
+				"sinh(", "cosh(", "tanh(",
+				"sqrt(", "rsqrt(", "pow(", "exp(", "exp2(",
+				"log(", "log2(", "log10(",
+				"normalize(", "length(", "distance(", "dot(", "cross(",
+				"reflect(", "refract(",
+				"lerp(", "clamp(", "smoothstep(", "step(", "saturate(",
+				"min(", "max(", "abs(", "sign(", "floor(", "ceil(", "round(",
+				"trunc(", "frac(", "fmod(",
+			};
+			uint32 Total = 0;
+			for (const char* P : Patterns)
+			{
+				Total += CountSubstring(Source, P);
+			}
+			return Total;
+		}
+
+		uint32 CountNoiseOps(const FString& Source)
+		{
+			static const char* const Patterns[] = {
+				"ValueNoise(", "GradientNoise(", "PerlinNoise(",
+				"VoronoiNoise(", "SimpleNoise(",
+				"Hash11(", "Hash21(", "Hash22(", "Hash33(",
+			};
+			uint32 Total = 0;
+			for (const char* P : Patterns)
+			{
+				Total += CountSubstring(Source, P);
+			}
+			return Total;
+		}
+	}
+
+	FMaterialCompiler::FShaderStats FMaterialCompiler::GetStats() const
+	{
+		FShaderStats Stats;
+
+		const FString PixelAll  = PixelChunks  + PixelOutputChunks;
+		const FString VertexAll = VertexChunks + VertexOutputChunks;
+
+		Stats.PixelInstructions   = CountLines(PixelAll);
+		Stats.VertexInstructions  = CountLines(VertexAll);
+		Stats.PixelCharacters     = static_cast<uint32>(PixelAll.size());
+		Stats.VertexCharacters    = static_cast<uint32>(VertexAll.size());
+
+		Stats.TextureSamples      = CountSubstring(PixelAll, ".Sample(") + CountSubstring(VertexAll, ".Sample(");
+		Stats.MathOps             = CountMathOps(PixelAll) + CountMathOps(VertexAll);
+		Stats.NoiseOps            = CountNoiseOps(PixelAll) + CountNoiseOps(VertexAll);
+
+		Stats.ScalarParameters    = NumScalarParams;
+		Stats.VectorParameters    = NumVectorParams;
+		Stats.TextureParameters   = NumTextureParams;
+		Stats.BoundTextures       = static_cast<uint32>(BoundImages.size());
+		Stats.bUsesVertexStage    = UsesVertexStage();
+
+		// Weighted approximation of relative cost. Texture samples and noise dominate; math is cheap;
+		// vertex-stage work is amortized across vertices so it counts less than per-pixel work.
+		Stats.EstimatedCost =
+			Stats.TextureSamples       * 8 +
+			Stats.NoiseOps             * 16 +
+			Stats.MathOps              * 1 +
+			Stats.PixelInstructions    * 1 +
+			Stats.VertexInstructions   / 2;
+
+		return Stats;
 	}
 
 	void FMaterialCompiler::GetParameters(TVector<FMaterialParameter>& OutParams, FMaterialUniforms& OutUniforms) const

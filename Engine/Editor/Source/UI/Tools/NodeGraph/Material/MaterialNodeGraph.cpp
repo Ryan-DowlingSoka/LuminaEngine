@@ -224,6 +224,140 @@ namespace Lumina
         }
     }
 
+    // Walks back from any output node, accumulating the inferred output InputType for each visited
+    // expression node. Used by ValidateOutputConnections so we can report the type a downstream pin
+    // will actually see -- after binary-op result-type promotion -- without running the full emit.
+    static EMaterialInputType InferOutputType(CEdNodeGraphPin* InputPin)
+    {
+        if (InputPin == nullptr || !InputPin->HasConnection())
+        {
+            return EMaterialInputType::Float;
+        }
+
+        CMaterialOutput* SourcePin = InputPin->GetConnection<CMaterialOutput>(0);
+        if (SourcePin == nullptr)
+        {
+            return EMaterialInputType::Float;
+        }
+
+        return SourcePin->InputType;
+    }
+
+    // Pre-emit type-compatibility check for the material output's pins. Catches the cases the
+    // existing emit-time checks miss -- specifically connections where no math op fires (so no
+    // ResultType promotion happens) but the connected width still doesn't fit the target attribute.
+    static void ValidateOutputConnections(CMaterialOutputNode* OutputNode, FMaterialCompiler& Compiler)
+    {
+        if (OutputNode == nullptr)
+        {
+            return;
+        }
+
+        struct FPinSpec
+        {
+            CEdNodeGraphPin* Pin;
+            const char*      AttributeName;
+            int32            RequiredComponents;
+            bool             bAllowBroadcast;
+        };
+
+        const FPinSpec Specs[] =
+        {
+            { OutputNode->BaseColorPin,           "Base Color",            3, true },
+            { OutputNode->MetallicPin,            "Metallic",              1, false },
+            { OutputNode->RoughnessPin,           "Roughness",             1, false },
+            { OutputNode->SpecularPin,            "Specular",              1, false },
+            { OutputNode->EmissivePin,            "Emissive",              3, true },
+            { OutputNode->AOPin,                  "Ambient Occlusion",     1, false },
+            { OutputNode->NormalPin,              "Normal",                3, false },
+            { OutputNode->OpacityPin,             "Opacity",               1, false },
+            { OutputNode->WorldPositionOffsetPin, "World Position Offset", 3, false },
+        };
+
+        for (const FPinSpec& Spec : Specs)
+        {
+            if (Spec.Pin == nullptr || !Spec.Pin->HasConnection() || Spec.Pin->IsDisabled())
+            {
+                continue;
+            }
+
+            CMaterialOutput* SourcePin = Spec.Pin->GetConnection<CMaterialOutput>(0);
+            if (SourcePin == nullptr)
+            {
+                continue;
+            }
+
+            const EMaterialInputType SourceType = InferOutputType(Spec.Pin);
+            const int32 SourceComponents = FMaterialCompiler::GetComponentCount(SourceType);
+
+            // 0-component sources (Texture or unset) are reported as a generic mismatch -- the user
+            // probably forgot to extract a channel via a TextureSample / Mask node.
+            if (SourceType == EMaterialInputType::Texture)
+            {
+                EdNodeGraph::FError Error;
+                Error.Name        = "Invalid Connection";
+                Error.Description = FString("Cannot connect a texture object directly to '") + Spec.AttributeName
+                                  + "'. Sample the texture first (use a Texture Sample node).";
+                Error.Node        = SourcePin->GetOwningNode();
+                Compiler.AddError(Error);
+                continue;
+            }
+
+            if (SourceComponents == Spec.RequiredComponents)
+            {
+                continue;
+            }
+
+            // Single-component sources broadcast cleanly into any width.
+            if (SourceComponents == 1 && Spec.bAllowBroadcast)
+            {
+                continue;
+            }
+
+            // 4 -> 3 swizzle is supported by EmitMaterialAssignment (.rgb).
+            if (SourceComponents == 4 && Spec.RequiredComponents == 3)
+            {
+                continue;
+            }
+
+            // 2 -> 3 padding is supported by EmitMaterialAssignment (float3(xy, 0)).
+            if (SourceComponents == 2 && Spec.RequiredComponents == 3)
+            {
+                continue;
+            }
+
+            // Truncating wider->1 silently is dangerous; require explicit channel extraction.
+            EdNodeGraph::FError Error;
+            Error.Name = "Type Mismatch";
+
+            const char* SourceTypeName = "Float";
+            switch (SourceType)
+            {
+                case EMaterialInputType::Float:   SourceTypeName = "float";  break;
+                case EMaterialInputType::Float2:  SourceTypeName = "float2"; break;
+                case EMaterialInputType::Float3:  SourceTypeName = "float3"; break;
+                case EMaterialInputType::Float4:  SourceTypeName = "float4"; break;
+                default: break;
+            }
+
+            const char* TargetTypeName = "float";
+            switch (Spec.RequiredComponents)
+            {
+                case 1: TargetTypeName = "float";  break;
+                case 2: TargetTypeName = "float2"; break;
+                case 3: TargetTypeName = "float3"; break;
+                case 4: TargetTypeName = "float4"; break;
+                default: break;
+            }
+
+            Error.Description = FString("'") + Spec.AttributeName + "' expects " + TargetTypeName
+                              + " but the connected pin produces " + SourceTypeName
+                              + ". Insert a Mask or Append node to convert the value.";
+            Error.Node        = SourcePin->GetOwningNode();
+            Compiler.AddError(Error);
+        }
+    }
+
     void CMaterialNodeGraph::CompileGraph(FMaterialCompiler& Compiler)
     {
         if (Nodes.empty())
@@ -265,6 +399,12 @@ namespace Lumina
                 break;
             }
         }
+
+        // Pre-emit validation: catch type mismatches at the output-node boundary so the user gets a
+        // clear, node-anchored error before slang sees malformed code. If anything fires here we
+        // still proceed through the rest of the compile so additional errors accumulate, but the
+        // editor's HasErrors() gate will skip the shader compiler call.
+        ValidateOutputConnections(OutputNode, Compiler);
 
         THashSet<CEdGraphNode*> VertexSet;
         THashSet<CEdGraphNode*> PixelSet;

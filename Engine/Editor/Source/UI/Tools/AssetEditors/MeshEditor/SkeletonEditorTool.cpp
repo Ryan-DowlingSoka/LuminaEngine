@@ -251,11 +251,12 @@ namespace Lumina
 
     void FSkeletonEditorTool::InitializeDockingLayout(ImGuiID DockspaceID, const ImVec2& DockspaceSize) const
     {
-        ImGuiID leftID, centerID, rightID;
-        
+        ImGui::DockBuilderRemoveNodeChildNodes(DockspaceID);
+
+        ImGuiID leftID = 0, centerID = 0, rightID = 0;
         ImGui::DockBuilderSplitNode(DockspaceID, ImGuiDir_Right, 0.25f, &rightID, &centerID);
         ImGui::DockBuilderSplitNode(centerID, ImGuiDir_Left, 0.25f, &leftID, &centerID);
-        
+
         ImGui::DockBuilderDockWindow(GetToolWindowName(ViewportWindowName).c_str(), centerID);
         ImGui::DockBuilderDockWindow(GetToolWindowName(SkeletonPropertiesName).c_str(), rightID);
         ImGui::DockBuilderDockWindow(GetToolWindowName(BoneHierarchyName).c_str(), leftID);

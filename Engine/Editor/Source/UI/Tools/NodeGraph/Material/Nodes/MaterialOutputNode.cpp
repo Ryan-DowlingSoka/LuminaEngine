@@ -114,6 +114,13 @@ namespace Lumina
         CMaterialOutput* ConnectedPin = Pin->GetConnection<CMaterialOutput>(0);
         FString NodeName              = ConnectedPin->GetOwningNode()->GetNodeFullName();
         int32 ConnectedComponents     = FMaterialCompiler::GetComponentCount(ConnectedPin->GetComponentMask());
+        // Mask is optional metadata -- some emitters only stamp InputType. If the mask is None
+        // (count == 0) fall back to the type's intrinsic width so we don't drop into the generic
+        // float3(value) branch and emit a constructor with a wider-than-expected argument.
+        if (ConnectedComponents == 0)
+        {
+            ConnectedComponents = FMaterialCompiler::GetComponentCount(ConnectedPin->InputType);
+        }
         FString Swizzle               = GetSwizzleForMask(ConnectedPin->GetComponentMask());
         if (!Swizzle.empty())
         {
