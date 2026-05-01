@@ -5705,7 +5705,10 @@ namespace Lumina
             CmdList.SetGraphicsState(GraphicsState);
 
             FPostProcessMaterialPushConstants PC = {};
-            PC.MaterialIndex = (uint32)Material->GetMaterialIndex();
+            // Use the interface's index, not the parent material's — instances
+            // own their own slot in the material buffer (parameter overrides
+            // live there), so reading the parent's slot would ignore overrides.
+            PC.MaterialIndex = (uint32)MaterialInterface->GetMaterialIndex();
             CmdList.SetPushConstants(&PC, sizeof(PC));
             CmdList.Draw(3, 1, 0, 0);
 

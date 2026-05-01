@@ -90,7 +90,7 @@ namespace Lumina
         void RemoveOverride(const FName& Name);
 
         /** The parent material this instance overrides parameters for. */
-        PROPERTY(Editable, Category = "Material")
+        PROPERTY(ReadOnly, Category = "Material")
         TObjectPtr<CMaterial> Material;
 
         /** Per-parameter override values. Only parameters that diverge from the parent are stored here. */

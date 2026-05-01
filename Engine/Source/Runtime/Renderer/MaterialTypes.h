@@ -46,7 +46,7 @@ namespace Lumina
     struct RUNTIME_API FMaterialParameter
     {
         GENERATED_BODY()
-        
+
         /** Name key used to look up this parameter in the material. */
         PROPERTY()
         FName ParameterName;
@@ -58,5 +58,15 @@ namespace Lumina
         /** Slot index within the appropriate uniform array for this parameter type. */
         PROPERTY()
         uint16 Index;
+
+        /** Authored default for Scalar parameters. PostLoad replays this into
+         *  MaterialUniforms because the uniform block itself isn't serialized. */
+        PROPERTY()
+        float ScalarDefault = 0.0f;
+
+        /** Authored default for Vector parameters. PostLoad replays this into
+         *  MaterialUniforms because the uniform block itself isn't serialized. */
+        PROPERTY()
+        glm::vec4 VectorDefault = glm::vec4(0.0f);
     };
 }

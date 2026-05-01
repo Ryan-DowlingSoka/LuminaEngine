@@ -1239,6 +1239,15 @@ namespace Lumina
             FFixedString NewScriptPath = SelectedPath + "/" + "NewScript.luau";
             NewScriptPath = VFS::MakeUniqueFilePath(NewScriptPath);
             VFS::WriteFile(NewScriptPath, "");
+            RefreshContentBrowser();
+        }
+        
+        if (ImGui::MenuItem(LE_ICON_LANGUAGE_CSS3 " New Widget"))
+        {
+            FFixedString NewScriptPath = SelectedPath + "/" + "NewWidget.rml";
+            NewScriptPath = VFS::MakeUniqueFilePath(NewScriptPath);
+            VFS::WriteFile(NewScriptPath, "");
+            RefreshContentBrowser();
         }
 
         const char* FileIcon = LE_ICON_PLUS;

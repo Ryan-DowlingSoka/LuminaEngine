@@ -3,9 +3,7 @@
 #include "Material.h"
 #include "Assets/AssetTypes/Textures/Texture.h"
 #include "Core/Engine/Engine.h"
-#include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
-#include "Renderer/RHIGlobals.h"
 
 
 namespace Lumina

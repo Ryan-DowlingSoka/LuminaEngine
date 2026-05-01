@@ -140,13 +140,38 @@ namespace Lumina
 
             FBindingSetDesc SetDesc;
 
+            // FMaterialUniforms isn't serialized -- the Memzero in our ctor leaves
+            // Scalars/Vectors at zero on load, so authored defaults vanish until the
+            // user recompiles. Replay them from the per-parameter defaults that are
+            // serialized alongside Parameters.
+            for (const FMaterialParameter& Param : Parameters)
+            {
+                switch (Param.Type)
+                {
+                case EMaterialParameterType::Scalar:
+                    if (Param.Index < MAX_SCALARS)
+                    {
+                        MaterialUniforms.Scalars[Param.Index] = Param.ScalarDefault;
+                    }
+                    break;
+                case EMaterialParameterType::Vector:
+                    if (Param.Index < MAX_VECTORS)
+                    {
+                        MaterialUniforms.Vectors[Param.Index] = Param.VectorDefault;
+                    }
+                    break;
+                case EMaterialParameterType::Texture:
+                    break;
+                }
+            }
+
             uint32 Index = 0;
             for (CTexture* Binding : Textures)
             {
                 if (Binding != nullptr)
                 {
                     MaterialUniforms.Textures[Index] = Binding->GetRHIRef()->GetTextureCacheIndex();
-                    Index++;   
+                    Index++;
                 }
             }
             

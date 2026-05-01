@@ -898,6 +898,7 @@ namespace Lumina
 			Out.ParameterName = Pair.first;
 			Out.Type = EMaterialParameterType::Scalar;
 			Out.Index = Pair.second.Index;
+			Out.ScalarDefault = Pair.second.Value;
 			OutParams.push_back(Out);
 
 			if (Pair.second.Index < MAX_SCALARS)
@@ -912,6 +913,7 @@ namespace Lumina
 			Out.ParameterName = Pair.first;
 			Out.Type = EMaterialParameterType::Vector;
 			Out.Index = Pair.second.Index;
+			Out.VectorDefault = Pair.second.Value;
 			OutParams.push_back(Out);
 
 			if (Pair.second.Index < MAX_VECTORS)

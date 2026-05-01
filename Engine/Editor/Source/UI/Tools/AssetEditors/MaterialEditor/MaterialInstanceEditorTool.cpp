@@ -5,23 +5,20 @@
 #include "Assets/AssetTypes/Material/Material.h"
 #include "Assets/AssetTypes/Material/MaterialInstance.h"
 #include "Assets/AssetTypes/Textures/Texture.h"
-#include "Core/Engine/Engine.h"
+#include "Core/Math/Math.h"
 #include "Core/Object/Cast.h"
 #include "Core/Object/ObjectArray.h"
 #include "glm/gtc/type_ptr.inl"
-#include "Core/Math/Math.h"
 #include "Paths/Paths.h"
-#include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
-#include "Renderer/RHIGlobals.h"
 #include "Thumbnails/ThumbnailManager.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "UI/Tools/ContentBrowserEditorTool.h"
+#include "World/Entity/Components/CameraComponent.h"
 #include "World/Entity/Components/EnvironmentComponent.h"
 #include "World/Entity/Components/LightComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
-#include "World/Entity/Components/CameraComponent.h"
 
 namespace Lumina
 {
@@ -66,7 +63,15 @@ namespace Lumina
         glm::quat Rotation = Math::FindLookAtRotation(MeshTransform.GetLocation(), EditorTransform.GetLocation());
         EditorTransform.SetRotation(Rotation);
 
-        StaticMeshComponent.MaterialOverrides.push_back(CastAsserted<CMaterialInterface>(Asset.Get()));
+        CMaterialInterface* Material = CastAsserted<CMaterialInterface>(Asset.Get());
+        if (Material->GetMaterialType() == EMaterialType::PBR)
+        {
+            StaticMeshComponent.MaterialOverrides.push_back(Material);
+        }
+        else if (Material->GetMaterialType() == EMaterialType::PostProcess)
+        {
+            World->GetEntityRegistry().get<SCameraComponent>(EditorEntity).PostProcessMaterials.push_back(Material);
+        }
     }
 
     void FMaterialInstanceEditorTool::OnAssetLoadFinished()
@@ -340,10 +345,7 @@ namespace Lumina
         }
 
         ImGui::EndGroup();
-
-        // Picker popup — searchable list of all CTexture assets in the registry.
-        // Uses BeginPopup (not BeginCombo) because the row is wrapped in BeginDisabled
-        // and we want the picker itself to remain interactive once opened.
+        
         ImGui::SetNextWindowSize(ImVec2(360, 400));
         if (ImGui::BeginPopup("##TexturePickerPopup"))
         {
