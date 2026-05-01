@@ -506,19 +506,20 @@ namespace Lumina
 
         if (CameraState.Mode == EEditorCameraMode::Orbit)
         {
-            // Re-anchor on the focused entity; position is recomputed from
-            // the orbit angles in the next TickEditorCamera. Anchor moves
-            // too so a later ResetOrbitPan returns to the focused entity.
-            SetOrbitTarget(EntityTransform.GetLocation(), FocusDistance);
+            // Re-anchor on the focused entity; the orbit-target lerp in TickEditorCamera
+            // drives toward this position over a few frames. Anchor snaps so a later
+            // ResetOrbitPan returns to the focused entity.
+            CameraState.OrbitAnchor      = EntityTransform.GetLocation();
+            CameraState.FocusOrbitTarget = EntityTransform.GetLocation();
+            CameraState.FocusOrbitDistance = FocusDistance;
+            CameraState.bFocusInterp     = true;
             return;
         }
 
         glm::vec3 CurrentForward = EditorTransform.GetForward();
-        glm::vec3 NewPosition = EntityTransform.GetLocation() - CurrentForward * FocusDistance;
-        EditorTransform.SetLocation(NewPosition);
-
-        glm::quat Rotation = Math::FindLookAtRotation(EntityTransform.GetLocation(), NewPosition);
-        EditorTransform.SetRotation(Rotation);
+        CameraState.FocusFreePosition = EntityTransform.GetLocation() - CurrentForward * FocusDistance;
+        CameraState.FocusFreeRotation = Math::FindLookAtRotation(EntityTransform.GetLocation(), CameraState.FocusFreePosition);
+        CameraState.bFocusInterp      = true;
     }
 
     void FEditorTool::SetCameraMode(EEditorCameraMode Mode)
@@ -668,11 +669,69 @@ namespace Lumina
 
         STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
 
+        // Advance any in-flight focus lerp before reading user input. Movement input
+        // from the focused viewport cancels the lerp so the user can take over mid-flight.
+        if (CameraState.bFocusInterp)
+        {
+            const bool bWheel = bViewportFocused && Input.GetMouseZ() != 0.0;
+            bool bMoveInput = false;
+            if (bViewportFocused)
+            {
+                if (CameraState.Mode == EEditorCameraMode::Free)
+                {
+                    bMoveInput = bWantLook
+                        || Input.IsKeyDown(EKey::W) || Input.IsKeyDown(EKey::A)
+                        || Input.IsKeyDown(EKey::S) || Input.IsKeyDown(EKey::D)
+                        || Input.IsKeyDown(EKey::E) || Input.IsKeyDown(EKey::Q);
+                }
+                else
+                {
+                    bMoveInput = bWantLook || bWantPan;
+                }
+            }
+
+            if (bMoveInput || bWheel)
+            {
+                CameraState.bFocusInterp = false;
+            }
+            else
+            {
+                const float Alpha = 1.0f - std::exp(-CameraState.FocusInterpRate * static_cast<float>(DeltaTime));
+                if (CameraState.Mode == EEditorCameraMode::Free)
+                {
+                    const glm::vec3 NewLoc = glm::mix(Transform.GetLocation(), CameraState.FocusFreePosition, Alpha);
+                    const glm::quat NewRot = glm::slerp(Transform.GetRotation(), CameraState.FocusFreeRotation, Alpha);
+                    Transform.SetLocation(NewLoc);
+                    Transform.SetRotation(NewRot);
+
+                    if (glm::distance(NewLoc, CameraState.FocusFreePosition) < 1e-3f)
+                    {
+                        Transform.SetLocation(CameraState.FocusFreePosition);
+                        Transform.SetRotation(CameraState.FocusFreeRotation);
+                        CameraState.bFocusInterp = false;
+                    }
+                }
+                else
+                {
+                    CameraState.OrbitTarget   = glm::mix(CameraState.OrbitTarget, CameraState.FocusOrbitTarget, Alpha);
+                    CameraState.OrbitDistance = glm::mix(CameraState.OrbitDistance, CameraState.FocusOrbitDistance, Alpha);
+
+                    if (glm::distance(CameraState.OrbitTarget, CameraState.FocusOrbitTarget) < 1e-3f)
+                    {
+                        CameraState.OrbitTarget   = CameraState.FocusOrbitTarget;
+                        CameraState.OrbitDistance = CameraState.FocusOrbitDistance;
+                        CameraState.bFocusInterp = false;
+                    }
+                }
+            }
+        }
+
         if (CameraState.Mode == EEditorCameraMode::Free)
         {
             // Free-cam consumes input directly into the entity transform; no derived state
-            // to apply if the viewport isn't focused, so just bail.
-            if (!bViewportFocused)
+            // to apply if the viewport isn't focused, so just bail. Skip input while the
+            // focus lerp is still running so the camera doesn't fight the lerp.
+            if (!bViewportFocused || CameraState.bFocusInterp)
             {
                 return;
             }

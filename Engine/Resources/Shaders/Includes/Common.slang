@@ -328,9 +328,9 @@ struct FLightShadow
     float2 AtlasUVOffset;
     float2 AtlasUVScale;
     int    ShadowMapIndex;
-    int    ShadowMapLayer;
     int    LightIndex;
     int    ShadowDataIndex;
+    int    _Padding;
 };
 
 struct FBillboardInstance

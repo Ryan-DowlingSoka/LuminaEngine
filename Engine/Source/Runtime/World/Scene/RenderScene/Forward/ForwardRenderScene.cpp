@@ -2051,12 +2051,21 @@ namespace Lumina
             Sizes[i] = glm::clamp(V, MinTile, MaxTile);
         }
 
+        // Point lights now consume one tile per cube face (six tiles total);
+        // spot lights stay at one. Reflect that in the area accounting so the
+        // budget shrink loop doesn't underestimate point-light cost.
+        auto AreaCost = [&](uint32 i) -> uint64
+        {
+            const uint64 PerTile = (uint64)Sizes[i] * (uint64)Sizes[i];
+            return ShadowRequests[i].Type == ELightType::Point ? PerTile * 6ull : PerTile;
+        };
+
         auto AreaSum = [&]() -> uint64
         {
             uint64 S = 0;
             for (uint32 i = 0; i < NumRequests; ++i)
             {
-                S += (uint64)Sizes[i] * (uint64)Sizes[i];
+                S += AreaCost(i);
             }
             return S;
         };
@@ -2104,21 +2113,35 @@ namespace Lumina
             const FShadowRequest& Req = ShadowRequests[ReqIdx];
             const uint32 TileSize     = Sizes[ReqIdx];
 
-            const int32 TileIndex = ShadowAtlas.AllocateTile(TileSize);
-            if (TileIndex == INDEX_NONE)
-                continue;
-
-            const uint32 ShadowSlot = ShadowDataCount.fetch_add(1, std::memory_order_acquire);
-            if (ShadowSlot >= (uint32)MAX_SHADOWS)
-                continue;
-
-            LightData.Lights[Req.LightIndex].ShadowDataIndex = (int32)ShadowSlot;
-            FLightShadowData& ShadowData = LightData.Shadows[ShadowSlot];
-            const FShadowTile& Tile      = ShadowAtlas.GetTile(TileIndex);
-
             if (Req.Type == ELightType::Point)
             {
-                // Cube map: 6 faces share the tile's UV rect across layers 0-5.
+                // Each cube face gets its own 2D tile. Allocate all six up front
+                // so a partial allocation doesn't leave the light half-shadowed.
+                int32 FaceTileIndices[6];
+                bool  bAllAllocated = true;
+                for (uint32 Face = 0; Face < 6; ++Face)
+                {
+                    FaceTileIndices[Face] = ShadowAtlas.AllocateTile(TileSize);
+                    if (FaceTileIndices[Face] == INDEX_NONE)
+                    {
+                        bAllAllocated = false;
+                        break;
+                    }
+                }
+                if (!bAllAllocated)
+                {
+                    continue;
+                }
+
+                const uint32 ShadowSlot = ShadowDataCount.fetch_add(1, std::memory_order_acquire);
+                if (ShadowSlot >= (uint32)MAX_SHADOWS)
+                {
+                    continue;
+                }
+
+                LightData.Lights[Req.LightIndex].ShadowDataIndex = (int32)ShadowSlot;
+                FLightShadowData& ShadowData = LightData.Shadows[ShadowSlot];
+
                 // Near plane scales with radius; a fixed 0.01 collapses NDC z
                 // into the last ~0.001 of the depth buffer for any realistic
                 // light, leaving no precision for the PCF compare.
@@ -2143,19 +2166,37 @@ namespace Lumina
                     SetFace(Face);
                     ShadowData.ViewProjection[Face] = LightView.ToReverseDepthViewProjectionMatrix();
 
+                    const FShadowTile& FaceTile = ShadowAtlas.GetTile(FaceTileIndices[Face]);
+
                     FLightShadow& Shadow   = ShadowData.Shadow[Face];
-                    Shadow.AtlasUVOffset   = Tile.UVOffset;
-                    Shadow.AtlasUVScale    = Tile.UVScale;
-                    Shadow.ShadowMapIndex  = TileIndex;
-                    Shadow.ShadowMapLayer  = (int32)Face;
+                    Shadow.AtlasUVOffset   = FaceTile.UVOffset;
+                    Shadow.AtlasUVScale    = FaceTile.UVScale;
+                    Shadow.ShadowMapIndex  = FaceTileIndices[Face];
                     Shadow.LightIndex      = (int32)Req.LightIndex;
                     Shadow.ShadowDataIndex = (int32)ShadowSlot;
+                    Shadow._Padding        = 0;
                 }
 
                 PackedShadows[(uint32)ELightType::Point].push_back(ShadowData.Shadow[0]);
             }
             else // Spot
             {
+                const int32 TileIndex = ShadowAtlas.AllocateTile(TileSize);
+                if (TileIndex == INDEX_NONE)
+                {
+                    continue;
+                }
+
+                const uint32 ShadowSlot = ShadowDataCount.fetch_add(1, std::memory_order_acquire);
+                if (ShadowSlot >= (uint32)MAX_SHADOWS)
+                {
+                    continue;
+                }
+
+                LightData.Lights[Req.LightIndex].ShadowDataIndex = (int32)ShadowSlot;
+                FLightShadowData& ShadowData = LightData.Shadows[ShadowSlot];
+                const FShadowTile& Tile      = ShadowAtlas.GetTile(TileIndex);
+
                 const float ShadowNear = glm::max(Req.Attenuation * 0.01f, 0.1f);
                 FViewVolume ViewVolume(Req.OuterFOVDegrees * 2.0f, 1.0f, ShadowNear, Req.Attenuation);
                 ViewVolume.SetView(Req.Position, Req.Direction, Req.Up);
@@ -2165,9 +2206,9 @@ namespace Lumina
                 Shadow.AtlasUVOffset   = Tile.UVOffset;
                 Shadow.AtlasUVScale    = Tile.UVScale;
                 Shadow.ShadowMapIndex  = TileIndex;
-                Shadow.ShadowMapLayer  = 6; // Spot lights live on the dedicated 2D layer.
                 Shadow.LightIndex      = (int32)Req.LightIndex;
                 Shadow.ShadowDataIndex = (int32)ShadowSlot;
+                Shadow._Padding        = 0;
 
                 PackedShadows[(uint32)ELightType::Spot].push_back(Shadow);
             }
@@ -2491,9 +2532,9 @@ namespace Lumina
                     (float)GCSMCascadeSizes[i]  / (float)GCSMAtlasWidth,
                     (float)GCSMCascadeSizes[i]  / (float)GCSMAtlasHeight);
                 CascadeTile.ShadowMapIndex  = INDEX_NONE;
-                CascadeTile.ShadowMapLayer  = 0;
                 CascadeTile.LightIndex      = 0;
                 CascadeTile.ShadowDataIndex = (int32)ShadowSlot;
+                CascadeTile._Padding        = 0;
             }
 
             // Expose this cascade's world-space half-extent so the lit pixel
@@ -3056,12 +3097,27 @@ namespace Lumina
 
     void FForwardRenderScene::PointShadowPass(ICommandList& CmdList)
     {
-        if (PackedShadows[(uint32)ELightType::Point].empty() || DrawCommands.empty())
+        LUMINA_PROFILE_SECTION_COLORED("Point Light Shadow Pass", tracy::Color::DeepPink2);
+
+        // The point pass owns the once-per-frame Clear of the shared 2D
+        // shadow atlas. Even with no point shadows we still issue an empty
+        // pass so SpotShadowPass can safely use LoadOp::Load and so stale
+        // depth from prior frames doesn't leak through sampling.
+        if (DrawCommands.empty() || PackedShadows[(uint32)ELightType::Point].empty())
         {
+            FRenderPassDesc::FAttachment ClearDepth; ClearDepth
+                .SetLoadOp(ERenderLoadOp::Clear)
+                .SetDepthClearValue(1.0)
+                .SetImage(ShadowAtlas.GetImage());
+
+            FRenderPassDesc ClearPass; ClearPass
+                .SetDepthAttachment(ClearDepth)
+                .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
+
+            CmdList.BeginRenderPass(ClearPass);
+            CmdList.EndRenderPass();
             return;
         }
-
-        LUMINA_PROFILE_SECTION_COLORED("Point Light Shadow Pass", tracy::Color::DeepPink2);
 
         FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("ShadowMappingPixel.slang");
 
@@ -3077,54 +3133,58 @@ namespace Lumina
                     .SetDepthBias(1)
                     .SetCullBack());
 
-        // Per-face render pass: one clear per atlas layer, all point lights
-        // draw into that layer through their own per-tile viewport/scissor.
-        // The old per-light-per-face structure had clear loadop wiping the
-        // full layer every light, leaving only the last light's tile intact.
+        // Single 2D atlas: clear once, then every (light, face) pair draws
+        // into its own tile via per-tile viewport/scissor. SpotShadowPass
+        // re-enters the same atlas with LoadOp::Load to preserve our writes.
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
 
         const TVector<FLightShadow>& PointShadows = PackedShadows[(uint32)ELightType::Point];
 
-        for (int32 Face = 0; Face < 6; ++Face)
+        FRenderPassDesc::FAttachment Depth; Depth
+            .SetLoadOp(ERenderLoadOp::Clear)
+            .SetDepthClearValue(1.0)
+            .SetImage(ShadowAtlas.GetImage());
+
+        FRenderPassDesc RenderPass; RenderPass
+            .SetDepthAttachment(Depth)
+            .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
+
+        // Pipeline desc minus the vertex shader; the per-batch loop picks
+        // either the global shadow VS or a per-material WPO variant. The
+        // pipeline cache short-circuits identical lookups.
+        FGraphicsPipelineDesc DescTemplate; DescTemplate
+            .SetDebugName("Point Light Shadow Pass")
+            .SetRenderState(RenderState)
+            .AddBindingLayout(SceneBindingLayout)
+            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
+            .SetVertexShader(VertexShader)
+            .SetPixelShader(PixelShader);
+
+        // Begin once so the Clear loadop fires exactly once and wipes the
+        // whole atlas. Empty-pass case: no lights still needs the clear so
+        // stale depth doesn't leak; BeginRenderPass + EndRenderPass handles it.
+        CmdList.BeginRenderPass(RenderPass);
+
+        for (uint32 LightIdx = 0; LightIdx < PointShadows.size(); ++LightIdx)
         {
-            LUMINA_PROFILE_SECTION_COLORED("Point Shadow Face", tracy::Color::DeepPink2);
-
-            FRenderPassDesc::FAttachment Depth; Depth
-                .SetLoadOp(ERenderLoadOp::Clear)
-                .SetDepthClearValue(1.0)
-                .SetImage(ShadowAtlas.GetImage())
-                    .SetArraySlice((uint16)Face);
-
-            FRenderPassDesc RenderPass; RenderPass
-                .SetDepthAttachment(Depth)
-                .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
-
-            // Pipeline desc minus the vertex shader; the per-batch loop
-            // picks either the global shadow VS or a per-material WPO
-            // variant. Pipeline cache short-circuits identical lookups.
-            FGraphicsPipelineDesc DescTemplate; DescTemplate
-                .SetDebugName("Point Light Shadow Pass")
-                .SetRenderState(RenderState)
-                .AddBindingLayout(SceneBindingLayout)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                .SetVertexShader(VertexShader)
-                .SetPixelShader(PixelShader);
-
-            bool bPassBegun = false;
-
-            for (uint32 LightIdx = 0; LightIdx < PointShadows.size(); ++LightIdx)
+            const FLightShadow& LightShadow = PointShadows[LightIdx];
+            const uint32 ViewBase = PointShadowCullViewBases[LightIdx];
+            if (ViewBase == ~0u)
             {
-                const FLightShadow& LightShadow = PointShadows[LightIdx];
-                const uint32 ViewBase = PointShadowCullViewBases[LightIdx];
-                if (ViewBase == ~0u)
-                {
-                    continue;
-                }
+                continue;
+            }
 
-                const FShadowTile& Tile = ShadowAtlas.GetTile(LightShadow.ShadowMapIndex);
-                uint32 TilePixelX       = static_cast<uint32>(Tile.UVOffset.x * GShadowAtlasResolution);
-                uint32 TilePixelY       = static_cast<uint32>(Tile.UVOffset.y * GShadowAtlasResolution);
-                uint32 TileSize         = static_cast<uint32>(Tile.UVScale.x * GShadowAtlasResolution);
+            const FLightShadowData& ShadowData = LightData.Shadows[LightShadow.ShadowDataIndex];
+
+            for (int32 Face = 0; Face < 6; ++Face)
+            {
+                LUMINA_PROFILE_SECTION_COLORED("Point Shadow Face", tracy::Color::DeepPink2);
+
+                const FLightShadow& FaceShadow = ShadowData.Shadow[Face];
+                const FShadowTile& Tile = ShadowAtlas.GetTile(FaceShadow.ShadowMapIndex);
+                uint32 TilePixelX = static_cast<uint32>(Tile.UVOffset.x * GShadowAtlasResolution);
+                uint32 TilePixelY = static_cast<uint32>(Tile.UVOffset.y * GShadowAtlasResolution);
+                uint32 TileSize   = static_cast<uint32>(Tile.UVScale.x * GShadowAtlasResolution);
 
                 FViewport Viewport
                 (
@@ -3178,19 +3238,11 @@ namespace Lumina
                     CmdList.SetGraphicsState(GraphicsState);
                     CmdList.SetPushConstants(&PointPush, sizeof(PointPush));
                     CmdList.DrawIndirect(Batch.DrawCount, (FaceBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
-                    bPassBegun = true;
                 }
             }
-
-            // The face may have no lights (all dropped or pre-fit empty);
-            // still clear the layer so stale depth doesn't leak during sampling.
-            if (!bPassBegun)
-            {
-                CmdList.BeginRenderPass(RenderPass);
-            }
-
-            CmdList.EndRenderPass();
         }
+
+        CmdList.EndRenderPass();
     }
 
     void FForwardRenderScene::SpotShadowPass(ICommandList& CmdList)
@@ -3215,13 +3267,11 @@ namespace Lumina
 
 
         // Render pass + pipeline are built ONCE outside the per-light loop.
-        // Building them inside would re-clear the atlas layer between lights,
-        // wiping every spot's shadow except the last.
+        // Load (not Clear) to preserve the point-shadow tiles that
+        // PointShadowPass already wrote into this same 2D atlas.
         FRenderPassDesc::FAttachment Depth; Depth
-            .SetLoadOp(ERenderLoadOp::Clear)
-            .SetDepthClearValue(1.0f)
-            .SetImage(ShadowAtlas.GetImage())
-                .SetArraySlice(6);
+            .SetLoadOp(ERenderLoadOp::Load)
+            .SetImage(ShadowAtlas.GetImage());
 
         FRenderPassDesc RenderPass; RenderPass
             .SetDepthAttachment(Depth)

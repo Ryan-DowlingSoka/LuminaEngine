@@ -118,7 +118,7 @@ float SampleSpotShadowAtPoint(FLight Light, float3 WorldPos)
 
     float2 SafeUV  = saturate(ProjUV);
     float2 AtlasUV = Tile.AtlasUVOffset + SafeUV * Tile.AtlasUVScale;
-    return uShadowAtlas.SampleCmpLevelZero(float3(AtlasUV, Tile.ShadowMapLayer), Ref);
+    return uShadowAtlas.SampleCmpLevelZero(AtlasUV, Ref);
 }
 
 // Per-light scattering contribution at a single march sample. Returns the

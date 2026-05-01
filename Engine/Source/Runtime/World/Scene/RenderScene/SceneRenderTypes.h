@@ -192,7 +192,6 @@ namespace Lumina
         uint32 AtlasResolution    = GShadowAtlasResolution;    // Atlas is square: AtlasResolution x AtlasResolution.
         uint32 MaxTileResolution  = 1024;                      // Largest tile a single shadow can claim. Must be pow2.
         uint32 MinTileResolution  = 128;                       // Smallest leaf the quad-tree will subdivide to. Must be pow2.
-        uint32 NumLayers          = 7;                         // Shared across all layers; tiles occupy the same UV rect on every layer.
     };
 
     struct FShadowTile
@@ -224,8 +223,8 @@ namespace Lumina
             ImageDesc.Format            = EFormat::D32;
             ImageDesc.bKeepInitialState = true;
             ImageDesc.InitialState      = EResourceStates::DepthWrite;
-            ImageDesc.Dimension         = EImageDimension::Texture2DArray;
-            ImageDesc.ArraySize         = (uint16)Config.NumLayers;
+            ImageDesc.Dimension         = EImageDimension::Texture2D;
+            ImageDesc.ArraySize         = 1;
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::DepthAttachment, EImageCreateFlags::ShaderResource);
             ImageDesc.DebugName         = "Shadow Atlas";
 
@@ -333,7 +332,10 @@ namespace Lumina
 
         static constexpr uint32 RoundUpPow2(uint32 V)
         {
-            if (V <= 1) return 1;
+            if (V <= 1)
+            {
+                return 1;
+            }
             --V;
             V |= V >> 1;  V |= V >> 2;  V |= V >> 4;
             V |= V >> 8;  V |= V >> 16;
@@ -357,9 +359,9 @@ namespace Lumina
         glm::vec2   AtlasUVScale;
 
         int32       ShadowMapIndex;
-        int32       ShadowMapLayer;
         int32       LightIndex;
         int32       ShadowDataIndex;    // Index into FSceneLightData::Shadows[]
+        int32       _Padding;           // Keeps the struct 16-byte aligned for std430.
     };
 
     VERIFY_SSBO_ALIGNMENT(FLightShadow)

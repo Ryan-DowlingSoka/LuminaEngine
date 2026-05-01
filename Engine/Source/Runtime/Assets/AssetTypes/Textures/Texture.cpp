@@ -15,7 +15,7 @@ namespace Lumina
         {
             TextureResource = MakeUnique<FTextureResource>();
         }
-        
+
         Ar << *TextureResource.get();
     }
 
@@ -33,12 +33,12 @@ namespace Lumina
         {
             GRenderManager->GetTextureManager().RemoveTexture(TextureResource->RHIImage);
         }
-        
+
         TextureResource->RHIImage = GRenderContext->CreateImage(TextureResource->ImageDescription);
 
         FRHICommandListRef TransferCommandList = GRenderContext->CreateCommandList(FCommandListInfo::Compute());
         TransferCommandList->Open();
-        
+
         for (uint8 i = 0; i < TextureResource->Mips.size(); ++i)
         {
             FTextureResource::FMip& Mip = TextureResource->Mips[i];
@@ -47,8 +47,8 @@ namespace Lumina
         }
 
         TransferCommandList->Close();
-        GRenderContext->ExecuteCommandList(TransferCommandList, ECommandQueue::Compute); 
-        
+        GRenderContext->ExecuteCommandList(TransferCommandList, ECommandQueue::Compute);
+
         GRenderManager->GetTextureManager().AddTexture(TextureResource->RHIImage);
     }
 

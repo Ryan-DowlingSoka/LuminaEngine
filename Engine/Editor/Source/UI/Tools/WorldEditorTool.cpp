@@ -41,6 +41,7 @@
 #include "World/Entity/Components/NameComponent.h"
 #include "World/Entity/Components/RelationshipComponent.h"
 #include "World/Entity/Components/ScriptComponent.h"
+#include "world/entity/components/skeletalmeshcomponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Entity/Components/TagComponent.h"
 #include "World/Scene/RenderScene/RenderScene.h"
@@ -436,6 +437,31 @@ namespace Lumina
                 World->GetEntityRegistry().remove<SDisabledTag>(Data.Entity);
             }
         };
+        
+        OutlinerContext.HoveredFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
+        {
+            FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
+            FEntityRegistry& Registry = World->GetEntityRegistry();
+            if (!Registry.valid(Data.Entity))
+            {
+                return;
+            }
+            
+            const STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(Data.Entity);
+            
+            if (SStaticMeshComponent* MeshComponent = Registry.try_get<SStaticMeshComponent>(Data.Entity))
+            {
+                World->DrawBox(Transform.GetWorldLocation(), MeshComponent->GetAABB().GetSize() * 0.5f * Transform.GetWorldScale() * 1.2f, Transform.GetWorldRotation(), FColor::White, 3.0f);
+            }
+            else if (auto* SkinnedMeshComponent = Registry.try_get<SSkeletalMeshComponent>(Data.Entity))
+            {
+                World->DrawBox(Transform.GetWorldLocation(), SkinnedMeshComponent->GetAABB().GetSize() * 0.5f * Transform.GetWorldScale() * 1.2f, Transform.GetWorldRotation(), FColor::White, 3.0f);
+            }
+            else
+            {
+                World->DrawBox(Transform.GetWorldLocation(), 1.0f * Transform.GetWorldScale(), Transform.GetWorldRotation(), FColor::White, 3.0f);
+            }
+        };
 
         OutlinerContext.RebuildTreeFunction = [this](FTreeListView& Tree)
         {
@@ -494,6 +520,12 @@ namespace Lumina
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
 
             HandleEntityEditorDragDrop(Tree, Data.Entity);
+        };
+
+        OutlinerContext.ItemDoubleClickedFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
+        {
+            FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
+            FocusViewportToEntity(Data.Entity);
         };
 
         OutlinerContext.FilterFunction = [&](FTreeListView& Tree, FTreeNodeID Item)
@@ -954,25 +986,6 @@ namespace Lumina
     void FWorldEditorTool::DrawToolMenu(const FUpdateContext& UpdateContext)
     {
         FEditorTool::DrawToolMenu(UpdateContext);
-        
-        if (ImGui::BeginMenu(LE_ICON_LANGUAGE_LUA " Lua"))
-        {
-            auto View = World->GetEntityRegistry().view<SScriptComponent>();
-            
-            ImGui::Text("Number Of Scripts: %i", View.size_hint<>());
-            
-            ImGui::Separator();
-            
-            if (ImGui::MenuItem("Reload All"))
-            {
-                View.each([&](entt::entity Entity, SScriptComponent& ScriptComponent)
-                {
-                   World->OnScriptComponentCreated(Entity, ScriptComponent, true); 
-                });
-            }
-            
-            ImGui::EndMenu();
-        }
     }
 
     void FWorldEditorTool::InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const
@@ -1683,6 +1696,8 @@ namespace Lumina
         }
 
         DrawCursorWorldPositionOverlay(ViewportOrigin, ViewportSize, CameraComponent);
+        DrawEntityDebugOverlay(ViewportOrigin, ViewportSize, CameraComponent);
+        DrawOffscreenSelectionIndicators(ViewportOrigin, ViewportSize, CameraComponent);
     }
 
     void FWorldEditorTool::DrawViewportToolbar(const FUpdateContext& UpdateContext)
@@ -2706,6 +2721,8 @@ namespace Lumina
                 {
                     Settings.bDrawBillboards = bDrawBillboards;
                 }
+
+                ImGui::MenuItem("Draw Entity Debug Info", nullptr, &bDrawEntityDebugInfo);
 
                 bool bDrawAABB = Settings.bDrawAABB;
                 if (ImGui::MenuItem("Draw Bounds", nullptr, &bDrawAABB))
@@ -5368,5 +5385,250 @@ namespace Lumina
                                 ImVec2(TextPos.x + 220.0f, TextPos.y + 18.0f),
                                 IM_COL32(0, 0, 0, 140), 4.0f);
         DrawList->AddText(TextPos, IM_COL32(220, 220, 220, 230), Buf);
+    }
+
+    void FWorldEditorTool::DrawEntityDebugOverlay(ImVec2 ViewportOrigin, ImVec2 ViewportSize, const SCameraComponent& Camera)
+    {
+        if (!bDrawEntityDebugInfo || World == nullptr)
+        {
+            return;
+        }
+
+        glm::mat4 Proj = Camera.GetProjectionMatrix();
+        Proj[1][1] *= -1.0f;
+        const glm::mat4 ViewProj = Proj * Camera.GetViewMatrix();
+        FFrustum Frustum = Camera.GetViewVolume().GetFrustum();
+        const glm::vec3 CameraPos = Camera.GetPosition();
+
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        auto View = Registry.view<STransformComponent>(entt::exclude<FEditorComponent>);
+
+        struct FCandidate
+        {
+            entt::entity Entity;
+            ImVec2       Screen;
+            float        DepthSq;
+        };
+
+        TVector<FCandidate> Candidates;
+        Candidates.reserve(View.size_hint());
+
+        for (entt::entity Entity : View)
+        {
+            const STransformComponent& Transform = View.get<STransformComponent>(Entity);
+            const glm::vec3 WorldPos = Transform.GetWorldLocation();
+            if (!Frustum.IsInside(WorldPos))
+            {
+                continue;
+            }
+
+            ImVec2 Screen;
+            if (!ProjectPointToScreen(WorldPos, ViewProj, ViewportSize, Screen))
+            {
+                continue;
+            }
+
+            const glm::vec3 Delta = WorldPos - CameraPos;
+            Candidates.push_back({ Entity, Screen, glm::dot(Delta, Delta) });
+        }
+
+        // Front-to-back so closer labels claim space first.
+        eastl::sort(Candidates.begin(), Candidates.end(), [](const FCandidate& A, const FCandidate& B)
+        {
+            return A.DepthSq < B.DepthSq;
+        });
+
+        ImDrawList* DrawList = ImGui::GetWindowDrawList();
+        const float LineHeight = ImGui::GetTextLineHeight();
+        const float Padding = 4.0f;
+        const ImU32 BgColor = IM_COL32(0, 0, 0, 160);
+        const ImU32 TextColor = IM_COL32(230, 230, 230, 235);
+
+        TVector<ImRect> PlacedRects;
+        PlacedRects.reserve(Candidates.size());
+
+        for (const FCandidate& C : Candidates)
+        {
+            const SNameComponent* NameComp = Registry.try_get<SNameComponent>(C.Entity);
+            const STransformComponent& Transform = Registry.get<STransformComponent>(C.Entity);
+            const glm::vec3 P = Transform.GetWorldLocation();
+
+            char Line0[96];
+            char Line1[96];
+            const char* Name = (NameComp && !NameComp->Name.IsNone()) ? NameComp->Name.c_str() : "Entity";
+            snprintf(Line0, sizeof(Line0), "%s (id=%u)", Name, (uint32)entt::to_integral(C.Entity));
+            snprintf(Line1, sizeof(Line1), "%.2f, %.2f, %.2f", P.x, P.y, P.z);
+
+            const ImVec2 Size0 = ImGui::CalcTextSize(Line0);
+            const ImVec2 Size1 = ImGui::CalcTextSize(Line1);
+            const float BoxW = glm::max(Size0.x, Size1.x) + Padding * 2.0f;
+            const float BoxH = LineHeight * 2.0f + Padding * 2.0f;
+
+            // Anchor above the entity, then nudge down on collision until clear or we give up.
+            ImVec2 Anchor(ViewportOrigin.x + C.Screen.x - BoxW * 0.5f,
+                          ViewportOrigin.y + C.Screen.y - BoxH - 6.0f);
+
+            // Clamp to viewport horizontally so labels don't drift offscreen.
+            const float MinX = ViewportOrigin.x + 2.0f;
+            const float MaxX = ViewportOrigin.x + ViewportSize.x - BoxW - 2.0f;
+            Anchor.x = glm::clamp(Anchor.x, MinX, MaxX);
+
+            ImRect Rect(Anchor, ImVec2(Anchor.x + BoxW, Anchor.y + BoxH));
+
+            bool bPlaced = false;
+            for (int32 Attempt = 0; Attempt < 16; ++Attempt)
+            {
+                bool bOverlap = false;
+                for (const ImRect& Other : PlacedRects)
+                {
+                    if (Rect.Overlaps(Other))
+                    {
+                        bOverlap = true;
+                        Rect.Min.y = Other.Max.y + 1.0f;
+                        Rect.Max.y = Rect.Min.y + BoxH;
+                        break;
+                    }
+                }
+                if (!bOverlap)
+                {
+                    bPlaced = true;
+                    break;
+                }
+            }
+
+            if (!bPlaced)
+            {
+                continue;
+            }
+
+            // Drop labels that got pushed off the bottom of the viewport.
+            if (Rect.Max.y > ViewportOrigin.y + ViewportSize.y - 2.0f)
+            {
+                continue;
+            }
+
+            PlacedRects.push_back(Rect);
+
+            DrawList->AddRectFilled(Rect.Min, Rect.Max, BgColor, 3.0f);
+            DrawList->AddText(ImVec2(Rect.Min.x + Padding, Rect.Min.y + Padding), TextColor, Line0);
+            DrawList->AddText(ImVec2(Rect.Min.x + Padding, Rect.Min.y + Padding + LineHeight), TextColor, Line1);
+        }
+    }
+
+    void FWorldEditorTool::DrawOffscreenSelectionIndicators(ImVec2 ViewportOrigin, ImVec2 ViewportSize, const SCameraComponent& Camera)
+    {
+        if (World == nullptr)
+        {
+            return;
+        }
+
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        auto SelView = Registry.view<FSelectedInEditorComponent, STransformComponent>();
+        if (SelView.size_hint() == 0)
+        {
+            return;
+        }
+
+        glm::mat4 Proj = Camera.GetProjectionMatrix();
+        Proj[1][1] *= -1.0f;
+        const glm::mat4 ViewProj = Proj * Camera.GetViewMatrix();
+
+        ImDrawList* DrawList = ImGui::GetWindowDrawList();
+        const float EdgePadding = 32.0f;
+        const ImVec2 Center(ViewportOrigin.x + ViewportSize.x * 0.5f,
+                            ViewportOrigin.y + ViewportSize.y * 0.5f);
+        const ImVec2 RectMin(ViewportOrigin.x + EdgePadding,
+                             ViewportOrigin.y + EdgePadding);
+        const ImVec2 RectMax(ViewportOrigin.x + ViewportSize.x - EdgePadding,
+                             ViewportOrigin.y + ViewportSize.y - EdgePadding);
+
+        const ImU32 FillColor    = IM_COL32(255, 195, 60, 235);
+        const ImU32 OutlineColor = IM_COL32(20, 20, 20, 220);
+
+        for (entt::entity Entity : SelView)
+        {
+            const STransformComponent& Transform = SelView.get<STransformComponent>(Entity);
+            const glm::vec3 WorldPos = Transform.GetWorldLocation();
+
+            glm::vec4 Clip = ViewProj * glm::vec4(WorldPos, 1.0f);
+
+            // Reflect points behind the camera through the origin so they map to
+            // the opposite side of screen space — the natural direction for an
+            // arrow pointing back toward the entity.
+            const bool bBehind = Clip.w <= 0.0f;
+            if (bBehind)
+            {
+                Clip.x = -Clip.x;
+                Clip.y = -Clip.y;
+                Clip.w = -Clip.w;
+            }
+            const float SafeW = glm::max(Clip.w, 1e-4f);
+            float NdcX = Clip.x / SafeW;
+            float NdcY = Clip.y / SafeW;
+
+            // For behind-camera entities, force NDC outside [-1,1] so we always
+            // emit an indicator even when the reflected point lands near center.
+            if (bBehind)
+            {
+                const float Mag = glm::max(glm::abs(NdcX), glm::abs(NdcY));
+                if (Mag > 1e-4f)
+                {
+                    const float Scale = 1.5f / Mag;
+                    NdcX *= Scale;
+                    NdcY *= Scale;
+                }
+                else
+                {
+                    NdcX = 0.0f;
+                    NdcY = -1.5f;
+                }
+            }
+
+            const float ScreenX = (NdcX * 0.5f + 0.5f) * ViewportSize.x + ViewportOrigin.x;
+            const float ScreenY = (1.0f - (NdcY * 0.5f + 0.5f)) * ViewportSize.y + ViewportOrigin.y;
+
+            if (!bBehind &&
+                ScreenX >= RectMin.x && ScreenX <= RectMax.x &&
+                ScreenY >= RectMin.y && ScreenY <= RectMax.y)
+            {
+                continue;
+            }
+
+            ImVec2 Dir(ScreenX - Center.x, ScreenY - Center.y);
+            const float Len = sqrtf(Dir.x * Dir.x + Dir.y * Dir.y);
+            if (Len < 1e-3f)
+            {
+                continue;
+            }
+            Dir.x /= Len;
+            Dir.y /= Len;
+
+            // Clip ray from center to the inset rect.
+            const float TX = (Dir.x > 0.0f) ? (RectMax.x - Center.x) / Dir.x
+                            : (Dir.x < 0.0f) ? (RectMin.x - Center.x) / Dir.x
+                            : FLT_MAX;
+            const float TY = (Dir.y > 0.0f) ? (RectMax.y - Center.y) / Dir.y
+                            : (Dir.y < 0.0f) ? (RectMin.y - Center.y) / Dir.y
+                            : FLT_MAX;
+            const float T = glm::min(TX, TY);
+            if (T <= 0.0f)
+            {
+                continue;
+            }
+
+            const ImVec2 Tip(Center.x + Dir.x * T, Center.y + Dir.y * T);
+
+            const float ArrowLen  = 16.0f;
+            const float ArrowHalf = 9.0f;
+            const ImVec2 Perp(-Dir.y, Dir.x);
+            const ImVec2 BaseCenter(Tip.x - Dir.x * ArrowLen, Tip.y - Dir.y * ArrowLen);
+            const ImVec2 BaseL(BaseCenter.x + Perp.x * ArrowHalf, BaseCenter.y + Perp.y * ArrowHalf);
+            const ImVec2 BaseR(BaseCenter.x - Perp.x * ArrowHalf, BaseCenter.y - Perp.y * ArrowHalf);
+
+            DrawList->AddTriangleFilled(Tip, BaseL, BaseR, FillColor);
+            DrawList->AddTriangle(Tip, BaseL, BaseR, OutlineColor, 1.5f);
+            DrawList->AddCircleFilled(BaseCenter, 3.0f, FillColor);
+            DrawList->AddCircle(BaseCenter, 3.0f, OutlineColor, 0, 1.5f);
+        }
     }
 }

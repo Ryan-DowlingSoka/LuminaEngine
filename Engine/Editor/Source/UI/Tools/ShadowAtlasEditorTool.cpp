@@ -100,7 +100,7 @@ namespace Lumina
 
         const float UsedPct = AtlasPixels > 0 ? (float)((double)UsedPixels / (double)AtlasPixels * 100.0) : 0.0f;
 
-        ImGui::Text("Atlas: %u x %u  (layers: %u)", Cfg.AtlasResolution, Cfg.AtlasResolution, Cfg.NumLayers);
+        ImGui::Text("Atlas: %u x %u", Cfg.AtlasResolution, Cfg.AtlasResolution);
         ImGui::Text("Tiles allocated: %u   Utilization: %.1f%% (%llu / %llu px)",
             (uint32)Tiles.size(), UsedPct, (unsigned long long)UsedPixels, (unsigned long long)AtlasPixels);
 

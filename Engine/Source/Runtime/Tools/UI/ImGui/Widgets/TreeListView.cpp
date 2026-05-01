@@ -214,6 +214,10 @@ namespace Lumina
 
         const bool bNowExpanded = ImGui::TreeNodeEx("##TreeNode", Flags, "%s", Display.DisplayName.c_str());
 
+        const bool bTreeNodeDoubleClicked = ImGui::IsItemHovered()
+            && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)
+            && !ImGui::IsItemToggledOpen();
+
         if (bDeclaresChildren && bNowExpanded != State.bExpanded)
         {
             State.bExpanded = bNowExpanded;
@@ -265,6 +269,11 @@ namespace Lumina
 
         if (ImGui::IsItemHovered())
         {
+            if (Context.HoveredFunction)
+            {
+                Context.HoveredFunction(*this, FTreeNodeID{NodeIdx});
+            }
+            
             if (ImGui::IsKeyDown(ImGuiKey_F2) && Display.bAllowRenaming)
             {
 				State.bEditingText = true;
@@ -359,6 +368,11 @@ namespace Lumina
             (void)bShift;
             SetSelection(FTreeNodeID{NodeIdx}, Context, !bCtrl);
 		}
+
+        if (bTreeNodeDoubleClicked && !bMouseOverVisibilityButton && Context.ItemDoubleClickedFunction)
+        {
+            Context.ItemDoubleClickedFunction(*this, FTreeNodeID{NodeIdx});
+        }
 
         ImGui::PopStyleColor(); // header color
 

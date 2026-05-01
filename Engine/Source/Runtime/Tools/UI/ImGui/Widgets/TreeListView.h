@@ -52,6 +52,9 @@ namespace Lumina
         /** Called when an item has been selected in the tree */
         TFunction<void(FTreeListView&, FTreeNodeID, bool)>              ItemSelectedFunction;
 
+        /** Called when an item is double-clicked in the tree */
+        TFunction<void(FTreeListView&, FTreeNodeID)>                    ItemDoubleClickedFunction;
+
         /** Called when we have a drag-drop operation on a target */
         TFunction<void(FTreeListView&, FTreeNodeID)>                    DragDropFunction;
 
@@ -63,6 +66,9 @@ namespace Lumina
 
         /** Called when the visibility icon is toggled */
         TFunction<void(FTreeListView&, FTreeNodeID)>                    VisibilityToggleFunction;
+        
+        /** Called when a tree item is hovered */
+        TFunction<void(FTreeListView&, FTreeNodeID)>                    HoveredFunction;
 
         /** Called when an item is being renamed */
         TFunction<void(FTreeListView&, FTreeNodeID, FStringView)>       RenameFunction;

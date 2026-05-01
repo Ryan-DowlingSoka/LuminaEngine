@@ -54,6 +54,17 @@ namespace Lumina
         // Trailing-edge tracker: only release the captured mouse mode once when
         // the user lets go of RMB, instead of every frame they're not looking.
         bool        bWasLooking = false;
+
+        // Camera focus interpolation. When bFocusInterp is true, TickEditorCamera
+        // smoothly drives the camera toward the stored targets. User movement
+        // input (WASD, RMB-look, MMB-pan, scroll) cancels mid-lerp.
+        bool        bFocusInterp        = false;
+        // Exponential-decay rate (1/seconds). ~12 yields ~250ms to ~95% complete.
+        float       FocusInterpRate     = 12.0f;
+        glm::vec3   FocusFreePosition   = glm::vec3(0.0f);
+        glm::quat   FocusFreeRotation   = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        glm::vec3   FocusOrbitTarget    = glm::vec3(0.0f);
+        float       FocusOrbitDistance  = 5.0f;
     };
 
     class FEditorTool : public IEventHandler

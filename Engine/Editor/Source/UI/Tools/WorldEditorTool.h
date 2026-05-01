@@ -98,6 +98,8 @@ namespace Lumina
         void SaveCameraBookmark(int32 Slot);
         void RecallCameraBookmark(int32 Slot);
         void DrawCursorWorldPositionOverlay(ImVec2 ViewportOrigin, ImVec2 ViewportSize, const SCameraComponent& Camera);
+        void DrawEntityDebugOverlay(ImVec2 ViewportOrigin, ImVec2 ViewportSize, const SCameraComponent& Camera);
+        void DrawOffscreenSelectionIndicators(ImVec2 ViewportOrigin, ImVec2 ViewportSize, const SCameraComponent& Camera);
         
         bool HasSimulatingWorld() const { return bSimulatingWorld || bGamePreviewRunning; }
         
@@ -302,6 +304,7 @@ namespace Lumina
 
         
         bool                                    bShowComponentVisualizers = true;
+        bool                                    bDrawEntityDebugInfo = false;
 		bool									bGuizmoSnapEnabled = true;
         bool                                    bGamePreviewRunning = false;
         bool                                    bSimulatingWorld = false;

@@ -240,8 +240,7 @@ namespace Lumina
         }
     }
 
-    void IPrimitiveDrawInterface::DrawFrustum(const glm::mat4& Matrix, float zNear, float zFar, const glm::vec4& Color,
-        float Thickness, bool bDepthTest, float Duration)
+    void IPrimitiveDrawInterface::DrawFrustum(const glm::mat4& Matrix, float zNear, float zFar, const glm::vec4& Color, float Thickness, bool bDepthTest, float Duration)
     {
         auto UnprojectCorner = [&](float x, float y, float z) -> glm::vec3
         {
@@ -283,12 +282,11 @@ namespace Lumina
         DrawLine(corners[3], corners[7], Color, Thickness, bDepthTest, Duration);
     }
 
-    void IPrimitiveDrawInterface::DrawArrow(const glm::vec3& Start, const glm::vec3& Direction, float Length,
-        const glm::vec4& Color, float Thickness, bool bDepthTest, float Duration, float HeadSize)
+    void IPrimitiveDrawInterface::DrawArrow(const glm::vec3& Start, const glm::vec3& Direction, float Length, const glm::vec4& Color, float Thickness, bool bDepthTest, float Duration, float HeadSize)
     {
         glm::vec3 End = Start + glm::normalize(Direction) * Length;
 
-        DrawLine(Start, End, Color, Thickness, Duration);
+        DrawLine(Start, End, Color, Thickness, bDepthTest, Duration);
 
         glm::vec3 Up(0, 1, 0);
         if (glm::abs(glm::dot(glm::normalize(Direction), Up)) > 0.99f)

@@ -146,7 +146,7 @@ namespace Lumina
         const auto& Camera      = Registry.get<SCameraComponent>(Entity);
 
         
-        PDI->DrawFrustum(Camera.GetViewProjectionMatrix(), 0.01f, 5000.0f, FColor::White, 4.0f);
+        PDI->DrawFrustum(Camera.GetViewProjectionMatrix(), 0.01f, 1000.0f, FColor::White, 4.0f);
         PDI->DrawArrow(Transform.GetWorldLocation(), Transform.GetWorldRotation() * glm::vec3(0.0, 0.0, 1.0), 1.5f, FColor::Green, 4.0f);
     }
 }

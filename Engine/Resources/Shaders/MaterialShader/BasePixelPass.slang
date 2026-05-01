@@ -394,8 +394,8 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
     // where outside the cone the UV early-out returns fully-lit.
     FLightShadow ShadowTile = GetShadowTile(Light.ShadowDataIndex, Face);
 
-    uint AtlasW, AtlasH, AtlasLayers;
-    uShadowAtlas.GetDimensions(AtlasW, AtlasH, AtlasLayers);
+    uint AtlasW, AtlasH;
+    uShadowAtlas.GetDimensions(AtlasW, AtlasH);
 
     float  AtlasTileTexels  = max(ShadowTile.AtlasUVScale.x, 1e-6) * float(AtlasW);
     float  WorldTexel       = (Light.Radius * 2.0) / max(AtlasTileTexels, 1.0);
@@ -449,14 +449,14 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
             continue;
         }
         float2 SampleUV = ShadowTile.AtlasUVOffset + (TapUV * ShadowTile.AtlasUVScale);
-        Shadow += uShadowAtlas.SampleCmp(float3(SampleUV, ShadowTile.ShadowMapLayer), RefDepth);
+        Shadow += uShadowAtlas.SampleCmp(SampleUV, RefDepth);
         Weight += 1.0;
     }
 
     if (Weight <= 0.0)
     {
         float2 CenterUV = ShadowTile.AtlasUVOffset + (SafeUV * ShadowTile.AtlasUVScale);
-        return uShadowAtlas.SampleCmp(float3(CenterUV, ShadowTile.ShadowMapLayer), RefDepth);
+        return uShadowAtlas.SampleCmp(CenterUV, RefDepth);
     }
     return Shadow / Weight;
 }

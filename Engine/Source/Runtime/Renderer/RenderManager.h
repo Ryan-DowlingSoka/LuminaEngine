@@ -22,7 +22,7 @@ namespace Lumina
 
         FRenderManager();
         ~FRenderManager();
-        
+
         void Initialize();
 
         void FrameStart(const FUpdateContext& UpdateContext);
@@ -36,22 +36,22 @@ namespace Lumina
         #endif
 
         uint32 GetCurrentFrameIndex() const { return CurrentFrameIndex; }
-        
+
         NODISCARD RHI::FTextureManager& GetTextureManager() const { return *TextureManager.get(); }
         NODISCARD RHI::FMaterialManager& GetMaterialManager() const { return *MaterialManager.get(); }
-        
+
     private:
-        
+
         #if WITH_EDITOR
         IImGuiRenderer*                     ImGuiRenderer = nullptr;
         #endif
-        
+
         TUniquePtr<RHI::FTextureManager>    TextureManager;
         TUniquePtr<RHI::FMaterialManager>   MaterialManager;
-        
+
         uint8                               CurrentFrameIndex = 0;
     };
-    
-    
+
+
     RUNTIME_API extern FRenderManager* GRenderManager;
 }
