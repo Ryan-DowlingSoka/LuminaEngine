@@ -168,6 +168,28 @@ namespace Lumina
         ImGui::Checkbox("##DebugID", &NodeGraph->bDebug);
     }
 
+    void FMaterialEditorTool::SetDebugMesh(EDebugMesh Mesh, FStringView Path)
+    {
+        switch (Mesh)
+        {
+        case EDebugMesh::Sphere:
+            {
+                World->GetEntityRegistry().get<SStaticMeshComponent>(MeshEntity).StaticMesh = CThumbnailManager::Get().SphereMesh;
+            }
+            break;
+        case EDebugMesh::Cube:
+            {
+                World->GetEntityRegistry().get<SStaticMeshComponent>(MeshEntity).StaticMesh = CThumbnailManager::Get().CubeMesh;
+            }
+            break;
+        case EDebugMesh::Plane:
+            {
+                World->GetEntityRegistry().get<SStaticMeshComponent>(MeshEntity).StaticMesh = CThumbnailManager::Get().PlaneMesh;
+            }
+            break;
+        }
+    }
+
     bool FMaterialEditorTool::DrawViewport(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture)
     {
         const ImVec2 ViewportSize(eastl::max(ImGui::GetContentRegionAvail().x, 64.0f), eastl::max(ImGui::GetContentRegionAvail().y, 64.0f));
@@ -182,6 +204,7 @@ namespace Lumina
             FSceneRenderSettings& Settings = Scene->GetSceneRenderSettings();
             Settings.bDrawBillboards = false;
             Settings.bDrawAABB       = false;
+            bWorldGridEnabled        = false;
         }
 
         SCameraComponent* CameraComponent =  World->GetActiveCamera();
@@ -212,12 +235,16 @@ namespace Lumina
 
         const ImGuiStyle& ImStyle = ImGui::GetStyle();
 
-        ImGui::Dummy(ImStyle.ItemSpacing);
-        ImGui::SetCursorPos(ImStyle.ItemSpacing);
-        DrawViewportOverlayElements(UpdateContext, ViewportTexture, ViewportSize);
+        ImVec2 Origin = ImGui::GetCursorStartPos();
 
         ImGui::Dummy(ImStyle.ItemSpacing);
-        ImGui::SetCursorPos(ImStyle.ItemSpacing);
+        ImGui::SetCursorPos(Origin + ImStyle.ItemSpacing);
+        DrawViewportOverlayElements(UpdateContext, ViewportTexture, ViewportSize);
+
+        Origin = ImGui::GetCursorStartPos();
+
+        ImGui::Dummy(ImStyle.ItemSpacing);
+        ImGui::SetCursorPos(Origin + ImStyle.ItemSpacing);
         DrawViewportToolbar(UpdateContext);
         
         if (ImGuiDockNode* pDockNode = ImGui::GetWindowDockNode())
@@ -231,7 +258,38 @@ namespace Lumina
 
     void FMaterialEditorTool::DrawViewportOverlayElements(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture, ImVec2 ViewportSize)
     {
-        ImGui::Button("Foobar");
+        FStringView PreviewString;
+        switch (DebugMesh)
+        {
+            case EDebugMesh::Sphere:    PreviewString  = "Sphere";  break;
+            case EDebugMesh::Cube:      PreviewString  = "Cube";    break;
+            case EDebugMesh::Plane:     PreviewString  = "Plane";   break;
+        }
+        
+        ImGui::PushItemWidth(95.0f);
+        if (ImGui::BeginCombo("##", PreviewString.data(), ImGuiComboFlags_HeightLarge))
+        {
+            if (ImGui::Selectable("Sphere", DebugMesh == EDebugMesh::Sphere))
+            {
+                DebugMesh = EDebugMesh::Sphere;
+                SetDebugMesh(DebugMesh);
+            }
+            
+            if (ImGui::Selectable("Cube", DebugMesh == EDebugMesh::Cube))
+            {
+                DebugMesh = EDebugMesh::Cube;
+                SetDebugMesh(DebugMesh);
+            }
+            
+            if (ImGui::Selectable("Plane", DebugMesh == EDebugMesh::Plane))
+            {
+                DebugMesh = EDebugMesh::Plane;
+                SetDebugMesh(DebugMesh);
+            }
+            
+            ImGui::EndCombo();
+        }
+        ImGui::PopItemWidth();
     }
 
     void FMaterialEditorTool::OnAssetLoadFinished()

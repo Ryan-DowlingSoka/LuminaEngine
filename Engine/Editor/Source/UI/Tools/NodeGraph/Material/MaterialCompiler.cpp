@@ -1533,18 +1533,32 @@ namespace Lumina
 		SetOwningOutputType(I, EMaterialInputType::Float3);
 	}
 
-	void FMaterialCompiler::RotateAboutAxis(CMaterialInput* Position, CMaterialInput* Axis, CMaterialInput* Angle)
+	void FMaterialCompiler::RotateAboutAxis(CMaterialInput* Position, CMaterialInput* Axis, CMaterialInput* Angle, CMaterialInput* Pivot)
 	{
 		FString OwningNode = Position->GetOwningNode()->GetNodeFullName();
-		FInputValue PV = GetTypedInputValue(Position, "float3(1.0, 0.0, 0.0)");
+
+		FInputValue PV = GetTypedInputValue(Position, "float3(0.0, 0.0, 0.0)");
 		FInputValue AV = GetTypedInputValue(Axis, "float3(0.0, 0.0, 1.0)");
 		FInputValue AngleV = GetTypedInputValue(Angle, 0.0f);
+		FInputValue PivotV = GetTypedInputValue(Pivot, "float3(0.0, 0.0, 0.0)");
 
 		GetActiveChunk().append("float3 " + OwningNode + "_K = normalize(" + AV.Value + ".xyz);\n");
 		GetActiveChunk().append("float  " + OwningNode + "_S = sin(" + AngleV.Value + ");\n");
 		GetActiveChunk().append("float  " + OwningNode + "_C = cos(" + AngleV.Value + ");\n");
-		GetActiveChunk().append("float3 " + OwningNode + "_V = " + PV.Value + ".xyz;\n");
-		GetActiveChunk().append("float3 " + OwningNode + " = " + OwningNode + "_V * " + OwningNode + "_C + cross(" + OwningNode + "_K, " + OwningNode + "_V) * " + OwningNode + "_S + " + OwningNode + "_K * dot(" + OwningNode + "_K, " + OwningNode + "_V) * (1.0 - " + OwningNode + "_C);\n");
+
+		// translate to pivot space
+		GetActiveChunk().append("float3 " + OwningNode + "_V = " + PV.Value + ".xyz - " + PivotV.Value + ".xyz;\n");
+
+		// rotate
+		GetActiveChunk().append(
+			"float3 " + OwningNode + "_R = " + OwningNode + "_V * " + OwningNode + "_C + "
+			"cross(" + OwningNode + "_K, " + OwningNode + "_V) * " + OwningNode + "_S + "
+			+ OwningNode + "_K * dot(" + OwningNode + "_K, " + OwningNode + "_V) * (1.0 - " + OwningNode + "_C);\n"
+		);
+
+		// translate back
+		GetActiveChunk().append("float3 " + OwningNode + " = " + OwningNode + "_R + " + PivotV.Value + ".xyz;\n");
+
 		SetOwningOutputType(Position, EMaterialInputType::Float3);
 	}
 

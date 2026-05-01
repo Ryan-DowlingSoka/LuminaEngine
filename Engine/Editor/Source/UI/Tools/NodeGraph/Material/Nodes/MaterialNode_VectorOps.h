@@ -240,5 +240,6 @@ namespace Lumina
         CMaterialInput* Position = nullptr;
         CMaterialInput* Axis = nullptr;
         CMaterialInput* Angle = nullptr;
+        CMaterialInput* Pivot = nullptr;
     };
 }

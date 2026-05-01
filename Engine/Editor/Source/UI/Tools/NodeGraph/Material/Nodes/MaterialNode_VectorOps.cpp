@@ -184,8 +184,16 @@ namespace Lumina
     void CMaterialExpression_Dot::BuildNode() { Super::BuildNode(); BuildBinaryInputs(this); }
     void CMaterialExpression_Dot::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.Dot(A, B); }
 
-    void CMaterialExpression_Cross::BuildNode() { Super::BuildNode(); BuildBinaryInputs(this); }
-    void CMaterialExpression_Cross::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.Cross(A, B); }
+    void CMaterialExpression_Cross::BuildNode()
+    {
+        Super::BuildNode(); 
+        BuildBinaryInputs(this);
+    }
+    
+    void CMaterialExpression_Cross::GenerateDefinition(FMaterialCompiler& Compiler)
+    {
+        Compiler.Cross(A, B);
+    }
 
     void CMaterialExpression_Reflect::BuildNode()
     {
@@ -193,7 +201,11 @@ namespace Lumina
         I = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "I", ENodePinDirection::Input));
         N = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "N", ENodePinDirection::Input));
     }
-    void CMaterialExpression_Reflect::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.Reflect(I, N); }
+    
+    void CMaterialExpression_Reflect::GenerateDefinition(FMaterialCompiler& Compiler)
+    {
+        Compiler.Reflect(I, N);
+    }
 
     void CMaterialExpression_Refract::BuildNode()
     {
@@ -202,7 +214,11 @@ namespace Lumina
         N = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "N", ENodePinDirection::Input));
         Eta = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "Eta", ENodePinDirection::Input));
     }
-    void CMaterialExpression_Refract::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.Refract(I, N, Eta); }
+    
+    void CMaterialExpression_Refract::GenerateDefinition(FMaterialCompiler& Compiler)
+    {
+        Compiler.Refract(I, N, Eta);
+    }
 
     void CMaterialExpression_RotateAboutAxis::BuildNode()
     {
@@ -210,6 +226,11 @@ namespace Lumina
         Position = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "Position", ENodePinDirection::Input));
         Axis     = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "Axis", ENodePinDirection::Input));
         Angle    = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "Angle", ENodePinDirection::Input));
+        Pivot    = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "Pivot", ENodePinDirection::Input));
     }
-    void CMaterialExpression_RotateAboutAxis::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.RotateAboutAxis(Position, Axis, Angle); }
+    
+    void CMaterialExpression_RotateAboutAxis::GenerateDefinition(FMaterialCompiler& Compiler)
+    {
+        Compiler.RotateAboutAxis(Position, Axis, Angle, Pivot);
+    }
 }

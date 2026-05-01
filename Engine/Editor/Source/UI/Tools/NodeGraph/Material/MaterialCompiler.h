@@ -248,7 +248,7 @@ namespace Lumina
         void Cross(CMaterialInput* A, CMaterialInput* B);
         void Reflect(CMaterialInput* I, CMaterialInput* N);
         void Refract(CMaterialInput* I, CMaterialInput* N, CMaterialInput* Eta);
-        void RotateAboutAxis(CMaterialInput* Position, CMaterialInput* Axis, CMaterialInput* Angle);
+        void RotateAboutAxis(CMaterialInput* Position, CMaterialInput* Axis, CMaterialInput* Angle, CMaterialInput* Pivot);
 
         // Color operations
         void Desaturate(CMaterialInput* Color, CMaterialInput* Amount);

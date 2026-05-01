@@ -31,6 +31,13 @@ namespace Lumina
             TVector<FCompilationError>  Errors;
             bool                        bIsError = false;
         };
+        
+        enum class EDebugMesh : uint8
+        {
+            Sphere,
+            Cube,
+            Plane,
+        };
 
         LUMINA_EDITOR_TOOL(FMaterialEditorTool)
 
@@ -63,6 +70,10 @@ namespace Lumina
         
     private:
         
+        void SetDebugMesh(EDebugMesh Mesh, FStringView Path = "");
+        
+    private:
+        
         entt::entity                    MeshEntity;
         entt::entity                    DirectionalLightEntity;
         
@@ -81,5 +92,7 @@ namespace Lumina
         
         TObjectPtr<CMaterialNodeGraph>  NodeGraph;
         bool                            bGLSLPreviewDirty = false;
+        
+        EDebugMesh                      DebugMesh;
     };
 }
