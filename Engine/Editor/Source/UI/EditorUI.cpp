@@ -984,24 +984,75 @@ namespace Lumina
                     LUMINA_PROFILE_SECTION("Draw Viewport");
 
                     constexpr ImGuiWindowFlags ViewportWindowFlags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNavFocus;
-                    ImGui::SetNextWindowClass(&Tool->ToolWindowsClass);
-                    
-                    ImGui::SetNextWindowSizeConstraints(ImVec2(128, 128), ImVec2(FLT_MAX, FLT_MAX));
-                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-                    bool const DrawViewportWindow = ImGui::Begin(ToolWindowName.c_str(), nullptr, ViewportWindowFlags);
-                    ImGui::PopStyleVar();
-                
-                    if (DrawViewportWindow)
-                    {
-                        IRenderScene* SceneRenderer = Tool->GetWorld()->GetRenderer();
-                        ImTextureRef ViewportTexture = ImGuiX::ToImTextureRef(SceneRenderer->GetRenderTarget());
-                        
-                        Tool->bViewportFocused = ImGui::IsWindowFocused();
-                        Tool->bViewportHovered = ImGui::IsWindowHovered();
-                        Tool->DrawViewport(UpdateContext, ViewportTexture);
-                    }
 
-                    ImGui::End();
+                    if (Tool->IsViewportFullscreen())
+                    {
+                        // Begin/End the docked viewport empty so its dock-node slot stays
+                        // alive — letting the window snap back into place when we exit
+                        // fullscreen instead of orphaning at the last fullscreen rect.
+                        ImGui::SetNextWindowClass(&Tool->ToolWindowsClass);
+                        ImGui::SetNextWindowSizeConstraints(ImVec2(128, 128), ImVec2(FLT_MAX, FLT_MAX));
+                        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+                        ImGui::Begin(ToolWindowName.c_str(), nullptr, ViewportWindowFlags);
+                        ImGui::PopStyleVar();
+                        ImGui::End();
+
+                        // Now draw the actual viewport into a separate fullscreen overlay window.
+                        // Different name so the docked window's position/dock state is untouched.
+                        const FFixedString FullscreenName(FFixedString::CtorSprintf(), "%s##Fullscreen_%08X", FEditorTool::ViewportWindowName, Tool->GetCurrentDockspaceID());
+
+                        const ImGuiViewport* MainVP = ImGui::GetMainViewport();
+                        ImGui::SetNextWindowPos(MainVP->WorkPos);
+                        ImGui::SetNextWindowSize(MainVP->WorkSize);
+                        ImGui::SetNextWindowViewport(MainVP->ID);
+
+                        constexpr ImGuiWindowFlags FullscreenFlags =
+                            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                            ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                            ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoNavInputs |
+                            ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoScrollbar |
+                            ImGuiWindowFlags_NoScrollWithMouse;
+
+                        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+                        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+                        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+                        bool const DrawViewportWindow = ImGui::Begin(FullscreenName.c_str(), nullptr, FullscreenFlags);
+                        ImGui::PopStyleVar(3);
+
+                        if (DrawViewportWindow)
+                        {
+                            ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+
+                            IRenderScene* SceneRenderer = Tool->GetWorld()->GetRenderer();
+                            ImTextureRef ViewportTexture = ImGuiX::ToImTextureRef(SceneRenderer->GetRenderTarget());
+
+                            Tool->bViewportFocused = ImGui::IsWindowFocused();
+                            Tool->bViewportHovered = ImGui::IsWindowHovered();
+                            Tool->DrawViewport(UpdateContext, ViewportTexture);
+                        }
+
+                        ImGui::End();
+                    }
+                    else
+                    {
+                        ImGui::SetNextWindowClass(&Tool->ToolWindowsClass);
+                        ImGui::SetNextWindowSizeConstraints(ImVec2(128, 128), ImVec2(FLT_MAX, FLT_MAX));
+                        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+                        bool const DrawViewportWindow = ImGui::Begin(ToolWindowName.c_str(), nullptr, ViewportWindowFlags);
+                        ImGui::PopStyleVar();
+
+                        if (DrawViewportWindow)
+                        {
+                            IRenderScene* SceneRenderer = Tool->GetWorld()->GetRenderer();
+                            ImTextureRef ViewportTexture = ImGuiX::ToImTextureRef(SceneRenderer->GetRenderTarget());
+
+                            Tool->bViewportFocused = ImGui::IsWindowFocused();
+                            Tool->bViewportHovered = ImGui::IsWindowHovered();
+                            Tool->DrawViewport(UpdateContext, ViewportTexture);
+                        }
+
+                        ImGui::End();
+                    }
                 }
                 else
                 {

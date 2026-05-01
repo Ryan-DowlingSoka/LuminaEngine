@@ -318,6 +318,16 @@ namespace Lumina
         bool                                bViewportFocused = false;
         bool                                bViewportHovered = false;
 		bool							    bWorldGridEnabled = true;
+
+        // Fullscreen viewport toggle (F11). When set, the viewport tool window is
+        // drawn as a borderless fullscreen overlay over the main viewport instead
+        // of inside the tool's dockspace; the tool's other windows are suppressed.
+        bool                                bViewportFullscreen = false;
+
+    public:
+        NODISCARD bool IsViewportFullscreen() const { return bViewportFullscreen; }
+        void SetViewportFullscreen(bool bInFullscreen) { bViewportFullscreen = bInFullscreen; }
+        void ToggleViewportFullscreen() { bViewportFullscreen = !bViewportFullscreen; }
     };
     
 }

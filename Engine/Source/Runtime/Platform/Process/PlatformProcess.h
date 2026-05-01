@@ -26,6 +26,11 @@ namespace Lumina::Platform
     RUNTIME_API uint32 GetCurrentCoreNumber();
     RUNTIME_API FString GetCurrentProcessPath();
 
+    // Request the OS use its highest-resolution scheduler tick so std::this_thread::sleep_for
+    // honors sub-millisecond durations. Paired calls; Disable must follow Enable.
+    RUNTIME_API void EnableHighResolutionTiming();
+    RUNTIME_API void DisableHighResolutionTiming();
+
 	RUNTIME_API int LaunchProcess(const TCHAR* URL, const TCHAR* Params = nullptr, bool bLaunchDetached = true);
     RUNTIME_API void LaunchURL(const TCHAR* URL);
 

@@ -12,8 +12,11 @@
 #include "Core/Delegates/CoreDelegates.h"
 #include "Core/Object/Cast.h"
 #include "Core/Object/Class.h"
+#include "Core/Object/ObjectCore.h"
 #include "Core/Object/ObjectIterator.h"
 #include "Core/Object/Package/Package.h"
+#include "FileSystem/FileSystem.h"
+#include "Paths/Paths.h"
 #include "Core/Serialization/JsonArchiver.h"
 #include "Core/Serialization/ObjectArchiver.h"
 #include "EASTL/sort.h"
@@ -23,6 +26,7 @@
 #include "Input/InputProcessor.h"
 #include "Input/InputViewport.h"
 #include "Memory/SmartPtr.h"
+#include "Core/Math/Math.h"
 #include "Thumbnails/ThumbnailManager.h"
 #include "Tools/ComponentVisualizers/ComponentVisualizer.h"
 #include "Tools/Dialogs/Dialogs.h"
@@ -93,6 +97,84 @@ namespace Lumina
         return Entity;
     }
     static constexpr const char* DragDropID = "EntityDropID";
+
+    // CPU marquee-pick + drop-to-floor helpers. The editor world has no physics scene,
+    // so we project mesh AABBs in software for both. Cheap (a few mat-vec per entity).
+
+    // Project a world-space AABB to a screen-space rect (y-down, viewport pixels).
+    // Returns false when the entire box is behind the near plane.
+    static bool ProjectAABBToScreenRect(const FAABB& WorldAABB, const glm::mat4& ViewProj,
+                                        const ImVec2& ViewportSize,
+                                        ImVec2& OutMin, ImVec2& OutMax)
+    {
+        const glm::vec3 Corners[8] = {
+            { WorldAABB.Min.x, WorldAABB.Min.y, WorldAABB.Min.z },
+            { WorldAABB.Max.x, WorldAABB.Min.y, WorldAABB.Min.z },
+            { WorldAABB.Min.x, WorldAABB.Max.y, WorldAABB.Min.z },
+            { WorldAABB.Max.x, WorldAABB.Max.y, WorldAABB.Min.z },
+            { WorldAABB.Min.x, WorldAABB.Min.y, WorldAABB.Max.z },
+            { WorldAABB.Max.x, WorldAABB.Min.y, WorldAABB.Max.z },
+            { WorldAABB.Min.x, WorldAABB.Max.y, WorldAABB.Max.z },
+            { WorldAABB.Max.x, WorldAABB.Max.y, WorldAABB.Max.z },
+        };
+
+        OutMin = ImVec2( FLT_MAX,  FLT_MAX);
+        OutMax = ImVec2(-FLT_MAX, -FLT_MAX);
+        bool bAnyInFront = false;
+
+        for (const glm::vec3& Corner : Corners)
+        {
+            glm::vec4 Clip = ViewProj * glm::vec4(Corner, 1.0f);
+            if (Clip.w <= 1e-4f)
+            {
+                continue;
+            }
+            const float NdcX = Clip.x / Clip.w;
+            const float NdcY = Clip.y / Clip.w;
+            // ViewProj's projection has its [1][1] flipped to GL-Y-up convention by the caller,
+            // so NDC +Y is up — convert to y-down pixel coords for marquee math.
+            const float Px = (NdcX * 0.5f + 0.5f) * ViewportSize.x;
+            const float Py = (1.0f - (NdcY * 0.5f + 0.5f)) * ViewportSize.y;
+            OutMin.x = glm::min(OutMin.x, Px);
+            OutMin.y = glm::min(OutMin.y, Py);
+            OutMax.x = glm::max(OutMax.x, Px);
+            OutMax.y = glm::max(OutMax.y, Py);
+            bAnyInFront = true;
+        }
+
+        return bAnyInFront;
+    }
+
+    // Slab-method ray vs AABB. Direction may be unnormalized; OutT is along Dir.
+    // Returns true and writes the entry t (>= 0) when the ray hits in front of the origin.
+    static bool RayVsAABB(const glm::vec3& Origin, const glm::vec3& Dir,
+                          const FAABB& Box, float& OutT)
+    {
+        float TMin = 0.0f;
+        float TMax = FLT_MAX;
+        for (int Axis = 0; Axis < 3; ++Axis)
+        {
+            if (glm::abs(Dir[Axis]) < 1e-6f)
+            {
+                if (Origin[Axis] < Box.Min[Axis] || Origin[Axis] > Box.Max[Axis])
+                {
+                    return false;
+                }
+                continue;
+            }
+            float T1 = (Box.Min[Axis] - Origin[Axis]) / Dir[Axis];
+            float T2 = (Box.Max[Axis] - Origin[Axis]) / Dir[Axis];
+            if (T1 > T2) { eastl::swap(T1, T2); }
+            TMin = glm::max(TMin, T1);
+            TMax = glm::min(TMax, T2);
+            if (TMin > TMax)
+            {
+                return false;
+            }
+        }
+        OutT = TMin;
+        return true;
+    }
 
 
     FWorldEditorTool::FWorldEditorTool(IEditorToolContext* Context, CWorld* InWorld)
@@ -558,7 +640,8 @@ namespace Lumina
             FocusViewportToEntity(GetLastSelectedEntity());
         }
 
-        if (bViewportHovered && ImGui::IsKeyPressed(ImGuiKey_G, false) && !ImGui::GetIO().WantTextInput)
+        if (bViewportHovered && ImGui::IsKeyPressed(ImGuiKey_G, false) && !ImGui::GetIO().WantTextInput
+            && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyAlt)
         {
             FSceneRenderSettings* Settings = nullptr;
             if (IRenderScene* RenderScene = World ? World->GetRenderer() : nullptr)
@@ -600,6 +683,64 @@ namespace Lumina
             }
         }
 
+
+        if (bViewportHovered && !ImGui::GetIO().WantTextInput)
+        {
+            const ImGuiIO& IO = ImGui::GetIO();
+            const bool bPlain = !IO.KeyCtrl && !IO.KeyShift && !IO.KeyAlt;
+
+            if (bPlain)
+            {
+                if      (ImGui::IsKeyPressed(ImGuiKey_W, false)) GuizmoOp = ImGuizmo::TRANSLATE;
+                else if (ImGui::IsKeyPressed(ImGuiKey_E, false)) GuizmoOp = ImGuizmo::ROTATE;
+                else if (ImGui::IsKeyPressed(ImGuiKey_R, false)) GuizmoOp = ImGuizmo::SCALE;
+            }
+
+            for (int32 Slot = 0; Slot < NumCameraBookmarks; ++Slot)
+            {
+                const ImGuiKey TopKey = (ImGuiKey)((int)ImGuiKey_1 + Slot);
+                const ImGuiKey PadKey = (ImGuiKey)((int)ImGuiKey_Keypad1 + Slot);
+                const bool bPressed = ImGui::IsKeyPressed(TopKey, false) || ImGui::IsKeyPressed(PadKey, false);
+                if (!bPressed)
+                {
+                    continue;
+                }
+
+                if (IO.KeyCtrl && !IO.KeyShift && !IO.KeyAlt)
+                {
+                    SaveCameraBookmark(Slot);
+                }
+                else if (bPlain)
+                {
+                    RecallCameraBookmark(Slot);
+                }
+            }
+
+            if (IO.KeyCtrl && !IO.KeyShift && !IO.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_G, false))
+            {
+                GroupSelectedEntities();
+            }
+
+            if (IO.KeyCtrl && IO.KeyShift && !IO.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_C, false))
+            {
+                CopyTransformFromLastSelected();
+            }
+
+            if (IO.KeyCtrl && IO.KeyShift && !IO.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_V, false))
+            {
+                PasteTransformToSelection();
+            }
+
+            if (bPlain && ImGui::IsKeyPressed(ImGuiKey_Home, false))
+            {
+                FrameAllEntities();
+            }
+
+            if (bPlain && ImGui::IsKeyPressed(ImGuiKey_End, false))
+            {
+                DropSelectionToFloor();
+            }
+        }
 
         if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_Z, false))
         {
@@ -946,8 +1087,10 @@ namespace Lumina
     
                 ImVec2 RightDragDelta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right);
                 float RightDragDistance = sqrtf(RightDragDelta.x * RightDragDelta.x + RightDragDelta.y * RightDragDelta.y);
-                bool bRightDragging = RightDragDistance < 15.0f;
-                
+                // True when the right release was a tap (no meaningful drag) — i.e. a context-menu click,
+                // not a camera-look gesture. Naming this for what it means, not what it tests.
+                bool bRightWasShortClick = RightDragDistance < 15.0f;
+
                 if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                 {
                     SelectionBox.bActive = true;
@@ -957,15 +1100,20 @@ namespace Lumina
 
                 if (ImGui::IsMouseReleased(ImGuiMouseButton_Right))
                 {
-                    if (bRightDragging)
+                    if (bRightWasShortClick)
                     {
                         entt::entity EntityHandle = World->GetRenderer()->GetEntityAtPixel(TexX, TexY);
                         EntityHandle = ResolvePrefabRootForViewportPick(World->GetEntityRegistry(), EntityHandle);
 
-                        SetSingleSelectedEntity(EntityHandle);
-
+                        // Only mutate selection when the click landed on an entity. Empty-space
+                        // right-clicks used to deselect everything — annoying, and prevented the
+                        // selection-aware menu from opening on the previously selected target.
                         if (EntityHandle != entt::null)
                         {
+                            if (!IsEntitySelected(EntityHandle))
+                            {
+                                SetSingleSelectedEntity(EntityHandle);
+                            }
                             ImGui::OpenPopup("EntityContextMenu");
                         }
                     }
@@ -976,19 +1124,15 @@ namespace Lumina
                     SelectionBox.Current = MousePosInViewport;
                 }
                 
-#if 0
-                if (SelectionBox.bActive)
+                if (SelectionBox.bActive && bLeftDragging)
                 {
                     ImDrawList* DrawList = ImGui::GetWindowDrawList();
-                    ImVec2 ViewportPos = ImGui::GetCursorScreenPos();
-                
-                    ImVec2 ScreenStart = ImVec2(ViewportPos.x + SelectionBox.Start.x, ViewportPos.y + SelectionBox.Start.y);
-                    ImVec2 ScreenEnd = ImVec2(ViewportPos.x + SelectionBox.Current.x, ViewportPos.y + SelectionBox.Current.y);
-
+                    const ImVec2 Origin = ViewportOrigin;
+                    const ImVec2 ScreenStart = ImVec2(Origin.x + SelectionBox.Start.x,   Origin.y + SelectionBox.Start.y);
+                    const ImVec2 ScreenEnd   = ImVec2(Origin.x + SelectionBox.Current.x, Origin.y + SelectionBox.Current.y);
                     DrawList->AddRectFilled(ScreenStart, ScreenEnd, IM_COL32(100, 150, 255, 50));
                     DrawList->AddRect(ScreenStart, ScreenEnd, IM_COL32(100, 150, 255, 255), 0.0f, 0, 2.0f);
                 }
-#endif
                 if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && SelectionBox.bActive)
                 {
                     ImVec2 Start = SelectionBox.Start;
@@ -1015,18 +1159,70 @@ namespace Lumina
                     }
                     else
                     {
-#if 0
-                        uint32 MinTexX = static_cast<uint32>(glm::min(Start.x, End.x) * ScaleX);
-                        uint32 MinTexY = static_cast<uint32>(glm::min(Start.y, End.y) * ScaleY);
-                        uint32 MaxTexX = static_cast<uint32>(glm::max(Start.x, End.x) * ScaleX);
-                        uint32 MaxTexY = static_cast<uint32>(glm::max(Start.y, End.y) * ScaleY);
-                    
-                        for (entt::entity Entity : World->GetRenderer()->GetEntitiesInPixelRange(MinTexX, MinTexY, MaxTexX, MaxTexY))
+                        const ImVec2 RectMin(glm::min(Start.x, End.x), glm::min(Start.y, End.y));
+                        const ImVec2 RectMax(glm::max(Start.x, End.x), glm::max(Start.y, End.y));
+                        const glm::mat4 ViewProj = ProjectionMatrix * ViewMatrix;
+
+                        entt::registry& Registry = World->GetEntityRegistry();
+
+                        THashSet<entt::entity> Hits;
+                        Registry.view<STransformComponent>().each([&](entt::entity Entity, STransformComponent& Transform)
                         {
-                            AddSelectedEntity(Entity, true);
+                            if (Entity == EditorEntity)
+                            {
+                                return;
+                            }
+
+                            ImVec2 ProjMin, ProjMax;
+
+                            if (const SStaticMeshComponent* Mesh = Registry.try_get<SStaticMeshComponent>(Entity))
+                            {
+                                FAABB WorldAABB = Mesh->GetAABB().ToWorld(Transform.GetWorldMatrix());
+                                if (!ProjectAABBToScreenRect(WorldAABB, ViewProj, ViewportSize, ProjMin, ProjMax))
+                                {
+                                    return;
+                                }
+                            }
+                            else
+                            {
+                                const glm::vec3 P = Transform.GetWorldLocation();
+                                glm::vec4 Clip = ViewProj * glm::vec4(P, 1.0f);
+                                if (Clip.w <= 1e-4f)
+                                {
+                                    return;
+                                }
+                                const float Px = (Clip.x / Clip.w * 0.5f + 0.5f) * ViewportSize.x;
+                                const float Py = (1.0f - (Clip.y / Clip.w * 0.5f + 0.5f)) * ViewportSize.y;
+                                ProjMin = ImVec2(Px - 4.0f, Py - 4.0f);
+                                ProjMax = ImVec2(Px + 4.0f, Py + 4.0f);
+                            }
+
+                            const bool bOverlap = ProjMax.x >= RectMin.x && ProjMin.x <= RectMax.x
+                                               && ProjMax.y >= RectMin.y && ProjMin.y <= RectMax.y;
+                            if (bOverlap)
+                            {
+                                Hits.insert(ResolvePrefabRootForViewportPick(Registry, Entity));
+                            }
+                        });
+
+                        const bool bShift = ImGui::GetIO().KeyShift;
+                        const bool bCtrl  = ImGui::GetIO().KeyCtrl;
+                        if (!bShift && !bCtrl)
+                        {
+                            ClearSelectedEntities();
                         }
-						ImGuiX::Notifications::NotifyInfo("{}", "This functionality is temporarily disabled as the current implementation is too slow. We are working on a more efficient solution that should be available in a future update.");
-#endif
+
+                        for (entt::entity Hit : Hits)
+                        {
+                            if (bCtrl)
+                            {
+                                ToggleSelectedEntity(Hit);
+                            }
+                            else
+                            {
+                                AddSelectedEntity(Hit, false);
+                            }
+                        }
                     } 
     
                     SelectionBox.bActive = false;
@@ -1191,9 +1387,11 @@ namespace Lumina
                 
                 ImGui::PopStyleVar(3);
             }
-            
+
             ImGui::EndPopup();
         }
+
+        DrawCursorWorldPositionOverlay(ViewportOrigin, ViewportSize, CameraComponent);
     }
 
     void FWorldEditorTool::DrawViewportToolbar(const FUpdateContext& UpdateContext)
@@ -1224,10 +1422,7 @@ namespace Lumina
         {
             ImGui::BeginGroup();
             
-            if (IsAssetEditorTool() || bSimulatingWorld || bGamePreviewRunning)
-            {
-                DrawSimulationControls(ButtonSize);
-            }
+            DrawSimulationControls(ButtonSize);
             
             if (!bGamePreviewRunning)
             {
@@ -1601,17 +1796,17 @@ namespace Lumina
 
     void FWorldEditorTool::OnSave()
     {
-		if (!IsAssetEditorTool())
+		if (!World->GetPackage())
         {
-            ImGuiX::Notifications::NotifyWarning("Cannot save world: No associated package.");
+            PushSaveAsAssetModal();
             return;
         }
-        
+
         if (ShouldGenerateThumbnailOnSave() && World->GetPackage())
         {
             GenerateThumbnail(World->GetPackage());
         }
-        
+
         if (CPackage::SavePackage(World->GetPackage(), World->GetPackage()->GetPackagePath()))
         {
             FAssetRegistry::Get().AssetSaved(World);
@@ -1623,9 +1818,132 @@ namespace Lumina
         }
     }
 
+    void FWorldEditorTool::PushSaveAsAssetModal()
+    {
+        ToolContext->PushModal("Save World As Asset", ImVec2(550.0f, 240.0f), [this]() -> bool
+        {
+            static FFixedString NameBuffer;
+            static FFixedString DirBuffer;
+            static FFixedString ErrorMessage;
+
+            if (ImGui::IsWindowAppearing())
+            {
+                NameBuffer = "NewWorld";
+                DirBuffer = "/Game";
+                ErrorMessage.clear();
+            }
+
+            ImGui::TextUnformatted("This world is not saved as an asset yet.");
+            ImGui::TextUnformatted("Pick a name and content folder to save it.");
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            ImGui::TextUnformatted("Folder");
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::InputText("##Folder", DirBuffer.data(), DirBuffer.max_size());
+
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Name");
+            ImGui::SetNextItemWidth(-1.0f);
+            const bool bEnter = ImGui::InputText("##Name", NameBuffer.data(), NameBuffer.max_size(), ImGuiInputTextFlags_EnterReturnsTrue);
+
+            if (!ErrorMessage.empty())
+            {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", ErrorMessage.c_str());
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            constexpr float ButtonWidth = 110.0f;
+            const float AvailWidth = ImGui::GetContentRegionAvail().x;
+            ImGui::SetCursorPosX((AvailWidth - ButtonWidth * 2 - ImGui::GetStyle().ItemSpacing.x) * 0.5f);
+
+            const bool bConfirm = ImGui::Button("Save", ImVec2(ButtonWidth, 0.0f)) || bEnter;
+            ImGui::SameLine();
+            const bool bCancel = ImGui::Button("Cancel", ImVec2(ButtonWidth, 0.0f));
+
+            if (bCancel)
+            {
+                return true;
+            }
+
+            if (!bConfirm)
+            {
+                return false;
+            }
+
+            if (NameBuffer.data()[0] == '\0')
+            {
+                ErrorMessage = "Name cannot be empty.";
+                return false;
+            }
+
+            if (DirBuffer.data()[0] == '\0')
+            {
+                ErrorMessage = "Folder cannot be empty.";
+                return false;
+            }
+
+            FFixedString Path = Paths::Combine(FStringView(DirBuffer.c_str()), FStringView(NameBuffer.c_str()));
+            Path = VFS::ResolveToVirtualPath(Path);
+            if (Path.empty() || Path.front() != '/')
+            {
+                ErrorMessage = "Folder must resolve to a virtual path under a mounted alias (e.g. /Game).";
+                return false;
+            }
+            CPackage::AddPackageExt(Path);
+            Path = VFS::MakeUniqueFilePath(Path);
+
+            FFixedString SafePath = SanitizeObjectName(Path);
+            if (FindObject<CPackage>(SafePath) != nullptr)
+            {
+                ErrorMessage = "A package with that name is already loaded.";
+                return false;
+            }
+
+            CPackage* NewPackage = CPackage::CreatePackage(SafePath);
+            if (NewPackage == nullptr)
+            {
+                ErrorMessage = "Failed to create package.";
+                return false;
+            }
+
+            FStringView FileName = VFS::FileName(Path, true);
+            World->Rename(FName(FileName), NewPackage);
+            World->SetFlag(OF_Public);
+
+            FObjectExport& Export = NewPackage->ExportTable.emplace_back();
+            Export.ObjectGUID = World->GetGUID();
+            Export.ObjectName = World->GetName();
+            Export.ClassName = World->GetClass()->GetName();
+            Export.Offset = 0;
+            Export.Size = 0;
+            Export.Object = World.Get();
+
+            if (ShouldGenerateThumbnailOnSave())
+            {
+                GenerateThumbnail(NewPackage);
+            }
+
+            if (CPackage::SavePackage(NewPackage, Path))
+            {
+                FAssetRegistry::Get().AssetCreated(World);
+                ImGuiX::Notifications::NotifySuccess("Saved world: \"{0}\"", Path);
+                return true;
+            }
+
+            ErrorMessage = "Failed to save package to disk.";
+            return false;
+        });
+    }
+
     bool FWorldEditorTool::IsAssetEditorTool() const
     {
-        return World->GetPackage() != nullptr;
+        return true;
     }
 
     void FWorldEditorTool::NotifyPlayInEditorStart()
@@ -4385,5 +4703,392 @@ namespace Lumina
             }
             break;
         }
+    }
+
+    void FWorldEditorTool::GroupSelectedEntities()
+    {
+        if (World == nullptr || World->IsSimulating())
+        {
+            return;
+        }
+
+        TFixedVector<entt::entity, 64> Targets;
+        Targets.reserve(SelectedEntities.size());
+        entt::registry& Registry = World->GetEntityRegistry();
+        for (entt::entity Entity : SelectedEntities)
+        {
+            if (!Registry.valid(Entity) || IsLockedPrefabChild(Registry, Entity))
+            {
+                continue;
+            }
+            Targets.push_back(Entity);
+        }
+
+        if (Targets.size() < 2)
+        {
+            return;
+        }
+
+        glm::vec3 Median(0.0f);
+        for (entt::entity Entity : Targets)
+        {
+            Median += Registry.get<STransformComponent>(Entity).GetWorldLocation();
+        }
+        Median /= static_cast<float>(Targets.size());
+
+        BeginTransaction();
+
+        FTransform GroupTransform;
+        GroupTransform.SetLocation(Median);
+        entt::entity Group = World->ConstructEntity("Group", GroupTransform);
+        if (Group == entt::null)
+        {
+            PendingBeforeState.clear();
+            return;
+        }
+
+        for (entt::entity Entity : Targets)
+        {
+            ECS::Utils::ReparentEntity(Registry, Entity, Group);
+            ReparentEntityInOutliner(Entity);
+        }
+
+        SetSingleSelectedEntity(Group);
+        EndTransaction("Group Selected");
+    }
+
+    void FWorldEditorTool::DropSelectionToFloor()
+    {
+        if (World == nullptr || World->IsSimulating())
+        {
+            return;
+        }
+
+        entt::registry& Registry = World->GetEntityRegistry();
+
+        TFixedVector<entt::entity, 64> Targets;
+        Targets.reserve(SelectedEntities.size());
+        for (entt::entity Entity : SelectedEntities)
+        {
+            if (Registry.valid(Entity) && !IsLockedPrefabChild(Registry, Entity))
+            {
+                Targets.push_back(Entity);
+            }
+        }
+
+        if (Targets.empty())
+        {
+            return;
+        }
+
+        // Build the exclusion set once (the dropped entities themselves and all their
+        // descendants). Without this, a parent group would land on its own child mesh.
+        THashSet<entt::entity> Exclude;
+        for (entt::entity Entity : Targets)
+        {
+            Exclude.insert(Entity);
+            ECS::Utils::ForEachDescendant(Registry, Entity, [&](entt::entity Desc)
+            {
+                Exclude.insert(Desc);
+            });
+        }
+
+        // Snapshot world-space mesh AABBs once so each per-entity raycast is a flat
+        // O(N) walk over a vector instead of touching the registry each iteration.
+        struct FCandidate { FAABB Box; };
+        TVector<FCandidate> Candidates;
+        Registry.view<STransformComponent, SStaticMeshComponent>().each(
+            [&](entt::entity Entity, STransformComponent& Transform, SStaticMeshComponent& Mesh)
+        {
+            if (Exclude.find(Entity) != Exclude.end())
+            {
+                return;
+            }
+            Candidates.push_back({ Mesh.GetAABB().ToWorld(Transform.GetWorldMatrix()) });
+        });
+
+        BeginTransaction();
+
+        bool bAnyMoved = false;
+        const glm::vec3 Down(0.0f, -1.0f, 0.0f);
+
+        for (entt::entity Entity : Targets)
+        {
+            STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
+            const glm::vec3 WorldLocation = Transform.GetWorldLocation();
+            const glm::vec3 Origin = WorldLocation + glm::vec3(0.0f, 0.5f, 0.0f);
+
+            float BestT = FLT_MAX;
+            for (const FCandidate& C : Candidates)
+            {
+                float T;
+                if (RayVsAABB(Origin, Down, C.Box, T) && T < BestT)
+                {
+                    BestT = T;
+                }
+            }
+
+            // Fallback: if nothing was hit, drop to the world Y=0 plane so the action
+            // always does something predictable.
+            float NewY;
+            if (BestT < FLT_MAX)
+            {
+                NewY = (Origin + Down * BestT).y;
+            }
+            else
+            {
+                NewY = 0.0f;
+            }
+
+            FTransform NewWorld = Transform.GetWorldTransform();
+            NewWorld.Location.y = NewY;
+
+            FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity);
+            if (Rel != nullptr && Rel->Parent != entt::null && Registry.valid(Rel->Parent))
+            {
+                glm::mat4 ParentWorld = Registry.get<STransformComponent>(Rel->Parent).GetWorldMatrix();
+                glm::mat4 NewLocalMat = glm::inverse(ParentWorld) * NewWorld.GetMatrix();
+
+                glm::vec3 LT, LS, LSkew; glm::quat LR; glm::vec4 LP;
+                glm::decompose(NewLocalMat, LS, LR, LT, LSkew, LP);
+
+                Transform.SetLocalLocation(LT);
+                Transform.SetLocalRotation(LR);
+                Transform.SetLocalScale(LS);
+            }
+            else
+            {
+                Transform.SetLocalLocation(NewWorld.Location);
+            }
+
+            bAnyMoved = true;
+        }
+
+        if (bAnyMoved)
+        {
+            EndTransaction("Drop to Floor");
+        }
+        else
+        {
+            PendingBeforeState.clear();
+        }
+    }
+
+    void FWorldEditorTool::FrameAllEntities()
+    {
+        if (World == nullptr)
+        {
+            return;
+        }
+
+        entt::registry& Registry = World->GetEntityRegistry();
+        if (!Registry.valid(EditorEntity))
+        {
+            return;
+        }
+
+        glm::vec3 Min(FLT_MAX);
+        glm::vec3 Max(-FLT_MAX);
+        bool bAny = false;
+
+        auto View = Registry.view<STransformComponent>();
+        for (entt::entity Entity : View)
+        {
+            if (Entity == EditorEntity)
+            {
+                continue;
+            }
+
+            const glm::vec3 Loc = Registry.get<STransformComponent>(Entity).GetWorldLocation();
+            Min = glm::min(Min, Loc);
+            Max = glm::max(Max, Loc);
+            bAny = true;
+        }
+
+        if (!bAny)
+        {
+            return;
+        }
+
+        const glm::vec3 Center = (Min + Max) * 0.5f;
+        const float Radius = glm::max(glm::length(Max - Min) * 0.5f, 1.0f);
+
+        const SCameraComponent& Camera = Registry.get<SCameraComponent>(EditorEntity);
+        const float HalfFov = glm::radians(Camera.GetFOV() * 0.5f);
+        const float Distance = (Radius / glm::tan(glm::max(HalfFov, glm::radians(1.0f)))) * 1.5f;
+
+        STransformComponent& EditorTransform = Registry.get<STransformComponent>(EditorEntity);
+        const glm::vec3 Forward = EditorTransform.GetForward();
+        const glm::vec3 NewPos  = Center - Forward * Distance;
+        EditorTransform.SetLocation(NewPos);
+        EditorTransform.SetRotation(Math::FindLookAtRotation(Center, NewPos));
+    }
+
+    void FWorldEditorTool::CopyTransformFromLastSelected()
+    {
+        if (World == nullptr)
+        {
+            return;
+        }
+
+        const entt::entity Entity = GetLastSelectedEntity();
+        entt::registry& Registry = World->GetEntityRegistry();
+        if (!Registry.valid(Entity))
+        {
+            return;
+        }
+
+        CopiedTransform = Registry.get<STransformComponent>(Entity).GetWorldTransform();
+        bHasCopiedTransform = true;
+    }
+
+    void FWorldEditorTool::PasteTransformToSelection()
+    {
+        if (World == nullptr || World->IsSimulating() || !bHasCopiedTransform)
+        {
+            return;
+        }
+
+        entt::registry& Registry = World->GetEntityRegistry();
+
+        TFixedVector<entt::entity, 64> Targets;
+        Targets.reserve(SelectedEntities.size());
+        for (entt::entity Entity : SelectedEntities)
+        {
+            if (Registry.valid(Entity) && !IsLockedPrefabChild(Registry, Entity))
+            {
+                Targets.push_back(Entity);
+            }
+        }
+
+        if (Targets.empty())
+        {
+            return;
+        }
+
+        BeginTransaction();
+
+        for (entt::entity Entity : Targets)
+        {
+            STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
+
+            FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity);
+            if (Rel != nullptr && Rel->Parent != entt::null && Registry.valid(Rel->Parent))
+            {
+                glm::mat4 ParentWorld = Registry.get<STransformComponent>(Rel->Parent).GetWorldMatrix();
+                glm::mat4 NewLocalMat = glm::inverse(ParentWorld) * CopiedTransform.GetMatrix();
+
+                glm::vec3 LT, LS, LSkew; glm::quat LR; glm::vec4 LP;
+                glm::decompose(NewLocalMat, LS, LR, LT, LSkew, LP);
+
+                Transform.SetLocalLocation(LT);
+                Transform.SetLocalRotation(LR);
+                Transform.SetLocalScale(LS);
+            }
+            else
+            {
+                Transform.SetLocalTransform(CopiedTransform);
+            }
+        }
+
+        EndTransaction("Paste Transform");
+    }
+
+    void FWorldEditorTool::SaveCameraBookmark(int32 Slot)
+    {
+        if (Slot < 0 || Slot >= NumCameraBookmarks || World == nullptr)
+        {
+            return;
+        }
+
+        entt::registry& Registry = World->GetEntityRegistry();
+        if (!Registry.valid(EditorEntity))
+        {
+            return;
+        }
+
+        CameraBookmarks[Slot] = Registry.get<STransformComponent>(EditorEntity).GetWorldTransform();
+        bCameraBookmarkSet[Slot] = true;
+    }
+
+    void FWorldEditorTool::RecallCameraBookmark(int32 Slot)
+    {
+        if (Slot < 0 || Slot >= NumCameraBookmarks || !bCameraBookmarkSet[Slot] || World == nullptr)
+        {
+            return;
+        }
+
+        entt::registry& Registry = World->GetEntityRegistry();
+        if (!Registry.valid(EditorEntity))
+        {
+            return;
+        }
+
+        // Bookmarks always restore to free-cam: orbit derives from the saved pose on the
+        // next user input, so the camera lands exactly where the user saved it either way.
+        if (CameraState.Mode != EEditorCameraMode::Free)
+        {
+            SetCameraMode(EEditorCameraMode::Free);
+        }
+
+        STransformComponent& Transform = Registry.get<STransformComponent>(EditorEntity);
+        Transform.SetLocalLocation(CameraBookmarks[Slot].Location);
+        Transform.SetLocalRotation(CameraBookmarks[Slot].Rotation);
+        Transform.SetLocalScale(CameraBookmarks[Slot].Scale);
+    }
+
+    void FWorldEditorTool::DrawCursorWorldPositionOverlay(ImVec2 ViewportOrigin, ImVec2 ViewportSize, const SCameraComponent& Camera)
+    {
+        if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows))
+        {
+            return;
+        }
+
+        const ImVec2 MousePos = ImGui::GetMousePos();
+        const float LocalX = MousePos.x - ViewportOrigin.x;
+        const float LocalY = MousePos.y - ViewportOrigin.y;
+        if (LocalX < 0.0f || LocalY < 0.0f || LocalX >= ViewportSize.x || LocalY >= ViewportSize.y)
+        {
+            return;
+        }
+
+        // Unproject through the camera's view-projection. Camera projection bakes Vulkan
+        // +Y-down NDC; flip Y to get a GL-style ray for math.
+        glm::mat4 Proj = Camera.GetProjectionMatrix();
+        Proj[1][1] *= -1.0f;
+        const glm::mat4 InvVP = glm::inverse(Proj * Camera.GetViewMatrix());
+
+        const float NdcX = (LocalX / ViewportSize.x) * 2.0f - 1.0f;
+        const float NdcY = 1.0f - (LocalY / ViewportSize.y) * 2.0f;
+        glm::vec4 Far = InvVP * glm::vec4(NdcX, NdcY, 1.0f, 1.0f);
+        if (glm::abs(Far.w) < 1e-6f)
+        {
+            return;
+        }
+        const glm::vec3 FarWorld = glm::vec3(Far) / Far.w;
+        const glm::vec3 Origin   = Camera.GetPosition();
+        const glm::vec3 Dir      = glm::normalize(FarWorld - Origin);
+
+        // Intersect with Y = 0 ground plane. Skip if ray is nearly parallel or pointing up
+        // when origin is above the plane (no useful readout in either case).
+        if (glm::abs(Dir.y) < 1e-4f)
+        {
+            return;
+        }
+        const float T = -Origin.y / Dir.y;
+        if (T <= 0.0f)
+        {
+            return;
+        }
+        const glm::vec3 Hit = Origin + Dir * T;
+
+        ImDrawList* DrawList = ImGui::GetWindowDrawList();
+        const ImVec2 TextPos(ViewportOrigin.x + 12.0f, ViewportOrigin.y + ViewportSize.y - 24.0f);
+        char Buf[128];
+        snprintf(Buf, sizeof(Buf), "Cursor: %.2f, %.2f, %.2f", Hit.x, Hit.y, Hit.z);
+        DrawList->AddRectFilled(ImVec2(TextPos.x - 6.0f, TextPos.y - 4.0f),
+                                ImVec2(TextPos.x + 220.0f, TextPos.y + 18.0f),
+                                IM_COL32(0, 0, 0, 140), 4.0f);
+        DrawList->AddText(TextPos, IM_COL32(220, 220, 220, 230), Buf);
     }
 }

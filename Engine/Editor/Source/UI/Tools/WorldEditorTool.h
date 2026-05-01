@@ -68,6 +68,7 @@ namespace Lumina
         void PushAddTagModal(entt::entity Entity);
         void PushAddComponentModal(entt::entity Entity);
         void PushRenameEntityModal(entt::entity Entity);
+        void PushSaveAsAssetModal();
 
 		void OnSave() override;
 
@@ -86,6 +87,17 @@ namespace Lumina
         void DrawCameraControls(float ButtonSize);
         void DrawViewportOptions(float ButtonSize);
         void DrawSnapSettingsPopup();
+
+        // QoL viewport actions, all bound from the Update() key handler. Each begins/ends
+        // a transaction internally where appropriate so they compose with undo/redo.
+        void GroupSelectedEntities();
+        void DropSelectionToFloor();
+        void FrameAllEntities();
+        void CopyTransformFromLastSelected();
+        void PasteTransformToSelection();
+        void SaveCameraBookmark(int32 Slot);
+        void RecallCameraBookmark(int32 Slot);
+        void DrawCursorWorldPositionOverlay(ImVec2 ViewportOrigin, ImVec2 ViewportSize, const SCameraComponent& Camera);
         
         bool HasSimulatingWorld() const { return bSimulatingWorld || bGamePreviewRunning; }
         
@@ -261,7 +273,18 @@ namespace Lumina
         bool                                    bDetailsDirty = false;
 
         FTerrainEditMode                        TerrainEditMode;
-        
+
+        // Viewport-local transform clipboard (Ctrl+Shift+C / Ctrl+Shift+V). Captured from
+        // the last-selected entity's world transform; pasted onto every selected entity.
+        FTransform                              CopiedTransform;
+        bool                                    bHasCopiedTransform = false;
+
+        // Camera bookmark slots. Index 0..8 maps to keys 1..9; Ctrl+N saves the current
+        // EditorEntity transform into slot N, plain N recalls it. Session-only for now.
+        static constexpr int32                  NumCameraBookmarks = 9;
+        FTransform                              CameraBookmarks[NumCameraBookmarks];
+        bool                                    bCameraBookmarkSet[NumCameraBookmarks] = {};
+
 
         float                                   GuizmoSnapTranslate = 0.1f;
 		float                                   GuizmoSnapRotate = 5.0f;

@@ -314,6 +314,11 @@ namespace Lumina
 
     bool FEditorTool::DrawViewport(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture)
     {
+        if ((bViewportFocused || bViewportHovered) && ImGui::IsKeyPressed(ImGuiKey_F11, false))
+        {
+            ToggleViewportFullscreen();
+        }
+
         const ImVec2 ContentRegion = ImGui::GetContentRegionAvail();
         const ImVec2 ViewportSize(eastl::max(ContentRegion.x, 64.0f), eastl::max(ContentRegion.y, 64.0f));
         const ImVec2 WindowPosition = ImGui::GetCursorScreenPos();

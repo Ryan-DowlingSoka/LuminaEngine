@@ -56,6 +56,8 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
+        Platform::EnableHighResolutionTiming();
+
         VFS::Mount<VFS::FNativeFileSystem>("/Engine", Paths::GetEngineDirectory());
         
         FCoreDelegates::OnPreEngineInit.BroadcastAndClear();
@@ -130,7 +132,9 @@ namespace Lumina
         Audio::Shutdown();
         
         FModuleManager::Get().UnloadAllModules();
-        
+
+        Platform::DisableHighResolutionTiming();
+
         return false;
     }
 
@@ -295,18 +299,22 @@ namespace Lumina
         if (MaxFrameRate > 0)
         {
             LUMINA_PROFILE_SECTION_COLORED("Frame-Rate-Limiter", tracy::Color::Gray);
-            const double TargetFrameTime    = 1.0 / static_cast<double>(MaxFrameRate);
-            const double CurrentTime        = UpdateContext.GetTime();
-            const double FrameTime          = CurrentTime - UpdateContext.GetFrameStartTime();
-            const double TimeToWait         = TargetFrameTime - FrameTime;
-        
-            if (TimeToWait > 0.0)
+            const double TargetFrameTime = 1.0 / static_cast<double>(MaxFrameRate);
+            const double FrameStartTime  = UpdateContext.GetFrameStartTime();
+            const double TargetEndTime   = FrameStartTime + TargetFrameTime;
+
+            // Sleep for the bulk; leave a small margin for the OS scheduler to overshoot,
+            // then spin the remainder for tight precision.
+            constexpr double SpinMargin = 0.001;
+            double Remaining = TargetEndTime - glfwGetTime();
+            if (Remaining > SpinMargin)
             {
-                constexpr double SleepThreshold = 0.001;
-                if (TimeToWait > SleepThreshold)
-                {
-                    std::this_thread::sleep_for(std::chrono::duration<double>(TimeToWait - SleepThreshold));
-                }
+                std::this_thread::sleep_for(std::chrono::duration<double>(Remaining - SpinMargin));
+            }
+
+            while (glfwGetTime() < TargetEndTime)
+            {
+                std::this_thread::yield();
             }
         }
         

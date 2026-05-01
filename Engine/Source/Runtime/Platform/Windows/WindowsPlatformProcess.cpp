@@ -17,8 +17,11 @@
 #include <psapi.h>
 #include <Shlwapi.h>
 
+#include <timeapi.h>
+
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "PathCch.lib")
+#pragma comment(lib, "Winmm.lib")
 
 namespace Lumina::Platform
 {
@@ -82,6 +85,16 @@ namespace Lumina::Platform
     uint32 GetCurrentCoreNumber()
     {
         return 0;
+    }
+
+    void EnableHighResolutionTiming()
+    {
+        timeBeginPeriod(1);
+    }
+
+    void DisableHighResolutionTiming()
+    {
+        timeEndPeriod(1);
     }
 
     FString GetCurrentProcessPath()

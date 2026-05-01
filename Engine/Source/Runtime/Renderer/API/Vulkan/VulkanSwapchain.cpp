@@ -13,7 +13,6 @@
 #include "Core/Profiler/Profile.h"
 #include "Core/Windows/Window.h"
 #include "Renderer/RenderTypes.h"
-#include "Renderer/RHIGlobals.h"
 #include "Core/Engine/Engine.h"
 #include "Renderer/RenderManager.h"
 
