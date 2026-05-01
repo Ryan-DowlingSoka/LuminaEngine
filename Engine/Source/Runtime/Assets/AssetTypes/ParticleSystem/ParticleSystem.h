@@ -56,6 +56,97 @@ namespace Lumina
         Custom,
     };
 
+    /** Primitive type stored by a user parameter. Determines which storage field carries the value. */
+    REFLECT()
+    enum class RUNTIME_API EParticleParameterType : uint8
+    {
+        Float,
+        Int,
+        Bool,
+        Vec2,
+        Vec3,
+        Vec4,
+        Color,
+    };
+
+    /**
+     * A named, typed value declared on a particle system asset and modifiable at game-time
+     * from C++ and Lua. Asset entries hold the default; component overrides reuse the same
+     * shape and only carry the changed value.
+     */
+    REFLECT()
+    struct RUNTIME_API FParticleParameter
+    {
+        GENERATED_BODY()
+
+        /** User-facing name. Looked up by FName from scripts and C++. */
+        PROPERTY()
+        FName Name;
+
+        /** Value type. Selects which storage field is read or written. */
+        PROPERTY()
+        EParticleParameterType Type = EParticleParameterType::Float;
+
+        /** Storage for Float values. */
+        float       Scalar  = 0.0f;
+
+        /** Storage for Int values. */
+        int32       Integer = 0;
+
+        /** Storage for Bool values. */
+        bool        Boolean = false;
+
+        /** Storage for Vec2/Vec3/Vec4/Color. Higher components are zero for narrower types. */
+        glm::vec4   Vector  = glm::vec4(0.0f);
+
+        /** Compact serialization: writes only the storage matching Type. */
+        bool Serialize(FArchive& Ar);
+
+        /** Full-field copy used by FStructOps::Copy (e.g. ResetToDefault). */
+        void CopyFrom(const FParticleParameter& Other)
+        {
+            Name    = Other.Name;
+            Type    = Other.Type;
+            Scalar  = Other.Scalar;
+            Integer = Other.Integer;
+            Boolean = Other.Boolean;
+            Vector  = Other.Vector;
+        }
+
+        /** Full-field equality used by FStructOps::Equals (e.g. DiffersFromDefault). */
+        bool operator==(const FParticleParameter& Other) const
+        {
+            return Name    == Other.Name
+                && Type    == Other.Type
+                && Scalar  == Other.Scalar
+                && Integer == Other.Integer
+                && Boolean == Other.Boolean
+                && Vector  == Other.Vector;
+        }
+    };
+
+    /**
+     * Routes one of the asset's built-in simulation properties through a named user parameter.
+     * When a binding exists, the renderer reads the parameter value (resolved from the
+     * component's overrides, falling back to the asset's parameter default) instead of the
+     * literal stored on the asset.
+     */
+    REFLECT()
+    struct RUNTIME_API FParticlePropertyBinding
+    {
+        GENERATED_BODY()
+
+        /** C++ field name of the simulation property being driven (e.g. "SpawnRate"). */
+        PROPERTY()
+        FName PropertyName;
+
+        /** Name of the user parameter that supplies the value. */
+        PROPERTY()
+        FName ParameterName;
+    };
+
+    struct SParticleSystemComponent;
+
     /**
      * A reusable GPU particle system asset. Supports a data-driven module pipeline out of the box and
      * an optional graph-compiled custom simulation shader for bespoke behavior.
@@ -95,6 +186,36 @@ namespace Lumina
         /** Compiled SPIR-V bytecode for a graph-generated simulation compute shader. */
         PROPERTY()
         TVector<uint32> ComputeShaderBinaries;
+
+        /**
+         * User parameters declared on this asset. Each entry is a name + type + default value,
+         * exposed to scripts and C++ via SParticleSystemComponent::GetFloat/SetFloat and friends.
+         * Per-emitter instance overrides are stored on the component.
+         */
+        PROPERTY(Editable, Category = "User Parameters")
+        TVector<FParticleParameter> UserParameters;
+
+        /**
+         * Bindings that route built-in simulation properties through user parameters. Each entry
+         * names a C++ property field (e.g. "SpawnRate") and the user parameter that drives it.
+         */
+        PROPERTY()
+        TVector<FParticlePropertyBinding> PropertyBindings;
+
+        /** Look up a parameter by name. Returns nullptr if no parameter with that name exists. */
+        const FParticleParameter* FindUserParameter(const FName& InName) const;
+
+        /** Returns the parameter name bound to PropertyName, or NAME_None if no binding exists. */
+        FName GetPropertyBinding(const FName& PropertyName) const;
+
+        /** Set or replace the binding for a property. Pass NAME_None as ParameterName to clear it. */
+        void SetPropertyBinding(const FName& PropertyName, const FName& ParameterName);
+
+        /** Drop the binding for the given property if one exists. */
+        void ClearPropertyBinding(const FName& PropertyName);
+
+        /** True if a non-None binding is recorded for the given property. */
+        bool HasPropertyBinding(const FName& PropertyName) const;
 
         //~ Begin Simulation
         /** Maximum number of particles that can be alive at once. This pre-allocates the GPU particle buffer. */
@@ -241,4 +362,56 @@ namespace Lumina
 
         FRHIComputeShaderRef ComputeShader;
     };
+
+    /**
+     * Per-frame, per-emitter snapshot of the simulation properties after binding resolution.
+     * The renderer builds one of these from (asset, component) before filling GPU buffers,
+     * so any property the asset has bound to a user parameter reads through to the parameter's
+     * effective value (component override, else asset default) instead of the asset literal.
+     */
+    struct RUNTIME_API FResolvedParticleParams
+    {
+        int32                   MaxParticles            = 1024;
+        float                   SpawnRate               = 0.0f;
+        int32                   BurstCount              = 0;
+        float                   Duration                = 0.0f;
+        bool                    bLooping                = true;
+
+        EParticleEmitterShape   Shape                   = EParticleEmitterShape::Point;
+        glm::vec3               ShapeSize               = glm::vec3(1.0f);
+        float                   ShapeAngle              = 30.0f;
+
+        EParticleVelocityMode   VelocityMode            = EParticleVelocityMode::Explicit;
+        glm::vec3               VelocityMin             = glm::vec3(0.0f);
+        glm::vec3               VelocityMax             = glm::vec3(0.0f);
+        glm::vec2               SpeedRange              = glm::vec2(1.0f, 3.0f);
+        glm::vec2               LifetimeRange           = glm::vec2(1.0f, 2.0f);
+
+        glm::vec3               Gravity                 = glm::vec3(0.0f, -9.8f, 0.0f);
+        float                   Drag                    = 0.0f;
+        float                   InheritEmitterVelocity  = 0.0f;
+
+        glm::vec4               StartColor              = glm::vec4(1.0f);
+        glm::vec4               EndColor                = glm::vec4(1.0f);
+        glm::vec2               StartSizeRange          = glm::vec2(0.2f, 0.3f);
+        glm::vec2               EndSizeRange            = glm::vec2(0.0f);
+        glm::vec2               RotationRange           = glm::vec2(0.0f);
+        glm::vec2               RotationSpeedRange      = glm::vec2(0.0f);
+
+        glm::vec3               NoiseStrength           = glm::vec3(0.0f);
+        float                   NoiseScale              = 1.0f;
+        float                   NoiseSpeed              = 1.0f;
+
+        EParticleBlendMode      BlendMode               = EParticleBlendMode::Additive;
+        bool                    bBillboardToCamera      = true;
+        bool                    bWriteDepth             = false;
+    };
+
+    /**
+     * Build a fully-resolved snapshot of a particle system asset's simulation properties for
+     * a given emitter component. Properties without a binding read the asset literal; bound
+     * properties read through the component's parameter overrides (or the asset's parameter
+     * default if no override exists).
+     */
+    RUNTIME_API FResolvedParticleParams ResolveParticleParams(const CParticleSystem& Asset, const SParticleSystemComponent& Component);
 }

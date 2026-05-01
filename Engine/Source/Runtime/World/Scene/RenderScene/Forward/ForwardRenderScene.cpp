@@ -3494,7 +3494,9 @@ namespace Lumina
                 return;
             }
 
-            const uint32 MaxParticles = (uint32)PS->MaxParticles;
+            const FResolvedParticleParams Resolved = ResolveParticleParams(*PS, Component);
+
+            const uint32 MaxParticles = (uint32)Resolved.MaxParticles;
             if (MaxParticles == 0)
             {
                 return;
@@ -3563,22 +3565,22 @@ namespace Lumina
             State.TotalTime += DeltaTime;
             State.SystemAge += ScaledDelta;
 
-            const bool bDurationExpired = (PS->Duration > 0.0f) && (State.SystemAge >= PS->Duration);
+            const bool bDurationExpired = (Resolved.Duration > 0.0f) && (State.SystemAge >= Resolved.Duration);
             if (bDurationExpired)
             {
-                if (PS->bLooping)
+                if (Resolved.bLooping)
                 {
-                    State.SystemAge = fmodf(State.SystemAge, PS->Duration);
+                    State.SystemAge = fmodf(State.SystemAge, Resolved.Duration);
                     State.bBurstPending = true;
                 }
             }
 
-            const bool bEmitActive = Component.bEmit && !(bDurationExpired && !PS->bLooping);
+            const bool bEmitActive = Component.bEmit && !(bDurationExpired && !Resolved.bLooping);
 
             uint32 SpawnCount = 0;
-            if (bEmitActive && PS->SpawnRate > 0.0f && Component.SpawnRateMultiplier > 0.0f)
+            if (bEmitActive && Resolved.SpawnRate > 0.0f && Component.SpawnRateMultiplier > 0.0f)
             {
-                State.SpawnAccumulator += DeltaTime * PS->SpawnRate * Component.SpawnRateMultiplier;
+                State.SpawnAccumulator += DeltaTime * Resolved.SpawnRate * Component.SpawnRateMultiplier;
                 SpawnCount = (uint32)State.SpawnAccumulator;
                 State.SpawnAccumulator -= (float)SpawnCount;
             }
@@ -3587,10 +3589,10 @@ namespace Lumina
                 State.SpawnAccumulator = 0.0f;
             }
 
-            const bool bDoBurst = bEmitActive && Component.bBurstOnSpawn && State.bBurstPending && PS->BurstCount > 0;
+            const bool bDoBurst = bEmitActive && Component.bBurstOnSpawn && State.bBurstPending && Resolved.BurstCount > 0;
             if (bDoBurst)
             {
-                SpawnCount += (uint32)PS->BurstCount;
+                SpawnCount += (uint32)Resolved.BurstCount;
                 State.bBurstPending = false;
             }
             else if (!Component.bBurstOnSpawn)
@@ -3614,12 +3616,12 @@ namespace Lumina
             State.PrevEmitterPosition = EmitterWorld;
             State.bHasPrevPosition    = true;
 
-            const float InheritFactor = glm::clamp(PS->InheritEmitterVelocity, 0.0f, 1.0f);
+            const float InheritFactor = glm::clamp(Resolved.InheritEmitterVelocity, 0.0f, 1.0f);
 
             State.FrameSeed = (State.FrameSeed + 2654435761u) ^ (uint32)Entity;
 
             uint32 SimFlags = 0u;
-            if (PS->bLooping)
+            if (Resolved.bLooping)
             {
                 SimFlags |= PARTICLE_SIM_FLAG_LOOP;
             }
@@ -3636,18 +3638,18 @@ namespace Lumina
             SimParams.EmitterRight      = glm::vec4(EmitterRight,   EmitterVelocity.y);
             SimParams.EmitterUp         = glm::vec4(EmitterUp,      EmitterVelocity.z);
             SimParams.Counts            = glm::uvec4(MaxParticles, SpawnCount, State.FrameSeed, SimFlags);
-            SimParams.Modes             = glm::uvec4((uint32)PS->Shape, (uint32)PS->VelocityMode, 0u, 0u);
-            SimParams.ShapeSize         = glm::vec4(PS->ShapeSize, glm::radians(PS->ShapeAngle));
-            SimParams.VelocityMin       = glm::vec4(PS->VelocityMin, 0.0f);
-            SimParams.VelocityMax       = glm::vec4(PS->VelocityMax, 0.0f);
-            SimParams.SpeedAndLifetime  = glm::vec4(PS->SpeedRange.x, PS->SpeedRange.y, PS->LifetimeRange.x, PS->LifetimeRange.y);
-            SimParams.Gravity           = glm::vec4(PS->Gravity, PS->Drag);
-            SimParams.StartColor        = PS->StartColor;
-            SimParams.EndColor          = PS->EndColor;
-            SimParams.SizeRange         = glm::vec4(PS->StartSizeRange.x, PS->StartSizeRange.y, PS->EndSizeRange.x, PS->EndSizeRange.y);
-            SimParams.RotationRange     = glm::vec4(PS->RotationRange.x, PS->RotationRange.y, PS->RotationSpeedRange.x, PS->RotationSpeedRange.y);
-            SimParams.NoiseStrength     = glm::vec4(PS->NoiseStrength, PS->NoiseScale);
-            SimParams.NoiseParams       = glm::vec4(PS->NoiseSpeed, InheritFactor, 0.0f, 0.0f);
+            SimParams.Modes             = glm::uvec4((uint32)Resolved.Shape, (uint32)Resolved.VelocityMode, 0u, 0u);
+            SimParams.ShapeSize         = glm::vec4(Resolved.ShapeSize, glm::radians(Resolved.ShapeAngle));
+            SimParams.VelocityMin       = glm::vec4(Resolved.VelocityMin, 0.0f);
+            SimParams.VelocityMax       = glm::vec4(Resolved.VelocityMax, 0.0f);
+            SimParams.SpeedAndLifetime  = glm::vec4(Resolved.SpeedRange.x, Resolved.SpeedRange.y, Resolved.LifetimeRange.x, Resolved.LifetimeRange.y);
+            SimParams.Gravity           = glm::vec4(Resolved.Gravity, Resolved.Drag);
+            SimParams.StartColor        = Resolved.StartColor;
+            SimParams.EndColor          = Resolved.EndColor;
+            SimParams.SizeRange         = glm::vec4(Resolved.StartSizeRange.x, Resolved.StartSizeRange.y, Resolved.EndSizeRange.x, Resolved.EndSizeRange.y);
+            SimParams.RotationRange     = glm::vec4(Resolved.RotationRange.x, Resolved.RotationRange.y, Resolved.RotationSpeedRange.x, Resolved.RotationSpeedRange.y);
+            SimParams.NoiseStrength     = glm::vec4(Resolved.NoiseStrength, Resolved.NoiseScale);
+            SimParams.NoiseParams       = glm::vec4(Resolved.NoiseSpeed, InheritFactor, 0.0f, 0.0f);
             SimParams.Timing            = glm::vec4(ScaledDelta, State.TotalTime, State.SystemAge, 0.0f);
 
             CmdList.WriteBuffer(State.SimParamsBuffer, &SimParams, sizeof(SimParams));
@@ -3807,6 +3809,8 @@ namespace Lumina
                 return;
             }
 
+            const FResolvedParticleParams Resolved = ResolveParticleParams(*PS, Component);
+
             uint32 TextureIndex = 0u;
             if (CTexture* Tex = PS->Texture.Get())
             {
@@ -3821,17 +3825,17 @@ namespace Lumina
             }
 
             FParticleRenderParamsGPU RenderParams{};
-            RenderParams.Flags      = glm::uvec4(TextureIndex, PS->bBillboardToCamera ? 1u : 0u, 0u, 0u);
+            RenderParams.Flags      = glm::uvec4(TextureIndex, Resolved.bBillboardToCamera ? 1u : 0u, 0u, 0u);
             RenderParams.Tint       = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
             RenderParams.UVParams   = glm::vec4(0.0f);
             CmdList.WriteBuffer(State.RenderParamsBuffer, &RenderParams, sizeof(RenderParams));
 
             FBlendState BlendState;
-            BlendState.SetRenderTarget(0, MakeParticleBlendTarget(PS->BlendMode));
+            BlendState.SetRenderTarget(0, MakeParticleBlendTarget(Resolved.BlendMode));
 
             FDepthStencilState DepthState;
             DepthState.SetDepthFunc(EComparisonFunc::GreaterOrEqual);
-            if (PS->bWriteDepth)
+            if (Resolved.bWriteDepth)
             {
                 DepthState.EnableDepthWrite();
             }
@@ -4250,14 +4254,24 @@ namespace Lumina
             }
 
 
+            // Strict material gate. The terrain pipeline binds set 2 to the
+            // heightmap / layer-weight / chunk-meshlet resources, which is
+            // only valid against a TERRAIN-compiled shader. A user-assigned
+            // material that isn't a Terrain material would point at a shader
+            // built for the mesh binding layout, so the descriptor set would
+            // bind to the wrong slots -- skip rather than render garbage.
             CMaterialInterface* MaterialInterface = Terrain.Material.Get();
             if (MaterialInterface && MaterialInterface->GetMaterialType() != EMaterialType::Terrain)
             {
-                MaterialInterface = nullptr;
+                return;
             }
             if (!MaterialInterface || !MaterialInterface->IsReadyForRender())
             {
                 MaterialInterface = CMaterial::GetDefaultTerrainMaterial();
+            }
+            if (!MaterialInterface || !MaterialInterface->IsReadyForRender())
+            {
+                return;
             }
 
             FRHIVertexShader* VertexShader = MaterialInterface->GetVertexShader();

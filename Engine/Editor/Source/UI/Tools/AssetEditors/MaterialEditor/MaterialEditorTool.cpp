@@ -376,7 +376,14 @@ namespace Lumina
             // DepthPrePass.slang / ShadowMappingVert.slang would write
             // un-displaced depth, causing the base pass's [earlydepthstencil]
             // to kill displaced fragments and shadows to lag the geometry.
-            const bool bWPO = Compiler.UsesVertexStage();
+            //
+            // Terrain has its own render pass (TerrainRenderPass writes its
+            // own depth, no shadow-VS path), and DepthPrePass / ShadowMappingVert
+            // reference mesh-only symbols (uMeshletDrawList, Inst, VertexData)
+            // that the terrain vertex stage doesn't expose -- skip both for
+            // terrain materials.
+            const bool bIsTerrain = Material->GetMaterialType() == EMaterialType::Terrain;
+            const bool bWPO = Compiler.UsesVertexStage() && !bIsTerrain;
             Material->bUsesWorldPositionOffset = bWPO;
             if (bWPO)
             {

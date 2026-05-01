@@ -156,44 +156,102 @@ namespace Lumina
     
     bool CPackage::DestroyPackage(CPackage* PackageToDestroy)
     {
-        ASSERT(PackageToDestroy->FullyLoad());
+        if (PackageToDestroy == nullptr || PackageToDestroy->HasAnyFlag(OF_MarkedDestroy))
+        {
+            return false;
+        }
+
+        FFixedString PackagePath = PackageToDestroy->GetPackagePath();
+
+        // Best-effort load. If the file is corrupt or assets failed to deserialize
+        // we still need to be able to delete the package.
+        (void)PackageToDestroy->FullyLoad();
+
+        // Resolve the primary-asset GUID from the export table (the entry whose
+        // name matches the package file name). The export table is the
+        // authoritative identity for asset-registry cleanup; runtime objects
+        // may be missing or in a partially-constructed state for corrupt
+        // packages, so we cannot rely on finding one with IsAsset() == true.
+        FName PackageFileName = VFS::FileName(PackagePath, true);
+        FGuid AssetGUID;
+        for (const FObjectExport& Export : PackageToDestroy->ExportTable)
+        {
+            if (Export.ObjectName == PackageFileName)
+            {
+                AssetGUID = Export.ObjectGUID;
+                break;
+            }
+        }
 
         TVector<CObject*> ExportObjects;
         ExportObjects.reserve(20);
         GetObjectsWithPackage(PackageToDestroy, ExportObjects);
 
-        FGuid AssetGUID;
         for (CObject* ExportObject : ExportObjects)
         {
+            if (ExportObject == nullptr || ExportObject == PackageToDestroy)
+            {
+                continue;
+            }
+
+            if (ExportObject->HasAnyFlag(OF_MarkedDestroy))
+            {
+                continue;
+            }
+
             if (ExportObject->IsAsset())
             {
-                AssetGUID = ExportObject->GetGUID();
+                if (!AssetGUID.IsValid())
+                {
+                    AssetGUID = ExportObject->GetGUID();
+                }
+
                 FObjectReferenceReplacerArchive Ar(ExportObject, nullptr);
                 for (TObjectIterator<CObject> Itr; Itr; ++Itr)
                 {
-                    CObject* Object = *Itr;
-                    Object->Serialize(Ar);
+                    if (CObject* Object = *Itr)
+                    {
+                        Object->Serialize(Ar);
+                    }
                 }
             }
-        
-            if (ExportObject != PackageToDestroy)
-            {
-                ExportObject->ConditionalBeginDestroy();
-            }
         }
-        
+
+        // Broadcast before tearing the package down so observers can release
+        // their handles while the objects are still addressable.
+        OnPackageDestroyed.Broadcast(PackagePath);
+
+        if (AssetGUID.IsValid())
+        {
+            FAssetRegistry::Get().AssetDeleted(AssetGUID);
+        }
+
+        for (CObject* ExportObject : ExportObjects)
+        {
+            if (ExportObject == nullptr || ExportObject == PackageToDestroy)
+            {
+                continue;
+            }
+
+            if (ExportObject->HasAnyFlag(OF_MarkedDestroy))
+            {
+                continue;
+            }
+
+            ExportObject->ConditionalBeginDestroy();
+        }
+
         PackageToDestroy->ExportTable.clear();
         PackageToDestroy->ImportTable.clear();
-        
-        FName PackagePath = PackageToDestroy->GetPackagePath();
+
         PackageToDestroy->RemoveFromRoot();
         PackageToDestroy->ConditionalBeginDestroy();
 
-        FAssetRegistry::Get().AssetDeleted(AssetGUID);
+        if (VFS::Exists(PackagePath) && !VFS::Remove(PackagePath))
+        {
+            LOG_ERROR("DestroyPackage: failed to remove package file {}", PackagePath);
+        }
 
-        OnPackageDestroyed.Broadcast(PackagePath);
-        VFS::Remove(PackageToDestroy->GetPackagePath());
-        
         return true;
     }
 

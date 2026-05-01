@@ -23,9 +23,13 @@ namespace Lumina
         {
             const float W = std::max(ViewportSize.x, 1.0f);
             const float H = std::max(ViewportSize.y, 1.0f);
-            
+
             const float Sx = (PixelWithinViewport.x / W) * 2.0f - 1.0f;
-            const float Sy = (PixelWithinViewport.y / H) * 2.0f - 1.0f;
+            // ImGui pixel.y = 0 at the top of the viewport; the ray must tilt
+            // *up* in world for a top-of-screen cursor, so flip the sign here.
+            // (BuildRayFromScreen used to read correct against an inverted Up
+            // vector before the camera-basis fix in 5827d9d9.)
+            const float Sy = 1.0f - (PixelWithinViewport.y / H) * 2.0f;
 
             const FViewVolume& View    = Camera.GetViewVolume();
             const glm::vec3    Forward = View.GetForwardVector();
@@ -35,7 +39,6 @@ namespace Lumina
 
             const float AspectRatio = W / H;
             const float TanHalfFov  = std::tan(glm::radians(View.GetFOV()) * 0.5f);
-
 
             OutOrigin = Camera.GetPosition();
             OutDir    = glm::normalize(Forward

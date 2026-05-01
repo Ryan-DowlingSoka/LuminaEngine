@@ -82,8 +82,10 @@ namespace Lumina
         // (e.g. MaterialShader/DepthPrePass.slang or
         // MaterialShader/ShadowMappingVert.slang) with the same vertex chunks
         // used by the base pass. Used to emit per-material depth/shadow
-        // shaders for WPO-using materials.
-        FString BuildVertexShaderFromTemplate(const FString& TemplateAbsolutePath) const;
+        // shaders for WPO-using materials. MaterialType selects the vertex-
+        // stage alias preamble: terrain templates expose WorldPos / HeightUV /
+        // TerrainParams instead of VertexData / Inst.
+        FString BuildVertexShaderFromTemplate(const FString& TemplateAbsolutePath, EMaterialType MaterialType = EMaterialType::PBR) const;
 
         // True when the graph fed any chunks into the vertex stage. Equivalent
         // to "WorldPositionOffset pin had a connection."

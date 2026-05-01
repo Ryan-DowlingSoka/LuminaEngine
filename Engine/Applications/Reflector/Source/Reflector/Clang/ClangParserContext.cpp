@@ -41,6 +41,10 @@ namespace Lumina::Reflection
         uint32_t cursorLine, cursorColumn;
         clang_getExpansionLocation(startLoc, &cursorFile, &cursorLine, &cursorColumn, nullptr);
 
+        // Position is monotonic with source order within the TU; used as a tiebreaker
+        // when the macro and the cursor live on the same physical line.
+        const int32_t cursorPosition = (int32_t)typeRange.begin_int_data;
+
         CXString FileName = clang_getFileName(cursorFile);
 
         if (FileName.data == nullptr)
@@ -60,18 +64,41 @@ namespace Lumina::Reflection
         }
 
         eastl::vector<FReflectionMacro>& MacrosForHeader = HeaderIter->second;
+
+        // Prefer the closest macro that lexically precedes the cursor:
+        // 1) Same line, macro before cursor in source order  (`FUNCTION(Script) float Foo()`)
+        // 2) Exactly one line above                          (`FUNCTION(Script)\n float Foo()`)
+        // Without (1), inline-form macros silently bind to the cursor below them and the
+        // first function in a block of inline macros gets no binding at all.
+        auto SameLineMatch = MacrosForHeader.end();
+        auto LineAboveMatch = MacrosForHeader.end();
+
         for (auto iter = MacrosForHeader.begin(); iter != MacrosForHeader.end(); ++iter)
         {
-            bool bValidMacro = (iter->LineNumber < cursorLine) && ((cursorLine - iter->LineNumber) <= 1);
-        
-            if (bValidMacro)
+            if (iter->LineNumber == cursorLine && iter->Position < cursorPosition)
             {
-                Macro = *iter;
-                MacrosForHeader.erase(iter);
-                return true;
+                if (SameLineMatch == MacrosForHeader.end() || iter->Position > SameLineMatch->Position)
+                {
+                    SameLineMatch = iter;
+                }
+            }
+            else if (iter->LineNumber + 1 == cursorLine)
+            {
+                if (LineAboveMatch == MacrosForHeader.end() || iter->Position > LineAboveMatch->Position)
+                {
+                    LineAboveMatch = iter;
+                }
             }
         }
-        
+
+        auto Best = (SameLineMatch != MacrosForHeader.end()) ? SameLineMatch : LineAboveMatch;
+        if (Best != MacrosForHeader.end())
+        {
+            Macro = *Best;
+            MacrosForHeader.erase(Best);
+            return true;
+        }
+
         return false;
     }
 

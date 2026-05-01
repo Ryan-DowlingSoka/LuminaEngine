@@ -42,6 +42,7 @@ namespace Lumina
         void DrawParticleGraph();
         void DrawParticleProperties();
         void DrawShaderPreview();
+        void DrawPropertyBindings();
 
     private:
 

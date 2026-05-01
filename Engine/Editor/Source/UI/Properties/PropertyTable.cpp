@@ -429,26 +429,34 @@ namespace Lumina
         {
             if (ImGui::MenuItem(LE_ICON_PLUS " Insert New Element"))
             {
-                ArrayProperty->PushBack(ContainerPtr, nullptr);
-                ArrayRow->RebuildChildren();
+                ArrayRow->QueueMutation([ArrayProperty, ContainerPtr]
+                {
+                    ArrayProperty->PushBack(ContainerPtr, nullptr);
+                });
             }
 
             if (Index > 0 && ImGui::MenuItem(LE_ICON_ARROW_UP " Move Element Up"))
             {
-                ArrayProperty->Swap(ContainerPtr, Index, Index - 1);
-                ArrayRow->RebuildChildren();
+                ArrayRow->QueueMutation([ArrayProperty, ContainerPtr, Index]
+                {
+                    ArrayProperty->Swap(ContainerPtr, Index, Index - 1);
+                });
             }
 
             if (ArrayNum > 0 && std::cmp_less(Index, ArrayNum - 1) && ImGui::MenuItem(LE_ICON_ARROW_DOWN " Move Element Down"))
             {
-                ArrayProperty->Swap(ContainerPtr, Index, Index + 1);
-                ArrayRow->RebuildChildren();
+                ArrayRow->QueueMutation([ArrayProperty, ContainerPtr, Index]
+                {
+                    ArrayProperty->Swap(ContainerPtr, Index, Index + 1);
+                });
             }
 
             if (ImGui::MenuItem(LE_ICON_TRASH_CAN " Remove Element"))
             {
-                ArrayProperty->RemoveAt(ContainerPtr, Index);
-                ArrayRow->RebuildChildren();
+                ArrayRow->QueueMutation([ArrayProperty, ContainerPtr, Index]
+                {
+                    ArrayProperty->RemoveAt(ContainerPtr, Index);
+                });
             }
 
             ImGui::EndPopup();
@@ -470,6 +478,21 @@ namespace Lumina
     void FArrayPropertyRow::Update()
     {
         ChangeOp = EPropertyChangeOp::None;
+
+        if (!PendingMutations.empty())
+        {
+            for (const TFunction<void()>& Mutation : PendingMutations)
+            {
+                Mutation();
+            }
+            PendingMutations.clear();
+            RebuildChildren();
+        }
+    }
+
+    void FArrayPropertyRow::QueueMutation(TFunction<void()> Mutation)
+    {
+        PendingMutations.push_back(Move(Mutation));
     }
 
     void FArrayPropertyRow::DrawHeader(float Offset)
@@ -614,11 +637,16 @@ namespace Lumina
 
     void FArrayPropertyRow::DrawExtraControlsSection()
     {
+        FArrayProperty* LocalArrayProperty = ArrayProperty;
+        void* LocalContainerPtr = PropertyHandle->ContainerPtr;
+
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 4));
         if (ImGuiX::FlatButton(LE_ICON_PLUS, ImVec2(18, 24), ArrayControlSeed))
         {
-            ArrayProperty->PushBack(PropertyHandle->ContainerPtr, nullptr);
-            RebuildChildren();
+            QueueMutation([LocalArrayProperty, LocalContainerPtr]
+            {
+                LocalArrayProperty->PushBack(LocalContainerPtr, nullptr);
+            });
         }
         ImGui::PopStyleVar();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
@@ -630,8 +658,10 @@ namespace Lumina
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 4));
         if (ImGuiX::FlatButton(LE_ICON_TRASH_CAN, ImVec2(18, 24), ArrayControlSeed))
         {
-            ArrayProperty->Clear(PropertyHandle->ContainerPtr);
-            RebuildChildren();
+            QueueMutation([LocalArrayProperty, LocalContainerPtr]
+            {
+                LocalArrayProperty->Clear(LocalContainerPtr);
+            });
         }
         ImGui::PopStyleVar();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))

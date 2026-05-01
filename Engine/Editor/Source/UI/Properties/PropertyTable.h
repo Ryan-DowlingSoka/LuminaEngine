@@ -146,12 +146,20 @@ namespace Lumina
 
         bool IsInnerFixedHeight() const;
 
+        // Queue a structural change (push/remove/swap/clear) instead of running it
+        // immediately. The mutation runs at the start of the next frame in Update,
+        // before any row reads through its element ContainerPtr — necessary because
+        // mutations that reallocate vector storage (e.g. push_back) invalidate every
+        // child handle's cached ContainerPtr and any read through them is UB.
+        void QueueMutation(TFunction<void()> Mutation);
+
         FArrayProperty*             ArrayProperty = nullptr;
 
     private:
 
         void DrawTruncationRow(float Offset, int HiddenCount);
 
+        TVector<TFunction<void()>>  PendingMutations;
         bool                        bShowAllElements = false;
     };
 

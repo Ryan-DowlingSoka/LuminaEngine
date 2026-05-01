@@ -34,6 +34,19 @@ namespace Lumina
 		"\tuint   EntityID      = Inst.EntityID;\n"
 		"\tfloat3 ViewPosition  = float3(0.0);\n";
 
+	// Terrain variant: TerrainBaseVertexPass.slang has no FVertexData / FGPUInstance
+	// in scope at the substitution point, so the alias sources are different.
+	// Keeping the same alias *names* lets the same node-emit code work for both.
+	static const char* GVertexStageAliasPreambleTerrain =
+		"\t// Material graph variable aliases (vertex stage, terrain).\n"
+		"\tfloat3 WorldPosition = WorldPos;\n"
+		"\tfloat3 WorldNormal   = NormalWS;\n"
+		"\tfloat2 UV0           = HeightUV;\n"
+		"\tfloat4 VertexColor   = float4(1.0, 1.0, 1.0, 1.0);\n"
+		"\tuint   MaterialIndex = TerrainParams.MaterialIndex;\n"
+		"\tuint   EntityID      = TerrainParams.EntityID;\n"
+		"\tfloat3 ViewPosition  = float3(0.0);\n";
+
 	// Substitute a single token; logs and returns false if the token is missing.
 	static bool SubstituteToken(FString& Source, const char* Token, const FString& Replacement)
 	{
@@ -104,10 +117,10 @@ namespace Lumina
 		// Vertex: alias preamble + body + output assignments. The vertex
 		// template declared `FMaterialVertexInputs Material;` inline above
 		// the token, so we only emit assignments here.
-		OutVertexShader = BuildVertexShaderFromTemplate(VertexPath);
+		OutVertexShader = BuildVertexShaderFromTemplate(VertexPath, MaterialType);
 	}
 
-	FString FMaterialCompiler::BuildVertexShaderFromTemplate(const FString& TemplateAbsolutePath) const
+	FString FMaterialCompiler::BuildVertexShaderFromTemplate(const FString& TemplateAbsolutePath, EMaterialType MaterialType) const
 	{
 		FString Loaded;
 		if (!FileHelper::LoadFileIntoString(Loaded, TemplateAbsolutePath))
@@ -116,7 +129,10 @@ namespace Lumina
 			return Loaded;
 		}
 
-		FString Replacement = FString(GVertexStageAliasPreamble) + VertexChunks + VertexOutputChunks;
+		const char* Preamble = (MaterialType == EMaterialType::Terrain)
+			? GVertexStageAliasPreambleTerrain
+			: GVertexStageAliasPreamble;
+		FString Replacement = FString(Preamble) + VertexChunks + VertexOutputChunks;
 		SubstituteToken(Loaded, "$MATERIAL_VERTEX_INPUTS", Replacement);
 		return Loaded;
 	}

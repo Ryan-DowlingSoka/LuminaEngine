@@ -55,6 +55,7 @@ namespace Lumina
 
         CreateToolWindow(ParticlePropertiesName, [&](bool bFocused)
         {
+            DrawPropertyBindings();
         });
 
         CreateToolWindow(ShaderPreviewName, [&](bool bFocused)
@@ -134,6 +135,192 @@ namespace Lumina
     void FParticleSystemEditorTool::DrawParticleProperties()
     {
         GetPropertyTable()->DrawTree();
+    }
+
+    namespace
+    {
+        struct FBindableProperty
+        {
+            const char*             PropertyName;
+            const char*             Category;
+            EParticleParameterType  ExpectedType;
+        };
+
+        static const FBindableProperty GBindableProperties[] =
+        {
+            { "SpawnRate",              "Simulation",     EParticleParameterType::Float },
+            { "BurstCount",             "Simulation",     EParticleParameterType::Int   },
+            { "Duration",               "Simulation",     EParticleParameterType::Float },
+            { "bLooping",               "Simulation",     EParticleParameterType::Bool  },
+
+            { "ShapeSize",              "Emitter Shape",  EParticleParameterType::Vec3  },
+            { "ShapeAngle",             "Emitter Shape",  EParticleParameterType::Float },
+
+            { "VelocityMin",            "Velocity",       EParticleParameterType::Vec3  },
+            { "VelocityMax",            "Velocity",       EParticleParameterType::Vec3  },
+            { "SpeedRange",             "Velocity",       EParticleParameterType::Vec2  },
+
+            { "LifetimeRange",          "Lifetime",       EParticleParameterType::Vec2  },
+
+            { "Gravity",                "Physics",        EParticleParameterType::Vec3  },
+            { "Drag",                   "Physics",        EParticleParameterType::Float },
+            { "InheritEmitterVelocity", "Physics",        EParticleParameterType::Float },
+
+            { "StartColor",             "Color",          EParticleParameterType::Color },
+            { "EndColor",               "Color",          EParticleParameterType::Color },
+
+            { "StartSizeRange",         "Size",           EParticleParameterType::Vec2  },
+            { "EndSizeRange",           "Size",           EParticleParameterType::Vec2  },
+
+            { "RotationRange",          "Rotation",       EParticleParameterType::Vec2  },
+            { "RotationSpeedRange",     "Rotation",       EParticleParameterType::Vec2  },
+
+            { "NoiseStrength",          "Noise",          EParticleParameterType::Vec3  },
+            { "NoiseScale",             "Noise",          EParticleParameterType::Float },
+            { "NoiseSpeed",             "Noise",          EParticleParameterType::Float },
+
+            { "bBillboardToCamera",     "Render",         EParticleParameterType::Bool  },
+            { "bWriteDepth",            "Render",         EParticleParameterType::Bool  },
+        };
+
+        static const char* ParameterTypeLabel(EParticleParameterType T)
+        {
+            switch (T)
+            {
+            case EParticleParameterType::Float: return "Float";
+            case EParticleParameterType::Int:   return "Int";
+            case EParticleParameterType::Bool:  return "Bool";
+            case EParticleParameterType::Vec2:  return "Vec2";
+            case EParticleParameterType::Vec3:  return "Vec3";
+            case EParticleParameterType::Vec4:  return "Vec4";
+            case EParticleParameterType::Color: return "Color";
+            }
+            return "?";
+        }
+
+        static bool IsCompatible(EParticleParameterType Expected, EParticleParameterType Actual)
+        {
+            if (Expected == Actual) return true;
+            // Color and Vec4 share storage and are interchangeable as drivers.
+            if ((Expected == EParticleParameterType::Color && Actual == EParticleParameterType::Vec4) ||
+                (Expected == EParticleParameterType::Vec4  && Actual == EParticleParameterType::Color))
+            {
+                return true;
+            }
+            return false;
+        }
+    }
+
+    void FParticleSystemEditorTool::DrawPropertyBindings()
+    {
+        CParticleSystem* PS = Cast<CParticleSystem>(Asset.Get());
+        if (PS == nullptr)
+        {
+            return;
+        }
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 4));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6, 4));
+
+        ImGui::TextDisabled("Bind any built-in property to a user parameter so scripts and C++ can drive it at runtime.");
+        ImGui::Separator();
+
+        const char* CurrentCategory = nullptr;
+        for (const FBindableProperty& Prop : GBindableProperties)
+        {
+            if (CurrentCategory == nullptr || strcmp(CurrentCategory, Prop.Category) != 0)
+            {
+                CurrentCategory = Prop.Category;
+                ImGui::Spacing();
+                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(220, 220, 222, 255));
+                ImGui::TextUnformatted(Prop.Category);
+                ImGui::PopStyleColor();
+                ImGui::Separator();
+            }
+
+            ImGui::PushID(Prop.PropertyName);
+
+            const FName PropName(Prop.PropertyName);
+            const FName BoundParam = PS->GetPropertyBinding(PropName);
+
+            const float NameWidth = 180.0f;
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(Prop.PropertyName);
+            ImGui::SameLine(NameWidth);
+
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(140, 140, 145, 255));
+            ImGui::TextUnformatted(ParameterTypeLabel(Prop.ExpectedType));
+            ImGui::PopStyleColor();
+            ImGui::SameLine(NameWidth + 60.0f);
+
+            const char* PreviewLabel = BoundParam.IsNone() ? "(literal)" : BoundParam.c_str();
+            const float ComboWidth = ImGui::GetContentRegionAvail().x - 28.0f;
+            ImGui::PushItemWidth(ComboWidth);
+            if (ImGui::BeginCombo("##Bind", PreviewLabel))
+            {
+                if (ImGui::Selectable("(literal)", BoundParam.IsNone()))
+                {
+                    PS->ClearPropertyBinding(PropName);
+                    PS->GetPackage()->MarkDirty();
+                }
+
+                for (const FParticleParameter& Param : PS->UserParameters)
+                {
+                    if (Param.Name.IsNone()) continue;
+                    const bool bCompat = IsCompatible(Prop.ExpectedType, Param.Type);
+                    if (!bCompat) continue;
+
+                    const bool bSelected = (BoundParam == Param.Name);
+                    if (ImGui::Selectable(Param.Name.c_str(), bSelected))
+                    {
+                        PS->SetPropertyBinding(PropName, Param.Name);
+                        PS->GetPackage()->MarkDirty();
+                    }
+                }
+
+                bool bAnyMismatch = false;
+                for (const FParticleParameter& Param : PS->UserParameters)
+                {
+                    if (!Param.Name.IsNone() && !IsCompatible(Prop.ExpectedType, Param.Type))
+                    {
+                        bAnyMismatch = true;
+                        break;
+                    }
+                }
+                if (bAnyMismatch)
+                {
+                    ImGui::Separator();
+                    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(140, 140, 145, 255));
+                    ImGui::TextUnformatted("Incompatible:");
+                    ImGui::PopStyleColor();
+                    for (const FParticleParameter& Param : PS->UserParameters)
+                    {
+                        if (Param.Name.IsNone() || IsCompatible(Prop.ExpectedType, Param.Type)) continue;
+                        ImGui::BeginDisabled();
+                        char Label[160];
+                        snprintf(Label, sizeof(Label), "%s (%s)", Param.Name.c_str(), ParameterTypeLabel(Param.Type));
+                        ImGui::Selectable(Label, false);
+                        ImGui::EndDisabled();
+                    }
+                }
+
+                ImGui::EndCombo();
+            }
+            ImGui::PopItemWidth();
+
+            ImGui::SameLine();
+            ImGui::BeginDisabled(BoundParam.IsNone());
+            if (ImGui::Button("X", ImVec2(22, 0)))
+            {
+                PS->ClearPropertyBinding(PropName);
+                PS->GetPackage()->MarkDirty();
+            }
+            ImGui::EndDisabled();
+
+            ImGui::PopID();
+        }
+
+        ImGui::PopStyleVar(2);
     }
 
     void FParticleSystemEditorTool::DrawShaderPreview()

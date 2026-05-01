@@ -62,6 +62,7 @@
 #include "Platform/Process/PlatformProcess.h"
 #include "Properties/Customizations/CoreTypeCustomization.h"
 #include "Properties/Customizations/CustomPrimitiveDataCustomization.h"
+#include "Tools/AssetEditors/ParticleSystemEditor/ParticleParameterCustomization.h"
 #include "Properties/Customizations/ScriptComponentCustomization.h"
 #include "Renderer/CustomPrimitiveData.h"
 #include "Renderer/RenderContext.h"
@@ -183,7 +184,12 @@ namespace Lumina
         
         PropertyCustomizationRegistry->RegisterPropertyCustomization(SCustomPrimitiveData::StaticStruct()->GetName(), []
         {
-           return FCustomPrimDataPropertyCustomization::MakeInstance(); 
+           return FCustomPrimDataPropertyCustomization::MakeInstance();
+        });
+
+        PropertyCustomizationRegistry->RegisterPropertyCustomization(FParticleParameter::StaticStruct()->GetName(), []
+        {
+           return FParticleParameterCustomization::MakeInstance();
         });
         
         EditorWindowClass.ClassId                       = ImHashStr("EditorWindowClass");

@@ -40,6 +40,7 @@ namespace Lumina
             , TimeScale(Other.TimeScale)
             , bEmit(Other.bEmit)
             , bBurstOnSpawn(Other.bBurstOnSpawn)
+            , ParameterOverrides(Other.ParameterOverrides)
         {
         }
 
@@ -53,6 +54,7 @@ namespace Lumina
                 TimeScale           = Other.TimeScale;
                 bEmit               = Other.bEmit;
                 bBurstOnSpawn       = Other.bBurstOnSpawn;
+                ParameterOverrides  = Other.ParameterOverrides;
                 GPUState            = FParticleGPUState{};
             }
             return *this;
@@ -85,6 +87,13 @@ namespace Lumina
         PROPERTY(Editable, Category = "Particle System")
         bool bBurstOnSpawn = true;
 
+        /**
+         * Per-instance overrides for user parameters declared on the asset. Only entries that
+         * diverge from the asset default need to live here; reads fall back to the asset.
+         */
+        PROPERTY()
+        TVector<FParticleParameter> ParameterOverrides;
+
         /** Live GPU state, populated on the first simulate tick. Not serialized. */
         FParticleGPUState GPUState;
 
@@ -115,5 +124,71 @@ namespace Lumina
         /** True while the emitter is spawning new particles. */
         FUNCTION(Script)
         bool IsActive() const { return bEmit; }
+
+        //~ Begin User Parameters
+        /** True if this component or its asset declares a parameter with the given name. */
+        FUNCTION(Script)
+        bool HasParameter(FName Name) const
+        {
+            return FindParameter(Name) != nullptr;
+        }
+
+        FUNCTION(Script) 
+        float GetFloat(FName Name, float Default = 0.0f) const;
+        
+        FUNCTION(Script) 
+        int32 GetInt(FName Name, int32 Default = 0) const;
+        
+        FUNCTION(Script) 
+        bool GetBool(FName Name, bool Default = false) const;
+        
+        FUNCTION(Script) 
+        glm::vec2 GetVec2(FName Name) const;
+        
+        FUNCTION(Script) 
+        glm::vec3 GetVec3(FName Name) const;
+        
+        FUNCTION(Script)
+        glm::vec4 GetVec4(FName Name) const;
+        
+        FUNCTION(Script)
+        glm::vec4 GetColor(FName Name) const;
+
+        FUNCTION(Script) 
+        void SetFloat(FName Name, float Value);
+        
+        FUNCTION(Script) 
+        void SetInt(FName Name, int32 Value);
+        
+        FUNCTION(Script)
+        void SetBool(FName Name, bool Value);
+        
+        FUNCTION(Script) 
+        void SetVec2(FName Name, glm::vec2 Value);
+        
+        FUNCTION(Script) 
+        void SetVec3(FName Name, glm::vec3 Value);
+        
+        FUNCTION(Script) 
+        void SetVec4(FName Name, glm::vec4 Value);
+        
+        FUNCTION(Script) 
+        void SetColor(FName Name, glm::vec4 Value);
+
+        /** Drop the override for this parameter, reverting to the asset default. */
+        FUNCTION(Script) 
+        void ResetParameter(FName Name);
+
+    private:
+
+        /** Resolve a parameter by name, preferring component overrides over the asset's default. */
+        const FParticleParameter* FindParameter(FName Name) const;
+
+        /**
+         * Get-or-create the override entry for the given name and type. If the asset declares
+         * the parameter with a different type, that's a programmer error and we return nullptr.
+         */
+        FParticleParameter* GetOrCreateOverride(FName Name, EParticleParameterType ExpectedType);
+        //~ End User Parameters
     };
 }

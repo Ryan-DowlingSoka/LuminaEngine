@@ -826,6 +826,8 @@ namespace Lumina::Lua
 
         for (int LocIdx = 1; ; ++LocIdx)
         {
+            lua_rawcheckstack(PausedThread, 1);
+            lua_rawcheckstack(L, 1);
             const char* Name = lua_getlocal(PausedThread, FrameIndex, LocIdx);
             if (Name == nullptr) break;
             lua_xmove(PausedThread, L, 1);
@@ -833,12 +835,15 @@ namespace Lumina::Lua
         }
 
         {
+            lua_rawcheckstack(PausedThread, 1);
             lua_Debug Info;
             if (lua_getinfo(PausedThread, FrameIndex, "f", &Info) && lua_isfunction(PausedThread, -1))
             {
                 const int FnIdx = lua_gettop(PausedThread);
                 for (int UpIdx = 1; ; ++UpIdx)
                 {
+                    lua_rawcheckstack(PausedThread, 1);
+                    lua_rawcheckstack(L, 1);
                     const char* Name = lua_getupvalue(PausedThread, FnIdx, UpIdx);
                     if (Name == nullptr) break;
                     lua_xmove(PausedThread, L, 1);
