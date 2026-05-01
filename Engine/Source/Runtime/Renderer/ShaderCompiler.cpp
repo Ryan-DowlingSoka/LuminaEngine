@@ -285,6 +285,16 @@ namespace Lumina
 
     bool FSpirVShaderCompiler::CompilerShaderRaw(FString ShaderString, const FShaderCompileOptions& CompileOptions, CompletedFunc OnCompleted)
     {
+        // Slang warns on top-level `#pragma once` (only valid inside an include).
+        // Source assembled from .slang headers carries it through — strip it here.
+        for (size_t Pos = ShaderString.find("#pragma once"); Pos != FString::npos; Pos = ShaderString.find("#pragma once", Pos))
+        {
+            size_t LineEnd = ShaderString.find('\n', Pos);
+            if (LineEnd == FString::npos) LineEnd = ShaderString.size();
+            else ++LineEnd;
+            ShaderString.erase(Pos, LineEnd - Pos);
+        }
+
         PendingTasks.fetch_add(1, std::memory_order_relaxed);
         
         Task::AsyncTask(1, 1, [this,

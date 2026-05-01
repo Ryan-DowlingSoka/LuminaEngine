@@ -103,10 +103,14 @@ namespace Lumina
     void FMaterialEditorTool::SetupWorldForTool()
     {
         FAssetEditorTool::SetupWorldForTool();
+        
+        World->GetRenderer()->GetSceneRenderSettings().bDrawBillboards = false;
 
         DirectionalLightEntity = World->ConstructEntity("Directional Light");
         World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
-        World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
+        auto& Environment = World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
+        
+        EnvironmentEditor = MakeUnique<FPropertyTable>(&Environment, SEnvironmentComponent::StaticStruct());
         
         MeshEntity = World->ConstructEntity("MeshEntity");
         SStaticMeshComponent& StaticMeshComponent = World->GetEntityRegistry().emplace<SStaticMeshComponent>(MeshEntity);
@@ -123,12 +127,6 @@ namespace Lumina
 
     void FMaterialEditorTool::ApplyMaterialToPreview()
     {
-        // Route the material into the preview world based on its domain.
-        // Surface materials (PBR / UI / Unlit / etc.) override the sphere's
-        // slot 0; PostProcess materials run as a fullscreen pass and must
-        // be hung off the camera component instead -- assigning one as a
-        // surface material drives the BasePass through the wrong pipeline
-        // layout (FullscreenQuad VS, set-2 mismatch) and corrupts the view.
         CMaterialInterface* MaterialInterface = CastAsserted<CMaterialInterface>(Asset.Get());
         const EMaterialType MaterialType = MaterialInterface ? MaterialInterface->GetMaterialType() : EMaterialType::None;
 
@@ -215,7 +213,6 @@ namespace Lumina
         {
            pDockNode->LocalFlags = 0;
            pDockNode->LocalFlags |= ImGuiDockNodeFlags_NoDockingOverMe;
-           pDockNode->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
         }
 
         return false;
@@ -241,6 +238,11 @@ namespace Lumina
     void FMaterialEditorTool::DrawMaterialProperties()
     {
         GetPropertyTable()->DrawTree();
+        
+        if (EnvironmentEditor)
+        {
+            EnvironmentEditor->DrawTree();
+        }
     }
     
     void FMaterialEditorTool::DrawGLSLPreview()

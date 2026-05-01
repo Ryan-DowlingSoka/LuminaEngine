@@ -624,6 +624,8 @@ namespace Lumina
     {
         FEditorTool::SetupWorldForTool();
         
+        World->GetRenderer()->GetSceneRenderSettings().bDrawBillboards = false;
+        
         DirectionalLightEntity = World->ConstructEntity("Directional Light");
         World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
         World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);

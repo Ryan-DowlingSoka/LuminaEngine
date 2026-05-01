@@ -108,7 +108,7 @@ namespace Lumina
 
         /** Brightness multiplier of the directional light. */
         PROPERTY(Editable, Category = "Light", ClampMin = 0.0f)
-        float Intensity = 2.5f;
+        float Intensity = 1.5f;
 
         /** When true, this light contributes to the shadow pass. */
         PROPERTY(Editable)

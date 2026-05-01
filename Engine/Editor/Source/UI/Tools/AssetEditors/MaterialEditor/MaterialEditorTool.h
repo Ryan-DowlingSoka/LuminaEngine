@@ -31,7 +31,6 @@ namespace Lumina
         void OnInitialize() override;
         void OnDeinitialize(const FUpdateContext& UpdateContext) override;
         void SetupWorldForTool() override;
-        void DrawHelpMenu() override;
 
         bool DrawViewport(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture) override;
         bool ShouldGenerateThumbnailOnSave() const override { return true; }
@@ -46,18 +45,24 @@ namespace Lumina
         void OnSave() override;
         void InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const override;
 
+    protected:
+        
+        void DrawHelpMenu() override;
+        
     private:
-        entt::entity            MeshEntity;
-        entt::entity            DirectionalLightEntity;
         
-        FString                 Tree;
-        size_t                  ReplacementStart = 0;
-        size_t                  ReplacementEnd = 0;
-        CEdGraphNode*           SelectedNode = nullptr;
-        FCompilationResultInfo  CompilationResult;
+        entt::entity                    MeshEntity;
+        entt::entity                    DirectionalLightEntity;
         
-        TObjectPtr<CMaterialNodeGraph> NodeGraph;
-        bool bGLSLPreviewDirty = false;
-
+        FString                         Tree;
+        size_t                          ReplacementStart = 0;
+        size_t                          ReplacementEnd = 0;
+        CEdGraphNode*                   SelectedNode = nullptr;
+        FCompilationResultInfo          CompilationResult;
+        
+        
+        TUniquePtr<FPropertyTable>      EnvironmentEditor;
+        TObjectPtr<CMaterialNodeGraph>  NodeGraph;
+        bool                            bGLSLPreviewDirty = false;
     };
 }
