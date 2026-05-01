@@ -17,6 +17,6 @@ namespace Lumina
 
     CObject* FObjectHandle::Resolve() const
     {
-        return (CObject*)GObjectArray.GetObjectByIndex(Index);
+        return (CObject*)GObjectArray.ResolveHandle(*this);
     }
 }

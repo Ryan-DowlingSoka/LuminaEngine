@@ -55,11 +55,7 @@ namespace Lumina
     bool FEngine::Init()
     {
         LUMINA_PROFILE_SCOPE();
-        
-        //-------------------------------------------------------------------------
-        // Initialize core engine state.
-        //-------------------------------------------------------------------------
-        
+
         VFS::Mount<VFS::FNativeFileSystem>("/Engine", Paths::GetEngineDirectory());
         
         FCoreDelegates::OnPreEngineInit.BroadcastAndClear();
@@ -107,12 +103,7 @@ namespace Lumina
 
         FCoreDelegates::OnPreEngineShutdown.BroadcastAndClear();
 
-        //-------------------------------------------------------------------------
-        // Shutdown core engine state.
-        //-------------------------------------------------------------------------
-
-        // UI before renderer: RmlUi's shutdown releases resources through
-        // our render interface.
+        // UI before renderer: RmlUi's shutdown releases resources through our render interface.
         RmlUi::Shutdown();
 
         #if USING(WITH_EDITOR)
@@ -146,10 +137,6 @@ namespace Lumina
     bool FEngine::Update(bool bApplicationWantsExit)
     {
         LUMINA_PROFILE_SCOPE();
-
-        //-------------------------------------------------------------------------
-        // Update core engine state.
-        //-------------------------------------------------------------------------
 
         bEngineReadyToClose = true;
         bCloseRequested = bApplicationWantsExit;

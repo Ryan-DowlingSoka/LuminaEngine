@@ -132,10 +132,14 @@ VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_Vulk
     WorldPos.z = TerrainParams.OriginXZ.y + float(SampleY) * Stride;
     WorldPos.y = TerrainParams.WorldOriginY.x + Height;
 
+    // Compute pass packs the post-normalize Normal.xz; recover Y from the
+    // unit-length constraint. Hardcoding Y=1 and re-normalizing tilts the
+    // normal toward +Y (lighting reads as too flat on slopes).
     float4 NormalSample = uTerrainNormal.SampleLevel(HeightUV, 0);
-    float3 NormalWS = normalize(float3(NormalSample.r * 2.0 - 1.0,
-                                       1.0,
-                                       NormalSample.g * 2.0 - 1.0));
+    float  Nx = NormalSample.r * 2.0 - 1.0;
+    float  Nz = NormalSample.g * 2.0 - 1.0;
+    float  Ny = sqrt(saturate(1.0 - Nx * Nx - Nz * Nz));
+    float3 NormalWS = float3(Nx, Ny, Nz);
 
     // Material vertex graph emission (WPO). Terrain typically leaves this at
     // zero; the substitution still runs for symmetry with the base pass.

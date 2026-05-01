@@ -18,10 +18,6 @@ namespace Lumina
 namespace Lumina
 {
     
-    //--------------------------------------------------------------------------------
-    // CField
-    //--------------------------------------------------------------------------------
-    
     class CField : public CObject
     {
     public:
@@ -56,10 +52,6 @@ namespace Lumina
     };
 
 
-    //--------------------------------------------------------------------------------
-    // CEnum
-    //--------------------------------------------------------------------------------
-    
     class CEnum : public CField
     {
     public:
@@ -87,18 +79,7 @@ namespace Lumina
     };
     
 
-    //--------------------------------------------------------------------------------
-    // CStruct
-    //--------------------------------------------------------------------------------
-    
-    
-    /**
-     * Base class for any data structure that holds fields.
-     *
-     * CStruct represents a reflected type that can contain properties (FProperty instances)
-     * and supports single inheritance via a SuperStruct chain. It serves as the foundation
-     * for native C++ types exposed to the reflection system.
-     */
+    // Reflected type that can contain properties and supports single inheritance via SuperStruct.
     class CStruct : public CField
     {
         friend RUNTIME_API void ConstructCStruct(CStruct** OutStruct, const FStructParams& Params);
@@ -218,12 +199,6 @@ namespace Lumina
     };
 
 
-
-    //--------------------------------------------------------------------------------
-    // CClass
-    //--------------------------------------------------------------------------------
-    
-    
     /** Final class for fields and functions. */
     class CClass final : public CStruct
     {

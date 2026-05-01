@@ -91,38 +91,6 @@ namespace Lumina
 
     } };
 
-    // Deprecated, held for reference.
-#if 0
-    VkFormat GetVkFormat(EImageFormat Format)
-    {
-        switch (Format)
-        {
-            case EImageFormat::R8_UNORM:        return VK_FORMAT_R8_UNORM;
-            case EImageFormat::R8_SNORM:        return VK_FORMAT_R8_SNORM;
-            case EImageFormat::RG16_UNORM:      return VK_FORMAT_R16G16_UNORM;
-            case EImageFormat::RGBA32_UNORM:    return VK_FORMAT_R8G8B8A8_UNORM;
-            case EImageFormat::BGRA32_UNORM:    return VK_FORMAT_B8G8R8A8_UNORM;
-            case EImageFormat::RGBA32_SRGB:     return VK_FORMAT_R8G8B8A8_SRGB;
-            case EImageFormat::BGRA32_SRGB:     return VK_FORMAT_B8G8R8A8_SRGB;
-            case EImageFormat::RGB32_SFLOAT:    return VK_FORMAT_R32G32B32_SFLOAT;
-            case EImageFormat::RGBA64_SFLOAT:   return VK_FORMAT_R16G16B16A16_SFLOAT;
-            case EImageFormat::RGBA128_SFLOAT:  return VK_FORMAT_R32G32B32A32_SFLOAT;
-            case EImageFormat::D32:             return VK_FORMAT_D32_SFLOAT;
-            case EImageFormat::BC1_UNORM:       return VK_FORMAT_BC1_RGB_UNORM_BLOCK;
-            case EImageFormat::BC1_SRGB:        return VK_FORMAT_BC1_RGB_SRGB_BLOCK;
-            case EImageFormat::BC3_UNORM:       return VK_FORMAT_BC3_UNORM_BLOCK;
-            case EImageFormat::BC3_SRGB:        return VK_FORMAT_BC3_SRGB_BLOCK;
-            case EImageFormat::BC5_UNORM:       return VK_FORMAT_BC5_UNORM_BLOCK;
-            case EImageFormat::BC5_SNORM:       return VK_FORMAT_BC5_SNORM_BLOCK;
-            case EImageFormat::BC6H_UFLOAT:     return VK_FORMAT_BC6H_UFLOAT_BLOCK;
-            case EImageFormat::BC6H_SFLOAT:     return VK_FORMAT_BC6H_SFLOAT_BLOCK;
-            case EImageFormat::BC7_UNORM:       return VK_FORMAT_BC7_UNORM_BLOCK;
-            case EImageFormat::BC7_SRGB:        return VK_FORMAT_BC7_SRGB_BLOCK;
-            default:                            return VK_FORMAT_UNDEFINED;
-        }
-    }
-#endif
-
     static VkImageViewType TextureDimensionToImageViewType(EImageDimension dimension)
     {
         switch (dimension)

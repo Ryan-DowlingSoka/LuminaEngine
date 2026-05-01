@@ -19,13 +19,7 @@ RUNTIME_API Lumina::CClass* Construct_CClass_Lumina_CObject();
 namespace Lumina
 {
 
-    //========================================================
-    //
-    // The base object for all reflected Lumina types.
-    // Object paths are formatted as:
-    //      <package-path>.<object-name>
-    //=========================================================
-    
+    // Base object for all reflected Lumina types. Path format: <package-path>.<object-name>
     class CObject : public CObjectBase
     {
     public:

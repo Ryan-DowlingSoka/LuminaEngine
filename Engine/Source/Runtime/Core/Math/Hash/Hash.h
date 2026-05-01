@@ -8,13 +8,9 @@
 #include <string.h>
 
 
-//-----------------------------------------------------------------------------
-
 namespace Lumina::Hash
 {
-	// XXHash
-	//-------------------------------------------------------------------------
-	// This is the default hashing algorithm for the engine
+	// XXHash: default hashing algorithm for the engine.
 
 	inline void HashCombine(size_t& seed, size_t value)
 	{
@@ -65,11 +61,7 @@ namespace Lumina::Hash
 		}
 	}
 
-	// FNV1a
-	//-------------------------------------------------------------------------
-	// This is a const expression hash
-	// Should not be used for anything other than code only features i.e. custom RTTI etc...
-
+	// FNV1a: constexpr hash. Use only for code-only features (custom RTTI, etc.).
 	namespace FNV1a
 	{
 		constexpr uint16 GConstValue16          = 0x811C;
@@ -95,9 +87,7 @@ namespace Lumina::Hash
 		}
 	}
 
-	// Default Lumina hashing functions
-	//-------------------------------------------------------------------------
-
+	// Default Lumina hashing functions.
 	FORCEINLINE uint32 GetHash32(const FString& string)
 	{
 		return XXHash::GetHash32(string.c_str(), string.length());

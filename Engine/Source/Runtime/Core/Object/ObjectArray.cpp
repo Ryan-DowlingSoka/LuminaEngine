@@ -138,29 +138,31 @@ namespace Lumina
         {
             Index = FreeIndices.back();
             FreeIndices.pop_back();
-    
+
             FCObjectEntry* Item = ChunkedArray.GetItem(Index);
             DEBUG_ASSERT(Item != nullptr);
             DEBUG_ASSERT(Item->GetObj() == nullptr);
-    
+
             Item->IncrementGeneration();
             Generation = Item->GetGeneration();
-                
+
+            Item->ResetRefCounts();
             Item->SetObj(Object);
         }
         else
         {
             Index = ChunkedArray.GetNumElements();
-    
+
             ASSERT(Index <= ChunkedArray.GetMaxElements(), "Object pool capacity exceeded!");
-    
+
             FCObjectEntry* Item = ChunkedArray.GetItem(Index);
             DEBUG_ASSERT(Item != nullptr);
-    
+
             Generation = 1;
             Item->Generation.store(Generation, std::memory_order_release);
+            Item->ResetRefCounts();
             Item->SetObj(Object);
-    
+
             ChunkedArray.IncrementElementCount();
         }
     

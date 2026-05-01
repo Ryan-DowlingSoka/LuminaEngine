@@ -316,7 +316,7 @@ namespace eastl
     {
         size_t operator()(const Lumina::TWeakObjectPtr<T>& Object) const noexcept
         {
-            return eastl::hash<Lumina::FObjectHandle>{}(Object.Handle);
+            return eastl::hash<Lumina::FObjectHandle>{}(Object.GetHandle());
         }
     };
 }

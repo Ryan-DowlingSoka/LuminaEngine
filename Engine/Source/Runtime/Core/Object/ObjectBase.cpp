@@ -54,7 +54,11 @@ namespace Lumina
     CObjectBase::~CObjectBase()
     {
         FObjectHashTables::Get().RemoveObject(this);
-        GObjectArray.DeallocateObject(InternalIndex);
+        if (InternalIndex != INDEX_NONE)
+        {
+            GObjectArray.DeallocateObject(InternalIndex);
+            InternalIndex = INDEX_NONE;
+        }
     }
 
     void CObjectBase::ConstructInternal(const FObjectInitializer& OI)
@@ -69,7 +73,7 @@ namespace Lumina
 
     CObjectBase::CObjectBase(EObjectFlags InFlags)
         : ObjectFlags(InFlags)
-        , InternalIndex(0)
+        , InternalIndex(INDEX_NONE)
     {
     }
 
@@ -79,7 +83,7 @@ namespace Lumina
         , PackagePrivate(Package)
         , NamePrivate(Move(InName))
         , GUIDPrivate(GUID)
-        , InternalIndex(0)
+        , InternalIndex(INDEX_NONE)
     {
     }
 
@@ -181,6 +185,10 @@ namespace Lumina
 
     void CObjectBase::AddObject()
     {
+        if (InternalIndex != INDEX_NONE)
+        {
+            return;
+        }
         InternalIndex = GObjectArray.AllocateObject(this).Index;
         FObjectHashTables::Get().AddObject(this);
     }

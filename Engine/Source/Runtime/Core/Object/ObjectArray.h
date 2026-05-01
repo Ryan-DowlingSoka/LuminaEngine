@@ -46,8 +46,18 @@ namespace Lumina
 
         uint32 ReleaseStrongRef()
         {
-            uint32 PrevCount = StrongRefCount.fetch_sub(1, std::memory_order_acq_rel);
-            return PrevCount - 1;
+            int32 PrevCount = StrongRefCount.load(std::memory_order_relaxed);
+            do
+            {
+                if (PrevCount <= 0)
+                {
+                    ASSERT(false, "ReleaseStrongRef on object with zero refcount");
+                    return 0;
+                }
+            }
+            while (!StrongRefCount.compare_exchange_weak(PrevCount, PrevCount - 1,
+                std::memory_order_acq_rel, std::memory_order_relaxed));
+            return uint32(PrevCount - 1);
         }
 
         void AddWeakRef()
@@ -83,6 +93,12 @@ namespace Lumina
         bool IsReferenced() const
         {
             return StrongRefCount.load(std::memory_order_relaxed) > 0;
+        }
+
+        void ResetRefCounts()
+        {
+            StrongRefCount.store(0, std::memory_order_relaxed);
+            WeakRefCount.store(0, std::memory_order_relaxed);
         }
     };
 
