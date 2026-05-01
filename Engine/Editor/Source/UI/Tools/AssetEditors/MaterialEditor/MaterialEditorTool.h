@@ -62,6 +62,8 @@ namespace Lumina
         
         
         TUniquePtr<FPropertyTable>      EnvironmentEditor;
+        TUniquePtr<FPropertyTable>      DirectionalEditor;
+        
         TObjectPtr<CMaterialNodeGraph>  NodeGraph;
         bool                            bGLSLPreviewDirty = false;
     };

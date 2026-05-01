@@ -107,11 +107,12 @@ namespace Lumina
         World->GetRenderer()->GetSceneRenderSettings().bDrawBillboards = false;
 
         DirectionalLightEntity = World->ConstructEntity("Directional Light");
-        World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
+        auto& Directional = World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
         auto& Environment = World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
         
+        DirectionalEditor = MakeUnique<FPropertyTable>(&Directional, SDirectionalLightComponent::StaticStruct());
         EnvironmentEditor = MakeUnique<FPropertyTable>(&Environment, SEnvironmentComponent::StaticStruct());
-        
+
         MeshEntity = World->ConstructEntity("MeshEntity");
         SStaticMeshComponent& StaticMeshComponent = World->GetEntityRegistry().emplace<SStaticMeshComponent>(MeshEntity);
         StaticMeshComponent.StaticMesh = CThumbnailManager::Get().SphereMesh;
@@ -239,8 +240,9 @@ namespace Lumina
     {
         GetPropertyTable()->DrawTree();
         
-        if (EnvironmentEditor)
+        if (EnvironmentEditor && DirectionalEditor)
         {
+            DirectionalEditor->DrawTree();
             EnvironmentEditor->DrawTree();
         }
     }
