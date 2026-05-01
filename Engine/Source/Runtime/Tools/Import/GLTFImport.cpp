@@ -52,7 +52,31 @@ namespace Lumina::Import::Mesh::GLTF
 
             fastgltf::Expected<fastgltf::Asset> Asset(fastgltf::Error::None);
 
-            fastgltf::Parser Parser;
+            constexpr fastgltf::Extensions extensions =
+                  fastgltf::Extensions::KHR_texture_transform
+                | fastgltf::Extensions::KHR_texture_basisu
+                | fastgltf::Extensions::MSFT_texture_dds
+                | fastgltf::Extensions::KHR_mesh_quantization
+                | fastgltf::Extensions::EXT_meshopt_compression
+                | fastgltf::Extensions::KHR_lights_punctual
+                | fastgltf::Extensions::EXT_texture_webp
+                | fastgltf::Extensions::KHR_materials_specular
+                | fastgltf::Extensions::KHR_materials_ior
+                | fastgltf::Extensions::KHR_materials_iridescence
+                | fastgltf::Extensions::KHR_materials_volume
+                | fastgltf::Extensions::KHR_materials_transmission
+                | fastgltf::Extensions::KHR_materials_clearcoat
+                | fastgltf::Extensions::KHR_materials_emissive_strength
+                | fastgltf::Extensions::KHR_materials_sheen
+                | fastgltf::Extensions::KHR_materials_unlit
+                | fastgltf::Extensions::KHR_materials_anisotropy
+                | fastgltf::Extensions::EXT_mesh_gpu_instancing
+                | fastgltf::Extensions::MSFT_packing_normalRoughnessMetallic
+                | fastgltf::Extensions::MSFT_packing_occlusionRoughnessMetallic
+                | fastgltf::Extensions::KHR_materials_dispersion
+                | fastgltf::Extensions::KHR_materials_variants;
+
+            fastgltf::Parser Parser(extensions);
             if (SourceType == fastgltf::GltfType::glTF)
             {
                 Asset = Parser.loadGltf(&Buffer, FSPath.parent_path(), options);
