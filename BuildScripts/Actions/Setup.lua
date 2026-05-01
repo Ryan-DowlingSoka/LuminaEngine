@@ -11,7 +11,7 @@
     The orchestrating Setup.bat runs this action and then `premake5 vs2022`.
 --]]
 
-local LuminaDir = os.getenv("LUMINA_DIR") or os.getcwd()
+local LuminaDir = os.getenv("LUMINA_DIR") or _MAIN_SCRIPT_DIR
 include (path.join(LuminaDir, "BuildScripts/Logger"))
 
 
