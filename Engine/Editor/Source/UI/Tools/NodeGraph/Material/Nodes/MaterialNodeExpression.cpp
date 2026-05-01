@@ -7,7 +7,7 @@ namespace Lumina
 {
     void CMaterialExpression::BuildNode()
     {
-        Output = Cast<CMaterialOutput>(CreatePin(CMaterialOutput::StaticClass(), "Material Output", ENodePinDirection::Output));
+        Output = Cast<CMaterialOutput>(CreatePin(CMaterialOutput::StaticClass(), "", ENodePinDirection::Output));
         Output->SetShouldDrawEditor(false);
     }
 
