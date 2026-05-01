@@ -134,55 +134,55 @@ namespace Lumina
         }
 
         FUNCTION(Script) 
-        float GetFloat(FName Name, float Default = 0.0f) const;
+        float GetFloat(const FName& Name, float Default = 0.0f) const;
         
         FUNCTION(Script) 
-        int32 GetInt(FName Name, int32 Default = 0) const;
+        int32 GetInt(const FName& Name, int32 Default = 0) const;
         
         FUNCTION(Script) 
-        bool GetBool(FName Name, bool Default = false) const;
+        bool GetBool(const FName& Name, bool Default = false) const;
         
         FUNCTION(Script) 
-        glm::vec2 GetVec2(FName Name) const;
+        glm::vec2 GetVec2(const FName& Name) const;
         
         FUNCTION(Script) 
-        glm::vec3 GetVec3(FName Name) const;
+        glm::vec3 GetVec3(const FName& Name) const;
         
         FUNCTION(Script)
-        glm::vec4 GetVec4(FName Name) const;
+        glm::vec4 GetVec4(const FName& Name) const;
         
         FUNCTION(Script)
-        glm::vec4 GetColor(FName Name) const;
+        glm::vec4 GetColor(const FName& Name) const;
 
         FUNCTION(Script) 
-        void SetFloat(FName Name, float Value);
+        void SetFloat(const FName& Name, float Value);
         
         FUNCTION(Script) 
-        void SetInt(FName Name, int32 Value);
+        void SetInt(const FName& Name, int32 Value);
         
         FUNCTION(Script)
-        void SetBool(FName Name, bool Value);
+        void SetBool(const FName& Name, bool Value);
         
         FUNCTION(Script) 
-        void SetVec2(FName Name, glm::vec2 Value);
+        void SetVec2(const FName& Name, glm::vec2 Value);
         
         FUNCTION(Script) 
-        void SetVec3(FName Name, glm::vec3 Value);
+        void SetVec3(const FName& Name, glm::vec3 Value);
         
         FUNCTION(Script) 
-        void SetVec4(FName Name, glm::vec4 Value);
+        void SetVec4(const FName& Name, glm::vec4 Value);
         
         FUNCTION(Script) 
-        void SetColor(FName Name, glm::vec4 Value);
+        void SetColor(const FName& Name, glm::vec4 Value);
 
         /** Drop the override for this parameter, reverting to the asset default. */
         FUNCTION(Script) 
-        void ResetParameter(FName Name);
+        void ResetParameter(const FName& Name);
 
     private:
 
         /** Resolve a parameter by name, preferring component overrides over the asset's default. */
-        const FParticleParameter* FindParameter(FName Name) const;
+        const FParticleParameter* FindParameter(const FName& Name) const;
 
         /**
          * Get-or-create the override entry for the given name and type. If the asset declares

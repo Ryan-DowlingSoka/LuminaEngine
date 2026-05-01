@@ -8,6 +8,7 @@ if defined LUMINA_DIR (
     set "ENGINE_ROOT=%LUMINA_DIR%"
 ) else (
     set "ENGINE_ROOT=%~dp0.."
+    set "LUMINA_DIR=%~dp0.."
 )
 
 set "PREMAKE=%ENGINE_ROOT%\Tools\premake5.exe"
