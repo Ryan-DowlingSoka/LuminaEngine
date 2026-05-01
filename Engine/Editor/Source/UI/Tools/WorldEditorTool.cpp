@@ -23,6 +23,7 @@
 #include "Input/InputProcessor.h"
 #include "Input/InputViewport.h"
 #include "Memory/SmartPtr.h"
+#include "Thumbnails/ThumbnailManager.h"
 #include "Tools/ComponentVisualizers/ComponentVisualizer.h"
 #include "Tools/Dialogs/Dialogs.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
@@ -38,7 +39,6 @@
 #include "World/Entity/Components/ScriptComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Entity/Components/TagComponent.h"
-#include "World/Entity/Components/VelocityComponent.h"
 #include "World/Scene/RenderScene/RenderScene.h"
 #include "World/Scene/RenderScene/SceneRenderTypes.h"
 #include "World/Subsystems/WorldSettings.h"
@@ -344,6 +344,8 @@ namespace Lumina
 
     void FWorldEditorTool::Update(const FUpdateContext& UpdateContext)
     {
+        FEditorTool::Update(UpdateContext);
+
         DrawWorldGrid();
 
         if (!ComponentDestroyRequests.empty())
@@ -1785,38 +1787,37 @@ namespace Lumina
         }
         
         const ImVec2 BtnSize = ImVec2(ButtonSize, ButtonSize);
-        float Speed = World->GetEntityRegistry().get<SVelocityComponent>(EditorEntity).Speed;
+        float Speed = CameraState.Speed;
 
         if (ImGuiX::IconButton(LE_ICON_CAMERA, "##Camera", 0xFFFFFFFF, BtnSize))
         {
             ImGui::OpenPopup("CameraSettings");
         }
-    
+
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
         {
             ImGui::SetTooltip("Camera Speed: %.1fx", Speed);
         }
-    
-        
+
+
         if (ImGui::BeginPopup("CameraSettings", ImGuiWindowFlags_NoMove))
         {
             STransformComponent& CameraTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
-            SVelocityComponent& Velocity = World->GetEntityRegistry().get<SVelocityComponent>(EditorEntity);
-            
+
             ImGui::SeparatorText(LE_ICON_VIDEO " Camera Settings");
-            
+
             ImGui::Text("Movement Speed");
             if (ImGui::SliderFloat("##Speed", &Speed, 0.1f, 100.0f, "%.1fx"))
             {
-                Velocity.Speed = Speed;
+                CameraState.Speed = Speed;
             }
-            
+
             ImGui::SameLine();
             
             if (ImGui::SmallButton("Reset##Speed"))
             {
                 Speed = 1.0f;
-                Velocity.Speed = 1.0f;
+                CameraState.Speed = 1.0f;
             }
             
             ImGui::Separator();
@@ -2881,6 +2882,26 @@ namespace Lumina
             {
                 using namespace entt::literals;
 
+                bool bDrewComponentsHeader = false;
+                auto DrawComponentsHeader = [&]()
+                {
+                    if (bDrewComponentsHeader)
+                    {
+                        return;
+                    }
+                    bDrewComponentsHeader = true;
+
+                    ImGui::Spacing();
+                    ImGui::Separator();
+                    ImGui::Spacing();
+
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.9f, 1.0f, 1.0f));
+                    ImGui::TextUnformatted(LE_ICON_CUBE " Components");
+                    ImGui::PopStyleColor();
+                    ImGui::Separator();
+                    ImGui::Spacing();
+                };
+
                 if (Entity == entt::null)
                 {
                     static const FName PrefabClassName = FName("CPrefab");
@@ -2943,16 +2964,74 @@ namespace Lumina
                                 ImGui::Spacing();
                             }
 
-                            ImGui::Spacing();
-                            ImGui::Separator();
-                            ImGui::Spacing();
+                            DrawComponentsHeader();
+                        }
+                    }
 
-                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.9f, 1.0f, 1.0f));
-                            ImGui::TextUnformatted(LE_ICON_CUBE " Components");
-                            ImGui::PopStyleColor();
-                            ImGui::Separator();
+                    struct FPrimitiveEntry
+                    {
+                        const char* Label;
+                        const char* EntityName;
+                        CStaticMesh* (*GetMesh)();
+                    };
+
+                    static const FPrimitiveEntry PrimitiveEntries[] =
+                    {
+                        { LE_ICON_CUBE     " Cube",     "Cube",     []() -> CStaticMesh* { return CThumbnailManager::Get().CubeMesh; } },
+                        { LE_ICON_CIRCLE   " Sphere",   "Sphere",   []() -> CStaticMesh* { return CThumbnailManager::Get().SphereMesh; } },
+                        { LE_ICON_SQUARE   " Plane",    "Plane",    []() -> CStaticMesh* { return CThumbnailManager::Get().PlaneMesh; } },
+                        { LE_ICON_CYLINDER " Cylinder", "Cylinder", []() -> CStaticMesh* { return CThumbnailManager::Get().CylinderMesh; } },
+                        { LE_ICON_CONE     " Cone",     "Cone",     []() -> CStaticMesh* { return CThumbnailManager::Get().ConeMesh; } },
+                    };
+
+                    TVector<const FPrimitiveEntry*> FilteredPrimitives;
+                    FilteredPrimitives.reserve(IM_ARRAYSIZE(PrimitiveEntries));
+                    for (const FPrimitiveEntry& Entry : PrimitiveEntries)
+                    {
+                        if (AddEntityComponentFilter.PassFilter(Entry.EntityName))
+                        {
+                            FilteredPrimitives.push_back(&Entry);
+                        }
+                    }
+
+                    if (!FilteredPrimitives.empty())
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.9f, 1.0f, 1.0f));
+                        ImGui::TextUnformatted(LE_ICON_SHAPE " Primitives");
+                        ImGui::PopStyleColor();
+                        ImGui::Separator();
+                        ImGui::Spacing();
+
+                        for (const FPrimitiveEntry* Entry : FilteredPrimitives)
+                        {
+                            ImGui::PushID(Entry);
+
+                            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.28f, 0.22f, 1.0f));
+                            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.45f, 0.35f, 1.0f));
+                            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.4f, 0.3f, 1.0f));
+                            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+                            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 10.0f));
+
+                            const float ButtonWidth = ImGui::GetContentRegionAvail().x;
+
+                            if (ImGui::Button(Entry->Label, ImVec2(ButtonWidth, 0.0f)))
+                            {
+                                BeginTransaction();
+                                CreatePrimitiveEntity(Entry->GetMesh(), Entry->EntityName);
+                                EndTransaction("New Primitive");
+
+                                ImGui::CloseCurrentPopup();
+                                AddEntityComponentFilter.Clear();
+                            }
+
+                            ImGui::PopStyleVar(2);
+                            ImGui::PopStyleColor(3);
+
+                            ImGui::PopID();
                             ImGui::Spacing();
                         }
+
+                        DrawComponentsHeader();
                     }
                 }
 
@@ -4249,6 +4328,25 @@ namespace Lumina
             SetSingleSelectedEntity(NewEntity);
         }
         // Outliner row appears via OnOutlinerEntityConstructed → FlushOutlinerPending.
+    }
+
+    void FWorldEditorTool::CreatePrimitiveEntity(CStaticMesh* PrimitiveMesh, const char* DisplayName)
+    {
+        if (PrimitiveMesh == nullptr)
+        {
+            return;
+        }
+
+        entt::entity CreatedEntity = World->ConstructEntity(DisplayName, GetCameraSpawnTransform());
+        if (CreatedEntity == entt::null)
+        {
+            return;
+        }
+
+        SStaticMeshComponent& MeshComp = World->GetEntityRegistry().emplace<SStaticMeshComponent>(CreatedEntity);
+        MeshComp.StaticMesh = PrimitiveMesh;
+
+        SetSingleSelectedEntity(CreatedEntity);
     }
 
     void FWorldEditorTool::CopyEntity(entt::entity& To, entt::entity From)

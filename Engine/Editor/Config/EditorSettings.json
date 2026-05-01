@@ -8,7 +8,7 @@
             "AutoTriggerCompletion": true,
             "AutoTriggerDelayMs": 100,
             "CompletePairs": true,
-            "FontScale": 2.200000047683716,
+            "FontScale": 2.125999927520752,
             "InsertSpacesOnTabs": false,
             "LineSpacing": 1.0,
             "MatchBrackets": true,
@@ -24,6 +24,10 @@
             "Prototyping"
         ],
         "StartupProject": "NULL",
+        "UI": {
+            "DPIAware": true,
+            "GlobalScale": 0.7099999785423279
+        },
         "WorldEditorTool": {
             "GuizmoSnapEnabled": false,
             "GuizmoSnapRotate": 1.0,

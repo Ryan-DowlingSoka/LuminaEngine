@@ -25,6 +25,8 @@ namespace Lumina
 
     void FAssetEditorTool::Update(const FUpdateContext& UpdateContext)
     {
+        FEditorTool::Update(UpdateContext);
+
         DrawWorldGrid();
 
         if (!bAssetLoadBroadcasted && Asset != nullptr)

@@ -14,7 +14,6 @@
 #include "world/Entity/Components/SimpleAnimationComponent.h"
 #include "world/entity/components/skeletalmeshcomponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
-#include "world/entity/components/velocitycomponent.h"
 
 
 namespace Lumina
@@ -61,8 +60,8 @@ namespace Lumina
             return;
         }
         
-        World->GetEntityRegistry().get<SVelocityComponent>(EditorEntity).Speed = 5.0f;
-        
+        CameraState.Speed = 5.0f;
+
         MeshEntity = World->ConstructEntity("MeshEntity");
         World->GetEntityRegistry().emplace<SSkeletalMeshComponent>(MeshEntity).SkeletalMesh = Animation->Skeleton->PreviewMesh;
         World->GetEntityRegistry().emplace<SSimpleAnimationComponent>(MeshEntity).Animation = Animation;

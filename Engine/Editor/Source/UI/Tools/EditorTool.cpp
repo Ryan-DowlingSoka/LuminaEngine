@@ -11,7 +11,9 @@
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "UI/Tools/EditorAssetDropHandlers.h"
 #include "Core/Application/Application.h"
+#include "Core/UpdateContext.h"
 #include "Input/InputContext.h"
+#include "Input/InputProcessor.h"
 #include "Input/InputViewport.h"
 #include "World/WorldManager.h"
 #include "World/Entity/EntityUtils.h"
@@ -20,8 +22,6 @@
 #include "World/Entity/Components/InputComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
-#include "World/Entity/Components/VelocityComponent.h"
-#include "World/Entity/Systems/EditorEntityMovementSystem.h"
 
 namespace Lumina
 {
@@ -180,6 +180,11 @@ namespace Lumina
         ToolWindows.clear();
     }
 
+    void FEditorTool::Update(const FUpdateContext& UpdateContext)
+    {
+        TickEditorCamera(UpdateContext.GetDeltaTime());
+    }
+
     ImGuiID FEditorTool::CalculateDockspaceID() const
     {
         uint32 DockspaceID = CurrLocationID;
@@ -233,7 +238,6 @@ namespace Lumina
         World->GetEntityRegistry().emplace<SCameraComponent>(EditorEntity);
         World->GetEntityRegistry().emplace<SInputComponent>(EditorEntity);
         World->GetEntityRegistry().emplace<FEditorComponent>(EditorEntity);
-        World->GetEntityRegistry().emplace<SVelocityComponent>(EditorEntity).Speed = 50.0f;
         World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetLocation(glm::vec3(0.0f, 1.25f, 3.25f));
 
         World->SetActiveCamera(EditorEntity);
@@ -429,23 +433,268 @@ namespace Lumina
         {
             return;
         }
-    
+
         if (!World->GetEntityRegistry().valid(Entity))
         {
             return;
         }
-    
+
         const STransformComponent& EntityTransform = World->GetEntityRegistry().get<STransformComponent>(Entity);
         STransformComponent& EditorTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
-        
-        float FocusDistance = 10.0f;
-    
+
+        const float FocusDistance = (CameraState.Mode == EEditorCameraMode::Orbit) ? CameraState.OrbitDistance : 10.0f;
+
+        if (CameraState.Mode == EEditorCameraMode::Orbit)
+        {
+            // Re-anchor on the focused entity; position is recomputed from
+            // the orbit angles in the next TickEditorCamera. Anchor moves
+            // too so a later ResetOrbitPan returns to the focused entity.
+            SetOrbitTarget(EntityTransform.GetLocation(), FocusDistance);
+            return;
+        }
+
         glm::vec3 CurrentForward = EditorTransform.GetForward();
         glm::vec3 NewPosition = EntityTransform.GetLocation() - CurrentForward * FocusDistance;
         EditorTransform.SetLocation(NewPosition);
-        
+
         glm::quat Rotation = Math::FindLookAtRotation(EntityTransform.GetLocation(), NewPosition);
         EditorTransform.SetRotation(Rotation);
+    }
+
+    void FEditorTool::SetCameraMode(EEditorCameraMode Mode)
+    {
+        if (CameraState.Mode == Mode)
+        {
+            return;
+        }
+
+        // When entering Orbit, derive yaw/pitch/distance from the current camera so the
+        // first frame doesn't snap. If the camera was looking through OrbitTarget already,
+        // distance falls out naturally; otherwise it's just the magnitude of the offset.
+        if (Mode == EEditorCameraMode::Orbit && HasWorld() && EditorEntity != entt::null
+            && World->GetEntityRegistry().valid(EditorEntity))
+        {
+            const STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
+            const glm::vec3 Position = Transform.GetLocation();
+            const glm::vec3 Offset   = Position - CameraState.OrbitTarget;
+            const float Distance = glm::length(Offset);
+
+            CameraState.OrbitDistance = glm::max(Distance, 0.1f);
+            // Yaw is around world-Y measured from +Z; pitch is the elevation above the XZ plane.
+            CameraState.OrbitYaw   = glm::degrees(std::atan2(Offset.x, Offset.z));
+            CameraState.OrbitPitch = glm::degrees(std::asin(glm::clamp(Offset.y / CameraState.OrbitDistance, -1.0f, 1.0f)));
+        }
+
+        CameraState.Mode = Mode;
+        CameraState.Velocity = glm::vec3(0.0f);
+
+        // Snap the entity transform now so the first frame after SetupWorldForTool sees the
+        // mesh framed correctly — TickEditorCamera otherwise wouldn't run until the viewport
+        // gets focus, leaving the camera at FEditorTool::SetupWorldForTool's default origin.
+        if (Mode == EEditorCameraMode::Orbit)
+        {
+            ApplyOrbitTransform();
+        }
+    }
+
+    void FEditorTool::SetOrbitTarget(const glm::vec3& Target, float Distance)
+    {
+        CameraState.OrbitTarget = Target;
+        CameraState.OrbitAnchor = Target;
+        if (Distance > 0.0f)
+        {
+            CameraState.OrbitDistance = Distance;
+        }
+
+        if (CameraState.Mode == EEditorCameraMode::Orbit)
+        {
+            ApplyOrbitTransform();
+        }
+    }
+
+    void FEditorTool::ResetOrbitPan()
+    {
+        CameraState.OrbitTarget = CameraState.OrbitAnchor;
+        if (CameraState.Mode == EEditorCameraMode::Orbit)
+        {
+            ApplyOrbitTransform();
+        }
+    }
+
+    void FEditorTool::ApplyOrbitTransform()
+    {
+        if (!HasWorld() || EditorEntity == entt::null)
+        {
+            return;
+        }
+        if (!World->GetEntityRegistry().valid(EditorEntity))
+        {
+            return;
+        }
+
+        const float YawRad   = glm::radians(CameraState.OrbitYaw);
+        const float PitchRad = glm::radians(CameraState.OrbitPitch);
+        const glm::vec3 Offset(
+            CameraState.OrbitDistance * std::cos(PitchRad) * std::sin(YawRad),
+            CameraState.OrbitDistance * std::sin(PitchRad),
+            CameraState.OrbitDistance * std::cos(PitchRad) * std::cos(YawRad));
+
+        const glm::vec3 NewPosition = CameraState.OrbitTarget + Offset;
+        STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
+        Transform.SetLocation(NewPosition);
+        Transform.SetRotation(Math::FindLookAtRotation(CameraState.OrbitTarget, NewPosition));
+    }
+
+    void FEditorTool::DrawCameraModeSelector(float ItemWidth)
+    {
+        const char* Label = (CameraState.Mode == EEditorCameraMode::Orbit) ? "Orbit" : "Free";
+        ImGui::PushItemWidth(ItemWidth);
+        if (ImGui::BeginCombo("##CameraMode", Label, ImGuiComboFlags_HeightLarge))
+        {
+            if (ImGui::Selectable("Free", CameraState.Mode == EEditorCameraMode::Free))
+            {
+                SetCameraMode(EEditorCameraMode::Free);
+            }
+            if (ImGui::Selectable("Orbit", CameraState.Mode == EEditorCameraMode::Orbit))
+            {
+                SetCameraMode(EEditorCameraMode::Orbit);
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::PopItemWidth();
+
+        // Reset-pan button: only meaningful in orbit mode, and only when MMB-drag has actually
+        // moved OrbitTarget off its anchor. Hidden otherwise so it doesn't add noise.
+        if (CameraState.Mode == EEditorCameraMode::Orbit)
+        {
+            const bool bPanned = glm::distance(CameraState.OrbitTarget, CameraState.OrbitAnchor) > 1e-4f;
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!bPanned);
+            if (ImGui::Button(LE_ICON_HOME "##ResetPan"))
+            {
+                ResetOrbitPan();
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            {
+                ImGui::SetTooltip("Reset Pan (return to anchor)");
+            }
+        }
+    }
+
+    void FEditorTool::TickEditorCamera(double DeltaTime)
+    {
+        if (!HasWorld() || EditorEntity == entt::null)
+        {
+            return;
+        }
+        if (!World->GetEntityRegistry().valid(EditorEntity))
+        {
+            return;
+        }
+
+        FInputProcessor& Input = FInputProcessor::Get();
+        const bool bWantLook = bViewportFocused && Input.IsMouseButtonDown(EMouseKey::ButtonRight);
+        const bool bWantPan  = bViewportFocused
+                            && CameraState.Mode == EEditorCameraMode::Orbit
+                            && Input.IsMouseButtonDown(EMouseKey::ButtonMiddle);
+        const bool bWantsCaptured = bWantLook || bWantPan;
+        
+        if (CameraState.bWasLooking && !bWantsCaptured)
+        {
+            Input.SetMouseMode(EMouseMode::Normal);
+        }
+        CameraState.bWasLooking = bWantsCaptured;
+
+        STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
+
+        if (CameraState.Mode == EEditorCameraMode::Free)
+        {
+            // Free-cam consumes input directly into the entity transform; no derived state
+            // to apply if the viewport isn't focused, so just bail.
+            if (!bViewportFocused)
+            {
+                return;
+            }
+
+            const glm::vec3 Forward = Transform.GetForward();
+            const glm::vec3 Right   = Transform.GetRight();
+            const glm::vec3 Up      = Transform.GetUp();
+
+            float Speed = CameraState.Speed;
+            if (Input.IsKeyDown(EKey::LeftShift))
+            {
+                Speed *= 10.0f;
+            }
+
+            glm::vec3 Acceleration(0.0f);
+            if (Input.IsKeyDown(EKey::W)) Acceleration += Forward;
+            if (Input.IsKeyDown(EKey::S)) Acceleration -= Forward;
+            if (Input.IsKeyDown(EKey::D)) Acceleration += Right;
+            if (Input.IsKeyDown(EKey::A)) Acceleration -= Right;
+            if (Input.IsKeyDown(EKey::E)) Acceleration += Up;
+            if (Input.IsKeyDown(EKey::Q)) Acceleration -= Up;
+
+            if (glm::length(Acceleration) > 0.0f)
+            {
+                Acceleration = glm::normalize(Acceleration) * Speed;
+            }
+
+            CameraState.Velocity += Acceleration * static_cast<float>(DeltaTime);
+            constexpr float Drag = 10.0f;
+            CameraState.Velocity -= CameraState.Velocity * Drag * static_cast<float>(DeltaTime);
+
+            Transform.Translate(CameraState.Velocity * static_cast<float>(DeltaTime) * CameraState.SpeedScale);
+
+            if (bWantLook)
+            {
+                Input.SetMouseMode(EMouseMode::Captured);
+
+                Transform.AddYaw(static_cast<float>(Input.GetMouseDeltaX() * 0.1));
+                Transform.AddPitch(static_cast<float>(Input.GetMouseDeltaY() * 0.1));
+
+                const double WheelZ = Input.GetMouseZ();
+                CameraState.SpeedScale += Math::Pow(1.05f, CameraState.SpeedScale) * static_cast<float>(WheelZ);
+                CameraState.SpeedScale = Math::Clamp(CameraState.SpeedScale, 0.2f, 100.0f);
+            }
+        }
+        else // Orbit
+        {
+            // Input is gated on focus, but the transform application below is not — the
+            // orbit camera position is purely derived from CameraState, so we always want
+            // it written back to the entity (otherwise the first frame after SetupWorldForTool
+            // renders with the default origin transform until the user clicks the viewport).
+            if (bViewportFocused)
+            {
+                if (bWantLook)
+                {
+                    Input.SetMouseMode(EMouseMode::Captured);
+                    CameraState.OrbitYaw   -= static_cast<float>(Input.GetMouseDeltaX() * 0.4);
+                    CameraState.OrbitPitch += static_cast<float>(Input.GetMouseDeltaY() * 0.4);
+                    CameraState.OrbitPitch = glm::clamp(CameraState.OrbitPitch, -89.0f, 89.0f);
+                }
+
+                if (Input.IsMouseButtonDown(EMouseKey::ButtonMiddle))
+                {
+                    Input.SetMouseMode(EMouseMode::Captured);
+                    const float PanScale = CameraState.OrbitDistance * 0.002f;
+                    const glm::vec3 Right = Transform.GetRight();
+                    const glm::vec3 Up    = Transform.GetUp();
+                    CameraState.OrbitTarget -= Right * static_cast<float>(Input.GetMouseDeltaX()) * PanScale;
+                    CameraState.OrbitTarget += Up    * static_cast<float>(Input.GetMouseDeltaY()) * PanScale;
+                }
+
+                const double WheelZ = Input.GetMouseZ();
+                if (WheelZ != 0.0)
+                {
+                    const float Zoom = 0.1f * CameraState.OrbitDistance;
+                    CameraState.OrbitDistance -= static_cast<float>(WheelZ) * Zoom;
+                    CameraState.OrbitDistance = glm::max(CameraState.OrbitDistance, 0.05f);
+                }
+            }
+
+            ApplyOrbitTransform();
+        }
     }
 
     void FEditorTool::DrawWorldGrid(int Scale, int Spacing)

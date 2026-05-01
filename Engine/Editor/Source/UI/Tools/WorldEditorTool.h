@@ -14,6 +14,7 @@
 
 namespace Lumina
 {
+    class CStaticMesh;
     DECLARE_MULTICAST_DELEGATE(FOnGamePreview);
     
     /**
@@ -197,6 +198,7 @@ namespace Lumina
 
         void CreateEntityWithComponent(const CStruct* Component);
         void CreateEntity();
+        void CreatePrimitiveEntity(CStaticMesh* PrimitiveMesh, const char* DisplayName);
 
         void CopyEntity(entt::entity& To, entt::entity From);
 

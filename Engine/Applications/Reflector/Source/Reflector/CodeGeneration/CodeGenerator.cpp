@@ -48,6 +48,20 @@ namespace Lumina::Reflection
             return WorkspacePath + R"(\Intermediates\Reflection\)" + Project.Name + R"(\ReflectionUnity.gen.cpp)";
         }
 
+        eastl::string MakeProjectIntermediateDir(const eastl::string& WorkspacePath, const FReflectedProject& Project)
+        {
+            return WorkspacePath + R"(\Intermediates\Reflection\)" + Project.Name;
+        }
+
+        constexpr const char* kUnityStubContents =
+            "// Reflection unity stub.\n"
+            "// This project has no reflected types yet; this file exists\n"
+            "// only so the vcxproj's source list resolves. The Reflector\n"
+            "// will overwrite it the moment a reflected type appears.\n"
+            "#if __has_include(\"pch.h\")\n"
+            "    #include \"pch.h\"\n"
+            "#endif\n";
+
         void WriteTextFile(const eastl::string& PathUtf8, const eastl::string& Contents)
         {
             std::filesystem::path OutputPath(PathUtf8.c_str());
@@ -73,8 +87,9 @@ namespace Lumina::Reflection
     {
         // Per-project accumulator: unity cpp pools every dirty header's
         // .generated.cpp include.
-        eastl::hash_map<FReflectedProject*, eastl::string> UnityPerProject;
-        eastl::hash_set<FReflectedProject*>                DirtyProjects;
+        eastl::hash_map<FReflectedProject*, eastl::string>                  UnityPerProject;
+        eastl::hash_set<FReflectedProject*>                                 DirtyProjects;
+        eastl::hash_map<FReflectedProject*, eastl::hash_set<eastl::string>> ExpectedArtifacts;
 
         for (const auto& [Header, _] : ReflectionDatabase->ReflectedTypes)
         {
@@ -85,6 +100,10 @@ namespace Lumina::Reflection
             }
             Unity += "#include \"" + Header->FileName + ".generated.cpp\"\n";
 
+            auto& Expected = ExpectedArtifacts[Header->Project];
+            Expected.insert(Header->FileName + ".generated.cpp");
+            Expected.insert(Header->FileName + ".generated.h");
+
             if (Header->bDirty)
             {
                 DirtyProjects.insert(Header->Project);
@@ -93,9 +112,66 @@ namespace Lumina::Reflection
             }
         }
 
+        // Orphan sweep: a header that was deleted between runs leaves its
+        // .generated.{h,cpp} on disk and the prior unity still includes the
+        // .cpp. The header never enters the loop above, so DirtyProjects
+        // never picks it up. Walk every reflection-enabled project's
+        // intermediate dir and remove any generated artifact whose backing
+        // header is gone, marking the project dirty so the unity gets
+        // rewritten without that include.
+        for (auto& Project : Workspace->ReflectedProjects)
+        {
+            const std::filesystem::path Dir(
+                MakeProjectIntermediateDir(Workspace->GetPath(), *Project).c_str());
+
+            std::error_code Ec;
+            if (!std::filesystem::exists(Dir, Ec))
+            {
+                continue;
+            }
+
+            const auto* Expected = [&]() -> const eastl::hash_set<eastl::string>*
+            {
+                auto It = ExpectedArtifacts.find(Project.get());
+                return It != ExpectedArtifacts.end() ? &It->second : nullptr;
+            }();
+
+            for (const auto& Entry : std::filesystem::directory_iterator(Dir, Ec))
+            {
+                if (Ec || !Entry.is_regular_file(Ec))
+                {
+                    continue;
+                }
+
+                const std::string FilenameStd = Entry.path().filename().string();
+                const eastl::string Filename(FilenameStd.c_str());
+
+                const bool bIsGenerated =
+                    Filename.find(".generated.cpp") != eastl::string::npos ||
+                    Filename.find(".generated.h") != eastl::string::npos;
+                if (!bIsGenerated)
+                {
+                    continue;
+                }
+
+                if (Expected && Expected->find(Filename) != Expected->end())
+                {
+                    continue;
+                }
+
+                std::filesystem::remove(Entry.path(), Ec);
+                DirtyProjects.insert(Project.get());
+            }
+        }
+
         for (auto* DirtyProject : DirtyProjects)
         {
-            WriteUnityBuildFile(DirtyProject, UnityPerProject[DirtyProject]);
+            // A project that lost its last reflected type has no entry in
+            // UnityPerProject; fall back to the stub so the vcxproj still
+            // compiles cleanly.
+            auto It = UnityPerProject.find(DirtyProject);
+            const bool bHasContent = It != UnityPerProject.end() && !It->second.empty();
+            WriteUnityBuildFile(DirtyProject, bHasContent ? It->second : eastl::string(kUnityStubContents));
         }
 
         // Stub guard: every reflection-enabled project lists ReflectionUnity.gen.cpp
@@ -116,14 +192,7 @@ namespace Lumina::Reflection
                 continue;
             }
 
-            WriteTextFile(Path,
-                "// Reflection unity stub.\n"
-                "// This project has no reflected types yet; this file exists\n"
-                "// only so the vcxproj's source list resolves. The Reflector\n"
-                "// will overwrite it the moment a reflected type appears.\n"
-                "#if __has_include(\"pch.h\")\n"
-                "    #include \"pch.h\"\n"
-                "#endif\n");
+            WriteTextFile(Path, kUnityStubContents);
         }
     }
 

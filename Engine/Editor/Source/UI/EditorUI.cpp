@@ -105,7 +105,6 @@
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "Tools/UI/ImGui/ImGuiRenderer.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
-#include "World/Entity/Components/EditorComponent.h"
 #include "World/Scene/RenderScene/RenderScene.h"
 
 namespace Lumina
@@ -1002,14 +1001,6 @@ namespace Lumina
                         Tool->DrawViewport(UpdateContext, ViewportTexture);
                     }
 
-                    if (Tool->GetWorld()->GetEntityRegistry().valid(Tool->EditorEntity))
-                    {
-						if (FEditorComponent* EditorComp = Tool->GetWorld()->GetEntityRegistry().try_get<FEditorComponent>(Tool->EditorEntity))
-                        {
-                            EditorComp->bEnabled = Tool->bViewportFocused;
-                        }
-                    }
-                    
                     ImGui::End();
                 }
                 else

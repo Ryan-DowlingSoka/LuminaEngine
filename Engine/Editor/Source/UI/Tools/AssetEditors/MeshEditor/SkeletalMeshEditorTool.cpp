@@ -7,7 +7,6 @@
 #include "world/entity/components/environmentcomponent.h"
 #include "World/Entity/Components/LightComponent.h"
 #include "World/Entity/Components/SkeletalMeshComponent.h"
-#include "world/entity/components/velocitycomponent.h"
 #include <UI/Tools/AssetEditors/AssetEditorTool.h>
 #include <UI/Tools/EditorTool.h>
 #include <Lumina.h>
@@ -392,7 +391,7 @@ namespace Lumina
         
         CSkeletalMesh* SkeletalMesh = Cast<CSkeletalMesh>(Asset.Get());
         
-        World->GetEntityRegistry().get<SVelocityComponent>(EditorEntity).Speed = 5.0f;
+        CameraState.Speed = 5.0f;
 
         MeshEntity = World->ConstructEntity("MeshEntity");
         SSkeletalMeshComponent& MeshComponent = World->GetEntityRegistry().emplace<SSkeletalMeshComponent>(MeshEntity);

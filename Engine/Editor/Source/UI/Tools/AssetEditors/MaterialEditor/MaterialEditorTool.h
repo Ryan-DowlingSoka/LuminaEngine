@@ -37,6 +37,8 @@ namespace Lumina
             Sphere,
             Cube,
             Plane,
+            Cylinder,
+            Cone,
         };
 
         LUMINA_EDITOR_TOOL(FMaterialEditorTool)

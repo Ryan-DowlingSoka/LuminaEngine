@@ -22,6 +22,39 @@ namespace Lumina
 
 namespace Lumina
 {
+    enum class EEditorCameraMode : uint8
+    {
+        Free,    // WASD + RMB-drag look (DCC-style flythrough)
+        Orbit,   // RMB-drag yaw/pitch around a focal point, MMB pan, wheel zoom
+    };
+
+    // Per-tool editor-camera state. Replaces the deleted SEditorEntityMovementSystem
+    // — each tool ticks its own camera in TickEditorCamera() so mode and focus can
+    // be configured per-editor (e.g. asset editors default to Orbit on the asset).
+    struct FEditorCameraState
+    {
+        EEditorCameraMode Mode = EEditorCameraMode::Free;
+
+        // Free-cam state
+        float       Speed       = 50.0f;
+        float       SpeedScale  = 1.0f;
+        glm::vec3   Velocity    = glm::vec3(0.0f);
+
+        // Orbit-cam state. Yaw/pitch are degrees applied to a unit forward axis
+        // pointing along +Z (matches FTransform's default forward). OrbitAnchor
+        // is the tool-set "home" position; MMB-pan moves OrbitTarget away from
+        // it, and ResetOrbitPan snaps back.
+        glm::vec3   OrbitTarget   = glm::vec3(0.0f);
+        glm::vec3   OrbitAnchor   = glm::vec3(0.0f);
+        float       OrbitDistance = 5.0f;
+        float       OrbitYaw      = 0.0f;
+        float       OrbitPitch    = -15.0f;
+
+        // Trailing-edge tracker: only release the captured mouse mode once when
+        // the user lets go of RMB, instead of every frame they're not looking.
+        bool        bWasLooking = false;
+    };
+
     class FEditorTool : public IEventHandler
     {
     public:
@@ -120,14 +153,46 @@ namespace Lumina
         /** Called just before updating the world at each stage */
         virtual void WorldUpdate(const FUpdateContext& UpdateContext) { }
 
-        /** Once per-frame update */
-        virtual void Update(const FUpdateContext& UpdateContext) { }
+        /** Once per-frame update. The base implementation drives the editor camera; subclasses
+         *  that override this should call FEditorTool::Update() (or TickEditorCamera() directly)
+         *  so look/orbit input keeps working. */
+        virtual void Update(const FUpdateContext& UpdateContext);
 
         /** Called once at the end of frame */
         virtual void EndFrame() { }
         
         /** Optionally draw a toolbar at the top of the window */
         void DrawMainToolbar(const FUpdateContext& UpdateContext);
+
+        /** Drives the editor-entity camera. Called once per frame from FEditorTool::Update;
+         *  subclasses should call FEditorTool::Update() (or this directly) so the camera ticks. */
+        void TickEditorCamera(double DeltaTime);
+
+        FEditorCameraState&       GetCameraState()       { return CameraState; }
+        const FEditorCameraState& GetCameraState() const { return CameraState; }
+
+        /** Switch camera mode. When entering Orbit, derive target/yaw/pitch/distance from the
+         *  current camera transform (relative to OrbitTarget) so the view doesn't snap. */
+        void SetCameraMode(EEditorCameraMode Mode);
+
+        /** Re-anchor orbit on a new world-space point. Pass the entity's location, mesh center, etc.
+         *  Updates both OrbitTarget and the OrbitAnchor that ResetOrbitPan returns to. */
+        void SetOrbitTarget(const glm::vec3& Target, float Distance = -1.0f);
+
+        /** Snap OrbitTarget back to OrbitAnchor — undoes any MMB-drag pan the user did. */
+        void ResetOrbitPan();
+
+    private:
+
+        /** Push the current orbit state (target/yaw/pitch/distance) onto the editor entity's
+         *  transform. Pure derived-state writer — safe to call any time, no input read. */
+        void ApplyOrbitTransform();
+
+    public:
+
+        /** Drop a small "Free / Orbit" combo into the current viewport overlay. Call from a tool's
+         *  DrawViewportOverlayElements override (typically alongside the preview-mesh selector). */
+        void DrawCameraModeSelector(float ItemWidth = 95.0f);
 
         /** Allows the child to draw specific menu actions */
         virtual void DrawToolMenu(const FUpdateContext& UpdateContext) { }
@@ -243,6 +308,7 @@ namespace Lumina
         
         TObjectPtr<CWorld>                  World;
         entt::entity                        EditorEntity;
+        FEditorCameraState                  CameraState;
         ImTextureID                         SceneViewportTexture = 0;
 
         TUniquePtr<FInputViewport>          InputViewport;

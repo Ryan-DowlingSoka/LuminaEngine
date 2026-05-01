@@ -45,7 +45,7 @@ namespace Lumina
             ImGui::BeginDisabled(Object == nullptr);
 
             TOptional<ImTextureRef> ButtonTexture;
-            if (Object.IsValid())
+            if (Object.IsValid() && HardObject->GetPackage())
             {
                 if (FPackageThumbnail* Thumbnail = CThumbnailManager::Get().GetThumbnailForPackage(HardObject->GetPackage()->GetName()))
                 {

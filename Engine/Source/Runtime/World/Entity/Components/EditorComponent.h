@@ -4,5 +4,5 @@ namespace Lumina
 {
     struct RUNTIME_API FSelectedInEditorComponent { };
     struct RUNTIME_API FHideInSceneOutliner { };
-    struct RUNTIME_API FEditorComponent { bool bEnabled = true; };
+    struct RUNTIME_API FEditorComponent { };
 }

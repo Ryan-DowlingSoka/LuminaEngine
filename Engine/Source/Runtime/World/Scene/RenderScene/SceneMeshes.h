@@ -49,9 +49,10 @@ namespace Lumina::PrimitiveMeshes
                 FVertex vertex;
                 vertex.Position = positions[idx];
                 vertex.Normal = PackNormal(normals[face]);
+                vertex.Tangent = 0; // MikkTSpace fills this in GenerateMeshlets; zero so dedup byte-compare works.
                 vertex.UV = glm::packHalf2x16(uvs[i]);
                 vertex.Color = 0xFFFFFFFF; // White
-            
+
                 OutVertices.push_back(vertex);
             }
 
@@ -85,6 +86,7 @@ namespace Lumina::PrimitiveMeshes
             FVertex v;
             v.Position = positions[i];
             v.Normal = PackNormal(normal);
+            v.Tangent = 0;
             v.UV     = glm::packHalf2x16(uvs[i]);
             v.Color = 0xFFFFFFFF;
             OutVertices.push_back(v);
@@ -118,6 +120,7 @@ namespace Lumina::PrimitiveMeshes
                 FVertex vert;
                 vert.Position = pos;
                 vert.Normal = PackNormal(glm::normalize(pos));
+                vert.Tangent = 0;
                 vert.UV     = glm::packHalf2x16(glm::vec2(u, v));
                 vert.Color = 0xFFFFFFFF;
                 OutVertices.push_back(vert);
@@ -162,6 +165,7 @@ namespace Lumina::PrimitiveMeshes
                 FVertex v;
                 v.Position = { dir.x, j ? halfHeight : -halfHeight, dir.z };
                 v.Normal = PackNormal(glm::normalize(dir));
+                v.Tangent = 0;
                 v.UV = glm::packHalf2x16(glm::vec2(u, j));
                 v.Color = 0xFFFFFFFF;
                 OutVertices.push_back(v);
@@ -192,20 +196,22 @@ namespace Lumina::PrimitiveMeshes
             FVertex center;
             center.Position = { 0, y, 0 };
             center.Normal = PackNormal(n);
+            center.Tangent = 0;
             center.UV = glm::packHalf2x16(glm::vec2(32768, 32768));
             center.Color = 0xFFFFFFFF;
             OutVertices.push_back(center);
             uint32 centerIdx = (uint32)OutVertices.size() - 1;
-    
+
             for (int i = 0; i <= Segments; ++i)
             {
                 float u = (float)i / Segments;
                 float theta = u * glm::two_pi<float>();
                 glm::vec3 dir = { std::cos(theta), 0, std::sin(theta) };
-    
+
                 FVertex v;
                 v.Position = { dir.x, y, dir.z };
                 v.Normal = PackNormal(n);
+                v.Tangent = 0;
                 v.UV    = glm::packHalf2x16(glm::vec2(u, cap));
                 v.Color = 0xFFFFFFFF;
                 OutVertices.push_back(v);
@@ -216,10 +222,101 @@ namespace Lumina::PrimitiveMeshes
                     uint32 b = centerIdx + i;
                     uint32 c = centerIdx + i + 1;
                     if (cap)
-                        OutIndices.insert(OutIndices.end(), { a, b, c });
-                    else
                         OutIndices.insert(OutIndices.end(), { a, c, b });
+                    else
+                        OutIndices.insert(OutIndices.end(), { a, b, c });
                 }
+            }
+        }
+    }
+
+    inline void GenerateCone(TVector<FVertex>& OutVertices, TVector<uint32>& OutIndices, int Segments = 32)
+    {
+        OutVertices.clear();
+        OutIndices.clear();
+
+        const float halfHeight = 1.0f;
+        const float radius     = 1.0f;
+        const float H          = halfHeight * 2.0f;
+
+        // Side faces — duplicate verts per segment so each face gets its own normal
+        // (smoothing across the apex looks bad on a cone).
+        for (int i = 0; i < Segments; ++i)
+        {
+            float u0 = (float)i / Segments;
+            float u1 = (float)(i + 1) / Segments;
+            float theta0 = u0 * glm::two_pi<float>();
+            float theta1 = u1 * glm::two_pi<float>();
+            float thetaMid = (theta0 + theta1) * 0.5f;
+
+            glm::vec3 normal0   = glm::normalize(glm::vec3(H * std::cos(theta0),   radius, H * std::sin(theta0)));
+            glm::vec3 normal1   = glm::normalize(glm::vec3(H * std::cos(theta1),   radius, H * std::sin(theta1)));
+            glm::vec3 normalTip = glm::normalize(glm::vec3(H * std::cos(thetaMid), radius, H * std::sin(thetaMid)));
+
+            FVertex v0;
+            v0.Position = { std::cos(theta0) * radius, -halfHeight, std::sin(theta0) * radius };
+            v0.Normal   = PackNormal(normal0);
+            v0.Tangent  = 0;
+            v0.UV       = glm::packHalf2x16(glm::vec2(u0, 0));
+            v0.Color    = 0xFFFFFFFF;
+
+            FVertex v1;
+            v1.Position = { std::cos(theta1) * radius, -halfHeight, std::sin(theta1) * radius };
+            v1.Normal   = PackNormal(normal1);
+            v1.Tangent  = 0;
+            v1.UV       = glm::packHalf2x16(glm::vec2(u1, 0));
+            v1.Color    = 0xFFFFFFFF;
+
+            FVertex vTip;
+            vTip.Position = { 0, halfHeight, 0 };
+            vTip.Normal   = PackNormal(normalTip);
+            vTip.Tangent  = 0;
+            vTip.UV       = glm::packHalf2x16(glm::vec2((u0 + u1) * 0.5f, 1));
+            vTip.Color    = 0xFFFFFFFF;
+
+            uint32 base = (uint32)OutVertices.size();
+            OutVertices.push_back(v0);
+            OutVertices.push_back(v1);
+            OutVertices.push_back(vTip);
+
+            OutIndices.push_back(base + 0);
+            OutIndices.push_back(base + 2);
+            OutIndices.push_back(base + 1);
+        }
+
+        // Bottom cap
+        const glm::vec3 capNormal = { 0, -1, 0 };
+
+        FVertex centerVert;
+        centerVert.Position = { 0, -halfHeight, 0 };
+        centerVert.Normal   = PackNormal(capNormal);
+        centerVert.Tangent  = 0;
+        centerVert.UV       = glm::packHalf2x16(glm::vec2(0.5f, 0.5f));
+        centerVert.Color    = 0xFFFFFFFF;
+
+        uint32 centerIdx = (uint32)OutVertices.size();
+        OutVertices.push_back(centerVert);
+
+        for (int i = 0; i <= Segments; ++i)
+        {
+            float u = (float)i / Segments;
+            float theta = u * glm::two_pi<float>();
+            glm::vec3 dir = { std::cos(theta), 0, std::sin(theta) };
+
+            FVertex v;
+            v.Position = { dir.x * radius, -halfHeight, dir.z * radius };
+            v.Normal   = PackNormal(capNormal);
+            v.Tangent  = 0;
+            v.UV       = glm::packHalf2x16(glm::vec2(0.5f + 0.5f * dir.x, 0.5f + 0.5f * dir.z));
+            v.Color    = 0xFFFFFFFF;
+            OutVertices.push_back(v);
+
+            if (i > 0)
+            {
+                uint32 a = centerIdx;
+                uint32 b = centerIdx + i;
+                uint32 c = centerIdx + i + 1;
+                OutIndices.insert(OutIndices.end(), { a, b, c });
             }
         }
     }

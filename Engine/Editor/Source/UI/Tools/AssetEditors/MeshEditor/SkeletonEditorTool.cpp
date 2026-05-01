@@ -8,7 +8,6 @@
 #include "World/Entity/Components/LightComponent.h"
 #include "world/entity/components/skeletalmeshcomponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
-#include "world/entity/components/velocitycomponent.h"
 
 
 namespace Lumina
@@ -157,7 +156,7 @@ namespace Lumina
         
         CSkeleton* Skeleton = GetAsset<CSkeleton>();
         
-        World->GetEntityRegistry().get<SVelocityComponent>(EditorEntity).Speed = 5.0f;
+        CameraState.Speed = 5.0f;
 
         if (!Skeleton->PreviewMesh.IsValid())
         {

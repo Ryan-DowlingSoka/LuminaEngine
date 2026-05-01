@@ -104,13 +104,13 @@ namespace Lumina
     void FMaterialEditorTool::SetupWorldForTool()
     {
         FAssetEditorTool::SetupWorldForTool();
-        
+
         World->GetRenderer()->GetSceneRenderSettings().bDrawBillboards = false;
 
         DirectionalLightEntity = World->ConstructEntity("Directional Light");
         auto& Directional = World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
         auto& Environment = World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
-        
+
         DirectionalEditor = MakeUnique<FPropertyTable>(&Directional, SDirectionalLightComponent::StaticStruct());
         EnvironmentEditor = MakeUnique<FPropertyTable>(&Environment, SEnvironmentComponent::StaticStruct());
 
@@ -118,11 +118,9 @@ namespace Lumina
         SStaticMeshComponent& StaticMeshComponent = World->GetEntityRegistry().emplace<SStaticMeshComponent>(MeshEntity);
         StaticMeshComponent.StaticMesh = CThumbnailManager::Get().SphereMesh;
 
-        STransformComponent& MeshTransform = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
-
-        STransformComponent& EditorTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
-        glm::quat Rotation = Math::FindLookAtRotation(MeshTransform.GetLocation(), EditorTransform.GetLocation());
-        EditorTransform.SetRotation(Rotation);
+        const STransformComponent& MeshTransform = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
+        SetOrbitTarget(MeshTransform.GetLocation(), 4.0f);
+        SetCameraMode(EEditorCameraMode::Orbit);
 
         ApplyMaterialToPreview();
     }
@@ -170,23 +168,14 @@ namespace Lumina
 
     void FMaterialEditorTool::SetDebugMesh(EDebugMesh Mesh, FStringView Path)
     {
+        SStaticMeshComponent& Component = World->GetEntityRegistry().get<SStaticMeshComponent>(MeshEntity);
         switch (Mesh)
         {
-        case EDebugMesh::Sphere:
-            {
-                World->GetEntityRegistry().get<SStaticMeshComponent>(MeshEntity).StaticMesh = CThumbnailManager::Get().SphereMesh;
-            }
-            break;
-        case EDebugMesh::Cube:
-            {
-                World->GetEntityRegistry().get<SStaticMeshComponent>(MeshEntity).StaticMesh = CThumbnailManager::Get().CubeMesh;
-            }
-            break;
-        case EDebugMesh::Plane:
-            {
-                World->GetEntityRegistry().get<SStaticMeshComponent>(MeshEntity).StaticMesh = CThumbnailManager::Get().PlaneMesh;
-            }
-            break;
+        case EDebugMesh::Sphere:    Component.StaticMesh = CThumbnailManager::Get().SphereMesh;   break;
+        case EDebugMesh::Cube:      Component.StaticMesh = CThumbnailManager::Get().CubeMesh;     break;
+        case EDebugMesh::Plane:     Component.StaticMesh = CThumbnailManager::Get().PlaneMesh;    break;
+        case EDebugMesh::Cylinder:  Component.StaticMesh = CThumbnailManager::Get().CylinderMesh; break;
+        case EDebugMesh::Cone:      Component.StaticMesh = CThumbnailManager::Get().ConeMesh;     break;
         }
     }
 
@@ -258,38 +247,47 @@ namespace Lumina
 
     void FMaterialEditorTool::DrawViewportOverlayElements(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture, ImVec2 ViewportSize)
     {
-        FStringView PreviewString;
-        switch (DebugMesh)
+        struct FPreviewMeshEntry
         {
-            case EDebugMesh::Sphere:    PreviewString  = "Sphere";  break;
-            case EDebugMesh::Cube:      PreviewString  = "Cube";    break;
-            case EDebugMesh::Plane:     PreviewString  = "Plane";   break;
+            const char* Label;
+            EDebugMesh  Value;
+        };
+        static const FPreviewMeshEntry Entries[] =
+        {
+            { "Sphere",   EDebugMesh::Sphere   },
+            { "Cube",     EDebugMesh::Cube     },
+            { "Plane",    EDebugMesh::Plane    },
+            { "Cylinder", EDebugMesh::Cylinder },
+            { "Cone",     EDebugMesh::Cone     },
+        };
+
+        const char* PreviewString = "Sphere";
+        for (const FPreviewMeshEntry& Entry : Entries)
+        {
+            if (Entry.Value == DebugMesh)
+            {
+                PreviewString = Entry.Label;
+                break;
+            }
         }
-        
+
         ImGui::PushItemWidth(95.0f);
-        if (ImGui::BeginCombo("##", PreviewString.data(), ImGuiComboFlags_HeightLarge))
+        if (ImGui::BeginCombo("##PreviewMesh", PreviewString, ImGuiComboFlags_HeightLarge))
         {
-            if (ImGui::Selectable("Sphere", DebugMesh == EDebugMesh::Sphere))
+            for (const FPreviewMeshEntry& Entry : Entries)
             {
-                DebugMesh = EDebugMesh::Sphere;
-                SetDebugMesh(DebugMesh);
+                if (ImGui::Selectable(Entry.Label, DebugMesh == Entry.Value))
+                {
+                    DebugMesh = Entry.Value;
+                    SetDebugMesh(DebugMesh);
+                }
             }
-            
-            if (ImGui::Selectable("Cube", DebugMesh == EDebugMesh::Cube))
-            {
-                DebugMesh = EDebugMesh::Cube;
-                SetDebugMesh(DebugMesh);
-            }
-            
-            if (ImGui::Selectable("Plane", DebugMesh == EDebugMesh::Plane))
-            {
-                DebugMesh = EDebugMesh::Plane;
-                SetDebugMesh(DebugMesh);
-            }
-            
             ImGui::EndCombo();
         }
         ImGui::PopItemWidth();
+
+        ImGui::SameLine();
+        DrawCameraModeSelector();
     }
 
     void FMaterialEditorTool::OnAssetLoadFinished()
@@ -316,6 +314,10 @@ namespace Lumina
         
         if (EnvironmentEditor && DirectionalEditor)
         {
+            ImGui::Spacing();
+            ImGui::SeparatorText("Preview Editor");
+            ImGui::Spacing();
+
             DirectionalEditor->DrawTree();
             EnvironmentEditor->DrawTree();
         }

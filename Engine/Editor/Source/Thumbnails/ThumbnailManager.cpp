@@ -68,7 +68,7 @@ namespace Lumina
         {
             TUniquePtr<FMeshResource> Resource = MakeUnique<FMeshResource>();
             PrimitiveMeshes::GeneratePlane(Resource->Vertices.emplace<TVector<FVertex>>(), Resource->Indices);
-            
+
             FGeometrySurface Surface;
             Surface.ID = "PlaneMesh";
             Surface.IndexCount = (uint32)Resource->Indices.size();
@@ -79,6 +79,38 @@ namespace Lumina
             PlaneMesh = NewObject<CStaticMesh>(nullptr, "ThumbnailPlaneMesh", FGuid::New(), OF_Transient);
             PlaneMesh->Materials.resize(1);
             PlaneMesh->SetMeshResource(Move(Resource));
+        }
+
+        {
+            TUniquePtr<FMeshResource> Resource = MakeUnique<FMeshResource>();
+            PrimitiveMeshes::GenerateCylinder(Resource->Vertices.emplace<TVector<FVertex>>(), Resource->Indices);
+
+            FGeometrySurface Surface;
+            Surface.ID = "CylinderMesh";
+            Surface.IndexCount = (uint32)Resource->Indices.size();
+            Surface.StartIndex = 0;
+            Surface.MaterialIndex = 0;
+            Resource->GeometrySurfaces.push_back(Surface);
+
+            CylinderMesh = NewObject<CStaticMesh>(nullptr, "ThumbnailCylinderMesh", FGuid::New(), OF_Transient);
+            CylinderMesh->Materials.resize(1);
+            CylinderMesh->SetMeshResource(Move(Resource));
+        }
+
+        {
+            TUniquePtr<FMeshResource> Resource = MakeUnique<FMeshResource>();
+            PrimitiveMeshes::GenerateCone(Resource->Vertices.emplace<TVector<FVertex>>(), Resource->Indices);
+
+            FGeometrySurface Surface;
+            Surface.ID = "ConeMesh";
+            Surface.IndexCount = (uint32)Resource->Indices.size();
+            Surface.StartIndex = 0;
+            Surface.MaterialIndex = 0;
+            Resource->GeometrySurfaces.push_back(Surface);
+
+            ConeMesh = NewObject<CStaticMesh>(nullptr, "ThumbnailConeMesh", FGuid::New(), OF_Transient);
+            ConeMesh->Materials.resize(1);
+            ConeMesh->SetMeshResource(Move(Resource));
         }
         
         constexpr float kThumbnailFOV       = 35.0f;

@@ -9,7 +9,6 @@
 #include "world/entity/components/environmentcomponent.h"
 #include "World/Entity/Components/LightComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
-#include "world/entity/components/velocitycomponent.h"
 #include "World/Scene/RenderScene/SceneRenderTypes.h"
 
 
@@ -631,20 +630,22 @@ namespace Lumina
         World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
         
         CStaticMesh* StaticMesh = Cast<CStaticMesh>(Asset.Get());
-        
-        World->GetEntityRegistry().get<SVelocityComponent>(EditorEntity).Speed = 5.0f;
+
+        CameraState.Speed = 5.0f;
 
         MeshEntity = World->ConstructEntity("MeshEntity");
         World->GetEntityRegistry().emplace<SStaticMeshComponent>(MeshEntity).StaticMesh = StaticMesh;
         STransformComponent& MeshTransform = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
-        
+
         float FloorY = MeshTransform.GetLocation().y + StaticMesh->GetAABB().Min.y;
         CreateFloorPlane(FloorY);
-        
-        STransformComponent& EditorTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
 
-        glm::quat Rotation = Math::FindLookAtRotation(MeshTransform.GetLocation() + glm::vec3(0.0f, 0.85f, 0.0f), EditorTransform.GetLocation());
-        EditorTransform.SetRotation(Rotation);
+        // Frame the mesh and default to orbit so the user can immediately tumble around it.
+        const FAABB Bounds = StaticMesh->GetAABB();
+        const glm::vec3 Center = MeshTransform.GetLocation() + Bounds.GetCenter();
+        const float Radius = glm::max(glm::length(Bounds.GetSize() * 0.5f), 0.5f);
+        SetOrbitTarget(Center, Radius * 3.0f);
+        SetCameraMode(EEditorCameraMode::Orbit);
     }
 
     void FStaticMeshEditorTool::Update(const FUpdateContext& UpdateContext)
@@ -719,6 +720,11 @@ namespace Lumina
 
     void FStaticMeshEditorTool::OnDeinitialize(const FUpdateContext& UpdateContext)
     {
+    }
+
+    void FStaticMeshEditorTool::DrawViewportOverlayElements(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture, ImVec2 ViewportSize)
+    {
+        DrawCameraModeSelector();
     }
 
     void FStaticMeshEditorTool::OnAssetLoadFinished()

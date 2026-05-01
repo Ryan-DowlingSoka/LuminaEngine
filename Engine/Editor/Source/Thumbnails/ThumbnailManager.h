@@ -60,8 +60,16 @@ namespace Lumina
         /** Unit plane mesh used to render thumbnail previews for flat assets. */
         PROPERTY(NotSerialized)
         TObjectPtr<CStaticMesh> PlaneMesh;
-        
-        
+
+        /** Unit cylinder mesh, also used as a primitive when spawning entities in the editor. */
+        PROPERTY(NotSerialized)
+        TObjectPtr<CStaticMesh> CylinderMesh;
+
+        /** Unit cone mesh, also used as a primitive when spawning entities in the editor. */
+        PROPERTY(NotSerialized)
+        TObjectPtr<CStaticMesh> ConeMesh;
+
+
         FSharedMutex ThumbnailLock;
         THashMap<FName, FPackageThumbnail*> Thumbnails;
 
