@@ -9,19 +9,24 @@ namespace Lumina
     {
         GENERATED_BODY()
     public:
+        
+        void BuildNode() override;
         FFixedString GetNodeCategory() const override { return "Inputs"; }
         FString GetNodeDisplayName() const override { return "TexCoords"; }
         FString GetNodeTooltip() const override { return "Returns the mesh's UV coordinates from the given texcoord set, scaled by the tiling factors."; }
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
 
         /** Index of the UV set to sample from the mesh. */
-        PROPERTY(Editable) uint32 TextureIndex = 0;
+        PROPERTY(Editable) 
+        uint32 TextureIndex = 0;
 
         /** Tiling multiplier applied to the U axis. */
-        PROPERTY(Editable) float UTiling = 1.0f;
+        PROPERTY(Editable) 
+        float UTiling = 1.0f;
 
         /** Tiling multiplier applied to the V axis. */
-        PROPERTY(Editable) float VTiling = 1.0f;
+        PROPERTY(Editable) 
+        float VTiling = 1.0f;
     };
 
     REFLECT()
@@ -30,6 +35,7 @@ namespace Lumina
         GENERATED_BODY()
     public:
         void BuildNode() override;
+        
         FFixedString GetNodeCategory() const override { return "Inputs"; }
         FString GetNodeDisplayName() const override { return "Panner"; }
         FString GetNodeTooltip() const override { return "Offsets UV coordinates over time. UV += Time * Speed."; }
@@ -39,8 +45,11 @@ namespace Lumina
         CMaterialInput* Time = nullptr;
         CMaterialInput* Speed = nullptr;
 
-        PROPERTY(Editable) float SpeedX = 1.0f;
-        PROPERTY(Editable) float SpeedY = 1.0f;
+        PROPERTY(Editable) 
+        float SpeedX = 1.0f;
+        
+        PROPERTY(Editable) 
+        float SpeedY = 1.0f;
     };
 
     REFLECT()

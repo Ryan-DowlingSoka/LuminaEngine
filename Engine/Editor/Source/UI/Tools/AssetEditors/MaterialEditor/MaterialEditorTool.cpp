@@ -229,6 +229,11 @@ namespace Lumina
         return false;
     }
 
+    void FMaterialEditorTool::DrawViewportOverlayElements(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture, ImVec2 ViewportSize)
+    {
+        ImGui::Button("Foobar");
+    }
+
     void FMaterialEditorTool::OnAssetLoadFinished()
     {
     }
@@ -238,6 +243,7 @@ namespace Lumina
         if (ImGui::MenuItem(LE_ICON_RECEIPT_TEXT" Compile"))
         {
             Compile();
+            OnSave();
         }
     }
 
@@ -275,10 +281,10 @@ namespace Lumina
             ImGui::Separator();
             ImGui::Spacing();
 
-            const ImVec4 TitleColor (1.00f, 0.55f, 0.55f, 1.0f);
-            const ImVec4 NodeColor  (1.00f, 0.85f, 0.55f, 1.0f);
-            const ImVec4 BodyColor  (1.00f, 0.80f, 0.80f, 1.0f);
-            const ImVec4 HintColor  (0.65f, 0.65f, 0.70f, 1.0f);
+            constexpr ImVec4 TitleColor (1.00f, 0.55f, 0.55f, 1.0f);
+            constexpr ImVec4 NodeColor  (1.00f, 0.85f, 0.55f, 1.0f);
+            constexpr ImVec4 BodyColor  (1.00f, 0.80f, 0.80f, 1.0f);
+            constexpr ImVec4 HintColor  (0.65f, 0.65f, 0.70f, 1.0f);
 
             for (size_t i = 0; i < CompilationResult.Errors.size(); ++i)
             {

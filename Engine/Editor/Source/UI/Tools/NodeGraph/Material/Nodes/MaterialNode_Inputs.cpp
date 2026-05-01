@@ -28,7 +28,18 @@ namespace Lumina
 
         Output->SetInputType(EMaterialInputType::Float2);
     }
-    void CMaterialExpression_Panner::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.Panner(UV, Time, Speed); }
+    
+    void CMaterialExpression_Panner::GenerateDefinition(FMaterialCompiler& Compiler)
+    {
+        Compiler.Panner(UV, Time, Speed);
+    }
+
+    void CMaterialExpression_TexCoords::BuildNode()
+    {
+        CMaterialExpression::BuildNode();
+        Output->SetInputType(EMaterialInputType::Float2);
+        Output->SetComponentMask(EComponentMask::RG);
+    }
 
     void CMaterialExpression_TexCoords::GenerateDefinition(FMaterialCompiler& Compiler)
     {
