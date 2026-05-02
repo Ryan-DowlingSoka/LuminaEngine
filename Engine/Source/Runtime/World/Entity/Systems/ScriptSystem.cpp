@@ -32,11 +32,7 @@ namespace Lumina
                 if (ScriptComponent.UpdateFunc.IsValid())
                 {
                     const float DeltaTime = static_cast<float>(Context.GetDeltaTime());
-
-                    // Coroutine-resume so a breakpoint inside Update can yield
-                    // via lua_break instead of erroring out of pcall — and so
-                    // yield-aware APIs (TimerManager:Wait, etc.) work the same
-                    // here as they do in OnAttach / OnReady.
+                    
                     if (ScriptComponent.TickRate <= 0.0f)
                     {
                         #if USING(WITH_EDITOR)

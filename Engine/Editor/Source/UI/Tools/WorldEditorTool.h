@@ -6,6 +6,7 @@
 #include "ImGuizmo.h"
 #include "Core/Delegates/Delegate.h"
 #include "Core/Object/Class.h"
+#include "NavMeshEditMode.h"
 #include "TerrainEditMode.h"
 #include "Tools/UI/ImGui/Widgets/TreeListView.h"
 #include "UI/Properties/PropertyTable.h"
@@ -285,6 +286,7 @@ namespace Lumina
         bool                                    bDetailsDirty = false;
 
         FTerrainEditMode                        TerrainEditMode;
+        FNavMeshEditMode                        NavMeshEditMode;
 
         // Viewport-local transform clipboard (Ctrl+Shift+C / Ctrl+Shift+V). Captured from
         // the last-selected entity's world transform; pasted onto every selected entity.

@@ -135,6 +135,11 @@ namespace Lumina::Physics
 
     	TQueue<entt::entity>				PendingRigidBodyCreations;
     	JPH::TempAllocatorImpl				Allocator;
+    	// One TempAllocator per task-system worker thread. CharacterVirtual::
+    	// ExtendedUpdate needs a TempAllocator and TempAllocatorImpl is a
+    	// single-threaded stack allocator, so we hand each parallel worker
+    	// its own to keep the character sub-step lock-free.
+    	TVector<TUniquePtr<JPH::TempAllocatorImpl>>	CharacterAllocators;
     	TUniquePtr<FJoltContactListener>	ContactListener;
         TUniquePtr<JPH::PhysicsSystem>		JoltSystem;
         CWorld*								World = nullptr;

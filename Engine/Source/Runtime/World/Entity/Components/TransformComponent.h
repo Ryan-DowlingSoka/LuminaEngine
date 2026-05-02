@@ -239,16 +239,22 @@ namespace Lumina
         
         void MarkDirty() const
         {
-            if (Registry)
+            if (!Registry)
             {
-                Registry->emplace_or_replace<FNeedsTransformUpdate>(Entity);
-                Registry->emplace_or_replace<FNeedsPhysicsBodyUpdate>(Entity);
+                return;
             }
+            
+            FRecursiveScopeLock Lock(ECS::Utils::GetTransformResolveMutex());
+            Registry->emplace_or_replace<FNeedsTransformUpdate>(Entity);
+            Registry->emplace_or_replace<FNeedsPhysicsBodyUpdate>(Entity);
         }
-    
+
         void ResolveIfDirty() const
         {
-            if (Registry && Registry->all_of<FNeedsTransformUpdate>(Entity))
+            // ResolveTransformChain handles the all_of check + locking
+            // itself - we drop the unsynced pre-check here so a stale
+            // read can't fire a chain resolve on already-clean data.
+            if (Registry)
             {
                 ECS::Utils::ResolveTransformChain(*Registry, Entity);
             }

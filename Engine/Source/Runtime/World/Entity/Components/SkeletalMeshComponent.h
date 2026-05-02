@@ -32,7 +32,10 @@ namespace Lumina
         /** When true, this mesh receives shadowing from shadow-casting lights. */
         PROPERTY(Editable, Category = "Shadow")
         bool bReceiveShadow = true;
-        
-        TArray<glm::mat4, 255> BoneTransforms;
+
+        // Sized to the skeleton's bone count by the animation system (or to 0 when unused).
+        // The render scene uploads exactly this many matrices into the shared bone buffer
+        // and FGPUInstance.BoneOffset references the start of this instance's slice.
+        TVector<glm::mat4> BoneTransforms;
     };
 }

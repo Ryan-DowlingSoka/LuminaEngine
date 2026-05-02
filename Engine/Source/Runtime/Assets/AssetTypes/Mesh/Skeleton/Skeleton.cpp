@@ -6,38 +6,39 @@ namespace Lumina
     void CSkeleton::Serialize(FArchive& Ar)
     {
         CObject::Serialize(Ar);
-        
+
         if (!SkeletonResource)
         {
             SkeletonResource = MakeUnique<FSkeletonResource>();
         }
-        
+
         Ar << *SkeletonResource;
     }
 
-    void CSkeleton::ComputeBindPoseSkinningMatrices(TArray<glm::mat4, 255>& OutMatrices) const
+    void CSkeleton::ComputeBindPoseSkinningMatrices(TVector<glm::mat4>& OutMatrices) const
     {
-        TVector<glm::mat4> Transforms;
-        Transforms.resize(SkeletonResource->GetNumBones());
-    
-        for (int i = 0; i < SkeletonResource->GetNumBones(); ++i)
+        const int32 NumBones = SkeletonResource->GetNumBones();
+        OutMatrices.resize(NumBones);
+
+        // Forward kinematics in skeleton order: parents always precede children
+        // in Bones[], so a single linear pass produces world-space transforms
+        // without any per-bone scratch.
+        for (int32 i = 0; i < NumBones; ++i)
         {
             const FSkeletonResource::FBoneInfo& Bone = SkeletonResource->GetBone(i);
-            
-            if (Bone.ParentIndex == INDEX_NONE)
-            {
-                Transforms[i] = Bone.LocalTransform;
-            }
-            else
-            {
-                Transforms[i] = Transforms[Bone.ParentIndex] * Bone.LocalTransform;
-            }
+            const glm::mat4 World = (Bone.ParentIndex == INDEX_NONE)
+                ? Bone.LocalTransform
+                : OutMatrices[Bone.ParentIndex] * Bone.LocalTransform;
+            OutMatrices[i] = World;
         }
-    
-        for (int i = 0; i < SkeletonResource->GetNumBones(); ++i)
+
+        // Second pass folds in InvBind. Doing it in-place after the FK pass is
+        // safe because the FK pass only ever reads OutMatrices[Parent] which is
+        // already finalised before any child reads it.
+        for (int32 i = 0; i < NumBones; ++i)
         {
             const FSkeletonResource::FBoneInfo& Bone = SkeletonResource->GetBone(i);
-            OutMatrices[i] = Transforms[i] * Bone.InvBindMatrix;
+            OutMatrices[i] = OutMatrices[i] * Bone.InvBindMatrix;
         }
     }
 }

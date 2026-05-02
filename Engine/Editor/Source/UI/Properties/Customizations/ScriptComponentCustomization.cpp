@@ -4,6 +4,7 @@
 #include "Platform/Process/PlatformProcess.h"
 #include "Scripting/Lua/Scripting.h"
 #include "Scripting/Lua/ScriptExports.h"
+#include "Scripting/Lua/LuaTypes.h"
 #include "UI/Tools/ContentBrowserEditorTool.h"
 
 namespace Lumina
@@ -11,6 +12,31 @@ namespace Lumina
     namespace
     {
         bool DrawScriptPropertyValue(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value, const char* Label);
+
+        // Format a Lua value for the debug Reference table without invoking __tostring,
+        // which can crash if a userdata's backing C++ object has been destroyed.
+        FString SafeRefDisplay(const Lua::FRef& Ref)
+        {
+            if (!Ref.IsValid())
+            {
+                return FString("<invalid>");
+            }
+            switch (Ref.GetType())
+            {
+            case Lua::EType::Nil:           return FString("nil");
+            case Lua::EType::Boolean:
+            case Lua::EType::Number:
+            case Lua::EType::Vector:
+            case Lua::EType::String:        return Ref.ToString();
+            case Lua::EType::Table:         return FString("<table>");
+            case Lua::EType::Function:      return FString("<function>");
+            case Lua::EType::Userdata:      return FString("<userdata>");
+            case Lua::EType::LightUserData: return FString("<lightuserdata>");
+            case Lua::EType::Thread:        return FString("<thread>");
+            case Lua::EType::Buffer:        return FString("<buffer>");
+            default:                        return FString("<unknown>");
+            }
+        }
 
         // Draws "Name | widget" as a row; returns whether the widget changed.
         bool DrawScalarValue(const Lua::FScriptExportType& Type, Lua::FScriptPropertyValue& Value, const char* Label)
@@ -406,9 +432,9 @@ namespace Lumina
                     {
                         ImGui::TableNextRow();
                         ImGui::TableSetColumnIndex(0);
-                        ImGui::TextUnformatted(Key.ToString().c_str());
+                        ImGui::TextUnformatted(SafeRefDisplay(Key).c_str());
                         ImGui::TableSetColumnIndex(1);
-                        ImGui::TextUnformatted(Value.ToString().c_str());
+                        ImGui::TextUnformatted(SafeRefDisplay(Value).c_str());
                     }
 
                     ImGui::EndTable();

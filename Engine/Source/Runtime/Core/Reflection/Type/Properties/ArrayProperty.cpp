@@ -8,14 +8,19 @@ namespace Lumina
         SIZE_T ElementCount = GetNum(Value);
         Ar << ElementCount;
         
-        size_t InnerElementSize = Inner->GetElementSize();
-        Ar << InnerElementSize;
-        
-        if (InnerElementSize != Inner->GetElementSize())
+        size_t SerializedInnerElementSize = Inner->GetElementSize();
+        Ar << SerializedInnerElementSize;
+
+        const size_t CurrentInnerElementSize = Inner->GetElementSize();
+        // Only trivial inner types are memcpy'd in bulk, so element size must match.
+        // Non-trivial types serialize property-by-property — in-memory padding (e.g. EASTL_NAME_ENABLED
+        // in Debug) can differ between configs without affecting the on-disk property layout.
+        if (Ar.IsReading() && Inner->IsTrivial() && SerializedInnerElementSize != CurrentInnerElementSize)
         {
-            LOG_ERROR("Inner array size changed, cannot safely serialize: Current Size: ({}) | Serialized Size: ({})", ElementSize, InnerElementSize);
+            LOG_ERROR("Inner element size changed for array '{}' (inner '{}'), aborting load: Current=({}) Serialized=({})", Name, Inner->Name, CurrentInnerElementSize, SerializedInnerElementSize);
             return;
         }
+        const size_t InnerElementSize = CurrentInnerElementSize;
         
         if (ElementCount > eastl::numeric_limits<uint32>::max())
         {

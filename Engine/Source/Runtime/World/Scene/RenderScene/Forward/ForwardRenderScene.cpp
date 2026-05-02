@@ -19,6 +19,7 @@
 #include "TaskSystem/TaskSystem.h"
 #include "Tools/Import/ImportHelpers.h"
 #include "World/World.h"
+#include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/BillboardComponent.h"
 #include "world/entity/components/charactercontrollercomponent.h"
 #include "World/Entity/Components/EditorComponent.h"
@@ -302,10 +303,10 @@ namespace Lumina
             }
             
             {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Transparent", FColor(0.40f, 0.60f, 0.85f)); 
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Transparent", FColor(0.40f, 0.60f, 0.85f));
                 TransparentPass(CmdList);
             }
-        
+
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "OIT Resolve", FColor(0.55f, 0.85f, 0.30f));
                 OITResolvePass(CmdList);
@@ -332,9 +333,19 @@ namespace Lumina
             }
         
             {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Billboards", FColor(0.95f, 0.20f, 0.20f)); 
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Billboards", FColor(0.95f, 0.20f, 0.20f));
                 BillboardPass(CmdList);
             }
+
+            #if USING(WITH_EDITOR)
+            {
+                // Issued after the last pass that writes the picker RT (Billboards).
+                // The actual pixel readback happens lazily in GetEntityAtPixel a few
+                // frames later, by which point this copy is guaranteed complete.
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Picker Readback", FColor(0.50f, 0.50f, 0.50f));
+                IssuePickerReadback(CmdList);
+            }
+            #endif
         
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Bloom", FColor(0.95f, 0.75f, 0.30f));
@@ -377,10 +388,23 @@ namespace Lumina
         GRenderContext->ClearCommandListCache();
         GRenderContext->ClearBindingCaches();
         BindingCache.ReleaseResources();
-        
+
         SceneViewport = GRenderContext->CreateViewport(NewSize, "Forward Renderer Viewport");
-        
+
         InitFrameResources();
+
+        #if USING(WITH_EDITOR)
+        // Old staging slots are sized to the previous picker extent; their pixel
+        // grid no longer matches incoming click coordinates. Drop them; the next
+        // frames will re-populate at the new size.
+        for (FPickerReadbackSlot& Slot : PickerReadbackRing)
+        {
+            Slot.Staging.SafeRelease();
+            Slot.Width = 0;
+            Slot.Height = 0;
+            Slot.bPending = false;
+        }
+        #endif
     }
 
     void FForwardRenderScene::CompileDrawCommands(ICommandList& CmdList)
@@ -404,7 +428,7 @@ namespace Lumina
             auto StaticView         = Registry.view<SStaticMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto SkeletalView       = Registry.view<SSkeletalMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             
-            ResolveDirtyTransforms();
+            ECS::Utils::ResolveAllDirtyTransforms(Registry);
 
             // Build the per-frame CPU reject volumes (camera frustum, sun-
             // swept shadow frustum, shadow-casting light spheres) before any
@@ -938,106 +962,6 @@ namespace Lumina
         }
     }
 
-    void FForwardRenderScene::ResolveDirtyTransforms()
-    {
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        auto SingleView = Registry.view<FNeedsTransformUpdate, STransformComponent>(entt::exclude<FRelationshipComponent>);
-        auto RelationshipGroup = Registry.group<FNeedsTransformUpdate, FRelationshipComponent>(entt::get<STransformComponent>);
-        
-        if (!RelationshipGroup.empty())
-        {
-            TFixedVector<entt::entity, 100> DirtyEntities;
-            DirtyEntities.reserve(RelationshipGroup.size());
-            for (auto entity : RelationshipGroup)
-            {
-                DirtyEntities.push_back(entity);
-            }
-            
-            auto RelationshipTransformCallable = [&](uint32 Index)
-            {
-                entt::entity DirtyEntity = DirtyEntities[Index];
-                
-                auto& DirtyTransform = RelationshipGroup.get<STransformComponent>(DirtyEntity);
-                auto& DirtyRelationship = RelationshipGroup.get<FRelationshipComponent>(DirtyEntity);
-                
-                if (DirtyRelationship.Parent != entt::null && Registry.valid(DirtyRelationship.Parent))
-                {
-                    glm::mat4 ParentWorldTransform         = Registry.get<STransformComponent>(DirtyRelationship.Parent).WorldTransform.GetMatrix();
-                    glm::mat4 LocalTransform               = DirtyTransform.LocalTransform.GetMatrix();
-                    DirtyTransform.WorldTransform          = FTransform(ParentWorldTransform * LocalTransform);
-                }
-                else
-                {
-                    DirtyTransform.WorldTransform = DirtyTransform.LocalTransform;
-                }
-                
-                DirtyTransform.CachedMatrix = DirtyTransform.WorldTransform.GetMatrix();
-                
-                TFunction<void(entt::entity)> UpdateChildrenRecursive;
-                UpdateChildrenRecursive = [&](entt::entity ParentEntity)
-                {
-                    ECS::Utils::ForEachChild(Registry, ParentEntity, [&](entt::entity Child)
-                    {
-                        auto& ParentTransform = Registry.get<STransformComponent>(ParentEntity);
-                        auto& ChildTransform = Registry.get<STransformComponent>(Child);
-
-                        glm::mat4 ParentWorldTransform = ParentTransform.WorldTransform.GetMatrix();
-                        glm::mat4 ChildLocalTransform = ChildTransform.LocalTransform.GetMatrix();
-                        
-                        ChildTransform.WorldTransform = FTransform(ParentWorldTransform * ChildLocalTransform);
-                        ChildTransform.CachedMatrix = ChildTransform.WorldTransform.GetMatrix();
-                        
-                        UpdateChildrenRecursive(Child);
-                    });
-                };
-                
-                UpdateChildrenRecursive(DirtyEntity);
-            };
-            
-            if (DirtyEntities.size() > 1000)
-            {
-                Task::ParallelFor((uint32)DirtyEntities.size(), RelationshipTransformCallable);
-            }
-            else
-            {
-                for (uint32 i = 0; i < (uint32)DirtyEntities.size(); ++i)
-                {
-                    RelationshipTransformCallable(i);
-                }
-            }
-        }
-
-        if (SingleView.size_hint() < 1000)
-        {
-            SingleView.each([&](STransformComponent& TransformComponent)
-            {
-                TransformComponent.WorldTransform = TransformComponent.LocalTransform;
-                TransformComponent.CachedMatrix = TransformComponent.WorldTransform.GetMatrix();  
-            });
-        }
-        else
-        {
-            auto WorkFunctor = [](STransformComponent& Transform)
-            {
-                Transform.WorldTransform = Transform.LocalTransform;
-                Transform.CachedMatrix = Transform.WorldTransform.GetMatrix();
-            };
-
-            auto Handle = SingleView.handle();
-            Task::ParallelFor(Handle->size(), [&](uint32 Index)
-            {
-                entt::entity Entity = (*Handle)[Index];
-                
-                if (SingleView.contains(Entity))
-                {
-                    std::apply(WorkFunctor, SingleView.get(Entity));
-                }
-            });
-        }
-        
-        Registry.clear<FNeedsTransformUpdate>();
-    }
-
     struct FResolvedSlot
     {
         FRHIVertexShader*   VertexShader;
@@ -1363,8 +1287,52 @@ namespace Lumina
 
         const FMeshResource& Resource = Mesh->GetMeshResource();
 
-        const uint32 LocalBoneOffset = (uint32)Local.BonesData.size();
-        Local.BonesData.insert(Local.BonesData.end(), MeshComponent.BoneTransforms.begin(), MeshComponent.BoneTransforms.end());
+        // The shader's LoadSkinnedVertex path determines the vertex stride
+        // (FSkinnedVertex vs FVertex), so every skeletal-mesh draw must carry
+        // a valid bone slice -- otherwise the cull pass / vertex shader would
+        // address stale matrices left over from the previous frame's writer.
+        // The animation system populates BoneTransforms when an animation is
+        // playing; fall back to the asset's bind pose when it hasn't.
+        const CSkeletalMesh*     SkelMesh = MeshComponent.SkeletalMesh.Get();
+        const FSkeletonResource* SkelRes  = (SkelMesh && SkelMesh->Skeleton.IsValid())
+            ? SkelMesh->Skeleton->GetSkeletonResource()
+            : nullptr;
+        const uint32 SkeletonBoneCount = SkelRes ? (uint32)SkelRes->GetNumBones() : 0u;
+
+        uint32 LocalBoneOffset = ~0u;
+        if (SkeletonBoneCount > 0)
+        {
+            LocalBoneOffset = (uint32)Local.BonesData.size();
+            if ((uint32)MeshComponent.BoneTransforms.size() == SkeletonBoneCount)
+            {
+                Local.BonesData.insert(Local.BonesData.end(),
+                                       MeshComponent.BoneTransforms.begin(),
+                                       MeshComponent.BoneTransforms.end());
+            }
+            else
+            {
+                // Append the bind pose directly into the per-thread bone buffer.
+                // Avoids mutating the (const) component and keeps the bind-pose
+                // upload off the hot path of animated entities.
+                const size_t BindBase = Local.BonesData.size();
+                Local.BonesData.resize(BindBase + SkeletonBoneCount);
+                for (uint32 i = 0; i < SkeletonBoneCount; ++i)
+                {
+                    const auto& Bone = SkelRes->GetBone((int32)i);
+                    const glm::mat4 BoneWorld = (Bone.ParentIndex == INDEX_NONE)
+                        ? Bone.LocalTransform
+                        : Local.BonesData[BindBase + Bone.ParentIndex] * Bone.LocalTransform;
+                    Local.BonesData[BindBase + i] = BoneWorld;
+                }
+                for (uint32 i = 0; i < SkeletonBoneCount; ++i)
+                {
+                    const auto& Bone = SkelRes->GetBone((int32)i);
+                    Local.BonesData[BindBase + i] = Local.BonesData[BindBase + i] * Bone.InvBindMatrix;
+                }
+            }
+        }
+
+        const uint32 NumBones = SkeletonBoneCount;
 
         // See static-mesh path for the angular-size reasoning; skinned bind-
         // pose bounds are conservative but fine for this coarse test.
@@ -1379,6 +1347,9 @@ namespace Lumina
             ? (glm::sqrt(DistSq) / Radius)
             : 0.0f;
 
+        // Skeletal-mesh assets always carry FSkinnedVertex data, so the
+        // Skinned flag is unconditional here -- LoadSkinnedVertex picks up
+        // either the animated pose or the bind-pose fallback written above.
         EInstanceFlags BaseFlags = EInstanceFlags::Skinned;
         if (MeshComponent.bReceiveShadow)
         {
@@ -1685,9 +1656,16 @@ namespace Lumina
                         const uint32 WriteIdx = LocalBatch.LocalDrawWriteBase[Item.LocalDrawIndex]++;
                         const FEntityRecord& Entity = Local.EntityRecords[Item.EntityRecordIndex];
 
-                        const uint16 BoneOffset = Entity.LocalBoneOffset != ~0u
-                            ? (uint16)(BoneBase + Entity.LocalBoneOffset)
-                            : (uint16)0;
+                        const uint32 GlobalBoneOffset = Entity.LocalBoneOffset != ~0u
+                            ? (BoneBase + Entity.LocalBoneOffset)
+                            : 0u;
+                        // Bone offset is packed into 16 bits inside FGPUInstance
+                        // alongside MaterialIndex (see PackBoneOffsetAndMaterial).
+                        // ~65k bones across all skinned instances in a single
+                        // frame is the hard cap. Catch overflow loudly rather
+                        // than silently wrap into the material slot.
+                        DEBUG_ASSERT(GlobalBoneOffset <= 0xFFFFu);
+                        const uint16 BoneOffset = (uint16)GlobalBoneOffset;
 
                         FGPUInstance& Out = Instances[WriteIdx];
                         Out.Transform                  = Entity.Transform;
@@ -6774,34 +6752,50 @@ namespace Lumina
 
     entt::entity FForwardRenderScene::GetEntityAtPixel(uint32 X, uint32 Y) const
     {
-        FRHIImage* PickerImage = GetNamedImage(ENamedImage::Picker);
-        if (!PickerImage)
+    #if USING(WITH_EDITOR)
+        // Find the newest slot whose GPU work is guaranteed complete. The render
+        // thread submits at most FRAMES_IN_FLIGHT frames before the CPU is gated
+        // on the previous frame's timeline value, so a slot whose SubmittedFrame
+        // is at least FRAMES_IN_FLIGHT older than the most recent issue is safe
+        // to map without waiting on a semaphore.
+        int32 BestSlotIdx = -1;
+        uint64 BestFrame = 0;
+        for (uint32 i = 0; i < PickerReadbackRingSize; ++i)
         {
+            const FPickerReadbackSlot& Slot = PickerReadbackRing[i];
+            if (!Slot.bPending || !Slot.Staging)
+            {
+                continue;
+            }
+            if (PickerReadbackFrame - Slot.SubmittedFrame <= FRAMES_IN_FLIGHT)
+            {
+                continue;
+            }
+            if (BestSlotIdx == -1 || Slot.SubmittedFrame > BestFrame)
+            {
+                BestSlotIdx = static_cast<int32>(i);
+                BestFrame = Slot.SubmittedFrame;
+            }
+        }
+
+        if (BestSlotIdx == -1)
+        {
+            // Not enough frames have rendered since the last invalidation
+            // (startup, swapchain resize, or first click on a fresh world).
+            // Caller treats this the same as "no entity under cursor".
             return entt::null;
         }
 
-        FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
-        CommandList->Open();
-
-        FRHIStagingImageRef StagingImage = GRenderContext->CreateStagingImage(PickerImage->GetDescription(), ERHIAccess::HostRead);
-        CommandList->CopyImage(PickerImage, FTextureSlice(), StagingImage, FTextureSlice());
-
-        CommandList->Close();
-        GRenderContext->ExecuteCommandList(CommandList);
+        const FPickerReadbackSlot& Slot = PickerReadbackRing[BestSlotIdx];
+        if (X >= Slot.Width || Y >= Slot.Height)
+        {
+            return entt::null;
+        }
 
         size_t RowPitch = 0;
-        void* MappedMemory = GRenderContext->MapStagingTexture(StagingImage, FTextureSlice(), ERHIAccess::HostRead, &RowPitch);
+        void* MappedMemory = GRenderContext->MapStagingTexture(Slot.Staging, FTextureSlice(), ERHIAccess::HostRead, &RowPitch);
         if (!MappedMemory)
         {
-            return entt::null;
-        }
-
-        const uint32 Width  = PickerImage->GetDescription().Extent.x;
-        const uint32 Height = PickerImage->GetDescription().Extent.y;
-
-        if (X >= Width || Y >= Height)
-        {
-            GRenderContext->UnMapStagingTexture(StagingImage);
             return entt::null;
         }
 
@@ -6809,7 +6803,7 @@ namespace Lumina
         uint32* PixelPtr = reinterpret_cast<uint32*>(RowStart) + X;
         uint32 PixelValue = *PixelPtr;
 
-        GRenderContext->UnMapStagingTexture(StagingImage);
+        GRenderContext->UnMapStagingTexture(Slot.Staging);
 
         if (PixelValue == 0)
         {
@@ -6817,5 +6811,43 @@ namespace Lumina
         }
 
         return static_cast<entt::entity>(PixelValue);
+    #else
+        (void)X;
+        (void)Y;
+        return entt::null;
+    #endif
     }
+
+    #if USING(WITH_EDITOR)
+    void FForwardRenderScene::IssuePickerReadback(ICommandList& CmdList)
+    {
+        FRHIImage* PickerImage = GetNamedImage(ENamedImage::Picker);
+        if (!PickerImage)
+        {
+            return;
+        }
+
+        const uint32 W = PickerImage->GetDescription().Extent.x;
+        const uint32 H = PickerImage->GetDescription().Extent.y;
+
+        FPickerReadbackSlot& Slot = PickerReadbackRing[PickerReadbackWriteIndex];
+
+        if (!Slot.Staging || Slot.Width != W || Slot.Height != H)
+        {
+            // First use of this slot, or extent changed (post-resize). Reallocate
+            // to match; bPending stays false until the new copy is recorded below.
+            Slot.Staging = GRenderContext->CreateStagingImage(PickerImage->GetDescription(), ERHIAccess::HostRead);
+            Slot.Width = W;
+            Slot.Height = H;
+        }
+
+        CmdList.CopyImage(PickerImage, FTextureSlice(), Slot.Staging, FTextureSlice());
+
+        Slot.SubmittedFrame = PickerReadbackFrame;
+        Slot.bPending = true;
+
+        ++PickerReadbackFrame;
+        PickerReadbackWriteIndex = (PickerReadbackWriteIndex + 1) % PickerReadbackRingSize;
+    }
+    #endif
 }

@@ -547,10 +547,31 @@ namespace Lumina::ECS::Utils
         return false;
     }
 
+    FRecursiveMutex& GetTransformResolveMutex()
+    {
+        static FRecursiveMutex Instance;
+        return Instance;
+    }
+
     void ResolveTransformChain(FEntityRegistry& Registry, entt::entity Entity)
     {
         LUMINA_PROFILE_SCOPE();
-        
+
+        // Serialize all chain resolves AND any concurrent MarkDirty calls.
+        // Multiple workers calling GetWorldMatrix on different entities
+        // would otherwise both mutate the FNeedsTransformUpdate pool
+        // (erase/remove inside, emplace from MarkDirty) and corrupt its
+        // sparse set. Recursive so a resolver that triggers another
+        // resolver downstream doesn't deadlock.
+        FRecursiveScopeLock Lock(GetTransformResolveMutex());
+
+        // Re-check under the lock: another worker may have already
+        // resolved this entity while we were waiting.
+        if (!Registry.all_of<FNeedsTransformUpdate>(Entity))
+        {
+            return;
+        }
+
         TFixedVector<entt::entity, 64> AncestorChain;
         
         entt::entity Current = Entity;
@@ -624,6 +645,115 @@ namespace Lumina::ECS::Utils
         };
     
         UpdateChildrenRecursive(Entity);
+    }
+
+    void ResolveAllDirtyTransforms(FEntityRegistry& Registry)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        // Two passes: parented entities (need parent x local) and roots
+        // (world == local). Iterating only FNeedsTransformUpdate keeps the
+        // empty-frame cost negligible.
+        auto SingleView        = Registry.view<FNeedsTransformUpdate, STransformComponent>(entt::exclude<FRelationshipComponent>);
+        auto RelationshipGroup = Registry.group<FNeedsTransformUpdate, FRelationshipComponent>(entt::get<STransformComponent>);
+
+        if (!RelationshipGroup.empty())
+        {
+            // Snapshot dirty entities before mutating the group; iterating
+            // a group while members are removed during the body is unsafe.
+            TFixedVector<entt::entity, 100> DirtyEntities;
+            DirtyEntities.reserve(RelationshipGroup.size());
+            for (auto Entity : RelationshipGroup)
+            {
+                DirtyEntities.push_back(Entity);
+            }
+
+            auto ResolveOne = [&](uint32 Index)
+            {
+                entt::entity DirtyEntity = DirtyEntities[Index];
+
+                auto& DirtyTransform    = RelationshipGroup.get<STransformComponent>(DirtyEntity);
+                auto& DirtyRelationship = RelationshipGroup.get<FRelationshipComponent>(DirtyEntity);
+
+                if (DirtyRelationship.Parent != entt::null && Registry.valid(DirtyRelationship.Parent))
+                {
+                    glm::mat4 ParentWorld = Registry.get<STransformComponent>(DirtyRelationship.Parent).WorldTransform.GetMatrix();
+                    glm::mat4 LocalMat    = DirtyTransform.LocalTransform.GetMatrix();
+                    DirtyTransform.WorldTransform = FTransform(ParentWorld * LocalMat);
+                }
+                else
+                {
+                    DirtyTransform.WorldTransform = DirtyTransform.LocalTransform;
+                }
+
+                DirtyTransform.CachedMatrix = DirtyTransform.WorldTransform.GetMatrix();
+
+                // Push the new world transform down the subtree. A child that
+                // was independently dirty also gets refreshed here; clearing
+                // FNeedsTransformUpdate at the end handles the dedupe.
+                TFunction<void(entt::entity)> UpdateChildrenRecursive;
+                UpdateChildrenRecursive = [&](entt::entity ParentEntity)
+                {
+                    ForEachChild(Registry, ParentEntity, [&](entt::entity Child)
+                    {
+                        auto& ParentTransform = Registry.get<STransformComponent>(ParentEntity);
+                        auto& ChildTransform  = Registry.get<STransformComponent>(Child);
+
+                        glm::mat4 ParentWorld = ParentTransform.WorldTransform.GetMatrix();
+                        glm::mat4 ChildLocal  = ChildTransform.LocalTransform.GetMatrix();
+
+                        ChildTransform.WorldTransform = FTransform(ParentWorld * ChildLocal);
+                        ChildTransform.CachedMatrix   = ChildTransform.WorldTransform.GetMatrix();
+
+                        UpdateChildrenRecursive(Child);
+                    });
+                };
+
+                UpdateChildrenRecursive(DirtyEntity);
+            };
+
+            if (DirtyEntities.size() > 1000)
+            {
+                Task::ParallelFor((uint32)DirtyEntities.size(), ResolveOne);
+            }
+            else
+            {
+                for (uint32 i = 0; i < (uint32)DirtyEntities.size(); ++i)
+                {
+                    ResolveOne(i);
+                }
+            }
+        }
+
+        if (SingleView.size_hint() < 1000)
+        {
+            SingleView.each([&](STransformComponent& Transform)
+            {
+                Transform.WorldTransform = Transform.LocalTransform;
+                Transform.CachedMatrix   = Transform.WorldTransform.GetMatrix();
+            });
+        }
+        else
+        {
+            auto WorkFunctor = [](STransformComponent& Transform)
+            {
+                Transform.WorldTransform = Transform.LocalTransform;
+                Transform.CachedMatrix   = Transform.WorldTransform.GetMatrix();
+            };
+
+            auto Handle = SingleView.handle();
+            Task::ParallelFor(Handle->size(), [&](uint32 Index)
+            {
+                entt::entity Entity = (*Handle)[Index];
+
+                if (SingleView.contains(Entity))
+                {
+                    std::apply(WorkFunctor, SingleView.get(Entity));
+                }
+            });
+        }
+
+        Registry.clear<FNeedsTransformUpdate>();
     }
 
     glm::vec3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity)

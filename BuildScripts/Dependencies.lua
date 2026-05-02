@@ -185,6 +185,8 @@ LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/Th
 LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/RenderDoc"))
 LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/concurrentqueue"))
 LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/JoltPhysics"))
+LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/Recast/Recast/Include"))
+LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/Recast/Detour/Include"))
 LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/luau/include"))
 LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/RmlUi/Include"))
 LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/FreeType/include"))

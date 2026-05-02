@@ -464,8 +464,13 @@ namespace Lumina::Lua
         requires(eastl::is_constructible_v<RawT, TArgs...>)
         static void Push(lua_State* State, TArgs&&... Args)
         {
+            // Skip value-initializing StorageT: that would zero-fill
+            // Buffer[sizeof(RawT)] immediately before Emplace overwrites it.
+            // Underlying / InvokeDtor only branch on External, so set just
+            // that and leave Buffer untouched for the placement-new.
             void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(StorageT), TClassTraits<RawT>::Tag());
-            auto* Header = new (Block) StorageT{};
+            auto* Header = static_cast<StorageT*>(Block);
+            Header->External = nullptr;
             Header->Emplace(eastl::forward<TArgs>(Args)...);
         }
 
@@ -492,9 +497,8 @@ namespace Lumina::Lua
 
         static void Push(lua_State* State, T* Ptr)
         {
-            void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(StorageT), TClassTraits<RawT>::Tag());
-            auto* Header = new (Block) StorageT{};
-            Header->SetExternal(Ptr);
+            void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(RawT*), TClassTraits<RawT>::Tag());
+            *static_cast<RawT**>(Block) = Ptr;
         }
 
         static RawT* Get(lua_State* State, int Index)

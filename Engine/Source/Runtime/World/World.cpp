@@ -1089,7 +1089,7 @@ namespace Lumina
         }
         
         ScriptComponent.Script = Lua::FScriptingContext::Get().LoadUniqueScriptPath(ScriptComponent.ScriptPath.Path);
-        if (ScriptComponent.Script == nullptr)
+        if (ScriptComponent.Script == nullptr || !ScriptComponent.Script->Reference.IsValid())
         {
             return;
         }
@@ -1103,15 +1103,7 @@ namespace Lumina
         {
             lua_setthreaddata(ScriptThread, &ScriptComponent.Script->ThreadData);
         }
-
-        // Engine-internal services injected onto `self` (the script's
-        // Reference table). They MUST live here, not on the per-script
-        // Environment: stdlib helper functions like EntityScript:GetComponent
-        // are loaded into the main thread's globals, so their closure env
-        // doesn't see this script's per-thread globals — but `self` is a
-        // direct argument every helper receives. Underscore-prefixed so the
-        // editor harvester (which skips `_*` keys) leaves them out of
-        // autocomplete; users hit them through self:GetComponent etc.
+        
         ScriptComponent.Script->Reference.RawSet("_Registry", &EntityRegistry);
         ScriptComponent.Script->Reference.RawSet("_Physics",  PhysicsScene.get());
         ScriptComponent.Script->Reference.RawSet("_Events",   &LuaEventBus);
@@ -1130,51 +1122,7 @@ namespace Lumina
         ScriptComponent.ReadyFunc       = ScriptComponent.Script->Reference["OnReady"];
         ScriptComponent.UpdateFunc      = ScriptComponent.Script->Reference["OnUpdate"];
         ScriptComponent.DetachFunc      = ScriptComponent.Script->Reference["OnDetach"];
-
-        // Discover directed message handlers by convention. Anything in the script
-        // table named "On<Something>" that isn't a reserved lifecycle hook becomes
-        // a callable handler for `Messages:Send(target, "On<Something>", payload)`.
-        // Done once here so Send is just a hashmap lookup at runtime.
-        //
-        // Walks via raw lua_next instead of FRef::FIterator: the iterator requires
-        // the previous key to remain at the top of the stack between iterations,
-        // but FRef::As<FString> pushes without popping and would corrupt that
-        // invariant -- the next lua_next call then trips "invalid key to next".
-        ScriptComponent.MessageHandlers.clear();
-        if (lua_State* L = ScriptComponent.Script->Reference.GetState())
-        {
-            ScriptComponent.Script->Reference.Push();
-            const int TableIdx = lua_gettop(L);
-
-            lua_pushnil(L);
-            while (lua_next(L, TableIdx) != 0)
-            {
-                // Stack: [..., table, key, value]
-                if (lua_type(L, -2) == LUA_TSTRING && lua_isfunction(L, -1))
-                {
-                    size_t KeyLen = 0;
-                    const char* KeyData = lua_tolstring(L, -2, &KeyLen);
-                    FStringView KeyView(KeyData, KeyLen);
-
-                    const bool bIsOnPrefixed = KeyView.size() >= 3 && KeyView[0] == 'O' && KeyView[1] == 'n';
-                    const bool bIsLifecycle  = KeyView == "OnAttach" || KeyView == "OnReady" || KeyView == "OnDetach" || KeyView == "OnUpdate";
-
-                    if (bIsOnPrefixed && !bIsLifecycle)
-                    {
-                        // FRef(L, -1) refs the value at top and pops it -- leaves
-                        // [..., table, key] so the next lua_next sees the key it expects.
-                        Lua::FRef Handler(L, -1);
-                        ScriptComponent.MessageHandlers.insert(eastl::make_pair(FName(KeyView), eastl::move(Handler)));
-                        continue;
-                    }
-                }
-
-                lua_pop(L, 1); // pop value, keep key for next lua_next
-            }
-
-            lua_pop(L, 1); // pop the table
-        }
-
+        
         // Sync per-instance overrides with the current schema, then apply them
         // by mutating the Exports table the script references.
         if (ScriptComponent.Script->ExportsSchema.IsValid())
@@ -1211,11 +1159,6 @@ namespace Lumina
             ScriptComponent.UpdateStage = MaybeUpdateStage ? MaybeUpdateStage.value() : EUpdateStage::PrePhysics;
         }
         
-        // Stage tags are runtime-only (not serialized), so fresh construct and
-        // post-deserialize paths won't have any of these. The remove dance only
-        // matters when the stage may have changed since a previous bind —
-        // hot-reload, editor path-change, etc. any_of is a cheap O(1) probe per
-        // tag and skips the per-pool remove call entirely on the common path.
         if (EntityRegistry.any_of<
                 FUpdateStage_FrameStart,
                 FUpdateStage_PrePhysics,

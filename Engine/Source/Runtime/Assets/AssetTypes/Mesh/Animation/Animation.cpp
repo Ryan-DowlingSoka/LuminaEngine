@@ -1,9 +1,7 @@
 #include "pch.h"
 #include "Animation.h"
 
-#include <glm/gtx/matrix_decompose.hpp>
-#include <glm/gtx/string_cast.hpp>
-
+#include "Memory/Memcpy.h"
 #include "Renderer/MeshData.h"
 
 
@@ -11,173 +9,240 @@ namespace Lumina
 {
     namespace Detail
     {
-            static glm::vec3 SampleVec3(const TVector<float>& Times, const TVector<glm::vec3>& Values, float Time)
-    {
-        if (Times.empty() || Values.empty())
+        static glm::vec3 SampleVec3(const TVector<float>& Times, const TVector<glm::vec3>& Values, float Time)
         {
-            return glm::vec3(0.0f);
-        }
-        
-        if (Times.size() == 1)
-        {
-            return Values[0];
-        }
-        
-        if (Time <= Times[0])
-        {
-            return Values[0];
-        }
-        
-        if (Time >= Times[Times.size() - 1])
-        {
-            return Values[Values.size() - 1];
-        }
-        
-        for (size_t i = 0; i < Times.size() - 1; ++i)
-        {
-            if (Time >= Times[i] && Time < Times[i + 1])
+            const size_t N = Times.size();
+            if (N == 0 || Values.empty())
             {
-                float DeltaTime = Times[i + 1] - Times[i];
-                float BlendFactor = (Time - Times[i]) / DeltaTime;
-                
-                return glm::mix(Values[i], Values[i + 1], BlendFactor);
+                return glm::vec3(0.0f);
             }
+            if (N == 1 || Time <= Times[0])
+            {
+                return Values[0];
+            }
+            if (Time >= Times[N - 1])
+            {
+                return Values[N - 1];
+            }
+
+            // Binary search the keyframe interval. Linear scan is fine when N
+            // is tiny but bone clips routinely carry hundreds of keys.
+            size_t Lo = 0;
+            size_t Hi = N - 1;
+            while (Lo + 1 < Hi)
+            {
+                const size_t Mid = (Lo + Hi) >> 1;
+                (Time < Times[Mid] ? Hi : Lo) = Mid;
+            }
+
+            const float Dt = Times[Lo + 1] - Times[Lo];
+            const float t  = Dt > 0.0f ? (Time - Times[Lo]) / Dt : 0.0f;
+            return glm::mix(Values[Lo], Values[Lo + 1], t);
         }
-        
-        return Values[Values.size() - 1];
+
+        static glm::quat SampleQuat(const TVector<float>& Times, const TVector<glm::quat>& Values, float Time)
+        {
+            const size_t N = Times.size();
+            if (N == 0 || Values.empty())
+            {
+                return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            }
+            if (N == 1 || Time <= Times[0])
+            {
+                return Values[0];
+            }
+            if (Time >= Times[N - 1])
+            {
+                return Values[N - 1];
+            }
+
+            size_t Lo = 0;
+            size_t Hi = N - 1;
+            while (Lo + 1 < Hi)
+            {
+                const size_t Mid = (Lo + Hi) >> 1;
+                (Time < Times[Mid] ? Hi : Lo) = Mid;
+            }
+
+            const float Dt = Times[Lo + 1] - Times[Lo];
+            const float t  = Dt > 0.0f ? (Time - Times[Lo]) / Dt : 0.0f;
+
+            glm::quat Q0 = Values[Lo];
+            glm::quat Q1 = Values[Lo + 1];
+            if (glm::dot(Q0, Q1) < 0.0f)
+            {
+                Q1 = -Q1;
+            }
+            return glm::slerp(Q0, Q1, t);
+        }
+
+        // Cheap TRS extract for matrices known to be rigid + per-axis scale
+        // (every bone's bind-pose LocalTransform from the FBX importer fits
+        // this). glm::decompose runs an iterative polar decomposition, which is
+        // overkill -- and we used to call it once per channel, which is
+        // catastrophic on a TRS-animated bone.
+        static FORCEINLINE void FastDecomposeTRS(const glm::mat4& M,
+                                                  glm::vec3& OutT,
+                                                  glm::quat& OutR,
+                                                  glm::vec3& OutS)
+        {
+            OutT = glm::vec3(M[3]);
+
+            const glm::vec3 C0(M[0]);
+            const glm::vec3 C1(M[1]);
+            const glm::vec3 C2(M[2]);
+
+            OutS = glm::vec3(glm::length(C0), glm::length(C1), glm::length(C2));
+
+            const float InvSx = OutS.x > 1e-8f ? 1.0f / OutS.x : 0.0f;
+            const float InvSy = OutS.y > 1e-8f ? 1.0f / OutS.y : 0.0f;
+            const float InvSz = OutS.z > 1e-8f ? 1.0f / OutS.z : 0.0f;
+
+            glm::mat3 Rot;
+            Rot[0] = C0 * InvSx;
+            Rot[1] = C1 * InvSy;
+            Rot[2] = C2 * InvSz;
+            OutR = glm::quat_cast(Rot);
+        }
+
+        static constexpr uint8 TouchedT = 1u << 0;
+        static constexpr uint8 TouchedR = 1u << 1;
+        static constexpr uint8 TouchedS = 1u << 2;
+        static constexpr uint8 TouchedAll = TouchedT | TouchedR | TouchedS;
     }
 
-    static glm::quat SampleQuat(const TVector<float>& Times, const TVector<glm::quat>& Values, float Time)
-    {
-        if (Times.empty() || Values.empty())
-        {
-            return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-        }
-    
-        if (Times.size() == 1)
-        {
-            return Values[0];
-        }
-    
-        if (Time <= Times[0])
-        {
-            return Values[0];
-        }
-    
-        if (Time >= Times[Times.size() - 1])
-        {
-            return Values[Values.size() - 1];
-        }
-    
-        for (size_t i = 0; i < Times.size() - 1; ++i)
-        {
-            if (Time >= Times[i] && Time < Times[i + 1])
-            {
-                float DeltaTime = Times[i + 1] - Times[i];
-                float BlendFactor = (Time - Times[i]) / DeltaTime;
-            
-                glm::quat Q0 = Values[i];
-                glm::quat Q1 = Values[i + 1];
-                
-                if (glm::dot(Q0, Q1) < 0.0f)
-                {
-                    Q1 = -Q1;
-                }
-            
-                return glm::slerp(Q0, Q1, BlendFactor);
-            }
-        }
-    
-        return Values[Values.size() - 1];
-    }
-    }
-    
-    
+
     void CAnimation::Serialize(FArchive& Ar)
     {
         CObject::Serialize(Ar);
-        
+
         if (!AnimationResource)
         {
             AnimationResource = MakeUnique<FAnimationResource>();
         }
-        
+
         Ar << *AnimationResource;
     }
-    
-    void CAnimation::SamplePose(float Time, FSkeletonResource* RESTRICT SkeletonResource, TArray<glm::mat4, 255>& RESTRICT OutBoneTransforms)
+
+    void CAnimation::SamplePose(float Time, FSkeletonResource* RESTRICT InSkeleton, TVector<glm::mat4>& RESTRICT OutBoneTransforms) const
     {
         LUMINA_PROFILE_SCOPE();
-        
-        const int32 NumBones = SkeletonResource->GetNumBones();
-    
-        TVector<glm::mat4> Local(NumBones);
-        for (int i = 0; i < NumBones; ++i)
+
+        const int32 NumBones = InSkeleton->GetNumBones();
+        OutBoneTransforms.resize(NumBones);
+
+        if (NumBones == 0)
         {
-            const auto& Bone = SkeletonResource->GetBone(i);
-            Local[i] = Bone.LocalTransform;
+            return;
         }
-    
+
+        // Per-thread scratch. Reused across frames so this is a one-shot
+        // allocation per worker, sized to the largest skeleton it has seen.
+        // ParallelFor in the animation system means SamplePose is genuinely
+        // multi-threaded, so true thread_local is required (not static).
+        thread_local TVector<glm::vec3> ScratchT;
+        thread_local TVector<glm::quat> ScratchR;
+        thread_local TVector<glm::vec3> ScratchS;
+        thread_local TVector<uint8>     ScratchTouched;
+
+        if ((int32)ScratchT.size() < NumBones)
+        {
+            ScratchT.resize(NumBones);
+            ScratchR.resize(NumBones);
+            ScratchS.resize(NumBones);
+            ScratchTouched.resize(NumBones);
+        }
+
+        Memory::Memset(ScratchTouched.data(), 0, (size_t)NumBones * sizeof(uint8));
+
+        // Pass 1: gather per-bone TRS overrides. One sample per channel; the
+        // old path decomposed the bind pose once per channel, so a bone with
+        // T+R+S animation paid for three full polar decompositions every
+        // frame. This pass is now N samples and zero decompositions.
         for (const FAnimationChannel& Channel : AnimationResource->Channels)
         {
-            int i = SkeletonResource->FindBoneIndex(Channel.TargetBone);
-            if (i < 0 || i >= NumBones)
+            const int32 BoneIdx = InSkeleton->FindBoneIndex(Channel.TargetBone);
+            if (BoneIdx < 0 || BoneIdx >= NumBones)
             {
                 continue;
             }
-            
-            glm::vec3 Translation;
-            glm::quat Rotation;
-            glm::vec3 Scale;
-            glm::vec3 Skew;
-            glm::vec4 Perspective;
-            glm::decompose(Local[i], Scale, Rotation, Translation, Skew, Perspective);
 
             switch (Channel.TargetPath)
             {
             case FAnimationChannel::ETargetPath::Translation:
-                Translation = Detail::SampleVec3(Channel.Timestamps, Channel.Translations, Time);
+                ScratchT[BoneIdx]       = Detail::SampleVec3(Channel.Timestamps, Channel.Translations, Time);
+                ScratchTouched[BoneIdx] |= Detail::TouchedT;
                 break;
-    
             case FAnimationChannel::ETargetPath::Rotation:
-                Rotation = Detail::SampleQuat(Channel.Timestamps, Channel.Rotations, Time);
+                ScratchR[BoneIdx]       = Detail::SampleQuat(Channel.Timestamps, Channel.Rotations, Time);
+                ScratchTouched[BoneIdx] |= Detail::TouchedR;
                 break;
-    
             case FAnimationChannel::ETargetPath::Scale:
-                Scale = Detail::SampleVec3(Channel.Timestamps, Channel.Scales, Time);
+                ScratchS[BoneIdx]       = Detail::SampleVec3(Channel.Timestamps, Channel.Scales, Time);
+                ScratchTouched[BoneIdx] |= Detail::TouchedS;
                 break;
-                
-            case FAnimationChannel::ETargetPath::Weights:
-                break;
-                
             default:
                 break;
             }
-            
-            Local[i] =
-                glm::translate(glm::mat4(1.0f), Translation) *
-                glm::mat4_cast(Rotation) *
-                glm::scale(glm::mat4(1.0f), Scale);
         }
-        
-        TVector<glm::mat4> Global(NumBones);
-        for (int i = 0; i < NumBones; ++i)
+
+        // Pass 2: build per-bone local matrices into OutBoneTransforms (used
+        // here as scratch; the FK and InvBind passes below overwrite it). The
+        // FastDecomposeTRS path only runs for partially-overridden bones --
+        // fully-animated bones skip it, untouched bones inherit the bind-pose
+        // matrix verbatim.
+        for (int32 i = 0; i < NumBones; ++i)
         {
-            const auto& Bone = SkeletonResource->GetBone(i);
-            if (Bone.ParentIndex == INDEX_NONE)
+            const FSkeletonResource::FBoneInfo& Bone = InSkeleton->GetBone(i);
+            const uint8 Touched = ScratchTouched[i];
+
+            if (Touched == 0)
             {
-                Global[i] = Local[i];
+                OutBoneTransforms[i] = Bone.LocalTransform;
+                continue;
             }
-            else
+
+            if (Touched == Detail::TouchedAll)
             {
-                Global[i] = Global[Bone.ParentIndex] * Local[i];
+                OutBoneTransforms[i] =
+                    glm::translate(glm::mat4(1.0f), ScratchT[i]) *
+                    glm::mat4_cast(ScratchR[i]) *
+                    glm::scale(glm::mat4(1.0f), ScratchS[i]);
+                continue;
+            }
+
+            glm::vec3 T, S;
+            glm::quat R;
+            Detail::FastDecomposeTRS(Bone.LocalTransform, T, R, S);
+
+            if (Touched & Detail::TouchedT) T = ScratchT[i];
+            if (Touched & Detail::TouchedR) R = ScratchR[i];
+            if (Touched & Detail::TouchedS) S = ScratchS[i];
+
+            OutBoneTransforms[i] =
+                glm::translate(glm::mat4(1.0f), T) *
+                glm::mat4_cast(R) *
+                glm::scale(glm::mat4(1.0f), S);
+        }
+
+        // Pass 3: forward kinematics in skeleton order. Bones[] is laid out
+        // parents-before-children by the importer, so a single linear pass
+        // resolves every world transform without a recursion or scratch buffer.
+        for (int32 i = 0; i < NumBones; ++i)
+        {
+            const FSkeletonResource::FBoneInfo& Bone = InSkeleton->GetBone(i);
+            if (Bone.ParentIndex != INDEX_NONE)
+            {
+                OutBoneTransforms[i] = OutBoneTransforms[Bone.ParentIndex] * OutBoneTransforms[i];
             }
         }
-    
-        for (int i = 0; i < NumBones; ++i)
+
+        // Pass 4: fold in InvBind. After this OutBoneTransforms[i] is the
+        // skinning matrix the GPU samples in LoadSkinnedVertex.
+        for (int32 i = 0; i < NumBones; ++i)
         {
-            const auto& Bone = SkeletonResource->GetBone(i);
-            OutBoneTransforms[i] = Global[i] * Bone.InvBindMatrix;
+            const FSkeletonResource::FBoneInfo& Bone = InSkeleton->GetBone(i);
+            OutBoneTransforms[i] = OutBoneTransforms[i] * Bone.InvBindMatrix;
         }
     }
 }

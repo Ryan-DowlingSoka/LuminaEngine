@@ -132,7 +132,7 @@ namespace Lumina
         glm::vec3 Start = Location - glm::vec3(0, Character.HalfHeight, 0);
         glm::vec3 End = Location + glm::vec3(0, Character.HalfHeight, 0);
     
-        PDI->DrawCapsule(Start, End, Character.Radius, glm::vec4(0.0f, 1.0f, 0.0f, 1.0f), 12, 2.0f, true, 0.0f);
+        PDI->DrawCapsule(Start, End, Character.Radius * glm::length(Transform.GetWorldScale()), glm::vec4(0.0f, 1.0f, 0.0f, 1.0f), 12, 2.0f, true, 0.0f);
     }
 
     CStruct* CComponentVisualizer_Camera::GetSupportedComponentType() const

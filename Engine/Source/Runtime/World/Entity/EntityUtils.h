@@ -30,6 +30,40 @@ namespace Lumina::ECS::Utils
 	RUNTIME_API void CollectChildren(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutChildren);
 	RUNTIME_API bool HasComponent(FEntityRegistry& Registry, entt::entity Entity, entt::meta_type Type);
 	RUNTIME_API void ResolveTransformChain(FEntityRegistry& Registry, entt::entity Entity);
+
+	/**
+	 * Bulk-resolve every entity carrying FNeedsTransformUpdate, propagate
+	 * to descendants, and clear the dirty pool. Cost is O(dirty), so a
+	 * call when nothing is dirty is cheap.
+	 *
+	 * Intended use: a system that is about to do many parallel
+	 * GetWorldTransform reads can call this once at the top of its
+	 * Update on the main thread, then read STransformComponent::WorldTransform
+	 * directly inside its ParallelFor body and skip the per-read mutex
+	 * in ResolveTransformChain. The caller is responsible for guaranteeing
+	 * that nothing in the parallel section mutates transforms; outside
+	 * such a section the lazy GetWorldTransform()/ResolveIfDirty contract
+	 * still applies and remains the right call for generic readers.
+	 *
+	 * Must be called on the main thread (or any single thread with no
+	 * concurrent writers) - it walks/clears the FNeedsTransformUpdate
+	 * pool without taking GetTransformResolveMutex.
+	 */
+	RUNTIME_API void ResolveAllDirtyTransforms(FEntityRegistry& Registry);
+
+	/**
+	 * Single mutex shared by every code path that mutates the
+	 * FNeedsTransformUpdate pool or the cached transform/world matrices
+	 * inside a chain resolve. Acquired by ResolveTransformChain (around
+	 * its full body) and STransformComponent::MarkDirty so workers and
+	 * the main thread can race-freely call setters/getters that touch
+	 * the dirty flag. Held only across the resolve itself - typical
+	 * uncontended cost is a single atomic CAS.
+	 *
+	 * Direct emplace<FNeedsTransformUpdate> elsewhere should also take
+	 * this lock if it can run off the main thread.
+	 */
+	RUNTIME_API FRecursiveMutex& GetTransformResolveMutex();
 	
 	RUNTIME_API glm::vec3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity);
 	RUNTIME_API glm::quat GetEntityRotation(FEntityRegistry& Registry, entt::entity Entity);

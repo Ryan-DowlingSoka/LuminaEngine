@@ -337,13 +337,18 @@ namespace Lumina::Lua
             // type identity, so pushing them by static type is correct.
             if constexpr (eastl::is_base_of_v<CObject, ClassT>)
             {
+                // Polymorphic CObject push is always external — the object
+                // outlives the userdata and we only need the External slot at
+                // offset 0. Skip the inline Buffer (sizeof(ClassT) of dead
+                // weight per pushed CObject) and skip Initialize entirely;
+                // SetExternal writes the pointer straight in.
                 FUserdataLayout Layout;
                 Layout.Tag         = TClassTraits<ClassT>::Tag();
-                Layout.Size        = sizeof(TUserdataHeader<ClassT>);
-                Layout.Initialize  = +[](void* Block) { new (Block) TUserdataHeader<ClassT>{}; };
+                Layout.Size        = sizeof(ClassT*);
+                Layout.Initialize  = +[](void*) {};
                 Layout.SetExternal = +[](void* Block, void* Ptr)
                 {
-                    static_cast<TUserdataHeader<ClassT>*>(Block)->SetExternal(static_cast<ClassT*>(Ptr));
+                    *static_cast<ClassT**>(Block) = static_cast<ClassT*>(Ptr);
                 };
                 RegisterCObjectLayout(ClassT::StaticClass(), Layout);
             }

@@ -12,6 +12,7 @@ LuminaModule({
         "LUMINA_RENDERER_VULKAN",
         "VK_NO_PROTOTYPES",
         "LUMINA_RPMALLOC",
+        "LUMINA_HAS_RECAST",
     },
     Dependencies =
     {
@@ -19,6 +20,7 @@ LuminaModule({
         "JoltPhysics", "RPMalloc", "XXHash", "Volk", "VKBootstrap",
         "TinyOBJLoader", "MeshOptimizer", "SPIRV-Reflect", "FastGLTF",
         "OpenFBX", "BasicUniversal", "RmlUi", "FreeType", "MikkTSpace",
+        "Recast",
     },
     ExtraLinks =
     {

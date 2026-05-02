@@ -375,8 +375,6 @@ namespace Lumina
 
         void CompileDrawCommands(ICommandList& CmdList);
 
-        void ResolveDirtyTransforms();
-
         void ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
         void ProcessSkeletalMeshEntityInternal(entt::entity Entity, const SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
 
@@ -663,6 +661,34 @@ namespace Lumina
          * no cull is active (no instances this frame).
          */
         uint32                                  CameraLateViewIndex = ~0u;
+
+#if USING(WITH_EDITOR)
+        // Async picker readback ring. Synchronous readback (allocate staging,
+        // copy, immediately Map -> WaitCommandList) used to stall the calling
+        // thread for whatever was already in flight on the graphics queue
+        // (~10ms in the worst case). Instead we copy ENamedImage::Picker into
+        // the next staging slot at the end of every frame's RenderView, then
+        // GetEntityAtPixel reads from the newest slot whose GPU work is
+        // guaranteed complete (>= FRAMES_IN_FLIGHT frames behind the writer).
+        // Sized FRAMES_IN_FLIGHT + 1 so there is always at least one
+        // completed slot available without blocking.
+        static constexpr uint32                 PickerReadbackRingSize = FRAMES_IN_FLIGHT + 1;
+        struct FPickerReadbackSlot
+        {
+            FRHIStagingImageRef Staging;
+            uint32              Width = 0;
+            uint32              Height = 0;
+            uint64              SubmittedFrame = 0;
+            bool                bPending = false;
+        };
+        mutable TArray<FPickerReadbackSlot, PickerReadbackRingSize> PickerReadbackRing;
+        uint64                                  PickerReadbackFrame = 0;
+        uint32                                  PickerReadbackWriteIndex = 0;
+
+        // Schedules the per-frame picker -> staging copy on CmdList. Called
+        // from RenderView after the last pass that writes to the picker RT.
+        void IssuePickerReadback(ICommandList& CmdList);
+#endif
 
     };
 }

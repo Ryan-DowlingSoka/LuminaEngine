@@ -5,7 +5,9 @@
 #include <iomanip>
 #include <sstream>
 #include <random>
-    
+
+#include "Core/Math/Hash/Hash.h"
+
 #if defined(_WIN32)
 #include <objbase.h>
 #elif defined(__APPLE__)
@@ -106,18 +108,24 @@ namespace Lumina
     
     FGuid FGuid::NewDeterministic(FStringView seed)
     {
-        eastl::hash<FStringView> hasher;
-        size_t hash = hasher(seed);
-        
+        const uint64 H0 = Hash::XXHash::GetHash64(seed.data(), seed.size());
+
+        uint64 H1 = H0 + 0x9E3779B97F4A7C15ULL;
+        H1 = (H1 ^ (H1 >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        H1 = (H1 ^ (H1 >> 27)) * 0x94D049BB133111EBULL;
+        H1 =  H1 ^ (H1 >> 31);
+
         ByteArray bytes{};
-        for (size_t i = 0; i < GUID_SIZE; ++i)
+        for (size_t i = 0; i < 8; ++i)
         {
-            bytes[i] = static_cast<uint8_t>((hash >> (i * 8)) & 0xFF);
+            bytes[i]     = static_cast<uint8>((H0 >> (i * 8)) & 0xFFu);
+            bytes[i + 8] = static_cast<uint8>((H1 >> (i * 8)) & 0xFFu);
         }
-        
+
+        // RFC-4122-ish version (5: name-based) and variant bits.
         bytes[6] = (bytes[6] & 0x0F) | 0x50;
         bytes[8] = (bytes[8] & 0x3F) | 0x80;
-        
+
         return FGuid(bytes);
     }
     
@@ -191,7 +199,7 @@ namespace Lumina
         ByteArray bytes{};
         if (TryParseInternal(str, bytes))
         {
-            return FGuid(std::move(bytes));
+            return FGuid(bytes);
         }
         return eastl::nullopt;
     }

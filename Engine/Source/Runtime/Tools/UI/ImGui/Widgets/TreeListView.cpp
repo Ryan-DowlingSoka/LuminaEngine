@@ -121,7 +121,10 @@ namespace Lumina
             }
         }
 
-        ClearSelections(Context);
+        // Do NOT call ClearSelections here. It fires ItemSelectedFunction with InvalidTreeNode,
+        // which clients treat as "user cleared selection" and propagate to their canonical state
+        // (e.g. registry tags). A structural rebuild is unrelated to user intent — the rebuild
+        // path is expected to re-apply bSelected from the client's own source of truth.
         ClearTree();
 
         Context.RebuildTreeFunction(*this);

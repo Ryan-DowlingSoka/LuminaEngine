@@ -112,7 +112,12 @@ namespace Lumina
         
         bool IsAsset() const override { return true; }
         
-        void SamplePose(float Time, FSkeletonResource* RESTRICT SkeletonResource, TArray<glm::mat4, 255>& RESTRICT OutBoneTransforms);
+        // Samples the animation at Time and writes (Global * InvBind) for every
+        // bone into OutBoneTransforms (resized to the skeleton's bone count).
+        // Bones with no channels in this clip stay at their bind-pose local
+        // transform, so partial animations (e.g. upper-body only) compose
+        // correctly with the rest of the skeleton.
+        void SamplePose(float Time, FSkeletonResource* RESTRICT InSkeleton, TVector<glm::mat4>& RESTRICT OutBoneTransforms) const;
         
         float GetDuration() const { return AnimationResource->Duration; }
         FAnimationResource* GetAnimationResource() const { return AnimationResource.get(); }

@@ -1053,6 +1053,7 @@ namespace Lumina
 
         TerrainEditMode.Tick(World, (float)World->GetWorldDeltaTime(), CameraComponent, bViewportHovered, ViewportOrigin, ViewportSize);
         TerrainEditMode.DrawOverlay(World, ViewportOrigin, ViewportSize, CameraComponent);
+        NavMeshEditMode.DrawOverlay(World);
 
         auto SelectionView = World->GetEntityRegistry().view<FSelectedInEditorComponent, STransformComponent>();
         
@@ -1745,6 +1746,7 @@ namespace Lumina
                 DrawViewportOptions(ButtonSize);
 
                 TerrainEditMode.DrawToolbar(World, ButtonSize);
+                NavMeshEditMode.DrawToolbar(World, ButtonSize);
             }
 
             ImGui::EndGroup();
@@ -3580,7 +3582,9 @@ namespace Lumina
                             DrawComponentsHeader();
                         }
                     }
+                }
 
+                {
                     struct FPrimitiveEntry
                     {
                         const char* Label;
@@ -3595,6 +3599,7 @@ namespace Lumina
                         { LE_ICON_SQUARE   " Plane",    "Plane",    []() -> CStaticMesh* { return CThumbnailManager::Get().PlaneMesh; } },
                         { LE_ICON_CYLINDER " Cylinder", "Cylinder", []() -> CStaticMesh* { return CThumbnailManager::Get().CylinderMesh; } },
                         { LE_ICON_CONE     " Cone",     "Cone",     []() -> CStaticMesh* { return CThumbnailManager::Get().ConeMesh; } },
+                        { LE_ICON_GAS_CYLINDER " Capsule",     "Capsule",     []() -> CStaticMesh* { return CThumbnailManager::Get().CapsuleMesh; } },
                     };
 
                     TVector<const FPrimitiveEntry*> FilteredPrimitives;
@@ -3629,9 +3634,29 @@ namespace Lumina
 
                             if (ImGui::Button(Entry->Label, ImVec2(ButtonWidth, 0.0f)))
                             {
-                                BeginTransaction();
-                                CreatePrimitiveEntity(Entry->GetMesh(), Entry->EntityName);
-                                EndTransaction("New Primitive");
+                                CStaticMesh* PrimitiveMesh = Entry->GetMesh();
+                                if (World->GetEntityRegistry().valid(Entity))
+                                {
+                                    if (PrimitiveMesh != nullptr)
+                                    {
+                                        BeginTransaction();
+                                        SStaticMeshComponent& MeshComp = World->GetEntityRegistry().emplace_or_replace<SStaticMeshComponent>(Entity);
+                                        MeshComp.StaticMesh = PrimitiveMesh;
+                                        EndTransaction("Set Primitive Mesh");
+
+                                        OutlinerListView.MarkTreeDirty();
+                                        if (Entity == DetailsEntity)
+                                        {
+                                            bDetailsDirty = true;
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    BeginTransaction();
+                                    CreatePrimitiveEntity(PrimitiveMesh, Entry->EntityName);
+                                    EndTransaction("New Primitive");
+                                }
 
                                 ImGui::CloseCurrentPopup();
                                 AddEntityComponentFilter.Clear();

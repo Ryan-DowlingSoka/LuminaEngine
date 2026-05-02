@@ -25,6 +25,7 @@
 #include "Core/Object/Class.h"
 #include "Events/EventProcessor.h"
 #include "Input/InputMode.h"
+#include "World/Entity/Systems/NavMeshSystem.h"
 #include "World/Entity/Systems/SystemContext.h"
 
 namespace Lumina::Lua
@@ -449,6 +450,7 @@ namespace Lumina::Lua
 
         CWorld::RegisterLuaModule(GlobalsRef);
         RmlUi::RegisterLuaModule(GlobalsRef);
+        Nav::RegisterLuaModule(GlobalsRef);
 
         // Console — print + log levels. `print` stays globally aliased to
         // Console.Log so existing scripts that just call print() keep working.

@@ -69,6 +69,9 @@ namespace Lumina
         PROPERTY(NotSerialized)
         TObjectPtr<CStaticMesh> ConeMesh;
 
+        /** Unit capsule mesh */
+        PROPERTY(NotSerialized)
+        TObjectPtr<CStaticMesh> CapsuleMesh;
 
         FSharedMutex ThumbnailLock;
         THashMap<FName, FPackageThumbnail*> Thumbnails;

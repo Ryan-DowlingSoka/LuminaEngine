@@ -23,12 +23,17 @@
 #include "Jolt/Physics/Body/BodyCreationSettings.h"
 #include "Jolt/Physics/Collision/Shape/BoxShape.h"
 #include "Jolt/Physics/Collision/Shape/SphereShape.h"
+#include "Jolt/Physics/Collision/Shape/MeshShape.h"
+#include "Jolt/Physics/Collision/Shape/ConvexHullShape.h"
+#include "Assets/AssetTypes/Mesh/StaticMesh/StaticMesh.h"
+#include "Renderer/MeshData.h"
 #include "Renderer/RendererUtils.h"
 #include "World/World.h"
 #include "World/Entity/Components/CharacterComponent.h"
 #include "World/Entity/Components/CharacterControllerComponent.h"
 #include "World/Entity/Components/DirtyComponent.h"
 #include "World/Entity/Components/PhysicsComponent.h"
+#include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "world/entity/components/velocitycomponent.h"
 #include "World/Entity/Events/ImpulseEvent.h"
@@ -222,9 +227,21 @@ namespace Lumina::Physics
         JoltSystem->SetContactListener(ContactListener.get());
         
         FEntityRegistry& Registry = World->GetEntityRegistry();
-        
+
         Registry.on_construct<SSphereColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SBoxColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<SMeshColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+
+        // Per-worker TempAllocator pool for the parallel character sub-step.
+        // 4 MiB per worker is comfortably above the high-water mark for a
+        // single CharacterVirtual::ExtendedUpdate; the heavy allocator
+        // (300 MiB) is reserved for JoltSystem->Update.
+        const uint32 NumWorkers = GTaskSystem ? GTaskSystem->GetScheduler().GetNumTaskThreads() : 1u;
+        CharacterAllocators.reserve(NumWorkers);
+        for (uint32 i = 0; i < NumWorkers; ++i)
+        {
+            CharacterAllocators.push_back(MakeUnique<JPH::TempAllocatorImpl>(4ull * 1024 * 1024));
+        }
     }
 
     FJoltPhysicsScene::~FJoltPhysicsScene()
@@ -233,6 +250,7 @@ namespace Lumina::Physics
 
         Registry.on_construct<SSphereColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SBoxColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<SMeshColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
     }
 
     void FJoltPhysicsScene::PreUpdate()
@@ -692,10 +710,37 @@ namespace Lumina::Physics
         JPH::PhysicsSystem* PhysicsSystem = JoltSystem.get();
 
         auto View = Registry.view<SCharacterPhysicsComponent, SCharacterMovementComponent>();
+        auto Handle = View.handle();
+        const uint32 Count = (uint32)Handle->size();
+        if (Count == 0)
+        {
+            return;
+        }
 
-        View.each([&](SCharacterPhysicsComponent& Physics, SCharacterMovementComponent& Movement)
+        // Each character's sub-step is fully entity-local: per-character
+        // velocity / rotation math, and ExtendedUpdate's broadphase queries
+        // are read-only against a stable broadphase (JoltSystem->Update has
+        // already returned this frame). BodyInterface activations inside
+        // ExtendedUpdate are internally locked by Jolt. The only piece that
+        // forces parallelization to be careful is the TempAllocator -
+        // TempAllocatorImpl is single-threaded, so each worker uses its own
+        // out of CharacterAllocators[ThreadNum].
+        //
+        // Below ParallelMinCount the scheduler overhead beats the gain;
+        // small worlds run sequentially with the main allocator.
+        constexpr uint32 ParallelMinCount = 8;
+
+        auto SubStep = [&](entt::entity Entity, JPH::TempAllocator& InAllocator)
         {
             LUMINA_PROFILE_SECTION("Character Sub-Step");
+
+            if (!View.contains(Entity))
+            {
+                return;
+            }
+
+            SCharacterPhysicsComponent&  Physics  = View.get<SCharacterPhysicsComponent>(Entity);
+            SCharacterMovementComponent& Movement = View.get<SCharacterMovementComponent>(Entity);
 
             JPH::CharacterVirtual* Character = Physics.Character ? Physics.Character->Ref.GetPtr() : nullptr;
             if (Character == nullptr)
@@ -812,9 +857,28 @@ namespace Lumina::Physics
                 PhysicsSystem->GetDefaultLayerFilter(Layer),
                 {},
                 {},
-                Allocator);
+                InAllocator);
 
             Movement.Velocity = JoltUtils::FromJPHVec3(Character->GetLinearVelocity());
+        };
+
+        if (Count < ParallelMinCount || CharacterAllocators.empty())
+        {
+            for (uint32 i = 0; i < Count; ++i)
+            {
+                SubStep((*Handle)[i], Allocator);
+            }
+            return;
+        }
+
+        const uint32 NumWorkers = (uint32)CharacterAllocators.size();
+        Task::ParallelFor(Count, [&](uint32 Index, uint32 ThreadNum)
+        {
+            // ThreadNum is bounded by GetNumTaskThreads(), which is what
+            // we sized CharacterAllocators against. Clamp defensively in
+            // case a registered external thread reports a higher index.
+            const uint32 AllocIdx = ThreadNum < NumWorkers ? ThreadNum : 0u;
+            SubStep((*Handle)[Index], *CharacterAllocators[AllocIdx]);
         });
     }
 
@@ -1074,6 +1138,87 @@ namespace Lumina::Physics
         
     }
 
+    static JPH::ShapeRefC BuildMeshColliderShape(const CMesh* Mesh, const glm::vec3& Scale, bool bConvex)
+    {
+        const FMeshResource& Resource = Mesh->GetMeshResource();
+        const FMeshletData&  MD       = Resource.MeshletData;
+
+        if (MD.IsEmpty() || Resource.bSkinnedMesh)
+        {
+            return nullptr;
+        }
+
+        JPH::VertexList         Vertices;
+        JPH::IndexedTriangleList Triangles;
+
+        Mesh->ForEachSurface([&](const FGeometrySurface& Surface, uint32)
+        {
+            const uint32 Offset = Surface.LODMeshletOffset[0];
+            const uint32 Count  = Surface.LODMeshletCount[0];
+            for (uint32 i = 0; i < Count; ++i)
+            {
+                const FMeshlet& M       = MD.Meshlets[Offset + i];
+                const uint32 BaseVertex = (uint32)Vertices.size();
+
+                for (uint32 v = 0; v < M.VertexCount; ++v)
+                {
+                    const FMeshletVertex& MV = MD.MeshletVertices[M.VertexOffset + v];
+                    const uint32 P  = MV.Position;
+                    const float qx  = (float)( P        & 0x3FFu);
+                    const float qy  = (float)((P >> 10) & 0x3FFu);
+                    const float qz  = (float)((P >> 20) & 0x3FFu);
+                    glm::vec3 Pos = MD.MeshOrigin + (glm::vec3(M.LoInt) + glm::vec3(qx, qy, qz)) * MD.MeshGridStep;
+                    Pos *= Scale;
+                    Vertices.push_back(JPH::Float3(Pos.x, Pos.y, Pos.z));
+                }
+
+                for (uint32 t = 0; t < M.TriangleCount; ++t)
+                {
+                    const uint32 Packed = MD.MeshletTriangles[M.TriangleOffset + t];
+                    const uint32 i0 = (Packed      ) & 0xFFu;
+                    const uint32 i1 = (Packed >>  8) & 0xFFu;
+                    const uint32 i2 = (Packed >> 16) & 0xFFu;
+                    Triangles.emplace_back(BaseVertex + i0, BaseVertex + i1, BaseVertex + i2, 0);
+                }
+            }
+        });
+
+        if (Vertices.empty() || Triangles.empty())
+        {
+            return nullptr;
+        }
+
+        if (bConvex)
+        {
+            JPH::Array<JPH::Vec3> Points;
+            Points.reserve(Vertices.size());
+            for (const JPH::Float3& V : Vertices)
+            {
+                Points.emplace_back(V.x, V.y, V.z);
+            }
+
+            JPH::ConvexHullShapeSettings Settings(Points);
+            Settings.SetEmbedded();
+            auto Result = Settings.Create();
+            if (Result.HasError())
+            {
+                LOG_ERROR("Failed to build convex hull from mesh '{}': {}", Mesh->GetName().ToString(), Result.GetError());
+                return nullptr;
+            }
+            return Result.Get();
+        }
+
+        JPH::MeshShapeSettings Settings(std::move(Vertices), std::move(Triangles));
+        Settings.SetEmbedded();
+        auto Result = Settings.Create();
+        if (Result.HasError())
+        {
+            LOG_ERROR("Failed to build triangle mesh from mesh '{}': {}", Mesh->GetName().ToString(), Result.GetError());
+            return nullptr;
+        }
+        return Result.Get();
+    }
+
     void FJoltPhysicsScene::OnRigidBodyComponentConstructed(entt::registry& Registry, entt::entity Entity)
     {
         LUMINA_PROFILE_SCOPE();
@@ -1081,6 +1226,7 @@ namespace Lumina::Physics
         JPH::ShapeRefC Shape;
         glm::vec3 ColliderTranslationOffset(0.0f);
         glm::vec3 ColliderRotationOffset(0.0f);
+        bool      bIsTriangleMesh = false;
 
         STransformComponent* TransformComponent = Registry.try_get<STransformComponent>(Entity);
         if (!TransformComponent)
@@ -1088,12 +1234,12 @@ namespace Lumina::Physics
             PendingRigidBodyCreations.push(Entity);
             return;
         }
-        
+
         if (SBoxColliderComponent* BC = Registry.try_get<SBoxColliderComponent>(Entity))
         {
             ColliderTranslationOffset       = BC->TranslationOffset;
             ColliderRotationOffset          = BC->RotationOffset;
-            
+
             JPH::BoxShapeSettings Settings(JoltUtils::ToJPHVec3(BC->HalfExtent * TransformComponent->GetScale()));
             Settings.SetEmbedded();
             auto Result = Settings.Create();
@@ -1101,7 +1247,7 @@ namespace Lumina::Physics
             {
                 return LOG_ERROR("Failed to create BoxCollider Shape for Entity: {} - {}", entt::to_integral(Entity), Result.GetError());
             }
-            
+
             Shape = Result.Get();
         }
         else if (SSphereColliderComponent* SC = Registry.try_get<SSphereColliderComponent>(Entity))
@@ -1115,8 +1261,36 @@ namespace Lumina::Physics
             {
                 return LOG_ERROR("Failed to create SphereCollider Shape for Entity: {} - {}", entt::to_integral(Entity), Result.GetError());
             }
-            
-            Shape = Result.Get();      
+
+            Shape = Result.Get();
+        }
+        else if (SMeshColliderComponent* MC = Registry.try_get<SMeshColliderComponent>(Entity))
+        {
+            ColliderTranslationOffset = MC->TranslationOffset;
+            ColliderRotationOffset    = MC->RotationOffset;
+
+            CStaticMesh* Mesh = MC->Mesh.Get();
+            if (Mesh == nullptr)
+            {
+                if (SStaticMeshComponent* SMC = Registry.try_get<SStaticMeshComponent>(Entity))
+                {
+                    Mesh = SMC->StaticMesh.Get();
+                }
+            }
+
+            if (Mesh == nullptr || Mesh->HasAnyFlag(OF_NeedsLoad) || Mesh->GetMeshResource().MeshletData.IsEmpty())
+            {
+                PendingRigidBodyCreations.push(Entity);
+                return;
+            }
+
+            Shape = BuildMeshColliderShape(Mesh, TransformComponent->GetScale(), MC->bConvex);
+            if (Shape == nullptr)
+            {
+                return LOG_ERROR("Failed to create MeshCollider Shape for Entity: {}", entt::to_integral(Entity));
+            }
+
+            bIsTriangleMesh = !MC->bConvex;
         }
         else
         {
@@ -1132,6 +1306,13 @@ namespace Lumina::Physics
         
         JPH::ObjectLayer Layer      = JoltUtils::PackToObjectLayer(RigidBodyComponent.CollisionProfile);
         JPH::EMotionType MotionType = ToJoltMotionType(RigidBodyComponent.BodyType);
+
+        // Jolt's triangle mesh shape only supports Static / Kinematic bodies.
+        if (bIsTriangleMesh && MotionType == JPH::EMotionType::Dynamic)
+        {
+            LOG_WARN("MeshCollider on Entity {} is a non-convex triangle mesh; forcing motion type to Static.", entt::to_integral(Entity));
+            MotionType = JPH::EMotionType::Static;
+        }
 
         glm::quat Rotation      = TransformComponent->GetRotation();
         glm::vec3 Position      = TransformComponent->GetLocation();

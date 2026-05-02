@@ -15,6 +15,7 @@
 #include "Renderer/RenderTypes.h"
 #include "Core/Engine/Engine.h"
 #include "Renderer/RenderManager.h"
+#include "Renderer/RHIGlobals.h"
 
 namespace Lumina
 {

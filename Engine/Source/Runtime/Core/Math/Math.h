@@ -81,6 +81,11 @@ namespace Lumina::Math
         return Abs(Value) <= Epsilon;
     }
     
+    [[nodiscard]] inline bool IsNearlyEqual(const glm::vec3& A, const glm::vec3& B, float Epsilon = 1e-4f)
+    {
+        return glm::all(glm::lessThanEqual(glm::abs(A - B), glm::vec3(Epsilon)));
+    }
+    
     [[nodiscard]] constexpr uint64 CountTrailingZeros64(uint64 Value)
     {
         if (Value == 0)

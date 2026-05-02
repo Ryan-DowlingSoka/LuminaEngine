@@ -1,11 +1,14 @@
 ﻿#pragma once
 
 #include "Core/Object/ObjectMacros.h"
+#include "Core/Object/ObjectHandleTyped.h"
 #include "Physics/PhysicsTypes.h"
 #include "PhysicsComponent.generated.h"
 
 namespace Lumina
 {
+    class CStaticMesh;
+
     REFLECT(Component)
     struct RUNTIME_API alignas(Threading::GCacheLineSize) SRigidBodyComponent
     {
@@ -120,5 +123,27 @@ namespace Lumina
         PROPERTY(Editable)
         glm::vec3 TranslationOffset;
     };
-    
+
+    REFLECT(Component)
+    struct RUNTIME_API SMeshColliderComponent
+    {
+        GENERATED_BODY()
+
+        /** Mesh asset used as collision geometry. If null, the system falls back to the entity's StaticMeshComponent. */
+        PROPERTY(Editable)
+        TObjectPtr<CStaticMesh> Mesh;
+
+        /** Build a convex hull from the mesh (allows dynamic bodies). When false, builds a concave triangle mesh (static / kinematic only). */
+        PROPERTY(Editable)
+        bool bConvex = false;
+
+        /** Local-space offset applied to the collider position relative to the entity. */
+        PROPERTY(Editable)
+        glm::vec3 TranslationOffset;
+
+        /** Local-space euler rotation offset applied to the collider. */
+        PROPERTY(Editable)
+        glm::vec3 RotationOffset;
+    };
+
 }

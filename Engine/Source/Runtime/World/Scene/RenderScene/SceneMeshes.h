@@ -184,9 +184,6 @@ namespace Lumina::PrimitiveMeshes
             OutIndices.push_back(base + 3);
         }
     
-        // Top + bottom caps
-        uint32 baseIndex = (uint32)OutVertices.size();
-    
         for (int cap = 0; cap < 2; ++cap)
         {
             float y = cap ? halfHeight : -halfHeight;
@@ -222,9 +219,13 @@ namespace Lumina::PrimitiveMeshes
                     uint32 b = centerIdx + i;
                     uint32 c = centerIdx + i + 1;
                     if (cap)
+                    {
                         OutIndices.insert(OutIndices.end(), { a, c, b });
+                    }
                     else
+                    {
                         OutIndices.insert(OutIndices.end(), { a, b, c });
+                    }
                 }
             }
         }
@@ -238,9 +239,7 @@ namespace Lumina::PrimitiveMeshes
         const float halfHeight = 1.0f;
         const float radius     = 1.0f;
         const float H          = halfHeight * 2.0f;
-
-        // Side faces — duplicate verts per segment so each face gets its own normal
-        // (smoothing across the apex looks bad on a cone).
+        
         for (int i = 0; i < Segments; ++i)
         {
             float u0 = (float)i / Segments;
@@ -319,5 +318,143 @@ namespace Lumina::PrimitiveMeshes
                 OutIndices.insert(OutIndices.end(), { a, b, c });
             }
         }
+    }
+    
+    inline void GenerateCapsule(TVector<FVertex>& OutVertices, TVector<uint32>& OutIndices, int Segments = 32, float Radius = 0.5f, float HalfHeight = 1.0f)
+    {
+        OutVertices.clear();
+        OutIndices.clear();
+
+        // Default radius/halfHeight gives a 2-unit-tall capsule that is
+        // 1 unit wide - the cylinder section is 1 unit long. With the
+        // previous (1, 1) defaults cylinderHalf collapsed to zero and the
+        // two hemispheres met at the equator, rendering as a sphere.
+        const float radius = Radius;
+        const float halfHeight = HalfHeight;
+
+        const float cylinderHalf = glm::max(0.0f, halfHeight - radius);
+        const int hemiSegments = Segments;
+        const int circleSegments = Segments;
+    
+        auto addVertex = [&](const glm::vec3& pos, const glm::vec3& n, const glm::vec2& uv)
+        {
+            FVertex v;
+            v.Position = pos;
+            v.Normal   = PackNormal(n);
+            v.Tangent  = 0;
+            v.UV       = glm::packHalf2x16(uv);
+            v.Color    = 0xFFFFFFFF;
+            OutVertices.push_back(v);
+        };
+            
+        for (int i = 0; i < circleSegments; ++i)
+        {
+            float u0 = (float)i / circleSegments;
+            float u1 = (float)(i + 1) / circleSegments;
+    
+            float t0 = u0 * glm::two_pi<float>();
+            float t1 = u1 * glm::two_pi<float>();
+    
+            glm::vec3 p0 = { std::cos(t0) * radius, -cylinderHalf, std::sin(t0) * radius };
+            glm::vec3 p1 = { std::cos(t1) * radius, -cylinderHalf, std::sin(t1) * radius };
+            glm::vec3 p2 = { std::cos(t1) * radius,  cylinderHalf, std::sin(t1) * radius };
+            glm::vec3 p3 = { std::cos(t0) * radius,  cylinderHalf, std::sin(t0) * radius };
+    
+            glm::vec3 n0 = glm::normalize(glm::vec3(p0.x, 0, p0.z));
+            glm::vec3 n1 = glm::normalize(glm::vec3(p1.x, 0, p1.z));
+    
+            uint32 base = (uint32)OutVertices.size();
+    
+            addVertex(p0, n0, { u0, 0 });
+            addVertex(p1, n1, { u1, 0 });
+            addVertex(p2, n1, { u1, 1 });
+            addVertex(p3, n0, { u0, 1 });
+    
+            OutIndices.insert(OutIndices.end(),
+            {
+                base + 0, base + 2, base + 1,
+                base + 0, base + 3, base + 2
+            });
+        }
+            
+        auto buildHemisphere = [&](bool top)
+        {
+            float sign = top ? 1.0f : -1.0f;
+            glm::vec3 centerOffset = { 0, sign * cylinderHalf, 0 };
+    
+            for (int y = 0; y < hemiSegments; ++y)
+            {
+                float v0 = (float)y / hemiSegments;
+                float v1 = (float)(y + 1) / hemiSegments;
+    
+                float phi0 = v0 * (glm::half_pi<float>());
+                float phi1 = v1 * (glm::half_pi<float>());
+    
+                for (int x = 0; x < circleSegments; ++x)
+                {
+                    float u0 = (float)x / circleSegments;
+                    float u1 = (float)(x + 1) / circleSegments;
+    
+                    float t0 = u0 * glm::two_pi<float>();
+                    float t1 = u1 * glm::two_pi<float>();
+    
+                    glm::vec3 p00 = {
+                        std::cos(t0) * std::cos(phi0),
+                        std::sin(phi0) * sign,
+                        std::sin(t0) * std::cos(phi0)
+                    };
+    
+                    glm::vec3 p10 = {
+                        std::cos(t1) * std::cos(phi0),
+                        std::sin(phi0) * sign,
+                        std::sin(t1) * std::cos(phi0)
+                    };
+    
+                    glm::vec3 p01 = {
+                        std::cos(t0) * std::cos(phi1),
+                        std::sin(phi1) * sign,
+                        std::sin(t0) * std::cos(phi1)
+                    };
+    
+                    glm::vec3 p11 = {
+                        std::cos(t1) * std::cos(phi1),
+                        std::sin(phi1) * sign,
+                        std::sin(t1) * std::cos(phi1)
+                    };
+    
+                    glm::vec3 n00 = glm::normalize(p00);
+                    glm::vec3 n10 = glm::normalize(p10);
+                    glm::vec3 n01 = glm::normalize(p01);
+                    glm::vec3 n11 = glm::normalize(p11);
+    
+                    uint32 base = (uint32)OutVertices.size();
+    
+                    addVertex(p00 * radius + centerOffset, n00, { u0, v0 });
+                    addVertex(p10 * radius + centerOffset, n10, { u1, v0 });
+                    addVertex(p11 * radius + centerOffset, n11, { u1, v1 });
+                    addVertex(p01 * radius + centerOffset, n01, { u0, v1 });
+    
+                    if (top)
+                    {
+                        OutIndices.insert(OutIndices.end(),
+                        {
+                            base + 0, base + 2, base + 1,
+                            base + 0, base + 3, base + 2
+                        });
+                    }
+                    else
+                    {
+                        OutIndices.insert(OutIndices.end(),
+                        {
+                            base + 0, base + 1, base + 2,
+                            base + 0, base + 2, base + 3
+                        });
+                    }
+                }
+            }
+        };
+    
+        buildHemisphere(true);
+        buildHemisphere(false);
     }
 }

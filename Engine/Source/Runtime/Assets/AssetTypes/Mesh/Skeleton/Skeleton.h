@@ -25,7 +25,7 @@ namespace Lumina
 
         FSkeletonResource* GetSkeletonResource() const { return SkeletonResource.get(); }
         
-        void ComputeBindPoseSkinningMatrices(TArray<glm::mat4, 255>& OutMatrices) const;
+        void ComputeBindPoseSkinningMatrices(TVector<glm::mat4>& OutMatrices) const;
         
         /** Default skeletal mesh used to preview this skeleton in the editor. */
         PROPERTY(Editable, Category = "Preview")

@@ -118,6 +118,22 @@ namespace Lumina
             ConeMesh->SetMeshResource(Move(Resource));
         }
         
+        {
+            TUniquePtr<FMeshResource> Resource = MakeUnique<FMeshResource>();
+            PrimitiveMeshes::GenerateCapsule(Resource->Vertices.emplace<TVector<FVertex>>(), Resource->Indices);
+
+            FGeometrySurface Surface;
+            Surface.ID = "CapsuleMesh";
+            Surface.IndexCount = (uint32)Resource->Indices.size();
+            Surface.StartIndex = 0;
+            Surface.MaterialIndex = 0;
+            Resource->GeometrySurfaces.push_back(Surface);
+
+            CapsuleMesh = NewObject<CStaticMesh>(TransientPackage, "EngineCapsuleMesh", FGuid::NewDeterministic("Engine.PrimitiveMesh.Capsule"));
+            CapsuleMesh->Materials.resize(1);
+            CapsuleMesh->SetMeshResource(Move(Resource));
+        }
+        
         constexpr float kThumbnailFOV       = 35.0f;
         constexpr float kMeshFramingScale   = 3.2f;   // Margin around bounds
         constexpr float kSphereFramingScale = 5.5f;   // Sphere fills ~60% of frame

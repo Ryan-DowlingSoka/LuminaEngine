@@ -296,22 +296,29 @@ namespace Lumina::Lua
     TOptional<T> FRef::As() const
     {
         Push();
-        return TStack<T>::Get(State, -1);
-    }
-
-    template <typename T>
-    TOptional<T> FRef::Get(FStringView Key)
-    {
-        
-        Push();
-        lua_getfield(State, -1, Key.data());
-        lua_remove(State, -2);
-        
         TOptional<T> Value;
         if (TStack<T>::Check(State, -1))
         {
             Value = TStack<T>::Get(State, -1);
         }
+        lua_pop(State, 1);
+        return Value;
+    }
+
+    template <typename T>
+    TOptional<T> FRef::Get(FStringView Key)
+    {
+
+        Push();
+        lua_getfield(State, -1, Key.data());
+        lua_remove(State, -2);
+
+        TOptional<T> Value;
+        if (TStack<T>::Check(State, -1))
+        {
+            Value = TStack<T>::Get(State, -1);
+        }
+        lua_pop(State, 1);
         return Value;
     }
 
@@ -321,13 +328,15 @@ namespace Lumina::Lua
         Push();
         lua_rawgeti(State, -1, Index);
         lua_remove(State, -2);
-        
+
         TOptional<T> Value;
         if (TStack<T>::Check(State, -1))
         {
             Value = TStack<T>::Get(State, -1);
         }
-        return Value;    }
+        lua_pop(State, 1);
+        return Value;
+    }
 
     template <typename ... TArgs>
     FRef FRef::Invoke(TArgs&&... Args)
