@@ -7,6 +7,21 @@
 namespace Lumina
 {
     /**
+     * Result of the most recent path query. Distinct from "is the agent
+     * currently moving" - the agent may keep walking the prior corners
+     * after a failed replan, so a follower can be Following with a
+     * Failed last query.
+     */
+    enum class EPathFollowStatus : uint8
+    {
+        None      = 0, // No target set, or target was just cleared.
+        Searching = 1, // Target set; first query has not yet been issued (or just dirtied).
+        Following = 2, // Last query succeeded; corners are fresh.
+        Reached   = 3, // Agent has consumed the corner list.
+        Failed    = 4, // Last query returned no valid path.
+    };
+
+    /**
      * Drives an entity along a navmesh path. Pair with SCharacterControllerComponent
      * (or any other movement consumer) - the SPathFollowSystem fills its
      * MoveInput each tick from the direction toward the next path corner.
@@ -34,6 +49,8 @@ namespace Lumina
             TargetEntity   = entt::null;
             bHasTarget     = true;
             bPathDirty     = true;
+            Status         = EPathFollowStatus::Searching;
+            ConsecutiveFailures = 0;
         }
 
         /** Track an entity. The system re-projects the entity's current location each tick. */
@@ -43,6 +60,8 @@ namespace Lumina
             TargetEntity = Entity;
             bHasTarget   = (Entity != entt::null);
             bPathDirty   = true;
+            Status       = bHasTarget ? EPathFollowStatus::Searching : EPathFollowStatus::None;
+            ConsecutiveFailures = 0;
         }
 
         /** Clear the goal and any cached path. */
@@ -54,6 +73,8 @@ namespace Lumina
             CornerCount = 0;
             CurrentCorner = 0;
             bPathDirty = false;
+            Status = EPathFollowStatus::None;
+            ConsecutiveFailures = 0;
         }
 
         FUNCTION(Script)
@@ -61,6 +82,14 @@ namespace Lumina
 
         FUNCTION(Script)
         bool IsAtDestination() const { return bHasTarget && CornerCount > 0 && CurrentCorner >= CornerCount; }
+
+        /** True if the most recent path query failed. Stays true until a subsequent query succeeds or the target is cleared. */
+        FUNCTION(Script)
+        bool DidPathFindingFail() const { return Status == EPathFollowStatus::Failed; }
+
+        /** Number of consecutive failed queries since the last success. Useful for script-side give-up logic. */
+        FUNCTION(Script)
+        int32 GetConsecutivePathFailures() const { return ConsecutiveFailures; }
 
         /** Closest queued path corner, or the target if no path is cached. */
         FUNCTION(Script)
@@ -113,5 +142,11 @@ namespace Lumina
         float       TimeSinceLastPath = 0.0f;
         bool        bHasTarget = false;
         bool        bPathDirty = false;
+
+        /** Latched outcome of the most recent path query. Updated by SPathFollowSystem. */
+        EPathFollowStatus Status = EPathFollowStatus::None;
+
+        /** Resets to 0 on a successful query, increments on every failed query. */
+        int32 ConsecutiveFailures = 0;
     };
 }

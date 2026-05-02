@@ -29,21 +29,26 @@ namespace Lumina
         {
             FProperty* Prop = Property->Property;
             float Speed = Prop->HasMetadata("Delta") ? std::stof(Prop->GetMetadata("Delta").c_str()) : (IsFloatType(DT) ? 0.01f : 1.0f);
-            
-            std::optional<float> MinOpt;
-            std::optional<float> MaxOpt;
+
+            // ImGui::DragScalar reads sizeof(T) bytes from Min/Max as the
+            // property's actual type. Passing &float when T is int32 makes
+            // ImGui reinterpret the float bit pattern as an int, which is
+            // why drags on int properties used to snap to ~1e9 (the
+            // bit-pattern of float(3.0) is 0x40400000 = 1077936128).
+            std::optional<ValueType> MinOpt;
+            std::optional<ValueType> MaxOpt;
 
             if (Prop->HasMetadata("ClampMin"))
             {
-                MinOpt = std::stof(Prop->GetMetadata("ClampMin").c_str());
+                MinOpt = static_cast<ValueType>(std::stod(Prop->GetMetadata("ClampMin").c_str()));
             }
             if (Prop->HasMetadata("ClampMax"))
             {
-                MaxOpt = std::stof(Prop->GetMetadata("ClampMax").c_str());
+                MaxOpt = static_cast<ValueType>(std::stod(Prop->GetMetadata("ClampMax").c_str()));
             }
 
-            float* Min = MinOpt ? &MinOpt.value() : nullptr;
-            float* Max = MaxOpt ? &MaxOpt.value() : nullptr;
+            const ValueType* Min = MinOpt ? &MinOpt.value() : nullptr;
+            const ValueType* Max = MaxOpt ? &MaxOpt.value() : nullptr;
 
             ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
             ImGui::DragScalar("##Value", DT, &DisplayValue, Speed, Min, Max);

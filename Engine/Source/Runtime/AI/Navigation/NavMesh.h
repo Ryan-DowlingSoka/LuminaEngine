@@ -70,6 +70,15 @@ namespace Lumina
         void ForEachTriangle(FTriangleVisitor Visitor) const;
 
         /**
+         * Parallel variant: fans the triangle range across the task pool.
+         * The visitor MUST be thread-safe — it will be invoked
+         * concurrently. Intended for the debug-draw path where the line
+         * sink (FLineBatcherComponent::EnqueueLine) is itself MPMC.
+         */
+        using FParallelTriangleVisitor = TFunction<void(const glm::vec3&, const glm::vec3&, const glm::vec3&, uint8)>;
+        void ParallelForEachTriangle(const FParallelTriangleVisitor& Visitor) const;
+
+        /**
          * Rebuild the triangle cache from the live dtNavMesh. Called
          * automatically at the end of Initialize and RebuildTile.
          * Read-only on dtNavMesh so it's safe to call from a worker

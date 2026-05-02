@@ -62,9 +62,8 @@ namespace Lumina
             return Ar;
         }
         
-        // Stream operators
-        friend std::ostream& operator<<(std::ostream& os, const FGuid& guid);
-        friend std::istream& operator>>(std::istream& is, FGuid& guid);
+        friend RUNTIME_API std::ostream& operator<<(std::ostream& os, const FGuid& guid);
+        friend RUNTIME_API std::istream& operator>>(std::istream& is, FGuid& guid);
     
     private:
         ByteArray Bytes{};

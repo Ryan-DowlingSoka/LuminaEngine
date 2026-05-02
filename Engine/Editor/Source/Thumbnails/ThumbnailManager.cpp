@@ -16,6 +16,7 @@
 #include "World/Entity/Components/EnvironmentComponent.h"
 #include "World/Entity/Components/LightComponent.h"
 #include "World/Entity/Components/ParticleSystemComponent.h"
+#include "World/Entity/Components/PostProcessComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Scene/RenderScene/SceneMeshes.h"
 
@@ -186,10 +187,29 @@ namespace Lumina
 
                 SetupStudioLighting(World);
 
+                // Post-process materials run as a screen-space pass after tone
+                // mapping, not as a surface shader. Applying one as a mesh
+                // override falls back to the default material in BasePass.
+                // Drive it through a post-process volume instead so the
+                // pass actually executes against the lit sphere.
+                CMaterial* BaseMaterial = Material->GetMaterial();
+                const bool bIsPostProcess = BaseMaterial != nullptr && BaseMaterial->GetMaterialType() == EMaterialType::PostProcess;
+
                 entt::entity MeshEntity = World->ConstructEntity("PreviewSphere");
                 SStaticMeshComponent& MeshComp = Registry.emplace<SStaticMeshComponent>(MeshEntity);
                 MeshComp.StaticMesh = SphereMesh;
-                MeshComp.MaterialOverrides.push_back(Material);
+                if (!bIsPostProcess)
+                {
+                    MeshComp.MaterialOverrides.push_back(Material);
+                }
+
+                if (bIsPostProcess)
+                {
+                    entt::entity VolumeEntity = World->ConstructEntity("PreviewPostProcessVolume");
+                    SPostProcessComponent& Volume = Registry.emplace<SPostProcessComponent>(VolumeEntity);
+                    Volume.bInfiniteExtent = true;
+                    Volume.PostProcessMaterials.push_back(Material);
+                }
 
                 // Sphere mesh has unit radius.
                 const glm::vec3 Dir = glm::normalize(glm::vec3(0.0f, 0.25f, 1.0f));

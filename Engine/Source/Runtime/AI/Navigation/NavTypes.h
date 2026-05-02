@@ -126,6 +126,16 @@ namespace Lumina
         uint16 ExcludeFlags = 0;
         float  AreaCost[64] = {};   // 1.0 default; copied into dtQueryFilter
 
+        /**
+         * Half-extents of the search box used by findNearestPoly when
+         * snapping a world point (start, end, center) onto the mesh. If a
+         * caller's point is further than this from any walkable poly, the
+         * query fails. Generous on Y by default because typical scenes
+         * have agents floating slightly above the cell-quantized poly Y;
+         * shrink for tighter projection when you want misses to fail loudly.
+         */
+        glm::vec3 QueryExtents = glm::vec3(2.0f, 16.0f, 2.0f);
+
         FNavQueryFilter()
         {
             for (int32 i = 0; i < 64; ++i) AreaCost[i] = 1.0f;

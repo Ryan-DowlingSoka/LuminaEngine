@@ -312,7 +312,7 @@ namespace Lumina::Lua
                     if (Header == nullptr) return 0;
                     T* Self = Header->Underlying();
                     if (Self == nullptr) return 0;
-                    MemberT Member = TStack<MemberT>::Get(State, 2);
+                    MemberT Member = TStack<MemberT>::Get(State, 3);
                     Self->*TMemberPtr = std::move(Member);
                     return 0;
                 };

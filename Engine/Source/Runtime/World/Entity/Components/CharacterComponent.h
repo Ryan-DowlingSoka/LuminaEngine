@@ -101,9 +101,14 @@ namespace Lumina
         /** Maximum number of contact hits processed per step before culling. */
         PROPERTY(Script, Editable, Category = "Physics")
         uint32 MaxNumHits = 256;
-        
-        
-        
+
+        /** When true, this character's capsule contributes its shape to NavMesh bakes so other agents path around it.
+         *  Default false because a path-following character that obstructs the navmesh ends up carving out the floor
+         *  poly directly under itself (Recast height-filter), and then can't find a starting poly for its own queries.
+         *  Flip on only for characters that should act as obstacles (vehicles, stationary NPCs blocking a corridor). */
+        PROPERTY(Script, Editable, Category = "Navigation")
+        bool bAffectsNavigation = false;
+
         FUNCTION(Script)
         uint32 GetBodyID() const;
 

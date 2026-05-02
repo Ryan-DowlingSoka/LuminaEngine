@@ -75,6 +75,22 @@ TEST(GUIDTests, NewDeterministic_HighAndLowHalvesDiffer)
     EXPECT_TRUE(AnyDifferent);
 }
 
+TEST(GUIDTests, ToString_ProducesNonEmpty)
+{
+    FGuid G = FGuid::NewDeterministic("Engine.PrimitiveMesh.Sphere");
+    FString Text = G.ToString();
+    EXPECT_FALSE(Text.empty());
+    EXPECT_EQ(Text.length(), 36u);
+}
+
+TEST(GUIDTests, ToShortString_ProducesNonEmpty)
+{
+    FGuid G = FGuid::NewDeterministic("Engine.PrimitiveMesh.Sphere");
+    FString Text = G.ToShortString();
+    EXPECT_FALSE(Text.empty());
+    EXPECT_EQ(Text.length(), 32u);
+}
+
 TEST(GUIDTests, NewDeterministic_RoundTripThroughString)
 {
     FGuid Original  = FGuid::NewDeterministic("Engine.PrimitiveMesh.Sphere");

@@ -91,6 +91,7 @@ namespace Lumina
             if (!Comp.bHasTarget)
             {
                 Comp.CornerCount = 0;
+                Comp.Status = EPathFollowStatus::None;
                 return;
             }
 
@@ -98,6 +99,7 @@ namespace Lumina
             if (!ResolveGoal(Context, Comp, Goal))
             {
                 Comp.CornerCount = 0;
+                Comp.Status = EPathFollowStatus::None;
                 return;
             }
 
@@ -121,12 +123,21 @@ namespace Lumina
                     Comp.PathSourceTarget = Goal;
                     Comp.bPathDirty = false;
                     Comp.TimeSinceLastPath = 0.0f;
+                    Comp.Status = EPathFollowStatus::Following;
+                    Comp.ConsecutiveFailures = 0;
                 }
                 else
                 {
-                    // Path failed - keep any prior corners in case the
-                    // next tick succeeds; clearing here would stutter the
-                    // agent during a transient nav-edge case.
+                    // Path failed - latch the failure so script can react,
+                    // but keep any prior corners in case the next tick
+                    // succeeds; clearing here would stutter the agent
+                    // during a transient nav-edge case. Reset the timer so
+                    // the next attempt waits one full RepathInterval
+                    // instead of hammering FindPath every tick.
+                    Comp.Status = EPathFollowStatus::Failed;
+                    ++Comp.ConsecutiveFailures;
+                    Comp.TimeSinceLastPath = 0.0f;
+                    Comp.bPathDirty = false;
                     if (Comp.CornerCount == 0)
                     {
                         return;
@@ -151,6 +162,10 @@ namespace Lumina
 
             if (Comp.CurrentCorner >= Comp.CornerCount)
             {
+                if (Comp.Status == EPathFollowStatus::Following)
+                {
+                    Comp.Status = EPathFollowStatus::Reached;
+                }
                 return;
             }
 

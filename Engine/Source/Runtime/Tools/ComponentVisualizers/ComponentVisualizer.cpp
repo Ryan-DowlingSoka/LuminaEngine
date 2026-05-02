@@ -127,12 +127,14 @@ namespace Lumina
     {
         const SCharacterPhysicsComponent& Character = Registry.get<SCharacterPhysicsComponent>(Entity);
         const STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
-    
-        glm::vec3 Location = Transform.GetWorldLocation();
-        glm::vec3 Start = Location - glm::vec3(0, Character.HalfHeight, 0);
-        glm::vec3 End = Location + glm::vec3(0, Character.HalfHeight, 0);
-    
-        PDI->DrawCapsule(Start, End, Character.Radius * glm::length(Transform.GetWorldScale()), glm::vec4(0.0f, 1.0f, 0.0f, 1.0f), 12, 2.0f, true, 0.0f);
+
+        // Match Jolt: Start/End are the cylinder-axis endpoints, Radius scales by MaxScale.
+        const glm::vec3 Location = Transform.GetWorldLocation();
+        const glm::vec3 Axis = Transform.GetWorldRotation() * glm::vec3(0.0f, Character.HalfHeight, 0.0f);
+        const glm::vec3 Start = Location - Axis;
+        const glm::vec3 End   = Location + Axis;
+
+        PDI->DrawCapsule(Start, End, Character.Radius * Transform.MaxScale(), glm::vec4(0.0f, 1.0f, 0.0f, 1.0f), 12, 2.0f, true, 0.0f);
     }
 
     CStruct* CComponentVisualizer_Camera::GetSupportedComponentType() const

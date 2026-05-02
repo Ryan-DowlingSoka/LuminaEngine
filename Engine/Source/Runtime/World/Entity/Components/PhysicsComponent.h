@@ -108,6 +108,10 @@ namespace Lumina
         /** Local-space euler rotation offset applied to the collider. */
         PROPERTY(Editable)
         glm::vec3 RotationOffset;
+
+        /** When true, this collider contributes its shape to NavMesh bakes. */
+        PROPERTY(Editable, Category = "Navigation")
+        bool bAffectsNavigation = true;
     };
 
     REFLECT(Component)
@@ -122,6 +126,10 @@ namespace Lumina
         /** Local-space offset applied to the collider position relative to the entity. */
         PROPERTY(Editable)
         glm::vec3 TranslationOffset;
+
+        /** When true, this collider contributes its shape to NavMesh bakes. */
+        PROPERTY(Editable, Category = "Navigation")
+        bool bAffectsNavigation = true;
     };
 
     REFLECT(Component)
@@ -144,6 +152,10 @@ namespace Lumina
         /** Local-space euler rotation offset applied to the collider. */
         PROPERTY(Editable)
         glm::vec3 RotationOffset;
+
+        /** When true, this collider contributes its shape to NavMesh bakes. */
+        PROPERTY(Editable, Category = "Navigation")
+        bool bAffectsNavigation = true;
     };
 
 }

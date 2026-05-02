@@ -4,11 +4,13 @@
 #include "AI/Navigation/NavMesh.h"
 #include "AI/Navigation/NavMeshBuilder.h"
 #include "Assets/AssetTypes/Mesh/StaticMesh/StaticMesh.h"
+#include "Core/Console/ConsoleVariable.h"
 #include "Renderer/MeshData.h"
 #include "Renderer/Vertex.h"
 #include "TaskSystem/TaskSystem.h"
-#include "World/Entity/Components/CharacterControllerComponent.h"
+#include "World/Entity/Components/CharacterComponent.h"
 #include "World/Entity/Components/NavMeshComponent.h"
+#include "World/Entity/Components/PhysicsComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/World.h"
@@ -17,6 +19,11 @@
 
 namespace Lumina
 {
+    static TConsoleVar<bool> CVarNavDrawDebug(
+        "Nav.DrawDebug",
+        false,
+        "When true, every nav-mesh component emits debug lines for its walkable triangles each tick.");
+
     namespace
     {
         struct FGatherAccumulator
@@ -56,24 +63,182 @@ namespace Lumina
                      TMax.z < BMin.z || TMin.z > BMax.z);
         }
 
-        // Decode LOD0 meshlets of a static mesh, transform by entity's world
-        // matrix, clip-test against the bake AABB, and append to the
-        // accumulator. Per-mesh AABB is also reported back for change-detection.
-        void DecodeMeshIntoAccumulator(CStaticMesh* Mesh, const glm::mat4& World, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc, glm::vec3& OutAABBMin, glm::vec3& OutAABBMax)
+        // Tag-bit packed into the cache key so a single entity may carry one
+        // collider of each type tracked independently for change detection.
+        enum class ENavColliderType : uint8 { Box = 0, Sphere = 1, Mesh = 2, Capsule = 3 };
+
+        FORCEINLINE uint64 PackSourceKey(entt::entity E, ENavColliderType T)
+        {
+            return ((uint64)(uint32)E << 8) | (uint64)T;
+        }
+
+        // Build the world-space matrix for a collider given its entity
+        // transform and local offset / euler-rotation. Matches the matrix
+        // composition used by Jolt body placement so nav geometry overlaps
+        // physics geometry exactly.
+        FORCEINLINE glm::mat4 ColliderToWorld(const STransformComponent& X, const glm::vec3& TransOffset, const glm::vec3& EulerOffset)
+        {
+            const glm::mat4 LocalOffset = glm::translate(glm::mat4(1.0f), TransOffset)
+                                        * glm::mat4_cast(glm::quat(EulerOffset));
+            return X.GetWorldMatrix() * LocalOffset;
+        }
+
+        FORCEINLINE void EmitTri(FGatherAccumulator& Acc, const glm::vec3& BakeMin, const glm::vec3& BakeMax, const glm::vec3& A, const glm::vec3& B, const glm::vec3& C)
+        {
+            if (!TriIntersectsAABB(A, B, C, BakeMin, BakeMax))
+            {
+                return;
+            }
+            const uint32 Base = (uint32)Acc.Vertices.size();
+            Acc.Vertices.push_back(A);
+            Acc.Vertices.push_back(B);
+            Acc.Vertices.push_back(C);
+            Acc.Indices.push_back(Base + 0);
+            Acc.Indices.push_back(Base + 1);
+            Acc.Indices.push_back(Base + 2);
+            Acc.AABBMin = glm::min(Acc.AABBMin, glm::min(A, glm::min(B, C)));
+            Acc.AABBMax = glm::max(Acc.AABBMax, glm::max(A, glm::max(B, C)));
+        }
+
+        // Box: 12 triangles (2 per face). World matrix is precomputed by the
+        // caller (entity transform composed with the collider's local offset)
+        // so the same lower-tier emit can serve both the main-thread gather
+        // and the worker snapshot path.
+        void EmitBoxGeometry(const glm::mat4& W, const glm::vec3& HalfExtent, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
+        {
+            const glm::vec3 H = HalfExtent;
+            const glm::vec3 LocalCorners[8] = {
+                {-H.x,-H.y,-H.z}, { H.x,-H.y,-H.z},
+                { H.x,-H.y, H.z}, {-H.x,-H.y, H.z},
+                {-H.x, H.y,-H.z}, { H.x, H.y,-H.z},
+                { H.x, H.y, H.z}, {-H.x, H.y, H.z},
+            };
+            glm::vec3 V[8];
+            for (int i = 0; i < 8; ++i)
+            {
+                V[i] = glm::vec3(W * glm::vec4(LocalCorners[i], 1.0f));
+            }
+            // Faces: -Y, +Y, -Z, +Z, -X, +X. Wound so (v1-v0) × (v2-v0)
+            // points OUTWARD, which is what Recast's slope test expects -
+            // a top face with an upward normal is the one marked walkable.
+            EmitTri(Acc, BakeMin, BakeMax, V[0], V[1], V[2]); EmitTri(Acc, BakeMin, BakeMax, V[0], V[2], V[3]);
+            EmitTri(Acc, BakeMin, BakeMax, V[4], V[6], V[5]); EmitTri(Acc, BakeMin, BakeMax, V[4], V[7], V[6]);
+            EmitTri(Acc, BakeMin, BakeMax, V[0], V[5], V[1]); EmitTri(Acc, BakeMin, BakeMax, V[0], V[4], V[5]);
+            EmitTri(Acc, BakeMin, BakeMax, V[3], V[2], V[6]); EmitTri(Acc, BakeMin, BakeMax, V[3], V[6], V[7]);
+            EmitTri(Acc, BakeMin, BakeMax, V[0], V[7], V[4]); EmitTri(Acc, BakeMin, BakeMax, V[0], V[3], V[7]);
+            EmitTri(Acc, BakeMin, BakeMax, V[1], V[6], V[2]); EmitTri(Acc, BakeMin, BakeMax, V[1], V[5], V[6]);
+        }
+
+        // Sphere: low-poly UV-sphere (12 segments x 8 stacks = 192 tris).
+        // Cheap to bake into; nav doesn't need detail past tile resolution.
+        void EmitSphereGeometry(const glm::mat4& W, float Radius, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
+        {
+            constexpr int Segments = 12;
+            constexpr int Stacks   = 8;
+            glm::vec3 Verts[(Stacks + 1) * (Segments + 1)];
+            for (int s = 0; s <= Stacks; ++s)
+            {
+                const float Phi = LE_PI_F * (float)s / (float)Stacks;
+                const float SinP = std::sin(Phi);
+                const float CosP = std::cos(Phi);
+                for (int g = 0; g <= Segments; ++g)
+                {
+                    const float Theta = (2.0f * LE_PI_F) * (float)g / (float)Segments;
+                    const glm::vec3 Local(Radius * SinP * std::cos(Theta), Radius * CosP, Radius * SinP * std::sin(Theta));
+                    Verts[s * (Segments + 1) + g] = glm::vec3(W * glm::vec4(Local, 1.0f));
+                }
+            }
+            for (int s = 0; s < Stacks; ++s)
+            {
+                for (int g = 0; g < Segments; ++g)
+                {
+                    const glm::vec3& A = Verts[(s + 0) * (Segments + 1) + g + 0];
+                    const glm::vec3& B = Verts[(s + 1) * (Segments + 1) + g + 0];
+                    const glm::vec3& C = Verts[(s + 1) * (Segments + 1) + g + 1];
+                    const glm::vec3& D = Verts[(s + 0) * (Segments + 1) + g + 1];
+                    // Outward winding: A→D→C and A→C→B keep normals radial.
+                    EmitTri(Acc, BakeMin, BakeMax, A, D, C);
+                    EmitTri(Acc, BakeMin, BakeMax, A, C, B);
+                }
+            }
+        }
+
+        // Capsule: cylindrical side band + two hemispheres along the +Y
+        // axis (Jolt's CapsuleShape convention). Total height is
+        // 2*HalfHeight + 2*Radius. Lower-tier so the worker snapshot path
+        // can call it with a precomputed world matrix.
+        void EmitCapsuleGeometry(const glm::mat4& W, float HalfHeight, float Radius, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
+        {
+            constexpr int Segments = 12;
+            constexpr int HemiStacks = 4;
+            const int Rings = 2 * HemiStacks + 2; // top hemi + cylinder seam + bottom hemi
+
+            TVector<glm::vec3> Verts;
+            Verts.resize(Rings * (Segments + 1));
+
+            int RingIdx = 0;
+            // Top hemisphere (Phi 0..pi/2), centered at +Y * HalfHeight.
+            for (int s = 0; s <= HemiStacks; ++s, ++RingIdx)
+            {
+                const float Phi = (LE_PI_F * 0.5f) * (float)s / (float)HemiStacks;
+                const float SinP = std::sin(Phi);
+                const float CosP = std::cos(Phi);
+                for (int g = 0; g <= Segments; ++g)
+                {
+                    const float Theta = (2.0f * LE_PI_F) * (float)g / (float)Segments;
+                    const glm::vec3 Local(Radius * SinP * std::cos(Theta), HalfHeight + Radius * CosP, Radius * SinP * std::sin(Theta));
+                    Verts[RingIdx * (Segments + 1) + g] = glm::vec3(W * glm::vec4(Local, 1.0f));
+                }
+            }
+            // Bottom hemisphere (Phi pi/2..pi), centered at -Y * HalfHeight.
+            for (int s = 1; s <= HemiStacks + 1; ++s, ++RingIdx)
+            {
+                const float Phi = (LE_PI_F * 0.5f) + (LE_PI_F * 0.5f) * (float)s / (float)(HemiStacks + 1);
+                const float SinP = std::sin(Phi);
+                const float CosP = std::cos(Phi);
+                for (int g = 0; g <= Segments; ++g)
+                {
+                    const float Theta = (2.0f * LE_PI_F) * (float)g / (float)Segments;
+                    const glm::vec3 Local(Radius * SinP * std::cos(Theta), -HalfHeight + Radius * CosP, Radius * SinP * std::sin(Theta));
+                    Verts[RingIdx * (Segments + 1) + g] = glm::vec3(W * glm::vec4(Local, 1.0f));
+                }
+            }
+
+            for (int s = 0; s < Rings - 1; ++s)
+            {
+                for (int g = 0; g < Segments; ++g)
+                {
+                    const glm::vec3& A = Verts[(s + 0) * (Segments + 1) + g + 0];
+                    const glm::vec3& B = Verts[(s + 1) * (Segments + 1) + g + 0];
+                    const glm::vec3& C = Verts[(s + 1) * (Segments + 1) + g + 1];
+                    const glm::vec3& D = Verts[(s + 0) * (Segments + 1) + g + 1];
+                    EmitTri(Acc, BakeMin, BakeMax, A, D, C);
+                    EmitTri(Acc, BakeMin, BakeMax, A, C, B);
+                }
+            }
+        }
+
+        // Resolve the mesh asset for a SMeshColliderComponent: explicit Mesh
+        // wins, otherwise fall back to the entity's StaticMeshComponent.
+        // Mirrors the resolution Jolt uses to build collider shapes.
+        CStaticMesh* ResolveMeshColliderAsset(const SMeshColliderComponent& MC, const SStaticMeshComponent* Fallback)
+        {
+            if (CStaticMesh* M = MC.Mesh.Get())
+            {
+                return M;
+            }
+            return Fallback ? Fallback->StaticMesh.Get() : nullptr;
+        }
+
+        void EmitMeshGeometry(const glm::mat4& W, CStaticMesh* Mesh, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
         {
             if (!Mesh) return;
             const FMeshResource& Res = Mesh->GetMeshResource();
             const FMeshletData&  Md  = Res.MeshletData;
-            if (Md.IsEmpty()) return;
-            // Skinned meshes need bone-driven vertex positions; nav for those
-            // is its own problem. Skip for v1 - matches Godot.
-            if (Res.bSkinnedMesh) return;
+            if (Md.IsEmpty() || Res.bSkinnedMesh) return;
 
             const TVector<FMeshletVertex>& MV = Md.MeshletVertices;
             const TVector<uint32>&         MT = Md.MeshletTriangles;
-
-            OutAABBMin = glm::vec3( FLT_MAX);
-            OutAABBMax = glm::vec3(-FLT_MAX);
 
             for (const FGeometrySurface& Surface : Res.GeometrySurfaces)
             {
@@ -83,72 +248,67 @@ namespace Lumina
                 {
                     const FMeshlet& Meshlet = Md.Meshlets[First + m];
 
-                    // Decode this meshlet's vertices into a local cache so
-                    // each triangle only does the matrix multiply once.
                     glm::vec3 LocalVerts[MESHLET_MAX_VERTICES];
                     const uint32 V0 = Meshlet.VertexOffset;
                     for (uint32 v = 0; v < Meshlet.VertexCount; ++v)
                     {
                         const glm::vec3 Local = DecodePosition(MV[V0 + v].Position, Meshlet.LoInt, Md.MeshOrigin, Md.MeshGridStep);
-                        LocalVerts[v] = glm::vec3(World * glm::vec4(Local, 1.0f));
-                        OutAABBMin = glm::min(OutAABBMin, LocalVerts[v]);
-                        OutAABBMax = glm::max(OutAABBMax, LocalVerts[v]);
+                        LocalVerts[v] = glm::vec3(W * glm::vec4(Local, 1.0f));
                     }
 
-                    // Walk triangle dwords. TriangleOffset is in dwords already.
                     const uint32 T0 = Meshlet.TriangleOffset;
                     for (uint32 t = 0; t < Meshlet.TriangleCount; ++t)
                     {
                         uint32 A, B, C;
                         UnpackTri(MT[T0 + t], A, B, C);
-                        const glm::vec3& VA = LocalVerts[A];
-                        const glm::vec3& VB = LocalVerts[B];
-                        const glm::vec3& VC = LocalVerts[C];
-                        if (!TriIntersectsAABB(VA, VB, VC, BakeMin, BakeMax))
-                        {
-                            continue;
-                        }
-                        const uint32 Base = (uint32)Acc.Vertices.size();
-                        Acc.Vertices.push_back(VA);
-                        Acc.Vertices.push_back(VB);
-                        Acc.Vertices.push_back(VC);
-                        Acc.Indices.push_back(Base + 0);
-                        Acc.Indices.push_back(Base + 1);
-                        Acc.Indices.push_back(Base + 2);
-                        Acc.AABBMin = glm::min(Acc.AABBMin, glm::min(VA, glm::min(VB, VC)));
-                        Acc.AABBMax = glm::max(Acc.AABBMax, glm::max(VA, glm::max(VB, VC)));
+                        EmitTri(Acc, BakeMin, BakeMax, LocalVerts[A], LocalVerts[B], LocalVerts[C]);
                     }
                 }
             }
         }
 
-        // One pass over the registry collecting nav source entities. Returns
-        // the accumulated geometry plus a per-entity AABB map for change
-        // detection. AABBs use the entity id key so the dynamic update tick
-        // can compare against the previous frame's snapshot.
-        void GatherSourceGeometry(const FSystemContext& Context, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc, THashMap<uint32, FNavSourceEntity>& OutAABBs)
+        // One pass over the registry collecting nav source colliders from
+        // every entity that opted in via bAffectsNavigation. Character
+        // capsules participate too when their bAffectsNavigation flag is on,
+        // so other agents path around them.
+        void GatherSourceGeometry(const FSystemContext& Context, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
         {
-            // Exclude path-following agents: their meshes move every frame,
-            // and including them would carve the agent itself out of the
-            // navmesh AND trigger a per-frame tile-rebake storm as they
-            // walk. Characters are dynamic by definition; static obstacles
-            // are everything that isn't one.
-            auto View = Context.CreateView<SStaticMeshComponent, STransformComponent>(entt::exclude<SCharacterControllerComponent>);
-            for (entt::entity Entity : View)
+            auto BoxView = Context.CreateView<SBoxColliderComponent, STransformComponent>();
+            for (entt::entity Entity : BoxView)
             {
-                SStaticMeshComponent& MeshComp = View.get<SStaticMeshComponent>(Entity);
-                STransformComponent&  XformC   = View.get<STransformComponent>(Entity);
+                SBoxColliderComponent& Box = BoxView.get<SBoxColliderComponent>(Entity);
+                if (!Box.bAffectsNavigation) continue;
+                const glm::mat4 W = ColliderToWorld(BoxView.get<STransformComponent>(Entity), Box.TranslationOffset, Box.RotationOffset);
+                EmitBoxGeometry(W, Box.HalfExtent, BakeMin, BakeMax, Acc);
+            }
 
-                CStaticMesh* Mesh = MeshComp.GetStaticMesh();
-                if (!Mesh) continue;
+            auto SphereView = Context.CreateView<SSphereColliderComponent, STransformComponent>();
+            for (entt::entity Entity : SphereView)
+            {
+                SSphereColliderComponent& Sphere = SphereView.get<SSphereColliderComponent>(Entity);
+                if (!Sphere.bAffectsNavigation) continue;
+                const glm::mat4 W = ColliderToWorld(SphereView.get<STransformComponent>(Entity), Sphere.TranslationOffset, glm::vec3(0.0f));
+                EmitSphereGeometry(W, Sphere.Radius, BakeMin, BakeMax, Acc);
+            }
 
-                glm::vec3 EntityMin, EntityMax;
-                DecodeMeshIntoAccumulator(Mesh, XformC.GetWorldMatrix(), BakeMin, BakeMax, Acc, EntityMin, EntityMax);
+            auto MeshView = Context.CreateView<SMeshColliderComponent, STransformComponent>();
+            for (entt::entity Entity : MeshView)
+            {
+                SMeshColliderComponent& MC = MeshView.get<SMeshColliderComponent>(Entity);
+                if (!MC.bAffectsNavigation) continue;
+                const SStaticMeshComponent* Fallback = Context.GetRegistry().try_get<SStaticMeshComponent>(Entity);
+                CStaticMesh* Mesh = ResolveMeshColliderAsset(MC, Fallback);
+                const glm::mat4 W = ColliderToWorld(MeshView.get<STransformComponent>(Entity), MC.TranslationOffset, MC.RotationOffset);
+                EmitMeshGeometry(W, Mesh, BakeMin, BakeMax, Acc);
+            }
 
-                FNavSourceEntity Snap;
-                Snap.AABBMin = EntityMin;
-                Snap.AABBMax = EntityMax;
-                OutAABBs[(uint32)Entity] = Snap;
+            auto CapsuleView = Context.CreateView<SCharacterPhysicsComponent, STransformComponent>();
+            for (entt::entity Entity : CapsuleView)
+            {
+                SCharacterPhysicsComponent& Cap = CapsuleView.get<SCharacterPhysicsComponent>(Entity);
+                if (!Cap.bAffectsNavigation) continue;
+                const glm::mat4 W = ColliderToWorld(CapsuleView.get<STransformComponent>(Entity), glm::vec3(0.0f), glm::vec3(0.0f));
+                EmitCapsuleGeometry(W, Cap.HalfHeight, Cap.Radius, BakeMin, BakeMax, Acc);
             }
         }
 
@@ -164,13 +324,63 @@ namespace Lumina
 
         FORCEINLINE uint64 PackTileKey(int32 TX, int32 TY) { return ((uint64)(uint32)TY << 32) | (uint32)TX; }
 
-        // Cheap conservative world-space AABB for one static-mesh entity.
-        // Transforms the mesh's local AABB corners by the entity matrix.
-        // Both the bake-completion cache rebuild and the change-detector
-        // share this so byte-identical values flow through both paths.
-        bool ComputeEntityAABB(SStaticMeshComponent& MeshComp, STransformComponent& XformC, glm::vec3& OutMin, glm::vec3& OutMax)
+        // Conservative world-space AABBs for each collider type. Used by
+        // the change detector and the bake-completion cache rebuild; both
+        // call sites must produce byte-identical values for change
+        // detection to report zero diff after a fresh bake.
+
+        bool ComputeBoxColliderAABB(const SBoxColliderComponent& Box, const STransformComponent& X, glm::vec3& OutMin, glm::vec3& OutMax)
         {
-            CStaticMesh* Mesh = MeshComp.GetStaticMesh();
+            const glm::mat4 W = ColliderToWorld(X, Box.TranslationOffset, Box.RotationOffset);
+            const glm::vec3 H = Box.HalfExtent;
+            const glm::vec3 LocalCorners[8] = {
+                {-H.x,-H.y,-H.z}, { H.x,-H.y,-H.z},
+                { H.x,-H.y, H.z}, {-H.x,-H.y, H.z},
+                {-H.x, H.y,-H.z}, { H.x, H.y,-H.z},
+                { H.x, H.y, H.z}, {-H.x, H.y, H.z},
+            };
+            OutMin = glm::vec3( FLT_MAX);
+            OutMax = glm::vec3(-FLT_MAX);
+            for (int i = 0; i < 8; ++i)
+            {
+                const glm::vec3 P = glm::vec3(W * glm::vec4(LocalCorners[i], 1.0f));
+                OutMin = glm::min(OutMin, P);
+                OutMax = glm::max(OutMax, P);
+            }
+            return true;
+        }
+
+        bool ComputeSphereColliderAABB(const SSphereColliderComponent& Sphere, const STransformComponent& X, glm::vec3& OutMin, glm::vec3& OutMax)
+        {
+            const glm::mat4 W = ColliderToWorld(X, Sphere.TranslationOffset, glm::vec3(0.0f));
+            const glm::vec3 Center = glm::vec3(W * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+            // Conservative radius under arbitrary scale: longest column basis.
+            const float Sx = glm::length(glm::vec3(W[0]));
+            const float Sy = glm::length(glm::vec3(W[1]));
+            const float Sz = glm::length(glm::vec3(W[2]));
+            const float R  = Sphere.Radius * std::max(Sx, std::max(Sy, Sz));
+            OutMin = Center - glm::vec3(R);
+            OutMax = Center + glm::vec3(R);
+            return true;
+        }
+
+        bool ComputeCapsuleColliderAABB(const SCharacterPhysicsComponent& Cap, const STransformComponent& X, glm::vec3& OutMin, glm::vec3& OutMax)
+        {
+            const glm::mat4 W = X.GetWorldMatrix();
+            const glm::vec3 TopCenter = glm::vec3(W * glm::vec4(0.0f,  Cap.HalfHeight, 0.0f, 1.0f));
+            const glm::vec3 BotCenter = glm::vec3(W * glm::vec4(0.0f, -Cap.HalfHeight, 0.0f, 1.0f));
+            const float Sx = glm::length(glm::vec3(W[0]));
+            const float Sy = glm::length(glm::vec3(W[1]));
+            const float Sz = glm::length(glm::vec3(W[2]));
+            const float R  = Cap.Radius * std::max(Sx, std::max(Sy, Sz));
+            OutMin = glm::min(TopCenter, BotCenter) - glm::vec3(R);
+            OutMax = glm::max(TopCenter, BotCenter) + glm::vec3(R);
+            return true;
+        }
+
+        bool ComputeMeshColliderAABB(const SMeshColliderComponent& MC, const STransformComponent& X, const SStaticMeshComponent* Fallback, glm::vec3& OutMin, glm::vec3& OutMax)
+        {
+            CStaticMesh* Mesh = ResolveMeshColliderAsset(MC, Fallback);
             if (!Mesh || Mesh->GetMeshResource().bSkinnedMesh) return false;
 
             const FAABB& Local = Mesh->GetAABB();
@@ -180,7 +390,7 @@ namespace Lumina
                 {Local.Min.x, Local.Min.y, Local.Max.z}, {Local.Max.x, Local.Min.y, Local.Max.z},
                 {Local.Min.x, Local.Max.y, Local.Max.z}, {Local.Max.x, Local.Max.y, Local.Max.z},
             };
-            const glm::mat4& W = XformC.GetWorldMatrix();
+            const glm::mat4 W = ColliderToWorld(X, MC.TranslationOffset, MC.RotationOffset);
             OutMin = glm::vec3( FLT_MAX);
             OutMax = glm::vec3(-FLT_MAX);
             for (int i = 0; i < 8; ++i)
@@ -192,40 +402,66 @@ namespace Lumina
             return true;
         }
 
-        // Snapshot every nav-source entity's conservative AABB into the cache.
-        // Called at bake completion so the next change-detector tick compares
-        // apples to apples and reports zero diff.
-        void RebuildEntityAABBCache(const FSystemContext& Context, THashMap<uint32, FNavSourceEntity>& OutCache)
+        // Snapshot every nav-source collider's conservative AABB into the
+        // cache. Called at bake completion so the next change-detector tick
+        // compares apples to apples and reports zero diff.
+        void RebuildEntityAABBCache(const FSystemContext& Context, THashMap<uint64, FNavSourceEntity>& OutCache)
         {
             OutCache.clear();
-            // Exclude path-following agents: their meshes move every frame,
-            // and including them would carve the agent itself out of the
-            // navmesh AND trigger a per-frame tile-rebake storm as they
-            // walk. Characters are dynamic by definition; static obstacles
-            // are everything that isn't one.
-            auto View = Context.CreateView<SStaticMeshComponent, STransformComponent>(entt::exclude<SCharacterControllerComponent>);
-            for (entt::entity Entity : View)
+
+            auto BoxView = Context.CreateView<SBoxColliderComponent, STransformComponent>();
+            for (entt::entity Entity : BoxView)
             {
+                SBoxColliderComponent& Box = BoxView.get<SBoxColliderComponent>(Entity);
+                if (!Box.bAffectsNavigation) continue;
                 glm::vec3 Mn, Mx;
-                if (!ComputeEntityAABB(View.get<SStaticMeshComponent>(Entity), View.get<STransformComponent>(Entity), Mn, Mx))
-                {
-                    continue;
-                }
-                OutCache[(uint32)Entity] = FNavSourceEntity{ Mn, Mx };
+                if (!ComputeBoxColliderAABB(Box, BoxView.get<STransformComponent>(Entity), Mn, Mx)) continue;
+                OutCache[PackSourceKey(Entity, ENavColliderType::Box)] = FNavSourceEntity{ Mn, Mx };
+            }
+
+            auto SphereView = Context.CreateView<SSphereColliderComponent, STransformComponent>();
+            for (entt::entity Entity : SphereView)
+            {
+                SSphereColliderComponent& Sphere = SphereView.get<SSphereColliderComponent>(Entity);
+                if (!Sphere.bAffectsNavigation) continue;
+                glm::vec3 Mn, Mx;
+                if (!ComputeSphereColliderAABB(Sphere, SphereView.get<STransformComponent>(Entity), Mn, Mx)) continue;
+                OutCache[PackSourceKey(Entity, ENavColliderType::Sphere)] = FNavSourceEntity{ Mn, Mx };
+            }
+
+            auto MeshView = Context.CreateView<SMeshColliderComponent, STransformComponent>();
+            for (entt::entity Entity : MeshView)
+            {
+                SMeshColliderComponent& MC = MeshView.get<SMeshColliderComponent>(Entity);
+                if (!MC.bAffectsNavigation) continue;
+                const SStaticMeshComponent* Fallback = Context.GetRegistry().try_get<SStaticMeshComponent>(Entity);
+                glm::vec3 Mn, Mx;
+                if (!ComputeMeshColliderAABB(MC, MeshView.get<STransformComponent>(Entity), Fallback, Mn, Mx)) continue;
+                OutCache[PackSourceKey(Entity, ENavColliderType::Mesh)] = FNavSourceEntity{ Mn, Mx };
+            }
+
+            auto CapsuleView = Context.CreateView<SCharacterPhysicsComponent, STransformComponent>();
+            for (entt::entity Entity : CapsuleView)
+            {
+                SCharacterPhysicsComponent& Cap = CapsuleView.get<SCharacterPhysicsComponent>(Entity);
+                if (!Cap.bAffectsNavigation) continue;
+                glm::vec3 Mn, Mx;
+                if (!ComputeCapsuleColliderAABB(Cap, CapsuleView.get<STransformComponent>(Entity), Mn, Mx)) continue;
+                OutCache[PackSourceKey(Entity, ENavColliderType::Capsule)] = FNavSourceEntity{ Mn, Mx };
             }
         }
 
         // Build the full FNavBuildInput consumed by Bake() / BakeSingleTile().
         // Lazy-evaluated by the caller and reused for both initial bake and
         // partial rebuilds.
-        void FillBuildInput(const FSystemContext& Context, SNavMeshComponent& Comp, FNavBuildInput& Out, THashMap<uint32, FNavSourceEntity>& OutAABBs)
+        void FillBuildInput(const FSystemContext& Context, SNavMeshComponent& Comp, FNavBuildInput& Out)
         {
             Out.Settings  = Comp.Settings;
             Out.BoundsMin = Comp.Center - Comp.Extents;
             Out.BoundsMax = Comp.Center + Comp.Extents;
 
             FGatherAccumulator Acc;
-            GatherSourceGeometry(Context, Out.BoundsMin, Out.BoundsMax, Acc, OutAABBs);
+            GatherSourceGeometry(Context, Out.BoundsMin, Out.BoundsMax, Acc);
             Out.Vertices = std::move(Acc.Vertices);
             Out.Indices  = std::move(Acc.Indices);
         }
@@ -249,6 +485,26 @@ namespace Lumina
             if (Comp.Runtime.ActiveBake && Comp.Runtime.ActiveBake->bDone.load(std::memory_order_acquire))
             {
                 FNavBuildOutput& Out = Comp.Runtime.ActiveBake->Output;
+
+                // Tally non-empty tiles so a bake that produced *zero*
+                // walkable surface is loud instead of silent. The most
+                // common cause is the bounds volume not actually
+                // overlapping any static-mesh geometry.
+                int32 NonEmptyTiles = 0;
+                for (const FNavTileData& T : Out.Tiles)
+                {
+                    if (!T.Blob.empty()) ++NonEmptyTiles;
+                }
+                if (Out.Tiles.empty() || NonEmptyTiles == 0)
+                {
+                    LOG_WARN("NavMesh bake produced no walkable tiles ({} tiles total). Verify the bounds volume overlaps source geometry and that meshes are not skinned.", Out.Tiles.size());
+                }
+                else
+                {
+                    LOG_INFO("NavMesh bake complete: {}/{} tiles walkable, origin=({:.2f}, {:.2f}, {:.2f}), tileSize={:.2f}.",
+                        NonEmptyTiles, (int32)Out.Tiles.size(), Out.Origin.x, Out.Origin.y, Out.Origin.z, Out.TileWorldSize);
+                }
+
                 Comp.Tiles           = std::move(Out.Tiles);
                 Comp.Origin          = Out.Origin;
                 Comp.TileWorldSize   = Out.TileWorldSize;
@@ -269,7 +525,20 @@ namespace Lumina
             {
                 Comp.Runtime.Mesh = std::move(Comp.Runtime.PendingInit->ResultMesh);
                 Comp.Runtime.PendingInit.reset();
-                Comp.Runtime.State = ENavBakeState::Ready;
+                // dtNavMesh::init or the per-tile addTile loop can fail
+                // and leave the FNavMesh non-ready. Without this branch
+                // the system silently transitions to Ready and every
+                // pathfinding query no-ops with no log trail.
+                if (!Comp.Runtime.Mesh || !Comp.Runtime.Mesh->IsReady())
+                {
+                    LOG_ERROR("NavMesh hydration failed: dtNavMesh did not initialize (recast vendoring missing, or addTile rejected every blob). All Nav queries will return false.");
+                    Comp.Runtime.State = ENavBakeState::Failed;
+                    Comp.Runtime.Mesh.reset();
+                }
+                else
+                {
+                    Comp.Runtime.State = ENavBakeState::Ready;
+                }
             }
 
             // 3. Kick async hydration when tiles are present and either we
@@ -324,15 +593,18 @@ namespace Lumina
             // Debug draw runs FIRST so it always emits while the mesh is
             // ready, regardless of whether step 5 below decides to early
             // return on empty dirty tiles or saturated rebake jobs.
-            if (Comp.bDrawDebug)
+            if (CVarNavDrawDebug.GetValue())
             {
-                const glm::vec4 EdgeColor(0.2f, 0.9f, 0.4f, 1.0f);
-                Comp.Runtime.Mesh->ForEachTriangle([&](const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, uint8 /*Area*/)
+                const glm::vec4 EdgeColor(0.05f, 1.0f, 0.15f, 1.0f);
+                constexpr float EdgeThickness = 2.0f;
+                // EnqueueLine (the path Context.DrawDebugLine ends up on)
+                // is MPMC-safe, so the visitor can run on every worker.
+                Comp.Runtime.Mesh->ParallelForEachTriangle([&Context, EdgeColor](const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, uint8 /*Area*/)
                 {
                     const glm::vec3 Lift(0.0f, 0.05f, 0.0f);
-                    Context.DrawDebugLine(A + Lift, B + Lift, EdgeColor, 1.0f, -1.0f);
-                    Context.DrawDebugLine(B + Lift, C + Lift, EdgeColor, 1.0f, -1.0f);
-                    Context.DrawDebugLine(C + Lift, A + Lift, EdgeColor, 1.0f, -1.0f);
+                    Context.DrawDebugLine(A + Lift, B + Lift, EdgeColor, EdgeThickness, -1.0f);
+                    Context.DrawDebugLine(B + Lift, C + Lift, EdgeColor, EdgeThickness, -1.0f);
+                    Context.DrawDebugLine(C + Lift, A + Lift, EdgeColor, EdgeThickness, -1.0f);
                 });
             }
 
@@ -348,17 +620,31 @@ namespace Lumina
                     continue;
                 }
 
-                Comp.Runtime.Mesh->RebuildTile(Job->TileX, Job->TileY, std::move(Job->ResultBlob));
-                // Persist into Comp.Tiles so the next world save captures the
-                // updated layout. Find the matching tile index by (X,Y).
+                // Persist a copy into Comp.Tiles BEFORE handing the blob to
+                // the runtime mesh. Without this, the serialized tile array
+                // would lose its data on every rebake, and any subsequent
+                // PIE clone or world save would init from empty blobs (the
+                // dtNavMesh's owned copy is unreachable from serialization).
+                bool bUpdatedExisting = false;
                 for (FNavTileData& T : Comp.Tiles)
                 {
                     if (T.X == Job->TileX && T.Y == Job->TileY)
                     {
-                        T.Blob.clear(); // fresh blob already moved into the mesh; serializing it back requires a copy at swap time
+                        T.Blob = Job->ResultBlob;
+                        bUpdatedExisting = true;
                         break;
                     }
                 }
+                if (!bUpdatedExisting)
+                {
+                    FNavTileData NewTile;
+                    NewTile.X = Job->TileX;
+                    NewTile.Y = Job->TileY;
+                    NewTile.Blob = Job->ResultBlob;
+                    Comp.Tiles.push_back(std::move(NewTile));
+                }
+
+                Comp.Runtime.Mesh->RebuildTile(Job->TileX, Job->TileY, std::move(Job->ResultBlob));
                 Job->bConsumed.store(true, std::memory_order_release);
             }
             
@@ -367,65 +653,88 @@ namespace Lumina
                     [](const TSharedPtr<FNavTileRebake>& J) { return !J || J->bConsumed.load(std::memory_order_acquire); }),
                 Comp.Runtime.PendingRebakes.end());
 
-            // 4. Detect moved/added/removed source entities and dirty their tiles.
-            const glm::vec3 BakeMin = Comp.Center - Comp.Extents;
-            THashMap<uint32, FNavSourceEntity> CurrentAABBs;
+            // 4. Detect moved/added/removed source colliders and dirty their tiles.
+            THashMap<uint64, FNavSourceEntity> CurrentAABBs;
             CurrentAABBs.reserve(Comp.Runtime.EntityAABBs.size());
 
-            auto MeshView = Context.CreateView<SStaticMeshComponent, STransformComponent>(entt::exclude<SCharacterControllerComponent>);
-            for (entt::entity E : MeshView)
+            auto MarkDirtyForAABB = [&](const glm::vec3& Mn, const glm::vec3& Mx)
             {
-                glm::vec3 Mn, Mx;
-                if (!ComputeEntityAABB(MeshView.get<SStaticMeshComponent>(E), MeshView.get<STransformComponent>(E), Mn, Mx))
+                int32 TX0, TY0, TX1, TY1;
+                TilesForAABB(Mn, Mx, Comp.Origin, Comp.TileWorldSize, Comp.Runtime.TilesX, Comp.Runtime.TilesY, TX0, TY0, TX1, TY1);
+                for (int32 ty = TY0; ty <= TY1; ++ty)
                 {
-                    continue;
+                    for (int32 tx = TX0; tx <= TX1; ++tx)
+                    {
+                        Comp.Runtime.DirtyTiles.insert(PackTileKey(tx, ty));
+                    }
                 }
-                CurrentAABBs[(uint32)E] = FNavSourceEntity{ Mn, Mx };
+            };
 
-                auto It = Comp.Runtime.EntityAABBs.find((uint32)E);
-                const bool bNew = It == Comp.Runtime.EntityAABBs.end();
-                const bool bMoved = !bNew && (!Math::IsNearlyEqual(It->second.AABBMin, Mn) || !Math::IsNearlyEqual(It->second.AABBMax, Mx));                
+            auto VisitSource = [&](uint64 Key, const glm::vec3& Mn, const glm::vec3& Mx)
+            {
+                CurrentAABBs[Key] = FNavSourceEntity{ Mn, Mx };
+                auto It = Comp.Runtime.EntityAABBs.find(Key);
+                const bool bNew   = It == Comp.Runtime.EntityAABBs.end();
+                const bool bMoved = !bNew && (!Math::IsNearlyEqual(It->second.AABBMin, Mn) || !Math::IsNearlyEqual(It->second.AABBMax, Mx));
                 if (bNew || bMoved)
                 {
-                    int32 TX0, TY0, TX1, TY1;
                     if (bMoved)
                     {
                         // Old footprint also gets dirtied so triangles we
                         // were standing on are re-evaluated.
-                        TilesForAABB(It->second.AABBMin, It->second.AABBMax, Comp.Origin, Comp.TileWorldSize, Comp.Runtime.TilesX, Comp.Runtime.TilesY, TX0, TY0, TX1, TY1);
-                        for (int32 ty = TY0; ty <= TY1; ++ty)
-                        {
-                            for (int32 tx = TX0; tx <= TX1; ++tx)
-                            {
-                                Comp.Runtime.DirtyTiles.insert(PackTileKey(tx, ty));
-                            }
-                        }
+                        MarkDirtyForAABB(It->second.AABBMin, It->second.AABBMax);
                     }
-                    TilesForAABB(Mn, Mx, Comp.Origin, Comp.TileWorldSize, Comp.Runtime.TilesX, Comp.Runtime.TilesY, TX0, TY0, TX1, TY1);
-                    for (int32 ty = TY0; ty <= TY1; ++ty)
-                    {
-                        for (int32 tx = TX0; tx <= TX1; ++tx)
-                        {
-                            Comp.Runtime.DirtyTiles.insert(PackTileKey(tx, ty));
-                        }
-                    }
+                    MarkDirtyForAABB(Mn, Mx);
                 }
+            };
+
+            auto BoxCheckView = Context.CreateView<SBoxColliderComponent, STransformComponent>();
+            for (entt::entity E : BoxCheckView)
+            {
+                SBoxColliderComponent& Box = BoxCheckView.get<SBoxColliderComponent>(E);
+                if (!Box.bAffectsNavigation) continue;
+                glm::vec3 Mn, Mx;
+                if (!ComputeBoxColliderAABB(Box, BoxCheckView.get<STransformComponent>(E), Mn, Mx)) continue;
+                VisitSource(PackSourceKey(E, ENavColliderType::Box), Mn, Mx);
             }
 
-            // Removed entities also dirty their last-known tiles.
+            auto SphereCheckView = Context.CreateView<SSphereColliderComponent, STransformComponent>();
+            for (entt::entity E : SphereCheckView)
+            {
+                SSphereColliderComponent& Sphere = SphereCheckView.get<SSphereColliderComponent>(E);
+                if (!Sphere.bAffectsNavigation) continue;
+                glm::vec3 Mn, Mx;
+                if (!ComputeSphereColliderAABB(Sphere, SphereCheckView.get<STransformComponent>(E), Mn, Mx)) continue;
+                VisitSource(PackSourceKey(E, ENavColliderType::Sphere), Mn, Mx);
+            }
+
+            auto MeshCheckView = Context.CreateView<SMeshColliderComponent, STransformComponent>();
+            for (entt::entity E : MeshCheckView)
+            {
+                SMeshColliderComponent& MC = MeshCheckView.get<SMeshColliderComponent>(E);
+                if (!MC.bAffectsNavigation) continue;
+                const SStaticMeshComponent* Fallback = Context.GetRegistry().try_get<SStaticMeshComponent>(E);
+                glm::vec3 Mn, Mx;
+                if (!ComputeMeshColliderAABB(MC, MeshCheckView.get<STransformComponent>(E), Fallback, Mn, Mx)) continue;
+                VisitSource(PackSourceKey(E, ENavColliderType::Mesh), Mn, Mx);
+            }
+
+            auto CapCheckView = Context.CreateView<SCharacterPhysicsComponent, STransformComponent>();
+            for (entt::entity E : CapCheckView)
+            {
+                SCharacterPhysicsComponent& Cap = CapCheckView.get<SCharacterPhysicsComponent>(E);
+                if (!Cap.bAffectsNavigation) continue;
+                glm::vec3 Mn, Mx;
+                if (!ComputeCapsuleColliderAABB(Cap, CapCheckView.get<STransformComponent>(E), Mn, Mx)) continue;
+                VisitSource(PackSourceKey(E, ENavColliderType::Capsule), Mn, Mx);
+            }
+
+            // Removed colliders also dirty their last-known tiles.
             for (const auto& [Id, Snap] : Comp.Runtime.EntityAABBs)
             {
                 if (CurrentAABBs.find(Id) == CurrentAABBs.end())
                 {
-                    int32 TX0, TY0, TX1, TY1;
-                    TilesForAABB(Snap.AABBMin, Snap.AABBMax, Comp.Origin, Comp.TileWorldSize, Comp.Runtime.TilesX, Comp.Runtime.TilesY, TX0, TY0, TX1, TY1);
-                    for (int32 ty = TY0; ty <= TY1; ++ty)
-                    {
-                        for (int32 tx = TX0; tx <= TX1; ++tx)
-                        {
-                            Comp.Runtime.DirtyTiles.insert(PackTileKey(tx, ty));
-                        }
-                    }
+                    MarkDirtyForAABB(Snap.AABBMin, Snap.AABBMax);
                 }
             }
 
@@ -440,10 +749,9 @@ namespace Lumina
                 return;
             }
 
-            // Snapshot only mesh asset pointers + world matrices on the main
-            // thread. Cheap (one matrix copy per static mesh entity). The
-            // expensive meshlet decode runs on a worker via the coordinator
-            // task below - that decode used to live here and ate ~4ms.
+            // Snapshot only collider parameter blobs + world matrices on the
+            // main thread. Cheap. The per-shape tessellation runs on a worker
+            // via the coordinator task below.
             const uint32 Capacity = MaxConcurrent - (uint32)Comp.Runtime.PendingRebakes.size();
             TVector<TSharedPtr<FNavTileRebake>> BatchJobs;
             BatchJobs.reserve(Capacity);
@@ -459,14 +767,21 @@ namespace Lumina
                 Comp.Runtime.PendingRebakes.push_back(std::move(Job));
             }
 
+            struct FBoxSnap     { glm::mat4 World; glm::vec3 HalfExtent; };
+            struct FSphereSnap  { glm::mat4 World; float Radius; };
+            struct FMeshSnap    { glm::mat4 World; CStaticMesh* Mesh; };
+            struct FCapsuleSnap { glm::mat4 World; float HalfHeight; float Radius; };
+
             struct FInputSnapshot
             {
-                TVector<CStaticMesh*>   Meshes;
-                TVector<glm::mat4>      Matrices;
-                glm::vec3               BakeMin;
-                glm::vec3               BakeMax;
-                FNavBuildSettings       Settings;
-                FNavBuildOutput         Layout;
+                TVector<FBoxSnap>     Boxes;
+                TVector<FSphereSnap>  Spheres;
+                TVector<FMeshSnap>    Meshes;
+                TVector<FCapsuleSnap> Capsules;
+                glm::vec3             BakeMin;
+                glm::vec3             BakeMax;
+                FNavBuildSettings     Settings;
+                FNavBuildOutput       Layout;
             };
             auto Snap = MakeShared<FInputSnapshot>();
             Snap->BakeMin  = Comp.Center - Comp.Extents;
@@ -474,21 +789,46 @@ namespace Lumina
             Snap->Settings = Comp.Settings;
             Snap->Layout   = Comp.Runtime.LiveLayout;
             {
-                auto SnapView = Context.CreateView<SStaticMeshComponent, STransformComponent>(entt::exclude<SCharacterControllerComponent>);
-                Snap->Meshes.reserve(SnapView.size_hint());
-                Snap->Matrices.reserve(SnapView.size_hint());
-                for (entt::entity E : SnapView)
+                auto BoxSnapView = Context.CreateView<SBoxColliderComponent, STransformComponent>();
+                for (entt::entity E : BoxSnapView)
                 {
-                    CStaticMesh* M = SnapView.get<SStaticMeshComponent>(E).GetStaticMesh();
+                    SBoxColliderComponent& Box = BoxSnapView.get<SBoxColliderComponent>(E);
+                    if (!Box.bAffectsNavigation) continue;
+                    Snap->Boxes.push_back({ ColliderToWorld(BoxSnapView.get<STransformComponent>(E), Box.TranslationOffset, Box.RotationOffset), Box.HalfExtent });
+                }
+
+                auto SphereSnapView = Context.CreateView<SSphereColliderComponent, STransformComponent>();
+                for (entt::entity E : SphereSnapView)
+                {
+                    SSphereColliderComponent& Sphere = SphereSnapView.get<SSphereColliderComponent>(E);
+                    if (!Sphere.bAffectsNavigation) continue;
+                    Snap->Spheres.push_back({ ColliderToWorld(SphereSnapView.get<STransformComponent>(E), Sphere.TranslationOffset, glm::vec3(0.0f)), Sphere.Radius });
+                }
+
+                auto MeshSnapView = Context.CreateView<SMeshColliderComponent, STransformComponent>();
+                for (entt::entity E : MeshSnapView)
+                {
+                    SMeshColliderComponent& MC = MeshSnapView.get<SMeshColliderComponent>(E);
+                    if (!MC.bAffectsNavigation) continue;
+                    const SStaticMeshComponent* Fallback = Context.GetRegistry().try_get<SStaticMeshComponent>(E);
+                    CStaticMesh* M = ResolveMeshColliderAsset(MC, Fallback);
                     if (!M || M->GetMeshResource().bSkinnedMesh) continue;
-                    Snap->Meshes.push_back(M);
-                    Snap->Matrices.push_back(SnapView.get<STransformComponent>(E).GetWorldMatrix());
+                    Snap->Meshes.push_back({ ColliderToWorld(MeshSnapView.get<STransformComponent>(E), MC.TranslationOffset, MC.RotationOffset), M });
+                }
+
+                auto CapSnapView = Context.CreateView<SCharacterPhysicsComponent, STransformComponent>();
+                for (entt::entity E : CapSnapView)
+                {
+                    SCharacterPhysicsComponent& Cap = CapSnapView.get<SCharacterPhysicsComponent>(E);
+                    if (!Cap.bAffectsNavigation) continue;
+                    Snap->Capsules.push_back({ ColliderToWorld(CapSnapView.get<STransformComponent>(E), glm::vec3(0.0f), glm::vec3(0.0f)), Cap.HalfHeight, Cap.Radius });
                 }
             }
 
-            // One coordinator task: decodes geometry once on a worker, then
-            // ParallelFors the per-tile bakes against the shared input.
-            // Inner ParallelFor amortizes wait time across the worker pool.
+            // One coordinator task: tessellates collider geometry once on a
+            // worker, then ParallelFors the per-tile bakes against the
+            // shared input. Inner ParallelFor amortizes wait time across the
+            // worker pool.
             Task::AsyncTask(1, 1, [Snap, Jobs = std::move(BatchJobs)](uint32, uint32, uint32) mutable
             {
                 FNavBuildInput Input;
@@ -497,10 +837,21 @@ namespace Lumina
                 Input.Settings  = Snap->Settings;
 
                 FGatherAccumulator Acc;
-                for (size_t i = 0; i < Snap->Meshes.size(); ++i)
+                for (const FBoxSnap& B : Snap->Boxes)
                 {
-                    glm::vec3 Mn, Mx;
-                    DecodeMeshIntoAccumulator(Snap->Meshes[i], Snap->Matrices[i], Snap->BakeMin, Snap->BakeMax, Acc, Mn, Mx);
+                    EmitBoxGeometry(B.World, B.HalfExtent, Snap->BakeMin, Snap->BakeMax, Acc);
+                }
+                for (const FSphereSnap& S : Snap->Spheres)
+                {
+                    EmitSphereGeometry(S.World, S.Radius, Snap->BakeMin, Snap->BakeMax, Acc);
+                }
+                for (const FMeshSnap& M : Snap->Meshes)
+                {
+                    EmitMeshGeometry(M.World, M.Mesh, Snap->BakeMin, Snap->BakeMax, Acc);
+                }
+                for (const FCapsuleSnap& C : Snap->Capsules)
+                {
+                    EmitCapsuleGeometry(C.World, C.HalfHeight, C.Radius, Snap->BakeMin, Snap->BakeMax, Acc);
                 }
                 Input.Vertices = std::move(Acc.Vertices);
                 Input.Indices  = std::move(Acc.Indices);
@@ -547,9 +898,6 @@ namespace Lumina
             {
                 Nav.Center = Xform->GetWorldTransform().Location;
             }
-            // Make the new bounds visible by default so the user can see
-            // where they placed it without hunting for the checkbox.
-            Nav.bDrawDebug = true;
         }
     }
 
@@ -606,12 +954,41 @@ namespace Lumina
     {
         if (Comp.Runtime.ActiveBake)
         {
+            LOG_WARN("NavMesh bake requested while one is already in flight. Ignoring (the in-progress bake will complete first).");
+            return;
+        }
+
+        // Bounds with zero or negative volume produce a single 1x1 grid of
+        // empty tiles. Catch it up front so the user gets a clear message
+        // instead of a "0 walkable tiles" warning at completion.
+        const glm::vec3 Span = Comp.Extents * 2.0f;
+        if (Span.x <= 0.0f || Span.y <= 0.0f || Span.z <= 0.0f)
+        {
+            LOG_ERROR("NavMesh bake skipped: bounds extents must be positive on all axes (got {:.2f}, {:.2f}, {:.2f}).",
+                Comp.Extents.x, Comp.Extents.y, Comp.Extents.z);
+            return;
+        }
+        if (Comp.Settings.CellSize <= 0.0f || Comp.Settings.CellHeight <= 0.0f || Comp.Settings.TileSizeVoxels <= 0)
+        {
+            LOG_ERROR("NavMesh bake skipped: invalid voxel settings (CellSize={:.3f}, CellHeight={:.3f}, TileSizeVoxels={}).",
+                Comp.Settings.CellSize, Comp.Settings.CellHeight, Comp.Settings.TileSizeVoxels);
             return;
         }
 
         FNavBuildInput Input;
-        THashMap<uint32, FNavSourceEntity> Unused;
-        FillBuildInput(Context, Comp, Input, Unused);
+        FillBuildInput(Context, Comp, Input);
+
+        if (Input.Vertices.empty() || Input.Indices.empty())
+        {
+            LOG_WARN("NavMesh bake starting with no source geometry inside bounds. The result will be an empty navmesh; check that static meshes (non-character-controller) overlap the bounds volume.");
+        }
+        else
+        {
+            LOG_INFO("NavMesh bake starting: {} verts, {} tris, bounds=({:.1f},{:.1f},{:.1f})..({:.1f},{:.1f},{:.1f}).",
+                (int32)Input.Vertices.size(), (int32)(Input.Indices.size() / 3),
+                Input.BoundsMin.x, Input.BoundsMin.y, Input.BoundsMin.z,
+                Input.BoundsMax.x, Input.BoundsMax.y, Input.BoundsMax.z);
+        }
 
         // EntityAABB cache populated at bake-completion drain instead of
         // here - the gather's tight per-triangle AABBs would mismatch the

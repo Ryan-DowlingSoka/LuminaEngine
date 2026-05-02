@@ -20,9 +20,11 @@ namespace Lumina
      * state, see SNavMeshComponent's copy ctor).
      */
     /**
-     * Snapshot of one nav-relevant entity used to detect "moved since last
-     * tick." Cached on the component, keyed by entt::entity. When the live
-     * AABB diverges from LastAABB, the union of the old and new AABB's tile
+     * Snapshot of one nav-relevant collider used to detect "moved since last
+     * tick." Cached on the component, keyed by (entity, collider type index)
+     * packed into a uint64 - one entity can carry up to one collider of each
+     * type, and each is tracked independently. When the live AABB diverges
+     * from the cached value, the union of the old and new AABB's tile
      * coverage is marked dirty for incremental rebake.
      */
     struct FNavSourceEntity
@@ -73,8 +75,8 @@ namespace Lumina
         // Dynamic-rebuild state. Populated lazily on the first tick after a
         // full bake completes; never serialized.
 
-        /** Cached per-source-entity AABBs from the previous tick. */
-        THashMap<uint32, FNavSourceEntity>      EntityAABBs;
+        /** Cached per-source-collider AABBs from the previous tick. Keyed by (entity << 8 | colliderType). */
+        THashMap<uint64, FNavSourceEntity>      EntityAABBs;
 
         /** Tile coords (packed as TY*TilesX + TX) waiting to be rebuilt. */
         THashSet<uint64>                        DirtyTiles;
@@ -110,7 +112,6 @@ namespace Lumina
             : Settings(Other.Settings)
             , Center(Other.Center)
             , Extents(Other.Extents)
-            , bDrawDebug(Other.bDrawDebug)
             , Tiles(Other.Tiles)
             , Origin(Other.Origin)
             , TileWorldSize(Other.TileWorldSize)
@@ -129,7 +130,6 @@ namespace Lumina
                 Origin          = Other.Origin;
                 TileWorldSize   = Other.TileWorldSize;
                 MaxPolysPerTile = Other.MaxPolysPerTile;
-                bDrawDebug      = Other.bDrawDebug;
                 Runtime         = FNavMeshRuntime{}; // transient, reset on copy
             }
             return *this;
@@ -149,10 +149,6 @@ namespace Lumina
         /** Half-extents of the bake volume. */
         PROPERTY(Editable, Category = "NavMesh|Bounds")
         glm::vec3 Extents = glm::vec3(64.0f, 16.0f, 64.0f);
-
-        /** When true, the system emits debug lines for every walkable triangle each tick. */
-        PROPERTY(Editable, Category = "NavMesh|Debug")
-        bool bDrawDebug = false;
 
         /**
          * Set by the editor "Bake" button (or gameplay code) and consumed by

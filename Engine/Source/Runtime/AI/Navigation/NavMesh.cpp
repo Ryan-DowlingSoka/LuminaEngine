@@ -53,6 +53,15 @@ namespace Lumina
         NavMesh = dtAllocNavMesh();
         if (!NavMesh)
         {
+            LOG_ERROR("FNavMesh::Initialize: dtAllocNavMesh returned null (out of memory).");
+            return false;
+        }
+
+        if (TileWorldSize <= 0.0f || MaxTiles <= 0)
+        {
+            LOG_ERROR("FNavMesh::Initialize: invalid layout (TileWorldSize={:.3f}, MaxTiles={}). Refusing to init.", TileWorldSize, MaxTiles);
+            dtFreeNavMesh(NavMesh);
+            NavMesh = nullptr;
             return false;
         }
 
@@ -65,6 +74,7 @@ namespace Lumina
 
         if (dtStatusFailed(NavMesh->init(&Params)))
         {
+            LOG_ERROR("FNavMesh::Initialize: dtNavMesh::init failed (TileWorldSize={:.3f}, MaxTiles={}, MaxPolys={}).", TileWorldSize, MaxTiles, MaxPolysPerTile);
             dtFreeNavMesh(NavMesh);
             NavMesh = nullptr;
             return false;
@@ -72,10 +82,14 @@ namespace Lumina
 
         // dtNavMesh::addTile is not thread-safe so tiles are added serially.
         // The expensive work (voxelization etc.) happened during the bake.
+        int32 Added = 0;
+        int32 Skipped = 0;
+        int32 Rejected = 0;
         for (FNavTileData& Tile : Tiles)
         {
             if (Tile.Blob.empty())
             {
+                ++Skipped;
                 continue;
             }
 
@@ -83,6 +97,7 @@ namespace Lumina
             uint8* Owned = (uint8*)dtAlloc((int)Size, DT_ALLOC_PERM);
             if (!Owned)
             {
+                ++Rejected;
                 continue;
             }
             memcpy(Owned, Tile.Blob.data(), Size);
@@ -92,7 +107,24 @@ namespace Lumina
             if (dtStatusFailed(Status))
             {
                 dtFree(Owned);
+                ++Rejected;
             }
+            else
+            {
+                ++Added;
+            }
+        }
+        if (Rejected > 0)
+        {
+            LOG_WARN("FNavMesh::Initialize: dtNavMesh::addTile rejected {} of {} non-empty tiles (likely tile coord collision or maxTiles too small).",
+                Rejected, Added + Rejected);
+        }
+        if (Added == 0 && (int32)Tiles.size() > 0)
+        {
+            LOG_ERROR("FNavMesh::Initialize: no tiles were added (skipped={}, rejected={}). NavMesh will not be ready.", Skipped, Rejected);
+            dtFreeNavMesh(NavMesh);
+            NavMesh = nullptr;
+            return false;
         }
 
         // Slightly over-provision so worker contention rarely blocks. Each
@@ -100,17 +132,27 @@ namespace Lumina
         // for typical worker counts.
         const uint32 PoolSize = (GTaskSystem ? GTaskSystem->GetNumWorkers() : 4u) + 2u;
         QueryPool = TVector<FQuerySlot>(PoolSize);
+        uint32 ReadyQueries = 0;
         for (uint32 i = 0; i < PoolSize; ++i)
         {
             dtNavMeshQuery* Query = dtAllocNavMeshQuery();
             if (Query && dtStatusSucceed(Query->init(NavMesh, 2048)))
             {
                 QueryPool[i].Query = Query;
+                ++ReadyQueries;
             }
             else if (Query)
             {
                 dtFreeNavMeshQuery(Query);
             }
+        }
+        if (ReadyQueries == 0)
+        {
+            LOG_ERROR("FNavMesh::Initialize: no dtNavMeshQuery instances initialized; pathfinding will always return false.");
+            dtFreeNavMesh(NavMesh);
+            NavMesh = nullptr;
+            QueryPool.clear();
+            return false;
         }
 
         bReady = true;
@@ -120,6 +162,7 @@ namespace Lumina
         return true;
 #else
         (void)MaxTiles; (void)MaxPolysPerTile; (void)Tiles;
+        LOG_ERROR("FNavMesh::Initialize: Recast/Detour not vendored (LUMINA_HAS_RECAST undefined). NavMesh cannot be initialized.");
         bReady = false;
         return false;
 #endif
@@ -198,7 +241,7 @@ namespace Lumina
 
         float SP[3]; Pack(Start, SP);
         float EP[3]; Pack(End,   EP);
-        const float Extents[3] = { 2.0f, 4.0f, 2.0f };
+        float Extents[3]; Pack(Filter.QueryExtents, Extents);
 
         dtPolyRef SRef = 0, ERef = 0;
         float SNear[3], ENear[3];
@@ -298,6 +341,17 @@ namespace Lumina
         }
     }
 
+    void FNavMesh::ParallelForEachTriangle(const FParallelTriangleVisitor& Visitor) const
+    {
+        const size_t NumTris = CachedTriAreas.size();
+        if (NumTris == 0) return;
+
+        Task::ParallelFor((uint32)NumTris, [this, &Visitor](uint32 i)
+        {
+            Visitor(CachedTriVerts[i * 3 + 0], CachedTriVerts[i * 3 + 1], CachedTriVerts[i * 3 + 2], CachedTriAreas[i]);
+        });
+    }
+
     bool FNavMesh::RebuildTile(int32 TileX, int32 TileY, TVector<uint8>&& NewBlob)
     {
         LUMINA_PROFILE_SCOPE();
@@ -356,7 +410,7 @@ namespace Lumina
         // Locate the polygon closest to Center to seed the random walk.
         // Without a valid start ref the disk-walk has nothing to anchor to.
         float CP[3]; Pack(Center, CP);
-        const float Extents[3] = { 2.0f, 4.0f, 2.0f };
+        float Extents[3]; Pack(Filter.QueryExtents, Extents);
 
         dtPolyRef StartRef = 0;
         float Snapped[3];
@@ -400,7 +454,7 @@ namespace Lumina
         dtQueryFilter F; ApplyFilter(Filter, F);
         float SP[3]; Pack(Start, SP);
         float EP[3]; Pack(End,   EP);
-        const float Extents[3] = { 2.0f, 4.0f, 2.0f };
+        float Extents[3]; Pack(Filter.QueryExtents, Extents);
 
         dtPolyRef SRef = 0;
         float SNear[3];

@@ -2533,11 +2533,17 @@ namespace Lumina
 
     void FForwardRenderScene::ProcessBatchedLines(FLineBatcherComponent& Batcher)
     {
+        // Pull anything pushed by workers this frame into the canonical
+        // arrays. This is the only place the queue is drained, and it runs
+        // single-threaded on the render-extraction tick, so DrawLine /
+        // RemoveLine / lifetime fix-ups below stay race-free.
+        Batcher.DrainQueue();
+
         if (Batcher.Lines.empty())
         {
             return;
         }
-        
+
         for (FLineBatcherComponent::FLineInstance& Line : Batcher.Lines)
         {
             if (!Line.bSingleFrame && Line.RemainingLifetime >= 0.0f)

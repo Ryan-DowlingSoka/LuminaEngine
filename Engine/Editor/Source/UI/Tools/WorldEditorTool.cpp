@@ -2644,7 +2644,21 @@ namespace Lumina
                         FConsoleRegistry::Get().SetAs("Jolt.Debug.Draw", bProxy);
                     }
                 }
-                
+
+                ImGui::EndMenu();
+            }
+
+            if (ImGui::BeginMenu("Navigation"))
+            {
+                if (const bool* bValue = FConsoleRegistry::Get().TryGetAs<bool>("Nav.DrawDebug"))
+                {
+                    bool bProxy = *bValue;
+                    if (ImGui::MenuItem("Draw NavMesh", nullptr, &bProxy))
+                    {
+                        FConsoleRegistry::Get().SetAs("Nav.DrawDebug", bProxy);
+                    }
+                }
+
                 ImGui::EndMenu();
             }
             

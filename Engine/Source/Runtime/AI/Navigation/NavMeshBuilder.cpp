@@ -268,6 +268,10 @@ namespace Lumina::NavMeshBuilder
 
     static void RunBake(const FNavBuildInput& Input, FNavBakeHandle& Handle)
     {
+#if !defined(LUMINA_HAS_RECAST)
+        LOG_ERROR("NavMesh bake invoked but Recast/Detour is not vendored (LUMINA_HAS_RECAST undefined). All tiles will be empty stubs.");
+#endif
+
         const FTileGrid Grid = ComputeGrid(Input);
         const uint32 TileCount = (uint32)(Grid.TilesX * Grid.TilesY);
 
@@ -277,6 +281,10 @@ namespace Lumina::NavMeshBuilder
         Handle.Output.MaxPolysPerTile = 1 << 14;
         Handle.Output.Tiles.resize(TileCount);
         Handle.TilesScheduled = TileCount;
+
+        // Per-tile failures are aggregated into one log line at the end so
+        // a broken bake doesn't spam the log with N entries.
+        std::atomic<uint32> FailCount{ 0 };
 
         // Tiles are independent - each task voxelizes its tile against the
         // shared (read-only) Input snapshot and writes one slot in Tiles.
@@ -292,13 +300,22 @@ namespace Lumina::NavMeshBuilder
             const int32 TY = (int32)(Index / (uint32)Grid.TilesX);
 
 #if defined(LUMINA_HAS_RECAST)
-            BakeTile(Input, Grid, TX, TY, Handle.Output.Tiles[Index]);
+            if (!BakeTile(Input, Grid, TX, TY, Handle.Output.Tiles[Index]))
+            {
+                FailCount.fetch_add(1, std::memory_order_relaxed);
+            }
 #else
             Handle.Output.Tiles[Index].X = TX;
             Handle.Output.Tiles[Index].Y = TY;
 #endif
             Handle.TilesCompleted.fetch_add(1, std::memory_order_release);
         });
+
+        const uint32 Failed = FailCount.load(std::memory_order_relaxed);
+        if (Failed > 0)
+        {
+            LOG_WARN("NavMesh bake: {}/{} tiles failed to bake (Recast pipeline returned false). Those tiles will be empty.", Failed, TileCount);
+        }
 
         Handle.bDone.store(true, std::memory_order_release);
     }

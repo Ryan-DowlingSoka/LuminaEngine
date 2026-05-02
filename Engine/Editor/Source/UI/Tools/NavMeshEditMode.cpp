@@ -37,7 +37,6 @@ namespace Lumina
         SNavMeshComponent& Nav = World->GetEntityRegistry().emplace<SNavMeshComponent>(Entity);
         Nav.Center  = WorldLocation;
         Nav.Extents = glm::vec3(64.0f, 16.0f, 64.0f);
-        Nav.bDrawDebug = true;
         // Don't auto-bake on create. The user usually wants to position +
         // resize the bounds first; an explicit Bake click matches Unreal.
         return Entity;

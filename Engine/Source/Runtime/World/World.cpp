@@ -1318,7 +1318,10 @@ namespace Lumina
 
     void CWorld::DrawLine(const glm::vec3& Start, const glm::vec3& End, const glm::vec4& Color, float Thickness, bool bDepthTest, float Duration)
     {
-        LineBatcherComponent->DrawLine(Start, End, Color, Thickness, bDepthTest, Duration);
+        // EnqueueLine is thread-safe; the queue is drained once per render
+        // extraction tick. Routing every caller through it removes the
+        // foot-gun of accidentally calling DrawLine from a worker.
+        LineBatcherComponent->EnqueueLine(Start, End, Color, Thickness, bDepthTest, Duration);
     }
     
     TOptional<SRayResult> CWorld::CastRay(const SRayCastSettings& Settings)
