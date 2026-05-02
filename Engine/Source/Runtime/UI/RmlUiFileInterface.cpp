@@ -25,7 +25,7 @@ namespace Lumina
         TVector<uint8> Bytes;
         if (!VFS::ReadFile(Bytes, Source))
         {
-            // Fall back to the resolver for absolute paths handed in by the editor.
+            // Fall back to virtual-path resolver for absolute editor paths.
             const FFixedString Resolved = VFS::ResolveToVirtualPath(Source);
             if (!VFS::ReadFile(Bytes, FStringView(Resolved.c_str(), Resolved.size())))
             {
@@ -99,8 +99,7 @@ namespace Lumina
 
     bool FRmlUiFileInterface::LoadFile(const Rml::String& Path, Rml::String& OutData)
     {
-        // Override the default to go through VFS rather than fopen, so cooked
-        // PAK mounts work transparently.
+        // Routes through VFS so PAK mounts work.
         FStringView Source(Path.c_str(), Path.size());
         TVector<uint8> Bytes;
         if (!VFS::ReadFile(Bytes, Source))

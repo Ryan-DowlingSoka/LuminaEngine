@@ -20,9 +20,7 @@ namespace Lumina::Lua
 
     namespace
     {
-        // lua_callbacks holds free function pointers, no userdata channel.
-        // Forward through a translation unit local that knows where the
-        // singleton lives.
+        // lua_callbacks takes free function pointers, no userdata; trampoline through the singleton.
         void DebugBreakTrampoline(lua_State* L, lua_Debug* ar)
         {
             FLuaDebugger::Get().HandleDebugBreak(L, ar);
@@ -33,9 +31,7 @@ namespace Lumina::Lua
             FLuaDebugger::Get().HandleDebugStep(L, ar);
         }
 
-        // Stringify whatever's at -1 on Thread for the debugger UI. Pops the
-        // value. Tries to be informative without invoking __tostring metamethods
-        // (which could re-enter Lua mid-pause and cause problems).
+        // Stringify -1 and pop. Avoids __tostring to prevent reentry mid-pause.
         FString StringifyTopValue(lua_State* Thread)
         {
             FString Result;
@@ -178,7 +174,6 @@ namespace Lumina::Lua
                 }
             }
 
-            // Drop any per-line settings; the breakpoint no longer exists.
             auto SettingsIt = BreakpointSettings.find(Key);
             if (SettingsIt != BreakpointSettings.end())
             {
@@ -190,8 +185,7 @@ namespace Lumina::Lua
             }
         }
 
-        // Apply to any currently-loaded scripts at this path so the change
-        // takes effect without a save / reload cycle.
+        // Apply to live scripts at this path so changes take effect without reload.
         if (MainState == nullptr)
         {
             return;
@@ -216,8 +210,6 @@ namespace Lumina::Lua
 
         THashSet<int> ToClear = Itr->second;
         Breakpoints.erase(Itr);
-
-        // Drop all per-line metadata for this path too.
         BreakpointSettings.erase(Key);
 
         for (const TSharedPtr<FScript>& Script : FScriptingContext::Get().GetAllRegisteredScripts())
@@ -287,14 +279,12 @@ namespace Lumina::Lua
             return;
         }
 
-        // Push the captured module closure, ask Luau to (un)set a breakpoint
-        // on that line. lua_breakpoint walks child protos recursively, so a
-        // breakpoint inside any nested closure within the module is handled.
+        // lua_breakpoint walks child protos recursively for nested closures.
         lua_State* L = Script.MainFunction.GetState();
         Script.MainFunction.Push();
         const int FuncIndex = lua_gettop(L);
 
-        // Luau line numbering is 1-based; editor-side ours is 0-based.
+        // Luau is 1-based, editor is 0-based.
         lua_breakpoint(L, FuncIndex, LineZeroBased + 1, bEnabled ? 1 : 0);
 
         lua_pop(L, 1);
@@ -302,10 +292,7 @@ namespace Lumina::Lua
 
     void FLuaDebugger::HandleDebugBreak(lua_State* L, lua_Debug* ar)
     {
-        // After a resume, the first debugbreak on the same (thread, source,
-        // line) we paused at is the LOP_BREAK we never advanced past; see
-        // SkipNextBreak* commentary. Eat it so the VM's VM_CONTINUE(op) can
-        // run the original instruction and move the PC forward.
+        // Eat the first debugbreak on the resumed line so VM_CONTINUE(op) runs the original op.
         if (SkipNextBreakThread == L && SkipNextBreakLine >= 0)
         {
             lua_Debug Here;
@@ -318,19 +305,15 @@ namespace Lumina::Lua
                     SkipNextBreakThread = nullptr;
                     SkipNextBreakSource.clear();
                     SkipNextBreakLine = -1;
-                    return; // no lua_break, VM will execute original op
+                    return;
                 }
             }
-            // Different line/source, the resume already moved past the
-            // line we were skipping, so disarm the skip and treat this as
-            // a normal break.
+            // Already past the skip line; disarm and treat as a normal break.
             SkipNextBreakThread = nullptr;
             SkipNextBreakSource.clear();
             SkipNextBreakLine = -1;
         }
 
-        // Apply per-breakpoint settings (condition / log point / hit count /
-        // run-to-line / disabled) before deciding to actually pause.
         lua_Debug Here;
         FStringView Source;
         int LineZeroBased = -1;
@@ -342,7 +325,7 @@ namespace Lumina::Lua
 
         if (!ProcessBreakpointHit(L, ar, Source, LineZeroBased))
         {
-            return; // log point or condition-false: keep running.
+            return;
         }
 
         EnterPause(L, ar);
@@ -355,9 +338,7 @@ namespace Lumina::Lua
             return;
         }
 
-        // Single-step fires per VM instruction, that's many fires per editor
-        // line. Pull the current frame's source/line and only consider a break
-        // when we have actually progressed past the line we resumed from.
+        // Single-step fires per VM instruction; only break once we move past the resume line.
         lua_Debug TopFrame;
         if (!lua_getinfo(L, 0, "sl", &TopFrame))
         {
@@ -369,35 +350,27 @@ namespace Lumina::Lua
         const FStringView Source = TopFrame.source ? FStringView(TopFrame.source) : FStringView();
         const FStringView LastSource(StepLastSource.c_str(), StepLastSource.size());
 
-        // Reaching a new source-line position means EITHER the line number
-        // changed within the same chunk OR we've crossed into a different
-        // chunk (e.g. stepped into another script). Either is a line-tick.
         const bool bOnNewLine = (CurrentLine != StepLastLine) || (Source != LastSource);
 
         bool bShouldBreak = false;
         switch (StepMode)
         {
         case EStepMode::Into:
-            // First instruction of any new line at any depth.
             bShouldBreak = bOnNewLine;
             break;
 
         case EStepMode::Over:
             if (Depth < StepBaseDepth)
             {
-                // Returned out of the call we were stepping over.
                 bShouldBreak = true;
             }
             else if (Depth == StepBaseDepth && bOnNewLine)
             {
-                // Same depth, moved to a new line, the over completed.
                 bShouldBreak = true;
             }
-            // Otherwise (Depth > base, or same depth same line) keep running.
             break;
 
         case EStepMode::Out:
-            // Break only after we've returned at least one frame.
             bShouldBreak = (Depth < StepBaseDepth);
             break;
 
@@ -410,9 +383,7 @@ namespace Lumina::Lua
             return;
         }
 
-        // Disarm the per-thread single-step flag before pausing; the next
-        // user-issued step request will re-arm it. Leaving it on means the
-        // VM keeps invoking us after resume even with mode None.
+        // Disarm single-step before pause; otherwise VM keeps calling us after resume.
         lua_singlestep(L, 0);
         StepMode = EStepMode::None;
         EnterPause(L, ar);
@@ -420,8 +391,6 @@ namespace Lumina::Lua
 
     void FLuaDebugger::EnterPause(lua_State* L, lua_Debug* /*ar*/)
     {
-        // Already paused? Shouldn't happen, debug callbacks don't reentrantly
-        // fire on the same thread. Bail to be safe.
         if (Status == EDebuggerStatus::Paused)
         {
             return;
@@ -429,16 +398,12 @@ namespace Lumina::Lua
 
         CaptureCallStack(L);
 
-        // Pin the broken thread so the GC can't reap it before resume.
-        // Refs are global to the lua_State family, getting the ref via the
-        // main state is fine.
+        // Pin the broken thread so GC can't reap it before resume.
         lua_pushthread(L);
         PausedThreadRef = lua_ref(L, -1);
         lua_pop(L, 1);
         PausedThread = L;
 
-        // Pull source/line from the top frame for the editor "now paused at"
-        // overlay. CaptureCallStack populates these from lua_Debug.
         if (!CallStack.empty())
         {
             PausedSource = CallStack[0].Source;
@@ -447,11 +412,7 @@ namespace Lumina::Lua
 
         Status = EDebuggerStatus::Paused;
 
-        // Tell the VM to unwind this resume. lua_break flags the thread; when
-        // the callback returns the VM bails out of the current execution and
-        // lua_resume returns LUA_BREAK. The host (FRef::InvokeAsCoroutine)
-        // treats LUA_BREAK like LUA_YIELD, the thread stays alive, anchored
-        // by PausedThreadRef, until the user resumes it from Tick().
+        // lua_break unwinds the resume; host treats LUA_BREAK like LUA_YIELD until Tick() resumes.
         lua_break(L);
     }
 
@@ -463,8 +424,7 @@ namespace Lumina::Lua
         for (int Level = 0; Level < Depth; ++Level)
         {
             lua_Debug ar;
-            // "snlf", source, line, name, info-flags. Skip "u" (upvalues) and
-            // "L" (active lines) because we don't need them in the snapshot.
+            // "snlf": source, line, name, function (needed for upvalue walk).
             if (!lua_getinfo(L, Level, "snlf", &ar))
             {
                 break;
@@ -489,8 +449,6 @@ namespace Lumina::Lua
             }
             Frame.Line = ar.currentline > 0 ? ar.currentline - 1 : -1;
 
-            // Locals: lua_getlocal pushes the value and returns the name.
-            // Indices are 1-based and walk up until null.
             for (int I = 1; ; ++I)
             {
                 const char* Name = lua_getlocal(L, Level, I);
@@ -501,13 +459,11 @@ namespace Lumina::Lua
                 FStackVariable Var;
                 Var.Name.assign(Name);
                 Var.TypeName.assign(TypeNameForTop(L));
-                Var.Value = StringifyTopValue(L);  // pops
+                Var.Value = StringifyTopValue(L);
                 Frame.Locals.emplace_back(eastl::move(Var));
             }
 
-            // Upvalues: lua_getinfo with 'f' pushed the function onto the stack
-            // (our request string includes 'f'). Walk its upvalues, then pop it.
-            // Without 'f' we couldn't inspect upvalues here; function is needed.
+            // 'f' in getinfo string pushed the function; walk its upvalues then pop it.
             if (lua_isfunction(L, -1))
             {
                 const int FuncIdx = lua_gettop(L);
@@ -524,7 +480,7 @@ namespace Lumina::Lua
                     Var.Value = StringifyTopValue(L);
                     Frame.Upvalues.emplace_back(eastl::move(Var));
                 }
-                lua_pop(L, 1);  // pop the function pushed by getinfo("f")
+                lua_pop(L, 1);
             }
 
             CallStack.emplace_back(eastl::move(Frame));
@@ -533,14 +489,11 @@ namespace Lumina::Lua
 
     bool FLuaDebugger::ProcessBreakpointHit(lua_State* L, lua_Debug* /*ar*/, FStringView Source, int LineZeroBased)
     {
-        // No source info -> couldn't match settings. Treat as a normal break.
         if (LineZeroBased < 0 || Source.empty())
         {
             return true;
         }
 
-        // Run-to-line. One-shot: if this is our target, clear it before
-        // pausing so the temporary breakpoint goes away.
         const bool bRunToHit = (RunToTargetLine == LineZeroBased)
             && (FStringView(RunToTargetSource.c_str(), RunToTargetSource.size()) == Source);
 
@@ -556,8 +509,6 @@ namespace Lumina::Lua
             }
         }
 
-        // Walk lua_getinfo("n") for a function name we can attribute to the hit
-        // in the history panel. Cheap enough to pay for every break.
         FString FunctionName;
         {
             lua_Debug Info;
@@ -574,7 +525,7 @@ namespace Lumina::Lua
             if (!Settings->bEnabled)
             {
                 if (bRunToHit) ClearRunToLine();
-                return bRunToHit; // disabled bp still pauses if it's our run-to-line target
+                return bRunToHit;
             }
 
             if (Settings->IgnoreCount > 0 && Settings->HitCount <= Settings->IgnoreCount)
@@ -583,8 +534,7 @@ namespace Lumina::Lua
                 return bRunToHit;
             }
 
-            // Conditional. Skip on parse error too; invalid expressions
-            // shouldn't silently turn into permanent breaks.
+            // Skip on parse error too; invalid expressions shouldn't become permanent breaks.
             if (!Settings->Condition.empty())
             {
                 FString OutValue;
@@ -604,10 +554,9 @@ namespace Lumina::Lua
                 }
             }
 
-            // Log point: format and log, do not pause.
+            // Log point: format with {expr} substitutions, do not pause.
             if (!Settings->LogMessage.empty())
             {
-                // Substitute {expr} occurrences with their evaluated values.
                 eastl::string Out;
                 Out.reserve(Settings->LogMessage.size() + 16);
                 const char* Data = Settings->LogMessage.c_str();
@@ -637,7 +586,7 @@ namespace Lumina::Lua
 
                 RecordBreakHistory(Source, FStringView(FunctionName.c_str(), FunctionName.size()), LineZeroBased, true);
                 if (bRunToHit) ClearRunToLine();
-                return false; // logged, keep running
+                return false;
             }
         }
 
@@ -647,7 +596,7 @@ namespace Lumina::Lua
         }
 
         RecordBreakHistory(Source, FStringView(FunctionName.c_str(), FunctionName.size()), LineZeroBased, false);
-        return true; // pause normally.
+        return true;
     }
 
     void FLuaDebugger::RecordBreakHistory(FStringView Source, FStringView FunctionName, int Line, bool bLogPoint)
@@ -656,7 +605,7 @@ namespace Lumina::Lua
         Entry.Source.assign(Source.data(), Source.size());
         Entry.FunctionName.assign(FunctionName.data(), FunctionName.size());
         Entry.Line = Line;
-        Entry.TimeSeconds = 0.0; // engine clock not threaded through; UI shows index instead.
+        Entry.TimeSeconds = 0.0;
         Entry.bWasLogPoint = bLogPoint;
 
         BreakHistory.insert(BreakHistory.begin(), eastl::move(Entry));
@@ -720,18 +669,12 @@ namespace Lumina::Lua
 
     void FLuaDebugger::RunToLine(FStringView Path, int LineZeroBased)
     {
-        // Clear any prior target's *temp* breakpoint that we installed only
-        // for the run-to-line, but only if there isn't a real user-set
-        // breakpoint there. The cleanup happens lazily in ClearRunToLine.
         ClearRunToLine();
 
         RunToTargetSource.assign(Path.data(), Path.size());
         RunToTargetLine = LineZeroBased;
 
-        // Install a real breakpoint so the VM stops at that line. Mark it as
-        // a one-shot so ClearRunToLine() can remove it cleanly. If the user
-        // already had a breakpoint there, leave the underlying breakpoint
-        // alone; we just match on RunToTarget* in ProcessBreakpointHit.
+        // Skip install if the user already has a real breakpoint there.
         if (!HasBreakpoint(Path, LineZeroBased))
         {
             SetBreakpoint(Path, LineZeroBased, true);
@@ -745,10 +688,7 @@ namespace Lumina::Lua
             return;
         }
 
-        // If the temp target wasn't already a user breakpoint, take it down.
-        // We can't track "we put it there" reliably, so the heuristic is:
-        // a user-set breakpoint will still have an entry in Breakpoints OR
-        // BreakpointSettings; if neither, this was a pure run-to.
+        // Heuristic: no metadata means RunToLine added the bp; we own cleanup.
         const FString Key(RunToTargetSource.c_str(), RunToTargetSource.size());
         const FStringView SrcView(RunToTargetSource.c_str(), RunToTargetSource.size());
 
@@ -756,9 +696,6 @@ namespace Lumina::Lua
         const bool bHasSettings = (SettingsIt != BreakpointSettings.end()
             && SettingsIt->second.find(RunToTargetLine) != SettingsIt->second.end());
 
-        // Heuristic stays simple: if there is no metadata for this line, the
-        // breakpoint was added by RunToLine and we own the cleanup. If there
-        // IS metadata, we don't own it; leave it alone.
         if (!bHasSettings)
         {
             SetBreakpoint(SrcView, RunToTargetLine, false);
@@ -788,8 +725,7 @@ namespace Lumina::Lua
             return false;
         }
 
-        // Compile `return (Expr)`. The parens guard against ambiguity for
-        // expressions that start with `function` etc.
+        // Parens guard against ambiguity for exprs starting with `function`.
         eastl::string Wrapped;
         Wrapped.reserve(Expr.size() + 12);
         Wrapped.assign("return (");
@@ -820,7 +756,7 @@ namespace Lumina::Lua
             return false;
         }
 
-        // Build the env table: locals + upvalues by name, with __index = globals.
+        // env: locals + upvalues by name, with __index = globals.
         lua_newtable(L);
         const int EnvIdx = lua_gettop(L);
 
@@ -875,17 +811,13 @@ namespace Lumina::Lua
             if (Now > StackBefore) lua_pop(L, Now - StackBefore);
             return false;
         }
-        // Result on top of MainState. Caller is responsible for popping.
+        // Result on top of MainState; caller pops.
         return true;
     }
 
     namespace
     {
-        // True for tables and for engine-bound userdata. Engine types stamp
-        // a `__lumina_members` table onto the metatable at registration; that
-        // is what EnumerateChildrenInPausedFrame walks to drive expansion, so
-        // we mirror the same probe here. Falls back to the table-__index case
-        // for userdata bound outside TClass<T>.
+        // True for tables and engine-bound userdata (probes __lumina_members, falls back to __index).
         bool IsExpandableAtTop(lua_State* L)
         {
             if (lua_istable(L, -1)) return true;
@@ -932,7 +864,7 @@ namespace Lumina::Lua
         lua_State* L = MainState;
         OutTypeName.assign(lua_typename(L, lua_type(L, -1)));
         bOutExpandable = IsExpandableAtTop(L);
-        OutValue = StringifyTopValue(L);    // pops result
+        OutValue = StringifyTopValue(L);
         return true;
     }
 
@@ -952,9 +884,7 @@ namespace Lumina::Lua
 
         auto AppendKv = [&](int KeyIdx, int ValIdx)
         {
-            // Only string / number keys are reachable via standard Lua
-            // expression syntax; skip everything else - table keys with
-            // bool/table/function keys can't be addressed by path.
+            // Only string/number keys are addressable by Lua expression path.
             FChildEntry E;
             const int KeyType = lua_type(L, KeyIdx);
             char Buf[96];
@@ -963,8 +893,7 @@ namespace Lumina::Lua
                 size_t KLen = 0;
                 const char* Key = lua_tolstring(L, KeyIdx, &KLen);
 
-                // Decide whether the key is a valid Lua identifier (for
-                // `.foo` access) or needs bracket-string access.
+                // Identifier => `.foo`, otherwise `["..."]`.
                 bool bIsIdent = (KLen > 0)
                     && !(Key[0] >= '0' && Key[0] <= '9');
                 for (size_t I = 0; I < KLen && bIsIdent; ++I)
@@ -1008,11 +937,10 @@ namespace Lumina::Lua
                 return false;
             }
 
-            // Move value to top so StringifyTopValue / IsExpandableAtTop work.
             lua_pushvalue(L, ValIdx);
             E.TypeName.assign(lua_typename(L, lua_type(L, -1)));
             E.bIsExpandable = IsExpandableAtTop(L);
-            E.Value = StringifyTopValue(L); // pops the value copy
+            E.Value = StringifyTopValue(L);
             Out.emplace_back(eastl::move(E));
             return true;
         };
@@ -1023,28 +951,22 @@ namespace Lumina::Lua
             int Count = 0;
             while (Count < MaxChildren && lua_next(L, ResultIdx) != 0)
             {
-                // value at -1, key at -2.
                 if (AppendKv(-2, -1))
                 {
                     ++Count;
                 }
-                lua_pop(L, 1); // pop value, leave key for next iteration
+                lua_pop(L, 1);
             }
         }
         else if (lua_type(L, ResultIdx) == LUA_TUSERDATA && lua_getmetatable(L, ResultIdx))
         {
-            // Engine userdata: read field names from `__lumina_members`,
-            // a Lua table mapping name to "property" or "method". For each
-            // property, invoke its getter through the __index metamethod
-            // so we display the live value.
+            // Engine userdata: walk __lumina_members (name -> "property"/"method").
             lua_getfield(L, -1, "__lumina_members");
             if (lua_istable(L, -1))
             {
                 const int MembersIdx = lua_gettop(L);
 
-                // Collect names first into a local list. Walking the table
-                // and calling lua_gettable on the userdata in the same loop
-                // tangles the iteration state when the getter pushes/pops.
+                // Collect names first; getter push/pop would tangle in-loop iteration.
                 eastl::vector<eastl::string> Names;
                 eastl::vector<bool>          IsProp;
                 lua_pushnil(L);
@@ -1071,9 +993,7 @@ namespace Lumina::Lua
 
                     if (IsProp[I])
                     {
-                        // lua_getfield invokes __index, which routes through
-                        // the engine's GenericIndex closure to call the live
-                        // getter and push the current value.
+                        // __index routes through GenericIndex to invoke the live getter.
                         lua_getfield(L, ResultIdx, Names[I].c_str());
                         E.TypeName.assign(lua_typename(L, lua_type(L, -1)));
                         E.bIsExpandable = IsExpandableAtTop(L);
@@ -1090,10 +1010,9 @@ namespace Lumina::Lua
                     ++Count;
                 }
             }
-            lua_pop(L, 2); // __lumina_members, metatable
+            lua_pop(L, 2);
         }
 
-        // Pop the evaluated result.
         lua_pop(L, 1);
         return true;
     }
@@ -1116,7 +1035,6 @@ namespace Lumina::Lua
 
         if (PausedThread == nullptr)
         {
-            // Defensive: pause state without a thread is malformed.
             Status = EDebuggerStatus::Running;
             return;
         }
@@ -1125,12 +1043,7 @@ namespace Lumina::Lua
 
         if (Req == EResumeRequest::Stop)
         {
-            // Wipe the thread's call frames + stack so it's done. Calling
-            // lua_error here would crash, we're outside any C frame that
-            // has a setjmp anchor for the longjmp to land on. lua_resetthread
-            // is the clean equivalent: thread becomes dead, the original
-            // Update invocation already returned with Yielded, and once we
-            // drop our anchor the thread is GC-eligible.
+            // lua_error would crash here (no setjmp anchor); lua_resetthread is the clean equivalent.
             lua_resetthread(Thread);
 
             const int OldRef = PausedThreadRef;
@@ -1155,18 +1068,12 @@ namespace Lumina::Lua
             return;
         }
 
-        // Arm the post-resume skip for the line we're paused on. Without it
-        // LOP_BREAK at this PC would re-fire debugbreak the moment we resume
-        // (the VM bailed out before VM_CONTINUE(op) on the way in, so the PC
-        // is still parked on LOP_BREAK).
+        // Arm post-resume skip; PC is still parked on LOP_BREAK and would re-fire on resume.
         SkipNextBreakThread = Thread;
         SkipNextBreakSource.assign(PausedSource.c_str(), PausedSource.size());
         SkipNextBreakLine = PausedLine;
 
-        // Configure single-step for step requests. Out/Over need the depth +
-        // line we paused at; capture both up front so HandleDebugStep can
-        // tell when we've moved off the originating line vs just emitting
-        // another instruction on it.
+        // Out/Over need the pause depth + line for HandleDebugStep to detect line changes.
         StepBaseDepth = lua_stackdepth(Thread);
         StepLastSource.assign(PausedSource.c_str(), PausedSource.size());
         StepLastLine = PausedLine;
@@ -1192,30 +1099,22 @@ namespace Lumina::Lua
             break;
         }
 
-        // Clear the pause snapshot before the resume; captured state is now
-        // about to be invalid, and a fresh break will refill it.
         const int OldRef = PausedThreadRef;
         PausedThreadRef = -1;
         PausedThread = nullptr;
         Status = EDebuggerStatus::Running;
-        // Keep CallStack until the next break replaces it; UI looks empty
-        // mid-resume otherwise. We'll clear it on next EnterPause.
+        // Keep CallStack until next break to avoid empty UI mid-resume.
 
         const int ResumeStatus = lua_resume(Thread, MainState, 0);
 
-        // After resume:
-        //  - LUA_OK / coroutine end: thread is finished, drop our anchor.
-        //  - LUA_BREAK / LUA_YIELD: HandleDebugBreak (or another yield site)
-        //    has taken its own anchor; drop ours.
-        //  - Error: log; drop our anchor.
+        // OK/break/yield: drop our anchor; another holder (or completion) covers the rest.
         if (ResumeStatus != LUA_OK && ResumeStatus != LUA_YIELD && ResumeStatus != LUA_BREAK)
         {
             const char* Err = lua_tostring(Thread, -1);
             LOG_ERROR("[LuaDebugger] resume error: {}", Err ? Err : "<unknown>");
         }
 
-        // If the resume completed without re-pausing, the skip arming we set
-        // is stale; a future, unrelated break would otherwise eat itself.
+        // Resume completed without re-pausing; clear stale skip arming.
         if (Status != EDebuggerStatus::Paused)
         {
             SkipNextBreakThread = nullptr;

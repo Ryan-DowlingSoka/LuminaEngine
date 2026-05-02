@@ -13,12 +13,6 @@ namespace Lumina
 
 namespace Lumina::RenderUtils
 {
-    /**
-     * 
-     * @param Buffer Buffer needing a resize
-     * @param DesiredSize New desired size.
-     * @return true if the buffer was resized.
-     */
     RUNTIME_API bool ResizeBufferIfNeeded(FRHIBufferRef& Buffer, uint32 DesiredSize, float GrowthFactor);
     
     RUNTIME_API FRHIImageRef CreateImageFromPixels(TSpan<uint8> PixelData, bool bFlipVertically = true, glm::uvec2 Size = {});

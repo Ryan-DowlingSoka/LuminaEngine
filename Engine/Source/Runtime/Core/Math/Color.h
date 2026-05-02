@@ -58,31 +58,26 @@ namespace Lumina
             A = std::clamp(A, 0.0f, 1.0f);
         }
     
-        // Add two colors (component-wise)
         FColor operator+(const FColor& other) const
         {
             return FColor(R + other.R, G + other.G, B + other.B, A + other.A);
         }
-    
-        // Subtract two colors (component-wise)
+
         FColor operator-(const FColor& other) const
         {
             return FColor(R - other.R, G - other.G, B - other.B, A - other.A);
         }
-    
-        // Multiply color by a scalar
+
         FColor operator*(float scalar) const
         {
             return FColor(R * scalar, G * scalar, B * scalar, A * scalar);
         }
-    
-        // Multiply color by another color (component-wise)
+
         FColor operator*(const FColor& other) const
         {
             return FColor(R * other.R, G * other.G, B * other.B, A * other.A);
         }
-    
-        // Linear interpolation between two colors
+
         static FColor Lerp(const FColor& start, const FColor& end, float t)
         {
             return FColor(
@@ -92,8 +87,7 @@ namespace Lumina
                 start.A + t * (end.A - start.A)
             );
         }
-    
-        // Convert to string representation for easy logging or display
+
         FString ToString() const
         {
             return "R: " + eastl::to_string(R) + " G: " + eastl::to_string(G) + 
@@ -113,25 +107,21 @@ namespace Lumina
             return !(*this == Color);
         }
     
-        // Utility function to create a color from a grayscale value
         static FColor FromGrayscale(float value, float alpha = 1.0f)
         {
             return FColor(value, value, value, alpha);
         }
 
-        // Generate a random color with optional alpha control
         static FColor MakeRandom(float alpha = 1.0f);
 
-        // Generate a random color with full random alpha
         static FColor MakeRandomWithAlpha();
 
-        // Generate a random bright/vibrant color (higher saturation)
+        /** Higher saturation. */
         static FColor MakeRandomVibrant(float alpha = 1.0f);
 
-        // Generate a random pastel color (lower saturation, higher lightness)
+        /** Lower saturation, higher lightness. */
         static FColor MakeRandomPastel(float alpha = 1.0f);
-    
-        // Static helper function to convert RGB to HSL (Hue, Saturation, Lightness)
+
         static void RGBtoHSL(const FColor& color, float& h, float& s, float& l)
         {
             float r = color.R;
@@ -155,10 +145,9 @@ namespace Lumina
     
             l = (max + min) / 2.0f;
             s = (max == min) ? 0.0f : (max - min) / (1.0f - std::abs(2.0f * l - 1.0f));
-            h /= 6.0f; // Normalize hue to [0, 1]
+            h /= 6.0f;
         }
-    
-        // Static helper function to convert HSL to RGB
+
         static FColor HSLtoRGB(float h, float s, float l, float alpha = 1.0f)
         {
             float c = (1.0f - std::abs(2.0f * l - 1.0f)) * s;

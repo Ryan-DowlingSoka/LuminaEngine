@@ -23,8 +23,7 @@ namespace Lumina
             return FString(Name.data(), Name.size());
         }
 
-        // Luau reserved words. Surfaced first in the suggestion list when they
-        // match the search prefix.
+        // Luau reserved words; surfaced first in suggestions when they match the prefix.
         const char* const kLuauKeywords[] = {
             "and", "break", "continue", "do", "else", "elseif", "end", "false",
             "for", "function", "if", "in", "local", "nil", "not", "or", "repeat",
@@ -52,8 +51,7 @@ namespace Lumina
                 return {};
             }
 
-            // Walk back accumulating segments separated by '.'.
-            // ':' only valid as the last (closest-to-cursor) separator.
+            // Walk back collecting '.'-separated segments; ':' only valid as the closest-to-cursor separator.
             TVector<FString> SegmentsRev;
             int Cursor = I - 1;
             while (Cursor > 0)
@@ -109,8 +107,7 @@ namespace Lumina
                 return &Lang;
             }
 
-            // Start from the bundled Lua language (gets number/identifier
-            // tokenizers, comments, [[...]] strings) and overlay Luau on top.
+            // Bundled Lua tokenizer/strings, with Luau overlaid on top.
             const TextEditor::Language* Base = TextEditor::Language::Lua();
             Lang = *Base;
             Lang.name = "Luau";
@@ -124,28 +121,23 @@ namespace Lumina
             };
             for (const char* K : LuauOnlyKeywords) Lang.keywords.insert(K);
 
-            // Built-in type names. colored as known identifiers so type
-            // annotations like `local x: number` light up.
+            // Built-in types colored as identifiers so `local x: number` lights up.
             static const char* const TypeNames[] = {
                 "any", "unknown", "never", "nil", "boolean", "number", "string",
                 "thread", "userdata", "table", "function", "vector", "buffer",
             };
             for (const char* T : TypeNames) Lang.identifiers.insert(T);
 
-            // Lua / Luau standard library globals + common engine bindings.
-            // Marking them as known identifiers gives them a distinct color
-            // even when the live VM hasn't been harvested yet.
+            // Lua/Luau stdlib + engine globals; colored even before live-VM harvest.
             static const char* const Stdlib[] = {
                 "_G", "_ENV", "_VERSION",
                 "assert", "collectgarbage", "error", "getmetatable", "ipairs",
                 "next", "pairs", "pcall", "xpcall", "rawequal", "rawget",
                 "rawlen", "rawset", "select", "setmetatable", "tonumber",
                 "tostring", "type", "print", "require", "unpack",
-                // standard libraries
                 "bit32", "buffer", "coroutine", "debug", "io", "math", "os",
                 "string", "table", "utf8",
-                // engine surfaces (added defensively. they may also be
-                // auto-discovered by the live-VM harvest)
+                // engine surfaces (defensively; may also be auto-discovered by VM harvest)
                 "Engine", "Events", "World", "Entity", "Time",
             };
             for (const char* S : Stdlib) Lang.identifiers.insert(S);
@@ -154,9 +146,7 @@ namespace Lumina
             return &Lang;
         }
 
-        // Tooltip wrapper that drops the popup-bg alpha for a light glassy
-        // look so the code under the cursor remains visible. PushStyleColor
-        // affects only the bg fill; text and separators keep full alpha.
+        // Tooltip with low-alpha bg so code under the cursor stays visible.
         void BeginTranslucentTooltip()
         {
             ImVec4 Bg = ImGui::GetStyleColorVec4(ImGuiCol_PopupBg);
@@ -170,11 +160,7 @@ namespace Lumina
             ImGui::PopStyleColor();
         }
 
-        // Detect whether the byte at `Col` in `Line` falls inside a string
-        // literal, and if so report its surrounding range and content kind.
-        // Walks the line left-to-right tracking quote state. fast, no regex.
-        // Returns false for triple-bracket [[...]] (multi-line) but those are
-        // rare in scripts; the editor's own colorizer handles them visually.
+        // Detect string literal at byte Col in Line. Triple-bracket [[...]] not handled.
         struct FStringHit
         {
             int  StartCol = -1;     // column of the opening quote
@@ -214,7 +200,7 @@ namespace Lumina
                     I = End;
                     continue;
                 }
-                // skip line comments. anything after `--` is comment
+                // skip line comments
                 if (C == '-' && I + 1 < N && Line[I + 1] == '-')
                 {
                     return false;
@@ -224,8 +210,7 @@ namespace Lumina
             return false;
         }
 
-        // Detects a number literal surrounding the column. Handles hex (0x..),
-        // binary (0b... Luau), decimals, and scientific notation.
+        // Detect number literal at column; handles hex/binary/decimal/scientific.
         bool FindNumberAt(const std::string& Line, int Col, int& OutStart, int& OutEnd)
         {
             auto IsDigitOrSep = [](char C) { return (C >= '0' && C <= '9') || C == '_'; };
@@ -234,7 +219,7 @@ namespace Lumina
             {
                 return false;
             }
-            // anchor: walk left to a digit or to '0x'/'0b' prefix
+            // walk left to a digit or 0x/0b prefix
             int Start = Col;
             while (Start > 0)
             {
@@ -247,7 +232,6 @@ namespace Lumina
                 }
                 else break;
             }
-            // require Start to actually be a digit (or 0x/0b prefix start)
             if (Start >= N)
             {
                 return false;
@@ -257,7 +241,6 @@ namespace Lumina
             {
                 return false;
             }
-            // now scan forward through digit-ish characters
             int End = Start;
             bool SawDigit = false;
             while (End < N)
@@ -269,8 +252,7 @@ namespace Lumina
                     || C == 'e' || C == 'E' || C == 'f' || C == 'F' || C == 'p' || C == 'P'
                     || C == '+' || C == '-')
                 {
-                    // accept only as part of valid suffixes. heuristic: only
-                    // continue if previous char was digit or this is '.' '+' '-'
+                    // accept only as valid suffixes; previous must be digit or this is '.','+','-'.
                     ++End;
                     continue;
                 }
@@ -363,16 +345,13 @@ namespace Lumina
         LoadFromDisk();
         RebuildLocalIndex();
 
-        // Re-hydrate breakpoints from the runtime debugger so they survive
-        // closing and reopening the editor. The debugger is the source of
-        // truth; the editor's THashSet just mirrors it for gutter rendering.
+        // Re-hydrate breakpoints from the debugger (source of truth) so they survive editor reopen.
         for (int Line : Lua::FLuaDebugger::Get().GetBreakpointLines(FStringView(VirtualPath.c_str(), VirtualPath.size())))
         {
             Breakpoints.insert(Line);
         }
         RefreshBreakpointMarkers();
 
-        // Toggle a breakpoint by right-clicking the line number gutter.
         CodeEditor.SetLineNumberContextMenuCallback([this](int Line)
         {
             const bool bHasBp = Breakpoints.count(Line) > 0;
@@ -385,7 +364,6 @@ namespace Lumina
             if (ImGui::MenuItem("Configure breakpoint..."))
             {
                 RequestedBreakpointSettingsLine = Line;
-                // Seed the popup buffers from any existing settings.
                 BpConditionBuffer[0] = '\0';
                 BpLogMessageBuffer[0] = '\0';
                 BpIgnoreCount = 0;
@@ -437,8 +415,7 @@ namespace Lumina
                 return;
             }
             bBufferDirty = true;
-            // Re-harvest local declarations so the next hover tooltip
-            // reflects what the user has typed since the last refresh.
+            // Re-harvest locals so the next hover reflects recent edits.
             RebuildLocalIndex();
             RebuildDocumentOutline();
         }, /*delay ms*/ 100);
@@ -459,9 +436,7 @@ namespace Lumina
         };
         CodeEditor.SetAutoCompleteConfig(&AutoCompleteCfg);
 
-        // Hover info: identifier under the mouse -> tooltip showing kind +
-        // type + value/signature, sourced from the same harvested symbol
-        // table the autocomplete uses.
+        // Hover tooltip uses the same harvested symbol table as autocomplete.
         CodeEditor.SetHoverCallback([this](const std::string& Word, const std::string& DottedPath)
         {
             OnHoverIdentifier(Word, DottedPath);
@@ -477,19 +452,15 @@ namespace Lumina
             const ImVec2 Avail = ImGui::GetContentRegionAvail();
             const float StatusBarHeight = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
 
-            // Reserve a slot under the editor for the inline debugger panel
-            // when paused at this file. Tuned to fit toolbar + a small split
-            // for call stack / locals without dwarfing the code view.
+            // Reserve space under the editor for the inline debugger panel when paused.
             const float DebuggerPanelHeight = bPausedHere ? std::min(Avail.y * 0.5f, 360.0f) : 0.0f;
             const float SpacingForPanel = bPausedHere ? ImGui::GetStyle().ItemSpacing.y : 0.0f;
 
-            // Side outline panel optionally pinned to the right of the editor.
             const float OutlineWidth = bShowOutline ? std::clamp(Avail.x * 0.25f, 220.0f, 360.0f) : 0.0f;
             const float OutlineSpacing = bShowOutline ? ImGui::GetStyle().ItemSpacing.x : 0.0f;
             const ImVec2 EditorSize(Avail.x - OutlineWidth - OutlineSpacing, std::max(32.0f, Avail.y - StatusBarHeight - DebuggerPanelHeight - SpacingForPanel));
 
-            // Ctrl+wheel over the editor adjusts font scale. Steal the wheel
-            // so TextEditor doesn't also use it for vertical scroll.
+            // Ctrl+wheel adjusts font scale; steal the wheel so TextEditor doesn't also scroll.
             const ImVec2 EditorMin = ImGui::GetCursorScreenPos();
             const ImVec2 EditorMax(EditorMin.x + EditorSize.x, EditorMin.y + EditorSize.y);
             ImGuiIO& Io = ImGui::GetIO();
@@ -499,9 +470,7 @@ namespace Lumina
                 Io.MouseWheel = 0.0f;
             }
 
-            // The proportional UI font has variable advance widths. TextEditor
-            // assumes a uniform glyph cell, so columns and selections drift.
-            // Push the bundled JetBrainsMono font for code rendering.
+            // Push JetBrainsMono; TextEditor assumes uniform glyph cells, so the proportional UI font drifts.
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Mono);
             ImGui::PushFontSize(ImGui::GetStyle().FontSizeBase * EditorFontScale);
             CodeEditor.Render("##lua_text", EditorSize);
@@ -618,7 +587,6 @@ namespace Lumina
         ImGuiX::Notifications::NotifySuccess("Saved '{0}'.", VirtualPath.c_str());
     }
 
-    // -------------------------------------------------------------- helpers ---
 
     void FLuaEditorTool::LoadFromDisk()
     {
@@ -742,7 +710,6 @@ namespace Lumina
         RefreshBreakpointMarkers();
     }
 
-    // ---------------------------------------------------------- autocomplete ---
 
     void FLuaEditorTool::RebuildSymbolIndex()
     {
@@ -1827,7 +1794,6 @@ namespace Lumina
         return false;
     }
 
-    // ------------------------------------------------------------- toolbar ---
 
     void FLuaEditorTool::DrawToolbar()
     {
@@ -3338,7 +3304,6 @@ namespace Lumina
         ImGui::PopStyleColor();
     }
 
-    // -------------------------------------------------------- file watcher ---
 
     void FLuaEditorTool::StartWatching()
     {

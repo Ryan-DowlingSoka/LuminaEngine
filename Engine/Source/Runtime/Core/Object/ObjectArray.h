@@ -23,7 +23,6 @@ namespace Lumina
         TAtomic<int32> StrongRefCount{0};
         TAtomic<int32> WeakRefCount{0};
         
-        // Non-copyable
         FCObjectEntry(FCObjectEntry&&) = delete;
         FCObjectEntry(const FCObjectEntry&) = delete;
         FCObjectEntry& operator=(FCObjectEntry&&) = delete;
@@ -102,18 +101,15 @@ namespace Lumina
         }
     };
 
-    /**
-     * Global control block for all CObjects, never reallocates.
-     */
+    /** Global CObject control block. Never reallocates. */
     class FChunkedFixedCObjectArray
     {
     public:
-        
+
         static constexpr int32 NumElementsPerChunk = 64 * 1024;
-    
+
     private:
-        
-        // Array of chunk pointers.
+
         FCObjectEntry** Objects = nullptr;
     
         int32 MaxElements = 0;
@@ -148,13 +144,11 @@ namespace Lumina
         FORCEINLINE int32 GetNumElements() const { return NumElements; }
         FORCEINLINE int32 GetNumChunks() const { return NumChunks; }
     
-        // Increment element count (called by FCObjectArray on allocation)
         FORCEINLINE void IncrementElementCount()
         {
             ++NumElements;
         }
-    
-        // Decrement element count (called by FCObjectArray on deallocation)
+
         FORCEINLINE void DecrementElementCount()
         {
             --NumElements;
@@ -177,35 +171,26 @@ namespace Lumina
         ~FCObjectArray() = default;
 
         LE_NO_COPYMOVE(FCObjectArray);
-    
-        // Initialize the object array with maximum capacity
+
         void AllocateObjectPool(int32 InMaxCObjects);
-    
+
         void Shutdown();
-    
-        // Allocate a slot for an object and return a handle
+
         FObjectHandle AllocateObject(CObjectBase* Object);
-    
-        // Deallocate an object slot
+
         void DeallocateObject(int32 Index);
-    
-        // Resolve a handle to an object pointer
-        
+
         RUNTIME_API CObjectBase* ResolveHandle(const FObjectHandle& Handle) const;
-        
+
         RUNTIME_API CObjectBase* GetObjectByIndex(int32 Index) const;
 
         RUNTIME_API FObjectHandle GetHandleByObject(const CObjectBase* Object) const;
-        
-    
-        // Get handle from object index and current generation
+
         RUNTIME_API FObjectHandle GetHandleByIndex(int32 Index) const;
 
-        // Add a strong reference to an object by pointer
         RUNTIME_API void AddStrongRef(CObjectBase* Object);
 
-        // Release a strong reference by pointer
-        // Returns true if object was deleted.
+        /** Returns true if object was deleted. */
         RUNTIME_API bool ReleaseStrongRef(CObjectBase* Object);
     
         RUNTIME_API void AddStrongRefByIndex(int32 Index);
@@ -241,7 +226,6 @@ namespace Lumina
         }
     };
     
-    // Global object array instance
     extern RUNTIME_API FCObjectArray GObjectArray;
     
 }

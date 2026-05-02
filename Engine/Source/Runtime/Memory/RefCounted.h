@@ -7,7 +7,6 @@
 
 namespace Lumina
 {
-	/** A virtual interface for ref counted objects to implement. */
 	class RUNTIME_API IRefCountedObject
 	{
 	public:
@@ -17,7 +16,7 @@ namespace Lumina
 		virtual uint32 GetRefCount() const = 0;
 	};
 
-	/** Atomic ref counting - intrusive Smart Pointer Implementation */
+	/** Atomic intrusive ref counting. */
 	class RUNTIME_API IRefCounted
 	{
 	public:
@@ -29,14 +28,12 @@ namespace Lumina
 
 		uint32 AddRef() const
 		{
-			/** Add 1 to the reference count */
 			return RefCount.fetch_add(1, std::memory_order_relaxed);
 		}
 
 		uint32 Release() const
 		{
 			int Value = RefCount.fetch_sub(1, std::memory_order_release);
-			/** Returns the previous value (if previous value is 1, our new value is 0). */
 			if(Value == 1)
 			{
 				std::atomic_thread_fence(std::memory_order_acquire);
@@ -64,9 +61,7 @@ namespace Lumina
 		{ t.AddRef() }	-> std::same_as<uint32>;
 	};
 	
-	/**
-	 * A smart pointer to an object which implements AddRef/Release.
-	 */
+	/** Smart pointer for objects with AddRef/Release. */
 	template<typename ReferencedType>
 	class TRefCountPtr
 	{
@@ -135,7 +130,7 @@ namespace Lumina
 		{
 			if (Reference != InReference)
 			{
-				// Call AddRef before Release, in case the new reference is the same as the old reference.
+				// AddRef before Release: handles the new == old case.
 				ReferencedType* OldReference = Reference;
 				Reference = InReference;
 				if (Reference)
@@ -199,7 +194,7 @@ namespace Lumina
 		template<typename MoveReferencedType>
 		TRefCountPtr& operator=(TRefCountPtr<MoveReferencedType>&& InPtr)
 		{
-			// InPtr is a different type (or we would have called the other operator), so we need not test &InPtr != this
+			// Different type, so &InPtr != this.
 			ReferencedType* OldReference = Reference;
 			Reference = InPtr.Reference;
 			InPtr.Reference = nullptr;
@@ -252,12 +247,12 @@ namespace Lumina
 			if (Reference)
 			{
 				Result = Reference->GetRefCount();
-				DEBUG_ASSERT(Result > 0); // you should never have a zero ref count if there is a live ref counted pointer (*this is live)
+				DEBUG_ASSERT(Result > 0);
 			}
 			return Result;
 		}
 
-		FORCEINLINE void Swap(TRefCountPtr& InPtr) // this does not change the reference count, and so is faster
+		FORCEINLINE void Swap(TRefCountPtr& InPtr)
 		{
 			ReferencedType* OldReference = Reference;
 			Reference = InPtr.Reference;

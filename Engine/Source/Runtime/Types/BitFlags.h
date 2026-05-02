@@ -3,11 +3,6 @@
 #include <type_traits>
 #include "Core/Assertions/Assert.h"
 
-//-------------------------------------------------------------------------
-//  Bit Flags
-//-------------------------------------------------------------------------
-// Generic flag flags type
-
 namespace Lumina
 {
     class FBitFlags
@@ -22,16 +17,12 @@ namespace Lumina
         inline FBitFlags() = default;
         inline explicit FBitFlags(uint32 flags) : Flags(flags) {}
 
-        //-------------------------------------------------------------------------
-
         FORCEINLINE uint32 Get() const { return Flags; }
         FORCEINLINE void Set(uint32 InFlags) { Flags = InFlags; }
         inline operator uint32() const { return Flags; }
 
         FORCEINLINE bool HasNoFlagsSet() const { return Flags == 0; }
         FORCEINLINE bool IsAnyFlagSet() const { return Flags != 0; }
-
-        //-------------------------------------------------------------------------
 
         FORCEINLINE bool IsFlagSet( uint8_t flag ) const
         {
@@ -76,8 +67,6 @@ namespace Lumina
             Flags = 0xFFFFFFFF;
         }
 
-        //-------------------------------------------------------------------------
-
         FORCEINLINE bool IsFlagCleared(uint8 flag) const
         {
             DEBUG_ASSERT(flag < MaxFlags);
@@ -108,8 +97,6 @@ namespace Lumina
             Flags = 0;
         }
 
-        //-------------------------------------------------------------------------
-
         FORCEINLINE void FlipFlag(uint8 flag)
         {
             DEBUG_ASSERT(flag >= 0 && flag < MaxFlags);
@@ -129,8 +116,6 @@ namespace Lumina
             Flags = ~Flags;
         }
 
-        //-------------------------------------------------------------------------
-
         FORCEINLINE FBitFlags& operator | ( uint8_t flag )
         {
             DEBUG_ASSERT(flag < MaxFlags);
@@ -148,11 +133,6 @@ namespace Lumina
         uint32 Flags = 0;
     };
 }
-
-//-------------------------------------------------------------------------
-//  Templatized Bit Flags
-//-------------------------------------------------------------------------
-// Helper to create flag flags variables from a specific enum type
 
 namespace Lumina
 {
@@ -187,16 +167,12 @@ namespace Lumina
 
         TBitFlags& operator=( TBitFlags const& rhs ) = default;
 
-        //-------------------------------------------------------------------------
-
         FORCEINLINE bool IsFlagSet( T flag ) const { return FBitFlags::IsFlagSet( (uint8_t) flag ); }
         FORCEINLINE bool IsFlagCleared( T flag ) const { return FBitFlags::IsFlagCleared( (uint8_t) flag ); }
         FORCEINLINE void SetFlag( T flag ) { FBitFlags::SetFlag( (uint8_t) flag ); }
         FORCEINLINE void SetFlag( T flag, bool value ) { FBitFlags::SetFlag( (uint8_t) flag, value ); }
         FORCEINLINE void FlipFlag( T flag ) { FBitFlags::FlipFlag( (uint8_t) flag ); }
         FORCEINLINE void ClearFlag( T flag ) { FBitFlags::ClearFlag( (uint8_t) flag ); }
-
-        //-------------------------------------------------------------------------
 
         template<typename... Args>
         FORCEINLINE void SetMultipleFlags(Args&&... args)
@@ -211,8 +187,6 @@ namespace Lumina
             ((mask |= 1u << (uint8) eastl::forward<Args>(args)), ...);
             return (Flags & mask) != 0;
         }
-
-        //-------------------------------------------------------------------------
 
         FORCEINLINE TBitFlags& operator| ( T flag )
         {

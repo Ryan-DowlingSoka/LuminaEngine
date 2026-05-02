@@ -7,21 +7,16 @@
 
 namespace Lumina
 {
-    /**
-     * Builds a .pak by buffering (virtualPath, bytes) entries in memory and
-     * writing the final file in one shot. Currently in-memory; if PAK sizes
-     * grow large enough to matter we can swap for a streaming-to-disk impl.
-     */
+    /** Buffers (path, bytes) entries in memory and writes the .pak in one shot. */
     class RUNTIME_API FPakWriter
     {
     public:
 
-        // The path is stored verbatim — pass full virtual paths like
-        // "/Game/Content/Foo.lasset". Returns false if Path was already added.
+        /** Path stored verbatim. Returns false on duplicate. */
         bool AddEntry(FStringView VirtualPath, TSpan<const uint8> Data);
         bool AddEntry(FStringView VirtualPath, FStringView Data);
 
-        // Writes the pak to NativeFilePath. Overwrites if it exists.
+        /** Overwrites NativeFilePath. */
         bool Finalize(FStringView NativeFilePath);
 
         size_t NumEntries() const { return Entries.size(); }

@@ -9,25 +9,7 @@
 
 namespace Lumina::Import::Mesh
 {
-    // ----------------------------------------------------------------------------
-    //  MikkTSpace tangent generation
-    //
-    //  Authored normal maps from Substance / Marmoset / UE / Unity assume the
-    //  MikkTSpace tangent basis. Generating tangents the same way here means
-    //  baked normal maps round-trip pixel-for-pixel; deviating from MikkTSpace
-    //  produces visible high-frequency error on diagonals and curves.
-    //
-    //  MikkTSpace operates per face-corner. We write into the shared vertex
-    //  array by index (last-write-wins for corners that resolve to the same
-    //  vertex). In practice every modern importer splits at UV / hard-normal
-    //  seams, so corners that share an index also share their MikkTSpace
-    //  inputs (position, normal, UV) and produce the same tangent -- the
-    //  collisions are degenerate, not lossy.
-    //
-    //  Runs inside GenerateMeshlets, after the optimize pass has deduped:
-    //  it overwrites the un-set tangents the importers left at zero, then
-    //  the meshlet pack reads V.Tangent into FMeshletVertex.
-    // ----------------------------------------------------------------------------
+    // MikkTSpace tangent gen: matches authored normal-map convention so baked normals round-trip.
     namespace
     {
         int Mikk_GetNumFaces(const SMikkTSpaceContext* Ctx)
@@ -112,7 +94,6 @@ namespace Lumina::Import::Mesh
             return;
         }
 
-        // Vertex dedup + index remap.
         {
             TVector<uint32> Remap(NumVertices);
             const size_t UniqueVerts = meshopt_generateVertexRemap(
@@ -137,8 +118,7 @@ namespace Lumina::Import::Mesh
             }
         }
 
-        // Per-surface vertex-cache + overdraw reorder. Surfaces own disjoint
-        // index slices, so the in-place reorder is thread-safe.
+        // Per-surface reorder; disjoint index slices make the in-place reorder thread-safe.
         const uint32 NumSurfaces = (uint32)MeshResource.GeometrySurfaces.size();
         if (NumSurfaces > 0)
         {
@@ -157,7 +137,6 @@ namespace Lumina::Import::Mesh
                     &MeshResource.Indices[Section.StartIndex],
                     Section.IndexCount, NumVertices);
 
-                // 5% ACMR slack for overdraw wins.
                 constexpr float Threshold = 1.05f;
                 meshopt_optimizeOverdraw(
                     &MeshResource.Indices[Section.StartIndex],
@@ -168,7 +147,7 @@ namespace Lumina::Import::Mesh
             });
         }
 
-        // Vertex-fetch reorder must be last (depends on final index order).
+        // Vertex-fetch reorder must be last; depends on final index order.
         meshopt_optimizeVertexFetch(
             MeshResource.GetVertexData(),
             MeshResource.Indices.data(), NumIndices,
@@ -180,28 +159,13 @@ namespace Lumina::Import::Mesh
     {
         struct FLODSettings
         {
-            // Target index count as a fraction of LOD 0's index count.
-            float Ratio;
-            // distance/radius ratio at which this LOD becomes active. Index
-            // 0 is unused (LOD 0 is the default). Ramp must be monotonic.
-            float Threshold;
-            // Target error fed to the simplifier (model-AABB-relative).
-            // Sloppy LODs use much higher error to actually hit the target.
-            float TargetError;
-            // True = use meshopt_simplifySloppy (clustering, topology-
-            // breaking). False = use meshopt_simplify (edge-collapse,
-            // topology-preserving).
-            bool  bSloppy;
+            float Ratio;        // target index count fraction of LOD 0
+            float Threshold;    // distance/radius ratio at which this LOD activates
+            float TargetError;  // simplifier target error (model-AABB-relative)
+            bool  bSloppy;      // true = clustering simplify; false = edge-collapse
         };
 
-        // The LOD ladder. First four levels are topology-preserving and
-        // hold up under typical viewing distances; the last two use sloppy
-        // simplification to reach near-billboard triangle counts at
-        // distances where silhouette accuracy is invisible anyway.
-        //
-        // 50% / 25% / 12.5% is the textbook regular-simplify ramp.
-        // 3% / 0.5% are sloppy targets -- regular simplify would bail out
-        // on the 95% progress floor long before hitting these.
+        // 50/25/12.5% topology-preserving ramp; 3%/0.5% sloppy for distant near-billboards.
         constexpr FLODSettings kLODs[MAX_MESH_LODS] =
         {
             { 1.0f,     0.0f,  0.05f, false },  // LOD 0 -- full detail
@@ -212,28 +176,21 @@ namespace Lumina::Import::Mesh
             { 0.005f, 128.0f,  1.00f, true  },  // LOD 5 (sloppy, near-quad)
         };
 
-        // Sloppy simplification can degenerate to a few triangles or even
-        // zero. Below this index floor (= ~5 tris) we treat the LOD as
-        // unusable and stop the per-surface ladder; the renderer will fall
-        // back to the next-coarsest available LOD on those surfaces.
+        // ~5 triangles minimum; below this we drop the LOD and fall back to coarser.
         constexpr size_t kLODMinIndices = 15u;
 
         struct FSurfaceMeshletResult
         {
-            TVector<uint32>          Vertices;       // local meshlet vertex indices
-            TVector<uint8>           Triangles;      // local micro-indices
-            TVector<FMeshlet>        OutMeshlets;    // local offsets
+            TVector<uint32>          Vertices;
+            TVector<uint8>           Triangles;
+            TVector<FMeshlet>        OutMeshlets;
             TVector<FMeshletBounds>  Bounds;
-            TVector<glm::vec3>       MeshletLo;      // per-meshlet world-space min P
+            TVector<glm::vec3>       MeshletLo;
             glm::vec3                MaxExtent = glm::vec3(0.0f);
             bool                     bHasData  = false;
         };
 
-        // Build meshlets for one (LOD, Surface) cell from a (possibly
-        // simplified) index range. Writes into Result; sets bHasData=true on
-        // success. Position quantization is *not* done here -- the global
-        // grid is sized after every LOD's meshlets exist, then a serial pack
-        // pass turns Result into appended FMeshletData entries.
+        // Build meshlets for one (LOD, Surface) cell; quantization deferred to the serial pack pass.
         template<typename TReadPos>
         void BuildLODMeshletsForRange(
             const uint32* SrcIndices, size_t SrcIndexCount,
@@ -273,7 +230,7 @@ namespace Lumina::Import::Mesh
 
             LocalMeshlets.resize(MeshletCount);
 
-            // Trim flat arrays; meshopt pads triangles to a multiple of 4.
+            // meshopt pads triangles to a multiple of 4.
             const meshopt_Meshlet& Last = LocalMeshlets.back();
             Result.Vertices.resize(Last.vertex_offset + Last.vertex_count);
             Result.Triangles.resize(Last.triangle_offset + ((Last.triangle_count * 3 + 3) & ~3u));
@@ -333,13 +290,7 @@ namespace Lumina::Import::Mesh
     {
         MeshResource.MeshletData.Clear();
 
-        // Tangent space generation happens here -- not in the importer --
-        // so the operation runs once per finalize regardless of which
-        // importer or call path produced the indexed mesh. The dedup in
-        // OptimizeNewlyImportedMesh has already collapsed identical
-        // (pos, normal, uv, color) corners (Tangent is zero on every
-        // vertex up to this point so it doesn't influence dedup); MikkTSpace
-        // then assigns tangents on the deduped vertex array.
+        // Tangents generated post-dedup so MikkTSpace runs once on the deduped vertex array.
         ComputeMikkTSpaceTangents(MeshResource);
 
         const size_t NumVertices = MeshResource.GetNumVertices();
@@ -361,12 +312,9 @@ namespace Lumina::Import::Mesh
             return;
         }
 
-        // FVertex / FSkinnedVertex both place Position at offset 0
-        // (static_assert in Vertex.h), so the vertex pointer doubles as
-        // meshopt's position pointer.
+        // FVertex/FSkinnedVertex have Position at offset 0; vertex pointer = meshopt position pointer.
         const float* VertexPositions = static_cast<const float*>(MeshResource.GetVertexData());
 
-        // Typed position fetch by global vertex index.
         auto ReadPosition = [&](uint32 GlobalIdx) -> glm::vec3
         {
             return eastl::visit([&](const auto& Vec) -> glm::vec3
@@ -377,14 +325,8 @@ namespace Lumina::Import::Mesh
 
         const uint32 NumSurfaces = (uint32)MeshResource.GeometrySurfaces.size();
 
-        // Phase 1: per-surface parallel build of every LOD. Each cell
-        // [LOD * NumSurfaces + SurfaceIdx] is owned exclusively by one
-        // worker, so the parallel writes are race-free without a barrier.
+        // Phase 1: per-(LOD,Surface) parallel build; each cell owned by one worker.
         TVector<FSurfaceMeshletResult> Results(MAX_MESH_LODS * NumSurfaces);
-
-        // Per-surface count of LODs that produced usable meshlets. LOD 0
-        // always succeeds when the surface has indices; later LODs may
-        // bail out if simplification can't make further progress.
         TVector<uint32> PerSurfaceNumLODs(NumSurfaces, 0u);
 
         Task::ParallelFor(NumSurfaces, [&](uint32 SurfaceIdx)
@@ -398,7 +340,6 @@ namespace Lumina::Import::Mesh
 
             const uint32* SurfaceIndices = &MeshResource.Indices[Section.StartIndex];
 
-            // LOD 0: build directly from the optimized source slice.
             FSurfaceMeshletResult& LOD0 = Results[0 * NumSurfaces + SurfaceIdx];
             BuildLODMeshletsForRange(
                 SurfaceIndices, Section.IndexCount,
@@ -407,7 +348,6 @@ namespace Lumina::Import::Mesh
 
             uint32 LODsBuilt = LOD0.bHasData ? 1u : 0u;
 
-            // Scratch buffer reused across LODs of this surface.
             TVector<uint32> Simplified(Section.IndexCount);
             size_t LastIndexCount = Section.IndexCount;
 
@@ -415,9 +355,7 @@ namespace Lumina::Import::Mesh
             {
                 const FLODSettings& Cfg = kLODs[lod];
 
-                // Target index count, snapped to a multiple of 3 (whole
-                // triangles). Floor at kLODMinIndices so sloppy LODs don't
-                // collapse to zero on tiny surfaces.
+                // Snap to whole triangles; floor at kLODMinIndices so sloppy LODs don't degenerate.
                 size_t TargetIndices = (size_t)((float)Section.IndexCount * Cfg.Ratio);
                 TargetIndices = (TargetIndices / 3u) * 3u;
                 if (TargetIndices < kLODMinIndices)
@@ -431,7 +369,7 @@ namespace Lumina::Import::Mesh
                         Simplified.data(),
                         SurfaceIndices, Section.IndexCount,
                         VertexPositions, NumVertices, VertexSize,
-                        nullptr, // vertex_lock
+                        nullptr,
                         TargetIndices, Cfg.TargetError,
                         &ResultError)
                     : meshopt_simplify(
@@ -447,21 +385,14 @@ namespace Lumina::Import::Mesh
                     break;
                 }
 
-                // Topology-preserving simplify can hit a hard floor where
-                // the next ratio also won't help; the 5% progress check
-                // catches that case so we stop emitting near-duplicates of
-                // the previous LOD. Sloppy can't get stuck the same way --
-                // it always reaches its target -- so this gate is regular-
-                // only.
+                // 5% progress floor for topology-preserving simplify; sloppy always hits target.
                 if (!Cfg.bSloppy && (float)NewCount > (float)LastIndexCount * 0.95f)
                 {
                     break;
                 }
                 LastIndexCount = NewCount;
 
-                // Restore vertex-cache locality on the simplified output;
-                // both simplifiers reorder triangles by collapse / cluster
-                // priority, leaving fetch patterns ugly.
+                // Restore vertex-cache locality after simplifiers reorder by collapse/cluster priority.
                 meshopt_optimizeVertexCache(
                     Simplified.data(),
                     Simplified.data(),
@@ -483,9 +414,7 @@ namespace Lumina::Import::Mesh
             PerSurfaceNumLODs[SurfaceIdx] = LODsBuilt;
         });
 
-        // Mesh AABB + per-axis max meshlet extent. Reduce extents across
-        // *every* (LOD, surface) cell so the global quantization grid is
-        // sized for the coarsest LOD's largest meshlet.
+        // Reduce extents across every cell so the global grid sizes for the largest meshlet at any LOD.
         glm::vec3 MeshLo( FLT_MAX);
         glm::vec3 MeshHi(-FLT_MAX);
         eastl::visit([&](const auto& Vec)
@@ -506,8 +435,7 @@ namespace Lumina::Import::Mesh
             }
         }
 
-        // GridStep / 1022 (not 1023): round() can introduce a +1 fudge in
-        // the integer diff, so 1022 keeps q in [0, 1023].
+        // 1022 (not 1023): round() can introduce a +1, so 1022 keeps q in [0, 1023].
         glm::vec3 GridStep(0.0f);
         glm::vec3 InvGridStep(0.0f);
         if (MaxMeshletExtent.x > 0.0f) { GridStep.x = MaxMeshletExtent.x / 1022.0f; InvGridStep.x = 1.0f / GridStep.x; }
@@ -522,7 +450,6 @@ namespace Lumina::Import::Mesh
             return glm::ivec3(glm::round((P - MeshLo) * InvGridStep));
         };
 
-        // Reserve totals across every LOD.
         size_t TotalMeshlets  = 0;
         size_t TotalVertices  = 0;
         size_t TotalTriangles = 0;
@@ -552,9 +479,7 @@ namespace Lumina::Import::Mesh
             MeshResource.MeshletData.MeshletVertices.reserve(TotalVertices);
         }
 
-        // Initialize per-surface LOD descriptors. NumLODs grows monotonically
-        // in the pack loop below; unused slots keep their FLT_MAX threshold
-        // so the renderer's "first-miss-wins" pick can never select them.
+        // Unused LOD slots keep FLT_MAX threshold so first-miss-wins selection can't pick them.
         for (FGeometrySurface& Section : MeshResource.GeometrySurfaces)
         {
             Section.NumLODs = 0;
@@ -566,9 +491,7 @@ namespace Lumina::Import::Mesh
             }
         }
 
-        // Phase 3: serial pack. Iterate LOD-major so LOD 0 across all
-        // surfaces lands at the front of the meshlet buffer -- compact, and
-        // makes hot-path (LOD 0) accesses contiguous in memory.
+        // Phase 3: serial pack, LOD-major so LOD 0 is contiguous at the front of the buffer.
         for (uint32 lod = 0; lod < MAX_MESH_LODS; ++lod)
         {
             for (uint32 SurfaceIdx = 0; SurfaceIdx < NumSurfaces; ++SurfaceIdx)
@@ -576,7 +499,6 @@ namespace Lumina::Import::Mesh
                 FGeometrySurface&      Section = MeshResource.GeometrySurfaces[SurfaceIdx];
                 FSurfaceMeshletResult& Result  = Results[lod * NumSurfaces + SurfaceIdx];
 
-                // bHasData is set only for the dense run [0, PerSurfaceNumLODs[s]).
                 if (!Result.bHasData)
                 {
                     continue;
@@ -651,7 +573,6 @@ namespace Lumina::Import::Mesh
             }
         }
 
-        // Avoid a zero-byte SSBO upload.
         if (MeshResource.MeshletData.MeshletTriangles.empty())
         {
             MeshResource.MeshletData.MeshletTriangles.push_back(0u);
@@ -666,12 +587,7 @@ namespace Lumina::Import::Mesh
 
     namespace
     {
-        // Coalesce surfaces that share a MaterialIndex into one surface each.
-        // Importers (especially glTF) emit one FGeometrySurface per source
-        // primitive, which can blow up to thousands of surfaces sharing a
-        // handful of materials and quadratically inflate scene-prep CPU.
-        // We rebuild the index buffer so each material's indices are
-        // contiguous, then collapse the surface list.
+        // Coalesce surfaces by MaterialIndex; rebuilds the index buffer to make per-material slices contiguous.
         void MergeSurfacesByMaterial(FMeshResource& MeshResource)
         {
             const TVector<FGeometrySurface>& OldSurfaces = MeshResource.GeometrySurfaces;
@@ -680,8 +596,7 @@ namespace Lumina::Import::Mesh
                 return;
             }
 
-            // First-seen MaterialIndex order. Stable so material slot indices
-            // line up with the order downstream code expects.
+            // First-seen MaterialIndex order; stable for downstream slot matching.
             THashMap<int16, uint32> MaterialToNewIdx;
             TVector<int16>          MaterialOrder;
             MaterialOrder.reserve(OldSurfaces.size());
@@ -697,12 +612,11 @@ namespace Lumina::Import::Mesh
 
             if (MaterialOrder.size() == OldSurfaces.size())
             {
-                return; // Already 1:1.
+                return;
             }
 
             const uint32 NumMerged = (uint32)MaterialOrder.size();
 
-            // Per-merged-surface index totals + start offsets.
             TVector<uint32> CountPerMerged(NumMerged, 0u);
             for (const FGeometrySurface& S : OldSurfaces)
             {
@@ -717,7 +631,6 @@ namespace Lumina::Import::Mesh
                 Running += CountPerMerged[i];
             }
 
-            // Scatter old slices into their merged contiguous range.
             TVector<uint32> NewIndices(MeshResource.Indices.size());
             TVector<uint32> WriteCursor = StartPerMerged;
             for (const FGeometrySurface& S : OldSurfaces)
@@ -733,8 +646,7 @@ namespace Lumina::Import::Mesh
                 WriteCursor[NewIdx] += S.IndexCount;
             }
 
-            // Build the new surface list. Inherit the first source surface's
-            // ID so re-imports keep stable surface identities.
+            // Inherit first source surface's ID so re-imports keep stable surface identity.
             TVector<FGeometrySurface> NewSurfaces;
             NewSurfaces.reserve(NumMerged);
             for (uint32 i = 0; i < NumMerged; ++i)
@@ -758,9 +670,7 @@ namespace Lumina::Import::Mesh
             MeshResource.GeometrySurfaces = Move(NewSurfaces);
         }
 
-        // Concatenate Src into Dst with index/material rebase. Src.ImportTransform
-        // is baked into positions/normals so merged geometry keeps its authored
-        // world placement.
+        // Concatenate Src into Dst with index/material rebase; bakes Src.ImportTransform into positions/normals.
         void MergeResourceInto(FMeshResource& Src, FMeshResource& Dst, THashMap<int16, int16>& MaterialRemap)
         {
             const uint32 BaseVert = (uint32)Dst.GetNumVertices();

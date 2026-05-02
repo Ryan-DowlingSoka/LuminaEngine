@@ -128,7 +128,7 @@ namespace Lumina
         const SCharacterPhysicsComponent& Character = Registry.get<SCharacterPhysicsComponent>(Entity);
         const STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
 
-        // Match Jolt: Start/End are the cylinder-axis endpoints, Radius scales by MaxScale.
+        // Match Jolt: Start/End are cylinder-axis endpoints; Radius scales by MaxScale.
         const glm::vec3 Location = Transform.GetWorldLocation();
         const glm::vec3 Axis = Transform.GetWorldRotation() * glm::vec3(0.0f, Character.HalfHeight, 0.0f);
         const glm::vec3 Start = Location - Axis;

@@ -10,10 +10,6 @@ PRAGMA_ENABLE_ALL_WARNINGS
 
 namespace Lumina
 {
-    /**
-     * Fully encompasses a view for a camera. 
-     */
-    
     class RUNTIME_API FViewVolume
     {
     public:

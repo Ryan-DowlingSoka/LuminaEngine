@@ -123,17 +123,14 @@ namespace Lumina::Paths
 
     void ReplaceFilename(FString& Path, const FString& NewFilename)
     {
-        // Find the last occurrence of a path separator
         size_t LastSlash = Path.find_last_of("/\\");
-    
+
         if (LastSlash != FString::npos)
         {
-            // Extract directory and append the new filename
             Path = Path.substr(0, LastSlash + 1) + NewFilename;
             return;
         }
 
-        // If no path separator is found, assume it's just a filename and replace it entirely
         Path = NewFilename;
     }
 

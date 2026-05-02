@@ -32,7 +32,6 @@ namespace Lumina
         return 1;
     }
 
-    // DLL Template specialization exports.
     template class RUNTIME_API TRefCountPtr<IRHIResource>;
     template class RUNTIME_API TRefCountPtr<IEventQuery>;
     template class RUNTIME_API TRefCountPtr<ITimerQuery>;

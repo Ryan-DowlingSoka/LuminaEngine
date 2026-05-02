@@ -20,7 +20,7 @@ namespace Lumina
     RUNTIME_API FCObjectArray GObjectArray;
 
 
-    /** Objects that will not be destroyed */
+    /** Rooted objects: never auto-destroyed. */
     static THashSet<TObjectPtr<CObjectBase>> GRootedObjects;
     static FMutex RootMutex;
 
@@ -43,8 +43,6 @@ namespace Lumina
     static FPendingRegistrant* GLastPendingRegistrant = nullptr;
 
 
-    //-----------------------------------------------------------------------------------------------
-    
     CObjectBase::CObjectBase()
         : ObjectFlags()
         , InternalIndex(INDEX_NONE)
@@ -193,9 +191,6 @@ namespace Lumina
         FObjectHashTables::Get().AddObject(this);
     }
 
-    //-----------------------------------------------------------------------------------------------
-    
-
     static void DequeuePendingAutoRegistrations(TVector<FPendingRegistrant>& OutPending)
     {
         FPendingRegistrant* NextPendingRegistrant = GFirstPendingRegistrant;
@@ -221,7 +216,6 @@ namespace Lumina
 
             CObjectForceRegistration(PendingRegistrant.Object);
 
-            // Register any new results.
             DequeuePendingAutoRegistrations(PendingRegistrants);
         }
     }
@@ -233,7 +227,6 @@ namespace Lumina
         
         if (Index != INDEX_NONE)
         {
-            // Remove here so it doesn't happen twice.
             Pending.erase(Pending.begin() + Index);
             Object->FinishRegister(CClass::StaticClass(), TEXT(""));
         }
@@ -290,7 +283,7 @@ namespace Lumina
                     return Memo;
                 };
                 
-                // Sort by class depth so that base classes come before derived ones
+                // Base classes before derived.
                 eastl::sort(NewClasses.begin(), NewClasses.end(), [&](const CClass* A, const CClass* B)
                 {
                     return GetClassDepth(A) < GetClassDepth(B);

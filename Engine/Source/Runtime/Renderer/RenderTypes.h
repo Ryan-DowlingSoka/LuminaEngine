@@ -16,40 +16,23 @@ namespace Lumina
 
     enum class ERHIAccess : uint32
     {
-        None = 0,                            // No access
-        
-        // General Access Types
-        Read = 1 << 0,                       // General read access
-        Write = 1 << 1,                      // General write access
-        
-        // Transfer Access Types
-        TransferRead = 1 << 2,               // Read access in a transfer operation (e.g., copying)
-        TransferWrite = 1 << 3,              // Write access in a transfer operation (e.g., copying)
-        
-        // Shader Access Types
-        ShaderRead = 1 << 4,                 // Read access in a shader (e.g., from a texture or buffer)
-        ShaderWrite = 1 << 5,                // Write access in a shader (e.g., to a texture or buffer)
-        
-        // Color Attachment Access Types
-        ColorAttachmentWrite = 1 << 6,       // Write access to a color attachment (e.g., during rendering)
-        
-        // Depth/Stencil Attachment Access Types
-        DepthStencilAttachmentWrite = 1 << 7, // Write access to a depth/stencil attachment (e.g., during rendering)
-        
-        // Present Access Types
-        PresentRead = 1 << 8,                // Read access for presenting an image (e.g., to the screen)
-        
-        // Miscellaneous Access Types
-        HostRead = 1 << 9,                   // Read access for CPU (host-side access to resources)
-        HostWrite = 1 << 10,                  // Write access for CPU (host-side access to resources)
-        
-        // Compute Access Types
-        ComputeRead = 1 << 11,               // Read access in compute shaders
-        ComputeWrite = 1 << 12,              // Write access in compute shaders
+        None = 0,
+        Read = 1 << 0,
+        Write = 1 << 1,
+        TransferRead = 1 << 2,
+        TransferWrite = 1 << 3,
+        ShaderRead = 1 << 4,
+        ShaderWrite = 1 << 5,
+        ColorAttachmentWrite = 1 << 6,
+        DepthStencilAttachmentWrite = 1 << 7,
+        PresentRead = 1 << 8,
+        HostRead = 1 << 9,
+        HostWrite = 1 << 10,
+        ComputeRead = 1 << 11,
+        ComputeWrite = 1 << 12,
 
         General = HostRead,
-        
-        // Combined Access Flags
+
         All = Read | Write | TransferRead | TransferWrite | ShaderRead | ShaderWrite | ColorAttachmentWrite |
           DepthStencilAttachmentWrite | PresentRead | HostRead | HostWrite | ComputeRead | ComputeWrite
     };
@@ -140,16 +123,16 @@ namespace Lumina
     enum class ERenderDeviceBufferMemoryUsage : uint8
     {
         None              = 0,
-        GPUOnly           = 1 << 0,  // (Fast GPU memory, not CPU accessible)
-        CPUToGPU          = 1 << 1,  // (Staging, mapped)
-        GPUToCPU          = 1 << 2,  // (Readable from GPU)
-        Transient         = 1 << 3,  // (For transient resources)
+        GPUOnly           = 1 << 0,
+        CPUToGPU          = 1 << 1,
+        GPUToCPU          = 1 << 2,
+        Transient         = 1 << 3,
     };
 
     enum class ERenderLoadOp : uint8
     {
-        Clear,      // Clear attachment to a specified color/depth
-        Load,       // Load existing contents
+        Clear,
+        Load,
     };
 
     enum class ERenderStoreOp : uint8
@@ -215,7 +198,6 @@ namespace Lumina
     };
     
 
-    /** Describes the dimension of a texture. */
     enum class EImageDimension : uint8
     {
         Unknown,
@@ -228,44 +210,18 @@ namespace Lumina
 
     enum class EImageCreateFlags : uint32
     {
-        /** No special flags */
         None = 0,
-
-        /** Texture can be presented to the screen (e.g., used as a swapchain image) */
         Presentable = 1,
-
-        /** Texture can be used as a render target (color or depth attachment) */
         RenderTarget = 2,
-
-        /** Texture can be used as a shader resource (sampled in shaders) */
         ShaderResource = 3,
-
-        /** Texture can be used as a storage image (read/write access in compute shaders) */
         Storage = 4,
-
-        /** Texture supports input attachments (used in Vulkan subpasses) */
         InputAttachment = 5,
-
-        /** Texture can be used as a depth/stencil buffer */
         DepthStencil = 6,
-
-        /** Texture allows unordered access (DirectX-style UAV equivalent) */
         UnorderedAccess = 7,
-
-        /** Texture supports mipmap generation */
         GenerateMipMaps = 8,
-
-        /** Texture can be used as a cube map */
         CubeCompatible = 9,
-
-        /** Texture supports aliasing (can be used with sparse memory allocation) */
         Aliasable = 10,
-
-        /** Texture can be used with multi-sampling (MSAA) */
         MultiSampled = 11,
-
-
-        // Aliases.
 
         ColorAttachment = RenderTarget,
         DepthAttachment = DepthStencil,
@@ -286,37 +242,22 @@ namespace Lumina
 
     enum class EPipelineStage : uint8
     {
-        // Common pipeline stages
-        TopOfPipe,                  // No operation, beginning of the pipeline
-        BottomOfPipe,               // End of the pipeline
-
-        // Vertex Input stages
-        VertexInput,                // Vertex data is being read from buffers
-        VertexShader,               // Vertex shader execution
-
-        // Tessellation stages
-        TessellationControlShader,  // Tessellation control shader execution
-        TessellationEvaluationShader, // Tessellation evaluation shader execution
-
-        // Geometry stages
-        GeometryShader,             // Geometry shader execution
-
-        // Fragment stages
-        FragmentShader,             // Fragment shader execution
-        ColorAttachmentOutput,      // After the fragment shader and before blending
-
-        // Compute stages
-        ComputeShader,              // Compute shader execution
-        Transfer,                   // Data transfer (e.g., buffers or images)
-
-        // Post-processing stages
-        EarlyFragmentTests,         // Early fragment testing (e.g., depth/stencil testing)
-        LateFragmentTests,          // Late fragment testing (e.g., depth/stencil testing after blending)
-
-        // Special stages
-        Host,                       // Operations that occur on the host (CPU)
-        AllGraphics,                // All stages related to graphics pipeline
-        AllCommands                 // All stages (graphics, compute, etc.)
+        TopOfPipe,
+        BottomOfPipe,
+        VertexInput,
+        VertexShader,
+        TessellationControlShader,
+        TessellationEvaluationShader,
+        GeometryShader,
+        FragmentShader,
+        ColorAttachmentOutput,
+        ComputeShader,
+        Transfer,
+        EarlyFragmentTests,
+        LateFragmentTests,
+        Host,
+        AllGraphics,
+        AllCommands
     };
 
 

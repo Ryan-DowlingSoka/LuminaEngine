@@ -26,13 +26,10 @@ namespace Lumina
 
         CMaterial();
 
-        /** Register a live instance whose parent is this material. Called by CMaterialInstance::PostLoad. */
         void RegisterInstance(CMaterialInstance* Instance);
-
-        /** Unregister a live instance. Called by CMaterialInstance::OnDestroy or when the parent reference changes. */
         void UnregisterInstance(CMaterialInstance* Instance);
 
-        /** Refresh all registered instances after a recompile (calls RebuildUniformsFromOverrides + UpdateMaterialUniforms). */
+        /** Refresh registered instance uniforms after a recompile. */
         void NotifyInstancesParentChanged();
 
         void Serialize(FArchive& Ar) override;
@@ -50,10 +47,7 @@ namespace Lumina
         FRHIVertexShader* GetVertexShader() const override;
         FRHIPixelShader* GetPixelShader() const override;
 
-        // Per-material depth-prepass / shadow vertex shaders, populated only
-        // when the material's graph drives WorldPositionOffset. Null for
-        // non-WPO materials -- the renderer falls back to the global shader
-        // library's DepthPrePass.slang / ShadowMappingVert.slang in that case.
+        // Per-material depth-prepass / shadow VS only populated for WPO materials; null falls back to global lib.
         FRHIVertexShader* GetDepthPrepassVertexShader() const { return DepthPrepassVertexShader; }
         FRHIVertexShader* GetShadowVertexShader() const { return ShadowVertexShader; }
         bool UsesWorldPositionOffset() const { return bUsesWorldPositionOffset; }
@@ -77,61 +71,49 @@ namespace Lumina
         EMaterialShadingModel GetShadingModel() override { return ShadingModel; }
         float GetOpacityMaskClipValue() override { return OpacityMaskClipValue; }
 
-        /** Domain of the material (Surface, PostProcess, etc.). */
         PROPERTY(Editable)
         EMaterialType MaterialType;
 
-        /** Controls how the material composites with the scene (Opaque, Masked, Translucent, Additive). */
         PROPERTY(Editable)
         EBlendMode BlendMode = EBlendMode::Opaque;
 
-        /** Lighting model used during shading (Lit, Unlit, etc.). */
         PROPERTY(Editable)
         EMaterialShadingModel ShadingModel = EMaterialShadingModel::Lit;
 
-        /** When true, objects using this material write to the shadow map. */
         PROPERTY(Editable)
         bool bCastShadows = true;
 
-        /** When true, back faces are rendered as well as front faces. */
         PROPERTY(Editable)
         bool bTwoSided = false;
 
-        /** When true, the depth test is skipped for surfaces using this material. */
         PROPERTY(Editable)
         bool bDisableDepthTest = false;
 
-        /** Opacity threshold for Masked blend mode, pixels below this value are discarded. */
+        /** Masked blend threshold; pixels below are discarded. */
         PROPERTY(Editable)
         float OpacityMaskClipValue = 0.333f;
 
-        /** Texture slots bound to this material, indexed by the Parameters list. */
         PROPERTY()
         TVector<TObjectPtr<CTexture>>           Textures;
 
-        /** Compiled SPIR-V bytecode for the pixel shader. */
         PROPERTY()
         TVector<uint32>                         PixelShaderBinaries;
 
-        /** Compiled SPIR-V bytecode for the vertex shader. */
         PROPERTY()
         TVector<uint32>                         VertexShaderBinaries;
 
-        /** Per-material depth-prepass vertex bytecode. Empty when bUsesWorldPositionOffset is false. */
+        /** Empty when bUsesWorldPositionOffset is false. */
         PROPERTY()
         TVector<uint32>                         DepthPrepassVertexShaderBinaries;
 
-        /** Per-material shadow vertex bytecode. Empty when bUsesWorldPositionOffset is false. */
+        /** Empty when bUsesWorldPositionOffset is false. */
         PROPERTY()
         TVector<uint32>                         ShadowVertexShaderBinaries;
 
-        /** True when the graph's WorldPositionOffset pin is connected. Drives
-         *  whether the renderer binds the per-material depth/shadow shaders or
-         *  falls back to the global ones. */
+        /** True when the graph's WPO pin is connected; gates per-material depth/shadow shader selection. */
         PROPERTY()
         bool                                    bUsesWorldPositionOffset = false;
 
-        /** Declared material parameters (scalars, vectors, textures) with their slot indices. */
         PROPERTY()
         TVector<FMaterialParameter>             Parameters;
 
@@ -144,14 +126,11 @@ namespace Lumina
 
     private:
 
-        /** Rebuilds ParameterLookup from Parameters. Called after PostLoad / recompile. */
         void RebuildParameterLookup();
 
-        /** Live instance back-reference list. Built at runtime by CMaterialInstance::PostLoad / OnDestroy.
-         *  Raw pointers are safe because the instance pre-emptively unregisters in its OnDestroy. */
+        /** Instance back-references; instances unregister in OnDestroy so raw pointers are safe. */
         TVector<CMaterialInstance*>             Instances;
 
-        /** O(1) parameter lookup by name. Rebuilt in PostLoad / on recompile. */
         THashMap<FName, FMaterialParameter>     ParameterLookup;
     };
     

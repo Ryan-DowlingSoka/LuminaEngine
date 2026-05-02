@@ -5,7 +5,7 @@
 
 namespace Lumina
 {
-    // Standard layer priorities. Higher = runs first; first handler to return true stops propagation.
+    /** Higher = runs first; first handler returning true stops propagation. */
     enum class EInputLayer : int32
     {
         Viewport     = 1000,

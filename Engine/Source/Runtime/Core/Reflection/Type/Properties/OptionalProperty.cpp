@@ -5,7 +5,7 @@ namespace Lumina
 {
     void FOptionalProperty::Serialize(FArchive& Ar, void* Value)
     {
-        // Wire format: [bool engaged][payload?] -- payload only if engaged.
+        // Wire: [bool engaged][payload?]
         if (Ar.IsWriting())
         {
             bool bEngaged = HasValue(Value);
@@ -23,8 +23,7 @@ namespace Lumina
 
             if (bEngaged)
             {
-                // SetValue with null engages the optional via default-construction;
-                // we then deserialize the payload directly into the engaged slot.
+                // SetValue(null) engages via default-construct; we then deserialize into the slot.
                 SetValue(Value, nullptr);
                 Inner->Serialize(Ar, GetValue(Value));
             }
@@ -68,8 +67,6 @@ namespace Lumina
             return;
         }
 
-        // Engage Dst with a default-constructed payload, then in-place
-        // copy the source payload into it.
         SetValue(Dst, nullptr);
         void* DstPayload = GetValueFn(Dst);
         const void* SrcPayload = GetValueFn(const_cast<void*>(Src));

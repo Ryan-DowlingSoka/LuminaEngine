@@ -245,7 +245,7 @@ namespace Lumina
 
     bool FCObjectArray::ReleaseStrongRef(CObjectBase* Object)
     {
-        // Shutting down means we're manually destroying every object, so we don't want to do anything else.
+        // Shutdown destroys all objects manually; skip individual release.
         if (bShuttingDown)
         {
             return false;

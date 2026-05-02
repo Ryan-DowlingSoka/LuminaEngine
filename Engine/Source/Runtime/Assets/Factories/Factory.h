@@ -27,7 +27,6 @@ namespace Lumina
 
         const TVector<CFactory*>& GetFactories() const { return Factories; }
 
-        // CDOs are always rooted.
         TVector<CFactory*> Factories;
     };
     

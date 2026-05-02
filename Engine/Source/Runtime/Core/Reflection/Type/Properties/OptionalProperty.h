@@ -5,14 +5,7 @@
 
 namespace Lumina
 {
-    /**
-     * Reflection wrapper for TOptional<T> (eastl::optional<T>).
-     *
-     * Layout-wise, optionals carry the same wire format as a single-element
-     * array: one bool ("engaged?") followed by an optional payload. The Inner
-     * FProperty describes the payload type so structured archives and the
-     * editor can recurse into it without knowing T at compile time.
-     */
+    /** Reflection wrapper for TOptional<T>. Wire format: bool engaged + optional payload. */
     class FOptionalProperty : public FProperty
     {
     public:
@@ -27,8 +20,7 @@ namespace Lumina
 
         DECLARE_FPROPERTY(EPropertyTypeFlags::Optional)
 
-        // ConstructProperties feeds the inner property in via this hook; we
-        // take ownership so the optional fully describes its payload.
+        /** Inner property (payload type) installed via ConstructProperties. */
         void AddProperty(FProperty* Property) override { Inner.reset(Property); }
 
         FProperty* GetInternalProperty() const { return Inner.get(); }
@@ -41,8 +33,7 @@ namespace Lumina
         void Serialize(FArchive& Ar, void* Value) override;
         void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults) override;
 
-        // Compares engaged-state, then payload via Inner. Copy mirrors the
-        // engaged state (engaging via SetValue / disengaging via Reset).
+        /** Compares engaged-state then payload via Inner; Copy mirrors engaged state. */
         RUNTIME_API bool Identical(const void* ValueA, const void* ValueB) const override;
         RUNTIME_API void CopyCompleteValue(void* Dst, const void* Src) const override;
 

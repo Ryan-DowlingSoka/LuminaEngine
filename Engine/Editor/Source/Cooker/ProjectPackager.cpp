@@ -24,7 +24,6 @@ namespace Lumina
             LOG_INFO("[Packager] {}", FString(Msg.data(), Msg.size()).c_str());
         }
 
-        // Copies one file with overwrite. Returns false on filesystem error.
         bool CopyFileTo(const std::filesystem::path& Src, const std::filesystem::path& Dst)
         {
             std::error_code Ec;
@@ -49,12 +48,7 @@ namespace Lumina
             return true;
         }
 
-        // Pulls every non-.lasset file under /Game/ in the VFS and writes a
-        // loose mirror under <OutDir>/Game/. Returns the number of files
-        // copied. Used when bExtractScriptsAsLooseFiles is set so users can
-        // tweak game logic / UI in the shipped build without re-cooking.
-        // .lasset files always live in the PAK; only loose-friendly content
-        // (.luau, .rml, JSON, etc) is mirrored.
+        // Mirror every non-.lasset /Game/ file under <OutDir>/Game/ for loose-files mode.
         size_t CopyLooseScripts(const FString& OutDir, const TFunction<void(FStringView)>& LogFunc)
         {
             const std::filesystem::path ScriptsRoot = std::filesystem::path(OutDir.c_str()) / "Game";
@@ -82,7 +76,6 @@ namespace Lumina
                     return;
                 }
 
-                // Mirror the relative directory structure.
                 static constexpr FStringView Prefix = "/Game/";
                 if (Vp.size() <= Prefix.size())
                 {
@@ -110,9 +103,7 @@ namespace Lumina
             return Count;
         }
 
-        // True if Stem ends with "-<OtherConfig>" — used to skip wrong-config
-        // DLLs left over from a previous Editor build (e.g. Runtime-Development.dll
-        // sitting next to Runtime-Shipping.dll).
+        // Stem ends with "-<OtherConfig>"; used to skip wrong-config DLLs from a previous Editor build.
         bool HasOtherConfigSuffix(const std::string& Stem, const FString& MyConfig)
         {
             const char* Configs[] = { "Debug", "Development", "Shipping" };
@@ -132,19 +123,7 @@ namespace Lumina
             return false;
         }
 
-        // Copies the runtime payload from the build's flat Binaries/Windows64/
-        // folder into the cooked output directory. We're permissive on
-        // purpose: third-party DLLs land here under various naming schemes
-        // (slang.dll has no config suffix; Tracy-Shipping.dll has one), and
-        // the cooked exe needs all of them. We skip:
-        //   - Other-config siblings (Runtime-Development.dll when shipping)
-        //   - The Lumina executable for configs other than ours
-        //   - Editor-only DLLs (Editor-*.dll), tools (Reflector.exe, Tests-*.exe)
-        //   - Linker artifacts (.lib, .exp, .pdb)
-        // Returns true if any DLL in SourceDir has the same base name as Stem
-        // but with a config suffix (e.g. Stem="Luau" matches "Luau-Shipping.dll").
-        // Used to detect stale pre-targetsuffix copies — when both Luau.dll and
-        // Luau-Shipping.dll exist, the unsuffixed one is dead weight.
+        // True if SourceDir has a "<Stem>-<Config>.dll" sibling; identifies stale pre-targetsuffix dupes.
         bool HasSuffixedSibling(const std::filesystem::path& SourceDir, const std::string& Stem)
         {
             std::error_code Ec;
@@ -159,14 +138,10 @@ namespace Lumina
             return false;
         }
 
-        // Editor-only / tooling DLLs that get dropped into Binaries/Windows64/
-        // by various build steps but aren't needed at runtime. Hard-coded
-        // because there's no programmatic way to tell them apart from real
-        // runtime deps like slang.dll.
+        // Editor-only / tooling DLLs that aren't needed at runtime; hard-coded since no programmatic check exists.
         bool IsEditorOnlyDll(const std::string& FileName)
         {
-            // libclang.dll is shipped for the Reflector tool's Clang frontend.
-            // Pure compile-time dependency.
+            // libclang.dll is for the Reflector tool's Clang frontend (compile-time only).
             return FileName == "libclang.dll";
         }
 
@@ -191,45 +166,37 @@ namespace Lumina
                 const std::string Ext      = Entry.path().extension().string();
                 const std::string Stem     = Entry.path().stem().string();
 
-                // Tools / test exes / wrong-config exes — never ship.
+                // Skip tools / wrong-config exes.
                 if (Ext == ".exe" && FileName != MyExeName)
                 {
                     continue;
                 }
 
-                // Runtime payload only — DLLs and the matching exe.
                 if (Ext != ".dll" && Ext != ".exe")
                 {
                     continue;
                 }
 
-                // Skip wrong-config DLLs left from a previous build.
                 if (HasOtherConfigSuffix(Stem, ConfigSuffix))
                 {
                     ++Skipped;
                     continue;
                 }
 
-                // Editor-only DLLs aren't needed by the cooked game and won't
-                // be present anyway when the editor is properly removed from
-                // the Game platform — but if a prior Editor build left one
-                // behind, skip it explicitly.
+                // Skip stale Editor-*.dll left over from a prior Editor build.
                 if (Stem.size() >= 7 && Stem.compare(0, 7, "Editor-") == 0)
                 {
                     ++Skipped;
                     continue;
                 }
 
-                // Editor-only tooling DLLs (libclang for the Reflector etc.).
                 if (IsEditorOnlyDll(FileName))
                 {
                     ++Skipped;
                     continue;
                 }
 
-                // Stale unsuffixed copy of a now-suffixed DLL. Pre-targetsuffix
-                // builds dumped Luau.dll / Tracy.dll into Binaries/; those linger
-                // alongside the proper Luau-Shipping.dll and would just waste space.
+                // Stale unsuffixed dupe of a now-suffixed DLL (pre-targetsuffix builds).
                 if (Ext == ".dll"
                     && Stem.find("-Debug") == std::string::npos
                     && Stem.find("-Development") == std::string::npos
@@ -308,7 +275,6 @@ namespace Lumina
             return Result;
         }
 
-        // Copy <Config>-suffixed exe + dlls into the output folder.
         const std::filesystem::path BinariesDir =
             std::filesystem::path(Paths::GetEngineInstallDirectory().c_str()) / "Binaries" / "Windows64";
         const std::filesystem::path DestDir(Options.OutputDirectory.c_str());
@@ -335,22 +301,15 @@ namespace Lumina
 
     FString FProjectPackager::DefaultMSBuildPath()
     {
-        // Cache the result — vswhere subprocess invocation isn't free, and
-        // the answer never changes within a session.
+        // Cache; vswhere subprocess isn't free and the answer doesn't change in-session.
         static FString CachedPath;
         if (!CachedPath.empty())
         {
             return CachedPath;
         }
 
-        // vswhere.exe ships at a well-known location with every VS 2017+
-        // install (including the standalone Build Tools). It's the canonical
-        // Microsoft recipe for finding MSBuild and works regardless of the
-        // user's edition (Community/Pro/Enterprise/BuildTools).
-        //
-        // The -find pattern matches both x86 (MSBuild\Current\Bin\MSBuild.exe)
-        // and amd64 flavors; we take the first line, which is the x86 build —
-        // either bitness builds our solution fine.
+        // vswhere.exe is at a known path with every VS 2017+ install; canonical Microsoft recipe.
+        // -find matches x86 + amd64 MSBuild.exe; take the first line (x86 builds fine).
         const char* VsWhereCandidates[] =
         {
             R"(C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe)",
@@ -366,8 +325,6 @@ namespace Lumina
             }
 
             FString FirstLine;
-            // vswhere.exe paths are ASCII-only; iterator-construct a wide
-            // string the same way the BuildAndCopyOnly path does.
             const std::string CandidateStr(Candidate);
             const std::wstring VsWhereW(CandidateStr.begin(), CandidateStr.end());
             const std::wstring ArgsW = LR"(-latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" -nologo)";
@@ -376,8 +333,7 @@ namespace Lumina
                 VsWhereW.c_str(), ArgsW.c_str(), nullptr,
                 [&FirstLine](FStringView Line)
                 {
-                    // vswhere can emit multiple matches (x86 + amd64); we
-                    // only need the first usable one.
+                    // vswhere can emit multiple matches; first usable wins.
                     if (FirstLine.empty() && !Line.empty())
                     {
                         FirstLine.assign(Line.data(), Line.size());
@@ -386,17 +342,14 @@ namespace Lumina
 
             if (ExitCode == 0 && !FirstLine.empty())
             {
-                // vswhere returns Windows-style backslashes; normalize so the
-                // path round-trips through the rest of the engine cleanly.
+                // Normalize Windows backslashes to forward slashes.
                 std::replace(FirstLine.begin(), FirstLine.end(), '\\', '/');
                 CachedPath = Move(FirstLine);
                 return CachedPath;
             }
         }
 
-        // Last-resort fallback: the most common VS 2022 Community install
-        // path. If this is also wrong, the user can override via the editor
-        // tool's "MSBuild Path" field.
+        // Fallback: VS 2022 Community default; user can override via "MSBuild Path".
         CachedPath = "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe";
         return CachedPath;
     }
@@ -430,7 +383,6 @@ namespace Lumina
 
         Log(LogFunc, FString().sprintf("Output directory: %s", OutDir.c_str()).c_str());
 
-        // 2) Cook → .pak
         const FString PakPath = OutDir + "/" + ProjectName + ".pak";
         Log(LogFunc, FString().sprintf("Cooking PAK: %s", PakPath.c_str()).c_str());
 

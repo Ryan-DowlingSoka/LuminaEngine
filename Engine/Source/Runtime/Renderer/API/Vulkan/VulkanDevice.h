@@ -33,9 +33,7 @@ namespace Lumina
         VmaAllocation AllocateBuffer(const VkBufferCreateInfo* CreateInfo, VmaAllocationCreateFlags Flags, VkBuffer* vkBuffer, const char* AllocationName) const;
         VmaAllocation AllocateImage(const VkImageCreateInfo* CreateInfo, VmaAllocationCreateFlags Flags, VkImage* vkImage, const char* AllocationName) const;
 
-        // Fast-path allocation for transient/upload buffers. Uses a dedicated linear-algorithm pool
-        // so allocations are O(1) bump-pointer and never fragment. Falls back to a dedicated allocation
-        // if the buffer is larger than the pool block size.
+        // Linear-pool fast path for upload buffers; falls back to dedicated alloc if too large.
         VmaAllocation AllocateUploadBuffer(const VkBufferCreateInfo* CreateInfo, VkBuffer* vkBuffer, const char* AllocationName) const;
 
         VmaAllocator GetVMA() const { return Allocator; }
@@ -43,9 +41,7 @@ namespace Lumina
         void DestroyBuffer(VkBuffer Buffer, VmaAllocation Allocation) const;
         void DestroyImage(VkImage Image, VmaAllocation Allocation) const;
 
-        /** All buffers created with VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT will have their memory persistently mapped *
-         * https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/memory_mapping.html
-         * */
+        // Buffers with HOST_ACCESS_SEQUENTIAL_WRITE_BIT are persistently mapped (VMA).
         void* GetMappedMemory(const FVulkanBuffer* Buffer) const;
 
     

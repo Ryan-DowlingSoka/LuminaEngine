@@ -83,7 +83,6 @@ namespace Lumina
             .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
             .build();
 
-    	//DEBUG_ASSERT(!vkbSwapchain.has_value() || !vkbSwapchain->get_images().has_value(), "Failed to create swapchain! Error: {} - Extent: {}x{}", vkbSwapchain.error().message(), Extent.x, Extent.y);
     	if (!vkbSwapchain.has_value() || !vkbSwapchain->get_images().has_value())
     	{
     		LOG_CRITICAL("Failed to create swapchain! Error: {} - Extent: {}x{}", vkbSwapchain.error().message(), Extent.x, Extent.y);

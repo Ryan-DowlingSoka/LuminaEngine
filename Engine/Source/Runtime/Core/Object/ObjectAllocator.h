@@ -15,10 +15,9 @@ namespace Lumina
         FCObjectAllocator();
         ~FCObjectAllocator();
 
-        /** Allocates memory for a new CObject, but does not place in memory */
+        /** Raw allocation; does not construct. */
         RUNTIME_API void* AllocateCObject(uint32 Size, uint32 Alignment);
 
-        /** Free memory of an object */
         RUNTIME_API void FreeCObject(CObjectBase* Ptr);
 
     private:

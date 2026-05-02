@@ -12,10 +12,7 @@ namespace Lumina
 {
     namespace
     {
-        // Pull T out of a byte buffer at Offset, advancing Offset.
-        // Returns false if there isn't enough room — every read in the parser
-        // is bounds-checked so a truncated/corrupt PAK fails cleanly instead
-        // of crashing.
+        // Bounds-checked POD read; truncated PAKs fail cleanly.
         template<typename T>
         bool ReadPOD(const uint8* Data, size_t Size, size_t& Offset, T& Out)
         {
@@ -43,8 +40,7 @@ namespace Lumina
 
     TSharedPtr<FPakArchive> FPakArchive::Open(FStringView NativeFilePath)
     {
-        // Native file IO — the PAK lives next to the cooked exe, before any
-        // VFS mounts are set up.
+        // Native IO; PAK is read before VFS mounts exist.
         std::ifstream File(FString(NativeFilePath.data(), NativeFilePath.size()).c_str(), std::ios::binary | std::ios::ate);
         if (!File)
         {
@@ -96,7 +92,6 @@ namespace Lumina
             return nullptr;
         }
 
-        // Walk the TOC entries.
         Cursor = (size_t)Header.TocOffset;
         Archive->Entries.reserve(Header.EntryCount);
 
@@ -119,8 +114,7 @@ namespace Lumina
                 return nullptr;
             }
 
-            // Sanity-check that the blob region the entry points at is actually
-            // inside the file. Catches truncated PAKs early.
+            // Catch truncated PAKs.
             if (Entry.Offset + Entry.Size > (uint64)Size || Entry.Offset >= (uint64)Size)
             {
                 LOG_ERROR("FPakArchive: entry '{}' points outside the file (offset={}, size={}, file size={})",

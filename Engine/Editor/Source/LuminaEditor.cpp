@@ -21,7 +21,6 @@ namespace Lumina
     {
         const FStringView EditorFile = "/Editor/Config/EditorSettings.json";
 
-        // World editor — gizmo snapping
         GConfig->RegisterSetting(FConfigSetting::Make("Editor.WorldEditorTool.GuizmoSnapEnabled", EConfigValueType::Bool)
             .WithCategory("Editor/World Tool")
             .WithDescription("Whether transform gizmo snapping is enabled by default")
@@ -49,7 +48,6 @@ namespace Lumina
             .WithRange(0.001, 10.0)
             .WithOwnerFile(EditorFile));
 
-        // Content browser
         GConfig->RegisterSetting(FConfigSetting::Make("Editor.ContentBrowser.TileSize", EConfigValueType::Float)
             .WithCategory("Editor/Content Browser")
             .WithDescription("Pixel size of asset tiles in the content browser")
@@ -57,7 +55,6 @@ namespace Lumina
             .WithRange(32.0, 256.0)
             .WithOwnerFile(EditorFile));
 
-        // Recents — typed as a string list of project names
         GConfig->RegisterSetting(FConfigSetting::Make("Editor.RecentProjects", EConfigValueType::StringArray)
             .WithCategory("Editor/General")
             .WithDescription("Recently opened projects (most recent appended last)")
@@ -69,8 +66,6 @@ namespace Lumina
             .WithDefault(std::string("NULL"))
             .WithOwnerFile(EditorFile));
 
-        // Lua editor — open in-engine by default; flip this to route .lua/.luau
-        // double-clicks to the OS-registered handler instead.
         GConfig->RegisterSetting(FConfigSetting::Make("Editor.LuaEditor.UsePlatformEditor", EConfigValueType::Bool)
             .WithCategory("Editor/Lua Editor")
             .WithDescription("Open .lua/.luau files with the OS default editor instead of the in-engine Lua editor")
@@ -165,7 +160,6 @@ namespace Lumina
             .WithRange(0, 1000)
             .WithOwnerFile(EditorFile));
 
-        // RmlUi editor settings.
         GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.FontScale", EConfigValueType::Float)
             .WithCategory("Editor/RmlUi Editor")
             .WithDescription("Font scale multiplier for the in-engine RmlUi editor")
@@ -301,8 +295,7 @@ namespace Lumina
             }
         };
 
-        // Longer tokens must be replaced first so that $PROJECTNAME doesn't
-        // eat the prefix of $PROJECTNAMEUPPER.
+        // Longer tokens first so $PROJECTNAME doesn't eat $PROJECTNAMEUPPER.
         ReplaceAll(Text, "$PROJECTNAMEUPPER", Ctx.NameUpper);
         ReplaceAll(Text, "$PROJECTDESCRIPTION", Ctx.Description);
         ReplaceAll(Text, "$PROJECTGUID", Ctx.Guid);
@@ -352,8 +345,7 @@ namespace Lumina
                 const std::filesystem::path SourcePath = Entry.path();
                 const std::string Ext = SourcePath.extension().string();
 
-                // Binary files (e.g. premake5.exe) must be copied verbatim.
-                // Only run token replacement on text files.
+                // Token replace only on text files; binaries (premake5.exe, etc.) copy verbatim.
                 const bool bIsTextFile =
                     Ext == ".h"     || Ext == ".hpp"        || Ext == ".cpp"    ||
                     Ext == ".c"     || Ext == ".inl"        || Ext == ".lua"    ||

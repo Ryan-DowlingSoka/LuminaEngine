@@ -95,7 +95,7 @@ namespace Lumina
 
         const double Now = NowMs();
 
-        // Prune stale targets whose worlds have gone away / haven't pushed scopes recently.
+        // Prune targets that haven't pushed scopes recently.
         for (auto It = Targets.begin(); It != Targets.end();)
         {
             if ((*It)->LastActiveFrame + StaleTargetFrameCount < FrameCounter && FrameCounter > StaleTargetFrameCount)
@@ -118,7 +118,6 @@ namespace Lumina
 
     void FCPUProfiler::EndFrame()
     {
-        // Defensive: close any dangling pushes.
         TargetStack.clear();
 
         if (!IsEnabled())
@@ -139,7 +138,7 @@ namespace Lumina
     {
         FCPUProfileFrame& Frame = Target.Current;
 
-        // Close out any scopes that stayed open across a mis-paired push/pop.
+        // Close scopes left open by mis-paired push/pop.
         const double Now = NowMs();
         while (!Frame.ScopeStack.empty())
         {
@@ -181,7 +180,7 @@ namespace Lumina
 
         FCPUProfileTarget* Target = FindOrCreate(Key, Name, Kind);
 
-        // Track activity for stale pruning. If this is the first push of the frame, seed the frame header.
+        // Seed frame header on first push of this frame.
         if (Target->LastActiveFrame != FrameCounter)
         {
             Target->Current.Reset();
@@ -210,7 +209,7 @@ namespace Lumina
         FString NameStr = World->GetName().c_str();
         FCPUProfileTarget* Target = FindOrCreate(World, NameStr.c_str(), ECPUTargetKind::World);
 
-        // Refresh metadata each push; world context can be reassigned (PIE / duplication).
+        // Refresh metadata each push; context can be reassigned across PIE/duplication.
         if (GWorldManager != nullptr)
         {
             if (FWorldContext* Ctx = GWorldManager->FindContext(World))

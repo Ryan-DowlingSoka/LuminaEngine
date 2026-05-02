@@ -57,11 +57,7 @@ namespace Lumina::Assert
         }
     }
     
-    // ========================= LUMINA ASSERTION INFO =========================
-    // ASSERT_DEBUG(...)    - Checked in debug and development, no codegen in release.
-    // ASSERT(...)          - Checked in all configurations.
-    // ASSUME(...)          - Checked in debug and development, compiler optimization hint in shipping.
-    // =========================================================================
+    // ASSERT_DEBUG: debug/dev only. ASSERT: all configs. ASSUME: dev-checked, shipping optimizer hint.
     
 #define LUMINA_HANDLE_ASSERTION_HEADER \
     Detail::HandleAssertion(FAssertion

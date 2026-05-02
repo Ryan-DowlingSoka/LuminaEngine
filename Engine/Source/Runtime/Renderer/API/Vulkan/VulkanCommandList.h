@@ -26,7 +26,7 @@ namespace Lumina
         
     };
 
-    struct FResourceStateMapping2 // for use with KHR_synchronization2
+    struct FResourceStateMapping2 // KHR_synchronization2
     {
          EResourceStates State;
          VkImageLayout ImageLayout;

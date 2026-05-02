@@ -23,19 +23,7 @@ enum EInternal { EC_InternalUseOnlyConstructor };
 
 
 
-// =====================================================================================================
-// NOTE: Clang has a known limitation where it struggles to properly expand variadic macros
-// during parsing (especially when using libclang or Clang tooling).
-// 
-// When REFLECTION_PARSER is defined (i.e., when running our custom reflection parser),
-// we disable the GENERATED_BODY macro expansion to prevent parsing errors and allow
-// correct type discovery.
-//
-// This workaround ensures that Clang sees an empty GENERATED_BODY(...) instead of trying
-// to expand it and breaking the AST.
-//
-// IMPORTANT: This does not affect normal compilation; only parsing for reflection!
-// =====================================================================================================
+// libclang variadic macro expansion is unreliable during reflection parsing; stub these out then.
 #if defined(REFLECTION_PARSER)
 
     #define GENERATED_BODY(...)
@@ -119,7 +107,7 @@ public: \
     }
 
 
-/** Intrinsic classic auto register. */
+/** Intrinsic class auto-register. */
 #define IMPLEMENT_INTRINSIC_CLASS(TClass, TBaseClass, TAPI) \
     TAPI Lumina::CClass* Construct_CClass_Lumina_##TClass(); \
     extern Lumina::FClassRegistrationInfo Registration_Info_CClass_Lumina_##TClass; \
@@ -153,7 +141,7 @@ public: \
 
 namespace LuminaAsserts_Private
 {
-    // A junk function to allow us to use sizeof on a member variable which is potentially a bitfield
+    // sizeof()-via-overload to handle potential bitfield members.
     template <typename T>
     bool GetMemberNameCheckedJunk(const T&);
     template <typename T>
@@ -162,6 +150,6 @@ namespace LuminaAsserts_Private
     bool GetMemberNameCheckedJunk(R(*)(Args...));
 }
 
-// Returns FName(TEXT("MemberName")), while statically verifying that the member exists in ClassName
+/** Returns FName(MemberName) while statically asserting the member exists. */
 #define GET_MEMBER_NAME_CHECKED(ClassName, MemberName) \
 ((void)sizeof(LuminaAsserts_Private::GetMemberNameCheckedJunk(((ClassName*)0)->MemberName)), FName(TEXT(#MemberName)))

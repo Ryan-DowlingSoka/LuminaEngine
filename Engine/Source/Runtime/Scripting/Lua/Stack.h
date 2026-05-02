@@ -24,9 +24,7 @@ namespace Lumina::Lua
     
     struct FNil {};
 
-    // Specialize for types that have native Lua representations
-    
-    template<typename T> 
+    template<typename T>
     struct TLuaNativeType<TOptional<T>>                 : eastl::true_type {};
     
     template<> struct TLuaNativeType<FNil>              : eastl::true_type {};
@@ -464,10 +462,7 @@ namespace Lumina::Lua
         requires(eastl::is_constructible_v<RawT, TArgs...>)
         static void Push(lua_State* State, TArgs&&... Args)
         {
-            // Skip value-initializing StorageT: that would zero-fill
-            // Buffer[sizeof(RawT)] immediately before Emplace overwrites it.
-            // Underlying / InvokeDtor only branch on External, so set just
-            // that and leave Buffer untouched for the placement-new.
+            // Skip value-init; would zero-fill Buffer right before Emplace overwrites it.
             void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(StorageT), TClassTraits<RawT>::Tag());
             auto* Header = static_cast<StorageT*>(Block);
             Header->External = nullptr;
@@ -594,7 +589,6 @@ namespace Lumina::Lua
         static bool Check(lua_State* State, int Index)  { return lua_isnumber(State, Index); }
     };
 
-    // Forward-declared helpers used by TFunction support below.
     template<typename TParam>
     static decltype(auto) GetArg(lua_State* L, int Index);
 
@@ -640,7 +634,6 @@ namespace Lumina::Lua
 
         static FStringView TypeName(lua_State* State) { return lua_typename(State, LUA_TFUNCTION); }
 
-        // Thunk invoked by Lua: unpacks args from the Lua stack and calls the stored TFunction.
         static int InvokeThunk(lua_State* L)
         {
             auto* Stored = static_cast<FuncT*>(lua_touserdata(L, lua_upvalueindex(1)));
@@ -677,8 +670,7 @@ namespace Lumina::Lua
             PushImpl(State, eastl::move(Value));
         }
 
-        // Pulls a Lua function off the stack and adapts it into a C++ TFunction.
-        // The resulting TFunction can be copied; all copies share the same pinned Lua reference.
+        // Adapts a Lua function into a TFunction; copies share one pinned Lua ref.
         static FuncT Get(lua_State* State, int Index)
         {
             if (lua_isnil(State, Index))
@@ -754,8 +746,7 @@ namespace Lumina::Lua
         }
     };
 
-    // Convenience: raw function-pointer values get wrapped into a TFunction and pushed.
-    // Lets users return a plain `R(*)(Args...)` from a bound C++ function.
+    // Raw fn-ptr values wrap into a TFunction so users can return `R(*)(Args...)` from bindings.
     template<typename R, typename... Args>
     struct TLuaNativeType<R(*)(Args...)> : eastl::true_type {};
 

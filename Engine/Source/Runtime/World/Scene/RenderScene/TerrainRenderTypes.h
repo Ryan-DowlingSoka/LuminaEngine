@@ -13,27 +13,14 @@ namespace Lumina
     /** Maximum number of paintable layers the renderer blends in the terrain pixel shader. */
     constexpr uint32 GTerrainMaxLayers = 4;
 
-    /**
-     * Per-meshlet quad span. Each meshlet covers up to GTerrainMeshletQuads^2 quads
-     * = (GTerrainMeshletQuads + 1)^2 vertices = 2 * GTerrainMeshletQuads^2 triangles.
-     * Sized so a perfect-square meshlet fits inside the renderer's MESHLET_MAX_VERTICES
-     * (64) and MESHLET_MAX_TRIANGLES (124) bounds: 7^2 = 49 quads, 8x8 = 64 verts,
-     * 98 triangles.
-     */
+    // 7x7 quads = 49 quads, 8x8 verts (64), 98 tris -- fits MESHLET_MAX_VERTICES/TRIANGLES.
     constexpr int32 GTerrainMeshletQuads        = 7;
-    constexpr int32 GTerrainMeshletVertsPerSide = GTerrainMeshletQuads + 1;       // 8
-    constexpr int32 GTerrainMeshletMaxQuads     = GTerrainMeshletQuads * GTerrainMeshletQuads;     // 49
-    constexpr int32 GTerrainMeshletMaxTris      = GTerrainMeshletMaxQuads * 2;    // 98
-    constexpr int32 GTerrainMeshletMaxVerts     = GTerrainMeshletMaxTris * 3;     // 294 (six verts per quad emitted by VS)
+    constexpr int32 GTerrainMeshletVertsPerSide = GTerrainMeshletQuads + 1;
+    constexpr int32 GTerrainMeshletMaxQuads     = GTerrainMeshletQuads * GTerrainMeshletQuads;
+    constexpr int32 GTerrainMeshletMaxTris      = GTerrainMeshletMaxQuads * 2;
+    constexpr int32 GTerrainMeshletMaxVerts     = GTerrainMeshletMaxTris * 3;
 
-    /**
-     * CPU mirror of the terrain render params constant buffer. Layout must match
-     * FTerrainRenderParams in TerrainBaseVertexPass.slang / TerrainBasePixelPass.slang
-     * exactly. The MaterialIndex slot resolves per-terrain material uniforms through
-     * the same bindless material buffer used by regular meshes; per-layer textures
-     * and UV scales now live inside the material graph and are not pushed through
-     * this buffer.
-     */
+    /** Mirror of FTerrainRenderParams in TerrainBase{Vertex,Pixel}Pass.slang. */
     struct alignas(16) FTerrainRenderParams
     {
         glm::vec2   OriginXZ        = glm::vec2(0.0f);
@@ -55,10 +42,7 @@ namespace Lumina
     };
     VERIFY_SSBO_ALIGNMENT(FTerrainRenderParams);
 
-    /**
-     * Constant buffer feeding the normal-recompute compute shader. Matches
-     * FTerrainNormalParams in TerrainNormalCompute.slang.
-     */
+    /** Mirror of FTerrainNormalParams in TerrainNormalCompute.slang. */
     struct alignas(16) FTerrainNormalParams
     {
         int32   Resolution   = 0;
@@ -73,15 +57,7 @@ namespace Lumina
     };
     VERIFY_SSBO_ALIGNMENT(FTerrainNormalParams);
 
-    /**
-     * Per-chunk metadata uploaded to the GPU. Used by the terrain cull compute
-     * pass to early-reject whole chunks against the camera frustum and Hi-Z
-     * pyramid before walking individual meshlets, and consumed in the vertex
-     * shader to translate from meshlet-local quad coords to world space.
-     *
-     * BoundsMin/Max are tight world-space AABBs derived from the heightmap
-     * sample range across the chunk.
-     */
+    /** Per-chunk metadata: tight world AABBs + meshlet range. Cull pass tests against frustum/HiZ. */
     struct alignas(16) FTerrainChunkInfo
     {
         glm::vec3   BoundsMin       = glm::vec3(0.0f);
@@ -89,14 +65,11 @@ namespace Lumina
         glm::vec3   BoundsMax       = glm::vec3(0.0f);
         float       _Pad1           = 0.0f;
 
-        // Origin of the chunk in the global heightmap quad grid (samples).
         // QuadOriginXY = ChunkCoord * QuadsPerChunk.
         glm::ivec2  ChunkCoord      = glm::ivec2(0);
         glm::ivec2  QuadOrigin      = glm::ivec2(0);
 
-        // Range into the per-terrain meshlet array. MeshletCount mirrors
-        // MeshletsPerChunkSide^2 today, but is stored explicitly so partial
-        // chunks at the terrain edge can carry fewer meshlets later.
+        // Range into per-terrain meshlet array; MeshletCount stored for future partial chunks.
         uint32      MeshletOffset   = 0u;
         uint32      MeshletCount    = 0u;
         uint32      _Pad2           = 0u;
@@ -104,14 +77,7 @@ namespace Lumina
     };
     VERIFY_SSBO_ALIGNMENT(FTerrainChunkInfo);
 
-    /**
-     * Per-meshlet metadata. Each meshlet owns a (QuadCountX x QuadCountY) sub-
-     * region of its parent chunk's quad grid, where each axis is at most
-     * GTerrainMeshletQuads. Bounds are world-space and tight to the heightmap.
-     *
-     * The cull pass tests Bounds against the camera frustum and Hi-Z pyramid;
-     * survivors append (ChunkIndex, MeshletIndex) into the visible-meshlet list.
-     */
+    /** Per-meshlet sub-region of its parent chunk's quad grid; cull pass appends survivors. */
     struct alignas(16) FTerrainMeshletInfo
     {
         glm::vec3   BoundsMin       = glm::vec3(0.0f);
@@ -119,13 +85,10 @@ namespace Lumina
         glm::vec3   BoundsMax       = glm::vec3(0.0f);
         float       _Pad1           = 0.0f;
 
-        // Quad-grid origin of this meshlet within its parent chunk.
         glm::ivec2  ChunkLocalQuadOrigin = glm::ivec2(0);
-        // Quads covered along each axis. Always <= GTerrainMeshletQuads;
-        // smaller for partial meshlets at the chunk's far edge.
+        // Quads covered per axis; smaller for partial meshlets at chunk far edge.
         glm::ivec2  QuadExtent      = glm::ivec2(0);
 
-        // Index of the parent chunk (into FTerrainChunkInfo[]).
         uint32      ChunkIndex      = 0u;
         uint32      _Pad2           = 0u;
         uint32      _Pad3           = 0u;
@@ -133,10 +96,7 @@ namespace Lumina
     };
     VERIFY_SSBO_ALIGNMENT(FTerrainMeshletInfo);
 
-    /**
-     * Output entry from the terrain cull compute pass. One slot per surviving
-     * meshlet. Consumed by the terrain vertex shader through SV_InstanceID.
-     */
+    /** Survivor slot from terrain cull; consumed by VS via SV_InstanceID. */
     struct alignas(8) FTerrainVisibleMeshlet
     {
         uint32  ChunkIndex   = 0u;
@@ -144,10 +104,7 @@ namespace Lumina
     };
     static_assert(sizeof(FTerrainVisibleMeshlet) == 8);
 
-    /**
-     * Push-constant payload for TerrainCull.slang. Camera frustum lives in
-     * the shared scene globals; only the per-terrain layout is pushed here.
-     */
+    /** TerrainCull.slang push constants; frustum lives in scene globals. */
     struct FTerrainCullPushConstants
     {
         uint32  ChunkCount      = 0u;

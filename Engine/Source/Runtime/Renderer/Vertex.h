@@ -69,15 +69,8 @@ namespace Lumina
              | ((uint32(q.z) & 0x3FFu) << 20);
     }
 
-    // Octahedral 15-15 tangent direction + 1-bit handedness sign. One bit
-    // less precision per axis than PackNormal so the MikkTSpace handedness
-    // (the bitangent flip on mirrored UV islands) fits into the same uint32
-    // and FMeshletVertex stays 4-byte aligned.
-    //
-    // Layout: bits  0..14 = signed 15-bit qx
-    //         bits 15..29 = signed 15-bit qy
-    //         bit 30      = handedness (1 = +1, 0 = -1)
-    //         bit 31      = reserved (zero)
+    // Octahedral 15-15 tangent + 1-bit handedness packed into uint32 (4-byte aligned).
+    // Layout: [0..14]=qx, [15..29]=qy, [30]=hand (1=+, 0=-), [31]=reserved.
     inline uint32 PackTangent(glm::vec3 t, float Sign)
     {
         t /= glm::abs(t.x) + glm::abs(t.y) + glm::abs(t.z) + 1e-12f;
@@ -119,15 +112,8 @@ namespace Lumina
         return glm::vec4(glm::normalize(t), Sign);
     }
 
-    // Full-precision import-time vertex. Dropped after meshlet generation.
-    // Importers must explicitly zero Tangent on every vertex they produce
-    // -- MikkTSpace overwrites it inside GenerateMeshlets, but the dedup
-    // in OptimizeNewlyImportedMesh runs first and byte-compares the whole
-    // struct, so leaving Tangent uninitialized would wrongly split
-    // otherwise-identical vertices. A default member initializer would
-    // make this safe automatically but would also make FVertex
-    // non-trivially-default-constructible, breaking TCanBulkSerialize
-    // (which requires eastl::is_trivial_v).
+    // Importers must zero Tangent: dedup byte-compares before MikkTSpace runs.
+    // Cannot use member initializer — would break TCanBulkSerialize (needs trivial).
     struct FVertex
     {
         glm::vec3       Position;

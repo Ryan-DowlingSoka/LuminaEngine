@@ -69,7 +69,6 @@ namespace Lumina
     {
     public:
 
-        // Helps with string API concepts.
         using value_type = char;
         
         static void Initialize();
@@ -116,8 +115,7 @@ namespace Lumina
         {
             return strlen(GNameTable->GetString(ID));
         }
-        
-        // For stl.
+
         size_t length() const
         {
             return strlen(GNameTable->GetString(ID));

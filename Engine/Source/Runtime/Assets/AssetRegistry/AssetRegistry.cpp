@@ -87,9 +87,7 @@ namespace Lumina
         auto It = Assets.find_as(GUID, FGuidHash(), FAssetDataGuidEqual());
         if (It == Assets.end())
         {
-            // Out-of-band deletion (e.g. external file removal followed by a
-            // discovery pass that already pruned the entry). Don't crash —
-            // the desired end state (entry absent) already holds.
+            // Out-of-band deletion: entry already pruned by a discovery pass.
             LOG_WARN("AssetRegistry::AssetDeleted: GUID not present in registry; ignoring");
             return;
         }
@@ -110,10 +108,7 @@ namespace Lumina
 
         if (It == Assets.end())
         {
-            // The on-disk side of the rename succeeded but our registry view
-            // is out of sync (race with discovery, or registry was rebuilt).
-            // Crashing the editor is strictly worse than logging — the next
-            // discovery pass will repair the entry.
+            // Registry out of sync with on-disk rename; next discovery repairs it.
             LOG_WARN("AssetRegistry::AssetRenamed: no entry for {}; rename of {} -> {} not reflected in registry until next discovery", OldPath, OldPath, NewPath);
             return;
         }
@@ -230,11 +225,7 @@ namespace Lumina
 
         if (Export == Exports.end())
         {
-            // The .lasset's primary export name doesn't match the file name on
-            // disk. We used to silently patch this; that hid the underlying
-            // bug (non-atomic save / rename) that left these on disk in the
-            // first place. With atomic save+rename in place this should never
-            // happen for new files, so we surface it loudly instead.
+            // Primary export name must match the file name; mismatch indicates a non-atomic save/rename bug.
             LOG_ERROR("AssetRegistry: {} contains no export matching its file name; refusing to register", Path);
             RecordFailedAsset(Path);
             return;
@@ -250,9 +241,7 @@ namespace Lumina
         FWriteScopeLock Lock(AssetsMutex);
         if (Assets.find(AssetData) != Assets.end())
         {
-            // Duplicate GUID across two .lasset files. Discovery is racy with
-            // user-driven renames so don't assert; flag the offender so the
-            // editor can surface it.
+            // Duplicate GUID across .lasset files; flag rather than assert (discovery races user renames).
             LOG_ERROR("AssetRegistry: duplicate asset GUID encountered while processing {} (already registered); skipping", Path);
             RecordFailedAsset(Path);
             return;

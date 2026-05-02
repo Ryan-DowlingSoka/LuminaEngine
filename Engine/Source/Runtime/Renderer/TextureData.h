@@ -4,7 +4,6 @@
 
 namespace Lumina
 {
-    /** Contains data about a texture that's intended to be saved to disk */
     struct FTextureResource
     {
         struct FMip

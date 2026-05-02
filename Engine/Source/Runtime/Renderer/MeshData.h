@@ -14,21 +14,12 @@ namespace Lumina
     constexpr uint32 MESHLET_MAX_TRIANGLES      = 124;
     constexpr uint32 MESHLET_VERTICES_PER_DRAW  = MESHLET_MAX_TRIANGLES * 3;
 
-    // Hard cap on per-surface LODs. LOD 0 is full detail; subsequent LODs
-    // are progressively simplified copies. CPU instance build picks one LOD
-    // per instance per frame from a distance-to-radius ratio.
-    //
-    // The default ladder mixes meshopt_simplify (topology-preserving) for
-    // the first four levels with meshopt_simplifySloppy (clustering) for
-    // the last two; sloppy lets us reach near-billboard triangle counts on
-    // distant geometry where silhouette is sub-pixel anyway.
+    // LOD 0 is full detail. Default ladder uses meshopt_simplify for 0-3 and
+    // meshopt_simplifySloppy for 4-5.
     constexpr uint32 MAX_MESH_LODS              = 6;
 
-    // Highest LOD the shadow / cascaded-shadow paths may use. Sloppy LODs
-    // (4, 5 in the default ladder) can introduce holes in the simplified
-    // topology -- harmless when seen at distance, but for shadow casters
-    // those holes turn into light leaks. Cap to topology-preserving LODs.
-    // Bump only if the LOD ladder no longer puts sloppy at >= this index.
+    // Sloppy LODs (4-5) can produce holes that become shadow light-leaks; cap
+    // shadow casters to topology-preserving LODs.
     constexpr uint32 MAX_SHADOW_LOD             = 3;
 
     // LoInt: meshlet's quantization origin in mesh-global grid units.
@@ -134,16 +125,11 @@ namespace Lumina
         uint32  StartIndex = 0;
         int16   MaterialIndex = -1;
 
-        // Per-LOD meshlet ranges into FMeshResource::MeshletData.Meshlets.
-        // LOD 0 is full detail; LOD i (i>=1) covers simplified geometry
-        // produced by meshopt_simplify and packed into the same MeshletData
-        // arrays. NumLODs is at least 1.
+        // Per-LOD meshlet ranges into MeshletData.Meshlets; NumLODs >= 1.
         uint32  NumLODs                              = 1;
         uint32  LODMeshletOffset[MAX_MESH_LODS]      = {};
         uint32  LODMeshletCount[MAX_MESH_LODS]       = {};
-        // Distance-to-radius ratio (length(InstanceCenter - Camera) / Radius)
-        // at which LOD i becomes the active LOD. Index 0 is unused (LOD 0 is
-        // the default), entries are monotonically increasing.
+        // distance/radius threshold at which LOD i becomes active (monotonic, [0] unused).
         float   LODScreenThreshold[MAX_MESH_LODS]    = {};
 
         friend FArchive& operator << (FArchive& Ar, FGeometrySurface& Data)
@@ -345,9 +331,7 @@ namespace Lumina
             Ar << Data.GeometrySurfaces;
             Ar << Data.MeshletData;
 
-            // Per-surface LOD payload. Always present -- assets older than
-            // the LOD addition are intentionally unsupported and need to be
-            // re-imported (or deleted).
+            // Per-surface LOD payload; pre-LOD assets must be re-imported.
             for (FGeometrySurface& Surface : Data.GeometrySurfaces)
             {
                 Ar << Surface.NumLODs;
@@ -387,9 +371,7 @@ namespace Lumina
         TVector<FBoneInfo> Bones;
         THashMap<FName, int32> BoneNameToIndex;
 
-        // Transient: set in the import dialog so the user can deselect a
-        // specific skeleton (e.g. an FBX with multiple rigs where only one
-        // is wanted). Intentionally not serialized.
+        // Transient import-dialog flag; not serialized.
         bool bShouldImport = true;
         
         FORCEINLINE int32 GetNumBones() const 
@@ -418,7 +400,6 @@ namespace Lumina
             return Bones[BoneIndex];
         }
     
-        // Get the parent bone, or nullptr if root
         FORCEINLINE const FBoneInfo* GetParentBone(int32 BoneIndex) const
         {
             if (!IsBoneIndexValid(BoneIndex))
@@ -435,7 +416,6 @@ namespace Lumina
             return &Bones[ParentIdx];
         }
     
-        // Get all children of a bone
         TVector<int32> GetChildBones(int32 BoneIndex) const
         {
             TVector<int32> Children;
@@ -449,7 +429,6 @@ namespace Lumina
             return Children;
         }
     
-        // Get root bones (bones with no parent)
         TVector<int32> GetRootBones() const
         {
             TVector<int32> Roots;

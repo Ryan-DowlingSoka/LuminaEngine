@@ -40,16 +40,14 @@ namespace Lumina
         World,
     };
 
-    // One profiler "track". One world == one target, so client / server / editor
-    // worlds accumulate independently and can be inspected side-by-side.
+    /** One profiler track per world; lets client/server/editor accumulate independently. */
     struct RUNTIME_API FCPUProfileTarget
     {
         FFixedString        Name;
         void*               Key                 = nullptr;
         ECPUTargetKind      Kind                = ECPUTargetKind::Custom;
 
-        // World metadata for world targets; lets the editor panel badge
-        // net-role and PIE without chasing a possibly-destroyed CWorld*.
+        // Cached world metadata so editor can badge role/PIE without dereffing a possibly-dead CWorld*.
         EWorldType          WorldType           = EWorldType{};
         ENetMode            NetMode             = ENetMode{};
         bool                bPIE                = false;
@@ -78,21 +76,19 @@ namespace Lumina
 
         bool IsEnabled() const;
 
-        // Engine frame boundary: rolls targets Current -> Latest and starts a new Current.
+        /** Rolls Current -> Latest. */
         void BeginFrame();
         void EndFrame();
 
-        // Activation. Scopes emitted between Push/Pop route to the pushed target.
-        // Safe to call with profiling disabled; becomes a cheap no-op.
+        /** Routes scopes emitted between Push/Pop to the pushed target. No-op when disabled. */
         void PushTarget(void* Key, const char* Name, ECPUTargetKind Kind);
         void PushWorldTarget(CWorld* World);
         void PopTarget();
 
-        // Called by FCPUProfileScopeRAII. No-op when no active target or disabled.
+        /** Called by FCPUProfileScopeRAII. */
         void BeginScope(const char* Name, const FColor& Color);
         void EndScope();
 
-        // Editor accessors.
         const TVector<TUniquePtr<FCPUProfileTarget>>& GetTargets() const { return Targets; }
         const FCPUProfileTarget* FindTargetByKey(void* Key) const;
         uint64 GetFrameCounter() const { return FrameCounter; }

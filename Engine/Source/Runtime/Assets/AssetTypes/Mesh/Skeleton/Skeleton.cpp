@@ -20,9 +20,7 @@ namespace Lumina
         const int32 NumBones = SkeletonResource->GetNumBones();
         OutMatrices.resize(NumBones);
 
-        // Forward kinematics in skeleton order: parents always precede children
-        // in Bones[], so a single linear pass produces world-space transforms
-        // without any per-bone scratch.
+        // FK in skeleton order; Bones[] is parents-before-children.
         for (int32 i = 0; i < NumBones; ++i)
         {
             const FSkeletonResource::FBoneInfo& Bone = SkeletonResource->GetBone(i);
@@ -32,9 +30,7 @@ namespace Lumina
             OutMatrices[i] = World;
         }
 
-        // Second pass folds in InvBind. Doing it in-place after the FK pass is
-        // safe because the FK pass only ever reads OutMatrices[Parent] which is
-        // already finalised before any child reads it.
+        // Fold in InvBind in-place; safe because the FK pass already finalized parents before children.
         for (int32 i = 0; i < NumBones; ++i)
         {
             const FSkeletonResource::FBoneInfo& Bone = SkeletonResource->GetBone(i);

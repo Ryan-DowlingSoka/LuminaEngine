@@ -15,9 +15,7 @@ namespace Lumina
 
         if (!SeenPaths.insert(Key).second)
         {
-            // Repeat-add: not an error, but we ignore the second copy. The
-            // dependency walker can hit the same asset by multiple paths,
-            // and silently de-duping makes its caller simpler.
+            // Silently de-dup; dependency walker can revisit assets via different paths.
             return false;
         }
 
@@ -43,7 +41,7 @@ namespace Lumina
             return false;
         }
 
-        // 1) Reserve header — patched at the end with the real TocOffset.
+        // Reserve header; patched with real TocOffset at end.
         FPakHeader Header{};
         Header.Magic      = PAK_MAGIC;
         Header.Version    = PAK_VERSION;
@@ -53,7 +51,6 @@ namespace Lumina
 
         File.write(reinterpret_cast<const char*>(&Header), sizeof(Header));
 
-        // 2) Concatenate entry blobs, recording their absolute offsets.
         TVector<uint64> Offsets;
         Offsets.reserve(Entries.size());
 
@@ -67,8 +64,6 @@ namespace Lumina
             }
         }
 
-        // 3) Write TOC at the current position. Each entry: pathLen, path bytes,
-        //    offset, size.
         const uint64 TocOffset = (uint64)File.tellp();
         for (size_t i = 0; i < Entries.size(); ++i)
         {
@@ -86,7 +81,7 @@ namespace Lumina
             File.write(reinterpret_cast<const char*>(&Size),   sizeof(Size));
         }
 
-        // 4) Patch header with the TocOffset.
+        // Patch header with TocOffset.
         Header.TocOffset = TocOffset;
         File.seekp(0);
         File.write(reinterpret_cast<const char*>(&Header), sizeof(Header));

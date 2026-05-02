@@ -21,11 +21,7 @@ namespace Lumina::Lua
     struct FScript;
     DECLARE_MULTICAST_DELEGATE(FScriptTransactionDelegate, FStringView);
 
-    /**
-     * Per-source-file cache populated on first load. Subsequent loads of the same
-     * script path skip the file read, luau_compile, and schema build — all
-     * instances pay only luau_load + pcall to materialize a fresh module table.
-     */
+    // Per-path cache; subsequent loads skip file read + luau_compile + schema build.
     struct FScriptCacheEntry
     {
         TVector<uint8>                  Bytecode;
@@ -38,9 +34,7 @@ namespace Lumina::Lua
     void Initialize();
     void Shutdown();
 
-    // ------------------------------------------------------------------------
-    // Symbol harvest — walks the live VM globals so the editor can offer
-    // autocomplete that stays in sync with whatever Scripting.cpp registers.
+    // Symbol harvest from live VM globals for editor autocomplete.
     enum class ELuaSymbolKind : uint8
     {
         Table,
@@ -50,39 +44,20 @@ namespace Lumina::Lua
 
     struct FLuaSymbol
     {
-        FString         Name;          // Leaf name, e.g. "ReadFile"
-        FString         Path;          // Dotted path, e.g. "Engine.VFS.ReadFile"
-        FString         Parent;        // Empty for top-level, else parent path e.g. "Engine.VFS"
+        FString         Name;
+        FString         Path;          // Dotted, e.g. "Engine.VFS.ReadFile".
+        FString         Parent;
         ELuaSymbolKind  Kind = ELuaSymbolKind::Value;
 
-        // Concrete Lua type name straight from lua_typename — "function",
-        // "table", "string", "number", "boolean", "vector", etc. Distinct
-        // from Kind because Kind collapses every primitive into Value;
-        // TypeName lets the editor show the precise type.
-        FString         TypeName;
+        FString         TypeName;      // Precise lua_typename; Kind collapses primitives into Value.
+        FString         ValuePreview;  // Literal text for primitives only.
 
-        // Preview of the runtime value for primitives. Empty for tables /
-        // functions / userdata, filled with the literal text for strings,
-        // numbers, booleans. Lets the autocomplete popup show "MaxHealth = 100"
-        // instead of just "MaxHealth".
-        FString         ValuePreview;
-
-        // Function signature info, harvested via lua_getinfo "a" flag:
-        //   - Lua functions: real declared parameter count + vararg flag.
-        //   - C functions:   ParamCount = 0, bIsVararg = true (Luau can't
-        //     introspect their arity, so we render them as "function(...)").
-        // The editor formats these into "function(arg1, arg2, ...)" for the
-        // suggestion popup detail column.
+        // Lua functions: real arity. C functions: ParamCount=0, bIsVararg=true (Luau can't introspect).
         uint8           ParamCount = 0;
         bool            bIsVararg = false;
         bool            bIsCFunction = false;
 
-        // Curated documentation overlay. Filled in for known standard-library
-        // symbols (math.sin, string.format, vector.create, ...) by the
-        // harvester after the live VM walk. ParamNames lets the editor
-        // render real parameter names instead of the generic "arg1, arg2";
-        // Description feeds the multi-line block at the bottom of the hover
-        // tooltip.
+        // Curated overlay for known stdlib symbols.
         TVector<FString> ParamNames;
         FString          Description;
     };
@@ -139,20 +114,14 @@ namespace Lumina::Lua
         RUNTIME_API void RunGC();
         RUNTIME_API FRef GetGlobalsRef() const;
 
-        // Drop the cached bytecode/schema for a path. Called when the source
-        // on disk changes so the next load re-reads + re-compiles.
+        // Drops cached bytecode/schema; next load re-reads + recompiles.
         RUNTIME_API void InvalidateScriptCache(FStringView Path);
 
-        // Walks LUA_GLOBALSINDEX one level deep into nested tables and
-        // returns symbol info the editor uses for autocomplete. Stays in
-        // sync with whatever Initialize() registers — no separate manifest.
+        // Walks LUA_GLOBALSINDEX one level deep for editor autocomplete.
         RUNTIME_API void HarvestGlobalSymbols(TVector<FLuaSymbol>& Out);
 
-        // Re-runs every Lua stdlib file (Engine/Resources/Content/Scripts/Stdlib/*.luau)
-        // against the live VM. Stdlib files use `Foo = Foo or {}` for their
-        // top-level tables, so existing script instances — whose metatables
-        // point at those tables — see the updated methods immediately.
-        // Exposed to Lua as `Engine.ReloadStdlib()`.
+        // Re-runs Stdlib *.luau against the live VM; `Foo = Foo or {}` keeps existing instance metatables hot.
+        // Exposed as `Engine.ReloadStdlib()`.
         RUNTIME_API void ReloadStdlib();
         
         #if LUAI_GCMETRICS
@@ -172,9 +141,7 @@ namespace Lumina::Lua
 
         void ReloadScripts(FStringView Path);
 
-        // Cached-bytecode -> live FScript pipeline. When the Out* params are
-        // non-null they're populated by walking the freshly-loaded module —
-        // used by LoadUniqueScriptPath on a cold cache to seed the entry.
+        // Out* params (when non-null) are populated by walking the loaded module; seeds the cache on cold load.
         TSharedPtr<FScript> InstantiateFromBytecode(
             const TVector<uint8>& Bytecode,
             FStringView Name,
@@ -190,9 +157,6 @@ namespace Lumina::Lua
 
         THashMap<FName, TVector<TWeakPtr<FScript>>> RegisteredScripts;
 
-        // Per-source-file cache of compiled bytecode + parsed schema + handler
-        // keys. Built lazily on first LoadUniqueScriptPath for a given path,
-        // dropped by InvalidateScriptCache when the source changes.
         THashMap<FName, FScriptCacheEntry> ScriptCache;
     };
     

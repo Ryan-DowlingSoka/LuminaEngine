@@ -76,7 +76,6 @@ namespace Lumina
         bool                        bBufferDirty = false;
         bool                        bAutoReload = true;
 
-        // --- Preview ---
         Rml::Context*               PreviewContext = nullptr;
         FRHIImageRef                PreviewTarget;
         uint32                      PreviewWidth = 0;
@@ -107,7 +106,6 @@ namespace Lumina
 
         bool                        bShowRulers = false;
 
-        // --- Editor ---
         float                       EditorFontScale = 1.25f;
         int                         EditorTabSize = 4;
         float                       EditorLineSpacing = 1.0f;

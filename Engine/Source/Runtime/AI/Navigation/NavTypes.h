@@ -5,22 +5,19 @@
 
 namespace Lumina
 {
-    /**
-     * Per-area cost / inclusion mask used by Detour's dtQueryFilter. Up to 64
-     * areas are supported; the first few are reserved by the bake.
-     */
+    /** Area ids for dtQueryFilter (0..63). 0..15 are reserved by the bake. */
     REFLECT()
     enum class ENavArea : uint8
     {
-        Null    = 0,    // Unwalkable, never traversed.
-        Ground  = 1,    // Default walkable terrain.
-        Water   = 2,    // Walkable but expensive.
-        Door    = 3,    // Modifier-stamped, gameplay can toggle cost.
+        Null    = 0,
+        Ground  = 1,
+        Water   = 2,
+        Door    = 3,
         Danger  = 4,
-        User0   = 16,   // 16..63 reserved for game-specific areas.
+        User0   = 16,
     };
 
-    /** Bit flag set carried by every poly. Filters AND-ed at query time. */
+    /** Per-poly flag set; AND-ed at query time. */
     REFLECT()
     enum class ENavPolyFlag : uint16
     {
@@ -32,7 +29,7 @@ namespace Lumina
         All     = 0xFFFF,
     };
 
-    /** Settings driving the offline voxelization + region build. Reflected so the editor exposes them. */
+    /** Offline voxelization + region build settings. */
     REFLECT()
     struct RUNTIME_API FNavBuildSettings
     {
@@ -126,20 +123,12 @@ namespace Lumina
         uint16 ExcludeFlags = 0;
         float  AreaCost[64] = {};   // 1.0 default; copied into dtQueryFilter
 
-        /**
-         * Half-extents of the search box used by findNearestPoly when
-         * snapping a world point (start, end, center) onto the mesh. If a
-         * caller's point is further than this from any walkable poly, the
-         * query fails. Generous on Y by default because typical scenes
-         * have agents floating slightly above the cell-quantized poly Y;
-         * shrink for tighter projection when you want misses to fail loudly.
-         */
+        /** Half-extents for findNearestPoly snapping; generous on Y for cell-quantized poly Y. */
         glm::vec3 QueryExtents = glm::vec3(2.0f, 16.0f, 2.0f);
 
         FNavQueryFilter()
         {
             for (int32 i = 0; i < 64; ++i) AreaCost[i] = 1.0f;
-            // Water more expensive than ground by default.
             AreaCost[(uint8)ENavArea::Water] = 4.0f;
         }
     };
@@ -150,7 +139,7 @@ namespace Lumina
         Gathering,
         Building,
         Combining,
-        Initializing,   // tiles baked, async FNavMesh::Initialize in flight
+        Initializing,
         Ready,
         Failed,
     };

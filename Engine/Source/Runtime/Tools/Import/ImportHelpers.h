@@ -70,12 +70,7 @@ namespace Lumina::Import
             bool bFlipUVs           = false;
             bool bMergeMeshes       = false;
             float Scale             = 1.0f;
-            // Skip the heavy CPU finalization (vertex remap, cache reorder,
-            // shadow buffer, meshlet build, statistics) and the user-facing
-            // transforms (scale, flip-uvs, flip-normals, merge). The dialog
-            // uses this to parse the source file once for preview and defer
-            // the expensive work to commit time, so toggling options no
-            // longer triggers a full re-parse.
+            /** Skip heavy finalization and user transforms; dialog defers them to commit time. */
             bool bSkipFinalization  = false;
         };
 
@@ -85,10 +80,7 @@ namespace Lumina::Import
             FRHIImageRef    DisplayImage;
             TVector<uint8>  Bytes;
 
-            // Semantic role inferred by the mesh importer (from glTF
-            // material slots, etc). When set to a concrete value, the
-            // texture factory uses it directly and skips the filename
-            // heuristic; Auto leaves the heuristic in charge.
+            /** Semantic role from the mesh importer; Auto defers to filename heuristic. */
             ETextureColorSpace IntendedColorSpace = ETextureColorSpace::Auto;
 
             NODISCARD bool IsBytes() const { return !Bytes.empty(); }
@@ -133,10 +125,7 @@ namespace Lumina::Import
             TVector<TUniquePtr<FMeshResource>>          Resources;
             TVector<TUniquePtr<FAnimationResource>>     Animations;
             TVector<TUniquePtr<FSkeletonResource>>      Skeletons;
-            // The dialog populates this when the user commits and TryImport
-            // reads it to drive FinalizeMeshImportData and the per-asset
-            // creation gates. Defaults are safe for any importer that builds
-            // FMeshImportData without going through the dialog.
+            /** Populated by the dialog at commit; drives FinalizeMeshImportData and per-asset creation gates. */
             FMeshImportOptions                          CommitOptions;
         };
         
@@ -144,11 +133,7 @@ namespace Lumina::Import
         void GenerateMeshlets(FMeshResource& MeshResource);
         void AnalyzeMeshStatistics(FMeshResource& MeshResource, FMeshStatistics& OutMeshStats);
 
-        // Apply user-facing transforms (Scale, FlipUVs, FlipNormals, optional
-        // merge) and run the heavy finalize passes (optimize, meshlets, stats)
-        // on a previously parsed FMeshImportData. Used by the import dialog to
-        // defer all expensive post-processing to commit time so toggling
-        // options doesn't trigger a re-parse.
+        /** Apply user transforms and run the heavy finalize passes on a previously parsed FMeshImportData. */
         RUNTIME_API void FinalizeMeshImportData(FMeshImportData& Data, const FMeshImportOptions& Options);
         
         namespace OBJ

@@ -29,37 +29,28 @@ namespace Lumina
         Orbit,   // RMB-drag yaw/pitch around a focal point, MMB pan, wheel zoom
     };
 
-    // Per-tool editor-camera state. Replaces the deleted SEditorEntityMovementSystem
-    // — each tool ticks its own camera in TickEditorCamera() so mode and focus can
-    // be configured per-editor (e.g. asset editors default to Orbit on the asset).
+    // Per-tool editor-camera state; each tool ticks its own camera so mode/focus is per-editor.
     struct FEditorCameraState
     {
         EEditorCameraMode Mode = EEditorCameraMode::Free;
 
-        // Free-cam state
         float       Speed       = 50.0f;
         float       SpeedScale  = 1.0f;
         glm::vec3   Velocity    = glm::vec3(0.0f);
 
-        // Orbit-cam state. Yaw/pitch are degrees applied to a unit forward axis
-        // pointing along +Z (matches FTransform's default forward). OrbitAnchor
-        // is the tool-set "home" position; MMB-pan moves OrbitTarget away from
-        // it, and ResetOrbitPan snaps back.
+        // Yaw/pitch in degrees on +Z forward. OrbitAnchor is "home"; MMB-pan moves OrbitTarget, ResetOrbitPan snaps back.
         glm::vec3   OrbitTarget   = glm::vec3(0.0f);
         glm::vec3   OrbitAnchor   = glm::vec3(0.0f);
         float       OrbitDistance = 5.0f;
         float       OrbitYaw      = 0.0f;
         float       OrbitPitch    = -15.0f;
 
-        // Trailing-edge tracker: only release the captured mouse mode once when
-        // the user lets go of RMB, instead of every frame they're not looking.
+        // Trailing-edge: release captured mouse mode once on RMB-up, not every non-looking frame.
         bool        bWasLooking = false;
 
-        // Camera focus interpolation. When bFocusInterp is true, TickEditorCamera
-        // smoothly drives the camera toward the stored targets. User movement
-        // input (WASD, RMB-look, MMB-pan, scroll) cancels mid-lerp.
+        // Smooth focus interp; user movement input cancels mid-lerp.
         bool        bFocusInterp        = false;
-        // Exponential-decay rate (1/seconds). ~12 yields ~250ms to ~95% complete.
+        // Exponential-decay rate (1/s); ~12 yields ~250ms to ~95%.
         float       FocusInterpRate     = 12.0f;
         glm::vec3   FocusFreePosition   = glm::vec3(0.0f);
         glm::quat   FocusFreeRotation   = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
@@ -75,7 +66,6 @@ namespace Lumina
 
         constexpr static char const* const ViewportWindowName = "Viewport";
 
-        //--------------------------------------------------------------------------
         
         class FToolWindow
         {
@@ -100,7 +90,6 @@ namespace Lumina
             
         };
         
-        //--------------------------------------------------------------------------
         
         struct FTransaction
         {
@@ -109,7 +98,6 @@ namespace Lumina
             TVector<uint8>  AfterState;
         };
 
-        //--------------------------------------------------------------------------
 
     public:
 
@@ -144,10 +132,7 @@ namespace Lumina
 
         NODISCARD virtual bool IsSingleWindowTool() const { return false; }
 
-        // Get the hash of the unique type ID for this tool
         NODISCARD virtual uint32 GetUniqueTypeID() const = 0;
-
-        // Get the unique typename for this tool to be used for docking
         NODISCARD virtual char const* GetUniqueTypeName() const = 0;
 
         /** Replaces the world: destroys the old, creates a fresh editor context, sets up entities. */
@@ -165,9 +150,7 @@ namespace Lumina
         /** Called just before updating the world at each stage */
         virtual void WorldUpdate(const FUpdateContext& UpdateContext) { }
 
-        /** Once per-frame update. The base implementation drives the editor camera; subclasses
-         *  that override this should call FEditorTool::Update() (or TickEditorCamera() directly)
-         *  so look/orbit input keeps working. */
+        /** Per-frame update; overrides should call base (or TickEditorCamera) so look/orbit input works. */
         virtual void Update(const FUpdateContext& UpdateContext);
 
         /** Called once at the end of frame */
@@ -176,34 +159,29 @@ namespace Lumina
         /** Optionally draw a toolbar at the top of the window */
         void DrawMainToolbar(const FUpdateContext& UpdateContext);
 
-        /** Drives the editor-entity camera. Called once per frame from FEditorTool::Update;
-         *  subclasses should call FEditorTool::Update() (or this directly) so the camera ticks. */
+        /** Drives the editor-entity camera; called from FEditorTool::Update. */
         void TickEditorCamera(double DeltaTime);
 
         FEditorCameraState&       GetCameraState()       { return CameraState; }
         const FEditorCameraState& GetCameraState() const { return CameraState; }
 
-        /** Switch camera mode. When entering Orbit, derive target/yaw/pitch/distance from the
-         *  current camera transform (relative to OrbitTarget) so the view doesn't snap. */
+        /** Switch camera mode; entering Orbit derives target/yaw/pitch/distance from the current transform. */
         void SetCameraMode(EEditorCameraMode Mode);
 
-        /** Re-anchor orbit on a new world-space point. Pass the entity's location, mesh center, etc.
-         *  Updates both OrbitTarget and the OrbitAnchor that ResetOrbitPan returns to. */
+        /** Re-anchor orbit on a new world point; updates OrbitTarget and the OrbitAnchor ResetOrbitPan returns to. */
         void SetOrbitTarget(const glm::vec3& Target, float Distance = -1.0f);
 
-        /** Snap OrbitTarget back to OrbitAnchor — undoes any MMB-drag pan the user did. */
+        /** Snap OrbitTarget back to OrbitAnchor (undo MMB-drag pan). */
         void ResetOrbitPan();
 
     private:
 
-        /** Push the current orbit state (target/yaw/pitch/distance) onto the editor entity's
-         *  transform. Pure derived-state writer — safe to call any time, no input read. */
+        /** Push current orbit state onto the editor entity's transform. */
         void ApplyOrbitTransform();
 
     public:
 
-        /** Drop a small "Free / Orbit" combo into the current viewport overlay. Call from a tool's
-         *  DrawViewportOverlayElements override (typically alongside the preview-mesh selector). */
+        /** Free/Orbit combo for DrawViewportOverlayElements overrides. */
         void DrawCameraModeSelector(float ItemWidth = 95.0f);
 
         /** Allows the child to draw specific menu actions */
@@ -271,19 +249,16 @@ namespace Lumina
 
     protected:
 
-        /** Called when the user begins manipulating something to be transacted. Captures the before-state for the transaction. */
+        /** Begin a transaction; captures before-state. */
         virtual void BeginTransaction();
 
-        /** Called when the user finishes manipulating something that was transacted. Captures the after-state and pushes the transaction onto the undo stack. */
+        /** End a transaction; captures after-state and pushes onto the undo stack. */
         virtual void EndTransaction(FName Name);
 
-        /** Restores the registry to the state before the last transaction. Pushes the current state onto the redo stack. */
         virtual void Undo();
-
-        /** Restores the registry to the state after the last undone transaction. Pushes the current state onto the undo stack. */
         virtual void Redo();
 
-        /** Hook called after a registry round-trip in Undo/Redo. Override to rebuild caches that mirror registry state (e.g. selection sets, outliner rows). */
+        /** After a registry round-trip in Undo/Redo; override to rebuild caches mirroring registry state. */
         virtual void OnPostUndoRedo() { }
 
         /** Drops every transaction; call when the world is replaced or an asset reloads. */
@@ -293,32 +268,26 @@ namespace Lumina
         
         FToolWindow* CreateToolWindow(FName InName, const TFunction<void(bool)>& DrawFunction, const ImVec2& WindowPadding = ImVec2(-1, -1), bool DisableScrolling = false);
         
-        /** Draw a help menu for this tool. Called inside a 2-column HelpTable;
-         *  override to add tool-specific rows via DrawHelpTextRow. */
+        /** Override to add tool-specific rows in a 2-column HelpTable. */
         virtual void DrawHelpMenu() { DrawHelpTextRow("No Help Available", ""); }
 
-        /** Helper to add a simple entry to the help menu */
         void DrawHelpTextRow(const char* Label, const char* Text) const;
 
     private:
 
-        /** Renders the tool's registered actions as a Help > Keybinds sub-menu.
-         *  Called automatically from DrawMainToolbar; tools never invoke this. */
+        /** Renders registered actions as Help > Keybinds; auto-called from DrawMainToolbar. */
         void DrawKeybindsMenu();
 
     public:
 
-        /** Register a keybind-driven editor command. Tools should call this from
-         *  OnInitialize(). Registered actions are dispatched once per frame and
-         *  surfaced in the global Help > Keyboard Shortcuts window. */
+        /** Register a keybind-driven command; call from OnInitialize. Surfaces in Help > Keyboard Shortcuts. */
         void RegisterAction(FEditorAction Action) { EditorActions.push_back(eastl::move(Action)); }
 
         const TVector<FEditorAction>& GetRegisteredActions() const { return EditorActions; }
 
     protected:
 
-        /** Polls every registered action's chord and fires its callback when matched.
-         *  Called from FEditorTool::Update; gated against text-input focus. */
+        /** Polls action chords and fires callbacks; called from FEditorTool::Update; gated against text-input focus. */
         void TickEditorActions();
 
     private:
@@ -357,9 +326,7 @@ namespace Lumina
         bool                                bViewportHovered = false;
 		bool							    bWorldGridEnabled = true;
 
-        // Fullscreen viewport toggle (F11). When set, the viewport tool window is
-        // drawn as a borderless fullscreen overlay over the main viewport instead
-        // of inside the tool's dockspace; the tool's other windows are suppressed.
+        // F11 fullscreen viewport: draws as borderless overlay; other tool windows are suppressed.
         bool                                bViewportFullscreen = false;
 
     public:
@@ -377,7 +344,6 @@ constexpr static bool const s_isSingleton = false; \
 virtual char const* GetUniqueTypeName() const override { return s_uniqueTypeName; }\
 virtual uint32 GetUniqueTypeID() const override final { return TypeName::s_toolTypeID; }
 
-//-------------------------------------------------------------------------
 
 #define LUMINA_SINGLETON_EDITOR_TOOL( TypeName ) \
 constexpr static char const* const s_uniqueTypeName = #TypeName;\

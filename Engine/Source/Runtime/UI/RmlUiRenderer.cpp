@@ -23,7 +23,7 @@
 
 namespace Lumina
 {
-    // Must match RmlUiVert.slang exactly.
+    // Must match RmlUiVert.slang.
     struct FRmlUiPushConstants
     {
         glm::mat4 MVP;
@@ -33,7 +33,7 @@ namespace Lumina
     static_assert(sizeof(FRmlUiPushConstants) == 80, "Push-constant size must match shader layout exactly.");
     static_assert(sizeof(FRmlUiPushConstants) <= MaxPushConstantSize, "Push-constants exceed RHI cap.");
 
-    // Vertex layout matches Rml::Vertex byte-for-byte: pos(8) colour(4) uv(8).
+    // Vertex layout: pos(8) colour(4) uv(8).
     static_assert(sizeof(Rml::Vertex) == 20, "Rml::Vertex layout drifted; renderer input layout must be updated.");
 
     FRmlUiRenderer::FRmlUiRenderer() = default;
@@ -56,8 +56,7 @@ namespace Lumina
             return false;
         }
 
-        // Default 1x1 white texture for untextured geometry. Upload happens on
-        // first BeginFrame when we have a command list outside any render pass.
+        // 1x1 white fallback for untextured geometry; uploaded on first BeginFrame.
         constexpr uint8 WhitePixel[4] = {255, 255, 255, 255};
         TVector<uint8> Bytes;
         Bytes.assign(WhitePixel, WhitePixel + 4);
@@ -109,7 +108,6 @@ namespace Lumina
         Attribs[2].ElementStride= sizeof(Rml::Vertex);
         InputLayout = GRenderContext->CreateInputLayout(Attribs, 3);
 
-        // Combined image-sampler at set 0 / binding 0; matches RmlUiPixel.slang.
         FBindingLayoutDesc LayoutDesc;
         LayoutDesc.SetDebugName("RmlUiBindings")
                   .SetBindingIndex(0)
@@ -117,7 +115,7 @@ namespace Lumina
                   .AddItem(FBindingLayoutItem::Texture_SRV(0));
         BindingLayout = GRenderContext->CreateBindingLayout(LayoutDesc);
 
-        // Bilinear + clamp: glyph upscaling needs filtering, UV wrap is never wanted.
+        // Bilinear + clamp; UV wrap is never wanted.
         FSamplerDesc SamplerInfo;
         SamplerInfo.DebugName = "RmlUiSampler";
         SamplerInfo.SetAllFilters(true).SetAllAddressModes(ESamplerAddressMode::Clamp);
@@ -131,7 +129,7 @@ namespace Lumina
             return false;
         }
 
-        // Premultiplied alpha: src=One because RmlUi pre-multiplies vertex colours.
+        // Premultiplied alpha: RmlUi pre-multiplies vertex colors.
         FBlendState BlendState;
         BlendState.Targets[0].EnableBlend()
             .SetSrcBlend(EBlendFactor::One)
@@ -144,7 +142,7 @@ namespace Lumina
         FDepthStencilState DepthState;
         DepthState.DisableDepthTest().DisableDepthWrite().DisableStencil();
 
-        // No culling: RmlUi doesn't normalise winding.
+        // No culling; RmlUi doesn't normalize winding.
         FRasterState RasterState;
         RasterState.SetCullNone().EnableScissor();
 
@@ -153,9 +151,7 @@ namespace Lumina
                    .SetDepthStencilState(DepthState)
                    .SetRasterState(RasterState);
 
-        // Pipeline format-bound to the engine viewport. World RTs in Lumina
-        // use the same format today; if that diverges this needs a per-format
-        // pipeline cache.
+        // Pipeline format-bound to the engine viewport; world RTs share that format today.
         FRHIImage* TargetImage = FEngine::GetEngineViewport()->GetRenderTarget();
         if (TargetImage == nullptr)
         {
@@ -197,8 +193,7 @@ namespace Lumina
 
         DrawCalls.clear();
 
-        // pixel -> NDC orthographic. No Y-flip: Lumina's Vulkan viewport is
-        // already +Y-down (FVulkanCommandList::ToVkViewport, FLIP=0).
+        // pixel -> NDC ortho; no Y-flip since Vulkan viewport is +Y-down.
         const float W = ViewportSize.x > 0 ? float(ViewportSize.x) : 1.0f;
         const float H = ViewportSize.y > 0 ? float(ViewportSize.y) : 1.0f;
         ProjectionMatrix = glm::mat4(
@@ -211,8 +206,7 @@ namespace Lumina
         CachedMVP     = ProjectionMatrix;
         bScissorEnabled = false;
 
-        // Cache the pass desc so SetGraphicsState compares equal across draws
-        // and doesn't churn Begin/End passes.
+        // Cache pass desc so SetGraphicsState avoids Begin/End churn across draws.
         CurrentPassDesc = FRenderPassDesc{};
         if (Target != nullptr)
         {
@@ -232,7 +226,7 @@ namespace Lumina
         }
         ICommandList& CmdList = *CurrentCmdList;
 
-        // Texture uploads must run outside any render pass.
+        // Texture uploads must be outside a render pass.
         UploadPendingTextures();
 
         if (!DrawCalls.empty() && CurrentTarget != nullptr)
@@ -271,7 +265,6 @@ namespace Lumina
             return;
         }
 
-        // Untextured geometry binds the 1x1 white fallback.
         FRHIBindingSet* BindingSet = DefaultWhiteBindingSet.GetReference();
         if (Draw.Texture != 0)
         {
@@ -321,7 +314,7 @@ namespace Lumina
     {
         if (CurrentCmdList == nullptr)
         {
-            // RmlUi can compile geometry outside our frame (e.g. font-atlas re-bake).
+            // RmlUi can compile outside our frame (e.g. font-atlas re-bake).
             return 0;
         }
 
@@ -332,9 +325,7 @@ namespace Lumina
             return 0;
         }
 
-        // bKeepInitialState marks VertexBuffer/IndexBuffer as the resting state
-        // so the auto-barrier system stays correct across frames (each frame
-        // uses a fresh command list).
+        // bKeepInitialState pins the resting state so auto-barriers stay correct across frames.
         FRHIBufferDesc VBDesc;
         VBDesc.Size = VBSize;
         VBDesc.Stride = sizeof(Rml::Vertex);
@@ -410,7 +401,7 @@ namespace Lumina
             return 0;
         }
 
-        // CSS images use straight alpha; pre-multiply so the pipeline's blend works for both sources.
+        // CSS images are straight alpha; pre-multiply for the blend pipeline.
         const size_t PixelCount = size_t(Width) * size_t(Height);
         for (size_t i = 0; i < PixelCount; ++i)
         {
@@ -443,8 +434,7 @@ namespace Lumina
             return 0;
         }
 
-        // ShaderResource is the resting state; auto-barriers cycle to CopyDest
-        // for the upload and back. bKeepInitialState makes that stick across frames.
+        // Resting state ShaderResource; bKeepInitialState pins across frames.
         FRHIImageDesc Desc;
         Desc.Extent      = glm::uvec2(uint32(Width), uint32(Height));
         Desc.Format      = EFormat::RGBA8_UNORM;
@@ -527,8 +517,7 @@ namespace Lumina
     {
         if (Transform)
         {
-            // RmlUi defaults to column-major (matches glm); direct memcpy is fine.
-            // RMLUI_MATRIX_ROW_MAJOR would require a transpose.
+            // RmlUi defaults column-major (matches glm); RMLUI_MATRIX_ROW_MAJOR would require a transpose.
             std::memcpy(glm::value_ptr(UserTransform), Transform->data(), sizeof(float) * 16);
         }
         else

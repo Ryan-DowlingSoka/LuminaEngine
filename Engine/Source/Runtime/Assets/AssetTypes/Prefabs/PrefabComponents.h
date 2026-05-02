@@ -9,11 +9,7 @@ namespace Lumina
 {
     class CPrefab;
 
-    /**
-     * Placed on every entity that belongs to a CPrefab's registry.
-     * StableID is unique within the prefab and survives save/load, letting us pair prefab entities
-     * with their world instances so prefab edits can propagate to already-placed instances.
-     */
+    /** Placed on every prefab-registry entity; StableID survives save/load to pair entities with instances. */
     REFLECT(Component, HideInComponentList)
     struct RUNTIME_API SPrefabComponent
     {
@@ -23,11 +19,7 @@ namespace Lumina
         FName StableID;
     };
 
-    /**
-     * Marks an entity in a world as an instance of a prefab.
-     * On world post-load (and whenever a prefab changes) we walk these and copy fresh component data
-     * from the source prefab so live instances stay in sync with the asset.
-     */
+    /** Marks a world entity as a prefab instance; refreshed from the source prefab on world load. */
     REFLECT(Component)
     struct RUNTIME_API SPrefabInstanceComponent
     {

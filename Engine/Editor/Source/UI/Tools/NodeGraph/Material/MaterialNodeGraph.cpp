@@ -28,7 +28,6 @@ namespace Lumina
             CreateNode(CMaterialOutputNode::StaticClass());
         }
 
-        // ---- Math (binary) ----
         RegisterGraphNode(CMaterialExpression_Addition::StaticClass());
         RegisterGraphNode(CMaterialExpression_Subtraction::StaticClass());
         RegisterGraphNode(CMaterialExpression_Multiplication::StaticClass());
@@ -40,7 +39,6 @@ namespace Lumina
         RegisterGraphNode(CMaterialExpression_Step::StaticClass());
         RegisterGraphNode(CMaterialExpression_Atan2::StaticClass());
 
-        // ---- Math (unary) ----
         RegisterGraphNode(CMaterialExpression_Sin::StaticClass());
         RegisterGraphNode(CMaterialExpression_Cosin::StaticClass());
         RegisterGraphNode(CMaterialExpression_Tan::StaticClass());
@@ -72,13 +70,11 @@ namespace Lumina
         RegisterGraphNode(CMaterialExpression_Abs::StaticClass());
         RegisterGraphNode(CMaterialExpression_Saturate::StaticClass());
 
-        // ---- Math (ternary) ----
         RegisterGraphNode(CMaterialExpression_Lerp::StaticClass());
         RegisterGraphNode(CMaterialExpression_Clamp::StaticClass());
         RegisterGraphNode(CMaterialExpression_SmoothStep::StaticClass());
         RegisterGraphNode(CMaterialExpression_Remap::StaticClass());
 
-        // ---- Vector ops ----
         RegisterGraphNode(CMaterialExpression_ComponentMask::StaticClass());
         RegisterGraphNode(CMaterialExpression_Append::StaticClass());
         RegisterGraphNode(CMaterialExpression_MakeFloat2::StaticClass());
@@ -96,7 +92,6 @@ namespace Lumina
         RegisterGraphNode(CMaterialExpression_Refract::StaticClass());
         RegisterGraphNode(CMaterialExpression_RotateAboutAxis::StaticClass());
 
-        // ---- Inputs ----
         RegisterGraphNode(CMaterialExpression_TexCoords::StaticClass());
         RegisterGraphNode(CMaterialExpression_Panner::StaticClass());
         RegisterGraphNode(CMaterialExpression_VertexNormal::StaticClass());
@@ -109,17 +104,14 @@ namespace Lumina
         RegisterGraphNode(CMaterialNodeGetTime::StaticClass());
         RegisterGraphNode(CMaterialExpression_CustomPrimitiveData::StaticClass());
 
-        // ---- Constants ----
         RegisterGraphNode(CMaterialExpression_ConstantFloat::StaticClass());
         RegisterGraphNode(CMaterialExpression_ConstantFloat2::StaticClass());
         RegisterGraphNode(CMaterialExpression_ConstantFloat3::StaticClass());
         RegisterGraphNode(CMaterialExpression_ConstantFloat4::StaticClass());
         RegisterGraphNode(CMaterialExpression_NumericConstant::StaticClass());
 
-        // ---- Textures ----
         RegisterGraphNode(CMaterialExpression_TextureSample::StaticClass());
 
-        // ---- Color ----
         RegisterGraphNode(CMaterialExpression_Luminance::StaticClass());
         RegisterGraphNode(CMaterialExpression_Desaturate::StaticClass());
         RegisterGraphNode(CMaterialExpression_RGBToHSV::StaticClass());
@@ -132,7 +124,6 @@ namespace Lumina
         RegisterGraphNode(CMaterialExpression_LinearToSRGB::StaticClass());
         RegisterGraphNode(CMaterialExpression_SRGBToLinear::StaticClass());
 
-        // ---- Noise ----
         RegisterGraphNode(CMaterialExpression_Hash11::StaticClass());
         RegisterGraphNode(CMaterialExpression_Hash21::StaticClass());
         RegisterGraphNode(CMaterialExpression_Hash22::StaticClass());
@@ -144,14 +135,12 @@ namespace Lumina
         RegisterGraphNode(CMaterialExpression_SimpleNoise::StaticClass());
         RegisterGraphNode(CMaterialExpression_Checkerboard::StaticClass());
 
-        // ---- UV ----
         RegisterGraphNode(CMaterialExpression_RotateUV::StaticClass());
         RegisterGraphNode(CMaterialExpression_TilingAndOffset::StaticClass());
         RegisterGraphNode(CMaterialExpression_FlipBook::StaticClass());
         RegisterGraphNode(CMaterialExpression_PolarCoordinates::StaticClass());
         RegisterGraphNode(CMaterialExpression_TwirlUV::StaticClass());
 
-        // ---- Scene ----
         RegisterGraphNode(CMaterialExpression_ScreenPosition::StaticClass());
         RegisterGraphNode(CMaterialExpression_ViewDirection::StaticClass());
         RegisterGraphNode(CMaterialExpression_ReflectionVector::StaticClass());
@@ -162,18 +151,15 @@ namespace Lumina
         RegisterGraphNode(CMaterialExpression_SceneDepth::StaticClass());
         RegisterGraphNode(CMaterialExpression_SceneHDRColor::StaticClass());
 
-        // ---- Conditional ----
         RegisterGraphNode(CMaterialExpression_If::StaticClass());
         RegisterGraphNode(CMaterialExpression_Compare::StaticClass());
 
-        // ---- Shading ----
         RegisterGraphNode(CMaterialExpression_Fresnel::StaticClass());
         RegisterGraphNode(CMaterialExpression_DepthFade::StaticClass());
         RegisterGraphNode(CMaterialExpression_NormalFromHeight::StaticClass());
         RegisterGraphNode(CMaterialExpression_DeriveNormalZ::StaticClass());
         RegisterGraphNode(CMaterialExpression_BlendNormals::StaticClass());
 
-        // ---- Terrain ----
         RegisterGraphNode(CMaterialExpression_TerrainLayerWeight::StaticClass());
         RegisterGraphNode(CMaterialExpression_TerrainLayerWeights::StaticClass());
         RegisterGraphNode(CMaterialExpression_TerrainLayerBlend::StaticClass());

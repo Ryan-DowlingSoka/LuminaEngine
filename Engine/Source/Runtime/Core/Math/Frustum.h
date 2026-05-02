@@ -28,10 +28,7 @@ namespace Lumina
             return true;
         }
 
-        // Conservative sphere-vs-frustum: returns true unless the sphere is
-        // entirely outside at least one plane (i.e. signed distance < -Radius
-        // for some plane). False positives near corners are fine; the test is
-        // used for cheap broad-phase culling, not exact visibility.
+        /** Conservative sphere-vs-frustum; false positives near corners are acceptable for broad-phase. */
         NODISCARD bool IntersectsSphere(const glm::vec3& Center, float Radius) const
         {
             for (int i = 0; i < NUM; ++i)
@@ -69,18 +66,7 @@ namespace Lumina
             return true;
         }
 
-        /**
-         * Returns a frustum that bounds the Minkowski sum of this frustum and the
-         * line segment { t * SweepDir : 0 <= t <= SweepDistance }. In practice:
-         * takes this (camera) frustum and extends it along the sun-light
-         * direction so shadow casters sitting *outside* the camera view but
-         * *between* the sun and the camera view still get included in the
-         * shadow-cull pass. Planes whose outward-facing normal has a component
-         * into -SweepDir are pushed outward by that component's length.
-         *
-         * SweepDir should point from the shadow caster toward the light (i.e.
-         * the sun direction vector, same convention as FLight::Direction).
-         */
+        /** Sweeps the frustum along SweepDir for shadow culling; SweepDir points toward the light. */
         NODISCARD FFrustum Extruded(const glm::vec3& SweepDir, float SweepDistance) const
         {
             FFrustum Out;
@@ -88,19 +74,13 @@ namespace Lumina
             {
                 const glm::vec4& P = Planes[i];
                 const glm::vec3 N(P.x, P.y, P.z);
-                // Inside half-space is N.X + d >= 0. For points in the swept
-                // volume (X or X + t*SweepDir), worst-case is X - max(0, t * dot(N, -SweepDir)).
-                // So relax d by max(0, SweepDistance * dot(N, -SweepDir)).
                 const float Push = glm::max(0.0f, SweepDistance * glm::dot(N, -SweepDir));
                 Out.Planes[i] = glm::vec4(N, P.w + Push);
             }
             return Out;
         }
 
-        // Extract the 6 world-space planes from a view-projection matrix. Planes
-        // are normalized and oriented so that points inside the frustum produce
-        // a non-negative signed distance (matching the convention used by
-        // IsInside / the GPU InFrustum helper in ShadowMeshCull.slang).
+        /** Extracts 6 normalized world-space planes; signed distance >= 0 inside. Matches GPU InFrustum convention. */
         static FFrustum FromViewProjection(const glm::mat4& VP)
         {
             FFrustum Out = {};

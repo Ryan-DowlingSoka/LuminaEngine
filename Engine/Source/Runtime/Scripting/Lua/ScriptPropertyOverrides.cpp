@@ -33,8 +33,7 @@ namespace Lumina
             Items.resize(Count);
         }
 
-        // If a single item fails its own forward-compat skip can resync the stream;
-        // reconcile will replace Nil/mismatched entries against the live schema.
+        // Per-item forward-compat skip resyncs the stream; reconcile fixes mismatches.
         for (uint32 i = 0; i < Count; ++i)
         {
             Ar << Items[i].Name;

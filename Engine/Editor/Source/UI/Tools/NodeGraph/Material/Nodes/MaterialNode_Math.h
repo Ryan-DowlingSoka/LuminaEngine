@@ -4,9 +4,7 @@
 
 namespace Lumina
 {
-    // ========================================================================
     // Binary math operations (A op B)
-    // ========================================================================
 
     REFLECT()
     class CMaterialExpression_Addition : public CMaterialExpression_Math
@@ -128,9 +126,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    // ========================================================================
     // Unary math operations
-    // ========================================================================
 
     REFLECT()
     class CMaterialExpression_Sin : public CMaterialExpression_Math
@@ -492,9 +488,7 @@ namespace Lumina
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 
-    // ========================================================================
     // Ternary
-    // ========================================================================
 
     REFLECT()
     class CMaterialExpression_Lerp : public CMaterialExpression_Math

@@ -14,9 +14,7 @@ namespace Lumina::Vk
 
         FResourceStateMapping AsResourceStateMapping() const 
         {
-            // It's safe to cast VkAccessFlags2 -> VkAccessFlags and VkPipelineStageFlags2 -> VkPipelineStageFlags (as long as the enum exist in both versions!),
-            // synchronization2 spec says: "The new flags are identical to the old values within the 32-bit range, with new stages and bits beyond that."
-            // The below stages are exclusive to synchronization2
+            // synchronization2 stages/bits beyond 32-bit range are not safe to cast to legacy types.
             DEBUG_ASSERT((StageFlags & VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT) != VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT);
             DEBUG_ASSERT((AccessMask & VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT) != VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT);
             return FResourceStateMapping(State, static_cast<VkPipelineStageFlags>(StageFlags), static_cast<VkAccessFlags>(AccessMask), ImageLayout);

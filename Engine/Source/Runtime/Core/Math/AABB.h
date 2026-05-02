@@ -12,11 +12,9 @@ namespace Lumina
     {
         GENERATED_BODY()
         
-        /** Minimum corner of the axis-aligned bounding box in local space. */
         PROPERTY(Script, Editable)
         glm::vec3 Min;
 
-        /** Maximum corner of the axis-aligned bounding box in local space. */
         PROPERTY(Script, Editable)
         glm::vec3 Max;
         

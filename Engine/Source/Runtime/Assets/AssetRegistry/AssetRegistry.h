@@ -88,13 +88,9 @@ namespace Lumina
 		FAssetRegistryUpdatedDelegate	OnAssetRegistryUpdated;
 
 		mutable FSharedMutex			AssetsMutex;
-
-		/** Global hash of all registered assets */
 		FAssetDataMap 					Assets;
 
 		mutable FSharedMutex			FailedAssetsMutex;
-
-		/** Assets that failed to load (corrupt header, version mismatch, etc.) */
 		TVector<FString>				FailedAssets;
 	};
 

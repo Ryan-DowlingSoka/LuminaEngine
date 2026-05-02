@@ -10,19 +10,13 @@ namespace Lumina
 
 namespace Lumina
 {
-    /** Aids in serialization of reflected properties. */
+    /** Reflected-property serialization tag. */
     struct FPropertyTag
     {
-        /** Type of the property */
         FName Type;
-
-        /** Name of the property */
         FName Name;
-
-        /** Size of the property */
         int32 Size = 0;
-
-        /** Offset into the buffer in bytes */
+        /** Offset into the buffer in bytes. */
         int64 Offset = 0;
         
         

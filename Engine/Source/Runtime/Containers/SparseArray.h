@@ -7,10 +7,7 @@
 
 namespace Lumina
 {
-    /**
-     *  Sparse Array implementation
-     *  Provides stable indices at the cost of non-contiguous access and some extra memory.
-     *  **/
+    /** Stable-index array; non-contiguous storage. */
     template <typename T>
     class TSparseArray
     {
@@ -47,7 +44,6 @@ namespace Lumina
                         }
                         if (!Occupied[i])
                         {
-                            // Remove from free list if it was there
                             FreeList.erase(std::remove(FreeList.begin(), FreeList.end(), i), FreeList.end());
                             new (&Data[i]) T(*reinterpret_cast<const T*>(&other.Data[i]));
                             Occupied[i] = true;
@@ -62,14 +58,12 @@ namespace Lumina
             }
         }
         
-        // Move constructor
         TSparseArray(TSparseArray&& other) noexcept
             : Data(std::move(other.Data))
             , Occupied(std::move(other.Occupied))
             , FreeList(std::move(other.FreeList))
         {}
         
-        // Assignment operators
         TSparseArray& operator=(const TSparseArray& other)
         {
             if (this != &other)
@@ -97,7 +91,6 @@ namespace Lumina
             Clear();
         }
     
-        // Perfect forwarding insert
         template<typename... Args>
         Index Emplace(Args&&... args)
         {
@@ -152,7 +145,6 @@ namespace Lumina
             return (idx < Data.size() && Occupied[idx]) ? reinterpret_cast<const T*>(&Data[idx]) : nullptr;
         }
     
-        // Bounds-checked access
         T& At(Index idx)
         {
             if (idx >= Data.size() || !Occupied[idx])
@@ -171,7 +163,6 @@ namespace Lumina
             return *reinterpret_cast<const T*>(&Data[idx]);
         }
     
-        // Unchecked access
         T& operator[](Index idx) noexcept
         {
             return *reinterpret_cast<T*>(&Data[idx]);
@@ -201,34 +192,29 @@ namespace Lumina
             FreeList.clear();
         }
     
-        // Reserve capacity
         void Reserve(size_type capacity)
         {
             Data.reserve(capacity);
             Occupied.reserve(capacity);
-            // Note: Don't reserve FreeList as its size is unpredictable
         }
-    
-        // Shrink free list and compact if beneficial
+
         void ShrinkToFit()
         {
             Data.shrink_to_fit();
             FreeList.shrink_to_fit();
         }
     
-        // Get statistics
         size_type Size() const noexcept { return Data.size() - FreeList.size(); }
         size_type Capacity() const noexcept { return Data.size(); }
         size_type FreeCount() const noexcept { return FreeList.size(); }
         bool Empty() const noexcept { return Size() == 0; }
-        
-        // Get fragmentation ratio (0.0 = no fragmentation, 1.0 = maximum fragmentation)
+
+        /** 0.0 = none, 1.0 = max fragmentation. */
         float FragmentationRatio() const noexcept 
         {
             return Data.empty() ? 0.0f : static_cast<float>(FreeList.size()) / Data.size();
         }
     
-        // Compacts the array by moving elements to fill holes
         void Defragment()
         {
             if (FreeList.empty())
@@ -236,16 +222,14 @@ namespace Lumina
                 return;
             }
 
-            // Sort free list to process holes in order
             std::ranges::sort(FreeList);
-    
+
             Index writeIdx = 0;
             Index readIdx = 0;
-            
+
             while (readIdx < Data.size()) {
                 if (Occupied[readIdx]) {
                     if (writeIdx != readIdx) {
-                        // Move element
                         new (&Data[writeIdx]) T(std::move(*reinterpret_cast<T*>(&Data[readIdx])));
                         reinterpret_cast<T*>(&Data[readIdx])->~T();
                         Occupied[writeIdx] = true;
@@ -255,14 +239,12 @@ namespace Lumina
                 }
                 ++readIdx;
             }
-    
-            // Resize containers
+
             Data.resize(writeIdx);
             Occupied.resize(writeIdx);
             FreeList.clear();
         }
-    
-        // Iterator implementation
+
         class iterator
         {
         public:
@@ -312,7 +294,6 @@ namespace Lumina
                 return !(*this == other);
             }
     
-            // Get the current index
             Index GetIndex() const { return IndexValue; }
     
         private:

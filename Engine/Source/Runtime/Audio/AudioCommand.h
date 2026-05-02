@@ -7,8 +7,7 @@
 
 namespace Lumina
 {
-	// A command sent from the game thread to the audio thread.
-	// Uses a tagged-union style to avoid heap allocation per command.
+	// Tagged-union command from game thread to audio thread; avoids per-command heap alloc.
 	struct FAudioCommand
 	{
 		EAudioCommandType Type;
@@ -18,7 +17,7 @@ namespace Lumina
 		{
 			struct
 			{
-				// We store the path inline (up to 255 chars) to avoid heap alloc.
+				// Inline path (up to 255 chars) to avoid heap alloc.
 				char Path[256];
 				float Volume;
 				float Pitch;

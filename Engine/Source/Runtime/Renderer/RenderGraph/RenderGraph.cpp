@@ -11,9 +11,7 @@
 
 namespace Lumina
 {
-    // Linear allocator backing for the render graph. Sized to comfortably hold a full frame's
-    // worth of passes (~50 passes * ~1.5KB each + their descriptors). Reset happens implicitly
-    // when the graph goes out of scope at frame end.
+    // Sized for ~50 passes/frame (~1.5KB each + descriptors). Reset on graph destruction.
     static constexpr size_t GRenderGraphAllocatorSize = 256u * 1024u;
 
 
@@ -27,9 +25,7 @@ namespace Lumina
     
     FRenderGraph::~FRenderGraph()
     {
-        // The linear allocator only frees its backing memory; it does not invoke destructors.
-        // We explicitly destruct passes and descriptors so captured lambdas, command list refs,
-        // and resource-access vectors release their resources.
+        // Linear allocator doesn't run dtors; do it manually so captured refs release.
         for (FRenderGraphPass* Pass : Passes)
         {
             Pass->~FRenderGraphPass();
@@ -112,14 +108,8 @@ namespace Lumina
             return;
         }
 
-        // One command list per batch. All passes in the batch record to the same CL, so state
-        // tracking (image layouts, barrier source stages) composes correctly across them, the
-        // same guarantee the old single-CL RenderGraph provided.
-        //
-        // Parallelism: batches are independent (different queues, or explicit Async), so we can
-        // still record them concurrently on task-system workers. This gives async compute and
-        // similar multi-queue workloads a real CPU win, without sacrificing correctness within
-        // a batch.
+        // One CL per batch keeps state tracking consistent within the batch; batches are
+        // independent (different queues / explicit Async), so they record in parallel.
         Task::ParallelFor(NumBatches, [this](uint32 BatchIdx)
         {
             LUMINA_PROFILE_SECTION("RenderGraph::RecordBatch");
@@ -150,8 +140,7 @@ namespace Lumina
             return;
         }
 
-        // Track which batch index was the last one submitted on each queue. A batch on queue Q
-        // needs to wait on queue R when R has submitted a batch strictly after Q's last submit.
+        // Q must wait on R when R submitted a batch after Q's last submit on this queue.
         TArray<int32, (uint32)ECommandQueue::Num> LastSubmittedBatchIdx;
         for (uint32 i = 0; i < LastSubmittedBatchIdx.size(); ++i)
         {
@@ -163,12 +152,9 @@ namespace Lumina
             FRGBatch& Batch = Batches[BatchIdx];
             const uint32 BatchQueueIdx = (uint32)Batch.Queue;
 
-            // Async batches opt out of cross-queue waits per the ERGExecutionFlags::Async
-            // contract, the caller has promised the pass has no dependencies on prior work.
+            // Async batches skip cross-queue waits per the ERGExecutionFlags::Async contract.
             if (!Batch.bIsAsync)
             {
-                // Any other queue that submitted after our last submission on this queue must be
-                // waited on for cross-queue memory visibility.
                 const int32 OurLast = LastSubmittedBatchIdx[BatchQueueIdx];
                 for (uint32 OtherQ = 0; OtherQ < (uint32)ECommandQueue::Num; ++OtherQ)
                 {

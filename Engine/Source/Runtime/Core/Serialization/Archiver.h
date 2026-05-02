@@ -48,17 +48,13 @@ namespace Lumina
 
         virtual void Serialize(void* V, int64 Length) {}
 
-        // Set, remove, and check flags
         FORCEINLINE void SetFlag(EArchiverFlags Flag) { Flags.SetFlag(Flag); }
         FORCEINLINE void RemoveFlag(EArchiverFlags Flag) { Flags.ClearFlag(Flag); }
         FORCEINLINE bool HasFlag(EArchiverFlags Flag) const { return Flags.IsFlagSet(Flag); }
 
-        /** Is this archiver writing to a buffer */
         FORCEINLINE bool virtual IsWriting() const { return HasFlag(EArchiverFlags::Writing); }
 
-        /** Is this archiver reading from a buffer, not to be mistaken with reading from a class.
-         * As this is used to write to a class, whilst reading from a buffer.
-         * */
+        /** Reading from a buffer (i.e. deserializing into a class). */
         FORCEINLINE bool virtual IsReading() const { return HasFlag(EArchiverFlags::Reading); }
 
         FORCEINLINE void SetHasError(bool bIsError) { bHasError = bIsError; }
@@ -69,7 +65,6 @@ namespace Lumina
             return GPackageFileLuminaVersion;
         }
     
-        /** Returns the maximum size of data that this archive is allowed to serialize. */
         FORCEINLINE size_t GetMaxSerializeSize() const { return ArMaxSerializeSize; }
 
         
@@ -262,10 +257,6 @@ namespace Lumina
             return *this;
         }
 
-        //-------------------------------------------------------------------------
-        // Serialization for containers.
-        //-------------------------------------------------------------------------
-
         template<typename ValueType>
         FArchive& operator << (TVector<ValueType>& Array)
         {
@@ -274,7 +265,6 @@ namespace Lumina
         
             if (SerializeNum == 0)
             {
-                // if we are loading, then we have to reset the size to 0, in case it isn't currently 0
                 if (IsReading())
                 {
                     Array.clear();
@@ -291,7 +281,6 @@ namespace Lumina
                 return *this;
             }
             
-            // If we don't need to perform per-item serialization, just read it in bulk
             if constexpr (sizeof(ValueType) == 1 || TCanBulkSerialize<ValueType>::value)
             {
                 if (IsReading())
@@ -405,7 +394,6 @@ namespace Lumina
         D = !!OldBoolValue;
     }
 
-    // GLM Vector Types
     inline FArchive& operator<<(FArchive& Ar, glm::vec2& v)
     {
         Ar << v.x << v.y;
@@ -424,7 +412,6 @@ namespace Lumina
         return Ar;
     }
 
-    // GLM Integer Vector Types
     inline FArchive& operator<<(FArchive& Ar, glm::ivec2& v)
     {
         Ar << v.x << v.y;
@@ -443,7 +430,6 @@ namespace Lumina
         return Ar;
     }
 
-    // GLM Unsigned Integer Vector Types
     inline FArchive& operator<<(FArchive& Ar, glm::uvec2& v)
     {
         Ar << v.x << v.y;
@@ -462,7 +448,6 @@ namespace Lumina
         return Ar;
     }
     
-    // GLM 8-bit Unsigned Integer Vector Types
     inline FArchive& operator<<(FArchive& Ar, glm::u8vec2& v)
     {
         Ar << v.x << v.y;
@@ -481,7 +466,6 @@ namespace Lumina
         return Ar;
     }
     
-    // GLM 16-bit Unsigned Integer Vector Types
     inline FArchive& operator<<(FArchive& Ar, glm::u16vec2& v)
     {
         Ar << v.x << v.y;
@@ -500,7 +484,6 @@ namespace Lumina
         return Ar;
     }
 
-    // GLM Matrix Types
     inline FArchive& operator<<(FArchive& Ar, glm::mat2& m)
     {
         Ar << m[0] << m[1];
@@ -519,7 +502,6 @@ namespace Lumina
         return Ar;
     }
 
-    // GLM Quaternion
     inline FArchive& operator<<(FArchive& Ar, glm::quat& q)
     {
         Ar << q.x << q.y << q.z << q.w;
@@ -539,18 +521,3 @@ namespace Lumina
 
 
 
-// Example usage for a custom struct
-#if 0
-struct MyStruct
-{
-    int x;
-    float y;
-    FString name;
-
-    friend FArchive& operator<<(FArchive& archive, MyStruct& s)
-    {
-        archive << s.x << s.y << s.name;
-        return archive;
-    }
-};
-#endif

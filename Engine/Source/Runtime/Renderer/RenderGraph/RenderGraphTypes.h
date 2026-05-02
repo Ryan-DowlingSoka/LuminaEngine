@@ -25,20 +25,13 @@ namespace Lumina
 
     ENUM_CLASS_FLAGS(ERGAccess);
 
-    /** Describes a single resource usage by a pass. */
     struct FRGResourceAccess
     {
         IRHIResource*   Resource    = nullptr;
         ERGAccess       Access      = ERGAccess::None;
     };
 
-    /**
-     * A group of consecutive passes recorded onto a single command list.
-     * All passes in a batch share one state tracker, so resource state carries across them
-     * and barriers are emitted with the correct prior-stage source masks.
-     * Independent batches (distinct queues, or passes flagged Async) get their own CLs and
-     * can be recorded in parallel.
-     */
+    // Same-queue passes share a CL and state tracker; independent batches record in parallel.
     struct alignas(64) FRGBatch
     {
         ECommandQueue                       Queue = ECommandQueue(0);

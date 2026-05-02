@@ -89,8 +89,7 @@ namespace Lumina::RHI
 
     static void ResolveMarkerCallback(const void* MarkerData, uint32 MarkerDataSize, void* UserData, PFN_GFSDK_Aftermath_ResolveMarker ResolveMarker)
     {
-        // Aftermath hands back the pointer we passed to vkCmdSetCheckpointNV; we stored a
-        // stable FString pointer in MarkerStorage, so interpret it as a C string.
+        // MarkerData is the FString* we passed to vkCmdSetCheckpointNV via MarkerStorage.
         if (MarkerData == nullptr)
         {
             return;
@@ -200,11 +199,8 @@ namespace Lumina::RHI
         auto tStart = std::chrono::steady_clock::now();
         auto tElapsed = std::chrono::milliseconds::zero();
 
-        // Loop while Aftermath crash dump data collection has not finished or
-        // the application is still processing the crash dump data.
         while (Status != GFSDK_Aftermath_CrashDump_Status_CollectingDataFailed && Status != GFSDK_Aftermath_CrashDump_Status_Finished && tElapsed < TerminationTimeout)
         {
-            // Sleep a couple of milliseconds and poll the status again.
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             AFTERMATH_CHECK_ERROR(GFSDK_Aftermath_GetCrashDumpStatus(&Status));
 
@@ -323,7 +319,7 @@ namespace Lumina::RHI
             ShaderDebugInfos[IdentifierKey(Identifier)] = Move(Data);
         }
 
-        // Also persist it to disk so it can be consumed by Nsight later.
+        // Persist for Nsight consumption.
         FString FilePath = GetCrashDumpDirectory() + "/Shader" + ToString(Identifier) + ".nvdbg";
         std::ofstream F(FilePath.c_str(), std::ios::out | std::ios::binary);
         if (F)
@@ -345,8 +341,7 @@ namespace Lumina::RHI
         SpirvCode.pData = SPIRV.data();
         SpirvCode.size  = static_cast<uint32>(SPIRV.size() * sizeof(uint32));
 
-        // Compute the aftermath binary hash; this is the key Aftermath uses when asking
-        // us for the original shader during crash-dump decoding.
+        // BinaryHash is the key Aftermath uses to look up the shader during dump decoding.
         GFSDK_Aftermath_ShaderBinaryHash BinaryHash = {};
         GFSDK_Aftermath_Result HashResult = GFSDK_Aftermath_GetShaderHashSpirv(
             GFSDK_Aftermath_Version_API,
@@ -359,7 +354,7 @@ namespace Lumina::RHI
             return;
         }
 
-        // We don't strip our shaders, so pass the same blob twice to derive the debug name.
+        // Same blob twice — we don't strip; deriving a debug name needs both halves.
         GFSDK_Aftermath_ShaderDebugName DebugName = {};
         GFSDK_Aftermath_Result DebugNameResult = GFSDK_Aftermath_GetShaderDebugNameSpirv(
             GFSDK_Aftermath_Version_API,
@@ -438,7 +433,7 @@ namespace Lumina::RHI
             return;
         }
 
-        // We don't strip debug info; the full binary is its own source debug data.
+        // Full binary doubles as source debug data (no stripping).
         SetShaderBinary(ShaderIt->second.Binary.data(), static_cast<uint32>(ShaderIt->second.Binary.size()));
     }
 #endif
@@ -465,8 +460,7 @@ namespace Lumina::RHI
 
     void FVulkanCrashTracker::BeginMarker(RHICommandBuffer CmdBuffer, const char* MarkerName)
     {
-        // NV checkpoints are flat - there's no push/pop concept on the GPU side.
-        // Record a begin checkpoint so we can bracket in the dump.
+        // NV checkpoints are flat; bracket via begin/end strings instead of push/pop.
         #if WITH_AFTERMATH
         if (CmdBuffer == nullptr || vkCmdSetCheckpointNV == nullptr)
         {

@@ -9,7 +9,6 @@ namespace Lumina
 	REFLECT()
 	enum class EKey : uint16
 	{
-		// From glfw3.h
 		Space               = 32,
 		Apostrophe          = 39, /* ' */
 		Comma               = 44, /* , */
@@ -66,7 +65,6 @@ namespace Lumina
 		World1              = 161, /* non-US #1 */
 		World2              = 162, /* non-US #2 */
 	
-		/* Function keys */
 		Escape              = 256,
 		Enter               = 257,
 		Tab                 = 258,
@@ -112,7 +110,6 @@ namespace Lumina
 		F24                 = 313,
 		F25                 = 314,
 	
-		/* Keypad */
 		KP0                 = 320,
 		KP1                 = 321,
 		KP2                 = 322,

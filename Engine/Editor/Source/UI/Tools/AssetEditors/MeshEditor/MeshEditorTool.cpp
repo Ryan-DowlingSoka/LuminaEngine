@@ -297,14 +297,12 @@ namespace Lumina
             ImGui::Spacing();
             ImGui::Spacing();
 
-            // ----------------------------------------------------------------
             // LOD configuration + visualization. Lets the user override which
             // LOD the preview entity renders (forces all surfaces to the
             // chosen LOD) and tune per-LOD distance thresholds. The forced
             // LOD is pushed onto the SStaticMeshComponent each frame in
             // Update(); thresholds live on FGeometrySurface and persist with
             // the asset.
-            // ----------------------------------------------------------------
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
             ImGui::SeparatorText("Levels of Detail");
             ImGuiX::Font::PopFont();

@@ -952,9 +952,7 @@ namespace Lumina
 		GetActiveChunk().append("\n");
 	}
 
-	// ========================================================================
 	// Built-in scene inputs
-	// ========================================================================
 
 	void FMaterialCompiler::VertexNormal(const FString& ID)
 	{
@@ -1228,9 +1226,7 @@ namespace Lumina
 		}
 	}
 
-	// ========================================================================
 	// Math Operations - binary
-	// ========================================================================
 
 	void FMaterialCompiler::Multiply(CMaterialInput* A, CMaterialInput* B)
 	{
@@ -1292,9 +1288,7 @@ namespace Lumina
 		EmitBinaryFunc("atan2", Y, X, Node->ConstA, Node->ConstB);
 	}
 
-	// ========================================================================
 	// Math Operations - unary
-	// ========================================================================
 
 	void FMaterialCompiler::Sin(CMaterialInput* A)        { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("sin", A, N->ConstA); }
 	void FMaterialCompiler::Cos(CMaterialInput* A)        { CMaterialExpression_Math* N = A->GetOwningNode<CMaterialExpression_Math>(); EmitUnaryFunc("cos", A, N->ConstA); }
@@ -1382,9 +1376,7 @@ namespace Lumina
 		SetOwningOutputType(A, AValue.Type);
 	}
 
-	// ========================================================================
 	// Math Operations - ternary
-	// ========================================================================
 
 	void FMaterialCompiler::Lerp(CMaterialInput* A, CMaterialInput* B, CMaterialInput* C)
 	{
@@ -1431,9 +1423,7 @@ namespace Lumina
 		SetOwningOutputType(X, ResultType);
 	}
 
-	// ========================================================================
 	// Vector operations
-	// ========================================================================
 
 	void FMaterialCompiler::Normalize(CMaterialInput* A)
 	{
@@ -1564,9 +1554,7 @@ namespace Lumina
 		SetOwningOutputType(Position, EMaterialInputType::Float3);
 	}
 
-	// ========================================================================
 	// Color
-	// ========================================================================
 
 	void FMaterialCompiler::Luminance(CMaterialInput* Color)
 	{
@@ -1675,9 +1663,7 @@ namespace Lumina
 		SetOwningOutputType(Color, EMaterialInputType::Float3);
 	}
 
-	// ========================================================================
 	// Noise / procedural
-	// ========================================================================
 
 	void FMaterialCompiler::Hash11(CMaterialInput* X)
 	{
@@ -1787,9 +1773,7 @@ namespace Lumina
 		SetOwningOutputType(UV, EMaterialInputType::Float);
 	}
 
-	// ========================================================================
 	// Conditional
-	// ========================================================================
 
 	void FMaterialCompiler::If(CMaterialInput* X, CMaterialInput* Y, CMaterialInput* GreaterThan, CMaterialInput* EqualTo, CMaterialInput* LessThan, float Threshold)
 	{
@@ -1818,9 +1802,7 @@ namespace Lumina
 		SetOwningOutputType(A, EMaterialInputType::Float);
 	}
 
-	// ========================================================================
 	// Advanced shading helpers
-	// ========================================================================
 
 	void FMaterialCompiler::Fresnel(CMaterialInput* Exponent, CMaterialInput* BaseReflect, CMaterialInput* Normal)
 	{
@@ -1874,9 +1856,7 @@ namespace Lumina
 		SetOwningOutputType(A, EMaterialInputType::Float3);
 	}
 
-	// ========================================================================
 	// Terrain
-	// ========================================================================
 
 	void FMaterialCompiler::TerrainLayerWeight(const FString& ID, uint32 LayerIndex, CMaterialGraphNode* Node)
 	{

@@ -30,10 +30,7 @@ namespace Lumina::Logging
 		Logger = spdlog::stdout_color_mt("Lumina");
 		Logger->sinks().push_back(std::make_shared<FConsoleSink>(GetConsoleLogQueue()));
 
-		// File sink. Cooked builds run as WindowedApp with no console, so the
-		// stdout sink is a black hole — without a file we have zero visibility
-		// into init crashes, asset registry stalls, or shader compile failures.
-		// Lives next to the exe so users can attach it to bug reports.
+		// File sink: cooked WindowedApp builds have no console; lives next to the exe.
 		try
 		{
 			std::filesystem::path ExePath(Platform::BaseDir());
@@ -45,8 +42,7 @@ namespace Lumina::Logging
 		}
 		catch (const std::exception&)
 		{
-			// File-sink failure is non-fatal — better to keep running with
-			// console-only logging than to crash the engine.
+			// Non-fatal; fall back to console-only logging.
 		}
 
 		Logger->set_level(spdlog::level::trace);

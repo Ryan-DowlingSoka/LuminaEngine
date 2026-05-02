@@ -161,7 +161,6 @@ namespace Lumina
         void DrawAddToEntityOrWorldPopup(entt::entity Entity = entt::null);
         void DrawFilterOptions();
 
-        // -- Incremental scene outliner --
         // Initial population (called on tree dirty); just enumerates roots and lets lazy children
         // build subtrees on first expand.
         void RebuildSceneOutliner(FTreeListView& Tree);
@@ -269,7 +268,6 @@ namespace Lumina
         TVector<TUniquePtr<FPropertyTable>>     PropertyTables;
         TUniquePtr<FPropertyTable>              WorldSettingsPropertyTable;
 
-        // -- Canonical selection state --
         // SelectedEntities is the authoritative set; FSelectedInEditorComponent on the
         // registry is mirrored from it (other systems — render highlight, prefab editor,
         // visualizers — read the tag). LastSelectedEntity is the focus target for the

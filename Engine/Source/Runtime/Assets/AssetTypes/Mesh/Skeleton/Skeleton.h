@@ -27,7 +27,6 @@ namespace Lumina
         
         void ComputeBindPoseSkinningMatrices(TVector<glm::mat4>& OutMatrices) const;
         
-        /** Default skeletal mesh used to preview this skeleton in the editor. */
         PROPERTY(Editable, Category = "Preview")
         TObjectPtr<CSkeletalMesh> PreviewMesh;
         

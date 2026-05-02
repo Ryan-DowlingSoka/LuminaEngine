@@ -34,12 +34,7 @@ namespace Lumina
     }
     
 
-    //-----------------------------------------------------------------------------------------------------------------------------------------
-
-    
     IMPLEMENT_INTRINSIC_CLASS(CClass, CStruct, RUNTIME_API)
-
-    //-----------------------------------------------------------------------------------------------
 
     bool CField::HasMeta(const FName& Key) const
     {
@@ -86,9 +81,7 @@ namespace Lumina
             return nullptr;
         }
 
-        // Aligned raw allocation, default-construct in place. Lifetime is the
-        // process — we deliberately don't track these for cleanup, mirroring
-        // how class CDOs are AddToRoot'd and never released.
+        // Process-lifetime allocation, mirroring how class CDOs are rooted and never released.
         const uint32 InstanceSize = GetSize();
         const uint32 InstanceAlign = GetAlignment();
         DefaultInstance = Memory::Malloc(InstanceSize, InstanceAlign);

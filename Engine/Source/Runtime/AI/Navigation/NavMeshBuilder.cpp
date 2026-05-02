@@ -17,10 +17,10 @@ namespace Lumina::NavMeshBuilder
         struct FTileGrid
         {
             glm::vec3   Origin;             // BoundsMin
-            float       TileWorldSize;      // == TileSizeVoxels * CellSize
-            float       BorderSize;         // world units of expand-per-tile, for seam consistency
+            float       TileWorldSize;      // TileSizeVoxels * CellSize
+            float       BorderSize;         // world units of per-tile expand for seam consistency
             int32       TilesX = 0;
-            int32       TilesY = 0;         // Y in nav-grid sense = world Z
+            int32       TilesY = 0;         // nav-grid Y = world Z
         };
 
         FTileGrid ComputeGrid(const FNavBuildInput& In)
@@ -28,10 +28,7 @@ namespace Lumina::NavMeshBuilder
             FTileGrid Grid{};
             Grid.Origin = In.BoundsMin;
             Grid.TileWorldSize = (float)In.Settings.TileSizeVoxels * In.Settings.CellSize;
-            // Recast needs each tile expanded by a few voxels of border so
-            // rasterized triangles spanning a tile boundary contribute to
-            // both. AgentRadius rounded up in voxels + 3 is the conventional
-            // choice and what dtNavMeshBuilder expects to find.
+            // AgentRadius/CellSize + 3 is the Recast convention; tiles need a voxel border for seam triangles.
             const int32 BorderVoxels = (int32)std::ceil(In.Settings.AgentRadius / In.Settings.CellSize) + 3;
             Grid.BorderSize = (float)BorderVoxels * In.Settings.CellSize;
             const glm::vec3 Span = In.BoundsMax - In.BoundsMin;
@@ -43,9 +40,7 @@ namespace Lumina::NavMeshBuilder
         }
 
 #if defined(LUMINA_HAS_RECAST)
-        // Bake one tile in isolation. Pure function over (Input, Grid, X, Y) -
-        // touches no shared state, so calling it concurrently from
-        // Task::ParallelFor is safe.
+        // Pure over (Input, Grid, X, Y); safe to call concurrently.
         bool BakeTile(const FNavBuildInput& In, const FTileGrid& Grid, int32 TX, int32 TY, FNavTileData& Out)
         {
             const FNavBuildSettings& S = In.Settings;
@@ -53,7 +48,6 @@ namespace Lumina::NavMeshBuilder
             Out.Y = TY;
             Out.Blob.clear();
 
-            // Tile world-space bounds (without border).
             const float TileMinX = Grid.Origin.x + (float)TX * Grid.TileWorldSize;
             const float TileMinZ = Grid.Origin.z + (float)TY * Grid.TileWorldSize;
             const float TileMaxX = TileMinX + Grid.TileWorldSize;
@@ -78,8 +72,7 @@ namespace Lumina::NavMeshBuilder
             Cfg.width              = Cfg.tileSize + Cfg.borderSize * 2;
             Cfg.height             = Cfg.tileSize + Cfg.borderSize * 2;
 
-            // bmin/bmax expanded by border so rasterization sees triangles
-            // that span the seam; rcBuildPolyMesh strips border polys later.
+            // bmin/bmax include border so seam tris rasterize; rcBuildPolyMesh strips border polys.
             Cfg.bmin[0] = TileMinX - Grid.BorderSize;
             Cfg.bmin[1] = In.BoundsMin.y;
             Cfg.bmin[2] = TileMinZ - Grid.BorderSize;
@@ -97,27 +90,21 @@ namespace Lumina::NavMeshBuilder
                 return false;
             }
 
-            // Scratch arrays scoped to this tile.
             const int32 NumTris = (int32)(In.Indices.size() / 3);
             TVector<uint8> TriAreas(NumTris, 0);
 
-            // Mark walkable triangles by slope, then rasterize. We rasterize
-            // every input triangle - rcRasterizeTriangles internally clips
-            // against bmin/bmax, so passing the tile bbox limits work to
-            // tile-relevant geometry without a manual cull.
+            // rcRasterizeTriangles clips against bmin/bmax internally, so no manual tile cull needed.
             const float* Verts = reinterpret_cast<const float*>(In.Vertices.data());
             const int32  NumVerts = (int32)In.Vertices.size();
             const int*   Tris  = reinterpret_cast<const int*>(In.Indices.data());
 
             rcMarkWalkableTriangles(&Ctx, Cfg.walkableSlopeAngle, Verts, NumVerts, Tris, NumTris, TriAreas.data());
 
-            // Override areas if the caller supplied per-triangle area ids
-            // (used by Nav modifiers stamping water/door/danger).
             if (!In.Areas.empty() && (int32)In.Areas.size() == NumTris)
             {
                 for (int32 i = 0; i < NumTris; ++i)
                 {
-                    if (TriAreas[i] != 0) // keep unwalkable as-is
+                    if (TriAreas[i] != 0) // keep unwalkable
                     {
                         TriAreas[i] = In.Areas[i];
                     }
@@ -155,8 +142,7 @@ namespace Lumina::NavMeshBuilder
                 return false;
             }
 
-            // Watershed regions - good polygonization, slightly slower than
-            // monotone. Worth the cost; monotone produces long thin polys.
+            // Watershed regions; monotone is faster but yields thin polys.
             if (!rcBuildDistanceField(&Ctx, *Compact) ||
                 !rcBuildRegions(&Ctx, *Compact, Cfg.borderSize, Cfg.minRegionArea, Cfg.mergeRegionArea))
             {
@@ -174,7 +160,7 @@ namespace Lumina::NavMeshBuilder
             }
             if (CSet->nconts == 0)
             {
-                // Empty tile is a valid result; no walkable surface here.
+                // Empty tile is valid.
                 rcFreeCompactHeightfield(Compact);
                 rcFreeContourSet(CSet);
                 return true;
@@ -206,9 +192,7 @@ namespace Lumina::NavMeshBuilder
             rcFreeCompactHeightfield(Compact);
             rcFreeContourSet(CSet);
 
-            // Tag every poly with the Walk flag so default queries find them.
-            // Area-specific flag tagging (door/danger) layers on top via Nav
-            // modifiers when those land.
+            // Tag polys with Walk flag for default queries.
             for (int i = 0; i < PMesh->npolys; ++i)
             {
                 if (PMesh->areas[i] == RC_WALKABLE_AREA)
@@ -257,8 +241,7 @@ namespace Lumina::NavMeshBuilder
                 return false;
             }
 
-            // Copy out of Detour's allocator into our serialized blob; the
-            // runtime makes its own copy at addTile so this can outlive both.
+            // Copy out of Detour's allocator; runtime addTile copies again.
             Out.Blob.assign(NavData, NavData + NavDataSize);
             dtFree(NavData);
             return true;
@@ -282,12 +265,9 @@ namespace Lumina::NavMeshBuilder
         Handle.Output.Tiles.resize(TileCount);
         Handle.TilesScheduled = TileCount;
 
-        // Per-tile failures are aggregated into one log line at the end so
-        // a broken bake doesn't spam the log with N entries.
+        // Aggregate per-tile failures into one log line.
         std::atomic<uint32> FailCount{ 0 };
 
-        // Tiles are independent - each task voxelizes its tile against the
-        // shared (read-only) Input snapshot and writes one slot in Tiles.
         Task::ParallelFor(TileCount, [&](uint32 Index)
         {
             if (Handle.bCancelRequested.load(std::memory_order_acquire))
@@ -344,9 +324,7 @@ namespace Lumina::NavMeshBuilder
 #if defined(LUMINA_HAS_RECAST)
     bool BakeSingleTile(const FNavBuildInput& Input, const FNavBuildOutput& BaseLayout, int32 TX, int32 TY, FNavTileData& Out)
     {
-        // Reuse the same Recast pipeline but with the existing baked layout's
-        // grid origin and tile size, so the new tile aligns to the live
-        // dtNavMesh and hot-swap is byte-exact.
+        // Reuse pipeline with BaseLayout's origin/tile size for byte-exact hot-swap.
         FTileGrid Grid{};
         Grid.Origin = BaseLayout.Origin;
         Grid.TileWorldSize = BaseLayout.TileWorldSize;

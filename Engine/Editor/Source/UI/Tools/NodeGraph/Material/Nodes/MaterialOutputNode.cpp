@@ -149,7 +149,6 @@ namespace Lumina
 
     void CMaterialOutputNode::GenerateDefinition(FMaterialCompiler& Compiler)
     {
-        // ----- Pixel stage -----
         FString PixelOut;
         PixelOut += "\n\n";
         PixelOut += "\tFMaterialPixelInputs Material;\n";
@@ -193,7 +192,6 @@ namespace Lumina
 
         Compiler.AddPixelOutput(PixelOut);
 
-        // ----- Vertex stage (WPO) -----
         // The vertex template already declares `FMaterialVertexInputs Material;`
         // inline above the token, so we only emit the assignment here.
         FString VertexOut;

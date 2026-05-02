@@ -30,19 +30,16 @@ namespace Lumina
             corners[i] = Center + glm::rotate(Rotation, LocalCorners[i]);
         }
 
-        // Bottom face edges
         DrawLine(corners[0], corners[1], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[1], corners[2], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[2], corners[3], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[3], corners[0], Color, Thickness, bDepthTest, Duration);
 
-        // Top face edges
         DrawLine(corners[4], corners[5], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[5], corners[6], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[6], corners[7], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[7], corners[4], Color, Thickness, bDepthTest, Duration);
 
-        // Vertical edges
         DrawLine(corners[0], corners[4], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[1], corners[5], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[2], corners[6], Color, Thickness, bDepthTest, Duration);
@@ -203,8 +200,8 @@ namespace Lumina
         
         for (uint8 stack = 1; stack <= Stacks; ++stack)
         {
-            float t = (float)stack / Stacks;          // 0..1 along cone length
-            float ringLength = t * Length;            // distance from apex
+            float t = (float)stack / Stacks;
+            float ringLength = t * Length;
             float ringRadius = ringLength * tan(AngleRadians);
         
             TVector<glm::vec3> circlePoints(Segments);
@@ -249,33 +246,29 @@ namespace Lumina
             return glm::vec3(world) / world.w;
         };
 
-        // Compute near/far corners in NDC space
         glm::vec3 corners[8];
 
-        corners[0] = UnprojectCorner(-1, -1, zNear); // NearBL
-        corners[1] = UnprojectCorner( 1, -1, zNear); // NearBR
-        corners[2] = UnprojectCorner( 1,  1, zNear); // NearTR
-        corners[3] = UnprojectCorner(-1,  1, zNear); // NearTL
+        corners[0] = UnprojectCorner(-1, -1, zNear);
+        corners[1] = UnprojectCorner( 1, -1, zNear);
+        corners[2] = UnprojectCorner( 1,  1, zNear);
+        corners[3] = UnprojectCorner(-1,  1, zNear);
 
-        corners[4] = UnprojectCorner(-1, -1, zFar);  // FarBL
-        corners[5] = UnprojectCorner( 1, -1, zFar);  // FarBR
-        corners[6] = UnprojectCorner( 1,  1, zFar);  // FarTR
-        corners[7] = UnprojectCorner(-1,  1, zFar);  // FarTL
-            
+        corners[4] = UnprojectCorner(-1, -1, zFar);
+        corners[5] = UnprojectCorner( 1, -1, zFar);
+        corners[6] = UnprojectCorner( 1,  1, zFar);
+        corners[7] = UnprojectCorner(-1,  1, zFar);
 
-        // Draw near plane box
+
         DrawLine(corners[0], corners[1], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[1], corners[2], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[2], corners[3], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[3], corners[0], Color, Thickness, bDepthTest, Duration);
 
-        // Draw far plane box
         DrawLine(corners[4], corners[5], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[5], corners[6], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[6], corners[7], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[7], corners[4], Color, Thickness, bDepthTest, Duration);
 
-        // Connect near ↔ far corners
         DrawLine(corners[0], corners[4], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[1], corners[5], Color, Thickness, bDepthTest, Duration);
         DrawLine(corners[2], corners[6], Color, Thickness, bDepthTest, Duration);
@@ -299,13 +292,11 @@ namespace Lumina
         glm::vec3 Tip = End;
         glm::vec3 BaseCenter = End - glm::normalize(Direction) * HeadSize;
 
-        // Four base corners of arrowhead pyramid
         glm::vec3 Corner1 = BaseCenter + (Up + Right) * HeadSize * 0.5f;
         glm::vec3 Corner2 = BaseCenter + (Up - Right) * HeadSize * 0.5f;
         glm::vec3 Corner3 = BaseCenter + (-Up - Right) * HeadSize * 0.5f;
         glm::vec3 Corner4 = BaseCenter + (-Up + Right) * HeadSize * 0.5f;
 
-        // Draw pyramid lines
         DrawLine(Tip, Corner1, Color, Thickness, bDepthTest, Duration);
         DrawLine(Tip, Corner2, Color, Thickness, bDepthTest, Duration);
         DrawLine(Tip, Corner3, Color, Thickness, bDepthTest, Duration);

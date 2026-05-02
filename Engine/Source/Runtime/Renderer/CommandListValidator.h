@@ -4,20 +4,7 @@
 
 namespace Lumina
 {
-    /**
-     * Validation wrapper around an ICommandList.
-     *
-     * When the render context is created with bValidation = true the factory
-     * wraps each command list in this decorator. All input validation that
-     * used to live inside the backend command list (null checks, range/size
-     * checks, render pass / query state checks, etc.) lives here so that the
-     * backend hot path stays free of branches and asserts in non-validating
-     * builds.
-     *
-     * Every ICommandList virtual is forwarded to the inner list. ::ExecuteCommandLists
-     * and ::FQueue::Submit unwrap via GetUnwrappedCommandList() so the backend
-     * can recover its concrete type for queue submission.
-     */
+    // Validation decorator; only inserted when bValidation is true. Submission unwraps via GetUnwrappedCommandList.
     class RUNTIME_API FCommandListValidator final : public ICommandList
     {
     public:

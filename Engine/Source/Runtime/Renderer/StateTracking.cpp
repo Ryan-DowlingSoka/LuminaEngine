@@ -134,7 +134,6 @@ namespace Lumina
             return texture->DescRef.bKeepInitialState ? (texture->bStateInitialized ? texture->DescRef.InitialState : EResourceStates::Common) : EResourceStates::Unknown;
         }
 
-        // whole resource
         if (tracking->SubresourceStates.empty())
         {
             return tracking->State;
@@ -170,8 +169,6 @@ namespace Lumina
         
         if (subresources.IsEntireTexture(texture->DescRef) && Tracking->SubresourceStates.empty())
         {
-            // We're requiring state for the entire texture, and it's been tracked as entire texture too
-
             bool bTransitionNecessary = Tracking->State != state;
             bool bUAVNecessary = ((state & EResourceStates::UnorderedAccess) != EResourceStates::Unknown) && (Tracking->bEnableUavBarriers || !Tracking->bFirstUavBarrierPlaced);
 
@@ -199,9 +196,7 @@ namespace Lumina
         }
         else
         {
-            // Transition individual subresources
-
-            // Make sure that we're tracking the texture on subresource level
+            // Expand to per-subresource tracking if currently whole-resource.
             bool bStateExpanded = false;
             if (Tracking->SubresourceStates.empty())
             {
@@ -216,10 +211,7 @@ namespace Lumina
                 bStateExpanded = true;
             }
 
-            // Fast path: if every subresource in the requested range shares the same prior
-            // state, emit a single VkImageMemoryBarrier2 covering the whole range instead
-            // of one per (mip, slice). This drops the driver-side barrier count and
-            // shrinks vkCmdPipelineBarrier2 setup.
+            // Fast path: if all subresources share a prior state, coalesce into one barrier.
             const uint32 BaseArraySlice = subresources.BaseArraySlice;
             const uint32 BaseMipLevel   = subresources.BaseMipLevel;
             const uint32 NumArraySlices = subresources.NumArraySlices;
@@ -281,7 +273,7 @@ namespace Lumina
             }
             else
             {
-                // Slow path: mixed prior states, emit per-subresource barriers.
+                // Mixed prior states: per-subresource barriers.
                 bool bAnyUavBarrier = false;
 
                 for (uint32 ArraySlice = BaseArraySlice; ArraySlice < BaseArraySlice + NumArraySlices; ArraySlice++)
@@ -344,7 +336,6 @@ namespace Lumina
 
         if (buffer->DescRef.Usage.IsFlagSet(EBufferUsageFlags::CPUWritable))
         {
-            // CPU-visible buffers can't change state
             return;
         }
 
@@ -366,8 +357,7 @@ namespace Lumina
             && Tracking->PendingBarrierIndex >= 0
             && (uint32)Tracking->PendingBarrierIndex < BufferBarriers.size())
         {
-            // Same buffer already has a pending barrier in this batch.
-            // Combine the state bits (e.g. same buffer used as both index and vertex buffer).
+            // Combine into the pending barrier (e.g. same buffer used as both index and vertex).
             FBufferBarrier& Existing = BufferBarriers[Tracking->PendingBarrierIndex];
             Existing.StateAfter = EResourceStates(Existing.StateAfter | state);
             Tracking->State = Existing.StateAfter;

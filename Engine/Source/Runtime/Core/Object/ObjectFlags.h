@@ -5,37 +5,21 @@
 
 namespace Lumina
 {
-    /** Core object flags for all CObjects, describes it's state. */
     enum EObjectFlags
     {
-        /** NULL */
         OF_None                 = 0,
-
-        /** Should not be saved */
+        /** Not saved. */
         OF_Transient            = BIT(0),
-
-        /** This object is currently a part of the root set */
         OF_Rooted               = BIT(1),
-        
-        /** Is this a default subobject of a class? */
+        /** Class default object. */
         OF_DefaultObject        = BIT(2),
-
-        /** Does this object need to be loaded after creation? */
         OF_NeedsLoad            = BIT(3),
-        
-        /** Is this object currently being loaded? */
         OF_Loading              = BIT(4),
-
-        /** Does this object need PostLoad called? This will not deserialize the object again. */
+        /** PostLoad still owed; does not re-deserialize. */
         OF_NeedsPostLoad        = BIT(5),
-
-        /** Was this object loaded from a package */
         OF_WasLoaded            = BIT(6),
-
-        /** Object is public outside of it's package (assets and such) */
+        /** Visible outside its package (assets). */
         OF_Public               = BIT(7),
-
-        /** Object has already been marked to be destroyed */
         OF_MarkedDestroy        = BIT(8),
     };
 

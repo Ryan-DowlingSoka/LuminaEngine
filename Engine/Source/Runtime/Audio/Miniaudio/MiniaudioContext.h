@@ -33,16 +33,9 @@ namespace Lumina
 
 	private:
 
-		// Allocate a handle on the game thread (thread-safe via atomic).
 		FAudioHandle AllocateHandle();
-
-		// The audio thread entry point.
 		void AudioThreadMain();
-
-		// Process a single command on the audio thread.
 		void ProcessCommand(const FAudioCommand& Cmd);
-
-		// Cleanup finished sounds on the audio thread.
 		void CleanupFinishedSounds();
 
 		struct FActiveSound
@@ -54,10 +47,7 @@ namespace Lumina
 			bool bInitialized = false;
 		};
 
-		// Finds an active sound by handle. Returns nullptr if not found.
 		FActiveSound* FindSound(FAudioHandle Handle);
-
-		// Stops and uninitializes a sound. Does not remove it from the list.
 		void UninitSound(FActiveSound& Sound);
 
 		ma_engine Engine;

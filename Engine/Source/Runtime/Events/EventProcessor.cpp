@@ -16,7 +16,7 @@ namespace Lumina
             }
         }
 
-        // Sorted descending; equal priorities preserve registration order.
+        // Sorted descending; equal priorities keep registration order.
         FEntry NewEntry{ InHandler, Priority };
         auto It = EventHandlers.begin();
         for (; It != EventHandlers.end(); ++It)

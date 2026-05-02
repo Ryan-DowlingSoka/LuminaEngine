@@ -10,7 +10,7 @@ namespace
 {
 	void GLFWErrorCallback(int error, const char* description)
 	{
-		// Ignore invalid scancode.
+		// 65540 = invalid scancode; spammed by some keyboard layouts.
 		if (error == 65540)
 		{
 			return;
@@ -99,8 +99,6 @@ namespace Lumina
 			glfwWindowHint(GLFW_TITLEBAR, GLFW_TRUE);
 
 #endif
-			//glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
-
 			GLFWmonitor* Monitor = glfwGetPrimaryMonitor();
 			const GLFWvidmode* Mode = glfwGetVideoMode(Monitor);
 
@@ -256,7 +254,7 @@ namespace Lumina
 
 	void FWindow::MouseScrollCallback(GLFWwindow* window, double xoffset, double yoffset)
 	{
-		//We're only dealing with vertical here.
+		// Vertical scroll only.
 		GApp->GetEventProcessor().Dispatch<FMouseScrolledEvent>(EMouseKey::Scroll, yoffset);
 	}
 

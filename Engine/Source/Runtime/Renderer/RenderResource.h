@@ -27,9 +27,7 @@ namespace Lumina
 
     static constexpr uint32 MaxRenderTargets = 8;
 	static constexpr uint32 MaxVertexAttributes = 16;
-	// 256 B is supported on every modern desktop Vulkan implementation (and matches
-	// the D3D12 root-signature cap). Spec minimum is 128; we run on devices that
-	// advertise more, and several shaders (e.g. ColorGrading) need 144 B.
+	// 256 B matches D3D12 root-signature cap; ColorGrading needs 144 B.
 	static constexpr uint32 MaxPushConstantSize = 256;
 	static constexpr uint32 MaxBindingLayouts = 4;
 	static constexpr uint32 MaxBindingsPerLayout = 128;
@@ -66,7 +64,6 @@ namespace Lumina::RHI::Format
 	RUNTIME_API uint8 BytesPerBlock(EFormat Format);
 }
 
-/** An enumeration of the different RHI reference types. */
 enum ERHIResourceType : uint8
 {
 	RRT_None,
@@ -106,17 +103,14 @@ enum class ERHIBindingResourceType : uint8
 {
 	Unknown,
 	
-	// SRV (Shader Resource View) Types.
 	Texture_SRV,
 	Buffer_SRV,
 
 	Sampler,
 
-	// UAV (Unordered Access View) Types.
 	Texture_UAV,
 	Buffer_UAV,
 
-	// Constant Buffer (could be a uniform buffer)
 	Buffer_CBV,
 	Buffer_Uniform = Buffer_CBV,
 	Buffer_Uniform_Dynamic,
@@ -292,10 +286,7 @@ namespace Lumina
 		TFixedHashSet<IRHIResource*, 1> ResourceList;
 	};
 
-	/**
-	 * Global RHI resource, is free-threaded and atomically ref counted and deleted.
-	 * It is not promised to be owned by a single thread, nor is it promised to be deleted on a single thread.
-	 */
+	// Free-threaded, atomically ref-counted; may be deleted from any thread.
 	class RUNTIME_API IRHIResource
     {
     public:
@@ -345,7 +336,6 @@ namespace Lumina
     	{
     		DEBUG_ASSERT((RefCount.load(std::memory_order_relaxed) > 0));
     		uint32 Value = RefCount.fetch_sub(1, std::memory_order_release);
-    		/** Returns the previous value (if previous value is 1, our new value is 0). */
     		if(Value == 1)
     		{
     			std::atomic_thread_fence(std::memory_order_acquire);
@@ -509,7 +499,6 @@ namespace Lumina
 		{
 			if (Usage.IsFlagSet(BUF_NullResource))
 			{
-				// The null resource descriptor should have its other fields zeroed, and no additional flags.
 				DEBUG_ASSERT(Size == 0 && Stride == 0 && Usage.IsFlagSet(BUF_NullResource));
 				return true;
 			}
@@ -542,52 +531,21 @@ namespace Lumina
 	//-------------------------------------------------------------------------------------------------------------------
 	
 	
-	/** 
-	 * Descriptor used to define the properties of an image (texture) resource.
-	 * This struct specifies how an image should be created, including its format,
-	 * dimensions, and usage flags.
-	 */
 	struct FRHIImageDesc
 	{
-		/** Flags that define how the image will be used (e.g., render target, shader resource). */
 		TBitFlags<EImageCreateFlags> Flags = 0;
-
-		/** Additional data that may be used by specific platforms or backends. */
 		uint32 ExtraData = 0;
-
-		/** 
-		 * The width and height of the image. 
-		 * This is the primary size for 2D textures.
-		 */
 		glm::uvec2 Extent = glm::uvec2(1);
-
-		/** The depth of the image (used for 3D textures). */
 		uint16 Depth = 1;
-
-		/** The number of array layers (for texture arrays). */
 		uint16 ArraySize = 1;
-
-		/** The number of mip levels in the texture. */
 		uint8 NumMips = 1;
-
-		/** The number of samples for multi-sampled images (MSAA). */
 		uint8 NumSamples = 1;
-
-		/** The dimensionality of the image (1D, 2D, 3D, or Cube). */
 		EImageDimension Dimension = EImageDimension::Texture2D;
-
-		/** The format of the image (e.g., RGBA8, BC7 compressed, etc.). */
 		EFormat Format = EFormat::UNKNOWN;
-
-		/** Debug Name of this texture */
 		FString DebugName;
-
-		/** Initial state of this image. */
 		EResourceStates InitialState = EResourceStates::Unknown;
-		
-		// If keepInitialState is true, command lists that use the texture will automatically
-		// begin tracking the texture from the initial state and transition it to the initial state 
-		// on command list close.
+
+		// If true, command lists auto-track from InitialState and restore it on close.
 		bool bKeepInitialState = false;
 		
 		friend FArchive& operator << (FArchive& Ar, FRHIImageDesc& Data)
@@ -737,8 +695,7 @@ namespace Lumina
 
 		FORCEINLINE FRenderPassDesc& SetSampleCount(uint16 Count) { SampleCount = Count; return *this; }
 
-		/** If SampleCount is still default (1), derive it from the first attached image's NumSamples.
-		 *  Lets callers attach an MSAA image without remembering to also bump SampleCount. */
+		// If SampleCount==1, infer it from the first MSAA-capable attachment.
 		RUNTIME_API uint16 DeriveSampleCount() const noexcept;
 
 		FORCEINLINE FRenderPassDesc& SetViewMask(uint32 Mask) { ViewMask = Mask; return *this; }
@@ -901,10 +858,7 @@ namespace Lumina
 	{
 	public:
 
-		/** Return a hash of the shader's data. */
 		virtual uint64 GetHashCode() const = 0;
-		
-		/** Get the shader's native representation of it's bytecode */
 		virtual void GetByteCode(void** ByteCode, uint64* Size) = 0;
 
 		virtual const FShaderHeader& GetShaderHeader() const = 0;
@@ -1515,8 +1469,6 @@ namespace Lumina
 			return eastl::get_if<FBindingTextureResource>(&Variant);
 		}
 		
-		// Creates a Shader Resource View (SRV) binding for a buffer.
-		// Typically used for read-only access to structured or byte-address buffers.
 		static FBindingSetItem BufferSRV(uint32 Slot, FRHIBuffer* Buffer, EFormat Format = EFormat::UNKNOWN, FBufferRange Range = EntireBuffer)
 		{
 			bool bIsDynamic = Buffer->GetDescription().Usage.IsFlagSet(BUF_Dynamic);
@@ -1531,8 +1483,6 @@ namespace Lumina
 			return Result;
 		}
 
-		// Creates an Unordered Access View (UAV) binding for a buffer.
-		// Used for read-write access in shaders (e.g. compute shaders).
 		static FBindingSetItem BufferUAV(uint32 Slot, FRHIBuffer* Buffer, EFormat Format = EFormat::UNKNOWN, FBufferRange Range = EntireBuffer)
 		{
 			bool bIsDynamic = Buffer->GetDescription().Usage.IsFlagSet(BUF_Dynamic);
@@ -1547,8 +1497,6 @@ namespace Lumina
 			return Result;
 		}
 
-		// Creates a Constant Buffer View (CBV) binding for a buffer.
-		// Used to bind uniform buffers (read-only, small constant data).
 		static FBindingSetItem BufferCBV(uint32 Slot, FRHIBuffer* Buffer, EFormat Format = EFormat::UNKNOWN, FBufferRange Range = EntireBuffer)
 		{
 			bool bIsDynamic = Buffer->GetDescription().Usage.IsFlagSet(BUF_Dynamic);
@@ -1563,8 +1511,6 @@ namespace Lumina
 			return Result;
 		}
 
-		// Creates a Shader Resource View (SRV) binding for a texture/image.
-		// Used to read from a texture in shaders (e.g. sampling or texel fetch).
 		static FBindingSetItem TextureSRV(uint32 Slot, FRHIImage* Image, FRHISampler* Sampler = nullptr, EFormat Format = EFormat::UNKNOWN, 
 			FTextureSubresourceSet Subresources = AllSubresources, EImageDimension Dimension = EImageDimension::Unknown)
 		{
@@ -1579,8 +1525,6 @@ namespace Lumina
 		}
 
 		
-		// Creates an Unordered Access View (UAV) binding for a texture/image.
-		// Used for read-write access to a texture (e.g. compute shader writes).
 		static FBindingSetItem TextureUAV(uint32 Slot, FRHIImage* Image, EFormat Format = EFormat::UNKNOWN, FTextureSubresourceSet Subresources =
 			FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices), EImageDimension Dimension = EImageDimension::Unknown)
 		{
@@ -1751,7 +1695,6 @@ namespace Lumina
 		FRHIBuffer* IndirectParams = nullptr;
 		FRHIBuffer* CountBuffer = nullptr;
 
-		// Move semantic overloads.
 		FORCEINLINE FGraphicsState& SetRenderPass(FRenderPassDesc&& value) { RenderPass = Move(value); return *this; }
 		FORCEINLINE FGraphicsState& SetViewportState(FViewportState&& value) { ViewportState = Move(value); return *this; }
 
@@ -1936,8 +1879,7 @@ namespace eastl
 	{ 
 		size_t operator()(const FSamplerDesc& Item) const 
 		{ 
-			size_t hash = 0; 
-			//Hash::HashCombine(hash, Item.BorderColor);
+			size_t hash = 0;
 			Hash::HashCombine(hash, Item.MaxAnisotropy);
 			Hash::HashCombine(hash, Item.MipBias);
 			Hash::HashCombine(hash, Item.MinFilter);

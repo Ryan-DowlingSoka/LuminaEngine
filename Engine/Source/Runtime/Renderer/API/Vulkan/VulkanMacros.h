@@ -44,8 +44,6 @@ namespace Lumina::Vulkan
 #define VULKAN_TIMEOUT_ONE_SECOND 1000000000
 #define VK_NO_FLAGS 0
 
-// Macro to check Vulkan function results and log errors if necessary
-
 #ifdef LUMINA_DEBUG
 #define VK_CHECK(x)                                                                     \
 do {                                                                                    \

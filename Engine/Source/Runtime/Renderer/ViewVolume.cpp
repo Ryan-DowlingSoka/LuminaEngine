@@ -14,13 +14,7 @@ namespace Lumina
     
     FViewVolume::FViewVolume(float fov, float aspect, float InNear, float InFar)
         : ViewPosition(glm::vec3(1.0))
-        // ForwardVector / UpVector / RightVector intentionally seeded here so
-        // SetView's normalize-then-cross chain below never touches uninitialized
-        // memory. Older code passed the still-garbage `ForwardVector` member as
-        // the direction argument, which silently worked in Debug (uninitialized
-        // patterns happened to normalize to something view-shaped under no
-        // optimization) and caught fire in Shipping (LTO + release heap = garbage
-        // forward → NaN view matrix → black screen).
+        // Seeded so SetView's normalize/cross chain never sees uninitialized memory.
         , ForwardVector(ForwardAxis)
         , UpVector(UpAxis)
         , RightVector(RightAxis)
@@ -33,13 +27,7 @@ namespace Lumina
         SetView(glm::vec3(0.0), ForwardAxis, UpAxis);
     }
 
-    // Single source of truth for projection construction. The Y-flip bakes the
-    // Vulkan +Y-down NDC convention into the matrix itself (same approach
-    // NVRHI takes for its Vulkan backend), so NDC->UV is the trivial
-    // `xy * 0.5 + 0.5` everywhere in shader code and the same engine code
-    // path will Just Work when a DX12 backend is added (DX12 already uses
-    // +Y-down NDC, no flip needed there). Reverse-Z lives in the Far/Near
-    // argument order to glm::perspective.
+    // Y-flip bakes Vulkan +Y-down NDC into the matrix; reverse-Z via swapped Far/Near.
     static glm::mat4 BuildVulkanReverseZPerspective(float FovDegrees, float Aspect, float Near, float Far)
     {
         glm::mat4 P = glm::perspective(glm::radians(FovDegrees), Aspect, Far, Near);
@@ -135,9 +123,7 @@ namespace Lumina
 
     glm::mat4 FViewVolume::ToReverseDepthViewProjectionMatrix() const
     {
-        // Standard-Z (Near, Far -- not the reverse-Z swapped order used for the
-        // camera) projection used by shadow face VPs. Same Vulkan Y-flip as the
-        // camera so shadow-map sampling uses the same NDC->UV math.
+        // Standard-Z projection (not reverse-Z) for shadow face VPs; keeps Vulkan Y-flip.
         glm::mat4 P = glm::perspective(glm::radians(FOV), AspectRatio, Near, Far);
         P[1][1] *= -1.0f;
         return P * ViewMatrix;

@@ -9,7 +9,6 @@ namespace Lumina
     {
         GENERATED_BODY()
         
-        /** Relative path to the Luau script file within the project. */
         PROPERTY(Editable)
         FString Path;
     };

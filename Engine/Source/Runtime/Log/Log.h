@@ -25,8 +25,6 @@ namespace Lumina::Logging
 	
 }
 
-/* Core Logging Macros */
-
 #define LOG_CRITICAL(...)	::Lumina::Logging::GetLogger()->critical(__VA_ARGS__)
 #define LOG_ERROR(...)		::Lumina::Logging::GetLogger()->error(__VA_ARGS__)
 #define LOG_WARN(...)		::Lumina::Logging::GetLogger()->warn(__VA_ARGS__)

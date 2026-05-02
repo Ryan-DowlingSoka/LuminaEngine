@@ -59,10 +59,7 @@ namespace Lumina
         FQueue& operator = (FQueue&&) = delete;
         
 
-        /**
-         * @threadsafety - Called from ICommandList::Open, so free-threaded.
-         * @return A valid command buffer to use.
-         */
+        // Free-threaded; called from ICommandList::Open.
         TRefCountPtr<FTrackedCommandBuffer> GetOrCreateCommandBuffer();
 
         void RetireCommandBuffers();

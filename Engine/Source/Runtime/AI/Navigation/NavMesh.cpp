@@ -3,12 +3,7 @@
 
 #include "TaskSystem/TaskSystem.h"
 
-// Recast/Detour vendoring is a follow-up step. Once
-// Engine/Source/ThirdParty/Recast/ exists and is wired into premake, define
-// LUMINA_HAS_RECAST in the Runtime module's PrivateDefines and the real
-// implementation below switches on automatically. Until then, the runtime is
-// a no-op shell so the rest of the engine can compile and the system can be
-// scheduled and exercised end-to-end.
+// Real Recast/Detour path is gated on LUMINA_HAS_RECAST; otherwise compiles as a no-op shell.
 #if defined(LUMINA_HAS_RECAST)
     #include <DetourNavMesh.h>
     #include <DetourNavMeshQuery.h>
@@ -80,8 +75,7 @@ namespace Lumina
             return false;
         }
 
-        // dtNavMesh::addTile is not thread-safe so tiles are added serially.
-        // The expensive work (voxelization etc.) happened during the bake.
+        // dtNavMesh::addTile is not thread-safe; the expensive bake work already happened.
         int32 Added = 0;
         int32 Skipped = 0;
         int32 Rejected = 0;
@@ -127,9 +121,7 @@ namespace Lumina
             return false;
         }
 
-        // Slightly over-provision so worker contention rarely blocks. Each
-        // dtNavMeshQuery is a few hundred KB at 2048 nodes, so this is cheap
-        // for typical worker counts.
+        // Over-provision so contention rarely blocks; each query is a few hundred KB.
         const uint32 PoolSize = (GTaskSystem ? GTaskSystem->GetNumWorkers() : 4u) + 2u;
         QueryPool = TVector<FQuerySlot>(PoolSize);
         uint32 ReadyQueries = 0;
@@ -156,8 +148,6 @@ namespace Lumina
         }
 
         bReady = true;
-        // Build the triangle cache here on the same thread that just
-        // populated the dtNavMesh; safe and amortized inside Initialize.
         RefreshTriangleCache();
         return true;
 #else
@@ -184,9 +174,7 @@ namespace Lumina
 
     FNavMesh::FAcquiredQuery FNavMesh::AcquireQuery() const
     {
-        // Linear CAS scan. With PoolSize > NumWorkers the first sweep almost
-        // always finds a free slot; the spin loop is a safety net for
-        // pathological contention from many ad-hoc threads.
+        // Linear CAS scan; spin loop is a safety net for pathological contention.
         const uint32 N = (uint32)QueryPool.size();
         if (N == 0) return {};
 
@@ -290,9 +278,6 @@ namespace Lumina
         const dtNavMesh* CMesh = NavMesh;
         const int32 MaxTiles = CMesh->getMaxTiles();
 
-        // Pre-size conservatively so the inner loop doesn't reallocate.
-        // 64 detail tris per poly is a high estimate; over-reserving is
-        // cheap, under-reserving is multiple reallocs.
         size_t TriEstimate = 0;
         for (int32 i = 0; i < MaxTiles; ++i)
         {
@@ -362,7 +347,6 @@ namespace Lumina
             return false;
         }
 
-        // Drop the existing tile at this slot. It's fine if there isn't one.
         const dtTileRef OldRef = NavMesh->getTileRefAt(TileX, TileY, 0);
         if (OldRef != 0)
         {
@@ -371,7 +355,7 @@ namespace Lumina
 
         if (NewBlob.empty())
         {
-            return true; // tile is now (intentionally) empty
+            return true; // intentionally empty
         }
 
         const size_t Size = NewBlob.size();
@@ -388,9 +372,7 @@ namespace Lumina
             dtFree(Owned);
             return false;
         }
-        // Cache stays valid for unchanged tiles, but the rebuilt one's
-        // triangles are stale. A full refresh keeps the cache simple; the
-        // walk is a few hundred µs even for medium meshes.
+        // Full refresh; per-tile patching isn't worth the complexity.
         RefreshTriangleCache();
         return true;
 #else
@@ -407,8 +389,6 @@ namespace Lumina
 
         dtQueryFilter F; ApplyFilter(Filter, F);
 
-        // Locate the polygon closest to Center to seed the random walk.
-        // Without a valid start ref the disk-walk has nothing to anchor to.
         float CP[3]; Pack(Center, CP);
         float Extents[3]; Pack(Filter.QueryExtents, Extents);
 
@@ -419,9 +399,7 @@ namespace Lumina
             return false;
         }
 
-        // Detour drives sampling through a 0..1 RNG. xorshift gives us a
-        // cheap thread-safe stream without dragging std::random into the
-        // query path.
+        // Thread-local xorshift; cheap RNG for Detour's sampling callback.
         static thread_local uint32 RngState = 0xDEADBEEF;
         auto Rand01 = []() -> float
         {

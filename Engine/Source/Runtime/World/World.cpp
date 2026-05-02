@@ -286,7 +286,6 @@ namespace Lumina
 
     void CWorld::PostLoad()
     {
-        //...
     }
     
     void CWorld::InitializeWorld(EWorldType InWorldType)

@@ -967,7 +967,6 @@ namespace Lumina
         }
     }
 
-    // -- Transactions ----------------------------------------------------------------------
     //
     // Transactions snapshot the entity registry on Begin and again on End; Undo restores the
     // before-state, Redo restores the after. Lives on the base so every editor tool with a

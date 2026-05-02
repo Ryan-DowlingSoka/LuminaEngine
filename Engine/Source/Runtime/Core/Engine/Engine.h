@@ -58,13 +58,7 @@ namespace Lumina
         /** Loads the project's script module */
         RUNTIME_API void LoadProjectScript(FStringView Path);
 
-        /**
-         * Cooked-runtime entry point. Mounts the .pak located alongside the
-         * executable, loads project config from inside it, runs asset
-         * discovery, loads the project's script module + DLL (if alongside),
-         * spawns the game instance, and loads the configured startup map.
-         * Returns false if no .pak could be found or it failed to mount.
-         */
+        /** Cooked-runtime entry: mounts .pak next to exe, loads config/scripts/DLL, spawns game instance, loads startup map. */
         RUNTIME_API bool LoadCookedRuntime();
 
         #if WITH_EDITOR
@@ -72,10 +66,7 @@ namespace Lumina
         RUNTIME_API IDevelopmentToolUI* GetDevelopmentToolsUI() const { return DeveloperToolUI; }
         #endif
 
-        // Cross-DLL meta plumbing has moved to Core/Engine/EngineMetaContext.h
-        // (free functions Lumina::GetEngineMetaContext / GetEngineMetaService)
-        // so Engine.h doesn't have to drag <entt/entt.hpp> into ~22 transitive
-        // include sites that don't actually touch entt.
+        // Meta-context accessors live in EngineMetaContext.h to avoid pulling <entt/entt.hpp> into Engine.h.
 
         RUNTIME_API void SetReadyToClose(bool bReadyToClose) { bEngineReadyToClose = bReadyToClose; }
         
@@ -96,30 +87,20 @@ namespace Lumina
 
         RUNTIME_API CGameInstance* GetGameInstance() const { return GameInstance; }
 
-        /**
-         * Queues a world travel to the asset at WorldPath. The actual swap
-         * runs at the start of the next frame so calls from gameplay code,
-         * scripts, or UI never tear down a world mid-tick.
-         *
-         * Targets the running Game-type world, preferring PIE when one exists.
-         * The editor proxy world is preserved so exiting PIE restores the
-         * original map. In packaged builds with no Game world yet, Travel
-         * creates one.
-         */
+        /** Queues world travel; swap runs at next FrameStart. Prefers PIE Game world; preserves editor proxy on PIE exit. */
         RUNTIME_API void Travel(FStringView WorldPath);
 
     protected:
 
-        /** Constructs the CGameInstance subclass named by Project.GameInstanceClass (or the base if unset) and calls Init. */
+        /** Constructs Project.GameInstanceClass (or base CGameInstance) and calls Init. */
         RUNTIME_API virtual void CreateGameInstance();
 
-        /** Loads Project.GameStartupMap as a Game world context. Editor overrides to no-op. */
+        /** Loads Project.GameStartupMap as a Game world. Editor overrides to no-op. */
         RUNTIME_API virtual void LoadStartupMap();
 
-        /** Destroys the GameInstance. Called during Shutdown. */
         RUNTIME_API virtual void DestroyGameInstance();
 
-        /** Drains a queued Travel request. Called once per frame at FrameStart. */
+        /** Drains a queued Travel request; called at FrameStart. */
         RUNTIME_API void ProcessPendingTravel();
 
     protected:

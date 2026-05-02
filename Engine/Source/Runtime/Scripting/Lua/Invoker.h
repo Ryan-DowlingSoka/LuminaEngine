@@ -106,13 +106,8 @@ namespace Lumina::Lua
         return Dispatch(eastl::make_index_sequence<TraitsT::ArgCount>{});
     }
     
-    // Variant of Invoker that pulls `self` from stack slot 1 without checking
-    // the userdata tag. The metatable dispatch that lands us here already
-    // constrains the userdata to a type whose ancestor chain includes
-    // SelfClassT — and since TUserdataHeader is laid out so External lives at
-    // a fixed offset and Buffer holds the leaf object whose first bytes are
-    // the SelfClassT subobject, reading it as SelfClassT is sound. Used by
-    // TClass<T>::AddFunction so inherited methods work on child userdata.
+    // Untagged self-read; metatable dispatch constrains type, header layout makes the cast sound.
+    // Used by TClass<T>::AddFunction so inherited methods work on child userdata.
     template<typename SelfClassT, auto TFunc>
     auto InvokerSelfUntagged(lua_State* L)
     {

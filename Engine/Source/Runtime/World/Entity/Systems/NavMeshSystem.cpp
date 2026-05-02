@@ -34,9 +34,7 @@ namespace Lumina
             glm::vec3          AABBMax = glm::vec3(-FLT_MAX);
         };
 
-        // Triangle indices in MeshletTriangles are 8-bit local indices packed
-        // 3 per uint32. Each meshlet's vertex indices are local to its
-        // VertexOffset in MeshletVertices.
+        // 8-bit local indices packed 3 per uint32; vertex indices local to Meshlet.VertexOffset.
         FORCEINLINE void UnpackTri(uint32 Packed, uint32& A, uint32& B, uint32& C)
         {
             A = (Packed >> 0)  & 0xFFu;
@@ -44,7 +42,7 @@ namespace Lumina
             C = (Packed >> 16) & 0xFFu;
         }
 
-        // Position is 10-10-10 unsigned. Decode is MeshOrigin + (LoInt + q) * GridStep.
+        // 10-10-10 unsigned position; MeshOrigin + (LoInt + q) * GridStep.
         FORCEINLINE glm::vec3 DecodePosition(uint32 Packed, const glm::ivec3& LoInt, const glm::vec3& MeshOrigin, const glm::vec3& GridStep)
         {
             const glm::ivec3 Q(
@@ -63,8 +61,7 @@ namespace Lumina
                      TMax.z < BMin.z || TMin.z > BMax.z);
         }
 
-        // Tag-bit packed into the cache key so a single entity may carry one
-        // collider of each type tracked independently for change detection.
+        // Tag-bit packed into cache key so one entity may track one collider of each type.
         enum class ENavColliderType : uint8 { Box = 0, Sphere = 1, Mesh = 2, Capsule = 3 };
 
         FORCEINLINE uint64 PackSourceKey(entt::entity E, ENavColliderType T)
@@ -72,10 +69,7 @@ namespace Lumina
             return ((uint64)(uint32)E << 8) | (uint64)T;
         }
 
-        // Build the world-space matrix for a collider given its entity
-        // transform and local offset / euler-rotation. Matches the matrix
-        // composition used by Jolt body placement so nav geometry overlaps
-        // physics geometry exactly.
+        // Matches Jolt body placement so nav geometry overlaps physics exactly.
         FORCEINLINE glm::mat4 ColliderToWorld(const STransformComponent& X, const glm::vec3& TransOffset, const glm::vec3& EulerOffset)
         {
             const glm::mat4 LocalOffset = glm::translate(glm::mat4(1.0f), TransOffset)
@@ -100,10 +94,7 @@ namespace Lumina
             Acc.AABBMax = glm::max(Acc.AABBMax, glm::max(A, glm::max(B, C)));
         }
 
-        // Box: 12 triangles (2 per face). World matrix is precomputed by the
-        // caller (entity transform composed with the collider's local offset)
-        // so the same lower-tier emit can serve both the main-thread gather
-        // and the worker snapshot path.
+        // 12 tris (2 per face); world matrix precomputed by caller.
         void EmitBoxGeometry(const glm::mat4& W, const glm::vec3& HalfExtent, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
         {
             const glm::vec3 H = HalfExtent;
@@ -118,9 +109,7 @@ namespace Lumina
             {
                 V[i] = glm::vec3(W * glm::vec4(LocalCorners[i], 1.0f));
             }
-            // Faces: -Y, +Y, -Z, +Z, -X, +X. Wound so (v1-v0) × (v2-v0)
-            // points OUTWARD, which is what Recast's slope test expects -
-            // a top face with an upward normal is the one marked walkable.
+            // Outward-wound for Recast's slope test (top face = walkable).
             EmitTri(Acc, BakeMin, BakeMax, V[0], V[1], V[2]); EmitTri(Acc, BakeMin, BakeMax, V[0], V[2], V[3]);
             EmitTri(Acc, BakeMin, BakeMax, V[4], V[6], V[5]); EmitTri(Acc, BakeMin, BakeMax, V[4], V[7], V[6]);
             EmitTri(Acc, BakeMin, BakeMax, V[0], V[5], V[1]); EmitTri(Acc, BakeMin, BakeMax, V[0], V[4], V[5]);
@@ -129,8 +118,7 @@ namespace Lumina
             EmitTri(Acc, BakeMin, BakeMax, V[1], V[6], V[2]); EmitTri(Acc, BakeMin, BakeMax, V[1], V[5], V[6]);
         }
 
-        // Sphere: low-poly UV-sphere (12 segments x 8 stacks = 192 tris).
-        // Cheap to bake into; nav doesn't need detail past tile resolution.
+        // Low-poly UV-sphere (12x8); nav doesn't need detail past tile resolution.
         void EmitSphereGeometry(const glm::mat4& W, float Radius, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
         {
             constexpr int Segments = 12;
@@ -156,28 +144,24 @@ namespace Lumina
                     const glm::vec3& B = Verts[(s + 1) * (Segments + 1) + g + 0];
                     const glm::vec3& C = Verts[(s + 1) * (Segments + 1) + g + 1];
                     const glm::vec3& D = Verts[(s + 0) * (Segments + 1) + g + 1];
-                    // Outward winding: A→D→C and A→C→B keep normals radial.
                     EmitTri(Acc, BakeMin, BakeMax, A, D, C);
                     EmitTri(Acc, BakeMin, BakeMax, A, C, B);
                 }
             }
         }
 
-        // Capsule: cylindrical side band + two hemispheres along the +Y
-        // axis (Jolt's CapsuleShape convention). Total height is
-        // 2*HalfHeight + 2*Radius. Lower-tier so the worker snapshot path
-        // can call it with a precomputed world matrix.
+        // Cylinder + hemispheres along +Y (Jolt CapsuleShape). Total height = 2*HalfHeight + 2*Radius.
         void EmitCapsuleGeometry(const glm::mat4& W, float HalfHeight, float Radius, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
         {
             constexpr int Segments = 12;
             constexpr int HemiStacks = 4;
-            const int Rings = 2 * HemiStacks + 2; // top hemi + cylinder seam + bottom hemi
+            const int Rings = 2 * HemiStacks + 2;
 
             TVector<glm::vec3> Verts;
             Verts.resize(Rings * (Segments + 1));
 
             int RingIdx = 0;
-            // Top hemisphere (Phi 0..pi/2), centered at +Y * HalfHeight.
+            // Top hemisphere at +Y * HalfHeight.
             for (int s = 0; s <= HemiStacks; ++s, ++RingIdx)
             {
                 const float Phi = (LE_PI_F * 0.5f) * (float)s / (float)HemiStacks;
@@ -190,7 +174,7 @@ namespace Lumina
                     Verts[RingIdx * (Segments + 1) + g] = glm::vec3(W * glm::vec4(Local, 1.0f));
                 }
             }
-            // Bottom hemisphere (Phi pi/2..pi), centered at -Y * HalfHeight.
+            // Bottom hemisphere at -Y * HalfHeight.
             for (int s = 1; s <= HemiStacks + 1; ++s, ++RingIdx)
             {
                 const float Phi = (LE_PI_F * 0.5f) + (LE_PI_F * 0.5f) * (float)s / (float)(HemiStacks + 1);
@@ -218,9 +202,7 @@ namespace Lumina
             }
         }
 
-        // Resolve the mesh asset for a SMeshColliderComponent: explicit Mesh
-        // wins, otherwise fall back to the entity's StaticMeshComponent.
-        // Mirrors the resolution Jolt uses to build collider shapes.
+        // Explicit Mesh wins; falls back to StaticMeshComponent. Mirrors Jolt's resolution.
         CStaticMesh* ResolveMeshColliderAsset(const SMeshColliderComponent& MC, const SStaticMeshComponent* Fallback)
         {
             if (CStaticMesh* M = MC.Mesh.Get())
@@ -267,10 +249,7 @@ namespace Lumina
             }
         }
 
-        // One pass over the registry collecting nav source colliders from
-        // every entity that opted in via bAffectsNavigation. Character
-        // capsules participate too when their bAffectsNavigation flag is on,
-        // so other agents path around them.
+        // Collect nav source colliders from all entities with bAffectsNavigation set.
         void GatherSourceGeometry(const FSystemContext& Context, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
         {
             auto BoxView = Context.CreateView<SBoxColliderComponent, STransformComponent>();
@@ -312,7 +291,6 @@ namespace Lumina
             }
         }
 
-        // Compute the inclusive (TX,TY) range of tiles covered by a world AABB.
         FORCEINLINE void TilesForAABB(const glm::vec3& AABBMin, const glm::vec3& AABBMax, const glm::vec3& Origin, float TileWorldSize, int32 TilesX, int32 TilesY,
                                       int32& OutTX0, int32& OutTY0, int32& OutTX1, int32& OutTY1)
         {
@@ -324,10 +302,7 @@ namespace Lumina
 
         FORCEINLINE uint64 PackTileKey(int32 TX, int32 TY) { return ((uint64)(uint32)TY << 32) | (uint32)TX; }
 
-        // Conservative world-space AABBs for each collider type. Used by
-        // the change detector and the bake-completion cache rebuild; both
-        // call sites must produce byte-identical values for change
-        // detection to report zero diff after a fresh bake.
+        // Conservative world AABBs; change detector and cache rebuild MUST produce byte-identical values.
 
         bool ComputeBoxColliderAABB(const SBoxColliderComponent& Box, const STransformComponent& X, glm::vec3& OutMin, glm::vec3& OutMax)
         {
@@ -354,7 +329,7 @@ namespace Lumina
         {
             const glm::mat4 W = ColliderToWorld(X, Sphere.TranslationOffset, glm::vec3(0.0f));
             const glm::vec3 Center = glm::vec3(W * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
-            // Conservative radius under arbitrary scale: longest column basis.
+            // Conservative radius: longest column basis under arbitrary scale.
             const float Sx = glm::length(glm::vec3(W[0]));
             const float Sy = glm::length(glm::vec3(W[1]));
             const float Sz = glm::length(glm::vec3(W[2]));
@@ -402,9 +377,7 @@ namespace Lumina
             return true;
         }
 
-        // Snapshot every nav-source collider's conservative AABB into the
-        // cache. Called at bake completion so the next change-detector tick
-        // compares apples to apples and reports zero diff.
+        // Snapshot AABBs at bake completion so next change-detector tick reports zero diff.
         void RebuildEntityAABBCache(const FSystemContext& Context, THashMap<uint64, FNavSourceEntity>& OutCache)
         {
             OutCache.clear();
@@ -451,9 +424,6 @@ namespace Lumina
             }
         }
 
-        // Build the full FNavBuildInput consumed by Bake() / BakeSingleTile().
-        // Lazy-evaluated by the caller and reused for both initial bake and
-        // partial rebuilds.
         void FillBuildInput(const FSystemContext& Context, SNavMeshComponent& Comp, FNavBuildInput& Out)
         {
             Out.Settings  = Comp.Settings;
@@ -466,30 +436,20 @@ namespace Lumina
             Out.Indices  = std::move(Acc.Indices);
         }
 
-        // Walk components, finalize completed bakes, drain per-tile rebakes,
-        // detect entity AABB changes and dirty the affected tiles, and kick
-        // any pending rebake jobs.
         void TickComponent(const FSystemContext& Context, entt::entity Entity, SNavMeshComponent& Comp)
         {
-            // 0. Editor / gameplay requested a fresh bake. Convert the flag
-            //    into a real RequestBake call now that we have a context.
             if (Comp.bBakeRequested)
             {
                 Comp.bBakeRequested = false;
                 SNavMeshSystem::RequestBake(Context, Comp);
             }
 
-            // 1. Drain a finished full bake. We don't construct the FNavMesh
-            // here - that work goes onto a worker via PendingInit so main
-            // never pays the dtNavMesh::init + per-tile addTile cost.
+            // Drain finished bake; FNavMesh construction is offloaded via PendingInit.
             if (Comp.Runtime.ActiveBake && Comp.Runtime.ActiveBake->bDone.load(std::memory_order_acquire))
             {
                 FNavBuildOutput& Out = Comp.Runtime.ActiveBake->Output;
 
-                // Tally non-empty tiles so a bake that produced *zero*
-                // walkable surface is loud instead of silent. The most
-                // common cause is the bounds volume not actually
-                // overlapping any static-mesh geometry.
+                // Tally non-empty tiles so a zero-walkable bake is loud (usually bounds miss geometry).
                 int32 NonEmptyTiles = 0;
                 for (const FNavTileData& T : Out.Tiles)
                 {
@@ -519,16 +479,12 @@ namespace Lumina
                 Comp.Runtime.DirtyTiles.clear();
             }
 
-            // 2. Drain a finished async hydration. The worker built the
-            // FNavMesh + triangle cache; main thread just hands it over.
+            // Drain finished async hydration.
             if (Comp.Runtime.PendingInit && Comp.Runtime.PendingInit->bDone.load(std::memory_order_acquire))
             {
                 Comp.Runtime.Mesh = std::move(Comp.Runtime.PendingInit->ResultMesh);
                 Comp.Runtime.PendingInit.reset();
-                // dtNavMesh::init or the per-tile addTile loop can fail
-                // and leave the FNavMesh non-ready. Without this branch
-                // the system silently transitions to Ready and every
-                // pathfinding query no-ops with no log trail.
+                // dtNavMesh::init or addTile can fail; without this branch state silently goes Ready.
                 if (!Comp.Runtime.Mesh || !Comp.Runtime.Mesh->IsReady())
                 {
                     LOG_ERROR("NavMesh hydration failed: dtNavMesh did not initialize (recast vendoring missing, or addTile rejected every blob). All Nav queries will return false.");
@@ -541,13 +497,8 @@ namespace Lumina
                 }
             }
 
-            // 3. Kick async hydration when tiles are present and either we
-            // have no live mesh yet (first bake / PIE clone / world load)
-            // OR the tiles changed since the last init (subsequent bakes
-            // set bRuntimeDirty in step 1). Without the bRuntimeDirty
-            // branch, a re-bake leaves the old Mesh in place, the
-            // condition stays false, and the editor stays stuck on
-            // "Baking..." because State never leaves Building.
+            // Kick async hydration when tiles are present and mesh is missing or dirty.
+            // bRuntimeDirty branch is essential: re-bake otherwise leaves old Mesh and state stuck Building.
             if (Comp.HasBakedData() && !Comp.Runtime.PendingInit && (Comp.Runtime.bRuntimeDirty || !Comp.Runtime.Mesh))
             {
                 const glm::vec3 BakeMin = Comp.Center - Comp.Extents;
@@ -564,9 +515,7 @@ namespace Lumina
                 Comp.Runtime.bRuntimeDirty = false;
                 Comp.Runtime.State = ENavBakeState::Initializing;
 
-                // Copy tiles so the worker owns its own data; Comp.Tiles
-                // remains the serialized source of truth and isn't touched
-                // by the async init.
+                // Copy tiles so worker owns its data; Comp.Tiles stays serialized source of truth.
                 TVector<FNavTileData> TilesCopy = Comp.Tiles;
                 const glm::vec3 InitOrigin = Comp.Origin;
                 const float InitTileSize = Comp.TileWorldSize;
@@ -590,15 +539,12 @@ namespace Lumina
                 return;
             }
 
-            // Debug draw runs FIRST so it always emits while the mesh is
-            // ready, regardless of whether step 5 below decides to early
-            // return on empty dirty tiles or saturated rebake jobs.
+            // Debug draw runs first so it emits even when later steps early-return.
             if (CVarNavDrawDebug.GetValue())
             {
                 const glm::vec4 EdgeColor(0.05f, 1.0f, 0.15f, 1.0f);
                 constexpr float EdgeThickness = 2.0f;
-                // EnqueueLine (the path Context.DrawDebugLine ends up on)
-                // is MPMC-safe, so the visitor can run on every worker.
+                // EnqueueLine is MPMC-safe; visitor runs on every worker.
                 Comp.Runtime.Mesh->ParallelForEachTriangle([&Context, EdgeColor](const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, uint8 /*Area*/)
                 {
                     const glm::vec3 Lift(0.0f, 0.05f, 0.0f);
@@ -608,7 +554,7 @@ namespace Lumina
                 });
             }
 
-            // 3. Hot-swap completed per-tile rebakes.
+            // Hot-swap completed per-tile rebakes.
             for (auto& Job : Comp.Runtime.PendingRebakes)
             {
                 if (!Job || Job->bConsumed.load(std::memory_order_acquire))
@@ -620,11 +566,7 @@ namespace Lumina
                     continue;
                 }
 
-                // Persist a copy into Comp.Tiles BEFORE handing the blob to
-                // the runtime mesh. Without this, the serialized tile array
-                // would lose its data on every rebake, and any subsequent
-                // PIE clone or world save would init from empty blobs (the
-                // dtNavMesh's owned copy is unreachable from serialization).
+                // Persist into Comp.Tiles BEFORE the runtime mesh hand-off, or PIE clones/saves init from empty.
                 bool bUpdatedExisting = false;
                 for (FNavTileData& T : Comp.Tiles)
                 {
@@ -653,7 +595,7 @@ namespace Lumina
                     [](const TSharedPtr<FNavTileRebake>& J) { return !J || J->bConsumed.load(std::memory_order_acquire); }),
                 Comp.Runtime.PendingRebakes.end());
 
-            // 4. Detect moved/added/removed source colliders and dirty their tiles.
+            // Detect moved/added/removed source colliders and dirty their tiles.
             THashMap<uint64, FNavSourceEntity> CurrentAABBs;
             CurrentAABBs.reserve(Comp.Runtime.EntityAABBs.size());
 
@@ -680,8 +622,7 @@ namespace Lumina
                 {
                     if (bMoved)
                     {
-                        // Old footprint also gets dirtied so triangles we
-                        // were standing on are re-evaluated.
+                        // Old footprint also dirtied so vacated tris get re-evaluated.
                         MarkDirtyForAABB(It->second.AABBMin, It->second.AABBMax);
                     }
                     MarkDirtyForAABB(Mn, Mx);
@@ -729,7 +670,7 @@ namespace Lumina
                 VisitSource(PackSourceKey(E, ENavColliderType::Capsule), Mn, Mx);
             }
 
-            // Removed colliders also dirty their last-known tiles.
+            // Removed colliders dirty their last-known tiles.
             for (const auto& [Id, Snap] : Comp.Runtime.EntityAABBs)
             {
                 if (CurrentAABBs.find(Id) == CurrentAABBs.end())
@@ -740,18 +681,14 @@ namespace Lumina
 
             Comp.Runtime.EntityAABBs = std::move(CurrentAABBs);
 
-            // 5. Kick rebakes for dirty tiles. Cap concurrent jobs so a
-            // burst of movement doesn't saturate the worker pool. The
-            // remaining tiles stay dirty and pick up next tick.
+            // Cap concurrent rebake jobs; remaining dirty tiles wait for next tick.
             constexpr uint32 MaxConcurrent = 8;
             if (Comp.Runtime.DirtyTiles.empty() || Comp.Runtime.PendingRebakes.size() >= MaxConcurrent)
             {
                 return;
             }
 
-            // Snapshot only collider parameter blobs + world matrices on the
-            // main thread. Cheap. The per-shape tessellation runs on a worker
-            // via the coordinator task below.
+            // Main thread only snapshots params + world matrices; tessellation runs on a worker.
             const uint32 Capacity = MaxConcurrent - (uint32)Comp.Runtime.PendingRebakes.size();
             TVector<TSharedPtr<FNavTileRebake>> BatchJobs;
             BatchJobs.reserve(Capacity);
@@ -825,10 +762,7 @@ namespace Lumina
                 }
             }
 
-            // One coordinator task: tessellates collider geometry once on a
-            // worker, then ParallelFors the per-tile bakes against the
-            // shared input. Inner ParallelFor amortizes wait time across the
-            // worker pool.
+            // Coordinator: tessellate once on a worker, ParallelFor the per-tile bakes.
             Task::AsyncTask(1, 1, [Snap, Jobs = std::move(BatchJobs)](uint32, uint32, uint32) mutable
             {
                 FNavBuildInput Input;
@@ -887,10 +821,7 @@ namespace Lumina
 
     namespace
     {
-        // Fires when a SNavMeshComponent is added to an entity (inspector,
-        // script, code). Initializes Center from the entity's transform so
-        // the bake volume defaults to the entity's location rather than the
-        // origin.
+        // Initializes Center from entity transform so bake volume defaults at entity location.
         void OnNavMeshConstructed(entt::registry& Reg, entt::entity Entity)
         {
             SNavMeshComponent& Nav = Reg.get<SNavMeshComponent>(Entity);
@@ -905,8 +836,7 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        // Register the construction callback once. Connecting twice no-ops
-        // because entt sinks dedupe on the same free-function pointer.
+        // entt sinks dedupe on the same function pointer, so reconnect is a no-op.
         Context.GetRegistry().on_construct<SNavMeshComponent>().connect<&OnNavMeshConstructed>();
 
         auto View = Context.CreateView<SNavMeshComponent>();
@@ -939,9 +869,7 @@ namespace Lumina
             }
             Comp.Runtime.Mesh.reset();
             Comp.Runtime.ActiveBake.reset();
-            // PendingInit's worker holds its own shared_ptr; clearing the
-            // component's slot just stops it from being consumed when the
-            // worker eventually finishes.
+            // Worker holds its own shared_ptr; clearing here just prevents consumption.
             Comp.Runtime.PendingInit.reset();
             Comp.Runtime.PendingRebakes.clear();
             Comp.Runtime.DirtyTiles.clear();
@@ -958,9 +886,7 @@ namespace Lumina
             return;
         }
 
-        // Bounds with zero or negative volume produce a single 1x1 grid of
-        // empty tiles. Catch it up front so the user gets a clear message
-        // instead of a "0 walkable tiles" warning at completion.
+        // Catch zero/negative bounds up front; otherwise user gets a misleading "0 walkable" warning later.
         const glm::vec3 Span = Comp.Extents * 2.0f;
         if (Span.x <= 0.0f || Span.y <= 0.0f || Span.z <= 0.0f)
         {
@@ -990,10 +916,7 @@ namespace Lumina
                 Input.BoundsMax.x, Input.BoundsMax.y, Input.BoundsMax.z);
         }
 
-        // EntityAABB cache populated at bake-completion drain instead of
-        // here - the gather's tight per-triangle AABBs would mismatch the
-        // change-detector's conservative 8-corner AABBs and cause a
-        // spurious tile-rebake storm right after the bake lands.
+        // EntityAABB cache populated at bake-completion drain (avoids tight-vs-conservative AABB mismatch storm).
         Comp.Runtime.EntityAABBs.clear();
         Comp.Runtime.DirtyTiles.clear();
         Comp.Runtime.PendingRebakes.clear();
@@ -1021,13 +944,8 @@ namespace Lumina
             return Mesh && Mesh->Raycast(Start, End, Filter, HitOut);
         }
 
-        // ---- CWorld flavor -------------------------------------------
-
         namespace
         {
-            // Locate the first SNavMeshComponent whose runtime FNavMesh is
-            // ready in this world. Multi-bounds support layers on top later
-            // (route by entity, area mask, etc.).
             FNavMesh* FirstReadyNavMeshFromWorld(CWorld* World)
             {
                 if (!World) return nullptr;
@@ -1096,22 +1014,17 @@ namespace Lumina
             return Len;
         }
 
-        // ---- Lua module ----------------------------------------------
-
         void RegisterLuaModule(Lua::FRef& Globals)
         {
             Lua::FRef NavTable = Globals.NewTable("Nav");
 
-            // Boolean status / reachability queries.
             NavTable.SetFunction<[](CWorld* W) { return Nav::IsReady(W); }>("IsReady");
             NavTable.SetFunction<[](CWorld* W, glm::vec3 From, glm::vec3 To) { return Nav::IsReachable(W, From, To); }>("IsReachable");
 
-            // Float-returning helpers. PathLength returns < 0 when no path.
+            // PathLength returns < 0 when no path.
             NavTable.SetFunction<[](CWorld* W, glm::vec3 From, glm::vec3 To) { return Nav::PathLength(W, From, To); }>("PathLength");
 
-            // Vec3-returning helpers. Returns the input on failure so Lua
-            // code can no-op gracefully; pair with IsReady / IsReachable
-            // when validity matters.
+            // Returns the input on failure; pair with IsReady/IsReachable when validity matters.
             NavTable.SetFunction<[](CWorld* W, glm::vec3 P, glm::vec3 E) -> glm::vec3
             {
                 glm::vec3 Out = P;
@@ -1133,7 +1046,7 @@ namespace Lumina
                 return Out;
             }>("FindRandomReachablePoint");
 
-            // Path corners as a Luau array. Empty when no path exists.
+            // Empty array when no path exists.
             NavTable.SetFunction<[](CWorld* W, glm::vec3 S, glm::vec3 E) -> TVector<glm::vec3>
             {
                 FNavPath Path;

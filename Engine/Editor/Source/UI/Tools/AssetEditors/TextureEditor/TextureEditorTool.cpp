@@ -290,7 +290,6 @@ namespace Lumina
             ImGui::Spacing();
             ImGui::Spacing();
         
-            // === Mipmap Chain ===
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
             ImGui::SeparatorText("Mipmap Chain");
             ImGuiX::Font::PopFont();
@@ -431,7 +430,6 @@ namespace Lumina
             ImGui::Spacing();
             ImGui::Spacing();
         
-            // === Image Capabilities ===
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
             ImGui::SeparatorText("Image Capabilities");
             ImGuiX::Font::PopFont();
@@ -483,7 +481,6 @@ namespace Lumina
             ImGui::Spacing();
             ImGui::Spacing();
         
-            // === Statistics ===
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
             ImGui::SeparatorText("Statistics");
             ImGuiX::Font::PopFont();

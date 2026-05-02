@@ -23,22 +23,7 @@ namespace Lumina
         return NewObject<CTexture>(Package, Name);
     }
 
-    // ----------------------------------------------------------------------------
-    //  HDR / Environment cooking path
-    //
-    //  Bypasses Basis Universal entirely: Basis is LDR-only (it expects sRGB
-    //  RGBA8 input and clamps anything beyond [0,1]), so feeding a radiance
-    //  HDR through it would burn the brightest values to white before the
-    //  IBL convolution ever sees them. Instead, store as RGBA16F: half the
-    //  memory of float32, more than enough precision for environment lighting
-    //  (the IBL pipeline takes thousands of samples per output texel and any
-    //  half-float quantization noise averages out), and natively sampled by
-    //  Vulkan without a transcode step.
-    //
-    //  No mips: the equirect is an intermediate the renderer converts to a
-    //  cubemap on first use; the cube then gets its own GGX prefilter chain
-    //  in PrefilterEnvMapPass.
-    // ----------------------------------------------------------------------------
+    // HDR/Environment cook: bypasses Basis (LDR-only) and stores RGBA16F. No mips; the cube prefilter chain owns mip generation.
     static bool CookEnvironmentTexture(CTexture* Texture, const Import::Textures::FTextureImportResult& Source)
     {
         const uint32 Width  = Source.Dimensions.x;
@@ -49,8 +34,7 @@ namespace Lumina
             return false;
         }
 
-        // Source is always float32 here -- TextureFactory routes only files
-        // that loaded as one of the float formats below into this path.
+        // Source is always float32 here; only float-format files reach this path.
         uint32 SrcChannels = 0;
         switch (Source.Format)
         {
@@ -66,10 +50,7 @@ namespace Lumina
 
         const float* SrcFloats = reinterpret_cast<const float*>(Source.Pixels.data());
 
-        // RGBA16F packed as two uint32 per pixel: low halves = (R, G), high
-        // halves = (B, A). glm::packHalf2x16 puts the first vec2 component in
-        // the low 16 bits, which matches RGBA16F's natural little-endian
-        // byte order (R first in memory). 8 bytes per pixel.
+        // RGBA16F: two uint32 per pixel; (R,G) low half, (B,A) high half. 8 bytes per pixel.
         TVector<uint32> Halves(NumTexels * 2);
         for (uint64 i = 0; i < NumTexels; ++i)
         {
@@ -107,7 +88,7 @@ namespace Lumina
         FRHIImageRef RHIImage = GRenderContext->CreateImage(ImageDescription);
         Texture->TextureResource->RHIImage = RHIImage;
 
-        const uint32 BytesPerPixel = 8u;  // RGBA16F.
+        const uint32 BytesPerPixel = 8u;
         const uint32 RowPitch      = Width * BytesPerPixel;
         const uint32 SlicePitch    = RowPitch * Height;
 
@@ -130,11 +111,7 @@ namespace Lumina
         return true;
     }
 
-    // Encodes pre-loaded raw RGBA8 pixels via Basis Universal and writes the
-    // compressed image into Texture->TextureResource. Shared by initial
-    // import and Recook so the format-selection logic lives in exactly one
-    // place. Returns false on any compressor / transcoder error; callers
-    // are responsible for cleaning up the texture on failure.
+    // Encodes RGBA8 via Basis Universal; shared by initial import and Recook.
     static bool CookTexturePixels(CTexture* Texture, const TVector<uint8>& Pixels, glm::uvec2 Dimensions, ETextureColorSpace ColorSpace)
     {
         const bool bIsSRGB     = (ColorSpace == ETextureColorSpace::SRGB);
@@ -157,19 +134,9 @@ namespace Lumina
         Params.m_quality_level              = 128;
         Params.m_pack_uastc_ldr_4x4_flags   = basisu::cPackUASTCLevelFastest;
 
-        // Tell the encoder whether to optimize in perceptual (sRGB) or linear
-        // error space. Mismatched perceptual mode + storage format is the
-        // root cause of "all my albedos look dark" -- the encoder makes
-        // perceptually-good bits, then the GPU samples them as linear and
-        // every value comes out wrong. Mip filter color space matches.
+        // Perceptual mode must match storage format or sRGB albedos look wrong.
         Params.m_perceptual = bIsSRGB;
         Params.m_mip_srgb   = bIsSRGB;
-
-        // Normal maps don't need additional encoder hints here -- the BC5
-        // transcode target below is what saves them. Basis encodes RGBA
-        // UASTC; selecting BC5_RG at transcode time pulls only the RG
-        // endpoints into the BC5 block, which is the same precision win as
-        // a "2-channel mode" without a special encoder configuration.
 
         basisu::basis_compressor Compressor;
         if (!Compressor.init(Params))
@@ -197,21 +164,7 @@ namespace Lumina
         const uint32 Width  = ImageInfo.m_width;
         const uint32 Height = ImageInfo.m_height;
 
-        // Format selection by color-space role:
-        //   SRGB       -> BC7_UNORM_SRGB. GPU does sRGB->linear on every
-        //                 fetch (free hardware path); critical for albedo
-        //                 and any other color content.
-        //   NormalMap  -> BC5_UNORM. Two-channel store (RG = X, Y); shader
-        //                 reconstructs Z = sqrt(1 - x^2 - y^2). Doubles
-        //                 angular precision vs. BC7_UNORM at the same byte
-        //                 cost since BC5 dedicates both blocks to RG instead
-        //                 of sharing endpoints across RGB.
-        //   Linear /
-        //   PackedData -> BC7_UNORM. Linear sampling, no perceptual decode.
-        //                 BC4-per-channel splitting for ORM-style packs is
-        //                 a future pass; BC7_UNORM with linear-mode encoding
-        //                 is already a real improvement over the previous
-        //                 "BC7 with perceptual encoder" mismatch.
+        // SRGB->BC7_UNORM_SRGB; NormalMap->BC5_UNORM (shader reconstructs Z); Linear/Packed->BC7_UNORM.
         EFormat StoredFormat;
         basist::transcoder_texture_format TranscodeTarget;
         if (bIsSRGB)
@@ -243,8 +196,7 @@ namespace Lumina
             Texture->TextureResource = MakeUnique<FTextureResource>();
         }
 
-        // Drop the previous bindless slot before swapping the RHI image; the
-        // new image will re-register on PostLoad / fresh import.
+        // Drop the previous bindless slot before swapping the RHI image.
         if (Texture->TextureResource->RHIImage && Texture->TextureResource->RHIImage->GetTextureCacheIndex() != -1)
         {
             GRenderManager->GetTextureManager().RemoveTexture(Texture->TextureResource->RHIImage);
@@ -301,41 +253,29 @@ namespace Lumina
         CommandList->Close();
         GRenderContext->ExecuteCommandList(CommandList, ECommandQueue::Compute);
 
-        // Re-register the new image so any binding tables / global texture
-        // arrays pick it up. AddTexture is a no-op if the image is already
-        // tracked, so it's safe to always call.
         GRenderManager->GetTextureManager().AddTexture(RHIImage);
 
         return true;
     }
 
-    // Filename-driven default for ETextureColorSpace::Auto. The conventions
-    // here match what the major DCC tools (Substance, Blender, Marmoset) export
-    // by default. Anything we can't classify falls through to SRGB on the
-    // assumption that "color textures are the common case"; the asset's
-    // ColorSpace property is editable in the inspector for the cases the
-    // heuristic gets wrong.
+    // Filename suffix heuristic for Auto; falls back to SRGB. Editable in the inspector for misclassifications.
     static ETextureColorSpace ClassifyByFilename(FStringView Path)
     {
         eastl::string Stem(Path.data(), Path.size());
 
-        // Lowercase before slicing so the .hdr extension check is case-
-        // insensitive (matters: HDRIHaven and Polyhaven exports often
-        // ship as .HDR).
+        // Lowercase first so .HDR/.hdr both match.
         for (char& C : Stem)
         {
             if (C >= 'A' && C <= 'Z') C = (char)(C + ('a' - 'A'));
         }
 
-        // .hdr is always an HDR equirectangular panorama in practice;
-        // route it to the Environment cooking path before any of the
-        // suffix-based heuristics below see it.
+        // Route .hdr to Environment before suffix heuristics run.
         if (Stem.size() >= 4 && Stem.compare(Stem.size() - 4, 4, ".hdr") == 0)
         {
             return ETextureColorSpace::Environment;
         }
 
-        // Strip any extension so the suffix match isn't fooled by ".png".
+        // Strip extension before suffix match.
         const size_t DotPos = Stem.find_last_of('.');
         if (DotPos != eastl::string::npos)
         {
@@ -348,26 +288,21 @@ namespace Lumina
             return Stem.size() >= SufLen && Stem.compare(Stem.size() - SufLen, SufLen, Suffix) == 0;
         };
 
-        // Tangent-space normals.
         if (EndsWith("_n") || EndsWith("_normal") || EndsWith("_norm") || EndsWith("_nrm"))
             return ETextureColorSpace::NormalMap;
 
-        // Multi-channel PBR packs (incl. glTF metallic-roughness convention,
-        // which packs roughness in G and metallic in B with R unused or AO).
         if (EndsWith("_orm") || EndsWith("_arm") || EndsWith("_mra") || EndsWith("_rmo") ||
             EndsWith("_mro") || EndsWith("_rma") || EndsWith("_amr") ||
             EndsWith("_metalroughness") || EndsWith("_metallicroughness") ||
             EndsWith("_metalrough") || EndsWith("_mr") || EndsWith("_rm"))
             return ETextureColorSpace::PackedData;
 
-        // Single-channel linear data textures.
         if (EndsWith("_r") || EndsWith("_rough") || EndsWith("_roughness") ||
             EndsWith("_m") || EndsWith("_metal") || EndsWith("_metallic") ||
             EndsWith("_ao") || EndsWith("_occ") || EndsWith("_occlusion") ||
             EndsWith("_h") || EndsWith("_height") || EndsWith("_disp") || EndsWith("_displacement"))
             return ETextureColorSpace::Linear;
 
-        // Default for albedo / color / emissive / UI / unrecognized.
         return ETextureColorSpace::SRGB;
     }
     
@@ -440,11 +375,7 @@ namespace Lumina
             ImageSettings = &Settings->As<Import::Mesh::FMeshImportImage>();
         }
 
-        // Bytes path = mesh-embedded image. File path = either a direct file
-        // import (Settings == nullptr) or a mesh import that resolved a
-        // relative URI to an absolute path (Settings != nullptr but no Bytes).
-        // Both fall through to the same loader; only Settings.Bytes triggers
-        // the in-memory path.
+        // Bytes path = mesh-embedded; file path = direct or mesh-resolved URI.
         if (ImageSettings && ImageSettings->IsBytes())
         {
             MaybeResult = Import::Textures::ImportTexture(ImageSettings->Bytes, false);
@@ -462,11 +393,7 @@ namespace Lumina
 
         const Import::Textures::FTextureImportResult& Result = MaybeResult.value();
 
-        // Apply mesh-importer-supplied semantic role first -- it's the most
-        // accurate signal we have (came directly from glTF material slots /
-        // assimp's aiTextureType), then fall back to filename pattern
-        // matching for OBJ + standalone PNG drags. Auto is the wildcard;
-        // any concrete value sticks regardless of filename.
+        // Mesh-supplied role wins; otherwise classify by filename for direct drags.
         if (ImageSettings && ImageSettings->IntendedColorSpace != ETextureColorSpace::Auto)
         {
             NewTexture->ColorSpace = ImageSettings->IntendedColorSpace;
@@ -476,12 +403,7 @@ namespace Lumina
             NewTexture->ColorSpace = ClassifyByFilename(RawPath.c_str());
         }
 
-        // Hard override for float-source data: Basis Universal expects
-        // 8-bit RGBA and would interpret the float bytes as garbage 8-bit
-        // pixels, producing a corrupt asset with no error. Anything that
-        // loads as a float format MUST take the Environment path. The
-        // CTexture default ColorSpace is SRGB, which would otherwise win
-        // here because the filename heuristic only fires on Auto.
+        // Float-source data must take the Environment path; Basis would silently corrupt it.
         const bool bIsFloatSource =
             Result.Format == EFormat::R32_FLOAT    ||
             Result.Format == EFormat::RG32_FLOAT   ||
@@ -493,20 +415,14 @@ namespace Lumina
         }
 
 #if USING(WITH_EDITOR)
-        // Thumbnail generator assumes 4-byte RGBA8 strides. HDR float inputs
-        // would read garbage (the first byte of each float, treated as 8-bit
-        // color) and produce a broken-looking preview. Skip it for HDR;
-        // package gets a default thumbnail.
+        // Thumbnail generator assumes RGBA8; skip for HDR.
         if (NewTexture->ColorSpace != ETextureColorSpace::Environment)
         {
             CreatePackageThumbnail(NewTexture, Result.Pixels.data(), Result.Dimensions.x, Result.Dimensions.y);
         }
 #endif
 
-        // Persist the source path so the editor's Recook button can rerun
-        // compression after a ColorSpace change without forcing the user to
-        // re-drag the file. Bytes-only imports (mesh-embedded textures) leave
-        // SourcePath empty -- those can't be re-cooked from disk.
+        // Persist source path for Recook; bytes-only imports leave it empty.
         if (!ImageSettings || !ImageSettings->IsBytes())
         {
             NewTexture->SourcePath = FString(RawPath.c_str());
@@ -515,7 +431,6 @@ namespace Lumina
         bool bCooked = false;
         if (NewTexture->ColorSpace == ETextureColorSpace::Environment)
         {
-            // Skip the Basis/BC* path entirely -- HDR data needs to stay HDR.
             bCooked = CookEnvironmentTexture(NewTexture, Result);
         }
         else
@@ -567,17 +482,13 @@ namespace Lumina
 
         const Import::Textures::FTextureImportResult& Result = MaybeResult.value();
 
-        // ColorSpace::Auto on a re-cook is treated the same as a fresh
-        // import: classify by filename and persist the resolved value so the
-        // user sees the concrete role in the inspector after re-cooking.
+        // Re-cook with Auto resolves like a fresh import.
         if (Texture->ColorSpace == ETextureColorSpace::Auto)
         {
             Texture->ColorSpace = ClassifyByFilename(Texture->SourcePath);
         }
 
-        // Same hard override as TryImport: float-source data can't go
-        // through Basis. If a user manually flips ColorSpace away from
-        // Environment on an .hdr asset we still cook it correctly.
+        // Float-source data must stay on the Environment path even if user changed ColorSpace.
         const bool bIsFloatSource =
             Result.Format == EFormat::R32_FLOAT    ||
             Result.Format == EFormat::RG32_FLOAT   ||

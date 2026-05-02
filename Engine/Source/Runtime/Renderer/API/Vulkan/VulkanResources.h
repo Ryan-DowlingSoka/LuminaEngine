@@ -12,35 +12,9 @@
 namespace Lumina
 {
     class FBitSetAllocator;
-    // Forward decl breaks the VulkanRenderContext.h <-> VulkanResources.h
-    // include cycle. All uses below are pointer/reference; the .cpp pulls in
-    // the full definition.
     class FVulkanRenderContext;
 
-    // ----------------------------------------------------------------------------------
-    // GLSL / GLM Type       | Vulkan VkFormat Equivalent         | Size (Bytes) | Notes
-    // ----------------------------------------------------------------------------------
-    // float                 | VK_FORMAT_R32_SFLOAT               | 4            | 1 × 32-bit float
-    // vec2 / glm::vec2      | VK_FORMAT_R32G32_SFLOAT            | 8            | 2 × 32-bit floats
-    // vec3 / glm::vec3      | VK_FORMAT_R32G32B32_SFLOAT         | 12           | 3 × 32-bit floats (no padding in VkFormat)
-    // vec4 / glm::vec4      | VK_FORMAT_R32G32B32A32_SFLOAT      | 16           | 4 × 32-bit floats
-    // int                   | VK_FORMAT_R32_SINT                 | 4            | 1 × 32-bit signed integer
-    // ivec2 / glm::ivec2    | VK_FORMAT_R32G32_SINT              | 8            | 2 × 32-bit signed integers
-    // ivec3 / glm::ivec3    | VK_FORMAT_R32G32B32_SINT           | 12           | 3 × 32-bit signed integers
-    // ivec4 / glm::ivec4    | VK_FORMAT_R32G32B32A32_SINT        | 16           | 4 × 32-bit signed integers
-    // uint                  | VK_FORMAT_R32_UINT                 | 4            | 1 × 32-bit unsigned integer
-    // uvec2 / glm::uvec2    | VK_FORMAT_R32G32_UINT              | 8            | 2 × 32-bit unsigned integers
-    // uvec3 / glm::uvec3    | VK_FORMAT_R32G32B32_UINT           | 12           | 3 × 32-bit unsigned integers
-    // uvec4 / glm::uvec4    | VK_FORMAT_R32G32B32A32_UINT        | 16           | 4 × 32-bit unsigned integers
-    // ----------------------------------------------------------------------------------
-    // Note:
-    // - There is no VK_FORMAT for 3-element types with alignment padding like GLSL's std140 vec3.
-    //   In vertex formats, VK_FORMAT_R32G32B32_* is valid and used, but memory alignment should
-    //   still be handled carefully when packing structs in C++.
-    // - Avoid using vec3 in UBOs unless you pad to vec4 alignment manually.
-    // ----------------------------------------------------------------------------------
-    
-
+    // Note: avoid vec3 in UBOs (std140 padding); pad to vec4 manually.
     VkFormat ConvertFormat(EFormat Format);
     
     class FVulkanSwapchain;
@@ -53,7 +27,7 @@ namespace Lumina
         uint64 WritePointer;
         void* MappedMemory = nullptr;
 
-        static constexpr uint64 GSizeAlignment = 4096; // GPU page size
+        static constexpr uint64 GSizeAlignment = 4096;
     };
 
     class FUploadManager : public IDeviceChild
@@ -65,16 +39,6 @@ namespace Lumina
         ~FUploadManager() = default;
         LE_NO_COPYMOVE(FUploadManager);
         
-        /**
-         * 
-         * @param Size Size of the buffer to suballocate
-         * @param Buffer Out buffer 
-         * @param Offset Offset into the buffer
-         * @param CpuVA CPU Virtual Address
-         * @param CurrentVersion Version tracking
-         * @param Alignment Alignment
-         * @return 
-         */
         bool SuballocateBuffer(uint64 Size, FRHIBuffer*& Buffer, uint64& Offset, void*& CpuVA, uint64 CurrentVersion, uint32 Alignment = 256);
         void SubmitChunks(uint64 CurrentVersion, uint64 SubmittedVersion);
         
@@ -159,8 +123,8 @@ namespace Lumina
         
     };
 
-    // A copyable version of std::atomic.
-    class FBufferVersionItem : public std::atomic<uint64> 
+    // Copyable std::atomic.
+    class FBufferVersionItem : public std::atomic<uint64>
     {
     public:
         FBufferVersionItem()
@@ -598,7 +562,6 @@ namespace Lumina
         TFixedVector<VkDescriptorPoolSize, 2>           PoolSizes;
     };
 
-    // Contains a VkDescriptorSet
     class FVulkanBindingSet : public FRHIBindingSet, public IDeviceChild
     {
     public:

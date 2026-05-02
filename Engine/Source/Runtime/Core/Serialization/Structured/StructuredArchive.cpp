@@ -3,10 +3,6 @@
 
 namespace Lumina
 {
-    //------------------------------------------------------------------------------------------------------
-    // FArchiveSlot
-    //------------------------------------------------------------------------------------------------------
-    
     FArchiveRecord FArchiveSlot::EnterRecord()
     {
         int32 ElementIdx = StructuredArchive.EnterSlotAsType(*this, StructuredArchive::EElementType::Record);
@@ -152,10 +148,6 @@ namespace Lumina
         return StructuredArchive.GetInnerAr();
     }
 
-    //------------------------------------------------------------------------------------------------------
-    // FArchiveRecord
-    //------------------------------------------------------------------------------------------------------
-
     FArchiveRecord::~FArchiveRecord()
     {
         StructuredArchive.LeaveRecord();
@@ -165,10 +157,6 @@ namespace Lumina
     {
         return StructuredArchive.EnterField(FieldName);
     }
-
-    //------------------------------------------------------------------------------------------------------
-    // FArchiveArray
-    //------------------------------------------------------------------------------------------------------
 
     FArchiveArray::~FArchiveArray()
     {
@@ -180,10 +168,6 @@ namespace Lumina
         return StructuredArchive.EnterArrayElement();
     }
 
-    //------------------------------------------------------------------------------------------------------
-    // FArchiveStream
-    //------------------------------------------------------------------------------------------------------
-
     FArchiveStream::~FArchiveStream()
     {
         StructuredArchive.LeaveStream();
@@ -193,10 +177,6 @@ namespace Lumina
     {
         return StructuredArchive.EnterStreamElement();
     }
-
-    //------------------------------------------------------------------------------------------------------
-    // FArchiveMap
-    //------------------------------------------------------------------------------------------------------
 
     FArchiveMap::~FArchiveMap()
     {
@@ -212,10 +192,6 @@ namespace Lumina
     {
         return StructuredArchive.EnterMapValue();
     }
-
-    //------------------------------------------------------------------------------------------------------
-    // IStructuredArchive
-    //------------------------------------------------------------------------------------------------------
 
     FArchiveSlot IStructuredArchive::Open()
     {
@@ -254,14 +230,12 @@ namespace Lumina
 
         int32 NewSlotDepth = Slot.Depth + 1;
 
-        // Check if we need to handle attributed values
-        if (NewSlotDepth < (int32)CurrentScope.size() && 
+        if (NewSlotDepth < (int32)CurrentScope.size() &&
             CurrentScope[NewSlotDepth].Type == StructuredArchive::EElementType::AttributedValue)
         {
             ++NewSlotDepth;
         }
 
-        // Ensure scope is large enough
         if (NewSlotDepth >= (int32)CurrentScope.size())
         {
             StructuredArchive::FSlotID NewID = IDGenerator.Generate();
@@ -270,7 +244,6 @@ namespace Lumina
         }
         else
         {
-            // Replace existing scope
             CurrentScope[NewSlotDepth].Type = Type;
             CurrentSlotID = CurrentScope[NewSlotDepth].ID;
         }
@@ -283,10 +256,6 @@ namespace Lumina
         SetScope(Slot);
     }
 
-    //------------------------------------------------------------------------------------------------------
-    // FBinaryStructuredArchive
-    //------------------------------------------------------------------------------------------------------
-
     FBinaryStructuredArchive::FBinaryStructuredArchive(FArchive& InAr)
         : IStructuredArchive(InAr)
     {
@@ -295,14 +264,11 @@ namespace Lumina
     void FBinaryStructuredArchive::EnterSlot(FSlotPosition Slot, bool bEnteringAttributedValue)
     {
         IStructuredArchive::EnterSlot(Slot, bEnteringAttributedValue);
-        
-        // For binary format, we don't need to write any metadata for simple slots
-        // The structure is implicit in the order of reads/writes
+        // Binary format encodes structure implicitly via read/write order.
     }
 
     void FBinaryStructuredArchive::LeaveSlot()
     {
-        // Nothing to do for binary format - structure is implicit
     }
 
     void FBinaryStructuredArchive::EnterRecord()
@@ -342,7 +308,6 @@ namespace Lumina
 
     void FBinaryStructuredArchive::LeaveField()
     {
-        // Nothing to do for binary format
     }
 
     void FBinaryStructuredArchive::EnterArray(int32& NumElements)
@@ -373,7 +338,6 @@ namespace Lumina
 
     void FBinaryStructuredArchive::EnterStream()
     {
-        // Streams don't have a fixed count, so no metadata needed
     }
 
     void FBinaryStructuredArchive::LeaveStream()
@@ -425,6 +389,4 @@ namespace Lumina
         
         return FArchiveSlot(*this, NewDepth, NewSlotID);
     }
-
-    //------------------------------------------------------------------------------------------------------
 }

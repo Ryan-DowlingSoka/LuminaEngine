@@ -16,7 +16,6 @@ namespace Lumina
         }
     };
 
-    // Usage with eastl::shared_ptr:
     template<typename S> using TSharedPtr =         eastl::shared_ptr<S>;
     template<typename S> using TUniquePtr =         eastl::unique_ptr<S>;
     template<typename S> using TWeakPtr =           eastl::weak_ptr<S>;

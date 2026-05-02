@@ -31,50 +31,41 @@ namespace Lumina
 
         CObject() = default;
         
-        /** Internal constructor */
         RUNTIME_API CObject(EObjectFlags InFlags)
             : CObjectBase(InFlags)
         {}
 
-        /** Internal constructor */
         RUNTIME_API CObject(CClass* InClass, EObjectFlags InFlags, CPackage* Package, const FName& InName, const FGuid& GUID)
             :CObjectBase(InClass, InFlags, Package, InName, GUID)
         {}
-        
-        /** Serializes object data. Can be overridden by derived classes. */
+
         RUNTIME_API virtual void Serialize(FArchive& Ar);
 
-        /** Used during serialization to and from a structured archive (Packaging, Network, etc.). */
+        /** Structured-archive serialize (packaging, network). */
         RUNTIME_API virtual void Serialize(IStructuredArchive::FRecord Record);
-        
-        /** Called after constructor and after properties have been initialized. */
+
+        /** Called after constructor + property init. */
         RUNTIME_API virtual void PostInitProperties();
 
-        /** Called after classes Class Default Object has been created */
+        /** Called after the CDO is created. */
         RUNTIME_API virtual void PostCreateCDO() {}
 
-        /** Is the object considered an asset? */
         RUNTIME_API virtual bool IsAsset() const { return false; }
-        
-        /** If this object is an asset, should it serialize as binary, or a text format */
+
+        /** Asset binary vs text serialization. */
         RUNTIME_API virtual bool IsBinary() const { return true; }
-        
-        /** Called just before the object is serialized from disk */
+
         RUNTIME_API virtual void PreLoad() {}
-        
-        /** Called immediately after the object is serialized from disk */
         RUNTIME_API virtual void PostLoad() {}
 
-        /** Called when a property on this object has been modified externally */
+        /** Property modified externally (e.g. editor). */
         RUNTIME_API virtual void PostPropertyChange(FProperty* ChangedProperty) {}
 
-        /** Renames this object, optionally changing its package */
         RUNTIME_API virtual bool Rename(const FName& NewName, CPackage* NewPackage = nullptr);
-        
-        /** Uses this object as a template to construct a new object from, will only copy reflected properties. */
+
+        /** Templates a new object from this one; copies reflected properties only. */
         RUNTIME_API CObject* Duplicate();
-        
-        /** Copies this object's properties over to another property of the same class */
+
         RUNTIME_API void CopyPropertiesTo(CObject* Other);
         
     private:

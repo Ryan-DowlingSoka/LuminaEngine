@@ -12,11 +12,7 @@ namespace Lumina::Lua
 {
     enum class EType : uint8;
 
-    /**
-     * Result of resuming a Lua coroutine. `Yielded` means the coroutine is suspended
-     * and is being kept alive by whoever requested the yield (e.g. FTimerManager:Wait
-     * pinning the thread in the registry until the timer fires).
-     */
+    // Yielded means the coroutine is suspended and pinned by whoever requested the yield.
     enum class ECoroutineStatus : uint8
     {
         Ok,
@@ -24,12 +20,7 @@ namespace Lumina::Lua
         Error,
     };
 
-    /**
-     * A reference to a lua object.
-     *
-     * This will pin down a reference to a lua-allocated object and prevent it from being garbage collected.
-     * Once this class is cleaned up, it will release the reference, and may allow GC again.
-     */
+    // Pins a lua-allocated object via lua_ref so it survives GC until destruction.
     class RUNTIME_API FRef
     {
     public:
@@ -137,15 +128,8 @@ namespace Lumina::Lua
         template<typename... TArgs>
         NODISCARD FRef Invoke(TArgs&& ... Args);
 
-        /**
-         * Invoke this function on a freshly spawned sub-coroutine. The sub-thread is
-         * pinned in the Lua registry while running and released on completion or error.
-         * If the function yields (e.g. via FTimerManager:Wait), responsibility for the
-         * thread's lifetime transfers to whoever requested the yield.
-         *
-         * Use this for entry points where the script is allowed to call yield-aware APIs
-         * such as `TimerManager:Wait`. Plain `Invoke` (lua_pcall) cannot yield.
-         */
+        // Invoke on a fresh sub-coroutine; required for yield-aware APIs since lua_pcall cannot yield.
+        // On yield, ownership of the thread transfers to whoever requested the yield.
         template<typename... TArgs>
         ECoroutineStatus InvokeAsCoroutine(TArgs&& ... Args) const;
 
@@ -159,13 +143,7 @@ namespace Lumina::Lua
         NODISCARD EType GetType() const;
         NODISCARD void Push() const;
 
-        /**
-         * Push the referenced value onto a specific target state's stack. Lua refs are
-         * global to the lua_State family (main + all coroutines/threads), so pushing
-         * onto any thread in the family is valid. Required when the target state isn't
-         * the FRef's owning state — e.g. pushing a value as an argument to a function
-         * being resumed on a freshly spawned sub-coroutine.
-         */
+        // Push onto a target thread in the same lua_State family (main + coroutines).
         NODISCARD void Push(lua_State* TargetState) const;
 
         NODISCARD FRef NewTable(FStringView Key) const;
@@ -368,20 +346,17 @@ namespace Lumina::Lua
             return ECoroutineStatus::Error;
         }
 
-        // Spawn sub-thread off the parent state. Pin in registry so the GC doesn't reclaim
-        // it before lua_resume is done with it.
+        // Pin sub-thread in registry so GC won't reclaim it during lua_resume.
         lua_State* SubThread = lua_newthread(State);
         const int ThreadRef = lua_ref(State, -1);
         lua_pop(State, 1);
 
-        // Propagate per-thread data (e.g. owning entity) so yield-aware APIs called inside
-        // the coroutine can find their script context.
+        // Propagate per-thread data so yield-aware APIs find their script context.
         if (void* ParentData = lua_getthreaddata(State))
         {
             lua_setthreaddata(SubThread, ParentData);
         }
 
-        // Lua refs are global to the lua_State family — getref onto the sub-thread is fine.
         lua_getref(SubThread, Ref);
         DEBUG_ASSERT(lua_type(SubThread, -1) == LUA_TFUNCTION);
 
@@ -391,9 +366,7 @@ namespace Lumina::Lua
 
         if (Status == LUA_YIELD || Status == LUA_BREAK)
         {
-            // Whoever yielded (e.g. FTimerManager:Wait) or broke (FLuaDebugger
-            // hitting a breakpoint via lua_break) holds its own ref to keep the
-            // thread alive until resumed; release ours.
+            // Yielder/debugger holds its own ref to keep the thread alive; release ours.
             lua_unref(State, ThreadRef);
             return ECoroutineStatus::Yielded;
         }
@@ -429,9 +402,7 @@ namespace Lumina::Lua
                 return;
             }
 
-            // Push onto the target state, not the FRef's owning state. Critical when
-            // pushing FRef args into a sub-coroutine's stack via InvokeAsCoroutine,
-            // since the FRef typically lives on the script's main thread.
+            // Push onto target state, not owning state — required for sub-coroutine arg passing.
             Value.Push(State);
         }
 

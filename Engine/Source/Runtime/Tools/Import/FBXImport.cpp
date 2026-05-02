@@ -407,13 +407,7 @@ namespace Lumina::Import::Mesh::FBX
         
         ImportData.Resources.reserve(MeshCount);
 
-        // Per-mesh extraction is decoupled from the merged buffers: every
-        // source mesh writes into its own thread-local FFBXMeshResult so the
-        // expensive triangulate + vertex-dedup loops run in parallel. A serial
-        // merge phase then concatenates each result into the final static or
-        // skinned FMeshResource, fixing up index/StartIndex offsets along the
-        // way. BoneNameToIndex is read-only at this point so multiple workers
-        // share it safely.
+        // Per-mesh extraction in parallel into FFBXMeshResult; serial merge concatenates with rebased offsets.
         struct FFBXMeshResult
         {
             bool                        bSkinned = false;
@@ -442,20 +436,8 @@ namespace Lumina::Import::Mesh::FBX
             const ofbx::Vec2Attributes   UVs       = Geometry.getUVs();
             const ofbx::Vec4Attributes   Colors    = Geometry.getColors();
 
-            // Bake the mesh's full FBX transform chain into vertex data:
-            //
-            //   WorldVertex = GlobalTransform * GeometricMatrix * LocalVertex
-            //
-            // GlobalTransform is the node->world transform. GeometricMatrix
-            // is an FBX-specific per-mesh transform that sits between the
-            // geometry data and the node, set independently when artists
-            // freeze transforms at different times. Different meshes in the
-            // same scene routinely carry different geometric transforms,
-            // which manifests as "some meshes vertical, others horizontal"
-            // when the merged buffer ignores it. SceneScale is applied as a
-            // uniform outer scale; uniform scale does not affect normal
-            // direction, so the normal matrix is built from the rotation/
-            // scale 3x3 of the FBX transform alone.
+            // Bake FBX transform: WorldVertex = GlobalTransform * GeometricMatrix * LocalVertex.
+            // Per-mesh GeometricMatrix is FBX-specific; ignoring it leaves meshes inconsistently oriented.
             const glm::mat4 GlobalMatrix    = ConvertMatrix(Mesh->getGlobalTransform());
             const glm::mat4 GeometricMatrix = ConvertMatrix(Mesh->getGeometricMatrix());
             const glm::mat4 MeshToWorld     = GlobalMatrix * GeometricMatrix;
@@ -617,7 +599,7 @@ namespace Lumina::Import::Mesh::FBX
                                 FSkinnedVertex Vertex;
                                 Vertex.Position = Pos;
                                 Vertex.Normal   = PackNormal(Normal);
-                                Vertex.Tangent  = 0;  // Filled by MikkTSpace in GenerateMeshlets.
+                                Vertex.Tangent  = 0;
                                 Vertex.UV       = glm::packHalf2x16(UV);
                                 Vertex.Color    = PackColor(Col);
 
@@ -648,7 +630,7 @@ namespace Lumina::Import::Mesh::FBX
                                 FVertex Vertex;
                                 Vertex.Position = Pos;
                                 Vertex.Normal   = PackNormal(Normal);
-                                Vertex.Tangent  = 0;  // Filled by MikkTSpace in GenerateMeshlets.
+                                Vertex.Tangent  = 0;
                                 Vertex.UV       = glm::packHalf2x16(UV);
                                 Vertex.Color    = PackColor(Col);
 
@@ -672,10 +654,7 @@ namespace Lumina::Import::Mesh::FBX
             }
         });
 
-        // Serial merge into the two final mesh resources. Indices are rebased
-        // by the running per-target vertex base, surface StartIndex is rebased
-        // by the running per-target index base. Walking results in source order
-        // keeps the surface ordering deterministic across runs.
+        // Serial merge: indices and surface StartIndex rebased by running bases, source-order traversal stays deterministic.
         TUniquePtr<FMeshResource> StaticMesh = MakeUnique<FMeshResource>();
         StaticMesh->Vertices = TVector<FVertex>();
         StaticMesh->Name = FString(FileName) + "_Mesh";
@@ -686,8 +665,6 @@ namespace Lumina::Import::Mesh::FBX
         SkinnedMesh->Name = FString(FileName) + "_SkeletalMesh";
 
         {
-            // Pre-compute final sizes so we reserve once and avoid reallocs in
-            // the hot append path.
             size_t StaticVertCount = 0, StaticIdxCount = 0, StaticSurfCount = 0;
             size_t SkinnedVertCount = 0, SkinnedIdxCount = 0, SkinnedSurfCount = 0;
             for (const FFBXMeshResult& R : Results)
@@ -747,9 +724,6 @@ namespace Lumina::Import::Mesh::FBX
             }
         }
 
-        // Heavy CPU finalization runs concurrently for the two final meshes;
-        // each pass internally parallelizes per-surface so even a single
-        // resource still saturates the worker pool on dense scenes.
         TVector<FMeshResource*> ToFinalize;
         if (StaticMesh->GetNumVertices() > 0)
         {
@@ -760,9 +734,7 @@ namespace Lumina::Import::Mesh::FBX
             ToFinalize.push_back(SkinnedMesh.get());
         }
 
-        // When bSkipFinalization is set the dialog runs the heavy passes
-        // itself at commit time. We still build per-resource stats so the
-        // preview table has something to display.
+        // When bSkipFinalization is set, the dialog runs heavy passes at commit; stats still built for preview.
         if (!ImportOptions.bSkipFinalization)
         {
             Task::ParallelFor((uint32)ToFinalize.size(), [&](uint32 i)

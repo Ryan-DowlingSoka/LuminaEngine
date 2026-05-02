@@ -29,10 +29,7 @@ namespace Lumina
 
     namespace
     {
-        // Lazy global allocator bootstrap. Magic-static gives us thread-safe
-        // exactly-once construction; the assignment publishes the same pointer
-        // for the legacy GMalloc extern. Lets statics that allocate during
-        // dynamic init bring the system up cleanly.
+        // Magic-static bootstrap so dynamic-init allocations come up cleanly; also publishes GMalloc.
         Memory::FMalloc& EnsureAllocator()
         {
             static Memory::FMalloc Instance;

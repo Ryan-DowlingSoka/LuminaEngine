@@ -52,15 +52,10 @@ PRAGMA_DISABLE_ALL_WARNINGS
 PRAGMA_ENABLE_ALL_WARNINGS
 
 
-//-------------------------------------------------------------------------
 #define InvalidIndex -1
 
 namespace Lumina
 {
-
-    //-------------------------------------------------------------------------
-    // Commonly used containers aliases
-    //-------------------------------------------------------------------------
 
 #ifdef LUMINA_USE_EASTL
 
@@ -159,7 +154,7 @@ namespace Lumina
 #else
 
     template <size_t N> using TBitSet = std::bitset<N>;
-    // no direct std::bitvector equivalent; fallback to vector<bool>
+    // no std::bitvector equivalent; fallback to vector<bool>
     using TBitVector = std::vector<bool>;
     template <typename T> using TVector = std::vector<T>;
     template <typename T> using TSpan = std::span<T>;
@@ -167,7 +162,6 @@ namespace Lumina
 
     template <typename K, typename V> using TUnorderedMap = std::unordered_map<K, V>;
     template <typename K, typename V> using TOrderedMap = std::map<K, V>;
-    // std::unordered_map is the closest thing to hash_map
     template <typename K, typename V, typename H = std::hash<K>, typename E = std::equal_to<K>> using THashMap = std::unordered_map<K, V, H, E>;
     template <typename K, typename V> using TPair = std::pair<K, V>;
     template <typename T> using TList = std::list<T>;
@@ -179,21 +173,13 @@ namespace Lumina
     template <typename T> using TDeque = std::deque<T>;
     template <typename T, typename C = TVector<T>> using TStack = std::stack<T, C>;
 
-    // Note: no std::fixed_vector. Could fall back to std::array with manual growth,
-    // or implement a custom wrapper if you rely on EASTL fixed_vector semantics.
+    // No std::fixed_vector; fallback to std::array.
     template <typename T, size_t S, bool bOverflow = true> using TFixedVector = std::array<T, S>;
 
 #endif
 
-
-    
-
     using Blob = TVector<uint8>;
-    
-    
-    //-------------------------------------------------------------------------
-    // Simple utility functions to improve syntactic usage of container types
-    //-------------------------------------------------------------------------
+
 
 
     template<typename T>
@@ -213,15 +199,12 @@ namespace Lumina
         std::is_trivially_copyable_v<typename T::value_type>;
 
 
-    // Find an element in a vector
     template<typename T>
     inline typename TVector<T>::const_iterator VectorFind( TVector<T> const& vector, T const& value )
     {
         return eastl::find( vector.begin(), vector.end(), value );
     }
 
-    // Find an element in a vector
-    // Usage: vectorFind( vector, value, [] ( T const& typeRef, V const& valueRef ) { ... } );
     template<typename T, typename V, typename Predicate>
     inline typename TVector<T>::const_iterator VectorFind( TVector<T> const& vector, V const& value, Predicate predicate )
     {
@@ -244,17 +227,12 @@ namespace Lumina
         Vector.erase(Vector.begin() + Index);
     }
 
-    // Find an element in a vector
-    // Require non-const versions since we might want to modify the result
     template<typename T>
     inline typename TVector<T>::iterator VectorFind( TVector<T>& vector, T const& value )
     {
         return eastl::find( vector.begin(), vector.end(), value );
     }
 
-    // Find an element in a vector
-    // Usage: vectorFind( vector, value, [] ( T const& typeRef, V const& valueRef ) { ... } );
-    // Require non-const versions since we might want to modify the result
     template<typename T, typename V, typename Predicate>
     inline typename TVector<T>::iterator VectorFind( TVector<T>& vector, V const& value, Predicate predicate )
     {
@@ -274,7 +252,6 @@ namespace Lumina
         return eastl::find( vector.begin(), vector.end(), value, eastl::forward<Predicate>( predicate ) ) != vector.end();
     }
 
-    // Usage: VectorContains( vector, [] ( T const& typeRef ) { ... } );
     template<typename T, typename V, typename Predicate>
     inline bool VectorContains( TVector<T> const& vector, Predicate predicate )
     {
@@ -295,7 +272,6 @@ namespace Lumina
         }
     }
 
-    // Usage: VectorFindIndex( vector, value, [] ( T const& typeRef, V const& valueRef ) { ... } );
     template<typename T, typename V, typename Predicate>
     inline int32_t VectorFindIndex( TVector<T> const& vector, V const& value, Predicate predicate )
     {
@@ -310,7 +286,6 @@ namespace Lumina
         }
     }
 
-    // Usage: VectorContains( vector, [] ( T const& typeRef ) { ... } );
     template<typename T, typename V, typename Predicate>
     inline int32_t VectorFindIndex( TVector<T> const& vector, Predicate predicate )
     {
@@ -325,12 +300,6 @@ namespace Lumina
         }
     }
 
-    //-------------------------------------------------------------------------
-    
-    /** 
-     * Checks if two vectors are equal using std::memcmp for trivially copyable types,
-     * otherwise falls back to std::equal.
-     */
     template <typename T>
     NODISCARD constexpr bool VectorsAreEqual(const T& A, const T& B)
     {
@@ -342,10 +311,6 @@ namespace Lumina
         return std::equal(A.begin(), A.end(), B.begin());
     }
 
-    /** 
-     * Checks if two vectors with trivially copyable elements are equal using std::memcmp.
-     * This is a more restrictive version that enforces the trivially copyable constraint at compile time.
-     */
     template <typename T>
     requires(std::is_trivially_copyable_v<typename T::value_type>)
     NODISCARD bool VectorsAreTriviallyEqual(const T& A, const T& B)
@@ -371,7 +336,6 @@ namespace Lumina
         return eastl::find( vector.begin(), vector.end(), value, eastl::forward<Predicate>( predicate ) ) != vector.end();
     }
 
-    // Find an element in a vector
     template<typename T, typename V, eastl_size_t S>
     NODISCARD typename TFixedVector<T, S>::const_iterator VectorFind(TFixedVector<T, S> const& vector, V const& value)
     {
@@ -385,10 +349,8 @@ namespace Lumina
         return eastl::find( vector.begin(), vector.end(), value, eastl::forward<Predicate>( predicate ) );
     }
 
-    // Find an element in a vector
-    // Require non-const versions since we might want to modify the result
     template<typename T, typename V, eastl_size_t S>
-    NODISCARD typename TFixedVector<T, S>::iterator VectorFind(TFixedVector<T, S>& vector, V const& value )
+    NODISCARD typename TFixedVector<T, S>::iterator VectorFind(TFixedVector<T, S>& vector, V const& value)
     {
         return eastl::find( vector.begin(), vector.end(), value );
     }
@@ -428,8 +390,6 @@ namespace Lumina
             return ( int32_t) ( iter - vector.begin() );
         }
     }
-
-    //-------------------------------------------------------------------------
 
     template<typename T>
     inline void VectorEmplaceBackUnique( TVector<T>& vector, T&& item )

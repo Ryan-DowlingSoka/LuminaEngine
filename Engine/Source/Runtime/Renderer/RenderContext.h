@@ -44,7 +44,6 @@ namespace Lumina
         virtual void HandleDeviceLost() = 0;
 
         
-        //-------------------------------------------------------------------------------------
 
         virtual const FRenderContextDesc& GetRenderContextDescription() const = 0;
 
@@ -56,13 +55,11 @@ namespace Lumina
         NODISCARD virtual uint64 GetAllocatedMemory() const = 0;
         NODISCARD virtual uint64 GetAvailableMemory() const = 0;
         
-        //-------------------------------------------------------------------------------------
 
         virtual void ClearCommandListCache() = 0;
         virtual FRHICommandListRef CreateCommandList(const FCommandListInfo& Info) = 0;
         virtual uint64 ExecuteCommandLists(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType) = 0;
 
-        //-------------------------------------------------------------------------------------
 
         NODISCARD virtual FRHIEventQueryRef CreateEventQuery() = 0;
         virtual void SetEventQuery(IEventQuery* Query, ECommandQueue Queue) = 0;
@@ -82,7 +79,6 @@ namespace Lumina
 
         virtual void AddCommandQueueWait(ECommandQueue Waiting, ECommandQueue WaitOn) = 0;
         
-        //-------------------------------------------------------------------------------------
 
         NODISCARD virtual void* MapBuffer(FRHIBuffer* Buffer) = 0;
         NODISCARD virtual void UnMapBuffer(FRHIBuffer* Buffer) = 0;
@@ -92,12 +88,10 @@ namespace Lumina
 
 
         
-        //-------------------------------------------------------------------------------------
 
         NODISCARD virtual FRHIViewportRef CreateViewport(const glm::uvec2& Size, FString&& DebugName) = 0;
 
         
-        //-------------------------------------------------------------------------------------
         
         NODISCARD virtual FRHIVertexShaderRef CreateVertexShader(const FShaderHeader& Shader) = 0;
         NODISCARD virtual FRHIPixelShaderRef CreatePixelShader(const FShaderHeader& Shader) = 0;
@@ -110,7 +104,6 @@ namespace Lumina
         virtual void CompileEngineShaders() = 0;
 
         
-        //-------------------------------------------------------------------------------------
 
         virtual void ClearBindingCaches() = 0;
         NODISCARD virtual FRHIDescriptorTableRef CreateDescriptorTable(FRHIBindingLayout* InLayout) = 0;
@@ -127,7 +120,6 @@ namespace Lumina
         
         NODISCARD virtual RHI::ICrashTracker& GetCrashTracker() const = 0;
         
-        //-------------------------------------------------------------------------------------
 
         virtual void OnShaderCompiled(FRHIShader* Shader, bool bAddToLibrary, bool bReloadPipelines) = 0;
 
@@ -140,13 +132,11 @@ namespace Lumina
         NODISCARD virtual FRHIImageRef CreateImage(const FRHIImageDesc& ImageSpec) = 0;
         NODISCARD virtual FRHISamplerRef CreateSampler(const FSamplerDesc& SamplerDesc) = 0;
 
-        // Front-end for executeCommandLists(..., 1) for compatibility and convenience
         uint64 ExecuteCommandList(ICommandList* CommandList, ECommandQueue ExecutionQueue = ECommandQueue::Graphics)
         {
             return ExecuteCommandLists(&CommandList, 1, ExecutionQueue);
         }
 
-        //-------------------------------------------------------------------------------------
 
         
         virtual void FlushPendingDeletes() = 0;

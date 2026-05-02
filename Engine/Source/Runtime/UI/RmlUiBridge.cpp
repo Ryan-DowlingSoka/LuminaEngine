@@ -26,7 +26,6 @@ namespace Lumina::RmlUi
 {
     namespace
     {
-        // Bridges Rml clock + log onto Lumina's logger / std::chrono.
         class FLuminaSystemInterface final : public Rml::SystemInterface
         {
         public:
@@ -77,10 +76,7 @@ namespace Lumina::RmlUi
                 {
                     return;
                 }
-                // Stack-local copy keeps a lua ref alive even if the callback
-                // destroys this listener (e.g. UI.UnloadDocument from inside
-                // the click handler) — FRef::Invoke would otherwise read a
-                // nulled State after pcall returns.
+                // Stack-local copy: callback may destroy this listener (e.g. UI.UnloadDocument from a click handler).
                 Lua::FRef Local = Cb;
                 Local();
             }
@@ -94,8 +90,7 @@ namespace Lumina::RmlUi
             Lua::FRef Cb;
         };
 
-        // 1:1 with CWorld. Listener lifetime is owned by RmlUi (FLuaEventListener
-        // self-deletes in OnDetach), so we only track documents here.
+        // 1:1 with CWorld. Listeners self-delete via OnDetach, so we only track documents.
         struct FWorldEntry
         {
             CWorld*       World = nullptr;
@@ -103,9 +98,7 @@ namespace Lumina::RmlUi
             THashMap<FString, Rml::ElementDocument*> Documents;
         };
 
-        // Editor-side preview contexts: not bound to any world. The asset
-        // editor tool owns the FRHIImage target and pushes a new size/image
-        // pointer whenever its preview window resizes.
+        // Editor preview context not bound to any world; tool owns the target image.
         struct FEditorEntry
         {
             Rml::Context*         Context = nullptr;
@@ -158,7 +151,7 @@ namespace Lumina::RmlUi
                     return E.get();
                 }
             }
-            // ActiveContext stale or unset; fall through to the first world.
+            // Stale/unset ActiveContext; fall back to first world.
             return State.Worlds.empty() ? nullptr : State.Worlds.front().get();
         }
 
@@ -201,7 +194,6 @@ namespace Lumina::RmlUi
             return (It != E->Documents.end()) ? It->second : nullptr;
         }
 
-        // {nullptr, 0} if the world has no renderer yet.
         struct FWorldTarget { FRHIImage* Image = nullptr; glm::uvec2 Size{0, 0}; };
         FWorldTarget GetWorldTarget(CWorld* World)
         {
@@ -272,17 +264,14 @@ namespace Lumina::RmlUi
         FState& State = S();
         if (!State.bInitialized && !State.System) return;
 
-        // Detach the debugger before its host context dies. Keeping our
-        // DebuggerHost tracking honest matters if Shutdown is followed by a
-        // re-Init.
+        // Detach debugger before its host context dies; matters if Shutdown is followed by re-Init.
         if (State.DebuggerHost != nullptr)
         {
             Rml::Debugger::Shutdown();
             State.DebuggerHost = nullptr;
         }
 
-        // Drop every context first: Rml walks element trees and calls OnDetach
-        // on each listener. Our listener wrappers must outlive that walk.
+        // Drop contexts first; Rml walks element trees and calls OnDetach on listeners.
         for (auto& E : State.Worlds)
         {
             if (E->Context != nullptr)
@@ -326,14 +315,12 @@ namespace Lumina::RmlUi
             return;
         }
 
-        // TickAll resizes from the real RT every frame; this initial value
-        // is just to let layout run until the first RenderAll.
+        // TickAll resizes from the real RT each frame; initial size is a placeholder.
         const FWorldTarget Tgt = GetWorldTarget(World);
         const Rml::Vector2i InitialSize = (Tgt.Size.x > 0 && Tgt.Size.y > 0)
             ? Rml::Vector2i(int(Tgt.Size.x), int(Tgt.Size.y))
             : Rml::Vector2i(1280, 720);
 
-        // Pointer-based context name: unique while the world lives.
         char NameBuf[64];
         std::snprintf(NameBuf, sizeof(NameBuf), "world_%p", static_cast<void*>(World));
 
@@ -349,7 +336,7 @@ namespace Lumina::RmlUi
         Entry->Context = Ctx;
         State.Worlds.push_back(Move(Entry));
 
-        // Most-recent-world becomes active so Lua calls land on it.
+        // Newest world becomes active so Lua calls land there.
         State.ActiveContext = Ctx;
         SyncDebuggerToActiveContext();
 
@@ -372,19 +359,16 @@ namespace Lumina::RmlUi
                 continue;
             }
 
-            // Detach the debugger before removing its host; otherwise
-            // Debugger::Shutdown would walk a freed element tree.
+            // Detach debugger before removing host; otherwise it'd walk a freed element tree.
             if (State.DebuggerHost == E->Context)
             {
                 Rml::Debugger::Shutdown();
                 State.DebuggerHost = nullptr;
             }
 
-            // Cache the pointer for the ActiveContext compare after we null it.
             Rml::Context* DyingContext = E->Context;
 
-            // RmlUi tears down first (walks elements, calls listener OnDetach);
-            // then we drop our wrappers.
+            // RmlUi tears down first (calls listener OnDetach), then we drop wrappers.
             if (E->Context != nullptr)
             {
                 Rml::RemoveContext(E->Context->GetName());
@@ -447,10 +431,7 @@ namespace Lumina::RmlUi
             if (E->Size.x > 0 && E->Size.y > 0)
             {
                 E->Context->SetDimensions(Rml::Vector2i(int(E->Size.x), int(E->Size.y)));
-                // Editor contexts use the caller-supplied DPI scale directly,
-                // the auto height-based ratio used for world contexts ends
-                // up at 1.0 for any preview pane shorter than 1080px, which
-                // is unreadably small for editing.
+                // Editor contexts use caller-supplied DPI; the world heuristic is too small for previews <1080px.
                 E->Context->SetDensityIndependentPixelRatio(std::max(0.1f, E->DpiScale));
             }
             E->Context->Update();
@@ -492,10 +473,7 @@ namespace Lumina::RmlUi
             {
                 continue;
             }
-            // Renderer uses LoadOp=Load. For an editor preview we want a fresh
-            // frame, so clear here before submitting the RmlUi pass. Honor
-            // the per-context clear color so the editor can render a fully
-            // transparent canvas and composite its own background underneath.
+            // Renderer uses LoadOp=Load; clear here so editor can composite its own background under a transparent canvas.
             CmdList.SetImageState(E->Target, AllSubresources, EResourceStates::CopyDest);
             CmdList.CommitBarriers();
             CmdList.ClearImageColor(E->Target, FColor(E->ClearColor.r, E->ClearColor.g, E->ClearColor.b, E->ClearColor.a));
@@ -692,7 +670,7 @@ namespace Lumina::RmlUi
         }
     }
 
-    // `UI.*` Lua module. Operates on the active world's context.
+    // `UI.*` Lua module on the active world's context.
     namespace LuaApi
     {
         bool LoadDocument(FStringView Path)
@@ -741,8 +719,7 @@ namespace Lumina::RmlUi
             auto It = Entry->Documents.find(Key);
             if (It == Entry->Documents.end()) return;
 
-            // RmlUi defers actual destruction until ReleaseUnloadedDocuments;
-            // OnDetach (and FLuaEventListener::delete this) fires then.
+            // RmlUi defers destruction until ReleaseUnloadedDocuments; OnDetach fires then.
             Entry->Context->UnloadDocument(It->second);
             Entry->Documents.erase(It);
         }
@@ -774,8 +751,7 @@ namespace Lumina::RmlUi
 
         void SetDebuggerVisible(bool bVisible)
         {
-            // Sticks across PIE: SyncDebuggerToActiveContext reads bDebuggerVisible
-            // after rebinding the host.
+            // Persists across PIE: SyncDebuggerToActiveContext re-reads after host rebind.
             S().bDebuggerVisible = bVisible;
             SyncDebuggerToActiveContext();
             LOG_INFO("[RmlUi] Debugger {}.", bVisible ? "shown" : "hidden");
@@ -847,8 +823,7 @@ namespace Lumina::RmlUi
                 return;
             }
 
-            // Ownership transfers to RmlUi; the listener self-deletes in
-            // OnDetach when the element/document is destroyed.
+            // Ownership transfers to RmlUi; listener self-deletes via OnDetach.
             Target->AddEventListener(EventStr, new FLuaEventListener(Move(Callback)));
         }
     }

@@ -63,10 +63,9 @@ namespace Lumina
 
         if (Count == 0)
         {
-            // Empty work, but we still need a node so dependents fire. Run once with an empty body.
+            // Empty work; node still needed so dependents fire.
             Node->m_SetSize     = 1;
             Node->m_MinRange    = 1;
-            // Drop the user's function on purpose; ExecuteRange handles the empty branch.
         }
         else
         {
@@ -100,8 +99,7 @@ namespace Lumina
             return;
         }
 
-        // Count incoming edges per node so we can size each node's dependency array exactly,
-        // keeping enki::Dependency object addresses stable for SetDependency().
+        // Size each node's Deps exactly so enki::Dependency addresses stay stable for SetDependency().
         TVector<uint32> DepCount(NumNodes, 0u);
         for (const auto& Edge : Edges)
         {
@@ -125,7 +123,7 @@ namespace Lumina
             Child->SetDependency(Child->Deps[Slot], Parent);
         }
 
-        // Only schedule root nodes; the scheduler will queue dependents automatically.
+        // Only schedule roots; dependents queue automatically when parents complete.
         Task::ParallelFor(NumNodes, [&](uint32 Index)
         {
             if (DepCount[Index] == 0)
@@ -144,8 +142,7 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION("FTaskGraph::Wait");
 
-        // WaitForTask is safe on already-completed tasks. Walking every node guarantees the
-        // calling thread blocks (while assisting workers) until the entire graph is drained.
+        // Walk every node so the caller assists workers until the graph drains.
         for (auto& Node : Nodes)
         {
             GTaskSystem->GetScheduler().WaitforTask(Node);

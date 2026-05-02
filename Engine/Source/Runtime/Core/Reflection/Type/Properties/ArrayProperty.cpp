@@ -12,9 +12,7 @@ namespace Lumina
         Ar << SerializedInnerElementSize;
 
         const size_t CurrentInnerElementSize = Inner->GetElementSize();
-        // Only trivial inner types are memcpy'd in bulk, so element size must match.
-        // Non-trivial types serialize property-by-property — in-memory padding (e.g. EASTL_NAME_ENABLED
-        // in Debug) can differ between configs without affecting the on-disk property layout.
+        // Trivial types memcpy in bulk so size must match; non-trivial types tolerate in-memory padding diffs.
         if (Ar.IsReading() && Inner->IsTrivial() && SerializedInnerElementSize != CurrentInnerElementSize)
         {
             LOG_ERROR("Inner element size changed for array '{}' (inner '{}'), aborting load: Current=({}) Serialized=({})", Name, Inner->Name, CurrentInnerElementSize, SerializedInnerElementSize);

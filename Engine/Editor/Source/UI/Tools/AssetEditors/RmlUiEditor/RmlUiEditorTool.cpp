@@ -525,7 +525,6 @@ namespace Lumina
         GConfig->Set<std::string>(kKeyPalette,   std::string(EditorPalette == EPalette::Dark ? "Dark" : "Light"));
     }
 
-    // ---------------------------------------------------------------- editor ---
 
     void FRmlUiEditorTool::DrawEditorToolbar()
     {
@@ -987,7 +986,6 @@ namespace Lumina
         ImGui::PopStyleColor();
     }
 
-    // --------------------------------------------------------------- preview ---
 
     void FRmlUiEditorTool::DrawPreviewToolbar()
     {
@@ -1157,7 +1155,6 @@ namespace Lumina
         const ImVec2 PaneSize = ImGui::GetWindowSize();
         ImDrawList* DL = ImGui::GetWindowDrawList();
 
-        // --- Pan/zoom input ---------------------------------------------------
         if (ImGui::IsWindowHovered())
         {
             ImGuiIO& Io = ImGui::GetIO();
@@ -1184,7 +1181,6 @@ namespace Lumina
             }
         }
 
-        // --- Canvas placement -------------------------------------------------
         // Fit the canvas inside the pane at View=1.0, then scale by ViewZoom.
         const float CanvasAspect = float(EffW) / float(EffH);
         const float PaneAspect   = PaneSize.x / std::max(1.0f, PaneSize.y);
@@ -1206,7 +1202,6 @@ namespace Lumina
             PaneCenter.y - CanvasSize.y * 0.5f + ViewPan.y);
         const ImVec2 CanvasMax(CanvasMin.x + CanvasSize.x, CanvasMin.y + CanvasSize.y);
 
-        // --- Background -------------------------------------------------------
         if (BgMode == EBgMode::Checker)
         {
             const float Cell = 12.0f;
@@ -1230,12 +1225,10 @@ namespace Lumina
         }
         // Transparent — draw nothing, the pane background shows through.
 
-        // --- The render --------------------------------------------------------
         const ImTextureID Tex = GRenderManager->GetImGuiRenderer()->GetOrCreateImTexture(PreviewTarget.GetReference());
         DL->AddImage(Tex, CanvasMin, CanvasMax);
         DL->AddRect(CanvasMin, CanvasMax, IM_COL32(80, 80, 95, 255), 0.0f, 0, 1.0f);
 
-        // --- Overlays ----------------------------------------------------------
         // Convert canvas-space px to pane-space px:
         const float ScalePx = CanvasSize.x / float(EffW);
 
@@ -1302,7 +1295,6 @@ namespace Lumina
         ImGui::PopStyleColor();
     }
 
-    // --------------------------------------------------------------- helpers ---
 
     void FRmlUiEditorTool::LoadFromDisk()
     {

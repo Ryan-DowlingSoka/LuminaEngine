@@ -23,9 +23,7 @@ namespace Lumina
         EqualsFn        Equals      = nullptr;
         ToStringFn      ToString    = nullptr;
         LessThanFn      LessThan    = nullptr;
-        // Construct/Destruct exist only for default-constructible reflected
-        // types. Used by CStruct::GetDefaultInstance to lazily build the
-        // default value used for diff/reset in property editors.
+        // Only set for default-constructible types; used by CStruct::GetDefaultInstance for editor diff/reset.
         ConstructFn     Construct   = nullptr;
         DestructFn      Destruct    = nullptr;
 

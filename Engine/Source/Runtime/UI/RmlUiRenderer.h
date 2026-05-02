@@ -1,14 +1,7 @@
 #pragma once
 
-// Rml::RenderInterface backed by Lumina's RHI.
-// Frame contract:
-//   1. BeginFrame(cmdList, target, viewport) - resets per-frame state.
-//   2. Rml::Context::Render() - RmlUi calls our overrides.
-//   3. EndFrame() - drains queued texture uploads, replays draws inside one
-//      render pass.
-// Draws are deferred (recorded during step 2, replayed in step 3) so RmlUi
-// can interleave texture creation with draw calls; texture uploads need to
-// happen outside an active render pass.
+// Rml::RenderInterface on the RHI. Frame: BeginFrame -> Context::Render (defers draws) -> EndFrame (uploads + replay).
+// Draws are deferred so texture uploads can run outside the render pass.
 
 #include "Containers/Array.h"
 #include "Renderer/RHIFwd.h"
@@ -46,7 +39,6 @@ namespace Lumina
         void                        SetTransform(const Rml::Matrix4f* Transform) override;
 
     private:
-        // Nested types defined first so private methods can reference them.
         struct FGeometry
         {
             FRHIBufferRef VertexBuffer;

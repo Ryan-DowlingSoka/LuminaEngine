@@ -8,25 +8,8 @@
 
 namespace Lumina
 {
-    /**
-     * Flags controlling how a pass is scheduled relative to other passes.
-     *
-     * - None             : Default. Pass runs in declaration order on its queue.
-     *                      Cross-queue waits are inserted automatically.
-     *
-     * - Async            : The pass has no dependencies on preceding passes. The scheduler is
-     *                      free to submit it without cross-queue waits. The user takes
-     *                      responsibility for correctness (resources must already be in the
-     *                      required state or the pass must transition them).
-     *
-     * - AsyncCompute     : Compute pass may be routed to the compute queue for async overlap
-     *                      with graphics work. Requires that any GPU resources touched are
-     *                      either VK_SHARING_MODE_CONCURRENT or have a safe ownership pattern.
-     *
-     * - AsyncTransfer    : Transfer pass may be routed to the transfer queue.
-     *
-     * - NeverCull        : Pass is always executed even if its outputs are not consumed.
-     */
+    // Async opts out of cross-queue waits — caller owns correctness.
+    // AsyncCompute/Transfer route to the matching queue; resources need concurrent sharing.
     enum class ERGExecutionFlags : uint8
     {
         None            = 0,
@@ -38,14 +21,7 @@ namespace Lumina
 
     ENUM_CLASS_FLAGS(ERGExecutionFlags);
 
-    /**
-     * Per-pass description used by the render graph during compilation.
-     *
-     * Callers may optionally declare resource reads and writes via Read()/Write()/ReadWrite().
-     * When declared, the graph uses these to build a data-dependency DAG and can reorder and
-     * parallelize passes more aggressively. When no accesses are declared, the graph falls
-     * back to per-queue submission order as the implicit dependency.
-     */
+    // Optional Read/Write/ReadWrite declarations enable DAG analysis; otherwise per-queue submission order is used.
     class FRGPassDescriptor
     {
         friend class FRenderGraph;
@@ -55,13 +31,9 @@ namespace Lumina
 
         FRGPassDescriptor() = default;
 
-        // Execution flags.
-
         FRGPassDescriptor& SetFlag(ERGExecutionFlags Flag) { EnumAddFlags(ExecutionFlags, Flag); return *this; }
         bool HasAnyFlag(ERGExecutionFlags Flag) const { return EnumHasAnyFlags(ExecutionFlags, Flag); }
         bool HasAllFlags(ERGExecutionFlags Flags) const { return EnumHasAllFlags(ExecutionFlags, Flags); }
-
-        // Resource access declarations. Optional but enables dependency analysis.
 
         FRGPassDescriptor& Read(FRHIImage* Image)           { AddAccess(Image,  ERGAccess::Read); return *this; }
         FRGPassDescriptor& Read(FRHIBuffer* Buffer)         { AddAccess(Buffer, ERGAccess::Read); return *this; }
@@ -82,7 +54,6 @@ namespace Lumina
                 return;
             }
 
-            // Merge duplicates.
             for (FRGResourceAccess& Existing : Accesses)
             {
                 if (Existing.Resource == Resource)

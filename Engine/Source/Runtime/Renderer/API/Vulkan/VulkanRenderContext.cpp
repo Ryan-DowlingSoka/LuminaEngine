@@ -51,7 +51,6 @@ namespace Lumina
             return VK_FALSE;
         }
         
-        // Helper to decode messageTypes
         auto GetMessageTypeString = [](VkDebugUtilsMessageTypeFlagsEXT types) -> FFixedString
         {
             FFixedString Result;
@@ -215,7 +214,6 @@ namespace Lumina
             if (RenderContext->GetRenderContextDescription().bValidation)
             {
                 const char* QueueName = "\0";
-                // ReSharper disable once CppIncompleteSwitchStatement
                 switch (Type)
                 {
                 case ECommandQueue::Graphics:
@@ -248,9 +246,7 @@ namespace Lumina
 
         TFixedVector<TRefCountPtr<FTrackedCommandBuffer>, 16> ToEnqueue;
 
-        // In-place two-pointer compaction: finished submissions move out to
-        // ToEnqueue, unfinished ones stay packed at the front. Avoids the Move
-        // + re-emplace pattern which, on a list, allocated a node per entry.
+        // Two-pointer compaction: finished submissions go to ToEnqueue, unfinished stay packed.
         uint32 WriteIdx = 0;
         for (uint32 ReadIdx = 0, Count = (uint32)CommandBuffersInFlight.size(); ReadIdx < Count; ++ReadIdx)
         {
@@ -435,7 +431,6 @@ namespace Lumina
 
         {
             LUMINA_PROFILE_SECTION("vkWaitSemaphores");
-            // Wait for the command list to catch up.
             VkResult Result = vkWaitSemaphores(Device->GetDevice(), &WaitInfo, Timeout);
             VK_CHECK(Result);
             return (Result == VK_SUCCESS);
@@ -518,10 +513,6 @@ namespace Lumina
         .set_allocation_callbacks(VK_ALLOC_CALLBACK);
         if (Description.bValidation)
         {
-            //Builder.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT);
-            //Builder.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT);
-            //Builder.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_RESERVE_BINDING_SLOT_EXT);
-            //Builder.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT);
             Builder.add_debug_messenger_severity(VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);
             Builder.add_debug_messenger_severity(VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT);
             Builder.add_debug_messenger_type(VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT);
@@ -776,7 +767,6 @@ namespace Lumina
         DeviceFeatures.shaderInt16                          = VK_TRUE;
         DeviceFeatures.independentBlend                     = VK_TRUE;
         DeviceFeatures.pipelineStatisticsQuery              = VK_TRUE;
-        //DeviceFeatures.shaderInt64                          = VK_TRUE;
 
         VkPhysicalDeviceVulkan11Features Features11 = {};
         Features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
@@ -948,7 +938,7 @@ namespace Lumina
 
     void FVulkanRenderContext::UnMapStagingTexture(FRHIStagingImage* Image)
     {
-        // Vulkan CPU buffers are persistently mapped.
+        // Persistently mapped; no-op.
     }
 
     FRHIImageRef FVulkanRenderContext::CreateImage(const FRHIImageDesc& ImageSpec)
@@ -1316,7 +1306,6 @@ namespace Lumina
         {
             while (!PollTimerQuery(Query))
             {
-                // Spin wait.
             }
         }
         
@@ -1333,9 +1322,7 @@ namespace Lumina
         VulkanTimerQuery->Time = 0.0f;
     }
 
-    // Counter bits enabled on the pipeline-statistics pool. Keep in lock-step
-    // with the read-back struct below; result size, slot count and field
-    // order all derive from this mask's bit order.
+    // Bit order MUST match the read-back struct below.
     static constexpr VkQueryPipelineStatisticFlags GPipelineStatsFlags =
         VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT       |
         VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT     |
@@ -1398,8 +1385,7 @@ namespace Lumina
             return false;
         }
 
-        // Bit order must match GPipelineStatsFlags; Vulkan writes one uint64
-        // per enabled bit in declared order.
+        // Bit order must match GPipelineStatsFlags.
         VulkanQuery->Stats.InputAssemblyVertices     = Results[0];
         VulkanQuery->Stats.InputAssemblyPrimitives   = Results[1];
         VulkanQuery->Stats.VertexShaderInvocations   = Results[2];
@@ -1424,7 +1410,7 @@ namespace Lumina
         {
             while (!PollPipelineStatsQuery(Query))
             {
-                // Spin-wait; callers that care about latency should Poll first.
+                // Spin-wait; latency-sensitive callers should Poll first.
             }
         }
 
@@ -1461,7 +1447,7 @@ namespace Lumina
 
     void FVulkanRenderContext::UnMapBuffer(FRHIBuffer* Buffer)
     {
-        //... Vulkan CPU buffers are persistently mapped.
+        // Persistently mapped; no-op.
     }
 
     FRHIBufferRef FVulkanRenderContext::CreateBuffer(const FRHIBufferDesc& Desc)
@@ -1492,8 +1478,7 @@ namespace Lumina
     
     void FVulkanRenderContext::CompileEngineShaders()
     {
-        //@TODO - Obviously we don't want to recompile every shader everytime the engine loads, this is starting to become annoying
-        // but until we have some data cache setup, we'll just leave it for now.
+        //@TODO - Cache compiled shaders; recompiling every load is wasteful.
         
         TVector<FString> Shaders;
         const FString ShaderDir(Paths::GetEngineResourceDirectory() + "/Shaders");

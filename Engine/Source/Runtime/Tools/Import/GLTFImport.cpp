@@ -271,32 +271,9 @@ namespace Lumina::Import::Mesh::GLTF
             ImportData.Skeletons.push_back(Move(NewSkeleton));
         }
         
-        // Texture extraction must run once per asset, NOT once per mesh. The
-        // previous code nested this inside the mesh loop, so a glTF with N
-        // meshes loaded the same image N times, prefixed each entry with the
-        // current mesh name (making real deduplication impossible), and did
-        // a CPU->GPU upload per copy for the dialog preview.
+        // Texture extraction is per-asset; tag each image with its material role so the texture factory picks correct BC/colorspace.
         if (ImportOptions.bImportTextures)
         {
-            // Walk every material slot and tag the underlying image with its
-            // semantic role so the texture factory can pick the right BC
-            // format and color space. Without this, normal maps and
-            // metallic-roughness packs default to SRGB and look completely
-            // wrong (the GPU's hardware sRGB->linear decode runs against
-            // values that were never sRGB-encoded). Glb assets in particular
-            // give the texture factory no filename to fall back on, so this
-            // is the only signal it has.
-            //
-            // Resolution: image[textures[T].imageIndex] gets the role chosen
-            // by whichever material slot references texture T. Roles:
-            //   baseColor          -> SRGB        (color, gamma-encoded)
-            //   normal             -> NormalMap   (BC5_UNORM + Z reconstruct)
-            //   metallicRoughness  -> PackedData  (linear, GB packed in glTF)
-            //   occlusion          -> Linear      (single-channel data)
-            //   emissive           -> SRGB        (color, gamma-encoded)
-            // If two materials disagree on a single image's role (rare), the
-            // last assignment wins -- which is fine because the heuristic
-            // below errs toward the more conservative interpretation.
             TVector<ETextureColorSpace> ImageRoles(Asset.images.size(), ETextureColorSpace::Auto);
 
             auto MarkImageForTexture = [&](size_t TextureIndex, ETextureColorSpace Role)
@@ -420,12 +397,7 @@ namespace Lumina::Import::Mesh::GLTF
             return glm::mat4(1.0f);
         };
 
-        // Per-mesh primitive extraction. Captures the loop variables but does
-        // NOT touch ImportData, so multiple invocations on different mesh
-        // resources can run concurrently. Merge mode shares the targets and
-        // MergedMaterialRemap, which is why merge mode stays serial below.
-        // WorldMatrix is the node->world transform for the mesh instance;
-        // identity when extracting a mesh in isolation (non-merge mode).
+        // Per-mesh primitive extraction; concurrent across resources but serial in merge mode (shared targets).
         auto ProcessMeshPrimitives = [&](
             const fastgltf::Mesh& Mesh,
             const FFixedString&   MeshName,
@@ -507,7 +479,7 @@ namespace Lumina::Import::Mesh::GLTF
                 for (size_t i = InitialVert; i < NewResource->GetNumVertices(); ++i)
                 {
                     NewResource->SetNormalAt(i, PackNormal(DefaultNormal));
-                    NewResource->SetTangentAt(i, 0);  // Filled by MikkTSpace in GenerateMeshlets.
+                    NewResource->SetTangentAt(i, 0);
                     NewResource->SetUVAt(i, glm::u16vec2(0, 0));
                     NewResource->SetColorAt(i, 0xFFFFFFFF);
                     if (NewResource->IsSkinnedMesh())
@@ -587,12 +559,7 @@ namespace Lumina::Import::Mesh::GLTF
             }
         };
 
-        // Heavy CPU finalization (vertex remap, cache reorder, shadow buffer,
-        // meshlet build) is independent per FMeshResource. AnalyzeMeshStatistics
-        // appends to a shared vector so it stays serial. When bSkipFinalization
-        // is set the dialog has asked for a raw preview parse and will run
-        // the heavy passes itself at commit time via FinalizeMeshImportData,
-        // so we can skip them here.
+        // bSkipFinalization defers heavy passes to FinalizeMeshImportData at commit time.
         const bool bSkipFinalize = ImportOptions.bSkipFinalization;
         auto FinalizeResource = [&](FMeshResource& Resource)
         {
@@ -609,10 +576,7 @@ namespace Lumina::Import::Mesh::GLTF
 
         if (ImportOptions.bMergeMeshes)
         {
-            // Merge mode collapses every GLTF mesh into a single static/skinned
-            // pair. Primitives that reference the same GLTF material are folded
-            // onto one local material slot so the final asset has the minimum
-            // number of slots rather than one per primitive.
+            // Merge mode: collapse all meshes into one static/skinned pair, deduping material slots.
             TUniquePtr<FMeshResource> MergedStaticMesh = MakeUnique<FMeshResource>();
             MergedStaticMesh->Vertices = TVector<FVertex>();
             MergedStaticMesh->Name = FString(Name.begin(), Name.end()) + "_Mesh";
@@ -624,15 +588,7 @@ namespace Lumina::Import::Mesh::GLTF
 
             THashMap<int16, int16> MergedMaterialRemap;
 
-            // Merge mode mutates shared targets; keep the per-primitive walk
-            // serial. The dominant cost (FinalizeResource) still parallelizes
-            // internally via per-surface meshlet/optimize passes.
-            //
-            // Walk the scene graph rather than iterating Asset.meshes directly:
-            // a glTF mesh has no inherent placement, only nodes do. Without
-            // accumulating each node's world transform, every primitive lands
-            // at its local origin and the merged result has all geometry
-            // collapsed onto a single point.
+            // Walk the scene graph (not Asset.meshes) to accumulate node->world transforms; required for correct placement.
             auto VisitMeshInstance = [&](size_t MeshIdx, const glm::mat4& WorldMatrix)
             {
                 const fastgltf::Mesh& Mesh = Asset.meshes[MeshIdx];
@@ -690,9 +646,7 @@ namespace Lumina::Import::Mesh::GLTF
             }
             else
             {
-                // glTF without scene/node info: fall back to iterating meshes
-                // directly with identity transforms (preserves prior behavior
-                // for malformed assets).
+                // No scene info; fall back to identity-transform iteration.
                 for (size_t MeshIdx = 0; MeshIdx < Asset.meshes.size(); ++MeshIdx)
                 {
                     VisitMeshInstance(MeshIdx, glm::mat4(1.0f));
@@ -730,19 +684,7 @@ namespace Lumina::Import::Mesh::GLTF
         }
         else
         {
-            // Non-merge mode: walk the scene graph and emit one resource per
-            // node->mesh reference. Vertices stay in mesh-local space; the
-            // node's world transform is stamped onto FMeshResource::Import-
-            // Transform so commit-time merging in MergeResourceInto can bake
-            // it into positions and normals. Without this, the editor's
-            // "parse once, merge cheaply at commit" flow ends up concatenating
-            // local-space vertex buffers and every primitive collapses onto
-            // its mesh-local origin.
-            //
-            // A single glTF mesh can be referenced by multiple nodes; each
-            // reference becomes its own FMeshResource instance with a unique
-            // ImportTransform so instanced layouts (columns, props, etc.)
-            // come through correctly when merged.
+            // Non-merge: one resource per node->mesh reference; ImportTransform carries node world placement for commit-time merge.
             struct FInstance
             {
                 size_t       MeshIdx;
@@ -770,8 +712,7 @@ namespace Lumina::Import::Mesh::GLTF
                     MeshName.append_convert(SanitizedMeshName);
                 }
 
-                // Disambiguate when the same mesh is referenced by multiple
-                // nodes so the resulting asset names don't collide.
+                // Disambiguate same-mesh-multi-node so asset names don't collide.
                 uint32& Count = InstanceCountPerMesh[MeshIdx];
                 if (Count > 0)
                 {
@@ -820,8 +761,7 @@ namespace Lumina::Import::Mesh::GLTF
             }
             else
             {
-                // glTF without scene/node info: fall back to one instance per
-                // mesh with identity transform.
+                // No scene info; fall back to one identity-transform instance per mesh.
                 for (size_t MeshIdx = 0; MeshIdx < Asset.meshes.size(); ++MeshIdx)
                 {
                     EmitInstance(MeshIdx, glm::mat4(1.0f));
@@ -836,10 +776,7 @@ namespace Lumina::Import::Mesh::GLTF
 
             TVector<FMeshSlot> Slots(Instances.size());
 
-            // Phase 1: extract per-instance vertex/index data in parallel. We
-            // pass identity to ProcessMeshPrimitives so vertices remain in
-            // mesh-local space; ImportTransform carries the world placement
-            // for the merger to apply at commit time.
+            // Phase 1: extract per-instance data in parallel; vertices stay mesh-local, ImportTransform carries placement.
             Task::ParallelFor((uint32)Instances.size(), [&](uint32 SlotIdx)
             {
                 const FInstance&      Inst   = Instances[SlotIdx];
@@ -862,9 +799,7 @@ namespace Lumina::Import::Mesh::GLTF
                 ProcessMeshPrimitives(Mesh, MeshNm, Slot.Static.get(), Slot.Skinned.get(), nullptr, glm::mat4(1.0f));
             });
 
-            // Phase 2: collect every non-empty resource and finalize them all
-            // in parallel. Each FMeshResource is touched by exactly one task so
-            // optimize/shadow/meshlet passes are race-free across resources.
+            // Phase 2: finalize every non-empty resource in parallel; each resource touched by one task.
             TVector<FMeshResource*> ToFinalize;
             ToFinalize.reserve(Slots.size() * 2);
             for (FMeshSlot& Slot : Slots)
@@ -884,9 +819,7 @@ namespace Lumina::Import::Mesh::GLTF
                 FinalizeResource(*ToFinalize[i]);
             });
 
-            // Phase 3: serial collect into ImportData (push_back + stats are
-            // not threadsafe). The actual cost here is trivial relative to the
-            // CPU work above.
+            // Phase 3: serial collect into ImportData (push_back + stats aren't threadsafe).
             for (FMeshSlot& Slot : Slots)
             {
                 if (Slot.Static && Slot.Static->GetNumVertices() > 0)

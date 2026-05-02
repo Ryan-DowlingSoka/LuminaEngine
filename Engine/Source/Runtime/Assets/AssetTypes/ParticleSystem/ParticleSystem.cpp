@@ -164,8 +164,7 @@ namespace Lumina
             return Literal;
         }
 
-        // Color and Vec4 share storage and should both be acceptable for any vec4 property
-        // (e.g. you can drive StartColor with either a Color or a Vec4 parameter).
+        // Color and Vec4 share storage; either can drive a vec4 property.
         if (Comp.HasParameter(ParamName))
         {
             return Comp.GetColor(ParamName) + Comp.GetVec4(ParamName);

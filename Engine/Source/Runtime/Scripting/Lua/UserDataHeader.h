@@ -4,12 +4,8 @@
 
 namespace Lumina::Lua
 {
-    // Layout note: External lives at offset 0 of every TUserdataHeader<T>
-    // instantiation. That lets a parent-class accessor (whose static type is
-    // Parent) read the External pointer of a child userdata block — even
-    // though the child's `Buffer[sizeof(Child)]` would otherwise push the
-    // parent's view of External to the wrong offset. Inheritance dispatch
-    // for properties and namecalls relies on this guarantee.
+    // External at offset 0 across all TUserdataHeader<T> so parent accessors can read it from child blocks.
+    // Inheritance dispatch (properties + namecalls) depends on this layout guarantee.
     template<typename T>
     struct TUserdataHeader
     {

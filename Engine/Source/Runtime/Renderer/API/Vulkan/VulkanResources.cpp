@@ -110,7 +110,7 @@ namespace Lumina
     {
         VkBufferUsageFlags result = VK_NO_FLAGS;
 
-        // Always include TRANSFER_SRC since hardware vendors confirmed it wouldn't have any performance cost.
+        // TRANSFER_SRC always set — vendors confirmed no perf cost.
         result |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         
         if (Usage.IsFlagSet(EBufferUsageFlags::VertexBuffer))
@@ -416,9 +416,7 @@ namespace Lumina
         {
             FRHIBufferDesc Desc;
             Desc.Size = Size;
-            // Transient flag routes the underlying VMA allocation through the linear-algorithm
-            // upload pool. Allocations are O(1) bump-pointer regardless of chunk size, so chunks
-            // can grow well past the old ~13 MiB stall threshold without paying free-list search cost.
+            // Transient routes through the linear upload pool (O(1) bump alloc).
             Desc.Usage.SetMultipleFlags(EBufferUsageFlags::CPUWritable, EBufferUsageFlags::StagingBuffer, EBufferUsageFlags::Transient);
             Desc.DebugName = FString("UploadChunk [ " + eastl::to_string(Size) + " ]");
 
@@ -478,7 +476,7 @@ namespace Lumina
         FQueue* Queue = Context->GetQueue(queue);
         uint64 CompletedInstance = Queue->GetCompletedInstance();
 
-        // First pass: retire any chunks the GPU is done with so they're reusable.
+        // Retire GPU-done chunks for reuse.
         for (auto& Chunk : ChunkPool)
         {
             if (VersionGetSubmitted(Chunk->Version) && VersionGetInstance(Chunk->Version) <= CompletedInstance)
@@ -487,7 +485,7 @@ namespace Lumina
             }
         }
 
-        // Second pass: pick the smallest free chunk that fits, so we don't waste a 32 MiB chunk on a 1 KiB upload.
+        // Smallest-fit to avoid wasting big chunks on tiny uploads.
         TSharedPtr<FBufferChunk> BestFit;
         for (auto& Chunk : ChunkPool)
         {
@@ -513,10 +511,7 @@ namespace Lumina
 
         if (!CurrentChunk)
         {
-            // Geometric, power-of-2 chunk sizing. Once we've ever needed N bytes, future chunks
-            // round up to the next pow2 >= max(N, DefaultChunkSize, LargestSeen). This dramatically
-            // increases pool reuse, most subsequent allocations hit a cached chunk instead of
-            // calling vmaCreateBuffer at all.
+            // Pow-2 sizing >= max(req, default, LargestSeen) to maximize pool reuse.
             uint64 Target = std::max<uint64>(Size, DefaultChunkSize);
             Target = std::max<uint64>(Target, LargestChunkSize);
             uint64 SizeToAllocate = NextPow2_u64(Target);
@@ -527,9 +522,7 @@ namespace Lumina
                 return false;
             }
 
-            // Evict idle chunks that are smaller than half the new target, they'll never be reused
-            // now that callers are demanding bigger buffers, and they're just consuming pool slots
-            // and host-visible memory budget.
+            // Evict idle chunks < half target; the pool grew, they won't be reused.
             const uint64 EvictBelow = SizeToAllocate / 2;
             for (auto It = ChunkPool.begin(); It != ChunkPool.end(); )
             {
@@ -638,7 +631,6 @@ namespace Lumina
             
             Alignment = Math::Max<uint64>(Alignment, AtomSize);
 
-            // Check if it's a power of 2
             DEBUG_ASSERT((Alignment & (Alignment - 1)) == 0);
             Size = (Size + Alignment - 1) & ~(Alignment - 1);
             
@@ -652,8 +644,7 @@ namespace Lumina
         }
         else
         {
-            // Vulkan allows for <= 64kb buffer updates to be done inline via vkCmdUpdateBuffer,
-            // but the data size must always be a multiple of 4.
+            // vkCmdUpdateBuffer: <= 64kb, size must be multiple of 4.
             Size = (Size + 3) & ~3ull;
         }
 
@@ -684,9 +675,7 @@ namespace Lumina
 
         if (InDescription.Usage.IsFlagSet(EBufferUsageFlags::Transient))
         {
-            // Transient/upload chunks live for one or two frames and are freed in roughly FIFO order.
-            // Route them through the dedicated linear-algorithm pool, O(1) bump-pointer allocations
-            // that can never fragment, regardless of how large individual chunks grow.
+            // Transient chunks: route to linear pool (FIFO lifetime, can't fragment).
             Allocation = Device->GetAllocator().AllocateUploadBuffer(&BufferCreateInfo, &Buffer, Description.DebugName.c_str());
         }
         else
@@ -905,9 +894,7 @@ namespace Lumina
 
         auto CacheKey = eastl::make_tuple(Subresource, ViewType, Dimension, Format, Usage);
 
-        // Inline fast path: linear scan over the last few lookups using direct
-        // equality. Avoids the 5-way HashCombine + hash_map bucket walk on the
-        // common case where the same handful of views are queried repeatedly.
+        // Inline cache: linear scan beats the 5-way HashCombine on hot views.
         for (const FInlineViewEntry& Entry : InlineViewCache)
         {
             if (Entry.Key == CacheKey)
@@ -1026,7 +1013,7 @@ namespace Lumina
     {
         if (Desc.Depth != 1)
         {
-            // Hard case, since each mip level has half the slices as the previous one.
+            // 3D textures: each mip halves the slice count.
             ASSERT(ArraySlice == 0);
             ASSERT(Z < Desc.Depth);
 
@@ -1041,7 +1028,6 @@ namespace Lumina
         }
         else if (Desc.ArraySize != 1)
         {
-            // Easy case, since each mip level has a consistent number of slices.
             ASSERT(ArraySlice < Desc.ArraySize);
             ASSERT(SliceRegions.size() == Desc.NumMips * Desc.ArraySize);
             return SliceRegions[MipLevel * Desc.ArraySize + ArraySlice];
@@ -1071,7 +1057,6 @@ namespace Lumina
             {
                 SliceRegions.push_back({ curOffset, sliceSize });
 
-                // update offset for the next region
                 curOffset = AlignBufferOffset(off_t(curOffset + sliceSize));
             }
         }

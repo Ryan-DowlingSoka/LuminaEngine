@@ -19,14 +19,9 @@ namespace Lumina
             return new (Mem) T(Forward<Args>(args)...);
         } 
         
-        // Allocates memory of specified size and alignment.
         virtual void* Allocate(size_t Size, size_t Alignment = alignof(std::max_align_t)) = 0;
-
         virtual void Free(void* Data) = 0;
-
         virtual size_t GetCapacity() { return 0; }
-        
-        // Clears or resets the allocator (depending on strategy).
         virtual void Reset() = 0;
     };
 
@@ -130,7 +125,6 @@ namespace Lumina
             }
         }
 
-        // STL/EASTL container support.
         void* allocate(size_t n, int flags = 0)
         {
             return Allocate(n, EASTL_ALLOCATOR_MIN_ALIGNMENT);
@@ -143,7 +137,6 @@ namespace Lumina
         
         void deallocate(void* p, size_t n)
         {
-            //... Unsupported.
         }
          
         void* Allocate(SIZE_T Size, SIZE_T Alignment) override
@@ -171,10 +164,7 @@ namespace Lumina
             return Result;
         }
     
-        void Free(void* Data) override 
-        { 
-            // Linear allocators don't support individual frees
-        } 
+        void Free(void* Data) override { }
     
         void Reset() override 
         { 
@@ -182,7 +172,7 @@ namespace Lumina
             CurrentOffset = 0;
         }
 
-        /** Will free all memory blocks except the first, and reset the offset. */
+        /** Frees all blocks except the first, then resets. */
         void Compact()
         {
             if (!FirstBlock)
@@ -199,7 +189,6 @@ namespace Lumina
                 BlockCount--;
             }
 
-            // Reset state to only use the first block
             FirstBlock->Next = nullptr;
             CurrentBlock = FirstBlock;
             CurrentOffset = 0;
@@ -213,16 +202,14 @@ namespace Lumina
         SIZE_T GetUsed() const 
         { 
             SIZE_T Used = 0;
-            
-            // Count all previous blocks as fully used
+
             Block* Block = FirstBlock;
             while (Block != CurrentBlock && Block != nullptr)
             {
                 Used += GetUsableBlockSize();
                 Block = Block->Next;
             }
-            
-            // Add current block usage
+
             if (CurrentBlock)
             {
                 Used += CurrentOffset;
@@ -253,8 +240,7 @@ namespace Lumina
         
         void AllocateNewBlock()
         {
-            // Reuse a chained block left over from before Reset(); only allocate
-            // a fresh one when we're at the tail of the list.
+            // Reuse a chained block from before Reset(); allocate fresh only at tail.
             if (CurrentBlock && CurrentBlock->Next)
             {
                 CurrentBlock = CurrentBlock->Next;
@@ -287,14 +273,7 @@ namespace Lumina
     };
 
 
-    /**
-     * EASTL-compatible adapter that delegates to an external FBlockLinearAllocator.
-     * The adapter is a small, copyable handle (just an arena pointer + name);
-     * the underlying arena is owned elsewhere and reset between frames.
-     *
-     * Containers built with this allocator must not outlive the arena; their
-     * memory is reclaimed wholesale by FBlockLinearAllocator::Reset().
-     */
+    /** EASTL adapter; copyable handle to an external FBlockLinearAllocator. Containers must not outlive the arena. */
     class FFrameArenaAllocator
     {
     public:

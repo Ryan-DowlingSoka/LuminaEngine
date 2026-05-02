@@ -151,16 +151,13 @@ namespace Lumina
 
         if (!Windowing::GetPrimaryWindowHandle()->IsWindowMinimized())
         {
-            // Frame Start
-            //-------------------------------------------------------------------
             {
                 LUMINA_PROFILE_SECTION_COLORED("FrameStart", tracy::Color::Red);
                 UpdateContext.UpdateStage = EUpdateStage::FrameStart;
 
                 MainThread::ProcessQueue();
 
-                // Drain pending Travel requests before any world ticks; tearing
-                // down a world from inside its own update is unsafe.
+                // Drain Travel requests before world ticks; tearing down a world from inside its own update is unsafe.
                 ProcessPendingTravel();
 
                 GRenderManager->FrameStart(UpdateContext);
@@ -170,17 +167,14 @@ namespace Lumina
                 DeveloperToolUI->Update(UpdateContext);
                 #endif
 
-                // Tick UI before world updates so game-side queries see fresh
-                // layout. TickAll handles per-context resize internally.
+                // Tick UI before world updates so game-side queries see fresh layout.
                 RmlUi::TickAll();
 
                 GWorldManager->UpdateWorlds(UpdateContext);
 
                 OnUpdateStage(UpdateContext);
             }
-            
-            // Paused
-            //-------------------------------------------------------------------
+
             {
                 LUMINA_PROFILE_SECTION_COLORED("Paused", tracy::Color::Purple);
                 UpdateContext.UpdateStage = EUpdateStage::Paused;
@@ -194,8 +188,6 @@ namespace Lumina
                 OnUpdateStage(UpdateContext);
             }
 
-            // Pre Physics
-            //-------------------------------------------------------------------
             {
                 LUMINA_PROFILE_SECTION_COLORED("Pre-Physics", tracy::Color::Green);
                 UpdateContext.UpdateStage = EUpdateStage::PrePhysics;
@@ -203,14 +195,12 @@ namespace Lumina
                 #if USING(WITH_EDITOR)
                 DeveloperToolUI->Update(UpdateContext);
                 #endif
-                
+
                 GWorldManager->UpdateWorlds(UpdateContext);
 
                 OnUpdateStage(UpdateContext);
             }
 
-            // During Physics
-            //-------------------------------------------------------------------
             {
                 LUMINA_PROFILE_SECTION_COLORED("During-Physics", tracy::Color::Blue);
                 UpdateContext.UpdateStage = EUpdateStage::DuringPhysics;
@@ -218,14 +208,12 @@ namespace Lumina
                 #if USING(WITH_EDITOR)
                 DeveloperToolUI->Update(UpdateContext);
                 #endif
-                
+
                 GWorldManager->UpdateWorlds(UpdateContext);
 
                 OnUpdateStage(UpdateContext);
             }
 
-            // Post Physics
-            //-------------------------------------------------------------------
             {
                 LUMINA_PROFILE_SECTION_COLORED("Post-Physics", tracy::Color::Yellow);
                 UpdateContext.UpdateStage = EUpdateStage::PostPhysics;
@@ -239,8 +227,6 @@ namespace Lumina
                 OnUpdateStage(UpdateContext);
             }
 
-            // Frame End / Render
-            //-------------------------------------------------------------------
             {
                 LUMINA_PROFILE_SECTION_COLORED("Frame-End", tracy::Color::Coral);
                 UpdateContext.UpdateStage = EUpdateStage::FrameEnd;
@@ -249,8 +235,7 @@ namespace Lumina
                 PrimaryCommandList->Open();
                 ICommandList& CmdList = *PrimaryCommandList;
 
-                // GPU scopes must close before GRenderManager->FrameEnd(); it submits
-                // the command list and advances the profiler ring, after which EndScope is a no-op.
+                // GPU scopes must close before FrameEnd(); it submits the cmd list and advances the profiler ring.
                 {
                     GPU_PROFILE_SCOPE(&CmdList, "Frame");
 
@@ -264,8 +249,7 @@ namespace Lumina
                         GWorldManager->RenderWorlds(CmdList);
                     }
 
-                    // RmlUi composites between world render and editor ImGui:
-                    // game UI overlays the world, editor chrome stays on top.
+                    // RmlUi composites between world render and editor ImGui so editor chrome stays on top.
                     RmlUi::RenderAll(CmdList);
 
                     #if USING(WITH_EDITOR)
@@ -277,10 +261,7 @@ namespace Lumina
 
                 Lua::FScriptingContext::Get().ProcessDeferredActions();
 
-                // Resume paused script threads when the user has clicked
-                // Continue / Step in the editor debugger panel. Runs after
-                // ProcessDeferredActions so a hot-reloaded script gets fresh
-                // breakpoints applied before any potential resume.
+                // Runs after ProcessDeferredActions so a hot-reloaded script gets fresh breakpoints before resume.
                 Lua::FLuaDebugger::Get().Tick();
 
                 OnUpdateStage(UpdateContext);
@@ -292,9 +273,6 @@ namespace Lumina
 
         UpdateContext.MarkFrameEnd(glfwGetTime());
 
-        
-        // Frame-Rate Limiting
-        //-------------------------------------------------------------------
         int32 MaxFrameRate = CVarMaxFrameRate.GetValue();
         if (MaxFrameRate > 0)
         {
@@ -303,8 +281,7 @@ namespace Lumina
             const double FrameStartTime  = UpdateContext.GetFrameStartTime();
             const double TargetEndTime   = FrameStartTime + TargetFrameTime;
 
-            // Sleep for the bulk; leave a small margin for the OS scheduler to overshoot,
-            // then spin the remainder for tight precision.
+            // Sleep the bulk, leaving margin for OS scheduler overshoot, then spin for precision.
             constexpr double SpinMargin = 0.001;
             double Remaining = TargetEndTime - glfwGetTime();
             if (Remaining > SpinMargin)
@@ -333,8 +310,6 @@ namespace Lumina
             ModuleUpdateFunc(Context.GetDeltaTime());
         }
     }
-
-    // Meta-context accessors moved to EngineMetaContext.cpp.
 
     FRHIViewport* FEngine::GetEngineViewport()
     {
@@ -373,8 +348,7 @@ namespace Lumina
 
         GConfig->LoadPath("/Config");
 
-        // Project-side settings. Game projects can register additional ones from
-        // their module init; these three are read by the engine itself.
+        // Engine-read project settings; games may register more from their module init.
         const FStringView ProjectFile = "/Config/GameSettings.json";
         GConfig->RegisterSetting(FConfigSetting::Make("Project.LuaModuleFile", EConfigValueType::Path)
             .WithCategory("Project/Scripting")
@@ -401,7 +375,7 @@ namespace Lumina
         
         FFixedString DLLPath;
         
-        // Sandbox is a special project that has binaries hidden away elsewhere. A normal project will be at the normal bin path.
+        // Sandbox stores its binaries elsewhere; normal projects use the standard bin path.
         if (ProjectID == FGuid::FromString(SANDBOX_PROJECT_ID))
         {
             DLLPath = Paths::Combine(Paths::GetEngineInstallDirectory(), "Binaries", LUMINA_PLATFORM_NAME, ProjectName);
@@ -471,7 +445,7 @@ namespace Lumina
             return;
         }
 
-        // Tolerate legacy absolute paths saved before the path resolver landed.
+        // Tolerate legacy absolute paths from before the path resolver.
         const FFixedString MapName = VFS::ResolveToVirtualPath(RawMapName);
 
         CWorld* StartupWorld = LoadObject<CWorld>(FStringView(MapName.c_str(), MapName.size()));
@@ -491,9 +465,7 @@ namespace Lumina
 
     void FEngine::Travel(FStringView WorldPath)
     {
-        // Defer the swap; it's unsafe to tear down a world from inside its own tick,
-        // and Travel is typically called from gameplay/script code that runs during
-        // world updates. ProcessPendingTravel drains this at the next FrameStart.
+        // Deferred: tearing down a world from inside its own tick is unsafe. Drained at next FrameStart.
         PendingTravelPath.assign(WorldPath.data(), WorldPath.size());
         bHasPendingTravel = true;
     }
@@ -530,10 +502,7 @@ namespace Lumina
             return;
         }
 
-        // Find the running game context. Prefer a PIE Game context (editor case)
-        // so that Travel always replaces the *running* world, never the editor
-        // proxy world we want to restore on PIE exit. Falls back to any Game
-        // context (packaged build), and finally any Simulation if no Game exists.
+        // Prefer a PIE Game context so Travel replaces the running world, not the editor proxy world.
         FWorldContext* OldContext = nullptr;
         for (const TUniquePtr<FWorldContext>& Ctx : GWorldManager->GetContexts())
         {
@@ -547,8 +516,7 @@ namespace Lumina
             }
         }
 
-        // No running game world yet (cold-boot or pre-startup-map call):
-        // spawn a fresh game context. No source to duplicate from here.
+        // No running game world yet (cold-boot): spawn a fresh game context.
         if (OldContext == nullptr)
         {
             FWorldContext* NewContext = GWorldManager->CreateWorldContext(WorldAsset, EWorldType::Game, ENetMode::Standalone);
@@ -560,7 +528,6 @@ namespace Lumina
             return;
         }
 
-        // Snapshot role-state we need to reapply to the replacement context.
         const EWorldType                Type           = OldContext->Type;
         const ENetMode                  NetMode        = OldContext->NetMode;
         const bool                      bPIE           = OldContext->bPIE;
@@ -570,11 +537,7 @@ namespace Lumina
                                                             : GameInstance;
         CWorld* const                   OldWorld       = OldContext->World.Get();
 
-        // Always duplicate the loaded asset. Two reasons:
-        //   1) PIE semantics: never run on the cached source asset.
-        //   2) Travel-to-same-map: LoadObject returns the cached CWorld; if
-        //      we then DestroyWorldContext on it we'd be tearing down the very
-        //      world we just intended to spin up.
+        // Always duplicate: PIE never runs on the cached asset, and Travel-to-same-map would self-destroy.
         CWorld* NewWorld = CWorld::DuplicateWorld(WorldAsset);
         if (NewWorld == nullptr)
         {
@@ -597,18 +560,13 @@ namespace Lumina
             Primary->SetWorld(NewWorld);
         }
 
-        // Subscribers compare against OldWorld for identity. CObject memory
-        // is still alive (only TeardownWorld has run); safe to compare but
-        // state must not be inspected.
+        // OldWorld memory still alive (only TeardownWorld has run); safe to compare identity, do not inspect state.
         FCoreDelegates::OnWorldTravelled.Broadcast(OldWorld, NewWorld);
     }
 
     bool FEngine::LoadCookedRuntime()
     {
-        // Looks for a single .pak alongside the executable. We don't try to
-        // pick "the right one" by name — there should only be one in a
-        // shipped game folder. Platform::BaseDir returns wide on Windows;
-        // convert before slicing.
+        // Find the single .pak next to the exe. Platform::BaseDir returns wide on Windows; convert first.
         const FString ExeFullPath = StringUtils::FromWideString(Platform::BaseDir());
         const size_t LastSlash = ExeFullPath.find_last_of("/\\");
         const FString ExeDir = (LastSlash == FString::npos)
@@ -642,10 +600,7 @@ namespace Lumina
             return false;
         }
 
-        // Mount the archive under each top-level alias the TOC contains. The
-        // PAK shipped by the editor cooker carries entries like "/Engine/...",
-        // "/Game/...", and "/Config/..." — each becomes a VFS mount sharing
-        // the same FPakArchive instance via TSharedPtr.
+        // Mount under each TOC top-level alias (/Engine, /Game, /Config), sharing one FPakArchive via TSharedPtr.
         TVector<FString> Aliases = Archive->GetTopLevelAliases();
         for (const FString& Alias : Aliases)
         {
@@ -654,12 +609,7 @@ namespace Lumina
             LOG_INFO("FEngine::LoadCookedRuntime: mounted PAK at '{}'", Alias.c_str());
         }
 
-        // Loose-files overlay. The packager can be configured to extract
-        // /Game/Scripts/ (or other content) as editable files next to the
-        // exe instead of bundling them in the PAK. Mounting this AFTER the
-        // PAK means lookups walk the loose folder first (most-recently-mounted
-        // wins per VFS dispatch order) — users can tweak scripts in the
-        // shipped game without re-cooking.
+        // Loose-files overlay; mounted after PAK so most-recently-mounted wins and users can tweak shipped scripts.
         const FString LooseGameDir = ExeDir + "/Game";
         if (std::filesystem::exists(LooseGameDir.c_str()))
         {
@@ -667,7 +617,6 @@ namespace Lumina
             LOG_INFO("FEngine::LoadCookedRuntime: mounted loose overlay at '/Game' -> {}", LooseGameDir.c_str());
         }
 
-        // Project config is *inside* the PAK, written there by the cooker.
         if (Archive->HasEntry("/Config/GameSettings.json"))
         {
             GConfig->LoadPath("/Config");
@@ -677,10 +626,7 @@ namespace Lumina
             LOG_WARN("FEngine::LoadCookedRuntime: no /Config/GameSettings.json in PAK; using defaults.");
         }
 
-        // The asset registry already iterates /Engine/Resources/Content and
-        // /Game/Content via VFS — those calls now hit the PAK transparently.
-        // Discovery is async; we MUST wait before LoadStartupMap or the
-        // GetAssetByPath lookup hits an empty registry and silently fails.
+        // Discovery is async; MUST wait before LoadStartupMap or GetAssetByPath silently fails on empty registry.
         FAssetRegistry::Get().RunInitialDiscovery();
         if (GTaskSystem != nullptr)
         {
@@ -688,7 +634,6 @@ namespace Lumina
         }
         LOG_INFO("FEngine::LoadCookedRuntime: asset discovery complete.");
 
-        // Project script (Lua) — load from PAK if the path is set.
         const FString ScriptPath = GConfig->Get<std::string>("Project.LuaModuleFile").c_str();
         if (!ScriptPath.empty())
         {
@@ -697,10 +642,7 @@ namespace Lumina
 
         FInputActionMap::Get().LoadFromConfig();
 
-        // Project DLL — the cooker stashes "Project.Name" in config so we can
-        // resolve "<ProjectName>-<Config>.dll" sitting next to the exe. We
-        // skip silently if it's missing; bare projects without a C++ module
-        // can still boot.
+        // Project DLL: cooker stashes Project.Name in config to resolve "<Name>-<Config>.dll" next to the exe.
         ProjectName = GConfig->Get<std::string>("Project.Name").c_str();
         if (!ProjectName.empty())
         {

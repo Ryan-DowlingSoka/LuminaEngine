@@ -62,9 +62,7 @@ namespace Lumina
         Parameters = Material->Parameters;
         MaterialUniforms = Material->MaterialUniforms;
 
-        // Drop overrides whose parameter no longer exists (or changed type) on the parent.
-        // Without this, renaming/removing a parameter on the parent leaves dead override entries
-        // serialized into every instance forever.
+        // Drop overrides whose parent parameter is gone/retyped, otherwise dead entries persist forever.
         Overrides.erase(eastl::remove_if(Overrides.begin(), Overrides.end(),
             [this](const FMaterialParameterOverride& O)
             {
@@ -173,7 +171,7 @@ namespace Lumina
             }
             else
             {
-                // Fall back to the parent's default texture for this slot.
+                // Fall back to parent default texture.
                 MaterialUniforms.Textures[Param.Index] = Material->MaterialUniforms.Textures[Param.Index];
             }
         }
@@ -308,15 +306,12 @@ namespace Lumina
             return;
         }
 
-        // Register against the parent BEFORE its PostLoad runs so its NotifyInstancesParentChanged
-        // sees us and refreshes our cached parameters. (NotifyInstancesParentChanged early-outs
-        // for instances whose MaterialIndex is still -1, so we still need the AddMaterial below.)
+        // Register before parent's PostLoad so NotifyInstancesParentChanged refreshes our cached params.
         Material->RegisterInstance(this);
 
         if (!Material->IsReadyForRender())
         {
             Material->PostLoad();
-            // Parent's PostLoad pushed Parameters/MaterialUniforms into us via NotifyInstancesParentChanged.
         }
         else
         {

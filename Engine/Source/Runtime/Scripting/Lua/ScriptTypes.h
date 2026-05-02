@@ -13,14 +13,8 @@ namespace Lumina
 
 namespace Lumina::Lua
 {
-    /**
-     * Per-thread context attached to a script's lua_State via lua_setthreaddata.
-     * Yield-aware C APIs read this to resolve which entity / world owns the calling
-     * coroutine — for example so FTimerManager:Wait can scope its timer to an entity
-     * and have it auto-cleared if the entity is destroyed mid-wait.
-     *
-     * The struct is owned by FScript so its address is stable for the script's lifetime.
-     */
+    // Per-thread context published via lua_setthreaddata so yield-aware APIs find their owning entity/world.
+    // Owned by FScript for stable address.
     struct FScriptThreadData
     {
         entt::entity Entity = entt::null;
@@ -35,22 +29,11 @@ namespace Lumina::Lua
         FRef                            Environment;
         FRef                            Thread;
 
-        /**
-         * Pinned reference to the module's top-level closure (the function
-         * returned by luau_load before pcall consumed it). Captured pre-pcall
-         * via lua_pushvalue so the debugger can walk its prototype tree to
-         * install line breakpoints — without it the closure would be GC'd as
-         * soon as pcall returned.
-         */
+        // Pinned pre-pcall so the debugger can walk its prototype tree for line breakpoints.
         FRef                            MainFunction;
 
-        /** Schema parsed from the `type Exports = {...}` alias; empty if none/unrecognised. */
         FScriptExportSchema             ExportsSchema;
-
-        /** Default values read from the runtime `Exports` table right after script execution. */
         TVector<FScriptPropertyEntry>   ExportDefaults;
-
-        /** Stable-address per-thread context published via lua_setthreaddata. */
         FScriptThreadData               ThreadData;
 
         bool                            bDirty = false;

@@ -11,8 +11,7 @@ namespace Lumina
     enum class EEventType : uint8
     {
         None = 0,
-        
-        // Input events
+
         KeyPressed,
         KeyReleased,
         KeyRepeat,
@@ -25,8 +24,7 @@ namespace Lumina
         MouseScrolled,
         MouseEntered,
         MouseLeft,
-        
-        // Window events
+
         WindowResize,
         WindowClose,
         WindowFocus,
@@ -38,15 +36,12 @@ namespace Lumina
         WindowRefresh,
         WindowContentScaleChanged,
         FramebufferResize,
-        
-        // File drop
+
         FileDrop,
-        
-        // Joystick/Gamepad
+
         JoystickConnected,
         JoystickDisconnected,
-        
-        // Application events
+
         AppTick,
         AppUpdate,
         AppRender,
@@ -77,15 +72,10 @@ namespace Lumina
         bool bHandled = false;
     };
 
-    // Macro to implement static type for events
     #define EVENT_CLASS_TYPE(type) \
         static EEventType GetStaticType() { return EEventType::type; } \
         virtual EEventType GetEventType() const override { return GetStaticType(); } \
         virtual const char* GetName() const override { return #type; }
-
-    // ========================================================================
-    // Key Events
-    // ========================================================================
 
     class FKeyEvent : public FEvent
     {
@@ -152,7 +142,6 @@ namespace Lumina
         EVENT_CLASS_TYPE(KeyReleased)
     };
 
-    // Character input events (for text input)
     class FCharInputEvent : public FEvent
     {
     public:
@@ -160,8 +149,7 @@ namespace Lumina
             : Codepoint(InCodepoint) {}
         
         uint32 GetCodepoint() const { return Codepoint; }
-        
-        // Convert to UTF-8 string
+
         FString GetCharacter() const
         {
             char buffer[5] = { 0 };
@@ -217,10 +205,6 @@ namespace Lumina
         bool bAlt;
         bool bSuper;
     };
-
-    // ========================================================================
-    // Mouse Events
-    // ========================================================================
 
     class FMouseMovedEvent : public FEvent
     {
@@ -300,10 +284,6 @@ namespace Lumina
     public:
         EVENT_CLASS_TYPE(MouseLeft)
     };
-
-    // ========================================================================
-    // Window Events
-    // ========================================================================
 
     class FWindowResizeEvent : public FEvent
     {
@@ -393,10 +373,6 @@ namespace Lumina
     };
     
 
-    // ========================================================================
-    // File Drop Events
-    // ========================================================================
-
     class FFileDropEvent : public FEvent
     {
     public:
@@ -418,10 +394,6 @@ namespace Lumina
         TVector<FFixedString> Paths;
         float MouseX, MouseY;
     };
-
-    // ========================================================================
-    // Joystick/Gamepad Events
-    // ========================================================================
 
     class FJoystickConnectedEvent : public FEvent
     {
@@ -450,10 +422,6 @@ namespace Lumina
     private:
         int32 JoystickID;
     };
-
-    // ========================================================================
-    // Application Events
-    // ========================================================================
 
     class FAppTickEvent : public FEvent
     {

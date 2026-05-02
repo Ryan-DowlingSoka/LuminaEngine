@@ -9,31 +9,14 @@
 namespace Lumina
 {
 
-    /**
-     * Transient runtime state for a navmesh instance. Mirrors
-     * FTerrainGPUState's role: rebuilt from serialized data on world startup,
-     * never serialized itself.
-     *
-     * Holds the live FNavMesh (Detour-backed query target) plus the in-flight
-     * bake handle, if any. Both are unique_ptrs so the component remains
-     * cheaply copyable for editor undo/redo (deep copies reset transient
-     * state, see SNavMeshComponent's copy ctor).
-     */
-    /**
-     * Snapshot of one nav-relevant collider used to detect "moved since last
-     * tick." Cached on the component, keyed by (entity, collider type index)
-     * packed into a uint64 - one entity can carry up to one collider of each
-     * type, and each is tracked independently. When the live AABB diverges
-     * from the cached value, the union of the old and new AABB's tile
-     * coverage is marked dirty for incremental rebake.
-     */
+    /** Cached collider AABB for change detection; key = (entity << 8 | colliderType). */
     struct FNavSourceEntity
     {
         glm::vec3   AABBMin = glm::vec3( FLT_MAX);
         glm::vec3   AABBMax = glm::vec3(-FLT_MAX);
     };
 
-    /** Per-tile rebake task in flight. One slot per dirty tile being processed. */
+    /** Per-tile rebake task in flight. */
     struct FNavTileRebake
     {
         int32                       TileX = 0;
@@ -43,13 +26,7 @@ namespace Lumina
         std::atomic<bool>           bConsumed{ false };
     };
 
-    /**
-     * Off-main initialization job. The bake produces tile blobs, but
-     * dtNavMesh::init + per-tile addTile + per-worker dtNavMeshQuery
-     * allocation are still expensive (ms-level for moderate bakes).
-     * That work happens here on a worker; main thread just consumes
-     * the resulting FNavMesh when bDone flips.
-     */
+    /** Off-main FNavMesh init (dtNavMesh::init + addTile + per-worker query alloc). */
     struct FNavInitJob
     {
         TUniquePtr<FNavMesh>        ResultMesh;
@@ -61,46 +38,30 @@ namespace Lumina
         TUniquePtr<FNavMesh>            Mesh;
         TUniquePtr<FNavBakeHandle>      ActiveBake;
 
-        /**
-         * Async hydration job. While set, an FNavMesh is being built off
-         * main; once bDone flips, the system consumes ResultMesh into Mesh
-         * and transitions State from Initializing to Ready.
-         */
+        /** Async hydration job; bDone -> consume ResultMesh, State -> Ready. */
         TSharedPtr<FNavInitJob>         PendingInit;
 
         ENavBakeState                   State = ENavBakeState::Idle;
 
-        bool                            bRuntimeDirty = true;   // Tiles changed; rebuild FNavMesh next tick.
+        bool                            bRuntimeDirty = true;   // Tiles changed; rebuild next tick.
 
-        // Dynamic-rebuild state. Populated lazily on the first tick after a
-        // full bake completes; never serialized.
-
-        /** Cached per-source-collider AABBs from the previous tick. Keyed by (entity << 8 | colliderType). */
+        /** Cached per-collider AABBs from previous tick. */
         THashMap<uint64, FNavSourceEntity>      EntityAABBs;
 
-        /** Tile coords (packed as TY*TilesX + TX) waiting to be rebuilt. */
+        /** Tile coords waiting to be rebuilt. */
         THashSet<uint64>                        DirtyTiles;
 
-        /**
-         * Per-tile rebake jobs currently running on workers. Shared_ptr
-         * because the async coordinator holds its own reference - Teardown
-         * clearing this vector cannot dangle an in-flight worker.
-         */
+        /** Shared with async coordinator so Teardown can't dangle in-flight workers. */
         TVector<TSharedPtr<FNavTileRebake>>     PendingRebakes;
 
-        /** Cached layout fed to BakeSingleTile so coords align with the live mesh. */
+        /** Layout fed to BakeSingleTile so coords align with live mesh. */
         FNavBuildOutput                         LiveLayout;
 
-        /** Tile grid extent at bake time, used to pack/unpack DirtyTiles keys. */
         int32                                   TilesX = 0;
         int32                                   TilesY = 0;
     };
 
-    /**
-     * Volume defining where the bake gathers source geometry. World-space
-     * AABB centered on Center with half-extents Extents. Multiple components
-     * per world are unioned at bake time.
-     */
+    /** Bake volume (world AABB at Center +/- Extents); multiple components union at bake time. */
     REFLECT(Component)
     struct RUNTIME_API SNavMeshComponent
     {
@@ -130,7 +91,7 @@ namespace Lumina
                 Origin          = Other.Origin;
                 TileWorldSize   = Other.TileWorldSize;
                 MaxPolysPerTile = Other.MaxPolysPerTile;
-                Runtime         = FNavMeshRuntime{}; // transient, reset on copy
+                Runtime         = FNavMeshRuntime{};
             }
             return *this;
         }
@@ -150,33 +111,26 @@ namespace Lumina
         PROPERTY(Editable, Category = "NavMesh|Bounds")
         glm::vec3 Extents = glm::vec3(64.0f, 16.0f, 64.0f);
 
-        /**
-         * Set by the editor "Bake" button (or gameplay code) and consumed by
-         * SNavMeshSystem on the next tick, which dispatches the actual
-         * RequestBake. Avoids exposing FSystemContext to the editor.
-         */
+        /** Editor "Bake" button flag; consumed next tick by SNavMeshSystem. */
         bool bBakeRequested = false;
 
-        /**
-         * Baked tile blobs. One per tile in the grid; empty blobs represent
-         * fully-non-walkable tiles. Serialized with the world.
-         */
+        /** Baked tile blobs (empty = non-walkable tile). Serialized. */
         PROPERTY(Category = "NavMesh|Baked")
         TVector<FNavTileData> Tiles;
 
-        /** Bake origin (== bounds min). Persisted so runtime init matches. */
+        /** Bake origin (= bounds min). */
         PROPERTY(Category = "NavMesh|Baked")
         glm::vec3 Origin = glm::vec3(0.0f);
 
-        /** Tile size in world units (== TileSizeVoxels * CellSize at bake time). */
+        /** Tile size in world units. */
         PROPERTY(Category = "NavMesh|Baked")
         float TileWorldSize = 0.0f;
 
-        /** Cap fed to dtNavMeshParams; oversize, costs memory not perf. */
+        /** Cap fed to dtNavMeshParams. */
         PROPERTY(Category = "NavMesh|Baked")
         int32 MaxPolysPerTile = 0;
 
-        /** Live runtime state. Not serialized. */
+        /** Transient; not serialized. */
         FNavMeshRuntime Runtime;
 
         bool HasBakedData() const { return !Tiles.empty() && TileWorldSize > 0.0f; }

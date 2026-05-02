@@ -31,32 +31,27 @@ enum class EName : uint32
 #define CAT(x, y) CAT_(x, y)
 #define CAT_(x, y) x##y
 
-// Tiny float threshold used for comparisons
 #define LE_EPSILON                      1.192092896e-07F
 #define LE_SMALL_NUMBER                 1e-8f
 #define LE_KINDA_SMALL_NUMBER           1e-4f
 #define LE_KINDA_SORTA_SMALL_NUMBER     1e-2f
 
-// Numeric limits that come up constantly
-#define LE_BIG_NUMBER          3.4e+38f      // safe-ish max float range
+#define LE_BIG_NUMBER          3.4e+38f
 #define LE_MAX_FLOAT           3.402823466e+38f
 #define LE_MIN_FLOAT           1.175494351e-38f
 
-// Pi-related
 #define LE_PI                  3.14159265358979323846
 #define LE_PI_F                3.14159265358979323846f
 #define LE_TWO_PI              (2.0 * LE_PI)
 #define LE_HALF_PI             (0.5 * LE_PI)
 
-
-// Degrees <-> Radians
 #define LE_DEG2RAD(x)          ((x) * (LE_PI / 180.0))
 #define LE_RAD2DEG(x)          ((x) * (180.0 / LE_PI))
 
 #define USING(flag) DETAIL_USING_FIRST(CAT(DETAIL_USING_CHECK_, flag))
 #define DETAIL_USING_CHECK_0 0,x
 #define DETAIL_USING_CHECK_1 1,x
-#if defined(_MSC_VER) && !defined(__clang__) && (!defined(_MSVC_TRADITIONAL) || _MSVC_TRADITIONAL) // Stupid legacy MSVC preprocessor.
+#if defined(_MSC_VER) && !defined(__clang__) && (!defined(_MSVC_TRADITIONAL) || _MSVC_TRADITIONAL) // Legacy MSVC preprocessor workaround.
 #define DETAIL_USING_DUMMY
 #define DETAIL_USING_FIRST(...) DETAIL_USING_FIRST_ DETAIL_USING_DUMMY(__VA_ARGS__)
 #else

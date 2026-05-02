@@ -96,10 +96,7 @@ namespace Lumina
 
     bool FProperty::Identical_InContainer(const void* ContainerA, const void* ContainerB, int64 ArrayIndex) const
     {
-        // Vector properties' codegen wrappers (GetNum / GetAt / ...) cast Object to the
-        // parent type and access the array member by name, so they need the container
-        // pointer, not container+offset. Mirrors the special-case at every other
-        // value-pointer site (Object.cpp / Struct.cpp).
+        // Vector property wrappers need the raw container pointer, not container+offset.
         if (IsA(EPropertyTypeFlags::Vector))
         {
             return Identical(ContainerA, ContainerB);

@@ -27,9 +27,7 @@ namespace Lumina
     {
         GenerateBoundingBox();
 
-        // Meshlets are baked at import time. Fallback covers procedurally-
-        // generated meshes that hit PostLoad without going through the import
-        // finalize pass.
+        // Fallback for procedurally-generated meshes that bypass the import finalize pass.
         if (MeshResources && MeshResources->MeshletData.IsEmpty() && !MeshResources->Indices.empty())
         {
             Import::Mesh::GenerateMeshlets(*MeshResources);
@@ -116,8 +114,7 @@ namespace Lumina
             return;
         }
 
-        // Loaded asset: Vertices is transient, derive the AABB from per-meshlet
-        // LoInt against the mesh grid.
+        // Loaded asset: Vertices is transient, derive the AABB from per-meshlet LoInt against the grid.
         if (MeshResources && !MeshResources->MeshletData.IsEmpty())
         {
             const FMeshletData& MD       = MeshResources->MeshletData;

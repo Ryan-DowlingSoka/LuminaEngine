@@ -13,32 +13,24 @@ namespace Lumina
 
 namespace Lumina
 {
-    /**
-     * Per-parameter override stored on a material instance.
-     * Only parameters that diverge from the parent material need an entry here.
-     */
+    /** Per-parameter override on a material instance; only divergent parameters are stored. */
     REFLECT()
     struct RUNTIME_API FMaterialParameterOverride
     {
         GENERATED_BODY()
 
-        /** Name of the parameter on the parent material this override targets. */
         PROPERTY()
         FName ParameterName;
 
-        /** Type of the parameter (Scalar, Vector, Texture). Selects which value field is used. */
         PROPERTY()
         EMaterialParameterType Type = EMaterialParameterType::Scalar;
 
-        /** Override value for scalar parameters. */
         PROPERTY()
         float Scalar = 0.0f;
 
-        /** Override value for vector parameters. */
         PROPERTY()
         glm::vec4 Vector = glm::vec4(0.0f);
 
-        /** Override texture for texture parameters. */
         PROPERTY()
         TObjectPtr<CTexture> Texture;
     };
@@ -80,27 +72,19 @@ namespace Lumina
         void PostLoad() override;
         void OnDestroy() override;
 
-        /** Reset MaterialUniforms to the parent's defaults and re-apply every override. */
+        /** Reset uniforms to parent defaults and re-apply every override. */
         void RebuildUniformsFromOverrides();
 
-        /** True if a non-default override is recorded for the given parameter. */
         bool HasOverride(const FName& Name) const;
-
-        /** Drop the override entry for the given parameter, reverting it to the parent's default. */
         void RemoveOverride(const FName& Name);
 
-        /** The parent material this instance overrides parameters for. */
         PROPERTY(ReadOnly, Category = "Material")
         TObjectPtr<CMaterial> Material;
 
-        /** Per-parameter override values. Only parameters that diverge from the parent are stored here. */
         PROPERTY()
         TVector<FMaterialParameterOverride>     Overrides;
 
-        /** Resolved parameter manifest (mirrors the parent's Parameters list at PostLoad time). */
         TVector<FMaterialParameter>             Parameters;
-
-        /** GPU uniform block for this instance, derived from parent defaults + overrides. */
         FMaterialUniforms                       MaterialUniforms;
     };
 }

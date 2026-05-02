@@ -1,9 +1,6 @@
 #pragma once
 
-// Bridges Rml::FileInterface onto Lumina's VFS. Open() reads the whole file
-// into memory; Read/Seek/Tell operate on a cursor inside that blob. Suitable
-// for UI documents and font files (typically tens of KB). Large media should
-// not flow through here.
+// Bridges Rml::FileInterface to VFS; whole file is read into memory. Use only for small UI/font assets.
 
 #include <RmlUi/Core/FileInterface.h>
 

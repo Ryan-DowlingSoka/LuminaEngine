@@ -65,7 +65,6 @@ namespace Lumina
     {
         GENERATED_BODY()
         
-        /** The data type stored in this primitive data slot. */
         PROPERTY(Script, Editable)
         ECustomPrimitiveDataType Type = ECustomPrimitiveDataType::Float;
 

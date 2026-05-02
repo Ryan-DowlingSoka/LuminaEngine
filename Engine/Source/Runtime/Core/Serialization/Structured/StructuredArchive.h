@@ -71,7 +71,6 @@ namespace Lumina
         RUNTIME_API FArchiveStream EnterStream();
         RUNTIME_API FArchiveMap EnterMap(int32& NumElements);
 
-        // Basic type serialization
         void Serialize(uint8& Value);
         void Serialize(uint16& Value);
         void Serialize(uint32& Value);
@@ -227,39 +226,31 @@ namespace Lumina
             , InnerAr(InInnerAr)
         {}
 
-        /** Begins writing an archive at the root slot */
+        /** Begin writing at the root slot. */
         RUNTIME_API FArchiveSlot Open();
 
-        /** Flushes any remaining scope and closes the archive */
         RUNTIME_API void Close();
 
-        /** Switches the scope to the given slot */
         RUNTIME_API void SetScope(FSlotPosition Slot);
 
-        /** Enters the current slot, adding an element onto the stack. */
         RUNTIME_API int32 EnterSlotAsType(FSlotPosition Slot, StructuredArchive::EElementType Type);
 
-        /** Enters the current slot for serializing a value */
         virtual void EnterSlot(FSlotPosition Slot, bool bEnteringAttributedValue = false);
         virtual void LeaveSlot() = 0;
 
-        // Record operations
         virtual void EnterRecord() = 0;
         virtual void LeaveRecord() = 0;
         virtual FArchiveSlot EnterField(FName FieldName) = 0;
         virtual void LeaveField() = 0;
 
-        // Array operations
         virtual void EnterArray(int32& NumElements) = 0;
         virtual void LeaveArray() = 0;
         virtual FArchiveSlot EnterArrayElement() = 0;
 
-        // Stream operations
         virtual void EnterStream() = 0;
         virtual void LeaveStream() = 0;
         virtual FArchiveSlot EnterStreamElement() = 0;
 
-        // Map operations
         virtual void EnterMap(int32& NumElements) = 0;
         virtual void LeaveMap() = 0;
         virtual FArchiveSlot EnterMapKey() = 0;

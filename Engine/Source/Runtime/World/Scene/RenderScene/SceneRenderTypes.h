@@ -34,34 +34,17 @@ constexpr int ClusterGridSizeZ = 24;
 
 constexpr int NumClusters = ClusterGridSizeX * ClusterGridSizeY * ClusterGridSizeZ;
 
-// Per-cascade resolutions. Cascade 0 covers the closest split and gets the
-// largest texture; outer cascades cover much more world area each so spending
-// the same texel budget on them is wasted. The atlas packs all three into a
-// single Texture2D, which cuts the previous 4096x4096x3 D32 array (192 MB)
-// down to a 3072x2048 atlas (~24 MB) with no visible quality loss on the near
-// cascade.
-//
-// Layout in the atlas:
-//   +-----------+--------+
-//   |           |   C1   |   1024x1024
-//   |    C0     | 1024sq |   (top-right)
-//   |  2048x    +--------+
-//   |   2048    |   C2   |   1024x1024
-//   |           | 1024sq |   (bottom-right)
-//   +-----------+--------+
-//   0         2048      3072
+// CSM atlas: C0 (2048) takes left half; C1/C2 (1024 each) stack in right column.
+// Single Texture2D atlas (~24 MB) replaces 192 MB D32 array.
 constexpr int GCSMCascadeSizes[3]       = { 2048, 1024, 1024 };
-constexpr int GCSMAtlasWidth            = 3072;  // C0(2048) + C1/C2 column(1024)
-constexpr int GCSMAtlasHeight           = 2048;  // max(C0, C1+C2)
-// Per-cascade origin (top-left pixel) in the atlas. Index parallels GCSMCascadeSizes.
+constexpr int GCSMAtlasWidth            = 3072;
+constexpr int GCSMAtlasHeight           = 2048;
 constexpr int GCSMCascadeOriginX[3]     = { 0,    2048, 2048 };
 constexpr int GCSMCascadeOriginY[3]     = { 0,    0,    1024 };
 
 constexpr int GShadowAtlasResolution    = 4096;
 
-// Hard cap on simultaneous cull views. One main camera + NumCascades CSM
-// slices + 6 per point light + 1 per spot light. 128 leaves room for ~20
-// local shadow lights after cascades, which matches GShadowAtlas layer budget.
+// Hard cap on cull views: camera + NumCascades + 6/point + 1/spot.
 constexpr int GMaxCullViews             = 128;
 
 namespace Lumina
@@ -78,23 +61,21 @@ namespace Lumina
     template<typename T>
     using TRenderVector = TFixedVector<T, 100>;
     
-    // Mutually-exclusive debug visualization mode for the forward scene. The
-    // enum value is forwarded to the GPU via FCullData::DebugMode; keep the
-    // numeric values in sync with DEBUG_MODE_* in Common.slang.
+    // Mutually-exclusive debug viz; values must match DEBUG_MODE_* in Common.slang.
     enum class ERenderSceneDebugFlags : uint8
     {
-        None                = 0,    // Normal lit rendering.
-        Unlit               = 1,    // Albedo + emissive only, skip lighting.
-        Meshlets            = 2,    // Per-meshlet hash color.
-        WorldNormal         = 3,    // World-space geometric normal remapped to [0,1].
-        ShadingNormal       = 4,    // World-space normal-mapped shading normal.
-        BaseColor           = 5,    // Raw albedo with no lighting or emissive.
-        Roughness           = 6,    // Roughness as greyscale.
-        Metallic            = 7,    // Metallic as greyscale.
-        AmbientOcclusion    = 8,    // Material AO as greyscale.
-        Emissive            = 9,    // Emissive term only.
-        UV                  = 10,   // frac(UV0) -> rg channels.
-        LightComplexity     = 11,   // Cluster light count heatmap.
+        None                = 0,
+        Unlit               = 1,
+        Meshlets            = 2,
+        WorldNormal         = 3,
+        ShadingNormal       = 4,
+        BaseColor           = 5,
+        Roughness           = 6,
+        Metallic            = 7,
+        AmbientOcclusion    = 8,
+        Emissive            = 9,
+        UV                  = 10,
+        LightComplexity     = 11,
         Num                 = 12,
     };
 
@@ -167,10 +148,7 @@ namespace Lumina
     constexpr uint32 LIGHT_SHADOW_MASK    = 0xFFFF0000; // upper 16 bits
     constexpr int    LIGHT_SHADOW_SHIFT   = 16;
 
-    // Bit flags packed into FLight::Flags. Type bits are mutually exclusive in
-    // practice but kept as bits (not a sequential enum) so feature flags like
-    // CastShadow / Volumetric can OR in without colliding. Mirror of
-    // ELightFlags in Common.slang -- keep the values in lockstep.
+    // Mirror of ELightFlags in Common.slang -- keep values in lockstep.
     enum class ELightFlags : uint32
     {
         None        = 0,
@@ -178,10 +156,6 @@ namespace Lumina
         Point       = BIT(1),
         Spot        = BIT(2),
         CastShadow  = BIT(3),
-        // Set when the light should scatter through participating media. The
-        // VolumetricLightingPass walks NumLights and skips entries without
-        // this bit, so a scene with no volumetrics still pays only the empty
-        // loop.
         Volumetric  = BIT(4),
     };
 
@@ -200,17 +174,7 @@ namespace Lumina
         glm::vec2 UVScale;      // Normalized size (square: UVScale.x == UVScale.y).
     };
 
-    // Quad-tree shadow atlas allocator.
-    //
-    // The atlas is subdivided on-demand into power-of-two tiles between
-    // [MinTileResolution, MaxTileResolution]. Each frame the allocator is
-    // reset via FreeTiles(); callers request a tile sized from the shadow's
-    // on-screen importance (projected radius), so distant shadows consume
-    // 16x-256x less atlas area than near ones and many more shadow-casters
-    // fit in the same budget.
-    //
-    // Returned handles index into Tiles[]; UV offset/scale are ready to pass
-    // straight to FLightShadow with no further conversion.
+    // Quad-tree shadow atlas allocator. Tiles sized by projected radius; reset per-frame via FreeTiles().
     class FShadowAtlas
     {
     public:
@@ -238,21 +202,14 @@ namespace Lumina
             FreeTiles();
         }
 
-        // Allocate a square tile of at least DesiredPixels on a side. The grant
-        // is quantized up to the next power of two and clamped to the configured
-        // [Min, Max] range. Returns INDEX_NONE if the atlas is full at every
-        // size >= DesiredPixels.
+        // Quantizes up to next pow2 and clamps to [Min,Max]. Returns INDEX_NONE if full.
         int32 AllocateTile(uint32 DesiredPixels)
         {
-            // Point/spotlight processing runs across parallel tasks, so the
-            // allocator has to be thread-safe. Contention is trivial in practice
-            // (tens of shadow casters per frame) so a plain mutex is fine.
             FScopeLock Lock(AllocMutex);
 
             const uint32 ClampedSize = glm::clamp(RoundUpPow2(DesiredPixels), Config.MinTileResolution, Config.MaxTileResolution);
             const uint32 StartLevel  = Log2Floor(ClampedSize) - MinLevel;
 
-            // Walk upward until we find a level that has (or can split to yield) a free tile.
             for (uint32 Level = StartLevel; Level < NumLevels; ++Level)
             {
                 if (!FreeLists[Level].empty())
@@ -260,8 +217,7 @@ namespace Lumina
                     FTileRect Rect = FreeLists[Level].front();
                     FreeLists[Level].pop();
 
-                    // Split down to StartLevel, returning the last quadrant and
-                    // pushing its three siblings back for future allocations.
+                    // Split down to StartLevel; return last quadrant, push siblings back.
                     while (Level > StartLevel)
                     {
                         const uint32 Half = Rect.Size / 2;
@@ -285,8 +241,7 @@ namespace Lumina
             return INDEX_NONE;
         }
 
-        // Reset state at the start of a frame. Reseeds the top-level free list
-        // with a grid of MaxTileResolution roots covering the whole atlas.
+        // Reseeds top-level free list with a grid of MaxTileResolution roots.
         void FreeTiles()
         {
             Tiles.clear();
@@ -309,8 +264,6 @@ namespace Lumina
         const FShadowTile& GetTile(int32 TileIndex) const { return Tiles[TileIndex]; }
         FRHIImageRef GetImage() const { return ShadowAtlas; }
 
-        // Debug-only accessors. Safe to call from the UI thread between frames;
-        // reads a stable snapshot of the previous frame's allocation.
         const FShadowAtlasConfig& GetConfig() const { return Config; }
         const TVector<FShadowTile>& GetAllocatedTiles() const { return Tiles; }
 
@@ -361,7 +314,7 @@ namespace Lumina
         int32       ShadowMapIndex;
         int32       LightIndex;
         int32       ShadowDataIndex;    // Index into FSceneLightData::Shadows[]
-        int32       _Padding;           // Keeps the struct 16-byte aligned for std430.
+        int32       _Padding;           // std430 16-byte alignment.
     };
 
     VERIFY_SSBO_ALIGNMENT(FLightShadow)
@@ -382,8 +335,7 @@ namespace Lumina
         ELightFlags     Flags;
         int32           ShadowDataIndex;    // INDEX_NONE if no shadow
 
-        // Per-light scattering strength used by VolumetricLightingPass. Read
-        // by the GPU as a float; ignored unless Flags has ELightFlags::Volumetric.
+        // Ignored unless Flags has ELightFlags::Volumetric.
         float           VolumetricIntensity;
         uint32          Padding0;
     };
@@ -393,9 +345,7 @@ namespace Lumina
 
     VERIFY_SSBO_ALIGNMENT(FLight)
 
-    // Cold shadow-caster data. Only shadow-rendering passes and the lit
-    // pixel shader's shadow branch touch this, so the hot lighting loop
-    // never pays the miss.
+    // Cold shadow-caster data; hot lighting loop never touches it.
     struct FLightShadowData
     {
         glm::mat4       ViewProjection[6];  // 384 B
@@ -419,14 +369,9 @@ namespace Lumina
         uint32              bHasSun{};
 
         glm::vec4           CascadeSplits{};
-        // World-space half-extent (sphere radius) of each CSM cascade. Used
-        // to convert a shadow texel into world-space length for normal-offset
-        // bias; must shrink with the cascade or grows large in cascade 0.
+        // Half-extent of each CSM cascade; used to convert shadow texel to world length.
         glm::vec4           CascadeRadii{};
-        // Per-cascade shadow-map resolution. Cascades pack into a single
-        // atlas with progressive sizes (see GCSMCascadeSizes), so the pixel
-        // shader can't assume one constant resolution when computing texel
-        // size. xyzw correspond to cascades 0..3.
+        // Per-cascade shadow-map resolution; xyzw = cascades 0..3.
         glm::vec4           CascadeResolutions{};
 
         glm::vec4           AmbientLight{};
@@ -489,10 +434,7 @@ namespace Lumina
         glm::uvec4 GridSize;
     };
 
-    // Unified 128B per-instance descriptor. One SSBO, one binding, one fetch per
-    // instance. The empty default constructor lets eastl::vector<FGPUInstance>
-    // skip zero-init on resize(), every byte is overwritten by the parallel
-    // writer anyway, and 100k instances × 128B is ~12 MB of pointless writes.
+    // 128B per-instance descriptor. Empty ctor skips zero-init on resize() (parallel writer overwrites everything).
     struct alignas(16) FGPUInstance
     {
         FGPUInstance() noexcept {}
@@ -548,9 +490,7 @@ namespace Lumina
 
         uint32 NumDraws;
         uint32 DebugMode;
-        // Total meshlets across every instance this frame; the cull's flat
-        // thread-per-meshlet dispatch reads this for the tail-thread cutoff
-        // and the dispatch sizing.
+        // Total meshlets this frame; flat thread-per-meshlet dispatch reads this.
         uint32 TotalMeshletBound;
         uint32 Padding;
     };
@@ -581,11 +521,7 @@ namespace Lumina
         };
     }
 
-    // Mirror of FCullView in Common.slang. One entry per logical render view
-    // (main camera, each CSM cascade, each point-light face, each spot light).
-    // The unified cull compute pass walks every surviving meshlet and tests it
-    // against every view, emitting per-view draw lists into shared storage
-    // sliced by DrawListOffset / IndirectArgsOffset.
+    // Mirror of FCullView in Common.slang; one entry per render view.
     struct alignas(16) FCullView
     {
         glm::vec4   FrustumPlanes[6];           // 96 B
@@ -664,17 +600,15 @@ namespace Lumina
         uint32 IndirectDrawOffset;
     };
     
-    // CPU-side scene stats (batch/cull/material bookkeeping). Draw-time
-    // counters like triangles and VS/FS invocations come from Vulkan
-    // pipeline-statistics queries: see FPipelineStats / FGPUProfileFrame.
+    // CPU-side scene stats. Draw-time counters come from FPipelineStats / FGPUProfileFrame.
     struct FSceneRenderStats
     {
-        uint64 NumBatches = 0;            // Unique pipeline/material batches built this frame
-        uint64 NumMeshes = 0;             // Unique meshes referenced
-        uint64 NumMaterials = 0;          // Unique materials referenced
-        uint64 NumDrawCallsCulled = 0;    // Draws culled by frustum/occlusion (CPU path)
-        uint64 NumInstancesCulled = 0;    // Instances culled
-        uint64 NumShadowDraws = 0;        // Shadow pass draws
+        uint64 NumBatches = 0;
+        uint64 NumMeshes = 0;
+        uint64 NumMaterials = 0;
+        uint64 NumDrawCallsCulled = 0;
+        uint64 NumInstancesCulled = 0;
+        uint64 NumShadowDraws = 0;
         uint64 NumSkinnedMeshes = 0;
         uint64 NumStaticMeshes = 0;
     };
@@ -691,23 +625,12 @@ namespace Lumina
         uint8 bShadowOcclusionCull:1    = true;
         uint8 bWireframe:1              = false;
         uint8 bDrawBillboards:1         = true;
-        // CPU-side pre-upload reject of instances that fall outside every
-        // possible contributing view (camera + sun-swept shadow frustum +
-        // shadow-casting light spheres). Saves per-surface batch work and
-        // shrinks the Instance SSBO upload; GPU meshlet cull still runs.
+        // Pre-upload reject of instances outside every contributing view.
         uint8 bCPUInstanceCull:1        = true;
-        // Enable distance-based LOD picking on the CPU during the per-frame
-        // instance build. Disabled = always use LOD 0 (full detail) -- handy
-        // for A/B comparisons or pinning quality regardless of camera
-        // distance. The actual LOD ladder is baked at import time.
+        // Disabled = always LOD 0 (full detail).
         uint8 bUseLODs:1                = true;
 
-        // Bias added to each instance's camera LOD to pick its shadow LOD.
-        // Shadow casters render at this offset for cascaded / point / spot
-        // shadow passes. Capped at MAX_SHADOW_LOD so sloppy LODs never reach
-        // shadows (their topology breaks would manifest as light leaks).
-        // 0 = use the same LOD as the camera (no shadow saving).
-        // 1-2 = typical sweet spot.
+        // Camera LOD + bias picks shadow LOD; capped at MAX_SHADOW_LOD. 0 = no saving, 1-2 typical.
         int8  ShadowLODBias             = 1;
     };
     

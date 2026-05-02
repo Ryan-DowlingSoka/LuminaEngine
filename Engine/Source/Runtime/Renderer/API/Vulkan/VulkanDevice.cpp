@@ -15,12 +15,7 @@ namespace Lumina
 {
     constexpr uint64 DEDICATED_MEMORY_THRESHOLD = 2048llu * 2048;
 
-    // 32 MiB per VMA pool block. Previously 128 MiB, which routinely failed
-    // vmaCreatePool with VK_ERROR_OUT_OF_DEVICE_MEMORY on the host-visible
-    // device-local "BAR" heap that VMA picks for upload buffers — that heap
-    // is 256 MiB on cards without Resizable BAR. 32 MiB still amortizes
-    // vkAllocateMemory cost well across hundreds of small upload buffers
-    // and lets the pool grow elastically (maxBlockCount = 0).
+    // 32 MiB block: 128 MiB OOMed on the 256 MiB BAR heap (no Resizable BAR).
     constexpr VkDeviceSize UPLOAD_POOL_BLOCK_SIZE = 32llu * 1024 * 1024;
 
     FVulkanMemoryAllocator::FVulkanMemoryAllocator(FVulkanRenderContext* InCxt, VkInstance Instance, VkPhysicalDevice PhysicalDevice, VkDevice Device)
@@ -47,8 +42,7 @@ namespace Lumina
 
     void FVulkanMemoryAllocator::InitUploadPool()
     {
-        // Build a sample VkBufferCreateInfo that matches every usage flag a staging/upload chunk
-        // can ever take, so VMA can pick a memory type that satisfies all of them at once.
+        // Sample with all upload-chunk usage flags so VMA picks a single compatible memory type.
         VkBufferCreateInfo SampleInfo = {};
         SampleInfo.sType  = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         SampleInfo.size   = 1024;
@@ -76,25 +70,17 @@ namespace Lumina
 
         VmaPoolCreateInfo PoolInfo = {};
         PoolInfo.memoryTypeIndex = MemoryTypeIndex;
-        // Linear algorithm: bump-allocate, never search a free list, never fragment.
-        // Perfect for FIFO transient resources like per-frame upload buffers.
+        // Linear bump-allocator; perfect for FIFO transient upload buffers.
         PoolInfo.flags          = VMA_POOL_CREATE_LINEAR_ALGORITHM_BIT;
         PoolInfo.blockSize      = UploadBlockSize;
-        // Lazy-allocate: don't claim a block at init. The first upload buffer
-        // request triggers the first block alloc, which is cheap enough to
-        // happen during normal frame flow. Pre-warming used to fail outright
-        // when the host-visible heap couldn't satisfy a 128 MiB request at
-        // startup, which is why we landed in the warn-and-fallback path
-        // every launch.
+        // Lazy: first upload triggers first block. Pre-warming OOMed startup on small BAR heaps.
         PoolInfo.minBlockCount  = 0;
-        PoolInfo.maxBlockCount  = 0; // unlimited
+        PoolInfo.maxBlockCount  = 0;
 
         const VkResult PoolResult = vmaCreatePool(Allocator, &PoolInfo, &UploadPool);
         if (PoolResult != VK_SUCCESS)
         {
-            // Surface the actual VkResult so future regressions don't go
-            // unexplained. The fallback to the default allocator is
-            // functionally fine but slower under sustained upload load.
+            // Default allocator fallback works but is slower under sustained upload load.
             LOG_WARN("FVulkanMemoryAllocator: vmaCreatePool failed (VkResult={}, memoryTypeIndex={}, blockSize={} MiB); falling back to default allocator for upload chunks.",
                 (int)PoolResult, MemoryTypeIndex, UploadBlockSize / (1024 * 1024));
             UploadPool = VK_NULL_HANDLE;
@@ -152,8 +138,7 @@ namespace Lumina
         VmaAllocationInfo AllocInfo  = {};
         VkResult Result              = VK_ERROR_OUT_OF_DEVICE_MEMORY;
 
-        // Fast path: linear-algorithm pool. O(1) bump-pointer allocation, no fragmentation.
-        // Only attempt if the buffer fits in a single pool block.
+        // Linear pool fast path; only if the request fits in a block.
         if (UploadPool != VK_NULL_HANDLE && CreateInfo->size <= UploadBlockSize)
         {
             VmaAllocationCreateInfo Info = {};
@@ -162,7 +147,6 @@ namespace Lumina
             Result = vmaCreateBuffer(Allocator, CreateInfo, &Info, vkBuffer, &Allocation, &AllocInfo);
         }
 
-        // Fallback: dedicated allocation with min-time strategy. Used for outsized one-shot uploads.
         if (Result != VK_SUCCESS)
         {
             VmaAllocationCreateInfo Info = {};

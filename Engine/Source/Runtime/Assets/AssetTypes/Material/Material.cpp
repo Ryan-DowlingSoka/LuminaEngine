@@ -44,7 +44,6 @@ namespace Lumina
         {
             return;
         }
-        // Linear scan to avoid double-registration (instance count is bounded by what references this material).
         for (CMaterialInstance* Existing : Instances)
         {
             if (Existing == Instance)
@@ -73,14 +72,11 @@ namespace Lumina
 
     void CMaterial::NotifyInstancesParentChanged()
     {
-        // Live instances cached our Parameters/MaterialUniforms at their own PostLoad time.
-        // After a recompile (or first-time load when an instance loaded before us) they're
-        // stale, so refresh every registered instance.
+        // Refresh instances whose cached uniforms are stale after a recompile or first-time load order.
         for (CMaterialInstance* Instance : Instances)
         {
             if (Instance == nullptr || Instance->Material.Get() != this)
             {
-                // Defensive: stale entry. Skip; OnDestroy / re-parent should clean these up.
                 continue;
             }
 
@@ -118,9 +114,7 @@ namespace Lumina
             PixelHeader.Binaries        = PixelShaderBinaries;
             PixelShader                 = GRenderContext->CreatePixelShader(PixelHeader);
 
-            // Per-material depth-prepass + shadow vertex shaders are present
-            // only for WPO-using materials. Null is the signal to the renderer
-            // to fall back to the global library shader.
+            // Depth-prepass / shadow VS only present for WPO materials; null falls back to global lib shader.
             if (!DepthPrepassVertexShaderBinaries.empty())
             {
                 FShaderHeader Header;
@@ -140,10 +134,7 @@ namespace Lumina
 
             FBindingSetDesc SetDesc;
 
-            // FMaterialUniforms isn't serialized -- the Memzero in our ctor leaves
-            // Scalars/Vectors at zero on load, so authored defaults vanish until the
-            // user recompiles. Replay them from the per-parameter defaults that are
-            // serialized alongside Parameters.
+            // FMaterialUniforms isn't serialized; replay defaults from Parameters so authored values survive load.
             for (const FMaterialParameter& Param : Parameters)
             {
                 switch (Param.Type)
@@ -195,7 +186,6 @@ namespace Lumina
             MaterialUniforms.Flags = (uint32)GPUFlags;
             MaterialUniforms.OpacityClipValue = OpacityMaskClipValue;
 
-            // Rebuild O(1) parameter lookup before any instance asks via GetParameterValue.
             RebuildParameterLookup();
 
             if (GetMaterialIndex() == -1)
@@ -209,9 +199,6 @@ namespace Lumina
 
             SetReadyForRender(true);
 
-            // Refresh every live instance that references us (their cached Parameters/MaterialUniforms
-            // are now stale after a recompile, or were never populated if the instance loaded first).
-            // O(instances-of-this-material) instead of an O(all-objects) global iterator scan.
             NotifyInstancesParentChanged();
         }
     }
@@ -354,8 +341,7 @@ namespace Lumina
             return;
         }
 
-        // Default material: substitute the vertex token with a no-op WPO so
-        // the geometry is unmodified.
+        // Default material: no-op WPO substitution.
         const char* VertexToken = "$MATERIAL_VERTEX_INPUTS";
         size_t VertexPos = LoadedVertexString.find(VertexToken);
         FString VertexReplacement = "Material.WorldPositionOffset = float3(0.0);\n";
@@ -414,15 +400,11 @@ namespace Lumina
             return;
         }
 
-        // Default terrain material: 4-layer weighted albedo with hardcoded defaults,
-        // so an unassigned terrain still reads as distinct painted regions rather
-        // than a single flat color. A user-authored CMaterial replaces this via its
-        // own graph-compiled $MATERIAL_INPUTS.
+        // Default terrain: 4-layer weighted albedo so unassigned terrain reads as distinct painted regions.
         const char* Token = "$MATERIAL_INPUTS";
         size_t PixelPos = LoadedPixelString.find(Token);
 
-        // Layer palette: dry earth / grass / rock / sand. Slang rejects typed array
-        // initializers here, so the blend is expanded into a straight weighted sum.
+        // Slang rejects typed array initializers, so the blend is expanded into a weighted sum.
         FString PixelReplacement;
         PixelReplacement += "\tfloat4 _LayerW = GetTerrainLayerWeights4(HeightUV);\n";
         PixelReplacement += "\tfloat3 _TerrainAlbedo = float3(0.45, 0.40, 0.30) * _LayerW.x\n";
@@ -455,8 +437,7 @@ namespace Lumina
             return;
         }
 
-        // Default terrain material: no WPO. Substitute the vertex token with
-        // a zero-init.
+        // Default terrain: no WPO; zero-init vertex token.
         const char* VertexToken = "$MATERIAL_VERTEX_INPUTS";
         size_t VertexPos = LoadedVertexString.find(VertexToken);
         FString VertexReplacement = "Material.WorldPositionOffset = float3(0.0);\n";

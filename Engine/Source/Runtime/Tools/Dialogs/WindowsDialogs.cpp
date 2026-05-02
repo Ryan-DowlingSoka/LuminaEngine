@@ -39,8 +39,6 @@ namespace Lumina::Dialogs
             break;
         }
 
-        //-------------------------------------------------------------------------
-
         switch (Type)
         {
             case EType::Ok:                 Style |= MB_OK; break;
@@ -51,8 +49,6 @@ namespace Lumina::Dialogs
             case EType::AbortRetryIgnore:   Style |= MB_ABORTRETRYIGNORE; break;
             case EType::CancelTryContinue:  Style |= MB_CANCELTRYCONTINUE; break;
         }
-
-        //-------------------------------------------------------------------------
 
         EResult Result = EResult::Yes;
         MessageBeep(MB_ICONEXCLAMATION);

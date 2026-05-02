@@ -22,10 +22,7 @@ namespace Lumina
     {
         using namespace Import::Mesh;
 
-        // Re-parses the source file with neutral options for preview. User
-        // transforms (Scale, FlipUVs, FlipNormals) and the heavy optimize/
-        // shadow/meshlet passes are deferred to commit time so toggling
-        // options in the dialog never triggers another re-parse.
+        // Neutral-options preview parse; transforms and heavy passes deferred to commit time.
         bool PreviewParse(const FFixedString& RawPath, FMeshImportData& Out)
         {
             FMeshImportOptions PreviewOptions;
@@ -377,8 +374,6 @@ namespace Lumina
         const bool bImport = DrawDialogButtons();
         if (bImport)
         {
-            // Hand the user's chosen options off to TryImport via the
-            // settings payload so commit-time finalization can apply them.
             ImportedData->CommitOptions = Options;
             bShouldClose = true;
             return true;
@@ -394,10 +389,7 @@ namespace Lumina
     {
         using namespace Import::Mesh;
 
-        // The settings payload holds the raw preview parse plus the user's
-        // final options (CommitOptions). Finalize in place: apply user
-        // transforms, optionally merge, then run the heavy optimize/shadow/
-        // meshlet/stats passes once with the final geometry.
+        // Finalize the preview parse in place using the user's CommitOptions.
         FMeshImportData& ImportData = const_cast<FMeshImportData&>(Settings->As<FMeshImportData>());
         const FMeshImportOptions& Options = ImportData.CommitOptions;
         FinalizeMeshImportData(ImportData, Options);
@@ -414,8 +406,7 @@ namespace Lumina
             DestinationDir = DestinationPath.substr(0, LastSlashPos + 1);
             BaseName       = DestinationPath.substr(LastSlashPos + 1, FFixedString::npos);
         }
-        // Strip the source-file extension (.fbx/.gltf/...) from BaseName so
-        // the resulting asset paths don't end up with the wrong extension.
+        // Strip source-file extension so asset paths don't carry it.
         const size_t DotPos = BaseName.find_last_of('.');
         if (DotPos != FFixedString::npos)
         {
@@ -434,8 +425,7 @@ namespace Lumina
             return Path;
         };
 
-        // Avoid clobbering existing assets when the user is reimporting next
-        // to a previous import, or when sub-asset names happen to collide.
+        // Avoid clobbering existing assets on reimport or sub-asset name collisions.
         auto EnsureUniquePath = [](FFixedString Path) -> FFixedString
         {
             if (FindObject<CPackage>(Path) == nullptr)
@@ -469,8 +459,7 @@ namespace Lumina
                 continue;
             }
 
-            // Multiple skeletons in one source file is rare but legal (e.g.
-            // an FBX with several rigs); disambiguate by internal name.
+            // Disambiguate multi-skeleton sources by internal name.
             FFixedString SkeletonPath = bMultipleSkeletons
                 ? BuildPath(SkeletonRes->Name.ToString())
                 : BuildPath("Skeleton");
@@ -524,10 +513,7 @@ namespace Lumina
             NewMesh->SetFlag(OF_NeedsPostLoad);
 
 
-            // Size the material slot array from the highest referenced
-            // surface index, not the surface count: merge-mode imports
-            // dedup primitives onto shared slots, and any importer that
-            // references a sparse source index needs every slot up to it.
+            // Size from highest referenced material index; merge-mode dedups onto shared slots.
             size_t MaterialSlotCount = 0;
             bool   bAnyExplicitMaterial = false;
             for (const FGeometrySurface& Surface : MeshResource->GeometrySurfaces)
@@ -600,12 +586,7 @@ namespace Lumina
                     if (!FindObject<CPackage>(QualifiedPath))
                     {
                         CPackage::AddPackageExt(QualifiedPath);
-                        // Pass the mesh-import metadata so IntendedColorSpace
-                        // (set by GLTFImport from material slots) survives
-                        // the trip to the texture factory. Without it, the
-                        // file-path branch was forced to fall back to the
-                        // filename heuristic, which misses glTF-style names
-                        // like "Default_metalRoughness.jpg".
+                        // Pass mesh-import metadata so IntendedColorSpace survives to the texture factory.
                         TextureFactory->Import(TexturePath, QualifiedPath, &Texture);
                     }
                 }

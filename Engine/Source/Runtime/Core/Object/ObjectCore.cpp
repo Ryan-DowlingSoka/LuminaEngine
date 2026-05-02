@@ -24,12 +24,11 @@
 
 namespace Lumina
 {
-    /** Allocates a section of memory for the new object, does not place anything into the newly allocated memory*/
+    /** Raw allocation only; does not construct. */
     static void* AllocateCObjectMemory(const CClass* InClass, EObjectFlags InFlags)
     {
-        // Force 16-byte minimal
         uint32 Alignment = Math::Max<uint32>(16, InClass->GetAlignment());
-        
+
         return GCObjectAllocator.AllocateCObject(InClass->GetSize(), Alignment);
     }
 
@@ -63,10 +62,7 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        // Resolve in-memory first. Objects living in the engine-wide transient
-        // package (engine primitive meshes, default materials, etc.) have
-        // stable GUIDs but no asset-registry entry, so a save/load cycle on a
-        // world that references them only resolves through this path.
+        // Transient-package objects have stable GUIDs but no registry entry; in-memory lookup is the only path.
         if (CObject* Existing = FindObjectImpl(GUID))
         {
             return Existing;
@@ -144,7 +140,6 @@ namespace Lumina
 
     FFixedString SanitizeObjectName(FStringView Name)
     {
-        // Strip extension
         const size_t ExtPos = Name.find_last_of('.');
         if (ExtPos != FString::npos)
         {
@@ -337,7 +332,7 @@ namespace Lumina
     {
         const FPropertyParams* Param = *--Properties;
 
-        // Indicates the property has an associated inner property, which would be next in the Properties list.
+        // Non-zero if property has an inner property next in Properties list.
         uint32 ReadMore = 0;
 
         
@@ -408,9 +403,7 @@ namespace Lumina
             break;
         case EPropertyTypeFlags::Optional:
             {
-                // Optionals are layout-equivalent to "one bool + one payload",
-                // so like Vector/Enum we read the next FPropertyParams as the
-                // inner property describing the payload.
+                // Like Vector/Enum, the next FPropertyParams describes the inner payload type.
                 NewProperty = NewFProperty<FOptionalProperty, FOptionalPropertyParams>(FieldOwner, Param);
 
                 ReadMore = 1;
@@ -434,7 +427,7 @@ namespace Lumina
 
     void InitializeAndCreateFProperties(CStruct* Outer, const FPropertyParams* const* PropertyArray, uint32 NumProperties)
     {
-        // Move to iterate backwards.
+        // Iterates backwards.
         PropertyArray += NumProperties;
         while (NumProperties)
         {
@@ -481,9 +474,6 @@ namespace Lumina
         
         lua_State* LuaVM = Lua::FScriptingContext::Get().GetVM();
         Params.LuaRegisterFn(LuaVM);
-        
-        // Link this class to its parent. (if it has one).
-        //FinalClass->Link();
     }
 
     void ConstructCEnum(CEnum** OutEnum, const FEnumParams& Params)

@@ -9,14 +9,7 @@ namespace Lumina
 {
     struct FNavTileData;
 
-    /**
-     * Runtime navmesh: thin opaque wrapper around dtNavMesh plus a small pool
-     * of dtNavMeshQuery instances acquired with an atomic-flag CAS so any
-     * thread can issue queries lock-free under typical contention.
-     *
-     * Owned 1:1 by SNavMeshComponent. Rebuilt from FNavTileData blobs on world
-     * startup; not serialized. Construct on the main thread; query from any.
-     */
+    /** Runtime navmesh: dtNavMesh + atomic-flag CAS query pool. Construct on main thread; query from any. */
     class RUNTIME_API FNavMesh
     {
     public:
@@ -27,11 +20,7 @@ namespace Lumina
         FNavMesh(const FNavMesh&) = delete;
         FNavMesh& operator=(const FNavMesh&) = delete;
 
-        /**
-         * Build a fresh dtNavMesh from baked tile blobs and pre-allocate the
-         * query pool. Tiles is consumed: each blob is copied into Detour-owned
-         * memory, so the input vector can be freed after this call returns.
-         */
+        /** Tiles is consumed; each blob is copied into Detour memory. */
         bool Initialize(const glm::vec3& Origin, float TileWorldSize, int32 MaxTiles, int32 MaxPolysPerTile, TVector<FNavTileData>&& Tiles);
 
         void Shutdown();
@@ -42,48 +31,20 @@ namespace Lumina
         bool FindPath(const glm::vec3& Start, const glm::vec3& End, const FNavQueryFilter& Filter, FNavPath& Out) const;
         bool Raycast(const glm::vec3& Start, const glm::vec3& End, const FNavQueryFilter& Filter, glm::vec3& HitOut) const;
 
-        /**
-         * Pick a random walkable point inside the disk of (Center, Radius)
-         * that's reachable from Center along the navmesh. Used by AI
-         * wander behaviors and patrol-point sampling.
-         */
         bool FindRandomPoint(const glm::vec3& Center, float Radius, const FNavQueryFilter& Filter, glm::vec3& Out) const;
 
-        /**
-         * Replace a single (TileX, TileY) tile. Used by dynamic rebuild after
-         * a per-tile rebake completes. NewBlob is consumed; if empty, the
-         * existing tile is just removed (covers fully-non-walkable regions).
-         *
-         * Caller must serialize this against in-flight queries on the same
-         * tile - typically by running it on the main update tick where the
-         * rest of the navmesh state changes happen.
-         */
+        /** NewBlob is consumed; empty removes the tile. Caller must serialize against in-flight queries on this tile. */
         bool RebuildTile(int32 TileX, int32 TileY, TVector<uint8>&& NewBlob);
 
-        /**
-         * Walk every walkable triangle in the navmesh. Iterates a flat
-         * cache built from the dtNavMesh detail mesh (refreshed by
-         * Initialize / RebuildTile), not the dtNavMesh itself - main
-         * thread debug draw doesn't pay the per-frame poly traversal.
-         */
+        /** Iterates the cached flat triangle list (skip the dtNavMesh traversal cost). */
         using FTriangleVisitor = TMoveOnlyFunction<void(const glm::vec3&, const glm::vec3&, const glm::vec3&, uint8)>;
         void ForEachTriangle(FTriangleVisitor Visitor) const;
 
-        /**
-         * Parallel variant: fans the triangle range across the task pool.
-         * The visitor MUST be thread-safe — it will be invoked
-         * concurrently. Intended for the debug-draw path where the line
-         * sink (FLineBatcherComponent::EnqueueLine) is itself MPMC.
-         */
+        /** Visitor MUST be thread-safe; invoked concurrently. */
         using FParallelTriangleVisitor = TFunction<void(const glm::vec3&, const glm::vec3&, const glm::vec3&, uint8)>;
         void ParallelForEachTriangle(const FParallelTriangleVisitor& Visitor) const;
 
-        /**
-         * Rebuild the triangle cache from the live dtNavMesh. Called
-         * automatically at the end of Initialize and RebuildTile.
-         * Read-only on dtNavMesh so it's safe to call from a worker
-         * provided no other thread is mutating the same tile.
-         */
+        /** Auto-called by Initialize and RebuildTile. Read-only on dtNavMesh. */
         void RefreshTriangleCache();
 
     private:
@@ -94,7 +55,6 @@ namespace Lumina
             std::atomic<bool>   Busy{ false };
         };
 
-        // RAII handle that releases its slot on destruction.
         struct FAcquiredQuery
         {
             FQuerySlot* Slot = nullptr;
@@ -109,20 +69,10 @@ namespace Lumina
 
         dtNavMesh*                          NavMesh = nullptr;
 
-        // Mutable so the const query API can flip Busy flags. The
-        // observable result of a query is invariant under acquire/release
-        // bookkeeping, so the const-correctness story holds.
+        // Mutable so const query API can flip Busy flags.
         mutable TVector<FQuerySlot>         QueryPool;
 
-        /**
-         * Flat cache of every walkable triangle in world space, refreshed
-         * after Initialize and RebuildTile. ForEachTriangle iterates this
-         * directly so per-frame debug draw doesn't pay the dtNavMesh
-         * traversal cost (which is non-trivial on big meshes).
-         *
-         * Layout: 3 vec3 per triangle in Verts; 1 area byte per triangle
-         * in Areas. Sized so Verts.size() == 3 * Areas.size().
-         */
+        // Flat cache: 3 vec3 per tri in Verts; 1 area byte per tri.
         TVector<glm::vec3>                  CachedTriVerts;
         TVector<uint8>                      CachedTriAreas;
 

@@ -25,8 +25,7 @@ namespace Lumina
                 return Values[N - 1];
             }
 
-            // Binary search the keyframe interval. Linear scan is fine when N
-            // is tiny but bone clips routinely carry hundreds of keys.
+            // Binary search keyframe interval; clips routinely have hundreds of keys.
             size_t Lo = 0;
             size_t Hi = N - 1;
             while (Lo + 1 < Hi)
@@ -76,11 +75,7 @@ namespace Lumina
             return glm::slerp(Q0, Q1, t);
         }
 
-        // Cheap TRS extract for matrices known to be rigid + per-axis scale
-        // (every bone's bind-pose LocalTransform from the FBX importer fits
-        // this). glm::decompose runs an iterative polar decomposition, which is
-        // overkill -- and we used to call it once per channel, which is
-        // catastrophic on a TRS-animated bone.
+        // Cheap TRS extract for rigid + per-axis-scale matrices; glm::decompose's polar iteration is overkill here.
         static FORCEINLINE void FastDecomposeTRS(const glm::mat4& M,
                                                   glm::vec3& OutT,
                                                   glm::quat& OutR,
@@ -136,10 +131,7 @@ namespace Lumina
             return;
         }
 
-        // Per-thread scratch. Reused across frames so this is a one-shot
-        // allocation per worker, sized to the largest skeleton it has seen.
-        // ParallelFor in the animation system means SamplePose is genuinely
-        // multi-threaded, so true thread_local is required (not static).
+        // Per-thread scratch reused across frames; thread_local required since SamplePose runs in ParallelFor.
         thread_local TVector<glm::vec3> ScratchT;
         thread_local TVector<glm::quat> ScratchR;
         thread_local TVector<glm::vec3> ScratchS;
@@ -155,10 +147,7 @@ namespace Lumina
 
         Memory::Memset(ScratchTouched.data(), 0, (size_t)NumBones * sizeof(uint8));
 
-        // Pass 1: gather per-bone TRS overrides. One sample per channel; the
-        // old path decomposed the bind pose once per channel, so a bone with
-        // T+R+S animation paid for three full polar decompositions every
-        // frame. This pass is now N samples and zero decompositions.
+        // Pass 1: gather per-bone TRS overrides; one sample per channel, zero decompositions.
         for (const FAnimationChannel& Channel : AnimationResource->Channels)
         {
             const int32 BoneIdx = InSkeleton->FindBoneIndex(Channel.TargetBone);
@@ -186,11 +175,7 @@ namespace Lumina
             }
         }
 
-        // Pass 2: build per-bone local matrices into OutBoneTransforms (used
-        // here as scratch; the FK and InvBind passes below overwrite it). The
-        // FastDecomposeTRS path only runs for partially-overridden bones --
-        // fully-animated bones skip it, untouched bones inherit the bind-pose
-        // matrix verbatim.
+        // Pass 2: build per-bone local matrices into OutBoneTransforms (scratch; later passes overwrite).
         for (int32 i = 0; i < NumBones; ++i)
         {
             const FSkeletonResource::FBoneInfo& Bone = InSkeleton->GetBone(i);
@@ -225,9 +210,7 @@ namespace Lumina
                 glm::scale(glm::mat4(1.0f), S);
         }
 
-        // Pass 3: forward kinematics in skeleton order. Bones[] is laid out
-        // parents-before-children by the importer, so a single linear pass
-        // resolves every world transform without a recursion or scratch buffer.
+        // Pass 3: FK in skeleton order; Bones[] is parents-before-children so a single linear pass works.
         for (int32 i = 0; i < NumBones; ++i)
         {
             const FSkeletonResource::FBoneInfo& Bone = InSkeleton->GetBone(i);
@@ -237,8 +220,7 @@ namespace Lumina
             }
         }
 
-        // Pass 4: fold in InvBind. After this OutBoneTransforms[i] is the
-        // skinning matrix the GPU samples in LoadSkinnedVertex.
+        // Pass 4: fold in InvBind to produce the GPU skinning matrix.
         for (int32 i = 0; i < NumBones; ++i)
         {
             const FSkeletonResource::FBoneInfo& Bone = InSkeleton->GetBone(i);

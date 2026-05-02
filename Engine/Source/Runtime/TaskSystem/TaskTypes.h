@@ -41,8 +41,6 @@ namespace Lumina
     {
         enki::Dependency    Dependency;
     
-        // We override OnDependenciesComplete to provide an 'action' which occurs after
-        // the dependency task is complete.
         void OnDependenciesComplete(enki::TaskScheduler* pTaskScheduler_, uint32_t threadNum_ ) override;
     };
     

@@ -15,17 +15,16 @@ namespace Lumina
     class CObjectBase;
     class CClass;
     
-    /** Low level implementation of a CObject */
+    /** Low-level CObject implementation. */
     class CObjectBase
     {
     public:
         friend class FCObjectArray;
         friend class CPackage;
-        
+
         RUNTIME_API CObjectBase();
         RUNTIME_API virtual ~CObjectBase();
 
-        // Non-movable, Non-copyable.
         CObjectBase(const CObjectBase&) = delete;
         CObjectBase(CObjectBase&&) = delete;
 
@@ -51,58 +50,50 @@ namespace Lumina
         RUNTIME_API void ConditionalBeginDestroy();
         RUNTIME_API int32 GetStrongRefCount() const;
 
-        /** Low level object rename, will remove and reload into hash buckets. Only call this if you've verified it's safe */
+        /** Low-level rename; rewires hash buckets. Caller must guarantee safety. */
         RUNTIME_API void HandleNameChange(const FName& NewName, CPackage* NewPackage = nullptr) noexcept;
 
-        /** Called just before the destructor is called and the memory is freed */
+        /** Called just before destructor + free. */
         RUNTIME_API virtual void OnDestroy() { }
 
-        /** Internal index into the CObjectArray */
         RUNTIME_API int32 GetInternalIndex() const { return InternalIndex; }
 
-        /** Adds the object the root set, rooting an object will ensure it will not be destroyed */
+        /** Roots the object, preventing destruction. */
         RUNTIME_API void AddToRoot();
-
-        /** Removes the object from the root set. */
         RUNTIME_API void RemoveFromRoot();
-        
-        /** Strips away common CObject prefixes */
+
+        /** Strips common CObject prefixes. */
         RUNTIME_API virtual FFixedString MakeDisplayName() const;
-        
+
     private:
 
         RUNTIME_API void AddObject();
-        
+
     public:
-        
-        /** Force any base classes to be registered first. */
+
+        /** Force base classes to register first. */
         RUNTIME_API virtual void RegisterDependencies() { }
 
-        /** Returns the CClass that defines the fields of this object */
         CClass* GetClass() const
         {
             return ClassPrivate;
         }
 
-        /** Get the internal low level name of this object */
         FName GetName() const
         {
             return NamePrivate;
         }
 
-        /** Get the internal globally unique ID for this CObject */
         const FGuid& GetGUID() const
         {
             return GUIDPrivate;
         }
 
-        /** Get the internal package this object came from (script, plugin, package, etc.). */
         CPackage* GetPackage() const
         {
             return PackagePrivate;
         }
 
-        /** Loader index from asset loading */
         RUNTIME_API int64 GetLoaderIndex() const
         {
             return LoaderIndex;
@@ -118,7 +109,7 @@ namespace Lumina
         
     public:
 
-        // This exists to fix the cyclical dependency between CObjectBase and CClass.
+        // Templated to break the cyclic dep between CObjectBase and CClass.
         template<typename OtherClassType>
         bool IsA(OtherClassType Base) const
         {
@@ -127,12 +118,10 @@ namespace Lumina
 
             const CClass* ThisClass = GetClass();
 
-            // Stop compiler from doing un-necessary branching for nullptr checks.
             ASSUME(SomeBase);
             ASSUME(ThisClass);
 
             return IsAHelper(ThisClass, SomeBase);
-            
         }
         
         template<typename T>
@@ -143,32 +132,18 @@ namespace Lumina
 
     private:
 
-        /** Flags used to track various object states. */
         mutable EObjectFlags    ObjectFlags;
-
-        /** Class this object belongs to */
         CClass*                 ClassPrivate = nullptr;
-
-        /** Package to represent on disk */
         CPackage*               PackagePrivate = nullptr;
-        
-        /** Logical name of this object. */
         FName                   NamePrivate;
-
-        /** Globally unique identifier for this object */
         FGuid                   GUIDPrivate;
-        
-        /** Internal index into the global object array. */
         int32                   InternalIndex = -1;
-
-        /** Index into this object's package export map */
+        /** Index into this object's package export map. */
         int32                   LoaderIndex = 0;
     };
 
-//---------------------------------------------------------------------------------------------------
-    
 
-    /** Helper for static registration in LRT code */
+    /** Static-registration helper for generated reflection code. */
     struct FRegisterCompiledInInfo
     {
         template<typename ... TArgs>
@@ -210,7 +185,7 @@ namespace Lumina
     RUNTIME_API void InitializeCObjectSystem();
     RUNTIME_API void ShutdownCObjectSystem();
 
-    /** Invoked from static constructor in generated code */
+    /** Called from generated-code static ctors. */
     RUNTIME_API void RegisterCompiledInInfo(CClass* (*RegisterFn)(), const TCHAR* Package, const TCHAR* Name);
 
     RUNTIME_API void RegisterCompiledInInfo(CEnum* (*RegisterFn)(), const FEnumRegisterCompiledInInfo& Info);

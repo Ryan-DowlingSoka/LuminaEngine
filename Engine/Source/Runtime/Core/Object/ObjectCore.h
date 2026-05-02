@@ -7,10 +7,7 @@
 #include "Core/LuminaMacros.h"
 #include "Platform/GenericPlatform.h"
 
-// Forward-declare lua_State instead of pulling in <lua.h>. lua_State only
-// appears as a pointer in the function-pointer typedefs below, so no
-// definition is needed here. The handful of files that actually call into
-// Lua include <lua.h> directly.
+// Forward-declare to avoid pulling in <lua.h>; only appears as pointer in typedefs below.
 extern "C" { struct lua_State; }
 
 
@@ -129,28 +126,24 @@ namespace Lumina
 
     ENUM_CLASS_FLAGS(EPropertyFlags);
 
-    /** This must reflect EPropertyTypeFlags found in ReflectedType.h */
+    /** Must mirror EPropertyTypeFlags in ReflectedType.h. */
     enum class EPropertyTypeFlags : uint8
     {
         None = 0,
 
-        // Signed integers
         Int8,
         Int16,
         Int32,
         Int64,
 
-        // Unsigned integers
         UInt8,
         UInt16,
         UInt32,
         UInt64,
 
-        // Floats
         Float,
         Double,
 
-        // Other types
         Bool,
         Object,
         Class,
@@ -211,10 +204,10 @@ namespace Lumina
     {
         using TType = T;
         
-        /** Is the first object to be constructed, and internally allocates the classes memory */
+        /** Allocates the class memory in stage 1. */
         TType* InnerSingleton = nullptr;
 
-        /** After the InnerSingleton stage, this pointer is used to track and initialize the classes internal data, such as properties and function reflection */
+        /** Stage 2: holds property/function reflection initialization. */
         TType* OuterSingleton = nullptr;
 
     };
@@ -232,43 +225,20 @@ namespace Lumina
     typedef void (*SetterFuncPtr)(void* InContainer, const void* InValue);
     typedef void (*GetterFuncPtr)(const void* InContainer, void* OutValue);
 
-    // Add an element to the array
     typedef void (*ArrayPushBackPtr)(void* InContainer, const void* InValue);
-
-    // Get the number of elements in the array
     typedef size_t (*ArrayGetNumPtr)(const void* InContainer);
-
-    // Remove an element at a given index
     typedef void (*ArrayRemoveAtPtr)(void* InContainer, size_t Index);
-
-    // Clear the array
     typedef void (*ArrayClearPtr)(void* InContainer);
-    
-    // Access an element by index (mutable)
     typedef void* (*ArrayGetAtPtr)(void* InContainer, size_t Index);
-    
-    // Resize an array.
     typedef void (*ArrayResizePtr)(void* InContainer, size_t Index);
-
-    // Reserve an array
     typedef void (*ArrayReservePtr)(void* InContainer, size_t Index);
-    
-    // Swap two elements of the array.
     typedef void (*ArraySwapPtr)(void* InContainer, size_t LHS, size_t RHS);
 
-    // ---------- Optional (TOptional<T>) -------------------------------------
-
-    // Has the optional been engaged?
     typedef bool (*OptionalHasValuePtr)(const void* InContainer);
-
-    // Pointer to the held value (only valid if HasValue returned true).
+    /** Only valid when HasValue returned true. */
     typedef void* (*OptionalGetValuePtr)(void* InContainer);
-
-    // Engage the optional, copying InValue (if non-null) or default-constructing
-    // (if null).
+    /** Engages the optional; copies InValue if non-null, else default-constructs. */
     typedef void (*OptionalSetValuePtr)(void* InContainer, const void* InValue);
-
-    // Disengage the optional.
     typedef void (*OptionalResetPtr)(void* InContainer);
 
 

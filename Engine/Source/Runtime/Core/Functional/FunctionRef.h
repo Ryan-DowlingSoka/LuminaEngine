@@ -24,12 +24,9 @@ namespace Lumina
         template<typename TCallable>
         struct IsValidCallable
         {
-            static constexpr bool value = 
-                // Not a TFunctionRef
+            static constexpr bool value =
                 !eastl::is_same_v<eastl::decay_t<TCallable>, TFunctionRef> &&
-                // Not nullptr_t
                 !eastl::is_same_v<eastl::decay_t<TCallable>, std::nullptr_t> &&
-                // Is invocable with correct signature
                 eastl::is_invocable_r_v<TRet, TCallable&, TArgs...>;
         };
 

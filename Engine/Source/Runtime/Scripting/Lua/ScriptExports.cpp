@@ -8,22 +8,10 @@
 
 namespace Lumina::Lua
 {
-    // ---------------------------------------------------------------------------------------------
-    // Serialize
-    // ---------------------------------------------------------------------------------------------
-
     bool FScriptPropertyValue::Serialize(FArchive& Ar)
     {
-        // Format:
-        //   uint8  Version            // 2
-        //   uint32 PayloadSize        // bytes of body that follow, for forward-compat skip
-        //   uint8  KindRaw            // body begins here
-        //   ... kind-specific body ...
-        //
-        // On read: unknown Version -> reset to Nil and abort (reconcile will refill).
-        // On read: unknown KindRaw -> seek past body, reset to Nil (reconcile will refill).
-        // On write: backpatch PayloadSize after writing the body.
-
+        // Format: [u8 Version][u32 PayloadSize][u8 KindRaw][body...]. PayloadSize backpatched on write,
+        // used on read to skip unknown kinds/versions (reconcile refills with defaults).
         constexpr uint8 CurrentVersion = 2;
         uint8 Version = CurrentVersion;
         Ar << Version;
@@ -159,7 +147,7 @@ namespace Lumina::Lua
             const int64 ExpectedEnd = BodyStart + PayloadSize;
             if (Ar.Tell() != ExpectedEnd)
             {
-                // Body was shorter/longer than the declared size; realign so outer read stays sane.
+                // Realign on size mismatch so outer read stays sane.
                 Ar.Seek(ExpectedEnd);
             }
         }
@@ -195,16 +183,12 @@ namespace Lumina::Lua
         return V;
     }
 
-    // ---------------------------------------------------------------------------------------------
     // Duck-typed schema + default builder. One runtime walk over the live `Exports` table.
-    // ---------------------------------------------------------------------------------------------
-
     namespace
     {
         static TSharedPtr<FScriptExportType> BuildTypeFromLuaValue(lua_State* State, int Index, FScriptPropertyValue& OutValue);
 
-        // Reads the stamped typename (from TClass) off the metatable of the value at Index.
-        // Returns an empty FName if no metatable or no __typename field.
+        // Reads __typename stamped on the metatable by TClass; empty if none.
         static FName ReadUserdataTypeName(lua_State* State, int Index)
         {
             if (!lua_getmetatable(State, Index))
@@ -219,27 +203,25 @@ namespace Lumina::Lua
                 const char* S = lua_tolstring(State, -1, &Len);
                 Result = FName(FString(S, Len));
             }
-            lua_pop(State, 2); // pop __typename + metatable
+            lua_pop(State, 2);
             return Result;
         }
 
-        // Decides whether a table looks like an Array (integer keys 1..n) vs a NestedStruct (string keys).
-        // Empty tables default to NestedStruct so the editor can still show a shape.
+        // Empty tables fall through as NestedStruct so the editor can still show a shape.
         static bool TableLooksLikeArray(lua_State* State, int Index)
         {
             Index = lua_absindex(State, Index);
             int Len = lua_objlen(State, Index);
             if (Len <= 0) return false;
 
-            // Walk all keys; if any non-integer key is present, it's a struct.
             lua_pushnil(State);
             while (lua_next(State, Index) != 0)
             {
                 int KeyType = lua_type(State, -2);
-                lua_pop(State, 1); // value
+                lua_pop(State, 1);
                 if (KeyType != LUA_TNUMBER)
                 {
-                    lua_pop(State, 1); // key
+                    lua_pop(State, 1);
                     return false;
                 }
             }
@@ -263,7 +245,7 @@ namespace Lumina::Lua
                 auto ElemType = BuildTypeFromLuaValue(State, -1, Elem);
                 if (!Type->ElementType && ElemType)
                 {
-                    Type->ElementType = ElemType; // element type taken from the first item
+                    Type->ElementType = ElemType;
                 }
                 OutValue.Items.emplace_back(eastl::move(Elem));
                 lua_pop(State, 1);
@@ -289,7 +271,6 @@ namespace Lumina::Lua
             lua_pushnil(State);
             while (lua_next(State, Index) != 0)
             {
-                // Only string-keyed fields participate.
                 if (lua_type(State, -2) == LUA_TSTRING)
                 {
                     size_t KeyLen = 0;
@@ -309,7 +290,7 @@ namespace Lumina::Lua
                     Entry.Value = eastl::move(FieldValue);
                     OutValue.StructFields.emplace_back(eastl::move(Entry));
                 }
-                lua_pop(State, 1); // value
+                lua_pop(State, 1);
             }
 
             return Type;
@@ -438,15 +419,11 @@ namespace Lumina::Lua
                 Entry.Value = eastl::move(Value);
                 OutDefaults.emplace_back(eastl::move(Entry));
             }
-            lua_pop(State, 1); // value
+            lua_pop(State, 1);
         }
 
         return !OutSchema.Fields.empty();
     }
-
-    // ---------------------------------------------------------------------------------------------
-    // Push values back into an existing table (mutate-in-place)
-    // ---------------------------------------------------------------------------------------------
 
     static void PushValueToLua(lua_State* State, const FScriptPropertyValue& Value, const FScriptExportType& Type);
 
@@ -509,7 +486,7 @@ namespace Lumina::Lua
             lua_pushvector(State, Value.AsVec.x, Value.AsVec.y, Value.AsVec.z, Value.AsVec.w);
             return;
         case EScriptExportKind::UnknownUserdata:
-            // Not editable in v1; push nil to signal unsupported.
+            // v1: not editable.
             lua_pushnil(State);
             return;
         case EScriptExportKind::Array:
@@ -536,7 +513,7 @@ namespace Lumina::Lua
             if (!Field || !Field->Type) continue;
             if (Field->Type->Kind == EScriptExportKind::UnknownUserdata)
             {
-                // v1: reflected C++ userdata overrides are not applied; the default in the table stays.
+                // v1: userdata overrides not applied; default stays.
                 continue;
             }
 
@@ -546,10 +523,6 @@ namespace Lumina::Lua
         }
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Reconcile
-    // ---------------------------------------------------------------------------------------------
-
     static bool SameShape(const FScriptExportType& Type, const FScriptPropertyValue& Value)
     {
         if (Type.Kind != Value.Kind)
@@ -558,7 +531,7 @@ namespace Lumina::Lua
         }
         if (Type.Kind == EScriptExportKind::Array)
         {
-            // Element-type mismatch is handled on reapply (we filled with defaults anyway); shape OK.
+            // Element-type mismatch handled on reapply.
             return true;
         }
         if (Type.Kind == EScriptExportKind::UnknownUserdata)
@@ -592,7 +565,7 @@ namespace Lumina::Lua
             }
             else
             {
-                // Fall back to the default read from the script, or a zeroed value if none.
+                // Fall back to script-default, then zero.
                 const FScriptPropertyEntry* Default = nullptr;
                 for (const FScriptPropertyEntry& D : Defaults)
                 {

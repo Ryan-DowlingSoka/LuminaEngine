@@ -35,26 +35,7 @@ namespace Lumina
         
         enki::TaskScheduler& GetScheduler() { return Scheduler; }
 
-        /**
-         * When scheduling tasks, the number specified is the number of iterations you want. EnkiTS will -
-         * divide up the tasks between the available threads, it's important to note that these are *NOT*
-         * executed in order. The ranges will be random, but they will all be executed only once, but if you -
-         * need the index to be consistent. This will not work for you. Here's an example of a parallel for loop.
-         *
-         * Task::AsyncTask(10, [](uint32 Start, uint32 End, uint32 Thread)
-         * {
-         *      for(uint32 i = Start; i < End; ++i)
-         *      {
-         *          //.... [i] will be randomly distributed.
-         *      }
-         * });
-         *
-         * 
-         * @param Num Number of executions.
-         * @param Function Callback
-         * @param Priority 
-         * @return The task you can wait on, but should not be saved as it will be cleaned up automatically.
-         */
+        /** Num iterations split across worker threads; ranges are unordered. Returned handle is auto-cleaned. */
         RUNTIME_API FTaskHandle ScheduleLambda(uint32 Num, uint32 MinRange, TaskSetFunction&& Function, ETaskPriority Priority = ETaskPriority::Medium);
         
         

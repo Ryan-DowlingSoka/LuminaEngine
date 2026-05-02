@@ -52,7 +52,6 @@ namespace Lumina
 
 	FMiniaudioContext::~FMiniaudioContext()
 	{
-		// Signal the audio thread to stop.
 		bRunning.store(false, Atomic::MemoryOrderRelease);
 
 		if (AudioThread.joinable())
@@ -60,7 +59,6 @@ namespace Lumina
 			AudioThread.join();
 		}
 
-		// Clean up any remaining sounds.
 		for (TUniquePtr<FActiveSound>& Sound : ActiveSounds)
 		{
 			UninitSound(*Sound);
@@ -75,7 +73,7 @@ namespace Lumina
 	{
 		FAudioHandle Handle;
 		Handle.Generation = NextGeneration.fetch_add(1, Atomic::MemoryOrderRelaxed);
-		Handle.Index      = 0; // Index is assigned on the audio thread.
+		Handle.Index      = 0; // Assigned on audio thread.
 		return Handle;
 	}
 
@@ -148,7 +146,6 @@ namespace Lumina
 		{
 			LUMINA_PROFILE_SECTION_COLORED("Audio-Thread-Tick", tracy::Color::Orange);
 
-			// Drain the command queue.
 			int32 Processed = 0;
 			while (Processed < MaxCommandsPerTick && CommandQueue.try_dequeue(Cmd))
 			{
@@ -156,11 +153,8 @@ namespace Lumina
 				++Processed;
 			}
 
-			// Cleanup sounds that have finished playing.
 			CleanupFinishedSounds();
 
-			// Sleep briefly to avoid spinning. ~5ms gives ~200 ticks/sec which is
-			// more than sufficient for audio command latency.
 			Threading::Sleep(5);
 		}
 	}
@@ -178,9 +172,7 @@ namespace Lumina
 				return;
 			}
 
-			// Allocate the sound on the heap before initializing miniaudio objects,
-			// ma_decoder/ma_sound register themselves into the engine node graph by
-			// pointer, so their storage must never move after init.
+			// Heap-allocate; ma_decoder/ma_sound store pointers in the engine node graph and must not move.
 			TUniquePtr<FActiveSound> NewSound = MakeUnique<FActiveSound>();
 			NewSound->Handle = Cmd.Handle;
 			NewSound->Bytes  = eastl::move(Bytes);
@@ -324,9 +316,7 @@ namespace Lumina
 			if (Sound.bInitialized && ma_sound_at_end(&Sound.Sound))
 			{
 				UninitSound(Sound);
-				// Swap-and-pop for O(1) removal. The unique_ptr itself moves,
-				// but the underlying FActiveSound (and its ma_sound) keep the
-				// same heap address, which miniaudio requires.
+				// Swap-and-pop; the FActiveSound heap address stays stable as miniaudio requires.
 				if (i < (int32)ActiveSounds.size() - 1)
 				{
 					ActiveSounds[i] = eastl::move(ActiveSounds.back());

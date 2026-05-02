@@ -26,7 +26,7 @@ namespace Lumina
 
     bool CStruct::IsChildOf(const CStruct* Base) const
     {
-        // Do *not* call IsChildOf with a nullptr. It is UB.
+        // UB to call on nullptr.
         ASSUME(this);
         
         if (Base == nullptr)
@@ -160,7 +160,7 @@ namespace Lumina
                 PropertyTag.Type = Current->GetTypeName();
                 PropertyTag.Name = Current->GetPropertyName();
 
-                // Write a placeholder tag to measure its size
+                // Placeholder tag; rewritten with final size after serialize.
                 int64 TagPosition = Ar.Tell();
                 Ar << PropertyTag;
                 int64 AfterTagPosition = Ar.Tell();
@@ -173,8 +173,7 @@ namespace Lumina
 
                 int64 DataEndPosition = Ar.Tell();
                 PropertyTag.Size = (int32)(DataEndPosition - AfterTagPosition);
-            
-                // Go back and rewrite the tag with correct values
+
                 Ar.Seek(TagPosition);
                 Ar << PropertyTag;
             
@@ -204,14 +203,14 @@ namespace Lumina
         
                 FProperty* FoundProperty = nullptr;
 
-                // First try for an O(n) search, as the order may still match.
+                // O(n) fast path assuming order is unchanged.
                 if (Current && Current->GetPropertyName() == Tag.Name)
                 {
                     FoundProperty = Current;
                     Current = (FProperty*)Current->Next;
                 }
-        
-                // Property was not found, fallback to an O(n^2) search, as it may have changed order.
+
+                // O(n^2) fallback for reordered properties.
                 if (FoundProperty == nullptr)
                 {
                     for (FProperty* Search = LinkedProperty; Search; Search = (FProperty*)Search->Next)
@@ -264,7 +263,6 @@ namespace Lumina
                     LOG_WARN("Property '{}' of type '{}' not found in struct, skipping", Tag.Name.ToString(), Tag.Type.ToString());
                 }
         
-                // Always seek past this property's data to read the next tag
                 Ar.Seek(DataStartPos + Tag.Size);
             }
         }

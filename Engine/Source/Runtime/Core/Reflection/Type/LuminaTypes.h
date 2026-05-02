@@ -39,7 +39,7 @@ namespace Lumina
         
         LE_NO_COPYMOVE(FProperty);
         
-        // Adds self to owner.
+        /** Adds self to owner. */
         void Init();
 
         RUNTIME_API size_t GetElementSize() const { return ElementSize; }
@@ -54,7 +54,7 @@ namespace Lumina
             return ValuePtr;
         }
 
-        /** Gets the cast internal value type by an offset, UB if type is not correct */
+        /** UB if ValueType doesn't match the property type. */
         template<typename ValueType>
         requires !eastl::is_pointer_v<ValueType>
         ValueType* GetValuePtr(void* ContainerPtr, int64 ArrayIndex = 0) const
@@ -62,7 +62,6 @@ namespace Lumina
             return static_cast<ValueType*>(GetValuePtrInternal(ContainerPtr, ArrayIndex));
         }
 
-        /** Gets the cast internal value type by an offset, UB if type is not correct */
         template<typename ValueType>
         requires !eastl::is_pointer_v<ValueType>
         const ValueType* GetValuePtr(const void* ContainerPtr, int64 ArrayIndex = 0) const
@@ -100,18 +99,12 @@ namespace Lumina
         virtual void Serialize(FArchive& Ar, void* Value) { }
         virtual void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults = nullptr) { }
 
-        // Per-property value compare. Inputs are raw value pointers (already past
-        // the property offset). Default is byte-wise memcmp on ElementSize, which
-        // is correct for trivial scalars; non-trivial types (FString, structs,
-        // arrays, optionals) override this to use type-aware equality.
+        /** Defaults to byte-wise memcmp; non-trivial types (FString, structs, arrays) override. */
         RUNTIME_API virtual bool Identical(const void* ValueA, const void* ValueB) const;
 
-        // Per-property value copy. Inputs are raw value pointers. Default is
-        // memcpy on ElementSize; non-trivial types override.
+        /** Defaults to memcpy on ElementSize; non-trivial types override. */
         RUNTIME_API virtual void CopyCompleteValue(void* Dst, const void* Src) const;
 
-        // Container-level convenience wrappers: resolve the value pointer at
-        // offset (+ optional element index) on each side and forward.
         RUNTIME_API bool Identical_InContainer(const void* ContainerA, const void* ContainerB, int64 ArrayIndex = 0) const;
         RUNTIME_API void CopyCompleteValue_InContainer(void* DstContainer, const void* SrcContainer, int64 ArrayIndex = 0) const;
 
@@ -158,20 +151,11 @@ namespace Lumina
         RUNTIME_API void* GetValuePtrInternal(void* ContainerPtr, int64 ArrayIndex) const;
         
     public:
-        
-        /** Any attached metadata of the property */
-        FMetaDataPair       Metadata;
-        
-        /** Typename of the element */
-        FName               TypeName;
-        
-        /** Size of the internal element type */
-        uint32              ElementSize;
 
-        /** Flags this property has (ReadOnly, Transient, etc.) */
+        FMetaDataPair       Metadata;
+        FName               TypeName;
+        uint32              ElementSize;
         EPropertyFlags      Flags;
-        
-        /** Specifies the type of property this is */
         EPropertyTypeFlags  TypeFlags;
     };
 
@@ -258,30 +242,26 @@ namespace Lumina
             Alignment = alignof(TCPPType)
         };
 
-        /** Convert the address of a value of the property to the proper type */
         static const TCPPType* GetPropertyValuePtr(const void* Ptr)
         {
             return static_cast<const TCPPType*>(Ptr);
         }
 
-        /** Convert the address of a value of the property to the proper type */
         static TCPPType* GetPropertyValuePtr(void* Ptr)
         {
             return static_cast<TCPPType*>(Ptr);
         }
 
-        /** Get the value of the property from an address */
         static TCPPType const& GetPropertyValue(void const* A)
         {
             return *GetPropertyValuePtr(A);
         }
 
-        /** Set the value of a property at an address */
         static void SetPropertyValue(void* Ptr, const TCPPType& Value)
         {
             *GetPropertyValuePtr(Ptr) = Value;
         }
-        
+
     };
     
     template<typename TBacking, typename TCPPType>

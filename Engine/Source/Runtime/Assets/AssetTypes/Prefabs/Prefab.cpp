@@ -15,12 +15,12 @@ namespace Lumina
 {
     namespace
     {
-        /** Returns true if a given component-storage type ID corresponds to a component we refuse to copy cross-registry. */
+        /** Component types skipped by the cross-registry copy pass. */
         bool IsNonReplicatedStorage(entt::id_type ID)
         {
             // Relationships are remapped manually after the copy pass.
             if (ID == entt::type_hash<FRelationshipComponent>::value()) return true;
-            // Editor-only selection / visibility state must not bleed from the preview world into a prefab or vice versa.
+            // Editor-only state must not leak between worlds and prefabs.
             if (ID == entt::type_hash<FSelectedInEditorComponent>::value()) return true;
             if (ID == entt::type_hash<FHideInSceneOutliner>::value()) return true;
             if (ID == entt::type_hash<FEditorComponent>::value()) return true;
@@ -113,7 +113,6 @@ namespace Lumina
 
         entt::registry& WorldRegistry = TargetWorld->GetEntityRegistry();
 
-        // Identify the root of the prefab hierarchy (the entity with no parent in the prefab).
         entt::entity PrefabRoot = entt::null;
         Registry.view<entt::entity>().each([&](entt::entity E)
         {
@@ -198,7 +197,6 @@ namespace Lumina
             return;
         }
 
-        // Gather the full instance hierarchy keyed by StableID.
         THashMap<FName, entt::entity> InstanceByStableID;
         InstanceByStableID[RootInstance->StableID] = InstanceRoot;
         ECS::Utils::ForEachDescendant(WorldRegistry, InstanceRoot, [&](entt::entity Descendant)
@@ -212,7 +210,6 @@ namespace Lumina
             }
         });
 
-        // For each prefab entity, find the matching world instance and overwrite reflected components.
         Registry.view<SPrefabComponent>().each([&](entt::entity PrefabE, const SPrefabComponent& PrefabComp)
         {
             auto It = InstanceByStableID.find(PrefabComp.StableID);
@@ -234,8 +231,7 @@ namespace Lumina
                 {
                     continue;
                 }
-                // Preserve the placed root's world transform; the prefab's
-                // source transform would stomp placement on PIE/refresh.
+                // Preserve placed-root world transform; prefab's source transform would stomp placement.
                 if (bIsRoot && ID == entt::type_hash<STransformComponent>::value())
                 {
                     continue;
@@ -258,7 +254,6 @@ namespace Lumina
             }
         });
 
-        // Re-establish the SPrefabInstanceComponent with root flag preserved for the root entity.
         for (auto& [StableID, WorldE] : InstanceByStableID)
         {
             const bool bIsRoot = (WorldE == InstanceRoot);
@@ -313,7 +308,6 @@ namespace Lumina
             return;
         }
 
-        // Collect the set of entities to capture: the root and all descendants.
         TVector<entt::entity> EntitiesToCapture;
         EntitiesToCapture.reserve(16);
         EntitiesToCapture.push_back(RootEntity);
@@ -322,7 +316,7 @@ namespace Lumina
             EntitiesToCapture.push_back(E);
         });
 
-        // Build a scratch registry that owns only the captured entities, so we can reuse CopyRegistry.
+        // Scratch registry holding only captured entities so CopyRegistry can be reused.
         entt::registry Scratch;
         THashMap<entt::entity, entt::entity> ToScratch;
         for (entt::entity SrcE : EntitiesToCapture)
@@ -379,7 +373,6 @@ namespace Lumina
             Remap(DestRel.Prev);
             Remap(DestRel.Next);
             Remap(DestRel.Parent);
-            // The captured root has no parent (captured subtree is rooted here).
             if (SrcE == RootEntity)
             {
                 DestRel.Parent = entt::null;
@@ -387,7 +380,6 @@ namespace Lumina
             Scratch.emplace_or_replace<FRelationshipComponent>(ToScratch[SrcE], DestRel);
         }
 
-        // Assign fresh stable IDs for any entity that doesn't already have one.
         for (entt::entity SrcE : EntitiesToCapture)
         {
             entt::entity DestE = ToScratch[SrcE];
@@ -403,7 +395,6 @@ namespace Lumina
             Scratch.emplace_or_replace<SPrefabComponent>(DestE).StableID = StableID;
         }
 
-        // Replace this prefab's contents with the scratch.
         Registry.clear<>();
         Registry = entt::registry{};
         THashMap<entt::entity, entt::entity> UnusedMap;

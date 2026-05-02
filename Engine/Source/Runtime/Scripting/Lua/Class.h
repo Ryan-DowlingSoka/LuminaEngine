@@ -16,9 +16,7 @@ namespace Lumina
 
 namespace Lumina::Lua
 {
-    // Default factory used by codegen as the `new` constructor for reflected
-    // structs. Returning T by value lets TStack<T>::Push wrap it in the
-    // matching tagged userdata, so we don't have to duplicate that plumbing.
+    // Codegen `new` ctor for reflected structs; by-value return routes through TStack<T>::Push.
     template <typename T>
     T DefaultConstruct() { return T{}; }
 
@@ -39,9 +37,7 @@ namespace Lumina::Lua
 
     namespace Internal
     {
-        // Heap header followed by a flexible run of TEntry. Lifetime is owned
-        // by Lua: we allocate via lua_newuserdata and root the userdata as a
-        // metatable field, so the array lives as long as the metatable does.
+        // Header + flexible array via lua_newuserdata; lifetime tied to the metatable.
         template <typename TEntry>
         struct alignas(TEntry) FEntryTable
         {
@@ -64,9 +60,7 @@ namespace Lumina::Lua
             }
         };
 
-        // One generic dispatcher reused across every TClass<T> registration.
-        // The per-type data lives entirely in the closure upvalue, so binary
-        // sizes don't grow with the number of registered types.
+        // Shared dispatcher; per-type data lives in the closure upvalue so code size stays constant.
         inline int GenericNamecall(lua_State* L)
         {
             int RawAtom = 0;
@@ -154,12 +148,7 @@ namespace Lumina::Lua
         }
     }
 
-    // Per-class metadata captured at registration time so we can push a
-    // CObject* using its actual runtime type's metatable rather than the
-    // static type the caller happened to hold. Without this, loading an
-    // object via `Engine.LoadObject(path)` (which returns CObject*) would
-    // wrap the result with CObject's metatable even when the underlying
-    // instance is a subclass with its own bound methods.
+    // Lets PushCObjectAsActualType wrap with the runtime class's metatable, not the static type's.
     struct FUserdataLayout
     {
         uint16  Tag         = 0;
@@ -171,19 +160,10 @@ namespace Lumina::Lua
     RUNTIME_API void RegisterCObjectLayout(const CClass* Class, const FUserdataLayout& Layout);
     RUNTIME_API const FUserdataLayout* FindCObjectLayout(const CClass* Class);
 
-    // Pushes Object as a Lua userdata wrapped with the metatable of its
-    // actual runtime class (walking up Object->GetClass()->GetSuperClass() if
-    // the leaf class isn't bound to Lua). Pushes nil if Object is null or no
-    // ancestor is bound. Use this anywhere a polymorphic CObject* needs to
-    // cross the C++/Lua boundary, direct loaders, return values from
-    // reflected functions, etc.
+    // Pushes Object using its runtime class metatable, walking the super chain. Nil if no ancestor bound.
     RUNTIME_API void PushCObjectAsActualType(lua_State* L, CObject* Object);
 
-    // Type-erased registration helper. Per-type code is confined to the small
-    // template glue (Invoker<TFunc>, AddProperty's getter/setter lambdas, and
-    // the destructor lambda for non-trivially-destructible types); the bulk
-    // of Register lives in this base class so it's emitted once for the whole
-    // program rather than once per registered type.
+    // Type-erased registration; bulk of Register is emitted once for the whole program.
     class RUNTIME_API FClassBuilder
     {
     public:
@@ -193,25 +173,18 @@ namespace Lumina::Lua
         FClassBuilder& SetSuperClass(FStringView InParentName);
         FClassBuilder& EnableTypeId();
 
-        // Records an entry. Allocates only during registration; dispatch is
-        // unaffected because the final array is stored as a Lua userdata.
         FClassBuilder& AddMethod(FStringView FuncName, lua_CFunction Func);
         FClassBuilder& AddProperty(FStringView PropName, lua_CFunction Getter, lua_CFunction Setter);
         FClassBuilder& AddMetamethod(FStringView MetaName, lua_CFunction Func);
 
-        // Walks the parent chain (if any), merges entries (child wins on name
-        // collisions), sorts, allocates the dispatch tables on the Lua heap,
-        // and stamps the metatable + global. Stack-balanced.
+        // Merges parent entries (child wins), sorts, stamps metatable + global. Stack-balanced.
         FClassBuilder& Register(int UserdataTag);
 
-        // Static helpers attached to the public global (e.g. constructors,
-        // class loaders). Must be called after Register.
+        // Must be called after Register.
         FClassBuilder& AddStaticFunction(FStringView FuncName, lua_CFunction Func);
 
     protected:
 
-        // Subclasses (TClass<T>) install a userdata destructor by tag — keeps
-        // the type-specific destruction lambda out of the type-erased path.
         virtual void InstallUserdataDestructor(int /*Tag*/) {}
 
         lua_State*                  L           = nullptr;
@@ -243,11 +216,7 @@ namespace Lumina::Lua
 
             if constexpr (eastl::is_member_function_pointer_v<decltype(TFunc)>)
             {
-                // Self extraction is untagged because the metatable dispatch
-                // already constrains the userdata to a compatible type. With a
-                // strict `lua_touserdatatagged` we'd reject child userdata when
-                // the method comes from a parent type via inheritance — see
-                // TUserdataHeader's layout note for why this cast is sound.
+                // Untagged self: metatable dispatch already constrains type, strict-tag would reject children.
                 FClassBuilder::AddMethod(FuncName, [](lua_State* State) -> int
                 {
                     return InvokerSelfUntagged<T, TFunc>(State);
@@ -266,8 +235,7 @@ namespace Lumina::Lua
             return *this;
         }
 
-        // Sets a metamethod (e.g. __add, __eq) directly on the metatable.
-        // Bypasses the dispatch tables since metamethods aren't called by name.
+        // Goes straight on the metatable; metamethods aren't called by name.
         template <auto TFunc>
         TClass& AddFunction(EMetaMethod Method)
         {
@@ -282,17 +250,7 @@ namespace Lumina::Lua
             using MemberRefT = decltype(eastl::declval<T&>().*TMemberPtr);
             using MemberT    = eastl::remove_cvref_t<MemberRefT>;
 
-            // Untagged self access: when this getter is inherited by a child
-            // type, the userdata's tag is the child's, not T's. The
-            // metatable lookup that got us here already proved type
-            // compatibility, so we can safely reinterpret as TUserdataHeader<T>
-            // and access fields T owns (single-inheritance layout guarantee).
-            //
-            // PushArg (not TStack<MemberRefT>::Push) routes the result so
-            // primitives like bool/int/float push as Lua values; only
-            // non-native member types get wrapped as userdata refs. Without
-            // this, `obj.bFlag` returns a userdata wrapping the bool rather
-            // than the boolean itself.
+            // Untagged self for inherited getters; PushArg routes primitives as Lua values not userdata.
             lua_CFunction Getter = [](lua_State* State) -> int
             {
                 auto* Header = static_cast<TUserdataHeader<T>*>(lua_touserdata(State, 1));
@@ -332,16 +290,10 @@ namespace Lumina::Lua
         {
             FClassBuilder::Register(TClassTraits<ClassT>::Tag());
 
-            // Register the layout for polymorphic pushes. Only CObject-derived
-            // types participate, POD structs (CStruct) don't have runtime
-            // type identity, so pushing them by static type is correct.
+            // CObject pushes are always external; POD structs use static type push instead.
             if constexpr (eastl::is_base_of_v<CObject, ClassT>)
             {
-                // Polymorphic CObject push is always external — the object
-                // outlives the userdata and we only need the External slot at
-                // offset 0. Skip the inline Buffer (sizeof(ClassT) of dead
-                // weight per pushed CObject) and skip Initialize entirely;
-                // SetExternal writes the pointer straight in.
+                // External-only layout: skip inline Buffer + Initialize, just write the pointer.
                 FUserdataLayout Layout;
                 Layout.Tag         = TClassTraits<ClassT>::Tag();
                 Layout.Size        = sizeof(ClassT*);

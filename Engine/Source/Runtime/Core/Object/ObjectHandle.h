@@ -12,7 +12,7 @@ namespace Lumina
 
 namespace Lumina
 {
-    // Object handle for weak reference semantics
+    /** Weak-reference handle for CObjects. */
     struct RUNTIME_API FObjectHandle
     {
         int32 Index = -1;

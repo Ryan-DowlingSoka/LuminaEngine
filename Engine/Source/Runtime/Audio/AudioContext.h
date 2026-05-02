@@ -13,8 +13,7 @@ namespace Lumina
 		void Shutdown();
 	}
 
-	// Thread-safe audio interface. All public methods are safe to call from any thread.
-	// Commands are queued and processed on a dedicated audio thread.
+	// Thread-safe; commands queue to a dedicated audio thread.
 	class RUNTIME_API IAudioContext
 	{
 	public:

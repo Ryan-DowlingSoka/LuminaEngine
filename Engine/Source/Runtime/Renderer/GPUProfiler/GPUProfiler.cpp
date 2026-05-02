@@ -54,7 +54,6 @@ namespace Lumina
     {
         const bool bEnabled = CVarGPUProfilingEnabled.GetValue();
 
-        // Try to resolve every other slot, they may have completed since last visit.
         for (uint32 i = 0; i < MaxFramesInFlight; ++i)
         {
             if (i == RecordingSlot)
@@ -70,8 +69,7 @@ namespace Lumina
 
         FGPUProfileFrame& Slot = Frames[RecordingSlot];
 
-        // If the slot we're about to write into is still pending GPU completion, force-resolve it.
-        // GetTimerQueryTime spin-waits, but that only happens when we've already wrapped the ring.
+        // Force-resolve the slot we're about to overwrite (spin-waits if ring has wrapped).
         if (Slot.State == EGPUFrameState::Submitted)
         {
             TryResolveFrame(Slot);
@@ -81,7 +79,6 @@ namespace Lumina
 
         if (!bEnabled)
         {
-            // Leave Slot.State = Idle so IsEnabled() returns false this frame.
             return;
         }
 
@@ -95,7 +92,6 @@ namespace Lumina
 
         if (Slot.State == EGPUFrameState::Recording)
         {
-            // Any unmatched scopes should not happen, but guard against it.
             Slot.ScopeStack.clear();
             Slot.State = EGPUFrameState::Submitted;
         }
@@ -119,7 +115,6 @@ namespace Lumina
             return;
         }
 
-        // Ensure we have a query for this scope.
         if (Frame.QueryCursor >= Frame.QueryPool.size())
         {
             FRHITimerQueryRef NewQuery = GRenderContext->CreateTimerQuery();
@@ -133,13 +128,9 @@ namespace Lumina
         const int32 QueryIdx = (int32)Frame.QueryCursor++;
         ITimerQuery* Query = Frame.QueryPool[QueryIdx].GetReference();
 
-        // Clear any leftover state from this query's previous use.
         GRenderContext->ResetTimerQuery(Query);
 
-        // Pipeline-statistics queries share scope boundaries with timers.
-        // Top-level scopes only, nested stats queries are illegal in Vulkan
-        // (a stats query pool is single-active-per-command-buffer) and
-        // flattening overlapping ranges isn't meaningful anyway.
+        // Stats queries: top-level only — Vulkan disallows nested pipeline-stats queries.
         const bool bWantStats = Frame.ScopeStack.empty();
         int32 StatsIdx = -1;
         IPipelineStatsQuery* StatsQuery = nullptr;
@@ -224,8 +215,7 @@ namespace Lumina
             return;
         }
 
-        // Only poll queries actually attached to a recorded scope this frame.
-        // (Pool may contain stale entries from earlier frames whose bStarted is now false.)
+        // Skip stale pool entries from earlier frames — only poll this frame's scopes.
         for (const FGPUProfileScope& Scope : Frame.Scopes)
         {
             if (Scope.QueryIndex < 0 || Scope.QueryIndex >= (int32)Frame.QueryPool.size())
@@ -270,9 +260,7 @@ namespace Lumina
                 IPipelineStatsQuery* StatsQuery = Frame.PipelineStatsPool[Scope.StatsQueryIndex].GetReference();
                 Scope.ResolvedStats = GRenderContext->GetPipelineStats(StatsQuery);
 
-                // Frame totals are the sum of top-level scopes only, nested
-                // scopes would double-count (and nested scopes skip stats
-                // queries anyway, so this is just belt-and-braces).
+                // Sum top-level scopes only to avoid double-counting nested ones.
                 if (Scope.ParentIndex < 0)
                 {
                     FrameStats += Scope.ResolvedStats;

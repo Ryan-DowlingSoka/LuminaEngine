@@ -19,8 +19,8 @@ namespace Lumina
         FColor              Color          = FColor::White;
         int32               ParentIndex    = -1;
         int32               Depth          = 0;
-        int32               QueryIndex     = -1;    // Index into the owning frame's QueryPool
-        int32               StatsQueryIndex= -1;    // Index into the owning frame's PipelineStatsPool; -1 if unused
+        int32               QueryIndex     = -1;
+        int32               StatsQueryIndex= -1;
         float               ResolvedTimeMs = 0.0f;
         FPipelineStats      ResolvedStats;
     };
@@ -65,31 +65,22 @@ namespace Lumina
         FGPUProfiler(const FGPUProfiler&) = delete;
         FGPUProfiler& operator = (const FGPUProfiler&) = delete;
 
-        /** Release GPU resources, call before render context shuts down. */
+        // Call before render context shuts down.
         void Shutdown();
 
-        /** Returns true when profiling is CVar-enabled AND a frame is actively recording. */
+        // True only when CVar is enabled AND a frame is actively recording.
         bool IsEnabled() const;
 
-        /** Called from RenderManager at the start of each frame. */
         void BeginFrame();
-
-        /** Called from RenderManager after the primary command list has been submitted. */
         void EndFrame();
 
-        /** Push a new GPU scope onto the active frame's stack. Records a begin-timestamp on CmdList. */
         void BeginScope(ICommandList* CmdList, const char* Name, const FColor& Color = FColor::White);
-
-        /** Pop the active GPU scope. Records an end-timestamp on CmdList. */
         void EndScope(ICommandList* CmdList);
 
-        /** Most recently resolved frame, or nullptr if none is ready. Used by the editor panel. */
         const FGPUProfileFrame* GetLatestResolvedFrame() const;
 
-        /** Rolling window of total GPU frame times in ms for UI graphs. */
         const TVector<float>& GetFrameTimeHistory() const { return FrameTimeHistory; }
 
-        // Diagnostic accessors, used by the editor debug panel to inspect ring-buffer state.
         uint32                  GetRecordingSlot() const            { return RecordingSlot; }
         int32                   GetLatestResolvedSlot() const       { return LatestResolvedSlot; }
         const FGPUProfileFrame& GetSlot(uint32 Index) const         { return Frames[Index]; }
@@ -108,7 +99,7 @@ namespace Lumina
         TVector<float>      FrameTimeHistory;
     };
 
-    /** RAII helper emitted by the GPU_PROFILE_SCOPE macro. Zero-cost when CVar is disabled. */
+    // Zero-cost when CVar is disabled.
     struct RUNTIME_API FGPUProfileScopeRAII
     {
         ICommandList*   CmdList;

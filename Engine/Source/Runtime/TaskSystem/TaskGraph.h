@@ -10,26 +10,7 @@
 
 namespace Lumina
 {
-    /**
-     * Lightweight task graph for fan-out / dependency / fan-in patterns.
-     *
-     * Build the graph with Add() and AddParallelFor(), wire ordering with AddDependency(),
-     * then call Dispatch() to start execution and Wait() to block until everything finishes.
-     *
-     * Dependent nodes are queued automatically by the underlying scheduler the moment
-     * their parents complete, no worker threads are blocked on intermediate joins.
-     *
-     * Typical usage:
-     *
-     *     FTaskGraph Graph;
-     *     auto A = Graph.AddParallelFor(NumA, 64, [&](const Task::FParallelRange& R){ ... });
-     *     auto B = Graph.AddParallelFor(NumB, 32, [&](const Task::FParallelRange& R){ ... });
-     *     auto C = Graph.Add([&]{ MergeResults(); });
-     *     Graph.AddDependency(C, A);
-     *     Graph.AddDependency(C, B);
-     *     Graph.Dispatch();
-     *     Graph.Wait();
-     */
+    /** Task graph for fan-out / dependency / fan-in patterns; dependents queue automatically when parents complete. */
     class FTaskGraph
     {
     public:
@@ -51,23 +32,15 @@ namespace Lumina
         FTaskGraph(FTaskGraph&&) = delete;
         FTaskGraph& operator=(FTaskGraph&&) = delete;
 
-        /** Adds a single-shot task that runs Func once on a worker thread. */
         RUNTIME_API FNodeHandle Add(FOneShotFunc Func, ETaskPriority Priority = ETaskPriority::Medium);
 
-        /**
-         * Adds a parallel-for task. The scheduler distributes [0, Count) across worker threads
-         * and invokes Func once per partition. Count == 0 produces a no-op node that still
-         * allows dependents to fire.
-         */
+        /** Count == 0 produces a no-op node that still fires dependents. */
         RUNTIME_API FNodeHandle AddParallelFor(uint32 Count, uint32 MinRange, FParallelForFunc Func, ETaskPriority Priority = ETaskPriority::Medium);
 
-        /** Declares Node may not start until Dependency has finished. Must be called before Dispatch(). */
+        /** Must be called before Dispatch(). */
         RUNTIME_API void AddDependency(FNodeHandle Node, FNodeHandle Dependency);
 
-        /** Schedules every root node. Each non-root node is queued automatically when its dependencies complete. */
         RUNTIME_API void Dispatch();
-
-        /** Blocks the calling thread until every node in the graph has completed. Helps the scheduler in the meantime. */
         RUNTIME_API void Wait();
 
     private:

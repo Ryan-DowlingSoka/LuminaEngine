@@ -26,7 +26,7 @@ namespace Lumina
 
     static EImageDimension GetDimensionForFramebuffer(EImageDimension dimension, bool isArray)
     {
-        // Can't render into cubes and 3D textures directly, convert them to 2D arrays
+        // Cubes/3D can't be render targets directly; treat as 2D arrays.
         if (dimension == EImageDimension::TextureCube || dimension == EImageDimension::TextureCubeArray || dimension == EImageDimension::Texture3D)
         {
             dimension = EImageDimension::Texture2DArray;
@@ -89,12 +89,10 @@ namespace Lumina
             TracyVkCollect(CurrentCommandBuffer->TracyContext, CurrentCommandBuffer->CommandBuffer)
         }
 
-        // Reset any images or buffers to their default desired layouts.
         StateTracker.KeepBufferInitialStates();
         StateTracker.KeepTextureInitialStates();
         CommitBarriers();
         
-        // Clear the recording state and end the command buffer. 
         VK_CHECK(vkEndCommandBuffer(CurrentCommandBuffer->CommandBuffer));
         
         PendingState.ClearPendingState(EPendingCommandState::Recording);
@@ -160,7 +158,6 @@ namespace Lumina
         VkImageBlit2 BlitRegion                     = {};
         BlitRegion.sType                            = VK_STRUCTURE_TYPE_IMAGE_BLIT_2;
     
-        // Source Image
         BlitRegion.srcSubresource.aspectMask        = VulkanImageSrc->GetFullAspectMask();
         BlitRegion.srcSubresource.mipLevel          = SrcSlice.MipLevel;
         BlitRegion.srcSubresource.baseArrayLayer    = SrcSlice.ArraySlice;
@@ -168,7 +165,6 @@ namespace Lumina
         BlitRegion.srcOffsets[0]                    = { 0, 0, 0 };
         BlitRegion.srcOffsets[1]                    = { (int32)Src->GetSizeX(), (int32)Src->GetSizeY(), 1 };
 
-        // Destination Image
         BlitRegion.dstSubresource.aspectMask        = VulkanImageDst->GetFullAspectMask();
         BlitRegion.dstSubresource.mipLevel          = DstSlice.MipLevel;
         BlitRegion.dstSubresource.baseArrayLayer    = DstSlice.ArraySlice;
@@ -650,7 +646,7 @@ namespace Lumina
         
         if (Size == 0)
         {
-            // For ease of use, we make trying to write a size of 0 technically a silent fail, so you can just blindly upload and not need to worry about it.
+            // Size 0 is silent no-op for caller convenience.
             return;
         }
 
@@ -666,9 +662,7 @@ namespace Lumina
         }
         
         
-        // Per Vulkan spec, vkCmdUpdateBuffer requires that the data size is smaller than or equal to 64 kB,
-        // and that the offset and data size are a multiple of 4. We can't change the offset, but data size
-        // is rounded up later.
+        // vkCmdUpdateBuffer: <= 64kb, offset/size must be multiples of 4 (size rounded up below).
         if (Size <= Limits::vkCmdUpdateBufferLimit && (Offset & 3) == 0)
         {
             if (PendingState.IsInState(EPendingCommandState::AutomaticBarriers))
@@ -677,7 +671,6 @@ namespace Lumina
             }
             CommitBarriers();
             
-            // Round up the write size to a multiple of 4
             const SIZE_T SizeToWrite = (Size + 3) & ~3ull;
             
             LUMINA_PROFILE_SECTION("vkCmdUpdateBuffer");
@@ -1033,9 +1026,7 @@ namespace Lumina
 
     void FVulkanCommandList::BeginPipelineStatsQuery(IPipelineStatsQuery* Query)
     {
-        // vkCmdBeginQuery(PIPELINE_STATISTICS) is invalid inside a render
-        // pass started with begin/end-rendering (dynamic rendering); match
-        // the timer-query convention and flush any in-flight pass first.
+        // PIPELINE_STATISTICS query is invalid inside dynamic-rendering pass; flush first.
         EndRenderPass();
 
         FVulkanPipelineStatsQuery* VulkanQuery = static_cast<FVulkanPipelineStatsQuery*>(Query);
@@ -1211,8 +1202,7 @@ namespace Lumina
         RenderInfo.viewMask                 = PassInfo.ViewMask;
 
         vkCmdBeginRendering(CurrentCommandBuffer->CommandBuffer, &RenderInfo);
-        // Store the original (un-derived) pass desc so equality compares against caller-side
-        // descs in SetGraphicsState don't churn the pass when SampleCount is at default.
+        // Store un-derived pass desc so SampleCount default doesn't break SetGraphicsState equality.
         CurrentGraphicsState.RenderPass = InPassInfo;
 
     }
@@ -1261,9 +1251,6 @@ namespace Lumina
         LUMINA_PROFILE_SCOPE();
 
         //@ TODO This might not be possible to support both, since we allocate binding sets, so having an API that expects both
-        // Is possibly even more wasteful, because they'd be allocating binding sets, but never using any of the data inside while all we would need
-        // more-or-less is the binding set description...
-        //bool bUsePushDescriptors = static_cast<FVulkanRenderContext*>(GRenderContext)->IsExtensionEnabled(EVulkanExtensions::PushDescriptors);
         
         uint32 CurrentBatchStart = UINT32_MAX;
         TFixedVector<VkDescriptorSet, 4> CurrentDescriptorBatch;
@@ -1279,7 +1266,6 @@ namespace Lumina
                 CurrentBatchStart = (uint32)i;
             }
             
-            // No desc means bindless.
             if (Set->GetDesc())
             {
                 FVulkanBindingSet* VulkanSet = static_cast<FVulkanBindingSet*>(Set);
@@ -1302,7 +1288,6 @@ namespace Lumina
             }
         }
         
-        // Final flush
         if (!CurrentDescriptorBatch.empty())
         {
             CommandListStats.NumBindings += CurrentDescriptorBatch.size();
@@ -1327,11 +1312,7 @@ namespace Lumina
 
     VkViewport FVulkanCommandList::ToVkViewport(float MinX, float MinY, float MinZ, float MaxX, float MaxY, float MaxZ)
     {
-        // Direct viewport mapping. The Vulkan +Y-down NDC convention is baked
-        // into projection matrices at construction time (see
-        // BuildVulkanReverseZPerspective in ViewVolume.cpp), the same way
-        // NVRHI's Vulkan backend handles it. Do NOT use a negative-height
-        // viewport here -- it would Y-flip a second time and undo the fix.
+        // Y-flip is baked into the projection matrix; do NOT use negative-height viewport here.
         VkViewport Viewport = {};
         Viewport.x        = MinX;
         Viewport.y        = MinY;
@@ -1607,9 +1588,7 @@ namespace Lumina
         VK_ACCESS_2_MEMORY_READ_BIT    |
         VK_ACCESS_2_MEMORY_WRITE_BIT;
 
-    // Strips stage/access flags that are invalid for the recording queue family.
-    // Falls back to ALL_COMMANDS when all stage bits are removed so that layout
-    // transitions on non-graphics queues (e.g. depth image prep) are still ordered.
+    // Strip stage/access bits invalid for the queue; fall back to ALL_COMMANDS if empty.
     static void FilterBarrierForQueue(VkPipelineStageFlags2& StageMask,
                                       VkAccessFlags2& AccessMask,
                                       ECommandQueue Queue)

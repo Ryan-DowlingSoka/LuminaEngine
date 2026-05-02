@@ -165,10 +165,7 @@ namespace Lumina
         if (SelectedMaterialGUID.IsValid())
         {
             NewInstance->Material = Cast<CMaterial>(LoadObject<CObject>(SelectedMaterialGUID));
-            // Run the same parent-registration / parameter-resolve / material-manager
-            // insertion that PostLoad does on a reload. Without this, a freshly created
-            // instance has no Parameters list and MaterialIndex==-1, so the editor
-            // shows "no parameters" and the renderer reads the parent's GPU slot.
+            // Mirror reload-time PostLoad so Parameters/MaterialIndex are populated for the editor.
             NewInstance->PostLoad();
         }
 

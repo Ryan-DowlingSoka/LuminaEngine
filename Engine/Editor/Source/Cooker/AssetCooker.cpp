@@ -45,9 +45,7 @@ namespace Lumina
             return true;
         }
 
-        // Walks the asset reference graph starting from RootPackagePath. Uses
-        // CPackage::BuildSaveContext so we get the same dependency set the
-        // package would emit as imports when saved.
+        // Walks the asset reference graph using CPackage::BuildSaveContext (same set as save-time imports).
         void CollectAssetReferences(const FString& RootPackagePath, THashSet<FString>& OutPaths, const TFunction<void(FStringView)>& LogFunc)
         {
             TQueue<FString> Queue;
@@ -89,8 +87,7 @@ namespace Lumina
                     const FAssetData* Data = FAssetRegistry::Get().GetAssetByGUID(Import->GetGUID());
                     if (Data == nullptr)
                     {
-                        // Engine-resident object (CDOs, classes, primitives)
-                        // have no asset record — these don't need cooking.
+                        // Engine-resident objects (CDOs, classes, primitives) have no asset record.
                         continue;
                     }
                     FString DepPath(Data->Path.c_str());
@@ -102,8 +99,7 @@ namespace Lumina
             }
         }
 
-        // True if VirtualPath ends in ".lasset" (case-insensitive enough — VFS
-        // paths are normalized lowercase on the extension end).
+        // VirtualPath ends in ".lasset" (case-insensitive).
         bool IsLAssetPath(FStringView VirtualPath)
         {
             static constexpr FStringView Ext = ".lasset";
@@ -121,10 +117,8 @@ namespace Lumina
             return true;
         }
 
-        // Bundle every non-.lasset file under /Game (scripts, .rml, JSON, etc).
-        // .lasset files are pulled in via the asset reference graph instead.
-        // Tracing require()/href dependencies isn't feasible across our mix of
-        // languages, so we just ship the whole tree; it's tens of KB, cheap.
+        // Bundle every non-.lasset file under /Game; .lasset files come in via the asset reference graph.
+        // Whole-tree ship is fine since require()/href tracing across our language mix isn't feasible.
         size_t BundleGameLooseFiles(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
         {
             size_t Count = 0;
@@ -220,9 +214,7 @@ namespace Lumina
             return Count;
         }
 
-        // Reads /Config/GameSettings.json, injects "Project.Name" so the
-        // cooked runtime can resolve the project DLL filename, and bundles
-        // the modified JSON. The on-disk file is left untouched.
+        // Inject Project.Name into /Config/GameSettings.json so the cooked runtime can resolve the project DLL.
         bool BundleConfigWithProjectName(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
         {
             FString JsonText;
@@ -253,9 +245,7 @@ namespace Lumina
             return true;
         }
 
-        // Bundle every other /Config/*.json (InputActions.json, etc).
-        // GameSettings.json is shipped separately by BundleConfigWithProjectName
-        // because it needs Project.Name injected.
+        // Bundle other /Config/*.json files; GameSettings.json is handled by BundleConfigWithProjectName.
         size_t BundleAuxConfigFiles(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
         {
             size_t Count = 0;
@@ -296,8 +286,7 @@ namespace Lumina
             return Result;
         }
 
-        // Accept either VFS paths or legacy absolute Windows paths from the
-        // file dialog (config files predating the path-resolver still hold those).
+        // Accept VFS paths or legacy absolute paths (older configs predate the resolver).
         const FFixedString ResolvedFixed = VFS::ResolveToVirtualPath(RawStartupMap);
         const FString ResolvedStartupMap(ResolvedFixed.c_str(), ResolvedFixed.size());
 
@@ -315,13 +304,11 @@ namespace Lumina
 
         Log(LogFunc, FString().sprintf("Cooking from startup map: %s", StartupAsset->Path.c_str()).c_str());
 
-        // 1) Walk the asset reference graph.
         THashSet<FString> Reachable;
         CollectAssetReferences(FString(StartupAsset->Path.c_str()), Reachable, LogFunc);
 
         Log(LogFunc, FString().sprintf("Reachable assets: %zu", Reachable.size()).c_str());
 
-        // 2) Pack each reachable asset into the PAK.
         FPakWriter Writer;
         for (const FString& Path : Reachable)
         {
@@ -331,17 +318,13 @@ namespace Lumina
             }
         }
 
-        // 3) Project config (with injected Project.Name).
         if (BundleConfigWithProjectName(Writer, LogFunc))
         {
             ++Result.NumExtraFiles;
         }
         Result.NumExtraFiles += BundleAuxConfigFiles(Writer, LogFunc);
 
-        // 4) Loose /Game files (.luau, .rml, JSON, etc). Skipped when the
-        //    caller wants them shipped as loose files (the packager copies
-        //    them next to the exe instead). .lasset files come in via the
-        //    asset graph above and are de-duped by the writer.
+        // Loose /Game files (.luau, .rml, JSON, etc). Skipped in loose-files mode; .lasset files come via the asset graph.
         if (!Options.bExtractScriptsAsLooseFiles)
         {
             Result.NumExtraFiles += BundleGameLooseFiles(Writer, LogFunc);
@@ -351,14 +334,12 @@ namespace Lumina
             Log(LogFunc, "Skipping loose /Game files in PAK (loose mode).");
         }
 
-        // 5) User-specified extras (files + directories) — always in the PAK.
         if (!Options.ExtraFiles.empty() || !Options.ExtraDirectories.empty())
         {
             Log(LogFunc, "Bundling extras...");
             Result.NumExtraFiles += BundleExtras(Writer, Options, LogFunc);
         }
 
-        // 6) Write the .pak.
         Result.TotalBytes = Writer.TotalEntryBytes();
         if (!Writer.Finalize(OutputPakPath))
         {

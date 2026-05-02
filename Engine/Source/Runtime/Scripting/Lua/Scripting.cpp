@@ -30,15 +30,6 @@
 
 namespace Lumina::Lua
 {
-    // ------------------------------------------------------------------------
-    // FClassBuilder — type-erased registration shared by every TClass<T>.
-    //
-    // Centralizing the registration body here means we only emit the metatable
-    // setup, parent-chain merge, and dispatch wiring once for the whole
-    // program — rather than once per registered C++ type, as the previous
-    // template-recursive design did. The per-type code in TClass<T> is just
-    // the small invoker/getter/setter trampolines that genuinely need T.
-
     FClassBuilder::FClassBuilder(lua_State* InL, FStringView InName)
         : L(InL)
         , Name(InName)
@@ -103,10 +94,7 @@ namespace Lumina::Lua
             Prop.Hash   = Hash::FNV1a::GetHash32(Prop.Name.data());
         }
 
-        // Walk the parent chain (resolved by name from the registry) and merge
-        // inherited entries. Child entries take precedence on name collisions.
-        // Parent has already done its own merge, so a single hop captures the
-        // entire ancestry.
+        // Single hop captures the full ancestry; parent already merged its own.
         TVector<FMethodEntry>   MergedMethods = Methods;
         TVector<FPropertyEntry> MergedProps   = Properties;
 
@@ -162,9 +150,7 @@ namespace Lumina::Lua
 
         if (bHasTypeId)
         {
-            // Synthetic __type_id property: reads the hash from the metatable
-            // at access time, so the dispatcher's single upvalue can stay
-            // reserved for the props table.
+            // Synthetic __type_id reads from MT at access time; keeps the dispatcher upvalue free.
             FPropertyEntry TypeIdProp;
             TypeIdProp.Name   = FStringView("__type_id");
             TypeIdProp.Hash   = Hash::FNV1a::GetHash32("__type_id");
@@ -233,9 +219,7 @@ namespace Lumina::Lua
             lua_rawsetfield(L, -2, "__newindex"); // [MT]
         }
 
-        // Editor introspection: a plain Lua table mapping member-name ->
-        // "method"|"property" so the harvester can enumerate the inherited
-        // surface without poking at the userdata internals.
+        // Editor introspection table: name -> "method"|"property".
         lua_newtable(L); // [MT, MembersTable]
         for (const auto& M : MergedMethods)
         {
@@ -289,15 +273,9 @@ namespace Lumina::Lua
         return *this;
     }
 
-    // ------------------------------------------------------------------------
-    // Polymorphic CObject push: route through Object->GetClass() so loaded
-    // assets carry their actual subclass's metatable, not whatever static
-    // type the caller happened to be holding.
-
     namespace
     {
-        // Keyed by CClass*; entries persist for the process lifetime since
-        // CClass instances are leaked-by-design CObjects.
+        // Keyed by CClass*; lifetime is process-wide (CClass is leaked by design).
         THashMap<const CClass*, FUserdataLayout>& GetCObjectLayoutRegistry()
         {
             static THashMap<const CClass*, FUserdataLayout> Registry;
@@ -327,9 +305,7 @@ namespace Lumina::Lua
             return;
         }
 
-        // Walk up the class chain so a subclass with no Lua bindings still
-        // resolves to its nearest bound ancestor instead of falling back to
-        // the raw lightuserdata path.
+        // Walk up to nearest bound ancestor so unbound subclasses still get a metatable.
         const FUserdataLayout* Layout = nullptr;
         for (const CClass* Class = Object->GetClass(); Class != nullptr; Class = Class->GetSuperClass())
         {
@@ -347,8 +323,6 @@ namespace Lumina::Lua
         Layout->Initialize(Block);
         Layout->SetExternal(Block, Object);
     }
-
-    // ------------------------------------------------------------------------
 
     static void* ScriptingMemoryReallocFn([[maybe_unused]] void* Caller, void* Memory, [[maybe_unused]] size_t OldSize, size_t NewSize)
     {
@@ -436,8 +410,7 @@ namespace Lumina::Lua
         Callbacks->useratom         = AtomString;
         Callbacks->panic            = LuaPanicHandler;
 
-        // Hook the debugger before any scripts can load so its debugbreak /
-        // debugstep callbacks are visible to every coroutine spawned by the VM.
+        // Hook before any scripts load so callbacks are visible to every coroutine.
         FLuaDebugger::Get().Initialize(L);
 
         luaL_openlibs(L);
@@ -452,8 +425,7 @@ namespace Lumina::Lua
         RmlUi::RegisterLuaModule(GlobalsRef);
         Nav::RegisterLuaModule(GlobalsRef);
 
-        // Console — print + log levels. `print` stays globally aliased to
-        // Console.Log so existing scripts that just call print() keep working.
+        // `print` stays globally aliased to Console.Log.
         FRef ConsoleTable = GlobalsRef.NewTable("Console");
         lua_pushcfunction(L, LuminaLuaPrint,    "Console.Log");
         lua_setfield(L, -2, "Log");
@@ -462,19 +434,14 @@ namespace Lumina::Lua
         lua_pushcfunction(L, LuminaLuaLogError, "Console.Error");
         lua_setfield(L, -2, "Error");
 
-        // Time — frame-level clock. Reads from the engine's UpdateContext so
-        // every script sees the same frame's values regardless of which world
-        // it's attached to.
+        // Reads from UpdateContext so all scripts see the same frame values.
         FRef TimeTable = GlobalsRef.NewTable("Time");
         TimeTable.SetFunction<[]() -> double { return GEngine ? GEngine->GetUpdateContext().GetDeltaTime() : 0.0; }>("DeltaTime");
         TimeTable.SetFunction<[]() -> double { return GEngine ? GEngine->GetUpdateContext().GetTime() : 0.0; }>("Now");
         TimeTable.SetFunction<[]() -> uint64 { return GEngine ? GEngine->GetUpdateContext().GetFrame() : uint64{0}; }>("FrameNumber");
         TimeTable.SetFunction<[]() -> float  { return GEngine ? GEngine->GetUpdateContext().GetFPS() : 0.0f; }>("FPS");
         
-        // Top-level service namespaces. Flat layout — no `Engine.X` subtree.
-        // The original `Engine` table stays around for true engine queries
-        // (project name / path / Travel / LoadObject) since those don't fit
-        // any of the namespace buckets below.
+        // Flat layout. Engine table is for engine-wide queries that don't fit other buckets.
         FRef EngineTable        = GlobalsRef.NewTable("Engine");
         FRef VFSTable           = GlobalsRef.NewTable("VFS");
         FRef MathTable          = GlobalsRef.NewTable("Math");
@@ -484,10 +451,7 @@ namespace Lumina::Lua
         FRef RHITable           = GlobalsRef.NewTable("RHI");
         FRef ECSTable           = GlobalsRef.NewTable("ECS");
 
-        // Engine.LoadObject, a raw cfunction (rather than the Invoker path)
-        // because the result is polymorphic: an asset at a path may resolve to
-        // a subclass of CObject, and we want Lua to see it as that subclass
-        // (with its bound methods) rather than as a plain CObject.
+        // Raw cfunction, not Invoker — needs polymorphic push so subclass methods are visible.
         EngineTable.Push();
         lua_pushcfunction(L, +[](lua_State* State) -> int
         {
@@ -657,7 +621,7 @@ namespace Lumina::Lua
         InputTable.SetFunction<&FInputProcessor::GetMouseZ>("GetMouseZ", &FInputProcessor::Get());
         InputTable.SetFunction<&FInputProcessor::GetMouseDeltaX>("GetMouseDeltaX", &FInputProcessor::Get());
         InputTable.SetFunction<&FInputProcessor::GetMouseDeltaY>("GetMouseDeltaY", &FInputProcessor::Get());
-        // Accept strings so scripts read naturally: "Hidden", "Normal", "Captured".
+        // Accept strings: "Hidden", "Normal", "Captured".
         InputTable.SetFunction<[](FStringView Mode)
         {
             if      (Mode == "Hidden")
@@ -709,7 +673,6 @@ namespace Lumina::Lua
             return FString(InputModeToString(FInputProcessor::Get().GetInputMode()));
         }>("GetMode");
 
-        // Action queries resolve against the active viewport's FInputContext.
         InputTable.SetFunction<[](FStringView Name) -> bool
         {
             FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
@@ -738,7 +701,7 @@ namespace Lumina::Lua
             return FInputActionMap::Get().GetActionAxis(FName(FString(Name.data(), Name.size()).c_str()), V->GetContext());
         }>("GetActionAxis");
 
-        // Returns an ID for UnbindAction. Scoped to whichever context is active at call time.
+        // Returns an ID for UnbindAction; scoped to the active context.
         InputTable.SetFunction<[](FStringView Name, Lua::FRef Callback) -> uint64
         {
             FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
@@ -782,8 +745,7 @@ namespace Lumina::Lua
             .AddProperty<&glm::quat::y>("Y")
             .AddProperty<&glm::quat::z>("Z")
             .AddProperty<&glm::quat::w>("W")
-    
-            // Metamethods
+
             .AddFunction<[](glm::quat& A, glm::quat B) { return A * B; }>(EMetaMethod::Mul)
             .AddFunction<[](glm::quat& A, glm::quat B) { return A + B; }>(EMetaMethod::Add)
             .AddFunction<[](glm::quat& A, glm::quat B) { return A - B; }>(EMetaMethod::Sub)
@@ -791,8 +753,7 @@ namespace Lumina::Lua
             .AddFunction<[](glm::quat& A, glm::quat B) { return A == B; }>(EMetaMethod::Eq)
             .AddFunction<[](glm::quat& Self) { return glm::to_string(Self); }>(EMetaMethod::ToString)
             .AddFunction<[](glm::quat& Self) { return glm::length(Self); }>(EMetaMethod::Len)
-    
-            // Methods
+
             .AddFunction<[](glm::quat& Self) { return glm::eulerAngles(Self); }>("EulerAngles")
             .AddFunction<[](glm::quat& Self) { return glm::normalize(Self); }>("Normalize")
             .AddFunction<[](glm::quat& Self) { return glm::inverse(Self); }>("Inverse")
@@ -812,18 +773,8 @@ namespace Lumina::Lua
 
     void FScriptingContext::LoadStdlibFiles()
     {
-        // Engine Lua stdlib. Each file runs against the main state so its
-        // globals are visible to every user-script thread spawned later.
-        // Paths are virtual — the `/Engine` mount points at the install dir,
-        // so this resolves to <LUMINA_DIR>/Engine/Resources/Content/Scripts/Stdlib/...
-        //
-        // Stdlib files use `Foo = Foo or {}` so re-running them mutates
-        // existing tables in place rather than replacing them. That keeps
-        // already-instantiated user scripts pointing at the same metatable
-        // and lets ReloadStdlib() propagate edits without respawning entities.
-        //
-        // Order matters only when one stdlib file depends on another — keep
-        // them topologically sorted.
+        // Files use `Foo = Foo or {}` so reload mutates existing tables in place.
+        // Order is significant when one file depends on another.
         static const char* const kStdlibFiles[] =
         {
             "/Engine/Resources/Content/Scripts/Stdlib/EntityScript.luau",
@@ -916,10 +867,6 @@ namespace Lumina::Lua
         FWriteScopeLock Lock(SharedMutex);
 
         // Drop the cache entry so the next LoadUniqueScriptPath rereads from
-        // disk and recompiles. Done eagerly here (rather than at the deferred
-        // tick) because invalidate is cheap and idempotent — any in-flight
-        // ProcessDeferredActions on the main thread will pick up the cleared
-        // entry naturally.
         ScriptCache.erase(FName(ScriptPath));
 
         DeferredActions.EnqueueAction<FScriptLoad>(ScriptPath);
@@ -950,16 +897,10 @@ namespace Lumina::Lua
 
     namespace
     {
-        // Compile source -> Luau bytecode using the build-config-appropriate
-        // options. Returns false (and clears Out) on compile failure.
         bool CompileSourceToBytecode(FStringView Code, TVector<uint8>& Out)
         {
             lua_CompileOptions Options{};
-            // Editor builds always compile with full debug info and optLevel 1 so
-            // the debugger can land breakpoints on every source line and locals
-            // keep their declared names. Optimization level 2 inlines / folds
-            // things that lua_breakpoint then can't attach to. Game / Shipping
-            // builds — where the debugger isn't shipped — get the fast path.
+            // Editor: opt 1 + full debug so the debugger can attach breakpoints; opt 2 inlines past lua_breakpoint.
             #if USING(WITH_EDITOR)
                 Options.debugLevel = 2;
                 Options.optimizationLevel = 1;
@@ -988,9 +929,7 @@ namespace Lumina::Lua
 
         FName PathName(Path);
 
-        // First load for this path: read source, compile to bytecode, build
-        // schema, harvest handler keys, store all of it. Subsequent calls skip
-        // straight to bytecode -> instance below.
+        // Cold path: read, compile, build schema, store. Subsequent loads use the cache below.
         auto CacheIt = ScriptCache.find(PathName);
         if (CacheIt == ScriptCache.end())
         {
@@ -1014,10 +953,7 @@ namespace Lumina::Lua
                 return {};
             }
 
-            // Schema is derived by running the module once and inspecting the
-            // live `Exports` table. We piggyback off the first instance: build
-            // it, harvest schema from it, populate the cache, then return that
-            // very instance.
+            // Piggyback schema harvest off the first instance.
             TSharedPtr<FScript> FirstScript = InstantiateFromBytecode(Entry.Bytecode, Path,
                                                                       &Entry.ExportsSchema,
                                                                       &Entry.ExportDefaults);
@@ -1033,8 +969,6 @@ namespace Lumina::Lua
             return FirstScript;
         }
 
-        // Cache hit — fast path. luau_load + pcall on cached bytecode, copy
-        // schema/defaults onto the instance.
         const FScriptCacheEntry& CachedEntry = CacheIt->second;
         TSharedPtr<FScript> Script = InstantiateFromBytecode(CachedEntry.Bytecode, Path, nullptr, nullptr);
         if (Script == nullptr)
@@ -1065,11 +999,7 @@ namespace Lumina::Lua
 
         luaL_sandboxthread(Thread);
 
-        // Pass the full virtual path as the Luau chunkname so debug callbacks
-        // (lua_Debug::source / short_src) carry an identifier that maps cleanly
-        // back to whatever opened the script — the editor's breakpoint keys,
-        // FScriptingContext::ScriptReloaded, and runtime stack walks all key
-        // off the same path string.
+        // Virtual path as chunkname so lua_Debug::source matches editor/registry keys.
         int LoadResult = luau_load(Thread, Name.data(),
                                    reinterpret_cast<const char*>(Bytecode.data()),
                                    Bytecode.size(), 0);
@@ -1079,11 +1009,7 @@ namespace Lumina::Lua
             return {};
         }
 
-        // Pin a ref to the loaded module closure before pcall consumes it.
-        // The debugger uses this anchor to call lua_breakpoint, which descends
-        // into nested protos and sets break opcodes on every line that matches.
-        // Without this anchor the closure is GC-eligible the moment pcall
-        // returns its single result, so breakpoints would silently no-op.
+        // Pin closure pre-pcall; debugger needs it for lua_breakpoint or breakpoints silently no-op.
         lua_pushvalue(Thread, -1);
         FRef MainFunctionRef(Thread, -1);
 
@@ -1094,8 +1020,7 @@ namespace Lumina::Lua
             return {};
         }
 
-        // First-load harvesting. The module table is on top of the Thread stack.
-        // Schema is built from the `Exports` field and written into the cache.
+        // First-load schema harvest from the module's `Exports` table.
         if (OutSchema != nullptr || OutDefaults != nullptr)
         {
             if (lua_istable(Thread, -1))
@@ -1136,9 +1061,7 @@ namespace Lumina::Lua
     {
         LUMINA_PROFILE_SCOPE();
 
-        // One-shot path used by callers that pass raw source (e.g. project
-        // boot script). No path-keyed cache, but we still go through the same
-        // bytecode -> instance pipeline so behavior matches LoadUniqueScriptPath.
+        // Raw-source path (e.g. project boot script); no cache, same instance pipeline.
         TVector<uint8> Bytecode;
         if (!CompileSourceToBytecode(Code, Bytecode))
         {
@@ -1197,9 +1120,6 @@ namespace Lumina::Lua
         LOG_INFO("Reloaded Scripts: {}", Path);
     }
 
-    // ------------------------------------------------------------------------
-    // Symbol harvesting
-
     namespace
     {
         ELuaSymbolKind ClassifyTop(lua_State* L)
@@ -1219,7 +1139,6 @@ namespace Lumina::Lua
         // Lua functions get their real numparams + is_vararg.
         void HarvestFunctionInfoTop(lua_State* L, FLuaSymbol& Out)
         {
-            // lua_getinfo with negative level reads the function at top + level.
             lua_Debug ar = {};
             if (lua_getinfo(L, -1, "a", &ar) == 0)
             {
@@ -1229,14 +1148,11 @@ namespace Lumina::Lua
             Out.ParamCount = static_cast<uint8>(ar.nparams);
             Out.bIsVararg  = ar.isvararg != 0;
 
-            // C functions report nparams=0, isvararg=1 unconditionally.
-            // Tag them so the formatter knows to render "(...)" instead of "()".
+            // C functions always report nparams=0, isvararg=1.
             Out.bIsCFunction = (Out.ParamCount == 0 && Out.bIsVararg);
         }
 
-        // Stringify the value at -1 for the autocomplete preview. Cheap and
-        // side-effect-free: skips __tostring metamethods (we're walking a
-        // live VM and don't want to invoke arbitrary Lua during a harvest).
+        // Avoids __tostring to keep the harvest side-effect free.
         FString PreviewTopValue(lua_State* L)
         {
             switch (lua_type(L, -1))
@@ -1269,29 +1185,17 @@ namespace Lumina::Lua
                     return FString(Buf);
                 }
                 default:
-                    return FString();  // tables, functions, userdata — type alone is enough
+                    return FString();
             }
         }
 
-        // Filters only the genuinely-noisy meta-globals. Standard library
-        // tables (math, string, table, vector, ...) and base globals (print,
-        // pairs, ...) are surfaced so the editor's hover and autocomplete
-        // cover the full Lua/Luau API. The curated overlay (see
-        // ApplyCuratedDocs below) attaches parameter names and descriptions
-        // for the well-known entries.
+        // Skips _G/_ENV/_VERSION/_LOADED (anything underscore-prefixed).
         bool IsHiddenGlobal(const char* Name)
         {
             if (Name == nullptr) return true;
-            // _G is the global table (recursive — would double-list everything),
-            // _ENV / _VERSION / _LOADED are runtime housekeeping.
             return Name[0] == '_';
         }
 
-        // Walks the table on top of the stack and emits a symbol for each
-        // string-keyed child. Recurses into nested tables up to MaxDepth so
-        // chains like Engine.VFS.ReadFile produce three symbols, not just
-        // two. A pointer-set cycle guard handles tables that reference
-        // themselves (or each other) — common with metatable __index chains.
         constexpr int kMaxHarvestDepth = 4;
 
         void IterateTable(lua_State* L, FStringView ParentPath, int Depth,
@@ -1302,8 +1206,7 @@ namespace Lumina::Lua
                 return;
             }
 
-            // Caller has the table on top of the stack. Mark it visited so
-            // recursive children that loop back here just stop.
+            // Cycle guard for recursive tables (metatable __index chains).
             const void* TablePtr = lua_topointer(L, -1);
             if (TablePtr != nullptr)
             {
@@ -1317,7 +1220,6 @@ namespace Lumina::Lua
             lua_pushnil(L);
             while (lua_next(L, -2) != 0)
             {
-                // Stack: ... table key value
                 if (lua_type(L, -2) == LUA_TSTRING)
                 {
                     const char* Key = lua_tostring(L, -2);
@@ -1337,26 +1239,17 @@ namespace Lumina::Lua
                         : (Symbol.Parent + "." + Symbol.Name);
                     Out.push_back(Symbol);
 
-                    // Recurse into nested tables so Engine.VFS, Engine.Math,
-                    // and similar two-level engine tables have their members
-                    // surface in the editor's autocomplete popup.
                     if (Symbol.Kind == ELuaSymbolKind::Table)
                     {
                         IterateTable(L, FStringView(Symbol.Path.c_str(), Symbol.Path.size()),
                                      Depth + 1, Visited, Out);
                     }
                 }
-                lua_pop(L, 1);  // pop value, keep key for next iter
+                lua_pop(L, 1);
             }
         }
 
-        // For reflected/hand-registered C++ types, the editor-facing surface
-        // (methods + properties, including those inherited from a parent type)
-        // is stamped onto the metatable as `__lumina_members` at registration
-        // time — see TClass<T>::Register. Pull it out and emit one symbol per
-        // entry so typed-local autocomplete (`local x: STransformComponent`)
-        // and `Type.Member` lookups light up without the harvester having to
-        // know about C++ reflection.
+        // Reads __lumina_members stamped by TClass<T>::Register so typed locals autocomplete.
         void HarvestReflectedMembers(lua_State* L, FStringView TypeName, TVector<FLuaSymbol>& Out)
         {
             luaL_getmetatable(L, TypeName.data());
@@ -1379,8 +1272,7 @@ namespace Lumina::Lua
                 if (lua_type(L, -2) == LUA_TSTRING)
                 {
                     const char* Key = lua_tostring(L, -2);
-                    // __parentname is bookkeeping for the chain merge, not a
-                    // member; skip it (and any other underscore-prefixed key).
+                    // Skip underscore-prefixed bookkeeping (e.g. __parentname).
                     if (Key && Key[0] != '_')
                     {
                         const char* Kind = lua_isstring(L, -1) ? lua_tostring(L, -1) : "method";
@@ -1393,9 +1285,7 @@ namespace Lumina::Lua
                         {
                             Symbol.Kind = ELuaSymbolKind::Function;
                             Symbol.TypeName.assign("function");
-                            // Reflected methods are dispatched via __namecall,
-                            // so they look opaque to lua_getinfo. Surface them
-                            // as varargs-style C functions to match.
+                            // __namecall-dispatched; opaque to lua_getinfo.
                             Symbol.bIsCFunction = true;
                             Symbol.bIsVararg    = true;
                         }
@@ -1410,21 +1300,13 @@ namespace Lumina::Lua
                 lua_pop(L, 1);
             }
 
-            lua_pop(L, 2); // members, metatable
+            lua_pop(L, 2);
         }
     }
 
     namespace
     {
-        // Curated documentation table for Lua/Luau standard library symbols.
-        // Path is the dotted name as it appears in the harvested symbol list
-        // ("math.sin", "string.format", "vector.create", ...). Params is a
-        // pipe-separated list of parameter names, "..." marks vararg. Desc is
-        // a short single-paragraph summary shown in the hover tooltip.
-        //
-        // Keep this data-only — no logic — so adding/correcting entries is a
-        // line-edit. The order doesn't matter; lookup is O(N) but N is small
-        // and we only walk this once at harvest time.
+        // Path = dotted name, Params = pipe-separated ("..." = vararg), Desc = tooltip line.
         struct FCuratedDoc
         {
             const char* Path;
@@ -1458,7 +1340,7 @@ namespace Lumina::Lua
             { "require",        "modname",              "Loads a module by name and returns its result. Uses package.loaded as a cache." },
             { "newproxy",       "withMeta",             "Creates a userdata proxy. If withMeta is true, the proxy has its own freshly-created metatable." },
 
-            // --- math library ---
+            // math
             { "math.pi",        "",                     "The constant 3.141592653589793." },
             { "math.huge",      "",                     "Positive infinity. Larger than any other numeric value." },
             { "math.abs",       "x",                    "Returns the absolute value of x." },
@@ -1622,9 +1504,7 @@ namespace Lumina::Lua
             { "debug.getinfo",    "level|what",         "Returns a table describing the function at the given stack level." },
         };
 
-        // Apply curated docs to harvested symbols. O(N*M) but both are tiny
-        // (a few hundred symbols, ~150 curated entries) and this only runs on
-        // editor focus, not per-frame.
+        // O(N*M) but both small; runs only on editor focus.
         void ApplyCuratedDocs(TVector<FLuaSymbol>& Symbols)
         {
             for (FLuaSymbol& Symbol : Symbols)
@@ -1641,9 +1521,7 @@ namespace Lumina::Lua
                         Symbol.Description.assign(Doc.Desc);
                     }
 
-                    // Parse pipe-separated parameter names. "..." or any
-                    // segment ending in "..." flips the vararg flag and is
-                    // not added as a named param.
+                    // "..." flips vararg; other segments become named params.
                     if (Doc.Params != nullptr && Doc.Params[0] != '\0')
                     {
                         Symbol.ParamNames.clear();
@@ -1664,8 +1542,6 @@ namespace Lumina::Lua
                             if (*P == '|') ++P;
                         }
                         Symbol.ParamCount = static_cast<uint8>(Symbol.ParamNames.size());
-                        // A curated function with named params is not opaque,
-                        // even if Luau lua_getinfo flagged it as a C function.
                         if (Symbol.Kind == ELuaSymbolKind::Function)
                         {
                             Symbol.bIsCFunction = false;
@@ -1689,12 +1565,8 @@ namespace Lumina::Lua
 
         const int Top = lua_gettop(L);
 
-        // Pointer-keyed visited set shared across the whole walk. Catches
-        // tables that recursively reference themselves through __index or
-        // mutually reference each other (Engine.X.Parent = Engine).
         THashSet<const void*> Visited;
 
-        // Top-level pass over LUA_GLOBALSINDEX.
         lua_pushvalue(L, LUA_GLOBALSINDEX);
         lua_pushnil(L);
         while (lua_next(L, -2) != 0)
@@ -1721,10 +1593,6 @@ namespace Lumina::Lua
                         IterateTable(L, FStringView(Symbol.Path.c_str(), Symbol.Path.size()),
                                      /*Depth*/ 1, Visited, Out);
 
-                        // If this global has a registered metatable carrying a
-                        // __lumina_members table (i.e. it's a TClass<T>-bound
-                        // C++ type), surface its method + property surface so
-                        // typed-local autocomplete picks up the inherited set.
                         HarvestReflectedMembers(L, FStringView(Symbol.Name.c_str(), Symbol.Name.size()), Out);
                     }
                 }
@@ -1734,9 +1602,6 @@ namespace Lumina::Lua
 
         lua_settop(L, Top);
 
-        // Layer hand-authored docs (parameter names, descriptions) onto the
-        // walked symbols. Done here rather than per-lookup so the editor's
-        // hover and autocomplete paths stay simple and uniform.
         ApplyCuratedDocs(Out);
     }
 }

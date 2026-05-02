@@ -26,11 +26,7 @@ namespace Lumina
 
         void TryImport(const FFixedString& RawPath, const FFixedString& DestinationPath, const Import::FImportSettings* Settings) override;
 
-        /** Re-runs the Basis Universal compression on an existing texture using
-         *  its currently-set ColorSpace, replacing its compressed bits and
-         *  RHI image in-place. Reads from `Texture->SourcePath`; returns false
-         *  if the source file is missing or the asset wasn't imported from a
-         *  file (e.g. mesh-embedded). Marks the package dirty on success. */
+        /** Re-runs Basis compression on Texture->SourcePath; false if path is missing or asset is mesh-embedded. */
         static RUNTIME_API bool Recook(CTexture* Texture);
 
     private:

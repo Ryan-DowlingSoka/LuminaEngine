@@ -61,11 +61,7 @@ namespace Lumina
 
     bool CPackage::Rename(const FName& NewName, CPackage* NewPackage)
     {
-        // Pure in-memory rename. Disk side (atomic write to new path, removal
-        // of the old file) is the responsibility of the caller — typically
-        // CPackage::RenamePackage. We deliberately do NOT destroy any exported
-        // objects here: live TObjectPtr / TObjectHandle references in the
-        // world must keep pointing at the same renamed objects.
+        // In-memory rename only; caller (RenamePackage) handles disk. Exported objects survive so live refs stay valid.
         FStringView FileName = VFS::FileName(NewName.ToString(), true);
         FStringView OldFileName = VFS::FileName(GetName().ToString(), true);
         bool bFileNameDirty = FileName != OldFileName;
@@ -125,7 +121,7 @@ namespace Lumina
     
     bool CPackage::DestroyPackage(FStringView Path)
     {
-        // If the package is loaded, we need to handle replacing references to its assets.
+        // If loaded, route through the live-reference replacement path.
         if (CPackage* Package = FindPackageByPath(Path))
         {
             return DestroyPackage(Package);
@@ -187,15 +183,10 @@ namespace Lumina
 
         FFixedString PackagePath = PackageToDestroy->GetPackagePath();
 
-        // Best-effort load. If the file is corrupt or assets failed to deserialize
-        // we still need to be able to delete the package.
+        // Best-effort load; corrupt packages still need to be deletable.
         (void)PackageToDestroy->FullyLoad();
 
-        // Resolve the primary-asset GUID from the export table (the entry whose
-        // name matches the package file name). The export table is the
-        // authoritative identity for asset-registry cleanup; runtime objects
-        // may be missing or in a partially-constructed state for corrupt
-        // packages, so we cannot rely on finding one with IsAsset() == true.
+        // Resolve primary-asset GUID from the export table; runtime objects may be missing for corrupt packages.
         FName PackageFileName = VFS::FileName(PackagePath, true);
         FGuid AssetGUID;
         for (const FObjectExport& Export : PackageToDestroy->ExportTable)
@@ -241,8 +232,7 @@ namespace Lumina
             }
         }
 
-        // Broadcast before tearing the package down so observers can release
-        // their handles while the objects are still addressable.
+        // Broadcast before teardown so observers can release handles while objects are addressable.
         OnPackageDestroyed.Broadcast(PackagePath);
 
         if (AssetGUID.IsValid())
@@ -307,12 +297,7 @@ namespace Lumina
         FFixedString OldObjectName = SanitizeObjectName(OldPath);
         FFixedString NewObjectName = SanitizeObjectName(NewPath);
 
-        // Always go through the loaded-rename + full re-save path. Patching an
-        // unloaded file's export table in place is unsafe: FName serializes as
-        // a length-prefixed string, so the new export table size can differ
-        // from the old, which would either clobber the trailing thumbnail
-        // block or leave stale bytes — and Header.ThumbnailDataOffset is not
-        // recomputed. A clean SavePackage rebuilds every offset from scratch.
+        // Always rename-then-resave: in-place export-table patching is unsafe (FName length-prefix shifts offsets).
         CPackage* Package = FindObject<CPackage>(OldObjectName);
         if (Package == nullptr)
         {
@@ -335,13 +320,11 @@ namespace Lumina
         if (!SavePackage(Package, NewPath))
         {
             LOG_ERROR("RenamePackage: atomic save to {} failed; rolling back in-memory rename", NewPath);
-            // Roll back; on-disk state at OldPath is unchanged.
             Package->Rename(SavedName, nullptr);
             return false;
         }
 
-        // New file is committed. Drop the old file. If the remove fails the
-        // user just sees a stale duplicate — better than data loss.
+        // Stale duplicate on remove failure is preferable to data loss.
         if (VFS::Exists(OldPath) && !VFS::Remove(OldPath))
         {
             LOG_ERROR("RenamePackage: failed to remove old file {} (new file at {} is intact)", OldPath, NewPath);
@@ -351,10 +334,7 @@ namespace Lumina
 
     void CPackage::OnPackageMovedExternally(FStringView OldPath, FStringView NewPath)
     {
-        // Used when a parent directory was renamed: the .lasset file is already
-        // at NewPath on disk and its content is unchanged (the file name part
-        // didn't change, only the directory). We just need to update the
-        // in-memory CPackage's identity if it was loaded.
+        // Parent-dir rename: file already at NewPath on disk, just update in-memory identity.
         if (OldPath == NewPath)
         {
             return;
@@ -431,8 +411,7 @@ namespace Lumina
                 Reader << Package->ExportTable;
 
 #if USING(WITH_EDITOR)
-                // Thumbnails are editor metadata. Files saved by a non-editor
-                // build encode this with ThumbnailDataOffset == 0.
+                // Non-editor saves encode no thumbnail (offset == 0).
                 if (PackageHeader.ThumbnailDataOffset != 0)
                 {
                     int64 SizeBefore = Reader.Tell();
@@ -482,10 +461,9 @@ namespace Lumina
         Header.Tag = PACKAGE_FILE_TAG;
         Header.Version = GPackageFileLuminaVersion.FileVersion;
 
-        // Skip the header until we've built the tables.
+        // Skip header; written last once offsets are known.
         Writer.Seek(sizeof(FPackageHeader));
 
-        // Build the save context (imports/exports)
         FSaveContext SaveContext(Package);
         Package->BuildSaveContext(SaveContext);
 
@@ -499,8 +477,7 @@ namespace Lumina
         Header.ThumbnailDataOffset = Writer.Tell();
         Package->GetPackageThumbnail()->Serialize(Writer);
 #else
-        // Non-editor builds never persist thumbnail data — flag the absence
-        // with a zero offset so the loader knows to skip the read.
+        // Non-editor: zero signals loader to skip thumbnail.
         Header.ThumbnailDataOffset = 0;
 #endif
 
@@ -509,16 +486,12 @@ namespace Lumina
 
         if (!VFS::AtomicWriteFile(Path, FileBinary))
         {
-            // Disk file at Path is unchanged thanks to the temp-then-rename
-            // primitive. Leave the package marked dirty so the caller (and any
-            // future save attempt) knows the on-disk copy is stale.
+            // Atomic write failed: disk unchanged, package stays dirty for retry.
             LOG_ERROR("Failed to save package: {}", Path);
             return false;
         }
 
-        // Only refresh the loader once the new bytes are guaranteed to be on
-        // disk. Otherwise a failed save would leave us with a loader pointing
-        // at content that doesn't match what the file system actually holds.
+        // Refresh loader only after disk commit so it can't point at uncommitted bytes.
         Package->CreateLoader(FileBinary);
 
         LOG_INFO("Saved Package: \"{}\" - ( [{}] Exports | [{}] Imports | [{:.2f}] KiB)",
@@ -622,7 +595,6 @@ namespace Lumina
         
         CPackage* ObjectPackage = Object->GetPackage();
         
-        // If this object's package comes from somewhere else, load it through there.
         if (ObjectPackage != this)
         {
             ObjectPackage->LoadObject(Object);
@@ -673,7 +645,6 @@ namespace Lumina
 
         Object->PostLoad();
 
-        // Reset the state of the loader to the previous object.
         Loader->Seek(SavedPos);
     }
 

@@ -23,20 +23,15 @@ namespace Lumina
         
         void SetEnum(CEnum* InEnum);
 
-        /** Returns the pointer to the internal enum */
         FORCEINLINE CEnum* GetEnum() const { return Enum; }
 
         void Serialize(FArchive& Ar, void* Value) override;
         void SerializeItem(IStructuredArchive::FSlot Slot, void* Value, void const* Defaults) override;
-    
-        
+
+
     private:
 
-        /** Numeric property which represents the current value of this enum */
         TUniquePtr<FNumericProperty> InnerProperty;
-
-        /** The actual enum class object this property represents */
         CEnum* Enum = nullptr;
-    
     };
 }

@@ -35,12 +35,7 @@ namespace Lumina
 
 		FMutex								RequestMutex;
 		TVector<TSharedPtr<FAssetRequest>>	ActiveRequests;
-		
-	};
-	
 
-	//--------------------------------------------------------------------------
-	// Template definitions.
-	//--------------------------------------------------------------------------
-	
+	};
+
 }

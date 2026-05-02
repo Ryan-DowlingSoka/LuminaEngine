@@ -62,9 +62,7 @@ namespace Lumina
     struct FBufferState
     {
         EResourceStates State = EResourceStates::Unknown;
-        // Index of the pending barrier in FCommandListResourceStateTracker::BufferBarriers,
-        // tagged with BarrierEpoch. -1 means no pending barrier. Checked against the tracker's
-        // CurrentBarrierEpoch so a single bump invalidates all stale indices after a commit.
+        // Pending-barrier index into BufferBarriers, validated by BarrierEpoch.
         int32 PendingBarrierIndex = -1;
         uint32 BarrierEpoch = 0;
         uint32 bEnableUavBarriers:1 = true;
@@ -109,8 +107,6 @@ namespace Lumina
         EResourceStates GetTextureSubresourceState(FTextureStateExtension* texture, uint32 arraySlice, uint32 mipLevel);
         EResourceStates GetBufferState(FBufferStateExtension* buffer);
 
-        // Internal interface
-        
         void RequireTextureState(FTextureStateExtension* texture, FTextureSubresourceSet subresources, EResourceStates state);
         void RequireBufferState(FBufferStateExtension* buffer, EResourceStates state);
 
@@ -128,8 +124,7 @@ namespace Lumina
         TFixedHashMap<FTextureStateExtension*, FTextureState*, 128> TextureStates;
         TFixedHashMap<FBufferStateExtension*, FBufferState*, 64> BufferStates;
 
-        // Deferred transitions of textures and buffers to permanent states.
-        // They are executed only when the command list is executed, not when the app calls setPermanentTextureState or setPermanentBufferState.
+        // Deferred to command list execution, not applied at SetPermanentXxxState() time.
         TFixedVector<TPair<FTextureStateExtension*, EResourceStates>, 32> PermanentTextureStates;
         TFixedVector<TPair<FBufferStateExtension*, EResourceStates>, 32> PermanentBufferStates;
 
