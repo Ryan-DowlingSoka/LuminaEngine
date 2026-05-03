@@ -40,5 +40,12 @@ namespace Lumina::Physics
         virtual glm::vec3 GetLinearVelocity(uint32 BodyID) = 0;
         virtual glm::vec3 GetAngularVelocity(uint32 BodyID) = 0;
         virtual glm::vec3 GetCenterOfMass(uint32 BodyID)= 0;
+
+        // Body's actual current pose, NOT the interpolated render transform.
+        // Use this when a script reads the body in PrePhysics and needs the
+        // position physics will integrate from this frame -- the cached
+        // STransformComponent is the lagged display value.
+        virtual glm::vec3 GetBodyPosition(uint32 BodyID) = 0;
+        virtual glm::quat GetBodyRotation(uint32 BodyID) = 0;
     };
 }

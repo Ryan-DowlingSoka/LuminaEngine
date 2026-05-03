@@ -449,6 +449,7 @@ namespace Lumina::Physics
 
             JoltSystem->Update(FixedTimestep, (int)CollisionSteps, &Allocator, FJoltPhysicsContext::GetThreadPool());
             UpdateCharacters(FixedTimestep);
+            
 
             Accumulator -= (float)CollisionSteps * FixedTimestep;
         }
@@ -624,6 +625,13 @@ namespace Lumina::Physics
             TransformComponent.SetRotation(Rotation);
 
             ECS::Utils::ResolveTransformChain(Registry, EntityID);
+
+            // SetLocation/SetRotation tag FNeedsPhysicsBodyUpdate via MarkDirty;
+            // strip it so next frame's ApplyDirtyTransforms doesn't push the
+            // interpolated render value back into the body, which would reset
+            // physics behind its actual position every frame ("snap back" at
+            // speed, especially as PhysicsHz approaches render rate).
+            Registry.remove<FNeedsPhysicsBodyUpdate>(EntityID);
         });
 
         auto CharacterView = Registry.view<SCharacterPhysicsComponent, STransformComponent>();
@@ -1505,7 +1513,19 @@ namespace Lumina::Physics
     {
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID JPHBodyID = JPH::BodyID(BodyID);
-        
+
         return JoltUtils::FromJPHVec3(Interface.GetCenterOfMassPosition(JPHBodyID));
+    }
+
+    glm::vec3 FJoltPhysicsScene::GetBodyPosition(uint32 BodyID)
+    {
+        JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
+        return JoltUtils::FromJPHVec3(Interface.GetPosition(JPH::BodyID(BodyID)));
+    }
+
+    glm::quat FJoltPhysicsScene::GetBodyRotation(uint32 BodyID)
+    {
+        JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
+        return JoltUtils::FromJPHQuat(Interface.GetRotation(JPH::BodyID(BodyID)));
     }
 }

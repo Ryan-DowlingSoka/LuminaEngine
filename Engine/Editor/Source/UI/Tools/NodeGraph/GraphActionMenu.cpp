@@ -552,6 +552,14 @@ namespace Lumina
                         Graph->TryAutoConnect(Graph->PendingSourcePin, TargetPin);
                     }
                 }
+
+                ax::NodeEditor::ClearSelection();
+                ax::NodeEditor::SelectNode(NewNode->GetNodeID(), false);
+
+                if (Graph->NodeSelectedCallback)
+                {
+                    Graph->NodeSelectedCallback(NewNode);
+                }
             }
             Graph->PendingSourcePin = nullptr;
             return true;

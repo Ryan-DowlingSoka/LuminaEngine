@@ -1016,15 +1016,28 @@ namespace Lumina
         NavMeshEditMode.DrawOverlay(World);
 
         auto SelectionView = World->GetEntityRegistry().view<FSelectedInEditorComponent, STransformComponent>();
-        
-        if (SelectionView.size_hint())
+
+        const entt::entity PivotEntityForGizmo = GetLastSelectedEntity();
+        const bool bGizmoTargetValid = SelectionView.size_hint() && World->GetEntityRegistry().valid(PivotEntityForGizmo);
+
+        // If selection/pivot vanished mid-drag (entity destroyed, selection cleared by undo, etc.),
+        // ImGuizmo never sees the release. End the transaction and reset so clicks are not blocked.
+        if (!bGizmoTargetValid && bImGuizmoUsedOnce)
         {
-            entt::entity PivotEntity = GetLastSelectedEntity();
-            if (World->GetEntityRegistry().valid(PivotEntity))
+            EndTransaction("Transform");
+            bImGuizmoUsedOnce = false;
+            bVertexSnapAnchorValid = false;
+            bVertexSnapApplied = false;
+        }
+
+        if (bGizmoTargetValid)
+        {
+            entt::entity PivotEntity = PivotEntityForGizmo;
             {
                 STransformComponent& PivotTransformComponent = World->GetEntityRegistry().get<STransformComponent>(PivotEntity);
-                if (CameraComponent.GetViewVolume().GetFrustum().IsInside(PivotTransformComponent.GetWorldLocation()))
                 {
+                    // No frustum gate: drag-out-of-view must still reach the IsUsing()/cleanup path,
+                    // otherwise bImGuizmoUsedOnce sticks true and ImGuizmo::IsOver() blocks all viewport clicks.
                     glm::mat4 EntityMatrix = PivotTransformComponent.GetWorldMatrix();
 
                     float* SnapValues = nullptr;
@@ -1092,6 +1105,8 @@ namespace Lumina
                         {
                             BeginTransaction();
                             bImGuizmoUsedOnce = true;
+                            // Click landed on the gizmo, not empty space — kill the marquee armed by IsMouseClicked.
+                            SelectionBox.bActive = false;
                         }
 
                         glm::mat4 DeltaMatrix = EntityMatrix * glm::inverse(PreManipulateMatrix);
@@ -3216,6 +3231,12 @@ namespace Lumina
             DetailsEntity = entt::null;
             bDetailsDirty = true;
 
+            // Clear selection tags on the editor world before stashing it. Otherwise they
+            // linger on ProxyWorld and the outliner rebuild on PIE-exit re-marks those rows
+            // selected from leftover tags while the SelectedEntities cache is empty.
+            World->GetEntityRegistry().clear<FSelectedInEditorComponent>();
+            World->GetEntityRegistry().clear<FLastSelectedTag>();
+
             World->SetActive(false);
             ProxyWorld = World;
             ProxyEditorEntity = EditorEntity;
@@ -3292,6 +3313,12 @@ namespace Lumina
             DetailsEntity = entt::null;
             bDetailsDirty = true;
             bSimulatingWorld = true;
+
+            // Clear selection tags on the editor world before stashing it. Otherwise they
+            // linger on ProxyWorld and the outliner rebuild on Simulate-exit re-marks those rows
+            // selected from leftover tags while the SelectedEntities cache is empty.
+            World->GetEntityRegistry().clear<FSelectedInEditorComponent>();
+            World->GetEntityRegistry().clear<FLastSelectedTag>();
 
             FTransform TransformCopy = World->GetEntityRegistry().get<STransformComponent>(EditorEntity).GetWorldTransform();
             SCameraComponent CameraCopy = World->GetEntityRegistry().get<SCameraComponent>(EditorEntity);

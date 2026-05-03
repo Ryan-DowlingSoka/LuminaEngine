@@ -1,6 +1,7 @@
 ﻿#include <gtest/gtest.h>
 #include <entt/entt.hpp>
 #include "World/Entity/EntityUtils.h"
+#include "World/Entity/Components/DirtyComponent.h"
 #include "World/Entity/Components/RelationshipComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 
@@ -92,6 +93,87 @@ TEST(ECSTests, Parent_Reparent_MovesCorrectly)
     EXPECT_EQ(B.Children, 1);
 
     EXPECT_EQ(A.Children, 0);
+}
+
+TEST(ECSTests, ResolveTransformChain_GrandchildFollowsRootMove)
+{
+    FEntityRegistry Registry{};
+
+    auto A = Registry.create();
+    auto B = Registry.create();
+    auto C = Registry.create();
+
+    Registry.emplace<STransformComponent>(A).LocalTransform.Location = glm::vec3(10.f, 0.f, 0.f);
+    Registry.emplace<STransformComponent>(B).LocalTransform.Location = glm::vec3(5.f,  0.f, 0.f);
+    Registry.emplace<STransformComponent>(C).LocalTransform.Location = glm::vec3(2.f,  0.f, 0.f);
+
+    // AddToParent only links the relationship; ReparentEntity would
+    // bake the (zeroed) cached world matrix into local transforms.
+    ECS::Utils::AddToParent(Registry, B, A);
+    ECS::Utils::AddToParent(Registry, C, B);
+
+    Registry.emplace<FNeedsTransformUpdate>(A);
+    Registry.emplace<FNeedsTransformUpdate>(B);
+    Registry.emplace<FNeedsTransformUpdate>(C);
+    ECS::Utils::ResolveAllDirtyTransforms(Registry);
+
+    EXPECT_FLOAT_EQ(Registry.get<STransformComponent>(C).WorldTransform.Location.x, 17.f);
+
+    Registry.get<STransformComponent>(A).LocalTransform.Location = glm::vec3(20.f, 0.f, 0.f);
+    Registry.emplace_or_replace<FNeedsTransformUpdate>(A);
+
+    // Lazy resolve against the grandchild: A is dirty but B and C are
+    // not. Before the fix, this returned C's stale CachedMatrix because
+    // ResolveTransformChain bailed when the queried entity itself was
+    // clean. After the fix it walks up to A, refreshes the chain, and
+    // C tracks A's move while staying at the same offset from B.
+    ECS::Utils::ResolveTransformChain(Registry, C);
+
+    const STransformComponent& WorldC = Registry.get<STransformComponent>(C);
+    const STransformComponent& WorldB = Registry.get<STransformComponent>(B);
+    const STransformComponent& WorldA = Registry.get<STransformComponent>(A);
+
+    EXPECT_FLOAT_EQ(WorldA.WorldTransform.Location.x, 20.f);
+    EXPECT_FLOAT_EQ(WorldB.WorldTransform.Location.x, 25.f);
+    EXPECT_FLOAT_EQ(WorldC.WorldTransform.Location.x, 27.f);
+    EXPECT_FLOAT_EQ(WorldC.WorldTransform.Location.x - WorldB.WorldTransform.Location.x, 2.f);
+}
+
+TEST(ECSTests, ResolveTransformChain_SiblingSubtreeStaysConsistent)
+{
+    FEntityRegistry Registry{};
+
+    auto A = Registry.create();
+    auto B = Registry.create();
+    auto C = Registry.create();
+    auto D = Registry.create();
+
+    Registry.emplace<STransformComponent>(A).LocalTransform.Location = glm::vec3(10.f, 0.f, 0.f);
+    Registry.emplace<STransformComponent>(B).LocalTransform.Location = glm::vec3(5.f,  0.f, 0.f);
+    Registry.emplace<STransformComponent>(C).LocalTransform.Location = glm::vec3(2.f,  0.f, 0.f);
+    Registry.emplace<STransformComponent>(D).LocalTransform.Location = glm::vec3(0.f,  3.f, 0.f);
+
+    ECS::Utils::AddToParent(Registry, B, A);
+    ECS::Utils::AddToParent(Registry, C, B);
+    ECS::Utils::AddToParent(Registry, D, A);
+
+    Registry.emplace<FNeedsTransformUpdate>(A);
+    Registry.emplace<FNeedsTransformUpdate>(B);
+    Registry.emplace<FNeedsTransformUpdate>(C);
+    Registry.emplace<FNeedsTransformUpdate>(D);
+    ECS::Utils::ResolveAllDirtyTransforms(Registry);
+
+    Registry.get<STransformComponent>(A).LocalTransform.Location = glm::vec3(20.f, 0.f, 0.f);
+    Registry.emplace_or_replace<FNeedsTransformUpdate>(A);
+
+    // Resolving via C must also refresh sibling D's CachedMatrix - D is
+    // not dirty itself and would otherwise serve a stale matrix on the
+    // next lazy query (A's dirty bit is gone after C's resolve).
+    ECS::Utils::ResolveTransformChain(Registry, C);
+    ECS::Utils::ResolveTransformChain(Registry, D);
+
+    EXPECT_FLOAT_EQ(Registry.get<STransformComponent>(D).WorldTransform.Location.x, 20.f);
+    EXPECT_FLOAT_EQ(Registry.get<STransformComponent>(D).WorldTransform.Location.y, 3.f);
 }
 
 TEST(ECSTests, Parent_Unparent)

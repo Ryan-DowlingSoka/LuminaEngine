@@ -129,6 +129,8 @@ namespace Lumina::Physics
     	glm::vec3 GetLinearVelocity(uint32 BodyID) override;
     	glm::vec3 GetAngularVelocity(uint32 BodyID) override;
     	glm::vec3 GetCenterOfMass(uint32 BodyID) override;
+    	glm::vec3 GetBodyPosition(uint32 BodyID) override;
+    	glm::quat GetBodyRotation(uint32 BodyID) override;
     	
     	JPH::PhysicsSystem* GetPhysicsSystem() const { return JoltSystem.get(); }
 

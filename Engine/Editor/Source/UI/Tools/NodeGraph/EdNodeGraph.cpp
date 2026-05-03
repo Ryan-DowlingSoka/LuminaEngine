@@ -514,49 +514,64 @@ namespace Lumina
             {
                 if (StartPinID && EndPinID && StartPinID != EndPinID)
                 {
-                    if (NodeEditor::AcceptNewItem())
-                    {
-                        CEdNodeGraphPin* StartPin = nullptr;
-                        CEdNodeGraphPin* EndPin = nullptr;
-    
-                        for (CEdGraphNode* Node : Nodes)
-                        {
-                            StartPin = Node->GetPin(static_cast<uint16>(StartPinID.Get()), ENodePinDirection::Output);
-                            if (StartPin)
-                            {
-                                break;
-                            }
-                        }
-    
-                        for (CEdGraphNode* Node : Nodes)
-                        {
-                            EndPin = Node->GetPin(static_cast<uint16>(EndPinID.Get()), ENodePinDirection::Input);
-                            if (EndPin)
-                            {
-                                break;
-                            }
-                        }
-                        
-                        const FEdGraphSchema& Schema = GetSchema();
-                        // Disabled pins reject new links. Existing connections
-                        // remain so the user can still disconnect a stale link
-                        // after the material domain changes.
-                        const bool bAnyDisabled = (StartPin && StartPin->IsDisabled()) || (EndPin && EndPin->IsDisabled());
-                        if (!bAnyDisabled && Schema.CanCreateConnection(StartPin, EndPin))
-                        {
-                            if (EndPin->HasConnection() && !Schema.AllowsMultipleConnections(EndPin))
-                            {
-                                TVector<CEdNodeGraphPin*> Existing = EndPin->GetConnections();
-                                for (CEdNodeGraphPin* ConnectedPin : Existing)
-                                {
-                                    EndPin->DisconnectFrom(ConnectedPin);
-                                }
-                            }
+                    CEdNodeGraphPin* StartPin = nullptr;
+                    CEdNodeGraphPin* EndPin = nullptr;
 
-                            StartPin->AddConnection(EndPin);
-                            EndPin->AddConnection(StartPin);
-                            ValidateGraph();
+                    const uint16 StartGUID = static_cast<uint16>(StartPinID.Get());
+                    const uint16 EndGUID   = static_cast<uint16>(EndPinID.Get());
+
+                    for (CEdGraphNode* Node : Nodes)
+                    {
+                        if (!StartPin)
+                        {
+                            StartPin = Node->GetPin(StartGUID, ENodePinDirection::Output);
+                            if (!StartPin)
+                            {
+                                StartPin = Node->GetPin(StartGUID, ENodePinDirection::Input);
+                            }
                         }
+                        if (!EndPin)
+                        {
+                            EndPin = Node->GetPin(EndGUID, ENodePinDirection::Output);
+                            if (!EndPin)
+                            {
+                                EndPin = Node->GetPin(EndGUID, ENodePinDirection::Input);
+                            }
+                        }
+                        if (StartPin && EndPin)
+                        {
+                            break;
+                        }
+                    }
+
+                    // User dragged input -> output: swap so StartPin is always the output side.
+                    if (StartPin && EndPin && StartPin->bInputPin && !EndPin->bInputPin)
+                    {
+                        eastl::swap(StartPin, EndPin);
+                    }
+
+                    const FEdGraphSchema& Schema = GetSchema();
+                    const bool bAnyDisabled = (StartPin && StartPin->IsDisabled()) || (EndPin && EndPin->IsDisabled());
+                    const bool bValidDirections = StartPin && EndPin && !StartPin->bInputPin && EndPin->bInputPin;
+
+                    if (!bValidDirections || bAnyDisabled || !Schema.CanCreateConnection(StartPin, EndPin))
+                    {
+                        NodeEditor::RejectNewItem(ImColor(255, 64, 64), 2.0f);
+                    }
+                    else if (NodeEditor::AcceptNewItem(ImColor(128, 255, 128), 2.0f))
+                    {
+                        if (EndPin->HasConnection() && !Schema.AllowsMultipleConnections(EndPin))
+                        {
+                            TVector<CEdNodeGraphPin*> Existing = EndPin->GetConnections();
+                            for (CEdNodeGraphPin* ConnectedPin : Existing)
+                            {
+                                EndPin->DisconnectFrom(ConnectedPin);
+                            }
+                        }
+
+                        StartPin->AddConnection(EndPin);
+                        EndPin->AddConnection(StartPin);
+                        ValidateGraph();
                     }
                 }
             }

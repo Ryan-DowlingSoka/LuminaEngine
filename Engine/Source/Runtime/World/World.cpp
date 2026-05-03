@@ -240,6 +240,8 @@ namespace Lumina
             .AddFunction<&Physics::IPhysicsScene::GetLinearVelocity>("GetLinearVelocity")
             .AddFunction<&Physics::IPhysicsScene::GetAngularVelocity>("GetAngularVelocity")
             .AddFunction<&Physics::IPhysicsScene::GetCenterOfMass>("GetCenterOfMass")
+            .AddFunction<&Physics::IPhysicsScene::GetBodyPosition>("GetBodyPosition")
+            .AddFunction<&Physics::IPhysicsScene::GetBodyRotation>("GetBodyRotation")
             .Register();
         
         GlobalRef.NewClass<entt::runtime_view>("RuntimeView")
@@ -516,9 +518,19 @@ namespace Lumina
         entt::entity CameraEntity = GetActiveCameraEntity();
         if (EntityRegistry.valid(CameraEntity))
         {
-            // Force an update now.
-            (void)EntityRegistry.get<STransformComponent>(CameraEntity).GetWorldMatrix();
+            const STransformComponent& CameraTransform = EntityRegistry.get<STransformComponent>(CameraEntity);
+            (void)CameraTransform.GetWorldMatrix();
+
+            // Bake view matrix from the freshest camera transform. Doing it here
+            // instead of in SCameraSystem::Update means follow-cameras written in
+            // PostPhysics scripts land in the same frame's render — otherwise the
+            // view matrix lags by one frame and anything tracked stutters.
+            const glm::quat CameraRotation = CameraTransform.GetWorldRotation();
             const SCameraComponent& Camera = EntityRegistry.get<SCameraComponent>(CameraEntity);
+            const_cast<SCameraComponent&>(Camera).SetView(
+                CameraTransform.GetWorldLocation(),
+                CameraRotation * glm::vec3(0.0f, 0.0f, 1.0f),
+                CameraRotation * glm::vec3(0.0f, 1.0f, 0.0f));
 
             // Resolve any SPostProcessComponent volumes the camera is inside
             // (or that have bInfiniteExtent) into a final blended settings

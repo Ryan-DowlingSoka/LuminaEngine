@@ -155,25 +155,104 @@ function EntityScript:DrawSphere(Center, Radius, Color, Segments, Thickness, Dep
 end
 
 -- ---- Physics -------------------------------------------------------------
--- Thin wrappers around IPhysicsScene that fill in self.Entity. Users who
--- need cross-entity physics work can still go through self.World.
+-- Thin wrappers around IPhysicsScene that build the event struct and fill
+-- in this entity's body id, so scripts don't repeat the SImpulseEvent etc.
+-- boilerplate. Cross-entity work still goes through self._Physics directly.
+
+function EntityScript:GetBodyID()
+    return self._Physics:GetEntityBodyID(self.Entity)
+end
 
 function EntityScript:ApplyImpulse(Impulse)
-    self._Physics:ApplyImpulse(Impulse)
+    local E = SImpulseEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.Impulse = Impulse
+    self._Physics:ApplyImpulse(E)
 end
 
 function EntityScript:ApplyForce(Force)
-    self._Physics:ApplyForce(Force)
+    local E = SForceEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.Force = Force
+    self._Physics:ApplyForce(E)
+end
+
+function EntityScript:ApplyTorque(Torque)
+    local E = STorqueEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.Torque = Torque
+    self._Physics:ApplyTorque(E)
+end
+
+function EntityScript:ApplyAngularImpulse(AngularImpulse)
+    local E = SAngularImpulseEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.AngularImpulse = AngularImpulse
+    self._Physics:ApplyAngularImpulse(E)
+end
+
+function EntityScript:ApplyImpulseAt(Impulse, Position)
+    local E = SAddImpulseAtPositionEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.Impulse = Impulse
+    E.Position = Position
+    self._Physics:AddImpulseAtPosition(E)
+end
+
+function EntityScript:ApplyForceAt(Force, Position)
+    local E = SAddForceAtPositionEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.Force = Force
+    E.Position = Position
+    self._Physics:AddForceAtPosition(E)
 end
 
 function EntityScript:SetVelocity(Velocity)
-    self._Physics:SetVelocity(Velocity)
+    local E = SSetVelocityEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.Velocity = Velocity
+    self._Physics:SetVelocity(E)
 end
 
 function EntityScript:SetAngularVelocity(AngularVelocity)
-    self._Physics:SetAngularVelocity(AngularVelocity)
+    local E = SSetAngularVelocityEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.AngularVelocity = AngularVelocity
+    self._Physics:SetAngularVelocity(E)
 end
 
-function EntityScript:GetBodyID()
-	return self._Physics:GetEntityBodyID(self.Entity)
+function EntityScript:GetLinearVelocity()
+    return self._Physics:GetLinearVelocity(self:GetBodyID())
+end
+
+function EntityScript:GetAngularVelocity()
+    return self._Physics:GetAngularVelocity(self:GetBodyID())
+end
+
+function EntityScript:GetVelocityAtPoint(Point)
+    return self._Physics:GetVelocityAtPoint(self:GetBodyID(), Point)
+end
+
+-- Body's actual current pose. Use these instead of self.Transform when the
+-- script runs in PrePhysics and needs to compute force application points or
+-- ray origins relative to the body -- the cached transform component holds
+-- the lagged interpolated render value, not what physics will integrate from.
+function EntityScript:GetBodyPosition()
+    return self._Physics:GetBodyPosition(self:GetBodyID())
+end
+
+function EntityScript:GetBodyRotation()
+    return self._Physics:GetBodyRotation(self:GetBodyID())
+end
+
+function EntityScript:GetBodyForward()
+    return self._Physics:GetBodyRotation(self:GetBodyID()):RotateVector(vector.create(0.0, 0.0, 1.0))
+end
+
+function EntityScript:GetBodyRight()
+    return self._Physics:GetBodyRotation(self:GetBodyID()):RotateVector(vector.create(1.0, 0.0, 0.0))
+end
+
+function EntityScript:GetBodyUp()
+    return self._Physics:GetBodyRotation(self:GetBodyID()):RotateVector(vector.create(0.0, 1.0, 0.0))
 end

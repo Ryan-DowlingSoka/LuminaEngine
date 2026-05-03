@@ -565,68 +565,73 @@ namespace Lumina::ECS::Utils
         // resolver downstream doesn't deadlock.
         FRecursiveScopeLock Lock(GetTransformResolveMutex());
 
-        // Re-check under the lock: another worker may have already
-        // resolved this entity while we were waiting.
-        if (!Registry.all_of<FNeedsTransformUpdate>(Entity))
-        {
-            return;
-        }
-
+        // Walk to the root and record the topmost dirty ancestor. Even
+        // when Entity itself is clean, a dirty ancestor invalidates our
+        // cached world matrix - moving a parent does not mark its
+        // descendants dirty, so a query against the descendant must
+        // chase the dirty bit upward.
         TFixedVector<entt::entity, 64> AncestorChain;
-        
+        int32 TopmostDirtyIndex = -1;
+
         entt::entity Current = Entity;
         while (Current != entt::null)
         {
+            if (Registry.all_of<FNeedsTransformUpdate>(Current))
+            {
+                TopmostDirtyIndex = (int32)AncestorChain.size();
+            }
+
             AncestorChain.push_back(Current);
-    
+
             if (!Registry.all_of<FRelationshipComponent>(Current))
             {
                 break;
             }
-    
+
             entt::entity Parent = Registry.get<FRelationshipComponent>(Current).Parent;
             if (Parent == entt::null || !Registry.valid(Parent))
             {
                 break;
             }
-            
-            if (!Registry.all_of<FNeedsTransformUpdate>(Parent))
-            {
-                break;
-            }
-    
+
             Current = Parent;
         }
-    
-        for (int32 i = (int32)AncestorChain.size() - 1; i >= 0; --i)
+
+        if (TopmostDirtyIndex < 0)
+        {
+            return;
+        }
+
+        // Refresh the chain from the topmost dirty ancestor down to Entity.
+        // Each step reads its parent's just-recomputed CachedMatrix, so
+        // intermediate clean ancestors get refreshed too (their cache is
+        // stale by virtue of having a dirty ancestor above them).
+        for (int32 i = TopmostDirtyIndex; i >= 0; --i)
         {
             entt::entity Ancestor = AncestorChain[i];
             auto& Transform = Registry.get<STransformComponent>(Ancestor);
-    
-            if (Registry.all_of<FRelationshipComponent>(Ancestor))
+
+            FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Ancestor);
+            if (Rel && Rel->Parent != entt::null && Registry.valid(Rel->Parent))
             {
-                entt::entity Parent = Registry.get<FRelationshipComponent>(Ancestor).Parent;
-    
-                if (Parent != entt::null && Registry.valid(Parent))
-                {
-                    glm::mat4 ParentWorld = Registry.get<STransformComponent>(Parent).CachedMatrix;
-                    glm::mat4 Local       = Transform.LocalTransform.GetMatrix();
-                    Transform.WorldTransform = FTransform(ParentWorld * Local);
-                }
-                else
-                {
-                    Transform.WorldTransform = Transform.LocalTransform;
-                }
+                glm::mat4 ParentWorld = Registry.get<STransformComponent>(Rel->Parent).CachedMatrix;
+                glm::mat4 Local       = Transform.LocalTransform.GetMatrix();
+                Transform.WorldTransform = FTransform(ParentWorld * Local);
             }
             else
             {
                 Transform.WorldTransform = Transform.LocalTransform;
             }
-    
+
             Transform.CachedMatrix = Transform.WorldTransform.GetMatrix();
-            Registry.erase<FNeedsTransformUpdate>(Ancestor);
+            Registry.remove<FNeedsTransformUpdate>(Ancestor);
         }
-        
+
+        // Push the new world transforms across the full subtree rooted at
+        // the topmost dirty ancestor - sibling branches of Entity also
+        // referenced that ancestor's matrix. Skipping them would leave
+        // their CachedMatrix stale with no dirty bit to trigger a later
+        // resolve, so a subsequent query would return wrong data.
         TFunction<void(entt::entity)> UpdateChildrenRecursive;
         UpdateChildrenRecursive = [&](entt::entity ParentEntity)
         {
@@ -634,17 +639,17 @@ namespace Lumina::ECS::Utils
             {
                 auto& ParentTransform = Registry.get<STransformComponent>(ParentEntity);
                 auto& ChildTransform  = Registry.get<STransformComponent>(Child);
-    
+
                 ChildTransform.WorldTransform = FTransform(ParentTransform.CachedMatrix * ChildTransform.LocalTransform.GetMatrix());
                 ChildTransform.CachedMatrix   = ChildTransform.WorldTransform.GetMatrix();
-    
+
                 Registry.remove<FNeedsTransformUpdate>(Child);
-    
+
                 UpdateChildrenRecursive(Child);
             });
         };
-    
-        UpdateChildrenRecursive(Entity);
+
+        UpdateChildrenRecursive(AncestorChain[TopmostDirtyIndex]);
     }
 
     void ResolveAllDirtyTransforms(FEntityRegistry& Registry)

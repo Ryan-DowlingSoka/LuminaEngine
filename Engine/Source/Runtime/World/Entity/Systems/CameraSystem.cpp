@@ -28,13 +28,8 @@ namespace Lumina
 
     void SCameraSystem::Update(const FSystemContext& SystemContext) noexcept
     {
-        LUMINA_PROFILE_SCOPE();
-        
-        auto View = SystemContext.CreateView<SCameraComponent, STransformComponent>();
-        View.each([](SCameraComponent& CameraComponent, const STransformComponent& TransformComponent)
-        {
-            CameraComponent.SetFOV(CameraComponent.GetFOV());
-            CameraComponent.SetView(TransformComponent.GetWorldLocation(), TransformComponent.GetWorldRotation() * glm::vec3(0.0, 0.0, 1.0), TransformComponent.GetWorldRotation() * glm::vec3(0.0, 1.0, 0.0));
-        });
+        // View matrix is baked lazily in CWorld::Render from the camera entity's
+        // transform, so any script or system that writes the camera transform up
+        // to the end of PostPhysics is reflected in the same frame.
     }
 }

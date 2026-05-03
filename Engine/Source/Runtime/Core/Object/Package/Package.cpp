@@ -68,17 +68,29 @@ namespace Lumina
 
         if (bFileNameDirty)
         {
+            // Source of truth is the live object set, not ExportTable: SavePackage clears
+            // ExportTable on every save, and freshly-created assets may have stale weak ptrs.
+            // Missing the rename here writes a desynced export name on the next save.
+            const FName OldFileNameAsFName(OldFileName);
+            const FName NewFileNameAsFName(FileName);
+
+            TVector<CObject*> PackageObjects;
+            PackageObjects.reserve(8);
+            GetObjectsWithPackage(this, PackageObjects);
+
+            for (CObject* Object : PackageObjects)
+            {
+                if (Object && Object->GetName() == OldFileNameAsFName)
+                {
+                    Object->Rename(NewFileNameAsFName, nullptr);
+                }
+            }
+
             for (FObjectExport& Export : ExportTable)
             {
-                if (Export.ObjectName == OldFileName)
+                if (Export.ObjectName == OldFileNameAsFName)
                 {
-                    Export.ObjectName = FileName;
-                    if (CObject* Object = Export.Object.Get())
-                    {
-                        ASSERT(Object->GetName() == OldFileName);
-                        Object->Rename(FileName, nullptr);
-                        break;
-                    }
+                    Export.ObjectName = NewFileNameAsFName;
                 }
             }
         }
