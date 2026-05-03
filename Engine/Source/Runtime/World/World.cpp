@@ -236,6 +236,10 @@ namespace Lumina
             .AddFunction<&Physics::IPhysicsScene::OnAddForceAtPositionEvent>("AddForceAtPosition")
             .AddFunction<&Physics::IPhysicsScene::OnAddImpulseAtPositionEvent>("AddImpulseAtPosition")
             .AddFunction<&Physics::IPhysicsScene::OnSetGravityFactorEvent>("SetGravityFactor")
+            .AddFunction<&Physics::IPhysicsScene::GetVelocityAtPoint>("GetVelocityAtPoint")
+            .AddFunction<&Physics::IPhysicsScene::GetLinearVelocity>("GetLinearVelocity")
+            .AddFunction<&Physics::IPhysicsScene::GetAngularVelocity>("GetAngularVelocity")
+            .AddFunction<&Physics::IPhysicsScene::GetCenterOfMass>("GetCenterOfMass")
             .Register();
         
         GlobalRef.NewClass<entt::runtime_view>("RuntimeView")

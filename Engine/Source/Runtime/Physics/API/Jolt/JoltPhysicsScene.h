@@ -125,6 +125,11 @@ namespace Lumina::Physics
         void OnAddForceAtPositionEvent(const SAddForceAtPositionEvent& Event) override;
         void OnSetGravityFactorEvent(const SSetGravityFactorEvent& Event) override;
     	
+    	glm::vec3 GetVelocityAtPoint(uint32 BodyID, const glm::vec3& Point) override;
+    	glm::vec3 GetLinearVelocity(uint32 BodyID) override;
+    	glm::vec3 GetAngularVelocity(uint32 BodyID) override;
+    	glm::vec3 GetCenterOfMass(uint32 BodyID) override;
+    	
     	JPH::PhysicsSystem* GetPhysicsSystem() const { return JoltSystem.get(); }
 
     private:

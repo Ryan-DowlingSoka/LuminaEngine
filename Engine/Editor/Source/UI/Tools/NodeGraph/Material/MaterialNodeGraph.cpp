@@ -275,19 +275,7 @@ namespace Lumina
 
             const EMaterialInputType SourceType = InferOutputType(Spec.Pin);
             const int32 SourceComponents = FMaterialCompiler::GetComponentCount(SourceType);
-
-            // 0-component sources (Texture or unset) are reported as a generic mismatch -- the user
-            // probably forgot to extract a channel via a TextureSample / Mask node.
-            if (SourceType == EMaterialInputType::Texture)
-            {
-                EdNodeGraph::FError Error;
-                Error.Name        = "Invalid Connection";
-                Error.Description = FString("Cannot connect a texture object directly to '") + Spec.AttributeName
-                                  + "'. Sample the texture first (use a Texture Sample node).";
-                Error.Node        = SourcePin->GetOwningNode();
-                Compiler.AddError(Error);
-                continue;
-            }
+            
 
             if (SourceComponents == Spec.RequiredComponents)
             {

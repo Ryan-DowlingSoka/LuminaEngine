@@ -33,6 +33,9 @@ namespace Lumina
         /** Normalized distance along ray (0 = start, 1 = end). */
         PROPERTY(Script)
         float Fraction;
+        
+        PROPERTY(Script)
+        float Distance;
     };
 
     REFLECT()
@@ -52,6 +55,9 @@ namespace Lumina
         /** Seconds; 0 = one frame. */
         PROPERTY(Script)
         float DebugDuration = 0.0f;
+        
+        PROPERTY(Script)
+        bool bIgnoreSelf = false;
 
         PROPERTY(Script)
         glm::vec3 DebugHitColor = glm::vec3(0.0, 1.0f, 0.0f);
@@ -63,7 +69,13 @@ namespace Lumina
         ECollisionProfiles LayerMask;
 
         PROPERTY(Script)
-        TVector<int64> IgnoreBodies;
+        TVector<uint32> IgnoreBodies;
+        
+        FUNCTION(Script)
+        void AddIgnoredBody(uint32 Body)
+        {
+            IgnoreBodies.push_back(Body);
+        }
     };
 
     REFLECT()
@@ -98,6 +110,12 @@ namespace Lumina
         ECollisionProfiles LayerMask;
 
         PROPERTY(Script)
-        TVector<int64> IgnoreBodies;
+        TVector<uint32> IgnoreBodies;
+        
+        FUNCTION(Script)
+        void AddIgnoredBody(uint32 Body)
+        {
+            IgnoreBodies.push_back(Body);
+        }
     };
 }

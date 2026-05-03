@@ -159,17 +159,21 @@ end
 -- need cross-entity physics work can still go through self.World.
 
 function EntityScript:ApplyImpulse(Impulse)
-    self._Physics:ApplyImpulse(self.Entity, Impulse)
+    self._Physics:ApplyImpulse(Impulse)
 end
 
 function EntityScript:ApplyForce(Force)
-    self._Physics:ApplyForce(self.Entity, Force)
+    self._Physics:ApplyForce(Force)
 end
 
 function EntityScript:SetVelocity(Velocity)
-    self._Physics:SetVelocity(self.Entity, Velocity)
+    self._Physics:SetVelocity(Velocity)
 end
 
 function EntityScript:SetAngularVelocity(AngularVelocity)
-    self._Physics:SetAngularVelocity(self.Entity, AngularVelocity)
+    self._Physics:SetAngularVelocity(AngularVelocity)
+end
+
+function EntityScript:GetBodyID()
+	return self._Physics:GetEntityBodyID(self.Entity)
 end

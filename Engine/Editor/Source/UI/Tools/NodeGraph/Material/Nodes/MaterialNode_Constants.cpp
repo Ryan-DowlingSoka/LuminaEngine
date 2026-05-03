@@ -32,6 +32,7 @@ namespace Lumina
             {
                 ParameterName = FName(Buffer);
             }
+            ImGui::Spacing();
         }
         else
         {
@@ -151,8 +152,14 @@ namespace Lumina
 
     void CMaterialExpression_ConstantFloat2::GenerateDefinition(FMaterialCompiler& Compiler)
     {
-        if (bDynamic) Compiler.DefineFloat2Parameter(FullName, ParameterName, &Value.r);
-        else          Compiler.DefineConstantFloat2(FullName, &Value.r);
+        if (bDynamic)
+        {
+            Compiler.DefineFloat2Parameter(FullName, ParameterName, &Value.r);
+        }
+        else
+        {
+            Compiler.DefineConstantFloat2(FullName, &Value.r);
+        }
     }
     void CMaterialExpression_ConstantFloat2::DrawNodeBody()
     {
@@ -162,8 +169,14 @@ namespace Lumina
 
     void CMaterialExpression_ConstantFloat3::GenerateDefinition(FMaterialCompiler& Compiler)
     {
-        if (bDynamic) Compiler.DefineFloat3Parameter(FullName, ParameterName, &Value.r);
-        else          Compiler.DefineConstantFloat3(FullName, &Value.r);
+        if (bDynamic)
+        {
+            Compiler.DefineFloat3Parameter(FullName, ParameterName, &Value.r);
+        }
+        else
+        {
+            Compiler.DefineConstantFloat3(FullName, &Value.r);
+        }
     }
     void CMaterialExpression_ConstantFloat3::DrawNodeBody()
     {
@@ -173,8 +186,14 @@ namespace Lumina
 
     void CMaterialExpression_ConstantFloat4::GenerateDefinition(FMaterialCompiler& Compiler)
     {
-        if (bDynamic) Compiler.DefineFloat4Parameter(FullName, ParameterName, &Value.r);
-        else          Compiler.DefineConstantFloat4(FullName, &Value.r);
+        if (bDynamic)
+        {
+            Compiler.DefineFloat4Parameter(FullName, ParameterName, &Value.r);
+        }
+        else
+        {
+            Compiler.DefineConstantFloat4(FullName, &Value.r);
+        }
     }
     void CMaterialExpression_ConstantFloat4::DrawNodeBody()
     {

@@ -35,5 +35,10 @@ namespace Lumina::Physics
         virtual void OnAddImpulseAtPositionEvent(const SAddImpulseAtPositionEvent& Event) = 0;
         virtual void OnAddForceAtPositionEvent(const SAddForceAtPositionEvent& Event) = 0;
         virtual void OnSetGravityFactorEvent(const SSetGravityFactorEvent& Event) = 0;
+        
+        virtual glm::vec3 GetVelocityAtPoint(uint32 BodyID, const glm::vec3& Point) = 0;
+        virtual glm::vec3 GetLinearVelocity(uint32 BodyID) = 0;
+        virtual glm::vec3 GetAngularVelocity(uint32 BodyID) = 0;
+        virtual glm::vec3 GetCenterOfMass(uint32 BodyID)= 0;
     };
 }

@@ -131,13 +131,13 @@ namespace Lumina::Physics
     {
     public:
         
-        FIgnoreFilter(TSpan<const int64> InIgnoreBodies)
+        FIgnoreFilter(TSpan<const uint32> InIgnoreBodies)
             : IgnoreBodies(InIgnoreBodies)
         {}
         
         bool ShouldCollide(const JPH::BodyID& inBodyID) const override
         {
-            const int64 Key = inBodyID.GetIndexAndSequenceNumber();
+            const uint32 Key = inBodyID.GetIndexAndSequenceNumber();
             for (std::size_t i = 0; i < IgnoreBodies.size(); i++)
             {
                 if (IgnoreBodies[i] == Key)
@@ -148,7 +148,7 @@ namespace Lumina::Physics
             return true;
         }
     
-        TSpan<const int64> IgnoreBodies;
+        TSpan<const uint32> IgnoreBodies;
     };
 
     static FLayerInterfaceImpl                  GJoltLayerInterface;
@@ -598,7 +598,7 @@ namespace Lumina::Physics
         View.each([&](entt::entity EntityID, SRigidBodyComponent& BodyComponent, STransformComponent& TransformComponent)
         {
             const JPH::Body* Body = LockInterface.TryGetBody(JPH::BodyID(BodyComponent.BodyID));
-            if (Body == nullptr || Body->IsStatic() || !Body->IsActive())
+            if (Body == nullptr || Body->IsStatic())
             {
                 return;
             }
@@ -622,6 +622,8 @@ namespace Lumina::Physics
 
             TransformComponent.SetLocation(Location);
             TransformComponent.SetRotation(Rotation);
+
+            ECS::Utils::ResolveTransformChain(Registry, EntityID);
         });
 
         auto CharacterView = Registry.view<SCharacterPhysicsComponent, STransformComponent>();
@@ -947,6 +949,9 @@ namespace Lumina::Physics
         
         JPH::Vec3 SurfaceNormal = Body->GetWorldSpaceSurfaceNormal(Hit.mSubShapeID2, Ray.GetPointOnRay(Hit.mFraction));
         
+        glm::vec3 Distance  = (Settings.Start - Settings.End);
+        float Length        = glm::length(Distance);
+        
         SRayResult Result
         {
             .BodyID     = Hit.mBodyID.GetIndexAndSequenceNumber(),
@@ -955,7 +960,8 @@ namespace Lumina::Physics
             .End        = Settings.End,
             .Location   = JoltUtils::FromJPHRVec3(Ray.GetPointOnRay(Hit.mFraction)),
             .Normal     = glm::normalize(JoltUtils::FromJPHVec3(SurfaceNormal)),
-            .Fraction   = Hit.mFraction
+            .Fraction   = Hit.mFraction,
+            .Distance   = Hit.mFraction * Length,
         };
         
         return Result;
@@ -1467,5 +1473,39 @@ namespace Lumina::Physics
         JPH::BodyID BodyID = JPH::BodyID(Event.BodyID);
         
         Interface.SetGravityFactor(BodyID, Event.GravityFactor);
+    }
+
+    glm::vec3 FJoltPhysicsScene::GetVelocityAtPoint(uint32 BodyID, const glm::vec3& Point)
+    {
+        JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
+        JPH::BodyID JPHBodyID = JPH::BodyID(BodyID);
+        
+        JPH::Vec3 PointVelocity = Interface.GetPointVelocity(JPHBodyID, JoltUtils::ToJPHRVec3(Point));
+        
+        return JoltUtils::FromJPHVec3(PointVelocity);
+    }
+
+    glm::vec3 FJoltPhysicsScene::GetLinearVelocity(uint32 BodyID)
+    {
+        JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
+        JPH::BodyID JPHBodyID = JPH::BodyID(BodyID);
+        
+        return JoltUtils::FromJPHVec3(Interface.GetLinearVelocity(JPHBodyID));
+    }
+
+    glm::vec3 FJoltPhysicsScene::GetAngularVelocity(uint32 BodyID)
+    {
+        JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
+        JPH::BodyID JPHBodyID = JPH::BodyID(BodyID);
+        
+        return JoltUtils::FromJPHVec3(Interface.GetAngularVelocity(JPHBodyID));
+    }
+
+    glm::vec3 FJoltPhysicsScene::GetCenterOfMass(uint32 BodyID)
+    {
+        JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
+        JPH::BodyID JPHBodyID = JPH::BodyID(BodyID);
+        
+        return JoltUtils::FromJPHVec3(Interface.GetCenterOfMassPosition(JPHBodyID));
     }
 }
