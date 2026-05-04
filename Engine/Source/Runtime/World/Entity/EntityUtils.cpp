@@ -6,6 +6,7 @@
 #include "components/entitytags.h"
 #include "Components/PhysicsComponent.h"
 #include "Components/RelationshipComponent.h"
+#include "Components/ScriptComponent.h"
 #include "components/tagcomponent.h"
 #include "Components/TransformComponent.h"
 #include "Core/Object/Class.h"
@@ -826,11 +827,45 @@ namespace Lumina::ECS::Utils
             {
                 if (Storage.contains(Source) && !Storage.contains(To))
                 {
-                    if (ID != entt::type_hash<FRelationshipComponent>::value())
+                    // Scripts can't be bit-copied: their Lua refs point at the source's thread, the shared
+                    // FScript would be shared, and self.Entity/self.Transform would resolve to the source.
+                    // Re-emplace below with just the editable fields so on_construct re-runs SetupScriptComponent.
+                    if (ID == entt::type_hash<FRelationshipComponent>::value()
+                        || ID == entt::type_hash<SScriptComponent>::value())
                     {
-                        Storage.push(To, Storage.value(Source));
+                        continue;
                     }
+
+                    Storage.push(To, Storage.value(Source));
                 }
+            }
+
+            // Bit-copying STransformComponent carries the source's self-references; rebind so MarkDirty
+            // and ResolveIfDirty operate on the duplicate, not the original.
+            if (STransformComponent* NewTransform = Registry.try_get<STransformComponent>(To))
+            {
+                NewTransform->Bind(Registry, To);
+                Registry.emplace_or_replace<FNeedsTransformUpdate>(To);
+            }
+
+            // Same for the rigid body's Jolt BodyID — invalidate so the physics scene allocates a fresh body.
+            if (SRigidBodyComponent* NewBody = Registry.try_get<SRigidBodyComponent>(To))
+            {
+                NewBody->BodyID = 0xFFFFFFFF;
+                Registry.emplace_or_replace<FNeedsPhysicsBodyUpdate>(To);
+            }
+
+            // Emplace SScriptComponent with the editable fields only; on_construct fires the canonical
+            // attach flow which loads a unique FScript and binds fresh Lua refs to the new entity.
+            if (const SScriptComponent* SourceScript = Registry.try_get<SScriptComponent>(Source))
+            {
+                SScriptComponent NewScript;
+                NewScript.ScriptPath        = SourceScript->ScriptPath;
+                NewScript.PropertyOverrides = SourceScript->PropertyOverrides;
+                NewScript.UpdateStage       = SourceScript->UpdateStage;
+                NewScript.TickRate          = SourceScript->TickRate;
+                NewScript.bRunInEditor      = SourceScript->bRunInEditor;
+                Registry.emplace<SScriptComponent>(To, eastl::move(NewScript));
             }
 
             if (NewParent != entt::null)

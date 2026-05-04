@@ -17,7 +17,7 @@ LuminaModule({
     Dependencies =
     {
         "MiniAudio", "GLFW", "ImGui", "EA", "Tracy", "Luau", "EnkiTS",
-        "JoltPhysics", "RPMalloc", "XXHash", "Volk", "VKBootstrap",
+        "JoltPhysics", "RPMalloc", "XXHash", "Miniz", "Volk", "VKBootstrap",
         "TinyOBJLoader", "MeshOptimizer", "SPIRV-Reflect", "FastGLTF",
         "OpenFBX", "BasicUniversal", "RmlUi", "FreeType", "MikkTSpace",
         "Recast",

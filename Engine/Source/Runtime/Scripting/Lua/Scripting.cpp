@@ -518,7 +518,6 @@ namespace Lumina::Lua
         }>("WriteFileString");
         
         
-        RHITable.SetFunction<&IRenderContext::CompileEngineShaders>("CompileEngineShaders", GRenderContext);
         RHITable.SetFunction<&IRenderContext::WaitIdle>("WaitIdle", GRenderContext);
         RHITable.SetFunction<&IRenderContext::GetAllocatedMemory>("GetAllocatedMemory", GRenderContext);
         RHITable.SetFunction<&IRenderContext::GetAvailableMemory>("GetAvailableMemory", GRenderContext);

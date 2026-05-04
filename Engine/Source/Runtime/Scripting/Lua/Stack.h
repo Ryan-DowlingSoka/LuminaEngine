@@ -421,6 +421,12 @@ namespace Lumina::Lua
         }
     };
     
+    // TVector is encoded as a Lua buffer/table, not userdata, so a reference parameter
+    // (`const TVector<T>&`) must read it by value rather than going through the userdata-
+    // pointer path that the generic TStack<T&> uses. Delegate to the value specialization.
+    template<typename T>
+    struct TStack<TVector<T>&> : TStack<TVector<T>> {};
+
     template<typename T>
     requires(eastl::is_arithmetic_v<T>)
     struct TStack<TVector<T>>
@@ -429,17 +435,18 @@ namespace Lumina::Lua
         
         static void Push(lua_State* State, const TVector<T>& Value)
         {
-            void* Buffer = lua_newbuffer(State, Value.size());
-            Memory::Memcpy(Buffer, Value.data(), Value.size() * sizeof(T));
+            const size_t Bytes = Value.size() * sizeof(T);
+            void* Buffer = lua_newbuffer(State, Bytes);
+            Memory::Memcpy(Buffer, Value.data(), Bytes);
         }
-        
+
         static TVector<T> Get(lua_State* State, int Index)
         {
             size_t Size = 0;
             void* Buffer = luaL_checkbuffer(State, Index, &Size);
-        
+
             TVector<T> Result(Size / sizeof(T));
-            Memory::Memcpy(Result.data(), Buffer, Size * sizeof(T));
+            Memory::Memcpy(Result.data(), Buffer, Size);
             return Result;
         }
         

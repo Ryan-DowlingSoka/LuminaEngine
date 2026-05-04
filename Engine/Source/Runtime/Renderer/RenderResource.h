@@ -929,8 +929,6 @@ namespace Lumina
 		static FRHIPixelShaderRef GetPixelShader(const FName& Path, TSpan<FString> Macros = {});
 		static FRHIComputeShaderRef GetComputeShader(const FName& Path, TSpan<FString> Macros = {});
 		static FRHIGeometryShaderRef GetGeometryShader(const FName& Path, TSpan<FString> Macros = {});
-		static FRHIMeshShaderRef GetMeshShader(const FName& Path, TSpan<FString> Macros = {});
-		static FRHITaskShaderRef GetTaskShader(const FName& Path, TSpan<FString> Macros = {});
 
 		template<typename T>
 		TRefCountPtr<T> GetShader(FName Key, TSpan<FString> Macros = {})

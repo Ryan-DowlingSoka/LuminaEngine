@@ -13,6 +13,7 @@
 #include "Renderer/RHIGlobals.h"
 #include "Renderer/ShaderCompiler.h"
 #include "Thumbnails/ThumbnailManager.h"
+#include "Tools/PrimitiveManager/PrimitiveManager.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "UI/Tools/NodeGraph/Material/MaterialCompiler.h"
 #include "UI/Tools/NodeGraph/Material/MaterialNodeGraph.h"
@@ -116,7 +117,7 @@ namespace Lumina
 
         MeshEntity = World->ConstructEntity("MeshEntity");
         SStaticMeshComponent& StaticMeshComponent = World->GetEntityRegistry().emplace<SStaticMeshComponent>(MeshEntity);
-        StaticMeshComponent.StaticMesh = CThumbnailManager::Get().SphereMesh;
+        StaticMeshComponent.StaticMesh = CPrimitiveManager::Get().SphereMesh;
 
         const STransformComponent& MeshTransform = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
         SetOrbitTarget(MeshTransform.GetLocation(), 4.0f);
@@ -171,11 +172,11 @@ namespace Lumina
         SStaticMeshComponent& Component = World->GetEntityRegistry().get<SStaticMeshComponent>(MeshEntity);
         switch (Mesh)
         {
-        case EDebugMesh::Sphere:    Component.StaticMesh = CThumbnailManager::Get().SphereMesh;   break;
-        case EDebugMesh::Cube:      Component.StaticMesh = CThumbnailManager::Get().CubeMesh;     break;
-        case EDebugMesh::Plane:     Component.StaticMesh = CThumbnailManager::Get().PlaneMesh;    break;
-        case EDebugMesh::Cylinder:  Component.StaticMesh = CThumbnailManager::Get().CylinderMesh; break;
-        case EDebugMesh::Cone:      Component.StaticMesh = CThumbnailManager::Get().ConeMesh;     break;
+        case EDebugMesh::Sphere:    Component.StaticMesh = CPrimitiveManager::Get().SphereMesh;   break;
+        case EDebugMesh::Cube:      Component.StaticMesh = CPrimitiveManager::Get().CubeMesh;     break;
+        case EDebugMesh::Plane:     Component.StaticMesh = CPrimitiveManager::Get().PlaneMesh;    break;
+        case EDebugMesh::Cylinder:  Component.StaticMesh = CPrimitiveManager::Get().CylinderMesh; break;
+        case EDebugMesh::Cone:      Component.StaticMesh = CPrimitiveManager::Get().ConeMesh;     break;
         }
     }
 

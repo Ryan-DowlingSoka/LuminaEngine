@@ -1,12 +1,10 @@
 #include "pch.h"
 #include "PakArchive.h"
-
-#include <algorithm>
-#include <cstring>
 #include <fstream>
-
+#include "miniz.h"
 #include "Core/Templates/LuminaTemplate.h"
 #include "Log/Log.h"
+#include "Memory/SmartPtr.h"
 
 namespace Lumina
 {
@@ -36,6 +34,15 @@ namespace Lumina
                 ? FString(Path.data(), Path.size())
                 : FString(Path.data(), Path.data() + Second);
         }
+
+        struct FParsedEntry
+        {
+            FFixedString Path;
+            uint64 Offset;
+            uint64 CompressedSize;
+            uint64 UncompressedSize;
+            uint8  Method;
+        };
     }
 
     TSharedPtr<FPakArchive> FPakArchive::Open(FStringView NativeFilePath)
@@ -55,18 +62,18 @@ namespace Lumina
             return nullptr;
         }
 
-        TSharedPtr<FPakArchive> Archive(new FPakArchive());
-        Archive->RawData.resize((size_t)FileSize);
+        TVector<uint8> Compressed;
+        Compressed.resize((size_t)FileSize);
 
         File.seekg(0, std::ios::beg);
-        if (!File.read(reinterpret_cast<char*>(Archive->RawData.data()), FileSize))
+        if (!File.read(reinterpret_cast<char*>(Compressed.data()), FileSize))
         {
             LOG_ERROR("FPakArchive: read failed for '{}'", FString(NativeFilePath.data(), NativeFilePath.size()).c_str());
             return nullptr;
         }
 
-        const uint8* Data = Archive->RawData.data();
-        const size_t Size = Archive->RawData.size();
+        const uint8* Data = Compressed.data();
+        const size_t Size = Compressed.size();
 
         FPakHeader Header{};
         size_t Cursor = 0;
@@ -93,7 +100,11 @@ namespace Lumina
         }
 
         Cursor = (size_t)Header.TocOffset;
-        Archive->Entries.reserve(Header.EntryCount);
+
+        TVector<FParsedEntry> Parsed;
+        Parsed.reserve(Header.EntryCount);
+
+        uint64 TotalUncompressed = 0;
 
         for (uint32 i = 0; i < Header.EntryCount; ++i)
         {
@@ -107,27 +118,84 @@ namespace Lumina
             FFixedString Path(reinterpret_cast<const char*>(Data + Cursor), PathLen);
             Cursor += PathLen;
 
-            FPakEntry Entry{};
-            if (!ReadPOD(Data, Size, Cursor, Entry.Offset) || !ReadPOD(Data, Size, Cursor, Entry.Size))
+            FParsedEntry P{};
+            P.Path = Move(Path);
+            uint8 Pad[7] = {};
+            if (!ReadPOD(Data, Size, Cursor, P.Offset)
+             || !ReadPOD(Data, Size, Cursor, P.CompressedSize)
+             || !ReadPOD(Data, Size, Cursor, P.UncompressedSize)
+             || !ReadPOD(Data, Size, Cursor, P.Method)
+             || Cursor + sizeof(Pad) > Size)
             {
-                LOG_ERROR("FPakArchive: TOC entry {} offsets read failed", i);
+                LOG_ERROR("FPakArchive: TOC entry {} fields read failed", i);
                 return nullptr;
             }
+            Cursor += sizeof(Pad);
 
             // Catch truncated PAKs.
-            if (Entry.Offset + Entry.Size > (uint64)Size || Entry.Offset >= (uint64)Size)
+            if (P.Offset + P.CompressedSize > (uint64)Size || P.Offset >= (uint64)Size)
             {
-                LOG_ERROR("FPakArchive: entry '{}' points outside the file (offset={}, size={}, file size={})",
-                    Path.c_str(), Entry.Offset, Entry.Size, Size);
+                LOG_ERROR("FPakArchive: entry '{}' points outside the file (offset={}, comp={}, file size={})",
+                    P.Path, P.Offset, P.CompressedSize, Size);
                 return nullptr;
             }
 
-            Archive->Entries.emplace(Move(Path), Entry);
+            TotalUncompressed += P.UncompressedSize;
+            Parsed.emplace_back(Move(P));
         }
 
-        LOG_INFO("FPakArchive: loaded '{}' ({} entries, {} bytes)",
+        TSharedPtr<FPakArchive> Archive(new FPakArchive{});
+        Archive->RawData.resize((size_t)TotalUncompressed);
+        Archive->Entries.reserve(Parsed.size());
+
+        uint64 DestCursor = 0;
+        for (const FParsedEntry& P : Parsed)
+        {
+            const uint8* Src = Data + P.Offset;
+            uint8* Dst = Archive->RawData.data() + DestCursor;
+
+            if (P.Method == (uint8)EPakCompression::None)
+            {
+                if (P.CompressedSize != P.UncompressedSize)
+                {
+                    LOG_ERROR("FPakArchive: entry '{}' uncompressed but sizes differ (comp={}, uncomp={})",
+                        P.Path.c_str(), P.CompressedSize, P.UncompressedSize);
+                    return nullptr;
+                }
+                if (P.UncompressedSize > 0)
+                {
+                    std::memcpy(Dst, Src, (size_t)P.UncompressedSize);
+                }
+            }
+            else if (P.Method == (uint8)EPakCompression::Deflate)
+            {
+                mz_ulong OutLen = (mz_ulong)P.UncompressedSize;
+                int Ret = mz_uncompress(Dst, &OutLen, Src, (mz_ulong)P.CompressedSize);
+                if (Ret != MZ_OK || OutLen != P.UncompressedSize)
+                {
+                    LOG_ERROR("FPakArchive: decompress failed for '{}' (ret={}, got={}, expected={})",
+                        P.Path.c_str(), Ret, (uint64)OutLen, P.UncompressedSize);
+                    return nullptr;
+                }
+            }
+            else
+            {
+                LOG_ERROR("FPakArchive: entry '{}' has unknown compression method {}",
+                    P.Path.c_str(), (uint32)P.Method);
+                return nullptr;
+            }
+
+            FPakEntry Entry{};
+            Entry.Offset = DestCursor;
+            Entry.Size   = P.UncompressedSize;
+            Archive->Entries.emplace(P.Path, Entry);
+
+            DestCursor += P.UncompressedSize;
+        }
+
+        LOG_INFO("FPakArchive: loaded '{}' ({} entries, {} bytes on disk, {} bytes uncompressed)",
             FString(NativeFilePath.data(), NativeFilePath.size()).c_str(),
-            Header.EntryCount, Size);
+            Header.EntryCount, Size, TotalUncompressed);
 
         return Archive;
     }
@@ -162,7 +230,7 @@ namespace Lumina
         for (const auto& [Key, Entry] : Entries)
         {
             FString Alias = TopLevelOf(FStringView(Key.data(), Key.size()));
-            if (!Alias.empty() && std::find(Out.begin(), Out.end(), Alias) == Out.end())
+            if (!Alias.empty() && eastl::find(Out.begin(), Out.end(), Alias) == Out.end())
             {
                 Out.push_back(Move(Alias));
             }

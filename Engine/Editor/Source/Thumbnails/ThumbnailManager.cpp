@@ -13,6 +13,7 @@
 #include "Renderer/RHIGlobals.h"
 
 #include "TaskSystem/TaskSystem.h"
+#include "Tools/PrimitiveManager/PrimitiveManager.h"
 #include "World/Entity/Components/EnvironmentComponent.h"
 #include "World/Entity/Components/LightComponent.h"
 #include "World/Entity/Components/ParticleSystemComponent.h"
@@ -34,107 +35,6 @@ namespace Lumina
     {
         (void)CPackage::OnPackageDestroyed.AddMember(this, &ThisClass::OnPackageDestroyed);
 
-        // Engine primitive meshes live in the in-memory transient package with
-        // stable, deterministic GUIDs so worlds can reference them and survive
-        // a save/load cycle without needing a .lasset on disk.
-        CPackage* TransientPackage = CPackage::GetTransientPackage();
-
-        {
-            TUniquePtr<FMeshResource> Resource = MakeUnique<FMeshResource>();
-            PrimitiveMeshes::GenerateCube(Resource->Vertices.emplace<TVector<FVertex>>(), Resource->Indices);
-
-            FGeometrySurface Surface;
-            Surface.ID = "CubeMesh";
-            Surface.IndexCount = (uint32)Resource->Indices.size();
-            Surface.StartIndex = 0;
-            Surface.MaterialIndex = 0;
-            Resource->GeometrySurfaces.push_back(Surface);
-
-            CubeMesh = NewObject<CStaticMesh>(TransientPackage, "EngineCubeMesh", FGuid::NewDeterministic("Engine.PrimitiveMesh.Cube"));
-            CubeMesh->Materials.resize(1);
-            CubeMesh->SetMeshResource(Move(Resource));
-        }
-
-        {
-            TUniquePtr<FMeshResource> Resource = MakeUnique<FMeshResource>();
-            PrimitiveMeshes::GenerateSphere(Resource->Vertices.emplace<TVector<FVertex>>(), Resource->Indices);
-
-            FGeometrySurface Surface;
-            Surface.ID = "SphereMesh";
-            Surface.IndexCount = (uint32)Resource->Indices.size();
-            Surface.StartIndex = 0;
-            Surface.MaterialIndex = 0;
-            Resource->GeometrySurfaces.push_back(Surface);
-
-            SphereMesh = NewObject<CStaticMesh>(TransientPackage, "EngineSphereMesh", FGuid::NewDeterministic("Engine.PrimitiveMesh.Sphere"));
-            SphereMesh->Materials.resize(1);
-            SphereMesh->SetMeshResource(Move(Resource));
-        }
-
-        {
-            TUniquePtr<FMeshResource> Resource = MakeUnique<FMeshResource>();
-            PrimitiveMeshes::GeneratePlane(Resource->Vertices.emplace<TVector<FVertex>>(), Resource->Indices);
-
-            FGeometrySurface Surface;
-            Surface.ID = "PlaneMesh";
-            Surface.IndexCount = (uint32)Resource->Indices.size();
-            Surface.StartIndex = 0;
-            Surface.MaterialIndex = 0;
-            Resource->GeometrySurfaces.push_back(Surface);
-
-            PlaneMesh = NewObject<CStaticMesh>(TransientPackage, "EnginePlaneMesh", FGuid::NewDeterministic("Engine.PrimitiveMesh.Plane"));
-            PlaneMesh->Materials.resize(1);
-            PlaneMesh->SetMeshResource(Move(Resource));
-        }
-
-        {
-            TUniquePtr<FMeshResource> Resource = MakeUnique<FMeshResource>();
-            PrimitiveMeshes::GenerateCylinder(Resource->Vertices.emplace<TVector<FVertex>>(), Resource->Indices);
-
-            FGeometrySurface Surface;
-            Surface.ID = "CylinderMesh";
-            Surface.IndexCount = (uint32)Resource->Indices.size();
-            Surface.StartIndex = 0;
-            Surface.MaterialIndex = 0;
-            Resource->GeometrySurfaces.push_back(Surface);
-
-            CylinderMesh = NewObject<CStaticMesh>(TransientPackage, "EngineCylinderMesh", FGuid::NewDeterministic("Engine.PrimitiveMesh.Cylinder"));
-            CylinderMesh->Materials.resize(1);
-            CylinderMesh->SetMeshResource(Move(Resource));
-        }
-
-        {
-            TUniquePtr<FMeshResource> Resource = MakeUnique<FMeshResource>();
-            PrimitiveMeshes::GenerateCone(Resource->Vertices.emplace<TVector<FVertex>>(), Resource->Indices);
-
-            FGeometrySurface Surface;
-            Surface.ID = "ConeMesh";
-            Surface.IndexCount = (uint32)Resource->Indices.size();
-            Surface.StartIndex = 0;
-            Surface.MaterialIndex = 0;
-            Resource->GeometrySurfaces.push_back(Surface);
-
-            ConeMesh = NewObject<CStaticMesh>(TransientPackage, "EngineConeMesh", FGuid::NewDeterministic("Engine.PrimitiveMesh.Cone"));
-            ConeMesh->Materials.resize(1);
-            ConeMesh->SetMeshResource(Move(Resource));
-        }
-        
-        {
-            TUniquePtr<FMeshResource> Resource = MakeUnique<FMeshResource>();
-            PrimitiveMeshes::GenerateCapsule(Resource->Vertices.emplace<TVector<FVertex>>(), Resource->Indices);
-
-            FGeometrySurface Surface;
-            Surface.ID = "CapsuleMesh";
-            Surface.IndexCount = (uint32)Resource->Indices.size();
-            Surface.StartIndex = 0;
-            Surface.MaterialIndex = 0;
-            Resource->GeometrySurfaces.push_back(Surface);
-
-            CapsuleMesh = NewObject<CStaticMesh>(TransientPackage, "EngineCapsuleMesh", FGuid::NewDeterministic("Engine.PrimitiveMesh.Capsule"));
-            CapsuleMesh->Materials.resize(1);
-            CapsuleMesh->SetMeshResource(Move(Resource));
-        }
-        
         constexpr float kThumbnailFOV       = 35.0f;
         constexpr float kMeshFramingScale   = 3.2f;   // Margin around bounds
         constexpr float kSphereFramingScale = 5.5f;   // Sphere fills ~60% of frame
@@ -174,7 +74,7 @@ namespace Lumina
                 Scene.SetCameraTransform(CamPos, Cen, kThumbnailFOV);
             });
 
-        RegisterThumbnailRenderer(CMaterialInterface::StaticClass(), [this, SetupStudioLighting](FThumbnailScene& Scene, CObject* Asset)
+        RegisterThumbnailRenderer(CMaterialInterface::StaticClass(), [SetupStudioLighting](FThumbnailScene& Scene, CObject* Asset)
             {
                 CMaterialInterface* Material = Cast<CMaterialInterface>(Asset);
                 if (Material == nullptr)
@@ -197,7 +97,7 @@ namespace Lumina
 
                 entt::entity MeshEntity = World->ConstructEntity("PreviewSphere");
                 SStaticMeshComponent& MeshComp = Registry.emplace<SStaticMeshComponent>(MeshEntity);
-                MeshComp.StaticMesh = SphereMesh;
+                MeshComp.StaticMesh = CPrimitiveManager::Get().SphereMesh;
                 if (!bIsPostProcess)
                 {
                     MeshComp.MaterialOverrides.push_back(Material);

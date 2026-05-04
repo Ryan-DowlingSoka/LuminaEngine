@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Audio/AudioContext.h"
+#include "Audio/ProceduralAudioStream.h"
 #include "Containers/Array.h"
 #include "Core/Threading/Thread.h"
 #include "Core/Threading/Atomic.h"
@@ -31,6 +32,10 @@ namespace Lumina
 		void UpdateListenerPosition(glm::vec3 Location, glm::quat Rotation) override;
 		void StopAllSounds() override;
 
+		TSharedPtr<FProceduralAudioStream> CreateProceduralStream(uint32 SampleRate, uint32 ChannelCount, uint32 BufferFrames) override;
+		FAudioHandle PlayProceduralStream(TSharedPtr<FProceduralAudioStream> Stream, bool bSpatialized,
+			glm::vec3 Position, float Volume, float Pitch, float MinDistance, float MaxDistance) override;
+
 	private:
 
 		FAudioHandle AllocateHandle();
@@ -45,7 +50,26 @@ namespace Lumina
 			ma_decoder Decoder;
 			ma_sound Sound;
 			bool bInitialized = false;
+
+			// When non-null, this is a procedural sound; ma_sound is attached to Procedural's ring buffer
+			// instead of Decoder. Procedural sounds are never auto-cleaned by CleanupFinishedSounds.
+			TSharedPtr<FProceduralAudioStream> Procedural;
 		};
+
+		// Side queue for procedural Play commands; the unioned FAudioCommand can't carry a TSharedPtr.
+		struct FPendingProceduralStart
+		{
+			FAudioHandle Handle;
+			TSharedPtr<FProceduralAudioStream> Stream;
+			bool bSpatialized;
+			glm::vec3 Position;
+			float Volume;
+			float Pitch;
+			float MinDistance;
+			float MaxDistance;
+		};
+		TConcurrentQueue<FPendingProceduralStart> PendingProceduralStarts;
+		void ProcessPendingProceduralStart(const FPendingProceduralStart& Start);
 
 		FActiveSound* FindSound(FAudioHandle Handle);
 		void UninitSound(FActiveSound& Sound);

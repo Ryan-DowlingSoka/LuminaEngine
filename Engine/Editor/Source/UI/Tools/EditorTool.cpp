@@ -1,5 +1,8 @@
 ﻿
 #include "EditorTool.h"
+
+#include <Tools/PrimitiveManager/PrimitiveManager.h>
+
 #include "imgui_internal.h"
 #include "ToolFlags.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
@@ -306,7 +309,7 @@ namespace Lumina
         entt::entity FloorEntity = World->ConstructEntity("FloorPlane", Transform);
         World->GetEntityRegistry().emplace<FHideInSceneOutliner>(FloorEntity);
         SStaticMeshComponent& MeshComponent = World->GetEntityRegistry().emplace<SStaticMeshComponent>(FloorEntity);
-        MeshComponent.StaticMesh = CThumbnailManager::Get().PlaneMesh;
+        MeshComponent.StaticMesh = CPrimitiveManager::Get().PlaneMesh;
         
         return FloorEntity;
     }
@@ -502,6 +505,8 @@ namespace Lumina
         const STransformComponent& EntityTransform = World->GetEntityRegistry().get<STransformComponent>(Entity);
         STransformComponent& EditorTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
 
+        // Resolve to world space — local would mis-frame any entity parented under another.
+        const glm::vec3 EntityWorldLocation = EntityTransform.GetWorldLocation();
         const float FocusDistance = (CameraState.Mode == EEditorCameraMode::Orbit) ? CameraState.OrbitDistance : 10.0f;
 
         if (CameraState.Mode == EEditorCameraMode::Orbit)
@@ -509,16 +514,16 @@ namespace Lumina
             // Re-anchor on the focused entity; the orbit-target lerp in TickEditorCamera
             // drives toward this position over a few frames. Anchor snaps so a later
             // ResetOrbitPan returns to the focused entity.
-            CameraState.OrbitAnchor      = EntityTransform.GetLocation();
-            CameraState.FocusOrbitTarget = EntityTransform.GetLocation();
+            CameraState.OrbitAnchor      = EntityWorldLocation;
+            CameraState.FocusOrbitTarget = EntityWorldLocation;
             CameraState.FocusOrbitDistance = FocusDistance;
             CameraState.bFocusInterp     = true;
             return;
         }
 
         glm::vec3 CurrentForward = EditorTransform.GetForward();
-        CameraState.FocusFreePosition = EntityTransform.GetLocation() - CurrentForward * FocusDistance;
-        CameraState.FocusFreeRotation = Math::FindLookAtRotation(EntityTransform.GetLocation(), CameraState.FocusFreePosition);
+        CameraState.FocusFreePosition = EntityWorldLocation - CurrentForward * FocusDistance;
+        CameraState.FocusFreeRotation = Math::FindLookAtRotation(EntityWorldLocation, CameraState.FocusFreePosition);
         CameraState.bFocusInterp      = true;
     }
 

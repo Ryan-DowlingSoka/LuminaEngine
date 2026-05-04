@@ -9,7 +9,7 @@ namespace Lumina
     struct SAudioSystem
     {
         GENERATED_BODY()
-        ENTITY_SYSTEM(RequiresUpdate(EUpdateStage::PrePhysics), RequiresUpdate(EUpdateStage::Paused))
+        ENTITY_SYSTEM(RequiresUpdate(EUpdateStage::PostPhysics))
 
         static void Startup(const FSystemContext& Context) noexcept;
         static void Update(const FSystemContext& Context) noexcept;

@@ -12,7 +12,7 @@ CameraScript.Exports = {
 	PitchSensitivity = 0.25,
 	-- Pitch is the camera's elevation angle around the target.
 	-- Positive = above target looking down, negative = below.
-	MinPitch         = -70.0,
+	MinPitch         = -1.0,
 	MaxPitch         =  80.0,
 	InitialPitch     =  15.0,
 	FollowSmoothing  = 12.0,

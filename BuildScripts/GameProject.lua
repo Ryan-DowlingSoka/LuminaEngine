@@ -164,7 +164,7 @@ local function SetupWorkspace(Def)
             symbols "Off"
             runtime "Release"
             defines { "NDEBUG", "LE_SHIPPING", "LUMINA_SHIPPING" }
-            removedefines { "TRACY_ENABLE" }
+            removedefines { "TRACY_ENABLE", "JPH_DEBUG_RENDERER" }
         filter {}
 end
 
@@ -260,12 +260,24 @@ local function SetupProject(Def)
             return Out
         end
 
+        -- Tracy is Debug/Development-only. Shipping has TRACY_ENABLE removed
+        -- (macros expand to no-ops) and must not link Tracy-Shipping.dll.
+        local function StripTracy(Libs)
+            local Out = {}
+            for _, Lib in ipairs(Libs) do
+                if Lib ~= "Tracy" then
+                    table.insert(Out, Lib)
+                end
+            end
+            return Out
+        end
+
         filter "configurations:Debug"
             links(WithSuffix(BaseLinks, "-Debug"))
         filter "configurations:Development"
             links(WithSuffix(BaseLinks, "-Development"))
         filter "configurations:Shipping"
-            links(WithSuffix(BaseLinks, "-Shipping"))
+            links(WithSuffix(StripTracy(BaseLinks), "-Shipping"))
         filter {}
 
         -- Raw extra links are passed through verbatim (user is responsible

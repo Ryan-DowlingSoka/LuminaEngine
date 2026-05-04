@@ -26,6 +26,14 @@ namespace Lumina
         PROPERTY(Script, Editable, Category = "Physics")
         float Mass = 1.0f;
 
+        /** When true, Mass overrides the value Jolt would compute from shape density. */
+        PROPERTY(Script, Editable, Category = "Physics")
+        bool bOverrideMass = false;
+
+        /** Local-space offset applied to the body's center of mass. Lower the Y for car-like weight bias. */
+        PROPERTY(Script, Editable, Category = "Physics")
+        glm::vec3 CenterOfMassOffset = glm::vec3(0.0f);
+
         /** Layer and mask controlling which bodies this one collides with. */
         PROPERTY(Script, Editable, Category = "Physics")
         FCollisionProfile CollisionProfile;

@@ -1736,8 +1736,9 @@ namespace Lumina
             return;
         }
 
-        glm::vec3 UpdatedForward    = TransformComponent.GetRotation() * FViewVolume::ForwardAxis;
-        glm::vec3 UpdatedUp         = TransformComponent.GetRotation() * FViewVolume::UpAxis;
+        const glm::quat WorldRotation = TransformComponent.GetWorldRotation();
+        glm::vec3 UpdatedForward    = WorldRotation * FViewVolume::ForwardAxis;
+        glm::vec3 UpdatedUp         = WorldRotation * FViewVolume::UpAxis;
 
         float InnerDegrees = SpotLight.InnerConeAngle;
         float OuterDegrees = SpotLight.OuterConeAngle;
@@ -1774,7 +1775,7 @@ namespace Lumina
             Req.DesiredPixels   = DesiredPixels;
             Req.DistanceToCamera = Dist;
             Req.Position        = Light.Position;
-            Req.Direction       = UpdatedForward;
+            Req.Direction       = -UpdatedForward;
             Req.Up              = UpdatedUp;
             Req.Attenuation     = SpotLight.Attenuation;
             Req.OuterFOVDegrees = OuterDegrees;
@@ -3004,11 +3005,6 @@ namespace Lumina
             .SetVertexShader(VertexShader)
             .SetPixelShader(PixelShader);
 
-        // Begin once so the Clear loadop fires exactly once and wipes the
-        // whole atlas. Empty-pass case: no lights still needs the clear so
-        // stale depth doesn't leak; BeginRenderPass + EndRenderPass handles it.
-        CmdList.BeginRenderPass(RenderPass);
-
         for (uint32 LightIdx = 0; LightIdx < PointShadows.size(); ++LightIdx)
         {
             const FLightShadow& LightShadow = PointShadows[LightIdx];
@@ -3085,8 +3081,6 @@ namespace Lumina
                 }
             }
         }
-
-        CmdList.EndRenderPass();
     }
 
     void FForwardRenderScene::SpotShadowPass(ICommandList& CmdList)
@@ -3099,7 +3093,8 @@ namespace Lumina
         LUMINA_PROFILE_SECTION_COLORED("Spot Shadow Pass", tracy::Color::DeepPink4);
         
         FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("ShadowMappingPixel.slang");
-        
+        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
+
         // See PointShadowPass for why these bias values are lower than the CSM pass.
         FRenderState RenderState; RenderState
             .SetDepthStencilState(FDepthStencilState()
@@ -3120,9 +3115,7 @@ namespace Lumina
         FRenderPassDesc RenderPass; RenderPass
             .SetDepthAttachment(Depth)
             .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
-
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
-
+        
         // Pipeline desc reused across batches; per-batch loop swaps in a WPO
         // VS variant when the material has WorldPositionOffset connected.
         FGraphicsPipelineDesc PipelineDescTemplate; PipelineDescTemplate
@@ -3134,7 +3127,7 @@ namespace Lumina
             .SetPixelShader(PixelShader);
 
         const TVector<FLightShadow>& SpotShadows = PackedShadows[(uint32)ELightType::Spot];
-
+        
         for (uint32 SpotIdx = 0; SpotIdx < SpotShadows.size(); ++SpotIdx)
         {
             const FLightShadow& Shadow  = SpotShadows[SpotIdx];
@@ -3170,7 +3163,7 @@ namespace Lumina
             );
 
             // ShadowMappingVert push = { int ShadowDataIndex; int ViewIndex; }.
-            // Spot lights only use ViewProjection[0], so ViewIndex is 0.
+            // Spotlights only use ViewProjection[0], so ViewIndex is 0.
             struct { int32 ShadowDataIndex; int32 ViewIndex; } SpotPush;
             SpotPush.ShadowDataIndex = Shadow.ShadowDataIndex;
             SpotPush.ViewIndex       = 0;
@@ -3200,8 +3193,6 @@ namespace Lumina
                 CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
             }
         }
-
-        CmdList.EndRenderPass();
     }
 
     void FForwardRenderScene::CascadedShowPass(ICommandList& CmdList)
@@ -3271,10 +3262,7 @@ namespace Lumina
 
             const uint32 ViewIndex = CascadeViewBase + c;
             const uint32 ViewBase  = ViewIndex * NumDrawsPerView;
-            // Meshlet-driven: one indirect "instance" per surviving meshlet,
-            // indirects sourced from this cascade's slice of the unified
-            // IndirectArgs buffer. Per-batch pipeline pick supports per-
-            // material WPO shadow VS variants.
+
             for (uint32 OpaqueIdx : OpaqueDrawList)
             {
                 const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];

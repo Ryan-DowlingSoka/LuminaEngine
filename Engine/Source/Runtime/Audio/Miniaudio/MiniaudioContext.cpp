@@ -133,6 +133,30 @@ namespace Lumina
 	{
 		CommandQueue.enqueue(FAudioCommand::MakeStopAll());
 	}
+
+	TSharedPtr<FProceduralAudioStream> FMiniaudioContext::CreateProceduralStream(uint32 SampleRate, uint32 ChannelCount, uint32 BufferFrames)
+	{
+		return MakeShared<FProceduralAudioStream>(SampleRate, ChannelCount, BufferFrames);
+	}
+
+	FAudioHandle FMiniaudioContext::PlayProceduralStream(TSharedPtr<FProceduralAudioStream> Stream, bool bSpatialized,
+		glm::vec3 Position, float Volume, float Pitch, float MinDistance, float MaxDistance)
+	{
+		FAudioHandle Handle = AllocateHandle();
+
+		FPendingProceduralStart Start;
+		Start.Handle       = Handle;
+		Start.Stream       = eastl::move(Stream);
+		Start.bSpatialized = bSpatialized;
+		Start.Position     = Position;
+		Start.Volume       = Volume;
+		Start.Pitch        = Pitch;
+		Start.MinDistance  = MinDistance;
+		Start.MaxDistance  = MaxDistance;
+
+		PendingProceduralStarts.enqueue(eastl::move(Start));
+		return Handle;
+	}
 	
 	void FMiniaudioContext::AudioThreadMain()
 	{
@@ -151,6 +175,12 @@ namespace Lumina
 			{
 				ProcessCommand(Cmd);
 				++Processed;
+			}
+
+			FPendingProceduralStart Start;
+			while (PendingProceduralStarts.try_dequeue(Start))
+			{
+				ProcessPendingProceduralStart(Start);
 			}
 
 			CleanupFinishedSounds();
@@ -308,11 +338,56 @@ namespace Lumina
 		}
 	}
 
+	void FMiniaudioContext::ProcessPendingProceduralStart(const FPendingProceduralStart& Start)
+	{
+		if (!Start.Stream || Start.Stream->GetDataSource() == nullptr)
+		{
+			LOG_WARN("Audio: Procedural start with invalid stream");
+			return;
+		}
+
+		TUniquePtr<FActiveSound> NewSound = MakeUnique<FActiveSound>();
+		NewSound->Handle     = Start.Handle;
+		NewSound->Procedural = Start.Stream;
+
+		if (ma_sound_init_from_data_source(&Engine, Start.Stream->GetDataSource(), 0, nullptr, &NewSound->Sound) != MA_SUCCESS)
+		{
+			LOG_WARN("Audio: Failed to init procedural sound");
+			return;
+		}
+
+		NewSound->bInitialized = true;
+
+		ma_sound_set_volume(&NewSound->Sound, Start.Volume);
+		ma_sound_set_pitch(&NewSound->Sound, Start.Pitch);
+		ma_sound_set_looping(&NewSound->Sound, MA_FALSE);
+
+		if (Start.bSpatialized)
+		{
+			ma_sound_set_spatialization_enabled(&NewSound->Sound, MA_TRUE);
+			ma_sound_set_position(&NewSound->Sound, Start.Position.x, Start.Position.y, Start.Position.z);
+			ma_sound_set_min_distance(&NewSound->Sound, Start.MinDistance);
+			ma_sound_set_max_distance(&NewSound->Sound, Start.MaxDistance);
+		}
+		else
+		{
+			ma_sound_set_spatialization_enabled(&NewSound->Sound, MA_FALSE);
+		}
+
+		ma_sound_start(&NewSound->Sound);
+		ActiveSounds.push_back(eastl::move(NewSound));
+	}
+
 	void FMiniaudioContext::CleanupFinishedSounds()
 	{
 		for (int32 i = (int32)ActiveSounds.size() - 1; i >= 0; --i)
 		{
 			FActiveSound& Sound = *ActiveSounds[i];
+			// Procedural sounds are kept alive even when their ring buffer is momentarily empty.
+			if (Sound.Procedural)
+			{
+				continue;
+			}
 			if (Sound.bInitialized && ma_sound_at_end(&Sound.Sound))
 			{
 				UninitSound(Sound);
@@ -343,7 +418,10 @@ namespace Lumina
 		if (Sound.bInitialized)
 		{
 			ma_sound_uninit(&Sound.Sound);
-			ma_decoder_uninit(&Sound.Decoder);
+			if (!Sound.Procedural)
+			{
+				ma_decoder_uninit(&Sound.Decoder);
+			}
 			Sound.bInitialized = false;
 		}
 	}

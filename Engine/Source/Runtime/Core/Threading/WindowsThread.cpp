@@ -13,7 +13,9 @@ namespace Lumina::Threading
         auto pNativeThreadHandle = GetCurrentThread();
         MultiByteToWideChar(CP_ACP, MB_PRECOMPOSED, Name, -1, WThreadName, 255);
         HRESULT Result = SetThreadDescription(pNativeThreadHandle, WThreadName);
+#ifdef TRACY_ENABLE
         TracyCSetThreadName(Name)
+#endif
         return Result != 0;
     }
     

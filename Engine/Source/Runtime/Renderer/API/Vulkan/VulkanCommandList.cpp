@@ -1083,34 +1083,31 @@ namespace Lumina
             EndRenderPass();
         }
 
-        FRenderPassDesc PassInfo = InPassInfo;
-        PassInfo.SampleCount = PassInfo.DeriveSampleCount();
-        
-        TFixedVector<VkRenderingAttachmentInfo, 4> ColorAttachments(PassInfo.ColorAttachments.size());
+        const SIZE_T NumColorAttachments = InPassInfo.ColorAttachments.size();
+        TFixedVector<VkRenderingAttachmentInfo, 4> ColorAttachments(NumColorAttachments);
         VkRenderingAttachmentInfo DepthAttachment = {};
 
         uint32 NumArraySlices = 0;
-        
-        for (SIZE_T i = 0; i < PassInfo.ColorAttachments.size(); ++i)
+
+        for (SIZE_T i = 0; i < NumColorAttachments; ++i)
         {
-            FRenderPassDesc::FAttachment PassAttachment = PassInfo.ColorAttachments[i];
+            const FRenderPassDesc::FAttachment& PassAttachment = InPassInfo.ColorAttachments[i];
             CurrentCommandBuffer->AddReferencedResource(PassAttachment.Image);
             FVulkanImage* VulkanImage = static_cast<FVulkanImage*>(PassAttachment.Image);
 
+            const FRHIImageDesc& ImageDesc = VulkanImage->GetDescription();
+            const FTextureSubresourceSet Subresource = PassAttachment.Subresources.Resolve(ImageDesc, true);
 
-            const FTextureSubresourceSet Subresource = PassAttachment.Subresources.Resolve(VulkanImage->GetDescription(), true);
+            EImageDimension Dimension = GetDimensionForFramebuffer(ImageDesc.Dimension, Subresource.NumArraySlices > 1);
+            EFormat Format = PassAttachment.Format == EFormat::UNKNOWN ? ImageDesc.Format : PassAttachment.Format;
 
-            EImageDimension Dimension = GetDimensionForFramebuffer(VulkanImage->GetDescription().Dimension, Subresource.NumArraySlices > 1);
-            EFormat Format = PassAttachment.Format == EFormat::UNKNOWN ? VulkanImage->GetDescription().Format : PassAttachment.Format;
-            
             VkImageView View = VulkanImage->GetSubresourceView(Subresource, Dimension, Format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT).View;
 
-            
-            
-            VkRenderingAttachmentInfo Attachment = {};
+            VkRenderingAttachmentInfo& Attachment = ColorAttachments[i];
+            Attachment = {};
             Attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             Attachment.imageView = View;
-            Attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; 
+            Attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             Attachment.loadOp = (PassAttachment.LoadOp == ERenderLoadOp::Clear) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
             Attachment.storeOp = (PassAttachment.StoreOp == ERenderStoreOp::Store) ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
 
@@ -1133,7 +1130,6 @@ namespace Lumina
                 Attachment.clearValue.color.float32[2] = PassAttachment.ClearColor.b;
                 Attachment.clearValue.color.float32[3] = PassAttachment.ClearColor.a;
             }
-            ColorAttachments[i] = Attachment;
 
             if (NumArraySlices)
             {
@@ -1144,42 +1140,41 @@ namespace Lumina
                 NumArraySlices = Subresource.NumArraySlices;
             }
         }
-        
-        
-        if (PassInfo.DepthAttachment.IsValid())
+
+
+        const FRenderPassDesc::FAttachment& DepthDesc = InPassInfo.DepthAttachment;
+        if (DepthDesc.IsValid())
         {
-            FVulkanImage* VulkanImage = static_cast<FVulkanImage*>(PassInfo.DepthAttachment.Image);
+            FVulkanImage* VulkanImage = static_cast<FVulkanImage*>(DepthDesc.Image);
             CurrentCommandBuffer->AddReferencedResource(VulkanImage);
 
-            const FTextureSubresourceSet Subresource = PassInfo.DepthAttachment.Subresources.Resolve(VulkanImage->GetDescription(), true);
+            const FRHIImageDesc& ImageDesc = VulkanImage->GetDescription();
+            const FTextureSubresourceSet Subresource = DepthDesc.Subresources.Resolve(ImageDesc, true);
 
-            EImageDimension Dimension = GetDimensionForFramebuffer(VulkanImage->GetDescription().Dimension, Subresource.NumArraySlices > 1);
-            EFormat Format = PassInfo.DepthAttachment.Format == EFormat::UNKNOWN ? VulkanImage->GetDescription().Format : PassInfo.DepthAttachment.Format;
-            
+            EImageDimension Dimension = GetDimensionForFramebuffer(ImageDesc.Dimension, Subresource.NumArraySlices > 1);
+            EFormat Format = DepthDesc.Format == EFormat::UNKNOWN ? ImageDesc.Format : DepthDesc.Format;
+
             VkImageView View = VulkanImage->GetSubresourceView(Subresource, Dimension, Format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT).View;
-            
-            VkRenderingAttachmentInfo Attachment = {};
-            Attachment.sType        = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            Attachment.imageView    = View;
-            Attachment.imageLayout  = PassInfo.DepthAttachment.bReadOnly ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-            Attachment.loadOp       = (PassInfo.DepthAttachment.LoadOp == ERenderLoadOp::Clear) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
-            Attachment.storeOp      = (PassInfo.DepthAttachment.StoreOp == ERenderStoreOp::Store) ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            
-            Attachment.clearValue.depthStencil.depth = PassInfo.DepthAttachment.ClearColor.r;
-            Attachment.clearValue.depthStencil.stencil = (uint32)PassInfo.DepthAttachment.ClearColor.g;
 
-            if (PassInfo.DepthAttachment.ResolveImage != nullptr)
+            DepthAttachment.sType        = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            DepthAttachment.imageView    = View;
+            DepthAttachment.imageLayout  = DepthDesc.bReadOnly ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            DepthAttachment.loadOp       = (DepthDesc.LoadOp == ERenderLoadOp::Clear) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+            DepthAttachment.storeOp      = (DepthDesc.StoreOp == ERenderStoreOp::Store) ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+            DepthAttachment.clearValue.depthStencil.depth = DepthDesc.ClearColor.r;
+            DepthAttachment.clearValue.depthStencil.stencil = (uint32)DepthDesc.ClearColor.g;
+
+            if (DepthDesc.ResolveImage != nullptr)
             {
-                CurrentCommandBuffer->AddReferencedResource(PassInfo.DepthAttachment.ResolveImage);
-                FVulkanImage* VkResolveImage = static_cast<FVulkanImage*>(PassInfo.DepthAttachment.ResolveImage);
+                CurrentCommandBuffer->AddReferencedResource(DepthDesc.ResolveImage);
+                FVulkanImage* VkResolveImage = static_cast<FVulkanImage*>(DepthDesc.ResolveImage);
                 VkImageView ResolveView = VkResolveImage->GetSubresourceView(Subresource, Dimension, Format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT).View;
 
-                Attachment.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
-                Attachment.resolveImageView = ResolveView;
-                Attachment.resolveImageLayout = PassInfo.DepthAttachment.bReadOnly ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+                DepthAttachment.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+                DepthAttachment.resolveImageView = ResolveView;
+                DepthAttachment.resolveImageLayout = DepthDesc.bReadOnly ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
             }
-
-            DepthAttachment = Attachment;
 
             if (NumArraySlices)
             {
@@ -1190,16 +1185,16 @@ namespace Lumina
                 NumArraySlices = Subresource.NumArraySlices;
             }
         }
-        
+
         VkRenderingInfo RenderInfo          = {};
         RenderInfo.sType                    = VK_STRUCTURE_TYPE_RENDERING_INFO;
         RenderInfo.colorAttachmentCount     = (uint32)ColorAttachments.size();
         RenderInfo.pColorAttachments        = ColorAttachments.data();
         RenderInfo.pDepthAttachment         = (DepthAttachment.imageView != VK_NULL_HANDLE) ? &DepthAttachment : nullptr;
-        RenderInfo.renderArea.extent.width  = PassInfo.RenderArea.x;
-        RenderInfo.renderArea.extent.height = PassInfo.RenderArea.y;
+        RenderInfo.renderArea.extent.width  = InPassInfo.RenderArea.x;
+        RenderInfo.renderArea.extent.height = InPassInfo.RenderArea.y;
         RenderInfo.layerCount               = 1;//NumArraySlices;
-        RenderInfo.viewMask                 = PassInfo.ViewMask;
+        RenderInfo.viewMask                 = InPassInfo.ViewMask;
 
         vkCmdBeginRendering(CurrentCommandBuffer->CommandBuffer, &RenderInfo);
         // Store un-derived pass desc so SampleCount default doesn't break SetGraphicsState equality.
@@ -1720,8 +1715,6 @@ namespace Lumina
     
     void FVulkanCommandList::TrackResourcesAndBarriers(const FGraphicsState& State)
     {
-        LUMINA_PROFILE_SCOPE();
-        
         if (!VectorsAreEqual(State.Bindings, CurrentGraphicsState.Bindings))
         {
             for (SIZE_T i = 0; i < State.Bindings.size(); ++i)

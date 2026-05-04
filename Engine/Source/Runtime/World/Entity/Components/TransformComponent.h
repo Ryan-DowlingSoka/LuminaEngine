@@ -225,9 +225,17 @@ namespace Lumina
     
         FUNCTION(Script)
         glm::vec3 GetRotationAsEuler() const { return GetLocalRotationAsEuler(); }
-    
+
+        // Bind this component to its owning entity. Called after duplication or post-load to rewire the
+        // self-referential pointers used by MarkDirty/ResolveIfDirty. World init also does this directly via friend access.
+        void Bind(FEntityRegistry& InRegistry, entt::entity InEntity)
+        {
+            Registry = &InRegistry;
+            Entity = InEntity;
+        }
+
     public:
-        
+
         /** Local-space transform relative to the entity's parent (or world if no parent). */
         PROPERTY(Editable, Category = "Transform")
         FTransform LocalTransform;

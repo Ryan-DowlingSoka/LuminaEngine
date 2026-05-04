@@ -100,9 +100,6 @@ namespace Lumina
 
         NODISCARD virtual IShaderCompiler* GetShaderCompiler() const = 0;
         NODISCARD virtual FRHIShaderLibraryRef GetShaderLibrary() const = 0;
-
-        virtual void CompileEngineShaders() = 0;
-
         
 
         virtual void ClearBindingCaches() = 0;

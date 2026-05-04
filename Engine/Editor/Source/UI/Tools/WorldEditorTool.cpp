@@ -29,6 +29,7 @@
 #include "Core/Math/Math.h"
 #include "Thumbnails/ThumbnailManager.h"
 #include "Tools/ComponentVisualizers/ComponentVisualizer.h"
+#include "Tools/PrimitiveManager/PrimitiveManager.h"
 #include "Tools/Dialogs/Dialogs.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
@@ -65,24 +66,37 @@ namespace Lumina
         return Instance != nullptr && !Instance->bIsRoot;
     }
 
-    // Viewport picks resolve to the prefab root so the prefab selects as a unit; outliner still allows sub-picks.
-    static entt::entity ResolvePrefabRootForViewportPick(entt::registry& Registry, entt::entity Entity)
+    // Viewport picks walk parents to the nearest selection root: an FSelectionRoot tag or a prefab-instance
+    // root, whichever comes first. Lets users select a non-renderable logical parent (rigid body, scripts) by
+    // clicking a visible child. Outliner clicks bypass this so sub-entities remain reachable directly.
+    static entt::entity ResolveSelectionRootForViewportPick(entt::registry& Registry, entt::entity Entity)
     {
         if (Entity == entt::null || !Registry.valid(Entity))
         {
             return Entity;
         }
 
-        const SPrefabInstanceComponent* Instance = Registry.try_get<SPrefabInstanceComponent>(Entity);
-        if (Instance == nullptr || Instance->bIsRoot)
+        // The picked entity is itself a root — keep it.
+        if (Registry.all_of<FSelectionRoot>(Entity))
         {
             return Entity;
+        }
+        if (const SPrefabInstanceComponent* Instance = Registry.try_get<SPrefabInstanceComponent>(Entity))
+        {
+            if (Instance->bIsRoot)
+            {
+                return Entity;
+            }
         }
 
         const FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity);
         while (Relationship != nullptr && Relationship->Parent != entt::null)
         {
             entt::entity Parent = Relationship->Parent;
+            if (Registry.all_of<FSelectionRoot>(Parent))
+            {
+                return Parent;
+            }
             if (const SPrefabInstanceComponent* ParentInstance = Registry.try_get<SPrefabInstanceComponent>(Parent))
             {
                 if (ParentInstance->bIsRoot)
@@ -390,6 +404,23 @@ namespace Lumina
                 PushRenameEntityModal(Data.Entity);
             }
 
+            if (!bLocked)
+            {
+                const bool bIsSelectionRoot = Registry.all_of<FSelectionRoot>(Data.Entity);
+                if (ImGui::MenuItem(bIsSelectionRoot ? "Unmark Selection Root" : "Mark as Selection Root"))
+                {
+                    if (bIsSelectionRoot)
+                    {
+                        Registry.remove<FSelectionRoot>(Data.Entity);
+                    }
+                    else
+                    {
+                        Registry.emplace<FSelectionRoot>(Data.Entity);
+                    }
+                }
+                ImGuiX::TextTooltip("{}", "Viewport clicks on any descendant will resolve up to this entity. Outliner clicks still select directly.");
+            }
+
             if (!bLocked && ImGui::MenuItem("Duplicate"))
             {
                 BeginTransaction();
@@ -404,6 +435,12 @@ namespace Lumina
                     PendingBeforeState.clear();
                 }
             }
+
+            if (!bLocked && ImGui::MenuItem(LE_ICON_PACKAGE_VARIANT " Create Prefab from Entity..."))
+            {
+                PushCreatePrefabModalForEntity(Data.Entity);
+            }
+            ImGuiX::TextTooltip("{}", "Save this entity (and its descendants) as a reusable prefab asset.");
 
             if (!bLocked && ImGui::MenuItem("Delete"))
             {
@@ -1425,7 +1462,7 @@ namespace Lumina
                     if (bRightWasShortClick)
                     {
                         entt::entity EntityHandle = World->GetRenderer()->GetEntityAtPixel(TexX, TexY);
-                        EntityHandle = ResolvePrefabRootForViewportPick(World->GetEntityRegistry(), EntityHandle);
+                        EntityHandle = ResolveSelectionRootForViewportPick(World->GetEntityRegistry(), EntityHandle);
 
                         // Only mutate selection when the click landed on an entity; empty-space right-clicks preserve it.
                         if (EntityHandle != entt::null)
@@ -1461,7 +1498,7 @@ namespace Lumina
                     if (!bLeftDragging)
                     {
                         entt::entity EntityHandle = World->GetRenderer()->GetEntityAtPixel(TexX, TexY);
-                        EntityHandle = ResolvePrefabRootForViewportPick(World->GetEntityRegistry(), EntityHandle);
+                        EntityHandle = ResolveSelectionRootForViewportPick(World->GetEntityRegistry(), EntityHandle);
 
                         // Ctrl+click toggles picked entity in selection; plain click replaces.
                         if (ImGui::GetIO().KeyCtrl)
@@ -1520,7 +1557,7 @@ namespace Lumina
                                                && ProjMax.y >= RectMin.y && ProjMin.y <= RectMax.y;
                             if (bOverlap)
                             {
-                                Hits.insert(ResolvePrefabRootForViewportPick(Registry, Entity));
+                                Hits.insert(ResolveSelectionRootForViewportPick(Registry, Entity));
                             }
                         });
 
@@ -1557,86 +1594,44 @@ namespace Lumina
             {
                 entt::registry& Registry = World->GetEntityRegistry();
                 const bool bLastSelectedLocked = IsLockedPrefabChild(Registry, LastSelectedEntity);
+                const size_t NumSelected = SelectedEntities.size();
+                const bool bMultiSelected = NumSelected > 1;
 
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
                 ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 4));
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 4));
 
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-                ImGui::TextUnformatted("ENTITY");
-                ImGui::PopStyleColor();
-
-                ImGui::SameLine();
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
-                ImGui::Text("%u", (uint32)LastSelectedEntity);
-                ImGui::PopStyleColor();
-
-                ImGui::Spacing();
-                ImGui::Separator();
-                ImGui::Spacing();
-
-                if (!bLastSelectedLocked)
+                // Header: name + ID for the focal entity, with a "+N more" badge when there's a wider selection.
                 {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
-                    if (ImGui::MenuItem(LE_ICON_TRASH_CAN" Delete Entity", "Del"))
-                    {
-                        if (Dialogs::Confirmation("Confirm Deletion", "Are you sure you want to delete entity \"{0}\"?\n\nThis action cannot be undone.", entt::to_integral(LastSelectedEntity)))
-                        {
-                            EntityDestroyRequests.push(LastSelectedEntity);
-                        }
+                    const SNameComponent* HeaderName = Registry.try_get<SNameComponent>(LastSelectedEntity);
+                    FStringView HeaderText = HeaderName ? FStringView(HeaderName->Name.c_str()) : FStringView("<unnamed>");
 
-                        ImGui::CloseCurrentPopup();
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+                    ImGui::TextUnformatted(HeaderText.data(), HeaderText.data() + HeaderText.size());
+                    ImGui::PopStyleColor();
+
+                    ImGui::SameLine();
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+                    ImGui::Text("#%u", (uint32)LastSelectedEntity);
+                    ImGui::PopStyleColor();
+
+                    if (bMultiSelected)
+                    {
+                        ImGui::SameLine();
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+                        ImGui::Text("+%zu more", NumSelected - 1);
+                        ImGui::PopStyleColor();
                     }
-                    ImGui::PopStyleColor();
                 }
-                
+
                 ImGui::Spacing();
                 ImGui::Separator();
                 ImGui::Spacing();
-                
-                if (ImGui::MenuItem("Add Component"))
-                {
-                    PushAddComponentModal(LastSelectedEntity);
-                    ImGui::CloseCurrentPopup();
-                }
-                
-                if (ImGui::BeginMenu("Remove Component"))
-                {
-                    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 6));
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.6f, 0.4f, 1.0f));
-                    
-                    ECS::Utils::ForEachComponent(Registry, LastSelectedEntity, [&](void*, const entt::basic_sparse_set<>& Set, entt::meta_type Meta)
-                    {
-                        using namespace entt::literals;
-                        
-                        if (entt::meta_any ReturnValue = ECS::Utils::InvokeMetaFunc(Meta, "static_struct"_hs))
-                        {
-                            CStruct* StructType = ReturnValue.cast<CStruct*>();
-                            if (StructType == SNameComponent::StaticStruct() || StructType == STransformComponent::StaticStruct())
-                            {
-                                return;
-                            }
-                            
-                            if (ImGui::MenuItem(ReturnValue.cast<CStruct*>()->MakeDisplayName().c_str()))
-                            {
-                                ComponentDestroyRequests.push(FComponentDestroyRequest{StructType, LastSelectedEntity});
-                            }
-                        }
-                    });
-                    
-                    ImGui::PopStyleColor();
-                    ImGui::PopStyleVar();
-                    ImGui::EndMenu();
-                }
-                
-                ImGui::Spacing();
-                ImGui::Separator();
-                ImGui::Spacing();
-                
+
+                // Edit: clipboard + duplicate.
                 if (!bLastSelectedLocked)
                 {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.8f, 1.0f, 1.0f));
-                    if (ImGui::MenuItem("Duplicate", "Ctrl+D"))
+                    if (ImGui::MenuItem(LE_ICON_CONTENT_DUPLICATE " Duplicate", "Ctrl+D"))
                     {
                         BeginTransaction();
                         entt::entity To = entt::null;
@@ -1651,42 +1646,89 @@ namespace Lumina
                         }
                         ImGui::CloseCurrentPopup();
                     }
-                    ImGui::PopStyleColor();
                 }
-                
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.8f, 0.6f, 1.0f));
-                if (ImGui::MenuItem("Copy", "Ctrl+C"))
+
+                if (ImGui::MenuItem(LE_ICON_CONTENT_COPY " Copy", "Ctrl+C"))
                 {
                     ClearCopies();
                     AddEntityToCopies(LastSelectedEntity);
                     ImGui::CloseCurrentPopup();
                 }
-                ImGui::PopStyleColor();
-                
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.8f, 0.6f, 1.0f));
+
                 if (ImGui::MenuItem("Copy Entity ID"))
                 {
                     ImGui::SetClipboardText(std::to_string(entt::to_integral(LastSelectedEntity)).c_str());
                     ImGui::CloseCurrentPopup();
                 }
-                ImGui::PopStyleColor();
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                // Components.
+                if (ImGui::MenuItem("Add Component..."))
+                {
+                    PushAddComponentModal(LastSelectedEntity);
+                    ImGui::CloseCurrentPopup();
+                }
+
+                if (ImGui::BeginMenu("Remove Component"))
+                {
+                    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 6));
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.6f, 0.4f, 1.0f));
+
+                    ECS::Utils::ForEachComponent(Registry, LastSelectedEntity, [&](void*, const entt::basic_sparse_set<>& Set, entt::meta_type Meta)
+                    {
+                        using namespace entt::literals;
+
+                        if (entt::meta_any ReturnValue = ECS::Utils::InvokeMetaFunc(Meta, "static_struct"_hs))
+                        {
+                            CStruct* StructType = ReturnValue.cast<CStruct*>();
+                            if (StructType == SNameComponent::StaticStruct() || StructType == STransformComponent::StaticStruct())
+                            {
+                                return;
+                            }
+
+                            if (ImGui::MenuItem(ReturnValue.cast<CStruct*>()->MakeDisplayName().c_str()))
+                            {
+                                ComponentDestroyRequests.push(FComponentDestroyRequest{StructType, LastSelectedEntity});
+                            }
+                        }
+                    });
+
+                    ImGui::PopStyleColor();
+                    ImGui::PopStyleVar();
+                    ImGui::EndMenu();
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                // Hierarchy.
+                if (!bLastSelectedLocked && bMultiSelected)
+                {
+                    if (ImGui::MenuItem(LE_ICON_FOLDER " Group Selection", "Ctrl+G"))
+                    {
+                        GroupSelectedEntities();
+                        ImGui::CloseCurrentPopup();
+                    }
+                }
 
                 if (!bLastSelectedLocked && ECS::Utils::IsChild(Registry, LastSelectedEntity))
                 {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 0.3f, 0.6f, 1.0f));
                     if (ImGui::MenuItem("Unparent"))
                     {
                         BeginTransaction();
                         ECS::Utils::RemoveFromParent(Registry, LastSelectedEntity);
                         EndTransaction("Unparent");
                         ReparentEntityInOutliner(LastSelectedEntity);
+                        ImGui::CloseCurrentPopup();
                     }
-                    ImGui::PopStyleColor();
                 }
 
                 if (!bLastSelectedLocked && ECS::Utils::IsParent(Registry, LastSelectedEntity))
                 {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.9f, 0.2f, 1.0f));
                     if (ImGui::MenuItem("Detach Children"))
                     {
                         TVector<entt::entity> Children;
@@ -1698,12 +1740,61 @@ namespace Lumina
                         {
                             ReparentEntityInOutliner(Child);
                         }
+                        ImGui::CloseCurrentPopup();
+                    }
+                }
+
+                if (!bLastSelectedLocked)
+                {
+                    const bool bIsSelectionRoot = Registry.all_of<FSelectionRoot>(LastSelectedEntity);
+                    if (ImGui::MenuItem(bIsSelectionRoot ? "Unmark Selection Root" : "Mark as Selection Root"))
+                    {
+                        if (bIsSelectionRoot)
+                        {
+                            Registry.remove<FSelectionRoot>(LastSelectedEntity);
+                        }
+                        else
+                        {
+                            Registry.emplace<FSelectionRoot>(LastSelectedEntity);
+                        }
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGuiX::TextTooltip("{}", "Viewport clicks on any descendant will resolve up to this entity.");
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                // Prefab.
+                if (ImGui::MenuItem(LE_ICON_PACKAGE_VARIANT " Create Prefab from Selected..."))
+                {
+                    PushCreatePrefabFromSelectionModal();
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGuiX::TextTooltip("{}", "Save the selection as a reusable prefab asset. Children of selected entities are included automatically.");
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                // Destructive at bottom.
+                if (!bLastSelectedLocked)
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+                    if (ImGui::MenuItem(LE_ICON_TRASH_CAN " Delete Entity", "Del"))
+                    {
+                        if (Dialogs::Confirmation("Confirm Deletion", "Are you sure you want to delete entity \"{0}\"?\n\nThis action cannot be undone.", entt::to_integral(LastSelectedEntity)))
+                        {
+                            EntityDestroyRequests.push(LastSelectedEntity);
+                        }
+                        ImGui::CloseCurrentPopup();
                     }
                     ImGui::PopStyleColor();
                 }
-                
+
                 ImGui::Spacing();
-                
+
                 ImGui::PopStyleVar(3);
             }
 
@@ -2261,6 +2352,305 @@ namespace Lumina
             ErrorMessage = "Failed to save package to disk.";
             return false;
         });
+    }
+
+    namespace
+    {
+        // Capture-time snapshot the modal needs: which entities to capture, the pivot, the suggested name,
+        // and a precomputed total entity count so the modal can show the user exactly what's being captured.
+        struct FCreatePrefabRequest
+        {
+            TVector<entt::entity> Roots;
+            glm::vec3 Pivot;
+            FFixedString DefaultName;
+            uint32 TotalEntityCount;
+        };
+
+        FCreatePrefabRequest BuildCreatePrefabRequest(entt::registry& Registry, TVector<entt::entity> InitialRoots)
+        {
+            FCreatePrefabRequest Out;
+            Out.Roots = eastl::move(InitialRoots);
+            Out.Pivot = glm::vec3(0.0f);
+            Out.TotalEntityCount = 0;
+
+            for (entt::entity Entity : Out.Roots)
+            {
+                Out.Pivot += Registry.get<STransformComponent>(Entity).GetWorldLocation();
+                Out.TotalEntityCount += 1;
+                ECS::Utils::ForEachDescendant(Registry, Entity, [&](entt::entity)
+                {
+                    Out.TotalEntityCount += 1;
+                });
+            }
+            if (!Out.Roots.empty())
+            {
+                Out.Pivot /= static_cast<float>(Out.Roots.size());
+            }
+
+            Out.DefaultName = "NewPrefab";
+            if (Out.Roots.size() == 1)
+            {
+                if (const SNameComponent* NameComp = Registry.try_get<SNameComponent>(Out.Roots[0]))
+                {
+                    Out.DefaultName = NameComp->Name.c_str();
+                }
+            }
+            return Out;
+        }
+    }
+
+    void FWorldEditorTool::PushCreatePrefabFromSelectionModal()
+    {
+        if (World == nullptr || World->IsSimulating())
+        {
+            ImGuiX::Notifications::NotifyWarning("Cannot create a prefab while simulating.");
+            return;
+        }
+
+        entt::registry& Registry = World->GetEntityRegistry();
+
+        // Filter the selection: drop invalid handles and prefab-instance children whose hierarchy is locked.
+        THashSet<entt::entity> Filtered;
+        for (entt::entity Entity : SelectedEntities)
+        {
+            if (Registry.valid(Entity) && !IsLockedPrefabChild(Registry, Entity))
+            {
+                Filtered.insert(Entity);
+            }
+        }
+
+        if (Filtered.empty())
+        {
+            ImGuiX::Notifications::NotifyWarning("Select an entity in the world before creating a prefab.");
+            return;
+        }
+
+        // Reduce to top-level entities: if any ancestor is also selected, we descend through the parent.
+        TVector<entt::entity> Roots;
+        Roots.reserve(Filtered.size());
+        for (entt::entity Entity : Filtered)
+        {
+            const FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity);
+            entt::entity Walk = Rel ? Rel->Parent : entt::null;
+            bool bAncestorInSet = false;
+            while (Walk != entt::null)
+            {
+                if (Filtered.find(Walk) != Filtered.end())
+                {
+                    bAncestorInSet = true;
+                    break;
+                }
+                const FRelationshipComponent* WalkRel = Registry.try_get<FRelationshipComponent>(Walk);
+                Walk = WalkRel ? WalkRel->Parent : entt::null;
+            }
+            if (!bAncestorInSet)
+            {
+                Roots.push_back(Entity);
+            }
+        }
+
+        FCreatePrefabRequest Req = BuildCreatePrefabRequest(Registry, eastl::move(Roots));
+
+        ToolContext->PushModal("Create Prefab From Selection", ImVec2(560.0f, 290.0f),
+            [this, Req = eastl::move(Req)]() -> bool
+        {
+            static FFixedString NameBuffer;
+            static FFixedString DirBuffer;
+            static FFixedString ErrorMessage;
+
+            if (ImGui::IsWindowAppearing())
+            {
+                NameBuffer = Req.DefaultName;
+                DirBuffer = "/Game";
+                ErrorMessage.clear();
+            }
+
+            ImGui::TextUnformatted("Save the selection as a reusable prefab asset.");
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+                "Capturing %u entities total (%zu top-level + descendants).",
+                Req.TotalEntityCount, Req.Roots.size());
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            ImGui::TextUnformatted("Folder");
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::InputText("##Folder", DirBuffer.data(), DirBuffer.max_size());
+
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Name");
+            ImGui::SetNextItemWidth(-1.0f);
+            const bool bEnter = ImGui::InputText("##Name", NameBuffer.data(), NameBuffer.max_size(), ImGuiInputTextFlags_EnterReturnsTrue);
+
+            if (!ErrorMessage.empty())
+            {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", ErrorMessage.c_str());
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            constexpr float ButtonWidth = 110.0f;
+            const float AvailWidth = ImGui::GetContentRegionAvail().x;
+            ImGui::SetCursorPosX((AvailWidth - ButtonWidth * 2 - ImGui::GetStyle().ItemSpacing.x) * 0.5f);
+
+            const bool bConfirm = ImGui::Button("Create", ImVec2(ButtonWidth, 0.0f)) || bEnter;
+            ImGui::SameLine();
+            const bool bCancel = ImGui::Button("Cancel", ImVec2(ButtonWidth, 0.0f));
+
+            if (bCancel) return true;
+            if (!bConfirm) return false;
+
+            if (NameBuffer.data()[0] == '\0') { ErrorMessage = "Name cannot be empty."; return false; }
+            if (DirBuffer.data()[0]  == '\0') { ErrorMessage = "Folder cannot be empty."; return false; }
+
+            entt::registry& WorkingRegistry = World->GetEntityRegistry();
+            for (entt::entity Entity : Req.Roots)
+            {
+                if (!WorkingRegistry.valid(Entity))
+                {
+                    ErrorMessage = "Selection changed; cannot capture missing entities.";
+                    return false;
+                }
+            }
+
+            FFixedString Path = Paths::Combine(FStringView(DirBuffer.c_str()), FStringView(NameBuffer.c_str()));
+            Path = VFS::ResolveToVirtualPath(Path);
+            if (Path.empty() || Path.front() != '/')
+            {
+                ErrorMessage = "Folder must resolve to a virtual path under a mounted alias (e.g. /Game).";
+                return false;
+            }
+            CPackage::AddPackageExt(Path);
+            Path = VFS::MakeUniqueFilePath(Path);
+
+            FFixedString SafePath = SanitizeObjectName(Path);
+            if (FindObject<CPackage>(SafePath) != nullptr)
+            {
+                ErrorMessage = "A package with that name is already loaded.";
+                return false;
+            }
+
+            CPackage* NewPackage = CPackage::CreatePackage(SafePath);
+            if (NewPackage == nullptr) { ErrorMessage = "Failed to create package."; return false; }
+
+            const FStringView FileName = VFS::FileName(Path, true);
+            CPrefab* Prefab = NewObject<CPrefab>(NewPackage, FName(FileName));
+            if (Prefab == nullptr) { ErrorMessage = "Failed to create prefab object."; return false; }
+            Prefab->SetFlag(OF_Public);
+
+            // Single-root: capture directly. Multi-root: build a scratch parent at the pivot, reparent the
+            // top-level entities under it (preserving world transforms via ReparentEntity), then capture and
+            // restore. ReparentEntity is world-preserving in both directions, so the world ends up unchanged.
+            entt::entity CaptureRoot = entt::null;
+            entt::entity ScratchRoot = entt::null;
+            TVector<entt::entity> OriginalParents;
+
+            if (Req.Roots.size() == 1)
+            {
+                CaptureRoot = Req.Roots[0];
+            }
+            else
+            {
+                FTransform PivotTransform;
+                PivotTransform.SetLocation(Req.Pivot);
+                ScratchRoot = World->ConstructEntity(FName(FileName), PivotTransform);
+                if (ScratchRoot == entt::null)
+                {
+                    ErrorMessage = "Failed to create scratch parent.";
+                    return false;
+                }
+
+                OriginalParents.reserve(Req.Roots.size());
+                for (entt::entity Entity : Req.Roots)
+                {
+                    const FRelationshipComponent* Rel = WorkingRegistry.try_get<FRelationshipComponent>(Entity);
+                    OriginalParents.push_back(Rel ? Rel->Parent : entt::null);
+                    ECS::Utils::ReparentEntity(WorkingRegistry, Entity, ScratchRoot);
+                }
+                CaptureRoot = ScratchRoot;
+            }
+
+            Prefab->CaptureFromWorld(World, CaptureRoot);
+
+            // Anchor the captured root at origin so the prefab opens centered in its editor.
+            Prefab->Registry.view<entt::entity>().each([&](entt::entity E)
+            {
+                const FRelationshipComponent* Rel = Prefab->Registry.try_get<FRelationshipComponent>(E);
+                if (Rel != nullptr && Rel->Parent != entt::null)
+                {
+                    return;
+                }
+                if (STransformComponent* Tx = Prefab->Registry.try_get<STransformComponent>(E))
+                {
+                    Tx->SetLocalTransform(FTransform());
+                }
+            });
+
+            // Restore the world: detach top-level entities back to their original parents, drop the scratch.
+            if (ScratchRoot != entt::null)
+            {
+                for (size_t i = 0; i < Req.Roots.size(); ++i)
+                {
+                    if (OriginalParents[i] == entt::null)
+                    {
+                        ECS::Utils::RemoveFromParent(WorkingRegistry, Req.Roots[i]);
+                    }
+                    else
+                    {
+                        ECS::Utils::ReparentEntity(WorkingRegistry, Req.Roots[i], OriginalParents[i]);
+                    }
+                }
+                World->DestroyEntity(ScratchRoot);
+            }
+
+            FObjectExport& Export = NewPackage->ExportTable.emplace_back();
+            Export.ObjectGUID = Prefab->GetGUID();
+            Export.ObjectName = Prefab->GetName();
+            Export.ClassName = Prefab->GetClass()->GetName();
+            Export.Offset = 0;
+            Export.Size = 0;
+            Export.Object = Prefab;
+
+            if (CPackage::SavePackage(NewPackage, Path))
+            {
+                FAssetRegistry::Get().AssetCreated(Prefab);
+                ImGuiX::Notifications::NotifySuccess("Created prefab: \"{0}\"", Path);
+                return true;
+            }
+
+            ErrorMessage = "Failed to save prefab to disk.";
+            return false;
+        });
+    }
+
+    void FWorldEditorTool::PushCreatePrefabModalForEntity(entt::entity Entity)
+    {
+        if (World == nullptr || World->IsSimulating())
+        {
+            ImGuiX::Notifications::NotifyWarning("Cannot create a prefab while simulating.");
+            return;
+        }
+
+        entt::registry& Registry = World->GetEntityRegistry();
+        if (!Registry.valid(Entity) || IsLockedPrefabChild(Registry, Entity))
+        {
+            ImGuiX::Notifications::NotifyWarning("Cannot create a prefab from this entity.");
+            return;
+        }
+
+        // Drive the same modal as the viewport selection path, but force a single-root request so children
+        // get pulled in via descendant walk (no synthetic root needed). Reuse SelectionModal by stashing
+        // the override into SelectedEntities-equivalent state would be invasive; instead replicate the few
+        // lines of setup and call PushCreatePrefabFromSelectionModal indirectly by faking the selection.
+        const THashSet<entt::entity> SavedSelection = SelectedEntities;
+        SelectedEntities.clear();
+        SelectedEntities.insert(Entity);
+        PushCreatePrefabFromSelectionModal();
+        SelectedEntities = SavedSelection;
     }
 
     bool FWorldEditorTool::IsAssetEditorTool() const
@@ -3610,12 +4000,12 @@ namespace Lumina
 
                     static const FPrimitiveEntry PrimitiveEntries[] =
                     {
-                        { LE_ICON_CUBE     " Cube",     "Cube",     []() -> CStaticMesh* { return CThumbnailManager::Get().CubeMesh; } },
-                        { LE_ICON_CIRCLE   " Sphere",   "Sphere",   []() -> CStaticMesh* { return CThumbnailManager::Get().SphereMesh; } },
-                        { LE_ICON_SQUARE   " Plane",    "Plane",    []() -> CStaticMesh* { return CThumbnailManager::Get().PlaneMesh; } },
-                        { LE_ICON_CYLINDER " Cylinder", "Cylinder", []() -> CStaticMesh* { return CThumbnailManager::Get().CylinderMesh; } },
-                        { LE_ICON_CONE     " Cone",     "Cone",     []() -> CStaticMesh* { return CThumbnailManager::Get().ConeMesh; } },
-                        { LE_ICON_GAS_CYLINDER " Capsule",     "Capsule",     []() -> CStaticMesh* { return CThumbnailManager::Get().CapsuleMesh; } },
+                        { LE_ICON_CUBE     " Cube",     "Cube",     []() -> CStaticMesh* { return CPrimitiveManager::Get().CubeMesh; } },
+                        { LE_ICON_CIRCLE   " Sphere",   "Sphere",   []() -> CStaticMesh* { return CPrimitiveManager::Get().SphereMesh; } },
+                        { LE_ICON_SQUARE   " Plane",    "Plane",    []() -> CStaticMesh* { return CPrimitiveManager::Get().PlaneMesh; } },
+                        { LE_ICON_CYLINDER " Cylinder", "Cylinder", []() -> CStaticMesh* { return CPrimitiveManager::Get().CylinderMesh; } },
+                        { LE_ICON_CONE     " Cone",     "Cone",     []() -> CStaticMesh* { return CPrimitiveManager::Get().ConeMesh; } },
+                        { LE_ICON_GAS_CYLINDER " Capsule",     "Capsule",     []() -> CStaticMesh* { return CPrimitiveManager::Get().CapsuleMesh; } },
                     };
 
                     TVector<const FPrimitiveEntry*> FilteredPrimitives;
@@ -3968,14 +4358,44 @@ namespace Lumina
         EntityToTreeNode[Entity] = ItemEntity;
 
         FTreeNodeDisplay& Display = OutlinerListView.Get<FTreeNodeDisplay>(ItemEntity);
+
+        // Tooltip header. Component list appended below.
+        FString Tooltip;
         if (bIsLockedPrefabChild)
         {
-            Display.TooltipText = "Prefab instance child, hierarchy is locked. Edit the source prefab to change.";
+            Tooltip = "Prefab instance child, hierarchy is locked. Edit the source prefab to change.\n";
         }
         else
         {
-            Display.TooltipText = FString("Entity: " + eastl::to_string(entt::to_integral(Entity))).c_str();
+            Tooltip = FString("Entity: " + eastl::to_string(entt::to_integral(Entity)));
         }
+
+        // Components shown on hover only — they no longer clutter the outliner tree.
+        Tooltip += "\n\nComponents:";
+        bool bAnyComponent = false;
+        ECS::Utils::ForEachComponent(Registry, Entity, [&](void*, const entt::basic_sparse_set<>& /*Set*/, entt::meta_type Meta)
+        {
+            using namespace entt::literals;
+            Tooltip += "\n  ";
+            Tooltip += LE_ICON_PUZZLE " ";
+            if (entt::meta_any Resolved = ECS::Utils::InvokeMetaFunc(Meta, "static_struct"_hs))
+            {
+                if (CStruct* StructType = Resolved.cast<CStruct*>())
+                {
+                    Tooltip += StructType->MakeDisplayName().c_str();
+                    bAnyComponent = true;
+                    return;
+                }
+            }
+            Tooltip += Meta.name();
+            bAnyComponent = true;
+        });
+        if (!bAnyComponent)
+        {
+            Tooltip += "\n  (none)";
+        }
+        Display.TooltipText = Tooltip;
+
         Display.bShowDisabledIcon = true;
         Display.bAllowRenaming = !bIsLockedPrefabChild;
 
@@ -3991,7 +4411,10 @@ namespace Lumina
             OutlinerListView.Get<FTreeNodeState>(ItemEntity).bDisabled = true;
         }
 
-        OutlinerListView.MarkHasLazyChildren(ItemEntity);
+        // Only show an expander if the entity actually has child entities; lazy expansion will populate them.
+        const FRelationshipComponent* RelForChildren = Registry.try_get<FRelationshipComponent>(Entity);
+        const bool bHasChildren = RelForChildren != nullptr && RelForChildren->Children > 0;
+        OutlinerListView.MarkHasLazyChildren(ItemEntity, bHasChildren);
 
         return ItemEntity;
     }
@@ -4033,17 +4456,6 @@ namespace Lumina
         {
             return;
         }
-
-        // Component rows: no incremental hooks; rebuilt each time the parent's lazy children fire.
-        ECS::Utils::ForEachComponent(Registry, Data.Entity, [&](void* Component, entt::basic_sparse_set<>& Set, entt::meta_type Meta)
-        {
-            FFixedString NameString;
-            NameString.assign(LE_ICON_PUZZLE).append(" ").append(Meta.name());
-            FTreeNodeID ComponentEntity = Tree.CreateNode(Item, FStringView(NameString.data(), NameString.length()));
-
-            Tree.Get<FTreeNodeDisplay>(ComponentEntity).TooltipText = Meta.name();
-            Tree.EmplaceUserData<FEntityListViewItemData>(ComponentEntity).Entity = Data.Entity;
-        });
 
         // Child entity rows: skip ones already present (on_construct race).
         ECS::Utils::ForEachChild(Registry, Data.Entity, [&](entt::entity Child)

@@ -284,6 +284,12 @@ function LuminaModule(Def)
         links(AllLinks)
     end
 
+    -- Tracy is a Debug/Development-only profiler. Shipping builds have
+    -- TRACY_ENABLE removed (macros become no-ops) and must not link Tracy.
+    filter "configurations:Shipping"
+        removelinks { "Tracy" }
+    filter {}
+
     -- Editor-only module dependencies
     if #Def.EditorModuleDependencies > 0 then
         filter "platforms:Editor"

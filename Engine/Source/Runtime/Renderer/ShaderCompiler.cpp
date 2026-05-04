@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ShaderCompiler.h"
 #include "RenderContext.h"
+#include "ShaderCache.h"
 #include "RenderResource.h"
 #include "RHIGlobals.h"
 #include "slang-com-ptr.h"
@@ -44,26 +45,60 @@ namespace Lumina
     bool FSpirVShaderCompiler::CompileShaderPaths(TSpan<FString> ShaderPaths, TSpan<FShaderCompileOptions> CompileOptions, CompletedFunc OnCompleted)
     {
         LUMINA_PROFILE_SCOPE();
-        
+
         ASSERT(ShaderPaths.size() == CompileOptions.size());
-    
-        uint32 NumShaders = (uint32)ShaderPaths.size();
-        if (NumShaders == 0)
+
+        uint32 NumInputs = (uint32)ShaderPaths.size();
+        if (NumInputs == 0)
         {
             return false;
         }
-        
+
+        // Cache pass: serve hits inline, queue misses for the Slang task swarm.
+        TVector<FString> Paths;
+        TVector<FShaderCompileOptions> Options;
+        TVector<uint64> SourceHashes;
+        Paths.reserve(NumInputs);
+        Options.reserve(NumInputs);
+        SourceHashes.reserve(NumInputs);
+
+        uint32 NumHits = 0;
+        for (uint32 i = 0; i < NumInputs; ++i)
+        {
+            const uint64 SrcHash = FShaderCache::ComputeSourceSetHash(ShaderPaths[i], CompileOptions[i].MacroDefinitions);
+            FShaderHeader Cached;
+            if (SrcHash != 0 && FShaderCache::TryLoad(ShaderPaths[i], CompileOptions[i].MacroDefinitions, SrcHash, Cached))
+            {
+                GRenderContext->GetCrashTracker().RegisterShader(Cached.Binaries, Cached.DebugName);
+                OnCompleted(Move(Cached));
+                ++NumHits;
+                continue;
+            }
+
+            Paths.emplace_back(ShaderPaths[i]);
+            Options.emplace_back(CompileOptions[i]);
+            SourceHashes.push_back(SrcHash);
+        }
+
+        if (NumHits > 0)
+        {
+            LOG_INFO("Shader cache: {} hit, {} miss", NumHits, (uint32)Paths.size());
+        }
+
+        const uint32 NumShaders = (uint32)Paths.size();
+        if (NumShaders == 0)
+        {
+            return true;
+        }
+
         PendingTasks.fetch_add(NumShaders, std::memory_order_relaxed);
 
         LOG_INFO("Starting Shader Task Swarm - Num: {}", NumShaders);
-        
-        TVector<FString> Paths(ShaderPaths.begin(), ShaderPaths.end());
-        TVector<FShaderCompileOptions> Options(CompileOptions.begin(), CompileOptions.end());
 
-        
         Task::AsyncTask(NumShaders, NumShaders, [this,
             Paths = Move(Paths),
             Options = Move(Options),
+            SourceHashes = Move(SourceHashes),
             Callback = Move(OnCompleted)] (uint32 Start, uint32 End, uint32 Thread) mutable
         {
 
@@ -260,10 +295,12 @@ namespace Lumina
                 LOG_TRACE("Compiled {0} in {1:.2f} ms (Thread {2})", FileName, DurationMs.count(), Thread);
         
                 GRenderContext->GetCrashTracker().RegisterShader(Shader.Binaries, Shader.DebugName);
-                
+
+                FShaderCache::Save(Paths[i], Options[i].MacroDefinitions, SourceHashes[i], Shader);
+
                 Callback(Move(Shader));
             }
-            
+
         }, ETaskPriority::High);
     
         return true;
@@ -276,6 +313,54 @@ namespace Lumina
     void FSpirVShaderCompiler::Initialize()
     {
         slang::createGlobalSession(SLangGlobalSession.writeRef());
+
+        TVector<FString> Shaders;
+        VFS::DirectoryIterator("/Engine/Resources/Shaders", [&](const VFS::FFileInfo& Info)
+        {
+            if (Info.GetExt() == ".slang")
+            {
+                Shaders.emplace_back(Info.VirtualPath.c_str());
+            }
+        });
+
+        if (Shaders.empty())
+        {
+            // Packaged builds ship the .lsc cache instead of .slang sources;
+            // load every entry under /Engine/Intermediate/ShaderCache directly.
+            uint32 Loaded = 0;
+            VFS::DirectoryIterator(FShaderCache::CACHE_DIR, [&](const VFS::FFileInfo& Info)
+            {
+                if (Info.GetExt() != ".lsc")
+                {
+                    return;
+                }
+                FShaderHeader Header;
+                if (!FShaderCache::TryLoadByCachePath(Info.VirtualPath.c_str(), 0, Header))
+                {
+                    LOG_WARN("Shader cache: failed to load {}", Info.VirtualPath.c_str());
+                    return;
+                }
+                GRenderContext->GetCrashTracker().RegisterShader(Header.Binaries, Header.DebugName);
+                GRenderContext->GetShaderLibrary()->CreateAndAddShader(Header.DebugName, Header, false);
+                ++Loaded;
+            });
+            LOG_INFO("Shader cache: loaded {} packaged shaders (no source available).", Loaded);
+        }
+        else
+        {
+            TVector<FShaderCompileOptions> Options(Shaders.size());
+            for (int i = 0; i < Shaders.size(); ++i)
+            {
+                Options[i].bGenerateReflectionData = false;
+            }
+
+            CompileShaderPaths(Shaders, Options, [&] (const FShaderHeader& Header)
+            {
+                GRenderContext->GetShaderLibrary()->CreateAndAddShader(Header.DebugName, Header, false);
+            });
+        }
+
+        GRenderContext->OnShaderCompiled(nullptr, false, true);
     }
 
     void FSpirVShaderCompiler::Shutdown()

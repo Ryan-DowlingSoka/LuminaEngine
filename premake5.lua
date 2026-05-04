@@ -148,7 +148,7 @@ workspace "Lumina"
         symbols "Off"
         runtime "Release"
         defines { "NDEBUG", "LE_SHIPPING", "LUMINA_SHIPPING" }
-        removedefines { "TRACY_ENABLE" }
+        removedefines { "TRACY_ENABLE", "JPH_DEBUG_RENDERER" }
     
     filter {}
 
@@ -185,6 +185,7 @@ workspace "Lumina"
         include "Engine/Source/ThirdParty/Recast"
         include "Engine/Source/ThirdParty/RPMalloc"
         include "Engine/Source/ThirdParty/XXHash"
+        include "Engine/Source/ThirdParty/miniz"
         include "Engine/Source/ThirdParty/VulkanMemoryAllocator"
         include "Engine/Source/ThirdParty/Volk"
         include "Engine/Source/ThirdParty/tinyobjloader"

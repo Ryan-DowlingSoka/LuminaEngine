@@ -749,6 +749,18 @@ namespace Lumina::RmlUi
             }
         }
 
+        // Toggle a single class on the element without disturbing other classes.
+        // Pass true to add, false to remove.
+        void SetClass(FStringView Path, FStringView ElementId, FStringView ClassName, bool bActive)
+        {
+            auto* Doc = FindDoc(Path);
+            if (Doc == nullptr) return;
+            if (Rml::Element* El = Doc->GetElementById(Rml::String(ElementId.data(), ElementId.size())))
+            {
+                El->SetClass(Rml::String(ClassName.data(), ClassName.size()), bActive);
+            }
+        }
+
         void SetDebuggerVisible(bool bVisible)
         {
             // Persists across PIE: SyncDebuggerToActiveContext re-reads after host rebind.
@@ -839,6 +851,7 @@ namespace Lumina::RmlUi
         UI.SetFunction<&LuaApi::IsVisible>("IsVisible");
         UI.SetFunction<&LuaApi::SetText>("SetText");
         UI.SetFunction<&LuaApi::SetInnerRml>("SetInnerRml");
+        UI.SetFunction<&LuaApi::SetClass>("SetClass");
         UI.SetFunction<&LuaApi::OnEvent>("OnEvent");
         UI.SetFunction<&LuaApi::SetDebuggerVisible>("SetDebuggerVisible");
         UI.SetFunction<&LuaApi::DescribeState>("DescribeState");

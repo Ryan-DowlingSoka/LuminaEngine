@@ -42,7 +42,13 @@ namespace Lumina
     {
         ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
 
-        ImGui::InputText("##Name", const_cast<char*>(DisplayValue.c_str()), 256);
+        char Buffer[256];
+        strncpy(Buffer, DisplayValue.c_str(), sizeof(Buffer));
+        Buffer[sizeof(Buffer) - 1] = '\0';
+        if (ImGui::InputText("##ParamName", Buffer, sizeof(Buffer)))
+        {
+            DisplayValue = Buffer;
+        }
 
         ImGui::PopItemWidth();
         
@@ -52,8 +58,7 @@ namespace Lumina
     
     void FStringPropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
     {
-        CachedValue = DisplayValue;
-        Property->Property->SetValue(Property->ContainerPtr, CachedValue, Property->Index);
+        Property->Property->SetValue(Property->ContainerPtr, DisplayValue, Property->Index);
     }
 
     void FStringPropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
@@ -61,9 +66,6 @@ namespace Lumina
         FString ActualValue;
         Property->Property->GetValue(Property->ContainerPtr, &ActualValue, Property->Index);
         
-        if (CachedValue != ActualValue)
-        {
-            CachedValue = DisplayValue = ActualValue;
-        }
+        DisplayValue = ActualValue;
     }
 }

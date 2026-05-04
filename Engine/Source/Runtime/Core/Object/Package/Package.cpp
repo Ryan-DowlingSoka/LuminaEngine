@@ -62,8 +62,11 @@ namespace Lumina
     bool CPackage::Rename(const FName& NewName, CPackage* NewPackage)
     {
         // In-memory rename only; caller (RenamePackage) handles disk. Exported objects survive so live refs stay valid.
-        FStringView FileName = VFS::FileName(NewName.ToString(), true);
-        FStringView OldFileName = VFS::FileName(GetName().ToString(), true);
+        // FName::ToString() returns by value; bind to locals so the FStringViews aren't dangling.
+        const FString NewNameStr = NewName.ToString();
+        const FString OldNameStr = GetName().ToString();
+        FStringView FileName = VFS::FileName(NewNameStr, true);
+        FStringView OldFileName = VFS::FileName(OldNameStr, true);
         bool bFileNameDirty = FileName != OldFileName;
 
         if (bFileNameDirty)

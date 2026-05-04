@@ -158,7 +158,7 @@ float3 EvaluateScatter(FLight Light, float3 P, float3 ViewDirToCam, float CosThe
     if (bSpot)
     {
         float3 SpotForward = normalize(Light.Direction);
-        float CosAtP = dot(SpotForward, LightDirAtP);
+        float CosAtP = dot(SpotForward, LtoCam);
         Cone = saturate((CosAtP - Light.Angles.y) / max(Light.Angles.x - Light.Angles.y, 1e-3));
         if (Cone <= 0.0)
         {

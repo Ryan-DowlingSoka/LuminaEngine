@@ -45,7 +45,9 @@ namespace Lumina
             return true;
         }
 
-        // Walks the asset reference graph using CPackage::BuildSaveContext (same set as save-time imports).
+        // Walks the asset reference graph via each package's on-disk ImportTable.
+        // Avoids FullyLoad/BuildSaveContext, which only see references on objects already realized in memory —
+        // that path missed actor/component refs whenever the level wasn't open in the editor.
         void CollectAssetReferences(const FString& RootPackagePath, THashSet<FString>& OutPaths, const TFunction<void(FStringView)>& LogFunc)
         {
             TQueue<FString> Queue;
@@ -69,22 +71,9 @@ namespace Lumina
                     continue;
                 }
 
-                if (!Pkg->FullyLoad())
+                for (const FObjectImport& Import : Pkg->ImportTable)
                 {
-                    Log(LogFunc, FString().sprintf("  [warn] could not fully load: %s", Path.c_str()).c_str());
-                    continue;
-                }
-
-                FSaveContext Context(Pkg);
-                Pkg->BuildSaveContext(Context);
-
-                for (CObject* Import : Context.Imports)
-                {
-                    if (Import == nullptr)
-                    {
-                        continue;
-                    }
-                    const FAssetData* Data = FAssetRegistry::Get().GetAssetByGUID(Import->GetGUID());
+                    const FAssetData* Data = FAssetRegistry::Get().GetAssetByGUID(Import.ObjectGUID);
                     if (Data == nullptr)
                     {
                         // Engine-resident objects (CDOs, classes, primitives) have no asset record.
@@ -245,6 +234,69 @@ namespace Lumina
             return true;
         }
 
+        // True if Path lies under /Engine/Resources/Shaders. Slang sources are
+        // intentionally excluded from the pak — packaged builds load SPIR-V
+        // from the shader cache instead.
+        bool IsShaderSourcePath(FStringView Path)
+        {
+            constexpr FStringView Prefix = "/Engine/Resources/Shaders";
+            if (Path.size() < Prefix.size())
+            {
+                return false;
+            }
+            for (size_t i = 0; i < Prefix.size(); ++i)
+            {
+                if (Path[i] != Prefix[i])
+                {
+                    return false;
+                }
+            }
+            return Path.size() == Prefix.size() || Path[Prefix.size()] == '/';
+        }
+
+        // Bundle runtime-needed engine content: /Engine/Resources/{Content,Fonts,Textures,UI,...}.
+        // Skips Shaders (covered by BundleShaderCache).
+        size_t BundleEngineResources(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
+        {
+            size_t Count = 0;
+            VFS::RecursiveDirectoryIterator("/Engine/Resources", [&](const VFS::FFileInfo& Info)
+            {
+                if (Info.IsDirectory())
+                {
+                    return;
+                }
+                FStringView Vp(Info.VirtualPath.c_str(), Info.VirtualPath.size());
+                if (IsShaderSourcePath(Vp))
+                {
+                    return;
+                }
+                if (BundleVfsFile(Writer, Vp, LogFunc))
+                {
+                    ++Count;
+                }
+            });
+            return Count;
+        }
+
+        // Bundle every cached SPIR-V (.lsc) under /Intermediates/ShaderCache.
+        // Packaged builds load these directly instead of running Slang.
+        size_t BundleShaderCache(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
+        {
+            size_t Count = 0;
+            VFS::RecursiveDirectoryIterator("/Intermediates/ShaderCache", [&](const VFS::FFileInfo& Info)
+            {
+                if (Info.IsDirectory() || Info.GetExt() != ".lsc")
+                {
+                    return;
+                }
+                if (BundleVfsFile(Writer, Info.VirtualPath.c_str(), LogFunc))
+                {
+                    ++Count;
+                }
+            });
+            return Count;
+        }
+
         // Bundle other /Config/*.json files; GameSettings.json is handled by BundleConfigWithProjectName.
         size_t BundleAuxConfigFiles(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
         {
@@ -323,6 +375,16 @@ namespace Lumina
             ++Result.NumExtraFiles;
         }
         Result.NumExtraFiles += BundleAuxConfigFiles(Writer, LogFunc);
+
+        Log(LogFunc, "Bundling engine resources...");
+        const size_t NumEngine = BundleEngineResources(Writer, LogFunc);
+        Result.NumExtraFiles += NumEngine;
+        Log(LogFunc, FString().sprintf("  bundled %zu engine files", NumEngine).c_str());
+
+        Log(LogFunc, "Bundling shader cache...");
+        const size_t NumShaders = BundleShaderCache(Writer, LogFunc);
+        Result.NumExtraFiles += NumShaders;
+        Log(LogFunc, FString().sprintf("  bundled %zu cached shaders", NumShaders).c_str());
 
         // Loose /Game files (.luau, .rml, JSON, etc). Skipped in loose-files mode; .lasset files come via the asset graph.
         if (!Options.bExtractScriptsAsLooseFiles)

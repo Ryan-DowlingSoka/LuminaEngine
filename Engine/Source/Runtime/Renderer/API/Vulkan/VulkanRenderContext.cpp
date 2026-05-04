@@ -13,6 +13,7 @@
 #include "Core/Math/Alignment.h"
 #include "Core/Profiler/Profile.h"
 #include "Core/Windows/Window.h"
+#include "FileSystem/FileSystem.h"
 #include "Paths/Paths.h"
 #include "Renderer/CommandList.h"
 #include "Renderer/CommandListValidator.h"
@@ -565,8 +566,6 @@ namespace Lumina
         ShaderLibrary = MakeRefCount<FShaderLibrary>();
         ShaderCompiler = Memory::New<FSpirVShaderCompiler>();
         ShaderCompiler->Initialize();
-            
-        CompileEngineShaders();
         
         WaitIdle();
         FlushPendingDeletes();
@@ -1474,38 +1473,6 @@ namespace Lumina
                 Queue->RetireCommandBuffers();
             }
         }
-    }
-    
-    void FVulkanRenderContext::CompileEngineShaders()
-    {
-        //@TODO - Cache compiled shaders; recompiling every load is wasteful.
-        
-        TVector<FString> Shaders;
-        const FString ShaderDir(Paths::GetEngineResourceDirectory() + "/Shaders");
-
-        for (const auto& entry : std::filesystem::directory_iterator(ShaderDir.c_str()))
-        {
-            if (!entry.is_directory())
-            {
-                if (entry.path().extension() == ".slang")
-                {
-                    Shaders.emplace_back(entry.path().string().c_str());
-                }
-            }
-        }
-        
-        TVector<FShaderCompileOptions> Options(Shaders.size());
-        for (int i = 0; i < Shaders.size(); ++i)
-        {
-            Options[i].bGenerateReflectionData = false;
-        }
-        
-        GetShaderCompiler()->CompileShaderPaths(Shaders, Options, [&] (const FShaderHeader& Header)
-        {
-            ShaderLibrary->CreateAndAddShader(Header.DebugName, Header, false);
-        });
-
-        OnShaderCompiled(nullptr, false, true);
     }
 
     void FVulkanRenderContext::OnShaderCompiled(FRHIShader* Shader, bool bAddToLibrary, bool bReloadPipelines)

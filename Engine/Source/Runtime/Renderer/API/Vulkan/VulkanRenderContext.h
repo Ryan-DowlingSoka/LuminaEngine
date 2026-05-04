@@ -210,7 +210,6 @@ namespace Lumina
 
         NODISCARD IShaderCompiler* GetShaderCompiler() const override;
         NODISCARD FRHIShaderLibraryRef GetShaderLibrary() const override;
-        void CompileEngineShaders() override;
         void OnShaderCompiled(FRHIShader* Shader, bool bAddToLibrary, bool bReloadPipelines) override;
 
         

@@ -30,7 +30,7 @@
         },
         "WorldEditorTool": {
             "GuizmoSnapEnabled": false,
-            "GuizmoSnapRotate": 1.0,
+            "GuizmoSnapRotate": 5.0,
             "GuizmoSnapScale": 0.10000000149011612,
             "GuizmoSnapTranslate": 1.0
         }

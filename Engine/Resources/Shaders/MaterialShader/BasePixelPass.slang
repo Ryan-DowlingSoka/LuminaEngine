@@ -449,14 +449,14 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
             continue;
         }
         float2 SampleUV = ShadowTile.AtlasUVOffset + (TapUV * ShadowTile.AtlasUVScale);
-        Shadow += uShadowAtlas.SampleCmp(SampleUV, RefDepth);
+        Shadow += uShadowAtlas.SampleCmpLevelZero(SampleUV, RefDepth);
         Weight += 1.0;
     }
 
     if (Weight <= 0.0)
     {
         float2 CenterUV = ShadowTile.AtlasUVOffset + (SafeUV * ShadowTile.AtlasUVScale);
-        return uShadowAtlas.SampleCmp(CenterUV, RefDepth);
+        return uShadowAtlas.SampleCmpLevelZero(CenterUV, RefDepth);
     }
     return Shadow / Weight;
 }

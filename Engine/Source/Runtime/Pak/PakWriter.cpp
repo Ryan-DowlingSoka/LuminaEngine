@@ -6,6 +6,7 @@
 
 #include "Core/Templates/LuminaTemplate.h"
 #include "Log/Log.h"
+#include "miniz.h"
 
 namespace Lumina
 {
@@ -51,23 +52,66 @@ namespace Lumina
 
         File.write(reinterpret_cast<const char*>(&Header), sizeof(Header));
 
-        TVector<uint64> Offsets;
-        Offsets.reserve(Entries.size());
+        struct FWriteRecord
+        {
+            uint64 Offset;
+            uint64 CompressedSize;
+            uint64 UncompressedSize;
+            uint8  Method;
+        };
+
+        TVector<FWriteRecord> Records;
+        Records.reserve(Entries.size());
+
+        TVector<uint8> Scratch;
+        size_t TotalCompressed = 0;
 
         for (const FPendingEntry& Entry : Entries)
         {
             const uint64 Offset = (uint64)File.tellp();
-            Offsets.push_back(Offset);
-            if (!Entry.Data.empty())
+            const uint64 Original = (uint64)Entry.Data.size();
+
+            FWriteRecord Rec{};
+            Rec.Offset = Offset;
+            Rec.UncompressedSize = Original;
+
+            const uint8* WritePtr = Entry.Data.data();
+            uint64 WriteSize = Original;
+            uint8 Method = (uint8)EPakCompression::None;
+
+            if (Original >= PAK_COMPRESSION_MIN_SIZE)
             {
-                File.write(reinterpret_cast<const char*>(Entry.Data.data()), Entry.Data.size());
+                mz_ulong Bound = mz_compressBound((mz_ulong)Original);
+                Scratch.resize((size_t)Bound);
+
+                mz_ulong OutLen = Bound;
+                int Ret = mz_compress2(Scratch.data(), &OutLen, Entry.Data.data(), (mz_ulong)Original, MZ_DEFAULT_COMPRESSION);
+
+                if (Ret == MZ_OK && OutLen < Original)
+                {
+                    WritePtr = Scratch.data();
+                    WriteSize = (uint64)OutLen;
+                    Method = (uint8)EPakCompression::Deflate;
+                }
             }
+
+            if (WriteSize > 0)
+            {
+                File.write(reinterpret_cast<const char*>(WritePtr), (std::streamsize)WriteSize);
+            }
+
+            Rec.CompressedSize = WriteSize;
+            Rec.Method = Method;
+            TotalCompressed += (size_t)WriteSize;
+            Records.emplace_back(Rec);
         }
 
         const uint64 TocOffset = (uint64)File.tellp();
         for (size_t i = 0; i < Entries.size(); ++i)
         {
             const FPendingEntry& Entry = Entries[i];
+            const FWriteRecord& Rec = Records[i];
+
             const uint32 PathLen = (uint32)Entry.VirtualPath.size();
             File.write(reinterpret_cast<const char*>(&PathLen), sizeof(PathLen));
             if (PathLen > 0)
@@ -75,10 +119,13 @@ namespace Lumina
                 File.write(Entry.VirtualPath.c_str(), PathLen);
             }
 
-            const uint64 Offset = Offsets[i];
-            const uint64 Size   = (uint64)Entry.Data.size();
-            File.write(reinterpret_cast<const char*>(&Offset), sizeof(Offset));
-            File.write(reinterpret_cast<const char*>(&Size),   sizeof(Size));
+            File.write(reinterpret_cast<const char*>(&Rec.Offset),           sizeof(Rec.Offset));
+            File.write(reinterpret_cast<const char*>(&Rec.CompressedSize),   sizeof(Rec.CompressedSize));
+            File.write(reinterpret_cast<const char*>(&Rec.UncompressedSize), sizeof(Rec.UncompressedSize));
+            File.write(reinterpret_cast<const char*>(&Rec.Method),           sizeof(Rec.Method));
+
+            const uint8 Pad[7] = {};
+            File.write(reinterpret_cast<const char*>(Pad), sizeof(Pad));
         }
 
         // Patch header with TocOffset.
@@ -92,9 +139,13 @@ namespace Lumina
             return false;
         }
 
-        LOG_INFO("FPakWriter: wrote '{}' ({} entries, {} bytes data, TOC at {})",
+        const double Ratio = TotalDataSize > 0
+            ? (double)TotalCompressed / (double)TotalDataSize
+            : 1.0;
+
+        LOG_INFO("FPakWriter: wrote '{}' ({} entries, {} -> {} bytes, ratio {:.2f}, TOC at {})",
             FString(NativeFilePath.data(), NativeFilePath.size()).c_str(),
-            (uint32)Entries.size(), TotalDataSize, TocOffset);
+            (uint32)Entries.size(), TotalDataSize, TotalCompressed, Ratio, TocOffset);
         return true;
     }
 }

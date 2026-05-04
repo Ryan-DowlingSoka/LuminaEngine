@@ -1,8 +1,6 @@
 ﻿#pragma once
-#include "Assets/AssetTypes/Mesh/StaticMesh/StaticMesh.h"
 #include "Containers/Function.h"
 #include "Core/Object/Object.h"
-#include "Core/Object/ObjectHandleTyped.h"
 #include "Core/Object/ObjectMacros.h"
 #include "ThumbnailManager.generated.h"
 
@@ -46,32 +44,8 @@ namespace Lumina
 
         // Generate a fresh thumbnail for Asset and write it into Package's
         // thumbnail slot. Returns false if no renderer is registered for this
-        // asset class — caller can fall back to its viewport-grab path.
+        // asset class, caller can fall back to its viewport-grab path.
         bool GenerateThumbnail(CObject* Asset, CPackage* Package);
-        
-        /** Unit cube mesh used to render thumbnail previews for cube-shaped assets. */
-        PROPERTY(NotSerialized)
-        TObjectPtr<CStaticMesh> CubeMesh;
-
-        /** Unit sphere mesh used to render thumbnail previews for sphere-shaped assets. */
-        PROPERTY(NotSerialized)
-        TObjectPtr<CStaticMesh> SphereMesh;
-
-        /** Unit plane mesh used to render thumbnail previews for flat assets. */
-        PROPERTY(NotSerialized)
-        TObjectPtr<CStaticMesh> PlaneMesh;
-
-        /** Unit cylinder mesh, also used as a primitive when spawning entities in the editor. */
-        PROPERTY(NotSerialized)
-        TObjectPtr<CStaticMesh> CylinderMesh;
-
-        /** Unit cone mesh, also used as a primitive when spawning entities in the editor. */
-        PROPERTY(NotSerialized)
-        TObjectPtr<CStaticMesh> ConeMesh;
-
-        /** Unit capsule mesh */
-        PROPERTY(NotSerialized)
-        TObjectPtr<CStaticMesh> CapsuleMesh;
 
         FSharedMutex ThumbnailLock;
         THashMap<FName, FPackageThumbnail*> Thumbnails;

@@ -70,6 +70,8 @@ namespace Lumina
         void PushAddComponentModal(entt::entity Entity);
         void PushRenameEntityModal(entt::entity Entity);
         void PushSaveAsAssetModal();
+        void PushCreatePrefabFromSelectionModal();
+        void PushCreatePrefabModalForEntity(entt::entity Entity);
 
 		void OnSave() override;
 

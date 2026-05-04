@@ -2,6 +2,7 @@
 #include "AudioSystem.h"
 #include "Audio/AudioGlobals.h"
 #include "World/Entity/Components/AudioSourceComponent.h"
+#include "World/Entity/Components/ProceduralAudioComponent.h"
 
 namespace Lumina
 {
@@ -22,6 +23,17 @@ namespace Lumina
 				Audio.bPlaying = false;
 			}
 		});
+
+		auto ProceduralView = Context.CreateView<SProceduralAudioComponent>();
+		ProceduralView.each([](SProceduralAudioComponent& Audio)
+		{
+			if (Audio.bPlaying && Audio.ActiveHandle.IsValid())
+			{
+				GAudioContext->StopSound(Audio.ActiveHandle);
+				Audio.ActiveHandle = FAudioHandle::Invalid();
+				Audio.bPlaying = false;
+			}
+		});
 	}
 
 	void SAudioSystem::Update(const FSystemContext& SystemContext) noexcept
@@ -32,7 +44,7 @@ namespace Lumina
 			auto ListenerView = SystemContext.CreateView<SAudioListenerComponent, STransformComponent>();
 			ListenerView.each([](SAudioListenerComponent&, const STransformComponent& Transform)
 			{
-				GAudioContext->UpdateListenerPosition(Transform.GetLocation(), Transform.GetRotation());
+				GAudioContext->UpdateListenerPosition(Transform.GetWorldLocation(), Transform.GetWorldRotation());
 			});
 		}
 
@@ -48,7 +60,7 @@ namespace Lumina
 					{
 						Audio.ActiveHandle = GAudioContext->PlaySoundAtLocation(
 							FStringView(Audio.SoundFile),
-							Transform.GetLocation(),
+							Transform.GetWorldLocation(),
 							Audio.Volume,
 							Audio.Pitch,
 							Audio.MinDistance,
@@ -61,7 +73,7 @@ namespace Lumina
 
 				if (Audio.bPlaying && Audio.ActiveHandle.IsValid())
 				{
-					GAudioContext->SetPosition(Audio.ActiveHandle, Transform.GetLocation());
+					GAudioContext->SetPosition(Audio.ActiveHandle, Transform.GetWorldLocation());
 
 					if (Audio.bVolumeDirty)
 					{
@@ -79,6 +91,42 @@ namespace Lumina
 					{
 						GAudioContext->SetLooping(Audio.ActiveHandle, Audio.bLooping);
 						Audio.bLoopingDirty = false;
+					}
+				}
+			});
+		}
+
+		{
+			auto ProceduralView = SystemContext.CreateView<SProceduralAudioComponent, STransformComponent>();
+			ProceduralView.each([](SProceduralAudioComponent& Audio, const STransformComponent& Transform)
+			{
+				if (!Audio.bReady)
+				{
+					Audio.bReady = true;
+
+					if (Audio.bPlayOnReady)
+					{
+						Audio.Start();
+					}
+				}
+
+				if (Audio.bPlaying && Audio.ActiveHandle.IsValid())
+				{
+					if (Audio.bSpatialized)
+					{
+						GAudioContext->SetPosition(Audio.ActiveHandle, Transform.GetWorldLocation());
+					}
+
+					if (Audio.bVolumeDirty)
+					{
+						GAudioContext->SetVolume(Audio.ActiveHandle, Audio.Volume);
+						Audio.bVolumeDirty = false;
+					}
+
+					if (Audio.bPitchDirty)
+					{
+						GAudioContext->SetPitch(Audio.ActiveHandle, Audio.Pitch);
+						Audio.bPitchDirty = false;
 					}
 				}
 			});

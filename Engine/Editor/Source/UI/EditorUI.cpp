@@ -287,7 +287,6 @@ namespace Lumina
         
         if (ImGui::IsKeyPressed(ImGuiKey_F5))
         {
-            GRenderContext->CompileEngineShaders();
             CMaterial::CreateDefaultMaterial();
         }
 
@@ -1397,7 +1396,6 @@ namespace Lumina
         {
             if (ImGui::MenuItem(LE_ICON_HAMMER " Recompile All", "F5"))
             {
-                GRenderContext->CompileEngineShaders();
                 CMaterial::CreateDefaultMaterial();
             }
             

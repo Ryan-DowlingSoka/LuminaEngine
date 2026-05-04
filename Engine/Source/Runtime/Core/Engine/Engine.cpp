@@ -32,6 +32,7 @@
 #include "Scripting/Lua/Scripting.h"
 #include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "TaskSystem/ThreadedCallback.h"
+#include "Tools/PrimitiveManager/PrimitiveManager.h"
 #include "Tools/UI/DevelopmentToolUI.h"
 #include "World/WorldManager.h"
 #include "World/World.h"
@@ -58,7 +59,23 @@ namespace Lumina
 
         Platform::EnableHighResolutionTiming();
 
-        VFS::Mount<VFS::FNativeFileSystem>("/Engine", Paths::GetEngineDirectory());
+        // Editor / dev runs: mount /Engine to the engine source tree, and
+        // /Intermediates to the repo-root sibling that holds the shader cache,
+        // reflection, and .obj output. Packaged runs don't have either on disk
+        // (LUMINA_DIR is unset); both aliases come from the .pak via
+        // LoadCookedRuntime instead.
+        const FString& EngineDir = Paths::GetEngineDirectory();
+        if (!EngineDir.empty() && std::filesystem::exists(EngineDir.c_str()))
+        {
+            VFS::Mount<VFS::FNativeFileSystem>("/Engine", EngineDir);
+        }
+        const FString& InstallDir = Paths::GetEngineInstallDirectory();
+        if (!InstallDir.empty() && std::filesystem::exists(InstallDir.c_str()))
+        {
+            const FString IntermediatesDir = InstallDir + "/Intermediates";
+            std::filesystem::create_directories(IntermediatesDir.c_str());
+            VFS::Mount<VFS::FNativeFileSystem>("/Intermediates", IntermediatesDir);
+        }
         
         FCoreDelegates::OnPreEngineInit.BroadcastAndClear();
         
@@ -77,7 +94,10 @@ namespace Lumina
         Lua::Initialize();
 
         ProcessNewlyLoadedCObjects();
-        
+
+        // Built-in primitive meshes must exist before any world deserializes.
+        CPrimitiveManager::Get();
+
         GWorldManager = Memory::New<FWorldManager>();
 
         #if USING(WITH_EDITOR)
@@ -87,11 +107,6 @@ namespace Lumina
         GApp->GetEventProcessor().RegisterEventHandler(DeveloperToolUI, (int32)EInputLayer::EditorChrome);
         #endif
         
-        // RmlUi needs CompileEngineShaders done and the engine viewport alive
-        // (both true by this point), AND it must be ready before
-        // OnPostEngineInit fires; in packaged builds that broadcast triggers
-        // LoadCookedRuntime, which loads worlds and runs scripts that may
-        // call UI.LoadDocument straight away.
         RmlUi::Initialise();
 
         FCoreDelegates::OnPostEngineInit.BroadcastAndClear();

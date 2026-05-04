@@ -25,6 +25,7 @@
 #include "Jolt/Physics/Collision/Shape/SphereShape.h"
 #include "Jolt/Physics/Collision/Shape/MeshShape.h"
 #include "Jolt/Physics/Collision/Shape/ConvexHullShape.h"
+#include "Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h"
 #include "Assets/AssetTypes/Mesh/StaticMesh/StaticMesh.h"
 #include "Renderer/MeshData.h"
 #include "Renderer/RendererUtils.h"
@@ -1342,6 +1343,18 @@ namespace Lumina::Physics
         
         Shape = RTSResult.Get();
 
+        if (glm::dot(RigidBodyComponent.CenterOfMassOffset, RigidBodyComponent.CenterOfMassOffset) > 0.0f)
+        {
+            JPH::OffsetCenterOfMassShapeSettings COMS(JoltUtils::ToJPHVec3(RigidBodyComponent.CenterOfMassOffset), Shape);
+            auto COMResult = COMS.Create();
+            if (COMResult.HasError())
+            {
+                LOG_ERROR("Failed to apply CenterOfMassOffset for Entity: {} - {}", entt::to_integral(Entity), COMResult.GetError());
+                return;
+            }
+            Shape = COMResult.Get();
+        }
+
         JPH::BodyCreationSettings Settings(
             Shape,
             JoltUtils::ToJPHRVec3(Position),
@@ -1360,7 +1373,13 @@ namespace Lumina::Physics
         Settings.mRestitution               = RigidBodyComponent.RestitutionOverride;
         Settings.mFriction                  = RigidBodyComponent.FrictionOverride;
         Settings.mAngularDamping            = RigidBodyComponent.AngularDamping;
-        Settings.mLinearDamping             = RigidBodyComponent.LinearDamping; 
+        Settings.mLinearDamping             = RigidBodyComponent.LinearDamping;
+
+        if (RigidBodyComponent.bOverrideMass && MotionType == JPH::EMotionType::Dynamic)
+        {
+            Settings.mOverrideMassProperties           = JPH::EOverrideMassProperties::CalculateInertia;
+            Settings.mMassPropertiesOverride.mMass     = RigidBodyComponent.Mass;
+        }
 
         JPH::BodyInterface& BodyInterface   = JoltSystem->GetBodyInterface();
         JPH::Body* Body                     = BodyInterface.CreateBody(Settings);
