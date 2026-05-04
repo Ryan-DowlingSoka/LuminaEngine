@@ -58,12 +58,7 @@ namespace Lumina
         LUMINA_PROFILE_SCOPE();
 
         Platform::EnableHighResolutionTiming();
-
-        // Editor / dev runs: mount /Engine to the engine source tree, and
-        // /Intermediates to the repo-root sibling that holds the shader cache,
-        // reflection, and .obj output. Packaged runs don't have either on disk
-        // (LUMINA_DIR is unset); both aliases come from the .pak via
-        // LoadCookedRuntime instead.
+        
         const FString& EngineDir = Paths::GetEngineDirectory();
         if (!EngineDir.empty() && std::filesystem::exists(EngineDir.c_str()))
         {
@@ -82,7 +77,6 @@ namespace Lumina
         FConsoleRegistry::Get().LoadFromConfig();
         
         basisu::basisu_encoder_init();
-
         Audio::Initialize();
         Task::Initialize();
         Physics::Initialize();
@@ -581,6 +575,15 @@ namespace Lumina
 
     bool FEngine::LoadCookedRuntime()
     {
+        if (!MountCookedRuntime())
+        {
+            return false;
+        }
+        return StartCookedGame();
+    }
+
+    bool FEngine::MountCookedRuntime()
+    {
         // Find the single .pak next to the exe. Platform::BaseDir returns wide on Windows; convert first.
         const FString ExeFullPath = StringUtils::FromWideString(Platform::BaseDir());
         const size_t LastSlash = ExeFullPath.find_last_of("/\\");
@@ -640,6 +643,18 @@ namespace Lumina
         {
             LOG_WARN("FEngine::LoadCookedRuntime: no /Config/GameSettings.json in PAK; using defaults.");
         }
+
+        return true;
+    }
+
+    bool FEngine::StartCookedGame()
+    {
+        // Resolve exe dir again — used for project DLL lookup.
+        const FString ExeFullPath = StringUtils::FromWideString(Platform::BaseDir());
+        const size_t LastSlash = ExeFullPath.find_last_of("/\\");
+        const FString ExeDir = (LastSlash == FString::npos)
+            ? ExeFullPath
+            : ExeFullPath.substr(0, LastSlash);
 
         // Discovery is async; MUST wait before LoadStartupMap or GetAssetByPath silently fails on empty registry.
         FAssetRegistry::Get().RunInitialDiscovery();

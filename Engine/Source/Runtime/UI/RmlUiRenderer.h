@@ -50,6 +50,7 @@ namespace Lumina
         {
             FRHIImageRef       Image;
             FRHIBindingSetRef  BindingSet;
+            class CTexture*    AssetKeepalive = nullptr;   // rooted while held; released on ReleaseTexture
         };
 
         struct FPendingTexture

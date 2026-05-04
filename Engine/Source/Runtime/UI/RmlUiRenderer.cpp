@@ -13,12 +13,11 @@
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Vertex.h>
 
-#define STB_IMAGE_IMPLEMENTATION_DISABLE 0
-#include "stb_image.h"
-
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include "Assets/AssetTypes/Textures/Texture.h"
+#include "Core/Object/ObjectCore.h"
 #include "FileSystem/FileSystem.h"
 
 namespace Lumina
@@ -81,6 +80,14 @@ namespace Lumina
         DrawCalls.clear();
         PendingTextureUploads.clear();
         Geometries.clear();
+        for (auto& KV : Textures)
+        {
+            if (KV.second.AssetKeepalive != nullptr)
+            {
+                KV.second.AssetKeepalive->RemoveFromRoot();
+                KV.second.AssetKeepalive = nullptr;
+            }
+        }
         Textures.clear();
         DefaultWhiteImage.SafeRelease();
         DefaultWhiteBindingSet.SafeRelease();
@@ -379,45 +386,53 @@ namespace Lumina
 
     Rml::TextureHandle FRmlUiRenderer::LoadTexture(Rml::Vector2i& OutDimensions, const Rml::String& Source)
     {
-        TVector<uint8> FileBytes;
-        FStringView SourceView(Source.c_str(), Source.size());
-        if (!VFS::ReadFile(FileBytes, SourceView))
+        // All paths in the engine are virtual; resolve the source as a CTexture asset
+        // and reuse its already-uploaded RHIImage. No re-decode, no re-upload.
+        const FStringView SourceView(Source.c_str(), Source.size());
+        CTexture* Texture = LoadObject<CTexture>(SourceView);
+        if (Texture == nullptr)
         {
-            const FFixedString Resolved = VFS::ResolveToVirtualPath(SourceView);
-            if (!VFS::ReadFile(FileBytes, FStringView(Resolved.c_str(), Resolved.size())))
-            {
-                LOG_WARN("[RmlUi] LoadTexture failed to read '{}'", Source.c_str());
-                return 0;
-            }
-        }
-
-        int Width = 0;
-        int Height = 0;
-        int Channels = 0;
-        stbi_uc* Decoded = stbi_load_from_memory(FileBytes.data(), int(FileBytes.size()), &Width, &Height, &Channels, STBI_rgb_alpha);
-        if (Decoded == nullptr)
-        {
-            LOG_WARN("[RmlUi] stb_image failed to decode '{}': {}", Source.c_str(), stbi_failure_reason());
+            LOG_WARN("[RmlUi] LoadTexture: no CTexture asset at '{}'.", Source.c_str());
             return 0;
         }
 
-        // CSS images are straight alpha; pre-multiply for the blend pipeline.
-        const size_t PixelCount = size_t(Width) * size_t(Height);
-        for (size_t i = 0; i < PixelCount; ++i)
+        FRHIImage* RawImage = Texture->GetRHIRef();
+        if (RawImage == nullptr)
         {
-            const uint32 A = Decoded[i * 4 + 3];
-            Decoded[i * 4 + 0] = uint8((uint32(Decoded[i * 4 + 0]) * A + 127) / 255);
-            Decoded[i * 4 + 1] = uint8((uint32(Decoded[i * 4 + 1]) * A + 127) / 255);
-            Decoded[i * 4 + 2] = uint8((uint32(Decoded[i * 4 + 2]) * A + 127) / 255);
+            LOG_WARN("[RmlUi] LoadTexture: '{}' has no RHI image (asset not yet uploaded?).", Source.c_str());
+            return 0;
         }
 
-        TVector<uint8> Bytes;
-        Bytes.assign(Decoded, Decoded + (PixelCount * 4));
-        stbi_image_free(Decoded);
+        const FRHIImageDesc& ImgDesc = Texture->GetTextureResource().ImageDescription;
+        if (ImgDesc.Extent.x == 0 || ImgDesc.Extent.y == 0)
+        {
+            LOG_WARN("[RmlUi] LoadTexture: '{}' has zero extent.", Source.c_str());
+            return 0;
+        }
 
-        OutDimensions.x = Width;
-        OutDimensions.y = Height;
-        return RegisterTexturePending(Move(Bytes), Width, Height);
+        FBindingSetDesc SetDesc;
+        SetDesc.AddItem(FBindingSetItem::TextureSRV(0, RawImage, Sampler));
+        FRHIBindingSetRef BindingSet = GRenderContext->CreateBindingSet(SetDesc, BindingLayout);
+        if (!BindingSet)
+        {
+            LOG_WARN("[RmlUi] LoadTexture: failed to create binding set for '{}'.", Source.c_str());
+            return 0;
+        }
+
+        // Pin the asset for the lifetime of the RmlUi handle so an unload doesn't
+        // dangle our binding set. Released in ReleaseTexture.
+        Texture->AddToRoot();
+
+        const Rml::TextureHandle Handle = NextTextureHandle++;
+        FTexture Tex;
+        Tex.Image           = FRHIImageRef(RawImage);
+        Tex.BindingSet      = Move(BindingSet);
+        Tex.AssetKeepalive  = Texture;
+        Textures.emplace(Handle, Move(Tex));
+
+        OutDimensions.x = int(ImgDesc.Extent.x);
+        OutDimensions.y = int(ImgDesc.Extent.y);
+        return Handle;
     }
 
     Rml::TextureHandle FRmlUiRenderer::GenerateTexture(Rml::Span<const Rml::byte> Bytes, Rml::Vector2i Dimensions)
@@ -500,7 +515,16 @@ namespace Lumina
 
     void FRmlUiRenderer::ReleaseTexture(Rml::TextureHandle Texture)
     {
-        Textures.erase(Texture);
+        auto It = Textures.find(Texture);
+        if (It != Textures.end())
+        {
+            if (It->second.AssetKeepalive != nullptr)
+            {
+                It->second.AssetKeepalive->RemoveFromRoot();
+                It->second.AssetKeepalive = nullptr;
+            }
+            Textures.erase(It);
+        }
     }
 
     void FRmlUiRenderer::EnableScissorRegion(bool bEnable)

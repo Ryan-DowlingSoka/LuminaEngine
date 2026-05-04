@@ -21,7 +21,8 @@ namespace Lumina::Paths
 
     void InitializePaths()
     {
-        FString LuminaDir = std::getenv("LUMINA_DIR");
+        const char* LuminaDirEnv = std::getenv("LUMINA_DIR");
+        FString LuminaDir = LuminaDirEnv ? FString(LuminaDirEnv) : FString();
         Normalize(LuminaDir);
             
         CachedDirectories[EngineInstallDirectoryName]   = LuminaDir;

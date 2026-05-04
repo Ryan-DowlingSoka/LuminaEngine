@@ -34,14 +34,14 @@ int LuminaMain(int ArgC, char** ArgV)  // NOLINT(misc-use-internal-linkage)
     #else
     FEngine Engine{};
     GEngine = &Engine;
-
-    // Cooked-runtime entry. The PAK + project DLL are expected next to the exe;
-    // FEngine::LoadCookedRuntime mounts them and starts the configured map.
-    // We hook this onto OnPostEngineInit so it runs after VFS / asset registry
-    // are alive and before the first frame.
+    
+    FCoreDelegates::OnPreEngineInit.AddLambda([]
+    {
+        GEngine->MountCookedRuntime();
+    });
     FCoreDelegates::OnPostEngineInit.AddLambda([]
     {
-        GEngine->LoadCookedRuntime();
+        GEngine->StartCookedGame();
     });
     #endif
 

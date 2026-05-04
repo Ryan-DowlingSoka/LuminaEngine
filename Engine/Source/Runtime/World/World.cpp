@@ -998,7 +998,7 @@ namespace Lumina
 
     SDefaultWorldSettings& CWorld::GetDefaultWorldSettings()
     {
-        return EntityRegistry.get<SDefaultWorldSettings>(SingletonEntity);
+        return EntityRegistry.get_or_emplace<SDefaultWorldSettings>(SingletonEntity);
     }
 
     bool CWorld::EntityHasTag(entt::entity Entity, const FName& Tag)

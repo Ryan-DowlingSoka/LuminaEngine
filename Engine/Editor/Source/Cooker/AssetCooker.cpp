@@ -234,28 +234,7 @@ namespace Lumina
             return true;
         }
 
-        // True if Path lies under /Engine/Resources/Shaders. Slang sources are
-        // intentionally excluded from the pak — packaged builds load SPIR-V
-        // from the shader cache instead.
-        bool IsShaderSourcePath(FStringView Path)
-        {
-            constexpr FStringView Prefix = "/Engine/Resources/Shaders";
-            if (Path.size() < Prefix.size())
-            {
-                return false;
-            }
-            for (size_t i = 0; i < Prefix.size(); ++i)
-            {
-                if (Path[i] != Prefix[i])
-                {
-                    return false;
-                }
-            }
-            return Path.size() == Prefix.size() || Path[Prefix.size()] == '/';
-        }
-
-        // Bundle runtime-needed engine content: /Engine/Resources/{Content,Fonts,Textures,UI,...}.
-        // Skips Shaders (covered by BundleShaderCache).
+        // Bundle runtime-needed engine content: /Engine/Resources/{Content, Fonts, Textures, UI,...}.
         size_t BundleEngineResources(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
         {
             size_t Count = 0;
@@ -265,11 +244,9 @@ namespace Lumina
                 {
                     return;
                 }
+                
                 FStringView Vp(Info.VirtualPath.c_str(), Info.VirtualPath.size());
-                if (IsShaderSourcePath(Vp))
-                {
-                    return;
-                }
+
                 if (BundleVfsFile(Writer, Vp, LogFunc))
                 {
                     ++Count;
@@ -279,7 +256,6 @@ namespace Lumina
         }
 
         // Bundle every cached SPIR-V (.lsc) under /Intermediates/ShaderCache.
-        // Packaged builds load these directly instead of running Slang.
         size_t BundleShaderCache(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
         {
             size_t Count = 0;

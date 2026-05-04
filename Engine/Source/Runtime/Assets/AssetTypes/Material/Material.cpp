@@ -2,8 +2,8 @@
 #include "Material.h"
 #include "Assets/AssetTypes/Material/MaterialInstance.h"
 #include "Assets/AssetTypes/Textures/Texture.h"
+#include "FileSystem/FileSystem.h"
 #include "Paths/Paths.h"
-#include "Platform/Filesystem/FileHelper.h"
 #include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
 #include "Renderer/RHIGlobals.h"
@@ -289,10 +289,7 @@ namespace Lumina
         IShaderCompiler* ShaderCompiler = GRenderContext->GetShaderCompiler();
 
         ShaderCompiler->Flush();
-
-        FString PixelPath = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/BasePixelPass.slang";
-        FString VertexPath = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/BaseVertexPass.slang";
-
+        
         if (DefaultMaterial)
         {
             DefaultMaterial->RemoveFromRoot();
@@ -304,7 +301,7 @@ namespace Lumina
         DefaultMaterial->AddToRoot();
         
         FString LoadedPixelString;
-        if (!FileHelper::LoadFileIntoString(LoadedPixelString, PixelPath))
+        if (!VFS::ReadFile(LoadedPixelString, "/Engine/Resources/Shaders/MaterialShader/BasePixelPass.slang"))
         {
             LOG_ERROR("Failed to find BasePixelPass.slang!");
             return;
@@ -335,7 +332,7 @@ namespace Lumina
         }
         
         FString LoadedVertexString;
-        if (!FileHelper::LoadFileIntoString(LoadedVertexString, VertexPath))
+        if (!VFS::ReadFile(LoadedVertexString, "/Engine/Resources/Shaders/MaterialShader/BaseVertexPass.slang"))
         {
             LOG_ERROR("Failed to find BaseVertPass.slang!");
             return;
@@ -378,10 +375,7 @@ namespace Lumina
         IShaderCompiler* ShaderCompiler = GRenderContext->GetShaderCompiler();
 
         ShaderCompiler->Flush();
-
-        FString PixelPath  = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/TerrainBasePixelPass.slang";
-        FString VertexPath = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/TerrainBaseVertexPass.slang";
-
+        
         if (DefaultTerrainMaterial)
         {
             DefaultTerrainMaterial->RemoveFromRoot();
@@ -394,7 +388,7 @@ namespace Lumina
         DefaultTerrainMaterial->MaterialType = EMaterialType::Terrain;
 
         FString LoadedPixelString;
-        if (!FileHelper::LoadFileIntoString(LoadedPixelString, PixelPath))
+        if (!VFS::ReadFile(LoadedPixelString, "/Engine/Resources/Shaders/MaterialShader/TerrainBasePixelPass.slang"))
         {
             LOG_ERROR("Failed to find TerrainBasePixelPass.slang!");
             return;
@@ -431,7 +425,7 @@ namespace Lumina
         }
 
         FString LoadedVertexString;
-        if (!FileHelper::LoadFileIntoString(LoadedVertexString, VertexPath))
+        if (!VFS::ReadFile(LoadedVertexString, "/Engine/Resources/Shaders/MaterialShader/TerrainBaseVertexPass.slang"))
         {
             LOG_ERROR("Failed to find TerrainBaseVertexPass.slang!");
             return;

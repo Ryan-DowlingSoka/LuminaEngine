@@ -16,8 +16,63 @@
 
 namespace Lumina
 {
+    class FSlangBlob : public ISlangBlob
+    {
+    public:
+        FSlangBlob(TVector<uint8>&& InData)
+            : Data(std::move(InData)), RefCount(1) {}
+    
+        virtual ~FSlangBlob() = default;
+        
+        void const* getBufferPointer() noexcept override { return (void*)Data.data(); }
+        size_t getBufferSize() noexcept override { return Data.size(); }
+    
+        SlangResult queryInterface(const SlangUUID&, void**) noexcept override { return SLANG_E_NO_INTERFACE; }
+    
+        uint32_t addRef() noexcept override { return ++RefCount; }
+        uint32_t release() noexcept override
+        {
+            uint32_t rc = --RefCount;
+            if (rc == 0)
+            {
+                delete this;
+            }
+            return rc;
+        }
+    
+    private:
+        TVector<uint8> Data;
+        std::atomic<uint32_t> RefCount;
+    };
+    
+    class FShaderFS : public ISlangFileSystem
+    {
+    public:
+        SlangResult loadFile(const char* path, ISlangBlob** outBlob) override
+        {
+            FString ActualPath{path};
+    
+            TVector<uint8> Data;
+            if (!VFS::ReadFile(Data, ActualPath))
+            {
+                return SLANG_FAIL;
+            }
+    
+            *outBlob = new FSlangBlob(std::move(Data));
+            return SLANG_OK;
+        }
+    
+        SlangResult queryInterface(const SlangUUID&, void**) noexcept override { return SLANG_E_NO_INTERFACE; }
+    
+        uint32_t addRef() noexcept override { return 1; }
+        uint32_t release() noexcept override { return 1; }
+    
+        void* castAs(const SlangUUID&) noexcept override { return nullptr; }
+    };
+    
     static Slang::ComPtr<slang::IGlobalSession> SLangGlobalSession;
     static FSharedMutex SlangMutex;
+    static FShaderFS FileSystem;
     
     bool FSpirVShaderCompiler::HasPendingRequests() const
     {
@@ -115,9 +170,10 @@ namespace Lumina
             for (uint32 i = Start; i < End; ++i)
             {
                 FWriteScopeLock Lock(SlangMutex);
-
+                
                 slang::SessionDesc SessionDesc = {};
                 SessionDesc.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_COLUMN_MAJOR;
+                SessionDesc.fileSystem = &FileSystem;
         
                 slang::TargetDesc TargetDesc = {};
                 TargetDesc.format  = SLANG_SPIRV;
@@ -136,8 +192,7 @@ namespace Lumina
                 SessionDesc.targets     = &TargetDesc;
                 SessionDesc.targetCount = 1;
 
-                FString ShaderDir = Paths::GetEngineResourceDirectory() + "/Shaders";
-                const char* SearchPaths[] = { ShaderDir.c_str() };
+                const char* SearchPaths[] = { "/Engine/Resources/Shaders" };
                 SessionDesc.searchPaths     = SearchPaths;
                 SessionDesc.searchPathCount = 1;
                 
@@ -400,6 +455,7 @@ namespace Lumina
         
             slang::SessionDesc SessionDesc = {};
             SessionDesc.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_COLUMN_MAJOR;
+            SessionDesc.fileSystem = &FileSystem;
 
             slang::TargetDesc TargetDesc = {};
             TargetDesc.format  = SLANG_SPIRV;
@@ -416,8 +472,7 @@ namespace Lumina
             SessionDesc.targets     = &TargetDesc;
             SessionDesc.targetCount = 1;
         
-            FString ShaderDir = Paths::GetEngineResourceDirectory() + "/Shaders";
-            const char* SearchPaths[] = { ShaderDir.c_str() };
+            const char* SearchPaths[] = { "/Engine/Resources/Shaders" };
             SessionDesc.searchPaths     = SearchPaths;
             SessionDesc.searchPathCount = 1;
         

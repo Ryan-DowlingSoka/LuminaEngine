@@ -61,6 +61,12 @@ namespace Lumina
         /** Cooked-runtime entry: mounts .pak next to exe, loads config/scripts/DLL, spawns game instance, loads startup map. */
         RUNTIME_API bool LoadCookedRuntime();
 
+        /** Cooked-runtime: mount the .pak + loose overlay so VFS reads work during engine init. */
+        RUNTIME_API bool MountCookedRuntime();
+
+        /** Cooked-runtime: post-init half — asset discovery, project DLL, game instance, startup map. */
+        RUNTIME_API bool StartCookedGame();
+
         #if WITH_EDITOR
         RUNTIME_API virtual IDevelopmentToolUI* CreateDevelopmentTools() = 0;
         RUNTIME_API IDevelopmentToolUI* GetDevelopmentToolsUI() const { return DeveloperToolUI; }
