@@ -1,12 +1,13 @@
 -- Engine standard library — entity-attached script base.
 --
 -- Usage:
+--   local EntityScript = require("Stdlib/EntityScript")
 --   local Script = EntityScript.new()
 --   function Script:OnReady() ... end
---   function Script:Update(DeltaTime) ... end
+--   function Script:OnUpdate(DeltaTime) ... end
 --   return Script
 --
--- The engine still expects a plain table with OnAttach / OnReady / Update /
+-- The engine still expects a plain table with OnAttach / OnReady / OnUpdate /
 -- OnDetach keys; new() returns one whose metatable points back here so any
 -- method the user doesn't override falls through to the no-op defaults below.
 --
@@ -19,17 +20,12 @@
 --
 -- Engine-internal services live as underscore-prefixed fields on `self`
 -- (self._Registry, self._Events, self._Messages, self._Timers, self._Draw,
--- self._Physics). They have to be on `self` rather than as script globals:
--- the helper methods below are loaded into the main thread's globals at
--- engine init, so their closure environment doesn't see per-script globals,
--- but `self` is passed in directly on every call. The leading `_` keeps
--- them out of autocomplete; users go through self:GetComponent etc.
+-- self._Physics). They have to be on `self` rather than module globals:
+-- helper methods are shared across every requiring script, so `self` is the
+-- only place per-entity context can live. The leading `_` keeps them out of
+-- autocomplete; users go through self:GetComponent etc.
 
--- `EntityScript = EntityScript or {}` preserves the table's identity across
--- hot-reloads. Already-instantiated scripts hold this table as their
--- metatable — mutating it in place lets them see redefined methods without
--- being respawned.
-EntityScript = EntityScript or {}
+local EntityScript = {}
 EntityScript.__index = EntityScript
 
 -- Per-entity instance shape. Each entry: field name → human-readable type
@@ -256,3 +252,5 @@ end
 function EntityScript:GetBodyUp()
     return self._Physics:GetBodyRotation(self:GetBodyID()):RotateVector(vector.create(0.0, 1.0, 0.0))
 end
+
+return EntityScript

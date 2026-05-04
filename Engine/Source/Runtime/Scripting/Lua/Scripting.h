@@ -29,6 +29,15 @@ namespace Lumina::Lua
         TVector<FScriptPropertyEntry>   ExportDefaults;
     };
 
+    // require() result cache. Bytecode is held C++-side so reload re-reads VFS;
+    // the module value is pinned via lua_ref so it survives GC for the lifetime
+    // of the cache entry. RegistryRef==LUA_NOREF means "compiled but not yet executed".
+    struct FModuleCacheEntry
+    {
+        TVector<uint8>  Bytecode;
+        int             RegistryRef = -1; // LUA_NOREF
+    };
+
 
     struct FLuaScriptMetadata;
     void Initialize();
@@ -117,6 +126,18 @@ namespace Lumina::Lua
         // Drops cached bytecode/schema; next load re-reads + recompiles.
         RUNTIME_API void InvalidateScriptCache(FStringView Path);
 
+        // require("Foo/Bar") resolution + load. Internal entry point for the C `require`
+        // function bound onto every lua_State. Caller is responsible for handling stack.
+        // Returns true on success and leaves the module result on top of `Thread`.
+        bool RequireModule(lua_State* Thread, FStringView ModuleName);
+
+        // Drops a require() module's cached bytecode AND its pinned result so the next
+        // require() re-reads + re-runs the file. If the module returned a table and was
+        // already cached, the table identity is preserved (new keys are copied into the
+        // existing table) so any script that captured the module reference sees the
+        // updated functions on its next call.
+        RUNTIME_API void ReloadModule(FStringView ModuleName);
+
         // Walks LUA_GLOBALSINDEX one level deep for editor autocomplete.
         RUNTIME_API void HarvestGlobalSymbols(TVector<FLuaSymbol>& Out);
 
@@ -136,6 +157,16 @@ namespace Lumina::Lua
         RUNTIME_API lua_State* GetVM() const { return L; }
         
     private:
+
+        // Resolves a `require()` argument against the engine's VFS-backed module roots.
+        // Returns true and writes the resolved virtual path on success.
+        bool ResolveModulePath(FStringView ModuleName, FString& OutPath) const;
+
+        // Compile + run module on the given thread, write the returned value into the
+        // module cache as a Lua registry ref, and leave the value on top of the stack.
+        // If `ExistingTable` is non-zero, copies new module keys into that table (kept
+        // for hot-reload identity preservation) and returns that table instead.
+        bool LoadModuleOntoThread(lua_State* Thread, const FString& ResolvedPath, int ExistingTableRegistryRef);
 
         void LoadStdlibFiles();
 
@@ -158,6 +189,8 @@ namespace Lumina::Lua
         THashMap<FName, TVector<TWeakPtr<FScript>>> RegisteredScripts;
 
         THashMap<FName, FScriptCacheEntry> ScriptCache;
+
+        THashMap<FName, FModuleCacheEntry> ModuleCache;
     };
     
 }

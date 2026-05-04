@@ -217,6 +217,7 @@ namespace Lumina
         void CopyEntity(entt::entity& To, entt::entity From);
 
         void CycleGuizmoOp();
+        void ToggleGuizmoMode();
 
         /** Toggle the editor's "game view": hide grid, billboards, AABBs, gizmos so the
          *  viewport shows only what a runtime camera would. Bound to G by default. */

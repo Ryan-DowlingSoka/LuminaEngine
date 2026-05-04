@@ -1,3 +1,4 @@
+local EntityScript = require("Stdlib/EntityScript")
 local CameraScript = EntityScript.new()
 
 CameraScript.Meta = {

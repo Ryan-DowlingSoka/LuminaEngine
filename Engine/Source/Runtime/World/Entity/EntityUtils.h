@@ -64,6 +64,15 @@ namespace Lumina::ECS::Utils
 	 * this lock if it can run off the main thread.
 	 */
 	RUNTIME_API FRecursiveMutex& GetTransformResolveMutex();
+
+	/**
+	 * Tag a transform as dirty. Always sets FNeedsTransformUpdate so the
+	 * cached world matrix gets refreshed; only sets FNeedsPhysicsBodyUpdate
+	 * if the entity actually owns a physics body, so non-physics entities
+	 * (cameras, lights, billboards, post-process volumes) don't churn the
+	 * physics-sync pool every frame they move.
+	 */
+	RUNTIME_API void MarkTransformDirty(FEntityRegistry& Registry, entt::entity Entity);
 	
 	RUNTIME_API glm::vec3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity);
 	RUNTIME_API glm::quat GetEntityRotation(FEntityRegistry& Registry, entt::entity Entity);

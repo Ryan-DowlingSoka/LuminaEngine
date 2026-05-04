@@ -1,3 +1,4 @@
+local EntityScript = require("Stdlib/EntityScript")
 local Script = EntityScript.new()
 
 local PlayerEntity = 1048580

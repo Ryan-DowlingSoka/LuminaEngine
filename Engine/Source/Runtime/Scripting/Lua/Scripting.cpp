@@ -380,7 +380,20 @@ namespace Lumina::Lua
     static int LuminaLuaPrint(lua_State* L)    { return LuminaLuaLogImpl(L, ELuaLogLevel::Info);  }
     static int LuminaLuaLogWarn(lua_State* L)  { return LuminaLuaLogImpl(L, ELuaLogLevel::Warn);  }
     static int LuminaLuaLogError(lua_State* L) { return LuminaLuaLogImpl(L, ELuaLogLevel::Error); }
-    
+
+    // Bound as the global `require` on every script thread. The actual resolution +
+    // bytecode cache lives on FScriptingContext; this is just the C entry point so the
+    // call appears in the lua stack trace and luaL_errorL plays nice with sandboxed threads.
+    static int LuminaLuaRequire(lua_State* L)
+    {
+        const char* ModName = luaL_checkstring(L, 1);
+        if (!FScriptingContext::Get().RequireModule(L, FStringView(ModName)))
+        {
+            luaL_errorL(L, "require: failed to load module '%s'", ModName);
+        }
+        return 1;
+    }
+
     static TUniquePtr<FScriptingContext> GScriptingContext;
 
     namespace { bool CompileSourceToBytecode(FStringView Code, TVector<uint8>& Out); }
@@ -417,6 +430,12 @@ namespace Lumina::Lua
 
         lua_pushcfunction(L, LuminaLuaPrint, "LuminaLuaPrint");
         lua_setglobal(L, "print");
+
+        // Replace luaL_openlibs's `require` (which expects Lua 5.x's package.searchers
+        // machinery — Luau ships none of it) with a VFS-backed resolver. Sandboxed
+        // script threads pick this up via their __index fallback to the main globals.
+        lua_pushcfunction(L, LuminaLuaRequire, "require");
+        lua_setglobal(L, "require");
 
         lua_pushvalue(L, LUA_GLOBALSINDEX);
         FRef GlobalsRef(L, -1);
@@ -773,53 +792,44 @@ namespace Lumina::Lua
 
     void FScriptingContext::LoadStdlibFiles()
     {
-        // Files use `Foo = Foo or {}` so reload mutates existing tables in place.
-        // Order is significant when one file depends on another.
-        static const char* const kStdlibFiles[] =
+        // Stdlib modules are loaded lazily via `require("Stdlib/EntityScript")`.
+        // Pre-warming here keeps editor autocomplete (HarvestGlobalSymbols walks
+        // ModuleCache results) populated even before any user script runs.
+        static const char* const kStdlibModules[] =
         {
-            "/Engine/Resources/Content/Scripts/Stdlib/EntityScript.luau",
+            "Stdlib/EntityScript",
         };
 
-        for (const char* VirtualPath : kStdlibFiles)
+        for (const char* ModName : kStdlibModules)
         {
-            FString Source;
-            if (!VFS::ReadFile(Source, VirtualPath))
+            if (!RequireModule(L, FStringView(ModName)))
             {
-                LOG_ERROR("Lua stdlib: failed to read {}", VirtualPath);
+                LOG_ERROR("Lua stdlib: failed to preload module '{}'", ModName);
                 continue;
             }
-
-            TVector<uint8> Bytecode;
-            if (!CompileSourceToBytecode(Source, Bytecode))
-            {
-                LOG_ERROR("Lua stdlib: failed to compile {}", VirtualPath);
-                continue;
-            }
-
-            const int LoadResult = luau_load(L, VirtualPath,
-                                             reinterpret_cast<const char*>(Bytecode.data()),
-                                             Bytecode.size(), 0);
-            if (LoadResult != LUA_OK)
-            {
-                LOG_ERROR("Lua stdlib: load failed for {}: {}", VirtualPath, lua_tostring(L, -1));
-                lua_pop(L, 1);
-                continue;
-            }
-
-            const int CallResult = lua_pcall(L, 0, 0, 0);
-            if (CallResult != LUA_OK)
-            {
-                LOG_ERROR("Lua stdlib: runtime error in {}: {}", VirtualPath, lua_tostring(L, -1));
-                lua_pop(L, 1);
-            }
+            lua_pop(L, 1); // discard returned module value
         }
     }
 
     void FScriptingContext::ReloadStdlib()
     {
         FWriteScopeLock Lock(SharedMutex);
-        LoadStdlibFiles();
-        LOG_INFO("Lua stdlib: reloaded");
+
+        // Walk every cached require() result and reload it identity-preservingly,
+        // so any FScript that captured a module table sees the new functions on
+        // its next call without being rebuilt.
+        TVector<FName> Paths;
+        Paths.reserve(ModuleCache.size());
+        for (const auto& Pair : ModuleCache)
+        {
+            Paths.push_back(Pair.first);
+        }
+        for (const FName& Path : Paths)
+        {
+            ReloadModule(FStringView(Path.c_str()));
+        }
+
+        LOG_INFO("Lua stdlib: reloaded {} module(s)", Paths.size());
     }
 
     void FScriptingContext::SandboxGlobals()
@@ -868,6 +878,13 @@ namespace Lumina::Lua
 
         // Drop the cache entry so the next LoadUniqueScriptPath rereads from
         ScriptCache.erase(FName(ScriptPath));
+
+        // If the saved file is also a require()'d module, refresh its cached value
+        // identity-preservingly so live scripts pick up the new functions.
+        if (ModuleCache.find(FName(ScriptPath)) != ModuleCache.end())
+        {
+            ReloadModule(ScriptPath);
+        }
 
         DeferredActions.EnqueueAction<FScriptLoad>(ScriptPath);
     }
@@ -1076,6 +1093,212 @@ namespace Lumina::Lua
     void FScriptingContext::InvalidateScriptCache(FStringView Path)
     {
         ScriptCache.erase(FName(Path));
+    }
+
+    bool FScriptingContext::ResolveModulePath(FStringView ModuleName, FString& OutPath) const
+    {
+        // Absolute VFS path: pass through, append `.luau` if the user omitted it.
+        if (!ModuleName.empty() && ModuleName[0] == '/')
+        {
+            OutPath.assign(ModuleName.data(), ModuleName.length());
+            if (OutPath.size() < 5 || OutPath.compare(OutPath.size() - 5, 5, ".luau") != 0)
+            {
+                OutPath += ".luau";
+            }
+            return VFS::Exists(OutPath);
+        }
+
+        // `Foo.Bar` → `Foo/Bar`. Common Luau convention so `require("Stdlib.EntityScript")`
+        // and `require("Stdlib/EntityScript")` both work.
+        FString Normalized(ModuleName.data(), ModuleName.length());
+        for (char& C : Normalized)
+        {
+            if (C == '.') C = '/';
+        }
+
+        // Search roots, in order. Engine stdlib first so user code can override only by
+        // explicit absolute path, never by accident.
+        static const char* const kRoots[] =
+        {
+            "/Engine/Resources/Content/Scripts/",
+            "/Game/Scripts/",
+        };
+
+        for (const char* Root : kRoots)
+        {
+            FString Candidate = Root;
+            Candidate += Normalized;
+            Candidate += ".luau";
+            if (VFS::Exists(Candidate))
+            {
+                OutPath = eastl::move(Candidate);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool FScriptingContext::LoadModuleOntoThread(lua_State* RequestingThread, const FString& ResolvedPath, int ExistingTableRegistryRef)
+    {
+        const FName CacheKey(FStringView(ResolvedPath.c_str()));
+        auto It = ModuleCache.find(CacheKey);
+
+        TVector<uint8>* Bytecode = nullptr;
+        if (It != ModuleCache.end() && !It->second.Bytecode.empty())
+        {
+            Bytecode = &It->second.Bytecode;
+        }
+        else
+        {
+            FString Source;
+            if (!VFS::ReadFile(Source, ResolvedPath))
+            {
+                LOG_ERROR("Lua require: failed to read '{}'", ResolvedPath);
+                return false;
+            }
+
+            FModuleCacheEntry NewEntry;
+            if (!CompileSourceToBytecode(Source, NewEntry.Bytecode))
+            {
+                LOG_ERROR("Lua require: compile failed for '{}'", ResolvedPath);
+                return false;
+            }
+
+            auto Inserted = ModuleCache.emplace(CacheKey, eastl::move(NewEntry));
+            It = Inserted.first;
+            Bytecode = &It->second.Bytecode;
+        }
+
+        // Run the module body on the main state. Functions defined inside capture this
+        // FENV, which lives for the whole VM — script-thread sandboxes come and go but
+        // the cached module value (and its closures) outlive them.
+        const int LoadResult = luau_load(L, ResolvedPath.c_str(),
+                                         reinterpret_cast<const char*>(Bytecode->data()),
+                                         Bytecode->size(), 0);
+        if (LoadResult != LUA_OK)
+        {
+            LOG_ERROR("Lua require: load failed for '{}': {}", ResolvedPath, lua_tostring(L, -1));
+            lua_pop(L, 1);
+            return false;
+        }
+
+        const int CallResult = lua_pcall(L, 0, 1, 0);
+        if (CallResult != LUA_OK)
+        {
+            LOG_ERROR("Lua require: runtime error in '{}': {}", ResolvedPath, lua_tostring(L, -1));
+            lua_pop(L, 1);
+            return false;
+        }
+
+        // Modules that return nothing get cached as `true`, matching Lua convention.
+        if (lua_isnil(L, -1))
+        {
+            lua_pop(L, 1);
+            lua_pushboolean(L, 1);
+        }
+
+        // Identity-preserving reload: copy new keys into the existing table and discard
+        // the freshly-built one. Only valid when both sides are tables.
+        if (ExistingTableRegistryRef != LUA_NOREF && lua_istable(L, -1))
+        {
+            lua_getref(L, ExistingTableRegistryRef);
+            if (lua_istable(L, -1))
+            {
+                // Stack: [NewTable, OldTable]. Iterate NewTable, rawset into OldTable.
+                lua_pushnil(L);
+                while (lua_next(L, -3) != 0)
+                {
+                    lua_pushvalue(L, -2); // dup key
+                    lua_pushvalue(L, -2); // dup value
+                    lua_rawset(L, -5);    // OldTable[key] = value
+                    lua_pop(L, 1);        // pop value, keep key for next iteration
+                }
+                // Drop NewTable; OldTable becomes the result.
+                lua_remove(L, -2);
+                It->second.RegistryRef = ExistingTableRegistryRef;
+            }
+            else
+            {
+                lua_pop(L, 1); // not a table — fall through to replace
+                if (It->second.RegistryRef != LUA_NOREF)
+                {
+                    lua_unref(L, It->second.RegistryRef);
+                }
+                lua_pushvalue(L, -1);
+                It->second.RegistryRef = lua_ref(L, -1);
+                lua_pop(L, 1);
+            }
+        }
+        else
+        {
+            // First load (or non-table replace): drop any prior pin and re-ref.
+            if (It->second.RegistryRef != LUA_NOREF)
+            {
+                lua_unref(L, It->second.RegistryRef);
+            }
+            lua_pushvalue(L, -1);
+            It->second.RegistryRef = lua_ref(L, -1);
+            lua_pop(L, 1);
+        }
+
+        // Result is on top of L. If the requester is a different thread, hop it over via
+        // the registry ref we just pinned (avoids lua_xmove and keeps stacks balanced).
+        if (RequestingThread != L)
+        {
+            lua_pop(L, 1); // discard from main state
+            lua_getref(RequestingThread, It->second.RegistryRef);
+        }
+        return true;
+    }
+
+    bool FScriptingContext::RequireModule(lua_State* Thread, FStringView ModuleName)
+    {
+        FString ResolvedPath;
+        if (!ResolveModulePath(ModuleName, ResolvedPath))
+        {
+            LOG_ERROR("Lua require: module '{}' not found in any search root", ModuleName);
+            return false;
+        }
+
+        const FName CacheKey(FStringView(ResolvedPath.c_str()));
+        auto It = ModuleCache.find(CacheKey);
+        if (It != ModuleCache.end() && It->second.RegistryRef != LUA_NOREF)
+        {
+            // Cache hit — just push the pinned value onto the requesting thread.
+            lua_getref(Thread, It->second.RegistryRef);
+            return true;
+        }
+
+        return LoadModuleOntoThread(Thread, ResolvedPath, LUA_NOREF);
+    }
+
+    void FScriptingContext::ReloadModule(FStringView ModuleName)
+    {
+        FString ResolvedPath;
+        if (!ResolveModulePath(ModuleName, ResolvedPath))
+        {
+            LOG_WARN("Lua require: reload skipped, module '{}' not found", ModuleName);
+            return;
+        }
+
+        const FName CacheKey(FStringView(ResolvedPath.c_str()));
+        auto It = ModuleCache.find(CacheKey);
+
+        // Wipe bytecode so the next load re-reads the file from disk.
+        int ExistingRef = LUA_NOREF;
+        if (It != ModuleCache.end())
+        {
+            It->second.Bytecode.clear();
+            ExistingRef = It->second.RegistryRef;
+        }
+
+        // Run on the main state — module bodies belong to the VM, not any one script thread.
+        if (!LoadModuleOntoThread(L, ResolvedPath, ExistingRef))
+        {
+            return;
+        }
+        lua_pop(L, 1); // discard returned value; pin lives in the cache via ref
     }
 
     TVector<TSharedPtr<FScript>> FScriptingContext::GetAllRegisteredScripts()

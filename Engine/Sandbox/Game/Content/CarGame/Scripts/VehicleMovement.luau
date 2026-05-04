@@ -1,4 +1,5 @@
-VehicleMovement = EntityScript.new()
+local EntityScript = require("Stdlib/EntityScript")
+local VehicleMovement = EntityScript.new()
 
 -- Tunables -----------------------------------------------------------------
 -- Stiffness/damping are forces (N), applied via ApplyForceAt so Jolt
@@ -59,6 +60,7 @@ function VehicleMovement:OnUpdate(DeltaTime)
     local RawThrottle = Input.GetActionAxis("MoveY")
     local Steer       = Input.GetActionAxis("MoveX")
     local Handbrake   = Input.IsActionDown("Jump")
+    local Boost	      = Input.IsActionDown("Sprint")
 
     self.SmoothThrottle = self.SmoothThrottle or 0.0
     local Rate = (math.abs(RawThrottle) > math.abs(self.SmoothThrottle)) and ThrottleAttack or ThrottleRelease
@@ -104,7 +106,12 @@ function VehicleMovement:OnUpdate(DeltaTime)
                 Accel = Throttle * EngineAccel * ReverseFactor
             end
             if math.abs(ForwardSpeed) < MaxSpeed or Throttle * ForwardSpeed < 0.0 then
-                Velocity = Velocity + Forward * (Accel * DeltaTime)
+            	
+            	if Boost then
+                	Velocity = Velocity + Forward * (Accel * DeltaTime) * 2
+                else
+                    Velocity = Velocity + Forward * (Accel * DeltaTime)
+                end
             end
         else
             Velocity = Velocity - Forward * (ForwardSpeed * CoastDrag * DeltaTime)

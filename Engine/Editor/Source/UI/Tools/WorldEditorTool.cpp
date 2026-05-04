@@ -848,6 +848,9 @@ namespace Lumina
         RegisterAction({"Scale Mode", "Gizmo", "Switch the gizmo to scale mode",
             FInputChord{ImGuiKey_R}, [this]{ GuizmoOp = ImGuizmo::SCALE; }, Hovered});
 
+        RegisterAction({"Toggle Local/World", "Gizmo", "Switch the gizmo between world-space and entity-local space",
+            FInputChord{ImGuiKey_X}, [this]{ ToggleGuizmoMode(); }, Hovered});
+
         RegisterAction({"Focus Selection", "View", "Frame the camera on the last-selected entity",
             FInputChord{ImGuiKey_F}, [this]{ FocusViewportToEntity(GetLastSelectedEntity()); }});
 
@@ -1035,9 +1038,15 @@ namespace Lumina
             entt::entity PivotEntity = PivotEntityForGizmo;
             {
                 STransformComponent& PivotTransformComponent = World->GetEntityRegistry().get<STransformComponent>(PivotEntity);
+
+                // Padded AABB so the gizmo stays visible when the pivot is just outside the frustum but handles aren't.
+                const glm::vec3 PivotWorld = PivotTransformComponent.GetWorldLocation();
+                const FAABB PivotBounds(PivotWorld - glm::vec3(1.0f), PivotWorld + glm::vec3(1.0f));
+                const bool bPivotVisible = CameraComponent.GetViewVolume().GetFrustum().IsInside(PivotBounds);
+
+                // Mid-drag stays drawn so ImGuizmo's release fires; otherwise bImGuizmoUsedOnce sticks and IsOver() blocks clicks.
+                if (bPivotVisible || bImGuizmoUsedOnce)
                 {
-                    // No frustum gate: drag-out-of-view must still reach the IsUsing()/cleanup path,
-                    // otherwise bImGuizmoUsedOnce sticks true and ImGuizmo::IsOver() blocks all viewport clicks.
                     glm::mat4 EntityMatrix = PivotTransformComponent.GetWorldMatrix();
 
                     float* SnapValues = nullptr;
@@ -1077,6 +1086,7 @@ namespace Lumina
                     const bool bCtrlHeld = ImGui::GetIO().KeyCtrl;
                     const bool bVertexSnapArmed = bCtrlHeld
                                                && GuizmoOp == ImGuizmo::TRANSLATE
+                                               && GuizmoMode == ImGuizmo::WORLD
                                                && !World->IsGameWorld();
                     const glm::mat4 SnapViewProj = ProjectionMatrix * ViewMatrix;
                     glm::vec3 PreviewAnchorLocal(0.0f);
@@ -1186,77 +1196,119 @@ namespace Lumina
                             bVertexSnapAnchorValid = false;
                         }
 
-                        glm::vec3 PivotPosition = PivotTransformComponent.WorldTransform.Location;
-                        
-                        SelectionView.each([&](entt::entity Entity, STransformComponent& Transform)
+                        if (GuizmoMode == ImGuizmo::LOCAL)
                         {
-                            glm::mat4 DesiredWorldMatrix;
+                            // LOCAL mode: ImGuizmo right-multiplies a pure T/R/S onto MatrixIn,
+                            // so inverse(Pre) * Post is a clean entity-local delta — no shear from
+                            // the parent leaks in, which means scaling under a non-uniformly scaled
+                            // parent no longer NaNs through glm::decompose.
+                            glm::mat4 LocalDeltaMatrix = glm::inverse(PreManipulateMatrix) * EntityMatrix;
 
-                            switch (GuizmoOp)
+                            glm::vec3 LocalDeltaTrans, LocalDeltaScaleVec, LocalDeltaSkew;
+                            glm::quat LocalDeltaRot;
+                            glm::vec4 LocalDeltaPersp;
+                            glm::decompose(LocalDeltaMatrix, LocalDeltaScaleVec, LocalDeltaRot, LocalDeltaTrans, LocalDeltaSkew, LocalDeltaPersp);
+
+                            SelectionView.each([&](entt::entity, STransformComponent& Transform)
                             {
-                                case ImGuizmo::TRANSLATE:
+                                switch (GuizmoOp)
                                 {
-                                    glm::mat4 TranslationDelta = glm::translate(glm::mat4(1.f), DeltaTranslation);
-                                    DesiredWorldMatrix = TranslationDelta * Transform.GetWorldMatrix();
-                                    break;
+                                    case ImGuizmo::TRANSLATE:
+                                    {
+                                        // Delta is in entity-local axes; rotate into parent space before adding.
+                                        glm::vec3 ParentSpaceDelta = Transform.GetLocalRotation() * LocalDeltaTrans;
+                                        Transform.SetLocalLocation(Transform.GetLocalLocation() + ParentSpaceDelta);
+                                        break;
+                                    }
+
+                                    case ImGuizmo::ROTATE:
+                                    {
+                                        Transform.SetLocalRotation(glm::normalize(Transform.GetLocalRotation() * LocalDeltaRot));
+                                        break;
+                                    }
+
+                                    case ImGuizmo::SCALE:
+                                    {
+                                        Transform.SetLocalScale(Transform.GetLocalScale() * LocalDeltaScaleVec);
+                                        break;
+                                    }
                                 }
-                        
-                                case ImGuizmo::ROTATE:
-                                {
-                                    glm::vec3 OffsetFromPivot = Transform.WorldTransform.Location - PivotPosition;
-                                    glm::vec3 RotatedOffset   = DeltaRotation * OffsetFromPivot;
-                                    glm::vec3 NewWorldPos     = PivotPosition + RotatedOffset;
-                                    glm::quat NewWorldRot     = DeltaRotation * Transform.GetWorldRotation();
-                                    glm::vec3 WorldScale      = Transform.GetWorldScale();
-                        
-                                    DesiredWorldMatrix = glm::translate(glm::mat4(1.f), NewWorldPos)
-                                                       * glm::mat4_cast(NewWorldRot)
-                                                       * glm::scale(glm::mat4(1.f), WorldScale);
-                                    break;
-                                }
-                        
-                                case ImGuizmo::SCALE:
-                                {
-                                    glm::vec3 OffsetFromPivot = Transform.WorldTransform.Location - PivotPosition;
-                                    glm::vec3 ScaledOffset    = OffsetFromPivot * DeltaScale;
-                                    glm::vec3 NewWorldPos     = PivotPosition + ScaledOffset;
-                                    glm::quat WorldRot        = Transform.GetWorldRotation();
-                                    glm::vec3 NewWorldScale   = Transform.GetWorldScale() * DeltaScale;
-                        
-                                    DesiredWorldMatrix = glm::translate(glm::mat4(1.f), NewWorldPos)
-                                                       * glm::mat4_cast(WorldRot)
-                                                       * glm::scale(glm::mat4(1.f), NewWorldScale);
-                                    break;
-                                }
-                            }
-                        
-                            FRelationshipComponent* Rel = World->GetEntityRegistry().try_get<FRelationshipComponent>(Entity);
-                            if (Rel && Rel->Parent != entt::null)
+                            });
+                        }
+                        else
+                        {
+                            glm::vec3 PivotPosition = PivotTransformComponent.WorldTransform.Location;
+
+                            SelectionView.each([&](entt::entity Entity, STransformComponent& Transform)
                             {
-                                STransformComponent& ParentTransform = World->GetEntityRegistry().get<STransformComponent>(Rel->Parent);
-                                glm::mat4 LocalMatrix = glm::inverse(ParentTransform.GetWorldMatrix()) * DesiredWorldMatrix;
-                        
-                                glm::vec3 LocalTranslation, LocalScale, LocalSkew;
-                                glm::quat LocalRotation;
-                                glm::vec4 LocalPerspective;
-                                glm::decompose(LocalMatrix, LocalScale, LocalRotation, LocalTranslation, LocalSkew, LocalPerspective);
-                        
-                                Transform.SetLocalLocation(LocalTranslation);
-                                Transform.SetLocalRotation(LocalRotation);
-                                Transform.SetLocalScale(LocalScale);
-                            }
-                            else
-                            {
-                                glm::vec3 WorldTranslation, WorldScale, WorldSkew;
-                                glm::quat WorldRotation;
-                                glm::vec4 WorldPerspective;
-                                glm::decompose(DesiredWorldMatrix, WorldScale, WorldRotation, WorldTranslation, WorldSkew, WorldPerspective);
-                        
-                                Transform.SetLocalLocation(WorldTranslation);
-                                Transform.SetLocalRotation(WorldRotation);
-                                Transform.SetLocalScale(WorldScale);
-                            }
-                        });
+                                glm::mat4 DesiredWorldMatrix;
+
+                                switch (GuizmoOp)
+                                {
+                                    case ImGuizmo::TRANSLATE:
+                                    {
+                                        glm::mat4 TranslationDelta = glm::translate(glm::mat4(1.f), DeltaTranslation);
+                                        DesiredWorldMatrix = TranslationDelta * Transform.GetWorldMatrix();
+                                        break;
+                                    }
+
+                                    case ImGuizmo::ROTATE:
+                                    {
+                                        glm::vec3 OffsetFromPivot = Transform.WorldTransform.Location - PivotPosition;
+                                        glm::vec3 RotatedOffset   = DeltaRotation * OffsetFromPivot;
+                                        glm::vec3 NewWorldPos     = PivotPosition + RotatedOffset;
+                                        glm::quat NewWorldRot     = DeltaRotation * Transform.GetWorldRotation();
+                                        glm::vec3 WorldScale      = Transform.GetWorldScale();
+
+                                        DesiredWorldMatrix = glm::translate(glm::mat4(1.f), NewWorldPos)
+                                                           * glm::mat4_cast(NewWorldRot)
+                                                           * glm::scale(glm::mat4(1.f), WorldScale);
+                                        break;
+                                    }
+
+                                    case ImGuizmo::SCALE:
+                                    {
+                                        glm::vec3 OffsetFromPivot = Transform.WorldTransform.Location - PivotPosition;
+                                        glm::vec3 ScaledOffset    = OffsetFromPivot * DeltaScale;
+                                        glm::vec3 NewWorldPos     = PivotPosition + ScaledOffset;
+                                        glm::quat WorldRot        = Transform.GetWorldRotation();
+                                        glm::vec3 NewWorldScale   = Transform.GetWorldScale() * DeltaScale;
+
+                                        DesiredWorldMatrix = glm::translate(glm::mat4(1.f), NewWorldPos)
+                                                           * glm::mat4_cast(WorldRot)
+                                                           * glm::scale(glm::mat4(1.f), NewWorldScale);
+                                        break;
+                                    }
+                                }
+
+                                FRelationshipComponent* Rel = World->GetEntityRegistry().try_get<FRelationshipComponent>(Entity);
+                                if (Rel && Rel->Parent != entt::null)
+                                {
+                                    STransformComponent& ParentTransform = World->GetEntityRegistry().get<STransformComponent>(Rel->Parent);
+                                    glm::mat4 LocalMatrix = glm::inverse(ParentTransform.GetWorldMatrix()) * DesiredWorldMatrix;
+
+                                    glm::vec3 LocalTranslation, LocalScale, LocalSkew;
+                                    glm::quat LocalRotation;
+                                    glm::vec4 LocalPerspective;
+                                    glm::decompose(LocalMatrix, LocalScale, LocalRotation, LocalTranslation, LocalSkew, LocalPerspective);
+
+                                    Transform.SetLocalLocation(LocalTranslation);
+                                    Transform.SetLocalRotation(LocalRotation);
+                                    Transform.SetLocalScale(LocalScale);
+                                }
+                                else
+                                {
+                                    glm::vec3 WorldTranslation, WorldScale, WorldSkew;
+                                    glm::quat WorldRotation;
+                                    glm::vec4 WorldPerspective;
+                                    glm::decompose(DesiredWorldMatrix, WorldScale, WorldRotation, WorldTranslation, WorldSkew, WorldPerspective);
+
+                                    Transform.SetLocalLocation(WorldTranslation);
+                                    Transform.SetLocalRotation(WorldRotation);
+                                    Transform.SetLocalScale(WorldScale);
+                                }
+                            });
+                        }
                     }
                     else if (bImGuizmoUsedOnce)
                     {
@@ -2509,7 +2561,22 @@ namespace Lumina
         {
             ImGui::SetTooltip("Gizmo: %s (R)", ImGuiX::ImGuizmoOpToString(GuizmoOp).data());
         }
-        
+
+        ImGui::SameLine();
+
+        const bool bIsLocalMode = (GuizmoMode == ImGuizmo::LOCAL);
+        const char* ModeIcon = bIsLocalMode ? LE_ICON_AXIS_ARROW : LE_ICON_EARTH;
+        const ImColor ModeIconColor = bIsLocalMode ? ImVec4(0.2f, 0.6f, 1.0f, 1.0f) : ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+        if (ImGuiX::IconButton(ModeIcon, "##GizmoSpace", ModeIconColor, BtnSize))
+        {
+            ToggleGuizmoMode();
+        }
+
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        {
+            ImGui::SetTooltip("Gizmo Space: %s (X)", bIsLocalMode ? "Local" : "World");
+        }
+
         if (bGuizmoSnapEnabled)
         {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 1.0f, 0.6f));
@@ -4942,6 +5009,11 @@ namespace Lumina
             }
             break;
         }
+    }
+
+    void FWorldEditorTool::ToggleGuizmoMode()
+    {
+        GuizmoMode = (GuizmoMode == ImGuizmo::WORLD) ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
     }
 
     void FWorldEditorTool::GroupSelectedEntities()

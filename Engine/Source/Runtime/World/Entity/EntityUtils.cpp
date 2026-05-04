@@ -1,8 +1,10 @@
 ﻿#include "pch.h"
 #include "EntityUtils.h"
+#include "Components/CharacterComponent.h"
 #include "Components/DirtyComponent.h"
 #include "Components/EditorComponent.h"
 #include "components/entitytags.h"
+#include "Components/PhysicsComponent.h"
 #include "Components/RelationshipComponent.h"
 #include "components/tagcomponent.h"
 #include "Components/TransformComponent.h"
@@ -892,5 +894,16 @@ namespace Lumina::ECS::Utils
     void SetEntityBodyType(FEntityRegistry& Registry, entt::entity Entity)
     {
         Registry.emplace_or_replace<FNeedsPhysicsBodyUpdate>(Entity);
+    }
+
+    void MarkTransformDirty(FEntityRegistry& Registry, entt::entity Entity)
+    {
+        FRecursiveScopeLock Lock(GetTransformResolveMutex());
+        Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
+
+        if (Registry.any_of<SRigidBodyComponent, SCharacterPhysicsComponent>(Entity))
+        {
+            Registry.emplace_or_replace<FNeedsPhysicsBodyUpdate>(Entity);
+        }
     }
 }

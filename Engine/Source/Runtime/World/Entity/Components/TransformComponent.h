@@ -243,10 +243,8 @@ namespace Lumina
             {
                 return;
             }
-            
-            FRecursiveScopeLock Lock(ECS::Utils::GetTransformResolveMutex());
-            Registry->emplace_or_replace<FNeedsTransformUpdate>(Entity);
-            Registry->emplace_or_replace<FNeedsPhysicsBodyUpdate>(Entity);
+
+            ECS::Utils::MarkTransformDirty(*Registry, Entity);
         }
 
         void ResolveIfDirty() const

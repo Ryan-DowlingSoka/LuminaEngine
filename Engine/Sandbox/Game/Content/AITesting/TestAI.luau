@@ -1,4 +1,5 @@
-TestAI = EntityScript.new()
+local EntityScript = require("Stdlib/EntityScript")
+local TestAI = EntityScript.new()
 
 local PathFollow : SPathFollowComponent = nil
 

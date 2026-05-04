@@ -77,7 +77,6 @@ namespace Lumina
     {
         LOG_TRACE("Initializing Forward Render Scene");
         
-        GRenderContext->WaitIdle();
         SceneViewport = GRenderContext->CreateViewport(Windowing::GetPrimaryWindowHandle()->GetExtent(), "Forward Renderer Viewport");
 
         InitBuffers();
@@ -6081,9 +6080,6 @@ namespace Lumina
         {
             return;
         }
-
-        // Idle the GPU before tearing down attachments that may still be referenced by in-flight cmd lists.
-        GRenderContext->WaitIdle();
 
         NamedImages[(int)ENamedImage::HDR_MS]    = nullptr;
         NamedImages[(int)ENamedImage::Depth_MS]  = nullptr;
