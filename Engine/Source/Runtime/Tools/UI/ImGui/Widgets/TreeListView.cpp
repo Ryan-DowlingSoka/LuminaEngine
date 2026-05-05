@@ -8,7 +8,7 @@ namespace Lumina
 {
     namespace
     {
-        constexpr float kRowHeight = 25.0f;
+        constexpr float kRowHeight = 15.0f;
         constexpr float kIndentPerDepth = 21.0f;
     }
 

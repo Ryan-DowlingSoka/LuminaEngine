@@ -7,8 +7,8 @@ local VehicleMovement = EntityScript.new()
 -- ApplyImpulseAt with these same values, which treated N as N·s and
 -- effectively multiplied them by PhysicsHz — stable at rest but unstable at
 -- speed when compression varied. New numbers ≈ old × 60Hz to preserve feel.
-local SuspensionStiffness = 180000.0 -- spring force per metre of compression
-local SuspensionDamping   = 12000.0  -- damper force per m/s along spring
+local SuspensionStiffness = 120000.0 -- spring force per metre of compression
+local SuspensionDamping   = 8000.0  -- damper force per m/s along spring
 local MaxSuspensionForce  = 200000.0 -- cap so a noisy ray hit can't punt the body
 local RestLength          = 0.45
 local RayExtra            = 0.00       -- extra ray length past rest, for slopes
@@ -26,8 +26,8 @@ local SteerResponse       = 7.0       -- yaw blend rate toward target
 local ThrottleAttack      = 10.0      -- pedal-down response (1/s)
 local ThrottleRelease     = 3.0       -- pedal-up response (1/s) — slower for realism
 
-local LateralGrip         = 4.0       -- side-velocity decay (1/s)
-local DriftLateralGrip    = 0.6       -- with handbrake — lets the rear slide
+local LateralGrip         = 3.0       -- side-velocity decay (1/s)
+local DriftLateralGrip    = 0.5       -- with handbrake — lets the rear slide
 
 -- Wheel layout in body frame ----------------------------------------------
 local HalfLength = 1.0
@@ -57,17 +57,17 @@ local HUDUpdateRate      = 20.0           -- Hz; HUD doesn't need per-frame chur
 local MetersPerSecToMPH  = 2.2369363
 
 -- Boost meter
-local BoostDrainRate     = 0.55     -- meter per second while held
+local BoostDrainRate     = 0.85     -- meter per second while held
 local BoostRechargeRate  = 0.18     -- meter per second when idle
 local BoostMin           = 0.05     -- below this, must recharge before reuse
-local BoostMultiplier    = 6.0      -- accel multiplier while burning boost
+local BoostMultiplier    = 3.0      -- accel multiplier while burning boost
 
 -- Drift scoring
-local DriftMinSpeed      = 7.0      -- m/s; below this drift doesn't count
-local DriftMinSlip       = 2.5      -- m/s of lateral velocity
-local DriftScoreRate     = 18.0     -- score per (slip * speed * mult) per second
-local DriftMultRampUp    = 0.45     -- multiplier added per second of drift
-local DriftMultMax       = 5.0
+local DriftMinSpeed      = 5.0      -- m/s; below this drift doesn't count
+local DriftMinSlip       = 2.0      -- m/s of lateral velocity
+local DriftScoreRate     = 8.0      -- score per (slip * speed * mult) per second
+local DriftMultRampUp    = 0.15     -- multiplier added per second of drift
+local DriftMultMax       = 4.0
 local DriftBankFade      = 1.5      -- seconds banner stays after drift ends
 local DriftBoostReward   = 0.0005   -- boost meter awarded per banked score point
 local DriftHugeThreshold = 5000
@@ -125,6 +125,7 @@ function VehicleMovement:OnReady()
     self.DriftScore    = 0
     self.DriftMult     = 1.0
     self.DriftBanked   = 0          -- shown on banner
+    self.TotalDrift    = 0
     self.DriftFade     = 0.0        -- post-drift display countdown
     
     ParticleSystem1 = self._Registry:Get(44, SParticleSystemComponent)
@@ -399,6 +400,7 @@ function VehicleMovement:OnUpdate(DeltaTime)
     elseif self.DriftActive then
         self.DriftActive = false
         self.Boost = math.min(1.0, (self.Boost or 0.0) + self.DriftScore * DriftBoostReward)
+        self.TotalDrift += self.DriftScore
         self.DriftScore = 0
     elseif self.DriftFade > 0.0 then
         self.DriftFade = math.max(0.0, self.DriftFade - DeltaTime)
@@ -455,9 +457,7 @@ function VehicleMovement:OnUpdate(DeltaTime)
         if SlipPct ~= self.LastSlipPct or SlipSide ~= self.LastSlipSide then
             local LeftPct  = (SlipSide < 0) and SlipPct or 0
             local RightPct = (SlipSide > 0) and SlipPct or 0
-            UI.SetInnerRml(HUDDocument, "slip-track", string.format(
-                '<div id="slip-left" style="width: %d%%;"/><div id="slip-right" style="width: %d%%;"/>',
-                LeftPct, RightPct))
+            UI.SetInnerRml(HUDDocument, "slip-track", string.format('<div id="slip-left" style="width: %d%%;"/><div id="slip-right" style="width: %d%%;"/>', LeftPct, RightPct))
             self.LastSlipPct  = SlipPct
             self.LastSlipSide = SlipSide
         end
@@ -486,6 +486,7 @@ function VehicleMovement:OnUpdate(DeltaTime)
         if DriftBannerActive then
             UI.SetText(HUDDocument, "drift-score", tostring(self.DriftBanked))
             UI.SetText(HUDDocument, "drift-mult", string.format("x%.1f", self.DriftMult))
+            UI.SetText(HUDDocument, "total-score", string.format("%.1f", self.TotalDrift))
         end
     end
 

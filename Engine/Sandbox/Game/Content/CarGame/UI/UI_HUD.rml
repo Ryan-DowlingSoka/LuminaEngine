@@ -65,6 +65,18 @@
         {
             border-color: #ff4d4d;
         }
+        #total-row
+		{
+    		display: block;
+    		font-size: 16dp;
+    		font-weight: bold;
+    		color: #97a0b6;
+    		margin-top: 6dp;
+		}
+		#total-row span
+		{
+    		color: #2BFF00;
+		}
 
         /* Gauge stack, anchored bottom-right. */
         #gauges
@@ -254,6 +266,9 @@
     <div id="drift-banner">
         <span id="drift-label">DRIFT</span>
         <span id="drift-score">0</span><span id="drift-mult">x1.0</span>
+		<span id="total-row">
+    		TOTAL: <span id="total-score">0</span>
+		</span>
     </div>
 
     <div id="gauges">

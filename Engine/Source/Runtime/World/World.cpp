@@ -998,6 +998,12 @@ namespace Lumina
 
     SDefaultWorldSettings& CWorld::GetDefaultWorldSettings()
     {
+        static SDefaultWorldSettings Defaults{};
+        if (!EntityRegistry.valid(SingletonEntity))
+        {
+            return Defaults;
+        }
+        
         return EntityRegistry.get_or_emplace<SDefaultWorldSettings>(SingletonEntity);
     }
 
