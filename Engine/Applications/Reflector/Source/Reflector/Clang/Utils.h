@@ -7,12 +7,43 @@
 #include <clang-c/Index.h>
 #include <EASTL/algorithm.h>
 #include <EASTL/string.h>
+#include <filesystem>
+#include <system_error>
 #include "xxhash.h"
 #include "spdlog/spdlog.h"
 
 
 namespace Lumina::ClangUtils
 {
+    // Canonicalize a path for use as a hash key in the AllHeaders map.
+    // Both the JSON registration side (premake node.abspath) and the parse-time
+    // cursor lookup side must agree byte-for-byte, otherwise cursors get silently
+    // dropped and types simply don't register. std::filesystem::weakly_canonical
+    // resolves relative→absolute, collapses redundant separators, and (when the
+    // file exists) resolves junctions/symlinks/SUBST drives to a single canonical
+    // form. After that we still lowercase + forward-slash so case-insensitive
+    // filesystems behave consistently.
+    inline eastl::string NormalizeHeaderPath(eastl::string Input)
+    {
+        if (Input.empty())
+        {
+            return Input;
+        }
+
+        std::error_code ErrorCode;
+        std::filesystem::path Path(Input.c_str());
+        std::filesystem::path Canonical = std::filesystem::weakly_canonical(Path, ErrorCode);
+        if (ErrorCode)
+        {
+            Canonical = Path.lexically_normal();
+        }
+
+        eastl::string Result(Canonical.generic_string().c_str());
+        eastl::replace(Result.begin(), Result.end(), '\\', '/');
+        Result.make_lower();
+        return Result;
+    }
+
     inline eastl::string GetString(const CXString& string)
     {
         eastl::string str = clang_getCString(string);
@@ -85,13 +116,11 @@ namespace Lumina::ClangUtils
         {
             CXString ClangFilePath = clang_getFileName(File);
             HeaderFilePath = eastl::string(clang_getCString(ClangFilePath));
-            
             clang_disposeString(ClangFilePath);
-            
-            eastl::replace(HeaderFilePath.begin(), HeaderFilePath.end(), '\\', '/');
-            HeaderFilePath.make_lower();
+
+            HeaderFilePath = NormalizeHeaderPath(eastl::move(HeaderFilePath));
         }
-        
+
         return HeaderFilePath;
     }
 
@@ -109,6 +138,16 @@ namespace Lumina::ClangUtils
         return clang::QualType::getFromOpaquePtr(type.data[0]); 
     }
     
+    // True when libclang's type printer fell back to its location-derived placeholder
+    // (e.g. "(unnamed struct at h:\path\file.h:20:5)"). Such strings leak the build
+    // path into generated C++ identifiers and break every consumer of the type — most
+    // visibly when the build path contains characters that aren't valid in identifiers.
+    inline bool IsLibclangPlaceholderName(const eastl::string& Name)
+    {
+        return Name.find("(unnamed ") != eastl::string::npos
+            || Name.find("(anonymous ") != eastl::string::npos;
+    }
+
     inline bool GetQualifiedNameForType(clang::QualType Type, eastl::string& QualifiedName)
     {
         const clang::Type* pType = Type.getTypePtr();
@@ -133,55 +172,55 @@ namespace Lumina::ClangUtils
                 case clang::BuiltinType::Char_S:
                     QualifiedName = "int8";
                     break;
-                
+
                 case clang::BuiltinType::Char_U:
                     QualifiedName = "uint8";
                     break;
-                
+
                 case clang::BuiltinType::UChar:
                     QualifiedName = "uint8";
                     break;
-                
+
                 case clang::BuiltinType::SChar:
                     QualifiedName = "int8";
                     break;
-                
+
                 case clang::BuiltinType::Char16:
                     QualifiedName = "uint16";
                     break;
-                
+
                 case clang::BuiltinType::Char32:
                     QualifiedName = "uint32";
                     break;
-                
+
                 case clang::BuiltinType::UShort:
                     QualifiedName = "uint16";
                     break;
-                
+
                 case clang::BuiltinType::Short:
                     QualifiedName = "int16";
                     break;
-                
+
                 case clang::BuiltinType::UInt:
                     QualifiedName = "uint32";
                     break;
-                
+
                 case clang::BuiltinType::Int:
                     QualifiedName = "int32";
                     break;
-                
+
                 case clang::BuiltinType::ULongLong:
                     QualifiedName = "uint64";
                     break;
-                
+
                 case clang::BuiltinType::LongLong:
                     QualifiedName = "int64";
                     break;
-                
+
                 case clang::BuiltinType::Float:
                     QualifiedName = "float";
                     break;
-                
+
                 case clang::BuiltinType::Double:
                     QualifiedName = "double";
                     break;
@@ -193,15 +232,25 @@ namespace Lumina::ClangUtils
         }
         else if (pType->isPointerType())
         {
-            const clang::QualType QualType = pType->getAs<clang::PointerType>()->getPointeeType();
-            QualifiedName = QualType.getAsString().c_str();
+            // Recurse instead of getAsString(): the latter routes through libclang's
+            // PrintingPolicy and can emit "(unnamed struct at <path>:line:col)" for
+            // records the printer considers anonymous, baking the build path into
+            // generated identifiers.
+            clang::QualType Pointee = pType->getAs<clang::PointerType>()->getPointeeType();
+            if (!GetQualifiedNameForType(Pointee, QualifiedName))
+            {
+                return false;
+            }
         }
         else if (pType->isReferenceType())
         {
-            const clang::QualType QualType = pType->getAs<clang::ReferenceType>()->getPointeeType();
-            QualifiedName = QualType.getUnqualifiedType().getAsString().c_str();
+            clang::QualType Pointee = pType->getAs<clang::ReferenceType>()->getPointeeType().getUnqualifiedType();
+            if (!GetQualifiedNameForType(Pointee, QualifiedName))
+            {
+                return false;
+            }
         }
-        if (pType->isRecordType())
+        else if (pType->isRecordType())
         {
             if (pType->isTypedefNameType())
             {
@@ -283,8 +332,36 @@ namespace Lumina::ClangUtils
         {
             QualifiedName = "Lumina::CClass";
         }
-        
+
+        // Refuse libclang's location-based placeholders. Letting them through
+        // produces broken generated identifiers like
+        // "Construct_CStruct_(unnamed struct at h:\repo-foo\...)".
+        if (IsLibclangPlaceholderName(QualifiedName))
+        {
+            QualifiedName.clear();
+            return false;
+        }
+
         return !QualifiedName.empty();
+    }
+
+    // Return a printable C++ type expression suitable for casts in generated code
+    // (e.g. "glm::vec3", "Lumina::FName"). Falls back to the semantic qualified name
+    // if libclang's printer would have produced an "(unnamed/anonymous ...)" placeholder.
+    inline eastl::string GetSafeTypeAsString(clang::QualType Type)
+    {
+        eastl::string Result = Type.getAsString().c_str();
+        if (!IsLibclangPlaceholderName(Result))
+        {
+            return Result;
+        }
+
+        eastl::string SemanticName;
+        if (GetQualifiedNameForType(Type, SemanticName))
+        {
+            return SemanticName;
+        }
+        return Result;
     }
     
 

@@ -21,6 +21,7 @@
 #include "Renderer/ShaderCompiler.h"
 #include "TaskSystem/TaskSystem.h"
 #include "Renderer/ErrorHandling/Vulkan/VulkanCrashTracker.h"
+#include "Tools/Dialogs/Dialogs.h"
 
 namespace Lumina
 {
@@ -494,24 +495,44 @@ namespace Lumina
     {
     }
 
+    static void ShowVulkanInitFailure(const FString& Title, const FString& Message)
+    {
+        LOG_CRITICAL("{}: {}", Title, Message);
+        const FString Body = Message + "\n\nThis is usually caused by an outdated GPU driver or a GPU that does not support the required Vulkan features. "
+            "Please update your graphics drivers from your GPU vendor (NVIDIA, AMD, or Intel) and restart the application.";
+        Dialogs::ShowInternal(Dialogs::ESeverity::FatalError, Dialogs::EType::Ok, Title, Body);
+    }
+
     bool FVulkanRenderContext::Initialize(const FRenderContextDesc& Desc)
     {
         LUMINA_PROFILE_SCOPE();
-        
+
         CrashTracker = MakeUnique<RHI::FVulkanCrashTracker>();
 
-        ASSERT(glfwVulkanSupported(), "Vulkan Is Not Supported!");
+        if (!glfwVulkanSupported())
+        {
+            ShowVulkanInitFailure("Vulkan Not Supported",
+                "GLFW reports that this system does not support Vulkan. The Vulkan runtime (vulkan-1.dll) was not found, "
+                "or no installed GPU driver provides a Vulkan ICD.");
+            return false;
+        }
+
         VkResult VolkInitResult = volkInitialize();
-        ASSERT(VolkInitResult == VK_SUCCESS, "Volk failed to initialize");
-        
+        if (VolkInitResult != VK_SUCCESS)
+        {
+            ShowVulkanInitFailure("Vulkan Loader Failure",
+                "Failed to initialize the Vulkan loader (volkInitialize). The Vulkan runtime appears to be missing or corrupted.");
+            return false;
+        }
+
         Description = Desc;
         GVulkanAllocationCallbacks.pfnAllocation    = VulkanAlloc;
         GVulkanAllocationCallbacks.pfnFree          = VulkanFree;
         GVulkanAllocationCallbacks.pfnReallocation  = VulkanRealloc;
-        
+
         vkb::InstanceBuilder Builder; Builder
         .set_app_name("Lumina Engine")
-        .require_api_version(1, 3, 0)
+        .require_api_version(1, 4, 0)
         .set_allocation_callbacks(VK_ALLOC_CALLBACK);
         if (Description.bValidation)
         {
@@ -535,20 +556,25 @@ namespace Lumina
 
         if (!InstBuilder.has_value())
         {
-            LOG_CRITICAL("A critical error occured while trying to create a Vulkan instance: {}", InstBuilder.error().message());
+            FString InstanceMessage = "Failed to create a Vulkan instance: ";
+            InstanceMessage += InstBuilder.error().message().c_str();
+            ShowVulkanInitFailure("Vulkan Instance Creation Failed", InstanceMessage);
             return false;
         }
 
         VulkanInstance = InstBuilder.value();
-        
+
         volkLoadInstance(VulkanInstance);
-        
+
         if (Description.bValidation)
         {
             DebugUtils.DebugMessenger = InstBuilder->debug_messenger;
         }
-        
-        CreateDevice(InstBuilder.value());
+
+        if (!CreateDevice(InstBuilder.value()))
+        {
+            return false;
+        }
 
         volkLoadDevice(VulkanDevice->GetDevice());
         
@@ -750,7 +776,7 @@ namespace Lumina
         return SubmissionID;
     }
     
-    void FVulkanRenderContext::CreateDevice(vkb::Instance Instance)
+    bool FVulkanRenderContext::CreateDevice(vkb::Instance Instance)
     {
         VkPhysicalDeviceFeatures DeviceFeatures             = {};
         DeviceFeatures.fragmentStoresAndAtomics             = VK_TRUE;
@@ -800,8 +826,8 @@ namespace Lumina
         
         
         vkb::PhysicalDeviceSelector selector(Instance);
-        vkb::PhysicalDevice PhysicalDevice = selector
-            .set_minimum_version(1, 3)
+        auto PhysicalDeviceResult = selector
+            .set_minimum_version(1, 4)
             .set_required_features(DeviceFeatures)
             .set_required_features_11(Features11)
             .set_required_features_12(Features12)
@@ -809,9 +835,33 @@ namespace Lumina
             .require_separate_transfer_queue()
             .require_separate_compute_queue()
             .defer_surface_initialization()
-            .select()
-            .value();
-        
+            .select();
+
+        if (!PhysicalDeviceResult.has_value())
+        {
+            uint32 InstanceVersion = VK_API_VERSION_1_0;
+            if (vkEnumerateInstanceVersion != nullptr)
+            {
+                vkEnumerateInstanceVersion(&InstanceVersion);
+            }
+
+            FString Message = "No suitable GPU was found that supports the required Vulkan 1.4 features.\n\nReason: ";
+            Message += PhysicalDeviceResult.error().message().c_str();
+            Message += "\n\nDetected Vulkan instance API version: ";
+            Message += eastl::to_string(VK_API_VERSION_MAJOR(InstanceVersion)).c_str();
+            Message += ".";
+            Message += eastl::to_string(VK_API_VERSION_MINOR(InstanceVersion)).c_str();
+            Message += ".";
+            Message += eastl::to_string(VK_API_VERSION_PATCH(InstanceVersion)).c_str();
+            Message += "\n\nLumina requires Vulkan 1.4 with dynamic rendering, synchronization2, descriptor indexing, "
+                "buffer device address, timeline semaphores, and compute shader derivatives.";
+
+            ShowVulkanInitFailure("Vulkan Device Selection Failed", Message);
+            return false;
+        }
+
+        vkb::PhysicalDevice PhysicalDevice = PhysicalDeviceResult.value();
+
         PhysicalDevice.enable_extension_if_present(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         PhysicalDevice.enable_extension_if_present(VK_EXT_SAMPLER_FILTER_MINMAX_EXTENSION_NAME);
         PhysicalDevice.enable_extension_if_present(VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME);
@@ -834,8 +884,19 @@ namespace Lumina
 
         vkb::DeviceBuilder DeviceBuilder(PhysicalDevice);
         CrashTracker->EnableDeviceFeatures(DeviceBuilder);
-        
-        vkb::Device vkbDevice = DeviceBuilder.build().value();
+
+        auto DeviceResult = DeviceBuilder.build();
+        if (!DeviceResult.has_value())
+        {
+            FString Message = "Failed to create the Vulkan logical device on '";
+            Message += PhysicalDevice.name.c_str();
+            Message += "'.\n\nReason: ";
+            Message += DeviceResult.error().message().c_str();
+            ShowVulkanInitFailure("Vulkan Device Creation Failed", Message);
+            return false;
+        }
+
+        vkb::Device vkbDevice = DeviceResult.value();
         VkDevice Device = vkbDevice.device;
         volkLoadDevice(Device);
 
@@ -867,6 +928,8 @@ namespace Lumina
             Queues[uint32(ECommandQueue::Transfer)] = MakeUnique<FQueue>(this, Queue, Index, ECommandQueue::Transfer);
             SetVulkanObjectName("Transfer Queue", VK_OBJECT_TYPE_QUEUE, (uintptr_t)Queue);
         }
+
+        return true;
     }
 
     uint64 FVulkanRenderContext::GetAlignedSizeForBuffer(uint64 Size, TBitFlags<EBufferUsageFlags> Usage)

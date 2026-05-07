@@ -40,7 +40,8 @@ namespace Lumina::Reflection
         };
         
         eastl::string LuminaDirectory = std::getenv("LUMINA_DIR");
-        if (!LuminaDirectory.empty() && LuminaDirectory.back() == '/' )
+        while (!LuminaDirectory.empty() &&
+               (LuminaDirectory.back() == '/' || LuminaDirectory.back() == '\\'))
         {
             LuminaDirectory.pop_back();
         }

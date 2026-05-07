@@ -2,6 +2,7 @@
 #include <print>
 #include "StringHash.h"
 #include "nlohmann/json.hpp"
+#include "Reflector/Clang/Utils.h"
 #include "Reflector/Diagnostics/HeaderIncludeGraph.h"
 #include "Reflector/Diagnostics/LRTDiagnostics.h"
 #include "Reflector/ProjectSolution.h"
@@ -69,9 +70,8 @@ int main(int argc, char* argv[])
         for (const auto& ProjectFileJson : Project["Files"])
         {
             eastl::string ProjectFile = ProjectFileJson.get<std::string>().c_str();
-            ProjectFile.make_lower();
-            eastl::replace(ProjectFile.begin(), ProjectFile.end(), '\\', '/');
-            
+            ProjectFile = Lumina::ClangUtils::NormalizeHeaderPath(eastl::move(ProjectFile));
+
             auto ReflectedHeader = eastl::make_unique<FReflectedHeader>(ReflectedProject.get(), ProjectFile);
 
             Lumina::FStringHash HeaderHash(ProjectFile);

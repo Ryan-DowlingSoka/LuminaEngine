@@ -123,7 +123,7 @@ namespace Lumina::Reflection::Visitor
 		Info.OwningCursor	= Cursor;
 		Info.Name			= CursorName;
 		Info.TypeName		= TypeSpelling;
-		Info.RawFieldType	= FieldQualType.getAsString().c_str();
+		Info.RawFieldType	= ClangUtils::GetSafeTypeAsString(FieldQualType);
 
 		return Info;
 	}
@@ -191,7 +191,7 @@ namespace Lumina::Reflection::Visitor
 		Info.Type			= FieldType;
 		Info.Name			= "None";
 		Info.TypeName		= TypeSpelling;
-		Info.RawFieldType	= FieldQualType.getAsString().c_str();
+		Info.RawFieldType	= ClangUtils::GetSafeTypeAsString(FieldQualType);
 
 		return Info;
 	}
@@ -407,7 +407,7 @@ namespace Lumina::Reflection::Visitor
 				return false;
 			}
 
-			ArrayProperty->ElementTypeName = clang_getCString(clang_getTypeSpelling(ArgType));
+			ArrayProperty->ElementTypeName = ClangUtils::GetSafeTypeAsString(ClangUtils::GetQualType(ArgType));
 			NewProperty = eastl::move(ArrayProperty);
 
 			FieldProperty->bInner = true; // This property "belongs" to the array.
@@ -439,7 +439,7 @@ namespace Lumina::Reflection::Visitor
 				return false;
 			}
 
-			OptionalProperty->ElementTypeName = clang_getCString(clang_getTypeSpelling(ArgType));
+			OptionalProperty->ElementTypeName = ClangUtils::GetSafeTypeAsString(ClangUtils::GetQualType(ArgType));
 			NewProperty = eastl::move(OptionalProperty);
 
 			FieldProperty->bInner = true; // Inner T is owned by the optional.

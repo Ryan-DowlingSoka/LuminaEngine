@@ -5,10 +5,6 @@
 
 namespace Lumina
 {
-    FDescriptorHandle::FDescriptorHandle()
-    {
-    }
-
     FDescriptorHandle::~FDescriptorHandle()
     {
         if (DescriptorIndex >= 0)

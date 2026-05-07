@@ -15,7 +15,7 @@ namespace Lumina
         FDescriptorHandle& operator=(const FDescriptorHandle&) = delete;
         FDescriptorHandle& operator=(FDescriptorHandle&&) = default;
 
-        FDescriptorHandle();
+        FDescriptorHandle() = default;
         FDescriptorHandle(const TSharedPtr<FDescriptorTableManager>& InManager, int64 InIndex)
             : Manager(InManager)
             , DescriptorIndex(InIndex)

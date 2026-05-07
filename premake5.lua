@@ -66,8 +66,8 @@ workspace "Lumina"
         "RMLUI_STATIC_LIB",
         
         "LUA_VECTOR_SIZE=4",
-        "LUA_UTAG_LIMIT=1000",
-        "LUA_LUTAG_LIMIT=1000",
+        "LUA_UTAG_LIMIT=2000",
+        "LUA_LUTAG_LIMIT=2000",
 
         "TRACY_ALLOW_SHADOW_WARNING",
         "TRACY_ENABLE",

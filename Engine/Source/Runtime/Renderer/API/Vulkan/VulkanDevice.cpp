@@ -26,7 +26,7 @@ namespace Lumina
         Functions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
 
         VmaAllocatorCreateInfo Info = {};
-        Info.vulkanApiVersion       = VK_API_VERSION_1_3;
+        Info.vulkanApiVersion       = VK_API_VERSION_1_4;
         Info.instance               = Instance;
         Info.physicalDevice         = PhysicalDevice;
         Info.device                 = Device;

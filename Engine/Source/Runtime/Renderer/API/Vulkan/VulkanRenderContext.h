@@ -141,7 +141,7 @@ namespace Lumina
         void HandleDeviceLost() override;
 
         void WaitIdle() override;
-        void CreateDevice(vkb::Instance Instance);
+        bool CreateDevice(vkb::Instance Instance);
         
         bool FrameStart(const FUpdateContext& UpdateContext, uint8 InCurrentFrameIndex) override;
         bool FrameEnd(const FUpdateContext& UpdateContext, ICommandList& CmdList) override;

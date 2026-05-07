@@ -1104,9 +1104,9 @@ namespace Lumina
 
     SDefaultWorldSettings& CWorld::GetDefaultWorldSettings()
     {
-        static SDefaultWorldSettings Defaults{};
         if (!EntityRegistry.valid(SingletonEntity))
         {
+            static SDefaultWorldSettings Defaults{};
             return Defaults;
         }
         
