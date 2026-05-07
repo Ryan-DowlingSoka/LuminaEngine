@@ -3,6 +3,7 @@
 #include "PendingState.h"
 #include "RenderResource.h"
 #include "Core/Math/Color.h"
+#include "Memory/Memcpy.h"
 #include "Platform/GenericPlatform.h"
 
 namespace Lumina
@@ -68,6 +69,22 @@ namespace Lumina
         uint32 NumRenderPasses = 0;
         uint32 NumBindings = 0;
         uint32 NumPushConstants = 0;
+        uint32 NumTransientAllocs = 0;
+    };
+
+    // One-shot scratch allocation from the command list's per-frame ring.
+    // Memory is host-visible: write directly to Cpu, read on the GPU via the
+    // BDA in Gpu. Lifetime is the current command-list submission.
+    struct FTransientAlloc
+    {
+        void*       Cpu     = nullptr;
+        uint64      Gpu     = 0;        // device address; already includes Offset
+        FRHIBuffer* Buffer  = nullptr;  // ring chunk this allocation lives in
+        uint64      Offset  = 0;
+        uint64      Size    = 0;
+
+        NODISCARD bool IsValid() const { return Cpu != nullptr; }
+        explicit operator bool() const { return IsValid(); }
     };
 
     class RUNTIME_API ICommandList : public IRHIResource
@@ -100,6 +117,37 @@ namespace Lumina
         virtual void WriteBuffer(FRHIBuffer* Buffer, const void* Data, size_t Size, size_t Offset = 0) = 0;
         virtual void FillBuffer(FRHIBuffer* Buffer, uint32 Value) = 0;
         virtual void CopyBuffer(FRHIBuffer* Source, uint64 SrcOffset, FRHIBuffer* Destination, uint64 DstOffset, uint64 CopySize) = 0;
+
+        // Suballocate Size bytes from the command list's per-frame ring buffer.
+        // Returns a CPU pointer to write to and a GPU device address for the shader.
+        // The allocation is alive for this submission only, never persist Cpu/Gpu
+        // beyond the same command-list scope.
+        virtual FTransientAlloc AllocateTransient(uint64 Size, uint32 Alignment = 16) = 0;
+
+        // Copy a single value into a transient allocation. Returned Gpu is the BDA
+        // ready to be pushed to the shader (e.g. as a push constant).
+        template<typename T>
+        FTransientAlloc UploadTransient(const T& Data, uint32 Alignment = 16)
+        {
+            FTransientAlloc Alloc = AllocateTransient(sizeof(T), Alignment);
+            if (Alloc.IsValid())
+            {
+                Memory::Memcpy(Alloc.Cpu, &Data, sizeof(T));
+            }
+            return Alloc;
+        }
+
+        // Copy an array. Stride is sizeof(T); pass tight CPU data.
+        template<typename T>
+        FTransientAlloc UploadTransientArray(const T* Data, uint64 Count, uint32 Alignment = 16)
+        {
+            FTransientAlloc Alloc = AllocateTransient(sizeof(T) * Count, Alignment);
+            if (Alloc.IsValid() && Count > 0)
+            {
+                Memory::Memcpy(Alloc.Cpu, Data, sizeof(T) * Count);
+            }
+            return Alloc;
+        }
 
 
         virtual void SetEnableUavBarriersForImage(FRHIImage* Image, bool bEnableBarriers) = 0;

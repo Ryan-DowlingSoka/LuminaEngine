@@ -13,23 +13,17 @@
 [[vk::binding(5, 0)]] RWStructuredBuffer<FMaterialUniforms>         uMaterialUniforms;
 [[vk::binding(6, 0)]] StructuredBuffer<FBillboardInstance>          uBillboards;
 
-// Cascades pack into a single 2D atlas (see GCSMCascadeSizes / atlas layout
-// in SceneRenderTypes.h), so the binding is Sampler2D, not Sampler2DArray.
-// The pixel shader applies a per-cascade UV transform from FLightShadow
-// to land its sample inside the right atlas tile.
-[[vk::binding(7,  0)]] Sampler2D                                     uShadowCascade;
-// Single 2D atlas: every cube face of every point light, plus every spot
-// light, owns its own tile. The pixel shader applies a per-light per-face
-// UV transform from FLightShadow to land its sample inside the right tile.
-[[vk::binding(8, 0)]] Sampler2D                                      uShadowAtlas;
+// Cascade and shadow atlas live in the dedicated shadow-sampling set (set=3,
+// see ShadowSampling.slang). They are NOT declared in this set so that shadow
+// rendering passes (Point/Spot/Cascaded) can bind set 0 without triggering a
+// shader-read state transition on images they're about to write as depth.
 [[vk::binding(9, 0)]] Sampler2D                                      uDepthPyramid;
 
 [[vk::binding(10, 0)]] StructuredBuffer<FCullView>                   uCullViews;
 [[vk::binding(11, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawList;
 [[vk::binding(12, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectArgs;
 
-// Same cascade atlas as binding 7, point-sampler for raw depth (PCSS blocker).
-[[vk::binding(13, 0)]] Sampler2D                                     uShadowCascadePoint;
+// Binding 13 (uShadowCascadePoint) moved to ShadowSampling.slang at set 3.
 
 // Phase-0 deferred camera meshlets, retested by phase 1 against the rebuilt HZB.
 [[vk::binding(14, 0)]] RWStructuredBuffer<FMeshletDeferred>          uMeshletDeferList;

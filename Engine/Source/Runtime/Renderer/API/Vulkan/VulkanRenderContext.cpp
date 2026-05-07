@@ -353,6 +353,7 @@ namespace Lumina
 
         WaitSemaphores.clear();
         WaitSemaphoreValues.clear();
+        WaitStageFlags.clear();
         SignalSemaphores.clear();
         SignalSemaphoreValues.clear();
 

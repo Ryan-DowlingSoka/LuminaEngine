@@ -480,6 +480,10 @@ namespace Lumina
 		FString DebugName;
 		EResourceStates InitialState = EResourceStates::Common;
 		bool bKeepInitialState = false;
+		// When true, buffer is created with VK_SHARING_MODE_CONCURRENT across graphics+compute queue
+		// families so it can be touched from both without ownership-transfer barriers. Set this for
+		// any resource that will be accessed by an async compute pass and a graphics pass.
+		bool bConcurrentSharing = false;
 		TBitFlags<EBufferUsageFlags> Usage;
 
 		FRHIBufferDesc() = default;
@@ -1679,13 +1683,22 @@ namespace Lumina
         FORCEINLINE FGraphicsPipelineDesc& AddBindingLayout(FRHIBindingLayout* layout) { BindingLayouts.push_back(layout); return *this; }
     };
 
+	struct FBufferAccess
+	{
+		FRHIBuffer*     Buffer = nullptr;
+		EResourceStates State  = EResourceStates::Unknown;
+
+		bool operator==(const FBufferAccess&) const = default;
+	};
+
 	struct RUNTIME_API FGraphicsState
 	{
 		FRHIGraphicsPipeline* Pipeline = nullptr;
 		FRenderPassDesc RenderPass = {};
 		FViewportState ViewportState;
 		TFixedVector<FRHIBindingSet*, 1> Bindings;
-        
+		TFixedVector<FBufferAccess, 1> BufferAccesses;
+
 		TFixedVector<FVertexBufferBinding, 1> VertexBuffers;
 		FIndexBufferBinding IndexBuffer;
 
@@ -1695,13 +1708,15 @@ namespace Lumina
 		FORCEINLINE FGraphicsState& SetRenderPass(FRenderPassDesc&& value) { RenderPass = Move(value); return *this; }
 		FORCEINLINE FGraphicsState& SetViewportState(FViewportState&& value) { ViewportState = Move(value); return *this; }
 
-		
+
 		FORCEINLINE FGraphicsState& SetRenderPass(const FRenderPassDesc& value) { RenderPass = value; return *this; }
 		FORCEINLINE FGraphicsState& SetPipeline(FRHIGraphicsPipeline* value) { Pipeline = value; return *this; }
 		FORCEINLINE FGraphicsState& AddViewport(const FViewport& Viewport) { ViewportState.Viewports.push_back(Viewport); return *this; }
 		FORCEINLINE FGraphicsState& AddScissor(const FRect& Scissor) { ViewportState.Scissors.push_back(Scissor); return *this; }
 		FORCEINLINE FGraphicsState& SetViewportState(const FViewportState& value) { ViewportState = Move(value); return *this; }
 		FORCEINLINE FGraphicsState& AddBindingSet(FRHIBindingSet* value) { Bindings.push_back(value); return *this; }
+		FORCEINLINE FGraphicsState& Writes(FRHIBuffer* Buffer, EResourceStates State = EResourceStates::UnorderedAccess) { BufferAccesses.push_back({Buffer, State}); return *this; }
+		FORCEINLINE FGraphicsState& Reads(FRHIBuffer* Buffer, EResourceStates State = EResourceStates::ShaderResource) { BufferAccesses.push_back({Buffer, State}); return *this; }
 		FORCEINLINE FGraphicsState& AddVertexBuffer(const FVertexBufferBinding& value) { VertexBuffers.push_back(value); return *this; }
 		FORCEINLINE FGraphicsState& SetVertexBuffer(const FVertexBufferBinding& value)
 		{
@@ -1725,13 +1740,16 @@ namespace Lumina
 	{
 		FRHIComputePipeline* Pipeline = nullptr;
 		TFixedVector<FRHIBindingSet*, 1> Bindings;
+		TFixedVector<FBufferAccess, 1> BufferAccesses;
 
 		FRHIBuffer* IndirectParams = nullptr;
 
 		FORCEINLINE FComputeState& SetPipeline(FRHIComputePipeline* value) { Pipeline = value; return *this; }
 		FORCEINLINE FComputeState& AddBindingSet(FRHIBindingSet* value) { Bindings.push_back(value); return *this; }
+		FORCEINLINE FComputeState& Writes(FRHIBuffer* Buffer, EResourceStates State = EResourceStates::UnorderedAccess) { BufferAccesses.push_back({Buffer, State}); return *this; }
+		FORCEINLINE FComputeState& Reads(FRHIBuffer* Buffer, EResourceStates State = EResourceStates::ShaderResource) { BufferAccesses.push_back({Buffer, State}); return *this; }
 		FORCEINLINE FComputeState& SetIndirectParams(FRHIBuffer* value) { IndirectParams = value; return *this; }
-        
+
 	};
 
 	

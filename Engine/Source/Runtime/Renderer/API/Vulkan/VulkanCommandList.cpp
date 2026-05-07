@@ -695,6 +695,37 @@ namespace Lumina
         }
     }
 
+    FTransientAlloc FVulkanCommandList::AllocateTransient(uint64 Size, uint32 Alignment)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        FTransientAlloc Result;
+        if (Size == 0)
+        {
+            return Result;
+        }
+
+        FRHIBuffer* RingBuffer = nullptr;
+        uint64      RingOffset = 0;
+        void*       CpuVA      = nullptr;
+        const uint64 Version   = MakeVersion(CurrentCommandBuffer->RecordingID, Info.CommandQueue, false);
+
+        if (!UploadManager->SuballocateBuffer(Size, RingBuffer, RingOffset, CpuVA, Version, Alignment))
+        {
+            LOG_ERROR("Failed to suballocate %llu bytes from transient ring", Size);
+            return Result;
+        }
+
+        CommandListStats.NumTransientAllocs++;
+
+        Result.Cpu    = CpuVA;
+        Result.Buffer = RingBuffer;
+        Result.Offset = RingOffset;
+        Result.Size   = Size;
+        Result.Gpu    = RingBuffer->GetAddress() + RingOffset;
+        return Result;
+    }
+
     void FVulkanCommandList::FillBuffer(FRHIBuffer* Buffer, uint32 Value)
     {
         FVulkanBuffer* VulkanBuffer = static_cast<FVulkanBuffer*>(Buffer);
@@ -1082,6 +1113,16 @@ namespace Lumina
         {
             EndRenderPass();
         }
+
+        // Empty/clear-only passes never call SetGraphicsState, so the attachment
+        // states must be promoted here. Without this, LoadOp::Clear writes go
+        // unrecorded and a later transition emits TOP_OF_PIPE as srcStage,
+        // hiding the LATE_FRAGMENT_TESTS write and triggering a SyncVal WAW.
+        if (PendingState.IsInState(EPendingCommandState::AutomaticBarriers))
+        {
+            SetResourceStateForRenderPass(InPassInfo);
+        }
+        CommitBarriers();
 
         const SIZE_T NumColorAttachments = InPassInfo.ColorAttachments.size();
         TFixedVector<VkRenderingAttachmentInfo, 4> ColorAttachments(NumColorAttachments);
@@ -1497,6 +1538,15 @@ namespace Lumina
             }
         }
 
+        if (PendingState.IsInState(EPendingCommandState::AutomaticBarriers)
+            && !VectorsAreEqual(State.BufferAccesses, CurrentComputeState.BufferAccesses))
+        {
+            for (const FBufferAccess& Access : State.BufferAccesses)
+            {
+                RequireBufferState(Access.Buffer, Access.State);
+            }
+        }
+
         if (CurrentComputeState.Pipeline != ComputePipeline)
         {
             CommandListStats.NumPipelineSwitches++;
@@ -1727,7 +1777,15 @@ namespace Lumina
                 SetResourceStatesForBindingSet(State.Bindings[i]);
             }
         }
-        
+
+        if (!VectorsAreEqual(State.BufferAccesses, CurrentGraphicsState.BufferAccesses))
+        {
+            for (const FBufferAccess& Access : State.BufferAccesses)
+            {
+                RequireBufferState(Access.Buffer, Access.State);
+            }
+        }
+
         if (State.IndexBuffer.Buffer && State.IndexBuffer.Buffer != CurrentGraphicsState.IndexBuffer.Buffer)
         {
             RequireBufferState(State.IndexBuffer.Buffer, EResourceStates::IndexBuffer);

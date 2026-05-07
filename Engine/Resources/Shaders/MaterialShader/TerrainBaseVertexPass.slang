@@ -58,10 +58,17 @@ struct FTerrainVisibleMeshlet
 [[vk::binding(0, 2)]] Sampler2D                                      uHeightmap;
 [[vk::binding(1, 2)]] Sampler2D                                      uTerrainNormal;
 [[vk::binding(2, 2)]] Sampler2DArray                                 uLayerWeights;
-[[vk::binding(3, 2)]] ConstantBuffer<FTerrainRenderParams>           TerrainParams;
 [[vk::binding(4, 2)]] StructuredBuffer<FTerrainChunkInfo>            uTerrainChunks;
 [[vk::binding(5, 2)]] StructuredBuffer<FTerrainMeshletInfo>          uTerrainMeshlets;
 [[vk::binding(6, 2)]] StructuredBuffer<FTerrainVisibleMeshlet>       uTerrainVisible;
+
+// Pulled from a transient ring slot via buffer device address. Same block
+// declared in TerrainBasePixelPass.slang so VS and PS share the push range.
+struct FTerrainPushConstants
+{
+    ConstBufferPointer<FTerrainRenderParams> Params;
+};
+[[vk::push_constant]] FTerrainPushConstants PC;
 
 struct VSOutput
 {
@@ -90,6 +97,8 @@ struct VSOutput
 [shader("vertex")]
 VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_VulkanInstanceID)
 {
+    FTerrainRenderParams TerrainParams = PC.Params.get();
+
     FTerrainVisibleMeshlet Vis     = uTerrainVisible[InstanceID];
     FTerrainMeshletInfo    Meshlet = uTerrainMeshlets[Vis.MeshletIndex];
     FTerrainChunkInfo      Chunk   = uTerrainChunks[Meshlet.ChunkIndex];

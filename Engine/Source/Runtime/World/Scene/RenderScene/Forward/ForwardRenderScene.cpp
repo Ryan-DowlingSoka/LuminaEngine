@@ -41,6 +41,9 @@
 
 namespace Lumina
 {
+    static TConsoleVar<bool> CVarAsyncCompute("r.AsyncCompute", true,
+        "Run GPU particle simulation on the async compute queue (parallel to graphics).");
+
     static FRHIImageRef CreateSMAALUTImage(const uint8* Bytes, uint32 Width, uint32 Height, EFormat Format, uint32 RowPitch, const char* DebugName)
     {
         FRHIImageDesc Desc;
@@ -76,7 +79,12 @@ namespace Lumina
     void FForwardRenderScene::Init()
     {
         LOG_TRACE("Initializing Forward Render Scene");
-        
+
+        // Travel reinits the scene mid-session; if the GPU is still touching the
+        // previous scene's atlases/depth views, recreating them here races on the
+        // driver and trips SyncVal WAW. Drain before allocating new resources.
+        GRenderContext->WaitIdle();
+
         SceneViewport = GRenderContext->CreateViewport(Windowing::GetPrimaryWindowHandle()->GetExtent(), "Forward Renderer Viewport");
 
         InitBuffers();
@@ -186,7 +194,13 @@ namespace Lumina
         
         {
             LUMINA_PROFILE_SECTION("RenderPasses");
-        
+
+            // Submit the async-compute batch as early in the frame as possible so it can run
+            // alongside CPU recording of the rest of the graphics CL. Returns true when work
+            // was actually dispatched, in which case the matching inline graphics-CL fallbacks
+            // below are skipped.
+            const bool bAsyncRan = DispatchAsyncComputePasses();
+
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cull Early", FColor(1.00f, 0.40f, 0.70f));
                 CullPassEarly(CmdList);
@@ -306,13 +320,16 @@ namespace Lumina
                 BatchedLineDraw(CmdList);
             }
         
+            // When the async batch ran, particle simulate already dispatched on the compute
+            // queue at the top of RenderPasses and the cross-queue wait was queued there.
+            if (!bAsyncRan)
             {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Particles Simulate", FColor(1.00f, 0.55f, 0.20f)); 
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Particles Simulate", FColor(1.00f, 0.55f, 0.20f));
                 ParticleSimulatePass(CmdList);
             }
-        
+
             {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Particles Render", FColor(1.00f, 0.40f, 0.20f)); 
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Particles Render", FColor(1.00f, 0.40f, 0.20f));
                 ParticleRenderPass(CmdList);
             }
         
@@ -3338,13 +3355,18 @@ namespace Lumina
         {
             const FMeshDrawCommand& Batch = DrawCommands[Idx];
 
+            // BasePass uses sets 0 (scene), 1 (bindless textures), 3 (shadow sampling).
+            // Set 2 is unused by BasePixelPass.slang but the pipeline layout must be
+            // contiguous, so an EmptySet2Layout is inserted as a placeholder.
             FGraphicsPipelineDesc Desc; Desc
                 .SetDebugName("Forward Base Pass")
                 .SetRenderState(RenderState)
                 .SetVertexShader(Batch.VertexShader)
                 .SetPixelShader(Batch.PixelShader)
                 .AddBindingLayout(SceneBindingLayout)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
+                .AddBindingLayout(EmptySet2Layout)
+                .AddBindingLayout(ShadowSamplingBindingLayout);
 
             // GREATER_EQUAL allows non-occluder fragments to write depth atop the pre-pass.
             FGraphicsState GraphicsState; GraphicsState
@@ -3353,7 +3375,9 @@ namespace Lumina
                 .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
                 .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs))
                 .AddBindingSet(SceneBindingSet)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
+                .AddBindingSet(EmptySet2BindingSet)
+                .AddBindingSet(ShadowSamplingBindingSet);
 
             CmdList.SetGraphicsState(GraphicsState);
 
@@ -3369,13 +3393,57 @@ namespace Lumina
         }
     }
 
-    void FForwardRenderScene::ParticleSimulatePass(ICommandList& CmdList)
+    bool FForwardRenderScene::DispatchAsyncComputePasses()
+    {
+        if (!CVarAsyncCompute.GetValue())
+        {
+            return false;
+        }
+
+        // Cheap presence checks — avoid creating a compute CL we'll never submit.
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        const bool bHasParticles = Registry.storage<SParticleSystemComponent>().size() > 0;
+
+        const bool bAnyAsyncWork = bHasParticles;
+        if (!bAnyAsyncWork)
+        {
+            return false;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Async Compute Batch", tracy::Color::Orange);
+
+        FRHICommandListRef ComputeCmdList = GRenderContext->CreateCommandList(FCommandListInfo::Compute());
+        ComputeCmdList->Open();
+
+        uint32 TotalDispatches = 0;
+
+        if (bHasParticles)
+        {
+            TotalDispatches += ParticleSimulatePass(*ComputeCmdList);
+        }
+
+        ComputeCmdList->Close();
+
+        if (TotalDispatches == 0)
+        {
+            return false;
+        }
+
+        ICommandList* Lists[] = { ComputeCmdList.GetReference() };
+        GRenderContext->ExecuteCommandLists(Lists, 1, ECommandQueue::Compute);
+        GRenderContext->AddCommandQueueWait(ECommandQueue::Graphics, ECommandQueue::Compute);
+        return true;
+    }
+
+    uint32 FForwardRenderScene::ParticleSimulatePass(ICommandList& CmdList)
     {
         LUMINA_PROFILE_SECTION_COLORED("Particle Simulate", tracy::Color::Orange);
 
         const float DeltaTime = (float)World->GetWorldDeltaTime();
 
         FEntityRegistry& Registry = World->GetEntityRegistry();
+
+        uint32 DispatchCount = 0;
 
         auto ParticleView = Registry.view<SParticleSystemComponent, STransformComponent>(entt::exclude<SDisabledTag>);
         ParticleView.each([&](entt::entity Entity, SParticleSystemComponent& Component, const STransformComponent& Transform)
@@ -3401,11 +3469,14 @@ namespace Lumina
             {
                 const FString AssetName = PS->GetName().ToString();
 
+                // Particle SSBOs cross queues: written on async compute, read on graphics.
+                // Concurrent sharing avoids ownership-transfer barriers.
                 FRHIBufferDesc ParticleDesc;
                 ParticleDesc.Size       = (uint64)MaxParticles * 64ull;
                 ParticleDesc.Stride     = 64u;
                 ParticleDesc.DebugName  = AssetName + "_Particles";
                 ParticleDesc.bKeepInitialState = true;
+                ParticleDesc.bConcurrentSharing = true;
                 ParticleDesc.InitialState = EResourceStates::UnorderedAccess;
                 ParticleDesc.Usage.SetFlag(BUF_StorageBuffer);
                 State.ParticleBuffer = GRenderContext->CreateBuffer(ParticleDesc);
@@ -3414,6 +3485,7 @@ namespace Lumina
                 SimParamsDesc.Size      = sizeof(FParticleSimParamsGPU);
                 SimParamsDesc.DebugName = AssetName + "_SimParams";
                 SimParamsDesc.bKeepInitialState = true;
+                SimParamsDesc.bConcurrentSharing = true;
                 SimParamsDesc.InitialState = EResourceStates::UnorderedAccess;
                 SimParamsDesc.Usage.SetFlag(BUF_UniformBuffer);
                 State.SimParamsBuffer = GRenderContext->CreateBuffer(SimParamsDesc);
@@ -3423,6 +3495,7 @@ namespace Lumina
                 RenderParamsDesc.DebugName  = AssetName + "_RenderParams";
                 RenderParamsDesc.Usage.SetFlag(BUF_UniformBuffer);
                 RenderParamsDesc.bKeepInitialState = true;
+                RenderParamsDesc.bConcurrentSharing = true;
                 RenderParamsDesc.InitialState = EResourceStates::UnorderedAccess;
                 State.RenderParamsBuffer = GRenderContext->CreateBuffer(RenderParamsDesc);
 
@@ -3432,6 +3505,7 @@ namespace Lumina
                 SpawnCounterDesc.DebugName  = AssetName + "_SpawnCounter";
                 SpawnCounterDesc.Usage.SetFlag(BUF_StorageBuffer);
                 SpawnCounterDesc.bKeepInitialState = true;
+                SpawnCounterDesc.bConcurrentSharing = true;
                 SpawnCounterDesc.InitialState = EResourceStates::UnorderedAccess;
                 State.SpawnCounterBuffer = GRenderContext->CreateBuffer(SpawnCounterDesc);
 
@@ -3586,7 +3660,10 @@ namespace Lumina
 
             CmdList.SetComputeState(ComputeState);
             CmdList.Dispatch((MaxParticles + 63u) / 64u, 1, 1);
+            ++DispatchCount;
         });
+
+        return DispatchCount;
     }
 
     static FBlendState::RenderTarget MakeParticleBlendTarget(EParticleBlendMode Mode)
@@ -3929,30 +4006,21 @@ namespace Lumina
                 NormalParams.RegionSizeY   = (int32)Res;
                 NormalParams.TileWorldSize = Terrain.TileWorldSize;
                 NormalParams.MaxHeight     = Terrain.MaxHeight;
-
-                FRHIBufferDesc NormalCBDesc;
-                NormalCBDesc.Size      = sizeof(FTerrainNormalParams);
-                NormalCBDesc.DebugName = "TerrainNormalParams";
-                NormalCBDesc.Usage.SetFlag(BUF_UniformBuffer);
-                NormalCBDesc.bKeepInitialState = true;
-                NormalCBDesc.InitialState = EResourceStates::ConstantBuffer;
-                FRHIBufferRef NormalCB = GRenderContext->CreateBuffer(NormalCBDesc);
-                CmdList.WriteBuffer(NormalCB, &NormalParams, sizeof(NormalParams));
+                
+                FTransientAlloc NormalParamsAlloc = CmdList.UploadTransient(NormalParams);
 
                 FRHISamplerRef ClampSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-                
+
                 FBindingLayoutDesc NormalLayoutDesc;
                 NormalLayoutDesc.SetBindingIndex(0)
                     .SetVisibility(ERHIShaderType::Compute)
                     .AddItem(FBindingLayoutItem::Texture_SRV(0))
-                    .AddItem(FBindingLayoutItem::Texture_UAV(1))
-                    .AddItem(FBindingLayoutItem::Buffer_CBV(2));
+                    .AddItem(FBindingLayoutItem::Texture_UAV(1));
                 FRHIBindingLayout* NormalLayout = BindingCache.GetOrCreateBindingLayout(NormalLayoutDesc);
 
                 FBindingSetDesc NormalSetDesc;
                 NormalSetDesc.AddItem(FBindingSetItem::TextureSRV(0, State.HeightmapTexture, ClampSampler))
-                             .AddItem(FBindingSetItem::TextureUAV(1, State.NormalTexture))
-                             .AddItem(FBindingSetItem::BufferCBV(2, NormalCB));
+                             .AddItem(FBindingSetItem::TextureUAV(1, State.NormalTexture));
                 FRHIBindingSetRef NormalSet = GRenderContext->CreateBindingSet(NormalSetDesc, NormalLayout);
 
                 FComputePipelineDesc NormalPipelineDesc;
@@ -3965,6 +4033,7 @@ namespace Lumina
                                   .AddBindingSet(NormalSet);
 
                 CmdList.SetComputeState(NormalComputeState);
+                CmdList.SetPushConstants(&NormalParamsAlloc.Gpu, sizeof(uint64));
                 CmdList.Dispatch((Res + 7u) / 8u, (Res + 7u) / 8u, 1u);
 
                 State.HeightDirtyMin = glm::ivec2(INT32_MAX);
@@ -4197,14 +4266,9 @@ namespace Lumina
             RenderParams.MeshletsPerChunkSide = MeshletsPerChunkSide;
             RenderParams.MeshletQuadSide      = GTerrainMeshletQuads;
 
-            FRHIBufferDesc RenderCBDesc;
-            RenderCBDesc.Size      = sizeof(FTerrainRenderParams);
-            RenderCBDesc.DebugName = "TerrainRenderParams";
-            RenderCBDesc.Usage.SetFlag(BUF_UniformBuffer);
-            RenderCBDesc.bKeepInitialState = true;
-            RenderCBDesc.InitialState = EResourceStates::ConstantBuffer;
-            FRHIBufferRef RenderCB = GRenderContext->CreateBuffer(RenderCBDesc);
-            CmdList.WriteBuffer(RenderCB, &RenderParams, sizeof(RenderParams));
+            // Transient ring upload; shader pulls via buffer-device-address
+            // through the push constant set further down.
+            FTransientAlloc RenderParamsAlloc = CmdList.UploadTransient(RenderParams);
 
             const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment;
 
@@ -4251,10 +4315,10 @@ namespace Lumina
 
             FRHISamplerRef HeightSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
-            // Bind set 2 = terrain-local resources. Slots 0..3 are the same
-            // texture/CB layout the legacy direct draw used; 4..6 are the
-            // chunk + meshlet metadata + cull-output draw list the new
-            // indirect path consumes via SV_InstanceID.
+            // Bind set 2 = terrain-local resources. Slots 0..2 textures, 4..6
+            // chunk + meshlet metadata + cull-output draw list (consumed via
+            // SV_InstanceID by the indirect path). Slot 3 used to be the
+            // FTerrainRenderParams CBV; now sourced via push-constant BDA.
             FBindingLayoutDesc TerrainLayoutDesc;
             TerrainLayoutDesc.SetBindingIndex(2)
                 .SetVisibility(ERHIShaderType::Vertex)
@@ -4262,7 +4326,6 @@ namespace Lumina
                 .AddItem(FBindingLayoutItem::Texture_SRV(0))
                 .AddItem(FBindingLayoutItem::Texture_SRV(1))
                 .AddItem(FBindingLayoutItem::Texture_SRV(2))
-                .AddItem(FBindingLayoutItem::Buffer_CBV(3))
                 .AddItem(FBindingLayoutItem::Buffer_SRV(4))
                 .AddItem(FBindingLayoutItem::Buffer_SRV(5))
                 .AddItem(FBindingLayoutItem::Buffer_SRV(6));
@@ -4272,12 +4335,12 @@ namespace Lumina
             TerrainSetDesc.AddItem(FBindingSetItem::TextureSRV(0, State.HeightmapTexture, HeightSampler))
                           .AddItem(FBindingSetItem::TextureSRV(1, State.NormalTexture,    HeightSampler))
                           .AddItem(FBindingSetItem::TextureSRV(2, State.LayerWeightTexture, HeightSampler))
-                          .AddItem(FBindingSetItem::BufferCBV(3, RenderCB))
                           .AddItem(FBindingSetItem::BufferSRV(4, State.ChunkInfoBuffer))
                           .AddItem(FBindingSetItem::BufferSRV(5, State.MeshletInfoBuffer))
                           .AddItem(FBindingSetItem::BufferSRV(6, State.VisibleMeshletBuffer));
             FRHIBindingSetRef TerrainSet = GRenderContext->CreateBindingSet(TerrainSetDesc, TerrainLayout);
 
+            // Sets 0 (scene), 1 (textures), 2 (terrain heightmap/weights/etc.), 3 (shadow sampling).
             FGraphicsPipelineDesc Desc;
             Desc.SetDebugName("Terrain")
                 .SetRenderState(RenderState)
@@ -4285,7 +4348,8 @@ namespace Lumina
                 .SetPixelShader(PixelShader)
                 .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                .AddBindingLayout(TerrainLayout);
+                .AddBindingLayout(TerrainLayout)
+                .AddBindingLayout(ShadowSamplingBindingLayout);
 
             FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
@@ -4296,9 +4360,11 @@ namespace Lumina
                 .AddBindingSet(SceneBindingSet)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                 .AddBindingSet(TerrainSet)
+                .AddBindingSet(ShadowSamplingBindingSet)
                 .SetIndirectParams(State.IndirectDrawBuffer);
 
             CmdList.SetGraphicsState(GraphicsState);
+            CmdList.SetPushConstants(&RenderParamsAlloc.Gpu, sizeof(uint64));
 
             // The cull pass populated the single FDrawIndirectArguments slot
             // with VertexCount = MeshletQuads^2 * 6 and InstanceCount =
@@ -4455,13 +4521,16 @@ namespace Lumina
                        .SetRasterState(RasterState)
                        .SetBlendState(Batch.bAdditive ? AdditiveBlendState : TranslucentBlendState);
 
+            // Sets 0 (scene), 1 (textures), 2 (empty placeholder), 3 (shadow sampling).
             FGraphicsPipelineDesc Desc;
             Desc.SetDebugName("Transparent Pass")
                 .SetRenderState(RenderState)
                 .SetVertexShader(Batch.VertexShader)
                 .SetPixelShader(Batch.PixelShader)
                 .AddBindingLayout(SceneBindingLayout)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
+                .AddBindingLayout(EmptySet2Layout)
+                .AddBindingLayout(ShadowSamplingBindingLayout);
 
             FGraphicsState GraphicsState;
             GraphicsState.SetRenderPass(RenderPass)
@@ -4469,7 +4538,9 @@ namespace Lumina
                          .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
                          .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs))
                          .AddBindingSet(SceneBindingSet)
-                         .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+                         .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
+                         .AddBindingSet(EmptySet2BindingSet)
+                         .AddBindingSet(ShadowSamplingBindingSet);
 
             CmdList.SetGraphicsState(GraphicsState);
             // View 0 = camera.
@@ -4662,12 +4733,14 @@ namespace Lumina
             RenderState.SetRasterState(RasterState);
             RenderState.SetDepthStencilState(DepthState);
 
+            // Sets 0 (scene), 1 (textures), 2 (depth), 3 (shadow sampling).
             FGraphicsPipelineDesc Desc;
             Desc.SetDebugName("Volumetric Lighting March");
             Desc.SetRenderState(RenderState);
             Desc.AddBindingLayout(SceneBindingLayout);
             Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
             Desc.AddBindingLayout(DepthLayout);
+            Desc.AddBindingLayout(ShadowSamplingBindingLayout);
             Desc.SetVertexShader(VertexShader);
             Desc.SetPixelShader(MarchPS);
 
@@ -4677,6 +4750,7 @@ namespace Lumina
             GraphicsState.AddBindingSet(SceneBindingSet);
             GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
             GraphicsState.AddBindingSet(DepthSet);
+            GraphicsState.AddBindingSet(ShadowSamplingBindingSet);
             GraphicsState.SetPipeline(Pipeline);
             GraphicsState.SetRenderPass(RenderPass);
             GraphicsState.SetViewportState(MakeViewportStateFromImage(HalfRes));
@@ -6541,13 +6615,11 @@ namespace Lumina
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(4, GetNamedBuffer(ENamedBuffer::Cluster)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(5, GRenderManager->GetMaterialManager().GetMaterialBuffer()));
             BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(6, GetNamedBuffer(ENamedBuffer::Billboards)));
-            // Comparison sampler enables hardware PCF: SampleCmp returns a 4-tap
-            // bilinear-filtered shadow term in one texture fetch, replacing the
-            // old manual Sample + step path.
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(7, GetNamedImage(ENamedImage::Cascade),
-                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(8, ShadowAtlas.GetImage(),
-                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
+            // Bindings 7 (Cascade) and 8 (Shadow Atlas) moved to ShadowSamplingBindingSet
+            // (set=3). Keeping shadow textures off set 0 prevents a layout-thrash bug:
+            // when an image is bound as SRV in a set AND used as the current pass's
+            // depth attachment, the state tracker emits two transitions on the same
+            // image in a single barrier call which is incoherent.
             // Min-reduction clamp sampler: a single bilinear tap on the depth pyramid
             // returns the minimum of the 2x2 footprint (farthest depth in reverse-Z).
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(9, GetNamedImage(ENamedImage::DepthPyramid),
@@ -6560,12 +6632,7 @@ namespace Lumina
             BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(10, GetNamedBuffer(ENamedBuffer::CullView)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(11, GetNamedBuffer(ENamedBuffer::MeshletDrawList)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(12, GetNamedBuffer(ENamedBuffer::IndirectArgs)));
-            // PCSS needs raw depth (not PCF results) during blocker search so
-            // individual texels can be classified against the receiver depth.
-            // Binding 7 returns filtered compares; bind the same cascade with
-            // a point/standard sampler at binding 13.
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(13, GetNamedImage(ENamedImage::Cascade),
-                TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Standard>::GetRHI()));
+            // Binding 13 (uShadowCascadePoint) moved to ShadowSamplingBindingSet (set=3).
             // Two-pass cull defer list + atomic counter. CullMeshlets phase 0
             // writes meshlets occluded by the stale HZB here; phase 1 pops
             // them and re-tests against the rebuilt HZB.
@@ -6599,6 +6666,39 @@ namespace Lumina
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
             GRenderContext->CreateBindingSetAndLayout(Visibility, 0, BindingSetDesc, SceneBindingLayout, SceneBindingSet);
+        }
+
+        // Empty set-2 placeholder. BasePass and TransparentPass shaders use sets
+        // 0, 1, and 3 (no set 2). Vulkan pipeline layouts are indexed by set, so
+        // the slot for set 2 needs a real (empty) descriptor set layout. Building
+        // it once here and reusing it in both pipelines.
+        {
+            FBindingSetDesc EmptyDesc;
+            TBitFlags<ERHIShaderType> Visibility;
+            Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
+            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, EmptyDesc, EmptySet2Layout, EmptySet2BindingSet);
+        }
+
+        // Set 3 — shadow textures, bound only by passes that SAMPLE shadows
+        // (BasePass, transparent, terrain render, volumetric lighting). The shadow
+        // RENDERING passes (Point/Spot/Cascaded) intentionally do NOT bind this set,
+        // so the cascade/atlas don't get a shader-read state transition queued in
+        // the same SetGraphicsState that's about to use them as depth attachments.
+        {
+            FBindingSetDesc ShadowSetDesc;
+            // 0: cascade with comparison sampler — hardware PCF.
+            ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::Cascade),
+                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
+            // 1: shadow atlas with comparison sampler.
+            ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(1, ShadowAtlas.GetImage(),
+                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
+            // 2: cascade again, with point/standard sampler — PCSS blocker search needs raw depth.
+            ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(2, GetNamedImage(ENamedImage::Cascade),
+                TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Standard>::GetRHI()));
+
+            TBitFlags<ERHIShaderType> Visibility;
+            Visibility.SetMultipleFlags(ERHIShaderType::Fragment, ERHIShaderType::Compute);
+            GRenderContext->CreateBindingSetAndLayout(Visibility, 3, ShadowSetDesc, ShadowSamplingBindingLayout, ShadowSamplingBindingSet);
         }
 
         // Standalone set-2 layout for ToneMapping. Binds:

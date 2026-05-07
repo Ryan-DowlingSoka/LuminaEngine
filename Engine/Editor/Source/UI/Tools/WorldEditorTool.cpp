@@ -34,6 +34,7 @@
 #include "Tools/UI/ImGui/ImGuiDragDrop.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
+#include "UI/Tools/EditorEntityUtils.h"
 #include "World/WorldManager.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/CameraComponent.h"
@@ -5389,45 +5390,17 @@ namespace Lumina
 
     void FWorldEditorTool::CopyEntity(entt::entity& To, entt::entity From)
     {
-        World->DuplicateEntity(To, From, [&](const entt::type_info& Type)
-        {
-            if    (Type == entt::type_id<FRelationshipComponent>()
-                || Type == entt::type_id<FSelectedInEditorComponent>()
-                || Type == entt::type_id<FCopiedTag>()
-                || Type == entt::type_id<FLastSelectedTag>())
-            {
-                return false;
-            }
-
-            return true;
-        });
+        World->DuplicateEntity(To, From, &EditorEntityUtils::DefaultDuplicateFilter);
     }
 
     void FWorldEditorTool::CycleGuizmoOp()
     {
-        switch (GuizmoOp)
-        {
-        case ImGuizmo::TRANSLATE:
-            {
-                GuizmoOp = ImGuizmo::ROTATE;
-            }
-            break;
-        case ImGuizmo::ROTATE:
-            {
-                GuizmoOp = ImGuizmo::SCALE;
-            }
-            break;
-        case ImGuizmo::SCALE:
-            {
-                GuizmoOp = ImGuizmo::TRANSLATE;
-            }
-            break;
-        }
+        EditorEntityUtils::CycleGizmoOp(GuizmoOp);
     }
 
     void FWorldEditorTool::ToggleGuizmoMode()
     {
-        GuizmoMode = (GuizmoMode == ImGuizmo::WORLD) ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
+        EditorEntityUtils::ToggleGizmoMode(GuizmoMode);
     }
 
     void FWorldEditorTool::GroupSelectedEntities()

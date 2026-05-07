@@ -29,6 +29,8 @@ namespace Lumina
         void FillBuffer(FRHIBuffer* Buffer, uint32 Value) override;
         void CopyBuffer(FRHIBuffer* Source, uint64 SrcOffset, FRHIBuffer* Destination, uint64 DstOffset, uint64 CopySize) override;
 
+        FTransientAlloc AllocateTransient(uint64 Size, uint32 Alignment = 16) override;
+
         void SetEnableUavBarriersForImage(FRHIImage* Image, bool bEnableBarriers) override;
         void SetEnableUavBarriersForBuffer(FRHIBuffer* Buffer, bool bEnableBarriers) override;
 

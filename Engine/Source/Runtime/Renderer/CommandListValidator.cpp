@@ -103,6 +103,12 @@ namespace Lumina
         Inner->FillBuffer(Buffer, Value);
     }
 
+    FTransientAlloc FCommandListValidator::AllocateTransient(uint64 Size, uint32 Alignment)
+    {
+        ASSERT(Alignment > 0 && (Alignment & (Alignment - 1)) == 0);
+        return Inner->AllocateTransient(Size, Alignment);
+    }
+
     void FCommandListValidator::CopyBuffer(FRHIBuffer* Source, uint64 SrcOffset, FRHIBuffer* Destination, uint64 DstOffset, uint64 CopySize)
     {
         ASSERT(Source != nullptr);

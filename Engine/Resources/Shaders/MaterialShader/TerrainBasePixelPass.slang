@@ -1,5 +1,6 @@
 #include "Includes/SceneGlobals.slang"
 #include "Includes/IBLRuntime.slang"
+#include "Includes/ShadowSampling.slang"
 
 // Keep in sync with FTerrainRenderParams in TerrainRenderTypes.h.
 struct FTerrainRenderParams
@@ -25,7 +26,14 @@ struct FTerrainRenderParams
 [[vk::binding(0, 2)]] Sampler2D                            uHeightmap;
 [[vk::binding(1, 2)]] Sampler2D                            uTerrainNormal;
 [[vk::binding(2, 2)]] Sampler2DArray                       uLayerWeights;
-[[vk::binding(3, 2)]] ConstantBuffer<FTerrainRenderParams> TerrainParams;
+
+// Same push-constant block as TerrainBaseVertexPass.slang. Materialised on
+// each access; Slang CSEs repeated reads within one function.
+struct FTerrainPushConstants
+{
+    ConstBufferPointer<FTerrainRenderParams> Params;
+};
+[[vk::push_constant]] FTerrainPushConstants PC;
 
 struct PSInput
 {
@@ -337,7 +345,7 @@ float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3
 }
 
 
-int   GetTerrainLayerCount()                       { return TerrainParams.LayerCount; }
+int   GetTerrainLayerCount()                       { return PC.Params.get().LayerCount; }
 float GetTerrainLayerWeight(float2 HeightUV, int i)
 {
     return uLayerWeights.Sample(float3(HeightUV, float(i))).r;
@@ -368,7 +376,7 @@ float3 TerrainMeshletDebugColor(uint Index)
 float4 GetTerrainLayerWeights4(float2 HeightUV)
 {
     float4 W = float4(0.0, 0.0, 0.0, 0.0);
-    int Count = min(TerrainParams.LayerCount, 4);
+    int Count = min(PC.Params.get().LayerCount, 4);
     [unroll] for (int i = 0; i < 4; ++i)
     {
         if (i < Count)

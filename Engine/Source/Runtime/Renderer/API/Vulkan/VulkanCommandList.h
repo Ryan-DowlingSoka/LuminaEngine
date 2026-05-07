@@ -62,6 +62,8 @@ namespace Lumina
         void FillBuffer(FRHIBuffer* Buffer, uint32 Value) override;
         void CopyBuffer(FRHIBuffer* Source, uint64 SrcOffset, FRHIBuffer* Destination, uint64 DstOffset, uint64 CopySize) override;
 
+        FTransientAlloc AllocateTransient(uint64 Size, uint32 Alignment = 16) override;
+
         void WriteDynamicBuffer(FRHIBuffer* Buffer, const void* Data, SIZE_T Size);
         void FlushDynamicBufferWrites();
         void SubmitDynamicBuffers(uint64 RecordingID, uint64 SubmittedID);

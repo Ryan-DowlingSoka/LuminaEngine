@@ -1,4 +1,5 @@
 #include "Includes/SceneGlobals.slang"
+#include "Includes/ShadowSampling.slang"
 
 // Half-resolution screen-space ray-marched volumetric lighting. Writes a
 // scattering buffer that the bilateral upsample pass composites into HDR.

@@ -458,14 +458,29 @@ namespace Lumina
         // Tolerate legacy absolute paths from before the path resolver.
         const FFixedString MapName = VFS::ResolveToVirtualPath(RawMapName);
 
-        CWorld* StartupWorld = LoadObject<CWorld>(FStringView(MapName.c_str(), MapName.size()));
-        if (StartupWorld == nullptr)
+        CWorld* SourceWorld = LoadObject<CWorld>(FStringView(MapName.c_str(), MapName.size()));
+        if (SourceWorld == nullptr)
         {
             LOG_ERROR("Failed to load startup map '{}' (resolved to '{}').", RawMapName.c_str(), MapName.c_str());
             return;
         }
 
-        GWorldManager->CreateWorldContext(StartupWorld, EWorldType::Game, ENetMode::Standalone);
+        // Run on a duplicate so the cached asset is never the live world. Without this, the first
+        // Travel call tears down the cached asset (LoadObject returns it again on the next Travel,
+        // now empty), and DuplicateWorld would serialize a live, already-initialized registry.
+        CWorld* StartupWorld = CWorld::DuplicateWorld(SourceWorld);
+        if (StartupWorld == nullptr)
+        {
+            LOG_ERROR("Failed to duplicate startup map '{}'.", MapName.c_str());
+            return;
+        }
+
+        FWorldContext* Context = GWorldManager->CreateWorldContext(StartupWorld, EWorldType::Game, ENetMode::Standalone);
+        if (Context != nullptr)
+        {
+            Context->SourceWorld  = SourceWorld;
+            Context->GameInstance = GameInstance;
+        }
 
         if (FInputViewport* Primary = GApp ? GApp->GetPrimaryViewport() : nullptr)
         {

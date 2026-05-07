@@ -673,6 +673,41 @@ namespace Lumina
         BufferCreateInfo.usage          = ToVkBufferUsage(InDescription.Usage);
         BufferCreateInfo.flags          = 0;
 
+        // Concurrent sharing: list distinct queue families so graphics & async-compute can both
+        // touch the buffer without ownership-transfer barriers. Only flips to CONCURRENT when
+        // the device exposes >=2 distinct families; otherwise EXCLUSIVE remains valid and faster.
+        uint32 ConcurrentFamilies[3] = {};
+        uint32 ConcurrentFamilyCount = 0;
+        if (InDescription.bConcurrentSharing)
+        {
+            auto* Ctx = static_cast<FVulkanRenderContext*>(GRenderContext);
+            const ECommandQueue Candidates[] = { ECommandQueue::Graphics, ECommandQueue::Compute, ECommandQueue::Transfer };
+            for (ECommandQueue Q : Candidates)
+            {
+                FQueue* Queue = Ctx->GetQueue(Q);
+                if (!Queue)
+                {
+                    continue;
+                }
+                const uint32 Family = Queue->QueueFamilyIndex;
+                bool bDuplicate = false;
+                for (uint32 i = 0; i < ConcurrentFamilyCount; ++i)
+                {
+                    if (ConcurrentFamilies[i] == Family) { bDuplicate = true; break; }
+                }
+                if (!bDuplicate)
+                {
+                    ConcurrentFamilies[ConcurrentFamilyCount++] = Family;
+                }
+            }
+            if (ConcurrentFamilyCount >= 2)
+            {
+                BufferCreateInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+                BufferCreateInfo.queueFamilyIndexCount = ConcurrentFamilyCount;
+                BufferCreateInfo.pQueueFamilyIndices = ConcurrentFamilies;
+            }
+        }
+
         if (InDescription.Usage.IsFlagSet(EBufferUsageFlags::Transient))
         {
             // Transient chunks: route to linear pool (FIFO lifetime, can't fragment).

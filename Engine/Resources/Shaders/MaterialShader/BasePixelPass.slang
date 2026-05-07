@@ -1,5 +1,6 @@
 #include "Includes/SceneGlobals.slang"
 #include "Includes/IBLRuntime.slang"
+#include "Includes/ShadowSampling.slang"
 
 struct PSInput
 {

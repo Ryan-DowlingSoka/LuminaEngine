@@ -18,9 +18,15 @@ struct FTerrainNormalParams
     int     _Pad;
 };
 
+// Pulled from a transient ring slot via buffer device address.
+struct FPushConstants
+{
+    ConstBufferPointer<FTerrainNormalParams> Params;
+};
+[[vk::push_constant]] FPushConstants PC;
+
 [[vk::binding(0, 0)]] Sampler2D                            uHeightmap;
 [[vk::binding(1, 0)]] RWTexture2D<float4>                  uNormalOut;
-[[vk::binding(2, 0)]] ConstantBuffer<FTerrainNormalParams> NormalParams;
 
 // Central-difference normals. We sample the heightmap with clamp semantics
 // (clamp-to-edge sampler on the RHI side) so border pixels stay stable.
@@ -28,22 +34,24 @@ struct FTerrainNormalParams
 [numthreads(8, 8, 1)]
 void ComputeMain(uint3 DTid : SV_DispatchThreadID)
 {
-    if ((int)DTid.x >= NormalParams.RegionSizeX || (int)DTid.y >= NormalParams.RegionSizeY)
+    FTerrainNormalParams Params = PC.Params.get();
+
+    if ((int)DTid.x >= Params.RegionSizeX || (int)DTid.y >= Params.RegionSizeY)
         return;
 
-    int X = NormalParams.RegionMinX + (int)DTid.x;
-    int Y = NormalParams.RegionMinY + (int)DTid.y;
+    int X = Params.RegionMinX + (int)DTid.x;
+    int Y = Params.RegionMinY + (int)DTid.y;
 
-    float InvRes = 1.0 / float(NormalParams.Resolution);
-    float Stride = NormalParams.TileWorldSize / float(NormalParams.Resolution - 1);
+    float InvRes = 1.0 / float(Params.Resolution);
+    float Stride = Params.TileWorldSize / float(Params.Resolution - 1);
 
     float HL = uHeightmap.SampleLevel(float2(float(X - 1) + 0.5, float(Y    ) + 0.5) * InvRes, 0).r;
     float HR = uHeightmap.SampleLevel(float2(float(X + 1) + 0.5, float(Y    ) + 0.5) * InvRes, 0).r;
     float HD = uHeightmap.SampleLevel(float2(float(X    ) + 0.5, float(Y - 1) + 0.5) * InvRes, 0).r;
     float HU = uHeightmap.SampleLevel(float2(float(X    ) + 0.5, float(Y + 1) + 0.5) * InvRes, 0).r;
 
-    float dHdx = (HR - HL) * NormalParams.MaxHeight / (2.0 * Stride);
-    float dHdz = (HU - HD) * NormalParams.MaxHeight / (2.0 * Stride);
+    float dHdx = (HR - HL) * Params.MaxHeight / (2.0 * Stride);
+    float dHdz = (HU - HD) * Params.MaxHeight / (2.0 * Stride);
 
     // Surface tangents T=(1,dHdx,0), B=(0,dHdz,1). Cross = (-dHdx, 1, -dHdz) * norm.
     float3 Normal = normalize(float3(-dHdx, 1.0, -dHdz));

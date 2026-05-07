@@ -335,7 +335,16 @@ namespace Lumina
         void CascadedShowPass(ICommandList& CmdList);
         void BasePass(ICommandList& CmdList);
         void BillboardPass(ICommandList& CmdList);
-        void ParticleSimulatePass(ICommandList& CmdList);
+        // Returns the number of compute dispatches recorded — caller uses this to skip
+        // cross-queue sync when there are no active particle systems.
+        uint32 ParticleSimulatePass(ICommandList& CmdList);
+
+        // Records the async-compute batch onto a dedicated compute command list, submits it,
+        // and queues a graphics-side wait. Returns true if work was dispatched (caller skips
+        // the inline graphics-CL fallbacks for those passes). Add new compute passes here —
+        // each pass must (a) read no resources written on the graphics CL this frame,
+        // (b) have its output buffers/images created with bConcurrentSharing=true.
+        bool DispatchAsyncComputePasses();
         void ParticleRenderPass(ICommandList& CmdList);
         void TerrainUpdatePass(ICommandList& CmdList);
         // Per-terrain GPU cull. One dispatch per active terrain entity, one
@@ -544,7 +553,22 @@ namespace Lumina
 
         FRHIBindingSetRef                       SceneBindingSet;
         FRHIBindingLayoutRef                    SceneBindingLayout;
-        
+
+        // Set 3 — shadow textures bound only by passes that SAMPLE shadows. Kept
+        // out of SceneBindingSet so the shadow rendering passes (Point/Spot/
+        // Cascaded) don't trigger a shader-read state transition on the same
+        // image they're about to write as a depth attachment.
+        FRHIBindingSetRef                       ShadowSamplingBindingSet;
+        FRHIBindingLayoutRef                    ShadowSamplingBindingLayout;
+
+        // Empty layout/set used as a contiguous-pipeline-layout placeholder for set 2
+        // in pipelines that use set 3 (shadow sampling) but no set 2 (BasePass and
+        // TransparentPass). Vulkan requires pSetLayouts to be contiguous up to the
+        // highest used set index.
+        FRHIBindingSetRef                       EmptySet2BindingSet;
+        FRHIBindingLayoutRef                    EmptySet2Layout;
+
+
         FRHIBindingSetRef                       ComposeBindingSet;
         FRHIBindingLayoutRef                    ComposeBindingLayout;
 
