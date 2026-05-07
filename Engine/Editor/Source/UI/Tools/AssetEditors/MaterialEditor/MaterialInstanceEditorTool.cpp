@@ -13,6 +13,7 @@
 #include "Renderer/RenderManager.h"
 #include "Thumbnails/ThumbnailManager.h"
 #include "Tools/PrimitiveManager/PrimitiveManager.h"
+#include "Tools/UI/ImGui/ImGuiDragDrop.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "UI/Tools/ContentBrowserEditorTool.h"
 #include "World/Entity/Components/CameraComponent.h"
@@ -338,28 +339,10 @@ namespace Lumina
         // Drag-drop target — works on the ImageButton's hit rect even while the row is BeginDisabled.
         if (ImGui::BeginDragDropTarget())
         {
-            const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(
-                FContentBrowserEditorTool::FContentBrowserTileViewItem::DragDropID,
-                ImGuiDragDropFlags_AcceptBeforeDelivery);
-
-            if (Payload && Payload->IsDelivery())
+            if (CTexture* DroppedTexture = DragDrop::AcceptAsset<CTexture>())
             {
-                const uintptr_t ValuePtr = *static_cast<uintptr_t*>(Payload->Data);
-                const auto* PayloadItem = reinterpret_cast<FContentBrowserEditorTool::FContentBrowserTileViewItem*>(ValuePtr);
-                if (PayloadItem && PayloadItem->IsAsset())
-                {
-                    if (FAssetData* AssetData = FAssetRegistry::Get().GetAssetByPath(PayloadItem->GetVirtualPath()))
-                    {
-                        if (CObject* Loaded = LoadObject<CObject>(AssetData->AssetGUID))
-                        {
-                            if (CTexture* DroppedTexture = Cast<CTexture>(Loaded))
-                            {
-                                Instance->SetTextureValue(Param.ParameterName, DroppedTexture);
-                                Asset->GetPackage()->MarkDirty();
-                            }
-                        }
-                    }
-                }
+                Instance->SetTextureValue(Param.ParameterName, DroppedTexture);
+                Asset->GetPackage()->MarkDirty();
             }
             ImGui::EndDragDropTarget();
         }

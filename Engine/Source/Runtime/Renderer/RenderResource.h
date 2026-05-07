@@ -27,8 +27,7 @@ namespace Lumina
 
     static constexpr uint32 MaxRenderTargets = 8;
 	static constexpr uint32 MaxVertexAttributes = 16;
-	// 256 B matches D3D12 root-signature cap; ColorGrading needs 144 B.
-	static constexpr uint32 MaxPushConstantSize = 256;
+	static constexpr uint32 MaxPushConstantSize = 128;
 	static constexpr uint32 MaxBindingLayouts = 4;
 	static constexpr uint32 MaxBindingsPerLayout = 128;
 

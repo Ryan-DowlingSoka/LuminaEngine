@@ -5,6 +5,7 @@
 #include "Scripting/Lua/Scripting.h"
 #include "Scripting/Lua/ScriptExports.h"
 #include "Scripting/Lua/LuaTypes.h"
+#include "Tools/UI/ImGui/ImGuiDragDrop.h"
 #include "UI/Tools/ContentBrowserEditorTool.h"
 
 namespace Lumina
@@ -284,9 +285,25 @@ namespace Lumina
         
             FFixedString PathString(ScriptComponent->ScriptPath.Path.begin(), ScriptComponent->ScriptPath.Path.length());
             ImGui::InputText("##ScriptPathText", PathString.data(), PathString.max_size(), ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_ReadOnly);
-        
+
+            // Drop a .luau / .lua file from the content browser to bind it.
+            if (ImGui::BeginDragDropTarget())
+            {
+                FFixedString DroppedPath;
+                if (DragDrop::AcceptScript(DroppedPath))
+                {
+                    ScriptComponent->ScriptPath.Path = FString(DroppedPath.c_str(), DroppedPath.size());
+                    if (ScriptComponent->World)
+                    {
+                        ScriptComponent->World->OnScriptComponentCreated(ScriptComponent->Entity, *ScriptComponent, true);
+                    }
+                    bWasChanged = true;
+                }
+                ImGui::EndDragDropTarget();
+            }
+
             ImGuiX::TextTooltip("{}", ScriptComponent->ScriptPath.Path);
-        
+
             ImGui::PopStyleColor();
 
             const ImVec2 ComboDropDownSize = ImMax(ImVec2(200, 200), ImVec2(TextWidgetWidth, 300.0f));

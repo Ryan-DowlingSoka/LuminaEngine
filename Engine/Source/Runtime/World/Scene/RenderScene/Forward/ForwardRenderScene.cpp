@@ -5238,10 +5238,7 @@ namespace Lumina
 
     namespace
     {
-        // Mirror of ColorGrading.slang::FPushConstants. 128 bytes, std430-style
-        // packing: scalar groups are aligned in 16-byte chunks then a run of
-        // float4s. Keep the field order in lockstep with the shader.
-        struct FColorGradingPushConstants
+        struct FColorGradingConstants
         {
             float    Exposure;
             float    Contrast;
@@ -5270,15 +5267,11 @@ namespace Lumina
             // .rgb = bloom tint, .a = chromatic aberration intensity.
             glm::vec4 BloomTint;
         };
-        static_assert(sizeof(FColorGradingPushConstants) == 144,
-            "ColorGrading push constants stay within the 256B push-constant tier.");
-
-        // Build a fully-defaulted constants block (identity grade, AGX tone
-        // mapping). Used when the active camera has no post-process or
-        // grading is globally disabled.
-        FColorGradingPushConstants MakeDefaultColorGrading(float Time)
+        static_assert(sizeof(FColorGradingConstants) == 144, "FColorGradingConstants layout must match ColorGrading.slang::FColorGradingConstants.");
+        
+        FColorGradingConstants MakeDefaultColorGrading(float Time)
         {
-            FColorGradingPushConstants PC{};
+            FColorGradingConstants PC{};
             PC.Exposure           = 1.0f;
             PC.Contrast           = 1.0f;
             PC.Saturation         = 1.0f;
@@ -5300,14 +5293,14 @@ namespace Lumina
             return PC;
         }
 
-        FColorGradingPushConstants BuildColorGradingConstants(const SPostProcessSettings* Settings, float Time)
+        FColorGradingConstants BuildColorGradingConstants(const SPostProcessSettings* Settings, float Time)
         {
             if (Settings == nullptr || !Settings->bEnabled)
             {
                 return MakeDefaultColorGrading(Time);
             }
 
-            FColorGradingPushConstants PC{};
+            FColorGradingConstants PC{};
             // ExposureCompensation is in stops; 2^EV gives the linear
             // multiplier the shader expects.
             PC.Exposure           = std::exp2(Settings->ExposureCompensation);
@@ -5551,6 +5544,11 @@ namespace Lumina
 
         FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
+        // Stage the constants UBO before the pipeline barrier transitions
+        // it back to ConstantBuffer for the draw.
+        FColorGradingConstants Constants = BuildColorGradingConstants(ActivePostProcess, SceneGlobalData.Time);
+        CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::ColorGrading), &Constants, sizeof(Constants));
+
         FGraphicsState GraphicsState;
         GraphicsState.SetPipeline(Pipeline);
         GraphicsState.AddBindingSet(SceneBindingSet);
@@ -5560,9 +5558,6 @@ namespace Lumina
         GraphicsState.SetViewportState(MakeViewportStateFromImage(OutputImage));
 
         CmdList.SetGraphicsState(GraphicsState);
-
-        FColorGradingPushConstants PC = BuildColorGradingConstants(ActivePostProcess, SceneGlobalData.Time);
-        CmdList.SetPushConstants(&PC, sizeof(PC));
         CmdList.Draw(3, 1, 0, 0);
     }
 
@@ -6096,6 +6091,18 @@ namespace Lumina
             BufferDesc.DebugName = "Instance Meshlet Prefix";
             NamedBuffers[(int)ENamedBuffer::InstanceMeshletPrefix] = GRenderContext->CreateBuffer(BufferDesc);
         }
+
+        // Color grading constants UBO. 144 B; lives in a buffer rather than
+        // push constants because RDNA's maxPushConstantsSize is 128 B.
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = 160; // round up to a 16-byte multiple; struct is 144 B today
+            BufferDesc.Usage.SetFlag(BUF_UniformBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::ConstantBuffer;
+            BufferDesc.DebugName = "Color Grading Constants";
+            NamedBuffers[(int)ENamedBuffer::ColorGrading] = GRenderContext->CreateBuffer(BufferDesc);
+        }
     }
 
     static uint32 PreviousPow2(uint32 v)
@@ -6597,15 +6604,20 @@ namespace Lumina
         // Standalone set-2 layout for ToneMapping. Binds:
         //   0 -- HDR scene color (input to grading + chromatic aberration)
         //   1 -- Bloom mip 0 (output of the bloom upsample chain)
-        // Linear-clamp samplers on both: chromatic aberration offsets the
-        // HDR sample by a fraction of a UV so it must filter, and the
-        // bloom composite reads the largest mip at a different resolution.
+        //   2 -- Color grading constants UBO (replaces what used to be a
+        //        144 B push-constant block, which exceeds AMD RDNA's 128 B
+        //        push-constant cap).
+        // Linear-clamp samplers on both textures: chromatic aberration
+        // offsets the HDR sample by a fraction of a UV so it must filter,
+        // and the bloom composite reads the largest mip at a different
+        // resolution.
         {
             FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
             FBindingSetDesc ComposeSetDesc;
             ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::HDR), LinearClamp));
             ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(1, BloomMips[0], LinearClamp));
+            ComposeSetDesc.AddItem(FBindingSetItem::BufferCBV(2, GetNamedBuffer(ENamedBuffer::ColorGrading)));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Fragment);

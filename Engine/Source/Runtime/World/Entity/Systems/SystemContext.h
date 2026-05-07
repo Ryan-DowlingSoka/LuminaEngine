@@ -116,7 +116,7 @@ namespace Lumina
         template<typename ... Ts>
         NODISCARD bool HasAllOf(entt::entity EntityID) const
         {
-            return Registry.any_of<Ts...>(EntityID);
+            return Registry.all_of<Ts...>(EntityID);
         }
 
         template<typename T, typename ... TArgs>

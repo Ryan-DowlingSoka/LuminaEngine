@@ -167,6 +167,10 @@ namespace Lumina
             // MeshletLocalIdx) without the old per-instance over-dispatch
             // and thread-bounds early-outs.
             InstanceMeshletPrefix,
+            // Color grading + tone mapping constants. 144 B exceeds AMD RDNA's
+            // 128 B push-constant cap, so the block lives in a UBO bound at
+            // (set 2, binding 2) for the tone-mapping pass.
+            ColorGrading,
 
             Num,
         };

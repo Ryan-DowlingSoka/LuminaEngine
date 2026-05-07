@@ -133,38 +133,52 @@ namespace Lumina
         
         ContentBrowserTileViewContext.DragDropFunction = [this] (FTileViewItem* DropItem, const TVector<FTileViewItem*>& Selections)
         {
-            const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(FContentBrowserTileViewItem::DragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery);
-            if (Payload && Payload->IsDelivery())
+            auto* TypedDroppedItem = static_cast<FContentBrowserTileViewItem*>(DropItem);
+            if (!TypedDroppedItem->IsDirectory())
             {
-                auto* TypedDroppedItem = static_cast<FContentBrowserTileViewItem*>(DropItem);
-                if (!TypedDroppedItem->IsDirectory())
+                return;
+            }
+
+            const DragDrop::FPayload* Peek = DragDrop::PeekPayload();
+            if (Peek == nullptr || !DragDrop::IsDelivered())
+            {
+                return;
+            }
+
+            FStringView SourcePath;
+            if (Peek->Kind == DragDrop::EPayloadKind::Asset)
+            {
+                SourcePath = FStringView(Peek->AssetPath.c_str(), Peek->AssetPath.size());
+            }
+            else if (Peek->Kind == DragDrop::EPayloadKind::File)
+            {
+                SourcePath = FStringView(Peek->FilePath.c_str(), Peek->FilePath.size());
+            }
+            else
+            {
+                return;
+            }
+
+            if (SourcePath != TypedDroppedItem->GetVirtualPath())
+            {
+                HandleContentBrowserDragDrop(TypedDroppedItem->GetVirtualPath(), SourcePath);
+            }
+
+            for (FTileViewItem* Item : Selections)
+            {
+                auto* SourceItem = reinterpret_cast<FContentBrowserTileViewItem*>(Item);
+
+                if (SourceItem->GetVirtualPath() == SourcePath)
                 {
-                    return;
-                }
-                
-                uintptr_t ValuePtr = *static_cast<uintptr_t*>(Payload->Data);
-                auto* PayloadItem = reinterpret_cast<FContentBrowserTileViewItem*>(ValuePtr);
-                if (PayloadItem != TypedDroppedItem)
-                {
-                    HandleContentBrowserDragDrop(TypedDroppedItem->GetVirtualPath(), PayloadItem->GetVirtualPath());
+                    continue;
                 }
 
-                for (FTileViewItem* Item : Selections)
+                if (SourceItem == TypedDroppedItem)
                 {
-                    auto* SourceItem = reinterpret_cast<FContentBrowserTileViewItem*>(Item);
-                    
-                    if (PayloadItem == Item)
-                    {
-                        continue;
-                    }
-                    
-                    if (SourceItem == TypedDroppedItem)
-                    {
-                        continue;
-                    }
-
-                    HandleContentBrowserDragDrop(TypedDroppedItem->GetVirtualPath(), SourceItem->GetVirtualPath());
+                    continue;
                 }
+
+                HandleContentBrowserDragDrop(TypedDroppedItem->GetVirtualPath(), SourceItem->GetVirtualPath());
             }
         };
 
@@ -388,25 +402,39 @@ namespace Lumina
         DirectoryContext.DragDropFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
             FContentBrowserListViewItemData& Data = Tree.Get<FContentBrowserListViewItemData>(Item);
-            const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(FContentBrowserTileViewItem::DragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery);
-            if (Payload && Payload->IsDelivery())
+
+            const DragDrop::FPayload* Peek = DragDrop::PeekPayload();
+            if (Peek == nullptr || !DragDrop::IsDelivered())
             {
-                uintptr_t ValuePtr = *static_cast<uintptr_t*>(Payload->Data);
-                auto* PayloadItem = reinterpret_cast<FContentBrowserTileViewItem*>(ValuePtr);
-                
-                HandleContentBrowserDragDrop(Data.Path, PayloadItem->GetVirtualPath());
+                return;
+            }
 
-                for (FTileViewItem* TileItem : ContentBrowserTileView.GetSelections())
+            FStringView SourcePath;
+            if (Peek->Kind == DragDrop::EPayloadKind::Asset)
+            {
+                SourcePath = FStringView(Peek->AssetPath.c_str(), Peek->AssetPath.size());
+            }
+            else if (Peek->Kind == DragDrop::EPayloadKind::File)
+            {
+                SourcePath = FStringView(Peek->FilePath.c_str(), Peek->FilePath.size());
+            }
+            else
+            {
+                return;
+            }
+
+            HandleContentBrowserDragDrop(Data.Path, SourcePath);
+
+            for (FTileViewItem* TileItem : ContentBrowserTileView.GetSelections())
+            {
+                auto* SourceItem = static_cast<FContentBrowserTileViewItem*>(TileItem);
+
+                if (SourceItem->GetVirtualPath() == SourcePath)
                 {
-                    auto* SourceItem = static_cast<FContentBrowserTileViewItem*>(TileItem);
-                    
-                    if (PayloadItem == TileItem)
-                    {
-                        continue;
-                    }
-
-                    HandleContentBrowserDragDrop(Data.Path, SourceItem->GetVirtualPath());
+                    continue;
                 }
+
+                HandleContentBrowserDragDrop(Data.Path, SourceItem->GetVirtualPath());
             }
         };
         

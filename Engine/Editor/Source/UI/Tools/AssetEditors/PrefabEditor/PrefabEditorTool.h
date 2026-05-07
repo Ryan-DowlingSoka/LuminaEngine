@@ -95,6 +95,5 @@ namespace Lumina
 
         static constexpr const char* OutlinerWindowName = "PrefabOutliner";
         static constexpr const char* PropertiesWindowName = "PrefabProperties";
-        static constexpr const char* PrefabDragDropID = "PrefabEntityDropID";
     };
 }

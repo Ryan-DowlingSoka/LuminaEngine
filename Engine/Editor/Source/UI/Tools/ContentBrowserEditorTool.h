@@ -7,9 +7,12 @@
 #include "Platform/Filesystem/DirectoryWatcher.h"
 #include "Tools/Actions/DeferredActions.h"
 #include "Tools/UI/ImGui/imfilebrowser.h"
+#include "Tools/UI/ImGui/ImGuiDragDrop.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "Tools/UI/ImGui/Widgets/TileViewWidget.h"
 #include "Tools/UI/ImGui/Widgets/TreeListView.h"
+#include "Assets/AssetRegistry/AssetData.h"
+#include "Assets/AssetRegistry/AssetRegistry.h"
 
 namespace Lumina
 {
@@ -57,12 +60,18 @@ namespace Lumina
             {
             }
 
-            constexpr static const char* DragDropID = "ContentBrowserItem";
-            
             void SetDragDropPayloadData() const override
             {
-                uintptr_t IntPtr = reinterpret_cast<uintptr_t>(this);
-                ImGui::SetDragDropPayload(DragDropID, &IntPtr, sizeof(uintptr_t));
+                if (FileInfo.IsLAsset())
+                {
+                    FStringView Path(FileInfo.VirtualPath.c_str(), FileInfo.VirtualPath.size());
+                    if (const FAssetData* Data = FAssetRegistry::Get().GetAssetByPath(Path))
+                    {
+                        DragDrop::SetAssetPayload(*Data);
+                        return;
+                    }
+                }
+                DragDrop::SetFilePayload(FStringView(FileInfo.VirtualPath.c_str(), FileInfo.VirtualPath.size()));
             }
 
             void DrawTooltip() const override

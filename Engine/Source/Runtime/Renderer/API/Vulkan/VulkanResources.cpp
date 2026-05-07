@@ -1576,30 +1576,36 @@ namespace Lumina
         vkDestroyPipelineLayout(Device->GetDevice(), PipelineLayout, VK_ALLOC_CALLBACK);
     }
 
-    void FVulkanPipeline::CreatePipelineLayout(const FString& DebugName, const TFixedVector<FRHIBindingLayoutRef, 1>& BindingLayouts, VkShaderStageFlags& OutStageFlags)
+    void FVulkanPipeline::CreatePipelineLayout(const FString& DebugName, const TFixedVector<FRHIBindingLayoutRef, 1>& BindingLayouts, VkShaderStageFlags InStageMask, VkShaderStageFlags& OutStageFlags)
     {
         TFixedVector<VkDescriptorSetLayout, 2> Layouts;
-        
+
         for (const FRHIBindingLayoutRef& Binding : BindingLayouts)
         {
             ASSERT(Binding.IsValid());
-            
+
             FVulkanBindingLayout* VkBindingLayout = Binding.As<FVulkanBindingLayout>();
             Layouts.push_back(VkBindingLayout->DescriptorSetLayout);
         }
 
+        // Clamp to the device's actual limit. AMD RDNA2 typically reports 128 here
+        // and crashes vkCreateComputePipelines outright if the layout declares more.
+        const uint32 DeviceMaxPushConstants = Device->GetPhysicalDeviceProperties().limits.maxPushConstantsSize;
+        const uint32 DeclaredSize = (DeviceMaxPushConstants < MaxPushConstantSize) ? DeviceMaxPushConstants : MaxPushConstantSize;
+        OutStageFlags = InStageMask;
+
         VkPushConstantRange Range = {};
-        Range.size = MaxPushConstantSize;
-        Range.stageFlags = VK_SHADER_STAGE_ALL;
+        Range.size = DeclaredSize;
+        Range.stageFlags = InStageMask;
         Range.offset = 0;
-        
+
         VkPipelineLayoutCreateInfo CreateInfo = {};
         CreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         CreateInfo.pSetLayouts = Layouts.data();
         CreateInfo.setLayoutCount = (uint32)Layouts.size();
-        CreateInfo.pushConstantRangeCount = 1;
-        CreateInfo.pPushConstantRanges = &Range;
-        
+        CreateInfo.pushConstantRangeCount = (DeclaredSize > 0) ? 1 : 0;
+        CreateInfo.pPushConstantRanges = (DeclaredSize > 0) ? &Range : nullptr;
+
         VK_CHECK(vkCreatePipelineLayout(Device->GetDevice(), &CreateInfo, VK_ALLOC_CALLBACK, &PipelineLayout));
         static_cast<FVulkanRenderContext*>(GRenderContext)->SetVulkanObjectName(DebugName, VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uintptr_t)PipelineLayout);
     }
@@ -1608,8 +1614,8 @@ namespace Lumina
         :FVulkanPipeline(InDevice)
     {
         Desc = InDesc;
-        
-        CreatePipelineLayout(InDesc.DebugName, InDesc.BindingLayouts, PushConstantVisibility);
+
+        CreatePipelineLayout(InDesc.DebugName, InDesc.BindingLayouts, VK_SHADER_STAGE_ALL_GRAPHICS, PushConstantVisibility);
         
         VkDynamicState DynamicStates[] =
         {
@@ -1787,7 +1793,7 @@ namespace Lumina
     {
         Desc = InDesc;
 
-        CreatePipelineLayout(InDesc.DebugName, InDesc.BindingLayouts, PushConstantVisibility);
+        CreatePipelineLayout(InDesc.DebugName, InDesc.BindingLayouts, VK_SHADER_STAGE_COMPUTE_BIT, PushConstantVisibility);
         
         VkPipelineShaderStageCreateInfo StageInfo = {};
         StageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

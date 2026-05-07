@@ -11,6 +11,7 @@
 #include "GUID/GUID.h"
 #include "glm/gtc/type_ptr.hpp"
 #include "glm/gtx/matrix_decompose.hpp"
+#include "Tools/UI/ImGui/ImGuiDragDrop.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "UI/Properties/PropertyTable.h"
@@ -124,8 +125,7 @@ namespace Lumina
         OutlinerContext.SetDragDropFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
         {
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
-            entt::entity Source = Data.Entity;
-            ImGui::SetDragDropPayload(PrefabDragDropID, &Source, sizeof(entt::entity));
+            DragDrop::SetEntityPayload(World, Data.Entity);
         };
 
         OutlinerContext.DragDropFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
@@ -572,11 +572,18 @@ namespace Lumina
 
     void FPrefabEditorTool::HandleOutlinerDragDrop(FTreeListView& Tree, entt::entity DropItem)
     {
-        if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(PrefabDragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery))
+        const DragDrop::FPayload* Peek = DragDrop::PeekPayload();
+        if (Peek == nullptr)
         {
-            if (Payload->IsDelivery())
+            return;
+        }
+
+        if (Peek->Kind == DragDrop::EPayloadKind::Entity)
+        {
+            CWorld* SourceWorld = nullptr;
+            entt::entity Source = entt::null;
+            if (DragDrop::AcceptEntity(&SourceWorld, &Source) && SourceWorld == World)
             {
-                entt::entity Source = *static_cast<entt::entity*>(Payload->Data);
                 if (Source != entt::null && Source != DropItem)
                 {
                     entt::registry& Registry = World->GetEntityRegistry();
@@ -597,20 +604,10 @@ namespace Lumina
             return;
         }
 
-        // Accept content-browser asset drops (static mesh, material, ...) onto an outliner row.
-        if (const ImGuiPayload* CBPayload = ImGui::AcceptDragDropPayload(
-                FContentBrowserEditorTool::FContentBrowserTileViewItem::DragDropID,
-                ImGuiDragDropFlags_AcceptBeforeDelivery))
+        // Asset drop (static mesh, material, ...) onto an outliner row.
+        if (Peek->Kind == DragDrop::EPayloadKind::Asset && DragDrop::IsDelivered())
         {
-            if (CBPayload->IsDelivery())
-            {
-                const uintptr_t ValuePtr = *static_cast<uintptr_t*>(CBPayload->Data);
-                const auto* PayloadItem = reinterpret_cast<FContentBrowserEditorTool::FContentBrowserTileViewItem*>(ValuePtr);
-                if (PayloadItem && PayloadItem->IsAsset())
-                {
-                    HandlePrefabContentDrop(PayloadItem->GetVirtualPath(), DropItem);
-                }
-            }
+            HandlePrefabContentDrop(FStringView(Peek->AssetPath.c_str(), Peek->AssetPath.size()), DropItem);
         }
     }
 

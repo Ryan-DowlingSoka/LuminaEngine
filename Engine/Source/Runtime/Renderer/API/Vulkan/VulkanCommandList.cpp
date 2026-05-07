@@ -1300,9 +1300,14 @@ namespace Lumina
     void FVulkanCommandList::SetPushConstants(const void* Data, SIZE_T ByteSize)
     {
         LUMINA_PROFILE_SCOPE();
-        
+
+        // Anything larger than the engine cap belongs in a UBO; pushing past
+        // the device limit is undefined and crashes outright on AMD.
+        ASSERT(ByteSize <= MaxPushConstantSize);
+
         CommandListStats.NumPushConstants++;
-        vkCmdPushConstants(CurrentCommandBuffer->CommandBuffer, CurrentPipelineLayout, VK_SHADER_STAGE_ALL, 0, (uint32)ByteSize, Data);
+        const VkShaderStageFlags Stages = (PushConstantVisibility != 0) ? PushConstantVisibility : VK_SHADER_STAGE_ALL;
+        vkCmdPushConstants(CurrentCommandBuffer->CommandBuffer, CurrentPipelineLayout, Stages, 0, (uint32)ByteSize, Data);
     }
 
     VkViewport FVulkanCommandList::ToVkViewport(float MinX, float MinY, float MinZ, float MaxX, float MaxY, float MaxZ)

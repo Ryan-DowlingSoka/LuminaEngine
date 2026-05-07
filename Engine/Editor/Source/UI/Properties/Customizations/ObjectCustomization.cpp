@@ -5,6 +5,7 @@
 #include "Core/Reflection/Type/Properties/ObjectProperty.h"
 #include "Paths/Paths.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
+#include "Tools/UI/ImGui/ImGuiDragDrop.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "UI/EditorUI.h"
 #include <Assets/AssetRegistry/AssetData.h>
@@ -60,6 +61,18 @@ namespace Lumina
             
             ImGui::ImageButton(Label, ButtonTexture.value(), ImVec2(64, 64));
             ImGui::EndDisabled();
+
+            // Asset drop target: any drag of an asset whose class is-a property's
+            // declared class binds the property to that asset.
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (CObject* Dropped = DragDrop::AcceptAssetOfClass(ObjectProperty->GetPropertyClass()))
+                {
+                    Object = Dropped;
+                    bWasChanged = true;
+                }
+                ImGui::EndDragDropTarget();
+            }
 
             if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
             {

@@ -253,6 +253,7 @@ namespace Lumina
     {
         ASSERT(Data != nullptr);
         ASSERT(ByteSize > 0);
+        ASSERT(ByteSize <= MaxPushConstantSize);
         Inner->SetPushConstants(Data, ByteSize);
     }
 

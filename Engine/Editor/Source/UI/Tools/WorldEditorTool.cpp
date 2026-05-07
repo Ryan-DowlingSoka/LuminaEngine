@@ -31,6 +31,7 @@
 #include "Tools/ComponentVisualizers/ComponentVisualizer.h"
 #include "Tools/PrimitiveManager/PrimitiveManager.h"
 #include "Tools/Dialogs/Dialogs.h"
+#include "Tools/UI/ImGui/ImGuiDragDrop.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "World/WorldManager.h"
@@ -109,7 +110,6 @@ namespace Lumina
 
         return Entity;
     }
-    static constexpr const char* DragDropID = "EntityDropID";
 
     // CPU marquee-pick + drop-to-floor: editor world has no physics scene, so we project mesh AABBs in software.
 
@@ -339,9 +339,7 @@ namespace Lumina
         OutlinerContext.SetDragDropFunction = [this] (FTreeListView& Tree, FTreeNodeID Item)
         {
             FEntityListViewItemData& Data = Tree.Get<FEntityListViewItemData>(Item);
-
-            entt::entity Payload = Data.Entity;
-            ImGui::SetDragDropPayload(DragDropID, &Payload, sizeof(Payload));
+            DragDrop::SetEntityPayload(World, Data.Entity);
         };
 
         OutlinerContext.ItemContextMenuFunction = [this](FTreeListView& Tree, FTreeNodeID Item)
@@ -4507,11 +4505,20 @@ namespace Lumina
 
     void FWorldEditorTool::HandleEntityEditorDragDrop(FTreeListView& Tree, entt::entity DropItem)
     {
-        if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(DragDropID, ImGuiDragDropFlags_AcceptBeforeDelivery))
+        // Distinguish entity reparent from asset drop by inspecting the typed
+        // payload rather than racing two AcceptDragDropPayload calls.
+        const DragDrop::FPayload* Peek = DragDrop::PeekPayload();
+        if (Peek == nullptr)
         {
-            if (Payload->IsDelivery())
+            return;
+        }
+
+        if (Peek->Kind == DragDrop::EPayloadKind::Entity)
+        {
+            CWorld* OutWorld = nullptr;
+            entt::entity SourceEntity = entt::null;
+            if (DragDrop::AcceptEntity(&OutWorld, &SourceEntity) && OutWorld == World)
             {
-                entt::entity SourceEntity = *static_cast<entt::entity*>(Payload->Data);
                 entt::registry& Registry = World->GetEntityRegistry();
 
                 if (IsLockedPrefabChild(Registry, SourceEntity) || IsLockedPrefabChild(Registry, DropItem))
@@ -4534,21 +4541,16 @@ namespace Lumina
 
     void FWorldEditorTool::AcceptContentBrowserPrefabPayload(entt::entity DropTarget)
     {
-        const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(
-            FContentBrowserEditorTool::FContentBrowserTileViewItem::DragDropID,
-            ImGuiDragDropFlags_AcceptBeforeDelivery);
-
-        if (Payload == nullptr || !Payload->IsDelivery())
+        const DragDrop::FPayload* Peek = DragDrop::PeekPayload();
+        if (Peek == nullptr || Peek->Kind != DragDrop::EPayloadKind::Asset)
         {
             return;
         }
-
-        const uintptr_t ValuePtr = *static_cast<uintptr_t*>(Payload->Data);
-        const auto* PayloadItem = reinterpret_cast<FContentBrowserEditorTool::FContentBrowserTileViewItem*>(ValuePtr);
-        if (PayloadItem && PayloadItem->IsAsset())
+        if (!DragDrop::IsDelivered())
         {
-            HandlePrefabContentDrop(PayloadItem->GetVirtualPath(), DropTarget);
+            return;
         }
+        HandlePrefabContentDrop(FStringView(Peek->AssetPath.c_str(), Peek->AssetPath.size()), DropTarget);
     }
 
     void FWorldEditorTool::HandlePrefabContentDrop(FStringView VirtualPath, entt::entity DropTarget)

@@ -11,8 +11,10 @@
 //  applies an optional tinted vignette in display space, then gamma-encodes
 //  for the SRGBA8_UNORM swapchain.
 //
-//  Push-constant layout mirrors Lumina::FColorGradingPushConstants exactly
-//  (128 bytes, std430-style packing).
+//  Constants block lives in a UBO at (set 2, binding 2) -- mirrors
+//  Lumina::FColorGradingConstants exactly (144 bytes, std140 packing).
+//  Must be a buffer rather than push constants because AMD RDNA's
+//  maxPushConstantsSize is 128 B.
 // =============================================================================
 
 [[vk::binding(0, 2)]] Sampler2D uHDRSceneColor;
@@ -24,7 +26,7 @@
 #define TONEMAPPER_AGX_PUNCHY 3u
 #define TONEMAPPER_AGX_GOLDEN 4u
 
-struct FPushConstants
+struct FColorGradingConstants
 {
     // 16 B
     float Exposure;        // linear multiplier built from EV stops on CPU side
@@ -54,6 +56,8 @@ struct FPushConstants
     // 16 B
     float4 BloomTint;          // .rgb tint, .a chromatic aberration intensity
 };
+
+[[vk::binding(2, 2)]] ConstantBuffer<FColorGradingConstants> PC;
 
 struct VSOutput
 {
@@ -287,7 +291,7 @@ float3 ApplyFilmGrain(float3 X, float2 PixelPos, float Time, float Intensity, fl
 // =============================================================================
 
 [shader("fragment")]
-float4 FragmentMain(VSOutput Input, uniform FPushConstants PC) : SV_Target0
+float4 FragmentMain(VSOutput Input) : SV_Target0
 {
     // Radial chromatic aberration. Offset scales with distance from the
     // screen center so the middle of the image stays clean. Applied to the
