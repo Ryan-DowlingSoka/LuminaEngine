@@ -613,6 +613,18 @@ namespace Lumina
         /** Packed array of all cached mesh draw commands */
         TVector<FMeshDrawCommand>               DrawCommands;
 
+        // MergeMeshDrawData scratch. Persisted across frames so capacity is
+        // reused; resized up only, never shrunk. Each frame the active prefix
+        // [0..NumBatches) / [0..TotalDrawArgs) is overwritten in place.
+        TVector<FDrawBatchKey>                  MergeGlobalBatchKeys;
+        TVector<TVector<FLocalBatchEntry*>>     MergeBatchToLocals;
+        TVector<TVector<FDrawKey>>              MergeGlobalDrawsPerBatch;
+        TVector<uint32>                         MergeBatchDrawArgBase;
+        TVector<uint32>                         MergeDrawInstanceCounts;
+        TVector<uint32>                         MergeMeshletCountsPerDraw;
+        TVector<uint32>                         MergeDrawInstanceOffsets;
+        TVector<uint32>                         MergeDrawCursor;
+
         /** Indices into DrawCommands for opaque batches */
         TVector<uint32>                         OpaqueDrawList;
 

@@ -1226,22 +1226,8 @@ namespace Lumina
             }
             else
             {
-                // Append bind pose directly into the per-thread bone buffer; avoids mutating const component.
-                const size_t BindBase = Local.BonesData.size();
-                Local.BonesData.resize(BindBase + SkeletonBoneCount);
-                for (uint32 i = 0; i < SkeletonBoneCount; ++i)
-                {
-                    const auto& Bone = SkelRes->GetBone((int32)i);
-                    const glm::mat4 BoneWorld = (Bone.ParentIndex == INDEX_NONE)
-                        ? Bone.LocalTransform
-                        : Local.BonesData[BindBase + Bone.ParentIndex] * Bone.LocalTransform;
-                    Local.BonesData[BindBase + i] = BoneWorld;
-                }
-                for (uint32 i = 0; i < SkeletonBoneCount; ++i)
-                {
-                    const auto& Bone = SkelRes->GetBone((int32)i);
-                    Local.BonesData[BindBase + i] = Local.BonesData[BindBase + i] * Bone.InvBindMatrix;
-                }
+                // No active animation: BoneWorld * InvBindMatrix collapses to identity for every bone.
+                Local.BonesData.resize(Local.BonesData.size() + SkeletonBoneCount, glm::mat4(1.0f));
             }
         }
 
@@ -1345,19 +1331,26 @@ namespace Lumina
         }
 
         // Linear search: per-thread batch tables are tiny (tens of entries).
-        TVector<FDrawBatchKey> GlobalBatchKeys;
-        GlobalBatchKeys.reserve(64);
-        DrawCommands.reserve(64);
+        // Scratch lives on scene members so capacity is reused across frames.
+        MergeGlobalBatchKeys.clear();
+        if (MergeGlobalBatchKeys.capacity() < 64)
+        {
+            MergeGlobalBatchKeys.reserve(64);
+        }
+        if (DrawCommands.capacity() < 64)
+        {
+            DrawCommands.reserve(64);
+        }
 
         for (FThreadLocalDrawData& Local : ThreadLocal)
         {
             for (FLocalBatchEntry& LocalBatch : Local.LocalBatches)
             {
                 uint32 GlobalIdx = ~0u;
-                const uint32 NumGlobal = (uint32)GlobalBatchKeys.size();
+                const uint32 NumGlobal = (uint32)MergeGlobalBatchKeys.size();
                 for (uint32 g = 0; g < NumGlobal; ++g)
                 {
-                    if (GlobalBatchKeys[g] == LocalBatch.Key)
+                    if (MergeGlobalBatchKeys[g] == LocalBatch.Key)
                     {
                         GlobalIdx = g;
                         break;
@@ -1366,7 +1359,7 @@ namespace Lumina
                 if (GlobalIdx == ~0u)
                 {
                     GlobalIdx = NumGlobal;
-                    GlobalBatchKeys.push_back(LocalBatch.Key);
+                    MergeGlobalBatchKeys.push_back(LocalBatch.Key);
 
                     FMeshDrawCommand& NewCmd = DrawCommands.emplace_back();
                     NewCmd.VertexShader        = LocalBatch.VertexShader;
@@ -1384,16 +1377,23 @@ namespace Lumina
             }
         }
 
-        const uint32 NumBatches = (uint32)GlobalBatchKeys.size();
+        const uint32 NumBatches = (uint32)MergeGlobalBatchKeys.size();
 
-        // Group LocalBatches by global batch so heavy per-batch passes fan out in parallel.
-        // Pre-resize output vectors here -- parallel tasks would race on each thread's frame arena.
-        TVector<TVector<FLocalBatchEntry*>> BatchToLocals(NumBatches);
+        // Group LocalBatches by global batch. Outer vector resized up only;
+        // inner vectors clear() in place to keep their heap capacity warm.
+        if (MergeBatchToLocals.size() < NumBatches)
+        {
+            MergeBatchToLocals.resize(NumBatches);
+        }
+        for (uint32 b = 0; b < NumBatches; ++b)
+        {
+            MergeBatchToLocals[b].clear();
+        }
         for (FThreadLocalDrawData& Local : ThreadLocal)
         {
             for (FLocalBatchEntry& LocalBatch : Local.LocalBatches)
             {
-                BatchToLocals[LocalBatch.GlobalBatchIndex].push_back(&LocalBatch);
+                MergeBatchToLocals[LocalBatch.GlobalBatchIndex].push_back(&LocalBatch);
 
                 const uint32 NumLocal = (uint32)LocalBatch.LocalDraws.size();
                 LocalBatch.LocalToGlobalDraw.resize(NumLocal);
@@ -1401,19 +1401,27 @@ namespace Lumina
             }
         }
 
-        // Phase C: per-batch draw dedupe. Each task owns its batch's
-        // GlobalDrawsPerBatch[b] slot and its own scratch hash map; batches
-        // are independent so no synchronization is needed.
-        TVector<TVector<FDrawKey>> GlobalDrawsPerBatch(NumBatches);
+        // Phase C: per-batch draw dedupe. Each task owns its batch's slot and
+        // a scratch hash map; the map allocates from the worker's frame arena
+        // (no system-heap traffic). Batches are independent — no sync needed.
+        if (MergeGlobalDrawsPerBatch.size() < NumBatches)
+        {
+            MergeGlobalDrawsPerBatch.resize(NumBatches);
+        }
+        for (uint32 b = 0; b < NumBatches; ++b)
+        {
+            MergeGlobalDrawsPerBatch[b].clear();
+        }
         {
             FTaskGraph DedupGraph;
             DedupGraph.AddParallelFor(NumBatches, 1, [&](const Task::FParallelRange& Range)
             {
+                TFrameHashMap<uint64, uint32> Dedupe(FFrameArenaAllocator(FrameArenas[Range.Thread].get()));
                 for (uint32 b = Range.Start; b < Range.End; ++b)
                 {
-                    THashMap<uint64, uint32> Dedupe;
-                    TVector<FDrawKey>&       Globals = GlobalDrawsPerBatch[b];
-                    for (FLocalBatchEntry* LB : BatchToLocals[b])
+                    Dedupe.clear();
+                    TVector<FDrawKey>& Globals = MergeGlobalDrawsPerBatch[b];
+                    for (FLocalBatchEntry* LB : MergeBatchToLocals[b])
                     {
                         const uint32 NumLocal = (uint32)LB->LocalDraws.size();
                         for (uint32 ld = 0; ld < NumLocal; ++ld)
@@ -1442,22 +1450,22 @@ namespace Lumina
         }
 
         // Each batch gets a contiguous block of draw args.
-        TVector<uint32> BatchDrawArgBase(NumBatches);
+        MergeBatchDrawArgBase.resize(NumBatches);
         uint32 TotalDrawArgs = 0;
         for (uint32 b = 0; b < NumBatches; ++b)
         {
-            BatchDrawArgBase[b]                 = TotalDrawArgs;
+            MergeBatchDrawArgBase[b]            = TotalDrawArgs;
             DrawCommands[b].IndirectDrawOffset  = TotalDrawArgs;
-            DrawCommands[b].DrawCount           = (uint32)GlobalDrawsPerBatch[b].size();
-            TotalDrawArgs                       += (uint32)GlobalDrawsPerBatch[b].size();
+            DrawCommands[b].DrawCount           = (uint32)MergeGlobalDrawsPerBatch[b].size();
+            TotalDrawArgs                       += (uint32)MergeGlobalDrawsPerBatch[b].size();
         }
 
         DrawMeshletStartOffsets.resize(TotalDrawArgs);
         Instances.resize(TotalInstances);
         NumDrawsPerView = TotalDrawArgs;
 
-        TVector<uint32> DrawInstanceCounts(TotalDrawArgs, 0u);
-        TVector<uint32> MeshletCountsPerDraw(TotalDrawArgs, 0u);
+        MergeDrawInstanceCounts.assign(TotalDrawArgs, 0u);
+        MergeMeshletCountsPerDraw.assign(TotalDrawArgs, 0u);
 
         // Per-batch GlobalDraw ranges are disjoint, so writes don't race.
         {
@@ -1466,15 +1474,15 @@ namespace Lumina
             {
                 for (uint32 b = Range.Start; b < Range.End; ++b)
                 {
-                    const uint32 BatchBase = BatchDrawArgBase[b];
-                    for (FLocalBatchEntry* LB : BatchToLocals[b])
+                    const uint32 BatchBase = MergeBatchDrawArgBase[b];
+                    for (FLocalBatchEntry* LB : MergeBatchToLocals[b])
                     {
                         const uint32 NumLocal = (uint32)LB->LocalDrawCounts.size();
                         for (uint32 ld = 0; ld < NumLocal; ++ld)
                         {
                             const uint32 GlobalDraw = BatchBase + LB->LocalToGlobalDraw[ld];
-                            DrawInstanceCounts[GlobalDraw]   += LB->LocalDrawCounts[ld];
-                            MeshletCountsPerDraw[GlobalDraw] += LB->LocalMeshletCounts[ld];
+                            MergeDrawInstanceCounts[GlobalDraw]   += LB->LocalDrawCounts[ld];
+                            MergeMeshletCountsPerDraw[GlobalDraw] += LB->LocalMeshletCounts[ld];
                         }
                     }
                 }
@@ -1484,34 +1492,34 @@ namespace Lumina
         }
 
         // Prefix sum for instance offsets (serial; data dependency).
-        TVector<uint32> DrawInstanceOffsets(TotalDrawArgs);
+        MergeDrawInstanceOffsets.resize(TotalDrawArgs);
         {
             uint32 Running = 0;
             for (uint32 d = 0; d < TotalDrawArgs; ++d)
             {
-                DrawInstanceOffsets[d] = Running;
-                Running += DrawInstanceCounts[d];
+                MergeDrawInstanceOffsets[d] = Running;
+                Running += MergeDrawInstanceCounts[d];
             }
             DEBUG_ASSERT(Running == TotalInstances);
         }
 
         // Per-batch DrawCursor slices are disjoint; race-free.
-        TVector<uint32> DrawCursor = DrawInstanceOffsets;
+        MergeDrawCursor.assign(MergeDrawInstanceOffsets.begin(), MergeDrawInstanceOffsets.begin() + TotalDrawArgs);
         {
             FTaskGraph CursorGraph;
             CursorGraph.AddParallelFor(NumBatches, 1, [&](const Task::FParallelRange& Range)
             {
                 for (uint32 b = Range.Start; b < Range.End; ++b)
                 {
-                    const uint32 BatchBase = BatchDrawArgBase[b];
-                    for (FLocalBatchEntry* LB : BatchToLocals[b])
+                    const uint32 BatchBase = MergeBatchDrawArgBase[b];
+                    for (FLocalBatchEntry* LB : MergeBatchToLocals[b])
                     {
                         const uint32 NumLocal = (uint32)LB->LocalDrawCounts.size();
                         for (uint32 ld = 0; ld < NumLocal; ++ld)
                         {
                             const uint32 GlobalDraw = BatchBase + LB->LocalToGlobalDraw[ld];
-                            LB->LocalDrawWriteBase[ld] = DrawCursor[GlobalDraw];
-                            DrawCursor[GlobalDraw] += LB->LocalDrawCounts[ld];
+                            LB->LocalDrawWriteBase[ld] = MergeDrawCursor[GlobalDraw];
+                            MergeDrawCursor[GlobalDraw] += LB->LocalDrawCounts[ld];
                         }
                     }
                 }
@@ -1525,7 +1533,7 @@ namespace Lumina
         for (uint32 d = 0; d < TotalDrawArgs; ++d)
         {
             DrawMeshletStartOffsets[d] = MeshletRunning;
-            MeshletRunning            += MeshletCountsPerDraw[d];
+            MeshletRunning            += MergeMeshletCountsPerDraw[d];
         }
         TotalMeshletBound = MeshletRunning;
 
@@ -1544,7 +1552,7 @@ namespace Lumina
                     for (FProcessedDrawItem& Item : Local.Items)
                     {
                         FLocalBatchEntry& LocalBatch = Local.LocalBatches[Item.LocalBatchIndex];
-                        const uint32 GlobalDraw = BatchDrawArgBase[LocalBatch.GlobalBatchIndex]
+                        const uint32 GlobalDraw = MergeBatchDrawArgBase[LocalBatch.GlobalBatchIndex]
                                                 + LocalBatch.LocalToGlobalDraw[Item.LocalDrawIndex];
 
                         const uint32 WriteIdx = LocalBatch.LocalDrawWriteBase[Item.LocalDrawIndex]++;
@@ -2106,11 +2114,12 @@ namespace Lumina
             const uint32 ViewDrawListBase = ViewIndex * TotalMeshletBound;
             for (uint32 d = 0; d < NumDraws; ++d)
             {
-                FDrawIndirectArguments& Arg = IndirectArgs[ViewIndex * NumDraws + d];
+                FDrawIndirectArguments Arg;
                 Arg.VertexCount           = MESHLET_VERTICES_PER_DRAW;
                 Arg.InstanceCount         = 0u;
                 Arg.StartVertexLocation   = 0u;
                 Arg.StartInstanceLocation = ViewDrawListBase + DrawMeshletStartOffsets[d];
+                IndirectArgs.push_back(Arg);
             }
         };
 
@@ -2130,7 +2139,7 @@ namespace Lumina
         ASSERT(NumViews <= (uint32)GMaxCullViews);
 
         CullViews.reserve(NumViews);
-        IndirectArgs.assign((size_t)NumViews * (size_t)NumDraws, FDrawIndirectArguments{});
+        IndirectArgs.reserve((size_t)NumViews * (size_t)NumDraws);
 
         CascadeViewBase = ~0u;
         CameraLateViewIndex = ~0u;
