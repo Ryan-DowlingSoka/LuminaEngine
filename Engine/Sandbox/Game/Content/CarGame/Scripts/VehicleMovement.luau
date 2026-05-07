@@ -1,5 +1,4 @@
-local EntityScript = require("Stdlib/EntityScript")
-local VehicleMovement = EntityScript.new()
+local VehicleMovement: EntityScript = EntityScript.new()
 
 -- Tunables -----------------------------------------------------------------
 -- Stiffness/damping are forces (N), applied via ApplyForceAt so Jolt
@@ -72,6 +71,24 @@ local DriftBankFade      = 1.5      -- seconds banner stays after drift ends
 local DriftBoostReward   = 0.0005   -- boost meter awarded per banked score point
 local DriftHugeThreshold = 5000
 
+-- Drift sprint mode --------------------------------------------------------
+-- Fixed-duration countdown; the player tries to rack up as many drift points
+-- as possible before the clock hits 0. R reloads the level for a fresh run.
+local LevelPath              = "/Game/CarGame/L_RaceTrack.lasset"
+local RunDurationSeconds     = 90.0
+local TimerWarnAt            = 15.0      -- timer border turns hot below this
+local TimerCriticalAt        = 5.0       -- timer pulses below this
+
+-- Crash penalty: lose score on collision. Cost scales with impact speed so
+-- a gentle nudge is cheap and a head-on hit is brutal.
+local CrashMinImpact      = 4.0      -- m/s; below this we ignore (kerb-touches etc.)
+local CrashHeavyImpact    = 14.0     -- m/s; "heavy" UI styling kicks in above this
+local CrashScorePerImpact = 1000.0    -- penalty = ImpactSpeed * this
+local CrashScoreMin       = 50       -- minimum penalty when above CrashMinImpact
+local CrashScoreMax       = 20000     -- ceiling so a single hit can't wipe everything
+local CrashBannerHold     = 1.4      -- seconds the banner stays up after a crash
+local CrashCooldown       = 0.35     -- seconds before another crash can register
+
 -- Redline visual cutoff
 local RedlineWarn        = 0.93
 
@@ -100,11 +117,19 @@ local function CastWheel(self, BodyID, Origin, Up)
     return self.World:CastRay(Settings)
 end
 
+-- Popup constants. Slots are pre-baked in the RML; the script rotates through
+-- them, replacing each slot's inner RML to re-trigger its float-up animation.
+local PopupSlotCount     = 8
+local DriftPopupInterval = 0.45     -- seconds between mid-drift "+N" popups
+local DriftPopupMinGain  = 25       -- skip popups below this so we don't spam
+local DriftBigPopupAt    = 1500     -- mid-drift gain >= this gets the "bigwin" style
+local DriftBankPopupMin  = 200      -- end-of-drift bank popup threshold
+
 function VehicleMovement:OnReady()
     if not self:HasComponent(SProceduralAudioComponent) then
         self:AddComponent(SProceduralAudioComponent)
     end
-    
+
     UI.LoadDocument(HUDDocument)
     self.HUDAccum = 0.0
     self.LastMPH  = -1
@@ -119,6 +144,7 @@ function VehicleMovement:OnReady()
     self.LastRPMRedline   = false
     self.LastDriftActive  = false
     self.LastDriftHuge    = false
+    self.LastSpeedTier    = ""       -- "", "fast", "danger" — toggled on the mph gauge
 
     self.Boost         = 1.0        -- meter [0,1]
     self.DriftActive   = false
@@ -127,9 +153,37 @@ function VehicleMovement:OnReady()
     self.DriftBanked   = 0          -- shown on banner
     self.TotalDrift    = 0
     self.DriftFade     = 0.0        -- post-drift display countdown
-    
-    ParticleSystem1 = self._Registry:Get(44, SParticleSystemComponent)
-    ParticleSystem2 = self._Registry:Get(43, SParticleSystemComponent)
+
+    -- Drift score change tracking so we can emit "+N" popups while drifting.
+    self.DriftLastScoreSnapshot = 0
+    self.DriftPopupAccum        = 0.0
+
+    -- Popup ring. Slot index advances with each spawn so the same animation
+    -- doesn't get clobbered mid-flight (8 slots * 1.4–1.8s anim = comfortable
+    -- for any realistic event rate).
+    self.PopupSlot = 0
+
+    -- Crash banner state. CrashBannerFade counts down each frame; while > 0
+    -- the banner is visible. CrashCooldownLeft suppresses follow-up hits from
+    -- the same physical contact (Jolt fires a few enter events in quick
+    -- succession when a body slides along a wall).
+    self.CrashBannerFade  = 0.0
+    self.CrashCooldownLeft = 0.0
+    self.CrashLastAmount  = 0
+    self.CrashLastHeavy   = false
+    self.LastCrashActive  = false
+    self.LastCrashHeavy   = false
+
+    -- Run state
+    self.TimeRemaining = RunDurationSeconds
+    self.RaceFinished  = false
+    self.TopSpeedMPH   = 0
+    self.LastTimerStr  = ""
+    self.LastTimerTier = ""                 -- "", "warn", "critical", "complete"
+    self.RestartHooked = false
+
+    ParticleSystem1 = self:GetComponentOf(44, SParticleSystemComponent)
+    ParticleSystem2 = self:GetComponentOf(43, SParticleSystemComponent)
 
     local Audio = self:GetComponent(SProceduralAudioComponent)
     Audio.SampleRate   = AudioSampleRate
@@ -263,10 +317,122 @@ local function SynthEngineFrames(self, FrameCount, DeltaTime)
     return Buf
 end
 
+-- Push a floating score popup into the HUD's pre-baked slot ring. The slot's
+-- inner RML is replaced with a fresh element carrying the popup-content class,
+-- which re-triggers the float-up keyframe animation from frame 0.
+function VehicleMovement:_PushPopup(Kind, Text)
+    local Slot = self.PopupSlot or 0
+    self.PopupSlot = (Slot + 1) % PopupSlotCount
+    local Id = "popup-" .. tostring(Slot)
+    UI.SetInnerRml(HUDDocument, Id,
+        string.format('<div class="popup-content %s">%s</div>', Kind, Text))
+end
+
+-- Crash handling. The physics layer auto-invokes OnContactBegin whenever a
+-- non-trigger contact starts on this entity's body; we deduct score based on
+-- impact speed and arm the HUD crash banner.
+function VehicleMovement:OnContactBegin(Event)
+    -- Cooldown guard: a single car-vs-wall slide can fire several "enter"
+    -- callbacks in quick succession as sub-shapes touch.
+    if (self.CrashCooldownLeft or 0.0) > 0.0 then
+        return
+    end
+
+    local Impact = Event.ImpactSpeed or 0.0
+    if Impact < CrashMinImpact then
+        return
+    end
+
+    local Penalty = math.floor(Impact * CrashScorePerImpact + 0.5)
+    if Penalty < CrashScoreMin then Penalty = CrashScoreMin end
+    if Penalty > CrashScoreMax then Penalty = CrashScoreMax end
+
+    -- Take the penalty out of the banked drift total, then any active drift run.
+    local Available = (self.TotalDrift or 0) + (self.DriftScore or 0)
+    local Applied   = math.min(Penalty, Available)
+    local Drained   = Applied
+    if Drained > 0 then
+        local FromTotal = math.min(self.TotalDrift or 0, Drained)
+        self.TotalDrift = (self.TotalDrift or 0) - FromTotal
+        Drained = Drained - FromTotal
+    end
+    if Drained > 0 then
+        self.DriftScore = math.max(0.0, (self.DriftScore or 0) - Drained)
+        self.DriftBanked = math.floor((self.DriftScore or 0) + 0.5)
+    end
+
+    self.CrashLastAmount  = Applied
+    self.CrashLastHeavy   = Impact >= CrashHeavyImpact
+    self.CrashBannerFade  = CrashBannerHold
+    self.CrashCooldownLeft = CrashCooldown
+    self.CrashLastImpactMPH = math.floor(Impact * MetersPerSecToMPH + 0.5)
+    -- Re-arm the screen-flash overlay on every crash. Toggling the .active
+    -- class off then on within the same frame doesn't re-trigger the
+    -- animation, so we drive it off a state flag the HUD tick reads.
+    self.CrashFlashPending = true
+
+    -- Push the totals immediately (the throttled HUD path won't get to it for
+    -- up to a frame and the banner needs to read the right value when it pops).
+    UI.SetText(HUDDocument, "total-score", string.format("%.1f", self.TotalDrift))
+
+    -- Floating popup at the impact spot (well, screen-anchored — we don't
+    -- have world->screen projection in Lua right now). Only emit if the
+    -- penalty was actually applied; if the player has 0 score, no popup.
+    if Applied > 0 then
+        self:_PushPopup("loss", string.format("-%d", Applied))
+    end
+end
+
+-- Format seconds as M:SS.t (or 0:00.0 when negative). Tenths look better
+-- than full ms for a HUD timer — easier to read at a glance under stress.
+local function _FormatTimer(Seconds)
+    if Seconds < 0.0 then Seconds = 0.0 end
+    local Mins   = math.floor(Seconds / 60.0)
+    local Rest   = Seconds - Mins * 60.0
+    local SecInt = math.floor(Rest)
+    local Tenth  = math.floor((Rest - SecInt) * 10.0)
+    if Tenth > 9 then Tenth = 9 end
+    return string.format("%d:%02d.%d", Mins, SecInt, Tenth)
+end
+
+function VehicleMovement:_RequestRestart()
+    -- Engine.Travel is deferred (drained at next FrameStart), so it's safe to
+    -- call from inside this script's tick — the world tear-down won't run
+    -- until we've returned.
+    Engine.Travel(LevelPath)
+end
+
+function VehicleMovement:_HookRestartButton()
+    if self.RestartHooked then return end
+    UI.OnEvent(HUDDocument, "endcard-restart", "click", function()
+        self:_RequestRestart()
+    end)
+    self.RestartHooked = true
+end
+
+function VehicleMovement:_ShowEndScreen()
+    UI.SetClass(HUDDocument, "endscreen", "visible", true)
+    UI.SetText(HUDDocument, "endcard-headline", "TIME UP")
+    UI.SetText(HUDDocument, "endcard-topspeed", string.format("%d MPH", self.TopSpeedMPH))
+    UI.SetText(HUDDocument, "endcard-final-value", string.format("%.0f", self.TotalDrift or 0))
+    -- Release the mouse so the player can click RESTART. Whichever script
+    -- captured it during gameplay will re-arm it on the next level load.
+    Input.SetMouseMode("Normal")
+end
+
 function VehicleMovement:OnUpdate(DeltaTime)
+    -- Restart hotkey: reload the level via Engine.Travel. Available any time
+    -- so the player can bail mid-run; level reload is deferred so the rest of
+    -- this tick still runs to completion safely.
+    self:_HookRestartButton()
+    if Input.IsActionDown("Restart") then
+        self:_RequestRestart()
+        return
+    end
+
     local BodyID   = self:GetBodyID()
-    local Rotation = self._Physics:GetBodyRotation(BodyID)
-    local Loc      = self._Physics:GetBodyPosition(BodyID)
+    local Rotation = self:GetBodyRotation()
+    local Loc      = self:GetBodyPosition()
     local Forward  = Rotation:RotateVector(vector.create(0.0, 0.0, 1.0))
     local Right    = Rotation:RotateVector(vector.create(1.0, 0.0, 0.0))
     local Up       = Rotation:RotateVector(vector.create(0.0, 1.0, 0.0))
@@ -277,8 +443,8 @@ function VehicleMovement:OnUpdate(DeltaTime)
     local Boost	      = Input.IsActionDown("Sprint")
     
     if Input.IsActionDown("Fire") then
-    	self.Transform:SetLocation(vector.create(0, 2, 0))
-    	self.Transform:SetRotationFromEuler(vector.zero)
+        self:SetLocation(vector.create(0, 2, 0))
+        self:SetRotationFromEuler(vector.zero)
     end
         
     if Handbrake then
@@ -391,19 +557,61 @@ function VehicleMovement:OnUpdate(DeltaTime)
             self.DriftActive = true
             self.DriftMult   = 1.0
             self.DriftScore  = 0
+            self.DriftLastScoreSnapshot = 0
+            self.DriftPopupAccum = 0.0
         end
         self.DriftMult  = math.min(DriftMultMax, self.DriftMult + DriftMultRampUp * DeltaTime)
         local Gain      = math.abs(LateralSpeed) * SpeedAbs * self.DriftMult * DriftScoreRate * DeltaTime
         self.DriftScore = self.DriftScore + Gain
         self.DriftBanked = math.floor(self.DriftScore + 0.5)
         self.DriftFade  = DriftBankFade
+
+        -- Periodic mid-drift "+N" popup so each chunk of score has a visible
+        -- payoff. Snapshot diffing keeps the values honest even when the
+        -- accumulator overshoots (long frame, etc.).
+        self.DriftPopupAccum = (self.DriftPopupAccum or 0.0) + DeltaTime
+        if self.DriftPopupAccum >= DriftPopupInterval then
+            self.DriftPopupAccum = 0.0
+            local IntervalGain = math.floor((self.DriftScore - self.DriftLastScoreSnapshot) + 0.5)
+            if IntervalGain >= DriftPopupMinGain then
+                local Kind = (IntervalGain >= DriftBigPopupAt) and "bigwin" or "gain"
+                self:_PushPopup(Kind, string.format("+%d", IntervalGain))
+            end
+            self.DriftLastScoreSnapshot = self.DriftScore
+        end
     elseif self.DriftActive then
         self.DriftActive = false
+        local Banked = math.floor(self.DriftScore + 0.5)
         self.Boost = math.min(1.0, (self.Boost or 0.0) + self.DriftScore * DriftBoostReward)
         self.TotalDrift += self.DriftScore
         self.DriftScore = 0
+        self.DriftLastScoreSnapshot = 0
+
+        -- "BANK +N" popup when ending a meaningful drift run. This is what the
+        -- player feels as the payoff for committing to a long slide.
+        if Banked >= DriftBankPopupMin then
+            self:_PushPopup("banked", string.format("BANK +%d", Banked))
+        end
     elseif self.DriftFade > 0.0 then
         self.DriftFade = math.max(0.0, self.DriftFade - DeltaTime)
+    end
+
+    -- ----- Drift sprint timer -----
+    -- Top-speed tracking — used in the end-of-run summary.
+    do
+        local CurMPH = math.floor(math.abs(SignedSpeed) * MetersPerSecToMPH + 0.5)
+        if CurMPH > (self.TopSpeedMPH or 0) then
+            self.TopSpeedMPH = CurMPH
+        end
+    end
+
+    if not self.RaceFinished then
+        self.TimeRemaining = self.TimeRemaining - DeltaTime
+        if self.TimeRemaining <= 0.0 then
+            self.TimeRemaining = 0.0
+            self.RaceFinished  = true
+            self:_ShowEndScreen()
+        end
     end
 
     self.HUDAccum = (self.HUDAccum or 0.0) + DeltaTime
@@ -427,6 +635,19 @@ function VehicleMovement:OnUpdate(DeltaTime)
         end
         if RPM ~= self.LastRPM then
             UI.SetText(HUDDocument, "rpm-value", tostring(RPM))
+            -- RPM fill bar: 0..1 blend across IdleRPM..RedlineRPM. The fill is
+            -- a fresh element each update so the gradient decorator re-evaluates
+            -- against the new width. Skip the fill entirely below 1% — RmlUi's
+            -- gradient decorator can't generate element data on a 0-width box
+            -- and logs a warning every frame.
+            local RPMFrac = math.clamp((self.RPM - IdleRPM) / (RedlineRPM - IdleRPM), 0.0, 1.0)
+            local RPMPct  = math.floor(RPMFrac * 100.0 + 0.5)
+            if RPMPct < 1 then
+                UI.SetInnerRml(HUDDocument, "rpm-bar", "")
+            else
+                UI.SetInnerRml(HUDDocument, "rpm-bar",
+                    string.format('<div id="rpm-fill" style="width: %d%%;"/>', RPMPct))
+            end
             self.LastRPM = RPM
         end
         if Gear ~= self.LastGear then
@@ -434,10 +655,33 @@ function VehicleMovement:OnUpdate(DeltaTime)
             self.LastGear = Gear
         end
 
+        -- Speed-tier styling on the MPH gauge: cyan glow once you're moving
+        -- with conviction, golden pulse once you're at top-end. Anything
+        -- below ~30 mph stays neutral white so daily-driver speeds don't
+        -- look artificially loud.
+        local SpeedTier = ""
+        if MPH >= 95 then
+            SpeedTier = "danger"
+        elseif MPH >= 35 then
+            SpeedTier = "fast"
+        end
+        if SpeedTier ~= self.LastSpeedTier then
+            UI.SetClass(HUDDocument, "mph", "fast",   SpeedTier == "fast")
+            UI.SetClass(HUDDocument, "mph", "danger", SpeedTier == "danger")
+            self.LastSpeedTier = SpeedTier
+        end
+
         local BoostPct = math.floor((self.Boost or 0.0) * 100.0 + 0.5)
         if BoostPct ~= self.LastBoostPct then
-            UI.SetInnerRml(HUDDocument, "boost-track",
-                string.format('<div id="boost-fill" style="width: %d%%;"/>', BoostPct))
+            -- Skip the fill div entirely at 0% — gradient decorators can't
+            -- compute against a zero-width box (RmlUi logs a warning per frame).
+            if BoostPct < 1 then
+                UI.SetInnerRml(HUDDocument, "boost-track", "")
+            else
+                UI.SetInnerRml(HUDDocument, "boost-track",
+                    string.format('<div id="boost-fill" style="width: %d%%;"/>', BoostPct))
+            end
+            UI.SetText(HUDDocument, "boost-pct", string.format("%d%%", BoostPct))
             self.LastBoostPct = BoostPct
         end
         local BoostActive = self.BoostBurning == true
@@ -488,7 +732,70 @@ function VehicleMovement:OnUpdate(DeltaTime)
             UI.SetText(HUDDocument, "drift-mult", string.format("x%.1f", self.DriftMult))
             UI.SetText(HUDDocument, "total-score", string.format("%.1f", self.TotalDrift))
         end
+
+        local CrashActive = (self.CrashBannerFade or 0.0) > 0.0
+        local CrashHeavy  = CrashActive and (self.CrashLastHeavy == true)
+        if CrashActive then
+            UI.SetText(HUDDocument, "crash-amount", string.format("-%d", self.CrashLastAmount or 0))
+            UI.SetText(HUDDocument, "crash-impact", string.format("%d mph impact", self.CrashLastImpactMPH or 0))
+        end
+        if CrashActive ~= self.LastCrashActive then
+            UI.SetClass(HUDDocument, "crash-banner", "active", CrashActive)
+            self.LastCrashActive = CrashActive
+        end
+        if CrashHeavy ~= self.LastCrashHeavy then
+            UI.SetClass(HUDDocument, "crash-banner", "heavy", CrashHeavy)
+            self.LastCrashHeavy = CrashHeavy
+        end
+
+        -- Run-timer HUD writes
+        local TimerStr = _FormatTimer(self.TimeRemaining or 0.0)
+        if TimerStr ~= self.LastTimerStr then
+            UI.SetText(HUDDocument, "timer-value", TimerStr)
+            self.LastTimerStr = TimerStr
+        end
+        local TimerTier = ""
+        if self.RaceFinished then
+            TimerTier = "complete"
+        elseif self.TimeRemaining <= TimerCriticalAt then
+            TimerTier = "critical"
+        elseif self.TimeRemaining <= TimerWarnAt then
+            TimerTier = "warn"
+        end
+        if TimerTier ~= self.LastTimerTier then
+            UI.SetClass(HUDDocument, "timetrial-panel", "warn",     TimerTier == "warn")
+            UI.SetClass(HUDDocument, "timetrial-panel", "critical", TimerTier == "critical")
+            UI.SetClass(HUDDocument, "timetrial-panel", "complete", TimerTier == "complete")
+            self.LastTimerTier = TimerTier
+        end
     end
+
+    -- Crash banner / cooldown countdowns run every frame so the HUD throttle
+    -- doesn't introduce visible lag between the impact and the banner showing.
+    if (self.CrashBannerFade or 0.0) > 0.0 then
+        self.CrashBannerFade = math.max(0.0, self.CrashBannerFade - DeltaTime)
+    end
+    if (self.CrashCooldownLeft or 0.0) > 0.0 then
+        self.CrashCooldownLeft = math.max(0.0, self.CrashCooldownLeft - DeltaTime)
+    end
+
+    -- Crash-flash overlay: re-trigger the keyframe by replacing the element
+    -- entirely (toggling .active off/on within a frame doesn't restart the
+    -- animation). Cleared by SetInnerRml on the parent body? No — the flash
+    -- div is a sibling. We swap its outer wrapper instead via SetClass off,
+    -- and arm via SetClass on next tick. Two-stage so the class change is
+    -- observed: clear on this tick, set on the next.
+    if self.CrashFlashPending then
+        if self.CrashFlashStage == nil then
+            UI.SetClass(HUDDocument, "crash-flash", "active", false)
+            self.CrashFlashStage = "armed"
+        elseif self.CrashFlashStage == "armed" then
+            UI.SetClass(HUDDocument, "crash-flash", "active", true)
+            self.CrashFlashPending = false
+            self.CrashFlashStage   = nil
+        end
+    end
+
 
     -- Top up the procedural audio ring buffer so the audio thread never starves.
     if self.Audio then

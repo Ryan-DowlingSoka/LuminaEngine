@@ -48,6 +48,13 @@ namespace Lumina
         void Dispatch(FStringView EventName, const Lua::FRef& Payload);
 
         /**
+         * Like Dispatch, but only invoke listeners whose Owner == Target. Used to deliver
+         * entity-targeted events (e.g. collisions) to the owning script without leaking
+         * to every other subscriber of the same name.
+         */
+        void DispatchToEntity(entt::entity Target, FStringView EventName, const Lua::FRef& Payload);
+
+        /**
          * Queue an event to be dispatched at the beginning of the next frame
          * (during CWorld::Update FrameStart stage). Safe to call from within a
          * Dispatch callback without causing re-entrant iteration.

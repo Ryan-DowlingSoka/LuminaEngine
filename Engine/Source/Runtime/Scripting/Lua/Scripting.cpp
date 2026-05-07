@@ -396,7 +396,7 @@ namespace Lumina::Lua
 
     static TUniquePtr<FScriptingContext> GScriptingContext;
 
-    namespace { bool CompileSourceToBytecode(FStringView Code, TVector<uint8>& Out); }
+    namespace { bool CompileSourceToBytecode(FStringView Code, TVector<uint8>& Out, FCompileDiagnostic* OutDiag = nullptr); }
 
     void Initialize()
     {
@@ -485,6 +485,28 @@ namespace Lumina::Lua
         EngineTable.SetFunction<&FEngine::GetProjectPath>("GetProjectPath", GEngine);
         EngineTable.SetFunction<&FEngine::Travel>("Travel", GEngine);
         EngineTable.SetFunction<[]() { FScriptingContext::Get().ReloadStdlib(); }>("ReloadStdlib");
+
+        // Game/editor mode probe. CWorld::IsGameWorld is the source of truth;
+        // the per-thread script context published by SetupScriptComponent
+        // tells us which world this script belongs to.
+        EngineTable.Push();
+        lua_pushcfunction(L, +[](lua_State* State) -> int
+        {
+            const auto* TD = static_cast<FScriptThreadData*>(lua_getthreaddata(State));
+            lua_pushboolean(State, (TD && TD->World && TD->World->IsGameWorld()) ? 1 : 0);
+            return 1;
+        }, "IsGame");
+        lua_rawsetfield(L, -2, "IsGame");
+
+        lua_pushcfunction(L, +[](lua_State* State) -> int
+        {
+            const auto* TD = static_cast<FScriptThreadData*>(lua_getthreaddata(State));
+            const bool bEditor = TD && TD->World && TD->World->GetWorldType() == EWorldType::Editor;
+            lua_pushboolean(State, bEditor ? 1 : 0);
+            return 1;
+        }, "IsEditor");
+        lua_rawsetfield(L, -2, "IsEditor");
+        lua_pop(L, 1);
         
         VFSTable.SetFunction<&VFS::Exists>("Exists");
         VFSTable.SetFunction<&VFS::CreateDir>("CreateDir");
@@ -748,11 +770,23 @@ namespace Lumina::Lua
         }>("UnbindAction");
 
 
-        AudioTable.SetFunction<[](FStringView File, glm::vec3 Location) { (void)GAudioContext->PlaySoundAtLocation(File, Location); }>("PlaySoundAtLocation");
-        AudioTable.SetFunction<[](FStringView File) { (void)GAudioContext->PlaySound2D(File); }>("PlaySound2D");
-        
+        AudioTable.SetFunction<[](FStringView File, glm::vec3 Location) { return GAudioContext->PlaySoundAtLocation(File, Location); }>("PlaySoundAtLocation");
+        AudioTable.SetFunction<[](FStringView File) { return GAudioContext->PlaySound2D(File); }>("PlaySound2D");
+        AudioTable.SetFunction<[](FStringView File, glm::vec3 Loc, float Volume, float Pitch, bool bLooping)
+            { return GAudioContext->PlaySoundAtLocation(File, Loc, Volume, Pitch, 1.0f, 50.0f, bLooping); }>("PlaySoundAtLocationEx");
+        AudioTable.SetFunction<[](FStringView File, float Volume, float Pitch, bool bLooping)
+            { return GAudioContext->PlaySound2D(File, Volume, Pitch, bLooping); }>("PlaySound2DEx");
+        AudioTable.SetFunction<[]() { GAudioContext->StopAllSounds(); }>("StopAllSounds");
+
         GlobalsRef.NewClass<FAudioHandle>("AudioHandle")
             .AddFunction<&FAudioHandle::IsValid>("IsValid")
+            .AddFunction<[](FAudioHandle& Self) { GAudioContext->StopSound(Self, EAudioStopMode::Immediate); }>("Stop")
+            .AddFunction<[](FAudioHandle& Self) { GAudioContext->StopSound(Self, EAudioStopMode::AllowFadeOut); }>("FadeOut")
+            .AddFunction<[](FAudioHandle& Self, float Volume) { GAudioContext->SetVolume(Self, Volume); }>("SetVolume")
+            .AddFunction<[](FAudioHandle& Self, float Pitch)  { GAudioContext->SetPitch(Self, Pitch); }>("SetPitch")
+            .AddFunction<[](FAudioHandle& Self, bool bLoop)   { GAudioContext->SetLooping(Self, bLoop); }>("SetLooping")
+            .AddFunction<[](FAudioHandle& Self, glm::vec3 P)  { GAudioContext->SetPosition(Self, P); }>("SetPosition")
+            .AddFunction<[](FAudioHandle& Self, float Min, float Max) { GAudioContext->SetMinMaxDistance(Self, Min, Max); }>("SetMinMaxDistance")
             .Register();
         
         GlobalsRef.NewClass<glm::mat4>("Mat4")
@@ -791,12 +825,17 @@ namespace Lumina::Lua
 
     void FScriptingContext::LoadStdlibFiles()
     {
-        // Stdlib modules are loaded lazily via `require("Stdlib/EntityScript")`.
-        // Pre-warming here keeps editor autocomplete (HarvestGlobalSymbols walks
-        // ModuleCache results) populated even before any user script runs.
+        // Stdlib modules are loaded once at startup and also bound as globals
+        // under their basename so user scripts can write
+        //     local Script: EntityScript = EntityScript.new()
+        // without an explicit require, and so HarvestGlobalSymbols sees them
+        // for autocomplete.
         static const char* const kStdlibModules[] =
         {
             "Stdlib/EntityScript",
+            "Stdlib/Random",
+            "Stdlib/Color",
+            "Stdlib/Tween",
         };
 
         for (const char* ModName : kStdlibModules)
@@ -806,7 +845,14 @@ namespace Lumina::Lua
                 LOG_ERROR("Lua stdlib: failed to preload module '{}'", ModName);
                 continue;
             }
-            lua_pop(L, 1); // discard returned module value
+
+            FStringView Path(ModName);
+            const size_t LastSlash = Path.find_last_of('/');
+            const FStringView Basename = (LastSlash != FStringView::npos)
+                ? Path.substr(LastSlash + 1)
+                : Path;
+
+            lua_setglobal(L, FString(Basename).c_str());
         }
     }
 
@@ -913,7 +959,7 @@ namespace Lumina::Lua
 
     namespace
     {
-        bool CompileSourceToBytecode(FStringView Code, TVector<uint8>& Out)
+        bool CompileSourceToBytecode(FStringView Code, TVector<uint8>& Out, FCompileDiagnostic* OutDiag)
         {
             lua_CompileOptions Options{};
             // Editor: opt 1 + full debug so the debugger can attach breakpoints; opt 2 inlines past lua_breakpoint.
@@ -929,7 +975,38 @@ namespace Lumina::Lua
             char* Bytecode = luau_compile(Code.data(), Code.length(), &Options, &BytecodeSize);
             if (Bytecode == nullptr)
             {
+                if (OutDiag)
+                {
+                    OutDiag->Message = "luau_compile returned null";
+                    OutDiag->Line    = -1;
+                }
                 Out.clear();
+                return false;
+            }
+
+            // Luau encodes compile errors as "version 0" bytecode: byte 0 is
+            // 0 (no real bytecode version starts at 0) followed by an error
+            // message string of form ":line: text". See BytecodeBuilder::getError.
+            if (BytecodeSize > 0 && Bytecode[0] == 0)
+            {
+                if (OutDiag)
+                {
+                    const char* MsgStart = Bytecode + 1;
+                    const size_t MsgLen  = BytecodeSize - 1;
+                    OutDiag->Message.assign(MsgStart, MsgLen);
+
+                    OutDiag->Line = -1;
+                    if (MsgLen > 1 && MsgStart[0] == ':')
+                    {
+                        int Parsed = 0, Consumed = 0;
+                        if (sscanf(MsgStart + 1, "%d:%n", &Parsed, &Consumed) == 1)
+                        {
+                            OutDiag->Line = Parsed;
+                        }
+                    }
+                }
+                Out.clear();
+                free(Bytecode);
                 return false;
             }
 
@@ -963,11 +1040,15 @@ namespace Lumina::Lua
             }
 
             FScriptCacheEntry Entry;
-            if (!CompileSourceToBytecode(ScriptData, Entry.Bytecode))
+            FCompileDiagnostic Diag;
+            if (!CompileSourceToBytecode(ScriptData, Entry.Bytecode, &Diag))
             {
-                LOG_ERROR("Lua - Compile failed for: {}", Path);
+                Diag.Path.assign(Path.data(), Path.size());
+                LOG_ERROR("Lua - Compile failed for {}: {}", Path, Diag.Message);
+                OnScriptCompileError.Broadcast(Path, Diag);
                 return {};
             }
+            OnScriptCompileSuccess.Broadcast(Path);
 
             // Piggyback schema harvest off the first instance.
             TSharedPtr<FScript> FirstScript = InstantiateFromBytecode(Entry.Bytecode, Path,
@@ -1158,11 +1239,15 @@ namespace Lumina::Lua
             }
 
             FModuleCacheEntry NewEntry;
-            if (!CompileSourceToBytecode(Source, NewEntry.Bytecode))
+            FCompileDiagnostic Diag;
+            if (!CompileSourceToBytecode(Source, NewEntry.Bytecode, &Diag))
             {
-                LOG_ERROR("Lua require: compile failed for '{}'", ResolvedPath);
+                Diag.Path = ResolvedPath;
+                LOG_ERROR("Lua require: compile failed for '{}': {}", ResolvedPath, Diag.Message);
+                OnScriptCompileError.Broadcast(FStringView(ResolvedPath.c_str(), ResolvedPath.size()), Diag);
                 return false;
             }
+            OnScriptCompileSuccess.Broadcast(FStringView(ResolvedPath.c_str(), ResolvedPath.size()));
 
             auto Inserted = ModuleCache.emplace(CacheKey, eastl::move(NewEntry));
             It = Inserted.first;

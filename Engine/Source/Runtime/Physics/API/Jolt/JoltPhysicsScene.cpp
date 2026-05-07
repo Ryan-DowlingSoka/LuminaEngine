@@ -34,11 +34,17 @@
 #include "World/Entity/Components/CharacterControllerComponent.h"
 #include "World/Entity/Components/DirtyComponent.h"
 #include "World/Entity/Components/PhysicsComponent.h"
+#include "World/Entity/Components/ScriptComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "world/entity/components/velocitycomponent.h"
 #include "World/Entity/Events/ImpulseEvent.h"
+#include "World/Entity/Events/LuaEventBus.h"
 #include "World/Subsystems/WorldSettings.h"
+#include "Scripting/Lua/Reference.h"
+#include "Scripting/Lua/Scripting.h"
+#include "Scripting/Lua/Stack.h"
+#include "lua.h"
 
 using namespace JPH::literals;
 
@@ -157,19 +163,231 @@ namespace Lumina::Physics
     static FObjectVsBroadPhaseLayerFilterImpl   GObjectVsBroadPhaseLayerFilter;
 
 
+    namespace
+    {
+        // Contact callbacks run with all bodies locked. Pull the manifold's
+        // average contact point + normal and the bodies' pre-step linear
+        // velocities so the game-thread dispatch is purely table-building.
+        FContactRecord BuildContactRecord(EContactEventType Type,
+                                          const JPH::Body& InBody1,
+                                          const JPH::Body& InBody2,
+                                          const JPH::ContactManifold& InManifold)
+        {
+            FContactRecord Record;
+            Record.Type      = Type;
+            Record.EntityA   = static_cast<entt::entity>(InBody1.GetUserData());
+            Record.EntityB   = static_cast<entt::entity>(InBody2.GetUserData());
+            Record.BodyIDA   = InBody1.GetID().GetIndexAndSequenceNumber();
+            Record.BodyIDB   = InBody2.GetID().GetIndexAndSequenceNumber();
+            Record.bSensorA  = InBody1.IsSensor();
+            Record.bSensorB  = InBody2.IsSensor();
+
+            JPH::Vec3 Sum = JPH::Vec3::sZero();
+            const uint32 N = InManifold.mRelativeContactPointsOn1.size();
+            if (N > 0)
+            {
+                for (uint32 i = 0; i < N; ++i)
+                {
+                    Sum += InManifold.mRelativeContactPointsOn1[i];
+                }
+                Sum /= float(N);
+            }
+            const JPH::RVec3 WorldPoint = InManifold.mBaseOffset + Sum;
+            Record.Point  = JoltUtils::FromJPHVec3(WorldPoint);
+            Record.Normal = JoltUtils::FromJPHVec3(InManifold.mWorldSpaceNormal);
+
+            const JPH::Vec3 V1 = InBody1.GetLinearVelocity();
+            const JPH::Vec3 V2 = InBody2.GetLinearVelocity();
+            Record.VelocityA = JoltUtils::FromJPHVec3(V1);
+            Record.VelocityB = JoltUtils::FromJPHVec3(V2);
+
+            const JPH::Vec3 RelVel = V2 - V1;
+            Record.ImpactSpeed = std::abs(RelVel.Dot(InManifold.mWorldSpaceNormal));
+            return Record;
+        }
+    }
+
     void FJoltContactListener::OnContactAdded(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings)
     {
-        
+        if (Scene)
+        {
+            Scene->EnqueueContactRecord(BuildContactRecord(EContactEventType::Added, inBody1, inBody2, inManifold));
+        }
     }
 
     void FJoltContactListener::OnContactPersisted(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings)
     {
-        ContactListener::OnContactPersisted(inBody1, inBody2, inManifold, ioSettings);
+        // Persisted contacts are intentionally not surfaced to scripts -- they fire
+        // every step and would drown the bus. Enter/Exit cover the script use case;
+        // C++ systems that want continuous contacts can read the bodies directly.
     }
 
     void FJoltContactListener::OnContactRemoved(const JPH::SubShapeIDPair& inSubShapePair)
     {
-        ContactListener::OnContactRemoved(inSubShapePair);
+        if (Scene == nullptr || BodyLockInterface == nullptr)
+        {
+            return;
+        }
+
+        // Bodies may have been removed by the time this fires; resolve via the
+        // no-lock interface, populate just what we can, and skip if either side
+        // is already gone.
+        const JPH::Body* B1 = BodyLockInterface->TryGetBody(inSubShapePair.GetBody1ID());
+        const JPH::Body* B2 = BodyLockInterface->TryGetBody(inSubShapePair.GetBody2ID());
+        if (B1 == nullptr || B2 == nullptr)
+        {
+            return;
+        }
+
+        FContactRecord Record;
+        Record.Type      = EContactEventType::Removed;
+        Record.EntityA   = static_cast<entt::entity>(B1->GetUserData());
+        Record.EntityB   = static_cast<entt::entity>(B2->GetUserData());
+        Record.BodyIDA   = B1->GetID().GetIndexAndSequenceNumber();
+        Record.BodyIDB   = B2->GetID().GetIndexAndSequenceNumber();
+        Record.bSensorA  = B1->IsSensor();
+        Record.bSensorB  = B2->IsSensor();
+        Record.Point     = glm::vec3(0.0f);
+        Record.Normal    = glm::vec3(0.0f, 1.0f, 0.0f);
+        Record.VelocityA = JoltUtils::FromJPHVec3(B1->GetLinearVelocity());
+        Record.VelocityB = JoltUtils::FromJPHVec3(B2->GetLinearVelocity());
+        Record.ImpactSpeed = 0.0f;
+
+        Scene->EnqueueContactRecord(Record);
+    }
+
+    void FJoltPhysicsScene::EnqueueContactRecord(const FContactRecord& Record)
+    {
+        FScopeLock Lock(ContactQueueMutex);
+        PendingContacts.push_back(Record);
+    }
+
+    namespace
+    {
+        // Build the per-listener payload table. Each side gets its own payload so
+        // self/other are correctly oriented. The Body* fields are 0xFFFFFFFF (Jolt
+        // invalid id) when the body has already been destroyed by the time the
+        // event drains -- scripts should treat them as informational.
+        Lua::FRef BuildCollisionPayload(lua_State* L,
+                                        bool bIsTriggerSide,
+                                        entt::entity SelfEntity,
+                                        entt::entity OtherEntity,
+                                        uint32 SelfBodyID,
+                                        uint32 OtherBodyID,
+                                        const FContactRecord& Record,
+                                        bool bFlipNormal)
+        {
+            lua_newtable(L);
+
+            Lua::TStack<entt::entity>::Push(L, SelfEntity);
+            lua_setfield(L, -2, "Entity");
+
+            Lua::TStack<entt::entity>::Push(L, OtherEntity);
+            lua_setfield(L, -2, "Other");
+
+            Lua::TStack<uint32>::Push(L, SelfBodyID);
+            lua_setfield(L, -2, "BodyID");
+
+            Lua::TStack<uint32>::Push(L, OtherBodyID);
+            lua_setfield(L, -2, "OtherBodyID");
+
+            Lua::TStack<glm::vec3>::Push(L, Record.Point);
+            lua_setfield(L, -2, "Point");
+
+            // Convention: Normal points outward from self toward other so scripts
+            // can react with `-Normal` to bounce away from the impact.
+            const glm::vec3 Normal = bFlipNormal ? -Record.Normal : Record.Normal;
+            Lua::TStack<glm::vec3>::Push(L, Normal);
+            lua_setfield(L, -2, "Normal");
+
+            const glm::vec3 SelfVel  = bFlipNormal ? Record.VelocityB : Record.VelocityA;
+            const glm::vec3 OtherVel = bFlipNormal ? Record.VelocityA : Record.VelocityB;
+            Lua::TStack<glm::vec3>::Push(L, SelfVel);
+            lua_setfield(L, -2, "Velocity");
+            Lua::TStack<glm::vec3>::Push(L, OtherVel);
+            lua_setfield(L, -2, "OtherVelocity");
+            Lua::TStack<glm::vec3>::Push(L, OtherVel - SelfVel);
+            lua_setfield(L, -2, "RelativeVelocity");
+
+            Lua::TStack<float>::Push(L, Record.ImpactSpeed);
+            lua_setfield(L, -2, "ImpactSpeed");
+
+            Lua::TStack<bool>::Push(L, bIsTriggerSide);
+            lua_setfield(L, -2, "bIsTrigger");
+
+            return Lua::FRef(L, -1);
+        }
+    }
+
+    void FJoltPhysicsScene::DispatchContactEvents()
+    {
+        TVector<FContactRecord> Drain;
+        {
+            FScopeLock Lock(ContactQueueMutex);
+            if (PendingContacts.empty())
+            {
+                return;
+            }
+            Drain.swap(PendingContacts);
+        }
+
+        lua_State* L = Lua::FScriptingContext::Get().GetVM();
+        if (L == nullptr)
+        {
+            return;
+        }
+
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+
+        // Invoke the cached FRef on SScriptComponent if the script defined one. Contact
+        // = solid (response) impacts; Overlap = at least one side was a sensor/trigger.
+        // Avoids any subscribe/dispatch boilerplate -- scripts just write a method.
+        auto Deliver = [&](entt::entity Self, entt::entity Other, uint32 SelfBody, uint32 OtherBody,
+                           const FContactRecord& Record, bool bFlipNormal, bool bIsAdded, bool bIsOverlap)
+        {
+            if (Self == entt::null || !Registry.valid(Self))
+            {
+                return;
+            }
+            SScriptComponent* Comp = Registry.try_get<SScriptComponent>(Self);
+            if (Comp == nullptr || Comp->Script == nullptr)
+            {
+                return;
+            }
+
+            const Lua::FRef& Func = bIsOverlap
+                ? (bIsAdded ? Comp->OverlapBeginFunc : Comp->OverlapEndFunc)
+                : (bIsAdded ? Comp->ContactBeginFunc : Comp->ContactEndFunc);
+            if (!Func.IsInvokable())
+            {
+                return;
+            }
+
+            // bIsTrigger field on the payload tells the script whether the OTHER side
+            // was a sensor; useful when the same handler covers both kinds.
+            const bool bOtherIsTrigger = bFlipNormal ? Record.bSensorA : Record.bSensorB;
+            Lua::FRef Payload = BuildCollisionPayload(L,
+                bOtherIsTrigger,
+                Self, Other,
+                SelfBody, OtherBody,
+                Record,
+                bFlipNormal);
+
+            // Pass the script's `self` table as the first argument so the user can write
+            // `function MyScript:OnContactBegin(Event)` and access self.Entity etc.
+            Func.InvokeAsCoroutine(Comp->Script->Reference, Payload);
+        };
+
+        for (const FContactRecord& Record : Drain)
+        {
+            const bool bAdded = (Record.Type == EContactEventType::Added);
+            const bool bOverlap = Record.bSensorA || Record.bSensorB;
+
+            Deliver(Record.EntityA, Record.EntityB, Record.BodyIDA, Record.BodyIDB,
+                    Record, /*bFlipNormal*/ false, bAdded, bOverlap);
+            Deliver(Record.EntityB, Record.EntityA, Record.BodyIDB, Record.BodyIDA,
+                    Record, /*bFlipNormal*/ true,  bAdded, bOverlap);
+        }
     }
 
     void FJoltContactListener::OverrideFrictionAndRestitution(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings)
@@ -224,7 +442,7 @@ namespace Lumina::Physics
         JoltSystem->SetPhysicsSettings(JoltSettings);
         
         entt::dispatcher& Dispatcher = World->GetEntityRegistry().ctx().get<entt::dispatcher&>();
-        ContactListener = MakeUnique<FJoltContactListener>(Dispatcher, &JoltSystem->GetBodyLockInterfaceNoLock());
+        ContactListener = MakeUnique<FJoltContactListener>(this, Dispatcher, &JoltSystem->GetBodyLockInterfaceNoLock());
         JoltSystem->SetContactListener(ContactListener.get());
         
         FEntityRegistry& Registry = World->GetEntityRegistry();
@@ -450,7 +668,11 @@ namespace Lumina::Physics
 
             JoltSystem->Update(FixedTimestep, (int)CollisionSteps, &Allocator, FJoltPhysicsContext::GetThreadPool());
             UpdateCharacters(FixedTimestep);
-            
+
+            // Drain enter/exit contacts captured by the listener during the step
+            // and dispatch entity-targeted Lua events while we're still on the
+            // game thread (registry + Lua VM are not threadsafe).
+            DispatchContactEvents();
 
             Accumulator -= (float)CollisionSteps * FixedTimestep;
         }
@@ -1242,6 +1464,7 @@ namespace Lumina::Physics
         glm::vec3 ColliderTranslationOffset(0.0f);
         glm::vec3 ColliderRotationOffset(0.0f);
         bool      bIsTriangleMesh = false;
+        bool      bColliderIsTrigger = false;
 
         STransformComponent* TransformComponent = Registry.try_get<STransformComponent>(Entity);
         if (!TransformComponent)
@@ -1254,6 +1477,7 @@ namespace Lumina::Physics
         {
             ColliderTranslationOffset       = BC->TranslationOffset;
             ColliderRotationOffset          = BC->RotationOffset;
+            bColliderIsTrigger              = BC->bIsTrigger;
 
             JPH::BoxShapeSettings Settings(JoltUtils::ToJPHVec3(BC->HalfExtent * TransformComponent->GetScale()));
             Settings.SetEmbedded();
@@ -1268,6 +1492,7 @@ namespace Lumina::Physics
         else if (SSphereColliderComponent* SC = Registry.try_get<SSphereColliderComponent>(Entity))
         {
             ColliderTranslationOffset           = SC->TranslationOffset;
+            bColliderIsTrigger                  = SC->bIsTrigger;
 
             JPH::SphereShapeSettings Settings(SC->Radius * TransformComponent->MaxScale());
             Settings.SetEmbedded();
@@ -1283,6 +1508,7 @@ namespace Lumina::Physics
         {
             ColliderTranslationOffset = MC->TranslationOffset;
             ColliderRotationOffset    = MC->RotationOffset;
+            bColliderIsTrigger        = MC->bIsTrigger;
 
             CStaticMesh* Mesh = MC->Mesh.Get();
             if (Mesh == nullptr)
@@ -1364,7 +1590,9 @@ namespace Lumina::Physics
 
         Settings.mNumPositionStepsOverride  = RigidBodyComponent.NumPositionStepsOverride;
         Settings.mNumVelocityStepsOverride  = RigidBodyComponent.NumVelocityStepsOverride;
-        Settings.mIsSensor                  = RigidBodyComponent.bIsSensor;
+        // Either the rigid body's own bIsSensor or the collider's bIsTrigger turns this body
+        // into a query-only sensor. The collider flag is the friendlier "trigger box" path.
+        Settings.mIsSensor                  = RigidBodyComponent.bIsSensor || bColliderIsTrigger;
         Settings.mUseManifoldReduction      = RigidBodyComponent.bUseManifoldReduction;
         Settings.mApplyGyroscopicForce      = RigidBodyComponent.bApplyGyroscopicForce;
         Settings.mMotionQuality             = RigidBodyComponent.MotionQualityLevel == 0 ? JPH::EMotionQuality::Discrete : JPH::EMotionQuality::LinearCast;

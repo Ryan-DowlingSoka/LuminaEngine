@@ -50,7 +50,7 @@ namespace Lumina
             ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthStretch);
 
             ImGuiListClipper Clipper;
-            Clipper.Begin(static_cast<int>(VisibleList.size()), kRowHeight);
+            Clipper.Begin(static_cast<int>(VisibleList.size()));
             while (Clipper.Step())
             {
                 for (int i = Clipper.DisplayStart; i < Clipper.DisplayEnd; ++i)

@@ -229,5 +229,17 @@ namespace Lumina
         char                            BpLogMessageBuffer[256] = {0};
         int                             BpIgnoreCount = 0;
         bool                            bBpEnabled = true;
+
+        // Compile-error overlay. The most recent compile diagnostic for this
+        // script (line + message); rendered as a red gutter marker plus a
+        // status-bar line. Cleared on a successful recompile.
+        FDelegateHandle                     CompileErrorHandle;
+        FDelegateHandle                     CompileSuccessHandle;
+        bool                                bHasCompileError = false;
+        int                                 CompileErrorLine = -1; // 1-based
+        FString                             CompileErrorMessage;
+
+        void ApplyCompileError(int Line, const FString& Message);
+        void ClearCompileError();
     };
 }

@@ -22,7 +22,8 @@ namespace Lumina
         bool Initialize();
         void Shutdown();
 
-        void BeginFrame(ICommandList& CmdList, FRHIImage* Target, const glm::uvec2& ViewportSize);
+        // LogicalSize=0 mirrors ViewportSize; nonzero decouples projection (layout pixels) from RT pixels.
+        void BeginFrame(ICommandList& CmdList, FRHIImage* Target, const glm::uvec2& ViewportSize, const glm::uvec2& LogicalSize = glm::uvec2(0));
         void EndFrame();
 
         Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> Vertices, Rml::Span<const int> Indices) override;

@@ -1,15 +1,14 @@
-local EntityScript = require("Stdlib/EntityScript")
-local Script = EntityScript.new()
+local Script: EntityScript = EntityScript.new()
 
 local PlayerEntity = 1048580
-local PlayerTransform: STransformComponent?
+local PlayerTransform: STransformComponent? = nil
 
-function Script:Update(DeltaTime: number)
+function Script:OnUpdate(DeltaTime: number)
     if PlayerTransform == nil then
-        PlayerTransform = _Registry:Get(PlayerEntity, STransformComponent)
+        PlayerTransform = self:GetComponentOf(PlayerEntity, STransformComponent)
     end
 
-    self.Transform:SetLocation(PlayerTransform:GetLocation() + vector.create(0.0, 1.0, 0.0))
+    self:SetLocation(PlayerTransform:GetLocation() + vector.create(0.0, 1.0, 0.0))
 
     local MouseX = Input.GetMouseDeltaX() * 0.1
     local MouseY = Input.GetMouseDeltaY() * 0.1

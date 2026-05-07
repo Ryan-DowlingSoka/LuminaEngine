@@ -194,6 +194,33 @@ namespace Lumina
         {
             return ECS::Utils::DuplicateEntity(Registry, Entity);
         }
+
+        static Lua::FRef GetScriptTable_Lua(FEntityRegistry& Registry, entt::entity Entity)
+        {
+            LUMINA_PROFILE_SECTION("Get Script Table [Lua]");
+            if (!Registry.valid(Entity))
+            {
+                return {};
+            }
+
+            SScriptComponent* ScriptComp = Registry.try_get<SScriptComponent>(Entity);
+            if (ScriptComp == nullptr || ScriptComp->Script == nullptr)
+            {
+                return {};
+            }
+
+            return ScriptComp->Script->Reference;
+        }
+
+        // Per-thread world resolver. Every entity script thread publishes its
+        // owning CWorld via lua_setthreaddata in SetupScriptComponent, so any
+        // C function bound into the global table can reach back into the
+        // correct world without taking it as an explicit argument.
+        static CWorld* CurrentWorld(lua_State* L)
+        {
+            const auto* TD = static_cast<Lua::FScriptThreadData*>(lua_getthreaddata(L));
+            return TD ? TD->World : nullptr;
+        }
     }
     
     
@@ -216,11 +243,6 @@ namespace Lumina
             .AddFunction<&FLuaEventBus::DispatchDeferred>("DispatchDeferred")
             .AddFunction<&FLuaEventBus::ClearEvent>("ClearEvent")
             .AddFunction<&FLuaEventBus::GetSubscriberCount>("GetSubscriberCount")
-            .Register();
-
-        GlobalRef.NewClass<FEntityMessageBus>("EntityMessageBus")
-            .AddFunction<&FEntityMessageBus::Send>("Send")
-            .AddFunction<&FEntityMessageBus::SendDeferred>("SendDeferred")
             .Register();
         
         GlobalRef.NewClass<Physics::IPhysicsScene>("PhysicsScene")
@@ -252,6 +274,84 @@ namespace Lumina
             .AddFunction<&LuaBinds::RuntimeViewGetEntities_Lua>("GetEntities")
             .Register();
         
+        // Camera/World tables: thin wrappers that resolve their target world
+        // from the per-thread script context. Raw cfunctions because the
+        // typed binding wrappers don't expose lua_State* to the body.
+        if (lua_State* VM = Lua::FScriptingContext::Get().GetVM())
+        {
+            Lua::FRef CameraTable = GlobalRef.NewTable("Camera");
+            CameraTable.Push();
+
+            lua_pushcfunction(VM, +[](lua_State* L) -> int
+            {
+                CWorld* World = LuaBinds::CurrentWorld(L);
+                const entt::entity E = lua_isnumber(L, 1)
+                    ? static_cast<entt::entity>(static_cast<uint32>(lua_tointeger(L, 1)))
+                    : entt::null;
+                if (World) World->SetActiveCamera(E);
+                return 0;
+            }, "Camera.SetActive");
+            lua_rawsetfield(VM, -2, "SetActive");
+
+            lua_pushcfunction(VM, +[](lua_State* L) -> int
+            {
+                CWorld* World = LuaBinds::CurrentWorld(L);
+                const entt::entity E = World ? World->GetActiveCameraEntity() : entt::null;
+                lua_pushinteger(L, static_cast<int64_t>(static_cast<uint32>(E)));
+                return 1;
+            }, "Camera.GetActive");
+            lua_rawsetfield(VM, -2, "GetActive");
+            lua_pop(VM, 1);
+
+            Lua::FRef WorldTable = GlobalRef.NewTable("World");
+            WorldTable.Push();
+
+            lua_pushcfunction(VM, +[](lua_State* L) -> int
+            {
+                CWorld* World = LuaBinds::CurrentWorld(L);
+                const char* Name = luaL_checkstring(L, 1);
+                const entt::entity E = World ? World->GetEntityByName(FName(Name)) : entt::null;
+                lua_pushinteger(L, static_cast<int64_t>(static_cast<uint32>(E)));
+                return 1;
+            }, "World.FindByName");
+            lua_rawsetfield(VM, -2, "FindByName");
+
+            lua_pushcfunction(VM, +[](lua_State* L) -> int
+            {
+                CWorld* World = LuaBinds::CurrentWorld(L);
+                const char* Tag = luaL_checkstring(L, 1);
+                const entt::entity E = World ? World->GetEntityByTag(FName(Tag)) : entt::null;
+                lua_pushinteger(L, static_cast<int64_t>(static_cast<uint32>(E)));
+                return 1;
+            }, "World.FindByTag");
+            lua_rawsetfield(VM, -2, "FindByTag");
+
+            lua_pushcfunction(VM, +[](lua_State* L) -> int
+            {
+                CWorld* World = LuaBinds::CurrentWorld(L);
+                lua_pushinteger(L, World ? static_cast<int64_t>(World->GetNumEntities()) : 0);
+                return 1;
+            }, "World.GetNumEntities");
+            lua_rawsetfield(VM, -2, "GetNumEntities");
+
+            lua_pushcfunction(VM, +[](lua_State* L) -> int
+            {
+                CWorld* World = LuaBinds::CurrentWorld(L);
+                lua_pushnumber(L, World ? World->GetWorldDeltaTime() : 0.0);
+                return 1;
+            }, "World.GetDeltaTime");
+            lua_rawsetfield(VM, -2, "GetDeltaTime");
+
+            lua_pushcfunction(VM, +[](lua_State* L) -> int
+            {
+                CWorld* World = LuaBinds::CurrentWorld(L);
+                lua_pushnumber(L, World ? World->GetTimeSinceWorldCreation() : 0.0);
+                return 1;
+            }, "World.GetTimeSinceCreation");
+            lua_rawsetfield(VM, -2, "GetTimeSinceCreation");
+            lua_pop(VM, 1);
+        }
+
         GlobalRef.NewClass<FEntityRegistry>("FEntityRegistry")
             .AddFunction<&FEntityRegistry::valid>("Valid")
             .AddFunction<&FEntityRegistry::orphan>("Orphan")
@@ -265,6 +365,7 @@ namespace Lumina
             .AddFunction<&LuaBinds::EmplaceComponent_Lua>("Emplace")
             .AddFunction<&LuaBinds::ForEachEntity_Lua>("ForEachEntity")
             .AddFunction<&LuaBinds::GetComponent_Lua>("Get")
+            .AddFunction<&LuaBinds::GetScriptTable_Lua>("GetScriptTable")
             .AddFunction<&LuaBinds::IsEntityNull_Lua>("IsNull")
             .AddFunction<&LuaBinds::RuntimeView_Lua>("RuntimeView")
             .AddFunction<&LuaBinds::DispatchEvent_Lua>("DispatchEvent")
@@ -341,8 +442,6 @@ namespace Lumina
         EntityRegistry.ctx().emplace<FSystemContext&>(SystemContext);
         EntityRegistry.ctx().emplace<CWorld*>(this);
         EntityRegistry.ctx().emplace<FLuaEventBus*>(&LuaEventBus);
-        EntityRegistry.ctx().emplace<FEntityMessageBus*>(&MessageBus);
-        MessageBus.SetWorld(this);
 
         CreateRenderer();
         RegisterSystems();
@@ -373,7 +472,13 @@ namespace Lumina
         {
             lua_newtable(VM);
             DrawInterfaceRef = Lua::FRef(VM, -1);
-            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawSphere>("DrawSphere", static_cast<IPrimitiveDrawInterface*>(this));
+            auto* DI = static_cast<IPrimitiveDrawInterface*>(this);
+            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawLine>   ("DrawLine",    DI);
+            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawBox>    ("DrawBox",     DI);
+            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawSphere> ("DrawSphere",  DI);
+            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawCapsule>("DrawCapsule", DI);
+            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawCone>   ("DrawCone",    DI);
+            DrawInterfaceRef.SetFunction<&IPrimitiveDrawInterface::DrawArrow>  ("DrawArrow",   DI);
         }
         
         auto TransformView = EntityRegistry.view<STransformComponent>();
@@ -426,7 +531,6 @@ namespace Lumina
         }
         
         LuaEventBus.Clear();
-        MessageBus.Clear();
         TimerManager.Clear();
 
         RegistryPending.clear<>();
@@ -495,10 +599,6 @@ namespace Lumina
             {
                 CPU_PROFILE_SCOPE_COLOR("Lua Events (Deferred)", FColor(0.95f, 0.70f, 0.25f));
                 LuaEventBus.ProcessDeferred();
-            }
-            {
-                CPU_PROFILE_SCOPE_COLOR("Lua Messages (Deferred)", FColor(0.95f, 0.55f, 0.25f));
-                MessageBus.ProcessDeferred();
             }
             {
                 CPU_PROFILE_SCOPE("Timers");
@@ -890,10 +990,16 @@ namespace Lumina
                 EntityRegistry.emplace_or_replace<FNeedsTransformUpdate>(NewEntity);
             }
 
-            // Same for the rigid body's Jolt BodyID — invalidate so the physics scene allocates a fresh body.
-            if (SRigidBodyComponent* NewBody = EntityRegistry.try_get<SRigidBodyComponent>(NewEntity))
+            // Re-copy SRigidBodyComponent explicitly. The storage iteration above skips it
+            // when a default rigid body has already been emplaced by a collider on_construct
+            // hook (entt fires emplace_or_replace<SRigidBodyComponent> when SBoxCollider/etc.
+            // are pushed onto the duplicate), which clobbers BodyType/Mass/CollisionProfile
+            // back to defaults. Force the source's data through, then invalidate the body id
+            // so the physics scene allocates a fresh Jolt body.
+            if (const SRigidBodyComponent* SourceBody = EntityRegistry.try_get<SRigidBodyComponent>(Source))
             {
-                NewBody->BodyID = 0xFFFFFFFF;
+                SRigidBodyComponent& NewBody = EntityRegistry.emplace_or_replace<SRigidBodyComponent>(NewEntity, *SourceBody);
+                NewBody.BodyID = 0xFFFFFFFF;
                 EntityRegistry.emplace_or_replace<FNeedsPhysicsBodyUpdate>(NewEntity);
             }
 
@@ -1161,7 +1267,6 @@ namespace Lumina
         ScriptComponent.Script->Reference.RawSet("_Registry", &EntityRegistry);
         ScriptComponent.Script->Reference.RawSet("_Physics",  PhysicsScene.get());
         ScriptComponent.Script->Reference.RawSet("_Events",   &LuaEventBus);
-        ScriptComponent.Script->Reference.RawSet("_Messages", &MessageBus);
         ScriptComponent.Script->Reference.RawSet("_Timers",   &TimerManager);
         ScriptComponent.Script->Reference.RawSet("_Draw",     DrawInterfaceRef);
 
@@ -1171,11 +1276,20 @@ namespace Lumina
         ScriptComponent.Script->Reference.RawSet("Transform", &EntityRegistry.get<STransformComponent>(Entity));
         ScriptComponent.Script->Reference.RawSet("Name",      EntityRegistry.get<SNameComponent>(Entity).Name);
         
-        ScriptComponent.ScriptMetaTable = ScriptComponent.Script->Reference["Meta"];
-        ScriptComponent.AttachFunc      = ScriptComponent.Script->Reference["OnAttach"];
-        ScriptComponent.ReadyFunc       = ScriptComponent.Script->Reference["OnReady"];
-        ScriptComponent.UpdateFunc      = ScriptComponent.Script->Reference["OnUpdate"];
-        ScriptComponent.DetachFunc      = ScriptComponent.Script->Reference["OnDetach"];
+        ScriptComponent.ScriptMetaTable     = ScriptComponent.Script->Reference["Meta"];
+        ScriptComponent.AttachFunc          = ScriptComponent.Script->Reference["OnAttach"];
+        ScriptComponent.ReadyFunc           = ScriptComponent.Script->Reference["OnReady"];
+        ScriptComponent.UpdateFunc          = ScriptComponent.Script->Reference["OnUpdate"];
+        ScriptComponent.DetachFunc          = ScriptComponent.Script->Reference["OnDetach"];
+
+        // Physics hooks: cache only if the script defined them. The base EntityScript
+        // table doesn't ship no-op fallbacks for these (unlike OnUpdate etc.), so the
+        // FRef stays invalid for scripts that don't care, and the physics dispatch
+        // skips them via IsInvokable().
+        ScriptComponent.ContactBeginFunc    = ScriptComponent.Script->Reference["OnContactBegin"];
+        ScriptComponent.ContactEndFunc      = ScriptComponent.Script->Reference["OnContactEnd"];
+        ScriptComponent.OverlapBeginFunc    = ScriptComponent.Script->Reference["OnOverlapBegin"];
+        ScriptComponent.OverlapEndFunc      = ScriptComponent.Script->Reference["OnOverlapEnd"];
         
         // Sync per-instance overrides with the current schema, then apply them
         // by mutating the Exports table the script references.
@@ -1316,11 +1430,15 @@ namespace Lumina
         TimerManager.ClearTimersForEntity(Entity);
 
         ScriptComponent.Script.reset();
-        ScriptComponent.AttachFunc      = {};
-        ScriptComponent.ReadyFunc       = {};
-        ScriptComponent.UpdateFunc      = {};
-        ScriptComponent.DetachFunc      = {};
-        ScriptComponent.ScriptMetaTable = {};
+        ScriptComponent.AttachFunc          = {};
+        ScriptComponent.ReadyFunc           = {};
+        ScriptComponent.UpdateFunc          = {};
+        ScriptComponent.DetachFunc          = {};
+        ScriptComponent.ContactBeginFunc    = {};
+        ScriptComponent.ContactEndFunc      = {};
+        ScriptComponent.OverlapBeginFunc    = {};
+        ScriptComponent.OverlapEndFunc      = {};
+        ScriptComponent.ScriptMetaTable     = {};
         ScriptComponent.MessageHandlers.clear();
 
         OnScriptComponentCreated(Entity, ScriptComponent, /*bRunReady*/ true);

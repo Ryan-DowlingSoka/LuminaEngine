@@ -4945,8 +4945,11 @@ bool TextEditor::Autocomplete::render(Document& document, Cursors& cursors, cons
 						currentSelection++;
 					}
 
-				// use selected suggestion if user hit tab of return
-				} else if (ImGui::IsKeyPressed(ImGuiKey_Tab) || ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
+				// Tab accepts the selected suggestion. Enter is intentionally
+				// NOT bound to accept — the popup auto-shows while typing,
+				// and stealing Enter for accept makes "type word, press
+				// Enter for newline" insert the suggestion instead.
+				} else if (ImGui::IsKeyPressed(ImGuiKey_Tab)) {
 					requestDeactivation = true;
 					result = true;
 
@@ -5019,7 +5022,10 @@ void TextEditor::Autocomplete::setSuggestions(const std::vector<std::string>& su
 //
 
 bool TextEditor::Autocomplete::isSpecialKeyPressed() const {
-	for (auto key : {ImGuiKey_Tab, ImGuiKey_Enter, ImGuiKey_KeypadEnter, ImGuiKey_UpArrow, ImGuiKey_DownArrow}) {
+	// Keys the editor must not handle while autocomplete is active.
+	// Enter/KeypadEnter are intentionally absent so a newline still inserts
+	// when the popup happens to be open — Tab is the accept key.
+	for (auto key : {ImGuiKey_Tab, ImGuiKey_UpArrow, ImGuiKey_DownArrow}) {
 		if (ImGui::IsKeyPressed(key)) {
 			return true;
 		}

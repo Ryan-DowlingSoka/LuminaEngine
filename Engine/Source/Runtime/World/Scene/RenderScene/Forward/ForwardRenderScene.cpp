@@ -4546,75 +4546,86 @@ namespace Lumina
 
     namespace
     {
-        // Mirror of VolumetricLighting.slang::FPushConstants. Kept under
-        // the 128-byte Vulkan minimum guarantee.
+        // Mirror of VolumetricLighting.slang::FPushConstants and
+        // VolumetricUpsample.slang::FPushConstants.
+        constexpr uint32 GVolumetricMaxLocalLights = 16;
+
         struct FVolumetricLightingPushConstants
         {
-            uint32   NumSteps;          // Ray-march sample count along the camera ray.
-            float    MaxDistance;       // Hard cap on march length (meters); shorter = cheaper, less far fog.
-            float    Density;           // Participating-media density. Scales overall scattering strength.
-            float    Anisotropy;        // Henyey-Greenstein g in [-1, 1]. Positive = forward scatter (sunbeam look).
-            uint32   ScreenSize[2];
+            uint32   NumSteps;
+            float    MaxDistance;
+            float    Density;
+            float    Anisotropy;
+            uint32   ScreenSize[2];        // Half-res output dimensions.
             float    InvScreenSize[2];
-            float    Time;              // For temporal jitter rotation.
-            float    _Pad0;
-            float    _Pad1;
-            float    _Pad2;
+            float    Time;
+            uint32   bSunVolumetric;       // 1 if sun (light 0) opted in.
+            uint32   NumLocalVolumetric;   // <= GVolumetricMaxLocalLights.
+            uint32   _Pad0;
+            uint32   LocalLightIndices[GVolumetricMaxLocalLights];
         };
         static_assert(sizeof(FVolumetricLightingPushConstants) <= 128,
-            "Volumetric push constants must stay within the 128B Vulkan minimum.");
+            "Volumetric march push constants must stay within the 128B Vulkan minimum.");
+
+        struct FVolumetricUpsamplePushConstants
+        {
+            float    HalfTexelSize[2];
+            float    DepthSigma;
+            float    _Pad0;
+        };
+        static_assert(sizeof(FVolumetricUpsamplePushConstants) <= 128,
+            "Volumetric upsample push constants must stay within the 128B Vulkan minimum.");
     }
 
     void FForwardRenderScene::VolumetricLightingPass(ICommandList& CmdList)
     {
-        // Cheap CPU-side early-out: skip the whole pass when no light has the
-        // volumetric flag. The walk over LightData.Lights is O(NumLights) but
-        // NumLights is typically a handful and saves a fullscreen ray-march.
-        bool bAnyVolumetric = false;
-        for (uint32 i = 0; i < LightData.NumLights; ++i)
+        // Build a CPU-side list of the volumetric lights this frame so the
+        // shader can iterate them directly instead of scanning every active
+        // light with a flag check. Sun (index 0) is special-cased -- its
+        // phase + radiance can be hoisted out of the per-step inner loop.
+        bool   bSunVolumetric = false;
+        uint32 LocalIndices[GVolumetricMaxLocalLights];
+        uint32 NumLocal = 0;
+
+        if (LightData.NumLights > 0
+            && EnumHasAnyFlags(LightData.Lights[0].Flags, ELightFlags::Directional)
+            && EnumHasAnyFlags(LightData.Lights[0].Flags, ELightFlags::Volumetric))
         {
-            if (EnumHasAnyFlags(LightData.Lights[i].Flags, ELightFlags::Volumetric))
+            bSunVolumetric = true;
+        }
+
+        for (uint32 i = 1; i < LightData.NumLights; ++i)
+        {
+            if (!EnumHasAnyFlags(LightData.Lights[i].Flags, ELightFlags::Volumetric))
             {
-                bAnyVolumetric = true;
+                continue;
+            }
+            if (NumLocal >= GVolumetricMaxLocalLights)
+            {
+                // Quietly clamp -- typical scenes have 1-3 volumetric lights.
                 break;
             }
+            LocalIndices[NumLocal++] = i;
         }
-        if (!bAnyVolumetric)
+
+        if (!bSunVolumetric && NumLocal == 0)
         {
             return;
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Volumetric Lighting Pass", tracy::Color::Orange3);
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader("VolumetricLighting.slang");
-        if (!VertexShader || !PixelShader)
+        FRHIVertexShaderRef VertexShader  = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
+        FRHIPixelShaderRef  MarchPS       = FShaderLibrary::GetPixelShader("VolumetricLighting.slang");
+        FRHIPixelShaderRef  UpsamplePS    = FShaderLibrary::GetPixelShader("VolumetricUpsample.slang");
+        if (!VertexShader || !MarchPS || !UpsamplePS)
         {
             return;
         }
 
-        // Additive blend into HDR. The opaque + transparent scene already lives
-        // there; volumetric scattering is a separable additive term so we just
-        // accumulate on top without disturbing the existing color.
-        FBlendState::RenderTarget Blend0;
-        Blend0.SetBlendEnable(true);
-        Blend0.SetSrcBlend(EBlendFactor::One);
-        Blend0.SetDestBlend(EBlendFactor::One);
-        Blend0.SetBlendOp(EBlendOp::Add);
-        Blend0.SetSrcBlendAlpha(EBlendFactor::One);
-        Blend0.SetDestBlendAlpha(EBlendFactor::One);
-        Blend0.SetBlendOpAlpha(EBlendOp::Add);
-
-        FBlendState BlendState;
-        BlendState.SetRenderTarget(0, Blend0);
-
-        FRenderPassDesc::FAttachment Attachment; Attachment
-            .SetImage(GetNamedImage(ENamedImage::HDR))
-            .SetLoadOp(ERenderLoadOp::Load);
-
-        FRenderPassDesc RenderPass; RenderPass
-            .AddColorAttachment(Attachment)
-            .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+        FRHIImage* HDR        = GetNamedImage(ENamedImage::HDR);
+        FRHIImage* HalfRes    = GetNamedImage(ENamedImage::VolumetricHalfRes);
+        FRHIImage* SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
 
         FRasterState RasterState;
         RasterState.SetCullNone();
@@ -4623,63 +4634,149 @@ namespace Lumina
         DepthState.DisableDepthTest();
         DepthState.DisableDepthWrite();
 
-        FRenderState RenderState;
-        RenderState.SetRasterState(RasterState);
-        RenderState.SetBlendState(BlendState);
-        RenderState.SetDepthStencilState(DepthState);
+        // ---- Pass 1: half-res ray march into VolumetricHalfRes. ----------
+        // No blend; this RT is owned by the volumetric pipeline and overwritten
+        // every frame.
+        {
+            FBindingLayoutDesc DepthLayoutDesc;
+            DepthLayoutDesc.SetBindingIndex(2)
+                .SetVisibility(ERHIShaderType::Fragment)
+                .AddItem(FBindingLayoutItem::Texture_SRV(0));
+            FRHIBindingLayout* DepthLayout = BindingCache.GetOrCreateBindingLayout(DepthLayoutDesc);
 
-        // Set 2: scene depth as SRV. The base pass + terrain finished writing
-        // depth before this point, so reading it here picks up every opaque
-        // surface. Transparent fragments don't write depth (WBOIT) so they
-        // don't occlude fog -- desirable for the typical "glass + light shaft"
-        // case.
-        FBindingLayoutDesc DepthLayoutDesc;
-        DepthLayoutDesc.SetBindingIndex(2)
-            .SetVisibility(ERHIShaderType::Fragment)
-            .AddItem(FBindingLayoutItem::Texture_SRV(0));
-        FRHIBindingLayout* DepthLayout = BindingCache.GetOrCreateBindingLayout(DepthLayoutDesc);
+            FRHISamplerRef PointClamp = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
-        FRHISamplerRef PointClamp = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+            FBindingSetDesc DepthSetDesc;
+            DepthSetDesc.AddItem(FBindingSetItem::TextureSRV(0, SceneDepth, PointClamp));
+            FRHIBindingSetRef DepthSet = GRenderContext->CreateBindingSet(DepthSetDesc, DepthLayout);
 
-        FBindingSetDesc DepthSetDesc;
-        DepthSetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::DepthAttachment), PointClamp));
-        FRHIBindingSetRef DepthSet = GRenderContext->CreateBindingSet(DepthSetDesc, DepthLayout);
+            FRenderPassDesc::FAttachment Attachment; Attachment
+                .SetImage(HalfRes)
+                .SetLoadOp(ERenderLoadOp::Clear);
 
-        FGraphicsPipelineDesc Desc;
-        Desc.SetDebugName("Volumetric Lighting Pass");
-        Desc.SetRenderState(RenderState);
-        Desc.AddBindingLayout(SceneBindingLayout);
-        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-        Desc.AddBindingLayout(DepthLayout);
-        Desc.SetVertexShader(VertexShader);
-        Desc.SetPixelShader(PixelShader);
+            FRenderPassDesc RenderPass; RenderPass
+                .AddColorAttachment(Attachment)
+                .SetRenderArea(HalfRes->GetExtent());
 
-        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+            FRenderState RenderState;
+            RenderState.SetRasterState(RasterState);
+            RenderState.SetDepthStencilState(DepthState);
 
-        FGraphicsState GraphicsState;
-        GraphicsState.AddBindingSet(SceneBindingSet);
-        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-        GraphicsState.AddBindingSet(DepthSet);
-        GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.SetRenderPass(RenderPass);
-        GraphicsState.SetViewportState(SceneViewportState);
+            FGraphicsPipelineDesc Desc;
+            Desc.SetDebugName("Volumetric Lighting March");
+            Desc.SetRenderState(RenderState);
+            Desc.AddBindingLayout(SceneBindingLayout);
+            Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+            Desc.AddBindingLayout(DepthLayout);
+            Desc.SetVertexShader(VertexShader);
+            Desc.SetPixelShader(MarchPS);
 
-        CmdList.SetGraphicsState(GraphicsState);
+            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
-        FRHIImage* HDR = GetNamedImage(ENamedImage::HDR);
-        FVolumetricLightingPushConstants PC = {};
-        PC.NumSteps         = 32;
-        PC.MaxDistance      = 200.0f;
-        PC.Density          = 0.4f;
-        PC.Anisotropy       = 0.6f;
-        PC.ScreenSize[0]    = HDR->GetSizeX();
-        PC.ScreenSize[1]    = HDR->GetSizeY();
-        PC.InvScreenSize[0] = 1.0f / (float)HDR->GetSizeX();
-        PC.InvScreenSize[1] = 1.0f / (float)HDR->GetSizeY();
-        PC.Time             = SceneGlobalData.Time;
+            FGraphicsState GraphicsState;
+            GraphicsState.AddBindingSet(SceneBindingSet);
+            GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            GraphicsState.AddBindingSet(DepthSet);
+            GraphicsState.SetPipeline(Pipeline);
+            GraphicsState.SetRenderPass(RenderPass);
+            GraphicsState.SetViewportState(MakeViewportStateFromImage(HalfRes));
 
-        CmdList.SetPushConstants(&PC, sizeof(PC));
-        CmdList.Draw(3, 1, 0, 0);
+            CmdList.SetGraphicsState(GraphicsState);
+
+            FVolumetricLightingPushConstants PC = {};
+            PC.NumSteps           = 16;
+            PC.MaxDistance        = 200.0f;
+            PC.Density            = 0.4f;
+            PC.Anisotropy         = 0.6f;
+            PC.ScreenSize[0]      = HalfRes->GetSizeX();
+            PC.ScreenSize[1]      = HalfRes->GetSizeY();
+            PC.InvScreenSize[0]   = 1.0f / (float)HalfRes->GetSizeX();
+            PC.InvScreenSize[1]   = 1.0f / (float)HalfRes->GetSizeY();
+            PC.Time               = SceneGlobalData.Time;
+            PC.bSunVolumetric     = bSunVolumetric ? 1u : 0u;
+            PC.NumLocalVolumetric = NumLocal;
+            for (uint32 i = 0; i < NumLocal; ++i)
+            {
+                PC.LocalLightIndices[i] = LocalIndices[i];
+            }
+
+            CmdList.SetPushConstants(&PC, sizeof(PC));
+            CmdList.Draw(3, 1, 0, 0);
+        }
+
+        // ---- Pass 2: depth-aware bilateral upsample, additive into HDR. --
+        {
+            FBlendState::RenderTarget Additive;
+            Additive.SetBlendEnable(true);
+            Additive.SetSrcBlend(EBlendFactor::One);
+            Additive.SetDestBlend(EBlendFactor::One);
+            Additive.SetBlendOp(EBlendOp::Add);
+            Additive.SetSrcBlendAlpha(EBlendFactor::One);
+            Additive.SetDestBlendAlpha(EBlendFactor::One);
+            Additive.SetBlendOpAlpha(EBlendOp::Add);
+
+            FBlendState BlendState;
+            BlendState.SetRenderTarget(0, Additive);
+
+            // Set 0: half-res scatter (linear-clamp) + scene depth (point-clamp).
+            FBindingLayoutDesc UpLayoutDesc;
+            UpLayoutDesc.SetBindingIndex(0)
+                .SetVisibility(ERHIShaderType::Fragment)
+                .AddItem(FBindingLayoutItem::Texture_SRV(0))
+                .AddItem(FBindingLayoutItem::Texture_SRV(1));
+            FRHIBindingLayout* UpLayout = BindingCache.GetOrCreateBindingLayout(UpLayoutDesc);
+
+            FRHISamplerRef LinearClamp = TStaticRHISampler<true,  true,  AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+            FRHISamplerRef PointClamp  = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+            FBindingSetDesc UpSetDesc;
+            UpSetDesc.AddItem(FBindingSetItem::TextureSRV(0, HalfRes,    LinearClamp));
+            UpSetDesc.AddItem(FBindingSetItem::TextureSRV(1, SceneDepth, PointClamp));
+            FRHIBindingSetRef UpSet = GRenderContext->CreateBindingSet(UpSetDesc, UpLayout);
+
+            FRenderPassDesc::FAttachment Attachment; Attachment
+                .SetImage(HDR)
+                .SetLoadOp(ERenderLoadOp::Load);
+
+            FRenderPassDesc RenderPass; RenderPass
+                .AddColorAttachment(Attachment)
+                .SetRenderArea(HDR->GetExtent());
+
+            FRenderState RenderState;
+            RenderState.SetRasterState(RasterState);
+            RenderState.SetBlendState(BlendState);
+            RenderState.SetDepthStencilState(DepthState);
+
+            FGraphicsPipelineDesc Desc;
+            Desc.SetDebugName("Volumetric Lighting Upsample");
+            Desc.SetRenderState(RenderState);
+            Desc.AddBindingLayout(UpLayout);
+            Desc.SetVertexShader(VertexShader);
+            Desc.SetPixelShader(UpsamplePS);
+
+            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+            FGraphicsState GraphicsState;
+            GraphicsState.AddBindingSet(UpSet);
+            GraphicsState.SetPipeline(Pipeline);
+            GraphicsState.SetRenderPass(RenderPass);
+            GraphicsState.SetViewportState(MakeViewportStateFromImage(HDR));
+
+            CmdList.SetGraphicsState(GraphicsState);
+
+            // DepthSigma controls how aggressively the bilateral term rejects
+            // mismatched neighbors. The shader works in (1 - reverseZ) so the
+            // input space is roughly [0,1]; sigma ~ 0.01 of that range gives a
+            // sharp edge cutoff. Stored as 1/sigma^2 for the shader.
+            constexpr float DepthEdgeWidth = 0.01f;
+            FVolumetricUpsamplePushConstants PC = {};
+            PC.HalfTexelSize[0] = 1.0f / (float)HalfRes->GetSizeX();
+            PC.HalfTexelSize[1] = 1.0f / (float)HalfRes->GetSizeY();
+            PC.DepthSigma       = 1.0f / (DepthEdgeWidth * DepthEdgeWidth);
+
+            CmdList.SetPushConstants(&PC, sizeof(PC));
+            CmdList.Draw(3, 1, 0, 0);
+        }
     }
 
     // 5 mips: roughness M/(NumMips-1) = {0, 0.25, 0.5, 0.75, 1.0}. Standard PBR choice.
@@ -6217,6 +6314,28 @@ namespace Lumina
             ImageDesc.DebugName = "Revealage";
 
             NamedImages[(int)ENamedImage::Revealage] = GRenderContext->CreateImage(ImageDesc);
+        }
+
+        {
+            // Half-res volumetric scattering buffer. The march writes here at
+            // 1/2 width and 1/2 height; the bilateral upsample reads it back
+            // and composites into HDR. R11G11B10_FLOAT matches bloom's choice
+            // -- additive over scene color, 1e5 dynamic range, no banding
+            // visible after tone map.
+            uint32 W = eastl::max<uint32>(Extent.x / 2u, 1u);
+            uint32 H = eastl::max<uint32>(Extent.y / 2u, 1u);
+
+            FRHIImageDesc ImageDesc;
+            ImageDesc.Extent            = glm::uvec2(W, H);
+            ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
+            ImageDesc.Dimension         = EImageDimension::Texture2D;
+            ImageDesc.NumMips           = 1;
+            ImageDesc.InitialState      = EResourceStates::ShaderResource;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
+            ImageDesc.DebugName         = "Volumetric Half Res";
+
+            NamedImages[(int)ENamedImage::VolumetricHalfRes] = GRenderContext->CreateImage(ImageDesc);
         }
 
         {

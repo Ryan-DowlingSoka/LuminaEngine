@@ -18,6 +18,7 @@
 #include "Input/InputContext.h"
 #include "Input/InputProcessor.h"
 #include "Input/InputViewport.h"
+#include "UI/RmlUiBridge.h"
 #include "World/WorldManager.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/CameraComponent.h"
@@ -441,6 +442,13 @@ namespace Lumina
                 }
             }
             InputViewport->SetRenderTargetSize(RTW, RTH);
+
+            // Lay UI out at the panel's size so the per-axis stretch from RT -> panel
+            // leaves it at correct proportions on screen instead of squishing it.
+            if (World != nullptr)
+            {
+                RmlUi::SetWorldDisplaySize(World, glm::uvec2(uint32(eastl::max(ViewportSize.x, 1.0f)), uint32(eastl::max(ViewportSize.y, 1.0f))));
+            }
 
             InputViewport->SetHovered(bViewportHovered);
             InputViewport->SetFocused(bViewportFocused);

@@ -2,11 +2,19 @@
 <head>
     <title>Car HUD</title>
     <style>
+        /* =====================================================
+           Vaporwave racing HUD
+           Palette: deep indigo background, hot magenta + cyan
+           neon accents, golden highlights for big wins. Heavy
+           use of conic and linear gradients to hint at chrome
+           and CRT vibe without needing custom shaders.
+           ===================================================== */
+
         body
         {
             font-family: LatoLatin;
             font-size: 22dp;
-            color: #e6e8ee;
+            color: #f8e8ff;
             margin: 0;
             padding: 0;
             width: 100%;
@@ -14,148 +22,504 @@
             background-color: transparent;
         }
 
-        /* Drift banner, top-center. Hidden by default; revealed by giving the
-           element the .active class from script. */
+        /* Vertical neon glow on the very top + bottom edges. vertical-gradient
+           is a CPU 2-stop interpolation -- doesn't require a CompileShader
+           override on the render interface, so it works in Lumina's renderer. */
+        #vignette-top
+        {
+            position: absolute;
+            left: 0; top: 0; right: 0;
+            height: 80dp;
+            decorator: vertical-gradient(rgba(0, 240, 255, 50) rgba(0, 0, 0, 0));
+        }
+        #vignette-bottom
+        {
+            position: absolute;
+            left: 0; bottom: 0; right: 0;
+            height: 110dp;
+            decorator: vertical-gradient(rgba(0, 0, 0, 0) rgba(255, 0, 200, 70));
+        }
+
+        /* =====================================================
+           Keyframes
+           ===================================================== */
+
+        @keyframes pop-in
+        {
+            0%   { transform: scale(0.4); opacity: 0.0; }
+            55%  { transform: scale(1.15); opacity: 1.0; }
+            100% { transform: scale(1.0); opacity: 1.0; }
+        }
+
+        @keyframes float-up
+        {
+            0%   { transform: translateY(0dp) scale(0.7); opacity: 0.0; }
+            18%  { transform: translateY(-12dp) scale(1.15); opacity: 1.0; }
+            65%  { transform: translateY(-46dp) scale(1.0); opacity: 1.0; }
+            100% { transform: translateY(-90dp) scale(0.9); opacity: 0.0; }
+        }
+
+        @keyframes float-up-big
+        {
+            0%   { transform: translateY(20dp) scale(0.5); opacity: 0.0; }
+            22%  { transform: translateY(-8dp) scale(1.25); opacity: 1.0; }
+            70%  { transform: translateY(-40dp) scale(1.05); opacity: 1.0; }
+            100% { transform: translateY(-110dp) scale(0.95); opacity: 0.0; }
+        }
+
+        @keyframes shake
+        {
+            0%   { transform: translate(0dp, 0dp); }
+            10%  { transform: translate(-6dp, 2dp); }
+            25%  { transform: translate(5dp, -3dp); }
+            45%  { transform: translate(-4dp, 4dp); }
+            65%  { transform: translate(3dp, -2dp); }
+            85%  { transform: translate(-2dp, 1dp); }
+            100% { transform: translate(0dp, 0dp); }
+        }
+
+        @keyframes pulse-magenta
+        {
+            0%   { border-color: #ff36c8; background-color: rgba(40, 4, 36, 200); }
+            50%  { border-color: #ff8af0; background-color: rgba(80, 6, 70, 220); }
+            100% { border-color: #ff36c8; background-color: rgba(40, 4, 36, 200); }
+        }
+
+        @keyframes pulse-cyan
+        {
+            0%   { border-color: #00f0ff; }
+            50%  { border-color: #a8fbff; }
+            100% { border-color: #00f0ff; }
+        }
+
+        @keyframes pulse-redline
+        {
+            0%   { color: #ff5fff; }
+            50%  { color: #ffe300; }
+            100% { color: #ff5fff; }
+        }
+
+        @keyframes huge-cycle
+        {
+            0%   { border-color: #ff36c8; color: #ff36c8; }
+            33%  { border-color: #00f0ff; color: #00f0ff; }
+            66%  { border-color: #ffe300; color: #ffe300; }
+            100% { border-color: #ff36c8; color: #ff36c8; }
+        }
+
+        @keyframes flash-overlay
+        {
+            0%   { opacity: 0.55; }
+            40%  { opacity: 0.30; }
+            100% { opacity: 0.0; }
+        }
+
+        @keyframes timer-warn
+        {
+            0%   { color: #ff8af0; }
+            50%  { color: #ff2e7e; }
+            100% { color: #ff8af0; }
+        }
+
+        @keyframes timer-critical
+        {
+            0%   { color: #ffe300; transform: scale(1.0); }
+            50%  { color: #ff2e7e; transform: scale(1.10); }
+            100% { color: #ffe300; transform: scale(1.0); }
+        }
+
+        @keyframes endscreen-in
+        {
+            0%   { opacity: 0.0; transform: translateY(-30dp) scale(0.92); }
+            60%  { opacity: 1.0; transform: translateY(6dp) scale(1.04); }
+            100% { opacity: 1.0; transform: translateY(0dp) scale(1.0); }
+        }
+
+        /* =====================================================
+           Run timer — small panel in the top-left corner.
+           Drift-points sprint: a single fixed countdown, no gates.
+           ===================================================== */
+
+        #timetrial-panel
+        {
+            position: absolute;
+            left: 32dp;
+            top: 32dp;
+            padding: 10dp 16dp 8dp;
+            background-color: rgba(14, 2, 30, 200);
+            border: 2dp #ff36c8;
+            border-radius: 4dp;
+            text-align: left;
+        }
+        #timer-label
+        {
+            display: block;
+            font-size: 10dp;
+            font-weight: bold;
+            color: #88e8ff;
+            letter-spacing: 4dp;
+            margin-bottom: 2dp;
+        }
+        #timer-value
+        {
+            display: block;
+            font-family: JetBrains Mono;
+            font-size: 28dp;
+            font-weight: bold;
+            color: #ff8af0;
+            letter-spacing: 2dp;
+        }
+        #timetrial-panel.warn { border-color: #ff2e7e; }
+        #timetrial-panel.warn #timer-value
+        {
+            animation: timer-warn 0.55s linear-in-out infinite;
+        }
+        #timetrial-panel.critical { border-color: #ffe300; }
+        #timetrial-panel.critical #timer-value
+        {
+            animation: timer-critical 0.32s cubic-out infinite;
+        }
+        #timetrial-panel.complete { border-color: #ffe300; }
+        #timetrial-panel.complete #timer-value { color: #ffe300; }
+
+        /* =====================================================
+           Drift banner (top-center)
+           ===================================================== */
+
         #drift-banner
         {
             position: absolute;
             left: 50%;
-            top: 64dp;
-            width: 360dp;
-            margin-left: -180dp;
-            padding: 14dp 22dp;
-            background-color: rgba(8, 10, 18, 200);
-            border: 2dp #ffb347;
-            border-radius: 12dp;
+            top: 36dp;
+            width: 520dp;
+            margin-left: -260dp;
+            padding: 16dp 26dp 14dp;
+            background-color: rgba(20, 4, 38, 215);
+            border: 2dp #ff36c8;
+            border-radius: 6dp;
             text-align: center;
             opacity: 0.0;
+            transform: translateY(-30dp) scale(0.92);
+            transition: opacity 0.18s linear-out, transform 0.22s back-out;
         }
         #drift-banner.active
         {
             opacity: 1.0;
+            transform: translateY(0dp) scale(1.0);
+        }
+        #drift-banner.huge
+        {
+            animation: huge-cycle 0.9s linear-in-out infinite;
         }
         #drift-label
         {
             display: block;
             font-size: 14dp;
             font-weight: bold;
-            color: #ffb347;
-            margin-bottom: 4dp;
+            color: #ff8af0;
+            margin-bottom: 6dp;
         }
         #drift-score
         {
             display: inline;
-            font-size: 44dp;
+            font-family: JetBrains Mono;
+            font-size: 56dp;
             font-weight: bold;
             color: #ffffff;
         }
         #drift-mult
         {
             display: inline;
-            font-size: 22dp;
+            font-family: JetBrains Mono;
+            font-size: 26dp;
             font-weight: bold;
-            color: #ffb347;
-            margin-left: 12dp;
+            color: #00f0ff;
+            margin-left: 14dp;
         }
-        #drift-banner.huge #drift-score
-        {
-            color: #ff4d4d;
-        }
-        #drift-banner.huge
-        {
-            border-color: #ff4d4d;
-        }
+        #drift-banner.huge #drift-score { color: #ffe300; }
+        #drift-banner.huge #drift-mult  { color: #ffe300; }
         #total-row
-		{
-    		display: block;
-    		font-size: 16dp;
-    		font-weight: bold;
-    		color: #97a0b6;
-    		margin-top: 6dp;
-		}
-		#total-row span
-		{
-    		color: #2BFF00;
-		}
+        {
+            display: block;
+            font-size: 13dp;
+            font-weight: bold;
+            color: #b9a4d6;
+            margin-top: 8dp;
+            letter-spacing: 2dp;
+        }
+        #total-row span
+        {
+            font-family: JetBrains Mono;
+            color: #ff8af0;
+            margin-left: 6dp;
+        }
 
-        /* Gauge stack, anchored bottom-right. */
+        /* =====================================================
+           Score-popup stack (under the drift banner)
+           Each slot's inner RML is replaced from script to
+           re-trigger its keyframe animation.
+           ===================================================== */
+
+        #popup-stack
+        {
+            position: absolute;
+            left: 50%;
+            top: 220dp;
+            width: 360dp;
+            margin-left: -180dp;
+            text-align: center;
+        }
+        .popup-slot
+        {
+            display: block;
+            width: 100%;
+            height: 0dp;
+            text-align: center;
+            font-family: JetBrains Mono;
+            font-weight: bold;
+            font-size: 32dp;
+        }
+        .popup-content
+        {
+            display: inline-block;
+            padding: 4dp 12dp;
+            border-radius: 4dp;
+            opacity: 0.0;        /* Base state: animation drives visibility on/off. */
+        }
+        .popup-content.gain
+        {
+            color: #00f0ff;
+            animation: float-up 1.4s cubic-out;
+        }
+        .popup-content.bigwin
+        {
+            color: #ffe300;
+            font-size: 44dp;
+            animation: float-up-big 1.8s cubic-out;
+        }
+        .popup-content.loss
+        {
+            color: #ff2e7e;
+            animation: float-up 1.4s cubic-out;
+        }
+        .popup-content.banked
+        {
+            color: #ff8af0;
+            font-size: 38dp;
+            animation: float-up-big 1.8s cubic-out;
+        }
+
+        /* =====================================================
+           Crash banner (center, shake)
+           ===================================================== */
+
+        #crash-banner
+        {
+            position: absolute;
+            left: 50%;
+            top: 320dp;
+            width: 480dp;
+            margin-left: -240dp;
+            padding: 18dp 24dp;
+            background-color: rgba(40, 6, 18, 230);
+            border: 3dp #ff2e7e;
+            border-radius: 6dp;
+            text-align: center;
+            opacity: 0.0;
+            transition: opacity 0.12s linear-out;
+        }
+        #crash-banner.active
+        {
+            opacity: 1.0;
+            animation: shake 0.5s cubic-out;
+        }
+        #crash-banner.heavy
+        {
+            background-color: rgba(60, 4, 8, 240);
+            border-color: #ffe300;
+        }
+        #crash-label
+        {
+            display: block;
+            font-size: 28dp;
+            font-weight: bold;
+            color: #ffd5d5;
+            letter-spacing: 8dp;
+            margin-bottom: 8dp;
+        }
+        #crash-banner.heavy #crash-label { color: #fffff0; }
+        #crash-amount
+        {
+            display: block;
+            font-family: JetBrains Mono;
+            font-size: 64dp;
+            font-weight: bold;
+            color: #ff2e7e;
+        }
+        #crash-banner.heavy #crash-amount { color: #ffe300; }
+        #crash-impact
+        {
+            display: block;
+            font-size: 14dp;
+            color: #ffb3c8;
+            margin-top: 4dp;
+            letter-spacing: 4dp;
+        }
+
+        /* Full-screen red flash overlay synced to the crash banner. */
+        #crash-flash
+        {
+            position: absolute;
+            left: 0; top: 0; right: 0; bottom: 0;
+            background-color: rgba(255, 50, 90, 80);
+            opacity: 0.0;
+        }
+        #crash-flash.active
+        {
+            animation: flash-overlay 0.55s cubic-out;
+        }
+
+        /* =====================================================
+           Right-side gauge cluster
+           ===================================================== */
+
         #gauges
         {
             position: absolute;
-            right: 48dp;
-            bottom: 48dp;
-            width: 280dp;
+            right: 36dp;
+            bottom: 36dp;
+            width: 320dp;
         }
-        .gauge
+
+        /* Boost panel */
+        #boost-panel
         {
             display: block;
-            padding: 16dp 22dp;
-            margin-bottom: 12dp;
-            background-color: rgba(8, 10, 18, 180);
-            border: 2dp #2c3346;
-            border-radius: 12dp;
+            padding: 12dp 16dp;
+            margin-bottom: 14dp;
+            background-color: rgba(14, 2, 30, 220);
+            border: 2dp #00f0ff;
+            border-radius: 4dp;
+        }
+        #boost-panel.active
+        {
+            animation: pulse-cyan 0.5s cubic-out infinite;
+        }
+        #boost-row
+        {
+            display: block;
+            margin-bottom: 6dp;
+        }
+        #boost-label
+        {
+            display: inline;
+            font-size: 12dp;
+            font-weight: bold;
+            color: #88e8ff;
+            letter-spacing: 4dp;
+        }
+        #boost-pct
+        {
+            display: inline;
+            font-family: JetBrains Mono;
+            font-size: 14dp;
+            font-weight: bold;
+            color: #00f0ff;
+            margin-left: 12dp;
+        }
+        #boost-track
+        {
+            display: block;
+            width: 100%;
+            height: 14dp;
+            background-color: rgba(8, 0, 24, 220);
+            border: 1dp #2a4280;
+            border-radius: 2dp;
+        }
+        /* horizontal-gradient is a per-vertex CPU gradient -- doesn't require a
+           CompileShader override on the render interface (which Lumina doesn't
+           provide). Limited to two stops, so we pick the most representative
+           pair per state. */
+        #boost-fill
+        {
+            display: block;
+            height: 100%;
+            width: 100%;
+            decorator: horizontal-gradient(#00d8e8 #88faff);
+        }
+        #boost-panel.active #boost-fill
+        {
+            decorator: horizontal-gradient(#ffe300 #ff36c8);
+        }
+        #boost-panel.empty #boost-fill
+        {
+            decorator: horizontal-gradient(#ff2e7e #ff8a8a);
+        }
+
+        /* Speed gauge */
+        #mph
+        {
+            display: block;
+            padding: 18dp 22dp 14dp;
+            margin-bottom: 14dp;
+            background-color: rgba(14, 2, 30, 220);
+            border: 2dp #ff36c8;
+            border-radius: 4dp;
             text-align: right;
         }
         .gauge-label
         {
             display: block;
-            font-size: 14dp;
+            font-size: 12dp;
             font-weight: bold;
-            color: #6b7894;
+            color: #ff8af0;
+            letter-spacing: 6dp;
             margin-bottom: 4dp;
         }
-        .gauge-value
+        #mph-value
         {
             display: inline;
-            font-size: 56dp;
+            font-family: JetBrains Mono;
+            font-size: 76dp;
             font-weight: bold;
-            color: #00d68f;
+            color: #ffffff;
+        }
+        #mph.fast #mph-value
+        {
+            color: #00f0ff;
+        }
+        #mph.fast
+        {
+            border-color: #00f0ff;
+        }
+        #mph.danger #mph-value
+        {
+            color: #ffe300;
+        }
+        #mph.danger
+        {
+            border-color: #ffe300;
+            animation: pulse-magenta 0.4s cubic-out infinite;
         }
         .gauge-unit
         {
             display: inline;
             font-size: 18dp;
             font-weight: bold;
-            color: #97a0b6;
-            margin-left: 6dp;
-        }
-        #rpm .gauge-value
-        {
-            color: #ffb347;
-        }
-        #rpm.redline .gauge-value
-        {
-            color: #ff4d4d;
-        }
-        #rpm.redline
-        {
-            border-color: #ff4d4d;
-        }
-        #gear-row
-        {
-            display: block;
-            font-size: 18dp;
-            color: #c8d0e0;
-            margin-top: 6dp;
-        }
-        #gear-row span
-        {
-            color: #ffffff;
-            font-weight: bold;
+            color: #b9a4d6;
+            margin-left: 8dp;
+            letter-spacing: 4dp;
         }
 
-        /* Sideslip bar — sits inside the MPH gauge.
-           A wide track with a centered fill that grows left or right based on
-           drift direction. We do that with two stacked fill divs (left / right)
-           whose width is set from script. */
+        /* Slip bar inside MPH gauge */
         #slip-track
         {
             display: block;
             width: 100%;
-            height: 6dp;
-            background-color: #11151f;
-            border: 1dp #232a3d;
-            border-radius: 3dp;
+            height: 5dp;
+            background-color: rgba(8, 0, 24, 220);
+            border: 1dp #2a4280;
+            border-radius: 2dp;
             margin-top: 10dp;
             position: relative;
         }
@@ -164,7 +528,7 @@
             position: absolute;
             top: 0;
             height: 100%;
-            background-color: #00d68f;
+            background-color: #00f0ff;
             width: 0%;
         }
         #slip-left  { right: 50%; }
@@ -172,90 +536,260 @@
         #slip-track.drifting #slip-left,
         #slip-track.drifting #slip-right
         {
-            background-color: #ffb347;
+            background-color: #ffe300;
         }
 
-        /* Boost bar — full-width strip above the gauge stack. */
-        #boost-panel
+        /* RPM gauge */
+        #rpm
         {
             display: block;
-            padding: 12dp 16dp;
-            margin-bottom: 12dp;
-            background-color: rgba(8, 10, 18, 180);
-            border: 2dp #2c3346;
-            border-radius: 12dp;
+            padding: 14dp 18dp;
+            background-color: rgba(14, 2, 30, 220);
+            border: 2dp #9d4edd;
+            border-radius: 4dp;
         }
-        #boost-label
+        #rpm-row
         {
             display: block;
+            text-align: right;
+        }
+        #rpm-label
+        {
+            display: inline;
             font-size: 12dp;
             font-weight: bold;
-            color: #6b7894;
-            margin-bottom: 6dp;
+            color: #c89aff;
+            letter-spacing: 6dp;
         }
-        #boost-track
+        #rpm-value
+        {
+            display: inline;
+            font-family: JetBrains Mono;
+            font-size: 32dp;
+            font-weight: bold;
+            color: #ff8af0;
+            margin-left: 12dp;
+        }
+        #rpm.redline #rpm-value
+        {
+            animation: pulse-redline 0.3s cubic-out infinite;
+        }
+        #rpm.redline
+        {
+            border-color: #ff2e7e;
+        }
+        #rpm-bar
         {
             display: block;
             width: 100%;
-            height: 14dp;
-            background-color: #11151f;
-            border: 1dp #232a3d;
-            border-radius: 4dp;
+            height: 8dp;
+            background-color: rgba(8, 0, 24, 220);
+            border: 1dp #2a4280;
+            border-radius: 2dp;
+            margin-top: 8dp;
         }
-        #boost-fill
+        #rpm-fill
         {
             display: block;
             height: 100%;
-            width: 100%;
-            background-color: #4ad6ff;
-            border-radius: 4dp;
+            width: 1%;          /* script overrides via inline style; non-zero so first paint succeeds */
+            decorator: horizontal-gradient(#9d4edd #ff36c8);
         }
-        #boost-panel.active #boost-fill
+        #rpm.redline #rpm-fill
         {
-            background-color: #ffb347;
+            decorator: horizontal-gradient(#ff36c8 #ffe300);
         }
-        #boost-panel.empty #boost-fill
+        #gear-row
         {
-            background-color: #ff4d4d;
+            display: block;
+            font-size: 14dp;
+            color: #c89aff;
+            margin-top: 8dp;
+            letter-spacing: 4dp;
+            text-align: right;
+        }
+        #gear-row span
+        {
+            font-family: JetBrains Mono;
+            font-size: 18dp;
+            color: #ffffff;
+            font-weight: bold;
+            margin-left: 8dp;
         }
 
-        /* Controls panel, anchored bottom-left. */
+        /* =====================================================
+           End-of-run modal (full-screen, dim backdrop + card)
+           ===================================================== */
+
+        #endscreen
+        {
+            position: absolute;
+            left: 0; top: 0; right: 0; bottom: 0;
+            background-color: rgba(8, 0, 24, 200);
+            opacity: 0.0;
+        }
+        #endscreen.visible
+        {
+            opacity: 1.0;
+        }
+        #endcard
+        {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 620dp;
+            margin-left: -310dp;
+            margin-top: -200dp;
+            padding: 36dp 40dp 32dp;
+            background-color: rgba(20, 4, 38, 245);
+            border: 3dp #ff36c8;
+            border-radius: 6dp;
+            text-align: center;
+            opacity: 0.0;
+            transform: translateY(-30dp) scale(0.92);
+        }
+        #endscreen.visible #endcard
+        {
+            animation: endscreen-in 0.55s back-out;
+            opacity: 1.0;
+            transform: translateY(0dp) scale(1.0);
+        }
+        #endcard-title
+        {
+            display: block;
+            font-size: 18dp;
+            font-weight: bold;
+            color: #ff8af0;
+            letter-spacing: 12dp;
+            margin-bottom: 4dp;
+        }
+        #endcard-headline
+        {
+            display: block;
+            font-family: JetBrains Mono;
+            font-size: 64dp;
+            font-weight: bold;
+            color: #ffe300;
+            letter-spacing: 4dp;
+            margin-bottom: 16dp;
+        }
+        #endcard.victory #endcard-headline { color: #00f0ff; }
+        #endcard-stats
+        {
+            display: block;
+            margin: 6dp 0 22dp;
+        }
+        .end-stat
+        {
+            display: block;
+            font-size: 14dp;
+            color: #c89aff;
+            letter-spacing: 4dp;
+            margin: 6dp 0;
+        }
+        .end-stat span
+        {
+            font-family: JetBrains Mono;
+            color: #ff8af0;
+            font-weight: bold;
+            margin-left: 12dp;
+            font-size: 22dp;
+        }
+        #endcard-final
+        {
+            display: block;
+            font-size: 16dp;
+            color: #88e8ff;
+            letter-spacing: 6dp;
+            margin: 10dp 0 4dp;
+        }
+        #endcard-final-value
+        {
+            display: block;
+            font-family: JetBrains Mono;
+            font-size: 56dp;
+            font-weight: bold;
+            color: #ffe300;
+            letter-spacing: 4dp;
+            margin-bottom: 22dp;
+        }
+        #endcard-restart
+        {
+            display: inline-block;
+            padding: 14dp 36dp;
+            background-color: rgba(0, 240, 255, 30);
+            border: 2dp #00f0ff;
+            border-radius: 4dp;
+            font-family: JetBrains Mono;
+            font-size: 18dp;
+            font-weight: bold;
+            color: #00f0ff;
+            letter-spacing: 6dp;
+            cursor: pointer;
+        }
+        #endcard-restart:hover
+        {
+            background-color: rgba(0, 240, 255, 70);
+            color: #ffffff;
+        }
+        #endcard-hint
+        {
+            display: block;
+            font-size: 11dp;
+            color: #88a8d0;
+            letter-spacing: 4dp;
+            margin-top: 12dp;
+        }
+        #endcard-hint span
+        {
+            font-family: JetBrains Mono;
+            color: #ffe300;
+            font-weight: bold;
+        }
+
+        /* =====================================================
+           Controls panel (bottom-left)
+           ===================================================== */
+
         #controls-panel
         {
             position: absolute;
-            left: 48dp;
-            bottom: 48dp;
-            min-width: 280dp;
-            padding: 18dp 22dp;
-            background-color: rgba(8, 10, 18, 180);
-            border: 2dp #2c3346;
-            border-radius: 12dp;
+            left: 36dp;
+            bottom: 36dp;
+            min-width: 270dp;
+            padding: 16dp 20dp;
+            background-color: rgba(14, 2, 30, 200);
+            border: 2dp #9d4edd;
+            border-radius: 4dp;
         }
         #controls-title
         {
             display: block;
-            font-size: 14dp;
+            font-size: 12dp;
             font-weight: bold;
-            color: #6b7894;
+            color: #c89aff;
+            letter-spacing: 6dp;
             margin-bottom: 10dp;
         }
         .row
         {
             display: block;
             margin: 4dp 0;
-            font-size: 16dp;
-            color: #c8d0e0;
+            font-size: 14dp;
+            color: #d8c8f0;
         }
         .key
         {
             display: inline-block;
-            min-width: 72dp;
+            min-width: 64dp;
             text-align: center;
+            font-family: JetBrains Mono;
             font-weight: bold;
-            color: #ffffff;
-            background-color: #0f1320;
-            border: 1dp #2c3346;
-            border-radius: 4dp;
+            font-size: 12dp;
+            color: #ffe300;
+            background-color: rgba(255, 54, 200, 30);
+            border: 1dp #ff36c8;
+            border-radius: 2dp;
             padding: 2dp 8dp;
             margin-right: 10dp;
         }
@@ -263,42 +797,88 @@
 </head>
 <body>
 
-    <div id="drift-banner">
-        <span id="drift-label">DRIFT</span>
-        <span id="drift-score">0</span><span id="drift-mult">x1.0</span>
-		<span id="total-row">
-    		TOTAL: <span id="total-score">0</span>
-		</span>
+    <div id="vignette-top"/>
+    <div id="vignette-bottom"/>
+
+    <div id="timetrial-panel">
+        <span id="timer-label">T I M E</span>
+        <span id="timer-value">0:00.0</span>
     </div>
+
+    <div id="drift-banner">
+        <span id="drift-label">D R I F T</span>
+        <span id="drift-score">0</span><span id="drift-mult">x1.0</span>
+        <span id="total-row">TOTAL <span id="total-score">0</span></span>
+    </div>
+
+    <div id="popup-stack">
+        <div class="popup-slot" id="popup-0"/>
+        <div class="popup-slot" id="popup-1"/>
+        <div class="popup-slot" id="popup-2"/>
+        <div class="popup-slot" id="popup-3"/>
+        <div class="popup-slot" id="popup-4"/>
+        <div class="popup-slot" id="popup-5"/>
+        <div class="popup-slot" id="popup-6"/>
+        <div class="popup-slot" id="popup-7"/>
+    </div>
+
+    <div id="crash-banner">
+        <span id="crash-label">C R A S H</span>
+        <span id="crash-amount">-0</span>
+        <span id="crash-impact">0 MPH IMPACT</span>
+    </div>
+
+    <div id="crash-flash"/>
 
     <div id="gauges">
         <div id="boost-panel">
-            <span id="boost-label">BOOST</span>
+            <div id="boost-row">
+                <span id="boost-label">B O O S T</span>
+                <span id="boost-pct">100%</span>
+            </div>
             <div id="boost-track"><div id="boost-fill"/></div>
         </div>
-        <div id="mph" class="gauge">
+        <div id="mph">
             <span class="gauge-label">SPEED</span>
-            <span id="mph-value" class="gauge-value">0</span><span class="gauge-unit">MPH</span>
+            <span id="mph-value">0</span><span class="gauge-unit">MPH</span>
             <div id="slip-track">
                 <div id="slip-left"/>
                 <div id="slip-right"/>
             </div>
         </div>
-        <div id="rpm" class="gauge">
-            <span class="gauge-label">RPM</span>
-            <span id="rpm-value" class="gauge-value">0</span>
+        <div id="rpm">
+            <div id="rpm-row">
+                <span id="rpm-label">R P M</span>
+                <span id="rpm-value">0</span>
+            </div>
+            <div id="rpm-bar"><div id="rpm-fill"/></div>
             <span id="gear-row">GEAR <span id="gear-value">N</span></span>
         </div>
     </div>
 
+    <div id="endscreen">
+        <div id="endcard">
+            <span id="endcard-title">D R I F T   S P R I N T</span>
+            <span id="endcard-headline">TIME UP</span>
+            <div id="endcard-stats">
+                <span class="end-stat">TOP SPEED <span id="endcard-topspeed">0 MPH</span></span>
+            </div>
+            <span id="endcard-final">FINAL DRIFT SCORE</span>
+            <span id="endcard-final-value">0</span>
+            <span id="endcard-restart">RESTART</span>
+            <span id="endcard-hint">OR PRESS <span>R</span></span>
+        </div>
+    </div>
+
     <div id="controls-panel">
-        <span id="controls-title">CONTROLS</span>
+        <span id="controls-title">C O N T R O L S</span>
         <span class="row"><span class="key">W</span> Accelerate</span>
         <span class="row"><span class="key">S</span> Brake / Reverse</span>
         <span class="row"><span class="key">A / D</span> Steer</span>
-        <span class="row"><span class="key">Space</span> Drift Mode</span>
-        <span class="row"><span class="key">Shift</span> Boost</span>
-        <span class="row"><span class="key">LMB</span> Reset</span>
+        <span class="row"><span class="key">SPACE</span> Drift</span>
+        <span class="row"><span class="key">SHIFT</span> Boost</span>
+        <span class="row"><span class="key">LMB</span> Reset Car</span>
+        <span class="row"><span class="key">R</span> Restart Run</span>
     </div>
 
 </body>

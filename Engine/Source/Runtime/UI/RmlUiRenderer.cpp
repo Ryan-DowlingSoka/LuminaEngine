@@ -191,7 +191,7 @@ namespace Lumina
         return true;
     }
 
-    void FRmlUiRenderer::BeginFrame(ICommandList& CmdList, FRHIImage* Target, const glm::uvec2& ViewportSize)
+    void FRmlUiRenderer::BeginFrame(ICommandList& CmdList, FRHIImage* Target, const glm::uvec2& ViewportSize, const glm::uvec2& LogicalSize)
     {
         CurrentCmdList   = &CmdList;
         CurrentTarget    = Target;
@@ -200,9 +200,13 @@ namespace Lumina
 
         DrawCalls.clear();
 
+        // Logical size drives the projection (so layout pixels span the full RT regardless of
+        // its aspect); ViewportSize drives the RHI viewport / scissor.
+        const glm::uvec2 ProjSize = (LogicalSize.x > 0 && LogicalSize.y > 0) ? LogicalSize : ViewportSize;
+
         // pixel -> NDC ortho; no Y-flip since Vulkan viewport is +Y-down.
-        const float W = ViewportSize.x > 0 ? float(ViewportSize.x) : 1.0f;
-        const float H = ViewportSize.y > 0 ? float(ViewportSize.y) : 1.0f;
+        const float W = ProjSize.x > 0 ? float(ProjSize.x) : 1.0f;
+        const float H = ProjSize.y > 0 ? float(ProjSize.y) : 1.0f;
         ProjectionMatrix = glm::mat4(
             2.0f / W,  0.0f,       0.0f,  0.0f,
             0.0f,      2.0f / H,   0.0f,  0.0f,

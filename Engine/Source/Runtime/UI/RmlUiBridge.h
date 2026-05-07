@@ -37,6 +37,9 @@ namespace Lumina::RmlUi
     RUNTIME_API Rml::Context*   GetActiveContext();
     RUNTIME_API Rml::Context*   GetContextForWorld(CWorld* World);
 
+    // Lay UI out at this size instead of the RT image size; {0,0} reverts. Used by the editor viewport.
+    RUNTIME_API void            SetWorldDisplaySize(CWorld* World, const glm::uvec2& Size);
+
     RUNTIME_API FRmlUiRenderer* GetRenderer();
 
     // Editor preview contexts. Caller owns lifetime; pass Target=nullptr to skip a frame.

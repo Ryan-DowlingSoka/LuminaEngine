@@ -345,6 +345,29 @@ namespace Lumina
         LoadFromDisk();
         RebuildLocalIndex();
 
+        // Subscribe to compile diagnostics. The scripting context fires these
+        // for every compile attempt; we filter to ones that match this
+        // editor's virtual path. ApplyCompileError / ClearCompileError repaint
+        // the marker stripe via RefreshBreakpointMarkers so the visual stays
+        // consistent with breakpoints / bookmarks / PC arrow.
+        Lua::FScriptingContext& SC = Lua::FScriptingContext::Get();
+        CompileErrorHandle = SC.OnScriptCompileError.AddLambda(
+            [this](FStringView Path, const Lua::FCompileDiagnostic& Diag)
+            {
+                if (Path == FStringView(VirtualPath.c_str(), VirtualPath.size()))
+                {
+                    ApplyCompileError(Diag.Line, Diag.Message);
+                }
+            });
+        CompileSuccessHandle = SC.OnScriptCompileSuccess.AddLambda(
+            [this](FStringView Path)
+            {
+                if (Path == FStringView(VirtualPath.c_str(), VirtualPath.size()))
+                {
+                    ClearCompileError();
+                }
+            });
+
         // Re-hydrate breakpoints from the debugger (source of truth) so they survive editor reopen.
         for (int Line : Lua::FLuaDebugger::Get().GetBreakpointLines(FStringView(VirtualPath.c_str(), VirtualPath.size())))
         {
@@ -520,6 +543,32 @@ namespace Lumina
     void FLuaEditorTool::OnDeinitialize(const FUpdateContext& UpdateContext)
     {
         FileWatcher.Stop();
+
+        Lua::FScriptingContext& SC = Lua::FScriptingContext::Get();
+        SC.OnScriptCompileError.Remove(CompileErrorHandle);
+        SC.OnScriptCompileSuccess.Remove(CompileSuccessHandle);
+    }
+
+    void FLuaEditorTool::ApplyCompileError(int Line, const FString& Message)
+    {
+        bHasCompileError    = true;
+        CompileErrorLine    = Line;
+        CompileErrorMessage = Message;
+        RefreshBreakpointMarkers();
+        if (Line >= 1)
+        {
+            CodeEditor.ScrollToLine(Line - 1, TextEditor::Scroll::alignMiddle);
+        }
+        ImGuiX::Notifications::NotifyError("Compile error: {0}", Message.c_str());
+    }
+
+    void FLuaEditorTool::ClearCompileError()
+    {
+        if (!bHasCompileError) return;
+        bHasCompileError    = false;
+        CompileErrorLine    = -1;
+        CompileErrorMessage.clear();
+        RefreshBreakpointMarkers();
     }
 
     void FLuaEditorTool::Update(const FUpdateContext& UpdateContext)
@@ -1739,6 +1788,18 @@ namespace Lumina
         else
         {
             PCMarkerLine = -1;
+        }
+
+        // Compile-error stripe. Drawn last so it dominates whatever else is
+        // on the line (a stale breakpoint on a syntax-broken line is the
+        // less useful piece of information). Line is 1-based from Luau.
+        if (bHasCompileError && CompileErrorLine >= 1 && CompileErrorLine <= CodeEditor.GetLineCount())
+        {
+            const ImU32 ErrorCol  = IM_COL32(255, 80, 80, 255);
+            const ImU32 ErrorFill = IM_COL32(255, 80, 80, 70);
+            char Tip[512];
+            std::snprintf(Tip, sizeof(Tip), "Compile error: %s", CompileErrorMessage.c_str());
+            CodeEditor.AddMarker(CompileErrorLine - 1, ErrorCol, ErrorFill, "Compile error", Tip);
         }
     }
 
@@ -3298,6 +3359,15 @@ namespace Lumina
             {
                 ImGui::SameLine(0, 20);
                 ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "modified");
+            }
+
+            if (bHasCompileError)
+            {
+                ImGui::SameLine(0, 20);
+                ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f),
+                    "Compile error (Ln %d): %s",
+                    CompileErrorLine,
+                    CompileErrorMessage.c_str());
             }
         }
         ImGui::EndChild();

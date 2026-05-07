@@ -61,6 +61,14 @@
                         "Type": "Key"
                     }
                 ]
+            },
+            "Restart": {
+                "Bindings": [
+                    {
+                        "Key": "R",
+                        "Type": "Key"
+                    }
+                ]
             }
         }
     }

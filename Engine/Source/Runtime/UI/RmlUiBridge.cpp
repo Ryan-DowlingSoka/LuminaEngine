@@ -96,6 +96,9 @@ namespace Lumina::RmlUi
             CWorld*       World = nullptr;
             Rml::Context* Context = nullptr;
             THashMap<FString, Rml::ElementDocument*> Documents;
+            // Editor override: lay UI out at this size instead of the RT image size.
+            // Zero means use the RT size (standalone-runtime default).
+            glm::uvec2    DisplaySize{0, 0};
         };
 
         // Editor preview context not bound to any world; tool owns the target image.
@@ -253,6 +256,11 @@ namespace Lumina::RmlUi
         {
             LOG_WARN("[RmlUi] Default font LatoLatin-Regular.ttf failed to load; text may not render.");
         }
+
+        // Monospace face for digit-heavy HUDs (speedometer, RPM, etc.). Optional;
+        // RmlUi will fall back to LatoLatin if the file is missing.
+        Rml::LoadFontFace("/Engine/Resources/Fonts/JetbrainsMono/JetBrainsMono-ExtraBold.ttf", false);
+        Rml::LoadFontFace("/Engine/Resources/Fonts/JetbrainsMono/JetBrainsMono-Bold.ttf", false);
 
         State.bInitialized = true;
         LOG_INFO("[RmlUi] bInitialized. Per-world contexts will be created as worlds come up.");
@@ -413,10 +421,14 @@ namespace Lumina::RmlUi
             const FWorldTarget Tgt = GetWorldTarget(E->World);
             if (Tgt.Image != nullptr)
             {
-                constexpr float NominalHeight = 1080.0f;
-                E->Context->SetDimensions(Rml::Vector2i(int(Tgt.Size.x), int(Tgt.Size.y)));
+                // DisplaySize override (set by editor each frame) lets the UI lay out at the
+                // panel's aspect instead of the RT's. Falls back to RT size in standalone.
+                const glm::uvec2 LayoutSize = (E->DisplaySize.x > 0 && E->DisplaySize.y > 0) ? E->DisplaySize : Tgt.Size;
 
-                const float DpRatio = std::max(1.0f, float(Tgt.Size.y) / NominalHeight);
+                constexpr float NominalHeight = 1080.0f;
+                E->Context->SetDimensions(Rml::Vector2i(int(LayoutSize.x), int(LayoutSize.y)));
+
+                const float DpRatio = std::max(1.0f, float(LayoutSize.y) / NominalHeight);
                 E->Context->SetDensityIndependentPixelRatio(DpRatio);
             }
             E->Context->Update();
@@ -458,7 +470,8 @@ namespace Lumina::RmlUi
                 continue;
             }
 
-            State.Renderer->BeginFrame(CmdList, Tgt.Image, Tgt.Size);
+            const glm::uvec2 LayoutSize = (E->DisplaySize.x > 0 && E->DisplaySize.y > 0) ? E->DisplaySize : Tgt.Size;
+            State.Renderer->BeginFrame(CmdList, Tgt.Image, Tgt.Size, LayoutSize);
             E->Context->Render();
             State.Renderer->EndFrame();
         }
@@ -495,6 +508,14 @@ namespace Lumina::RmlUi
         }
         FWorldEntry* E = FindEntryByWorld(World);
         return E ? E->Context : nullptr;
+    }
+
+    void SetWorldDisplaySize(CWorld* World, const glm::uvec2& Size)
+    {
+        if (FWorldEntry* E = FindEntryByWorld(World))
+        {
+            E->DisplaySize = Size;
+        }
     }
 
     Rml::Context* CreateEditorContext(const char* Name, const glm::uvec2& InitialSize)

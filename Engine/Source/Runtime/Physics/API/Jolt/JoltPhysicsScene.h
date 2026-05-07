@@ -4,6 +4,8 @@
 // Jolt header expects, and was previously force-included via pch.h.
 #include <Jolt/Jolt.h>
 #include "Jolt/Physics/PhysicsSystem.h"
+#include "Containers/Array.h"
+#include "Core/Threading/Thread.h"
 #include "Memory/SmartPtr.h"
 #include "Physics/PhysicsScene.h"
 #include "World/Entity/Events/ImpulseEvent.h"
@@ -17,11 +19,40 @@ namespace Lumina
 
 namespace Lumina::Physics
 {
+	class FJoltPhysicsScene;
+
+	enum class EContactEventType : uint8
+	{
+		Added,
+		Removed,
+	};
+
+	// Snapshot of a single Jolt contact recorded on the physics thread and drained
+	// on the game thread after JoltSystem->Update returns. Pre-resolves entity ids
+	// and contact-time velocities so the game-thread dispatch never touches a
+	// (possibly destroyed) Jolt body.
+	struct FContactRecord
+	{
+		EContactEventType	Type;
+		entt::entity		EntityA;
+		entt::entity		EntityB;
+		uint32				BodyIDA;
+		uint32				BodyIDB;
+		glm::vec3			Point;          // average manifold point (world space)
+		glm::vec3			Normal;         // contact normal in world space (points from A toward B)
+		glm::vec3			VelocityA;      // pre-step linear velocity of A
+		glm::vec3			VelocityB;      // pre-step linear velocity of B
+		float				ImpactSpeed;    // |relative velocity along normal|
+		bool				bSensorA;
+		bool				bSensorB;
+	};
+
 	class FJoltContactListener : public JPH::ContactListener
 	{
 	public:
-		FJoltContactListener(entt::dispatcher& InDispatcher, const JPH::BodyLockInterfaceNoLock* InBodyLockInterface)
-			: EventDispatcher(InDispatcher)
+		FJoltContactListener(FJoltPhysicsScene* InScene, entt::dispatcher& InDispatcher, const JPH::BodyLockInterfaceNoLock* InBodyLockInterface)
+			: Scene(InScene)
+			, EventDispatcher(InDispatcher)
 			, BodyLockInterface(InBodyLockInterface)
 		{ }
 
@@ -61,7 +92,8 @@ namespace Lumina::Physics
 		void GetFrictionAndRestitution(const JPH::Body& inBody, const JPH::SubShapeID& inSubShapeID, float& outFriction, float& outRestitution) const;
 
 	private:
-		
+
+		FJoltPhysicsScene* Scene = nullptr;
 		entt::dispatcher& EventDispatcher;
 		const JPH::BodyLockInterfaceNoLock* BodyLockInterface = nullptr;
 	};
@@ -134,7 +166,17 @@ namespace Lumina::Physics
     	
     	JPH::PhysicsSystem* GetPhysicsSystem() const { return JoltSystem.get(); }
 
+    	// Called from FJoltContactListener on Jolt's worker threads. Cheap: locks
+    	// the queue mutex and copies a pre-baked FContactRecord. The drain runs on
+    	// the game thread inside Update() once Jolt has finished stepping.
+    	void EnqueueContactRecord(const FContactRecord& Record);
+
     private:
+
+    	// Drain pending contacts and dispatch entity-targeted Lua events for each.
+    	// Runs on the game thread after JoltSystem->Update returns; safe to touch
+    	// the registry, FLuaEventBus, and the Lua VM.
+    	void DispatchContactEvents();
 
     	// Snapshot all active body positions before stepping, used as the
     	// interpolation "previous" endpoint in SyncPhysicsTransforms.
@@ -150,6 +192,11 @@ namespace Lumina::Physics
     	TUniquePtr<FJoltContactListener>	ContactListener;
         TUniquePtr<JPH::PhysicsSystem>		JoltSystem;
         CWorld*								World = nullptr;
+
+    	// Pending contact events captured by FJoltContactListener during
+    	// JoltSystem->Update (multi-threaded) and drained on the game thread.
+    	FMutex					ContactQueueMutex;
+    	TVector<FContactRecord>	PendingContacts;
 
     	float	Accumulator = 0.0f;
     	uint32	CollisionSteps = 0;

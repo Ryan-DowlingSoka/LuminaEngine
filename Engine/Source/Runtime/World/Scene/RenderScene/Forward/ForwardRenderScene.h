@@ -193,6 +193,12 @@ namespace Lumina
             Accum,
             Revealage,
 
+            // Half-res scattering buffer for volumetric lighting. The march
+            // pass writes here; a depth-aware bilateral upsample composites
+            // the result into HDR. Half-res cuts the per-pixel ray-march cost
+            // by 4x and the bandwidth by another factor via R11G11B10_FLOAT.
+            VolumetricHalfRes,
+
             // MSAA scratch render targets. Allocated only when MSAASampleCount > 1.
             // Geometry passes write into these and resolve into the matching 1x
             // image (HDR / DepthAttachment / Picker) at end-of-pass.

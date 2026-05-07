@@ -21,6 +21,19 @@ namespace Lumina::Lua
     struct FScript;
     DECLARE_MULTICAST_DELEGATE(FScriptTransactionDelegate, FStringView);
 
+    // Result of a single luau_compile attempt. Line is 1-based as Luau
+    // reports it (begin.line + 1); -1 means the message had no parsable
+    // location prefix.
+    struct FCompileDiagnostic
+    {
+        FString Path;
+        FString Message;
+        int     Line   = -1;
+    };
+
+    DECLARE_MULTICAST_DELEGATE(FScriptCompileErrorDelegate, FStringView /*Path*/, const FCompileDiagnostic& /*Diag*/);
+    DECLARE_MULTICAST_DELEGATE(FScriptCompileSuccessDelegate, FStringView /*Path*/);
+
     // Per-path cache; subsequent loads skip file read + luau_compile + schema build.
     struct FScriptCacheEntry
     {
@@ -149,8 +162,14 @@ namespace Lumina::Lua
         RUNTIME_API const GCMetrics* GetGCMetrics() const;  
         #endif
         
-        FScriptTransactionDelegate OnScriptLoaded;
-        FScriptTransactionDelegate OnScriptDeleted;
+        FScriptTransactionDelegate    OnScriptLoaded;
+        FScriptTransactionDelegate    OnScriptDeleted;
+
+        // Fires whenever a compile attempt for a known path either succeeds
+        // or fails. The editor uses these to clear/set inline error markers
+        // without having to poll the bytecode cache.
+        FScriptCompileErrorDelegate   OnScriptCompileError;
+        FScriptCompileSuccessDelegate OnScriptCompileSuccess;
 
     public:
         

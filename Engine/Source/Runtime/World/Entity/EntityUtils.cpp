@@ -848,10 +848,16 @@ namespace Lumina::ECS::Utils
                 Registry.emplace_or_replace<FNeedsTransformUpdate>(To);
             }
 
-            // Same for the rigid body's Jolt BodyID — invalidate so the physics scene allocates a fresh body.
-            if (SRigidBodyComponent* NewBody = Registry.try_get<SRigidBodyComponent>(To))
+            // Re-copy SRigidBodyComponent explicitly. The storage iteration above skips it
+            // when a default rigid body has already been emplaced by a collider on_construct
+            // hook (entt fires emplace_or_replace<SRigidBodyComponent> when SBoxCollider/etc.
+            // are pushed onto the duplicate), which clobbers BodyType/Mass/CollisionProfile
+            // back to defaults. Force the source's data through, then invalidate the body id
+            // so the physics scene allocates a fresh Jolt body.
+            if (const SRigidBodyComponent* SourceBody = Registry.try_get<SRigidBodyComponent>(Source))
             {
-                NewBody->BodyID = 0xFFFFFFFF;
+                SRigidBodyComponent& NewBody = Registry.emplace_or_replace<SRigidBodyComponent>(To, *SourceBody);
+                NewBody.BodyID = 0xFFFFFFFF;
                 Registry.emplace_or_replace<FNeedsPhysicsBodyUpdate>(To);
             }
 

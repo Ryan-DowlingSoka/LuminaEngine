@@ -61,8 +61,33 @@ namespace Lumina
         {
             return;
         }
-        
+
         TVector<FListener> Snapshot = It->second;
+        DispatchListeners(Snapshot, Payload);
+    }
+
+    void FLuaEventBus::DispatchToEntity(entt::entity Target, FStringView EventName, const Lua::FRef& Payload)
+    {
+        if (Target == entt::null)
+        {
+            return;
+        }
+
+        auto It = Subscriptions.find(FName(EventName));
+        if (It == Subscriptions.end())
+        {
+            return;
+        }
+
+        TVector<FListener> Snapshot;
+        Snapshot.reserve(It->second.size());
+        for (const FListener& Listener : It->second)
+        {
+            if (Listener.Owner == Target)
+            {
+                Snapshot.push_back(Listener);
+            }
+        }
         DispatchListeners(Snapshot, Payload);
     }
 

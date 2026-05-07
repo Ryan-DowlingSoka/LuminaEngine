@@ -117,6 +117,10 @@ namespace Lumina
         PROPERTY(Editable)
         glm::vec3 RotationOffset;
 
+        /** When true, the body produces overlap events but no contact response (trigger volume). */
+        PROPERTY(Editable)
+        bool bIsTrigger = false;
+
         /** When true, this collider contributes its shape to NavMesh bakes. */
         PROPERTY(Editable, Category = "Navigation")
         bool bAffectsNavigation = true;
@@ -134,6 +138,10 @@ namespace Lumina
         /** Local-space offset applied to the collider position relative to the entity. */
         PROPERTY(Editable)
         glm::vec3 TranslationOffset;
+
+        /** When true, the body produces overlap events but no contact response (trigger volume). */
+        PROPERTY(Editable)
+        bool bIsTrigger = false;
 
         /** When true, this collider contributes its shape to NavMesh bakes. */
         PROPERTY(Editable, Category = "Navigation")
@@ -160,6 +168,10 @@ namespace Lumina
         /** Local-space euler rotation offset applied to the collider. */
         PROPERTY(Editable)
         glm::vec3 RotationOffset;
+
+        /** When true, the body produces overlap events but no contact response (trigger volume). */
+        PROPERTY(Editable)
+        bool bIsTrigger = false;
 
         /** When true, this collider contributes its shape to NavMesh bakes. */
         PROPERTY(Editable, Category = "Navigation")

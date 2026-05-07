@@ -32,6 +32,15 @@ namespace Lumina
         Lua::FRef       ReadyFunc;
         Lua::FRef       UpdateFunc;
         Lua::FRef       DetachFunc;
+
+        // Optional physics-event hooks. Cached at attach time; the physics
+        // scene invokes them directly when contacts begin/end on this entity's
+        // body. Contact = solid collision, Overlap = sensor/trigger.
+        Lua::FRef       ContactBeginFunc;
+        Lua::FRef       ContactEndFunc;
+        Lua::FRef       OverlapBeginFunc;
+        Lua::FRef       OverlapEndFunc;
+
         Lua::FRef       ScriptMetaTable;
 
         /**

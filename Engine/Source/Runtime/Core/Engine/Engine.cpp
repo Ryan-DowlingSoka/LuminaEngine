@@ -176,9 +176,6 @@ namespace Lumina
                 DeveloperToolUI->Update(UpdateContext);
                 #endif
 
-                // Tick UI before world updates so game-side queries see fresh layout.
-                RmlUi::TickAll();
-
                 GWorldManager->UpdateWorlds(UpdateContext);
 
                 OnUpdateStage(UpdateContext);
@@ -257,6 +254,10 @@ namespace Lumina
                         GWorldManager->UpdateWorlds(UpdateContext);
                         GWorldManager->RenderWorlds(CmdList);
                     }
+
+                    // Tick after all world updates so script mutations (SetText, class toggles)
+                    // are reconciled into layout before Render walks the tree.
+                    RmlUi::TickAll();
 
                     // RmlUi composites between world render and editor ImGui so editor chrome stays on top.
                     RmlUi::RenderAll(CmdList);
