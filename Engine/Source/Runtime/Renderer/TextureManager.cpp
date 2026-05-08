@@ -77,14 +77,28 @@ namespace Lumina::RHI
 
         FWriteScopeLock Lock(Mutex);
 
-        // SRV-only. Mutable bindings hold ONE descriptor type at a time, so writing
-        // a UAV mirror to the same slot would clobber the SRV (mip-0 STORAGE_IMAGE
-        // replacing an all-mips SAMPLED_IMAGE) and break sampling — including the
-        // depth-pyramid Hi-Z tap. Compute passes that write storage images bind
-        // per-mip UAVs through their own binding sets (e.g. DepthPyramidPass).
+        // The all-mips SRV. Mutable bindings hold one descriptor type per element,
+        // but distinct array indices can hold different types — so per-mip UAVs
+        // sit at their own slots and don't clobber this one.
         FBindingSetItem SRVItem = FBindingSetItem::TextureSRV(ImageBinding, InTexture);
         const int64 Index = DescriptorTableManager.CreateDescriptor(SRVItem);
         InTexture->SetResourceID(static_cast<int32>(Index));
+
+        // Per-mip storage views for SPD-style passes that write each mip via the
+        // bindless RW table without allocating a per-pass binding set.
+        const FRHIImageDesc& Desc = InTexture->GetDescription();
+        if (Desc.Flags.IsFlagSet(EImageCreateFlags::Storage) && Desc.NumMips > 1)
+        {
+            TVector<int32>& MipIndices = InTexture->GetMipUAVIndices();
+            MipIndices.resize(Desc.NumMips);
+            for (uint8 Mip = 0; Mip < Desc.NumMips; ++Mip)
+            {
+                FBindingSetItem UAVItem = FBindingSetItem::TextureUAV(
+                    ImageBinding, InTexture, Desc.Format,
+                    FTextureSubresourceSet(Mip, 1, 0, FTextureSubresourceSet::AllArraySlices));
+                MipIndices[Mip] = static_cast<int32>(DescriptorTableManager.CreateDescriptor(UAVItem));
+            }
+        }
     }
 
     void FTextureManager::RemoveTexture(FRHIImage* InTexture)
@@ -95,6 +109,16 @@ namespace Lumina::RHI
         }
 
         FWriteScopeLock Lock(Mutex);
+
+        TVector<int32>& MipIndices = InTexture->GetMipUAVIndices();
+        for (int32 MipIndex : MipIndices)
+        {
+            if (MipIndex >= 0)
+            {
+                DescriptorTableManager.ReleaseDescriptor(MipIndex);
+            }
+        }
+        MipIndices.clear();
 
         const int32 Index = InTexture->GetResourceID();
         if (Index == -1)

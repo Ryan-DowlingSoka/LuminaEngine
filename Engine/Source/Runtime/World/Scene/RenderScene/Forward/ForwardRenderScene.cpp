@@ -2789,7 +2789,7 @@ namespace Lumina
         {
             return;
         }
-        
+
         LUMINA_PROFILE_SECTION_COLORED("Depth Pyramid Pass (SPD)", tracy::Color::Orange);
 
         FRHIImage* DepthPyramid = GetNamedImage(ENamedImage::DepthPyramid);
@@ -2805,43 +2805,25 @@ namespace Lumina
 
         CmdList.FillBuffer(SpdCounter, 0u);
 
-        FBindingLayoutDesc LayoutDesc;
-        LayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0));
-        for (uint32 i = 0; i < SpdMaxMips; ++i)
-        {
-            LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(1 + i));
-        }
-        LayoutDesc.AddItem(FBindingLayoutItem::Buffer_UAV(13));
-        LayoutDesc.SetVisibility(ERHIShaderType::Compute);
-        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
-
         FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("DepthPyramidSPD.slang");
         FComputePipelineDesc PipelineDesc;
-        PipelineDesc.AddBindingLayout(Layout);
+        // Set 0 is the scene globals layout; SPD doesn't read it, but bindless
+        // arrays in SceneGlobals.slang are emitted at set=1, so the pipeline
+        // layout must reserve slot 0 for descriptor-set compatibility. Reuse the
+        // SceneBindingSet that every other pass already binds once per frame.
+        PipelineDesc.AddBindingLayout(SceneBindingLayout);
+        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         PipelineDesc.CS = ComputeShader;
         PipelineDesc.DebugName = "Depth Pyramid SPD";
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
-
-        FRHISamplerRef MinSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Minimum>::GetRHI();
-
-        FBindingSetDesc SetDesc;
-        SetDesc.AddItem(FBindingSetItem::TextureSRV(0, DepthSource, MinSampler));
-
-        for (uint32 i = 0; i < SpdMaxMips; ++i)
-        {
-            const uint32 SrcMip = (i < MipCount) ? i : 0u;
-            SetDesc.AddItem(FBindingSetItem::TextureUAV(1 + i, DepthPyramid, DepthPyramid->GetFormat(),
-                FTextureSubresourceSet(SrcMip, 1, 0, 1)));
-        }
-
-        SetDesc.AddItem(FBindingSetItem::BufferUAV(13, SpdCounter));
-
-        FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
-
         FComputeState State;
-        State.AddBindingSet(Set);
         State.SetPipeline(Pipeline);
+        State.AddBindingSet(SceneBindingSet);
+        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        State.Reads(DepthSource);
+        State.Writes(DepthPyramid);
+        State.Writes(SpdCounter);
         CmdList.SetComputeState(State);
 
         struct FSpdPushConstants
@@ -2850,6 +2832,10 @@ namespace Lumina
             uint32 NumMips;
             uint32 NumWorkGroups;
             float  InvPyramidSize[2];
+            uint32 SrcDepthIndex;
+            uint32 _Pad0;
+            uint64 AtomicCounter;
+            uint32 MipUAV[SpdMaxMips];
         } PC = {};
 
         constexpr uint32 SpdTileSize = 32;
@@ -2863,6 +2849,13 @@ namespace Lumina
         PC.NumWorkGroups      = TotalGroups;
         PC.InvPyramidSize[0]  = 1.0f / (float)PyramidW;
         PC.InvPyramidSize[1]  = 1.0f / (float)PyramidH;
+        PC.SrcDepthIndex      = (uint32)DepthSource->GetResourceID();
+        PC.AtomicCounter      = SpdCounter->GetAddress();
+        for (uint32 i = 0; i < SpdMaxMips; ++i)
+        {
+            const uint32 SrcMip = (i < MipCount) ? i : 0u;
+            PC.MipUAV[i] = (uint32)DepthPyramid->GetMipUAVIndex(SrcMip);
+        }
         CmdList.SetPushConstants(&PC, sizeof(PC));
 
         CmdList.Dispatch(DispatchX, DispatchY, 1);

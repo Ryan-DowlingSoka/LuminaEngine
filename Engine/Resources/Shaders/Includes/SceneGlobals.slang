@@ -55,12 +55,17 @@
 [[vk::binding(19, 0)]] SamplerCube                                   uSkyPrefilter;
 
 
-[[vk::binding(0, 1)]] Texture2D                  uBindlessTex2D[];
-[[vk::binding(0, 1)]] TextureCube                uBindlessTexCube[];
-[[vk::binding(0, 1)]] Texture3D                  uBindlessTex3D[];
-[[vk::binding(0, 1)]] Texture2DArray             uBindlessTex2DArray[];
-[[vk::binding(0, 1)]] RWTexture2D<float4>        uBindlessRWTex2D[];
-[[vk::binding(1, 1)]] SamplerState               uBindlessSamplers[];
+[[vk::binding(0, 1)]] Texture2D                                 uBindlessTex2D[];
+[[vk::binding(0, 1)]] TextureCube                               uBindlessTexCube[];
+[[vk::binding(0, 1)]] Texture3D                                 uBindlessTex3D[];
+[[vk::binding(0, 1)]] Texture2DArray                            uBindlessTex2DArray[];
+[[vk::binding(0, 1)]] RWTexture2D<float4>                       uBindlessRWTex2D[];
+// Same descriptor array, coherent alias. Use this for cross-workgroup hand-offs
+// (SPD mip-5 / mip-11). The SPIR-V Coherent decoration is per-OpVariable, so
+// declaring a second variable at the same binding lets per-access coherency
+// ride on the indexing expression.
+[[vk::binding(0, 1)]] globallycoherent RWTexture2D<float4>      uBindlessRWTex2DCoherent[];
+[[vk::binding(1, 1)]] SamplerState                              uBindlessSamplers[];
 
 // Stock sampler indices. Keep in lockstep with EBindlessSampler in
 // Engine/Source/Runtime/Renderer/TextureManager.h.

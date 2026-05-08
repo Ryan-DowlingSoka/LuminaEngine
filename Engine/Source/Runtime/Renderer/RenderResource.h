@@ -849,6 +849,13 @@ namespace Lumina
 		virtual int32 GetResourceID() const = 0;
 		virtual void SetResourceID(int32 InIndex) = 0;
 
+		// Per-mip storage-image bindless indices. Populated by FTextureManager
+		// for images created with EImageCreateFlags::Storage and NumMips > 1
+		// so SPD-style passes can write each mip via the bindless RW table
+		// without allocating a per-pass binding set. Returns -1 if not registered.
+		virtual int32 GetMipUAVIndex(uint32 Mip) const = 0;
+		virtual TVector<int32>& GetMipUAVIndices() = 0;
+
 		virtual void* GetRHIView(EFormat Format, FTextureSubresourceSet Subresources, EImageDimension Dimension, bool bReadyOnlyDSV = false) = 0;
 	};
 

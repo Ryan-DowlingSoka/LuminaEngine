@@ -1,25 +1,17 @@
 #pragma once
 #include "Includes/Common.slang"
+#include "Includes/SceneGlobals.slang"
 
 // Single-pass downsampler for the reverse-Z HZB. Up to 12 mips in one dispatch.
+// Resources: source SRV is a bindless texture index, per-mip UAVs are bindless
+// RW indices, the cross-WG atomic counter is a buffer-device-address. No
+// pass-local binding set — everything rides on push constants and the global
+// bindless table.
 
 #define TILE_THREAD_WIDTH 16
 #define TILE_THREAD_COUNT (TILE_THREAD_WIDTH * TILE_THREAD_WIDTH)
 
-[[vk::binding(0)]]  Sampler2D                                 uSrcDepth;
-[[vk::binding(1)]]  RWTexture2D<float>                        uDstMip0;
-[[vk::binding(2)]]  RWTexture2D<float>                        uDstMip1;
-[[vk::binding(3)]]  RWTexture2D<float>                        uDstMip2;
-[[vk::binding(4)]]  RWTexture2D<float>                        uDstMip3;
-[[vk::binding(5)]]  RWTexture2D<float>                        uDstMip4;
-[[vk::binding(6)]]  globallycoherent RWTexture2D<float>       uDstMip5;
-[[vk::binding(7)]]  RWTexture2D<float>                        uDstMip6;
-[[vk::binding(8)]]  RWTexture2D<float>                        uDstMip7;
-[[vk::binding(9)]]  RWTexture2D<float>                        uDstMip8;
-[[vk::binding(10)]] RWTexture2D<float>                        uDstMip9;
-[[vk::binding(11)]] RWTexture2D<float>                        uDstMip10;
-[[vk::binding(12)]] globallycoherent RWTexture2D<float>       uDstMip11;
-[[vk::binding(13)]] globallycoherent RWStructuredBuffer<uint> uAtomicCounter;
+#define SPD_MAX_MIPS 12
 
 struct FPushConstants
 {
@@ -27,7 +19,17 @@ struct FPushConstants
     uint   NumMips;
     uint   NumWorkGroups;
     float2 InvPyramidSize;
+    uint   SrcDepthIndex;
+    uint   _Pad0;
+    uint*  AtomicCounter;
+    uint   MipUAV[SPD_MAX_MIPS];
 };
+
+// Module-scope push constant. Passing PC as a uniform entry-point parameter makes
+// Slang copy the struct into Function storage, which trips spirv-val on the
+// PhysicalStorageBuffer pointer field (needs AliasedPointer/RestrictPointer on
+// the lowered OpVariable). PushConstant storage avoids the copy entirely.
+[[vk::push_constant]] FPushConstants PC;
 
 // Ping-pong LDS: alternating reduction passes write to disjoint halves so no
 // slot is read+written across a barrier.
@@ -41,28 +43,30 @@ float Reduce4(float a, float b, float c, float d)
 
 void StoreMip(uint Mip, int2 Pos, float Value)
 {
-    if      (Mip == 0)  uDstMip0[Pos]  = Value;
-    else if (Mip == 1)  uDstMip1[Pos]  = Value;
-    else if (Mip == 2)  uDstMip2[Pos]  = Value;
-    else if (Mip == 3)  uDstMip3[Pos]  = Value;
-    else if (Mip == 4)  uDstMip4[Pos]  = Value;
-    else if (Mip == 5)  uDstMip5[Pos]  = Value;
-    else if (Mip == 6)  uDstMip6[Pos]  = Value;
-    else if (Mip == 7)  uDstMip7[Pos]  = Value;
-    else if (Mip == 8)  uDstMip8[Pos]  = Value;
-    else if (Mip == 9)  uDstMip9[Pos]  = Value;
-    else if (Mip == 10) uDstMip10[Pos] = Value;
-    else if (Mip == 11) uDstMip11[Pos] = Value;
+    // Mips 5 and 11 are read by other workgroups in phase 2; route through the
+    // coherent alias so the SPIR-V Coherent decoration lands on these stores.
+    if (Mip == 5 || Mip == 11)
+    {
+        uBindlessRWTex2DCoherent[PC.MipUAV[Mip]][Pos] = float4(Value, 0, 0, 0);
+    }
+    else
+    {
+        uBindlessRWTex2D[PC.MipUAV[Mip]][Pos] = float4(Value, 0, 0, 0);
+    }
 }
 
-// Direct read through the coherent binding so the SPIR-V Coherent decoration
-// is on the load.
 float LoadMip5Coherent(int2 Pos, int2 MaxIdx)
 {
-    return uDstMip5[clamp(Pos, int2(0, 0), MaxIdx)];
+    return uBindlessRWTex2DCoherent[PC.MipUAV[5]][clamp(Pos, int2(0, 0), MaxIdx)].x;
 }
 
-float4 DownsampleMipN0_BaseCase(uint2 Tile, uint2 TileThread, FPushConstants PC)
+float SampleSrcDepth(float2 UV)
+{
+    return uBindlessTex2D[PC.SrcDepthIndex].SampleLevel(
+        uBindlessSamplers[SAMPLER_MIN_REDUCTION], UV, 0.0f).x;
+}
+
+float4 DownsampleMipN0_BaseCase(uint2 Tile, uint2 TileThread)
 {
     float4 Quad = float4(1, 1, 1, 1);
 
@@ -75,16 +79,16 @@ float4 DownsampleMipN0_BaseCase(uint2 Tile, uint2 TileThread, FPushConstants PC)
         if (all(uint2(DstP) < PC.PyramidSize))
         {
             const float2 UV = (float2(DstP) + 0.5f) * PC.InvPyramidSize;
-            const float  V  = uSrcDepth.SampleLevel(UV, 0.0f).x;
+            const float  V  = SampleSrcDepth(UV);
 
-            uDstMip0[DstP] = V;
+            uBindlessRWTex2D[PC.MipUAV[0]][DstP] = float4(V, 0, 0, 0);
             Quad[qi] = V;
         }
     }
     return Quad;
 }
 
-float4 DownsampleMipN0_FromMip5(uint2 Tile, uint2 TileThread, FPushConstants PC)
+float4 DownsampleMipN0_FromMip5(uint2 Tile, uint2 TileThread)
 {
     float4 Quad = float4(1, 1, 1, 1);
 
@@ -107,14 +111,14 @@ float4 DownsampleMipN0_FromMip5(uint2 Tile, uint2 TileThread, FPushConstants PC)
             const float D = LoadMip5Coherent(SrcP + int2(1, 1), SrcMaxIdx);
             const float V = Reduce4(A, B, C, D);
 
-            uDstMip6[DstP] = V;
+            uBindlessRWTex2D[PC.MipUAV[6]][DstP] = float4(V, 0, 0, 0);
             Quad[qi] = V;
         }
     }
     return Quad;
 }
 
-void DownsampleMipN1(int StartMip, uint2 Tile, uint2 TileThread, float4 Quad, FPushConstants PC)
+void DownsampleMipN1(int StartMip, uint2 Tile, uint2 TileThread, float4 Quad)
 {
     const int   DstMip  = StartMip + 2;
     const float V       = Reduce4(Quad.x, Quad.y, Quad.z, Quad.w);
@@ -129,7 +133,7 @@ void DownsampleMipN1(int StartMip, uint2 Tile, uint2 TileThread, float4 Quad, FP
     SpdLDS[TileThread.y * TILE_THREAD_WIDTH + TileThread.x] = V;
 }
 
-void DownsampleMipN2_N5(int StartMip, uint2 Tile, uint2 TileThread, int MipIndex, FPushConstants PC)
+void DownsampleMipN2_N5(int StartMip, uint2 Tile, uint2 TileThread, int MipIndex)
 {
     const int  DstMip  = StartMip + 3 + MipIndex;
     const uint PingSrc = uint(MipIndex & 1);
@@ -156,35 +160,35 @@ void DownsampleMipN2_N5(int StartMip, uint2 Tile, uint2 TileThread, int MipIndex
     }
 }
 
-void DownsampleTile_Phase1(uint2 Tile, uint2 TileThread, FPushConstants PC)
+void DownsampleTile_Phase1(uint2 Tile, uint2 TileThread)
 {
     if (PC.NumMips < 1) return;
-    const float4 Quad = DownsampleMipN0_BaseCase(Tile, TileThread, PC);
+    const float4 Quad = DownsampleMipN0_BaseCase(Tile, TileThread);
 
     if (PC.NumMips < 2) return;
-    DownsampleMipN1(-1, Tile, TileThread, Quad, PC);
+    DownsampleMipN1(-1, Tile, TileThread, Quad);
 
     [unroll]
     for (int mi = 0; mi < 4; ++mi)
     {
         if (int(PC.NumMips) <= -1 + 3 + mi) return;
-        DownsampleMipN2_N5(-1, Tile, TileThread, mi, PC);
+        DownsampleMipN2_N5(-1, Tile, TileThread, mi);
     }
 }
 
-void DownsampleTile_Phase2(uint2 Tile, uint2 TileThread, FPushConstants PC)
+void DownsampleTile_Phase2(uint2 Tile, uint2 TileThread)
 {
     if (PC.NumMips <= 6) return;
-    const float4 Quad = DownsampleMipN0_FromMip5(Tile, TileThread, PC);
+    const float4 Quad = DownsampleMipN0_FromMip5(Tile, TileThread);
 
     if (PC.NumMips <= 7) return;
-    DownsampleMipN1(5, Tile, TileThread, Quad, PC);
+    DownsampleMipN1(5, Tile, TileThread, Quad);
 
     [unroll]
     for (int mi = 0; mi < 4; ++mi)
     {
         if (int(PC.NumMips) <= 5 + 3 + mi) return;
-        DownsampleMipN2_N5(5, Tile, TileThread, mi, PC);
+        DownsampleMipN2_N5(5, Tile, TileThread, mi);
     }
 }
 
@@ -192,23 +196,21 @@ void DownsampleTile_Phase2(uint2 Tile, uint2 TileThread, FPushConstants PC)
 [numthreads(TILE_THREAD_WIDTH, TILE_THREAD_WIDTH, 1)]
 void ComputeMain(
     uint3 GroupID  : SV_GroupID,
-    uint3 ThreadID : SV_GroupThreadID,
-    uniform FPushConstants PC)
+    uint3 ThreadID : SV_GroupThreadID)
 {
     const uint2 Tile = GroupID.xy;
     const uint2 TT   = ThreadID.xy;
 
-    DownsampleTile_Phase1(Tile, TT, PC);
+    DownsampleTile_Phase1(Tile, TT);
 
     if (PC.NumMips <= 6) return;
 
-    // Cross-WG hand-off: the atomic on the globallycoherent counter is the
-    // only Device-scope memory event; the bool broadcasts the result through
-    // a workgroup barrier.
+    // Cross-WG hand-off: the atomic on the BDA counter is the only Device-scope
+    // memory event; the bool broadcasts the result through a workgroup barrier.
     if (all(TT == uint2(0, 0)))
     {
         uint OldCount;
-        InterlockedAdd(uAtomicCounter[0], 1u, OldCount);
+        InterlockedAdd(PC.AtomicCounter[0], 1u, OldCount);
         SpdIsLastWorkgroup = ((OldCount + 1u) == PC.NumWorkGroups);
     }
 
@@ -218,7 +220,7 @@ void ComputeMain(
 
     if (all(TT == uint2(0, 0)))
     {
-        uAtomicCounter[0] = 0u;
+        PC.AtomicCounter[0] = 0u;
     }
 
     // Walk mip-5 in 64x64 sub-tiles. Pyramids up to 2048-wide fit in one.
@@ -229,7 +231,7 @@ void ComputeMain(
     {
         for (uint tx = 0; tx < Mip5TileCount.x; ++tx)
         {
-            DownsampleTile_Phase2(uint2(tx, ty), TT, PC);
+            DownsampleTile_Phase2(uint2(tx, ty), TT);
         }
     }
 }

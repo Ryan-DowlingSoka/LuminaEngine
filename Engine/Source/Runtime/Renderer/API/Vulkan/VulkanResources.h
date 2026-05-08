@@ -313,9 +313,16 @@ namespace Lumina
 		int32 GetResourceID() const override { return ResourceID; }
 		void SetResourceID(int32 Index) override { ResourceID = Index; }
 
+		int32 GetMipUAVIndex(uint32 Mip) const override
+		{
+			return Mip < MipUAVIndices.size() ? MipUAVIndices[Mip] : -1;
+		}
+		TVector<int32>& GetMipUAVIndices() override { return MipUAVIndices; }
+
     private:
 
 		int32                   ResourceID = -1;
+		TVector<int32>          MipUAVIndices;
         
         FRHIImageDesc           Description;
         SubresourceMap          SubresourceViews;
