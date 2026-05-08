@@ -2807,10 +2807,6 @@ namespace Lumina
 
         FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("DepthPyramidSPD.slang");
         FComputePipelineDesc PipelineDesc;
-        // Set 0 is the scene globals layout; SPD doesn't read it, but bindless
-        // arrays in SceneGlobals.slang are emitted at set=1, so the pipeline
-        // layout must reserve slot 0 for descriptor-set compatibility. Reuse the
-        // SceneBindingSet that every other pass already binds once per frame.
         PipelineDesc.AddBindingLayout(SceneBindingLayout);
         PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         PipelineDesc.CS = ComputeShader;
@@ -2833,7 +2829,7 @@ namespace Lumina
             uint32 NumWorkGroups;
             float  InvPyramidSize[2];
             uint32 SrcDepthIndex;
-            uint32 _Pad0;
+            uint32 Pad0;
             uint64 AtomicCounter;
             uint32 MipUAV[SpdMaxMips];
         } PC = {};
