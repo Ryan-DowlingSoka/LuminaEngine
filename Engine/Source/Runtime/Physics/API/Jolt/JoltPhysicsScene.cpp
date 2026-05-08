@@ -239,6 +239,9 @@ namespace Lumina::Physics
             return;
         }
 
+        // OnContactRemoved fires in a phase where Jolt does not grant velocity
+        // read access to this thread; GetLinearVelocity hits a BodyAccess
+        // assert (UB in release). Only non-velocity fields are safe here.
         FContactRecord Record;
         Record.Type      = EContactEventType::Removed;
         Record.EntityA   = static_cast<entt::entity>(B1->GetUserData());
@@ -249,8 +252,8 @@ namespace Lumina::Physics
         Record.bSensorB  = B2->IsSensor();
         Record.Point     = glm::vec3(0.0f);
         Record.Normal    = glm::vec3(0.0f, 1.0f, 0.0f);
-        Record.VelocityA = JoltUtils::FromJPHVec3(B1->GetLinearVelocity());
-        Record.VelocityB = JoltUtils::FromJPHVec3(B2->GetLinearVelocity());
+        Record.VelocityA = glm::vec3(0.0f);
+        Record.VelocityB = glm::vec3(0.0f);
         Record.ImpactSpeed = 0.0f;
 
         Scene->EnqueueContactRecord(Record);

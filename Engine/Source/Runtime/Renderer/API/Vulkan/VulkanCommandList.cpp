@@ -61,9 +61,9 @@ namespace Lumina
     void FVulkanCommandList::Open()
     {
         LUMINA_PROFILE_SCOPE();
-        
+
         CurrentCommandBuffer = RenderContext->GetQueue(Info.CommandQueue)->GetOrCreateCommandBuffer();
-        
+
         static constexpr VkCommandBufferBeginInfo BeginInfo
         {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -71,10 +71,10 @@ namespace Lumina
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
             .pInheritanceInfo = nullptr,
         };
-        
+
         VK_CHECK(vkBeginCommandBuffer(CurrentCommandBuffer->CommandBuffer, &BeginInfo));
         CurrentCommandBuffer->ReferencedResources.push_back(this);
-        
+
         PendingState.AddPendingState(EPendingCommandState::Recording);
     }
 
@@ -715,6 +715,13 @@ namespace Lumina
             LOG_ERROR("Failed to suballocate %llu bytes from transient ring", Size);
             return Result;
         }
+
+        // The chunk's lifetime is owned by UploadManager's pool, which is owned
+        // by this command list; as long as the in-flight TrackedCommandBuffer
+        // pins this command list via ReferencedResources, the buffer outlives
+        // the GPU work that uses its BDA. Explicitly reference the ring buffer
+        // here so this guarantee survives any future cmdlist-lifetime refactor.
+        CurrentCommandBuffer->AddReferencedResource(RingBuffer);
 
         CommandListStats.NumTransientAllocs++;
 

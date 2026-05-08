@@ -40,11 +40,15 @@ namespace Lumina
         void                        SetTransform(const Rml::Matrix4f* Transform) override;
 
     private:
+        // RmlUi geometry is upload-grade: small, GPU-touched once per frame, then
+        // potentially re-uploaded on relayout. We keep CPU-side bytes here and
+        // suballocate from the cmdlist's transient ring at draw time -- no
+        // vmaCreateBuffer / vmaDestroyBuffer per Compile/Release pair.
         struct FGeometry
         {
-            FRHIBufferRef VertexBuffer;
-            FRHIBufferRef IndexBuffer;
-            uint32        IndexCount = 0;
+            TVector<uint8> VertexData;
+            TVector<uint8> IndexData;
+            uint32         IndexCount = 0;
         };
 
         struct FTexture

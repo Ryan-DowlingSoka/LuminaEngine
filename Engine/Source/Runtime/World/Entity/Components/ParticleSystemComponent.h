@@ -23,6 +23,12 @@ namespace Lumina
         bool            bPendingReset       = false;
         glm::vec3       PrevEmitterPosition = glm::vec3(0.0f);
         bool            bHasPrevPosition    = false;
+        // CPU-side estimate of remaining simulated time before all particles
+        // are guaranteed dead. Bumped to MaxLifetime on every frame that
+        // spawns; decremented by ScaledDelta otherwise. When this hits 0 and
+        // no spawns happen this frame, the simulate dispatch is skipped --
+        // there is nothing for the GPU to do.
+        float           AliveTimeRemaining  = 0.0f;
     };
 
     REFLECT(Component)

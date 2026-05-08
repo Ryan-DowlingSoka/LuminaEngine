@@ -1,0 +1,228 @@
+#pragma once
+#include "Includes/Common.slang"
+
+// =============================================================================
+//  Bloom Downsample (Single-Pass Downsampler)
+// =============================================================================
+//
+//  One compute dispatch generates the entire bloom mip chain (mips 0..N-1) from
+//  HDR scene color. Built on the daxa/foundation gen_hiz pattern (same one as
+//  DepthPyramidSPD): 16x16 thread tile produces a 32x32 patch of mip 0, then
+//  ping-pong LDS reductions emit mips 1..5 in-flight. Bloom only ever needs 5
+//  mips total, so phase 1 alone is sufficient -- no atomic counter, no last-WG
+//  hand-off.
+//
+//  Mip 0 base case:
+//    Per-pixel 13-tap Karis-weighted average from HDR (Jimenez 2014). Soft-
+//    knee quadratic threshold runs only at mip 0; subsequent mips are pure
+//    2x2 box reductions in groupshared LDS.
+//
+//  Push constants:
+//    PyramidSize     bloom mip 0 size (= HDR / 2).
+//    NumMips         number of mips to write (up to 5).
+//    InvHDRSize      1 / HDR resolution; tap offsets multiply by this.
+//    Threshold       knee curve x.
+//    KneeCurve       (Threshold - Knee, 2*Knee, 0.25/Knee). Precomputed.
+// =============================================================================
+
+#define TILE_THREAD_WIDTH 16
+#define TILE_THREAD_COUNT (TILE_THREAD_WIDTH * TILE_THREAD_WIDTH)
+
+[[vk::binding(0)]] Sampler2D            uHDR;
+[[vk::binding(1)]] RWTexture2D<float3>  uMip0;
+[[vk::binding(2)]] RWTexture2D<float3>  uMip1;
+[[vk::binding(3)]] RWTexture2D<float3>  uMip2;
+[[vk::binding(4)]] RWTexture2D<float3>  uMip3;
+[[vk::binding(5)]] RWTexture2D<float3>  uMip4;
+
+struct FPushConstants
+{
+    uint2  PyramidSize;     // bloom mip 0 size = HDR / 2.
+    uint   NumMips;         // number of bloom mips to write (1..5).
+    uint   _Pad0;
+
+    float2 InvHDRSize;      // 1 / HDR resolution (used for HDR tap offsets).
+    float  Threshold;       // Same value as KneeCurve.x + Knee.
+    float  _Pad1;
+
+    float3 KneeCurve;       // (T - Knee, 2*Knee, 0.25/Knee). See QuadraticThreshold.
+    float  _Pad2;
+};
+
+// Ping-pong LDS like DepthPyramidSPD: alternating reductions write to disjoint
+// halves so no slot is read+written across a barrier.
+groupshared float3 SpdLDS[2 * TILE_THREAD_COUNT];
+
+float3 Reduce4(float3 a, float3 b, float3 c, float3 d)
+{
+    return (a + b + c + d) * 0.25;
+}
+
+void StoreMip(uint Mip, int2 Pos, float3 V)
+{
+    if      (Mip == 0) uMip0[Pos] = V;
+    else if (Mip == 1) uMip1[Pos] = V;
+    else if (Mip == 2) uMip2[Pos] = V;
+    else if (Mip == 3) uMip3[Pos] = V;
+    else if (Mip == 4) uMip4[Pos] = V;
+}
+
+float3 QuadraticThreshold(float3 Color, float Threshold, float3 Curve)
+{
+    float Br  = max(max(Color.r, Color.g), Color.b);
+    float Rq  = clamp(Br - Curve.x, 0.0, Curve.y);
+    Rq        = (Rq * Rq) * Curve.z;
+    float Mul = max(Rq, Br - Threshold) / max(Br, 1e-4);
+    return Color * Mul;
+}
+
+float KarisWeight(float3 Color)
+{
+    float Luma = dot(Color, float3(0.2126, 0.7152, 0.0722)) * 0.25;
+    return 1.0 / (1.0 + Luma);
+}
+
+// Karis-weighted 13-tap downsample of HDR with soft-knee threshold. UV is the
+// destination mip 0 UV (== sample point on HDR thanks to the half-res mapping).
+float3 PrefilterHDR(float2 UV, float2 T, float Threshold, float3 KneeCurve)
+{
+    float3 a = uHDR.SampleLevel(UV + T * float2(-2.0, -2.0), 0.0).rgb;
+    float3 b = uHDR.SampleLevel(UV + T * float2( 0.0, -2.0), 0.0).rgb;
+    float3 c = uHDR.SampleLevel(UV + T * float2( 2.0, -2.0), 0.0).rgb;
+
+    float3 d = uHDR.SampleLevel(UV + T * float2(-2.0,  0.0), 0.0).rgb;
+    float3 e = uHDR.SampleLevel(UV + T * float2( 0.0,  0.0), 0.0).rgb;
+    float3 f = uHDR.SampleLevel(UV + T * float2( 2.0,  0.0), 0.0).rgb;
+
+    float3 g = uHDR.SampleLevel(UV + T * float2(-2.0,  2.0), 0.0).rgb;
+    float3 h = uHDR.SampleLevel(UV + T * float2( 0.0,  2.0), 0.0).rgb;
+    float3 i = uHDR.SampleLevel(UV + T * float2( 2.0,  2.0), 0.0).rgb;
+
+    float3 j = uHDR.SampleLevel(UV + T * float2(-1.0, -1.0), 0.0).rgb;
+    float3 k = uHDR.SampleLevel(UV + T * float2( 1.0, -1.0), 0.0).rgb;
+    float3 l = uHDR.SampleLevel(UV + T * float2(-1.0,  1.0), 0.0).rgb;
+    float3 m = uHDR.SampleLevel(UV + T * float2( 1.0,  1.0), 0.0).rgb;
+
+    float3 Q0 = (j + k + l + m) * 0.25;
+    float3 Q1 = (a + b + d + e) * 0.25;
+    float3 Q2 = (b + c + e + f) * 0.25;
+    float3 Q3 = (d + e + g + h) * 0.25;
+    float3 Q4 = (e + f + h + i) * 0.25;
+
+    float W0 = KarisWeight(Q0) * 0.5;
+    float W1 = KarisWeight(Q1) * 0.125;
+    float W2 = KarisWeight(Q2) * 0.125;
+    float W3 = KarisWeight(Q3) * 0.125;
+    float W4 = KarisWeight(Q4) * 0.125;
+
+    float WSum = W0 + W1 + W2 + W3 + W4;
+    float3 Result = (Q0 * W0 + Q1 * W1 + Q2 * W2 + Q3 * W3 + Q4 * W4) / max(WSum, 1e-4);
+
+    return QuadraticThreshold(max(Result, 0.0), Threshold, KneeCurve);
+}
+
+// Each thread writes a 2x2 sub-quad of mip 0 by prefiltering HDR. Returns the
+// 4 values via out params so DownsampleMipN1 can reduce them to mip 1 without
+// going through LDS.
+void DownsampleMipN0_BaseCase(uint2 Tile, uint2 TileThread, FPushConstants PC,
+    out float3 Q0, out float3 Q1, out float3 Q2, out float3 Q3)
+{
+    Q0 = float3(0, 0, 0);
+    Q1 = float3(0, 0, 0);
+    Q2 = float3(0, 0, 0);
+    Q3 = float3(0, 0, 0);
+
+    const int2 BaseDst = int2(Tile * TILE_THREAD_WIDTH + TileThread) * 2;
+    const float2 InvMip0Size = 1.0 / float2(PC.PyramidSize);
+
+    [unroll]
+    for (uint qi = 0; qi < 4; ++qi)
+    {
+        const int2 SubI = int2(qi & 1, qi >> 1);
+        const int2 DstP = BaseDst + SubI;
+
+        if (all(uint2(DstP) < PC.PyramidSize))
+        {
+            // Mip 0 pixel center in HDR UV space: (DstP + 0.5) / PyramidSize.
+            const float2 UV = (float2(DstP) + 0.5) * InvMip0Size;
+            const float3 V  = PrefilterHDR(UV, PC.InvHDRSize, PC.Threshold, PC.KneeCurve);
+
+            uMip0[DstP] = V;
+
+            if      (qi == 0) Q0 = V;
+            else if (qi == 1) Q1 = V;
+            else if (qi == 2) Q2 = V;
+            else              Q3 = V;
+        }
+    }
+}
+
+void DownsampleMipN1(int StartMip, uint2 Tile, uint2 TileThread,
+                     float3 Q0, float3 Q1, float3 Q2, float3 Q3, FPushConstants PC)
+{
+    const int   DstMip  = StartMip + 2;
+    const float3 V      = Reduce4(Q0, Q1, Q2, Q3);
+    const int2  DstP    = int2(Tile * TILE_THREAD_WIDTH + TileThread);
+    const uint2 DstSize = max(PC.PyramidSize >> uint(DstMip), uint2(1, 1));
+
+    if (all(uint2(DstP) < DstSize))
+    {
+        StoreMip(uint(DstMip), DstP, V);
+    }
+
+    SpdLDS[TileThread.y * TILE_THREAD_WIDTH + TileThread.x] = V;
+}
+
+void DownsampleMipN2_N5(int StartMip, uint2 Tile, uint2 TileThread, int MipIndex, FPushConstants PC)
+{
+    const int  DstMip  = StartMip + 3 + MipIndex;
+    const uint PingSrc = uint(MipIndex & 1);
+    const uint PingDst = uint((MipIndex + 1) & 1);
+
+    GroupMemoryBarrierWithGroupSync();
+
+    const uint2 RemainingTile = uint2(1, 1) * uint(TILE_THREAD_WIDTH >> (MipIndex + 1));
+    const int2  DstP    = int2(TileThread + Tile * RemainingTile);
+    const int2  SrcP    = int2(TileThread) * 2;
+    const uint2 DstSize = max(PC.PyramidSize >> uint(DstMip), uint2(1, 1));
+    const bool  Active  = all(TileThread < RemainingTile) && all(uint2(DstP) < DstSize);
+
+    if (Active)
+    {
+        const float3 A = SpdLDS[PingSrc * TILE_THREAD_COUNT + (SrcP.y + 0) * TILE_THREAD_WIDTH + (SrcP.x + 0)];
+        const float3 B = SpdLDS[PingSrc * TILE_THREAD_COUNT + (SrcP.y + 0) * TILE_THREAD_WIDTH + (SrcP.x + 1)];
+        const float3 C = SpdLDS[PingSrc * TILE_THREAD_COUNT + (SrcP.y + 1) * TILE_THREAD_WIDTH + (SrcP.x + 0)];
+        const float3 D = SpdLDS[PingSrc * TILE_THREAD_COUNT + (SrcP.y + 1) * TILE_THREAD_WIDTH + (SrcP.x + 1)];
+        const float3 V = Reduce4(A, B, C, D);
+
+        SpdLDS[PingDst * TILE_THREAD_COUNT + TileThread.y * TILE_THREAD_WIDTH + TileThread.x] = V;
+        StoreMip(uint(DstMip), DstP, V);
+    }
+}
+
+void DownsampleTile_Phase1(uint2 Tile, uint2 TileThread, FPushConstants PC)
+{
+    if (PC.NumMips < 1) return;
+    float3 Q0, Q1, Q2, Q3;
+    DownsampleMipN0_BaseCase(Tile, TileThread, PC, Q0, Q1, Q2, Q3);
+
+    if (PC.NumMips < 2) return;
+    DownsampleMipN1(-1, Tile, TileThread, Q0, Q1, Q2, Q3, PC);
+
+    [unroll]
+    for (int mi = 0; mi < 4; ++mi)
+    {
+        if (int(PC.NumMips) <= -1 + 3 + mi) return;
+        DownsampleMipN2_N5(-1, Tile, TileThread, mi, PC);
+    }
+}
+
+[shader("compute")]
+[numthreads(TILE_THREAD_WIDTH, TILE_THREAD_WIDTH, 1)]
+void ComputeMain(
+    uint3 GroupID  : SV_GroupID,
+    uint3 ThreadID : SV_GroupThreadID,
+    uniform FPushConstants PC)
+{
+    DownsampleTile_Phase1(GroupID.xy, ThreadID.xy, PC);
+}

@@ -195,12 +195,6 @@ namespace Lumina
         {
             LUMINA_PROFILE_SECTION("RenderPasses");
 
-            // Submit the async-compute batch as early in the frame as possible so it can run
-            // alongside CPU recording of the rest of the graphics CL. Returns true when work
-            // was actually dispatched, in which case the matching inline graphics-CL fallbacks
-            // below are skipped.
-            const bool bAsyncRan = DispatchAsyncComputePasses();
-
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Cull Early", FColor(1.00f, 0.40f, 0.70f));
                 CullPassEarly(CmdList);
@@ -319,10 +313,7 @@ namespace Lumina
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Batched Lines", FColor(0.95f, 0.20f, 0.20f));
                 BatchedLineDraw(CmdList);
             }
-        
-            // When the async batch ran, particle simulate already dispatched on the compute
-            // queue at the top of RenderPasses and the cross-queue wait was queued there.
-            if (!bAsyncRan)
+            
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Particles Simulate", FColor(1.00f, 0.55f, 0.20f));
                 ParticleSimulatePass(CmdList);
@@ -3401,48 +3392,7 @@ namespace Lumina
             }
         }
     }
-
-    bool FForwardRenderScene::DispatchAsyncComputePasses()
-    {
-        if (!CVarAsyncCompute.GetValue())
-        {
-            return false;
-        }
-
-        // Cheap presence checks — avoid creating a compute CL we'll never submit.
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        const bool bHasParticles = Registry.storage<SParticleSystemComponent>().size() > 0;
-
-        const bool bAnyAsyncWork = bHasParticles;
-        if (!bAnyAsyncWork)
-        {
-            return false;
-        }
-
-        LUMINA_PROFILE_SECTION_COLORED("Async Compute Batch", tracy::Color::Orange);
-
-        FRHICommandListRef ComputeCmdList = GRenderContext->CreateCommandList(FCommandListInfo::Compute());
-        ComputeCmdList->Open();
-
-        uint32 TotalDispatches = 0;
-
-        if (bHasParticles)
-        {
-            TotalDispatches += ParticleSimulatePass(*ComputeCmdList);
-        }
-
-        ComputeCmdList->Close();
-
-        if (TotalDispatches == 0)
-        {
-            return false;
-        }
-
-        ICommandList* Lists[] = { ComputeCmdList.GetReference() };
-        GRenderContext->ExecuteCommandLists(Lists, 1, ECommandQueue::Compute);
-        GRenderContext->AddCommandQueueWait(ECommandQueue::Graphics, ECommandQueue::Compute);
-        return true;
-    }
+    
 
     uint32 FForwardRenderScene::ParticleSimulatePass(ICommandList& CmdList)
     {
@@ -3527,13 +3477,11 @@ namespace Lumina
                 State.bBurstPending     = true;
             }
 
-            // Zero the spawn counter every frame before dispatch. @TODO see if needed.
-            CmdList.FillBuffer(State.SpawnCounterBuffer, 0u);
-            
             if (State.bPendingReset)
             {
                 CmdList.FillBuffer(State.ParticleBuffer, 0u);
-                State.bPendingReset = false;
+                State.bPendingReset      = false;
+                State.AliveTimeRemaining = 0.0f;
             }
 
             const float ScaledDelta = DeltaTime * Component.TimeScale;
@@ -3576,6 +3524,28 @@ namespace Lumina
             }
 
             SpawnCount = eastl::min(SpawnCount, MaxParticles);
+
+            // Track an upper bound on how long any currently-alive particle
+            // could still survive. A spawn this frame resets it to the asset's
+            // max lifetime; otherwise it counts down with the simulation
+            // clock. When it reaches zero and we're not spawning, all slots
+            // are guaranteed dead and the GPU has nothing to do -- skip the
+            // dispatch (and the associated per-frame buffer writes).
+            const float MaxLifetime = eastl::max(Resolved.LifetimeRange.y, 0.0f);
+            if (SpawnCount > 0)
+            {
+                State.AliveTimeRemaining = eastl::max(State.AliveTimeRemaining, MaxLifetime);
+            }
+            State.AliveTimeRemaining = eastl::max(State.AliveTimeRemaining - ScaledDelta, 0.0f);
+
+            if (SpawnCount == 0 && State.AliveTimeRemaining <= 0.0f)
+            {
+                return;
+            }
+
+            // Zero the spawn counter only when we are actually going to
+            // dispatch. Idle systems no longer pay for it.
+            CmdList.FillBuffer(State.SpawnCounterBuffer, 0u);
 
             const glm::mat4 WorldMat = Transform.GetWorldMatrix();
             const glm::vec3 EmitterWorld = glm::vec3(WorldMat * glm::vec4(Component.EmitterOffset, 1.0f));
@@ -5410,38 +5380,43 @@ namespace Lumina
 
     namespace
     {
-        // Push constants for BloomDownsample.slang. 32 B (well under the
-        // 128B Vulkan minimum) -- a single 16-byte scalar block plus a
-        // 16-byte vec3+pad block.
-        struct FBloomDownPushConstants
+        // Push constants for BloomDownsampleSPD.slang. 48 B (well under the
+        // 128 B Vulkan minimum push constant size).
+        struct FBloomDownSPDPushConstants
         {
-            glm::vec2 SrcTexelSize;
-            float     Threshold;
-            uint32    bIsPrefilter;
+            glm::uvec2 PyramidSize;     // bloom mip 0 size (= HDR / 2)
+            uint32     NumMips;
+            uint32     _Pad0;
 
-            glm::vec3 KneeCurve;
-            float     _Pad0;
+            glm::vec2  InvHDRSize;
+            float      Threshold;
+            float      _Pad1;
+
+            glm::vec3  KneeCurve;
+            float      _Pad2;
         };
-        static_assert(sizeof(FBloomDownPushConstants) == 32,
-            "FBloomDownPushConstants must match BloomDownsample.slang::FPushConstants.");
+        static_assert(sizeof(FBloomDownSPDPushConstants) == 48, "FBloomDownSPDPushConstants must match BloomDownsampleSPD.slang::FPushConstants.");
 
-        // Push constants for BloomUpsample.slang. 16 B.
-        struct FBloomUpPushConstants
+        // Push constants for BloomUpsampleCS.slang. 32 B.
+        struct FBloomUpCSPushConstants
         {
-            glm::vec2 SrcTexelSize;
-            float     Radius;
-            float     _Pad0;
+            glm::vec2  SrcTexelSize;
+            float      Radius;
+            float      _Pad0;
+
+            glm::uvec2 DstSize;
+            glm::uvec2 _Pad1;
         };
-        static_assert(sizeof(FBloomUpPushConstants) == 16,
-            "FBloomUpPushConstants must match BloomUpsample.slang::FPushConstants.");
+        static_assert(sizeof(FBloomUpCSPushConstants) == 32,
+            "FBloomUpCSPushConstants must match BloomUpsampleCS.slang::FPushConstants.");
+
+        // SPD tile in destination-mip-0 pixels. The 16x16 thread group writes
+        // a 32x32 patch of mip 0 (each thread owns a 2x2 sub-quad).
+        constexpr uint32 BloomSPDTileSize = 32;
     }
 
     void FForwardRenderScene::BloomPass(ICommandList& CmdList)
     {
-        // Cheap early-out. Skipping when bloom is disabled keeps the whole
-        // mip chain off the GPU; the tone map shader's BloomIntensity > 0
-        // branch additionally prevents it from sampling stale uBloom
-        // contents on the very first frame after disable.
         if (ActivePostProcess == nullptr || !ActivePostProcess->bEnabled || ActivePostProcess->BloomIntensity <= 0.0f)
         {
             return;
@@ -5449,130 +5424,110 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Bloom Pass", tracy::Color::Yellow3);
 
-        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef  DownPS       = FShaderLibrary::GetPixelShader("BloomDownsample.slang");
-        FRHIPixelShaderRef  UpPS         = FShaderLibrary::GetPixelShader("BloomUpsample.slang");
-        if (!VertexShader || !DownPS || !UpPS)
+        FRHIComputeShaderRef DownCS = FShaderLibrary::GetComputeShader("BloomDownsampleSPD.slang");
+        FRHIComputeShaderRef UpCS   = FShaderLibrary::GetComputeShader("BloomUpsampleCS.slang");
+        if (!DownCS || !UpCS)
         {
             return;
         }
 
+        FRHIImage* HDR        = GetNamedImage(ENamedImage::HDR);
+        FRHIImage* Bloom      = BloomChain;
+        const uint32 HDRWidth = HDR->GetSizeX();
+        const uint32 HDRHght  = HDR->GetSizeY();
+        const uint32 Mip0W    = eastl::max<uint32>(HDRWidth >> 1u, 1u);
+        const uint32 Mip0H    = eastl::max<uint32>(HDRHght  >> 1u, 1u);
+
         FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
-        // Set 0, binding 0: the source mip / HDR scene color, sampled with
-        // a linear-clamp combined sampler so the 13-tap downsample picks
-        // up bilinear taps without manual cross-fetching.
-        FBindingLayoutDesc SrcLayoutDesc;
-        SrcLayoutDesc.SetBindingIndex(0)
-            .SetVisibility(ERHIShaderType::Fragment)
-            .AddItem(FBindingLayoutItem::Texture_SRV(0));
-        FRHIBindingLayout* SrcLayout = BindingCache.GetOrCreateBindingLayout(SrcLayoutDesc);
-
-        // Knee maps the SoftKnee 0..1 dial onto an actual knee width in HDR
-        // units. The published Jimenez form uses (Threshold - Knee, 2*Knee,
-        // 0.25 / Knee); precomputing the three terms turns the per-pixel
-        // soft threshold into a single max + saturate + multiply.
+        
         const float Threshold = ActivePostProcess->BloomThreshold;
         const float Knee      = ActivePostProcess->BloomSoftKnee * Threshold + 1e-5f;
-        const glm::vec3 KneeCurve(Threshold - Knee, 2.0f * Knee, 0.25f / Knee);
 
-        FRasterState RasterState;
-        RasterState.SetCullNone();
-
-        FDepthStencilState DepthState;
-        DepthState.DisableDepthTest();
-        DepthState.DisableDepthWrite();
-
-        // Additive blend used by the upsample chain. Each upsample writes
-        // its 3x3 tent-filtered contribution on top of the larger mip the
-        // downsample chain already populated, producing the smooth halo.
-        FBlendState::RenderTarget AdditiveTarget;
-        AdditiveTarget.SetBlendEnable(true);
-        AdditiveTarget.SetSrcBlend(EBlendFactor::One);
-        AdditiveTarget.SetDestBlend(EBlendFactor::One);
-        AdditiveTarget.SetBlendOp(EBlendOp::Add);
-        AdditiveTarget.SetSrcBlendAlpha(EBlendFactor::One);
-        AdditiveTarget.SetDestBlendAlpha(EBlendFactor::One);
-        AdditiveTarget.SetBlendOpAlpha(EBlendOp::Add);
-        FBlendState AdditiveBlend;
-        AdditiveBlend.SetRenderTarget(0, AdditiveTarget);
-
-        auto RecordPass = [&](FRHIImage* Src, FRHIImage* Dst, FRHIPixelShader* PixelShader,
-                              const FBlendState* OptionalBlend, const void* PCData, uint32 PCSize,
-                              const char* DebugName)
         {
-            FRenderPassDesc::FAttachment Attachment;
-            Attachment.SetImage(Dst);
-            if (OptionalBlend != nullptr)
+            const glm::vec3 KneeCurve(Threshold - Knee, 2.0f * Knee, 0.25f / Knee);
+            FBindingLayoutDesc LayoutDesc;
+            LayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0));
+            for (uint32 i = 0; i < BLOOM_MIP_COUNT; ++i)
             {
-                // Additive: preserve the destination so the upsample
-                // accumulates instead of overwriting.
-                Attachment.SetLoadOp(ERenderLoadOp::Load);
+                LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(1 + i));
             }
+            LayoutDesc.SetVisibility(ERHIShaderType::Compute);
+            FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
 
-            FRenderPassDesc RenderPass;
-            RenderPass.AddColorAttachment(Attachment).SetRenderArea(Dst->GetExtent());
-
-            FRenderState RenderState;
-            RenderState.SetRasterState(RasterState);
-            RenderState.SetDepthStencilState(DepthState);
-            if (OptionalBlend != nullptr)
-            {
-                RenderState.SetBlendState(*OptionalBlend);
-            }
-
-            FGraphicsPipelineDesc Desc;
-            Desc.SetDebugName(DebugName);
-            Desc.SetRenderState(RenderState);
-            Desc.AddBindingLayout(SrcLayout);
-            Desc.SetVertexShader(VertexShader);
-            Desc.SetPixelShader(PixelShader);
-
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+            FComputePipelineDesc PipelineDesc;
+            PipelineDesc.AddBindingLayout(Layout);
+            PipelineDesc.CS = DownCS;
+            PipelineDesc.DebugName = "Bloom Downsample SPD";
+            FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
             FBindingSetDesc SetDesc;
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, Src, LinearClamp));
-            FRHIBindingSetRef Set = GRenderContext->CreateBindingSet(SetDesc, SrcLayout);
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, HDR, LinearClamp));
+            for (uint32 i = 0; i < BLOOM_MIP_COUNT; ++i)
+            {
+                SetDesc.AddItem(FBindingSetItem::TextureUAV(1 + i, Bloom, Bloom->GetFormat(),
+                    FTextureSubresourceSet(i, 1, 0, 1)));
+            }
+            FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
 
-            FGraphicsState GraphicsState;
-            GraphicsState.AddBindingSet(Set);
-            GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.SetRenderPass(RenderPass);
-            GraphicsState.SetViewportState(MakeViewportStateFromImage(Dst));
+            FComputeState State;
+            State.AddBindingSet(Set);
+            State.SetPipeline(Pipeline);
+            CmdList.SetComputeState(State);
 
-            CmdList.SetGraphicsState(GraphicsState);
-            CmdList.SetPushConstants(PCData, PCSize);
-            CmdList.Draw(3, 1, 0, 0);
-        };
-
-        // ---- Downsample chain. HDR -> mip0 (with prefilter), then halve. ----
-        for (uint32 i = 0; i < BLOOM_MIP_COUNT; ++i)
-        {
-            FRHIImage* Src = (i == 0) ? GetNamedImage(ENamedImage::HDR) : (FRHIImage*)BloomMips[i - 1];
-            FRHIImage* Dst = BloomMips[i];
-
-            FBloomDownPushConstants PC = {};
-            PC.SrcTexelSize = glm::vec2(1.0f / (float)Src->GetSizeX(), 1.0f / (float)Src->GetSizeY());
+            FBloomDownSPDPushConstants PC = {};
+            PC.PyramidSize  = glm::uvec2(Mip0W, Mip0H);
+            PC.NumMips      = BLOOM_MIP_COUNT;
+            PC.InvHDRSize   = glm::vec2(1.0f / (float)HDRWidth, 1.0f / (float)HDRHght);
             PC.Threshold    = Threshold;
-            PC.bIsPrefilter = (i == 0) ? 1u : 0u;
             PC.KneeCurve    = KneeCurve;
-            PC._Pad0        = 0.0f;
+            CmdList.SetPushConstants(&PC, sizeof(PC));
 
-            RecordPass(Src, Dst, DownPS, nullptr, &PC, sizeof(PC), "Bloom Downsample");
+            const uint32 GroupsX = RenderUtils::GetGroupCount(Mip0W, BloomSPDTileSize);
+            const uint32 GroupsY = RenderUtils::GetGroupCount(Mip0H, BloomSPDTileSize);
+            CmdList.Dispatch(GroupsX, GroupsY, 1);
         }
+        
+        FBindingLayoutDesc UpLayoutDesc;
+        UpLayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0))
+                    .AddItem(FBindingLayoutItem::Texture_UAV(1))
+                    .SetVisibility(ERHIShaderType::Compute);
+        FRHIBindingLayout* UpLayout = BindingCache.GetOrCreateBindingLayout(UpLayoutDesc);
 
-        // ---- Upsample chain. Walk back to mip0, additively blending. ----
+        FComputePipelineDesc UpPipelineDesc;
+        UpPipelineDesc.AddBindingLayout(UpLayout);
+        UpPipelineDesc.CS = UpCS;
+        UpPipelineDesc.DebugName = "Bloom Upsample CS";
+        FRHIComputePipelineRef UpPipeline = GRenderContext->CreateComputePipeline(UpPipelineDesc);
+
+        constexpr uint32 BloomUpTileSize = 8;
         for (uint32 i = BLOOM_MIP_COUNT - 1; i > 0; --i)
         {
-            FRHIImage* Src = BloomMips[i];
-            FRHIImage* Dst = BloomMips[i - 1];
+            const uint32 SrcMip = i;
+            const uint32 DstMip = i - 1;
+            const uint32 SrcW   = eastl::max<uint32>(Mip0W >> SrcMip, 1u);
+            const uint32 SrcH   = eastl::max<uint32>(Mip0H >> SrcMip, 1u);
+            const uint32 DstW   = eastl::max<uint32>(Mip0W >> DstMip, 1u);
+            const uint32 DstH   = eastl::max<uint32>(Mip0H >> DstMip, 1u);
 
-            FBloomUpPushConstants PC = {};
-            PC.SrcTexelSize = glm::vec2(1.0f / (float)Src->GetSizeX(), 1.0f / (float)Src->GetSizeY());
+            FBindingSetDesc SetDesc;
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, Bloom, LinearClamp, EFormat::UNKNOWN, FTextureSubresourceSet(SrcMip, 1, 0, 1)));
+            SetDesc.AddItem(FBindingSetItem::TextureUAV(1, Bloom, Bloom->GetFormat(), FTextureSubresourceSet(DstMip, 1, 0, 1)));
+            FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, UpLayout);
+
+            FComputeState State;
+            State.AddBindingSet(Set);
+            State.SetPipeline(UpPipeline);
+            CmdList.SetComputeState(State);
+
+            FBloomUpCSPushConstants PC = {};
+            PC.SrcTexelSize = glm::vec2(1.0f / (float)SrcW, 1.0f / (float)SrcH);
             PC.Radius       = 1.0f;
-            PC._Pad0        = 0.0f;
+            PC.DstSize      = glm::uvec2(DstW, DstH);
+            CmdList.SetPushConstants(&PC, sizeof(PC));
 
-            RecordPass(Src, Dst, UpPS, &AdditiveBlend, &PC, sizeof(PC), "Bloom Upsample");
+            const uint32 GroupsX = RenderUtils::GetGroupCount(DstW, BloomUpTileSize);
+            const uint32 GroupsY = RenderUtils::GetGroupCount(DstH, BloomUpTileSize);
+            CmdList.Dispatch(GroupsX, GroupsY, 1);
         }
     }
 
@@ -6429,29 +6384,24 @@ namespace Lumina
         }
 
         {
-            // Bloom mip chain. Half-res start, R11G11B10_FLOAT (additive over scene; quantization invisible).
-            uint32 W = eastl::max<uint32>(Extent.x / 2u, 1u);
-            uint32 H = eastl::max<uint32>(Extent.y / 2u, 1u);
-            for (uint32 i = 0; i < BLOOM_MIP_COUNT; ++i)
-            {
-                FRHIImageDesc ImageDesc;
-                ImageDesc.Extent            = glm::uvec2(W, H);
-                ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
-                ImageDesc.Dimension         = EImageDimension::Texture2D;
-                ImageDesc.NumMips           = 1;
-                ImageDesc.InitialState      = EResourceStates::ShaderResource;
-                ImageDesc.bKeepInitialState = true;
-                ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
+            // Bloom mip chain. Half-res start, R11G11B10_FLOAT (additive over
+            // scene; quantization invisible). One image, BLOOM_MIP_COUNT mips:
+            // SPD writes mips 0..N-1 from HDR in a single dispatch, then per-
+            // mip compute upsamples accumulate into mip[i-1].
+            const uint32 BloomW = eastl::max<uint32>(Extent.x / 2u, 1u);
+            const uint32 BloomH = eastl::max<uint32>(Extent.y / 2u, 1u);
 
-                FString Name = "Bloom Mip ";
-                Name.append_sprintf("%u", i);
-                ImageDesc.DebugName = Name.c_str();
+            FRHIImageDesc ImageDesc;
+            ImageDesc.Extent            = glm::uvec2(BloomW, BloomH);
+            ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
+            ImageDesc.Dimension         = EImageDimension::Texture2D;
+            ImageDesc.NumMips           = (uint8)BLOOM_MIP_COUNT;
+            ImageDesc.InitialState      = EResourceStates::ShaderResource;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage);
+            ImageDesc.DebugName         = "Bloom Chain";
 
-                BloomMips[i] = GRenderContext->CreateImage(ImageDesc);
-
-                W = eastl::max<uint32>(W / 2u, 1u);
-                H = eastl::max<uint32>(H / 2u, 1u);
-            }
+            BloomChain = GRenderContext->CreateImage(ImageDesc);
         }
     }
 
@@ -6725,7 +6675,8 @@ namespace Lumina
 
             FBindingSetDesc ComposeSetDesc;
             ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::HDR), LinearClamp));
-            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(1, BloomMips[0], LinearClamp));
+            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(1, BloomChain, LinearClamp,
+                EFormat::UNKNOWN, FTextureSubresourceSet(0, 1, 0, 1)));
             ComposeSetDesc.AddItem(FBindingSetItem::BufferCBV(2, GetNamedBuffer(ENamedBuffer::ColorGrading)));
 
             TBitFlags<ERHIShaderType> Visibility;

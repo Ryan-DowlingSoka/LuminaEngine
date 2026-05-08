@@ -24,7 +24,7 @@ namespace Lumina
         FRHIBufferRef Buffer;
         uint64 Version = 0;
         uint64 BufferSize = 0;
-        uint64 WritePointer;
+        uint64 WritePointer = 0;
         void* MappedMemory = nullptr;
 
         static constexpr uint64 GSizeAlignment = 4096;

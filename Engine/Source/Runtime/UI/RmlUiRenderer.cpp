@@ -271,7 +271,7 @@ namespace Lumina
             return;
         }
         const FGeometry& Geom = GeomIt->second;
-        if (!Geom.VertexBuffer || !Geom.IndexBuffer || Geom.IndexCount == 0)
+        if (Geom.VertexData.empty() || Geom.IndexData.empty() || Geom.IndexCount == 0)
         {
             return;
         }
@@ -290,13 +290,25 @@ namespace Lumina
             return;
         }
 
+        // Suballocate VB/IB out of the cmdlist's transient ring and memcpy from
+        // the cached CPU bytes. Indices need 4-byte alignment (R32_UINT); vertex
+        // alignment matches Rml::Vertex (sizeof = 20, naturally 4-byte aligned).
+        FTransientAlloc VBAlloc = CmdList.AllocateTransient(Geom.VertexData.size(), alignof(Rml::Vertex));
+        FTransientAlloc IBAlloc = CmdList.AllocateTransient(Geom.IndexData.size(), sizeof(int));
+        if (VBAlloc.Buffer == nullptr || IBAlloc.Buffer == nullptr)
+        {
+            return;
+        }
+        Memory::Memcpy(VBAlloc.Cpu, Geom.VertexData.data(), Geom.VertexData.size());
+        Memory::Memcpy(IBAlloc.Cpu, Geom.IndexData.data(), Geom.IndexData.size());
+
         FGraphicsState State;
         State.SetPipeline(Pipeline);
         State.SetRenderPass(CurrentPassDesc);
 
         State.AddBindingSet(BindingSet);
-        State.SetVertexBuffer(FVertexBufferBinding{}.SetBuffer(Geom.VertexBuffer).SetSlot(0).SetOffset(0));
-        State.SetIndexBuffer(FIndexBufferBinding{}.SetBuffer(Geom.IndexBuffer).SetFormat(EFormat::R32_UINT).SetOffset(0));
+        State.SetVertexBuffer(FVertexBufferBinding{}.SetBuffer(VBAlloc.Buffer).SetSlot(0).SetOffset(VBAlloc.Offset));
+        State.SetIndexBuffer(FIndexBufferBinding{}.SetBuffer(IBAlloc.Buffer).SetFormat(EFormat::R32_UINT).SetOffset(IBAlloc.Offset));
 
         State.AddViewport(FViewport(0.0f, float(CurrentSize.x), 0.0f, float(CurrentSize.y), 0.0f, 1.0f));
 
@@ -323,12 +335,6 @@ namespace Lumina
 
     Rml::CompiledGeometryHandle FRmlUiRenderer::CompileGeometry(Rml::Span<const Rml::Vertex> Vertices, Rml::Span<const int> Indices)
     {
-        if (CurrentCmdList == nullptr)
-        {
-            // RmlUi can compile outside our frame (e.g. font-atlas re-bake).
-            return 0;
-        }
-
         const size_t VBSize = Vertices.size() * sizeof(Rml::Vertex);
         const size_t IBSize = Indices.size()  * sizeof(int);
         if (VBSize == 0 || IBSize == 0)
@@ -336,35 +342,15 @@ namespace Lumina
             return 0;
         }
 
-        // bKeepInitialState pins the resting state so auto-barriers stay correct across frames.
-        FRHIBufferDesc VBDesc;
-        VBDesc.Size = VBSize;
-        VBDesc.Stride = sizeof(Rml::Vertex);
-        VBDesc.DebugName = "RmlUiVB";
-        VBDesc.Usage.SetMultipleFlags(EBufferUsageFlags::VertexBuffer);
-        VBDesc.InitialState = EResourceStates::VertexBuffer;
-        VBDesc.bKeepInitialState = true;
-
-        FRHIBufferDesc IBDesc;
-        IBDesc.Size = IBSize;
-        IBDesc.Stride = sizeof(int);
-        IBDesc.DebugName = "RmlUiIB";
-        IBDesc.Usage.SetMultipleFlags(EBufferUsageFlags::IndexBuffer);
-        IBDesc.InitialState = EResourceStates::IndexBuffer;
-        IBDesc.bKeepInitialState = true;
-
-        FRHIBufferRef VB = GRenderContext->CreateBuffer(CurrentCmdList, Vertices.data(), VBDesc);
-        FRHIBufferRef IB = GRenderContext->CreateBuffer(CurrentCmdList, Indices.data(),  IBDesc);
-
-        if (!VB || !IB)
-        {
-            return 0;
-        }
-
+        // CPU-side cache only. Real GPU buffers are suballocated from the cmdlist's
+        // transient ring at IssueDrawCall time, which avoids vmaCreateBuffer per
+        // Compile (RmlUi recompiles on every layout invalidation).
         FGeometry Geom;
-        Geom.VertexBuffer = Move(VB);
-        Geom.IndexBuffer  = Move(IB);
-        Geom.IndexCount   = uint32(Indices.size());
+        const uint8* VBytes = reinterpret_cast<const uint8*>(Vertices.data());
+        const uint8* IBytes = reinterpret_cast<const uint8*>(Indices.data());
+        Geom.VertexData.assign(VBytes, VBytes + VBSize);
+        Geom.IndexData.assign(IBytes, IBytes + IBSize);
+        Geom.IndexCount = uint32(Indices.size());
 
         const Rml::CompiledGeometryHandle Handle = NextGeometryHandle++;
         Geometries.emplace(Handle, Move(Geom));

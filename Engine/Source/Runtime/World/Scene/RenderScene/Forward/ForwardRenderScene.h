@@ -292,38 +292,19 @@ namespace Lumina
         void InitImages();
         void InitFrameResources();
         void CreateLayouts();
-
-        // Creates the persistent BRDF integration LUT and dispatches the bake
-        // compute pass synchronously. Called once from Init(); the result is
-        // independent of viewport/sky/frame state and is reused for the life
-        // of the scene.
+        
         void InitBRDFLUT();
-
-        // Allocates the persistent sky cubemap. Contents are filled every
-        // frame the sky is enabled by SkyCubeCapturePass(); the image itself
-        // is created once.
+        
         void InitSkyCube();
-
-        // Allocates the persistent IBL convolution targets (irradiance +
-        // prefiltered specular). Filled per frame the sky is enabled by the
-        // matching convolution passes, alongside SkyCube refresh.
+        
         void InitIBLConvolutionTargets();
         
         //~ Begin Render Passes
         void ResetPass(ICommandList& CmdList);
         
-        // Two-phase meshlet cull. Early dispatch runs every (instance,
-        // meshlet) pair against every non-late view; camera meshlets that
-        // fail the *previous-frame* Hi-Z are routed to the defer list
-        // instead of being dropped. Late dispatch pops the defer list and
-        // re-tests against the freshly built Hi-Z so disoccluded geometry
-        // (fast camera motion) still reaches the base pass.
         void CullPassEarly(ICommandList& CmdList);
         void CullPassLate(ICommandList& CmdList);
-        // Depth-only rasterization of opaque occluders. Early runs over the
-        // camera (view 0) slice right after CullEarly; late runs over the
-        // camera-late slice after CullLate so re-added meshlets contribute
-        // to the final depth buffer before the base pass draws lighting.
+
         
         void DepthPrePassEarly(ICommandList& CmdList);
         void DepthPrePassLate(ICommandList& CmdList);
@@ -335,57 +316,24 @@ namespace Lumina
         void CascadedShowPass(ICommandList& CmdList);
         void BasePass(ICommandList& CmdList);
         void BillboardPass(ICommandList& CmdList);
-        // Returns the number of compute dispatches recorded — caller uses this to skip
-        // cross-queue sync when there are no active particle systems.
-        uint32 ParticleSimulatePass(ICommandList& CmdList);
 
-        // Records the async-compute batch onto a dedicated compute command list, submits it,
-        // and queues a graphics-side wait. Returns true if work was dispatched (caller skips
-        // the inline graphics-CL fallbacks for those passes). Add new compute passes here —
-        // each pass must (a) read no resources written on the graphics CL this frame,
-        // (b) have its output buffers/images created with bConcurrentSharing=true.
-        bool DispatchAsyncComputePasses();
+        uint32 ParticleSimulatePass(ICommandList& CmdList);
+        
         void ParticleRenderPass(ICommandList& CmdList);
         void TerrainUpdatePass(ICommandList& CmdList);
-        // Per-terrain GPU cull. One dispatch per active terrain entity, one
-        // workgroup per chunk, one thread per meshlet. Survivors land in
-        // FTerrainGPUState::VisibleMeshletBuffer + IndirectDrawBuffer; the
-        // render pass consumes both via DrawIndirect.
+
         void TerrainCullPass(ICommandList& CmdList);
         void TerrainRenderPass(ICommandList& CmdList);
         void TransparentPass(ICommandList& CmdList);
         void OITResolvePass(ICommandList& CmdList);
-        // Screen-space ray-marched scattering for lights with ELightFlags::Volumetric.
-        // Reads the opaque depth attachment, walks the camera ray to the surface,
-        // accumulates per-light Henyey-Greenstein scatter (shadowed via the cascade
-        // / spot-shadow atlas), and additively blends the result into HDR. Skipped
-        // when no light in the scene has the flag set.
         void VolumetricLightingPass(ICommandList& CmdList);
         void EnvironmentPass(ICommandList& CmdList);
-        // Refreshes the sky cubemap. Runs every frame the sky is enabled,
-        // gated on the same RenderSettings.bHasEnvironment as EnvironmentPass.
-        // Cheap (256-cube; sub-millisecond) so per-frame is fine until a
-        // dirty-tracking optimization is added.
         void SkyCubeCapturePass(ICommandList& CmdList);
-        // Convolves the captured sky into the diffuse irradiance cube
-        // (cosine-weighted) and the GGX-prefiltered cube (one mip per
-        // roughness). Runs after SkyCubeCapturePass; same gating.
         void IrradianceConvolutionPass(ICommandList& CmdList);
         void PrefilterEnvMapPass(ICommandList& CmdList);
         void BatchedLineDraw(ICommandList& CmdList);
-        // Physically-motivated bloom: COD-AW 13-tap downsample chain (with
-        // Karis-luma-weighted prefilter on mip 0 to suppress fireflies),
-        // then a 3x3 tent upsample chain additively blended back into the
-        // larger mips. The tone mapping pass samples mip 0 of the chain
-        // and adds it into HDR before grading. Skipped when the active
-        // post-process settings have BloomIntensity == 0.
         void BloomPass(ICommandList& CmdList);
         void ToneMappingPass(ICommandList& CmdList);
-        // Apply the active post-process material chain. Each material is a
-        // graph compiled to a fullscreen pixel shader; the pass ping-pongs
-        // between LDR and PostProcessScratch so each material reads the
-        // previous result via the SceneColor sampler. Skipped when the
-        // active list is empty. Runs after tone mapping, before SMAA.
         void PostProcessMaterialPass(ICommandList& CmdList);
         void SMAAEdgeDetectionPass(ICommandList& CmdList);
         void SMAABlendWeightPass(ICommandList& CmdList);
@@ -456,12 +404,14 @@ namespace Lumina
         /** Reconcile cached sample count with the world setting; reallocates MS images when it changes. */
         void SyncMSAAState();
 
-        // Bloom mip chain. Index [0] is the largest (1/2 HDR resolution),
-        // each successive entry is half the previous. The downsample chain
-        // walks 0->N-1; the upsample chain walks N-1 back to 0 with additive
-        // blend. Mip 0 is what the tone-mapping pass samples.
+        // Bloom mip chain. Single image with NumMips = BLOOM_MIP_COUNT mips.
+        // Mip 0 is half-res of HDR; each successive mip halves again. The
+        // downsample chain (single SPD compute dispatch) writes mips 0..N-1
+        // from HDR; the upsample chain (one compute dispatch per mip step)
+        // walks mip N-1 back to mip 0 with additive accumulation in-shader.
+        // Tone-mapping samples mip 0.
         static constexpr uint32                         BLOOM_MIP_COUNT = 5;
-        TArray<FRHIImageRef, BLOOM_MIP_COUNT>           BloomMips = {};
+        FRHIImageRef                                    BloomChain;
         
         /** Packed array of all light shadows in the scene */
         TArray<TVector<FLightShadow>, (uint32)ELightType::Num>    PackedShadows;

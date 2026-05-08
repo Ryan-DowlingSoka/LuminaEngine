@@ -788,6 +788,7 @@ namespace Lumina
         DeviceFeatures.multiViewport                        = VK_TRUE;
         DeviceFeatures.multiDrawIndirect                    = VK_TRUE;
         DeviceFeatures.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+        DeviceFeatures.shaderStorageImageExtendedFormats    = VK_TRUE;
         DeviceFeatures.drawIndirectFirstInstance            = VK_TRUE;
         DeviceFeatures.vertexPipelineStoresAndAtomics       = VK_TRUE; // @TODO See if we need this.
         DeviceFeatures.shaderInt16                          = VK_TRUE;

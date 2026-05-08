@@ -417,7 +417,16 @@ namespace Lumina
             FRHIBufferDesc Desc;
             Desc.Size = Size;
             // Transient routes through the linear upload pool (O(1) bump alloc).
-            Desc.Usage.SetMultipleFlags(EBufferUsageFlags::CPUWritable, EBufferUsageFlags::StagingBuffer, EBufferUsageFlags::Transient);
+            // VB/IB flags let callers bind a transient slice as fixed-function
+            // vertex/index input. UniformBuffer is intentionally NOT added: chunks
+            // can exceed maxUniformBufferRange (and the FVulkanBuffer ctor asserts
+            // on it). Constant-buffer-style reads should go through BDA instead.
+            Desc.Usage.SetMultipleFlags(
+                EBufferUsageFlags::CPUWritable,
+                EBufferUsageFlags::StagingBuffer,
+                EBufferUsageFlags::Transient,
+                EBufferUsageFlags::VertexBuffer,
+                EBufferUsageFlags::IndexBuffer);
             Desc.DebugName = FString("UploadChunk [ " + eastl::to_string(Size) + " ]");
 
             Chunk->Buffer       = Context->CreateBuffer(Desc);
@@ -443,16 +452,23 @@ namespace Lumina
 
     bool FUploadManager::SuballocateBuffer(uint64 Size, FRHIBuffer*& Buffer, uint64& Offset, void*& CpuVA, uint64 CurrentVersion, uint32 Alignment)
     {
-        DEBUG_ASSERT(Size);
         LUMINA_PROFILE_SCOPE();
 
+        if (Size == 0)
+        {
+            return false;
+        }
+
+        // Alignment must be a power of two; Align<T> produces garbage otherwise.
+        ASSERT(Alignment > 0 && (Alignment & (Alignment - 1)) == 0);
+
         TSharedPtr<FBufferChunk> ChunkToRetire = nullptr;
-        
+
         if (CurrentChunk)
         {
             uint64 Aligned = Align<uint64>(CurrentChunk->WritePointer, Alignment);
             ASSERT(Aligned % Alignment == 0);
-            
+
             uint64 EndOfDataInChunk = Aligned + Size;
 
             if (EndOfDataInChunk <= CurrentChunk->BufferSize)
@@ -485,16 +501,27 @@ namespace Lumina
             }
         }
 
-        // Smallest-fit to avoid wasting big chunks on tiny uploads.
+        // Smallest-fit to avoid wasting big chunks on tiny uploads. For non-scratch
+        // pools the chunk MUST have a live mapped pointer; skip any pool entry that
+        // doesn't (defensive against a fallback allocator path that loses MAPPED_BIT).
         TSharedPtr<FBufferChunk> BestFit;
         for (auto& Chunk : ChunkPool)
         {
-            if (Chunk->Version == 0 && Chunk->BufferSize >= Size)
+            if (Chunk->Version != 0)
             {
-                if (!BestFit || Chunk->BufferSize < BestFit->BufferSize)
-                {
-                    BestFit = Chunk;
-                }
+                continue;
+            }
+            if (Chunk->BufferSize < Size)
+            {
+                continue;
+            }
+            if (!bIsScratchBuffer && Chunk->MappedMemory == nullptr)
+            {
+                continue;
+            }
+            if (!BestFit || Chunk->BufferSize < BestFit->BufferSize)
+            {
+                BestFit = Chunk;
             }
         }
 
@@ -511,9 +538,11 @@ namespace Lumina
 
         if (!CurrentChunk)
         {
-            // Pow-2 sizing >= max(req, default, LargestSeen) to maximize pool reuse.
+            // Pow-2 sizing >= max(req, default). LargestChunkSize is intentionally
+            // not part of the floor: ratcheting it caused every subsequent chunk
+            // to inflate to the largest historical size, blowing past the upload
+            // pool block size and forcing dedicated allocations on small BAR heaps.
             uint64 Target = std::max<uint64>(Size, DefaultChunkSize);
-            Target = std::max<uint64>(Target, LargestChunkSize);
             uint64 SizeToAllocate = NextPow2_u64(Target);
             SizeToAllocate = Align(SizeToAllocate, FBufferChunk::GSizeAlignment);
 
@@ -528,6 +557,7 @@ namespace Lumina
             {
                 if ((*It)->Version == 0 && (*It)->BufferSize < EvictBelow)
                 {
+                    AllocatedMemory -= (*It)->BufferSize;
                     It = ChunkPool.erase(It);
                 }
                 else
@@ -536,7 +566,7 @@ namespace Lumina
                 }
             }
 
-            LargestChunkSize = SizeToAllocate;
+            LargestChunkSize = std::max<uint64>(LargestChunkSize, SizeToAllocate);
             CurrentChunk = CreateChunk(SizeToAllocate);
             AllocatedMemory += SizeToAllocate;
         }
@@ -546,8 +576,17 @@ namespace Lumina
 
         Buffer = CurrentChunk->Buffer;
         Offset = 0;
-        
+
         CpuVA = CurrentChunk->MappedMemory;
+
+        // Non-scratch pools always have host-mapped chunks; if we somehow ended
+        // up with a null pointer (allocator failure on the fallback path) refuse
+        // the alloc rather than handing out a CpuVA that will SIGSEGV on memcpy.
+        if (!bIsScratchBuffer && CpuVA == nullptr)
+        {
+            CurrentChunk.reset();
+            return false;
+        }
 
         return true;
     }
@@ -559,13 +598,24 @@ namespace Lumina
             ChunkPool.push_back(CurrentChunk);
             CurrentChunk.reset();
         }
-        
+
+        // Bump every non-submitted chunk owned by this submission's queue to the
+        // submitted version. The previous code only matched chunks whose Version
+        // equaled CurrentVersion exactly, which leaks chunks recorded across an
+        // Open/Close/Open cycle without an intervening Submit (their RecordingID
+        // no longer matches CurrentVersion, so they'd never get reclaimed).
+        const ECommandQueue SubmitQueue = VersionGetQueue(CurrentVersion);
         for (const TSharedPtr<FBufferChunk>& Chunk : ChunkPool)
         {
-            if (Chunk->Version == CurrentVersion)
+            if (VersionGetSubmitted(Chunk->Version))
             {
-                Chunk->Version = SubmittedVersion;
+                continue;
             }
+            if (VersionGetQueue(Chunk->Version) != SubmitQueue)
+            {
+                continue;
+            }
+            Chunk->Version = SubmittedVersion;
         }
     }
 
