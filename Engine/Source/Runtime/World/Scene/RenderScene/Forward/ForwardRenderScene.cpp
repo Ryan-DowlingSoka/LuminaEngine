@@ -5354,32 +5354,38 @@ namespace Lumina
 
     namespace
     {
-        // Push constants for BloomDownsampleSPD.slang. 48 B (well under the
-        // 128 B Vulkan minimum push constant size).
+        constexpr uint32 BloomMaxMips = 5;
+
+        // Push constants for BloomDownsampleSPD.slang. Bindless: HDRIndex picks the
+        // source SRV, MipUAV[i] picks the per-mip UAV — no pass-local binding set.
         struct FBloomDownSPDPushConstants
         {
             glm::uvec2 PyramidSize;     // bloom mip 0 size (= HDR / 2)
             uint32     NumMips;
-            uint32     _Pad0;
+            uint32     HDRIndex;
 
             glm::vec2  InvHDRSize;
             float      Threshold;
-            float      _Pad1;
+            float      _Pad0;
 
             glm::vec3  KneeCurve;
-            float      _Pad2;
-        };
-        static_assert(sizeof(FBloomDownSPDPushConstants) == 48, "FBloomDownSPDPushConstants must match BloomDownsampleSPD.slang::FPushConstants.");
+            float      _Pad1;
 
-        // Push constants for BloomUpsampleCS.slang. 32 B.
+            uint32     MipUAV[BloomMaxMips];
+        };
+        static_assert(sizeof(FBloomDownSPDPushConstants) == 68, "FBloomDownSPDPushConstants must match BloomDownsampleSPD.slang::FPushConstants.");
+
+        // Push constants for BloomUpsampleCS.slang. SrcIndex is the all-mips
+        // bindless SRV of BloomChain; SrcMip picks the level via SampleLevel.
         struct FBloomUpCSPushConstants
         {
             glm::vec2  SrcTexelSize;
             float      Radius;
-            float      _Pad0;
+            uint32     SrcIndex;
 
             glm::uvec2 DstSize;
-            glm::uvec2 _Pad1;
+            uint32     DstUAV;
+            float      SrcMip;
         };
         static_assert(sizeof(FBloomUpCSPushConstants) == 32,
             "FBloomUpCSPushConstants must match BloomUpsampleCS.slang::FPushConstants.");
@@ -5412,63 +5418,50 @@ namespace Lumina
         const uint32 Mip0W    = eastl::max<uint32>(HDRWidth >> 1u, 1u);
         const uint32 Mip0H    = eastl::max<uint32>(HDRHght  >> 1u, 1u);
 
-        FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-        
         const float Threshold = ActivePostProcess->BloomThreshold;
         const float Knee      = ActivePostProcess->BloomSoftKnee * Threshold + 1e-5f;
 
         {
             const glm::vec3 KneeCurve(Threshold - Knee, 2.0f * Knee, 0.25f / Knee);
-            FBindingLayoutDesc LayoutDesc;
-            LayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0));
-            for (uint32 i = 0; i < BLOOM_MIP_COUNT; ++i)
-            {
-                LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(1 + i));
-            }
-            LayoutDesc.SetVisibility(ERHIShaderType::Compute);
-            FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
 
             FComputePipelineDesc PipelineDesc;
-            PipelineDesc.AddBindingLayout(Layout);
+            // Set 0 reserved for SceneBindingSet (compatibility with bindless at set 1).
+            PipelineDesc.AddBindingLayout(SceneBindingLayout);
+            PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
             PipelineDesc.CS = DownCS;
             PipelineDesc.DebugName = "Bloom Downsample SPD";
             FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
-            FBindingSetDesc SetDesc;
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, HDR, LinearClamp));
-            for (uint32 i = 0; i < BLOOM_MIP_COUNT; ++i)
-            {
-                SetDesc.AddItem(FBindingSetItem::TextureUAV(1 + i, Bloom, Bloom->GetFormat(),
-                    FTextureSubresourceSet(i, 1, 0, 1)));
-            }
-            FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, Layout);
-
             FComputeState State;
-            State.AddBindingSet(Set);
             State.SetPipeline(Pipeline);
+            State.AddBindingSet(SceneBindingSet);
+            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            State.Reads(HDR);
+            State.Writes(Bloom);
             CmdList.SetComputeState(State);
 
             FBloomDownSPDPushConstants PC = {};
             PC.PyramidSize  = glm::uvec2(Mip0W, Mip0H);
             PC.NumMips      = BLOOM_MIP_COUNT;
+            PC.HDRIndex     = (uint32)HDR->GetResourceID();
             PC.InvHDRSize   = glm::vec2(1.0f / (float)HDRWidth, 1.0f / (float)HDRHght);
             PC.Threshold    = Threshold;
             PC.KneeCurve    = KneeCurve;
+            for (uint32 i = 0; i < BloomMaxMips; ++i)
+            {
+                const uint32 SrcMip = (i < BLOOM_MIP_COUNT) ? i : 0u;
+                PC.MipUAV[i] = (uint32)Bloom->GetMipUAVIndex(SrcMip);
+            }
             CmdList.SetPushConstants(&PC, sizeof(PC));
 
             const uint32 GroupsX = RenderUtils::GetGroupCount(Mip0W, BloomSPDTileSize);
             const uint32 GroupsY = RenderUtils::GetGroupCount(Mip0H, BloomSPDTileSize);
             CmdList.Dispatch(GroupsX, GroupsY, 1);
         }
-        
-        FBindingLayoutDesc UpLayoutDesc;
-        UpLayoutDesc.AddItem(FBindingLayoutItem::Texture_SRV(0))
-                    .AddItem(FBindingLayoutItem::Texture_UAV(1))
-                    .SetVisibility(ERHIShaderType::Compute);
-        FRHIBindingLayout* UpLayout = BindingCache.GetOrCreateBindingLayout(UpLayoutDesc);
 
         FComputePipelineDesc UpPipelineDesc;
-        UpPipelineDesc.AddBindingLayout(UpLayout);
+        UpPipelineDesc.AddBindingLayout(SceneBindingLayout);
+        UpPipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
         UpPipelineDesc.CS = UpCS;
         UpPipelineDesc.DebugName = "Bloom Upsample CS";
         FRHIComputePipelineRef UpPipeline = GRenderContext->CreateComputePipeline(UpPipelineDesc);
@@ -5483,20 +5476,23 @@ namespace Lumina
             const uint32 DstW   = eastl::max<uint32>(Mip0W >> DstMip, 1u);
             const uint32 DstH   = eastl::max<uint32>(Mip0H >> DstMip, 1u);
 
-            FBindingSetDesc SetDesc;
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, Bloom, LinearClamp, EFormat::UNKNOWN, FTextureSubresourceSet(SrcMip, 1, 0, 1)));
-            SetDesc.AddItem(FBindingSetItem::TextureUAV(1, Bloom, Bloom->GetFormat(), FTextureSubresourceSet(DstMip, 1, 0, 1)));
-            FRHIBindingSet* Set = BindingCache.GetOrCreateBindingSet(SetDesc, UpLayout);
-
             FComputeState State;
-            State.AddBindingSet(Set);
             State.SetPipeline(UpPipeline);
+            State.AddBindingSet(SceneBindingSet);
+            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            // Per-subresource: only SrcMip is sampled (ShaderResource), only DstMip
+            // is written (UnorderedAccess). Other mips' states don't matter here.
+            State.Reads(Bloom, FTextureSubresourceSet(SrcMip, 1, 0, 1));
+            State.Writes(Bloom, FTextureSubresourceSet(DstMip, 1, 0, 1));
             CmdList.SetComputeState(State);
 
             FBloomUpCSPushConstants PC = {};
             PC.SrcTexelSize = glm::vec2(1.0f / (float)SrcW, 1.0f / (float)SrcH);
             PC.Radius       = 1.0f;
+            PC.SrcIndex     = (uint32)Bloom->GetResourceID();
             PC.DstSize      = glm::uvec2(DstW, DstH);
+            PC.DstUAV       = (uint32)Bloom->GetMipUAVIndex(DstMip);
+            PC.SrcMip       = (float)SrcMip;
             CmdList.SetPushConstants(&PC, sizeof(PC));
 
             const uint32 GroupsX = RenderUtils::GetGroupCount(DstW, BloomUpTileSize);
