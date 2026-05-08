@@ -444,13 +444,9 @@ struct FCullData
     float    ShadowMaxDistance;
     uint     bShadowOcclusionCull;
     uint     NumDraws;
-    // Debug visualization mode. Mirrors Lumina::ERenderSceneDebugFlags; keep
-    // DEBUG_MODE_* constants below in sync with the C++ enum.
     uint     DebugMode;
-    // Total meshlets across every instance this frame. The cull's flat
-    // thread-per-meshlet dispatch reads this for the tail-thread cutoff.
     uint     TotalMeshletBound;
-    uint     _Pad0;
+    uint     DepthPyramidIndex;
 };
 
 // Debug visualization modes. Must match Lumina::ERenderSceneDebugFlags.

@@ -38,10 +38,10 @@ namespace Lumina
         TFunctionRef(std::nullptr_t) noexcept {}
 
         template <typename TCallable>
-        TFunctionRef(TCallable InCallable) noexcept
-        requires IsValidCallable<TCallable>::value 
+        TFunctionRef(TCallable&& InCallable) noexcept
+        requires IsValidCallable<TCallable>::value
         : Callback(CallbackFn<eastl::remove_reference_t<TCallable>>)
-        , Callable(reinterpret_cast<intptr_t>(&InCallable))
+        , Callable(reinterpret_cast<intptr_t>(eastl::addressof(InCallable)))
         {}
 
         TFunctionRef(const TFunctionRef&) = default;

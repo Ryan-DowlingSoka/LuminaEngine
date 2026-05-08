@@ -76,11 +76,6 @@ namespace Lumina
             Texture->TextureResource = MakeUnique<FTextureResource>();
         }
 
-        if (Texture->TextureResource->RHIImage && Texture->TextureResource->RHIImage->GetTextureCacheIndex() != -1)
-        {
-            GRenderManager->GetTextureManager().RemoveTexture(Texture->TextureResource->RHIImage);
-        }
-
         Texture->TextureResource->ImageDescription = ImageDescription;
         Texture->TextureResource->Mips.clear();
         Texture->TextureResource->Mips.resize(1);
@@ -107,7 +102,6 @@ namespace Lumina
         Mip.Pixels.assign(reinterpret_cast<uint8*>(Halves.data()),
                           reinterpret_cast<uint8*>(Halves.data()) + SlicePitch);
 
-        GRenderManager->GetTextureManager().AddTexture(RHIImage);
         return true;
     }
 
@@ -196,12 +190,6 @@ namespace Lumina
             Texture->TextureResource = MakeUnique<FTextureResource>();
         }
 
-        // Drop the previous bindless slot before swapping the RHI image.
-        if (Texture->TextureResource->RHIImage && Texture->TextureResource->RHIImage->GetTextureCacheIndex() != -1)
-        {
-            GRenderManager->GetTextureManager().RemoveTexture(Texture->TextureResource->RHIImage);
-        }
-
         Texture->TextureResource->ImageDescription = ImageDescription;
         Texture->TextureResource->Mips.clear();
         Texture->TextureResource->Mips.resize(NumMips);
@@ -252,8 +240,6 @@ namespace Lumina
 
         CommandList->Close();
         GRenderContext->ExecuteCommandList(CommandList, ECommandQueue::Compute);
-
-        GRenderManager->GetTextureManager().AddTexture(RHIImage);
 
         return true;
     }

@@ -19,7 +19,7 @@ struct FragmentOutput
 [shader("fragment")]
 FragmentOutput FragmentMain(FragmentInput Input)
 {
-    float4 Texture = uGlobalTextures[Input.TextureIndex].Sample(Input.UV);
+    float4 Texture = SampleBindless2D(Input.TextureIndex, SAMPLER_LINEAR_WRAP, Input.UV);
 
     if (Texture.a < 0.01)
     {

@@ -44,7 +44,7 @@ namespace Lumina
             case EMaterialParameterType::Texture:
                 if (Param.Index < MAX_TEXTURES && Override.Texture && Override.Texture->TextureResource && Override.Texture->TextureResource->RHIImage.IsValid())
                 {
-                    Uniforms.Textures[Param.Index] = Override.Texture->GetRHIRef()->GetTextureCacheIndex();
+                    Uniforms.Textures[Param.Index] = Override.Texture->GetRHIRef()->GetResourceID();
                 }
                 break;
             }
@@ -167,7 +167,7 @@ namespace Lumina
         {
             if (TextureValue && TextureValue->TextureResource && TextureValue->TextureResource->RHIImage.IsValid())
             {
-                MaterialUniforms.Textures[Param.Index] = TextureValue->GetRHIRef()->GetTextureCacheIndex();
+                MaterialUniforms.Textures[Param.Index] = TextureValue->GetRHIRef()->GetResourceID();
             }
             else
             {

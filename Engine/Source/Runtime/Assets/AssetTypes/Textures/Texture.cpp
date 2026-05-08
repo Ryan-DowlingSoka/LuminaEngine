@@ -29,11 +29,6 @@ namespace Lumina
 
     void CTexture::PostLoad()
     {
-        if (TextureResource && TextureResource->RHIImage && TextureResource->RHIImage->GetTextureCacheIndex() != -1)
-        {
-            GRenderManager->GetTextureManager().RemoveTexture(TextureResource->RHIImage);
-        }
-
         TextureResource->RHIImage = GRenderContext->CreateImage(TextureResource->ImageDescription);
 
         FRHICommandListRef TransferCommandList = GRenderContext->CreateCommandList(FCommandListInfo::Compute());
@@ -48,15 +43,9 @@ namespace Lumina
 
         TransferCommandList->Close();
         GRenderContext->ExecuteCommandList(TransferCommandList, ECommandQueue::Compute);
-
-        GRenderManager->GetTextureManager().AddTexture(TextureResource->RHIImage);
     }
 
     void CTexture::OnDestroy()
     {
-        if (TextureResource && TextureResource->RHIImage && TextureResource->RHIImage->GetTextureCacheIndex() != -1)
-        {
-            GRenderManager->GetTextureManager().RemoveTexture(TextureResource->RHIImage);
-        }
     }
 }

@@ -43,13 +43,11 @@ namespace Lumina
     
     FDescriptorTableManager::~FDescriptorTableManager()
     {
+        // Descriptors do not own a ref on their resources; resources unregister
+        // themselves on destruction via FTextureManager::RemoveTexture.
         for (auto& Descriptor : Descriptors)
         {
-            if (Descriptor.ResourceHandle)
-            {
-                Descriptor.ResourceHandle->Release();
-                Descriptor.ResourceHandle = nullptr;
-            }
+            Descriptor.ResourceHandle = nullptr;
         }
     }
 
@@ -93,11 +91,6 @@ namespace Lumina
         DescriptorIndexMap[Item] = Index;
         Context->WriteDescriptorTable(DescriptorTable, Item);
 
-        if (Item.ResourceHandle)
-        {
-            Item.ResourceHandle->AddRef();
-        }
-
         return Index;
     }
 
@@ -119,11 +112,12 @@ namespace Lumina
 
     void FDescriptorTableManager::ReleaseDescriptor(int64 DescriptorIndex)
     {
-        FBindingSetItem& Descriptor = Descriptors[DescriptorIndex];
-        if (Descriptor.ResourceHandle)
+        if (DescriptorIndex < 0 || (size_t)DescriptorIndex >= Descriptors.size())
         {
-            Descriptor.ResourceHandle->Release();
+            return;
         }
+
+        FBindingSetItem& Descriptor = Descriptors[DescriptorIndex];
 
         const auto IndexMapEntry = DescriptorIndexMap.find(Descriptors[DescriptorIndex]);
         if (IndexMapEntry != DescriptorIndexMap.end())

@@ -613,7 +613,14 @@ namespace Lumina
         PipelineCache.ReleasePipelines();
         
         Memory::Delete(Swapchain);
-        
+
+        // Drop command-list refs first. Each FRHICommandList holds an
+        // FTrackedCommandBuffer ref alongside FQueue::CommandBufferPool;
+        // releasing the manager first means the queue's pool drop is the
+        // refcount-zero edge that triggers vkDestroyCommandPool, which must
+        // happen before vkDestroyDevice at the end of this function.
+        CommandListManager.Cleanup();
+
         for (TUniquePtr<FQueue>& Queue : Queues)
         {
             Queue.reset();
@@ -621,7 +628,6 @@ namespace Lumina
 
         SamplerMap.clear();
         InputLayoutMap.clear();
-        CommandListManager.Cleanup();
         FlushPendingDeletes();
         IRHIResource::ReleaseAllRHIResources();
 
@@ -804,8 +810,15 @@ namespace Lumina
         Features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
         Features12.timelineSemaphore                = VK_TRUE;
         Features12.bufferDeviceAddress              = VK_TRUE;
-        Features12.descriptorIndexing               = VK_TRUE;
-        Features12.descriptorBindingPartiallyBound  = VK_TRUE;
+        Features12.descriptorIndexing                                 = VK_TRUE;
+        Features12.descriptorBindingPartiallyBound                    = VK_TRUE;
+        // UpdateAfterBind lets FTextureManager register/unregister bindless
+        // images mid-frame without invalidating in-flight command buffers.
+        Features12.descriptorBindingSampledImageUpdateAfterBind       = VK_TRUE;
+        Features12.descriptorBindingStorageImageUpdateAfterBind       = VK_TRUE;
+        Features12.descriptorBindingUniformBufferUpdateAfterBind      = VK_TRUE;
+        Features12.descriptorBindingStorageBufferUpdateAfterBind      = VK_TRUE;
+        Features12.descriptorBindingUpdateUnusedWhilePending          = VK_TRUE;
         Features12.shaderOutputViewportIndex        = VK_TRUE; // Should not stay.
         Features12.shaderOutputLayer                = VK_TRUE; // Should not stay.
         Features12.samplerFilterMinmax              = VK_TRUE;
@@ -818,14 +831,21 @@ namespace Lumina
         DerivativesFeature.sType                        = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR;
         DerivativesFeature.computeDerivativeGroupQuads  = VK_TRUE;
 
-        
+        // VK_EXT_mutable_descriptor_type lets the bindless table host both
+        // sampled and storage images at one binding slot, with the per-write
+        // descriptorType picking which interpretation to use.
+        VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT MutableDescriptorFeature{};
+        MutableDescriptorFeature.sType                  = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT;
+        MutableDescriptorFeature.mutableDescriptorType  = VK_TRUE;
+        MutableDescriptorFeature.pNext                  = &DerivativesFeature;
+
         VkPhysicalDeviceVulkan13Features Features13 = {};
         Features13.sType                            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         Features13.dynamicRendering                 = VK_TRUE;
         Features13.synchronization2                 = VK_TRUE;
-        Features13.pNext                            = &DerivativesFeature;
-        
-        
+        Features13.pNext                            = &MutableDescriptorFeature;
+
+
         vkb::PhysicalDeviceSelector selector(Instance);
         auto PhysicalDeviceResult = selector
             .set_minimum_version(1, 4)
@@ -833,6 +853,7 @@ namespace Lumina
             .set_required_features_11(Features11)
             .set_required_features_12(Features12)
             .set_required_features_13(Features13)
+            .add_required_extension(VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME)
             .require_separate_transfer_queue()
             .require_separate_compute_queue()
             .defer_surface_initialization()
@@ -1096,18 +1117,34 @@ namespace Lumina
                 {
                     FVulkanImage* Image = static_cast<FVulkanImage*>(Binding.ResourceHandle);
 
-                    const FTextureSubresourceSet Subresource = Binding.GetTextureResource().Subresources.Resolve(Image->GetDescription(), true);
+                    // SRVs span every mip the caller asked for. SampleLevel(UV, lod) on
+                    // multi-mip images (HZB taps especially) requires the view to expose
+                    // all mips, otherwise reads outside the view's mip range are
+                    // implementation-defined.
+                    const FTextureSubresourceSet Subresource = Binding.GetTextureResource().Subresources.Resolve(Image->GetDescription(), false);
                     FVulkanImage::ESubresourceViewType ViewType = Vk::GetTextureViewType(Binding.Format, Image->GetDescription().Format);
                     VkImageView View = Image->GetSubresourceView(Subresource, Binding.GetTextureResource().Dimension, Binding.Format, VK_IMAGE_USAGE_SAMPLED_BIT, ViewType).View;
-                    
+
                     VkDescriptorImageInfo& ImageInfo = ImageWriteInfos.emplace_back();
                     ImageInfo.imageView = View;
                     ImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                    ImageInfo.sampler = TStaticRHISampler<>::GetRHI()->GetAPI<VkSampler>();
 
-                    
+                    // SRV-into-mutable writes a plain SAMPLED_IMAGE (sampler comes
+                    // from the bindless sampler array). Otherwise fall back to the
+                    // legacy COMBINED_IMAGE_SAMPLER path with the static default
+                    // sampler baked in.
+                    const bool bMutable = (LayoutBinding.descriptorType == VK_DESCRIPTOR_TYPE_MUTABLE_EXT);
+                    if (bMutable)
+                    {
+                        ImageInfo.sampler    = VK_NULL_HANDLE;
+                        Write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                    }
+                    else
+                    {
+                        ImageInfo.sampler    = TStaticRHISampler<>::GetRHI()->GetAPI<VkSampler>();
+                        Write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    }
                     Write.pImageInfo = &ImageInfo;
-                    Write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                 }
                 break;
             case ERHIBindingResourceType::Texture_UAV:
@@ -1117,13 +1154,26 @@ namespace Lumina
                     const FTextureSubresourceSet Subresource = Binding.GetTextureResource().Subresources.Resolve(Image->GetDescription(), true);
                     FVulkanImage::ESubresourceViewType ViewType = Vk::GetTextureViewType(Binding.Format, Image->GetDescription().Format);
                     VkImageView View = Image->GetSubresourceView(Subresource, Binding.GetTextureResource().Dimension, Binding.Format, VK_IMAGE_USAGE_STORAGE_BIT, ViewType).View;
-                    
+
                     VkDescriptorImageInfo& ImageInfo = ImageWriteInfos.emplace_back();
                     ImageInfo.imageView = View;
                     ImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-                    
+
                     Write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
                     Write.pImageInfo = &ImageInfo;
+                }
+                break;
+            case ERHIBindingResourceType::Sampler:
+                {
+                    FVulkanSampler* Sampler = static_cast<FVulkanSampler*>(Binding.ResourceHandle);
+
+                    VkDescriptorImageInfo& ImageInfo = ImageWriteInfos.emplace_back();
+                    ImageInfo.sampler     = Sampler->GetAPI<VkSampler>();
+                    ImageInfo.imageView   = VK_NULL_HANDLE;
+                    ImageInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+                    Write.pImageInfo     = &ImageInfo;
+                    Write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
                 }
                 break;
             case ERHIBindingResourceType::Buffer_CBV:
@@ -1167,13 +1217,28 @@ namespace Lumina
             Writes.push_back(Write);
         };
 
+        auto BindingAcceptsWrite = [](ERHIBindingResourceType LayoutType, ERHIBindingResourceType WriteType)
+        {
+            if (LayoutType == WriteType)
+            {
+                return true;
+            }
+            // Image_Mutable bindings hold either kind of image.
+            if (LayoutType == ERHIBindingResourceType::Image_Mutable)
+            {
+                return WriteType == ERHIBindingResourceType::Texture_SRV
+                    || WriteType == ERHIBindingResourceType::Texture_UAV;
+            }
+            return false;
+        };
+
         for (uint32 BindingLocation = 0; BindingLocation < uint32(BindingLayout->Bindings.size()); BindingLocation++)
         {
             const FBindingLayoutItem& Item = BindingLayout->BindlessDesc.Bindings[BindingLocation];
-            if (Item.Type == Binding.Type)
+            if (BindingAcceptsWrite(Item.Type, Binding.Type))
             {
                 const VkDescriptorSetLayoutBinding& LayoutBinding = BindingLayout->Bindings[BindingLocation];
-                
+
                 WriteDescriptorForBinding(LayoutBinding);
             }
         }

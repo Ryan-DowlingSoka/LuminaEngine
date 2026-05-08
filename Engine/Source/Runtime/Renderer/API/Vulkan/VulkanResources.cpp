@@ -278,6 +278,8 @@ namespace Lumina
         {
         case ERHIBindingResourceType::Texture_SRV:                  return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         case ERHIBindingResourceType::Texture_UAV:                  return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        case ERHIBindingResourceType::Sampler:                      return VK_DESCRIPTOR_TYPE_SAMPLER;
+        case ERHIBindingResourceType::Image_Mutable:                return VK_DESCRIPTOR_TYPE_MUTABLE_EXT;
         case ERHIBindingResourceType::Buffer_SRV:                   return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         case ERHIBindingResourceType::Buffer_UAV:                   return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         case ERHIBindingResourceType::Buffer_CBV:                   return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -809,7 +811,7 @@ namespace Lumina
         Info.maxLod             = VK_LOD_CLAMP_NONE;
 
         VkSamplerReductionModeCreateInfoEXT CreateInfoReduction = {};
-        if (InDesc.ReductionType == ESamplerReductionType::Minimum || Desc.ReductionType == ESamplerReductionType::Max)
+        if (InDesc.ReductionType == ESamplerReductionType::Minimum || InDesc.ReductionType == ESamplerReductionType::Max)
         {
             CreateInfoReduction.sType           = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO_EXT;
             CreateInfoReduction.reductionMode   = ToVkReductionMode(InDesc.ReductionType);
@@ -835,12 +837,14 @@ namespace Lumina
         , Description(InDescription)
     {
         VkImageCreateFlags ImageFlags = VK_NO_FLAGS;
-        VkImageUsageFlags UsageFlags = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        // Every internally-allocated image is sampled-capable so it can carry a
+        // bindless SRV view; FTextureManager assigns each one a ResourceID.
+        VkImageUsageFlags UsageFlags = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         VmaAllocationCreateFlags AllocationFlags = 0;
-        
+
         DEBUG_ASSERT(InDescription.Format != EFormat::UNKNOWN);
         VkFormat VulkanFormat = ConvertFormat(InDescription.Format);
-        
+
         if (InDescription.Flags.IsFlagSet(EImageCreateFlags::RenderTarget))
         {
             UsageFlags |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -848,10 +852,6 @@ namespace Lumina
         if (InDescription.Flags.IsFlagSet(EImageCreateFlags::DepthStencil))
         {
             UsageFlags |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-        }
-        if (InDescription.Flags.IsFlagSet(EImageCreateFlags::ShaderResource))
-        {
-            UsageFlags |= VK_IMAGE_USAGE_SAMPLED_BIT;
         }
         if (InDescription.Flags.IsFlagSet(EImageCreateFlags::Storage))
         {
@@ -905,6 +905,14 @@ namespace Lumina
     
         Allocation = Device->GetAllocator().AllocateImage(&ImageCreateInfo, AllocationFlags, &Image, InDescription.DebugName.c_str());
         static_cast<FVulkanRenderContext*>(GRenderContext)->SetVulkanObjectName(InDescription.DebugName, VK_OBJECT_TYPE_IMAGE, (uintptr_t)Image);
+
+        if (GRenderManager != nullptr)
+        {
+            if (RHI::FTextureManager* Manager = GRenderManager->TryGetTextureManager())
+            {
+                Manager->AddTexture(this);
+            }
+        }
     }
 
 
@@ -921,6 +929,14 @@ namespace Lumina
 
     FVulkanImage::~FVulkanImage()
     {
+        if (GRenderManager != nullptr)
+        {
+            if (RHI::FTextureManager* Manager = GRenderManager->TryGetTextureManager())
+            {
+                Manager->RemoveTexture(this);
+            }
+        }
+
         FScopeLock Lock(SubresourceMutex);
         for (auto& ViewPair : SubresourceViews)
         {
@@ -1304,48 +1320,60 @@ namespace Lumina
         CreateInfo.bindingCount = (uint32)Bindings.size();
         CreateInfo.pBindings = Bindings.data();
 
-        TVector<VkDescriptorBindingFlags> BindFlags(Bindings.size(), VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+        // Bindless descriptor sets get UPDATE_AFTER_BIND so FTextureManager can
+        // register/unregister images mid-frame without invalidating in-flight
+        // command buffers that have the table bound. PARTIALLY_BOUND lets us
+        // sample slots that haven't been written yet (e.g. holes left by
+        // RemoveTexture). Non-bindless sets keep the old strict semantics.
+        VkDescriptorBindingFlags PerBindingFlags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+        if (bBindless)
+        {
+            PerBindingFlags |= VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+            CreateInfo.flags |= VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+        }
+
+        TVector<VkDescriptorBindingFlags> BindFlags(Bindings.size(), PerBindingFlags);
 
         VkDescriptorSetLayoutBindingFlagsCreateInfo ExtendedInfo = {};
         ExtendedInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
         ExtendedInfo.bindingCount = (uint32)Bindings.size();
         ExtendedInfo.pBindingFlags = BindFlags.data();
 
-        VkDescriptorType CbvSrvUavTypes[] = 
+        // VK_EXT_mutable_descriptor_type wiring. Each binding gets a
+        // VkMutableDescriptorTypeListEXT entry; only Image_Mutable bindings
+        // populate the list, the rest are empty.
+        static const VkDescriptorType ImageMutableTypes[] =
         {
             VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
-            VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
-            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
         };
 
-        VkDescriptorType CounterTypes[] =
+        TVector<VkMutableDescriptorTypeListEXT> MutableTypeLists(Bindings.size());
+        bool bHasMutable = false;
+        for (size_t i = 0; i < Bindings.size(); ++i)
         {
-            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        };
+            if (Bindings[i].descriptorType == VK_DESCRIPTOR_TYPE_MUTABLE_EXT)
+            {
+                MutableTypeLists[i].descriptorTypeCount = uint32(std::size(ImageMutableTypes));
+                MutableTypeLists[i].pDescriptorTypes    = ImageMutableTypes;
+                bHasMutable = true;
+            }
+            else
+            {
+                MutableTypeLists[i].descriptorTypeCount = 0;
+                MutableTypeLists[i].pDescriptorTypes    = nullptr;
+            }
+        }
 
-        VkDescriptorType SamplerTypes[] =
+        VkMutableDescriptorTypeCreateInfoEXT MutableInfo = {};
+        MutableInfo.sType                          = VK_STRUCTURE_TYPE_MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT;
+        MutableInfo.mutableDescriptorTypeListCount = (uint32)MutableTypeLists.size();
+        MutableInfo.pMutableDescriptorTypeLists    = MutableTypeLists.data();
+
+        if (bHasMutable)
         {
-            VK_DESCRIPTOR_TYPE_SAMPLER,
-        };
-
-        VkMutableDescriptorTypeListEXT CbvSrvUavTypesList = {};
-        CbvSrvUavTypesList.descriptorTypeCount = uint32(std::size(CbvSrvUavTypes));
-        CbvSrvUavTypesList.pDescriptorTypes = CbvSrvUavTypes;
-
-        VkMutableDescriptorTypeListEXT CounterTypesList = {};
-        CounterTypesList.descriptorTypeCount = uint32(std::size(CounterTypes));
-        CounterTypesList.pDescriptorTypes = CounterTypes;
-
-        VkMutableDescriptorTypeListEXT SamplerTypesList = {};
-        SamplerTypesList.descriptorTypeCount = uint32(std::size(SamplerTypes));
-        SamplerTypesList.pDescriptorTypes = SamplerTypes;
-
-        auto MutableDescriptorTypeList = &CbvSrvUavTypes;
-
-
+            ExtendedInfo.pNext = &MutableInfo;
+        }
         CreateInfo.pNext = &ExtendedInfo;
 
         auto Result = vkCreateDescriptorSetLayout(Device->GetDevice(), &CreateInfo, VK_ALLOC_CALLBACK, &DescriptorSetLayout);
@@ -1633,6 +1661,8 @@ namespace Lumina
         PoolCreateInfo.poolSizeCount = (uint32)InLayout->PoolSizes.size();
         PoolCreateInfo.pPoolSizes = InLayout->PoolSizes.data();
         PoolCreateInfo.maxSets = 1;
+        // Pool flag must mirror the layout flag set in FVulkanBindingLayout::Bake.
+        PoolCreateInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
 
         VK_CHECK(vkCreateDescriptorPool(Device->GetDevice(), &PoolCreateInfo, VK_ALLOC_CALLBACK, &DescriptorPool));
         

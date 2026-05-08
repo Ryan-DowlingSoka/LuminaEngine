@@ -952,7 +952,7 @@ namespace Lumina
         });
     }
 
-    void CWorld::DuplicateEntity(entt::entity& To, entt::entity From, TFunctionRef<bool(entt::type_info)> Callback)
+    void CWorld::DuplicateEntity(entt::entity& To, entt::entity From, const TFunctionRef<bool(entt::type_info)>& Callback)
     {
         ASSERT(To != From);
 

@@ -101,7 +101,7 @@ enum ERHIResourceType : uint8
 enum class ERHIBindingResourceType : uint8
 {
 	Unknown,
-	
+
 	Texture_SRV,
 	Buffer_SRV,
 
@@ -114,6 +114,11 @@ enum class ERHIBindingResourceType : uint8
 	Buffer_Uniform = Buffer_CBV,
 	Buffer_Uniform_Dynamic,
 	Buffer_Storage_Dynamic,
+
+	// Layout-only. A bindless mutable image slot accepting either a sampled
+	// or storage image; per-write VkDescriptorType determines which.
+	// FBindingSetItem writes still use Texture_SRV / Texture_UAV.
+	Image_Mutable,
 };
 
 enum class ERHIBindingPoint : uint8
@@ -841,8 +846,8 @@ namespace Lumina
 		virtual EFormat GetFormat() const = 0;
 		virtual TBitFlags<EImageCreateFlags> GetFlags() const = 0;
 		virtual uint8 GetNumMips() const = 0;
-		virtual int32 GetTextureCacheIndex() const = 0;
-		virtual void SetTextureCacheIndex(int32 InIndex) = 0;
+		virtual int32 GetResourceID() const = 0;
+		virtual void SetResourceID(int32 InIndex) = 0;
 
 		virtual void* GetRHIView(EFormat Format, FTextureSubresourceSet Subresources, EImageDimension Dimension, bool bReadyOnlyDSV = false) = 0;
 	};
@@ -1383,7 +1388,28 @@ namespace Lumina
 			Result.Size = Size;
 			return Result;
 		}
-		
+
+		static FBindingLayoutItem Sampler(uint32 Slot, uint16 Size = 0)
+		{
+			FBindingLayoutItem Result;
+			Result.Slot = Slot;
+			Result.Type = ERHIBindingResourceType::Sampler;
+			Result.Size = Size;
+			return Result;
+		}
+
+		// Bindless-only. The backing descriptor type is VK_DESCRIPTOR_TYPE_MUTABLE_EXT
+		// with a {SAMPLED_IMAGE, STORAGE_IMAGE} type list, so a single ResourceID
+		// indexes both Textures[] and RWTextures[] in the shader.
+		static FBindingLayoutItem Image_Mutable(uint32 Slot, uint16 Size = 0)
+		{
+			FBindingLayoutItem Result;
+			Result.Slot = Slot;
+			Result.Type = ERHIBindingResourceType::Image_Mutable;
+			Result.Size = Size;
+			return Result;
+		}
+
 		bool operator ==(const FBindingLayoutItem& b) const
 		{
 			return Slot == b.Slot
@@ -1535,10 +1561,20 @@ namespace Lumina
 			Result.ResourceHandle = Image;
 			Result.Format = Format;
 			Result.Variant = FBindingTextureResource{Subresources, nullptr, Dimension};
-			
+
 			return Result;
 		}
-		
+
+		static FBindingSetItem Sampler(uint32 Slot, FRHISampler* InSampler)
+		{
+			FBindingSetItem Result;
+			Result.Slot = Slot;
+			Result.Type = ERHIBindingResourceType::Sampler;
+			Result.ResourceHandle = InSampler;
+			Result.Variant = FBindingTextureResource{ AllSubresources, InSampler, EImageDimension::Unknown };
+			return Result;
+		}
+
 		bool operator == (const FBindingSetItem& b) const
 		{
 			return ResourceHandle == b.ResourceHandle
@@ -1691,6 +1727,15 @@ namespace Lumina
 		bool operator==(const FBufferAccess&) const = default;
 	};
 
+	struct FImageAccess
+	{
+		FRHIImage*             Image        = nullptr;
+		FTextureSubresourceSet Subresources = AllSubresources;
+		EResourceStates        State        = EResourceStates::Unknown;
+
+		bool operator==(const FImageAccess&) const = default;
+	};
+
 	struct RUNTIME_API FGraphicsState
 	{
 		FRHIGraphicsPipeline* Pipeline = nullptr;
@@ -1698,6 +1743,7 @@ namespace Lumina
 		FViewportState ViewportState;
 		TFixedVector<FRHIBindingSet*, 1> Bindings;
 		TFixedVector<FBufferAccess, 1> BufferAccesses;
+		TFixedVector<FImageAccess, 1> ImageAccesses;
 
 		TFixedVector<FVertexBufferBinding, 1> VertexBuffers;
 		FIndexBufferBinding IndexBuffer;
@@ -1717,6 +1763,10 @@ namespace Lumina
 		FORCEINLINE FGraphicsState& AddBindingSet(FRHIBindingSet* value) { Bindings.push_back(value); return *this; }
 		FORCEINLINE FGraphicsState& Writes(FRHIBuffer* Buffer, EResourceStates State = EResourceStates::UnorderedAccess) { BufferAccesses.push_back({Buffer, State}); return *this; }
 		FORCEINLINE FGraphicsState& Reads(FRHIBuffer* Buffer, EResourceStates State = EResourceStates::ShaderResource) { BufferAccesses.push_back({Buffer, State}); return *this; }
+		FORCEINLINE FGraphicsState& Writes(FRHIImage* Image, EResourceStates State = EResourceStates::UnorderedAccess) { ImageAccesses.push_back({Image, AllSubresources, State}); return *this; }
+		FORCEINLINE FGraphicsState& Writes(FRHIImage* Image, FTextureSubresourceSet Subresources, EResourceStates State = EResourceStates::UnorderedAccess) { ImageAccesses.push_back({Image, Subresources, State}); return *this; }
+		FORCEINLINE FGraphicsState& Reads(FRHIImage* Image, EResourceStates State = EResourceStates::ShaderResource) { ImageAccesses.push_back({Image, AllSubresources, State}); return *this; }
+		FORCEINLINE FGraphicsState& Reads(FRHIImage* Image, FTextureSubresourceSet Subresources, EResourceStates State = EResourceStates::ShaderResource) { ImageAccesses.push_back({Image, Subresources, State}); return *this; }
 		FORCEINLINE FGraphicsState& AddVertexBuffer(const FVertexBufferBinding& value) { VertexBuffers.push_back(value); return *this; }
 		FORCEINLINE FGraphicsState& SetVertexBuffer(const FVertexBufferBinding& value)
 		{
@@ -1741,6 +1791,7 @@ namespace Lumina
 		FRHIComputePipeline* Pipeline = nullptr;
 		TFixedVector<FRHIBindingSet*, 1> Bindings;
 		TFixedVector<FBufferAccess, 1> BufferAccesses;
+		TFixedVector<FImageAccess, 1> ImageAccesses;
 
 		FRHIBuffer* IndirectParams = nullptr;
 
@@ -1748,6 +1799,10 @@ namespace Lumina
 		FORCEINLINE FComputeState& AddBindingSet(FRHIBindingSet* value) { Bindings.push_back(value); return *this; }
 		FORCEINLINE FComputeState& Writes(FRHIBuffer* Buffer, EResourceStates State = EResourceStates::UnorderedAccess) { BufferAccesses.push_back({Buffer, State}); return *this; }
 		FORCEINLINE FComputeState& Reads(FRHIBuffer* Buffer, EResourceStates State = EResourceStates::ShaderResource) { BufferAccesses.push_back({Buffer, State}); return *this; }
+		FORCEINLINE FComputeState& Writes(FRHIImage* Image, EResourceStates State = EResourceStates::UnorderedAccess) { ImageAccesses.push_back({Image, AllSubresources, State}); return *this; }
+		FORCEINLINE FComputeState& Writes(FRHIImage* Image, FTextureSubresourceSet Subresources, EResourceStates State = EResourceStates::UnorderedAccess) { ImageAccesses.push_back({Image, Subresources, State}); return *this; }
+		FORCEINLINE FComputeState& Reads(FRHIImage* Image, EResourceStates State = EResourceStates::ShaderResource) { ImageAccesses.push_back({Image, AllSubresources, State}); return *this; }
+		FORCEINLINE FComputeState& Reads(FRHIImage* Image, FTextureSubresourceSet Subresources, EResourceStates State = EResourceStates::ShaderResource) { ImageAccesses.push_back({Image, Subresources, State}); return *this; }
 		FORCEINLINE FComputeState& SetIndirectParams(FRHIBuffer* value) { IndirectParams = value; return *this; }
 
 	};

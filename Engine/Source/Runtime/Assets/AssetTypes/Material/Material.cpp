@@ -161,7 +161,7 @@ namespace Lumina
             {
                 if (Binding != nullptr)
                 {
-                    MaterialUniforms.Textures[Index] = Binding->GetRHIRef()->GetTextureCacheIndex();
+                    MaterialUniforms.Textures[Index] = Binding->GetRHIRef()->GetResourceID();
                     Index++;
                 }
             }

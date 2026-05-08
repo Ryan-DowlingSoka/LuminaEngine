@@ -17,7 +17,8 @@
 // see ShadowSampling.slang). They are NOT declared in this set so that shadow
 // rendering passes (Point/Spot/Cascaded) can bind set 0 without triggering a
 // shader-read state transition on images they're about to write as depth.
-[[vk::binding(9, 0)]] Sampler2D                                      uDepthPyramid;
+// Slot 9 (uDepthPyramid) freed: Hi-Z is sampled bindless via
+// uSceneData.CullData.DepthPyramidIndex + SAMPLER_MIN_REDUCTION.
 
 [[vk::binding(10, 0)]] StructuredBuffer<FCullView>                   uCullViews;
 [[vk::binding(11, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawList;
@@ -53,11 +54,55 @@
 // the specular ambient term.
 [[vk::binding(19, 0)]] SamplerCube                                   uSkyPrefilter;
 
-// ---------------------------------------------------------------------------------
-//  Binding Set 1
-// ---------------------------------------------------------------------------------
 
-[[vk::binding(0, 1)]] Sampler2D uGlobalTextures[];
+[[vk::binding(0, 1)]] Texture2D                  uBindlessTex2D[];
+[[vk::binding(0, 1)]] TextureCube                uBindlessTexCube[];
+[[vk::binding(0, 1)]] Texture3D                  uBindlessTex3D[];
+[[vk::binding(0, 1)]] Texture2DArray             uBindlessTex2DArray[];
+[[vk::binding(0, 1)]] RWTexture2D<float4>        uBindlessRWTex2D[];
+[[vk::binding(1, 1)]] SamplerState               uBindlessSamplers[];
+
+// Stock sampler indices. Keep in lockstep with EBindlessSampler in
+// Engine/Source/Runtime/Renderer/TextureManager.h.
+static const uint SAMPLER_LINEAR_WRAP        = 0;
+static const uint SAMPLER_LINEAR_CLAMP       = 1;
+static const uint SAMPLER_LINEAR_MIRROR      = 2;
+static const uint SAMPLER_POINT_WRAP         = 3;
+static const uint SAMPLER_POINT_CLAMP        = 4;
+static const uint SAMPLER_ANISO_WRAP         = 5;
+static const uint SAMPLER_ANISO_CLAMP        = 6;
+static const uint SAMPLER_SHADOW             = 7;
+static const uint SAMPLER_MIN_REDUCTION      = 8;
+static const uint SAMPLER_MAX_REDUCTION      = 9;
+
+// Convenience wrappers around the bindless table. ResourceID matches
+// FRHIImage::GetResourceID() on the C++ side.
+SamplerState GetBindlessSampler(uint SamplerIndex) { return uBindlessSamplers[SamplerIndex]; }
+
+float4 SampleBindless2D(uint ResourceID, uint SamplerIndex, float2 UV)
+{
+    return uBindlessTex2D[ResourceID].Sample(uBindlessSamplers[SamplerIndex], UV);
+}
+
+float4 SampleBindless2DLevel(uint ResourceID, uint SamplerIndex, float2 UV, float Lod)
+{
+    return uBindlessTex2D[ResourceID].SampleLevel(uBindlessSamplers[SamplerIndex], UV, Lod);
+}
+
+float4 SampleBindlessCube(uint ResourceID, uint SamplerIndex, float3 Dir)
+{
+    return uBindlessTexCube[ResourceID].Sample(uBindlessSamplers[SamplerIndex], Dir);
+}
+
+float4 SampleBindlessCubeLevel(uint ResourceID, uint SamplerIndex, float3 Dir, float Lod)
+{
+    return uBindlessTexCube[ResourceID].SampleLevel(uBindlessSamplers[SamplerIndex], Dir, Lod);
+}
+
+float4 SampleBindless3D(uint ResourceID, uint SamplerIndex, float3 UVW)
+{
+    return uBindlessTex3D[ResourceID].Sample(uBindlessSamplers[SamplerIndex], UVW);
+}
 
 // Vertex loaders.
 

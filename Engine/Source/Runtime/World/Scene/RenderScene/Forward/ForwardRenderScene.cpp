@@ -112,14 +112,6 @@ namespace Lumina
         NamedImages[(int)ENamedImage::CameraIcon]           = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/CameraIcon.png", false);
         NamedImages[(int)ENamedImage::CharacterIcon]        = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/PersonIcon.png", false);
         NamedImages[(int)ENamedImage::ParticleSystemIcon]   = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/Molecule.png", false);
-
-        GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::PointLightIcon]);
-        GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::DirectionalLightIcon]);
-        GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::SkyLightIcon]);
-        GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::SpotLightIcon]);
-        GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::CameraIcon]);
-        GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::CharacterIcon]);
-        GRenderManager->GetTextureManager().AddTexture(NamedImages[(int)ENamedImage::ParticleSystemIcon]);
         #endif
     }
 
@@ -129,16 +121,6 @@ namespace Lumina
         GRenderContext->ClearCommandListCache();
         GRenderContext->ClearBindingCaches();
 
-        #if USING(WITH_EDITOR)
-        GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::PointLightIcon]);
-        GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::DirectionalLightIcon]);
-        GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::SkyLightIcon]);
-        GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::SpotLightIcon]);
-        GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::CameraIcon]);
-        GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::CharacterIcon]);
-        GRenderManager->GetTextureManager().RemoveTexture(NamedImages[(int)ENamedImage::ParticleSystemIcon]);
-        #endif
-        
         FRenderManager::OnSwapchainResized.Remove(SwapchainResizedHandle);
         
         LOG_TRACE("Shutting down Forward Render Scene");
@@ -177,6 +159,7 @@ namespace Lumina
         SceneGlobalData.CullData.bOcclusionCull         = RenderSettings.bOcclusionCull;
         SceneGlobalData.CullData.PyramidWidth           = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
         SceneGlobalData.CullData.PyramidHeight          = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeY();
+        SceneGlobalData.CullData.DepthPyramidIndex      = (uint32)GetNamedImage(ENamedImage::DepthPyramid)->GetResourceID();
         SceneGlobalData.CullData.ShadowMaxDistance      = World->GetDefaultWorldSettings().ShadowMaxDistance;
         SceneGlobalData.CullData.bShadowOcclusionCull   = RenderSettings.bShadowOcclusionCull;
         SceneGlobalData.CullData.DebugMode              = (uint32)RenderSettings.Flags;
@@ -238,7 +221,6 @@ namespace Lumina
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Spot Shadows", FColor(0.75f, 0.10f, 0.55f));
                 SpotShadowPass(CmdList);
-
             }
 
             {
@@ -523,7 +505,7 @@ namespace Lumina
                     }
                     
                     FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-                    Billboard.TextureIndex          = BillboardComponent.Texture->GetRHIRef()->GetTextureCacheIndex();
+                    Billboard.TextureIndex          = BillboardComponent.Texture->GetRHIRef()->GetResourceID();
                     Billboard.Position              = TransformComponent.WorldTransform.Location;
                     Billboard.Size                  = BillboardComponent.Scale;
                     Billboard.EntityID              = entt::to_integral(Entity);
@@ -536,7 +518,7 @@ namespace Lumina
                     auto EmplaceVisualizer = [this](entt::entity Entity, const glm::vec3& Position, ENamedImage Icon, const glm::vec4& Color, float Size = 0.20f)
                     {
                         FBillboardInstance& Billboard = BillboardInstances.emplace_back();
-                        Billboard.TextureIndex        = GetNamedImage(Icon)->GetTextureCacheIndex();
+                        Billboard.TextureIndex        = GetNamedImage(Icon)->GetResourceID();
                         Billboard.ColorPack           = PackColor(Color);
                         Billboard.Position            = Position;
                         Billboard.Size                = Size;
@@ -2140,12 +2122,13 @@ namespace Lumina
         SpotShadowCullViewBases.reserve(PackedShadows[(uint32)ELightType::Spot].size());
 
         // View 0: main camera. Frustum + cone + occlusion (Hi-Z + micro-poly).
+        // Frustum and occlusion are gated by render settings so the toggles can
+        // actually disable culling at runtime (cone is always cheap so it stays).
         {
             const glm::mat4 CameraVP = ViewVolume.GetProjectionMatrix() * ViewVolume.GetViewMatrix();
-            const uint32 CameraFlags =
-                ECullViewFlags::Frustum |
-                ECullViewFlags::Cone |
-                ECullViewFlags::Occlusion;
+            uint32 CameraFlags = ECullViewFlags::Cone;
+            if (RenderSettings.bFrustumCull)   CameraFlags |= ECullViewFlags::Frustum;
+            if (RenderSettings.bOcclusionCull) CameraFlags |= ECullViewFlags::Occlusion;
             PushView(CameraVP, ViewVolume.GetViewPosition(), CameraFlags);
         }
 
@@ -2530,13 +2513,13 @@ namespace Lumina
 
     void FForwardRenderScene::DrawBillboard(FRHIImage* Image, const glm::vec3& Location, float Scale)
     {
-        if (Image->GetTextureCacheIndex() == -1)
+        if (Image->GetResourceID() == -1)
         {
             return;
         }
         
         FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
-        Billboard.TextureIndex          = Image->GetTextureCacheIndex();
+        Billboard.TextureIndex          = Image->GetResourceID();
         Billboard.Position              = Location;
         Billboard.Size                  = Scale;
         Billboard.EntityID              = entt::null;
@@ -2604,11 +2587,12 @@ namespace Lumina
         PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
 
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-
+        
         FComputeState State;
         State.SetPipeline(Pipeline);
         State.AddBindingSet(SceneBindingSet);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        State.Reads(GetNamedImage(ENamedImage::DepthPyramid));
         CmdList.SetComputeState(State);
 
         FCullMeshletPushConstants PC = {};
@@ -2656,6 +2640,7 @@ namespace Lumina
         State.SetPipeline(Pipeline);
         State.AddBindingSet(SceneBindingSet);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        State.Writes(GetNamedImage(ENamedImage::DepthPyramid));
         CmdList.SetComputeState(State);
 
         FCullMeshletPushConstants PC = {};
@@ -3764,7 +3749,7 @@ namespace Lumina
             {
                 if (FRHIImage* Image = Tex->GetRHIRef())
                 {
-                    const int32 CacheIdx = Image->GetTextureCacheIndex();
+                    const int32 CacheIdx = Image->GetResourceID();
                     if (CacheIdx > 0)
                     {
                         TextureIndex = (uint32)CacheIdx;
@@ -6579,10 +6564,9 @@ namespace Lumina
             // when an image is bound as SRV in a set AND used as the current pass's
             // depth attachment, the state tracker emits two transitions on the same
             // image in a single barrier call which is incoherent.
-            // Min-reduction clamp sampler: a single bilinear tap on the depth pyramid
-            // returns the minimum of the 2x2 footprint (farthest depth in reverse-Z).
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(9, GetNamedImage(ENamedImage::DepthPyramid),
-                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Minimum>::GetRHI()));
+            // Slot 9 (depth pyramid) freed: the cull pass samples it bindless via
+            // FCullData::DepthPyramidIndex + SAMPLER_MIN_REDUCTION. State transitions
+            // for the pyramid are issued explicitly in CullPassEarly/Late.
             // Unified per-view culling: CullMeshlets.slang reads FCullView entries
             // from uCullViews and atomically appends surviving meshlets into the
             // owning view's slice of uMeshletDrawList / uIndirectArgs. Every shadow

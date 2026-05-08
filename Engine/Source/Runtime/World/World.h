@@ -140,7 +140,7 @@ namespace Lumina
         
         entt::entity GetFirstEntityWith(entt::id_type Type);
         
-        void DuplicateEntity(entt::entity& To, entt::entity From, TFunctionRef<bool(entt::type_info)> Callback);
+        void DuplicateEntity(entt::entity& To, entt::entity From, const TFunctionRef<bool(entt::type_info)>& Callback);
         
         void DestroyEntity(entt::entity Entity);
         

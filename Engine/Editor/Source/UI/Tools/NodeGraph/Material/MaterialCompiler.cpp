@@ -734,7 +734,7 @@ namespace Lumina
 			NumTextureParams++;
 		}
 
-		GetActiveChunk().append("float4 " + ID + " = uGlobalTextures[GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + ")].Sample(" + UVStr + ");\n");
+		GetActiveChunk().append("float4 " + ID + " = SampleBindless2D(GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + "), SAMPLER_LINEAR_WRAP, " + UVStr + ");\n");
 
 		if (Texture->ColorSpace == ETextureColorSpace::NormalMap)
 		{
@@ -770,7 +770,7 @@ namespace Lumina
 			NumTextureParams++;
 		}
 
-		GetActiveChunk().append("float4 " + ID + " = uGlobalTextures[GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + ")].Sample(" + UVStr + ");\n");
+		GetActiveChunk().append("float4 " + ID + " = SampleBindless2D(GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + "), SAMPLER_LINEAR_WRAP, " + UVStr + ");\n");
 
 		if (Texture && Texture->ColorSpace == ETextureColorSpace::NormalMap)
 		{

@@ -1554,6 +1554,15 @@ namespace Lumina
             }
         }
 
+        if (PendingState.IsInState(EPendingCommandState::AutomaticBarriers)
+            && !VectorsAreEqual(State.ImageAccesses, CurrentComputeState.ImageAccesses))
+        {
+            for (const FImageAccess& Access : State.ImageAccesses)
+            {
+                RequireTextureState(Access.Image, Access.Subresources, Access.State);
+            }
+        }
+
         if (CurrentComputeState.Pipeline != ComputePipeline)
         {
             CommandListStats.NumPipelineSwitches++;
@@ -1790,6 +1799,14 @@ namespace Lumina
             for (const FBufferAccess& Access : State.BufferAccesses)
             {
                 RequireBufferState(Access.Buffer, Access.State);
+            }
+        }
+
+        if (!VectorsAreEqual(State.ImageAccesses, CurrentGraphicsState.ImageAccesses))
+        {
+            for (const FImageAccess& Access : State.ImageAccesses)
+            {
+                RequireTextureState(Access.Image, Access.Subresources, Access.State);
             }
         }
 

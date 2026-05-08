@@ -1,46 +1,7 @@
 #pragma once
 #include "Includes/Culling.slang"
 
-// Two-phase meshlet culling. Follows the Ubisoft GPU-driven (SIGGRAPH 2015) /
-// UE5 Nanite approach: the early phase runs against the *previous frame's*
-// Hi-Z pyramid (stale but cheap), then the pipeline renders depth for the
-// survivors, rebuilds the HZB from current-frame depth, and the late phase
-// re-tests only the meshlets the early phase rejected as occluded.
-//
-// Why split:
-//   Single-pass against last-frame HZB mis-occludes disoccluded geometry
-//   (fast camera motion, uncovered surfaces) because last frame's pyramid
-//   doesn't know about those pixels yet. Meshlets being ~124 tris each, a
-//   false-occlusion shows up as visible pop-in/pop-out at the meshlet
-//   granularity. Two phases get the throughput win of conservative early
-//   rejection without sacrificing correctness on disocclusion.
-//
-// Per-phase behaviour:
-//
-//   Phase 0 (EARLY):
-//     * Each thread owns one (instance, meshlet-local) pair.
-//     * For every non-late view (camera, cascades, spot/point faces), runs
-//       distance/frustum/cone tests. Shadow views' camera-occlusion flag is
-//       NOT set, so they only pay frustum+cone here and emit straight into
-//       their own slice.
-//     * For the camera view, HZB-visible meshlets emit to uMeshletDrawList;
-//       HZB-occluded meshlets append to uMeshletDeferList for phase 1.
-//     * Skips the camera-late view entirely (phase 1 owns it).
-//
-//   Phase 1 (LATE):
-//     * One thread per deferred entry. Dispatch X = ceil(DeferCount / 64),
-//       but DeferCount is a GPU value so the CPU dispatches the worst-case
-//       (ceil(TotalMeshletBound / 64)) and threads beyond DeferCount early-out.
-//     * Re-tests the defer entry's meshlet against the freshly-built HZB.
-//       Survivors emit into the camera-late view slice. No frustum/cone
-//       retest -- those already passed in phase 0, and transforms do not
-//       change between phases.
-//     * Reads only the camera-late view; shadow views ignored.
-//
-// One compute shader owns both phases so the cull logic doesn't drift
-// between two parallel pipelines. The Phase push-constant branch is
-// uniform across a warp so the cost is a single jump.
-
+// Two-phase meshlet culling.
 #define LOCAL_SIZE_X 64
 
 struct FPushConstants

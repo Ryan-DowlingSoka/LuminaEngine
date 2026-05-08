@@ -115,9 +115,9 @@ bool IsHiZOccluded(float3 CenterWS, float RadiusWS)
 
     float2 SampleUV = (UvAABB.xy + UvAABB.zw) * 0.5;
 
-    // uDepthPyramid uses a MIN-reduction sampler, so this tap returns the
-    // minimum depth of the 2x2 footprint. In reverse-Z, min == farthest.
-    float PyramidDepth = uDepthPyramid.SampleLevel(SampleUV, Level).x;
+    // Bindless Hi-Z tap with the MIN-reduction sampler returns the minimum
+    // depth of the 2x2 footprint. In reverse-Z, min == farthest.
+    float PyramidDepth = SampleBindless2DLevel(uSceneData.CullData.DepthPyramidIndex, SAMPLER_MIN_REDUCTION, SampleUV, Level).x;
 
     float FrontZ      = ViewCenter.z - ViewRadius;
     float DepthSphere = SphereFrontDepth(FrontZ, ZNear, ZFar);

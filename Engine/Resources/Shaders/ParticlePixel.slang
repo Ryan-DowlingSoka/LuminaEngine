@@ -28,7 +28,7 @@ PSOutput PixelMain(PSInput In)
     float4 texel;
     if (In.TextureIndex != 0u)
     {
-        texel = uGlobalTextures[In.TextureIndex].Sample(In.UV);
+        texel = SampleBindless2D(In.TextureIndex, SAMPLER_LINEAR_WRAP, In.UV);
     }
     else
     {

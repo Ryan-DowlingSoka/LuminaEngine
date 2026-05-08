@@ -492,7 +492,8 @@ namespace Lumina
         uint32 DebugMode;
         // Total meshlets this frame; flat thread-per-meshlet dispatch reads this.
         uint32 TotalMeshletBound;
-        uint32 Padding;
+        // Bindless ResourceID of the depth pyramid; HZB tap goes through uBindlessTex2D.
+        uint32 DepthPyramidIndex;
     };
 
     // Bits inside FCullView::Flags. Must match CULL_VIEW_FLAG_* in Common.slang.

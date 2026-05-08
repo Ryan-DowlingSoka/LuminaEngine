@@ -38,6 +38,7 @@ namespace Lumina
         uint32 GetCurrentFrameIndex() const { return CurrentFrameIndex; }
 
         NODISCARD RHI::FTextureManager& GetTextureManager() const { return *TextureManager.get(); }
+        NODISCARD RHI::FTextureManager* TryGetTextureManager() const { return TextureManager.get(); }
         NODISCARD RHI::FMaterialManager& GetMaterialManager() const { return *MaterialManager.get(); }
 
     private:
