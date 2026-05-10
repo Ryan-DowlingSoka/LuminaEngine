@@ -6,6 +6,7 @@
 #include "Luau/AutocompleteTypes.h"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/ConfigResolver.h"
+#include "Luau/Error.h"
 #include "Luau/FileResolver.h"
 #include "Luau/Frontend.h"
 #include "Luau/GlobalTypes.h"
@@ -270,5 +271,86 @@ namespace Lumina
         V.Module = Mod;
         V.Out    = &Out;
         Source->root->visit(&V);
+    }
+
+    void FLuaTypeContext::GetTypeErrors(TVector<FLuaTypeDiagnostic>& Out)
+    {
+        Out.clear();
+        if (!EnsureChecked()) return;
+
+        Luau::ModulePtr Mod = Impl->Frontend->moduleResolverForAutocomplete.getModule(Impl->Name);
+        if (!Mod) Mod = Impl->Frontend->moduleResolver.getModule(Impl->Name);
+        if (!Mod) return;
+
+        Out.reserve(Mod->errors.size());
+        for (const Luau::TypeError& Err : Mod->errors)
+        {
+            std::string Msg = Luau::toString(Err);
+
+            FLuaTypeDiagnostic D;
+            D.Line      = int(Err.location.begin.line) + 1;
+            D.Column    = int(Err.location.begin.column) + 1;
+            D.EndLine   = int(Err.location.end.line) + 1;
+            D.EndColumn = int(Err.location.end.column) + 1;
+            D.Message.assign(Msg.c_str(), Msg.size());
+            Out.push_back(eastl::move(D));
+        }
+    }
+
+    namespace
+    {
+        // Add `name` to one GlobalTypes scope as both a value binding and a
+        // type alias, both resolving to `any`. Wraps the BuiltinDefinitions
+        // helper for the value side and writes directly into the scope's
+        // exportedTypeBindings for the type-alias side.
+        void RegisterAnyBindingInto(Luau::Frontend& Frontend, Luau::GlobalTypes& Globals, const std::string& Name)
+        {
+            Luau::TypeId AnyTy = Frontend.builtinTypes->anyType;
+            Luau::addGlobalBinding(Globals, Name, AnyTy, "@engine");
+            if (Globals.globalScope)
+            {
+                Globals.globalScope->exportedTypeBindings[Name] = Luau::TypeFun(AnyTy);
+            }
+        }
+    }
+
+    void FLuaTypeContext::RegisterEngineSymbol(FStringView Name)
+    {
+        if (Name.empty()) return;
+        // Need built-ins registered before we touch GlobalTypes: registerBuiltinGlobals
+        // builds globalScope and freezes the underlying TypeArena layout that
+        // addGlobalBinding writes into.
+        if (!Impl->bRegisteredBuiltins)
+        {
+            Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globals);
+            Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globalsForAutocomplete, /*forAutocomplete*/ true);
+            Impl->bRegisteredBuiltins = true;
+        }
+        const std::string SName(Name.data(), Name.size());
+        RegisterAnyBindingInto(*Impl->Frontend, Impl->Frontend->globals,                SName);
+        RegisterAnyBindingInto(*Impl->Frontend, Impl->Frontend->globalsForAutocomplete, SName);
+
+        Impl->bDirty = true;
+        Impl->Frontend->markDirty(Impl->Name);
+    }
+
+    void FLuaTypeContext::RegisterEngineSymbols(const TVector<FString>& Names)
+    {
+        if (Names.empty()) return;
+        if (!Impl->bRegisteredBuiltins)
+        {
+            Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globals);
+            Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globalsForAutocomplete, /*forAutocomplete*/ true);
+            Impl->bRegisteredBuiltins = true;
+        }
+        for (const FString& Name : Names)
+        {
+            if (Name.empty()) continue;
+            const std::string SName(Name.c_str(), Name.size());
+            RegisterAnyBindingInto(*Impl->Frontend, Impl->Frontend->globals,                SName);
+            RegisterAnyBindingInto(*Impl->Frontend, Impl->Frontend->globalsForAutocomplete, SName);
+        }
+        Impl->bDirty = true;
+        Impl->Frontend->markDirty(Impl->Name);
     }
 }

@@ -1,6 +1,5 @@
 #include "LuaEditorTool.h"
 
-#include "../../EditorToolContext.h"
 #include "Config/Config.h"
 #include "FileSystem/FileSystem.h"
 #include "Log/Log.h"
@@ -12,6 +11,8 @@
 
 #include <imgui.h>
 #include <imgui_internal.h>
+
+#include "UI/Tools/EditorToolContext.h"
 
 namespace Lumina
 {
@@ -294,45 +295,42 @@ namespace Lumina
 
         CodeEditor.SetLanguage(TextEditor::Language::Luau());
         ApplyEditorSettings();
+        
+        TypeContext = MakeUnique<FLuaTypeContext>(FStringView(VirtualPath.c_str(), VirtualPath.size()));
+        RebuildSymbolIndex();
+
         LoadFromDisk(); // RefreshAnalysis runs inside on cold load
 
         Lua::FScriptingContext& SC = Lua::FScriptingContext::Get();
-        CompileErrorHandle = SC.OnScriptCompileError.AddLambda(
-            [this](FStringView Path, const Lua::FCompileDiagnostic& Diag)
+        CompileErrorHandle = SC.OnScriptCompileError.AddLambda([this](FStringView Path, const Lua::FCompileDiagnostic& Diag)
+        {
+            if (Path == FStringView(VirtualPath.c_str(), VirtualPath.size()))
             {
-                if (Path == FStringView(VirtualPath.c_str(), VirtualPath.size()))
-                {
-                    ApplyCompileError(Diag.Line, Diag.Message);
-                }
-            });
-        CompileSuccessHandle = SC.OnScriptCompileSuccess.AddLambda(
-            [this](FStringView Path)
+                ApplyCompileError(Diag.Line, Diag.Message);
+            }
+        });
+        
+        CompileSuccessHandle = SC.OnScriptCompileSuccess.AddLambda([this](FStringView Path)
+        {
+            if (Path == FStringView(VirtualPath.c_str(), VirtualPath.size()))
             {
-                if (Path == FStringView(VirtualPath.c_str(), VirtualPath.size()))
-                {
-                    ClearCompileError();
-                }
-            });
-
-        // External-change reload: hook the central script-load broadcast
-        // (driven by the content browser's directory watcher) instead of
-        // spinning up a per-editor FDirectoryWatcher thread for every open
-        // script. Our own OnSave also routes through this broadcast; the
-        // bIgnoreNextReload fence absorbs that bounce.
-        ScriptLoadedHandle = SC.OnScriptLoaded.AddLambda(
-            [this](FStringView Path)
+                ClearCompileError();
+            }
+        });
+        
+        ScriptLoadedHandle = SC.OnScriptLoaded.AddLambda([this](FStringView Path)
+        {
+            if (Path != FStringView(VirtualPath.c_str(), VirtualPath.size()))
             {
-                if (Path != FStringView(VirtualPath.c_str(), VirtualPath.size()))
-                {
-                    return;
-                }
-                if (bIgnoreNextReload)
-                {
-                    bIgnoreNextReload = false;
-                    return;
-                }
-                bExternalChangePending = true;
-            });
+                return;
+            }
+            if (bIgnoreNextReload)
+            {
+                bIgnoreNextReload = false;
+                return;
+            }
+            bExternalChangePending = true;
+        });
 
         // Re-hydrate breakpoints from the debugger (source of truth) so they survive editor reopen.
         for (int Line : Lua::FLuaDebugger::Get().GetBreakpointLines(FStringView(VirtualPath.c_str(), VirtualPath.size())))
@@ -398,20 +396,12 @@ namespace Lumina
 
         CodeEditor.SetChangeCallback([this]
         {
-            // Cheap dirty check: TextEditor's monotonically-increasing undo
-            // index drifts away from the last-saved baseline whenever the
-            // user makes a real change AND walks back to it on undo. Using
-            // the index avoids a full GetText() copy + memcmp on every
-            // debounce tick, which used to be O(doc size).
             bBufferDirty = (CodeEditor.GetUndoIndex() != LastSyncedUndoIndex);
-
-            // One GetText covers everything below: status-bar size cache,
-            // AST reparse, lint, type-context source push, inlay hints.
+            
             const std::string Body = CodeEditor.GetText();
             RefreshAnalysis(FStringView(Body.data(), Body.size()));
         }, /*delay ms*/ 100);
 
-        RebuildSymbolIndex();
         AutoCompleteCfg.triggerOnTyping = bAutoTriggerCompletion;
         AutoCompleteCfg.triggerOnShortcut = true;
         AutoCompleteCfg.triggerInComments = false;
@@ -461,23 +451,14 @@ namespace Lumina
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Mono);
             ImGui::PushFontSize(ImGui::GetStyle().FontSizeBase * EditorFontScale);
             CodeEditor.Render("##lua_text", EditorSize);
-
-            // Free-form hover (strings / numbers) sits on top of the editor's
-            // own identifier hover. Mono font is still pushed so column math
-            // matches the just-rendered glyph cells.
+            
             DrawFreeFormHoverTooltip();
-
-            // Inline value annotations are drawn on top of the just-rendered
-            // editor area. Mono font is still pushed so column-cell math
-            // matches the glyph layout.
+            
             if (bPausedHere && bShowInlineValuesWhilePaused)
             {
                 DrawInlineValueOverlay();
             }
-
-            // Inlay hints (inferred ": type" ghost text after `local x = ...`).
-            // Suppressed during pauses so the live-value ghost text doesn't
-            // collide visually with type ghost text on the same line.
+            
             if (!bPausedHere && bShowInlayHints && !InlayHints.empty())
             {
                 DrawInlayHintsOverlay();
@@ -485,17 +466,13 @@ namespace Lumina
 
             ImGui::PopFontSize();
             ImGuiX::Font::PopFont();
-
-            // Right-side outline panel sits next to the editor. Drawn after
-            // the editor so it shares the same horizontal cursor-line.
+            
             if (bShowOutline)
             {
                 ImGui::SameLine();
                 DrawOutlinePanel();
             }
-
-            // Tool-level shortcuts that aren't handled by TextEditor itself.
-            // Gated on focus so we don't steal Ctrl+G from sibling panels.
+            
             if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
             {
                 HandleEditorShortcuts();
@@ -559,12 +536,7 @@ namespace Lumina
                 LOG_WARN("[LuaEditor] '{}' changed on disk but buffer is dirty; ignoring.", VirtualPath.c_str());
             }
         }
-
-        // Sync the PC marker with the live debugger state. The check is cheap
-        // and runs every frame so the marker advances when the user steps to
-        // a new line. Scroll-to-line only fires when the line actually moved
-        // so the user's manual scroll is preserved between steps on the same
-        // line (e.g. immediately after they look at the locals panel).
+        
         const int LivePC = IsDebuggerPausedHere() ? Lua::FLuaDebugger::Get().GetPausedLineZeroBased() : -1;
         if (LivePC != PCMarkerLine)
         {
@@ -627,19 +599,9 @@ namespace Lumina
         LastSyncedUndoIndex = CodeEditor.GetUndoIndex();
         CachedBodySize = Body.size();
         bBufferDirty = false;
-
-        // Re-run analysis against the freshly-saved buffer. Compile errors
-        // flow through OnScriptCompileError (driven by ScriptReloaded below);
-        // lint warnings + outline + locals are editor-side and synchronous,
-        // so we refresh them here using the body we just wrote.
+        
         RefreshAnalysis(FStringView(Body.data(), Body.size()));
-
-        // Tell FScriptingContext to recompile the source and re-bind every
-        // attached SScriptComponent referencing this path. The reload is
-        // deferred to the next ProcessDeferredActions tick on the main thread,
-        // so the editor stays in sync without re-entering the Lua VM here.
-        // The OnScriptLoaded broadcast that follows would otherwise bounce
-        // back as an "external change"; the fence makes our handler skip it.
+        
         bIgnoreNextReload = true;
         Lua::FScriptingContext::Get().ScriptReloaded(FStringView(VirtualPath.c_str(), VirtualPath.size()));
 
@@ -658,11 +620,7 @@ namespace Lumina
             bBufferDirty = false;
             return;
         }
-
-        // Our own OnSave fires the directory watcher and routes back here.
-        // If the disk content matches what we last synced, the file hasn't
-        // actually changed under us; skip SetText so the user's cursor,
-        // selection, scroll, and undo/redo stack are preserved.
+        
         if (Body.size() == LastSyncedText.size()
             && std::memcmp(Body.data(), LastSyncedText.data(), Body.size()) == 0)
         {
@@ -759,9 +717,7 @@ namespace Lumina
         {
             Breakpoints.insert(Line);
         }
-
-        // Mirror to the runtime debugger so the change takes effect on every
-        // currently-loaded instance of this script; no save required.
+        
         Lua::FLuaDebugger::Get().SetBreakpoint(
             FStringView(VirtualPath.c_str(), VirtualPath.size()),
             Line,
@@ -785,8 +741,6 @@ namespace Lumina
         {
             const FString Path(Symbol.Path.c_str(), Symbol.Path.size());
 
-            // Path -> symbol map serves both hover lookups (full path) and
-            // a future jump-to-definition feature.
             SymbolByPath[Path] = Symbol;
 
             if (Symbol.Parent.empty())
@@ -804,6 +758,17 @@ namespace Lumina
                 TableNames.insert(Path);
             }
         }
+        
+        if (TypeContext && !TopLevelSymbols.empty())
+        {
+            TVector<FString> Names;
+            Names.reserve(TopLevelSymbols.size());
+            for (const Lua::FLuaSymbol& Top : TopLevelSymbols)
+            {
+                Names.emplace_back(Top.Name.c_str(), Top.Name.size());
+            }
+            TypeContext->RegisterEngineSymbols(Names);
+        }
     }
 
     void FLuaEditorTool::RefreshAnalysis()
@@ -814,37 +779,27 @@ namespace Lumina
 
     void FLuaEditorTool::RefreshAnalysis(FStringView Body)
     {
-        // Update the cached size up-front so callers (status bar etc.) see
-        // the new value even if we early-exit below.
         CachedBodySize = Body.size();
-
-        // Heavy passes are skipped above this cap. Same threshold for AST,
-        // lint, and type-check; on huge buffers the editor still works, it
-        // just stops surfacing analysis-derived markers.
+        
         constexpr size_t kAnalysisByteCap = 256 * 1024;
         if (Body.size() > kAnalysisByteCap)
         {
             DocumentOutline.clear();
             Locals.clear();
             LintWarnings.clear();
+            TypeErrors.clear();
             InlayHints.clear();
             HoverTypeCache = {};
             HighlightedReferences.clear();
             RefreshBreakpointMarkers();
             return;
         }
-
-        // Single AST parse drives outline + local index + lint. The analyzer
-        // owns the AST + name table; lint reads the same parse result.
+        
         AstAnalyzer.Parse(Body);
         RebuildLocalIndex();
         RebuildDocumentOutline();
         AstAnalyzer.RunLint(LintWarnings);
-
-        // Type context: lazy-init on first use so opening a Lua file doesn't
-        // pay the Frontend warm-up cost upfront. Subsequent calls just push
-        // the new source + mark the module dirty; the type-check itself
-        // happens on demand inside the queries below.
+        
         if (!TypeContext)
         {
             TypeContext = MakeUnique<FLuaTypeContext>(
@@ -852,21 +807,16 @@ namespace Lumina
         }
         TypeContext->SetSource(Body);
 
-        // Hover-type cache is keyed by buffer state - any reparse invalidates.
         HoverTypeCache = {};
-
-        // Inlay hints walk the typed module. GetInlayHints triggers an
-        // EnsureChecked under the hood; that's the one place we deliberately
-        // pay the type-check cost per debounce.
+        
+        TypeContext->GetTypeErrors(TypeErrors);
+        
         InlayHints.clear();
         if (bShowInlayHints)
         {
             TypeContext->GetInlayHints(InlayHints);
         }
-
-        // Reference highlights are cursor-anchored; any edit moves the
-        // referenced text around, so clear them rather than letting them
-        // point at stale lines.
+        
         HighlightedReferences.clear();
 
         RefreshBreakpointMarkers();
@@ -900,16 +850,11 @@ namespace Lumina
                 Locals[FString(E.Name.c_str(), E.Name.size())] = D;
             }
         }
-        // Fallback: nothing else needed - the analyzer's pass covers everything
-        // the legacy regex code did and a few more cases (for/forin loops,
-        // nested function args).
     }
 
 
     void FLuaEditorTool::DrawFreeFormHoverTooltip()
     {
-        // Use the editor's own coordinate API to translate mouse -> (line, col).
-        // GetScreenPosForCoordinate(0,0) returns the origin of the text region.
         const ImVec2 Origin = CodeEditor.GetScreenPosForCoordinate(0, 0);
         const float LineHeight = CodeEditor.GetLineHeight();
         const float GlyphWidth = CodeEditor.GetGlyphWidth();
@@ -1080,10 +1025,6 @@ namespace Lumina
 
     void FLuaEditorTool::OnHoverIdentifier(const std::string& Word, const std::string& DottedPath)
     {
-        // Resolve an inferred type once at the top so each tooltip path can
-        // splice it in. Cached by (line, column) - the hover callback fires
-        // every frame the cursor sits on an identifier, but a typecheck per
-        // frame is wasteful. Cache invalidates on every analysis refresh.
         FString TypeText;
         if (TypeContext && !IsDebuggerPausedHere())
         {
@@ -1109,16 +1050,7 @@ namespace Lumina
                 HoverTypeCache.bChecked = true;
             }
         }
-
-        // While paused, prefer showing the live value of the identifier under
-        // the cursor; that's the most useful single piece of information at
-        // a breakpoint. We try three forms in priority order:
-        //   1. Dotted path (`MyThing.bThing`): eval against the paused frame
-        //      env. Shows the resolved value of the member, not the parent
-        //      table. Also folds in "{ N fields }" preview for tables/userdata.
-        //   2. Bare word in the cached snapshot (Locals / Upvalues lists)
-        //      cheap and covers the common case where the user wrote a single
-        //      identifier.
+        
         if (IsDebuggerPausedHere())
         {
             Lua::FLuaDebugger& Debugger = Lua::FLuaDebugger::Get();
@@ -1126,10 +1058,7 @@ namespace Lumina
             if (!Stack.empty())
             {
                 const int Frame = std::clamp(DebuggerSelectedFrame, 0, (int)Stack.size() - 1);
-
-                // Prefer dotted-path eval. `obj.field` resolves the field's
-                // value, not the parent's. We re-eval here rather than scan
-                // the snapshot because nested fields aren't in it.
+                
                 if (!DottedPath.empty() && DottedPath != Word)
                 {
                     FString Out, Type;
@@ -1181,9 +1110,7 @@ namespace Lumina
                         return;
                     }
                 }
-
-                // Bare-word fallback against the cached snapshot for plain
-                // identifiers. fast path, no Lua VM call.
+                
                 const Lua::FStackFrame& F = Stack[Frame];
                 auto Has = [&](const TVector<Lua::FStackVariable>& Vars)
                 {
@@ -1201,10 +1128,7 @@ namespace Lumina
                 }
             }
         }
-
-        // Locals (parsed from the buffer) take priority over globals; the
-        // cursor reads what the user wrote in this file, not whatever happens
-        // to be in the live VM under the same name.
+        
         if (Word == DottedPath)
         {
             const FString WordKey(Word.c_str(), Word.size());
@@ -1215,11 +1139,8 @@ namespace Lumina
                 BeginTranslucentTooltip();
                 if (!TypeText.empty())
                 {
-                    // Prefer the type checker's inferred type over the
-                    // syntactic annotation: it accounts for cross-line
-                    // value flow that a single-line annotation misses.
-                    ImGui::TextColored(ImVec4(0.65f, 0.85f, 1.0f, 1.0f),
-                        "(local) %s: %s", Word.c_str(), TypeText.c_str());
+
+                    ImGui::TextColored(ImVec4(0.65f, 0.85f, 1.0f, 1.0f), "(local) %s: %s", Word.c_str(), TypeText.c_str());
                     ImGui::TextDisabled("inferred type");
                 }
                 else if (!L.TypeAnnotation.empty())
@@ -1251,11 +1172,7 @@ namespace Lumina
                 return;
             }
         }
-
-        // Try the full dotted path first ("Engine.VFS.ReadFile") so a hover
-        // on a method shows method info rather than a top-level "ReadFile"
-        // collision. Fall back to the bare word for unqualified globals
-        // (locals like "self", or top-level functions).
+        
         const FString FullKey(DottedPath.c_str(), DottedPath.size());
         auto Itr = SymbolByPath.find(FullKey);
         if (Itr == SymbolByPath.end() && Word != DottedPath)
@@ -1265,8 +1182,6 @@ namespace Lumina
         }
         if (Itr == SymbolByPath.end())
         {
-            // Last fallback: keyword tooltip: at least lets the user
-            // confirm what something like `continue` or `repeat` is.
             for (const char* K : kLuauKeywords)
             {
                 if (Word == K)
@@ -1283,9 +1198,6 @@ namespace Lumina
         const Lua::FLuaSymbol& Symbol = Itr->second;
 
         BeginTranslucentTooltip();
-        // Header: kind badge + dotted path in a contrasting color, picked
-        // to match the suggestion popup's badge color so the visual link
-        // between hover and autocomplete is obvious.
         ImVec4 HeaderColor;
         const char* KindLabel = "";
         switch (Symbol.Kind)
@@ -1309,9 +1221,6 @@ namespace Lumina
 
         if (Symbol.Kind == Lua::ELuaSymbolKind::Function)
         {
-            // Build "name(arg1, arg2, ...)". Curated symbols supply real
-            // parameter names; bare Lua functions fall back to "argN"; opaque
-            // C functions render as "(...)".
             std::string Sig;
             Sig.reserve(64);
             Sig.assign(Symbol.Name.c_str(), Symbol.Name.size());
@@ -1416,34 +1325,43 @@ namespace Lumina
                     // Curated docs: real parameter names ("x", "y", ...).
                     for (size_t I = 0; I < Symbol.ParamNames.size(); ++I)
                     {
-                        if (I > 0) Out.append(", ");
+                        if (I > 0)
+                        {
+                            Out.append(", ");
+                        }
                         Out.append(Symbol.ParamNames[I].c_str(), Symbol.ParamNames[I].size());
                     }
                     if (Symbol.bIsVararg)
                     {
-                        if (!Symbol.ParamNames.empty()) Out.append(", ");
+                        if (!Symbol.ParamNames.empty())
+                        {
+                            Out.append(", ");
+                        }
                         Out.append("...");
                     }
                 }
                 else if (Symbol.bIsCFunction)
                 {
-                    // Luau can't introspect a C function's args. Render an
-                    // unknown-arity placeholder so users at least know it
-                    // accepts arguments.
                     Out.append("...");
                 }
                 else
                 {
                     for (uint8 I = 0; I < Symbol.ParamCount; ++I)
                     {
-                        if (I > 0) Out.append(", ");
+                        if (I > 0)
+                        {
+                            Out.append(", ");
+                        }
                         char Buf[16];
                         std::snprintf(Buf, sizeof(Buf), "arg%u", unsigned(I + 1));
                         Out.append(Buf);
                     }
                     if (Symbol.bIsVararg)
                     {
-                        if (Symbol.ParamCount > 0) Out.append(", ");
+                        if (Symbol.ParamCount > 0)
+                        {
+                            Out.append(", ");
+                        }
                         Out.append("...");
                     }
                 }
@@ -1471,13 +1389,7 @@ namespace Lumina
         State.suggestionDetails.clear();
 
         const std::string& Term = State.searchTerm;
-
-        // Push the live buffer into the type context just before we run the
-        // typed pass. The change-callback debounce is 100ms; autocomplete can
-        // fire mid-debounce, so without this push the type checker would
-        // see the buffer as it was at the previous debounce tick. Cheap
-        // (string copy + dirty flag); EnsureChecked inside Autocomplete
-        // reuses the cached check when nothing changed.
+        
         TVector<FLuaTypedCompletion> TypedEntries;
         if (TypeContext)
         {
@@ -1487,22 +1399,20 @@ namespace Lumina
             const int Col1  = static_cast<int>(State.searchTermEndIndex) + 1;
             TypeContext->Autocomplete(Line1, Col1, TypedEntries);
         }
-
-        // Use the raw character index, NOT the visible column. column is
-        // tab-expanded; index is the codepoint position into the line text.
-        // Mixing the two silently misaligns the dot/colon detection on any
-        // line with leading tabs.
+        
         const std::string Line = CodeEditor.GetLineText(static_cast<int>(State.line));
         const FString OwnerPath = ResolveOwnerPath(Line, static_cast<int>(State.searchTermStartIndex));
-
-        // Match-quality scoring. MatchesPrefix is case-insensitive; on top of
-        // that we boost candidates whose case ALSO matches what the user is
-        // typing. Returns -1 for non-matches, 1 for case-insensitive prefix,
-        // 2 for case-sensitive prefix.
+        
         auto MatchScore = [&](FStringView Candidate) -> int
         {
-            if (Term.empty()) return 1; // everything is a match while empty
-            if (Candidate.size() < Term.size()) return -1;
+            if (Term.empty())
+            {
+                return 1; // everything is a match while empty
+            }
+            if (Candidate.size() < Term.size())
+            {
+                return -1;
+            }
             bool bCaseSens = true;
             for (size_t I = 0; I < Term.size(); ++I)
             {
@@ -1516,19 +1426,7 @@ namespace Lumina
             }
             return bCaseSens ? 2 : 1;
         };
-
-        // Source-priority tiers. Higher tiers float to the top of the popup.
-        //   Local:    lexical-scope binding right where the cursor is.
-        //   Property: member of a typed receiver - exactly what the user
-        //             asked for in `obj.foo|`.
-        //   Engine:   live-VM globals (Engine, World, Events, ...) - the
-        //             user's whole engine surface.
-        //   Type:     type alias or named type.
-        //   Module:   require() module path.
-        //   Keyword:  Luau reserved word.
-        //   Field:    per-instance script field via the engine's _Shape.
-        //   String:   string-literal completion (require paths etc.).
-        //   Buffer:   name harvested from the current buffer only.
+        
         enum ETier : int
         {
             ETier_Local   = 9,
@@ -1559,11 +1457,7 @@ namespace Lumina
             if (!Seen.insert(Key).second) return;
             const int Match = MatchScore(FStringView(Name, NameLen));
             if (Match < 0) return;
-
-            // Rank layering, biggest weight first:
-            //   match-quality  (case-sens beats case-insens)
-            //   source tier    (local > property > ... > buffer)
-            //   length bonus   (shorter ranks higher within a tier)
+            
             const int LengthBonus = (NameLen <= 30) ? int(30 - NameLen) : 0;
             const int Rank = Match * 10000 + Tier * 100 + LengthBonus;
 
@@ -1574,11 +1468,7 @@ namespace Lumina
             C.Rank   = Rank;
             Candidates.push_back(eastl::move(C));
         };
-
-        // Map a typed-pass kind char to its source-priority tier. The kind
-        // badges from FLuaTypeContext mirror the VS Code style: 'b' bindings
-        // (locals), 'p' properties, 't' types, 'm' modules, 'k' keywords,
-        // 's' strings, 'f' generated functions, 'c' hot comments.
+        
         auto TypedTier = [](char K) -> int
         {
             switch (K)
@@ -1598,9 +1488,6 @@ namespace Lumina
         // children of the resolved owner; nothing else makes sense here.
         if (!OwnerPath.empty())
         {
-            // Typed properties first - they have the most accurate detail
-            // text. For receivers Luau treats as `any` (engine globals
-            // without .d.luau) this list is empty.
             for (const FLuaTypedCompletion& C : TypedEntries)
             {
                 Add(C.Name.c_str(), C.Name.size(),
@@ -1631,13 +1518,25 @@ namespace Lumina
                     {
                         const std::string Prev = CodeEditor.GetLineText(LineIdx);
                         const size_t FuncPos = Prev.find("function ");
-                        if (FuncPos == std::string::npos) continue;
+                        if (FuncPos == std::string::npos)
+                        {
+                            continue;
+                        }
 
                         size_t Start = FuncPos + 9;
-                        while (Start < Prev.size() && (Prev[Start] == ' ' || Prev[Start] == '\t')) ++Start;
+                        while (Start < Prev.size() && (Prev[Start] == ' ' || Prev[Start] == '\t'))
+                        {
+                            ++Start;
+                        }
                         size_t End = Start;
-                        while (End < Prev.size() && IsIdentChar(Prev[End])) ++End;
-                        if (End == Start || End >= Prev.size() || Prev[End] != ':') continue;
+                        while (End < Prev.size() && IsIdentChar(Prev[End]))
+                        {
+                            ++End;
+                        }
+                        if (End == Start || End >= Prev.size() || Prev[End] != ':')
+                        {
+                            continue;
+                        }
 
                         const FString Ident(Prev.data() + Start, Prev.data() + End);
                         auto SelfLocal = Locals.find(Ident);
@@ -1701,14 +1600,14 @@ namespace Lumina
             }
             for (const Lua::FLuaSymbol& Top : TopLevelSymbols)
             {
-                Add(Top.Name.c_str(), Top.Name.size(),
-                    BuildDetail(Top), KindBadge(Top.Kind), ETier_Engine);
+                Add(Top.Name.c_str(), Top.Name.size(), BuildDetail(Top), KindBadge(Top.Kind), ETier_Engine);
             }
             CodeEditor.IterateIdentifiers([&](const std::string& Identifier)
             {
-                // Skip the word the user is currently typing - autocompleting
-                // to itself is never what they want.
-                if (Identifier == Term) return;
+                if (Identifier == Term)
+                {
+                    return;
+                }
                 Add(Identifier.c_str(), Identifier.size(),
                     "identifier", 'i', ETier_Buffer);
             });
@@ -1840,16 +1739,55 @@ namespace Lumina
             CodeEditor.AddMarker(CompileErrorLine - 1, ErrorCol, ErrorFill, "Compile error", Tip);
         }
 
+        // Type errors: salmon gutter strip + "Type error" tooltip with the
+        // full Luau diagnostic. Type errors come from the typed Frontend's
+        // check pass and are stricter than lint - each entry indicates code
+        // the runtime can't safely execute. Multiple errors per line collapse
+        // into one marker; the tooltip lists all of them.
+        // Skipped on the compile-error line (compile error wins).
+        if (!TypeErrors.empty())
+        {
+            const ImU32 TypeErrCol  = IM_COL32(255, 110, 110, 255);
+            const ImU32 TypeErrFill = IM_COL32(255, 110, 110, 55);
+            const int LineCount = CodeEditor.GetLineCount();
+
+            // Group by line so each line gets one marker with a merged tip.
+            THashMap<int, FString> ByLine;
+            for (const FLuaTypeDiagnostic& E : TypeErrors)
+            {
+                if (E.Line < 1 || E.Line > LineCount) continue;
+                if (bHasCompileError && E.Line == CompileErrorLine) continue;
+
+                FString& Tip = ByLine[E.Line];
+                if (!Tip.empty()) Tip.append("\n\n");
+                Tip.append(E.Message.c_str(), E.Message.size());
+            }
+            for (auto& [Line, Tip] : ByLine)
+            {
+                CodeEditor.AddMarker(Line - 1, TypeErrCol, TypeErrFill,
+                                     "Type error", Tip.c_str());
+            }
+        }
+
         // Lint warnings: amber gutter strip + "Lint: name" tooltip with the
         // full Luau message. Skipped on the compile-error line so the user's
         // attention isn't split between an error and a stale lint about the
-        // same code.
+        // same code. Type-error lines also win - lint after a type error is
+        // usually downstream noise.
         const ImU32 LintCol  = IM_COL32(220, 165, 60, 255);
         const ImU32 LintFill = IM_COL32(220, 165, 60, 35);
         for (const FLuaLintWarning& W : LintWarnings)
         {
             if (W.Line < 1 || W.Line > CodeEditor.GetLineCount()) continue;
             if (bHasCompileError && W.Line == CompileErrorLine) continue;
+            // Suppress lint on lines that already have a type error so the
+            // gutter doesn't stack two strips on the same row.
+            bool bHasTypeError = false;
+            for (const FLuaTypeDiagnostic& E : TypeErrors)
+            {
+                if (E.Line == W.Line) { bHasTypeError = true; break; }
+            }
+            if (bHasTypeError) continue;
 
             const int LineIdx = W.Line - 1;
             char Title[128];
@@ -2147,6 +2085,46 @@ namespace Lumina
         ImGuiX::TextTooltip("Manage breakpoints. Hit a breakpoint to open the debugger panel.");
 
         ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+
+        // Problems: aggregated list of compile errors + type errors + lint
+        // warnings, click-to-jump. Button label includes counts so the user
+        // can see what's pending without opening the popup.
+        const size_t TotalErrors  = (bHasCompileError ? 1u : 0u) + TypeErrors.size();
+        const size_t TotalWarn    = LintWarnings.size();
+        char ProblemsLabel[64];
+        if (TotalErrors == 0 && TotalWarn == 0)
+        {
+            std::snprintf(ProblemsLabel, sizeof(ProblemsLabel),
+                          LE_ICON_ALERT_CIRCLE " Problems");
+        }
+        else
+        {
+            std::snprintf(ProblemsLabel, sizeof(ProblemsLabel),
+                          LE_ICON_ALERT_CIRCLE " Problems (%zu)",
+                          TotalErrors + TotalWarn);
+        }
+        if (TotalErrors > 0)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 110, 110, 255));
+        }
+        else if (TotalWarn > 0)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(220, 165, 60, 255));
+        }
+        if (ImGui::Button(ProblemsLabel))
+        {
+            ImGui::OpenPopup("##lua_problems");
+        }
+        if (TotalErrors > 0 || TotalWarn > 0)
+        {
+            ImGui::PopStyleColor();
+        }
+        ImGuiX::TextTooltip("All compile errors, type errors, and lint warnings on this file.\nClick to jump to a diagnostic.");
+        DrawProblemsPopup();
+
+        ImGui::SameLine();
         if (ImGui::Button(LE_ICON_HELP_CIRCLE " Help"))
         {
             ImGui::OpenPopup("##lua_help");
@@ -2403,6 +2381,112 @@ namespace Lumina
             CodeEditor.SetCursor(Target, 0);
             CodeEditor.ScrollToLine(Target, TextEditor::Scroll::alignMiddle);
             ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+
+    void FLuaEditorTool::DrawProblemsPopup()
+    {
+        if (!ImGui::BeginPopup("##lua_problems"))
+        {
+            return;
+        }
+
+        const size_t TotalErrors = (bHasCompileError ? 1u : 0u) + TypeErrors.size();
+        const size_t TotalWarn   = LintWarnings.size();
+
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.85f, 1.0f),
+            LE_ICON_ALERT_CIRCLE " Problems  ");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%zu errors", TotalErrors);
+        ImGui::SameLine();
+        ImGui::TextDisabled("/");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.86f, 0.71f, 0.35f, 1.0f), "%zu warnings", TotalWarn);
+
+        if (TotalErrors == 0 && TotalWarn == 0)
+        {
+            ImGui::Separator();
+            ImGui::TextDisabled("No problems detected.");
+            ImGui::EndPopup();
+            return;
+        }
+
+        ImGui::Separator();
+        if (ImGui::BeginTable("##lua_problems_table", 3,
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV
+                    | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY,
+                ImVec2(640.0f, 320.0f)))
+        {
+            ImGui::TableSetupColumn("Kind",    ImGuiTableColumnFlags_WidthFixed, 60.0f);
+            ImGui::TableSetupColumn("Line",    ImGuiTableColumnFlags_WidthFixed, 50.0f);
+            ImGui::TableSetupColumn("Message", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            auto JumpTo = [&](int Line1, int Col1)
+            {
+                const int LineCount = std::max(1, CodeEditor.GetLineCount());
+                const int Target    = std::max(0, std::min(Line1 - 1, LineCount - 1));
+                CodeEditor.SetCursor(Target, std::max(0, Col1 - 1));
+                CodeEditor.ScrollToLine(Target, TextEditor::Scroll::alignMiddle);
+                ImGui::CloseCurrentPopup();
+            };
+
+            int RowID = 0;
+            if (bHasCompileError)
+            {
+                ImGui::TableNextRow();
+                ImGui::PushID(RowID++);
+                ImGui::TableNextColumn();
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "compile");
+                ImGui::TableNextColumn();
+                ImGui::Text("%d", CompileErrorLine);
+                ImGui::TableNextColumn();
+                if (ImGui::Selectable(CompileErrorMessage.c_str(), false,
+                        ImGuiSelectableFlags_SpanAllColumns))
+                {
+                    JumpTo(CompileErrorLine, 1);
+                }
+                ImGui::PopID();
+            }
+
+            for (const FLuaTypeDiagnostic& E : TypeErrors)
+            {
+                ImGui::TableNextRow();
+                ImGui::PushID(RowID++);
+                ImGui::TableNextColumn();
+                ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "type");
+                ImGui::TableNextColumn();
+                ImGui::Text("%d", E.Line);
+                ImGui::TableNextColumn();
+                if (ImGui::Selectable(E.Message.c_str(), false,
+                        ImGuiSelectableFlags_SpanAllColumns))
+                {
+                    JumpTo(E.Line, E.Column);
+                }
+                ImGui::PopID();
+            }
+
+            for (const FLuaLintWarning& W : LintWarnings)
+            {
+                ImGui::TableNextRow();
+                ImGui::PushID(RowID++);
+                ImGui::TableNextColumn();
+                ImGui::TextColored(ImVec4(0.86f, 0.71f, 0.35f, 1.0f),
+                    "%s", W.Name.c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("%d", W.Line);
+                ImGui::TableNextColumn();
+                if (ImGui::Selectable(W.Message.c_str(), false,
+                        ImGuiSelectableFlags_SpanAllColumns))
+                {
+                    JumpTo(W.Line, W.Column);
+                }
+                ImGui::PopID();
+            }
+
+            ImGui::EndTable();
         }
 
         ImGui::EndPopup();
@@ -2898,8 +2982,7 @@ namespace Lumina
         if (bIsExpandable && bOpen)
         {
             TVector<Lua::FChildEntry> Children;
-            Lua::FLuaDebugger::Get().EnumerateChildrenInPausedFrame(
-                Frame, FStringView(Path.c_str(), Path.size()), Children, 256);
+            Lua::FLuaDebugger::Get().EnumerateChildrenInPausedFrame(Frame, FStringView(Path.c_str(), Path.size()), Children, 256);
 
             for (const Lua::FChildEntry& C : Children)
             {
@@ -3053,10 +3136,7 @@ namespace Lumina
 
         const int FirstVisible = CodeEditor.GetFirstVisibleLine();
         const int LastVisible  = std::min(CodeEditor.GetLastVisibleLine(), CodeEditor.GetLineCount() - 1);
-
-        // For each visible line that already references a known local, draw
-        // an end-of-line ghost annotation "  name = value". One per line so
-        // dense expressions don't drown the gutter.
+        
         for (int LineIdx = FirstVisible; LineIdx <= LastVisible; ++LineIdx)
         {
             const std::string LineText = CodeEditor.GetLineText(LineIdx);
@@ -3094,11 +3174,12 @@ namespace Lumina
             }
             if (MatchVar == nullptr) continue;
 
-            // Position annotation just past the line's last visible glyph.
-            // Compute the trimmed length so we don't draw inside trailing
-            // whitespace.
+
             int LastNonWs = N;
-            while (LastNonWs > 0 && (LineText[LastNonWs - 1] == ' ' || LineText[LastNonWs - 1] == '\t')) --LastNonWs;
+            while (LastNonWs > 0 && (LineText[LastNonWs - 1] == ' ' || LineText[LastNonWs - 1] == '\t'))
+            {
+                --LastNonWs;
+            }
 
             // Use visible column rather than byte index so tabs are accounted for.
             const int TabSize = CodeEditor.GetTabSize();
@@ -3109,8 +3190,7 @@ namespace Lumina
             }
 
             char Buf[256];
-            std::snprintf(Buf, sizeof(Buf), "  %s = %.80s",
-                MatchVar->Name.c_str(), MatchVar->Value.c_str());
+            std::snprintf(Buf, sizeof(Buf), "  %s = %.80s", MatchVar->Name.c_str(), MatchVar->Value.c_str());
 
             const ImVec2 Pos = CodeEditor.GetScreenPosForCoordinate(LineIdx, Visible);
             DrawList->AddText(Pos, GhostColor, Buf);
@@ -3134,7 +3214,10 @@ namespace Lumina
         for (const FLuaInlayHint& H : InlayHints)
         {
             const int LineIdx = H.Line - 1;
-            if (LineIdx < FirstVisible || LineIdx > LastVisible) continue;
+            if (LineIdx < FirstVisible || LineIdx > LastVisible)
+            {
+                continue;
+            }
 
             // Translate the hint's anchor column (1-based) to a visible column
             // accounting for tab expansion. Cheap walk over the line text.
@@ -3201,11 +3284,7 @@ namespace Lumina
             // an undo entry or jolt the cursor for a no-op format.
             return;
         }
-
-        // Save cursor + first-visible line so the user lands roughly where
-        // they were after formatting. Pretty-print is line-stable for typical
-        // edits, so clamping the line number is good enough; column resets
-        // to 0 to avoid landing inside re-flowed whitespace.
+        
         const TextEditor::CursorPosition Cursor = CodeEditor.GetCurrentCursorPosition();
         const int FirstVisible = CodeEditor.GetFirstVisibleLine();
 
@@ -3481,6 +3560,14 @@ namespace Lumina
                 ImGui::SameLine(0, 20);
                 ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), LE_ICON_BUG " %zu", Breakpoints.size());
                 ImGuiX::TextTooltip("Active breakpoints in this file.");
+            }
+
+            if (!TypeErrors.empty())
+            {
+                ImGui::SameLine(0, 20);
+                ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f),
+                    LE_ICON_ALERT_CIRCLE " %zu type", TypeErrors.size());
+                ImGuiX::TextTooltip("Luau type-checker errors. Click the Problems button to navigate them.");
             }
 
             if (!LintWarnings.empty())

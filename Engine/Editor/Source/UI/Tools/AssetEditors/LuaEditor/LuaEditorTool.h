@@ -88,6 +88,7 @@ namespace Lumina
         void DrawHelpPopup();
         void DrawGotoLinePopup();
         void DrawFormatPopup();
+        void DrawProblemsPopup();
         void HandleEditorShortcuts();
         void InsertSnippet(const char* Snippet);
 
@@ -292,6 +293,13 @@ namespace Lumina
         // load, save, and external reloads. Surfaced as orange gutter strips
         // alongside breakpoint and compile-error markers.
         TVector<FLuaLintWarning>            LintWarnings;
+
+        // Type errors from the typed Frontend's most recent check. Distinct
+        // from compile errors (which are syntactic) and from lint warnings
+        // (which are stylistic): each entry indicates code the runtime
+        // can't safely execute - calling a non-function, missing field,
+        // arity mismatch, etc.
+        TVector<FLuaTypeDiagnostic>         TypeErrors;
 
         // Live AST of the current buffer. Owned by the editor; kept in sync
         // with the change callback. Drives outline, locals harvest, hover,
