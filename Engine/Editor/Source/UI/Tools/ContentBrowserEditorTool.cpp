@@ -50,6 +50,127 @@
 
 namespace Lumina
 {
+    namespace
+    {
+        constexpr ImVec4 kMenuBg            = ImVec4(0.10f, 0.10f, 0.12f, 0.98f);
+        constexpr ImVec4 kMenuBorder        = ImVec4(0.22f, 0.23f, 0.27f, 1.00f);
+        constexpr ImVec4 kMenuText          = ImVec4(0.90f, 0.90f, 0.93f, 1.00f);
+        constexpr ImVec4 kMenuTextDim       = ImVec4(0.55f, 0.56f, 0.62f, 1.00f);
+        constexpr ImVec4 kMenuTextSection   = ImVec4(0.50f, 0.58f, 0.72f, 1.00f);
+        constexpr ImVec4 kMenuAccent        = ImVec4(0.36f, 0.66f, 1.00f, 1.00f);
+        constexpr ImVec4 kMenuAccentFolder  = ImVec4(1.00f, 0.78f, 0.40f, 1.00f);
+        constexpr ImVec4 kMenuAccentScript  = ImVec4(0.52f, 0.85f, 0.55f, 1.00f);
+        constexpr ImVec4 kMenuDanger        = ImVec4(0.96f, 0.36f, 0.38f, 1.00f);
+        constexpr ImVec4 kMenuDangerHover   = ImVec4(0.85f, 0.22f, 0.24f, 0.45f);
+        constexpr ImVec4 kMenuHeaderHover   = ImVec4(0.24f, 0.46f, 0.78f, 0.55f);
+        constexpr ImVec4 kMenuHeader        = ImVec4(0.24f, 0.46f, 0.78f, 0.30f);
+        constexpr ImVec4 kMenuHeaderActive  = ImVec4(0.24f, 0.46f, 0.78f, 0.85f);
+        constexpr ImVec4 kMenuSeparator     = ImVec4(0.24f, 0.25f, 0.30f, 0.65f);
+        constexpr ImVec4 kMenuHeaderBg      = ImVec4(0.16f, 0.17f, 0.20f, 1.00f);
+
+        // Popup-window-level styles. Push BEFORE BeginPopup* so the popup window picks them up.
+        void PushContextMenuWindowStyle()
+        {
+            ImGui::PushStyleColor(ImGuiCol_PopupBg, kMenuBg);
+            ImGui::PushStyleColor(ImGuiCol_Border,  kMenuBorder);
+            ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding,   8.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 1.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,   ImVec2(6.0f, 6.0f));
+        }
+
+        void PopContextMenuWindowStyle()
+        {
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor(2);
+        }
+
+        // Per-item styles. Push inside BeginPopup..EndPopup for consistent menu items.
+        void PushContextMenuItemStyle()
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text,          kMenuText);
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, kMenuHeaderHover);
+            ImGui::PushStyleColor(ImGuiCol_Header,        kMenuHeader);
+            ImGui::PushStyleColor(ImGuiCol_HeaderActive,  kMenuHeaderActive);
+            ImGui::PushStyleColor(ImGuiCol_Separator,     kMenuSeparator);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,    4.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,      ImVec2(8.0f, 3.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,     ImVec2(10.0f, 5.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, ImVec2(8.0f, 4.0f));
+        }
+
+        void PopContextMenuItemStyle()
+        {
+            ImGui::PopStyleVar(4);
+            ImGui::PopStyleColor(5);
+        }
+
+        void DrawMenuSection(const char* Label)
+        {
+            ImGui::Spacing();
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::TinyBold);
+            ImGui::PushStyleColor(ImGuiCol_Text, kMenuTextSection);
+            const float OldX = ImGui::GetCursorPosX();
+            ImGui::SetCursorPosX(OldX + 4.0f);
+            ImGui::TextUnformatted(Label);
+            ImGui::PopStyleColor();
+            ImGuiX::Font::PopFont();
+        }
+
+        void DrawMenuHeader(const char* Icon, const char* TitleStr, const char* SubtitleStr, const ImVec4& IconColor)
+        {
+            const bool bHasSubtitle = SubtitleStr && *SubtitleStr;
+
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::SmallBold);
+            const float TitleH = ImGui::GetTextLineHeight();
+            ImGuiX::Font::PopFont();
+
+            float SubH = 0.0f;
+            if (bHasSubtitle)
+            {
+                ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Tiny);
+                SubH = ImGui::GetTextLineHeight();
+                ImGuiX::Font::PopFont();
+            }
+
+            constexpr float TopPad   = 3.0f;
+            constexpr float BotPad   = 3.0f;
+            const     float Gap      = bHasSubtitle ? 0.0f : 0.0f;
+            const     float HeaderH  = TopPad + TitleH + Gap + SubH + BotPad;
+
+            ImDrawList* DrawList = ImGui::GetWindowDrawList();
+            const float  Avail = ImGui::GetContentRegionAvail().x;
+            const ImVec2 P0    = ImGui::GetCursorScreenPos();
+            const ImVec2 P1    = ImVec2(P0.x + Avail, P0.y + HeaderH);
+
+            DrawList->AddRectFilled(P0, P1, ImGui::ColorConvertFloat4ToU32(kMenuHeaderBg), 4.0f);
+            DrawList->AddRectFilled(P0, ImVec2(P0.x + 3.0f, P1.y), ImGui::ColorConvertFloat4ToU32(IconColor), 4.0f);
+
+            ImGui::SetCursorScreenPos(ImVec2(P0.x + 9.0f, P0.y + TopPad));
+            ImGui::PushStyleColor(ImGuiCol_Text, IconColor);
+            ImGui::TextUnformatted(Icon);
+            ImGui::PopStyleColor();
+
+            ImGui::SameLine(0, 6.0f);
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::SmallBold);
+            ImGui::PushStyleColor(ImGuiCol_Text, kMenuText);
+            ImGui::TextUnformatted(TitleStr);
+            ImGui::PopStyleColor();
+            ImGuiX::Font::PopFont();
+
+            if (bHasSubtitle)
+            {
+                ImGui::SetCursorScreenPos(ImVec2(P0.x + 9.0f, P0.y + TopPad + TitleH));
+                ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Tiny);
+                ImGui::PushStyleColor(ImGuiCol_Text, kMenuTextDim);
+                ImGui::TextUnformatted(SubtitleStr);
+                ImGui::PopStyleColor();
+                ImGuiX::Font::PopFont();
+            }
+
+            ImGui::SetCursorScreenPos(ImVec2(P0.x, P1.y));
+            ImGui::Dummy(ImVec2(Avail, 1.0f));
+        }
+    }
 
     template<size_t BufferSize = 42>
     class FRenameModalState
@@ -532,20 +653,17 @@ namespace Lumina
         
         ActionRegistry.ProcessAllOf<FPendingDestroy>([&] (const FPendingDestroy& Destroy)
         {
-            CObject* AliveObject = nullptr;
-            
-            if (VFS::HasExtension(Destroy.PendingDestroy, ".luau"))
+            if (VFS::IsDirectory(Destroy.PendingDestroy))
             {
-                if (VFS::Remove(Destroy.PendingDestroy))
-                {
-                    bWroteSomething = true;
-                    ImGuiX::Notifications::NotifySuccess("Deleted Script {0}", Destroy.PendingDestroy);
-                }
+                VFS::RemoveAll(Destroy.PendingDestroy);
+                ImGuiX::Notifications::NotifySuccess("Deleted Directory {0}", Destroy.PendingDestroy);
+                bWroteSomething = true;
                 return;
             }
-            
+
             if (VFS::HasExtension(Destroy.PendingDestroy, ".lasset"))
             {
+                CObject* AliveObject = nullptr;
                 if (const FAssetData* Data = FAssetRegistry::Get().GetAssetByPath(Destroy.PendingDestroy))
                 {
                     if (CObject* Object = FindObject<CObject>(Data->AssetGUID))
@@ -558,27 +676,30 @@ namespace Lumina
                         }
                     }
                 }
-            }
-            
-            if (VFS::IsDirectory(Destroy.PendingDestroy))
-            {
-                VFS::RemoveAll(Destroy.PendingDestroy);
-                ImGuiX::Notifications::NotifySuccess("Deleted Directory {0}", Destroy.PendingDestroy);
-            }
-            else
-            {
+
                 if (AliveObject)
                 {
                     ToolContext->OnDestroyAsset(AliveObject);
                 }
-                
+
                 if (CPackage::DestroyPackage(Destroy.PendingDestroy))
                 {
                     ImGuiX::Notifications::NotifySuccess("Deleted Asset {0}", Destroy.PendingDestroy);
+                    bWroteSomething = true;
                 }
+                return;
             }
 
-            bWroteSomething = true;
+            // Plain file (script, widget, audio, etc.) — disk-level remove only.
+            if (VFS::Remove(Destroy.PendingDestroy))
+            {
+                ImGuiX::Notifications::NotifySuccess("Deleted {0}", Destroy.PendingDestroy);
+                bWroteSomething = true;
+            }
+            else
+            {
+                ImGuiX::Notifications::NotifyError("Failed to delete {0}", Destroy.PendingDestroy);
+            }
 		});
         
         ActionRegistry.ProcessAllOf<FPendingRename>([&](FPendingRename& Rename)
@@ -655,7 +776,7 @@ namespace Lumina
             }
             else
             {
-                // Plain file (non-asset) — VFS rename is enough.
+                // Plain file (non-asset)
                 if (!VFS::Rename(Rename.OldName, Rename.NewName))
                 {
                     ImGuiX::Notifications::NotifyError("Rename Failed: {0}", Rename.OldName);
@@ -1082,39 +1203,21 @@ namespace Lumina
         if (ImGui::IsWindowHovered() && !ImGui::IsAnyItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
         {
             ImGui::OpenPopup("ContentContextMenu");
-            ImGui::SetNextWindowSizeConstraints(ImVec2(175.0f, 100.0f), ImVec2(0.0f, 0.0f));
+            ImGui::SetNextWindowSizeConstraints(ImVec2(240.0f, 0.0f), ImVec2(360.0f, FLT_MAX));
         }
-        
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,  ImVec2(6.0f, 6.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,    ImVec2(8.0f, 5.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding,  6.0f);
 
-        ImGui::PushStyleColor(ImGuiCol_PopupBg,      ImVec4(0.13f, 0.13f, 0.15f, 0.97f));
-        ImGui::PushStyleColor(ImGuiCol_Border,       ImVec4(0.30f, 0.30f, 0.35f, 1.00f));
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered,ImVec4(0.22f, 0.45f, 0.75f, 0.50f));
-        ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.22f, 0.45f, 0.75f, 0.30f));
-        ImGui::PushStyleColor(ImGuiCol_Text,         ImVec4(0.90f, 0.90f, 0.92f, 1.00f));
-        
+        PushContextMenuWindowStyle();
+
         if (ImGui::BeginPopup("ContentContextMenu"))
         {
-            const char* FolderIcon = LE_ICON_FOLDER;
-            FString MenuItemName = FString(FolderIcon) + " " + "New Folder";
-            if (ImGui::MenuItem(MenuItemName.c_str()))
-            {
-				FFixedString FinalPath = VFS::MakeUniqueFilePath(SelectedPath + "/NewFolder");
-            
-                VFS::CreateDir(FinalPath);
-                RefreshContentBrowser();
-            }
-            
+            PushContextMenuItemStyle();
             DrawContentDirectoryContextMenu();
-            
+            PopContextMenuItemStyle();
+
             ImGui::EndPopup();
         }
-        
-        ImGui::PopStyleColor(5);
-        ImGui::PopStyleVar(4);
+
+        PopContextMenuWindowStyle();
         
         if (ImGui::IsWindowHovered() && !ImGui::IsAnyItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         {
@@ -1179,8 +1282,12 @@ namespace Lumina
         ImGui::EndHorizontal();
 
         ImGui::Separator();
-        
+
+        // Per-item context menu popups are opened from inside the tile view's Draw().
+        // Push the popup window styles here so they apply when those popups are created.
+        PushContextMenuWindowStyle();
         ContentBrowserTileView.Draw(ContentBrowserTileViewContext);
+        PopContextMenuWindowStyle();
 
         ImVec2 ChildMin = ImGui::GetWindowPos();
         ImVec2 ChildMax = ImVec2(ChildMin.x + ImGui::GetWindowWidth(), ChildMin.y + ImGui::GetWindowHeight());
@@ -1201,39 +1308,61 @@ namespace Lumina
 
     void FContentBrowserEditorTool::DrawAssetContextMenu(FContentBrowserTileViewItem* ContentItem)
     {
-        if (ImGui::MenuItem(LE_ICON_ARCHIVE_EDIT " Rename", "F2"))
+        const bool bIsAsset      = ContentItem->IsAsset();
+        const bool bIsDirectory  = ContentItem->IsDirectory();
+        const bool bIsScript     = ContentItem->IsLuaScript();
+        const bool bIsProtected  = ContentItem->IsProtected();
+        const FString  Extension = ContentItem->GetExtension();
+
+        const char* HeaderIcon;
+        ImVec4      HeaderTint;
+        const char* TypeLabel;
+        if (bIsDirectory)
         {
-            PushRenameModal(ContentItem);
+            HeaderIcon = LE_ICON_FOLDER_OPEN;
+            HeaderTint = kMenuAccentFolder;
+            TypeLabel  = "Folder";
         }
-                    
-        ImGui::Separator();
-        
-        if (ImGui::MenuItem(LE_ICON_FOLDER " Show in Explorer", nullptr, false))
+        else if (bIsAsset)
         {
-            FString Parent = Paths::Parent(ContentItem->GetPathSource());
-            Platform::LaunchURL(StringUtils::ToWideString(Parent).c_str());
+            HeaderIcon = LE_ICON_FILE_DOCUMENT;
+            HeaderTint = kMenuAccent;
+            TypeLabel  = "Asset";
         }
-        
-        if (ImGui::MenuItem(LE_ICON_CONTENT_COPY " Copy Path", nullptr, false))
+        else if (bIsScript)
         {
-            ImGui::SetClipboardText(ContentItem->GetVirtualPath().data());
-            ImGuiX::Notifications::NotifyInfo("Path copied to clipboard");
+            HeaderIcon = LE_ICON_LANGUAGE_LUA;
+            HeaderTint = kMenuAccentScript;
+            TypeLabel  = "Lua Script";
         }
-        
-        ImGui::Separator();
-        
-        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 100, 100, 255));
-        bool bDeleteClicked = ImGui::MenuItem(LE_ICON_ALERT_OCTAGON " Delete", "Del");
-        ImGui::PopStyleColor();
-        
-        if (bDeleteClicked)
+        else
         {
-            OpenDeletionWarningPopup(ContentItem);
+            HeaderIcon = LE_ICON_FILE;
+            HeaderTint = ImVec4(0.78f, 0.78f, 0.82f, 1.0f);
+            TypeLabel  = "File";
         }
 
-        if (ContentItem->IsAsset())
+        FFixedString TitleBuf(ContentItem->GetName().data(), ContentItem->GetName().size());
+        FFixedString SubtitleBuf(ContentItem->GetVirtualPath().data(), ContentItem->GetVirtualPath().size());
+        (void)TypeLabel;
+
+        PushContextMenuItemStyle();
+
+        DrawMenuHeader(HeaderIcon, TitleBuf.c_str(), SubtitleBuf.c_str(), HeaderTint);
+
+        DrawMenuSection("OPEN");
+
+        if (bIsDirectory)
         {
-            if (ImGui::MenuItem(LE_ICON_FOLDER_OPEN " Open", "Double-Click"))
+            if (ImGui::MenuItem(LE_ICON_FOLDER_OPEN " Open Folder", "Dbl-Click"))
+            {
+                SelectedPath = FFixedString(ContentItem->GetVirtualPath().data(), ContentItem->GetVirtualPath().size());
+                RefreshContentBrowser();
+            }
+        }
+        else if (bIsAsset)
+        {
+            if (ImGui::MenuItem(LE_ICON_FOLDER_OPEN " Open Asset", "Dbl-Click"))
             {
                 FFixedString Path(ContentItem->GetVirtualPath().data(), ContentItem->GetVirtualPath().size());
                 if (const FAssetData* Data = FAssetRegistry::Get().GetAssetByPath(Path))
@@ -1241,71 +1370,127 @@ namespace Lumina
                     ToolContext->OpenAssetEditor(Data->AssetGUID);
                 }
             }
-            ImGui::Separator();
         }
-        else if (!ContentItem->IsDirectory())
+        else
         {
-            if (ImGui::MenuItem(LE_ICON_FOLDER_OPEN " Open", "Double-Click"))
+            if (ImGui::MenuItem(LE_ICON_FOLDER_OPEN " Open", "Dbl-Click"))
+            {
+                ToolContext->OpenFileEditor(ContentItem->GetVirtualPath());
+            }
+            if (ImGui::MenuItem(LE_ICON_OPEN_IN_NEW " Open Externally"))
             {
                 Platform::LaunchURL(UTF8_TO_TCHAR(ContentItem->GetPathSource().data()));
             }
         }
+
+        if (ImGui::MenuItem(LE_ICON_MICROSOFT_WINDOWS " Show in Explorer"))
+        {
+            FString Parent = Paths::Parent(ContentItem->GetPathSource());
+            Platform::LaunchURL(StringUtils::ToWideString(Parent).c_str());
+        }
+
+        DrawMenuSection("EDIT");
+
+        if (ImGui::MenuItem(LE_ICON_RENAME " Rename", "F2", false, !bIsProtected))
+        {
+            PushRenameModal(ContentItem);
+        }
+
+        DrawMenuSection("CLIPBOARD");
+
+        if (ImGui::MenuItem(LE_ICON_CONTENT_COPY " Copy Path"))
+        {
+            ImGui::SetClipboardText(ContentItem->GetVirtualPath().data());
+            ImGuiX::Notifications::NotifyInfo("Path copied to clipboard");
+        }
+        if (ImGui::MenuItem(LE_ICON_TAG " Copy Name"))
+        {
+            FFixedString Name(ContentItem->GetName().data(), ContentItem->GetName().size());
+            ImGui::SetClipboardText(Name.c_str());
+            ImGuiX::Notifications::NotifyInfo("Name copied to clipboard");
+        }
+        if (bIsAsset)
+        {
+            if (ImGui::MenuItem(LE_ICON_LINK " Copy Reference"))
+            {
+                FFixedString Path(ContentItem->GetVirtualPath().data(), ContentItem->GetVirtualPath().size());
+                if (const FAssetData* Data = FAssetRegistry::Get().GetAssetByPath(Path))
+                {
+                    FFixedString Reference;
+                    Reference.append("Asset(").append(Data->AssetClass.c_str()).append("'").append(Path.c_str()).append("')");
+                    ImGui::SetClipboardText(Reference.c_str());
+                    ImGuiX::Notifications::NotifyInfo("Reference copied to clipboard");
+                }
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        ImGui::PushStyleColor(ImGuiCol_Text,          kMenuDanger);
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, kMenuDangerHover);
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0.85f, 0.22f, 0.24f, 0.85f));
+        const bool bDeleteClicked = ImGui::MenuItem(LE_ICON_TRASH_CAN " Delete", "Del", false, !bIsProtected);
+        ImGui::PopStyleColor(3);
+
+        if (bIsProtected)
+        {
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Tiny);
+            ImGui::PushStyleColor(ImGuiCol_Text, kMenuTextDim);
+            const float OldX = ImGui::GetCursorPosX();
+            ImGui::SetCursorPosX(OldX + 4.0f);
+            ImGui::TextUnformatted(LE_ICON_LOCK " Protected, cannot be deleted");
+            ImGui::PopStyleColor();
+            ImGuiX::Font::PopFont();
+        }
+
+        if (bDeleteClicked)
+        {
+            OpenDeletionWarningPopup(ContentItem);
+        }
+
+        PopContextMenuItemStyle();
     }
     
     void FContentBrowserEditorTool::DrawContentDirectoryContextMenu()
     {
-        const char* ImportIcon = LE_ICON_FILE_IMPORT;
-        FString MenuItemName = FString(ImportIcon) + " " + "Import Asset";
-        if (ImGui::MenuItem(MenuItemName.c_str()))
+        FStringView FolderName = VFS::FileName(FStringView(SelectedPath.c_str(), SelectedPath.size()), true);
+        FFixedString FolderTitle(FolderName.data(), FolderName.size());
+        if (FolderTitle.empty())
         {
-            FFixedString SelectedFile;
-            const char* Filter = "Supported Assets (*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj)\0*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj\0All Files (*.*)\0*.*\0";
-            if (Platform::OpenFileDialogue(SelectedFile, "Import Asset", Filter))
-            {
-                TryImport(SelectedFile);
-            }
+            FolderTitle.assign("Content");
         }
-        
-        if (ImGui::MenuItem(LE_ICON_LANGUAGE_LUA " New Script"))
+
+        DrawMenuHeader(LE_ICON_FOLDER_OPEN, FolderTitle.c_str(), SelectedPath.c_str(), kMenuAccentFolder);
+
+        DrawMenuSection("CREATE");
+
+        if (ImGui::MenuItem(LE_ICON_FOLDER_PLUS " New Folder"))
         {
-            FFixedString NewScriptPath = SelectedPath + "/" + "NewScript.luau";
-            NewScriptPath = VFS::MakeUniqueFilePath(NewScriptPath);
-            VFS::WriteFile(NewScriptPath, "");
-            RefreshContentBrowser();
-        }
-        
-        if (ImGui::MenuItem(LE_ICON_LANGUAGE_CSS3 " New Widget"))
-        {
-            FFixedString NewScriptPath = SelectedPath + "/" + "NewWidget.rml";
-            NewScriptPath = VFS::MakeUniqueFilePath(NewScriptPath);
-            VFS::WriteFile(NewScriptPath, "");
+            FFixedString FinalPath = VFS::MakeUniqueFilePath(SelectedPath + "/NewFolder");
+            VFS::CreateDir(FinalPath);
             RefreshContentBrowser();
         }
 
-        const char* FileIcon = LE_ICON_PLUS;
-        const char* File = "New Asset";
-        
-        ImGui::Separator();
-        
-        FString FileName = FString(FileIcon) + " " + File;
-        
-        if (ImGui::BeginMenu(FileName.c_str()))
+        // Aggregated asset creation submenu (factory-driven).
+        const TVector<CFactory*>& Factories = CFactoryRegistry::Get().GetFactories();
+        if (ImGui::BeginMenu(LE_ICON_PLUS_BOX " New Asset"))
         {
-            const TVector<CFactory*>& Factories = CFactoryRegistry::Get().GetFactories();
+            DrawMenuSection("ASSET TYPES");
             for (CFactory* Factory : Factories)
             {
                 if (Factory->CanImport() || Factory->GetAssetClass() == nullptr)
                 {
                     continue;
                 }
-                
-                FString DisplayName = FString(LE_ICON_OPEN_IN_NEW) + " " + Factory->GetAssetName();
+
+                FString DisplayName = FString(LE_ICON_FILE_DOCUMENT_PLUS) + " " + Factory->GetAssetName();
                 if (ImGui::MenuItem(DisplayName.c_str()))
                 {
                     FFixedString Path = Paths::Combine(SelectedPath, Factory->GetDefaultAssetCreationName());
                     CPackage::AddPackageExt(Path);
                     Path = VFS::MakeUniqueFilePath(Path);
-                    
+
                     if (Factory->HasCreationDialogue())
                     {
                         ToolContext->PushModal("Create New", {500, 500}, [this, Factory, Path = Move(Path)]
@@ -1315,7 +1500,7 @@ namespace Lumina
                             {
                                 ImGuiX::Notifications::NotifySuccess("Successfully Created: \"{0}\"", Path);
                             }
-                    
+
                             return bShouldClose;
                         });
                     }
@@ -1336,13 +1521,55 @@ namespace Lumina
                         else
                         {
                             ImGuiX::Notifications::NotifyError("Failed to create new: \"{0}\"", Path);
-
                         }
                     }
                 }
             }
-            
             ImGui::EndMenu();
+        }
+
+        if (ImGui::MenuItem(LE_ICON_LANGUAGE_LUA " New Lua Script"))
+        {
+            FFixedString NewScriptPath = SelectedPath + "/" + "NewScript.luau";
+            NewScriptPath = VFS::MakeUniqueFilePath(NewScriptPath);
+            VFS::WriteFile(NewScriptPath, "");
+            RefreshContentBrowser();
+        }
+
+        if (ImGui::MenuItem(LE_ICON_LANGUAGE_CSS3 " New UI Widget"))
+        {
+            FFixedString NewWidgetPath = SelectedPath + "/" + "NewWidget.rml";
+            NewWidgetPath = VFS::MakeUniqueFilePath(NewWidgetPath);
+            VFS::WriteFile(NewWidgetPath, "");
+            RefreshContentBrowser();
+        }
+
+        // IMPORT -----------------------------------------------------------
+        DrawMenuSection("IMPORT");
+
+        if (ImGui::MenuItem(LE_ICON_IMPORT " Import Asset..."))
+        {
+            FFixedString SelectedFile;
+            const char* Filter = "Supported Assets (*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj)\0*.png;*.jpg;*.hdr;*.fbx;*.gltf;*.glb;*.obj\0All Files (*.*)\0*.*\0";
+            if (Platform::OpenFileDialogue(SelectedFile, "Import Asset", Filter))
+            {
+                TryImport(SelectedFile);
+            }
+        }
+
+        // VIEW -------------------------------------------------------------
+        DrawMenuSection("VIEW");
+
+        if (ImGui::MenuItem(LE_ICON_REFRESH " Refresh"))
+        {
+            RefreshContentBrowser();
+        }
+
+        if (ImGui::MenuItem(LE_ICON_MICROSOFT_WINDOWS " Show in Explorer"))
+        {
+            FFixedString Resolved = VFS::ResolvePath(FStringView(SelectedPath.c_str(), SelectedPath.size()));
+            const char* Target = Resolved.empty() ? SelectedPath.c_str() : Resolved.c_str();
+            Platform::LaunchURL(StringUtils::ToWideString(Target).c_str());
         }
     }
 }

@@ -84,6 +84,8 @@ namespace Lumina
     {
     public:
         using FBase = TBaseDelegate<R, Args...>;
+        
+        TMulticastDelegate() noexcept = default;
 
         template<typename TFunc>
         NODISCARD FDelegateHandle AddStatic(TFunc&& Func)

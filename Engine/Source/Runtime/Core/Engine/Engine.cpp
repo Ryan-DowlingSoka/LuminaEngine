@@ -51,7 +51,7 @@ namespace Lumina
     
     static FRHIViewportRef EngineViewport;
     
-    static TConsoleVar CVarMaxFrameRate("Core.MaxFPS", 144, "Changes the maximum frame-rate of your engine");
+    static TConsoleVar CVarMaxFrameRate("Core.MaxFPS", 4000, "Changes the maximum frame-rate of your engine");
     
     bool FEngine::Init()
     {

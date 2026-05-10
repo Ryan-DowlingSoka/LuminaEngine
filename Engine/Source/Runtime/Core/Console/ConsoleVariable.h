@@ -95,10 +95,10 @@ namespace Lumina
         using FConsoleContainer = TFixedHashMap<FStringView, FConsoleVariable, 100>;
 
         
-        static FConsoleRegistry& Get();
+        static FConsoleRegistry& Get() noexcept;
 
 
-        void Register(FConsoleVariable&& Var);
+        void Register(FConsoleVariable&& Var) noexcept;
 
         FConsoleVariable* Find(FStringView Name);
 

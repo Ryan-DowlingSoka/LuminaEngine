@@ -46,6 +46,54 @@ namespace Lumina
         DrawLine(corners[3], corners[7], Color, Thickness, bDepthTest, Duration);
     }
 
+    void IPrimitiveDrawInterface::DrawBoxCorners(const glm::vec3& Center, const glm::vec3& HalfExtents,
+        const glm::quat& Rotation, const glm::vec4& Color, float CornerFraction, float Thickness, bool bDepthTest, float Duration)
+    {
+        const float t = glm::clamp(CornerFraction, 0.0f, 0.5f);
+
+        glm::vec3 LocalCorners[8] =
+        {
+            {-HalfExtents.x, -HalfExtents.y, -HalfExtents.z},
+            { HalfExtents.x, -HalfExtents.y, -HalfExtents.z},
+            { HalfExtents.x,  HalfExtents.y, -HalfExtents.z},
+            {-HalfExtents.x,  HalfExtents.y, -HalfExtents.z},
+
+            {-HalfExtents.x, -HalfExtents.y,  HalfExtents.z},
+            { HalfExtents.x, -HalfExtents.y,  HalfExtents.z},
+            { HalfExtents.x,  HalfExtents.y,  HalfExtents.z},
+            {-HalfExtents.x,  HalfExtents.y,  HalfExtents.z},
+        };
+
+        glm::vec3 Corners[8];
+        for (int i = 0; i < 8; ++i)
+        {
+            Corners[i] = Center + glm::rotate(Rotation, LocalCorners[i]);
+        }
+
+        // The three neighbor corners along each axis for each of the 8 corners.
+        static constexpr int Neighbors[8][3] =
+        {
+            {1, 3, 4},
+            {0, 2, 5},
+            {3, 1, 6},
+            {2, 0, 7},
+            {5, 7, 0},
+            {4, 6, 1},
+            {7, 5, 2},
+            {6, 4, 3},
+        };
+
+        for (int i = 0; i < 8; ++i)
+        {
+            for (int n = 0; n < 3; ++n)
+            {
+                const glm::vec3& Far = Corners[Neighbors[i][n]];
+                const glm::vec3 Stub = Corners[i] + (Far - Corners[i]) * t;
+                DrawLine(Corners[i], Stub, Color, Thickness, bDepthTest, Duration);
+            }
+        }
+    }
+
     void IPrimitiveDrawInterface::DrawSphere(const glm::vec3& Center, float Radius, const glm::vec4& Color,
         uint8 Segments, float Thickness, bool bDepthTest, float Duration)
     {

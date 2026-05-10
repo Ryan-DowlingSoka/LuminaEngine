@@ -7,6 +7,7 @@
 #include "RHIGlobals.h"
 #include "CommandList.h"
 #include "Core/Application/Application.h"
+#include "Core/Console/ConsoleVariable.h"
 #include "Core/Engine/Engine.h"
 #include "Core/Profiler/Profile.h"
 #include "GPUProfiler/GPUProfiler.h"
@@ -19,6 +20,15 @@ namespace Lumina
 {
     TMulticastDelegate<void, glm::vec2> FRenderManager::OnSwapchainResized;
     RUNTIME_API FRenderManager* GRenderManager = nullptr;
+    
+    static TConsoleVar CVarMaxFrameRate("Core.VSync", true, "Toggles v-sync", [](const CVarValueType& Value)
+    {
+        if (GRenderContext)
+        {
+            GRenderContext->SetVSyncEnabled(eastl::get<bool>(Value));
+        }
+    });
+
 
     FRenderManager::FRenderManager()
     {

@@ -749,7 +749,7 @@ namespace Lumina
             if (SStaticMeshComponent* MeshComponent = World->GetEntityRegistry().try_get<SStaticMeshComponent>(Entity))
             {
                 const STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(Entity);
-                World->DrawBox(Transform.GetWorldLocation(), MeshComponent->GetAABB().GetSize() * 0.5f * Transform.GetWorldScale() * 1.2f, Transform.GetWorldRotation(), FColor::Red, 5.0f);
+                World->DrawBoxCorners(Transform.GetWorldLocation(), MeshComponent->GetAABB().GetSize() * 0.5f * Transform.GetWorldScale() * 1.2f, Transform.GetWorldRotation(), FColor::Green, 0.2f, 5.0f);
             }
         }
 

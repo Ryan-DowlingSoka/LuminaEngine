@@ -10,11 +10,9 @@
 #include "Renderer/RenderTypes.h"
 #include "Renderer/RHIGlobals.h"
 
+#include <glm/gtc/type_ptr.hpp>
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Vertex.h>
-
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
 
 #include "Assets/AssetTypes/Textures/Texture.h"
 #include "Core/Object/ObjectCore.h"

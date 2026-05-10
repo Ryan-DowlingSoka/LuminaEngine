@@ -132,9 +132,7 @@ namespace Lumina::Lua
         // On yield, ownership of the thread transfers to whoever requested the yield.
         template<typename... TArgs>
         ECoroutineStatus InvokeAsCoroutine(TArgs&& ... Args) const;
-
-        // Caller owns SubThread's lifetime (registry pin, threaddata, eventual unref).
-        // Used by FScript's coroutine pool to amortize per-call lua_newthread allocation.
+        
         template<typename... TArgs>
         ECoroutineStatus InvokeAsCoroutineOn(lua_State* SubThread, TArgs&& ... Args) const;
 

@@ -8,13 +8,13 @@
 
 namespace Lumina
 {
-    FConsoleRegistry& FConsoleRegistry::Get()
+    FConsoleRegistry& FConsoleRegistry::Get() noexcept
     {
         static FConsoleRegistry Instance;
         return Instance;
     }
 
-    void FConsoleRegistry::Register(FConsoleVariable&& Var)
+    void FConsoleRegistry::Register(FConsoleVariable&& Var) noexcept
     {
         FStringView VarName = Var.Name.data();
         ConsoleVariables.emplace(VarName, Move(Var));
