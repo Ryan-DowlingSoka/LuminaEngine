@@ -3,11 +3,15 @@
 #include "Luau/Allocator.h"
 #include "Luau/Ast.h"
 #include "Luau/AstQuery.h"
+#include "Luau/Linter.h"
+#include "Luau/LinterConfig.h"
 #include "Luau/Location.h"
 #include "Luau/ParseOptions.h"
 #include "Luau/ParseResult.h"
 #include "Luau/Parser.h"
 #include "Luau/PrettyPrinter.h"
+#include "Luau/Scope.h"
+#include "Luau/TypeArena.h"
 
 #include <memory>
 #include <string>
@@ -104,6 +108,53 @@ namespace Lumina
             }
             Out.push_back(')');
             return Out;
+        }
+
+        // Stringify a type annotation for use as a key into the editor's
+        // SymbolsByPath map and as hover text. The generic Luau::toString
+        // routes through PrettyPrinter, which uses location-aware advance
+        // and pads the result with leading whitespace / newlines from the
+        // source. We need a clean identifier-shaped string, so we walk the
+        // common AST type shapes by hand and only fall back to toString
+        // for the rare structural-type cases.
+        FString FormatTypeAnnotation(Luau::AstType* Annotation)
+        {
+            if (Annotation == nullptr) return {};
+
+            if (auto* Ref = Annotation->as<Luau::AstTypeReference>())
+            {
+                FString Out;
+                if (Ref->prefix.has_value() && Ref->prefix->value)
+                {
+                    Out.assign(Ref->prefix->value);
+                    Out.push_back('.');
+                }
+                if (Ref->name.value)
+                {
+                    Out.append(Ref->name.value);
+                }
+                return Out;
+            }
+
+            // Other shapes (table types, unions, function types, ...) - fall
+            // back to the generic stringifier and trim leading whitespace
+            // emitted by the location-aware writer.
+            std::string Anno = Luau::toString(Annotation);
+            size_t First = 0;
+            while (First < Anno.size()
+                && (Anno[First] == ' ' || Anno[First] == '\t' ||
+                    Anno[First] == '\r' || Anno[First] == '\n'))
+            {
+                ++First;
+            }
+            size_t Last = Anno.size();
+            while (Last > First
+                && (Anno[Last - 1] == ' ' || Anno[Last - 1] == '\t' ||
+                    Anno[Last - 1] == '\r' || Anno[Last - 1] == '\n'))
+            {
+                --Last;
+            }
+            return FString(Anno.data() + First, Last - First);
         }
 
         // Cheap value-hint snapshot from an AstExpr's syntactic shape. Mirrors
@@ -228,10 +279,7 @@ namespace Lumina
                 E.Line = ToOneLine(Var->location.begin);
                 if (Var->annotation != nullptr)
                 {
-                    // Annotation is an AST type subtree; cheaply stringify via
-                    // the pretty-printer's toString on the node.
-                    std::string Anno = Luau::toString(Var->annotation);
-                    E.TypeAnnotation.assign(Anno.c_str(), Anno.size());
+                    E.TypeAnnotation = FormatTypeAnnotation(Var->annotation);
                 }
                 else if (const char* Hint = InferValueHint(Val))
                 {
@@ -561,6 +609,49 @@ namespace Lumina
             return false;
         }
         OutText.assign(Pretty.code.c_str(), Pretty.code.size());
+        return true;
+    }
+
+    bool FLuaAstAnalyzer::RunLint(TVector<FLuaLintWarning>& Out) const
+    {
+        Out.clear();
+        if (!IsValid()) return false;
+        if (!Impl->ParseResult.errors.empty()) return false; // syntactic failure - skip lint
+
+        // Minimal scope so the lint passes that touch Scope (LocalShadow,
+        // ForRange, ...) have somewhere to read from. We don't run the
+        // type checker, so all type-info-aware checks are deliberately
+        // disabled below.
+        Luau::TypeArena    Arena;
+        Luau::TypePackId   EmptyReturn = Arena.addTypePack({});
+        Luau::ScopePtr     GlobalScope = std::make_shared<Luau::Scope>(EmptyReturn);
+
+        Luau::LintOptions Options;
+        Options.warningMask = ~uint64_t(0);
+        Options.disableWarning(Luau::LintWarning::Code_UnknownGlobal);
+        Options.disableWarning(Luau::LintWarning::Code_UnknownType);
+        Options.disableWarning(Luau::LintWarning::Code_DeprecatedApi);
+        Options.disableWarning(Luau::LintWarning::Code_DeprecatedGlobal);
+
+        std::vector<Luau::LintWarning> Warnings = Luau::lint(
+            Impl->Root(),
+            *Impl->Names,
+            GlobalScope,
+            /*module*/ nullptr,
+            Impl->ParseResult.hotcomments,
+            Options);
+
+        Out.reserve(Warnings.size());
+        for (const Luau::LintWarning& W : Warnings)
+        {
+            FLuaLintWarning E;
+            E.Line    = ToOneLine(W.location.begin);
+            E.Column  = ToOneColumn(W.location.begin);
+            E.Code    = int(W.code);
+            E.Name.assign(Luau::LintWarning::getName(W.code));
+            E.Message.assign(W.text.c_str(), W.text.size());
+            Out.push_back(eastl::move(E));
+        }
         return true;
     }
 }

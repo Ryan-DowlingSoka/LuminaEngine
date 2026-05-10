@@ -294,8 +294,7 @@ namespace Lumina
 
         CodeEditor.SetLanguage(TextEditor::Language::Luau());
         ApplyEditorSettings();
-        LoadFromDisk();
-        RebuildLocalIndex();
+        LoadFromDisk(); // RefreshAnalysis runs inside on cold load
 
         Lua::FScriptingContext& SC = Lua::FScriptingContext::Get();
         CompileErrorHandle = SC.OnScriptCompileError.AddLambda(
@@ -404,23 +403,13 @@ namespace Lumina
             // user makes a real change AND walks back to it on undo. Using
             // the index avoids a full GetText() copy + memcmp on every
             // debounce tick, which used to be O(doc size).
-            const size_t CurrentUndoIndex = CodeEditor.GetUndoIndex();
-            bBufferDirty = (CurrentUndoIndex != LastSyncedUndoIndex);
+            bBufferDirty = (CodeEditor.GetUndoIndex() != LastSyncedUndoIndex);
 
-            // Refresh the cached body size so the status bar can read it
-            // without doing the same full-doc copy every render. We pay one
-            // GetText() per debounced edit batch instead of one per frame.
-            CachedBodySize = CodeEditor.GetText().size();
-
-            // Re-harvest locals so the next hover reflects recent edits.
-            RebuildLocalIndex();
-            RebuildDocumentOutline();
-            // Lint the live buffer so warnings update as the user types
-            // (debounced via this 100ms callback so lint runs at most ~10/sec).
-            RefreshLintWarnings();
+            // One GetText covers everything below: status-bar size cache,
+            // AST reparse, lint, type-context source push, inlay hints.
+            const std::string Body = CodeEditor.GetText();
+            RefreshAnalysis(FStringView(Body.data(), Body.size()));
         }, /*delay ms*/ 100);
-
-        RebuildDocumentOutline();
 
         RebuildSymbolIndex();
         AutoCompleteCfg.triggerOnTyping = bAutoTriggerCompletion;
@@ -486,6 +475,14 @@ namespace Lumina
                 DrawInlineValueOverlay();
             }
 
+            // Inlay hints (inferred ": type" ghost text after `local x = ...`).
+            // Suppressed during pauses so the live-value ghost text doesn't
+            // collide visually with type ghost text on the same line.
+            if (!bPausedHere && bShowInlayHints && !InlayHints.empty())
+            {
+                DrawInlayHintsOverlay();
+            }
+
             ImGui::PopFontSize();
             ImGuiX::Font::PopFont();
 
@@ -545,25 +542,6 @@ namespace Lumina
         RefreshBreakpointMarkers();
     }
 
-    void FLuaEditorTool::RefreshLintWarnings()
-    {
-        // Skip lint on big files to keep typing snappy. The compile pass still
-        // runs (it's much cheaper) so the user doesn't lose error feedback.
-        constexpr size_t kLintByteCap = 256 * 1024;
-        const std::string Body = CodeEditor.GetText();
-        if (Body.size() > kLintByteCap)
-        {
-            LintWarnings.clear();
-            RefreshBreakpointMarkers();
-            return;
-        }
-
-        RunLuauLint(
-            FStringView(Body.data(), Body.size()),
-            FStringView(VirtualPath.c_str(), VirtualPath.size()),
-            LintWarnings);
-        RefreshBreakpointMarkers();
-    }
 
     void FLuaEditorTool::Update(const FUpdateContext& UpdateContext)
     {
@@ -650,10 +628,11 @@ namespace Lumina
         CachedBodySize = Body.size();
         bBufferDirty = false;
 
-        // Re-lint against the freshly-saved buffer. Compile errors flow through
-        // OnScriptCompileError (driven by ScriptReloaded below); lint warnings
-        // are editor-side and synchronous, so we refresh them here.
-        RefreshLintWarnings();
+        // Re-run analysis against the freshly-saved buffer. Compile errors
+        // flow through OnScriptCompileError (driven by ScriptReloaded below);
+        // lint warnings + outline + locals are editor-side and synchronous,
+        // so we refresh them here using the body we just wrote.
+        RefreshAnalysis(FStringView(Body.data(), Body.size()));
 
         // Tell FScriptingContext to recompile the source and re-bind every
         // attached SScriptComponent referencing this path. The reload is
@@ -695,11 +674,9 @@ namespace Lumina
         CodeEditor.SetText(View);
         LastSyncedText.assign(Body.c_str(), Body.size());
         LastSyncedUndoIndex = CodeEditor.GetUndoIndex();
-        CachedBodySize = LastSyncedText.size();
         bBufferDirty = false;
-        RebuildLocalIndex();
-        RefreshLintWarnings(); // updates markers via the path below
-        RefreshBreakpointMarkers();
+        // RefreshAnalysis sets CachedBodySize, runs lint, refreshes markers.
+        RefreshAnalysis(FStringView(Body.data(), Body.size()));
     }
 
     void FLuaEditorTool::ApplyEditorSettings()
@@ -829,172 +806,105 @@ namespace Lumina
         }
     }
 
+    void FLuaEditorTool::RefreshAnalysis()
+    {
+        const std::string Body = CodeEditor.GetText();
+        RefreshAnalysis(FStringView(Body.data(), Body.size()));
+    }
+
+    void FLuaEditorTool::RefreshAnalysis(FStringView Body)
+    {
+        // Update the cached size up-front so callers (status bar etc.) see
+        // the new value even if we early-exit below.
+        CachedBodySize = Body.size();
+
+        // Heavy passes are skipped above this cap. Same threshold for AST,
+        // lint, and type-check; on huge buffers the editor still works, it
+        // just stops surfacing analysis-derived markers.
+        constexpr size_t kAnalysisByteCap = 256 * 1024;
+        if (Body.size() > kAnalysisByteCap)
+        {
+            DocumentOutline.clear();
+            Locals.clear();
+            LintWarnings.clear();
+            InlayHints.clear();
+            HoverTypeCache = {};
+            HighlightedReferences.clear();
+            RefreshBreakpointMarkers();
+            return;
+        }
+
+        // Single AST parse drives outline + local index + lint. The analyzer
+        // owns the AST + name table; lint reads the same parse result.
+        AstAnalyzer.Parse(Body);
+        RebuildLocalIndex();
+        RebuildDocumentOutline();
+        AstAnalyzer.RunLint(LintWarnings);
+
+        // Type context: lazy-init on first use so opening a Lua file doesn't
+        // pay the Frontend warm-up cost upfront. Subsequent calls just push
+        // the new source + mark the module dirty; the type-check itself
+        // happens on demand inside the queries below.
+        if (!TypeContext)
+        {
+            TypeContext = MakeUnique<FLuaTypeContext>(
+                FStringView(VirtualPath.c_str(), VirtualPath.size()));
+        }
+        TypeContext->SetSource(Body);
+
+        // Hover-type cache is keyed by buffer state - any reparse invalidates.
+        HoverTypeCache = {};
+
+        // Inlay hints walk the typed module. GetInlayHints triggers an
+        // EnsureChecked under the hood; that's the one place we deliberately
+        // pay the type-check cost per debounce.
+        InlayHints.clear();
+        if (bShowInlayHints)
+        {
+            TypeContext->GetInlayHints(InlayHints);
+        }
+
+        // Reference highlights are cursor-anchored; any edit moves the
+        // referenced text around, so clear them rather than letting them
+        // point at stale lines.
+        HighlightedReferences.clear();
+
+        RefreshBreakpointMarkers();
+    }
+
     void FLuaEditorTool::RebuildLocalIndex()
     {
         Locals.clear();
-
-        const int LineCount = CodeEditor.GetLineCount();
-        for (int LineIdx = 0; LineIdx < LineCount; ++LineIdx)
+        if (AstAnalyzer.IsValid())
         {
-            const std::string Line = CodeEditor.GetLineText(LineIdx);
-            const int N = (int)Line.size();
-            int I = 0;
-
-            // Skip leading whitespace.
-            while (I < N && (Line[I] == ' ' || Line[I] == '\t')) ++I;
-            if (I >= N) continue;
-
-            // Single-line comment guard.
-            if (I + 1 < N && Line[I] == '-' && Line[I + 1] == '-') continue;
-
-            // Match `local` keyword followed by whitespace.
-            const char* kLocal = "local";
-            const int kLocalLen = 5;
-            if (I + kLocalLen > N) continue;
-            if (std::memcmp(Line.data() + I, kLocal, kLocalLen) != 0) continue;
-            const int After = I + kLocalLen;
-            if (After < N && (IsIdentChar(Line[After]) || Line[After] == '_')) continue; // not the keyword
-            I = After;
-            while (I < N && (Line[I] == ' ' || Line[I] == '\t')) ++I;
-            if (I >= N) continue;
-
-            // Optionally consume `function NAME` form first (we tag those as
-            // `function` regardless of any explicit annotation).
-            bool bIsFunctionForm = false;
-            const char* kFunction = "function";
-            const int kFunctionLen = 8;
-            if (I + kFunctionLen <= N && std::memcmp(Line.data() + I, kFunction, kFunctionLen) == 0
-                && (I + kFunctionLen >= N || !IsIdentChar(Line[I + kFunctionLen])))
+            TVector<FLuaAstLocalEntry> Entries;
+            AstAnalyzer.CollectLocals(Entries);
+            for (const FLuaAstLocalEntry& E : Entries)
             {
-                bIsFunctionForm = true;
-                I += kFunctionLen;
-                while (I < N && (Line[I] == ' ' || Line[I] == '\t')) ++I;
-            }
-
-            // Capture the first identifier (we ignore tuple-binding cases like
-            // `local a, b = ...` for the second name onward; keeping it simple
-            // and predictable beats half-supporting destructuring).
-            const int NameStart = I;
-            while (I < N && IsIdentChar(Line[I])) ++I;
-            if (I == NameStart) continue;
-            const FString Name(Line.data() + NameStart, I - NameStart);
-
-            FLocalDecl Decl;
-            Decl.Line = LineIdx;
-
-            if (bIsFunctionForm)
-            {
-                Decl.TypeAnnotation.assign("function");
-                Locals[Name] = Decl;
-                continue;
-            }
-
-            // Skip whitespace, look for `: TypeName`.
-            while (I < N && (Line[I] == ' ' || Line[I] == '\t')) ++I;
-            if (I < N && Line[I] == ':')
-            {
-                ++I;
-                while (I < N && (Line[I] == ' ' || Line[I] == '\t')) ++I;
-                // Type spans until '=' or end-of-line; trim trailing whitespace.
-                int TypeStart = I;
-                while (I < N && Line[I] != '=') ++I;
-                int TypeEnd = I;
-                while (TypeEnd > TypeStart && (Line[TypeEnd - 1] == ' ' || Line[TypeEnd - 1] == '\t')) --TypeEnd;
-                if (TypeEnd > TypeStart)
+                FLocalDecl D;
+                D.Line = E.Line - 1; // legacy zero-based
+                if (!E.TypeAnnotation.empty())
                 {
-                    Decl.TypeAnnotation.assign(Line.data() + TypeStart, TypeEnd - TypeStart);
+                    D.TypeAnnotation.assign(E.TypeAnnotation.c_str(), E.TypeAnnotation.size());
                 }
-            }
-
-            // Read a value hint after `=` for an inferred type when there's
-            // no explicit annotation.
-            while (I < N && (Line[I] == ' ' || Line[I] == '\t')) ++I;
-            if (I < N && Line[I] == '=')
-            {
-                ++I;
-                while (I < N && (Line[I] == ' ' || Line[I] == '\t')) ++I;
-                if (I < N)
+                if (!E.OriginName.empty())
                 {
-                    const char V = Line[I];
-                    if (V == '"' || V == '\'' || V == '`')   Decl.ValueHint.assign("string");
-                    else if (V == '{')                        Decl.ValueHint.assign("table");
-                    else if (V == 't' && I + 3 < N && std::memcmp(Line.data() + I, "true", 4) == 0)  Decl.ValueHint.assign("boolean");
-                    else if (V == 'f' && I + 4 < N && std::memcmp(Line.data() + I, "false", 5) == 0) Decl.ValueHint.assign("boolean");
-                    else if (V == 'n' && I + 2 < N && std::memcmp(Line.data() + I, "nil", 3) == 0)   Decl.ValueHint.assign("nil");
-                    else if (V == 'f' && I + 7 < N && std::memcmp(Line.data() + I, "function", 8) == 0) Decl.ValueHint.assign("function");
-                    else if (V >= '0' && V <= '9')            Decl.ValueHint.assign("number");
-                    else if (V == '-' && I + 1 < N && Line[I + 1] >= '0' && Line[I + 1] <= '9') Decl.ValueHint.assign("number");
-                    else if (IsIdentChar(V) && !(V >= '0' && V <= '9'))
+                    D.OriginName.assign(E.OriginName.c_str(), E.OriginName.size());
+                    auto It = Locals.find(FString(E.OriginName.c_str(), E.OriginName.size()));
+                    if (It != Locals.end() && D.TypeAnnotation.empty())
                     {
-                        // RHS starts with an identifier; read it through to
-                        // the next non-ident char, then check whether the
-                        // assignment is a bare reference (`local X = Y`,
-                        // optionally with trailing whitespace / comment).
-                        // We deliberately don't try to chase `Y.field` or
-                        // `Y()` here: those return arbitrary types that we
-                        // can't infer without a real type checker, so we
-                        // leave the hint blank rather than misreport.
-                        const int RhsStart = I;
-                        while (I < N && IsIdentChar(Line[I])) ++I;
-                        const FString RhsName(Line.data() + RhsStart, I - RhsStart);
-                        int Tail = I;
-                        while (Tail < N && (Line[Tail] == ' ' || Line[Tail] == '\t')) ++Tail;
-
-                        // Constructor pattern: `local X = Base.new(...)`. Treat
-                        // the local as having type `Base` so hover and member
-                        // completion can route through the existing global
-                        // symbol harvest. Only kicks in when `Base` is a known
-                        // global table; anything else stays untyped to avoid
-                        // mislabeling unrelated `Foo.new` chains.
-                        if (Tail + 4 <= N
-                            && Line[Tail] == '.'
-                            && std::memcmp(Line.data() + Tail + 1, "new", 3) == 0
-                            && (Tail + 4 == N || !IsIdentChar(Line[Tail + 4])))
-                        {
-                            int After = Tail + 4;
-                            while (After < N && (Line[After] == ' ' || Line[After] == '\t')) ++After;
-                            if (After < N && Line[After] == '('
-                                && SymbolsByPath.find(RhsName) != SymbolsByPath.end()
-                                && Decl.TypeAnnotation.empty())
-                            {
-                                Decl.TypeAnnotation = RhsName;
-                                Locals[Name] = Decl;
-                                continue;
-                            }
-                        }
-
-                        const bool bBareRef = (Tail >= N)
-                            || (Tail + 1 < N && Line[Tail] == '-' && Line[Tail + 1] == '-')
-                            || Line[Tail] == ';';
-                        if (bBareRef)
-                        {
-                            // Inherit the source local's type / value hint.
-                            // Because we scan top-down and skip pure-comment
-                            // lines, RhsName has already been populated when
-                            // we get here (Lua locals can only reference
-                            // earlier declarations).
-                            auto It = Locals.find(RhsName);
-                            if (It != Locals.end() && Decl.TypeAnnotation.empty())
-                            {
-                                const FLocalDecl& Src = It->second;
-                                if (!Src.TypeAnnotation.empty())
-                                {
-                                    Decl.TypeAnnotation = Src.TypeAnnotation;
-                                }
-                                else if (!Src.ValueHint.empty())
-                                {
-                                    Decl.ValueHint = Src.ValueHint;
-                                }
-                                Decl.OriginName = RhsName;
-                            }
-                        }
+                        D.TypeAnnotation = It->second.TypeAnnotation;
+                        D.ValueHint      = It->second.ValueHint;
                     }
                 }
+                Locals[FString(E.Name.c_str(), E.Name.size())] = D;
             }
-
-            Locals[Name] = Decl;
         }
+        // Fallback: nothing else needed - the analyzer's pass covers everything
+        // the legacy regex code did and a few more cases (for/forin loops,
+        // nested function args).
     }
+
 
     void FLuaEditorTool::DrawFreeFormHoverTooltip()
     {
@@ -1170,6 +1080,36 @@ namespace Lumina
 
     void FLuaEditorTool::OnHoverIdentifier(const std::string& Word, const std::string& DottedPath)
     {
+        // Resolve an inferred type once at the top so each tooltip path can
+        // splice it in. Cached by (line, column) - the hover callback fires
+        // every frame the cursor sits on an identifier, but a typecheck per
+        // frame is wasteful. Cache invalidates on every analysis refresh.
+        FString TypeText;
+        if (TypeContext && !IsDebuggerPausedHere())
+        {
+            const TextEditor::CursorPosition HoverPos = CodeEditor.GetCurrentCursorPosition();
+            const int Line1 = HoverPos.line + 1;
+            const int Col1  = HoverPos.column + 1;
+            if (HoverTypeCache.bChecked
+                && HoverTypeCache.Line == Line1
+                && HoverTypeCache.Column == Col1)
+            {
+                TypeText = HoverTypeCache.Text;
+            }
+            else
+            {
+                FString Resolved;
+                if (TypeContext->GetTypeAt(Line1, Col1, Resolved) && Resolved != "any")
+                {
+                    TypeText = Resolved;
+                }
+                HoverTypeCache.Line     = Line1;
+                HoverTypeCache.Column   = Col1;
+                HoverTypeCache.Text     = TypeText;
+                HoverTypeCache.bChecked = true;
+            }
+        }
+
         // While paused, prefer showing the live value of the identifier under
         // the cursor; that's the most useful single piece of information at
         // a breakpoint. We try three forms in priority order:
@@ -1273,7 +1213,16 @@ namespace Lumina
             {
                 const FLocalDecl& L = LItr->second;
                 BeginTranslucentTooltip();
-                if (!L.TypeAnnotation.empty())
+                if (!TypeText.empty())
+                {
+                    // Prefer the type checker's inferred type over the
+                    // syntactic annotation: it accounts for cross-line
+                    // value flow that a single-line annotation misses.
+                    ImGui::TextColored(ImVec4(0.65f, 0.85f, 1.0f, 1.0f),
+                        "(local) %s: %s", Word.c_str(), TypeText.c_str());
+                    ImGui::TextDisabled("inferred type");
+                }
+                else if (!L.TypeAnnotation.empty())
                 {
                     ImGui::TextColored(ImVec4(0.65f, 0.85f, 1.0f, 1.0f),
                         "(local) %s: %s", Word.c_str(), L.TypeAnnotation.c_str());
@@ -1348,6 +1297,15 @@ namespace Lumina
 
         ImGui::TextColored(HeaderColor, "(%s) %s", KindLabel, Symbol.Path.c_str());
         ImGui::Separator();
+
+        if (!TypeText.empty())
+        {
+            ImGui::PushTextWrapPos(420.0f);
+            ImGui::TextDisabled("inferred type:");
+            ImGui::TextUnformatted(TypeText.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::Spacing();
+        }
 
         if (Symbol.Kind == Lua::ELuaSymbolKind::Function)
         {
@@ -1434,43 +1392,6 @@ namespace Lumina
 
     namespace
     {
-        // suggestions, suggestionKinds, and suggestionDetails are parallel
-        // arrays; sort the suggestion strings via an index permutation so
-        // the kinds and details follow the same order. std::sort on each
-        // independently would shuffle them out of sync.
-        void CoSortSuggestions(TextEditor::AutoCompleteState& State)
-        {
-            const size_t N = State.suggestions.size();
-            if (N <= 1) return;
-
-            std::vector<size_t> Perm(N);
-            for (size_t I = 0; I < N; ++I) Perm[I] = I;
-
-            std::sort(Perm.begin(), Perm.end(), [&](size_t A, size_t B)
-            {
-                return State.suggestions[A] < State.suggestions[B];
-            });
-
-            std::vector<std::string> Names(N);
-            std::vector<char>        Kinds;
-            std::vector<std::string> Details;
-            const bool bHasKinds   = State.suggestionKinds.size()   == N;
-            const bool bHasDetails = State.suggestionDetails.size() == N;
-            if (bHasKinds)   Kinds.resize(N);
-            if (bHasDetails) Details.resize(N);
-
-            for (size_t I = 0; I < N; ++I)
-            {
-                Names[I] = std::move(State.suggestions[Perm[I]]);
-                if (bHasKinds)   Kinds[I]   = State.suggestionKinds[Perm[I]];
-                if (bHasDetails) Details[I] = std::move(State.suggestionDetails[Perm[I]]);
-            }
-
-            State.suggestions       = std::move(Names);
-            if (bHasKinds)   State.suggestionKinds   = std::move(Kinds);
-            if (bHasDetails) State.suggestionDetails = std::move(Details);
-        }
-
         // One-glyph kind tag for the suggestion popup's left badge.
         char KindBadge(Lua::ELuaSymbolKind Kind)
         {
@@ -1549,6 +1470,24 @@ namespace Lumina
         State.suggestionKinds.clear();
         State.suggestionDetails.clear();
 
+        const std::string& Term = State.searchTerm;
+
+        // Push the live buffer into the type context just before we run the
+        // typed pass. The change-callback debounce is 100ms; autocomplete can
+        // fire mid-debounce, so without this push the type checker would
+        // see the buffer as it was at the previous debounce tick. Cheap
+        // (string copy + dirty flag); EnsureChecked inside Autocomplete
+        // reuses the cached check when nothing changed.
+        TVector<FLuaTypedCompletion> TypedEntries;
+        if (TypeContext)
+        {
+            const std::string Body = CodeEditor.GetText();
+            TypeContext->SetSource(FStringView(Body.data(), Body.size()));
+            const int Line1 = static_cast<int>(State.line) + 1;
+            const int Col1  = static_cast<int>(State.searchTermEndIndex) + 1;
+            TypeContext->Autocomplete(Line1, Col1, TypedEntries);
+        }
+
         // Use the raw character index, NOT the visible column. column is
         // tab-expanded; index is the codepoint position into the line text.
         // Mixing the two silently misaligns the dot/colon detection on any
@@ -1556,56 +1495,121 @@ namespace Lumina
         const std::string Line = CodeEditor.GetLineText(static_cast<int>(State.line));
         const FString OwnerPath = ResolveOwnerPath(Line, static_cast<int>(State.searchTermStartIndex));
 
-        const std::string& Term = State.searchTerm;
-        const FString TermLower = [&]
+        // Match-quality scoring. MatchesPrefix is case-insensitive; on top of
+        // that we boost candidates whose case ALSO matches what the user is
+        // typing. Returns -1 for non-matches, 1 for case-insensitive prefix,
+        // 2 for case-sensitive prefix.
+        auto MatchScore = [&](FStringView Candidate) -> int
         {
-            FString Out;
-            Out.reserve(Term.size());
-            for (char C : Term) Out.push_back((char)std::tolower((unsigned char)C));
-            return Out;
-        }();
-
-        auto MatchesPrefix = [&](FStringView Candidate)
-        {
-            if (TermLower.empty()) return true;
-            if (Candidate.size() < TermLower.size()) return false;
-            for (size_t I = 0; I < TermLower.size(); ++I)
+            if (Term.empty()) return 1; // everything is a match while empty
+            if (Candidate.size() < Term.size()) return -1;
+            bool bCaseSens = true;
+            for (size_t I = 0; I < Term.size(); ++I)
             {
-                if ((char)std::tolower((unsigned char)Candidate[I]) != TermLower[I])
+                const char C = Candidate[I];
+                const char T = Term[I];
+                if (C != T) bCaseSens = false;
+                if ((char)std::tolower((unsigned char)C) != (char)std::tolower((unsigned char)T))
                 {
-                    return false;
+                    return -1;
                 }
             }
-            return true;
+            return bCaseSens ? 2 : 1;
         };
 
-        // Helper: push a suggestion + its parallel kind/detail. Sorting later
-        // is a co-permute on indices so the parallel arrays stay aligned.
-        auto PushSymbol = [&](const Lua::FLuaSymbol& Symbol)
+        // Source-priority tiers. Higher tiers float to the top of the popup.
+        //   Local:    lexical-scope binding right where the cursor is.
+        //   Property: member of a typed receiver - exactly what the user
+        //             asked for in `obj.foo|`.
+        //   Engine:   live-VM globals (Engine, World, Events, ...) - the
+        //             user's whole engine surface.
+        //   Type:     type alias or named type.
+        //   Module:   require() module path.
+        //   Keyword:  Luau reserved word.
+        //   Field:    per-instance script field via the engine's _Shape.
+        //   String:   string-literal completion (require paths etc.).
+        //   Buffer:   name harvested from the current buffer only.
+        enum ETier : int
         {
-            State.suggestions.emplace_back(Symbol.Name.c_str(), Symbol.Name.size());
-            State.suggestionKinds.push_back(KindBadge(Symbol.Kind));
-            State.suggestionDetails.emplace_back(BuildDetail(Symbol));
+            ETier_Local   = 9,
+            ETier_Property= 8,
+            ETier_Field   = 7,
+            ETier_Engine  = 6,
+            ETier_Type    = 5,
+            ETier_Module  = 5,
+            ETier_Keyword = 3,
+            ETier_String  = 2,
+            ETier_Buffer  = 1,
         };
 
-        auto PushKeyword = [&](const char* Word)
+        struct FCandidate
         {
-            State.suggestions.emplace_back(Word);
-            State.suggestionKinds.push_back('k');
-            State.suggestionDetails.emplace_back("keyword");
+            std::string Name;
+            std::string Detail;
+            char        Kind = 'p';
+            int         Rank = 0;
+        };
+        TVector<FCandidate> Candidates;
+        Candidates.reserve(64);
+
+        eastl::hash_set<FString> Seen;
+        auto Add = [&](const char* Name, size_t NameLen, std::string Detail, char Kind, int Tier)
+        {
+            const FString Key(Name, NameLen);
+            if (!Seen.insert(Key).second) return;
+            const int Match = MatchScore(FStringView(Name, NameLen));
+            if (Match < 0) return;
+
+            // Rank layering, biggest weight first:
+            //   match-quality  (case-sens beats case-insens)
+            //   source tier    (local > property > ... > buffer)
+            //   length bonus   (shorter ranks higher within a tier)
+            const int LengthBonus = (NameLen <= 30) ? int(30 - NameLen) : 0;
+            const int Rank = Match * 10000 + Tier * 100 + LengthBonus;
+
+            FCandidate C;
+            C.Name.assign(Name, NameLen);
+            C.Detail = std::move(Detail);
+            C.Kind   = Kind;
+            C.Rank   = Rank;
+            Candidates.push_back(eastl::move(C));
         };
 
-        auto PushBufferIdent = [&](const std::string& Identifier)
+        // Map a typed-pass kind char to its source-priority tier. The kind
+        // badges from FLuaTypeContext mirror the VS Code style: 'b' bindings
+        // (locals), 'p' properties, 't' types, 'm' modules, 'k' keywords,
+        // 's' strings, 'f' generated functions, 'c' hot comments.
+        auto TypedTier = [](char K) -> int
         {
-            State.suggestions.push_back(Identifier);
-            State.suggestionKinds.push_back('i');
-            State.suggestionDetails.emplace_back("identifier");
+            switch (K)
+            {
+            case 'b': return ETier_Local;
+            case 'p': return ETier_Property;
+            case 't': return ETier_Type;
+            case 'm': return ETier_Module;
+            case 'k': return ETier_Keyword;
+            case 's': return ETier_String;
+            case 'f': return ETier_Property; // typed GeneratedFunction
+            default:  return ETier_Property;
+            }
         };
 
         // Member-access path: "Engine.VFS." or "Engine.VFS:". Only suggest
-        // children of the resolved owner; nothing else makes sense in context.
+        // children of the resolved owner; nothing else makes sense here.
         if (!OwnerPath.empty())
         {
+            // Typed properties first - they have the most accurate detail
+            // text. For receivers Luau treats as `any` (engine globals
+            // without .d.luau) this list is empty.
+            for (const FLuaTypedCompletion& C : TypedEntries)
+            {
+                Add(C.Name.c_str(), C.Name.size(),
+                    std::string(C.Detail.c_str(), C.Detail.size()),
+                    C.Kind, TypedTier(C.Kind));
+            }
+
+            // Resolve the owner expression to a global symbol path: direct
+            // hit (`Engine.X`), then via local annotation, then via `self`.
             FString ResolvedType;
             auto Itr = SymbolsByPath.find(OwnerPath);
             if (Itr != SymbolsByPath.end())
@@ -1647,27 +1651,23 @@ namespace Lumina
                 }
             }
 
-            // Methods. Skip underscore-prefixed children; those are
-            // metadata slots on the base table (e.g. `_Shape`, `__index`)
-            // and shouldn't pollute the suggestion list.
+            // Engine members. Skip underscore-prefixed children; those are
+            // metadata slots on the base table (e.g. _Shape, __index) and
+            // shouldn't pollute the suggestion list.
             if (Itr != SymbolsByPath.end())
             {
                 for (const Lua::FLuaSymbol& Symbol : Itr->second)
                 {
                     if (!Symbol.Name.empty() && Symbol.Name[0] == '_') continue;
-                    if (MatchesPrefix(FStringView(Symbol.Name.c_str(), Symbol.Name.size())))
-                    {
-                        PushSymbol(Symbol);
-                    }
+                    Add(Symbol.Name.c_str(), Symbol.Name.size(),
+                        BuildDetail(Symbol), KindBadge(Symbol.Kind), ETier_Engine);
                 }
             }
 
-            // Per-instance fields. By convention, an entry in the resolved
-            // type's `_Shape` table publishes a field name + a type-string
-            // value the engine writes onto every instance at attach time.
-            // Single source of truth lives in the .luau stdlib itself
-            // this branch just re-routes those entries through the normal
-            // suggestion path with a 'v' kind badge.
+            // Per-instance fields surfaced via the script's _Shape table.
+            // Engine attaches these onto the live instance at runtime, so
+            // they aren't visible to the type checker but ARE in the user's
+            // mental model.
             if (!ResolvedType.empty())
             {
                 FString ShapePath = ResolvedType;
@@ -1677,58 +1677,62 @@ namespace Lumina
                 {
                     for (const Lua::FLuaSymbol& Field : ShapeItr->second)
                     {
-                        if (!MatchesPrefix(FStringView(Field.Name.c_str(), Field.Name.size()))) continue;
-                        State.suggestions.emplace_back(Field.Name.c_str(), Field.Name.size());
-                        State.suggestionKinds.push_back('v');
-                        State.suggestionDetails.emplace_back(
-                            Field.ValuePreview.empty()
-                                ? std::string("field")
-                                : std::string(Field.ValuePreview.c_str(), Field.ValuePreview.size()));
+                        std::string Detail = Field.ValuePreview.empty()
+                            ? std::string("field")
+                            : std::string(Field.ValuePreview.c_str(), Field.ValuePreview.size());
+                        Add(Field.Name.c_str(), Field.Name.size(),
+                            std::move(Detail), 'v', ETier_Field);
                     }
                 }
             }
-
-            // Co-sort the three parallel arrays by suggestion name.
-            CoSortSuggestions(State);
-            return;
         }
-
-        // Top-level: keywords + engine globals + identifiers in the buffer.
-        eastl::hash_set<FString> Seen;
-        auto SeenInsert = [&](const char* Data, size_t Size) -> bool
+        else
         {
-            const FString Key(Data, Size);
-            if (Seen.find(Key) != Seen.end()) return false;
-            Seen.insert(Key);
-            return true;
-        };
-
-        for (const char* Keyword : kLuauKeywords)
-        {
-            const size_t Len = std::strlen(Keyword);
-            if (!MatchesPrefix(FStringView(Keyword, Len))) continue;
-            if (!SeenInsert(Keyword, Len)) continue;
-            PushKeyword(Keyword);
+            // Top-level: typed entries + keywords + engine globals + buffer.
+            for (const FLuaTypedCompletion& C : TypedEntries)
+            {
+                Add(C.Name.c_str(), C.Name.size(),
+                    std::string(C.Detail.c_str(), C.Detail.size()),
+                    C.Kind, TypedTier(C.Kind));
+            }
+            for (const char* Keyword : kLuauKeywords)
+            {
+                Add(Keyword, std::strlen(Keyword), "keyword", 'k', ETier_Keyword);
+            }
+            for (const Lua::FLuaSymbol& Top : TopLevelSymbols)
+            {
+                Add(Top.Name.c_str(), Top.Name.size(),
+                    BuildDetail(Top), KindBadge(Top.Kind), ETier_Engine);
+            }
+            CodeEditor.IterateIdentifiers([&](const std::string& Identifier)
+            {
+                // Skip the word the user is currently typing - autocompleting
+                // to itself is never what they want.
+                if (Identifier == Term) return;
+                Add(Identifier.c_str(), Identifier.size(),
+                    "identifier", 'i', ETier_Buffer);
+            });
         }
-        for (const Lua::FLuaSymbol& Top : TopLevelSymbols)
+        
+        std::sort(Candidates.begin(), Candidates.end(),
+            [](const FCandidate& A, const FCandidate& B)
+            {
+                if (A.Rank != B.Rank)
+                {
+                    return A.Rank > B.Rank;
+                }
+                return A.Name < B.Name;
+            });
+
+        State.suggestions.reserve(Candidates.size());
+        State.suggestionKinds.reserve(Candidates.size());
+        State.suggestionDetails.reserve(Candidates.size());
+        for (FCandidate& C : Candidates)
         {
-            if (!MatchesPrefix(FStringView(Top.Name.c_str(), Top.Name.size()))) continue;
-            if (!SeenInsert(Top.Name.c_str(), Top.Name.size())) continue;
-            PushSymbol(Top);
+            State.suggestions.push_back(std::move(C.Name));
+            State.suggestionKinds.push_back(C.Kind);
+            State.suggestionDetails.push_back(std::move(C.Detail));
         }
-
-        // Identifiers harvested from the current buffer; picks up locals,
-        // function names, etc. that aren't in the engine global table.
-        CodeEditor.IterateIdentifiers([&](const std::string& Identifier)
-        {
-            // Don't shadow-suggest the word the user is currently typing.
-            if (Identifier == Term) return;
-            if (!MatchesPrefix(FStringView(Identifier.c_str(), Identifier.size()))) return;
-            if (!SeenInsert(Identifier.c_str(), Identifier.size())) return;
-            PushBufferIdent(Identifier);
-        });
-
-        CoSortSuggestions(State);
     }
 
     void FLuaEditorTool::RefreshBreakpointMarkers()
@@ -1854,6 +1858,21 @@ namespace Lumina
             std::snprintf(Tip, sizeof(Tip), "%s\n\nLuau lint code: %s",
                           W.Message.c_str(), W.Name.c_str());
             CodeEditor.AddMarker(LineIdx, LintCol, LintFill, Title, Tip);
+        }
+
+        // Highlight-all-references: subtle teal stripe on every line that
+        // mentions the local under the cursor. Cleared by toggling off or by
+        // moving to a different identifier.
+        if (!HighlightedReferences.empty())
+        {
+            const ImU32 RefCol  = IM_COL32(80, 200, 180, 255);
+            const ImU32 RefFill = IM_COL32(80, 200, 180, 28);
+            for (const FLuaSymbolRef& Ref : HighlightedReferences)
+            {
+                if (Ref.Line < 1 || Ref.Line > CodeEditor.GetLineCount()) continue;
+                CodeEditor.AddMarker(Ref.Line - 1, RefCol, RefFill,
+                    "Reference", "Reference to the local under the cursor.");
+            }
         }
     }
 
@@ -2184,6 +2203,20 @@ namespace Lumina
         ImGui::Checkbox("Trim trailing whitespace on save", &bTrimTrailingOnSave);
 
         ImGui::Spacing();
+        ImGui::TextDisabled("Type-aware features");
+        ImGui::Separator();
+        if (ImGui::Checkbox("Show inlay hints", &bShowInlayHints))
+        {
+            bDirty = true;
+            // Clear immediately when toggling off so the overlay disappears
+            // on the next frame; otherwise the cached vector would still
+            // paint until the next change-callback tick.
+            if (!bShowInlayHints) InlayHints.clear();
+            else                  RefreshAnalysis();
+        }
+        ImGuiX::TextTooltip("Show inferred type as ghost text after `local x = ...` declarations.");
+
+        ImGui::Spacing();
         ImGui::TextDisabled("Autocomplete");
         ImGui::Separator();
         if (ImGui::Checkbox("Trigger while typing", &bAutoTriggerCompletion)) bDirty = true;
@@ -2293,6 +2326,10 @@ namespace Lumina
 
         ImGui::TextDisabled("Document");
         ImGui::Separator();
+        if (ImGui::MenuItem("Format document", "Ctrl+Shift+I"))
+        {
+            FormatDocument();
+        }
         if (ImGui::MenuItem("Strip trailing whitespace"))
         {
             CodeEditor.StripTrailingWhitespaces();
@@ -2402,6 +2439,10 @@ namespace Lumina
                 Row("Alt+Up / Down", "Move line(s) up/down");
                 Row("F5 / F10 / F11","Continue / step over / step into (when paused)");
                 Row("Right-click gutter", "Toggle breakpoint");
+                Row("F12",                "Go to definition (locals only)");
+                Row("Shift+F12",          "Toggle highlight all references");
+                Row("Alt+Shift+Right",    "Expand selection to enclosing scope");
+                Row("Ctrl+Shift+I",       "Format document");
                 ImGui::EndTable();
             }
         }
@@ -2936,6 +2977,37 @@ namespace Lumina
                 bShowOutline = !bShowOutline;
             }
         }
+
+        // F12: jump to local definition. Shift+F12: highlight references.
+        // Plain F12 with no Shift held only does the jump; reference
+        // highlighting is opt-in to avoid surprising flashes.
+        if (ImGui::IsKeyPressed(ImGuiKey_F12, false))
+        {
+            if (Io.KeyShift)
+            {
+                ToggleHighlightReferencesAtCursor();
+            }
+            else
+            {
+                if (!GoToDefinitionAtCursor())
+                {
+                    ImGuiX::Notifications::NotifyInfo("No local definition under the cursor.");
+                }
+            }
+        }
+
+        // Alt+Shift+Right: expand selection to the next enclosing AST node.
+        // Mirrors the JetBrains/VSCode shortcut for smart selection.
+        if (Io.KeyAlt && Io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_RightArrow, false))
+        {
+            ExpandSelectionToEnclosingNode();
+        }
+
+        // Ctrl+Shift+I (mnemonic: "Indent + format"): pretty-print the file.
+        if (Io.KeyCtrl && Io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_I, false))
+        {
+            FormatDocument();
+        }
     }
 
     void FLuaEditorTool::DrawInlineValueOverlay()
@@ -3045,156 +3117,158 @@ namespace Lumina
         }
     }
 
+    void FLuaEditorTool::DrawInlayHintsOverlay()
+    {
+        if (InlayHints.empty()) return;
+
+        const float LineHeight = CodeEditor.GetLineHeight();
+        const float GlyphWidth = CodeEditor.GetGlyphWidth();
+        if (LineHeight <= 0.0f || GlyphWidth <= 0.0f) return;
+
+        const int FirstVisible = CodeEditor.GetFirstVisibleLine();
+        const int LastVisible  = CodeEditor.GetLastVisibleLine();
+
+        ImDrawList* DrawList = ImGui::GetWindowDrawList();
+        const ImU32 GhostColor = IM_COL32(150, 165, 200, 200);
+
+        for (const FLuaInlayHint& H : InlayHints)
+        {
+            const int LineIdx = H.Line - 1;
+            if (LineIdx < FirstVisible || LineIdx > LastVisible) continue;
+
+            // Translate the hint's anchor column (1-based) to a visible column
+            // accounting for tab expansion. Cheap walk over the line text.
+            const std::string Line = CodeEditor.GetLineText(LineIdx);
+            const int TabSize  = CodeEditor.GetTabSize();
+            const int AnchorB  = std::max(0, std::min((int)Line.size(), H.Column - 1));
+            int Visible = 0;
+            for (int K = 0; K < AnchorB; ++K)
+            {
+                Visible += (Line[K] == '\t') ? (TabSize - (Visible % TabSize)) : 1;
+            }
+
+            const ImVec2 Pos = CodeEditor.GetScreenPosForCoordinate(LineIdx, Visible);
+            DrawList->AddText(Pos, GhostColor, H.Text.c_str());
+        }
+    }
+
     void FLuaEditorTool::RebuildDocumentOutline()
     {
         DocumentOutline.clear();
-        const int LineCount = CodeEditor.GetLineCount();
+        if (!AstAnalyzer.IsValid()) return;
 
-        bool bInExportsBlock = false;
-        for (int LineIdx = 0; LineIdx < LineCount; ++LineIdx)
+        TVector<FLuaAstOutlineEntry> Entries;
+        AstAnalyzer.CollectOutline(Entries);
+
+        DocumentOutline.reserve(Entries.size());
+        for (const FLuaAstOutlineEntry& E : Entries)
         {
-            const std::string Line = CodeEditor.GetLineText(LineIdx);
-            const int N = (int)Line.size();
-            int I = 0;
-            while (I < N && (Line[I] == ' ' || Line[I] == '\t')) ++I;
-            if (I >= N) continue;
-            if (I + 1 < N && Line[I] == '-' && Line[I + 1] == '-')
+            FOutlineItem Item;
+            switch (E.Kind)
             {
-                // Comment header: --- region or -- == note ==. Treat any
-                // line of the form "-- ===" or "-- @region" as a marker.
-                if (I + 4 < N && (Line[I + 2] == '=' || Line[I + 2] == '#'))
-                {
-                    FOutlineItem Item;
-                    Item.Kind = 'c';
-                    Item.Line = LineIdx;
-                    int Cstart = I + 2;
-                    while (Cstart < N && (Line[Cstart] == ' ' || Line[Cstart] == '=' || Line[Cstart] == '#')) ++Cstart;
-                    int Cend = N;
-                    while (Cend > Cstart && (Line[Cend - 1] == ' ' || Line[Cend - 1] == '=' || Line[Cend - 1] == '#')) --Cend;
-                    Item.Name.assign(Line.data() + Cstart, Cend - Cstart);
-                    Item.Detail.assign("region");
-                    DocumentOutline.push_back(eastl::move(Item));
-                }
-                continue;
+            case FLuaAstOutlineEntry::EKind::Function:
+            case FLuaAstOutlineEntry::EKind::LocalFunction:
+            case FLuaAstOutlineEntry::EKind::Method:
+                Item.Kind = 'f'; break;
+            case FLuaAstOutlineEntry::EKind::Field:
+                Item.Kind = 'e'; break;
+            default:
+                Item.Kind = 'l'; break;
             }
-
-            // function NAME(...)
-            // local function NAME(...)
-            // function OBJ:METHOD(...)
-            const int Indent = I;
-            int J = I;
-            bool bIsLocal = false;
-            const char* kLocal = "local";
-            const int kLocalLen = 5;
-            if (J + kLocalLen + 1 <= N && std::memcmp(Line.data() + J, kLocal, kLocalLen) == 0
-                && (Line[J + kLocalLen] == ' ' || Line[J + kLocalLen] == '\t'))
-            {
-                bIsLocal = true;
-                J += kLocalLen;
-                while (J < N && (Line[J] == ' ' || Line[J] == '\t')) ++J;
-            }
-
-            const char* kFunction = "function";
-            const int kFunctionLen = 8;
-            if (J + kFunctionLen <= N && std::memcmp(Line.data() + J, kFunction, kFunctionLen) == 0
-                && (J + kFunctionLen >= N || !IsIdentChar(Line[J + kFunctionLen])))
-            {
-                int K = J + kFunctionLen;
-                while (K < N && (Line[K] == ' ' || Line[K] == '\t')) ++K;
-
-                // Read until '(' as the qualified name.
-                int NameStart = K;
-                while (K < N && Line[K] != '(' && Line[K] != ' ') ++K;
-                int NameEnd = K;
-                if (NameEnd > NameStart)
-                {
-                    int ParamEnd = K;
-                    while (ParamEnd < N && Line[ParamEnd] != ')') ++ParamEnd;
-                    int ParamStart = K;
-
-                    FOutlineItem Item;
-                    Item.Kind = 'f';
-                    Item.Line = LineIdx;
-                    Item.Indent = Indent;
-                    Item.Name.assign(Line.data() + NameStart, NameEnd - NameStart);
-                    if (ParamEnd > ParamStart)
-                    {
-                        Item.Detail.assign(Line.data() + ParamStart, ParamEnd - ParamStart + 1);
-                    }
-                    if (bIsLocal) Item.Detail.append(" [local]");
-                    DocumentOutline.push_back(eastl::move(Item));
-                    continue;
-                }
-            }
-
-            // local NAME (not a function form)
-            if (bIsLocal)
-            {
-                int K = J;
-                int NameStart = K;
-                while (K < N && IsIdentChar(Line[K])) ++K;
-                int NameEnd = K;
-                if (NameEnd > NameStart)
-                {
-                    FOutlineItem Item;
-                    Item.Kind = 'l';
-                    Item.Line = LineIdx;
-                    Item.Indent = Indent;
-                    Item.Name.assign(Line.data() + NameStart, NameEnd - NameStart);
-
-                    // Trim trailing whitespace and capture initializer hint.
-                    int Init = K;
-                    while (Init < N && (Line[Init] == ' ' || Line[Init] == '\t')) ++Init;
-                    if (Init < N && Line[Init] == ':')
-                    {
-                        int TStart = Init + 1;
-                        while (TStart < N && (Line[TStart] == ' ' || Line[TStart] == '\t')) ++TStart;
-                        int TEnd = TStart;
-                        while (TEnd < N && Line[TEnd] != '=' && Line[TEnd] != ',' && Line[TEnd] != ')') ++TEnd;
-                        while (TEnd > TStart && (Line[TEnd - 1] == ' ' || Line[TEnd - 1] == '\t')) --TEnd;
-                        if (TEnd > TStart)
-                        {
-                            Item.Detail.append(": ");
-                            Item.Detail.append(Line.data() + TStart, TEnd - TStart);
-                        }
-                    }
-                    DocumentOutline.push_back(eastl::move(Item));
-                    continue;
-                }
-            }
-
-            // Capture event handler-style top-level functions written as
-            // `OnXxx = function(...)` for export-table entries; rough but
-            // useful for users who define exports inline.
-            int IdentStart = I;
-            int K = I;
-            while (K < N && IsIdentChar(Line[K])) ++K;
-            if (K > IdentStart)
-            {
-                int Tail = K;
-                while (Tail < N && (Line[Tail] == ' ' || Line[Tail] == '\t')) ++Tail;
-                if (Tail < N && Line[Tail] == '=')
-                {
-                    // X = function(... pattern
-                    int Eq = Tail + 1;
-                    while (Eq < N && (Line[Eq] == ' ' || Line[Eq] == '\t')) ++Eq;
-                    if (Eq + kFunctionLen <= N
-                        && std::memcmp(Line.data() + Eq, kFunction, kFunctionLen) == 0
-                        && (Eq + kFunctionLen == N || Line[Eq + kFunctionLen] == '(' || Line[Eq + kFunctionLen] == ' '))
-                    {
-                        FOutlineItem Item;
-                        Item.Kind = bInExportsBlock ? 'e' : 'f';
-                        Item.Line = LineIdx;
-                        Item.Indent = Indent;
-                        Item.Name.assign(Line.data() + IdentStart, K - IdentStart);
-                        Item.Detail.assign("function");
-                        DocumentOutline.push_back(eastl::move(Item));
-                        continue;
-                    }
-                }
-            }
+            Item.Name.assign(E.Name.c_str(), E.Name.size());
+            Item.Detail.assign(E.Detail.c_str(), E.Detail.size());
+            Item.Line   = E.Line - 1; // legacy zero-based
+            Item.Indent = E.Indent;
+            DocumentOutline.push_back(eastl::move(Item));
         }
     }
+
+    void FLuaEditorTool::FormatDocument()
+    {
+        const std::string Body = CodeEditor.GetText();
+        FString Pretty;
+        FString Error;
+        if (!FLuaAstAnalyzer::Format(FStringView(Body.data(), Body.size()), Pretty, Error))
+        {
+            ImGuiX::Notifications::NotifyError("Format failed: {0}", Error.c_str());
+            return;
+        }
+
+        if (Body.size() == Pretty.size()
+            && std::memcmp(Body.data(), Pretty.data(), Body.size()) == 0)
+        {
+            // Already pretty - skip the SetText round-trip so we don't burn
+            // an undo entry or jolt the cursor for a no-op format.
+            return;
+        }
+
+        // Save cursor + first-visible line so the user lands roughly where
+        // they were after formatting. Pretty-print is line-stable for typical
+        // edits, so clamping the line number is good enough; column resets
+        // to 0 to avoid landing inside re-flowed whitespace.
+        const TextEditor::CursorPosition Cursor = CodeEditor.GetCurrentCursorPosition();
+        const int FirstVisible = CodeEditor.GetFirstVisibleLine();
+
+        CodeEditor.SetText(std::string_view(Pretty.c_str(), Pretty.size()));
+        bBufferDirty = (CodeEditor.GetUndoIndex() != LastSyncedUndoIndex);
+
+        const int NewLineCount = std::max(1, CodeEditor.GetLineCount());
+        const int RestoredLine = std::max(0, std::min(Cursor.line, NewLineCount - 1));
+        CodeEditor.SetCursor(RestoredLine, 0);
+        CodeEditor.ScrollToLine(std::max(0, std::min(FirstVisible, NewLineCount - 1)),
+                                 TextEditor::Scroll::alignTop);
+
+        RefreshAnalysis(FStringView(Pretty.data(), Pretty.size()));
+    }
+
+    bool FLuaEditorTool::GoToDefinitionAtCursor()
+    {
+        if (!AstAnalyzer.IsValid()) return false;
+        const TextEditor::CursorPosition Pos = CodeEditor.GetCurrentCursorPosition();
+        FString Name;
+        int DeclLine = 0, DeclCol = 0;
+        if (!AstAnalyzer.FindLocalDefinition(Pos.line + 1, Pos.column + 1,
+                                              &Name, &DeclLine, &DeclCol))
+        {
+            return false;
+        }
+        const int Target = std::max(0, DeclLine - 1);
+        CodeEditor.SetCursor(Target, std::max(0, DeclCol - 1));
+        CodeEditor.ScrollToLine(Target, TextEditor::Scroll::alignMiddle);
+        return true;
+    }
+
+    void FLuaEditorTool::ToggleHighlightReferencesAtCursor()
+    {
+        if (!HighlightedReferences.empty())
+        {
+            HighlightedReferences.clear();
+            RefreshBreakpointMarkers();
+            return;
+        }
+        if (!AstAnalyzer.IsValid()) return;
+        const TextEditor::CursorPosition Pos = CodeEditor.GetCurrentCursorPosition();
+        AstAnalyzer.FindLocalReferences(Pos.line + 1, Pos.column + 1, HighlightedReferences);
+        RefreshBreakpointMarkers();
+    }
+
+    void FLuaEditorTool::ExpandSelectionToEnclosingNode()
+    {
+        if (!AstAnalyzer.IsValid()) return;
+        const TextEditor::CursorPosition Pos = CodeEditor.GetCurrentCursorPosition();
+        const TextEditor::CursorSelection Sel = CodeEditor.GetMainCursorSelection();
+
+        int OutSL, OutSC, OutEL, OutEC;
+        const bool bOk = AstAnalyzer.FindEnclosingRange(
+            Pos.line + 1, Pos.column + 1,
+            Sel.start.line + 1, Sel.start.column + 1,
+            Sel.end.line + 1,   Sel.end.column + 1,
+            OutSL, OutSC, OutEL, OutEC);
+        if (!bOk) return;
+
+        CodeEditor.SelectRegion(OutSL - 1, OutSC - 1, OutEL - 1, OutEC - 1);
+    }
+
 
     void FLuaEditorTool::DrawOutlinePanel()
     {

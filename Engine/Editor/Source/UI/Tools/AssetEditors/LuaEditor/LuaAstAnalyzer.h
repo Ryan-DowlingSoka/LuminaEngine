@@ -34,6 +34,25 @@ namespace Lumina
         int Length = 0; // identifier length in characters
     };
 
+    // Single Luau Analysis lint warning, mapped from Luau::LintWarning into
+    // engine types so callers don't pull in Luau::Lint headers. Produced by
+    // FLuaAstAnalyzer::RunLint using whatever AST the most recent Parse()
+    // produced - which means lint shares its parse with the outline / local
+    // / hover passes instead of re-parsing the buffer.
+    struct FLuaLintWarning
+    {
+        // 1-based source line. Matches Luau::Location::begin.line + 1.
+        int     Line   = 0;
+        // 1-based column. Matches Luau::Location::begin.column + 1.
+        int     Column = 0;
+        // Luau lint code (Luau::LintWarning::Code value). 0 means unknown.
+        int     Code   = 0;
+        // Short lint family name, e.g. "TableOperations", "ForRange".
+        FString Name;
+        // Full message text Luau emitted.
+        FString Message;
+    };
+
     // PIMPL'd front-end for Luau's AST. Keeps Luau headers out of public
     // include surfaces (a lot of the editor includes Containers/, and we
     // don't want to drag the entire Luau type system into every TU).
@@ -93,6 +112,17 @@ namespace Lumina
         // on success; writes the formatted text to OutText. On parse failure,
         // OutError carries Luau's diagnostic and OutText is left empty.
         static bool Format(FStringView Source, FString& OutText, FString& OutError);
+
+        // Run Luau Analysis's linter against the AST produced by the last
+        // Parse(). Returns true if a lint pass was attempted (warnings list
+        // is then populated; may be empty). Returns false when the buffer
+        // failed to parse - syntactic errors flow through the compile-error
+        // broadcast and lint against a broken tree would just be noise.
+        //
+        // Type-checker-dependent lint codes (UnknownGlobal/UnknownType/
+        // DeprecatedApi/DeprecatedGlobal) are left disabled. A future engine
+        // .d.luau registration step is what would let those flip on.
+        bool RunLint(TVector<FLuaLintWarning>& Out) const;
 
     private:
         struct FImpl;
