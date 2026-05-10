@@ -48,7 +48,7 @@
 #ifdef LUA_BUILD_AS_DLL
 #ifdef LUA_LIB
 #define LUA_API __declspec(dllexport)
-#elif
+#else
 #define LUA_API __declspec(dllimport)
 #endif
 #endif

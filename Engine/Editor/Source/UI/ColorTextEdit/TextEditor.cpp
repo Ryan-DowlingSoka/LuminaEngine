@@ -8483,6 +8483,58 @@ const TextEditor::Language* TextEditor::Language::Lua() {
 
 
 //
+//	TextEditor::Language::Luau
+//
+//	Luau is a superset of Lua 5.1: backtick-delimited interpolated strings,
+//	a few extra reserved words, and a set of built-in type names that we
+//	highlight as identifiers so `local x: number` colors cleanly.
+//
+
+const TextEditor::Language* TextEditor::Language::Luau() {
+	static bool initialized = false;
+	static TextEditor::Language language;
+
+	if (!initialized) {
+		language = *Lua();
+		language.name = "Luau";
+
+		// Backtick interpolated strings.
+		language.otherStringAltStart = "`";
+		language.otherStringAltEnd = "`";
+
+		static const char* const luauKeywords[] = {
+			"continue", "export", "type", "typeof", "self",
+		};
+		for (auto& keyword : luauKeywords) { language.keywords.insert(keyword); }
+
+		// Built-in types so `local x: number` lights up.
+		static const char* const builtinTypes[] = {
+			"any", "unknown", "never", "nil", "boolean", "number", "string",
+			"thread", "userdata", "table", "function", "vector", "buffer",
+		};
+		for (auto& type : builtinTypes) { language.identifiers.insert(type); }
+
+		// Stdlib + engine globals colored even before a live VM harvest.
+		static const char* const stdlibIdentifiers[] = {
+			"_G", "_ENV", "_VERSION",
+			"assert", "collectgarbage", "error", "getmetatable", "ipairs",
+			"next", "pairs", "pcall", "xpcall", "rawequal", "rawget",
+			"rawlen", "rawset", "select", "setmetatable", "tonumber",
+			"tostring", "type", "print", "require", "unpack",
+			"bit32", "buffer", "coroutine", "debug", "io", "math", "os",
+			"string", "table", "utf8",
+			"Engine", "Events", "World", "Entity", "Time",
+		};
+		for (auto& ident : stdlibIdentifiers) { language.identifiers.insert(ident); }
+
+		initialized = true;
+	}
+
+	return &language;
+}
+
+
+//
 //	getPythonStyleNumber
 //
 

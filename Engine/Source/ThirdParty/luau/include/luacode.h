@@ -6,7 +6,7 @@
 #ifdef LUA_BUILD_AS_DLL
 #ifdef LUA_LIB
 #define LUACODE_API __declspec(dllexport)
-#elif
+#else
 #define LUACODE_API __declspec(dllimport)
 #endif
 #endif

@@ -895,25 +895,46 @@ namespace Lumina
     void FContentBrowserEditorTool::OnProjectLoaded()
     {
         FFixedString ScriptPath = GEditorEngine->GetProjectContentDirectory();
-        
+        Paths::Normalize(ScriptPath);
+
+        // Strip any trailing separator so the prefix length is unambiguous.
+        while (!ScriptPath.empty() && (ScriptPath.back() == '/' || ScriptPath.back() == '\\'))
+        {
+            ScriptPath.pop_back();
+        }
+
+        const size_t WatchRootLen = ScriptPath.size();
+
+        auto MakeVirtualPath = [WatchRootLen](FStringView AbsPath) -> FFixedString
+        {
+            // The watcher root *is* the project's Content folder, so the engine's
+            // virtual path is "/Game" + the tail past the root, with separator
+            // normalization. Both AbsPath (set by the watcher) and the captured
+            // root were normalized to forward slashes above.
+            FFixedString Out;
+            Out.append_convert("/Game");
+            if (AbsPath.size() > WatchRootLen)
+            {
+                FStringView Tail = AbsPath.substr(WatchRootLen);
+                if (!Tail.empty() && Tail.front() != '/')
+                {
+                    Out.append_convert("/");
+                }
+                Out.append_convert(Tail.data(), Tail.size());
+            }
+            return Out;
+        };
+
         Watcher.Stop();
-        Watcher.Watch(ScriptPath, [&](const FFileEvent& Event)
+        Watcher.Watch(ScriptPath, [this, MakeVirtualPath](const FFileEvent& Event)
         {
             if (!VFS::HasExtension(Event.Path, ".luau"))
             {
                 return;
             }
-            
-            FStringView Prefix = "/Game";
-            size_t Pos = Event.Path.find(Prefix.data(), 0, Prefix.size());
-            if (Pos == FString::npos)
-            {
-                return;
-            }
-            
-            FFixedString RelativePath;
-            RelativePath.append_convert(Prefix.data(), Prefix.size()).append_convert(Event.Path.substr(Pos + Prefix.size()));
-            
+
+            FFixedString RelativePath = MakeVirtualPath(Event.Path);
+
             switch (Event.Action)
             {
             case EFileAction::Added:
@@ -936,14 +957,7 @@ namespace Lumina
                 break;
             case EFileAction::Renamed:
                 {
-                    FFixedString RelativeOldPath;
-                    size_t OldPos = Event.OldPath.find(Prefix.data(), 0, Prefix.size());
-                    if (OldPos == FString::npos)
-                    {
-                        return;
-                    }
-                    
-                    RelativePath.append_convert(Prefix.data(), Prefix.size()).append_convert(Event.OldPath.substr(OldPos + Prefix.size()));
+                    FFixedString RelativeOldPath = MakeVirtualPath(Event.OldPath);
                     Lua::FScriptingContext::Get().ScriptRenamed(RelativePath, RelativeOldPath);
                     RefreshContentBrowser();
                 }

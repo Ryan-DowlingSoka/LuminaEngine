@@ -6,8 +6,7 @@
 #include <EASTL/vector.h>
 
 #include "Containers/String.h"
-#include "Core/Threading/Atomic.h"
-#include "Platform/Filesystem/DirectoryWatcher.h"
+#include "LuaLintRunner.h"
 #include "Scripting/Lua/Scripting.h"
 #include "UI/ColorTextEdit/TextEditor.h"
 #include "UI/Tools/AssetEditors/AssetEditorTool.h"
@@ -41,7 +40,6 @@ namespace Lumina
         enum class EPalette : uint8 { Dark, Light };
 
         void LoadFromDisk();
-        void StartWatching();
         void ApplyEditorSettings();
         void RefreshBreakpointMarkers();
 
@@ -127,8 +125,17 @@ namespace Lumina
 
         TextEditor          CodeEditor;
         std::string         LastSyncedText;
+        size_t              LastSyncedUndoIndex = 0;
+        // Cached document size used by the status bar so we don't pay a full
+        // GetText() copy every render frame. Recomputed in OnSave / LoadFromDisk
+        // and in the (debounced) change callback.
+        size_t              CachedBodySize = 0;
         bool                bBufferDirty = false;
-        
+        // Set in OnSave so the OnScriptLoaded broadcast we just emitted from
+        // FScriptingContext::ScriptReloaded doesn't bounce back as an external
+        // change. Cleared on the first matching broadcast.
+        bool                bIgnoreNextReload = false;
+
         THashSet<int>       Breakpoints;
 
         // Editor display options.
@@ -151,8 +158,12 @@ namespace Lumina
         int                 GotoLineBuffer = 1;
         bool                bRequestOpenGoto = false;
 
-        FDirectoryWatcher   FileWatcher;
-        TAtomic<bool>       bExternalChangePending{false};
+        // External-change flag: flipped on by the OnScriptLoaded broadcast
+        // (fired from FScriptingContext after either our own save or the
+        // central content-browser file watcher detects a disk modification).
+        // Update() consumes it on the main thread.
+        bool                bExternalChangePending = false;
+        FDelegateHandle     ScriptLoadedHandle;
 
         // Selected stack frame for the inline debugger panel. Re-clamped each
         // pause so a deeper call stack from a previous break doesn't index
@@ -242,5 +253,15 @@ namespace Lumina
 
         void ApplyCompileError(int Line, const FString& Message);
         void ClearCompileError();
+
+        // Re-run Luau's Analysis linter against the current buffer and refresh
+        // the gutter markers. Cheap on small files (a few ms); cap above which
+        // we skip is in the .cpp so we don't stall the UI on huge sources.
+        void RefreshLintWarnings();
+
+        // Lint warnings produced by the Luau Analysis linter. Refreshed on
+        // load, save, and external reloads. Surfaced as orange gutter strips
+        // alongside breakpoint and compile-error markers.
+        TVector<FLuaLintWarning>            LintWarnings;
     };
 }

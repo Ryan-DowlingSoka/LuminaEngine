@@ -6,7 +6,7 @@ LuminaModule({
     ModuleDependencies = { "Runtime" },
     Dependencies =
     {
-        "ImGui", "RPMalloc", "EA", "EnkiTS", "Tracy", "Luau",
+        "ImGui", "RPMalloc", "EA", "EnkiTS", "Tracy", "Luau", "LuauAnalysis",
     },
     ExtraLinks = { "GFSDK_Aftermath_Lib" },
     LibDirs =

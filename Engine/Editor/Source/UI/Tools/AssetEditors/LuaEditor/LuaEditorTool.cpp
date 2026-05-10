@@ -98,54 +98,6 @@ namespace Lumina
             return Path;
         }
         
-        const TextEditor::Language* GetLuauLanguage()
-        {
-            static bool Initialized = false;
-            static TextEditor::Language Lang;
-            if (Initialized)
-            {
-                return &Lang;
-            }
-
-            // Bundled Lua tokenizer/strings, with Luau overlaid on top.
-            const TextEditor::Language* Base = TextEditor::Language::Lua();
-            Lang = *Base;
-            Lang.name = "Luau";
-
-            // Backtick interpolated strings.
-            Lang.otherStringAltStart = "`";
-            Lang.otherStringAltEnd   = "`";
-
-            static const char* const LuauOnlyKeywords[] = {
-                "continue", "export", "type", "typeof", "self",
-            };
-            for (const char* K : LuauOnlyKeywords) Lang.keywords.insert(K);
-
-            // Built-in types colored as identifiers so `local x: number` lights up.
-            static const char* const TypeNames[] = {
-                "any", "unknown", "never", "nil", "boolean", "number", "string",
-                "thread", "userdata", "table", "function", "vector", "buffer",
-            };
-            for (const char* T : TypeNames) Lang.identifiers.insert(T);
-
-            // Lua/Luau stdlib + engine globals; colored even before live-VM harvest.
-            static const char* const Stdlib[] = {
-                "_G", "_ENV", "_VERSION",
-                "assert", "collectgarbage", "error", "getmetatable", "ipairs",
-                "next", "pairs", "pcall", "xpcall", "rawequal", "rawget",
-                "rawlen", "rawset", "select", "setmetatable", "tonumber",
-                "tostring", "type", "print", "require", "unpack",
-                "bit32", "buffer", "coroutine", "debug", "io", "math", "os",
-                "string", "table", "utf8",
-                // engine surfaces (defensively; may also be auto-discovered by VM harvest)
-                "Engine", "Events", "World", "Entity", "Time",
-            };
-            for (const char* S : Stdlib) Lang.identifiers.insert(S);
-
-            Initialized = true;
-            return &Lang;
-        }
-
         // Tooltip with low-alpha bg so code under the cursor stays visible.
         void BeginTranslucentTooltip()
         {
@@ -340,16 +292,11 @@ namespace Lumina
     {
         FAssetEditorTool::OnInitialize();
 
-        CodeEditor.SetLanguage(GetLuauLanguage());
+        CodeEditor.SetLanguage(TextEditor::Language::Luau());
         ApplyEditorSettings();
         LoadFromDisk();
         RebuildLocalIndex();
 
-        // Subscribe to compile diagnostics. The scripting context fires these
-        // for every compile attempt; we filter to ones that match this
-        // editor's virtual path. ApplyCompileError / ClearCompileError repaint
-        // the marker stripe via RefreshBreakpointMarkers so the visual stays
-        // consistent with breakpoints / bookmarks / PC arrow.
         Lua::FScriptingContext& SC = Lua::FScriptingContext::Get();
         CompileErrorHandle = SC.OnScriptCompileError.AddLambda(
             [this](FStringView Path, const Lua::FCompileDiagnostic& Diag)
@@ -366,6 +313,26 @@ namespace Lumina
                 {
                     ClearCompileError();
                 }
+            });
+
+        // External-change reload: hook the central script-load broadcast
+        // (driven by the content browser's directory watcher) instead of
+        // spinning up a per-editor FDirectoryWatcher thread for every open
+        // script. Our own OnSave also routes through this broadcast; the
+        // bIgnoreNextReload fence absorbs that bounce.
+        ScriptLoadedHandle = SC.OnScriptLoaded.AddLambda(
+            [this](FStringView Path)
+            {
+                if (Path != FStringView(VirtualPath.c_str(), VirtualPath.size()))
+                {
+                    return;
+                }
+                if (bIgnoreNextReload)
+                {
+                    bIgnoreNextReload = false;
+                    return;
+                }
+                bExternalChangePending = true;
             });
 
         // Re-hydrate breakpoints from the debugger (source of truth) so they survive editor reopen.
@@ -432,20 +399,28 @@ namespace Lumina
 
         CodeEditor.SetChangeCallback([this]
         {
-            const std::string Current = CodeEditor.GetText();
-            if (Current == LastSyncedText)
-            {
-                return;
-            }
-            bBufferDirty = true;
+            // Cheap dirty check: TextEditor's monotonically-increasing undo
+            // index drifts away from the last-saved baseline whenever the
+            // user makes a real change AND walks back to it on undo. Using
+            // the index avoids a full GetText() copy + memcmp on every
+            // debounce tick, which used to be O(doc size).
+            const size_t CurrentUndoIndex = CodeEditor.GetUndoIndex();
+            bBufferDirty = (CurrentUndoIndex != LastSyncedUndoIndex);
+
+            // Refresh the cached body size so the status bar can read it
+            // without doing the same full-doc copy every render. We pay one
+            // GetText() per debounced edit batch instead of one per frame.
+            CachedBodySize = CodeEditor.GetText().size();
+
             // Re-harvest locals so the next hover reflects recent edits.
             RebuildLocalIndex();
             RebuildDocumentOutline();
+            // Lint the live buffer so warnings update as the user types
+            // (debounced via this 100ms callback so lint runs at most ~10/sec).
+            RefreshLintWarnings();
         }, /*delay ms*/ 100);
 
         RebuildDocumentOutline();
-
-        StartWatching();
 
         RebuildSymbolIndex();
         AutoCompleteCfg.triggerOnTyping = bAutoTriggerCompletion;
@@ -542,11 +517,10 @@ namespace Lumina
 
     void FLuaEditorTool::OnDeinitialize(const FUpdateContext& UpdateContext)
     {
-        FileWatcher.Stop();
-
         Lua::FScriptingContext& SC = Lua::FScriptingContext::Get();
         SC.OnScriptCompileError.Remove(CompileErrorHandle);
         SC.OnScriptCompileSuccess.Remove(CompileSuccessHandle);
+        SC.OnScriptLoaded.Remove(ScriptLoadedHandle);
     }
 
     void FLuaEditorTool::ApplyCompileError(int Line, const FString& Message)
@@ -571,12 +545,33 @@ namespace Lumina
         RefreshBreakpointMarkers();
     }
 
+    void FLuaEditorTool::RefreshLintWarnings()
+    {
+        // Skip lint on big files to keep typing snappy. The compile pass still
+        // runs (it's much cheaper) so the user doesn't lose error feedback.
+        constexpr size_t kLintByteCap = 256 * 1024;
+        const std::string Body = CodeEditor.GetText();
+        if (Body.size() > kLintByteCap)
+        {
+            LintWarnings.clear();
+            RefreshBreakpointMarkers();
+            return;
+        }
+
+        RunLuauLint(
+            FStringView(Body.data(), Body.size()),
+            FStringView(VirtualPath.c_str(), VirtualPath.size()),
+            LintWarnings);
+        RefreshBreakpointMarkers();
+    }
+
     void FLuaEditorTool::Update(const FUpdateContext& UpdateContext)
     {
         FAssetEditorTool::Update(UpdateContext);
 
-        if (bExternalChangePending.exchange(false, Atomic::MemoryOrderAcquire))
+        if (bExternalChangePending)
         {
+            bExternalChangePending = false;
             if (!bBufferDirty)
             {
                 LoadFromDisk();
@@ -651,12 +646,22 @@ namespace Lumina
         }
 
         LastSyncedText = Body;
+        LastSyncedUndoIndex = CodeEditor.GetUndoIndex();
+        CachedBodySize = Body.size();
         bBufferDirty = false;
+
+        // Re-lint against the freshly-saved buffer. Compile errors flow through
+        // OnScriptCompileError (driven by ScriptReloaded below); lint warnings
+        // are editor-side and synchronous, so we refresh them here.
+        RefreshLintWarnings();
 
         // Tell FScriptingContext to recompile the source and re-bind every
         // attached SScriptComponent referencing this path. The reload is
         // deferred to the next ProcessDeferredActions tick on the main thread,
         // so the editor stays in sync without re-entering the Lua VM here.
+        // The OnScriptLoaded broadcast that follows would otherwise bounce
+        // back as an "external change"; the fence makes our handler skip it.
+        bIgnoreNextReload = true;
         Lua::FScriptingContext::Get().ScriptReloaded(FStringView(VirtualPath.c_str(), VirtualPath.size()));
 
         ImGuiX::Notifications::NotifySuccess("Saved '{0}'.", VirtualPath.c_str());
@@ -689,9 +694,12 @@ namespace Lumina
         const std::string_view View(Body.c_str(), Body.size());
         CodeEditor.SetText(View);
         LastSyncedText.assign(Body.c_str(), Body.size());
+        LastSyncedUndoIndex = CodeEditor.GetUndoIndex();
+        CachedBodySize = LastSyncedText.size();
         bBufferDirty = false;
-        RefreshBreakpointMarkers();
         RebuildLocalIndex();
+        RefreshLintWarnings(); // updates markers via the path below
+        RefreshBreakpointMarkers();
     }
 
     void FLuaEditorTool::ApplyEditorSettings()
@@ -1827,6 +1835,26 @@ namespace Lumina
             std::snprintf(Tip, sizeof(Tip), "Compile error: %s", CompileErrorMessage.c_str());
             CodeEditor.AddMarker(CompileErrorLine - 1, ErrorCol, ErrorFill, "Compile error", Tip);
         }
+
+        // Lint warnings: amber gutter strip + "Lint: name" tooltip with the
+        // full Luau message. Skipped on the compile-error line so the user's
+        // attention isn't split between an error and a stale lint about the
+        // same code.
+        const ImU32 LintCol  = IM_COL32(220, 165, 60, 255);
+        const ImU32 LintFill = IM_COL32(220, 165, 60, 35);
+        for (const FLuaLintWarning& W : LintWarnings)
+        {
+            if (W.Line < 1 || W.Line > CodeEditor.GetLineCount()) continue;
+            if (bHasCompileError && W.Line == CompileErrorLine) continue;
+
+            const int LineIdx = W.Line - 1;
+            char Title[128];
+            std::snprintf(Title, sizeof(Title), "Lint: %s", W.Name.c_str());
+            char Tip[768];
+            std::snprintf(Tip, sizeof(Tip), "%s\n\nLuau lint code: %s",
+                          W.Message.c_str(), W.Name.c_str());
+            CodeEditor.AddMarker(LineIdx, LintCol, LintFill, Title, Tip);
+        }
     }
 
     bool FLuaEditorTool::IsDebuggerPausedHere() const
@@ -2051,6 +2079,7 @@ namespace Lumina
             }
             else
             {
+                bool bMarkersDirty = false;
                 for (auto Itr = Breakpoints.begin(); Itr != Breakpoints.end(); )
                 {
                     const int Line = *Itr;
@@ -2073,6 +2102,7 @@ namespace Lumina
                             FStringView(VirtualPath.c_str(), VirtualPath.size()),
                             Line, false);
                         Itr = Breakpoints.erase(Itr);
+                        bMarkersDirty = true;
                     }
                     else
                     {
@@ -2084,11 +2114,15 @@ namespace Lumina
                 {
                     Lua::FLuaDebugger::Get().ClearBreakpointsFor(FStringView(VirtualPath.c_str(), VirtualPath.size()));
                     Breakpoints.clear();
+                    bMarkersDirty = true;
+                }
+
+                if (bMarkersDirty)
+                {
+                    RefreshBreakpointMarkers();
                 }
             }
 
-            // Always refresh markers; cheap and stays in sync with edits above.
-            RefreshBreakpointMarkers();
             ImGui::EndPopup();
         }
         ImGuiX::TextTooltip("Manage breakpoints. Hit a breakpoint to open the debugger panel.");
@@ -2914,22 +2948,27 @@ namespace Lumina
         }
         const int Frame = std::clamp(DebuggerSelectedFrame, 0, (int)Stack.size() - 1);
         const Lua::FStackFrame& F = Stack[Frame];
-
-        // Build a name -> value/type lookup for this frame. Locals shadow
-        // upvalues by name when both are present.
-        THashMap<FString, const Lua::FStackVariable*> ByName;
-        for (const Lua::FStackVariable& V : F.Upvalues)
-        {
-            ByName[FString(V.Name.c_str(), V.Name.size())] = &V;
-        }
-        for (const Lua::FStackVariable& V : F.Locals)
-        {
-            ByName[FString(V.Name.c_str(), V.Name.size())] = &V;
-        }
-        if (ByName.empty())
+        if (F.Locals.empty() && F.Upvalues.empty())
         {
             return;
         }
+
+        // Locals shadow upvalues; check locals first so a hit short-circuits
+        // before we look at upvalues. Linear scan is faster than rebuilding a
+        // hashmap with FString keys every frame for the typical frame size
+        // (well under fifty entries).
+        auto FindByName = [&](FStringView Name) -> const Lua::FStackVariable*
+        {
+            for (const Lua::FStackVariable& V : F.Locals)
+            {
+                if (FStringView(V.Name.c_str(), V.Name.size()) == Name) return &V;
+            }
+            for (const Lua::FStackVariable& V : F.Upvalues)
+            {
+                if (FStringView(V.Name.c_str(), V.Name.size()) == Name) return &V;
+            }
+            return nullptr;
+        };
 
         ImDrawList* DrawList = ImGui::GetWindowDrawList();
         const ImU32 GhostColor = IM_COL32(180, 180, 120, 200);
@@ -2957,8 +2996,6 @@ namespace Lumina
 
             // Find first identifier on this line that matches a known local.
             const Lua::FStackVariable* MatchVar = nullptr;
-            int Col = 0;
-            int LastIdentCol = 0;
             int I = 0;
             while (I < N)
             {
@@ -2969,20 +3006,16 @@ namespace Lumina
                 }
                 if ((C >= 'a' && C <= 'z') || (C >= 'A' && C <= 'Z') || C == '_')
                 {
-                    int Start = I;
+                    const int Start = I;
                     while (I < N && IsIdentChar(LineText[I]))
                     {
                         ++I;
                     }
-                    FString Ident(LineText.data() + Start, I - Start);
-                    auto It = ByName.find(Ident);
-                    if (It != ByName.end())
+                    if (const Lua::FStackVariable* Hit = FindByName(FStringView(LineText.data() + Start, I - Start)))
                     {
-                        MatchVar = It->second;
-                        Col = Start;
+                        MatchVar = Hit;
                         break;
                     }
-                    LastIdentCol = I;
                     continue;
                 }
                 ++I;
@@ -3009,7 +3042,6 @@ namespace Lumina
 
             const ImVec2 Pos = CodeEditor.GetScreenPosForCoordinate(LineIdx, Visible);
             DrawList->AddText(Pos, GhostColor, Buf);
-            (void)Col; (void)LastIdentCol;
         }
     }
 
@@ -3333,8 +3365,10 @@ namespace Lumina
         {
             const TextEditor::CursorPosition Pos = CodeEditor.GetCurrentCursorPosition();
             const int LineCount = CodeEditor.GetLineCount();
-            const std::string Body = CodeEditor.GetText();
-            const size_t Bytes = Body.size();
+            // CachedBodySize is refreshed by the (debounced) change callback,
+            // OnSave, and LoadFromDisk. Reading it here avoids a per-frame
+            // GetText() copy of the entire document.
+            const size_t Bytes = CachedBodySize;
 
             ImGui::Text("Ln %d, Col %d", Pos.line + 1, Pos.column + 1);
 
@@ -3375,6 +3409,14 @@ namespace Lumina
                 ImGuiX::TextTooltip("Active breakpoints in this file.");
             }
 
+            if (!LintWarnings.empty())
+            {
+                ImGui::SameLine(0, 20);
+                ImGui::TextColored(ImVec4(0.86f, 0.71f, 0.35f, 1.0f),
+                    "%zu lint", LintWarnings.size());
+                ImGuiX::TextTooltip("Luau Analysis lint warnings on this file. Hover the gutter strips for details.");
+            }
+
             if (bEditorReadOnly)
             {
                 ImGui::SameLine(0, 20);
@@ -3401,72 +3443,4 @@ namespace Lumina
     }
 
 
-    void FLuaEditorTool::StartWatching()
-    {
-        if (ParentDir.empty())
-        {
-            return;
-        }
-
-        FFixedString DiskParentDir;
-        const FStringView TargetVirtual(VirtualPath.c_str(), VirtualPath.size());
-        VFS::DirectoryIterator(FStringView(ParentDir.c_str(), ParentDir.size()),
-            [&](const VFS::FFileInfo& Info)
-            {
-                if (!DiskParentDir.empty())
-                {
-                    return;
-                }
-                if (FStringView(Info.VirtualPath.c_str(), Info.VirtualPath.size()) != TargetVirtual)
-                {
-                    return;
-                }
-                FStringView Source(Info.PathSource.c_str(), Info.PathSource.size());
-                const size_t Slash = Source.find_last_of('/');
-                const size_t BackSlash = Source.find_last_of('\\');
-                size_t Cut = FString::npos;
-                if (Slash != FStringView::npos)
-                {
-                    Cut = Slash;
-                }
-                if (BackSlash != FStringView::npos && (Cut == FStringView::npos || BackSlash > Cut))
-                {
-                    Cut = BackSlash;
-                }
-                if (Cut == FStringView::npos)
-                {
-                    return;
-                }
-                DiskParentDir.assign(Source.data(), Cut);
-            });
-
-        if (DiskParentDir.empty())
-        {
-            return;
-        }
-
-        const FStringView FileNameView = VFS::FileName(TargetVirtual);
-        const FString FileName(FileNameView.data(), FileNameView.size());
-
-        FileWatcher.Watch(DiskParentDir, [this, FileName](const FFileEvent& Event)
-        {
-            if (Event.Action != EFileAction::Modified && Event.Action != EFileAction::Added)
-            {
-                return;
-            }
-
-            FStringView EventPath(Event.Path.c_str(), Event.Path.size());
-            if (EventPath.size() < FileName.size())
-            {
-                return;
-            }
-            const FStringView Tail = EventPath.substr(EventPath.size() - FileName.size());
-            if (Tail != FStringView(FileName.c_str(), FileName.size()))
-            {
-                return;
-            }
-
-            bExternalChangePending.store(true, Atomic::MemoryOrderRelease);
-        }, false);
-    }
 }

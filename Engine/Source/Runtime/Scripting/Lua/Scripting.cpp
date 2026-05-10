@@ -892,19 +892,27 @@ namespace Lumina::Lua
     void FScriptingContext::ProcessDeferredActions()
     {
         FWriteScopeLock Lock(SharedMutex);
-        
+
         DeferredActions.ProcessAllOf<FScriptDelete>([&](const FScriptDelete& Delete)
         {
             OnScriptDeleted.Broadcast(Delete.Path);
         });
-        
+
         DeferredActions.ProcessAllOf<FScriptRename>([&](const FScriptRename& Reload)
         {
-            
+
         });
-        
+
+        // Coalesce duplicate reload requests within one tick. The editor's OnSave fires a
+        // direct reload, the directory watcher fires its own once disk catches up, and Windows'
+        // ReadDirectoryChangesW often emits multiple FILE_ACTION_MODIFIED events per save.
+        THashSet<FName> SeenPaths;
         DeferredActions.ProcessAllOf<FScriptLoad>([&](const FScriptLoad& Load)
         {
+            if (!SeenPaths.insert(FName(Load.Path)).second)
+            {
+                return;
+            }
             OnScriptLoaded.Broadcast(Load.Path);
             ReloadScripts(Load.Path);
         });
@@ -1423,8 +1431,25 @@ namespace Lumina::Lua
 
     void FScriptingContext::ReloadScripts(FStringView Path)
     {
-
         LOG_INFO("Reloaded Scripts: {}", Path);
+        
+        FString Source;
+        if (!VFS::ReadFile(Source, Path))
+        {
+            return;
+        }
+
+        TVector<uint8> Bytecode;
+        FCompileDiagnostic Diag;
+        if (CompileSourceToBytecode(Source, Bytecode, &Diag))
+        {
+            OnScriptCompileSuccess.Broadcast(Path);
+        }
+        else
+        {
+            Diag.Path.assign(Path.data(), Path.size());
+            OnScriptCompileError.Broadcast(Path, Diag);
+        }
     }
 
     namespace
