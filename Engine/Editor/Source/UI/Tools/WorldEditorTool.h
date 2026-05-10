@@ -65,6 +65,7 @@ namespace Lumina
 
         void DrawViewportOverlayElements(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture, ImVec2 ViewportSize) override;
         void DrawViewportToolbar(const FUpdateContext& UpdateContext) override;
+        void DrawHelpMenu() override;
 
         void PushAddTagModal(entt::entity Entity);
         void PushAddComponentModal(entt::entity Entity);

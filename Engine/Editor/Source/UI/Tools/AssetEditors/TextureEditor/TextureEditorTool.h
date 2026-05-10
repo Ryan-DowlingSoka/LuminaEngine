@@ -20,6 +20,7 @@ namespace Lumina
         void OnDeinitialize(const FUpdateContext& UpdateContext) override;
         void OnAssetLoadFinished() override;
         void DrawToolMenu(const FUpdateContext& UpdateContext) override;
+        void DrawHelpMenu() override;
         void InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const override;
 
 

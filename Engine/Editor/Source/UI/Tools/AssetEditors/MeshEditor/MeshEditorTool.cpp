@@ -729,6 +729,25 @@ namespace Lumina
     {
     }
 
+    void FStaticMeshEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("LODs",
+            "Each LOD is a separate index buffer over the same vertex stream. The Preview LOD picker forces "
+            "a specific level so you can inspect its geometry; -1 returns to automatic distance-based selection.");
+        DrawHelpTextRow("Surfaces",
+            "Surfaces (sub-meshes) are the unit at which materials are assigned. Click a row to highlight "
+            "its AABB in the viewport.");
+        DrawHelpTextRow("Materials",
+            "Material slots come from the source asset. Drag a Material or Material Instance from the "
+            "Content Browser onto a slot to override.");
+        DrawHelpTextRow("Visualizers",
+            "Toggle wireframe, normals, tangents, AABB from the View menu. Useful for verifying imports "
+            "and diagnosing lighting issues.");
+        DrawHelpTextRow("Reimport",
+            "If the source FBX/GLTF on disk changed, use File > Reimport to refresh — preserves material "
+            "overrides where slot names match.");
+    }
+
     void FStaticMeshEditorTool::DrawToolMenu(const FUpdateContext& UpdateContext)
     {
         FAssetEditorTool::DrawToolMenu(UpdateContext);

@@ -31,6 +31,36 @@ namespace Lumina::ImGuiX
         ImGui::PopStyleVar();
     }
 
+    void WrappedTooltip_Internal(FStringView String)
+    {
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 6));
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        {
+            if (ImGui::BeginTooltipEx(ImGuiTooltipFlags_OverridePrevious, ImGuiWindowFlags_None))
+            {
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                ImGui::TextUnformatted(String.data(), String.data() + String.size());
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+        }
+        ImGui::PopStyleVar();
+    }
+
+    void HelpMarker(FStringView Help)
+    {
+        HelpMarkerIcon("(?)", Help);
+    }
+
+    void HelpMarkerIcon(const char* Icon, FStringView Help)
+    {
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextUnformatted(Icon);
+        ImGui::PopStyleColor();
+        WrappedTooltip_Internal(Help);
+    }
+
     void TextColoredUnformatted(const ImVec4& Color, const FFixedString& String)
     {
     	ImGui::PushStyleColor(ImGuiCol_Text, Color);

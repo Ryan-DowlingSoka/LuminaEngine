@@ -20,6 +20,25 @@ namespace Lumina
     {
     }
 
+    void FShadowAtlasEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("Atlas",
+            "All shadow-casting lights share one big depth atlas. Each light is allocated a tile from a "
+            "quad-tree allocator sized by the light's screen-space importance.");
+        DrawHelpTextRow("Color Coding",
+            "Bigger tiles (more important / closer lights) shade toward red; small tiles toward blue. "
+            "The eye is drawn to the expensive allocations — usually what you care about.");
+        DrawHelpTextRow("Stats",
+            "Utilization % is the fraction of atlas pixels in use. Bucket histogram shows tile-size "
+            "distribution; lots of tiny tiles can mean far-away lights deserve culling.");
+        DrawHelpTextRow("Tile Table",
+            "Per-tile entry: owning light, size, position. Click to highlight on the canvas. Lets you "
+            "diagnose 'why is this light blurry' (= got a small tile).");
+        DrawHelpTextRow("Configuration",
+            "Atlas size + per-light cap come from Project Settings > Renderer > Shadows. "
+            "Increase atlas size if utilization regularly hits 100%.");
+    }
+
     // Warmer hue for bigger tiles: blue (small) -> red (big). Keeps the eye
     // drawn to the expensive allocations which are exactly what you care
     // about when debugging atlas pressure.

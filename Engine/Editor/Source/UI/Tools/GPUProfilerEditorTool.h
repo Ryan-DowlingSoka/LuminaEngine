@@ -19,6 +19,7 @@ namespace Lumina
         void OnInitialize() override;
         void OnDeinitialize(const FUpdateContext& UpdateContext) override;
         void DrawToolMenu(const FUpdateContext& UpdateContext) override;
+        void DrawHelpMenu() override;
 
     private:
 

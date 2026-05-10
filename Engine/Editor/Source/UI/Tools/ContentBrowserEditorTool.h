@@ -124,6 +124,7 @@ namespace Lumina
         void InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const override;
 
         void DrawToolMenu(const FUpdateContext& UpdateContext) override;
+        void DrawHelpMenu() override;
 
         void HandleContentBrowserDragDrop(FStringView DropPath, FStringView PayloadPath);
         

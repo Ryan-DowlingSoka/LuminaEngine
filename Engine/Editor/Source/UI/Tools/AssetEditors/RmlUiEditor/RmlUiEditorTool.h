@@ -33,6 +33,7 @@ namespace Lumina
         void OnDeinitialize(const FUpdateContext& UpdateContext) override;
         void Update(const FUpdateContext& UpdateContext) override;
         void OnSave() override;
+        void DrawHelpMenu() override;
 
         bool IsUnsavedDocument() override { return bBufferDirty; }
 

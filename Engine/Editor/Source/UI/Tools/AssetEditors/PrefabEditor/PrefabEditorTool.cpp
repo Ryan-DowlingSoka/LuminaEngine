@@ -1944,6 +1944,25 @@ namespace Lumina
         }
     }
 
+    void FPrefabEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("Authoring",
+            "Build the prefab in this isolated preview world like you would a normal scene. "
+            "Saving commits the entity hierarchy back to the prefab asset.");
+        DrawHelpTextRow("Selection / Gizmo",
+            "Same controls as the world editor: W/E/R for translate/rotate/scale, X for World/Local, "
+            "Ctrl-click multi-select, F frames the selection.");
+        DrawHelpTextRow("Components",
+            "Add Component on a selected entity to attach. Drag an asset directly onto the entity row "
+            "in the outliner for shortcut adds (e.g. drop a static mesh to add a SStaticMeshComponent).");
+        DrawHelpTextRow("Nested Prefabs",
+            "Drag another prefab asset into the outliner to instance it as a child. Property overrides "
+            "are per-instance; structural changes happen on the source prefab.");
+        DrawHelpTextRow("Save",
+            "Ctrl+S commits all entities, components and overrides to the prefab. Existing instances "
+            "in worlds reload on next open or with Reload Asset.");
+    }
+
     void FPrefabEditorTool::DrawToolMenu(const FUpdateContext& UpdateContext)
     {
         FAssetEditorTool::DrawToolMenu(UpdateContext);

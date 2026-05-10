@@ -991,6 +991,39 @@ namespace Lumina
         FEditorTool::DrawToolMenu(UpdateContext);
     }
 
+    void FWorldEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("Selection",
+            "Click an entity in the viewport or outliner to select. Ctrl-click adds, Shift-click range-selects. "
+            "Marquee-drag in the viewport for area selection. Esc clears.");
+        DrawHelpTextRow("Gizmo",
+            "W/E/R = Translate/Rotate/Scale. Spacebar cycles. X toggles World/Local space. "
+            "Hold Ctrl during a translate drag for vertex-snap to nearest unselected mesh vertex.");
+        DrawHelpTextRow("Snap",
+            "Snap settings (translate/rotate/scale step) live under the snap popup in the viewport toolbar.");
+        DrawHelpTextRow("Camera",
+            "Right-click + WASD to fly. Mouse wheel adjusts speed. F frames the selection. "
+            "Ctrl+1..9 saves a bookmark to that slot; 1..9 recalls it.");
+        DrawHelpTextRow("Game View (G)",
+            "Hides grid, billboards, AABBs, and gizmos so the viewport shows only what a runtime camera would. "
+            "Restores your prior toggles on exit.");
+        DrawHelpTextRow("Simulate / Play",
+            "Simulate runs physics + scripts in-place; Play (PIE) duplicates the world and switches to it. "
+            "Stop returns to the original editor world.");
+        DrawHelpTextRow("Undo / Redo",
+            "Ctrl+Z / Ctrl+Y. Each action that mutates the registry (transform edit, component add/remove, "
+            "entity creation) is captured as a transaction.");
+        DrawHelpTextRow("Drop to Floor",
+            "Casts a ray downward from each selected entity's pivot using their CPU AABBs. "
+            "No physics scene is required.");
+        DrawHelpTextRow("Prefabs",
+            "Right-click a selection > Create Prefab to author one; drag the asset back into the viewport "
+            "or outliner to instantiate.");
+        DrawHelpTextRow("Lua / Scripts",
+            "Attach an ScriptComponent and point it at a .luau asset. Open Tools > Debug > Scripts Info "
+            "for a live API reference.");
+    }
+
     void FWorldEditorTool::InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const
     {
         ImGui::DockBuilderRemoveNodeChildNodes(InDockspaceID);
@@ -3173,8 +3206,11 @@ namespace Lumina
     void FWorldEditorTool::DrawSnapSettingsPopup()
     {
         ImGui::Text("Snap Settings");
+        ImGuiX::HelpMarker(
+            "Constrains gizmo drags to fixed steps. Translate = world units. Rotate = degrees. "
+            "Scale = multiplicative factor. Toggle quickly with the Snap button on the toolbar.");
         ImGui::Separator();
-        
+
         if (ImGui::Checkbox("Enable Snap", &bGuizmoSnapEnabled))
         {
             GConfig->Set("Editor.WorldEditorTool.GuizmoSnapEnabled", bGuizmoSnapEnabled);

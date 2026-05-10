@@ -457,6 +457,25 @@ namespace Lumina
         }
     }
 
+    void FRmlUiEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("RmlUi",
+            "Lumina ships RmlUi as its HTML/CSS-style markup layer. Documents live as plain .rml files "
+            "alongside their .rcss stylesheets — no asset packaging.");
+        DrawHelpTextRow("Live Preview",
+            "Saving (Ctrl+S) reloads the document on the right pane. Auto Reload watches the file on disk "
+            "and refreshes when external editors save.");
+        DrawHelpTextRow("Decorators",
+            "FRmlUiRenderer supports CPU gradient decorators (horizontal-gradient / vertical-gradient) but NOT "
+            "shader-backed ones (linear-gradient, radial-gradient). Use the supported names.");
+        DrawHelpTextRow("Color Swatches",
+            "#RRGGBB / #RRGGBBAA literals get an inline color picker — click the swatch in the gutter "
+            "to open it. Edits commit through the editor's normal undo stack.");
+        DrawHelpTextRow("Resolution / Safe Zones",
+            "Use the toolbar to lock canvas size to a target resolution. Safe zone overlays help align "
+            "controls on TVs / consoles where overscan trims the edges.");
+    }
+
     void FRmlUiEditorTool::OnSave()
     {
         if (bTrimTrailingOnSave)

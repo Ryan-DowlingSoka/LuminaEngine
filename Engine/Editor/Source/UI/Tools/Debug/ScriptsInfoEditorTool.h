@@ -1,5 +1,6 @@
 #pragma once
 #include "../EditorTool.h"
+#include "Scripting/Lua/Scripting.h"
 
 namespace Lumina
 {
@@ -19,8 +20,16 @@ namespace Lumina
         void OnInitialize() override;
         void OnDeinitialize(const FUpdateContext& UpdateContext) override;
 
+        void DrawHelpMenu() override;
+
     private:
 
         void DrawWindow(bool bIsFocused);
+        void DrawRuntimeTab();
+        void DrawApiReferenceTab();
+        void RebuildApiCache();
+
+        TVector<Lua::FLuaSymbol> CachedSymbols;
+        double                   LastHarvestTimeSeconds = -1.0;
     };
 }

@@ -158,11 +158,22 @@ namespace Lumina
 
     void FMaterialEditorTool::DrawHelpMenu()
     {
+        DrawHelpTextRow("Graph",
+            "Right-click empty space to spawn nodes. Drag from a pin to wire it; types must match. "
+            "Shift-drag from a pin to drop a Reroute. Delete or Backspace removes selection.");
+        DrawHelpTextRow("Compile",
+            "Saving compiles the graph and uploads it to all material instances using this asset. "
+            "Compile errors surface in the log and on the failing node.");
+        DrawHelpTextRow("Preview",
+            "Use the Mesh menu to swap the preview between sphere/cube/plane/cylinder/cone. "
+            "Camera controls match the world editor (RMB + WASD).");
+        DrawHelpTextRow("Instances",
+            "Make derived materials via Content Browser > New > Material Instance. Instances inherit "
+            "the master graph and only override exposed parameters.");
+
         ImGui::TableNextRow();
-        
         ImGui::TableNextColumn();
         ImGui::TextUnformatted("Debug Node IDs");
-
         ImGui::TableNextColumn();
         ImGui::Checkbox("##DebugID", &NodeGraph->bDebug);
     }

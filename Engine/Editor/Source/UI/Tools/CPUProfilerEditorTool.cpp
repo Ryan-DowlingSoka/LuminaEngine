@@ -62,6 +62,24 @@ namespace Lumina
         ImGui::DragFloat("Min ms filter", &FilterMinTimeMs, 0.005f, 0.0f, 50.0f, "%.3f");
     }
 
+    void FCPUProfilerEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("Enable",
+            "CPU profiling is gated on cpu.Profiler.Enabled — toggle from the gear menu. Costs frames; "
+            "leave off when not investigating.");
+        DrawHelpTextRow("Targets",
+            "Multiple sample targets (engine main thread, render thread, asset cooker) can be picked "
+            "from the Target menu. Each has its own scope tree.");
+        DrawHelpTextRow("Reading the tree",
+            "Each node is a CPU scope pushed via FCPUProfileScope (or LUMINA_PROFILE macro). Time is "
+            "wall-clock ms; use Min ms filter to hide noise.");
+        DrawHelpTextRow("Frame Time Graph",
+            "Rolling history of total frame CPU time on the active target. Spikes correlate with surges "
+            "in the tree.");
+        DrawHelpTextRow("Adding scopes",
+            "In C++: LUMINA_PROFILE(\"YourScope\"); — scopes nest naturally.");
+    }
+
     void FCPUProfilerEditorTool::DrawProfilerWindow(bool)
     {
         FCPUProfiler& Profiler = FCPUProfiler::Get();

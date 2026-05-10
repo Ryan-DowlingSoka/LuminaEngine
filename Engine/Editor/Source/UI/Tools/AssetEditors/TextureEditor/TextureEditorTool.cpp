@@ -687,6 +687,25 @@ namespace Lumina
         FAssetEditorTool::DrawToolMenu(UpdateContext);
     }
 
+    void FTextureEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("Pan / Zoom",
+            "Middle-mouse drag pans, mouse wheel zooms. Hold Ctrl while scrolling to zoom finer. "
+            "The status bar shows current zoom percentage.");
+        DrawHelpTextRow("Mip Levels",
+            "If the texture has mips, the Mip slider lets you preview each level. The on-disk pixel "
+            "data is unchanged — this only changes which level is sampled for display.");
+        DrawHelpTextRow("HDR / Exposure",
+            "HDR textures (RGBA16F, RGB9E5, etc.) clip above 1.0 in the editor's LDR pipeline. "
+            "Use the Exposure stops slider to dim the preview and recover bright detail.");
+        DrawHelpTextRow("Channels",
+            "Toggle R/G/B/A channels from the View menu to inspect them in isolation. "
+            "Useful for verifying packed maps (e.g. ORM, normal maps with alpha height).");
+        DrawHelpTextRow("Compression / Format",
+            "Format and size are shown in the Details panel. Re-import via Content Browser to change "
+            "compression settings (BC1/BC3/BC5/BC7).");
+    }
+
     void FTextureEditorTool::InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const
     {
         ImGui::DockBuilderRemoveNodeChildNodes(InDockspaceID);

@@ -804,6 +804,26 @@ namespace Lumina
         ImGui::DockBuilderDockWindow(GetToolWindowName("Content").c_str(), bottomCenterDockID);
     }
 
+    void FContentBrowserEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("Browse",
+            "Left panel is the directory tree, right is the tile grid for the selected folder. "
+            "Double-click a folder to enter, double-click an asset to open its editor.");
+        DrawHelpTextRow("Create",
+            "Right-click empty space in the tile grid for the New menu (Material, Prefab, Lua script, etc). "
+            "Right-click a folder for create-in-place.");
+        DrawHelpTextRow("Import",
+            "Drag external files (FBX, PNG, WAV, ...) onto the tile grid to import. "
+            "Each importer maps to a CObject asset class.");
+        DrawHelpTextRow("Drag & Drop",
+            "Drag an asset tile into the world viewport, outliner, or a property field that accepts its type. "
+            "Filtering happens at drop-time based on the asset class.");
+        DrawHelpTextRow("Filter",
+            "Filter menu hides asset classes you don't want to see. View Options changes tile size.");
+        DrawHelpTextRow("Rename / Delete",
+            "F2 renames; Delete removes. Renames update inbound references via redirectors.");
+    }
+
     void FContentBrowserEditorTool::DrawToolMenu(const FUpdateContext& UpdateContext)
     {
         if (ImGui::BeginMenu(LE_ICON_FILTER " Filter"))

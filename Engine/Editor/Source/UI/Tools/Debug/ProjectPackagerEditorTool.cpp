@@ -30,6 +30,25 @@ namespace Lumina
     {
     }
 
+    void FProjectPackagerEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("What this does",
+            "Cooks the asset graph rooted at Project.GameStartupMap into a .pak, optionally invokes MSBuild "
+            "for the Game|Shipping target, and copies the binary + DLLs alongside the .pak.");
+        DrawHelpTextRow("Cook vs Full Package",
+            "Cook Only stops after the .pak — fast iteration when you only changed assets. "
+            "Full Package runs cook + build + copy and produces a runnable distribution.");
+        DrawHelpTextRow("Configurations",
+            "Shipping (default): no editor / no debug overhead, optimized. Development: profiler scopes + "
+            "asserts kept. Debug: unoptimized.");
+        DrawHelpTextRow("Extras",
+            "The Extras section adds files/directories to copy alongside the build (e.g. third-party DLLs, "
+            "docs, OpenSSL certs). Paths are relative to project root.");
+        DrawHelpTextRow("Build Output",
+            "The lower pane streams MSBuild output live. If a build fails, the stderr lines containing 'error' "
+            "are highlighted; full log is also kept on disk under <OutputDir>/build.log.");
+    }
+
     void FProjectPackagerEditorTool::AppendLog(FStringView Line)
     {
         LogLines.emplace_back(Line.data(), Line.size());

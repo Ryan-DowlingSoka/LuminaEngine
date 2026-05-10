@@ -20,6 +20,22 @@ namespace Lumina
     {
     }
 
+    void FMemoryProfilerEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("Tabs",
+            "Overview: high-level totals + history graph. Detailed: breakdown by allocator. "
+            "Distribution: bucket histograms (small/large allocations).");
+        DrawHelpTextRow("Snapshots",
+            "Sampled every second by default. Pause to freeze the graph and compare a known-good baseline "
+            "against a leaking trace.");
+        DrawHelpTextRow("What's tracked",
+            "Process-resident memory, currently mapped allocator size, cached (committed but free) memory, "
+            "and huge-allocation overhead. GPU memory lives in Renderer Info.");
+        DrawHelpTextRow("Reading the graph",
+            "Up-and-to-the-right that doesn't level off after gameplay quiet periods is the leak signal. "
+            "Check Object Browser for unexpected live objects.");
+    }
+
     void FMemoryProfilerEditorTool::DrawWindow(bool bIsFocused)
     {
         UpdateTimer += GEngine->GetDeltaTime();

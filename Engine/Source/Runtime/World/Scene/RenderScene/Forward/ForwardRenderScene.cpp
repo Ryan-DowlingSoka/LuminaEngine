@@ -2554,6 +2554,7 @@ namespace Lumina
         }
         
         CmdList.ClearImageUInt(GetNamedImage(ENamedImage::DepthAttachment), AllSubresources, 0); 
+        CmdList.ClearImageUInt(ShadowAtlas.GetImage(), AllSubresources, 1);
     }
 
 
@@ -2919,9 +2920,7 @@ namespace Lumina
         glm::mat4 ViewProj = SceneViewport->GetViewVolume().GetViewMatrix();
 
         CmdList.SetPushConstants(&ViewProj, sizeof(glm::mat4));
-
-        // LightCull.slang uses LOCAL_SIZE=128 and each invocation processes
-        // one cluster, so group count = ceil(NumClusters / 128).
+        
         constexpr uint32 LightCullGroupSize = 128;
         constexpr uint32 LightCullGroups    = (NumClusters + LightCullGroupSize - 1) / LightCullGroupSize;
         CmdList.Dispatch(LightCullGroups, 1, 1);
@@ -2931,33 +2930,14 @@ namespace Lumina
     void FForwardRenderScene::PointShadowPass(ICommandList& CmdList)
     {
         LUMINA_PROFILE_SECTION_COLORED("Point Light Shadow Pass", tracy::Color::DeepPink2);
-
-        // The point pass owns the once-per-frame Clear of the shared 2D
-        // shadow atlas. Even with no point shadows we still issue an empty
-        // pass so SpotShadowPass can safely use LoadOp::Load and so stale
-        // depth from prior frames doesn't leak through sampling.
+        
         if (DrawCommands.empty() || PackedShadows[(uint32)ELightType::Point].empty())
         {
-            FRenderPassDesc::FAttachment ClearDepth; ClearDepth
-                .SetLoadOp(ERenderLoadOp::Clear)
-                .SetDepthClearValue(1.0)
-                .SetImage(ShadowAtlas.GetImage());
-
-            FRenderPassDesc ClearPass; ClearPass
-                .SetDepthAttachment(ClearDepth)
-                .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
-
-            CmdList.BeginRenderPass(ClearPass);
-            CmdList.EndRenderPass();
             return;
         }
 
         FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("ShadowMappingPixel.slang");
-
-        // Bias tuned for the NDC-z atlas (near/far ~ radius*0.01 / radius).
-        // CSM uses larger values since its depth spreads uniformly; here the
-        // z range is compressed near 1.0, so slope-scale must be gentle or
-        // it pushes occluder depth past the receiver.
+        
         FRenderState RenderState; RenderState
                 .SetDepthStencilState(FDepthStencilState()
                 .SetDepthFunc(EComparisonFunc::Less))
@@ -2965,10 +2945,7 @@ namespace Lumina
                     .SetSlopeScaleDepthBias(1.5f)
                     .SetDepthBias(1)
                     .SetCullBack());
-
-        // Single 2D atlas: clear once, then every (light, face) pair draws
-        // into its own tile via per-tile viewport/scissor. SpotShadowPass
-        // re-enters the same atlas with LoadOp::Load to preserve our writes.
+        
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ShadowMappingVert.slang");
 
         const TVector<FLightShadow>& PointShadows = PackedShadows[(uint32)ELightType::Point];
@@ -2981,10 +2958,7 @@ namespace Lumina
         FRenderPassDesc RenderPass; RenderPass
             .SetDepthAttachment(Depth)
             .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
-
-        // Pipeline desc minus the vertex shader; the per-batch loop picks
-        // either the global shadow VS or a per-material WPO variant. The
-        // pipeline cache short-circuits identical lookups.
+        
         FGraphicsPipelineDesc DescTemplate; DescTemplate
             .SetDebugName("Point Light Shadow Pass")
             .SetRenderState(RenderState)

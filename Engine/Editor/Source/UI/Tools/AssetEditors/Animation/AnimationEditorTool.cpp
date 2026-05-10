@@ -93,6 +93,21 @@ namespace Lumina
     {
     }
 
+    void FAnimationEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("Playback",
+            "Spacebar plays/pauses, Home rewinds. The Playrate slider scales time so you can scrub at "
+            "non-1.0 speeds without scrubbing the timeline manually.");
+        DrawHelpTextRow("Sequencer",
+            "Tracks list one row per bone (or curve). Click a keyframe to select; drag to move; "
+            "Ctrl-drag duplicates. Right-click for keyframe context (interpolation, delete).");
+        DrawHelpTextRow("Preview Mesh",
+            "The clip plays on the asset's compatible skeletal mesh (matched by skeleton). To preview "
+            "on a different mesh, drop one onto the viewport.");
+        DrawHelpTextRow("Compression",
+            "Animation curves are compressed at import. Re-import to change tolerance/format.");
+    }
+
     void FAnimationEditorTool::DrawToolMenu(const FUpdateContext& UpdateContext)
     {
         FAssetEditorTool::DrawToolMenu(UpdateContext);

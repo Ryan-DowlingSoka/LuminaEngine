@@ -21,6 +21,27 @@ namespace Lumina
     {
     }
 
+    void FLuaDebuggerEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("Pause / Resume",
+            "Hits when the VM trips a breakpoint, an error, or an explicit assert. F5 resumes; "
+            "Stop ignores remaining steps.");
+        DrawHelpTextRow("Stepping",
+            "F10 step over (next line, same frame). F11 step into (descend into the next call). "
+            "Shift+F11 step out (run until current frame returns).");
+        DrawHelpTextRow("Call Stack",
+            "Click a frame to scope the Locals/Upvalues view. The Lua editor jumps to that frame's source line.");
+        DrawHelpTextRow("Watches",
+            "Add expressions in the Lua editor's Watch panel — they re-evaluate against the selected frame's "
+            "environment on every pause.");
+        DrawHelpTextRow("Breakpoints",
+            "Click the gutter in the Lua editor to toggle. Right-click 'Configure...' for conditional, "
+            "log-only, and hit-count breakpoints.");
+        DrawHelpTextRow("Inline Values",
+            "While paused, the Lua editor draws each visible local's current value at end-of-line. "
+            "Toggle from the editor toolbar.");
+    }
+
     void FLuaDebuggerEditorTool::Update(const FUpdateContext& /*UpdateContext*/)
     {
         const bool bPausedNow = Lua::FLuaDebugger::Get().IsPaused();

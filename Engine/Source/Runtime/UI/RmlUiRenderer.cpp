@@ -17,6 +17,7 @@
 #include "Assets/AssetTypes/Textures/Texture.h"
 #include "Core/Object/ObjectCore.h"
 #include "FileSystem/FileSystem.h"
+#include "Renderer/GPUProfiler/GPUProfiler.h"
 
 namespace Lumina
 {
@@ -262,6 +263,8 @@ namespace Lumina
     void FRmlUiRenderer::IssueDrawCall(FDrawCall& Draw)
     {
         ICommandList& CmdList = *CurrentCmdList;
+
+        GPU_PROFILE_SCOPE_COLOR(&CmdList, "FRmlUiRenderer::IssueDrawCall", FColor(0.50f, 0.65f, 1.00f));
 
         auto GeomIt = Geometries.find(Draw.Geometry);
         if (GeomIt == Geometries.end())

@@ -140,6 +140,24 @@ namespace Lumina
     {
     }
 
+    void FMaterialInstanceEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("What this is",
+            "An instance overrides parameters on a parent material — no shader recompile, no graph editing. "
+            "If you need new logic, edit the parent Material; if you only need different values, override here.");
+        DrawHelpTextRow("Parameters",
+            "Each row corresponds to a parameter exposed in the parent material's graph (Constant + ParameterName). "
+            "Toggle the Override checkbox to capture an override; clear it to fall back to the parent's value.");
+        DrawHelpTextRow("Texture Slots",
+            "Drag a texture from the Content Browser onto a slot. The picker filter matches by name — useful for "
+            "very large libraries.");
+        DrawHelpTextRow("Preview Mesh",
+            "Use the Mesh menu to swap between sphere/cube/plane/cylinder/cone for the preview viewport.");
+        DrawHelpTextRow("Inheritance",
+            "Changing the parent re-imports parameter defaults. Existing overrides are preserved when their "
+            "name + type match.");
+    }
+
     void FMaterialInstanceEditorTool::DrawParameterEditor(bool bFocused)
     {
         CMaterialInstance* Instance = Cast<CMaterialInstance>(Asset.Get());

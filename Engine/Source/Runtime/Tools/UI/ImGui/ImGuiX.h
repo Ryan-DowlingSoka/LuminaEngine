@@ -36,14 +36,31 @@ namespace Lumina::ImGuiX
 
     RUNTIME_API void TextTooltip_Internal(FStringView String);
     RUNTIME_API void TextColoredUnformatted(const ImVec4& Color, const FFixedString& String);
-    
+
     template<typename... TArgs>
     void TextTooltip(std::format_string<TArgs...> Fmt, TArgs&&... Args)
     {
         FFixedString Buffer;
-        std::format_to(std::back_inserter(Buffer), Fmt, std::forward<TArgs>(Args)...);   
+        std::format_to(std::back_inserter(Buffer), Fmt, std::forward<TArgs>(Args)...);
         TextTooltip_Internal(Buffer);
     }
+
+    // Wrapped tooltip for help text longer than a few words; auto-wraps at ~35em.
+    RUNTIME_API void WrappedTooltip_Internal(FStringView String);
+
+    template<typename... TArgs>
+    void WrappedTooltip(std::format_string<TArgs...> Fmt, TArgs&&... Args)
+    {
+        FFixedString Buffer;
+        std::format_to(std::back_inserter(Buffer), Fmt, std::forward<TArgs>(Args)...);
+        WrappedTooltip_Internal(Buffer);
+    }
+
+    // Inline `(?)` icon that shows a wrapped tooltip on hover. Place after a label or control.
+    RUNTIME_API void HelpMarker(FStringView Help);
+
+    // Same as HelpMarker but with a custom leading icon (e.g. LE_ICON_INFORMATION_OUTLINE).
+    RUNTIME_API void HelpMarkerIcon(const char* Icon, FStringView Help);
 
     template <typename... TArgs>
     void Text(std::format_string<TArgs...> Fmt, TArgs&&... Args)

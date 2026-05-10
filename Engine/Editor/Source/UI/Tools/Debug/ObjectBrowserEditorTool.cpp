@@ -23,6 +23,21 @@ namespace Lumina
     {
     }
 
+    void FObjectBrowserEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("What this is",
+            "Lists every live CObject in the engine — every loaded asset, every transient runtime object, "
+            "each grouped by package. Useful when chasing leaks or unexpected references.");
+        DrawHelpTextRow("Filters",
+            "Search filters by object name. Class filter narrows to a specific CClass (and its subclasses). "
+            "Show Only Active hides objects pending destroy.");
+        DrawHelpTextRow("Sorting",
+            "Toggle Sort By Name to sort alphabetically; otherwise rows are in registration (creation) order — "
+            "newest at the bottom.");
+        DrawHelpTextRow("Selection",
+            "Click a row to inspect its package + class. The package is what FAssetRegistry / save paths use.");
+    }
+
     void FObjectBrowserEditorTool::DrawWindow(bool bIsFocused)
     {
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 6.0f));

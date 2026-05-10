@@ -224,6 +224,22 @@ namespace Lumina
     {
     }
 
+    void FSkeletonEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("Hierarchy",
+            "Bone tree on the left mirrors the import. Click a bone to select; transforms come from the "
+            "bind pose. Multi-select extends sockets/constraints across bones.");
+        DrawHelpTextRow("Sockets",
+            "Sockets are named transforms relative to a bone. Add via the bone context menu. Runtime code "
+            "looks them up by name (e.g. 'WeaponR' for an attachment).");
+        DrawHelpTextRow("Retargeting",
+            "Two skeletons with identical bone names auto-retarget animations between them. Otherwise, "
+            "set up a per-bone mapping table on the asset.");
+        DrawHelpTextRow("Preview",
+            "Drop a skeletal mesh into the viewport to see the skeleton applied. Useful for verifying "
+            "socket positions.");
+    }
+
     void FSkeletonEditorTool::DrawToolMenu(const FUpdateContext& UpdateContext)
     {
         FAssetEditorTool::DrawToolMenu(UpdateContext);

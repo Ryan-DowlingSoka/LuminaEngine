@@ -21,6 +21,7 @@
 #include "Renderer/ShaderCompiler.h"
 #include "TaskSystem/TaskSystem.h"
 #include "Renderer/ErrorHandling/Vulkan/VulkanCrashTracker.h"
+#include "Renderer/GPUProfiler/GPUProfiler.h"
 #include "Tools/Dialogs/Dialogs.h"
 
 namespace Lumina

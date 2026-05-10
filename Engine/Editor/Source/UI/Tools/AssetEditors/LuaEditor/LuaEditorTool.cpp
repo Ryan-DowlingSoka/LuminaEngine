@@ -608,6 +608,32 @@ namespace Lumina
         }
     }
 
+    void FLuaEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("API Reference",
+            "Tools > Debug > Scripts Info > API Reference lists every class, function and value Lua sees. "
+            "Hover a name there for its description; the list refreshes from the live VM.");
+        DrawHelpTextRow("Autocomplete",
+            "Triggers on '.' / ':' or after a brief pause while typing. Pulls members from the live VM "
+            "globals plus locals declared in this buffer. Tab accepts.");
+        DrawHelpTextRow("Hover Tooltips",
+            "Hover an identifier for its kind, type, and (when known) signature. Locals show their "
+            "declared annotation; globals include description text harvested from C++.");
+        DrawHelpTextRow("Breakpoints",
+            "Click the gutter to toggle. Right-click 'Configure...' for conditional / log-only / hit-count "
+            "breakpoints. F5 continues, F10 step over, F11 step into.");
+        DrawHelpTextRow("Hot Reload",
+            "Saving recompiles immediately. The runtime VM picks up the change on its next instantiation; "
+            "stdlib reload is exposed as Engine.ReloadStdlib() in Lua.");
+        DrawHelpTextRow("Stdlib",
+            "EntityScript, Random, Color, Tween are preloaded as globals — no `require` needed. "
+            "Source lives under VFS Stdlib/.");
+        DrawHelpTextRow("Bookmarks",
+            "F2 toggles a bookmark on the current line. Shift+F2 cycles between them. Session-only.");
+        DrawHelpTextRow("Snippets / Format",
+            "Ctrl+Shift+P opens snippets; Format pretty-prints the buffer. Both available from the toolbar.");
+    }
+
     void FLuaEditorTool::OnSave()
     {
         if (bTrimTrailingOnSave)

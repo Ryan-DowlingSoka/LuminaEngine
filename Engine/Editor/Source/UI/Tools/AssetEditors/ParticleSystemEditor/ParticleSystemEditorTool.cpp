@@ -112,6 +112,19 @@ namespace Lumina
 
     void FParticleSystemEditorTool::DrawHelpMenu()
     {
+        DrawHelpTextRow("Graph",
+            "Particle behaviour is built from nodes — emitters, lifetime/velocity modifiers, render modules. "
+            "Right-click empty space to spawn nodes; drag pin-to-pin to wire them.");
+        DrawHelpTextRow("Compile",
+            "Compile bakes the graph into the asset's runtime data. Save also recompiles. "
+            "Compile errors surface in the log and on the failing node.");
+        DrawHelpTextRow("Preview",
+            "The viewport spawns the system at the origin. Toggle camera follow / restart from the toolbar. "
+            "Reset clears all live particles instantly.");
+        DrawHelpTextRow("Material",
+            "Drag a material onto the render module to swap. Translucent materials are sorted back-to-front "
+            "per draw so authoring blend modes per system is OK.");
+
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::TextUnformatted("Debug Node IDs");

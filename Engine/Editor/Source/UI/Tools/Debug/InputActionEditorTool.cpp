@@ -150,6 +150,25 @@ namespace Lumina
         EndCapture();
     }
 
+    void FInputActionEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("Actions vs Bindings",
+            "An Action is a named gameplay event (e.g. 'Jump'). Bindings are the physical inputs that "
+            "fire it (Spacebar, Gamepad-A, Mouse4). One action can have many bindings.");
+        DrawHelpTextRow("Capture",
+            "Click a Key/Mouse field's 'Listen' button and press the input you want to bind. Esc cancels. "
+            "Multiple modifiers can be held; the captured chord is what fires the action.");
+        DrawHelpTextRow("Axes",
+            "Positive/Negative slot pairs synthesize a -1..+1 axis (e.g. A/D for steering). The runtime "
+            "InputContext exposes them as floats.");
+        DrawHelpTextRow("Saving",
+            "Edits live in a working copy until you hit Save — at which point they're committed to "
+            "FInputActionMap and persisted to project config.");
+        DrawHelpTextRow("In Lua",
+            "Input.BindAction(\"Jump\", function() ... end) — see Tools > Debug > Scripts Info > API "
+            "Reference under 'Input' for the full surface.");
+    }
+
     void FInputActionEditorTool::Update(const FUpdateContext&)
     {
         if (CaptureSlot == ECaptureSlot::None)

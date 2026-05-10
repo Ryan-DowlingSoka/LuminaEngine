@@ -21,6 +21,23 @@ namespace Lumina
         
     }
 
+    void FConsoleLogEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("Filtering",
+            "Use the Filter menu to hide log levels you don't care about. The text filter at the top "
+            "supports inclusive (foo) and exclusive (-bar) terms separated by commas.");
+        DrawHelpTextRow("Console Commands",
+            "Type a console variable or command at the bottom prompt; Tab/Up navigates autocomplete. "
+            "Up/Down with empty input cycles command history.");
+        DrawHelpTextRow("Autocomplete",
+            "Live-matched against registered CVars and exec commands. Description text comes from the "
+            "FAutoConsoleVariable / FAutoConsoleCommand registration site.");
+        DrawHelpTextRow("Export",
+            "Copies the currently filtered messages out to a text file.");
+        DrawHelpTextRow("Clear",
+            "Clears the visible buffer only — the underlying ring buffer the engine writes to is unaffected.");
+    }
+
     void FConsoleLogEditorTool::DrawToolMenu(const FUpdateContext& UpdateContext)
     {
         if (ImGui::BeginMenu(LE_ICON_FILTER " Filter"))

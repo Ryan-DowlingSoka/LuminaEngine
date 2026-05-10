@@ -70,6 +70,22 @@ namespace Lumina
     {
     }
 
+    void FProjectSettingsEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("What's Listed",
+            "Only settings declared via FConfig::RegisterSetting are shown. Editing a value here writes it "
+            "into the project's config; unregistered keys read from disk are still writable elsewhere but invisible.");
+        DrawHelpTextRow("Categories",
+            "Settings are grouped by the Category field passed at registration. Pick one in the left panel "
+            "to filter the right pane. The search box matches against display name and key.");
+        DrawHelpTextRow("Defaults",
+            "Right-click a row > 'Reset to Default' restores the value declared in code. Useful when a setting "
+            "drifted from a one-off experiment.");
+        DrawHelpTextRow("Where it lives",
+            "Project config persists under <Project>/Config and is git-friendly text. Engine defaults are "
+            "merged on top of it at load time.");
+    }
+
     void FProjectSettingsEditorTool::DrawWindow(bool bIsFocused)
     {
         if (GConfig == nullptr)

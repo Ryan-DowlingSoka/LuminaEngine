@@ -478,6 +478,21 @@ namespace Lumina
     {
     }
 
+    void FSkeletalMeshEditorTool::DrawHelpMenu()
+    {
+        DrawHelpTextRow("Skeleton",
+            "The mesh references its skeleton asset; toggling Show Bones overlays the skeleton hierarchy. "
+            "Edit the skeleton in its own editor for socket / bone-name changes.");
+        DrawHelpTextRow("Visualizers",
+            "Toggle wireframe, normals, tangents, AABB, bones from the View menu. Combine with the "
+            "Animation editor's preview to spot weighting issues live.");
+        DrawHelpTextRow("Materials",
+            "Slot mapping comes from the source asset. Drag a material onto the slot to override.");
+        DrawHelpTextRow("Reimport",
+            "File > Reimport refreshes from disk; preserves material overrides and skeleton mapping "
+            "when slot/bone names match.");
+    }
+
     void FSkeletalMeshEditorTool::DrawToolMenu(const FUpdateContext& UpdateContext)
     {
         FAssetEditorTool::DrawToolMenu(UpdateContext);
