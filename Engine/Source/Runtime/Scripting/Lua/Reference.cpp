@@ -171,11 +171,11 @@ namespace Lumina::Lua
 
     bool FRef::IsUserdata(int Tag) const
     {
-        // Userdata tag is per-instance, not encoded in lua_type, so still need a stack peek.
         if (!IsValid() || CachedType != EType::Userdata)
         {
             return false;
         }
+        
         Push();
         bool bResult = lua_userdatatag(State, -1) == Tag;
         lua_pop(State, 1);

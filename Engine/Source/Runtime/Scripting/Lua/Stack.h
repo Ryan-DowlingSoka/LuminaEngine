@@ -185,7 +185,7 @@ namespace Lumina::Lua
     {
         static FStringView TypeName(lua_State* State)        { return lua_typename(State, LUA_TNUMBER); }
         static void Push(lua_State* State, double Value)     { lua_pushnumber(State, Value); }
-        static double Get(lua_State* State, int Index)       { return (float)luaL_checknumber(State, Index); }
+        static double Get(lua_State* State, int Index)       { return luaL_checknumber(State, Index); }
         static bool Check(lua_State* State, int Index)       { return lua_isnumber(State, Index); }
     };
     
@@ -211,45 +211,72 @@ namespace Lumina::Lua
     struct TStack<FStringView>
     {
         static FStringView TypeName(lua_State* State)         { return lua_typename(State, LUA_TSTRING); }
-        static void Push(lua_State* State, FStringView Value) { lua_pushstring(State, Value.data()); }
-        static FStringView Get(lua_State* State, int Index)   { return luaL_checkstring(State, Index); }
+        static void Push(lua_State* State, FStringView Value) { lua_pushlstring(State, Value.data(), Value.size()); }
+        static FStringView Get(lua_State* State, int Index)
+        {
+            size_t Len = 0;
+            const char* Str = luaL_checklstring(State, Index, &Len);
+            return FStringView(Str, Len);
+        }
         static bool Check(lua_State* State, int Index)        { return lua_type(State, Index) == LUA_TSTRING; }
     };
-    
+
     template<>
     struct TStack<FString>
     {
         static FStringView TypeName(lua_State* State)               { return lua_typename(State, LUA_TSTRING); }
-        static void Push(lua_State* State, const FString& Value)    { lua_pushstring(State, Value.c_str()); }
-        static FString Get(lua_State* State, int Index)             { return luaL_checkstring(State, Index); }
+        static void Push(lua_State* State, const FString& Value)    { lua_pushlstring(State, Value.data(), Value.size()); }
+        static FString Get(lua_State* State, int Index)
+        {
+            size_t Len = 0;
+            const char* Str = luaL_checklstring(State, Index, &Len);
+            return FString(Str, Len);
+        }
         static bool Check(lua_State* State, int Index)              { return lua_type(State, Index) == LUA_TSTRING; }
     };
-    
+
     template<>
     struct TStack<std::string>
     {
         static FStringView TypeName(lua_State* State)                   { return lua_typename(State, LUA_TSTRING); }
-        static void Push(lua_State* State, const std::string& Value)    { lua_pushstring(State, Value.c_str()); }
-        static std::string Get(lua_State* State, int Index)             { return luaL_checkstring(State, Index); }
+        static void Push(lua_State* State, const std::string& Value)    { lua_pushlstring(State, Value.data(), Value.size()); }
+        static std::string Get(lua_State* State, int Index)
+        {
+            size_t Len = 0;
+            const char* Str = luaL_checklstring(State, Index, &Len);
+            return std::string(Str, Len);
+        }
         static bool Check(lua_State* State, int Index)                  { return lua_type(State, Index) == LUA_TSTRING; }
     };
-    
-    
+
+
     template<>
     struct TStack<FFixedString>
     {
         static FStringView TypeName(lua_State* State)                   { return lua_typename(State, LUA_TSTRING); }
-        static void Push(lua_State* State, const FFixedString& Value)   { lua_pushstring(State, Value.c_str()); }
-        static FFixedString Get(lua_State* State, int Index)            { return luaL_checkstring(State, Index); }
+        static void Push(lua_State* State, const FFixedString& Value)   { lua_pushlstring(State, Value.data(), Value.length()); }
+        static FFixedString Get(lua_State* State, int Index)
+        {
+            size_t Len = 0;
+            const char* Str = luaL_checklstring(State, Index, &Len);
+            return FFixedString(Str, Len);
+        }
         static bool Check(lua_State* State, int Index)                  { return lua_type(State, Index) == LUA_TSTRING; }
     };
-    
+
     template<>
     struct TStack<FName>
     {
         static FStringView TypeName(lua_State* State)               { return lua_typename(State, LUA_TSTRING); }
+        // FName has no stored length — Length() does its own strlen — so just let
+        // lua_pushstring do the single strlen instead of paying it twice.
         static void Push(lua_State* State, const FName& Value)      { lua_pushstring(State, Value.c_str()); }
-        static FName Get(lua_State* State, int Index)               { return luaL_checkstring(State, Index); }
+        static FName Get(lua_State* State, int Index)
+        {
+            size_t Len = 0;
+            const char* Str = luaL_checklstring(State, Index, &Len);
+            return FName(Str, Len);
+        }
         static bool Check(lua_State* State, int Index)              { return lua_type(State, Index) == LUA_TSTRING; }
     };
     
@@ -402,14 +429,16 @@ namespace Lumina::Lua
                 luaL_error(State, "#%d Argument must be a table", Index);
             }
 
-            TVector<T> Vector;
-            Vector.reserve(static_cast<std::size_t>(lua_objlen(State, Index)));
+            const int ABSIndex  = lua_absindex(State, Index);
+            const int Count     = lua_objlen(State, ABSIndex);
 
-            int const ABSIndex = lua_absindex(State, Index);
-            lua_pushnil(State);
-            while (lua_next(State, ABSIndex) != 0)
+            TVector<T> Vector;
+            Vector.reserve(static_cast<std::size_t>(Count));
+            
+            for (int i = 1; i <= Count; ++i)
             {
-                Vector.push_back(TStack<T>::Get(State, -1));
+                lua_rawgeti(State, ABSIndex, i);
+                Vector.emplace_back(TStack<T>::Get(State, -1));
                 lua_pop(State, 1);
             }
             return Vector;
@@ -421,9 +450,6 @@ namespace Lumina::Lua
         }
     };
     
-    // TVector is encoded as a Lua buffer/table, not userdata, so a reference parameter
-    // (`const TVector<T>&`) must read it by value rather than going through the userdata-
-    // pointer path that the generic TStack<T&> uses. Delegate to the value specialization.
     template<typename T>
     struct TStack<TVector<T>&> : TStack<TVector<T>> {};
 
@@ -469,7 +495,6 @@ namespace Lumina::Lua
         requires(eastl::is_constructible_v<RawT, TArgs...>)
         static void Push(lua_State* State, TArgs&&... Args)
         {
-            // Skip value-init; would zero-fill Buffer right before Emplace overwrites it.
             void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(StorageT), TClassTraits<RawT>::Tag());
             auto* Header = static_cast<StorageT*>(Block);
             Header->External = nullptr;
