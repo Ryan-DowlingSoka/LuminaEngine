@@ -13,13 +13,7 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
         CPU_PROFILE_SCOPE_COLOR("Lua Scripts", FColor(0.95f, 0.70f, 0.25f));
-
-        // Hold every script Update while the debugger is parked at a
-        // breakpoint. Without this, the entity that broke would re-enter
-        // Update on the next frame and re-hit the same line, plus every
-        // other entity would tick on top of the paused thread, making the
-        // pause useless. The paused thread itself stays alive (anchored by
-        // FLuaDebugger) and only resumes when the user clicks Continue.
+        
         if (Lua::FLuaDebugger::Get().IsPaused())
         {
             return;
@@ -36,7 +30,7 @@ namespace Lumina
                     if (ScriptComponent.TickRate <= 0.0f)
                     {
                         #if USING(WITH_EDITOR)
-                        (void)ScriptComponent.UpdateFunc.InvokeAsCoroutine(Script->Reference, DeltaTime);
+                        (void)Script->InvokeAsCoroutine(ScriptComponent.UpdateFunc, Script->Reference, DeltaTime);
                         #else
                         (void)ScriptComponent.UpdateFunc.Invoke(Script->Reference, DeltaTime);
                         #endif
@@ -47,7 +41,7 @@ namespace Lumina
                         if (ScriptComponent.AccumulatedTime >= ScriptComponent.TickRate)
                         {
                             #if USING(WITH_EDITOR)
-                            (void)ScriptComponent.UpdateFunc.InvokeAsCoroutine(Script->Reference, ScriptComponent.AccumulatedTime);
+                            (void)Script->InvokeAsCoroutine(ScriptComponent.UpdateFunc, Script->Reference, ScriptComponent.AccumulatedTime);
                             #else
                             (void)ScriptComponent.UpdateFunc.Invoke(Script->Reference, ScriptComponent.AccumulatedTime);
                             #endif

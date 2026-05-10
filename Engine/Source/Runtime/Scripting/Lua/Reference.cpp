@@ -10,6 +10,7 @@ namespace Lumina::Lua
     FRef::FRef(lua_State* L, int Index)
         : State(lua_mainthread(L))
     {
+        CachedType = (EType)lua_type(L, Index);
         Ref = lua_ref(L, Index);
         lua_pop(L, 1);
     }
@@ -21,6 +22,7 @@ namespace Lumina::Lua
 
     FRef::FRef(const FRef& Other)
         : State(Other.State)
+        , CachedType(Other.CachedType)
     {
         if (State && Other.Ref != LUA_NOREF)
         {
@@ -36,25 +38,28 @@ namespace Lumina::Lua
         {
             return *this;
         }
-            
+
         Reset();
         State = Other.State;
+        CachedType = Other.CachedType;
         if (State && Other.Ref != LUA_NOREF)
         {
             lua_getref(State, Other.Ref);
             Ref = lua_ref(State, -1);
             lua_pop(State, 1);
         }
-            
+
         return *this;
     }
 
     FRef::FRef(FRef&& Other) noexcept
     : State(Other.State)
     , Ref(Other.Ref)
+    , CachedType(Other.CachedType)
     {
         Other.State = nullptr;
         Other.Ref   = LUA_NOREF;
+        Other.CachedType = EType::Nil;
     }
 
     FRef& FRef::operator=(FRef&& Other) noexcept
@@ -63,15 +68,17 @@ namespace Lumina::Lua
         {
             return *this;
         }
-            
+
         Reset();
-        
-        State   = Other.State;
-        Ref     = Other.Ref;
-            
+
+        State       = Other.State;
+        Ref         = Other.Ref;
+        CachedType  = Other.CachedType;
+
         Other.State = nullptr;
         Other.Ref   = LUA_NOREF;
-            
+        Other.CachedType = EType::Nil;
+
         return *this;
     }
 
@@ -80,8 +87,9 @@ namespace Lumina::Lua
         if (State && Ref != LUA_NOREF)
         {
             lua_unref(State, Ref);
-            Ref     = LUA_NOREF;
-            State   = nullptr;
+            Ref         = LUA_NOREF;
+            State       = nullptr;
+            CachedType  = EType::Nil;
         }
     }
 
@@ -97,12 +105,7 @@ namespace Lumina::Lua
 
     EType FRef::GetType() const
     {
-        Push();
-        
-        int Type = lua_type(State, -1);
-        
-        lua_pop(State, 1);
-        return (EType)Type;
+        return CachedType;
     }
 
     void FRef::Push() const
@@ -158,31 +161,22 @@ namespace Lumina::Lua
 
     bool FRef::IsInvokable() const
     {
-        if (!IsValid())
-        {
-            return false;
-        }
-
-        Push();
-
-        bool Result = lua_isfunction(State, -1);
-        lua_pop(State, 1);
-        return Result;
+        return IsValid() && CachedType == EType::Function;
     }
 
     bool FRef::IsTable() const
     {
-        Push();
-        
-        bool Result = lua_istable(State, -1);
-        lua_pop(State, 1);
-        return Result;
+        return IsValid() && CachedType == EType::Table;
     }
 
     bool FRef::IsUserdata(int Tag) const
     {
+        // Userdata tag is per-instance, not encoded in lua_type, so still need a stack peek.
+        if (!IsValid() || CachedType != EType::Userdata)
+        {
+            return false;
+        }
         Push();
-        
         bool bResult = lua_userdatatag(State, -1) == Tag;
         lua_pop(State, 1);
         return bResult;

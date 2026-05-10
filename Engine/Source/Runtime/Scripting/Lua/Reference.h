@@ -4,13 +4,13 @@
 #include "Error.h"
 #include "Invoker.h"
 #include "lua.h"
+#include "LuaTypes.h"
 #include "Stack.h"
 #include "Log/Log.h"
 
 
 namespace Lumina::Lua
 {
-    enum class EType : uint8;
 
     // Yielded means the coroutine is suspended and pinned by whoever requested the yield.
     enum class ECoroutineStatus : uint8
@@ -133,6 +133,11 @@ namespace Lumina::Lua
         template<typename... TArgs>
         ECoroutineStatus InvokeAsCoroutine(TArgs&& ... Args) const;
 
+        // Caller owns SubThread's lifetime (registry pin, threaddata, eventual unref).
+        // Used by FScript's coroutine pool to amortize per-call lua_newthread allocation.
+        template<typename... TArgs>
+        ECoroutineStatus InvokeAsCoroutineOn(lua_State* SubThread, TArgs&& ... Args) const;
+
         template<typename T>
         NODISCARD TClass<T> NewClass(FStringView Name);
         
@@ -203,9 +208,13 @@ namespace Lumina::Lua
         }    
         
     private:
-        
-        lua_State*      State   = nullptr;
-        int             Ref     = LUA_NOREF;
+
+        lua_State*      State       = nullptr;
+        int             Ref         = LUA_NOREF;
+        // lua_ref pins a specific value, and a registry slot's contents can't change,
+        // so the type is fixed for this ref's lifetime. Lets IsInvokable/IsTable/GetType
+        // skip the lua_getref + lua_pop round-trip.
+        EType           CachedType  = EType::Nil;
     };
 
     template <typename T>
@@ -380,6 +389,34 @@ namespace Lumina::Lua
         }
 
         lua_unref(State, ThreadRef);
+        return ECoroutineStatus::Ok;
+    }
+
+    template <typename ... TArgs>
+    ECoroutineStatus FRef::InvokeAsCoroutineOn(lua_State* SubThread, TArgs&&... Args) const
+    {
+        if (State == nullptr || Ref == LUA_NOREF || SubThread == nullptr)
+        {
+            return ECoroutineStatus::Error;
+        }
+
+        lua_getref(SubThread, Ref);
+        DEBUG_ASSERT(lua_type(SubThread, -1) == LUA_TFUNCTION);
+
+        (TStack<eastl::decay_t<TArgs>>::Push(SubThread, eastl::forward<TArgs>(Args)), ...);
+
+        const int Status = lua_resume(SubThread, State, sizeof...(Args));
+
+        if (Status == LUA_YIELD || Status == LUA_BREAK)
+        {
+            return ECoroutineStatus::Yielded;
+        }
+        if (Status != LUA_OK)
+        {
+            const char* ErrMsg = lua_tostring(SubThread, -1);
+            LOG_ERROR("[Lua] - Coroutine failed: {}", ErrMsg ? ErrMsg : "<unknown>");
+            return ECoroutineStatus::Error;
+        }
         return ECoroutineStatus::Ok;
     }
 

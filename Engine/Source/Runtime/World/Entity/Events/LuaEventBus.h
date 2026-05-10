@@ -82,6 +82,10 @@ namespace Lumina
         {
             entt::entity    Owner    = entt::null;
             Lua::FRef       Callback;
+            // Tombstone: set when an Unsubscribe lands while iteration is in flight on
+            // this listener's vector. Skipped during dispatch and reaped when the
+            // outermost dispatch unwinds. Avoids the per-Dispatch full-vector copy.
+            bool            bDead    = false;
         };
 
         struct FDeferredEvent
@@ -90,9 +94,41 @@ namespace Lumina
             Lua::FRef       Payload;
         };
 
-        static void DispatchListeners(TVector<FListener>& Listeners, const Lua::FRef& Payload);
+        struct FPendingMutation
+        {
+            enum class EKind : uint8 { Subscribe, Unsubscribe, UnsubscribeEntity, ClearEvent };
+            EKind           Kind;
+            FName           EventName;
+            entt::entity    Entity = entt::null;
+            Lua::FRef       Callback;
+        };
+
+        // RAII guard around a Dispatch: bumps DispatchDepth on entry, drops it on exit,
+        // and drains pending mutations + reaps tombstones when the outermost dispatch ends.
+        struct FDispatchScope
+        {
+            FLuaEventBus* Bus;
+            explicit FDispatchScope(FLuaEventBus* InBus) : Bus(InBus) { ++Bus->DispatchDepth; }
+            ~FDispatchScope()
+            {
+                if (--Bus->DispatchDepth == 0)
+                {
+                    Bus->DrainPendingMutations();
+                }
+            }
+            FDispatchScope(const FDispatchScope&) = delete;
+            FDispatchScope& operator=(const FDispatchScope&) = delete;
+        };
+
+        void ApplySubscribe(FName EventName, entt::entity Owner, Lua::FRef Callback);
+        void ApplyUnsubscribe(FName EventName, const Lua::FRef& Callback);
+        void ApplyUnsubscribeEntity(entt::entity Entity);
+        void ApplyClearEvent(FName EventName);
+        void DrainPendingMutations();
 
         THashMap<FName, TVector<FListener>>  Subscriptions;
         TVector<FDeferredEvent>              DeferredQueue;
+        TVector<FPendingMutation>            PendingMutations;
+        int                                  DispatchDepth = 0;
     };
 }

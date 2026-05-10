@@ -378,7 +378,7 @@ namespace Lumina::Physics
 
             // Pass the script's `self` table as the first argument so the user can write
             // `function MyScript:OnContactBegin(Event)` and access self.Entity etc.
-            Func.InvokeAsCoroutine(Comp->Script->Reference, Payload);
+            Comp->Script->InvokeAsCoroutine(Func, Comp->Script->Reference, Payload);
         };
 
         for (const FContactRecord& Record : Drain)

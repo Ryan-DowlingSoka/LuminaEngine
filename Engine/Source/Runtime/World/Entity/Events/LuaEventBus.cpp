@@ -12,7 +12,13 @@ namespace Lumina
             return;
         }
 
-        Subscriptions[FName(EventName)].push_back({ entt::null, eastl::move(Callback) });
+        const FName Name(EventName);
+        if (DispatchDepth > 0)
+        {
+            PendingMutations.push_back({ FPendingMutation::EKind::Subscribe, Name, entt::null, eastl::move(Callback) });
+            return;
+        }
+        ApplySubscribe(Name, entt::null, eastl::move(Callback));
     }
 
     void FLuaEventBus::SubscribeEntity(entt::entity Owner, FStringView EventName, Lua::FRef Callback)
@@ -29,29 +35,37 @@ namespace Lumina
             return;
         }
 
-        Subscriptions[FName(EventName)].push_back({ Owner, eastl::move(Callback) });
+        const FName Name(EventName);
+        if (DispatchDepth > 0)
+        {
+            PendingMutations.push_back({ FPendingMutation::EKind::Subscribe, Name, Owner, eastl::move(Callback) });
+            return;
+        }
+        ApplySubscribe(Name, Owner, eastl::move(Callback));
     }
 
     void FLuaEventBus::Unsubscribe(FStringView EventName, const Lua::FRef& Callback)
     {
-        auto It = Subscriptions.find(FName(EventName));
-        if (It == Subscriptions.end())
+        const FName Name(EventName);
+        if (DispatchDepth > 0)
         {
+            // Tombstone matching listeners so the in-flight iteration skips them; the
+            // outermost dispatch reaps them when it unwinds.
+            auto It = Subscriptions.find(Name);
+            if (It != Subscriptions.end())
+            {
+                for (FListener& Listener : It->second)
+                {
+                    if (!Listener.bDead && Listener.Callback == Callback)
+                    {
+                        Listener.bDead = true;
+                    }
+                }
+            }
+            PendingMutations.push_back({ FPendingMutation::EKind::Unsubscribe, Name, entt::null, Callback });
             return;
         }
-
-        TVector<FListener>& Listeners = It->second;
-        for (auto ListenerIt = Listeners.begin(); ListenerIt != Listeners.end(); )
-        {
-            if (ListenerIt->Callback == Callback)
-            {
-                ListenerIt = Listeners.erase(ListenerIt);
-            }
-            else
-            {
-                ++ListenerIt;
-            }
-        }
+        ApplyUnsubscribe(Name, Callback);
     }
 
     void FLuaEventBus::Dispatch(FStringView EventName, const Lua::FRef& Payload)
@@ -62,8 +76,25 @@ namespace Lumina
             return;
         }
 
-        TVector<FListener> Snapshot = It->second;
-        DispatchListeners(Snapshot, Payload);
+        FDispatchScope Scope(this);
+        TVector<FListener>& Listeners = It->second;
+
+        // Snapshot size before iteration so listeners added mid-dispatch don't fire on
+        // this pass. Index-based iteration is safe because mutations are deferred while
+        // DispatchDepth > 0.
+        const size_t Count = Listeners.size();
+        for (size_t i = 0; i < Count; ++i)
+        {
+            FListener& Listener = Listeners[i];
+            if (Listener.bDead)
+            {
+                continue;
+            }
+            if (Listener.Callback.IsInvokable())
+            {
+                Listener.Callback(Payload);
+            }
+        }
     }
 
     void FLuaEventBus::DispatchToEntity(entt::entity Target, FStringView EventName, const Lua::FRef& Payload)
@@ -79,16 +110,21 @@ namespace Lumina
             return;
         }
 
-        TVector<FListener> Snapshot;
-        Snapshot.reserve(It->second.size());
-        for (const FListener& Listener : It->second)
+        FDispatchScope Scope(this);
+        TVector<FListener>& Listeners = It->second;
+        const size_t Count = Listeners.size();
+        for (size_t i = 0; i < Count; ++i)
         {
-            if (Listener.Owner == Target)
+            FListener& Listener = Listeners[i];
+            if (Listener.bDead || Listener.Owner != Target)
             {
-                Snapshot.push_back(Listener);
+                continue;
+            }
+            if (Listener.Callback.IsInvokable())
+            {
+                Listener.Callback(Payload);
             }
         }
-        DispatchListeners(Snapshot, Payload);
     }
 
     void FLuaEventBus::DispatchDeferred(FStringView EventName, Lua::FRef Payload)
@@ -109,46 +145,146 @@ namespace Lumina
 
     void FLuaEventBus::ClearEvent(FStringView EventName)
     {
-        Subscriptions.erase(FName(EventName));
+        const FName Name(EventName);
+        if (DispatchDepth > 0)
+        {
+            auto It = Subscriptions.find(Name);
+            if (It != Subscriptions.end())
+            {
+                for (FListener& Listener : It->second)
+                {
+                    Listener.bDead = true;
+                }
+            }
+            PendingMutations.push_back({ FPendingMutation::EKind::ClearEvent, Name, entt::null, Lua::FRef() });
+            return;
+        }
+        ApplyClearEvent(Name);
     }
 
     int32 FLuaEventBus::GetSubscriberCount(FStringView EventName) const
     {
         auto It = Subscriptions.find(FName(EventName));
-        return It != Subscriptions.end() ? (int32)It->second.size() : 0;
+        if (It == Subscriptions.end())
+        {
+            return 0;
+        }
+        int32 Count = 0;
+        for (const FListener& Listener : It->second)
+        {
+            if (!Listener.bDead)
+            {
+                ++Count;
+            }
+        }
+        return Count;
     }
 
     void FLuaEventBus::UnsubscribeEntity(entt::entity Entity)
     {
-        for (auto& [Name, Listeners] : Subscriptions)
+        if (DispatchDepth > 0)
         {
-            for (auto It = Listeners.begin(); It != Listeners.end(); )
+            for (auto& [Name, Listeners] : Subscriptions)
             {
-                if (It->Owner == Entity)
+                for (FListener& Listener : Listeners)
                 {
-                    It = Listeners.erase(It);
-                }
-                else
-                {
-                    ++It;
+                    if (Listener.Owner == Entity)
+                    {
+                        Listener.bDead = true;
+                    }
                 }
             }
+            PendingMutations.push_back({ FPendingMutation::EKind::UnsubscribeEntity, FName(), Entity, Lua::FRef() });
+            return;
         }
+        ApplyUnsubscribeEntity(Entity);
     }
 
     void FLuaEventBus::Clear()
     {
         Subscriptions.clear();
         DeferredQueue.clear();
+        PendingMutations.clear();
     }
 
-    void FLuaEventBus::DispatchListeners(TVector<FListener>& Listeners, const Lua::FRef& Payload)
+    void FLuaEventBus::ApplySubscribe(FName EventName, entt::entity Owner, Lua::FRef Callback)
     {
-        for (FListener& Listener : Listeners)
+        Subscriptions[EventName].push_back({ Owner, eastl::move(Callback), false });
+    }
+
+    void FLuaEventBus::ApplyUnsubscribe(FName EventName, const Lua::FRef& Callback)
+    {
+        auto It = Subscriptions.find(EventName);
+        if (It == Subscriptions.end())
         {
-            if (Listener.Callback.IsInvokable())
+            return;
+        }
+        TVector<FListener>& Listeners = It->second;
+        Listeners.erase(
+            eastl::remove_if(Listeners.begin(), Listeners.end(),
+                [&](const FListener& L) { return L.Callback == Callback; }),
+            Listeners.end());
+    }
+
+    void FLuaEventBus::ApplyUnsubscribeEntity(entt::entity Entity)
+    {
+        for (auto& [Name, Listeners] : Subscriptions)
+        {
+            Listeners.erase(
+                eastl::remove_if(Listeners.begin(), Listeners.end(),
+                    [&](const FListener& L) { return L.Owner == Entity; }),
+                Listeners.end());
+        }
+    }
+
+    void FLuaEventBus::ApplyClearEvent(FName EventName)
+    {
+        Subscriptions.erase(EventName);
+    }
+
+    void FLuaEventBus::DrainPendingMutations()
+    {
+        // Reap tombstones first so subsequent re-subscribes don't see ghost slots.
+        for (auto It = Subscriptions.begin(); It != Subscriptions.end(); )
+        {
+            TVector<FListener>& Listeners = It->second;
+            Listeners.erase(
+                eastl::remove_if(Listeners.begin(), Listeners.end(),
+                    [](const FListener& L) { return L.bDead; }),
+                Listeners.end());
+            if (Listeners.empty())
             {
-                Listener.Callback(Payload);
+                It = Subscriptions.erase(It);
+            }
+            else
+            {
+                ++It;
+            }
+        }
+
+        if (PendingMutations.empty())
+        {
+            return;
+        }
+
+        TVector<FPendingMutation> ToApply = eastl::move(PendingMutations);
+        PendingMutations.clear();
+        for (FPendingMutation& Mutation : ToApply)
+        {
+            switch (Mutation.Kind)
+            {
+            case FPendingMutation::EKind::Subscribe:
+                ApplySubscribe(Mutation.EventName, Mutation.Entity, eastl::move(Mutation.Callback));
+                break;
+            case FPendingMutation::EKind::Unsubscribe:
+                ApplyUnsubscribe(Mutation.EventName, Mutation.Callback);
+                break;
+            case FPendingMutation::EKind::UnsubscribeEntity:
+                ApplyUnsubscribeEntity(Mutation.Entity);
+                break;
+            case FPendingMutation::EKind::ClearEvent:
+                ApplyClearEvent(Mutation.EventName);
+                break;
             }
         }
     }

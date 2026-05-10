@@ -779,7 +779,7 @@ namespace Lumina
             
         if (ScriptComponent->ReadyFunc.IsValid())
         {
-            ScriptComponent->ReadyFunc.InvokeAsCoroutine(ScriptComponent->Script->Reference);
+            ScriptComponent->Script->InvokeAsCoroutine(ScriptComponent->ReadyFunc, ScriptComponent->Script->Reference);
         }
     }
 
@@ -810,7 +810,7 @@ namespace Lumina
             const Lua::FRef& HookRef = Component->*Hook;
             if (HookRef.IsValid())
             {
-                HookRef.InvokeAsCoroutine(Component->Script->Reference);
+                Component->Script->InvokeAsCoroutine(HookRef, Component->Script->Reference);
             }
         };
 
@@ -1384,7 +1384,7 @@ namespace Lumina
 
         if (ScriptComponent.AttachFunc.IsValid())
         {
-            ScriptComponent.AttachFunc.InvokeAsCoroutine(ScriptComponent.Script->Reference);
+            ScriptComponent.Script->InvokeAsCoroutine(ScriptComponent.AttachFunc, ScriptComponent.Script->Reference);
         }
 
         if (bRunReady)
@@ -1407,7 +1407,7 @@ namespace Lumina
 
         if ((WorldType == EWorldType::Editor) == ScriptComponent.bRunInEditor)
         {
-            ScriptComponent.DetachFunc.InvokeAsCoroutine(ScriptComponent.Script->Reference);
+            ScriptComponent.Script->InvokeAsCoroutine(ScriptComponent.DetachFunc, ScriptComponent.Script->Reference);
         }
     }
 
@@ -1422,7 +1422,7 @@ namespace Lumina
         {
             if ((WorldType == EWorldType::Editor) == ScriptComponent.bRunInEditor)
             {
-                ScriptComponent.DetachFunc.InvokeAsCoroutine(ScriptComponent.Script->Reference);
+                ScriptComponent.Script->InvokeAsCoroutine(ScriptComponent.DetachFunc, ScriptComponent.Script->Reference);
             }
         }
 

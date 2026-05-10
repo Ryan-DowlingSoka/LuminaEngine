@@ -2553,10 +2553,7 @@ namespace Lumina
             PackedShadows[i].clear();
         }
         
-        if (DrawCommands.empty())
-        {
-           CmdList.ClearImageUInt(GetNamedImage(ENamedImage::DepthAttachment), AllSubresources, 0); 
-        }
+        CmdList.ClearImageUInt(GetNamedImage(ENamedImage::DepthAttachment), AllSubresources, 0); 
     }
 
 
