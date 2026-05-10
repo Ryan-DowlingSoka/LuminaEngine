@@ -1735,7 +1735,8 @@ namespace Lumina
         VkDynamicState DynamicStates[] =
         {
             VK_DYNAMIC_STATE_SCISSOR,
-            VK_DYNAMIC_STATE_VIEWPORT
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_LINE_WIDTH,
         };
         
         TFixedVector<VkPipelineShaderStageCreateInfo, 2> ShaderStages;
@@ -1792,7 +1793,7 @@ namespace Lumina
         ViewportState.viewportCount         = 1;
         ViewportState.scissorCount          = 1;
 
-        FRasterState RasterState = InDesc.RenderState.RasterState;
+        const FRasterState& RasterState = InDesc.RenderState.RasterState;
         
         VkPipelineRasterizationStateCreateInfo RasterizationState = {};
         RasterizationState.sType                        = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -1804,7 +1805,6 @@ namespace Lumina
         RasterizationState.depthBiasConstantFactor      = (float)RasterState.DepthBias;
         RasterizationState.depthBiasClamp               = RasterState.DepthBiasClamp;
         RasterizationState.depthBiasSlopeFactor         = RasterState.SlopeScaledDepthBias;
-        RasterizationState.lineWidth                    = Device->GetFeatures10().wideLines ? RasterState.LineWidth : 1.0f;
 
         const FDepthStencilState& DepthState = InDesc.RenderState.DepthStencilState;
         

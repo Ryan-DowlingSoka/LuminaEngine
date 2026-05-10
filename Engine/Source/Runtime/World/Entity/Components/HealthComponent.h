@@ -6,7 +6,7 @@
 
 namespace Lumina
 {
-    REFLECT(Component)
+    REFLECT(Component, Category = "Gameplay")
     struct RUNTIME_API SHealthComponent
     {
         GENERATED_BODY()

@@ -16,7 +16,7 @@ namespace Lumina
 
     // NoLua: physics characters aren't script-creatable; the engine
     // constructs them from the physics scene side.
-    REFLECT(Component, NoLua)
+    REFLECT(Component, NoLua, Category = "Character")
     struct RUNTIME_API SCharacterPhysicsComponent
     {
         GENERATED_BODY()
@@ -114,7 +114,7 @@ namespace Lumina
 
     };
 
-    REFLECT(Component)
+    REFLECT(Component, Category = "Character")
     struct RUNTIME_API SCharacterMovementComponent
     {
         GENERATED_BODY()

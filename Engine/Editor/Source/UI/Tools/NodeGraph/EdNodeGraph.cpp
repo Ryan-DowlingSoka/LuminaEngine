@@ -1,6 +1,7 @@
 ﻿#include "EdNodeGraph.h"
 
 #include "EdGraphNode.h"
+#include "EdNode_Reroute.h"
 #include "Core/Object/Class.h"
 #include <Core/Reflection/Type/LuminaTypes.h>
 #include "Drawing.h"
@@ -137,6 +138,128 @@ namespace Lumina
         return GetPackage();
     }
 
+    void CEdNodeGraph::DrawRerouteNode(CEdGraphNode* Node, TVector<TPair<CEdNodeGraphPin*, CEdNodeGraphPin*>>& OutLinks)
+    {
+        using namespace ax;
+
+        // Tight visual: small filled circle, no header, no labels. The pin icons collapse to the
+        // same screen position via PivotAlignment / zero pin radius so the dot reads as a single
+        // point even though there are two pins under the hood.
+        constexpr float DotRadius = 6.0f;
+        constexpr ImU32 DotColor  = IM_COL32(220, 220, 220, 255);
+        constexpr ImU32 DotShadow = IM_COL32(  0,   0,   0, 180);
+
+        NodeEditor::PushStyleVar(NodeEditor::StyleVar_NodePadding,    ImVec4(0, 0, 0, 0));
+        NodeEditor::PushStyleVar(NodeEditor::StyleVar_NodeBorderWidth, 0.0f);
+        NodeEditor::PushStyleVar(NodeEditor::StyleVar_NodeRounding,    0.0f);
+        NodeEditor::PushStyleColor(NodeEditor::StyleColor_NodeBg,     ImColor(0, 0, 0, 0));
+        NodeEditor::PushStyleColor(NodeEditor::StyleColor_NodeBorder, ImColor(0, 0, 0, 0));
+
+        NodeEditor::BeginNode(Node->GetNodeID());
+        ImGui::PushID(Node->GetNodeID());
+
+        const ImVec2 CursorStart = ImGui::GetCursorScreenPos();
+        const ImVec2 DotSize(DotRadius * 2.0f, DotRadius * 2.0f);
+
+        // Reserve a square for the dot. The hit area extends past it on each side so dragging a
+        // wire onto the dot consistently hits one of the pins instead of the empty node body.
+        ImGui::Dummy(DotSize);
+
+        const ImVec2 Center      = CursorStart + DotSize * 0.5f;
+        const float  HitHalfX    = DotRadius * 2.0f;
+        const ImVec2 InputRectMin (CursorStart.x - HitHalfX, CursorStart.y - DotRadius * 0.5f);
+        const ImVec2 InputRectMax (Center.x,                  CursorStart.y + DotSize.y + DotRadius * 0.5f);
+        const ImVec2 OutputRectMin(Center.x,                  InputRectMin.y);
+        const ImVec2 OutputRectMax(CursorStart.x + DotSize.x + HitHalfX, InputRectMax.y);
+
+        // Input pin: hit-tests against the LEFT half of the (enlarged) dot. Both pins share the
+        // same pivot point at the centre so wires visually meet at a single dot.
+        if (CEdNodeGraphPin* InputPin = Node->GetInputPins().empty() ? nullptr : Node->GetInputPins()[0].Get())
+        {
+            for (CEdNodeGraphPin* Connection : InputPin->GetConnections())
+            {
+                OutLinks.emplace_back(InputPin, Connection);
+            }
+
+            NodeEditor::PushStyleVar(NodeEditor::StyleVar_PivotAlignment, ImVec2(0.5f, 0.5f));
+            NodeEditor::PushStyleVar(NodeEditor::StyleVar_PivotSize,      ImVec2(0, 0));
+            NodeEditor::PushStyleVar(NodeEditor::StyleVar_PinRadius,      DotRadius);
+            NodeEditor::BeginPin(InputPin->GetPinGUID(), NodeEditor::PinKind::Input);
+            NodeEditor::PinPivotRect(Center, Center);
+            NodeEditor::PinRect(InputRectMin, InputRectMax);
+            NodeEditor::EndPin();
+            NodeEditor::PopStyleVar(3);
+        }
+
+        // Output pin: RIGHT half of the dot's hit area. Same pivot as the input so the visual dot
+        // remains a single point.
+        if (CEdNodeGraphPin* OutputPin = Node->GetOutputPins().empty() ? nullptr : Node->GetOutputPins()[0].Get())
+        {
+            NodeEditor::PushStyleVar(NodeEditor::StyleVar_PivotAlignment, ImVec2(0.5f, 0.5f));
+            NodeEditor::PushStyleVar(NodeEditor::StyleVar_PivotSize,      ImVec2(0, 0));
+            NodeEditor::PushStyleVar(NodeEditor::StyleVar_PinRadius,      DotRadius);
+            NodeEditor::BeginPin(OutputPin->GetPinGUID(), NodeEditor::PinKind::Output);
+            NodeEditor::PinPivotRect(Center, Center);
+            NodeEditor::PinRect(OutputRectMin, OutputRectMax);
+            NodeEditor::EndPin();
+            NodeEditor::PopStyleVar(3);
+        }
+
+        ImGui::PopID();
+        NodeEditor::EndNode();
+
+        NodeEditor::PopStyleColor(2);
+        NodeEditor::PopStyleVar(3);
+
+        // Paint the dot itself on the node's background draw list so it sits behind incoming wires
+        // but above the (transparent) node background.
+        if (ImDrawList* DrawList = NodeEditor::GetNodeBackgroundDrawList(Node->GetNodeID()))
+        {
+            DrawList->AddCircleFilled(Center, DotRadius + 1.5f, DotShadow, 16);
+            DrawList->AddCircleFilled(Center, DotRadius,        DotColor,  16);
+        }
+    }
+
+    CEdGraphNode* CEdNodeGraph::InsertRerouteOnLink(CEdNodeGraphPin* OutputPin, CEdNodeGraphPin* InputPin, ImVec2 CanvasPos)
+    {
+        if (OutputPin == nullptr || InputPin == nullptr)
+        {
+            return nullptr;
+        }
+
+        CClass* RerouteClass = GetRerouteNodeClass();
+        if (RerouteClass == nullptr)
+        {
+            return nullptr;
+        }
+
+        CEdGraphNode* RerouteNode = CreateNode(RerouteClass);
+        if (RerouteNode == nullptr)
+        {
+            return nullptr;
+        }
+
+        CEdNodeGraphPin* RerouteIn  = RerouteNode->GetInputPins().empty()  ? nullptr : RerouteNode->GetInputPins()[0].Get();
+        CEdNodeGraphPin* RerouteOut = RerouteNode->GetOutputPins().empty() ? nullptr : RerouteNode->GetOutputPins()[0].Get();
+        if (RerouteIn == nullptr || RerouteOut == nullptr)
+        {
+            return RerouteNode;
+        }
+
+        // Break the original wire and rebuild it as Source -> RerouteIn, RerouteOut -> Target.
+        OutputPin->DisconnectFrom(InputPin);
+
+        OutputPin->AddConnection(RerouteIn);
+        RerouteIn->AddConnection(OutputPin);
+
+        RerouteOut->AddConnection(InputPin);
+        InputPin->AddConnection(RerouteOut);
+
+        ax::NodeEditor::SetNodePosition(RerouteNode->GetNodeID(), CanvasPos);
+        ValidateGraph();
+        return RerouteNode;
+    }
+
     void CEdNodeGraph::DrawGraph()
     {
         LUMINA_PROFILE_SCOPE();
@@ -153,19 +276,26 @@ namespace Lumina
         uint32 Index = 0;
         for (CEdGraphNode* Node : Nodes)
         {
-            NodeBuilder.Begin(Node->GetNodeID());
-            
             ImVec2 Position = NodeEditor::GetNodePosition(Node->GetNodeID());
             Node->GridX = Position.x;
             Node->GridY = Position.y;
-            
+
+            if (Node->IsRerouteNode())
+            {
+                DrawRerouteNode(Node, Links);
+                ++Index;
+                continue;
+            }
+
+            NodeBuilder.Begin(Node->GetNodeID());
+
             if (!Node->WantsTitlebar())
             {
                 ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
             }
-            
+
             NodeBuilder.Header(ImGui::ColorConvertU32ToFloat4(Node->GetNodeTitleColor()));
-            
+
             if (!Node->WantsTitlebar())
             {
                 ImGui::PopStyleVar();
@@ -505,6 +635,29 @@ namespace Lumina
         for (auto& [Start, End] : Links)
         {
             NodeEditor::Link(LinkID++, Start->GetPinGUID(), End->GetPinGUID());
+        }
+
+        // Double-clicking a wire splits it with a reroute node, anchored at the click position.
+        // Graphs that haven't opted in via GetRerouteNodeClass() get a no-op.
+        // imgui-node-editor transforms io.MousePos into canvas-local coords while the canvas is
+        // active (i.e. outside Suspend()), so GetMousePos() here is already in canvas space --
+        // an extra ScreenToCanvas would double-transform and pin the node to the top-left.
+        if (NodeEditor::LinkId DoubleClickedLink = NodeEditor::GetDoubleClickedLink())
+        {
+            const uint64 LinkIndex = DoubleClickedLink.Get() - 1u;
+            if (LinkIndex < Links.size() && GetRerouteNodeClass() != nullptr)
+            {
+                CEdNodeGraphPin* SidePinA = Links[LinkIndex].first;
+                CEdNodeGraphPin* SidePinB = Links[LinkIndex].second;
+
+                // Links are emitted as (InputPin, ConnectedOutputPin) by the per-node loop. Pick
+                // them apart so InsertRerouteOnLink gets (Output, Input) regardless of order.
+                CEdNodeGraphPin* OutputSide = SidePinA->bInputPin ? SidePinB : SidePinA;
+                CEdNodeGraphPin* InputSide  = SidePinA->bInputPin ? SidePinA : SidePinB;
+
+                const ImVec2 InsertAt = ImGui::GetMousePos();
+                InsertRerouteOnLink(OutputSide, InputSide, InsertAt);
+            }
         }
         
         if (NodeEditor::BeginCreate())

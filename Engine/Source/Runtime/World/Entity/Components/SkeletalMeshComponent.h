@@ -11,7 +11,7 @@ namespace Lumina
     class CSkeletalMesh;
     
     
-    REFLECT(Component)
+    REFLECT(Component, Category = "Rendering")
     struct RUNTIME_API SSkeletalMeshComponent : SMeshComponent
     {
         GENERATED_BODY()

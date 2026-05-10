@@ -4,7 +4,7 @@
 
 namespace Lumina
 {
-    REFLECT(Component)
+    REFLECT(Component, Category = "Camera")
     struct SSpringArmComponent
     {
         GENERATED_BODY()

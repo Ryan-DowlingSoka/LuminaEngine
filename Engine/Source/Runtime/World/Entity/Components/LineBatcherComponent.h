@@ -8,19 +8,22 @@ namespace Lumina
     {
         static constexpr auto in_place_delete = true;
 
+        // Self-contained line record. Storing endpoints + packed color
+        // directly removes the parallel Vertices array we used to keep,
+        // which had to be index-patched on every compaction.
         struct FLineInstance
         {
-            uint32  StartVertexIndex;
-            float   RemainingLifetime;
-            float   Thickness;
-            uint8   bDepthTest:1;
-            uint8   bSingleFrame:1;
+            glm::vec3   Start;
+            glm::vec3   End;
+            uint32      ColorPacked;
+            float       RemainingLifetime;
+            float       Thickness;
+            uint8       bDepthTest:1;
+            uint8       bSingleFrame:1;
         };
 
-        // Self-contained line record used to cross the thread boundary. The
-        // existing Vertices/Lines layout is index-keyed and only safe to
-        // mutate from one thread, so workers push these into Queue and a
-        // single drain on the render-extraction tick converts them.
+        // Cross-thread record. Same shape as FLineInstance minus the
+        // lifetime bookkeeping that DrainQueue fills in.
         struct FQueuedLine
         {
             glm::vec3   Start;
@@ -32,7 +35,6 @@ namespace Lumina
             uint8       bSingleFrame:1;
         };
 
-        TVector<FSimpleElementVertex>   Vertices;
         TVector<FLineInstance>          Lines;
 
         // MPMC queue. moodycamel's ConcurrentQueue is lock-free for both
@@ -56,72 +58,24 @@ namespace Lumina
             Queue.enqueue(Q);
         }
 
-        // Pull every queued line into the canonical Vertices/Lines arrays.
-        // Single-threaded; call before reading Lines for render extraction.
+        // Pull every queued line into Lines. Single-threaded; call before
+        // reading Lines for render extraction.
         void DrainQueue()
         {
             FQueuedLine Q;
             while (Queue.try_dequeue(Q))
             {
-                AppendLine(Q.Start, Q.End, Q.ColorPacked, Q.Thickness, Q.bDepthTest != 0, Q.Duration);
+                Lines.emplace_back(FLineInstance
+                {
+                    .Start              = Q.Start,
+                    .End                = Q.End,
+                    .ColorPacked        = Q.ColorPacked,
+                    .RemainingLifetime  = Q.Duration,
+                    .Thickness          = Q.Thickness,
+                    .bDepthTest         = Q.bDepthTest,
+                    .bSingleFrame       = Q.bSingleFrame,
+                });
             }
-        }
-
-        // Single-threaded direct push. Kept for code paths that already
-        // know they're on the render thread (and hot enough to skip the
-        // queue). New callers should prefer EnqueueLine.
-        void DrawLine(const glm::vec3& Start, const glm::vec3& End, const glm::vec4& Color, float Thickness = 1.0f, bool bDepthTest = true, float Duration = -1.0f)
-        {
-            AppendLine(Start, End, PackColor(Color), Thickness, bDepthTest, Duration);
-        }
-
-        void RemoveLine(int32 LineIndex)
-        {
-            const FLineInstance& Line = Lines[LineIndex];
-            uint32 VertexIndex = Line.StartVertexIndex;
-
-            Vertices.erase(Vertices.begin() + VertexIndex, Vertices.begin() + VertexIndex + 2);
-
-            for (int32 i = LineIndex + 1; i < Lines.size(); ++i)
-            {
-                Lines[i].StartVertexIndex -= 2;
-            }
-
-            Lines.erase(Lines.begin() + LineIndex);
-        }
-
-    private:
-
-        void AppendLine(const glm::vec3& Start, const glm::vec3& End, uint32 ColorPacked, float Thickness, bool bDepthTest, float Duration)
-        {
-            if (Vertices.capacity() < Vertices.size() + 2)
-            {
-                Vertices.reserve(Vertices.capacity() * 2);
-                Lines.reserve(Lines.capacity() * 2);
-            }
-
-            uint32 StartVertexIndex = static_cast<uint32>(Vertices.size());
-
-            Vertices.emplace_back(FSimpleElementVertex
-            {
-                .Position = Start,
-                .Color    = ColorPacked,
-            });
-
-            Vertices.emplace_back(FSimpleElementVertex
-            {
-                .Position = End,
-                .Color    = ColorPacked,
-            });
-
-            Lines.emplace_back(FLineInstance
-            {
-                .StartVertexIndex   = StartVertexIndex,
-                .RemainingLifetime  = Duration,
-                .Thickness          = Thickness,
-                .bDepthTest         = bDepthTest,
-                .bSingleFrame       = Duration == -1.0f
-            });
         }
     };
 }

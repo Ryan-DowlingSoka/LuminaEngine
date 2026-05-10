@@ -6,7 +6,7 @@
 
 namespace Lumina
 {
-    REFLECT(Component)
+    REFLECT(Component, Category = "Character")
     struct RUNTIME_API SCharacterControllerComponent
     {
         GENERATED_BODY()

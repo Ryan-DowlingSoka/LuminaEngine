@@ -5,7 +5,7 @@
 
 namespace Lumina
 {
-    REFLECT(Component)
+    REFLECT(Component, Category = "Lights")
     struct RUNTIME_API SPointLightComponent
     {
         GENERATED_BODY()
@@ -39,7 +39,7 @@ namespace Lumina
         float VolumetricIntensity = 0.5f;
     };
 
-    REFLECT(Component)
+    REFLECT(Component, Category = "Lights")
     struct RUNTIME_API SSpotLightComponent
     {
         GENERATED_BODY()
@@ -93,7 +93,7 @@ namespace Lumina
     };
 
 
-    REFLECT(Component)
+    REFLECT(Component, Category = "Lights")
     struct RUNTIME_API SDirectionalLightComponent
     {
         GENERATED_BODY()

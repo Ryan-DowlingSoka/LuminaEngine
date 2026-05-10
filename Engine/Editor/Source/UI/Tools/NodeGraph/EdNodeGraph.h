@@ -65,6 +65,16 @@ namespace Lumina
         virtual void HandleQuickPlace(int Digit, ImVec2 CanvasPos) {}
         virtual void HandleQuickPlace(char Key, ImVec2 CanvasPos) {}
 
+        // Class returned here (when non-null) is instantiated when the user double-clicks an
+        // existing wire. The node is inserted at the click position and the wire is rerouted
+        // through it. Default is null -- graphs that want this UX (e.g. material) override.
+        virtual CClass* GetRerouteNodeClass() const { return nullptr; }
+
+        // Splits the link between OutputPin -> InputPin by inserting a freshly-constructed reroute
+        // node at CanvasPos. No-op if GetRerouteNodeClass() returns null. Used by the double-click
+        // wire handler in DrawGraph; safe to call directly from custom UI as well.
+        CEdGraphNode* InsertRerouteOnLink(CEdNodeGraphPin* OutputPin, CEdNodeGraphPin* InputPin, ImVec2 CanvasPos);
+
         
         void SetNodeSelectedCallback(const TFunction<void(CEdGraphNode*)>& Callback) { NodeSelectedCallback = Callback; }
         void SetPreNodeDeletedCallback(const TFunction<void(CEdGraphNode*)>& Callback) { PreNodeDeletedCallback = Callback; }
@@ -81,6 +91,11 @@ namespace Lumina
 
         static bool GraphSaveSettings(const char* data, size_t size, ax::NodeEditor::SaveReasonFlags reason, void* userPointer);
         static size_t GraphLoadSettings(char* data, void* userPointer);
+
+        // Compact reroute renderer: single small dot, no header, no padding. Pushes the node's
+        // input/output connections into OutLinks just like the regular per-node loop so the link
+        // pass downstream picks up the wires going through this reroute.
+        void DrawRerouteNode(CEdGraphNode* Node, TVector<TPair<CEdNodeGraphPin*, CEdNodeGraphPin*>>& OutLinks);
         
     public:
 

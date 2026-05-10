@@ -6,7 +6,7 @@
 
 namespace Lumina
 {
-	REFLECT(Component)
+	REFLECT(Component, Category = "Audio")
 	struct RUNTIME_API SAudioSourceComponent
 	{
 		GENERATED_BODY()
@@ -57,7 +57,7 @@ namespace Lumina
 		void Stop(EAudioStopMode Mode = EAudioStopMode::Immediate);
 	};
 
-	REFLECT(Component)
+	REFLECT(Component, Category = "Audio")
 	struct RUNTIME_API SAudioListenerComponent
 	{
 		GENERATED_BODY()

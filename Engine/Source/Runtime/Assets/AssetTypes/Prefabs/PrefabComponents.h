@@ -20,7 +20,7 @@ namespace Lumina
     };
 
     /** Marks a world entity as a prefab instance; refreshed from the source prefab on world load. */
-    REFLECT(Component)
+    REFLECT(Component, Category = "Prefab")
     struct RUNTIME_API SPrefabInstanceComponent
     {
         GENERATED_BODY()

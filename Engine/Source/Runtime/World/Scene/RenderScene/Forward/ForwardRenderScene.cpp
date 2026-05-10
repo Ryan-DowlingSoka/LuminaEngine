@@ -2394,115 +2394,113 @@ namespace Lumina
 
     void FForwardRenderScene::ProcessBatchedLines(FLineBatcherComponent& Batcher)
     {
-        // Pull anything pushed by workers this frame into the canonical
-        // arrays. This is the only place the queue is drained, and it runs
-        // single-threaded on the render-extraction tick, so DrawLine /
-        // RemoveLine / lifetime fix-ups below stay race-free.
         Batcher.DrainQueue();
 
-        if (Batcher.Lines.empty())
+        TVector<FLineBatcherComponent::FLineInstance>& Lines = Batcher.Lines;
+        const SIZE_T LineCount = Lines.size();
+        if (LineCount == 0)
         {
             return;
         }
-
-        for (FLineBatcherComponent::FLineInstance& Line : Batcher.Lines)
-        {
-            if (!Line.bSingleFrame && Line.RemainingLifetime >= 0.0f)
-            {
-                Line.RemainingLifetime -= SceneGlobalData.DeltaTime;
-            }
-        }
         
-        struct FLineWithVertices
+        struct FBucket
         {
-            FLineBatcherComponent::FLineInstance Line;
-            FSimpleElementVertex Vertex0;
-            FSimpleElementVertex Vertex1;
+            float   Thickness;
+            uint32  StartVertex;
+            uint32  VertexCount;
+            uint8   bDepthTest;
+        };
+        TFixedVector<FBucket, 8> Buckets;
+
+        auto FindOrCreateBucket = [&](float Thickness, uint8 bDepthTest) -> uint32
+        {
+            for (uint32 i = 0, n = (uint32)Buckets.size(); i < n; ++i)
+            {
+                const FBucket& B = Buckets[i];
+                if (B.bDepthTest == bDepthTest &&
+                    glm::epsilonEqual(B.Thickness, Thickness, LE_SMALL_NUMBER))
+                {
+                    return i;
+                }
+            }
+            Buckets.push_back({Thickness, 0u, 0u, bDepthTest});
+            return (uint32)Buckets.size() - 1;
         };
         
-        TVector<FLineWithVertices> AliveLinesWithVertices;
-        AliveLinesWithVertices.reserve(Batcher.Lines.size());
-        
-        TVector<FLineBatcherComponent::FLineInstance> NewLines;
-        TVector<FSimpleElementVertex> NewVertices;
-        NewLines.reserve(Batcher.Lines.size());
-        NewVertices.reserve(Batcher.Vertices.size());
-        
-        for (const FLineBatcherComponent::FLineInstance& Line : Batcher.Lines)
+        struct FLineDraw
         {
-            FLineWithVertices LineData;
-            LineData.Line = Line;
-            LineData.Vertex0 = Batcher.Vertices[Line.StartVertexIndex];
-            LineData.Vertex1 = Batcher.Vertices[Line.StartVertexIndex + 1];
-            AliveLinesWithVertices.emplace_back(LineData);
-        }
+            glm::vec3 Start;
+            glm::vec3 End;
+            uint32    ColorPacked;
+            uint8     BucketIdx;
+        };
+        TVector<FLineDraw> DrawCache;
+        DrawCache.reserve(LineCount);
         
-        eastl::sort(AliveLinesWithVertices.begin(), AliveLinesWithVertices.end(), [](const FLineWithVertices& A, const FLineWithVertices& B)
+        const float Dt = SceneGlobalData.DeltaTime;
+        FFrustum& ViewFrustum = SceneGlobalData.CullData.Frustum;
+        SIZE_T WriteIdx = 0;
+        for (SIZE_T i = 0; i < LineCount; ++i)
         {
-            if (A.Line.bDepthTest != B.Line.bDepthTest)
-            {
-                return A.Line.bDepthTest < B.Line.bDepthTest;
-            }
-            return A.Line.Thickness < B.Line.Thickness;
-        });
-        
-        uint32 CurrentVertexIndex = 0;
-        for (const FLineWithVertices& LineData : AliveLinesWithVertices)
-        {
-            FLineBatcherComponent::FLineInstance NewLine = LineData.Line;
-            NewLine.StartVertexIndex = CurrentVertexIndex;
-        
-            if (!LineData.Line.bSingleFrame && LineData.Line.RemainingLifetime > 0.0f)
-            {
-                NewLines.emplace_back(NewLine);
-                NewVertices.emplace_back(LineData.Vertex0);
-                NewVertices.emplace_back(LineData.Vertex1);
-                CurrentVertexIndex += 2;
-            }
-        }
-        
-        Batcher.Lines = std::move(NewLines);
-        Batcher.Vertices = std::move(NewVertices);
-        
-        if (!AliveLinesWithVertices.empty())
-        {
-            SimpleVertices.clear();
-            SimpleVertices.reserve(AliveLinesWithVertices.size() * 2);
-            for (const FLineWithVertices& LineData : AliveLinesWithVertices)
-            {
-                SimpleVertices.emplace_back(LineData.Vertex0);
-                SimpleVertices.emplace_back(LineData.Vertex1);
-            }
-        
-            LineBatches.clear();
-        
-            FLineBatch CurrentBatch;
-            CurrentBatch.StartVertex = 0;
-            CurrentBatch.VertexCount = 2;
-            CurrentBatch.Thickness = AliveLinesWithVertices[0].Line.Thickness;
-            CurrentBatch.bDepthTest = AliveLinesWithVertices[0].Line.bDepthTest;
-        
-            for (size_t i = 1; i < AliveLinesWithVertices.size(); ++i)
-            {
-                const auto& LineData = AliveLinesWithVertices[i];
-        
-                if (glm::epsilonEqual(LineData.Line.Thickness, CurrentBatch.Thickness, LE_SMALL_NUMBER) &&
-                    LineData.Line.bDepthTest == CurrentBatch.bDepthTest)
-                {
-                    CurrentBatch.VertexCount += 2;
-                }
-                else
-                {
-                    LineBatches.emplace_back(CurrentBatch);
+            FLineBatcherComponent::FLineInstance& Line = Lines[i];
 
-                    CurrentBatch.StartVertex = (uint32)SimpleVertices.size() - (uint32)AliveLinesWithVertices.size() * 2 + (uint32)(i * 2);
-                    CurrentBatch.VertexCount = 2;
-                    CurrentBatch.Thickness = LineData.Line.Thickness;
-                    CurrentBatch.bDepthTest = LineData.Line.bDepthTest;
-                }
+            const FAABB LineBounds(glm::min(Line.Start, Line.End), glm::max(Line.Start, Line.End));
+            if (ViewFrustum.IsInside(LineBounds))
+            {
+                const uint32 BucketIdx = FindOrCreateBucket(Line.Thickness, Line.bDepthTest);
+                Buckets[BucketIdx].VertexCount += 2;
+                DrawCache.push_back({Line.Start, Line.End, Line.ColorPacked, (uint8)BucketIdx});
             }
 
-            LineBatches.emplace_back(CurrentBatch);
+            if (Line.bSingleFrame)
+            {
+                continue;
+            }
+
+            Line.RemainingLifetime -= Dt;
+            if (Line.RemainingLifetime > 0.0f)
+            {
+                if (WriteIdx != i)
+                {
+                    Lines[WriteIdx] = Line;
+                }
+                ++WriteIdx;
+            }
+        }
+        Lines.resize(WriteIdx);
+        
+        const uint32 BaseVertex = (uint32)SimpleVertices.size();
+        uint32 Cursor = BaseVertex;
+        for (FBucket& B : Buckets)
+        {
+            B.StartVertex = Cursor;
+            Cursor += B.VertexCount;
+        }
+        SimpleVertices.resize(Cursor);
+
+        TFixedVector<uint32, 8> BucketWriteCursors;
+        BucketWriteCursors.resize(Buckets.size());
+        for (SIZE_T b = 0, n = Buckets.size(); b < n; ++b)
+        {
+            BucketWriteCursors[b] = Buckets[b].StartVertex;
+        }
+        
+        for (const FLineDraw& Draw : DrawCache)
+        {
+            uint32& Wc = BucketWriteCursors[Draw.BucketIdx];
+            SimpleVertices[Wc++] = { Draw.Start, Draw.ColorPacked };
+            SimpleVertices[Wc++] = { Draw.End,   Draw.ColorPacked };
+        }
+
+        LineBatches.reserve(LineBatches.size() + Buckets.size());
+        for (const FBucket& B : Buckets)
+        {
+            FLineBatch Batch;
+            Batch.StartVertex = B.StartVertex;
+            Batch.VertexCount = B.VertexCount;
+            Batch.Thickness   = B.Thickness;
+            Batch.bDepthTest  = B.bDepthTest != 0;
+            LineBatches.emplace_back(Batch);
         }
     }
 
@@ -2528,6 +2526,7 @@ namespace Lumina
     void FForwardRenderScene::ResetPass(ICommandList& CmdList)
     {
         SimpleVertices.clear();
+        LineBatches.clear();
         DrawCommands.clear();
         OpaqueDrawList.clear();
         OpaqueOccluderDrawList.clear();
@@ -3284,8 +3283,7 @@ namespace Lumina
 
         FRasterState RasterState; RasterState
             .EnableDepthClip()
-            .SetFillMode(RenderSettings.bWireframe ? ERasterFillMode::Wireframe : ERasterFillMode::Solid)
-            .SetLineWidth(5.0f);
+            .SetFillMode(RenderSettings.bWireframe ? ERasterFillMode::Wireframe : ERasterFillMode::Solid);
     
         // GREATER_EQUAL: occluders re-write their pre-pass depth; non-occluders fill the rest.
         FDepthStencilState DepthState; DepthState
@@ -3299,10 +3297,7 @@ namespace Lumina
         for (uint32 Idx : OpaqueDrawList)
         {
             const FMeshDrawCommand& Batch = DrawCommands[Idx];
-
-            // BasePass uses sets 0 (scene), 1 (bindless textures), 3 (shadow sampling).
-            // Set 2 is unused by BasePixelPass.slang but the pipeline layout must be
-            // contiguous, so an EmptySet2Layout is inserted as a placeholder.
+            
             FGraphicsPipelineDesc Desc; Desc
                 .SetDebugName("Forward Base Pass")
                 .SetRenderState(RenderState)
@@ -3313,7 +3308,6 @@ namespace Lumina
                 .AddBindingLayout(EmptySet2Layout)
                 .AddBindingLayout(ShadowSamplingBindingLayout);
 
-            // GREATER_EQUAL allows non-occluder fragments to write depth atop the pre-pass.
             FGraphicsState GraphicsState; GraphicsState
                 .SetRenderPass(RenderPass)
                 .SetViewportState(SceneViewportState)
@@ -3326,10 +3320,8 @@ namespace Lumina
 
             CmdList.SetGraphicsState(GraphicsState);
 
-            // View 0 = camera-early.
             CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
 
-            // Late phase: re-tested deferred meshlets (slice may be empty).
             if (CameraLateViewIndex != ~0u)
             {
                 const uint32 LateBase = CameraLateViewIndex * NumDrawsPerView;
@@ -5188,48 +5180,41 @@ namespace Lumina
 
         FVertexBufferBinding VertexBinding{GetNamedBuffer(ENamedBuffer::SimpleVertex)};
 
+        FRasterState RasterState; RasterState
+            .EnableDepthClip();
+
+        FDepthStencilState DepthState; DepthState
+            .SetDepthFunc(EComparisonFunc::Greater)
+            .EnableDepthWrite()
+            .EnableDepthTest();
+            
+        FRenderState RenderState; RenderState
+            .SetRasterState(RasterState)
+            .SetDepthStencilState(DepthState);
+            
+        FGraphicsPipelineDesc Desc; Desc
+            .SetDebugName("Batched Line Draw")
+            .SetPrimType(EPrimitiveType::LineList)
+            .SetRenderState(RenderState)
+            .SetInputLayout(SimpleVertexLayoutInput)
+            .AddBindingLayout(SceneBindingLayout)
+            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
+            .SetVertexShader(VertexShader)
+            .SetPixelShader(PixelShader);
+
+        FGraphicsState GraphicsState; GraphicsState
+            .SetRenderPass(RenderPass)
+            .AddVertexBuffer(VertexBinding)
+            .SetViewportState(SceneViewportState)
+            .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
+            .AddBindingSet(SceneBindingSet)
+            .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+
+        CmdList.SetGraphicsState(GraphicsState);
+        
         for (const FLineBatch& Batch : LineBatches)
         {
-            FRasterState RasterState; RasterState
-                .SetLineWidth(Batch.Thickness)
-                .EnableDepthClip();
-
-            FDepthStencilState DepthState; DepthState
-                .SetDepthFunc(EComparisonFunc::Greater)
-                .EnableDepthWrite();
-            
-            if (Batch.bDepthTest)
-            {
-                DepthState.EnableDepthTest();
-            }
-            else
-            {
-                DepthState.DisableDepthTest();
-            }
-
-            FRenderState RenderState; RenderState
-                .SetRasterState(RasterState)
-                .SetDepthStencilState(DepthState);
-            
-            FGraphicsPipelineDesc Desc; Desc
-                .SetDebugName("Batched Line Draw")
-                .SetPrimType(EPrimitiveType::LineList)
-                .SetRenderState(RenderState)
-                .SetInputLayout(SimpleVertexLayoutInput)
-                .AddBindingLayout(SceneBindingLayout)
-                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-                .SetVertexShader(VertexShader)
-                .SetPixelShader(PixelShader);
-
-            FGraphicsState GraphicsState; GraphicsState
-                .SetRenderPass(RenderPass)
-                .AddVertexBuffer(VertexBinding)
-                .SetViewportState(SceneViewportState)
-                .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-                .AddBindingSet(SceneBindingSet)
-                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-
-            CmdList.SetGraphicsState(GraphicsState);
+            CmdList.SetLineWidth(Batch.Thickness);
             CmdList.Draw(Batch.VertexCount, 1, Batch.StartVertex, 0);
         }
     }

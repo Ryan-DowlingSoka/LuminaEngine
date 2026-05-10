@@ -8,7 +8,7 @@ namespace Lumina
 {
     class CTexture;
     
-    REFLECT(Component)
+    REFLECT(Component, Category = "Rendering")
     struct SBillboardComponent
     {
         GENERATED_BODY()

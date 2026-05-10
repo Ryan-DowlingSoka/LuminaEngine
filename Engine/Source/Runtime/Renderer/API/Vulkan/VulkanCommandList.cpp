@@ -1479,9 +1479,14 @@ namespace Lumina
         PendingState.ClearPendingState(EPendingCommandState::DynamicBufferWrites);
     }
 
+    void FVulkanCommandList::SetLineWidth(float Width)
+    {
+        
+        vkCmdSetLineWidth(CurrentCommandBuffer->CommandBuffer, Width);
+    }
+
     void FVulkanCommandList::Draw(uint32 VertexCount, uint32 InstanceCount, uint32 FirstVertex, uint32 FirstInstance)
     {
-        LUMINA_PROFILE_SCOPE();
         UpdateGraphicsDynamicBuffers();
         
         CommandListStats.NumDrawCalls++;
@@ -1490,8 +1495,6 @@ namespace Lumina
 
     void FVulkanCommandList::DrawIndexed(uint32 IndexCount, uint32 InstanceCount, uint32 FirstIndex, int32 VertexOffset, uint32 FirstInstance)
     {
-        LUMINA_PROFILE_SCOPE();
-
         UpdateGraphicsDynamicBuffers();
 
         CommandListStats.NumDrawCalls++;
@@ -1501,8 +1504,6 @@ namespace Lumina
 
     void FVulkanCommandList::DrawIndirect(uint32 DrawCount, uint64 Offset)
     {
-        LUMINA_PROFILE_SCOPE();
-
         UpdateGraphicsDynamicBuffers();
 
         CommandListStats.NumDrawCalls++;
@@ -1512,8 +1513,6 @@ namespace Lumina
 
     void FVulkanCommandList::DrawIndexedIndirect(uint32 DrawCount, uint64 Offset)
     {
-        LUMINA_PROFILE_SCOPE();
-
         UpdateGraphicsDynamicBuffers();
 
         CommandListStats.NumDrawCalls++;

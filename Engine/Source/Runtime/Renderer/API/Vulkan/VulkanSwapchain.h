@@ -61,7 +61,7 @@ namespace Lumina
         VkSurfaceFormatKHR                      SurfaceFormat = {};
         
         VkFormat                                Format = VK_FORMAT_MAX_ENUM;
-        VkPresentModeKHR                        CurrentPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+        VkPresentModeKHR                        CurrentPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
         uint32                                  CurrentImageIndex = 0;
         
         bool                                    bNeedsResize = false;

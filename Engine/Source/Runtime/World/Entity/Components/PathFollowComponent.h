@@ -33,7 +33,7 @@ namespace Lumina
      * triggers a replan if the tracked target's position drifts past
      * RepathDistance from where the path was originally generated.
      */
-    REFLECT(Component)
+    REFLECT(Component, Category = "AI")
     struct RUNTIME_API SPathFollowComponent
     {
         GENERATED_BODY()

@@ -60,6 +60,11 @@ namespace Lumina
 
         virtual bool IsDeletable() const { return true; }
 
+        // True for "wire passthrough" nodes (e.g. CEdNode_Reroute). The graph drawer renders these
+        // as a single compact dot instead of a normal node body, and graph-walking code (compilers,
+        // closure walks) is expected to skip them and resolve through to the real source/target.
+        virtual bool IsRerouteNode() const { return false; }
+
         void SetDebugExecutionOrder(uint32 Order) { DebugExecutionOrder = Order; }
         uint32 GetDebugExecutionOrder() const { return DebugExecutionOrder; }
 

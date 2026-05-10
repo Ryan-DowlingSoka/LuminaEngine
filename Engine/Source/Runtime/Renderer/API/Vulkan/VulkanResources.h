@@ -648,6 +648,9 @@ namespace Lumina
         FVulkanGraphicsPipeline(FVulkanDevice* InDevice, const FGraphicsPipelineDesc& InDesc, const FRenderPassDesc& RenderPassDesc);
 
         const FGraphicsPipelineDesc& GetDesc() const override { return Desc; }
+        
+    protected:
+        
         void* GetAPIResourceImpl(EAPIResourceType InType) override;
     
     private:

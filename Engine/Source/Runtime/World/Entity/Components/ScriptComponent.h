@@ -13,7 +13,7 @@ namespace Lumina
 {
     class CWorld;
 
-    REFLECT(Component)
+    REFLECT(Component, Category = "Gameplay")
     struct RUNTIME_API SScriptComponent
     {
         GENERATED_BODY()

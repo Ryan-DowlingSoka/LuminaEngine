@@ -9,7 +9,7 @@ namespace Lumina
 {
     class CStaticMesh;
 
-    REFLECT(Component)
+    REFLECT(Component, Category = "Physics")
     struct RUNTIME_API alignas(Threading::GCacheLineSize) SRigidBodyComponent
     {
         GENERATED_BODY()
@@ -100,7 +100,7 @@ namespace Lumina
         
     };
 
-    REFLECT(Component)
+    REFLECT(Component, Category = "Physics")
     struct RUNTIME_API SBoxColliderComponent
     {
         GENERATED_BODY()
@@ -126,7 +126,7 @@ namespace Lumina
         bool bAffectsNavigation = true;
     };
 
-    REFLECT(Component)
+    REFLECT(Component, Category = "Physics")
     struct RUNTIME_API SSphereColliderComponent
     {
         GENERATED_BODY()
@@ -148,7 +148,7 @@ namespace Lumina
         bool bAffectsNavigation = true;
     };
 
-    REFLECT(Component)
+    REFLECT(Component, Category = "Physics")
     struct RUNTIME_API SMeshColliderComponent
     {
         GENERATED_BODY()

@@ -1144,8 +1144,6 @@ namespace Lumina
         int DepthBias = 0;
         float DepthBiasClamp = 0.0f;
         float SlopeScaledDepthBias = 0.0f;
-		float LineWidth = 1.0f;
-
 
         uint8 ForcedSampleCount = 0;
         bool ProgrammableSamplePositionsEnable = false;
@@ -1154,7 +1152,6 @@ namespace Lumina
         char SamplePositionsX[16]{};
         char SamplePositionsY[16]{};
 
-		constexpr FRasterState& SetLineWidth(float Width) { LineWidth = Width; return *this; } 
         constexpr FRasterState& SetFillMode(ERasterFillMode value) { FillMode = value; return *this; }
         constexpr FRasterState& SetFillSolid() { FillMode = ERasterFillMode::Solid; return *this; }
         constexpr FRasterState& SetFillWireframe() { FillMode = ERasterFillMode::Wireframe; return *this; }
@@ -2078,7 +2075,6 @@ namespace eastl
 			Hash::HashCombine(hash, State.ProgrammableSamplePositionsEnable);
 			Hash::HashCombine(hash, State.ConservativeRasterEnable);
 			Hash::HashCombine(hash, State.QuadFillEnable);
-			Hash::HashCombine(hash, State.LineWidth);
 
 			for (size_t i = 0; i < 16; ++i)
 			{

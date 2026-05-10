@@ -4,7 +4,7 @@
 
 namespace Lumina
 {
-    REFLECT(Component)
+    REFLECT(Component, Category = "Gameplay")
     struct RUNTIME_API SInputComponent
     {
         GENERATED_BODY()

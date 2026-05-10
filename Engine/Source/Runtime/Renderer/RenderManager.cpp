@@ -95,7 +95,7 @@ namespace Lumina
         #else
         
         if (FWorldContext* Ctx = GWorldManager->GetPrimaryGameContext())
-        {
+        { 
             if (CWorld* World = Ctx->World.Get())
             {
                 if (IRenderScene* Scene = World->GetRenderer())

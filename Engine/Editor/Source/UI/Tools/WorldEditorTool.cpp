@@ -1496,13 +1496,20 @@ namespace Lumina
                         entt::entity EntityHandle = World->GetRenderer()->GetEntityAtPixel(TexX, TexY);
                         EntityHandle = ResolveSelectionRootForViewportPick(World->GetEntityRegistry(), EntityHandle);
 
-                        // Only mutate selection when the click landed on an entity; empty-space right-clicks preserve it.
-                        if (EntityHandle != entt::null)
+                        // Sync selection to the right-clicked entity when the picker hits one. When the picker
+                        // misses (readback not ready, light icon / billboard, edge of silhouette, etc.) keep
+                        // the existing selection so the menu still has something to act on.
+                        if (EntityHandle != entt::null && !IsEntitySelected(EntityHandle))
                         {
-                            if (!IsEntitySelected(EntityHandle))
-                            {
-                                SetSingleSelectedEntity(EntityHandle);
-                            }
+                            SetSingleSelectedEntity(EntityHandle);
+                        }
+
+                        const entt::entity MenuTarget = (EntityHandle != entt::null)
+                            ? EntityHandle
+                            : GetLastSelectedEntity();
+
+                        if (World->GetEntityRegistry().valid(MenuTarget))
+                        {
                             ImGui::OpenPopup("EntityContextMenu");
                         }
                     }
@@ -2011,175 +2018,84 @@ namespace Lumina
     void FWorldEditorTool::PushAddComponentModal(entt::entity Entity)
     {
         TUniquePtr<ImGuiTextFilter> Filter = MakeUnique<ImGuiTextFilter>();
-        ToolContext->PushModal("Add Component", ImVec2(650.0f, 500.0f), [this, Entity, Filter = Move(Filter)] () -> bool
+        ToolContext->PushModal("Add Component", ImVec2(500.0f, 600.0f), [this, Entity, Filter = Move(Filter)] () -> bool
         {
             bool bComponentAdded = false;
-    
+
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 0.9f, 1.0f));
             ImGui::TextUnformatted("Select a component to add to the entity");
             ImGui::PopStyleColor();
-            
+
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
-    
+
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 8));
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
             ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.15f, 0.15f, 0.16f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.18f, 0.18f, 0.19f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.2f, 0.2f, 0.21f, 1.0f));
-            
+
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
             Filter->Draw(LE_ICON_BRIEFCASE_SEARCH " Search Components...", ImGui::GetContentRegionAvail().x);
-            
+
             ImGui::PopStyleColor(3);
             ImGui::PopStyleVar(2);
-            
+
             ImGui::Spacing();
-    
-            float const tableHeight = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 2;
-            
-            ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(12, 8));
-            ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, ImVec4(0.12f, 0.12f, 0.13f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_TableBorderStrong, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_TableRowBg, ImVec4(0.14f, 0.14f, 0.15f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt, ImVec4(0.16f, 0.16f, 0.17f, 1.0f));
-            
-            if (ImGui::BeginTable("##ComponentsList", 2, 
-                ImGuiTableFlags_NoSavedSettings | 
-                ImGuiTableFlags_Borders | 
-                ImGuiTableFlags_RowBg |
-                ImGuiTableFlags_ScrollY, 
-                ImVec2(0, tableHeight)))
+
+            const float ListHeight = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 2;
+
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 16.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
+
+            if (ImGui::BeginChild("##ComponentsList", ImVec2(0, ListHeight), true))
             {
-                ImGui::TableSetupColumn("Component", ImGuiTableColumnFlags_WidthStretch);
-                ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 120.0f);
-                ImGui::TableHeadersRow();
-    
-                ImGui::PushID((int)Entity);
-    
-                struct ComponentInfo
+                entt::meta_type PickedMetaType;
+                CStruct*        PickedStruct = nullptr;
+                if (DrawAddableComponentList(*Filter, PickedMetaType, PickedStruct))
                 {
-                    FFixedString Name;
-                    FFixedString Category;
-                    entt::meta_type MetaType;
-                };
-                
-                TVector<ComponentInfo> Components;
-                
-                for(auto&& [_, MetaType]: entt::resolve())
-                {
-                    ECS::ETraits Traits = MetaType.traits<ECS::ETraits>();
-                    if (!EnumHasAllFlags(Traits, ECS::ETraits::Component))
-                    {
-                        continue;
-                    }
-                    
                     using namespace entt::literals;
-                    entt::meta_any Any = ECS::Utils::InvokeMetaFunc(MetaType, "static_struct"_hs);
-                    CStruct* Type = Any.cast<CStruct*>();
-                    ASSERT(Type);
-                    
-                    if (Type->HasMeta("HideInComponentList"))
-                    {
-                        continue;
-                    }
-                    
-                    FFixedString ComponentName = Type->MakeDisplayName();
-                    
-                    if (!Filter->PassFilter(ComponentName.c_str()))
-                    {
-                        continue;
-                    }
-                    
-                    const char* Category = "General";
-                    Components.push_back({ComponentName, Category, MetaType});
-                }
-                
-                eastl::sort(Components.begin(), Components.end(), [](const ComponentInfo& a, const ComponentInfo& b)
-                {
-                    if (a.Category != b.Category)
-                    {
-                        return a.Category < b.Category;
-                    }
+                    BeginTransaction();
+                    ECS::Utils::InvokeMetaFunc(PickedMetaType, "emplace"_hs, entt::forward_as_meta(World->GetEntityRegistry()), Entity, entt::forward_as_meta(entt::meta_any{}));
+                    EndTransaction("Emplace Component");
 
-                    return a.Name < b.Name;
-                });
-                
-                for (const ComponentInfo& CompInfo : Components)
-                {
-                    ImGui::TableNextRow();
-                    ImGui::TableSetColumnIndex(0);
-                    
-                    ImVec4 IconColor = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
-                    const char* Icon = LE_ICON_CUBE;
-                    
-                    ImGui::PushStyleColor(ImGuiCol_Text, IconColor);
-                    ImGui::TextUnformatted(Icon);
-                    ImGui::PopStyleColor();
-                    
-                    ImGui::SameLine();
-                    
-                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.5f, 0.8f, 0.4f));
-                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.3f, 0.6f, 0.9f, 0.5f));
-                    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.35f, 0.65f, 0.95f, 0.6f));
-                    
-                    if (ImGui::Selectable(CompInfo.Name.c_str(), false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick))
-                    {
-                        using namespace entt::literals;
-                        BeginTransaction();
-
-                        ECS::Utils::InvokeMetaFunc(CompInfo.MetaType, "emplace"_hs, entt::forward_as_meta(World->GetEntityRegistry()), Entity, entt::forward_as_meta(entt::meta_any{}));
-                        
-                        EndTransaction("Emplace Component");
-                        
-                        bComponentAdded = true;
-                    }
-                    
-                    ImGui::PopStyleColor(3);
-                    
-                    ImGui::TableSetColumnIndex(1);
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
-                    ImGui::TextUnformatted(CompInfo.Category.c_str());
-                    ImGui::PopStyleColor();
+                    bComponentAdded = true;
                 }
-                
-                ImGui::PopID();
-                ImGui::EndTable();
             }
-            
-            ImGui::PopStyleColor(4);
-            ImGui::PopStyleVar();
-    
+            ImGui::EndChild();
+
+            ImGui::PopStyleVar(2);
+
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
-    
-            float buttonWidth = 120.0f;
-            float availWidth = ImGui::GetContentRegionAvail().x;
-            ImGui::SetCursorPosX((availWidth - buttonWidth) * 0.5f);
-            
+
+            const float ButtonWidth = 120.0f;
+            const float AvailWidth = ImGui::GetContentRegionAvail().x;
+            ImGui::SetCursorPosX((AvailWidth - ButtonWidth) * 0.5f);
+
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(20, 8));
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.25f, 0.27f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.3f, 0.3f, 0.32f, 1.0f));
-            
-            bool shouldClose = false;
-            if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0)))
+
+            bool bShouldClose = false;
+            if (ImGui::Button("Cancel", ImVec2(ButtonWidth, 0)))
             {
-                shouldClose = true;
+                bShouldClose = true;
             }
-            
+
             ImGui::PopStyleColor(3);
             ImGui::PopStyleVar(2);
-            
+
             if (bComponentAdded && Entity == DetailsEntity)
             {
                 bDetailsDirty = true;
             }
 
-            return bComponentAdded || shouldClose;
+            return bComponentAdded || bShouldClose;
         });
     }
 
@@ -3891,6 +3807,133 @@ namespace Lumina
         }
     }
 
+    bool FWorldEditorTool::DrawAddableComponentList(const ImGuiTextFilter& Filter, entt::meta_type& OutMetaType, CStruct*& OutStruct)
+    {
+        struct FComponentEntry
+        {
+            entt::meta_type MetaType;
+            CStruct*        Struct;
+        };
+
+        struct FComponentCategory
+        {
+            FString                  Name;
+            TVector<FComponentEntry> Entries;
+        };
+
+        TVector<FComponentCategory> Categories;
+        auto FindOrAddCategory = [&Categories](const FString& Name) -> FComponentCategory&
+        {
+            for (FComponentCategory& Cat : Categories)
+            {
+                if (Cat.Name == Name)
+                {
+                    return Cat;
+                }
+            }
+            FComponentCategory& Added = Categories.emplace_back();
+            Added.Name = Name;
+            return Added;
+        };
+
+        static const FString DefaultCategoryName = "General";
+
+        for(auto &&[ID, MetaType]: entt::resolve())
+        {
+            ECS::ETraits Traits = MetaType.traits<ECS::ETraits>();
+            if (!EnumHasAllFlags(Traits, ECS::ETraits::Component))
+            {
+                continue;
+            }
+
+            using namespace entt::literals;
+            entt::meta_any Any = ECS::Utils::InvokeMetaFunc(MetaType, "static_struct"_hs);
+            CStruct* Struct = Any.cast<CStruct*>();
+            ASSERT(Struct);
+
+            if (Struct->HasMeta("HideInComponentList"))
+            {
+                continue;
+            }
+
+            FFixedString DisplayName = Struct->MakeDisplayName();
+            if (!Filter.PassFilter(DisplayName.c_str()))
+            {
+                continue;
+            }
+
+            FString CategoryName = Struct->HasMeta("Category")
+                ? Struct->GetMeta("Category")
+                : DefaultCategoryName;
+
+            FindOrAddCategory(CategoryName).Entries.push_back({MetaType, Struct});
+        }
+
+        eastl::sort(Categories.begin(), Categories.end(), [](const FComponentCategory& LHS, const FComponentCategory& RHS)
+        {
+            // Push "General" to the bottom so categorized buckets surface first.
+            const bool bLhsGeneral = (LHS.Name == DefaultCategoryName);
+            const bool bRhsGeneral = (RHS.Name == DefaultCategoryName);
+            if (bLhsGeneral != bRhsGeneral)
+            {
+                return !bLhsGeneral;
+            }
+            return LHS.Name < RHS.Name;
+        });
+
+        bool bPicked = false;
+        for (FComponentCategory& Category : Categories)
+        {
+            eastl::sort(Category.Entries.begin(), Category.Entries.end(), [](const FComponentEntry& LHS, const FComponentEntry& RHS)
+            {
+                return LHS.Struct->GetName().ToString() < RHS.Struct->GetName().ToString();
+            });
+
+            ImGui::PushID(Category.Name.c_str());
+
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.9f, 1.0f, 1.0f));
+            FFixedString Header;
+            Header.append(LE_ICON_FOLDER " ");
+            Header.append(Category.Name.c_str());
+            ImGui::TextUnformatted(Header.c_str());
+            ImGui::PopStyleColor();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            for (const FComponentEntry& Entry : Category.Entries)
+            {
+                ImGui::PushID(Entry.Struct);
+
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.18f, 0.21f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.45f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.3f, 0.4f, 1.0f));
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 10.0f));
+
+                const float ButtonWidth = ImGui::GetContentRegionAvail().x;
+
+                FFixedString DisplayName = Entry.Struct->MakeDisplayName();
+                if (ImGui::Button(DisplayName.c_str(), ImVec2(ButtonWidth, 0.0f)))
+                {
+                    OutMetaType = Entry.MetaType;
+                    OutStruct   = Entry.Struct;
+                    bPicked     = true;
+                }
+
+                ImGui::PopStyleVar(2);
+                ImGui::PopStyleColor(3);
+
+                ImGui::PopID();
+                ImGui::Spacing();
+            }
+
+            ImGui::PopID();
+            ImGui::Spacing();
+        }
+
+        return bPicked;
+    }
+
     void FWorldEditorTool::DrawAddToEntityOrWorldPopup(entt::entity Entity)
     {
         ImGui::SetNextWindowSize(ImVec2(450.0f, 550.0f), ImGuiCond_Always);
@@ -4114,79 +4157,28 @@ namespace Lumina
                     }
                 }
 
-                TVector<TPair<entt::meta_type, CStruct*>> SortedComponents;
-                
-                for(auto &&[ID, MetaType]: entt::resolve())
+                entt::meta_type PickedMetaType;
+                CStruct*        PickedStruct = nullptr;
+                if (DrawAddableComponentList(AddEntityComponentFilter, PickedMetaType, PickedStruct))
                 {
-                    ECS::ETraits Traits = MetaType.traits<ECS::ETraits>();
-                    if (!EnumHasAllFlags(Traits, ECS::ETraits::Component))
+                    if (World->GetEntityRegistry().valid(Entity))
                     {
-                        continue;
+                        using namespace entt::literals;
+                        ECS::Utils::InvokeMetaFunc(PickedMetaType, "emplace"_hs, entt::forward_as_meta(World->GetEntityRegistry()), Entity, entt::forward_as_meta(entt::meta_any{}));
+                        OutlinerListView.MarkTreeDirty();
+                        if (Entity == DetailsEntity)
+                        {
+                            bDetailsDirty = true;
+                        }
                     }
-                    
-                    entt::meta_any Any = ECS::Utils::InvokeMetaFunc(MetaType, "static_struct"_hs);
-                    CStruct* Struct = Any.cast<CStruct*>();
-                    ASSERT(Struct);
-                    
-                    if (Struct->HasMeta("HideInComponentList"))
+                    else
                     {
-                        continue;
-                    }
-                    
-                    FFixedString DisplayName = Struct->MakeDisplayName();
-                    if (!AddEntityComponentFilter.PassFilter(DisplayName.c_str()))
-                    {
-                        continue;
+                        BeginTransaction();
+                        CreateEntityWithComponent(PickedStruct);
+                        EndTransaction("New Component");
                     }
 
-                    SortedComponents.emplace_back(MetaType, Struct);
-                }
-                
-                
-                eastl::sort(SortedComponents.begin(), SortedComponents.end(), [](const auto& LHS, const auto& RHS)
-                {
-                   return LHS.second->GetName().ToString() < RHS.second->GetName().ToString(); 
-                });
-
-                for (auto&& [MetaType, Struct] : SortedComponents)
-                {
-                    ImGui::PushID(Struct);
-                    
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.18f, 0.21f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.45f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.3f, 0.4f, 1.0f));
-                    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 10.0f));
-                    
-                    const float ButtonWidth = ImGui::GetContentRegionAvail().x;
-                    
-                    FFixedString DisplayName = Struct->MakeDisplayName();
-                    if (ImGui::Button(DisplayName.c_str(), ImVec2(ButtonWidth, 0.0f)))
-                    {
-                        if (World->GetEntityRegistry().valid(Entity))
-                        {
-                            ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs, entt::forward_as_meta(World->GetEntityRegistry()), Entity, entt::forward_as_meta(entt::meta_any{}));
-                            OutlinerListView.MarkTreeDirty();
-                            if (Entity == DetailsEntity)
-                            {
-                                bDetailsDirty = true;
-                            }
-                        }
-                        else
-                        {
-                            BeginTransaction();
-                            CreateEntityWithComponent(Struct);
-                            EndTransaction("New Component");
-                        }
-                        
-                        ImGui::CloseCurrentPopup();
-                    }
-                    
-                    ImGui::PopStyleVar(2);
-                    ImGui::PopStyleColor(3);
-                    
-                    ImGui::PopID();
-                    ImGui::Spacing();
+                    ImGui::CloseCurrentPopup();
                 }
                 
             }

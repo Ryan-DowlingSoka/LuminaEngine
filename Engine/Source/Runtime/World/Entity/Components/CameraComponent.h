@@ -10,7 +10,7 @@
 namespace Lumina
 {
     class CMaterialInterface;
-    REFLECT(Component)
+    REFLECT(Component, Category = "Camera")
     struct RUNTIME_API SCameraComponent
     {
         GENERATED_BODY()

@@ -790,7 +790,6 @@ namespace Lumina
         DeviceFeatures.samplerAnisotropy                    = VK_TRUE;
         DeviceFeatures.sampleRateShading                    = VK_TRUE;
         DeviceFeatures.fillModeNonSolid                     = VK_TRUE;
-        DeviceFeatures.wideLines                            = VK_TRUE; // @TODO Don't keep this.
         DeviceFeatures.imageCubeArray                       = VK_TRUE;
         DeviceFeatures.multiViewport                        = VK_TRUE;
         DeviceFeatures.multiDrawIndirect                    = VK_TRUE;
@@ -904,6 +903,13 @@ namespace Lumina
         if (PhysicalDevice.enable_extension_if_present(VK_EXT_SHADER_VIEWPORT_INDEX_LAYER_EXTENSION_NAME))
         {
             EnabledExtensions.SetFlag(EVulkanExtensions::ViewportIndexLayer);
+        }
+
+        // wideLines is optional; pipelines clamp lineWidth to 1.0 if unavailable.
+        {
+            VkPhysicalDeviceFeatures OptionalFeatures = {};
+            OptionalFeatures.wideLines = VK_TRUE;
+            PhysicalDevice.enable_features_if_present(OptionalFeatures);
         }
 
         vkb::DeviceBuilder DeviceBuilder(PhysicalDevice);

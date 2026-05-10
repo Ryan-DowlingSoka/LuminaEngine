@@ -1,7 +1,7 @@
 {
     "Editor": {
         "ContentBrowser": {
-            "TileSize": 190.8000030517578
+            "TileSize": 136.5
         },
         "LuaEditor": {
             "AutoIndent": true,

@@ -31,7 +31,7 @@ namespace Lumina
         float           AliveTimeRemaining  = 0.0f;
     };
 
-    REFLECT(Component)
+    REFLECT(Component, Category = "Effects")
     struct RUNTIME_API SParticleSystemComponent
     {
         GENERATED_BODY()

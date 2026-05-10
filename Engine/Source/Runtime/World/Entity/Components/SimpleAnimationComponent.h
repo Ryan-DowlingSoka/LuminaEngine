@@ -7,7 +7,7 @@ namespace Lumina
 {
     class CAnimation;
 
-    REFLECT(Component)
+    REFLECT(Component, Category = "Animation")
     struct SSimpleAnimationComponent
     {
         GENERATED_BODY()

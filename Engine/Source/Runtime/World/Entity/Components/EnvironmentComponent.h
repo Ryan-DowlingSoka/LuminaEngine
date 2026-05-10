@@ -25,7 +25,7 @@ namespace Lumina
     };
 
     /** Singleton-style environment component; only one enabled instance per frame is read. */
-    REFLECT(Component)
+    REFLECT(Component, Category = "Environment")
     struct RUNTIME_API SEnvironmentComponent
     {
         GENERATED_BODY()

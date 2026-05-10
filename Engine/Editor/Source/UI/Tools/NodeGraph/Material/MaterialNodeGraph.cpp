@@ -1,6 +1,8 @@
 #include "MaterialNodeGraph.h"
 #include "MaterialCompiler.h"
+#include "MaterialReroute.h"
 #include "Core/Object/Cast.h"
+#include "Core/Object/Class.h"
 #include "Nodes/MaterialNodes.h"
 #include "UI/Tools/NodeGraph/EdNodeGraphPin.h"
 #include "UI/Tools/NodeGraph/EdNode_Reroute.h"
@@ -164,7 +166,14 @@ namespace Lumina
         RegisterGraphNode(CMaterialExpression_TerrainLayerWeights::StaticClass());
         RegisterGraphNode(CMaterialExpression_TerrainLayerBlend::StaticClass());
 
+        RegisterGraphNode(CMaterialReroute::StaticClass());
+
         ValidateGraph();
+    }
+
+    CClass* CMaterialNodeGraph::GetRerouteNodeClass() const
+    {
+        return CMaterialReroute::StaticClass();
     }
 
     void CMaterialNodeGraph::Shutdown()
@@ -175,6 +184,8 @@ namespace Lumina
     // Reverse-BFS the input-edge closure starting at any nodes feeding the
     // given pin. Used to partition the graph into "nodes that contribute to
     // the pixel stage" vs. "nodes that contribute to the vertex stage (WPO)".
+    // Reroute nodes are traversed for connectivity (so true upstream nodes are reached) but are
+    // not themselves added to the result set -- the compile loop skips reroutes anyway.
     static void CollectInputClosure(CEdNodeGraphPin* StartPin, THashSet<CEdGraphNode*>& OutSet)
     {
         if (StartPin == nullptr || !StartPin->HasConnection())
@@ -186,7 +197,14 @@ namespace Lumina
         for (CEdNodeGraphPin* Conn : StartPin->GetConnections())
         {
             CEdGraphNode* N = Conn->GetOwningNode();
-            if (OutSet.insert(N).second)
+            if (N != nullptr && !N->IsRerouteNode())
+            {
+                if (OutSet.insert(N).second)
+                {
+                    Q.push(N);
+                }
+            }
+            else if (N != nullptr)
             {
                 Q.push(N);
             }
@@ -201,13 +219,50 @@ namespace Lumina
                 for (CEdNodeGraphPin* Conn : InputPin->GetConnections())
                 {
                     CEdGraphNode* Up = Conn->GetOwningNode();
-                    if (OutSet.insert(Up).second)
+                    if (Up == nullptr)
+                    {
+                        continue;
+                    }
+                    if (Up->IsRerouteNode())
+                    {
+                        Q.push(Up);
+                    }
+                    else if (OutSet.insert(Up).second)
                     {
                         Q.push(Up);
                     }
                 }
             }
         }
+    }
+
+    // Chases an output pin back through any reroute nodes connected to it, returning the first
+    // non-reroute output. Returns nullptr if the chain dead-ends at a disconnected reroute.
+    static CMaterialOutput* ResolveOutputThroughReroutes(CMaterialOutput* OutputPin)
+    {
+        constexpr int MaxHops = 64;
+        int Hops = 0;
+        while (OutputPin != nullptr && Hops++ < MaxHops)
+        {
+            CEdGraphNode* Owner = OutputPin->GetOwningNode();
+            if (Owner == nullptr || !Owner->IsRerouteNode())
+            {
+                return OutputPin;
+            }
+
+            const TVector<TObjectPtr<CEdNodeGraphPin>>& Inputs = Owner->GetInputPins();
+            if (Inputs.empty())
+            {
+                return nullptr;
+            }
+            CEdNodeGraphPin* RerouteInput = Inputs[0].Get();
+            if (RerouteInput == nullptr || !RerouteInput->HasConnection())
+            {
+                return nullptr;
+            }
+            OutputPin = static_cast<CMaterialOutput*>(RerouteInput->GetConnection(0));
+        }
+        return nullptr;
     }
 
     // Walks back from any output node, accumulating the inferred output InputType for each visited
@@ -221,6 +276,7 @@ namespace Lumina
         }
 
         CMaterialOutput* SourcePin = InputPin->GetConnection<CMaterialOutput>(0);
+        SourcePin = ResolveOutputThroughReroutes(SourcePin);
         if (SourcePin == nullptr)
         {
             return EMaterialInputType::Float;
@@ -268,6 +324,7 @@ namespace Lumina
             }
 
             CMaterialOutput* SourcePin = Spec.Pin->GetConnection<CMaterialOutput>(0);
+            SourcePin = ResolveOutputThroughReroutes(SourcePin);
             if (SourcePin == nullptr)
             {
                 continue;
@@ -419,6 +476,13 @@ namespace Lumina
                 continue;
             }
 
+            // Reroute nodes are visual-only: GetTypedInputValue resolves through them, so the
+            // emit pass skips them entirely.
+            if (Node->IsRerouteNode())
+            {
+                continue;
+            }
+
             static_cast<CMaterialGraphNode*>(Node)->GenerateDefinition(Compiler);
         }
 
@@ -435,6 +499,10 @@ namespace Lumina
                     continue;
                 }
                 if (VertexSet.find(Node) == VertexSet.end())
+                {
+                    continue;
+                }
+                if (Node->IsRerouteNode())
                 {
                     continue;
                 }

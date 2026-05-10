@@ -62,7 +62,7 @@ namespace Lumina
     };
 
     /** Bake volume (world AABB at Center +/- Extents); multiple components union at bake time. */
-    REFLECT(Component)
+    REFLECT(Component, Category = "AI")
     struct RUNTIME_API SNavMeshComponent
     {
         GENERATED_BODY()

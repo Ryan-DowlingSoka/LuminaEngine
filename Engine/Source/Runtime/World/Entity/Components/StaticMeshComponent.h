@@ -8,7 +8,7 @@
 
 namespace Lumina
 {
-    REFLECT(Component)
+    REFLECT(Component, Category = "Rendering")
     struct RUNTIME_API ALIGN_FOR_FALSE_SHARING SStaticMeshComponent : SMeshComponent
     {
         GENERATED_BODY()

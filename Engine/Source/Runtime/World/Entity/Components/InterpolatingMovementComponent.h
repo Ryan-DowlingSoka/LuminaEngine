@@ -8,7 +8,7 @@
 namespace Lumina
 {
     
-    REFLECT(Component)
+    REFLECT(Component, Category = "Movement")
     struct RUNTIME_API SInterpolatingMovementComponent
     {
         GENERATED_BODY()
@@ -30,7 +30,7 @@ namespace Lumina
         bool bForward = true;
     };
 
-    REFLECT(Component)
+    REFLECT(Component, Category = "Movement")
     struct RUNTIME_API SSineWaveMovementComponent
     {
         GENERATED_BODY()

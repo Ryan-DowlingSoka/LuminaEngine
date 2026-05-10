@@ -164,6 +164,13 @@ namespace Lumina
         void DrawAddToEntityOrWorldPopup(entt::entity Entity = entt::null);
         void DrawFilterOptions();
 
+        /**
+         * Renders a categorized, filterable list of addable components as styled buttons.
+         * Populates OutMetaType / OutStruct and returns true when the user clicks an entry.
+         * Caller is responsible for the actual emplace / create-entity behavior and popup closure.
+         */
+        bool DrawAddableComponentList(const ImGuiTextFilter& Filter, entt::meta_type& OutMetaType, CStruct*& OutStruct);
+
         // Initial population (called on tree dirty); just enumerates roots and lets lazy children
         // build subtrees on first expand.
         void RebuildSceneOutliner(FTreeListView& Tree);

@@ -23,7 +23,7 @@ namespace Lumina
      * last (i.e. wins ties). Use BlendDistance to fade the contribution at
      * the box boundary so designers don't get a hard pop on entry.
      */
-    REFLECT(Component)
+    REFLECT(Component, Category = "Rendering")
     struct RUNTIME_API SPostProcessComponent
     {
         GENERATED_BODY()

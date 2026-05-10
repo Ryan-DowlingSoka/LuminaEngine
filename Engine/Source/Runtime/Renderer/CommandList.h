@@ -191,6 +191,8 @@ namespace Lumina
         virtual void SetPushConstants(const void* Data, size_t ByteSize) = 0;
 
         virtual void SetGraphicsState(const FGraphicsState& State) = 0;
+        
+        virtual void SetLineWidth(float Width) = 0;
 
         virtual void Draw(uint32 VertexCount, uint32 InstanceCount, uint32 FirstVertex, uint32 FirstInstance) = 0;
         virtual void DrawIndexed(uint32 IndexCount, uint32 InstanceCount = 1, uint32 FirstIndex = 1, int32 VertexOffset = 0, uint32 FirstInstance = 0) = 0;

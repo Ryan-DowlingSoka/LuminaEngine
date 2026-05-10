@@ -12,7 +12,7 @@ namespace Lumina
 
 	// Streams PCM audio supplied at runtime — typically synthesized in script — through a lock-free
 	// ring buffer to the audio thread. Use for engine sounds, synths, network audio, etc.
-	REFLECT(Component)
+	REFLECT(Component, Category = "Audio")
 	struct RUNTIME_API SProceduralAudioComponent
 	{
 		GENERATED_BODY()

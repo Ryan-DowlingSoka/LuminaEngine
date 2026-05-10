@@ -68,6 +68,7 @@ namespace Lumina
         void SetPushConstants(const void* Data, size_t ByteSize) override;
 
         void SetGraphicsState(const FGraphicsState& State) override;
+        void SetLineWidth(float Width) override;
         void Draw(uint32 VertexCount, uint32 InstanceCount, uint32 FirstVertex, uint32 FirstInstance) override;
         void DrawIndexed(uint32 IndexCount, uint32 InstanceCount, uint32 FirstIndex, int32 VertexOffset, uint32 FirstInstance) override;
         void DrawIndirect(uint32 DrawCount, uint64 Offset) override;

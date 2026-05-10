@@ -5,6 +5,7 @@
 #include "Paths/Paths.h"
 #include "Platform/Filesystem/FileHelper.h"
 #include "UI/Tools/NodeGraph/EdGraphNode.h"
+#include "UI/Tools/NodeGraph/EdNode_Reroute.h"
 
 namespace Lumina
 {
@@ -240,6 +241,40 @@ namespace Lumina
 		return GetTypedInputValue(Input, eastl::to_string(DefaultValue));
 	}
 
+	// Walks back through any chain of CEdNode_Reroute nodes connected to OutputPin and returns the
+	// first non-reroute output pin. Returns nullptr if the chain dead-ends at an unconnected reroute
+	// input (which is treated upstream the same as no connection at all).
+	static CMaterialOutput* ResolveSourceOutputThroughReroutes(CMaterialOutput* OutputPin)
+	{
+		// Cap the walk so a malformed/cyclic graph can't hang the compiler.
+		constexpr int MaxHops = 64;
+		int Hops = 0;
+		while (OutputPin != nullptr && Hops++ < MaxHops)
+		{
+			CEdGraphNode* Owner = OutputPin->GetOwningNode();
+			if (Owner == nullptr || !Owner->IsRerouteNode())
+			{
+				return OutputPin;
+			}
+
+			// Reroute owner: chase back through its single input pin's connection.
+			const TVector<TObjectPtr<CEdNodeGraphPin>>& Inputs = Owner->GetInputPins();
+			if (Inputs.empty())
+			{
+				return nullptr;
+			}
+
+			CEdNodeGraphPin* RerouteInput = Inputs[0].Get();
+			if (RerouteInput == nullptr || !RerouteInput->HasConnection())
+			{
+				return nullptr;
+			}
+
+			OutputPin = static_cast<CMaterialOutput*>(RerouteInput->GetConnection(0));
+		}
+		return nullptr;
+	}
+
 	FMaterialCompiler::FInputValue FMaterialCompiler::GetTypedInputValue(CMaterialInput* Input, const FString& DefaultValueStr)
 	{
 		FInputValue Result;
@@ -247,6 +282,18 @@ namespace Lumina
 		if (Input->HasConnection())
 		{
 			CMaterialOutput* Conn	= Input->GetConnection<CMaterialOutput>(0);
+			Conn					= ResolveSourceOutputThroughReroutes(Conn);
+
+			if (Conn == nullptr)
+			{
+				FString NodeName		= Input->GetOwningNode()->GetNodeFullName();
+				Result.Type				= GetTypeFromComponentCount(GetComponentCount(Input->GetComponentMask()));
+				Result.ComponentCount	= GetComponentCount(Input->GetComponentMask());
+				Result.Value 			= DefaultValueStr;
+				Result.Mask  			= Input->GetComponentMask();
+				return Result;
+			}
+
 			FString NodeName		= Conn->GetOwningNode()->GetNodeFullName();
 
 			Result.Type				= Conn->InputType;

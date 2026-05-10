@@ -273,6 +273,11 @@ namespace Lumina
         Inner->SetGraphicsState(State);
     }
 
+    void FCommandListValidator::SetLineWidth(float Width)
+    {
+        Inner->SetLineWidth(Width);
+    }
+
     void FCommandListValidator::Draw(uint32 VertexCount, uint32 InstanceCount, uint32 FirstVertex, uint32 FirstInstance)
     {
         Inner->Draw(VertexCount, InstanceCount, FirstVertex, FirstInstance);
