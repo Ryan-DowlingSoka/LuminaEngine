@@ -37,11 +37,6 @@ namespace Lumina
                 PackagePaths.emplace_back(File.VirtualPath);
             }
         };
-        
-        if (!VFS::Exists("/Game/Content"))
-        {
-            VFS::CreateDir("/Game/Content");
-        }
 
         VFS::RecursiveDirectoryIterator("/Engine/Resources/Content", Callback);
         VFS::RecursiveDirectoryIterator("/Game", Callback);

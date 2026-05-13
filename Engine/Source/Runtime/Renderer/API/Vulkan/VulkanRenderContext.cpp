@@ -828,25 +828,21 @@ namespace Lumina
         Features12.shaderInt8                       = VK_TRUE;
         Features12.shaderFloat16                    = VK_TRUE;
 
-        VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR DerivativesFeature{};
-        DerivativesFeature.sType                        = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR;
-        DerivativesFeature.computeDerivativeGroupQuads  = VK_TRUE;
-
         // VK_EXT_mutable_descriptor_type lets the bindless table host both
         // sampled and storage images at one binding slot, with the per-write
         // descriptorType picking which interpretation to use.
         VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT MutableDescriptorFeature{};
         MutableDescriptorFeature.sType                  = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT;
         MutableDescriptorFeature.mutableDescriptorType  = VK_TRUE;
-        MutableDescriptorFeature.pNext                  = &DerivativesFeature;
 
         VkPhysicalDeviceVulkan13Features Features13 = {};
         Features13.sType                            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         Features13.dynamicRendering                 = VK_TRUE;
         Features13.synchronization2                 = VK_TRUE;
-        Features13.pNext                            = &MutableDescriptorFeature;
 
-
+        // vk-bootstrap memcpys each features struct by size and rebuilds its
+        // own pNext chain; structs chained via pNext are silently dropped.
+        // Register each extension feature separately so it reaches the device.
         vkb::PhysicalDeviceSelector selector(Instance);
         auto PhysicalDeviceResult = selector
             .set_minimum_version(1, 4)
@@ -854,6 +850,7 @@ namespace Lumina
             .set_required_features_11(Features11)
             .set_required_features_12(Features12)
             .set_required_features_13(Features13)
+            .add_required_extension_features(MutableDescriptorFeature)
             .add_required_extension(VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME)
             .require_separate_transfer_queue()
             .require_separate_compute_queue()
@@ -877,7 +874,7 @@ namespace Lumina
             Message += ".";
             Message += eastl::to_string(VK_API_VERSION_PATCH(InstanceVersion)).c_str();
             Message += "\n\nLumina requires Vulkan 1.4 with dynamic rendering, synchronization2, descriptor indexing, "
-                "buffer device address, timeline semaphores, and compute shader derivatives.";
+                "buffer device address, and timeline semaphores.";
 
             ShowVulkanInitFailure("Vulkan Device Selection Failed", Message);
             return false;
@@ -887,8 +884,9 @@ namespace Lumina
 
         PhysicalDevice.enable_extension_if_present(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         PhysicalDevice.enable_extension_if_present(VK_EXT_SAMPLER_FILTER_MINMAX_EXTENSION_NAME);
-        PhysicalDevice.enable_extension_if_present(VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME);
-        PhysicalDevice.enable_extension_if_present(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+
+        // NV-only; AMD/Intel will skip the Aftermath diagnostics config pNext below.
+        const bool bNvDiagnostics = PhysicalDevice.enable_extension_if_present(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
 
         if (PhysicalDevice.enable_extension_if_present(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME))
         {
@@ -913,7 +911,10 @@ namespace Lumina
         }
 
         vkb::DeviceBuilder DeviceBuilder(PhysicalDevice);
-        CrashTracker->EnableDeviceFeatures(DeviceBuilder);
+        if (bNvDiagnostics)
+        {
+            CrashTracker->EnableDeviceFeatures(DeviceBuilder);
+        }
 
         auto DeviceResult = DeviceBuilder.build();
         if (!DeviceResult.has_value())

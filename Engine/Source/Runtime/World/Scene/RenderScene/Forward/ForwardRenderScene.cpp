@@ -6333,11 +6333,6 @@ namespace Lumina
 
     void FForwardRenderScene::InitBRDFLUT()
     {
-        // 256x256 RG16_FLOAT is the standard size for Karis 2013 split-sum.
-        // R holds the F0 scale, G holds the F0 bias. RG16 is plenty -- the
-        // integrand is smooth and saturates inside [0, 1] over the whole
-        // (NdotV, Roughness) plane, so 16-bit half precision is invisible
-        // against per-frame noise from the rest of the pipeline.
         constexpr uint32 BRDFLutSize = 256u;
 
         FRHIImageDesc ImageDesc;
@@ -6345,8 +6340,6 @@ namespace Lumina
         ImageDesc.Format            = EFormat::RG16_FLOAT;
         ImageDesc.Dimension         = EImageDimension::Texture2D;
         ImageDesc.NumMips           = 1;
-        // Bake transitions us to ShaderResource at the end of the pass; from
-        // then on the LUT is read-only for the life of the scene.
         ImageDesc.InitialState      = EResourceStates::ShaderResource;
         ImageDesc.bKeepInitialState = true;
         ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage);
@@ -6354,11 +6347,7 @@ namespace Lumina
 
         FRHIImageRef BRDFLut = GRenderContext->CreateImage(ImageDesc);
         NamedImages[(int)ENamedImage::BRDFLut] = BRDFLut;
-
-        // Private layout/set for the bake -- the integrand uses no scene data,
-        // so binding it through SceneBindingSet would force CreateLayouts() to
-        // run (and reference an empty NamedImages slot) before this function
-        // runs. Standalone is the cleanest order.
+        
         FBindingLayoutDesc LayoutDesc;
         LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(0));
         LayoutDesc.SetVisibility(ERHIShaderType::Compute);
@@ -6384,7 +6373,6 @@ namespace Lumina
         State.SetPipeline(Pipeline);
         CmdList->SetComputeState(State);
 
-        // Tile size matches numthreads in BRDFIntegration.slang.
         constexpr uint32 BRDFLutTile = 8u;
         const uint32 GroupsX = RenderUtils::GetGroupCount(BRDFLutSize, BRDFLutTile);
         const uint32 GroupsY = RenderUtils::GetGroupCount(BRDFLutSize, BRDFLutTile);
@@ -6405,14 +6393,8 @@ namespace Lumina
         ImageDesc.Dimension         = EImageDimension::TextureCube;
         ImageDesc.ArraySize         = 6;
         ImageDesc.NumMips           = 1;
-        // The capture pass alternates the cube between UAV (write) and SRV
-        // (sample by IBL passes), so let the auto-barrier system track it.
         ImageDesc.InitialState      = EResourceStates::ShaderResource;
         ImageDesc.bKeepInitialState = true;
-        // CubeCompatible is required for the SamplerCube SRV view downstream.
-        // Vulkan does not derive VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT from
-        // Dimension::TextureCube alone -- the flag must be set explicitly or
-        // the cube view is undefined behavior (driver-dependent black/garbage).
         ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage, EImageCreateFlags::CubeCompatible);
         ImageDesc.DebugName         = "Sky Cube";
 
@@ -6421,9 +6403,6 @@ namespace Lumina
 
     void FForwardRenderScene::InitIBLConvolutionTargets()
     {
-        // Diffuse irradiance: very low frequency, 32 per face is the
-        // textbook size and indistinguishable from larger captures because
-        // the cos-weighted hemispherical integration smears everything.
         {
             constexpr uint32 IrradianceFaceSize = 32u;
 
