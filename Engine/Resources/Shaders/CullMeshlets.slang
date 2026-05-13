@@ -95,6 +95,10 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
     }
 
     FGPUInstance Inst = GetInstance(InstanceID);
+    if (MeshletLocalIdx >= Inst.SurfaceMeshletCount)
+    {
+    	return;
+    }
 
     // Per-instance / per-meshlet data reused across every view.
     bool bSkinned  = Inst.HasFlag(EInstanceFlags::Skinned);
@@ -271,8 +275,10 @@ void RunLatePhase(uint3 GlobalID, uint3 GroupID, uint CameraLateViewIndex)
     // can't change between phases (they're baked into the Instance buffer
     // that was uploaded before phase 0) so re-deriving is stable.
     FGPUInstance Inst = GetInstance(Entry.InstanceID);
-    if (Inst.SurfaceMeshletCount == 0)
-        return;
+    if (Entry.MeshletLocalIndex >= Inst.SurfaceMeshletCount)
+    {
+   		return;    
+    }
 
     uint GlobalMeshletIdx = Inst.SurfaceMeshletOffset + Entry.MeshletLocalIndex;
     FMeshletBounds Bounds = Inst.MeshletHeader.Bounds[GlobalMeshletIdx];
