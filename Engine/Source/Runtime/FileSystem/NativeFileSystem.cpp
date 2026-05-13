@@ -304,64 +304,104 @@ namespace Lumina::VFS
     void FNativeFileSystem::RecursiveDirectoryIterator(FStringView Path, const TFunction<void(const FFileInfo&)>& Callback) const
     {
         FFixedString BaseResolvedPath = ResolveVirtualPath(Path);
-        
-        for (auto& Itr : std::filesystem::recursive_directory_iterator(BaseResolvedPath.c_str()))
+        if (BaseResolvedPath.empty())
         {
-            std::string FilePath        = Itr.path().generic_string();
+            LOG_WARN("RecursiveDirectoryIterator: path '{0}' does not resolve under alias '{1}'", Path, AliasPath);
+            return;
+        }
+
+        std::error_code EC;
+        if (!std::filesystem::is_directory(BaseResolvedPath.c_str(), EC) || EC)
+        {
+            LOG_WARN("RecursiveDirectoryIterator: skipping '{0}' (resolved '{1}'): {2}",
+                FString(Path.data(), Path.size()), BaseResolvedPath,
+                EC ? EC.message() : std::string("not a directory"));
+            return;
+        }
+
+        std::filesystem::recursive_directory_iterator Itr(BaseResolvedPath.c_str(), std::filesystem::directory_options::skip_permission_denied, EC);
+        if (EC)
+        {
+            LOG_WARN("RecursiveDirectoryIterator: failed to open '{0}': {1}", BaseResolvedPath, EC.message());
+            return;
+        }
+
+        const std::filesystem::recursive_directory_iterator End{};
+        while (Itr != End)
+        {
+            const auto& Entry = *Itr;
+
+            std::string FilePath        = Entry.path().generic_string();
             std::string RelativeStr     = FilePath.substr(BasePath.size());
             FFixedString VirtualPath    { RelativeStr.data(), RelativeStr.size() };
-            
+
             VirtualPath.insert(0, AliasPath);
 
-            auto FileTime           = std::filesystem::last_write_time(Itr);
-            auto SysTime            = std::chrono::clock_cast<std::chrono::system_clock>(FileTime);
-            int64 LastModifyTime    = std::chrono::duration_cast<std::chrono::nanoseconds>(SysTime.time_since_epoch()).count();
-            bool bHidden            = Itr.path().filename().generic_string().starts_with(".");
-            
+            std::error_code TimeEC;
+            auto FileTime           = std::filesystem::last_write_time(Entry, TimeEC);
+            int64 LastModifyTime    = 0;
+            if (!TimeEC)
+            {
+                auto SysTime        = std::chrono::clock_cast<std::chrono::system_clock>(FileTime);
+                LastModifyTime      = std::chrono::duration_cast<std::chrono::nanoseconds>(SysTime.time_since_epoch()).count();
+            }
+            bool bHidden            = Entry.path().filename().generic_string().starts_with(".");
+
 
             EFileFlags Flags = EFileFlags::None;
-            
-            if (Itr.path().extension() == ".lua" || Itr.path().extension() == ".luau")
+
+            if (Entry.path().extension() == ".lua" || Entry.path().extension() == ".luau")
             {
                 Flags |= EFileFlags::LuaFile;
             }
-            
-            if (Itr.path().extension() == ".lasset")
+
+            if (Entry.path().extension() == ".lasset")
             {
                 Flags |= EFileFlags::LAssetFile;
             }
-            
+
             if (bHidden)
             {
                 Flags |= EFileFlags::Hidden;
             }
-            
-            if (Itr.is_directory())
+
+            if (Entry.is_directory(EC))
             {
                 Flags |= EFileFlags::Directory;
             }
-            
-            if (Itr.is_symlink())
+
+            if (Entry.is_symlink(EC))
             {
                 Flags |= EFileFlags::Symlink;
             }
-            
-            auto Perms = Itr.status().permissions();
-            if ((Perms & std::filesystem::perms::owner_write) == std::filesystem::perms::none)
+
+            auto Status = Entry.status(EC);
+            if (!EC)
             {
-                Flags |= EFileFlags::ReadOnly;
+                auto Perms = Status.permissions();
+                if ((Perms & std::filesystem::perms::owner_write) == std::filesystem::perms::none)
+                {
+                    Flags |= EFileFlags::ReadOnly;
+                }
             }
-            
+
             FFileInfo FileInfo
             {
-                .Name               = Itr.path().filename().generic_string().c_str(),
+                .Name               = Entry.path().filename().generic_string().c_str(),
                 .VirtualPath        = FFixedString{VirtualPath.data(),VirtualPath.size()},
                 .PathSource         = FFixedString{FilePath.data(), FilePath.size()},
                 .LastModifyTime     = LastModifyTime,
                 .Flags              = Flags
             };
-            
+
             Callback(Move(FileInfo));
+
+            Itr.increment(EC);
+            if (EC)
+            {
+                LOG_WARN("RecursiveDirectoryIterator: iteration error under '{0}': {1}", BaseResolvedPath, EC.message());
+                break;
+            }
         }
     }
 }
