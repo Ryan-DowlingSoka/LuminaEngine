@@ -226,8 +226,27 @@ namespace Lumina
         ImGui::PopID();
 
         ImGui::PopItemWidth();
-        
-        return bWasChanged ? EPropertyChangeOp::Updated : EPropertyChangeOp::None;
+
+        if (bWasChanged)
+        {
+            // A transaction from a prior change is still settling; fold this one into it.
+            if (bFinishPending)
+            {
+                return EPropertyChangeOp::Updated;
+            }
+            // Open the transaction now: StartChangeCallback snapshots the old value
+            // before UpdatePropertyValue writes the new one.
+            bFinishPending = true;
+            return EPropertyChangeOp::Started;
+        }
+
+        if (bFinishPending)
+        {
+            bFinishPending = false;
+            return EPropertyChangeOp::Finished;
+        }
+
+        return EPropertyChangeOp::None;
     }
 
     void FCObjectPropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)

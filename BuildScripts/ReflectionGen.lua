@@ -12,13 +12,18 @@
 -- wasted on every incremental build. A single Utility project collapses
 -- that to one premake run.
 --
--- Utility kind: produces no build output, so MSBuild has no
--- input/output FastUpToDateCheck to skip on — prebuild fires every build,
--- which is what we want. The lua action handles "do we actually need to
--- run libclang" internally.
+-- Utility kind produces no build output, but that alone does NOT make the
+-- prebuild fire every build: VS's FastUpToDateCheck still evaluates this
+-- project, and since reflected headers (Mesh.h, etc.) are not among its
+-- tracked inputs, editing one leaves ReflectionGen "up-to-date" and the
+-- prebuild gets skipped entirely. `fastuptodate "Off"`
+-- (DisableFastUpToDateCheck) forces VS to invoke MSBuild every build so the
+-- PreBuildEvent always runs. The lua action then handles "do we actually
+-- need to run libclang" internally via its own cross-project dirty check.
 
 project "ReflectionGen"
     kind "Utility"
+    fastuptodate "Off"
     targetdir(LuminaConfig.GetTargetDirectory())
     objdir(path.join(LuminaConfig.EnginePath("Intermediates/Obj"),
                      LuminaConfig.OutputDirectory, "ReflectionGen"))

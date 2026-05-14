@@ -1,7 +1,10 @@
 ﻿#include "PCH.h"
+#include <chrono>
 #include <glm/gtx/string_cast.hpp>
 #include "ImportHelpers.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
+#include "Core/Progress/SlowTask.h"
+#include "Core/Threading/Atomic.h"
 #include "Core/Utils/Defer.h"
 #include "FileSystem/FileSystem.h"
 #include "OpenFBX/ofbx.h"
@@ -22,22 +25,54 @@ namespace Lumina::Import::Mesh::FBX
     }
     
     
-    TExpected<FMeshImportData, FString> ImportFBX(const FMeshImportOptions& ImportOptions, FStringView FilePath)
+    TExpected<FMeshImportData, FString> ImportFBX(const FMeshImportOptions& ImportOptions, FStringView FilePath, FScopedSlowTask* Progress)
     {
+        // [DIAG] Time the file read vs. the ofbx parse so we can see where "Parsing source file" goes.
+        if (Progress)
+        {
+            Progress->UpdateMessage("Loading source file...");
+        }
+        const auto TLoadStart = std::chrono::steady_clock::now();
+
         TVector<uint8> FileBlob;
         if (!FileHelper::LoadFileToArray(FileBlob, FilePath))
         {
             return TUnexpected("Failed to load file path");
         }
-        
-        ofbx::LoadFlags LoadFlags = ofbx::LoadFlags::IGNORE_CAMERAS | ofbx::LoadFlags::IGNORE_LIGHTS | ofbx::LoadFlags::IGNORE_VIDEOS;
+
+        const auto TParseStart = std::chrono::steady_clock::now();
+        LOG_INFO("[FBX] File load: {} ms ({} MB)",
+            std::chrono::duration_cast<std::chrono::milliseconds>(TParseStart - TLoadStart).count(),
+            FileBlob.size() / (1024ull * 1024ull));
+
+        if (Progress)
+        {
+            Progress->UpdateMessage("Parsing FBX data...");
+        }
+
+        // Blend shapes and bind-pose objects are never consumed by this importer; skipping
+        // their construction shaves work off ofbx::load for files that contain them.
+        ofbx::LoadFlags LoadFlags = ofbx::LoadFlags::IGNORE_CAMERAS
+            | ofbx::LoadFlags::IGNORE_LIGHTS
+            | ofbx::LoadFlags::IGNORE_VIDEOS
+            | ofbx::LoadFlags::IGNORE_BLEND_SHAPES
+            | ofbx::LoadFlags::IGNORE_POSES;
 
         ofbx::IScene* FBXScene = ofbx::load(FileBlob.data(), FileBlob.size(), (uint16)LoadFlags);
         if (!FBXScene)
         {
             return TUnexpected("Failed to load FBX Scene");
         }
-        
+
+        const auto TSceneStart = std::chrono::steady_clock::now();
+        LOG_INFO("[FBX] Parse (ofbx::load): {} ms",
+            std::chrono::duration_cast<std::chrono::milliseconds>(TSceneStart - TParseStart).count());
+
+        if (Progress)
+        {
+            Progress->EnterProgressFrame(0.40f, "Reading animations...");
+        }
+
         float SceneScale = FBXScene->getGlobalSettings()->UnitScaleFactor * 0.01f;
         SceneScale *= ImportOptions.Scale;
         
@@ -255,7 +290,12 @@ namespace Lumina::Import::Mesh::FBX
                 ImportData.Animations.push_back(Move(AnimClip));
             }
         }
-        
+
+        if (Progress)
+        {
+            Progress->UpdateMessage("Reading skeleton & materials...");
+        }
+
         int DataCount = FBXScene->getEmbeddedDataCount();
         
         for (int DataIdx = 0; DataIdx < DataCount; ++DataIdx)
@@ -407,6 +447,14 @@ namespace Lumina::Import::Mesh::FBX
         
         ImportData.Resources.reserve(MeshCount);
 
+        LOG_INFO("[FBX] Scene data (anims/skeleton/materials): {} ms",
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - TSceneStart).count());
+
+        if (Progress)
+        {
+            Progress->EnterProgressFrame(0.10f, "Reading geometry...");
+        }
+
         // Per-mesh extraction in parallel into FFBXMeshResult; serial merge concatenates with rebased offsets.
         struct FFBXMeshResult
         {
@@ -418,6 +466,10 @@ namespace Lumina::Import::Mesh::FBX
         };
 
         TVector<FFBXMeshResult> Results(MeshCount);
+
+        // The geometry phase owns the final 0.5 of the parse budget, spread per mesh.
+        const float GeometryStep = 0.5f / (float)eastl::max<size_t>((size_t)1, (size_t)MeshCount);
+        TAtomic<uint32> CompletedMeshes{0};
 
         Task::ParallelFor((uint32)MeshCount, [&](uint32 MeshIdx)
         {
@@ -652,15 +704,20 @@ namespace Lumina::Import::Mesh::FBX
                 Surface.MaterialIndex = (int16)PartitionIdx;
                 Result.Surfaces.push_back(Surface);
             }
+
+            if (Progress)
+            {
+                const uint32 Done = CompletedMeshes.fetch_add(1) + 1;
+                FFixedString Msg(FFixedString::CtorSprintf(), "Reading geometry (%u/%u meshes)...", Done, (uint32)MeshCount);
+                Progress->EnterProgressFrame(GeometryStep, Msg);
+            }
         });
 
         // Serial merge: indices and surface StartIndex rebased by running bases, source-order traversal stays deterministic.
         TUniquePtr<FMeshResource> StaticMesh = MakeUnique<FMeshResource>();
-        StaticMesh->Vertices = TVector<FVertex>();
         StaticMesh->Name = FString(FileName) + "_Mesh";
 
         TUniquePtr<FMeshResource> SkinnedMesh = MakeUnique<FMeshResource>();
-        SkinnedMesh->Vertices = TVector<FSkinnedVertex>();
         SkinnedMesh->bSkinnedMesh = true;
         SkinnedMesh->Name = FString(FileName) + "_SkeletalMesh";
 
@@ -683,13 +740,11 @@ namespace Lumina::Import::Mesh::FBX
                 }
             }
 
-            auto& StaticVertVec = eastl::get<TVector<FVertex>>(StaticMesh->Vertices);
-            StaticVertVec.reserve(StaticVertCount);
+            StaticMesh->ReserveVertices(StaticVertCount);
             StaticMesh->Indices.reserve(StaticIdxCount);
             StaticMesh->GeometrySurfaces.reserve(StaticSurfCount);
 
-            auto& SkinnedVertVec = eastl::get<TVector<FSkinnedVertex>>(SkinnedMesh->Vertices);
-            SkinnedVertVec.reserve(SkinnedVertCount);
+            SkinnedMesh->ReserveVertices(SkinnedVertCount);
             SkinnedMesh->Indices.reserve(SkinnedIdxCount);
             SkinnedMesh->GeometrySurfaces.reserve(SkinnedSurfCount);
         }
@@ -703,13 +758,17 @@ namespace Lumina::Import::Mesh::FBX
 
             if (R.bSkinned)
             {
-                auto& Vec = eastl::get<TVector<FSkinnedVertex>>(Target.Vertices);
-                Vec.insert(Vec.end(), R.SkinnedVerts.begin(), R.SkinnedVerts.end());
+                for (const FSkinnedVertex& V : R.SkinnedVerts)
+                {
+                    Target.AppendVertex(V);
+                }
             }
             else
             {
-                auto& Vec = eastl::get<TVector<FVertex>>(Target.Vertices);
-                Vec.insert(Vec.end(), R.StaticVerts.begin(), R.StaticVerts.end());
+                for (const FVertex& V : R.StaticVerts)
+                {
+                    Target.AppendVertex(V);
+                }
             }
 
             for (uint32 LocalIdx : R.Indices)

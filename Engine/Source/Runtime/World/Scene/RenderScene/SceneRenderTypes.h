@@ -34,13 +34,14 @@ constexpr int ClusterGridSizeZ = 24;
 
 constexpr int NumClusters = ClusterGridSizeX * ClusterGridSizeY * ClusterGridSizeZ;
 
-// CSM atlas: C0 (2048) takes left half; C1/C2 (1024 each) stack in right column.
-// Single Texture2D atlas (~24 MB) replaces 192 MB D32 array.
-constexpr int GCSMCascadeSizes[3]       = { 2048, 1024, 1024 };
-constexpr int GCSMAtlasWidth            = 3072;
+// CSM atlas: three 2048 cascades packed side by side in a single Texture2D
+// atlas (~48 MB D32). Outer cascades get full resolution so the large world
+// area they cover doesn't degrade into blocky shadows.
+constexpr int GCSMCascadeSizes[3]       = { 2048, 2048, 2048 };
+constexpr int GCSMAtlasWidth            = 6144;
 constexpr int GCSMAtlasHeight           = 2048;
-constexpr int GCSMCascadeOriginX[3]     = { 0,    2048, 2048 };
-constexpr int GCSMCascadeOriginY[3]     = { 0,    0,    1024 };
+constexpr int GCSMCascadeOriginX[3]     = { 0,    2048, 4096 };
+constexpr int GCSMCascadeOriginY[3]     = { 0,    0,    0    };
 
 constexpr int GShadowAtlasResolution    = 4096;
 

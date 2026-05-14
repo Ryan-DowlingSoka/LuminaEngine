@@ -19,6 +19,7 @@ namespace Lumina
     struct FSkeletonResource;
     class IRenderContext;
     struct FVertex;
+    class FScopedSlowTask;
 }
 
 namespace Lumina::Import
@@ -128,28 +129,32 @@ namespace Lumina::Import
             /** Populated by the dialog at commit; drives FinalizeMeshImportData and per-asset creation gates. */
             FMeshImportOptions                          CommitOptions;
         };
-        
-        void OptimizeNewlyImportedMesh(FMeshResource& MeshResource);
-        void GenerateMeshlets(FMeshResource& MeshResource);
+
+        void OptimizeNewlyImportedMesh(FMeshResource& MeshResource, FScopedSlowTask* Progress = nullptr);
+        /** When Progress is set, advances StepPerSurface of progress for each surface meshletized. */
+        void GenerateMeshlets(FMeshResource& MeshResource, FScopedSlowTask* Progress = nullptr, float StepPerSurface = 0.0f);
         void AnalyzeMeshStatistics(FMeshResource& MeshResource, FMeshStatistics& OutMeshStats);
 
-        /** Apply user transforms and run the heavy finalize passes on a previously parsed FMeshImportData. */
-        RUNTIME_API void FinalizeMeshImportData(FMeshImportData& Data, const FMeshImportOptions& Options);
-        
+        /**
+         * Apply user transforms and run the heavy finalize passes on a previously parsed FMeshImportData.
+         * When Progress is set, advances a total of ProgressBudget across the whole finalize pass.
+         */
+        RUNTIME_API void FinalizeMeshImportData(FMeshImportData& Data, const FMeshImportOptions& Options, FScopedSlowTask* Progress = nullptr, float ProgressBudget = 1.0f);
+
         namespace OBJ
         {
-            NODISCARD RUNTIME_API TExpected<FMeshImportData, FString> ImportOBJ(const FMeshImportOptions& ImportOptions, FStringView FilePath);
-        }
-        
-        namespace FBX
-        {
-            NODISCARD RUNTIME_API TExpected<FMeshImportData, FString> ImportFBX(const FMeshImportOptions& ImportOptions, FStringView FilePath);
+            NODISCARD RUNTIME_API TExpected<FMeshImportData, FString> ImportOBJ(const FMeshImportOptions& ImportOptions, FStringView FilePath, FScopedSlowTask* Progress = nullptr);
         }
 
-        
+        namespace FBX
+        {
+            NODISCARD RUNTIME_API TExpected<FMeshImportData, FString> ImportFBX(const FMeshImportOptions& ImportOptions, FStringView FilePath, FScopedSlowTask* Progress = nullptr);
+        }
+
+
         namespace GLTF
         {
-            NODISCARD RUNTIME_API TExpected<FMeshImportData, FString> ImportGLTF(const FMeshImportOptions& ImportOptions, FStringView FilePath);
+            NODISCARD RUNTIME_API TExpected<FMeshImportData, FString> ImportGLTF(const FMeshImportOptions& ImportOptions, FStringView FilePath, FScopedSlowTask* Progress = nullptr);
         }
     }
     

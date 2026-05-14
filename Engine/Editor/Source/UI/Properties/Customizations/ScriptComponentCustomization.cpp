@@ -292,11 +292,15 @@ namespace Lumina
                 FFixedString DroppedPath;
                 if (DragDrop::AcceptScript(DroppedPath))
                 {
-                    ScriptComponent->ScriptPath.Path = FString(DroppedPath.c_str(), DroppedPath.size());
-                    if (ScriptComponent->World)
+                    const FString NewPath(DroppedPath.c_str(), DroppedPath.size());
+                    PendingMutation = [ScriptComponent, NewPath]
                     {
-                        ScriptComponent->World->OnScriptComponentCreated(ScriptComponent->Entity, *ScriptComponent, true);
-                    }
+                        ScriptComponent->ScriptPath.Path = NewPath;
+                        if (ScriptComponent->World)
+                        {
+                            ScriptComponent->World->OnScriptComponentCreated(ScriptComponent->Entity, *ScriptComponent, true);
+                        }
+                    };
                     bWasChanged = true;
                 }
                 ImGui::EndDragDropTarget();
@@ -346,8 +350,15 @@ namespace Lumina
                         SelectableLabel.append(LE_ICON_LANGUAGE_LUA).append(" ").append(FileInfo.VirtualPath.c_str());
                         if (ImGui::Selectable(SelectableLabel.c_str()))
                         {
-                            ScriptComponent->ScriptPath.Path = FileInfo.VirtualPath;
-                            ScriptComponent->World->OnScriptComponentCreated(ScriptComponent->Entity, *ScriptComponent, true);
+                            const FString NewPath(FileInfo.VirtualPath.c_str(), FileInfo.VirtualPath.size());
+                            PendingMutation = [ScriptComponent, NewPath]
+                            {
+                                ScriptComponent->ScriptPath.Path = NewPath;
+                                if (ScriptComponent->World)
+                                {
+                                    ScriptComponent->World->OnScriptComponentCreated(ScriptComponent->Entity, *ScriptComponent, true);
+                                }
+                            };
                             ImGui::CloseCurrentPopup();
                             bWasChanged = true;
                         }
@@ -403,10 +414,13 @@ namespace Lumina
             
             if (ImGui::Button(LE_ICON_REFRESH "##Refresh", GButtonSize))
             {
-                if (ScriptComponent->World)
+                PendingMutation = [ScriptComponent]
                 {
-                    ScriptComponent->World->OnScriptComponentCreated(ScriptComponent->Entity, *ScriptComponent, true);
-                }
+                    if (ScriptComponent->World)
+                    {
+                        ScriptComponent->World->OnScriptComponentCreated(ScriptComponent->Entity, *ScriptComponent, true);
+                    }
+                };
                 bWasChanged = true;
             }
             
@@ -420,15 +434,18 @@ namespace Lumina
 
             if (ImGui::Button(LE_ICON_CLOSE_CIRCLE "##Clear", GButtonSize))
             {
-                ScriptComponent->Script = {};
-                ScriptComponent->AttachFunc = {};
-                ScriptComponent->ReadyFunc = {};
-                ScriptComponent->UpdateFunc = {};
-                ScriptComponent->DetachFunc = {};
-                ScriptComponent->ScriptPath = {};
-                ScriptComponent->ScriptMetaTable = {};
-                ScriptComponent->TickRate = 0.0f;
-                ScriptComponent->bRunInEditor = false;
+                PendingMutation = [ScriptComponent]
+                {
+                    ScriptComponent->Script = {};
+                    ScriptComponent->AttachFunc = {};
+                    ScriptComponent->ReadyFunc = {};
+                    ScriptComponent->UpdateFunc = {};
+                    ScriptComponent->DetachFunc = {};
+                    ScriptComponent->ScriptPath = {};
+                    ScriptComponent->ScriptMetaTable = {};
+                    ScriptComponent->TickRate = 0.0f;
+                    ScriptComponent->bRunInEditor = false;
+                };
                 bWasChanged = true;
             }
             
@@ -460,7 +477,11 @@ namespace Lumina
             
             ImGui::PopStyleColor(3);
 
-            DrawExportsSection(*ScriptComponent, bWasChanged);
+            // Export-value edits mutate the component live and aren't deferred, so they're kept
+            // out of the change-op for now — they'd otherwise push an empty transaction (the
+            // mutation already happened before BeginTransaction could snapshot the old state).
+            bool bExportsChanged = false;
+            DrawExportsSection(*ScriptComponent, bExportsChanged);
 
             ImGui::EndGroup();
         }
@@ -469,13 +490,38 @@ namespace Lumina
         ImGui::PopID();
 
         ImGui::PopItemWidth();
-        
-        return bWasChanged ? EPropertyChangeOp::Updated : EPropertyChangeOp::None;
+
+        if (bWasChanged)
+        {
+            // Fold a follow-up edit into the already-open transaction.
+            if (bFinishPending)
+            {
+                return EPropertyChangeOp::Updated;
+            }
+            // Open the transaction now; the deferred PendingMutation runs in UpdatePropertyValue,
+            // after StartChangeCallback (BeginTransaction) has snapshotted the pre-change state.
+            bFinishPending = true;
+            return EPropertyChangeOp::Started;
+        }
+
+        if (bFinishPending)
+        {
+            bFinishPending = false;
+            return EPropertyChangeOp::Finished;
+        }
+
+        return EPropertyChangeOp::None;
     }
 
     void FScriptComponentPropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
     {
-        
+        // Runs inside DispatchChange, after BeginTransaction — replay the deferred edit here so
+        // the undo snapshot captured the pre-change state.
+        if (PendingMutation)
+        {
+            PendingMutation();
+            PendingMutation = {};
+        }
     }
 
     void FScriptComponentPropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)

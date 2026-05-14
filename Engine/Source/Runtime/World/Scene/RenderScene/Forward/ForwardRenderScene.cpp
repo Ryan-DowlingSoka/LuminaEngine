@@ -2307,11 +2307,10 @@ namespace Lumina
             {
                 Radius = glm::max(Radius, glm::length(Corners[j] - SphereCenter));
             }
-            // Quantize the radius to whole texels. Sub-texel jitter in the
-            // radius would change TexelSize between frames, defeating the
-            // snap below. Rounding up at texel granularity keeps the world-
-            // space texel size constant across small camera motions.
-            const float QuantStep = 1.0f / CascadeResFloat;
+
+            
+            const float Octave    = std::exp2(std::floor(std::log2(glm::max(Radius, 1e-4f))));
+            const float QuantStep = Octave / 8.0f;
             Radius = std::ceil(Radius / QuantStep) * QuantStep;
             const float TexelSize = (Radius * 2.0f) / CascadeResFloat;
 
@@ -2328,11 +2327,7 @@ namespace Lumina
                 glm::vec3(0.0f),
                 FViewVolume::UpAxis);
 
-            // Snap the sphere center to the nearest whole texel in light
-            // space. As the camera moves continuously, SnappedCenter moves
-            // in discrete one-texel jumps perpendicular to LightDir, so
-            // every world point projects to the same shadow texel until the
-            // grid actually advances by a step.
+
             glm::vec4 CenterLS = LightRotation * glm::vec4(SphereCenter, 1.0f);
             CenterLS.x = std::round(CenterLS.x / TexelSize) * TexelSize;
             CenterLS.y = std::round(CenterLS.y / TexelSize) * TexelSize;
@@ -2342,11 +2337,7 @@ namespace Lumina
                 SnappedCenter + LightDir * (Radius + BackDistance),
                 SnappedCenter,
                 FViewVolume::UpAxis);
-
-            // Standard-Z [0,1] LH ortho. Near plane is at the eye (0), far at the
-            // far face of the slab (OrthoRange). The full sphere fits inside.
-            // Y-flip bakes Vulkan +Y-down NDC into the matrix so the cascade
-            // shader samples with the same NDC->UV math as everything else.
+            
             glm::mat4 LightProjection = glm::ortho(
                 -Radius, +Radius,
                 -Radius, +Radius,
@@ -2357,12 +2348,7 @@ namespace Lumina
             if (CascadeShadowData)
             {
                 CascadeShadowData->ViewProjection[i] = CascadeVP;
-
-                // Atlas UV transform for this cascade. The pixel shader
-                // takes the per-cascade UV in [0,1] and remaps it into the
-                // packed atlas region. Origin/size come from the constant
-                // packing table so the shader doesn't need to know the
-                // atlas layout, just the per-cascade transform.
+                
                 FLightShadow& CascadeTile = CascadeShadowData->Shadow[i];
                 CascadeTile.AtlasUVOffset = glm::vec2(
                     (float)GCSMCascadeOriginX[i] / (float)GCSMAtlasWidth,
@@ -2562,7 +2548,7 @@ namespace Lumina
         uint32 NumViews;
         uint32 Phase;
         uint32 CameraLateViewIndex;
-        uint32 _Pad;
+        uint32 Pad;
     };
 
     void FForwardRenderScene::CullPassEarly(ICommandList& CmdList)
@@ -6254,7 +6240,7 @@ namespace Lumina
         AllocateMSAAImages(Extent);
 
         {
-            // Progressive CSM atlas: cascade 0 = 2048², 1/2 = 1024² each (see GCSMAtlasW/H).
+            // CSM atlas: three 2048² cascades packed side by side (see GCSMAtlasW/H).
             FRHIImageDesc ImageDesc = {};
             ImageDesc.Extent = glm::uvec2(GCSMAtlasWidth, GCSMAtlasHeight);
             ImageDesc.Format = EFormat::D32;

@@ -138,13 +138,18 @@ namespace Lumina
         float GetMeasuredHeaderTextWidth() const override;
         void DrawChildren(float ChildOffset, bool bReadOnly) override;
         void RebuildChildren();
-        bool HasExtraControls() const override { return true; }
+        bool HasExtraControls() const override;
         float GetExtraControlsSectionWidth() override;
         void DrawExtraControlsSection() override;
         void OnValueResetToDefault() override { RebuildChildren(); }
         TSharedPtr<FPropertyHandle> GetPropertyHandle() const { return PropertyHandle; }
 
         bool IsInnerFixedHeight() const;
+
+        // Metadata-driven editing restrictions. The "NoResize" meta hides the
+        // add/insert/remove/clear actions; "NoReorder" hides move-up/down.
+        bool AllowResize() const;
+        bool AllowReorder() const;
 
         // Queue a structural change (push/remove/swap/clear) instead of running it
         // immediately. The mutation runs at the start of the next frame in Update,

@@ -95,8 +95,27 @@ namespace Lumina
         }
         
         ImGui::PopItemWidth();
-    
-        return bWasChanged ? EPropertyChangeOp::Updated : EPropertyChangeOp::None;
+
+        if (bWasChanged)
+        {
+            // Fold an ongoing edit (e.g. a multi-frame drag) into the already-open transaction.
+            if (bFinishPending)
+            {
+                return EPropertyChangeOp::Updated;
+            }
+            // Open the transaction now: StartChangeCallback snapshots the old value
+            // before UpdatePropertyValue writes the new one.
+            bFinishPending = true;
+            return EPropertyChangeOp::Started;
+        }
+
+        if (bFinishPending)
+        {
+            bFinishPending = false;
+            return EPropertyChangeOp::Finished;
+        }
+
+        return EPropertyChangeOp::None;
     }
 
     void FCustomPrimDataPropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)

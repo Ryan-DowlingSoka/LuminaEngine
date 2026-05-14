@@ -55,7 +55,7 @@ namespace Lumina
 
         
         
-        PROPERTY(Editable, Category = "Materials")
+        PROPERTY(Editable, NoResize, NoReorder, Category = "Materials")
         TVector<TObjectPtr<CMaterialInterface>> Materials;
 
         PROPERTY(Script, Category = "AABB")

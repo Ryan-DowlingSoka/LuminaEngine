@@ -8,10 +8,13 @@
 #include "Assets/AssetTypes/Mesh/StaticMesh/StaticMesh.h"
 #include "Assets/Factories/TextureFactory/TextureFactory.h"
 #include "Core/Object/Package/Package.h"
+#include "Core/Progress/SlowTask.h"
 #include "Core/Utils/Defer.h"
+#include "Renderer/RendererUtils.h"
 #include "FileSystem/FileSystem.h"
 #include "Paths/Paths.h"
 #include "TaskSystem/TaskSystem.h"
+#include "TaskSystem/ThreadedCallback.h"
 #include "Tools/Import/ImportHelpers.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 
@@ -23,7 +26,7 @@ namespace Lumina
         using namespace Import::Mesh;
 
         // Neutral-options preview parse; transforms and heavy passes deferred to commit time.
-        bool PreviewParse(const FFixedString& RawPath, FMeshImportData& Out)
+        bool PreviewParse(const FFixedString& RawPath, FMeshImportData& Out, FScopedSlowTask* Progress)
         {
             FMeshImportOptions PreviewOptions;
             PreviewOptions.bOptimize         = false;
@@ -37,15 +40,15 @@ namespace Lumina
             TExpected<FMeshImportData, FString> Result;
             if (Ext == ".obj")
             {
-                Result = OBJ::ImportOBJ(PreviewOptions, RawPath);
+                Result = OBJ::ImportOBJ(PreviewOptions, RawPath, Progress);
             }
             else if (Ext == ".gltf" || Ext == ".glb")
             {
-                Result = GLTF::ImportGLTF(PreviewOptions, RawPath);
+                Result = GLTF::ImportGLTF(PreviewOptions, RawPath, Progress);
             }
             else if (Ext == ".fbx")
             {
-                Result = FBX::ImportFBX(PreviewOptions, RawPath);
+                Result = FBX::ImportFBX(PreviewOptions, RawPath, Progress);
             }
 
             if (!Result)
@@ -56,6 +59,41 @@ namespace Lumina
 
             Out = Move(Result.Value());
             return true;
+        }
+        
+        void BuildPreviewThumbnails(const FFixedString& RawPath, FMeshImportData& Data, FScopedSlowTask& Progress)
+        {
+            if (Data.Textures.empty())
+            {
+                return;
+            }
+
+            Progress.UpdateMessage("Generating thumbnails...");
+            
+            TVector<FMeshImportImage*> Images;
+            Images.reserve(Data.Textures.size());
+            for (const FMeshImportImage& Texture : Data.Textures)
+            {
+                Images.push_back(const_cast<FMeshImportImage*>(&Texture));
+            }
+
+            Task::ParallelFor((uint32)Images.size(), [&](uint32 Index)
+            {
+                FMeshImportImage& Texture = *Images[Index];
+                if (Texture.DisplayImage)
+                {
+                    return;
+                }
+                if (Texture.IsBytes())
+                {
+                    Texture.DisplayImage = RenderUtils::CreateImageFromPixels(Texture.Bytes, true, glm::uvec2(128, 128));
+                }
+                else
+                {
+                    FFixedString FullPath = Paths::Combine(VFS::Parent(RawPath), Texture.RelativePath);
+                    Texture.DisplayImage = Import::Textures::CreateTextureFromImport(FullPath, true, glm::uvec2(128, 128));
+                }
+            });
         }
 
         constexpr float kLabelColumnWidth = 180.0f;
@@ -342,21 +380,49 @@ namespace Lumina
         }
     }
 
+    void CMeshFactory::PrepareImportAsync(const FFixedString& RawPath, const FFixedString& DestinationPath, FImportPrepareCallback OnReady)
+    {
+        using namespace Import::Mesh;
+
+        // Parse the source file off the main thread so a heavy asset (e.g. Sponza) doesn't
+        // freeze the editor. The slow-task popup shows progress; the caller opens the options
+        // dialog only once the parsed result has landed back on the main thread.
+        Task::AsyncTask(1, 1, [RawPath, OnReady = Move(OnReady)](uint32, uint32, uint32) mutable
+        {
+            FScopedSlowTask SlowTask(1.0f, "Reading Mesh", "Parsing source file...");
+
+            auto Data = MakeUnique<FMeshImportData>();
+            const bool bOk = PreviewParse(RawPath, *Data, &SlowTask);
+
+            // Build preview thumbnails here on the worker thread (RHI resource creation is
+            // multi-threaded by design); doing this on the main thread froze the editor.
+            if (bOk)
+            {
+                BuildPreviewThumbnails(RawPath, *Data, SlowTask);
+            }
+
+            // Hand the fully-prepared result back to the main thread to open the dialog.
+            MainThread::Enqueue([OnReady = Move(OnReady), Data = Move(Data), bOk]() mutable
+            {
+                if (bOk)
+                {
+                    OnReady(Move(Data));
+                }
+                else
+                {
+                    OnReady(nullptr);
+                }
+            });
+        });
+    }
+
     bool CMeshFactory::DrawImportDialogue(const FFixedString& RawPath, const FFixedString& DestinationPath, TUniquePtr<Import::FImportSettings>& ImportSettings, bool& bShouldClose)
     {
         using namespace Import::Mesh;
 
+        // ImportSettings arrives fully parsed: PrepareImportAsync ran the source-file parse
+        // off-thread and the dialog is only pushed once the result (and thumbnails) landed.
         static FMeshImportOptions Options;
-
-        if (ImGui::IsWindowAppearing())
-        {
-            ImportSettings = MakeUnique<FMeshImportData>();
-            if (!PreviewParse(RawPath, static_cast<FMeshImportData&>(*ImportSettings)))
-            {
-                bShouldClose = true;
-                return false;
-            }
-        }
 
         FMeshImportData* ImportedData = static_cast<FMeshImportData*>(ImportSettings.get());
 
@@ -392,7 +458,19 @@ namespace Lumina
         // Finalize the preview parse in place using the user's CommitOptions.
         FMeshImportData& ImportData = const_cast<FMeshImportData&>(Settings->As<FMeshImportData>());
         const FMeshImportOptions& Options = ImportData.CommitOptions;
-        FinalizeMeshImportData(ImportData, Options);
+
+        // Progress budget (sums to 1.0): the geometry finalize dominates wall time, so it
+        // owns most of the bar; asset creation / texture import / package save get the rest.
+        constexpr float kFinalizeBudget = 0.75f;
+        constexpr float kCreateBudget   = 0.05f;
+        constexpr float kTextureBudget  = 0.12f;
+        constexpr float kSaveBudget     = 0.08f;
+
+        const FStringView SourceName = VFS::FileName(RawPath, true);
+        FFixedString SlowTaskTitle(FFixedString::CtorSprintf(), "Importing %.*s", (int)SourceName.length(), SourceName.data());
+        FScopedSlowTask SlowTask(1.0f, SlowTaskTitle, "Processing geometry...");
+
+        FinalizeMeshImportData(ImportData, Options, &SlowTask, kFinalizeBudget);
 
         FFixedString DestinationDir;
         FFixedString BaseName;
@@ -445,6 +523,8 @@ namespace Lumina
             return Path;
         };
         
+        SlowTask.EnterProgressFrame(kCreateBudget, "Creating assets...");
+
         TVector<CObject*> CreatedObjects;
         CreatedObjects.reserve(ImportData.Skeletons.size() + ImportData.Resources.size() + ImportData.Animations.size());
 
@@ -557,11 +637,14 @@ namespace Lumina
             CreatedObjects.push_back(NewAnimation);
         }
         
+        SlowTask.UpdateMessage("Importing textures...");
+
         if (Options.bImportTextures && !ImportData.Textures.empty())
         {
             TVector<FMeshImportImage> Images(ImportData.Textures.begin(), ImportData.Textures.end());
             CTextureFactory* TextureFactory = CTextureFactory::StaticClass()->GetDefaultObject<CTextureFactory>();
 
+            const float TextureStep = kTextureBudget / (float)Images.size();
             for (const FMeshImportImage& Texture : Images)
             {
                 if (Texture.IsBytes())
@@ -590,9 +673,19 @@ namespace Lumina
                         TextureFactory->Import(TexturePath, QualifiedPath, &Texture);
                     }
                 }
+
+                SlowTask.EnterProgressFrame(TextureStep);
             }
         }
-        
+        else
+        {
+            // No textures to import; still advance this phase's slice of the bar.
+            SlowTask.EnterProgressFrame(kTextureBudget);
+        }
+
+        SlowTask.UpdateMessage("Saving packages...");
+
+        const float SaveStep = kSaveBudget / (float)eastl::max<size_t>((size_t)1, CreatedObjects.size());
         for (CObject* Obj : CreatedObjects)
         {
             CPackage* Package = Obj->GetPackage();
@@ -604,6 +697,12 @@ namespace Lumina
             {
                 LOG_ERROR("MeshFactory: failed to save {}; asset will not be registered", Package->GetPackagePath());
             }
+
+            SlowTask.EnterProgressFrame(SaveStep);
+        }
+        if (CreatedObjects.empty())
+        {
+            SlowTask.EnterProgressFrame(kSaveBudget);
         }
         
         for (auto It = CreatedObjects.rbegin(); It != CreatedObjects.rend(); ++It)

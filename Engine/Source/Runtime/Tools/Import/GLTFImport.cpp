@@ -13,6 +13,8 @@
 
 #include "ImportHelpers.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
+#include "Core/Progress/SlowTask.h"
+#include "Core/Threading/Atomic.h"
 #include "FileSystem/FileSystem.h"
 #include "Memory/Memory.h"
 #include "Paths/Paths.h"
@@ -26,10 +28,15 @@ namespace Lumina::Import::Mesh::GLTF
 {
     namespace
     {
-        TExpected<fastgltf::Asset, FString> ExtractAsset(FStringView InPath)
+        TExpected<fastgltf::Asset, FString> ExtractAsset(FStringView InPath, FScopedSlowTask* Progress)
         {
             std::filesystem::path FSPath(InPath.begin(), InPath.end());
-        
+
+            if (Progress)
+            {
+                Progress->UpdateMessage("Loading source file...");
+            }
+
             fastgltf::GltfDataBuffer Buffer;
 
             if (!Buffer.loadFromFile(FSPath))
@@ -44,11 +51,17 @@ namespace Lumina::Import::Mesh::GLTF
                 return TUnexpected(std::format("Failed to determine glTF file type with path: {0}. Aborting import.", FSPath.string()).c_str());
             }
 
-            constexpr fastgltf::Options options = fastgltf::Options::DontRequireValidAssetMember 
-            | fastgltf::Options::LoadGLBBuffers 
-            | fastgltf::Options::LoadExternalBuffers 
-            | fastgltf::Options::GenerateMeshIndices 
-            | fastgltf::Options::DecomposeNodeMatrices;
+            if (Progress)
+            {
+                Progress->UpdateMessage("Parsing glTF data...");
+            }
+
+            // Do NOT decompose node matrices: TRS decomposition is lossy for sheared matrices,
+            // which misplaces parts when combining meshes. NodeLocalMatrix handles both variants exactly.
+            constexpr fastgltf::Options options = fastgltf::Options::DontRequireValidAssetMember
+            | fastgltf::Options::LoadGLBBuffers
+            | fastgltf::Options::LoadExternalBuffers
+            | fastgltf::Options::GenerateMeshIndices;
 
             fastgltf::Expected<fastgltf::Asset> Asset(fastgltf::Error::None);
 
@@ -96,14 +109,18 @@ namespace Lumina::Import::Mesh::GLTF
         }
     }
 
-    TExpected<FMeshImportData, FString> ImportGLTF(const FMeshImportOptions& ImportOptions, FStringView FilePath)
+    TExpected<FMeshImportData, FString> ImportGLTF(const FMeshImportOptions& ImportOptions, FStringView FilePath, FScopedSlowTask* Progress)
     {
-        TExpected<fastgltf::Asset, FString> ExpectedAsset = ExtractAsset(FilePath.data());
+        TExpected<fastgltf::Asset, FString> ExpectedAsset = ExtractAsset(FilePath.data(), Progress);
         if (ExpectedAsset.IsError())
         {
             return TUnexpected(ExpectedAsset.Error());
         }
-        
+        if (Progress)
+        {
+            Progress->EnterProgressFrame(0.40f, "Reading scene data...");
+        }
+
         const fastgltf::Asset& Asset = ExpectedAsset.Value();
         float ImportScale = ImportOptions.Scale;
         
@@ -270,7 +287,12 @@ namespace Lumina::Import::Mesh::GLTF
             
             ImportData.Skeletons.push_back(Move(NewSkeleton));
         }
-        
+
+        if (Progress)
+        {
+            Progress->EnterProgressFrame(0.05f, "Reading textures...");
+        }
+
         // Texture extraction is per-asset; tag each image with its material role so the texture factory picks correct BC/colorspace.
         if (ImportOptions.bImportTextures)
         {
@@ -278,11 +300,20 @@ namespace Lumina::Import::Mesh::GLTF
 
             auto MarkImageForTexture = [&](size_t TextureIndex, ETextureColorSpace Role)
             {
-                if (TextureIndex >= Asset.textures.size()) return;
+                if (TextureIndex >= Asset.textures.size())
+                {
+                    return;
+                }
                 const auto& Tex = Asset.textures[TextureIndex];
-                if (!Tex.imageIndex.has_value()) return;
+                if (!Tex.imageIndex.has_value())
+                {
+                    return;
+                }
                 const size_t ImgIdx = Tex.imageIndex.value();
-                if (ImgIdx >= ImageRoles.size()) return;
+                if (ImgIdx >= ImageRoles.size())
+                {
+                    return;
+                }
                 ImageRoles[ImgIdx] = Role;
             };
 
@@ -333,8 +364,14 @@ namespace Lumina::Import::Mesh::GLTF
                 if (auto* URI = std::get_if<fastgltf::sources::URI>(&Image.data))
                 {
                     GLTFImage.RelativePath = URI->uri.c_str();
-                    FFixedString FullPath = Paths::Combine(VFS::Parent(FilePath), GLTFImage.RelativePath);
-                    GLTFImage.DisplayImage = Textures::CreateTextureFromImport(FullPath, true, glm::uvec2(128, 128));
+                    // Thumbnails are GPU resources; skip them on the preview parse,
+                    // which runs on a worker thread. The dialog builds them on the
+                    // main thread once the parse result is adopted.
+                    if (!ImportOptions.bSkipFinalization)
+                    {
+                        FFixedString FullPath = Paths::Combine(VFS::Parent(FilePath), GLTFImage.RelativePath);
+                        GLTFImage.DisplayImage = Textures::CreateTextureFromImport(FullPath, true, glm::uvec2(128, 128));
+                    }
                     ImportData.Textures.emplace(Move(GLTFImage));
                 }
                 else if (auto* BufferView = std::get_if<fastgltf::sources::BufferView>(&Image.data))
@@ -349,7 +386,13 @@ namespace Lumina::Import::Mesh::GLTF
                     }
 
                     AssignFallbackName();
-                    GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                    // Thumbnails are GPU resources; skip them on the preview parse,
+                    // which runs on a worker thread. The dialog builds them on the
+                    // main thread once the parse result is adopted.
+                    if (!ImportOptions.bSkipFinalization)
+                    {
+                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                    }
                     ImportData.Textures.emplace(Move(GLTFImage));
                 }
                 else if (auto* Array = std::get_if<fastgltf::sources::Array>(&Image.data))
@@ -357,7 +400,13 @@ namespace Lumina::Import::Mesh::GLTF
                     const uint8* Start = Array->bytes.data();
                     GLTFImage.Bytes.assign(Start, Start + Array->bytes.size());
                     AssignFallbackName();
-                    GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                    // Thumbnails are GPU resources; skip them on the preview parse,
+                    // which runs on a worker thread. The dialog builds them on the
+                    // main thread once the parse result is adopted.
+                    if (!ImportOptions.bSkipFinalization)
+                    {
+                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                    }
                     ImportData.Textures.emplace(Move(GLTFImage));
                 }
                 else if (auto* Vector = std::get_if<fastgltf::sources::Vector>(&Image.data))
@@ -365,7 +414,13 @@ namespace Lumina::Import::Mesh::GLTF
                     const uint8* Start = Vector->bytes.data();
                     GLTFImage.Bytes.assign(Start, Start + Vector->bytes.size());
                     AssignFallbackName();
-                    GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                    // Thumbnails are GPU resources; skip them on the preview parse,
+                    // which runs on a worker thread. The dialog builds them on the
+                    // main thread once the parse result is adopted.
+                    if (!ImportOptions.bSkipFinalization)
+                    {
+                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                    }
                     ImportData.Textures.emplace(Move(GLTFImage));
                 }
                 else if (auto* ByteView = std::get_if<fastgltf::sources::ByteView>(&Image.data))
@@ -373,12 +428,23 @@ namespace Lumina::Import::Mesh::GLTF
                     const uint8* Start = reinterpret_cast<const uint8*>(ByteView->bytes.data());
                     GLTFImage.Bytes.assign(Start, Start + ByteView->bytes.size());
                     AssignFallbackName();
-                    GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                    // Thumbnails are GPU resources; skip them on the preview parse,
+                    // which runs on a worker thread. The dialog builds them on the
+                    // main thread once the parse result is adopted.
+                    if (!ImportOptions.bSkipFinalization)
+                    {
+                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                    }
                     ImportData.Textures.emplace(Move(GLTFImage));
                 }
 
                 ImageCounter++;
             }
+        }
+
+        if (Progress)
+        {
+            Progress->EnterProgressFrame(0.05f, "Reading geometry...");
         }
 
         auto NodeLocalMatrix = [](const fastgltf::Node& Node) -> glm::mat4
@@ -408,19 +474,13 @@ namespace Lumina::Import::Mesh::GLTF
         {
             const glm::mat4 PosMatrix    = glm::scale(glm::mat4(1.0f), glm::vec3(ImportScale)) * WorldMatrix;
             const glm::mat3 NormalMatrix = glm::transpose(glm::inverse(glm::mat3(WorldMatrix)));
-            FMeshResource* NewResource = nullptr;
+
             for (auto& Primitive : Mesh.primitives)
             {
-                auto Joints = Primitive.findAttribute("JOINTS_0");
+                auto Joints  = Primitive.findAttribute("JOINTS_0");
                 auto Weights = Primitive.findAttribute("WEIGHTS_0");
-                if (Joints != Primitive.attributes.end() && Weights != Primitive.attributes.end())
-                {
-                    NewResource = SkinnedTarget;
-                }
-                else
-                {
-                    NewResource = StaticTarget;
-                }
+                const bool bSkinnedPrim = (Joints != Primitive.attributes.end() && Weights != Primitive.attributes.end());
+                FMeshResource* NewResource = bSkinnedPrim ? SkinnedTarget : StaticTarget;
 
                 FGeometrySurface NewSurface;
                 NewSurface.StartIndex = (uint32)NewResource->GetNumIndices();
@@ -466,95 +526,94 @@ namespace Lumina::Import::Mesh::GLTF
                     }
                 }
 
-                size_t InitialIndex = NewResource->GetNumIndices();
-                size_t InitialVert = NewResource->GetNumVertices();
-                size_t VertexCount = Asset.accessors[Primitive.findAttribute("POSITION")->second].count;
+                const size_t InitialIndex = NewResource->GetNumIndices();
+                const size_t InitialVert  = NewResource->GetNumVertices();
+                const fastgltf::Accessor& PosAccessor = Asset.accessors[Primitive.findAttribute("POSITION")->second];
+                const size_t VertexCount = PosAccessor.count;
 
-                eastl::visit([&](auto& Vector)
-                {
-                    Vector.resize(InitialVert + VertexCount);
-                }, NewResource->Vertices);
+                NewResource->ResizeVertices(InitialVert + VertexCount);
 
-                const glm::vec3 DefaultNormal = glm::normalize(NormalMatrix * FViewVolume::UpAxis);
-                for (size_t i = InitialVert; i < NewResource->GetNumVertices(); ++i)
+                // Position: bulk-copy raw values, then bake the world+scale transform in place.
+                fastgltf::copyFromAccessor<glm::vec3>(Asset, PosAccessor, NewResource->Positions.data() + InitialVert);
+                for (size_t i = 0; i < VertexCount; ++i)
                 {
-                    NewResource->SetNormalAt(i, PackNormal(DefaultNormal));
-                    NewResource->SetTangentAt(i, 0);
-                    NewResource->SetUVAt(i, glm::u16vec2(0, 0));
-                    NewResource->SetColorAt(i, 0xFFFFFFFF);
-                    if (NewResource->IsSkinnedMesh())
+                    glm::vec3& P = NewResource->Positions[InitialVert + i];
+                    P = glm::vec3(PosMatrix * glm::vec4(P, 1.0f));
+                }
+
+                // Normal: bulk-copy into scratch, then transform + octahedral-pack into the stream.
+                auto NormalAttr = Primitive.findAttribute("NORMAL");
+                if (NormalAttr != Primitive.attributes.end())
+                {
+                    TVector<glm::vec3> ScratchNormals(VertexCount);
+                    fastgltf::copyFromAccessor<glm::vec3>(Asset, Asset.accessors[NormalAttr->second], ScratchNormals.data());
+                    for (size_t i = 0; i < VertexCount; ++i)
                     {
-                        NewResource->SetJointIndicesAt(i, glm::u8vec4(0));
-                        NewResource->SetJointWeightsAt(i, glm::u8vec4(0));
+                        NewResource->Normals[InitialVert + i] = PackNormal(glm::normalize(NormalMatrix * ScratchNormals[i]));
+                    }
+                }
+                else
+                {
+                    const uint32 DefaultNormal = PackNormal(glm::normalize(NormalMatrix * FViewVolume::UpAxis));
+                    for (size_t i = 0; i < VertexCount; ++i)
+                    {
+                        NewResource->Normals[InitialVert + i] = DefaultNormal;
                     }
                 }
 
-                const fastgltf::Accessor& PosAccessor = Asset.accessors[Primitive.findAttribute("POSITION")->second];
-                fastgltf::iterateAccessorWithIndex<glm::vec3>(Asset, PosAccessor, [&](glm::vec3 Value, size_t Index)
+                // UVs: ResizeVertices zeroed the stream; only fill when the attribute exists.
+                auto UVAttr = Primitive.findAttribute("TEXCOORD_0");
+                if (UVAttr != Primitive.attributes.end())
                 {
-                    glm::vec3 P = glm::vec3(PosMatrix * glm::vec4(Value, 1.0f));
-                    NewResource->SetPositionAt(InitialVert + Index, P);
-                });
-
-                const fastgltf::Accessor& IndexAccessor = Asset.accessors[Primitive.indicesAccessor.value()];
-                NewResource->Indices.reserve(InitialIndex + IndexAccessor.count);
-
-                fastgltf::iterateAccessor<uint32>(Asset, IndexAccessor, [&](uint32 Index)
-                {
-                    NewResource->Indices.push_back((uint32)(InitialVert + Index));
-                });
-
-                auto Normals = Primitive.findAttribute("NORMAL");
-                if (Normals != Primitive.attributes.end())
-                {
-                    fastgltf::iterateAccessorWithIndex<glm::vec3>(Asset, Asset.accessors[Normals->second], [&](glm::vec3 Value, size_t Index)
-                    {
-                        glm::vec3 N = glm::normalize(NormalMatrix * Value);
-                        NewResource->SetNormalAt(InitialVert + Index, PackNormal(N));
-                    });
-                }
-
-                auto UV = Primitive.findAttribute("TEXCOORD_0");
-                if (UV != Primitive.attributes.end())
-                {
-                    fastgltf::iterateAccessorWithIndex<glm::vec2>(Asset, Asset.accessors[UV->second], [&](glm::vec2 Value, size_t Index)
+                    fastgltf::iterateAccessorWithIndex<glm::vec2>(Asset, Asset.accessors[UVAttr->second], [&](glm::vec2 Value, size_t Index)
                     {
                         if (ImportOptions.bFlipUVs)
                         {
                             Value.y = 1.0f - Value.y;
                         }
-
-                        NewResource->SetUVAt(InitialVert + Index, Value);
+                        NewResource->UVs[InitialVert + Index] = glm::packHalf2x16(Value);
                     });
                 }
 
-                auto Colors = Primitive.findAttribute("COLOR_0");
-                if (Colors != Primitive.attributes.end())
+                // Colors: default to opaque white, override from COLOR_0 when present.
+                auto ColorAttr = Primitive.findAttribute("COLOR_0");
+                if (ColorAttr != Primitive.attributes.end())
                 {
-                    fastgltf::iterateAccessorWithIndex<glm::vec4>(Asset, Asset.accessors[Colors->second], [&](glm::vec4 Value, size_t Index)
+                    fastgltf::iterateAccessorWithIndex<glm::vec4>(Asset, Asset.accessors[ColorAttr->second], [&](glm::vec4 Value, size_t Index)
                     {
-                        NewResource->SetColorAt(InitialVert + Index, PackColor(Value));
+                        NewResource->Colors[InitialVert + Index] = PackColor(Value);
                     });
                 }
+                else
+                {
+                    for (size_t i = 0; i < VertexCount; ++i)
+                    {
+                        NewResource->Colors[InitialVert + i] = 0xFFFFFFFF;
+                    }
+                }
 
-                if (Joints != Primitive.attributes.end())
+                // Tangents stay zero (ResizeVertices zeroed them); MikkTSpace fills them at finalize.
+
+                if (bSkinnedPrim)
                 {
                     fastgltf::iterateAccessorWithIndex<glm::u8vec4>(Asset, Asset.accessors[Joints->second], [&](glm::u8vec4 Value, size_t Index)
                     {
-                        NewResource->SetJointIndicesAt(InitialVert + Index, Value);
+                        NewResource->JointIndices[InitialVert + Index] = Value;
                     });
-                }
-
-                if (Weights != Primitive.attributes.end())
-                {
                     fastgltf::iterateAccessorWithIndex<glm::vec4>(Asset, Asset.accessors[Weights->second], [&](glm::vec4 Value, size_t Index)
                     {
-                        NewResource->SetJointWeightsAt(InitialVert + Index, glm::u8vec4(Value * 255.0f));
+                        NewResource->JointWeights[InitialVert + Index] = glm::u8vec4(Value * 255.0f);
                     });
                 }
 
-                NewSurface.IndexCount = (uint32)NewResource->GetNumIndices() - NewSurface.StartIndex;
+                const fastgltf::Accessor& IndexAccessor = Asset.accessors[Primitive.indicesAccessor.value()];
+                NewResource->Indices.reserve(InitialIndex + IndexAccessor.count);
+                fastgltf::iterateAccessor<uint32>(Asset, IndexAccessor, [&](uint32 Index)
+                {
+                    NewResource->Indices.push_back((uint32)(InitialVert + Index));
+                });
 
+                NewSurface.IndexCount = (uint32)NewResource->GetNumIndices() - NewSurface.StartIndex;
                 NewResource->GeometrySurfaces.push_back(NewSurface);
             }
         };
@@ -578,11 +637,9 @@ namespace Lumina::Import::Mesh::GLTF
         {
             // Merge mode: collapse all meshes into one static/skinned pair, deduping material slots.
             TUniquePtr<FMeshResource> MergedStaticMesh = MakeUnique<FMeshResource>();
-            MergedStaticMesh->Vertices = TVector<FVertex>();
             MergedStaticMesh->Name = FString(Name.begin(), Name.end()) + "_Mesh";
 
             TUniquePtr<FMeshResource> MergedSkinnedMesh = MakeUnique<FMeshResource>();
-            MergedSkinnedMesh->Vertices = TVector<FSkinnedVertex>();
             MergedSkinnedMesh->bSkinnedMesh = true;
             MergedSkinnedMesh->Name = FString(Name.begin(), Name.end()) + "_SkeletalMesh";
 
@@ -653,6 +710,11 @@ namespace Lumina::Import::Mesh::GLTF
                 }
             }
 
+            if (Progress)
+            {
+                Progress->EnterProgressFrame(0.50f, "Reading geometry...");
+            }
+
             TVector<FMeshResource*> ToFinalize;
             if (MergedStaticMesh && MergedStaticMesh->GetNumVertices() > 0)
             {
@@ -684,7 +746,6 @@ namespace Lumina::Import::Mesh::GLTF
         }
         else
         {
-            // Non-merge: one resource per node->mesh reference; ImportTransform carries node world placement for commit-time merge.
             struct FInstance
             {
                 size_t       MeshIdx;
@@ -776,7 +837,10 @@ namespace Lumina::Import::Mesh::GLTF
 
             TVector<FMeshSlot> Slots(Instances.size());
 
-            // Phase 1: extract per-instance data in parallel; vertices stay mesh-local, ImportTransform carries placement.
+            // The geometry phase owns the final 0.5 of the parse budget, spread per mesh instance.
+            const float GeometryStep = 0.5f / (float)eastl::max<size_t>((size_t)1, Instances.size());
+            TAtomic<uint32> CompletedInstances{0};
+
             Task::ParallelFor((uint32)Instances.size(), [&](uint32 SlotIdx)
             {
                 const FInstance&      Inst   = Instances[SlotIdx];
@@ -786,20 +850,22 @@ namespace Lumina::Import::Mesh::GLTF
                 FMeshSlot& Slot = Slots[SlotIdx];
 
                 Slot.Static = MakeUnique<FMeshResource>();
-                Slot.Static->Vertices = TVector<FVertex>();
                 Slot.Static->Name = FString(MeshNm) + "_Mesh";
-                Slot.Static->ImportTransform = Inst.World;
 
                 Slot.Skinned = MakeUnique<FMeshResource>();
-                Slot.Skinned->Vertices = TVector<FSkinnedVertex>();
                 Slot.Skinned->bSkinnedMesh = true;
                 Slot.Skinned->Name = FString(MeshNm) + "_SkeletalMesh";
-                Slot.Skinned->ImportTransform = Inst.World;
 
-                ProcessMeshPrimitives(Mesh, MeshNm, Slot.Static.get(), Slot.Skinned.get(), nullptr, glm::mat4(1.0f));
+                ProcessMeshPrimitives(Mesh, MeshNm, Slot.Static.get(), Slot.Skinned.get(), nullptr, Inst.World);
+
+                if (Progress)
+                {
+                    const uint32 Done = CompletedInstances.fetch_add(1) + 1;
+                    FFixedString Msg(FFixedString::CtorSprintf(), "Reading geometry (%u/%u meshes)...", Done, (uint32)Instances.size());
+                    Progress->EnterProgressFrame(GeometryStep, Msg);
+                }
             });
 
-            // Phase 2: finalize every non-empty resource in parallel; each resource touched by one task.
             TVector<FMeshResource*> ToFinalize;
             ToFinalize.reserve(Slots.size() * 2);
             for (FMeshSlot& Slot : Slots)
@@ -819,7 +885,6 @@ namespace Lumina::Import::Mesh::GLTF
                 FinalizeResource(*ToFinalize[i]);
             });
 
-            // Phase 3: serial collect into ImportData (push_back + stats aren't threadsafe).
             for (FMeshSlot& Slot : Slots)
             {
                 if (Slot.Static && Slot.Static->GetNumVertices() > 0)

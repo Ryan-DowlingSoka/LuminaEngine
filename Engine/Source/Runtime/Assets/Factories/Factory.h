@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Containers/Function.h"
 #include "Core/Object/ObjectMacros.h"
 #include "Core/Object/Object.h"
 #include "Core/Object/Cast.h"
@@ -73,6 +74,15 @@ namespace Lumina
 
         virtual bool HasImportDialogue() const { return false; }
         virtual bool HasCreationDialogue() const { return false; }
+
+        /**
+         * Asynchronously builds the import settings that drive DrawImportDialogue (e.g. parsing
+         * the source file off-thread). OnReady runs on the main thread once the settings are
+         * ready; it receives null if preparation failed. Default is synchronous.
+         */
+        using FImportPrepareCallback = TMoveOnlyFunction<void(TUniquePtr<Import::FImportSettings>)>;
+        virtual void PrepareImportAsync(const FFixedString& RawPath, const FFixedString& DestinationPath, FImportPrepareCallback OnReady);
+
         virtual bool DrawImportDialogue(const FFixedString& RawPath, const FFixedString& DestinationPath, TUniquePtr<Import::FImportSettings>& ImportSettings, bool& bShouldClose) { return true; }
         
     protected:

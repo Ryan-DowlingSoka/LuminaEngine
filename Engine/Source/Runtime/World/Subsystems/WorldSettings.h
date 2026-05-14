@@ -54,7 +54,7 @@ namespace Lumina
         float DeltaTimeScale = 1.0f;
         
         PROPERTY(Editable, Category = "Rendering")
-        float CascadeSplitLambda = 0.97f;
+        float CascadeSplitLambda = 0.80f;
         
         PROPERTY(Editable, Category = "Rendering")
         float ShadowMaxDistance = 500.0f;

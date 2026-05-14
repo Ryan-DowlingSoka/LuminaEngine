@@ -7,6 +7,7 @@
 #include "FileSystem/FileSystem.h"
 #include "Paths/Paths.h"
 #include "TaskSystem/TaskSystem.h"
+#include "Tools/Import/ImportHelpers.h"
 
 namespace Lumina
 {
@@ -64,6 +65,12 @@ namespace Lumina
     void CFactory::Import(const FFixedString& ImportFile, const FFixedString& DestinationPath, const Import::FImportSettings* Settings)
     {
         TryImport(ImportFile, DestinationPath, Settings);
+    }
+
+    void CFactory::PrepareImportAsync(const FFixedString& RawPath, const FFixedString& DestinationPath, FImportPrepareCallback OnReady)
+    {
+        // No async preparation needed by default: hand back an empty settings object immediately.
+        OnReady(MakeUnique<Import::FImportSettings>());
     }
     
     bool CFactory::ShowCreationDialogue(CFactory* Factory, FStringView Path)

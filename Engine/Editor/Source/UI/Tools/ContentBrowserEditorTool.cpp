@@ -989,31 +989,45 @@ namespace Lumina
             
             if (Factory->HasImportDialogue())
             {
-                struct FModelState
+                struct FModalState
                 {
                     TUniquePtr<Import::FImportSettings> ImportSettings;
                     bool bShouldClose = false;
-                } State;
-                
-                auto SharedState = MakeShared<FModelState>();
-                
-                ToolContext->PushModal("Import", {700, 800}, [this, Factory, Path = Move(Path), DestinationPath = Move(DestinationPath), SharedState] () mutable
-                {
-                    if (Factory->DrawImportDialogue(Path, DestinationPath, SharedState->ImportSettings, SharedState->bShouldClose))
+                };
+
+                // Prepare the import off-thread first (parsing shows the slow-task popup);
+                // the options dialog is pushed only once the settings have landed.
+                Factory->PrepareImportAsync(Path, DestinationPath,
+                    [this, Factory, Path, DestinationPath](TUniquePtr<Import::FImportSettings> Settings)
                     {
-                        Task::AsyncTask(1, 1, [Factory, Path, DestinationPath, ImportSettings = Move(SharedState->ImportSettings)](uint32, uint32, uint32)
+                        if (!Settings)
                         {
-                            Factory->Import(Path, DestinationPath, ImportSettings.get());
-                            
-                            MainThread::Enqueue([Path = Move(Path)] ()
+                            ImGuiX::Notifications::NotifyError("Failed to import: \"{0}\"", Path);
+                            return;
+                        }
+
+                        auto SharedState = MakeShared<FModalState>();
+                        SharedState->ImportSettings = Move(Settings);
+
+                        ToolContext->PushModal("Import", {700, 800},
+                            [Factory, Path, DestinationPath, SharedState]() mutable
                             {
-                                ImGuiX::Notifications::NotifySuccess("Successfully Imported: \"{0}\"", Path);
+                                if (Factory->DrawImportDialogue(Path, DestinationPath, SharedState->ImportSettings, SharedState->bShouldClose))
+                                {
+                                    Task::AsyncTask(1, 1, [Factory, Path, DestinationPath, ImportSettings = Move(SharedState->ImportSettings)](uint32, uint32, uint32)
+                                    {
+                                        Factory->Import(Path, DestinationPath, ImportSettings.get());
+
+                                        MainThread::Enqueue([Path]()
+                                        {
+                                            ImGuiX::Notifications::NotifySuccess("Successfully Imported: \"{0}\"", Path);
+                                        });
+                                    });
+                                }
+
+                                return SharedState->bShouldClose;
                             });
-                        });
-                    }
-                    
-                    return SharedState->bShouldClose;
-                });
+                    });
             }
             else
             {

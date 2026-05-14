@@ -1,6 +1,7 @@
 ﻿#include "EditorToolModal.h"
 
 #include "Core/Templates/LuminaTemplate.h"
+#include "UI/SlowTaskModal.h"
 
 namespace Lumina
 {
@@ -10,7 +11,7 @@ namespace Lumina
         {
             return;
         }
-        
+
         ActiveModal = MakeUnique<FEditorToolModal>(Title, Size, bCloseable);
         ActiveModal->DrawFunction = Move(DrawFunction);
         ActiveModal->bBlocking = bBlocking;
@@ -19,45 +20,53 @@ namespace Lumina
 
     void FEditorModalManager::DrawDialogue()
     {
-        if (!ActiveModal)
-        {
-            return;
-        }
-
-        if (ActiveModal->bBlocking)
+        // A blocking modal must host the slow-task popup as a nested child. ImGui keeps
+        // only one modal chain, so two sibling modals close each other every frame;
+        // nesting keeps both alive and stacks the progress popup cleanly on top.
+        if (ActiveModal && ActiveModal->bBlocking)
         {
             ImGui::OpenPopup(ActiveModal->Title.c_str());
-        }
 
-        ImGuiViewport* Viewport = ImGui::GetMainViewport();
-        ImVec2 Center = Viewport->GetCenter();
-        ImGui::SetNextWindowPos(Center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ActiveModal->Size, ImGuiCond_Appearing);
+            ImGuiViewport* Viewport = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(Viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(ActiveModal->Size, ImGuiCond_Appearing);
 
-        bool* bOpen = ActiveModal->bCloseable ? &ActiveModal->bOpen : nullptr;
-        
-        if (ActiveModal->bBlocking)
-        {
+            bool* bOpen = ActiveModal->bCloseable ? &ActiveModal->bOpen : nullptr;
+
             if (ImGui::BeginPopupModal(ActiveModal->Title.c_str(), bOpen, ImGuiWindowFlags_NoCollapse))
             {
-                if (ActiveModal->DrawModal() || !ActiveModal->bOpen)
+                const bool bClose = ActiveModal->DrawModal() || !ActiveModal->bOpen;
+
+                SlowTaskModal::Render();
+
+                if (bClose)
                 {
                     ImGui::CloseCurrentPopup();
                     ActiveModal.reset();
                 }
                 ImGui::EndPopup();
             }
+            return;
         }
-        else
+
+        if (ActiveModal)
         {
-            if (ImGui::Begin(ActiveModal->Title.c_str(), bOpen, ImGuiWindowFlags_NoCollapse))
+            // Non-blocking modal: a plain window, so there is no modal chain to conflict with.
+            ImGuiViewport* Viewport = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(Viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(ActiveModal->Size, ImGuiCond_Appearing);
+
+            bool* bOpen = ActiveModal->bCloseable ? &ActiveModal->bOpen : nullptr;
+
+            const bool bVisible = ImGui::Begin(ActiveModal->Title.c_str(), bOpen, ImGuiWindowFlags_NoCollapse);
+            if (bVisible && (ActiveModal->DrawModal() || !ActiveModal->bOpen))
             {
-                if (ActiveModal->DrawModal() || !ActiveModal->bOpen)
-                {
-                    ActiveModal.reset();
-                }
-                ImGui::End();
+                ActiveModal.reset();
             }
+            ImGui::End();
         }
+
+        // No blocking modal in the way: the slow-task popup owns the root modal scope.
+        SlowTaskModal::Render();
     }
 }

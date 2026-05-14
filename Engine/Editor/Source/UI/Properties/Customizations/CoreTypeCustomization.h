@@ -157,6 +157,11 @@ namespace Lumina
 
         TWeakObjectPtr<CObject> Object;
         ImGuiTextFilter SearchFilter;
+
+        // Object edits (clear / pick / drop) are discrete one-frame events. We emit Started
+        // on the change frame and Finished the next so the change is wrapped in a proper
+        // undo transaction instead of a bare Updated that never opens or commits one.
+        bool bFinishPending = false;
     };
 
     class FEnumPropertyCustomization : public IPropertyTypeCustomization
@@ -212,6 +217,7 @@ namespace Lumina
     private:
 
         FString DisplayValue;
+        ImGuiTextFilter SearchFilter;
     };
 
     class FVec2PropertyCustomization : public IPropertyTypeCustomization

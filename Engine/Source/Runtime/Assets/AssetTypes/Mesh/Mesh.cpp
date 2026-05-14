@@ -104,12 +104,10 @@ namespace Lumina
 
         if (MeshResources && MeshResources->GetNumVertices() > 0)
         {
-            for (size_t i = 0; i < MeshResources->GetNumVertices(); ++i)
+            for (const glm::vec3& P : MeshResources->Positions)
             {
-                eastl::visit([&](auto& Vertex)
-                {
-                    MeshResources->ExpandBounds(Vertex[i], BoundingBox);
-                }, MeshResources->Vertices);
+                BoundingBox.Min = glm::min(BoundingBox.Min, P);
+                BoundingBox.Max = glm::max(BoundingBox.Max, P);
             }
             return;
         }
@@ -216,7 +214,7 @@ namespace Lumina
         GRenderContext->ExecuteCommandList(CommandList, ECommandQueue::Graphics);
 
         // Drop import-time scratch.
-        eastl::visit([](auto& Vec) { Vec.clear(); Vec.shrink_to_fit(); }, MeshResources->Vertices);
+        MeshResources->ClearVertices();
         MeshResources->Indices.clear();
         MeshResources->Indices.shrink_to_fit();
     }

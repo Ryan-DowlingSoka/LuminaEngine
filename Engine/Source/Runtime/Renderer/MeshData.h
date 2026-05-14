@@ -145,8 +145,6 @@ namespace Lumina
 
     struct RUNTIME_API FMeshResource : INonCopyable
     {
-        using FVertexVariant = TVariant<TVector<FVertex>, TVector<FSkinnedVertex>>;
-
         struct FMeshBuffers
         {
             FRHIBufferRef MeshletBuffer;
@@ -157,8 +155,18 @@ namespace Lumina
         };
 
         FName                       Name;
-        // Import-time scratch; not serialized. Dropped after GenerateMeshlets.
-        FVertexVariant              Vertices;
+
+        // Import-time scratch vertex streams (structure-of-arrays); not serialized,
+        // dropped after GenerateMeshlets. All active streams stay parallel and equal
+        // length. Joint streams are populated only when bSkinnedMesh, else empty.
+        TVector<glm::vec3>          Positions;
+        TVector<uint32>             Normals;        // octahedral pack (PackNormal)
+        TVector<uint32>             Tangents;       // octahedral + handedness (PackTangent)
+        TVector<uint32>             UVs;            // packHalf2x16
+        TVector<uint32>             Colors;         // RGBA8 (PackColor)
+        TVector<glm::u8vec4>        JointIndices;
+        TVector<glm::u8vec4>        JointWeights;
+
         TVector<uint32>             Indices;
         TVector<FGeometrySurface>   GeometrySurfaces;
         FMeshletData                MeshletData;
@@ -167,163 +175,109 @@ namespace Lumina
 
         // Source scene-graph world transform; baked into vertices at merge time.
         glm::mat4                   ImportTransform = glm::mat4(1.0f);
-        
+
         FORCEINLINE size_t GetNumSurfaces() const { return GeometrySurfaces.size(); }
-        
+
         FORCEINLINE bool IsSurfaceIndexValid(size_t Slot) const
         {
             return Slot < GetNumSurfaces();
         }
-        
+
         FORCEINLINE const FGeometrySurface& GetSurface(size_t Slot) const
         {
             return GeometrySurfaces[Slot];
         }
-        
-        template<typename T>
-        NODISCARD TVector<T>& GetVertexDataAs() { return eastl::get<TVector<T>>(Vertices); }
-        
-        FORCEINLINE size_t GetNumVertices() const
-        {
-            return eastl::visit([&](auto& Vector) { return Vector.size(); }, Vertices);
-        }
-        
-        FORCEINLINE size_t GetNumIndices() const
-        {
-            return Indices.size();
-        }
-        
-        FORCEINLINE size_t GetNumTriangles() const
-        {
-            return Indices.size() / 3;
-        }
-        
-        void SetPositionAt(size_t Index, glm::vec3 Position)
-        {
-            eastl::visit([&]<typename T0>(T0& Vector)
-            {
-                Vector[Index].Position = Position;
-            }, Vertices);
-        }
-        
-        void SetNormalAt(size_t Index, uint32 Normal)
-        {
-            eastl::visit([&]<typename T0>(T0& Vector)
-            {
-                Vector[Index].Normal = Normal;
-            }, Vertices);
-        }
 
-        void SetTangentAt(size_t Index, uint32 Tangent)
-        {
-            eastl::visit([&]<typename T0>(T0& Vector)
-            {
-                Vector[Index].Tangent = Tangent;
-            }, Vertices);
-        }
-        
-        void SetUVAt(size_t Index, glm::vec2 UV)
-        {
-            eastl::visit([&]<typename T0>(T0& Vector)
-            {
-                Vector[Index].UV = glm::packHalf2x16(UV);
-            }, Vertices);
-        }
-        
-        void SetColorAt(size_t Index, uint32 Color)
-        {
-            eastl::visit([&]<typename T0>(T0& Vector)
-            {
-                Vector[Index].Color = Color;
-            }, Vertices);
-        }
-        
-        void SetJointWeightsAt(size_t Index, glm::u8vec4 Weights)
-        {
-            eastl::get<eastl::vector<FSkinnedVertex>>(Vertices)[Index].JointWeights = Weights;
-        }
-        
-        void SetJointIndicesAt(size_t Index, glm::u8vec4 InIndices)
-        {
-            eastl::get<eastl::vector<FSkinnedVertex>>(Vertices)[Index].JointIndices = InIndices;
-        }
-        
-        glm::vec3 GetPositionAt(size_t Index) const
-        {
-            return eastl::visit([&]<typename T0>(const T0& Vector)
-            {
-                return Vector[Index].Position;
-            }, Vertices);
-        }
-        
-        uint32 GetNormalAt(size_t Index) const
-        {
-            return eastl::visit([&]<typename T0>(const T0& Vector)
-            {
-                return Vector[Index].Normal;
-            }, Vertices);
-        }
-        
-        glm::vec2 GetUVAt(size_t Index) const
-        {
-            return eastl::visit([&]<typename T0>(const T0& Vector)
-            {
-                return glm::unpackHalf2x16(Vector[Index].UV);
-            }, Vertices);
-        }
-        
-        uint32 GetColorAt(size_t Index) const
-        {
-            return eastl::visit([&]<typename T0>(const T0& Vector)
-            {
-                return Vector[Index].Color;
-            }, Vertices);
-        }
-        
-        glm::u8vec4 GetJointIndicesAt(size_t Index) const
-        {
-            return eastl::get<eastl::vector<FSkinnedVertex>>(Vertices)[Index].JointIndices;
-        }
-        
-        glm::u8vec4 GetJointWeightsAt(size_t Index) const
-        {
-            return eastl::get<eastl::vector<FSkinnedVertex>>(Vertices)[Index].JointWeights;
-        }
-        
-        template<typename TVertex>
-        const glm::vec3& GetPosition(const TVertex& V) const
-        {
-            return V.Position;
-        }
-        
-        template<typename TVertex>
-        void ExpandBounds(const TVertex& Vertex, FAABB& BoundingBox)
-        {
-            const glm::vec3& P = GetPosition(Vertex);
-        
-            BoundingBox.Min = glm::min(BoundingBox.Min, P);
-            BoundingBox.Max = glm::max(BoundingBox.Max, P);
-        }
-        
-        FORCEINLINE size_t GetVertexTypeSize() const
-        {
-            return eastl::visit([&]<typename T0>(const T0& Vector)
-            {
-                using VertexT = eastl::decay_t<T0>::value_type;
-                return sizeof(VertexT);
-            }, Vertices);
-        }
-        
+        FORCEINLINE size_t GetNumVertices() const { return Positions.size(); }
+        FORCEINLINE size_t GetNumIndices()  const { return Indices.size(); }
+        FORCEINLINE size_t GetNumTriangles() const { return Indices.size() / 3; }
         FORCEINLINE NODISCARD bool IsSkinnedMesh() const { return bSkinnedMesh; }
 
-        FORCEINLINE NODISCARD void* GetVertexData()
+        // Synthetic interleaved vertex size; only meshopt fetch/overdraw analysis needs it.
+        FORCEINLINE size_t GetVertexTypeSize() const
         {
-            return eastl::visit([&]<typename T0>(T0& Vector)
-            {
-                return reinterpret_cast<void*>(Vector.data());
-            }, Vertices);
+            return bSkinnedMesh ? sizeof(FSkinnedVertex) : sizeof(FVertex);
         }
-        
+
+        // --- stream sizing -------------------------------------------------
+        void ResizeVertices(size_t N)
+        {
+            Positions.resize(N);
+            Normals.resize(N);
+            Tangents.resize(N);
+            UVs.resize(N);
+            Colors.resize(N);
+            if (bSkinnedMesh)
+            {
+                JointIndices.resize(N);
+                JointWeights.resize(N);
+            }
+        }
+
+        void ReserveVertices(size_t N)
+        {
+            Positions.reserve(N);
+            Normals.reserve(N);
+            Tangents.reserve(N);
+            UVs.reserve(N);
+            Colors.reserve(N);
+            if (bSkinnedMesh)
+            {
+                JointIndices.reserve(N);
+                JointWeights.reserve(N);
+            }
+        }
+
+        void ClearVertices()
+        {
+            auto Drop = [](auto& V) { V.clear(); V.shrink_to_fit(); };
+            Drop(Positions);
+            Drop(Normals);
+            Drop(Tangents);
+            Drop(UVs);
+            Drop(Colors);
+            Drop(JointIndices);
+            Drop(JointWeights);
+        }
+
+        void AppendVertex(const FVertex& V)
+        {
+            Positions.push_back(V.Position);
+            Normals.push_back(V.Normal);
+            Tangents.push_back(V.Tangent);
+            UVs.push_back(V.UV);
+            Colors.push_back(V.Color);
+        }
+
+        void AppendVertex(const FSkinnedVertex& V)
+        {
+            AppendVertex(static_cast<const FVertex&>(V));
+            JointIndices.push_back(V.JointIndices);
+            JointWeights.push_back(V.JointWeights);
+        }
+
+        // --- per-vertex accessors (thin; direct stream indexing) -----------
+        FORCEINLINE glm::vec3 GetPositionAt(size_t Index) const { return Positions[Index]; }
+        FORCEINLINE void SetPositionAt(size_t Index, glm::vec3 Position) { Positions[Index] = Position; }
+
+        FORCEINLINE uint32 GetNormalAt(size_t Index) const { return Normals[Index]; }
+        FORCEINLINE void SetNormalAt(size_t Index, uint32 Normal) { Normals[Index] = Normal; }
+
+        FORCEINLINE uint32 GetTangentAt(size_t Index) const { return Tangents[Index]; }
+        FORCEINLINE void SetTangentAt(size_t Index, uint32 Tangent) { Tangents[Index] = Tangent; }
+
+        FORCEINLINE glm::vec2 GetUVAt(size_t Index) const { return glm::unpackHalf2x16(UVs[Index]); }
+        FORCEINLINE void SetUVAt(size_t Index, glm::vec2 UV) { UVs[Index] = glm::packHalf2x16(UV); }
+
+        FORCEINLINE uint32 GetColorAt(size_t Index) const { return Colors[Index]; }
+        FORCEINLINE void SetColorAt(size_t Index, uint32 Color) { Colors[Index] = Color; }
+
+        FORCEINLINE glm::u8vec4 GetJointIndicesAt(size_t Index) const { return JointIndices[Index]; }
+        FORCEINLINE void SetJointIndicesAt(size_t Index, glm::u8vec4 InIndices) { JointIndices[Index] = InIndices; }
+
+        FORCEINLINE glm::u8vec4 GetJointWeightsAt(size_t Index) const { return JointWeights[Index]; }
+        FORCEINLINE void SetJointWeightsAt(size_t Index, glm::u8vec4 Weights) { JointWeights[Index] = Weights; }
+
         friend FArchive& operator << (FArchive& Ar, FMeshResource& Data)
         {
             Ar << Data.Name;

@@ -405,7 +405,15 @@ namespace Lumina
 
     bool FPropertyPropertyRow::HasExtraControls() const
     {
-        return bArrayElement;
+        if (!bArrayElement)
+        {
+            return false;
+        }
+
+        // The element-options menu only has resize and reorder actions, so an
+        // array locked against both has nothing to show.
+        const FArrayPropertyRow* ArrayRow = static_cast<const FArrayPropertyRow*>(ParentRow);
+        return ArrayRow->AllowResize() || ArrayRow->AllowReorder();
     }
 
     float FPropertyPropertyRow::GetExtraControlsSectionWidth()
@@ -420,6 +428,8 @@ namespace Lumina
         void* ContainerPtr = ArrayRow->GetPropertyHandle()->ContainerPtr;
         const size_t ArrayNum = ArrayProperty->GetNum(ContainerPtr);
         const int64 Index = PropertyHandle->Index;
+        const bool bAllowResize = ArrayRow->AllowResize();
+        const bool bAllowReorder = ArrayRow->AllowReorder();
 
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 4));
         ImGuiX::FlatButton(LE_ICON_DOTS_HORIZONTAL, ImVec2(18, 24), ArrayControlSeed);
@@ -427,7 +437,7 @@ namespace Lumina
 
         if (ImGui::BeginPopupContextItem(nullptr, ImGuiPopupFlags_MouseButtonLeft))
         {
-            if (ImGui::MenuItem(LE_ICON_PLUS " Insert New Element"))
+            if (bAllowResize && ImGui::MenuItem(LE_ICON_PLUS " Insert New Element"))
             {
                 ArrayRow->QueueMutation([ArrayProperty, ContainerPtr]
                 {
@@ -435,7 +445,7 @@ namespace Lumina
                 });
             }
 
-            if (Index > 0 && ImGui::MenuItem(LE_ICON_ARROW_UP " Move Element Up"))
+            if (bAllowReorder && Index > 0 && ImGui::MenuItem(LE_ICON_ARROW_UP " Move Element Up"))
             {
                 ArrayRow->QueueMutation([ArrayProperty, ContainerPtr, Index]
                 {
@@ -443,7 +453,7 @@ namespace Lumina
                 });
             }
 
-            if (ArrayNum > 0 && std::cmp_less(Index, ArrayNum - 1) && ImGui::MenuItem(LE_ICON_ARROW_DOWN " Move Element Down"))
+            if (bAllowReorder && ArrayNum > 0 && std::cmp_less(Index, ArrayNum - 1) && ImGui::MenuItem(LE_ICON_ARROW_DOWN " Move Element Down"))
             {
                 ArrayRow->QueueMutation([ArrayProperty, ContainerPtr, Index]
                 {
@@ -451,7 +461,7 @@ namespace Lumina
                 });
             }
 
-            if (ImGui::MenuItem(LE_ICON_TRASH_CAN " Remove Element"))
+            if (bAllowResize && ImGui::MenuItem(LE_ICON_TRASH_CAN " Remove Element"))
             {
                 ArrayRow->QueueMutation([ArrayProperty, ContainerPtr, Index]
                 {
@@ -628,6 +638,23 @@ namespace Lumina
             NewRow->SetIsArrayElement(true);
             Children.push_back(Move(NewRow));
         }
+    }
+
+    bool FArrayPropertyRow::AllowResize() const
+    {
+        return ArrayProperty == nullptr || !ArrayProperty->HasMetadata("NoResize");
+    }
+
+    bool FArrayPropertyRow::AllowReorder() const
+    {
+        return ArrayProperty == nullptr || !ArrayProperty->HasMetadata("NoReorder");
+    }
+
+    bool FArrayPropertyRow::HasExtraControls() const
+    {
+        // The array-level extra controls are add-element and clear-all, both
+        // resize operations, so a NoResize array hides them entirely.
+        return AllowResize();
     }
 
     float FArrayPropertyRow::GetExtraControlsSectionWidth()

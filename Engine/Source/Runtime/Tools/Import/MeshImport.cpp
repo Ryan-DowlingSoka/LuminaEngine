@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "ImportHelpers.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
+#include "Core/Progress/SlowTask.h"
 #include "Core/Templates/AsBytes.h"
 #include "Renderer/MeshData.h"
 #include "Renderer/Vertex.h"
@@ -12,10 +13,25 @@ namespace Lumina::Import::Mesh
     // MikkTSpace tangent gen: matches authored normal-map convention so baked normals round-trip.
     namespace
     {
+        // One MikkTSpace context per surface so the (single-threaded) generator can run
+        // concurrently across a mesh's disjoint index ranges.
+        struct FMikkSurfaceContext
+        {
+            FMeshResource* Mesh;
+            uint32         StartIndex;
+            uint32         IndexCount;
+        };
+
+        FORCEINLINE uint32 MikkVertexIndex(const SMikkTSpaceContext* Ctx, int iFace, int iVert)
+        {
+            const FMikkSurfaceContext* S = static_cast<const FMikkSurfaceContext*>(Ctx->m_pUserData);
+            return S->Mesh->Indices[(size_t)S->StartIndex + (size_t)iFace * 3u + (size_t)iVert];
+        }
+
         int Mikk_GetNumFaces(const SMikkTSpaceContext* Ctx)
         {
-            const FMeshResource* M = static_cast<const FMeshResource*>(Ctx->m_pUserData);
-            return (int)(M->Indices.size() / 3);
+            const FMikkSurfaceContext* S = static_cast<const FMikkSurfaceContext*>(Ctx->m_pUserData);
+            return (int)(S->IndexCount / 3u);
         }
 
         int Mikk_GetNumVerticesOfFace(const SMikkTSpaceContext*, int)
@@ -25,45 +41,76 @@ namespace Lumina::Import::Mesh
 
         void Mikk_GetPosition(const SMikkTSpaceContext* Ctx, float Out[], int iFace, int iVert)
         {
-            const FMeshResource* M = static_cast<const FMeshResource*>(Ctx->m_pUserData);
-            const uint32 Idx = M->Indices[(size_t)iFace * 3u + (size_t)iVert];
-            const glm::vec3 P = M->GetPositionAt(Idx);
+            const FMikkSurfaceContext* S = static_cast<const FMikkSurfaceContext*>(Ctx->m_pUserData);
+            const glm::vec3 P = S->Mesh->Positions[MikkVertexIndex(Ctx, iFace, iVert)];
             Out[0] = P.x; Out[1] = P.y; Out[2] = P.z;
         }
 
         void Mikk_GetNormal(const SMikkTSpaceContext* Ctx, float Out[], int iFace, int iVert)
         {
-            const FMeshResource* M = static_cast<const FMeshResource*>(Ctx->m_pUserData);
-            const uint32 Idx = M->Indices[(size_t)iFace * 3u + (size_t)iVert];
-            const glm::vec3 N = UnpackNormal(M->GetNormalAt(Idx));
+            const FMikkSurfaceContext* S = static_cast<const FMikkSurfaceContext*>(Ctx->m_pUserData);
+            const glm::vec3 N = UnpackNormal(S->Mesh->Normals[MikkVertexIndex(Ctx, iFace, iVert)]);
             Out[0] = N.x; Out[1] = N.y; Out[2] = N.z;
         }
 
         void Mikk_GetTexCoord(const SMikkTSpaceContext* Ctx, float Out[], int iFace, int iVert)
         {
-            const FMeshResource* M = static_cast<const FMeshResource*>(Ctx->m_pUserData);
-            const uint32 Idx = M->Indices[(size_t)iFace * 3u + (size_t)iVert];
-            const glm::vec2 UV = M->GetUVAt(Idx);
+            const FMikkSurfaceContext* S = static_cast<const FMikkSurfaceContext*>(Ctx->m_pUserData);
+            const glm::vec2 UV = S->Mesh->GetUVAt(MikkVertexIndex(Ctx, iFace, iVert));
             Out[0] = UV.x; Out[1] = UV.y;
         }
 
         void Mikk_SetTSpaceBasic(const SMikkTSpaceContext* Ctx, const float Tangent[], float Sign, int iFace, int iVert)
         {
-            FMeshResource* M = static_cast<FMeshResource*>(Ctx->m_pUserData);
-            const uint32 Idx = M->Indices[(size_t)iFace * 3u + (size_t)iVert];
-            const uint32 Packed = PackTangent(glm::vec3(Tangent[0], Tangent[1], Tangent[2]), Sign);
-            eastl::visit([&](auto& Vec) { Vec[Idx].Tangent = Packed; }, M->Vertices);
+            const FMikkSurfaceContext* S = static_cast<const FMikkSurfaceContext*>(Ctx->m_pUserData);
+            // Disjoint surfaces rarely share a vertex post-dedup; when they do, both write a
+            // valid tangent and the aligned uint32 store is atomic, so it is last-writer-wins.
+            S->Mesh->Tangents[MikkVertexIndex(Ctx, iFace, iVert)] = PackTangent(glm::vec3(Tangent[0], Tangent[1], Tangent[2]), Sign);
+        }
+
+        // Describe every active SoA vertex stream for meshopt's multi-stream remap.
+        uint32 BuildVertexStreams(FMeshResource& M, meshopt_Stream* OutStreams)
+        {
+            uint32 Count = 0;
+            OutStreams[Count++] = { M.Positions.data(), sizeof(glm::vec3),   sizeof(glm::vec3) };
+            OutStreams[Count++] = { M.Normals.data(),   sizeof(uint32),      sizeof(uint32) };
+            OutStreams[Count++] = { M.Tangents.data(),  sizeof(uint32),      sizeof(uint32) };
+            OutStreams[Count++] = { M.UVs.data(),       sizeof(uint32),      sizeof(uint32) };
+            OutStreams[Count++] = { M.Colors.data(),    sizeof(uint32),      sizeof(uint32) };
+            if (M.bSkinnedMesh)
+            {
+                OutStreams[Count++] = { M.JointIndices.data(), sizeof(glm::u8vec4), sizeof(glm::u8vec4) };
+                OutStreams[Count++] = { M.JointWeights.data(), sizeof(glm::u8vec4), sizeof(glm::u8vec4) };
+            }
+            return Count;
+        }
+
+        // Apply a meshopt vertex remap to every active stream into fresh buffers (no overlap).
+        void RemapVertexStreams(FMeshResource& M, const uint32* Remap, size_t OldCount, size_t NewCount)
+        {
+            auto RemapStream = [&](auto& Stream)
+            {
+                using TElem = typename eastl::remove_reference_t<decltype(Stream)>::value_type;
+                TVector<TElem> Out(NewCount);
+                meshopt_remapVertexBuffer(Out.data(), Stream.data(), OldCount, sizeof(TElem), Remap);
+                Stream = Move(Out);
+            };
+            RemapStream(M.Positions);
+            RemapStream(M.Normals);
+            RemapStream(M.Tangents);
+            RemapStream(M.UVs);
+            RemapStream(M.Colors);
+            if (M.bSkinnedMesh)
+            {
+                RemapStream(M.JointIndices);
+                RemapStream(M.JointWeights);
+            }
         }
     }
 
-    void ComputeMikkTSpaceTangents(FMeshResource& MeshResource)
+    void ComputeMikkTSpaceTangents(FMeshResource& MeshResource, FScopedSlowTask* Progress = nullptr, float StepPerSurface = 0.0f)
     {
         if (MeshResource.Indices.empty() || MeshResource.GetNumVertices() == 0)
-        {
-            return;
-        }
-
-        if (MeshResource.Indices.size() / 3u == 0)
         {
             return;
         }
@@ -76,30 +123,52 @@ namespace Lumina::Import::Mesh
         Interface.m_getTexCoord          = Mikk_GetTexCoord;
         Interface.m_setTSpaceBasic       = Mikk_SetTSpaceBasic;
 
-        SMikkTSpaceContext Ctx = {};
-        Ctx.m_pInterface = &Interface;
-        Ctx.m_pUserData  = &MeshResource;
+        // MikkTSpace is single-threaded internally; surfaces are disjoint index ranges,
+        // so run one generator context per surface in parallel.
+        const uint32 NumSurfaces = (uint32)MeshResource.GeometrySurfaces.size();
+        Task::ParallelFor(NumSurfaces, [&](uint32 SurfaceIdx)
+        {
+            const FGeometrySurface& Section = MeshResource.GeometrySurfaces[SurfaceIdx];
+            if (Section.IndexCount >= 3)
+            {
+                FMikkSurfaceContext UserData{ &MeshResource, Section.StartIndex, Section.IndexCount };
+                SMikkTSpaceContext Ctx = {};
+                Ctx.m_pInterface = &Interface;
+                Ctx.m_pUserData  = &UserData;
+                genTangSpaceDefault(&Ctx);
+            }
 
-        genTangSpaceDefault(&Ctx);
+            if (Progress)
+            {
+                Progress->EnterProgressFrame(StepPerSurface);
+            }
+        });
     }
 
-    void OptimizeNewlyImportedMesh(FMeshResource& MeshResource)
+    void OptimizeNewlyImportedMesh(FMeshResource& MeshResource, FScopedSlowTask* Progress)
     {
         size_t NumVertices = MeshResource.GetNumVertices();
-        size_t NumIndices  = MeshResource.Indices.size();
-        const size_t VertexSize = MeshResource.GetVertexTypeSize();
+        const size_t NumIndices = MeshResource.Indices.size();
 
         if (NumVertices == 0 || NumIndices == 0)
         {
             return;
         }
 
+        // Dedup exact-duplicate vertices across every SoA stream at once.
+        if (Progress)
         {
+            Progress->UpdateMessage("Removing duplicate vertices...");
+        }
+        {
+            meshopt_Stream Streams[7];
+            const uint32 StreamCount = BuildVertexStreams(MeshResource, Streams);
+
             TVector<uint32> Remap(NumVertices);
-            const size_t UniqueVerts = meshopt_generateVertexRemap(
+            const size_t UniqueVerts = meshopt_generateVertexRemapMulti(
                 Remap.data(),
                 MeshResource.Indices.data(), NumIndices,
-                MeshResource.GetVertexData(), NumVertices, VertexSize);
+                NumVertices, Streams, StreamCount);
 
             if (UniqueVerts < NumVertices)
             {
@@ -108,12 +177,7 @@ namespace Lumina::Import::Mesh
                     MeshResource.Indices.data(), NumIndices,
                     Remap.data());
 
-                meshopt_remapVertexBuffer(
-                    MeshResource.GetVertexData(),
-                    MeshResource.GetVertexData(), NumVertices, VertexSize,
-                    Remap.data());
-
-                eastl::visit([&](auto& Vector) { Vector.resize(UniqueVerts); }, MeshResource.Vertices);
+                RemapVertexStreams(MeshResource, Remap.data(), NumVertices, UniqueVerts);
                 NumVertices = UniqueVerts;
             }
         }
@@ -122,7 +186,11 @@ namespace Lumina::Import::Mesh
         const uint32 NumSurfaces = (uint32)MeshResource.GeometrySurfaces.size();
         if (NumSurfaces > 0)
         {
-            const float* VertexPositions = static_cast<const float*>(MeshResource.GetVertexData());
+            if (Progress)
+            {
+                Progress->UpdateMessage("Optimizing vertex cache & overdraw...");
+            }
+            const float* VertexPositions = reinterpret_cast<const float*>(MeshResource.Positions.data());
 
             Task::ParallelFor(NumSurfaces, [&](uint32 SurfaceIdx)
             {
@@ -143,16 +211,29 @@ namespace Lumina::Import::Mesh
                     &MeshResource.Indices[Section.StartIndex],
                     Section.IndexCount,
                     VertexPositions,
-                    NumVertices, VertexSize, Threshold);
+                    NumVertices, sizeof(glm::vec3), Threshold);
             });
         }
 
         // Vertex-fetch reorder must be last; depends on final index order.
-        meshopt_optimizeVertexFetch(
-            MeshResource.GetVertexData(),
-            MeshResource.Indices.data(), NumIndices,
-            MeshResource.GetVertexData(),
-            NumVertices, VertexSize);
+        if (Progress)
+        {
+            Progress->UpdateMessage("Optimizing vertex fetch...");
+        }
+        {
+            TVector<uint32> FetchRemap(NumVertices);
+            const size_t NewCount = meshopt_optimizeVertexFetchRemap(
+                FetchRemap.data(),
+                MeshResource.Indices.data(), NumIndices,
+                NumVertices);
+
+            meshopt_remapIndexBuffer(
+                MeshResource.Indices.data(),
+                MeshResource.Indices.data(), NumIndices,
+                FetchRemap.data());
+
+            RemapVertexStreams(MeshResource, FetchRemap.data(), NumVertices, NewCount);
+        }
     }
 
     namespace
@@ -286,16 +367,25 @@ namespace Lumina::Import::Mesh
         }
     } // namespace
 
-    void GenerateMeshlets(FMeshResource& MeshResource)
+    void GenerateMeshlets(FMeshResource& MeshResource, FScopedSlowTask* Progress, float StepPerSurface)
     {
         MeshResource.MeshletData.Clear();
 
+        // Split each surface's progress budget between tangent generation and meshlet building.
+        const float TangentStep = StepPerSurface * 0.35f;
+        const float MeshletStep = StepPerSurface * 0.65f;
+
         // Tangents generated post-dedup so MikkTSpace runs once on the deduped vertex array.
-        ComputeMikkTSpaceTangents(MeshResource);
+        if (Progress)
+        {
+            Progress->UpdateMessage("Generating tangents...");
+        }
+        ComputeMikkTSpaceTangents(MeshResource, Progress, TangentStep);
 
         const size_t NumVertices = MeshResource.GetNumVertices();
         const size_t NumIndices  = MeshResource.Indices.size();
-        const size_t VertexSize  = MeshResource.GetVertexTypeSize();
+        // meshopt position-stream stride; the SoA Positions array is tightly packed glm::vec3.
+        constexpr size_t PositionStride = sizeof(glm::vec3);
 
         if (NumVertices == 0 || NumIndices == 0)
         {
@@ -309,21 +399,26 @@ namespace Lumina::Import::Mesh
                     Section.LODScreenThreshold[i] = i == 0 ? 0.0f : FLT_MAX;
                 }
             }
+            if (Progress)
+            {
+                Progress->EnterProgressFrame(StepPerSurface * (float)MeshResource.GeometrySurfaces.size());
+            }
             return;
         }
 
-        // FVertex/FSkinnedVertex have Position at offset 0; vertex pointer = meshopt position pointer.
-        const float* VertexPositions = static_cast<const float*>(MeshResource.GetVertexData());
+        const float* VertexPositions = reinterpret_cast<const float*>(MeshResource.Positions.data());
 
         auto ReadPosition = [&](uint32 GlobalIdx) -> glm::vec3
         {
-            return eastl::visit([&](const auto& Vec) -> glm::vec3
-            {
-                return Vec[GlobalIdx].Position;
-            }, MeshResource.Vertices);
+            return MeshResource.Positions[GlobalIdx];
         };
 
         const uint32 NumSurfaces = (uint32)MeshResource.GeometrySurfaces.size();
+
+        if (Progress)
+        {
+            Progress->UpdateMessage("Building meshlets & LODs...");
+        }
 
         // Phase 1: per-(LOD,Surface) parallel build; each cell owned by one worker.
         TVector<FSurfaceMeshletResult> Results(MAX_MESH_LODS * NumSurfaces);
@@ -335,6 +430,10 @@ namespace Lumina::Import::Mesh
             if (Section.IndexCount == 0)
             {
                 PerSurfaceNumLODs[SurfaceIdx] = 0;
+                if (Progress)
+                {
+                    Progress->EnterProgressFrame(MeshletStep);
+                }
                 return;
             }
 
@@ -343,7 +442,7 @@ namespace Lumina::Import::Mesh
             FSurfaceMeshletResult& LOD0 = Results[0 * NumSurfaces + SurfaceIdx];
             BuildLODMeshletsForRange(
                 SurfaceIndices, Section.IndexCount,
-                VertexPositions, NumVertices, VertexSize,
+                VertexPositions, NumVertices, PositionStride,
                 ReadPosition, LOD0);
 
             uint32 LODsBuilt = LOD0.bHasData ? 1u : 0u;
@@ -368,14 +467,14 @@ namespace Lumina::Import::Mesh
                     ? meshopt_simplifySloppy(
                         Simplified.data(),
                         SurfaceIndices, Section.IndexCount,
-                        VertexPositions, NumVertices, VertexSize,
+                        VertexPositions, NumVertices, PositionStride,
                         nullptr,
                         TargetIndices, Cfg.TargetError,
                         &ResultError)
                     : meshopt_simplify(
                         Simplified.data(),
                         SurfaceIndices, Section.IndexCount,
-                        VertexPositions, NumVertices, VertexSize,
+                        VertexPositions, NumVertices, PositionStride,
                         TargetIndices, Cfg.TargetError,
                         meshopt_SimplifyLockBorder,
                         &ResultError);
@@ -401,7 +500,7 @@ namespace Lumina::Import::Mesh
                 FSurfaceMeshletResult& LODi = Results[lod * NumSurfaces + SurfaceIdx];
                 BuildLODMeshletsForRange(
                     Simplified.data(), NewCount,
-                    VertexPositions, NumVertices, VertexSize,
+                    VertexPositions, NumVertices, PositionStride,
                     ReadPosition, LODi);
 
                 if (!LODi.bHasData)
@@ -412,19 +511,21 @@ namespace Lumina::Import::Mesh
             }
 
             PerSurfaceNumLODs[SurfaceIdx] = LODsBuilt;
+
+            if (Progress)
+            {
+                Progress->EnterProgressFrame(MeshletStep);
+            }
         });
 
         // Reduce extents across every cell so the global grid sizes for the largest meshlet at any LOD.
         glm::vec3 MeshLo( FLT_MAX);
         glm::vec3 MeshHi(-FLT_MAX);
-        eastl::visit([&](const auto& Vec)
+        for (const glm::vec3& P : MeshResource.Positions)
         {
-            for (const auto& V : Vec)
-            {
-                MeshLo = glm::min(MeshLo, V.Position);
-                MeshHi = glm::max(MeshHi, V.Position);
-            }
-        }, MeshResource.Vertices);
+            MeshLo = glm::min(MeshLo, P);
+            MeshHi = glm::max(MeshHi, P);
+        }
 
         glm::vec3 MaxMeshletExtent(0.0f);
         for (const FSurfaceMeshletResult& R : Results)
@@ -521,35 +622,33 @@ namespace Lumina::Import::Mesh
 
                     if (MeshResource.bSkinnedMesh)
                     {
-                        const auto& Verts = eastl::get<TVector<FSkinnedVertex>>(MeshResource.Vertices);
                         for (uint32 i = 0; i < Out.VertexCount; ++i)
                         {
-                            const FSkinnedVertex& V = Verts[Result.Vertices[Out.VertexOffset + i]];
+                            const uint32 GlobalIdx = Result.Vertices[Out.VertexOffset + i];
 
                             FMeshletSkinnedVertex Packed;
-                            Packed.Position = PackMeshletPosition(GridIndex(V.Position) - Out.LoInt);
-                            Packed.Normal   = V.Normal;
-                            Packed.Tangent  = V.Tangent;
-                            Packed.UV       = V.UV;
-                            Packed.Color    = V.Color;
-                            memcpy(&Packed.JointIndices, &V.JointIndices, sizeof(uint32));
-                            memcpy(&Packed.JointWeights, &V.JointWeights, sizeof(uint32));
+                            Packed.Position = PackMeshletPosition(GridIndex(MeshResource.Positions[GlobalIdx]) - Out.LoInt);
+                            Packed.Normal   = MeshResource.Normals[GlobalIdx];
+                            Packed.Tangent  = MeshResource.Tangents[GlobalIdx];
+                            Packed.UV       = MeshResource.UVs[GlobalIdx];
+                            Packed.Color    = MeshResource.Colors[GlobalIdx];
+                            memcpy(&Packed.JointIndices, &MeshResource.JointIndices[GlobalIdx], sizeof(uint32));
+                            memcpy(&Packed.JointWeights, &MeshResource.JointWeights[GlobalIdx], sizeof(uint32));
                             MeshResource.MeshletData.MeshletSkinnedVertices.push_back(Packed);
                         }
                     }
                     else
                     {
-                        const auto& Verts = eastl::get<TVector<FVertex>>(MeshResource.Vertices);
                         for (uint32 i = 0; i < Out.VertexCount; ++i)
                         {
-                            const FVertex& V = Verts[Result.Vertices[Out.VertexOffset + i]];
+                            const uint32 GlobalIdx = Result.Vertices[Out.VertexOffset + i];
 
                             FMeshletVertex Packed;
-                            Packed.Position = PackMeshletPosition(GridIndex(V.Position) - Out.LoInt);
-                            Packed.Normal   = V.Normal;
-                            Packed.Tangent  = V.Tangent;
-                            Packed.UV       = V.UV;
-                            Packed.Color    = V.Color;
+                            Packed.Position = PackMeshletPosition(GridIndex(MeshResource.Positions[GlobalIdx]) - Out.LoInt);
+                            Packed.Normal   = MeshResource.Normals[GlobalIdx];
+                            Packed.Tangent  = MeshResource.Tangents[GlobalIdx];
+                            Packed.UV       = MeshResource.UVs[GlobalIdx];
+                            Packed.Color    = MeshResource.Colors[GlobalIdx];
                             MeshResource.MeshletData.MeshletVertices.push_back(Packed);
                         }
                     }
@@ -582,7 +681,7 @@ namespace Lumina::Import::Mesh
     void AnalyzeMeshStatistics(FMeshResource& MeshResource, FMeshStatistics& OutMeshStats)
     {
         OutMeshStats.VertexFetchStatics.emplace_back(meshopt_analyzeVertexFetch(MeshResource.Indices.data(), MeshResource.Indices.size(), MeshResource.GetNumVertices(), MeshResource.GetVertexTypeSize()));
-        OutMeshStats.OverdrawStatics.emplace_back(meshopt_analyzeOverdraw(MeshResource.Indices.data(), MeshResource.Indices.size(), static_cast<float*>(MeshResource.GetVertexData()), MeshResource.GetNumVertices(), MeshResource.GetVertexTypeSize()));
+        OutMeshStats.OverdrawStatics.emplace_back(meshopt_analyzeOverdraw(MeshResource.Indices.data(), MeshResource.Indices.size(), reinterpret_cast<const float*>(MeshResource.Positions.data()), MeshResource.GetNumVertices(), sizeof(glm::vec3)));
     }
 
     namespace
@@ -680,39 +779,28 @@ namespace Lumina::Import::Mesh
             const glm::mat3 NormalMatrix = glm::transpose(glm::inverse(glm::mat3(PosMatrix)));
             const bool bIdentity         = PosMatrix == glm::mat4(1.0f);
 
-            auto TransformVertex = [&](FVertex& V)
-            {
-                V.Position = glm::vec3(PosMatrix * glm::vec4(V.Position, 1.0f));
-                glm::vec3 N = glm::normalize(NormalMatrix * UnpackNormal(V.Normal));
-                V.Normal = PackNormal(N);
-            };
+            // Append every active stream; joint streams only when both sides are skinned.
+            const size_t Start    = Dst.GetNumVertices();
+            const size_t SrcCount = Src.GetNumVertices();
 
-            if (Src.bSkinnedMesh)
+            Dst.Positions.insert(Dst.Positions.end(), Src.Positions.begin(), Src.Positions.end());
+            Dst.Normals.insert(Dst.Normals.end(),     Src.Normals.begin(),   Src.Normals.end());
+            Dst.Tangents.insert(Dst.Tangents.end(),   Src.Tangents.begin(),  Src.Tangents.end());
+            Dst.UVs.insert(Dst.UVs.end(),             Src.UVs.begin(),       Src.UVs.end());
+            Dst.Colors.insert(Dst.Colors.end(),       Src.Colors.begin(),    Src.Colors.end());
+            if (Dst.bSkinnedMesh && Src.bSkinnedMesh)
             {
-                auto& DstVec = eastl::get<TVector<FSkinnedVertex>>(Dst.Vertices);
-                auto& SrcVec = eastl::get<TVector<FSkinnedVertex>>(Src.Vertices);
-                const size_t Start = DstVec.size();
-                DstVec.insert(DstVec.end(), SrcVec.begin(), SrcVec.end());
-                if (!bIdentity)
-                {
-                    for (size_t i = Start; i < DstVec.size(); ++i)
-                    {
-                        TransformVertex(DstVec[i]);
-                    }
-                }
+                Dst.JointIndices.insert(Dst.JointIndices.end(), Src.JointIndices.begin(), Src.JointIndices.end());
+                Dst.JointWeights.insert(Dst.JointWeights.end(), Src.JointWeights.begin(), Src.JointWeights.end());
             }
-            else
+
+            // Bake the source scene-graph transform into the appended positions/normals.
+            if (!bIdentity)
             {
-                auto& DstVec = eastl::get<TVector<FVertex>>(Dst.Vertices);
-                auto& SrcVec = eastl::get<TVector<FVertex>>(Src.Vertices);
-                const size_t Start = DstVec.size();
-                DstVec.insert(DstVec.end(), SrcVec.begin(), SrcVec.end());
-                if (!bIdentity)
+                for (size_t i = Start; i < Start + SrcCount; ++i)
                 {
-                    for (size_t i = Start; i < DstVec.size(); ++i)
-                    {
-                        TransformVertex(DstVec[i]);
-                    }
+                    Dst.Positions[i] = glm::vec3(PosMatrix * glm::vec4(Dst.Positions[i], 1.0f));
+                    Dst.Normals[i]   = PackNormal(glm::normalize(NormalMatrix * UnpackNormal(Dst.Normals[i])));
                 }
             }
 
@@ -745,7 +833,7 @@ namespace Lumina::Import::Mesh
         }
     }
 
-    void FinalizeMeshImportData(FMeshImportData& Data, const FMeshImportOptions& Options)
+    void FinalizeMeshImportData(FMeshImportData& Data, const FMeshImportOptions& Options, FScopedSlowTask* Progress, float ProgressBudget)
     {
         const float Scale          = Options.Scale;
         const bool  bScaleEnabled  = (Scale != 1.0f);
@@ -836,10 +924,8 @@ namespace Lumina::Import::Mesh
         if (Options.bMergeMeshes && Data.Resources.size() > 1)
         {
             TUniquePtr<FMeshResource> MergedStatic = MakeUnique<FMeshResource>();
-            MergedStatic->Vertices = TVector<FVertex>();
 
             TUniquePtr<FMeshResource> MergedSkinned = MakeUnique<FMeshResource>();
-            MergedSkinned->Vertices = TVector<FSkinnedVertex>();
             MergedSkinned->bSkinnedMesh = true;
 
             // Inherit name from first matching source.
@@ -892,6 +978,38 @@ namespace Lumina::Import::Mesh
         Data.MeshStatistics.OverdrawStatics.clear();
         Data.MeshStatistics.VertexFetchStatics.clear();
 
+        // Coalesce surfaces by material first (cheap, parallel) so the optimize/meshlet
+        // passes operate on bigger contiguous slices, the renderer iterates one
+        // FGeometrySurface per material, and we can size progress by final surface count.
+        if (Progress)
+        {
+            Progress->UpdateMessage("Merging surfaces...");
+        }
+        Task::ParallelFor((uint32)Data.Resources.size(), [&](uint32 ResIdx)
+        {
+            if (Data.Resources[ResIdx])
+            {
+                MergeSurfacesByMaterial(*Data.Resources[ResIdx]);
+            }
+        });
+
+        // Spread the finalize progress budget evenly across every surface in every
+        // resource, so the bar moves smoothly even when merge collapses to one resource.
+        size_t TotalSurfaces = 0;
+        for (const TUniquePtr<FMeshResource>& MeshPtr : Data.Resources)
+        {
+            if (MeshPtr)
+            {
+                TotalSurfaces += MeshPtr->GeometrySurfaces.size();
+            }
+        }
+        const float StepPerSurface = ProgressBudget / (float)eastl::max<size_t>((size_t)1, TotalSurfaces);
+
+        if (Progress)
+        {
+            Progress->UpdateMessage("Optimizing geometry...");
+        }
+
         Task::ParallelFor((uint32)Data.Resources.size(), [&](uint32 ResIdx)
         {
             TUniquePtr<FMeshResource>& MeshPtr = Data.Resources[ResIdx];
@@ -900,18 +1018,13 @@ namespace Lumina::Import::Mesh
                 return;
             }
             FMeshResource& M = *MeshPtr;
-            // Coalesce surfaces by material first so the optimize pass operates
-            // on the bigger contiguous slices and the renderer iterates one
-            // FGeometrySurface per material instead of per source primitive.
-            MergeSurfacesByMaterial(M);
             if (Options.bOptimize)
             {
-                OptimizeNewlyImportedMesh(M);
+                OptimizeNewlyImportedMesh(M, Progress);
             }
-            // GenerateMeshlets internally runs ComputeMikkTSpaceTangents
-            // before packing, so any path that builds meshlets (here or
-            // inside an importer's direct call) gets MikkTSpace tangents.
-            GenerateMeshlets(M);
+            // GenerateMeshlets internally runs ComputeMikkTSpaceTangents before packing,
+            // and advances StepPerSurface of progress for each surface it meshletizes.
+            GenerateMeshlets(M, Progress, StepPerSurface);
         });
 
         for (TUniquePtr<FMeshResource>& MeshPtr : Data.Resources)

@@ -26,7 +26,16 @@ namespace Lumina
                                                  auto&& Generate)
         {
             TUniquePtr<FMeshResource> Resource = MakeUnique<FMeshResource>();
-            Generate(Resource->Vertices.emplace<TVector<FVertex>>(), Resource->Indices);
+
+            // The Generate* helpers build an interleaved FVertex array; scatter it into
+            // the resource's structure-of-arrays vertex streams.
+            TVector<FVertex> GeneratedVerts;
+            Generate(GeneratedVerts, Resource->Indices);
+            Resource->ReserveVertices(GeneratedVerts.size());
+            for (const FVertex& V : GeneratedVerts)
+            {
+                Resource->AppendVertex(V);
+            }
 
             FGeometrySurface Surface;
             Surface.ID = SurfaceID;

@@ -56,8 +56,20 @@ namespace Lumina
 {
     static constexpr const char* WorldSettingsName = "World Settings";
     static constexpr const char* SceneGraphName = "Scene Graph";
+    
+    static glm::vec3 SanitizeManipulationScale(glm::vec3 Scale)
+    {
+        constexpr float MinScale = 0.001f;
+        for (int i = 0; i < 3; ++i)
+        {
+            if (!std::isfinite(Scale[i]) || std::abs(Scale[i]) < MinScale)
+            {
+                Scale[i] = Scale[i] < 0.0f ? -MinScale : MinScale;
+            }
+        }
+        return Scale;
+    }
 
-    // Non-root prefab-instance members are locked against hierarchy edits; only the root moves/deletes.
     static bool IsLockedPrefabChild(const entt::registry& Registry, entt::entity Entity)
     {
         if (Entity == entt::null || !Registry.valid(Entity))
@@ -67,10 +79,7 @@ namespace Lumina
         const SPrefabInstanceComponent* Instance = Registry.try_get<SPrefabInstanceComponent>(Entity);
         return Instance != nullptr && !Instance->bIsRoot;
     }
-
-    // Viewport picks walk parents to the nearest selection root: an FSelectionRoot tag or a prefab-instance
-    // root, whichever comes first. Lets users select a non-renderable logical parent (rigid body, scripts) by
-    // clicking a visible child. Outliner clicks bypass this so sub-entities remain reachable directly.
+    
     static entt::entity ResolveSelectionRootForViewportPick(entt::registry& Registry, entt::entity Entity)
     {
         if (Entity == entt::null || !Registry.valid(Entity))
@@ -1104,8 +1113,8 @@ namespace Lumina
 
         if (bGizmoTargetValid)
         {
-            entt::entity PivotEntity = PivotEntityForGizmo;
             {
+                entt::entity PivotEntity = PivotEntityForGizmo;
                 STransformComponent& PivotTransformComponent = World->GetEntityRegistry().get<STransformComponent>(PivotEntity);
 
                 // Padded AABB so the gizmo stays visible when the pivot is just outside the frustum but handles aren't.
@@ -1149,9 +1158,7 @@ namespace Lumina
                     }
 
                     glm::mat4 PreManipulateMatrix = EntityMatrix;
-
-                    // Vertex-snap pre-pass: with CTRL+TRANSLATE, preview the pivot mesh's closest vertex.
-                    // Runs every frame so pre-pressing CTRL arms a valid anchor before ImGuizmo engages.
+                    
                     const bool bCtrlHeld = ImGui::GetIO().KeyCtrl;
                     const bool bVertexSnapArmed = bCtrlHeld
                                                && GuizmoOp == ImGuizmo::TRANSLATE
@@ -1175,8 +1182,9 @@ namespace Lumina
                         }
                     }
 
+                    glm::mat4 GizmoDeltaMatrix(1.0f);
                     ImGuizmo::Manipulate(glm::value_ptr(ViewMatrix), glm::value_ptr(ProjectionMatrix),
-                        GuizmoOp, GuizmoMode, glm::value_ptr(EntityMatrix), nullptr, SnapValues);
+                        GuizmoOp, GuizmoMode, glm::value_ptr(EntityMatrix), glm::value_ptr(GizmoDeltaMatrix), SnapValues);
 
                     if (ImGuizmo::IsUsing())
                     {
@@ -1187,8 +1195,8 @@ namespace Lumina
                             // Click landed on the gizmo, not empty space — kill the marquee armed by IsMouseClicked.
                             SelectionBox.bActive = false;
                         }
-
-                        glm::mat4 DeltaMatrix = EntityMatrix * glm::inverse(PreManipulateMatrix);
+                        
+                        const glm::mat4& DeltaMatrix = GizmoDeltaMatrix;
 
                         glm::vec3 DeltaTranslation, DeltaScale, DeltaSkew;
                         glm::quat DeltaRotation;
@@ -1222,8 +1230,14 @@ namespace Lumina
                                     Registry.view<SStaticMeshComponent, STransformComponent>().each(
                                         [&](entt::entity Entity, SStaticMeshComponent& MeshComp, STransformComponent& Xform)
                                     {
-                                        if (Entity == EditorEntity || !MeshComp.StaticMesh) return;
-                                        if (Registry.all_of<FSelectedInEditorComponent>(Entity)) return;
+                                        if (Entity == EditorEntity || !MeshComp.StaticMesh)
+                                        {
+                                            return;
+                                        }
+                                        if (Registry.all_of<FSelectedInEditorComponent>(Entity))
+                                        {
+                                            return;
+                                        }
 
                                         glm::vec3 LP, WP;
                                         if (!FindClosestVertexToScreenPoint(*MeshComp.StaticMesh.Get(),
@@ -1267,19 +1281,21 @@ namespace Lumina
 
                         if (GuizmoMode == ImGuizmo::LOCAL)
                         {
-                            // LOCAL mode: ImGuizmo right-multiplies a pure T/R/S onto MatrixIn,
-                            // so inverse(Pre) * Post is a clean entity-local delta — no shear from
-                            // the parent leaks in, which means scaling under a non-uniformly scaled
-                            // parent no longer NaNs through glm::decompose.
                             glm::mat4 LocalDeltaMatrix = glm::inverse(PreManipulateMatrix) * EntityMatrix;
 
                             glm::vec3 LocalDeltaTrans, LocalDeltaScaleVec, LocalDeltaSkew;
                             glm::quat LocalDeltaRot;
                             glm::vec4 LocalDeltaPersp;
-                            glm::decompose(LocalDeltaMatrix, LocalDeltaScaleVec, LocalDeltaRot, LocalDeltaTrans, LocalDeltaSkew, LocalDeltaPersp);
+                            const bool bLocalDeltaValid = glm::decompose(
+                                LocalDeltaMatrix, LocalDeltaScaleVec, LocalDeltaRot, LocalDeltaTrans, LocalDeltaSkew, LocalDeltaPersp);
 
                             SelectionView.each([&](entt::entity, STransformComponent& Transform)
                             {
+                                if (!bLocalDeltaValid)
+                                {
+                                    return;
+                                }
+
                                 switch (GuizmoOp)
                                 {
                                     case ImGuizmo::TRANSLATE:
@@ -1298,7 +1314,7 @@ namespace Lumina
 
                                     case ImGuizmo::SCALE:
                                     {
-                                        Transform.SetLocalScale(Transform.GetLocalScale() * LocalDeltaScaleVec);
+                                        Transform.SetLocalScale(SanitizeManipulationScale(Transform.GetLocalScale() * LocalDeltaScaleVec));
                                         break;
                                     }
                                 }
@@ -1337,11 +1353,26 @@ namespace Lumina
 
                                     case ImGuizmo::SCALE:
                                     {
+                                        const glm::vec3 CurrentWorldScale = Transform.GetWorldScale();
+                                        glm::vec3 ClampedDeltaScale       = DeltaScale;
+                                        constexpr float MinScale          = 0.001f;
+                                        for (int Axis = 0; Axis < 3; ++Axis)
+                                        {
+                                            const float Target = CurrentWorldScale[Axis] * DeltaScale[Axis];
+                                            if (!std::isfinite(Target) || glm::abs(Target) < MinScale)
+                                            {
+                                                const float SignedMin = (Target < 0.0f) ? -MinScale : MinScale;
+                                                ClampedDeltaScale[Axis] = (glm::abs(CurrentWorldScale[Axis]) > 1e-8f)
+                                                                        ? SignedMin / CurrentWorldScale[Axis]
+                                                                        : 1.0f;
+                                            }
+                                        }
+
                                         glm::vec3 OffsetFromPivot = Transform.WorldTransform.Location - PivotPosition;
-                                        glm::vec3 ScaledOffset    = OffsetFromPivot * DeltaScale;
+                                        glm::vec3 ScaledOffset    = OffsetFromPivot * ClampedDeltaScale;
                                         glm::vec3 NewWorldPos     = PivotPosition + ScaledOffset;
                                         glm::quat WorldRot        = Transform.GetWorldRotation();
-                                        glm::vec3 NewWorldScale   = Transform.GetWorldScale() * DeltaScale;
+                                        glm::vec3 NewWorldScale   = CurrentWorldScale * ClampedDeltaScale;
 
                                         DesiredWorldMatrix = glm::translate(glm::mat4(1.f), NewWorldPos)
                                                            * glm::mat4_cast(WorldRot)
@@ -1359,22 +1390,29 @@ namespace Lumina
                                     glm::vec3 LocalTranslation, LocalScale, LocalSkew;
                                     glm::quat LocalRotation;
                                     glm::vec4 LocalPerspective;
-                                    glm::decompose(LocalMatrix, LocalScale, LocalRotation, LocalTranslation, LocalSkew, LocalPerspective);
+
+                                    if (!glm::decompose(LocalMatrix, LocalScale, LocalRotation, LocalTranslation, LocalSkew, LocalPerspective))
+                                    {
+                                        return;
+                                    }
 
                                     Transform.SetLocalLocation(LocalTranslation);
                                     Transform.SetLocalRotation(LocalRotation);
-                                    Transform.SetLocalScale(LocalScale);
+                                    Transform.SetLocalScale(SanitizeManipulationScale(LocalScale));
                                 }
                                 else
                                 {
                                     glm::vec3 WorldTranslation, WorldScale, WorldSkew;
                                     glm::quat WorldRotation;
                                     glm::vec4 WorldPerspective;
-                                    glm::decompose(DesiredWorldMatrix, WorldScale, WorldRotation, WorldTranslation, WorldSkew, WorldPerspective);
+                                    if (!glm::decompose(DesiredWorldMatrix, WorldScale, WorldRotation, WorldTranslation, WorldSkew, WorldPerspective))
+                                    {
+                                        return;
+                                    }
 
                                     Transform.SetLocalLocation(WorldTranslation);
                                     Transform.SetLocalRotation(WorldRotation);
-                                    Transform.SetLocalScale(WorldScale);
+                                    Transform.SetLocalScale(SanitizeManipulationScale(WorldScale));
                                 }
                             });
                         }

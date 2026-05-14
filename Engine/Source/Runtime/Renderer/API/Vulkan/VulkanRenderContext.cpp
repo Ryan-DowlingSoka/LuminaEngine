@@ -244,6 +244,9 @@ namespace Lumina
     void FQueue::RetireCommandBuffers()
     {
         LUMINA_PROFILE_SCOPE();
+        
+        std::scoped_lock Lock(Mutex);
+        LockMark(Mutex);
 
         uint64 LastFinish = UpdateLastFinishID();
 

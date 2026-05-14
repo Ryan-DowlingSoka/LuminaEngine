@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "FileHelper.h"
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include "Containers/Array.h"
@@ -30,28 +31,30 @@ namespace Lumina::FileHelper
     bool LoadFileToArray(TVector<uint8>& Result, FStringView Path)
     {
         Result.clear();
-        
-        std::ifstream InFile(Path.data(), std::ios::binary | std::ios::ate);
-        if (!InFile)
-        {
-            Result.clear();
-            LOG_ERROR("Failed to open file for reading: {0}", Path);
-            return false;
-        }
 
-        std::streamsize FileSize = InFile.tellg();
-        if (FileSize == -1)
+        // std::filesystem::file_size handles >4GB cleanly; fread reads markedly faster
+        // than std::ifstream for large assets (e.g. an 886 MB FBX) on Windows.
+        std::error_code SizeError;
+        const std::uintmax_t FileSize = std::filesystem::file_size(std::filesystem::path(Path.begin(), Path.end()), SizeError);
+        if (SizeError)
         {
-            Result.clear();
             LOG_ERROR("Failed to get the file size: {0}", Path);
             return false;
         }
 
-        InFile.seekg(0, std::ios::beg);
+        std::FILE* File = std::fopen(Path.data(), "rb");
+        if (File == nullptr)
+        {
+            LOG_ERROR("Failed to open file for reading: {0}", Path);
+            return false;
+        }
 
         Result.resize(static_cast<size_t>(FileSize));
 
-        if (!InFile.read(reinterpret_cast<char*>(Result.data()), FileSize))
+        const size_t BytesRead = std::fread(Result.data(), 1, static_cast<size_t>(FileSize), File);
+        std::fclose(File);
+
+        if (BytesRead != static_cast<size_t>(FileSize))
         {
             Result.clear();
             LOG_ERROR("Failed to read data from file: {0}", Path);

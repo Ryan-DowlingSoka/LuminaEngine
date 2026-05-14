@@ -285,13 +285,19 @@ namespace Lumina::Lua
 
     void RegisterCObjectLayout(const CClass* Class, const FUserdataLayout& Layout)
     {
-        if (Class == nullptr) return;
+        if (Class == nullptr)
+        {
+            return;
+        }
         GetCObjectLayoutRegistry()[Class] = Layout;
     }
 
     const FUserdataLayout* FindCObjectLayout(const CClass* Class)
     {
-        if (Class == nullptr) return nullptr;
+        if (Class == nullptr)
+        {
+            return nullptr;
+        }
         const auto& Registry = GetCObjectLayoutRegistry();
         const auto It = Registry.find(Class);
         return It != Registry.end() ? &It->second : nullptr;
@@ -310,7 +316,10 @@ namespace Lumina::Lua
         for (const CClass* Class = Object->GetClass(); Class != nullptr; Class = Class->GetSuperClass())
         {
             Layout = FindCObjectLayout(Class);
-            if (Layout != nullptr) break;
+            if (Layout != nullptr)
+            {
+                break;
+            }
         }
 
         if (Layout == nullptr)
@@ -1261,10 +1270,7 @@ namespace Lumina::Lua
             It = Inserted.first;
             Bytecode = &It->second.Bytecode;
         }
-
-        // Run the module body on the main state. Functions defined inside capture this
-        // FENV, which lives for the whole VM — script-thread sandboxes come and go but
-        // the cached module value (and its closures) outlive them.
+        
         const int LoadResult = luau_load(L, ResolvedPath.c_str(),
                                          reinterpret_cast<const char*>(Bytecode->data()),
                                          Bytecode->size(), 0);
@@ -1312,7 +1318,7 @@ namespace Lumina::Lua
             }
             else
             {
-                lua_pop(L, 1); // not a table — fall through to replace
+                lua_pop(L, 1); // not a table, fall through to replace
                 if (It->second.RegistryRef != LUA_NOREF)
                 {
                     lua_unref(L, It->second.RegistryRef);
@@ -1357,7 +1363,7 @@ namespace Lumina::Lua
         auto It = ModuleCache.find(CacheKey);
         if (It != ModuleCache.end() && It->second.RegistryRef != LUA_NOREF)
         {
-            // Cache hit — just push the pinned value onto the requesting thread.
+            // Cache hit
             lua_getref(Thread, It->second.RegistryRef);
             return true;
         }
@@ -1385,7 +1391,7 @@ namespace Lumina::Lua
             ExistingRef = It->second.RegistryRef;
         }
 
-        // Run on the main state — module bodies belong to the VM, not any one script thread.
+        // Run on the main state, module bodies belong to the VM, not any one script thread.
         if (!LoadModuleOntoThread(L, ResolvedPath, ExistingRef))
         {
             return;

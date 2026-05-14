@@ -3,6 +3,7 @@
 #include <tinyobjloader/tiny_obj_loader.h>
 #include "ImportHelpers.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
+#include "Core/Progress/SlowTask.h"
 #include "FileSystem/FileSystem.h"
 #include "Paths/Paths.h"
 #include "Renderer/MeshData.h"
@@ -10,7 +11,7 @@
 
 namespace Lumina::Import::Mesh::OBJ
 {
-    TExpected<FMeshImportData, FString> ImportOBJ(const FMeshImportOptions& ImportOptions, FStringView FilePath)
+    TExpected<FMeshImportData, FString> ImportOBJ(const FMeshImportOptions& ImportOptions, FStringView FilePath, FScopedSlowTask* Progress)
     {
         tinyobj::ObjReaderConfig ReaderConfig;
 
@@ -30,7 +31,12 @@ namespace Lumina::Import::Mesh::OBJ
         {
             LOG_WARN("TinyObjReader Warning: {}", Reader.Warning());
         }
-        
+
+        if (Progress)
+        {
+            Progress->EnterProgressFrame(0.45f, "Reading materials...");
+        }
+
     
         const tinyobj::attrib_t& Attribute                  = Reader.GetAttrib();
         const std::vector<tinyobj::shape_t>& Shapes         = Reader.GetShapes();
@@ -112,23 +118,16 @@ namespace Lumina::Import::Mesh::OBJ
         }
         
         bool bIsSkinned = !Attribute.skin_weights.empty();
-        if (bIsSkinned)
-        {
-            MeshResource->Vertices = TVector<FSkinnedVertex>();
-            MeshResource->bSkinnedMesh = true;
-        }
-        else
-        {
-            MeshResource->Vertices = TVector<FVertex>();
-        }
-        
+        MeshResource->bSkinnedMesh = bIsSkinned;
+
+        // The geometry phase owns the final 0.55 of the parse budget, spread per shape.
+        const float ShapeStep = 0.55f / (float)eastl::max<size_t>((size_t)1, Shapes.size());
+        uint32 ShapesDone = 0;
+
         for (const tinyobj::shape_t& Shape : Shapes)
         {
             const size_t NumFaces = Shape.mesh.num_face_vertices.size();
-
-            // Precompute the index offset for each face so we can iterate faces
-            // in arbitrary order below (faces don't have to be material-sorted
-            // in the OBJ).
+            
             TVector<size_t> FaceIndexOffsets;
             FaceIndexOffsets.resize(NumFaces);
             {
@@ -139,13 +138,7 @@ namespace Lumina::Import::Mesh::OBJ
                     Running += Shape.mesh.num_face_vertices[Face];
                 }
             }
-
-            // Bucket faces by material. Previous code created one surface per
-            // shape and reassigned MaterialIndex inside the face loop, which
-            // meant multi-material OBJs ended up with every face attributed to
-            // the LAST face's material. Now each (shape, material) pair gets
-            // its own surface, which is what the renderer's per-surface
-            // material lookup expects.
+            
             THashMap<int, TVector<size_t>> FacesByMaterial;
             for (size_t Face = 0; Face < NumFaces; ++Face)
             {
@@ -158,8 +151,6 @@ namespace Lumina::Import::Mesh::OBJ
             for (auto& [MaterialID, FaceList] : FacesByMaterial)
             {
                 FGeometrySurface& Surface = MeshResource->GeometrySurfaces.emplace_back();
-                // Disambiguate surface IDs when the same shape splits across
-                // multiple materials so the editor surface list stays useful.
                 if (FacesByMaterial.size() > 1)
                 {
                     FFixedString SurfaceID;
@@ -187,7 +178,12 @@ namespace Lumina::Import::Mesh::OBJ
                         Surface.IndexCount++;
 
                         FSkinnedVertex Vertex;
+                        Vertex.Normal   = 0;
                         Vertex.Tangent  = 0;  // Filled by MikkTSpace in GenerateMeshlets.
+                        Vertex.UV       = 0;
+                        Vertex.Color    = 0xFFFFFFFF;
+                        Vertex.JointIndices = glm::u8vec4(0);
+                        Vertex.JointWeights = glm::u8vec4(0);
                         Vertex.Position.x = Attribute.vertices[3 * Index.vertex_index + 0];
                         Vertex.Position.y = Attribute.vertices[3 * Index.vertex_index + 1];
                         Vertex.Position.z = Attribute.vertices[3 * Index.vertex_index + 2];
@@ -208,23 +204,24 @@ namespace Lumina::Import::Mesh::OBJ
 
                         if (bIsSkinned)
                         {
-                            eastl::get<TVector<FSkinnedVertex>>(MeshResource->Vertices).push_back(Vertex);
+                            MeshResource->AppendVertex(Vertex);
                         }
                         else
                         {
-                            FVertex StaticVertex;
-                            StaticVertex.Position = Vertex.Position;
-                            StaticVertex.Normal   = Vertex.Normal;
-                            StaticVertex.Tangent  = 0;  // Filled by MikkTSpace in GenerateMeshlets.
-                            StaticVertex.UV       = Vertex.UV;
-                            StaticVertex.Color    = Vertex.Color;
-                            eastl::get<TVector<FVertex>>(MeshResource->Vertices).push_back(StaticVertex);
+                            MeshResource->AppendVertex(static_cast<const FVertex&>(Vertex));
                         }
                     }
                 }
             }
+
+            if (Progress)
+            {
+                ++ShapesDone;
+                FFixedString Msg(FFixedString::CtorSprintf(), "Reading geometry (%u/%u shapes)...", ShapesDone, (uint32)Shapes.size());
+                Progress->EnterProgressFrame(ShapeStep, Msg);
+            }
         }
-        
+
         // Skip the heavy passes when the dialog has asked for a raw preview
         // parse; FinalizeMeshImportData runs them at commit time.
         if (!ImportOptions.bSkipFinalization)
