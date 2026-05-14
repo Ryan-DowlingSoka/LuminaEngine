@@ -885,6 +885,11 @@ namespace Lumina
         PhysicalDevice.enable_extension_if_present(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         PhysicalDevice.enable_extension_if_present(VK_EXT_SAMPLER_FILTER_MINMAX_EXTENSION_NAME);
 
+        // Slang embeds NonSemantic.Shader.DebugInfo.100 via SPV_KHR_non_semantic_info.
+        // Core in 1.3 but some drivers (notably AMD) still reject the SPIR-V OpExtension
+        // unless the matching device extension is explicitly enabled.
+        PhysicalDevice.enable_extension_if_present(VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME);
+
         // NV-only; AMD/Intel will skip the Aftermath diagnostics config pNext below.
         const bool bNvDiagnostics = PhysicalDevice.enable_extension_if_present(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
 

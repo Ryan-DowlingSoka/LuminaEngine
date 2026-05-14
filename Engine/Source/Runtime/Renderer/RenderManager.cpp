@@ -61,7 +61,7 @@ namespace Lumina
         #if LUMINA_SHIPPING
         GRenderContext->Initialize(FRenderContextDesc{false, false});
         #else
-        GRenderContext->Initialize(FRenderContextDesc{false, true});
+        GRenderContext->Initialize(FRenderContextDesc{true, true});
         #endif
         
         #if WITH_EDITOR
