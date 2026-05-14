@@ -584,7 +584,10 @@ PSOutput FragmentMain(PSInput Input)
         Lo                  += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, float3(0.0), 0.0) * Shadow;
     }
 
-    for (uint i = 0; i < LightCount; ++i)
+    // Hard upper bound mirrors LightCull's write cap; protects against any path
+    // (e.g. uninitialised cluster memory) that leaves Count outside [0, LIGHTS_PER_CLUSTER].
+    uint SafeLightCount = min(LightCount, (uint)LIGHTS_PER_CLUSTER);
+    for (uint i = 0; i < SafeLightCount; ++i)
     {
         uint   LightIndex = uClusters[TileIndex].LightIndices[i];
         FLight Light      = GetLightAt(LightIndex);
@@ -659,14 +662,20 @@ PSOutput FragmentMain(PSInput Input)
                 break;
             case DEBUG_MODE_LIGHT_COMPLEXITY:
             {
-                float DbgZN       = GetNearPlane();
-                float DbgZF       = GetFarPlane();
-                uint3 DbgGrid     = uSceneData.GridSize.xyz;
-                uint2 DbgScreen   = uSceneData.ScreenSize.xy;
-                uint  DbgZTile    = uint((log(abs(ViewPosition.z) / DbgZN) * float(DbgGrid.z)) / log(DbgZF / DbgZN));
-                float2 DbgTile    = float2(DbgScreen) / float2(DbgGrid.xy);
-                uint3 DbgTileIdx  = uint3(uint2(divide(Input.Position.xy, DbgTile)), DbgZTile);
-                uint DbgIndex     = DbgTileIdx.x + (DbgTileIdx.y * DbgGrid.x) + (DbgTileIdx.z * DbgGrid.x * DbgGrid.y);
+                // Same clamp as the main lighting path: edge fragments below ZNear
+                // would otherwise wrap into a huge cluster index and OOB the SSBO.
+                float  DbgZN       = GetNearPlane();
+                float  DbgZF       = GetFarPlane();
+                uint3  DbgGrid     = uSceneData.GridSize.xyz;
+                uint2  DbgScreen   = uSceneData.ScreenSize.xy;
+                float  DbgZForTile = max(abs(ViewPosition.z), DbgZN);
+                float  DbgZTileF   = (log(DbgZForTile / DbgZN) * float(DbgGrid.z)) / log(DbgZF / DbgZN);
+                uint   DbgZTile    = (uint)clamp(DbgZTileF, 0.0, float(DbgGrid.z) - 1.0);
+                float2 DbgTile     = float2(DbgScreen) / float2(DbgGrid.xy);
+                uint2  DbgTileXY   = (uint2)clamp(divide(Input.Position.xy, DbgTile),
+                                                  float2(0.0, 0.0),
+                                                  float2(DbgGrid.xy) - float2(1.0, 1.0));
+                uint   DbgIndex    = DbgTileXY.x + (DbgTileXY.y * DbgGrid.x) + (DbgZTile * DbgGrid.x * DbgGrid.y);
                 Color = LightComplexityColor(uClusters[DbgIndex].Count);
                 break;
             }

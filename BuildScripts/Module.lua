@@ -153,14 +153,16 @@ function LuminaModule(Def)
     end
 
     -- Reflection setup
+    --
+    -- ReflectionGen is a workspace-shared Utility project that fires the
+    -- Reflector prebuild exactly once per build. Depending on it (rather
+    -- than wiring our own prebuildcommands) avoids paying premake's
+    -- workspace-walk startup cost for every reflected module. The lua
+    -- Reflection action processes every project with enablereflection=true
+    -- in a single pass, so one invocation covers all reflected modules.
     if Def.Reflection then
-        dependson { "Reflector" }
+        dependson { "Reflector", "ReflectionGen" }
         enablereflection "true"
-
-        prebuildcommands
-        {
-            LuminaConfig.RunReflection()
-        }
     end
 
     local FilePatterns = {

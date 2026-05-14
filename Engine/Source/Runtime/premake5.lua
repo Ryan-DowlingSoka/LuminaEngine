@@ -18,7 +18,7 @@ LuminaModule({
     {
         "MiniAudio", "GLFW", "ImGui", "EA", "Tracy", "Luau", "EnkiTS",
         "JoltPhysics", "RPMalloc", "XXHash", "Miniz", "Volk", "VKBootstrap",
-        "TinyOBJLoader", "MeshOptimizer", "SPIRV-Reflect", "FastGLTF",
+        "TinyOBJLoader", "MeshOptimizer", "FastGLTF",
         "OpenFBX", "BasicUniversal", "RmlUi", "FreeType", "MikkTSpace",
         "Recast",
     },

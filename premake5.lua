@@ -160,10 +160,19 @@ workspace "Lumina"
         -- relink savings are large.
         linktimeoptimization "Off"
         incrementallink "On"
+        -- /Z7 embeds debug info in the .obj (same rationale as Debug):
+        -- under /MP the alternative is /Zi which serialises everything
+        -- through mspdbsrv and stalls parallel compilation. obj files grow,
+        -- but full and incremental compile time drop noticeably.
+        debugformat "c7"
+        editandcontinue "Off"
         defines { "NDEBUG", "LE_DEVELOPMENT", "LUMINA_DEVELOPMENT", }
 
+    -- /DEBUG:FASTLINK skips merging .obj debug info into a unified PDB.
+    -- Linker just references the .objs; relinks drop from seconds to ~ms.
+    -- Scoped to non-StaticLib because lib.exe ignores it and spams LNK4044.
     filter { "configurations:Development", "kind:not StaticLib" }
-        linkoptions { "/OPT:NOICF", "/OPT:NOREF" }
+        linkoptions { "/OPT:NOICF", "/OPT:NOREF", "/DEBUG:FASTLINK" }
 
     filter "configurations:Shipping"
         targetsuffix "-Shipping"
@@ -216,7 +225,6 @@ workspace "Lumina"
         include "Engine/Source/ThirdParty/MeshOptimizer"
         include "Engine/Source/ThirdParty/MikkTSpace"
         include "Engine/Source/ThirdParty/vk-bootstrap"
-        include "Engine/Source/ThirdParty/SPIRV-Reflect"
         include "Engine/Source/ThirdParty/json"
         include "Engine/Source/ThirdParty/fastgltf"
         include "Engine/Source/ThirdParty/OpenFBX"
@@ -229,4 +237,5 @@ workspace "Lumina"
 
     group "Build"
         include "BuildScripts"
+        include "BuildScripts/ReflectionGen.lua"
     group ""

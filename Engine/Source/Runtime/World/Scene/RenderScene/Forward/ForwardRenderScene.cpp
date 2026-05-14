@@ -2856,7 +2856,11 @@ namespace Lumina
 
     void FForwardRenderScene::ClusterBuildPass(ICommandList& CmdList)
     {
-		if (LightData.NumLights == 0 || DrawCommands.empty())
+        // Must run whenever there is geometry, even with zero lights: BasePixelPass
+        // reads uClusters[].Count unconditionally, and LightCull is the only writer.
+        // Skipping here left Count holding whatever garbage GPU memory was allocated
+        // with, which on AMD became a billion-iteration loop and a device-lost OOB.
+        if (DrawCommands.empty())
         {
             return;
         }
@@ -2894,7 +2898,10 @@ namespace Lumina
 
     void FForwardRenderScene::LightCullPass(ICommandList& CmdList)
     {
-        if (LightData.NumLights == 0)
+        // Always run when there is geometry, regardless of NumLights. The shader
+        // writes Count = 0 to every cluster when the light loop is empty, which
+        // is the only thing keeping BasePixelPass from reading garbage Count.
+        if (DrawCommands.empty())
         {
             return;
         }

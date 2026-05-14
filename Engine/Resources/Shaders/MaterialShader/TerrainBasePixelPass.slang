@@ -468,7 +468,9 @@ PSOutput FragmentMain(PSInput Input)
         Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, float3(0.0), 0.0) * Shadow;
     }
 
-    for (uint i = 0; i < LightCount; ++i)
+    // Mirror the cap LightCull enforces on writes.
+    uint SafeLightCount = min(LightCount, (uint)LIGHTS_PER_CLUSTER);
+    for (uint i = 0; i < SafeLightCount; ++i)
     {
         uint   LightIndex = uClusters[TileIndex].LightIndices[i];
         FLight Light      = GetLightAt(LightIndex);

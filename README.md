@@ -189,7 +189,6 @@ Contributions to Lumina are recognized in several ways, including Steam keys for
 * **RPMalloc** - Lock-free thread-caching memory allocator
 * **Slang** - Modern shader language and compiler with SPIR-V / HLSL output
 * **SPDLog** - Fast C++ logging library with async mode and multiple sinks
-* **SPIRV-Reflect** - Runtime reflection for SPIR-V shader binaries
 * **stb_image** - Single-header image loading library for common formats
 * **TinyObjLoader** - Lightweight OBJ parser with MTL material support
 * **Tracy** - Real-time frame profiler with sampling, GPU zones, and lock contention tracking

@@ -30,6 +30,16 @@ bool TestSphereAABB(uint i, FCluster Cluster)
 void ComputeMain(uint3 WorkGroupID : SV_GroupID, uint3 LocalID : SV_GroupThreadID)
 {
     uint Index      = WorkGroupID.x * LOCAL_SIZE + LocalID.x;
+
+    // Tail-thread guard: defense-in-depth in case the cluster count ever stops
+    // being a multiple of LOCAL_SIZE.
+    uint3 Grid = uSceneData.GridSize.xyz;
+    uint  NumClusters = Grid.x * Grid.y * Grid.z;
+    if (Index >= NumClusters)
+    {
+        return;
+    }
+
     uint LightCount = uLightData[0].NumLights;
 
     // Directional light is always at index 0; skip since it applies globally.
