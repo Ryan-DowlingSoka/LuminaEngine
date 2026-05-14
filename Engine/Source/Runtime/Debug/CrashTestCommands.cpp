@@ -24,12 +24,6 @@ namespace Lumina
         "Trigger the device-lost handler to test the GPU crash pipeline (Aftermath dump + panic). Does not actually fault the GPU.",
         []()
         {
-            if (!GRenderContext)
-            {
-                LOG_ERROR("crash.gpu: no render context");
-                return;
-            }
-
             LOG_CRITICAL("crash.gpu: invoking HandleDeviceLost() to exercise GPU crash pipeline");
             Logging::GetLogger()->flush();
 

@@ -85,6 +85,7 @@
 #include "Tools/ToolFlags.h"
 #include "Tools/WorldEditorTool.h"
 #include "Tools/Debug/AboutEditorTool.h"
+#include "Tools/Debug/ConsoleVariableEditorTool.h"
 #include "Tools/Debug/MemoryProfilerEditorTool.h"
 #include "Tools/Debug/ObjectBrowserEditorTool.h"
 #include "Tools/Debug/InputActionEditorTool.h"
@@ -1512,6 +1513,7 @@ namespace Lumina
         DrawToolMenuItem<FShadowAtlasEditorTool>(LE_ICON_GRID " Shadow Atlas", this);
         DrawToolMenuItem<FMemoryProfilerEditorTool>(LE_ICON_MEMORY " Memory Profiler", this);
         DrawToolMenuItem<FObjectBrowserEditorTool>(LE_ICON_LIST_BOX " Object Browser", this);
+        DrawToolMenuItem<FConsoleVariableEditorTool>(LE_ICON_TUNE " Console Variables", this);
         
         ImGui::Spacing();
         
