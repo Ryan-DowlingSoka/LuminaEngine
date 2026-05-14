@@ -1,5 +1,6 @@
 
 #include <Windows.h>
+#include <stdlib.h> // __argc / __argv (CRT-provided on Windows).
 
 extern int LuminaMain(int ArgC, char** ArgV);
 

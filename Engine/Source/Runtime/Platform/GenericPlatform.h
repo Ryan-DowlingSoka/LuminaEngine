@@ -19,6 +19,12 @@ using uint64 = unsigned long long;
 // 64-bit pointer.
 using UINTPTR = uint64;
 
+// Windows SDK `SIZE_T` (ULONG_PTR on x64). Some allocator/memory code uses
+// SIZE_T directly and historically picked it up via transitive Windows.h
+// pulls from third-party PCH entries; declare it here so the engine doesn't
+// rely on that accident.
+using SIZE_T = uint64;
+
 //--------------------------------- Signed base types
 
 // 8-bit signed integer

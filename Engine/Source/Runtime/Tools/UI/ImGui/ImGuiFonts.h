@@ -2,6 +2,7 @@
 
 #include "imgui.h"
 #include "Platform/GenericPlatform.h"
+#include "Platform/Platform.h"
 
 
 namespace Lumina::ImGuiX::Font

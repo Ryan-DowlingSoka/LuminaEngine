@@ -99,12 +99,17 @@ workspace "Lumina"
     filter "system:windows"
         systemversion "latest"
         conformancemode "On"
-        defines 
-        { 
+        defines
+        {
             "LE_PLATFORM_WINDOWS",
             "DLL_EXPORT=__declspec(dllexport)",
             "DLL_IMPORT=__declspec(dllimport)",
             "__AVX2__",
+            -- Block <windows.h> from defining `min`/`max` macros, which clobber
+            -- std::max/glm::min etc. Previously suppressed by transitive
+            -- spdlog/fmt includes; now hardened.
+            "NOMINMAX",
+            "WIN32_LEAN_AND_MEAN",
         }
         buildoptions 
         {
@@ -129,17 +134,36 @@ workspace "Lumina"
         incrementallink "On"
         optimize "Off"
         symbols "On"
+        -- /Z7 embeds debug info in the .obj, avoiding mspdbsrv serialization
+        -- during /MP compile. Pairs with /DEBUG:FASTLINK so the linker just
+        -- references the .objs instead of merging everything into a PDB.
+        -- EnC requires /Zi, so it's disabled here.
+        debugformat "c7"
+        editandcontinue "Off"
         runtime "Debug"
-        editandcontinue "On"
         defines { "LE_DEBUG", "LUMINA_DEBUG", "_DEBUG", "DEBUG", }
+
+    -- FASTLINK is a linker-only switch; scoping to non-StaticLib avoids the
+    -- LNK4044 spam on third-party static libs (where lib.exe ignores it).
+    filter { "configurations:Debug", "kind:not StaticLib" }
+        linkoptions { "/DEBUG:FASTLINK" }
 
     filter "configurations:Development"
         targetsuffix "-Development"
         optimize "Speed"
         symbols "On"
         runtime "Release"
-        linktimeoptimization "On"
+        -- LTO turns every relink into a whole-program codegen pass. Engine
+        -- programmers iterate in Development; keep incremental link instead.
+        -- /OPT:ICF (default with optimize "Speed") suppresses /INCREMENTAL,
+        -- so disable it for this iteration config; perf hit is minor and the
+        -- relink savings are large.
+        linktimeoptimization "Off"
+        incrementallink "On"
         defines { "NDEBUG", "LE_DEVELOPMENT", "LUMINA_DEVELOPMENT", }
+
+    filter { "configurations:Development", "kind:not StaticLib" }
+        linkoptions { "/OPT:NOICF", "/OPT:NOREF" }
 
     filter "configurations:Shipping"
         targetsuffix "-Shipping"

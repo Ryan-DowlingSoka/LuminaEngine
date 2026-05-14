@@ -134,21 +134,22 @@ function LuminaModule(Def)
         staticruntime "Off"
         vectorextensions "AVX2"
 
-    -- Force-include the universal ModuleAPI.h
-    forceincludes
-    {
-        "ModuleAPI.h",
-    }
-
     -- Remove platforms if requested (e.g. Editor removes "Game")
     if Def.RemovePlatforms then
         removeplatforms(Def.RemovePlatforms)
     end
 
-    -- Precompiled header
+    -- Precompiled header. When present, the PCH header is force-included
+    -- ahead of ModuleAPI.h so /Yu finds it as the first include in every TU
+    -- even when the .cpp doesn't write `#include "pch.h"` itself (Editor's
+    -- existing TUs don't). #pragma once makes the explicit-include case
+    -- already-present-in-Runtime idempotent.
     if Def.PCH then
         pchheader(Def.PCH.Header)
         pchsource(Def.PCH.Source)
+        forceincludes { Def.PCH.Header, "ModuleAPI.h" }
+    else
+        forceincludes { "ModuleAPI.h" }
     end
 
     -- Reflection setup

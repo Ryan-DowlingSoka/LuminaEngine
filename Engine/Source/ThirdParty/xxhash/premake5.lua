@@ -8,3 +8,7 @@ project "XXHash"
 		"**.c",
 		"**.lua",
 	}
+
+	filter "configurations:Debug"
+		editandcontinue "Off"
+	filter {}

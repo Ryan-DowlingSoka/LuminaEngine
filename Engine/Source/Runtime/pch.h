@@ -36,8 +36,14 @@
 // ===================
 // EASTL
 // ===================
+// Trimmed:
+//   <eastl/any.h>, <eastl/random.h>          -- rarely used, expensive templates.
+//   <eastl/list.h> <eastl/stack.h>           -- Containers/Array.h pulls these
+//   <eastl/queue.h> <eastl/deque.h>             when callers actually need them
+//   <eastl/bitset.h>                            (75 headers include Array.h).
+//   <eastl/numeric_limits.h>                 -- covered by <limits>.
+//   duplicate <eastl/memory.h>               -- was listed twice.
 #include <eastl/type_traits.h>
-#include <eastl/random.h>
 #include <eastl/utility.h>
 #include <eastl/array.h>
 #include <eastl/vector.h>
@@ -52,23 +58,15 @@
 #include <eastl/fixed_vector.h>
 #include <eastl/fixed_string.h>
 #include <eastl/atomic.h>
-#include <eastl/numeric_limits.h>
-#include <eastl/any.h>
 #include <eastl/sort.h>
 #include <eastl/memory.h>
 #include <eastl/string.h>
 #include <eastl/string_view.h>
 #include <eastl/algorithm.h>
 #include <eastl/functional.h>
-#include <eastl/memory.h>
 #include <eastl/unique_ptr.h>
 #include <eastl/shared_ptr.h>
 #include <eastl/weak_ptr.h>
-#include <eastl/deque.h>
-#include <eastl/list.h>
-#include <eastl/stack.h>
-#include <eastl/queue.h>
-#include <eastl/bitset.h>
 
 
 // ===================
@@ -79,10 +77,12 @@
 //   entt    - 48+ files reach into entt:: directly via component / system
 //             headers; pulling it out of the PCH would just shift the parse
 //             cost from "once" to "48+ times".
-//   spdlog  - logging hits every TU.
 //   xxhash  - small, heavily used.
-// Removed: <Jolt/Jolt.h> -- only ~7 files use Jolt; they include it directly.
+// Removed:
+//   <spdlog/spdlog.h> -- Log/Log.h already includes spdlog and the 32 TUs that
+//                        log already go through Log.h. The fmt template
+//                        expansion was paying for every TU regardless.
+//   <Jolt/Jolt.h> -- only ~7 files use Jolt; they include it directly.
 #include <glm/glm.hpp>
 #include <entt/entt.hpp>
-#include <spdlog/spdlog.h>
 #include <xxhash.h>

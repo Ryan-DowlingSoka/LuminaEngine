@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "RenderDocImpl.h"
 
+#include <windows.h>
+
 #include "renderdoc_app.h"
 #include "Core/Assertions/Assert.h"
 #include "Platform/Filesystem/FileHelper.h"

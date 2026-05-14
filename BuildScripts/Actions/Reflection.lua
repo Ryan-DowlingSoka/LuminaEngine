@@ -116,11 +116,44 @@ newaction
         local ReflectionDirectory = path.join(os.getenv("LUMINA_DIR"), "Binaries", SystemName .. "64", "Reflector" .. Extension)
         local CmdLine = ReflectionDirectory .. " " .. path.getabsolute("Reflection_Files.json")
 
-        
+
         if SystemName == "Windows" then
             CmdLine = CmdLine:gsub("/", "\\")
         end
-        
+
+        -- Dirty-check: skip the Reflector exec (the expensive libclang parse)
+        -- when no reflected input is newer than the stamp. Premake itself still
+        -- runs because prebuildcommands always fires, but that's ~1s vs the
+        -- multi-second cold libclang pass.
+        local StampFile = path.join(os.getenv("LUMINA_DIR"), "Intermediates", "Reflection", ".stamp")
+        local function FileTime(P)
+            local Stat = os.stat(P)
+            return (Stat and Stat.mtime) or 0
+        end
+
+        local StampTime = FileTime(StampFile)
+        local LatestInput = FileTime(ReflectionDirectory) -- rebuilding the Reflector invalidates outputs
+        if LatestInput == 0 then
+            Logger.Warning("Reflector binary not found at " .. ReflectionDirectory .. " - running build will produce it.")
+        end
+
+        if StampTime > 0 then
+            for _, ProjectData in pairs(ProjectFiles) do
+                for _, F in ipairs(ProjectData.Files) do
+                    local T = FileTime(F)
+                    if T > LatestInput then LatestInput = T end
+                    if LatestInput > StampTime then break end
+                end
+                if LatestInput > StampTime then break end
+            end
+        end
+
+        if StampTime > 0 and LatestInput > 0 and LatestInput <= StampTime then
+            Logger.Success("Reflection up-to-date - skipping Reflector exec.")
+            os.remove("Reflection_Files.json")
+            return
+        end
+
         Logger.Info("Executing Command Line " .. CmdLine)
         local Result = os.execute(CmdLine)
 
@@ -131,6 +164,14 @@ newaction
         if bOk then
             Logger.Success("Reflection completed successfully!")
             os.remove("Reflection_Files.json")
+            -- Touch the stamp so subsequent no-change builds short-circuit.
+            local StampDir = path.getdirectory(StampFile)
+            os.mkdir(StampDir)
+            local Touch = io.open(StampFile, "w")
+            if Touch then
+                Touch:write(os.date())
+                Touch:close()
+            end
         else
             -- The Reflector already emitted MSBuild-formatted error lines to
             -- stderr; we just need to fail the action so ReflectionRunner.bat

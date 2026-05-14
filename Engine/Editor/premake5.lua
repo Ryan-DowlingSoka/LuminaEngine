@@ -2,6 +2,11 @@ LuminaModule({
     Name = "Editor",
     Kind = "SharedLib",
     Reflection = true,
+    -- Editor PCH lives in Source/ so the `Source/**` files glob picks up
+    -- EditorPCH.cpp as a regular TU. The header is uniquely named so the
+    -- Reflector's libclang pass doesn't resolve `#include "pch.h"` to the
+    -- editor PCH and loop into itself (Runtime also has a pch.h).
+    PCH = { Header = "EditorPCH.h", Source = "Source/EditorPCH.cpp" },
     PublicIncludeDirs = { "." },
     ModuleDependencies = { "Runtime" },
     Dependencies =
