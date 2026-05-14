@@ -88,19 +88,35 @@ namespace Lumina
         {}
     };
 
+    struct RUNTIME_API FConsoleCommand
+    {
+        FStringView Name;
+        FStringView Hint;
+        void (*Execute)();
+
+        constexpr FConsoleCommand(FStringView InName, FStringView InHint, void(*InExec)())
+            : Name(InName)
+            , Hint(InHint)
+            , Execute(InExec)
+        {}
+    };
+
     class RUNTIME_API FConsoleRegistry
     {
     public:
 
         using FConsoleContainer = TFixedHashMap<FStringView, FConsoleVariable, 100>;
+        using FCommandContainer = TFixedHashMap<FStringView, FConsoleCommand, 100>;
 
-        
+
         static FConsoleRegistry& Get() noexcept;
 
 
         void Register(FConsoleVariable&& Var) noexcept;
+        void RegisterCommand(FConsoleCommand&& Cmd) noexcept;
 
         FConsoleVariable* Find(FStringView Name);
+        FConsoleCommand* FindCommand(FStringView Name);
 
         template<ValidConsoleVarType T>
         const T& GetAs(FStringView Name)
@@ -122,16 +138,20 @@ namespace Lumina
         }
 
         const FConsoleContainer& GetAll() const;
+        const FCommandContainer& GetAllCommands() const;
 
         bool SetValueFromString(FStringView TargetName, FStringView StrValue);
         TOptional<FString> GetValueAsString(FStringView VariableName);
 
+        bool ExecuteCommand(FStringView Name);
+
         void SaveToConfig();
         void LoadFromConfig();
-    
+
     private:
 
         FConsoleContainer ConsoleVariables;
+        FCommandContainer ConsoleCommands;
     };
 
 
@@ -169,5 +189,15 @@ namespace Lumina
     private:
 
         CVarValueType Storage;
+    };
+
+    class FAutoConsoleCommand
+    {
+    public:
+
+        FAutoConsoleCommand(FStringView Name, FStringView Hint, void(*Execute)()) noexcept
+        {
+            FConsoleRegistry::Get().RegisterCommand(FConsoleCommand(Name, Hint, Execute));
+        }
     };
 }

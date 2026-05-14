@@ -9,12 +9,17 @@
 #include "Core/CommandLine/CommandLine.h"
 #include "Core/Delegates/CoreDelegates.h"
 #include "Core/Engine/Engine.h"
+#include "Platform/CrashHandler.h"
 
 using namespace Lumina;
 
 
 int LuminaMain(int ArgC, char** ArgV)  // NOLINT(misc-use-internal-linkage)
 {
+    // Must come before anything else so an early-init fault still produces a
+    // dump and a modal.
+    CrashHandler::Install();
+
     int Result = 0;
     FApplicationGlobalState GlobalState;
 
@@ -54,5 +59,6 @@ int LuminaMain(int ArgC, char** ArgV)  // NOLINT(misc-use-internal-linkage)
     GCommandLine    = nullptr;
     GConfig         = nullptr;
 
+    CrashHandler::Shutdown();
     return Result;
 }

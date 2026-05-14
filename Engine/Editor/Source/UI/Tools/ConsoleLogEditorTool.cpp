@@ -352,24 +352,42 @@ namespace Lumina
         LOG_INFO("> {}", Command);
 
         size_t Index = Command.find_first_of(' ');
-        if (Index != FString::npos)
+        FStringView Name = (Index == FString::npos) ? Command : Command.substr(0, Index);
+        FStringView ValueString = (Index == FString::npos) ? FStringView{} : Command.substr(Index + 1);
+
+        FConsoleRegistry& Registry = FConsoleRegistry::Get();
+
+        if (Registry.FindCommand(Name))
         {
-            FStringView VariableName = Command.substr(0, Index);
-            FStringView ValueString = Command.substr(Index + 1);
-
-
-            if (FConsoleRegistry::Get().Find(VariableName))
+            if (Index != FString::npos)
             {
-                if (FConsoleRegistry::Get().SetValueFromString(VariableName, ValueString))
-                {
-                    LOG_INFO("{} New Value: {}", VariableName, ValueString);
-                }
-                else
-                {
-                    LOG_WARN("Failed to execute command {}", Command);
-                }
+                LOG_WARN("'{}' is a command and takes no arguments; ignoring '{}'", Name, ValueString);
             }
+            Registry.ExecuteCommand(Name);
+            return;
         }
+
+        if (Registry.Find(Name))
+        {
+            if (Index == FString::npos)
+            {
+                TOptional<FString> Value = Registry.GetValueAsString(Name);
+                LOG_INFO("{} = {}", Name, Value.has_value() ? *Value : FString("<unprintable>"));
+                return;
+            }
+
+            if (Registry.SetValueFromString(Name, ValueString))
+            {
+                LOG_INFO("{} New Value: {}", Name, ValueString);
+            }
+            else
+            {
+                LOG_WARN("Failed to set '{}' to '{}'", Name, ValueString);
+            }
+            return;
+        }
+
+        LOG_WARN("Unknown console command or variable: '{}'", Name);
     }
 
     void FConsoleLogEditorTool::AddCommandToHistory(FStringView Command)
@@ -445,19 +463,28 @@ namespace Lumina
             return;
         }
         
-        const FConsoleRegistry::FConsoleContainer& Container = FConsoleRegistry::Get().GetAll();
+        FConsoleRegistry& Registry = FConsoleRegistry::Get();
 
-        for (const auto& [Name, Var] : Container)
+        for (const auto& [Name, Var] : Registry.GetAll())
         {
             float Score = CalculateMatchScore(Name, CurrentInput);
             if (Score > 0.0f)
             {
-                TOptional<FString> Value = FConsoleRegistry::Get().GetValueAsString(Name);
+                TOptional<FString> Value = Registry.GetValueAsString(Name);
 
                 if (Value.has_value())
                 {
                     AutoCompleteCandidates.emplace_back(Name, Var.Hint, Value.value(), Score);
                 }
+            }
+        }
+
+        for (const auto& [Name, Cmd] : Registry.GetAllCommands())
+        {
+            float Score = CalculateMatchScore(Name, CurrentInput);
+            if (Score > 0.0f)
+            {
+                AutoCompleteCandidates.emplace_back(Name, Cmd.Hint, FString(), Score);
             }
         }
 

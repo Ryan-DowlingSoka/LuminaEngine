@@ -8,6 +8,7 @@ PRAGMA_DISABLE_ALL_WARNINGS
 #include "Sinks/ConsoleSink.h"
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/rotating_file_sink.h>
 #include "spdlog/sinks/ringbuffer_sink.h"
 PRAGMA_ENABLE_ALL_WARNINGS
 
@@ -31,12 +32,17 @@ namespace Lumina::Logging
 		Logger->sinks().push_back(std::make_shared<FConsoleSink>(GetConsoleLogQueue()));
 
 		// File sink: cooked WindowedApp builds have no console; lives next to the exe.
+		// Rotating keeps the prior run's log around so a crash on launch #2
+		// doesn't wipe launch #1's evidence.
 		try
 		{
 			std::filesystem::path ExePath(Platform::BaseDir());
 			std::filesystem::path LogPath = ExePath.parent_path() / "Lumina.log";
 
-			auto FileSink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(LogPath.string(), /*truncate=*/true);
+			constexpr size_t MaxLogSizeBytes = 16 * 1024 * 1024;
+			constexpr size_t MaxLogFiles     = 5;
+			auto FileSink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+				LogPath.string(), MaxLogSizeBytes, MaxLogFiles, /*rotate_on_open=*/true);
 			FileSink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
 			Logger->sinks().push_back(FileSink);
 		}
@@ -46,7 +52,8 @@ namespace Lumina::Logging
 		}
 
 		Logger->set_level(spdlog::level::trace);
-		Logger->flush_on(spdlog::level::warn);
+		// Flush eagerly so the last lines before a crash reach disk.
+		Logger->flush_on(spdlog::level::info);
 
 		LOG_TRACE("------- Log Initialized -------");
 	}

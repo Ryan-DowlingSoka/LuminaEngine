@@ -20,15 +20,44 @@ namespace Lumina
         ConsoleVariables.emplace(VarName, Move(Var));
     }
 
+    void FConsoleRegistry::RegisterCommand(FConsoleCommand&& Cmd) noexcept
+    {
+        FStringView CmdName = Cmd.Name.data();
+        ConsoleCommands.emplace(CmdName, Move(Cmd));
+    }
+
     FConsoleVariable* FConsoleRegistry::Find(FStringView Name)
     {
         auto It = ConsoleVariables.find(Name);
         return It != ConsoleVariables.end() ? &It->second : nullptr;
     }
 
+    FConsoleCommand* FConsoleRegistry::FindCommand(FStringView Name)
+    {
+        auto It = ConsoleCommands.find(Name);
+        return It != ConsoleCommands.end() ? &It->second : nullptr;
+    }
+
     const FConsoleRegistry::FConsoleContainer& FConsoleRegistry::GetAll() const
     {
         return ConsoleVariables;
+    }
+
+    const FConsoleRegistry::FCommandContainer& FConsoleRegistry::GetAllCommands() const
+    {
+        return ConsoleCommands;
+    }
+
+    bool FConsoleRegistry::ExecuteCommand(FStringView Name)
+    {
+        FConsoleCommand* Cmd = FindCommand(Name);
+        if (Cmd == nullptr || Cmd->Execute == nullptr)
+        {
+            return false;
+        }
+
+        Cmd->Execute();
+        return true;
     }
 
     bool FConsoleRegistry::SetValueFromString(FStringView TargetName, FStringView StrValue)
