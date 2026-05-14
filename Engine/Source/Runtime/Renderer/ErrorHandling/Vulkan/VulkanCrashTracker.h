@@ -32,6 +32,9 @@ namespace Lumina::RHI
         // Call after device creation to enable Aftermath features
         void EnableDeviceFeatures(vkb::DeviceBuilder& Builder);
 
+        // Set by CreateDevice when VK_EXT_device_fault was successfully enabled.
+        void SetDeviceFaultEnabled(bool bEnabled) { bDeviceFaultEnabled = bEnabled; }
+
         void GPUCrashDumpCallback(const void* GPUCrashDump, uint32 CrashDumpSize) override;
         void OnShaderDebugInfo(const void* ShaderDebugInfo, const uint32 ShaderDebugInfoSize) override;
 
@@ -76,12 +79,16 @@ namespace Lumina::RHI
 
         const void* StoreMarker(const char* MarkerName);
 
+        void LogDeviceInfo() const;
+        void LogDeviceFaultInfo() const;
+
         VkDevice Device = VK_NULL_HANDLE;
         VkPhysicalDevice PhysicalDevice = VK_NULL_HANDLE;
 
         FString CrashDumpDirectory;
 
         bool bInitialized = false;
+        bool bDeviceFaultEnabled = false;
     };
 
 }

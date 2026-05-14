@@ -189,8 +189,103 @@ namespace Lumina::RHI
         PhysicalDevice = VK_NULL_HANDLE;
     }
 
+    static const char* DriverIDToString(VkDriverId Id)
+    {
+        switch (Id)
+        {
+        case VK_DRIVER_ID_AMD_PROPRIETARY:           return "AMD Proprietary (AMDVLK)";
+        case VK_DRIVER_ID_AMD_OPEN_SOURCE:           return "AMD Open Source";
+        case VK_DRIVER_ID_MESA_RADV:                 return "Mesa RADV";
+        case VK_DRIVER_ID_NVIDIA_PROPRIETARY:        return "NVIDIA Proprietary";
+        case VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS: return "Intel Proprietary";
+        case VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA:    return "Intel Mesa";
+        case VK_DRIVER_ID_MESA_LLVMPIPE:             return "Mesa LLVMpipe";
+        case VK_DRIVER_ID_MOLTENVK:                  return "MoltenVK";
+        default:                                     return "Unknown";
+        }
+    }
+
+    void FVulkanCrashTracker::LogDeviceInfo() const
+    {
+        if (PhysicalDevice == VK_NULL_HANDLE)
+        {
+            return;
+        }
+
+        VkPhysicalDeviceDriverProperties DriverProps{};
+        DriverProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+
+        VkPhysicalDeviceProperties2 Props2{};
+        Props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        Props2.pNext = &DriverProps;
+
+        vkGetPhysicalDeviceProperties2(PhysicalDevice, &Props2);
+
+        const uint32 ApiVer = Props2.properties.apiVersion;
+        LOG_ERROR("[DeviceLost] GPU: {} | Driver: {} ({}) [{}] | API: {}.{}.{}",
+            Props2.properties.deviceName,
+            DriverProps.driverName,
+            DriverProps.driverInfo,
+            DriverIDToString(DriverProps.driverID),
+            VK_API_VERSION_MAJOR(ApiVer),
+            VK_API_VERSION_MINOR(ApiVer),
+            VK_API_VERSION_PATCH(ApiVer));
+    }
+
+    void FVulkanCrashTracker::LogDeviceFaultInfo() const
+    {
+        if (!bDeviceFaultEnabled || Device == VK_NULL_HANDLE || vkGetDeviceFaultInfoEXT == nullptr)
+        {
+            return;
+        }
+
+        VkDeviceFaultCountsEXT Counts{};
+        Counts.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT;
+
+        VkResult Result = vkGetDeviceFaultInfoEXT(Device, &Counts, nullptr);
+        if (Result != VK_SUCCESS && Result != VK_INCOMPLETE)
+        {
+            LOG_ERROR("[DeviceLost] vkGetDeviceFaultInfoEXT(counts) failed: 0x{:x}", (uint32)Result);
+            return;
+        }
+
+        TVector<VkDeviceFaultAddressInfoEXT> AddressInfos(Counts.addressInfoCount);
+        TVector<VkDeviceFaultVendorInfoEXT>  VendorInfos(Counts.vendorInfoCount);
+
+        VkDeviceFaultInfoEXT Info{};
+        Info.sType             = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT;
+        Info.pAddressInfos     = AddressInfos.empty() ? nullptr : AddressInfos.data();
+        Info.pVendorInfos      = VendorInfos.empty()  ? nullptr : VendorInfos.data();
+        Info.pVendorBinaryData = nullptr;
+        Counts.vendorBinarySize = 0;
+
+        Result = vkGetDeviceFaultInfoEXT(Device, &Counts, &Info);
+        if (Result != VK_SUCCESS && Result != VK_INCOMPLETE)
+        {
+            LOG_ERROR("[DeviceLost] vkGetDeviceFaultInfoEXT(info) failed: 0x{:x}", (uint32)Result);
+            return;
+        }
+
+        LOG_ERROR("[DeviceLost] Fault: {}", Info.description);
+        for (uint32 i = 0; i < Counts.addressInfoCount; ++i)
+        {
+            const VkDeviceFaultAddressInfoEXT& A = AddressInfos[i];
+            LOG_ERROR("[DeviceLost]   Address[{}] type={} reported=0x{:x} precision=0x{:x}",
+                i, (uint32)A.addressType, (uint64)A.reportedAddress, (uint64)A.addressPrecision);
+        }
+        for (uint32 i = 0; i < Counts.vendorInfoCount; ++i)
+        {
+            const VkDeviceFaultVendorInfoEXT& V = VendorInfos[i];
+            LOG_ERROR("[DeviceLost]   Vendor[{}] {} (code=0x{:x} data=0x{:x})",
+                i, V.description, (uint64)V.vendorFaultCode, (uint64)V.vendorFaultData);
+        }
+    }
+
     void FVulkanCrashTracker::OnDeviceLost()
     {
+        LogDeviceInfo();
+        LogDeviceFaultInfo();
+
         #if WITH_AFTERMATH
         GFSDK_Aftermath_CrashDump_Status Status = GFSDK_Aftermath_CrashDump_Status_Unknown;
         AFTERMATH_CHECK_ERROR(GFSDK_Aftermath_GetCrashDumpStatus(&Status));

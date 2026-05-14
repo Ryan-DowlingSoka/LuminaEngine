@@ -687,6 +687,24 @@ namespace Lumina
 
     void FVulkanRenderContext::HandleDeviceLost()
     {
+        LOG_ERROR("[DeviceLost] Vulkan device lost - dumping queue state:");
+        for (uint32 i = 0; i < (uint32)ECommandQueue::Num; ++i)
+        {
+            FQueue* Q = Queues[i].get();
+            if (!Q)
+            {
+                continue;
+            }
+
+            // vkGetSemaphoreCounterValue may itself return VK_ERROR_DEVICE_LOST after a
+            // GPU hang; tolerate failure and surface the result code regardless.
+            uint64 Completed = 0;
+            VkResult R = vkGetSemaphoreCounterValue(VulkanDevice->GetDevice(), Q->TimelineSemaphore, &Completed);
+            LOG_ERROR("[DeviceLost]   Queue[{}] LastSubmitted={} Completed={} InFlight={} status=0x{:x}",
+                (uint32)Q->Type, Q->LastSubmittedID, Completed,
+                (uint32)Q->CommandBuffersInFlight.size(), (uint32)R);
+        }
+
         if (CrashTracker)
         {
             CrashTracker->OnDeviceLost();
@@ -909,6 +927,16 @@ namespace Lumina
         // NV-only; AMD/Intel will skip the Aftermath diagnostics config pNext below.
         const bool bNvDiagnostics = PhysicalDevice.enable_extension_if_present(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
 
+        // Vendor-agnostic device fault info on VK_ERROR_DEVICE_LOST. Most useful on AMD
+        // where we have no Aftermath; supported by AMDVLK, RADV, and NVIDIA.
+        const bool bDeviceFault = PhysicalDevice.enable_extension_if_present(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+        static VkPhysicalDeviceFaultFeaturesEXT DeviceFaultFeatures{};
+        if (bDeviceFault)
+        {
+            DeviceFaultFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT;
+            DeviceFaultFeatures.deviceFault = VK_TRUE;
+        }
+
         if (PhysicalDevice.enable_extension_if_present(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME))
         {
             EnabledExtensions.SetFlag(EVulkanExtensions::PushDescriptors);
@@ -935,6 +963,11 @@ namespace Lumina
         if (bNvDiagnostics)
         {
             CrashTracker->EnableDeviceFeatures(DeviceBuilder);
+        }
+        if (bDeviceFault)
+        {
+            DeviceBuilder.add_pNext(&DeviceFaultFeatures);
+            CrashTracker->SetDeviceFaultEnabled(true);
         }
 
         auto DeviceResult = DeviceBuilder.build();
