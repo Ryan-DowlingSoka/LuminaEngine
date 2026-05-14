@@ -560,9 +560,18 @@ PSOutput FragmentMain(PSInput Input)
     uint3  GridSize   = uSceneData.GridSize.xyz;
     uint2  ScreenSize = uSceneData.ScreenSize.xy;
 
-    uint   ZTile        = uint((log(abs(ViewPosition.z) / ZNear) * float(GridSize.z)) / log(ZFar / ZNear));
+    // Edge fragments can land at |ViewPosition.z| < ZNear, making log() negative;
+    // casting that to uint wraps to a huge ZTile and TileIndex overflows uClusters,
+    // producing a garbage LightCount/LightIndices and an MMU fault inside the loop.
+    // Same hardening as TerrainBasePixelPass.
+    float  ZForTile     = max(abs(ViewPosition.z), ZNear);
+    float  ZTileF       = (log(ZForTile / ZNear) * float(GridSize.z)) / log(ZFar / ZNear);
+    uint   ZTile        = (uint)clamp(ZTileF, 0.0, float(GridSize.z) - 1.0);
     float2 TileSize     = float2(ScreenSize) / float2(GridSize.xy);
-    uint3  Tile          = uint3(uint2(divide(Input.Position.xy, TileSize)), ZTile);
+    uint2  TileXY       = (uint2)clamp(divide(Input.Position.xy, TileSize),
+                                       float2(0.0, 0.0),
+                                       float2(GridSize.xy) - float2(1.0, 1.0));
+    uint3  Tile         = uint3(TileXY, ZTile);
     uint   TileIndex    = Tile.x + (Tile.y * GridSize.x) + (Tile.z * GridSize.x * GridSize.y);
     uint   LightCount   = uClusters[TileIndex].Count;
 
