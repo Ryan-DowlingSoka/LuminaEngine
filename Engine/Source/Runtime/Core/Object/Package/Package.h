@@ -200,6 +200,9 @@ namespace Lumina
 
         RUNTIME_API static bool SavePackage(CPackage* Package, FStringView Path);
 
+        /** Reads a package file from disk and decompresses it into the raw uncompressed package binary. */
+        RUNTIME_API static bool ReadPackageFile(FStringView Path, TVector<uint8>& OutBinary);
+
         void CreateLoader(const TVector<uint8>& FileBinary);
         
         RUNTIME_API FPackageLoader* GetLoader() const;

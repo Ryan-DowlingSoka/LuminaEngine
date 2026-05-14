@@ -12,6 +12,7 @@
 #include "Paths/Paths.h"
 #include "TaskSystem/TaskSystem.h"
 #include "Thumbnail/PackageThumbnail.h"
+#include "miniz.h"
 
 
 namespace Lumina
@@ -19,6 +20,86 @@ namespace Lumina
     IMPLEMENT_INTRINSIC_CLASS(CPackage, CObject, RUNTIME_API)
 
     FPackageDestroyedDelegate CPackage::OnPackageDestroyed;
+
+    namespace
+    {
+        struct FCompressedPackageHeader
+        {
+            uint64 UncompressedSize;
+            uint64 CompressedSize;
+        };
+
+        // Deflate at MZ_BEST_SPEED, prefixed with sizes for the loader.
+        bool CompressPackageBinary(const TVector<uint8>& In, TVector<uint8>& Out)
+        {
+            mz_ulong Bound = mz_compressBound((mz_ulong)In.size());
+            Out.resize(sizeof(FCompressedPackageHeader) + (size_t)Bound);
+
+            mz_ulong OutLen = Bound;
+            int Ret = mz_compress2(Out.data() + sizeof(FCompressedPackageHeader), &OutLen,
+                In.data(), (mz_ulong)In.size(), MZ_DEFAULT_LEVEL);
+
+            if (Ret != MZ_OK)
+            {
+                LOG_ERROR("CompressPackageBinary: compress failed (ret={})", Ret);
+                Out.clear();
+                return false;
+            }
+
+            FCompressedPackageHeader CHeader;
+            CHeader.UncompressedSize = In.size();
+            CHeader.CompressedSize   = OutLen;
+            std::memcpy(Out.data(), &CHeader, sizeof(CHeader));
+
+            Out.resize(sizeof(FCompressedPackageHeader) + (size_t)OutLen);
+            return true;
+        }
+
+        bool DecompressPackageBinary(const TVector<uint8>& Raw, TVector<uint8>& Out)
+        {
+            if (Raw.size() < sizeof(FCompressedPackageHeader))
+            {
+                LOG_ERROR("DecompressPackageBinary: file too small ({} bytes)", Raw.size());
+                return false;
+            }
+
+            FCompressedPackageHeader CHeader;
+            std::memcpy(&CHeader, Raw.data(), sizeof(CHeader));
+
+            if (sizeof(FCompressedPackageHeader) + CHeader.CompressedSize != Raw.size())
+            {
+                LOG_ERROR("DecompressPackageBinary: size mismatch (header={}, file={})",
+                    sizeof(FCompressedPackageHeader) + CHeader.CompressedSize, Raw.size());
+                return false;
+            }
+
+            Out.resize((size_t)CHeader.UncompressedSize);
+            mz_ulong OutLen = (mz_ulong)CHeader.UncompressedSize;
+            int Ret = mz_uncompress(Out.data(), &OutLen,
+                Raw.data() + sizeof(FCompressedPackageHeader), (mz_ulong)CHeader.CompressedSize);
+
+            if (Ret != MZ_OK || OutLen != CHeader.UncompressedSize)
+            {
+                LOG_ERROR("DecompressPackageBinary: decompress failed (ret={}, got={}, expected={})",
+                    Ret, (uint64)OutLen, CHeader.UncompressedSize);
+                Out.clear();
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    bool CPackage::ReadPackageFile(FStringView Path, TVector<uint8>& OutBinary)
+    {
+        TVector<uint8> RawBinary;
+        if (!VFS::ReadFile(RawBinary, Path))
+        {
+            return false;
+        }
+
+        return DecompressPackageBinary(RawBinary, OutBinary);
+    }
 
     FObjectExport::FObjectExport(CObject* InObject)
     {
@@ -35,24 +116,6 @@ namespace Lumina
         ObjectGUID      = InObject->GetGUID();
         Object          = InObject;
     }
-    
-    struct FObjectLoadScopeGuard
-    {
-        CObject* Object;
-        
-        FObjectLoadScopeGuard(CObject* InObject)
-            : Object(InObject)
-        {
-            Object->SetFlag(OF_Loading);
-        }
-        
-        ~FObjectLoadScopeGuard()
-        {
-            Object->ClearFlags(OF_Loading);
-        }
-        
-        bool IsLoading() const { return Object->HasAnyFlag(OF_Loading); }
-    };
     
     void CPackage::OnDestroy()
     {
@@ -143,12 +206,12 @@ namespace Lumina
         }
         
         TVector<uint8> PackageBlob;
-        if (!VFS::ReadFile(PackageBlob, Path))
+        if (!ReadPackageFile(Path, PackageBlob))
         {
             LOG_ERROR("Failed to load package file at path {}", Path);
             return false;
         }
-        
+
         FPackageHeader Header;
         FMemoryReader Reader(PackageBlob);
         Reader << Header;
@@ -408,7 +471,7 @@ namespace Lumina
         auto Start = std::chrono::high_resolution_clock::now();
 
         TVector<uint8> FileBinary;
-        if (VFS::ReadFile(FileBinary, Path))
+        if (ReadPackageFile(Path, FileBinary))
         {
             Package->CreateLoader(FileBinary);
         
@@ -499,7 +562,14 @@ namespace Lumina
         Writer.Seek(0);
         Writer << Header;
 
-        if (!VFS::AtomicWriteFile(Path, FileBinary))
+        TVector<uint8> DiskBinary;
+        if (!CompressPackageBinary(FileBinary, DiskBinary))
+        {
+            LOG_ERROR("Failed to compress package: {}", Path);
+            return false;
+        }
+
+        if (!VFS::AtomicWriteFile(Path, DiskBinary))
         {
             // Atomic write failed: disk unchanged, package stays dirty for retry.
             LOG_ERROR("Failed to save package: {}", Path);
@@ -507,12 +577,14 @@ namespace Lumina
         }
 
         // Refresh loader only after disk commit so it can't point at uncommitted bytes.
+        // Loader always holds the uncompressed bytes.
         Package->CreateLoader(FileBinary);
 
-        LOG_INFO("Saved Package: \"{}\" - ( [{}] Exports | [{}] Imports | [{:.2f}] KiB)",
+        LOG_INFO("Saved Package: \"{}\" - ( [{}] Exports | [{}] Imports | [{:.2f}] KiB on disk, [{:.2f}] KiB uncompressed)",
             Package->GetName(),
             Package->ExportTable.size(),
             Package->ImportTable.size(),
+            static_cast<double>(DiskBinary.size()) / 1024.0,
             static_cast<double>(FileBinary.size()) / 1024.0);
 
         Package->ClearDirty();

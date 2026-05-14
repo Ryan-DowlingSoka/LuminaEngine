@@ -172,7 +172,7 @@ namespace Lumina
     void FAssetRegistry::ProcessPackagePath(FStringView Path)
     {
         TVector<uint8> Data;
-        if (!VFS::ReadFile(Data, Path))
+        if (!CPackage::ReadPackageFile(Path, Data))
         {
             LOG_ERROR("AssetRegistry: failed to read {}", Path);
             RecordFailedAsset(Path);
