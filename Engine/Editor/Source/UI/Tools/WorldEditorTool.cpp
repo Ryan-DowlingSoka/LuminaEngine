@@ -3097,7 +3097,12 @@ namespace Lumina
                     static const FViewModeEntry Geometry[] =
                     {
                         { ERenderSceneDebugFlags::Meshlets,        "Meshlets"         },
+                    };
+
+                    static const FViewModeEntry Lighting[] =
+                    {
                         { ERenderSceneDebugFlags::LightComplexity, "Light Complexity" },
+                        { ERenderSceneDebugFlags::ClusterGrid,     "Light Clusters"   },
                     };
 
                     auto DrawGroup = [&](const char* Header, const FViewModeEntry* Entries, size_t Count)
@@ -3119,6 +3124,8 @@ namespace Lumina
                     DrawGroup("Buffers", Buffers, sizeof(Buffers) / sizeof(Buffers[0]));
                     ImGui::Spacing();
                     DrawGroup("Geometry", Geometry, sizeof(Geometry) / sizeof(Geometry[0]));
+                    ImGui::Spacing();
+                    DrawGroup("Lighting", Lighting, sizeof(Lighting) / sizeof(Lighting[0]));
 
                     ImGui::EndMenu();
                 }

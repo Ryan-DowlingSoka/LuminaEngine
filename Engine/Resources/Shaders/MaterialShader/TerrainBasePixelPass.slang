@@ -527,6 +527,18 @@ PSOutput FragmentMain(PSInput Input)
             case DEBUG_MODE_UV:
                 Color = float3(frac(Input.UV), 0.0);
                 break;
+            case DEBUG_MODE_LIGHT_COMPLEXITY:
+            {
+                uint DbgIndex = ComputeClusterIndex(ViewPosition.z, Input.Position.xy);
+                Color = LightComplexityColor(uClusters[DbgIndex].Count);
+                break;
+            }
+            case DEBUG_MODE_CLUSTER_GRID:
+            {
+                uint DbgIndex = ComputeClusterIndex(ViewPosition.z, Input.Position.xy);
+                Color = ClusterDebugColor(DbgIndex, uClusters[DbgIndex].Count);
+                break;
+            }
             default:
                 break;
         }

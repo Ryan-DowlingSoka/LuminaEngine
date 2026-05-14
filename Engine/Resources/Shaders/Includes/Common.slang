@@ -23,7 +23,7 @@ static const int SSAO_KERNEL_SIZE = 32;
 #define COL_A_SHIFT 24
 #define COL_A_MASK  0xFF000000
 
-#define MAX_LIGHTS      1728
+#define MAX_LIGHTS      8192
 #define MAX_SHADOWS     256
 #define NUM_CASCADES    3
 #define MAX_CULL_VIEWS  128
@@ -462,6 +462,7 @@ struct FCullData
 #define DEBUG_MODE_EMISSIVE             9u
 #define DEBUG_MODE_UV                   10u
 #define DEBUG_MODE_LIGHT_COMPLEXITY     11u
+#define DEBUG_MODE_CLUSTER_GRID         12u
 
 struct FSceneGlobalData
 {

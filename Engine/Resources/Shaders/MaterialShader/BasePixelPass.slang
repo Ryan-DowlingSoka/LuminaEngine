@@ -33,18 +33,6 @@ float3 MeshletDebugColor(uint Index)
     );
 }
 
-// Discrete heatmap used for the light-complexity visualization. Bands chosen
-// so the transition between step counts reads at a glance.
-float3 LightComplexityColor(uint Count)
-{
-    if (Count == 0u)  return float3(0.0, 0.0, 0.0);
-    if (Count <= 2u)  return float3(0.0, 0.25, 0.6);
-    if (Count <= 4u)  return float3(0.0, 0.6, 0.3);
-    if (Count <= 8u)  return float3(0.7, 0.8, 0.0);
-    if (Count <= 16u) return float3(1.0, 0.5, 0.0);
-    return float3(1.0, 0.0, 0.0);
-}
-
 struct PSOutput
 {   
     #ifdef TRANSLUCENT
@@ -662,21 +650,14 @@ PSOutput FragmentMain(PSInput Input)
                 break;
             case DEBUG_MODE_LIGHT_COMPLEXITY:
             {
-                // Same clamp as the main lighting path: edge fragments below ZNear
-                // would otherwise wrap into a huge cluster index and OOB the SSBO.
-                float  DbgZN       = GetNearPlane();
-                float  DbgZF       = GetFarPlane();
-                uint3  DbgGrid     = uSceneData.GridSize.xyz;
-                uint2  DbgScreen   = uSceneData.ScreenSize.xy;
-                float  DbgZForTile = max(abs(ViewPosition.z), DbgZN);
-                float  DbgZTileF   = (log(DbgZForTile / DbgZN) * float(DbgGrid.z)) / log(DbgZF / DbgZN);
-                uint   DbgZTile    = (uint)clamp(DbgZTileF, 0.0, float(DbgGrid.z) - 1.0);
-                float2 DbgTile     = float2(DbgScreen) / float2(DbgGrid.xy);
-                uint2  DbgTileXY   = (uint2)clamp(divide(Input.Position.xy, DbgTile),
-                                                  float2(0.0, 0.0),
-                                                  float2(DbgGrid.xy) - float2(1.0, 1.0));
-                uint   DbgIndex    = DbgTileXY.x + (DbgTileXY.y * DbgGrid.x) + (DbgZTile * DbgGrid.x * DbgGrid.y);
+                uint DbgIndex = ComputeClusterIndex(ViewPosition.z, Input.Position.xy);
                 Color = LightComplexityColor(uClusters[DbgIndex].Count);
+                break;
+            }
+            case DEBUG_MODE_CLUSTER_GRID:
+            {
+                uint DbgIndex = ComputeClusterIndex(ViewPosition.z, Input.Position.xy);
+                Color = ClusterDebugColor(DbgIndex, uClusters[DbgIndex].Count);
                 break;
             }
         }

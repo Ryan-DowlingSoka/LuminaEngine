@@ -481,6 +481,16 @@ namespace Lumina
         // for the (common) case of a static environment.
         FEnvironmentParams                      LastUploadedEnvironmentParams = {};
         bool                                    bEnvironmentParamsUploaded    = false;
+
+        // Cluster-grid change tracking. The cluster AABBs ClusterBuildPass
+        // produces live in view space and depend only on the projection and
+        // the render-target size -- not the camera transform -- so the pass
+        // is skipped while those are unchanged. bClusterGridDirty forces a
+        // rebuild on the first frame and after a buffer reallocation.
+        glm::mat4                               LastClusterInvProjection = glm::mat4(0.0f);
+        glm::vec2                               LastClusterNearFar       = glm::vec2(0.0f);
+        glm::uvec2                              LastClusterScreenSize    = glm::uvec2(0);
+        bool                                    bClusterGridDirty        = true;
         
         FBindingCache                           BindingCache;
 

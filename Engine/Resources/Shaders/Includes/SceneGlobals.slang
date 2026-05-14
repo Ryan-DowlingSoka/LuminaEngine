@@ -277,3 +277,63 @@ float3 ReconstructViewPos(float2 UV, float Depth, float4x4 InvProj)
     float4 View = mul(InvProj, Clip);
     return View.xyz / View.w;
 }
+
+// ---------------------------------------------------------------------------------
+//  Clustered-lighting debug helpers
+// ---------------------------------------------------------------------------------
+
+// Froxel index for a fragment, recomputed from view-space depth + screen
+// position. Mirrors the tile math in ClusterBuild/LightCull and the lit path;
+// the clamps stop edge fragments below ZNear from wrapping into a huge index
+// that would read past uClusters.
+uint ComputeClusterIndex(float ViewZ, float2 ScreenPos)
+{
+    uint3  Grid       = uSceneData.GridSize.xyz;
+    uint2  ScreenSize = uSceneData.ScreenSize.xy;
+    float  ZNear      = GetNearPlane();
+    float  ZFar       = GetFarPlane();
+
+    float  ZForTile = max(abs(ViewZ), ZNear);
+    float  ZTileF   = (log(ZForTile / ZNear) * float(Grid.z)) / log(ZFar / ZNear);
+    uint   ZTile    = (uint)clamp(ZTileF, 0.0, float(Grid.z) - 1.0);
+    float2 TileSize = float2(ScreenSize) / float2(Grid.xy);
+    uint2  TileXY   = (uint2)clamp(ScreenPos / TileSize, float2(0.0, 0.0), float2(Grid.xy) - float2(1.0, 1.0));
+    return TileXY.x + TileXY.y * Grid.x + ZTile * Grid.x * Grid.y;
+}
+
+// Discrete heatmap for the "Light Complexity" view: how many lights a froxel
+// has to shade. Bands chosen so the transition between counts reads at a glance.
+float3 LightComplexityColor(uint Count)
+{
+    if (Count == 0u)  return float3(0.0, 0.0, 0.0);
+    if (Count <= 2u)  return float3(0.0, 0.25, 0.6);
+    if (Count <= 4u)  return float3(0.0, 0.6, 0.3);
+    if (Count <= 8u)  return float3(0.7, 0.8, 0.0);
+    if (Count <= 16u) return float3(1.0, 0.5, 0.0);
+    return float3(1.0, 0.0, 0.0);
+}
+
+// Per-froxel hue for the "Light Clusters" view: each cluster gets a stable
+// hashed color so the 16x9x24 grid (and its exponential Z slicing) is directly
+// visible. Empty froxels are dimmed; froxels that hit the LIGHTS_PER_CLUSTER
+// write cap turn white so light-list saturation is obvious.
+float3 ClusterDebugColor(uint ClusterIndex, uint LightCount)
+{
+    if (LightCount >= (uint)LIGHTS_PER_CLUSTER)
+    {
+        return float3(1.0, 1.0, 1.0);
+    }
+
+    uint H = ClusterIndex * 2654435761u;
+    H ^= H >> 16; H *= 2246822519u;
+    H ^= H >> 13; H *= 3266489917u;
+    H ^= H >> 16;
+
+    float3 Hue = float3(
+        float( H        & 0xFFu) / 255.0,
+        float((H >>  8) & 0xFFu) / 255.0,
+        float((H >> 16) & 0xFFu) / 255.0);
+
+    // Dim empty froxels so populated ones pop against the grid.
+    return Hue * ((LightCount == 0u) ? 0.25 : 1.0);
+}

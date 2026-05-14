@@ -9,7 +9,7 @@
 #include "Renderer/RenderResource.h"
 #include "Renderer/RHIGlobals.h"
 
-#define MAX_LIGHTS 1728
+#define MAX_LIGHTS 8192
 #define MAX_SHADOWS 256
 #define SSAO_KERNEL_SIZE 32
 #define LIGHT_INDEX_MASK 0x1FFFu
@@ -77,7 +77,8 @@ namespace Lumina
         Emissive            = 9,
         UV                  = 10,
         LightComplexity     = 11,
-        Num                 = 12,
+        ClusterGrid         = 12,
+        Num                 = 13,
     };
 
     constexpr FStringView RenderFlagsAsString(ERenderSceneDebugFlags Flags)
@@ -96,6 +97,7 @@ namespace Lumina
             case ERenderSceneDebugFlags::Emissive:          return "Emissive";
             case ERenderSceneDebugFlags::UV:                return "UV";
             case ERenderSceneDebugFlags::LightComplexity:   return "Light Complexity";
+            case ERenderSceneDebugFlags::ClusterGrid:       return "Light Clusters";
             default:                                        return "Lit";
         }
     }

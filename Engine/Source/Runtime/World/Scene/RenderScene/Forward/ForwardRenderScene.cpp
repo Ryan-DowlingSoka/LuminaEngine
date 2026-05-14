@@ -629,7 +629,10 @@ namespace Lumina
             Graph.Wait();
 
 
-            LightData.NumLights = LightCount.load(std::memory_order_acquire);
+            // LightCount can overshoot MAX_LIGHTS when the scene has more lights
+            // than the buffer holds; Process*Light drops the overflow, so clamp
+            // here to keep NumLights in lockstep with what was actually written.
+            LightData.NumLights = glm::min(LightCount.load(std::memory_order_acquire), (uint32)MAX_LIGHTS);
 
             // Serial fit/allocate after parallel light pass; shrinks when sum(area) exceeds atlas budget.
             AllocateShadowTiles();
@@ -1679,7 +1682,7 @@ namespace Lumina
     void FForwardRenderScene::ProcessPointLight(const SPointLightComponent& PointLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount)
     {
         auto Lights = LightCount.fetch_add(1, std::memory_order_acquire);
-        if (LightCount >= MAX_LIGHTS - 1)
+        if (Lights >= MAX_LIGHTS)
         {
             NotifyMaxLightsHit();
             return;
@@ -1728,7 +1731,7 @@ namespace Lumina
     void FForwardRenderScene::ProcessSpotLight(const SSpotLightComponent& SpotLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount)
     {
         auto Lights = LightCount.fetch_add(1, std::memory_order_acquire);
-        if (LightCount >= MAX_LIGHTS - 1)
+        if (Lights >= MAX_LIGHTS)
         {
             NotifyMaxLightsHit();
             return;
@@ -2525,7 +2528,10 @@ namespace Lumina
         CameraLateViewIndex = ~0u;
         Instances.clear();
         InstanceMeshletPrefix.clear();
-        LightData = {};
+        // memset rather than `= {}`: at the raised MAX_LIGHTS cap FSceneLightData
+        // is ~0.6 MB, and `= {}` would materialize that as a zero-init temporary
+        // on the stack before the copy.
+        memset(&LightData, 0, sizeof(LightData));
         ShadowDataCount.store(0, std::memory_order_release);
         ShadowAtlas.FreeTiles();
         ShadowRequests.clear();
@@ -2852,28 +2858,47 @@ namespace Lumina
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Cluster Build Pass", tracy::Color::Pink2);
-            
+
+        FLightClusterPC ClusterPC;
+        ClusterPC.InverseProjection = SceneViewport->GetViewVolume().GetInverseProjectionMatrix();
+        ClusterPC.zNearFar = glm::vec2(SceneViewport->GetViewVolume().GetNear(), SceneViewport->GetViewVolume().GetFar());
+        ClusterPC.GridSize = glm::vec4(ClusterGridSizeX, ClusterGridSizeY, ClusterGridSizeZ, 0.0f);
+        ClusterPC.ScreenSize = glm::uvec2(GetNamedImage(ENamedImage::HDR)->GetSizeX(), GetNamedImage(ENamedImage::HDR)->GetSizeY());
+
+        // Cluster AABBs are view-space and depend only on projection + RT size.
+        // Skip the dispatch while those are unchanged: the Cluster buffer is
+        // persistent and LightCull only overwrites the per-cluster light lists.
+        const bool bNeedsRebuild =
+            bClusterGridDirty
+            || ClusterPC.InverseProjection != LastClusterInvProjection
+            || ClusterPC.zNearFar          != LastClusterNearFar
+            || ClusterPC.ScreenSize        != LastClusterScreenSize;
+
+        if (!bNeedsRebuild)
+        {
+            return;
+        }
+
+        LastClusterInvProjection = ClusterPC.InverseProjection;
+        LastClusterNearFar       = ClusterPC.zNearFar;
+        LastClusterScreenSize    = ClusterPC.ScreenSize;
+        bClusterGridDirty        = false;
+
         FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("ClusterBuild.slang");
 
         FComputePipelineDesc PipelineDesc;
         PipelineDesc.SetComputeShader(ComputeShader);
         PipelineDesc.AddBindingLayout(SceneBindingLayout);
         PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-                
+
         FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
-            
+
         FComputeState State;
         State.SetPipeline(Pipeline);
         State.AddBindingSet(SceneBindingSet);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         CmdList.SetComputeState(State);
 
-        FLightClusterPC ClusterPC;
-        ClusterPC.InverseProjection = SceneViewport->GetViewVolume().GetInverseProjectionMatrix();
-        ClusterPC.zNearFar = glm::vec2(SceneViewport->GetViewVolume().GetNear(), SceneViewport->GetViewVolume().GetFar());
-        ClusterPC.GridSize = glm::vec4(ClusterGridSizeX, ClusterGridSizeY, ClusterGridSizeZ, 0.0f);
-        ClusterPC.ScreenSize = glm::vec2(GetNamedImage(ENamedImage::HDR)->GetSizeX(), GetNamedImage(ENamedImage::HDR)->GetSizeY());
-            
         CmdList.SetPushConstants(&ClusterPC, sizeof(FLightClusterPC));
             
         constexpr uint32 ClusterBuildGroupSize = 64;
@@ -5921,6 +5946,9 @@ namespace Lumina
             BufferDesc.InitialState = EResourceStates::UnorderedAccess;
             BufferDesc.DebugName = "Cluster SSBO";
             NamedBuffers[(int)ENamedBuffer::Cluster] = GRenderContext->CreateBuffer(BufferDesc);
+
+            // Fresh buffer has undefined contents; force ClusterBuildPass to run.
+            bClusterGridDirty = true;
         }
 
         {

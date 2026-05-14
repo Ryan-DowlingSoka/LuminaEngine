@@ -9,17 +9,17 @@
 
 bool SphereAABBIntersection(float3 Center, float Radius, float3 AABBMin, float3 AABBMax)
 {
-    float3 ClosestPoint   = clamp(Center, AABBMin, AABBMax);
-    float  DistanceSquared = dot(ClosestPoint - Center, ClosestPoint - Center);
+    float3 ClosestPoint    = clamp(Center, AABBMin, AABBMax);
+    float3 Delta           = ClosestPoint - Center;
+    float  DistanceSquared = dot(Delta, Delta);
     return DistanceSquared <= Radius * Radius;
 }
 
-bool TestSphereAABB(uint i, FCluster Cluster)
-{
-    float3 Center  = mul(GetCameraView(), float4(uLightData[0].Lights[i].Position, 1.0)).xyz;
-    float  Radius  = uLightData[0].Lights[i].Radius;
-    return SphereAABBIntersection(Center, Radius, Cluster.MinPoint.xyz, Cluster.MaxPoint.xyz);
-}
+// View-space light position (xyz) + radius (w). Staged once per batch so the
+// LOCAL_SIZE clusters in a group share a single view-space transform and a
+// single global load per light, instead of every cluster re-transforming and
+// re-reading every light from the FLightData buffer.
+groupshared float4 gLightViewPosRadius[LOCAL_SIZE];
 
 // ============================================================================
 //  Main
@@ -29,37 +29,73 @@ bool TestSphereAABB(uint i, FCluster Cluster)
 [numthreads(LOCAL_SIZE, 1, 1)]
 void ComputeMain(uint3 WorkGroupID : SV_GroupID, uint3 LocalID : SV_GroupThreadID)
 {
-    uint Index      = WorkGroupID.x * LOCAL_SIZE + LocalID.x;
+    uint Index = WorkGroupID.x * LOCAL_SIZE + LocalID.x;
+    uint Local = LocalID.x;
 
-    // Tail-thread guard: defense-in-depth in case the cluster count ever stops
-    // being a multiple of LOCAL_SIZE.
-    uint3 Grid = uSceneData.GridSize.xyz;
-    uint  NumClusters = Grid.x * Grid.y * Grid.z;
-    if (Index >= NumClusters)
-    {
-        return;
-    }
+    // Tail-thread guard: out-of-range threads still participate in the
+    // cooperative loads and barriers below, they just never test or write.
+    uint3 Grid          = uSceneData.GridSize.xyz;
+    uint  NumClusters   = Grid.x * Grid.y * Grid.z;
+    bool  bValidCluster = Index < NumClusters;
+
+    float3 ClusterMin = bValidCluster ? uClusters[Index].MinPoint.xyz : float3(0.0);
+    float3 ClusterMax = bValidCluster ? uClusters[Index].MaxPoint.xyz : float3(0.0);
 
     uint LightCount = uLightData[0].NumLights;
 
     // Directional light is always at index 0; skip since it applies globally.
     uint StartIndex = (LightCount > 0 && HasFlag(uLightData[0].Lights[0].Flags, ELightFlags::Directional)) ? 1u : 0u;
 
-    FCluster Cluster = uClusters[Index];
-    uint VisibleCount = 0;
+    float4x4 View         = GetCameraView();
+    uint     VisibleCount = 0;
 
-    for (uint i = StartIndex; i < LightCount; ++i)
+    // LightCount is uniform across the group, so every thread runs the same
+    // number of iterations and reaches both barriers each pass -- the syncs
+    // are never in divergent control flow.
+    for (uint Base = 0; Base < LightCount; Base += LOCAL_SIZE)
     {
-        if (TestSphereAABB(i, Cluster))
+        uint LoadIndex = Base + Local;
+        if (LoadIndex < LightCount)
         {
-            uClusters[Index].LightIndices[VisibleCount] = i;
-            ++VisibleCount;
-            if (VisibleCount >= LIGHTS_PER_CLUSTER)
+            float3 ViewPos = mul(View, float4(uLightData[0].Lights[LoadIndex].Position, 1.0)).xyz;
+            gLightViewPosRadius[Local] = float4(ViewPos, uLightData[0].Lights[LoadIndex].Radius);
+        }
+        else
+        {
+            gLightViewPosRadius[Local] = float4(0.0, 0.0, 0.0, -1.0);
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+
+        if (bValidCluster && VisibleCount < LIGHTS_PER_CLUSTER)
+        {
+            uint BatchCount = min((uint)LOCAL_SIZE, LightCount - Base);
+            for (uint j = 0; j < BatchCount; ++j)
             {
-                break;
+                uint GlobalLight = Base + j;
+                if (GlobalLight < StartIndex)
+                {
+                    continue;
+                }
+
+                float4 LightVP = gLightViewPosRadius[j];
+                if (SphereAABBIntersection(LightVP.xyz, LightVP.w, ClusterMin, ClusterMax))
+                {
+                    uClusters[Index].LightIndices[VisibleCount] = GlobalLight;
+                    ++VisibleCount;
+                    if (VisibleCount >= LIGHTS_PER_CLUSTER)
+                    {
+                        break;
+                    }
+                }
             }
         }
+
+        GroupMemoryBarrierWithGroupSync();
     }
 
-    uClusters[Index].Count = VisibleCount;
+    if (bValidCluster)
+    {
+        uClusters[Index].Count = VisibleCount;
+    }
 }
