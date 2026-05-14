@@ -7,6 +7,15 @@ if _ACTION == "setup" then return end
 include "BuildScripts/Dependencies"
 include "BuildScripts/Module"
 include "BuildScripts/Actions/Reflection"
+include "BuildScripts/Actions/Clean"
+
+-- Tests (and its GoogleTest dependency) are off by default so a normal
+-- `premake5 vs2022` solution doesn't pay GoogleTest's ~22s clean-build cost.
+-- Run `premake5 vs2022 --with-tests` to include them.
+newoption {
+    trigger     = "with-tests",
+    description = "Include the Tests project and its GoogleTest dependency",
+}
 
 workspace "Lumina"
 	language "C++"
@@ -185,9 +194,11 @@ workspace "Lumina"
     
     filter {}
 
-    group "Tests"
-        include "Engine/Tests"
-    group ""
+    if _OPTIONS["with-tests"] then
+        group "Tests"
+            include "Engine/Tests"
+        group ""
+    end
 
     group "Engine"
 		include "Engine/Source/Runtime"
@@ -230,7 +241,9 @@ workspace "Lumina"
         include "Engine/Source/ThirdParty/OpenFBX"
         include "Engine/Source/ThirdParty/basis_universal"
         include "Engine/Source/ThirdParty/SLang"
-        include "Engine/Source/ThirdParty/GoogleTest"
+        if _OPTIONS["with-tests"] then
+            include "Engine/Source/ThirdParty/GoogleTest"
+        end
         include "Engine/Source/ThirdParty/FreeType"
         include "Engine/Source/ThirdParty/RmlUi"
 	group ""

@@ -57,6 +57,9 @@
 #include <eastl/fixed_hash_map.h>
 #include <eastl/fixed_vector.h>
 #include <eastl/fixed_string.h>
+// variant.h is expensive template code, but Core/Variant/Variant.h pulls it
+// into 166 of 313 TUs -- amortize the parse through the PCH.
+#include <eastl/variant.h>
 #include <eastl/atomic.h>
 #include <eastl/sort.h>
 #include <eastl/memory.h>
