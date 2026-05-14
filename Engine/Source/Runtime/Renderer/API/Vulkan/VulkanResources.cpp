@@ -1888,6 +1888,8 @@ namespace Lumina
         CreateInfo.subpass                      = 0;
         
         VK_CHECK(vkCreateGraphicsPipelines(Device->GetDevice(), nullptr, 1, &CreateInfo, VK_ALLOC_CALLBACK, &Pipeline));
+        
+        DEBUG_ASSERT(Pipeline != VK_NULL_HANDLE);
         static_cast<FVulkanRenderContext*>(GRenderContext)->SetVulkanObjectName(Desc.DebugName, VK_OBJECT_TYPE_PIPELINE, (uintptr_t)Pipeline);
 
     }
@@ -1922,6 +1924,8 @@ namespace Lumina
         CreateInfo.layout = PipelineLayout;
         
         VK_CHECK(vkCreateComputePipelines(Device->GetDevice(), nullptr, 1, &CreateInfo, VK_ALLOC_CALLBACK, &Pipeline));
+
+        DEBUG_ASSERT(Pipeline != VK_NULL_HANDLE);
         static_cast<FVulkanRenderContext*>(GRenderContext)->SetVulkanObjectName(Desc.DebugName, VK_OBJECT_TYPE_PIPELINE, (uintptr_t)Pipeline);
     }
 

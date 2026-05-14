@@ -504,6 +504,22 @@ namespace Lumina
         Dialogs::ShowInternal(Dialogs::ESeverity::FatalError, Dialogs::EType::Ok, Title, Body);
     }
 
+    namespace Vulkan
+    {
+        void ShowVulkanCheckFailureDialog(const FString& Expr, const char* File, int Line, const FString& ResultString)
+        {
+            FString Body = "Vulkan call failed:\n\n";
+            Body += Expr;
+            Body += "\n\nLocation: ";
+            Body += File;
+            Body += ":";
+            Body += eastl::to_string(Line).c_str();
+            Body += "\n\n";
+            Body += ResultString;
+            Dialogs::ShowInternal(Dialogs::ESeverity::FatalError, Dialogs::EType::Ok, "Vulkan Error", Body);
+        }
+    }
+
     bool FVulkanRenderContext::Initialize(const FRenderContextDesc& Desc)
     {
         LUMINA_PROFILE_SCOPE();

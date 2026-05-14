@@ -5,6 +5,11 @@
 
 namespace Lumina::Vulkan
 {
+    // Pops a modal Win32 dialog with the failing call site. WindowedApp builds
+    // (default in this engine) have no console, so this is what the user sees
+    // when VK_CHECK trips outside a debugger.
+    RUNTIME_API void ShowVulkanCheckFailureDialog(const FString& Expr, const char* File, int Line, const FString& ResultString);
+
     inline FString VkResultToString(VkResult result)
     {
         switch (result)
@@ -44,13 +49,13 @@ namespace Lumina::Vulkan
 #define VULKAN_TIMEOUT_ONE_SECOND 1000000000
 #define VK_NO_FLAGS 0
 
-#ifdef LUMINA_DEBUG
+#ifndef LE_SHIPPING
 #define VK_CHECK(x)                                                                     \
 do {                                                                                    \
     VkResult result = (x);                                                              \
     if (UNLIKELY(result < 0))                                                           \
     {                                                                                   \
-        LOG_WARN(                                                                       \
+        LOG_ERROR(                                                                      \
             "Vulkan Error:\n"                                                           \
             "  Function Call : {0}\n"                                                   \
             "  File          : {1}\n"                                                   \
@@ -60,6 +65,12 @@ do {                                                                            
         if (result == VK_ERROR_DEVICE_LOST)                                             \
         {                                                                               \
             Lumina::GRenderContext->HandleDeviceLost();                                 \
+        }                                                                               \
+        else                                                                            \
+        {                                                                               \
+            Lumina::Vulkan::ShowVulkanCheckFailureDialog(                               \
+                #x, __FILE__, __LINE__, Vulkan::VkResultToString(result));              \
+            EASTL_DEBUG_BREAK();                                                        \
         }                                                                               \
     }                                                                                   \
 } while (0)
