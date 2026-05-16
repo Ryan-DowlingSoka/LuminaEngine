@@ -1,0 +1,30 @@
+#include "pch.h"
+#include "AnimationGraph.h"
+
+namespace Lumina
+{
+    void CAnimationGraph::Serialize(FArchive& Ar)
+    {
+        CObject::Serialize(Ar);
+
+        Ar << Parameters;
+        Ar << BoneMasks;
+        Ar << StateMachines;
+        Ar << Bytecode;
+        Ar << NumScalarRegisters;
+        Ar << NumPoseRegisters;
+        Ar << NumStateSlots;
+    }
+
+    int32 CAnimationGraph::FindParameterIndex(const FName& Name) const
+    {
+        for (int32 i = 0; i < (int32)Parameters.size(); ++i)
+        {
+            if (Parameters[i].Name == Name)
+            {
+                return i;
+            }
+        }
+        return INDEX_NONE;
+    }
+}

@@ -38,6 +38,7 @@
 #include "lstate.h"
 #include "LuminaEditor.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Assets/AssetTypes/Animation/AnimationGraph/AnimationGraph.h"
 #include "Assets/AssetTypes/Material/Material.h"
 #include "Assets/AssetTypes/Material/MaterialInstance.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
@@ -94,6 +95,7 @@
 #include "Tools/Debug/RendererInfoEditorTool.h"
 #include "Tools/Debug/ScriptsInfoEditorTool.h"
 #include "Tools/AssetEditors/Animation/AnimationEditorTool.h"
+#include "Tools/AssetEditors/AnimationGraph/AnimationGraphEditorTool.h"
 #include "Tools/AssetEditors/MaterialEditor/MaterialEditorTool.h"
 #include "Tools/AssetEditors/MaterialEditor/MaterialInstanceEditorTool.h"
 #include "Tools/AssetEditors/MeshEditor/MeshEditorTool.h"
@@ -554,6 +556,10 @@ namespace Lumina
         else if (Asset->IsA<CMaterial>())
         {
             NewTool = CreateTool<FMaterialEditorTool>(this, Asset);
+        }
+        else if (Asset->IsA<CAnimationGraph>())
+        {
+            NewTool = CreateTool<FAnimationGraphEditorTool>(this, Asset);
         }
         else if (Asset->IsA<CTexture>())
         {

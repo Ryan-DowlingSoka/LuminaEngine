@@ -176,10 +176,11 @@ namespace Lumina
         }
     
         float& CurrentTime = AnimationComponent->CurrentTime;
+        const float TimeBeforeEdit = CurrentTime;
         static bool bIsPlaying = false;
         static int SelectedChannel = -1;
         static bool bShowCurveEditor = true;
-        
+
         if (bIsPlaying)
         {
             CurrentTime += ImGui::GetIO().DeltaTime * Playrate;
@@ -365,6 +366,14 @@ namespace Lumina
             }
             
             ImGui::EndChild();
+        }
+
+        // The sequencer drives CurrentTime directly instead of the component's
+        // own bPlaying advance, so the animation system can't tell the pose is
+        // stale. Mark it dirty whenever we moved the playhead this frame.
+        if (CurrentTime != TimeBeforeEdit)
+        {
+            AnimationComponent->bDirty = true;
         }
     }
 }

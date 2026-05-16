@@ -60,6 +60,11 @@ namespace Lumina
 
         virtual bool IsDeletable() const { return true; }
 
+        // A node graph this node "contains" and the editor can descend into on
+        // double-click (e.g. a state machine node's canvas, or a state's blend
+        // tree). Null for ordinary leaf nodes. May lazily allocate the graph.
+        virtual CEdNodeGraph* GetEnterableSubGraph() { return nullptr; }
+
         // True for "wire passthrough" nodes (e.g. CEdNode_Reroute). The graph drawer renders these
         // as a single compact dot instead of a normal node body, and graph-walking code (compilers,
         // closure walks) is expected to skip them and resolve through to the real source/target.

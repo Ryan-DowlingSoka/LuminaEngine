@@ -10,6 +10,7 @@ namespace Lumina
 {
     class CSkeleton;
     struct FSkeletonResource;
+    struct FPose;
 
     struct FAnimationChannel
     {
@@ -114,6 +115,9 @@ namespace Lumina
         
         /** Writes (Global * InvBind) per bone; bones without channels keep their bind-pose local transform. */
         void SamplePose(float Time, FSkeletonResource* RESTRICT InSkeleton, TVector<glm::mat4>& RESTRICT OutBoneTransforms) const;
+
+        /** Samples the clip into a local-space TRS pose; bones without channels keep their bind-pose local transform. */
+        void SampleLocalPose(float Time, FSkeletonResource* RESTRICT InSkeleton, FPose& RESTRICT OutPose) const;
 
         float GetDuration() const { return AnimationResource->Duration; }
         FAnimationResource* GetAnimationResource() const { return AnimationResource.get(); }

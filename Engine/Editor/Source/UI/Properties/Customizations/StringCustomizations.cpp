@@ -1,4 +1,8 @@
 #include "CoreTypeCustomization.h"
+#include "BonePickerContext.h"
+#include "ParameterPickerContext.h"
+#include "Assets/AssetTypes/Animation/AnimationGraph/AnimationGraph.h"
+#include "Renderer/MeshData.h"
 #include "UI/Tools/AssetEditors/TextureEditor/TextureEditorTool.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
@@ -8,21 +12,215 @@
 
 namespace Lumina
 {
+    namespace
+    {
+        // Recursive draw of a single bone node and its children. Returns true if
+        // a bone was clicked, with OutSelected set to its name.
+        bool DrawBoneTreeNode(const FSkeletonResource& Skeleton, int32 BoneIndex, ImGuiTextFilter& Filter, const FName& Current, FName& OutSelected)
+        {
+            const FSkeletonResource::FBoneInfo& Bone = Skeleton.GetBone(BoneIndex);
+            const char* Label = Bone.Name.c_str();
+            const TVector<int32> Children = Skeleton.GetChildBones(BoneIndex);
+
+            // The filter hides non-matching leaves but keeps a node visible if
+            // any descendant matches, so users can drill down by partial name.
+            const bool bSelfMatches = Filter.PassFilter(Label);
+            bool bAnyChildVisible = false;
+            for (int32 Child : Children)
+            {
+                if (Filter.PassFilter(Skeleton.GetBone(Child).Name.c_str()))
+                {
+                    bAnyChildVisible = true;
+                    break;
+                }
+            }
+            if (!bSelfMatches && !bAnyChildVisible && Filter.IsActive())
+            {
+                bool bDeepMatch = false;
+                for (int32 Child : Children)
+                {
+                    FName Throwaway;
+                    if (DrawBoneTreeNode(Skeleton, Child, Filter, Current, Throwaway))
+                    {
+                        bDeepMatch = true;
+                        OutSelected = Throwaway;
+                    }
+                }
+                return bDeepMatch;
+            }
+
+            ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanAvailWidth;
+            if (Children.empty())
+            {
+                Flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+            }
+            if (Bone.Name == Current)
+            {
+                Flags |= ImGuiTreeNodeFlags_Selected;
+            }
+            if (Filter.IsActive())
+            {
+                ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+            }
+
+            const bool bOpen = ImGui::TreeNodeEx((const void*)(intptr_t)BoneIndex, Flags, "%s", Label);
+
+            bool bClicked = false;
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen())
+            {
+                OutSelected = Bone.Name;
+                bClicked = true;
+            }
+
+            if (bOpen && !(Flags & ImGuiTreeNodeFlags_NoTreePushOnOpen))
+            {
+                for (int32 Child : Children)
+                {
+                    FName ChildSelected;
+                    if (DrawBoneTreeNode(Skeleton, Child, Filter, Current, ChildSelected))
+                    {
+                        OutSelected = ChildSelected;
+                        bClicked = true;
+                    }
+                }
+                ImGui::TreePop();
+            }
+
+            return bClicked;
+        }
+    }
+
     EPropertyChangeOp FNamePropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
     {
-        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
+        const bool bBonePicker = Property->Property->HasMetadata("BonePicker");
+        const bool bParamPicker = Property->Property->HasMetadata("ParameterPicker");
+        const FSkeletonResource* Skeleton = bBonePicker ? BonePickerContext::GetActiveSkeleton() : nullptr;
+        CAnimationGraph* PickerGraph = bParamPicker ? ParameterPickerContext::GetActiveGraph() : nullptr;
+
+        EPropertyChangeOp Result = EPropertyChangeOp::None;
+
+        const float ButtonWidth = (bBonePicker || bParamPicker) ? ImGui::GetFrameHeight() : 0.0f;
 
         char Buffer[256];
         strncpy(Buffer, DisplayValue.c_str(), sizeof(Buffer));
         Buffer[sizeof(Buffer) - 1] = '\0';
+
+        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - ButtonWidth);
         if (ImGui::InputText("##ParamName", Buffer, sizeof(Buffer)))
         {
             DisplayValue = FName(Buffer);
         }
-
         ImGui::PopItemWidth();
 
-        return EPropertyChangeOp::None;
+        if (ImGui::IsItemDeactivatedAfterEdit())
+        {
+            Result = EPropertyChangeOp::Updated;
+        }
+
+        if (bParamPicker)
+        {
+            ImGui::SameLine(0, 0);
+            const bool bHasGraph = PickerGraph != nullptr;
+            ImGui::BeginDisabled(!bHasGraph);
+            if (ImGui::Button(LE_ICON_MENU_DOWN "##ParamPick", ImVec2(ButtonWidth, 0)))
+            {
+                ImGui::OpenPopup("##ParameterPicker");
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            {
+                ImGuiX::TextTooltip_Internal(bHasGraph ? "Pick existing parameter" : "No graph context");
+            }
+
+            if (ImGui::BeginPopup("##ParameterPicker"))
+            {
+                if (ImGui::Selectable("(none)", DisplayValue.IsNone()))
+                {
+                    DisplayValue = FName();
+                    Result = EPropertyChangeOp::Updated;
+                    ImGui::CloseCurrentPopup();
+                }
+                if (PickerGraph != nullptr)
+                {
+                    if (PickerGraph->Parameters.empty())
+                    {
+                        ImGui::Separator();
+                        ImGui::TextDisabled("No parameters yet.");
+                        ImGui::TextDisabled("Add a Get Parameter node");
+                        ImGui::TextDisabled("or type a name here to create one.");
+                    }
+                    else
+                    {
+                        ImGui::Separator();
+                        for (const FAnimGraphParameter& Param : PickerGraph->Parameters)
+                        {
+                            const bool bSelected = (Param.Name == DisplayValue);
+                            if (ImGui::Selectable(Param.Name.c_str(), bSelected))
+                            {
+                                DisplayValue = Param.Name;
+                                Result = EPropertyChangeOp::Updated;
+                                ImGui::CloseCurrentPopup();
+                            }
+                        }
+                    }
+                }
+                ImGui::EndPopup();
+            }
+        }
+
+        if (bBonePicker)
+        {
+            ImGui::SameLine(0, 0);
+            const bool bHasSkeleton = Skeleton != nullptr && Skeleton->GetNumBones() > 0;
+            ImGui::BeginDisabled(!bHasSkeleton);
+            if (ImGui::Button(LE_ICON_BONE "##BonePick", ImVec2(ButtonWidth, 0)))
+            {
+                BoneFilter.Clear();
+                ImGui::OpenPopup("##BonePicker");
+            }
+            ImGui::EndDisabled();
+
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            {
+                ImGuiX::TextTooltip_Internal(bHasSkeleton ? "Pick bone from skeleton" : "No skeleton assigned on the asset");
+            }
+
+            if (ImGui::BeginPopup("##BonePicker"))
+            {
+                BoneFilter.Draw("##Filter", 260.0f);
+
+                if (ImGui::BeginChild("##BoneTree", ImVec2(280, 360)))
+                {
+                    if (Skeleton != nullptr)
+                    {
+                        // None entry first: lets the user clear the selection.
+                        if (ImGui::Selectable("(none)", DisplayValue.IsNone()))
+                        {
+                            DisplayValue = FName();
+                            Result = EPropertyChangeOp::Updated;
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::Separator();
+
+                        const TVector<int32> Roots = Skeleton->GetRootBones();
+                        for (int32 Root : Roots)
+                        {
+                            FName Selected;
+                            if (DrawBoneTreeNode(*Skeleton, Root, BoneFilter, DisplayValue, Selected))
+                            {
+                                DisplayValue = Selected;
+                                Result = EPropertyChangeOp::Updated;
+                                ImGui::CloseCurrentPopup();
+                            }
+                        }
+                    }
+                }
+                ImGui::EndChild();
+                ImGui::EndPopup();
+            }
+        }
+
+        return Result;
     }
 
     void FNamePropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)

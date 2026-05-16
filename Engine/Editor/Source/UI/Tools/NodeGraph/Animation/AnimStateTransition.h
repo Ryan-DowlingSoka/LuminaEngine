@@ -1,0 +1,51 @@
+#pragma once
+
+#include "Core/Object/Object.h"
+#include "Assets/AssetTypes/Animation/AnimationGraph/AnimationGraph.h"
+#include "AnimStateTransition.generated.h"
+
+namespace Lumina
+{
+    // Data behind a transition wire on the state machine canvas. It is not a
+    // graph node -- the wire between two State nodes is the visual; this object
+    // holds the condition and is shown in the properties panel when its wire is
+    // selected. CAnimStateMachineGraph owns these and reconciles them against
+    // the live State -> State connections in ValidateGraph().
+    REFLECT()
+    class CAnimStateTransition : public CObject
+    {
+        GENERATED_BODY()
+    public:
+
+        // Node IDs of the source / destination State nodes this transition wires
+        // together. Used to match the object back to its canvas link.
+        PROPERTY()
+        int64 FromStateNodeID = 0;
+
+        PROPERTY()
+        int64 ToStateNodeID = 0;
+
+        /** Graph parameter compared against Compare Value to gate the transition.
+         *  Leave empty for an unconditional / always-true transition. */
+        PROPERTY(Editable, Category = "Transition", ParameterPicker)
+        FName ConditionParameter;
+
+        /** How the parameter is tested against Compare Value. */
+        PROPERTY(Editable, Category = "Transition")
+        EAnimTransitionCompare Compare = EAnimTransitionCompare::Greater;
+
+        /** Right-hand side of the comparison. */
+        PROPERTY(Editable, Category = "Transition")
+        float CompareValue = 0.0f;
+
+        /** Cross-fade length in seconds when this transition fires. 0 snaps instantly. */
+        PROPERTY(Editable, Category = "Transition")
+        float BlendDuration = 0.2f;
+
+        /** When true, this transition is re-checked every frame DURING an
+         *  in-flight cross-fade and can pre-empt it. Use sparingly: a small
+         *  visible pop occurs at the seam unless the new blend duration is long. */
+        PROPERTY(Editable, Category = "Transition")
+        bool bCanInterrupt = false;
+    };
+}

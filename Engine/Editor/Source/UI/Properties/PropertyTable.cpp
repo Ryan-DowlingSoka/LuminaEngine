@@ -1081,9 +1081,35 @@ namespace Lumina
             }
 
             const EPropertyChangeOp ChangeOp = Customization->UpdateAndDraw(PropertyHandle, bReadOnly);
-            if (ChangeOp == EPropertyChangeOp::Updated)
+            if (ChangeOp != EPropertyChangeOp::None)
             {
+                // Mirror FPropertyRow::DispatchChange: customizations may defer their
+                // mutation into UpdatePropertyValue and drive a Started/Finished cycle,
+                // so the whole sequence has to be replayed here, not just Updated.
+                const FPropertyChangedEvent Event{Struct, PropertyHandle->Property,
+                    PropertyHandle->Property ? PropertyHandle->Property->Name : FName()};
+
+                if (ChangeOp == EPropertyChangeOp::Started && ChangeEventCallbacks.StartChangeCallback)
+                {
+                    ChangeEventCallbacks.StartChangeCallback(Event);
+                }
+
+                if (ChangeEventCallbacks.PreChangeCallback)
+                {
+                    ChangeEventCallbacks.PreChangeCallback(Event);
+                }
+
                 Customization->UpdatePropertyValue(PropertyHandle);
+
+                if (ChangeEventCallbacks.PostChangeCallback)
+                {
+                    ChangeEventCallbacks.PostChangeCallback(Event);
+                }
+
+                if (ChangeOp == EPropertyChangeOp::Finished && ChangeEventCallbacks.FinishChangeCallback)
+                {
+                    ChangeEventCallbacks.FinishChangeCallback(Event);
+                }
             }
             return;
         }

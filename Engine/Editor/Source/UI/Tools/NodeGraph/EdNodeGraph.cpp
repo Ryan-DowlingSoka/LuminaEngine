@@ -630,7 +630,47 @@ namespace Lumina
         {
             NodeSelectedCallback(nullptr);
         }
-        
+
+        // Surface the currently selected link (if exactly one) to the graph.
+        // Links were built by the per-node loop above; their 1-based IDs below
+        // match last frame's emission order, so the index is stable.
+        if (LinkSelectedCallback)
+        {
+            NodeEditor::LinkId SelectedLink;
+            if (NodeEditor::GetSelectedLinks(&SelectedLink, 1) == 1)
+            {
+                const uint64 LinkIndex = SelectedLink.Get() - 1u;
+                if (LinkIndex < Links.size())
+                {
+                    LinkSelectedCallback(Links[LinkIndex].first, Links[LinkIndex].second);
+                }
+                else
+                {
+                    LinkSelectedCallback(nullptr, nullptr);
+                }
+            }
+            else
+            {
+                LinkSelectedCallback(nullptr, nullptr);
+            }
+        }
+
+        // Double-clicking a node descends into its sub-graph (if it has one).
+        if (NodeDoubleClickedCallback)
+        {
+            if (NodeEditor::NodeId DoubleClickedNode = NodeEditor::GetDoubleClickedNode())
+            {
+                for (CEdGraphNode* Node : Nodes)
+                {
+                    if (std::cmp_equal(Node->GetNodeID(), DoubleClickedNode.Get()))
+                    {
+                        NodeDoubleClickedCallback(Node);
+                        break;
+                    }
+                }
+            }
+        }
+
         uint32 LinkID = 1;
         for (auto& [Start, End] : Links)
         {

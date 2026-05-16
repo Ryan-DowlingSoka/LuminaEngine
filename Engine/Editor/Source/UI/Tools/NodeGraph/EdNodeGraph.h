@@ -79,6 +79,15 @@ namespace Lumina
         void SetNodeSelectedCallback(const TFunction<void(CEdGraphNode*)>& Callback) { NodeSelectedCallback = Callback; }
         void SetPreNodeDeletedCallback(const TFunction<void(CEdGraphNode*)>& Callback) { PreNodeDeletedCallback = Callback; }
 
+        // Fired when a node is double-clicked on the canvas. The animation graph
+        // editor uses this to descend into a node's sub-graph.
+        void SetNodeDoubleClickedCallback(const TFunction<void(CEdGraphNode*)>& Callback) { NodeDoubleClickedCallback = Callback; }
+
+        // Fired every frame with the two pins of the currently selected link, or
+        // (null, null) when no single link is selected. Used by the state machine
+        // canvas to surface the selected transition in the properties panel.
+        void SetLinkSelectedCallback(const TFunction<void(CEdNodeGraphPin*, CEdNodeGraphPin*)>& Callback) { LinkSelectedCallback = Callback; }
+
         // Schema that governs what connections are allowed in this graph.
         virtual const FEdGraphSchema& GetSchema() const { return GetDefaultEdGraphSchema(); }
 
@@ -119,6 +128,8 @@ namespace Lumina
 
         TFunction<void(CEdGraphNode*)>                  NodeSelectedCallback;
         TFunction<void(CEdGraphNode*)>                  PreNodeDeletedCallback;
+        TFunction<void(CEdGraphNode*)>                  NodeDoubleClickedCallback;
+        TFunction<void(CEdNodeGraphPin*, CEdNodeGraphPin*)> LinkSelectedCallback;
 
         int64                                           NextID = 0;
 

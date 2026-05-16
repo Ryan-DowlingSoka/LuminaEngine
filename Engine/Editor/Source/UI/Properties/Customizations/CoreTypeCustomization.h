@@ -185,7 +185,7 @@ namespace Lumina
     class FNamePropertyCustomization : public IPropertyTypeCustomization
     {
     public:
-        
+
         static TSharedPtr<FNamePropertyCustomization> MakeInstance()
         {
             return MakeShared<FNamePropertyCustomization>();
@@ -194,11 +194,12 @@ namespace Lumina
         EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override;
         void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override;
         void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override;
-        
+
     private:
 
         FName CachedValue;
         FName DisplayValue;
+        ImGuiTextFilter BoneFilter;
     };
 
     class FStringPropertyCustomization : public IPropertyTypeCustomization
