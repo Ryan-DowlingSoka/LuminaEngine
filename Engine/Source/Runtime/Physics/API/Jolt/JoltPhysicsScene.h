@@ -165,40 +165,31 @@ namespace Lumina::Physics
     	glm::quat GetBodyRotation(uint32 BodyID) override;
     	
     	JPH::PhysicsSystem* GetPhysicsSystem() const { return JoltSystem.get(); }
-
-    	// Called from FJoltContactListener on Jolt's worker threads. Cheap: locks
-    	// the queue mutex and copies a pre-baked FContactRecord. The drain runs on
-    	// the game thread inside Update() once Jolt has finished stepping.
+    	
     	void EnqueueContactRecord(const FContactRecord& Record);
 
     private:
-
-    	// Drain pending contacts and dispatch entity-targeted Lua events for each.
-    	// Runs on the game thread after JoltSystem->Update returns; safe to touch
-    	// the registry, FLuaEventBus, and the Lua VM.
+    	
     	void DispatchContactEvents();
-
-    	// Snapshot all active body positions before stepping, used as the
-    	// interpolation "previous" endpoint in SyncPhysicsTransforms.
+    	
     	void SnapshotBodyStates();
+    	
+    	void BulkCreateRigidBodies(entt::registry& Registry);
+    	
+    	
+    private:
 
-    	TQueue<entt::entity>				PendingRigidBodyCreations;
-    	JPH::TempAllocatorImpl				Allocator;
-    	// One TempAllocator per task-system worker thread. CharacterVirtual::
-    	// ExtendedUpdate needs a TempAllocator and TempAllocatorImpl is a
-    	// single-threaded stack allocator, so we hand each parallel worker
-    	// its own to keep the character sub-step lock-free.
+    	TQueue<entt::entity>						PendingRigidBodyCreations;
+    	JPH::TempAllocatorImpl						Allocator;
     	TVector<TUniquePtr<JPH::TempAllocatorImpl>>	CharacterAllocators;
-    	TUniquePtr<FJoltContactListener>	ContactListener;
-        TUniquePtr<JPH::PhysicsSystem>		JoltSystem;
-        CWorld*								World = nullptr;
+    	TUniquePtr<FJoltContactListener>			ContactListener;
+        TUniquePtr<JPH::PhysicsSystem>				JoltSystem;
+        CWorld*										World = nullptr;
+    	
+    	FMutex										ContactQueueMutex;
+    	TVector<FContactRecord>						PendingContacts;
 
-    	// Pending contact events captured by FJoltContactListener during
-    	// JoltSystem->Update (multi-threaded) and drained on the game thread.
-    	FMutex					ContactQueueMutex;
-    	TVector<FContactRecord>	PendingContacts;
-
-    	float	Accumulator = 0.0f;
-    	uint32	CollisionSteps = 0;
+    	float										Accumulator = 0.0f;
+    	uint32										CollisionSteps = 0;
     };
 }

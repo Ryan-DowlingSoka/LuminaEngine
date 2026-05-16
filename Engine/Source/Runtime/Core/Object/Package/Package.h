@@ -209,9 +209,6 @@ namespace Lumina
 
         RUNTIME_API void BuildSaveContext(FSaveContext& Context);
 
-        RUNTIME_API void CreateExports();
-        RUNTIME_API void CreateImports();
-
         void WriteImports(FPackageSaver& Ar, FPackageHeader& Header, FSaveContext& SaveContext);
         void WriteExports(FPackageSaver& Ar, FPackageHeader& Header, FSaveContext& SaveContext);
                 
@@ -252,9 +249,7 @@ namespace Lumina
         TUniquePtr<FArchive>             Loader;
         TVector<FObjectImport>           ImportTable;
         TVector<FObjectExport>           ExportTable;
-        
-        int64       ExportIndex = 0;
-        
+
     private:
 
         TAtomic<ELoadState>             LoadState{ELoadState::Unloaded};

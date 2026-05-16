@@ -2237,14 +2237,20 @@ namespace Lumina
             Light.VolumetricIntensity = DirectionalLight.VolumetricIntensity;
         }
 
-        // Directional CSM always allocates a shadow slot; the cascade VPs live
-        // in FLightShadowData and are looked up by the PS/VS via ShadowDataIndex.
-        uint32 ShadowSlot = ShadowDataCount.fetch_add(1, std::memory_order_acquire);
+        // Directional CSM allocates a shadow slot only when this light actually
+        // casts shadows. ShadowDataIndex stays INDEX_NONE otherwise; the cull-
+        // view builder, cascade pass, and pixel shaders all use that sentinel
+        // to skip shadow work and treat the light as un-occluded.
+        uint32 ShadowSlot                  = 0u;
         FLightShadowData* CascadeShadowData = nullptr;
-        if (ShadowSlot < (uint32)MAX_SHADOWS)
+        if (DirectionalLight.bCastShadows)
         {
-            Light.ShadowDataIndex = (int32)ShadowSlot;
-            CascadeShadowData     = &LightData.Shadows[ShadowSlot];
+            ShadowSlot = ShadowDataCount.fetch_add(1, std::memory_order_acquire);
+            if (ShadowSlot < (uint32)MAX_SHADOWS)
+            {
+                Light.ShadowDataIndex = (int32)ShadowSlot;
+                CascadeShadowData     = &LightData.Shadows[ShadowSlot];
+            }
         }
         
         float CascadeSplitLambda  = World->GetDefaultWorldSettings().CascadeSplitLambda;
@@ -2319,9 +2325,13 @@ namespace Lumina
 
             // BackDistance pushes the light eye behind the cascade volume so
             // off-screen occluders (e.g. things directly above the cascade)
-            // still write into the depth texture.
-            constexpr float BackDistance = 200.0f;
-            const float     OrthoRange   = Radius * 2.0f + BackDistance;
+            // still write into the depth texture. Low sun angles need a much
+            // larger value because horizontal distance from the cascade center
+            // maps to large light-space height: a caster D meters horizontally
+            // away with sun at elevation theta sits ~D/tan(theta) "above" in
+            // shadow space. Exposed via WorldSettings.CascadeBackDistance.
+            const float BackDistance = glm::max(World->GetDefaultWorldSettings().CascadeBackDistance, 1.0f);
+            const float OrthoRange   = Radius * 2.0f + BackDistance;
 
             // lookAt target = origin (not SphereCenter) so the rotation
             // depends only on LightDir; otherwise the texel snap below collapses.
@@ -2544,8 +2554,16 @@ namespace Lumina
             PackedShadows[i].clear();
         }
         
-        CmdList.ClearImageUInt(GetNamedImage(ENamedImage::DepthAttachment), AllSubresources, 0); 
+        CmdList.ClearImageUInt(GetNamedImage(ENamedImage::DepthAttachment), AllSubresources, 0);
         CmdList.ClearImageUInt(ShadowAtlas.GetImage(), AllSubresources, 1);
+        // Cascade atlas clear must happen unconditionally. The cascade render pass's
+        // LoadOp::Clear only fires when the pass actually begins, which requires at
+        // least one OpaqueDrawList draw. A terrain-only scene leaves the atlas at
+        // uninitialised (often 0) depth -- SampleCmp with LESS then reads every
+        // near-cascade terrain pixel as fully shadowed, while far cascades fall
+        // outside the projection and return 1.0 (lit). Clearing here removes the
+        // dependency on having mesh draws.
+        CmdList.ClearImageUInt(GetNamedImage(ENamedImage::Cascade), AllSubresources, 1);
     }
 
 
@@ -2848,11 +2866,9 @@ namespace Lumina
 
     void FForwardRenderScene::ClusterBuildPass(ICommandList& CmdList)
     {
-        // Must run whenever there is geometry, even with zero lights: BasePixelPass
-        // reads uClusters[].Count unconditionally, and LightCull is the only writer.
-        // Skipping here left Count holding whatever garbage GPU memory was allocated
-        // with, which on AMD became a billion-iteration loop and a device-lost OOB.
-        if (DrawCommands.empty())
+        auto TerrainView = World->GetEntityRegistry().view<STerrainComponent>(entt::exclude<SDisabledTag>);
+        const bool bHasTerrain = TerrainView.begin() != TerrainView.end();
+        if (DrawCommands.empty() && !bHasTerrain)
         {
             return;
         }
@@ -2909,10 +2925,9 @@ namespace Lumina
 
     void FForwardRenderScene::LightCullPass(ICommandList& CmdList)
     {
-        // Always run when there is geometry, regardless of NumLights. The shader
-        // writes Count = 0 to every cluster when the light loop is empty, which
-        // is the only thing keeping BasePixelPass from reading garbage Count.
-        if (DrawCommands.empty())
+        auto TerrainView = World->GetEntityRegistry().view<STerrainComponent>(entt::exclude<SDisabledTag>);
+        const bool bHasTerrain = TerrainView.begin() != TerrainView.end();
+        if (DrawCommands.empty() && !bHasTerrain)
         {
             return;
         }
@@ -3176,7 +3191,16 @@ namespace Lumina
 
     void FForwardRenderScene::CascadedShowPass(ICommandList& CmdList)
     {
+        // No work if the sun doesn't cast shadows (ShadowDataIndex was set to
+        // INDEX_NONE by ProcessDirectionalLight in that case), or the scene has
+        // no shadow-caster meshes to rasterise. Terrain-only scenes still read
+        // valid (cleared 1.0) shadow data thanks to the unconditional cascade
+        // clear in ResetPass.
         if (!LightData.bHasSun || DrawCommands.empty())
+        {
+            return;
+        }
+        if (LightData.Lights[0].ShadowDataIndex == INDEX_NONE)
         {
             return;
         }
@@ -6268,7 +6292,7 @@ namespace Lumina
         AllocateMSAAImages(Extent);
 
         {
-            // CSM atlas: three 2048² cascades packed side by side (see GCSMAtlasW/H).
+            // CSM atlas: three 4096² cascades packed side by side (see GCSMAtlasW/H).
             FRHIImageDesc ImageDesc = {};
             ImageDesc.Extent = glm::uvec2(GCSMAtlasWidth, GCSMAtlasHeight);
             ImageDesc.Format = EFormat::D32;

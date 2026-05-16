@@ -5,52 +5,34 @@
 
 namespace Lumina
 {
-    void FSaveContext::AddImport(CObject* Import)
-    {
-        if (!SeenImports.insert(Import).second)
-        {
-            return;
-        }
-        
-        Imports.push_back(Import);
-    }
-
-    void FSaveContext::AddExport(CObject* Export)
+    bool FSaveContext::AddExport(CObject* Export)
     {
         if (!SeenExports.insert(Export).second)
         {
-            return;
+            return false;
         }
-        
+
         Exports.push_back(Export);
+        return true;
     }
 
     FArchive& FSaveReferenceBuilderArchive::operator<<(CObject*& Value)
     {
-        if (Value == nullptr)
+        if (Value == nullptr || Value->GetPackage() == nullptr)
         {
             return *this;
         }
 
-        if (Value->GetPackage() == nullptr)
-        {
-            return *this;
-        }
-        
+        // Only recurse into same-package exports, and only on first sight.
+        // Skipping the guard re-enters Serialize for shared/cyclic refs and infinite-loops.
         if (Value->GetPackage() == SaveContext->CurrentPackage)
         {
-            SaveContext->AddExport(Value);
-        }
-        else if (Value->GetPackage())
-        {
-            SaveContext->AddImport(Value);
+            if (SaveContext->AddExport(Value))
+            {
+                Value->Serialize(*this);
+            }
         }
 
-        if (Value->GetPackage() == SaveContext->CurrentPackage)
-        {
-            Value->Serialize(*this);
-        }
-        
         return *this;
     }
 
@@ -118,9 +100,19 @@ namespace Lumina
                 }
             }
         }
-        
+
         *this << Index;
-        
+
         return *this;
+    }
+
+    void FPackageSaver::PopulateImportTable(TVector<FObjectImport>& Out) const
+    {
+        Out.clear();
+        Out.resize(CurrentImportIndex);
+        for (const auto& [Obj, Idx] : ObjectToIndexMap)
+        {
+            Out[Idx] = FObjectImport(Obj);
+        }
     }
 }

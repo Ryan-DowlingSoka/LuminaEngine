@@ -75,6 +75,7 @@ struct VSOutput
     float4 FragColor                : COLOR;
     float4 NormalVS                 : NORMAL_VS;
     float4 NormalWS                 : NORMAL_WS;
+    float4 TangentWS                : TANGENT_WS;
     float4 FragPos                  : FRAG_POS;
     float2 UV                       : TEXCOORD0;
     float2 HeightUV                 : HEIGHT_UV;
@@ -160,10 +161,20 @@ VSOutput VertexMain(uint VertexID : SV_VulkanVertexID, uint InstanceID : SV_Vulk
     float4   ViewPos = mul(View, float4(WorldPos, 1.0));
     float3   NormalVS = normalize(mul((float3x3)View, NormalWS));
 
+    // Analytic surface tangent from the heightfield. Since UV = WorldPos.xz the
+    // tangent direction is dP/du = (1, dHdx, 0); recover dHdx from the packed
+    // normal (N = normalize(-dHdx, 1, -dHdz) => dHdx = -N.x / N.y). Emitting a
+    // smooth per-vertex tangent here avoids the per-triangle ddx/ddy TBN that
+    // produced visible lighting cut-offs along triangle edges.
+    float  InvNy     = 1.0 / max(NormalWS.y, 1e-4);
+    float  DhDx      = -NormalWS.x * InvNy;
+    float3 TangentWS = normalize(float3(1.0, DhDx, 0.0));
+
     VSOutput Out;
     Out.FragColor     = float4(1.0, 1.0, 1.0, 1.0);
     Out.NormalVS      = float4(NormalVS, 0.0);
     Out.NormalWS      = float4(NormalWS, 0.0);
+    Out.TangentWS     = float4(TangentWS, 1.0);
     Out.FragPos       = ViewPos;
     Out.UV            = WorldPos.xz;
     Out.HeightUV      = HeightUV;

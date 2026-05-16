@@ -34,13 +34,13 @@ constexpr int ClusterGridSizeZ = 24;
 
 constexpr int NumClusters = ClusterGridSizeX * ClusterGridSizeY * ClusterGridSizeZ;
 
-// CSM atlas: three 2048 cascades packed side by side in a single Texture2D
-// atlas (~48 MB D32). Outer cascades get full resolution so the large world
+// CSM atlas: three 4096 cascades packed side by side in a single Texture2D
+// atlas (~192 MB D32). Outer cascades get full resolution so the large world
 // area they cover doesn't degrade into blocky shadows.
-constexpr int GCSMCascadeSizes[3]       = { 2048, 2048, 2048 };
-constexpr int GCSMAtlasWidth            = 6144;
-constexpr int GCSMAtlasHeight           = 2048;
-constexpr int GCSMCascadeOriginX[3]     = { 0,    2048, 4096 };
+constexpr int GCSMCascadeSizes[3]       = { 4096, 4096, 4096 };
+constexpr int GCSMAtlasWidth            = 12288;
+constexpr int GCSMAtlasHeight           = 4096;
+constexpr int GCSMCascadeOriginX[3]     = { 0,    4096, 8192 };
 constexpr int GCSMCascadeOriginY[3]     = { 0,    0,    0    };
 
 constexpr int GShadowAtlasResolution    = 4096;
@@ -78,7 +78,8 @@ namespace Lumina
         UV                  = 10,
         LightComplexity     = 11,
         ClusterGrid         = 12,
-        Num                 = 13,
+        ShadowCascades      = 13,
+        Num                 = 14,
     };
 
     constexpr FStringView RenderFlagsAsString(ERenderSceneDebugFlags Flags)
@@ -98,6 +99,7 @@ namespace Lumina
             case ERenderSceneDebugFlags::UV:                return "UV";
             case ERenderSceneDebugFlags::LightComplexity:   return "Light Complexity";
             case ERenderSceneDebugFlags::ClusterGrid:       return "Light Clusters";
+            case ERenderSceneDebugFlags::ShadowCascades:    return "Shadow Cascades";
             default:                                        return "Lit";
         }
     }

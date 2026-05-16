@@ -13,26 +13,26 @@ namespace Lumina
     {
     public:
 
-        void Seek(int64 InPos) final
+        void Seek(int64 InPos) override
         {
             Offset = InPos;
         }
-        
+
         int64 Tell() final
         {
             return Offset;
         }
-        
+
     protected:
 
         FMemoryArchiver()
             : FArchive()
             , Offset(0)
         {}
-        
+
         int64 Offset;
     };
-    
+
     class RUNTIME_API FMemoryReader : public FMemoryArchiver
     {
     public:
@@ -41,6 +41,7 @@ namespace Lumina
         int64 TotalSize() override;
         void SetLimitSize(int64 NewLimitSize);
 
+        void Seek(int64 InPos) override;
         void Serialize(void* V, int64 Size) override;
 
     private:

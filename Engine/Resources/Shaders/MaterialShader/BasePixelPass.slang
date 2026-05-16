@@ -319,6 +319,13 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
 
     if (IsDirectionalLight)
     {
+        // Sun with bCastShadows = false leaves ShadowDataIndex at INDEX_NONE;
+        // skip the cascade work and treat as fully lit.
+        if (Light.ShadowDataIndex == INDEX_NONE)
+        {
+            return 1.0;
+        }
+
         // Pick current cascade based on view-space Z against the split table.
         int CascadeIndex = 0;
         for (int i = 0; i < NUM_CASCADES; ++i)
@@ -357,6 +364,18 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
             if (InsideB)
             {
                 return lerp(ShadowA, ShadowB, BlendT);
+            }
+        }
+
+        // Final cascade: fade to fully lit over the outer slice so shadows
+        // dissolve at ShadowMaxDistance instead of popping off.
+        if (CascadeIndex + 1 == NUM_CASCADES)
+        {
+            const float FarFadeStart = 0.85;
+            if (LocalT > FarFadeStart)
+            {
+                float FadeT = saturate((LocalT - FarFadeStart) / (1.0 - FarFadeStart));
+                return lerp(ShadowA, 1.0, FadeT);
             }
         }
 
@@ -448,6 +467,76 @@ float ComputeShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float
         return uShadowAtlas.SampleCmpLevelZero(CenterUV, RefDepth);
     }
     return Shadow / Weight;
+}
+
+// Walk the light table once to find the sun's shadow-data slot. Used by the
+// cascade debug visualizer; pixel-shader cost is irrelevant in that mode.
+int FindSunShadowDataIndex()
+{
+    if (uLightData[0].bHasSun == 0u)
+    {
+        return INDEX_NONE;
+    }
+    uint Count = GetNumLights();
+    for (uint i = 0; i < Count; ++i)
+    {
+        FLight L = GetLightAt(i);
+        if (HasFlag(L.Flags, ELightFlags::Directional) && L.ShadowDataIndex != INDEX_NONE)
+        {
+            return L.ShadowDataIndex;
+        }
+    }
+    return INDEX_NONE;
+}
+
+// Per-cascade tint for the Shadow Cascades view mode. Mirrors the cascade
+// selection in ComputeShadowFactor so the colors match what the lit pass would
+// actually sample. Dark gray = no sun shadow data (caster missing or sun
+// disabled); muted tint = fragment outside the cascade's projected bounds, so
+// the cascade can't shadow it even though it was selected.
+float3 CascadeDebugColor(float3 FragmentPos, float3 ViewPosition, float3 ShadedBase)
+{
+    int SunShadowIdx = FindSunShadowDataIndex();
+    if (SunShadowIdx == INDEX_NONE)
+    {
+        return float3(0.08, 0.08, 0.08);
+    }
+
+    int CascadeIndex = 0;
+    for (int i = 0; i < NUM_CASCADES; ++i)
+    {
+        if (ViewPosition.z > uLightData[0].CascadeSplits[i])
+            CascadeIndex = i + 1;
+    }
+    if (CascadeIndex >= NUM_CASCADES)
+    {
+        return float3(0.18, 0.18, 0.18);
+    }
+
+    float4x4 CascadeVP  = GetShadowViewProjection(SunShadowIdx, CascadeIndex);
+    float4   ShadowCoord = mul(CascadeVP, float4(FragmentPos, 1.0));
+    float3   ProjCoords  = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
+    float2   ProjUV      = ProjCoords.xy * 0.5 + 0.5;
+    bool     Inside      = !(any(ProjUV < 0.0) || any(ProjUV > 1.0) ||
+                              ProjCoords.z < 0.0 || ProjCoords.z > 1.0);
+
+    const float3 CascadeTints[3] = {
+        float3(1.00, 0.25, 0.25),
+        float3(0.25, 1.00, 0.30),
+        float3(0.30, 0.45, 1.00),
+    };
+    float3 Tint = CascadeTints[CascadeIndex];
+
+    // Blend with a luminance proxy from the lit shading so silhouettes stay
+    // readable while the cascade color dominates.
+    float Luma = saturate(dot(ShadedBase, float3(0.299, 0.587, 0.114)));
+    float3 Color = lerp(Tint * 0.4, Tint, 0.5 + 0.5 * Luma);
+
+    if (!Inside)
+    {
+        Color *= 0.35;
+    }
+    return Color;
 }
 
 
@@ -660,6 +749,9 @@ PSOutput FragmentMain(PSInput Input)
                 Color = ClusterDebugColor(DbgIndex, uClusters[DbgIndex].Count);
                 break;
             }
+            case DEBUG_MODE_SHADOW_CASCADES:
+                Color = CascadeDebugColor(WorldPosition, ViewPosition, Color);
+                break;
         }
     }
 

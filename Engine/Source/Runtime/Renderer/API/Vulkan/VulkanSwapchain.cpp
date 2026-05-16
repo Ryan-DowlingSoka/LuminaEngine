@@ -227,9 +227,7 @@ namespace Lumina
     	FQueue* Queue = Context->GetQueue(ECommandQueue::Graphics);
     	
     	VkSemaphore Semaphore = PresentSemaphores[CurrentImageIndex];
-    	
-    	Queue->SignalSemaphore(Semaphore);
-    	
+
     	VkPresentInfoKHR PresentInfo = {};
     	PresentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     	PresentInfo.pSwapchains = &Swapchain;

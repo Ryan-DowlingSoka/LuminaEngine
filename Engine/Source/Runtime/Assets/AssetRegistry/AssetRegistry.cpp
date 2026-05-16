@@ -199,12 +199,14 @@ namespace Lumina
             return;
         }
 
-        if (Header.Version != GPackageFileLuminaVersion.FileVersion)
+        if (Header.Version > GPackageFileLuminaVersion.FileVersion)
         {
-            LOG_ERROR("AssetRegistry: {} was saved with engine version {} (current {}); refusing to register until migrated", Path, Header.Version, GPackageFileLuminaVersion.FileVersion);
+            LOG_ERROR("AssetRegistry: {} was saved with engine version {} (current {}); cannot register files from a newer engine", Path, Header.Version, GPackageFileLuminaVersion.FileVersion);
             RecordFailedAsset(Path);
             return;
         }
+
+        Reader.SetFileVersion(Header.Version);
 
         if (Header.ExportTableOffset < 0 || static_cast<size_t>(Header.ExportTableOffset) > Data.size())
         {

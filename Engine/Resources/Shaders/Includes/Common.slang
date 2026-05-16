@@ -463,6 +463,7 @@ struct FCullData
 #define DEBUG_MODE_UV                   10u
 #define DEBUG_MODE_LIGHT_COMPLEXITY     11u
 #define DEBUG_MODE_CLUSTER_GRID         12u
+#define DEBUG_MODE_SHADOW_CASCADES      13u
 
 struct FSceneGlobalData
 {

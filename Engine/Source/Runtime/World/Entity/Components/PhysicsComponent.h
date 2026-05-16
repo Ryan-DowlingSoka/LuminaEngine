@@ -148,6 +148,21 @@ namespace Lumina
         bool bAffectsNavigation = true;
     };
 
+    /** Static collider built from an STerrainComponent's heightmap (Jolt HeightFieldShape). Requires both components on the same entity. */
+    REFLECT(Component, Category = "Physics")
+    struct RUNTIME_API STerrainColliderComponent
+    {
+        GENERATED_BODY()
+
+        /** When true, the body produces overlap events but no contact response (trigger volume). */
+        PROPERTY(Editable)
+        bool bIsTrigger = false;
+
+        /** When true, this collider contributes its shape to NavMesh bakes. */
+        PROPERTY(Editable, Category = "Navigation")
+        bool bAffectsNavigation = true;
+    };
+
     REFLECT(Component, Category = "Physics")
     struct RUNTIME_API SMeshColliderComponent
     {

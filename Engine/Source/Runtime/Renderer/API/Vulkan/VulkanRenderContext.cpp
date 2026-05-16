@@ -738,6 +738,8 @@ namespace Lumina
 
         CmdList.Close();
         ICommandList* CL = &CmdList;
+
+        GetQueue(ECommandQueue::Graphics)->AddSignalSemaphore(Swapchain->GetCurrentPresentSemaphore(), 0);
         ExecuteCommandLists(&CL, 1, ECommandQueue::Graphics);
 
         bool bSuccess = Swapchain->Present();

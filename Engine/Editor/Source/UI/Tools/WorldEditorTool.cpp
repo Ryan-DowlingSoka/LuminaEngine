@@ -34,6 +34,7 @@
 #include "Tools/UI/ImGui/ImGuiDragDrop.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
+#include "TerrainEditMode.h"
 #include "UI/Tools/EditorEntityUtils.h"
 #include "World/WorldManager.h"
 #include "World/Entity/EntityUtils.h"
@@ -343,6 +344,7 @@ namespace Lumina
         GuizmoSnapScale     = GConfig->Get("Editor.WorldEditorTool.GuizmoSnapScale", 0.1f);
 
         RegisterEditorActions();
+        RegisterEditorModes();
 
         WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
         
@@ -941,6 +943,58 @@ namespace Lumina
             FInputChord{}, nullptr});
     }
 
+    void FWorldEditorTool::RegisterEditorModes()
+    {
+        // Selection must be first so ActiveModeIndex=0 matches the pre-existing
+        // default. Append new viewport modes here; they show up in the mode bar
+        // in registration order.
+        EditorModes.clear();
+        EditorModes.push_back(MakeUnique<FSelectionEditorMode>());
+        EditorModes.push_back(MakeUnique<FTerrainEditMode>());
+
+        ActiveModeIndex = 0;
+        if (IWorldEditorMode* Active = GetActiveMode())
+        {
+            Active->OnEnter(World);
+        }
+    }
+
+    IWorldEditorMode* FWorldEditorTool::GetActiveMode() const
+    {
+        if (EditorModes.empty()) return nullptr;
+        const int32 Idx = glm::clamp(ActiveModeIndex, 0, (int32)EditorModes.size() - 1);
+        return EditorModes[Idx].get();
+    }
+
+    void FWorldEditorTool::SetActiveMode(int32 NewIndex)
+    {
+        if (EditorModes.empty()) return;
+        NewIndex = glm::clamp(NewIndex, 0, (int32)EditorModes.size() - 1);
+        if (NewIndex == ActiveModeIndex) return;
+
+        // Drop any half-drag gizmo state before yielding the viewport to a mode
+        // that won't see the mouse release. Without this, bImGuizmoUsedOnce sticks
+        // true and IsOver()'s gating blocks clicks indefinitely after switching back.
+        if (bImGuizmoUsedOnce)
+        {
+            EndTransaction("Transform");
+            bImGuizmoUsedOnce = false;
+        }
+        bVertexSnapAnchorValid = false;
+        bVertexSnapApplied     = false;
+        SelectionBox.bActive   = false;
+
+        if (IWorldEditorMode* Old = EditorModes[ActiveModeIndex].get())
+        {
+            Old->OnExit(World);
+        }
+        ActiveModeIndex = NewIndex;
+        if (IWorldEditorMode* New = EditorModes[ActiveModeIndex].get())
+        {
+            New->OnEnter(World);
+        }
+    }
+
     void FWorldEditorTool::EndFrame()
     {
         using namespace entt::literals;
@@ -1092,9 +1146,17 @@ namespace Lumina
             }
         }
 
-        TerrainEditMode.Tick(World, (float)World->GetWorldDeltaTime(), CameraComponent, bViewportHovered, ViewportOrigin, ViewportSize);
-        TerrainEditMode.DrawOverlay(World, ViewportOrigin, ViewportSize, CameraComponent);
+        if (IWorldEditorMode* ActiveMode = GetActiveMode())
+        {
+            ActiveMode->Tick(World, CameraComponent, bViewportHovered, ViewportOrigin, ViewportSize);
+            ActiveMode->DrawOverlay(World, ViewportOrigin, ViewportSize, CameraComponent);
+        }
         NavMeshEditMode.DrawOverlay(World);
+
+        // Modes that own the viewport (terrain, future painting tools) get exclusive
+        // input — the host's click-to-select, drag-marquee, and transform gizmo are
+        // suppressed so brush strokes don't fight with selection clicks.
+        const bool bModeOwnsInput = GetActiveMode() && GetActiveMode()->ConsumesViewportInput();
 
         auto SelectionView = World->GetEntityRegistry().view<FSelectedInEditorComponent, STransformComponent>();
 
@@ -1111,7 +1173,7 @@ namespace Lumina
             bVertexSnapApplied = false;
         }
 
-        if (bGizmoTargetValid)
+        if (bGizmoTargetValid && !bModeOwnsInput)
         {
             {
                 entt::entity PivotEntity = PivotEntityForGizmo;
@@ -1486,7 +1548,7 @@ namespace Lumina
             }
         }
 
-        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows))
+        if (!bModeOwnsInput && ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows))
         {
             uint32 PickerWidth = World->GetRenderer()->GetRenderTarget()->GetExtent().x;
             uint32 PickerHeight = World->GetRenderer()->GetRenderTarget()->GetExtent().y;
@@ -1927,7 +1989,50 @@ namespace Lumina
         
                 DrawViewportOptions(ButtonSize);
 
-                TerrainEditMode.DrawToolbar(World, ButtonSize);
+                // Mode-selector bar: one toggle button per registered viewport mode.
+                // Modes are mutually exclusive — switching here drives OnEnter/OnExit
+                // and clears any half-drag gizmo state via SetActiveMode.
+                ImGui::SameLine();
+                ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+                ImGui::SameLine();
+
+                for (int32 Idx = 0; Idx < (int32)EditorModes.size(); ++Idx)
+                {
+                    IWorldEditorMode* Mode = EditorModes[Idx].get();
+                    if (!Mode) continue;
+                    const bool bSelected = (Idx == ActiveModeIndex);
+
+                    ImGui::PushID(Idx);
+                    if (bSelected)
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35f, 0.55f, 0.25f, 1.0f));
+                    }
+                    if (ImGui::Button(Mode->GetDisplayName(), ImVec2(0, ButtonSize)))
+                    {
+                        SetActiveMode(Idx);
+                    }
+                    if (bSelected)
+                    {
+                        ImGui::PopStyleColor();
+                    }
+                    if (const char* Tip = Mode->GetTooltip())
+                    {
+                        if (ImGui::IsItemHovered())
+                        {
+                            ImGui::SetTooltip("%s", Tip);
+                        }
+                    }
+                    ImGui::PopID();
+                    if (Idx + 1 < (int32)EditorModes.size())
+                    {
+                        ImGui::SameLine();
+                    }
+                }
+
+                if (IWorldEditorMode* ActiveMode = GetActiveMode())
+                {
+                    ActiveMode->DrawToolbar(World, ButtonSize);
+                }
                 NavMeshEditMode.DrawToolbar(World, ButtonSize);
             }
 
@@ -3103,6 +3208,7 @@ namespace Lumina
                     {
                         { ERenderSceneDebugFlags::LightComplexity, "Light Complexity" },
                         { ERenderSceneDebugFlags::ClusterGrid,     "Light Clusters"   },
+                        { ERenderSceneDebugFlags::ShadowCascades,  "Shadow Cascades"  },
                     };
 
                     auto DrawGroup = [&](const char* Header, const FViewModeEntry* Entries, size_t Count)

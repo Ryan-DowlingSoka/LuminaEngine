@@ -49,7 +49,11 @@ namespace Lumina
                 return bDeepMatch;
             }
 
-            ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanAvailWidth;
+            ImGuiTreeNodeFlags Flags =  ImGuiTreeNodeFlags_OpenOnArrow | 
+                                        ImGuiTreeNodeFlags_OpenOnDoubleClick | 
+                                        ImGuiTreeNodeFlags_SpanAvailWidth | 
+                                        ImGuiTreeNodeFlags_DefaultOpen;
+            
             if (Children.empty())
             {
                 Flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;

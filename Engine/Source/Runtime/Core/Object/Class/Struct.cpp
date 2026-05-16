@@ -193,6 +193,13 @@ namespace Lumina
             uint32 NumProperties = 0;
             Ar << NumProperties;
 
+            if (NumProperties > Ar.GetMaxSerializeSize())
+            {
+                LOG_ERROR("Archiver corrupted: struct claims {} tagged properties (max {})", NumProperties, Ar.GetMaxSerializeSize());
+                Ar.SetHasError(true);
+                return;
+            }
+
             FProperty* Current = LinkedProperty;
             for (uint32 i = 0; i < NumProperties; ++i)
             {

@@ -89,15 +89,22 @@ namespace Lumina
         void UpdateAutoComplete(FStringView CurrentInput);
         void DrawAutoCompletePopup();
         void DrawHistoryPopup();
+        void ApplyCompletion(FStringView Replacement);
         float CalculateMatchScore(FStringView Candidate, FStringView Input);
-        
+
+        static int InputTextCallbackStub(ImGuiInputTextCallbackData* Data);
+        int InputTextCallback(ImGuiInputTextCallbackData* Data);
+
         const char* GetLevelIcon(spdlog::level::level_enum Level) const;
         const char* GetLevelLabel(spdlog::level::level_enum Level) const;
         static ImVec4 GetColorForLevel(spdlog::level::level_enum Level);
 
         size_t PreviousMessageSize = 0;
         TDeque<FString> CommandHistory;
-        FFixedString CurrentCommand;
+        char InputBuffer[256] = {};
+        FString PendingBufferReplacement;
+        bool bPendingBufferReplacement = false;
+        bool bFocusInput = true;
         uint64 HistoryIndex;
         bool bNeedsScrollToBottom;
         uint32 FilteredMessageCount;

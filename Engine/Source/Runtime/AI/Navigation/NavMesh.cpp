@@ -271,6 +271,10 @@ namespace Lumina
     {
         CachedTriVerts.clear();
         CachedTriAreas.clear();
+        CachedBoundaryVerts.clear();
+        CachedBoundaryAreas.clear();
+        CachedOffMeshVerts.clear();
+        CachedTileBounds.clear();
 
 #if defined(LUMINA_HAS_RECAST)
         if (!NavMesh) return;
@@ -279,26 +283,54 @@ namespace Lumina
         const int32 MaxTiles = CMesh->getMaxTiles();
 
         size_t TriEstimate = 0;
+        size_t EdgeEstimate = 0;
+        size_t LinkEstimate = 0;
         for (int32 i = 0; i < MaxTiles; ++i)
         {
             const dtMeshTile* Tile = CMesh->getTile(i);
-            if (Tile && Tile->header) TriEstimate += (size_t)Tile->header->detailTriCount;
+            if (!Tile || !Tile->header) continue;
+            TriEstimate  += (size_t)Tile->header->detailTriCount;
+            EdgeEstimate += (size_t)Tile->header->polyCount * 4;
+            LinkEstimate += (size_t)Tile->header->offMeshConCount;
         }
         CachedTriVerts.reserve(TriEstimate * 3);
         CachedTriAreas.reserve(TriEstimate);
+        CachedBoundaryVerts.reserve(EdgeEstimate * 2);
+        CachedBoundaryAreas.reserve(EdgeEstimate);
+        CachedOffMeshVerts.reserve(LinkEstimate * 2);
+        CachedTileBounds.reserve(MaxTiles);
 
         for (int32 i = 0; i < MaxTiles; ++i)
         {
             const dtMeshTile* Tile = CMesh->getTile(i);
             if (!Tile || !Tile->header) continue;
 
+            FNavTileBounds Tb;
+            Tb.Min = glm::vec3(Tile->header->bmin[0], Tile->header->bmin[1], Tile->header->bmin[2]);
+            Tb.Max = glm::vec3(Tile->header->bmax[0], Tile->header->bmax[1], Tile->header->bmax[2]);
+            Tb.X   = Tile->header->x;
+            Tb.Y   = Tile->header->y;
+            CachedTileBounds.push_back(Tb);
+
             for (int p = 0; p < Tile->header->polyCount; ++p)
             {
                 const dtPoly& Poly = Tile->polys[p];
                 if (Poly.getType() == DT_POLYTYPE_OFFMESH_CONNECTION) continue;
 
-                const dtPolyDetail& Detail = Tile->detailMeshes[p];
                 const uint8 Area = Poly.getArea();
+
+                // Outer perimeter only. neis[j]==0 -> hard boundary; nonzero (incl. DT_EXT_LINK) -> internal/cross-tile.
+                for (int j = 0; j < Poly.vertCount; ++j)
+                {
+                    if (Poly.neis[j] != 0) continue;
+                    const float* A = &Tile->verts[Poly.verts[j] * 3];
+                    const float* B = &Tile->verts[Poly.verts[(j + 1) % Poly.vertCount] * 3];
+                    CachedBoundaryVerts.emplace_back(A[0], A[1], A[2]);
+                    CachedBoundaryVerts.emplace_back(B[0], B[1], B[2]);
+                    CachedBoundaryAreas.push_back(Area);
+                }
+
+                const dtPolyDetail& Detail = Tile->detailMeshes[p];
                 for (int t = 0; t < Detail.triCount; ++t)
                 {
                     const uint8* Tri = &Tile->detailTris[(Detail.triBase + t) * 4];
@@ -313,8 +345,51 @@ namespace Lumina
                     CachedTriAreas.push_back(Area);
                 }
             }
+
+            for (int c = 0; c < Tile->header->offMeshConCount; ++c)
+            {
+                const dtOffMeshConnection& Con = Tile->offMeshCons[c];
+                CachedOffMeshVerts.emplace_back(Con.pos[0], Con.pos[1], Con.pos[2]);
+                CachedOffMeshVerts.emplace_back(Con.pos[3], Con.pos[4], Con.pos[5]);
+            }
         }
 #endif
+    }
+
+    void FNavMesh::ForEachBoundaryEdge(const FBoundaryEdgeVisitor& Visitor) const
+    {
+        const size_t N = CachedBoundaryAreas.size();
+        for (size_t i = 0; i < N; ++i)
+        {
+            Visitor(CachedBoundaryVerts[i * 2 + 0], CachedBoundaryVerts[i * 2 + 1], CachedBoundaryAreas[i]);
+        }
+    }
+
+    void FNavMesh::ForEachOffMeshLink(const FOffMeshLinkVisitor& Visitor) const
+    {
+        const size_t N = CachedOffMeshVerts.size() / 2;
+        for (size_t i = 0; i < N; ++i)
+        {
+            Visitor(CachedOffMeshVerts[i * 2 + 0], CachedOffMeshVerts[i * 2 + 1]);
+        }
+    }
+
+    void FNavMesh::ForEachLoadedTile(const FTileBoundsVisitor& Visitor) const
+    {
+        for (const FNavTileBounds& T : CachedTileBounds)
+        {
+            Visitor(T);
+        }
+    }
+
+    FNavDebugStats FNavMesh::GetDebugStats() const
+    {
+        FNavDebugStats S;
+        S.LoadedTiles   = (int32)CachedTileBounds.size();
+        S.Triangles     = (int32)CachedTriAreas.size();
+        S.BoundaryEdges = (int32)CachedBoundaryAreas.size();
+        S.OffMeshLinks  = (int32)(CachedOffMeshVerts.size() / 2);
+        return S;
     }
 
     void FNavMesh::ForEachTriangle(FTriangleVisitor Visitor) const

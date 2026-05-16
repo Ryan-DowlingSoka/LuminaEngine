@@ -9,6 +9,24 @@ namespace Lumina
 {
     struct FNavTileData;
 
+    /** World-space AABB of a loaded nav tile + its grid coords. */
+    struct FNavTileBounds
+    {
+        glm::vec3   Min = glm::vec3( FLT_MAX);
+        glm::vec3   Max = glm::vec3(-FLT_MAX);
+        int32       X = 0;
+        int32       Y = 0;
+    };
+
+    /** Snapshot of cached debug data sizes. Cheap; safe to call every frame. */
+    struct FNavDebugStats
+    {
+        int32 LoadedTiles    = 0;
+        int32 Triangles      = 0;
+        int32 BoundaryEdges  = 0;
+        int32 OffMeshLinks   = 0;
+    };
+
     /** Runtime navmesh: dtNavMesh + atomic-flag CAS query pool. Construct on main thread; query from any. */
     class RUNTIME_API FNavMesh
     {
@@ -44,6 +62,20 @@ namespace Lumina
         using FParallelTriangleVisitor = TFunction<void(const glm::vec3&, const glm::vec3&, const glm::vec3&, uint8)>;
         void ParallelForEachTriangle(const FParallelTriangleVisitor& Visitor) const;
 
+        /** Outer perimeter of each poly (neis[edge]==0). Excludes internal poly-to-poly edges. */
+        using FBoundaryEdgeVisitor = TFunction<void(const glm::vec3& A, const glm::vec3& B, uint8 Area)>;
+        void ForEachBoundaryEdge(const FBoundaryEdgeVisitor& Visitor) const;
+
+        /** Off-mesh connection start/end pairs (jump links, teleporters, etc.). */
+        using FOffMeshLinkVisitor = TFunction<void(const glm::vec3& Start, const glm::vec3& End)>;
+        void ForEachOffMeshLink(const FOffMeshLinkVisitor& Visitor) const;
+
+        /** Loaded tile world-AABBs from dtMeshTile::header. */
+        using FTileBoundsVisitor = TFunction<void(const FNavTileBounds&)>;
+        void ForEachLoadedTile(const FTileBoundsVisitor& Visitor) const;
+
+        FNavDebugStats GetDebugStats() const;
+
         /** Auto-called by Initialize and RebuildTile. Read-only on dtNavMesh. */
         void RefreshTriangleCache();
 
@@ -75,6 +107,15 @@ namespace Lumina
         // Flat cache: 3 vec3 per tri in Verts; 1 area byte per tri.
         TVector<glm::vec3>                  CachedTriVerts;
         TVector<uint8>                      CachedTriAreas;
+
+        // 2 vec3 per edge in Verts; 1 area byte per edge. Boundary = poly outer perimeter.
+        TVector<glm::vec3>                  CachedBoundaryVerts;
+        TVector<uint8>                      CachedBoundaryAreas;
+
+        // 2 vec3 per link (Start, End).
+        TVector<glm::vec3>                  CachedOffMeshVerts;
+
+        TVector<FNavTileBounds>             CachedTileBounds;
 
         glm::vec3                           Origin = glm::vec3(0.0f);
         float                               TileWorldSize = 0.0f;

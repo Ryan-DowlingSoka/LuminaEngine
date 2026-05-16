@@ -295,7 +295,7 @@ namespace Lumina
         {
             Tooltip = &Property->GetPropertyDisplayName();
         }
-        ImGuiX::TextTooltip_Internal(*Tooltip);
+        ImGuiX::WrappedTooltip_Internal(*Tooltip);
     }
 
     FPropertyPropertyRow::FPropertyPropertyRow(const TSharedPtr<FPropertyHandle>& InPropHandle, FPropertyRow* InParentRow, const FPropertyChangedEventCallbacks& InCallbacks)

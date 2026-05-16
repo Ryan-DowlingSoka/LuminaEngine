@@ -27,6 +27,20 @@ namespace Lumina
         float               DeltaSeconds  = 0.0f;
         int32               ActiveLayer   = 0;
         int8                SculptSign    = 1;
+
+        /** Noise mode parameters (world-space frequency in 1/units, octaves >= 1). */
+        float               NoiseFrequency = 1.0f / 512.0f;
+        int32               NoiseOctaves   = 4;
+
+        /** Ramp mode endpoints in world space; only XZ used. Heights are sampled from
+         *  the heightmap at the endpoints unless RampUseExplicitHeights is set. */
+        glm::vec3           RampStart      = glm::vec3(0.0f);
+        glm::vec3           RampEnd        = glm::vec3(0.0f);
+        bool                RampUseExplicitHeights = false;
+        float               RampStartHeight = 0.0f;
+        float               RampEndHeight   = 0.0f;
+        /** Half-width of the ramp's linear core (world units). Beyond this, falloff applies. */
+        float               RampHalfWidth   = 0.0f;
     };
 
     /**
@@ -57,6 +71,8 @@ namespace Lumina
         static void ApplySculpt (STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect);
         static void ApplyFlatten(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect);
         static void ApplySmooth (STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect);
+        static void ApplyNoise  (STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect);
+        static void ApplyRamp   (STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect);
         static void ApplyPaint  (STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect);
     };
 }

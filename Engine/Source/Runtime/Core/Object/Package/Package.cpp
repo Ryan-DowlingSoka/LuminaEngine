@@ -167,7 +167,11 @@ namespace Lumina
     CPackage* CPackage::CreatePackage(FStringView Path)
     {
         FFixedString ObjectName = SanitizeObjectName(Path);
-        ASSERT(FindObject<CPackage>(ObjectName) == nullptr);
+        if (FindObject<CPackage>(ObjectName) != nullptr)
+        {
+            LOG_ERROR("CreatePackage: package {} already exists", Path);
+            return nullptr;
+        }
 
         CPackage* Package = NewObject<CPackage>(nullptr, ObjectName);
         Package->AddToRoot();
@@ -480,11 +484,37 @@ namespace Lumina
             FPackageHeader PackageHeader;
             Reader << PackageHeader;
 
-            if (PackageHeader.Tag == PACKAGE_FILE_TAG)
+            const int64 LoaderSize = Reader.TotalSize();
+            auto OffsetInRange = [LoaderSize](int64 Off)
             {
+                return Off >= 0 && Off <= LoaderSize;
+            };
+
+            if (PackageHeader.Tag != PACKAGE_FILE_TAG)
+            {
+                LOG_ERROR("LoadPackage: {} is not a valid Lumina package (tag mismatch)", Path);
+            }
+            else if (PackageHeader.Version > GPackageFileLuminaVersion.FileVersion)
+            {
+                // Older files load fine — readers branch on Ar.GetFileVersion() to migrate.
+                // Newer files we genuinely can't read.
+                LOG_ERROR("LoadPackage: {} was saved with engine version {} (current {}); cannot load files from a newer engine", Path, PackageHeader.Version, GPackageFileLuminaVersion.FileVersion);
+            }
+            else if (!OffsetInRange(PackageHeader.ImportTableOffset) ||
+                     !OffsetInRange(PackageHeader.ExportTableOffset) ||
+                     !OffsetInRange(PackageHeader.ThumbnailDataOffset))
+            {
+                LOG_ERROR("LoadPackage: {} has out-of-range header offsets (size={}, import={}, export={}, thumb={})",
+                    Path, LoaderSize, PackageHeader.ImportTableOffset, PackageHeader.ExportTableOffset, PackageHeader.ThumbnailDataOffset);
+            }
+            else
+            {
+                // Stamp source version so per-type Serialize can branch for migration.
+                Reader.SetFileVersion(PackageHeader.Version);
+
                 Reader.Seek(PackageHeader.ImportTableOffset);
                 Reader << Package->ImportTable;
-        
+
                 Reader.Seek(PackageHeader.ExportTableOffset);
                 Reader << Package->ExportTable;
 
@@ -545,8 +575,11 @@ namespace Lumina
         FSaveContext SaveContext(Package);
         Package->BuildSaveContext(SaveContext);
 
-        Package->WriteImports(Writer, Header, SaveContext);
+        // Exports first: serializing them populates Writer's ObjectToIndexMap with the
+        // canonical import order. WriteImports then builds ImportTable from that same
+        // map, so the indices emitted in export data line up with ImportTable slots.
         Package->WriteExports(Writer, Header, SaveContext);
+        Package->WriteImports(Writer, Header, SaveContext);
 
         Header.ImportCount = static_cast<int32>(Package->ImportTable.size());
         Header.ExportCount = static_cast<int32>(Package->ExportTable.size());
@@ -617,31 +650,14 @@ namespace Lumina
         }
     }
 
-    void CPackage::CreateExports()
-    {
-        while (std::cmp_less(ExportIndex, ExportTable.size()))
-        {
-            
-
-            ++ExportIndex;
-        }
-    }
-
-    void CPackage::CreateImports()
-    {
-        
-    }
-
     void CPackage::WriteImports(FPackageSaver& Ar, FPackageHeader& Header, FSaveContext& SaveContext)
     {
-        for (CObject* Import : SaveContext.Imports)
-        {
-            ImportTable.emplace_back(Import);
-        }
-        
+        // Must run AFTER WriteExports — pulls the import order from the saver's ObjectToIndexMap
+        // so on-disk indices match what was emitted in export data.
+        Ar.PopulateImportTable(ImportTable);
+
         Header.ImportTableOffset = Ar.Tell();
         Ar << ImportTable;
-        
     }
 
     void CPackage::WriteExports(FPackageSaver& Ar, FPackageHeader& Header, FSaveContext& SaveContext)
@@ -743,13 +759,17 @@ namespace Lumina
 
             if (Export.ObjectGUID == GUID)
             {
-                CClass* ObjectClass = FindObject<CClass>(Export.ClassName);
-
-                CObject* Object = nullptr;
-                Object = FindObjectImpl(Export.ObjectGUID);
+                CObject* Object = FindObjectImpl(Export.ObjectGUID);
 
                 if (Object == nullptr)
                 {
+                    CClass* ObjectClass = FindObject<CClass>(Export.ClassName);
+                    if (ObjectClass == nullptr)
+                    {
+                        LOG_ERROR("LoadObject: class '{}' for export '{}' in package '{}' could not be resolved", Export.ClassName, Export.ObjectName, GetName());
+                        return nullptr;
+                    }
+
                     Object = NewObject(ObjectClass, this, Export.ObjectName, Export.ObjectGUID);
                     Object->SetFlag(OF_NeedsLoad);
 
@@ -758,13 +778,13 @@ namespace Lumina
                         Object->SetFlag(OF_Public);
                     }
                 }
-            
+
                 Object->LoaderIndex = FObjectPackageIndex::FromExport(static_cast<int32>(i)).GetRaw();
 
                 Export.Object = Object;
 
                 LoadObject(Object);
-                
+
                 return Object;
             }
         }
@@ -785,21 +805,27 @@ namespace Lumina
                 if (Object == nullptr)
                 {
                     CClass* ObjectClass = FindObject<CClass>(Export.ClassName);
+                    if (ObjectClass == nullptr)
+                    {
+                        LOG_ERROR("LoadObjectByName: class '{}' for export '{}' in package '{}' could not be resolved", Export.ClassName, Name, GetName());
+                        return nullptr;
+                    }
+
                     Object = NewObject(ObjectClass, this, Export.ObjectName, Export.ObjectGUID);
                     Object->SetFlag(OF_NeedsLoad);
-                    
+
                     if (Object->IsAsset())
                     {
                         Object->SetFlag(OF_Public);
                     }
                 }
-            
+
                 Object->LoaderIndex = FObjectPackageIndex::FromExport(static_cast<int32>(i)).GetRaw();
 
                 Export.Object = Object;
 
                 LoadObject(Object);
-                
+
                 return Object;
             }
         }
@@ -809,12 +835,16 @@ namespace Lumina
 
     bool CPackage::FullyLoad()
     {
+        bool bAllOk = true;
         for (const FObjectExport& Export : ExportTable)
         {
-            LoadObject(Export.ObjectGUID);
+            if (LoadObject(Export.ObjectGUID) == nullptr)
+            {
+                bAllOk = false;
+            }
         }
 
-        return true;
+        return bAllOk;
     }
 
     CObject* CPackage::FindObjectInPackage(const FName& Name)

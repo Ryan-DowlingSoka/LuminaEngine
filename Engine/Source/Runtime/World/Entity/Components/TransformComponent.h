@@ -233,6 +233,12 @@ namespace Lumina
             Registry = &InRegistry;
             Entity = InEntity;
         }
+        
+        void SetFromPhysics(const glm::vec3& Location, const glm::quat& Rotation)
+        {
+            LocalTransform.Location = Location;
+            LocalTransform.Rotation = Rotation;
+        }
 
     public:
 

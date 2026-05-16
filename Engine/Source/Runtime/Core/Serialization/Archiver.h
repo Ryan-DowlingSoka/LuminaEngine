@@ -64,7 +64,15 @@ namespace Lumina
         {
             return GPackageFileLuminaVersion;
         }
-    
+
+        /**
+         * Version of the file this archive is reading/writing. Defaults to the current engine
+         * version; LoadPackage overrides it after reading the header so per-type Serialize
+         * implementations can branch on the source version to migrate older payloads.
+         */
+        FORCEINLINE int32 GetFileVersion() const { return FileVersion; }
+        FORCEINLINE void SetFileVersion(int32 InVersion) { FileVersion = InVersion; }
+
         FORCEINLINE size_t GetMaxSerializeSize() const { return ArMaxSerializeSize; }
 
         
@@ -337,6 +345,14 @@ namespace Lumina
             else
             {
                 *this << Count;
+
+                if (Count > GetMaxSerializeSize())
+                {
+                    SetHasError(true);
+                    LOG_ERROR("Archiver is corrupted, attempted to serialize {} map entries. Max is: {}", Count, GetMaxSerializeSize());
+                    return *this;
+                }
+
                 Map.clear();
                 Map.reserve(Count);
 
@@ -372,7 +388,9 @@ namespace Lumina
     private:
 
         size_t                      ArMaxSerializeSize = INT32_MAX;
-        
+
+        int32                       FileVersion = GPackageFileLuminaVersion.FileVersion;
+
         TBitFlags<EArchiverFlags>   Flags;
         uint8                       bHasError:1 = false;
 
@@ -380,18 +398,15 @@ namespace Lumina
 
     inline void FArchive::SerializeBool(bool& D)
     {
-        uint32 OldBoolValue;
+        uint8 BoolValue = D ? 1 : 0;
+        Serialize(&BoolValue, sizeof(BoolValue));
 
-        OldBoolValue = D ? 1 : 0;
-        Serialize(&OldBoolValue, sizeof(OldBoolValue));
-
-        if (OldBoolValue > 1)
+        if (BoolValue > 1)
         {
             LOG_ERROR("Invalid boolean encountered while reading archive - stream is most likely corrupted.");
-
             SetHasError(true);
         }
-        D = !!OldBoolValue;
+        D = !!BoolValue;
     }
 
     inline FArchive& operator<<(FArchive& Ar, glm::vec2& v)

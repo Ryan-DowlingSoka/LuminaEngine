@@ -24,19 +24,12 @@ namespace Lumina::ECS::Utils
         {
             Ar << Entity;
 
-            bool bHasRelationship = false;
-            int64 SizeBeforeRelationshipFlag = Ar.Tell();
+            FRelationshipComponent* RelationshipComponent = Registry.try_get<FRelationshipComponent>(Entity);
+            bool bHasRelationship = (RelationshipComponent != nullptr);
             Ar << bHasRelationship;
 
-            if (FRelationshipComponent* RelationshipComponent = Registry.try_get<FRelationshipComponent>(Entity))
+            if (bHasRelationship)
             {
-                bHasRelationship = true;
-                
-                int64 SizeBefore = Ar.Tell();
-                Ar.Seek(SizeBeforeRelationshipFlag);
-                Ar << bHasRelationship;
-                Ar.Seek(SizeBefore);
-                
                 Ar << *RelationshipComponent;
             }
 
@@ -88,9 +81,7 @@ namespace Lumina::ECS::Utils
         }
         else if (Ar.IsReading())
         {
-            uint32 EntityID = (uint32)Entity;
-            Ar << EntityID;
-            Entity = (entt::entity)EntityID;
+            Ar << Entity;
 
             if (!Registry.valid(Entity))
             {
@@ -98,7 +89,7 @@ namespace Lumina::ECS::Utils
                 ALERT_IF_NOT(New == Entity);
                 Entity = New;
             }
-            
+
             bool bHasRelationship = false;
             Ar << bHasRelationship;
 
@@ -110,6 +101,13 @@ namespace Lumina::ECS::Utils
 
             size_t NumComponents = 0;
             Ar << NumComponents;
+
+            if (NumComponents > Ar.GetMaxSerializeSize())
+            {
+                LOG_ERROR("Archiver corrupted: entity claims {} components (max {})", NumComponents, Ar.GetMaxSerializeSize());
+                Ar.SetHasError(true);
+                return false;
+            }
 
             for (size_t i = 0; i < NumComponents; ++i)
             {
@@ -213,16 +211,28 @@ namespace Lumina::ECS::Utils
             int32 NumEntitiesSerialized = 0;
             Ar << NumEntitiesSerialized;
 
+            if (NumEntitiesSerialized < 0 || (size_t)NumEntitiesSerialized > Ar.GetMaxSerializeSize())
+            {
+                LOG_ERROR("Archiver corrupted: registry claims {} entities (max {})", NumEntitiesSerialized, Ar.GetMaxSerializeSize());
+                Ar.SetHasError(true);
+                return false;
+            }
+
             for (int32 i = 0; i < NumEntitiesSerialized; ++i)
             {
                 int64 EntitySaveSize = 0;
                 Ar << EntitySaveSize;
-        
+
                 int64 PreEntityPos = Ar.Tell();
 
                 entt::entity NewEntity = entt::null;
                 bool bSuccess = ECS::Utils::SerializeEntity(Ar, Registry, NewEntity);
-                
+
+                // Clear the per-entity error so one corrupt entity does not poison
+                // every subsequent SerializeEntity call. The size-header seek below
+                // re-aligns the stream regardless.
+                Ar.SetHasError(false);
+
                 if (!bSuccess || NewEntity == entt::null)
                 {
                     // Skip to the next entity using the saved size
@@ -232,10 +242,10 @@ namespace Lumina::ECS::Utils
                 }
 
                 Registry.emplace_or_replace<FNeedsTransformUpdate>(NewEntity);
-        
+
                 int64 PostEntityPos = Ar.Tell();
                 int64 ActualBytesRead = PostEntityPos - PreEntityPos;
-        
+
                 if (ActualBytesRead != EntitySaveSize)
                 {
                     // Data mismatch, seek to correct position to stay aligned

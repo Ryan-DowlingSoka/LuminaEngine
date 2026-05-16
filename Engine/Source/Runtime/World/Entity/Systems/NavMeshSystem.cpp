@@ -19,10 +19,126 @@
 
 namespace Lumina
 {
-    static TConsoleVar<bool> CVarNavDrawDebug(
-        "Nav.DrawDebug",
-        false,
-        "When true, every nav-mesh component emits debug lines for its walkable triangles each tick.");
+    // NOLINTBEGIN(bugprone-throwing-static-initialization)
+
+    // Master toggle. When false, no nav debug draws at all (sub-CVars are ignored).
+    static TConsoleVar<bool>  CVarNavDrawDebug      ("Nav.DrawDebug",          false, "Master toggle for navmesh debug visualization.");
+
+    // Per-layer toggles. Defaults aim for a useful "first look" when the master is flipped on.
+    static TConsoleVar<bool>  CVarNavDebugEdges     ("Nav.Debug.Edges",        true,  "Draw detail-triangle edges (faint) and poly boundary edges (thick).");
+    static TConsoleVar<bool>  CVarNavDebugColorArea ("Nav.Debug.ColorByArea",  true,  "Color edges/centers by ENavArea (ground/water/door/danger).");
+    static TConsoleVar<bool>  CVarNavDebugVerts     ("Nav.Debug.Vertices",     false, "Sphere at every poly boundary vertex (intersections).");
+    static TConsoleVar<bool>  CVarNavDebugCenters   ("Nav.Debug.Centers",      false, "Small sphere at every walkable triangle center.");
+    static TConsoleVar<bool>  CVarNavDebugTiles     ("Nav.Debug.TileBounds",   true,  "Wireframe box for each loaded nav tile.");
+    static TConsoleVar<bool>  CVarNavDebugBounds    ("Nav.Debug.BakeBounds",   true,  "Wireframe box for the bake volume (Center +/- Extents).");
+    static TConsoleVar<bool>  CVarNavDebugLinks     ("Nav.Debug.OffMeshLinks", true,  "Arrows for off-mesh connections.");
+    static TConsoleVar<bool>  CVarNavDebugLog       ("Nav.Debug.LogStats",     false, "Log triangle/edge/tile counts on every cache refresh.");
+    static TConsoleVar<float> CVarNavDebugLift      ("Nav.Debug.LiftY",        0.05f, "Vertical offset added to debug geometry to avoid Z-fighting.");
+    static TConsoleVar<float> CVarNavDebugVertSize  ("Nav.Debug.VertexRadius", 0.08f, "Radius of vertex spheres (also drives center-sphere size).");
+
+    // NOLINTEND(bugprone-throwing-static-initialization)
+
+    namespace
+    {
+        // Per-area colors for at-a-glance area classification. Alpha currently unused by the line batcher,
+        // but kept consistent so future translucent rendering doesn't need a second table.
+        FORCEINLINE glm::vec4 NavAreaColor(uint8 Area)
+        {
+            switch ((ENavArea)Area)
+            {
+                case ENavArea::Ground: return glm::vec4(0.20f, 0.85f, 0.30f, 1.0f);
+                case ENavArea::Water:  return glm::vec4(0.20f, 0.45f, 0.95f, 1.0f);
+                case ENavArea::Door:   return glm::vec4(0.95f, 0.65f, 0.15f, 1.0f);
+                case ENavArea::Danger: return glm::vec4(0.95f, 0.20f, 0.20f, 1.0f);
+                case ENavArea::Null:   return glm::vec4(0.40f, 0.40f, 0.40f, 1.0f);
+                default:               return glm::vec4(0.75f, 0.30f, 0.95f, 1.0f);
+            }
+        }
+
+        void DrawNavDebug(const FSystemContext& Context, const SNavMeshComponent& Comp)
+        {
+            const FNavMesh& Mesh = *Comp.Runtime.Mesh;
+            const glm::vec3 Lift(0.0f, CVarNavDebugLift.GetValue(), 0.0f);
+            const bool bColorByArea = CVarNavDebugColorArea.GetValue();
+
+            if (CVarNavDebugBounds.GetValue())
+            {
+                Context.DrawDebugBox(Comp.Center, Comp.Extents, glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+                    glm::vec4(1.0f, 0.85f, 0.10f, 1.0f), 4.0f, -1.0f);
+            }
+
+            if (CVarNavDebugTiles.GetValue())
+            {
+                const glm::vec4 TileColor(0.20f, 0.65f, 1.0f, 1.0f);
+                Mesh.ForEachLoadedTile([&Context, TileColor](const FNavTileBounds& T)
+                {
+                    const glm::vec3 Center = (T.Min + T.Max) * 0.5f;
+                    const glm::vec3 Half   = (T.Max - T.Min) * 0.5f;
+                    Context.DrawDebugBox(Center, Half, glm::quat(1.0f, 0.0f, 0.0f, 0.0f), TileColor, 4.0f, -1.0f);
+                });
+            }
+
+            if (CVarNavDebugEdges.GetValue())
+            {
+                // Faint interior triangle edges so the mesh fill reads, without drowning the boundary.
+                Mesh.ParallelForEachTriangle([&Context, &Lift, bColorByArea](const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, uint8 Area)
+                {
+                    glm::vec4 Color = bColorByArea ? NavAreaColor(Area) : glm::vec4(0.05f, 1.0f, 0.15f, 1.0f);
+                    Color *= glm::vec4(0.6f, 0.6f, 0.6f, 1.0f);
+                    constexpr float Thickness = 1.0f;
+                    Context.DrawDebugLine(A + Lift, B + Lift, Color, Thickness, -1.0f);
+                    Context.DrawDebugLine(B + Lift, C + Lift, Color, Thickness, -1.0f);
+                    Context.DrawDebugLine(C + Lift, A + Lift, Color, Thickness, -1.0f);
+                });
+
+                // Poly perimeter on top, thicker and brighter so the actual nav polygon shape stands out.
+                Mesh.ForEachBoundaryEdge([&Context, &Lift, bColorByArea](const glm::vec3& A, const glm::vec3& B, uint8 Area)
+                {
+                    const glm::vec4 Color = bColorByArea ? NavAreaColor(Area) : glm::vec4(0.0f, 0.95f, 1.0f, 1.0f);
+                    Context.DrawDebugLine(A + Lift, B + Lift, Color, 3.0f, -1.0f);
+                });
+            }
+
+            if (CVarNavDebugVerts.GetValue())
+            {
+                const float R = CVarNavDebugVertSize.GetValue();
+                const glm::vec4 VColor(1.0f, 0.85f, 0.0f, 1.0f);
+                // Boundary endpoints == poly vertices == the "intersections" users want to see.
+                Mesh.ForEachBoundaryEdge([&Context, R, VColor, &Lift](const glm::vec3& A, const glm::vec3& B, uint8)
+                {
+                    Context.DrawDebugSphere(A + Lift, R, VColor, 8, 4.0f, -1.0f);
+                    Context.DrawDebugSphere(B + Lift, R, VColor, 8, 4.0f, -1.0f);
+                });
+            }
+
+            if (CVarNavDebugCenters.GetValue())
+            {
+                const float R = std::max(0.02f, CVarNavDebugVertSize.GetValue() * 0.5f);
+                Mesh.ParallelForEachTriangle([&Context, R, &Lift, bColorByArea](const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, uint8 Area)
+                {
+                    const glm::vec3 C0 = (A + B + C) * (1.0f / 3.0f) + Lift;
+                    const glm::vec4 Color = bColorByArea ? NavAreaColor(Area) : glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+                    Context.DrawDebugSphere(C0, R, Color, 6, 4.0f, -1.0f);
+                });
+            }
+
+            if (CVarNavDebugLinks.GetValue())
+            {
+                const glm::vec4 LinkColor(1.0f, 0.30f, 0.95f, 1.0f);
+                Mesh.ForEachOffMeshLink([&Context, LinkColor, &Lift](const glm::vec3& A, const glm::vec3& B)
+                {
+                    const glm::vec3 Dir = B - A;
+                    const float Len = glm::length(Dir);
+                    if (Len > 1e-4f)
+                    {
+                        Context.DrawDebugArrow(A + Lift, Dir / Len, Len, LinkColor, 2.5f, -1.0f, 0.25f);
+                    }
+                    Context.DrawDebugSphere(A + Lift, 0.15f, LinkColor, 10, 4.0f, -1.0f);
+                    Context.DrawDebugSphere(B + Lift, 0.15f, LinkColor, 10, 4.0f, -1.0f);
+                });
+            }
+        }
+    }
 
     namespace
     {
@@ -494,6 +610,13 @@ namespace Lumina
                 else
                 {
                     Comp.Runtime.State = ENavBakeState::Ready;
+
+                    if (CVarNavDebugLog.GetValue())
+                    {
+                        const FNavDebugStats Stats = Comp.Runtime.Mesh->GetDebugStats();
+                        LOG_INFO("NavMesh ready: {} tiles, {} triangles, {} boundary edges, {} off-mesh links.",
+                            Stats.LoadedTiles, Stats.Triangles, Stats.BoundaryEdges, Stats.OffMeshLinks);
+                    }
                 }
             }
 
@@ -542,16 +665,7 @@ namespace Lumina
             // Debug draw runs first so it emits even when later steps early-return.
             if (CVarNavDrawDebug.GetValue())
             {
-                const glm::vec4 EdgeColor(0.05f, 1.0f, 0.15f, 1.0f);
-                constexpr float EdgeThickness = 2.0f;
-                // EnqueueLine is MPMC-safe; visitor runs on every worker.
-                Comp.Runtime.Mesh->ParallelForEachTriangle([&Context, EdgeColor](const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, uint8 /*Area*/)
-                {
-                    const glm::vec3 Lift(0.0f, 0.05f, 0.0f);
-                    Context.DrawDebugLine(A + Lift, B + Lift, EdgeColor, EdgeThickness, -1.0f);
-                    Context.DrawDebugLine(B + Lift, C + Lift, EdgeColor, EdgeThickness, -1.0f);
-                    Context.DrawDebugLine(C + Lift, A + Lift, EdgeColor, EdgeThickness, -1.0f);
-                });
+                DrawNavDebug(Context, Comp);
             }
 
             // Hot-swap completed per-tile rebakes.
@@ -1014,6 +1128,38 @@ namespace Lumina
             return Len;
         }
 
+        void DrawPath(CWorld* World, const FNavPath& Path, const glm::vec4& Color, float Thickness, float Lift, float Duration)
+        {
+            if (!World || !Path.bValid || Path.Corners.size() < 2) return;
+
+            const glm::vec3 LiftV(0.0f, Lift, 0.0f);
+            for (size_t i = 1; i < Path.Corners.size(); ++i)
+            {
+                World->DrawLine(Path.Corners[i - 1] + LiftV, Path.Corners[i] + LiftV, Color, Thickness, true, Duration);
+            }
+            // Corner spheres so kinks read at a glance; goal sphere distinguished.
+            const float R = 0.12f;
+            for (size_t i = 0; i < Path.Corners.size(); ++i)
+            {
+                const bool bGoal = (i + 1 == Path.Corners.size());
+                const glm::vec4 SphColor = bGoal ? glm::vec4(1.0f, 1.0f, 1.0f, 1.0f) : Color;
+                World->DrawSphere(Path.Corners[i] + LiftV, bGoal ? R * 1.6f : R, SphColor, 10, 1.0f, true, Duration);
+            }
+            // Partial paths are easy to misread; flag them with a red marker on the last corner.
+            if (Path.bPartial)
+            {
+                World->DrawSphere(Path.Corners.back() + LiftV, 0.25f, glm::vec4(1.0f, 0.2f, 0.2f, 1.0f), 12, 1.0f, true, Duration);
+            }
+        }
+
+        bool DrawDebugPath(CWorld* World, const glm::vec3& From, const glm::vec3& To, const glm::vec4& Color, float Duration)
+        {
+            FNavPath Path;
+            if (!FindPath(World, From, To, Path) || !Path.bValid) return false;
+            DrawPath(World, Path, Color, 3.0f, 0.15f, Duration);
+            return true;
+        }
+
         void RegisterLuaModule(Lua::FRef& Globals)
         {
             Lua::FRef NavTable = Globals.NewTable("Nav");
@@ -1053,6 +1199,12 @@ namespace Lumina
                 Nav::FindPath(W, S, E, Path);
                 return Path.Corners;
             }>("FindPath");
+
+            // Duration <= 0 draws for a single frame; useful for tick-driven scripts.
+            NavTable.SetFunction<[](CWorld* W, glm::vec3 S, glm::vec3 E, float Duration) -> bool
+            {
+                return Nav::DrawDebugPath(W, S, E, glm::vec4(0.10f, 1.0f, 0.95f, 1.0f), Duration);
+            }>("DrawDebugPath");
         }
     }
 }

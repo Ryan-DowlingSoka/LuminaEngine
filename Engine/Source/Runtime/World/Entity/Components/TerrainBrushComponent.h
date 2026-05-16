@@ -11,6 +11,8 @@ namespace Lumina
         Sculpt,     // Raise / lower based on stroke sign.
         Flatten,    // Drive heights toward a locked reference height.
         Smooth,     // Blur heights within the brush footprint.
+        Noise,      // Add fbm noise within the brush footprint.
+        Ramp,       // Drag a line; heights ramp linearly between endpoints.
         Paint,      // Apply weights for ActiveLayer.
     };
 

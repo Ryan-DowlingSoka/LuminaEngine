@@ -25,6 +25,7 @@
 #include "Jolt/Physics/Collision/Shape/SphereShape.h"
 #include "Jolt/Physics/Collision/Shape/MeshShape.h"
 #include "Jolt/Physics/Collision/Shape/ConvexHullShape.h"
+#include "Jolt/Physics/Collision/Shape/HeightFieldShape.h"
 #include "Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h"
 #include "Assets/AssetTypes/Mesh/StaticMesh/StaticMesh.h"
 #include "Renderer/MeshData.h"
@@ -36,6 +37,7 @@
 #include "World/Entity/Components/PhysicsComponent.h"
 #include "World/Entity/Components/ScriptComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
+#include "World/Entity/Components/TerrainComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "world/entity/components/velocitycomponent.h"
 #include "World/Entity/Events/ImpulseEvent.h"
@@ -453,6 +455,7 @@ namespace Lumina::Physics
         Registry.on_construct<SSphereColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SBoxColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SMeshColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<STerrainColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
 
         // Per-worker TempAllocator pool for the parallel character sub-step.
         // 4 MiB per worker is comfortably above the high-water mark for a
@@ -473,6 +476,7 @@ namespace Lumina::Physics
         Registry.on_construct<SSphereColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SBoxColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SMeshColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<STerrainColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
     }
 
     void FJoltPhysicsScene::PreUpdate()
@@ -697,13 +701,11 @@ namespace Lumina::Physics
     void FJoltPhysicsScene::Simulate()
     {
         entt::registry& Registry = World->GetEntityRegistry();
-        
-        auto View = Registry.view<SRigidBodyComponent>();
-        
-        View.each([&] (entt::entity EntityID, SRigidBodyComponent&)
-        {
-            OnRigidBodyComponentConstructed(Registry, EntityID);
-        });
+
+        // Build all initial rigid bodies in parallel, then commit + add in one batch.
+        // The on_construct hook is connected below, so anything spawned at runtime
+        // still goes through the per-entity path.
+        BulkCreateRigidBodies(Registry);
 
         auto CharacterView = Registry.view<SCharacterPhysicsComponent>();
         
@@ -820,8 +822,17 @@ namespace Lumina::Physics
 
         const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
         entt::registry& Registry = World->GetEntityRegistry();
-        
+
+        // Defer destroys (registry-mutating) and accumulate touched entities so
+        // we can do ONE batched dirty-mark + one bulk descendant-resolving pass
+        // at the end instead of N×(MarkDirty mutex + ResolveTransformChain walk
+        // + remove<FNeedsPhysicsBodyUpdate>) per entity per frame.
+        TVector<entt::entity> ToDestroy;
+        TVector<entt::entity> Touched;
+
         auto View = Registry.view<SRigidBodyComponent, STransformComponent>();
+        Touched.reserve(View.size_hint());
+
         View.each([&](entt::entity EntityID, SRigidBodyComponent& BodyComponent, STransformComponent& TransformComponent)
         {
             const JPH::Body* Body = LockInterface.TryGetBody(JPH::BodyID(BodyComponent.BodyID));
@@ -835,32 +846,26 @@ namespace Lumina::Physics
 
             if (CurrPos.GetY() < KillHeight)
             {
-                Registry.destroy(EntityID);
+                ToDestroy.push_back(EntityID);
                 return;
             }
 
             // Interpolate between the pre-step snapshot and the current physics state.
             // Falls back to the current state on the first frame (no snapshot yet).
-            const glm::vec3 PrevPos    = BodyComponent.LastBodyPosition;
-            const glm::quat PrevRot    = BodyComponent.LastBodyRotation;
-
-            glm::vec3 Location = glm::mix(PrevPos, JoltUtils::FromJPHVec3(CurrPos), Alpha);
-            glm::quat Rotation = glm::normalize(glm::slerp(PrevRot, JoltUtils::FromJPHQuat(CurrRot), Alpha));
-
-            TransformComponent.SetLocation(Location);
-            TransformComponent.SetRotation(Rotation);
-
-            ECS::Utils::ResolveTransformChain(Registry, EntityID);
-
-            // SetLocation/SetRotation tag FNeedsPhysicsBodyUpdate via MarkDirty;
-            // strip it so next frame's ApplyDirtyTransforms doesn't push the
-            // interpolated render value back into the body, which would reset
-            // physics behind its actual position every frame ("snap back" at
-            // speed, especially as PhysicsHz approaches render rate).
-            Registry.remove<FNeedsPhysicsBodyUpdate>(EntityID);
+            const glm::vec3 Location = glm::mix(BodyComponent.LastBodyPosition,
+                                                JoltUtils::FromJPHVec3(CurrPos),
+                                                Alpha);
+            const glm::quat Rotation = glm::normalize(glm::slerp(BodyComponent.LastBodyRotation,
+                                                                 JoltUtils::FromJPHQuat(CurrRot),
+                                                                 Alpha));
+            
+            TransformComponent.SetFromPhysics(Location, Rotation);
+            Touched.push_back(EntityID);
         });
 
         auto CharacterView = Registry.view<SCharacterPhysicsComponent, STransformComponent>();
+        Touched.reserve(Touched.size() + CharacterView.size_hint());
+
         CharacterView.each([&](entt::entity Entity, SCharacterPhysicsComponent& CharacterComponent, STransformComponent& TransformComponent)
         {
             if (CharacterComponent.Character == nullptr)
@@ -873,22 +878,35 @@ namespace Lumina::Physics
 
             if (CurrPos.GetY() < KillHeight)
             {
-                Registry.destroy(Entity);
+                ToDestroy.push_back(Entity);
                 return;
             }
 
-            const glm::vec3 PrevPos = CharacterComponent.LastBodyPosition;
-            const glm::quat PrevRot = CharacterComponent.LastBodyRotation;
+            const glm::vec3 Location = glm::mix(CharacterComponent.LastBodyPosition,
+                                                JoltUtils::FromJPHVec3(CurrPos),
+                                                Alpha);
+            const glm::quat Rotation = glm::normalize(glm::slerp(CharacterComponent.LastBodyRotation,
+                                                                 JoltUtils::FromJPHQuat(CurrRot),
+                                                                 Alpha));
 
-            glm::vec3 Location = glm::mix(PrevPos, JoltUtils::FromJPHVec3(CurrPos), Alpha);
-            glm::quat Rotation = glm::normalize(glm::slerp(PrevRot, JoltUtils::FromJPHQuat(CurrRot), Alpha));
-
-            TransformComponent.SetLocation(Location);
-            TransformComponent.SetRotation(Rotation);
-
-            Registry.remove<FNeedsPhysicsBodyUpdate>(Entity);
+            TransformComponent.SetFromPhysics(Location, Rotation);
+            Touched.push_back(Entity);
         });
+
+        for (entt::entity Entity : ToDestroy)
+        {
+            Registry.destroy(Entity);
+        }
         
+        for (entt::entity Entity : Touched)
+        {
+            if (Registry.valid(Entity))
+            {
+                Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
+            }
+        }
+
+        ECS::Utils::ResolveAllDirtyTransforms(Registry);
     }
 
     void FJoltPhysicsScene::LatchCharacterInput()
@@ -952,18 +970,7 @@ namespace Lumina::Physics
         {
             return;
         }
-
-        // Each character's sub-step is fully entity-local: per-character
-        // velocity / rotation math, and ExtendedUpdate's broadphase queries
-        // are read-only against a stable broadphase (JoltSystem->Update has
-        // already returned this frame). BodyInterface activations inside
-        // ExtendedUpdate are internally locked by Jolt. The only piece that
-        // forces parallelization to be careful is the TempAllocator -
-        // TempAllocatorImpl is single-threaded, so each worker uses its own
-        // out of CharacterAllocators[ThreadNum].
-        //
-        // Below ParallelMinCount the scheduler overhead beats the gain;
-        // small worlds run sequentially with the main allocator.
+        
         constexpr uint32 ParallelMinCount = 8;
 
         auto SubStep = [&](entt::entity Entity, JPH::TempAllocator& InAllocator)
@@ -983,10 +990,7 @@ namespace Lumina::Physics
             {
                 return;
             }
-
-            // Input was latched once per frame in LatchCharacterInput(). Every
-            // substep sees the same intent, which is what we want for multi-
-            // substep frames.
+            
             const bool bHasMovementInput = Movement.bHasPendingMoveInput;
             const glm::vec3 DesiredDirection = Movement.PendingMoveDirection;
 
@@ -1005,9 +1009,7 @@ namespace Lumina::Physics
             {
                 Movement.JumpCount = 0;
             }
-
-            // Rotation: keep orientation work in the fixed step so slerp is
-            // frame-rate independent.
+            
             glm::quat TargetRotation = JoltUtils::FromJPHQuat(Character->GetRotation());
             if (Movement.bUseControllerRotation)
             {
@@ -1057,8 +1059,6 @@ namespace Lumina::Physics
 
             if (Movement.bGrounded)
             {
-                // Inherit moving-platform velocity so the character isn't
-                // left behind when standing on a kinematic lift etc.
                 const JPH::Vec3 GroundVelocity = Character->GetGroundVelocity();
                 Movement.Velocity.x += GroundVelocity.GetX();
                 Movement.Velocity.y  = GroundVelocity.GetY();
@@ -1110,9 +1110,6 @@ namespace Lumina::Physics
         const uint32 NumWorkers = (uint32)CharacterAllocators.size();
         Task::ParallelFor(Count, [&](uint32 Index, uint32 ThreadNum)
         {
-            // ThreadNum is bounded by GetNumTaskThreads(), which is what
-            // we sized CharacterAllocators against. Clamp defensively in
-            // case a registered external thread reports a higher index.
             const uint32 AllocIdx = ThreadNum < NumWorkers ? ThreadNum : 0u;
             SubStep((*Handle)[Index], *CharacterAllocators[AllocIdx]);
         });
@@ -1459,9 +1456,98 @@ namespace Lumina::Physics
         return Result.Get();
     }
 
-    void FJoltPhysicsScene::OnRigidBodyComponentConstructed(entt::registry& Registry, entt::entity Entity)
+    static JPH::ShapeRefC BuildTerrainHeightFieldShape(const STerrainComponent& Terrain)
+    {
+        const int32 Res = Terrain.Resolution;
+        if (Res < 2 || (int64)Terrain.Heightmap.size() < (int64)Res * (int64)Res)
+        {
+            return nullptr;
+        }
+
+        // Jolt rounds mSampleCount UP to the next multiple of mBlockSize, so we must
+        // size the sample buffer to the rounded count to avoid out-of-bounds reads.
+        constexpr uint32 BlockSize = 2;
+        const uint32 SampleCount   = ((uint32(Res) + BlockSize - 1) / BlockSize) * BlockSize;
+        const float   Stride       = Terrain.TileWorldSize / float(Res - 1);
+        const float   HalfSize     = Terrain.TileWorldSize * 0.5f;
+
+        TVector<float> Samples;
+        Samples.resize(size_t(SampleCount) * size_t(SampleCount));
+
+        // Copy heightmap, scaling normalized [0,1] to world Y; replicate edge for padding rows/cols.
+        for (uint32 Y = 0; Y < SampleCount; ++Y)
+        {
+            const uint32 SrcY = Y < uint32(Res) ? Y : uint32(Res - 1);
+            for (uint32 X = 0; X < SampleCount; ++X)
+            {
+                const uint32 SrcX = X < uint32(Res) ? X : uint32(Res - 1);
+                Samples[size_t(Y) * SampleCount + X] = Terrain.Heightmap[size_t(SrcY) * size_t(Res) + size_t(SrcX)] * Terrain.MaxHeight;
+            }
+        }
+
+        JPH::HeightFieldShapeSettings Settings(
+            Samples.data(),
+            JPH::Vec3(-HalfSize, 0.0f, -HalfSize),
+            JPH::Vec3(Stride, 1.0f, Stride),
+            SampleCount);
+        Settings.mBlockSize = BlockSize;
+        Settings.SetEmbedded();
+
+        auto Result = Settings.Create();
+        if (Result.HasError())
+        {
+            LOG_ERROR("Failed to build terrain heightfield shape: {}", Result.GetError());
+            return nullptr;
+        }
+        return Result.Get();
+    }
+
+    // Outcome of TryBuildRigidBodyCreationSettings: drives whether the caller
+    // commits the body, retries later, or drops the entity.
+    enum class EBodyBuildStatus : uint8
+    {
+        Success,        // Result populated; safe to CreateBody and add.
+        Defer,          // Asset/transform not ready; push to PendingRigidBodyCreations.
+        AlreadyExists,  // Component already owns a BodyID; skip.
+        NoCollider,     // No collider component attached; nothing to build (caller decides whether to defer).
+        Error,          // Shape build failed and was logged; do not retry.
+    };
+
+    // Output of the (thread-safe) shape-build phase. The body is created on
+    // the main thread from this; LastBodyPosition/Rotation seed interpolation
+    // so the first frame blends instead of snapping from an uninitialized quat.
+    struct FRigidBodyBuildResult
+    {
+        JPH::BodyCreationSettings   Settings;
+        glm::vec3                   LastBodyPosition = glm::vec3(0.0f);
+        glm::quat                   LastBodyRotation = glm::identity<glm::quat>();
+    };
+
+    // Pure CPU shape-build + settings assembly. Reads only the registry,
+    // collider components, transforms, and loaded mesh/terrain assets — no
+    // Jolt PhysicsSystem state, no global mutation — so callers may invoke
+    // this from multiple worker threads in parallel as long as the registry
+    // is not being mutated.
+    static EBodyBuildStatus TryBuildRigidBodyCreationSettings(entt::registry& Registry, entt::entity Entity, FRigidBodyBuildResult& Out)
     {
         LUMINA_PROFILE_SCOPE();
+
+        const SRigidBodyComponent* RigidBodyComponent = Registry.try_get<SRigidBodyComponent>(Entity);
+        if (RigidBodyComponent == nullptr)
+        {
+            return EBodyBuildStatus::Error;
+        }
+
+        if (RigidBodyComponent->BodyID != JPH::BodyID::cInvalidBodyID)
+        {
+            return EBodyBuildStatus::AlreadyExists;
+        }
+
+        const STransformComponent* TransformComponent = Registry.try_get<STransformComponent>(Entity);
+        if (TransformComponent == nullptr)
+        {
+            return EBodyBuildStatus::Defer;
+        }
 
         JPH::ShapeRefC Shape;
         glm::vec3 ColliderTranslationOffset(0.0f);
@@ -1469,14 +1555,7 @@ namespace Lumina::Physics
         bool      bIsTriangleMesh = false;
         bool      bColliderIsTrigger = false;
 
-        STransformComponent* TransformComponent = Registry.try_get<STransformComponent>(Entity);
-        if (!TransformComponent)
-        {
-            PendingRigidBodyCreations.push(Entity);
-            return;
-        }
-
-        if (SBoxColliderComponent* BC = Registry.try_get<SBoxColliderComponent>(Entity))
+        if (const SBoxColliderComponent* BC = Registry.try_get<SBoxColliderComponent>(Entity))
         {
             ColliderTranslationOffset       = BC->TranslationOffset;
             ColliderRotationOffset          = BC->RotationOffset;
@@ -1487,12 +1566,13 @@ namespace Lumina::Physics
             auto Result = Settings.Create();
             if (Result.HasError())
             {
-                return LOG_ERROR("Failed to create BoxCollider Shape for Entity: {} - {}", entt::to_integral(Entity), Result.GetError());
+                LOG_ERROR("Failed to create BoxCollider Shape for Entity: {} - {}", entt::to_integral(Entity), Result.GetError());
+                return EBodyBuildStatus::Error;
             }
 
             Shape = Result.Get();
         }
-        else if (SSphereColliderComponent* SC = Registry.try_get<SSphereColliderComponent>(Entity))
+        else if (const SSphereColliderComponent* SC = Registry.try_get<SSphereColliderComponent>(Entity))
         {
             ColliderTranslationOffset           = SC->TranslationOffset;
             bColliderIsTrigger                  = SC->bIsTrigger;
@@ -1502,12 +1582,13 @@ namespace Lumina::Physics
             auto Result = Settings.Create();
             if (Result.HasError())
             {
-                return LOG_ERROR("Failed to create SphereCollider Shape for Entity: {} - {}", entt::to_integral(Entity), Result.GetError());
+                LOG_ERROR("Failed to create SphereCollider Shape for Entity: {} - {}", entt::to_integral(Entity), Result.GetError());
+                return EBodyBuildStatus::Error;
             }
 
             Shape = Result.Get();
         }
-        else if (SMeshColliderComponent* MC = Registry.try_get<SMeshColliderComponent>(Entity))
+        else if (const SMeshColliderComponent* MC = Registry.try_get<SMeshColliderComponent>(Entity))
         {
             ColliderTranslationOffset = MC->TranslationOffset;
             ColliderRotationOffset    = MC->RotationOffset;
@@ -1516,7 +1597,7 @@ namespace Lumina::Physics
             CStaticMesh* Mesh = MC->Mesh.Get();
             if (Mesh == nullptr)
             {
-                if (SStaticMeshComponent* SMC = Registry.try_get<SStaticMeshComponent>(Entity))
+                if (const SStaticMeshComponent* SMC = Registry.try_get<SStaticMeshComponent>(Entity))
                 {
                     Mesh = SMC->StaticMesh.Get();
                 }
@@ -1524,32 +1605,45 @@ namespace Lumina::Physics
 
             if (Mesh == nullptr || Mesh->HasAnyFlag(OF_NeedsLoad) || Mesh->GetMeshResource().MeshletData.IsEmpty())
             {
-                PendingRigidBodyCreations.push(Entity);
-                return;
+                return EBodyBuildStatus::Defer;
             }
 
             Shape = BuildMeshColliderShape(Mesh, TransformComponent->GetScale(), MC->bConvex);
             if (Shape == nullptr)
             {
-                return LOG_ERROR("Failed to create MeshCollider Shape for Entity: {}", entt::to_integral(Entity));
+                LOG_ERROR("Failed to create MeshCollider Shape for Entity: {}", entt::to_integral(Entity));
+                return EBodyBuildStatus::Error;
             }
 
             bIsTriangleMesh = !MC->bConvex;
         }
+        else if (const STerrainColliderComponent* TC = Registry.try_get<STerrainColliderComponent>(Entity))
+        {
+            bColliderIsTrigger = TC->bIsTrigger;
+
+            const STerrainComponent* Terrain = Registry.try_get<STerrainComponent>(Entity);
+            if (Terrain == nullptr || Terrain->Heightmap.empty())
+            {
+                return EBodyBuildStatus::Defer;
+            }
+
+            Shape = BuildTerrainHeightFieldShape(*Terrain);
+            if (Shape == nullptr)
+            {
+                LOG_ERROR("Failed to create TerrainCollider Shape for Entity: {}", entt::to_integral(Entity));
+                return EBodyBuildStatus::Error;
+            }
+
+            // HeightFieldShape::MustBeStatic() -> true; the body must be Static.
+            bIsTriangleMesh = true;
+        }
         else
         {
-            PendingRigidBodyCreations.push(Entity);
-            return;
+            return EBodyBuildStatus::NoCollider;
         }
 
-        SRigidBodyComponent& RigidBodyComponent = Registry.get<SRigidBodyComponent>(Entity);
-        if (RigidBodyComponent.BodyID != JPH::BodyID::cInvalidBodyID)
-        {
-            return;
-        }
-        
-        JPH::ObjectLayer Layer      = JoltUtils::PackToObjectLayer(RigidBodyComponent.CollisionProfile);
-        JPH::EMotionType MotionType = ToJoltMotionType(RigidBodyComponent.BodyType);
+        JPH::ObjectLayer Layer      = JoltUtils::PackToObjectLayer(RigidBodyComponent->CollisionProfile);
+        JPH::EMotionType MotionType = ToJoltMotionType(RigidBodyComponent->BodyType);
 
         // Jolt's triangle mesh shape only supports Static / Kinematic bodies.
         if (bIsTriangleMesh && MotionType == JPH::EMotionType::Dynamic)
@@ -1560,76 +1654,173 @@ namespace Lumina::Physics
 
         glm::quat Rotation      = TransformComponent->GetRotation();
         glm::vec3 Position      = TransformComponent->GetLocation();
-        
+
         glm::quat QuatRotation(ColliderRotationOffset);
         JPH::RotatedTranslatedShapeSettings RTS(JoltUtils::ToJPHVec3(ColliderTranslationOffset), JoltUtils::ToJPHQuat(QuatRotation), Shape);
         auto RTSResult = RTS.Create();
         if (RTSResult.HasError())
         {
             LOG_ERROR("Failed to create offset shape for Entity: {} - {}", entt::to_integral(Entity), RTSResult.GetError());
-            return;
+            return EBodyBuildStatus::Error;
         }
-        
+
         Shape = RTSResult.Get();
 
-        if (glm::dot(RigidBodyComponent.CenterOfMassOffset, RigidBodyComponent.CenterOfMassOffset) > 0.0f)
+        if (glm::dot(RigidBodyComponent->CenterOfMassOffset, RigidBodyComponent->CenterOfMassOffset) > 0.0f)
         {
-            JPH::OffsetCenterOfMassShapeSettings COMS(JoltUtils::ToJPHVec3(RigidBodyComponent.CenterOfMassOffset), Shape);
+            JPH::OffsetCenterOfMassShapeSettings COMS(JoltUtils::ToJPHVec3(RigidBodyComponent->CenterOfMassOffset), Shape);
             auto COMResult = COMS.Create();
             if (COMResult.HasError())
             {
                 LOG_ERROR("Failed to apply CenterOfMassOffset for Entity: {} - {}", entt::to_integral(Entity), COMResult.GetError());
-                return;
+                return EBodyBuildStatus::Error;
             }
             Shape = COMResult.Get();
         }
 
-        JPH::BodyCreationSettings Settings(
+        Out.Settings = JPH::BodyCreationSettings(
             Shape,
             JoltUtils::ToJPHRVec3(Position),
             JoltUtils::ToJPHQuat(Rotation),
             MotionType,
             Layer);
 
-        Settings.mNumPositionStepsOverride  = RigidBodyComponent.NumPositionStepsOverride;
-        Settings.mNumVelocityStepsOverride  = RigidBodyComponent.NumVelocityStepsOverride;
+        Out.Settings.mNumPositionStepsOverride  = RigidBodyComponent->NumPositionStepsOverride;
+        Out.Settings.mNumVelocityStepsOverride  = RigidBodyComponent->NumVelocityStepsOverride;
         // Either the rigid body's own bIsSensor or the collider's bIsTrigger turns this body
         // into a query-only sensor. The collider flag is the friendlier "trigger box" path.
-        Settings.mIsSensor                  = RigidBodyComponent.bIsSensor || bColliderIsTrigger;
-        Settings.mUseManifoldReduction      = RigidBodyComponent.bUseManifoldReduction;
-        Settings.mApplyGyroscopicForce      = RigidBodyComponent.bApplyGyroscopicForce;
-        Settings.mMotionQuality             = RigidBodyComponent.MotionQualityLevel == 0 ? JPH::EMotionQuality::Discrete : JPH::EMotionQuality::LinearCast;
-        Settings.mMaxLinearVelocity         = RigidBodyComponent.MaxLinearVelocity;
-        Settings.mMaxAngularVelocity        = RigidBodyComponent.MaxAngularVelocity;
-        Settings.mRestitution               = RigidBodyComponent.RestitutionOverride;
-        Settings.mFriction                  = RigidBodyComponent.FrictionOverride;
-        Settings.mAngularDamping            = RigidBodyComponent.AngularDamping;
-        Settings.mLinearDamping             = RigidBodyComponent.LinearDamping;
+        Out.Settings.mIsSensor                  = RigidBodyComponent->bIsSensor || bColliderIsTrigger;
+        Out.Settings.mUseManifoldReduction      = RigidBodyComponent->bUseManifoldReduction;
+        Out.Settings.mApplyGyroscopicForce      = RigidBodyComponent->bApplyGyroscopicForce;
+        Out.Settings.mMotionQuality             = RigidBodyComponent->MotionQualityLevel == 0 ? JPH::EMotionQuality::Discrete : JPH::EMotionQuality::LinearCast;
+        Out.Settings.mMaxLinearVelocity         = RigidBodyComponent->MaxLinearVelocity;
+        Out.Settings.mMaxAngularVelocity        = RigidBodyComponent->MaxAngularVelocity;
+        Out.Settings.mRestitution               = RigidBodyComponent->RestitutionOverride;
+        Out.Settings.mFriction                  = RigidBodyComponent->FrictionOverride;
+        Out.Settings.mAngularDamping            = RigidBodyComponent->AngularDamping;
+        Out.Settings.mLinearDamping             = RigidBodyComponent->LinearDamping;
 
-        if (RigidBodyComponent.bOverrideMass && MotionType == JPH::EMotionType::Dynamic)
+        if (RigidBodyComponent->bOverrideMass && MotionType == JPH::EMotionType::Dynamic)
         {
-            Settings.mOverrideMassProperties           = JPH::EOverrideMassProperties::CalculateInertia;
-            Settings.mMassPropertiesOverride.mMass     = RigidBodyComponent.Mass;
+            Out.Settings.mOverrideMassProperties        = JPH::EOverrideMassProperties::CalculateInertia;
+            Out.Settings.mMassPropertiesOverride.mMass  = RigidBodyComponent->Mass;
         }
 
-        JPH::BodyInterface& BodyInterface   = JoltSystem->GetBodyInterface();
-        JPH::Body* Body                     = BodyInterface.CreateBody(Settings);
-        
+        Out.LastBodyPosition = Position;
+        Out.LastBodyRotation = Rotation;
+
+        return EBodyBuildStatus::Success;
+    }
+
+    void FJoltPhysicsScene::OnRigidBodyComponentConstructed(entt::registry& Registry, entt::entity Entity)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        FRigidBodyBuildResult BuildResult;
+        const EBodyBuildStatus Status = TryBuildRigidBodyCreationSettings(Registry, Entity, BuildResult);
+
+        switch (Status)
+        {
+        case EBodyBuildStatus::Defer:
+        case EBodyBuildStatus::NoCollider:
+            PendingRigidBodyCreations.push(Entity);
+            return;
+        case EBodyBuildStatus::AlreadyExists:
+        case EBodyBuildStatus::Error:
+            return;
+        case EBodyBuildStatus::Success:
+            break;
+        }
+
+        JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
+        JPH::Body* Body                   = BodyInterface.CreateBody(BuildResult.Settings);
+
         if (Body == nullptr)
         {
             LOG_ERROR("Failed to create body for Entity: {}", entt::to_integral(Entity));
             return;
         }
-        
-        Body->SetUserData(static_cast<uint64>(Entity));
-        RigidBodyComponent.BodyID           = Body->GetID().GetIndexAndSequenceNumber();
 
-        // Seed interpolation state so the first frame blends correctly instead of
-        // snapping from an uninitialized quaternion (which produces NaN on normalize).
-        RigidBodyComponent.LastBodyPosition = Position;
-        RigidBodyComponent.LastBodyRotation = Rotation;
+        Body->SetUserData(static_cast<uint64>(Entity));
+
+        SRigidBodyComponent& RigidBodyComponent = Registry.get<SRigidBodyComponent>(Entity);
+        RigidBodyComponent.BodyID               = Body->GetID().GetIndexAndSequenceNumber();
+        RigidBodyComponent.LastBodyPosition     = BuildResult.LastBodyPosition;
+        RigidBodyComponent.LastBodyRotation     = BuildResult.LastBodyRotation;
 
         BodyInterface.AddBody(Body->GetID(), JPH::EActivation::Activate);
+    }
+
+    void FJoltPhysicsScene::BulkCreateRigidBodies(entt::registry& Registry)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        TVector<entt::entity> Candidates;
+        auto View = Registry.view<SRigidBodyComponent>();
+        Candidates.reserve(View.size_hint());
+        for (entt::entity Entity : View)
+        {
+            Candidates.push_back(Entity);
+        }
+
+        const uint32 Count = (uint32)Candidates.size();
+        if (Count == 0)
+        {
+            return;
+        }
+
+        TVector<FRigidBodyBuildResult> Results(Count);
+        TVector<EBodyBuildStatus>      Statuses(Count, EBodyBuildStatus::Error);
+
+
+        Task::ParallelFor(Count, [&](uint32 Index)
+        {
+            Statuses[Index] = TryBuildRigidBodyCreationSettings(Registry, Candidates[Index], Results[Index]);
+        });
+
+
+        JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
+        TVector<JPH::BodyID> BodyIDsToAdd;
+        BodyIDsToAdd.reserve(Count);
+
+        for (uint32 i = 0; i < Count; ++i)
+        {
+            const entt::entity Entity = Candidates[i];
+            switch (Statuses[i])
+            {
+            case EBodyBuildStatus::Defer:
+            case EBodyBuildStatus::NoCollider:
+                PendingRigidBodyCreations.push(Entity);
+                continue;
+            case EBodyBuildStatus::AlreadyExists:
+            case EBodyBuildStatus::Error:
+                continue;
+            case EBodyBuildStatus::Success:
+                break;
+            }
+
+            JPH::Body* Body = BodyInterface.CreateBody(Results[i].Settings);
+            if (Body == nullptr)
+            {
+                LOG_ERROR("Failed to create body for Entity: {}", entt::to_integral(Entity));
+                continue;
+            }
+
+            Body->SetUserData(static_cast<uint64>(Entity));
+
+            SRigidBodyComponent& RigidBodyComponent = Registry.get<SRigidBodyComponent>(Entity);
+            RigidBodyComponent.BodyID               = Body->GetID().GetIndexAndSequenceNumber();
+            RigidBodyComponent.LastBodyPosition     = Results[i].LastBodyPosition;
+            RigidBodyComponent.LastBodyRotation     = Results[i].LastBodyRotation;
+
+            BodyIDsToAdd.push_back(Body->GetID());
+        }
+
+        if (!BodyIDsToAdd.empty())
+        {
+            JPH::BodyInterface::AddState AddState = BodyInterface.AddBodiesPrepare(BodyIDsToAdd.data(), (int)BodyIDsToAdd.size());
+            BodyInterface.AddBodiesFinalize(BodyIDsToAdd.data(), (int)BodyIDsToAdd.size(), AddState, JPH::EActivation::Activate);
+        }
     }
 
     void FJoltPhysicsScene::OnRigidBodyComponentDestroyed(entt::registry& Registry, entt::entity Entity)

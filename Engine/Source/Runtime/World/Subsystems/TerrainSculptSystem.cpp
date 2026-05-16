@@ -111,7 +111,33 @@ namespace Lumina
             return;
         }
 
-        const glm::ivec4 Rect = ComputeSampleRect(Terrain, Dab.TerrainOrigin, Dab.WorldPosition, Dab.Radius);
+        glm::ivec4 Rect;
+        if (Dab.Mode == ETerrainBrushMode::Ramp)
+        {
+            // Tight AABB of the start->end segment padded by half-width. Building it
+            // from two rect-unions instead of a circumscribing circle keeps the parallel
+            // scan limited to roughly the ramp's footprint on long diagonals.
+            const glm::ivec4 R1 = ComputeSampleRect(Terrain, Dab.TerrainOrigin, Dab.RampStart, Dab.RampHalfWidth);
+            const glm::ivec4 R2 = ComputeSampleRect(Terrain, Dab.TerrainOrigin, Dab.RampEnd,   Dab.RampHalfWidth);
+            const bool V1 = !(R1.z < R1.x || R1.w < R1.y);
+            const bool V2 = !(R2.z < R2.x || R2.w < R2.y);
+            if (!V1 && !V2)
+            {
+                return;
+            }
+            if (V1 && V2)
+            {
+                Rect = glm::ivec4(std::min(R1.x, R2.x), std::min(R1.y, R2.y), std::max(R1.z, R2.z), std::max(R1.w, R2.w));
+            }
+            else
+            {
+                Rect = V1 ? R1 : R2;
+            }
+        }
+        else
+        {
+            Rect = ComputeSampleRect(Terrain, Dab.TerrainOrigin, Dab.WorldPosition, Dab.Radius);
+        }
         if (Rect.z < Rect.x || Rect.w < Rect.y)
         {
             return;
@@ -122,6 +148,8 @@ namespace Lumina
         case ETerrainBrushMode::Sculpt:  ApplySculpt (Terrain, Dab, Rect); break;
         case ETerrainBrushMode::Flatten: ApplyFlatten(Terrain, Dab, Rect); break;
         case ETerrainBrushMode::Smooth:  ApplySmooth (Terrain, Dab, Rect); break;
+        case ETerrainBrushMode::Noise:   ApplyNoise  (Terrain, Dab, Rect); break;
+        case ETerrainBrushMode::Ramp:    ApplyRamp   (Terrain, Dab, Rect); break;
         case ETerrainBrushMode::Paint:   ApplyPaint  (Terrain, Dab, Rect); break;
         }
 
@@ -211,19 +239,35 @@ namespace Lumina
 
     void FTerrainSculptSystem::ApplySmooth(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect)
     {
-        // 3x3 box-blur read against the previous frame. Because rows are disjoint on
-        // write, sampling neighbors on the same snapshot is race-free inside a dab.
-        const float Stride = Terrain.TileWorldSize / float(Terrain.Resolution - 1);
+        // 3x3 box-blur read against a snapshot of only the affected rect (plus a 1px
+        // apron for neighbor sampling). Copying the full heightmap each dab was costing
+        // multiple MB of allocation traffic at 1025x1025 and dominated the brush's
+        // per-frame cost.
+        const int32 Res    = Terrain.Resolution;
+        const float Stride = Terrain.TileWorldSize / float(Res - 1);
         const float Speed  = glm::clamp(Dab.Strength * Dab.DeltaSeconds, 0.0f, 1.0f);
         const float Radius = Dab.Radius;
         const glm::vec2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
 
-        TVector<float> Snapshot = Terrain.Heightmap;
+        const int32 SnapMinX = std::max(Rect.x - 1, 0);
+        const int32 SnapMinY = std::max(Rect.y - 1, 0);
+        const int32 SnapMaxX = std::min(Rect.z + 1, Res - 1);
+        const int32 SnapMaxY = std::min(Rect.w + 1, Res - 1);
+        const int32 SnapW    = SnapMaxX - SnapMinX + 1;
+        const int32 SnapH    = SnapMaxY - SnapMinY + 1;
+
+        TVector<float> Snapshot;
+        Snapshot.resize(size_t(SnapW) * size_t(SnapH));
+        for (int32 Y = 0; Y < SnapH; ++Y)
+        {
+            const float* SrcRow = &Terrain.Heightmap[size_t(SnapMinY + Y) * size_t(Res) + size_t(SnapMinX)];
+            float*       DstRow = &Snapshot[size_t(Y) * size_t(SnapW)];
+            std::memcpy(DstRow, SrcRow, size_t(SnapW) * sizeof(float));
+        }
 
         const int32 RowCount = Rect.w - Rect.y + 1;
-        Task::ParallelFor((uint32)RowCount, [&, Rect, Radius, Speed, Stride, OriginXZ](const Task::FParallelRange& Range)
+        Task::ParallelFor((uint32)RowCount, [&, Rect, Radius, Speed, Stride, OriginXZ, SnapMinX, SnapMinY, SnapW](const Task::FParallelRange& Range)
         {
-            const int32 Res = Terrain.Resolution;
             for (uint32 RowIdx = Range.Start; RowIdx < Range.End; ++RowIdx)
             {
                 int Y = Rect.y + int(RowIdx);
@@ -245,7 +289,7 @@ namespace Lumina
                     {
                         for (int XX = std::max(X - 1, 0); XX <= std::min(X + 1, Res - 1); ++XX)
                         {
-                            Sum += Snapshot[YY * Res + XX];
+                            Sum += Snapshot[size_t(YY - SnapMinY) * size_t(SnapW) + size_t(XX - SnapMinX)];
                             ++Count;
                         }
                     }
@@ -253,6 +297,147 @@ namespace Lumina
 
                     float& H = Terrain.Heightmap[Y * Res + X];
                     H = glm::mix(H, Avg, Speed * W);
+                }
+            }
+        }, 64u);
+    }
+
+    namespace
+    {
+        // Cheap 2D value-hash noise (no glm::perlin dependency, predictable across
+        // platforms). Used for the Noise brush; quality is fine for fbm sculpting.
+        inline float Hash2D(int X, int Y)
+        {
+            uint32 N = uint32(X) * 374761393u + uint32(Y) * 668265263u;
+            N = (N ^ (N >> 13u)) * 1274126177u;
+            N = N ^ (N >> 16u);
+            return float(N & 0x00FFFFFFu) / float(0x00FFFFFF);
+        }
+
+        inline float ValueNoise2D(float X, float Y)
+        {
+            const int Xi = int(std::floor(X));
+            const int Yi = int(std::floor(Y));
+            const float Fx = X - float(Xi);
+            const float Fy = Y - float(Yi);
+            const float Ux = Fx * Fx * (3.0f - 2.0f * Fx);
+            const float Uy = Fy * Fy * (3.0f - 2.0f * Fy);
+            const float V00 = Hash2D(Xi,     Yi);
+            const float V10 = Hash2D(Xi + 1, Yi);
+            const float V01 = Hash2D(Xi,     Yi + 1);
+            const float V11 = Hash2D(Xi + 1, Yi + 1);
+            const float A = glm::mix(V00, V10, Ux);
+            const float B = glm::mix(V01, V11, Ux);
+            return glm::mix(A, B, Uy) * 2.0f - 1.0f;   // [-1, 1]
+        }
+
+        inline float Fbm2D(float X, float Y, int Octaves)
+        {
+            float Sum = 0.0f;
+            float Amp = 1.0f;
+            float Freq = 1.0f;
+            float Norm = 0.0f;
+            for (int i = 0; i < Octaves; ++i)
+            {
+                Sum  += ValueNoise2D(X * Freq, Y * Freq) * Amp;
+                Norm += Amp;
+                Amp  *= 0.5f;
+                Freq *= 2.0f;
+            }
+            return (Norm > 0.0f) ? (Sum / Norm) : 0.0f;
+        }
+    }
+
+    void FTerrainSculptSystem::ApplyNoise(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect)
+    {
+        const int32 Res    = Terrain.Resolution;
+        const float Stride = Terrain.TileWorldSize / float(Res - 1);
+        const float Radius = Dab.Radius;
+        const float DeltaPerSecond = (Dab.Strength * Dab.DeltaSeconds * float(Dab.SculptSign)) / Terrain.MaxHeight;
+        const float Freq = std::max(Dab.NoiseFrequency, 1e-6f);
+        const int   Octaves = glm::clamp(Dab.NoiseOctaves, 1, 8);
+        const glm::vec2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
+
+        const int32 RowCount = Rect.w - Rect.y + 1;
+        Task::ParallelFor((uint32)RowCount, [&, Rect, Radius, DeltaPerSecond, Stride, OriginXZ, Freq, Octaves](const Task::FParallelRange& Range)
+        {
+            for (uint32 RowIdx = Range.Start; RowIdx < Range.End; ++RowIdx)
+            {
+                int Y = Rect.y + int(RowIdx);
+                float WorldZ = OriginXZ.y + float(Y) * Stride;
+                float DZ = WorldZ - Dab.WorldPosition.z;
+                for (int X = Rect.x; X <= Rect.z; ++X)
+                {
+                    float WorldX = OriginXZ.x + float(X) * Stride;
+                    float DX = WorldX - Dab.WorldPosition.x;
+                    float W = BrushWeight(DX * DX + DZ * DZ, Radius, Dab.Falloff);
+                    if (W <= 0.0f)
+                    {
+                        continue;
+                    }
+
+                    const float N = Fbm2D(WorldX * Freq, WorldZ * Freq, Octaves);
+                    float& H = Terrain.Heightmap[Y * Res + X];
+                    H = glm::clamp(H + DeltaPerSecond * W * N, 0.0f, 1.0f);
+                }
+            }
+        }, 64u);
+    }
+
+    void FTerrainSculptSystem::ApplyRamp(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect)
+    {
+        const int32 Res    = Terrain.Resolution;
+        const float Stride = Terrain.TileWorldSize / float(Res - 1);
+        const float Speed  = glm::clamp(Dab.Strength * Dab.DeltaSeconds, 0.0f, 1.0f);
+        const glm::vec2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
+
+        const glm::vec2 A   = glm::vec2(Dab.RampStart.x, Dab.RampStart.z);
+        const glm::vec2 B   = glm::vec2(Dab.RampEnd.x,   Dab.RampEnd.z);
+        const glm::vec2 AB  = B - A;
+        const float ABLen2  = glm::dot(AB, AB);
+        if (ABLen2 < 1e-3f)
+        {
+            return;
+        }
+
+        const float MaxH = std::max(Terrain.MaxHeight, 1e-3f);
+        const float StartN = Dab.RampUseExplicitHeights
+            ? glm::clamp(Dab.RampStartHeight / MaxH, 0.0f, 1.0f)
+            : glm::clamp(Dab.RampStart.y / MaxH, 0.0f, 1.0f);
+        const float EndN = Dab.RampUseExplicitHeights
+            ? glm::clamp(Dab.RampEndHeight / MaxH, 0.0f, 1.0f)
+            : glm::clamp(Dab.RampEnd.y / MaxH, 0.0f, 1.0f);
+
+        const float HalfWidth = std::max(Dab.RampHalfWidth, Stride);
+
+        const int32 RowCount = Rect.w - Rect.y + 1;
+        Task::ParallelFor((uint32)RowCount, [&, Rect, Speed, Stride, OriginXZ, A, AB, ABLen2, StartN, EndN, HalfWidth](const Task::FParallelRange& Range)
+        {
+            for (uint32 RowIdx = Range.Start; RowIdx < Range.End; ++RowIdx)
+            {
+                int Y = Rect.y + int(RowIdx);
+                float WorldZ = OriginXZ.y + float(Y) * Stride;
+                for (int X = Rect.x; X <= Rect.z; ++X)
+                {
+                    float WorldX = OriginXZ.x + float(X) * Stride;
+
+                    const glm::vec2 P  = glm::vec2(WorldX, WorldZ) - A;
+                    const float T      = glm::clamp(glm::dot(P, AB) / ABLen2, 0.0f, 1.0f);
+                    const glm::vec2 C  = AB * T;
+                    const float Perp2  = glm::dot(P - C, P - C);
+                    const float Perp   = std::sqrt(Perp2);
+                    if (Perp > HalfWidth)
+                    {
+                        continue;
+                    }
+
+                    const float Edge = Perp / HalfWidth;       // 0 center, 1 edge
+                    const float Lat  = 1.0f - Edge;            // lateral weight
+                    const float Soft = glm::mix(1.0f, Lat * Lat * (3.0f - 2.0f * Lat), Dab.Falloff);
+
+                    const float Target = glm::mix(StartN, EndN, T);
+                    float& H = Terrain.Heightmap[Y * Res + X];
+                    H = glm::mix(H, Target, Speed * Soft);
                 }
             }
         }, 64u);

@@ -7,7 +7,8 @@
 #include "Core/Delegates/Delegate.h"
 #include "Core/Object/Class.h"
 #include "NavMeshEditMode.h"
-#include "TerrainEditMode.h"
+#include "WorldEditorMode.h"
+#include "Memory/Memory.h"
 #include "Tools/UI/ImGui/Widgets/TreeListView.h"
 #include "UI/Properties/PropertyTable.h"
 #include "World/Entity/Components/NameComponent.h"
@@ -239,6 +240,18 @@ namespace Lumina
          *  Called from OnInitialize. */
         void RegisterEditorActions();
 
+        /** Build the editor-mode registry. Selection mode is always first. New
+         *  modes (foliage, painting, splines, etc.) are added by appending to
+         *  EditorModes here. */
+        void RegisterEditorModes();
+
+        /** Current viewport mode. Always non-null after OnInitialize. */
+        NODISCARD IWorldEditorMode* GetActiveMode() const;
+
+        /** Switch the active mode by registry index. Drives OnEnter/OnExit and
+         *  clears any half-finished gizmo / vertex-snap state from the prior mode. */
+        void SetActiveMode(int32 NewIndex);
+
     private:
 
         struct FSelectionBox
@@ -294,7 +307,13 @@ namespace Lumina
         entt::entity                            DetailsEntity = entt::null;
         bool                                    bDetailsDirty = false;
 
-        FTerrainEditMode                        TerrainEditMode;
+        // Registered viewport modes; index 0 is always the default Selection mode so
+        // initial state matches the pre-mode-system behavior. SetActiveMode handles
+        // OnEnter/OnExit hooks and resets gizmo bookkeeping so partial-drag state
+        // can't leak across a mode switch.
+        TVector<TUniquePtr<IWorldEditorMode>>   EditorModes;
+        int32                                   ActiveModeIndex = 0;
+
         FNavMeshEditMode                        NavMeshEditMode;
 
         // Viewport-local transform clipboard (Ctrl+Shift+C / Ctrl+Shift+V). Captured from

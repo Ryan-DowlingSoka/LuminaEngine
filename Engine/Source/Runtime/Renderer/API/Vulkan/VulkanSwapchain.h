@@ -39,6 +39,7 @@ namespace Lumina
         FORCEINLINE const glm::uvec2& GetSwapchainExtent() const { return SwapchainExtent; }
         
         TRefCountPtr<FVulkanImage> GetCurrentImage() const;
+        FORCEINLINE VkSemaphore GetCurrentPresentSemaphore() const { return PresentSemaphores[CurrentImageIndex]; }
 
         bool AcquireNextImage();
         bool Present();

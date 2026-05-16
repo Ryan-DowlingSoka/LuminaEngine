@@ -16,19 +16,17 @@ namespace Lumina
         FSaveContext(CPackage* InPackage)
             :CurrentPackage(InPackage)
         {}
-        
+
         friend class FSaveReferenceBuilderArchive;
 
-        void AddImport(CObject* Import);
-        void AddExport(CObject* Export);
+        /** Returns true if Export was newly inserted (caller should recurse into Serialize). */
+        bool AddExport(CObject* Export);
 
-        
+
         THashSet<CObject*> SeenExports;
-        THashSet<CObject*> SeenImports;
-        
-        TVector<CObject*> Imports;
+
         TVector<CObject*> Exports;
-        
+
         CPackage* CurrentPackage;
     };
 
@@ -56,10 +54,12 @@ namespace Lumina
         FSaveContext* SaveContext;
     };
     
+    struct FObjectImport;
+
     class FPackageSaver : public FMemoryWriter
     {
     public:
-        
+
         using FArchive::operator<<;
 
         explicit FPackageSaver(TVector<uint8>& InBytes, CPackage* InPackage)
@@ -69,6 +69,11 @@ namespace Lumina
 
         virtual FArchive& operator<<(CObject*& Value) override;
         virtual FArchive& operator<<(FObjectHandle& Value) override;
+
+        /** Build the package's ImportTable from the order in which imports were discovered while writing exports. */
+        void PopulateImportTable(TVector<FObjectImport>& Out) const;
+
+        uint32 GetImportCount() const { return CurrentImportIndex; }
 
     private:
 

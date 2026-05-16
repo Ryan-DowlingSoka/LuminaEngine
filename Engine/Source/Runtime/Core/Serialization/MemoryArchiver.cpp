@@ -21,6 +21,22 @@ namespace Lumina
         LimitSize = NewLimitSize;
     }
 
+    void FMemoryReader::Seek(int64 InPos)
+    {
+        // Clamp + flag instead of letting a corrupt offset land at a negative
+        // or out-of-range position; downstream Serialize() would then index
+        // through a junk pointer.
+        const int64 Total = TotalSize();
+        if (InPos < 0 || InPos > Total)
+        {
+            LOG_ERROR("FMemoryReader::Seek out of range: pos={}, size={}", InPos, Total);
+            SetHasError(true);
+            Offset = (InPos < 0) ? 0 : Total;
+            return;
+        }
+        Offset = InPos;
+    }
+
     void FMemoryReader::Serialize(void* V, int64 Size)
     {
         if ((Size) && !HasError())
@@ -75,8 +91,13 @@ namespace Lumina
 
     void FBufferReader::Seek(int64 InPos)
     {
-        DEBUG_ASSERT(InPos >= 0);
-        DEBUG_ASSERT(InPos <= ReaderSize);
+        if (InPos < 0 || InPos > ReaderSize)
+        {
+            LOG_ERROR("FBufferReader::Seek out of range: pos={}, size={}", InPos, ReaderSize);
+            SetHasError(true);
+            ReaderPos = (InPos < 0) ? 0 : ReaderSize;
+            return;
+        }
         ReaderPos = InPos;
     }
     

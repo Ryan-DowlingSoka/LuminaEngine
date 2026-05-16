@@ -258,69 +258,69 @@ namespace Lumina
         ImGui::SameLine(0, 6);
         ImGui::SetNextItemWidth(-1);
 
-        ImGuiInputTextFlags InputFlags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_EscapeClearsAll;
-
-        bool bExecuteCommand = ImGui::InputTextWithHint("##CommandInput", "enter command or console variable...", CurrentCommand.data(), CurrentCommand.max_size(), InputFlags);
-        CurrentCommand = FFixedString(CurrentCommand.data(), strlen(CurrentCommand.data()));
-
-        if (ImGui::IsItemEdited())
+        if (bFocusInput)
         {
-            UpdateAutoComplete(CurrentCommand);
-        }
-        
-        if (bExecuteCommand && !CurrentCommand.empty())
-        {
-            ProcessCommand(CurrentCommand);
-            AddCommandToHistory(CurrentCommand);
-            CurrentCommand.clear();
-            bNeedsScrollToBottom = true;
-            bShowAutoComplete = false;
+            ImGui::SetKeyboardFocusHere();
+            bFocusInput = false;
         }
 
-        bool bInputFocused = ImGui::IsItemFocused();
+        const ImGuiInputTextFlags InputFlags =
+            ImGuiInputTextFlags_EnterReturnsTrue |
+            ImGuiInputTextFlags_CallbackCompletion |
+            ImGuiInputTextFlags_CallbackHistory |
+            ImGuiInputTextFlags_CallbackEdit |
+            ImGuiInputTextFlags_CallbackAlways;
 
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(2);
+        const bool bExecuteCommand = ImGui::InputTextWithHint(
+            "##CommandInput",
+            "enter command or console variable...",
+            InputBuffer,
+            sizeof(InputBuffer),
+            InputFlags,
+            &FConsoleLogEditorTool::InputTextCallbackStub,
+            this);
 
-        if (bInputFocused && bShowAutoComplete && !AutoCompleteCandidates.empty())
+        const bool bInputActive = ImGui::IsItemActive();
+
+        if (bExecuteCommand)
         {
-            if (ImGui::IsKeyPressed(ImGuiKey_Tab))
+            FStringView Command(InputBuffer);
+            if (!Command.empty())
             {
-                if (AutoCompleteSelectedIndex >= 0 && std::cmp_less(AutoCompleteSelectedIndex, AutoCompleteCandidates.size()))
-                {
-                    CurrentCommand = AutoCompleteCandidates[AutoCompleteSelectedIndex].Name.data();
-                    bShowAutoComplete = false;
-                }
+                ProcessCommand(Command);
+                AddCommandToHistory(Command);
+                InputBuffer[0] = '\0';
+                bNeedsScrollToBottom = true;
+                bShowAutoComplete = false;
+                AutoCompleteCandidates.clear();
             }
-            else if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))
-            {
-                AutoCompleteSelectedIndex = (AutoCompleteSelectedIndex + 1) % AutoCompleteCandidates.size();
-            }
-            else if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))
-            {
-                AutoCompleteSelectedIndex--;
-                if (AutoCompleteSelectedIndex < 0)
-                {
-                    AutoCompleteSelectedIndex = AutoCompleteCandidates.size() - 1;
-                }
-            }
+            bFocusInput = true;
         }
-        else if (bInputFocused && !bShowAutoComplete)
+
+        if (bInputActive && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
         {
-            if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+            if (bShowAutoComplete)
             {
-                NavigateHistory(-1);
+                bShowAutoComplete = false;
+                AutoCompleteCandidates.clear();
             }
-            else if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+            else if (bShowHistory)
             {
-                NavigateHistory(1);
+                bShowHistory = false;
+            }
+            else if (InputBuffer[0] != '\0')
+            {
+                InputBuffer[0] = '\0';
             }
         }
 
-        if (bInputFocused && ImGui::IsKeyPressed(ImGuiKey_Space) && (ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeySuper))
+        if (bInputActive && ImGui::IsKeyPressed(ImGuiKey_Space) && (ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeySuper))
         {
             bShowHistory = !bShowHistory;
         }
+
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(2);
 
         if (bShowAutoComplete && !AutoCompleteCandidates.empty())
         {
@@ -331,6 +331,112 @@ namespace Lumina
         {
             DrawHistoryPopup();
         }
+    }
+
+    int FConsoleLogEditorTool::InputTextCallbackStub(ImGuiInputTextCallbackData* Data)
+    {
+        FConsoleLogEditorTool* Self = static_cast<FConsoleLogEditorTool*>(Data->UserData);
+        return Self->InputTextCallback(Data);
+    }
+
+    int FConsoleLogEditorTool::InputTextCallback(ImGuiInputTextCallbackData* Data)
+    {
+        switch (Data->EventFlag)
+        {
+            case ImGuiInputTextFlags_CallbackAlways:
+            {
+                if (bPendingBufferReplacement)
+                {
+                    Data->DeleteChars(0, Data->BufTextLen);
+                    Data->InsertChars(0, PendingBufferReplacement.c_str());
+                    Data->CursorPos = Data->BufTextLen;
+                    Data->SelectionStart = Data->SelectionEnd = Data->CursorPos;
+                    bPendingBufferReplacement = false;
+                    PendingBufferReplacement.clear();
+                }
+                break;
+            }
+            case ImGuiInputTextFlags_CallbackEdit:
+            {
+                FStringView Current(Data->Buf, (size_t)Data->BufTextLen);
+                UpdateAutoComplete(Current);
+                break;
+            }
+            case ImGuiInputTextFlags_CallbackCompletion:
+            {
+                if (bShowAutoComplete && !AutoCompleteCandidates.empty())
+                {
+                    int32 Index = AutoCompleteSelectedIndex;
+                    if (Index < 0 || Index >= (int32)AutoCompleteCandidates.size())
+                    {
+                        Index = 0;
+                    }
+
+                    FStringView Replacement = AutoCompleteCandidates[Index].Name;
+                    Data->DeleteChars(0, Data->BufTextLen);
+                    Data->InsertChars(0, Replacement.data(), Replacement.data() + Replacement.size());
+                    Data->CursorPos = Data->BufTextLen;
+                    bShowAutoComplete = false;
+                    AutoCompleteCandidates.clear();
+                }
+                break;
+            }
+            case ImGuiInputTextFlags_CallbackHistory:
+            {
+                if (bShowAutoComplete && !AutoCompleteCandidates.empty())
+                {
+                    if (Data->EventKey == ImGuiKey_DownArrow)
+                    {
+                        AutoCompleteSelectedIndex = (AutoCompleteSelectedIndex + 1) % (int32)AutoCompleteCandidates.size();
+                    }
+                    else if (Data->EventKey == ImGuiKey_UpArrow)
+                    {
+                        AutoCompleteSelectedIndex--;
+                        if (AutoCompleteSelectedIndex < 0)
+                        {
+                            AutoCompleteSelectedIndex = (int32)AutoCompleteCandidates.size() - 1;
+                        }
+                    }
+                }
+                else
+                {
+                    const uint64 PrevHistoryIndex = HistoryIndex;
+                    if (Data->EventKey == ImGuiKey_UpArrow)
+                    {
+                        NavigateHistory(-1);
+                    }
+                    else if (Data->EventKey == ImGuiKey_DownArrow)
+                    {
+                        NavigateHistory(1);
+                    }
+
+                    if (HistoryIndex != PrevHistoryIndex)
+                    {
+                        const FString& Replacement = (HistoryIndex < CommandHistory.size())
+                            ? CommandHistory[HistoryIndex]
+                            : FString();
+                        Data->DeleteChars(0, Data->BufTextLen);
+                        if (!Replacement.empty())
+                        {
+                            Data->InsertChars(0, Replacement.c_str());
+                        }
+                        Data->CursorPos = Data->BufTextLen;
+                    }
+                }
+                break;
+            }
+            default: break;
+        }
+        return 0;
+    }
+
+    void FConsoleLogEditorTool::ApplyCompletion(FStringView Replacement)
+    {
+        PendingBufferReplacement.assign(Replacement.data(), Replacement.size());
+        bPendingBufferReplacement = true;
+        bShowAutoComplete = false;
+        AutoCompleteCandidates.clear();
+        bFocusInput = true;
     }
 
     ImVec4 FConsoleLogEditorTool::GetColorForLevel(spdlog::level::level_enum Level)
@@ -421,20 +527,13 @@ namespace Lumina
             if (HistoryIndex > 0)
             {
                 HistoryIndex--;
-                CurrentCommand = CommandHistory[HistoryIndex].c_str();
             }
         }
         else if (Direction > 0)
         {
-            if (HistoryIndex < CommandHistory.size() - 1)
+            if (HistoryIndex < CommandHistory.size())
             {
                 HistoryIndex++;
-                CurrentCommand = CommandHistory[HistoryIndex].c_str();
-            }
-            else if (HistoryIndex == CommandHistory.size() - 1)
-            {
-                HistoryIndex++;
-                CurrentCommand.clear();
             }
         }
     }
@@ -541,8 +640,7 @@ namespace Lumina
                 
                 if (ImGui::Selectable("##Candidate", bIsSelected, 0, ImVec2(0, 0)))
                 {
-                    CurrentCommand = FFixedString(Candidate.Name.data(), Candidate.Name.size());
-                    bShowAutoComplete = false;
+                    ApplyCompletion(Candidate.Name);
                 }
 
                 ImGui::SameLine(0, 4);
@@ -630,7 +728,7 @@ namespace Lumina
                     
                     if (ImGui::Selectable(Cmd.c_str(), bIsSelected))
                     {
-                        CurrentCommand = Cmd.c_str();
+                        ApplyCompletion(Cmd);
                         bShowHistory = false;
                     }
 

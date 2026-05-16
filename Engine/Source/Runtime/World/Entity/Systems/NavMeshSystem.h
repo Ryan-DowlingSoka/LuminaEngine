@@ -51,6 +51,12 @@ namespace Lumina
         /** Returns negative when no path exists. */
         RUNTIME_API float PathLength(CWorld* World, const glm::vec3& From, const glm::vec3& To);
 
+        /** Visualize an FNavPath via the World's debug drawer. Lift offsets the polyline above the mesh. */
+        RUNTIME_API void DrawPath(CWorld* World, const FNavPath& Path, const glm::vec4& Color, float Thickness = 3.0f, float Lift = 0.15f, float Duration = 0.0f);
+
+        /** Convenience: FindPath + DrawPath. Returns true if a (possibly partial) path was found and drawn. */
+        RUNTIME_API bool DrawDebugPath(CWorld* World, const glm::vec3& From, const glm::vec3& To, const glm::vec4& Color, float Duration = 0.0f);
+
         RUNTIME_API void RegisterLuaModule(Lua::FRef& Globals);
     }
 }

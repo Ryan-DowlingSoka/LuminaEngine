@@ -40,6 +40,7 @@ struct PSInput
     float4 FragColor                : COLOR;
     float4 NormalVS                 : NORMAL_VS;
     float4 NormalWS                 : NORMAL_WS;
+    float4 TangentWS                : TANGENT_WS;
     float4 FragPos                  : FRAG_POS;
     float2 UV                       : TEXCOORD0;
     float2 HeightUV                 : HEIGHT_UV;
@@ -92,47 +93,26 @@ float3 FresnelSchlick(float CosTheta, float3 F0)
     return F0 + (1.0 - F0) * (x2 * x2 * x);
 }
 
-float3 GetWorldNormal(float3 FragNormal, float2 UV, float3 FragPos, float3 TangentSpaceNormal)
+// Vertex-tangent TBN; mirrors BasePixelPass::GetWorldNormal. The terrain VS
+// emits a smooth analytic tangent derived from the heightfield, so per-pixel
+// we just Gram-Schmidt it against the interpolated normal. Replaces a
+// screen-space-derivative TBN that went piecewise-flat per triangle and
+// produced visible lighting cut-offs along triangle edges.
+float3 GetWorldNormal(float3 FragNormal, float4 FragTangent, float3 TangentSpaceNormal)
 {
-    float3 Q1  = ddx(FragPos);
-    float3 Q2  = ddy(FragPos);
-    float2 St1 = ddx(UV);
-    float2 St2 = ddy(UV);
+    float3 N = normalize(FragNormal);
 
-    // See the matching GetWorldNormal in BasePixelPass.slang for the full
-    // rationale: normalize T/B before Gram-Schmidt so close-range tiny
-    // derivatives don't trip the "TBN collapsed, fall back" guard, and
-    // drive B from St1.x / St2.x so it follows the actual UV layout's
-    // dP/dv (cross(N, T) only matches dP/dv when T x B = N).
-    float3 T = Q1 * St2.y - Q2 * St1.y;
-    float3 B = Q2 * St1.x - Q1 * St2.x;
-
-    float TGeomLen2 = dot(T, T);
-    float BGeomLen2 = dot(B, B);
-    if (TGeomLen2 < 1e-20 || BGeomLen2 < 1e-20)
-    {
-        return FragNormal;
-    }
-    T *= rsqrt(TGeomLen2);
-    B *= rsqrt(BGeomLen2);
-
-    T = T - FragNormal * dot(T, FragNormal);
+    float3 T = FragTangent.xyz - N * dot(FragTangent.xyz, N);
     float TLen2 = dot(T, T);
-    if (TLen2 < 1e-6)
+    if (TLen2 < 1e-8)
     {
-        return FragNormal;
+        return N;
     }
     T *= rsqrt(TLen2);
 
-    B = B - FragNormal * dot(B, FragNormal) - T * dot(B, T);
-    float BLen2 = dot(B, B);
-    if (BLen2 < 1e-6)
-    {
-        return FragNormal;
-    }
-    B *= rsqrt(BLen2);
+    float3 B = cross(N, T) * FragTangent.w;
 
-    float3x3 TBN = float3x3(T, B, FragNormal);
+    float3x3 TBN = float3x3(T, B, N);
     return normalize(mul(TangentSpaceNormal, TBN));
 }
 
@@ -259,6 +239,13 @@ float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal
         return 1.0;
     }
 
+    // bCastShadows = false on the sun => ProcessDirectionalLight leaves
+    // ShadowDataIndex as INDEX_NONE. Treat as fully lit.
+    if (Light.ShadowDataIndex == INDEX_NONE)
+    {
+        return 1.0;
+    }
+
     int CascadeIndex = 0;
     for (int i = 0; i < NUM_CASCADES; ++i)
     {
@@ -296,8 +283,84 @@ float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal
         }
     }
 
+    // Final cascade: fade to fully lit over the outer slice so shadows
+    // dissolve at ShadowMaxDistance instead of popping off.
+    if (CascadeIndex + 1 == NUM_CASCADES)
+    {
+        const float FarFadeStart = 0.85;
+        if (LocalT > FarFadeStart)
+        {
+            float FadeT = saturate((LocalT - FarFadeStart) / (1.0 - FarFadeStart));
+            return lerp(ShadowA, 1.0, FadeT);
+        }
+    }
+
     return ShadowA;
 }
+
+int FindSunShadowDataIndexTerrain()
+{
+    if (uLightData[0].bHasSun == 0u)
+    {
+        return INDEX_NONE;
+    }
+    uint Count = GetNumLights();
+    for (uint i = 0; i < Count; ++i)
+    {
+        FLight L = GetLightAt(i);
+        if (HasFlag(L.Flags, ELightFlags::Directional) && L.ShadowDataIndex != INDEX_NONE)
+        {
+            return L.ShadowDataIndex;
+        }
+    }
+    return INDEX_NONE;
+}
+
+// Mirror of CascadeDebugColor in BasePixelPass.slang so terrain and meshes
+// share the same Shadow Cascades view-mode visualization.
+float3 CascadeDebugColorTerrain(float3 FragmentPos, float3 ViewPosition, float3 ShadedBase)
+{
+    int SunShadowIdx = FindSunShadowDataIndexTerrain();
+    if (SunShadowIdx == INDEX_NONE)
+    {
+        return float3(0.08, 0.08, 0.08);
+    }
+
+    int CascadeIndex = 0;
+    for (int i = 0; i < NUM_CASCADES; ++i)
+    {
+        if (ViewPosition.z > uLightData[0].CascadeSplits[i])
+            CascadeIndex = i + 1;
+    }
+    if (CascadeIndex >= NUM_CASCADES)
+    {
+        return float3(0.18, 0.18, 0.18);
+    }
+
+    float4x4 CascadeVP   = GetShadowViewProjection(SunShadowIdx, CascadeIndex);
+    float4   ShadowCoord = mul(CascadeVP, float4(FragmentPos, 1.0));
+    float3   ProjCoords  = ShadowCoord.xyz / max(ShadowCoord.w, 1e-6);
+    float2   ProjUV      = ProjCoords.xy * 0.5 + 0.5;
+    bool     Inside      = !(any(ProjUV < 0.0) || any(ProjUV > 1.0) ||
+                              ProjCoords.z < 0.0 || ProjCoords.z > 1.0);
+
+    const float3 CascadeTints[3] = {
+        float3(1.00, 0.25, 0.25),
+        float3(0.25, 1.00, 0.30),
+        float3(0.30, 0.45, 1.00),
+    };
+    float3 Tint = CascadeTints[CascadeIndex];
+
+    float Luma = saturate(dot(ShadedBase, float3(0.299, 0.587, 0.114)));
+    float3 Color = lerp(Tint * 0.4, Tint, 0.5 + 0.5 * Luma);
+
+    if (!Inside)
+    {
+        Color *= 0.35;
+    }
+    return Color;
+}
+
 
 float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3 V, float3 Albedo, float Roughness, float Metallic, float3 F0, float3 PrecomputedL, float PrecomputedDist)
 {
@@ -435,7 +498,7 @@ PSOutput FragmentMain(PSInput Input)
 
 #else
 
-    float3 N  = GetWorldNormal(WorldNormal, UV0, WorldPosition, Normal);
+    float3 N  = GetWorldNormal(WorldNormal, Input.TangentWS, Normal);
     float3 V  = normalize(GetCameraPosition() - WorldPosition);
 
     static const float3 F0_DIELECTRIC = float3(0.04);
@@ -539,6 +602,9 @@ PSOutput FragmentMain(PSInput Input)
                 Color = ClusterDebugColor(DbgIndex, uClusters[DbgIndex].Count);
                 break;
             }
+            case DEBUG_MODE_SHADOW_CASCADES:
+                Color = CascadeDebugColorTerrain(WorldPosition, ViewPosition, Color);
+                break;
             default:
                 break;
         }
