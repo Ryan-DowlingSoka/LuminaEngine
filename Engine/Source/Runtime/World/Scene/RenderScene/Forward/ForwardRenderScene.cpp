@@ -126,17 +126,27 @@ namespace Lumina
         LOG_TRACE("Shutting down Forward Render Scene");
     }
 
-    void FForwardRenderScene::RenderView(ICommandList& CmdList, const FViewVolume& ViewVolume, const SPostProcessSettings* PostProcess)
+    void FForwardRenderScene::Extract(const FViewVolume& ViewVolume, const SPostProcessSettings* PostProcess)
     {
         LUMINA_PROFILE_SCOPE();
 
-        // Reconciles MSAA toggle: alloc/free MS scratch so next frame uses new sample count without reload.
-        SyncMSAAState();
+        bExtractedThisFrame = false;
 
-        ActivePostProcess = PostProcess;
+        // Value-copy: PostProcess points to a temporary in CWorld::Extract that
+        // will go out of scope before the render thread runs the passes. The
+        // render thread reads ActivePostProcess via this stable member instead.
+        if (PostProcess != nullptr)
+        {
+            ActivePostProcessStorage = *PostProcess;
+            ActivePostProcess        = &ActivePostProcessStorage;
+        }
+        else
+        {
+            ActivePostProcess = nullptr;
+        }
 
         SceneViewport->SetViewVolume(ViewVolume);
-        
+
         SceneGlobalData.CameraData.Location             = glm::vec4(SceneViewport->GetViewVolume().GetViewPosition(), 1.0f);
         SceneGlobalData.CameraData.Up                   = glm::vec4(SceneViewport->GetViewVolume().GetUpVector(), 1.0f);
         SceneGlobalData.CameraData.Right                = glm::vec4(SceneViewport->GetViewVolume().GetRightVector(), 1.0f);
@@ -157,23 +167,49 @@ namespace Lumina
         SceneGlobalData.CullData.InstanceNum            = (uint32)Instances.size();
         SceneGlobalData.CullData.bFrustumCull           = RenderSettings.bFrustumCull;
         SceneGlobalData.CullData.bOcclusionCull         = RenderSettings.bOcclusionCull;
-        SceneGlobalData.CullData.PyramidWidth           = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
-        SceneGlobalData.CullData.PyramidHeight          = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeY();
-        SceneGlobalData.CullData.DepthPyramidIndex      = (uint32)GetNamedImage(ENamedImage::DepthPyramid)->GetResourceID();
         SceneGlobalData.CullData.ShadowMaxDistance      = World->GetDefaultWorldSettings().ShadowMaxDistance;
         SceneGlobalData.CullData.bShadowOcclusionCull   = RenderSettings.bShadowOcclusionCull;
         SceneGlobalData.CullData.DebugMode              = (uint32)RenderSettings.Flags;
-        
-        
-        if(GRenderContext->GetShaderCompiler()->HasPendingRequests())
+
+        if (GRenderContext->GetShaderCompiler()->HasPendingRequests())
         {
             return;
         }
 
+        // Clear last frame's CPU-side scene state BEFORE the parallel gather
+        // repopulates it. Must run on the game thread so the render thread
+        // never sees a half-cleared / half-populated set of containers.
+        ResetPass_GameThread();
+
+        // CPU half: parallel ECS gather + cull setup. Populates scene members
+        // (Instances, LightData, EnvironmentParams, CullViews, ...).
+        CompileDrawCommands_GameThread();
+
+        bExtractedThisFrame = true;
+    }
+
+    void FForwardRenderScene::RenderView_RenderThread(ICommandList& CmdList)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        // Reconciles MSAA toggle: alloc/free MS scratch so next frame uses new sample count without reload.
+        SyncMSAAState();
+
+        if (!bExtractedThisFrame)
+        {
+            return;
+        }
+
+        // RHI-dependent CullData fields: DepthPyramid changes only on swapchain
+        // resize, so reading it here on the render thread is race-safe.
+        SceneGlobalData.CullData.PyramidWidth      = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
+        SceneGlobalData.CullData.PyramidHeight     = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeY();
+        SceneGlobalData.CullData.DepthPyramidIndex = (uint32)GetNamedImage(ENamedImage::DepthPyramid)->GetResourceID();
+
         GPU_PROFILE_SCOPE_COLOR(&CmdList, "RenderView", FColor(0.30f, 0.65f, 1.00f));
 
-        ResetPass(CmdList);
-        CompileDrawCommands(CmdList);
+        ResetPass_RenderThread(CmdList);
+        CompileDrawCommands_RenderThread(CmdList);
         
         {
             LUMINA_PROFILE_SECTION("RenderPasses");
@@ -377,10 +413,10 @@ namespace Lumina
         #endif
     }
 
-    void FForwardRenderScene::CompileDrawCommands(ICommandList& CmdList)
+    void FForwardRenderScene::CompileDrawCommands_GameThread()
     {
         LUMINA_PROFILE_SCOPE();
-        
+
         {
             LUMINA_PROFILE_SECTION("Compile Draw Commands");
             FEntityRegistry& Registry = World->GetEntityRegistry();
@@ -750,6 +786,11 @@ namespace Lumina
         // matrix is settled. Everything downstream (size calcs, upload) reads
         // the array lengths it produced.
         BuildCullViews(SceneViewport->GetViewVolume());
+    }
+
+    void FForwardRenderScene::CompileDrawCommands_RenderThread(ICommandList& CmdList)
+    {
+        LUMINA_PROFILE_SCOPE();
 
         const uint32 NumCullViews                  = (uint32)CullViews.size();
         const uint32 NumDraws                      = NumDrawsPerView;
@@ -2522,7 +2563,7 @@ namespace Lumina
         Billboard.EntityID              = entt::null;
     }
 
-    void FForwardRenderScene::ResetPass(ICommandList& CmdList)
+    void FForwardRenderScene::ResetPass_GameThread()
     {
         SimpleVertices.clear();
         LineBatches.clear();
@@ -2538,10 +2579,7 @@ namespace Lumina
         CameraLateViewIndex = ~0u;
         Instances.clear();
         InstanceMeshletPrefix.clear();
-        // memset rather than `= {}`: at the raised MAX_LIGHTS cap FSceneLightData
-        // is ~0.6 MB, and `= {}` would materialize that as a zero-init temporary
-        // on the stack before the copy.
-        memset(&LightData, 0, sizeof(LightData));
+        Memory::Memzero(&LightData, sizeof(LightData));
         ShadowDataCount.store(0, std::memory_order_release);
         ShadowAtlas.FreeTiles();
         ShadowRequests.clear();
@@ -2553,16 +2591,12 @@ namespace Lumina
         {
             PackedShadows[i].clear();
         }
-        
+    }
+
+    void FForwardRenderScene::ResetPass_RenderThread(ICommandList& CmdList)
+    {
         CmdList.ClearImageUInt(GetNamedImage(ENamedImage::DepthAttachment), AllSubresources, 0);
         CmdList.ClearImageUInt(ShadowAtlas.GetImage(), AllSubresources, 1);
-        // Cascade atlas clear must happen unconditionally. The cascade render pass's
-        // LoadOp::Clear only fires when the pass actually begins, which requires at
-        // least one OpaqueDrawList draw. A terrain-only scene leaves the atlas at
-        // uninitialised (often 0) depth -- SampleCmp with LESS then reads every
-        // near-cascade terrain pixel as fully shadowed, while far cascades fall
-        // outside the projection and return 1.0 (lit). Clearing here removes the
-        // dependency on having mesh draws.
         CmdList.ClearImageUInt(GetNamedImage(ENamedImage::Cascade), AllSubresources, 1);
     }
 

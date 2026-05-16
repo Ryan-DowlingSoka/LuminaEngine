@@ -16,6 +16,7 @@ namespace Lumina
         void Open() override;
         void Close() override;
         void Executed(FQueue* Queue, uint64 SubmissionID) override;
+        void KeepAlive(IRHIResource* Resource) override;
 
         void CopyImage(FRHIImage* Src, const FTextureSlice& SrcSlice, FRHIImage* Dst, const FTextureSlice& DstSlice) override;
         void CopyImage(FRHIImage* Src, const FTextureSlice& SrcSlice, FRHIStagingImage* Dst, const FTextureSlice& DstSlice) override;
@@ -60,6 +61,8 @@ namespace Lumina
 
         void AddMarker(const char* Name, const FColor& Color = FColor::Red) override;
         void PopMarker() override;
+        void BeginProfilerZone(const char* Name, const FColor& Color = FColor::White) override;
+        void EndProfilerZone() override;
 
         void BeginRenderPass(const FRenderPassDesc& PassInfo) override;
         void EndRenderPass() override;

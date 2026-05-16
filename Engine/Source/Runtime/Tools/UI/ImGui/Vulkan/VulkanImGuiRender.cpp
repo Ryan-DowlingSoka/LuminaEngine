@@ -164,6 +164,16 @@ namespace Lumina
     	ImGui::DestroyContext();
     }
 
+    void FVulkanImGuiRender::FillReferencedImagesSnapshot(TVector<FRHIImageRef>& Out)
+    {
+		FRecursiveScopeLock Lock(Mutex);
+		Out.reserve(ReferencedImages.size());
+		for (const FRHIImageRef& Image : ReferencedImages)
+		{
+			Out.push_back(Image);
+		}
+    }
+
     void FVulkanImGuiRender::OnStartFrame(const FUpdateContext& UpdateContext)
     {
     	LUMINA_PROFILE_SCOPE();
@@ -178,7 +188,7 @@ namespace Lumina
         ImGui::NewFrame();
     }
 	
-    void FVulkanImGuiRender::OnEndFrame(const FUpdateContext& UpdateContext, ICommandList& CmdList)
+    void FVulkanImGuiRender::OnEndFrame(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot)
     {
 		LUMINA_PROFILE_SECTION_COLORED("ImGui Render", tracy::Color::Aquamarine3);
 
@@ -186,21 +196,23 @@ namespace Lumina
 		CmdList.SetImageState(EngineViewport, AllSubresources, EResourceStates::RenderTarget);
 		CmdList.CommitBarriers();
 
-		if (ImDrawData* DrawData = ImGui::GetDrawData())
+		ImDrawData* DrawData = Snapshot.GetDrawData();
+		if (DrawData != nullptr && DrawData->Valid)
 		{
 			CmdList.DisableAutomaticBarriers();
 
 			FRenderPassDesc::FAttachment Attachment; Attachment
 				.SetImage(EngineViewport);
 
-			for (FRHIImage* Image : ReferencedImages)
+			for (const FRHIImageRef& Image : Snapshot.ReferencedImages)
 			{
-				if (Image == EngineViewport)
+				if (Image.GetReference() == EngineViewport)
 				{
 					continue;
 				}
 
 				CmdList.SetImageState(Image, AllSubresources, EResourceStates::ShaderResource);
+				CmdList.KeepAlive(Image);
 			}
 
 			CmdList.CommitBarriers();

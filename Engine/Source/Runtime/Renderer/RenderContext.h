@@ -48,8 +48,9 @@ namespace Lumina
         virtual const FRenderContextDesc& GetRenderContextDescription() const = 0;
 
 
-        virtual bool FrameStart(const FUpdateContext& UpdateContext, uint8 InCurrentFrameIndex) = 0;
-        virtual bool FrameEnd(const FUpdateContext& UpdateContext, ICommandList& CmdList) = 0;
+        virtual bool FrameStart(uint8 InCurrentFrameIndex) = 0;
+        virtual bool FrameEnd(ICommandList& CmdList) = 0;
+        virtual void WaitForGPU() = 0;
         
 
         NODISCARD virtual uint64 GetAllocatedMemory() const = 0;

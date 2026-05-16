@@ -43,6 +43,7 @@ namespace Lumina
 
         bool AcquireNextImage();
         bool Present();
+        void WaitForFramePace();
         
     private:
 

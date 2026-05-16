@@ -252,7 +252,8 @@ namespace Lumina
         void BeginFrame() override { }
         void EndFrame() override { }
         
-        void RenderView(ICommandList& CmdList, const FViewVolume& ViewVolume, const SPostProcessSettings* PostProcess = nullptr) override;
+        void Extract(const FViewVolume& ViewVolume, const SPostProcessSettings* PostProcess) override;
+        void RenderView_RenderThread(ICommandList& CmdList) override;
         void SetActivePostProcessMaterials(const TVector<CMaterialInterface*>& Materials) override { ActivePostProcessMaterials = Materials; }
         void SwapchainResized(glm::vec2 NewSize);
         void Resize(const glm::uvec2& NewSize) override { SwapchainResized(glm::vec2(NewSize)); }
@@ -300,7 +301,12 @@ namespace Lumina
         void InitIBLConvolutionTargets();
         
         //~ Begin Render Passes
-        void ResetPass(ICommandList& CmdList);
+        // Game thread: clear per-frame CPU scene state (Instances, LightData,
+        // DrawCommands, ...). Must run before the parallel ECS gather repopulates.
+        void ResetPass_GameThread();
+
+        // Render thread: depth + shadow atlas clears recorded onto the cmd list.
+        void ResetPass_RenderThread(ICommandList& CmdList);
         
         void CullPassEarly(ICommandList& CmdList);
         void CullPassLate(ICommandList& CmdList);
@@ -340,7 +346,18 @@ namespace Lumina
         void SMAANeighborhoodBlendPass(ICommandList& CmdList);
         //~ End Render Passes
 
-        void CompileDrawCommands(ICommandList& CmdList);
+        // Game-thread half: ECS reads + parallel Process* tasks + cull/shadow setup.
+        // Populates Instances, LightData, EnvironmentParams, CullViews, etc.
+        void CompileDrawCommands_GameThread();
+
+        // Render-thread half: buffer resize + WriteBuffer commands. Reads the
+        // state populated by the matching CompileDrawCommands_GameThread call.
+        void CompileDrawCommands_RenderThread(ICommandList& CmdList);
+
+        // Set true at end of Extract if the frame is renderable; checked by
+        // RenderView_RenderThread which no-ops when false (typically when the
+        // shader compiler still has pending requests).
+        bool bExtractedThisFrame = false;
 
         void ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
         void ProcessSkeletalMeshEntityInternal(entt::entity Entity, const SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
@@ -498,9 +515,13 @@ namespace Lumina
         
         FSceneGlobalData                        SceneGlobalData;
 
-        // Color grading + tone-mapping settings of the active camera for the
-        // frame currently being recorded. Set in RenderView() and consumed by
-        // ToneMappingPass(). Null falls back to baked defaults.
+        // Color grading + tone-mapping settings for the current frame.
+        // Extract() value-copies the caller's settings into ActivePostProcessStorage
+        // and points ActivePostProcess at it -- the caller's pointer would dangle
+        // because the render thread reads this after Extract has returned.
+        // ActivePostProcess is null when no post-process is active (falls back
+        // to baked defaults in the passes that consume it).
+        SPostProcessSettings                    ActivePostProcessStorage = {};
         const SPostProcessSettings*             ActivePostProcess = nullptr;
 
         // Resolved post-process material chain for the frame currently
@@ -669,15 +690,6 @@ namespace Lumina
         uint32                                  CameraLateViewIndex = ~0u;
 
 #if USING(WITH_EDITOR)
-        // Async picker readback ring. Synchronous readback (allocate staging,
-        // copy, immediately Map -> WaitCommandList) used to stall the calling
-        // thread for whatever was already in flight on the graphics queue
-        // (~10ms in the worst case). Instead we copy ENamedImage::Picker into
-        // the next staging slot at the end of every frame's RenderView, then
-        // GetEntityAtPixel reads from the newest slot whose GPU work is
-        // guaranteed complete (>= FRAMES_IN_FLIGHT frames behind the writer).
-        // Sized FRAMES_IN_FLIGHT + 1 so there is always at least one
-        // completed slot available without blocking.
         static constexpr uint32                 PickerReadbackRingSize = FRAMES_IN_FLIGHT + 1;
         struct FPickerReadbackSlot
         {

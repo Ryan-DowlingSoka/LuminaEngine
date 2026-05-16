@@ -9,6 +9,7 @@ namespace Lumina
     namespace Threading
     {
         static std::thread::id GMainThreadID = {};
+        static std::thread::id GRenderThreadID = {};
 
         void ThreadYield()
         {
@@ -23,6 +24,20 @@ namespace Lumina
         bool IsMainThread()
         {
             return GMainThreadID == std::this_thread::get_id();
+        }
+
+        bool IsRenderThread()
+        {
+            // Before SetRenderThread runs (boot / shutdown), the main thread is the render thread.
+            const std::thread::id Render = GRenderThreadID;
+            return Render == std::thread::id{}
+                ? GMainThreadID == std::this_thread::get_id()
+                : Render == std::this_thread::get_id();
+        }
+
+        void SetRenderThread(std::thread::id ID)
+        {
+            GRenderThreadID = ID;
         }
 
         uint32 GetNumThreads()

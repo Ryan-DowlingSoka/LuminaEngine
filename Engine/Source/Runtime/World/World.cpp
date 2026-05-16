@@ -615,6 +615,15 @@ namespace Lumina
     void CWorld::Render(ICommandList& CmdList) const
     {
         LUMINA_PROFILE_SCOPE();
+        if (RenderScene)
+        {
+            RenderScene->RenderView_RenderThread(CmdList);
+        }
+    }
+
+    void CWorld::Extract()
+    {
+        LUMINA_PROFILE_SCOPE();
 
         entt::entity CameraEntity = GetActiveCameraEntity();
         if (EntityRegistry.valid(CameraEntity))
@@ -753,13 +762,13 @@ namespace Lumina
             }
             RenderScene->SetActivePostProcessMaterials(PostProcessMaterials);
 
-            RenderScene->RenderView(CmdList, Camera.GetViewVolume(), &ResolvedPostProcess);
+            RenderScene->Extract(Camera.GetViewVolume(), &ResolvedPostProcess);
 
             return;
         }
 
         RenderScene->SetActivePostProcessMaterials({});
-        RenderScene->RenderView(CmdList, FViewVolume{}, nullptr);
+        RenderScene->Extract(FViewVolume{}, nullptr);
     }
 
     void CWorld::OnScriptComponentPendingReady(const FScriptComponentPendingReady& Event)

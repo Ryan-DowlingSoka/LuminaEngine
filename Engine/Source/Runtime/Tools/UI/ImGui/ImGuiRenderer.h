@@ -1,6 +1,7 @@
 #pragma once
 
 #include "imgui.h"
+#include "ImDrawDataSnapshot.h"
 #include "ImGuiX.h"
 #include "Renderer/RenderResource.h"
 #include "Subsystems/Subsystem.h"
@@ -25,10 +26,20 @@ namespace Lumina
         virtual void Deinitialize();
 
         void StartFrame(const FUpdateContext& UpdateContext);
-        void EndFrame(const FUpdateContext& UpdateContext, ICommandList& CmdList);
+
+        // Game thread: ImGui::Render() then deep-copy DrawData into a heap
+        // snapshot. The caller (render command lambda) owns and destroys it.
+        TUniquePtr<FImDrawDataSnapshot> BuildFrame_GameThread();
+
+        // Render thread: record the snapshot's draw lists onto CmdList.
+        void RecordFrame_RenderThread(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot);
 
         virtual void OnStartFrame(const FUpdateContext& UpdateContext) = 0;
-        virtual void OnEndFrame(const FUpdateContext& UpdateContext, ICommandList& CmdList) = 0;
+        virtual void OnEndFrame(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot) = 0;
+
+        // Copy this frame's referenced texture refs into the snapshot so the
+        // render thread keeps them alive while recording.
+        virtual void FillReferencedImagesSnapshot(TVector<FRHIImageRef>& Out) = 0;
 
         virtual ImTextureID GetOrCreateImTexture(FStringView Path) = 0;
         virtual ImTextureID GetOrCreateImTexture(FRHIImage* Image, const FTextureSubresourceSet& Subresources = AllSubresources) = 0;

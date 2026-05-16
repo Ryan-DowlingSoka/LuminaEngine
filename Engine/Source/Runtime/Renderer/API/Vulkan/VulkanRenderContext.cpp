@@ -18,6 +18,7 @@
 #include "Renderer/CommandList.h"
 #include "Renderer/CommandListValidator.h"
 #include "Renderer/RHIStaticStates.h"
+#include "Renderer/RenderThread.h"
 #include "Renderer/ShaderCompiler.h"
 #include "TaskSystem/TaskSystem.h"
 #include "Renderer/ErrorHandling/Vulkan/VulkanCrashTracker.h"
@@ -716,23 +717,43 @@ namespace Lumina
 
     void FVulkanRenderContext::WaitIdle()
     {
+        // If a caller on the game thread asks for WaitIdle while the render
+        // thread has work in flight, vkDeviceWaitIdle alone does not stop the
+        // render thread from issuing another submit immediately after. Marshal
+        // through the render thread so the caller sees a true quiescent device.
+        if (GRenderThread != nullptr && GRenderThread->IsRunning() && !Threading::IsRenderThread())
+        {
+            GRenderThread->EnqueueAndWait("WaitIdle",
+                [this]() { VK_CHECK(vkDeviceWaitIdle(VulkanDevice->GetDevice())); });
+            return;
+        }
         VK_CHECK(vkDeviceWaitIdle(VulkanDevice->GetDevice()));
     }
 
-    bool FVulkanRenderContext::FrameStart(const FUpdateContext& UpdateContext, uint8 InCurrentFrameIndex) 
+    bool FVulkanRenderContext::FrameStart(uint8 InCurrentFrameIndex)
     {
         LUMINA_PROFILE_SCOPE();
 
+        // Game-thread bookkeeping only -- acquire moved to FrameEnd (render
+        // thread) so acquire/submit/present are paired atomically per frame.
         CurrentFrameIndex = InCurrentFrameIndex;
-
-        bool bSuccess = Swapchain->AcquireNextImage();
-        
-        return bSuccess;
+        return true;
     }
 
-    bool FVulkanRenderContext::FrameEnd(const FUpdateContext& UpdateContext, ICommandList& CmdList)
+    void FVulkanRenderContext::WaitForGPU()
+    {
+        Swapchain->WaitForFramePace();
+    }
+
+    bool FVulkanRenderContext::FrameEnd(ICommandList& CmdList)
     {
         LUMINA_PROFILE_SCOPE();
+
+        // Acquire here on the render thread. The acquire semaphore is added to
+        // the graphics queue's pending wait list, which the ExecuteCommandLists
+        // below consumes atomically -- no game-thread/render-thread overlap on
+        // queue semaphore state, no double-acquires per submit.
+        Swapchain->AcquireNextImage();
 
         CmdList.CopyImage(FEngine::GetEngineViewport()->GetRenderTarget(), FTextureSlice(), Swapchain->GetCurrentImage(), FTextureSlice());
 

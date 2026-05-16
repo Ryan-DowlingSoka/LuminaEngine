@@ -58,6 +58,14 @@ namespace Lumina
         PendingState.AddPendingState(EPendingCommandState::AutomaticBarriers);
     }
 
+    void FVulkanCommandList::KeepAlive(IRHIResource* Resource)
+    {
+        if (Resource != nullptr)
+        {
+            CurrentCommandBuffer->AddReferencedResource(Resource);
+        }
+    }
+
     void FVulkanCommandList::Open()
     {
         LUMINA_PROFILE_SCOPE();
@@ -1110,6 +1118,48 @@ namespace Lumina
         {
             vkCmdEndDebugUtilsLabelEXT(CurrentCommandBuffer->CommandBuffer);
         }
+    }
+
+    void FVulkanCommandList::BeginProfilerZone(const char* Name, const FColor& Color)
+    {
+        if (!PendingState.IsRecording())
+        {
+            return;
+        }
+
+        AddMarker(Name, Color);
+
+        if (CurrentCommandBuffer->TracyContext != nullptr && TracyZoneDepth < MaxTracyZoneDepth && Name != nullptr)
+        {
+            constexpr const char* SourceFile = __FILE__;
+            constexpr const char* SourceFunc = "GPU";
+            new (TracyZoneStorage[TracyZoneDepth]) tracy::VkCtxScope(
+                CurrentCommandBuffer->TracyContext,
+                (uint32_t)__LINE__,
+                SourceFile, sizeof(__FILE__) - 1,
+                SourceFunc, 3,
+                Name, strlen(Name),
+                CurrentCommandBuffer->CommandBuffer,
+                true);
+            ++TracyZoneDepth;
+        }
+    }
+
+    void FVulkanCommandList::EndProfilerZone()
+    {
+        if (!PendingState.IsRecording())
+        {
+            return;
+        }
+
+        if (TracyZoneDepth > 0)
+        {
+            --TracyZoneDepth;
+            auto* Scope = std::launder(reinterpret_cast<tracy::VkCtxScope*>(TracyZoneStorage[TracyZoneDepth]));
+            Scope->~VkCtxScope();
+        }
+
+        PopMarker();
     }
     
     void FVulkanCommandList::BeginRenderPass(const FRenderPassDesc& InPassInfo)

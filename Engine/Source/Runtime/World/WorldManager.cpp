@@ -37,6 +37,22 @@ namespace Lumina
         }
     }
 
+    void FWorldManager::ExtractWorlds()
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        for (const TUniquePtr<FWorldContext>& Context : Contexts)
+        {
+            CWorld* World = Context->World.Get();
+            if (World == nullptr || World->IsSuspended())
+            {
+                continue;
+            }
+
+            World->Extract();
+        }
+    }
+
     void FWorldManager::RenderWorlds(ICommandList& CmdList)
     {
         LUMINA_PROFILE_SCOPE();

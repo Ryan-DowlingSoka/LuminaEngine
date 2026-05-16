@@ -1,5 +1,6 @@
 #pragma once
 #include "MaterialManager.h"
+#include "RenderTypes.h"
 #include "TextureManager.h"
 #include "Core/Delegates/Delegate.h"
 #include "Subsystems/Subsystem.h"
@@ -10,6 +11,7 @@ namespace Lumina
     class ICommandList;
     class IImGuiRenderer;
     class IRenderContext;
+    class FRHICommandList;
 }
 
 namespace Lumina
@@ -25,8 +27,13 @@ namespace Lumina
 
         void Initialize();
 
+        // Game thread: ImGui::NewFrame (and any other backend per-frame init).
         void FrameStart(const FUpdateContext& UpdateContext);
-        void FrameEnd(const FUpdateContext& UpdateContext, ICommandList& CmdList);
+
+        // Game thread: snapshot ImGui DrawData and enqueue the whole render
+        // pipeline (cmd list create, all recording, submit, present, wait) onto
+        // the render thread. Returns immediately.
+        void FrameEnd();
 
         void SwapchainResized(glm::vec2 NewSize);
 

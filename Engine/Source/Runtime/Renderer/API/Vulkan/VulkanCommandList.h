@@ -49,6 +49,7 @@ namespace Lumina
         void Open() override;
         void Close() override;
         void Executed(FQueue* Queue, uint64 SubmissionID) override;
+        void KeepAlive(IRHIResource* Resource) override;
 
         void CopyImage(FRHIImage* Src, const FTextureSlice& SrcSlice, FRHIImage* Dst, const FTextureSlice& DstSlice) override;
         void CopyImage(FRHIImage* Src, const FTextureSlice& SrcSlice, FRHIStagingImage* Dst, const FTextureSlice& DstSlice) override;
@@ -99,6 +100,8 @@ namespace Lumina
         void EndPipelineStatsQuery(IPipelineStatsQuery* Query) override;
         void AddMarker(const char* Name, const FColor& Color = FColor::Red) override;
         void PopMarker() override;
+        void BeginProfilerZone(const char* Name, const FColor& Color = FColor::White) override;
+        void EndProfilerZone() override;
 
         void BeginRenderPass(const FRenderPassDesc& PassInfo) override;
         void EndRenderPass() override;
@@ -164,6 +167,12 @@ namespace Lumina
         FCommandListInfo                                        Info;
         VkShaderStageFlags                                      PushConstantVisibility;
         VkPipelineLayout                                        CurrentPipelineLayout;
+
+        // Stack of Tracy VkCtxScope objects, lifetime-managed via placement new.
+        // Bounded nesting depth — far above any real profiler usage.
+        static constexpr uint32                                 MaxTracyZoneDepth = 32;
+        alignas(tracy::VkCtxScope) uint8                        TracyZoneStorage[MaxTracyZoneDepth][sizeof(tracy::VkCtxScope)] = {};
+        uint32                                                  TracyZoneDepth = 0;
     };
     
 }

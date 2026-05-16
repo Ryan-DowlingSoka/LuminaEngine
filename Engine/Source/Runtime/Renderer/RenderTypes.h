@@ -5,7 +5,7 @@
 #include "Core/LuminaMacros.h"
 #include "Core/Math/Hash/Hash.h"
 
-#define FRAMES_IN_FLIGHT 2
+#define FRAMES_IN_FLIGHT 3
 #define SWAPCHAIN_IMAGES 3
 
 namespace Lumina

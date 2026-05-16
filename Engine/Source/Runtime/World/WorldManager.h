@@ -16,6 +16,14 @@ namespace Lumina
         LE_NO_COPYMOVE(FWorldManager);
 
         void UpdateWorlds(const FUpdateContext& UpdateContext);
+
+        // Game thread: run CWorld::Extract on every active world. Caller must
+        // first ensure the prior frame's RenderWorlds has finished or it races
+        // on scene-thread state.
+        void ExtractWorlds();
+
+        // Render thread: emit each world's draws onto CmdList. Reads only scene
+        // state populated by the matching ExtractWorlds.
         void RenderWorlds(ICommandList& CmdList);
 
         // Creates a context for an already-constructed CWorld and calls InitializeWorld on it.

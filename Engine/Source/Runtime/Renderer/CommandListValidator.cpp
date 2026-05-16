@@ -28,6 +28,11 @@ namespace Lumina
         Inner->Executed(Queue, SubmissionID);
     }
 
+    void FCommandListValidator::KeepAlive(IRHIResource* Resource)
+    {
+        Inner->KeepAlive(Resource);
+    }
+
     void FCommandListValidator::CopyImage(FRHIImage* Src, const FTextureSlice& SrcSlice, FRHIImage* Dst, const FTextureSlice& DstSlice)
     {
         ASSERT(Src != nullptr && Dst != nullptr);
@@ -237,6 +242,16 @@ namespace Lumina
     void FCommandListValidator::PopMarker()
     {
         Inner->PopMarker();
+    }
+
+    void FCommandListValidator::BeginProfilerZone(const char* Name, const FColor& Color)
+    {
+        Inner->BeginProfilerZone(Name, Color);
+    }
+
+    void FCommandListValidator::EndProfilerZone()
+    {
+        Inner->EndProfilerZone();
     }
 
     void FCommandListValidator::BeginRenderPass(const FRenderPassDesc& PassInfo)

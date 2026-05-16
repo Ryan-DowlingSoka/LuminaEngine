@@ -143,8 +143,9 @@ namespace Lumina
         void WaitIdle() override;
         bool CreateDevice(vkb::Instance Instance);
         
-        bool FrameStart(const FUpdateContext& UpdateContext, uint8 InCurrentFrameIndex) override;
-        bool FrameEnd(const FUpdateContext& UpdateContext, ICommandList& CmdList) override;
+        bool FrameStart(uint8 InCurrentFrameIndex) override;
+        bool FrameEnd(ICommandList& CmdList) override;
+        void WaitForGPU() override;
 
         uint64 GetAllocatedMemory() const override;
         uint64 GetAvailableMemory() const override;

@@ -37,7 +37,8 @@ namespace Lumina
         void Deinitialize() override;
         
         void OnStartFrame(const FUpdateContext& UpdateContext) override;
-        void OnEndFrame(const FUpdateContext& UpdateContext, ICommandList& CmdList) override;
+        void OnEndFrame(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot) override;
+        void FillReferencedImagesSnapshot(TVector<FRHIImageRef>& Out) override;
 
         void DrawRenderDebugContents(const FUpdateContext& InContext) override;
 

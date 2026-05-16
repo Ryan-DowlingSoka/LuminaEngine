@@ -28,6 +28,7 @@
 #include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
 #include "Renderer/RenderResource.h"
+#include "Renderer/RenderThread.h"
 #include "Renderer/RHIGlobals.h"
 #include "Scripting/Lua/Scripting.h"
 #include "Scripting/Lua/Debugger/LuaDebugger.h"
@@ -153,7 +154,7 @@ namespace Lumina
 
         bEngineReadyToClose = true;
         bCloseRequested = bApplicationWantsExit;
-        
+
         UpdateContext.MarkFrameStart(glfwGetTime());
 
         FCPUProfiler::Get().BeginFrame();
@@ -237,37 +238,28 @@ namespace Lumina
                 LUMINA_PROFILE_SECTION_COLORED("Frame-End", tracy::Color::Coral);
                 UpdateContext.UpdateStage = EUpdateStage::FrameEnd;
 
-                FRHICommandListRef PrimaryCommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
-                PrimaryCommandList->Open();
-                ICommandList& CmdList = *PrimaryCommandList;
+                #if USING(WITH_EDITOR)
+                DeveloperToolUI->Update(UpdateContext);
+                #endif
 
-                // GPU scopes must close before FrameEnd(); it submits the cmd list and advances the profiler ring.
+                // Final world update stage runs on game thread.
+                GWorldManager->UpdateWorlds(UpdateContext);
+
+                #if USING(WITH_EDITOR)
+                DeveloperToolUI->EndFrame(UpdateContext);
+                #endif
+
+                // Wait for the prior frame's render before mutating shared
+                // scene / RmlUi state below. ImGui state is already snapshotted
+                // per-frame, so the NewFrame + widget-build calls above didn't race.
                 {
-                    GPU_PROFILE_SCOPE(&CmdList, "Frame");
-
-                    #if USING(WITH_EDITOR)
-                    DeveloperToolUI->Update(UpdateContext);
-                    #endif
-
-                    {
-                        GPU_PROFILE_SCOPE_COLOR(&CmdList, "World Render", FColor(0.20f, 0.55f, 0.90f));
-                        GWorldManager->UpdateWorlds(UpdateContext);
-                        GWorldManager->RenderWorlds(CmdList);
-                    }
-
-                    // Tick after all world updates so script mutations (SetText, class toggles)
-                    // are reconciled into layout before Render walks the tree.
-                    RmlUi::TickAll();
-
-                    // RmlUi composites between world render and editor ImGui so editor chrome stays on top.
-                    RmlUi::RenderAll(CmdList);
-
-                    #if USING(WITH_EDITOR)
-                    DeveloperToolUI->EndFrame(UpdateContext);
-                    #endif
+                    LUMINA_PROFILE_SECTION_COLORED("WaitForRender", tracy::Color::Crimson);
+                    FlushRenderingCommands();
                 }
 
-                GRenderManager->FrameEnd(UpdateContext, CmdList);
+                RmlUi::TickAll();
+                GWorldManager->ExtractWorlds();
+                GRenderManager->FrameEnd();
 
                 Lua::FScriptingContext::Get().ProcessDeferredActions();
 

@@ -71,6 +71,18 @@ namespace Lumina
          * Called on every update stage and runs systems attached to this world.
          */
         void Update(const FUpdateContext& Context);
+
+        /**
+         * Game thread: read ECS to compute camera, resolve post-process volumes,
+         * and populate the scene's per-frame state. Must run before any render
+         * thread call to Render() consumes that state. Mutates scene members.
+         */
+        void Extract();
+
+        /**
+         * Render thread: emit the scene's draw commands using state populated
+         * by the matching Extract() call.
+         */
         void Render(ICommandList& CmdList) const;
         
         FUNCTION(Script)

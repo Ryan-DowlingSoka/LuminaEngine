@@ -103,6 +103,11 @@ namespace Lumina
         virtual void Close() = 0;
         virtual void Executed(FQueue* Queue, uint64 SubmissionID) = 0;
 
+        // Keep Resource alive until this cmd list's submission retires. Use
+        // when a third-party backend records native API draws that bypass our
+        // Bind*/Copy* tracking (e.g. ImGui_ImplVulkan_RenderDrawData).
+        virtual void KeepAlive(IRHIResource* Resource) = 0;
+
         virtual void CopyImage(FRHIImage* Src, const FTextureSlice& SrcSlice, FRHIImage* Dst, const FTextureSlice& DstSlice) = 0;
         virtual void CopyImage(FRHIImage* Src, const FTextureSlice& SrcSlice, FRHIStagingImage* Dst, const FTextureSlice& DstSlice) = 0;
         virtual void CopyImage(FRHIStagingImage* Src, const FTextureSlice& SrcSlice, FRHIImage* Dst, const FTextureSlice& DstSlice) = 0;
@@ -182,6 +187,11 @@ namespace Lumina
 
         virtual void AddMarker(const char* Name, const FColor& Color = FColor::Red) = 0;
         virtual void PopMarker() = 0;
+
+        // Begin a profiler scope: emits a Vulkan debug label AND a Tracy GPU zone.
+        // Each Begin must be paired with End. Default no-op for non-Vulkan backends.
+        virtual void BeginProfilerZone(const char* Name, const FColor& Color = FColor::White) {}
+        virtual void EndProfilerZone() {}
 
         virtual void BeginRenderPass(const FRenderPassDesc& PassInfo) = 0;
         virtual void EndRenderPass() = 0;

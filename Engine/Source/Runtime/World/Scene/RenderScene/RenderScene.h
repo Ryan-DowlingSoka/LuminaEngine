@@ -30,10 +30,14 @@ namespace Lumina
         // pointers across frames -- the world rebuilds the list each tick.
         virtual void SetActivePostProcessMaterials(const TVector<CMaterialInterface*>& Materials) {}
 
-        // Record this view's draws onto the provided command list.
-        // PostProcess is the active camera's grading; pass nullptr to skip
-        // grading and use the default tonemap behaviour.
-        virtual void RenderView(ICommandList& CmdList, const FViewVolume&, const SPostProcessSettings* PostProcess = nullptr) = 0;
+        // Game thread: read ECS and populate per-frame scene state. Caller must
+        // gate this on the previous frame's RenderView_RenderThread completion
+        // (e.g. via FlushRenderingCommands) or it races on scene storage.
+        virtual void Extract(const FViewVolume&, const SPostProcessSettings* PostProcess) = 0;
+
+        // Render thread: record this view's draws onto CmdList. Reads only the
+        // scene state populated by the matching Extract call -- never the ECS.
+        virtual void RenderView_RenderThread(ICommandList& CmdList) = 0;
         
         virtual entt::entity GetEntityAtPixel(uint32 X, uint32 Y) const = 0;
         

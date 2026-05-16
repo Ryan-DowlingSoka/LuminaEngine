@@ -191,23 +191,33 @@ namespace Lumina
     	OnStartFrame(UpdateContext);
     }
 
-    void IImGuiRenderer::EndFrame(const FUpdateContext& UpdateContext, ICommandList& CmdList)
+    TUniquePtr<FImDrawDataSnapshot> IImGuiRenderer::BuildFrame_GameThread()
     {
         LUMINA_PROFILE_SCOPE();
 
-    	ImGuiIO& Io = ImGui::GetIO();
-    	Io.DisplaySize.x = static_cast<float>(FEngine::GetEngineViewport()->GetSize().x);
-    	Io.DisplaySize.y = static_cast<float>(FEngine::GetEngineViewport()->GetSize().y);
+        ImGuiIO& Io = ImGui::GetIO();
+        Io.DisplaySize.x = static_cast<float>(FEngine::GetEngineViewport()->GetSize().x);
+        Io.DisplaySize.y = static_cast<float>(FEngine::GetEngineViewport()->GetSize().y);
 
-    	ImGuiX::Notifications::Render();
-		ImGui::Render();
+        ImGuiX::Notifications::Render();
+        ImGui::Render();
 
-    	if (Io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
-    	{
-    		ImGui::UpdatePlatformWindows();
-    		ImGui::RenderPlatformWindowsDefault();
-    	}
+        if (Io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+        {
+            ImGui::UpdatePlatformWindows();
+            ImGui::RenderPlatformWindowsDefault();
+        }
 
-    	OnEndFrame(UpdateContext, CmdList);
+        TUniquePtr<FImDrawDataSnapshot> Snapshot = MakeUnique<FImDrawDataSnapshot>();
+        Snapshot->CopyFrom(ImGui::GetDrawData());
+        FillReferencedImagesSnapshot(Snapshot->ReferencedImages);
+        return Snapshot;
+    }
+
+    void IImGuiRenderer::RecordFrame_RenderThread(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        OnEndFrame(CmdList, Snapshot);
     }
 }

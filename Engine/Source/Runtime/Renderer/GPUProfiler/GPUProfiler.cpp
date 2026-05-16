@@ -166,7 +166,6 @@ namespace Lumina
 
         Frame.ScopeStack.push_back(ScopeIndex);
 
-        CmdList->AddMarker(Name ? Name : "<unnamed>", Color);
         CmdList->BeginTimerQuery(Query);
         if (StatsQuery != nullptr)
         {
@@ -204,8 +203,6 @@ namespace Lumina
             IPipelineStatsQuery* StatsQuery = Frame.PipelineStatsPool[Scope.StatsQueryIndex].GetReference();
             CmdList->EndPipelineStatsQuery(StatsQuery);
         }
-
-        CmdList->PopMarker();
     }
 
     void FGPUProfiler::TryResolveFrame(FGPUProfileFrame& Frame)
@@ -294,6 +291,11 @@ namespace Lumina
         : CmdList(InCmdList)
         , bActive(FGPUProfiler::Get().IsEnabled())
     {
+        if (CmdList != nullptr)
+        {
+            CmdList->BeginProfilerZone(Name ? Name : "<unnamed>", Color);
+        }
+
         if (bActive)
         {
             FGPUProfiler::Get().BeginScope(CmdList, Name, Color);
@@ -305,6 +307,11 @@ namespace Lumina
         if (bActive)
         {
             FGPUProfiler::Get().EndScope(CmdList);
+        }
+
+        if (CmdList != nullptr)
+        {
+            CmdList->EndProfilerZone();
         }
     }
 }

@@ -171,7 +171,7 @@ namespace Lumina
 
     	Context->WaitIdle();
     	CreateSwapchain(Context->GetVulkanInstance(), Context, Windowing::GetPrimaryWindowHandle(), Extent, true);
-    	
+
     	bNeedsResize = false;
     }
 
@@ -185,6 +185,21 @@ namespace Lumina
 	TRefCountPtr<FVulkanImage> FVulkanSwapchain::GetCurrentImage() const
     {
 	    return SwapchainImages[CurrentImageIndex];
+    }
+
+    void FVulkanSwapchain::WaitForFramePace()
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        while (FramesInFlight.size() >= FRAMES_IN_FLIGHT)
+        {
+            FRHIEventQueryRef Query = FramesInFlight.front();
+            FramesInFlight.pop();
+
+            Context->WaitEventQuery(Query);
+
+            QueryPool.push_back(Query);
+        }
     }
 
     bool FVulkanSwapchain::AcquireNextImage()
@@ -256,16 +271,6 @@ namespace Lumina
     	}
 #endif
 
-
-    	while (FramesInFlight.size() >= FRAMES_IN_FLIGHT)
-    	{
-    		FRHIEventQueryRef Query = FramesInFlight.front();
-    		FramesInFlight.pop();
-			
-    		Context->WaitEventQuery(Query);
-
-    		QueryPool.push_back(Query);
-    	}
 
     	FRHIEventQueryRef Query;
     	if (!QueryPool.empty())
