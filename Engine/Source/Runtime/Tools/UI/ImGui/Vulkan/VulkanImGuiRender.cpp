@@ -161,6 +161,7 @@ namespace Lumina
     	ImGui_ImplVulkan_Shutdown();
     	ImGui_ImplGlfw_Shutdown();
 		ImPlot::DestroyContext();
+    	ClearSnapshots();
     	ImGui::DestroyContext();
     }
 
@@ -178,14 +179,26 @@ namespace Lumina
     {
     	LUMINA_PROFILE_SCOPE();
 
+		// Mutex acquisition is instrumented via TracyLockable on Mutex itself --
+		// if the wait shows up as the spike source, contention with the
+		// render-thread snapshot fill (FillReferencedImagesSnapshot) is the cause.
 		FRecursiveScopeLock Lock(Mutex);
 		SquareWhiteTexture.second->LastUseFrame.exchange(GEngine->GetUpdateContext().GetFrame(), std::memory_order_relaxed);
-		
+
 		ReferencedImages.clear();
-		
-        ImGui_ImplVulkan_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
+
+		{
+			LUMINA_PROFILE_SECTION_COLORED("ImGui_ImplVulkan_NewFrame", tracy::Color::Aquamarine);
+			ImGui_ImplVulkan_NewFrame();
+		}
+		{
+			LUMINA_PROFILE_SECTION_COLORED("ImGui_ImplGlfw_NewFrame", tracy::Color::Aquamarine);
+			ImGui_ImplGlfw_NewFrame();
+		}
+		{
+			LUMINA_PROFILE_SECTION_COLORED("ImGui::NewFrame", tracy::Color::Aquamarine);
+			ImGui::NewFrame();
+		}
     }
 	
     void FVulkanImGuiRender::OnEndFrame(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot)

@@ -366,7 +366,7 @@ namespace Lumina
         return LastSubmittedID;
     }
 
-    void FQueue::SignalSemaphore(VkSemaphore SemaphoreToSignal) const
+    void FQueue::SignalSemaphore(VkSemaphore SemaphoreToSignal)
     {
         LUMINA_PROFILE_SCOPE();
 
@@ -374,13 +374,25 @@ namespace Lumina
         SubmitInfo.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         SubmitInfo.pSignalSemaphores    = &SemaphoreToSignal;
         SubmitInfo.signalSemaphoreCount = 1;
-        
+
+        std::scoped_lock Lock(Mutex);
+        LockMark(Mutex);
         VK_CHECK(vkQueueSubmit(Queue, 1, &SubmitInfo, nullptr));
+    }
+
+    VkResult FQueue::Present(const VkPresentInfoKHR& PresentInfo)
+    {
+        LUMINA_PROFILE_SCOPE();
+        std::scoped_lock Lock(Mutex);
+        LockMark(Mutex);
+        return vkQueuePresentKHR(Queue, &PresentInfo);
     }
 
     void FQueue::WaitIdle()
     {
         LUMINA_PROFILE_SCOPE();
+        std::scoped_lock Lock(Mutex);
+        LockMark(Mutex);
         VK_CHECK(vkQueueWaitIdle(Queue));
     }
 

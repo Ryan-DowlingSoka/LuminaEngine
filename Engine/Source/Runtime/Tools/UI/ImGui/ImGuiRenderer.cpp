@@ -92,7 +92,11 @@ namespace Lumina
     	
     	io.ConfigWindowsMoveFromTitleBarOnly = true;
     	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
-    	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+    	// Gamepad nav intentionally NOT enabled: when set, ImGui's GLFW backend
+    	// polls XInput every frame in ImGui_ImplGlfw_NewFrame, which causes
+    	// 1-4ms hitches on Windows (USB enumeration / driver state transitions)
+    	// even with no controller connected. Re-enable only if/when the editor
+    	// genuinely needs gamepad-driven ImGui navigation.
     	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
     	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
     	io.BackendFlags |= ImGuiBackendFlags_PlatformHasViewports;
@@ -183,6 +187,7 @@ namespace Lumina
 
     void IImGuiRenderer::Deinitialize()
     {
+    	ClearSnapshots();
     	ImGui::DestroyContext();
     }
 
@@ -191,7 +196,15 @@ namespace Lumina
     	OnStartFrame(UpdateContext);
     }
 
-    TUniquePtr<FImDrawDataSnapshot> IImGuiRenderer::BuildFrame_GameThread()
+    void IImGuiRenderer::ClearSnapshots()
+    {
+        for (FImDrawDataSnapshot& Snapshot : Snapshots)
+        {
+            Snapshot.Clear();
+        }
+    }
+
+    FImDrawDataSnapshot* IImGuiRenderer::BuildFrame_GameThread(uint8 FrameIndex)
     {
         LUMINA_PROFILE_SCOPE();
 
@@ -208,10 +221,20 @@ namespace Lumina
             ImGui::RenderPlatformWindowsDefault();
         }
 
-        TUniquePtr<FImDrawDataSnapshot> Snapshot = MakeUnique<FImDrawDataSnapshot>();
-        Snapshot->CopyFrom(ImGui::GetDrawData());
-        FillReferencedImagesSnapshot(Snapshot->ReferencedImages);
-        return Snapshot;
+        // The previous frame using this slot is at least one render-thread
+        // submission ago and must have completed reading from it before we
+        // can swap fresh data in. FRAMES_IN_FLIGHT slots give the same safety
+        // margin as the rest of the renderer.
+        FImDrawDataSnapshot& Snapshot = Snapshots[FrameIndex % FRAMES_IN_FLIGHT];
+        Snapshot.SnapUsingSwap(ImGui::GetDrawData(), ImGui::GetTime());
+        if (!Snapshot.IsValid())
+        {
+            return nullptr;
+        }
+
+        Snapshot.ReferencedImages.clear();
+        FillReferencedImagesSnapshot(Snapshot.ReferencedImages);
+        return &Snapshot;
     }
 
     void IImGuiRenderer::RecordFrame_RenderThread(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot)

@@ -698,7 +698,8 @@ namespace Lumina
             }
             else
             {
-                LOG_ERROR("Failed to suballocate buffer");
+                PANIC("WriteBuffer: upload suballoc failed for buffer '{}', size {} bytes, offset {}",
+                      Buffer->GetDescription().DebugName, Size, Offset);
             }
         }
     }

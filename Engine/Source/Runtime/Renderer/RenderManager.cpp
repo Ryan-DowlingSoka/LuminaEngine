@@ -31,20 +31,13 @@ namespace Lumina
         }
     });
 
-    // Boot-time only. When false the worker stays down and ENQUEUE_RENDER_COMMAND
-    // runs inline on the caller -- effectively single-threaded rendering.
-    static TConsoleVar CVarRenderThreadEnabled("Core.RenderThread.Enabled", true,
-        "Run a dedicated render thread. Boot-time only; restart to apply changes.");
-
-
     FRenderManager::FRenderManager()
     {
     }
 
     FRenderManager::~FRenderManager()
     {
-        // Stop the render thread first: any pending command on the queue holds
-        // refs to GPU resources we're about to destroy below.
+        // Stop the worker first: queued commands hold refs to GPU resources destroyed below.
         if (GRenderThread)
         {
             GRenderThread->Stop();
@@ -75,14 +68,11 @@ namespace Lumina
         #if LUMINA_SHIPPING
         GRenderContext->Initialize(FRenderContextDesc{false, false});
         #else
-        GRenderContext->Initialize(FRenderContextDesc{true, true});
+        GRenderContext->Initialize(FRenderContextDesc{false, true});
         #endif
 
         GRenderThread = Memory::New<FRenderThread>();
-        if (CVarRenderThreadEnabled.GetValue())
-        {
-            GRenderThread->Start();
-        }
+        GRenderThread->Start();
 
         #if WITH_EDITOR
         ImGuiRenderer = Memory::New<FVulkanImGuiRender>();
@@ -102,36 +92,53 @@ namespace Lumina
         #endif
     }
 
-    void FRenderManager::FrameEnd()
+    void FRenderManager::FrameEnd(FRHICommandListRef RmlUiCmdList)
     {
         LUMINA_PROFILE_SCOPE();
-
-        TUniquePtr<FImDrawDataSnapshot> ImGuiSnapshot;
-        #if WITH_EDITOR
-        ImGuiSnapshot = ImGuiRenderer->BuildFrame_GameThread();
-        #endif
 
         const uint8 ThisFrameIndex = CurrentFrameIndex;
         CurrentFrameIndex = (CurrentFrameIndex + 1) % FRAMES_IN_FLIGHT;
 
-        ENQUEUE_RENDER_COMMAND(RenderFrame)([this, ThisFrameIndex, Snapshot = Move(ImGuiSnapshot)]() mutable
+        FImDrawDataSnapshot* ImGuiSnapshot = nullptr;
+        #if WITH_EDITOR
+        ImGuiSnapshot = ImGuiRenderer->BuildFrame_GameThread(ThisFrameIndex);
+        #endif
+
+        ENQUEUE_RENDER_COMMAND(RenderFrame)([this, ThisFrameIndex, Snapshot = ImGuiSnapshot, RmlUi = Move(RmlUiCmdList)]() mutable
         {
             FGPUProfiler::Get().BeginFrame();
             GRenderContext->FrameStart(ThisFrameIndex);
 
-            FRHICommandListRef CmdList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
-            CmdList->Open();
-            ICommandList& CL = *CmdList;
+            // World render goes into its own cmdlist so the pre-recorded RmlUi
+            // cmdlist (built on the game thread) can execute between world and
+            // ImGui without breaking GPU ordering. Single graphics queue =
+            // submission order is execution order.
+            FRHICommandListRef WorldCmdList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
+            WorldCmdList->Open();
+            {
+                GPU_PROFILE_SCOPE_COLOR(WorldCmdList.GetReference(), "World Render", FColor(0.20f, 0.55f, 0.90f));
+                GWorldManager->RenderWorlds(*WorldCmdList, ThisFrameIndex);
+            }
+            WorldCmdList->Close();
+            GRenderContext->ExecuteCommandList(WorldCmdList);
+
+            // RmlUi (recorded on the game thread, references the same world RTs).
+            // Submitted between world render and final composite so editor panels
+            // sample world+RmlUi.
+            if (RmlUi)
+            {
+                GRenderContext->ExecuteCommandList(RmlUi);
+            }
+
+            // Final cmdlist: ImGui composite (or game-build swap copy) + the
+            // FrameEnd path that does AcquireNextImage + engine-viewport-to-
+            // swapchain copy + submit + present.
+            FRHICommandListRef FinalCmdList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
+            FinalCmdList->Open();
+            ICommandList& CL = *FinalCmdList;
 
             {
-                GPU_PROFILE_SCOPE(&CL, "Frame");
-
-                {
-                    GPU_PROFILE_SCOPE_COLOR(&CL, "World Render", FColor(0.20f, 0.55f, 0.90f));
-                    GWorldManager->RenderWorlds(CL);
-                }
-
-                RmlUi::RenderAll(CL);
+                GPU_PROFILE_SCOPE(&CL, "Frame Composite");
 
                 #if WITH_EDITOR
                 if (Snapshot)
@@ -164,6 +171,11 @@ namespace Lumina
             GRenderContext->WaitForGPU();
             FGPUProfiler::Get().EndFrame();
             GRenderContext->FlushPendingDeletes();
+
+            // Last per-slot reader (ImGui composite via Snapshot) has finished.
+            // Release the scene's frame slot back to the game thread so it can
+            // overwrite FrameRing[Slot] for frame N+FRAMES_IN_FLIGHT.
+            GWorldManager->SignalFrameConsumed(ThisFrameIndex);
         });
     }
 

@@ -6,6 +6,7 @@
 #include "Renderer/CommandList.h"
 #include "Renderer/RenderContext.h"
 #include "Renderer/RenderResource.h"
+#include "Renderer/RenderThread.h"
 #include "Renderer/RHIGlobals.h"
 #include "World/WorldTypes.h"
 #include "World/Entity/Components/CameraComponent.h"
@@ -102,10 +103,24 @@ namespace Lumina
             return false;
         }
 
+        // Capture submits a command list straight onto the graphics queue from
+        // the game thread. The render thread shares that queue + GRenderContext
+        // caches, so wait for any in-flight frame before we record or submit.
+        FlushRenderingCommands();
+
+        // RenderView_RenderThread reads scene state populated by Extract -- the
+        // view volume, camera matrices, post-process, etc. Without this, the
+        // capture renders against zeroed state and the thumbnail comes out
+        // garbled.
+        World->Extract();
+
         FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
         CommandList->Open();
 
-        World->Render(*CommandList);
+        // Thumbnail capture is one-shot from the game thread after a Flush, so
+        // there's no real frame ring in play; the scene's slot-0 snapshot just
+        // populated by Extract is the one we render against.
+        World->Render(*CommandList, 0u);
 
         FRHIImage* RenderTarget = World->GetRenderer()->GetRenderTarget();
         if (RenderTarget == nullptr)

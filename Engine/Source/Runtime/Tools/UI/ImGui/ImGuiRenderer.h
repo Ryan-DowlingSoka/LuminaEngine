@@ -4,6 +4,7 @@
 #include "ImDrawDataSnapshot.h"
 #include "ImGuiX.h"
 #include "Renderer/RenderResource.h"
+#include "Renderer/RenderTypes.h"
 #include "Subsystems/Subsystem.h"
 
 struct ImPlotContext;
@@ -27,12 +28,18 @@ namespace Lumina
 
         void StartFrame(const FUpdateContext& UpdateContext);
 
-        // Game thread: ImGui::Render() then deep-copy DrawData into a heap
-        // snapshot. The caller (render command lambda) owns and destroys it.
-        TUniquePtr<FImDrawDataSnapshot> BuildFrame_GameThread();
+        // Game thread: ImGui::Render() then swap DrawData into the snapshot
+        // slot for FrameIndex. Returns a pointer into the persistent ring -
+        // the renderer owns the storage, the caller just forwards it to the
+        // render thread. Returns nullptr if there's no valid draw data.
+        FImDrawDataSnapshot* BuildFrame_GameThread(uint8 FrameIndex);
 
         // Render thread: record the snapshot's draw lists onto CmdList.
         void RecordFrame_RenderThread(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot);
+
+        // Releases persistent snapshot storage. Must be called BEFORE
+        // ImGui::DestroyContext() since pooled ImDrawLists use its allocator.
+        void ClearSnapshots();
 
         virtual void OnStartFrame(const FUpdateContext& UpdateContext) = 0;
         virtual void OnEndFrame(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot) = 0;
@@ -55,7 +62,11 @@ namespace Lumina
     protected:
 
         ImGuiContext* Context = nullptr;
-        ImPlotContext* ImPlotContext = nullptr; 
-        
+        ImPlotContext* ImPlotContext = nullptr;
+
+        // Persistent ring keyed by render-thread frame index. Each slot owns
+        // a pool of ImDrawList copies that get reused across frames - after
+        // warm-up SnapUsingSwap is allocation-free unless buffers grow.
+        FImDrawDataSnapshot Snapshots[FRAMES_IN_FLIGHT];
     };
 }

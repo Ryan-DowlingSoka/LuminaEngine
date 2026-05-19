@@ -4,6 +4,8 @@
 #include "Memory/Allocators/Allocator.h"
 #include "Types/BitFlags.h"
 
+#include <atomic>
+
 
 namespace Lumina
 {
@@ -19,7 +21,29 @@ namespace Lumina
         bool VerifyPermanentResourceState(EResourceStates PermanentState, EResourceStates RequiredState, bool bIsTexture, FStringView DebugName);
     }
 
-    
+    // Write-once-publish, read-from-many-threads. Wrapper provides
+    // release-on-write / acquire-on-read so existing call sites stay terse.
+    struct FPermanentResourceState
+    {
+        FPermanentResourceState() = default;
+        FPermanentResourceState(const FPermanentResourceState&) = delete;
+        FPermanentResourceState& operator=(const FPermanentResourceState&) = delete;
+
+        FORCEINLINE operator EResourceStates() const noexcept
+        {
+            return Value.load(std::memory_order_acquire);
+        }
+
+        FORCEINLINE FPermanentResourceState& operator=(EResourceStates NewState) noexcept
+        {
+            Value.store(NewState, std::memory_order_release);
+            return *this;
+        }
+
+    private:
+        std::atomic<EResourceStates> Value{ EResourceStates::Unknown };
+    };
+
     struct FBufferStateExtension
     {
         friend class FCommandListResourceStateTracker;
@@ -28,7 +52,7 @@ namespace Lumina
             : DescRef(desc)
         { }
 
-        EResourceStates PermanentState = EResourceStates::Unknown;
+        FPermanentResourceState PermanentState;
 
     private:
         const FRHIBufferDesc& DescRef;
@@ -37,15 +61,15 @@ namespace Lumina
     struct FTextureStateExtension
     {
         friend class FCommandListResourceStateTracker;
-        
+
         explicit FTextureStateExtension(const FRHIImageDesc& desc)
             : DescRef(desc)
         { }
 
-        EResourceStates PermanentState = EResourceStates::Unknown;
+        FPermanentResourceState PermanentState;
         uint32 bStateInitialized:1 = false;
         uint32 bIsSamplerFeedback:1 = false;
-        
+
     private:
         const FRHIImageDesc& DescRef;
     };

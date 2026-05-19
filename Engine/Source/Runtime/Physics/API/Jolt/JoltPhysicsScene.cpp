@@ -481,11 +481,17 @@ namespace Lumina::Physics
 
     void FJoltPhysicsScene::PreUpdate()
     {
-        
+
     }
 
     void FJoltPhysicsScene::PostUpdate()
     {
+    }
+
+    void FJoltPhysicsScene::DispatchPendingEvents()
+    {
+        LUMINA_PROFILE_SCOPE();
+        DispatchContactEvents();
     }
 
     void FJoltPhysicsScene::ApplyDirtyTransforms(float FixedDt)
@@ -676,10 +682,7 @@ namespace Lumina::Physics
             JoltSystem->Update(FixedTimestep, (int)CollisionSteps, &Allocator, FJoltPhysicsContext::GetThreadPool());
             UpdateCharacters(FixedTimestep);
 
-            // Drain enter/exit contacts captured by the listener during the step
-            // and dispatch entity-targeted Lua events while we're still on the
-            // game thread (registry + Lua VM are not threadsafe).
-            DispatchContactEvents();
+            // Contact records drained on game thread via DispatchPendingEvents.
 
             Accumulator -= (float)CollisionSteps * FixedTimestep;
         }

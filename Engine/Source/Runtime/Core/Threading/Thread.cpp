@@ -10,6 +10,7 @@ namespace Lumina
     {
         static std::thread::id GMainThreadID = {};
         static std::thread::id GRenderThreadID = {};
+        static std::thread::id GPhysicsThreadID = {};
 
         void ThreadYield()
         {
@@ -35,9 +36,23 @@ namespace Lumina
                 : Render == std::this_thread::get_id();
         }
 
+        bool IsPhysicsThread()
+        {
+            // Before SetPhysicsThread runs (boot / shutdown), the main thread is the physics thread.
+            const std::thread::id Physics = GPhysicsThreadID;
+            return Physics == std::thread::id{}
+                ? GMainThreadID == std::this_thread::get_id()
+                : Physics == std::this_thread::get_id();
+        }
+
         void SetRenderThread(std::thread::id ID)
         {
             GRenderThreadID = ID;
+        }
+
+        void SetPhysicsThread(std::thread::id ID)
+        {
+            GPhysicsThreadID = ID;
         }
 
         uint32 GetNumThreads()

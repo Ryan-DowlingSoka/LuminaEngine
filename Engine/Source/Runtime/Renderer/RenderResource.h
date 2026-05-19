@@ -1531,9 +1531,9 @@ namespace Lumina
 		static FBindingSetItem BufferCBV(uint32 Slot, FRHIBuffer* Buffer, EFormat Format = EFormat::UNKNOWN, FBufferRange Range = EntireBuffer)
 		{
 			bool bIsDynamic = Buffer->GetDescription().Usage.IsFlagSet(BUF_Dynamic);
-			
+
 			FBindingSetItem Result;
-			Result.Type				= bIsDynamic ? ERHIBindingResourceType::Buffer_Storage_Dynamic : ERHIBindingResourceType::Buffer_CBV;
+			Result.Type				= bIsDynamic ? ERHIBindingResourceType::Buffer_Uniform_Dynamic : ERHIBindingResourceType::Buffer_CBV;
 			Result.ResourceHandle	= Buffer;
 			Result.Variant			= Range;
 			Result.Format			= Format;

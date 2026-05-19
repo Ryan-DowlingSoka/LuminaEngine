@@ -1,5 +1,6 @@
 #pragma once
 #include "MaterialManager.h"
+#include "RenderResource.h"
 #include "RenderTypes.h"
 #include "TextureManager.h"
 #include "Core/Delegates/Delegate.h"
@@ -33,7 +34,12 @@ namespace Lumina
         // Game thread: snapshot ImGui DrawData and enqueue the whole render
         // pipeline (cmd list create, all recording, submit, present, wait) onto
         // the render thread. Returns immediately.
-        void FrameEnd();
+        //
+        // RmlUiCmdList: optional pre-recorded cmdlist (game-thread recorded) that
+        // composites RmlUi onto world RTs. Executed by the render thread between
+        // world render and ImGui composite so RmlUi never touches the live DOM
+        // off the render thread. Pass nullptr to skip.
+        void FrameEnd(FRHICommandListRef RmlUiCmdList = nullptr);
 
         void SwapchainResized(glm::vec2 NewSize);
 

@@ -254,7 +254,7 @@ namespace Lumina
     	VkResult Result;
 	    {
 	    	LUMINA_PROFILE_SECTION_COLORED("vkQueuePresentKHR", tracy::Color::Aquamarine3);
-		    Result = vkQueuePresentKHR(Queue->Queue, &PresentInfo);
+		    Result = Queue->Present(PresentInfo);
 	    }
 
     	if (!(Result == VK_SUCCESS || Result == VK_SUBOPTIMAL_KHR || Result == VK_ERROR_OUT_OF_DATE_KHR))

@@ -250,6 +250,12 @@ namespace Lumina
         return true;
     }
     
+    namespace
+    {
+        FMutex                GPendingDestroyMutex;
+        TVector<CPackage*>    GPendingDestroyPackages;
+    }
+
     bool CPackage::DestroyPackage(CPackage* PackageToDestroy)
     {
         if (PackageToDestroy == nullptr || PackageToDestroy->HasAnyFlag(OF_MarkedDestroy))
@@ -265,10 +271,8 @@ namespace Lumina
 
         FFixedString PackagePath = PackageToDestroy->GetPackagePath();
 
-        // Best-effort load; corrupt packages still need to be deletable.
         (void)PackageToDestroy->FullyLoad();
 
-        // Resolve primary-asset GUID from the export table; runtime objects may be missing for corrupt packages.
         FName PackageFileName = VFS::FileName(PackagePath, true);
         FGuid AssetGUID;
         for (const FObjectExport& Export : PackageToDestroy->ExportTable)
@@ -280,27 +284,69 @@ namespace Lumina
             }
         }
 
-        TVector<CObject*> ExportObjects;
-        ExportObjects.reserve(20);
-        GetObjectsWithPackage(PackageToDestroy, ExportObjects);
+        // Synchronous so the asset browser updates immediately.
+        OnPackageDestroyed.Broadcast(PackagePath);
 
-        for (CObject* ExportObject : ExportObjects)
+        if (AssetGUID.IsValid())
         {
-            if (ExportObject == nullptr || ExportObject == PackageToDestroy)
+            FAssetRegistry::Get().AssetDeleted(AssetGUID);
+        }
+
+        if (VFS::Exists(PackagePath) && !VFS::Remove(PackagePath))
+        {
+            LOG_ERROR("DestroyPackage: failed to remove package file {}", PackagePath);
+        }
+
+        // Object-graph mutation deferred to DrainPendingDestroys; running it
+        // here would tear CMesh* / buffer refs out from under the render thread.
+        PackageToDestroy->SetFlag(OF_MarkedDestroy);
+        {
+            FScopeLock Lock(GPendingDestroyMutex);
+            GPendingDestroyPackages.push_back(PackageToDestroy);
+        }
+
+        return true;
+    }
+
+    bool CPackage::HasPendingDestroys()
+    {
+        FScopeLock Lock(GPendingDestroyMutex);
+        return !GPendingDestroyPackages.empty();
+    }
+
+    void CPackage::DrainPendingDestroys()
+    {
+        TVector<CPackage*> Local;
+        {
+            FScopeLock Lock(GPendingDestroyMutex);
+            if (GPendingDestroyPackages.empty())
+            {
+                return;
+            }
+            Local.swap(GPendingDestroyPackages);
+        }
+
+        for (CPackage* PackageToDestroy : Local)
+        {
+            if (PackageToDestroy == nullptr)
             {
                 continue;
             }
 
-            if (ExportObject->HasAnyFlag(OF_MarkedDestroy))
-            {
-                continue;
-            }
+            TVector<CObject*> ExportObjects;
+            ExportObjects.reserve(20);
+            GetObjectsWithPackage(PackageToDestroy, ExportObjects);
 
-            if (ExportObject->IsAsset())
+            for (CObject* ExportObject : ExportObjects)
             {
-                if (!AssetGUID.IsValid())
+                if (ExportObject == nullptr || ExportObject == PackageToDestroy)
                 {
-                    AssetGUID = ExportObject->GetGUID();
+                    continue;
+                }
+
+                if (!ExportObject->IsAsset())
+                {
+                    continue;
                 }
 
                 FObjectReferenceReplacerArchive Ar(ExportObject, nullptr);
@@ -312,43 +358,28 @@ namespace Lumina
                     }
                 }
             }
-        }
 
-        // Broadcast before teardown so observers can release handles while objects are addressable.
-        OnPackageDestroyed.Broadcast(PackagePath);
-
-        if (AssetGUID.IsValid())
-        {
-            FAssetRegistry::Get().AssetDeleted(AssetGUID);
-        }
-
-        for (CObject* ExportObject : ExportObjects)
-        {
-            if (ExportObject == nullptr || ExportObject == PackageToDestroy)
+            for (CObject* ExportObject : ExportObjects)
             {
-                continue;
+                if (ExportObject == nullptr || ExportObject == PackageToDestroy)
+                {
+                    continue;
+                }
+
+                if (ExportObject->HasAnyFlag(OF_MarkedDestroy))
+                {
+                    continue;
+                }
+
+                ExportObject->ConditionalBeginDestroy();
             }
 
-            if (ExportObject->HasAnyFlag(OF_MarkedDestroy))
-            {
-                continue;
-            }
+            PackageToDestroy->ExportTable.clear();
+            PackageToDestroy->ImportTable.clear();
 
-            ExportObject->ConditionalBeginDestroy();
+            PackageToDestroy->RemoveFromRoot();
+            PackageToDestroy->ConditionalBeginDestroy();
         }
-
-        PackageToDestroy->ExportTable.clear();
-        PackageToDestroy->ImportTable.clear();
-
-        PackageToDestroy->RemoveFromRoot();
-        PackageToDestroy->ConditionalBeginDestroy();
-
-        if (VFS::Exists(PackagePath) && !VFS::Remove(PackagePath))
-        {
-            LOG_ERROR("DestroyPackage: failed to remove package file {}", PackagePath);
-        }
-
-        return true;
     }
 
     CPackage* CPackage::FindPackageByPath(FStringView Path)

@@ -1595,19 +1595,15 @@ namespace Lumina
                     BufferInfo.buffer = Buffer->GetBuffer();
                     BufferInfo.offset = 0;
                     BufferInfo.range = Buffer->GetSize();
-                        
+
                     Write.pBufferInfo = &BufferInfo;
                     Write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
                     DynamicBuffers.push_back(Buffer);
-                    
-                    if (!Buffer->PermanentState)
-                    {
-                        BindingsRequiringTransitions.push_back((uint32)BindingIndex);
-                    }
-                    else
-                    {
-                        VkStateTracking::VerifyPermanentResourceState(Buffer->PermanentState, EResourceStates::ConstantBuffer, true, Buffer->GetDescription().DebugName);
-                    }
+
+                    // BUF_Dynamic buffers are host-mapped and synchronized via the per-version
+                    // tracker (WriteDynamicBuffer picks a slot whose prior submission has retired).
+                    // They are exempt from the command-list state tracker, so no transition is
+                    // needed at bind time and PermanentState has no meaning here.
                 }
                 break;
             case ERHIBindingResourceType::Buffer_Storage_Dynamic:
@@ -1617,19 +1613,12 @@ namespace Lumina
                     BufferInfo.buffer = Buffer->GetBuffer();
                     BufferInfo.offset = 0;
                     BufferInfo.range = Buffer->GetSize();
-                        
+
                     Write.pBufferInfo = &BufferInfo;
                     Write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
                     DynamicBuffers.push_back(Buffer);
 
-                    if (!Buffer->PermanentState)
-                    {
-                        BindingsRequiringTransitions.push_back((uint32)BindingIndex);
-                    }
-                    else
-                    {
-                        VkStateTracking::VerifyPermanentResourceState(Buffer->PermanentState, EResourceStates::ShaderResource, true, Buffer->GetDescription().DebugName);
-                    }
+                    // See Buffer_Uniform_Dynamic above: dynamic buffers bypass state tracking.
                 }
                 break;
             }

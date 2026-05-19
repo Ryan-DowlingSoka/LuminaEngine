@@ -16,6 +16,9 @@ namespace Lumina::Physics
         virtual void PostUpdate() = 0;
         virtual void Simulate() = 0;
         virtual void StopSimulate() = 0;
+
+        // Game-thread drain of step-side events (Lua, entt::dispatcher). Pair with Update.
+        virtual void DispatchPendingEvents() {}
         
         virtual void DeactivateBody(uint32 BodyID) = 0;
         virtual void ActivateBody(uint32 BodyID) = 0;

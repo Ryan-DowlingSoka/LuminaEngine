@@ -34,6 +34,7 @@
 #include "Entity/Events/WorldEvents.h"
 #include "Entity/Events/LuaEventBus.h"
 #include "Physics/Physics.h"
+#include "Renderer/RenderThread.h"
 #include "Scene/RenderScene/Forward/ForwardRenderScene.h"
 #include "Scripting/Lua/Scripting.h"
 #include "Scripting/Lua/VariadicArgs.h"
@@ -509,6 +510,10 @@ namespace Lumina
     
     void CWorld::TeardownWorld()
     {
+        // Render thread may still be inside the prior frame's RenderWorlds lambda,
+        // reading this world's RenderScene + ECS. Drain it before we destroy them.
+        FlushRenderingCommands();
+
         GAudioContext->StopAllSounds();
 
         if (ScriptReloadedHandle.IsValid())
@@ -579,12 +584,6 @@ namespace Lumina
             return;
         }
 
-        if (Stage == EUpdateStage::DuringPhysics)
-        {
-            CPU_PROFILE_SCOPE_COLOR("Physics", FColor(0.20f, 0.75f, 0.90f));
-            PhysicsScene->Update(DeltaTime);
-        }
-
         SystemContext.DeltaTime     = DeltaTime;
         SystemContext.Time          = TimeSinceCreation;
         SystemContext.UpdateStage   = Stage;
@@ -612,12 +611,35 @@ namespace Lumina
         }
     }
 
-    void CWorld::Render(ICommandList& CmdList) const
+    void CWorld::TickPhysics()
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        if (bPaused || PhysicsScene == nullptr)
+        {
+            return;
+        }
+
+        CPU_PROFILE_SCOPE_COLOR("Physics", FColor(0.20f, 0.75f, 0.90f));
+        PhysicsScene->Update(DeltaTime);
+    }
+
+    void CWorld::DispatchPhysicsEvents()
+    {
+        if (PhysicsScene == nullptr)
+        {
+            return;
+        }
+
+        PhysicsScene->DispatchPendingEvents();
+    }
+
+    void CWorld::Render(ICommandList& CmdList, uint8 FrameIndex) const
     {
         LUMINA_PROFILE_SCOPE();
         if (RenderScene)
         {
-            RenderScene->RenderView_RenderThread(CmdList);
+            RenderScene->RenderView_RenderThread(CmdList, FrameIndex);
         }
     }
 
@@ -1146,6 +1168,10 @@ namespace Lumina
     {
         if (RenderScene)
         {
+            // Covers SetActive(false). TeardownWorld already flushed before
+            // reaching here, so the second flush is a no-op on that path.
+            FlushRenderingCommands();
+
             RenderScene->Shutdown();
             RenderScene.reset();
         }

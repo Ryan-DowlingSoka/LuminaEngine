@@ -8,6 +8,7 @@
 #include "Core/Delegates/CoreDelegates.h"
 #include "Core/Module/ModuleManager.h"
 #include "Core/Object/ObjectIterator.h"
+#include "Core/Object/Package/Package.h"
 #include "Core/Profiler/CPUProfiler.h"
 #include "Core/Profiler/Profile.h"
 #include "Core/Windows/Window.h"
@@ -23,6 +24,7 @@
 #include "nlohmann/json.hpp"
 #include "Paths/Paths.h"
 #include "Physics/Physics.h"
+#include "Physics/PhysicsThread.h"
 #include "Platform/Filesystem/FileHelper.h"
 #include "Renderer/GPUProfiler/GPUProfiler.h"
 #include "Renderer/RenderContext.h"
@@ -81,6 +83,9 @@ namespace Lumina
         Audio::Initialize();
         Task::Initialize();
         Physics::Initialize();
+
+        GPhysicsThread = Memory::New<FPhysicsThread>();
+        GPhysicsThread->Start();
         
         GRenderManager = Memory::New<FRenderManager>();
         GRenderManager->Initialize();
@@ -137,6 +142,14 @@ namespace Lumina
         Memory::Delete(GRenderManager);
         GRenderManager = nullptr;
 
+        // Stop the worker before Physics::Shutdown so no in-flight step touches Jolt globals being destroyed.
+        if (GPhysicsThread)
+        {
+            GPhysicsThread->Stop();
+            Memory::Delete(GPhysicsThread);
+            GPhysicsThread = nullptr;
+        }
+
         Physics::Shutdown();
         Task::Shutdown();
         Audio::Shutdown();
@@ -167,7 +180,7 @@ namespace Lumina
 
                 MainThread::ProcessQueue();
 
-                // Drain Travel requests before world ticks; tearing down a world from inside its own update is unsafe.
+                // Drain Travel before world ticks; tearing down a world from inside its own update is unsafe.
                 ProcessPendingTravel();
 
                 GRenderManager->FrameStart(UpdateContext);
@@ -206,6 +219,10 @@ namespace Lumina
                 GWorldManager->UpdateWorlds(UpdateContext);
 
                 OnUpdateStage(UpdateContext);
+
+                // Hand off to the worker. DuringPhysics scripts run concurrently;
+                // they must not touch Jolt body state or physics-controlled transforms.
+                GWorldManager->KickPhysics();
             }
 
             {
@@ -224,6 +241,12 @@ namespace Lumina
             {
                 LUMINA_PROFILE_SECTION_COLORED("Post-Physics", tracy::Color::Yellow);
                 UpdateContext.UpdateStage = EUpdateStage::PostPhysics;
+
+                {
+                    LUMINA_PROFILE_SECTION_COLORED("WaitForPhysics", tracy::Color::DarkOliveGreen);
+                    GWorldManager->WaitForPhysics();
+                    GWorldManager->DispatchPhysicsEvents();
+                }
 
                 #if USING(WITH_EDITOR)
                 DeveloperToolUI->Update(UpdateContext);
@@ -249,17 +272,48 @@ namespace Lumina
                 DeveloperToolUI->EndFrame(UpdateContext);
                 #endif
 
-                // Wait for the prior frame's render before mutating shared
-                // scene / RmlUi state below. ImGui state is already snapshotted
-                // per-frame, so the NewFrame + widget-build calls above didn't race.
+                // Per-slot back-pressure now lives inside the scene's Extract
+                // (waits on FrameRing[Slot]'s consumed counter). The render
+                // thread can be up to FRAMES_IN_FLIGHT frames behind without
+                // blocking the game thread here.
+                //
+                // RmlUi::TickAll mutates the Rml::Context DOM, which the
+                // render-thread RmlUi command recording (on the prior frame)
+                // does NOT touch -- recording moved onto the game thread
+                // below, after TickAll, so the live-read race is gone.
+                //
+                // CPackage::DrainPendingDestroys does still want a render-
+                // idle moment because freed packages may own GPU resources
+                // captured by lambdas already on the queue. Drain only when
+                // there's actually something to free, so the common case
+                // skips the flush entirely.
+                if (CPackage::HasPendingDestroys())
                 {
-                    LUMINA_PROFILE_SECTION_COLORED("WaitForRender", tracy::Color::Crimson);
+                    LUMINA_PROFILE_SECTION_COLORED("WaitForRender (Package Teardown)", tracy::Color::Crimson);
                     FlushRenderingCommands();
+                    CPackage::DrainPendingDestroys();
                 }
 
                 RmlUi::TickAll();
                 GWorldManager->ExtractWorlds();
-                GRenderManager->FrameEnd();
+
+                // Record RmlUi on the game thread into its own cmdlist.
+                // Previously RmlUi::RenderAll ran on the render thread and
+                // traversed the live Rml::Context DOM that TickAll just
+                // mutated -- the Flush above is what made that safe. Moving
+                // the recording here serializes naturally with TickAll and
+                // breaks the live-read race; the render thread submits this
+                // cmdlist between world render and final composite.
+                FRHICommandListRef RmlUiCmdList;
+                {
+                    LUMINA_PROFILE_SECTION_COLORED("RmlUi::RenderAll (GameThread)", tracy::Color::Aquamarine);
+                    RmlUiCmdList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
+                    RmlUiCmdList->Open();
+                    RmlUi::RenderAll(*RmlUiCmdList);
+                    RmlUiCmdList->Close();
+                }
+
+                GRenderManager->FrameEnd(Move(RmlUiCmdList));
 
                 Lua::FScriptingContext::Get().ProcessDeferredActions();
 

@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include <condition_variable>
 #include "Core/Delegates/Delegate.h"
 #include "Memory/Allocators/Allocator.h"
 #include "Memory/SmartPtr.h"
@@ -9,6 +10,7 @@
 #include "World/Scene/RenderScene/RenderScene.h"
 #include "World/Scene/RenderScene/SceneCullContext.h"
 #include "World/Entity/Components/PostProcessSettings.h"
+#include "World/Subsystems/WorldSettings.h"
 
 
 namespace Lumina
@@ -111,14 +113,117 @@ namespace Lumina
             TFrameVector<FEntityRecord>         EntityRecords;
             TFrameVector<FLocalBatchEntry>      LocalBatches;
             TFrameVector<glm::mat4>             BonesData;
+            TFrameHashMap<class CMesh*, uint8>  PinnedMeshDedupe;
+            // Heap-backed so refs survive the per-thread arena reset.
+            TVector<FRHIBufferRef>              PinnedMeshBuffers;
             FFrameArenaAllocator                Arena;
             FSceneRenderStats                   Stats = {};
 
             FThreadLocalDrawData() = default;
             explicit FThreadLocalDrawData(FFrameArenaAllocator A)
-                : Items(A), EntityRecords(A), LocalBatches(A), BonesData(A), Arena(A) {}
+                : Items(A), EntityRecords(A), LocalBatches(A), BonesData(A), PinnedMeshDedupe(A), Arena(A) {}
         };
-        
+
+        /**
+         * Pending per-light shadow tile requests queued during parallel light
+         * processing. Finalized into ShadowAtlas tiles + FLightShadowData by
+         * AllocateShadowTiles after Graph.Wait. Request capture has to be
+         * deferred so we can fit the whole set against the atlas budget and
+         * shrink the largest tiles uniformly when over budget. The old
+         * greedy allocator failed the Nth light once the atlas was full.
+         */
+        struct FShadowRequest
+        {
+            uint32      LightIndex;        // Into LightData.Lights
+            ELightType  Type;
+            uint32      DesiredPixels;     // Unclamped; clamped + shrunk by the fit pass
+            float       DistanceToCamera;  // Used by the view-budget drop pass (farthest first)
+            glm::vec3   Position;
+            glm::vec3   Direction;         // Spot only
+            glm::vec3   Up;                // Spot only
+            float       Attenuation;       // Spot far plane
+            float       OuterFOVDegrees;   // Spot
+        };
+
+        /**
+         * Per-frame extracted snapshot. Game thread writes into FrameRing[Slot]
+         * during Extract; render thread reads FrameRing[Slot] during RenderView.
+         * Sized FRAMES_IN_FLIGHT so the two threads can pipeline without
+         * blocking on each other.
+         *
+         * Holds *only* state that crosses the game/render boundary. Persistent
+         * render-thread-only state (NamedBuffers/Images, IBL caches, BindingCache,
+         * MSAA scratch, picker readback, ShadowAtlas image + free-lists) stays
+         * on FForwardRenderScene.
+         */
+        struct FFrameData
+        {
+            // Camera / world snapshot
+            FViewVolume                      ViewVolume = {};
+            FSceneGlobalData                 SceneGlobalData = {};
+            SDefaultWorldSettings            CachedWorldSettings = {};
+            float                            CachedWorldDeltaTime = 0.0f;
+            // Set true at end of Extract if the frame is renderable; checked by
+            // RenderView_RenderThread which no-ops when false (typically when the
+            // shader compiler still has pending requests).
+            bool                             bExtractedThisFrame = false;
+
+            // Mesh gather output
+            TVector<FGPUInstance>            Instances;
+            TVector<glm::mat4>               BonesData;
+            TVector<FMeshDrawCommand>        DrawCommands;
+            TVector<uint32>                  OpaqueDrawList;
+            TVector<uint32>                  OpaqueOccluderDrawList;
+            TVector<uint32>                  TranslucentDrawList;
+            TVector<FRHIBufferRef>           PinnedMeshBuffersThisFrame;
+            FSceneCullContext                SceneCullContext;
+
+            // Cull / draw-arg output
+            TVector<FCullView>               CullViews;
+            TVector<FDrawIndirectArguments>  IndirectArgs;
+            TVector<uint32>                  DrawMeshletStartOffsets;
+            TVector<uint32>                  InstanceMeshletPrefix;
+            uint32                           TotalMeshletBound   = 0;
+            uint32                           NumDrawsPerView     = 0;
+            uint32                           CameraLateViewIndex = ~0u;
+            uint32                           CascadeViewBase     = ~0u;
+            TVector<uint32>                  PointShadowCullViewBases;
+            TVector<uint32>                  SpotShadowCullViewBases;
+
+            // Lights & shadows
+            FSceneLightData                  LightData = {};
+            TArray<TVector<FLightShadow>, (uint32)ELightType::Num> PackedShadows = {};
+            TAtomic<uint32>                  ShadowDataCount = 0;
+            TVector<FShadowRequest>          ShadowRequests;
+            FMutex                           ShadowRequestMutex;
+            // Snapshot of FShadowAtlas::Tiles for this frame. AllocateShadowTiles
+            // builds it via the persistent atlas allocator on the game thread;
+            // render passes look up tiles via Frame.AtlasTiles[idx] (NOT
+            // ShadowAtlas.GetTile(idx)) so the read is per-slot and race-free.
+            TVector<FShadowTile>             AtlasTiles;
+
+            // Environment + post-process
+            FEnvironmentParams               EnvironmentParams = {};
+            FRHIImage*                       EnvironmentMapImage = nullptr;
+            // bIBL{,Convolution}Dirty are recomputed every Extract from the
+            // class-level Last* snapshot, so they live per-frame.
+            bool                             bIBLDirty            = false;
+            bool                             bIBLConvolutionDirty = false;
+            SPostProcessSettings             ActivePostProcessStorage = {};
+            bool                             bHasActivePostProcess = false;
+            TVector<CMaterialInterface*>     ActivePostProcessMaterials;
+
+            // Debug draw
+            TVector<FSimpleElementVertex>    SimpleVertices;
+            TVector<FLineBatch>              LineBatches;
+            TVector<FBillboardInstance>      BillboardInstances;
+
+            // Stats accumulated during this frame's Extract. Render thread
+            // copies into FForwardRenderScene::RenderStats at the top of
+            // RenderView so GetRenderStats() returns last-rendered values.
+            FSceneRenderStats                FrameStats = {};
+        };
+
         enum class ENamedBuffer : uint8
         {
             Scene,
@@ -253,8 +358,9 @@ namespace Lumina
         void EndFrame() override { }
         
         void Extract(const FViewVolume& ViewVolume, const SPostProcessSettings* PostProcess) override;
-        void RenderView_RenderThread(ICommandList& CmdList) override;
-        void SetActivePostProcessMaterials(const TVector<CMaterialInterface*>& Materials) override { ActivePostProcessMaterials = Materials; }
+        void RenderView_RenderThread(ICommandList& CmdList, uint8 FrameIndex) override;
+        void SignalFrameConsumed(uint8 FrameIndex) override;
+        void SetActivePostProcessMaterials(const TVector<CMaterialInterface*>& Materials) override { PendingPostProcessMaterials = Materials; }
         void SwapchainResized(glm::vec2 NewSize);
         void Resize(const glm::uvec2& NewSize) override { SwapchainResized(glm::vec2(NewSize)); }
         
@@ -265,6 +371,9 @@ namespace Lumina
         
         FRHIBuffer* GetNamedBuffer(ENamedBuffer Buffer) const { return NamedBuffers[(int)Buffer]; }
         FRHIImage* GetNamedImage(ENamedImage Image) const { return NamedImages[(int)Image];}
+
+        // Ringed accessor for IndirectArgs (see IndirectArgsRing).
+        FRHIBuffer* GetIndirectArgs() const { return IndirectArgsRing[CurrentFrameSlot]; }
 
         /** Returns the MSAA scratch RT when MSAA is enabled, otherwise the 1x image.
          *  Use these for the *render target* binding on geometry passes that should
@@ -354,11 +463,6 @@ namespace Lumina
         // state populated by the matching CompileDrawCommands_GameThread call.
         void CompileDrawCommands_RenderThread(ICommandList& CmdList);
 
-        // Set true at end of Extract if the frame is renderable; checked by
-        // RenderView_RenderThread which no-ops when false (typically when the
-        // shader compiler still has pending requests).
-        bool bExtractedThisFrame = false;
-
         void ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
         void ProcessSkeletalMeshEntityInternal(entt::entity Entity, const SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
 
@@ -430,67 +534,41 @@ namespace Lumina
         static constexpr uint32                         BLOOM_MIP_COUNT = 5;
         FRHIImageRef                                    BloomChain;
         
-        /** Packed array of all light shadows in the scene */
-        TArray<TVector<FLightShadow>, (uint32)ELightType::Num>    PackedShadows;
-
-        /** Atomic cursor into FSceneLightData::Shadows[]. Reset every frame. */
-        TAtomic<uint32>                         ShadowDataCount = 0;
-
-        /**
-         * Pending per-light shadow tile requests queued during parallel light
-         * processing. Finalized into ShadowAtlas tiles + FLightShadowData by
-         * AllocateShadowTiles after Graph.Wait. Request capture has to be
-         * deferred so we can fit the whole set against the atlas budget and
-         * shrink the largest tiles uniformly when over budget. The old
-         * greedy allocator failed the Nth light once the atlas was full.
-         */
-        struct FShadowRequest
-        {
-            uint32      LightIndex;        // Into LightData.Lights
-            ELightType  Type;
-            uint32      DesiredPixels;     // Unclamped; clamped + shrunk by the fit pass
-            float       DistanceToCamera;  // Used by the view-budget drop pass (farthest first)
-            glm::vec3   Position;
-            glm::vec3   Direction;         // Spot only
-            glm::vec3   Up;                // Spot only
-            float       Attenuation;       // Spot far plane
-            float       OuterFOVDegrees;   // Spot
-        };
-        TVector<FShadowRequest>                 ShadowRequests;
-        FMutex                                  ShadowRequestMutex;
-        
         FViewportState                          SceneViewportState;
         FDelegateHandle                         SwapchainResizedHandle;
         CWorld*                                 World = nullptr;
-        
+
+        // Mirror of last-rendered frame's FrameStats; rendered immediately
+        // visible to GetRenderStats() callers (editor UI panels).
         FSceneRenderStats                       RenderStats;
         FSceneRenderSettings                    RenderSettings;
-        FSceneLightData                         LightData;
-        // Per-frame copy of the active SEnvironmentComponent's GPU params.
-        // Populated during environment processing, uploaded with the scene
-        // buffers, and read by Environment.slang at binding (2, 0).
-        FEnvironmentParams                      EnvironmentParams;
-
-        // Resolved RHI image for SEnvironmentComponent::EnvironmentMap
-        // (the imported HDRI). Set during environment processing and
-        // consumed by SkyCubeCapturePass to drive the equirect->cube
-        // conversion. Null = no HDRI bound; SkyCubeCapturePass falls
-        // back to the procedural sky shader.
-        FRHIImage*                              EnvironmentMapImage = nullptr;
 
         // IBL change-tracking. SkyCube / Irradiance / Prefilter outputs
         // are persistent across frames and only need to be rebuilt when
-        // their inputs actually change. Without these snapshots the three
-        // convolution passes ran every frame -- a noticeable cost now
-        // that SkyCube is 1024 per face. The snapshot fields hold what
+        // their inputs actually change. The snapshot fields hold what
         // the IBL output was last baked from; we re-bake when any of
         // them differs. bIBLValid = false forces the first-frame bake.
+        //
+        // bIBLDirty drives the sky-cube capture and tracks every sun delta
+        // so the visible sky stays smooth under animated time-of-day.
+        //
+        // bIBLConvolutionDirty drives the irradiance + GGX prefilter passes,
+        // which are far more expensive (256 GGX samples per texel per mip,
+        // 5 mips). It only fires when the sun has moved by more than
+        // GIBLConvolutionSunCosThreshold or when env params / HDRI change,
+        // so continuous TOD animation does not pay full convolution cost
+        // every frame.
         FEnvironmentParams                      LastIBLEnvironmentParams = {};
         FRHIImage*                              LastIBLEnvironmentMap    = nullptr;
         glm::vec3                               LastIBLSunDirection      = glm::vec3(0.0f);
         bool                                    bLastIBLHasSun           = false;
         bool                                    bIBLValid                = false;
-        bool                                    bIBLDirty                = true;
+
+        FEnvironmentParams                      LastConvolvedEnvironmentParams = {};
+        FRHIImage*                              LastConvolvedEnvironmentMap    = nullptr;
+        glm::vec3                               LastConvolvedSunDirection      = glm::vec3(0.0f);
+        bool                                    bLastConvolvedHasSun           = false;
+        bool                                    bIBLConvolutionValid           = false;
 
         // Mirrors EnvironmentParams from the last frame we uploaded. The
         // env CB is 96 B but uploaded every frame through
@@ -512,28 +590,31 @@ namespace Lumina
         FBindingCache                           BindingCache;
 
         FRHIViewportRef                         SceneViewport;
-        
-        FSceneGlobalData                        SceneGlobalData;
 
-        // Color grading + tone-mapping settings for the current frame.
-        // Extract() value-copies the caller's settings into ActivePostProcessStorage
-        // and points ActivePostProcess at it -- the caller's pointer would dangle
-        // because the render thread reads this after Extract has returned.
-        // ActivePostProcess is null when no post-process is active (falls back
-        // to baked defaults in the passes that consume it).
-        SPostProcessSettings                    ActivePostProcessStorage = {};
-        const SPostProcessSettings*             ActivePostProcess = nullptr;
+        // Latest post-process material list handed by the world. Captured into
+        // FFrameData::ActivePostProcessMaterials at the start of Extract; not
+        // read by render passes directly.
+        TVector<CMaterialInterface*>            PendingPostProcessMaterials;
 
-        // Resolved post-process material chain for the frame currently
-        // being recorded. Set by SetActivePostProcessMaterials() (called
-        // from CWorld::Tick after the volume blend) and consumed by
-        // PostProcessMaterialPass(). The renderer does not own the
-        // CObjects -- the world keeps them alive via TObjectPtr on the
-        // owning components. Cleared each frame the world hands a new list.
-        TVector<CMaterialInterface*>            ActivePostProcessMaterials;
+        // SceneBindingSet is a non-owning view of SceneBindingSets[CurrentFrameSlot],
+        // refreshed at the top of RenderView_RenderThread. Every per-pass bind site
+        // reads through this pointer so call sites don't need to know about ringing.
+        // Refs live in SceneBindingSets; the raw pointer here is safe for the duration
+        // of the render frame because the ring keeps them alive.
+        FRHIBindingSet*                                                 SceneBindingSet = nullptr;
+        TArray<FRHIBindingSetRef, FRAMES_IN_FLIGHT>                     SceneBindingSets = {};
+        FRHIBindingLayoutRef                                            SceneBindingLayout;
 
-        FRHIBindingSetRef                       SceneBindingSet;
-        FRHIBindingLayoutRef                    SceneBindingLayout;
+        // IndirectArgs is GPU-atomic-written by CullMeshlets and consumed by
+        // DrawIndirect calls, so it can't live in BUF_Dynamic (the bind path
+        // doesn't carry dynamic offsets to vkCmdDrawIndirect). Manual N-buffer:
+        // GetIndirectArgs() returns the slot bound by the current frame's
+        // SceneBindingSets entry.
+        TArray<FRHIBufferRef, FRAMES_IN_FLIGHT>                         IndirectArgsRing = {};
+
+        // Frame slot index for ringed scene resources. Set at the top of
+        // RenderView_RenderThread from GRenderManager->GetCurrentFrameIndex().
+        uint8                                                           CurrentFrameSlot = 0;
 
         // Set 3 — shadow textures bound only by passes that SAMPLE shadows. Kept
         // out of SceneBindingSet so the shadow rendering passes (Point/Spot/
@@ -565,24 +646,7 @@ namespace Lumina
         FRHIBindingSetRef                       OITBindingSet;
         FRHIBindingLayoutRef                    OITBindingLayout;
         
-        TVector<FSimpleElementVertex>           SimpleVertices;
-        
         FRHIInputLayoutRef                      SimpleVertexLayoutInput;
-        TVector<FLineBatch>                     LineBatches;
-
-        TVector<FBillboardInstance>             BillboardInstances;
-        
-        /** Packed array of per-instance descriptors uploaded to ENamedBuffer::Instance. */
-        TVector<FGPUInstance>                   Instances;
-        TVector<glm::mat4>                      BonesData;
-
-        /**
-         * Per-frame CPU reject volumes. Built at the top of CompileDrawCommands
-         * (serially; only needs sun direction and shadow-caster positions)
-         * and consumed by the parallel Process*Mesh tasks. Entries are
-         * read-only during parallel gather.
-         */
-        FSceneCullContext                       SceneCullContext;
 
         FShadowAtlas                            ShadowAtlas;
 
@@ -590,9 +654,6 @@ namespace Lumina
         // the start of every BuildPerFrameRenderData. Backs all per-frame
         // TFrameVector / TFrameHashMap members on FThreadLocalDrawData.
         TVector<TUniquePtr<FBlockLinearAllocator>> FrameArenas;
-
-        /** Packed array of all cached mesh draw commands */
-        TVector<FMeshDrawCommand>               DrawCommands;
 
         // MergeMeshDrawData scratch. Persisted across frames so capacity is
         // reused; resized up only, never shrunk. Each frame the active prefix
@@ -606,88 +667,30 @@ namespace Lumina
         TVector<uint32>                         MergeDrawInstanceOffsets;
         TVector<uint32>                         MergeDrawCursor;
 
-        /** Indices into DrawCommands for opaque batches */
-        TVector<uint32>                         OpaqueDrawList;
+        // ---------------------------------------------------------------
+        // Per-frame extracted state ring. Game thread writes FrameRing[Slot]
+        // during Extract; render thread reads FrameRing[Slot] during RenderView.
+        // ExtractFrame/RenderFrame are owned by their respective threads.
+        // SlotProducedCount[S] / SlotConsumedCount[S] form the back-pressure
+        // fence: Extract for slot S waits until Consumed[S] >= Produced[S]
+        // so the render thread is done with the previous use of that slot.
+        // RenderView_RenderThread signals at its end.
+        // ---------------------------------------------------------------
+        TArray<FFrameData, FRAMES_IN_FLIGHT>          FrameRing;
+        TArray<TAtomic<uint64>, FRAMES_IN_FLIGHT>     SlotConsumedCount;
+        TArray<uint64,         FRAMES_IN_FLIGHT>      SlotProducedCount = {};
+        FMutex                                        SlotMutex;
+        std::condition_variable                       SlotCV;
 
-        /**
-         * Subset of OpaqueDrawList whose batches have bDrawInDepthPass set.
-         * Only these batches are rasterized in the depth pre-pass; the full
-         * opaque set is drawn in the base pass with GREATER_EQUAL so non-
-         * occluders still contribute to the final depth buffer.
-         */
-        TVector<uint32>                         OpaqueOccluderDrawList;
+        // Game-thread-only pointer set at the top of Extract().
+        FFrameData*                             ExtractFrame = nullptr;
+        // Render-thread-only pointer set at the top of RenderView_RenderThread().
+        const FFrameData*                       RenderFrame  = nullptr;
 
-        /** Indices into DrawCommands for translucent batches, rendered after opaque */
-        TVector<uint32>                         TranslucentDrawList;
-
-        /**
-         * Per-view indirect draw arguments. Sized NumCullViews * NumDraws,
-         * view-major: slot (v, d) = v * NumDraws + d. VertexCount =
-         * MESHLET_VERTICES_PER_DRAW (372), InstanceCount starts at 0 (incremented
-         * by CullMeshlets), FirstInstance = v * TotalMeshletBound + prefix[d] so
-         * each per-view atomic append stays inside that view's draw-list slice.
-         */
-        TVector<FDrawIndirectArguments>         IndirectArgs;
-
-        /**
-         * Per-view cull descriptors. One FCullView per logical render view
-         * (main camera at 0, then NumCascades CSM views, then 6 per point
-         * light, then 1 per spot). Packed tightly into the CullView SSBO
-         * and consumed by CullMeshlets.slang.
-         */
-        TVector<FCullView>                      CullViews;
-
-        /**
-         * Per-draw meshlet start offset (prefix sum of meshlet counts).
-         * IndirectArgs for view v, draw d is seeded with
-         *   FirstInstance = v * TotalMeshletBound + DrawMeshletStartOffsets[d]
-         * so every view writes into its own disjoint slice of uMeshletDrawList.
-         * Filled by MergeMeshDrawData; consumed by BuildCullViews.
-         */
-        TVector<uint32>                         DrawMeshletStartOffsets;
-
-        /** Per-view stride in uMeshletDrawList (CullMeshlets atomic writes stay within this span). */
-        uint32                                  TotalMeshletBound = 0;
-
-        /** Per-view stride into IndirectArgs (NumDraws). Cached so draw passes can index without recomputing. */
-        uint32                                  NumDrawsPerView = 0;
-
-        /**
-         * Inclusive prefix sum of per-instance SurfaceMeshletCount.
-         * Sized [Instances.size() + 1]; entry [i] is the running total of
-         * meshlets across instances [0..i). Built on CPU after the parallel
-         * instance write, uploaded to ENamedBuffer::InstanceMeshletPrefix
-         * each frame, and used by the cull pass to recover (InstanceID,
-         * MeshletLocalIdx) from a flat thread index.
-         */
-        TVector<uint32>                         InstanceMeshletPrefix;
-
-        /**
-         * View index of the first CSM cascade. Only valid if bHasSun and the
-         * sun has a valid ShadowDataIndex; otherwise UINT32_MAX. Cascade c's
-         * view index is CascadeViewBase + c.
-         */
-        uint32                                  CascadeViewBase = ~0u;
-
-        /**
-         * View index of each point shadow's first (face 0) view. Indexed
-         * parallel to PackedShadows[Point]; face F's view index is
-         * PointShadowCullViewBases[i] + F.
-         */
-        TVector<uint32>                         PointShadowCullViewBases;
-
-        /** View index of each spot shadow. Indexed parallel to PackedShadows[Spot]. */
-        TVector<uint32>                         SpotShadowCullViewBases;
-
-        /**
-         * Index of the camera-late cull view. Phase 1 (CullPassLate) emits
-         * into this view's slice after re-testing the defer list against
-         * the rebuilt Hi-Z; DepthPrePassLate and BasePass each issue a
-         * second DrawIndirect per batch against this offset to pick up the
-         * meshlets that the early HZB pass mis-occluded. UINT32_MAX when
-         * no cull is active (no instances this frame).
-         */
-        uint32                                  CameraLateViewIndex = ~0u;
+        // Game thread waits until prior frame's RenderView for this slot has signalled.
+        void WaitForSlotConsumed(uint8 Slot, uint64 Target);
+        // Render thread signals at end of RenderView_RenderThread for this slot.
+        void SignalSlotConsumed(uint8 Slot);
 
 #if USING(WITH_EDITOR)
         static constexpr uint32                 PickerReadbackRingSize = FRAMES_IN_FLIGHT + 1;

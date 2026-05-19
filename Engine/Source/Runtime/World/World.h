@@ -72,6 +72,12 @@ namespace Lumina
          */
         void Update(const FUpdateContext& Context);
 
+        // Steps physics. Runs on the physics worker; pair with DispatchPhysicsEvents on the game thread post-join.
+        void TickPhysics();
+
+        // Game-thread drain of physics events (Lua + entt::dispatcher).
+        void DispatchPhysicsEvents();
+
         /**
          * Game thread: read ECS to compute camera, resolve post-process volumes,
          * and populate the scene's per-frame state. Must run before any render
@@ -80,10 +86,12 @@ namespace Lumina
         void Extract();
 
         /**
-         * Render thread: emit the scene's draw commands using state populated
-         * by the matching Extract() call.
+         * Render thread: emit the scene's draw commands for the FrameData slot
+         * identified by FrameIndex, using state populated by the matching
+         * Extract() call. The slot index is round-robin across FRAMES_IN_FLIGHT
+         * so multiple frames can pipeline without scene-storage races.
          */
-        void Render(ICommandList& CmdList) const;
+        void Render(ICommandList& CmdList, uint8 FrameIndex) const;
         
         FUNCTION(Script)
         entt::entity ConstructEntity(const FName& Name, const FTransform& Transform = FTransform());

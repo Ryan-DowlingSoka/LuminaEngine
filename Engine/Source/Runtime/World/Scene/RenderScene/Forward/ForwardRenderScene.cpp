@@ -70,8 +70,6 @@ namespace Lumina
     
     FForwardRenderScene::FForwardRenderScene(CWorld* InWorld)
         : World(InWorld)
-        , LightData()
-        , SceneGlobalData()
         , ShadowAtlas(FShadowAtlasConfig())
     {
     }
@@ -126,27 +124,72 @@ namespace Lumina
         LOG_TRACE("Shutting down Forward Render Scene");
     }
 
+    void FForwardRenderScene::WaitForSlotConsumed(uint8 Slot, uint64 Target)
+    {
+        // Wait until the render thread has signalled completion of this slot's
+        // prior use. In steady state Consumed[Slot] is already >= Target so this
+        // returns immediately; it only blocks when game thread laps render by
+        // FRAMES_IN_FLIGHT frames.
+        if (SlotConsumedCount[Slot].load(std::memory_order_acquire) >= Target)
+        {
+            return;
+        }
+        LUMINA_PROFILE_SECTION_COLORED("WaitForSlotConsumed", tracy::Color::Crimson);
+        std::unique_lock<FMutex> Lock(SlotMutex);
+        SlotCV.wait(Lock, [&]() {
+            return SlotConsumedCount[Slot].load(std::memory_order_acquire) >= Target;
+        });
+    }
+
+    void FForwardRenderScene::SignalSlotConsumed(uint8 Slot)
+    {
+        SlotConsumedCount[Slot].fetch_add(1, std::memory_order_release);
+        {
+            std::scoped_lock<FMutex> Lock(SlotMutex);
+        }
+        SlotCV.notify_all();
+    }
+
     void FForwardRenderScene::Extract(const FViewVolume& ViewVolume, const SPostProcessSettings* PostProcess)
     {
         LUMINA_PROFILE_SCOPE();
 
-        bExtractedThisFrame = false;
+        // Pick this frame's slot. Wait for the render thread to be done with
+        // its previous use of this slot before we overwrite it.
+        const uint8  Slot       = (uint8)(GRenderManager->GetCurrentFrameIndex() % FRAMES_IN_FLIGHT);
+        const uint64 NextProduce = SlotProducedCount[Slot] + 1u;
+        WaitForSlotConsumed(Slot, SlotProducedCount[Slot]);
+
+        ExtractFrame = &FrameRing[Slot];
+        FFrameData& Frame = *ExtractFrame;
+
+        Frame.bExtractedThisFrame = false;
+
+        // Snapshot world settings + delta time once. Render-thread passes read
+        // these via Frame.CachedWorldSettings/CachedWorldDeltaTime; never live
+        // off World-> so the game thread can mutate freely after Extract.
+        Frame.CachedWorldSettings  = World->GetDefaultWorldSettings();
+        Frame.CachedWorldDeltaTime = (float)World->GetWorldDeltaTime();
+        Frame.ViewVolume           = ViewVolume;
 
         // Value-copy: PostProcess points to a temporary in CWorld::Extract that
-        // will go out of scope before the render thread runs the passes. The
-        // render thread reads ActivePostProcess via this stable member instead.
+        // will go out of scope before the render thread runs the passes.
         if (PostProcess != nullptr)
         {
-            ActivePostProcessStorage = *PostProcess;
-            ActivePostProcess        = &ActivePostProcessStorage;
+            Frame.ActivePostProcessStorage = *PostProcess;
+            Frame.bHasActivePostProcess    = true;
         }
         else
         {
-            ActivePostProcess = nullptr;
+            Frame.bHasActivePostProcess    = false;
         }
+
+        // Capture post-process material chain handed by the world during Tick.
+        Frame.ActivePostProcessMaterials = PendingPostProcessMaterials;
 
         SceneViewport->SetViewVolume(ViewVolume);
 
+        FSceneGlobalData& SceneGlobalData = Frame.SceneGlobalData;
         SceneGlobalData.CameraData.Location             = glm::vec4(SceneViewport->GetViewVolume().GetViewPosition(), 1.0f);
         SceneGlobalData.CameraData.Up                   = glm::vec4(SceneViewport->GetViewVolume().GetUpVector(), 1.0f);
         SceneGlobalData.CameraData.Right                = glm::vec4(SceneViewport->GetViewVolume().GetRightVector(), 1.0f);
@@ -158,21 +201,23 @@ namespace Lumina
         SceneGlobalData.ScreenSize                      = glm::vec4(SceneViewport->GetSize().x, SceneViewport->GetSize().y, 0.0f, 0.0f);
         SceneGlobalData.GridSize                        = glm::vec4(ClusterGridSizeX, ClusterGridSizeY, ClusterGridSizeZ, 0.0f);
         SceneGlobalData.Time                            = (float)World->GetTimeSinceWorldCreation();
-        SceneGlobalData.DeltaTime                       = (float)World->GetWorldDeltaTime();
+        SceneGlobalData.DeltaTime                       = Frame.CachedWorldDeltaTime;
         SceneGlobalData.FarPlane                        = SceneViewport->GetViewVolume().GetFar();
         SceneGlobalData.NearPlane                       = SceneViewport->GetViewVolume().GetNear();
         SceneGlobalData.CullData.Frustum                = SceneViewport->GetViewVolume().GetFrustum();
         SceneGlobalData.CullData.ShadowFrustum          = SceneGlobalData.CullData.Frustum; // Rebuilt after directional light is processed.
         SceneGlobalData.CullData.bHasDirectional        = 0u;
-        SceneGlobalData.CullData.InstanceNum            = (uint32)Instances.size();
+        SceneGlobalData.CullData.InstanceNum            = (uint32)Frame.Instances.size();
         SceneGlobalData.CullData.bFrustumCull           = RenderSettings.bFrustumCull;
         SceneGlobalData.CullData.bOcclusionCull         = RenderSettings.bOcclusionCull;
-        SceneGlobalData.CullData.ShadowMaxDistance      = World->GetDefaultWorldSettings().ShadowMaxDistance;
+        SceneGlobalData.CullData.ShadowMaxDistance      = Frame.CachedWorldSettings.ShadowMaxDistance;
         SceneGlobalData.CullData.bShadowOcclusionCull   = RenderSettings.bShadowOcclusionCull;
         SceneGlobalData.CullData.DebugMode              = (uint32)RenderSettings.Flags;
 
         if (GRenderContext->GetShaderCompiler()->HasPendingRequests())
         {
+            SlotProducedCount[Slot] = NextProduce;
+            ExtractFrame = nullptr;
             return;
         }
 
@@ -181,32 +226,66 @@ namespace Lumina
         // never sees a half-cleared / half-populated set of containers.
         ResetPass_GameThread();
 
-        // CPU half: parallel ECS gather + cull setup. Populates scene members
+        // CPU half: parallel ECS gather + cull setup. Populates Frame state
         // (Instances, LightData, EnvironmentParams, CullViews, ...).
         CompileDrawCommands_GameThread();
 
-        bExtractedThisFrame = true;
+        // Snapshot the atlas's allocated tiles for the render thread to look
+        // up via Frame.AtlasTiles[idx] (race-free per-slot copy).
+        Frame.AtlasTiles = ShadowAtlas.GetAllocatedTiles();
+
+        // Stats handed to render thread; visible via GetRenderStats() once
+        // RenderView for this slot starts.
+        Frame.bExtractedThisFrame = true;
+
+        SlotProducedCount[Slot] = NextProduce;
+        ExtractFrame = nullptr;
     }
 
-    void FForwardRenderScene::RenderView_RenderThread(ICommandList& CmdList)
+    void FForwardRenderScene::RenderView_RenderThread(ICommandList& CmdList, uint8 FrameIndex)
     {
         LUMINA_PROFILE_SCOPE();
+
+        // Bind the slot's FrameData BEFORE SyncMSAAState (which reads
+        // Frame.CachedWorldSettings.MSAASampleCount). RenderFrame stays valid
+        // until we clear it at the bottom; SignalSlotConsumed fires after the
+        // last read.
+        const uint8 Slot = (uint8)(FrameIndex % FRAMES_IN_FLIGHT);
+        RenderFrame = &FrameRing[Slot];
+        // Local non-const handle for the few CullData fields we write below.
+        FFrameData& Frame = FrameRing[Slot];
 
         // Reconciles MSAA toggle: alloc/free MS scratch so next frame uses new sample count without reload.
         SyncMSAAState();
 
-        if (!bExtractedThisFrame)
+        if (!Frame.bExtractedThisFrame)
         {
+            SignalSlotConsumed(Slot);
+            RenderFrame = nullptr;
             return;
         }
 
+        // Pick this frame's ringed scene resources: IndirectArgs slot + matching
+        // SceneBindingSet that has IndirectArgsRing[Slot] bound at binding 12.
+        // Every pass below reads SceneBindingSet through the cached pointer.
+        CurrentFrameSlot = Slot;
+        SceneBindingSet  = SceneBindingSets[CurrentFrameSlot];
+
         // RHI-dependent CullData fields: DepthPyramid changes only on swapchain
         // resize, so reading it here on the render thread is race-safe.
-        SceneGlobalData.CullData.PyramidWidth      = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
-        SceneGlobalData.CullData.PyramidHeight     = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeY();
-        SceneGlobalData.CullData.DepthPyramidIndex = (uint32)GetNamedImage(ENamedImage::DepthPyramid)->GetResourceID();
+        Frame.SceneGlobalData.CullData.PyramidWidth      = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
+        Frame.SceneGlobalData.CullData.PyramidHeight     = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeY();
+        Frame.SceneGlobalData.CullData.DepthPyramidIndex = (uint32)GetNamedImage(ENamedImage::DepthPyramid)->GetResourceID();
+
+        // Stats handed to GetRenderStats() callers — snapshot of this frame's gather.
+        RenderStats = Frame.FrameStats;
 
         GPU_PROFILE_SCOPE_COLOR(&CmdList, "RenderView", FColor(0.30f, 0.65f, 1.00f));
+
+        for (const FRHIBufferRef& Buf : Frame.PinnedMeshBuffersThisFrame)
+        {
+            CmdList.KeepAlive(Buf.GetReference());
+        }
 
         ResetPass_RenderThread(CmdList);
         CompileDrawCommands_RenderThread(CmdList);
@@ -370,25 +449,38 @@ namespace Lumina
                 PostProcessMaterialPass(CmdList);
             }
 
-            if (World->GetDefaultWorldSettings().SMAAQuality != ESMAAQuality::Off)
+            if (Frame.CachedWorldSettings.SMAAQuality != ESMAAQuality::Off)
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "SMAA", FColor(0.95f, 0.20f, 0.20f));
                 {
-                    GPU_PROFILE_SCOPE(&CmdList, "Edge Detection"); 
+                    GPU_PROFILE_SCOPE(&CmdList, "Edge Detection");
                     SMAAEdgeDetectionPass(CmdList);
                 }
-            
+
                 {
-                    GPU_PROFILE_SCOPE(&CmdList, "Blend Weight"); 
+                    GPU_PROFILE_SCOPE(&CmdList, "Blend Weight");
                     SMAABlendWeightPass(CmdList);
                 }
-            
+
                 {
-                    GPU_PROFILE_SCOPE(&CmdList, "Neighborhood Blend");   
+                    GPU_PROFILE_SCOPE(&CmdList, "Neighborhood Blend");
                     SMAANeighborhoodBlendPass(CmdList);
                 }
             }
         }
+
+        // RenderView no longer reads Frame data after this point. The slot is
+        // NOT yet eligible to be reused, though, because the encompassing
+        // render lambda still has ImGui composite + present queued behind us.
+        // FWorldManager::SignalFrameConsumed (called from the lambda after
+        // the last per-slot read) fires the slot signal.
+        RenderFrame = nullptr;
+    }
+
+    void FForwardRenderScene::SignalFrameConsumed(uint8 FrameIndex)
+    {
+        const uint8 Slot = (uint8)(FrameIndex % FRAMES_IN_FLIGHT);
+        SignalSlotConsumed(Slot);
     }
     
     void FForwardRenderScene::SwapchainResized(glm::vec2 NewSize)
@@ -416,6 +508,36 @@ namespace Lumina
     void FForwardRenderScene::CompileDrawCommands_GameThread()
     {
         LUMINA_PROFILE_SCOPE();
+
+        FFrameData& Frame = *ExtractFrame;
+        auto& Instances              = Frame.Instances;
+        auto& BonesData              = Frame.BonesData;
+        auto& DrawCommands           = Frame.DrawCommands;
+        auto& OpaqueDrawList         = Frame.OpaqueDrawList;
+        auto& OpaqueOccluderDrawList = Frame.OpaqueOccluderDrawList;
+        auto& TranslucentDrawList    = Frame.TranslucentDrawList;
+        auto& PinnedMeshBuffersThisFrame = Frame.PinnedMeshBuffersThisFrame;
+        auto& SceneCullContext       = Frame.SceneCullContext;
+        auto& CullViews              = Frame.CullViews;
+        auto& IndirectArgs           = Frame.IndirectArgs;
+        auto& DrawMeshletStartOffsets= Frame.DrawMeshletStartOffsets;
+        auto& InstanceMeshletPrefix  = Frame.InstanceMeshletPrefix;
+        auto& LightData              = Frame.LightData;
+        auto& PackedShadows          = Frame.PackedShadows;
+        auto& EnvironmentParams      = Frame.EnvironmentParams;
+        auto& EnvironmentMapImage    = Frame.EnvironmentMapImage;
+        auto& SceneGlobalData        = Frame.SceneGlobalData;
+        auto& SimpleVertices         = Frame.SimpleVertices;
+        auto& LineBatches            = Frame.LineBatches;
+        auto& BillboardInstances     = Frame.BillboardInstances;
+        auto& FrameStats             = Frame.FrameStats;
+        (void)Instances; (void)BonesData; (void)DrawCommands;
+        (void)OpaqueDrawList; (void)OpaqueOccluderDrawList; (void)TranslucentDrawList;
+        (void)PinnedMeshBuffersThisFrame; (void)SceneCullContext; (void)CullViews;
+        (void)IndirectArgs; (void)DrawMeshletStartOffsets; (void)InstanceMeshletPrefix;
+        (void)LightData; (void)PackedShadows; (void)EnvironmentParams;
+        (void)EnvironmentMapImage; (void)SceneGlobalData; (void)SimpleVertices;
+        (void)LineBatches; (void)BillboardInstances; (void)FrameStats;
 
         {
             LUMINA_PROFILE_SECTION("Compile Draw Commands");
@@ -533,13 +655,13 @@ namespace Lumina
             {
                 LUMINA_PROFILE_SECTION("Process Billboard Primitives");
                 
-                BillboardView.each([this](entt::entity Entity, const SBillboardComponent& BillboardComponent, const STransformComponent& TransformComponent)
+                BillboardView.each([this, &BillboardInstances](entt::entity Entity, const SBillboardComponent& BillboardComponent, const STransformComponent& TransformComponent)
                 {
                     if (!BillboardComponent.Texture.IsValid() || !BillboardComponent.Texture->GetRHIRef()->IsValid())
                     {
                         return;
                     }
-                    
+
                     FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
                     Billboard.TextureIndex          = BillboardComponent.Texture->GetRHIRef()->GetResourceID();
                     Billboard.Position              = TransformComponent.WorldTransform.Location;
@@ -551,7 +673,7 @@ namespace Lumina
                 // Editor visualizers: billboards for lights/cameras/sky/particles. Skipped in game/thumbnail worlds.
                 if (!World->IsGameWorld())
                 {
-                    auto EmplaceVisualizer = [this](entt::entity Entity, const glm::vec3& Position, ENamedImage Icon, const glm::vec4& Color, float Size = 0.20f)
+                    auto EmplaceVisualizer = [this, &BillboardInstances](entt::entity Entity, const glm::vec3& Position, ENamedImage Icon, const glm::vec4& Color, float Size = 0.20f)
                     {
                         FBillboardInstance& Billboard = BillboardInstances.emplace_back();
                         Billboard.TextureIndex        = GetNamedImage(Icon)->GetResourceID();
@@ -684,9 +806,10 @@ namespace Lumina
                 EnvironmentParams              = FEnvironmentParams{};
                 EnvironmentMapImage            = nullptr;
                 // Set true below if any IBL input differs from the last bake snapshot.
-                bIBLDirty                      = false;
+                Frame.bIBLDirty                = false;
+                Frame.bIBLConvolutionDirty     = false;
 
-                EnvironmentView.each([this] (const SEnvironmentComponent& Env)
+                EnvironmentView.each([this, &LightData, &EnvironmentParams, &EnvironmentMapImage] (const SEnvironmentComponent& Env)
                 {
                     // bRenderSky gates the sky pass; ambient/skylight still flow when off (indoor scenes).
                     RenderSettings.bHasEnvironment = Env.bRenderSky;
@@ -792,6 +915,26 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
+        // We are on the render thread; mutate this slot's CullData but read
+        // everything else as const.
+        FFrameData& Frame = const_cast<FFrameData&>(*RenderFrame);
+        auto& SceneGlobalData            = Frame.SceneGlobalData;
+        const auto& Instances            = Frame.Instances;
+        const auto& BonesData            = Frame.BonesData;
+        const auto& CullViews            = Frame.CullViews;
+        const auto& IndirectArgs         = Frame.IndirectArgs;
+        const auto& InstanceMeshletPrefix= Frame.InstanceMeshletPrefix;
+        const auto& LightData            = Frame.LightData;
+        const auto& EnvironmentParams    = Frame.EnvironmentParams;
+        FRHIImage* EnvironmentMapImage   = Frame.EnvironmentMapImage;
+        const auto& SimpleVertices       = Frame.SimpleVertices;
+        const auto& BillboardInstances   = Frame.BillboardInstances;
+        const auto& ShadowDataCount      = Frame.ShadowDataCount;
+        const uint32 TotalMeshletBound   = Frame.TotalMeshletBound;
+        const uint32 NumDrawsPerView     = Frame.NumDrawsPerView;
+        bool& bIBLDirty                  = Frame.bIBLDirty;
+        bool& bIBLConvolutionDirty       = Frame.bIBLConvolutionDirty;
+
         const uint32 NumCullViews                  = (uint32)CullViews.size();
         const uint32 NumDraws                      = NumDrawsPerView;
         SceneGlobalData.CullData.NumDraws          = NumDraws;
@@ -801,12 +944,10 @@ namespace Lumina
         const SIZE_T InstanceSize         = Instances.size() * sizeof(FGPUInstance);
         const SIZE_T BoneDataSize         = BonesData.size() * sizeof(glm::mat4);
 
-        const SIZE_T ActiveLightsSize  = LightData.NumLights * sizeof(FLight);
-        const SIZE_T LightsUploadSize  = offsetof(FSceneLightData, Lights) + ActiveLightsSize;
         const uint32 ActiveShadowCount = glm::min<uint32>(ShadowDataCount.load(std::memory_order_acquire), (uint32)MAX_SHADOWS);
         const SIZE_T ShadowsUploadSize = ActiveShadowCount * sizeof(FLightShadowData);
-        // Sized to cover the shadow suffix even when only uploading active slice; WriteBuffer at
-        // ShadowsOffset would otherwise overrun a buffer sized only to LightsUploadSize.
+        // Single contiguous upload (header + all FLight slots + active shadow prefix). Sized to
+        // cover the shadow suffix even with no active shadows so the buffer can hold any shadow count.
         const SIZE_T LightUploadSize   = offsetof(FSceneLightData, Shadows) + ShadowsUploadSize;
         const SIZE_T BillboardSize     = BillboardInstances.size() * sizeof(FBillboardInstance);
 
@@ -842,7 +983,10 @@ namespace Lumina
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Billboards], (uint32)BillboardSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::CullView], (uint32)CullViewSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletDrawList], (uint32)MeshletDrawListSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::IndirectArgs], (uint32)IndirectArgsSize, 1.2f);
+        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
+        {
+            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(IndirectArgsRing[Slot], (uint32)IndirectArgsSize, 1.2f);
+        }
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletDeferList], (uint32)DeferListSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMeshletPrefix], (uint32)InstanceMeshletPrefixSize, 1.2f);
 
@@ -854,16 +998,11 @@ namespace Lumina
         {
             LUMINA_PROFILE_SECTION_COLORED("Write Scene Buffers", tracy::Color::OrangeRed3);
 
-            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Scene), EResourceStates::CopyDest);
-            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Instance), EResourceStates::CopyDest);
-            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Bone), EResourceStates::CopyDest);
-            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::CullView), EResourceStates::CopyDest);
-            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::IndirectArgs), EResourceStates::CopyDest);
+            // Only IndirectArgs and SimpleVertex remain non-dynamic uploads;
+            // the rest are BUF_Dynamic (WriteBuffer memcpys into a versioned
+            // host-mapped slot, no CopyDest transition needed).
+            CmdList.SetBufferState(GetIndirectArgs(), EResourceStates::CopyDest);
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::SimpleVertex), EResourceStates::CopyDest);
-            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Light), EResourceStates::CopyDest);
-            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Billboards), EResourceStates::CopyDest);
-            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::Environment), EResourceStates::CopyDest);
-            CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::InstanceMeshletPrefix), EResourceStates::CopyDest);
             CmdList.CommitBarriers();
 
             CmdList.DisableAutomaticBarriers();
@@ -879,16 +1018,15 @@ namespace Lumina
             // FirstInstance pre-seeded so each atomic append in CullMeshlets lands in its own slice.
             if (!IndirectArgs.empty())
             {
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::IndirectArgs), IndirectArgs.data(), IndirectArgs.size() * sizeof(FDrawIndirectArguments));
+                CmdList.WriteBuffer(GetIndirectArgs(), IndirectArgs.data(), IndirectArgs.size() * sizeof(FDrawIndirectArguments));
             }
 
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::SimpleVertex), SimpleVertices.data(), SimpleVertexSize);
-            // Upload only populated prefix: header + active FLight, and active FLightShadowData. Middle is unread.
-            CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Light), &LightData, LightsUploadSize, 0);
-            if (ShadowsUploadSize > 0)
-            {
-                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Light), &LightData.Shadows[0], ShadowsUploadSize, offsetof(FSceneLightData, Shadows));
-            }
+            // Single contiguous upload: header + all FLight slots (inactive tail
+            // is unread by shaders) + active FLightShadowData prefix. Required
+            // because BUF_Dynamic WriteBuffer memcpys from offset 0 only;
+            // per-offset writes aren't supported on dynamic buffers.
+            CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Light), &LightData, LightUploadSize);
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Billboards), BillboardInstances.data(), BillboardSize);
 
             // Skip env upload + IBL convolution when nothing they depend on changed.
@@ -917,6 +1055,36 @@ namespace Lumina
                 LastIBLSunDirection        = LightData.SunDirection;
                 bLastIBLHasSun             = (LightData.bHasSun != 0);
                 bIBLValid                  = true;
+            }
+
+            // Irradiance + GGX prefilter are the most expensive IBL stages.
+            // Gate them with an angular threshold on the sun so continuous
+            // TOD animation does not pay full convolution cost every frame.
+            // cos(0.5 deg) ~ 0.99996; below that the diffuse SH lobe and the
+            // wide GGX kernels would smear away the difference anyway.
+            constexpr float SunCosThreshold = 0.99996f;
+            const bool bConvHasSunChanged =
+                bLastConvolvedHasSun != (LightData.bHasSun != 0);
+            float SunCos = 1.0f;
+            if (bLastConvolvedHasSun && LightData.bHasSun)
+            {
+                SunCos = glm::dot(LastConvolvedSunDirection, LightData.SunDirection);
+            }
+            const bool bConvSunChanged = bConvHasSunChanged || (SunCos < SunCosThreshold);
+            const bool bConvParamsChanged =
+                std::memcmp(&LastConvolvedEnvironmentParams, &EnvironmentParams, sizeof(FEnvironmentParams)) != 0;
+            const bool bConvMapChanged =
+                LastConvolvedEnvironmentMap != EnvironmentMapImage;
+
+            if (RenderSettings.bHasEnvironment &&
+                (!bIBLConvolutionValid || bConvParamsChanged || bConvSunChanged || bConvMapChanged))
+            {
+                bIBLConvolutionDirty           = true;
+                LastConvolvedEnvironmentParams = EnvironmentParams;
+                LastConvolvedEnvironmentMap    = EnvironmentMapImage;
+                LastConvolvedSunDirection      = LightData.SunDirection;
+                bLastConvolvedHasSun           = (LightData.bHasSun != 0);
+                bIBLConvolutionValid           = true;
             }
             if (!InstanceMeshletPrefix.empty())
             {
@@ -1086,6 +1254,10 @@ namespace Lumina
 
     void FForwardRenderScene::ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local)
     {
+        const FFrameData& Frame = *ExtractFrame;
+        const auto& SceneCullContext = Frame.SceneCullContext;
+        const auto& SceneGlobalData  = Frame.SceneGlobalData;
+
         CMesh* Mesh = MeshComponent.StaticMesh;
         if (!IsValid(Mesh))
         {
@@ -1115,9 +1287,19 @@ namespace Lumina
         }
 
         const FMeshResource& Resource = Mesh->GetMeshResource();
-        const uint64 MeshletHeaderAddress = Mesh->GetMeshBuffers().MeshletHeaderBuffer
-            ? Mesh->GetMeshBuffers().MeshletHeaderBuffer->GetAddress()
+        const FMeshResource::FMeshBuffers& MB = Mesh->GetMeshBuffers();
+        const uint64 MeshletHeaderAddress = MB.MeshletHeaderBuffer
+            ? MB.MeshletHeaderBuffer->GetAddress()
             : 0ull;
+
+        if (MeshletHeaderAddress && Local.PinnedMeshDedupe.emplace(Mesh, uint8(0)).second)
+        {
+            Local.PinnedMeshBuffers.push_back(MB.MeshletHeaderBuffer);
+            Local.PinnedMeshBuffers.push_back(MB.MeshletBuffer);
+            Local.PinnedMeshBuffers.push_back(MB.MeshletBoundsBuffer);
+            Local.PinnedMeshBuffers.push_back(MB.MeshletVertexBuffer);
+            Local.PinnedMeshBuffers.push_back(MB.MeshletTriangleBuffer);
+        }
 
         // Angular size proxy (2r/d, squared to skip sqrt). Tiny props skip depth pre-pass.
         const glm::vec3 CameraPos  = glm::vec3(SceneGlobalData.CameraData.Location);
@@ -1194,6 +1376,10 @@ namespace Lumina
 
     void FForwardRenderScene::ProcessSkeletalMeshEntityInternal(entt::entity Entity, const SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local)
     {
+        const FFrameData& Frame = *ExtractFrame;
+        const auto& SceneCullContext = Frame.SceneCullContext;
+        const auto& SceneGlobalData  = Frame.SceneGlobalData;
+
         CMesh* Mesh = MeshComponent.SkeletalMesh;
         if (!IsValid(Mesh))
         {
@@ -1268,9 +1454,19 @@ namespace Lumina
             BaseFlags |= EInstanceFlags::ReceiveShadow;
         }
 
-        const uint64 MeshletHeaderAddress = Mesh->GetMeshBuffers().MeshletHeaderBuffer
-            ? Mesh->GetMeshBuffers().MeshletHeaderBuffer->GetAddress()
+        const FMeshResource::FMeshBuffers& MB = Mesh->GetMeshBuffers();
+        const uint64 MeshletHeaderAddress = MB.MeshletHeaderBuffer
+            ? MB.MeshletHeaderBuffer->GetAddress()
             : 0ull;
+
+        if (MeshletHeaderAddress && Local.PinnedMeshDedupe.emplace(Mesh, uint8(0)).second)
+        {
+            Local.PinnedMeshBuffers.push_back(MB.MeshletHeaderBuffer);
+            Local.PinnedMeshBuffers.push_back(MB.MeshletBuffer);
+            Local.PinnedMeshBuffers.push_back(MB.MeshletBoundsBuffer);
+            Local.PinnedMeshBuffers.push_back(MB.MeshletVertexBuffer);
+            Local.PinnedMeshBuffers.push_back(MB.MeshletTriangleBuffer);
+        }
 
         const uint32 EntityRecordIdx = (uint32)Local.EntityRecords.size();
         FEntityRecord& EntityRecord = Local.EntityRecords.emplace_back();
@@ -1326,6 +1522,20 @@ namespace Lumina
     {
         LUMINA_PROFILE_SECTION("Merge Mesh Draw Data");
 
+        FFrameData& Frame = *ExtractFrame;
+        auto& Instances              = Frame.Instances;
+        auto& BonesData              = Frame.BonesData;
+        auto& DrawCommands           = Frame.DrawCommands;
+        auto& OpaqueDrawList         = Frame.OpaqueDrawList;
+        auto& OpaqueOccluderDrawList = Frame.OpaqueOccluderDrawList;
+        auto& TranslucentDrawList    = Frame.TranslucentDrawList;
+        auto& PinnedMeshBuffersThisFrame = Frame.PinnedMeshBuffersThisFrame;
+        auto& DrawMeshletStartOffsets = Frame.DrawMeshletStartOffsets;
+        auto& InstanceMeshletPrefix  = Frame.InstanceMeshletPrefix;
+        auto& FrameStats             = Frame.FrameStats;
+        uint32& TotalMeshletBound    = Frame.TotalMeshletBound;
+        uint32& NumDrawsPerView      = Frame.NumDrawsPerView;
+
         const uint32 NumThreads = (uint32)ThreadLocal.size();
 
         // Bones merged serially: skinned meshes reference by absolute index.
@@ -1339,8 +1549,20 @@ namespace Lumina
             BonesData.insert(BonesData.end(), Local.BonesData.begin(), Local.BonesData.end());
             TotalInstances += (uint32)Local.Items.size();
             TotalInstancesCulled += Local.Stats.NumInstancesCulled;
+
+            // Must happen before per-thread arena reset; refs are heap-backed,
+            // but the source TVector is destroyed with the FThreadLocalDrawData.
+            if (!Local.PinnedMeshBuffers.empty())
+            {
+                PinnedMeshBuffersThisFrame.reserve(PinnedMeshBuffersThisFrame.size() + Local.PinnedMeshBuffers.size());
+                for (FRHIBufferRef& Ref : Local.PinnedMeshBuffers)
+                {
+                    PinnedMeshBuffersThisFrame.push_back(eastl::move(Ref));
+                }
+                Local.PinnedMeshBuffers.clear();
+            }
         }
-        RenderStats.NumInstancesCulled += TotalInstancesCulled;
+        FrameStats.NumInstancesCulled += TotalInstancesCulled;
 
         if (TotalInstances == 0)
         {
@@ -1617,7 +1839,7 @@ namespace Lumina
             DEBUG_ASSERT(RunningInstanceMeshlets == TotalMeshletBound);
         }
 
-        RenderStats.NumBatches = NumBatches;
+        FrameStats.NumBatches = NumBatches;
         OpaqueDrawList.reserve(NumBatches);
         OpaqueOccluderDrawList.reserve(NumBatches);
         TranslucentDrawList.reserve(NumBatches);
@@ -1641,12 +1863,16 @@ namespace Lumina
 
     bool FForwardRenderScene::ShouldRequestShadow(const glm::vec3& LightPosition, float LightRadius) const
     {
-        return SceneGlobalData.CullData.Frustum.IntersectsSphere(LightPosition, LightRadius);
+        return ExtractFrame->SceneGlobalData.CullData.Frustum.IntersectsSphere(LightPosition, LightRadius);
     }
 
     void FForwardRenderScene::BuildSceneCullContext()
     {
         LUMINA_PROFILE_SCOPE();
+
+        FFrameData& Frame = *ExtractFrame;
+        auto& SceneCullContext = Frame.SceneCullContext;
+        auto& SceneGlobalData  = Frame.SceneGlobalData;
 
         SceneCullContext.Reset();
         SceneCullContext.bEnabled = RenderSettings.bCPUInstanceCull;
@@ -1722,6 +1948,11 @@ namespace Lumina
 
     void FForwardRenderScene::ProcessPointLight(const SPointLightComponent& PointLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount)
     {
+        FFrameData& Frame = *ExtractFrame;
+        auto& LightData         = Frame.LightData;
+        auto& ShadowRequests    = Frame.ShadowRequests;
+        auto& ShadowRequestMutex= Frame.ShadowRequestMutex;
+
         auto Lights = LightCount.fetch_add(1, std::memory_order_acquire);
         if (Lights >= MAX_LIGHTS)
         {
@@ -1771,6 +2002,11 @@ namespace Lumina
 
     void FForwardRenderScene::ProcessSpotLight(const SSpotLightComponent& SpotLight, const STransformComponent& TransformComponent, TAtomic<uint32>& LightCount)
     {
+        FFrameData& Frame = *ExtractFrame;
+        auto& LightData         = Frame.LightData;
+        auto& ShadowRequests    = Frame.ShadowRequests;
+        auto& ShadowRequestMutex= Frame.ShadowRequestMutex;
+
         auto Lights = LightCount.fetch_add(1, std::memory_order_acquire);
         if (Lights >= MAX_LIGHTS)
         {
@@ -1832,6 +2068,12 @@ namespace Lumina
 
     void FForwardRenderScene::AllocateShadowTiles()
     {
+        FFrameData& Frame = *ExtractFrame;
+        auto& LightData       = Frame.LightData;
+        auto& ShadowRequests  = Frame.ShadowRequests;
+        auto& ShadowDataCount = Frame.ShadowDataCount;
+        auto& PackedShadows   = Frame.PackedShadows;
+
         if (ShadowRequests.empty())
             return;
 
@@ -2098,9 +2340,21 @@ namespace Lumina
 
     void FForwardRenderScene::BuildCullViews(const FViewVolume& ViewVolume)
     {
+        FFrameData& Frame = *ExtractFrame;
+        auto& CullViews                = Frame.CullViews;
+        auto& IndirectArgs             = Frame.IndirectArgs;
+        auto& DrawMeshletStartOffsets  = Frame.DrawMeshletStartOffsets;
+        auto& LightData                = Frame.LightData;
+        auto& PackedShadows            = Frame.PackedShadows;
+        auto& PointShadowCullViewBases = Frame.PointShadowCullViewBases;
+        auto& SpotShadowCullViewBases  = Frame.SpotShadowCullViewBases;
+        uint32& CascadeViewBase        = Frame.CascadeViewBase;
+        uint32& CameraLateViewIndex    = Frame.CameraLateViewIndex;
+        const uint32 TotalMeshletBound = Frame.TotalMeshletBound;
+
         // Per-view: DrawList slice v = [v*TotalMeshletBound, (v+1)*TotalMeshletBound),
         // IndirectArgs slot (v,d) = v*NumDraws + d. CullMeshlets owns all atomic appends.
-        const uint32 NumDraws = NumDrawsPerView;
+        const uint32 NumDraws = Frame.NumDrawsPerView;
 
         auto PushView = [&](const glm::mat4& ViewProjection, const glm::vec3& Origin, uint32 Flags)
         {
@@ -2259,6 +2513,12 @@ namespace Lumina
 
     void FForwardRenderScene::ProcessDirectionalLight(const SDirectionalLightComponent& DirectionalLight, TAtomic<uint32>& LightCount)
     {
+        FFrameData& Frame = *ExtractFrame;
+        auto& LightData            = Frame.LightData;
+        auto& ShadowDataCount      = Frame.ShadowDataCount;
+        auto& SceneGlobalData      = Frame.SceneGlobalData;
+        const auto& CachedWorldSettings = Frame.CachedWorldSettings;
+
         LightData.bHasSun = true;
         const FViewVolume& ViewVolume = SceneViewport->GetViewVolume();
         
@@ -2294,11 +2554,11 @@ namespace Lumina
             }
         }
         
-        float CascadeSplitLambda  = World->GetDefaultWorldSettings().CascadeSplitLambda;
+        float CascadeSplitLambda  = CachedWorldSettings.CascadeSplitLambda;
         
         constexpr float ShadowMinDistance   = 1.0f;
 
-        const float ShadowFar  = glm::min(FarClip, World->GetDefaultWorldSettings().ShadowMaxDistance);
+        const float ShadowFar  = glm::min(FarClip, CachedWorldSettings.ShadowMaxDistance);
         const float ShadowNear = glm::max(NearClip, ShadowMinDistance);
         const float ClipRange  = ShadowFar - ShadowNear;
         const float MinDepth   = ShadowNear;
@@ -2371,7 +2631,7 @@ namespace Lumina
             // maps to large light-space height: a caster D meters horizontally
             // away with sun at elevation theta sits ~D/tan(theta) "above" in
             // shadow space. Exposed via WorldSettings.CascadeBackDistance.
-            const float BackDistance = glm::max(World->GetDefaultWorldSettings().CascadeBackDistance, 1.0f);
+            const float BackDistance = glm::max(CachedWorldSettings.CascadeBackDistance, 1.0f);
             const float OrthoRange   = Radius * 2.0f + BackDistance;
 
             // lookAt target = origin (not SphereCenter) so the rotation
@@ -2434,6 +2694,11 @@ namespace Lumina
 
     void FForwardRenderScene::ProcessBatchedLines(FLineBatcherComponent& Batcher)
     {
+        FFrameData& Frame = *ExtractFrame;
+        auto& SceneGlobalData = Frame.SceneGlobalData;
+        auto& SimpleVertices  = Frame.SimpleVertices;
+        auto& LineBatches     = Frame.LineBatches;
+
         Batcher.DrainQueue();
 
         TVector<FLineBatcherComponent::FLineInstance>& Lines = Batcher.Lines;
@@ -2555,8 +2820,14 @@ namespace Lumina
         {
             return;
         }
-        
-        FBillboardInstance& Billboard   = BillboardInstances.emplace_back();
+
+        // Game-thread API: write into the in-progress Extract frame.
+        if (ExtractFrame == nullptr)
+        {
+            return;
+        }
+
+        FBillboardInstance& Billboard   = ExtractFrame->BillboardInstances.emplace_back();
         Billboard.TextureIndex          = Image->GetResourceID();
         Billboard.Position              = Location;
         Billboard.Size                  = Scale;
@@ -2565,31 +2836,37 @@ namespace Lumina
 
     void FForwardRenderScene::ResetPass_GameThread()
     {
-        SimpleVertices.clear();
-        LineBatches.clear();
-        DrawCommands.clear();
-        OpaqueDrawList.clear();
-        OpaqueOccluderDrawList.clear();
-        TranslucentDrawList.clear();
-        DrawMeshletStartOffsets.clear();
-        IndirectArgs.clear();
-        CullViews.clear();
-        TotalMeshletBound = 0;
-        NumDrawsPerView = 0;
-        CameraLateViewIndex = ~0u;
-        Instances.clear();
-        InstanceMeshletPrefix.clear();
-        Memory::Memzero(&LightData, sizeof(LightData));
-        ShadowDataCount.store(0, std::memory_order_release);
+        FFrameData& Frame = *ExtractFrame;
+
+        Frame.SimpleVertices.clear();
+        Frame.LineBatches.clear();
+        Frame.DrawCommands.clear();
+        Frame.OpaqueDrawList.clear();
+        Frame.OpaqueOccluderDrawList.clear();
+        Frame.TranslucentDrawList.clear();
+        Frame.DrawMeshletStartOffsets.clear();
+        Frame.IndirectArgs.clear();
+        Frame.CullViews.clear();
+        Frame.TotalMeshletBound = 0;
+        Frame.NumDrawsPerView   = 0;
+        Frame.CameraLateViewIndex = ~0u;
+        Frame.Instances.clear();
+        Frame.InstanceMeshletPrefix.clear();
+        Memory::Memzero(&Frame.LightData, sizeof(Frame.LightData));
+        Frame.ShadowDataCount.store(0, std::memory_order_release);
         ShadowAtlas.FreeTiles();
-        ShadowRequests.clear();
-        BonesData.clear();
-        BillboardInstances.clear();
-        RenderStats = {};
+        Frame.ShadowRequests.clear();
+        Frame.AtlasTiles.clear();
+        Frame.BonesData.clear();
+        Frame.BillboardInstances.clear();
+        // Previous frame's pin refs were already handed to the render
+        // thread's command buffer; clearing here just drops our copy.
+        Frame.PinnedMeshBuffersThisFrame.clear();
+        Frame.FrameStats = {};
 
         for (int i = 0; i < (int)ELightType::Num; ++i)
         {
-            PackedShadows[i].clear();
+            Frame.PackedShadows[i].clear();
         }
     }
 
@@ -2611,6 +2888,12 @@ namespace Lumina
 
     void FForwardRenderScene::CullPassEarly(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands     = Frame.DrawCommands;
+        const auto& CullViews        = Frame.CullViews;
+        const uint32 TotalMeshletBound = Frame.TotalMeshletBound;
+        const uint32 CameraLateViewIndex = Frame.CameraLateViewIndex;
+
         if (DrawCommands.empty() || CullViews.empty() || TotalMeshletBound == 0u)
         {
             return;
@@ -2652,6 +2935,12 @@ namespace Lumina
 
     void FForwardRenderScene::CullPassLate(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands     = Frame.DrawCommands;
+        const auto& CullViews        = Frame.CullViews;
+        const uint32 TotalMeshletBound = Frame.TotalMeshletBound;
+        const uint32 CameraLateViewIndex = Frame.CameraLateViewIndex;
+
         if (DrawCommands.empty() || CullViews.empty() || TotalMeshletBound == 0)
         {
             return;
@@ -2776,13 +3065,18 @@ namespace Lumina
 
     void FForwardRenderScene::DepthPrePassEarly(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands           = Frame.DrawCommands;
+        const auto& OpaqueOccluderDrawList = Frame.OpaqueOccluderDrawList;
+        const uint32 NumDrawsPerView       = Frame.NumDrawsPerView;
+
         if (OpaqueOccluderDrawList.empty())
         {
             return;
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Pre-Depth (Early)", tracy::Color::Orange);
-        
+
         RecordDepthPrePassSlice(
             CmdList,
             DrawCommands,
@@ -2792,7 +3086,7 @@ namespace Lumina
             SceneBindingLayout,
             SceneBindingSet,
             SceneViewportState,
-            GetNamedBuffer(ENamedBuffer::IndirectArgs),
+            GetIndirectArgs(),
             0u,
             NumDrawsPerView,
             true,
@@ -2801,6 +3095,12 @@ namespace Lumina
 
     void FForwardRenderScene::DepthPrePassLate(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands           = Frame.DrawCommands;
+        const auto& OpaqueOccluderDrawList = Frame.OpaqueOccluderDrawList;
+        const uint32 NumDrawsPerView       = Frame.NumDrawsPerView;
+        const uint32 CameraLateViewIndex   = Frame.CameraLateViewIndex;
+
         if (OpaqueOccluderDrawList.empty() || CameraLateViewIndex == ~0u)
         {
             return;
@@ -2817,7 +3117,7 @@ namespace Lumina
             SceneBindingLayout,
             SceneBindingSet,
             SceneViewportState,
-            GetNamedBuffer(ENamedBuffer::IndirectArgs),
+            GetIndirectArgs(),
             CameraLateViewIndex,
             NumDrawsPerView,
             false,
@@ -2826,6 +3126,9 @@ namespace Lumina
 
     void FForwardRenderScene::DepthPyramidPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands = Frame.DrawCommands;
+
         if (DrawCommands.empty())
         {
             return;
@@ -2900,6 +3203,9 @@ namespace Lumina
 
     void FForwardRenderScene::ClusterBuildPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands = Frame.DrawCommands;
+
         auto TerrainView = World->GetEntityRegistry().view<STerrainComponent>(entt::exclude<SDisabledTag>);
         const bool bHasTerrain = TerrainView.begin() != TerrainView.end();
         if (DrawCommands.empty() && !bHasTerrain)
@@ -2959,6 +3265,9 @@ namespace Lumina
 
     void FForwardRenderScene::LightCullPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands = Frame.DrawCommands;
+
         auto TerrainView = World->GetEntityRegistry().view<STerrainComponent>(entt::exclude<SDisabledTag>);
         const bool bHasTerrain = TerrainView.begin() != TerrainView.end();
         if (DrawCommands.empty() && !bHasTerrain)
@@ -2995,8 +3304,17 @@ namespace Lumina
 
     void FForwardRenderScene::PointShadowPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands             = Frame.DrawCommands;
+        const auto& OpaqueDrawList           = Frame.OpaqueDrawList;
+        const auto& LightData                = Frame.LightData;
+        const auto& PackedShadows            = Frame.PackedShadows;
+        const auto& AtlasTiles               = Frame.AtlasTiles;
+        const auto& PointShadowCullViewBases = Frame.PointShadowCullViewBases;
+        const uint32 NumDrawsPerView         = Frame.NumDrawsPerView;
+
         LUMINA_PROFILE_SECTION_COLORED("Point Light Shadow Pass", tracy::Color::DeepPink2);
-        
+
         if (DrawCommands.empty() || PackedShadows[(uint32)ELightType::Point].empty())
         {
             return;
@@ -3049,7 +3367,7 @@ namespace Lumina
                 LUMINA_PROFILE_SECTION_COLORED("Point Shadow Face", tracy::Color::DeepPink2);
 
                 const FLightShadow& FaceShadow = ShadowData.Shadow[Face];
-                const FShadowTile& Tile = ShadowAtlas.GetTile(FaceShadow.ShadowMapIndex);
+                const FShadowTile& Tile = AtlasTiles[FaceShadow.ShadowMapIndex];
                 uint32 TilePixelX = static_cast<uint32>(Tile.UVOffset.x * GShadowAtlasResolution);
                 uint32 TilePixelY = static_cast<uint32>(Tile.UVOffset.y * GShadowAtlasResolution);
                 uint32 TileSize   = static_cast<uint32>(Tile.UVScale.x * GShadowAtlasResolution);
@@ -3101,7 +3419,7 @@ namespace Lumina
                         .SetPipeline(Pipeline)
                         .AddBindingSet(SceneBindingSet)
                         .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                        .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
+                        .SetIndirectParams(GetIndirectArgs());
 
                     CmdList.SetGraphicsState(GraphicsState);
                     CmdList.SetPushConstants(&PointPush, sizeof(PointPush));
@@ -3113,6 +3431,14 @@ namespace Lumina
 
     void FForwardRenderScene::SpotShadowPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands             = Frame.DrawCommands;
+        const auto& OpaqueDrawList           = Frame.OpaqueDrawList;
+        const auto& PackedShadows            = Frame.PackedShadows;
+        const auto& AtlasTiles               = Frame.AtlasTiles;
+        const auto& SpotShadowCullViewBases  = Frame.SpotShadowCullViewBases;
+        const uint32 NumDrawsPerView         = Frame.NumDrawsPerView;
+
         if (PackedShadows[(uint32)ELightType::Spot].empty() || DrawCommands.empty())
         {
             return;
@@ -3167,7 +3493,7 @@ namespace Lumina
 
             LUMINA_PROFILE_SECTION_COLORED("Process Spot Light", tracy::Color::DeepPink);
 
-            const FShadowTile& Tile = ShadowAtlas.GetTile(Shadow.ShadowMapIndex);
+            const FShadowTile& Tile = AtlasTiles[Shadow.ShadowMapIndex];
             uint32 TilePixelX = static_cast<uint32>(Tile.UVOffset.x * GShadowAtlasResolution);
             uint32 TilePixelY = static_cast<uint32>(Tile.UVOffset.y * GShadowAtlasResolution);
             uint32 TileSize   = static_cast<uint32>(Tile.UVScale.x * GShadowAtlasResolution);
@@ -3214,7 +3540,7 @@ namespace Lumina
                     .SetPipeline(Pipeline)
                     .AddBindingSet(SceneBindingSet)
                     .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
+                    .SetIndirectParams(GetIndirectArgs());
 
                 CmdList.SetGraphicsState(GraphicsState);
                 CmdList.SetPushConstants(&SpotPush, sizeof(SpotPush));
@@ -3225,6 +3551,13 @@ namespace Lumina
 
     void FForwardRenderScene::CascadedShowPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands     = Frame.DrawCommands;
+        const auto& OpaqueDrawList   = Frame.OpaqueDrawList;
+        const auto& LightData        = Frame.LightData;
+        const uint32 NumDrawsPerView = Frame.NumDrawsPerView;
+        const uint32 CascadeViewBase = Frame.CascadeViewBase;
+
         // No work if the sun doesn't cast shadows (ShadowDataIndex was set to
         // INDEX_NONE by ProcessDirectionalLight in that case), or the scene has
         // no shadow-caster meshes to rasterise. Terrain-only scenes still read
@@ -3317,7 +3650,7 @@ namespace Lumina
                     .SetPipeline(Pipeline)
                     .AddBindingSet(SceneBindingSet)
                     .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
-                    .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs));
+                    .SetIndirectParams(GetIndirectArgs());
 
                 CmdList.SetGraphicsState(GraphicsState);
                 CmdList.SetPushConstants(&CascadePush, sizeof(CascadePush));
@@ -3328,6 +3661,12 @@ namespace Lumina
 
     void FForwardRenderScene::BasePass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands         = Frame.DrawCommands;
+        const auto& OpaqueDrawList       = Frame.OpaqueDrawList;
+        const uint32 NumDrawsPerView     = Frame.NumDrawsPerView;
+        const uint32 CameraLateViewIndex = Frame.CameraLateViewIndex;
+
         if (DrawCommands.empty())
         {
             return;
@@ -3388,7 +3727,7 @@ namespace Lumina
                 .SetRenderPass(RenderPass)
                 .SetViewportState(SceneViewportState)
                 .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-                .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs))
+                .SetIndirectParams(GetIndirectArgs())
                 .AddBindingSet(SceneBindingSet)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                 .AddBindingSet(EmptySet2BindingSet)
@@ -3411,7 +3750,8 @@ namespace Lumina
     {
         LUMINA_PROFILE_SECTION_COLORED("Particle Simulate", tracy::Color::Orange);
 
-        const float DeltaTime = (float)World->GetWorldDeltaTime();
+        const FFrameData& Frame = *RenderFrame;
+        const float DeltaTime   = Frame.CachedWorldDeltaTime;
 
         FEntityRegistry& Registry = World->GetEntityRegistry();
 
@@ -3708,6 +4048,9 @@ namespace Lumina
     void FForwardRenderScene::ParticleRenderPass(ICommandList& CmdList)
     {
         LUMINA_PROFILE_SECTION_COLORED("Particle Render", tracy::Color::OrangeRed);
+
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands = Frame.DrawCommands;
 
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("ParticleVertex.slang");
         FRHIPixelShaderRef  PixelShader  = FShaderLibrary::GetPixelShader("ParticlePixel.slang");
@@ -4170,6 +4513,9 @@ namespace Lumina
 
     void FForwardRenderScene::TerrainRenderPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands = Frame.DrawCommands;
+
         FEntityRegistry& PreCheckRegistry = World->GetEntityRegistry();
         auto PreCheckView = PreCheckRegistry.view<STerrainComponent, STransformComponent>(entt::exclude<SDisabledTag>);
         if (PreCheckView.begin() == PreCheckView.end())
@@ -4367,6 +4713,10 @@ namespace Lumina
 
     void FForwardRenderScene::BillboardPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& BillboardInstances = Frame.BillboardInstances;
+        const auto& DrawCommands       = Frame.DrawCommands;
+
         if (BillboardInstances.empty() || !RenderSettings.bDrawBillboards)
         {
             return;
@@ -4437,6 +4787,10 @@ namespace Lumina
 
     void FForwardRenderScene::TransparentPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands        = Frame.DrawCommands;
+        const auto& TranslucentDrawList = Frame.TranslucentDrawList;
+
         if (TranslucentDrawList.empty())
         {
             return;
@@ -4528,7 +4882,7 @@ namespace Lumina
             GraphicsState.SetRenderPass(RenderPass)
                          .SetViewportState(SceneViewportState)
                          .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-                         .SetIndirectParams(GetNamedBuffer(ENamedBuffer::IndirectArgs))
+                         .SetIndirectParams(GetIndirectArgs())
                          .AddBindingSet(SceneBindingSet)
                          .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                          .AddBindingSet(EmptySet2BindingSet)
@@ -4542,6 +4896,9 @@ namespace Lumina
 
     void FForwardRenderScene::OITResolvePass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& TranslucentDrawList = Frame.TranslucentDrawList;
+
         if (TranslucentDrawList.empty())
         {
             return;
@@ -4642,6 +4999,10 @@ namespace Lumina
 
     void FForwardRenderScene::VolumetricLightingPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& LightData       = Frame.LightData;
+        const auto& SceneGlobalData = Frame.SceneGlobalData;
+
         // Build a CPU-side list of the volumetric lights this frame so the
         // shader can iterate them directly instead of scanning every active
         // light with a flag check. Sun (index 0) is special-cased -- its
@@ -4852,6 +5213,12 @@ namespace Lumina
 
     void FForwardRenderScene::SkyCubeCapturePass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& LightData         = Frame.LightData;
+        const auto& SceneGlobalData   = Frame.SceneGlobalData;
+        FRHIImage* EnvironmentMapImage= Frame.EnvironmentMapImage;
+        const bool bIBLDirty          = Frame.bIBLDirty;
+
         if (!RenderSettings.bHasEnvironment)
         {
             return;
@@ -4929,7 +5296,8 @@ namespace Lumina
         // Cube bound as Texture2DArray UAV (6 layers) for write; IBL passes sample as TextureCube.
         FBindingLayoutDesc LayoutDesc;
         LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(0));
-        LayoutDesc.AddItem(FBindingLayoutItem::Buffer_CBV(1));
+        // Buffer_UD: Environment buffer is BUF_Dynamic; layout must declare dynamic to match.
+        LayoutDesc.AddItem(FBindingLayoutItem::Buffer_UD(1));
         LayoutDesc.SetVisibility(ERHIShaderType::Compute);
         FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
 
@@ -4985,14 +5353,19 @@ namespace Lumina
 
     void FForwardRenderScene::IrradianceConvolutionPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const bool bIBLConvolutionDirty = Frame.bIBLConvolutionDirty;
+
         if (!RenderSettings.bHasEnvironment)
         {
             return;
         }
 
         // Skip the 1024-sample-per-texel convolution when the source cube
-        // is unchanged from last frame -- the irradiance cube is persistent.
-        if (!bIBLDirty)
+        // hasn't moved meaningfully -- the irradiance cube is persistent
+        // and the diffuse lobe is so wide that sub-degree sun deltas are
+        // invisible in the result.
+        if (!bIBLConvolutionDirty)
         {
             return;
         }
@@ -5055,6 +5428,9 @@ namespace Lumina
 
     void FForwardRenderScene::PrefilterEnvMapPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const bool bIBLConvolutionDirty = Frame.bIBLConvolutionDirty;
+
         if (!RenderSettings.bHasEnvironment)
         {
             return;
@@ -5062,8 +5438,9 @@ namespace Lumina
 
         // Same dirty gate as the irradiance pass -- the prefilter cube
         // outlives a single frame, so re-running 256 GGX samples per
-        // texel per mip is wasted when the source cube hasn't moved.
-        if (!bIBLDirty)
+        // texel per mip is wasted when the source cube hasn't moved
+        // beyond the angular threshold.
+        if (!bIBLConvolutionDirty)
         {
             return;
         }
@@ -5183,7 +5560,8 @@ namespace Lumina
         FBindingLayoutDesc EnvLayoutDesc;
         EnvLayoutDesc.SetBindingIndex(2)
             .SetVisibility(ERHIShaderType::Fragment)
-            .AddItem(FBindingLayoutItem::Buffer_CBV(0))
+            // Buffer_UD: Environment buffer is BUF_Dynamic; layout must declare dynamic to match.
+            .AddItem(FBindingLayoutItem::Buffer_UD(0))
             .AddItem(FBindingLayoutItem::Texture_SRV(1));
         FRHIBindingLayout* EnvLayout = BindingCache.GetOrCreateBindingLayout(EnvLayoutDesc);
 
@@ -5224,6 +5602,12 @@ namespace Lumina
 
     void FForwardRenderScene::BatchedLineDraw(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& SimpleVertices     = Frame.SimpleVertices;
+        const auto& LineBatches        = Frame.LineBatches;
+        const auto& DrawCommands       = Frame.DrawCommands;
+        const auto& BillboardInstances = Frame.BillboardInstances;
+
         if (SimpleVertices.empty() || LineBatches.empty())
         {
             return;
@@ -5429,6 +5813,9 @@ namespace Lumina
 
     void FForwardRenderScene::BloomPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const SPostProcessSettings* ActivePostProcess = Frame.bHasActivePostProcess ? &Frame.ActivePostProcessStorage : nullptr;
+
         if (ActivePostProcess == nullptr || !ActivePostProcess->bEnabled || ActivePostProcess->BloomIntensity <= 0.0f)
         {
             return;
@@ -5537,6 +5924,12 @@ namespace Lumina
     {
         LUMINA_PROFILE_SECTION_COLORED("Color Grading + Tone Map Pass", tracy::Color::Red2);
 
+        const FFrameData& Frame = *RenderFrame;
+        const auto& CachedWorldSettings        = Frame.CachedWorldSettings;
+        const auto& ActivePostProcessMaterials = Frame.ActivePostProcessMaterials;
+        const SPostProcessSettings* ActivePostProcess = Frame.bHasActivePostProcess ? &Frame.ActivePostProcessStorage : nullptr;
+        const auto& SceneGlobalData            = Frame.SceneGlobalData;
+
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
         FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("ColorGrading.slang");
         if (!VertexShader || !PixelShader)
@@ -5550,7 +5943,7 @@ namespace Lumina
         // material chain is non-empty, in which case we still need an
         // intermediate so the chain can ping-pong against it before the
         // final blit to RT in PostProcessMaterialPass.
-        const bool bSMAAEnabled = World->GetDefaultWorldSettings().SMAAQuality != ESMAAQuality::Off;
+        const bool bSMAAEnabled = CachedWorldSettings.SMAAQuality != ESMAAQuality::Off;
         const bool bPPMaterials = !ActivePostProcessMaterials.empty();
         FRHIImage* OutputImage = (bSMAAEnabled || bPPMaterials) ? GetNamedImage(ENamedImage::LDR) : GetRenderTarget();
 
@@ -5618,6 +6011,10 @@ namespace Lumina
 
     void FForwardRenderScene::PostProcessMaterialPass(ICommandList& CmdList)
     {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& CachedWorldSettings        = Frame.CachedWorldSettings;
+        const auto& ActivePostProcessMaterials = Frame.ActivePostProcessMaterials;
+
         if (ActivePostProcessMaterials.empty())
         {
             return;
@@ -5654,7 +6051,7 @@ namespace Lumina
         RenderState.SetRasterState(RasterState);
         RenderState.SetDepthStencilState(DepthState);
 
-        const bool bSMAAEnabled = World->GetDefaultWorldSettings().SMAAQuality != ESMAAQuality::Off;
+        const bool bSMAAEnabled = CachedWorldSettings.SMAAQuality != ESMAAQuality::Off;
 
         // The chain reads from "Source" and writes to "Dest", swapping each
         // pass. Tone mapping wrote into LDR (we forced that path in
@@ -5785,6 +6182,9 @@ namespace Lumina
     {
         LUMINA_PROFILE_SECTION_COLORED("SMAA Edge Detection", tracy::Color::Red2);
 
+        const FFrameData& Frame = *RenderFrame;
+        const auto& CachedWorldSettings = Frame.CachedWorldSettings;
+
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
         FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("SMAAEdgeDetection.slang");
         if (!VertexShader || !PixelShader)
@@ -5834,7 +6234,7 @@ namespace Lumina
 
         CmdList.SetGraphicsState(GraphicsState);
 
-        FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, World->GetDefaultWorldSettings());
+        FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, CachedWorldSettings);
         CmdList.SetPushConstants(&PC, sizeof(PC));
         CmdList.Draw(3, 1, 0, 0);
     }
@@ -5842,6 +6242,9 @@ namespace Lumina
     void FForwardRenderScene::SMAABlendWeightPass(ICommandList& CmdList)
     {
         LUMINA_PROFILE_SECTION_COLORED("SMAA Blend Weight", tracy::Color::Red2);
+
+        const FFrameData& Frame = *RenderFrame;
+        const auto& CachedWorldSettings = Frame.CachedWorldSettings;
 
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
         FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("SMAABlendWeight.slang");
@@ -5892,7 +6295,7 @@ namespace Lumina
 
         CmdList.SetGraphicsState(GraphicsState);
 
-        FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, World->GetDefaultWorldSettings());
+        FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, CachedWorldSettings);
         CmdList.SetPushConstants(&PC, sizeof(PC));
         CmdList.Draw(3, 1, 0, 0);
     }
@@ -5900,6 +6303,9 @@ namespace Lumina
     void FForwardRenderScene::SMAANeighborhoodBlendPass(ICommandList& CmdList)
     {
         LUMINA_PROFILE_SECTION_COLORED("SMAA Neighborhood Blend", tracy::Color::Red2);
+
+        const FFrameData& Frame = *RenderFrame;
+        const auto& CachedWorldSettings = Frame.CachedWorldSettings;
 
         FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
         FRHIPixelShaderRef PixelShader = FShaderLibrary::GetPixelShader("SMAANeighborhoodBlend.slang");
@@ -5949,7 +6355,7 @@ namespace Lumina
 
         CmdList.SetGraphicsState(GraphicsState);
 
-        FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, World->GetDefaultWorldSettings());
+        FSMAAPushConstants PC = BuildSMAAPushConstants(OutputImage, CachedWorldSettings);
         CmdList.SetPushConstants(&PC, sizeof(PC));
         CmdList.Draw(3, 1, 0, 0);
     }
@@ -5959,9 +6365,10 @@ namespace Lumina
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(FSceneGlobalData);
-            BufferDesc.Usage.SetFlag(BUF_UniformBuffer);
+            BufferDesc.Usage.SetMultipleFlags(BUF_UniformBuffer, BUF_Dynamic);
+            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
             BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ShaderResource;
+            BufferDesc.InitialState = EResourceStates::ConstantBuffer;
             BufferDesc.DebugName = "Scene Global Data";
             NamedBuffers[(int)ENamedBuffer::Scene] = GRenderContext->CreateBuffer(BufferDesc);
         }
@@ -5969,17 +6376,23 @@ namespace Lumina
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(FGPUInstance);
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
+            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::ShaderResource;
             BufferDesc.DebugName = "Instance Buffer";
             NamedBuffers[(int)ENamedBuffer::Instance] = GRenderContext->CreateBuffer(BufferDesc);
         }
-        
+
         {
+            // Initial size sized for a modest skeletal-mesh load; the upload
+            // site grows this as needed. Sizing for the absolute worst case
+            // (255 bones x 1000 skeletons = 16 MB) up front would multiply by
+            // MaxVersions into host-visible memory for scenes that don't need it.
             FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(glm::mat4) * 255 * 1'000;
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.Size = sizeof(glm::mat4) * 16 * 1024;
+            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
+            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::ShaderResource;
             BufferDesc.DebugName = "Bone Data Buffer";
@@ -5989,7 +6402,8 @@ namespace Lumina
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = offsetof(FSceneLightData, Lights);
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
+            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::ShaderResource;
             BufferDesc.DebugName = "Light Data Buffer";
@@ -6022,7 +6436,8 @@ namespace Lumina
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(FBillboardInstance);
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
+            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::ShaderResource;
             BufferDesc.DebugName = "Billboard Data";
@@ -6033,7 +6448,8 @@ namespace Lumina
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(FCullView);
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
+            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::ShaderResource;
             BufferDesc.DebugName = "Cull View Buffer";
@@ -6055,6 +6471,11 @@ namespace Lumina
         }
 
         // Unified indirect draw args. Sized NumViews * NumDraws.
+        // Manually ringed (one VkBuffer per slot) because the buffer is both
+        // GPU-atomic-written by CullMeshlets and consumed by vkCmdDrawIndirect,
+        // neither of which works with BUF_Dynamic's host-mapped descriptor
+        // offset model.
+        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(FDrawIndirectArguments);
@@ -6062,8 +6483,8 @@ namespace Lumina
             BufferDesc.Usage.SetMultipleFlags(BUF_Indirect, BUF_StorageBuffer);
             BufferDesc.InitialState = EResourceStates::IndirectArgument;
             BufferDesc.bKeepInitialState = true;
-            BufferDesc.DebugName = "Indirect Args";
-            NamedBuffers[(int)ENamedBuffer::IndirectArgs] = GRenderContext->CreateBuffer(BufferDesc);
+            BufferDesc.DebugName = FString("Indirect Args [") + eastl::to_string(Slot) + "]";
+            IndirectArgsRing[Slot] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
         // Two-pass cull defer list. Phase 0 appends camera meshlets that
@@ -6115,7 +6536,8 @@ namespace Lumina
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(FEnvironmentParams);
-            BufferDesc.Usage.SetFlag(BUF_UniformBuffer);
+            BufferDesc.Usage.SetMultipleFlags(BUF_UniformBuffer, BUF_Dynamic);
+            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::ConstantBuffer;
             BufferDesc.DebugName = "Environment Params";
@@ -6128,7 +6550,8 @@ namespace Lumina
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(uint32);
             BufferDesc.Stride = sizeof(uint32);
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
+            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::ShaderResource;
             BufferDesc.DebugName = "Instance Meshlet Prefix";
@@ -6209,7 +6632,14 @@ namespace Lumina
 
     void FForwardRenderScene::SyncMSAAState()
     {
-        const uint8 Desired = ::Lumina::GetMSAASampleCount(World->GetDefaultWorldSettings().MSAASampleCount);
+        // Called from RenderView_RenderThread after RenderFrame is bound; read
+        // the slot's MSAA setting. If RenderFrame is null (boot, teardown,
+        // first frame before any Extract) skip — we'll reconcile next frame.
+        if (RenderFrame == nullptr)
+        {
+            return;
+        }
+        const uint8 Desired = ::Lumina::GetMSAASampleCount(RenderFrame->CachedWorldSettings.MSAASampleCount);
 
         if (Desired == MSAASampleCount)
         {
@@ -6233,7 +6663,9 @@ namespace Lumina
         glm::uvec2 Extent = Windowing::GetPrimaryWindowHandle()->GetExtent();
 
         // Snapshot the MSAA setting once per init. Live changes are handled by SyncMSAAState().
-        MSAASampleCount = ::Lumina::GetMSAASampleCount(World->GetDefaultWorldSettings().MSAASampleCount);
+        // First call comes before any Extract so we read straight from the world.
+        const SDefaultWorldSettings& InitSettings = World ? World->GetDefaultWorldSettings() : SDefaultWorldSettings{};
+        MSAASampleCount = ::Lumina::GetMSAASampleCount(InitSettings.MSAASampleCount);
 
         {
             FRHIImageDesc ImageDesc = GetRenderTarget()->GetDescription();
@@ -6463,8 +6895,12 @@ namespace Lumina
 
     void FForwardRenderScene::InitSkyCube()
     {
-        // 1024 per face: keeps HDRI detail when read 1:1 by Environment.slang.
-        constexpr uint32 SkyCubeFaceSize = 1024u;
+        // 256 per face. The fullscreen Environment pass now samples this cube
+        // with bilinear filtering, so per-pixel detail comes from the
+        // hardware filter rather than from the cube being the same size as
+        // the screen. 256 keeps the sun disc, moon, and Milky-Way band
+        // sharp enough while cutting cube-bake work 16x vs the old 1024.
+        constexpr uint32 SkyCubeFaceSize = 256u;
 
         FRHIImageDesc ImageDesc;
         ImageDesc.Extent            = glm::uvec2(SkyCubeFaceSize, SkyCubeFaceSize);
@@ -6548,7 +6984,12 @@ namespace Lumina
 
     void FForwardRenderScene::CreateLayouts()
     {
-                
+        // Build a SceneBindingSet per frame slot. Only binding 12 (IndirectArgs)
+        // differs across slots; the dynamic-buffer bindings (Scene, Light, etc.)
+        // share one VkBuffer with per-slot offsets selected at bind time. The
+        // layout is identical across iterations, so we only let the first call
+        // build it via CreateBindingSetAndLayout and reuse it for the rest.
+        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
         {
             FBindingSetDesc BindingSetDesc;
             BindingSetDesc.AddItem(FBindingSetItem::BufferCBV(0, GetNamedBuffer(ENamedBuffer::Scene)));
@@ -6573,7 +7014,8 @@ namespace Lumina
             // view's DrawListOffset / IndirectArgsOffset.
             BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(10, GetNamedBuffer(ENamedBuffer::CullView)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(11, GetNamedBuffer(ENamedBuffer::MeshletDrawList)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(12, GetNamedBuffer(ENamedBuffer::IndirectArgs)));
+            // Per-slot IndirectArgs (the only binding that differs across SceneBindingSets entries).
+            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(12, IndirectArgsRing[Slot]));
             // Binding 13 (uShadowCascadePoint) moved to ShadowSamplingBindingSet (set=3).
             // Two-pass cull defer list + atomic counter. CullMeshlets phase 0
             // writes meshlets occluded by the stale HZB here; phase 1 pops
@@ -6605,10 +7047,20 @@ namespace Lumina
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(19, GetNamedImage(ENamedImage::SkyPrefilter),  IBLCubeSampler,
                 EFormat::UNKNOWN, AllSubresources, EImageDimension::TextureCube));
 
-            TBitFlags<ERHIShaderType> Visibility;
-            Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
-            GRenderContext->CreateBindingSetAndLayout(Visibility, 0, BindingSetDesc, SceneBindingLayout, SceneBindingSet);
+            if (Slot == 0)
+            {
+                TBitFlags<ERHIShaderType> Visibility;
+                Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
+                GRenderContext->CreateBindingSetAndLayout(Visibility, 0, BindingSetDesc, SceneBindingLayout, SceneBindingSets[0]);
+            }
+            else
+            {
+                SceneBindingSets[Slot] = GRenderContext->CreateBindingSet(BindingSetDesc, SceneBindingLayout);
+            }
         }
+
+        // Default to slot 0; RenderView_RenderThread re-points it per frame.
+        SceneBindingSet = SceneBindingSets[CurrentFrameSlot];
 
         // Empty set-2 placeholder. BasePass and TransparentPass shaders use sets
         // 0, 1, and 3 (no set 2). Vulkan pipeline layouts are indexed by set, so

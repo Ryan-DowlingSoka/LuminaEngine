@@ -68,8 +68,12 @@ namespace Lumina
         
         /** Submission must happen from a single thread at a time */
         uint64 Submit(ICommandList* const* CommandLists, uint32 NumCommandLists);
-        void SignalSemaphore(VkSemaphore SemaphoreToSignal) const;
-        
+        void SignalSemaphore(VkSemaphore SemaphoreToSignal);
+
+        // External sync for the VkQueue; vkQueuePresentKHR must serialize
+        // against vkQueueSubmit on the same queue.
+        VkResult Present(const VkPresentInfoKHR& PresentInfo);
+
         void WaitIdle();
         uint64 UpdateLastFinishID();
         bool PollCommandList(uint64 CommandListID);

@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "WorldManager.h"
 #include "Core/Profiler/Profile.h"
+#include "Physics/PhysicsThread.h"
+#include "Renderer/RenderThread.h"
 #include "UI/RmlUiBridge.h"
 
 
@@ -10,6 +12,12 @@ namespace Lumina
 
     FWorldManager::~FWorldManager()
     {
+        // Render thread iterates Contexts in RenderWorlds; drain before we touch them.
+        FlushRenderingCommands();
+
+        // Worker holds raw CWorld*; drain before teardown.
+        WaitForPhysics();
+
         // Tear down in reverse so PIE/derived contexts go before their source.
         for (auto It = Contexts.rbegin(); It != Contexts.rend(); ++It)
         {
@@ -37,6 +45,46 @@ namespace Lumina
         }
     }
 
+    void FWorldManager::KickPhysics()
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        for (const TUniquePtr<FWorldContext>& Context : Contexts)
+        {
+            CWorld* World = Context->World.Get();
+            if (World == nullptr || World->IsSuspended())
+            {
+                continue;
+            }
+
+            GPhysicsThread->Enqueue("World::TickPhysics", [World]()
+            {
+                World->TickPhysics();
+            });
+        }
+    }
+
+    void FWorldManager::WaitForPhysics()
+    {
+        GPhysicsThread->Flush();
+    }
+
+    void FWorldManager::DispatchPhysicsEvents()
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        for (const TUniquePtr<FWorldContext>& Context : Contexts)
+        {
+            CWorld* World = Context->World.Get();
+            if (World == nullptr || World->IsSuspended())
+            {
+                continue;
+            }
+
+            World->DispatchPhysicsEvents();
+        }
+    }
+
     void FWorldManager::ExtractWorlds()
     {
         LUMINA_PROFILE_SCOPE();
@@ -53,7 +101,7 @@ namespace Lumina
         }
     }
 
-    void FWorldManager::RenderWorlds(ICommandList& CmdList)
+    void FWorldManager::RenderWorlds(ICommandList& CmdList, uint8 FrameIndex)
     {
         LUMINA_PROFILE_SCOPE();
 
@@ -65,7 +113,24 @@ namespace Lumina
                 continue;
             }
 
-            World->Render(CmdList);
+            World->Render(CmdList, FrameIndex);
+        }
+    }
+
+    void FWorldManager::SignalFrameConsumed(uint8 FrameIndex)
+    {
+        for (const TUniquePtr<FWorldContext>& Context : Contexts)
+        {
+            CWorld* World = Context->World.Get();
+            if (World == nullptr || World->IsSuspended())
+            {
+                continue;
+            }
+
+            if (IRenderScene* Scene = World->GetRenderer())
+            {
+                Scene->SignalFrameConsumed(FrameIndex);
+            }
         }
     }
 
@@ -108,6 +173,10 @@ namespace Lumina
         {
             return;
         }
+
+        // RenderWorlds iterates Contexts on the render thread. Flush before any
+        // mutation of the vector or destruction of the world it points at.
+        FlushRenderingCommands();
 
         for (size_t i = 0; i < Contexts.size(); ++i)
         {

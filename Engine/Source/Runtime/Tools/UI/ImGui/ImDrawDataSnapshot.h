@@ -1,22 +1,34 @@
 #pragma once
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "Containers/Array.h"
-#include "Memory/SmartPtr.h"
 #include "ModuleAPI.h"
 #include "Renderer/RenderResource.h"
 
 
 namespace Lumina
 {
-    // Deep copy of an ImDrawData frame, owned by the render-thread command that
-    // consumes it. Lets the game thread call ImGui::NewFrame for the next frame
-    // without invalidating draw data the render thread is still reading.
+    struct FImDrawListCacheEntry
+    {
+        ImDrawList* SrcCopy      = nullptr; // Drawlist owned by main ImGui context
+        ImDrawList* OurCopy      = nullptr; // Our persistent copy (owns the swapped buffers)
+        double      LastUsedTime = 0.0;
+    };
+
+    // Render-thread snapshot of one ImGui frame. Owns a persistent pool of
+    // ImDrawList copies keyed by source-list pointer; SnapUsingSwap swaps the
+    // Cmd/Idx/Vtx buffer storage out of ImGui's live lists into ours, so the
+    // game thread can call NewFrame on the next frame while the render thread
+    // is still reading from this snapshot.
+    //
+    // Pattern from ocornut/imgui_club imgui_threaded_rendering.h. After the
+    // first frame the swap is allocation-free unless buffers need to grow.
     class FImDrawDataSnapshot
     {
     public:
 
         FImDrawDataSnapshot() = default;
-        ~FImDrawDataSnapshot() { Reset(); }
+        ~FImDrawDataSnapshot() { Clear(); }
 
         FImDrawDataSnapshot(const FImDrawDataSnapshot&)            = delete;
         FImDrawDataSnapshot& operator=(const FImDrawDataSnapshot&) = delete;
@@ -25,52 +37,90 @@ namespace Lumina
         // its recording; populated by the backend via FillReferencedImagesSnapshot.
         TVector<FRHIImageRef> ReferencedImages;
 
-        // Source may be null (e.g. minimized).
-        void CopyFrom(const ImDrawData* Source)
+        // Swap ImGui's live draw lists into our persistent copies. Source must
+        // be the result of ImGui::GetDrawData() on the game thread, immediately
+        // after ImGui::Render(). Passing null clears the snapshot.
+        void SnapUsingSwap(ImDrawData* Source, double CurrentTime)
         {
-            Reset();
-            if (Source == nullptr)
+            if (Source == nullptr || !Source->Valid)
             {
+                DrawData = {};
+                bValid = false;
                 return;
             }
 
-            // Do NOT shallow-assign `DrawData = *Source` then clear() the
-            // CmdLists -- ImVector::operator= aliases the source Data pointer,
-            // and clear() then IM_FREEs it, corrupting ImGui's live state.
-            DrawData.Valid              = Source->Valid;
-            DrawData.CmdListsCount      = Source->CmdListsCount;
-            DrawData.TotalIdxCount      = Source->TotalIdxCount;
-            DrawData.TotalVtxCount      = Source->TotalVtxCount;
-            DrawData.DisplayPos         = Source->DisplayPos;
-            DrawData.DisplaySize        = Source->DisplaySize;
-            DrawData.FramebufferScale   = Source->FramebufferScale;
-            DrawData.OwnerViewport      = Source->OwnerViewport;
-            DrawData.Textures           = Source->Textures;
+            ImDrawData* Dst = &DrawData;
 
-            ClonedCmdLists.reserve(Source->CmdLists.Size);
+            // Shallow-copy every field except CmdLists[] (the owning vector).
+            ImVector<ImDrawList*> BackupCmdLists;
+            BackupCmdLists.swap(Source->CmdLists);
+            *Dst = *Source;
+            BackupCmdLists.swap(Source->CmdLists);
+
+            Dst->CmdLists.resize(0);
+
             for (ImDrawList* SrcList : Source->CmdLists)
             {
                 if (SrcList == nullptr)
                 {
                     continue;
                 }
-                ImDrawList* Clone = SrcList->CloneOutput();
-                ClonedCmdLists.push_back(Clone);
-                DrawData.CmdLists.push_back(Clone);
+
+                FImDrawListCacheEntry* Entry = GetOrAddEntry(SrcList);
+                if (Entry->OurCopy == nullptr)
+                {
+                    Entry->SrcCopy = SrcList;
+                    Entry->OurCopy = IM_NEW(ImDrawList)(SrcList->_Data);
+                }
+                IM_ASSERT(Entry->SrcCopy == SrcList);
+
+                Entry->SrcCopy->CmdBuffer.swap(Entry->OurCopy->CmdBuffer);
+                Entry->SrcCopy->IdxBuffer.swap(Entry->OurCopy->IdxBuffer);
+                Entry->SrcCopy->VtxBuffer.swap(Entry->OurCopy->VtxBuffer);
+
+                // Hand the source the bigger capacity so it doesn't realloc next frame.
+                Entry->SrcCopy->CmdBuffer.reserve(Entry->OurCopy->CmdBuffer.Capacity);
+                Entry->SrcCopy->IdxBuffer.reserve(Entry->OurCopy->IdxBuffer.Capacity);
+                Entry->SrcCopy->VtxBuffer.reserve(Entry->OurCopy->VtxBuffer.Capacity);
+
+                Entry->LastUsedTime = CurrentTime;
+                Dst->CmdLists.push_back(Entry->OurCopy);
+            }
+
+            // GC pool entries for lists that haven't been seen for a while
+            // (closed windows, destroyed viewports).
+            const double GCThreshold = CurrentTime - static_cast<double>(MemoryCompactSeconds);
+            for (int n = 0; n < Cache.GetMapSize(); ++n)
+            {
+                if (FImDrawListCacheEntry* Entry = Cache.TryGetMapData(n))
+                {
+                    if (Entry->LastUsedTime > GCThreshold)
+                    {
+                        continue;
+                    }
+                    IM_DELETE(Entry->OurCopy);
+                    Cache.Remove(GetDrawListID(Entry->SrcCopy), Entry);
+                }
             }
 
             bValid = true;
         }
 
-        void Reset()
+        // Must be called while the owning ImGui context is still alive — the
+        // pooled ImDrawLists were allocated through the context's allocator.
+        void Clear()
         {
-            for (ImDrawList* L : ClonedCmdLists)
+            for (int n = 0; n < Cache.GetMapSize(); ++n)
             {
-                IM_DELETE(L);
+                if (FImDrawListCacheEntry* Entry = Cache.TryGetMapData(n))
+                {
+                    IM_DELETE(Entry->OurCopy);
+                }
             }
-            ClonedCmdLists.clear();
+            Cache.Clear();
             DrawData = {};
-            bValid   = false;
+            ReferencedImages.clear();
+            bValid = false;
         }
 
         bool IsValid() const { return bValid; }
@@ -78,8 +128,19 @@ namespace Lumina
 
     private:
 
-        ImDrawData              DrawData = {};
-        TVector<ImDrawList*>    ClonedCmdLists;
-        bool                    bValid = false;
+        ImGuiID GetDrawListID(ImDrawList* SrcList) const
+        {
+            return ImHashData(&SrcList, sizeof(SrcList));
+        }
+
+        FImDrawListCacheEntry* GetOrAddEntry(ImDrawList* SrcList)
+        {
+            return Cache.GetOrAddByKey(GetDrawListID(SrcList));
+        }
+
+        ImDrawData                       DrawData = {};
+        ImPool<FImDrawListCacheEntry>    Cache;
+        float                            MemoryCompactSeconds = 20.0f;
+        bool                             bValid = false;
     };
 }

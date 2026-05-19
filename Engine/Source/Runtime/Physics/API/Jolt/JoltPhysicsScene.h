@@ -114,6 +114,8 @@ namespace Lumina::Physics
         void Simulate() override;
         void StopSimulate() override;
 
+        void DispatchPendingEvents() override;
+
     	void ActivateBody(uint32 BodyID) override;
     	void DeactivateBody(uint32 BodyID) override;
     	void ChangeBodyMotionType(uint32 BodyID, EBodyType NewType) override;

@@ -410,25 +410,27 @@ namespace Lumina
     {
         for (auto& [texture, state] : PermanentTextureStates)
         {
-            if (texture->PermanentState != EResourceStates::Unknown && texture->PermanentState != state)
+            const EResourceStates ExistingState = texture->PermanentState;
+            if (ExistingState != EResourceStates::Unknown && ExistingState != state)
             {
                 LOG_ERROR("Attempted to switch permanent state of texture {0} from 0x{1:X} to 0x{2:X}.",
                           texture->DescRef.DebugName,
-                          static_cast<uint32>(texture->PermanentState),
+                          static_cast<uint32>(ExistingState),
                           static_cast<uint32>(state));
                 continue;
             }
 
             texture->PermanentState = state;
         }
-        
+
         for (auto& [buffer, state] : PermanentBufferStates)
         {
-            if (buffer->PermanentState != EResourceStates::Unknown && buffer->PermanentState != state)
+            const EResourceStates ExistingState = buffer->PermanentState;
+            if (ExistingState != EResourceStates::Unknown && ExistingState != state)
             {
                 LOG_ERROR("Attempted to switch permanent state of buffer {0} from 0x{1:X} to 0x{2:X}.",
                           buffer->DescRef.DebugName,
-                          static_cast<uint32>(buffer->PermanentState),
+                          static_cast<uint32>(ExistingState),
                           static_cast<uint32>(state));
                 continue;
             }

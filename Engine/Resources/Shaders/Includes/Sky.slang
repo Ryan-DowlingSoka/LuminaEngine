@@ -141,7 +141,11 @@ float Sky_FBM(float3 P)
 
 float3 Sky_OpticalDepth(float3 RayOrigin, float3 RayDir, float RayLength)
 {
-    const int Steps    = 8;
+    // 4 inner steps is the sweet spot: the light-march integral converges
+    // quickly because the sun ray climbs out of the atmosphere monotonically.
+    // 8 was overkill -- the per-fragment cost of the cube bake is dominated
+    // by these inner samples.
+    const int Steps    = 4;
     float StepSize     = RayLength / float(Steps);
     float3 OpticalDepth = float3(0.0, 0.0, 0.0);
 
@@ -175,7 +179,11 @@ float3 Sky_Atmosphere(float3 RayOrigin, float3 RayDir, float3 SunDir, float3 Sun
     float Length = End - Start;
     if (Length <= 0.0) return float3(0.0, 0.0, 0.0);
 
-    const int Steps = 16;
+    // 8 outer steps. Combined with the 4-step inner light march this gives
+    // 32 nested evaluations instead of the previous 128, which is what made
+    // the dynamic sky too expensive on low-end GPUs. Visual difference is
+    // imperceptible because the sky is low-frequency.
+    const int Steps = 8;
     float StepSize  = Length / float(Steps);
 
     float3 SumR = float3(0.0, 0.0, 0.0);
@@ -460,26 +468,22 @@ float3 Sky_Dynamic(FEnvironmentParams Env, float3 SunDir, float3 RayDir, float T
         Atmo = lerp(Atmo, GroundTint, Below);
     }
 
-    // Stars + galaxy + moon (only meaningful when NightFactor > 0).
-    float3 Galaxy = Sky_Galaxy(RayDir, Env, NightFactor);
-    float3 Stars  = Sky_Stars(RayDir, Env, Time, NightFactor);
-    float3 Moon   = Sky_RenderMoon(RayDir, SunDir, Env, NightFactor);
-
-    // Mask stars and the galaxy band by upward-facing rays so they don't
-    // appear inside the lit ground band.
+    // Galaxy lives in the cube (low-frequency band, looks fine at 256).
+    // Stars, sun disc, and moon do NOT -- they are pixel-scale features
+    // that alias at cube resolution. Environment.slang re-evaluates them
+    // per-fragment against the sampled cube instead.
     float UpMask = smoothstep(-0.05, 0.1, RayDir.y);
-    Stars  *= UpMask;
-    Galaxy *= UpMask;
+    float3 Galaxy = float3(0.0);
+    if (UpMask > 0.0 && NightFactor > 0.0)
+    {
+        Galaxy = Sky_Galaxy(RayDir, Env, NightFactor) * UpMask;
+    }
 
     // Background night color sits underneath stars/galaxy and shows through
     // the dim atmosphere when the sun is below the horizon.
     float3 NightBG = Env.NightSkyColor.rgb * Env.NightSkyColor.w * NightFactor * UpMask;
 
-    float3 Color = Atmo + NightBG + Galaxy + Stars + Moon;
-
-    // Sun disc rides on top, but only contributes when the sun is at or
-    // above the horizon (Sky_RenderSun fades it).
-    Color += Sky_RenderSun(RayDir, SunDir, SunColor, Env.Misc.y);
+    float3 Color = Atmo + NightBG + Galaxy;
 
     // Tonemap with the artist's exposure. Reinhard-ish curve gives a softer
     // roll-off than the previous 1 - exp version, which crushed the moon

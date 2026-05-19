@@ -17,14 +17,27 @@ namespace Lumina
 
         void UpdateWorlds(const FUpdateContext& UpdateContext);
 
-        // Game thread: run CWorld::Extract on every active world. Caller must
-        // first ensure the prior frame's RenderWorlds has finished or it races
-        // on scene-thread state.
+        // Kick every world's physics step onto GPhysicsThread.
+        void KickPhysics();
+
+        // Block until KickPhysics work completes.
+        void WaitForPhysics();
+
+        // Game thread: drain queued physics events for every world. Call after WaitForPhysics.
+        void DispatchPhysicsEvents();
+
+        // Game thread: snapshot world state for the render thread. Pair with the prior frame's RenderWorlds.
         void ExtractWorlds();
 
-        // Render thread: emit each world's draws onto CmdList. Reads only scene
-        // state populated by the matching ExtractWorlds.
-        void RenderWorlds(ICommandList& CmdList);
+        // Render thread: emit each world's draws onto CmdList for the FrameData
+        // slot identified by FrameIndex. Reads only the snapshot populated by
+        // the matching ExtractWorlds; never touches the live ECS.
+        void RenderWorlds(ICommandList& CmdList, uint8 FrameIndex);
+
+        // Render thread: called from the render lambda after the LAST per-slot
+        // read for this frame (post-ImGui composite, post-present). Releases
+        // the slot back to the game thread.
+        void SignalFrameConsumed(uint8 FrameIndex);
 
         // Creates a context for an already-constructed CWorld and calls InitializeWorld on it.
         // Returns the owning context (stable pointer until DestroyWorldContext).
