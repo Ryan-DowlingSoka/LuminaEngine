@@ -177,10 +177,16 @@ namespace Lumina::Physics
     	void SnapshotBodyStates();
     	
     	void BulkCreateRigidBodies(entt::registry& Registry);
-    	
-    	
+
+    	// Build + add a single body to Jolt. Must run on the physics thread,
+    	// outside JoltSystem->Update(). The on_construct hook only enqueues;
+    	// the drain at the top of Update() calls this.
+    	void CreateRigidBodyImmediate(entt::registry& Registry, entt::entity Entity);
+
+
     private:
 
+    	FMutex										PendingRigidBodyMutex;
     	TQueue<entt::entity>						PendingRigidBodyCreations;
     	JPH::TempAllocatorImpl						Allocator;
     	TVector<TUniquePtr<JPH::TempAllocatorImpl>>	CharacterAllocators;

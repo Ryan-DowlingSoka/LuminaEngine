@@ -33,13 +33,9 @@ namespace Lumina
 
         // Game thread: snapshot ImGui DrawData and enqueue the whole render
         // pipeline (cmd list create, all recording, submit, present, wait) onto
-        // the render thread. Returns immediately.
-        //
-        // RmlUiCmdList: optional pre-recorded cmdlist (game-thread recorded) that
-        // composites RmlUi onto world RTs. Executed by the render thread between
-        // world render and ImGui composite so RmlUi never touches the live DOM
-        // off the render thread. Pass nullptr to skip.
-        void FrameEnd(FRHICommandListRef RmlUiCmdList = nullptr);
+        // the render thread. Returns immediately. Caller must have already run
+        // RmlUi::TickAll() so the DOM is stable for the render thread to traverse.
+        void FrameEnd();
 
         void SwapchainResized(glm::vec2 NewSize);
 

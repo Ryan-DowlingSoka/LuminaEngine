@@ -594,14 +594,26 @@ namespace Lumina::Physics
     {
         LUMINA_PROFILE_SCOPE();
         
-        while (!PendingRigidBodyCreations.empty())
+        // Drain pending body creations on the physics thread, BEFORE the step.
+        // on_construct hands entities to this queue (game thread); we build + add the
+        // Jolt body here where it's safe. CreateRigidBodyImmediate may re-enqueue if
+        // the entity is still waiting on a shape/transform, so release the lock per pop.
+        for (;;)
         {
-            entt::entity Entity = PendingRigidBodyCreations.front();
-            PendingRigidBodyCreations.pop();
+            entt::entity Entity;
+            {
+                FScopeLock Lock(PendingRigidBodyMutex);
+                if (PendingRigidBodyCreations.empty())
+                {
+                    break;
+                }
+                Entity = PendingRigidBodyCreations.front();
+                PendingRigidBodyCreations.pop();
+            }
 
             if (World->GetEntityRegistry().valid(Entity))
             {
-                OnRigidBodyComponentConstructed(World->GetEntityRegistry(), Entity);
+                CreateRigidBodyImmediate(World->GetEntityRegistry(), Entity);
             }
         }
         
@@ -1719,6 +1731,18 @@ namespace Lumina::Physics
     {
         LUMINA_PROFILE_SCOPE();
 
+        // entt fires on_construct on whichever thread emplaces the component -- usually
+        // the game thread. JoltSystem->Update may be running on the physics thread, and
+        // Jolt forbids BodyInterface::CreateBody/AddBody during a step. Always defer to
+        // the drain at the top of FJoltPhysicsScene::Update.
+        FScopeLock Lock(PendingRigidBodyMutex);
+        PendingRigidBodyCreations.push(Entity);
+    }
+
+    void FJoltPhysicsScene::CreateRigidBodyImmediate(entt::registry& Registry, entt::entity Entity)
+    {
+        LUMINA_PROFILE_SCOPE();
+
         FRigidBodyBuildResult BuildResult;
         const EBodyBuildStatus Status = TryBuildRigidBodyCreationSettings(Registry, Entity, BuildResult);
 
@@ -1726,8 +1750,11 @@ namespace Lumina::Physics
         {
         case EBodyBuildStatus::Defer:
         case EBodyBuildStatus::NoCollider:
+        {
+            FScopeLock Lock(PendingRigidBodyMutex);
             PendingRigidBodyCreations.push(Entity);
             return;
+        }
         case EBodyBuildStatus::AlreadyExists:
         case EBodyBuildStatus::Error:
             return;

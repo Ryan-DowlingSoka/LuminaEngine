@@ -3,9 +3,14 @@
 #include "imgui.h"
 #include "ImDrawDataSnapshot.h"
 #include "ImGuiX.h"
+#include "Containers/Array.h"
+#include "Core/Threading/Atomic.h"
 #include "Renderer/RenderResource.h"
 #include "Renderer/RenderTypes.h"
 #include "Subsystems/Subsystem.h"
+
+#include <condition_variable>
+#include <mutex>
 
 struct ImPlotContext;
 
@@ -36,6 +41,11 @@ namespace Lumina
 
         // Render thread: record the snapshot's draw lists onto CmdList.
         void RecordFrame_RenderThread(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot);
+
+        // Render thread: call after RecordFrame_RenderThread to release the
+        // snapshot slot. The game thread may be blocked in BuildFrame_GameThread
+        // waiting for this slot to wrap back around.
+        void SignalSnapshotSlotConsumed(uint8 FrameIndex);
 
         // Releases persistent snapshot storage. Must be called BEFORE
         // ImGui::DestroyContext() since pooled ImDrawLists use its allocator.
@@ -68,5 +78,18 @@ namespace Lumina
         // a pool of ImDrawList copies that get reused across frames - after
         // warm-up SnapUsingSwap is allocation-free unless buffers grow.
         FImDrawDataSnapshot Snapshots[FRAMES_IN_FLIGHT];
+
+        // Per-slot producer/consumer counters so the game thread can't overwrite
+        // a snapshot while the render thread is still recording from it. This
+        // ring is independent of the world FrameRing -- if the render thread
+        // ever falls more than FRAMES_IN_FLIGHT-1 frames behind for any reason
+        // (GPU stall, no-world frame, suspended world, etc.), the game thread
+        // blocks here instead of stomping a live snapshot.
+        TAtomic<uint64> SnapshotProduced[FRAMES_IN_FLIGHT] = {};
+        TAtomic<uint64> SnapshotConsumed[FRAMES_IN_FLIGHT] = {};
+        std::mutex SnapshotSlotMutex;
+        std::condition_variable SnapshotSlotCV;
+
+        void WaitForSnapshotSlot(uint8 Slot, uint64 Target);
     };
 }

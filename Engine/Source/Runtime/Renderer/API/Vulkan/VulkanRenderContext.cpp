@@ -757,6 +757,16 @@ namespace Lumina
         Swapchain->WaitForFramePace();
     }
 
+    void FVulkanRenderContext::LockQueueForExternalAccess(ECommandQueue QueueType)
+    {
+        Queues[(uint32)QueueType]->Mutex.lock();
+    }
+
+    void FVulkanRenderContext::UnlockQueueForExternalAccess(ECommandQueue QueueType)
+    {
+        Queues[(uint32)QueueType]->Mutex.unlock();
+    }
+
     bool FVulkanRenderContext::FrameEnd(ICommandList& CmdList)
     {
         LUMINA_PROFILE_SCOPE();

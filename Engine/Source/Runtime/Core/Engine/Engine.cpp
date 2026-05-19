@@ -180,6 +180,14 @@ namespace Lumina
 
                 MainThread::ProcessQueue();
 
+                // Join the physics worker from the previous frame before anything game-thread touches world state.
+                // Travel/teardown and all subsequent stages run with the worker idle.
+                {
+                    LUMINA_PROFILE_SECTION_COLORED("WaitForPhysics", tracy::Color::DarkOliveGreen);
+                    GWorldManager->WaitForPhysics();
+                    GWorldManager->DispatchPhysicsEvents();
+                }
+
                 // Drain Travel before world ticks; tearing down a world from inside its own update is unsafe.
                 ProcessPendingTravel();
 
@@ -219,10 +227,6 @@ namespace Lumina
                 GWorldManager->UpdateWorlds(UpdateContext);
 
                 OnUpdateStage(UpdateContext);
-
-                // Hand off to the worker. DuringPhysics scripts run concurrently;
-                // they must not touch Jolt body state or physics-controlled transforms.
-                GWorldManager->KickPhysics();
             }
 
             {
@@ -241,12 +245,6 @@ namespace Lumina
             {
                 LUMINA_PROFILE_SECTION_COLORED("Post-Physics", tracy::Color::Yellow);
                 UpdateContext.UpdateStage = EUpdateStage::PostPhysics;
-
-                {
-                    LUMINA_PROFILE_SECTION_COLORED("WaitForPhysics", tracy::Color::DarkOliveGreen);
-                    GWorldManager->WaitForPhysics();
-                    GWorldManager->DispatchPhysicsEvents();
-                }
 
                 #if USING(WITH_EDITOR)
                 DeveloperToolUI->Update(UpdateContext);
@@ -272,21 +270,8 @@ namespace Lumina
                 DeveloperToolUI->EndFrame(UpdateContext);
                 #endif
 
-                // Per-slot back-pressure now lives inside the scene's Extract
-                // (waits on FrameRing[Slot]'s consumed counter). The render
-                // thread can be up to FRAMES_IN_FLIGHT frames behind without
-                // blocking the game thread here.
-                //
-                // RmlUi::TickAll mutates the Rml::Context DOM, which the
-                // render-thread RmlUi command recording (on the prior frame)
-                // does NOT touch -- recording moved onto the game thread
-                // below, after TickAll, so the live-read race is gone.
-                //
-                // CPackage::DrainPendingDestroys does still want a render-
-                // idle moment because freed packages may own GPU resources
-                // captured by lambdas already on the queue. Drain only when
-                // there's actually something to free, so the common case
-                // skips the flush entirely.
+                // Freed packages may own GPU resources captured by in-flight render lambdas;
+                // gate the drain on the queue being empty. Skip the wait when nothing is pending.
                 if (CPackage::HasPendingDestroys())
                 {
                     LUMINA_PROFILE_SECTION_COLORED("WaitForRender (Package Teardown)", tracy::Color::Crimson);
@@ -294,26 +279,17 @@ namespace Lumina
                     CPackage::DrainPendingDestroys();
                 }
 
+                // TickAll mutates the Rml::Context DOM. After this returns nothing else on the
+                // game thread touches the DOM until next frame's TickAll, so the render thread
+                // can safely traverse it inside RmlUi::RenderAll on its single cmdlist.
                 RmlUi::TickAll();
                 GWorldManager->ExtractWorlds();
 
-                // Record RmlUi on the game thread into its own cmdlist.
-                // Previously RmlUi::RenderAll ran on the render thread and
-                // traversed the live Rml::Context DOM that TickAll just
-                // mutated -- the Flush above is what made that safe. Moving
-                // the recording here serializes naturally with TickAll and
-                // breaks the live-read race; the render thread submits this
-                // cmdlist between world render and final composite.
-                FRHICommandListRef RmlUiCmdList;
-                {
-                    LUMINA_PROFILE_SECTION_COLORED("RmlUi::RenderAll (GameThread)", tracy::Color::Aquamarine);
-                    RmlUiCmdList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
-                    RmlUiCmdList->Open();
-                    RmlUi::RenderAll(*RmlUiCmdList);
-                    RmlUiCmdList->Close();
-                }
+                // Kick physics after Extract: render data is gathered, so the worker can mutate transforms
+                // freely. Results land next frame at FrameStart -- PostPhysics stages read previous-frame physics.
+                GWorldManager->KickPhysics();
 
-                GRenderManager->FrameEnd(Move(RmlUiCmdList));
+                GRenderManager->FrameEnd();
 
                 Lua::FScriptingContext::Get().ProcessDeferredActions();
 

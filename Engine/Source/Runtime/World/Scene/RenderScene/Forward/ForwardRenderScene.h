@@ -124,51 +124,33 @@ namespace Lumina
                 : Items(A), EntityRecords(A), LocalBatches(A), BonesData(A), PinnedMeshDedupe(A), Arena(A) {}
         };
 
-        /**
-         * Pending per-light shadow tile requests queued during parallel light
-         * processing. Finalized into ShadowAtlas tiles + FLightShadowData by
-         * AllocateShadowTiles after Graph.Wait. Request capture has to be
-         * deferred so we can fit the whole set against the atlas budget and
-         * shrink the largest tiles uniformly when over budget. The old
-         * greedy allocator failed the Nth light once the atlas was full.
-         */
+        // Pending shadow tile request captured during parallel light processing;
+        // resolved + shrunk-to-fit by AllocateShadowTiles.
         struct FShadowRequest
         {
-            uint32      LightIndex;        // Into LightData.Lights
+            uint32      LightIndex;
             ELightType  Type;
-            uint32      DesiredPixels;     // Unclamped; clamped + shrunk by the fit pass
-            float       DistanceToCamera;  // Used by the view-budget drop pass (farthest first)
+            uint32      DesiredPixels;
+            float       DistanceToCamera;
             glm::vec3   Position;
-            glm::vec3   Direction;         // Spot only
-            glm::vec3   Up;                // Spot only
-            float       Attenuation;       // Spot far plane
-            float       OuterFOVDegrees;   // Spot
+            glm::vec3   Direction;      // Spot only
+            glm::vec3   Up;             // Spot only
+            float       Attenuation;
+            float       OuterFOVDegrees;
         };
 
-        /**
-         * Per-frame extracted snapshot. Game thread writes into FrameRing[Slot]
-         * during Extract; render thread reads FrameRing[Slot] during RenderView.
-         * Sized FRAMES_IN_FLIGHT so the two threads can pipeline without
-         * blocking on each other.
-         *
-         * Holds *only* state that crosses the game/render boundary. Persistent
-         * render-thread-only state (NamedBuffers/Images, IBL caches, BindingCache,
-         * MSAA scratch, picker readback, ShadowAtlas image + free-lists) stays
-         * on FForwardRenderScene.
-         */
+        // Per-frame extracted snapshot. FRAMES_IN_FLIGHT instances live in
+        // FrameRing; game thread writes one during Extract, render thread reads
+        // the matching one during RenderView.
         struct FFrameData
         {
-            // Camera / world snapshot
             FViewVolume                      ViewVolume = {};
             FSceneGlobalData                 SceneGlobalData = {};
             SDefaultWorldSettings            CachedWorldSettings = {};
             float                            CachedWorldDeltaTime = 0.0f;
-            // Set true at end of Extract if the frame is renderable; checked by
-            // RenderView_RenderThread which no-ops when false (typically when the
-            // shader compiler still has pending requests).
+            // False = shader compiler still warming up; RenderView no-ops.
             bool                             bExtractedThisFrame = false;
 
-            // Mesh gather output
             TVector<FGPUInstance>            Instances;
             TVector<glm::mat4>               BonesData;
             TVector<FMeshDrawCommand>        DrawCommands;
@@ -178,7 +160,6 @@ namespace Lumina
             TVector<FRHIBufferRef>           PinnedMeshBuffersThisFrame;
             FSceneCullContext                SceneCullContext;
 
-            // Cull / draw-arg output
             TVector<FCullView>               CullViews;
             TVector<FDrawIndirectArguments>  IndirectArgs;
             TVector<uint32>                  DrawMeshletStartOffsets;
@@ -190,37 +171,26 @@ namespace Lumina
             TVector<uint32>                  PointShadowCullViewBases;
             TVector<uint32>                  SpotShadowCullViewBases;
 
-            // Lights & shadows
             FSceneLightData                  LightData = {};
             TArray<TVector<FLightShadow>, (uint32)ELightType::Num> PackedShadows = {};
             TAtomic<uint32>                  ShadowDataCount = 0;
             TVector<FShadowRequest>          ShadowRequests;
             FMutex                           ShadowRequestMutex;
-            // Snapshot of FShadowAtlas::Tiles for this frame. AllocateShadowTiles
-            // builds it via the persistent atlas allocator on the game thread;
-            // render passes look up tiles via Frame.AtlasTiles[idx] (NOT
-            // ShadowAtlas.GetTile(idx)) so the read is per-slot and race-free.
+            // Per-slot copy of FShadowAtlas::Tiles -- render passes index this.
             TVector<FShadowTile>             AtlasTiles;
 
-            // Environment + post-process
             FEnvironmentParams               EnvironmentParams = {};
             FRHIImage*                       EnvironmentMapImage = nullptr;
-            // bIBL{,Convolution}Dirty are recomputed every Extract from the
-            // class-level Last* snapshot, so they live per-frame.
             bool                             bIBLDirty            = false;
             bool                             bIBLConvolutionDirty = false;
             SPostProcessSettings             ActivePostProcessStorage = {};
             bool                             bHasActivePostProcess = false;
             TVector<CMaterialInterface*>     ActivePostProcessMaterials;
 
-            // Debug draw
             TVector<FSimpleElementVertex>    SimpleVertices;
             TVector<FLineBatch>              LineBatches;
             TVector<FBillboardInstance>      BillboardInstances;
 
-            // Stats accumulated during this frame's Extract. Render thread
-            // copies into FForwardRenderScene::RenderStats at the top of
-            // RenderView so GetRenderStats() returns last-rendered values.
             FSceneRenderStats                FrameStats = {};
         };
 
@@ -667,29 +637,20 @@ namespace Lumina
         TVector<uint32>                         MergeDrawInstanceOffsets;
         TVector<uint32>                         MergeDrawCursor;
 
-        // ---------------------------------------------------------------
-        // Per-frame extracted state ring. Game thread writes FrameRing[Slot]
-        // during Extract; render thread reads FrameRing[Slot] during RenderView.
-        // ExtractFrame/RenderFrame are owned by their respective threads.
-        // SlotProducedCount[S] / SlotConsumedCount[S] form the back-pressure
-        // fence: Extract for slot S waits until Consumed[S] >= Produced[S]
-        // so the render thread is done with the previous use of that slot.
-        // RenderView_RenderThread signals at its end.
-        // ---------------------------------------------------------------
+        // Per-frame extracted-state ring. Extract waits on
+        // Consumed[Slot] >= Produced[Slot] before overwriting a slot;
+        // SignalFrameConsumed (called from the render lambda tail) advances
+        // Consumed.
         TArray<FFrameData, FRAMES_IN_FLIGHT>          FrameRing;
         TArray<TAtomic<uint64>, FRAMES_IN_FLIGHT>     SlotConsumedCount;
         TArray<uint64,         FRAMES_IN_FLIGHT>      SlotProducedCount = {};
         FMutex                                        SlotMutex;
         std::condition_variable                       SlotCV;
 
-        // Game-thread-only pointer set at the top of Extract().
-        FFrameData*                             ExtractFrame = nullptr;
-        // Render-thread-only pointer set at the top of RenderView_RenderThread().
-        const FFrameData*                       RenderFrame  = nullptr;
+        FFrameData*                             ExtractFrame = nullptr;  // game thread
+        FFrameData*                             RenderFrame  = nullptr;  // render thread
 
-        // Game thread waits until prior frame's RenderView for this slot has signalled.
         void WaitForSlotConsumed(uint8 Slot, uint64 Target);
-        // Render thread signals at end of RenderView_RenderThread for this slot.
         void SignalSlotConsumed(uint8 Slot);
 
 #if USING(WITH_EDITOR)

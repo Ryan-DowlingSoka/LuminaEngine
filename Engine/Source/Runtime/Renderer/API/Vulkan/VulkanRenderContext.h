@@ -150,6 +150,8 @@ namespace Lumina
         bool FrameStart(uint8 InCurrentFrameIndex) override;
         bool FrameEnd(ICommandList& CmdList) override;
         void WaitForGPU() override;
+        void LockQueueForExternalAccess(ECommandQueue Queue) override;
+        void UnlockQueueForExternalAccess(ECommandQueue Queue) override;
 
         uint64 GetAllocatedMemory() const override;
         uint64 GetAvailableMemory() const override;

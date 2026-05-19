@@ -5,6 +5,7 @@
 #include "Core/Object/Package/Thumbnail/PackageThumbnail.h"
 #include "Renderer/CommandList.h"
 #include "Renderer/RenderContext.h"
+#include "Renderer/RenderManager.h"
 #include "Renderer/RenderResource.h"
 #include "Renderer/RenderThread.h"
 #include "Renderer/RHIGlobals.h"
@@ -103,24 +104,18 @@ namespace Lumina
             return false;
         }
 
-        // Capture submits a command list straight onto the graphics queue from
-        // the game thread. The render thread shares that queue + GRenderContext
-        // caches, so wait for any in-flight frame before we record or submit.
+        // Synchronous capture on the game thread; flush any in-flight render work first.
         FlushRenderingCommands();
 
-        // RenderView_RenderThread reads scene state populated by Extract -- the
-        // view volume, camera matrices, post-process, etc. Without this, the
-        // capture renders against zeroed state and the thumbnail comes out
-        // garbled.
+        // Extract uses the live CurrentFrameIndex slot; Render must read the same one,
+        // and we must signal it consumed afterwards or the slot's Produced/Consumed
+        // counters drift and the next capture deadlocks.
+        const uint8 FrameIndex = (uint8)GRenderManager->GetCurrentFrameIndex();
         World->Extract();
 
         FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
         CommandList->Open();
-
-        // Thumbnail capture is one-shot from the game thread after a Flush, so
-        // there's no real frame ring in play; the scene's slot-0 snapshot just
-        // populated by Extract is the one we render against.
-        World->Render(*CommandList, 0u);
+        World->Render(*CommandList, FrameIndex);
 
         FRHIImage* RenderTarget = World->GetRenderer()->GetRenderTarget();
         if (RenderTarget == nullptr)
@@ -135,6 +130,12 @@ namespace Lumina
         CommandList->Close();
         GRenderContext->ExecuteCommandList(CommandList);
         GRenderContext->WaitIdle();
+
+        // Balance the Produced++ that Extract did, since we bypassed the render lambda.
+        if (IRenderScene* Scene = World->GetRenderer())
+        {
+            Scene->SignalFrameConsumed(FrameIndex);
+        }
 
         size_t RowPitch = 0;
         void* MappedMemory = GRenderContext->MapStagingTexture(StagingImage, FTextureSlice(), ERHIAccess::HostRead, &RowPitch);

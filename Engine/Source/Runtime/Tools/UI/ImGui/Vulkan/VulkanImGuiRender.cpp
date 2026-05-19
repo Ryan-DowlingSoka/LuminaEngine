@@ -121,7 +121,9 @@ namespace Lumina
         InitInfo.Queue							= VulkanRenderContext->GetQueue(ECommandQueue::Graphics)->Queue;
 		InitInfo.DescriptorPoolSize				= 1000;
         InitInfo.MinImageCount					= 2;
-        InitInfo.ImageCount						= 3;
+        // Must be >= FRAMES_IN_FLIGHT: ImGui's vtx/idx ring is sized by ImageCount, and
+        // frame N+ImageCount overwrites buffer 0 while frame N may still be GPU-in-flight.
+        InitInfo.ImageCount						= FRAMES_IN_FLIGHT;
         InitInfo.UseDynamicRendering			= true;
         InitInfo.MSAASamples					= VK_SAMPLE_COUNT_1_BIT;
 		
@@ -178,10 +180,7 @@ namespace Lumina
     void FVulkanImGuiRender::OnStartFrame(const FUpdateContext& UpdateContext)
     {
     	LUMINA_PROFILE_SCOPE();
-
-		// Mutex acquisition is instrumented via TracyLockable on Mutex itself --
-		// if the wait shows up as the spike source, contention with the
-		// render-thread snapshot fill (FillReferencedImagesSnapshot) is the cause.
+		
 		FRecursiveScopeLock Lock(Mutex);
 		SquareWhiteTexture.second->LastUseFrame.exchange(GEngine->GetUpdateContext().GetFrame(), std::memory_order_relaxed);
 

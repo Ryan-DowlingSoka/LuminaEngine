@@ -126,10 +126,6 @@ namespace Lumina
 
     void FForwardRenderScene::WaitForSlotConsumed(uint8 Slot, uint64 Target)
     {
-        // Wait until the render thread has signalled completion of this slot's
-        // prior use. In steady state Consumed[Slot] is already >= Target so this
-        // returns immediately; it only blocks when game thread laps render by
-        // FRAMES_IN_FLIGHT frames.
         if (SlotConsumedCount[Slot].load(std::memory_order_acquire) >= Target)
         {
             return;
@@ -144,9 +140,7 @@ namespace Lumina
     void FForwardRenderScene::SignalSlotConsumed(uint8 Slot)
     {
         SlotConsumedCount[Slot].fetch_add(1, std::memory_order_release);
-        {
-            std::scoped_lock<FMutex> Lock(SlotMutex);
-        }
+        { std::scoped_lock<FMutex> Lock(SlotMutex); }
         SlotCV.notify_all();
     }
 
@@ -154,26 +148,19 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        // Pick this frame's slot. Wait for the render thread to be done with
-        // its previous use of this slot before we overwrite it.
-        const uint8  Slot       = (uint8)(GRenderManager->GetCurrentFrameIndex() % FRAMES_IN_FLIGHT);
+        const uint8  Slot        = (uint8)(GRenderManager->GetCurrentFrameIndex() % FRAMES_IN_FLIGHT);
         const uint64 NextProduce = SlotProducedCount[Slot] + 1u;
         WaitForSlotConsumed(Slot, SlotProducedCount[Slot]);
 
         ExtractFrame = &FrameRing[Slot];
         FFrameData& Frame = *ExtractFrame;
 
-        Frame.bExtractedThisFrame = false;
-
-        // Snapshot world settings + delta time once. Render-thread passes read
-        // these via Frame.CachedWorldSettings/CachedWorldDeltaTime; never live
-        // off World-> so the game thread can mutate freely after Extract.
+        Frame.bExtractedThisFrame  = false;
         Frame.CachedWorldSettings  = World->GetDefaultWorldSettings();
         Frame.CachedWorldDeltaTime = (float)World->GetWorldDeltaTime();
         Frame.ViewVolume           = ViewVolume;
 
-        // Value-copy: PostProcess points to a temporary in CWorld::Extract that
-        // will go out of scope before the render thread runs the passes.
+        // PostProcess is a stack temporary in CWorld::Extract -- value-copy it.
         if (PostProcess != nullptr)
         {
             Frame.ActivePostProcessStorage = *PostProcess;
@@ -184,7 +171,6 @@ namespace Lumina
             Frame.bHasActivePostProcess    = false;
         }
 
-        // Capture post-process material chain handed by the world during Tick.
         Frame.ActivePostProcessMaterials = PendingPostProcessMaterials;
 
         SceneViewport->SetViewVolume(ViewVolume);
@@ -230,12 +216,9 @@ namespace Lumina
         // (Instances, LightData, EnvironmentParams, CullViews, ...).
         CompileDrawCommands_GameThread();
 
-        // Snapshot the atlas's allocated tiles for the render thread to look
-        // up via Frame.AtlasTiles[idx] (race-free per-slot copy).
+        // Per-slot copy of the atlas tile table -- render passes read this, not the live atlas.
         Frame.AtlasTiles = ShadowAtlas.GetAllocatedTiles();
 
-        // Stats handed to render thread; visible via GetRenderStats() once
-        // RenderView for this slot starts.
         Frame.bExtractedThisFrame = true;
 
         SlotProducedCount[Slot] = NextProduce;
@@ -246,38 +229,29 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        // Bind the slot's FrameData BEFORE SyncMSAAState (which reads
-        // Frame.CachedWorldSettings.MSAASampleCount). RenderFrame stays valid
-        // until we clear it at the bottom; SignalSlotConsumed fires after the
-        // last read.
         const uint8 Slot = (uint8)(FrameIndex % FRAMES_IN_FLIGHT);
         RenderFrame = &FrameRing[Slot];
-        // Local non-const handle for the few CullData fields we write below.
         FFrameData& Frame = FrameRing[Slot];
 
-        // Reconciles MSAA toggle: alloc/free MS scratch so next frame uses new sample count without reload.
+        // SyncMSAAState reads Frame.CachedWorldSettings, so RenderFrame must be set first.
         SyncMSAAState();
 
         if (!Frame.bExtractedThisFrame)
         {
-            SignalSlotConsumed(Slot);
+            // SignalFrameConsumed at lambda tail releases the slot.
             RenderFrame = nullptr;
             return;
         }
 
-        // Pick this frame's ringed scene resources: IndirectArgs slot + matching
-        // SceneBindingSet that has IndirectArgsRing[Slot] bound at binding 12.
-        // Every pass below reads SceneBindingSet through the cached pointer.
         CurrentFrameSlot = Slot;
         SceneBindingSet  = SceneBindingSets[CurrentFrameSlot];
 
-        // RHI-dependent CullData fields: DepthPyramid changes only on swapchain
-        // resize, so reading it here on the render thread is race-safe.
+        // DepthPyramid only changes on swapchain resize -- render-thread read is race-safe.
         Frame.SceneGlobalData.CullData.PyramidWidth      = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
         Frame.SceneGlobalData.CullData.PyramidHeight     = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeY();
         Frame.SceneGlobalData.CullData.DepthPyramidIndex = (uint32)GetNamedImage(ENamedImage::DepthPyramid)->GetResourceID();
 
-        // Stats handed to GetRenderStats() callers — snapshot of this frame's gather.
+        // Publish this frame's stats for the editor-side GetRenderStats() reader.
         RenderStats = Frame.FrameStats;
 
         GPU_PROFILE_SCOPE_COLOR(&CmdList, "RenderView", FColor(0.30f, 0.65f, 1.00f));
@@ -469,18 +443,14 @@ namespace Lumina
             }
         }
 
-        // RenderView no longer reads Frame data after this point. The slot is
-        // NOT yet eligible to be reused, though, because the encompassing
-        // render lambda still has ImGui composite + present queued behind us.
-        // FWorldManager::SignalFrameConsumed (called from the lambda after
-        // the last per-slot read) fires the slot signal.
+        // ImGui composite + present still read FrameRing[Slot] later in the
+        // render lambda; SignalFrameConsumed fires the per-slot signal there.
         RenderFrame = nullptr;
     }
 
     void FForwardRenderScene::SignalFrameConsumed(uint8 FrameIndex)
     {
-        const uint8 Slot = (uint8)(FrameIndex % FRAMES_IN_FLIGHT);
-        SignalSlotConsumed(Slot);
+        SignalSlotConsumed((uint8)(FrameIndex % FRAMES_IN_FLIGHT));
     }
     
     void FForwardRenderScene::SwapchainResized(glm::vec2 NewSize)
@@ -531,13 +501,6 @@ namespace Lumina
         auto& LineBatches            = Frame.LineBatches;
         auto& BillboardInstances     = Frame.BillboardInstances;
         auto& FrameStats             = Frame.FrameStats;
-        (void)Instances; (void)BonesData; (void)DrawCommands;
-        (void)OpaqueDrawList; (void)OpaqueOccluderDrawList; (void)TranslucentDrawList;
-        (void)PinnedMeshBuffersThisFrame; (void)SceneCullContext; (void)CullViews;
-        (void)IndirectArgs; (void)DrawMeshletStartOffsets; (void)InstanceMeshletPrefix;
-        (void)LightData; (void)PackedShadows; (void)EnvironmentParams;
-        (void)EnvironmentMapImage; (void)SceneGlobalData; (void)SimpleVertices;
-        (void)LineBatches; (void)BillboardInstances; (void)FrameStats;
 
         {
             LUMINA_PROFILE_SECTION("Compile Draw Commands");
@@ -915,9 +878,7 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        // We are on the render thread; mutate this slot's CullData but read
-        // everything else as const.
-        FFrameData& Frame = const_cast<FFrameData&>(*RenderFrame);
+        FFrameData& Frame = *RenderFrame;
         auto& SceneGlobalData            = Frame.SceneGlobalData;
         const auto& Instances            = Frame.Instances;
         const auto& BonesData            = Frame.BonesData;
@@ -2816,13 +2777,7 @@ namespace Lumina
 
     void FForwardRenderScene::DrawBillboard(FRHIImage* Image, const glm::vec3& Location, float Scale)
     {
-        if (Image->GetResourceID() == -1)
-        {
-            return;
-        }
-
-        // Game-thread API: write into the in-progress Extract frame.
-        if (ExtractFrame == nullptr)
+        if (Image->GetResourceID() == -1 || ExtractFrame == nullptr)
         {
             return;
         }
@@ -6632,9 +6587,6 @@ namespace Lumina
 
     void FForwardRenderScene::SyncMSAAState()
     {
-        // Called from RenderView_RenderThread after RenderFrame is bound; read
-        // the slot's MSAA setting. If RenderFrame is null (boot, teardown,
-        // first frame before any Extract) skip — we'll reconcile next frame.
         if (RenderFrame == nullptr)
         {
             return;
@@ -6662,8 +6614,7 @@ namespace Lumina
     {
         glm::uvec2 Extent = Windowing::GetPrimaryWindowHandle()->GetExtent();
 
-        // Snapshot the MSAA setting once per init. Live changes are handled by SyncMSAAState().
-        // First call comes before any Extract so we read straight from the world.
+        // Init runs before any Extract -- read straight from the world.
         const SDefaultWorldSettings& InitSettings = World ? World->GetDefaultWorldSettings() : SDefaultWorldSettings{};
         MSAASampleCount = ::Lumina::GetMSAASampleCount(InitSettings.MSAASampleCount);
 

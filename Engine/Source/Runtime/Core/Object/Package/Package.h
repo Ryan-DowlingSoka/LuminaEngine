@@ -190,9 +190,7 @@ namespace Lumina
         // DestroyPackage for anything queued since the last drain.
         RUNTIME_API static void DrainPendingDestroys();
 
-        // Cheap test: true if at least one package is queued for deferred
-        // destroy. Callers gate the render-thread Flush + DrainPendingDestroys
-        // on this so the common (nothing-pending) case skips the wait.
+        // Cheap test for the deferred-destroy queue; lets callers skip a Flush when empty.
         RUNTIME_API static bool HasPendingDestroys();
 
         RUNTIME_API static CPackage* FindPackageByPath(FStringView Path);

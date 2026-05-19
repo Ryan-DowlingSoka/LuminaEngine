@@ -29,14 +29,10 @@ namespace Lumina
         // Game thread: snapshot world state for the render thread. Pair with the prior frame's RenderWorlds.
         void ExtractWorlds();
 
-        // Render thread: emit each world's draws onto CmdList for the FrameData
-        // slot identified by FrameIndex. Reads only the snapshot populated by
-        // the matching ExtractWorlds; never touches the live ECS.
+        // Render thread: emit each world's draws from FrameIndex's snapshot.
         void RenderWorlds(ICommandList& CmdList, uint8 FrameIndex);
 
-        // Render thread: called from the render lambda after the LAST per-slot
-        // read for this frame (post-ImGui composite, post-present). Releases
-        // the slot back to the game thread.
+        // Render thread: release the slot after the last per-frame CPU read.
         void SignalFrameConsumed(uint8 FrameIndex);
 
         // Creates a context for an already-constructed CWorld and calls InitializeWorld on it.

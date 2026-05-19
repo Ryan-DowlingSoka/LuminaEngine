@@ -87,6 +87,12 @@ namespace Lumina
                 Dst->CmdLists.push_back(Entry->OurCopy);
             }
 
+            // ImGui maintains the invariant CmdLists.Size == CmdListsCount and
+            // backends iterate by CmdListsCount. *Dst = *Source above copied
+            // Source's CmdListsCount while Source->CmdLists was swapped out,
+            // so resync to whatever we actually pushed.
+            Dst->CmdListsCount = Dst->CmdLists.Size;
+
             // GC pool entries for lists that haven't been seen for a while
             // (closed windows, destroyed viewports).
             const double GCThreshold = CurrentTime - static_cast<double>(MemoryCompactSeconds);

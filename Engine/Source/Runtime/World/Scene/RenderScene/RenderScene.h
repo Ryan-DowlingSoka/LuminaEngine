@@ -30,21 +30,15 @@ namespace Lumina
         // pointers across frames -- the world rebuilds the list each tick.
         virtual void SetActivePostProcessMaterials(const TVector<CMaterialInterface*>& Materials) {}
 
-        // Game thread: read ECS and populate the FFrameData snapshot for the
-        // current FrameIndex slot. Scene implementations N-buffer per-frame
-        // state so Extract and RenderView_RenderThread for different frames
-        // can run concurrently. Extract may still block on a per-slot fence
-        // when the game thread laps the render thread by FRAMES_IN_FLIGHT.
+        // Game thread: populate the frame slot's snapshot. Scenes N-buffer
+        // per-frame state so Extract and RenderView can run concurrently;
+        // Extract back-pressures on the slot's consumed fence.
         virtual void Extract(const FViewVolume&, const SPostProcessSettings* PostProcess) = 0;
 
-        // Render thread: record this view's draws onto CmdList from the
-        // FFrameData slot identified by FrameIndex. Reads only the snapshot
-        // populated by the matching Extract; never touches the live ECS.
+        // Render thread: record this view's draws from the slot's snapshot.
         virtual void RenderView_RenderThread(ICommandList& CmdList, uint8 FrameIndex) = 0;
 
-        // Render thread: called from the render lambda after the LAST CPU
-        // read of FrameRing[Slot] for this frame (i.e. after ImGui composite,
-        // RmlUi, present, etc.). Releases the slot back to the game thread.
+        // Render thread: release the slot after the last CPU read for this frame.
         virtual void SignalFrameConsumed(uint8 FrameIndex) {}
         
         virtual entt::entity GetEntityAtPixel(uint32 X, uint32 Y) const = 0;

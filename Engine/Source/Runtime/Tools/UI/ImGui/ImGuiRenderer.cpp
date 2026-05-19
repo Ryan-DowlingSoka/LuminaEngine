@@ -7,6 +7,8 @@
 #include "imgui/misc/freetype/imgui_freetype.h"
 
 #include "Renderer/CommandList.h"
+#include "Renderer/RenderContext.h"
+#include "Renderer/RHIGlobals.h"
 #include "TaskSystem/TaskSystem.h"
 #include "Tools/UI/Notification/ImGuiNotifications.h"
 #include <imgui.h>
@@ -208,6 +210,16 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
+        const uint8 Slot = FrameIndex % FRAMES_IN_FLIGHT;
+
+        // Block here if the render thread hasn't finished consuming the
+        // previous use of this slot. Without this gate, a slow render thread
+        // (or a frame with no world to gate Extract) would let the game thread
+        // wrap around the snapshot ring and overwrite Snapshots[Slot] while
+        // the render thread is still recording from it -- which manifests as
+        // null draw lists inside ImGui_ImplVulkan_RenderDrawData.
+        WaitForSnapshotSlot(Slot, SnapshotProduced[Slot].load(std::memory_order_acquire));
+
         ImGuiIO& Io = ImGui::GetIO();
         Io.DisplaySize.x = static_cast<float>(FEngine::GetEngineViewport()->GetSize().x);
         Io.DisplaySize.y = static_cast<float>(FEngine::GetEngineViewport()->GetSize().y);
@@ -217,23 +229,32 @@ namespace Lumina
 
         if (Io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
         {
+            // ImGui_ImplVulkan_RenderWindow / SwapBuffers call vkQueueSubmit and
+            // vkQueuePresentKHR on the raw graphics VkQueue. Hold the same queue
+            // mutex the render thread uses so we serialize at submit/present
+            // only -- render-thread recording continues in parallel.
+            GRenderContext->LockQueueForExternalAccess(ECommandQueue::Graphics);
             ImGui::UpdatePlatformWindows();
             ImGui::RenderPlatformWindowsDefault();
+            GRenderContext->UnlockQueueForExternalAccess(ECommandQueue::Graphics);
         }
 
-        // The previous frame using this slot is at least one render-thread
-        // submission ago and must have completed reading from it before we
-        // can swap fresh data in. FRAMES_IN_FLIGHT slots give the same safety
-        // margin as the rest of the renderer.
-        FImDrawDataSnapshot& Snapshot = Snapshots[FrameIndex % FRAMES_IN_FLIGHT];
+        FImDrawDataSnapshot& Snapshot = Snapshots[Slot];
         Snapshot.SnapUsingSwap(ImGui::GetDrawData(), ImGui::GetTime());
         if (!Snapshot.IsValid())
         {
+            // Still bump produced -- the render thread won't try to read this
+            // slot, but a Signal pair must follow every Wait for the counters
+            // to stay paired across slots.
+            SnapshotProduced[Slot].fetch_add(1, std::memory_order_release);
+            SignalSnapshotSlotConsumed(FrameIndex);
             return nullptr;
         }
 
         Snapshot.ReferencedImages.clear();
         FillReferencedImagesSnapshot(Snapshot.ReferencedImages);
+
+        SnapshotProduced[Slot].fetch_add(1, std::memory_order_release);
         return &Snapshot;
     }
 
@@ -242,5 +263,27 @@ namespace Lumina
         LUMINA_PROFILE_SCOPE();
 
         OnEndFrame(CmdList, Snapshot);
+    }
+
+    void IImGuiRenderer::SignalSnapshotSlotConsumed(uint8 FrameIndex)
+    {
+        const uint8 Slot = FrameIndex % FRAMES_IN_FLIGHT;
+        SnapshotConsumed[Slot].fetch_add(1, std::memory_order_release);
+        { std::lock_guard<std::mutex> Lock(SnapshotSlotMutex); }
+        SnapshotSlotCV.notify_all();
+    }
+
+    void IImGuiRenderer::WaitForSnapshotSlot(uint8 Slot, uint64 Target)
+    {
+        if (SnapshotConsumed[Slot].load(std::memory_order_acquire) >= Target)
+        {
+            return;
+        }
+        LUMINA_PROFILE_SECTION_COLORED("WaitForImGuiSnapshotSlot", tracy::Color::Crimson);
+        std::unique_lock<std::mutex> Lock(SnapshotSlotMutex);
+        SnapshotSlotCV.wait(Lock, [&]()
+        {
+            return SnapshotConsumed[Slot].load(std::memory_order_acquire) >= Target;
+        });
     }
 }

@@ -85,12 +85,7 @@ namespace Lumina
          */
         void Extract();
 
-        /**
-         * Render thread: emit the scene's draw commands for the FrameData slot
-         * identified by FrameIndex, using state populated by the matching
-         * Extract() call. The slot index is round-robin across FRAMES_IN_FLIGHT
-         * so multiple frames can pipeline without scene-storage races.
-         */
+        /** Render thread: emit the scene's draw commands from FrameIndex's snapshot. */
         void Render(ICommandList& CmdList, uint8 FrameIndex) const;
         
         FUNCTION(Script)

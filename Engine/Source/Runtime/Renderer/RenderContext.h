@@ -51,6 +51,13 @@ namespace Lumina
         virtual bool FrameStart(uint8 InCurrentFrameIndex) = 0;
         virtual bool FrameEnd(ICommandList& CmdList) = 0;
         virtual void WaitForGPU() = 0;
+
+        // Acquire/release exclusive access to a queue from outside the RHI.
+        // Use when a third-party library (e.g. ImGui's multi-viewport backend)
+        // calls vkQueueSubmit/vkQueuePresentKHR on the same VkQueue we drive
+        // from the render thread.
+        virtual void LockQueueForExternalAccess(ECommandQueue Queue) = 0;
+        virtual void UnlockQueueForExternalAccess(ECommandQueue Queue) = 0;
         
 
         NODISCARD virtual uint64 GetAllocatedMemory() const = 0;
