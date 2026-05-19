@@ -119,10 +119,16 @@ namespace Lumina
 
     void FWorldManager::SignalFrameConsumed(uint8 FrameIndex)
     {
+        // Signal every scene unconditionally -- do NOT skip suspended worlds
+        // here. The produce/consume gate must pair 1:1, and whether a scene
+        // produced this frame is decided on the game thread at Extract time.
+        // Re-testing IsSuspended() on the render thread can diverge from that
+        // decision and desync the gate. SignalSlotConsumed self-pairs: it is a
+        // no-op for any scene that did not actually produce this slot.
         for (const TUniquePtr<FWorldContext>& Context : Contexts)
         {
             CWorld* World = Context->World.Get();
-            if (World == nullptr || World->IsSuspended())
+            if (World == nullptr)
             {
                 continue;
             }
@@ -152,6 +158,11 @@ namespace Lumina
         Context->NetMode = NetMode;
 
         FWorldContext* Raw = Context.get();
+
+        // RenderWorlds / SignalFrameConsumed iterate Contexts on the render
+        // thread. Drain it before push_back, which may reallocate the vector
+        // out from under that iteration. Mirrors DestroyWorldContext.
+        FlushRenderingCommands();
         Contexts.push_back(Move(Context));
 
         World->OwningContext = Raw;

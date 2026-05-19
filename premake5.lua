@@ -71,6 +71,7 @@ workspace "Lumina"
         "GLM_FORCE_AVX2",
 		"IMGUI_DEFINE_MATH_OPERATORS",
         "IMGUI_IMPL_VULKAN_USE_VOLK",
+        "WITH_AFTERMATH",
 
         "RMLUI_STATIC_LIB",
         

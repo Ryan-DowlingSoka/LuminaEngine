@@ -262,6 +262,13 @@ namespace Lumina
             {
                 Slot->ClearReferencedResources();
                 Slot->SubmissionID = 0;
+                // Reset here, not at next Begin. Pooled buffers retain descriptor-set
+                // tracking until reset; if a buffer sits idle in the pool with old
+                // descriptor bindings and validation/driver tries to free those
+                // descriptors (e.g. ImGui's periodic ImTexture cleanup), the buffer
+                // shows up as "still using" them. Resetting on retire releases the
+                // tracking immediately so descriptor frees are always safe.
+                vkResetCommandBuffer(Slot->CommandBuffer, 0);
                 ToEnqueue.emplace_back(Move(Slot));
             }
             else

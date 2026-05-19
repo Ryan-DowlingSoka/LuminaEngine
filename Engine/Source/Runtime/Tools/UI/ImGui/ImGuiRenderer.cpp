@@ -227,17 +227,25 @@ namespace Lumina
         ImGuiX::Notifications::Render();
         ImGui::Render();
 
+        // Everything below submits to the raw graphics VkQueue (texture uploads,
+        // platform-window present). Hold the same queue mutex the render thread
+        // uses so we serialize at submit only -- render-thread recording of the
+        // main viewport continues in parallel.
+        GRenderContext->LockQueueForExternalAccess(ECommandQueue::Graphics);
+
+        // Process all pending texture create/update/destroy here, on the game
+        // thread, while we hold the queue lock. The render thread must not do
+        // this from RenderDrawData: the texture list is shared, rebuilt every
+        // frame on this thread, and the backend uploads through a single shared
+        // command buffer + queue submit.
+        ProcessTextureUpdates_GameThread();
+
         if (Io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
         {
-            // ImGui_ImplVulkan_RenderWindow / SwapBuffers call vkQueueSubmit and
-            // vkQueuePresentKHR on the raw graphics VkQueue. Hold the same queue
-            // mutex the render thread uses so we serialize at submit/present
-            // only -- render-thread recording continues in parallel.
-            GRenderContext->LockQueueForExternalAccess(ECommandQueue::Graphics);
             ImGui::UpdatePlatformWindows();
             ImGui::RenderPlatformWindowsDefault();
-            GRenderContext->UnlockQueueForExternalAccess(ECommandQueue::Graphics);
         }
+        GRenderContext->UnlockQueueForExternalAccess(ECommandQueue::Graphics);
 
         FImDrawDataSnapshot& Snapshot = Snapshots[Slot];
         Snapshot.SnapUsingSwap(ImGui::GetDrawData(), ImGui::GetTime());
@@ -249,6 +257,18 @@ namespace Lumina
             SnapshotProduced[Slot].fetch_add(1, std::memory_order_release);
             SignalSnapshotSlotConsumed(FrameIndex);
             return nullptr;
+        }
+
+        // The snapshot's DrawData.Textures still aliases the live, shared
+        // g.PlatformIO.Textures vector -- which this thread rebuilds (resize(0))
+        // every frame and which we just fully processed above. Null it so the
+        // render thread's ImGui_ImplVulkan_RenderDrawData skips its texture
+        // loop and only records draws; otherwise it iterates a vector we're
+        // rebuilding and reruns UpdateTexture on the shared backend command
+        // buffer (missing glyphs + device lost).
+        if (ImDrawData* SnapshotDrawData = Snapshot.GetDrawData())
+        {
+            SnapshotDrawData->Textures = nullptr;
         }
 
         Snapshot.ReferencedImages.clear();

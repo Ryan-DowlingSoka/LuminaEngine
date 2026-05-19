@@ -121,9 +121,17 @@ namespace Lumina
         InitInfo.Queue							= VulkanRenderContext->GetQueue(ECommandQueue::Graphics)->Queue;
 		InitInfo.DescriptorPoolSize				= 1000;
         InitInfo.MinImageCount					= 2;
-        // Must be >= FRAMES_IN_FLIGHT: ImGui's vtx/idx ring is sized by ImageCount, and
-        // frame N+ImageCount overwrites buffer 0 while frame N may still be GPU-in-flight.
-        InitInfo.ImageCount						= FRAMES_IN_FLIGHT;
+        // ImageCount drives two ImGui lifetimes: the vtx/idx ring size AND how
+        // many frames a texture must be unused before WantDestroy frees its
+        // descriptor (backend: UnusedFrames >= ImageCount). UnusedFrames is
+        // counted on the game thread, which leads the render thread by up to
+        // FRAMES_IN_FLIGHT (snapshot ring depth) and the GPU by that plus the
+        // in-flight queue depth. With ImageCount == FRAMES_IN_FLIGHT, an old
+        // font atlas (rebuilt on scene switch) gets freed while a submitted
+        // command buffer still references it -> VUID-vkFreeDescriptorSets-00309
+        // and device loss. Double it so the destroy delay covers the full
+        // game-thread-to-GPU-completion gap.
+        InitInfo.ImageCount						= FRAMES_IN_FLIGHT * 2;
         InitInfo.UseDynamicRendering			= true;
         InitInfo.MSAASamples					= VK_SAMPLE_COUNT_1_BIT;
 		
@@ -175,6 +183,33 @@ namespace Lumina
 		{
 			Out.push_back(Image);
 		}
+    }
+
+    void FVulkanImGuiRender::ProcessTextureUpdates_GameThread()
+    {
+    	LUMINA_PROFILE_SCOPE();
+
+    	// Hold the same Mutex that guards GetOrCreateImTexture (AddTexture) and
+    	// the stale sweep (RemoveTexture). UpdateTexture alloc/frees descriptor
+    	// sets on the shared backend pool; vkAllocate/Free/UpdateDescriptorSets
+    	// require external host synchronization. Without this lock the render
+    	// thread's OnEndFrame sweep can mutate the pool concurrently with this
+    	// game-thread walk -> corrupted free list -> descriptors alias the wrong
+    	// view (corrupt textures) and eventual device lost.
+    	FRecursiveScopeLock Lock(Mutex);
+
+    	// Single shared list across all viewports (imgui.cpp sets every
+    	// draw_data->Textures to &g.PlatformIO.Textures). Processing it here once
+    	// covers the main viewport (rendered later on the render thread) and the
+    	// platform windows (rendered just below on this thread). Caller holds the
+    	// graphics-queue lock; UpdateTexture submits + waits on that queue.
+    	for (ImTextureData* Tex : ImGui::GetPlatformIO().Textures)
+    	{
+    		if (Tex->Status != ImTextureStatus_OK)
+    		{
+    			ImGui_ImplVulkan_UpdateTexture(Tex);
+    		}
+    	}
     }
 
     void FVulkanImGuiRender::OnStartFrame(const FUpdateContext& UpdateContext)

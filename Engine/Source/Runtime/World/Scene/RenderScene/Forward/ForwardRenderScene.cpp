@@ -41,9 +41,6 @@
 
 namespace Lumina
 {
-    static TConsoleVar<bool> CVarAsyncCompute("r.AsyncCompute", true,
-        "Run GPU particle simulation on the async compute queue (parallel to graphics).");
-
     static FRHIImageRef CreateSMAALUTImage(const uint8* Bytes, uint32 Width, uint32 Height, EFormat Format, uint32 RowPitch, const char* DebugName)
     {
         FRHIImageDesc Desc;
@@ -77,10 +74,7 @@ namespace Lumina
     void FForwardRenderScene::Init()
     {
         LOG_TRACE("Initializing Forward Render Scene");
-
-        // Travel reinits the scene mid-session; if the GPU is still touching the
-        // previous scene's atlases/depth views, recreating them here races on the
-        // driver and trips SyncVal WAW. Drain before allocating new resources.
+        
         GRenderContext->WaitIdle();
 
         SceneViewport = GRenderContext->CreateViewport(Windowing::GetPrimaryWindowHandle()->GetExtent(), "Forward Renderer Viewport");
@@ -116,11 +110,9 @@ namespace Lumina
     void FForwardRenderScene::Shutdown()
     {
         GRenderContext->WaitIdle();
-        GRenderContext->ClearCommandListCache();
-        GRenderContext->ClearBindingCaches();
 
         FRenderManager::OnSwapchainResized.Remove(SwapchainResizedHandle);
-        
+
         LOG_TRACE("Shutting down Forward Render Scene");
     }
 
@@ -130,15 +122,30 @@ namespace Lumina
         {
             return;
         }
+        
         LUMINA_PROFILE_SECTION_COLORED("WaitForSlotConsumed", tracy::Color::Crimson);
         std::unique_lock<FMutex> Lock(SlotMutex);
-        SlotCV.wait(Lock, [&]() {
+        
+        SlotCV.wait(Lock, [&]() 
+        {
             return SlotConsumedCount[Slot].load(std::memory_order_acquire) >= Target;
         });
     }
 
     void FForwardRenderScene::SignalSlotConsumed(uint8 Slot)
     {
+        // Only release the slot if Extract actually produced into it since the
+        // last consume. A signal with no matching produce (scene created
+        // mid-frame, or suspended at extract but not at signal) would otherwise
+        // push Consumed past Produced, open the gate early, and let the game
+        // thread reset/repopulate a slot the render thread is still reading --
+        // surfacing as DrawCommands cleared mid-pass (OpaqueDrawList indexing an
+        // emptied DrawCommands) plus general flicker/corruption.
+        bool Expected = true;
+        if (!SlotHasPendingConsume[Slot].compare_exchange_strong(Expected, false, std::memory_order_acq_rel))
+        {
+            return;
+        }
         SlotConsumedCount[Slot].fetch_add(1, std::memory_order_release);
         { std::scoped_lock<FMutex> Lock(SlotMutex); }
         SlotCV.notify_all();
@@ -151,6 +158,11 @@ namespace Lumina
         const uint8  Slot        = (uint8)(GRenderManager->GetCurrentFrameIndex() % FRAMES_IN_FLIGHT);
         const uint64 NextProduce = SlotProducedCount[Slot] + 1u;
         WaitForSlotConsumed(Slot, SlotProducedCount[Slot]);
+
+        // Every path below bumps SlotProducedCount, so this slot now has exactly
+        // one outstanding produce for the render lambda to consume. Marking it
+        // here lets SignalSlotConsumed pair the two and ignore stray signals.
+        SlotHasPendingConsume[Slot].store(true, std::memory_order_release);
 
         ExtractFrame = &FrameRing[Slot];
         FFrameData& Frame = *ExtractFrame;
@@ -455,8 +467,10 @@ namespace Lumina
     
     void FForwardRenderScene::SwapchainResized(glm::vec2 NewSize)
     {
-        GRenderContext->ClearCommandListCache();
-        GRenderContext->ClearBindingCaches();
+        // BindingCache is per-scene; safe to clear. GRenderContext->Clear* are NOT --
+        // they wipe pipelines/layouts shared across all scenes + RmlUi + ImGui. With
+        // multiple worlds (editor + tool worlds + PIE) clearing here detonates live
+        // pipeline pointers held elsewhere -> device lost.
         BindingCache.ReleaseResources();
 
         SceneViewport = GRenderContext->CreateViewport(NewSize, "Forward Renderer Viewport");

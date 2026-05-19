@@ -58,6 +58,15 @@ namespace Lumina
         // render thread keeps them alive while recording.
         virtual void FillReferencedImagesSnapshot(TVector<FRHIImageRef>& Out) = 0;
 
+        // Game thread: create/upload/destroy all pending ImGui textures now,
+        // before the snapshot is handed to the render thread. ImGui 1.92's
+        // dynamic-texture backend otherwise does this lazily inside
+        // RenderDrawData against shared backend state (g.PlatformIO.Textures +
+        // a single backend command buffer/queue submit), which races the game
+        // thread that rebuilds that list every frame. Must run under the
+        // graphics-queue external-access lock.
+        virtual void ProcessTextureUpdates_GameThread() {}
+
         virtual ImTextureID GetOrCreateImTexture(FStringView Path) = 0;
         virtual ImTextureID GetOrCreateImTexture(FRHIImage* Image, const FTextureSubresourceSet& Subresources = AllSubresources) = 0;
         virtual void DestroyImTexture(uint64 Hash) = 0;

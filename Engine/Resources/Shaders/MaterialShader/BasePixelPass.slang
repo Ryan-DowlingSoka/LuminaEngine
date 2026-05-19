@@ -667,6 +667,14 @@ PSOutput FragmentMain(PSInput Input)
     for (uint i = 0; i < SafeLightCount; ++i)
     {
         uint   LightIndex = uClusters[TileIndex].LightIndices[i];
+        // Cluster contents can be stale/uninitialized right after a scene switch
+        // (LightCull hasn't repopulated this froxel for the new light set yet).
+        // An index past the live count reads beyond Lights[MAX_LIGHTS] -> MMU
+        // fault in GetLightAt (SceneGlobals.slang). Skip out-of-range indices.
+        if (LightIndex >= GetNumLights())
+        {
+            continue;
+        }
         FLight Light      = GetLightAt(LightIndex);
 
         float3 LightToFrag = Light.Position - WorldPosition;

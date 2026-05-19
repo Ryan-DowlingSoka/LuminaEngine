@@ -39,6 +39,7 @@ namespace Lumina
         void OnStartFrame(const FUpdateContext& UpdateContext) override;
         void OnEndFrame(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot) override;
         void FillReferencedImagesSnapshot(TVector<FRHIImageRef>& Out) override;
+        void ProcessTextureUpdates_GameThread() override;
 
         void DrawRenderDebugContents(const FUpdateContext& InContext) override;
 

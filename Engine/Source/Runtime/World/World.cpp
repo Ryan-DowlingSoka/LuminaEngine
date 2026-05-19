@@ -510,9 +510,17 @@ namespace Lumina
     
     void CWorld::TeardownWorld()
     {
-        // Render thread may still be inside the prior frame's RenderWorlds lambda,
-        // reading this world's RenderScene + ECS. Drain it before we destroy them.
+        // Two-stage drain: FlushRenderingCommands waits for queued render lambdas
+        // to RETURN, but the cmd buffers they submitted may still be executing on
+        // the GPU. EntityRegistry.clear() below releases material textures, mesh
+        // buffers, render targets, etc. -- those are accessed bindlessly from cmd
+        // buffers, not held by KeepAlive, so the cmd buffer doesn't keep them
+        // alive. If we destroy them while the GPU is mid-draw -> handles freed
+        // under the GPU -> device lost (manifests after enough open/close churn
+        // when probability of catching the GPU mid-fetch crosses some threshold).
+        // WaitIdle here makes the GPU fully drained before any resource drop.
         FlushRenderingCommands();
+        GRenderContext->WaitIdle();
 
         GAudioContext->StopAllSounds();
 

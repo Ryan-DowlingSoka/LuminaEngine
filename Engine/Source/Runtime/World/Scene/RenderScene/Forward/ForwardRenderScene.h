@@ -644,6 +644,12 @@ namespace Lumina
         TArray<FFrameData, FRAMES_IN_FLIGHT>          FrameRing;
         TArray<TAtomic<uint64>, FRAMES_IN_FLIGHT>     SlotConsumedCount;
         TArray<uint64,         FRAMES_IN_FLIGHT>      SlotProducedCount = {};
+        // Set by Extract when it produces a slot, cleared by the matching
+        // SignalSlotConsumed. Pairs produce/consume 1:1 so a signal with no
+        // matching extract (scene created mid-frame, suspend state changing
+        // between extract and signal) can't advance Consumed past Produced and
+        // open the gate while the render thread is still reading the slot.
+        TArray<TAtomic<bool>,  FRAMES_IN_FLIGHT>      SlotHasPendingConsume = {};
         FMutex                                        SlotMutex;
         std::condition_variable                       SlotCV;
 
