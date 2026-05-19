@@ -279,9 +279,6 @@ namespace Lumina
                     CPackage::DrainPendingDestroys();
                 }
 
-                // TickAll mutates the Rml::Context DOM. After this returns nothing else on the
-                // game thread touches the DOM until next frame's TickAll, so the render thread
-                // can safely traverse it inside RmlUi::RenderAll on its single cmdlist.
                 RmlUi::TickAll();
                 GWorldManager->ExtractWorlds();
 

@@ -194,8 +194,11 @@ namespace Lumina
 
     bool FInputViewport::ForwardMouseEventToRmlUi(FEvent& Event)
     {
-        Rml::Context* Ctx = RmlUi::GetContextForWorld(World);
-        if (Ctx == nullptr)
+        // Lock held for the full ProcessXxx call: input dispatch can fire event
+        // listeners that mutate the DOM, so the render thread must not be
+        // walking it during this window.
+        RmlUi::FLockedWorldContext Ctx(World);
+        if (!Ctx)
         {
             return false;
         }
@@ -232,8 +235,8 @@ namespace Lumina
 
     bool FInputViewport::ForwardKeyEventToRmlUi(FEvent& Event)
     {
-        Rml::Context* Ctx = RmlUi::GetContextForWorld(World);
-        if (Ctx == nullptr)
+        RmlUi::FLockedWorldContext Ctx(World);
+        if (!Ctx)
         {
             return false;
         }

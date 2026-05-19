@@ -1,6 +1,6 @@
 #pragma once
 
-// One Rml::Context per CWorld; input flows from FInputViewport via GetContextForWorld.
+// One Rml::Context per CWorld; input flows from FInputViewport via FLockedWorldContext.
 
 #include <glm/glm.hpp>
 #include "Containers/String.h"
@@ -36,6 +36,29 @@ namespace Lumina::RmlUi
 
     RUNTIME_API Rml::Context*   GetActiveContext();
     RUNTIME_API Rml::Context*   GetContextForWorld(CWorld* World);
+
+    // RAII handle: acquires the bridge state lock for its lifetime and resolves
+    // the Rml::Context for a world. Use this whenever you need to call into the
+    // context (input dispatch via ProcessMouseMove/ProcessKeyDown/etc.) — the
+    // lock blocks the render thread's RenderAll from walking the DOM until you
+    // release, and keeps the context pointer valid against teardown.
+    class RUNTIME_API FLockedWorldContext
+    {
+    public:
+        explicit FLockedWorldContext(CWorld* World);
+        ~FLockedWorldContext();
+
+        FLockedWorldContext(const FLockedWorldContext&)            = delete;
+        FLockedWorldContext& operator=(const FLockedWorldContext&) = delete;
+
+        Rml::Context* Get() const { return Context; }
+        Rml::Context* operator->() const { return Context; }
+        explicit operator bool() const { return Context != nullptr; }
+
+    private:
+        Rml::Context* Context = nullptr;
+        bool          bLocked = false;
+    };
 
     // Lay UI out at this size instead of the RT image size; {0,0} reverts. Used by the editor viewport.
     RUNTIME_API void            SetWorldDisplaySize(CWorld* World, const glm::uvec2& Size);

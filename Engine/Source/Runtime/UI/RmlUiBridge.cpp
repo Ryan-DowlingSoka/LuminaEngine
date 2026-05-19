@@ -16,6 +16,7 @@
 
 #include "Log/Log.h"
 #include "Memory/SmartPtr.h"
+#include "Core/Threading/Thread.h"
 #include "Renderer/CommandList.h"
 #include "Renderer/RenderResource.h"
 #include "Scripting/Lua/Reference.h"
@@ -124,6 +125,12 @@ namespace Lumina::RmlUi
             Rml::Context*                       DebuggerHost = nullptr;
             bool                                bDebuggerVisible = false;
             bool                                bInitialized = false;
+
+            // Guards Worlds/EditorContexts/ActiveContext/Debugger* + serializes Rml::Context
+            // DOM mutations (TickAll/Update on game thread) against DOM traversal (Render on
+            // render thread). Recursive because Update may fire event callbacks that re-enter
+            // public bridge API on the same thread.
+            FRecursiveMutex                     StateMutex;
         };
 
         FState& S()
@@ -221,6 +228,7 @@ namespace Lumina::RmlUi
     bool Initialise()
     {
         FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         if (State.bInitialized) return true;
 
         State.System   = MakeUnique<FLuminaSystemInterface>();
@@ -231,13 +239,26 @@ namespace Lumina::RmlUi
         Rml::SetFileInterface(State.Files.get());
         Rml::SetRenderInterface(State.Renderer.get());
 
+        auto ResetOnFailure = [&]()
+        {
+            State.System.reset();
+            State.Files.reset();
+            State.Renderer.reset();
+            State.Worlds.clear();
+            State.EditorContexts.clear();
+            State.ActiveContext = nullptr;
+            State.DebuggerHost = nullptr;
+            State.bDebuggerVisible = false;
+            State.bInitialized = false;
+        };
+
         if (!Rml::Initialise())
         {
             LOG_ERROR("[RmlUi] Rml::Initialise failed.");
             Rml::SetRenderInterface(nullptr);
             Rml::SetFileInterface(nullptr);
             Rml::SetSystemInterface(nullptr);
-            State = FState{};
+            ResetOnFailure();
             return false;
         }
 
@@ -248,7 +269,7 @@ namespace Lumina::RmlUi
             Rml::SetRenderInterface(nullptr);
             Rml::SetFileInterface(nullptr);
             Rml::SetSystemInterface(nullptr);
-            State = FState{};
+            ResetOnFailure();
             return false;
         }
 
@@ -270,6 +291,7 @@ namespace Lumina::RmlUi
     void Shutdown()
     {
         FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         if (!State.bInitialized && !State.System) return;
 
         // Detach debugger before its host context dies; matters if Shutdown is followed by re-Init.
@@ -308,12 +330,18 @@ namespace Lumina::RmlUi
         Rml::SetFileInterface(nullptr);
         Rml::SetSystemInterface(nullptr);
 
-        State = FState{};
+        // Clear fields individually -- StateMutex is non-movable.
+        State.System.reset();
+        State.Files.reset();
+        State.Renderer.reset();
+        State.bDebuggerVisible = false;
+        State.bInitialized = false;
     }
 
     void OnWorldInitialized(CWorld* World)
     {
         FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         if (!State.bInitialized || World == nullptr)
         {
             return;
@@ -354,6 +382,7 @@ namespace Lumina::RmlUi
     void OnWorldTornDown(CWorld* World)
     {
         FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         if (World == nullptr)
         {
             return;
@@ -407,6 +436,7 @@ namespace Lumina::RmlUi
     void TickAll()
     {
         FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         if (!State.bInitialized)
         {
             return;
@@ -453,6 +483,11 @@ namespace Lumina::RmlUi
     void RenderAll(ICommandList& CmdList)
     {
         FState& State = S();
+        // Render thread holds the lock for the full DOM walk. Game-thread
+        // mutators (TickAll, OnWorldTornDown, Register/Destroy editor contexts)
+        // block until this completes, so World*/Context*/Worlds vector are
+        // stable for the duration of the iteration.
+        FRecursiveScopeLock Lock(State.StateMutex);
         if (!State.bInitialized || State.Renderer == nullptr)
         {
             return;
@@ -497,7 +532,13 @@ namespace Lumina::RmlUi
         }
     }
 
-    Rml::Context*   GetActiveContext() { return S().ActiveContext; }
+    Rml::Context*   GetActiveContext()
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        return State.ActiveContext;
+    }
+    // Renderer pointer is set once in Initialise() and only cleared in Shutdown() -- safe to read unlocked.
     FRmlUiRenderer* GetRenderer()      { return S().Renderer.get(); }
 
     Rml::Context* GetContextForWorld(CWorld* World)
@@ -506,12 +547,39 @@ namespace Lumina::RmlUi
         {
             return nullptr;
         }
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         FWorldEntry* E = FindEntryByWorld(World);
         return E ? E->Context : nullptr;
     }
 
+    FLockedWorldContext::FLockedWorldContext(CWorld* World)
+    {
+        if (World == nullptr)
+        {
+            return;
+        }
+        FState& State = S();
+        State.StateMutex.lock();
+        bLocked = true;
+        // Lookup happens INSIDE the locked scope so the resolved Context* can't
+        // be torn down between resolution and use; ~FLockedWorldContext releases.
+        FWorldEntry* E = FindEntryByWorld(World);
+        Context = E ? E->Context : nullptr;
+    }
+
+    FLockedWorldContext::~FLockedWorldContext()
+    {
+        if (bLocked)
+        {
+            S().StateMutex.unlock();
+        }
+    }
+
     void SetWorldDisplaySize(CWorld* World, const glm::uvec2& Size)
     {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         if (FWorldEntry* E = FindEntryByWorld(World))
         {
             E->DisplaySize = Size;
@@ -521,6 +589,7 @@ namespace Lumina::RmlUi
     Rml::Context* CreateEditorContext(const char* Name, const glm::uvec2& InitialSize)
     {
         FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         if (!State.bInitialized || Name == nullptr)
         {
             return nullptr;
@@ -551,6 +620,7 @@ namespace Lumina::RmlUi
             return;
         }
         FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         for (size_t i = 0; i < State.EditorContexts.size(); ++i)
         {
             FEditorEntry* E = State.EditorContexts[i].get();
@@ -585,6 +655,7 @@ namespace Lumina::RmlUi
             return;
         }
         FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         for (auto& E : State.EditorContexts)
         {
             if (E->Context == Context)
@@ -603,6 +674,7 @@ namespace Lumina::RmlUi
             return;
         }
         FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         for (auto& E : State.EditorContexts)
         {
             if (E->Context == Context)
@@ -620,6 +692,7 @@ namespace Lumina::RmlUi
             return;
         }
         FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         for (auto& E : State.EditorContexts)
         {
             if (E->Context == Context)
@@ -648,6 +721,8 @@ namespace Lumina::RmlUi
 
     bool ReplaceEditorContextDocument(Rml::Context* Context, FStringView Body, FStringView SourceUrl)
     {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         FEditorEntry* Entry = FindEditorEntry(Context);
         if (Entry == nullptr || Entry->Context == nullptr)
         {
@@ -679,6 +754,8 @@ namespace Lumina::RmlUi
 
     void ClearEditorContextDocument(Rml::Context* Context)
     {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
         FEditorEntry* Entry = FindEditorEntry(Context);
         if (Entry == nullptr || Entry->Context == nullptr)
         {
@@ -697,6 +774,7 @@ namespace Lumina::RmlUi
         bool LoadDocument(FStringView Path)
         {
             FState& State = S();
+            FRecursiveScopeLock Lock(State.StateMutex);
             FWorldEntry* Entry = GetActiveEntry();
             if (!State.bInitialized || Entry == nullptr || Entry->Context == nullptr)
             {
@@ -730,6 +808,8 @@ namespace Lumina::RmlUi
 
         void UnloadDocument(FStringView Path)
         {
+            FState& State = S();
+            FRecursiveScopeLock Lock(State.StateMutex);
             FWorldEntry* Entry = GetActiveEntry();
             if (Entry == nullptr || Entry->Context == nullptr)
             {
@@ -745,13 +825,30 @@ namespace Lumina::RmlUi
             Entry->Documents.erase(It);
         }
 
-        void Show(FStringView Path)        { if (auto* D = FindDoc(Path)) D->Show(); }
-        void Hide(FStringView Path)        { if (auto* D = FindDoc(Path)) D->Hide(); }
-        bool IsLoaded(FStringView Path)    { return FindDoc(Path) != nullptr; }
-        bool IsVisible(FStringView Path)   { auto* D = FindDoc(Path); return D && D->IsVisible(); }
+        void Show(FStringView Path)
+        {
+            FRecursiveScopeLock Lock(S().StateMutex);
+            if (auto* D = FindDoc(Path)) D->Show();
+        }
+        void Hide(FStringView Path)
+        {
+            FRecursiveScopeLock Lock(S().StateMutex);
+            if (auto* D = FindDoc(Path)) D->Hide();
+        }
+        bool IsLoaded(FStringView Path)
+        {
+            FRecursiveScopeLock Lock(S().StateMutex);
+            return FindDoc(Path) != nullptr;
+        }
+        bool IsVisible(FStringView Path)
+        {
+            FRecursiveScopeLock Lock(S().StateMutex);
+            auto* D = FindDoc(Path); return D && D->IsVisible();
+        }
 
         void SetText(FStringView Path, FStringView ElementId, FStringView Text)
         {
+            FRecursiveScopeLock Lock(S().StateMutex);
             auto* Doc = FindDoc(Path);
             if (Doc == nullptr) return;
             if (Rml::Element* El = Doc->GetElementById(Rml::String(ElementId.data(), ElementId.size())))
@@ -762,6 +859,7 @@ namespace Lumina::RmlUi
 
         void SetInnerRml(FStringView Path, FStringView ElementId, FStringView Rml_)
         {
+            FRecursiveScopeLock Lock(S().StateMutex);
             auto* Doc = FindDoc(Path);
             if (Doc == nullptr) return;
             if (Rml::Element* El = Doc->GetElementById(Rml::String(ElementId.data(), ElementId.size())))
@@ -774,6 +872,7 @@ namespace Lumina::RmlUi
         // Pass true to add, false to remove.
         void SetClass(FStringView Path, FStringView ElementId, FStringView ClassName, bool bActive)
         {
+            FRecursiveScopeLock Lock(S().StateMutex);
             auto* Doc = FindDoc(Path);
             if (Doc == nullptr) return;
             if (Rml::Element* El = Doc->GetElementById(Rml::String(ElementId.data(), ElementId.size())))
@@ -784,8 +883,10 @@ namespace Lumina::RmlUi
 
         void SetDebuggerVisible(bool bVisible)
         {
+            FState& State = S();
+            FRecursiveScopeLock Lock(State.StateMutex);
             // Persists across PIE: SyncDebuggerToActiveContext re-reads after host rebind.
-            S().bDebuggerVisible = bVisible;
+            State.bDebuggerVisible = bVisible;
             SyncDebuggerToActiveContext();
             LOG_INFO("[RmlUi] Debugger {}.", bVisible ? "shown" : "hidden");
         }
@@ -793,6 +894,7 @@ namespace Lumina::RmlUi
         FString DescribeState()
         {
             FState& State = S();
+            FRecursiveScopeLock Lock(State.StateMutex);
             if (!State.bInitialized) return FString("RmlUi not initialised.");
 
             std::string Out;
@@ -832,6 +934,7 @@ namespace Lumina::RmlUi
 
         void OnEvent(FStringView Path, FStringView ElementId, FStringView EventName, Lua::FRef Callback)
         {
+            FRecursiveScopeLock Lock(S().StateMutex);
             FWorldEntry* Entry = GetActiveEntry();
             if (Entry == nullptr || Entry->Context == nullptr) return;
 

@@ -68,7 +68,7 @@ namespace Lumina
         #if LUMINA_SHIPPING
         GRenderContext->Initialize(FRenderContextDesc{false, false});
         #else
-        GRenderContext->Initialize(FRenderContextDesc{true, true});
+        GRenderContext->Initialize(FRenderContextDesc{false, true});
         #endif
 
         GRenderThread = Memory::New<FRenderThread>();
@@ -112,9 +112,10 @@ namespace Lumina
             FGPUProfiler::Get().BeginFrame();
             GRenderContext->FrameStart(ThisFrameIndex);
 
-            // Single cmdlist for world + RmlUi + ImGui composite. RmlUi::TickAll
-            // has already run on the game thread, so the Rml::Context DOM the
-            // render thread traverses here is stable until next frame.
+            // Single cmdlist for world + RmlUi + ImGui composite. RmlUi::FState
+            // is locked by RenderAll for the duration of its DOM walk; the same
+            // lock blocks next-frame TickAll / world add/destroy on the game
+            // thread until this completes.
             FRHICommandListRef CmdList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
             CmdList->Open();
             ICommandList& CL = *CmdList;

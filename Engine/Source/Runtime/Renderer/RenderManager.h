@@ -31,10 +31,10 @@ namespace Lumina
         // Game thread: ImGui::NewFrame (and any other backend per-frame init).
         void FrameStart(const FUpdateContext& UpdateContext);
 
-        // Game thread: snapshot ImGui DrawData and enqueue the whole render
-        // pipeline (cmd list create, all recording, submit, present, wait) onto
-        // the render thread. Returns immediately. Caller must have already run
-        // RmlUi::TickAll() so the DOM is stable for the render thread to traverse.
+        // Game thread: snapshot ImGui DrawData and enqueue the render-thread
+        // pipeline (one cmdlist with world + RmlUi + ImGui composite).
+        // RmlUi::TickAll() must have already run on the game thread; the bridge's
+        // FState mutex guards DOM + world list against next-frame TickAll.
         void FrameEnd();
 
         void SwapchainResized(glm::vec2 NewSize);

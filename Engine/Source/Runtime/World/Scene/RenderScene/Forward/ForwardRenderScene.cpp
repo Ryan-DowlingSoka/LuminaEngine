@@ -7138,7 +7138,7 @@ namespace Lumina
 
     FRHIImage* FForwardRenderScene::GetRenderTarget() const
     {
-        return SceneViewport->GetRenderTarget();
+        return SceneViewport ? SceneViewport->GetRenderTarget() : nullptr;
     }
 
     const FSceneRenderStats& FForwardRenderScene::GetRenderStats() const
