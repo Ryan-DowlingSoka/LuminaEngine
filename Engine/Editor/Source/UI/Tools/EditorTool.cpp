@@ -774,7 +774,8 @@ namespace Lumina
 
             CameraState.Velocity += Acceleration * static_cast<float>(DeltaTime);
             constexpr float Drag = 10.0f;
-            CameraState.Velocity -= CameraState.Velocity * Drag * static_cast<float>(DeltaTime);
+            // Analytic decay; explicit Euler (v -= v*Drag*dt) flips sign below 10 FPS and stutters.
+            CameraState.Velocity *= std::exp(-Drag * static_cast<float>(DeltaTime));
 
             Transform.Translate(CameraState.Velocity * static_cast<float>(DeltaTime) * CameraState.SpeedScale);
 

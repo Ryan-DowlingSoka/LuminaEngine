@@ -133,7 +133,15 @@ namespace Lumina::Physics
     	// observes the same input.
     	void LatchCharacterInput();
     	
-    	void SyncPhysicsTransforms(float Alpha);
+    	// Physics thread: compute each dynamic body's interpolated transform and
+    	// stage it in InterpolatedTransforms. Does NOT touch the registry's
+    	// transforms -- the game thread applies them in ApplyInterpolatedTransforms.
+    	void BuildInterpolatedTransforms(float Alpha);
+
+    	// Game thread: write the staged transforms into the ECS, resolve the
+    	// transform hierarchy, and process deferred kill-height destroys. Only
+    	// writer of physics-driven transforms, so it must run on the game thread.
+    	void ApplyInterpolatedTransforms();
     	
     	uint32 GetEntityBodyID(entt::entity Entity) override;
     	
@@ -199,5 +207,20 @@ namespace Lumina::Physics
 
     	float										Accumulator = 0.0f;
     	uint32										CollisionSteps = 0;
+
+    	// Per-body interpolated transform staged by the physics thread
+    	// (BuildInterpolatedTransforms) and consumed by the game thread
+    	// (ApplyInterpolatedTransforms). The FrameStart join guarantees the
+    	// physics worker has finished writing before the game thread reads, so
+    	// this is single-buffered for now; removing that join later is what
+    	// requires promoting it to a published double buffer.
+    	struct FStagedTransform
+    	{
+    		entt::entity	Entity;
+    		glm::vec3		Location;
+    		glm::quat		Rotation;
+    		bool			bBelowKill;
+    	};
+    	TVector<FStagedTransform>					InterpolatedTransforms;
     };
 }

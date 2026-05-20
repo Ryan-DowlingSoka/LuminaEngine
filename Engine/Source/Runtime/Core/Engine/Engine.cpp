@@ -178,15 +178,15 @@ namespace Lumina
                 LUMINA_PROFILE_SECTION_COLORED("FrameStart", tracy::Color::Red);
                 UpdateContext.UpdateStage = EUpdateStage::FrameStart;
 
-                MainThread::ProcessQueue();
-
-                // Join the physics worker from the previous frame before anything game-thread touches world state.
-                // Travel/teardown and all subsequent stages run with the worker idle.
+                // Join the previous frame's physics worker before any game-thread code touches the
+                // ECS. ProcessQueue runs marshaled callbacks that may mutate it, so it follows the join.
                 {
                     LUMINA_PROFILE_SECTION_COLORED("WaitForPhysics", tracy::Color::DarkOliveGreen);
                     GWorldManager->WaitForPhysics();
                     GWorldManager->DispatchPhysicsEvents();
                 }
+
+                MainThread::ProcessQueue();
 
                 // Drain Travel before world ticks; tearing down a world from inside its own update is unsafe.
                 ProcessPendingTravel();
@@ -282,10 +282,6 @@ namespace Lumina
                 RmlUi::TickAll();
                 GWorldManager->ExtractWorlds();
 
-                // Kick physics after Extract: render data is gathered, so the worker can mutate transforms
-                // freely. Results land next frame at FrameStart -- PostPhysics stages read previous-frame physics.
-                GWorldManager->KickPhysics();
-
                 GRenderManager->FrameEnd();
 
                 Lua::FScriptingContext::Get().ProcessDeferredActions();
@@ -295,6 +291,10 @@ namespace Lumina
 
                 OnUpdateStage(UpdateContext);
 
+                // Kick physics last: all game-thread ECS access for the frame is done (Extract, the
+                // FrameEnd module update, deferred actions), so the worker races with nothing. Results
+                // land next frame at FrameStart -- PostPhysics stages read previous-frame physics.
+                GWorldManager->KickPhysics();
             }
         }
         

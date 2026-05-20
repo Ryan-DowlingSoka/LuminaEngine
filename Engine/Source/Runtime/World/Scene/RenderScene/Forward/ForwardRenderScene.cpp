@@ -134,20 +134,16 @@ namespace Lumina
 
     void FForwardRenderScene::SignalSlotConsumed(uint8 Slot)
     {
-        // Only release the slot if Extract actually produced into it since the
-        // last consume. A signal with no matching produce (scene created
-        // mid-frame, or suspended at extract but not at signal) would otherwise
-        // push Consumed past Produced, open the gate early, and let the game
-        // thread reset/repopulate a slot the render thread is still reading --
-        // surfacing as DrawCommands cleared mid-pass (OpaqueDrawList indexing an
-        // emptied DrawCommands) plus general flicker/corruption.
         bool Expected = true;
         if (!SlotHasPendingConsume[Slot].compare_exchange_strong(Expected, false, std::memory_order_acq_rel))
         {
             return;
         }
         SlotConsumedCount[Slot].fetch_add(1, std::memory_order_release);
-        { std::scoped_lock<FMutex> Lock(SlotMutex); }
+        
+        {
+            std::scoped_lock<FMutex> Lock(SlotMutex);
+        }
         SlotCV.notify_all();
     }
 

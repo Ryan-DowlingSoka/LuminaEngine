@@ -491,6 +491,9 @@ namespace Lumina::Physics
     void FJoltPhysicsScene::DispatchPendingEvents()
     {
         LUMINA_PROFILE_SCOPE();
+        // Game thread, post-join: write the physics step's interpolated transforms
+        // into the ECS before contact callbacks (scripts read fresh transforms).
+        ApplyInterpolatedTransforms();
         DispatchContactEvents();
     }
 
@@ -684,29 +687,47 @@ namespace Lumina::Physics
 
         if (CollisionSteps > 0)
         {
-            // Save positions before stepping so SyncPhysicsTransforms can
-            // interpolate smoothly between the previous and current states.
-            SnapshotBodyStates();
-
+            // Apply game-thread transform writes once before stepping; this also
+            // clears the FNeedsPhysicsBodyUpdate flags for the frame.
             ApplyDirtyTransforms(FixedTimestep);
             LatchCharacterInput();
 
-            JoltSystem->Update(FixedTimestep, (int)CollisionSteps, &Allocator, FJoltPhysicsContext::GetThreadPool());
-            UpdateCharacters(FixedTimestep);
+            // Advance one fixed step at a time. Jolt's Update(dt, steps) simulates
+            // dt TOTAL time, so a single Update(FixedTimestep, CollisionSteps) call
+            // advances only ONE step's worth of time while we consume CollisionSteps
+            // from the accumulator -- physics falls behind real time on every
+            // multi-step frame and the body visibly hitches. Stepping in a loop keeps
+            // each step exactly FixedTimestep and lets us snapshot the interpolation
+            // source one step before the final state.
+            for (uint32 Step = 0; Step < CollisionSteps; ++Step)
+            {
+                // Prev = state one fixed step behind the final state. Pairs with the
+                // Accumulator/FixedTimestep alpha below for smooth sub-frame interpolation.
+                if (Step == CollisionSteps - 1)
+                {
+                    SnapshotBodyStates();
+                }
+
+                JoltSystem->Update(FixedTimestep, 1, &Allocator, FJoltPhysicsContext::GetThreadPool());
+                UpdateCharacters(FixedTimestep);
+            }
 
             // Contact records drained on game thread via DispatchPendingEvents.
 
             Accumulator -= (float)CollisionSteps * FixedTimestep;
         }
 
-        // Sub-frame interpolation: how far into the current physics interval we are.
-        // Prev = positions before the last step, Curr = positions after.
+        // Sub-frame interpolation: how far into the next (not-yet-simulated) step we are.
+        // Prev = positions one step behind the final state, Curr = final state.
         // Alpha 0 == just stepped, 1 == next step due now.
         const float InterpolationAlpha = WorldSettings.bEnablePhysicsInterpolation
             ? glm::clamp(Accumulator / FixedTimestep, 0.0f, 1.0f)
             : 1.0f;
 
-        SyncPhysicsTransforms(InterpolationAlpha);
+        // Physics thread only captures the interpolation source/target into a buffer.
+        // The game thread applies it to the ECS in ApplyInterpolatedTransforms so the
+        // physics worker never mutates the registry.
+        BuildInterpolatedTransforms(InterpolationAlpha);
 
         #if JPH_DEBUG_RENDERER
         FJoltPhysicsContext::GetDebugRenderer()->NextFrame();
@@ -829,7 +850,7 @@ namespace Lumina::Physics
         });
     }
 
-    void FJoltPhysicsScene::SyncPhysicsTransforms(float Alpha)
+    void FJoltPhysicsScene::BuildInterpolatedTransforms(float Alpha)
     {
         LUMINA_PROFILE_SCOPE();
 
@@ -838,17 +859,12 @@ namespace Lumina::Physics
         const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
         entt::registry& Registry = World->GetEntityRegistry();
 
-        // Defer destroys (registry-mutating) and accumulate touched entities so
-        // we can do ONE batched dirty-mark + one bulk descendant-resolving pass
-        // at the end instead of N×(MarkDirty mutex + ResolveTransformChain walk
-        // + remove<FNeedsPhysicsBodyUpdate>) per entity per frame.
-        TVector<entt::entity> ToDestroy;
-        TVector<entt::entity> Touched;
+        InterpolatedTransforms.clear();
 
         auto View = Registry.view<SRigidBodyComponent, STransformComponent>();
-        Touched.reserve(View.size_hint());
+        InterpolatedTransforms.reserve(View.size_hint());
 
-        View.each([&](entt::entity EntityID, SRigidBodyComponent& BodyComponent, STransformComponent& TransformComponent)
+        View.each([&](entt::entity EntityID, SRigidBodyComponent& BodyComponent, STransformComponent&)
         {
             const JPH::Body* Body = LockInterface.TryGetBody(JPH::BodyID(BodyComponent.BodyID));
             if (Body == nullptr || Body->IsStatic())
@@ -861,7 +877,7 @@ namespace Lumina::Physics
 
             if (CurrPos.GetY() < KillHeight)
             {
-                ToDestroy.push_back(EntityID);
+                InterpolatedTransforms.push_back({ EntityID, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), true });
                 return;
             }
 
@@ -873,15 +889,14 @@ namespace Lumina::Physics
             const glm::quat Rotation = glm::normalize(glm::slerp(BodyComponent.LastBodyRotation,
                                                                  JoltUtils::FromJPHQuat(CurrRot),
                                                                  Alpha));
-            
-            TransformComponent.SetFromPhysics(Location, Rotation);
-            Touched.push_back(EntityID);
+
+            InterpolatedTransforms.push_back({ EntityID, Location, Rotation, false });
         });
 
         auto CharacterView = Registry.view<SCharacterPhysicsComponent, STransformComponent>();
-        Touched.reserve(Touched.size() + CharacterView.size_hint());
+        InterpolatedTransforms.reserve(InterpolatedTransforms.size() + CharacterView.size_hint());
 
-        CharacterView.each([&](entt::entity Entity, SCharacterPhysicsComponent& CharacterComponent, STransformComponent& TransformComponent)
+        CharacterView.each([&](entt::entity Entity, SCharacterPhysicsComponent& CharacterComponent, STransformComponent&)
         {
             if (CharacterComponent.Character == nullptr)
             {
@@ -893,7 +908,7 @@ namespace Lumina::Physics
 
             if (CurrPos.GetY() < KillHeight)
             {
-                ToDestroy.push_back(Entity);
+                InterpolatedTransforms.push_back({ Entity, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), true });
                 return;
             }
 
@@ -904,22 +919,45 @@ namespace Lumina::Physics
                                                                  JoltUtils::FromJPHQuat(CurrRot),
                                                                  Alpha));
 
-            TransformComponent.SetFromPhysics(Location, Rotation);
-            Touched.push_back(Entity);
+            InterpolatedTransforms.push_back({ Entity, Location, Rotation, false });
         });
+    }
 
-        for (entt::entity Entity : ToDestroy)
+    void FJoltPhysicsScene::ApplyInterpolatedTransforms()
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        if (InterpolatedTransforms.empty())
         {
-            Registry.destroy(Entity);
+            return;
         }
-        
-        for (entt::entity Entity : Touched)
+
+        entt::registry& Registry = World->GetEntityRegistry();
+
+        for (const FStagedTransform& Staged : InterpolatedTransforms)
         {
-            if (Registry.valid(Entity))
+            if (!Registry.valid(Staged.Entity))
             {
-                Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
+                continue;
             }
+
+            if (Staged.bBelowKill)
+            {
+                Registry.destroy(Staged.Entity);
+                continue;
+            }
+
+            STransformComponent* TransformComponent = Registry.try_get<STransformComponent>(Staged.Entity);
+            if (TransformComponent == nullptr)
+            {
+                continue;
+            }
+
+            TransformComponent->SetFromPhysics(Staged.Location, Staged.Rotation);
+            Registry.emplace_or_replace<FNeedsTransformUpdate>(Staged.Entity);
         }
+
+        InterpolatedTransforms.clear();
 
         ECS::Utils::ResolveAllDirtyTransforms(Registry);
     }

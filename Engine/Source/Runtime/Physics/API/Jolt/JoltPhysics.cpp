@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "JoltPhysics.h"
 #include <Core/Console/ConsoleVariable.h>
+
+#include <algorithm>
 #include "JoltPhysicsScene.h"
 #include "Core/Threading/Thread.h"
 #include "Jolt/RegisterTypes.h"
@@ -110,7 +112,7 @@ namespace Lumina::Physics
         LOG_CRITICAL("JOLT ASSERT FAILED: Message {}, File: {} - {}", expr, msg, file, line);
         return true;
     }
-    
+
     void FJoltPhysicsContext::Initialize()
     {
         #if JPH_ASSERT
@@ -135,7 +137,9 @@ namespace Lumina::Physics
         #endif
         JPH::RegisterTypes();
         
-        JoltData->JobThreadPool = MakeUnique<JPH::JobSystemThreadPool>(2048, 8, Threading::GetNumThreads() - 1);
+        int NumJoltThreads = (int)Threading::GetNumThreads() - 3;
+        NumJoltThreads = std::max(NumJoltThreads, 1);
+        JoltData->JobThreadPool = MakeUnique<JPH::JobSystemThreadPool>(2048, 8, NumJoltThreads);
 
     }
 

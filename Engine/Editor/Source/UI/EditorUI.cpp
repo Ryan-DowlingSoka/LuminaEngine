@@ -1346,11 +1346,12 @@ namespace Lumina
     {
         ImGui::SameLine();
 
-        float CurrentFPS = UpdateContext.GetFPS();
         float CurrentFrameTime = UpdateContext.GetDeltaTime() * 1000.0f;
-        
-        SmoothedFPS = SmoothedFPS + (CurrentFPS - SmoothedFPS) * FPSSmoothingFactor;
+
+        // Smooth frame time only and derive FPS from it; averaging 1/dt independently
+        // diverges from the frame time under spiky frames (high mean(1/dt), high mean(dt)).
         SmoothedFrameTime = SmoothedFrameTime + (CurrentFrameTime - SmoothedFrameTime) * FPSSmoothingFactor;
+        SmoothedFPS = (SmoothedFrameTime > 0.0f) ? 1000.0f / SmoothedFrameTime : 0.0f;
 
         const TFixedString<100> PerfStats(TFixedString<100>::CtorSprintf(), "FPS: %3.0f / %.2f ms", SmoothedFPS, SmoothedFrameTime);
         ImGui::TextUnformatted(PerfStats.c_str());
