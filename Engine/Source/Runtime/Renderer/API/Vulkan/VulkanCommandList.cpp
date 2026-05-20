@@ -7,6 +7,7 @@
 #include "VulkanResources.h"
 #include "Core/Profiler/Profile.h"
 #include "Memory/Memcpy.h"
+#include "Renderer/GPUProfiler/GPUProfiler.h"
 #include "Renderer/RHIGlobals.h"
 #include "TaskSystem/TaskSystem.h"
 
@@ -192,33 +193,49 @@ namespace Lumina
         FVulkanImage* Source = static_cast<FVulkanImage*>(Src);
         FVulkanStagingImage* Destination = static_cast<FVulkanStagingImage*>(Dst);
 
+        const FRHIImageDesc& SrcDesc = Source->GetDescription();
+        const FRHIImageDesc& DstDesc = Destination->GetDesc();
 
-        FTextureSlice ResolvedDstSlice = DstSlice.Resolve(Source->GetDescription());
-        FTextureSlice ResolvedSrcSlice = SrcSlice.Resolve(Destination->GetDesc());
+        // SrcSlice describes the sub-region of the source image to copy: X/Y/Z are the
+        // texel offset, Width/Height/Depth the extent. uint32(-1) extent means "to the
+        // end of the image from the offset", so a default FTextureSlice() copies the
+        // whole image -- preserving the existing full-image callers.
+        const uint32 SrcMip   = SrcSlice.MipLevel;
+        const uint32 SrcMipW  = (SrcDesc.Extent.x >> SrcMip) > 0 ? (SrcDesc.Extent.x >> SrcMip) : 1u;
+        const uint32 SrcMipH  = (SrcDesc.Extent.y >> SrcMip) > 0 ? (SrcDesc.Extent.y >> SrcMip) : 1u;
 
-        auto DstRegion = Destination->GetSliceRegion(ResolvedDstSlice.MipLevel, ResolvedDstSlice.ArraySlice, ResolvedDstSlice.Z);
+        const uint32 ExtentW  = (SrcSlice.Width  == uint32(-1)) ? (SrcMipW - SrcSlice.X) : SrcSlice.Width;
+        const uint32 ExtentH  = (SrcSlice.Height == uint32(-1)) ? (SrcMipH - SrcSlice.Y) : SrcSlice.Height;
+        const uint32 ExtentD  = (SrcSlice.Depth  == uint32(-1)) ? 1u : SrcSlice.Depth;
 
-        FTextureSubresourceSet SrcSubresource = FTextureSubresourceSet(ResolvedSrcSlice.MipLevel, 1, ResolvedSrcSlice.ArraySlice, 1);
+        // Destination buffer rows are packed at the staging image's own width, so a
+        // region-sized staging image yields a tightly-packed region-sized buffer.
+        const uint32 DstMip   = DstSlice.MipLevel;
+        const uint32 DstRowTexels = (DstDesc.Extent.x >> DstMip) > 0 ? (DstDesc.Extent.x >> DstMip) : 1u;
+        const uint32 DstImageRows = (DstDesc.Extent.y >> DstMip) > 0 ? (DstDesc.Extent.y >> DstMip) : 1u;
+
+        auto DstRegion = Destination->GetSliceRegion(DstMip, DstSlice.ArraySlice, DstSlice.Z);
+
+        FTextureSubresourceSet SrcSubresource = FTextureSubresourceSet(SrcMip, 1, SrcSlice.ArraySlice, 1);
 
         VkBufferImageCopy ImageCopy     = {};
         ImageCopy.bufferOffset          = DstRegion.Offset;
-        ImageCopy.bufferRowLength       = ResolvedDstSlice.X;
-        ImageCopy.bufferImageHeight     = ResolvedDstSlice.Y;
+        ImageCopy.bufferRowLength       = DstRowTexels;
+        ImageCopy.bufferImageHeight     = DstImageRows;
 
-        ImageCopy.imageSubresource.aspectMask       = GuessImageAspectFlags(ConvertFormat(Source->GetDescription().Format));
-        ImageCopy.imageSubresource.mipLevel         = ResolvedSrcSlice.MipLevel;
-        ImageCopy.imageSubresource.baseArrayLayer   = ResolvedSrcSlice.ArraySlice;
+        ImageCopy.imageSubresource.aspectMask       = GuessImageAspectFlags(ConvertFormat(SrcDesc.Format));
+        ImageCopy.imageSubresource.mipLevel         = SrcMip;
+        ImageCopy.imageSubresource.baseArrayLayer   = SrcSlice.ArraySlice;
         ImageCopy.imageSubresource.layerCount       = 1;
 
-        // @TODO 0 for now, will need to comeback and revisit to add offset ability.
-        ImageCopy.imageOffset.x = 0; //(int32)ResolvedSrcSlice.X;
-        ImageCopy.imageOffset.y = 0; //(int32)ResolvedSrcSlice.Y;
-        ImageCopy.imageOffset.z = 0; //(int32)ResolvedSrcSlice.Z;
+        ImageCopy.imageOffset.x = (int32)SrcSlice.X;
+        ImageCopy.imageOffset.y = (int32)SrcSlice.Y;
+        ImageCopy.imageOffset.z = (int32)SrcSlice.Z;
 
-        ImageCopy.imageExtent.width  = ResolvedSrcSlice.X;
-        ImageCopy.imageExtent.height = ResolvedSrcSlice.Y;
-        ImageCopy.imageExtent.depth  = ResolvedSrcSlice.Z;
-        
+        ImageCopy.imageExtent.width  = ExtentW;
+        ImageCopy.imageExtent.height = ExtentH;
+        ImageCopy.imageExtent.depth  = ExtentD;
+
         if (PendingState.IsInState(EPendingCommandState::AutomaticBarriers))
         {
             RequireBufferState(Destination->Buffer, EResourceStates::CopyDest);
@@ -1595,21 +1612,33 @@ namespace Lumina
             }
         }
 
-        if (PendingState.IsInState(EPendingCommandState::AutomaticBarriers)
-            && !VectorsAreEqual(State.BufferAccesses, CurrentComputeState.BufferAccesses))
+        if (!VectorsAreEqual(State.BufferAccesses, CurrentComputeState.BufferAccesses))
         {
+            const bool bAutoBarriers = PendingState.IsInState(EPendingCommandState::AutomaticBarriers);
             for (const FBufferAccess& Access : State.BufferAccesses)
             {
-                RequireBufferState(Access.Buffer, Access.State);
+                // A declared access implies GPU use, so keep the resource alive for
+                // this submission. Device-address / bindless resources have no
+                // descriptor binding to reference them otherwise, so without this a
+                // later resize/free could destroy them while still in flight.
+                CurrentCommandBuffer->AddReferencedResource(Access.Buffer);
+                if (bAutoBarriers)
+                {
+                    RequireBufferState(Access.Buffer, Access.State);
+                }
             }
         }
 
-        if (PendingState.IsInState(EPendingCommandState::AutomaticBarriers)
-            && !VectorsAreEqual(State.ImageAccesses, CurrentComputeState.ImageAccesses))
+        if (!VectorsAreEqual(State.ImageAccesses, CurrentComputeState.ImageAccesses))
         {
+            const bool bAutoBarriers = PendingState.IsInState(EPendingCommandState::AutomaticBarriers);
             for (const FImageAccess& Access : State.ImageAccesses)
             {
-                RequireTextureState(Access.Image, Access.Subresources, Access.State);
+                CurrentCommandBuffer->AddReferencedResource(Access.Image);
+                if (bAutoBarriers)
+                {
+                    RequireTextureState(Access.Image, Access.Subresources, Access.State);
+                }
             }
         }
 
@@ -1817,16 +1846,23 @@ namespace Lumina
 
         if (!BufferBarriers.empty() || !ImageBarriers.empty())
         {
+            const uint32 NumBufferBarriers = (uint32)BufferBarriers.size();
+            const uint32 NumImageBarriers  = (uint32)ImageBarriers.size();
+
             VkDependencyInfo DependencyInfo         = {};
             DependencyInfo.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            
+
             DependencyInfo.pBufferMemoryBarriers    = BufferBarriers.data();
-            DependencyInfo.bufferMemoryBarrierCount = (uint32)BufferBarriers.size();
-            
+            DependencyInfo.bufferMemoryBarrierCount = NumBufferBarriers;
+
             DependencyInfo.pImageMemoryBarriers     = ImageBarriers.data();
-            DependencyInfo.imageMemoryBarrierCount  = (uint32)ImageBarriers.size();
+            DependencyInfo.imageMemoryBarrierCount  = NumImageBarriers;
 
             vkCmdPipelineBarrier2(CommandBuffer, &DependencyInfo);
+
+            // Per-frame barrier accounting (surfaced by the GPU profiler + Tracy).
+            CommandListStats.NumBarriers += NumBufferBarriers + NumImageBarriers;
+            FGPUProfiler::Get().AddBarriers(NumBufferBarriers, NumImageBarriers);
         }
 
         ImageBarriers.clear();
@@ -1848,6 +1884,8 @@ namespace Lumina
         {
             for (const FBufferAccess& Access : State.BufferAccesses)
             {
+                // Declared access -> keep alive for the submission (see SetComputeState).
+                CurrentCommandBuffer->AddReferencedResource(Access.Buffer);
                 RequireBufferState(Access.Buffer, Access.State);
             }
         }
@@ -1856,6 +1894,7 @@ namespace Lumina
         {
             for (const FImageAccess& Access : State.ImageAccesses)
             {
+                CurrentCommandBuffer->AddReferencedResource(Access.Image);
                 RequireTextureState(Access.Image, Access.Subresources, Access.State);
             }
         }

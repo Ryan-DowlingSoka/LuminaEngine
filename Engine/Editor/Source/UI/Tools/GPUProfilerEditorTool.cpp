@@ -90,6 +90,10 @@ namespace Lumina
                 (unsigned long long)Frame->FrameNumber,
                 Frame->TotalTimeMs,
                 (uint32)Frame->Scopes.size());
+            ImGui::Text("Barriers: %u buffer  |  %u image  |  %u total",
+                Frame->NumBufferBarriers,
+                Frame->NumImageBarriers,
+                Frame->NumBufferBarriers + Frame->NumImageBarriers);
         }
         else
         {
@@ -319,7 +323,7 @@ namespace Lumina
 
         const float TableTotal = eastl::max(Frame->TotalTimeMs, 0.0001f);
 
-        if (!ImGui::BeginTable("##GPUScopes", 4,
+        if (!ImGui::BeginTable("##GPUScopes", 5,
                 ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable |
                 ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY))
         {
@@ -329,6 +333,7 @@ namespace Lumina
         ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Time (ms)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
         ImGui::TableSetupColumn("% Frame", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+        ImGui::TableSetupColumn("Barriers (buf/img)", ImGuiTableColumnFlags_WidthFixed, 120.0f);
         ImGui::TableSetupColumn("Bar", ImGuiTableColumnFlags_WidthFixed, 220.0f);
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableHeadersRow();
@@ -418,6 +423,16 @@ namespace Lumina
                     ImGui::Text("%5.1f%%", Pct);
 
                     ImGui::TableSetColumnIndex(3);
+                    if (Scope.NumBufferBarriers || Scope.NumImageBarriers)
+                    {
+                        ImGui::Text("%u / %u", Scope.NumBufferBarriers, Scope.NumImageBarriers);
+                    }
+                    else
+                    {
+                        ImGui::TextDisabled("-");
+                    }
+
+                    ImGui::TableSetColumnIndex(4);
                     const float Frac = eastl::min(eastl::max(Scope.ResolvedTimeMs / TableTotal, 0.0f), 1.0f);
                     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, NameColor);
                     ImGui::ProgressBar(Frac, ImVec2(-FLT_MIN, 0.0f), "");

@@ -10,7 +10,16 @@ struct FPushConstants
     uint Phase;              // CULL_PHASE_EARLY or CULL_PHASE_LATE
     uint CameraLateViewIndex; // Only consumed in LATE; index into uCullViews.
     uint _Pad;
+    // Cull-private scratch, addressed by device pointer instead of a descriptor
+    // binding so draw/post passes never bind (and never transition) them. State
+    // is tracked CPU-side via State.Writes on the cull passes. 8-byte aligned
+    // after the four uints above.
+    FDrawIndirectArguments* IndirectArgs;
+    FMeshletDeferred*       DeferList;
+    uint*                   DeferCount;
 };
+
+[[vk::push_constant]] FPushConstants PC;
 
 // -----------------------------------------------------------------------------
 // Emit helper. Appends a surviving meshlet into the given view's slice.
@@ -21,9 +30,9 @@ void EmitMeshlet(FCullView View, uint DrawID, uint InstanceID, uint MeshletLocal
 {
     uint IndirectIndex = View.IndirectArgsOffset + DrawID;
     uint OldCount;
-    InterlockedAdd(uIndirectArgs[IndirectIndex].InstanceCount, 1, OldCount);
+    InterlockedAdd(PC.IndirectArgs[IndirectIndex].InstanceCount, 1, OldCount);
 
-    uint Slot = uIndirectArgs[IndirectIndex].FirstInstance + OldCount;
+    uint Slot = PC.IndirectArgs[IndirectIndex].FirstInstance + OldCount;
 
     FMeshletDraw Draw;
     Draw.InstanceID        = InstanceID;
@@ -238,14 +247,14 @@ void RunEarlyPhase(uint3 GlobalID, uint3 GroupID, uint NumViews)
                 // Defer to phase 1. Phase 1 owns the camera-late view slice
                 // and re-tests against the rebuilt HZB before emitting.
                 uint DeferSlot;
-                InterlockedAdd(uDeferCount[0], 1, DeferSlot);
+                InterlockedAdd(PC.DeferCount[0], 1, DeferSlot);
 
                 FMeshletDeferred Entry;
                 Entry.InstanceID        = InstanceID;
                 Entry.MeshletLocalIndex = MeshletLocalIdx;
                 Entry.DrawID            = DrawID;
                 Entry._Pad              = 0u;
-                uMeshletDeferList[DeferSlot] = Entry;
+                PC.DeferList[DeferSlot] = Entry;
                 continue;
             }
         }
@@ -264,12 +273,12 @@ void RunLatePhase(uint3 GlobalID, uint3 GroupID, uint CameraLateViewIndex)
     // covers ((GroupID.x * 64) + ThreadID.x), and the C++ side folds large
     // dispatches into Y, so the late phase reads the same fold here.
     uint ThreadIdx = GlobalID.x + GroupID.y * 65535u * 64u;
-    uint Count     = uDeferCount[0];
+    uint Count     = PC.DeferCount[0];
 
     if (ThreadIdx >= Count)
         return;
 
-    FMeshletDeferred Entry = uMeshletDeferList[ThreadIdx];
+    FMeshletDeferred Entry = PC.DeferList[ThreadIdx];
 
     // Reconstruct world-space bounds the same way phase 0 did. Transforms
     // can't change between phases (they're baked into the Instance buffer
@@ -306,7 +315,7 @@ void RunLatePhase(uint3 GlobalID, uint3 GroupID, uint CameraLateViewIndex)
 
 [shader("compute")]
 [numthreads(LOCAL_SIZE_X, 1, 1)]
-void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupID, uniform FPushConstants PC)
+void ComputeMain(uint3 GlobalID : SV_DispatchThreadID, uint3 GroupID : SV_GroupID)
 {
     if (PC.Phase == CULL_PHASE_LATE)
     {

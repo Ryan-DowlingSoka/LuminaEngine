@@ -1568,7 +1568,10 @@ namespace Lumina
 
             uint32 TexX = static_cast<uint32>(MousePosInViewport.x * ScaleX);
             uint32 TexY = static_cast<uint32>(MousePosInViewport.y * ScaleY);
-            
+
+            // Publish the cursor so the renderer copies just the window around it.
+            World->GetRenderer()->SetPickerCursor(TexX, TexY, true);
+
             bool bOverImGuizmo = bImGuizmoUsedOnce ? ImGuizmo::IsOver() : false;
             
             if (!bOverImGuizmo)
@@ -1724,7 +1727,13 @@ namespace Lumina
                 }
             }
         }
-        
+        else
+        {
+            // Not a pick target this frame (cursor off the viewport or a mode owns input):
+            // tell the renderer to skip the picker readback.
+            World->GetRenderer()->SetPickerCursor(0, 0, false);
+        }
+
         if (ImGui::BeginPopup("EntityContextMenu"))
         {
             const entt::entity LastSelectedEntity = GetLastSelectedEntity();

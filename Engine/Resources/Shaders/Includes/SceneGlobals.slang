@@ -22,13 +22,12 @@
 
 [[vk::binding(10, 0)]] StructuredBuffer<FCullView>                   uCullViews;
 [[vk::binding(11, 0)]] RWStructuredBuffer<FMeshletDraw>              uMeshletDrawList;
-[[vk::binding(12, 0)]] RWStructuredBuffer<FDrawIndirectArguments>    uIndirectArgs;
 
+// Bindings 12/14/15 (uIndirectArgs, uMeshletDeferList, uDeferCount) are NOT in
+// this set: they're cull-pass-private and accessed via device buffer address
+// (push-constant pointers in CullMeshlets), so draw/post passes that include
+// this header never bind them and never pay a state transition for them.
 // Binding 13 (uShadowCascadePoint) moved to ShadowSampling.slang at set 3.
-
-// Phase-0 deferred camera meshlets, retested by phase 1 against the rebuilt HZB.
-[[vk::binding(14, 0)]] RWStructuredBuffer<FMeshletDeferred>          uMeshletDeferList;
-[[vk::binding(15, 0)]] globallycoherent RWStructuredBuffer<uint>     uDeferCount;
 
 // Inclusive per-instance meshlet prefix sum, sized [InstanceNum + 1].
 // Entry [i] is the running total of meshlets across instances [0..i). The

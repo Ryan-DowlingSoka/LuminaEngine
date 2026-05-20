@@ -2,6 +2,7 @@
 #include "GPUProfiler.h"
 
 #include "Core/Console/ConsoleVariable.h"
+#include "Core/Profiler/Profile.h"
 #include "Renderer/CommandList.h"
 #include "Renderer/RenderContext.h"
 #include "Renderer/RHIGlobals.h"
@@ -22,6 +23,8 @@ namespace Lumina
         FrameNumber = 0;
         TotalTimeMs = 0.0f;
         TotalStats = {};
+        NumBufferBarriers = 0;
+        NumImageBarriers = 0;
         State = EGPUFrameState::Idle;
     }
 
@@ -90,6 +93,17 @@ namespace Lumina
     {
         FGPUProfileFrame& Slot = Frames[RecordingSlot];
 
+        // Drain the barrier accumulators into this frame and plot them. Done
+        // unconditionally (not gated on the timing CVar) so a Tracy capture
+        // always carries the barrier counts even when the in-engine timing
+        // profiler is disabled.
+        const uint32 NumBufferBarriers = PendingBufferBarriers.exchange(0, std::memory_order_relaxed);
+        const uint32 NumImageBarriers  = PendingImageBarriers.exchange(0, std::memory_order_relaxed);
+        Slot.NumBufferBarriers = NumBufferBarriers;
+        Slot.NumImageBarriers  = NumImageBarriers;
+        LUMINA_PROFILE_VALUE("GPU Buffer Barriers", (double)NumBufferBarriers);
+        LUMINA_PROFILE_VALUE("GPU Image Barriers",  (double)NumImageBarriers);
+
         if (Slot.State == EGPUFrameState::Recording)
         {
             Slot.ScopeStack.clear();
@@ -97,6 +111,30 @@ namespace Lumina
         }
 
         RecordingSlot = (RecordingSlot + 1) % MaxFramesInFlight;
+    }
+
+    void FGPUProfiler::AddBarriers(uint32 NumBuffer, uint32 NumImage)
+    {
+        PendingBufferBarriers.fetch_add(NumBuffer, std::memory_order_relaxed);
+        PendingImageBarriers.fetch_add(NumImage, std::memory_order_relaxed);
+
+        // Attribute to the innermost open GPU scope (the pass that triggered the
+        // barrier) when profiling is active. Barriers committed between/outside
+        // scopes land only in the frame total above. Locked because barriers can
+        // be committed from any command-list-recording thread.
+        if (!IsEnabled())
+        {
+            return;
+        }
+
+        FScopeLock Lock(Mutex);
+        FGPUProfileFrame& Frame = Frames[RecordingSlot];
+        if (!Frame.ScopeStack.empty())
+        {
+            FGPUProfileScope& Scope = Frame.Scopes[Frame.ScopeStack.back()];
+            Scope.NumBufferBarriers += NumBuffer;
+            Scope.NumImageBarriers  += NumImage;
+        }
     }
 
     void FGPUProfiler::BeginScope(ICommandList* CmdList, const char* Name, const FColor& Color)

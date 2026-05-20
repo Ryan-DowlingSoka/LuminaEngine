@@ -3,6 +3,7 @@
 #include "Containers/Array.h"
 #include "Containers/String.h"
 #include "Core/Math/Color.h"
+#include "Core/Threading/Atomic.h"
 #include "Memory/SmartPtr.h"
 #include "Renderer/RenderResource.h"
 
@@ -23,6 +24,10 @@ namespace Lumina
         int32               StatsQueryIndex= -1;
         float               ResolvedTimeMs = 0.0f;
         FPipelineStats      ResolvedStats;
+        // Barriers attributed to this scope (the innermost open scope when the
+        // RHI committed them). Set during recording; survives resolve.
+        uint32              NumBufferBarriers = 0;
+        uint32              NumImageBarriers  = 0;
     };
 
     enum class EGPUFrameState : uint8
@@ -44,6 +49,11 @@ namespace Lumina
         uint64                                  FrameNumber         = 0;
         float                                   TotalTimeMs         = 0.0f;
         FPipelineStats                          TotalStats;
+        // CPU-recorded barrier counts for the frame (vkCmdPipelineBarrier2
+        // memory barriers), split so the buffer-side UAV barriers can be
+        // watched independently from image layout transitions.
+        uint32                                  NumBufferBarriers   = 0;
+        uint32                                  NumImageBarriers    = 0;
         EGPUFrameState                          State               = EGPUFrameState::Idle;
 
         void Reset();
@@ -77,6 +87,11 @@ namespace Lumina
         void BeginScope(ICommandList* CmdList, const char* Name, const FColor& Color = FColor::White);
         void EndScope(ICommandList* CmdList);
 
+        // Accumulate barriers emitted this frame. Called from the RHI barrier
+        // commit on whatever thread records the command list, so it's atomic.
+        // EndFrame snapshots + resets these into the recording frame.
+        void AddBarriers(uint32 NumBuffer, uint32 NumImage);
+
         const FGPUProfileFrame* GetLatestResolvedFrame() const;
 
         const TVector<float>& GetFrameTimeHistory() const { return FrameTimeHistory; }
@@ -95,6 +110,10 @@ namespace Lumina
         uint32              RecordingSlot          = 0;
         int32               LatestResolvedSlot     = -1;
         uint64              FrameCounter           = 0;
+
+        // Frame-in-progress barrier accumulators; drained in EndFrame.
+        TAtomic<uint32>     PendingBufferBarriers  = 0;
+        TAtomic<uint32>     PendingImageBarriers   = 0;
 
         TVector<float>      FrameTimeHistory;
     };

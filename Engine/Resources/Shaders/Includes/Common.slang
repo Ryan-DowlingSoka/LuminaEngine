@@ -13,7 +13,7 @@ static const int SSAO_KERNEL_SIZE = 32;
 #define LIGHT_INDEX_MASK 0x1FFFu
 #define LIGHTS_PER_UINT  2
 #define LIGHTS_PER_CLUSTER 100
-#define SHADOW_SAMPLE_COUNT 16
+#define SHADOW_SAMPLE_COUNT 8
 
 #define INDEX_NONE -1
 

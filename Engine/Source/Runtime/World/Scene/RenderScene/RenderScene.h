@@ -42,7 +42,12 @@ namespace Lumina
         virtual void SignalFrameConsumed(uint8 FrameIndex) {}
         
         virtual entt::entity GetEntityAtPixel(uint32 X, uint32 Y) const = 0;
-        
+
+        // Editor only: report the current pick-cursor position (in picker-RT texels)
+        // so the per-frame picker readback can copy just a small region around it.
+        // bOverViewport=false skips the readback entirely that frame.
+        virtual void SetPickerCursor(uint32 X, uint32 Y, bool bOverViewport) {}
+
         virtual FRHIImage* GetRenderTarget() const = 0;
 
         // Re-create the scene's render target at a new size. Used by transient

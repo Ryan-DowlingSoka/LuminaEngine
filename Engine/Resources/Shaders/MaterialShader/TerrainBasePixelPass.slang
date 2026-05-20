@@ -526,9 +526,17 @@ PSOutput FragmentMain(PSInput Input)
 
     if (uLightData[0].bHasSun != 0)
     {
-        FLight Light  = GetLightAt(0);
-        float  Shadow = ComputeTerrainShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, true);
-        Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, float3(0.0), 0.0) * Shadow;
+        FLight Light = GetLightAt(0);
+
+        // The sun's contribution is scaled by max(dot(N, L), 0), so a pixel facing
+        // away from the sun is fully self-shadowed regardless of the shadow map.
+        // Skip the 24-48 tap cascade PCSS for those pixels (~half a typical scene).
+        float SunNdotL = dot(N, normalize(Light.Direction.xyz));
+        if (SunNdotL > 0.0)
+        {
+            float Shadow = ComputeTerrainShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, true);
+            Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, float3(0.0), 0.0) * Shadow;
+        }
     }
 
     // Mirror the cap LightCull enforces on writes.
@@ -549,6 +557,15 @@ PSOutput FragmentMain(PSInput Input)
         float3 LightToFrag = Light.Position - WorldPosition;
         float  DistToLight = length(LightToFrag);
         float3 L           = LightToFrag / max(DistToLight, 0.0001);
+
+        // Cluster membership is conservative: a froxel can list a light whose sphere
+        // overlaps it but doesn't reach this pixel, or that lights only its back face.
+        // Both make EvaluateLightContribution return zero (NdotL clamp / falloff hits
+        // 1.0 at the radius), so skip the BRDF for them.
+        if (dot(N, L) <= 0.0 || DistToLight >= Light.Radius)
+        {
+            continue;
+        }
 
         Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight);
     }

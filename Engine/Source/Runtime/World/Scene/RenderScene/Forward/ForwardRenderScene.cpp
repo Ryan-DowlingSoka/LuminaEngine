@@ -155,9 +155,7 @@ namespace Lumina
         const uint64 NextProduce = SlotProducedCount[Slot] + 1u;
         WaitForSlotConsumed(Slot, SlotProducedCount[Slot]);
 
-        // Every path below bumps SlotProducedCount, so this slot now has exactly
-        // one outstanding produce for the render lambda to consume. Marking it
-        // here lets SignalSlotConsumed pair the two and ignore stray signals.
+        // Marks one outstanding produce so SignalSlotConsumed pairs it and ignores stray signals.
         SlotHasPendingConsume[Slot].store(true, std::memory_order_release);
 
         ExtractFrame = &FrameRing[Slot];
@@ -215,13 +213,11 @@ namespace Lumina
             return;
         }
 
-        // Clear last frame's CPU-side scene state BEFORE the parallel gather
-        // repopulates it. Must run on the game thread so the render thread
-        // never sees a half-cleared / half-populated set of containers.
+        // Clear CPU scene state before the gather; game-thread so the render thread
+        // never sees half-populated containers.
         ResetPass_GameThread();
 
-        // CPU half: parallel ECS gather + cull setup. Populates Frame state
-        // (Instances, LightData, EnvironmentParams, CullViews, ...).
+        // CPU half: parallel ECS gather + cull setup.
         CompileDrawCommands_GameThread();
 
         // Per-slot copy of the atlas tile table -- render passes read this, not the live atlas.
@@ -251,8 +247,9 @@ namespace Lumina
             return;
         }
 
-        CurrentFrameSlot = Slot;
-        SceneBindingSet  = SceneBindingSets[CurrentFrameSlot];
+        CurrentFrameSlot        = Slot;
+        SceneBindingSet         = SceneBindingSets[CurrentFrameSlot];
+        SceneBindingSetReadOnly = SceneBindingSetReadOnlys[CurrentFrameSlot];
 
         // DepthPyramid only changes on swapchain resize -- render-thread read is race-safe.
         Frame.SceneGlobalData.CullData.PyramidWidth      = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
@@ -464,9 +461,7 @@ namespace Lumina
     void FForwardRenderScene::SwapchainResized(glm::vec2 NewSize)
     {
         // BindingCache is per-scene; safe to clear. GRenderContext->Clear* are NOT --
-        // they wipe pipelines/layouts shared across all scenes + RmlUi + ImGui. With
-        // multiple worlds (editor + tool worlds + PIE) clearing here detonates live
-        // pipeline pointers held elsewhere -> device lost.
+        // they'd wipe pipelines shared across scenes/RmlUi/ImGui -> device lost.
         BindingCache.ReleaseResources();
 
         SceneViewport = GRenderContext->CreateViewport(NewSize, "Forward Renderer Viewport");
@@ -558,16 +553,22 @@ namespace Lumina
                 FrameArenas[t]->Reset();
             }
 
-            TVector<FThreadLocalDrawData> ThreadLocal;
-            ThreadLocal.reserve(NumThreads);
-            for (uint32 t = 0; t < NumThreads; ++t)
+            // Persistent: outer storage keeps capacity, arena-backed members reset per frame.
+            // NumThreads is process-constant, so this grows once.
+            TVector<FThreadLocalDrawData>& ThreadLocal = ThreadLocalStorage;
+            if (ThreadLocal.size() < NumThreads)
             {
-                ThreadLocal.emplace_back(FFrameArenaAllocator(FrameArenas[t].get()));
+                ThreadLocal.reserve(NumThreads);
+                while (ThreadLocal.size() < NumThreads)
+                {
+                    ThreadLocal.emplace_back(FFrameArenaAllocator(FrameArenas[ThreadLocal.size()].get()));
+                }
             }
             const uint32 ReservePerThread = (uint32)((EstimatedProxies + NumThreads - 1) / std::max(1u, NumThreads));
-            for (FThreadLocalDrawData& Local : ThreadLocal)
+            for (uint32 t = 0; t < NumThreads; ++t)
             {
-                Local.Items.reserve(ReservePerThread);
+                ThreadLocal[t].ResetForFrame(FFrameArenaAllocator(FrameArenas[t].get()));
+                ThreadLocal[t].Items.reserve(ReservePerThread);
             }
             
             
@@ -760,9 +761,7 @@ namespace Lumina
             Graph.Wait();
 
 
-            // LightCount can overshoot MAX_LIGHTS when the scene has more lights
-            // than the buffer holds; Process*Light drops the overflow, so clamp
-            // here to keep NumLights in lockstep with what was actually written.
+            // LightCount can overshoot MAX_LIGHTS; clamp to match what Process*Light wrote.
             LightData.NumLights = glm::min(LightCount.load(std::memory_order_acquire), (uint32)MAX_LIGHTS);
 
             // Serial fit/allocate after parallel light pass; shrinks when sum(area) exceeds atlas budget.
@@ -876,11 +875,8 @@ namespace Lumina
             SceneGlobalData.CullData.bHasDirectional = 0u;
         }
 
-        // BuildCullViews populates CullViews[] and IndirectArgs[] (indexed
-        // v * NumDraws + d with FirstInstance = v * TotalMeshletBound + prefix[d])
-        // and must run after AllocateShadowTiles so every shadow view's VP
-        // matrix is settled. Everything downstream (size calcs, upload) reads
-        // the array lengths it produced.
+        // Populates CullViews[]/IndirectArgs[]; must run after AllocateShadowTiles so
+        // every shadow view's VP is settled. Downstream size calcs read its lengths.
         BuildCullViews(SceneViewport->GetViewVolume());
     }
 
@@ -953,12 +949,12 @@ namespace Lumina
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Light], (uint32)LightUploadSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Billboards], (uint32)BillboardSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::CullView], (uint32)CullViewSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletDrawList], (uint32)MeshletDrawListSize, 1.2f);
         for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
         {
             bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(IndirectArgsRing[Slot], (uint32)IndirectArgsSize, 1.2f);
+            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(MeshletDrawListRing[Slot], (uint32)MeshletDrawListSize, 1.2f);
+            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(MeshletDeferListRing[Slot], (uint32)DeferListSize, 1.2f);
         }
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::MeshletDeferList], (uint32)DeferListSize, 1.2f);
         bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMeshletPrefix], (uint32)InstanceMeshletPrefixSize, 1.2f);
 
         if (bAnyBufferResized)
@@ -969,9 +965,8 @@ namespace Lumina
         {
             LUMINA_PROFILE_SECTION_COLORED("Write Scene Buffers", tracy::Color::OrangeRed3);
 
-            // Only IndirectArgs and SimpleVertex remain non-dynamic uploads;
-            // the rest are BUF_Dynamic (WriteBuffer memcpys into a versioned
-            // host-mapped slot, no CopyDest transition needed).
+            // Only IndirectArgs and SimpleVertex are non-dynamic uploads; the rest are
+            // BUF_Dynamic (memcpy into a host-mapped slot, no CopyDest transition).
             CmdList.SetBufferState(GetIndirectArgs(), EResourceStates::CopyDest);
             CmdList.SetBufferState(GetNamedBuffer(ENamedBuffer::SimpleVertex), EResourceStates::CopyDest);
             CmdList.CommitBarriers();
@@ -993,17 +988,11 @@ namespace Lumina
             }
 
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::SimpleVertex), SimpleVertices.data(), SimpleVertexSize);
-            // Single contiguous upload: header + all FLight slots (inactive tail
-            // is unread by shaders) + active FLightShadowData prefix. Required
-            // because BUF_Dynamic WriteBuffer memcpys from offset 0 only;
-            // per-offset writes aren't supported on dynamic buffers.
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Light), &LightData, LightUploadSize);
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Billboards), BillboardInstances.data(), BillboardSize);
 
             // Skip env upload + IBL convolution when nothing they depend on changed.
-            const bool bEnvParamsChanged =
-                !bEnvironmentParamsUploaded ||
-                std::memcmp(&EnvironmentParams, &LastUploadedEnvironmentParams, sizeof(FEnvironmentParams)) != 0;
+            const bool bEnvParamsChanged = !bEnvironmentParamsUploaded || std::memcmp(&EnvironmentParams, &LastUploadedEnvironmentParams, sizeof(FEnvironmentParams)) != 0;
             if (bEnvParamsChanged)
             {
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Environment), &EnvironmentParams, sizeof(FEnvironmentParams));
@@ -1028,14 +1017,10 @@ namespace Lumina
                 bIBLValid                  = true;
             }
 
-            // Irradiance + GGX prefilter are the most expensive IBL stages.
-            // Gate them with an angular threshold on the sun so continuous
-            // TOD animation does not pay full convolution cost every frame.
-            // cos(0.5 deg) ~ 0.99996; below that the diffuse SH lobe and the
-            // wide GGX kernels would smear away the difference anyway.
+            // Gate the costly irradiance + GGX prefilter on an angular sun threshold so
+            // TOD animation doesn't pay full convolution every frame. cos(0.5 deg) ~ 0.99996.
             constexpr float SunCosThreshold = 0.99996f;
-            const bool bConvHasSunChanged =
-                bLastConvolvedHasSun != (LightData.bHasSun != 0);
+            const bool bConvHasSunChanged = bLastConvolvedHasSun != (LightData.bHasSun != 0);
             float SunCos = 1.0f;
             if (bLastConvolvedHasSun && LightData.bHasSun)
             {
@@ -1083,10 +1068,24 @@ namespace Lumina
         uint8               bDrawInDepthPass : 1;
     };
 
+    // Resolve the material-pure portion of a slot, cached per-thread by material so the
+    // ~10 virtual calls below don't repeat for every surface sharing a material.
     template <typename TComponent>
-    static FResolvedSlot ResolveSlot(const TComponent& MeshComponent, int16 SlotIdx, bool bSignificantOccluder)
+    static const FForwardRenderScene::FCachedMaterialResolve& ResolveMaterialCached(
+        FForwardRenderScene::FThreadLocalDrawData& Local, const TComponent& MeshComponent, int16 SlotIdx)
     {
-        CMaterialInterface* Material = MeshComponent.GetMaterialForSlot(SlotIdx);
+        CMaterialInterface* RawMaterial = MeshComponent.GetMaterialForSlot(SlotIdx);
+
+        // Linear scan: per-thread unique material count is tiny (matches FindOrAddLocalBatch).
+        for (FForwardRenderScene::FMaterialCacheEntry& Entry : Local.MaterialCache)
+        {
+            if (Entry.Key == RawMaterial)
+            {
+                return Entry.Resolve;
+            }
+        }
+
+        CMaterialInterface* Material = RawMaterial;
         // Terrain/PostProcess have different pipeline layouts; misassignment falls back to default.
         if (IsValid(Material) &&
             (Material->GetMaterialType() == EMaterialType::Terrain ||
@@ -1105,27 +1104,63 @@ namespace Lumina
         const bool       bAdditive    = BlendMode == EBlendMode::Additive;
         const bool       bTwoSided    = bTranslucent || Material->IsTwoSided();
 
-        EInstanceFlags Extra = EInstanceFlags::None;
-        if (MeshComponent.bCastShadow && Material->DoesCastShadows()) Extra |= EInstanceFlags::CastShadow;
-        if (bTranslucent)                                              Extra |= EInstanceFlags::Translucent;
-        if (bMasked)                                                   Extra |= EInstanceFlags::Masked;
-        if (bTwoSided)                                                 Extra |= EInstanceFlags::TwoSided;
-
-        FResolvedSlot R;
-        R.VertexShader     = Material->GetVertexShader();
-        R.PixelShader      = Material->GetPixelShader();
+        FForwardRenderScene::FMaterialCacheEntry& NewEntry = Local.MaterialCache.emplace_back();
+        NewEntry.Key = RawMaterial;
+        FForwardRenderScene::FCachedMaterialResolve& R = NewEntry.Resolve;
+        R.VertexShader          = Material->GetVertexShader();
+        R.PixelShader           = Material->GetPixelShader();
+        R.DepthVertexShader     = nullptr;
+        R.ShadowVertexShader    = nullptr;
         if (CMaterial* ConcreteMaterial = Material->GetMaterial(); ConcreteMaterial && ConcreteMaterial->UsesWorldPositionOffset())
         {
             R.DepthVertexShader  = ConcreteMaterial->GetDepthPrepassVertexShader();
             R.ShadowVertexShader = ConcreteMaterial->GetShadowVertexShader();
         }
-        R.MaterialID       = (uint64)Material->GetMaterial();
-        R.ExtraFlags       = Extra;
-        R.MaterialIdx      = (uint16)Material->GetMaterialIndex();
-        R.bTranslucent     = bTranslucent;
-        R.bMasked          = bMasked;
-        R.bAdditive        = bAdditive;
-        R.bDrawInDepthPass = MeshComponent.bUseAsOccluder && !bTranslucent && bSignificantOccluder;
+        R.MaterialID            = (uint64)Material->GetMaterial();
+        R.MaterialIdx           = (uint16)Material->GetMaterialIndex();
+        R.bTranslucent          = bTranslucent;
+        R.bMasked               = bMasked;
+        R.bAdditive             = bAdditive;
+        R.bTwoSided             = bTwoSided;
+        R.bMaterialCastsShadows = Material->DoesCastShadows();
+        return R;
+    }
+
+    template <typename TComponent>
+    static FResolvedSlot ResolveSlot(FForwardRenderScene::FThreadLocalDrawData& Local, const TComponent& MeshComponent, int16 SlotIdx, bool bSignificantOccluder)
+    {
+        const FForwardRenderScene::FCachedMaterialResolve& M = ResolveMaterialCached(Local, MeshComponent, SlotIdx);
+
+        EInstanceFlags Extra = EInstanceFlags::None;
+        if (MeshComponent.bCastShadow && M.bMaterialCastsShadows)
+        {
+            Extra |= EInstanceFlags::CastShadow;
+        }
+        if (M.bTranslucent)
+        {
+            Extra |= EInstanceFlags::Translucent;
+        }
+        if (M.bMasked)
+        {
+            Extra |= EInstanceFlags::Masked;
+        }
+        if (M.bTwoSided)
+        {
+            Extra |= EInstanceFlags::TwoSided;
+        }
+
+        FResolvedSlot R;
+        R.VertexShader       = M.VertexShader;
+        R.PixelShader        = M.PixelShader;
+        R.DepthVertexShader  = M.DepthVertexShader;
+        R.ShadowVertexShader = M.ShadowVertexShader;
+        R.MaterialID         = M.MaterialID;
+        R.ExtraFlags         = Extra;
+        R.MaterialIdx        = M.MaterialIdx;
+        R.bTranslucent       = M.bTranslucent;
+        R.bMasked            = M.bMasked;
+        R.bAdditive          = M.bAdditive;
+        R.bDrawInDepthPass   = MeshComponent.bUseAsOccluder && !M.bTranslucent && bSignificantOccluder;
         return R;
     }
 
@@ -1207,11 +1242,7 @@ namespace Lumina
         }
         return 0u;
     }
-
-    // Pick the surface's shadow-only LOD. Camera LOD plus ShadowLODBias,
-    // capped at MAX_SHADOW_LOD so sloppy LODs are never selected for
-    // shadows -- their topology breaks would surface as light leaks
-    // through what should be solid casters.
+    
     static uint32 ResolveShadowLOD(const FGeometrySurface& Surface, uint32 CameraLOD, int32 ShadowLODBias)
     {
         if (Surface.NumLODs == 0)
@@ -1263,13 +1294,19 @@ namespace Lumina
             ? MB.MeshletHeaderBuffer->GetAddress()
             : 0ull;
 
-        if (MeshletHeaderAddress && Local.PinnedMeshDedupe.emplace(Mesh, uint8(0)).second)
+        // Skip the hash entirely for consecutive same-mesh entities; instanced
+        // scenes hit long runs of one mesh. Only consult the dedupe map on change.
+        if (MeshletHeaderAddress && Mesh != Local.LastPinnedMesh && Local.PinnedMeshDedupe.emplace(Mesh, uint8(0)).second)
         {
             Local.PinnedMeshBuffers.push_back(MB.MeshletHeaderBuffer);
             Local.PinnedMeshBuffers.push_back(MB.MeshletBuffer);
             Local.PinnedMeshBuffers.push_back(MB.MeshletBoundsBuffer);
             Local.PinnedMeshBuffers.push_back(MB.MeshletVertexBuffer);
             Local.PinnedMeshBuffers.push_back(MB.MeshletTriangleBuffer);
+        }
+        if (MeshletHeaderAddress)
+        {
+            Local.LastPinnedMesh = Mesh;
         }
 
         // Angular size proxy (2r/d, squared to skip sqrt). Tiny props skip depth pre-pass.
@@ -1306,7 +1343,7 @@ namespace Lumina
 
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
         {
-            const FResolvedSlot Slot = ResolveSlot(MeshComponent, Surface.MaterialIndex, bSignificantOccluder);
+            const FResolvedSlot Slot = ResolveSlot(Local, MeshComponent, Surface.MaterialIndex, bSignificantOccluder);
 
             const EInstanceFlags Flags = BaseFlags | Slot.ExtraFlags;
 
@@ -1430,13 +1467,19 @@ namespace Lumina
             ? MB.MeshletHeaderBuffer->GetAddress()
             : 0ull;
 
-        if (MeshletHeaderAddress && Local.PinnedMeshDedupe.emplace(Mesh, uint8(0)).second)
+        // Skip the hash entirely for consecutive same-mesh entities; instanced
+        // scenes hit long runs of one mesh. Only consult the dedupe map on change.
+        if (MeshletHeaderAddress && Mesh != Local.LastPinnedMesh && Local.PinnedMeshDedupe.emplace(Mesh, uint8(0)).second)
         {
             Local.PinnedMeshBuffers.push_back(MB.MeshletHeaderBuffer);
             Local.PinnedMeshBuffers.push_back(MB.MeshletBuffer);
             Local.PinnedMeshBuffers.push_back(MB.MeshletBoundsBuffer);
             Local.PinnedMeshBuffers.push_back(MB.MeshletVertexBuffer);
             Local.PinnedMeshBuffers.push_back(MB.MeshletTriangleBuffer);
+        }
+        if (MeshletHeaderAddress)
+        {
+            Local.LastPinnedMesh = Mesh;
         }
 
         const uint32 EntityRecordIdx = (uint32)Local.EntityRecords.size();
@@ -1451,7 +1494,7 @@ namespace Lumina
 
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
         {
-            const FResolvedSlot Slot = ResolveSlot(MeshComponent, Surface.MaterialIndex, bSignificantOccluder);
+            const FResolvedSlot Slot = ResolveSlot(Local, MeshComponent, Surface.MaterialIndex, bSignificantOccluder);
 
             const EInstanceFlags Flags = BaseFlags | Slot.ExtraFlags;
 
@@ -1494,15 +1537,15 @@ namespace Lumina
         LUMINA_PROFILE_SECTION("Merge Mesh Draw Data");
 
         FFrameData& Frame = *ExtractFrame;
-        auto& Instances              = Frame.Instances;
-        auto& BonesData              = Frame.BonesData;
-        auto& DrawCommands           = Frame.DrawCommands;
-        auto& OpaqueDrawList         = Frame.OpaqueDrawList;
-        auto& OpaqueOccluderDrawList = Frame.OpaqueOccluderDrawList;
-        auto& TranslucentDrawList    = Frame.TranslucentDrawList;
+        auto& Instances             = Frame.Instances;
+        auto& BonesData            = Frame.BonesData;
+        auto& DrawCommands     = Frame.DrawCommands;
+        auto& OpaqueDrawList            = Frame.OpaqueDrawList;
+        auto& OpaqueOccluderDrawList    = Frame.OpaqueOccluderDrawList;
+        auto& TranslucentDrawList       = Frame.TranslucentDrawList;
         auto& PinnedMeshBuffersThisFrame = Frame.PinnedMeshBuffersThisFrame;
-        auto& DrawMeshletStartOffsets = Frame.DrawMeshletStartOffsets;
-        auto& InstanceMeshletPrefix  = Frame.InstanceMeshletPrefix;
+        auto& DrawMeshletStartOffsets   = Frame.DrawMeshletStartOffsets;
+        auto& InstanceMeshletPrefix     = Frame.InstanceMeshletPrefix;
         auto& FrameStats             = Frame.FrameStats;
         uint32& TotalMeshletBound    = Frame.TotalMeshletBound;
         uint32& NumDrawsPerView      = Frame.NumDrawsPerView;
@@ -1510,7 +1553,9 @@ namespace Lumina
         const uint32 NumThreads = (uint32)ThreadLocal.size();
 
         // Bones merged serially: skinned meshes reference by absolute index.
-        TVector<uint32> ThreadBoneBase(NumThreads, 0u);
+        // Persistent member; assign keeps capacity across frames.
+        TVector<uint32>& ThreadBoneBase = MergeThreadBoneBase;
+        ThreadBoneBase.assign(NumThreads, 0u);
         uint32 TotalInstances = 0;
         uint64 TotalInstancesCulled = 0;
         for (uint32 t = 0; t < NumThreads; ++t)
@@ -1521,8 +1566,8 @@ namespace Lumina
             TotalInstances += (uint32)Local.Items.size();
             TotalInstancesCulled += Local.Stats.NumInstancesCulled;
 
-            // Must happen before per-thread arena reset; refs are heap-backed,
-            // but the source TVector is destroyed with the FThreadLocalDrawData.
+            // Move the refs out (heap-backed, arena-independent); the source is
+            // cleared next frame by ResetForFrame, so transfer ownership now.
             if (!Local.PinnedMeshBuffers.empty())
             {
                 PinnedMeshBuffersThisFrame.reserve(PinnedMeshBuffersThisFrame.size() + Local.PinnedMeshBuffers.size());
@@ -1610,10 +1655,7 @@ namespace Lumina
                 LocalBatch.LocalDrawWriteBase.resize(NumLocal);
             }
         }
-
-        // Phase C: per-batch draw dedupe. Each task owns its batch's slot and
-        // a scratch hash map; the map allocates from the worker's frame arena
-        // (no system-heap traffic). Batches are independent — no sync needed.
+        
         if (MergeGlobalDrawsPerBatch.size() < NumBatches)
         {
             MergeGlobalDrawsPerBatch.resize(NumBatches);
@@ -1679,8 +1721,7 @@ namespace Lumina
 
         // Per-batch GlobalDraw ranges are disjoint, so writes don't race.
         {
-            FTaskGraph CountGraph;
-            CountGraph.AddParallelFor(NumBatches, 1, [&](const Task::FParallelRange& Range)
+            Task::ParallelFor(NumBatches, [&](const Task::FParallelRange& Range)
             {
                 for (uint32 b = Range.Start; b < Range.End; ++b)
                 {
@@ -1696,9 +1737,7 @@ namespace Lumina
                         }
                     }
                 }
-            });
-            CountGraph.Dispatch();
-            CountGraph.Wait();
+            }, 1);
         }
 
         // Prefix sum for instance offsets (serial; data dependency).
@@ -1716,8 +1755,7 @@ namespace Lumina
         // Per-batch DrawCursor slices are disjoint; race-free.
         MergeDrawCursor.assign(MergeDrawInstanceOffsets.begin(), MergeDrawInstanceOffsets.begin() + TotalDrawArgs);
         {
-            FTaskGraph CursorGraph;
-            CursorGraph.AddParallelFor(NumBatches, 1, [&](const Task::FParallelRange& Range)
+            Task::ParallelFor(NumBatches, [&](const Task::FParallelRange& Range)
             {
                 for (uint32 b = Range.Start; b < Range.End; ++b)
                 {
@@ -1733,9 +1771,7 @@ namespace Lumina
                         }
                     }
                 }
-            });
-            CursorGraph.Dispatch();
-            CursorGraph.Wait();
+            }, 1);
         }
 
         // Per-draw meshlet prefix sum; CullMeshlets atomically appends into per-view disjoint slices.
@@ -1751,8 +1787,7 @@ namespace Lumina
         {
             LUMINA_PROFILE_SECTION("Parallel Instance Write");
 
-            FTaskGraph WriteGraph;
-            WriteGraph.AddParallelFor(NumThreads, 1, [&](const Task::FParallelRange& Range)
+            Task::ParallelFor(NumThreads, [&](const Task::FParallelRange& Range)
             {
                 for (uint32 t = Range.Start; t < Range.End; ++t)
                 {
@@ -1790,9 +1825,7 @@ namespace Lumina
                         Out.EntityID                   = Entity.EntityID;
                     }
                 }
-            });
-            WriteGraph.Dispatch();
-            WriteGraph.Wait();
+            }, 1);
         }
 
         // Inclusive prefix sum; cull pass binary-searches to recover (instance, meshletLocal).
@@ -2122,15 +2155,13 @@ namespace Lumina
 
         const uint32 NumRequests = (uint32)ShadowRequests.size();
 
-        // Round-up-pow2 clamped to [Min, Max]. Matches FShadowAtlas::AllocateTile's
-        // internal quantization so the area sum we reason about is the same area
-        // the allocator will actually consume.
+        // Round-up-pow2 clamped to [Min, Max], matching FShadowAtlas::AllocateTile's
+        // quantization so the area sum equals what the allocator consumes.
         TVector<uint32> Sizes;
         Sizes.resize(NumRequests);
         for (uint32 i = 0; i < NumRequests; ++i)
         {
             uint32 V = ShadowRequests[i].DesiredPixels;
-            // Round up to pow2.
             if (V <= 1)
             {
                 V = 1;
@@ -2145,9 +2176,8 @@ namespace Lumina
             Sizes[i] = glm::clamp(V, MinTile, MaxTile);
         }
 
-        // Point lights now consume one tile per cube face (six tiles total);
-        // spot lights stay at one. Reflect that in the area accounting so the
-        // budget shrink loop doesn't underestimate point-light cost.
+        // Point lights cost six tiles (one per cube face), spots one; reflect that
+        // in the area accounting so the shrink loop doesn't underestimate point cost.
         auto AreaCost = [&](uint32 i) -> uint64
         {
             const uint64 PerTile = (uint64)Sizes[i] * (uint64)Sizes[i];
@@ -2164,9 +2194,8 @@ namespace Lumina
             return S;
         };
 
-        // Iteratively halve the current largest tile until the set fits
-        // budget. Halving the largest drops summed area by 3/4 of its own
-        // area, the biggest single-step reduction available.
+        // Halve the largest tile until the set fits budget; that's the biggest
+        // single-step area reduction available.
         while (AreaSum() > Budget)
         {
             uint32 LargestIdx = 0;
@@ -2181,17 +2210,15 @@ namespace Lumina
             }
             if (LargestVal <= MinTile)
             {
-                // Everyone is already at the floor and still over budget.
-                // AllocateTile returns INDEX_NONE and the overflow request
-                // drops, which is preferable to spinning.
+                // All at the floor and still over budget; let the overflow request
+                // drop via AllocateTile INDEX_NONE rather than spin.
                 break;
             }
             Sizes[LargestIdx] = LargestVal >> 1;
         }
 
-        // Largest-first allocation keeps the quad-tree from fragmenting: big
-        // tiles get a root split, small tiles fall into whatever quadrants
-        // remain. Allocating small-first wastes root splits on leaves.
+        // Largest-first allocation keeps the quad-tree from fragmenting; small-first
+        // would waste root splits on leaves.
         TVector<uint32> SortedIndices;
         SortedIndices.resize(NumRequests);
         for (uint32 i = 0; i < NumRequests; ++i)
@@ -2209,8 +2236,8 @@ namespace Lumina
 
             if (Req.Type == ELightType::Point)
             {
-                // Each cube face gets its own 2D tile. Allocate all six up front
-                // so a partial allocation doesn't leave the light half-shadowed.
+                // Allocate all six cube-face tiles up front so a partial allocation
+                // doesn't leave the light half-shadowed.
                 int32 FaceTileIndices[6];
                 bool  bAllAllocated = true;
                 for (uint32 Face = 0; Face < 6; ++Face)
@@ -2236,9 +2263,8 @@ namespace Lumina
                 LightData.Lights[Req.LightIndex].ShadowDataIndex = (int32)ShadowSlot;
                 FLightShadowData& ShadowData = LightData.Shadows[ShadowSlot];
 
-                // Near plane scales with radius; a fixed 0.01 collapses NDC z
-                // into the last ~0.001 of the depth buffer for any realistic
-                // light, leaving no precision for the PCF compare.
+                // Near plane scales with radius; a fixed 0.01 collapses NDC z to the
+                // last ~0.001 of the depth buffer, leaving no precision for PCF.
                 const float ShadowNear = glm::max(Req.Attenuation * 0.01f, 0.1f);
                 FViewVolume LightView(90.0f, 1.0f, ShadowNear, Req.Attenuation);
 
@@ -2350,9 +2376,8 @@ namespace Lumina
             View.NumDraws           = NumDraws;
             CullViews.push_back(View);
 
-            // Seed this view's indirect slice. FirstInstance lands inside the
-            // view's draw-list slice so the atomic-append in CullMeshlets can
-            // never overflow into another view.
+            // Seed this view's indirect slice; FirstInstance lands inside the view's
+            // draw-list slice so CullMeshlets' atomic-append can't overflow into another.
             const uint32 ViewDrawListBase = ViewIndex * TotalMeshletBound;
             for (uint32 d = 0; d < NumDraws; ++d)
             {
@@ -2365,12 +2390,8 @@ namespace Lumina
             }
         };
 
-        // Pre-size IndirectArgs to exact view count. AllocateShadowTiles has
-        // already guaranteed NumViews <= GMaxCullViews by dropping far shadow
-        // requests, so no clamp is needed here. We also budget +1 view for
-        // the camera-late phase (two-pass occlusion re-test); it's appended
-        // last so existing CascadeViewBase / PointShadowCullViewBases /
-        // SpotShadowCullViewBases indices stay valid.
+        // AllocateShadowTiles already guaranteed NumViews <= GMaxCullViews. The +1 camera-late
+        // view (two-pass occlusion) is appended last so earlier view-base indices stay valid.
         const uint32 NumViews =
             1u +                                                        // Camera (early)
             (LightData.bHasSun ? (uint32)NumCascades : 0u) +            // CSM cascades
@@ -2390,9 +2411,8 @@ namespace Lumina
         SpotShadowCullViewBases.clear();
         SpotShadowCullViewBases.reserve(PackedShadows[(uint32)ELightType::Spot].size());
 
-        // View 0: main camera. Frustum + cone + occlusion (Hi-Z + micro-poly).
-        // Frustum and occlusion are gated by render settings so the toggles can
-        // actually disable culling at runtime (cone is always cheap so it stays).
+        // View 0: main camera. Frustum + occlusion gated by render settings so the
+        // toggles disable culling at runtime; cone is always cheap so it stays.
         {
             const glm::mat4 CameraVP = ViewVolume.GetProjectionMatrix() * ViewVolume.GetViewMatrix();
             uint32 CameraFlags = ECullViewFlags::Cone;
@@ -2401,9 +2421,8 @@ namespace Lumina
             PushView(CameraVP, ViewVolume.GetViewPosition(), CameraFlags);
         }
 
-        // CSM cascades. Sun-aligned cone + cast-shadow-only + distance (match
-        // ShadowMaxDistance). Frustum still cheap and catches casters completely
-        // outside the cascade volume.
+        // CSM cascades: sun-aligned cone + cast-shadow-only + distance; frustum still
+        // cheap and catches casters outside the cascade volume.
         if (LightData.bHasSun)
         {
             const int32 SunShadowIndex = LightData.Lights[0].ShadowDataIndex;
@@ -2425,9 +2444,8 @@ namespace Lumina
             }
         }
 
-        // Point lights: 6 views each (one per cube face). Cone cull uses
-        // the light's world-space position as the apex. Parallel array
-        // records each point shadow's face-0 view index for draw-pass lookup.
+        // Point lights: 6 views each (one per cube face), cone apex at light position.
+        // Parallel array records each face-0 view index for draw-pass lookup.
         for (const FLightShadow& PointShadow : PackedShadows[(uint32)ELightType::Point])
         {
             if (PointShadow.ShadowDataIndex < 0)
@@ -2509,10 +2527,8 @@ namespace Lumina
             Light.VolumetricIntensity = DirectionalLight.VolumetricIntensity;
         }
 
-        // Directional CSM allocates a shadow slot only when this light actually
-        // casts shadows. ShadowDataIndex stays INDEX_NONE otherwise; the cull-
-        // view builder, cascade pass, and pixel shaders all use that sentinel
-        // to skip shadow work and treat the light as un-occluded.
+        // Allocate a shadow slot only when the light casts shadows; ShadowDataIndex stays
+        // INDEX_NONE otherwise, the sentinel everything downstream uses to skip shadow work.
         uint32 ShadowSlot                  = 0u;
         FLightShadowData* CascadeShadowData = nullptr;
         if (DirectionalLight.bCastShadows)
@@ -2558,16 +2574,14 @@ namespace Lumina
             const float SplitNear = LastSplitDistance;
             const float SplitFar  = CascadeFarDistances[i];
 
-            // Per-cascade resolution. Outer cascades drop to a smaller
-            // texture; texel-size math below reads this so the snap step
-            // and world-space texel pitch shift accordingly.
+            // Per-cascade resolution (outer cascades smaller); texel-size math below
+            // reads it so snap step and world-space texel pitch shift accordingly.
             const int   CascadeRes        = GCSMCascadeSizes[i];
             const float CascadeResFloat   = (float)CascadeRes;
             LightData.CascadeResolutions[i] = CascadeResFloat;
 
-            // World-space corners of the camera sub-frustum [SplitNear, SplitFar].
-            // Use a standard-Z perspective so ComputeFrustumCorners can un-project the
-            // canonical NDC cube without caring about the engine's reverse-Z convention.
+            // World-space corners of sub-frustum [SplitNear, SplitFar]. Standard-Z perspective
+            // so ComputeFrustumCorners un-projects the canonical NDC cube despite reverse-Z.
             const glm::mat4 SliceProj = glm::perspective(glm::radians(CamFOV), CamAspect, SplitNear, SplitFar);
             const glm::mat4 SliceVP   = SliceProj * CamView;
 
@@ -2595,13 +2609,8 @@ namespace Lumina
             Radius = std::ceil(Radius / QuantStep) * QuantStep;
             const float TexelSize = (Radius * 2.0f) / CascadeResFloat;
 
-            // BackDistance pushes the light eye behind the cascade volume so
-            // off-screen occluders (e.g. things directly above the cascade)
-            // still write into the depth texture. Low sun angles need a much
-            // larger value because horizontal distance from the cascade center
-            // maps to large light-space height: a caster D meters horizontally
-            // away with sun at elevation theta sits ~D/tan(theta) "above" in
-            // shadow space. Exposed via WorldSettings.CascadeBackDistance.
+            // BackDistance pushes the light eye behind the cascade so off-screen occluders
+            // still write depth; low sun angles need larger values (D/tan(theta) light-space height).
             const float BackDistance = glm::max(CachedWorldSettings.CascadeBackDistance, 1.0f);
             const float OrthoRange   = Radius * 2.0f + BackDistance;
 
@@ -2647,9 +2656,8 @@ namespace Lumina
                 CascadeTile._Padding        = 0;
             }
 
-            // Expose this cascade's world-space half-extent so the lit pixel
-            // shader can convert a shadow texel into a world-space length for
-            // normal-offset bias.
+            // Expose half-extent so the lit pixel shader converts a shadow texel to a
+            // world-space length for normal-offset bias.
             LightData.CascadeRadii[i] = Radius;
 
             // Feed this cascade's frustum to the shadow cull pass so small casters
@@ -2837,7 +2845,15 @@ namespace Lumina
 
     void FForwardRenderScene::ResetPass_RenderThread(ICommandList& CmdList)
     {
-        CmdList.ClearImageUInt(GetNamedImage(ENamedImage::DepthAttachment), AllSubresources, 0);
+        // DepthPrePassEarly clears the depth target when it runs (occluders non-empty).
+        // Only clear here as the no-occluder fallback to avoid a redundant re-clear.
+        if (RenderFrame->OpaqueOccluderDrawList.empty())
+        {
+            CmdList.ClearImageUInt(GetNamedImage(ENamedImage::DepthAttachment), AllSubresources, 0);
+        }
+
+        // Atlas/cascade clears stay unconditional: shadow passes only clear their own
+        // tiles, so regions no light renders into still need clearing here.
         CmdList.ClearImageUInt(ShadowAtlas.GetImage(), AllSubresources, 1);
         CmdList.ClearImageUInt(GetNamedImage(ENamedImage::Cascade), AllSubresources, 1);
     }
@@ -2849,6 +2865,11 @@ namespace Lumina
         uint32 Phase;
         uint32 CameraLateViewIndex;
         uint32 Pad;
+        // Device addresses of the cull-private scratch buffers (matches the
+        // pointer fields in CullMeshlets.slang's FPushConstants, 8-byte aligned).
+        uint64 IndirectArgsAddr;
+        uint64 DeferListAddr;
+        uint64 DeferCountAddr;
     };
 
     void FForwardRenderScene::CullPassEarly(ICommandList& CmdList)
@@ -2866,7 +2887,7 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Cull Pass (Early)", tracy::Color::Pink2);
 
-        CmdList.FillBuffer(GetNamedBuffer(ENamedBuffer::DeferCount), 0u);
+        CmdList.FillBuffer(GetDeferCount(), 0u);
 
         FRHIComputeShaderRef CullShader = FShaderLibrary::GetComputeShader("CullMeshlets.slang");
 
@@ -2882,12 +2903,20 @@ namespace Lumina
         State.AddBindingSet(SceneBindingSet);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         State.Reads(GetNamedImage(ENamedImage::DepthPyramid));
+        // Cull-private scratch is bound by device address, not a descriptor set; declaring
+        // the accesses drives the tracker's barriers and keeps the buffers alive.
+        State.Writes(GetIndirectArgs());
+        State.Writes(GetMeshletDeferList());
+        State.Writes(GetDeferCount());
         CmdList.SetComputeState(State);
 
         FCullMeshletPushConstants PC = {};
         PC.NumViews            = (uint32)CullViews.size();
         PC.Phase               = (uint32)ECullPhase::Early;
         PC.CameraLateViewIndex = CameraLateViewIndex;
+        PC.IndirectArgsAddr    = GetIndirectArgs()->GetAddress();
+        PC.DeferListAddr       = GetMeshletDeferList()->GetAddress();
+        PC.DeferCountAddr      = GetDeferCount()->GetAddress();
         CmdList.SetPushConstants(&PC, sizeof(PC));
 
         // Flat thread-per-meshlet; workgroups beyond the 65535 X cap fold into Y.
@@ -2918,10 +2947,8 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Cull Pass (Late)", tracy::Color::Pink3);
 
-        // Dispatch covers the worst case: every camera meshlet was deferred.
-        // Threads past uDeferCount (a GPU value) early-out; we don't have an
-        // indirect-dispatch readback here because it would cost a round-trip
-        // and the dispatch is tiny anyway at typical occlusion rates.
+        // Worst-case dispatch (every camera meshlet deferred); threads past uDeferCount
+        // early-out. No indirect-dispatch readback: the round-trip outweighs the tiny dispatch.
         FRHIComputeShaderRef CullShader = FShaderLibrary::GetComputeShader("CullMeshlets.slang");
 
         FComputePipelineDesc PipelineDesc;
@@ -2936,17 +2963,24 @@ namespace Lumina
         State.AddBindingSet(SceneBindingSet);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         State.Writes(GetNamedImage(ENamedImage::DepthPyramid));
+        // Phase 1 reads the defer list/count phase 0 wrote and appends to indirect
+        // args; declared as writes so the UAV barrier orders phase 0 before this.
+        State.Writes(GetIndirectArgs());
+        State.Writes(GetMeshletDeferList());
+        State.Writes(GetDeferCount());
         CmdList.SetComputeState(State);
 
         FCullMeshletPushConstants PC = {};
         PC.NumViews            = (uint32)CullViews.size();
         PC.Phase               = (uint32)ECullPhase::Late;
         PC.CameraLateViewIndex = CameraLateViewIndex;
+        PC.IndirectArgsAddr    = GetIndirectArgs()->GetAddress();
+        PC.DeferListAddr       = GetMeshletDeferList()->GetAddress();
+        PC.DeferCountAddr      = GetDeferCount()->GetAddress();
         CmdList.SetPushConstants(&PC, sizeof(PC));
 
-        // Worst-case dispatch: every camera meshlet was deferred. Same X/Y
-        // fold as CullPassEarly so Vulkan's 65535 per-axis workgroup limit
-        // doesn't cap us on very large scenes.
+        // Same X/Y fold as CullPassEarly so Vulkan's 65535 per-axis workgroup
+        // limit doesn't cap us on very large scenes.
         const uint32 NumWorkgroups = (TotalMeshletBound + 63u) / 64u;
         constexpr uint32 MaxDispatchAxis = 65535u;
         const uint32 DispatchX = NumWorkgroups < MaxDispatchAxis ? NumWorkgroups : MaxDispatchAxis;
@@ -2962,7 +2996,7 @@ namespace Lumina
         FRHIImage* DepthImage,
         FRHIImage* SizedToImage,
         FRHIBindingLayout* SceneBindingLayout,
-        FRHIBindingSet* SceneBindingSet,
+        FRHIBindingSet* SceneBindingSetReadOnly,
         const FViewportState& SceneViewportState,
         FRHIBuffer* IndirectArgsBuffer,
         uint32 ViewIndex,
@@ -2999,9 +3033,8 @@ namespace Lumina
 
             if (Batch.bMasked)
             {
-                // Masked materials need their own pixel shader to discard.
-                // If they also use WPO, prefer the per-material depth VS so
-                // the displaced + masked geometry produces matching depth.
+                // Masked materials need their pixel shader to discard; if WPO, prefer the
+                // per-material depth VS so displaced+masked geometry matches.
                 Desc.SetVertexShader(Batch.DepthVertexShader ? Batch.DepthVertexShader : Batch.VertexShader);
                 Desc.SetPixelShader(Batch.PixelShader);
             }
@@ -3019,7 +3052,7 @@ namespace Lumina
             GraphicsState.SetRenderPass(RenderPass);
             GraphicsState.SetViewportState(SceneViewportState);
             GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.AddBindingSet(SceneBindingSet);
+            GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
             GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
             GraphicsState.SetIndirectParams(IndirectArgsBuffer);
 
@@ -3049,7 +3082,7 @@ namespace Lumina
             GetSceneDepthRT(),
             GetNamedImage(ENamedImage::HDR),
             SceneBindingLayout,
-            SceneBindingSet,
+            SceneBindingSetReadOnly,
             SceneViewportState,
             GetIndirectArgs(),
             0u,
@@ -3080,7 +3113,7 @@ namespace Lumina
             GetSceneDepthRT(),
             GetNamedImage(ENamedImage::HDR),
             SceneBindingLayout,
-            SceneBindingSet,
+            SceneBindingSetReadOnly,
             SceneViewportState,
             GetIndirectArgs(),
             CameraLateViewIndex,
@@ -3103,7 +3136,7 @@ namespace Lumina
 
         FRHIImage* DepthPyramid = GetNamedImage(ENamedImage::DepthPyramid);
         FRHIImage* DepthSource  = GetNamedImage(ENamedImage::DepthAttachment);
-        FRHIBuffer* SpdCounter  = GetNamedBuffer(ENamedBuffer::SpdCounter);
+        FRHIBuffer* SpdCounter  = GetSpdCounter();
 
         const uint32 PyramidW = DepthPyramid->GetSizeX();
         const uint32 PyramidH = DepthPyramid->GetSizeY();
@@ -3124,7 +3157,7 @@ namespace Lumina
 
         FComputeState State;
         State.SetPipeline(Pipeline);
-        State.AddBindingSet(SceneBindingSet);
+        State.AddBindingSet(SceneBindingSetReadOnly);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         State.Reads(DepthSource);
         State.Writes(DepthPyramid);
@@ -3186,9 +3219,8 @@ namespace Lumina
         ClusterPC.GridSize = glm::vec4(ClusterGridSizeX, ClusterGridSizeY, ClusterGridSizeZ, 0.0f);
         ClusterPC.ScreenSize = glm::uvec2(GetNamedImage(ENamedImage::HDR)->GetSizeX(), GetNamedImage(ENamedImage::HDR)->GetSizeY());
 
-        // Cluster AABBs are view-space and depend only on projection + RT size.
-        // Skip the dispatch while those are unchanged: the Cluster buffer is
-        // persistent and LightCull only overwrites the per-cluster light lists.
+        // Cluster AABBs are view-space, depending only on projection + RT size; skip the
+        // dispatch while unchanged since the Cluster buffer is persistent.
         const bool bNeedsRebuild =
             bClusterGridDirty
             || ClusterPC.InverseProjection != LastClusterInvProjection
@@ -3256,7 +3288,7 @@ namespace Lumina
         State.AddBindingSet(SceneBindingSet);
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         CmdList.SetComputeState(State);
-            
+
         glm::mat4 ViewProj = SceneViewport->GetViewVolume().GetViewMatrix();
 
         CmdList.SetPushConstants(&ViewProj, sizeof(glm::mat4));
@@ -3368,9 +3400,8 @@ namespace Lumina
                 {
                     const FMeshDrawCommand& Batch = DrawCommands[OpaqueIdx];
 
-                    // Pick per-material shadow VS for WPO materials so the
-                    // shadow tracks the displaced geometry instead of the
-                    // un-displaced rest pose.
+                    // Per-material shadow VS for WPO materials so the shadow tracks
+                    // displaced geometry, not the rest pose.
                     FGraphicsPipelineDesc Desc = DescTemplate;
                     if (Batch.ShadowVertexShader)
                     {
@@ -3382,7 +3413,7 @@ namespace Lumina
                         .SetRenderPass(RenderPass)
                         .SetViewportState(FViewportState(Viewport, Scissor))
                         .SetPipeline(Pipeline)
-                        .AddBindingSet(SceneBindingSet)
+                        .AddBindingSet(SceneBindingSetReadOnly)
                         .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                         .SetIndirectParams(GetIndirectArgs());
 
@@ -3424,9 +3455,8 @@ namespace Lumina
                     .SetCullBack());
 
 
-        // Render pass + pipeline are built ONCE outside the per-light loop.
-        // Load (not Clear) to preserve the point-shadow tiles that
-        // PointShadowPass already wrote into this same 2D atlas.
+        // Load (not Clear) to preserve the point-shadow tiles PointShadowPass
+        // already wrote into this same 2D atlas.
         FRenderPassDesc::FAttachment Depth; Depth
             .SetLoadOp(ERenderLoadOp::Load)
             .SetImage(ShadowAtlas.GetImage());
@@ -3503,7 +3533,7 @@ namespace Lumina
                     .SetRenderPass(RenderPass)
                     .SetViewportState(FViewportState(Viewport, Scissor))
                     .SetPipeline(Pipeline)
-                    .AddBindingSet(SceneBindingSet)
+                    .AddBindingSet(SceneBindingSetReadOnly)
                     .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                     .SetIndirectParams(GetIndirectArgs());
 
@@ -3523,11 +3553,8 @@ namespace Lumina
         const uint32 NumDrawsPerView = Frame.NumDrawsPerView;
         const uint32 CascadeViewBase = Frame.CascadeViewBase;
 
-        // No work if the sun doesn't cast shadows (ShadowDataIndex was set to
-        // INDEX_NONE by ProcessDirectionalLight in that case), or the scene has
-        // no shadow-caster meshes to rasterise. Terrain-only scenes still read
-        // valid (cleared 1.0) shadow data thanks to the unconditional cascade
-        // clear in ResetPass.
+        // No work without a shadow-casting sun or caster meshes; terrain-only scenes
+        // still read valid (cleared 1.0) shadow data from ResetPass.
         if (!LightData.bHasSun || DrawCommands.empty())
         {
             return;
@@ -3557,9 +3584,8 @@ namespace Lumina
             .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
             .SetVertexShader(VertexShader);
 
-        // Each cascade maps to its own cull view; BuildCullViews recorded the
-        // base index. Bail early if the sun didn't get a shadow data slot (rare:
-        // happens when MaxShadows was exceeded).
+        // Each cascade maps to its own cull view; BuildCullViews recorded the base.
+        // Bail if the sun got no shadow slot (MaxShadows exceeded).
         if (CascadeViewBase == ~0u)
         {
             return;
@@ -3567,10 +3593,8 @@ namespace Lumina
 
         for (uint32 c = 0; c < (uint32)NumCascades; ++c)
         {
-            // Cascade 0's pass clears the entire atlas (depth = 1.0). The
-            // outer cascades load the existing depth so their viewport
-            // region overwrites only itself, leaving the inner cascade's
-            // pixels and the unrendered atlas margin untouched.
+            // Cascade 0 clears the whole atlas (depth=1.0); outer cascades load so each
+            // viewport overwrites only its own tile, leaving other tiles untouched.
             FRenderPassDesc::FAttachment Depth; Depth
                 .SetLoadOp(c == 0u ? ERenderLoadOp::Clear : ERenderLoadOp::Load)
                 .SetDepthClearValue(1.0f)
@@ -3580,10 +3604,8 @@ namespace Lumina
                 .SetDepthAttachment(Depth)
                 .SetRenderArea(glm::uvec2(GCSMAtlasWidth, GCSMAtlasHeight));
 
-            // Per-cascade viewport: only this cascade's atlas tile rasterizes.
-            // Pixel coordinates come straight from the GCSMCascadeOrigin /
-            // GCSMCascadeSizes packing table. FViewport's Y range is
-            // (MinY, MaxY) which matches Vulkan after the engine's flip.
+            // Per-cascade viewport: only this tile rasterizes; coords from the
+            // GCSMCascadeOrigin/Sizes packing table.
             const float TileX = (float)GCSMCascadeOriginX[c];
             const float TileY = (float)GCSMCascadeOriginY[c];
             const float TileW = (float)GCSMCascadeSizes[c];
@@ -3613,7 +3635,7 @@ namespace Lumina
                     .SetRenderPass(RenderPass)
                     .SetViewportState(FViewportState(Viewport, Scissor))
                     .SetPipeline(Pipeline)
-                    .AddBindingSet(SceneBindingSet)
+                    .AddBindingSet(SceneBindingSetReadOnly)
                     .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                     .SetIndirectParams(GetIndirectArgs());
 
@@ -3693,7 +3715,7 @@ namespace Lumina
                 .SetViewportState(SceneViewportState)
                 .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
                 .SetIndirectParams(GetIndirectArgs())
-                .AddBindingSet(SceneBindingSet)
+                .AddBindingSet(SceneBindingSetReadOnly)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                 .AddBindingSet(EmptySet2BindingSet)
                 .AddBindingSet(ShadowSamplingBindingSet);
@@ -3843,12 +3865,8 @@ namespace Lumina
 
             SpawnCount = eastl::min(SpawnCount, MaxParticles);
 
-            // Track an upper bound on how long any currently-alive particle
-            // could still survive. A spawn this frame resets it to the asset's
-            // max lifetime; otherwise it counts down with the simulation
-            // clock. When it reaches zero and we're not spawning, all slots
-            // are guaranteed dead and the GPU has nothing to do -- skip the
-            // dispatch (and the associated per-frame buffer writes).
+            // Upper bound on remaining alive-particle lifetime; a spawn resets it to max
+            // lifetime, else it counts down. At zero with no spawn, skip the dispatch.
             const float MaxLifetime = eastl::max(Resolved.LifetimeRange.y, 0.0f);
             if (SpawnCount > 0)
             {
@@ -4024,10 +4042,8 @@ namespace Lumina
             return;
         }
 
-        // Only Load when an earlier pass actually wrote to these targets. In the
-        // particle editor's preview world (no meshes, no environment) BasePass and
-        // DepthPrePass both early-return, so the first pass to touch HDR/Depth has
-        // to clear them itself, or it'll sample uninitialized memory.
+        // Only Load when an earlier pass wrote these targets; in the particle preview world
+        // BasePass/DepthPrePass early-return, so the first pass must clear them itself.
         const bool bHDRWasWritten = !DrawCommands.empty() || RenderSettings.bHasEnvironment;
 
         FRenderPassDesc::FAttachment RenderTarget;
@@ -4138,7 +4154,7 @@ namespace Lumina
             GraphicsState.SetRenderPass(RenderPass)
                 .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
                 .SetPipeline(Pipeline)
-                .AddBindingSet(SceneBindingSet)
+                .AddBindingSet(SceneBindingSetReadOnly)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                 .AddBindingSet(ParticleSet);
 
@@ -4149,9 +4165,8 @@ namespace Lumina
 
     namespace
     {
-        // Ensure the component's CPU backing stores match the declared dimensions.
-        // Called lazily on the render thread so designers can tweak Resolution and
-        // LayerCount in the inspector without rebooting.
+        // Resize CPU backing stores to match declared dimensions; called lazily so
+        // designers can tweak Resolution/LayerCount without rebooting.
         static void EnsureTerrainCpuBuffers(STerrainComponent& Terrain)
         {
             const size_t NeededHeights = size_t(Terrain.Resolution) * size_t(Terrain.Resolution);
@@ -4226,11 +4241,8 @@ namespace Lumina
                 // so the chunk/meshlet metadata uses the right Resolution/ChunkRes.
                 State.bChunksDirty        = true;
 
-                // Vulkan does not zero new image memory. Unwritten slices
-                // return undefined data (~0.5 historically, producing uniform
-                // layer blends). Upload every slice from the CPU buffer so
-                // no slice is ever undefined; also clears dirty flags to
-                // skip redundant re-upload below.
+                // Vulkan doesn't zero new image memory; upload every slice from the CPU
+                // buffer so no slice reads undefined data, and clear dirty flags.
                 if (!Terrain.LayerWeights.empty())
                 {
                     const size_t SlicePixels = size_t(Res) * size_t(Res);
@@ -4340,9 +4352,8 @@ namespace Lumina
                 State.HeightDirtyMax = glm::ivec2(INT32_MIN);
             }
 
-            // Rebuild chunk + meshlet metadata whenever the heightmap geometry
-            // shifted. The cull pass tests against tight world-space AABBs
-            // computed here, so this has to fire before the next cull dispatch.
+            // Rebuild chunk + meshlet metadata when heightmap geometry shifted; the cull
+            // pass tests the AABBs computed here, so it must fire before the next cull.
             if (State.bChunksDirty)
             {
                 const glm::vec3 WorldOrigin = glm::vec3(Transform.GetWorldMatrix()[3]);
@@ -4368,9 +4379,8 @@ namespace Lumina
                             {
                                 Desc.Usage.SetFlag(BUF_Indirect);
                             }
-                            // bKeepInitialState pins the Common state so the
-                            // automatic state tracker can move the buffer
-                            // freely between SRV/UAV/Indirect at use sites.
+                            // bKeepInitialState pins Common so the tracker can move the
+                            // buffer freely between SRV/UAV/Indirect at use sites.
                             Desc.bKeepInitialState = true;
                             Desc.InitialState      = EResourceStates::Common;
                             Buffer = GRenderContext->CreateBuffer(Desc);
@@ -4458,7 +4468,7 @@ namespace Lumina
 
             FComputeState ComputeState;
             ComputeState.SetPipeline(CullPipeline)
-                        .AddBindingSet(SceneBindingSet)
+                        .AddBindingSet(SceneBindingSetReadOnly)
                         .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                         .AddBindingSet(CullSet);
             CmdList.SetComputeState(ComputeState);
@@ -4468,10 +4478,8 @@ namespace Lumina
             Push.MeshletCount = State.AllocatedMeshletCount;
             CmdList.SetPushConstants(&Push, sizeof(Push));
 
-            // One workgroup per chunk, one thread per meshlet inside that
-            // chunk. The shader's chunk-level test fires on thread 0 and
-            // gates every other thread via groupshared, so dispatch sizes
-            // up to MeshletsPerChunk (default 81) without wasting threads.
+            // One workgroup per chunk, one thread per meshlet; the chunk-level test on
+            // thread 0 gates the rest via groupshared.
             CmdList.Dispatch(State.AllocatedChunkCount, 1u, 1u);
         });
     }
@@ -4505,9 +4513,8 @@ namespace Lumina
             {
                 return;
             }
-            // Cull pass output is what makes the indirect draw legal; bail
-            // when it hasn't been built yet (first frame, or heightmap dirty
-            // but TerrainUpdatePass has not run since).
+            // Cull output makes the indirect draw legal; bail when it isn't built
+            // yet (first frame, or heightmap dirty before TerrainUpdatePass ran).
             if (!State.ChunkInfoBuffer || !State.MeshletInfoBuffer || !State.VisibleMeshletBuffer || !State.IndirectDrawBuffer)
             {
                 return;
@@ -4518,12 +4525,8 @@ namespace Lumina
             }
 
 
-            // Strict material gate. The terrain pipeline binds set 2 to the
-            // heightmap / layer-weight / chunk-meshlet resources, which is
-            // only valid against a TERRAIN-compiled shader. A user-assigned
-            // material that isn't a Terrain material would point at a shader
-            // built for the mesh binding layout, so the descriptor set would
-            // bind to the wrong slots -- skip rather than render garbage.
+            // Terrain pipeline binds set 2 to heightmap/weight/meshlet resources, valid only
+            // against a TERRAIN shader; a non-terrain material would bind wrong slots, so skip.
             CMaterialInterface* MaterialInterface = Terrain.Material.Get();
             if (MaterialInterface && MaterialInterface->GetMaterialType() != EMaterialType::Terrain)
             {
@@ -4618,10 +4621,8 @@ namespace Lumina
 
             FRHISamplerRef HeightSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
-            // Bind set 2 = terrain-local resources. Slots 0..2 textures, 4..6
-            // chunk + meshlet metadata + cull-output draw list (consumed via
-            // SV_InstanceID by the indirect path). Slot 3 used to be the
-            // FTerrainRenderParams CBV; now sourced via push-constant BDA.
+            // Set 2 = terrain-local resources: slots 0..2 textures, 4..6 chunk/meshlet
+            // metadata + cull-output draw list. RenderParams now sourced via push-constant BDA.
             FBindingLayoutDesc TerrainLayoutDesc;
             TerrainLayoutDesc.SetBindingIndex(2)
                 .SetVisibility(ERHIShaderType::Vertex)
@@ -4660,7 +4661,7 @@ namespace Lumina
             GraphicsState.SetRenderPass(RenderPass)
                 .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
                 .SetPipeline(Pipeline)
-                .AddBindingSet(SceneBindingSet)
+                .AddBindingSet(SceneBindingSetReadOnly)
                 .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                 .AddBindingSet(TerrainSet)
                 .AddBindingSet(ShadowSamplingBindingSet)
@@ -4669,9 +4670,8 @@ namespace Lumina
             CmdList.SetGraphicsState(GraphicsState);
             CmdList.SetPushConstants(&RenderParamsAlloc.Gpu, sizeof(uint64));
 
-            // The cull pass populated the single FDrawIndirectArguments slot
-            // with VertexCount = MeshletQuads^2 * 6 and InstanceCount =
-            // (number of surviving meshlets). One draw, GPU-driven.
+            // Cull populated the single indirect args slot (VertexCount = MeshletQuads^2*6,
+            // InstanceCount = surviving meshlets). One GPU-driven draw.
             CmdList.DrawIndirect(1u, 0u);
         });
     }
@@ -4743,7 +4743,7 @@ namespace Lumina
             .SetRenderPass(RenderPass)
             .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
             .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-            .AddBindingSet(SceneBindingSet)
+            .AddBindingSet(SceneBindingSetReadOnly)
             .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         
         CmdList.SetGraphicsState(GraphicsState);
@@ -4848,7 +4848,7 @@ namespace Lumina
                          .SetViewportState(SceneViewportState)
                          .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
                          .SetIndirectParams(GetIndirectArgs())
-                         .AddBindingSet(SceneBindingSet)
+                         .AddBindingSet(SceneBindingSetReadOnly)
                          .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
                          .AddBindingSet(EmptySet2BindingSet)
                          .AddBindingSet(ShadowSamplingBindingSet);
@@ -4968,10 +4968,8 @@ namespace Lumina
         const auto& LightData       = Frame.LightData;
         const auto& SceneGlobalData = Frame.SceneGlobalData;
 
-        // Build a CPU-side list of the volumetric lights this frame so the
-        // shader can iterate them directly instead of scanning every active
-        // light with a flag check. Sun (index 0) is special-cased -- its
-        // phase + radiance can be hoisted out of the per-step inner loop.
+        // CPU list of this frame's volumetric lights so the shader iterates them directly.
+        // Sun (index 0) is special-cased: phase + radiance hoist out of the per-step loop.
         bool   bSunVolumetric = false;
         uint32 LocalIndices[GVolumetricMaxLocalLights];
         uint32 NumLocal = 0;
@@ -5023,9 +5021,8 @@ namespace Lumina
         DepthState.DisableDepthTest();
         DepthState.DisableDepthWrite();
 
-        // ---- Pass 1: half-res ray march into VolumetricHalfRes. ----------
-        // No blend; this RT is owned by the volumetric pipeline and overwritten
-        // every frame.
+        // Pass 1: half-res ray march into VolumetricHalfRes. No blend; the volumetric
+        // pipeline owns this RT and overwrites it every frame.
         {
             FBindingLayoutDesc DepthLayoutDesc;
             DepthLayoutDesc.SetBindingIndex(2)
@@ -5065,7 +5062,7 @@ namespace Lumina
             FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
             FGraphicsState GraphicsState;
-            GraphicsState.AddBindingSet(SceneBindingSet);
+            GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
             GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
             GraphicsState.AddBindingSet(DepthSet);
             GraphicsState.AddBindingSet(ShadowSamplingBindingSet);
@@ -5096,7 +5093,7 @@ namespace Lumina
             CmdList.Draw(3, 1, 0, 0);
         }
 
-        // ---- Pass 2: depth-aware bilateral upsample, additive into HDR. --
+        // Pass 2: depth-aware bilateral upsample, additive into HDR.
         {
             FBlendState::RenderTarget Additive;
             Additive.SetBlendEnable(true);
@@ -5156,10 +5153,8 @@ namespace Lumina
 
             CmdList.SetGraphicsState(GraphicsState);
 
-            // DepthSigma controls how aggressively the bilateral term rejects
-            // mismatched neighbors. The shader works in (1 - reverseZ) so the
-            // input space is roughly [0,1]; sigma ~ 0.01 of that range gives a
-            // sharp edge cutoff. Stored as 1/sigma^2 for the shader.
+            // DepthSigma controls bilateral neighbor rejection; shader works in (1-reverseZ)
+            // ~[0,1], so 0.01 gives a sharp cutoff. Stored as 1/sigma^2.
             constexpr float DepthEdgeWidth = 0.01f;
             FVolumetricUpsamplePushConstants PC = {};
             PC.HalfTexelSize[0] = 1.0f / (float)HalfRes->GetSizeX();
@@ -5223,10 +5218,8 @@ namespace Lumina
             PipelineDesc.DebugName = "Equirect To Cubemap";
             FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
-            // Linear-clamp sampler. atan2/asin in the shader can produce UVs
-            // a hair past 1.0 from numerical noise at the wrap seam; clamp
-            // keeps the sample on the texture instead of wrapping into the
-            // wrong hemisphere.
+            // Clamp: atan2/asin can yield UVs a hair past 1.0 at the wrap seam; clamp
+            // keeps the sample on-texture instead of wrapping to the wrong hemisphere.
             FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
             FBindingSetDesc SetDesc;
@@ -5291,10 +5284,8 @@ namespace Lumina
             float     Time;
         } PC = {};
 
-        // Same source the EnvironmentPass uses (LightData.SunDirection points
-        // FROM surface TO sun, set up wherever the directional light is
-        // processed). Falls back to a sensible day-time direction if no sun
-        // is present so the cubemap still has structure for IBL.
+        // Same source EnvironmentPass uses (SunDirection points FROM surface TO sun);
+        // falls back to a daytime direction if no sun so the cube still has IBL structure.
         if (LightData.bHasSun)
         {
             PC.SunDirection = glm::normalize(LightData.SunDirection);
@@ -5303,9 +5294,8 @@ namespace Lumina
         {
             PC.SunDirection = glm::normalize(glm::vec3(0.3f, 0.8f, 0.4f));
         }
-        // Star twinkle samples Time -- the cube only re-bakes when env params
-        // or sun direction change, so this freezes for IBL purposes (stars
-        // get blurred to nothing in the convolution anyway).
+        // Star twinkle samples Time, but the cube only re-bakes on env/sun change so
+        // it effectively freezes (stars blur to nothing in convolution anyway).
         PC.Time = SceneGlobalData.Time;
         CmdList.SetPushConstants(&PC, sizeof(PC));
 
@@ -5326,10 +5316,8 @@ namespace Lumina
             return;
         }
 
-        // Skip the 1024-sample-per-texel convolution when the source cube
-        // hasn't moved meaningfully -- the irradiance cube is persistent
-        // and the diffuse lobe is so wide that sub-degree sun deltas are
-        // invisible in the result.
+        // Skip the per-texel convolution when the source cube hasn't moved; the wide
+        // diffuse lobe makes sub-degree sun deltas invisible in the persistent cube.
         if (!bIBLConvolutionDirty)
         {
             return;
@@ -5367,9 +5355,8 @@ namespace Lumina
         FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
         FBindingSetDesc SetDesc;
-        // SkyCube is bound as a TextureCube SRV: same image, different view
-        // type from the SkyCubeCapturePass UAV write earlier this frame.
-        // Auto-barriers transition between the two states.
+        // SkyCube bound as TextureCube SRV: same image, different view type from the
+        // SkyCubeCapturePass UAV write; auto-barriers transition between states.
         SetDesc.AddItem(FBindingSetItem::TextureSRV(
             0, SkyCube, LinearClamp, SkyCube->GetFormat(),
             FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
@@ -5401,10 +5388,8 @@ namespace Lumina
             return;
         }
 
-        // Same dirty gate as the irradiance pass -- the prefilter cube
-        // outlives a single frame, so re-running 256 GGX samples per
-        // texel per mip is wasted when the source cube hasn't moved
-        // beyond the angular threshold.
+        // Same dirty gate as irradiance: re-running 256 GGX samples per texel per mip
+        // is wasted when the persistent prefilter cube's source hasn't moved enough.
         if (!bIBLConvolutionDirty)
         {
             return;
@@ -5452,9 +5437,8 @@ namespace Lumina
 
         constexpr uint32 PrefilterTile = 8u;
 
-        // One dispatch per mip, each writing through a UAV view of just that
-        // mip. Roughness is uniform across the dispatch (same for every
-        // texel of every face at this mip), threaded in via push constant.
+        // One dispatch per mip, each writing a UAV view of just that mip; roughness is
+        // uniform across the dispatch, threaded in via push constant.
         for (uint32 Mip = 0; Mip < NumMips; ++Mip)
         {
             FBindingSetDesc SetDesc;
@@ -5474,9 +5458,8 @@ namespace Lumina
             CmdList.SetComputeState(State);
 
             FPrefilterPC PC = {};
-            // Even spacing of roughness across mips: mip 0 is mirror, last
-            // mip is fully rough. Mapping matches the runtime mip select
-            // SamplePrefilter() will use.
+            // Roughness even across mips (mip 0 mirror, last fully rough); matches
+            // SamplePrefilter()'s runtime mip select.
             PC.Roughness  = (NumMips <= 1u) ? 0.0f
                                             : (float)Mip / (float)(NumMips - 1u);
             PC.NumSamples = GPrefilterSampleCount;
@@ -5518,10 +5501,8 @@ namespace Lumina
         FRenderState RenderState;
         RenderState.SetRasterState(RasterState);
 
-        // Set 2: the env params CB at slot 0, plus the SkyCube at slot 1
-        // for SKY_MODE_HDRI to sample by view direction. SkyCube is filled
-        // earlier this frame by SkyCubeCapturePass -- auto-barriers handle
-        // the UAV->SRV transition so the env shader sees coherent texels.
+        // Set 2: env params CB at slot 0, SkyCube at slot 1 for SKY_MODE_HDRI. SkyCube is
+        // filled by SkyCubeCapturePass; auto-barriers handle the UAV->SRV transition.
         FBindingLayoutDesc EnvLayoutDesc;
         EnvLayoutDesc.SetBindingIndex(2)
             .SetVisibility(ERHIShaderType::Fragment)
@@ -5553,7 +5534,7 @@ namespace Lumina
         FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
         FGraphicsState GraphicsState;
-        GraphicsState.AddBindingSet(SceneBindingSet);
+        GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         GraphicsState.AddBindingSet(EnvSet);
         GraphicsState.SetPipeline(Pipeline);
@@ -5632,7 +5613,7 @@ namespace Lumina
             .AddVertexBuffer(VertexBinding)
             .SetViewportState(SceneViewportState)
             .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-            .AddBindingSet(SceneBindingSet)
+            .AddBindingSet(SceneBindingSetReadOnly)
             .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
 
         CmdList.SetGraphicsState(GraphicsState);
@@ -5818,7 +5799,7 @@ namespace Lumina
 
             FComputeState State;
             State.SetPipeline(Pipeline);
-            State.AddBindingSet(SceneBindingSet);
+            State.AddBindingSet(SceneBindingSetReadOnly);
             State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
             State.Reads(HDR);
             State.Writes(Bloom);
@@ -5862,7 +5843,7 @@ namespace Lumina
 
             FComputeState State;
             State.SetPipeline(UpPipeline);
-            State.AddBindingSet(SceneBindingSet);
+            State.AddBindingSet(SceneBindingSetReadOnly);
             State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
             // Per-subresource: only SrcMip is sampled (ShaderResource), only DstMip
             // is written (UnorderedAccess). Other mips' states don't matter here.
@@ -5902,12 +5883,8 @@ namespace Lumina
             return;
         }
 
-        // When SMAA is enabled, tonemap renders into an LDR intermediate that the
-        // SMAA passes then resolve into the final render target. Otherwise we
-        // write straight to the render target -- unless the post-process
-        // material chain is non-empty, in which case we still need an
-        // intermediate so the chain can ping-pong against it before the
-        // final blit to RT in PostProcessMaterialPass.
+        // Render to an LDR intermediate when SMAA or a post-process chain is active
+        // (both need to ping-pong before the final blit); otherwise straight to RT.
         const bool bSMAAEnabled = CachedWorldSettings.SMAAQuality != ESMAAQuality::Off;
         const bool bPPMaterials = !ActivePostProcessMaterials.empty();
         FRHIImage* OutputImage = (bSMAAEnabled || bPPMaterials) ? GetNamedImage(ENamedImage::LDR) : GetRenderTarget();
@@ -5949,7 +5926,7 @@ namespace Lumina
 
         FGraphicsState GraphicsState;
         GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(SceneBindingSet);
+        GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         GraphicsState.AddBindingSet(ComposeBindingSet);
         GraphicsState.SetRenderPass(RenderPass);
@@ -5987,13 +5964,8 @@ namespace Lumina
 
         LUMINA_PROFILE_SECTION_COLORED("Post Process Material Pass", tracy::Color::Magenta);
 
-        // Set 2 layout for the post-process inputs. Materials see three
-        // bindings: the chain's current input (uSceneColor, the ping-pong
-        // source), the opaque depth attachment (uSceneDepth), and the
-        // pre-tone-mapping HDR scene color (uHDRSceneColor) for materials
-        // that want the unclipped data. Each material in the chain gets a
-        // fresh binding set with the current source bound; the layout
-        // itself is shared (cached via BindingCache).
+        // Set 2 for post-process inputs: chain source (uSceneColor), depth (uSceneDepth),
+        // and pre-tonemap HDR (uHDRSceneColor). Per-material set, shared cached layout.
         FBindingLayoutDesc PPLayoutDesc;
         PPLayoutDesc.SetBindingIndex(2)
             .SetVisibility(ERHIShaderType::Fragment)
@@ -6018,10 +5990,8 @@ namespace Lumina
 
         const bool bSMAAEnabled = CachedWorldSettings.SMAAQuality != ESMAAQuality::Off;
 
-        // The chain reads from "Source" and writes to "Dest", swapping each
-        // pass. Tone mapping wrote into LDR (we forced that path in
-        // ToneMappingPass when ActivePostProcessMaterials is non-empty), so
-        // the first read is always LDR.
+        // Chain reads Source, writes Dest, swapping each pass. ToneMappingPass forced its
+        // output into LDR when PP materials are present, so the first read is always LDR.
         FRHIImage* Source = GetNamedImage(ENamedImage::LDR);
         FRHIImage* Dest   = GetNamedImage(ENamedImage::PostProcessScratch);
 
@@ -6062,17 +6032,15 @@ namespace Lumina
 
             FBindingSetDesc SetDesc;
             SetDesc.AddItem(FBindingSetItem::TextureSRV(0, Source, LinearClamp));
-            // Depth uses a point sampler -- linear filtering across a depth
-            // discontinuity returns garbage in-between depths, which any
-            // depth-based effect (DoF, distance fog, edge detection)
-            // would propagate as halos.
+            // Depth uses point sampling: linear filtering across a depth discontinuity
+            // returns in-between garbage that depth-based effects propagate as halos.
             SetDesc.AddItem(FBindingSetItem::TextureSRV(1, GetNamedImage(ENamedImage::DepthAttachment), PointClamp));
             SetDesc.AddItem(FBindingSetItem::TextureSRV(2, GetNamedImage(ENamedImage::HDR), LinearClamp));
             FRHIBindingSetRef PPSet = GRenderContext->CreateBindingSet(SetDesc, PPLayout);
 
             FGraphicsState GraphicsState;
             GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.AddBindingSet(SceneBindingSet);
+            GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
             GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
             GraphicsState.AddBindingSet(PPSet);
             GraphicsState.SetRenderPass(RenderPass);
@@ -6081,9 +6049,8 @@ namespace Lumina
             CmdList.SetGraphicsState(GraphicsState);
 
             FPostProcessMaterialPushConstants PC = {};
-            // Use the interface's index, not the parent material's — instances
-            // own their own slot in the material buffer (parameter overrides
-            // live there), so reading the parent's slot would ignore overrides.
+            // Use the interface's index, not the parent's: instances own their own buffer
+            // slot where parameter overrides live, so the parent's slot would ignore them.
             PC.MaterialIndex = (uint32)MaterialInterface->GetMaterialIndex();
             CmdList.SetPushConstants(&PC, sizeof(PC));
             CmdList.Draw(3, 1, 0, 0);
@@ -6091,10 +6058,8 @@ namespace Lumina
             eastl::swap(Source, Dest);
         }
 
-        // After the loop, Source holds the latest result. SMAA reads LDR,
-        // and the no-SMAA path expects the final image in the swapchain RT
-        // (which the bypass tone-map path used to write to directly). Make
-        // sure both consumers see Source where they expect.
+        // Source holds the latest result; copy it where each consumer expects --
+        // LDR for SMAA, the swapchain RT for the no-SMAA path.
         FRHIImage* LDR = GetNamedImage(ENamedImage::LDR);
         if (bSMAAEnabled)
         {
@@ -6191,7 +6156,7 @@ namespace Lumina
 
         FGraphicsState GraphicsState;
         GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(SceneBindingSet);
+        GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         GraphicsState.AddBindingSet(SMAAEdgeBindingSet);
         GraphicsState.SetRenderPass(RenderPass);
@@ -6252,7 +6217,7 @@ namespace Lumina
 
         FGraphicsState GraphicsState;
         GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(SceneBindingSet);
+        GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         GraphicsState.AddBindingSet(SMAABlendWeightBindingSet);
         GraphicsState.SetRenderPass(RenderPass);
@@ -6312,7 +6277,7 @@ namespace Lumina
 
         FGraphicsState GraphicsState;
         GraphicsState.SetPipeline(Pipeline);
-        GraphicsState.AddBindingSet(SceneBindingSet);
+        GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
         GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         GraphicsState.AddBindingSet(SMAANeighborhoodBindingSet);
         GraphicsState.SetRenderPass(RenderPass);
@@ -6350,10 +6315,8 @@ namespace Lumina
         }
 
         {
-            // Initial size sized for a modest skeletal-mesh load; the upload
-            // site grows this as needed. Sizing for the absolute worst case
-            // (255 bones x 1000 skeletons = 16 MB) up front would multiply by
-            // MaxVersions into host-visible memory for scenes that don't need it.
+            // Modest initial size, grown at the upload site; worst-case sizing up front
+            // would multiply by MaxVersions into host-visible memory needlessly.
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(glm::mat4) * 16 * 1024;
             BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
@@ -6421,25 +6384,21 @@ namespace Lumina
             NamedBuffers[(int)ENamedBuffer::CullView] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
-        // Unified meshlet draw list (NumViews * TotalMeshletBound).
-        // CullMeshlets.slang appends surviving meshlets into each view's
-        // slice via FCullView.DrawListOffset; draw passes read through
-        // FCullView.IndirectArgsOffset for the per-view InstanceCount pair.
+        // Unified meshlet draw list (NumViews * TotalMeshletBound); CullMeshlets appends
+        // surviving meshlets into each view's slice via FCullView.DrawListOffset.
+        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(uint32) * 2;
             BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = "Meshlet Draw List";
-            NamedBuffers[(int)ENamedBuffer::MeshletDrawList] = GRenderContext->CreateBuffer(BufferDesc);
+            BufferDesc.DebugName = FString("Meshlet Draw List [") + eastl::to_string(Slot) + "]";
+            MeshletDrawListRing[Slot] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
-        // Unified indirect draw args. Sized NumViews * NumDraws.
-        // Manually ringed (one VkBuffer per slot) because the buffer is both
-        // GPU-atomic-written by CullMeshlets and consumed by vkCmdDrawIndirect,
-        // neither of which works with BUF_Dynamic's host-mapped descriptor
-        // offset model.
+        // Unified indirect draw args (NumViews * NumDraws), manually ringed: it's both
+        // GPU-atomic-written and DrawIndirect-consumed, incompatible with BUF_Dynamic.
         for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
         {
             FRHIBufferDesc BufferDesc;
@@ -6452,10 +6411,9 @@ namespace Lumina
             IndirectArgsRing[Slot] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
-        // Two-pass cull defer list. Phase 0 appends camera meshlets that
-        // failed the previous-frame HZB test; phase 1 pops them and
-        // re-tests against the rebuilt HZB. Stride matches FMeshletDeferred
-        // (4x uint32).
+        // Two-pass cull defer list: phase 0 appends prev-frame-HZB rejects, phase 1
+        // re-tests them. Stride matches FMeshletDeferred (4x uint32).
+        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(uint32) * 4;
@@ -6463,12 +6421,13 @@ namespace Lumina
             BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = "Meshlet Defer List";
-            NamedBuffers[(int)ENamedBuffer::MeshletDeferList] = GRenderContext->CreateBuffer(BufferDesc);
+            BufferDesc.DebugName = FString("Meshlet Defer List [") + eastl::to_string(Slot) + "]";
+            MeshletDeferListRing[Slot] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
         // Atomic counter paired with MeshletDeferList. ResetPass zeroes it
         // every frame via FillBuffer before phase 0 runs.
+        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(uint32);
@@ -6476,14 +6435,13 @@ namespace Lumina
             BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = "Meshlet Defer Count";
-            NamedBuffers[(int)ENamedBuffer::DeferCount] = GRenderContext->CreateBuffer(BufferDesc);
+            BufferDesc.DebugName = FString("Meshlet Defer Count [") + eastl::to_string(Slot) + "]";
+            DeferCountRing[Slot] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
-        // Atomic counter used by the Single-Pass Downsampler to hand off from
-        // phase 1 (per-tile mips 0..5) to phase 2 (last workgroup generates
-        // mips 6..11). DepthPyramidPass zeroes it before each dispatch; SPD
-        // phase 2 also resets it so either writer leaves the buffer at zero.
+        // SPD hand-off counter: phase 1 (per-tile mips 0..5) to phase 2 (last workgroup,
+        // mips 6..11). Zeroed before each dispatch; phase 2 resets it so it stays zero.
+        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(uint32);
@@ -6491,13 +6449,12 @@ namespace Lumina
             BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = "SPD Counter";
-            NamedBuffers[(int)ENamedBuffer::SpdCounter] = GRenderContext->CreateBuffer(BufferDesc);
+            BufferDesc.DebugName = FString("SPD Counter [") + eastl::to_string(Slot) + "]";
+            SpdCounterRing[Slot] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
-        // Per-frame environment params consumed by Environment.slang. Sized
-        // for one FEnvironmentParams; the EnvironmentPass writes a fresh
-        // copy each frame from the active SEnvironmentComponent.
+        // Per-frame environment params consumed by Environment.slang; EnvironmentPass
+        // writes a fresh copy each frame from the active SEnvironmentComponent.
         {
             FRHIBufferDesc BufferDesc;
             BufferDesc.Size = sizeof(FEnvironmentParams);
@@ -6760,11 +6717,8 @@ namespace Lumina
         }
 
         {
-            // Half-res volumetric scattering buffer. The march writes here at
-            // 1/2 width and 1/2 height; the bilateral upsample reads it back
-            // and composites into HDR. R11G11B10_FLOAT matches bloom's choice
-            // -- additive over scene color, 1e5 dynamic range, no banding
-            // visible after tone map.
+            // Half-res volumetric scattering buffer; bilateral upsample composites it into
+            // HDR. R11G11B10_FLOAT (like bloom): wide range, no banding after tone map.
             uint32 W = eastl::max<uint32>(Extent.x / 2u, 1u);
             uint32 H = eastl::max<uint32>(Extent.y / 2u, 1u);
 
@@ -6782,10 +6736,8 @@ namespace Lumina
         }
 
         {
-            // Bloom mip chain. Half-res start, R11G11B10_FLOAT (additive over
-            // scene; quantization invisible). One image, BLOOM_MIP_COUNT mips:
-            // SPD writes mips 0..N-1 from HDR in a single dispatch, then per-
-            // mip compute upsamples accumulate into mip[i-1].
+            // Bloom mip chain (half-res, R11G11B10_FLOAT). SPD writes mips 0..N-1 from
+            // HDR in one dispatch, then per-mip upsamples accumulate into mip[i-1].
             const uint32 BloomW = eastl::max<uint32>(Extent.x / 2u, 1u);
             const uint32 BloomH = eastl::max<uint32>(Extent.y / 2u, 1u);
 
@@ -6856,11 +6808,8 @@ namespace Lumina
 
     void FForwardRenderScene::InitSkyCube()
     {
-        // 256 per face. The fullscreen Environment pass now samples this cube
-        // with bilinear filtering, so per-pixel detail comes from the
-        // hardware filter rather than from the cube being the same size as
-        // the screen. 256 keeps the sun disc, moon, and Milky-Way band
-        // sharp enough while cutting cube-bake work 16x vs the old 1024.
+        // 256 per face: bilinear filtering supplies per-pixel detail, so the cube needn't
+        // match screen size. Keeps sun/moon sharp while cutting bake work 16x vs 1024.
         constexpr uint32 SkyCubeFaceSize = 256u;
 
         FRHIImageDesc ImageDesc;
@@ -6896,10 +6845,8 @@ namespace Lumina
             NamedImages[(int)ENamedImage::SkyIrradiance] = GRenderContext->CreateImage(ImageDesc);
         }
 
-        // Pre-filtered specular: 128 base size with 5 mips ({128, 64, 32,
-        // 16, 8}). The smallest mip corresponds to fully rough surfaces;
-        // the GGX lobe at roughness=1 is so wide that 8 per face is more
-        // than enough resolution.
+        // Pre-filtered specular: 128 base, 5 mips. Smallest mip = fully rough; the
+        // roughness=1 GGX lobe is wide enough that 8 per face suffices.
         {
             constexpr uint32 PrefilterFaceSize = 128u;
 
@@ -6945,88 +6892,70 @@ namespace Lumina
 
     void FForwardRenderScene::CreateLayouts()
     {
-        // Build a SceneBindingSet per frame slot. Only binding 12 (IndirectArgs)
-        // differs across slots; the dynamic-buffer bindings (Scene, Light, etc.)
-        // share one VkBuffer with per-slot offsets selected at bind time. The
-        // layout is identical across iterations, so we only let the first call
-        // build it via CreateBindingSetAndLayout and reuse it for the rest.
-        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
+        // One scene binding set per frame slot, one shared layout. bReadOnly flips the
+        // GPU-written-then-read buffers UAV->SRV; IndirectArgs stays UAV (draw source).
+        auto BuildSceneDesc = [&](uint32 Slot, bool bReadOnly) -> FBindingSetDesc
         {
+            FRHIBuffer* ClusterBuf  = GetNamedBuffer(ENamedBuffer::Cluster);
+            FRHIBuffer* DrawListBuf = MeshletDrawListRing[Slot];
+
             FBindingSetDesc BindingSetDesc;
             BindingSetDesc.AddItem(FBindingSetItem::BufferCBV(0, GetNamedBuffer(ENamedBuffer::Scene)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(1, GetNamedBuffer(ENamedBuffer::Light)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(2, GetNamedBuffer(ENamedBuffer::Instance)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(3, GetNamedBuffer(ENamedBuffer::Bone)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(4, GetNamedBuffer(ENamedBuffer::Cluster)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(5, GRenderManager->GetMaterialManager().GetMaterialBuffer()));
+            BindingSetDesc.AddItem(bReadOnly ? FBindingSetItem::BufferSRV(4, ClusterBuf) : FBindingSetItem::BufferUAV(4, ClusterBuf));
+            // Material uniforms: SRV in both variants. CPU-updated, shader-read only;
+            // UAV-binding churned a spurious barrier on every binding-change pass.
+            BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(5, GRenderManager->GetMaterialManager().GetMaterialBuffer()));
             BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(6, GetNamedBuffer(ENamedBuffer::Billboards)));
-            // Bindings 7 (Cascade) and 8 (Shadow Atlas) moved to ShadowSamplingBindingSet
-            // (set=3). Keeping shadow textures off set 0 prevents a layout-thrash bug:
-            // when an image is bound as SRV in a set AND used as the current pass's
-            // depth attachment, the state tracker emits two transitions on the same
-            // image in a single barrier call which is incoherent.
-            // Slot 9 (depth pyramid) freed: the cull pass samples it bindless via
-            // FCullData::DepthPyramidIndex + SAMPLER_MIN_REDUCTION. State transitions
-            // for the pyramid are issued explicitly in CullPassEarly/Late.
-            // Unified per-view culling: CullMeshlets.slang reads FCullView entries
-            // from uCullViews and atomically appends surviving meshlets into the
-            // owning view's slice of uMeshletDrawList / uIndirectArgs. Every shadow
-            // / camera draw pass uses the same two buffers, addressed through each
-            // view's DrawListOffset / IndirectArgsOffset.
+            // Cascade/Atlas (7,8) on set 3 to dodge a layout-thrash bug; slot 9 (pyramid)
+            // sampled bindless. Cull appends survivors into per-view DrawList/IndirectArgs slices.
             BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(10, GetNamedBuffer(ENamedBuffer::CullView)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(11, GetNamedBuffer(ENamedBuffer::MeshletDrawList)));
-            // Per-slot IndirectArgs (the only binding that differs across SceneBindingSets entries).
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(12, IndirectArgsRing[Slot]));
-            // Binding 13 (uShadowCascadePoint) moved to ShadowSamplingBindingSet (set=3).
-            // Two-pass cull defer list + atomic counter. CullMeshlets phase 0
-            // writes meshlets occluded by the stale HZB here; phase 1 pops
-            // them and re-tests against the rebuilt HZB.
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(14, GetNamedBuffer(ENamedBuffer::MeshletDeferList)));
-            BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(15, GetNamedBuffer(ENamedBuffer::DeferCount)));
-            // Per-instance meshlet prefix sum used by the cull pass to map a
-            // flat thread index to (InstanceID, MeshletLocalIdx) without the
-            // per-instance over-dispatch the old (X = MaxMeshletsPerInstance,
-            // Y = NumInstances) layout produced.
+            BindingSetDesc.AddItem(bReadOnly ? FBindingSetItem::BufferSRV(11, DrawListBuf) : FBindingSetItem::BufferUAV(11, DrawListBuf));
+            // 12/14/15 (IndirectArgs, DeferList, DeferCount) are cull-private (device address,
+            // tracked via State.Writes), so no pass binds them. 16 = per-instance meshlet prefix.
             BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(16, GetNamedBuffer(ENamedBuffer::InstanceMeshletPrefix)));
 
-            // Pre-integrated BRDF LUT (Karis 2013 split-sum). Linear-clamp:
-            // the texel grid is sampled by (NdotV, Roughness) -- both in [0,1]
-            // -- and the table is smooth, so bilinear filtering is the right
-            // reconstruction filter and clamp matches the half-texel offsets
-            // baked into the LUT (so edge fetches read the boundary samples
-            // rather than wrapping or extrapolating).
+            // BRDF LUT (Karis split-sum), linear-clamp: sampled by (NdotV, Roughness) in
+            // [0,1]; clamp matches the half-texel offsets baked into the LUT.
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(17, GetNamedImage(ENamedImage::BRDFLut),
                 TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI()));
 
-            // IBL cubemaps. Linear-clamp: the convolutions store smooth HDR
-            // values and the prefilter has a real mip chain we want filtered
-            // across (the consumer picks a mip from Roughness, but bilinear
-            // between adjacent mips smooths the roughness-step transitions).
+            // IBL cubemaps, linear-clamp: smooth HDR convolutions, and bilinear between
+            // prefilter mips smooths the roughness-step transitions.
             FRHISamplerRef IBLCubeSampler = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(18, GetNamedImage(ENamedImage::SkyIrradiance), IBLCubeSampler,
                 EFormat::UNKNOWN, AllSubresources, EImageDimension::TextureCube));
             BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(19, GetNamedImage(ENamedImage::SkyPrefilter),  IBLCubeSampler,
                 EFormat::UNKNOWN, AllSubresources, EImageDimension::TextureCube));
+            return BindingSetDesc;
+        };
 
+        for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
+        {
+            FBindingSetDesc WritableDesc = BuildSceneDesc(Slot, false);
             if (Slot == 0)
             {
                 TBitFlags<ERHIShaderType> Visibility;
                 Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
-                GRenderContext->CreateBindingSetAndLayout(Visibility, 0, BindingSetDesc, SceneBindingLayout, SceneBindingSets[0]);
+                GRenderContext->CreateBindingSetAndLayout(Visibility, 0, WritableDesc, SceneBindingLayout, SceneBindingSets[0]);
             }
             else
             {
-                SceneBindingSets[Slot] = GRenderContext->CreateBindingSet(BindingSetDesc, SceneBindingLayout);
+                SceneBindingSets[Slot] = GRenderContext->CreateBindingSet(WritableDesc, SceneBindingLayout);
             }
+
+            FBindingSetDesc ReadOnlyDesc = BuildSceneDesc(Slot, true);
+            SceneBindingSetReadOnlys[Slot] = GRenderContext->CreateBindingSet(ReadOnlyDesc, SceneBindingLayout);
         }
 
-        // Default to slot 0; RenderView_RenderThread re-points it per frame.
-        SceneBindingSet = SceneBindingSets[CurrentFrameSlot];
+        // Default to slot 0; RenderView_RenderThread re-points both per frame.
+        SceneBindingSet         = SceneBindingSets[CurrentFrameSlot];
+        SceneBindingSetReadOnly = SceneBindingSetReadOnlys[CurrentFrameSlot];
 
-        // Empty set-2 placeholder. BasePass and TransparentPass shaders use sets
-        // 0, 1, and 3 (no set 2). Vulkan pipeline layouts are indexed by set, so
-        // the slot for set 2 needs a real (empty) descriptor set layout. Building
-        // it once here and reusing it in both pipelines.
+        // Empty set-2 placeholder: BasePass/TransparentPass use sets 0,1,3 but Vulkan
+        // indexes layouts by set, so set 2's slot needs a real (empty) layout.
         {
             FBindingSetDesc EmptyDesc;
             TBitFlags<ERHIShaderType> Visibility;
@@ -7034,11 +6963,8 @@ namespace Lumina
             GRenderContext->CreateBindingSetAndLayout(Visibility, 2, EmptyDesc, EmptySet2Layout, EmptySet2BindingSet);
         }
 
-        // Set 3 — shadow textures, bound only by passes that SAMPLE shadows
-        // (BasePass, transparent, terrain render, volumetric lighting). The shadow
-        // RENDERING passes (Point/Spot/Cascaded) intentionally do NOT bind this set,
-        // so the cascade/atlas don't get a shader-read state transition queued in
-        // the same SetGraphicsState that's about to use them as depth attachments.
+        // Set 3 -- shadow textures bound only by passes that SAMPLE shadows; rendering passes
+        // skip it so the cascade/atlas aren't shader-read in the same pass that depth-writes them.
         {
             FBindingSetDesc ShadowSetDesc;
             // 0: cascade with comparison sampler — hardware PCF.
@@ -7056,16 +6982,8 @@ namespace Lumina
             GRenderContext->CreateBindingSetAndLayout(Visibility, 3, ShadowSetDesc, ShadowSamplingBindingLayout, ShadowSamplingBindingSet);
         }
 
-        // Standalone set-2 layout for ToneMapping. Binds:
-        //   0 -- HDR scene color (input to grading + chromatic aberration)
-        //   1 -- Bloom mip 0 (output of the bloom upsample chain)
-        //   2 -- Color grading constants UBO (replaces what used to be a
-        //        144 B push-constant block, which exceeds AMD RDNA's 128 B
-        //        push-constant cap).
-        // Linear-clamp samplers on both textures: chromatic aberration
-        // offsets the HDR sample by a fraction of a UV so it must filter,
-        // and the bloom composite reads the largest mip at a different
-        // resolution.
+        // Standalone set-2 for ToneMapping: 0=HDR color, 1=Bloom mip 0, 2=color grading UBO
+        // (144 B exceeds RDNA's 128 B push cap). Linear-clamp so CA/bloom can filter.
         {
             FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
@@ -7093,9 +7011,8 @@ namespace Lumina
             GRenderContext->CreateBindingSetAndLayout(Visibility, 2, SetDesc, SMAAEdgeBindingLayout, SMAAEdgeBindingSet);
         }
 
-        // SMAA Pass 2 (Blend Weight): reads edges, AreaTex, SearchTex. SearchTex
-        // uses linear-clamp even though it's an integer-coded packed texture - the
-        // technique relies on bilinear filtering for the packed-pair encoding.
+        // SMAA Pass 2 (Blend Weight): reads edges, AreaTex, SearchTex. SearchTex uses
+        // linear-clamp despite being integer-coded; the technique needs the bilinear filter.
         {
             FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
@@ -7164,11 +7081,8 @@ namespace Lumina
     entt::entity FForwardRenderScene::GetEntityAtPixel(uint32 X, uint32 Y) const
     {
     #if USING(WITH_EDITOR)
-        // Find the newest slot whose GPU work is guaranteed complete. The render
-        // thread submits at most FRAMES_IN_FLIGHT frames before the CPU is gated
-        // on the previous frame's timeline value, so a slot whose SubmittedFrame
-        // is at least FRAMES_IN_FLIGHT older than the most recent issue is safe
-        // to map without waiting on a semaphore.
+        // Pick the newest complete slot whose window covers (X,Y). A slot is safe to map
+        // without a semaphore once it's >= FRAMES_IN_FLIGHT older than the latest issue.
         int32 BestSlotIdx = -1;
         uint64 BestFrame = 0;
         for (uint32 i = 0; i < PickerReadbackRingSize; ++i)
@@ -7182,6 +7096,11 @@ namespace Lumina
             {
                 continue;
             }
+            if (X < Slot.OriginX || X >= Slot.OriginX + Slot.Width ||
+                Y < Slot.OriginY || Y >= Slot.OriginY + Slot.Height)
+            {
+                continue;
+            }
             if (BestSlotIdx == -1 || Slot.SubmittedFrame > BestFrame)
             {
                 BestSlotIdx = static_cast<int32>(i);
@@ -7191,17 +7110,14 @@ namespace Lumina
 
         if (BestSlotIdx == -1)
         {
-            // Not enough frames have rendered since the last invalidation
-            // (startup, swapchain resize, or first click on a fresh world).
-            // Caller treats this the same as "no entity under cursor".
+            // No completed slot covers this pixel (startup/resize, early click, or fast
+            // cursor motion); caller treats this as "no entity under cursor".
             return entt::null;
         }
 
         const FPickerReadbackSlot& Slot = PickerReadbackRing[BestSlotIdx];
-        if (X >= Slot.Width || Y >= Slot.Height)
-        {
-            return entt::null;
-        }
+        const uint32 LocalX = X - Slot.OriginX;
+        const uint32 LocalY = Y - Slot.OriginY;
 
         size_t RowPitch = 0;
         void* MappedMemory = GRenderContext->MapStagingTexture(Slot.Staging, FTextureSlice(), ERHIAccess::HostRead, &RowPitch);
@@ -7210,8 +7126,8 @@ namespace Lumina
             return entt::null;
         }
 
-        uint8* RowStart = static_cast<uint8*>(MappedMemory) + Y * RowPitch;
-        uint32* PixelPtr = reinterpret_cast<uint32*>(RowStart) + X;
+        uint8* RowStart = static_cast<uint8*>(MappedMemory) + LocalY * RowPitch;
+        uint32* PixelPtr = reinterpret_cast<uint32*>(RowStart) + LocalX;
         uint32 PixelValue = *PixelPtr;
 
         GRenderContext->UnMapStagingTexture(Slot.Staging);
@@ -7230,30 +7146,72 @@ namespace Lumina
     }
 
     #if USING(WITH_EDITOR)
+    void FForwardRenderScene::SetPickerCursor(uint32 X, uint32 Y, bool bOverViewport)
+    {
+        const uint64 Packed = (bOverViewport ? 1ull : 0ull)
+                            | ((uint64(X) & 0x1FFFFF) << 1)
+                            | ((uint64(Y) & 0x1FFFFF) << 22);
+        PickerCursorPacked.store(Packed, std::memory_order_relaxed);
+    }
+
     void FForwardRenderScene::IssuePickerReadback(ICommandList& CmdList)
     {
+        const uint64 Packed = PickerCursorPacked.load(std::memory_order_relaxed);
+        const bool bOverViewport = (Packed & 1ull) != 0;
+        if (!bOverViewport)
+        {
+            // Cursor isn't over the viewport: no pick can happen this frame, so skip
+            // the copy (and its layout transition) entirely.
+            return;
+        }
+
         FRHIImage* PickerImage = GetNamedImage(ENamedImage::Picker);
         if (!PickerImage)
         {
             return;
         }
 
-        const uint32 W = PickerImage->GetDescription().Extent.x;
-        const uint32 H = PickerImage->GetDescription().Extent.y;
+        const uint32 ImgW = PickerImage->GetDescription().Extent.x;
+        const uint32 ImgH = PickerImage->GetDescription().Extent.y;
+        if (ImgW == 0 || ImgH == 0)
+        {
+            return;
+        }
+
+        const uint32 CursorX = glm::min((uint32)((Packed >> 1) & 0x1FFFFF), ImgW - 1);
+        const uint32 CursorY = glm::min((uint32)((Packed >> 22) & 0x1FFFFF), ImgH - 1);
+
+        // Copy a small window around the cursor, not the whole RT; clamp it inside the
+        // image so the region size is fixed and the cursor pixel stays inside.
+        const uint32 RegionW = glm::min(PickerRegionExtent, ImgW);
+        const uint32 RegionH = glm::min(PickerRegionExtent, ImgH);
+        const uint32 OriginX = glm::min(CursorX - glm::min(CursorX, RegionW / 2), ImgW - RegionW);
+        const uint32 OriginY = glm::min(CursorY - glm::min(CursorY, RegionH / 2), ImgH - RegionH);
 
         FPickerReadbackSlot& Slot = PickerReadbackRing[PickerReadbackWriteIndex];
 
-        if (!Slot.Staging || Slot.Width != W || Slot.Height != H)
+        if (!Slot.Staging || Slot.Width != RegionW || Slot.Height != RegionH)
         {
-            // First use of this slot, or extent changed (post-resize). Reallocate
-            // to match; bPending stays false until the new copy is recorded below.
-            Slot.Staging = GRenderContext->CreateStagingImage(PickerImage->GetDescription(), ERHIAccess::HostRead);
-            Slot.Width = W;
-            Slot.Height = H;
+            // First use of this slot, or region size changed (post-resize). Allocate a
+            // staging image sized to the region; bPending stays false until the copy below.
+            FRHIImageDesc StagingDesc = PickerImage->GetDescription();
+            StagingDesc.Extent = glm::uvec2(RegionW, RegionH);
+            Slot.Staging = GRenderContext->CreateStagingImage(StagingDesc, ERHIAccess::HostRead);
+            Slot.Width = RegionW;
+            Slot.Height = RegionH;
         }
 
-        CmdList.CopyImage(PickerImage, FTextureSlice(), Slot.Staging, FTextureSlice());
+        FTextureSlice SrcSlice;
+        SrcSlice.X = OriginX;
+        SrcSlice.Y = OriginY;
+        SrcSlice.Width = RegionW;
+        SrcSlice.Height = RegionH;
+        SrcSlice.Depth = 1;
 
+        CmdList.CopyImage(PickerImage, SrcSlice, Slot.Staging, FTextureSlice());
+
+        Slot.OriginX = OriginX;
+        Slot.OriginY = OriginY;
         Slot.SubmittedFrame = PickerReadbackFrame;
         Slot.bPending = true;
 
