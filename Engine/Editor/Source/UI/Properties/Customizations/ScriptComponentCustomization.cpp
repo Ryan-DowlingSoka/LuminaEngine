@@ -441,10 +441,11 @@ namespace Lumina
                     ScriptComponent->ReadyFunc = {};
                     ScriptComponent->UpdateFunc = {};
                     ScriptComponent->DetachFunc = {};
+                    ScriptComponent->FixedUpdateFunc = {};
+                    ScriptComponent->EditorUpdateFunc = {};
                     ScriptComponent->ScriptPath = {};
                     ScriptComponent->ScriptMetaTable = {};
                     ScriptComponent->TickRate = 0.0f;
-                    ScriptComponent->bRunInEditor = false;
                 };
                 bWasChanged = true;
             }

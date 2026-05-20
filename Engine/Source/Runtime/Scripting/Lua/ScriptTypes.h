@@ -30,18 +30,12 @@ namespace Lumina::Lua
         FRef                            Reference;
         FRef                            Environment;
         FRef                            Thread;
-
-        // Pinned pre-pcall so the debugger can walk its prototype tree for line breakpoints.
         FRef                            MainFunction;
 
         FScriptExportSchema             ExportsSchema;
         TVector<FScriptPropertyEntry>   ExportDefaults;
         FScriptThreadData               ThreadData;
-
-        // Persistent sub-thread for InvokeAsCoroutine, lazily allocated on first call.
-        // Reused via lua_resetthread between invocations to amortize lua_newthread cost.
-        // If a callback yields, the yielder pins the thread; subsequent invocations detect
-        // the yielded state and fall back to a fresh thread until the pool clears.
+        
         lua_State*                      PooledCoroutine    = nullptr;
         int                             PooledCoroutineRef = LUA_NOREF;
 
@@ -63,10 +57,7 @@ namespace Lumina::Lua
         FScript& operator=(const FScript&) = delete;
         FScript(FScript&&) = delete;
         FScript& operator=(FScript&&) = delete;
-
-        // Run a coroutine-aware Lua callback associated with this script. Reuses a pooled
-        // sub-thread when possible; falls back to a fresh thread when the pool is currently
-        // suspended by a yielder (e.g. mid-Wait).
+        
         template<typename... Args>
         ECoroutineStatus InvokeAsCoroutine(const FRef& Func, Args&&... args)
         {

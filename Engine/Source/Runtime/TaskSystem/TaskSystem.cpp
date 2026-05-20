@@ -55,11 +55,7 @@ namespace Lumina
         
             enki::TaskSchedulerConfig config;
             config.numTaskThreadsToCreate                       = GTaskSystem->NumWorkers;
-            // External slots: main thread (default 1) + render thread. Without
-            // the extra slot, render-thread Task::AsyncTask calls (resource
-            // destructors hitting FVulkanMemoryAllocator::Destroy*) race main
-            // thread on external slot 0 and trip ENKI_ASSERT(m_RunningCount==0).
-            config.numExternalTaskThreads                       = 2;
+            config.numExternalTaskThreads                       = 3;
             config.customAllocator.alloc                        = CustomAllocFunc;
             config.customAllocator.free                         = CustomFreeFunc;
             config.profilerCallbacks.threadStart                = OnStartThread;

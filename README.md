@@ -84,12 +84,12 @@ through the work of motivated contributors who help push the engine forward.
 - Custom memory allocators built on RPMalloc
 - Built-in profiling through Tracy integration
 
-### Lua Scripting
+### Luau Scripting
 
-- Full ECS access from Lua: create systems, query entities, modify components
+- Full ECS access from Luau: create systems, query entities, modify components
 - Hot-reloadable scripts for iterating on gameplay without recompiling
-- Automatic binding generation: C++ components are exposed to Lua via reflection
-- Built-in Lua script profiling through Tracy
+- Automatic binding generation: C++ components are exposed to Luau via reflection
+- Built-in Luau script profiling through Tracy
 
 ---
 

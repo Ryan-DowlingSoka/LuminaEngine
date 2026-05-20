@@ -230,6 +230,16 @@ namespace Lumina
         void InitializeScriptEntities();
         bool RegisterSystem(const FSystemVariant& NewSystem);
         void TickSystems(FSystemContext& Context);
+
+        // Drives OnFixedUpdate (game/simulation worlds, at the physics fixed rate) and
+        // OnEditorUpdate (editor worlds, once per frame) on the game thread.
+        void TickFixedUpdate();
+        void TickEditorUpdate();
+
+        // Whether a script's lifecycle (OnAttach/OnReady/OnDetach) should run in this
+        // world. Editor worlds run only scripts that define OnEditorUpdate; every other
+        // world type runs all scripts.
+        bool IsScriptActiveInWorld(entt::entity Entity) const;
     
     private:
         
@@ -266,6 +276,9 @@ namespace Lumina
         FWorldContext*                                      OwningContext = nullptr;
         double                                              DeltaTime = 0.0;
         double                                              TimeSinceCreation = 0.0;
+
+        // Game-thread accumulator driving OnFixedUpdate at the physics fixed rate.
+        float                                               FixedUpdateAccumulator = 0.0f;
         
         uint32                                              bPaused:1 = true;
         uint32                                              bActive:1 = true;

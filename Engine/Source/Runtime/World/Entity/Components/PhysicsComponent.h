@@ -84,7 +84,7 @@ namespace Lumina
 
         /** Merge similar contact manifolds to reduce solver work for this body. */
         PROPERTY(Script, Editable, Category = "Physics")
-        bool bUseManifoldReduction = false;
+        bool bUseManifoldReduction = true;
 
         /** Apply gyroscopic torque to spinning bodies for more realistic angular motion. */
         PROPERTY(Script, Editable, Category = "Physics")

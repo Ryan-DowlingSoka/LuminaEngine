@@ -4,7 +4,9 @@
 // Jolt header expects, and was previously force-included via pch.h.
 #include <Jolt/Jolt.h>
 #include "Jolt/Physics/PhysicsSystem.h"
+#include "Jolt/Physics/Collision/Shape/Shape.h"
 #include "Containers/Array.h"
+#include <cstring>
 #include "Core/Threading/Thread.h"
 #include "Memory/SmartPtr.h"
 #include "Physics/PhysicsScene.h"
@@ -178,6 +180,12 @@ namespace Lumina::Physics
     	
     	void EnqueueContactRecord(const FContactRecord& Record);
 
+    	// Return a shared collision shape for the given parameters, building it on
+    	// first request. Lets N identical bodies reference one JPH::Shape instead of
+    	// each allocating its own. Thread-safe: called from the parallel body build.
+    	JPH::ShapeRefC GetOrCreateSphereShape(float Radius);
+    	JPH::ShapeRefC GetOrCreateBoxShape(const glm::vec3& HalfExtent);
+
     private:
     	
     	void DispatchContactEvents();
@@ -193,6 +201,34 @@ namespace Lumina::Physics
 
 
     private:
+
+    	// Shared-shape cache keyed by kind + dimensions (bit-exact float compare).
+    	struct FShapeKey
+    	{
+    		uint8	Kind;       // 0 = sphere (X = radius), 1 = box (XYZ = half extent)
+    		float	X, Y, Z;
+    		bool operator==(const FShapeKey& Other) const
+    		{
+    			return Kind == Other.Kind && X == Other.X && Y == Other.Y && Z == Other.Z;
+    		}
+    	};
+    	struct FShapeKeyHash
+    	{
+    		size_t operator()(const FShapeKey& Key) const
+    		{
+    			size_t Hash = Key.Kind;
+    			auto Mix = [&Hash](float Value)
+    			{
+    				uint32 Bits;
+    				std::memcpy(&Bits, &Value, sizeof(Bits));
+    				Hash = (Hash * 1099511628211ull) ^ Bits;
+    			};
+    			Mix(Key.X); Mix(Key.Y); Mix(Key.Z);
+    			return Hash;
+    		}
+    	};
+    	FMutex												ShapeCacheMutex;
+    	THashMap<FShapeKey, JPH::ShapeRefC, FShapeKeyHash>	ShapeCache;
 
     	FMutex										PendingRigidBodyMutex;
     	TQueue<entt::entity>						PendingRigidBodyCreations;
@@ -220,6 +256,7 @@ namespace Lumina::Physics
     		glm::vec3		Location;
     		glm::quat		Rotation;
     		bool			bBelowKill;
+    		bool			bSkip;          // static / missing body: leave the slot untouched
     	};
     	TVector<FStagedTransform>					InterpolatedTransforms;
     };

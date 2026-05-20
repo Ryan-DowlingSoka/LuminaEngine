@@ -92,12 +92,32 @@ function EntityScript.new()
 end
 
 -- ---- Lifecycle -----------------------------------------------------------
--- Override what you need; unspecified hooks fall through here as no-ops.
+-- OnAttach/OnReady/OnDetach run once and fall through here as no-ops when not
+-- overridden. They run in a game world for every script, and in the editor only
+-- for scripts that define OnEditorUpdate (the editor-active marker).
 
 function EntityScript:OnAttach() end
 function EntityScript:OnReady() end
-function EntityScript:OnUpdate(DeltaTime: number) end
 function EntityScript:OnDetach() end
+
+-- ---- Ticks ---------------------------------------------------------------
+-- These have NO no-op fallback on purpose: define one and the engine tags the
+-- entity and ticks it, leave it out and the engine never iterates it (zero
+-- per-frame cost). Don't add no-op versions to this base table.
+--
+--   function MyScript:OnUpdate(DeltaTime) ... end
+--     Per-frame tick in play mode (game / simulation worlds).
+--
+--   function MyScript:OnFixedUpdate(FixedDelta) ... end
+--     Runs at the physics fixed rate (Meta.PhysicsHz), 0..MaxPhysicsSteps
+--     times per frame, before the physics step. Apply forces / impulses
+--     here so they integrate this step. Play mode only.
+--
+--   function MyScript:OnEditorUpdate(DeltaTime) ... end
+--     Per-frame tick while editing. Defining it is what makes a script run in
+--     the editor at all (its OnAttach/OnReady/OnDetach then fire there too) --
+--     the editor-mode counterpart to OnUpdate. Use for tool-style preview /
+--     gizmo logic.
 
 -- ---- Identity ------------------------------------------------------------
 

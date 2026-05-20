@@ -13,6 +13,14 @@ namespace Lumina
 {
     class CWorld;
 
+    // Runtime presence tags. Added/removed in CWorld::SetupScriptComponent based on which
+    // tick hooks the script actually defines, so the script systems iterate filtered views
+    // instead of testing each FRef per entity. Plain (non-reflected) like FUpdateStage_*:
+    // transient runtime state, never serialized or shown in the editor.
+    struct FScriptHasUpdateFn       {};
+    struct FScriptHasFixedUpdateFn  {};
+    struct FScriptHasEditorUpdateFn {};
+
     REFLECT(Component, Category = "Gameplay")
     struct RUNTIME_API SScriptComponent
     {
@@ -32,6 +40,13 @@ namespace Lumina
         Lua::FRef       ReadyFunc;
         Lua::FRef       UpdateFunc;
         Lua::FRef       DetachFunc;
+
+        // Optional. FixedUpdateFunc ticks at the physics fixed rate (game/simulation
+        // worlds); EditorUpdateFunc ticks every frame in an editor world. Like the
+        // physics hooks, the base script table ships no no-op fallback, so the FRef
+        // stays invalid when the script doesn't define them and the tick is skipped.
+        Lua::FRef       FixedUpdateFunc;
+        Lua::FRef       EditorUpdateFunc;
 
         // Optional physics-event hooks. Cached at attach time; the physics
         // scene invokes them directly when contacts begin/end on this entity's
@@ -58,6 +73,5 @@ namespace Lumina
         
         float           TickRate        = 0.0f;
         float           AccumulatedTime = 0.0f;
-        bool            bRunInEditor    = false;
     };
 }

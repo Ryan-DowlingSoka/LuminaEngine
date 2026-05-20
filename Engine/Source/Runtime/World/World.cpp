@@ -38,6 +38,7 @@
 #include "Scene/RenderScene/Forward/ForwardRenderScene.h"
 #include "Scripting/Lua/Scripting.h"
 #include "Scripting/Lua/VariadicArgs.h"
+#include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "Subsystems/FCameraManager.h"
 #include "Subsystems/WorldSettings.h"
 #include "World/Entity/Components/RelationshipComponent.h"
@@ -465,10 +466,7 @@ namespace Lumina
         SystemContext.EventSink     <FScriptComponentPendingReady>().connect<&ThisClass::OnScriptComponentPendingReady>(this);
 
         ScriptReloadedHandle = Lua::FScriptingContext::Get().OnScriptLoaded.AddMember(this, &ThisClass::OnScriptSourceReloaded);
-
-        // Build the world-scoped DrawInterface table once. Per-entity setup just
-        // assigns this ref into the script's environment instead of allocating
-        // a new table + C closure for every SScriptComponent.
+        
         if (lua_State* VM = Lua::FScriptingContext::Get().GetVM())
         {
             lua_newtable(VM);
@@ -510,15 +508,6 @@ namespace Lumina
     
     void CWorld::TeardownWorld()
     {
-        // Two-stage drain: FlushRenderingCommands waits for queued render lambdas
-        // to RETURN, but the cmd buffers they submitted may still be executing on
-        // the GPU. EntityRegistry.clear() below releases material textures, mesh
-        // buffers, render targets, etc. -- those are accessed bindlessly from cmd
-        // buffers, not held by KeepAlive, so the cmd buffer doesn't keep them
-        // alive. If we destroy them while the GPU is mid-draw -> handles freed
-        // under the GPU -> device lost (manifests after enough open/close churn
-        // when probability of catching the GPU mid-fetch crosses some threshold).
-        // WaitIdle here makes the GPU fully drained before any resource drop.
         FlushRenderingCommands();
         GRenderContext->WaitIdle();
 
@@ -617,6 +606,93 @@ namespace Lumina
             CPU_PROFILE_SCOPE("Systems");
             TickSystems(SystemContext);
         }
+        
+        if (Stage == EUpdateStage::PrePhysics)
+        {
+            TickFixedUpdate();
+        }
+        else if (Stage == EUpdateStage::Paused && WorldType == EWorldType::Editor)
+        {
+            TickEditorUpdate();
+        }
+    }
+
+    void CWorld::TickFixedUpdate()
+    {
+        if (WorldType != EWorldType::Game && WorldType != EWorldType::Simulation)
+        {
+            return;
+        }
+        if (Lua::FLuaDebugger::Get().IsPaused())
+        {
+            return;
+        }
+
+        const SDefaultWorldSettings& WorldSettings = GetDefaultWorldSettings();
+        const float Hz          = glm::max(10.0f, WorldSettings.PhysicsHz);
+        const float FixedDt     = 1.0f / Hz;
+        const int32 MaxSteps    = (int32)WorldSettings.MaxPhysicsSteps;
+        const float MaxAccum    = (float)MaxSteps * FixedDt;
+
+        FixedUpdateAccumulator += (float)DeltaTime;
+        // Clamp so a hitch can't trigger a step storm (matches the physics scene).
+        FixedUpdateAccumulator = glm::min(FixedUpdateAccumulator, MaxAccum);
+
+        int32 Steps = (FixedUpdateAccumulator >= FixedDt) ? (int32)(FixedUpdateAccumulator / FixedDt) : 0;
+        if (Steps <= 0)
+        {
+            return;
+        }
+        Steps = glm::min(Steps, MaxSteps);
+        FixedUpdateAccumulator -= (float)Steps * FixedDt;
+        
+        auto View = EntityRegistry.view<SScriptComponent, FScriptHasFixedUpdateFn>(entt::exclude<SDisabledTag>);
+        for (int32 Step = 0; Step < Steps; ++Step)
+        {
+            View.each([&](entt::entity, SScriptComponent& ScriptComponent)
+            {
+                const TSharedPtr<Lua::FScript>& Script = ScriptComponent.Script;
+                if (Script)
+                {
+                    #if USING(WITH_EDITOR)
+                    (void)Script->InvokeAsCoroutine(ScriptComponent.FixedUpdateFunc, Script->Reference, FixedDt);
+                    #else
+                    (void)ScriptComponent.FixedUpdateFunc.Invoke(Script->Reference, FixedDt);
+                    #endif
+                }
+            });
+        }
+    }
+
+    void CWorld::TickEditorUpdate()
+    {
+        if (Lua::FLuaDebugger::Get().IsPaused())
+        {
+            return;
+        }
+
+        const float DeltaSeconds = (float)DeltaTime;
+
+        // Defining OnEditorUpdate is what marks a script as editor-active, so the tag view
+        // is exactly the set that should tick (and whose lifecycle ran in this world).
+        auto View = EntityRegistry.view<SScriptComponent, FScriptHasEditorUpdateFn>(entt::exclude<SDisabledTag>);
+        View.each([&](entt::entity, SScriptComponent& ScriptComponent)
+        {
+            const TSharedPtr<Lua::FScript>& Script = ScriptComponent.Script;
+            if (Script)
+            {
+                (void)Script->InvokeAsCoroutine(ScriptComponent.EditorUpdateFunc, Script->Reference, DeltaSeconds);
+            }
+        });
+    }
+
+    bool CWorld::IsScriptActiveInWorld(entt::entity Entity) const
+    {
+        if (WorldType == EWorldType::Editor)
+        {
+            return EntityRegistry.all_of<FScriptHasEditorUpdateFn>(Entity);
+        }
+        return true;
     }
 
     void CWorld::TickPhysics()
@@ -660,22 +736,14 @@ namespace Lumina
         {
             const STransformComponent& CameraTransform = EntityRegistry.get<STransformComponent>(CameraEntity);
             (void)CameraTransform.GetWorldMatrix();
-
-            // Bake view matrix from the freshest camera transform. Doing it here
-            // instead of in SCameraSystem::Update means follow-cameras written in
-            // PostPhysics scripts land in the same frame's render — otherwise the
-            // view matrix lags by one frame and anything tracked stutters.
+            
             const glm::quat CameraRotation = CameraTransform.GetWorldRotation();
             const SCameraComponent& Camera = EntityRegistry.get<SCameraComponent>(CameraEntity);
             const_cast<SCameraComponent&>(Camera).SetView(
                 CameraTransform.GetWorldLocation(),
                 CameraRotation * glm::vec3(0.0f, 0.0f, 1.0f),
                 CameraRotation * glm::vec3(0.0f, 1.0f, 0.0f));
-
-            // Resolve any SPostProcessComponent volumes the camera is inside
-            // (or that have bInfiniteExtent) into a final blended settings
-            // block. The camera's own PostProcess is the base; volumes blend
-            // on top in priority order.
+            
             const glm::vec3 CameraWorldPos = EntityRegistry.get<STransformComponent>(CameraEntity).GetWorldLocation();
             SPostProcessSettings ResolvedPostProcess = Camera.PostProcess;
 
@@ -695,10 +763,6 @@ namespace Lumina
 
                 if (!Volume.bInfiniteExtent)
                 {
-                    // Transform the camera into the volume's local space and
-                    // measure signed distance to the box. Negative == inside,
-                    // positive == outside; values inside [0, BlendDistance]
-                    // fall off linearly so designers get a smooth on-ramp.
                     const STransformComponent& VolXform = VolumeView.get<const STransformComponent>(VolEntity);
                     const glm::mat4 InvWorld = glm::inverse(VolXform.GetWorldMatrix());
                     const glm::vec3 LocalCam = glm::vec3(InvWorld * glm::vec4(CameraWorldPos, 1.0f));
@@ -842,7 +906,7 @@ namespace Lumina
             {
                 return;
             }
-            if ((WorldType == EWorldType::Editor) != Component->bRunInEditor)
+            if (!IsScriptActiveInWorld(Entity))
             {
                 return;
             }
@@ -861,7 +925,6 @@ namespace Lumina
         // scriptless ones, but a non-script root may still have script descendants.
         auto RelationshipRoots = EntityRegistry.view<FRelationshipComponent>(entt::exclude<SDisabledTag>);
 
-        // Phase 2: top-down OnAttach.
         RelationshipRoots.each([&](entt::entity Entity, const FRelationshipComponent& Relationship)
         {
             if (Relationship.Parent != entt::null)
@@ -882,7 +945,6 @@ namespace Lumina
             }
         });
 
-        // Phase 3: bottom-up OnReady.
         RelationshipRoots.each([&](entt::entity Entity, const FRelationshipComponent& Relationship)
         {
             if (Relationship.Parent != entt::null)
@@ -1009,8 +1071,11 @@ namespace Lumina
                 // Scripts can't be bit-copied: their Lua refs point at the source's thread, the shared
                 // FScript would be shared, and self.Entity/self.Transform would resolve to the source.
                 // Re-emplace below with just the editable fields so on_construct re-runs SetupScriptComponent.
+                // SRigidBodyComponent is skipped too: bit-copying carries the source's live BodyID, and it
+                // must be re-emplaced (not copied) so on_construct builds a fresh Jolt body for the duplicate.
                 if (ID == entt::type_hash<FRelationshipComponent>::value()
-                    || ID == entt::type_hash<SScriptComponent>::value())
+                    || ID == entt::type_hash<SScriptComponent>::value()
+                    || ID == entt::type_hash<SRigidBodyComponent>::value())
                 {
                     continue;
                 }
@@ -1029,17 +1094,18 @@ namespace Lumina
                 EntityRegistry.emplace_or_replace<FNeedsTransformUpdate>(NewEntity);
             }
 
-            // Re-copy SRigidBodyComponent explicitly. The storage iteration above skips it
-            // when a default rigid body has already been emplaced by a collider on_construct
-            // hook (entt fires emplace_or_replace<SRigidBodyComponent> when SBoxCollider/etc.
-            // are pushed onto the duplicate), which clobbers BodyType/Mass/CollisionProfile
-            // back to defaults. Force the source's data through, then invalidate the body id
-            // so the physics scene allocates a fresh Jolt body.
+            // Re-emplace SRigidBodyComponent from the source. A collider on_construct hook may have
+            // auto-emplaced a default rigid body (and built a default Jolt body) onto the duplicate, so
+            // emplace_or_replace here would only fire on_update -- a no-op -- and the body would never be
+            // rebuilt with the source's type/profile. Remove that default first so on_destroy tears down
+            // any wrong Jolt body, then emplace fresh (with an invalid BodyID) so on_construct builds the body.
             if (const SRigidBodyComponent* SourceBody = EntityRegistry.try_get<SRigidBodyComponent>(Source))
             {
-                SRigidBodyComponent& NewBody = EntityRegistry.emplace_or_replace<SRigidBodyComponent>(NewEntity, *SourceBody);
+                SRigidBodyComponent NewBody = *SourceBody;
                 NewBody.BodyID = 0xFFFFFFFF;
-                EntityRegistry.emplace_or_replace<FNeedsPhysicsBodyUpdate>(NewEntity);
+
+                EntityRegistry.remove<SRigidBodyComponent>(NewEntity);
+                EntityRegistry.emplace<SRigidBodyComponent>(NewEntity, eastl::move(NewBody));
             }
 
             // Emplace SScriptComponent with the editable fields only; on_construct fires the canonical
@@ -1051,7 +1117,6 @@ namespace Lumina
                 NewScript.PropertyOverrides = SourceScript->PropertyOverrides;
                 NewScript.UpdateStage       = SourceScript->UpdateStage;
                 NewScript.TickRate          = SourceScript->TickRate;
-                NewScript.bRunInEditor      = SourceScript->bRunInEditor;
                 EntityRegistry.emplace<SScriptComponent>(NewEntity, eastl::move(NewScript));
             }
 
@@ -1325,9 +1390,13 @@ namespace Lumina
         ScriptComponent.UpdateFunc          = ScriptComponent.Script->Reference["OnUpdate"];
         ScriptComponent.DetachFunc          = ScriptComponent.Script->Reference["OnDetach"];
 
+        // No base no-op fallback (see ScriptComponent.h): invalid FRef means "not defined".
+        ScriptComponent.FixedUpdateFunc     = ScriptComponent.Script->Reference["OnFixedUpdate"];
+        ScriptComponent.EditorUpdateFunc    = ScriptComponent.Script->Reference["OnEditorUpdate"];
+
         // Physics hooks: cache only if the script defined them. The base EntityScript
-        // table doesn't ship no-op fallbacks for these (unlike OnUpdate etc.), so the
-        // FRef stays invalid for scripts that don't care, and the physics dispatch
+        // table doesn't ship no-op fallbacks for these (unlike OnAttach/OnReady/OnDetach),
+        // so the FRef stays invalid for scripts that don't care, and the physics dispatch
         // skips them via IsInvokable().
         ScriptComponent.ContactBeginFunc    = ScriptComponent.Script->Reference["OnContactBegin"];
         ScriptComponent.ContactEndFunc      = ScriptComponent.Script->Reference["OnContactEnd"];
@@ -1360,9 +1429,6 @@ namespace Lumina
         
         if (ScriptComponent.ScriptMetaTable.IsValid())
         {
-            auto MaybeRunInEditor = ScriptComponent.ScriptMetaTable.Get<bool>("bRunInEditor");
-            ScriptComponent.bRunInEditor = MaybeRunInEditor ? MaybeRunInEditor.value() : false;
-            
             auto MaybeTickRate = ScriptComponent.ScriptMetaTable.Get<float>("TickRate");
             ScriptComponent.TickRate = MaybeTickRate ? MaybeTickRate.value() : 0.0f;
             
@@ -1409,6 +1475,25 @@ namespace Lumina
         case EUpdateStage::Max:
             break;
         }
+
+        // Presence tags: let the script systems iterate filtered views instead of testing
+        // each FRef per entity. Re-evaluated here so a hot-reload that adds/drops a hook
+        // updates the tag. None of OnUpdate/OnFixedUpdate/OnEditorUpdate has a base no-op,
+        // so an invalid FRef genuinely means the script didn't define it.
+        if (ScriptComponent.UpdateFunc.IsValid())
+            EntityRegistry.emplace_or_replace<FScriptHasUpdateFn>(Entity);
+        else
+            EntityRegistry.remove<FScriptHasUpdateFn>(Entity);
+
+        if (ScriptComponent.FixedUpdateFunc.IsValid())
+            EntityRegistry.emplace_or_replace<FScriptHasFixedUpdateFn>(Entity);
+        else
+            EntityRegistry.remove<FScriptHasFixedUpdateFn>(Entity);
+
+        if (ScriptComponent.EditorUpdateFunc.IsValid())
+            EntityRegistry.emplace_or_replace<FScriptHasEditorUpdateFn>(Entity);
+        else
+            EntityRegistry.remove<FScriptHasEditorUpdateFn>(Entity);
     }
 
     void CWorld::OnScriptComponentCreated(entt::entity Entity, SScriptComponent& ScriptComponent, bool bRunReady)
@@ -1420,7 +1505,7 @@ namespace Lumina
             return;
         }
 
-        if ((WorldType == EWorldType::Editor) != ScriptComponent.bRunInEditor)
+        if (!IsScriptActiveInWorld(Entity))
         {
             return;
         }
@@ -1448,7 +1533,7 @@ namespace Lumina
             return;
         }
 
-        if ((WorldType == EWorldType::Editor) == ScriptComponent.bRunInEditor)
+        if (IsScriptActiveInWorld(Entity))
         {
             ScriptComponent.Script->InvokeAsCoroutine(ScriptComponent.DetachFunc, ScriptComponent.Script->Reference);
         }
@@ -1463,7 +1548,7 @@ namespace Lumina
         // table; reset them before LoadUniqueScriptPath returns a new instance.
         if (ScriptComponent.Script != nullptr && ScriptComponent.DetachFunc.IsValid())
         {
-            if ((WorldType == EWorldType::Editor) == ScriptComponent.bRunInEditor)
+            if (IsScriptActiveInWorld(Entity))
             {
                 ScriptComponent.Script->InvokeAsCoroutine(ScriptComponent.DetachFunc, ScriptComponent.Script->Reference);
             }
@@ -1477,6 +1562,8 @@ namespace Lumina
         ScriptComponent.ReadyFunc           = {};
         ScriptComponent.UpdateFunc          = {};
         ScriptComponent.DetachFunc          = {};
+        ScriptComponent.FixedUpdateFunc     = {};
+        ScriptComponent.EditorUpdateFunc    = {};
         ScriptComponent.ContactBeginFunc    = {};
         ScriptComponent.ContactEndFunc      = {};
         ScriptComponent.OverlapBeginFunc    = {};

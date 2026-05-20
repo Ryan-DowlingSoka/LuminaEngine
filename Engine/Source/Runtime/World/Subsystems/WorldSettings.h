@@ -91,10 +91,10 @@ namespace Lumina
         PROPERTY(Editable, Category = "Physics")
         bool bEnablePhysicsInterpolation = true;
 
-        /** By default, the simulation is deterministic. Turning this off makes it run faster
-         but results will differ across runs. */
+        /** When on, the simulation is deterministic at the cost of speed (forces contact/island
+         sorting and reduces solver parallelism). Enable only for lockstep netcode or replays. */
         PROPERTY(Editable, Category = "Physics")
-        bool bDeterministicSimulation = true;
+        bool bDeterministicSimulation = false;
         
         /** Global velocity solver iterations. Entities can raise this per-body via NumVelocityStepsOverride. Minimum 2 required for friction. */
         PROPERTY(Editable, Category = "Physics")
@@ -112,7 +112,7 @@ namespace Lumina
         PROPERTY(Editable, ClampMin = 0.0f, Category = "Physics")
         float SpeculativeContactDistance = 0.02f;
 
-        /** How much bodies are allowed to sink into each other (meters). */
+        /** How far bodies are allowed to sink into each other (meters). */
         PROPERTY(Editable, ClampMin = 0.0f, Category = "Physics")
         float PenetrationSlop = 0.02f;
 

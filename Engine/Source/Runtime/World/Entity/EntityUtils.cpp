@@ -840,8 +840,11 @@ namespace Lumina::ECS::Utils
                     // Scripts can't be bit-copied: their Lua refs point at the source's thread, the shared
                     // FScript would be shared, and self.Entity/self.Transform would resolve to the source.
                     // Re-emplace below with just the editable fields so on_construct re-runs SetupScriptComponent.
+                    // SRigidBodyComponent is skipped too: bit-copying carries the source's live BodyID, and it
+                    // must be re-emplaced (not copied) so on_construct builds a fresh Jolt body for the duplicate.
                     if (ID == entt::type_hash<FRelationshipComponent>::value()
-                        || ID == entt::type_hash<SScriptComponent>::value())
+                        || ID == entt::type_hash<SScriptComponent>::value()
+                        || ID == entt::type_hash<SRigidBodyComponent>::value())
                     {
                         continue;
                     }
@@ -858,17 +861,18 @@ namespace Lumina::ECS::Utils
                 Registry.emplace_or_replace<FNeedsTransformUpdate>(To);
             }
 
-            // Re-copy SRigidBodyComponent explicitly. The storage iteration above skips it
-            // when a default rigid body has already been emplaced by a collider on_construct
-            // hook (entt fires emplace_or_replace<SRigidBodyComponent> when SBoxCollider/etc.
-            // are pushed onto the duplicate), which clobbers BodyType/Mass/CollisionProfile
-            // back to defaults. Force the source's data through, then invalidate the body id
-            // so the physics scene allocates a fresh Jolt body.
+            // Re-emplace SRigidBodyComponent from the source. A collider on_construct hook may have
+            // auto-emplaced a default rigid body (and built a default Jolt body) onto the duplicate, so
+            // emplace_or_replace here would only fire on_update -- a no-op -- and the body would never be
+            // rebuilt with the source's type/profile. Remove that default first so on_destroy tears down
+            // any wrong Jolt body, then emplace fresh (with an invalid BodyID) so on_construct builds the body.
             if (const SRigidBodyComponent* SourceBody = Registry.try_get<SRigidBodyComponent>(Source))
             {
-                SRigidBodyComponent& NewBody = Registry.emplace_or_replace<SRigidBodyComponent>(To, *SourceBody);
+                SRigidBodyComponent NewBody = *SourceBody;
                 NewBody.BodyID = 0xFFFFFFFF;
-                Registry.emplace_or_replace<FNeedsPhysicsBodyUpdate>(To);
+
+                Registry.remove<SRigidBodyComponent>(To);
+                Registry.emplace<SRigidBodyComponent>(To, eastl::move(NewBody));
             }
 
             // Emplace SScriptComponent with the editable fields only; on_construct fires the canonical
@@ -880,7 +884,6 @@ namespace Lumina::ECS::Utils
                 NewScript.PropertyOverrides = SourceScript->PropertyOverrides;
                 NewScript.UpdateStage       = SourceScript->UpdateStage;
                 NewScript.TickRate          = SourceScript->TickRate;
-                NewScript.bRunInEditor      = SourceScript->bRunInEditor;
                 Registry.emplace<SScriptComponent>(To, eastl::move(NewScript));
             }
 

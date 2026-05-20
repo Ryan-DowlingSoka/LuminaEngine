@@ -20,6 +20,7 @@
 #include "JoltUtils.h"
 #include "Core/Console/ConsoleVariable.h"
 #include "Core/Profiler/Profile.h"
+#include "Core/Threading/Thread.h"
 #include "Jolt/Physics/Body/BodyCreationSettings.h"
 #include "Jolt/Physics/Collision/Shape/BoxShape.h"
 #include "Jolt/Physics/Collision/Shape/SphereShape.h"
@@ -824,15 +825,27 @@ namespace Lumina::Physics
         const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
         entt::registry& Registry = World->GetEntityRegistry();
 
+        // Each body writes only its own snapshot fields, so the pass is data-parallel.
+        // Guard with contains(): the handle can hold tombstones once bodies have been
+        // destroyed, and raw index + get() (unlike each()) is not tombstone-aware.
         auto RigidView = Registry.view<SRigidBodyComponent>();
-        RigidView.each([&](SRigidBodyComponent& BodyComponent)
+        auto RigidHandle = RigidView.handle();
+        Task::ParallelFor(RigidHandle->size(), [&](uint32 Index)
         {
+            entt::entity Entity = (*RigidHandle)[Index];
+            if (!RigidView.contains(Entity))
+            {
+                return;
+            }
+
+            SRigidBodyComponent& BodyComponent = RigidView.get<SRigidBodyComponent>(Entity);
+
             const JPH::Body* Body = LockInterface.TryGetBody(JPH::BodyID(BodyComponent.BodyID));
             if (Body == nullptr || Body->IsStatic())
             {
                 return;
             }
-            
+
             BodyComponent.LastBodyPosition = JoltUtils::FromJPHVec3(Body->GetPosition());
             BodyComponent.LastBodyRotation = JoltUtils::FromJPHQuat(Body->GetRotation());
         });
@@ -858,17 +871,31 @@ namespace Lumina::Physics
 
         const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
         entt::registry& Registry = World->GetEntityRegistry();
+        
+        auto View = Registry.view<SRigidBodyComponent, STransformComponent>();
+        auto Handle = View.handle();
+        const uint32 RigidCount = (uint32)Handle->size();
 
         InterpolatedTransforms.clear();
+        InterpolatedTransforms.resize(RigidCount);
 
-        auto View = Registry.view<SRigidBodyComponent, STransformComponent>();
-        InterpolatedTransforms.reserve(View.size_hint());
-
-        View.each([&](entt::entity EntityID, SRigidBodyComponent& BodyComponent, STransformComponent&)
+        Task::ParallelFor(RigidCount, [&](uint32 Index)
         {
+            entt::entity EntityID = (*Handle)[Index];
+            FStagedTransform& Staged = InterpolatedTransforms[Index];
+            Staged.Entity = EntityID;
+
+            if (!View.contains(EntityID))
+            {
+                Staged.bSkip = true;
+                return;
+            }
+
+            const SRigidBodyComponent& BodyComponent = View.get<SRigidBodyComponent>(EntityID);
             const JPH::Body* Body = LockInterface.TryGetBody(JPH::BodyID(BodyComponent.BodyID));
             if (Body == nullptr || Body->IsStatic())
             {
+                Staged.bSkip = true;
                 return;
             }
 
@@ -877,20 +904,23 @@ namespace Lumina::Physics
 
             if (CurrPos.GetY() < KillHeight)
             {
-                InterpolatedTransforms.push_back({ EntityID, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), true });
+                Staged.Location   = glm::vec3(0.0f);
+                Staged.Rotation   = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+                Staged.bBelowKill = true;
+                Staged.bSkip      = false;
                 return;
             }
 
             // Interpolate between the pre-step snapshot and the current physics state.
             // Falls back to the current state on the first frame (no snapshot yet).
-            const glm::vec3 Location = glm::mix(BodyComponent.LastBodyPosition,
-                                                JoltUtils::FromJPHVec3(CurrPos),
-                                                Alpha);
-            const glm::quat Rotation = glm::normalize(glm::slerp(BodyComponent.LastBodyRotation,
-                                                                 JoltUtils::FromJPHQuat(CurrRot),
-                                                                 Alpha));
-
-            InterpolatedTransforms.push_back({ EntityID, Location, Rotation, false });
+            Staged.Location   = glm::mix(BodyComponent.LastBodyPosition,
+                                         JoltUtils::FromJPHVec3(CurrPos),
+                                         Alpha);
+            Staged.Rotation   = glm::normalize(glm::slerp(BodyComponent.LastBodyRotation,
+                                                          JoltUtils::FromJPHQuat(CurrRot),
+                                                          Alpha));
+            Staged.bBelowKill = false;
+            Staged.bSkip      = false;
         });
 
         auto CharacterView = Registry.view<SCharacterPhysicsComponent, STransformComponent>();
@@ -908,7 +938,7 @@ namespace Lumina::Physics
 
             if (CurrPos.GetY() < KillHeight)
             {
-                InterpolatedTransforms.push_back({ Entity, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), true });
+                InterpolatedTransforms.emplace_back(Entity, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), true, false);
                 return;
             }
 
@@ -919,7 +949,7 @@ namespace Lumina::Physics
                                                                  JoltUtils::FromJPHQuat(CurrRot),
                                                                  Alpha));
 
-            InterpolatedTransforms.push_back({ Entity, Location, Rotation, false });
+            InterpolatedTransforms.push_back({ Entity, Location, Rotation, false, false });
         });
     }
 
@@ -936,7 +966,7 @@ namespace Lumina::Physics
 
         for (const FStagedTransform& Staged : InterpolatedTransforms)
         {
-            if (!Registry.valid(Staged.Entity))
+            if (Staged.bSkip || !Registry.valid(Staged.Entity))
             {
                 continue;
             }
@@ -997,10 +1027,7 @@ namespace Lumina::Physics
 
             Movement.PendingLookYaw = Controller.LookInput.x;
             Controller.MoveInput    = {};
-
-            // Jump is a one-shot edge, latch it as pending so the first
-            // substep that sees it consumes the impulse, then both the
-            // controller and pending flag are cleared.
+            
             if (Controller.bJumpPressed)
             {
                 Movement.bPendingJump    = true;
@@ -1581,7 +1608,7 @@ namespace Lumina::Physics
     // Jolt PhysicsSystem state, no global mutation — so callers may invoke
     // this from multiple worker threads in parallel as long as the registry
     // is not being mutated.
-    static EBodyBuildStatus TryBuildRigidBodyCreationSettings(entt::registry& Registry, entt::entity Entity, FRigidBodyBuildResult& Out)
+    static EBodyBuildStatus TryBuildRigidBodyCreationSettings(FJoltPhysicsScene* Scene, entt::registry& Registry, entt::entity Entity, FRigidBodyBuildResult& Out)
     {
         LUMINA_PROFILE_SCOPE();
 
@@ -1614,32 +1641,24 @@ namespace Lumina::Physics
             ColliderRotationOffset          = BC->RotationOffset;
             bColliderIsTrigger              = BC->bIsTrigger;
 
-            JPH::BoxShapeSettings Settings(JoltUtils::ToJPHVec3(BC->HalfExtent * TransformComponent->GetScale()));
-            Settings.SetEmbedded();
-            auto Result = Settings.Create();
-            if (Result.HasError())
+            Shape = Scene->GetOrCreateBoxShape(BC->HalfExtent * TransformComponent->GetScale());
+            if (Shape == nullptr)
             {
-                LOG_ERROR("Failed to create BoxCollider Shape for Entity: {} - {}", entt::to_integral(Entity), Result.GetError());
+                LOG_ERROR("Failed to create BoxCollider Shape for Entity: {}", entt::to_integral(Entity));
                 return EBodyBuildStatus::Error;
             }
-
-            Shape = Result.Get();
         }
         else if (const SSphereColliderComponent* SC = Registry.try_get<SSphereColliderComponent>(Entity))
         {
             ColliderTranslationOffset           = SC->TranslationOffset;
             bColliderIsTrigger                  = SC->bIsTrigger;
 
-            JPH::SphereShapeSettings Settings(SC->Radius * TransformComponent->MaxScale());
-            Settings.SetEmbedded();
-            auto Result = Settings.Create();
-            if (Result.HasError())
+            Shape = Scene->GetOrCreateSphereShape(SC->Radius * TransformComponent->MaxScale());
+            if (Shape == nullptr)
             {
-                LOG_ERROR("Failed to create SphereCollider Shape for Entity: {} - {}", entt::to_integral(Entity), Result.GetError());
+                LOG_ERROR("Failed to create SphereCollider Shape for Entity: {}", entt::to_integral(Entity));
                 return EBodyBuildStatus::Error;
             }
-
-            Shape = Result.Get();
         }
         else if (const SMeshColliderComponent* MC = Registry.try_get<SMeshColliderComponent>(Entity))
         {
@@ -1708,16 +1727,25 @@ namespace Lumina::Physics
         glm::quat Rotation      = TransformComponent->GetRotation();
         glm::vec3 Position      = TransformComponent->GetLocation();
 
-        glm::quat QuatRotation(ColliderRotationOffset);
-        JPH::RotatedTranslatedShapeSettings RTS(JoltUtils::ToJPHVec3(ColliderTranslationOffset), JoltUtils::ToJPHQuat(QuatRotation), Shape);
-        auto RTSResult = RTS.Create();
-        if (RTSResult.HasError())
+        // Only wrap in a RotatedTranslatedShape when there's an actual offset. The
+        // wrapper is a per-body allocation and adds a transform indirection to every
+        // collision query, so skipping it lets unoffset bodies share the bare cached
+        // shape (the common case for piles of identical primitives).
+        const bool bHasColliderOffset = glm::length2(ColliderTranslationOffset) > LE_SMALL_NUMBER
+                                     || glm::length2(ColliderRotationOffset)    > LE_SMALL_NUMBER;
+        if (bHasColliderOffset)
         {
-            LOG_ERROR("Failed to create offset shape for Entity: {} - {}", entt::to_integral(Entity), RTSResult.GetError());
-            return EBodyBuildStatus::Error;
-        }
+            glm::quat QuatRotation(ColliderRotationOffset);
+            JPH::RotatedTranslatedShapeSettings RTS(JoltUtils::ToJPHVec3(ColliderTranslationOffset), JoltUtils::ToJPHQuat(QuatRotation), Shape);
+            auto RTSResult = RTS.Create();
+            if (RTSResult.HasError())
+            {
+                LOG_ERROR("Failed to create offset shape for Entity: {} - {}", entt::to_integral(Entity), RTSResult.GetError());
+                return EBodyBuildStatus::Error;
+            }
 
-        Shape = RTSResult.Get();
+            Shape = RTSResult.Get();
+        }
 
         if (glm::dot(RigidBodyComponent->CenterOfMassOffset, RigidBodyComponent->CenterOfMassOffset) > 0.0f)
         {
@@ -1769,12 +1797,20 @@ namespace Lumina::Physics
     {
         LUMINA_PROFILE_SCOPE();
 
-        // entt fires on_construct on whichever thread emplaces the component -- usually
-        // the game thread. JoltSystem->Update may be running on the physics thread, and
-        // Jolt forbids BodyInterface::CreateBody/AddBody during a step. Always defer to
-        // the drain at the top of FJoltPhysicsScene::Update.
-        FScopeLock Lock(PendingRigidBodyMutex);
-        PendingRigidBodyCreations.push(Entity);
+        // Jolt forbids BodyInterface::CreateBody/AddBody during a step. If we're on the
+        // physics thread the step may be in flight, so defer to the drain at the top of
+        // Update. On the game thread the worker is provably idle (physics is kicked last
+        // in FrameEnd and joined first in FrameStart), so build the body now -- that way
+        // the BodyID is live for the same script call that spawned the entity.
+        // CreateRigidBodyImmediate re-queues if the shape/transform isn't ready yet.
+        if (Threading::IsPhysicsThread())
+        {
+            FScopeLock Lock(PendingRigidBodyMutex);
+            PendingRigidBodyCreations.push(Entity);
+            return;
+        }
+
+        CreateRigidBodyImmediate(Registry, Entity);
     }
 
     void FJoltPhysicsScene::CreateRigidBodyImmediate(entt::registry& Registry, entt::entity Entity)
@@ -1782,7 +1818,7 @@ namespace Lumina::Physics
         LUMINA_PROFILE_SCOPE();
 
         FRigidBodyBuildResult BuildResult;
-        const EBodyBuildStatus Status = TryBuildRigidBodyCreationSettings(Registry, Entity, BuildResult);
+        const EBodyBuildStatus Status = TryBuildRigidBodyCreationSettings(this, Registry, Entity, BuildResult);
 
         switch (Status)
         {
@@ -1819,6 +1855,56 @@ namespace Lumina::Physics
         BodyInterface.AddBody(Body->GetID(), JPH::EActivation::Activate);
     }
 
+    JPH::ShapeRefC FJoltPhysicsScene::GetOrCreateSphereShape(float Radius)
+    {
+        const FShapeKey Key{ 0, Radius, 0.0f, 0.0f };
+
+        FScopeLock Lock(ShapeCacheMutex);
+        auto It = ShapeCache.find(Key);
+        if (It != ShapeCache.end())
+        {
+            return It->second;
+        }
+
+        JPH::SphereShapeSettings Settings(Radius);
+        Settings.SetEmbedded();
+        auto Result = Settings.Create();
+        if (Result.HasError())
+        {
+            LOG_ERROR("Failed to create cached sphere shape (radius {}): {}", Radius, Result.GetError());
+            return {};
+        }
+
+        JPH::ShapeRefC Shape = Result.Get();
+        ShapeCache.emplace(Key, Shape);
+        return Shape;
+    }
+
+    JPH::ShapeRefC FJoltPhysicsScene::GetOrCreateBoxShape(const glm::vec3& HalfExtent)
+    {
+        const FShapeKey Key{ 1, HalfExtent.x, HalfExtent.y, HalfExtent.z };
+
+        FScopeLock Lock(ShapeCacheMutex);
+        auto It = ShapeCache.find(Key);
+        if (It != ShapeCache.end())
+        {
+            return It->second;
+        }
+
+        JPH::BoxShapeSettings Settings(JoltUtils::ToJPHVec3(HalfExtent));
+        Settings.SetEmbedded();
+        auto Result = Settings.Create();
+        if (Result.HasError())
+        {
+            LOG_ERROR("Failed to create cached box shape ({}, {}, {}): {}", HalfExtent.x, HalfExtent.y, HalfExtent.z, Result.GetError());
+            return {};
+        }
+
+        JPH::ShapeRefC Shape = Result.Get();
+        ShapeCache.emplace(Key, Shape);
+        return Shape;
+    }
+
     void FJoltPhysicsScene::BulkCreateRigidBodies(entt::registry& Registry)
     {
         LUMINA_PROFILE_SCOPE();
@@ -1843,7 +1929,7 @@ namespace Lumina::Physics
 
         Task::ParallelFor(Count, [&](uint32 Index)
         {
-            Statuses[Index] = TryBuildRigidBodyCreationSettings(Registry, Candidates[Index], Results[Index]);
+            Statuses[Index] = TryBuildRigidBodyCreationSettings(this, Registry, Candidates[Index], Results[Index]);
         });
 
 
