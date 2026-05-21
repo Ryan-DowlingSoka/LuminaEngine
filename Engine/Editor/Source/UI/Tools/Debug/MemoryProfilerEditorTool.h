@@ -1,8 +1,12 @@
 #pragma once
 #include "UI/Tools/EditorTool.h"
+#include "Memory/MemoryTracking.h"
 
 namespace Lumina
 {
+    // Single-window leak hunter. Category tracking is always on in Debug/Development;
+    // this window just visualizes it. Set a baseline, watch which category's Delta climbs,
+    // then tick call-stack capture to get the exact leaking line.
     class FMemoryProfilerEditorTool : public FEditorTool
     {
     public:
@@ -22,24 +26,21 @@ namespace Lumina
 
     private:
 
-        struct FMemorySnapshot
-        {
-            double timestamp;
-            size_t processMemory;
-            size_t currentMapped;
-            size_t cachedMemory;
-            size_t hugeAllocs;
-        };
-
         void DrawWindow(bool bIsFocused);
-        void DrawOverviewTab();
-        void DrawDetailedTab();
-        void DrawDistributionTab();
+        void DrawControls();
+        void DrawSummary();
+        void DrawCategoryTable(float Height);
+        void DrawCallSites();
 
-        TVector<FMemorySnapshot>    History;
-        float                       UpdateTimer = 0.0f;
-        bool                        bPaused     = false;
+#if LUMINA_MEMORY_TRACKING
+        // Snapshot refreshed on a timer so the table is readable rather than flickering.
+        TVector<Memory::FMemoryCategoryStats> Categories;
+        TVector<Memory::FMemoryCategoryStats> Baseline;
+        bool  bHasBaseline = false;
+        float RefreshTimer = 0.0f;
 
-        static constexpr int32 MaxHistoryPoints = 60;
+        // Top Call Sites ranking: false = live bytes (leaks), true = total allocs (churn).
+        bool  bSortCallSitesByAllocs = false;
+#endif
     };
 }

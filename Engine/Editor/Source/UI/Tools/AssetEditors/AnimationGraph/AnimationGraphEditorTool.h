@@ -7,6 +7,7 @@
 #include "UI/Properties/PropertyTable.h"
 #include "UI/Tools/AssetEditors/AssetEditorTool.h"
 #include "UI/Tools/NodeGraph/EdGraphNode.h"
+#include "UI/Tools/NodeGraph/Animation/AnimationGraphCompiler.h"
 
 namespace Lumina
 {
@@ -14,6 +15,8 @@ namespace Lumina
     class CAnimStateTransition;
     class CEdNodeGraph;
     class CEdNodeGraphPin;
+    class CEnum;
+    class CWorld;
 
     // Asset editor for CAnimationGraph. Hosts the node graph canvas, a 3D
     // preview viewport that runs the compiled graph on the skeleton's preview
@@ -56,6 +59,10 @@ namespace Lumina
         void DrawParametersWindow();
         void PushParameterOverrides();
 
+        // Resolves a reflected enum by registered name (lazy cache), for the
+        // Parameters panel's enum-key value combos.
+        CEnum* ResolveReflectedEnum(const FName& Name);
+
         // When a State node is selected, lists its outgoing transitions inline
         // so the user can edit each condition without having to click the
         // (often hard to hit) transition wire itself.
@@ -69,6 +76,16 @@ namespace Lumina
         // bMarkPackageDirty is skipped for the per-frame live-preview recompile so
         // the asset is not perpetually marked unsaved.
         void Compile(bool bMarkPackageDirty = true);
+
+        // Builds the live debug overlay (pin values, active state highlight) from
+        // the selected target's VM state and pushes it onto the displayed graph.
+        // No-op when the Debug toggle is off.
+        void UpdateDebugOverlay();
+
+        // Dropdown to choose which instance the debug overlay reads from: the
+        // editor preview, or any live entity (across worlds) whose anim component
+        // uses this graph asset.
+        void DrawDebugTargetCombo();
 
     private:
 
@@ -109,8 +126,9 @@ namespace Lumina
         // by parameter name so they survive recompiles / parameter reordering.
         THashMap<FName, float>                  ParameterOverrides;
 
-        // Buffer for the "Add parameter" UI in the Parameters panel.
-        char                                    NewParameterBuffer[128] = {};
+        // Lazily-built name -> reflected enum lookup for enum-key value combos.
+        THashMap<FName, CEnum*>                 ReflectedEnumCache;
+        bool                                    bEnumCacheBuilt = false;
 
         // Cached inline property tables for outgoing transitions of the selected
         // State node, keyed by transition pointer. Built lazily; we never let
@@ -121,6 +139,26 @@ namespace Lumina
         // Live preview: recompile the graph every frame so node edits show up
         // in the viewport immediately. Cheap for preview-sized graphs.
         bool                                    bAutoCompile = true;
+
+        // Debug overlay: when on, the graph animates link flow, prints live pin
+        // values, and highlights the active state machine state.
+        bool                                    bDebugEnabled = false;
+
+        // Which instance the debug overlay reads from. Null world = the editor
+        // preview (MeshEntity); otherwise a live entity in another world.
+        TWeakObjectPtr<CWorld>                  DebugTargetWorld;
+        entt::entity                            DebugTargetEntity = entt::null;
+
+        // Captured from the compiler after each compile: maps editor pins to VM
+        // registers and editor State nodes to their runtime state slot/index.
+        // Refreshed every frame by the auto-compile, so pin pointers stay valid.
+        THashMap<const CEdNodeGraphPin*, uint16> DebugPinRegisters;
+        TVector<FAnimGraphDebugStateNode>        DebugStateNodes;
+
+        // Per-frame overlay payload handed to the displayed graph; kept alive as
+        // members so the pointers in FGraphDebugContext stay valid during draw.
+        THashMap<CEdNodeGraphPin*, FString>      DebugPinValues;
+        THashSet<const CEdGraphNode*>            DebugActiveNodes;
 
         entt::entity                            MeshEntity = entt::null;
         entt::entity                            DirectionalLightEntity = entt::null;

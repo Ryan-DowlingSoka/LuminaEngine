@@ -9,6 +9,8 @@ namespace Lumina
         PoseBPin  = CreateAnimPin("Pose B", ENodePinDirection::Input, EAnimPinType::Pose);
         AlphaPin  = CreateAnimPin("Alpha", ENodePinDirection::Input, EAnimPinType::Value, 0.0f);
         ResultPin = CreateAnimPin("Result", ENodePinDirection::Output, EAnimPinType::Pose);
+
+        BindFloatPinEditor(AlphaPin);
     }
 
     void CAnimGraphNode_Blend::GenerateBytecode(FAnimationGraphCompiler& Compiler)

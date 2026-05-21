@@ -56,6 +56,8 @@ namespace Lumina
 
         CAnimGraphPin* PoseInPin = nullptr;
         CAnimGraphPin* AlphaPin = nullptr;
+        CAnimGraphPin* SpacePin = nullptr;
+        CAnimGraphPin* ModePin = nullptr;
         CAnimGraphPin* PoseOutPin = nullptr;
     };
 }

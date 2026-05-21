@@ -799,12 +799,18 @@ namespace Lumina
 
     uint64 FVulkanRenderContext::GetAllocatedMemory() const
     {
-        VmaBudget Budgets[VK_MAX_MEMORY_HEAPS];
-        vmaGetHeapBudgets(GetDevice()->GetAllocator().GetVMA(), Budgets);
+        VmaAllocator VMA = GetDevice()->GetAllocator().GetVMA();
+
+        // vmaGetHeapBudgets only writes the device's actual heaps; iterating the full
+        // VK_MAX_MEMORY_HEAPS would sum uninitialized stack garbage from the unused slots.
+        const VkPhysicalDeviceMemoryProperties* MemProps = nullptr;
+        vmaGetMemoryProperties(VMA, &MemProps);
+
+        VmaBudget Budgets[VK_MAX_MEMORY_HEAPS] = {};
+        vmaGetHeapBudgets(VMA, Budgets);
 
         uint64 Used = 0;
-
-        for (uint32 i = 0; i < VK_MAX_MEMORY_HEAPS; i++)
+        for (uint32 i = 0; i < MemProps->memoryHeapCount; ++i)
         {
             Used += Budgets[i].usage;
         }
@@ -814,16 +820,20 @@ namespace Lumina
 
     uint64 FVulkanRenderContext::GetAvailableMemory() const
     {
-        VmaBudget budgets[VK_MAX_MEMORY_HEAPS];
-        vmaGetHeapBudgets(GetDevice()->GetAllocator().GetVMA(), budgets);
+        VmaAllocator VMA = GetDevice()->GetAllocator().GetVMA();
+
+        const VkPhysicalDeviceMemoryProperties* MemProps = nullptr;
+        vmaGetMemoryProperties(VMA, &MemProps);
+
+        VmaBudget Budgets[VK_MAX_MEMORY_HEAPS] = {};
+        vmaGetHeapBudgets(VMA, Budgets);
 
         uint64 Budget = 0;
         uint64 Usage  = 0;
-
-        for (uint32 i = 0; i < VK_MAX_MEMORY_HEAPS; i++)
+        for (uint32 i = 0; i < MemProps->memoryHeapCount; ++i)
         {
-            Budget += budgets[i].budget;
-            Usage  += budgets[i].usage;
+            Budget += Budgets[i].budget;
+            Usage  += Budgets[i].usage;
         }
 
         return (Budget > Usage) ? (Budget - Usage) : 0;

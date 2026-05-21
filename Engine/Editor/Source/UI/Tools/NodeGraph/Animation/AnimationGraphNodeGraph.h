@@ -33,6 +33,9 @@ namespace Lumina
 
         const FEdGraphSchema& GetSchema() const override;
 
+        // Animation nodes expose value/enum defaults inline on their input pins.
+        bool ShouldDrawInlinePinEditors() const override { return true; }
+
         // Topologically sorts from the Output node and emits bytecode for each
         // contributing node into Compiler, finishing with an Output opcode.
         // Errors are attached to their nodes. Used for the top-level graph.

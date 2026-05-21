@@ -16,6 +16,7 @@ namespace Lumina
         Material,
         MaterialInstance,
         AnimationGraph,
+        Blackboard,
         Prefab,
         World,
         Max,
@@ -53,6 +54,7 @@ namespace Lumina
             case EAssetType::MaterialInstance:      return "MaterialInstance";
             case EAssetType::Material:              return "Material";
             case EAssetType::AnimationGraph:        return "AnimationGraph";
+            case EAssetType::Blackboard:            return "Blackboard";
             case EAssetType::Prefab:                return "Prefab";
             case EAssetType::World:                 return "World";
             case EAssetType::Max:                   return "INVALID";

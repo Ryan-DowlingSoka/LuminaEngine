@@ -1,6 +1,8 @@
 #include "CoreTypeCustomization.h"
 #include "imgui.h"
 #include "Core/Reflection/Type/Properties/EnumProperty.h"
+#include "Tools/UI/ImGui/ImGuiDesignIcons.h"
+#include "Tools/UI/ImGui/ImGuiX.h"
 
 namespace Lumina
 {
@@ -69,29 +71,28 @@ namespace Lumina
         }
         else
         {
-            int64 EnumCount = (int64)EnumProperty->GetEnum()->Names.size();
-            const char* PreviewValue = EnumProperty->GetEnum()->GetNameAtValue(CachedValue).c_str();
-    
-            if (ImGui::BeginCombo("##", PreviewValue))
+            CEnum* Enum = EnumProperty->GetEnum();
+            const int64 EnumCount = (int64)Enum->Names.size();
+
+            // Map the stored value to its row; values need not be contiguous with indices.
+            int32 CurrentIndex = INDEX_NONE;
+            for (int64 i = 0; i < EnumCount; ++i)
             {
-                for (int64 i = 0; i < EnumCount; ++i)
+                if ((int64)Enum->GetValueAtIndex(i) == CachedValue)
                 {
-                    const char* Label = EnumProperty->GetEnum()->GetNameAtIndex(i).c_str();
-                    bool bIsSelected = (i == CachedValue);
-    
-                    if (ImGui::Selectable(Label, bIsSelected))
-                    {
-                        CachedValue = i;
-                        bWasChanged = true;
-                    }
-    
-                    if (bIsSelected)
-                    {
-                        ImGui::SetItemDefaultFocus();
-                    }
+                    CurrentIndex = (int32)i;
+                    break;
                 }
-    
-                ImGui::EndCombo();
+            }
+
+            const FFixedString Preview = Enum->GetNameAtValue(CachedValue).c_str();
+            const int32 Picked = ImGuiX::SearchableCombo("##enum", Preview.c_str(), (int32)EnumCount, CurrentIndex,
+                [Enum](int32 Index) { return FFixedString(Enum->GetNameAtIndex(Index).c_str()); }, LE_ICON_RHOMBUS_OUTLINE);
+
+            if (Picked != INDEX_NONE)
+            {
+                CachedValue = (int64)Enum->GetValueAtIndex(Picked);
+                bWasChanged = true;
             }
         }
     

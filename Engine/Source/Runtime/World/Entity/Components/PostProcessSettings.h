@@ -42,9 +42,25 @@ namespace Lumina
         EToneMapper ToneMapper = EToneMapper::AGX;
 
 
-        /** Exposure compensation in stops (EV); +1 doubles, -1 halves. */
+        /** Exposure compensation in stops (EV); +1 doubles, -1 halves. With auto-exposure on, this biases the adapted result. */
         PROPERTY(Editable, Category = "Post Process|Exposure", ClampMin = -8.0f, ClampMax = 8.0f)
         float ExposureCompensation = 0.0f;
+
+        /** When true, exposure adapts to scene luminance over time; ExposureCompensation then acts as a bias on top. */
+        PROPERTY(Editable, Category = "Post Process|Exposure")
+        bool bAutoExposure = false;
+
+        /** Lower bound on the auto-exposure adjustment, in stops (EV). */
+        PROPERTY(Editable, Category = "Post Process|Exposure", ClampMin = -16.0f, ClampMax = 16.0f)
+        float AutoExposureMinEV = -8.0f;
+
+        /** Upper bound on the auto-exposure adjustment, in stops (EV). */
+        PROPERTY(Editable, Category = "Post Process|Exposure", ClampMin = -16.0f, ClampMax = 16.0f)
+        float AutoExposureMaxEV = 8.0f;
+
+        /** Eye-adaptation rate per second; higher snaps to new lighting faster. */
+        PROPERTY(Editable, Category = "Post Process|Exposure", ClampMin = 0.1f, ClampMax = 16.0f)
+        float AutoExposureSpeed = 2.0f;
 
 
         /** Color temperature [-1, 1]; negative cools, positive warms. LMS chromatic adaptation keeps neutrals neutral. */
@@ -154,6 +170,9 @@ namespace Lumina
         const auto LerpV3 = [Weight](glm::vec3 A, glm::vec3 B) { return A + (B - A) * Weight; };
 
         InOut.ExposureCompensation = LerpF (InOut.ExposureCompensation, In.ExposureCompensation);
+        InOut.AutoExposureMinEV    = LerpF (InOut.AutoExposureMinEV,    In.AutoExposureMinEV);
+        InOut.AutoExposureMaxEV    = LerpF (InOut.AutoExposureMaxEV,    In.AutoExposureMaxEV);
+        InOut.AutoExposureSpeed    = LerpF (InOut.AutoExposureSpeed,    In.AutoExposureSpeed);
         InOut.Temperature          = LerpF (InOut.Temperature,          In.Temperature);
         InOut.Tint                 = LerpF (InOut.Tint,                 In.Tint);
         InOut.Contrast             = LerpF (InOut.Contrast,             In.Contrast);
@@ -179,7 +198,8 @@ namespace Lumina
 
         if (Weight >= 0.5f)
         {
-            InOut.ToneMapper = In.ToneMapper;
+            InOut.ToneMapper    = In.ToneMapper;
+            InOut.bAutoExposure = In.bAutoExposure;
         }
     }
 }

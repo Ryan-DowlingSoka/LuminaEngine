@@ -491,12 +491,21 @@ namespace Lumina
 
         if (!PendingMutations.empty())
         {
+            // Structural edits (add / clear / remove) must notify like a value edit, otherwise
+            // change listeners never see them (e.g. a registry patch -> on_update), and the edit
+            // isn't captured for undo. Started fires before the mutation so the transaction snapshots
+            // the pre-edit array; Updated/Finished fire after so PostChangeCallback sees the new contents.
+            DispatchChange(EPropertyChangeOp::Started);
+
             for (const TFunction<void()>& Mutation : PendingMutations)
             {
                 Mutation();
             }
             PendingMutations.clear();
             RebuildChildren();
+
+            DispatchChange(EPropertyChangeOp::Updated);
+            DispatchChange(EPropertyChangeOp::Finished);
         }
     }
 

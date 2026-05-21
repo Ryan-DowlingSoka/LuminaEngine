@@ -1,23 +1,30 @@
 #include "AnimationGraphEditorTool.h"
 
+#include <cstdio>
 #include "Assets/AssetTypes/Animation/AnimationGraph/AnimationGraph.h"
 #include "Assets/AssetTypes/Mesh/Skeleton/Skeleton.h"
 #include "Core/Math/Math.h"
 #include "Core/Object/Cast.h"
 #include "Core/Object/Class.h"
+#include "Core/Object/ObjectArray.h"
 #include "Core/Object/Package/Package.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "UI/Properties/Customizations/BonePickerContext.h"
 #include "UI/Properties/Customizations/ParameterPickerContext.h"
 #include "UI/Tools/NodeGraph/EdNodeGraphPin.h"
+#include "UI/Tools/NodeGraph/Animation/AnimGraphPin.h"
 #include "UI/Tools/NodeGraph/Animation/AnimationGraphCompiler.h"
 #include "UI/Tools/NodeGraph/Animation/AnimationGraphNodeGraph.h"
 #include "UI/Tools/NodeGraph/Animation/AnimStateMachineGraph.h"
 #include "UI/Tools/NodeGraph/Animation/AnimStateTransition.h"
 #include "UI/Tools/NodeGraph/Animation/Nodes/AnimGraphNode_State.h"
+#include "Assets/AssetTypes/Blackboard/Blackboard.h"
+#include "World/WorldManager.h"
 #include "World/Entity/Components/EnvironmentComponent.h"
 #include "World/Entity/Components/LightComponent.h"
 #include "World/Entity/Components/AnimationGraphComponent.h"
+#include "World/Entity/Components/BlackboardComponent.h"
+#include "World/Entity/Components/NameComponent.h"
 #include "World/Entity/Components/SkeletalMeshComponent.h"
 
 namespace Lumina
@@ -280,6 +287,9 @@ namespace Lumina
             MeshEntity = World->ConstructEntity("Preview Mesh");
             Registry.emplace<SSkeletalMeshComponent>(MeshEntity).SkeletalMesh = PreviewMesh;
             Registry.emplace<SAnimationGraphComponent>(MeshEntity).Graph = Graph;
+            // Drive parameter values through a blackboard instance, exactly like
+            // a real entity would; the Parameters panel writes into it.
+            Registry.emplace<SBlackboardComponent>(MeshEntity).Blackboard = Graph->Blackboard;
 
             STransformComponent& MeshTransform   = Registry.get<STransformComponent>(MeshEntity);
             STransformComponent& EditorTransform = Registry.get<STransformComponent>(EditorEntity);
@@ -301,6 +311,13 @@ namespace Lumina
         if (GraphComp.Graph.Get() != Graph)
         {
             GraphComp.Graph = Graph;
+        }
+
+        // Keep the preview blackboard instance pointed at the graph's schema.
+        SBlackboardComponent& BlackboardComp = Registry.get_or_emplace<SBlackboardComponent>(MeshEntity);
+        if (BlackboardComp.Blackboard.Get() != Graph->Blackboard.Get())
+        {
+            BlackboardComp.Blackboard = Graph->Blackboard;
         }
     }
 
@@ -337,25 +354,18 @@ namespace Lumina
             return;
         }
 
-        SAnimationGraphComponent* GraphComp = Registry.try_get<SAnimationGraphComponent>(MeshEntity);
-        if (GraphComp == nullptr || !GraphComp->Graph.IsValid())
+        SBlackboardComponent* BlackboardComp = Registry.try_get<SBlackboardComponent>(MeshEntity);
+        if (BlackboardComp == nullptr)
         {
             return;
         }
 
-        // Write straight into the VM state's parameter array. Going through the
-        // component's SetFloot would pull an un-exported Runtime symbol into the
-        // editor; FindParameterIndex is part of the exported CAnimationGraph API.
-        // Unknown names resolve to INDEX_NONE; an un-sized VMState (system hasn't
-        // ticked yet) is simply skipped until the next frame.
-        CAnimationGraph* Graph = GraphComp->Graph.Get();
+        // Push the panel's live values into the preview entity's blackboard; the
+        // animation system then resolves them into the VM each frame, exactly as
+        // it would for a gameplay entity. Unknown keys are simply created.
         for (const auto& [Name, Value] : ParameterOverrides)
         {
-            const int32 Index = Graph->FindParameterIndex(Name);
-            if (Index >= 0 && Index < (int32)GraphComp->VMState.Parameters.size())
-            {
-                GraphComp->VMState.Parameters[Index] = Value;
-            }
+            BlackboardComp->SetFloat(Name, Value);
         }
     }
 
@@ -412,6 +422,8 @@ namespace Lumina
     {
         DrawBreadcrumbBar();
 
+        UpdateDebugOverlay();
+
         if (!GraphStack.empty() && GraphStack.back().Graph != nullptr)
         {
             GraphStack.back().Graph->DrawGraph();
@@ -454,6 +466,18 @@ namespace Lumina
 
         ImGui::SameLine();
         ImGui::Checkbox("Auto Compile", &bAutoCompile);
+
+        ImGui::SameLine();
+        ImGui::Checkbox("Debug", &bDebugEnabled);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        {
+            ImGuiX::TextTooltip_Internal("Animate flow, show live pin values, and highlight the active state from the selected target");
+        }
+
+        if (bDebugEnabled)
+        {
+            DrawDebugTargetCombo();
+        }
 
         ImGui::SameLine();
         if (bHasCompilationErrors)
@@ -580,6 +604,25 @@ namespace Lumina
         }
     }
 
+    CEnum* FAnimationGraphEditorTool::ResolveReflectedEnum(const FName& Name)
+    {
+        if (!bEnumCacheBuilt)
+        {
+            bEnumCacheBuilt = true;
+            GObjectArray.ForEachObject([&](CObjectBase* Object, int32)
+            {
+                if (Object != nullptr && Object->IsA<CEnum>())
+                {
+                    CEnum* Enum = static_cast<CEnum*>(Object);
+                    ReflectedEnumCache[Enum->GetName()] = Enum;
+                }
+            });
+        }
+
+        auto It = ReflectedEnumCache.find(Name);
+        return It == ReflectedEnumCache.end() ? nullptr : It->second;
+    }
+
     void FAnimationGraphEditorTool::DrawParametersWindow()
     {
         CAnimationGraph* Graph = Cast<CAnimationGraph>(Asset.Get());
@@ -588,103 +631,123 @@ namespace Lumina
             return;
         }
 
-        ImGui::TextWrapped("Parameters drive blend weights, playback speeds, and state-machine "
-            "transition conditions. Set values here to live-test in the preview viewport.");
+        ImGui::TextWrapped("Live values for the assigned Blackboard's keys. Set them here to test the "
+            "graph in the preview viewport; at runtime an entity's Blackboard Component supplies these.");
         ImGui::Separator();
 
-        // Inline create-parameter row. The graph's Parameters list is overwritten
-        // on every compile from discovered usage; to make a name "exist" across
-        // compiles we seed an editor override -- the picker dropdown also reads
-        // the (transient) list, and the compiler always re-adds names referenced
-        // by Get Parameter nodes / transition conditions.
-        ImGui::PushItemWidth(180.0f);
-        ImGui::InputTextWithHint("##NewParam", "New parameter name...", NewParameterBuffer, sizeof(NewParameterBuffer));
-        ImGui::PopItemWidth();
-        ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_PLUS " Add"))
-        {
-            const FName Name(NewParameterBuffer);
-            if (!Name.IsNone())
-            {
-                if (Graph->FindParameterIndex(Name) == INDEX_NONE)
-                {
-                    FAnimGraphParameter Param;
-                    Param.Name = Name;
-                    Param.Type = EAnimGraphParamType::Float;
-                    Param.DefaultValue = 0.0f;
-                    Graph->Parameters.push_back(Param);
-                }
-                ParameterOverrides[Name] = 0.0f;
-                NewParameterBuffer[0] = '\0';
-                Asset->GetPackage()->MarkDirty();
-            }
-        }
-        ImGui::Separator();
-
-        if (Graph->Parameters.empty())
+        CBlackboard* Blackboard = Graph->Blackboard.Get();
+        if (Blackboard == nullptr)
         {
             ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.35f, 1.0f),
-                "No parameters yet. Add one above, drop in a Get Parameter node,");
+                "No Blackboard assigned. Set one on the graph asset");
             ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.35f, 1.0f),
-                "or fill in a transition's Condition Parameter.");
+                "(Graph Properties) to declare parameters.");
             return;
         }
 
-        FName PendingRemoval;
-        for (const FAnimGraphParameter& Param : Graph->Parameters)
+        if (Blackboard->Keys.empty())
         {
-            // Lazily seed the editor override from the compiled default value.
-            auto It = ParameterOverrides.find(Param.Name);
+            ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.35f, 1.0f),
+                "Blackboard has no keys. Open it and add some.");
+            return;
+        }
+
+        for (const FBlackboardKey& Key : Blackboard->Keys)
+        {
+            if (Key.Name.IsNone())
+            {
+                continue;
+            }
+
+            // Numeric keys (Float / Int / Bool / Enum) drive the animation VM and
+            // are live-editable here. Vector / Object exist for the AI system.
+            if (Key.Type == EBlackboardKeyType::Vector || Key.Type == EBlackboardKeyType::Object)
+            {
+                ImGui::TextDisabled("%s (%s)", Key.Name.c_str(),
+                    Key.Type == EBlackboardKeyType::Vector ? "Vector" : "Object");
+                continue;
+            }
+
+            // Seed the live value from the key's default the first time we see it.
+            auto It = ParameterOverrides.find(Key.Name);
             if (It == ParameterOverrides.end())
             {
-                It = ParameterOverrides.emplace(Param.Name, Param.DefaultValue).first;
+                float Seed = Key.DefaultFloat;
+                switch (Key.Type)
+                {
+                case EBlackboardKeyType::Int:
+                case EBlackboardKeyType::Enum: Seed = (float)Key.DefaultInt;             break;
+                case EBlackboardKeyType::Bool: Seed = Key.DefaultBool ? 1.0f : 0.0f;     break;
+                default: break;
+                }
+                It = ParameterOverrides.emplace(Key.Name, Seed).first;
             }
 
             float& Value = It->second;
-            const char* Name = Param.Name.c_str();
+            const char* Name = Key.Name.c_str();
+
+            const bool bReadOnly = EnumHasAnyFlags(Key.Flags, EBlackboardKeyFlags::ReadOnly);
 
             ImGui::PushID(Name);
-
-            const float RemoveButtonW = 24.0f;
-            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - RemoveButtonW - 4.0f);
-            if (Param.Type == EAnimGraphParamType::Bool)
+            ImGui::BeginDisabled(bReadOnly);
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+            switch (Key.Type)
+            {
+            case EBlackboardKeyType::Bool:
             {
                 bool bValue = Value != 0.0f;
-                if (ImGui::Checkbox(Name, &bValue))
-                {
-                    Value = bValue ? 1.0f : 0.0f;
-                }
+                if (ImGui::Checkbox(Name, &bValue)) Value = bValue ? 1.0f : 0.0f;
+                break;
             }
-            else
+            case EBlackboardKeyType::Int:
             {
+                int IntValue = (int)glm::round(Value);
+                if (ImGui::DragInt(Name, &IntValue)) Value = (float)IntValue;
+                break;
+            }
+            case EBlackboardKeyType::Enum:
+            {
+                CEnum* Enum = ResolveReflectedEnum(Key.EnumType);
+                if (Enum != nullptr)
+                {
+                    const int Current = (int)glm::round(Value);
+
+                    int32 CurrentIndex = INDEX_NONE;
+                    for (int64 e = 0; e < (int64)Enum->Names.size(); ++e)
+                    {
+                        if ((int)Enum->GetValueAtIndex(e) == Current)
+                        {
+                            CurrentIndex = (int32)e;
+                            break;
+                        }
+                    }
+
+                    const FFixedString Preview = Enum->GetNameAtValue((uint64)Current).c_str();
+                    const int32 Picked = ImGuiX::SearchableCombo(Name, Preview.c_str(), (int32)Enum->Names.size(), CurrentIndex,
+                        [Enum](int32 Index) { return FFixedString(Enum->GetNameAtIndex(Index).c_str()); }, LE_ICON_RHOMBUS_OUTLINE);
+
+                    if (Picked != INDEX_NONE)
+                    {
+                        Value = (float)(int)Enum->GetValueAtIndex(Picked);
+                    }
+                }
+                else
+                {
+                    int IntValue = (int)glm::round(Value);
+                    if (ImGui::DragInt(Name, &IntValue)) Value = (float)IntValue;
+                }
+                break;
+            }
+            default:
                 ImGui::DragFloat(Name, &Value, 0.01f);
+                break;
             }
-
-            ImGui::SameLine();
-            if (ImGui::Button(LE_ICON_TRASH_CAN, ImVec2(RemoveButtonW, 0)))
+            ImGui::EndDisabled();
+            if (bReadOnly && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_AllowWhenDisabled))
             {
-                PendingRemoval = Param.Name;
+                ImGuiX::TextTooltip_Internal("Read-only key");
             }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-            {
-                ImGuiX::TextTooltip_Internal("Remove parameter (will be re-discovered if any node still references it)");
-            }
-
             ImGui::PopID();
-        }
-
-        if (!PendingRemoval.IsNone())
-        {
-            for (auto It = Graph->Parameters.begin(); It != Graph->Parameters.end(); ++It)
-            {
-                if (It->Name == PendingRemoval)
-                {
-                    Graph->Parameters.erase(It);
-                    break;
-                }
-            }
-            ParameterOverrides.erase(PendingRemoval);
-            Asset->GetPackage()->MarkDirty();
         }
     }
 
@@ -717,7 +780,18 @@ namespace Lumina
             Compiler.AddParameter(Param.Name, Param.Type, Param.DefaultValue);
         }
 
+        // Give the compiler the blackboard schema so it can warn when a node
+        // references a key that's been renamed / removed / retyped.
+        Compiler.SetBlackboard(Graph->Blackboard.Get());
+
         NodeGraph->CompileGraph(Compiler);
+
+        // Non-fatal diagnostics first, so they're visible whether or not the
+        // compile also produced hard errors.
+        for (const EdNodeGraph::FError& Warning : Compiler.GetWarnings())
+        {
+            CompilationLog += "WARNING - [" + Warning.Name + "]: " + Warning.Description + "\n";
+        }
 
         if (Compiler.HasErrors())
         {
@@ -731,12 +805,181 @@ namespace Lumina
 
         Compiler.BuildGraph(Graph);
 
+        // Snapshot the pin->register and state-node mappings so the debug overlay
+        // can read live VM values back onto the graph. Pin pointers stay valid
+        // because this runs every frame against the same editor pins.
+        DebugPinRegisters = Compiler.GetPinRegisters();
+        DebugStateNodes   = Compiler.GetDebugStateNodes();
+
         if (bMarkPackageDirty)
         {
             Asset->GetPackage()->MarkDirty();
         }
 
-        CompilationLog = "Animation graph compiled successfully.\n";
+        CompilationLog += "Animation graph compiled successfully.\n";
+    }
+
+    void FAnimationGraphEditorTool::UpdateDebugOverlay()
+    {
+        DebugPinValues.clear();
+        DebugActiveNodes.clear();
+
+        CEdNodeGraph* Graph = GraphStack.empty() ? nullptr : GraphStack.back().Graph;
+        if (Graph == nullptr)
+        {
+            return;
+        }
+
+        if (!bDebugEnabled)
+        {
+            Graph->ClearDebugContext();
+            return;
+        }
+
+        // Resolve the debug target. Null target world = the editor preview; any
+        // other world = a live entity picked from the target dropdown. A stale
+        // target (world/entity gone, e.g. PIE ended) silently reverts to preview.
+        CWorld* TargetWorld = DebugTargetWorld.Get();
+        entt::entity TargetEntity = DebugTargetEntity;
+        if (TargetWorld == nullptr)
+        {
+            TargetWorld  = World.Get();
+            TargetEntity = MeshEntity;
+        }
+
+        const FAnimGraphVMState* VMState = nullptr;
+        if (TargetWorld != nullptr && TargetEntity != entt::null)
+        {
+            auto& Registry = TargetWorld->GetEntityRegistry();
+            if (Registry.valid(TargetEntity))
+            {
+                if (SAnimationGraphComponent* Comp = Registry.try_get<SAnimationGraphComponent>(TargetEntity))
+                {
+                    VMState = &Comp->VMState;
+                }
+            }
+        }
+
+        if (VMState != nullptr)
+        {
+            // Live scalar values onto value pins.
+            const TVector<float>& Scalars = VMState->ScalarRegisters;
+            for (const auto& [Pin, Reg] : DebugPinRegisters)
+            {
+                CAnimGraphPin* AnimPin = Cast<CAnimGraphPin>(const_cast<CEdNodeGraphPin*>(Pin));
+                if (AnimPin == nullptr || AnimPin->GetPinType() != EAnimPinType::Value || Reg >= Scalars.size())
+                {
+                    continue;
+                }
+
+                char Buffer[32];
+                snprintf(Buffer, sizeof(Buffer), "%.2f", Scalars[Reg]);
+                DebugPinValues[const_cast<CEdNodeGraphPin*>(Pin)] = Buffer;
+            }
+
+            // Highlight whichever State node the VM is currently in.
+            const TVector<float>& Slots = VMState->StateSlots;
+            for (const FAnimGraphDebugStateNode& Entry : DebugStateNodes)
+            {
+                if (Entry.CurrentStateSlot < Slots.size() &&
+                    (int32)(Slots[Entry.CurrentStateSlot] + 0.5f) == Entry.StateIndex)
+                {
+                    DebugActiveNodes.insert(Entry.Node);
+                }
+            }
+        }
+
+        CEdNodeGraph::FGraphDebugContext Context;
+        Context.bEnabled    = true;
+        Context.bFlowLinks  = true;
+        Context.PinValues   = &DebugPinValues;
+        Context.ActiveNodes = &DebugActiveNodes;
+        Graph->SetDebugContext(Context);
+    }
+
+    void FAnimationGraphEditorTool::DrawDebugTargetCombo()
+    {
+        static auto WorldTypeLabel = [](EWorldType Type) -> const char*
+        {
+            switch (Type)
+            {
+            case EWorldType::Game:       return "Game";
+            case EWorldType::Simulation: return "Sim";
+            case EWorldType::Editor:     return "Editor";
+            default:                     return "World";
+            }
+        };
+
+        CAnimationGraph* AssetGraph = Cast<CAnimationGraph>(Asset.Get());
+
+        // Resolve the current selection's label; revert to preview if it's gone.
+        FString CurrentLabel = "Preview";
+        if (CWorld* CurWorld = DebugTargetWorld.Get())
+        {
+            auto& Registry = CurWorld->GetEntityRegistry();
+            if (Registry.valid(DebugTargetEntity))
+            {
+                const SNameComponent* Name = Registry.try_get<SNameComponent>(DebugTargetEntity);
+                CurrentLabel = Name ? Name->Name.ToString() : FString("Entity");
+            }
+            else
+            {
+                DebugTargetWorld  = nullptr;
+                DebugTargetEntity = entt::null;
+            }
+        }
+
+        // Flatten the candidates -- "Preview" plus every live entity (across worlds, except
+        // this tool's own preview) running this graph asset -- into one indexable list so the
+        // searchable picker can drive selection by index.
+        TVector<FString> Labels;
+        TVector<TPair<CWorld*, entt::entity>> Targets;
+        Labels.push_back("Preview");
+        Targets.push_back({ nullptr, static_cast<entt::entity>(entt::null) });
+
+        int32 CurrentIndex = DebugTargetWorld.IsValid() ? INDEX_NONE : 0;
+
+        if (GWorldManager != nullptr && AssetGraph != nullptr)
+        {
+            for (const TUniquePtr<FWorldContext>& Ctx : GWorldManager->GetContexts())
+            {
+                CWorld* CandidateWorld = Ctx->World.Get();
+                if (CandidateWorld == nullptr || CandidateWorld == World.Get())
+                {
+                    continue;
+                }
+
+                auto& Registry = CandidateWorld->GetEntityRegistry();
+                for (entt::entity Entity : Registry.view<SAnimationGraphComponent>())
+                {
+                    if (Registry.get<SAnimationGraphComponent>(Entity).Graph.Get() != AssetGraph)
+                    {
+                        continue;
+                    }
+
+                    const SNameComponent* Name = Registry.try_get<SNameComponent>(Entity);
+                    Labels.push_back((Name ? Name->Name.ToString() : FString("Entity"))
+                        + "  (" + WorldTypeLabel(Ctx->Type) + ")");
+                    Targets.push_back({ CandidateWorld, Entity });
+
+                    if (DebugTargetWorld.Get() == CandidateWorld && DebugTargetEntity == Entity)
+                    {
+                        CurrentIndex = (int32)Targets.size() - 1;
+                    }
+                }
+            }
+        }
+
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(220.0f);
+        const int32 Picked = ImGuiX::SearchableCombo("##DebugTarget", CurrentLabel.c_str(), (int32)Labels.size(), CurrentIndex,
+            [&Labels](int32 Index) { return FFixedString(Labels[Index].c_str()); });
+
+        if (Picked != INDEX_NONE)
+        {
+            DebugTargetWorld  = Targets[Picked].first;
+            DebugTargetEntity = Targets[Picked].second;
+        }
     }
 
     void FAnimationGraphEditorTool::OnSave()

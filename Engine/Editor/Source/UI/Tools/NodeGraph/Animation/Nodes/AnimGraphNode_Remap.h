@@ -21,27 +21,15 @@ namespace Lumina
         void BuildNode() override;
         void GenerateBytecode(FAnimationGraphCompiler& Compiler) override;
 
-        /** Lower bound of the input range. */
-        PROPERTY(Editable, Category = "Remap")
-        float InMin = 0.0f;
-
-        /** Upper bound of the input range. */
-        PROPERTY(Editable, Category = "Remap")
-        float InMax = 1.0f;
-
-        /** Value the output takes when the input equals In Min. */
-        PROPERTY(Editable, Category = "Remap")
-        float OutMin = 0.0f;
-
-        /** Value the output takes when the input equals In Max. */
-        PROPERTY(Editable, Category = "Remap")
-        float OutMax = 1.0f;
-
         /** When true, the normalized input is clamped to [0, 1] before scaling. */
         PROPERTY(Editable, Category = "Remap")
         bool bClampToRange = true;
 
         CAnimGraphPin* ValuePin = nullptr;
+        CAnimGraphPin* InMinPin = nullptr;
+        CAnimGraphPin* InMaxPin = nullptr;
+        CAnimGraphPin* OutMinPin = nullptr;
+        CAnimGraphPin* OutMaxPin = nullptr;
         CAnimGraphPin* ResultPin = nullptr;
     };
 }

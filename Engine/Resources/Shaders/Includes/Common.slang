@@ -14,6 +14,9 @@ static const int SSAO_KERNEL_SIZE = 32;
 #define LIGHTS_PER_UINT  2
 #define LIGHTS_PER_CLUSTER 100
 #define SHADOW_SAMPLE_COUNT 8
+// Upper bound for the directional cascade's runtime-tunable tap count
+// (SDirectionalLightComponent::ShadowSampleCount, forwarded via ShadowParams2.y).
+#define SHADOW_MAX_SAMPLE_COUNT 64
 
 #define INDEX_NONE -1
 
@@ -394,6 +397,11 @@ struct FLightData
     // cascade packing each cascade has a different texel size, so the
     // pixel shader can't fall back to a single GCSM_RESOLUTION constant.
     float4 CascadeResolutions;
+    // Directional shadow tuning (mirror FSceneLightData::ShadowParams).
+    // x = normal-bias scale, y = constant depth bias, z = PCSS softness, w = cascade blend fraction.
+    float4 ShadowParams;
+    // x = far-cascade distance-fade fraction; y = directional PCF tap count; zw reserved.
+    float4 ShadowParams2;
     float4 AmbientLight;
     FLight Lights[MAX_LIGHTS];
     FLightShadowData Shadows[MAX_SHADOWS];

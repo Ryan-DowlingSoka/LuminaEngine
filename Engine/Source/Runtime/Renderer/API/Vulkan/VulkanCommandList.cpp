@@ -1357,7 +1357,7 @@ namespace Lumina
         vkCmdClearColorImage(CurrentCommandBuffer->CommandBuffer, Image->GetAPI<VkImage, EAPIResourceType::Image>(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &Value, 1, &Range);
     }
 
-    void FVulkanCommandList::BindBindingSets(VkPipelineBindPoint BindPoint, VkPipelineLayout PipelineLayout, TFixedVector<FRHIBindingSet*, 1> BindingSets)
+    void FVulkanCommandList::BindBindingSets(VkPipelineBindPoint BindPoint, VkPipelineLayout PipelineLayout, const TFixedVector<FRHIBindingSet*, 4>& BindingSets)
     {
         LUMINA_PROFILE_SCOPE();
 

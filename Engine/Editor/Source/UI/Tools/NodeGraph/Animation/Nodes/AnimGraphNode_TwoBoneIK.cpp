@@ -12,6 +12,11 @@ namespace Lumina
         TargetYPin = CreateAnimPin("Target Y", ENodePinDirection::Input, EAnimPinType::Value, 0.0f);
         TargetZPin = CreateAnimPin("Target Z", ENodePinDirection::Input, EAnimPinType::Value, 0.0f);
         PoseOutPin = CreateAnimPin("Result", ENodePinDirection::Output, EAnimPinType::Pose);
+
+        BindFloatPinEditor(AlphaPin);
+        BindFloatPinEditor(TargetXPin);
+        BindFloatPinEditor(TargetYPin);
+        BindFloatPinEditor(TargetZPin);
     }
 
     void CAnimGraphNode_TwoBoneIK::GenerateBytecode(FAnimationGraphCompiler& Compiler)

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Memory.h"
+#include "MemoryTracking.h"
 #include "Core/LuminaMacros.h"
 #include "Core/Assertions/Assert.h"
 #include "Core/Profiler/Profile.h"
@@ -87,18 +88,28 @@ namespace Lumina
         FMalloc& Allocator = (GMalloc != nullptr) ? *GMalloc : EnsureAllocator();
         void* pMemory = Allocator.Malloc(Size, Align<size_t>(Alignment, 16));
         LUMINA_PROFILE_ALLOC(pMemory, Size);
+    #if LUMINA_MEMORY_TRACKING
+        ::Lumina::Memory::Hooks::OnAlloc(pMemory, Size);
+    #endif
         return pMemory;
     }
 
     void* Memory::Realloc(void* Memory, size_t NewSize, size_t Alignment)
     {
         FMalloc& Allocator = (GMalloc != nullptr) ? *GMalloc : EnsureAllocator();
-        return Allocator.Realloc(Memory, NewSize, Align<size_t>(Alignment, 16));
+        void* pMemory = Allocator.Realloc(Memory, NewSize, Align<size_t>(Alignment, 16));
+    #if LUMINA_MEMORY_TRACKING
+        ::Lumina::Memory::Hooks::OnRealloc(Memory, pMemory, NewSize);
+    #endif
+        return pMemory;
     }
 
     void Memory::Free(void*& Memory)
     {
         LUMINA_PROFILE_FREE(Memory);
+    #if LUMINA_MEMORY_TRACKING
+        ::Lumina::Memory::Hooks::OnFree(Memory);
+    #endif
         FMalloc& Allocator = (GMalloc != nullptr) ? *GMalloc : EnsureAllocator();
         Allocator.Free(Memory);
         Memory = nullptr;

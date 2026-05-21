@@ -53,7 +53,7 @@ namespace Lumina
         LoadConst,       // imm:float, dst:sReg
         LoadParam,       // paramIdx:uint16, dst:sReg
         ScalarOp,        // op:uint8, a:sReg, b:sReg, dst:sReg
-        AdvanceClock,    // stateIdx:uint16, speed:sReg, clipIdx:uint16, loopMode:uint8, dstClock:sReg, dstFinished:sReg
+        AdvanceClock,    // stateIdx:uint16, speed:sReg, clipIdx:uint16, loopMode:sReg, dstClock:sReg, dstFinished:sReg
         SampleAnim,      // clipIdx:uint16, time:sReg, dst:pReg
         RefPose,         // dst:pReg
         Blend,           // a:pReg, b:pReg, alpha:sReg, dst:pReg
@@ -61,7 +61,7 @@ namespace Lumina
         MakeAdditive,    // src:pReg, dst:pReg
         ApplyAdditive,   // base:pReg, delta:pReg, alpha:sReg, dst:pReg
         EvalStateMachine,// smIdx:uint16, dst:pReg
-        BoneTransform,   // src:pReg, alpha:sReg, boneIdx:uint16, space:uint8, mode:uint8, T:vec3, R:quat, S:vec3, dst:pReg
+        BoneTransform,   // src:pReg, alpha:sReg, boneIdx:uint16, space:sReg, mode:sReg, T:vec3, R:quat, S:vec3, dst:pReg
         TwoBoneIK,       // src:pReg, alpha:sReg, tx:sReg, ty:sReg, tz:sReg, rootIdx:uint16, midIdx:uint16, endIdx:uint16, pole:vec3, dst:pReg
         Output,          // src:pReg
     };

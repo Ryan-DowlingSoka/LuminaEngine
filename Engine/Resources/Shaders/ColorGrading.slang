@@ -55,9 +55,17 @@ struct FColorGradingConstants
 
     // 16 B
     float4 BloomTint;          // .rgb tint, .a chromatic aberration intensity
+
+    // 16 B
+    float AutoExposureKey;     // middle-grey key luminance; <= 0 disables auto-exposure
+    float AutoExposureMinMul;  // clamp on the auto-exposure multiplier (2^MinEV)
+    float AutoExposureMaxMul;  // clamp on the auto-exposure multiplier (2^MaxEV)
+    float _PadAE;
 };
 
 [[vk::binding(2, 2)]] ConstantBuffer<FColorGradingConstants> PC;
+// Persistent 1x1 adapted scene luminance written by AutoExposure.slang.
+[[vk::binding(3, 2)]] Sampler2D uAdaptedLuminance;
 
 struct VSOutput
 {
@@ -320,7 +328,17 @@ float4 FragmentMain(VSOutput Input) : SV_Target0
     }
 
     // ---- Linear HDR grading ----
-    Color *= PC.Exposure;
+    // Auto-exposure: scale toward the middle-grey key based on the adapted
+    // scene luminance, clamped to the user EV range. Key <= 0 means the
+    // feature is off and the manual PC.Exposure stands alone.
+    float AEScale = 1.0;
+    if (PC.AutoExposureKey > 0.0)
+    {
+        float AdaptedLum = uAdaptedLuminance.SampleLevel(float2(0.5, 0.5), 0.0).r;
+        AEScale = clamp(PC.AutoExposureKey / max(AdaptedLum, 1e-4),
+                        PC.AutoExposureMinMul, PC.AutoExposureMaxMul);
+    }
+    Color *= PC.Exposure * AEScale;
 
     if (PC.WhiteTemp != 0.0 || PC.WhiteTint != 0.0)
     {

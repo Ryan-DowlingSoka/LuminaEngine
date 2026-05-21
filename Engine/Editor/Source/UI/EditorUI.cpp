@@ -39,6 +39,7 @@
 #include "LuminaEditor.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Assets/AssetTypes/Animation/AnimationGraph/AnimationGraph.h"
+#include "Assets/AssetTypes/Blackboard/Blackboard.h"
 #include "Assets/AssetTypes/Material/Material.h"
 #include "Assets/AssetTypes/Material/MaterialInstance.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
@@ -96,6 +97,7 @@
 #include "Tools/Debug/ScriptsInfoEditorTool.h"
 #include "Tools/AssetEditors/Animation/AnimationEditorTool.h"
 #include "Tools/AssetEditors/AnimationGraph/AnimationGraphEditorTool.h"
+#include "Tools/AssetEditors/Blackboard/BlackboardEditorTool.h"
 #include "Tools/AssetEditors/MaterialEditor/MaterialEditorTool.h"
 #include "Tools/AssetEditors/MaterialEditor/MaterialInstanceEditorTool.h"
 #include "Tools/AssetEditors/MeshEditor/MeshEditorTool.h"
@@ -106,6 +108,7 @@
 #include "Tools/AssetEditors/LuaEditor/LuaEditorTool.h"
 #include "Tools/AssetEditors/RmlUiEditor/RmlUiEditorTool.h"
 #include "Tools/AssetEditors/TextureEditor/TextureEditorTool.h"
+#include "Tools/UI/ImGui/ImGuiAllocator.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "Tools/UI/ImGui/ImGuiRenderer.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
@@ -158,6 +161,13 @@ namespace Lumina
         ImPlotContext* PlotContext = GRenderManager->GetImGuiRenderer()->GetImPlotContext();
         ImGui::SetCurrentContext(Context);
         ImPlot::SetCurrentContext(PlotContext);
+
+        // The Editor links its own copy of ImGui (separate allocator globals). Route it through
+        // our allocator here -- alongside binding the shared context -- so font/draw buffers
+        // allocated by Runtime and grown here (ImFontBaked_BuildGrowIndex) stay on one heap.
+        // FEditorModule::StartupModule is NOT viable: the editor is linked by the exe, not
+        // LoadModule'd, so its StartupModule never runs.
+        ImGuiX::InstallImGuiAllocator();
 
         // Force ThumbnailManager init before any world load so engine primitive
         // meshes (Cube/Sphere/etc.) are already in the transient package and
@@ -560,6 +570,10 @@ namespace Lumina
         else if (Asset->IsA<CAnimationGraph>())
         {
             NewTool = CreateTool<FAnimationGraphEditorTool>(this, Asset);
+        }
+        else if (Asset->IsA<CBlackboard>())
+        {
+            NewTool = CreateTool<FBlackboardEditorTool>(this, Asset);
         }
         else if (Asset->IsA<CTexture>())
         {

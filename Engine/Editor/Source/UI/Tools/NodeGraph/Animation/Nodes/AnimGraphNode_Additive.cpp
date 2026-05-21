@@ -22,6 +22,8 @@ namespace Lumina
         DeltaPin  = CreateAnimPin("Delta", ENodePinDirection::Input, EAnimPinType::Pose);
         AlphaPin  = CreateAnimPin("Alpha", ENodePinDirection::Input, EAnimPinType::Value, 1.0f);
         ResultPin = CreateAnimPin("Result", ENodePinDirection::Output, EAnimPinType::Pose);
+
+        BindFloatPinEditor(AlphaPin);
     }
 
     void CAnimGraphNode_ApplyAdditive::GenerateBytecode(FAnimationGraphCompiler& Compiler)

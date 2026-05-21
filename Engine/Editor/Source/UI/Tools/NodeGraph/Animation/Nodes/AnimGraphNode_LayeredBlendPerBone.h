@@ -17,13 +17,26 @@ namespace Lumina
     public:
 
         FString GetNodeDisplayName() const override { return "Layered Blend Per Bone"; }
-        FString GetNodeTooltip() const override { return "Per-bone blend of Overlay onto Base using a named bone mask."; }
+        FString GetNodeTooltip() const override { return "Blends Overlay onto Base over a bone's subtree (pick a bone) or a named bone mask."; }
         FFixedString GetNodeCategory() const override { return "Animation"; }
 
         void BuildNode() override;
         void GenerateBytecode(FAnimationGraphCompiler& Compiler) override;
 
-        /** Name of a bone mask declared on the graph asset's Bone Masks list. */
+        /** Bone whose subtree the overlay affects. When set, the overlay is
+         *  blended onto this bone and all of its descendants (e.g. pick "neck"
+         *  to drive the neck + head), no authored mask required. Takes priority
+         *  over Mask Name; leave None to use a named mask instead. */
+        PROPERTY(Editable, Category = "Bone Mask", BonePicker)
+        FName BoneName;
+
+        /** When true the selected bone itself is affected; when false only its
+         *  descendants are (the bone stays on the base pose). */
+        PROPERTY(Editable, Category = "Bone Mask")
+        bool bInclusive = true;
+
+        /** Advanced: name of a bone mask declared on the graph asset's Bone
+         *  Masks list. Used only when Bone Name is None. */
         PROPERTY(Editable, Category = "Bone Mask")
         FName MaskName;
 

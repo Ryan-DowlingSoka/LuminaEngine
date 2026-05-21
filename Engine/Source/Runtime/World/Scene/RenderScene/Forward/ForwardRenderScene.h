@@ -15,16 +15,13 @@
 
 namespace Lumina
 {
-    template <typename T>
-    using TFrameVector = TVector<T, FFrameArenaAllocator>;
-
-    template <typename K, typename V>
-    using TFrameHashMap = THashMap<K, V, eastl::hash<K>, eastl::equal_to<K>, FFrameArenaAllocator>;
+    // TFrameVector / TFrameHashMap now live in Memory/Allocators/Allocator.h (globally usable).
 
     struct FLineBatcherComponent;
     struct SDirectionalLightComponent;
     struct SSpotLightComponent;
     struct SPointLightComponent;
+    struct SExponentialHeightFogComponent;
     class CWorld;
     struct SStaticMeshComponent;
     struct SSkeletalMeshComponent;
@@ -211,6 +208,13 @@ namespace Lumina
 
             FEnvironmentParams               EnvironmentParams = {};
             FRHIImage*                       EnvironmentMapImage = nullptr;
+
+            // Exponential height fog (analytic composite + volumetric coupling).
+            FExponentialHeightFogParams      FogParams           = {};
+            bool                             bHasFog             = false;
+            bool                             bVolumetricFog      = false;
+            uint32                           VolumetricStepCount = 16;
+
             bool                             bIBLDirty            = false;
             bool                             bIBLConvolutionDirty = false;
             SPostProcessSettings             ActivePostProcessStorage = {};
@@ -254,6 +258,9 @@ namespace Lumina
             SpdCounter,
             // Per-frame environment params read by Environment.slang at binding (2, 0).
             Environment,
+            // Per-frame exponential-height-fog params; read by the froxel volumetric
+            // fog passes (VolumetricFogInject / VolumetricFogApply).
+            Fog,
             // Inclusive prefix sum of per-instance SurfaceMeshletCount, sized [InstanceNum+1].
             // Cull binary-searches it to recover (InstanceID, MeshletLocalIdx) from a flat dispatch.
             InstanceMeshletPrefix,
@@ -282,9 +289,16 @@ namespace Lumina
             Accum,
             Revealage,
 
-            // Half-res volumetric scattering buffer; depth-aware bilateral upsample
-            // composites it into HDR. Half-res cuts ray-march cost 4x.
-            VolumetricHalfRes,
+            // Persistent 1x1 R32F holding the eye-adapted scene luminance.
+            // Written by AutoExposure.slang, read by ColorGrading.slang. Not
+            // ring-buffered: the adaptation feedback reads its own previous value.
+            AdaptedLuminance,
+
+            // Froxel volumetric fog: camera-frustum-aligned 3D volumes (RGBA16F).
+            // FroxelScatter holds per-froxel (in-scatter rgb, extinction); FroxelIntegrated
+            // holds the front-to-back accumulated (in-scatter rgb, transmittance).
+            FroxelScatter,
+            FroxelIntegrated,
 
             // MSAA scratch RTs, allocated only when MSAASampleCount > 1. Geometry passes
             // write here and resolve into the matching 1x image at end-of-pass.
@@ -412,13 +426,19 @@ namespace Lumina
         void TerrainRenderPass(ICommandList& CmdList);
         void TransparentPass(ICommandList& CmdList);
         void OITResolvePass(ICommandList& CmdList);
-        void VolumetricLightingPass(ICommandList& CmdList);
+        // Froxel volumetric fog: inject per-froxel scattering/extinction, integrate
+        // front-to-back, then composite into HDR. Replaces the old analytic height-fog
+        // + half-res ray-march passes.
+        void FroxelInjectPass(ICommandList& CmdList);
+        void FroxelIntegratePass(ICommandList& CmdList);
+        void FroxelApplyPass(ICommandList& CmdList);
         void EnvironmentPass(ICommandList& CmdList);
         void SkyCubeCapturePass(ICommandList& CmdList);
         void IrradianceConvolutionPass(ICommandList& CmdList);
         void PrefilterEnvMapPass(ICommandList& CmdList);
         void BatchedLineDraw(ICommandList& CmdList);
         void BloomPass(ICommandList& CmdList);
+        void AutoExposurePass(ICommandList& CmdList);
         void ToneMappingPass(ICommandList& CmdList);
         void PostProcessMaterialPass(ICommandList& CmdList);
         void SMAAEdgeDetectionPass(ICommandList& CmdList);
@@ -507,6 +527,10 @@ namespace Lumina
         // for the common static-environment case.
         FEnvironmentParams                      LastUploadedEnvironmentParams = {};
         bool                                    bEnvironmentParamsUploaded    = false;
+
+        // Mirrors last-uploaded FogParams; memcmp gate skips the WriteBuffer while static.
+        FExponentialHeightFogParams             LastUploadedFogParams = {};
+        bool                                    bFogParamsUploaded    = false;
 
         // Cluster-grid change tracking: view-space AABBs depend only on projection +
         // RT size, so the pass is skipped while those are unchanged.

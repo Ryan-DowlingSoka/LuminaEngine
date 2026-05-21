@@ -8,6 +8,9 @@ namespace Lumina
         APin      = CreateAnimPin("A", ENodePinDirection::Input, EAnimPinType::Value, GetDefaultA());
         BPin      = CreateAnimPin("B", ENodePinDirection::Input, EAnimPinType::Value, GetDefaultB());
         ResultPin = CreateAnimPin("Result", ENodePinDirection::Output, EAnimPinType::Value);
+
+        BindFloatPinEditor(APin);
+        BindFloatPinEditor(BPin);
     }
 
     void CAnimGraphNode_ScalarBinaryOp::GenerateBytecode(FAnimationGraphCompiler& Compiler)
@@ -23,6 +26,8 @@ namespace Lumina
     {
         APin      = CreateAnimPin("A", ENodePinDirection::Input, EAnimPinType::Value, GetDefaultA());
         ResultPin = CreateAnimPin("Result", ENodePinDirection::Output, EAnimPinType::Value);
+
+        BindFloatPinEditor(APin);
     }
 
     void CAnimGraphNode_ScalarUnaryOp::GenerateBytecode(FAnimationGraphCompiler& Compiler)

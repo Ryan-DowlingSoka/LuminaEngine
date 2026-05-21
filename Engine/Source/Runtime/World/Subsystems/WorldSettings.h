@@ -52,20 +52,7 @@ namespace Lumina
         /** Time dilation factor - values below 1 slow the world, above 1 speed it up. */
         PROPERTY(Editable)
         float DeltaTimeScale = 1.0f;
-        
-        PROPERTY(Editable, Category = "Rendering")
-        float CascadeSplitLambda = 0.80f;
-        
-        PROPERTY(Editable, Category = "Rendering")
-        float ShadowMaxDistance = 5000.0f;
 
-        /** Distance the directional-light eye is pushed behind each cascade volume along the sun direction.
-        Casters more than (CascadeRadius + this) "above" the cascade center in light-space get clipped at the
-        ortho near plane and their shadows go missing (hollow). Low sun angles need much larger values
-        because horizontal distance maps to large light-space height. */
-        PROPERTY(Editable, ClampMin = 1.0f, Category = "Rendering")
-        float CascadeBackDistance = 2000.0f;
-        
         /** Antialiasing quality. Off disables SMAA; higher qualities detect more edges at higher GPU cost. */
         PROPERTY(Editable, Category = "Rendering")
         ESMAAQuality SMAAQuality = ESMAAQuality::High;

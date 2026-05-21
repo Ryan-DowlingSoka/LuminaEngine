@@ -6,10 +6,23 @@
 #include "Renderer/MeshData.h"
 #include "Renderer/Vertex.h"
 #include "TaskSystem/TaskSystem.h"
+#include "Memory/Memory.h"
+#include "Memory/MemoryTracking.h"
 #include <mikktspace.h>
+#include <meshoptimizer.h>
 
 namespace Lumina::Import::Mesh
 {
+    namespace
+    {
+        // Route meshoptimizer through our allocator + tracker, attributed to "MeshOpt".
+        // meshopt_setAllocator only stores function pointers (no allocation), so running it
+        // from a static initializer is safe and guarantees it's set before any import call.
+        void* MeshoptAlloc(size_t Size) { LUMINA_MEMORY_SCOPE("MeshOpt"); return Memory::Malloc(Size); }
+        void  MeshoptFree(void* Ptr)    { if (Ptr) { Memory::Free(Ptr); } }
+        const bool GMeshoptAllocatorSet = []{ meshopt_setAllocator(MeshoptAlloc, MeshoptFree); return true; }();
+    }
+
     // MikkTSpace tangent gen: matches authored normal-map convention so baked normals round-trip.
     namespace
     {

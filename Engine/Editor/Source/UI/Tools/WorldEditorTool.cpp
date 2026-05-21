@@ -4869,11 +4869,6 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        if (World->IsSimulating())
-        {
-            ImGui::BeginDisabled();
-        }
-        
         SNameComponent* NameComponent = World->GetEntityRegistry().try_get<SNameComponent>(Entity);
         FName EntityName = NameComponent ? NameComponent->Name : eastl::to_string((uint32)Entity);
         
@@ -4959,12 +4954,7 @@ namespace Lumina
             
             ImGui::EndTable();
         }
-        
-        if (World->IsSimulating())
-        {
-            ImGui::EndDisabled();
-        }
-        
+
         ImGui::SeparatorText("Details");
 
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
@@ -5077,11 +5067,6 @@ namespace Lumina
             return;
         }
         
-        if (World->IsSimulating())
-        {
-            ImGui::BeginDisabled();
-        }
-        
         ImGui::PushID("TagList");
         
         ImVec2 CursorPos = ImGui::GetCursorScreenPos();
@@ -5188,11 +5173,6 @@ namespace Lumina
         
         ImGui::Spacing();
         ImGui::PopID();
-        
-        if (World->IsSimulating())
-        {
-            ImGui::EndDisabled();
-        }
     }
 
     void FWorldEditorTool::DrawComponentHeader(const TUniquePtr<FPropertyTable>& Table, entt::entity Entity)
@@ -5276,7 +5256,7 @@ namespace Lumina
             
             ImGui::Indent(8.0f);
             
-            Table->DrawTree(World->IsSimulating());
+            Table->DrawTree();
             
             ImGui::Unindent(8.0f);
             

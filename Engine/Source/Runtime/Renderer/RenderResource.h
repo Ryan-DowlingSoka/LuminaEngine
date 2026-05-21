@@ -1745,11 +1745,14 @@ namespace Lumina
 		FRHIGraphicsPipeline* Pipeline = nullptr;
 		FRenderPassDesc RenderPass = {};
 		FViewportState ViewportState;
-		TFixedVector<FRHIBindingSet*, 1> Bindings;
-		TFixedVector<FBufferAccess, 1> BufferAccesses;
-		TFixedVector<FImageAccess, 1> ImageAccesses;
+		// Inline capacities sized for typical passes so the by-value copy in SetGraphicsState
+		// stays on the stack instead of heap-allocating every frame (passes routinely bind
+		// 2-4 sets and read/write several resources; inline 1 overflowed on every call).
+		TFixedVector<FRHIBindingSet*, 4> Bindings;
+		TFixedVector<FBufferAccess, 4> BufferAccesses;
+		TFixedVector<FImageAccess, 4> ImageAccesses;
 
-		TFixedVector<FVertexBufferBinding, 1> VertexBuffers;
+		TFixedVector<FVertexBufferBinding, 2> VertexBuffers;
 		FIndexBufferBinding IndexBuffer;
 
 		FRHIBuffer* IndirectParams = nullptr;
@@ -1793,9 +1796,10 @@ namespace Lumina
 	struct RUNTIME_API FComputeState
 	{
 		FRHIComputePipeline* Pipeline = nullptr;
-		TFixedVector<FRHIBindingSet*, 1> Bindings;
-		TFixedVector<FBufferAccess, 1> BufferAccesses;
-		TFixedVector<FImageAccess, 1> ImageAccesses;
+		// See FGraphicsState above: inline-sized to avoid per-dispatch heap churn on copy.
+		TFixedVector<FRHIBindingSet*, 4> Bindings;
+		TFixedVector<FBufferAccess, 4> BufferAccesses;
+		TFixedVector<FImageAccess, 4> ImageAccesses;
 
 		FRHIBuffer* IndirectParams = nullptr;
 

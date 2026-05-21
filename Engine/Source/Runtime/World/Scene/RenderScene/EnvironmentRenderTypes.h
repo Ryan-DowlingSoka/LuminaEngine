@@ -49,4 +49,24 @@ namespace Lumina
         glm::vec4   GalaxyParams     = glm::vec4(0.06f, 0.45f, 0.0f, 0.0f);
     };
     VERIFY_SSBO_ALIGNMENT(FEnvironmentParams);
+
+    /**
+     * CPU mirror of the per-frame exponential-height-fog constant buffer. Layout
+     * must match FExponentialHeightFogParams in Includes/Fog.slang exactly. Read by
+     * the froxel volumetric fog passes (inject builds density + scattering from it;
+     * apply reads FogMaxOpacity).
+     */
+    struct alignas(16) FExponentialHeightFogParams
+    {
+        // rgb = fog inscattering color, w = fog density at base height
+        glm::vec4   InscatteringColor = glm::vec4(0.5f, 0.6f, 0.7f, 0.02f);
+        // x = height falloff, y = base height (world Y), z = start distance, w = max opacity
+        glm::vec4   HeightParams      = glm::vec4(0.2f, 0.0f, 0.0f, 1.0f);
+        // rgb = directional (sun) inscatter color, w = directional exponent
+        glm::vec4   DirectionalColor  = glm::vec4(1.0f, 0.9f, 0.7f, 4.0f);
+        // x = volumetric scattering intensity, y = volumetric anisotropy,
+        // z = volumetric max distance, w = directional inscatter start distance
+        glm::vec4   VolumetricParams  = glm::vec4(1.0f, 0.6f, 200.0f, 0.0f);
+    };
+    VERIFY_SSBO_ALIGNMENT(FExponentialHeightFogParams);
 }

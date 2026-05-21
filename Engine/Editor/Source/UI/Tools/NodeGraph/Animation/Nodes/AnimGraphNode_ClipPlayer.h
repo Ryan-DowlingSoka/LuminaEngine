@@ -35,6 +35,7 @@ namespace Lumina
         EClipLoopMode LoopMode = EClipLoopMode::Loop;
 
         CAnimGraphPin* SpeedPin = nullptr;
+        CAnimGraphPin* LoopModePin = nullptr;
         CAnimGraphPin* PosePin = nullptr;
         CAnimGraphPin* FinishedPin = nullptr;
     };

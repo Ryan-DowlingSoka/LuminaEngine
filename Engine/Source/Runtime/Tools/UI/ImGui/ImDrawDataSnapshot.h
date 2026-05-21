@@ -54,10 +54,16 @@ namespace Lumina
             // Shallow-copy every field except CmdLists[] (the owning vector).
             ImVector<ImDrawList*> BackupCmdLists;
             BackupCmdLists.swap(Source->CmdLists);
-            *Dst = *Source;
-            BackupCmdLists.swap(Source->CmdLists);
+            
+            ImVector<ImDrawList*> KeepDstCmdLists;
+            KeepDstCmdLists.swap(Dst->CmdLists);
 
-            Dst->CmdLists.resize(0);
+            *Dst = *Source;
+
+            BackupCmdLists.swap(Source->CmdLists);
+            KeepDstCmdLists.swap(Dst->CmdLists);
+
+            Dst->CmdLists.resize(0);   // keeps capacity
 
             for (ImDrawList* SrcList : Source->CmdLists)
             {

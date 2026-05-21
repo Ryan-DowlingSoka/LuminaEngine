@@ -219,17 +219,17 @@ namespace Lumina
             {
                 if (!FreeLists[Level].empty())
                 {
-                    FTileRect Rect = FreeLists[Level].front();
-                    FreeLists[Level].pop();
+                    FTileRect Rect = FreeLists[Level].back();
+                    FreeLists[Level].pop_back();
 
                     // Split down to StartLevel; return last quadrant, push siblings back.
                     while (Level > StartLevel)
                     {
                         const uint32 Half = Rect.Size / 2;
                         const uint32 ChildLevel = Level - 1;
-                        FreeLists[ChildLevel].push({ Rect.X + Half, Rect.Y,        Half });
-                        FreeLists[ChildLevel].push({ Rect.X,        Rect.Y + Half, Half });
-                        FreeLists[ChildLevel].push({ Rect.X + Half, Rect.Y + Half, Half });
+                        FreeLists[ChildLevel].push_back({ Rect.X + Half, Rect.Y,        Half });
+                        FreeLists[ChildLevel].push_back({ Rect.X,        Rect.Y + Half, Half });
+                        FreeLists[ChildLevel].push_back({ Rect.X + Half, Rect.Y + Half, Half });
                         Rect = { Rect.X, Rect.Y, Half };
                         --Level;
                     }
@@ -250,10 +250,9 @@ namespace Lumina
         void FreeTiles()
         {
             Tiles.clear();
-            for (TQueue<FTileRect>& Q : FreeLists)
+            for (TVector<FTileRect>& Q : FreeLists)
             {
-                TQueue<FTileRect> Empty;
-                std::swap(Q, Empty);
+                Q.clear();   // keeps capacity -- avoids reallocating the free lists every frame
             }
 
             const uint32 RootSize = Config.MaxTileResolution;
@@ -261,7 +260,7 @@ namespace Lumina
             {
                 for (uint32 X = 0; X < Config.AtlasResolution; X += RootSize)
                 {
-                    FreeLists[NumLevels - 1].push({ X, Y, RootSize });
+                    FreeLists[NumLevels - 1].push_back({ X, Y, RootSize });
                 }
             }
         }
@@ -303,7 +302,7 @@ namespace Lumina
         FRHIImageRef ShadowAtlas;
         FShadowAtlasConfig Config;
         TVector<FShadowTile> Tiles;
-        TVector<TQueue<FTileRect>> FreeLists;   // Indexed by (log2(size) - MinLevel).
+        TVector<TVector<FTileRect>> FreeLists;   // Indexed by (log2(size) - MinLevel). Used LIFO; cleared (keeps capacity) per frame.
         FMutex AllocMutex;
         uint32 MinLevel  = 0;
         uint32 MaxLevel  = 0;
@@ -378,6 +377,13 @@ namespace Lumina
         glm::vec4           CascadeRadii{};
         // Per-cascade shadow-map resolution; xyzw = cascades 0..3.
         glm::vec4           CascadeResolutions{};
+
+        // Directional shadow tuning from SDirectionalLightComponent.
+        // x = normal-bias scale, y = constant depth bias, z = PCSS softness (light size),
+        // w = cascade cross-fade fraction.
+        glm::vec4           ShadowParams{ 1.0f, 0.0f, 0.05f, 0.20f };
+        // x = far-cascade distance-fade fraction; yzw reserved.
+        glm::vec4           ShadowParams2{ 0.15f, 0.0f, 0.0f, 0.0f };
 
         glm::vec4           AmbientLight{};
 

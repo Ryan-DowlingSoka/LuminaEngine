@@ -8,6 +8,7 @@
 #include "Assets/AssetTypes/Textures/Texture.h"
 #include "Core/Console/ConsoleVariable.h"
 #include "Core/Windows/Window.h"
+#include "Memory/MemoryTracking.h"
 #include "Paths/Paths.h"
 #include "Renderer/GPUProfiler/GPUProfiler.h"
 #include "Renderer/RendererUtils.h"
@@ -25,6 +26,7 @@
 #include "World/Entity/Components/EditorComponent.h"
 #include "world/entity/components/entitytags.h"
 #include "world/entity/components/environmentcomponent.h"
+#include "World/Entity/Components/ExponentialHeightFogComponent.h"
 #include "world/entity/components/lightcomponent.h"
 #include "World/Entity/Components/LineBatcherComponent.h"
 #include "World/Entity/Components/ParticleSystemComponent.h"
@@ -41,6 +43,26 @@
 
 namespace Lumina
 {
+    namespace
+    {
+        // Froxel volumetric fog grid (camera-frustum-aligned 3D volume). Fixed at
+        // compile time so the two 3D volumes are allocated once in InitImages.
+        // 160x90x128 RGBA16F = ~29.5 MB per volume. The deeper Z grid (vs 64) plus
+        // the apply-pass depth dither keep the exponential slicing from banding.
+        constexpr uint32 GFroxelGridX = 160;
+        constexpr uint32 GFroxelGridY = 90;
+        constexpr uint32 GFroxelGridZ = 128;
+
+        // Hard cap on non-sun volumetric lights injected per frame; packed into the
+        // inject push constants (matches the prior half-res march's cap).
+        constexpr uint32 GFroxelMaxLocalLights = 16;
+
+        static TConsoleVar<bool> CVarVolFogEnabled(
+            "r.VolFog.Enabled",
+            true,
+            "Enable froxel volumetric fog. Still requires an enabled ExponentialHeightFog component.");
+    }
+
     static FRHIImageRef CreateSMAALUTImage(const uint8* Bytes, uint32 Width, uint32 Height, EFormat Format, uint32 RowPitch, const char* DebugName)
     {
         FRHIImageDesc Desc;
@@ -73,6 +95,7 @@ namespace Lumina
 
     void FForwardRenderScene::Init()
     {
+        LUMINA_MEMORY_SCOPE("Render Scene");
         LOG_TRACE("Initializing Forward Render Scene");
         
         GRenderContext->WaitIdle();
@@ -150,6 +173,7 @@ namespace Lumina
     void FForwardRenderScene::Extract(const FViewVolume& ViewVolume, const SPostProcessSettings* PostProcess)
     {
         LUMINA_PROFILE_SCOPE();
+        LUMINA_MEMORY_SCOPE("Render Scene");
 
         const uint8  Slot        = (uint8)(GRenderManager->GetCurrentFrameIndex() % FRAMES_IN_FLIGHT);
         const uint64 NextProduce = SlotProducedCount[Slot] + 1u;
@@ -202,7 +226,9 @@ namespace Lumina
         SceneGlobalData.CullData.InstanceNum            = (uint32)Frame.Instances.size();
         SceneGlobalData.CullData.bFrustumCull           = RenderSettings.bFrustumCull;
         SceneGlobalData.CullData.bOcclusionCull         = RenderSettings.bOcclusionCull;
-        SceneGlobalData.CullData.ShadowMaxDistance      = Frame.CachedWorldSettings.ShadowMaxDistance;
+        // Fallback; ProcessDirectionalLight overrides this from the active sun's
+        // ShadowMaxDistance. Only matters when no directional light is present.
+        SceneGlobalData.CullData.ShadowMaxDistance      = 5000.0f;
         SceneGlobalData.CullData.bShadowOcclusionCull   = RenderSettings.bShadowOcclusionCull;
         SceneGlobalData.CullData.DebugMode              = (uint32)RenderSettings.Flags;
 
@@ -232,6 +258,7 @@ namespace Lumina
     void FForwardRenderScene::RenderView_RenderThread(ICommandList& CmdList, uint8 FrameIndex)
     {
         LUMINA_PROFILE_SCOPE();
+        LUMINA_MEMORY_SCOPE("Render Scene");
 
         const uint8 Slot = (uint8)(FrameIndex % FRAMES_IN_FLIGHT);
         RenderFrame = &FrameRing[Slot];
@@ -381,8 +408,18 @@ namespace Lumina
             }
 
             {
-                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Volumetric Lighting", FColor(0.85f, 0.65f, 0.30f));
-                VolumetricLightingPass(CmdList);
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Froxel Fog Inject", FColor(0.55f, 0.60f, 0.65f));
+                FroxelInjectPass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Froxel Fog Integrate", FColor(0.65f, 0.55f, 0.75f));
+                FroxelIntegratePass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Froxel Fog Apply", FColor(0.85f, 0.65f, 0.30f));
+                FroxelApplyPass(CmdList);
             }
 
             {
@@ -416,6 +453,11 @@ namespace Lumina
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Bloom", FColor(0.95f, 0.75f, 0.30f));
                 BloomPass(CmdList);
+            }
+
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Auto Exposure", FColor(0.95f, 0.55f, 0.20f));
+                AutoExposurePass(CmdList);
             }
 
             {
@@ -483,6 +525,7 @@ namespace Lumina
     void FForwardRenderScene::CompileDrawCommands_GameThread()
     {
         LUMINA_PROFILE_SCOPE();
+        LUMINA_MEMORY_SCOPE("Render Scene");
 
         FFrameData& Frame = *ExtractFrame;
         auto& Instances              = Frame.Instances;
@@ -521,6 +564,7 @@ namespace Lumina
             auto BillboardView      = Registry.view<SBillboardComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto LineBatcherView    = Registry.view<FLineBatcherComponent>();
             auto EnvironmentView    = Registry.view<SEnvironmentComponent>(entt::exclude<SDisabledTag>);
+            auto FogView            = Registry.view<SExponentialHeightFogComponent>(entt::exclude<SDisabledTag>);
             auto StaticView         = Registry.view<SStaticMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto SkeletalView       = Registry.view<SSkeletalMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             
@@ -857,9 +901,51 @@ namespace Lumina
                     LightData.AmbientLight = glm::vec4(AmbientRGB, Env.AmbientIntensity);
                 });
             }
+
+            // Exponential height fog. Last enabled component with density > 0 wins.
+            {
+                LUMINA_PROFILE_SECTION("Fog Processing");
+
+                Frame.bHasFog             = false;
+                Frame.bVolumetricFog      = false;
+                Frame.VolumetricStepCount = 16;
+                Frame.FogParams           = FExponentialHeightFogParams{};
+
+                FogView.each([&Frame, &Registry] (entt::entity Entity, const SExponentialHeightFogComponent& Fog)
+                {
+                    if (!Fog.bEnabled || Fog.FogDensity <= 0.0f)
+                    {
+                        return;
+                    }
+
+                    // The entity's world height drives the fog layer; FogBaseHeight is a
+                    // fine-tune offset on top. (Height fog only depends on Y, so moving the
+                    // entity horizontally legitimately has no effect.)
+                    float BaseHeight = Fog.FogBaseHeight;
+                    if (const STransformComponent* Transform = Registry.try_get<STransformComponent>(Entity))
+                    {
+                        BaseHeight += Transform->WorldTransform.Location.y;
+                    }
+
+                    FExponentialHeightFogParams& P = Frame.FogParams;
+                    P.InscatteringColor = glm::vec4(Fog.FogInscatteringColor, Fog.FogDensity);
+                    P.HeightParams      = glm::vec4(Fog.FogHeightFalloff, BaseHeight,
+                                                    Fog.FogStartDistance, Fog.FogMaxOpacity);
+                    P.DirectionalColor  = glm::vec4(Fog.DirectionalInscatteringColor,
+                                                    Fog.DirectionalInscatteringExponent);
+                    P.VolumetricParams  = glm::vec4(Fog.VolumetricScatteringIntensity,
+                                                    Fog.VolumetricAnisotropy,
+                                                    Fog.VolumetricMaxDistance,
+                                                    Fog.DirectionalInscatteringStartDistance);
+
+                    Frame.bHasFog             = true;
+                    Frame.bVolumetricFog      = Fog.bVolumetricFog;
+                    Frame.VolumetricStepCount = (uint32)glm::clamp(Fog.VolumetricStepCount, 4, 128);
+                });
+            }
         }
-        
-        
+
+
         SceneGlobalData.CullData.InstanceNum = (uint32)Instances.size();
 
         if (LightData.bHasSun)
@@ -883,6 +969,7 @@ namespace Lumina
     void FForwardRenderScene::CompileDrawCommands_RenderThread(ICommandList& CmdList)
     {
         LUMINA_PROFILE_SCOPE();
+        LUMINA_MEMORY_SCOPE("Render Scene");
 
         FFrameData& Frame = *RenderFrame;
         auto& SceneGlobalData            = Frame.SceneGlobalData;
@@ -998,6 +1085,16 @@ namespace Lumina
                 CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Environment), &EnvironmentParams, sizeof(FEnvironmentParams));
                 LastUploadedEnvironmentParams = EnvironmentParams;
                 bEnvironmentParamsUploaded   = true;
+            }
+
+            // Fog params: same memcmp gate; the static-fog common case skips the upload.
+            const FExponentialHeightFogParams& FogParams = Frame.FogParams;
+            const bool bFogParamsChanged = !bFogParamsUploaded || std::memcmp(&FogParams, &LastUploadedFogParams, sizeof(FExponentialHeightFogParams)) != 0;
+            if (bFogParamsChanged)
+            {
+                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Fog), &FogParams, sizeof(FExponentialHeightFogParams));
+                LastUploadedFogParams = FogParams;
+                bFogParamsUploaded    = true;
             }
 
             const bool bSunChanged =
@@ -2500,23 +2597,69 @@ namespace Lumina
         }
     }
 
+    // Correlated-color-temperature -> linear RGB tint (Tanner Helland approximation),
+    // normalized so the brightest channel is 1.0 -- it tints the sun without changing
+    // its intensity (that's the separate Intensity multiplier). ~6500K ≈ white.
+    static glm::vec3 ColorTemperatureToRGB(float Kelvin)
+    {
+        const float Temp = glm::clamp(Kelvin, 1000.0f, 40000.0f) / 100.0f;
+
+        float R;
+        float G;
+        float B;
+
+        if (Temp <= 66.0f)
+        {
+            R = 255.0f;
+            G = 99.4708025861f * glm::log(Temp) - 161.1195681661f;
+        }
+        else
+        {
+            R = 329.698727446f * glm::pow(Temp - 60.0f, -0.1332047592f);
+            G = 288.1221695283f * glm::pow(Temp - 60.0f, -0.0755148492f);
+        }
+
+        if (Temp >= 66.0f)
+        {
+            B = 255.0f;
+        }
+        else if (Temp <= 19.0f)
+        {
+            B = 0.0f;
+        }
+        else
+        {
+            B = 138.5177312231f * glm::log(Temp - 10.0f) - 305.0447927307f;
+        }
+
+        glm::vec3 RGB = glm::clamp(glm::vec3(R, G, B) / 255.0f, glm::vec3(0.0f), glm::vec3(1.0f));
+        const float MaxC = glm::max(RGB.x, glm::max(RGB.y, RGB.z));
+        return MaxC > 1e-4f ? RGB / MaxC : glm::vec3(1.0f);
+    }
+
     void FForwardRenderScene::ProcessDirectionalLight(const SDirectionalLightComponent& DirectionalLight, TAtomic<uint32>& LightCount)
     {
         FFrameData& Frame = *ExtractFrame;
         auto& LightData            = Frame.LightData;
         auto& ShadowDataCount      = Frame.ShadowDataCount;
         auto& SceneGlobalData      = Frame.SceneGlobalData;
-        const auto& CachedWorldSettings = Frame.CachedWorldSettings;
 
         LightData.bHasSun = true;
         const FViewVolume& ViewVolume = SceneViewport->GetViewVolume();
-        
+
         const float NearClip = ViewVolume.GetNear();
         const float FarClip  = ViewVolume.GetFar();
-        
+
+        // Optional black-body tint: physical sun color from correlated color temperature.
+        glm::vec3 LightColor = DirectionalLight.Color;
+        if (DirectionalLight.bUseTemperature)
+        {
+            LightColor *= ColorTemperatureToRGB(DirectionalLight.Temperature);
+        }
+
         FLight Light            = {};
         Light.Flags             = ELightFlags::Directional;
-        Light.Color             = PackColor(glm::vec4(DirectionalLight.Color, 1.0));
+        Light.Color             = PackColor(glm::vec4(LightColor, 1.0));
         Light.Intensity         = DirectionalLight.Intensity;
         Light.Direction         = glm::normalize(DirectionalLight.Direction);
         Light.ShadowDataIndex   = INDEX_NONE;
@@ -2541,11 +2684,24 @@ namespace Lumina
             }
         }
         
-        float CascadeSplitLambda  = CachedWorldSettings.CascadeSplitLambda;
-        
+        // Cascade shadows are now configured per-light. Feed the cull pass this
+        // light's max distance so shadow-caster culling matches the cascades.
+        SceneGlobalData.CullData.ShadowMaxDistance = DirectionalLight.ShadowMaxDistance;
+
+        // Shadow tuning forwarded to the lit pixel shaders via the light buffer.
+        LightData.ShadowParams  = glm::vec4(DirectionalLight.ShadowNormalBias,
+                                            DirectionalLight.ShadowDepthBias,
+                                            DirectionalLight.ShadowSoftness,
+                                            DirectionalLight.CascadeBlend);
+        LightData.ShadowParams2 = glm::vec4(DirectionalLight.ShadowDistanceFade,
+                                            float(DirectionalLight.ShadowSampleCount),
+                                            0.0f, 0.0f);
+
+        const float CascadeSplitLambda = glm::clamp(DirectionalLight.CascadeSplitLambda, 0.0f, 1.0f);
+
         constexpr float ShadowMinDistance   = 1.0f;
 
-        const float ShadowFar  = glm::min(FarClip, CachedWorldSettings.ShadowMaxDistance);
+        const float ShadowFar  = glm::min(FarClip, DirectionalLight.ShadowMaxDistance);
         const float ShadowNear = glm::max(NearClip, ShadowMinDistance);
         const float ClipRange  = ShadowFar - ShadowNear;
         const float MinDepth   = ShadowNear;
@@ -2611,7 +2767,7 @@ namespace Lumina
 
             // BackDistance pushes the light eye behind the cascade so off-screen occluders
             // still write depth; low sun angles need larger values (D/tan(theta) light-space height).
-            const float BackDistance = glm::max(CachedWorldSettings.CascadeBackDistance, 1.0f);
+            const float BackDistance = glm::max(DirectionalLight.CascadeBackDistance, 1.0f);
             const float OrthoRange   = Radius * 2.0f + BackDistance;
 
             // lookAt target = origin (not SphereCenter) so the rotation
@@ -4929,49 +5085,54 @@ namespace Lumina
         CmdList.Draw(3, 1, 0, 0);
     }
 
+
     namespace
     {
-        // Mirror of VolumetricLighting.slang::FPushConstants and
-        // VolumetricUpsample.slang::FPushConstants.
-        constexpr uint32 GVolumetricMaxLocalLights = 16;
-
-        struct FVolumetricLightingPushConstants
+        // Mirrors the FPushConstants in the three VolumetricFog*.slang shaders.
+        struct FFroxelInjectPushConstants
         {
-            uint32   NumSteps;
-            float    MaxDistance;
-            float    Density;
-            float    Anisotropy;
-            uint32   ScreenSize[2];        // Half-res output dimensions.
-            float    InvScreenSize[2];
-            float    Time;
-            uint32   bSunVolumetric;       // 1 if sun (light 0) opted in.
-            uint32   NumLocalVolumetric;   // <= GVolumetricMaxLocalLights.
-            uint32   _Pad0;
-            uint32   LocalLightIndices[GVolumetricMaxLocalLights];
+            uint32 GridSize[3];
+            float  NearPlane;
+            float  FogRange;            // froxel far plane (max fog distance, view units)
+            uint32 bSunVolumetric;      // 1 if light 0 (sun) opted into volumetrics
+            uint32 NumLocalVolumetric;  // <= GFroxelMaxLocalLights
+            float  Time;
+            uint32 LocalLightIndices[GFroxelMaxLocalLights];
         };
-        static_assert(sizeof(FVolumetricLightingPushConstants) <= 128,
-            "Volumetric march push constants must stay within the 128B Vulkan minimum.");
+        static_assert(sizeof(FFroxelInjectPushConstants) <= 128, "Froxel inject PC must fit 128B");
 
-        struct FVolumetricUpsamplePushConstants
+        struct FFroxelIntegratePushConstants
         {
-            float    HalfTexelSize[2];
-            float    DepthSigma;
-            float    _Pad0;
+            uint32 GridSize[3];
+            float  NearPlane;
+            float  FogRange;
+            float  _Pad[3];
         };
-        static_assert(sizeof(FVolumetricUpsamplePushConstants) <= 128,
-            "Volumetric upsample push constants must stay within the 128B Vulkan minimum.");
+
+        struct FFroxelApplyPushConstants
+        {
+            uint32 GridZ;
+            float  NearPlane;
+            float  FogRange;
+            float  _Pad;
+        };
     }
 
-    void FForwardRenderScene::VolumetricLightingPass(ICommandList& CmdList)
+    void FForwardRenderScene::FroxelInjectPass(ICommandList& CmdList)
     {
         const FFrameData& Frame = *RenderFrame;
+        if (!Frame.bHasFog || !CVarVolFogEnabled.GetValue())
+        {
+            return;
+        }
+
         const auto& LightData       = Frame.LightData;
         const auto& SceneGlobalData = Frame.SceneGlobalData;
 
-        // CPU list of this frame's volumetric lights so the shader iterates them directly.
-        // Sun (index 0) is special-cased: phase + radiance hoist out of the per-step loop.
+        // Same volumetric-light policy as the lit passes: sun (light 0) is special-cased;
+        // local point/spot lights opt in via ELightFlags::Volumetric.
         bool   bSunVolumetric = false;
-        uint32 LocalIndices[GVolumetricMaxLocalLights];
+        uint32 LocalIndices[GFroxelMaxLocalLights];
         uint32 NumLocal = 0;
 
         if (LightData.NumLights > 0
@@ -4980,39 +5141,167 @@ namespace Lumina
         {
             bSunVolumetric = true;
         }
-
         for (uint32 i = 1; i < LightData.NumLights; ++i)
         {
             if (!EnumHasAnyFlags(LightData.Lights[i].Flags, ELightFlags::Volumetric))
             {
                 continue;
             }
-            if (NumLocal >= GVolumetricMaxLocalLights)
+            if (NumLocal >= GFroxelMaxLocalLights)
             {
-                // Quietly clamp -- typical scenes have 1-3 volumetric lights.
                 break;
             }
             LocalIndices[NumLocal++] = i;
         }
 
-        if (!bSunVolumetric && NumLocal == 0)
+        LUMINA_PROFILE_SECTION_COLORED("Froxel Inject Pass", tracy::Color::SlateBlue);
+
+        FRHIComputeShaderRef CS = FShaderLibrary::GetComputeShader("VolumetricFogInject.slang");
+        if (!CS)
         {
             return;
         }
 
-        LUMINA_PROFILE_SECTION_COLORED("Volumetric Lighting Pass", tracy::Color::Orange3);
+        FRHIImage* Scatter = GetNamedImage(ENamedImage::FroxelScatter);
 
-        FRHIVertexShaderRef VertexShader  = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
-        FRHIPixelShaderRef  MarchPS       = FShaderLibrary::GetPixelShader("VolumetricLighting.slang");
-        FRHIPixelShaderRef  UpsamplePS    = FShaderLibrary::GetPixelShader("VolumetricUpsample.slang");
-        if (!VertexShader || !MarchPS || !UpsamplePS)
+        // Set 2: froxel scatter UAV (0) + fog params CBV (1). Sets 0/1/3 are the scene
+        // globals, bindless table, and shadow-sampling set the inject shader needs.
+        FBindingLayoutDesc LayoutDesc;
+        LayoutDesc.SetBindingIndex(2)
+            .SetVisibility(ERHIShaderType::Compute)
+            .AddItem(FBindingLayoutItem::Texture_UAV(0))
+            .AddItem(FBindingLayoutItem::Buffer_UD(1));
+        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
+
+        FBindingSetDesc SetDesc;
+        SetDesc.AddItem(FBindingSetItem::TextureUAV(0, Scatter, EFormat::UNKNOWN,
+            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices), EImageDimension::Texture3D));
+        SetDesc.AddItem(FBindingSetItem::BufferCBV(1, GetNamedBuffer(ENamedBuffer::Fog)));
+        FRHIBindingSetRef Set = GRenderContext->CreateBindingSet(SetDesc, Layout);
+
+        FComputePipelineDesc PipelineDesc;
+        PipelineDesc.AddBindingLayout(SceneBindingLayout);
+        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        PipelineDesc.AddBindingLayout(Layout);
+        PipelineDesc.AddBindingLayout(ShadowSamplingBindingLayout);
+        PipelineDesc.CS = CS;
+        PipelineDesc.DebugName = "Froxel Inject";
+        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+        FComputeState State;
+        State.SetPipeline(Pipeline);
+        State.AddBindingSet(SceneBindingSetReadOnly);
+        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        State.AddBindingSet(Set);
+        State.AddBindingSet(ShadowSamplingBindingSet);
+        State.Writes(Scatter);
+        CmdList.SetComputeState(State);
+
+        const float FogRange = glm::clamp(Frame.FogParams.VolumetricParams.z, 1.0f, SceneGlobalData.FarPlane);
+
+        FFroxelInjectPushConstants PC = {};
+        PC.GridSize[0]        = GFroxelGridX;
+        PC.GridSize[1]        = GFroxelGridY;
+        PC.GridSize[2]        = GFroxelGridZ;
+        PC.NearPlane          = glm::max(SceneGlobalData.NearPlane, 0.05f);
+        PC.FogRange           = FogRange;
+        PC.bSunVolumetric     = bSunVolumetric ? 1u : 0u;
+        PC.NumLocalVolumetric = NumLocal;
+        PC.Time               = SceneGlobalData.Time;
+        for (uint32 i = 0; i < NumLocal; ++i)
+        {
+            PC.LocalLightIndices[i] = LocalIndices[i];
+        }
+        CmdList.SetPushConstants(&PC, sizeof(PC));
+
+        CmdList.Dispatch(RenderUtils::GetGroupCount(GFroxelGridX, 4),
+                         RenderUtils::GetGroupCount(GFroxelGridY, 4),
+                         RenderUtils::GetGroupCount(GFroxelGridZ, 4));
+    }
+
+    void FForwardRenderScene::FroxelIntegratePass(ICommandList& CmdList)
+    {
+        const FFrameData& Frame = *RenderFrame;
+        if (!Frame.bHasFog || !CVarVolFogEnabled.GetValue())
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Froxel Integrate Pass", tracy::Color::MediumPurple);
+
+        FRHIComputeShaderRef CS = FShaderLibrary::GetComputeShader("VolumetricFogIntegrate.slang");
+        if (!CS)
+        {
+            return;
+        }
+
+        FRHIImage* Scatter    = GetNamedImage(ENamedImage::FroxelScatter);
+        FRHIImage* Integrated = GetNamedImage(ENamedImage::FroxelIntegrated);
+
+        // Set 0: scatter SRV (0, fetched by integer coord) + integrated UAV (1).
+        FBindingLayoutDesc LayoutDesc;
+        LayoutDesc.SetBindingIndex(0)
+            .SetVisibility(ERHIShaderType::Compute)
+            .AddItem(FBindingLayoutItem::Texture_SRV(0))
+            .AddItem(FBindingLayoutItem::Texture_UAV(1));
+        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
+
+        FBindingSetDesc SetDesc;
+        SetDesc.AddItem(FBindingSetItem::TextureSRV(0, Scatter, nullptr, EFormat::UNKNOWN,
+            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices), EImageDimension::Texture3D));
+        SetDesc.AddItem(FBindingSetItem::TextureUAV(1, Integrated, EFormat::UNKNOWN,
+            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices), EImageDimension::Texture3D));
+        FRHIBindingSetRef Set = GRenderContext->CreateBindingSet(SetDesc, Layout);
+
+        FComputePipelineDesc PipelineDesc;
+        PipelineDesc.AddBindingLayout(Layout);
+        PipelineDesc.CS = CS;
+        PipelineDesc.DebugName = "Froxel Integrate";
+        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+        FComputeState State;
+        State.SetPipeline(Pipeline);
+        State.AddBindingSet(Set);
+        State.Reads(Scatter);
+        State.Writes(Integrated);
+        CmdList.SetComputeState(State);
+
+        const float FogRange = glm::clamp(Frame.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
+
+        FFroxelIntegratePushConstants PC = {};
+        PC.GridSize[0] = GFroxelGridX;
+        PC.GridSize[1] = GFroxelGridY;
+        PC.GridSize[2] = GFroxelGridZ;
+        PC.NearPlane   = glm::max(Frame.SceneGlobalData.NearPlane, 0.05f);
+        PC.FogRange    = FogRange;
+        CmdList.SetPushConstants(&PC, sizeof(PC));
+
+        // One thread per (x,y) column; each marches the full Z range.
+        CmdList.Dispatch(RenderUtils::GetGroupCount(GFroxelGridX, 8),
+                         RenderUtils::GetGroupCount(GFroxelGridY, 8),
+                         1u);
+    }
+
+    void FForwardRenderScene::FroxelApplyPass(ICommandList& CmdList)
+    {
+        const FFrameData& Frame = *RenderFrame;
+        if (!Frame.bHasFog || !CVarVolFogEnabled.GetValue())
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Froxel Apply Pass", tracy::Color::Orange3);
+
+        FRHIVertexShaderRef VS = FShaderLibrary::GetVertexShader("FullscreenQuad.slang");
+        FRHIPixelShaderRef  PS = FShaderLibrary::GetPixelShader("VolumetricFogApply.slang");
+        if (!VS || !PS)
         {
             return;
         }
 
         FRHIImage* HDR        = GetNamedImage(ENamedImage::HDR);
-        FRHIImage* HalfRes    = GetNamedImage(ENamedImage::VolumetricHalfRes);
         FRHIImage* SceneDepth = GetNamedImage(ENamedImage::DepthAttachment);
+        FRHIImage* Integrated = GetNamedImage(ENamedImage::FroxelIntegrated);
 
         FRasterState RasterState;
         RasterState.SetCullNone();
@@ -5021,149 +5310,80 @@ namespace Lumina
         DepthState.DisableDepthTest();
         DepthState.DisableDepthWrite();
 
-        // Pass 1: half-res ray march into VolumetricHalfRes. No blend; the volumetric
-        // pipeline owns this RT and overwrites it every frame.
-        {
-            FBindingLayoutDesc DepthLayoutDesc;
-            DepthLayoutDesc.SetBindingIndex(2)
-                .SetVisibility(ERHIShaderType::Fragment)
-                .AddItem(FBindingLayoutItem::Texture_SRV(0));
-            FRHIBindingLayout* DepthLayout = BindingCache.GetOrCreateBindingLayout(DepthLayoutDesc);
+        // result = inScatter + HDR * transmittance, via src=(One), dst=(InvSrcAlpha)
+        // with the shader writing alpha = 1 - transmittance.
+        FBlendState::RenderTarget OverBlend;
+        OverBlend.SetBlendEnable(true);
+        OverBlend.SetSrcBlend(EBlendFactor::One);
+        OverBlend.SetDestBlend(EBlendFactor::InvSrcAlpha);
+        OverBlend.SetBlendOp(EBlendOp::Add);
+        OverBlend.SetSrcBlendAlpha(EBlendFactor::Zero);
+        OverBlend.SetDestBlendAlpha(EBlendFactor::One);
+        OverBlend.SetBlendOpAlpha(EBlendOp::Add);
 
-            FRHISamplerRef PointClamp = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+        FBlendState BlendState;
+        BlendState.SetRenderTarget(0, OverBlend);
 
-            FBindingSetDesc DepthSetDesc;
-            DepthSetDesc.AddItem(FBindingSetItem::TextureSRV(0, SceneDepth, PointClamp));
-            FRHIBindingSetRef DepthSet = GRenderContext->CreateBindingSet(DepthSetDesc, DepthLayout);
+        // Set 2: scene depth SRV (0, point), integrated volume SRV (1, linear 3D), fog CBV (2).
+        FBindingLayoutDesc LayoutDesc;
+        LayoutDesc.SetBindingIndex(2)
+            .SetVisibility(ERHIShaderType::Fragment)
+            .AddItem(FBindingLayoutItem::Texture_SRV(0))
+            .AddItem(FBindingLayoutItem::Texture_SRV(1))
+            .AddItem(FBindingLayoutItem::Buffer_UD(2));
+        FRHIBindingLayout* Layout = BindingCache.GetOrCreateBindingLayout(LayoutDesc);
 
-            FRenderPassDesc::FAttachment Attachment; Attachment
-                .SetImage(HalfRes)
-                .SetLoadOp(ERenderLoadOp::Clear);
+        FRHISamplerRef PointClamp  = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+        FRHISamplerRef LinearClamp = TStaticRHISampler<true,  true,  AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
-            FRenderPassDesc RenderPass; RenderPass
-                .AddColorAttachment(Attachment)
-                .SetRenderArea(HalfRes->GetExtent());
+        FBindingSetDesc SetDesc;
+        SetDesc.AddItem(FBindingSetItem::TextureSRV(0, SceneDepth, PointClamp));
+        SetDesc.AddItem(FBindingSetItem::TextureSRV(1, Integrated, LinearClamp, EFormat::UNKNOWN,
+            FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices), EImageDimension::Texture3D));
+        SetDesc.AddItem(FBindingSetItem::BufferCBV(2, GetNamedBuffer(ENamedBuffer::Fog)));
+        FRHIBindingSetRef Set = GRenderContext->CreateBindingSet(SetDesc, Layout);
 
-            FRenderState RenderState;
-            RenderState.SetRasterState(RasterState);
-            RenderState.SetDepthStencilState(DepthState);
+        FRenderPassDesc::FAttachment Attachment; Attachment
+            .SetImage(HDR)
+            .SetLoadOp(ERenderLoadOp::Load);
 
-            // Sets 0 (scene), 1 (textures), 2 (depth), 3 (shadow sampling).
-            FGraphicsPipelineDesc Desc;
-            Desc.SetDebugName("Volumetric Lighting March");
-            Desc.SetRenderState(RenderState);
-            Desc.AddBindingLayout(SceneBindingLayout);
-            Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
-            Desc.AddBindingLayout(DepthLayout);
-            Desc.AddBindingLayout(ShadowSamplingBindingLayout);
-            Desc.SetVertexShader(VertexShader);
-            Desc.SetPixelShader(MarchPS);
+        FRenderPassDesc RenderPass; RenderPass
+            .AddColorAttachment(Attachment)
+            .SetRenderArea(HDR->GetExtent());
 
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+        FRenderState RenderState;
+        RenderState.SetRasterState(RasterState);
+        RenderState.SetBlendState(BlendState);
+        RenderState.SetDepthStencilState(DepthState);
 
-            FGraphicsState GraphicsState;
-            GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
-            GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-            GraphicsState.AddBindingSet(DepthSet);
-            GraphicsState.AddBindingSet(ShadowSamplingBindingSet);
-            GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.SetRenderPass(RenderPass);
-            GraphicsState.SetViewportState(MakeViewportStateFromImage(HalfRes));
+        FGraphicsPipelineDesc Desc;
+        Desc.SetDebugName("Froxel Fog Apply");
+        Desc.SetRenderState(RenderState);
+        Desc.AddBindingLayout(SceneBindingLayout);
+        Desc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        Desc.AddBindingLayout(Layout);
+        Desc.SetVertexShader(VS);
+        Desc.SetPixelShader(PS);
 
-            CmdList.SetGraphicsState(GraphicsState);
+        FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
-            FVolumetricLightingPushConstants PC = {};
-            PC.NumSteps           = 16;
-            PC.MaxDistance        = 200.0f;
-            PC.Density            = 0.4f;
-            PC.Anisotropy         = 0.6f;
-            PC.ScreenSize[0]      = HalfRes->GetSizeX();
-            PC.ScreenSize[1]      = HalfRes->GetSizeY();
-            PC.InvScreenSize[0]   = 1.0f / (float)HalfRes->GetSizeX();
-            PC.InvScreenSize[1]   = 1.0f / (float)HalfRes->GetSizeY();
-            PC.Time               = SceneGlobalData.Time;
-            PC.bSunVolumetric     = bSunVolumetric ? 1u : 0u;
-            PC.NumLocalVolumetric = NumLocal;
-            for (uint32 i = 0; i < NumLocal; ++i)
-            {
-                PC.LocalLightIndices[i] = LocalIndices[i];
-            }
+        FGraphicsState GraphicsState;
+        GraphicsState.AddBindingSet(SceneBindingSetReadOnly);
+        GraphicsState.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        GraphicsState.AddBindingSet(Set);
+        GraphicsState.SetPipeline(Pipeline);
+        GraphicsState.SetRenderPass(RenderPass);
+        GraphicsState.SetViewportState(SceneViewportState);
 
-            CmdList.SetPushConstants(&PC, sizeof(PC));
-            CmdList.Draw(3, 1, 0, 0);
-        }
+        CmdList.SetGraphicsState(GraphicsState);
 
-        // Pass 2: depth-aware bilateral upsample, additive into HDR.
-        {
-            FBlendState::RenderTarget Additive;
-            Additive.SetBlendEnable(true);
-            Additive.SetSrcBlend(EBlendFactor::One);
-            Additive.SetDestBlend(EBlendFactor::One);
-            Additive.SetBlendOp(EBlendOp::Add);
-            Additive.SetSrcBlendAlpha(EBlendFactor::One);
-            Additive.SetDestBlendAlpha(EBlendFactor::One);
-            Additive.SetBlendOpAlpha(EBlendOp::Add);
+        FFroxelApplyPushConstants PC = {};
+        PC.GridZ     = GFroxelGridZ;
+        PC.NearPlane = glm::max(Frame.SceneGlobalData.NearPlane, 0.05f);
+        PC.FogRange  = glm::clamp(Frame.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
+        CmdList.SetPushConstants(&PC, sizeof(PC));
 
-            FBlendState BlendState;
-            BlendState.SetRenderTarget(0, Additive);
-
-            // Set 0: half-res scatter (linear-clamp) + scene depth (point-clamp).
-            FBindingLayoutDesc UpLayoutDesc;
-            UpLayoutDesc.SetBindingIndex(0)
-                .SetVisibility(ERHIShaderType::Fragment)
-                .AddItem(FBindingLayoutItem::Texture_SRV(0))
-                .AddItem(FBindingLayoutItem::Texture_SRV(1));
-            FRHIBindingLayout* UpLayout = BindingCache.GetOrCreateBindingLayout(UpLayoutDesc);
-
-            FRHISamplerRef LinearClamp = TStaticRHISampler<true,  true,  AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-            FRHISamplerRef PointClamp  = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
-            FBindingSetDesc UpSetDesc;
-            UpSetDesc.AddItem(FBindingSetItem::TextureSRV(0, HalfRes,    LinearClamp));
-            UpSetDesc.AddItem(FBindingSetItem::TextureSRV(1, SceneDepth, PointClamp));
-            FRHIBindingSetRef UpSet = GRenderContext->CreateBindingSet(UpSetDesc, UpLayout);
-
-            FRenderPassDesc::FAttachment Attachment; Attachment
-                .SetImage(HDR)
-                .SetLoadOp(ERenderLoadOp::Load);
-
-            FRenderPassDesc RenderPass; RenderPass
-                .AddColorAttachment(Attachment)
-                .SetRenderArea(HDR->GetExtent());
-
-            FRenderState RenderState;
-            RenderState.SetRasterState(RasterState);
-            RenderState.SetBlendState(BlendState);
-            RenderState.SetDepthStencilState(DepthState);
-
-            FGraphicsPipelineDesc Desc;
-            Desc.SetDebugName("Volumetric Lighting Upsample");
-            Desc.SetRenderState(RenderState);
-            Desc.AddBindingLayout(UpLayout);
-            Desc.SetVertexShader(VertexShader);
-            Desc.SetPixelShader(UpsamplePS);
-
-            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
-
-            FGraphicsState GraphicsState;
-            GraphicsState.AddBindingSet(UpSet);
-            GraphicsState.SetPipeline(Pipeline);
-            GraphicsState.SetRenderPass(RenderPass);
-            GraphicsState.SetViewportState(MakeViewportStateFromImage(HDR));
-
-            CmdList.SetGraphicsState(GraphicsState);
-
-            // DepthSigma controls bilateral neighbor rejection; shader works in (1-reverseZ)
-            // ~[0,1], so 0.01 gives a sharp cutoff. Stored as 1/sigma^2.
-            constexpr float DepthEdgeWidth = 0.01f;
-            FVolumetricUpsamplePushConstants PC = {};
-            PC.HalfTexelSize[0] = 1.0f / (float)HalfRes->GetSizeX();
-            PC.HalfTexelSize[1] = 1.0f / (float)HalfRes->GetSizeY();
-            PC.DepthSigma       = 1.0f / (DepthEdgeWidth * DepthEdgeWidth);
-
-            CmdList.SetPushConstants(&PC, sizeof(PC));
-            CmdList.Draw(3, 1, 0, 0);
-        }
+        CmdList.Draw(3, 1, 0, 0);
     }
 
     // 5 mips: roughness M/(NumMips-1) = {0, 0.25, 0.5, 0.75, 1.0}. Standard PBR choice.
@@ -5655,8 +5875,13 @@ namespace Lumina
 
             // .rgb = bloom tint, .a = chromatic aberration intensity.
             glm::vec4 BloomTint;
+
+            float    AutoExposureKey;    // middle-grey key; <= 0 disables auto-exposure.
+            float    AutoExposureMinMul; // 2^MinEV clamp on the adapted multiplier.
+            float    AutoExposureMaxMul; // 2^MaxEV clamp on the adapted multiplier.
+            float    _PadAE;
         };
-        static_assert(sizeof(FColorGradingConstants) == 144, "FColorGradingConstants layout must match ColorGrading.slang::FColorGradingConstants.");
+        static_assert(sizeof(FColorGradingConstants) == 160, "FColorGradingConstants layout must match ColorGrading.slang::FColorGradingConstants.");
         
         FColorGradingConstants MakeDefaultColorGrading(float Time)
         {
@@ -5679,6 +5904,9 @@ namespace Lumina
             PC.Highlights         = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
             PC.VignetteColor      = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
             PC.BloomTint          = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
+            PC.AutoExposureKey    = 0.0f;
+            PC.AutoExposureMinMul = 0.0f;
+            PC.AutoExposureMaxMul = 1.0f;
             return PC;
         }
 
@@ -5710,6 +5938,11 @@ namespace Lumina
             PC.Highlights         = glm::vec4(Settings->Highlights, Settings->FilmGrainResponse);
             PC.VignetteColor      = glm::vec4(Settings->VignetteColor, 0.0f);
             PC.BloomTint          = glm::vec4(Settings->BloomTint, Settings->ChromaticAberration);
+            // 0.18 == photographic middle grey. Key <= 0 tells the shader to
+            // ignore the adapted luminance and use the manual exposure alone.
+            PC.AutoExposureKey    = Settings->bAutoExposure ? 0.18f : 0.0f;
+            PC.AutoExposureMinMul = std::exp2(Settings->AutoExposureMinEV);
+            PC.AutoExposureMaxMul = std::exp2(std::max(Settings->AutoExposureMaxEV, Settings->AutoExposureMinEV));
             return PC;
         }
     }
@@ -5864,6 +6097,68 @@ namespace Lumina
             const uint32 GroupsY = RenderUtils::GetGroupCount(DstH, BloomUpTileSize);
             CmdList.Dispatch(GroupsX, GroupsY, 1);
         }
+    }
+
+    namespace
+    {
+        // 16 B push block for AutoExposure.slang. Mirrors its FPushConstants.
+        struct FAutoExposurePushConstants
+        {
+            uint32 HDRIndex;
+            uint32 AdaptUAV;
+            float  DeltaTime;
+            float  AdaptationSpeed;
+        };
+        static_assert(sizeof(FAutoExposurePushConstants) == 16,
+            "FAutoExposurePushConstants must match AutoExposure.slang::FPushConstants.");
+    }
+
+    void FForwardRenderScene::AutoExposurePass(ICommandList& CmdList)
+    {
+        const FFrameData& Frame = *RenderFrame;
+        const SPostProcessSettings* ActivePostProcess = Frame.bHasActivePostProcess ? &Frame.ActivePostProcessStorage : nullptr;
+
+        // Skipped entirely when disabled; ColorGrading reads the persistent
+        // AdaptedLuminance image but ignores it (AutoExposureKey <= 0).
+        if (ActivePostProcess == nullptr || !ActivePostProcess->bEnabled || !ActivePostProcess->bAutoExposure)
+        {
+            return;
+        }
+
+        FRHIComputeShaderRef CS = FShaderLibrary::GetComputeShader("AutoExposure.slang");
+        if (!CS)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Auto Exposure Pass", tracy::Color::Orange3);
+
+        FRHIImage* HDR     = GetNamedImage(ENamedImage::HDR);
+        FRHIImage* Adapted = GetNamedImage(ENamedImage::AdaptedLuminance);
+
+        FComputePipelineDesc PipelineDesc;
+        PipelineDesc.AddBindingLayout(SceneBindingLayout);
+        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        PipelineDesc.CS = CS;
+        PipelineDesc.DebugName = "Auto Exposure";
+        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+        FComputeState State;
+        State.SetPipeline(Pipeline);
+        State.AddBindingSet(SceneBindingSetReadOnly);
+        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        State.Reads(HDR);
+        State.Writes(Adapted);
+        CmdList.SetComputeState(State);
+
+        FAutoExposurePushConstants PC = {};
+        PC.HDRIndex        = (uint32)HDR->GetResourceID();
+        PC.AdaptUAV        = (uint32)Adapted->GetMipUAVIndex(0);
+        PC.DeltaTime       = Frame.SceneGlobalData.DeltaTime;
+        PC.AdaptationSpeed = ActivePostProcess->AutoExposureSpeed;
+        CmdList.SetPushConstants(&PC, sizeof(PC));
+
+        CmdList.Dispatch(1, 1, 1);
     }
 
     void FForwardRenderScene::ToneMappingPass(ICommandList& CmdList)
@@ -6466,6 +6761,19 @@ namespace Lumina
             NamedBuffers[(int)ENamedBuffer::Environment] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
+        // Per-frame exponential-height-fog params; the height-fog composite and the
+        // volumetric march both read this.
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FExponentialHeightFogParams);
+            BufferDesc.Usage.SetMultipleFlags(BUF_UniformBuffer, BUF_Dynamic);
+            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::ConstantBuffer;
+            BufferDesc.DebugName = "Fog Params";
+            NamedBuffers[(int)ENamedBuffer::Fog] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
         // Per-instance meshlet prefix sum. Initial size is one entry; the
         // upload site grows it as Instances grows.
         {
@@ -6717,22 +7025,26 @@ namespace Lumina
         }
 
         {
-            // Half-res volumetric scattering buffer; bilateral upsample composites it into
-            // HDR. R11G11B10_FLOAT (like bloom): wide range, no banding after tone map.
-            uint32 W = eastl::max<uint32>(Extent.x / 2u, 1u);
-            uint32 H = eastl::max<uint32>(Extent.y / 2u, 1u);
-
+            // Froxel volumetric fog volumes: camera-frustum-aligned 3D textures, fixed
+            // grid (independent of swapchain size). RGBA16F holds (in-scatter rgb, a)
+            // where a is extinction (Scatter) or transmittance (Integrated). Storage for
+            // the compute inject/integrate UAVs, ShaderResource for the integrate read
+            // and the apply-pass trilinear sample.
             FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = glm::uvec2(W, H);
-            ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
-            ImageDesc.Dimension         = EImageDimension::Texture2D;
+            ImageDesc.Extent            = glm::uvec2(GFroxelGridX, GFroxelGridY);
+            ImageDesc.Depth             = (uint16)GFroxelGridZ;
+            ImageDesc.Format            = EFormat::RGBA16_FLOAT;
+            ImageDesc.Dimension         = EImageDimension::Texture3D;
             ImageDesc.NumMips           = 1;
             ImageDesc.InitialState      = EResourceStates::ShaderResource;
             ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
-            ImageDesc.DebugName         = "Volumetric Half Res";
+            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::Storage, EImageCreateFlags::ShaderResource);
 
-            NamedImages[(int)ENamedImage::VolumetricHalfRes] = GRenderContext->CreateImage(ImageDesc);
+            ImageDesc.DebugName = "Froxel Scatter";
+            NamedImages[(int)ENamedImage::FroxelScatter] = GRenderContext->CreateImage(ImageDesc);
+
+            ImageDesc.DebugName = "Froxel Integrated";
+            NamedImages[(int)ENamedImage::FroxelIntegrated] = GRenderContext->CreateImage(ImageDesc);
         }
 
         {
@@ -6752,6 +7064,25 @@ namespace Lumina
             ImageDesc.DebugName         = "Bloom Chain";
 
             BloomChain = GRenderContext->CreateImage(ImageDesc);
+        }
+
+        {
+            // Auto-exposure adapted luminance. 1x1 persistent R32F that carries
+            // the eye-adaptation state across frames (read+written by the
+            // AutoExposure compute pass, sampled by ColorGrading). Kept in
+            // ShaderResource so the grading pass can read it even on frames
+            // where auto-exposure is disabled and the compute pass is skipped.
+            FRHIImageDesc ImageDesc;
+            ImageDesc.Extent            = glm::uvec2(1, 1);
+            ImageDesc.Format            = EFormat::R32_FLOAT;
+            ImageDesc.Dimension         = EImageDimension::Texture2D;
+            ImageDesc.NumMips           = 1;
+            ImageDesc.InitialState      = EResourceStates::ShaderResource;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage);
+            ImageDesc.DebugName         = "Adapted Luminance";
+
+            NamedImages[(int)ENamedImage::AdaptedLuminance] = GRenderContext->CreateImage(ImageDesc);
         }
     }
 
@@ -6992,6 +7323,7 @@ namespace Lumina
             ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(1, BloomChain, LinearClamp,
                 EFormat::UNKNOWN, FTextureSubresourceSet(0, 1, 0, 1)));
             ComposeSetDesc.AddItem(FBindingSetItem::BufferCBV(2, GetNamedBuffer(ENamedBuffer::ColorGrading)));
+            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(3, GetNamedImage(ENamedImage::AdaptedLuminance), LinearClamp));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Fragment);

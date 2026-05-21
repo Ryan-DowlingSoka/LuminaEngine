@@ -40,9 +40,11 @@ namespace Lumina
     }
 
     FCommandListResourceStateTracker::FCommandListResourceStateTracker()
-        : LinearAllocator(1024)
+        // 64 KiB blocks: must fit the largest single allocation, which is a texture's
+        // per-subresource state array (NumMips * ArraySize * sizeof(EResourceStates)).
+        : LinearAllocator(64 * 1024)
     {
-        
+
     }
 
     void FCommandListResourceStateTracker::SetEnableUavBarriersForTexture(FTextureStateExtension* Texture, bool bEnableBarriers)
@@ -468,6 +470,9 @@ namespace Lumina
         }
 
         FTextureState* TrackingRef = LinearAllocator.TAlloc<FTextureState>();
+        // Back the (currently empty) subresource array with this tracker's arena so any
+        // overflow is bulk-reclaimed on Reset instead of leaking on the heap.
+        TrackingRef->SubresourceStates.set_allocator(FFrameArenaAllocator(&LinearAllocator, "TexState"));
         TextureStates.emplace(Texture, TrackingRef);
         
         if (Texture->DescRef.bKeepInitialState)

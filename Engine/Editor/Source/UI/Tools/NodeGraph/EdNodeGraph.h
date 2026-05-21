@@ -88,8 +88,29 @@ namespace Lumina
         // canvas to surface the selected transition in the properties panel.
         void SetLinkSelectedCallback(const TFunction<void(CEdNodeGraphPin*, CEdNodeGraphPin*)>& Callback) { LinkSelectedCallback = Callback; }
 
+        // Transient per-frame debug overlay data, pushed by an asset editor while
+        // a graph is "running" (e.g. the animation graph preview). The draw loop
+        // animates link flow, prints live pin values, and highlights active nodes.
+        // All pointers are owned by the caller and only valid for the frame.
+        struct FGraphDebugContext
+        {
+            bool                                            bEnabled = false;
+            bool                                            bFlowLinks = false;
+            const THashMap<CEdNodeGraphPin*, FString>*      PinValues = nullptr;
+            const THashSet<const CEdGraphNode*>*            ActiveNodes = nullptr;
+        };
+
+        void SetDebugContext(const FGraphDebugContext& InContext) { DebugContext = InContext; }
+        void ClearDebugContext() { DebugContext = FGraphDebugContext(); }
+
         // Schema that governs what connections are allowed in this graph.
         virtual const FEdGraphSchema& GetSchema() const { return GetDefaultEdGraphSchema(); }
+
+        // When true, the draw loop calls CEdNodeGraphPin::DrawPin() for each
+        // unconnected input pin so pins can render inline editors (default
+        // values, enum combos) on the node face. Off for graphs that don't want
+        // it so their pin layout is unaffected.
+        virtual bool ShouldDrawInlinePinEditors() const { return false; }
 
         // Package under which newly constructed nodes are allocated. Defaults to this graph's package,
         // so nodes live alongside the asset that owns the graph.
@@ -105,6 +126,10 @@ namespace Lumina
         // input/output connections into OutLinks just like the regular per-node loop so the link
         // pass downstream picks up the wires going through this reroute.
         void DrawRerouteNode(CEdGraphNode* Node, TVector<TPair<CEdNodeGraphPin*, CEdNodeGraphPin*>>& OutLinks);
+
+        // Draws a pin's live debug value (when the debug context supplies one) as a
+        // small colored token inline in the pin row. No-op when debug is off.
+        void DrawPinDebugValue(CEdNodeGraphPin* Pin);
         
     public:
 
@@ -150,6 +175,9 @@ namespace Lumina
     private:
 
         ax::NodeEditor::EditorContext* Context = nullptr;
+
+        // Set each frame by an asset editor's debug overlay; default is "off".
+        FGraphDebugContext DebugContext;
     };
     
     

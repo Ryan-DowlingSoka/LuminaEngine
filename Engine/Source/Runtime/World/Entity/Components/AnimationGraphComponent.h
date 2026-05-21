@@ -50,10 +50,8 @@ namespace Lumina
         FUNCTION(Script)
         bool HasParameter(const FName& ParameterName) const;
 
-    private:
-
         // Sizes VMState from the current graph if it has not been initialized
-        // yet, so Lua can set parameters before the system's first tick.
+        // yet, so Lua / the system can set parameters before the VM's first tick.
         void EnsureStateInitialized();
     };
 }

@@ -8,6 +8,7 @@ namespace Lumina
 {
     class CSkeleton;
     class CAnimation;
+    class CBlackboard;
 
     REFLECT()
     enum class EAnimGraphParamType : uint8
@@ -194,6 +195,12 @@ namespace Lumina
         /** Skeleton every pose produced by this graph is authored against. */
         PROPERTY(Editable, Category = "Animation")
         TObjectPtr<CSkeleton> Skeleton;
+
+        /** Blackboard schema this graph reads parameters from. Get Parameter
+         *  nodes and transition conditions pick keys from it; at runtime the
+         *  values come from the entity's SBlackboardComponent. */
+        PROPERTY(Editable, Category = "Animation")
+        TObjectPtr<CBlackboard> Blackboard;
 
         /** Animation clips referenced by SampleAnim opcodes, indexed by clip index. */
         PROPERTY()

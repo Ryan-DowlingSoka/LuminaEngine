@@ -1,5 +1,6 @@
 #include "AnimationGraphCompiler.h"
 
+#include "Assets/AssetTypes/Blackboard/Blackboard.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
 #include "Renderer/MeshData.h"
 
@@ -74,7 +75,7 @@ namespace Lumina
         return Dst;
     }
 
-    uint16 FAnimationGraphCompiler::EmitAdvanceClock(uint16 StateSlot, uint16 SpeedReg, uint16 ClipIndex, EClipLoopMode LoopMode, uint16& OutFinishedReg)
+    uint16 FAnimationGraphCompiler::EmitAdvanceClock(uint16 StateSlot, uint16 SpeedReg, uint16 ClipIndex, uint16 LoopModeReg, uint16& OutFinishedReg)
     {
         const uint16 DstClock    = AllocScalarReg();
         const uint16 DstFinished = AllocScalarReg();
@@ -82,7 +83,7 @@ namespace Lumina
         Write(StateSlot);
         Write(SpeedReg);
         Write(ClipIndex);
-        Write((uint8)LoopMode);
+        Write(LoopModeReg);
         Write(DstClock);
         Write(DstFinished);
         OutFinishedReg = DstFinished;
@@ -150,6 +151,41 @@ namespace Lumina
         return Dst;
     }
 
+    void FAnimationGraphCompiler::ValidateParameterKey(const FName& Name, CEdGraphNode* Node)
+    {
+        // No blackboard assigned, or no key referenced -> nothing to validate.
+        if (Blackboard == nullptr || Name.IsNone())
+        {
+            return;
+        }
+
+        const FBlackboardKey* Key = Blackboard->FindKey(Name);
+        if (Key == nullptr)
+        {
+            EdNodeGraph::FError Warning;
+            Warning.Name        = "Unknown Blackboard Key";
+            Warning.Description = FString("References blackboard key '") + Name.ToString() +
+                "' which doesn't exist on the assigned blackboard (renamed or removed?). It will read the default value.";
+            Warning.Node        = Node;
+            AddWarning(Warning);
+            return;
+        }
+
+        const bool bScalar = Key->Type == EBlackboardKeyType::Float
+                          || Key->Type == EBlackboardKeyType::Int
+                          || Key->Type == EBlackboardKeyType::Bool
+                          || Key->Type == EBlackboardKeyType::Enum;
+        if (!bScalar)
+        {
+            EdNodeGraph::FError Warning;
+            Warning.Name        = "Blackboard Key Type";
+            Warning.Description = FString("Blackboard key '") + Name.ToString() +
+                "' is not a scalar (Float/Int/Bool/Enum) type, so it can't drive a value parameter; it will read 0.";
+            Warning.Node        = Node;
+            AddWarning(Warning);
+        }
+    }
+
     int32 FAnimationGraphCompiler::ResolveBoneIndex(const FName& BoneName) const
     {
         if (Skeleton == nullptr || BoneName.IsNone())
@@ -160,7 +196,7 @@ namespace Lumina
     }
 
     uint16 FAnimationGraphCompiler::EmitBoneTransform(uint16 SrcPoseReg, uint16 AlphaReg, uint16 BoneIndex,
-                                                     EBoneTransformSpace Space, EBoneTransformMode Mode,
+                                                     uint16 SpaceReg, uint16 ModeReg,
                                                      const glm::vec3& Translation, const glm::quat& Rotation, const glm::vec3& Scale)
     {
         const uint16 Dst = AllocPoseReg();
@@ -168,8 +204,8 @@ namespace Lumina
         Write(SrcPoseReg);
         Write(AlphaReg);
         Write(BoneIndex);
-        Write((uint8)Space);
-        Write((uint8)Mode);
+        Write(SpaceReg);
+        Write(ModeReg);
         Write(Translation);
         Write(Rotation);
         Write(Scale);
@@ -245,6 +281,40 @@ namespace Lumina
     {
         auto It = BoneMaskNameToIndex.find(Name);
         return It == BoneMaskNameToIndex.end() ? INDEX_NONE : It->second;
+    }
+
+    uint16 FAnimationGraphCompiler::AddBoneSubtreeMask(int32 RootBoneIndex, bool bInclusive)
+    {
+        FAnimGraphBoneMask Mask;
+        const int32 NumBones = (Skeleton != nullptr) ? Skeleton->GetNumBones() : 0;
+        Mask.Weights.assign(NumBones, 0.0f);
+
+        for (int32 i = 0; i < NumBones; ++i)
+        {
+            bool bAffected = false;
+            if (i == RootBoneIndex)
+            {
+                bAffected = bInclusive;
+            }
+            else
+            {
+                // Walk up the parent chain; affected if the root is an ancestor.
+                for (int32 Parent = Skeleton->GetBone(i).ParentIndex; Parent >= 0; Parent = Skeleton->GetBone(Parent).ParentIndex)
+                {
+                    if (Parent == RootBoneIndex)
+                    {
+                        bAffected = true;
+                        break;
+                    }
+                }
+            }
+
+            Mask.Weights[i] = bAffected ? 1.0f : 0.0f;
+        }
+
+        const uint16 Index = (uint16)BoneMasks.size();
+        BoneMasks.push_back(Move(Mask));
+        return Index;
     }
 
     uint16 FAnimationGraphCompiler::EmitEvalStateMachine(FAnimGraphStateMachine&& StateMachine)

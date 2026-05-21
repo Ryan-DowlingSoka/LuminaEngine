@@ -2,6 +2,7 @@
 #include "BonePickerContext.h"
 #include "ParameterPickerContext.h"
 #include "Assets/AssetTypes/Animation/AnimationGraph/AnimationGraph.h"
+#include "Assets/AssetTypes/Blackboard/Blackboard.h"
 #include "Renderer/MeshData.h"
 #include "UI/Tools/AssetEditors/TextureEditor/TextureEditorTool.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
@@ -144,27 +145,34 @@ namespace Lumina
                     Result = EPropertyChangeOp::Updated;
                     ImGui::CloseCurrentPopup();
                 }
-                if (PickerGraph != nullptr)
+                CBlackboard* Blackboard = (PickerGraph != nullptr) ? PickerGraph->Blackboard.Get() : nullptr;
+                if (Blackboard == nullptr)
                 {
-                    if (PickerGraph->Parameters.empty())
+                    ImGui::Separator();
+                    ImGui::TextDisabled("No blackboard assigned.");
+                    ImGui::TextDisabled("Set one on the graph asset.");
+                }
+                else if (Blackboard->Keys.empty())
+                {
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Blackboard has no keys.");
+                    ImGui::TextDisabled("Add keys in the Blackboard editor.");
+                }
+                else
+                {
+                    ImGui::Separator();
+                    for (const FBlackboardKey& Key : Blackboard->Keys)
                     {
-                        ImGui::Separator();
-                        ImGui::TextDisabled("No parameters yet.");
-                        ImGui::TextDisabled("Add a Get Parameter node");
-                        ImGui::TextDisabled("or type a name here to create one.");
-                    }
-                    else
-                    {
-                        ImGui::Separator();
-                        for (const FAnimGraphParameter& Param : PickerGraph->Parameters)
+                        if (Key.Name.IsNone() || EnumHasAnyFlags(Key.Flags, EBlackboardKeyFlags::Hidden))
                         {
-                            const bool bSelected = (Param.Name == DisplayValue);
-                            if (ImGui::Selectable(Param.Name.c_str(), bSelected))
-                            {
-                                DisplayValue = Param.Name;
-                                Result = EPropertyChangeOp::Updated;
-                                ImGui::CloseCurrentPopup();
-                            }
+                            continue;
+                        }
+                        const bool bSelected = (Key.Name == DisplayValue);
+                        if (ImGui::Selectable(Key.Name.c_str(), bSelected))
+                        {
+                            DisplayValue = Key.Name;
+                            Result = EPropertyChangeOp::Updated;
+                            ImGui::CloseCurrentPopup();
                         }
                     }
                 }
@@ -191,10 +199,14 @@ namespace Lumina
 
             if (ImGui::BeginPopup("##BonePicker"))
             {
-                BoneFilter.Draw("##Filter", 260.0f);
+                BoneFilter.Draw("##Filter", 320.0f);
 
-                if (ImGui::BeginChild("##BoneTree", ImVec2(280, 360)))
+                // Horizontal scrollbar + a tight indent so deep bone chains
+                // (pelvis -> spine -> ... -> hand -> fingers) stay readable
+                // instead of running off the right edge of the popup.
+                if (ImGui::BeginChild("##BoneTree", ImVec2(340, 400), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar))
                 {
+                    ImGui::PushStyleVar(ImGuiStyleVar_IndentSpacing, 14.0f);
                     if (Skeleton != nullptr)
                     {
                         // None entry first: lets the user clear the selection.
@@ -218,6 +230,7 @@ namespace Lumina
                             }
                         }
                     }
+                    ImGui::PopStyleVar();
                 }
                 ImGui::EndChild();
                 ImGui::EndPopup();

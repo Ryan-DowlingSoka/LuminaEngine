@@ -10,6 +10,8 @@ namespace Lumina
 
     void CAnimGraphNode_GetParameter::GenerateBytecode(FAnimationGraphCompiler& Compiler)
     {
+        Compiler.ValidateParameterKey(ParameterName, this);
+
         const int32 ParameterIndex = Compiler.AddParameter(ParameterName, EAnimGraphParamType::Float, DefaultValue);
         const uint16 ValueReg = Compiler.EmitLoadParam((uint16)ParameterIndex);
 

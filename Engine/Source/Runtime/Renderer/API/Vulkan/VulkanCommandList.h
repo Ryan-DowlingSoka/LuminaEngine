@@ -108,7 +108,7 @@ namespace Lumina
         
         void ClearImageColor(FRHIImage* Image, const FColor& Color) override;
 
-        void BindBindingSets(VkPipelineBindPoint BindPoint, VkPipelineLayout PipelineLayout, TFixedVector<FRHIBindingSet*, 1> BindingSets);
+        void BindBindingSets(VkPipelineBindPoint BindPoint, VkPipelineLayout PipelineLayout, const TFixedVector<FRHIBindingSet*, 4>& BindingSets);
 
         void SetPushConstants(const void* Data, SIZE_T ByteSize) override;
 

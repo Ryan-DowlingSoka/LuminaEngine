@@ -7,6 +7,7 @@
 #include "Assets/AssetTypes/Mesh/Skeleton/Skeleton.h"
 #include "Renderer/MeshData.h"
 #include "World/Entity/Components/AnimationGraphComponent.h"
+#include "World/Entity/Components/BlackboardComponent.h"
 #include "World/Entity/Components/SkeletalMeshComponent.h"
 
 namespace Lumina
@@ -59,6 +60,23 @@ namespace Lumina
             if (Skeleton == nullptr || Skeleton->GetNumBones() == 0)
             {
                 return;
+            }
+
+            // Resolve the graph's referenced parameters from the entity's
+            // blackboard. Init the VM state first so it is sized and marked
+            // current -- Execute then won't re-init and wipe the values we write.
+            // No blackboard component -> values keep their compiled defaults.
+            if (SBlackboardComponent* Blackboard = SystemContext.TryGet<SBlackboardComponent>(Entity))
+            {
+                Blackboard->EnsureInitialized();
+                AnimGraph.EnsureStateInitialized();
+
+                const int32 NumParams = (int32)Graph->Parameters.size();
+                for (int32 i = 0; i < NumParams && i < (int32)AnimGraph.VMState.Parameters.size(); ++i)
+                {
+                    const FAnimGraphParameter& Param = Graph->Parameters[i];
+                    AnimGraph.VMState.Parameters[i] = Blackboard->GetFloat(Param.Name, Param.DefaultValue);
+                }
             }
 
             // FAnimationGraphVM::Execute lazily (re)initializes the VM state when

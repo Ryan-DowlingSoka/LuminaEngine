@@ -54,6 +54,17 @@ namespace Lumina
             return false;
         }
 
+        // Decodes an enum carried in a scalar register. Enum pins compile to a
+        // float (the enum's integer index); we round, clamp to the valid range,
+        // and cast back. Garbage / out-of-range registers fall back to value 0.
+        template <typename TEnum>
+        static FORCEINLINE TEnum ReadEnumReg(const float* Scalars, SIZE_T NumScalar, uint16 Reg, int32 MaxValue)
+        {
+            const float Value = Reg < NumScalar ? Scalars[Reg] : 0.0f;
+            const int32 Index = glm::clamp((int32)glm::round(Value), 0, MaxValue);
+            return (TEnum)Index;
+        }
+
         static FORCEINLINE float ApplyScalarOp(EAnimScalarOp Op, float A, float B)
         {
             switch (Op)
@@ -200,9 +211,11 @@ namespace Lumina
                 const uint16 StateIdx     = Reader.Read<uint16>();
                 const uint16 SpeedReg     = Reader.Read<uint16>();
                 const uint16 ClipIdx      = Reader.Read<uint16>();
-                const EClipLoopMode Mode  = (EClipLoopMode)Reader.Read<uint8>();
+                const uint16 LoopModeReg  = Reader.Read<uint16>();
                 const uint16 DstClock     = Reader.Read<uint16>();
                 const uint16 DstFinished  = Reader.Read<uint16>();
+
+                const EClipLoopMode Mode = Detail::ReadEnumReg<EClipLoopMode>(Scalars, NumScalar, LoopModeReg, (int32)EClipLoopMode::PlayOnce);
 
                 if (StateIdx < NumState)
                 {
@@ -487,8 +500,8 @@ namespace Lumina
                 const uint16 Src      = Reader.Read<uint16>();
                 const uint16 AlphaReg = Reader.Read<uint16>();
                 const uint16 BoneIdx  = Reader.Read<uint16>();
-                const auto Space      = (EBoneTransformSpace)Reader.Read<uint8>();
-                const auto Mode       = (EBoneTransformMode)Reader.Read<uint8>();
+                const uint16 SpaceReg = Reader.Read<uint16>();
+                const uint16 ModeReg  = Reader.Read<uint16>();
                 const glm::vec3 T     = Reader.Read<glm::vec3>();
                 const glm::quat R     = Reader.Read<glm::quat>();
                 const glm::vec3 S     = Reader.Read<glm::vec3>();
@@ -497,6 +510,9 @@ namespace Lumina
                 if (Src < NumPose && Dst < NumPose)
                 {
                     const float AlphaValue = AlphaReg < NumScalar ? Scalars[AlphaReg] : 1.0f;
+
+                    const EBoneTransformSpace Space = Detail::ReadEnumReg<EBoneTransformSpace>(Scalars, NumScalar, SpaceReg, (int32)EBoneTransformSpace::ComponentSpace);
+                    const EBoneTransformMode  Mode  = Detail::ReadEnumReg<EBoneTransformMode>(Scalars, NumScalar, ModeReg, (int32)EBoneTransformMode::Replace);
 
                     if (Dst != Src)
                     {

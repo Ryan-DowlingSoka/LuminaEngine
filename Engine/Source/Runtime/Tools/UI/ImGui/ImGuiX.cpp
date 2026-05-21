@@ -275,6 +275,108 @@ namespace Lumina::ImGuiX
     }
 
 
+    int32 SearchableCombo(const char* StrId, const char* Preview, int32 ItemCount, int32 CurrentIndex, const TFunction<FFixedString(int32)>& GetItemLabel, const char* ItemIcon)
+    {
+        int32 Result = INDEX_NONE;
+        const ImGuiStyle& Style = ImGui::GetStyle();
+
+        // Key the filter on the combo's own ID so each selector keeps its own search text.
+        const ImGuiID ComboId = ImGui::GetID(StrId);
+
+        // Mirror the chosen item's icon into the closed preview so it matches the open list.
+        FFixedString PreviewStr = Preview;
+        if (ItemIcon != nullptr && CurrentIndex != INDEX_NONE)
+        {
+            PreviewStr = ItemIcon;
+            PreviewStr += "  ";
+            PreviewStr += Preview;
+        }
+
+        // HeightLargest lets the popup grow to fit the inner list instead of clamping to
+        // ~8 items; the list child is then the only thing that scrolls -- no double bar.
+        if (ImGui::BeginCombo(StrId, PreviewStr.c_str(), ImGuiComboFlags_HeightLargest))
+        {
+            const float PopupWidth = ImGui::GetContentRegionAvail().x;
+
+            static THashMap<ImGuiID, ImGuiTextFilter> Filters;
+            ImGuiTextFilter& Filter = Filters[ComboId];
+
+            if (ImGui::IsWindowAppearing())
+            {
+                ImGui::SetKeyboardFocusHere();
+            }
+            Filter.Draw("##filter", PopupWidth);
+
+            // Grey magnify hint while the search box is empty.
+            if (!Filter.IsActive())
+            {
+                ImVec2 HintPos = ImGui::GetItemRectMin();
+                HintPos.x += Style.FramePadding.x + 2.0f;
+                HintPos.y += Style.FramePadding.y;
+                ImGui::GetWindowDrawList()->AddText(HintPos, ImGui::GetColorU32(ImGuiCol_TextDisabled), LE_ICON_MAGNIFY " Search...");
+            }
+
+            ImGui::Separator();
+
+            // Cap the visible rows; the child scrolls past that. The popup auto-fits this
+            // child exactly, so the combo window itself never grows a scrollbar.
+            const int32 VisibleRows = ItemCount < 12 ? ItemCount : 12;
+            const float ListHeight = VisibleRows * ImGui::GetTextLineHeightWithSpacing() + Style.FramePadding.y * 2.0f;
+
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(Style.ItemSpacing.x, 2.0f));
+            if (ImGui::BeginChild("##list", ImVec2(PopupWidth, ListHeight)))
+            {
+                bool bAnyVisible = false;
+                for (int32 i = 0; i < ItemCount; ++i)
+                {
+                    const FFixedString Label = GetItemLabel(i);
+                    if (!Filter.PassFilter(Label.c_str()))
+                    {
+                        continue;
+                    }
+                    bAnyVisible = true;
+
+                    // Row text is "<icon>  <label>"; the icon glyph reads as a leading marker.
+                    FFixedString Row;
+                    if (ItemIcon != nullptr)
+                    {
+                        Row = ItemIcon;
+                        Row += "  ";
+                        Row += Label;
+                    }
+                    else
+                    {
+                        Row = Label;
+                    }
+
+                    ImGui::PushID(i);
+                    const bool bSelected = (i == CurrentIndex);
+                    if (ImGui::Selectable(Row.c_str(), bSelected))
+                    {
+                        Result = i;
+                        ImGui::CloseCurrentPopup();
+                    }
+                    if (bSelected)
+                    {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::PopID();
+                }
+
+                if (!bAnyVisible)
+                {
+                    ImGui::TextDisabled("No matches");
+                }
+            }
+            ImGui::EndChild();
+            ImGui::PopStyleVar();
+
+            ImGui::EndCombo();
+        }
+
+        return Result;
+    }
+
     void SameLineSeparator(float width, const ImColor& color)
     {
         const ImColor separatorColor = ImGui::GetStyleColorVec4( ImGuiCol_Separator);

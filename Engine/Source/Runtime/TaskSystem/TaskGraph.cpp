@@ -39,6 +39,15 @@ namespace Lumina
         {
             Wait();
         }
+
+        // FNodes are placement-constructed in the linear allocator, which frees its
+        // raw block without running destructors. Destroy each node explicitly so its
+        // Deps vector (sized in Dispatch) and captured-function storage are freed
+        // instead of leaking every time a graph goes out of scope.
+        for (FNode* Node : Nodes)
+        {
+            Node->~FNode();
+        }
     }
 
     FTaskGraph::FNodeHandle FTaskGraph::Add(FOneShotFunc Func, ETaskPriority Priority)

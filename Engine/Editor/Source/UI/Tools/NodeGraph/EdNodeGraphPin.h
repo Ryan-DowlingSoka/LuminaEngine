@@ -33,6 +33,11 @@ namespace Lumina
         {}
         
         virtual float DrawPin() { return 1.5f; }
+
+        // True when this pin draws a compact inline editor (value field, enum
+        // selector) for an unconnected input. The graph draw loop uses this to
+        // right-align those editors into a tidy column.
+        virtual bool HasInlineEditor() const { return false; }
         
         void SetPinName(const FString& Name) { PinName = Name; }
         const FString& GetPinName() const { return PinName; }

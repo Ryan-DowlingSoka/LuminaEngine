@@ -138,6 +138,23 @@ namespace Lumina
         return GetPackage();
     }
 
+    void CEdNodeGraph::DrawPinDebugValue(CEdNodeGraphPin* Pin)
+    {
+        if (!DebugContext.bEnabled || DebugContext.PinValues == nullptr || Pin == nullptr)
+        {
+            return;
+        }
+
+        auto It = DebugContext.PinValues->find(Pin);
+        if (It == DebugContext.PinValues->end())
+        {
+            return;
+        }
+
+        ImGui::Spring(0);
+        ImGui::TextColored(ImVec4(0.45f, 0.9f, 1.0f, 1.0f), "%s", It->second.c_str());
+    }
+
     void CEdNodeGraph::DrawRerouteNode(CEdGraphNode* Node, TVector<TPair<CEdNodeGraphPin*, CEdNodeGraphPin*>>& OutLinks)
     {
         using namespace ax;
@@ -294,7 +311,10 @@ namespace Lumina
                 ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
             }
 
-            NodeBuilder.Header(ImGui::ColorConvertU32ToFloat4(Node->GetNodeTitleColor()));
+            const bool bNodeActive = DebugContext.bEnabled && DebugContext.ActiveNodes != nullptr
+                && DebugContext.ActiveNodes->find(Node) != DebugContext.ActiveNodes->end();
+            const uint32 HeaderColor = bNodeActive ? IM_COL32(235, 170, 40, 255) : Node->GetNodeTitleColor();
+            NodeBuilder.Header(ImGui::ColorConvertU32ToFloat4(HeaderColor));
 
             if (!Node->WantsTitlebar())
             {
@@ -350,6 +370,19 @@ namespace Lumina
 
                     ImGui::TextUnformatted(InputPin->GetPinName().c_str());
 
+                    // Inline editor: an unconnected input pin can render a compact
+                    // widget (default value, enum selector) so it's editable on the
+                    // node face. A stretch spring pushes it to the row's right edge
+                    // so editors line up in a tidy column regardless of pin-name
+                    // length. Opt-in per graph; see ShouldDrawInlinePinEditors().
+                    if (ShouldDrawInlinePinEditors() && !InputPin->HasConnection() && InputPin->HasInlineEditor())
+                    {
+                        ImGui::Spring(1.0f, 12.0f);
+                        InputPin->DrawPin();
+                    }
+
+                    DrawPinDebugValue(InputPin);
+
                     if (bDebug)
                     {
                         ImGui::Text("(ID - %i)", InputPin->GetPinGUID());
@@ -385,6 +418,7 @@ namespace Lumina
                     }
 
                     ImGui::Spring(1, 1);
+                    DrawPinDebugValue(OutputPin);
                     ImGui::TextUnformatted(OutputPin->GetPinName().c_str());
                     ImGui::Spring(0);
 
@@ -674,7 +708,15 @@ namespace Lumina
         uint32 LinkID = 1;
         for (auto& [Start, End] : Links)
         {
-            NodeEditor::Link(LinkID++, Start->GetPinGUID(), End->GetPinGUID());
+            const uint32 ThisLinkID = LinkID++;
+            NodeEditor::Link(ThisLinkID, Start->GetPinGUID(), End->GetPinGUID());
+
+            // Debug: animate flow along every wire so the running graph reads as
+            // "live". Re-issued each frame to keep the animation looping.
+            if (DebugContext.bEnabled && DebugContext.bFlowLinks)
+            {
+                NodeEditor::Flow(ThisLinkID);
+            }
         }
 
         // Double-clicking a wire splits it with a reroute node, anchored at the click position.

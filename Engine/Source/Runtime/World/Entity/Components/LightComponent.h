@@ -98,7 +98,7 @@ namespace Lumina
     {
         GENERATED_BODY()
 
-        /** RGB color of the directional light. */
+        /** RGB color of the directional light. Multiplied by the temperature tint when bUseTemperature is set. */
         PROPERTY(Editable, Color, Category = "Light")
         glm::vec3 Color = glm::vec4(1.0f);
 
@@ -110,9 +110,54 @@ namespace Lumina
         PROPERTY(Editable, Category = "Light", ClampMin = 0.0f)
         float Intensity = 1.5f;
 
+        /** When true, Color is tinted by a physical black-body color from Temperature. */
+        PROPERTY(Editable, Category = "Light|Temperature")
+        bool bUseTemperature = false;
+
+        /** Correlated color temperature in Kelvin (≈6500 = neutral daylight, lower = warmer, higher = cooler/blue). */
+        PROPERTY(Editable, Category = "Light|Temperature", ClampMin = 1000.0f, ClampMax = 15000.0f)
+        float Temperature = 6500.0f;
+
         /** When true, this light contributes to the shadow pass. */
-        PROPERTY(Editable)
+        PROPERTY(Editable, Category = "Cascaded Shadows")
         bool bCastShadows = true;
+
+        /** Blend between uniform (0) and logarithmic (1) cascade split distribution. Higher packs detail near the camera. */
+        PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 0.0f, ClampMax = 1.0f, Delta = 0.01f)
+        float CascadeSplitLambda = 0.92f;
+
+        /** Maximum view distance that receives cascaded shadows; shadows fade out before this. */
+        PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 1.0f)
+        float ShadowMaxDistance = 2000.0f;
+
+        /** Distance the light eye is pushed behind each cascade so off-screen occluders still cast.
+        Low sun angles need larger values or tall casters clip at the ortho near plane and shadows go hollow. */
+        PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 1.0f)
+        float CascadeBackDistance = 2000.0f;
+
+        /** Normal-offset bias scale; raise to kill shadow acne, lower if contact shadows detach (peter-panning). */
+        PROPERTY(Editable, Category = "Cascaded Shadows|Tuning", ClampMin = 0.0f, ClampMax = 8.0f, Delta = 0.05f)
+        float ShadowNormalBias = 1.0f;
+
+        /** Constant depth bias added at the shadow comparison; small values only. */
+        PROPERTY(Editable, Category = "Cascaded Shadows|Tuning", ClampMin = 0.0f, ClampMax = 0.01f, Delta = 0.0001f)
+        float ShadowDepthBias = 0.0f;
+
+        /** Penumbra softness (PCSS light size); 0 = hard edges, larger = softer distant shadows. */
+        PROPERTY(Editable, Category = "Cascaded Shadows|Tuning", ClampMin = 0.0f, ClampMax = 0.5f, Delta = 0.005f)
+        float ShadowSoftness = 0.05f;
+
+        /** PCF taps per cascade sample; higher = smoother penumbra (less dither grain) at higher GPU cost. */
+        PROPERTY(Editable, Category = "Cascaded Shadows|Tuning", ClampMin = 1, ClampMax = 64)
+        int32 ShadowSampleCount = 8;
+
+        /** Fraction of each cascade over which it cross-fades into the next; reduces visible split seams. */
+        PROPERTY(Editable, Category = "Cascaded Shadows|Tuning", ClampMin = 0.0f, ClampMax = 0.5f, Delta = 0.01f)
+        float CascadeBlend = 0.20f;
+
+        /** Fraction of the last cascade over which shadows fade to fully lit, so the edge doesn't pop at max distance. */
+        PROPERTY(Editable, Category = "Cascaded Shadows|Tuning", ClampMin = 0.0f, ClampMax = 0.5f, Delta = 0.01f)
+        float ShadowDistanceFade = 0.15f;
 
         /** When true, the sun scatters through participating media (god rays / light shafts). */
         PROPERTY(Editable, Category = "Advanced")

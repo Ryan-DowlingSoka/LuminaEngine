@@ -889,14 +889,18 @@ namespace Lumina
             PartialAspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         }
     
+        // 3D textures map Description.Depth to extent.depth; everything else is a 2D
+        // image (or 2D array / cube) with depth 1. 3D images can't be arrayed.
+        const bool bIs3D = Description.Dimension == EImageDimension::Texture3D;
+
         VkImageCreateInfo ImageCreateInfo   = {};
         ImageCreateInfo.sType               = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         ImageCreateInfo.flags               = ImageFlags;
-        ImageCreateInfo.imageType           = VK_IMAGE_TYPE_2D;
+        ImageCreateInfo.imageType           = bIs3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
         ImageCreateInfo.format              = VulkanFormat;
-        ImageCreateInfo.extent          = { Description.Extent.x, Description.Extent.y, 1 };
+        ImageCreateInfo.extent          = { Description.Extent.x, Description.Extent.y, bIs3D ? (uint32)Description.Depth : 1u };
         ImageCreateInfo.mipLevels           = Description.NumMips;
-        ImageCreateInfo.arrayLayers         = Description.ArraySize;
+        ImageCreateInfo.arrayLayers         = bIs3D ? 1u : Description.ArraySize;
         ImageCreateInfo.samples             = ToVkSampleCount(Description.NumSamples);
         ImageCreateInfo.tiling              = VK_IMAGE_TILING_OPTIMAL;
         ImageCreateInfo.initialLayout       = VK_IMAGE_LAYOUT_UNDEFINED;

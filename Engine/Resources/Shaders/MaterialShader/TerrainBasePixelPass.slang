@@ -125,7 +125,8 @@ float ComputeShadowBias(uint LightFlags, float3 Normal, float3 LightDir, int Cas
     {
         // Constant safety bias only; NormalOffsetWS below handles the
         // slope-driven acne, so a large slope term would only cause peter-panning.
-        return 0.00015 + 0.0003 * SlopeFactor;
+        // ShadowParams.y is the per-light constant depth bias.
+        return 0.00015 + 0.0003 * SlopeFactor + uLightData[0].ShadowParams.y;
     }
 
     return 0.0015 + 0.004 * SlopeFactor;
@@ -139,7 +140,8 @@ float3 NormalOffsetWS(float3 Normal, float3 LightDir, int CascadeIndex)
     float Radius      = uLightData[0].CascadeRadii[CascadeIndex];
     float Resolution  = max(uLightData[0].CascadeResolutions[CascadeIndex], 1.0);
     float TexelSize   = (2.0 * Radius) / Resolution;
-    return Normal * (TexelSize * 1.4 * OffsetScale);
+    // ShadowParams.x scales the normal-offset bias per-light (1.0 = default).
+    return Normal * (TexelSize * 1.4 * OffsetScale * uLightData[0].ShadowParams.x);
 }
 
 // Per-cascade UV -> shared atlas UV. Mirrors BasePixelPass.slang::CascadeAtlasUV.
@@ -207,23 +209,27 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
 
     float AvgBlockerDepth = BlockerDepthSum / float(NumBlockers);
     float DepthDelta      = max(CurrentDepth - AvgBlockerDepth, 0.0);
-    float Penumbra        = DepthDelta * PCSS_LightSize;
+    // Per-light penumbra softness (PCSS light size); PCSS_LightSize is the default.
+    float Penumbra        = DepthDelta * uLightData[0].ShadowParams.z;
     float MaxRadius       = PCSS_MaxFilterRadius * CascadeScale;
     float FilterRadius    = clamp(Penumbra, PCSS_MinFilterRadius, MaxRadius);
 
     float BlockerCoverage = float(NumBlockers) / float(PCSS_BLOCKER_SEARCH_TAPS);
     FilterRadius *= lerp(0.75, 1.0, BlockerCoverage);
 
+    // Per-light runtime tap count (ShadowParams2.y); uniform, so no wavefront
+    // divergence from the dynamic loop. Matches BasePixelPass.
+    int SampleCount = clamp(int(uLightData[0].ShadowParams2.y), 1, SHADOW_MAX_SAMPLE_COUNT);
     float Shadow = 0.0;
-    [unroll]
-    for (int i = 0; i < SHADOW_SAMPLE_COUNT; ++i)
+    [loop]
+    for (int i = 0; i < SampleCount; ++i)
     {
-        float2 Offset    = VogelDiskSample(i, SHADOW_SAMPLE_COUNT, Angle + PI) * FilterRadius;
+        float2 Offset    = VogelDiskSample(i, SampleCount, Angle + PI) * FilterRadius;
         float2 CascadeUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
         float2 AtlasUV   = TerrainCascadeAtlasUV(Light.ShadowDataIndex, CascadeIndex, CascadeUV);
         Shadow += uShadowCascade.SampleCmp(AtlasUV, RefDepth);
     }
-    return Shadow / float(SHADOW_SAMPLE_COUNT);
+    return Shadow / float(SampleCount);
 }
 
 float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal, float3 ViewPosition, float2 ScreenPos, bool ReceiveShadow)
@@ -268,7 +274,8 @@ float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal
     float CascadeLen  = max(CascadeFar - CascadeNear, 1e-4);
     float LocalT      = saturate((ViewPosition.z - CascadeNear) / CascadeLen);
 
-    const float BlendStart = 0.80;
+    // Cross-fade fraction is per-light (ShadowParams.w); BlendStart = 1 - blend.
+    const float BlendStart = saturate(1.0 - uLightData[0].ShadowParams.w);
     if (LocalT > BlendStart && CascadeIndex + 1 < NUM_CASCADES)
     {
         float BlendT  = saturate((LocalT - BlendStart) / (1.0 - BlendStart));
@@ -287,7 +294,8 @@ float ComputeTerrainShadowFactor(FLight Light, float3 FragmentPos, float3 Normal
     // dissolve at ShadowMaxDistance instead of popping off.
     if (CascadeIndex + 1 == NUM_CASCADES)
     {
-        const float FarFadeStart = 0.85;
+        // Distance-fade fraction is per-light (ShadowParams2.x); start = 1 - fade.
+        const float FarFadeStart = saturate(1.0 - uLightData[0].ShadowParams2.x);
         if (LocalT > FarFadeStart)
         {
             float FadeT = saturate((LocalT - FarFadeStart) / (1.0 - FarFadeStart));

@@ -60,6 +60,7 @@ namespace Lumina
         // Compile every State's blend tree into the shared register space and
         // record which pose register each state resolved to.
         THashMap<int64, int32> NodeIDToStateIndex;
+        TVector<TPair<CEdGraphNode*, int32>> StateNodesForDebug;
 
         for (CEdGraphNode* Node : SMGraph->Nodes)
         {
@@ -82,6 +83,7 @@ namespace Lumina
             const int32 StateIndex = (int32)StateMachine.StatePoseRegisters.size();
             StateMachine.StatePoseRegisters.push_back(PoseReg);
             NodeIDToStateIndex[StateNode->GetNodeID()] = StateIndex;
+            StateNodesForDebug.emplace_back(StateNode, StateIndex);
         }
 
         if (StateMachine.StatePoseRegisters.empty())
@@ -153,7 +155,9 @@ namespace Lumina
             Runtime.BlendDuration      = Transition->BlendDuration;
             Runtime.bCanInterrupt      = Transition->bCanInterrupt;
 
-            // Make sure the condition parameter exists in the compiled table.
+            // Make sure the condition parameter exists in the compiled table,
+            // and warn if it doesn't match a blackboard key (renamed / retyped).
+            Compiler.ValidateParameterKey(Transition->ConditionParameter, this);
             Compiler.AddParameter(Transition->ConditionParameter, EAnimGraphParamType::Float, 0.0f);
 
             StateMachine.Transitions.push_back(Runtime);
@@ -164,6 +168,13 @@ namespace Lumina
         StateMachine.FromStateSlot    = Compiler.AllocStateSlot();
         StateMachine.TimerSlot        = Compiler.AllocStateSlot();
         StateMachine.DurationSlot     = Compiler.AllocStateSlot();
+
+        // Record which slot/index each State node maps to so the editor's debug
+        // overlay can highlight the state the VM is currently in.
+        for (const TPair<CEdGraphNode*, int32>& Entry : StateNodesForDebug)
+        {
+            Compiler.AddDebugStateNode(Entry.first, StateMachine.CurrentStateSlot, Entry.second);
+        }
 
         const uint16 ResultReg = Compiler.EmitEvalStateMachine(Move(StateMachine));
         Compiler.SetPinRegister(ResultPin, ResultReg);

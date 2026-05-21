@@ -6,16 +6,26 @@ namespace Lumina
     void CAnimGraphNode_Remap::BuildNode()
     {
         ValuePin  = CreateAnimPin("Value", ENodePinDirection::Input, EAnimPinType::Value, 0.0f);
+        InMinPin  = CreateAnimPin("In Min", ENodePinDirection::Input, EAnimPinType::Value, 0.0f);
+        InMaxPin  = CreateAnimPin("In Max", ENodePinDirection::Input, EAnimPinType::Value, 1.0f);
+        OutMinPin = CreateAnimPin("Out Min", ENodePinDirection::Input, EAnimPinType::Value, 0.0f);
+        OutMaxPin = CreateAnimPin("Out Max", ENodePinDirection::Input, EAnimPinType::Value, 1.0f);
         ResultPin = CreateAnimPin("Result", ENodePinDirection::Output, EAnimPinType::Value);
+
+        BindFloatPinEditor(ValuePin);
+        BindFloatPinEditor(InMinPin);
+        BindFloatPinEditor(InMaxPin);
+        BindFloatPinEditor(OutMinPin);
+        BindFloatPinEditor(OutMaxPin);
     }
 
     void CAnimGraphNode_Remap::GenerateBytecode(FAnimationGraphCompiler& Compiler)
     {
         const uint16 ValueReg  = ResolveValueInput(ValuePin, Compiler);
-        const uint16 InMinReg  = Compiler.EmitLoadConst(InMin);
-        const uint16 InMaxReg  = Compiler.EmitLoadConst(InMax);
-        const uint16 OutMinReg = Compiler.EmitLoadConst(OutMin);
-        const uint16 OutMaxReg = Compiler.EmitLoadConst(OutMax);
+        const uint16 InMinReg  = ResolveValueInput(InMinPin, Compiler);
+        const uint16 InMaxReg  = ResolveValueInput(InMaxPin, Compiler);
+        const uint16 OutMinReg = ResolveValueInput(OutMinPin, Compiler);
+        const uint16 OutMaxReg = ResolveValueInput(OutMaxPin, Compiler);
 
         // Normalize: (Value - InMin) / (InMax - InMin). Divide-by-zero on a
         // degenerate input range resolves to 0 inside the VM.

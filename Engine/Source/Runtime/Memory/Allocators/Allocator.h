@@ -2,6 +2,7 @@
 
 #include "Core/Assertions/Assert.h"
 #include "Memory/Memory.h"
+#include "Containers/Array.h"
 
 namespace Lumina
 {
@@ -310,4 +311,12 @@ namespace Lumina
         const char*            Name;
     };
 
+    // Containers backed by a frame arena. The arena must outlive the container, and
+    // is bulk-reset, so element storage needs no per-item free. Construct with an
+    // explicit FFrameArenaAllocator(&Arena), or set_allocator() on an empty container.
+    template <typename T>
+    using TFrameVector = TVector<T, FFrameArenaAllocator>;
+
+    template <typename K, typename V>
+    using TFrameHashMap = THashMap<K, V, eastl::hash<K>, eastl::equal_to<K>, FFrameArenaAllocator>;
 }

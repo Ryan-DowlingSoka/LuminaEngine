@@ -2,18 +2,37 @@
 #include "NavMeshBuilder.h"
 
 #include "Memory/SmartPtr.h"
+#include "Memory/Memory.h"
+#include "Memory/MemoryTracking.h"
 #include "TaskSystem/TaskSystem.h"
 
 #if defined(LUMINA_HAS_RECAST)
     #include <Recast.h>
+    #include <RecastAlloc.h>
     #include <DetourNavMesh.h>
     #include <DetourNavMeshBuilder.h>
+    #include <DetourAlloc.h>
 #endif
 
 namespace Lumina::NavMeshBuilder
 {
     namespace
     {
+#if defined(LUMINA_HAS_RECAST)
+        // Route Recast + Detour through our allocator + tracker, attributed to "Navigation".
+        // The Set*Custom calls only store function pointers, so a static initializer is safe.
+        void* RecastAlloc(size_t Size, rcAllocHint) { LUMINA_MEMORY_SCOPE("Navigation"); return Memory::Malloc(Size); }
+        void  RecastFree(void* Ptr)                 { if (Ptr) { Memory::Free(Ptr); } }
+        void* DetourAlloc(size_t Size, dtAllocHint) { LUMINA_MEMORY_SCOPE("Navigation"); return Memory::Malloc(Size); }
+        void  DetourFree(void* Ptr)                 { if (Ptr) { Memory::Free(Ptr); } }
+        const bool GNavAllocatorsSet = []
+        {
+            rcAllocSetCustom(RecastAlloc, RecastFree);
+            dtAllocSetCustom(DetourAlloc, DetourFree);
+            return true;
+        }();
+#endif
+
         struct FTileGrid
         {
             glm::vec3   Origin;             // BoundsMin

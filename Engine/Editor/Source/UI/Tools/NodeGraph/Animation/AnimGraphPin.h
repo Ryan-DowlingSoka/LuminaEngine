@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Containers/Function.h"
 #include "UI/Tools/NodeGraph/EdNodeGraphPin.h"
 #include "AnimGraphPin.generated.h"
 
@@ -22,6 +23,16 @@ namespace Lumina
 
         void SetPinType(EAnimPinType InType);
         EAnimPinType GetPinType() const { return PinType; }
+
+        // Draws the inline editor (when set) for an unconnected input pin, so a
+        // pin's value/enum is editable directly on the node face. Invoked by the
+        // graph draw loop; see CAnimGraphNode::BindFloatPinEditor / BindEnumPinEditor.
+        float DrawPin() override;
+        bool HasInlineEditor() const override { return (bool)InlineEditor; }
+
+        /** Compact widget drawn in the pin row when this input pin is unconnected.
+         *  Set by the owning node in BuildNode; not serialized (rebuilt each load). */
+        TFunction<void()> InlineEditor;
 
         /** Fed into the compiler as a LoadConst when a Value input is left unconnected. */
         float DefaultValue = 0.0f;

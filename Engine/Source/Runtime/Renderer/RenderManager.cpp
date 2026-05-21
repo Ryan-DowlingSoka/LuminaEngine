@@ -139,12 +139,6 @@ namespace Lumina
                     ImGuiRenderer->RecordFrame_RenderThread(CL, *Snapshot);
                     ImGuiRenderer->SignalSnapshotSlotConsumed(ThisFrameIndex);
                 }
-                // Invalid-snapshot path produced + signaled inside BuildFrame_GameThread.
-                // Signaling here on top of that would advance Consumed past Produced,
-                // permanently disabling WaitForSnapshotSlot back-pressure -- the game
-                // thread would then overwrite OurCopy buffers mid-RenderDrawData
-                // (manifests as missing text chunks / flickering / eventual GPU crash
-                // when an index reads past the end of a swapped-out VtxBuffer).
                 #else
                 // Game build: copy the primary world's RT directly to the
                 // engine viewport (which the swap copies from in FrameEnd).

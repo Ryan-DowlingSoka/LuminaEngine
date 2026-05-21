@@ -15,12 +15,18 @@
 
 #include "implot.h"
 #include "Paths/Paths.h"
+#include "Tools/UI/ImGui/ImGuiAllocator.h"
 
 namespace Lumina
 {
     void IImGuiRenderer::Initialize()
     {
         IMGUI_CHECKVERSION();
+
+        // Route this (Runtime) ImGui copy through our allocator. Must also be done in every
+        // other module that links ImGui -- see ImGuiAllocator.h. Before CreateContext so even
+        // ImGui's first internal allocation is ours.
+        ImGuiX::InstallImGuiAllocator();
 		
         Context = ImGui::CreateContext();
     	ImPlotContext = ImPlot::CreateContext();

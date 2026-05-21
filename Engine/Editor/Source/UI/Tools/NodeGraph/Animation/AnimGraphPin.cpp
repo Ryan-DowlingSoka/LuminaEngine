@@ -1,7 +1,17 @@
 #include "AnimGraphPin.h"
+#include "imgui.h"
 
 namespace Lumina
 {
+    float CAnimGraphPin::DrawPin()
+    {
+        if (InlineEditor && !HasConnection())
+        {
+            InlineEditor();
+        }
+        return 1.5f;
+    }
+
     void CAnimGraphPin::SetPinType(EAnimPinType InType)
     {
         PinType = InType;

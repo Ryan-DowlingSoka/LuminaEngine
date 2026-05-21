@@ -7,7 +7,17 @@ namespace Lumina
     {
         PoseInPin  = CreateAnimPin("Pose", ENodePinDirection::Input, EAnimPinType::Pose);
         AlphaPin   = CreateAnimPin("Alpha", ENodePinDirection::Input, EAnimPinType::Value, 1.0f);
+        SpacePin   = CreateAnimPin("Space", ENodePinDirection::Input, EAnimPinType::Value, (float)Space);
+        ModePin    = CreateAnimPin("Mode", ENodePinDirection::Input, EAnimPinType::Value, (float)Mode);
         PoseOutPin = CreateAnimPin("Result", ENodePinDirection::Output, EAnimPinType::Pose);
+
+        BindFloatPinEditor(AlphaPin);
+        BindEnumPinEditor(SpacePin, { "Local Bone", "Component" },
+            [this]() { return (int)Space; },
+            [this](int Value) { Space = (EBoneTransformSpace)Value; });
+        BindEnumPinEditor(ModePin, { "Add", "Replace" },
+            [this]() { return (int)Mode; },
+            [this](int Value) { Mode = (EBoneTransformMode)Value; });
     }
 
     void CAnimGraphNode_BoneTransform::GenerateBytecode(FAnimationGraphCompiler& Compiler)
@@ -31,11 +41,20 @@ namespace Lumina
         const uint16 SrcReg   = ResolvePoseInput(PoseInPin, Compiler);
         const uint16 AlphaReg = ResolveValueInput(AlphaPin, Compiler);
 
+        // Space / mode are register-driven so they can be wired; an unconnected
+        // pin bakes the property's current value as a constant.
+        const uint16 SpaceReg = SpacePin->HasConnection()
+            ? ResolveValueInput(SpacePin, Compiler)
+            : Compiler.EmitLoadConst((float)Space);
+        const uint16 ModeReg = ModePin->HasConnection()
+            ? ResolveValueInput(ModePin, Compiler)
+            : Compiler.EmitLoadConst((float)Mode);
+
         const glm::vec3 RadEuler = glm::radians(Rotation);
         const glm::quat Quat     = glm::normalize(glm::quat(RadEuler));
 
         const uint16 ResultReg = Compiler.EmitBoneTransform(SrcReg, AlphaReg, (uint16)BoneIndex,
-                                                            Space, Mode,
+                                                            SpaceReg, ModeReg,
                                                             Translation, Quat, Scale);
 
         Compiler.SetPinRegister(PoseOutPin, ResultReg);
