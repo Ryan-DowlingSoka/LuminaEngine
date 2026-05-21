@@ -1,12 +1,18 @@
 #pragma once
 #include "UI/Tools/EditorTool.h"
 #include "Memory/MemoryTracking.h"
+#include "Renderer/RenderContext.h"
+#include "Renderer/RenderResource.h"
 
 namespace Lumina
 {
-    // Single-window leak hunter. Category tracking is always on in Debug/Development;
-    // this window just visualizes it. Set a baseline, watch which category's Delta climbs,
-    // then tick call-stack capture to get the exact leaking line.
+    // Unified CPU + GPU memory tool.
+    //
+    // CPU side is the always-on category tracker: set a baseline, watch which category's Delta
+    // climbs, then enable call-stack capture for the exact leaking line.
+    //
+    // GPU side is fully backend-agnostic -- it reads abstracted heap stats and a per-purpose
+    // breakdown through IRenderContext, so nothing here references the rendering API.
     class FMemoryProfilerEditorTool : public FEditorTool
     {
     public:
@@ -14,7 +20,7 @@ namespace Lumina
         LUMINA_SINGLETON_EDITOR_TOOL(FMemoryProfilerEditorTool)
 
         FMemoryProfilerEditorTool(IEditorToolContext* Context)
-            : FEditorTool(Context, "Memory Profiler", nullptr)
+            : FEditorTool(Context, "Memory", nullptr)
         {}
 
         bool IsSingleWindowTool() const override { return true; }
@@ -27,17 +33,44 @@ namespace Lumina
     private:
 
         void DrawWindow(bool bIsFocused);
+        void RefreshSnapshot();
+
+        void DrawHeaderCards();
+        void DrawOverviewTab();
+        void DrawGPUTab();
+        void DrawCPUTab();
+
+        // GPU sub-panels.
+        void DrawCategorySegmentBar(float Height);
+        void DrawGPUCategoryTable();
+        void DrawGPUHeaps();
+        void DrawResourceCounts();
+
+        // CPU sub-panels.
         void DrawControls();
-        void DrawSummary();
         void DrawCategoryTable(float Height);
         void DrawCallSites();
 
+        // GPU snapshot (backend-agnostic). Refreshed on a timer; always available.
+        FGPUMemoryStats         GPUStats;
+        FGPUMemoryCategoryUsage GPUCategories[(int)EGPUMemoryCategory::Count] = {};
+        FGPUDeviceInfo          DeviceInfo;
+        bool                    bDeviceInfoValid = false;
+        uint32                  ResourceCounts[RRT_Num] = {};
+        uint32                  TotalResources = 0;
+
+        // Rolling timelines in MB, advanced once per refresh tick.
+        TVector<float>          HistRSS;
+        TVector<float>          HistCPUTracked;
+        TVector<float>          HistVRAM;
+
+        float                   RefreshTimer = 0.0f;
+
 #if LUMINA_MEMORY_TRACKING
-        // Snapshot refreshed on a timer so the table is readable rather than flickering.
+        // CPU category snapshot, refreshed on the timer so the table reads steady.
         TVector<Memory::FMemoryCategoryStats> Categories;
         TVector<Memory::FMemoryCategoryStats> Baseline;
         bool  bHasBaseline = false;
-        float RefreshTimer = 0.0f;
 
         // Top Call Sites ranking: false = live bytes (leaks), true = total allocs (churn).
         bool  bSortCallSitesByAllocs = false;

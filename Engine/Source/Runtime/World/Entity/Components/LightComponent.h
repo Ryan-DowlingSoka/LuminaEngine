@@ -165,6 +165,6 @@ namespace Lumina
 
         /** Strength of the volumetric scattering contribution. */
         PROPERTY(Editable, Category = "Advanced")
-        float VolumetricIntensity = 0.5f;
+        float VolumetricIntensity = 1.0f;
     };
 }

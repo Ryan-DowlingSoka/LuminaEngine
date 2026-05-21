@@ -3,6 +3,8 @@
 #include "RenderResource.h"
 #include "RenderTypes.h"
 #include "RHIFwd.h"
+#include "Containers/Array.h"
+#include "Containers/String.h"
 #include "Types/BitFlags.h"
 #include "Core/UpdateContext.h"
 
@@ -27,7 +29,41 @@ namespace Lumina
         bool bValidation = false;
         bool bDebugUtils = true;
     };
-    
+
+    // API-neutral GPU device summary, surfaced to tools without exposing the backend.
+    struct FGPUDeviceInfo
+    {
+        FString Name;       // Adapter name, e.g. "NVIDIA GeForce RTX 4080".
+        FString APIName;    // Backend + version, e.g. "Vulkan 1.3.250".
+        bool    bDiscrete = false;
+    };
+
+    // One GPU memory heap, abstracted from the backend allocator. Bytes are device truth,
+    // not estimates: Usage is what the OS reports for the process, Allocated/Block come from
+    // the allocator's own bookkeeping (Block >= Allocated; the gap is fragmentation/reserve).
+    struct FGPUMemoryHeapStats
+    {
+        uint32 HeapIndex       = 0;
+        bool   bDeviceLocal    = false;
+        uint64 BudgetBytes     = 0;
+        uint64 UsageBytes      = 0;
+        uint64 AllocatedBytes  = 0;
+        uint64 BlockBytes      = 0;
+        uint32 BlockCount      = 0;
+        uint32 AllocationCount = 0;
+    };
+
+    struct FGPUMemoryStats
+    {
+        uint64 TotalBudget      = 0;
+        uint64 TotalUsage       = 0;
+        uint64 TotalAllocated   = 0;
+        uint64 TotalBlockBytes  = 0;
+        uint32 TotalAllocations = 0;
+        uint32 TotalBlocks      = 0;
+        TFixedVector<FGPUMemoryHeapStats, 16> Heaps;   // VK_MAX_MEMORY_HEAPS == 16.
+    };
+
     class IRenderContext
     {
     public:
@@ -62,10 +98,24 @@ namespace Lumina
 
         NODISCARD virtual uint64 GetAllocatedMemory() const = 0;
         NODISCARD virtual uint64 GetAvailableMemory() const = 0;
-        
+
+        // Full per-heap GPU memory breakdown (device truth), abstracted from the backend.
+        virtual void GetGPUMemoryStats(FGPUMemoryStats& Out) const = 0;
+
+        // Adapter name / API version for display.
+        NODISCARD virtual FGPUDeviceInfo GetDeviceInfo() const = 0;
+
 
         virtual void ClearCommandListCache() = 0;
         virtual FRHICommandListRef CreateCommandList(const FCommandListInfo& Info) = 0;
+
+        // Returns a persistent per-frame-in-flight graphics command list, reused each frame
+        // instead of allocated fresh (the recording wrapper + its upload managers + state
+        // tracker are otherwise re-created every frame). Reuse is gated by the frame-in-flight
+        // fence -- a slot's list is only handed out again once its prior GPU work has completed
+        // -- so its command buffer and (version-gated) upload chunks are never in flight on reuse.
+        // Default falls back to a transient list for backends without a pool.
+        virtual FRHICommandListRef GetFrameCommandList() { return CreateCommandList(FCommandListInfo::Graphics()); }
         virtual uint64 ExecuteCommandLists(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType) = 0;
 
 

@@ -1684,7 +1684,7 @@ namespace Lumina
         vkDestroyPipelineLayout(Device->GetDevice(), PipelineLayout, VK_ALLOC_CALLBACK);
     }
 
-    void FVulkanPipeline::CreatePipelineLayout(const FString& DebugName, const TFixedVector<FRHIBindingLayoutRef, 1>& BindingLayouts, VkShaderStageFlags InStageMask, VkShaderStageFlags& OutStageFlags)
+    void FVulkanPipeline::CreatePipelineLayout(const FString& DebugName, const TFixedVector<FRHIBindingLayoutRef, MaxBindingLayouts>& BindingLayouts, VkShaderStageFlags InStageMask, VkShaderStageFlags& OutStageFlags)
     {
         TFixedVector<VkDescriptorSetLayout, 2> Layouts;
 

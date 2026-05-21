@@ -67,9 +67,10 @@ namespace Lumina
         PROPERTY(Editable, Category = "Volumetric", ClampMin = 0.0f)
         float VolumetricScatteringIntensity = 3.0f;
 
-        /** Henyey-Greenstein phase asymmetry for shafts (0 = isotropic, ~0.8 = strong forward). */
+        /** Phase asymmetry for shafts (0 = isotropic, ~0.6 = forward god rays). Blended
+        with an isotropic floor so shafts stay visible side-on, not only sun-facing. */
         PROPERTY(Editable, Category = "Volumetric", ClampMin = -0.95f, ClampMax = 0.95f)
-        float VolumetricAnisotropy = 0.8f;
+        float VolumetricAnisotropy = 0.6f;
 
         /** Maximum ray-march distance for the volumetric shafts. */
         PROPERTY(Editable, Category = "Volumetric", ClampMin = 1.0f)

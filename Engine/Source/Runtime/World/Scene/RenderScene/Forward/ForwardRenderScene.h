@@ -5,6 +5,7 @@
 #include "Memory/SmartPtr.h"
 #include "Renderer/BindingCache.h"
 #include "Renderer/Vertex.h"
+#include "TaskSystem/TaskGraph.h"
 #include "World/Scene/RenderScene/EnvironmentRenderTypes.h"
 #include "World/Scene/RenderScene/MeshDrawCommand.h"
 #include "World/Scene/RenderScene/RenderScene.h"
@@ -15,8 +16,7 @@
 
 namespace Lumina
 {
-    // TFrameVector / TFrameHashMap now live in Memory/Allocators/Allocator.h (globally usable).
-
+    class CMesh;
     struct FLineBatcherComponent;
     struct SDirectionalLightComponent;
     struct SSpotLightComponent;
@@ -122,13 +122,13 @@ namespace Lumina
             TFrameVector<FEntityRecord>         EntityRecords;
             TFrameVector<FLocalBatchEntry>      LocalBatches;
             TFrameVector<glm::mat4>             BonesData;
-            TFrameHashMap<class CMesh*, uint8>  PinnedMeshDedupe;
+            TFrameHashMap<CMesh*, uint8>  PinnedMeshDedupe;
             // Heap-backed so refs survive the per-thread arena reset.
             TVector<FRHIBufferRef>              PinnedMeshBuffers;
             // Per-thread material resolve cache; linear-scanned (few unique materials per thread).
             TFrameVector<FMaterialCacheEntry>   MaterialCache;
             // Fast path for PinnedMeshDedupe: skip the hash for consecutive same-mesh entities.
-            class CMesh*                        LastPinnedMesh = nullptr;
+            CMesh*                        LastPinnedMesh = nullptr;
             FFrameArenaAllocator                Arena;
             FSceneRenderStats                   Stats = {};
 
@@ -622,6 +622,14 @@ namespace Lumina
         // Per-worker draw-gather scratch, persisted so outer storage keeps capacity;
         // arena-backed members are reset each frame (ResetForFrame) to avoid aliasing.
         TVector<FThreadLocalDrawData>           ThreadLocalStorage;
+
+        // Persistent task graphs reused each frame (Reset) instead of constructed locally,
+        // which churned ~85k heap allocs/sec. DrawTaskGraph: the gather/light graph in
+        // CompileDrawCommands_GameThread. DedupTaskGraph: the per-batch dedup graph in
+        // MergeMeshDrawData (runs nested inside DrawTaskGraph's merge node). Each is used by
+        // a single thread per frame, so reusing the member is race-free.
+        FTaskGraph                              DrawTaskGraph;
+        FTaskGraph                              DedupTaskGraph;
 
         TArray<FFrameData,      FRAMES_IN_FLIGHT>       FrameRing;
         TArray<TAtomic<uint64>, FRAMES_IN_FLIGHT>       SlotConsumedCount;

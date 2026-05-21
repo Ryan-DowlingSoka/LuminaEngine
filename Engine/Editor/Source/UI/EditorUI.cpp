@@ -93,7 +93,6 @@
 #include "Tools/Debug/InputActionEditorTool.h"
 #include "Tools/Debug/ProjectPackagerEditorTool.h"
 #include "Tools/Debug/ProjectSettingsEditorTool.h"
-#include "Tools/Debug/RendererInfoEditorTool.h"
 #include "Tools/Debug/ScriptsInfoEditorTool.h"
 #include "Tools/AssetEditors/Animation/AnimationEditorTool.h"
 #include "Tools/AssetEditors/AnimationGraph/AnimationGraphEditorTool.h"
@@ -1528,11 +1527,10 @@ namespace Lumina
         DrawToolMenuItem<FInputActionEditorTool>(LE_ICON_KEYBOARD " Input Actions", this);
         DrawToolMenuItem<FScriptsInfoEditorTool>(LE_ICON_LANGUAGE_LUA " Scripts Info", this);
         DrawToolMenuItem<FLuaDebuggerEditorTool>(LE_ICON_BUG " Lua Debugger", this);
-        DrawToolMenuItem<FRendererInfoEditorTool>(LE_ICON_CHART_LINE " Renderer Info", this);
         DrawToolMenuItem<FGPUProfilerEditorTool>(LE_ICON_CHART_TIMELINE " GPU Profiler", this);
         DrawToolMenuItem<FCPUProfilerEditorTool>(LE_ICON_CHART_BAR " CPU Profiler", this);
         DrawToolMenuItem<FShadowAtlasEditorTool>(LE_ICON_GRID " Shadow Atlas", this);
-        DrawToolMenuItem<FMemoryProfilerEditorTool>(LE_ICON_MEMORY " Memory Profiler", this);
+        DrawToolMenuItem<FMemoryProfilerEditorTool>(LE_ICON_MEMORY " Memory", this);
         DrawToolMenuItem<FObjectBrowserEditorTool>(LE_ICON_LIST_BOX " Object Browser", this);
         DrawToolMenuItem<FConsoleVariableEditorTool>(LE_ICON_TUNE " Console Variables", this);
         

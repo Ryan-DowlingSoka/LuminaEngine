@@ -155,12 +155,15 @@ namespace Lumina
 
         uint64 GetAllocatedMemory() const override;
         uint64 GetAvailableMemory() const override;
+        void GetGPUMemoryStats(FGPUMemoryStats& Out) const override;
+        FGPUDeviceInfo GetDeviceInfo() const override;
 
 
         FORCEINLINE NODISCARD FQueue* GetQueue(ECommandQueue Type) const { return Queues[(uint32)Type].get(); }
 
         void ClearCommandListCache() override;
         NODISCARD FRHICommandListRef CreateCommandList(const FCommandListInfo& Info) override;
+        NODISCARD FRHICommandListRef GetFrameCommandList() override;
         uint64 ExecuteCommandLists(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType) override;
         
         NODISCARD VkInstance GetVulkanInstance() const { return VulkanInstance; }
@@ -272,6 +275,9 @@ namespace Lumina
         FVulkanRenderContextFunctions                       DebugUtils;
 
         FCommandListManager                                 CommandListManager;
+        // Persistent per-frame-in-flight graphics command lists (see GetFrameCommandList).
+        // Reused each frame instead of re-created; released in Deinitialize before queue teardown.
+        TArray<FRHICommandListRef, FRAMES_IN_FLIGHT>        FrameCommandLists;
         FVulkanPipelineCache                                PipelineCache;
         FQueueArray                                         Queues;
         

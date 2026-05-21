@@ -121,7 +121,177 @@ namespace Lumina
         FRecursiveScopeLock Lock(FRHIResourceList::Get().Mutex);
         return (uint32)FRHIResourceList::Get().ResourceList.size();
     }
-    
+
+    const char* GetRHIResourceTypeName(ERHIResourceType Type)
+    {
+        switch (Type)
+        {
+        case RRT_SamplerState:        return "Sampler State";
+        case RTT_InputLayout:         return "Input Layout";
+        case RRT_BindingLayout:       return "Binding Layout";
+        case RRT_BindingSet:          return "Binding Set";
+        case RRT_DepthStencilState:   return "Depth Stencil State";
+        case RRT_BlendState:          return "Blend State";
+        case RRT_VertexShader:        return "Vertex Shader";
+        case RRT_PixelShader:         return "Pixel Shader";
+        case RRT_ComputeShader:       return "Compute Shader";
+        case RTT_GeometryShader:      return "Geometry Shader";
+        case RRT_MeshShader:          return "Mesh Shader";
+        case RRT_TaskShader:          return "Task Shader";
+        case RRT_ShaderLibrary:       return "Shader Library";
+        case RRT_GraphicsPipeline:    return "Graphics Pipeline";
+        case RRT_ComputePipeline:     return "Compute Pipeline";
+        case RRT_UniformBufferLayout: return "Uniform Buffer Layout";
+        case RRT_UniformBuffer:       return "Uniform Buffer";
+        case RRT_Buffer:              return "Buffer";
+        case RRT_Image:               return "Image";
+        case RRT_GPUFence:            return "GPU Fence";
+        case RRT_Viewport:            return "Viewport";
+        case RRT_StagingBuffer:       return "Staging Buffer";
+        case RRT_StagingImage:        return "Staging Image";
+        case RRT_CommandList:         return "Command List";
+        case RRT_DescriptorTable:     return "Descriptor Table";
+        case RTT_EventQuery:          return "Event Query";
+        case RTT_TimerQuery:          return "Timer Query";
+        case RTT_PipelineStatsQuery:  return "Pipeline Stats Query";
+        default:                      return "Unknown";
+        }
+    }
+
+    const char* GetGPUMemoryCategoryName(EGPUMemoryCategory Category)
+    {
+        switch (Category)
+        {
+        case EGPUMemoryCategory::RenderTarget:   return "Render Targets";
+        case EGPUMemoryCategory::DepthStencil:   return "Depth / Stencil";
+        case EGPUMemoryCategory::ShadowMap:      return "Shadow Maps";
+        case EGPUMemoryCategory::Texture:        return "Textures";
+        case EGPUMemoryCategory::Cubemap:        return "Cubemaps";
+        case EGPUMemoryCategory::VolumeTexture:  return "Volume Textures";
+        case EGPUMemoryCategory::VertexBuffer:   return "Vertex Buffers";
+        case EGPUMemoryCategory::IndexBuffer:    return "Index Buffers";
+        case EGPUMemoryCategory::UniformBuffer:  return "Uniform Buffers";
+        case EGPUMemoryCategory::StorageBuffer:  return "Storage Buffers";
+        case EGPUMemoryCategory::Staging:        return "Staging / Upload";
+        case EGPUMemoryCategory::Other:          return "Other";
+        default:                                 return "Unknown";
+        }
+    }
+
+    uint64 EstimateImageMemory(const FRHIImageDesc& Desc)
+    {
+        const FFormatInfo& Info = RHI::Format::Info(Desc.Format);
+        if (Info.BytesPerBlock == 0)
+        {
+            return 0;
+        }
+
+        const uint32 Block       = (Info.BlockSize > 0) ? Info.BlockSize : 1;
+        const uint16 ArraySlices = (Desc.ArraySize > 0) ? Desc.ArraySize : 1;
+        const uint8  Samples     = (Desc.NumSamples > 0) ? Desc.NumSamples : 1;
+        const uint8  Mips        = (Desc.NumMips > 0) ? Desc.NumMips : 1;
+
+        uint64 Bytes = 0;
+        for (uint8 Mip = 0; Mip < Mips; ++Mip)
+        {
+            const uint32 W = (Desc.Extent.x >> Mip) > 0 ? (Desc.Extent.x >> Mip) : 1u;
+            const uint32 H = (Desc.Extent.y >> Mip) > 0 ? (Desc.Extent.y >> Mip) : 1u;
+            const uint32 D = ((uint32)Desc.Depth >> Mip) > 0 ? ((uint32)Desc.Depth >> Mip) : 1u;
+
+            const uint64 BlocksX = (W + Block - 1) / Block;
+            const uint64 BlocksY = (H + Block - 1) / Block;
+
+            Bytes += BlocksX * BlocksY * D * Info.BytesPerBlock;
+        }
+
+        return Bytes * ArraySlices * Samples;
+    }
+
+    static EGPUMemoryCategory ClassifyImage(const FRHIImageDesc& Desc)
+    {
+        if (Desc.Flags.IsFlagSet(EImageCreateFlags::DepthStencil))
+        {
+            // Shadow atlases are depth targets too -- split them out so they read as their own line.
+            if (Desc.DebugName.find("Shadow") != FString::npos || Desc.DebugName.find("Cascade") != FString::npos)
+            {
+                return EGPUMemoryCategory::ShadowMap;
+            }
+            return EGPUMemoryCategory::DepthStencil;
+        }
+
+        if (Desc.Flags.IsFlagSet(EImageCreateFlags::RenderTarget))
+        {
+            return EGPUMemoryCategory::RenderTarget;
+        }
+
+        switch (Desc.Dimension)
+        {
+        case EImageDimension::TextureCube:
+        case EImageDimension::TextureCubeArray: return EGPUMemoryCategory::Cubemap;
+        case EImageDimension::Texture3D:        return EGPUMemoryCategory::VolumeTexture;
+        default:                                return EGPUMemoryCategory::Texture;
+        }
+    }
+
+    static EGPUMemoryCategory ClassifyBuffer(const FRHIBuffer* Buffer)
+    {
+        const TBitFlags<EBufferUsageFlags>& Usage = Buffer->GetUsage();
+        if (Usage.IsFlagSet(EBufferUsageFlags::StagingBuffer) || Usage.IsFlagSet(EBufferUsageFlags::CPUReadable) || Usage.IsFlagSet(EBufferUsageFlags::CPUWritable))
+        {
+            return EGPUMemoryCategory::Staging;
+        }
+        if (Usage.IsFlagSet(EBufferUsageFlags::VertexBuffer))  { return EGPUMemoryCategory::VertexBuffer; }
+        if (Usage.IsFlagSet(EBufferUsageFlags::IndexBuffer))   { return EGPUMemoryCategory::IndexBuffer; }
+        if (Usage.IsFlagSet(EBufferUsageFlags::UniformBuffer)) { return EGPUMemoryCategory::UniformBuffer; }
+        if (Usage.IsFlagSet(EBufferUsageFlags::StorageBuffer)) { return EGPUMemoryCategory::StorageBuffer; }
+        return EGPUMemoryCategory::Other;
+    }
+
+    void GatherGPUMemoryByCategory(FGPUMemoryCategoryUsage* Out, uint32 Count)
+    {
+        if (Out == nullptr || Count < (uint32)EGPUMemoryCategory::Count)
+        {
+            return;
+        }
+
+        for (uint32 i = 0; i < Count; ++i)
+        {
+            Out[i] = FGPUMemoryCategoryUsage{};
+        }
+
+        FRHIResourceList::ForEach([&](IRHIResource* Resource)
+        {
+            switch (Resource->GetResourceType())
+            {
+            case RRT_Image:
+            {
+                const FRHIImageDesc& Desc = static_cast<FRHIImage*>(Resource)->GetDescription();
+                const EGPUMemoryCategory Cat = ClassifyImage(Desc);
+                Out[(int)Cat].Bytes += EstimateImageMemory(Desc);
+                Out[(int)Cat].Count++;
+                break;
+            }
+            case RRT_StagingImage:
+            {
+                const FRHIImageDesc& Desc = static_cast<FRHIStagingImage*>(Resource)->GetDesc();
+                Out[(int)EGPUMemoryCategory::Staging].Bytes += EstimateImageMemory(Desc);
+                Out[(int)EGPUMemoryCategory::Staging].Count++;
+                break;
+            }
+            case RRT_Buffer:
+            {
+                FRHIBuffer* Buffer = static_cast<FRHIBuffer*>(Resource);
+                const EGPUMemoryCategory Cat = ClassifyBuffer(Buffer);
+                Out[(int)Cat].Bytes += Buffer->GetSize();
+                Out[(int)Cat].Count++;
+                break;
+            }
+            default:
+                break;
+            }
+        });
+    }
+
     void FRHIViewport::SetSize(const glm::uvec2& InSize)
     {
         if (Size == InSize)

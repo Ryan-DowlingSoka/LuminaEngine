@@ -616,8 +616,9 @@ namespace Lumina
             }
             
             
-            FTaskGraph Graph;
-            
+            DrawTaskGraph.Reset();   // reuse the persistent graph (allocator block + capacity)
+            FTaskGraph& Graph = DrawTaskGraph;
+
             FTaskGraph::FNodeHandle StaticNode = Graph.AddParallelFor((uint32)StaticView.handle()->size(), 64, [&](const Task::FParallelRange& Range)
             {
                 LUMINA_PROFILE_SECTION("Process Static Mesh Range");
@@ -1762,7 +1763,8 @@ namespace Lumina
             MergeGlobalDrawsPerBatch[b].clear();
         }
         {
-            FTaskGraph DedupGraph;
+            DedupTaskGraph.Reset();   // reuse the persistent graph (allocator block + capacity)
+            FTaskGraph& DedupGraph = DedupTaskGraph;
             DedupGraph.AddParallelFor(NumBatches, 1, [&](const Task::FParallelRange& Range)
             {
                 TFrameHashMap<uint64, uint32> Dedupe(FFrameArenaAllocator(FrameArenas[Range.Thread].get()));

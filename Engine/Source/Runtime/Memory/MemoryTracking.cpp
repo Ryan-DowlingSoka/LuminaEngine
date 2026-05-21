@@ -452,14 +452,12 @@ namespace Lumina::Memory
         const uint64 Hash = MixPtr(Ptr);
         FShard& Shard = gShards[Hash & (kNumShards - 1)];
 
-        const uint32 StackId = gCaptureStacks.load(Atomic::MemoryOrderRelaxed)
-            ? CaptureCallSite(Size, Cat) : 0;
+        const uint32 StackId = gCaptureStacks.load(Atomic::MemoryOrderRelaxed) ? CaptureCallSite(Size, Cat) : 0;
 
         bool bInserted;
         {
             FScopeLock Lock(Shard.Mutex);
-            bInserted = ShardEnsureCapacity(Shard)
-                     && TableInsert(Shard.Entries, Shard.Capacity, Ptr, Hash, Size, Cat, StackId, Shard.Count);
+            bInserted = ShardEnsureCapacity(Shard) && TableInsert(Shard.Entries, Shard.Capacity, Ptr, Hash, Size, Cat, StackId, Shard.Count);
         }
 
         if (!bInserted)

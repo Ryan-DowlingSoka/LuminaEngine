@@ -1364,8 +1364,11 @@ namespace Lumina
         //@ TODO This might not be possible to support both, since we allocate binding sets, so having an API that expects both
         
         uint32 CurrentBatchStart = UINT32_MAX;
-        TFixedVector<VkDescriptorSet, 4> CurrentDescriptorBatch;
-        TFixedVector<uint32, 4> DynamicOffsets;
+        // Inline-sized for the common case so this per-draw helper stays on the stack: up to
+        // MaxBindingLayouts sets, and the scene set alone binds several dynamic buffers
+        // (Scene/Light/Instance/Bone/...). Inline 4 overflowed to the heap every draw.
+        TFixedVector<VkDescriptorSet, 8> CurrentDescriptorBatch;
+        TFixedVector<uint32, 16> DynamicOffsets;
     
         for (size_t i = 0; i < BindingSets.size(); ++i)
         {

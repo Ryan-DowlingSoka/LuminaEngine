@@ -7,7 +7,9 @@ namespace Lumina
     {
         FOneShotFunc                OneShot;
         FParallelForFunc            ParallelForFunc;
-        TVector<enki::Dependency>   Deps;
+        // Arena-backed: Deps storage comes from the graph's block allocator (bulk-reset each
+        // frame), so sizing it in Dispatch never hits the heap. Allocator wired in Add().
+        TFrameVector<enki::Dependency> Deps;
         bool                        bIsParallelFor = false;
 
         void ExecuteRange(enki::TaskSetPartition Range, uint32_t ThreadNum) override
@@ -30,7 +32,7 @@ namespace Lumina
     };
 
     FTaskGraph::FTaskGraph()
-        :Allocator(1024llu * 4)
+        : Allocator(16llu * 1024)
     {}
 
     FTaskGraph::~FTaskGraph()
@@ -40,19 +42,37 @@ namespace Lumina
             Wait();
         }
 
-        // FNodes are placement-constructed in the linear allocator, which frees its
-        // raw block without running destructors. Destroy each node explicitly so its
-        // Deps vector (sized in Dispatch) and captured-function storage are freed
-        // instead of leaking every time a graph goes out of scope.
+        // FNodes are placement-constructed in the block allocator, which frees its raw
+        // blocks without running destructors. Destroy each node explicitly so its Deps
+        // (enki::Dependency teardown) and captured-function storage run.
         for (FNode* Node : Nodes)
         {
             Node->~FNode();
         }
     }
 
+    void FTaskGraph::Reset()
+    {
+        // Tasks must be complete before tearing down nodes/deps (enki Dependency teardown
+        // asserts completion). Destroy nodes BEFORE rewinding the arena their Deps live in.
+        if (bDispatched)
+        {
+            Wait();
+        }
+        for (FNode* Node : Nodes)
+        {
+            Node->~FNode();
+        }
+        Nodes.clear();          // keep capacity
+        Edges.clear();          // keep capacity
+        Allocator.Reset();      // rewind blocks, keep them
+        bDispatched = false;
+    }
+
     FTaskGraph::FNodeHandle FTaskGraph::Add(FOneShotFunc Func, ETaskPriority Priority)
     {
         auto* Node              = Allocator.TAlloc<FNode>();
+        Node->Deps.set_allocator(FFrameArenaAllocator(&Allocator, "TaskGraphDeps"));
         Node->OneShot           = Move(Func);
         Node->bIsParallelFor    = false;
         Node->m_SetSize         = 1;
@@ -67,6 +87,7 @@ namespace Lumina
     FTaskGraph::FNodeHandle FTaskGraph::AddParallelFor(uint32 Count, uint32 MinRange, FParallelForFunc Func, ETaskPriority Priority)
     {
         auto* Node              = Allocator.TAlloc<FNode>();
+        Node->Deps.set_allocator(FFrameArenaAllocator(&Allocator, "TaskGraphDeps"));
         Node->bIsParallelFor    = true;
         Node->m_Priority        = static_cast<enki::TaskPriority>(Priority);
 
@@ -109,7 +130,8 @@ namespace Lumina
         }
 
         // Size each node's Deps exactly so enki::Dependency addresses stay stable for SetDependency().
-        TVector<uint32> DepCount(NumNodes, 0u);
+        // DepCount/DepCursor are persistent members; assign() reuses their capacity.
+        DepCount.assign(NumNodes, 0u);
         for (const auto& Edge : Edges)
         {
             DepCount[Edge.first]++;
@@ -123,7 +145,7 @@ namespace Lumina
             }
         }
 
-        TVector<uint32> DepCursor(NumNodes, 0u);
+        DepCursor.assign(NumNodes, 0u);
         for (const auto& Edge : Edges)
         {
             FNode* Child  = Nodes[Edge.first];

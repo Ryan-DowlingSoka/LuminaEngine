@@ -41,29 +41,11 @@ namespace Lumina
         void FillReferencedImagesSnapshot(TVector<FRHIImageRef>& Out) override;
         void ProcessTextureUpdates_GameThread() override;
 
-        void DrawRenderDebugContents(const FUpdateContext& InContext) override;
-
         /** An ImTextureID in this context is castable to a VkDescriptorSet. */
         RUNTIME_API ImTextureID GetOrCreateImTexture(FStringView Path) override;
         RUNTIME_API ImTextureID GetOrCreateImTexture(FRHIImage* Image, const FTextureSubresourceSet& Subresources = AllSubresources) override;
         void DestroyImTexture(uint64 Hash) override;
-    
-    private:
 
-        void DrawOverviewTab(const VkPhysicalDeviceProperties& props, const VkPhysicalDeviceMemoryProperties& memProps, VmaAllocator Allocator);
-        void DrawMemoryTab(const VkPhysicalDeviceMemoryProperties& memProps, VmaAllocator Allocator);
-        void DrawResourcesTab();
-        void DrawDeviceInfoTab(const VkPhysicalDeviceProperties& props, const VkPhysicalDeviceFeatures& Features);
-        void DrawDeviceProperties(const VkPhysicalDeviceProperties& props);
-        void DrawDeviceFeatures(const VkPhysicalDeviceFeatures& Features);
-        void DrawDeviceLimits(const VkPhysicalDeviceProperties& props);
-        void DrawGeneralLimits(const VkPhysicalDeviceLimits& limits);
-        void DrawBufferImageLimits(const VkPhysicalDeviceLimits& limits);
-        void DrawComputeLimits(const VkPhysicalDeviceLimits& limits);
-        void DrawDescriptorLimits(const VkPhysicalDeviceLimits& limits);
-        void DrawRenderingLimits(const VkPhysicalDeviceLimits& limits);
-        
-    
     private:
 
         FRHIShaderRef VertexShader;
@@ -98,7 +80,6 @@ namespace Lumina
         VkDescriptorPool DescriptorPool = VK_NULL_HANDLE;
         FVulkanRenderContext* VulkanRenderContext = nullptr;
 
-        TFixedVector<float, 300> VRAMHistory;
         TFixedVector<FRHIImageRef, 10> ReferencedImages;
     };
 }

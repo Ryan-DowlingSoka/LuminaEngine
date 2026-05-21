@@ -26,11 +26,25 @@ struct FPushConstants
 [[vk::binding(0, 2)]] RWTexture3D<float4>                          uFroxelScatter;
 [[vk::binding(1, 2)]] ConstantBuffer<FExponentialHeightFogParams>  uFog;
 
-float PhaseHG(float CosTheta, float G)
+// Cornette-Shanks: a smoother, energy-normalized HG. Same `G` control, but the
+// lobe isn't as much of a needle.
+float PhaseCornetteShanks(float CosTheta, float G)
 {
-    float G2 = G * G;
-    float Denom = 1.0 + G2 - 2.0 * G * CosTheta;
-    return (1.0 - G2) / (4.0 * PI * pow(max(Denom, 1e-4), 1.5));
+    float G2  = G * G;
+    float Num = 3.0 * (1.0 - G2) * (1.0 + CosTheta * CosTheta);
+    float Den = 8.0 * PI * (2.0 + G2) * pow(max(1.0 + G2 - 2.0 * G * CosTheta, 1e-4), 1.5);
+    return Num / Den;
+}
+
+// Two-lobe phase: a forward scattering lobe blended with an isotropic floor.
+// A single high-G lobe collapses to a needle that only flares when you look
+// straight at the light, so side-on light shafts read as nearly black. The
+// isotropic floor keeps shafts visible from any angle while the forward lobe
+// still gives the sun-facing glow.
+float PhaseVolumetric(float CosTheta, float G)
+{
+    const float Isotropic = 1.0 / (4.0 * PI);
+    return lerp(Isotropic, PhaseCornetteShanks(CosTheta, G), 0.5);
 }
 
 // Froxel center -> world position. Slices are view-Z planes (exponential), matching
@@ -74,6 +88,23 @@ float SampleSunShadow(FLight Light, float3 WorldPos)
         }
     }
     return 1.0;
+}
+
+// Beam edges otherwise quantize to the froxel grid (one shadow tap per cell).
+// The shadow is the only high-frequency term across a froxel -- density and
+// phase vary slowly -- so supersample just it at four sub-froxel positions and
+// average. Cheap soft god-ray edges without temporal accumulation.
+float SampleSunShadowAA(FLight Sun, uint3 Coord)
+{
+    const float2 Offs[4] = { float2(0.25, 0.25), float2(0.75, 0.25),
+                             float2(0.25, 0.75), float2(0.75, 0.75) };
+    float S = 0.0;
+    [unroll]
+    for (int i = 0; i < 4; ++i)
+    {
+        S += SampleSunShadow(Sun, FroxelToWorld(Coord, float3(Offs[i], 0.5)));
+    }
+    return S * 0.25;
 }
 
 float SampleSpotShadow(FLight Light, float3 WorldPos)
@@ -126,8 +157,8 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
     {
         FLight Sun     = GetLightAt(0);
         float3 SunDir  = normalize(Sun.Direction);
-        float  Phase   = PhaseHG(dot(SunDir, ToCam), G);
-        float  Shadow  = SampleSunShadow(Sun, WorldPos);
+        float  Phase   = PhaseVolumetric(dot(SunDir, ToCam), G);
+        float  Shadow  = SampleSunShadowAA(Sun, DispatchID);
         float3 SunColor = UnpackColor(Sun.Color).rgb;
         InScatter += SunColor * Sun.Intensity * Phase * Shadow * Sun.VolumetricIntensity;
     }
@@ -166,7 +197,9 @@ void ComputeMain(uint3 DispatchID : SV_DispatchThreadID)
             Shadow = SampleSpotShadow(L, WorldPos);
         }
 
-        float  Phase = PhaseHG(dot(Ldir, ToCam), G);
+        // Ldir points toward the light; the photon travels the other way, so
+        // negate to match the sun's travel-direction phase convention.
+        float  Phase = PhaseVolumetric(dot(-Ldir, ToCam), G);
         float3 LC    = UnpackColor(L.Color).rgb;
         InScatter += LC * L.Intensity * Atten * Cone * Phase * Shadow * L.VolumetricIntensity;
     }

@@ -94,6 +94,7 @@ enum ERHIResourceType : uint8
 	RTT_EventQuery,
 	RTT_TimerQuery,
 	RTT_PipelineStatsQuery,
+	RRT_StagingImage,
 
 	RRT_Num
 };
@@ -862,11 +863,54 @@ namespace Lumina
 	class RUNTIME_API FRHIStagingImage : public IRHIResource
 	{
 	public:
-		RENDER_RESOURCE(RRT_Image)
+		RENDER_RESOURCE(RRT_StagingImage)
 
 		NODISCARD virtual const FRHIImageDesc& GetDesc() const = 0;
 	};
-	
+
+	//-------------------------------------------------------------------------------------------------------------------
+	// GPU memory accounting (API-agnostic). Walks the live RHI resource list and attributes an
+	// estimated device-memory footprint to coarse categories, sized from resource descriptions
+	// plus format info -- no backend types involved. Authoritative totals come from the backend
+	// (IRenderContext::GetGPUMemoryStats); this is the per-purpose attribution layered on top.
+
+	enum class EGPUMemoryCategory : uint8
+	{
+		RenderTarget,
+		DepthStencil,
+		ShadowMap,
+		Texture,
+		Cubemap,
+		VolumeTexture,
+		VertexBuffer,
+		IndexBuffer,
+		UniformBuffer,
+		StorageBuffer,
+		Staging,
+		Other,
+
+		Count
+	};
+
+	struct FGPUMemoryCategoryUsage
+	{
+		uint64 Bytes = 0;
+		uint32 Count = 0;
+	};
+
+	// Human-readable name for a resource type, e.g. for profiler tables.
+	RUNTIME_API const char* GetRHIResourceTypeName(ERHIResourceType Type);
+
+	RUNTIME_API const char* GetGPUMemoryCategoryName(EGPUMemoryCategory Category);
+
+	// Conservative byte estimate for an image: sum over mips of block-padded extent * bytes-per-block,
+	// times depth, array slices and sample count. Tracks committed size closely for OPTIMAL tiling.
+	RUNTIME_API uint64 EstimateImageMemory(const FRHIImageDesc& Desc);
+
+	// Fills Out (which must hold EGPUMemoryCategory::Count entries) with per-category usage
+	// summed across every live RHI image and buffer.
+	RUNTIME_API void GatherGPUMemoryByCategory(FGPUMemoryCategoryUsage* Out, uint32 Count);
+
 	//-------------------------------------------------------------------------------------------------------------------
 
 	class RUNTIME_API FRHIShader : public IRHIResource
@@ -1695,7 +1739,9 @@ namespace Lumina
     struct FGraphicsPipelineDesc
     {
         FRenderState							RenderState;
-        TFixedVector<FRHIBindingLayoutRef, 1>	BindingLayouts;
+        // Sized to MaxBindingLayouts so AddBindingLayout (passes bind 2-4) stays inline
+        // instead of heap-allocating in the per-frame pipeline-cache lookup desc.
+        TFixedVector<FRHIBindingLayoutRef, MaxBindingLayouts>	BindingLayouts;
     	FString									DebugName;
         FRHIInputLayoutRef						InputLayout;
         FRHIVertexShaderRef						VS;
@@ -1834,7 +1880,7 @@ namespace Lumina
 	{
 		FString									DebugName;
 		FRHIComputeShaderRef					CS;
-		TFixedVector<FRHIBindingLayoutRef, 1>	BindingLayouts;
+		TFixedVector<FRHIBindingLayoutRef, MaxBindingLayouts>	BindingLayouts;
 
 		FComputePipelineDesc& SetComputeShader(FRHIComputeShader* value) { CS = value; return *this; }
 		FComputePipelineDesc& AddBindingLayout(FRHIBindingLayout* layout) { BindingLayouts.push_back(layout); return *this; }

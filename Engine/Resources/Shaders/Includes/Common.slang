@@ -570,11 +570,16 @@ float2 VogelDiskSample(int SampleIndex, int SamplesCount, float Angle)
     return float2(r * cos(theta), r * sin(theta));
 }
 
+// Triangular-PDF dither (Gjol/Playdead "Banding in Games"). Two decorrelated
+// uniform hashes per channel subtract to a triangular distribution: flat noise
+// floor, +/-1 LSB amplitude at 8-bit -- enough to fully break banding.
 float3 ScreenSpaceDither(float2 ScreenPos, float Time)
 {
-    float3 Dither = float3(dot(float2(171.0, 231.0), ScreenPos.xy + Time));
-    Dither.rgb = frac(Dither.rgb / float3(103.0, 71.0, 97.0)) - float3(0.5, 0.5, 0.5);
-    return (Dither.rgb / 255.0) * 0.375;
+    float3 S0 = float3(dot(float2(171.0, 231.0), ScreenPos.xy + Time));
+    float3 S1 = float3(dot(float2(113.0, 271.0), ScreenPos.xy + Time + 13.7));
+    float3 R0 = frac(S0 / float3(103.0, 71.0, 97.0));
+    float3 R1 = frac(S1 / float3(89.0, 113.0, 127.0));
+    return (R0 + R1 - 1.0) / 255.0;
 }
 
 uint4 UnpackUIntToUVec4(uint Packed)

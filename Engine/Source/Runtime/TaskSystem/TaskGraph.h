@@ -43,13 +43,22 @@ namespace Lumina
         RUNTIME_API void Dispatch();
         RUNTIME_API void Wait();
 
+        /** Wipe the graph for reuse, keeping allocator block + container capacity (no per-frame
+            heap churn). Waits for any in-flight dispatch first. Call before re-adding nodes. */
+        RUNTIME_API void Reset();
+
     private:
 
         struct FNode;
 
-        FLinearAllocator                        Allocator;
+        // Block allocator so FNodes and their (arena-backed) Deps are reused via Reset()
+        // rather than reallocated every frame; grows if a graph ever needs more.
+        FBlockLinearAllocator                   Allocator;
         TVector<FNode*>                         Nodes;
         TVector<eastl::pair<uint32, uint32>>    Edges;
+        // Dispatch scratch, kept across frames so it reuses capacity.
+        TVector<uint32>                         DepCount;
+        TVector<uint32>                         DepCursor;
         bool                                    bDispatched = false;
     };
 }

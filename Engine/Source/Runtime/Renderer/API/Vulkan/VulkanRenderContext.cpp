@@ -659,6 +659,10 @@ namespace Lumina
         // releasing the manager first means the queue's pool drop is the
         // refcount-zero edge that triggers vkDestroyCommandPool, which must
         // happen before vkDestroyDevice at the end of this function.
+        for (FRHICommandListRef& FrameCmdList : FrameCommandLists)
+        {
+            FrameCmdList.SafeRelease();
+        }
         CommandListManager.Cleanup();
 
         for (TUniquePtr<FQueue>& Queue : Queues)
@@ -839,6 +843,56 @@ namespace Lumina
         return (Budget > Usage) ? (Budget - Usage) : 0;
     }
 
+    void FVulkanRenderContext::GetGPUMemoryStats(FGPUMemoryStats& Out) const
+    {
+        VmaAllocator VMA = GetDevice()->GetAllocator().GetVMA();
+
+        const VkPhysicalDeviceMemoryProperties* MemProps = nullptr;
+        vmaGetMemoryProperties(VMA, &MemProps);
+
+        VmaBudget Budgets[VK_MAX_MEMORY_HEAPS] = {};
+        vmaGetHeapBudgets(VMA, Budgets);
+
+        VmaTotalStatistics Stats = {};
+        vmaCalculateStatistics(VMA, &Stats);
+
+        Out = FGPUMemoryStats{};
+        for (uint32 i = 0; i < MemProps->memoryHeapCount; ++i)
+        {
+            FGPUMemoryHeapStats Heap;
+            Heap.HeapIndex       = i;
+            Heap.bDeviceLocal    = (MemProps->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+            Heap.BudgetBytes     = Budgets[i].budget;
+            Heap.UsageBytes      = Budgets[i].usage;
+            Heap.AllocatedBytes  = Stats.memoryHeap[i].statistics.allocationBytes;
+            Heap.BlockBytes      = Stats.memoryHeap[i].statistics.blockBytes;
+            Heap.BlockCount      = Stats.memoryHeap[i].statistics.blockCount;
+            Heap.AllocationCount = Stats.memoryHeap[i].statistics.allocationCount;
+            Out.Heaps.push_back(Heap);
+
+            Out.TotalBudget     += Heap.BudgetBytes;
+            Out.TotalUsage      += Heap.UsageBytes;
+            Out.TotalAllocated  += Heap.AllocatedBytes;
+            Out.TotalBlockBytes += Heap.BlockBytes;
+        }
+
+        Out.TotalAllocations = Stats.total.statistics.allocationCount;
+        Out.TotalBlocks      = Stats.total.statistics.blockCount;
+    }
+
+    FGPUDeviceInfo FVulkanRenderContext::GetDeviceInfo() const
+    {
+        VkPhysicalDeviceProperties Props = {};
+        vkGetPhysicalDeviceProperties(GetDevice()->GetPhysicalDevice(), &Props);
+
+        FGPUDeviceInfo Info;
+        Info.Name      = Props.deviceName;
+        Info.bDiscrete = Props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+        Info.APIName   = FString().sprintf("Vulkan %u.%u.%u",
+            VK_VERSION_MAJOR(Props.apiVersion), VK_VERSION_MINOR(Props.apiVersion), VK_VERSION_PATCH(Props.apiVersion));
+        return Info;
+    }
+
     void FVulkanRenderContext::ClearCommandListCache()
     {
         CommandListManager.Cleanup();
@@ -853,7 +907,22 @@ namespace Lumina
         }
         return Inner;
     }
-    
+
+    FRHICommandListRef FVulkanRenderContext::GetFrameCommandList()
+    {
+        // One persistent list per frame-in-flight slot. Reused every FRAMES_IN_FLIGHT frames;
+        // by then this slot's prior submission has completed (frame-ring / WaitForGPU), so its
+        // command buffer and version-gated upload chunks are not in flight. Open()/Close()/
+        // Executed() reset all per-recording state, so reuse records cleanly.
+        // Render-thread only (CurrentFrameIndex is set in FrameStart on the render thread).
+        FRHICommandListRef& Slot = FrameCommandLists[CurrentFrameIndex];
+        if (!Slot)
+        {
+            Slot = CreateCommandList(FCommandListInfo::Graphics());
+        }
+        return Slot;
+    }
+
     uint64 FVulkanRenderContext::ExecuteCommandLists(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType)
     {
         LUMINA_PROFILE_SCOPE();

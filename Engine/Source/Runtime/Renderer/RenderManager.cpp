@@ -68,7 +68,7 @@ namespace Lumina
         #if LUMINA_SHIPPING
         GRenderContext->Initialize(FRenderContextDesc{false, false});
         #else
-        GRenderContext->Initialize(FRenderContextDesc{true, true});
+        GRenderContext->Initialize(FRenderContextDesc{false, true});
         #endif
 
         GRenderThread = Memory::New<FRenderThread>();
@@ -116,7 +116,8 @@ namespace Lumina
             // is locked by RenderAll for the duration of its DOM walk; the same
             // lock blocks next-frame TickAll / world add/destroy on the game
             // thread until this completes.
-            FRHICommandListRef CmdList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
+            // Persistent per-frame-in-flight list (reused, not allocated fresh each frame).
+            FRHICommandListRef CmdList = GRenderContext->GetFrameCommandList();
             CmdList->Open();
             ICommandList& CL = *CmdList;
 

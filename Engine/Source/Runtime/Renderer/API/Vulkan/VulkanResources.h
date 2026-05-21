@@ -631,7 +631,7 @@ namespace Lumina
         {
         }
         
-        void CreatePipelineLayout(const FString& DebugName, const TFixedVector<FRHIBindingLayoutRef, 1>& BindingLayouts, VkShaderStageFlags InStageMask, VkShaderStageFlags& OutStageFlags);
+        void CreatePipelineLayout(const FString& DebugName, const TFixedVector<FRHIBindingLayoutRef, MaxBindingLayouts>& BindingLayouts, VkShaderStageFlags InStageMask, VkShaderStageFlags& OutStageFlags);
         
         VkPipelineLayout            PipelineLayout;
         VkPipeline                  Pipeline;

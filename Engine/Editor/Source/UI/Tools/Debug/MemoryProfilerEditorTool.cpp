@@ -1,22 +1,88 @@
 #include "MemoryProfilerEditorTool.h"
 
-#include <cstdlib>
 #include <cstring>
 #include <cstdio>
 #include <EASTL/sort.h>
+#include "implot.h"
 #include "Core/Engine/Engine.h"
 #include "Memory/Memory.h"
 #include "Memory/MemoryTracking.h"
 #include "Platform/Process/PlatformProcess.h"
 #include "Renderer/RHIGlobals.h"
 #include "Renderer/RenderContext.h"
+#include "Renderer/RenderResource.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
+#include "Tools/UI/ImGui/ImGuiFonts.h"
 
 namespace Lumina
 {
+    namespace
+    {
+        constexpr uint32 kHistorySamples = 240;     // ~60s at the 0.25s refresh tick.
+        constexpr float  kRefreshSeconds = 0.25f;
+
+        // Green under load, amber as it fills, red when nearly out.
+        ImVec4 UsageColor(float Fraction)
+        {
+            if (Fraction > 0.85f) { return ImVec4(0.90f, 0.32f, 0.28f, 1.0f); }
+            if (Fraction > 0.65f) { return ImVec4(0.92f, 0.70f, 0.25f, 1.0f); }
+            return ImVec4(0.30f, 0.78f, 0.45f, 1.0f);
+        }
+
+        ImVec4 CategoryColor(EGPUMemoryCategory Category)
+        {
+            switch (Category)
+            {
+            case EGPUMemoryCategory::RenderTarget:  return ImVec4(0.36f, 0.62f, 0.92f, 1.0f);
+            case EGPUMemoryCategory::DepthStencil:  return ImVec4(0.45f, 0.78f, 0.95f, 1.0f);
+            case EGPUMemoryCategory::ShadowMap:     return ImVec4(0.62f, 0.48f, 0.92f, 1.0f);
+            case EGPUMemoryCategory::Texture:       return ImVec4(0.95f, 0.62f, 0.35f, 1.0f);
+            case EGPUMemoryCategory::Cubemap:       return ImVec4(0.95f, 0.78f, 0.30f, 1.0f);
+            case EGPUMemoryCategory::VolumeTexture: return ImVec4(0.55f, 0.85f, 0.55f, 1.0f);
+            case EGPUMemoryCategory::VertexBuffer:  return ImVec4(0.40f, 0.85f, 0.70f, 1.0f);
+            case EGPUMemoryCategory::IndexBuffer:   return ImVec4(0.35f, 0.72f, 0.62f, 1.0f);
+            case EGPUMemoryCategory::UniformBuffer: return ImVec4(0.85f, 0.55f, 0.75f, 1.0f);
+            case EGPUMemoryCategory::StorageBuffer: return ImVec4(0.78f, 0.45f, 0.62f, 1.0f);
+            case EGPUMemoryCategory::Staging:       return ImVec4(0.70f, 0.70f, 0.74f, 1.0f);
+            default:                                return ImVec4(0.55f, 0.55f, 0.58f, 1.0f);
+            }
+        }
+
+        void PushHistory(TVector<float>& History, float Value)
+        {
+            History.push_back(Value);
+            if (History.size() > kHistorySamples)
+            {
+                History.erase(History.begin());
+            }
+        }
+
+        // Compact line+fill plot for a rolling MB history.
+        void DrawTimeline(const char* Id, const TVector<float>& History, const ImVec4& Color, float Height)
+        {
+            if (ImPlot::BeginPlot(Id, ImVec2(-1, Height), ImPlotFlags_NoMouseText | ImPlotFlags_NoLegend | ImPlotFlags_NoTitle))
+            {
+                ImPlot::SetupAxes(nullptr, "MB",
+                    ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoGridLines,
+                    ImPlotAxisFlags_AutoFit);
+                ImPlot::SetupAxisLimits(ImAxis_X1, 0, (double)kHistorySamples, ImGuiCond_Always);
+
+                if (!History.empty())
+                {
+                    ImPlot::PushStyleColor(ImPlotCol_Line, Color);
+                    ImPlot::PushStyleColor(ImPlotCol_Fill, ImVec4(Color.x, Color.y, Color.z, 0.25f));
+                    ImPlot::PlotShaded(Id, History.data(), (int)History.size(), 0.0);
+                    ImPlot::PlotLine(Id, History.data(), (int)History.size());
+                    ImPlot::PopStyleColor(2);
+                }
+                ImPlot::EndPlot();
+            }
+        }
+    }
+
     void FMemoryProfilerEditorTool::OnInitialize()
     {
-        CreateToolWindow("Memory Profiler", [this](bool bIsFocused)
+        CreateToolWindow("Memory", [this](bool bIsFocused)
         {
             DrawWindow(bIsFocused);
         });
@@ -25,58 +91,463 @@ namespace Lumina
     void FMemoryProfilerEditorTool::OnDeinitialize(const FUpdateContext& UpdateContext)
     {
 #if LUMINA_MEMORY_TRACKING
-        // Base tracking is always on; just stop the heavy per-alloc call-stack capture
-        // so it doesn't keep walking stacks after the window is closed.
+        // Base category tracking is always on; just stop the heavy per-alloc call-stack
+        // capture so it doesn't keep walking stacks after the window is closed.
         Memory::SetCaptureCallstacks(false);
 #endif
     }
 
     void FMemoryProfilerEditorTool::DrawHelpMenu()
     {
-        DrawHelpTextRow("Finding a leak",
-            "Click Set Baseline at a known-good moment, let the suspect run, then watch the "
-            "Delta column. The category that keeps climbing is your leak (the table is sorted "
-            "by growth). Then tick Capture call stacks and read Top Call Sites for the exact line.");
-        DrawHelpTextRow("Categories",
-            "A category is just the name passed to LUMINA_MEMORY_SCOPE(\"...\") around a region "
-            "of code. Anything not inside a scope is attributed to Default.");
+        DrawHelpTextRow("Overview",
+            "One picture of both memory pools: CPU (process heap, tracked by category) and GPU "
+            "(device memory, broken down by resource purpose). Backend-agnostic -- no API specifics.");
+        DrawHelpTextRow("GPU breakdown",
+            "Per-category sizes are estimated from each live resource's description (extent, format, "
+            "mips). Heap totals are device truth from the allocator. The two differ by driver overhead "
+            "and fragmentation.");
+        DrawHelpTextRow("Finding a CPU leak",
+            "On the CPU tab: click Set Baseline at a known-good moment, let the suspect run, then watch "
+            "the Delta column. The category that keeps climbing is your leak. Tick Capture call stacks "
+            "and read Top Call Sites for the exact line.");
         DrawHelpTextRow("Cost",
-            "Category tracking is always on in Debug/Development and compiled out entirely in "
-            "Shipping. Call-stack capture is a heavier, separate toggle, switched off when this "
-            "window closes.");
-        DrawHelpTextRow("Scope",
-            "Tracks CPU allocations routed through Memory::Malloc (engine-wide, including EASTL "
-            "and global new). GPU/VMA memory is not here -- see Renderer Info.");
+            "CPU category tracking is always on in Debug/Development and compiled out in Shipping. "
+            "Call-stack capture is a heavier, separate toggle, switched off when this window closes.");
+    }
+
+    void FMemoryProfilerEditorTool::RefreshSnapshot()
+    {
+#if LUMINA_MEMORY_TRACKING
+        Categories.resize(256);
+        const uint32 N = Memory::GetCategoryStats(Categories.data(), (uint32)Categories.size());
+        Categories.resize(N);
+#endif
+
+        if (GRenderContext)
+        {
+            GRenderContext->GetGPUMemoryStats(GPUStats);
+            GatherGPUMemoryByCategory(GPUCategories, (uint32)EGPUMemoryCategory::Count);
+
+            if (!bDeviceInfoValid)
+            {
+                DeviceInfo = GRenderContext->GetDeviceInfo();
+                bDeviceInfoValid = true;
+            }
+        }
+
+        for (uint32 i = 0; i < RRT_Num; ++i) { ResourceCounts[i] = 0; }
+        TotalResources = 0;
+        FRHIResourceList::ForEach([this](IRHIResource* Resource)
+        {
+            const ERHIResourceType Type = Resource->GetResourceType();
+            if (Type < RRT_Num) { ResourceCounts[Type]++; }
+            TotalResources++;
+        });
+
+        const float ToMB = 1.0f / (1024.0f * 1024.0f);
+        PushHistory(HistRSS, (float)Platform::GetProcessMemoryUsageBytes() * ToMB);
+        PushHistory(HistVRAM, (float)GPUStats.TotalUsage * ToMB);
+#if LUMINA_MEMORY_TRACKING
+        PushHistory(HistCPUTracked, (float)Memory::GetTrackedLiveBytes() * ToMB);
+#endif
     }
 
     void FMemoryProfilerEditorTool::DrawWindow(bool bIsFocused)
     {
+        RefreshTimer += GEngine->GetDeltaTime();
+        if (RefreshTimer >= kRefreshSeconds || HistVRAM.empty())
+        {
+            RefreshTimer = 0.0f;
+            RefreshSnapshot();
+        }
+
+        DrawHeaderCards();
+        ImGui::Spacing();
+
+        if (ImGui::BeginTabBar("##MemoryTabs"))
+        {
+            if (ImGui::BeginTabItem(LE_ICON_GAUGE " Overview"))
+            {
+                DrawOverviewTab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem(LE_ICON_EXPANSION_CARD " GPU"))
+            {
+                DrawGPUTab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem(LE_ICON_CPU_64_BIT " CPU"))
+            {
+                DrawCPUTab();
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+    }
+
+    void FMemoryProfilerEditorTool::DrawHeaderCards()
+    {
+        const size_t Process = Platform::GetProcessMemoryUsageBytes();
+#if LUMINA_MEMORY_TRACKING
+        const size_t Tracked = Memory::GetTrackedLiveBytes();
+#else
+        const size_t Tracked = 0;
+#endif
+        const size_t Untracked = (Process > Tracked) ? (Process - Tracked) : 0;
+
+        const float Spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float CardW = (ImGui::GetContentRegionAvail().x - Spacing) * 0.5f;
+        const float CardH = 104.0f;
+
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.13f, 0.14f, 0.16f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
+
+        // ---- CPU card ----
+        ImGui::BeginChild("##CPUCard", ImVec2(CardW, CardH), true);
+        {
+            ImGui::TextColored(ImVec4(0.66f, 0.78f, 0.95f, 1.0f), LE_ICON_CPU_64_BIT " CPU MEMORY");
+            ImGui::Separator();
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
+            ImGui::TextUnformatted(ImGuiX::FormatSize(Process).c_str());
+            ImGuiX::Font::PopFont();
+            ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("process (RSS)");
+
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.6f, 1.0f), "%s tracked", ImGuiX::FormatSize(Tracked).c_str());
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.9f, 0.55f, 0.55f, 1.0f), "  %s untracked", ImGuiX::FormatSize(Untracked).c_str());
+        }
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+
+        // ---- GPU card ----
+        ImGui::BeginChild("##GPUCard", ImVec2(CardW, CardH), true);
+        {
+            ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.55f, 1.0f), LE_ICON_EXPANSION_CARD " GPU MEMORY");
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", bDeviceInfoValid ? DeviceInfo.Name.c_str() : "");
+
+            ImGui::Separator();
+
+            const float Frac = (GPUStats.TotalBudget > 0)
+                ? (float)((double)GPUStats.TotalUsage / (double)GPUStats.TotalBudget) : 0.0f;
+
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
+            ImGui::TextUnformatted(ImGuiX::FormatSize((size_t)GPUStats.TotalUsage).c_str());
+            ImGuiX::Font::PopFont();
+            ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("/ %s  (%.0f%%)", ImGuiX::FormatSize((size_t)GPUStats.TotalBudget).c_str(), Frac * 100.0f);
+
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, UsageColor(Frac));
+            ImGui::ProgressBar(Frac, ImVec2(-1, 14), "");
+            ImGui::PopStyleColor();
+        }
+        ImGui::EndChild();
+
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+    }
+
+    //--------------------------------------------------------------------------------------------------
+    // Overview
+    //--------------------------------------------------------------------------------------------------
+
+    void FMemoryProfilerEditorTool::DrawCategorySegmentBar(float Height)
+    {
+        uint64 Total = 0;
+        for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i)
+        {
+            Total += GPUCategories[i].Bytes;
+        }
+
+        const ImVec2 Origin = ImGui::GetCursorScreenPos();
+        const float  Width = ImGui::GetContentRegionAvail().x;
+        ImDrawList*  Draw = ImGui::GetWindowDrawList();
+
+        Draw->AddRectFilled(Origin, ImVec2(Origin.x + Width, Origin.y + Height), IM_COL32(30, 31, 34, 255), 4.0f);
+
+        if (Total > 0)
+        {
+            const float MouseX = ImGui::GetIO().MousePos.x;
+            const bool  bHoverRow = ImGui::IsMouseHoveringRect(Origin, ImVec2(Origin.x + Width, Origin.y + Height));
+            float X = Origin.x;
+
+            for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i)
+            {
+                if (GPUCategories[i].Bytes == 0) { continue; }
+
+                const float Seg = Width * (float)((double)GPUCategories[i].Bytes / (double)Total);
+                const ImVec4 C = CategoryColor((EGPUMemoryCategory)i);
+                Draw->AddRectFilled(ImVec2(X, Origin.y), ImVec2(X + Seg, Origin.y + Height),
+                    ImGui::GetColorU32(C));
+
+                if (bHoverRow && MouseX >= X && MouseX < X + Seg)
+                {
+                    ImGui::SetTooltip("%s\n%s  (%.1f%%)",
+                        GetGPUMemoryCategoryName((EGPUMemoryCategory)i),
+                        ImGuiX::FormatSize(GPUCategories[i].Bytes).c_str(),
+                        100.0f * (float)((double)GPUCategories[i].Bytes / (double)Total));
+                }
+                X += Seg;
+            }
+        }
+
+        ImGui::Dummy(ImVec2(Width, Height));
+    }
+
+    void FMemoryProfilerEditorTool::DrawOverviewTab()
+    {
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "GPU memory by purpose");
+        ImGui::Spacing();
+        DrawCategorySegmentBar(22.0f);
+        ImGui::Spacing();
+        DrawGPUCategoryTable();
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Side-by-side rolling timelines.
+        const float Spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float HalfW = (ImGui::GetContentRegionAvail().x - Spacing) * 0.5f;
+
+        ImGui::BeginChild("##VRAMTL", ImVec2(HalfW, 200), false);
+        ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "VRAM usage");
+        DrawTimeline("##VRAMPlot", HistVRAM, ImVec4(0.95f, 0.70f, 0.40f, 1.0f), 160.0f);
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+
+        ImGui::BeginChild("##RSSTL", ImVec2(0, 200), false);
+        ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "Process RSS");
+        DrawTimeline("##RSSPlot", HistRSS, ImVec4(0.40f, 0.80f, 0.55f, 1.0f), 160.0f);
+        ImGui::EndChild();
+    }
+
+    //--------------------------------------------------------------------------------------------------
+    // GPU
+    //--------------------------------------------------------------------------------------------------
+
+    void FMemoryProfilerEditorTool::DrawGPUCategoryTable()
+    {
+        uint64 Total = 0;
+        for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i)
+        {
+            Total += GPUCategories[i].Bytes;
+        }
+
+        struct FRow { EGPUMemoryCategory Cat; uint64 Bytes; uint32 Count; };
+        TFixedVector<FRow, (int)EGPUMemoryCategory::Count> Rows;
+        for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i)
+        {
+            if (GPUCategories[i].Count > 0)
+            {
+                Rows.push_back({ (EGPUMemoryCategory)i, GPUCategories[i].Bytes, GPUCategories[i].Count });
+            }
+        }
+        eastl::sort(Rows.begin(), Rows.end(), [](const FRow& A, const FRow& B) { return A.Bytes > B.Bytes; });
+
+        const ImGuiTableFlags Flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
+        if (ImGui::BeginTable("##GPUCats", 4, Flags))
+        {
+            ImGui::TableSetupColumn("Category", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Size",     ImGuiTableColumnFlags_WidthFixed, 110);
+            ImGui::TableSetupColumn("Count",    ImGuiTableColumnFlags_WidthFixed, 70);
+            ImGui::TableSetupColumn("Share",    ImGuiTableColumnFlags_WidthFixed, 140);
+            ImGui::TableHeadersRow();
+
+            for (const FRow& Row : Rows)
+            {
+                ImGui::TableNextRow();
+
+                ImGui::TableSetColumnIndex(0);
+                const ImVec4 C = CategoryColor(Row.Cat);
+                ImGui::ColorButton("##c", C, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder, ImVec2(10, 10));
+                ImGui::SameLine();
+                ImGui::TextUnformatted(GetGPUMemoryCategoryName(Row.Cat));
+
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(ImGuiX::FormatSize(Row.Bytes).c_str());
+
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%u", Row.Count);
+
+                ImGui::TableSetColumnIndex(3);
+                const float Share = (Total > 0) ? (float)((double)Row.Bytes / (double)Total) : 0.0f;
+                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, C);
+                ImGui::ProgressBar(Share, ImVec2(-1, 0), FString().sprintf("%.1f%%", Share * 100.0f).c_str());
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::EndTable();
+        }
+
+        ImGui::TextDisabled(LE_ICON_INFORMATION " Estimated %s across %u tracked resources (heap truth on the GPU tab).",
+            ImGuiX::FormatSize(Total).c_str(),
+            ResourceCounts[RRT_Image] + ResourceCounts[RRT_Buffer] + ResourceCounts[RRT_StagingImage]);
+    }
+
+    void FMemoryProfilerEditorTool::DrawGPUHeaps()
+    {
+        ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "Device heaps");
+        ImGui::Spacing();
+
+        const ImGuiTableFlags Flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
+        if (ImGui::BeginTable("##Heaps", 5, Flags))
+        {
+            ImGui::TableSetupColumn("Heap",   ImGuiTableColumnFlags_WidthFixed, 150);
+            ImGui::TableSetupColumn("Usage",  ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Used",   ImGuiTableColumnFlags_WidthFixed, 100);
+            ImGui::TableSetupColumn("Budget", ImGuiTableColumnFlags_WidthFixed, 100);
+            ImGui::TableSetupColumn("Allocs", ImGuiTableColumnFlags_WidthFixed, 80);
+            ImGui::TableHeadersRow();
+
+            for (const FGPUMemoryHeapStats& Heap : GPUStats.Heaps)
+            {
+                ImGui::TableNextRow();
+
+                ImGui::TableSetColumnIndex(0);
+                ImGui::Text("%s %u", Heap.bDeviceLocal ? LE_ICON_EXPANSION_CARD : LE_ICON_MEMORY, Heap.HeapIndex);
+                ImGui::SameLine();
+                ImGui::TextDisabled(Heap.bDeviceLocal ? "Device" : "Host");
+
+                ImGui::TableSetColumnIndex(1);
+                const float Frac = (Heap.BudgetBytes > 0)
+                    ? (float)((double)Heap.UsageBytes / (double)Heap.BudgetBytes) : 0.0f;
+                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, UsageColor(Frac));
+                ImGui::ProgressBar(Frac, ImVec2(-1, 0), FString().sprintf("%.1f%%", Frac * 100.0f).c_str());
+                ImGui::PopStyleColor();
+
+                ImGui::TableSetColumnIndex(2);
+                ImGui::TextUnformatted(ImGuiX::FormatSize((size_t)Heap.UsageBytes).c_str());
+
+                ImGui::TableSetColumnIndex(3);
+                ImGui::TextUnformatted(ImGuiX::FormatSize((size_t)Heap.BudgetBytes).c_str());
+
+                ImGui::TableSetColumnIndex(4);
+                ImGui::Text("%u", Heap.AllocationCount);
+            }
+
+            ImGui::EndTable();
+        }
+
+        ImGui::TextDisabled("Allocator: %s in %u allocations across %u blocks.",
+            ImGuiX::FormatSize((size_t)GPUStats.TotalAllocated).c_str(),
+            GPUStats.TotalAllocations, GPUStats.TotalBlocks);
+    }
+
+    void FMemoryProfilerEditorTool::DrawResourceCounts()
+    {
+        ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "Live resources");
+        ImGui::Spacing();
+
+        const ImGuiTableFlags Flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY;
+        if (ImGui::BeginTable("##ResCounts", 2, Flags, ImVec2(0, 220)))
+        {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Type",  ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthFixed, 90);
+            ImGui::TableHeadersRow();
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "Total");
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%u", TotalResources);
+
+            for (uint32 Type = RRT_None + 1; Type < RRT_Num; ++Type)
+            {
+                if (ResourceCounts[Type] == 0) { continue; }
+
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(GetRHIResourceTypeName((ERHIResourceType)Type));
+                ImGui::TableSetColumnIndex(1);
+                ImGui::Text("%u", ResourceCounts[Type]);
+            }
+
+            ImGui::EndTable();
+        }
+    }
+
+    void FMemoryProfilerEditorTool::DrawGPUTab()
+    {
+        ImGui::Spacing();
+        if (bDeviceInfoValid)
+        {
+            ImGui::TextDisabled(LE_ICON_CHIP " %s   %s   %s",
+                DeviceInfo.Name.c_str(), DeviceInfo.APIName.c_str(),
+                DeviceInfo.bDiscrete ? "Discrete" : "Integrated");
+        }
+        ImGui::Spacing();
+
+        DrawGPUHeaps();
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Pie + counts side by side.
+        const float Spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float HalfW = (ImGui::GetContentRegionAvail().x - Spacing) * 0.5f;
+
+        ImGui::BeginChild("##GPUPie", ImVec2(HalfW, 280), false);
+        ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "Memory by purpose");
+
+        TFixedVector<const char*, (int)EGPUMemoryCategory::Count> Labels;
+        TFixedVector<float, (int)EGPUMemoryCategory::Count> Values;
+        for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i)
+        {
+            if (GPUCategories[i].Bytes > 0)
+            {
+                Labels.push_back(GetGPUMemoryCategoryName((EGPUMemoryCategory)i));
+                Values.push_back((float)((double)GPUCategories[i].Bytes / (1024.0 * 1024.0)));
+            }
+        }
+
+        if (!Values.empty() && ImPlot::BeginPlot("##GPUPiePlot", ImVec2(-1, 240), ImPlotFlags_Equal | ImPlotFlags_NoMouseText))
+        {
+            ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoDecorations, ImPlotAxisFlags_NoDecorations);
+            ImPlot::SetupAxesLimits(0, 1, 0, 1);
+            ImPlot::PlotPieChart(Labels.data(), Values.data(), (int)Values.size(), 0.5, 0.5, 0.4, "%.0f", 90.0,
+                ImPlotPieChartFlags_Normalize);
+            ImPlot::EndPlot();
+        }
+        else if (Values.empty())
+        {
+            ImGui::TextDisabled("No GPU resources tracked yet.");
+        }
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+
+        ImGui::BeginChild("##GPUCounts", ImVec2(0, 280), false);
+        DrawResourceCounts();
+        ImGui::EndChild();
+    }
+
+    //--------------------------------------------------------------------------------------------------
+    // CPU
+    //--------------------------------------------------------------------------------------------------
+
+    void FMemoryProfilerEditorTool::DrawCPUTab()
+    {
 #if !LUMINA_MEMORY_TRACKING
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
-            LE_ICON_ALERT " Memory tracking is compiled out in Shipping builds.");
-        return;
+            LE_ICON_ALERT " CPU category tracking is compiled out in Shipping builds.");
 #else
-        // Refresh the snapshot on a timer so the numbers are readable, not a blur.
-        RefreshTimer += GEngine->GetDeltaTime();
-        if (RefreshTimer >= 0.4f || Categories.empty())
-        {
-            RefreshTimer = 0.0f;
-            Categories.resize(256);
-            const uint32 N = Memory::GetCategoryStats(Categories.data(), (uint32)Categories.size());
-            Categories.resize(N);
-        }
-
         DrawControls();
-        ImGui::Separator();
-        DrawSummary();
         ImGui::Separator();
         ImGui::Spacing();
 
         const bool bCapturing = Memory::IsCapturingCallstacks();
-
-        // Categories take the upper region; call sites (when capturing) get the lower third.
-        const float Avail      = ImGui::GetContentRegionAvail().y;
+        const float Avail = ImGui::GetContentRegionAvail().y;
         const float TableHeight = bCapturing ? Avail * 0.55f : Avail;
         DrawCategoryTable(TableHeight);
 
@@ -128,60 +599,6 @@ namespace Lumina
                             "exact leaking line. Heavier -- turn on once a category is confirmed leaking.");
     }
 
-    void FMemoryProfilerEditorTool::DrawSummary()
-    {
-        // The tracker is the authoritative CPU number -- it counts every byte through
-        // Memory::Malloc independently of rpmalloc's internal statistics. "Untracked
-        // residency" is whatever the OS reports for the process beyond that (CRT malloc
-        // from 3rd-party C libs, the executable image, thread stacks, GPU host-visible
-        // mappings, driver overhead). GPU device memory is a separate pool, reported below.
-        const size_t Process   = Platform::GetProcessMemoryUsageBytes();
-        const size_t Tracked   = Memory::GetTrackedLiveBytes();
-        const size_t Untracked = (Process > Tracked) ? (Process - Tracked) : 0;
-        const uint64 GPU       = GRenderContext ? GRenderContext->GetAllocatedMemory() : 0;
-
-        auto Row = [](const char* Label, const FString& Value, ImVec4 Color, const char* Tip = nullptr)
-        {
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(Label);
-            if (Tip && ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", Tip); }
-            ImGui::TableSetColumnIndex(1);
-            ImGui::TextColored(Color, "%s", Value.c_str());
-        };
-
-        if (ImGui::BeginTable("Coverage", 2, ImGuiTableFlags_SizingFixedFit))
-        {
-            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 230);
-            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 220);
-
-            Row("Process (RSS)", ImGuiX::FormatSize(Process), ImVec4(1, 1, 1, 1),
-                "Total resident memory for the process, as the OS sees it.");
-            Row("   CPU tracked (our allocator)",
-                FString().sprintf("%s  (%llu allocs)", ImGuiX::FormatSize(Tracked).c_str(),
-                    (unsigned long long)Memory::GetTrackedLiveCount()),
-                ImVec4(0.4f, 1.0f, 0.6f, 1.0f),
-                "Live CPU bytes through Memory::Malloc / our global new, counted by the tracker. Authoritative.");
-            Row("   untracked residency", ImGuiX::FormatSize(Untracked), ImVec4(0.9f, 0.5f, 0.5f, 1.0f),
-                "Process minus tracked: CRT malloc from 3rd-party C libs, executable image, thread stacks, "
-                "GPU host-visible mappings, driver overhead.");
-
-            ImGui::TableNextRow();   // spacer
-            Row("GPU device memory (VMA)", ImGuiX::FormatSize((size_t)GPU), ImVec4(1.0f, 0.7f, 0.4f, 1.0f),
-                "vkAllocateMemory via VMA (VRAM + host-visible). A separate pool from the CPU heap; "
-                "depending on heap type and OS it may not be counted in Process RSS above.");
-
-            ImGui::EndTable();
-        }
-
-        const uint64 Overflow = Memory::GetTrackingOverflowCount();
-        if (Overflow > 0)
-        {
-            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f),
-                LE_ICON_ALERT " %llu allocations untracked (ledger full)", (unsigned long long)Overflow);
-        }
-    }
-
     void FMemoryProfilerEditorTool::DrawCategoryTable(float Height)
     {
         auto FindBaseline = [this](const char* Name) -> const Memory::FMemoryCategoryStats*
@@ -218,14 +635,12 @@ namespace Lumina
             Rows.push_back(Row);
         }
 
-        // Sort so the worst grower (or biggest live, with no baseline) is on top.
         eastl::sort(Rows.begin(), Rows.end(), [this](const FRow& A, const FRow& B)
         {
             if (bHasBaseline) { return A.DeltaBytes > B.DeltaBytes; }
             return A.S->LiveBytes > B.S->LiveBytes;
         });
 
-        // Leak hint sits just above the table.
         if (bHasBaseline && !Rows.empty() && Rows[0].DeltaBytes > 0)
         {
             ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
@@ -309,8 +724,7 @@ namespace Lumina
             return;
         }
 
-        // Ranking mode: live bytes finds leaks/persistent; total allocs finds transient churn
-        // (the per-frame allocations to eliminate). They surface very different call sites.
+        // Live bytes finds leaks/persistent; total allocs finds transient churn -- different sites.
         ImGui::TextUnformatted("Rank by:");
         ImGui::SameLine();
         if (ImGui::RadioButton("Live bytes", !bSortCallSitesByAllocs)) { bSortCallSitesByAllocs = false; }
@@ -332,8 +746,6 @@ namespace Lumina
 
         char SymBuf[512];
 
-        // One-click dump of every shown site (with full symbolized stacks) to the clipboard,
-        // for pasting into a review. Builds into a growable string since it can be large.
         ImGui::SameLine();
         if (ImGui::SmallButton(LE_ICON_CONTENT_COPY " Copy all"))
         {
@@ -423,7 +835,6 @@ namespace Lumina
 #else // !LUMINA_MEMORY_TRACKING
 
     void FMemoryProfilerEditorTool::DrawControls() {}
-    void FMemoryProfilerEditorTool::DrawSummary() {}
     void FMemoryProfilerEditorTool::DrawCategoryTable(float) {}
     void FMemoryProfilerEditorTool::DrawCallSites() {}
 
