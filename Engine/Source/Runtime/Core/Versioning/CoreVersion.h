@@ -9,6 +9,8 @@ enum class ELuminaEngineVersion : uint32
 {
 	INITIAL_VERSION = 1000,
 
+	// Persisted, named AnimNotify tracks on FAnimationResource.
+	ANIMATION_NOTIFY_TRACKS,
 
 	AUTOMATIC_VERSION_PLUS_ONE,
 	AUTOMATIC_VERSION = AUTOMATIC_VERSION_PLUS_ONE - 1

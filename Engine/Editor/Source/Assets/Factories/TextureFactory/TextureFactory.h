@@ -27,7 +27,7 @@ namespace Lumina
         void TryImport(const FFixedString& RawPath, const FFixedString& DestinationPath, const Import::FImportSettings* Settings) override;
 
         /** Re-runs Basis compression on Texture->SourcePath; false if path is missing or asset is mesh-embedded. */
-        static RUNTIME_API bool Recook(CTexture* Texture);
+        static EDITOR_API bool Recook(CTexture* Texture);
 
     private:
 

@@ -3176,7 +3176,13 @@ namespace Lumina
 
                 ImGui::EndMenu();
             }
-            
+
+            if (ImGui::BeginMenu(LE_ICON_BONE " Skeleton"))
+            {
+                DrawSkeletonDebugMenuItems();
+                ImGui::EndMenu();
+            }
+
             if (ImGui::BeginMenu("Rendering"))
             {
                 FSceneRenderSettings& Settings = RenderScene->GetSceneRenderSettings();

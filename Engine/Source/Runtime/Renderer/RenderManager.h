@@ -17,6 +17,27 @@ namespace Lumina
 
 namespace Lumina
 {
+    // Immutable GPU resources shared by every render scene: the BRDF LUT, the SMAA
+    // lookup tables, and (editor) the billboard icon textures. These are identical
+    // across scenes and were previously re-baked / re-loaded from disk on every
+    // FForwardRenderScene::Init(). Built once on the first scene and aliased by ref
+    // thereafter. Released in ~FRenderManager before the device is torn down.
+    struct FSharedRenderResources
+    {
+        FRHIImageRef    BRDFLut;
+        FRHIImageRef    SMAAArea;
+        FRHIImageRef    SMAASearch;
+
+        #if WITH_EDITOR
+        // PointLight, DirectionalLight, SkyLight, SpotLight, Camera, Character, ParticleSystem.
+        FRHIImageRef    EditorIcons[7];
+        #endif
+
+        bool            bInitialized = false;
+
+        void Reset() { *this = FSharedRenderResources{}; }
+    };
+
     class FRenderManager
     {
     public:
@@ -50,6 +71,9 @@ namespace Lumina
         NODISCARD RHI::FTextureManager* TryGetTextureManager() const { return TextureManager.get(); }
         NODISCARD RHI::FMaterialManager& GetMaterialManager() const { return *MaterialManager.get(); }
 
+        // Lazily populated by the first render scene; aliased by all later scenes.
+        NODISCARD FSharedRenderResources& GetSharedRenderResources() { return SharedRenderResources; }
+
     private:
 
         #if WITH_EDITOR
@@ -58,6 +82,8 @@ namespace Lumina
 
         TUniquePtr<RHI::FTextureManager>    TextureManager;
         TUniquePtr<RHI::FMaterialManager>   MaterialManager;
+
+        FSharedRenderResources              SharedRenderResources;
 
         uint8                               CurrentFrameIndex = 0;
     };

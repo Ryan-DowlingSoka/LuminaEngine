@@ -7,8 +7,7 @@
 namespace Lumina
 {
     class CObject;
-    class CFactory;
-    
+
     class FAssetRequest
     {
     public:

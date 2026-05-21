@@ -130,10 +130,10 @@ namespace Lumina::Import
             FMeshImportOptions                          CommitOptions;
         };
 
-        void OptimizeNewlyImportedMesh(FMeshResource& MeshResource, FScopedSlowTask* Progress = nullptr);
+        RUNTIME_API void OptimizeNewlyImportedMesh(FMeshResource& MeshResource, FScopedSlowTask* Progress = nullptr);
         /** When Progress is set, advances StepPerSurface of progress for each surface meshletized. */
-        void GenerateMeshlets(FMeshResource& MeshResource, FScopedSlowTask* Progress = nullptr, float StepPerSurface = 0.0f);
-        void AnalyzeMeshStatistics(FMeshResource& MeshResource, FMeshStatistics& OutMeshStats);
+        RUNTIME_API void GenerateMeshlets(FMeshResource& MeshResource, FScopedSlowTask* Progress = nullptr, float StepPerSurface = 0.0f);
+        RUNTIME_API void AnalyzeMeshStatistics(FMeshResource& MeshResource, FMeshStatistics& OutMeshStats);
 
         /**
          * Apply user transforms and run the heavy finalize passes on a previously parsed FMeshImportData.
@@ -141,21 +141,9 @@ namespace Lumina::Import
          */
         RUNTIME_API void FinalizeMeshImportData(FMeshImportData& Data, const FMeshImportOptions& Options, FScopedSlowTask* Progress = nullptr, float ProgressBudget = 1.0f);
 
-        namespace OBJ
-        {
-            NODISCARD RUNTIME_API TExpected<FMeshImportData, FString> ImportOBJ(const FMeshImportOptions& ImportOptions, FStringView FilePath, FScopedSlowTask* Progress = nullptr);
-        }
-
-        namespace FBX
-        {
-            NODISCARD RUNTIME_API TExpected<FMeshImportData, FString> ImportFBX(const FMeshImportOptions& ImportOptions, FStringView FilePath, FScopedSlowTask* Progress = nullptr);
-        }
-
-
-        namespace GLTF
-        {
-            NODISCARD RUNTIME_API TExpected<FMeshImportData, FString> ImportGLTF(const FMeshImportOptions& ImportOptions, FStringView FilePath, FScopedSlowTask* Progress = nullptr);
-        }
+        // Model-format parsers (ImportOBJ/FBX/GLTF) are editor-only and declared in
+        // Editor's Tools/Import/MeshFormatImport.h -- they pull tinyobjloader/OpenFBX/
+        // fastgltf, which don't ship in the Game runtime.
     }
-    
+
 }

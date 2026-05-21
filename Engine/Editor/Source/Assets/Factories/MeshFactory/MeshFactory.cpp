@@ -16,6 +16,7 @@
 #include "TaskSystem/TaskSystem.h"
 #include "TaskSystem/ThreadedCallback.h"
 #include "Tools/Import/ImportHelpers.h"
+#include "Tools/Import/MeshFormatImport.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 
 

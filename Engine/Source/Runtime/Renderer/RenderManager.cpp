@@ -54,6 +54,10 @@ namespace Lumina
         MaterialManager = nullptr;
         TextureManager = nullptr;
 
+        // Drop the shared LUT / icon refs while the device is still alive; member
+        // teardown would otherwise run after GRenderContext is deleted below.
+        SharedRenderResources.Reset();
+
         FGPUProfiler::Get().Shutdown();
 
         GRenderContext->Deinitialize();

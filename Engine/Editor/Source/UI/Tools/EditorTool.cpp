@@ -5,7 +5,9 @@
 
 #include "imgui_internal.h"
 #include "ToolFlags.h"
+#include "Animation/SkeletonDebugDraw.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Core/Console/ConsoleVariable.h"
 #include "Core/Object/Package/Package.h"
 #include "Core/Windows/Window.h"
 #include "Core/Serialization/MemoryArchiver.h"
@@ -29,7 +31,17 @@
 
 namespace Lumina
 {
-    
+    namespace
+    {
+        // Skeleton debug visualization. Editor-scoped and off by default; toggling the master
+        // CVar makes bones appear in every editor tool's viewport (world, anim, anim-graph, etc.).
+        static TConsoleVar<bool>  CVarDrawSkeletons    ("Editor.Debug.Skeletons",       false, "Draw the bone hierarchy for every skeletal mesh in the editor viewport.");
+        static TConsoleVar<bool>  CVarSkeletonNames    ("Editor.Debug.SkeletonNames",   false, "Label bones with their names (requires Editor.Debug.Skeletons).");
+        static TConsoleVar<bool>  CVarSkeletonAxes     ("Editor.Debug.SkeletonAxes",    false, "Draw a per-bone local X/Y/Z axis triad.");
+        static TConsoleVar<bool>  CVarSkeletonXRay     ("Editor.Debug.SkeletonXRay",    true,  "Draw bones without depth testing so they show through the mesh.");
+        static TConsoleVar<float> CVarSkeletonNameDist ("Editor.Debug.SkeletonNameDist", 10.0f, "Max camera distance (meters) at which bone names are drawn.");
+    }
+
     FEditorTool::FEditorTool(IEditorToolContext* Context, const FString& DisplayName, CWorld* InWorld)
         : ToolContext(Context)
         , ToolName(DisplayName)
@@ -188,6 +200,139 @@ namespace Lumina
     {
         TickEditorCamera(UpdateContext.GetDeltaTime());
         TickEditorActions();
+
+        // Enqueue bone debug lines here (mirrors DrawWorldGrid timing) so every tool that
+        // calls the base Update gets skeleton visualization for free.
+        DrawSkeletonDebug();
+    }
+
+    void FEditorTool::DrawSkeletonDebug()
+    {
+        if (World == nullptr || !CVarDrawSkeletons.GetValue())
+        {
+            return;
+        }
+
+        SkeletonDebugDraw::FOptions Options;
+        Options.bAxes      = CVarSkeletonAxes.GetValue();
+        Options.bDepthTest = !CVarSkeletonXRay.GetValue();
+
+        // CWorld implements IPrimitiveDrawInterface, so it is the draw target.
+        SkeletonDebugDraw::DrawWorldSkeletons(World, World, Options);
+    }
+
+    void FEditorTool::DrawSkeletonNameLabels(const ImVec2& ViewportOrigin, const ImVec2& ViewportSize)
+    {
+        if (World == nullptr || !CVarDrawSkeletons.GetValue() || !CVarSkeletonNames.GetValue())
+        {
+            return;
+        }
+
+        SCameraComponent* Camera = World->GetActiveCamera();
+        if (Camera == nullptr)
+        {
+            return;
+        }
+
+        TVector<SkeletonDebugDraw::FBoneLabel> Labels;
+        SkeletonDebugDraw::GatherWorldBoneLabels(World, Labels);
+        if (Labels.empty())
+        {
+            return;
+        }
+
+        // Same convention the world editor uses for its off-screen indicators: flip the
+        // projection Y, then map NDC -> panel pixels.
+        glm::mat4 Proj = Camera->GetProjectionMatrix();
+        Proj[1][1] *= -1.0f;
+        const glm::mat4 ViewProj = Proj * Camera->GetViewMatrix();
+        const glm::vec3 CameraPos = glm::vec3(glm::inverse(Camera->GetViewMatrix())[3]);
+
+        const float MaxDist     = CVarSkeletonNameDist.GetValue();
+        const float MaxDistSq   = MaxDist * MaxDist;
+        ImDrawList* DrawList    = ImGui::GetWindowDrawList();
+        const ImU32 TextColor   = IM_COL32(245, 248, 255, 255);
+        const ImU32 PillColor   = IM_COL32(18, 19, 24, 190);
+        const ImU32 BorderColor = IM_COL32(255, 168, 56, 130);  // matches the amber bones
+        const ImU32 DotColor    = IM_COL32(255, 210, 120, 255);
+        const ImVec2 Pad(5.0f, 2.0f);
+
+        DrawList->PushClipRect(ViewportOrigin, ImVec2(ViewportOrigin.x + ViewportSize.x, ViewportOrigin.y + ViewportSize.y), true);
+        for (const SkeletonDebugDraw::FBoneLabel& Label : Labels)
+        {
+            const glm::vec3 Delta = Label.WorldPosition - CameraPos;
+            if (glm::dot(Delta, Delta) > MaxDistSq)
+            {
+                continue;
+            }
+
+            const glm::vec4 Clip = ViewProj * glm::vec4(Label.WorldPosition, 1.0f);
+            if (Clip.w <= 1e-4f)
+            {
+                continue; // behind the camera
+            }
+
+            const float NdcX = Clip.x / Clip.w;
+            const float NdcY = Clip.y / Clip.w;
+            const float ScreenX = (NdcX * 0.5f + 0.5f) * ViewportSize.x + ViewportOrigin.x;
+            const float ScreenY = (1.0f - (NdcY * 0.5f + 0.5f)) * ViewportSize.y + ViewportOrigin.y;
+
+            const char* Text = Label.Name.c_str();
+            const ImVec2 TextSize = ImGui::CalcTextSize(Text);
+
+            // A dark rounded pill behind the text keeps names legible against any geometry,
+            // anchored just to the upper-right of the joint with a small marker dot.
+            const ImVec2 TextPos(ScreenX + 8.0f, ScreenY - TextSize.y - 4.0f);
+            const ImVec2 PillMin(TextPos.x - Pad.x, TextPos.y - Pad.y);
+            const ImVec2 PillMax(TextPos.x + TextSize.x + Pad.x, TextPos.y + TextSize.y + Pad.y);
+
+            DrawList->AddRectFilled(PillMin, PillMax, PillColor, 4.0f);
+            DrawList->AddRect(PillMin, PillMax, BorderColor, 4.0f);
+            DrawList->AddCircleFilled(ImVec2(ScreenX, ScreenY), 2.5f, DotColor);
+            DrawList->AddText(TextPos, TextColor, Text);
+        }
+        DrawList->PopClipRect();
+    }
+
+    void FEditorTool::DrawSkeletonDebugMenuItems()
+    {
+        FConsoleRegistry& Console = FConsoleRegistry::Get();
+
+        auto ToggleBool = [&](const char* Name, const char* Label, const char* Tooltip)
+        {
+            if (const bool* Value = Console.TryGetAs<bool>(Name))
+            {
+                bool Proxy = *Value;
+                if (ImGui::MenuItem(Label, nullptr, &Proxy))
+                {
+                    Console.SetAs(Name, Proxy);
+                }
+                if (Tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                {
+                    ImGui::SetTooltip("%s", Tooltip);
+                }
+            }
+        };
+
+        ToggleBool("Editor.Debug.Skeletons",     LE_ICON_BONE " Show Skeleton", "Draw the bone hierarchy for skeletal meshes.");
+        ImGui::Separator();
+
+        const bool bMaster = Console.TryGetAs<bool>("Editor.Debug.Skeletons") && Console.GetAs<bool>("Editor.Debug.Skeletons");
+        ImGui::BeginDisabled(!bMaster);
+        ToggleBool("Editor.Debug.SkeletonNames", "Bone Names", "Label each bone with its name.");
+        ToggleBool("Editor.Debug.SkeletonAxes",  "Bone Axes",  "Draw a per-bone local axis triad.");
+        ToggleBool("Editor.Debug.SkeletonXRay",  "X-Ray",      "Draw bones through the mesh (no depth test).");
+
+        if (const float* Dist = Console.TryGetAs<float>("Editor.Debug.SkeletonNameDist"))
+        {
+            ImGui::SetNextItemWidth(120.0f);
+            float Proxy = *Dist;
+            if (ImGui::DragFloat("Name Distance", &Proxy, 0.25f, 1.0f, 100.0f, "%.0f m"))
+            {
+                Console.SetAs("Editor.Debug.SkeletonNameDist", Proxy);
+            }
+        }
+        ImGui::EndDisabled();
     }
 
     void FEditorTool::TickEditorActions()
@@ -476,6 +621,10 @@ namespace Lumina
         ImGui::Dummy(ImStyle.ItemSpacing);
         ImGui::SetCursorPos(Origin + ImStyle.ItemSpacing);
         DrawViewportOverlayElements(UpdateContext, ViewportTexture, ViewportSize);
+
+        // Bone-name labels project onto the viewport panel; drawn after the overlay so they
+        // sit on top. WindowPosition is the viewport image's top-left in screen space.
+        DrawSkeletonNameLabels(WindowPosition, ViewportSize);
 
         Origin = ImGui::GetCursorStartPos();
 

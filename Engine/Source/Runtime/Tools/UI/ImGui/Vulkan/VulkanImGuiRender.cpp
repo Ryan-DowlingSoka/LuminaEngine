@@ -2,7 +2,6 @@
 #include "VulkanImGuiRender.h"
 #include "imgui.h"
 #include "implot.h"
-#include "Assets/Factories/TextureFactory/TextureFactory.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_vulkan.h"
 #include "Core/Engine/Engine.h"

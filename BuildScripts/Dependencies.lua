@@ -6,7 +6,6 @@ premake.api.register
 }
 
 LuminaConfig = LuminaConfig or {}
-LuminaConfig.PublicIncludes         = LuminaConfig.PublicIncludes or {}
 
 function capitalize(str)
     if not str or str == "" then
@@ -110,12 +109,24 @@ function LuminaConfig.GetReflectionFiles()
     return path.join(LuminaConfig.ReflectionDirectory, "ReflectionUnity.gen.cpp")
 end
 
-function LuminaConfig.AddPublicIncludeDirectory(Path)
-    table.insert(LuminaConfig.PublicIncludes, Path)
+-- Engine module headers a consumer always needs regardless of which
+-- third-party libs it pulls in: the Runtime tree (ModuleAPI.h + public
+-- headers) and Runtime's generated reflection headers. External game projects
+-- resolve these against the engine install via EnginePath().
+function LuminaConfig.GetEngineRuntimeIncludes()
+    return
+    {
+        LuminaConfig.EnginePath("Engine/Source/Runtime"),
+        LuminaConfig.EnginePath("Intermediates/Reflection/Runtime"),
+    }
 end
 
-function LuminaConfig.GetPublicIncludeDirectories()
-    return LuminaConfig.PublicIncludes
+function LuminaConfig.GetEngineEditorIncludes()
+    return
+    {
+        LuminaConfig.EnginePath("Engine/Editor/Source"),
+        LuminaConfig.EnginePath("Intermediates/Reflection/Editor"),
+    }
 end
 
 function LuminaConfig.CopyFile(Source, Destination)
@@ -154,39 +165,6 @@ function LuminaConfig.RunReflection()
     return path.join(LuminaConfig.EngineDirectory, "BuildScripts/ReflectionRunner.bat")
 end
 
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/Runtime"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Intermediates/Reflection/Runtime"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.ReflectionDirectory)
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/SLang"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/spdlog/include"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/GLFW/include"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/GLM"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/imgui"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/vk-bootstrap"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/VulkanMemoryAllocator"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/fastgltf/include"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/OpenFBX"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/stb_image"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/meshoptimizer/src"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/MikkTSpace/src"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/vulkan"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/basis_universal"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/volk"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/EnkiTS/src"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/json"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/entt"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/EA/EASTL/include"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/EA/EABase/include/Common"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/rpmalloc"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/xxhash"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/miniz"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/tracy/public"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/RenderDoc"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/concurrentqueue"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/JoltPhysics"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/Recast/Recast/Include"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/Recast/Detour/Include"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/luau/include"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/RmlUi/Include"))
-LuminaConfig.AddPublicIncludeDirectory(LuminaConfig.EnginePath("Engine/Source/ThirdParty/FreeType/include"))
+-- Per-dependency third-party metadata. Modules pull a library's includes/links
+-- by naming it in Dependencies; there is no global include dump.
+include(path.join(_SCRIPT_DIR, "ThirdParty.lua"))

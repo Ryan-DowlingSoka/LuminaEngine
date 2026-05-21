@@ -3,6 +3,7 @@
 #include "Core/Math/AABB.h"
 #include "Core/Object/Object.h"
 #include "Core/Object/ObjectHandleTyped.h"
+#include "Core/Versioning/CoreVersion.h"
 #include "Memory/SmartPtr.h"
 #include "Animation.generated.h"
 
@@ -85,8 +86,15 @@ namespace Lumina
         TVector<FAnimationChannel> Channels;
         TVector<FAnimationNotify> Notifies;
         TVector<FAnimationNotifyState> NotifyStates;
-        
-        
+
+        /**
+         * Authored notify lanes, in display order. Persisted independently of the
+         * notifies/states so an empty track survives a save/reload, and so track
+         * ordering is stable. A notify references its lane by name (NotifyTrack).
+         */
+        TVector<FName> NotifyTracks;
+
+
         friend FArchive& operator << (FArchive& Ar, FAnimationResource& Data)
         {
             Ar << Data.Name;
@@ -94,7 +102,14 @@ namespace Lumina
             Ar << Data.Channels;
             Ar << Data.Notifies;
             Ar << Data.NotifyStates;
-            
+
+            // Appended in ANIMATION_NOTIFY_TRACKS; older clips predate the lane list
+            // and reconstruct it from their notifies on first edit (see editor tool).
+            if (Ar.GetFileVersion() >= (int32)ELuminaEngineVersion::ANIMATION_NOTIFY_TRACKS)
+            {
+                Ar << Data.NotifyTracks;
+            }
+
             return Ar;
         }
     };
@@ -121,6 +136,10 @@ namespace Lumina
 
         float GetDuration() const { return AnimationResource->Duration; }
         FAnimationResource* GetAnimationResource() const { return AnimationResource.get(); }
+
+        const TVector<FAnimationNotify>& GetNotifies() const { return AnimationResource->Notifies; }
+        const TVector<FAnimationNotifyState>& GetNotifyStates() const { return AnimationResource->NotifyStates; }
+        bool HasNotifies() const { return !AnimationResource->Notifies.empty() || !AnimationResource->NotifyStates.empty(); }
 
         PROPERTY(Editable, Category = "Skeleton")
         TObjectPtr<CSkeleton> Skeleton;

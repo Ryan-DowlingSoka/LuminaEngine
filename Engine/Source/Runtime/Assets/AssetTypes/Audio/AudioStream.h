@@ -6,7 +6,7 @@
 namespace Lumina
 {
     REFLECT()
-    class CAudioStream : public CObject
+    class RUNTIME_API CAudioStream : public CObject
     {
         GENERATED_BODY()
     public:

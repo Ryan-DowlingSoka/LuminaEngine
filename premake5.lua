@@ -5,6 +5,7 @@ include "BuildScripts/Actions/Setup"
 if _ACTION == "setup" then return end
 
 include "BuildScripts/Dependencies"
+include "BuildScripts/Workspace"
 include "BuildScripts/Module"
 include "BuildScripts/Actions/Reflection"
 include "BuildScripts/Actions/Clean"
@@ -17,183 +18,12 @@ newoption {
     description = "Include the Tests project and its GoogleTest dependency",
 }
 
-workspace "Lumina"
-	language "C++"
-	cppdialect "C++latest"
-	architecture "x86_64"
-    warnings "Default"
-    targetdir (LuminaConfig.GetTargetDirectory())
-    objdir (LuminaConfig.GetObjDirectory())
-    enableunitybuild "Off"
-    fastuptodate "On"
-    multiprocessorcompile "On"
-	startproject "Lumina"
-    vectorextensions "AVX2"
-
-
-    configurations 
-    { 
-        "Debug",
-        "Development",
-        "Shipping",
-    }
-
-    platforms
-    {
-        "Editor",
-        "Game",
-    }
-
-    defaultplatform ("Editor")
-
-
-    filter "configurations:Debug"
-        defines
-        {
-            "JPH_FLOATING_POINT_EXCEPTIONS_ENABLED",
-            "JPH_EXTERNAL_PROFILE",
-            "JPH_ENABLE_ASSERTS",
-            "LUAI_GCMETRICS",
-        }
-    filter {}
-		
-	defines
-	{
-        "JPH_OBJECT_LAYER_BITS=32",
-        "JPH_DEBUG_RENDERER",
-        "EASTL_USER_DEFINED_ALLOCATOR=1",
-		"_CRT_SECURE_NO_WARNINGS",
-        "_SILENCE_CXX23_ALIGNED_UNION_DEPRECATION_WARNING",
-        "_SILENCE_CXX23_ALIGNED_STORAGE_DEPRECATION_WARNING",
-		"GLM_FORCE_DEPTH_ZERO_TO_ONE",
-		"GLM_FORCE_LEFT_HANDED",
-        "GLM_ENABLE_EXPERIMENTAL",
-        "GLM_FORCE_AVX2",
-		"IMGUI_DEFINE_MATH_OPERATORS",
-        "IMGUI_IMPL_VULKAN_USE_VOLK",
-        "WITH_AFTERMATH",
-
-        "RMLUI_STATIC_LIB",
-        
-        "LUA_VECTOR_SIZE=4",
-        "LUA_UTAG_LIMIT=2000",
-        "LUA_LUTAG_LIMIT=2000",
-
-        "TRACY_ALLOW_SHADOW_WARNING",
-        "TRACY_ENABLE",
-    	"TRACY_CALLSTACK",
-    	"TRACY_ON_DEMAND",
-        
-        'LUMINA_SYSTEM_NAME=\"%{LuminaConfig.GetSystem()}\"',
-        'LUMINA_ARCH_NAME=\"%{LuminaConfig.GetArchitecture()}\"',
-        'LUMINA_CONFIGURATION_NAME=\"%{cfg.buildcfg}\"',
-        'LUMINA_PLATFORM_NAME=\"%{LuminaConfig.GetSystem()}%{LuminaConfig.GetArchitecture()}\"',
-        'LUMINA_SHAREDLIB_EXT_NAME=\"%{LuminaConfig.GetSharedLibExtName()}\"',
-	}
-
-	disablewarnings
-    {
-        "4251", -- DLL-interface warning
-        "4275", -- Non-DLL-interface base class
-        "4244", -- "Precision loss warnings"
-        "4267", -- "Precision loss warnings"
-	}
-
-    filter "kind:SharedLib"
-        defines { "%{prj.name:upper()}_EXPORTS"}
-    filter {}
-        
-    filter "architecture:64"
-        defines { "LUMINA_PLATFORM_CPU_X86_64" }
-
-    filter "system:windows"
-        systemversion "latest"
-        conformancemode "On"
-        defines
-        {
-            "LE_PLATFORM_WINDOWS",
-            "DLL_EXPORT=__declspec(dllexport)",
-            "DLL_IMPORT=__declspec(dllimport)",
-            "__AVX2__",
-            -- Block <windows.h> from defining `min`/`max` macros, which clobber
-            -- std::max/glm::min etc. Previously suppressed by transitive
-            -- spdlog/fmt includes; now hardened.
-            "NOMINMAX",
-            "WIN32_LEAN_AND_MEAN",
-        }
-        buildoptions 
-        {
-            "/arch:AVX2",
-            "/Zc:preprocessor",
-            "/Zc:inline",
-            "/Zc:__cplusplus",
-            "/bigobj",
-        }
-
-    filter {}
-    
-    filter "platforms:Game"
-        defines { "WITH_EDITOR=0" } 
-
-    filter "platforms:Editor"
-        defines { "WITH_EDITOR=1" }
-
-    filter "configurations:Debug"
-        targetsuffix "-Debug"
-        linktimeoptimization "Off"
-        incrementallink "On"
-        optimize "Off"
-        symbols "On"
-        -- /Z7 embeds debug info in the .obj, avoiding mspdbsrv serialization
-        -- during /MP compile. Pairs with /DEBUG:FASTLINK so the linker just
-        -- references the .objs instead of merging everything into a PDB.
-        -- EnC requires /Zi, so it's disabled here.
-        debugformat "c7"
-        editandcontinue "Off"
-        runtime "Debug"
-        defines { "LE_DEBUG", "LUMINA_DEBUG", "_DEBUG", "DEBUG", }
-
-    -- FASTLINK is a linker-only switch; scoping to non-StaticLib avoids the
-    -- LNK4044 spam on third-party static libs (where lib.exe ignores it).
-    filter { "configurations:Debug", "kind:not StaticLib" }
-        linkoptions { "/DEBUG:FASTLINK" }
-
-    filter "configurations:Development"
-        targetsuffix "-Development"
-        optimize "Speed"
-        symbols "On"
-        runtime "Release"
-        -- LTO turns every relink into a whole-program codegen pass. Engine
-        -- programmers iterate in Development; keep incremental link instead.
-        -- /OPT:ICF (default with optimize "Speed") suppresses /INCREMENTAL,
-        -- so disable it for this iteration config; perf hit is minor and the
-        -- relink savings are large.
-        linktimeoptimization "Off"
-        incrementallink "On"
-        -- /Z7 embeds debug info in the .obj (same rationale as Debug):
-        -- under /MP the alternative is /Zi which serialises everything
-        -- through mspdbsrv and stalls parallel compilation. obj files grow,
-        -- but full and incremental compile time drop noticeably.
-        debugformat "c7"
-        editandcontinue "Off"
-        defines { "NDEBUG", "LE_DEVELOPMENT", "LUMINA_DEVELOPMENT", }
-
-    -- /DEBUG:FASTLINK skips merging .obj debug info into a unified PDB.
-    -- Linker just references the .objs; relinks drop from seconds to ~ms.
-    -- Scoped to non-StaticLib because lib.exe ignores it and spams LNK4044.
-    filter { "configurations:Development", "kind:not StaticLib" }
-        linkoptions { "/OPT:NOICF", "/OPT:NOREF", "/DEBUG:FASTLINK" }
-
-    filter "configurations:Shipping"
-        targetsuffix "-Shipping"
-        linktimeoptimization "On"
-        optimize "Full"
-        symbols "Off"
-        runtime "Release"
-        defines { "NDEBUG", "LE_SHIPPING", "LUMINA_SHIPPING" }
-        removedefines { "TRACY_ENABLE", "JPH_DEBUG_RENDERER" }
-    
-    filter {}
+LuminaWorkspaceSettings({
+    Name         = "Lumina",
+    StartProject = "Lumina",
+    TargetDir    = LuminaConfig.GetTargetDirectory(),
+    ObjDir       = LuminaConfig.GetObjDirectory(),
+})
 
     if _OPTIONS["with-tests"] then
         group "Tests"

@@ -17,7 +17,7 @@ namespace Lumina
     class CFactory;
     
     REFLECT()
-    class RUNTIME_API CFactoryRegistry : public CObject
+    class EDITOR_API CFactoryRegistry : public CObject
     {
         GENERATED_BODY()
     public:
@@ -32,7 +32,7 @@ namespace Lumina
     };
     
     REFLECT()
-    class RUNTIME_API CFactory : public CObject
+    class EDITOR_API CFactory : public CObject
     {
         GENERATED_BODY()
 

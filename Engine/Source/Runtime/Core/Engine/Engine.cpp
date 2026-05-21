@@ -198,6 +198,11 @@ namespace Lumina
                 DeveloperToolUI->Update(UpdateContext);
                 #endif
 
+                // Free render scenes of worlds left hidden past the grace window.
+                // Uses last frame's visibility (set during the UI update); a one-frame
+                // lag is irrelevant against a multi-second grace.
+                GWorldManager->ReclaimIdleRenderers(UpdateContext.GetFrameStartTime());
+
                 GWorldManager->UpdateWorlds(UpdateContext);
 
                 OnUpdateStage(UpdateContext);

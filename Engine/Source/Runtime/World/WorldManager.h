@@ -17,6 +17,11 @@ namespace Lumina
 
         void UpdateWorlds(const FUpdateContext& UpdateContext);
 
+        // Game thread: free the render scene of any world that has stayed hidden
+        // past the idle grace window (Editor.RenderScene.IdleReclaimSeconds).
+        // Reclaims at most one world per call to bound the per-frame GPU stall.
+        void ReclaimIdleRenderers(double NowSeconds);
+
         // Kick every world's physics step onto GPhysicsThread.
         void KickPhysics();
 

@@ -378,7 +378,9 @@ namespace Lumina
         const FSceneRenderStats& GetRenderStats() const override;
         FSceneRenderSettings& GetSceneRenderSettings() override;
         entt::entity GetEntityAtPixel(uint32 X, uint32 Y) const override;
+    #if USING(WITH_EDITOR)
         void SetPickerCursor(uint32 X, uint32 Y, bool bOverViewport) override;
+    #endif
         const FShadowAtlas* GetShadowAtlas() const override { return &ShadowAtlas; }
         
         
@@ -388,8 +390,13 @@ namespace Lumina
         void InitImages();
         void InitFrameResources();
         void CreateLayouts();
-        
-        void InitBRDFLUT();
+
+        // Aliases the process-wide immutable resources (BRDF LUT, SMAA LUTs, editor
+        // icons) into this scene's NamedImages, building them once on the first scene.
+        void InitSharedResources();
+
+        // Bakes the BRDF integration LUT and returns it (no NamedImages assignment).
+        FRHIImageRef BakeBRDFLUT();
         
         void InitSkyCube();
         

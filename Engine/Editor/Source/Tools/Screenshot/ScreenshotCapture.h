@@ -35,8 +35,8 @@ namespace Lumina::Screenshot
     //
     // OutputPath should include the extension (.png for FinalLDR, .hdr for SceneHDR).
     // If empty, a timestamped path under <EngineDir>/Saved/Screenshots is used.
-    RUNTIME_API FCaptureResult Capture(IRenderScene* Scene, ECaptureSource Source, const FString& OutputPath = {});
+    EDITOR_API FCaptureResult Capture(IRenderScene* Scene, ECaptureSource Source, const FString& OutputPath = {});
 
     // Picks the best available world's render scene (Game > Editor) and captures it.
-    RUNTIME_API FCaptureResult CaptureActiveWorld(ECaptureSource Source, const FString& OutputPath = {});
+    EDITOR_API FCaptureResult CaptureActiveWorld(ECaptureSource Source, const FString& OutputPath = {});
 }

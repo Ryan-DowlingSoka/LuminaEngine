@@ -1,7 +1,7 @@
 ﻿#include "PCH.h"
 #include <glm/glm.hpp>
 #include <tinyobjloader/tiny_obj_loader.h>
-#include "ImportHelpers.h"
+#include "MeshFormatImport.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
 #include "Core/Progress/SlowTask.h"
 #include "FileSystem/FileSystem.h"

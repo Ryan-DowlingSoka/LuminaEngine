@@ -9,7 +9,7 @@ namespace Lumina
     class CComponentVisualizer;
 
     REFLECT()
-    class RUNTIME_API CComponentVisualizerRegistry : public CObject
+    class EDITOR_API CComponentVisualizerRegistry : public CObject
     {
         GENERATED_BODY()
     public:
@@ -28,7 +28,7 @@ namespace Lumina
     };
     
     REFLECT()
-    class RUNTIME_API CComponentVisualizer : public CObject
+    class EDITOR_API CComponentVisualizer : public CObject
     {
         GENERATED_BODY()
     public:
@@ -41,7 +41,7 @@ namespace Lumina
     };
     
     REFLECT()
-    class RUNTIME_API CComponentVisualizer_PointLight : public CComponentVisualizer
+    class EDITOR_API CComponentVisualizer_PointLight : public CComponentVisualizer
     {
         GENERATED_BODY()
     public:
@@ -53,7 +53,7 @@ namespace Lumina
     };
     
     REFLECT()
-    class RUNTIME_API CComponentVisualizer_SpotLight : public CComponentVisualizer
+    class EDITOR_API CComponentVisualizer_SpotLight : public CComponentVisualizer
     {
         GENERATED_BODY()
     public:
@@ -64,7 +64,7 @@ namespace Lumina
     };
     
     REFLECT()
-    class RUNTIME_API CComponentVisualizer_DirectionalLight : public CComponentVisualizer
+    class EDITOR_API CComponentVisualizer_DirectionalLight : public CComponentVisualizer
     {
         GENERATED_BODY()
     public:
@@ -75,19 +75,7 @@ namespace Lumina
     };
     
     REFLECT()
-    class RUNTIME_API CComponentVisualizer_SphereCollider : public CComponentVisualizer
-    {
-        GENERATED_BODY()
-    public:
-        
-        CStruct* GetSupportedComponentType() const override;
-        
-        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
-        
-    };
-    
-    REFLECT()
-    class RUNTIME_API CComponentVisualizer_BoxCollider : public CComponentVisualizer
+    class EDITOR_API CComponentVisualizer_SphereCollider : public CComponentVisualizer
     {
         GENERATED_BODY()
     public:
@@ -99,7 +87,7 @@ namespace Lumina
     };
     
     REFLECT()
-    class RUNTIME_API CComponentVisualizer_CharacterPhysics : public CComponentVisualizer
+    class EDITOR_API CComponentVisualizer_BoxCollider : public CComponentVisualizer
     {
         GENERATED_BODY()
     public:
@@ -111,7 +99,19 @@ namespace Lumina
     };
     
     REFLECT()
-    class RUNTIME_API CComponentVisualizer_RigidBody : public CComponentVisualizer
+    class EDITOR_API CComponentVisualizer_CharacterPhysics : public CComponentVisualizer
+    {
+        GENERATED_BODY()
+    public:
+        
+        CStruct* GetSupportedComponentType() const override;
+        
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+        
+    };
+    
+    REFLECT()
+    class EDITOR_API CComponentVisualizer_RigidBody : public CComponentVisualizer
     {
         GENERATED_BODY()
     public:
@@ -123,7 +123,7 @@ namespace Lumina
     };
 
     REFLECT()
-    class RUNTIME_API CComponentVisualizer_Camera : public CComponentVisualizer
+    class EDITOR_API CComponentVisualizer_Camera : public CComponentVisualizer
     {
         GENERATED_BODY()
     public:

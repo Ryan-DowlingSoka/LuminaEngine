@@ -177,6 +177,11 @@ namespace Lumina
         void SetActive(bool bNewActive);
         bool IsSuspended() const { return !bActive; }
 
+        // Frees the render scene of a world that has stayed suspended longer than
+        // GraceSeconds. Stamps the suspend time on first idle observation. Returns
+        // true when it actually reclaimed (so callers can budget one stall/frame).
+        bool ReclaimIdleRenderer(double NowSeconds, double GraceSeconds);
+
         bool IsSimulating() const { return WorldType == EWorldType::Simulation; }
 
         static CWorld* DuplicateWorld(CWorld* OwningWorld);
@@ -276,6 +281,10 @@ namespace Lumina
         FWorldContext*                                      OwningContext = nullptr;
         double                                              DeltaTime = 0.0;
         double                                              TimeSinceCreation = 0.0;
+
+        // Time (engine clock) this world last went suspended; -1 while active or
+        // not yet stamped. Drives the idle render-scene reclaim grace window.
+        double                                              SuspendedTime = -1.0;
 
         // Game-thread accumulator driving OnFixedUpdate at the physics fixed rate.
         float                                               FixedUpdateAccumulator = 0.0f;

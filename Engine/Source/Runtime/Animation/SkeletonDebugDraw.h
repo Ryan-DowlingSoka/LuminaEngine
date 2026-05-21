@@ -1,0 +1,71 @@
+#pragma once
+
+#include "Containers/Array.h"
+#include "Containers/Name.h"
+#include <glm/glm.hpp>
+
+namespace Lumina
+{
+    class CWorld;
+    class IPrimitiveDrawInterface;
+    struct FSkeletonResource;
+
+    /**
+     * Stateless skeleton visualization helpers.
+     *
+     * These are deliberately free functions (no objects, no per-mesh state): any code
+     * with a draw interface and a skeleton can draw bones, and any tool with a world can
+     * draw every skeletal mesh in it. The editor base tool wires them up so the same
+     * visualization appears in the world editor, animation editor, anim-graph editor,
+     * skeleton/mesh editors, etc. -- nothing per-tool to maintain.
+     */
+    namespace SkeletonDebugDraw
+    {
+        // Plain options bag; pass by value/const-ref. No behavior, just knobs.
+        struct FOptions
+        {
+            bool      bBones        = true;  // parent->child bone shapes
+            bool      bJoints       = true;  // a small sphere at each bone origin
+            bool      bAxes         = false; // per-bone local X/Y/Z triad
+            bool      bOctahedral   = true;  // draw tapered octahedral bones (vs. plain lines)
+            bool      bDepthTest    = false; // false = x-ray (always visible)
+            float     JointRadius   = 0.014f;
+            float     AxisLength    = 0.06f;
+            float     BoneThickness = 2.4f;
+            // Warm, saturated palette: reads clearly over both dark and lit viewports,
+            // and deliberately avoids white (which washes out against bright geometry).
+            glm::vec4 BoneColor    = { 1.00f, 0.66f, 0.22f, 1.0f }; // amber
+            glm::vec4 RootColor    = { 0.30f, 0.92f, 0.70f, 1.0f }; // teal-green (roots stand out)
+            glm::vec4 JointColor   = { 1.00f, 0.82f, 0.40f, 1.0f }; // bright gold
+        };
+
+        // A bone's name paired with its world-space origin, for screen-space labelling.
+        struct FBoneLabel
+        {
+            FName     Name;
+            glm::vec3 WorldPosition;
+        };
+
+        /**
+         * Resolve model-space global transforms for every bone. When BoneTransforms holds
+         * a live pose (one skinning matrix per bone), recovers Global = Skinning * inverse(InvBind);
+         * otherwise falls back to the skeleton's bind pose via forward kinematics.
+         */
+        RUNTIME_API void ComputeGlobalBoneTransforms(const FSkeletonResource* Skeleton,
+                                                     const TVector<glm::mat4>& BoneTransforms,
+                                                     TVector<glm::mat4>& OutGlobals);
+
+        /** Draw one skeleton's bones/joints/axes. GlobalBoneTransforms is model-space (see above). */
+        RUNTIME_API void DrawSkeleton(IPrimitiveDrawInterface* DrawInterface,
+                                      const FSkeletonResource* Skeleton,
+                                      const TVector<glm::mat4>& GlobalBoneTransforms,
+                                      const glm::mat4& MeshWorldMatrix,
+                                      const FOptions& Options);
+
+        /** Draw every skeletal mesh in the world (bone lines/joints/axes only; no names). */
+        RUNTIME_API void DrawWorldSkeletons(CWorld* World, IPrimitiveDrawInterface* DrawInterface, const FOptions& Options);
+
+        /** Collect world-space bone label positions for every skeletal mesh in the world. */
+        RUNTIME_API void GatherWorldBoneLabels(CWorld* World, TVector<FBoneLabel>& OutLabels);
+    }
+}

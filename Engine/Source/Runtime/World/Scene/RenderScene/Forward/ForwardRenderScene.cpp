@@ -104,8 +104,10 @@ namespace Lumina
 
         InitBuffers();
 
-        // BRDF LUT must be baked before CreateLayouts() picks it up; survives swapchain rebuilds.
-        InitBRDFLUT();
+        // Process-wide immutable resources (BRDF LUT, SMAA LUTs, editor icons). Aliased
+        // from FRenderManager; built once on the first scene. Must precede CreateLayouts()
+        // (inside InitFrameResources) so the BRDF + SMAA binding sets see valid images.
+        InitSharedResources();
 
         // Sky cube allocated before CreateLayouts(); contents filled per-frame by SkyCubeCapturePass().
         InitSkyCube();
@@ -113,20 +115,45 @@ namespace Lumina
 
         InitFrameResources();
 
-        // Persistent SMAA LUTs, sized constants, not affected by swapchain size.
-        NamedImages[(int)ENamedImage::SMAAArea] = CreateSMAALUTImage(areaTexBytes, AREATEX_WIDTH, AREATEX_HEIGHT, EFormat::RG8_UNORM, AREATEX_PITCH, "SMAA AreaTex");
-        NamedImages[(int)ENamedImage::SMAASearch] = CreateSMAALUTImage(searchTexBytes, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, EFormat::R8_UNORM, SEARCHTEX_PITCH, "SMAA SearchTex");
-
         SwapchainResizedHandle = FRenderManager::OnSwapchainResized.AddMember(this, &FForwardRenderScene::SwapchainResized);
-        
+    }
+
+    void FForwardRenderScene::InitSharedResources()
+    {
+        FSharedRenderResources& Shared = GRenderManager->GetSharedRenderResources();
+
+        if (!Shared.bInitialized)
+        {
+            Shared.BRDFLut    = BakeBRDFLUT();
+            Shared.SMAAArea   = CreateSMAALUTImage(areaTexBytes, AREATEX_WIDTH, AREATEX_HEIGHT, EFormat::RG8_UNORM, AREATEX_PITCH, "SMAA AreaTex");
+            Shared.SMAASearch = CreateSMAALUTImage(searchTexBytes, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, EFormat::R8_UNORM, SEARCHTEX_PITCH, "SMAA SearchTex");
+
+            #if USING(WITH_EDITOR)
+            const FString Dir = Paths::GetEngineResourceDirectory();
+            Shared.EditorIcons[0] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/PointLight.png", false);
+            Shared.EditorIcons[1] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/DirectionalLight.png", false);
+            Shared.EditorIcons[2] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/SkyLight.png", false);
+            Shared.EditorIcons[3] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/SpotLight.png", false);
+            Shared.EditorIcons[4] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/CameraIcon.png", false);
+            Shared.EditorIcons[5] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/PersonIcon.png", false);
+            Shared.EditorIcons[6] = Import::Textures::CreateTextureFromImport(Dir + "/Textures/Molecule.png", false);
+            #endif
+
+            Shared.bInitialized = true;
+        }
+
+        NamedImages[(int)ENamedImage::BRDFLut]    = Shared.BRDFLut;
+        NamedImages[(int)ENamedImage::SMAAArea]   = Shared.SMAAArea;
+        NamedImages[(int)ENamedImage::SMAASearch] = Shared.SMAASearch;
+
         #if USING(WITH_EDITOR)
-        NamedImages[(int)ENamedImage::PointLightIcon]       = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/PointLight.png", false);
-        NamedImages[(int)ENamedImage::DirectionalLightIcon] = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/DirectionalLight.png", false);
-        NamedImages[(int)ENamedImage::SkyLightIcon]         = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/SkyLight.png", false);
-        NamedImages[(int)ENamedImage::SpotLightIcon]        = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/SpotLight.png", false);
-        NamedImages[(int)ENamedImage::CameraIcon]           = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/CameraIcon.png", false);
-        NamedImages[(int)ENamedImage::CharacterIcon]        = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/PersonIcon.png", false);
-        NamedImages[(int)ENamedImage::ParticleSystemIcon]   = Import::Textures::CreateTextureFromImport(Paths::GetEngineResourceDirectory() + "/Textures/Molecule.png", false);
+        NamedImages[(int)ENamedImage::PointLightIcon]       = Shared.EditorIcons[0];
+        NamedImages[(int)ENamedImage::DirectionalLightIcon] = Shared.EditorIcons[1];
+        NamedImages[(int)ENamedImage::SkyLightIcon]         = Shared.EditorIcons[2];
+        NamedImages[(int)ENamedImage::SpotLightIcon]        = Shared.EditorIcons[3];
+        NamedImages[(int)ENamedImage::CameraIcon]           = Shared.EditorIcons[4];
+        NamedImages[(int)ENamedImage::CharacterIcon]        = Shared.EditorIcons[5];
+        NamedImages[(int)ENamedImage::ParticleSystemIcon]   = Shared.EditorIcons[6];
         #endif
     }
 
@@ -5811,37 +5838,64 @@ namespace Lumina
         FRasterState RasterState; RasterState
             .EnableDepthClip();
 
-        FDepthStencilState DepthState; DepthState
-            .SetDepthFunc(EComparisonFunc::Greater)
-            .EnableDepthWrite()
-            .EnableDepthTest();
-            
-        FRenderState RenderState; RenderState
-            .SetRasterState(RasterState)
-            .SetDepthStencilState(DepthState);
-            
-        FGraphicsPipelineDesc Desc; Desc
-            .SetDebugName("Batched Line Draw")
-            .SetPrimType(EPrimitiveType::LineList)
-            .SetRenderState(RenderState)
-            .SetInputLayout(SimpleVertexLayoutInput)
-            .AddBindingLayout(SceneBindingLayout)
-            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
-            .SetVertexShader(VertexShader)
-            .SetPixelShader(PixelShader);
+        // Honor each batch's bDepthTest flag with two pipelines: depth-tested lines are
+        // occluded by geometry (reversed-Z 'Greater' + depth write, as before), while X-ray
+        // lines always draw on top and never write depth. Previously a single depth-tested
+        // pipeline drew every batch, so bDepthTest=false (e.g. skeleton bones) was ignored.
+        auto BuildLinePipeline = [&](bool bDepthTest)
+        {
+            FDepthStencilState DepthState;
+            if (bDepthTest)
+            {
+                DepthState.SetDepthFunc(EComparisonFunc::Greater).EnableDepthTest().EnableDepthWrite();
+            }
+            else
+            {
+                DepthState.DisableDepthTest().DisableDepthWrite();
+            }
 
-        FGraphicsState GraphicsState; GraphicsState
-            .SetRenderPass(RenderPass)
-            .AddVertexBuffer(VertexBinding)
-            .SetViewportState(SceneViewportState)
-            .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
-            .AddBindingSet(SceneBindingSetReadOnly)
-            .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            FRenderState RenderState; RenderState
+                .SetRasterState(RasterState)
+                .SetDepthStencilState(DepthState);
 
-        CmdList.SetGraphicsState(GraphicsState);
-        
+            FGraphicsPipelineDesc Desc; Desc
+                .SetDebugName(bDepthTest ? "Batched Line Draw (Depth)" : "Batched Line Draw (XRay)")
+                .SetPrimType(EPrimitiveType::LineList)
+                .SetRenderState(RenderState)
+                .SetInputLayout(SimpleVertexLayoutInput)
+                .AddBindingLayout(SceneBindingLayout)
+                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
+                .SetVertexShader(VertexShader)
+                .SetPixelShader(PixelShader);
+
+            return GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+        };
+
+        auto BuildLineState = [&](const FRHIGraphicsPipelineRef& Pipeline)
+        {
+            FGraphicsState GraphicsState; GraphicsState
+                .SetRenderPass(RenderPass)
+                .AddVertexBuffer(VertexBinding)
+                .SetViewportState(SceneViewportState)
+                .SetPipeline(Pipeline)
+                .AddBindingSet(SceneBindingSetReadOnly)
+                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            return GraphicsState;
+        };
+
+        FGraphicsState DepthTestedState = BuildLineState(BuildLinePipeline(true));
+        FGraphicsState XRayState        = BuildLineState(BuildLinePipeline(false));
+
+        // Re-bind only when the depth mode changes between consecutive batches.
+        int CurrentDepthMode = -1;
         for (const FLineBatch& Batch : LineBatches)
         {
+            const int DepthMode = Batch.bDepthTest ? 1 : 0;
+            if (DepthMode != CurrentDepthMode)
+            {
+                CmdList.SetGraphicsState(Batch.bDepthTest ? DepthTestedState : XRayState);
+                CurrentDepthMode = DepthMode;
+            }
             CmdList.SetLineWidth(Batch.Thickness);
             CmdList.Draw(Batch.VertexCount, 1, Batch.StartVertex, 0);
         }
@@ -7088,7 +7142,7 @@ namespace Lumina
         }
     }
 
-    void FForwardRenderScene::InitBRDFLUT()
+    FRHIImageRef FForwardRenderScene::BakeBRDFLUT()
     {
         constexpr uint32 BRDFLutSize = 256u;
 
@@ -7103,8 +7157,7 @@ namespace Lumina
         ImageDesc.DebugName         = "BRDF LUT";
 
         FRHIImageRef BRDFLut = GRenderContext->CreateImage(ImageDesc);
-        NamedImages[(int)ENamedImage::BRDFLut] = BRDFLut;
-        
+
         FBindingLayoutDesc LayoutDesc;
         LayoutDesc.AddItem(FBindingLayoutItem::Texture_UAV(0));
         LayoutDesc.SetVisibility(ERHIShaderType::Compute);
@@ -7137,6 +7190,8 @@ namespace Lumina
 
         CmdList->Close();
         GRenderContext->ExecuteCommandList(CmdList);
+
+        return BRDFLut;
     }
 
     void FForwardRenderScene::InitSkyCube()

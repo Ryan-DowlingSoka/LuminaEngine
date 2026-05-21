@@ -1,7 +1,7 @@
 ﻿#include "PCH.h"
 #include <chrono>
 #include <glm/gtx/string_cast.hpp>
-#include "ImportHelpers.h"
+#include "MeshFormatImport.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
 #include "Core/Progress/SlowTask.h"
 #include "Core/Threading/Atomic.h"

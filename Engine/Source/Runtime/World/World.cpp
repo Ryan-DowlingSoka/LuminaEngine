@@ -1255,16 +1255,42 @@ namespace Lumina
         if (bActive != bNewActive)
         {
             bActive = bNewActive;
-            
+
             if (bActive)
             {
-                CreateRenderer();       
+                // Resumed: clear the idle stamp and re-create the renderer if a
+                // prior idle pass reclaimed it. Cheap no-op while still resident.
+                SuspendedTime = -1.0;
+                CreateRenderer();
             }
-            else
-            {
-                DestroyRenderer();
-            }
+            // Suspending no longer tears the renderer down here. UpdateWorlds/Render
+            // already skip suspended worlds, so the flag alone stops all work; the
+            // GPU resources are reclaimed later by ReclaimIdleRenderer once the world
+            // has stayed hidden past the grace window. This keeps tab flicking free.
         }
+    }
+
+    bool CWorld::ReclaimIdleRenderer(double NowSeconds, double GraceSeconds)
+    {
+        if (bActive || RenderScene == nullptr)
+        {
+            return false;
+        }
+
+        if (SuspendedTime < 0.0)
+        {
+            // First frame observed idle: start the clock.
+            SuspendedTime = NowSeconds;
+            return false;
+        }
+
+        if (NowSeconds - SuspendedTime < GraceSeconds)
+        {
+            return false;
+        }
+
+        DestroyRenderer();
+        return true;
     }
 
     ENetMode CWorld::GetNetMode() const

@@ -14,14 +14,14 @@ LuminaModule({
         "LUMINA_RPMALLOC",
         "LUMINA_HAS_RECAST",
     },
-    Dependencies =
-    {
-        "MiniAudio", "GLFW", "ImGui", "EA", "Tracy", "Luau", "EnkiTS",
-        "JoltPhysics", "RPMalloc", "XXHash", "Miniz", "Volk", "VKBootstrap",
-        "TinyOBJLoader", "MeshOptimizer", "FastGLTF",
-        "OpenFBX", "BasicUniversal", "RmlUi", "FreeType", "MikkTSpace",
-        "Recast",
-    },
+    -- The full set of third-party libraries the Runtime links and exposes
+    -- through its public headers. Defined once in BuildScripts/ThirdParty so
+    -- module dependents and external game projects resolve the same closure.
+    -- Header-only entries (GLM, EnTT, spdlog, Vulkan, ...) contribute includes
+    -- only; the registry's Link flags decide what actually links.
+    -- Model-format parsers (tinyobjloader/OpenFBX/fastgltf) live in the Editor
+    -- module; they don't ship in the Game runtime.
+    Dependencies = LuminaThirdParty.RuntimePublicDeps,
     ExtraLinks =
     {
         "slang", 

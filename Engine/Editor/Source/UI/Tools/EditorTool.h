@@ -202,6 +202,17 @@ namespace Lumina
         /** Draws an editor viewport grid if a world exists */
         virtual void DrawWorldGrid(int Scale = 100, int Spacing = 1);
 
+        /** Draws bone debug lines/joints for every skeletal mesh in the world (CVar-gated). */
+        void DrawSkeletonDebug();
+
+        /** Screen-space bone-name labels for every skeletal mesh (CVar-gated); called from DrawViewport. */
+        void DrawSkeletonNameLabels(const ImVec2& ViewportOrigin, const ImVec2& ViewportSize);
+
+        /** Renders the skeleton-debug toggles (Show Skeleton / Names / Axes / X-Ray / distance).
+         *  Call inside a menu or popup; backed by the Editor.Debug.Skeleton* console variables so
+         *  every surface (world view-mode popup, anim/skeleton editors, console) stays in sync. */
+        void DrawSkeletonDebugMenuItems();
+
         bool BeginViewportToolbarGroup(char const* GroupID, ImVec2 GroupSize, const ImVec2& Padding);
         void EndViewportToolbarGroup();
 

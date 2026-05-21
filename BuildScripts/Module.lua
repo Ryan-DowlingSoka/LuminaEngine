@@ -29,7 +29,10 @@ local function ResolveIncludePath(BasePath, IncDir)
 end
 
 
--- Collect all public include directories from a module and its transitive ModuleDependencies
+-- Collect all public include directories a module exposes to its dependents:
+-- the module's own public includes, the public includes of the third-party
+-- libraries its headers expose (PUBLIC dependency semantics), and the same
+-- recursively for its module dependencies.
 local function CollectPublicIncludes(ModuleName, Visited)
     Visited = Visited or {}
     if Visited[ModuleName] then
@@ -44,8 +47,14 @@ local function CollectPublicIncludes(ModuleName, Visited)
 
     local Result = {}
 
-    -- Add this module's public includes
+    -- This module's own public includes
     for _, Dir in ipairs(Mod.ResolvedPublicIncludes or {}) do
+        table.insert(Result, Dir)
+    end
+
+    -- Third-party headers this module exposes through its public API
+    local ThirdPartyIncludes = LuminaThirdParty.Resolve(Mod.Dependencies or {})
+    for _, Dir in ipairs(ThirdPartyIncludes) do
         table.insert(Result, Dir)
     end
 
@@ -61,7 +70,9 @@ local function CollectPublicIncludes(ModuleName, Visited)
 end
 
 
--- Collect all public defines from a module and its transitive ModuleDependencies
+-- Collect all public defines a module exposes to its dependents: its own
+-- PublicDefines, the public defines of its third-party dependencies, and the
+-- same recursively for its module dependencies.
 local function CollectPublicDefines(ModuleName, Visited)
     Visited = Visited or {}
     if Visited[ModuleName] then
@@ -77,6 +88,11 @@ local function CollectPublicDefines(ModuleName, Visited)
     local Result = {}
 
     for _, Def in ipairs(Mod.PublicDefines or {}) do
+        table.insert(Result, Def)
+    end
+
+    local _, ThirdPartyDefines = LuminaThirdParty.Resolve(Mod.Dependencies or {})
+    for _, Def in ipairs(ThirdPartyDefines) do
         table.insert(Result, Def)
     end
 
@@ -122,6 +138,15 @@ function LuminaModule(Def)
     -- so dependents can include this module's headers
     if not Def.RootFiles then
         table.insert(Def.ResolvedPublicIncludes, path.join(BasePath, "Source"))
+    end
+
+    -- A reflected module's generated headers must be visible to its dependents.
+    -- Use an absolute engine path (not the per-project %{prj.name} token) so it
+    -- still points at THIS module's reflection output when a dependent resolves
+    -- it. Doubles as this module's own generated-header include.
+    if Def.Reflection then
+        table.insert(Def.ResolvedPublicIncludes,
+            LuminaConfig.EnginePath(path.join("Intermediates/Reflection", Def.Name)))
     end
 
     -- Register in the global module table before project() call
@@ -206,6 +231,11 @@ function LuminaModule(Def)
         filter {}
     end
 
+    -- Resolve this module's third-party dependencies once into (includes,
+    -- defines, links). Transitive and deduplicated via the registry.
+    local ThirdPartyIncludes, ThirdPartyDefines, ThirdPartyLinks =
+        LuminaThirdParty.Resolve(Def.Dependencies)
+
     local AllIncludes = {}
 
     -- Private includes (this module only)
@@ -240,8 +270,8 @@ function LuminaModule(Def)
         end
     end
 
-    -- Global public include directories (third-party, engine-wide)
-    for _, Dir in ipairs(LuminaConfig.GetPublicIncludeDirectories()) do
+    -- This module's own third-party dependency includes
+    for _, Dir in ipairs(ThirdPartyIncludes) do
         table.insert(AllIncludes, Dir)
     end
 
@@ -251,6 +281,11 @@ function LuminaModule(Def)
 
     -- Private defines
     for _, Def_ in ipairs(Def.PrivateDefines) do
+        table.insert(AllDefines, Def_)
+    end
+
+    -- Public defines required by this module's third-party dependencies
+    for _, Def_ in ipairs(ThirdPartyDefines) do
         table.insert(AllDefines, Def_)
     end
 
@@ -273,9 +308,10 @@ function LuminaModule(Def)
         table.insert(AllLinks, DepName)
     end
 
-    -- Third-party / external dependencies
-    for _, Dep in ipairs(Def.Dependencies) do
-        table.insert(AllLinks, Dep)
+    -- Third-party / external dependencies (transitive linkable set from the
+    -- registry; header-only libs contribute nothing here)
+    for _, Lib in ipairs(ThirdPartyLinks) do
+        table.insert(AllLinks, Lib)
     end
 
     -- Extra raw library links

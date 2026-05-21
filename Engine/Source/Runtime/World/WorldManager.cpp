@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "WorldManager.h"
+#include "Core/Console/ConsoleVariable.h"
 #include "Core/Profiler/Profile.h"
 #include "Physics/PhysicsThread.h"
 #include "Renderer/RenderThread.h"
@@ -9,6 +10,12 @@
 namespace Lumina
 {
     RUNTIME_API FWorldManager* GWorldManager = nullptr;
+
+    // Seconds a world may stay hidden before its render scene is reclaimed. Big
+    // enough that tab flicking / brief PIE never crosses it; small enough that a
+    // genuinely idle background world doesn't sit on ~hundreds of MB of GPU memory.
+    static TConsoleVar<float> CVarIdleReclaimSeconds("Editor.RenderScene.IdleReclaimSeconds", 3.0f,
+        "Seconds a hidden world's render scene is kept resident before being freed.");
 
     FWorldManager::~FWorldManager()
     {
@@ -42,6 +49,25 @@ namespace Lumina
             }
 
             World->Update(UpdateContext);
+        }
+    }
+
+    void FWorldManager::ReclaimIdleRenderers(double NowSeconds)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        const double Grace = (double)CVarIdleReclaimSeconds.GetValue();
+
+        // Reclaim at most one world per frame: DestroyRenderer does a full GPU
+        // WaitIdle, so freeing a batch of just-suspended worlds in one frame would
+        // stall hard. Spreading them keeps any single frame to one stall.
+        for (const TUniquePtr<FWorldContext>& Context : Contexts)
+        {
+            CWorld* World = Context->World.Get();
+            if (World != nullptr && World->ReclaimIdleRenderer(NowSeconds, Grace))
+            {
+                break;
+            }
         }
     }
 

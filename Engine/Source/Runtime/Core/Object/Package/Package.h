@@ -25,7 +25,7 @@ namespace Lumina
     struct FObjectExport
     {
         FObjectExport() = default;
-        FObjectExport(CObject* InObject);
+        RUNTIME_API FObjectExport(CObject* InObject);
 
         FGuid ObjectGUID;
         FName ObjectName;

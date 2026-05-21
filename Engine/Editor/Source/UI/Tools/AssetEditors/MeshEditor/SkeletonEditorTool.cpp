@@ -262,6 +262,12 @@ namespace Lumina
 
             ImGui::EndMenu();
         }
+
+        if (ImGui::BeginMenu(LE_ICON_BONE " Skeleton"))
+        {
+            DrawSkeletonDebugMenuItems();
+            ImGui::EndMenu();
+        }
     }
 
     void FSkeletonEditorTool::InitializeDockingLayout(ImGuiID DockspaceID, const ImVec2& DockspaceSize) const
