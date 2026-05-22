@@ -295,8 +295,8 @@ namespace Lumina
 	class RUNTIME_API IRHIResource
     {
     public:
-
-    	virtual ERHIResourceType GetResourceType() const = 0;
+		
+    	virtual ERHIResourceType GetResourceType() const { return RRT_None; }
 
     	IRHIResource();
     	virtual ~IRHIResource();
@@ -1637,7 +1637,9 @@ namespace Lumina
 	struct RUNTIME_API FBindingSetDesc
 	{
 		FString DebugName;
-		TFixedVector<FBindingSetItem, 1> Bindings;
+		// Most sets bind several resources; inline 1 spilled to the heap every frame on
+		// the 2nd AddItem (e.g. the per-frame Environment set).
+		TFixedVector<FBindingSetItem, 8> Bindings;
 		
 		bool operator ==(const FBindingSetDesc& b) const
 		{
@@ -1742,7 +1744,9 @@ namespace Lumina
         // Sized to MaxBindingLayouts so AddBindingLayout (passes bind 2-4) stays inline
         // instead of heap-allocating in the per-frame pipeline-cache lookup desc.
         TFixedVector<FRHIBindingLayoutRef, MaxBindingLayouts>	BindingLayouts;
-    	FString									DebugName;
+    	// Literal only (consumed once at pipeline creation); non-owning to keep the
+    	// per-frame cache-lookup desc allocation-free. Not part of the pipeline hash.
+    	const char*								DebugName = "";
         FRHIInputLayoutRef						InputLayout;
         FRHIVertexShaderRef						VS;
         FRHIPixelShaderRef						PS;
@@ -1755,7 +1759,7 @@ namespace Lumina
 
 		FORCEINLINE bool IsMeshShaderPipeline() const { return MS != nullptr; }
 
-		FORCEINLINE FGraphicsPipelineDesc& SetDebugName(const FString& InDebugName) { DebugName = Move(InDebugName); return *this; }
+		FORCEINLINE FGraphicsPipelineDesc& SetDebugName(const char* InDebugName) { DebugName = InDebugName; return *this; }
         FORCEINLINE FGraphicsPipelineDesc& SetPrimType(EPrimitiveType value) { PrimType = value; return *this; }
         FORCEINLINE FGraphicsPipelineDesc& SetInputLayout(FRHIInputLayout* value) { InputLayout = value; return *this; }
     	FORCEINLINE FGraphicsPipelineDesc& SetVertexShader(FRHIVertexShader* value) { VS = value; return *this; }
@@ -1878,7 +1882,8 @@ namespace Lumina
 
 	struct RUNTIME_API FComputePipelineDesc
 	{
-		FString									DebugName;
+		// Literal only; non-owning so per-frame cache-lookup descs don't allocate.
+		const char*								DebugName = "";
 		FRHIComputeShaderRef					CS;
 		TFixedVector<FRHIBindingLayoutRef, MaxBindingLayouts>	BindingLayouts;
 

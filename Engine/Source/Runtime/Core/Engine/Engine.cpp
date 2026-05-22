@@ -107,7 +107,7 @@ namespace Lumina
         GApp->GetEventProcessor().RegisterEventHandler(DeveloperToolUI, (int32)EInputLayer::EditorChrome);
         #endif
         
-        RmlUi::Initialise();
+        RmlUi::Initialize();
 
         FCoreDelegates::OnPostEngineInit.BroadcastAndClear();
 
@@ -284,7 +284,8 @@ namespace Lumina
                     CPackage::DrainPendingDestroys();
                 }
 
-                RmlUi::TickAll();
+                // Per-world UI ticks inside each world's Extract; only editor preview contexts remain global.
+                RmlUi::TickEditorContexts();
                 GWorldManager->ExtractWorlds();
 
                 GRenderManager->FrameEnd();

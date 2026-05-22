@@ -151,7 +151,10 @@ namespace Lumina
             return;
         }
 
-        const float DeltaTime = (float)SystemContext.GetDeltaTime();
+        const float  DeltaTime = (float)SystemContext.GetDeltaTime();
+        const double Now       = SystemContext.GetTime();
+        // Skeletons not rendered within this window are treated as off-screen.
+        constexpr double kAnimVisibilityGrace = 0.25;
 
         Task::ParallelFor(Handle->size(), [&](uint32 Index)
         {
@@ -164,6 +167,15 @@ namespace Lumina
 
             SSimpleAnimationComponent& Anim = View.get<SSimpleAnimationComponent>(Entity);
             SSkeletalMeshComponent&    Mesh = View.get<SSkeletalMeshComponent>(Entity);
+
+            // Off-screen: freeze the pose (skip the SamplePose hot path and time advance)
+            // until the mesh is rendered again. Notifies don't fire while frozen.
+            if (Mesh.VisibilityBasedAnimTick == EAnimUpdateMode::TickWhenRendered &&
+                (Now - Mesh.LastRenderedTime) > kAnimVisibilityGrace)
+            {
+                Anim.bAdvancedThisFrame = false;
+                return;
+            }
 
             // No animation or no mesh asset -> nothing to do. Don't clear the
             // pose buffer; the renderer treats an empty BoneTransforms as "not

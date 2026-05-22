@@ -23,7 +23,11 @@ namespace Lumina
             return;
         }
 
-        const float DeltaTime = (float)SystemContext.GetDeltaTime();
+        const float  DeltaTime = (float)SystemContext.GetDeltaTime();
+        const double Now       = SystemContext.GetTime();
+        // Skeletons not rendered within this window are treated as off-screen (a few frames of
+        // slack so brief occlusion / culling flicker doesn't stutter the pose).
+        constexpr double kAnimVisibilityGrace = 0.25;
 
         Task::ParallelFor(Handle->size(), [&](uint32 Index)
         {
@@ -36,6 +40,15 @@ namespace Lumina
 
             SAnimationGraphComponent& AnimGraph = View.get<SAnimationGraphComponent>(Entity);
             SSkeletalMeshComponent&   Mesh      = View.get<SSkeletalMeshComponent>(Entity);
+
+            // Off-screen pose evaluation skip: the graph VM is the per-skeleton hot path, so
+            // for crowds where most skeletons aren't on screen this is the big win. The pose
+            // simply freezes (and the clocks with it) until the mesh is rendered again.
+            if (Mesh.VisibilityBasedAnimTick == EAnimUpdateMode::TickWhenRendered &&
+                (Now - Mesh.LastRenderedTime) > kAnimVisibilityGrace)
+            {
+                return;
+            }
 
             // No graph or no mesh asset -> nothing to do. Leave BoneTransforms
             // untouched; the renderer treats an empty buffer as "not skinned".

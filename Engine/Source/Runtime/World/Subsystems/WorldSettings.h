@@ -82,7 +82,19 @@ namespace Lumina
          sorting and reduces solver parallelism). Enable only for lockstep netcode or replays. */
         PROPERTY(Editable, Category = "Physics")
         bool bDeterministicSimulation = false;
-        
+
+        /** Max rigid bodies the scene pre-allocates for. Drives up-front physics memory; exceeding it at runtime drops new bodies, so raise it for dense worlds. */
+        PROPERTY(Editable, Category = "Physics")
+        uint32 MaxPhysicsBodies = 16384;
+
+        /** Max simultaneously-overlapping body pairs the broad phase tracks. */
+        PROPERTY(Editable, Category = "Physics")
+        uint32 MaxPhysicsBodyPairs = 32768;
+
+        /** Max contact constraints the solver pre-allocates -- the dominant per-scene physics memory cost. Raise it if dense contact piles start interpenetrating. */
+        PROPERTY(Editable, Category = "Physics")
+        uint32 MaxPhysicsContactConstraints = 65536;
+
         /** Global velocity solver iterations. Entities can raise this per-body via NumVelocityStepsOverride. Minimum 2 required for friction. */
         PROPERTY(Editable, Category = "Physics")
         uint32 NumVelocitySteps = 10;

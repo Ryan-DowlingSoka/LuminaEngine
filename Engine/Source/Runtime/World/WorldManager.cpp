@@ -4,7 +4,6 @@
 #include "Core/Profiler/Profile.h"
 #include "Physics/PhysicsThread.h"
 #include "Renderer/RenderThread.h"
-#include "UI/RmlUiBridge.h"
 
 
 namespace Lumina
@@ -183,8 +182,6 @@ namespace Lumina
         Contexts.push_back(Move(Context));
 
         World->OwningContext = Raw;
-        
-        RmlUi::OnWorldInitialized(World);
 
         World->InitializeWorld(Type);
 
@@ -206,10 +203,6 @@ namespace Lumina
         {
             if (Contexts[i]->World.Get() == World)
             {
-                // Tear down RmlUi context BEFORE the world goes away; the
-                // bridge needs the live World pointer for its listener-detach walk.
-                RmlUi::OnWorldTornDown(World);
-
                 World->TeardownWorld();
                 World->OwningContext = nullptr;
 
@@ -224,7 +217,6 @@ namespace Lumina
         }
 
         // Not registered, tear down anyway so the caller's expectations hold.
-        RmlUi::OnWorldTornDown(World);
         World->TeardownWorld();
     }
 

@@ -55,7 +55,10 @@ namespace Lumina
         TVector<TRefCountPtr<FVulkanImage>>     SwapchainImages;
         TVector<VkSemaphore>                    PresentSemaphores;
         TVector<VkSemaphore>                    AcquireSemaphores;
-        TQueue<FRHIEventQueryRef>               FramesInFlight;
+        // Fixed node-pool FIFO: holds at most FRAMES_IN_FLIGHT queries (drained in
+        // WaitForFramePace before Present pushes), so it never touches the heap.
+        // Was a deque-backed TQueue whose push/pop churned subarrays every frame.
+        TFixedList<FRHIEventQueryRef, FRAMES_IN_FLIGHT + 1>  FramesInFlight;
         TFixedVector<FRHIEventQueryRef, 4>      QueryPool;
         
         glm::uvec2                              SwapchainExtent = {};

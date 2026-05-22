@@ -1,9 +1,13 @@
 #pragma once
 
-// One Rml::Context per CWorld; input flows from FInputViewport via FLockedWorldContext.
+// Process-global RmlUi backend. The per-world Rml::Context lives on CWorld
+// (FWorldUIContext); this bridge owns only the shared interfaces/renderer/font/
+// debugger plus editor-only preview contexts. Input flows from FInputViewport
+// via FLockedWorldContext.
 
 #include <glm/glm.hpp>
 #include "Containers/String.h"
+#include "Memory/SmartPtr.h"
 
 namespace Rml
 {
@@ -16,6 +20,7 @@ namespace Lumina
     class ICommandList;
     class FRHIImage;
     class FRmlUiRenderer;
+    struct FWorldUIContext;
 }
 
 namespace Lumina::Lua
@@ -25,22 +30,37 @@ namespace Lumina::Lua
 
 namespace Lumina::RmlUi
 {
-    RUNTIME_API bool            Initialise();
+    RUNTIME_API bool            Initialize();
     RUNTIME_API void            Shutdown();
 
-    RUNTIME_API void            OnWorldInitialized(CWorld* World);
-    RUNTIME_API void            OnWorldTornDown(CWorld* World);
+    // Per-world context lifecycle. CWorld owns the returned wrapper; CreateWorldUI
+    // builds the Rml::Context, DestroyWorldUI removes it. No external bookkeeping.
+    RUNTIME_API TUniquePtr<FWorldUIContext> CreateWorldUI(CWorld* World);
+    RUNTIME_API void            DestroyWorldUI(CWorld* World);
 
-    RUNTIME_API void            TickAll();
-    RUNTIME_API void            RenderAll(ICommandList& CmdList);
+    // Game thread: update one world's DOM (called from CWorld::Extract).
+    RUNTIME_API void            TickWorldUI(CWorld* World);
+    // Render thread: composite one world's UI onto its render target (from CWorld::Render).
+    RUNTIME_API void            RenderWorldUI(const CWorld* World, ICommandList& CmdList);
 
-    RUNTIME_API Rml::Context*   GetActiveContext();
+    // The world whose context the `UI.*` Lua module targets. Set when a world comes
+    // up or resumes; cleared when it tears down.
+    RUNTIME_API void            SetActiveWorld(CWorld* World);
+
+    // Editor-only preview contexts (not bound to any world); ticked/rendered here.
+    RUNTIME_API void            TickEditorContexts();
+    RUNTIME_API void            RenderEditorContexts(ICommandList& CmdList);
+
     RUNTIME_API Rml::Context*   GetContextForWorld(CWorld* World);
+
+    // True when the cursor is over an interactive element in this world's UI, so
+    // editor picking / marquee should yield to it. Reads RmlUi's current hover.
+    RUNTIME_API bool            WorldUIWantsMouse(const CWorld* World);
 
     // RAII handle: acquires the bridge state lock for its lifetime and resolves
     // the Rml::Context for a world. Use this whenever you need to call into the
     // context (input dispatch via ProcessMouseMove/ProcessKeyDown/etc.) — the
-    // lock blocks the render thread's RenderAll from walking the DOM until you
+    // lock blocks the render thread's RenderWorldUI from walking the DOM until you
     // release, and keeps the context pointer valid against teardown.
     class RUNTIME_API FLockedWorldContext
     {

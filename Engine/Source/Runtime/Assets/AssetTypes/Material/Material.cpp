@@ -3,6 +3,7 @@
 #include "Assets/AssetTypes/Material/MaterialInstance.h"
 #include "Assets/AssetTypes/Textures/Texture.h"
 #include "FileSystem/FileSystem.h"
+#include "Memory/MemoryTracking.h"
 #include "Paths/Paths.h"
 #include "Renderer/RenderContext.h"
 #include "Renderer/RenderManager.h"
@@ -23,6 +24,8 @@ namespace Lumina
 
     void CMaterial::Serialize(FArchive& Ar)
     {
+        LUMINA_MEMORY_SCOPE("Materials");
+
         CMaterialInterface::Serialize(Ar);
     }
 
@@ -200,6 +203,17 @@ namespace Lumina
             SetReadyForRender(true);
 
             NotifyInstancesParentChanged();
+
+#if !USING(WITH_EDITOR)
+            // The RHI shaders now own their compiled code; the serialized SPIR-V blobs are dead in a
+            // cooked build (nothing recompiles or re-saves the material, device loss panics). The editor
+            // keeps them -- the material editor reads/rewrites these on recompile and save.
+            auto Drop = [](TVector<uint32>& V) { V.clear(); V.shrink_to_fit(); };
+            Drop(VertexShaderBinaries);
+            Drop(PixelShaderBinaries);
+            Drop(DepthPrepassVertexShaderBinaries);
+            Drop(ShadowVertexShaderBinaries);
+#endif
         }
     }
 

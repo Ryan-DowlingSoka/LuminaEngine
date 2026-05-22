@@ -194,7 +194,7 @@ namespace Lumina
         while (FramesInFlight.size() >= FRAMES_IN_FLIGHT)
         {
             FRHIEventQueryRef Query = FramesInFlight.front();
-            FramesInFlight.pop();
+            FramesInFlight.pop_front();
 
             Context->WaitEventQuery(Query);
 
@@ -205,30 +205,49 @@ namespace Lumina
     bool FVulkanSwapchain::AcquireNextImage()
     {
     	LUMINA_PROFILE_SCOPE();
-    	
-    	VkSemaphore Semaphore = AcquireSemaphores[AcquireSemaphoreIndex];
-    	VkResult Result = VK_RESULT_MAX_ENUM;
+
+    	VkResult    Result    = VK_RESULT_MAX_ENUM;
+    	VkSemaphore Semaphore = VK_NULL_HANDLE;
 
 	    constexpr int MaxAttempts = 3;
 	    for (int Attempt = 0; Attempt < MaxAttempts; ++Attempt)
 	    {
-	    	Result = vkAcquireNextImageKHR(Context->GetDevice()->GetDevice(), Swapchain, UINT64_MAX, Semaphore, nullptr, &CurrentImageIndex);
-
-	    	if ((Result == VK_ERROR_OUT_OF_DATE_KHR || Result == VK_SUBOPTIMAL_KHR || bNeedsResize) && Attempt < MaxAttempts)
+	    	// Recreate before acquiring when a prior frame flagged a resize/suboptimal. Doing it
+	    	// here (not after a failed acquire) means we always acquire against a fresh swapchain.
+	    	if (bNeedsResize)
 	    	{
 	    		RecreateSwapchain(Windowing::GetPrimaryWindowHandle()->GetExtent());
 	    		GRenderManager->SwapchainResized(Windowing::GetPrimaryWindowHandle()->GetExtent());
 	    	}
-		    else
-		    {
-			    break;
-		    }
+
+	    	// Re-fetch every attempt: RecreateSwapchain destroys + rebuilds AcquireSemaphores, so a
+	    	// handle captured before a retry would dangle (and be used-after-free below).
+	    	Semaphore = AcquireSemaphores[AcquireSemaphoreIndex];
+
+	    	Result = vkAcquireNextImageKHR(Context->GetDevice()->GetDevice(), Swapchain, UINT64_MAX, Semaphore, nullptr, &CurrentImageIndex);
+
+	    	// OUT_OF_DATE is the only result where NO image was acquired and the semaphore was left
+	    	// UNSIGNALED -- so it's safe to recreate and re-acquire on a fresh semaphore. SUBOPTIMAL
+	    	// (and SUCCESS) acquired an image and SIGNALED the semaphore; re-acquiring on it would trip
+	    	// VUID-vkAcquireNextImageKHR-semaphore-01286 and leak the acquired image (the source of the
+	    	// WRITE_AFTER_PRESENT hazard), so we keep this image and recreate next frame instead.
+	    	if (Result == VK_ERROR_OUT_OF_DATE_KHR)
+	    	{
+	    		bNeedsResize = true;
+	    		continue;
+	    	}
+	    	break;
 	    }
 
-    	AcquireSemaphoreIndex = (AcquireSemaphoreIndex + 1) % AcquireSemaphores.size();
-    	
-    	if ((Result == VK_SUCCESS || Result == VK_SUBOPTIMAL_KHR || bNeedsResize))
+    	// Suboptimal image is still presentable; defer the recreate to the next acquire.
+    	if (Result == VK_SUBOPTIMAL_KHR)
     	{
+    		bNeedsResize = true;
+    	}
+
+    	if (Result == VK_SUCCESS || Result == VK_SUBOPTIMAL_KHR)
+    	{
+    		AcquireSemaphoreIndex = (AcquireSemaphoreIndex + 1) % AcquireSemaphores.size();
     		Context->GetQueue(ECommandQueue::Graphics)->AddWaitSemaphore(Semaphore, 0, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
     	}
 
@@ -243,13 +262,13 @@ namespace Lumina
     	
     	VkSemaphore Semaphore = PresentSemaphores[CurrentImageIndex];
 
-    	VkPresentInfoKHR PresentInfo = {};
-    	PresentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    	PresentInfo.pSwapchains = &Swapchain;
-    	PresentInfo.swapchainCount = 1;
-    	PresentInfo.pWaitSemaphores = &Semaphore;
-    	PresentInfo.waitSemaphoreCount = 1;
-    	PresentInfo.pImageIndices = &CurrentImageIndex;
+    	VkPresentInfoKHR PresentInfo	= {};
+    	PresentInfo.sType				= VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    	PresentInfo.pSwapchains			= &Swapchain;
+    	PresentInfo.swapchainCount		= 1;
+    	PresentInfo.pWaitSemaphores		= &Semaphore;
+    	PresentInfo.waitSemaphoreCount	= 1;
+    	PresentInfo.pImageIndices		= &CurrentImageIndex;
 
     	VkResult Result;
 	    {
@@ -285,7 +304,7 @@ namespace Lumina
 
     	Context->ResetEventQuery(Query);
     	Context->SetEventQuery(Query, ECommandQueue::Graphics);
-    	FramesInFlight.push(Query);
+    	FramesInFlight.push_back(Query);
     	return true;
     }
 }

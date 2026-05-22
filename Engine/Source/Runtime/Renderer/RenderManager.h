@@ -4,7 +4,6 @@
 #include "RenderTypes.h"
 #include "TextureManager.h"
 #include "Core/Delegates/Delegate.h"
-#include "Subsystems/Subsystem.h"
 
 
 namespace Lumina
@@ -13,6 +12,7 @@ namespace Lumina
     class IImGuiRenderer;
     class IRenderContext;
     class FRHICommandList;
+    class FUpdateContext;
 }
 
 namespace Lumina
@@ -53,9 +53,9 @@ namespace Lumina
         void FrameStart(const FUpdateContext& UpdateContext);
 
         // Game thread: snapshot ImGui DrawData and enqueue the render-thread
-        // pipeline (one cmdlist with world + RmlUi + ImGui composite).
-        // RmlUi::TickAll() must have already run on the game thread; the bridge's
-        // FState mutex guards DOM + world list against next-frame TickAll.
+        // pipeline (one cmdlist with world + RmlUi + ImGui composite). Per-world UI
+        // must already have ticked (CWorld::Extract); the bridge's FState mutex guards
+        // each context's DOM against next-frame mutation.
         void FrameEnd();
 
         void SwapchainResized(glm::vec2 NewSize);

@@ -6,6 +6,33 @@
 
 namespace Lumina
 {
+    // Pipeline compatibility (Vulkan dynamic rendering) depends only on attachment
+    // formats, sample count and view mask -- NOT the actual images, load/store ops,
+    // clear color or render area. Keying the cache on the full render pass desc minted
+    // a fresh pipeline set per scene (new RTs => new image pointers), so the global
+    // cache grew without bound. Mirror exactly the inputs vkCreateGraphicsPipelines reads.
+    static EFormat ResolveAttachmentFormat(const FRenderPassDesc::FAttachment& Attachment)
+    {
+        return Attachment.Format == EFormat::UNKNOWN
+                   ? Attachment.Image->GetDescription().Format
+                   : Attachment.Format;
+    }
+
+    static size_t HashRenderPassForPipeline(const FRenderPassDesc& Desc)
+    {
+        size_t Hash = 0;
+        Hash::HashCombine(Hash, Desc.SampleCount);
+        Hash::HashCombine(Hash, Desc.ViewMask);
+        Hash::HashCombine(Hash, (uint32)Desc.ColorAttachments.size());
+        for (const FRenderPassDesc::FAttachment& Attachment : Desc.ColorAttachments)
+        {
+            Hash::HashCombine(Hash, (uint32)ResolveAttachmentFormat(Attachment));
+        }
+        Hash::HashCombine(Hash, Desc.DepthAttachment.IsValid()
+                                    ? (uint32)ResolveAttachmentFormat(Desc.DepthAttachment)
+                                    : (uint32)EFormat::UNKNOWN);
+        return Hash;
+    }
 
     FRHIGraphicsPipeline* FVulkanPipelineCache::GetOrCreateGraphicsPipeline(FVulkanDevice* Device, const FGraphicsPipelineDesc& InDesc, const FRenderPassDesc& InRenderPassDesc)
     {
@@ -16,7 +43,7 @@ namespace Lumina
 
         size_t Hash = 0;
         Hash::HashCombine(Hash, InDesc);
-        Hash::HashCombine(Hash, RenderPassDesc);
+        Hash::HashCombine(Hash, HashRenderPassForPipeline(RenderPassDesc));
 
         auto It = GraphicsPipelines.find(Hash);
         if (It != GraphicsPipelines.end())

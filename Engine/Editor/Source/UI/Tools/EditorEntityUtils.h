@@ -47,4 +47,16 @@ namespace Lumina::EditorEntityUtils
      *  and all descendants with mesh AABBs / transforms. Returns false if the entity
      *  has nothing focusable. */
     bool ComputeFocusBoundsForEntity(FEntityRegistry& Registry, entt::entity Entity, glm::vec3& OutCenter, float& OutRadius);
+
+    /** Oriented box the editor draws around an entity: center = world location, half-extents
+     *  from the mesh AABB (+20% padding) for static/skeletal meshes, or a unit box scaled by the
+     *  transform for everything else. Returns false if the entity has no transform. The single
+     *  source of truth for selection/hover boxes so every entity type is treated identically. */
+    bool GetEntityDrawBox(FEntityRegistry& Registry, entt::entity Entity, glm::vec3& OutCenter, glm::vec3& OutHalfExtents, glm::quat& OutRotation);
+
+    /** Hover-style wireframe bounds box around any entity (via GetEntityDrawBox). No-op if unbounded. */
+    void DrawEntityBounds(CWorld* World, entt::entity Entity, const glm::vec4& Color, float Thickness = 3.0f, bool bDepthTest = true);
+
+    /** Selection-style corner-bracket box around any entity (via GetEntityDrawBox). No-op if unbounded. */
+    void DrawEntitySelectionBox(CWorld* World, entt::entity Entity, const glm::vec4& Color, float CornerFraction = 0.2f, float Thickness = 5.0f, bool bDepthTest = true);
 }

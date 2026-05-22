@@ -72,7 +72,7 @@ namespace Lumina
         #if LUMINA_SHIPPING
         GRenderContext->Initialize(FRenderContextDesc{false, false});
         #else
-        GRenderContext->Initialize(FRenderContextDesc{false, true});
+        GRenderContext->Initialize(FRenderContextDesc{true, true});
         #endif
 
         GRenderThread = Memory::New<FRenderThread>();
@@ -116,10 +116,10 @@ namespace Lumina
             FGPUProfiler::Get().BeginFrame();
             GRenderContext->FrameStart(ThisFrameIndex);
 
-            // Single cmdlist for world + RmlUi + ImGui composite. RmlUi::FState
-            // is locked by RenderAll for the duration of its DOM walk; the same
-            // lock blocks next-frame TickAll / world add/destroy on the game
-            // thread until this completes.
+            // Single cmdlist for world + RmlUi + ImGui composite. Each world renders
+            // its own UI inside RenderWorlds (CWorld::Render); the RmlUi state lock it
+            // takes blocks next-frame UI tick / world destroy on the game thread until
+            // the DOM walk completes. Editor-only contexts render via RenderEditorContexts.
             // Persistent per-frame-in-flight list (reused, not allocated fresh each frame).
             FRHICommandListRef CmdList = GRenderContext->GetFrameCommandList();
             CmdList->Open();
@@ -132,7 +132,8 @@ namespace Lumina
 
             {
                 GPU_PROFILE_SCOPE_COLOR(&CL, "RmlUi", FColor(0.95f, 0.55f, 0.20f));
-                RmlUi::RenderAll(CL);
+                // Per-world UI rendered inside RenderWorlds (CWorld::Render); only editor contexts remain here.
+                RmlUi::RenderEditorContexts(CL);
             }
 
             {

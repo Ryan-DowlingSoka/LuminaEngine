@@ -26,6 +26,9 @@ namespace Lumina
         uint64 BufferSize = 0;
         uint64 WritePointer = 0;
         void* MappedMemory = nullptr;
+        // Submission cycles this chunk has sat in the pool unused. Reset to 0 when used,
+        // incremented each SubmitChunks; drives reclamation of oversized idle chunks.
+        uint32 IdleCycles = 0;
 
         static constexpr uint64 GSizeAlignment = 4096;
     };

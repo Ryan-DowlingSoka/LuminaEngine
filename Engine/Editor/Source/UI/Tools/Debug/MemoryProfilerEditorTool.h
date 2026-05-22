@@ -35,10 +35,15 @@ namespace Lumina
         void DrawWindow(bool bIsFocused);
         void RefreshSnapshot();
 
+        // Serializes the full snapshot (CPU + GPU + resources + call sites) to the clipboard
+        // as a structured text report, formatted for pasting into an AI assistant.
+        void CopyAllStatsToClipboard();
+
         void DrawHeaderCards();
         void DrawOverviewTab();
         void DrawGPUTab();
         void DrawCPUTab();
+        void DrawScriptMemory();
 
         // GPU sub-panels.
         void DrawCategorySegmentBar(float Height);
@@ -59,10 +64,14 @@ namespace Lumina
         uint32                  ResourceCounts[RRT_Num] = {};
         uint32                  TotalResources = 0;
 
+        // Total bytes the Luau VM has allocated (whole shared global state across script threads).
+        size_t                  LuaBytes = 0;
+
         // Rolling timelines in MB, advanced once per refresh tick.
         TVector<float>          HistRSS;
         TVector<float>          HistCPUTracked;
         TVector<float>          HistVRAM;
+        TVector<float>          HistLua;
 
         float                   RefreshTimer = 0.0f;
 

@@ -56,7 +56,7 @@ VSOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: SV_Vu
     FVertexData VertexData;
     if (Inst.HasFlag(EInstanceFlags::Skinned))
     {
-        VertexData = LoadSkinnedVertex(Inst.MeshletHeader, M, LocalVertIdx, Inst.BoneOffset);
+        VertexData = LoadSkinnedVertex(M, LocalVertIdx, Inst.SkinnedVertexBase);
     }
     else
     {

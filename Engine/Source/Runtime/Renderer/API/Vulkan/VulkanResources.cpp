@@ -595,8 +595,16 @@ namespace Lumina
 
     void FUploadManager::SubmitChunks(uint64 CurrentVersion, uint64 SubmittedVersion)
     {
+        // Age every pooled chunk one submission cycle; the chunk used this cycle
+        // (CurrentChunk, pushed below) resets to 0 so only genuinely idle chunks accrue.
+        for (const TSharedPtr<FBufferChunk>& Chunk : ChunkPool)
+        {
+            Chunk->IdleCycles++;
+        }
+
         if (CurrentChunk)
         {
+            CurrentChunk->IdleCycles = 0;
             ChunkPool.push_back(CurrentChunk);
             CurrentChunk.reset();
         }
@@ -618,6 +626,31 @@ namespace Lumina
                 continue;
             }
             Chunk->Version = SubmittedVersion;
+        }
+
+        // Reclaim the high-water bloat: a one-off large upload mints an oversized chunk
+        // that smallest-fit never reuses for small uploads and the new-allocation eviction
+        // never trims, so it stays pinned for the (pooled) command list's whole lifetime.
+        // Free chunks larger than the reusable baseline once they've sat unused past the
+        // hysteresis window AND their GPU work has completed. Baseline-sized chunks stay.
+        static constexpr uint32 kReclaimIdleCycles = 128;
+        const uint64 BaselineSize = Align(NextPow2_u64(DefaultChunkSize), FBufferChunk::GSizeAlignment);
+        const uint64 Completed    = Context->GetQueue(SubmitQueue)->GetCompletedInstance();
+        for (auto It = ChunkPool.begin(); It != ChunkPool.end(); )
+        {
+            const TSharedPtr<FBufferChunk>& Chunk = *It;
+            const bool bGpuDone = (Chunk->Version == 0)
+                || (VersionGetSubmitted(Chunk->Version) && VersionGetInstance(Chunk->Version) <= Completed);
+
+            if (bGpuDone && Chunk->IdleCycles >= kReclaimIdleCycles && Chunk->BufferSize > BaselineSize)
+            {
+                AllocatedMemory -= Chunk->BufferSize;
+                It = ChunkPool.erase(It);
+            }
+            else
+            {
+                ++It;
+            }
         }
     }
 

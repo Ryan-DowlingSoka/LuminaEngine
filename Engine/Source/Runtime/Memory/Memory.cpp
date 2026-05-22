@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "Memory.h"
 #include "MemoryTracking.h"
+#include "Allocators/Allocator.h"
 #include "Core/LuminaMacros.h"
 #include "Core/Assertions/Assert.h"
 #include "Core/Profiler/Profile.h"
@@ -113,5 +114,13 @@ namespace Lumina
         FMalloc& Allocator = (GMalloc != nullptr) ? *GMalloc : EnsureAllocator();
         Allocator.Free(Memory);
         Memory = nullptr;
+    }
+
+    FBlockLinearAllocator& GetThreadScratchAllocator()
+    {
+        // 256 KB blocks; chains more on demand and reuses them across FMemMark scopes.
+        static constexpr SIZE_T ScratchBlockSize = 256 * 1024;
+        thread_local FBlockLinearAllocator GScratch(ScratchBlockSize);
+        return GScratch;
     }
 }

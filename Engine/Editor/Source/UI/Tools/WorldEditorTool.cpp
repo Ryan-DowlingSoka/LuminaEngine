@@ -24,6 +24,7 @@
 #include "glm/gtx/matrix_decompose.hpp"
 #include "Input/InputContext.h"
 #include "Input/InputProcessor.h"
+#include "UI/RmlUiBridge.h"
 #include "Input/InputViewport.h"
 #include "Memory/SmartPtr.h"
 #include "Core/Math/Math.h"
@@ -482,20 +483,7 @@ namespace Lumina
                 return;
             }
             
-            const STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(Data.Entity);
-            
-            if (SStaticMeshComponent* MeshComponent = Registry.try_get<SStaticMeshComponent>(Data.Entity))
-            {
-                World->DrawBox(Transform.GetWorldLocation(), MeshComponent->GetAABB().GetSize() * 0.5f * Transform.GetWorldScale() * 1.2f, Transform.GetWorldRotation(), FColor::White, 3.0f);
-            }
-            else if (auto* SkinnedMeshComponent = Registry.try_get<SSkeletalMeshComponent>(Data.Entity))
-            {
-                World->DrawBox(Transform.GetWorldLocation(), SkinnedMeshComponent->GetAABB().GetSize() * 0.5f * Transform.GetWorldScale() * 1.2f, Transform.GetWorldRotation(), FColor::White, 3.0f);
-            }
-            else
-            {
-                World->DrawBox(Transform.GetWorldLocation(), 1.0f * Transform.GetWorldScale(), Transform.GetWorldRotation(), FColor::White, 3.0f);
-            }
+            EditorEntityUtils::DrawEntityBounds(World, Data.Entity, FColor::White, 3.0f);
         };
 
         OutlinerContext.RebuildTreeFunction = [this](FTreeListView& Tree)
@@ -612,6 +600,13 @@ namespace Lumina
     void FWorldEditorTool::Update(const FUpdateContext& UpdateContext)
     {
         FEditorTool::Update(UpdateContext);
+
+        // Reassert Game focus each frame: a game script's SetMouseMode("Normal")
+        // clears NoMouse, which would otherwise re-enable ImGui mid-play.
+        if (bGamePreviewRunning && InputFocus == EInputFocus::Game)
+        {
+            ApplyInputFocus();
+        }
 
         DrawWorldGrid();
 
@@ -756,12 +751,10 @@ namespace Lumina
             {
                 continue;
             }
-            
-            if (SStaticMeshComponent* MeshComponent = World->GetEntityRegistry().try_get<SStaticMeshComponent>(Entity))
-            {
-                const STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(Entity);
-                World->DrawBoxCorners(Transform.GetWorldLocation(), MeshComponent->GetAABB().GetSize() * 0.5f * Transform.GetWorldScale() * 1.2f, Transform.GetWorldRotation(), FColor::Green, 0.2f, 5.0f);
-            }
+
+            // Every selectable entity type gets the same selection box (static mesh, skeletal mesh,
+            // or a unit-box fallback for lights/empties/etc.), resolved by the shared helper.
+            EditorEntityUtils::DrawEntitySelectionBox(World, Entity, FColor::Green, 0.2f, 5.0f);
         }
 
         const bool bPastePressed = bViewportHovered
@@ -1112,6 +1105,35 @@ namespace Lumina
 
     void FWorldEditorTool::DrawViewportOverlayElements(const FUpdateContext& UpdateContext, ImTextureRef ViewportTexture, ImVec2 ViewportSize)
     {
+        // Game-focus indicator: a subtle outline + hint so it's obvious input is
+        // routed to the game (not the editor), and how to hand it back.
+        if (bGamePreviewRunning && InputFocus == EInputFocus::Game)
+        {
+            ImDrawList* DL = ImGui::GetWindowDrawList();
+
+            // The viewport image is drawn at the cursor BEFORE the caller insets it
+            // by ItemSpacing (see FEditorTool::DrawViewport), so back that out to land
+            // the outline exactly on the image rect.
+            const ImVec2 Spacing = ImGui::GetStyle().ItemSpacing;
+            const ImVec2 Cursor  = ImGui::GetCursorScreenPos();
+            const ImVec2 Min(Cursor.x - Spacing.x, Cursor.y - Spacing.y);
+            const ImVec2 Max(Min.x + ViewportSize.x, Min.y + ViewportSize.y);
+            const ImU32  Accent = IM_COL32(255, 176, 64, 200);
+
+            // Drawn 1px inside the edge so the full 2px stroke stays within the image.
+            DL->AddRect(ImVec2(Min.x + 1.0f, Min.y + 1.0f), ImVec2(Max.x - 1.0f, Max.y - 1.0f),
+                Accent, 0.0f, 0, 2.0f);
+
+            // Faint, translucent hint in the top-right (clear of the toolbar at top-left).
+            const char*  Hint     = "Shift+F1: Editor focus";
+            const ImVec2 TextSize = ImGui::CalcTextSize(Hint);
+            const float  Pad = 6.0f, Margin = 8.0f;
+            const ImVec2 BgMin(Max.x - TextSize.x - Pad * 2.0f - Margin, Min.y + Margin);
+            const ImVec2 BgMax(BgMin.x + TextSize.x + Pad * 2.0f, BgMin.y + TextSize.y + Pad * 1.5f);
+            DL->AddRectFilled(BgMin, BgMax, IM_COL32(0, 0, 0, 70), 4.0f);
+            DL->AddText(ImVec2(BgMin.x + Pad, BgMin.y + Pad * 0.75f), IM_COL32(235, 235, 235, 120), Hint);
+        }
+
         if (bViewportHovered)
         {
             if (ImGui::IsKeyPressed(ImGuiKey_Space))
@@ -1548,7 +1570,9 @@ namespace Lumina
             }
         }
 
-        if (!bModeOwnsInput && ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows))
+        // Yield to the world's UI: a click over an interactive Rml element must not
+        // also fall through to entity picking / marquee behind it.
+        if (!bModeOwnsInput && ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows) && !RmlUi::WorldUIWantsMouse(World))
         {
             uint32 PickerWidth = World->GetRenderer()->GetRenderTarget()->GetExtent().x;
             uint32 PickerHeight = World->GetRenderer()->GetRenderTarget()->GetExtent().y;
@@ -1958,12 +1982,14 @@ namespace Lumina
     {
         constexpr float Padding = 8.0f;
         constexpr float ItemSpacing = 6.0f;
-        constexpr float ButtonSize = 32.0f;
+        // While playing, the only control is Stop: shrink it and make the bar solid
+        // so it reads as a small, deliberate widget instead of a distracting overlay.
+        const float ButtonSize = bGamePreviewRunning ? 24.0f : 32.0f;
         constexpr float CornerRounding = 8.0f;
-        
+
         ImVec2 Pos = ImGui::GetWindowPos();
         ImGui::SetNextWindowPos(Pos + ImVec2(Padding, Padding));
-        ImGui::SetNextWindowBgAlpha(0.85f);
+        ImGui::SetNextWindowBgAlpha(bGamePreviewRunning ? 1.0f : 0.85f);
     
         ImGuiWindowFlags WindowFlags = 
             ImGuiWindowFlags_NoDecoration |
@@ -2884,9 +2910,11 @@ namespace Lumina
         }
         else
         {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 0.8f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
-            if (ImGuiX::IconButton(LE_ICON_STOP, "##StopBtn", 0xFFFFFFFF, BtnSize))
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 0.5f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 0.75f));
+            // shouldCenterContents=true: center the icon glyph in the square (otherwise
+            // it's left-aligned at FramePadding and looks off in the small button).
+            if (ImGuiX::IconButton(LE_ICON_STOP, "##StopBtn", 0xFFFFFFFF, BtnSize, true))
             {
                 SetWorldPlayInEditor(false);
             }
@@ -3825,6 +3853,9 @@ namespace Lumina
             OutlinerListView.MarkTreeDirty();
 
             RebindRegistryObservers();
+
+            // Play starts in Game focus: ImGui stands down, input goes to game + UI.
+            SetInputFocus(EInputFocus::Game);
         }
         else
         {
@@ -3835,6 +3866,9 @@ namespace Lumina
             bDetailsDirty = true;
             World->SetPaused(true);
             bGamePreviewRunning = false;
+
+            // Hand input back to the editor on stop.
+            SetInputFocus(EInputFocus::Editor);
 
             // Use ProxyEditorEntity (captured at PIE entry); EditorEntity may be null if Travel swapped worlds mid-PIE.
             if (ProxyEditorEntity != entt::null && ProxyWorld->GetEntityRegistry().valid(ProxyEditorEntity))
@@ -3971,6 +4005,50 @@ namespace Lumina
                 FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
             }
         }
+    }
+
+    void FWorldEditorTool::ApplyInputFocus()
+    {
+        ImGuiIO& IO = ImGui::GetIO();
+        const ImGuiConfigFlags Mask = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoKeyboard;
+        if (InputFocus == EInputFocus::Game)
+        {
+            IO.ConfigFlags |= Mask;
+        }
+        else
+        {
+            IO.ConfigFlags &= ~Mask;
+        }
+    }
+
+    void FWorldEditorTool::SetInputFocus(EInputFocus NewFocus)
+    {
+        InputFocus = NewFocus;
+        ApplyInputFocus();
+
+        // Returning to the editor hands the cursor back so panels are usable even
+        // if the game had captured/hidden it.
+        if (NewFocus == EInputFocus::Editor)
+        {
+            FInputProcessor::Get().SetMouseMode(EMouseMode::Normal);
+        }
+    }
+
+    bool FWorldEditorTool::OnEvent(FEvent& Event)
+    {
+        // Shift+F1 toggles editor/game input focus while playing. Read off the raw
+        // event, not the ImGui action registry: Game focus sets NoKeyboard, which
+        // would hide the key from ImGui::IsKeyPressed.
+        if (bGamePreviewRunning && Event.IsA<FKeyPressedEvent>())
+        {
+            FKeyPressedEvent& Key = Event.As<FKeyPressedEvent>();
+            if (Key.GetKeyCode() == EKey::F1 && Key.IsShiftDown() && !Key.IsRepeat())
+            {
+                SetInputFocus(InputFocus == EInputFocus::Game ? EInputFocus::Editor : EInputFocus::Game);
+                return true;
+            }
+        }
+        return FEditorTool::OnEvent(Event);
     }
 
     bool FWorldEditorTool::DrawAddableComponentList(const ImGuiTextFilter& Filter, entt::meta_type& OutMetaType, CStruct*& OutStruct)

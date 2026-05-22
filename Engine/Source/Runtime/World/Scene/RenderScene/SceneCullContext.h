@@ -121,5 +121,36 @@ namespace Lumina
 
             return false;
         }
+
+        /**
+         * True only when the sphere is in the main camera view (frustum + draw
+         * distance). Unlike ShouldKeep, this ignores shadow sweeps: a skeleton
+         * kept solely to cast a shadow is NOT "rendered" for animation purposes,
+         * so the anim systems can stop ticking its pose while it's off-screen.
+         */
+        FORCEINLINE bool IsCameraVisible(
+            const glm::vec3& Center,
+            float            Radius,
+            float            MaxDrawDistance,
+            const glm::vec3& CameraPosition) const
+        {
+            if (!bEnabled)
+            {
+                return true;
+            }
+
+            if (MaxDrawDistance > 0.0f)
+            {
+                const glm::vec3 ToCamera = Center - CameraPosition;
+                const float     DistSq   = glm::dot(ToCamera, ToCamera);
+                const float     CutOff   = MaxDrawDistance + Radius;
+                if (DistSq > CutOff * CutOff)
+                {
+                    return false;
+                }
+            }
+
+            return Frustum.IntersectsSphere(Center, Radius);
+        }
     };
 }

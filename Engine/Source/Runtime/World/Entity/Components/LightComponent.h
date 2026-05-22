@@ -124,16 +124,16 @@ namespace Lumina
 
         /** Blend between uniform (0) and logarithmic (1) cascade split distribution. Higher packs detail near the camera. */
         PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 0.0f, ClampMax = 1.0f, Delta = 0.01f)
-        float CascadeSplitLambda = 0.92f;
+        float CascadeSplitLambda = 0.97f;
 
         /** Maximum view distance that receives cascaded shadows; shadows fade out before this. */
         PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 1.0f)
-        float ShadowMaxDistance = 2000.0f;
+        float ShadowMaxDistance = 1000.0f;
 
         /** Distance the light eye is pushed behind each cascade so off-screen occluders still cast.
         Low sun angles need larger values or tall casters clip at the ortho near plane and shadows go hollow. */
         PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 1.0f)
-        float CascadeBackDistance = 2000.0f;
+        float CascadeBackDistance = 100.0f;
 
         /** Normal-offset bias scale; raise to kill shadow acne, lower if contact shadows detach (peter-panning). */
         PROPERTY(Editable, Category = "Cascaded Shadows|Tuning", ClampMin = 0.0f, ClampMax = 8.0f, Delta = 0.05f)

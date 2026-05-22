@@ -91,10 +91,19 @@ namespace Lumina
     };
 
     
-    class RUNTIME_API FBlockLinearAllocator : public IAllocator 
+    class RUNTIME_API FBlockLinearAllocator : public IAllocator
     {
+        struct Block;
     public:
-        
+
+        // Snapshot of the allocation cursor. Restore to free everything allocated since,
+        // without touching earlier allocations. The basis for FMemMark-style scopes.
+        struct FMark
+        {
+            Block*  MarkBlock  = nullptr;
+            SIZE_T  MarkOffset = 0;
+        };
+
         explicit FBlockLinearAllocator(const char* AllocatorName) noexcept
             :FBlockLinearAllocator()
         {}
@@ -167,10 +176,24 @@ namespace Lumina
     
         void Free(void* Data) override { }
     
-        void Reset() override 
-        { 
+        void Reset() override
+        {
             CurrentBlock = FirstBlock;
             CurrentOffset = 0;
+        }
+
+        // Capture the current cursor; pair with RestoreToMark for scoped (pop-off) reuse.
+        FMark GetMark() const
+        {
+            return { CurrentBlock, CurrentOffset };
+        }
+
+        // Rewind the cursor to a previously captured mark. Blocks past the mark stay
+        // allocated and are reused by later Allocate calls (no free, no destructors).
+        void RestoreToMark(const FMark& Mark)
+        {
+            CurrentBlock  = Mark.MarkBlock ? Mark.MarkBlock : FirstBlock;
+            CurrentOffset = Mark.MarkOffset;
         }
 
         /** Frees all blocks except the first, then resets. */
@@ -319,4 +342,60 @@ namespace Lumina
 
     template <typename K, typename V>
     using TFrameHashMap = THashMap<K, V, eastl::hash<K>, eastl::equal_to<K>, FFrameArenaAllocator>;
+
+
+    // Per-thread scratch stack for short-lived allocations. Grows to its high-water mark
+    // and is reclaimed only by FMemMark scopes (or thread exit) -- never per-allocation.
+    // Use it through FMemMark, not directly, so allocations are always scoped.
+    RUNTIME_API FBlockLinearAllocator& GetThreadScratchAllocator();
+
+    // RAII scope over a bump allocator: captures a mark on construction, restores it on
+    // destruction, freeing everything allocated within the scope in one O(1) step.
+    // Defaults to this thread's scratch stack; pass an explicit arena to scope that instead.
+    //
+    //   FMemMark Mark;                                   // grab a scope on the thread scratch
+    //   TScratchVector<uint32> Indices(Mark.Eastl());    // arena-backed, freed at scope end
+    //   void* Raw = Mark.Allocate(Bytes, 16);            // or raw bump allocation
+    //
+    // No destructors run on scope exit, so only store trivially destructible data (or types
+    // whose heap-owning members you tear down yourself). Nested marks compose (LIFO).
+    class FMemMark
+    {
+    public:
+
+        FMemMark() noexcept
+            : Arena(GetThreadScratchAllocator())
+            , Mark(Arena.GetMark())
+        {}
+
+        explicit FMemMark(FBlockLinearAllocator& InArena) noexcept
+            : Arena(InArena)
+            , Mark(InArena.GetMark())
+        {}
+
+        ~FMemMark() { Arena.RestoreToMark(Mark); }
+
+        FMemMark(const FMemMark&)            = delete;
+        FMemMark& operator=(const FMemMark&) = delete;
+
+        void* Allocate(SIZE_T Size, SIZE_T Alignment = 16) { return Arena.Allocate(Size, Alignment); }
+
+        template<typename T, typename... Args>
+        T* Alloc(Args&&... args) { return new (Arena.Allocate(sizeof(T), alignof(T))) T(Forward<Args>(args)...); }
+
+        FBlockLinearAllocator& GetAllocator() const { return Arena; }
+        FFrameArenaAllocator   Eastl(const char* Name = "scratch") const { return FFrameArenaAllocator(&Arena, Name); }
+
+    private:
+
+        FBlockLinearAllocator&   Arena;
+        FBlockLinearAllocator::FMark Mark;
+    };
+
+    // Containers backed by the active FMemMark scope. Construct with Mark.Eastl().
+    template <typename T>
+    using TScratchVector = TVector<T, FFrameArenaAllocator>;
+
+    template <typename K, typename V>
+    using TScratchHashMap = THashMap<K, V, eastl::hash<K>, eastl::equal_to<K>, FFrameArenaAllocator>;
 }

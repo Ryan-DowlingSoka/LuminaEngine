@@ -35,7 +35,7 @@ VertexOutput VertexMain(uint VertexIndex: SV_VulkanVertexID, uint MeshletSlot: S
     float3 LocalPos;
     if (Inst.HasFlag(EInstanceFlags::Skinned))
     {
-        LocalPos = LoadSkinnedPosition(Inst.MeshletHeader, M, LocalVertIdx, Inst.BoneOffset);
+        LocalPos = LoadSkinnedPosition(Inst.MeshletHeader, M, LocalVertIdx, Inst.SkinnedVertexBase);
     }
     else
     {

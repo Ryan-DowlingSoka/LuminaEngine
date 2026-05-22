@@ -174,7 +174,7 @@ namespace Lumina::Lua
     public:
         
         RUNTIME_API lua_State* GetVM() const { return L; }
-        
+
     private:
 
         // Resolves a `require()` argument against the engine's VFS-backed module roots.

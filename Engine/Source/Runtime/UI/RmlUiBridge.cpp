@@ -3,6 +3,7 @@
 
 #include "RmlUiFileInterface.h"
 #include "RmlUiRenderer.h"
+#include "WorldUIContext.h"
 
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Context.h>
@@ -81,7 +82,7 @@ namespace Lumina::RmlUi
                 Lua::FRef Local = Cb;
                 Local();
             }
-            
+
             void OnDetach(Rml::Element* /*element*/) override
             {
                 delete this;
@@ -89,17 +90,6 @@ namespace Lumina::RmlUi
 
         private:
             Lua::FRef Cb;
-        };
-
-        // 1:1 with CWorld. Listeners self-delete via OnDetach, so we only track documents.
-        struct FWorldEntry
-        {
-            CWorld*       World = nullptr;
-            Rml::Context* Context = nullptr;
-            THashMap<FString, Rml::ElementDocument*> Documents;
-            // Editor override: lay UI out at this size instead of the RT image size.
-            // Zero means use the RT size (standalone-runtime default).
-            glm::uvec2    DisplaySize{0, 0};
         };
 
         // Editor preview context not bound to any world; tool owns the target image.
@@ -118,18 +108,20 @@ namespace Lumina::RmlUi
             TUniquePtr<FLuminaSystemInterface>  System;
             TUniquePtr<FRmlUiFileInterface>     Files;
             TUniquePtr<FRmlUiRenderer>          Renderer;
-            TVector<TUniquePtr<FWorldEntry>>    Worlds;
             TVector<TUniquePtr<FEditorEntry>>   EditorContexts;
-            Rml::Context*                       ActiveContext = nullptr;
+
+            // World whose context the `UI.*` Lua module targets; the worlds themselves
+            // own their FWorldUIContext (on CWorld). Null when no world is active.
+            CWorld*                             ActiveWorld = nullptr;
 
             Rml::Context*                       DebuggerHost = nullptr;
             bool                                bDebuggerVisible = false;
             bool                                bInitialized = false;
 
-            // Guards Worlds/EditorContexts/ActiveContext/Debugger* + serializes Rml::Context
-            // DOM mutations (TickAll/Update on game thread) against DOM traversal (Render on
-            // render thread). Recursive because Update may fire event callbacks that re-enter
-            // public bridge API on the same thread.
+            // Guards EditorContexts/ActiveWorld/Debugger* + serializes Rml::Context DOM
+            // mutations (TickWorldUI/Update on game thread) against DOM traversal
+            // (RenderWorldUI on render thread). Recursive because Update may fire event
+            // callbacks that re-enter public bridge API on the same thread.
             FRecursiveMutex                     StateMutex;
         };
 
@@ -139,36 +131,22 @@ namespace Lumina::RmlUi
             return State;
         }
 
-        FWorldEntry* FindEntryByWorld(CWorld* W)
+        FWorldUIContext* ActiveUI()
         {
-            for (auto& E : S().Worlds)
-            {
-                if (E->World == W)
-                {
-                    return E.get();
-                }
-            }
-            return nullptr;
+            CWorld* W = S().ActiveWorld;
+            return W ? W->GetUIContext() : nullptr;
         }
 
-        FWorldEntry* GetActiveEntry()
+        Rml::Context* ActiveContext()
         {
-            FState& State = S();
-            for (auto& E : State.Worlds)
-            {
-                if (E->Context == State.ActiveContext)
-                {
-                    return E.get();
-                }
-            }
-            // Stale/unset ActiveContext; fall back to first world.
-            return State.Worlds.empty() ? nullptr : State.Worlds.front().get();
+            FWorldUIContext* UI = ActiveUI();
+            return UI ? UI->Context : nullptr;
         }
 
         void SyncDebuggerToActiveContext()
         {
             FState& State = S();
-            Rml::Context* Active = State.ActiveContext;
+            Rml::Context* Active = ActiveContext();
 
             if (State.DebuggerHost != Active)
             {
@@ -195,17 +173,17 @@ namespace Lumina::RmlUi
 
         Rml::ElementDocument* FindDoc(FStringView Path)
         {
-            FWorldEntry* E = GetActiveEntry();
-            if (E == nullptr)
+            FWorldUIContext* UI = ActiveUI();
+            if (UI == nullptr)
             {
                 return nullptr;
             }
-            auto It = E->Documents.find(FString(Path.data(), Path.size()));
-            return (It != E->Documents.end()) ? It->second : nullptr;
+            auto It = UI->Documents.find(FString(Path.data(), Path.size()));
+            return (It != UI->Documents.end()) ? It->second : nullptr;
         }
 
         struct FWorldTarget { FRHIImage* Image = nullptr; glm::uvec2 Size{0, 0}; };
-        FWorldTarget GetWorldTarget(CWorld* World)
+        FWorldTarget GetWorldTarget(const CWorld* World)
         {
             if (World == nullptr)
             {
@@ -225,7 +203,7 @@ namespace Lumina::RmlUi
         }
     }
 
-    bool Initialise()
+    bool Initialize()
     {
         FState& State = S();
         FRecursiveScopeLock Lock(State.StateMutex);
@@ -244,9 +222,8 @@ namespace Lumina::RmlUi
             State.System.reset();
             State.Files.reset();
             State.Renderer.reset();
-            State.Worlds.clear();
             State.EditorContexts.clear();
-            State.ActiveContext = nullptr;
+            State.ActiveWorld = nullptr;
             State.DebuggerHost = nullptr;
             State.bDebuggerVisible = false;
             State.bInitialized = false;
@@ -254,7 +231,7 @@ namespace Lumina::RmlUi
 
         if (!Rml::Initialise())
         {
-            LOG_ERROR("[RmlUi] Rml::Initialise failed.");
+            LOG_ERROR("[RmlUi] Rml::Initialize failed.");
             Rml::SetRenderInterface(nullptr);
             Rml::SetFileInterface(nullptr);
             Rml::SetSystemInterface(nullptr);
@@ -284,7 +261,7 @@ namespace Lumina::RmlUi
         Rml::LoadFontFace("/Engine/Resources/Fonts/JetbrainsMono/JetBrainsMono-Bold.ttf", false);
 
         State.bInitialized = true;
-        LOG_INFO("[RmlUi] bInitialized. Per-world contexts will be created as worlds come up.");
+        LOG_INFO("[RmlUi] Initialized. Per-world contexts are owned by their CWorld.");
         return true;
     }
 
@@ -301,15 +278,10 @@ namespace Lumina::RmlUi
             State.DebuggerHost = nullptr;
         }
 
-        // Drop contexts first; Rml walks element trees and calls OnDetach on listeners.
-        for (auto& E : State.Worlds)
-        {
-            if (E->Context != nullptr)
-            {
-                Rml::RemoveContext(E->Context->GetName());
-                E->Context = nullptr;
-            }
-        }
+        // Editor contexts are bridge-owned, so drop them here. World contexts belong to
+        // their CWorld; once we flip bInitialized, any world torn down after this point
+        // just nulls its (now Rml::Shutdown-destroyed) context pointer instead of double
+        // removing it (see DestroyWorldUI).
         for (auto& E : State.EditorContexts)
         {
             if (E->Context != nullptr)
@@ -320,9 +292,9 @@ namespace Lumina::RmlUi
         }
         Rml::Shutdown();
 
-        State.Worlds.clear();
         State.EditorContexts.clear();
-        State.ActiveContext = nullptr;
+        State.ActiveWorld = nullptr;
+        State.bInitialized = false;
 
         if (State.Renderer) State.Renderer->Shutdown();
 
@@ -335,23 +307,20 @@ namespace Lumina::RmlUi
         State.Files.reset();
         State.Renderer.reset();
         State.bDebuggerVisible = false;
-        State.bInitialized = false;
     }
 
-    void OnWorldInitialized(CWorld* World)
+    TUniquePtr<FWorldUIContext> CreateWorldUI(CWorld* World)
     {
         FState& State = S();
         FRecursiveScopeLock Lock(State.StateMutex);
+
+        TUniquePtr<FWorldUIContext> UI = MakeUnique<FWorldUIContext>();
         if (!State.bInitialized || World == nullptr)
         {
-            return;
-        }
-        if (FindEntryByWorld(World) != nullptr)
-        {
-            return;
+            return UI;
         }
 
-        // TickAll resizes from the real RT each frame; initial size is a placeholder.
+        // TickWorldUI resizes from the real RT each frame; initial size is a placeholder.
         const FWorldTarget Tgt = GetWorldTarget(World);
         const Rml::Vector2i InitialSize = (Tgt.Size.x > 0 && Tgt.Size.y > 0)
             ? Rml::Vector2i(int(Tgt.Size.x), int(Tgt.Size.y))
@@ -364,104 +333,146 @@ namespace Lumina::RmlUi
         if (Ctx == nullptr)
         {
             LOG_ERROR("[RmlUi] CreateContext failed for world {}.", static_cast<void*>(World));
-            return;
+            return UI;
         }
 
-        TUniquePtr<FWorldEntry> Entry = MakeUnique<FWorldEntry>();
-        Entry->World   = World;
-        Entry->Context = Ctx;
-        State.Worlds.push_back(Move(Entry));
+        UI->Context = Ctx;
 
         // Newest world becomes active so Lua calls land there.
-        State.ActiveContext = Ctx;
+        State.ActiveWorld = World;
         SyncDebuggerToActiveContext();
 
         LOG_INFO("[RmlUi] Created context '{}' for world {} (initial {}x{}).", NameBuf, static_cast<void*>(World), InitialSize.x, InitialSize.y);
+        return UI;
     }
 
-    void OnWorldTornDown(CWorld* World)
+    void DestroyWorldUI(CWorld* World)
     {
-        FState& State = S();
-        FRecursiveScopeLock Lock(State.StateMutex);
         if (World == nullptr)
         {
             return;
         }
-
-        for (size_t i = 0; i < State.Worlds.size(); ++i)
+        FWorldUIContext* UI = World->GetUIContext();
+        if (UI == nullptr)
         {
-            FWorldEntry* E = State.Worlds[i].get();
-            if (E->World != World)
-            {
-                continue;
-            }
+            return;
+        }
 
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+
+        // Backend already shut down (Rml::Shutdown destroyed every context): the pointer
+        // is dangling, so just drop it without touching Rml.
+        if (!State.bInitialized)
+        {
+            UI->Context = nullptr;
+            UI->Documents.clear();
+            if (State.ActiveWorld == World)
+            {
+                State.ActiveWorld = nullptr;
+            }
+            return;
+        }
+
+        if (UI->Context != nullptr)
+        {
             // Detach debugger before removing host; otherwise it'd walk a freed element tree.
-            if (State.DebuggerHost == E->Context)
+            if (State.DebuggerHost == UI->Context)
             {
                 Rml::Debugger::Shutdown();
                 State.DebuggerHost = nullptr;
             }
-
-            Rml::Context* DyingContext = E->Context;
-
             // RmlUi tears down first (calls listener OnDetach), then we drop wrappers.
-            if (E->Context != nullptr)
-            {
-                Rml::RemoveContext(E->Context->GetName());
-                E->Context = nullptr;
-            }
-            if (State.ActiveContext == DyingContext)
-            {
-                State.ActiveContext = nullptr;
-            }
+            Rml::RemoveContext(UI->Context->GetName());
+            UI->Context = nullptr;
+        }
+        UI->Documents.clear();
 
-            const size_t Last = State.Worlds.size() - 1;
-            if (i != Last)
-            {
-                eastl::swap(State.Worlds[i], State.Worlds[Last]);
-            }
-            State.Worlds.pop_back();
-
-            if (State.ActiveContext == nullptr && !State.Worlds.empty())
-            {
-                State.ActiveContext = State.Worlds.front()->Context;
-            }
-
+        if (State.ActiveWorld == World)
+        {
+            State.ActiveWorld = nullptr;
             SyncDebuggerToActiveContext();
-            return;
         }
     }
 
-    void TickAll()
+    void SetActiveWorld(CWorld* World)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || World == nullptr || World->GetUIContext() == nullptr)
+        {
+            return;
+        }
+        State.ActiveWorld = World;
+        SyncDebuggerToActiveContext();
+    }
+
+    void TickWorldUI(CWorld* World)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || World == nullptr)
+        {
+            return;
+        }
+        FWorldUIContext* UI = World->GetUIContext();
+        if (UI == nullptr || UI->Context == nullptr)
+        {
+            return;
+        }
+
+        const FWorldTarget Tgt = GetWorldTarget(World);
+        if (Tgt.Image != nullptr)
+        {
+            // DisplaySize override (set by editor each frame) lets the UI lay out at the
+            // panel's aspect instead of the RT's. Falls back to RT size in standalone.
+            const glm::uvec2 LayoutSize = (UI->DisplaySize.x > 0 && UI->DisplaySize.y > 0) ? UI->DisplaySize : Tgt.Size;
+
+            constexpr float NominalHeight = 1080.0f;
+            UI->Context->SetDimensions(Rml::Vector2i(int(LayoutSize.x), int(LayoutSize.y)));
+
+            const float DpRatio = std::max(1.0f, float(LayoutSize.y) / NominalHeight);
+            UI->Context->SetDensityIndependentPixelRatio(DpRatio);
+        }
+        UI->Context->Update();
+    }
+
+    void RenderWorldUI(const CWorld* World, ICommandList& CmdList)
+    {
+        FState& State = S();
+        // Render thread holds the lock for the DOM walk. Game-thread mutators
+        // (TickWorldUI, DestroyWorldUI) block until this completes, so the
+        // Context* is stable for the duration of the render.
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || State.Renderer == nullptr || World == nullptr)
+        {
+            return;
+        }
+        FWorldUIContext* UI = World->GetUIContext();
+        if (UI == nullptr || UI->Context == nullptr)
+        {
+            return;
+        }
+
+        const FWorldTarget Tgt = GetWorldTarget(World);
+        if (Tgt.Image == nullptr)
+        {
+            return;
+        }
+
+        const glm::uvec2 LayoutSize = (UI->DisplaySize.x > 0 && UI->DisplaySize.y > 0) ? UI->DisplaySize : Tgt.Size;
+        State.Renderer->BeginFrame(CmdList, Tgt.Image, Tgt.Size, LayoutSize);
+        UI->Context->Render();
+        State.Renderer->EndFrame();
+    }
+
+    void TickEditorContexts()
     {
         FState& State = S();
         FRecursiveScopeLock Lock(State.StateMutex);
         if (!State.bInitialized)
         {
             return;
-        }
-
-        for (auto& E : State.Worlds)
-        {
-            if (E->Context == nullptr)
-            {
-                continue;
-            }
-            const FWorldTarget Tgt = GetWorldTarget(E->World);
-            if (Tgt.Image != nullptr)
-            {
-                // DisplaySize override (set by editor each frame) lets the UI lay out at the
-                // panel's aspect instead of the RT's. Falls back to RT size in standalone.
-                const glm::uvec2 LayoutSize = (E->DisplaySize.x > 0 && E->DisplaySize.y > 0) ? E->DisplaySize : Tgt.Size;
-
-                constexpr float NominalHeight = 1080.0f;
-                E->Context->SetDimensions(Rml::Vector2i(int(LayoutSize.x), int(LayoutSize.y)));
-
-                const float DpRatio = std::max(1.0f, float(LayoutSize.y) / NominalHeight);
-                E->Context->SetDensityIndependentPixelRatio(DpRatio);
-            }
-            E->Context->Update();
         }
 
         for (auto& E : State.EditorContexts)
@@ -480,35 +491,13 @@ namespace Lumina::RmlUi
         }
     }
 
-    void RenderAll(ICommandList& CmdList)
+    void RenderEditorContexts(ICommandList& CmdList)
     {
         FState& State = S();
-        // Render thread holds the lock for the full DOM walk. Game-thread
-        // mutators (TickAll, OnWorldTornDown, Register/Destroy editor contexts)
-        // block until this completes, so World*/Context*/Worlds vector are
-        // stable for the duration of the iteration.
         FRecursiveScopeLock Lock(State.StateMutex);
         if (!State.bInitialized || State.Renderer == nullptr)
         {
             return;
-        }
-
-        for (auto& E : State.Worlds)
-        {
-            if (E->Context == nullptr)
-            {
-                continue;
-            }
-            const FWorldTarget Tgt = GetWorldTarget(E->World);
-            if (Tgt.Image == nullptr)
-            {
-                continue;
-            }
-
-            const glm::uvec2 LayoutSize = (E->DisplaySize.x > 0 && E->DisplaySize.y > 0) ? E->DisplaySize : Tgt.Size;
-            State.Renderer->BeginFrame(CmdList, Tgt.Image, Tgt.Size, LayoutSize);
-            E->Context->Render();
-            State.Renderer->EndFrame();
         }
 
         for (auto& E : State.EditorContexts)
@@ -532,12 +521,6 @@ namespace Lumina::RmlUi
         }
     }
 
-    Rml::Context*   GetActiveContext()
-    {
-        FState& State = S();
-        FRecursiveScopeLock Lock(State.StateMutex);
-        return State.ActiveContext;
-    }
     // Renderer pointer is set once in Initialise() and only cleared in Shutdown() -- safe to read unlocked.
     FRmlUiRenderer* GetRenderer()      { return S().Renderer.get(); }
 
@@ -549,8 +532,24 @@ namespace Lumina::RmlUi
         }
         FState& State = S();
         FRecursiveScopeLock Lock(State.StateMutex);
-        FWorldEntry* E = FindEntryByWorld(World);
-        return E ? E->Context : nullptr;
+        FWorldUIContext* UI = World->GetUIContext();
+        return UI ? UI->Context : nullptr;
+    }
+
+    bool WorldUIWantsMouse(const CWorld* World)
+    {
+        if (World == nullptr)
+        {
+            return false;
+        }
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized)
+        {
+            return false;
+        }
+        const FWorldUIContext* UI = World->GetUIContext();
+        return UI != nullptr && UI->Context != nullptr && UI->Context->IsMouseInteracting();
     }
 
     FLockedWorldContext::FLockedWorldContext(CWorld* World)
@@ -562,10 +561,10 @@ namespace Lumina::RmlUi
         FState& State = S();
         State.StateMutex.lock();
         bLocked = true;
-        // Lookup happens INSIDE the locked scope so the resolved Context* can't
-        // be torn down between resolution and use; ~FLockedWorldContext releases.
-        FWorldEntry* E = FindEntryByWorld(World);
-        Context = E ? E->Context : nullptr;
+        // Resolved INSIDE the locked scope so the Context* can't be torn down between
+        // resolution and use; ~FLockedWorldContext releases.
+        FWorldUIContext* UI = World->GetUIContext();
+        Context = UI ? UI->Context : nullptr;
     }
 
     FLockedWorldContext::~FLockedWorldContext()
@@ -578,11 +577,15 @@ namespace Lumina::RmlUi
 
     void SetWorldDisplaySize(CWorld* World, const glm::uvec2& Size)
     {
+        if (World == nullptr)
+        {
+            return;
+        }
         FState& State = S();
         FRecursiveScopeLock Lock(State.StateMutex);
-        if (FWorldEntry* E = FindEntryByWorld(World))
+        if (FWorldUIContext* UI = World->GetUIContext())
         {
-            E->DisplaySize = Size;
+            UI->DisplaySize = Size;
         }
     }
 
@@ -775,32 +778,32 @@ namespace Lumina::RmlUi
         {
             FState& State = S();
             FRecursiveScopeLock Lock(State.StateMutex);
-            FWorldEntry* Entry = GetActiveEntry();
-            if (!State.bInitialized || Entry == nullptr || Entry->Context == nullptr)
+            FWorldUIContext* UI = ActiveUI();
+            if (!State.bInitialized || UI == nullptr || UI->Context == nullptr)
             {
                 LOG_WARN("[RmlUi] UI.LoadDocument('{}') has no active world context yet.", FString(Path.data(), Path.size()).c_str());
                 return false;
             }
 
             const FString Key(Path.data(), Path.size());
-            if (Entry->Documents.find(Key) != Entry->Documents.end())
+            if (UI->Documents.find(Key) != UI->Documents.end())
             {
-                Entry->Documents[Key]->Show();
+                UI->Documents[Key]->Show();
                 LOG_INFO("[RmlUi] '{}' already loaded; re-shown.", Key.c_str());
                 return true;
             }
 
-            Rml::ElementDocument* Doc = Entry->Context->LoadDocument(Rml::String(Path.data(), Path.size()));
+            Rml::ElementDocument* Doc = UI->Context->LoadDocument(Rml::String(Path.data(), Path.size()));
             if (Doc == nullptr)
             {
                 LOG_ERROR("[RmlUi] UI.LoadDocument: failed to load '{}'.", Key.c_str());
                 return false;
             }
             Doc->Show();
-            Entry->Documents.emplace(Key, Doc);
+            UI->Documents.emplace(Key, Doc);
 
             const Rml::Vector2f DocSize = Doc->GetBox().GetSize();
-            const Rml::Vector2i CtxSize = Entry->Context->GetDimensions();
+            const Rml::Vector2i CtxSize = UI->Context->GetDimensions();
             LOG_INFO("[RmlUi] Loaded '{}' (doc box {}x{}, context {}x{}).",
                      Key.c_str(), DocSize.x, DocSize.y, CtxSize.x, CtxSize.y);
             return true;
@@ -810,19 +813,19 @@ namespace Lumina::RmlUi
         {
             FState& State = S();
             FRecursiveScopeLock Lock(State.StateMutex);
-            FWorldEntry* Entry = GetActiveEntry();
-            if (Entry == nullptr || Entry->Context == nullptr)
+            FWorldUIContext* UI = ActiveUI();
+            if (UI == nullptr || UI->Context == nullptr)
             {
                 return;
             }
 
             const FString Key(Path.data(), Path.size());
-            auto It = Entry->Documents.find(Key);
-            if (It == Entry->Documents.end()) return;
+            auto It = UI->Documents.find(Key);
+            if (It == UI->Documents.end()) return;
 
             // RmlUi defers destruction until ReleaseUnloadedDocuments; OnDetach fires then.
-            Entry->Context->UnloadDocument(It->second);
-            Entry->Documents.erase(It);
+            UI->Context->UnloadDocument(It->second);
+            UI->Documents.erase(It);
         }
 
         void Show(FStringView Path)
@@ -897,36 +900,36 @@ namespace Lumina::RmlUi
             FRecursiveScopeLock Lock(State.StateMutex);
             if (!State.bInitialized) return FString("RmlUi not initialised.");
 
+            FWorldUIContext* UI = ActiveUI();
             std::string Out;
             Out.reserve(256);
-            Out += "RmlUi worlds: ";
-            Out += std::to_string(State.Worlds.size());
-            for (auto& E : State.Worlds)
+            if (UI == nullptr || UI->Context == nullptr)
             {
-                if (E->Context == nullptr) continue;
-                const Rml::Vector2i Sz = E->Context->GetDimensions();
-                Out += "\n  ";
-                Out += (E->Context == State.ActiveContext) ? "* " : "  ";
-                Out += E->Context->GetName();
-                Out += " size=";
-                Out += std::to_string(Sz.x);
-                Out += "x";
-                Out += std::to_string(Sz.y);
-                Out += " docs=";
-                Out += std::to_string(E->Documents.size());
-                for (const auto& KV : E->Documents)
+                Out += "RmlUi: no active world context.";
+                return FString(Out.c_str(), Out.size());
+            }
+
+            const Rml::Vector2i Sz = UI->Context->GetDimensions();
+            Out += "RmlUi active context: ";
+            Out += UI->Context->GetName();
+            Out += " size=";
+            Out += std::to_string(Sz.x);
+            Out += "x";
+            Out += std::to_string(Sz.y);
+            Out += " docs=";
+            Out += std::to_string(UI->Documents.size());
+            for (const auto& KV : UI->Documents)
+            {
+                Out += "\n    - ";
+                Out += KV.first.c_str();
+                if (KV.second != nullptr)
                 {
-                    Out += "\n    - ";
-                    Out += KV.first.c_str();
-                    if (KV.second != nullptr)
-                    {
-                        const Rml::Vector2f Box = KV.second->GetBox().GetSize();
-                        Out += " (";
-                        Out += std::to_string(int(Box.x));
-                        Out += "x";
-                        Out += std::to_string(int(Box.y));
-                        Out += KV.second->IsVisible() ? ", visible)" : ", hidden)";
-                    }
+                    const Rml::Vector2f Box = KV.second->GetBox().GetSize();
+                    Out += " (";
+                    Out += std::to_string(int(Box.x));
+                    Out += "x";
+                    Out += std::to_string(int(Box.y));
+                    Out += KV.second->IsVisible() ? ", visible)" : ", hidden)";
                 }
             }
             return FString(Out.c_str(), Out.size());
@@ -935,11 +938,11 @@ namespace Lumina::RmlUi
         void OnEvent(FStringView Path, FStringView ElementId, FStringView EventName, Lua::FRef Callback)
         {
             FRecursiveScopeLock Lock(S().StateMutex);
-            FWorldEntry* Entry = GetActiveEntry();
-            if (Entry == nullptr || Entry->Context == nullptr) return;
+            FWorldUIContext* UI = ActiveUI();
+            if (UI == nullptr || UI->Context == nullptr) return;
 
-            auto It = Entry->Documents.find(FString(Path.data(), Path.size()));
-            if (It == Entry->Documents.end())
+            auto It = UI->Documents.find(FString(Path.data(), Path.size()));
+            if (It == UI->Documents.end())
             {
                 LOG_WARN("[RmlUi] UI.OnEvent: document '{}' not loaded.",
                          FString(Path.data(), Path.size()).c_str());

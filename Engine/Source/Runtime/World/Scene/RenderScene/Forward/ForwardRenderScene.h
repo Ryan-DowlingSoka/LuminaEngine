@@ -47,8 +47,15 @@ namespace Lumina
             uint64                  MeshletHeaderAddress;
             uint32                  CustomData;
             uint32                  EntityID;
-            uint32                  LocalBoneOffset;  // ~0u for static meshes.
-            uint32                  _Pad;
+            uint32                  LocalBoneOffset;            // ~0u for static meshes.
+            // GPU pre-skinning: only the rendered-LOD meshlet span is skinned/stored (0 for
+            // static). SkinSpanStart = first rendered vertex offset, SkinSliceSize = its
+            // extent. GlobalSkinnedBase (combined base - span start) is resolved in merge.
+            uint32                  SkinMeshletStart;
+            uint32                  SkinMeshletCount;
+            uint32                  SkinSpanStart;
+            uint32                  SkinSliceSize;
+            uint32                  GlobalSkinnedBase;
         };
 
         // Per-(entity, surface) item. Composed into an FGPUInstance during the
@@ -121,14 +128,16 @@ namespace Lumina
             TFrameVector<FProcessedDrawItem>    Items;
             TFrameVector<FEntityRecord>         EntityRecords;
             TFrameVector<FLocalBatchEntry>      LocalBatches;
-            TFrameVector<glm::mat4>             BonesData;
+            // 48B/bone (last row dropped). Arena-backed; scales with skeletons x bones, so the
+            // arena block (kArenaBlockSize) must exceed one thread's worst-case bone vector.
+            TFrameVector<FBoneTransform>        BonesData;
             TFrameHashMap<CMesh*, uint8>  PinnedMeshDedupe;
             // Heap-backed so refs survive the per-thread arena reset.
             TVector<FRHIBufferRef>              PinnedMeshBuffers;
             // Per-thread material resolve cache; linear-scanned (few unique materials per thread).
             TFrameVector<FMaterialCacheEntry>   MaterialCache;
             // Fast path for PinnedMeshDedupe: skip the hash for consecutive same-mesh entities.
-            CMesh*                        LastPinnedMesh = nullptr;
+            CMesh*                              LastPinnedMesh = nullptr;
             FFrameArenaAllocator                Arena;
             FSceneRenderStats                   Stats = {};
 
@@ -142,7 +151,7 @@ namespace Lumina
                 Items            = TFrameVector<FProcessedDrawItem>(A);
                 EntityRecords    = TFrameVector<FEntityRecord>(A);
                 LocalBatches     = TFrameVector<FLocalBatchEntry>(A);
-                BonesData        = TFrameVector<glm::mat4>(A);
+                BonesData        = TFrameVector<FBoneTransform>(A);
                 PinnedMeshDedupe = TFrameHashMap<CMesh*, uint8>(A);
                 MaterialCache    = TFrameVector<FMaterialCacheEntry>(A);
                 PinnedMeshBuffers.clear();
@@ -179,7 +188,10 @@ namespace Lumina
             bool                             bExtractedThisFrame = false;
 
             TVector<FGPUInstance>            Instances;
-            TVector<glm::mat4>               BonesData;
+            TVector<FBoneTransform>          BonesData;   // 48B/bone (last row dropped)
+            // One descriptor per skinned entity; drives the skinning compute dispatch.
+            TVector<FSkinDescriptor>         SkinDescriptors;
+            uint32                           TotalPreSkinnedVertices = 0;
             TVector<FMeshDrawCommand>        DrawCommands;
             TVector<uint32>                  OpaqueDrawList;
             TVector<uint32>                  OpaqueOccluderDrawList;
@@ -267,6 +279,10 @@ namespace Lumina
             // Color grading + tone mapping constants. 144 B exceeds AMD RDNA's 128 B
             // push-constant cap, so it lives in a UBO at (set 2, binding 2).
             ColorGrading,
+            // GPU pre-skinning: output vertex buffer (binding 20) the skinning compute
+            // writes and draw VS read, plus the per-skinned-entity descriptor list (21).
+            PreSkinnedVertices,
+            SkinDescriptors,
 
             Num,
         };
@@ -412,6 +428,10 @@ namespace Lumina
         void CullPassEarly(ICommandList& CmdList);
         void CullPassLate(ICommandList& CmdList);
 
+        // Skins every visible skeletal entity once into the pre-skinned vertex buffer,
+        // before any draw pass that reads skinned geometry.
+        void SkinningPass(ICommandList& CmdList);
+
         
         void DepthPrePassEarly(ICommandList& CmdList);
         void DepthPrePassLate(ICommandList& CmdList);
@@ -460,7 +480,7 @@ namespace Lumina
         void CompileDrawCommands_RenderThread(ICommandList& CmdList);
 
         void ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
-        void ProcessSkeletalMeshEntityInternal(entt::entity Entity, const SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
+        void ProcessSkeletalMeshEntityInternal(entt::entity Entity, SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local);
 
         // Populates SceneCullContext with camera/shadow frustums and per-light spheres.
         // Runs serially before the parallel gather so the context is immutable during it.
@@ -491,6 +511,12 @@ namespace Lumina
     private:
         
         TArray<FRHIBufferRef, (int)ENamedBuffer::Num>   NamedBuffers = {};
+        // Per-buffer hysteresis counters for ResizeBufferIfNeeded's shrink path (consecutive
+        // frames of sustained low usage). Persisted so memory is reclaimed after the scene shrinks.
+        TArray<uint32, (int)ENamedBuffer::Num>          NamedBufferLowUsage = {};
+        TArray<uint32, FRAMES_IN_FLIGHT>                IndirectArgsRingLowUsage = {};
+        TArray<uint32, FRAMES_IN_FLIGHT>                MeshletDrawListRingLowUsage = {};
+        TArray<uint32, FRAMES_IN_FLIGHT>                MeshletDeferListRingLowUsage = {};
         TArray<FRHIImageRef, (int)ENamedImage::Num>     NamedImages = {};
 
         /** MSAA sample count cached from world settings. 1 == disabled (no overhead). */

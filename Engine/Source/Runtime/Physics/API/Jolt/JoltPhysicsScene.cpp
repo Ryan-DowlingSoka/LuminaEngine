@@ -406,14 +406,16 @@ namespace Lumina::Physics
     }
     
     FJoltPhysicsScene::FJoltPhysicsScene(CWorld* InWorld)
-        : Allocator(300ull * 1024 * 1024)
+        : Allocator(32ull * 1024 * 1024)
         , World(InWorld)
     {
         JoltSystem = MakeUnique<JPH::PhysicsSystem>();
-        
-        JoltSystem->Init(65536, 0, 131072, 262144, GJoltLayerInterface, GObjectVsBroadPhaseLayerFilter, GObjectVsObjectLayerFilter);
 
         const SDefaultWorldSettings& InitSettings = World->GetDefaultWorldSettings();
+        
+        JoltSystem->Init(InitSettings.MaxPhysicsBodies, 0, InitSettings.MaxPhysicsBodyPairs,
+            InitSettings.MaxPhysicsContactConstraints, GJoltLayerInterface, GObjectVsBroadPhaseLayerFilter, GObjectVsObjectLayerFilter);
+
         glm::vec3 GravityDir = glm::length2(InitSettings.GravityDirection) > 0.0f
             ? glm::normalize(InitSettings.GravityDirection) : glm::vec3(0.0f, -1.0f, 0.0f);
         JoltSystem->SetGravity(JoltUtils::ToJPHVec3(GravityDir * glm::abs(GEarthGravity) * InitSettings.GravityScale));
@@ -457,17 +459,6 @@ namespace Lumina::Physics
         Registry.on_construct<SBoxColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SMeshColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<STerrainColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
-
-        // Per-worker TempAllocator pool for the parallel character sub-step.
-        // 4 MiB per worker is comfortably above the high-water mark for a
-        // single CharacterVirtual::ExtendedUpdate; the heavy allocator
-        // (300 MiB) is reserved for JoltSystem->Update.
-        const uint32 NumWorkers = GTaskSystem ? GTaskSystem->GetScheduler().GetNumTaskThreads() : 1u;
-        CharacterAllocators.reserve(NumWorkers);
-        for (uint32 i = 0; i < NumWorkers; ++i)
-        {
-            CharacterAllocators.push_back(MakeUnique<JPH::TempAllocatorImpl>(4ull * 1024 * 1024));
-        }
     }
 
     FJoltPhysicsScene::~FJoltPhysicsScene()
@@ -692,14 +683,7 @@ namespace Lumina::Physics
             // clears the FNeedsPhysicsBodyUpdate flags for the frame.
             ApplyDirtyTransforms(FixedTimestep);
             LatchCharacterInput();
-
-            // Advance one fixed step at a time. Jolt's Update(dt, steps) simulates
-            // dt TOTAL time, so a single Update(FixedTimestep, CollisionSteps) call
-            // advances only ONE step's worth of time while we consume CollisionSteps
-            // from the accumulator -- physics falls behind real time on every
-            // multi-step frame and the body visibly hitches. Stepping in a loop keeps
-            // each step exactly FixedTimestep and lets us snapshot the interpolation
-            // source one step before the final state.
+            
             for (uint32 Step = 0; Step < CollisionSteps; ++Step)
             {
                 // Prev = state one fixed step behind the final state. Pairs with the
@@ -717,17 +701,11 @@ namespace Lumina::Physics
 
             Accumulator -= (float)CollisionSteps * FixedTimestep;
         }
-
-        // Sub-frame interpolation: how far into the next (not-yet-simulated) step we are.
-        // Prev = positions one step behind the final state, Curr = final state.
-        // Alpha 0 == just stepped, 1 == next step due now.
+        
         const float InterpolationAlpha = WorldSettings.bEnablePhysicsInterpolation
             ? glm::clamp(Accumulator / FixedTimestep, 0.0f, 1.0f)
             : 1.0f;
-
-        // Physics thread only captures the interpolation source/target into a buffer.
-        // The game thread applies it to the ECS in ApplyInterpolatedTransforms so the
-        // physics worker never mutates the registry.
+        
         BuildInterpolatedTransforms(InterpolationAlpha);
 
         #if JPH_DEBUG_RENDERER
@@ -738,10 +716,7 @@ namespace Lumina::Physics
     void FJoltPhysicsScene::Simulate()
     {
         entt::registry& Registry = World->GetEntityRegistry();
-
-        // Build all initial rigid bodies in parallel, then commit + add in one batch.
-        // The on_construct hook is connected below, so anything spawned at runtime
-        // still goes through the per-entity path.
+        
         BulkCreateRigidBodies(Registry);
 
         auto CharacterView = Registry.view<SCharacterPhysicsComponent>();
@@ -824,10 +799,7 @@ namespace Lumina::Physics
 
         const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
         entt::registry& Registry = World->GetEntityRegistry();
-
-        // Each body writes only its own snapshot fields, so the pass is data-parallel.
-        // Guard with contains(): the handle can hold tombstones once bodies have been
-        // destroyed, and raw index + get() (unlike each()) is not tombstone-aware.
+        
         auto RigidView = Registry.view<SRigidBodyComponent>();
         auto RigidHandle = RigidView.handle();
         Task::ParallelFor(RigidHandle->size(), [&](uint32 Index)
@@ -1389,9 +1361,28 @@ namespace Lumina::Physics
         return Results;
     }
 
+    void FJoltPhysicsScene::EnsureCharacterAllocators()
+    {
+        if (!CharacterAllocators.empty())
+        {
+            return;
+        }
+
+        // First character in this scene: stand up the per-worker substep allocator pool. 4 MiB
+        // per worker is comfortably above a single CharacterVirtual::ExtendedUpdate's high-water.
+        const uint32 NumWorkers = GTaskSystem ? GTaskSystem->GetScheduler().GetNumTaskThreads() : 1u;
+        CharacterAllocators.reserve(NumWorkers);
+        for (uint32 i = 0; i < NumWorkers; ++i)
+        {
+            CharacterAllocators.push_back(MakeUnique<JPH::TempAllocatorImpl>(4ull * 1024 * 1024));
+        }
+    }
+
     void FJoltPhysicsScene::OnCharacterComponentConstructed(entt::registry& Registry, entt::entity Entity)
     {
         LUMINA_PROFILE_SCOPE();
+
+        EnsureCharacterAllocators();
 
         SCharacterPhysicsComponent& CharacterComponent = Registry.get<SCharacterPhysicsComponent>(Entity);
         STransformComponent& TransformComponent = Registry.get<STransformComponent>(Entity);

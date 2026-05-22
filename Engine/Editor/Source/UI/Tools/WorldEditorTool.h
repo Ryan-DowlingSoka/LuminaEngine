@@ -57,6 +57,8 @@ namespace Lumina
         
         void Update(const FUpdateContext& UpdateContext) override;
         void EndFrame() override;
+
+        bool OnEvent(FEvent& Event) override;
         
         void OnEntityCreated(entt::registry& Registry, entt::entity Entity);
 
@@ -338,6 +340,18 @@ namespace Lumina
 		bool									bGuizmoSnapEnabled = true;
         bool                                    bGamePreviewRunning = false;
         bool                                    bSimulatingWorld = false;
+
+        // Who owns the mouse/keyboard while playing. Game = ImGui ignores input
+        // (editor chrome + picking inert), routed to game + UI; Editor = ImGui live
+        // so you can drive panels. Toggled with Shift+F1 during Play. Simulate stays
+        // Editor (live editing) and never enters Game focus.
+        enum class EInputFocus : uint8 { Editor, Game };
+        EInputFocus                             InputFocus = EInputFocus::Editor;
+
+        // Sets ImGui NoMouse|NoKeyboard per InputFocus; reasserted each frame while
+        // in Game focus so a script's SetMouseMode("Normal") can't re-enable ImGui.
+        void ApplyInputFocus();
+        void SetInputFocus(EInputFocus NewFocus);
 
         // Game view mode (toggled with G): hides grid, component visualizers, billboards
         // and bounds so the viewport shows just what a runtime camera would see. The

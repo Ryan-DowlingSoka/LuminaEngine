@@ -524,6 +524,12 @@ namespace Lumina::Lua
 
         static void Push(lua_State* State, T* Ptr)
         {
+            if (Ptr == nullptr)
+            {
+                lua_pushnil(State);
+                return;
+            }
+
             void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(RawT*), TClassTraits<RawT>::Tag());
             *static_cast<RawT**>(Block) = Ptr;
         }
@@ -564,6 +570,14 @@ namespace Lumina::Lua
         {
             return lua_islightuserdata(State, Index);
         }
+    };
+    
+    template<>
+    struct TStack<std::nullptr_t>
+    {
+        static FStringView TypeName(lua_State* State)       { return lua_typename(State, LUA_TNIL); }
+        static void Push(lua_State* State, std::nullptr_t)  { lua_pushnil(State); }
+        static bool Check(lua_State* State, int Index)      { return lua_isnil(State, Index); }
     };
     
     template<typename T>

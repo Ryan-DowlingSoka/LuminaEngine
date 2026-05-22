@@ -7,6 +7,7 @@
 #include "VulkanRenderContext.h"
 #include "VulkanResources.h"
 #include "Core/Profiler/Profile.h"
+#include "Memory/MemoryTracking.h"
 #include "Renderer/RHIGlobals.h"
 #include "TaskSystem/TaskSystem.h"
 
@@ -103,6 +104,7 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
         LUMINA_PROFILE_TAG(std::format("Size: {}", StringUtils::FormatSize(CreateInfo->size)).c_str());
+        LUMINA_MEMORY_SCOPE("VmaBuffers");
 
         VmaAllocationCreateInfo Info = {};
         Info.usage = VMA_MEMORY_USAGE_AUTO;
@@ -133,6 +135,7 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
         LUMINA_PROFILE_TAG(std::format("UploadSize: {}", StringUtils::FormatSize(CreateInfo->size)).c_str());
+        LUMINA_MEMORY_SCOPE("VmaBuffers");
 
         VmaAllocation Allocation     = nullptr;
         VmaAllocationInfo AllocInfo  = {};
@@ -173,7 +176,8 @@ namespace Lumina
     VmaAllocation FVulkanMemoryAllocator::AllocateImage(const VkImageCreateInfo* CreateInfo, VmaAllocationCreateFlags Flags, VkImage* vkImage, const char* AllocationName) const
     {
         LUMINA_PROFILE_SCOPE();
-    
+        LUMINA_MEMORY_SCOPE("VmaImages");
+
         ASSERT(CreateInfo->extent.depth != 0);
     
         VmaAllocationCreateInfo Info = {};
@@ -210,6 +214,7 @@ namespace Lumina
         Task::AsyncTask(1, 1, [this, Buffer, Allocation](uint32, uint32, uint32)
         {
             LUMINA_PROFILE_SCOPE();
+            LUMINA_MEMORY_SCOPE("VmaBuffers");
             vmaDestroyBuffer(Allocator, Buffer, Allocation);
         });
     }
@@ -219,6 +224,7 @@ namespace Lumina
         Task::AsyncTask(1, 1, [this, Image, Allocation](uint32, uint32, uint32)
         {
             LUMINA_PROFILE_SCOPE();
+            LUMINA_MEMORY_SCOPE("VmaImages");
             vmaDestroyImage(Allocator, Image, Allocation);
         });
     }

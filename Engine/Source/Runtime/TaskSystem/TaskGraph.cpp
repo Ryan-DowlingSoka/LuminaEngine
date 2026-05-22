@@ -5,28 +5,37 @@ namespace Lumina
 {
     struct FTaskGraph::FNode : enki::ITaskSet
     {
-        FOneShotFunc                OneShot;
-        FParallelForFunc            ParallelForFunc;
-        // Arena-backed: Deps storage comes from the graph's block allocator (bulk-reset each
-        // frame), so sizing it in Dispatch never hits the heap. Allocator wired in Add().
-        TFrameVector<enki::Dependency> Deps;
-        bool                        bIsParallelFor = false;
+        void*                           Callable       = nullptr;
+        FInvokeOneShot                  InvokeOneShot  = nullptr;
+        FInvokeParallel                 InvokeParallel = nullptr;
+        FDestroyCallable                Destroy        = nullptr;
+        TFrameVector<enki::Dependency>  Deps;
+        bool                            bIsParallelFor = false;
 
         void ExecuteRange(enki::TaskSetPartition Range, uint32_t ThreadNum) override
         {
             if (bIsParallelFor)
             {
-                if (ParallelForFunc)
+                if (InvokeParallel)
                 {
-                    ParallelForFunc(Task::FParallelRange{Range.start, Range.end, ThreadNum});
+                    InvokeParallel(Callable, Task::FParallelRange{Range.start, Range.end, ThreadNum});
                 }
             }
             else
             {
-                if (OneShot)
+                if (InvokeOneShot)
                 {
-                    OneShot();
+                    InvokeOneShot(Callable);
                 }
+            }
+        }
+
+        ~FNode()
+        {
+            // Closure lives in the arena: run its destructor, but never free (arena owns the bytes).
+            if (Callable && Destroy)
+            {
+                Destroy(Callable);
             }
         }
     };
@@ -69,11 +78,13 @@ namespace Lumina
         bDispatched = false;
     }
 
-    FTaskGraph::FNodeHandle FTaskGraph::Add(FOneShotFunc Func, ETaskPriority Priority)
+    FTaskGraph::FNodeHandle FTaskGraph::AddOneShotNode(void* Callable, FInvokeOneShot Invoke, FDestroyCallable Destroy, ETaskPriority Priority)
     {
         auto* Node              = Allocator.TAlloc<FNode>();
         Node->Deps.set_allocator(FFrameArenaAllocator(&Allocator, "TaskGraphDeps"));
-        Node->OneShot           = Move(Func);
+        Node->Callable          = Callable;
+        Node->InvokeOneShot     = Invoke;
+        Node->Destroy           = Destroy;
         Node->bIsParallelFor    = false;
         Node->m_SetSize         = 1;
         Node->m_MinRange        = 1;
@@ -84,7 +95,7 @@ namespace Lumina
         return Handle;
     }
 
-    FTaskGraph::FNodeHandle FTaskGraph::AddParallelFor(uint32 Count, uint32 MinRange, FParallelForFunc Func, ETaskPriority Priority)
+    FTaskGraph::FNodeHandle FTaskGraph::AddParallelForNode(uint32 Count, uint32 MinRange, void* Callable, FInvokeParallel Invoke, FDestroyCallable Destroy, ETaskPriority Priority)
     {
         auto* Node              = Allocator.TAlloc<FNode>();
         Node->Deps.set_allocator(FFrameArenaAllocator(&Allocator, "TaskGraphDeps"));
@@ -93,13 +104,15 @@ namespace Lumina
 
         if (Count == 0)
         {
-            // Empty work; node still needed so dependents fire.
+            // Empty work; node still needed so dependents fire. No callable was placed.
             Node->m_SetSize     = 1;
             Node->m_MinRange    = 1;
         }
         else
         {
-            Node->ParallelForFunc   = Move(Func);
+            Node->Callable          = Callable;
+            Node->InvokeParallel    = Invoke;
+            Node->Destroy           = Destroy;
             Node->m_SetSize         = Count;
             Node->m_MinRange        = std::max(1u, MinRange);
         }

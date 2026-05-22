@@ -10,6 +10,7 @@
 #include "Physics/PhysicsScene.h"
 #include "Entity/Systems/SystemContext.h"
 #include "Scene/RenderScene/RenderScene.h"
+#include "UI/WorldUIContext.h"
 #include "Subsystems/FCameraManager.h"
 #include "Subsystems/TimerManager.h"
 #include "Physics/Ray/RayCast.h"
@@ -188,6 +189,9 @@ namespace Lumina
 
         IRenderScene* GetRenderer() const { return RenderScene.get(); }
 
+        // Per-world UI (Rml context + documents); created in InitializeWorld, freed in TeardownWorld.
+        FWorldUIContext* GetUIContext() const { return UIContext.get(); }
+
         const TVector<FSystemVariant>& GetSystemsForUpdateStage(EUpdateStage Stage);
 
         void OnRelationshipComponentDestroyed(entt::registry& Registry, entt::entity Entity);
@@ -258,6 +262,7 @@ namespace Lumina
         TUniquePtr<FCameraManager>                          CameraManager;
         TUniquePtr<IRenderScene>                            RenderScene;
         TUniquePtr<Physics::IPhysicsScene>                  PhysicsScene;
+        TUniquePtr<FWorldUIContext>                         UIContext;
         
         TVector<FSystemVariant>                             SystemUpdateList[(int32)EUpdateStage::Max];
 

@@ -41,6 +41,7 @@
 #include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "Subsystems/FCameraManager.h"
 #include "Subsystems/WorldSettings.h"
+#include "UI/RmlUiBridge.h"
 #include "World/Entity/Components/RelationshipComponent.h"
 #include "World/entity/systems/EntitySystem.h"
 
@@ -436,9 +437,17 @@ namespace Lumina
         EntityRegistry.emplace<FSingletonEntityTag>(SingletonEntity);
         EntityRegistry.emplace<FHideInSceneOutliner>(SingletonEntity);
         
-        PhysicsScene    = Physics::GetPhysicsContext()->CreatePhysicsScene(this);
+        // Only worlds that actually simulate get a physics scene -- a Jolt scene reserves hundreds
+        // of MB up front, so creating one per editor/preview world (which never simulate; the
+        // editor picks via CPU AABB, not physics) wasted that memory and grew it per open world.
+        if (WorldType == EWorldType::Game || WorldType == EWorldType::Simulation)
+        {
+            PhysicsScene = Physics::GetPhysicsContext()->CreatePhysicsScene(this);
+        }
         CameraManager   = MakeUnique<FCameraManager>(this);
 
+        // Emplaced even when null so ctx().get<>() consumers find the key (value is null in
+        // non-simulating worlds and must be null-checked).
         EntityRegistry.ctx().emplace<Physics::IPhysicsScene*>(PhysicsScene.get());
         EntityRegistry.ctx().emplace<FCameraManager*>(CameraManager.get());
         EntityRegistry.ctx().emplace<FSystemContext&>(SystemContext);
@@ -446,6 +455,7 @@ namespace Lumina
         EntityRegistry.ctx().emplace<FLuaEventBus*>(&LuaEventBus);
 
         CreateRenderer();
+        UIContext = RmlUi::CreateWorldUI(this);
         RegisterSystems();
         
         if (WorldType == EWorldType::Game || WorldType == EWorldType::Simulation)
@@ -510,6 +520,11 @@ namespace Lumina
     {
         FlushRenderingCommands();
         GRenderContext->WaitIdle();
+
+        // Render thread is drained, so the UI context is safe to remove now (before the
+        // registry clear). Frees the Rml context this world owns; no external bookkeeping.
+        RmlUi::DestroyWorldUI(this);
+        UIContext.reset();
 
         GAudioContext->StopAllSounds();
 
@@ -725,11 +740,17 @@ namespace Lumina
         {
             RenderScene->RenderView_RenderThread(CmdList, FrameIndex);
         }
+
+        // Composite this world's UI onto its render target, right after its scene.
+        RmlUi::RenderWorldUI(this, CmdList);
     }
 
     void CWorld::Extract()
     {
         LUMINA_PROFILE_SCOPE();
+
+        // Game-thread DOM update for this world's UI; render thread composites it in Render().
+        RmlUi::TickWorldUI(this);
 
         entt::entity CameraEntity = GetActiveCameraEntity();
         if (EntityRegistry.valid(CameraEntity))
@@ -1262,6 +1283,8 @@ namespace Lumina
                 // prior idle pass reclaimed it. Cheap no-op while still resident.
                 SuspendedTime = -1.0;
                 CreateRenderer();
+                // Resuming makes this the world the `UI.*` Lua module targets again.
+                RmlUi::SetActiveWorld(this);
             }
             // Suspending no longer tears the renderer down here. UpdateWorlds/Render
             // already skip suspended worlds, so the flag alone stops all work; the

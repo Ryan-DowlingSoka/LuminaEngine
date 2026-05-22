@@ -150,6 +150,9 @@ namespace Lumina::Physics
     	TOptional<SRayResult> CastRay(const SRayCastSettings& Settings) override;
 		TVector<SRayResult> CastSphere(const SSphereCastSettings& Settings) override;
     	
+    	// Lazily stands up the per-worker character-substep allocator pool on the first character;
+    	// character-free worlds never allocate it.
+    	void EnsureCharacterAllocators();
     	void OnCharacterComponentConstructed(entt::registry& Registry, entt::entity Entity);
     	void OnCharacterComponentDestroyed(entt::registry& Registry, entt::entity Entity);
     	
@@ -232,7 +235,10 @@ namespace Lumina::Physics
 
     	FMutex										PendingRigidBodyMutex;
     	TQueue<entt::entity>						PendingRigidBodyCreations;
-    	JPH::TempAllocatorImpl						Allocator;
+    	// Malloc-fallback variant: a modest base buffer covers typical steps with no per-frame
+    	// allocation; a heavy frame that exceeds it falls back to malloc (correct, just slower)
+    	// instead of forcing a giant always-reserved buffer per scene.
+    	JPH::TempAllocatorImplWithMallocFallback	Allocator;
     	TVector<TUniquePtr<JPH::TempAllocatorImpl>>	CharacterAllocators;
     	TUniquePtr<FJoltContactListener>			ContactListener;
         TUniquePtr<JPH::PhysicsSystem>				JoltSystem;

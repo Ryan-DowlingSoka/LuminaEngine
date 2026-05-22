@@ -332,6 +332,11 @@ namespace Lumina
             }
 
             {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Skinning", FColor(0.40f, 0.85f, 1.00f));
+                SkinningPass(CmdList);
+            }
+
+            {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Depth PrePass Early", FColor(1.00f, 0.55f, 0.20f));
                 DepthPrePassEarly(CmdList);
             }
@@ -609,8 +614,10 @@ namespace Lumina
 
             const uint32 NumThreads = GTaskSystem->GetScheduler().GetNumTaskThreads();
 
-            // 4 MB block: handles a single TFrameVector growth doubling up to ~1 MB without overflow.
-            constexpr SIZE_T kArenaBlockSize = 4 * 1024 * 1024;
+            // Block must exceed one thread's worst-case single TFrameVector doubling. The bone
+            // vector dominates (skeletons x bones x 48B now the last row is dropped); 8MB gives
+            // headroom for ~12k+ across thread/bone counts. Reserved lazily, per active thread.
+            constexpr SIZE_T kArenaBlockSize = 8 * 1024 * 1024;
             if (FrameArenas.size() < NumThreads)
             {
                 FrameArenas.reserve(NumThreads);
@@ -673,7 +680,7 @@ namespace Lumina
                     entt::entity Entity = (*Handle)[i];
                     if (SkeletalView.contains(Entity))
                     {
-                        const SSkeletalMeshComponent& MeshComponent    = SkeletalView.get<SSkeletalMeshComponent>(Entity);
+                        SSkeletalMeshComponent&     MeshComponent      = SkeletalView.get<SSkeletalMeshComponent>(Entity);
                         const STransformComponent&  TransformComponent = SkeletalView.get<STransformComponent>(Entity);
                         ProcessSkeletalMeshEntityInternal(Entity, MeshComponent, TransformComponent, Local);
                     }
@@ -1024,7 +1031,13 @@ namespace Lumina
 
         const SIZE_T SimpleVertexSize     = SimpleVertices.size() * sizeof(FSimpleElementVertex);
         const SIZE_T InstanceSize         = Instances.size() * sizeof(FGPUInstance);
-        const SIZE_T BoneDataSize         = BonesData.size() * sizeof(glm::mat4);
+        const SIZE_T BoneDataSize         = BonesData.size() * sizeof(FBoneTransform);
+
+        // GPU pre-skinning: compute-written vertex buffer + CPU-uploaded descriptor list.
+        const SIZE_T PreSkinnedSize       = glm::max<SIZE_T>(sizeof(FPreSkinnedVertex),
+                                            (SIZE_T)Frame.TotalPreSkinnedVertices * sizeof(FPreSkinnedVertex));
+        const SIZE_T SkinDescriptorSize   = glm::max<SIZE_T>(sizeof(FSkinDescriptor),
+                                            Frame.SkinDescriptors.size() * sizeof(FSkinDescriptor));
 
         const uint32 ActiveShadowCount = glm::min<uint32>(ShadowDataCount.load(std::memory_order_acquire), (uint32)MAX_SHADOWS);
         const SIZE_T ShadowsUploadSize = ActiveShadowCount * sizeof(FLightShadowData);
@@ -1058,19 +1071,25 @@ namespace Lumina
             (SIZE_T)TotalMeshletBound * sizeof(uint32) * 4);
 
         bool bAnyBufferResized = false;
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Instance], (uint32)InstanceSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::SimpleVertex], (uint32)SimpleVertexSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Bone], (uint32)BoneDataSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Light], (uint32)LightUploadSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::Billboards], (uint32)BillboardSize, 1.2f);
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::CullView], (uint32)CullViewSize, 1.2f);
+        auto Resize = [&](ENamedBuffer Buf, SIZE_T DesiredSize)
+        {
+            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)Buf], (uint32)DesiredSize, 1.2f, NamedBufferLowUsage[(int)Buf]);
+        };
+        Resize(ENamedBuffer::Instance,              InstanceSize);
+        Resize(ENamedBuffer::SimpleVertex,          SimpleVertexSize);
+        Resize(ENamedBuffer::Bone,                  BoneDataSize);
+        Resize(ENamedBuffer::PreSkinnedVertices,    PreSkinnedSize);
+        Resize(ENamedBuffer::SkinDescriptors,       SkinDescriptorSize);
+        Resize(ENamedBuffer::Light,                 LightUploadSize);
+        Resize(ENamedBuffer::Billboards,            BillboardSize);
+        Resize(ENamedBuffer::CullView,              CullViewSize);
         for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
         {
-            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(IndirectArgsRing[Slot], (uint32)IndirectArgsSize, 1.2f);
-            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(MeshletDrawListRing[Slot], (uint32)MeshletDrawListSize, 1.2f);
-            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(MeshletDeferListRing[Slot], (uint32)DeferListSize, 1.2f);
+            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(IndirectArgsRing[Slot], (uint32)IndirectArgsSize, 1.2f, IndirectArgsRingLowUsage[Slot]);
+            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(MeshletDrawListRing[Slot], (uint32)MeshletDrawListSize, 1.2f, MeshletDrawListRingLowUsage[Slot]);
+            bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(MeshletDeferListRing[Slot], (uint32)DeferListSize, 1.2f, MeshletDeferListRingLowUsage[Slot]);
         }
-        bAnyBufferResized |= RenderUtils::ResizeBufferIfNeeded(NamedBuffers[(int)ENamedBuffer::InstanceMeshletPrefix], (uint32)InstanceMeshletPrefixSize, 1.2f);
+        Resize(ENamedBuffer::InstanceMeshletPrefix, InstanceMeshletPrefixSize);
 
         if (bAnyBufferResized)
         {
@@ -1090,6 +1109,11 @@ namespace Lumina
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Scene), &SceneGlobalData, sizeof(FSceneGlobalData));
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Instance), Instances.data(), InstanceSize);
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Bone), BonesData.data(),  BoneDataSize);
+            if (!Frame.SkinDescriptors.empty())
+            {
+                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::SkinDescriptors), Frame.SkinDescriptors.data(),
+                                    Frame.SkinDescriptors.size() * sizeof(FSkinDescriptor));
+            }
 
             if (!CullViews.empty())
             {
@@ -1464,7 +1488,11 @@ namespace Lumina
         EntityRecord.CustomData           = MeshComponent.CustomPrimitiveData.Data.Packed;
         EntityRecord.EntityID             = entt::to_integral(Entity);
         EntityRecord.LocalBoneOffset      = ~0u;
-        EntityRecord._Pad                 = 0u;
+        EntityRecord.SkinMeshletStart  = 0u;
+        EntityRecord.SkinMeshletCount  = 0u;
+        EntityRecord.SkinSpanStart     = 0u;
+        EntityRecord.SkinSliceSize     = 0u;
+        EntityRecord.GlobalSkinnedBase = 0u;
 
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
         {
@@ -1507,7 +1535,7 @@ namespace Lumina
         }
     }
 
-    void FForwardRenderScene::ProcessSkeletalMeshEntityInternal(entt::entity Entity, const SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local)
+    void FForwardRenderScene::ProcessSkeletalMeshEntityInternal(entt::entity Entity, SSkeletalMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local)
     {
         const FFrameData& Frame = *ExtractFrame;
         const auto& SceneCullContext = Frame.SceneCullContext;
@@ -1540,6 +1568,19 @@ namespace Lumina
             return;
         }
 
+        // Stamp the time this mesh was in the CAMERA view (not just kept for shadows) so the
+        // animation systems can skip pose evaluation for skeletons that haven't been on-screen
+        // recently. Shadow-only casters intentionally don't refresh this -- a pose that only
+        // feeds an off-screen shadow doesn't need per-frame eval.
+        if (SceneCullContext.IsCameraVisible(
+                Center,
+                Radius,
+                MeshComponent.MaxDrawDistance,
+                glm::vec3(SceneGlobalData.CameraData.Location)))
+        {
+            MeshComponent.LastRenderedTime = World->GetTimeSinceWorldCreation();
+        }
+
         const FMeshResource& Resource = Mesh->GetMeshResource();
 
         // Every skeletal draw needs a valid bone slice (LoadSkinnedVertex path); fall back to bind pose
@@ -1556,14 +1597,18 @@ namespace Lumina
             LocalBoneOffset = (uint32)Local.BonesData.size();
             if ((uint32)MeshComponent.BoneTransforms.size() == SkeletonBoneCount)
             {
-                Local.BonesData.insert(Local.BonesData.end(),
-                                       MeshComponent.BoneTransforms.begin(),
-                                       MeshComponent.BoneTransforms.end());
+                // Pack each mat4 down to its 3 rows (last row is always (0,0,0,1) for affine).
+                Local.BonesData.reserve(Local.BonesData.size() + SkeletonBoneCount);
+                for (const glm::mat4& M : MeshComponent.BoneTransforms)
+                {
+                    Local.BonesData.push_back(PackBoneTransform(M));
+                }
             }
             else
             {
                 // No active animation: BoneWorld * InvBindMatrix collapses to identity for every bone.
-                Local.BonesData.resize(Local.BonesData.size() + SkeletonBoneCount, glm::mat4(1.0f));
+                static const FBoneTransform IdentityBone{ glm::vec4(1,0,0,0), glm::vec4(0,1,0,0), glm::vec4(0,0,1,0) };
+                Local.BonesData.resize(Local.BonesData.size() + SkeletonBoneCount, IdentityBone);
             }
         }
 
@@ -1615,7 +1660,7 @@ namespace Lumina
         EntityRecord.CustomData           = MeshComponent.CustomPrimitiveData.Data.Packed;
         EntityRecord.EntityID             = entt::to_integral(Entity);
         EntityRecord.LocalBoneOffset      = LocalBoneOffset;
-        EntityRecord._Pad                 = 0u;
+        EntityRecord.GlobalSkinnedBase    = 0u;   // resolved during merge
 
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
         {
@@ -1655,6 +1700,49 @@ namespace Lumina
             Item.LocalDrawIndex       = LocalDrawIdx;
             Item._Pad                 = 0;
         }
+
+        // Resolve the meshlet span actually rendered (surface + shadow LODs, across surfaces)
+        // so the pre-skin slice covers only those LODs, not the whole mesh -- distant entities
+        // at low LODs then cost a fraction of the storage. Meshlets are LOD-major, so the span
+        // is contiguous; GlobalSkinnedBase is finalized in merge as (compacted base - span start).
+        uint32 SkinSliceSize = 0u;
+        if (LocalBoneOffset != ~0u && MeshletHeaderAddress != 0ull)
+        {
+            const TVector<FMeshlet>& Meshlets = Resource.MeshletData.Meshlets;
+            uint32 MinMeshlet    = ~0u;
+            uint32 MaxMeshletEnd = 0u;
+            for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
+            {
+                const uint32 LODIndex       = ResolveSurfaceLOD(Surface, MeshComponent.ForcedLODIndex, RenderSettings.bUseLODs, DistanceOverRadius);
+                const uint32 ShadowLODIndex = ResolveShadowLOD(Surface, LODIndex, RenderSettings.ShadowLODBias);
+                const uint32 Offsets[2] = { Surface.LODMeshletOffset[LODIndex], Surface.LODMeshletOffset[ShadowLODIndex] };
+                const uint32 Counts[2]  = { Surface.LODMeshletCount[LODIndex],  Surface.LODMeshletCount[ShadowLODIndex]  };
+                for (int k = 0; k < 2; ++k)
+                {
+                    if (Counts[k] > 0u)
+                    {
+                        MinMeshlet    = glm::min(MinMeshlet, Offsets[k]);
+                        MaxMeshletEnd = glm::max(MaxMeshletEnd, Offsets[k] + Counts[k]);
+                    }
+                }
+            }
+            if (MaxMeshletEnd > MinMeshlet)
+            {
+                const FMeshlet& First = Meshlets[MinMeshlet];
+                const FMeshlet& Last  = Meshlets[MaxMeshletEnd - 1u];
+                EntityRecord.SkinMeshletStart = MinMeshlet;
+                EntityRecord.SkinMeshletCount = MaxMeshletEnd - MinMeshlet;
+                EntityRecord.SkinSpanStart    = First.VertexOffset;
+                SkinSliceSize                 = (Last.VertexOffset + Last.VertexCount) - First.VertexOffset;
+            }
+        }
+        EntityRecord.SkinSliceSize = SkinSliceSize;
+        if (SkinSliceSize == 0u)
+        {
+            EntityRecord.SkinMeshletStart = 0u;
+            EntityRecord.SkinMeshletCount = 0u;
+            EntityRecord.SkinSpanStart    = 0u;
+        }
     }
 
     void FForwardRenderScene::MergeMeshDrawData(TVector<FThreadLocalDrawData>& ThreadLocal)
@@ -1688,6 +1776,31 @@ namespace Lumina
             FThreadLocalDrawData& Local = ThreadLocal[t];
             ThreadBoneBase[t] = (uint32)BonesData.size();
             BonesData.insert(BonesData.end(), Local.BonesData.begin(), Local.BonesData.end());
+
+            // GPU pre-skinning: give each skinned entity a slice in the pre-skinned buffer
+            // and emit a descriptor (resolved to global bone/skin offsets) for the compute
+            // dispatch. Stored back into the record so the parallel write reads it.
+            for (FEntityRecord& Rec : Local.EntityRecords)
+            {
+                if (Rec.LocalBoneOffset == ~0u || Rec.SkinSliceSize == 0u)
+                {
+                    continue;
+                }
+                // Combined base folds in the span start so SkinnedVertexBase + M.VertexOffset
+                // lands in the compacted slice (unsigned wrap; rendered M.VertexOffset >= span start).
+                const uint32 CompactedBase = Frame.TotalPreSkinnedVertices;
+                Rec.GlobalSkinnedBase      = CompactedBase - Rec.SkinSpanStart;
+
+                FSkinDescriptor& Desc     = Frame.SkinDescriptors.emplace_back();
+                Desc.MeshletHeaderAddress = Rec.MeshletHeaderAddress;
+                Desc.BoneOffset           = ThreadBoneBase[t] + Rec.LocalBoneOffset;
+                Desc.SkinnedVertexBase    = Rec.GlobalSkinnedBase;
+                Desc.SkinMeshletStart     = Rec.SkinMeshletStart;
+                Desc.SkinMeshletCount     = Rec.SkinMeshletCount;
+
+                Frame.TotalPreSkinnedVertices += Rec.SkinSliceSize;
+            }
+
             TotalInstances += (uint32)Local.Items.size();
             TotalInstancesCulled += Local.Stats.NumInstancesCulled;
 
@@ -1923,18 +2036,12 @@ namespace Lumina
                     for (FProcessedDrawItem& Item : Local.Items)
                     {
                         FLocalBatchEntry& LocalBatch = Local.LocalBatches[Item.LocalBatchIndex];
-                        const uint32 GlobalDraw = MergeBatchDrawArgBase[LocalBatch.GlobalBatchIndex]
-                                                + LocalBatch.LocalToGlobalDraw[Item.LocalDrawIndex];
+                        const uint32 GlobalDraw = MergeBatchDrawArgBase[LocalBatch.GlobalBatchIndex] + LocalBatch.LocalToGlobalDraw[Item.LocalDrawIndex];
 
                         const uint32 WriteIdx = LocalBatch.LocalDrawWriteBase[Item.LocalDrawIndex]++;
                         const FEntityRecord& Entity = Local.EntityRecords[Item.EntityRecordIndex];
 
-                        const uint32 GlobalBoneOffset = Entity.LocalBoneOffset != ~0u
-                            ? (BoneBase + Entity.LocalBoneOffset)
-                            : 0u;
-                        // Bone offset packed into 16 bits w/ MaterialIndex; ~65k bone hard cap per frame.
-                        DEBUG_ASSERT(GlobalBoneOffset <= 0xFFFFu);
-                        const uint16 BoneOffset = (uint16)GlobalBoneOffset;
+                        const uint32 GlobalBoneOffset = Entity.LocalBoneOffset != ~0u ? (BoneBase + Entity.LocalBoneOffset) : 0u;
 
                         FGPUInstance& Out = Instances[WriteIdx];
                         Out.Transform                  = Entity.Transform;
@@ -1947,8 +2054,10 @@ namespace Lumina
                         Out.SurfaceMeshletOffset       = Item.SurfaceMeshletOffset;
                         Out.SurfaceMeshletCount        = Item.SurfaceMeshletCount;
                         Out.CustomData                 = Entity.CustomData;
-                        Out.BoneOffsetAndMaterialIndex = PackBoneOffsetAndMaterial(BoneOffset, Item.MaterialIndex);
+                        Out.BoneOffset                 = GlobalBoneOffset;
+                        Out.MaterialIndex              = Item.MaterialIndex;
                         Out.EntityID                   = Entity.EntityID;
+                        Out.SkinnedVertexBase          = Entity.GlobalSkinnedBase;
                     }
                 }
             }, 1);
@@ -2858,9 +2967,9 @@ namespace Lumina
 
     void FForwardRenderScene::ProcessBatchedLines(FLineBatcherComponent& Batcher)
     {
-        FFrameData& Frame = *ExtractFrame;
-        auto& SceneGlobalData = Frame.SceneGlobalData;
-        auto& SimpleVertices  = Frame.SimpleVertices;
+        FFrameData& Frame       = *ExtractFrame;
+        auto& SceneGlobalData   = Frame.SceneGlobalData;
+        auto& SimpleVertices    = Frame.SimpleVertices;
         auto& LineBatches     = Frame.LineBatches;
 
         Batcher.DrainQueue();
@@ -2879,7 +2988,8 @@ namespace Lumina
             uint32  VertexCount;
             uint8   bDepthTest;
         };
-        TFixedVector<FBucket, 8> Buckets;
+        
+        TFixedVector<FBucket, 16> Buckets;
 
         auto FindOrCreateBucket = [&](float Thickness, uint8 bDepthTest) -> uint32
         {
@@ -2892,7 +3002,7 @@ namespace Lumina
                     return i;
                 }
             }
-            Buckets.push_back({Thickness, 0u, 0u, bDepthTest});
+            Buckets.emplace_back(Thickness, 0u, 0u, bDepthTest);
             return (uint32)Buckets.size() - 1;
         };
         
@@ -2918,7 +3028,7 @@ namespace Lumina
             {
                 const uint32 BucketIdx = FindOrCreateBucket(Line.Thickness, Line.bDepthTest);
                 Buckets[BucketIdx].VertexCount += 2;
-                DrawCache.push_back({Line.Start, Line.End, Line.ColorPacked, (uint8)BucketIdx});
+                DrawCache.emplace_back(Line.Start, Line.End, Line.ColorPacked, (uint8)BucketIdx);
             }
 
             if (Line.bSingleFrame)
@@ -2964,12 +3074,7 @@ namespace Lumina
         LineBatches.reserve(LineBatches.size() + Buckets.size());
         for (const FBucket& B : Buckets)
         {
-            FLineBatch Batch;
-            Batch.StartVertex = B.StartVertex;
-            Batch.VertexCount = B.VertexCount;
-            Batch.Thickness   = B.Thickness;
-            Batch.bDepthTest  = B.bDepthTest != 0;
-            LineBatches.emplace_back(Batch);
+            LineBatches.emplace_back(B.StartVertex, B.VertexCount, B.Thickness, B.bDepthTest);
         }
     }
 
@@ -3016,6 +3121,8 @@ namespace Lumina
         Frame.ShadowRequests.clear();
         Frame.AtlasTiles.clear();
         Frame.BonesData.clear();
+        Frame.SkinDescriptors.clear();
+        Frame.TotalPreSkinnedVertices = 0;
         Frame.BillboardInstances.clear();
         // Previous frame's pin refs were already handed to the render
         // thread's command buffer; clearing here just drops our copy.
@@ -3173,6 +3280,48 @@ namespace Lumina
         CmdList.Dispatch(DispatchX, DispatchY, 1u);
     }
 
+
+    void FForwardRenderScene::SkinningPass(ICommandList& CmdList)
+    {
+        const FFrameData& Frame = *RenderFrame;
+        const uint32 DescriptorCount = (uint32)Frame.SkinDescriptors.size();
+        if (DescriptorCount == 0)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Skinning Pass", tracy::Color::SkyBlue);
+
+        FRHIComputeShaderRef SkinShader = FShaderLibrary::GetComputeShader("Skinning.slang");
+        if (!SkinShader)
+        {
+            return;
+        }
+
+        FComputePipelineDesc PipelineDesc;
+        PipelineDesc.SetComputeShader(SkinShader);
+        PipelineDesc.AddBindingLayout(SceneBindingLayout);
+        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        PipelineDesc.DebugName = "Skinning";
+
+        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+        FComputeState State;
+        State.SetPipeline(Pipeline);
+        // Writable scene set: binding 20 (pre-skinned verts) is a UAV here, SRV in draw passes.
+        State.AddBindingSet(SceneBindingSet);
+        State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+        CmdList.SetComputeState(State);
+
+        struct FSkinningPushConstants { uint32 DescriptorCount; } PC{ DescriptorCount };
+        CmdList.SetPushConstants(&PC, sizeof(PC));
+
+        // One workgroup per skinned entity; fold across X/Y past the 65535 per-axis cap.
+        constexpr uint32 MaxDispatchAxis = 65535u;
+        const uint32 DispatchX = DescriptorCount < MaxDispatchAxis ? DescriptorCount : MaxDispatchAxis;
+        const uint32 DispatchY = (DescriptorCount + MaxDispatchAxis - 1u) / MaxDispatchAxis;
+        CmdList.Dispatch(DispatchX, DispatchY, 1u);
+    }
 
     static void RecordDepthPrePassSlice(
         ICommandList& CmdList,
@@ -6669,13 +6818,37 @@ namespace Lumina
             // Modest initial size, grown at the upload site; worst-case sizing up front
             // would multiply by MaxVersions into host-visible memory needlessly.
             FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(glm::mat4) * 16 * 1024;
+            BufferDesc.Size = sizeof(FBoneTransform) * 16 * 1024;
             BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
             BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
             BufferDesc.bKeepInitialState = true;
             BufferDesc.InitialState = EResourceStates::ShaderResource;
             BufferDesc.DebugName = "Bone Data Buffer";
             NamedBuffers[(int)ENamedBuffer::Bone] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        {
+            // GPU pre-skinning output: written by Skinning.slang (UAV), read by every draw
+            // VS (SRV). Device-local (not Dynamic) -- the GPU produces it, no CPU upload.
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FPreSkinnedVertex) * 64 * 1024;
+            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::ShaderResource;
+            BufferDesc.DebugName = "Pre-Skinned Vertices";
+            NamedBuffers[(int)ENamedBuffer::PreSkinnedVertices] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        {
+            // Per-skinned-entity skin descriptors, uploaded each frame (one per entity).
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FSkinDescriptor) * 4 * 1024;
+            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
+            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::ShaderResource;
+            BufferDesc.DebugName = "Skin Descriptors";
+            NamedBuffers[(int)ENamedBuffer::SkinDescriptors] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
         {
@@ -7304,6 +7477,10 @@ namespace Lumina
             // 12/14/15 (IndirectArgs, DeferList, DeferCount) are cull-private (device address,
             // tracked via State.Writes), so no pass binds them. 16 = per-instance meshlet prefix.
             BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(16, GetNamedBuffer(ENamedBuffer::InstanceMeshletPrefix)));
+            // Pre-skinned vertices: UAV in the skinning compute pass, SRV for the draw VS.
+            FRHIBuffer* PreSkinnedBuf = GetNamedBuffer(ENamedBuffer::PreSkinnedVertices);
+            BindingSetDesc.AddItem(bReadOnly ? FBindingSetItem::BufferSRV(20, PreSkinnedBuf) : FBindingSetItem::BufferUAV(20, PreSkinnedBuf));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(21, GetNamedBuffer(ENamedBuffer::SkinDescriptors)));
 
             // BRDF LUT (Karis split-sum), linear-clamp: sampled by (NdotV, Roughness) in
             // [0,1]; clamp matches the half-texel offsets baked into the LUT.

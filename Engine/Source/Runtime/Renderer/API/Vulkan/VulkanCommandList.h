@@ -148,7 +148,9 @@ namespace Lumina
         
     private:
         
-        TFixedHashMap<FRHIBufferRef, FDynamicBufferWrite, 2>    DynamicBufferWrites;
+        // Tracks the distinct dynamic buffers written per frame (Scene/Light/Instance/Bone/...);
+        // inline 2 spilled to the heap every frame. Bounded by distinct buffers, not draws.
+        TFixedHashMap<FRHIBufferRef, FDynamicBufferWrite, 16>   DynamicBufferWrites;
 
         FGraphicsState                                          CurrentGraphicsState;
         FComputeState                                           CurrentComputeState;

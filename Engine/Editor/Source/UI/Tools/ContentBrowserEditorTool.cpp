@@ -312,7 +312,8 @@ namespace Lumina
             ImTextureRef ImTexture;
             if (ContentItem->IsDirectory())
             {
-                ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/Folder.png");
+                static const FString FolderIcon = Paths::GetEngineResourceDirectory() + "/Textures/Folder.png";
+                ImTexture = ImGuiX::ToImTextureRef(FolderIcon);
                 TintColor = ImVec4(1.0f, 0.9f, 0.6f, 1.0f);
             }
             else if (ContentItem->IsAsset())
@@ -323,20 +324,24 @@ namespace Lumina
                 }
                 else
                 {
-                    ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/Asset.png");
+                    static const FString AssetIcon = Paths::GetEngineResourceDirectory() + "/Textures/Asset.png";
+                    ImTexture = ImGuiX::ToImTextureRef(AssetIcon);
                 }
             }
             else if (ContentItem->IsLuaScript())
             {
-                ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/LuaScript.png");
+                static const FString LuaIcon = Paths::GetEngineResourceDirectory() + "/Textures/LuaScript.png";
+                ImTexture = ImGuiX::ToImTextureRef(LuaIcon);
             }
             else if (ContentItem->GetExtension() == ".rml")
             {
-                ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/rmlui.png");
+                static const FString RmlIcon = Paths::GetEngineResourceDirectory() + "/Textures/rmlui.png";
+                ImTexture = ImGuiX::ToImTextureRef(RmlIcon);
             }
             else if (ContentItem->GetExtension() == ".wav")
             {
-                ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/Audio.png");
+                static const FString AudioIcon = Paths::GetEngineResourceDirectory() + "/Textures/Audio.png";
+                ImTexture = ImGuiX::ToImTextureRef(AudioIcon);
             }
             
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.16f, 0.17f, 1.0f)); 

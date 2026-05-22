@@ -1,13 +1,10 @@
 #pragma once
 #include "UpdateStage.h"
 #include "Platform/GenericPlatform.h"
-#include "Subsystems/Subsystem.h"
 
 
 namespace Lumina
 {
-    class FSubsystemManager;
-
     class RUNTIME_API FUpdateContext
     {
     public:

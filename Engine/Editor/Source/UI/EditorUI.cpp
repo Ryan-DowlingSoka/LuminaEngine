@@ -1329,7 +1329,8 @@ namespace Lumina
     void FEditorUI::DrawTitleBarMenu(const FUpdateContext& UpdateContext)
     {
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
-        ImGui::Image(ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/Lumina.png"), ImVec2(24.0f, 24.0f));
+        static const FString LuminaIcon = Paths::GetEngineResourceDirectory() + "/Textures/Lumina.png";
+        ImGui::Image(ImGuiX::ToImTextureRef(LuminaIcon), ImVec2(24.0f, 24.0f));
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 2.0f);
     
         // Styled menu bar

@@ -208,10 +208,18 @@ namespace Lumina
         if (Event.IsA<FMouseMovedEvent>())
         {
             // Raw accessors so UI mode (which gates GetMouseX/Y to 0 for game
-            // scripts) doesn't pin RmlUi's cursor to the origin.
+            // scripts) doesn't pin RmlUi's cursor to the origin. MouseX/Y are in
+            // render-target space; the context lays out at its own dimensions
+            // (panel size in the editor, which stretches the fixed-size RT), so
+            // rescale RT space -> context space or the cursor won't line up.
             const double Cx = Context->GetMouseXRaw();
             const double Cy = Context->GetMouseYRaw();
-            return !Ctx->ProcessMouseMove(int(Cx), int(Cy), Mods);
+            const auto   Dims = Ctx->GetDimensions();
+            const uint32 RTW  = Context->GetRenderTargetWidth();
+            const uint32 RTH  = Context->GetRenderTargetHeight();
+            const double Px = (RTW > 0) ? (Cx / double(RTW)) * double(Dims.x) : Cx;
+            const double Py = (RTH > 0) ? (Cy / double(RTH)) * double(Dims.y) : Cy;
+            return !Ctx->ProcessMouseMove(int(Px), int(Py), Mods);
         }
         if (Event.IsA<FMouseButtonPressedEvent>())
         {

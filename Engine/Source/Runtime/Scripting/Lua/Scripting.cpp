@@ -25,6 +25,7 @@
 #include "Core/Object/Class.h"
 #include "Events/EventProcessor.h"
 #include "Input/InputMode.h"
+#include "Memory/MemoryTracking.h"
 #include "World/Entity/Systems/NavMeshSystem.h"
 #include "World/Entity/Systems/SystemContext.h"
 
@@ -335,6 +336,8 @@ namespace Lumina::Lua
 
     static void* ScriptingMemoryReallocFn([[maybe_unused]] void* Caller, void* Memory, [[maybe_unused]] size_t OldSize, size_t NewSize)
     {
+        LUMINA_MEMORY_SCOPE("Physics");
+
         if (NewSize == 0)
         {
             Memory::Free(Memory);
@@ -929,6 +932,11 @@ namespace Lumina::Lua
     
     int FScriptingContext::GetScriptMemoryUsageBytes() const
     {
+        if (L == nullptr)
+        {
+            return 0;
+        }
+
         int KB        = lua_gc(L, LUA_GCCOUNT, 0);
         int Remainder = lua_gc(L, LUA_GCCOUNTB, 0);
         return (KB * 1024) + Remainder;

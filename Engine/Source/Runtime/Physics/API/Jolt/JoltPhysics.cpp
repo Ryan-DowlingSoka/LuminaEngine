@@ -7,6 +7,7 @@
 #include "Core/Threading/Thread.h"
 #include "Jolt/RegisterTypes.h"
 #include "Jolt/Core/Factory.h"
+#include "Memory/MemoryTracking.h"
 #include "Physics/API/Jolt/JoltUtils.h"
 #include "World/World.h"
 
@@ -82,13 +83,18 @@ namespace Lumina::Physics
     }
     #endif
 
+    // Tag at the allocation hook (not a call-site scope): Jolt allocates from its own job-system
+    // threads, so a thread-local scope around our calls would miss those. Wrapping the hook tags
+    // every Jolt allocation -- shapes, bodies, broadphase, collision/navmesh build -- as "Physics".
     void* JPHCustomAllocate(size_t size)
     {
+        LUMINA_MEMORY_SCOPE("Physics");
         return Memory::Malloc(size);
     }
 
     void* JPHCustomReallocate(void* block, size_t oldSize, size_t newSize)
     {
+        LUMINA_MEMORY_SCOPE("Physics");
         return Memory::Realloc(block, newSize);
     }
 
@@ -99,6 +105,7 @@ namespace Lumina::Physics
 
     void* JPHCustomAlignedAllocate(size_t size, size_t alignment)
     {
+        LUMINA_MEMORY_SCOPE("Physics");
         return Memory::Malloc(size, alignment);
     }
 

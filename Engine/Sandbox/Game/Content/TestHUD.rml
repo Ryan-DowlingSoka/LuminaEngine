@@ -1,0 +1,82 @@
+<rml>
+<head>
+    <title>UI Test Suite</title>
+    <style>
+        body {
+            font-family: LatoLatin;
+            color: #cdd6f4;
+        }
+
+        #panel {
+            display: block;
+            position: absolute;
+            top: 30dp;
+            left: 30dp;
+            width: 380dp;
+            padding: 18dp;
+            background-color: #1e1e2ef0;
+            border-width: 2dp;
+            border-color: #585b70;
+        }
+        #panel.active {
+            border-color: #a6e3a1;
+        }
+
+        #title {
+            display: block;
+            font-size: 24dp;
+            color: #89b4fa;
+            margin-bottom: 12dp;
+        }
+
+        .row {
+            display: block;
+            font-size: 16dp;
+            margin-bottom: 4dp;
+        }
+        .row span {
+            display: inline;
+            color: #f9e2af;
+        }
+
+        #message {
+            display: block;
+            font-size: 15dp;
+            margin-top: 6dp;
+            margin-bottom: 12dp;
+            color: #94e2d5;
+        }
+
+        button {
+            display: block;
+            margin-top: 6dp;
+            padding: 8dp 12dp;
+            font-size: 15dp;
+            color: #11111b;
+            background-color: #89b4fa;
+            border-width: 0dp;
+        }
+        button:hover  { background-color: #b4befe; }
+        button:active { background-color: #74c7ec; }
+    </style>
+</head>
+<body>
+    <div id="panel">
+        <div id="title">Per-World UI - Test Suite</div>
+
+        <div class="row">Frame: <span id="frame_value">0</span></div>
+        <div class="row">Time: <span id="time_value">0.0</span>s</div>
+        <div class="row">Counter: <span id="counter_value">0</span></div>
+        <div class="row">Popup: <span id="popup_state">closed</span></div>
+
+        <div id="message">Click the buttons to exercise the UI Lua API.</div>
+
+        <button id="btn_increment">Increment Counter (SetText)</button>
+        <button id="btn_highlight">Toggle Highlight (SetClass)</button>
+        <button id="btn_rml">Inject Markup (SetInnerRml)</button>
+        <button id="btn_popup">Toggle Popup (Show/Hide)</button>
+        <button id="btn_debugger">Toggle Debugger</button>
+        <button id="btn_describe">Log DescribeState</button>
+    </div>
+</body>
+</rml>

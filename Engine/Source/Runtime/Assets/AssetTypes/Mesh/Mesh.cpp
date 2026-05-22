@@ -3,6 +3,7 @@
 #include "Assets/AssetTypes/Material/Material.h"
 #include "assets/assettypes/material/materialinstance.h"
 #include "Core/Object/Cast.h"
+#include "Memory/MemoryTracking.h"
 #include "Renderer/RenderContext.h"
 #include "Renderer/RHIGlobals.h"
 #include "Renderer/Vertex.h"
@@ -13,18 +14,22 @@ namespace Lumina
 {
     void CMesh::Serialize(FArchive& Ar)
     {
+        LUMINA_MEMORY_SCOPE("Meshes");
+
         Super::Serialize(Ar);
 
         if (!MeshResources)
         {
             MeshResources = MakeUnique<FMeshResource>();
         }
-        
+
         Ar << *MeshResources;
     }
 
     void CMesh::PostLoad()
     {
+        LUMINA_MEMORY_SCOPE("Meshes");
+
         GenerateBoundingBox();
 
         // Fallback for procedurally-generated meshes that bypass the import finalize pass.
@@ -111,20 +116,30 @@ namespace Lumina
             }
             return;
         }
-
-        // Loaded asset: Vertices is transient, derive the AABB from per-meshlet LoInt against the grid.
+        
         if (MeshResources && !MeshResources->MeshletData.IsEmpty())
         {
-            const FMeshletData& MD       = MeshResources->MeshletData;
-            const glm::vec3     Origin   = MD.MeshOrigin;
-            const glm::vec3     GridStep = MD.MeshGridStep;
+            const FMeshletData& MD = MeshResources->MeshletData;
 
-            for (const FMeshlet& M : MD.Meshlets)
+            if (!MD.MeshletBounds.empty())
             {
-                const glm::vec3 Lo = Origin + glm::vec3(M.LoInt) * GridStep;
-                const glm::vec3 Hi = Lo + glm::vec3(1023.0f) * GridStep;
-                BoundingBox.Min = glm::min(BoundingBox.Min, Lo);
-                BoundingBox.Max = glm::max(BoundingBox.Max, Hi);
+                for (const FMeshletBounds& B : MD.MeshletBounds)
+                {
+                    BoundingBox.Min = glm::min(BoundingBox.Min, B.Center - glm::vec3(B.Radius));
+                    BoundingBox.Max = glm::max(BoundingBox.Max, B.Center + glm::vec3(B.Radius));
+                }
+            }
+            else
+            {
+                // Fallback (no bounds stored): the conservative whole-mesh grid extent.
+                const glm::vec3 Origin   = MD.MeshOrigin;
+                const glm::vec3 GridStep = MD.MeshGridStep;
+                for (const FMeshlet& M : MD.Meshlets)
+                {
+                    const glm::vec3 Lo = Origin + glm::vec3(M.LoInt) * GridStep;
+                    BoundingBox.Min = glm::min(BoundingBox.Min, Lo);
+                    BoundingBox.Max = glm::max(BoundingBox.Max, Lo + glm::vec3(1023.0f) * GridStep);
+                }
             }
         }
     }

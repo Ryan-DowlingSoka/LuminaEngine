@@ -34,14 +34,11 @@ constexpr int ClusterGridSizeZ = 24;
 
 constexpr int NumClusters = ClusterGridSizeX * ClusterGridSizeY * ClusterGridSizeZ;
 
-// CSM atlas: three 4096 cascades packed side by side in a single Texture2D
-// atlas (~192 MB D32). Outer cascades get full resolution so the large world
-// area they cover doesn't degrade into blocky shadows.
-constexpr int GCSMCascadeSizes[3]       = { 4096, 4096, 4096 };
-constexpr int GCSMAtlasWidth            = 12288;
+constexpr int GCSMCascadeSizes[3]       = { 4096, 2048, 1024 };
+constexpr int GCSMAtlasWidth            = 6144;
 constexpr int GCSMAtlasHeight           = 4096;
-constexpr int GCSMCascadeOriginX[3]     = { 0,    4096, 8192 };
-constexpr int GCSMCascadeOriginY[3]     = { 0,    0,    0    };
+constexpr int GCSMCascadeOriginX[3]     = { 0,    4096, 4096 };
+constexpr int GCSMCascadeOriginY[3]     = { 0,    0,    2048 };
 
 constexpr int GShadowAtlasResolution    = 4096;
 
@@ -464,23 +461,80 @@ namespace Lumina
         uint32          SurfaceMeshletCount;
         uint32          CustomData;
 
-        uint32          BoneOffsetAndMaterialIndex;
+        // Full 32-bit bone index (was packed into 16 bits with MaterialIndex, which capped
+        // the scene at 64k total bones). Pad keeps the SSBO stride 16-byte aligned.
+        uint32          BoneOffset;
+        uint32          MaterialIndex;
         uint32          EntityID;
+        // Base index into the pre-skinned vertex buffer for this instance's entity.
+        // The skinning compute pass writes there; the draw VS reads from it instead of
+        // re-skinning. 0 for static (non-skinned) instances.
+        uint32          SkinnedVertexBase;
+        uint32          _Pad1;
+        uint32          _Pad2;
     };
 
-    static_assert(sizeof(FGPUInstance) == 128, "FGPUInstance layout must match shader");
+    static_assert(sizeof(FGPUInstance) == 144, "FGPUInstance layout must match shader");
     VERIFY_SSBO_ALIGNMENT(FGPUInstance)
-    
+
+    // One per skinned vertex (per entity, per meshlet-vertex), produced by the skinning compute
+    // pass and consumed by every draw VS. Holds the COMPLETE vertex (UV/Color carried through)
+    // so the draw VS reads only this buffer, never the source skinned vertex. Position is
+    // full-precision; normal/tangent reuse the source octahedral packing. All-scalar => 28 B.
+    struct FPreSkinnedVertex
+    {
+        float       Px;
+        float       Py;
+        float       Pz;
+        uint32      Normal;     // PackNormal
+        uint32      Tangent;    // PackTangent
+        uint32      UV;
+        uint32      Color;
+    };
+    static_assert(sizeof(FPreSkinnedVertex) == 28, "FPreSkinnedVertex must match shader");
+
+    // One per skinned entity; drives the skinning compute dispatch (one workgroup each).
+    struct FSkinDescriptor
+    {
+        uint64      MeshletHeaderAddress;   // FMeshletHeader* (BDA)
+        uint32      BoneOffset;             // global index into the bone-matrix buffer
+        // Combined base = (compacted slice base) - (vertex span start), so that
+        // SkinnedVertexBase + M.VertexOffset lands in the compacted slice (uint wraps).
+        uint32      SkinnedVertexBase;
+        // Only the meshlets of the rendered LODs (surface + shadow span) are skinned, not
+        // the whole mesh -- so distant entities at low LODs cost a fraction of the storage.
+        uint32      SkinMeshletStart;
+        uint32      SkinMeshletCount;
+    };
+    static_assert(sizeof(FSkinDescriptor) == 24, "FSkinDescriptor must match shader");
+
+    // A bone skinning matrix with its always-(0,0,0,1) last row dropped: the first 3 rows of
+    // the 4x4 (row r = (M[0][r], M[1][r], M[2][r], M[3][r]) in glm's column-major storage).
+    // 48 B vs 64 B, lossless for affine transforms. Read only by the skinning compute now.
+    struct FBoneTransform
+    {
+        glm::vec4   Row0;
+        glm::vec4   Row1;
+        glm::vec4   Row2;
+    };
+    static_assert(sizeof(FBoneTransform) == 48, "FBoneTransform must match shader");
+    VERIFY_SSBO_ALIGNMENT(FBoneTransform)
+
+    // Drop the redundant 4th row of an affine skinning matrix. p' = M*p == dot(Row_r, p4).
+    FORCEINLINE FBoneTransform PackBoneTransform(const glm::mat4& M)
+    {
+        return {
+            glm::vec4(M[0][0], M[1][0], M[2][0], M[3][0]),
+            glm::vec4(M[0][1], M[1][1], M[2][1], M[3][1]),
+            glm::vec4(M[0][2], M[1][2], M[2][2], M[3][2]),
+        };
+    }
+
     constexpr uint32 PackDrawIDAndFlags(uint32 DrawID, EInstanceFlags Flags)
     {
         return (DrawID & 0x00FFFFFF) | (((uint32)Flags & 0xFF) << 24);
     }
-    
-    constexpr uint32 PackBoneOffsetAndMaterial(uint16 BoneOffset, uint16 MaterialIndex)
-    {
-        return (uint32)BoneOffset | ((uint32)MaterialIndex << 16);
-    }
-    
+
     struct FCullData
     {
         FFrustum Frustum;

@@ -11,6 +11,7 @@
 #include "Renderer/RHIGlobals.h"
 #include "Renderer/RenderContext.h"
 #include "Renderer/RenderResource.h"
+#include "Scripting/Lua/Scripting.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 
@@ -46,6 +47,13 @@ namespace Lumina
             case EGPUMemoryCategory::Staging:       return ImVec4(0.70f, 0.70f, 0.74f, 1.0f);
             default:                                return ImVec4(0.55f, 0.55f, 0.58f, 1.0f);
             }
+        }
+
+        // "12.3 MB (12884901 bytes)" -- human-readable plus exact, so an AI gets both the
+        // gestalt and a parseable number.
+        FString SizeBoth(uint64 Bytes)
+        {
+            return FString().sprintf("%s (%llu bytes)", ImGuiX::FormatSize((size_t)Bytes).c_str(), (unsigned long long)Bytes);
         }
 
         void PushHistory(TVector<float>& History, float Value)
@@ -144,9 +152,12 @@ namespace Lumina
             TotalResources++;
         });
 
+        LuaBytes = (size_t)Lua::FScriptingContext::Get().GetScriptMemoryUsageBytes();
+
         const float ToMB = 1.0f / (1024.0f * 1024.0f);
         PushHistory(HistRSS, (float)Platform::GetProcessMemoryUsageBytes() * ToMB);
         PushHistory(HistVRAM, (float)GPUStats.TotalUsage * ToMB);
+        PushHistory(HistLua, (float)LuaBytes * ToMB);
 #if LUMINA_MEMORY_TRACKING
         PushHistory(HistCPUTracked, (float)Memory::GetTrackedLiveBytes() * ToMB);
 #endif
@@ -162,6 +173,17 @@ namespace Lumina
         }
 
         DrawHeaderCards();
+        ImGui::Spacing();
+
+        if (ImGui::Button(LE_ICON_CONTENT_COPY " Copy All Stats"))
+        {
+            CopyAllStatsToClipboard();
+        }
+        ImGuiX::TextTooltip("Copies a full structured memory report (CPU + GPU heaps + memory-by-purpose + "
+                            "live resources + CPU categories + call sites) to the clipboard, formatted to "
+                            "paste straight into an AI assistant for usage tracking.");
+        ImGui::SameLine();
+        ImGui::TextDisabled(LE_ICON_INFORMATION " paste into an AI to track down where the memory goes");
         ImGui::Spacing();
 
         if (ImGui::BeginTabBar("##MemoryTabs"))
@@ -368,7 +390,9 @@ namespace Lumina
 
                 ImGui::TableSetColumnIndex(0);
                 const ImVec4 C = CategoryColor(Row.Cat);
+                ImGui::PushID((int)Row.Cat);
                 ImGui::ColorButton("##c", C, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder, ImVec2(10, 10));
+                ImGui::PopID();
                 ImGui::SameLine();
                 ImGui::TextUnformatted(GetGPUMemoryCategoryName(Row.Cat));
 
@@ -535,8 +559,28 @@ namespace Lumina
     // CPU
     //--------------------------------------------------------------------------------------------------
 
+    void FMemoryProfilerEditorTool::DrawScriptMemory()
+    {
+        // Lua VM total, independent of the CPU category tracker (Luau has its own allocator).
+        ImGui::Spacing();
+        ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
+        ImGui::TextColored(ImVec4(0.62f, 0.80f, 0.98f, 1.0f), LE_ICON_LANGUAGE_LUA " %s", ImGuiX::FormatSize(LuaBytes).c_str());
+        ImGuiX::Font::PopFont();
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("Lua VM (all script threads, live)");
+
+        DrawTimeline("##LuaPlot", HistLua, ImVec4(0.55f, 0.78f, 0.96f, 1.0f), 90.0f);
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
+
     void FMemoryProfilerEditorTool::DrawCPUTab()
     {
+        DrawScriptMemory();
+
 #if !LUMINA_MEMORY_TRACKING
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
@@ -839,4 +883,200 @@ namespace Lumina
     void FMemoryProfilerEditorTool::DrawCallSites() {}
 
 #endif
+
+    void FMemoryProfilerEditorTool::CopyAllStatsToClipboard()
+    {
+        FString R;
+        R.reserve(16 * 1024);
+
+        const size_t Process = Platform::GetProcessMemoryUsageBytes();
+#if LUMINA_MEMORY_TRACKING
+        const size_t Tracked = Memory::GetTrackedLiveBytes();
+#else
+        const size_t Tracked = 0;
+#endif
+        const size_t Untracked = (Process > Tracked) ? (Process - Tracked) : 0;
+
+        R += "# Lumina Engine - Memory Report\n\n";
+        R += "Captured from the in-editor Memory tool. Sizes show human-readable form with exact\n";
+        R += "byte counts in parentheses. Counts are live (currently outstanding) unless noted.\n";
+        R += "Use this to find which purpose/category/call-site is driving memory growth.\n\n";
+
+        // ---- System ----
+        R += "## System\n";
+        if (bDeviceInfoValid)
+        {
+            R += FString().sprintf("- GPU: %s (%s)\n", DeviceInfo.Name.c_str(), DeviceInfo.bDiscrete ? "Discrete" : "Integrated");
+            R += FString().sprintf("- API: %s\n", DeviceInfo.APIName.c_str());
+        }
+        else
+        {
+            R += "- GPU: (device info unavailable)\n";
+        }
+        R += "\n";
+
+        // ---- CPU ----
+        R += "## CPU memory\n";
+        R += FString().sprintf("- Process RSS: %s\n", SizeBoth(Process).c_str());
+        R += FString().sprintf("- Tracked:     %s\n", SizeBoth(Tracked).c_str());
+        R += FString().sprintf("- Untracked:   %s\n", SizeBoth(Untracked).c_str());
+        R += FString().sprintf("- Lua VM:      %s (Luau's own allocator; included in RSS, separate from the tracked categories below)\n\n",
+            SizeBoth(LuaBytes).c_str());
+
+        // ---- GPU summary ----
+        const float VRAMFrac = (GPUStats.TotalBudget > 0)
+            ? (float)((double)GPUStats.TotalUsage / (double)GPUStats.TotalBudget) : 0.0f;
+        R += "## GPU summary\n";
+        R += FString().sprintf("- VRAM usage: %s of %s (%.1f%%)\n",
+            SizeBoth(GPUStats.TotalUsage).c_str(), SizeBoth(GPUStats.TotalBudget).c_str(), VRAMFrac * 100.0f);
+        R += FString().sprintf("- Allocator allocated: %s\n", SizeBoth(GPUStats.TotalAllocated).c_str());
+        R += FString().sprintf("- Allocator blocks:    %s in %u blocks\n",
+            SizeBoth(GPUStats.TotalBlockBytes).c_str(), GPUStats.TotalBlocks);
+        R += FString().sprintf("- Live allocations:    %u\n\n", GPUStats.TotalAllocations);
+
+        // ---- GPU heaps ----
+        R += "## GPU heaps\n";
+        R += "| Heap | Type | Used | Budget | Used% | Allocated | Blocks | Allocs |\n";
+        R += "|------|------|------|--------|-------|-----------|--------|--------|\n";
+        for (const FGPUMemoryHeapStats& H : GPUStats.Heaps)
+        {
+            const float Frac = (H.BudgetBytes > 0) ? (float)((double)H.UsageBytes / (double)H.BudgetBytes) : 0.0f;
+            R += FString().sprintf("| %u | %s | %s | %s | %.1f%% | %s | %u | %u |\n",
+                H.HeapIndex, H.bDeviceLocal ? "Device" : "Host",
+                SizeBoth(H.UsageBytes).c_str(), SizeBoth(H.BudgetBytes).c_str(), Frac * 100.0f,
+                SizeBoth(H.AllocatedBytes).c_str(), H.BlockCount, H.AllocationCount);
+        }
+        R += "\n";
+
+        // ---- GPU memory by purpose ----
+        {
+            uint64 Total = 0;
+            for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i) { Total += GPUCategories[i].Bytes; }
+
+            struct FRow { EGPUMemoryCategory Cat; uint64 Bytes; uint32 Count; };
+            TFixedVector<FRow, (int)EGPUMemoryCategory::Count> Rows;
+            for (int i = 0; i < (int)EGPUMemoryCategory::Count; ++i)
+            {
+                if (GPUCategories[i].Count > 0)
+                {
+                    Rows.push_back({ (EGPUMemoryCategory)i, GPUCategories[i].Bytes, GPUCategories[i].Count });
+                }
+            }
+            eastl::sort(Rows.begin(), Rows.end(), [](const FRow& A, const FRow& B) { return A.Bytes > B.Bytes; });
+
+            R += "## GPU memory by purpose (estimated from resource descriptions, sorted by size)\n";
+            R += FString().sprintf("Total estimated: %s\n\n", SizeBoth(Total).c_str());
+            R += "| Purpose | Size | Count | Share% | Avg/resource |\n";
+            R += "|---------|------|-------|--------|--------------|\n";
+            for (const FRow& Row : Rows)
+            {
+                const float Share = (Total > 0) ? 100.0f * (float)((double)Row.Bytes / (double)Total) : 0.0f;
+                const uint64 Avg = (Row.Count > 0) ? (Row.Bytes / Row.Count) : 0;
+                R += FString().sprintf("| %s | %s | %u | %.1f%% | %s |\n",
+                    GetGPUMemoryCategoryName(Row.Cat), SizeBoth(Row.Bytes).c_str(),
+                    Row.Count, Share, SizeBoth(Avg).c_str());
+            }
+            R += "\n";
+        }
+
+        // ---- Live RHI resources ----
+        R += "## Live RHI resources\n";
+        R += FString().sprintf("Total: %u\n\n", TotalResources);
+        R += "| Type | Count |\n|------|-------|\n";
+        for (uint32 Type = RRT_None + 1; Type < RRT_Num; ++Type)
+        {
+            if (ResourceCounts[Type] == 0) { continue; }
+            R += FString().sprintf("| %s | %u |\n", GetRHIResourceTypeName((ERHIResourceType)Type), ResourceCounts[Type]);
+        }
+        R += "\n";
+
+#if LUMINA_MEMORY_TRACKING
+        // ---- CPU categories ----
+        {
+            struct FRow { const Memory::FMemoryCategoryStats* S; int64 DeltaBytes; int64 DeltaCount; };
+
+            auto FindBaseline = [this](const char* Name) -> const Memory::FMemoryCategoryStats*
+            {
+                if (bHasBaseline)
+                {
+                    for (const Memory::FMemoryCategoryStats& B : Baseline)
+                    {
+                        if (std::strcmp(B.Name, Name) == 0) { return &B; }
+                    }
+                }
+                return nullptr;
+            };
+
+            TVector<FRow> Rows;
+            Rows.reserve(Categories.size());
+            for (const Memory::FMemoryCategoryStats& S : Categories)
+            {
+                const Memory::FMemoryCategoryStats* B = FindBaseline(S.Name);
+                Rows.push_back({ &S,
+                    B ? (int64)S.LiveBytes - (int64)B->LiveBytes : 0,
+                    B ? (int64)S.LiveCount - (int64)B->LiveCount : 0 });
+            }
+            eastl::sort(Rows.begin(), Rows.end(), [](const FRow& A, const FRow& B) { return A.S->LiveBytes > B.S->LiveBytes; });
+
+            R += "## CPU memory by category (sorted by live bytes)\n";
+            R += FString().sprintf("Baseline set: %s\n\n", bHasBaseline ? "yes (Delta = growth since baseline)" : "no");
+            R += "| Category | Live | Count | Peak | Total allocs | Total frees | Delta bytes | Delta count |\n";
+            R += "|----------|------|-------|------|--------------|-------------|-------------|-------------|\n";
+            for (const FRow& Row : Rows)
+            {
+                const Memory::FMemoryCategoryStats& S = *Row.S;
+                R += FString().sprintf("| %s | %s | %llu | %s | %llu | %llu | %s%lld | %lld |\n",
+                    S.Name[0] ? S.Name : "Default",
+                    SizeBoth(S.LiveBytes).c_str(), (unsigned long long)S.LiveCount,
+                    SizeBoth(S.PeakBytes).c_str(),
+                    (unsigned long long)S.TotalAllocs, (unsigned long long)S.TotalFrees,
+                    Row.DeltaBytes > 0 ? "+" : "", (long long)Row.DeltaBytes, (long long)Row.DeltaCount);
+            }
+            R += "\n";
+        }
+
+        // ---- Top call sites (only when capturing) ----
+        R += "## Top call sites\n";
+        if (!Memory::IsCapturingCallstacks())
+        {
+            R += "(Call-stack attribution is OFF. Enable 'Capture call stacks' on the CPU tab, reproduce\n";
+            R += "the growth, then copy again to get per-line allocation sources.)\n\n";
+        }
+        else
+        {
+            char SymBuf[512];
+            const Memory::ECallSiteSort Sorts[2] = { Memory::ECallSiteSort::LiveBytes, Memory::ECallSiteSort::TotalAllocs };
+            const char* SortNames[2] = { "live bytes (leaks / persistent)", "total allocs (churn)" };
+
+            for (int s = 0; s < 2; ++s)
+            {
+                static constexpr uint32 kMaxSites = 24;
+                Memory::FCallSiteStat Sites[kMaxSites];
+                const uint32 NumSites = Memory::GetTopCallSites(Sites, kMaxSites, Sorts[s]);
+
+                R += FString().sprintf("### Ranked by %s\n", SortNames[s]);
+                for (uint32 i = 0; i < NumSites; ++i)
+                {
+                    const Memory::FCallSiteStat& Site = Sites[i];
+                    R += FString().sprintf("\n[%u] live %s | %llu live allocs | %llu total allocs | category [%s]\n",
+                        i + 1, SizeBoth(Site.LiveBytes).c_str(),
+                        (unsigned long long)Site.LiveCount, (unsigned long long)Site.TotalAllocs,
+                        Site.CatName[0] ? Site.CatName : "Default");
+                    for (uint32 f = 0; f < Site.FrameCount; ++f)
+                    {
+                        Memory::ResolveSymbol(Site.Frames[f], SymBuf, sizeof(SymBuf));
+                        R += "    ";
+                        R += SymBuf;
+                        R += "\n";
+                    }
+                }
+                R += "\n";
+            }
+        }
+#else
+        R += "## CPU categories / call sites\n(Compiled out in this build -- CPU tracking is Debug/Development only.)\n";
+#endif
+
+        ImGui::SetClipboardText(R.c_str());
+    }
 }

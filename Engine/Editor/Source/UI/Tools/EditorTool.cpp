@@ -156,7 +156,10 @@ namespace Lumina
 
         if (HasWorld())
         {
-            if (World->GetPhysicsScene() == nullptr)
+            // Initialize the world (creates its context) if it hasn't been already. Use the
+            // world context as the "is initialized" signal -- not the physics scene, which
+            // editor worlds intentionally don't have.
+            if (GWorldManager->FindContext(World) == nullptr)
             {
                 GWorldManager->CreateWorldContext(World, EWorldType::Editor);
             }
@@ -411,7 +414,9 @@ namespace Lumina
 
         World = InWorld;
 
-        if (World->GetPhysicsScene() == nullptr)
+        // Initialize the world (creates its context) if needed. Keyed on the world context, not
+        // the physics scene -- editor worlds intentionally have no physics scene.
+        if (GWorldManager->FindContext(World) == nullptr)
         {
             GWorldManager->CreateWorldContext(World, EWorldType::Editor);
         }

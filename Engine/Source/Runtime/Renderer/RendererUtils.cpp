@@ -7,24 +7,53 @@
 
 namespace Lumina::RenderUtils
 {
-    bool ResizeBufferIfNeeded(FRHIBufferRef& Buffer, uint32 DesiredSize, float GrowthFactor)
+    bool ResizeBufferIfNeeded(FRHIBufferRef& Buffer, uint32 DesiredSize, float GrowthFactor, uint32& LowUsageFrames)
     {
         const uint32 CurrentCapacity = (uint32)Buffer->GetSize();
 
-        if (CurrentCapacity >= DesiredSize)
+        auto Recreate = [&](uint32 NewCapacity)
         {
-            return false;
+            FRHIBufferDesc Desc = Buffer->GetDescription();
+            Desc.Size = NewCapacity;
+            FRHIBufferRef OldBuffer = Buffer;   // keep alive across the swap
+            Buffer = GRenderContext->CreateBuffer(Desc);
+            LowUsageFrames = 0;
+        };
+
+        // Grow immediately, with GrowthFactor headroom so a ramping scene doesn't realloc every frame.
+        if (CurrentCapacity < DesiredSize)
+        {
+            Recreate(std::max(DesiredSize, static_cast<uint32>(static_cast<float>(CurrentCapacity) * GrowthFactor)));
+            return true;
         }
 
-        uint32 NewCapacity = std::max(DesiredSize,static_cast<uint32>(static_cast<float>(CurrentCapacity) * GrowthFactor));
+        // Shrink with hysteresis: reclaim memory only after usage has stayed well below capacity
+        // for a sustained run of frames (e.g. the camera left a dense area), and only down to a
+        // size that still leaves headroom -- so transient dips don't thrash reallocation.
+        constexpr float  kShrinkUsageThreshold = 0.5f;   // "low" = live size < 50% of capacity
+        constexpr uint32 kShrinkAfterFrames    = 180;    // ~3s at 60fps of sustained low usage
+        constexpr float  kShrinkHeadroom       = 1.5f;   // shrink to 1.5x the live size
+        constexpr uint32 kMinCapacity          = 4096;   // never shrink to nothing
 
-        FRHIBufferDesc Desc = Buffer->GetDescription();
-        Desc.Size = NewCapacity;
+        if (DesiredSize <= static_cast<uint32>(static_cast<float>(CurrentCapacity) * kShrinkUsageThreshold))
+        {
+            if (++LowUsageFrames >= kShrinkAfterFrames)
+            {
+                const uint32 NewCapacity = std::max(kMinCapacity, static_cast<uint32>(static_cast<float>(DesiredSize) * kShrinkHeadroom));
+                if (NewCapacity < CurrentCapacity)
+                {
+                    Recreate(NewCapacity);
+                    return true;
+                }
+                LowUsageFrames = kShrinkAfterFrames;   // already at target; hold, don't overflow
+            }
+        }
+        else
+        {
+            LowUsageFrames = 0;
+        }
 
-        FRHIBufferRef OldBuffer = Buffer;
-        Buffer = GRenderContext->CreateBuffer(Desc);
-        
-        return true;
+        return false;
     }
 
     FRHIImageRef CreateImageFromPixels(TSpan<uint8> PixelData, bool bFlipVertically, glm::uvec2 Size)

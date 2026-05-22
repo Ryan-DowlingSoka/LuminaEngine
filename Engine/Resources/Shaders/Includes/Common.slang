@@ -115,6 +115,22 @@ struct FSkinnedVertex
     uint    JointWeights;
 };
 
+// Mirror of Lumina::FPreSkinnedVertex. Written by Skinning.slang, read by every draw VS.
+// Holds the COMPLETE vertex (UV/Color carried through unchanged) so the draw VS reads only
+// this buffer -- never the source skinned vertex. Position is full-precision (skinning breaks
+// meshlet quantization); normal/tangent reuse the source octahedral packing. All-scalar so the
+// structured-buffer stride is a tight 28 B.
+struct FPreSkinnedVertex
+{
+    float   Px;
+    float   Py;
+    float   Pz;
+    uint    Normal;     // PackNormal
+    uint    Tangent;    // PackTangent
+    uint    UV;         // carried through from the source vertex (skin-invariant)
+    uint    Color;
+};
+
 struct FVertexData
 {
     float3 Position;
@@ -252,6 +268,25 @@ struct FMeshletHeader
     float4          MeshGridStep;   // xyz: grid cell size
 };
 
+// Mirror of Lumina::FSkinDescriptor. One per skinned entity; drives the skinning dispatch.
+struct FSkinDescriptor
+{
+    FMeshletHeader* MeshletHeader;
+    uint            BoneOffset;
+    uint            SkinnedVertexBase;  // combined: compacted base - vertex span start
+    uint            SkinMeshletStart;   // skin only the rendered-LOD meshlet span
+    uint            SkinMeshletCount;
+};
+
+// Mirror of Lumina::FBoneTransform: a skinning matrix with the always-(0,0,0,1) last row
+// dropped. Blends linearly like the matrix; transform a point by explicit row dot products.
+struct FBoneTransform
+{
+    float4 Row0;
+    float4 Row1;
+    float4 Row2;
+};
+
 // One entry per surviving meshlet emitted by MeshletCull.slang.
 struct FMeshletDraw
 {
@@ -289,8 +324,16 @@ struct FGPUInstance
     uint                    SurfaceMeshletCount;
     FCustomPrimitiveData    CustomData;
 
-    private uint            BoneOffsetAndMaterialIndex;
+    // Full 32-bit index into the global bone-matrix buffer (no longer packed with the
+    // material index), so the scene is not capped at 64k total bones.
+    uint                    BoneOffset;
+    uint                    MaterialIndex;
     uint                    EntityID;
+    // Base into uPreSkinnedVertices for this instance's entity (skinning compute writes,
+    // draw VS reads). 0 for static instances.
+    uint                    SkinnedVertexBase;
+    private uint            _Pad1;
+    private uint            _Pad2;
 
     bool HasFlag(EInstanceFlags Flag)
     {
@@ -312,18 +355,6 @@ struct FGPUInstance
 
     property float3 BoundsCenter { get { return SphereBounds.xyz; } }
     property float  BoundsRadius { get { return SphereBounds.w; } }
-
-    property uint BoneOffset
-    {
-        get { return BoneOffsetAndMaterialIndex & 0x0000FFFFu; }
-        set { BoneOffsetAndMaterialIndex = (BoneOffsetAndMaterialIndex & 0xFFFF0000u) | (newValue & 0x0000FFFFu); }
-    }
-
-    property uint MaterialIndex
-    {
-        get { return (BoneOffsetAndMaterialIndex >> 16) & 0x0000FFFFu; }
-        set { BoneOffsetAndMaterialIndex = (BoneOffsetAndMaterialIndex & 0x0000FFFFu) | ((newValue & 0x0000FFFFu) << 16); }
-    }
 };
 
 struct FLightShadow
@@ -529,6 +560,38 @@ float4 UnpackTangent(uint Packed)
 
     float Sign = ((Packed >> 30u) & 1u) != 0u ? 1.0 : -1.0;
     return float4(normalize(t), Sign);
+}
+
+// Inverse of UnpackNormal: 16-16 signed octahedral. Standard oct encode (the decode above
+// is the matching closed form), so re-packing a decoded normal round-trips.
+uint PackNormal(float3 n)
+{
+    n = normalize(n);
+    float2 e = n.xy * (1.0 / (abs(n.x) + abs(n.y) + abs(n.z)));
+    if (n.z < 0.0)
+    {
+        e = (1.0 - abs(float2(e.y, e.x))) * float2(e.x >= 0.0 ? 1.0 : -1.0, e.y >= 0.0 ? 1.0 : -1.0);
+    }
+    int2 i = int2(round(clamp(e, -1.0, 1.0) * 32767.0));
+    return (uint(i.x) & 0xFFFFu) | ((uint(i.y) & 0xFFFFu) << 16);
+}
+
+// Inverse of UnpackTangent: 15-15 signed octahedral + handedness sign at bit 30.
+uint PackTangent(float4 t)
+{
+    float3 d = normalize(t.xyz);
+    float2 e = d.xy * (1.0 / (abs(d.x) + abs(d.y) + abs(d.z)));
+    if (d.z < 0.0)
+    {
+        e = (1.0 - abs(float2(e.y, e.x))) * float2(e.x >= 0.0 ? 1.0 : -1.0, e.y >= 0.0 ? 1.0 : -1.0);
+    }
+    int2 q = int2(round(clamp(e, -1.0, 1.0) * 16383.0));
+    uint Packed = (uint(q.x) & 0x7FFFu) | ((uint(q.y) & 0x7FFFu) << 15);
+    if (t.w >= 0.0)
+    {
+        Packed |= (1u << 30);
+    }
+    return Packed;
 }
 
 float3 UnpackMeshletPosition(uint Packed, int3 LoInt, float3 MeshOrigin, float3 GridStep)

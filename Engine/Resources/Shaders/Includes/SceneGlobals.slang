@@ -8,7 +8,7 @@
 [[vk::binding(0, 0)]] ConstantBuffer<FSceneGlobalData>              uSceneData;
 [[vk::binding(1, 0)]] StructuredBuffer<FLightData>                  uLightData;
 [[vk::binding(2, 0)]] RWStructuredBuffer<FGPUInstance>              uInstance;
-[[vk::binding(3, 0)]] StructuredBuffer<float4x4>                    uBoneMatrices;
+[[vk::binding(3, 0)]] StructuredBuffer<FBoneTransform>              uBoneMatrices;
 [[vk::binding(4, 0)]] RWStructuredBuffer<FCluster>                  uClusters;
 [[vk::binding(5, 0)]] RWStructuredBuffer<FMaterialUniforms>         uMaterialUniforms;
 [[vk::binding(6, 0)]] StructuredBuffer<FBillboardInstance>          uBillboards;
@@ -52,6 +52,12 @@
 // at mip = Roughness * (NumMips - 1) and combined with the BRDF LUT for
 // the specular ambient term.
 [[vk::binding(19, 0)]] SamplerCube                                   uSkyPrefilter;
+
+// Skinning compute writes one entry per skinned meshlet-vertex; every draw VS reads
+// from here (indexed by Inst.SkinnedVertexBase + M.VertexOffset + localIdx) instead of
+// re-skinning per pass. uSkinDescriptors drives the skinning dispatch (one per entity).
+[[vk::binding(20, 0)]] RWStructuredBuffer<FPreSkinnedVertex>          uPreSkinnedVertices;
+[[vk::binding(21, 0)]] StructuredBuffer<FSkinDescriptor>             uSkinDescriptors;
 
 
 [[vk::binding(0, 1)]] Texture2D                                 uBindlessTex2D[];
@@ -123,7 +129,37 @@ FVertexData LoadStaticVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLoca
     return Data;
 }
 
-FVertexData LoadSkinnedVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx, uint BoneOffset)
+// Skinned reads come ENTIRELY from the pre-skinned buffer (Skinning.slang did the bone blend
+// and carried UV/Color through once this frame) -- a single structured load, like the static
+// path, with no source-vertex fetch and no per-pass skinning work.
+FVertexData LoadSkinnedVertex(FMeshlet M, uint VertexLocalIdx, uint SkinnedVertexBase)
+{
+    FPreSkinnedVertex S = uPreSkinnedVertices[SkinnedVertexBase + M.VertexOffset + VertexLocalIdx];
+
+    FVertexData Data;
+    Data.Position = float3(S.Px, S.Py, S.Pz);
+    Data.Normal   = UnpackNormal(S.Normal);
+    Data.Tangent  = UnpackTangent(S.Tangent);
+    Data.UV       = UnpackUV(S.UV);
+    Data.Color    = UnpackColor(S.Color);
+    return Data;
+}
+
+float3 LoadStaticPosition(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx)
+{
+    FVertex V = reinterpret<FVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
+    return UnpackMeshletPosition(V.Position, M.LoInt, Header.MeshOrigin.xyz, Header.MeshGridStep.xyz);
+}
+
+float3 LoadSkinnedPosition(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx, uint SkinnedVertexBase)
+{
+    FPreSkinnedVertex S = uPreSkinnedVertices[SkinnedVertexBase + M.VertexOffset + VertexLocalIdx];
+    return float3(S.Px, S.Py, S.Pz);
+}
+
+// Performs the bone blend for one source vertex; used only by Skinning.slang to fill
+// the pre-skinned buffer. Output is object-space (the draw VS still applies ModelMatrix).
+FPreSkinnedVertex SkinVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx, uint BoneOffset)
 {
     FSkinnedVertex V = reinterpret<FSkinnedVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
 
@@ -134,49 +170,32 @@ FVertexData LoadSkinnedVertex(FMeshletHeader* Header, FMeshlet M, uint VertexLoc
     uint4  JointIndices = UnpackUIntToUVec4(V.JointIndices);
     float4 Weights      = unpack_u8u32(V.JointWeights) / float4(255.0);
 
-    float4x4 SkinMatrix =
-        uBoneMatrices[BoneOffset + JointIndices.x] * Weights.x +
-        uBoneMatrices[BoneOffset + JointIndices.y] * Weights.y +
-        uBoneMatrices[BoneOffset + JointIndices.z] * Weights.z +
-        uBoneMatrices[BoneOffset + JointIndices.w] * Weights.w;
+    FBoneTransform B0 = uBoneMatrices[BoneOffset + JointIndices.x];
+    FBoneTransform B1 = uBoneMatrices[BoneOffset + JointIndices.y];
+    FBoneTransform B2 = uBoneMatrices[BoneOffset + JointIndices.z];
+    FBoneTransform B3 = uBoneMatrices[BoneOffset + JointIndices.w];
 
-    // Skinning is rigid (rotation + translation) per bone, so the same 3x3
-    // submatrix that takes Normal to skinned space takes Tangent there too.
-    // The handedness sign rides through unchanged -- it describes the UV
-    // parameterization, not the geometry.
-    float3x3 SkinRot = (float3x3)SkinMatrix;
+    // Linear blend of the (row-stored) skinning matrices, then transform by explicit row dots
+    // -- p'[r] = dot(Row_r, p4), normal'[r] = dot(Row_r.xyz, n). Skinning is rigid per bone, so
+    // the same 3x3 rows rotate Tangent; the handedness sign (Tangent.w) is preserved.
+    float4 R0 = B0.Row0 * Weights.x + B1.Row0 * Weights.y + B2.Row0 * Weights.z + B3.Row0 * Weights.w;
+    float4 R1 = B0.Row1 * Weights.x + B1.Row1 * Weights.y + B2.Row1 * Weights.z + B3.Row1 * Weights.w;
+    float4 R2 = B0.Row2 * Weights.x + B1.Row2 * Weights.y + B2.Row2 * Weights.z + B3.Row2 * Weights.w;
 
-    FVertexData Data;
-    Data.Position = mul(SkinMatrix, float4(LocalPos, 1.0)).xyz;
-    Data.Normal   = normalize(mul(SkinRot, LocalNormal));
-    Data.Tangent  = float4(normalize(mul(SkinRot, LocalTangent.xyz)), LocalTangent.w);
-    Data.UV       = UnpackUV(V.UV);
-    Data.Color    = UnpackColor(V.Color);
-    return Data;
-}
+    float4 P = float4(LocalPos, 1.0);
+    float3 SkinnedPos     = float3(dot(R0, P), dot(R1, P), dot(R2, P));
+    float3 SkinnedNormal  = normalize(float3(dot(R0.xyz, LocalNormal),      dot(R1.xyz, LocalNormal),      dot(R2.xyz, LocalNormal)));
+    float3 SkinnedTangent = normalize(float3(dot(R0.xyz, LocalTangent.xyz), dot(R1.xyz, LocalTangent.xyz), dot(R2.xyz, LocalTangent.xyz)));
 
-float3 LoadStaticPosition(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx)
-{
-    FVertex V = reinterpret<FVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
-    return UnpackMeshletPosition(V.Position, M.LoInt, Header.MeshOrigin.xyz, Header.MeshGridStep.xyz);
-}
-
-float3 LoadSkinnedPosition(FMeshletHeader* Header, FMeshlet M, uint VertexLocalIdx, uint BoneOffset)
-{
-    FSkinnedVertex V = reinterpret<FSkinnedVertex*>(Header.Vertices)[M.VertexOffset + VertexLocalIdx];
-
-    float3 LocalPos = UnpackMeshletPosition(V.Position, M.LoInt, Header.MeshOrigin.xyz, Header.MeshGridStep.xyz);
-
-    uint4  JointIndices = UnpackUIntToUVec4(V.JointIndices);
-    float4 Weights      = unpack_u8u32(V.JointWeights) / float4(255.0);
-
-    float4x4 SkinMatrix =
-        uBoneMatrices[BoneOffset + JointIndices.x] * Weights.x +
-        uBoneMatrices[BoneOffset + JointIndices.y] * Weights.y +
-        uBoneMatrices[BoneOffset + JointIndices.z] * Weights.z +
-        uBoneMatrices[BoneOffset + JointIndices.w] * Weights.w;
-
-    return mul(SkinMatrix, float4(LocalPos, 1.0)).xyz;
+    FPreSkinnedVertex Out;
+    Out.Px      = SkinnedPos.x;
+    Out.Py      = SkinnedPos.y;
+    Out.Pz      = SkinnedPos.z;
+    Out.Normal  = PackNormal(SkinnedNormal);
+    Out.Tangent = PackTangent(float4(SkinnedTangent, LocalTangent.w));
+    Out.UV      = V.UV;     // skin-invariant; carried so the draw VS never reads the source
+    Out.Color   = V.Color;
+    return Out;
 }
 
 // ---------------------------------------------------------------------------------

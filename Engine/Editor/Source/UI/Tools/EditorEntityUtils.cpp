@@ -12,6 +12,7 @@
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Entity/Components/SkeletalMeshComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
+#include "World/World.h"
 #include "glm/gtx/matrix_decompose.hpp"
 
 namespace Lumina::EditorEntityUtils
@@ -174,5 +175,79 @@ namespace Lumina::EditorEntityUtils
         OutCenter = (Min + Max) * 0.5f;
         OutRadius = glm::max(glm::length(Max - Min) * 0.5f, 0.5f);
         return true;
+    }
+
+    bool GetEntityDrawBox(FEntityRegistry& Registry, entt::entity Entity, glm::vec3& OutCenter, glm::vec3& OutHalfExtents, glm::quat& OutRotation)
+    {
+        if (!Registry.valid(Entity))
+        {
+            return false;
+        }
+
+        const STransformComponent* Transform = Registry.try_get<STransformComponent>(Entity);
+        if (Transform == nullptr)
+        {
+            return false;
+        }
+
+        OutRotation = Transform->GetWorldRotation();
+
+        // Padding so the box sits just outside the mesh silhouette.
+        const glm::vec3 WorldScale = Transform->GetWorldScale();
+
+        // Resolve the local-space AABB if the entity has a renderable mesh asset.
+        const SStaticMeshComponent*   Mesh    = Registry.try_get<SStaticMeshComponent>(Entity);
+        const SSkeletalMeshComponent* Skinned = Registry.try_get<SSkeletalMeshComponent>(Entity);
+
+        FAABB Local;
+        bool  bHasBounds = false;
+        if (Mesh && Mesh->StaticMesh)
+        {
+            Local = Mesh->GetAABB();
+            bHasBounds = true;
+        }
+        else if (Skinned && Skinned->SkeletalMesh)
+        {
+            Local = Skinned->GetAABB();
+            bHasBounds = true;
+        }
+
+        if (bHasBounds)
+        {
+            constexpr float Padding = 1.05f;
+            const glm::vec3 LocalCenter = (Local.Min + Local.Max) * 0.5f;
+            const glm::vec3 LocalHalf   = (Local.Max - Local.Min) * 0.5f;
+
+            OutCenter      = Transform->GetWorldLocation() + (OutRotation * (LocalCenter * WorldScale));
+            OutHalfExtents = LocalHalf * WorldScale * Padding;
+        }
+        else
+        {
+            // No mesh bounds (lights, audio, empties, ...): a unit box scaled by the transform.
+            OutCenter      = Transform->GetWorldLocation();
+            OutHalfExtents = WorldScale;
+        }
+
+        return true;
+    }
+
+    void DrawEntityBounds(CWorld* World, entt::entity Entity, const glm::vec4& Color, float Thickness, bool bDepthTest)
+    {
+        glm::vec3 Center, HalfExtents;
+        glm::quat Rotation;
+        if (World && GetEntityDrawBox(World->GetEntityRegistry(), Entity, Center, HalfExtents, Rotation))
+        {
+            World->DrawBoxCorners(Center, HalfExtents, Rotation, Color, Thickness, bDepthTest);
+        }
+    }
+
+    void DrawEntitySelectionBox(CWorld* World, entt::entity Entity, const glm::vec4& Color, float CornerFraction, float Thickness, bool bDepthTest)
+    {
+        glm::vec3 Center, HalfExtents;
+        glm::quat Rotation;
+        if (World && GetEntityDrawBox(World->GetEntityRegistry(), Entity, Center, HalfExtents, Rotation))
+        {
+            World->DrawBoxCorners(Center, HalfExtents, Rotation, Color, CornerFraction, Thickness, bDepthTest);
+        }
     }
 }

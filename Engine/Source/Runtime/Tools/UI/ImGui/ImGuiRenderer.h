@@ -7,7 +7,6 @@
 #include "Core/Threading/Atomic.h"
 #include "Renderer/RenderResource.h"
 #include "Renderer/RenderTypes.h"
-#include "Subsystems/Subsystem.h"
 
 #include <condition_variable>
 #include <mutex>
@@ -18,6 +17,7 @@ namespace Lumina
 {
     class ICommandList;
     class FRenderManager;
+    class FUpdateContext;
 }
 
 namespace Lumina
