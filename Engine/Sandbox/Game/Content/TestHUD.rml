@@ -1,82 +1,64 @@
 <rml>
 <head>
     <title>UI Test Suite</title>
+    <!-- Absolute VFS paths (portable across mounts / future plugins). -->
+    <link type="text/rcss" href="/Game/UI/theme.rcss"/>
+    <link type="text/rcss" href="/Game/UI/animations.rcss"/>
     <style>
-        body {
-            font-family: LatoLatin;
-            color: #cdd6f4;
-        }
+        body { margin: 0; padding: 0; }
 
-        #panel {
-            display: block;
+        /* Corner HUD panel. Visual style comes from .panel in the theme. */
+        #panel
+        {
             position: absolute;
-            top: 30dp;
-            left: 30dp;
-            width: 380dp;
-            padding: 18dp;
-            background-color: #1e1e2ef0;
-            border-width: 2dp;
-            border-color: #585b70;
+            top: 28dp;
+            left: 28dp;
+            width: 348dp;
         }
-        #panel.active {
-            border-color: #a6e3a1;
-        }
+        /* Toggled by the Lua test via SetClass("panel", "active"). */
+        #panel.active { border-color: #a6e3a1; }
 
-        #title {
-            display: block;
-            font-size: 24dp;
-            color: #89b4fa;
-            margin-bottom: 12dp;
-        }
-
-        .row {
-            display: block;
-            font-size: 16dp;
-            margin-bottom: 4dp;
-        }
-        .row span {
-            display: inline;
-            color: #f9e2af;
-        }
-
-        #message {
-            display: block;
-            font-size: 15dp;
-            margin-top: 6dp;
-            margin-bottom: 12dp;
-            color: #94e2d5;
-        }
-
-        button {
-            display: block;
-            margin-top: 6dp;
-            padding: 8dp 12dp;
-            font-size: 15dp;
-            color: #11111b;
-            background-color: #89b4fa;
-            border-width: 0dp;
-        }
-        button:hover  { background-color: #b4befe; }
-        button:active { background-color: #74c7ec; }
+        #message { margin: 12dp 0px; }
     </style>
 </head>
 <body>
-    <div id="panel">
-        <div id="title">Per-World UI - Test Suite</div>
+    <div id="panel" class="panel anim-fade-in-down">
 
-        <div class="row">Frame: <span id="frame_value">0</span></div>
-        <div class="row">Time: <span id="time_value">0.0</span>s</div>
-        <div class="row">Counter: <span id="counter_value">0</span></div>
-        <div class="row">Popup: <span id="popup_state">closed</span></div>
+        <div class="row between" style="margin-bottom: 14dp;">
+            <span class="hud-title">Systems</span>
+            <span class="badge badge-success">online</span>
+        </div>
 
-        <div id="message">Click the buttons to exercise the UI Lua API.</div>
+        <div class="stat-row"><span class="label">Frame</span>  <span id="frame_value"   class="stat-value">0</span></div>
+        <div class="stat-row"><span class="label">Time</span>   <span id="time_value"    class="stat-value">0.0</span></div>
+        <div class="stat-row"><span class="label">Counter</span><span id="counter_value" class="stat-value">0</span></div>
+        <div class="stat-row"><span class="label">Popup</span>  <span id="popup_state"   class="text-muted">closed</span></div>
 
-        <button id="btn_increment">Increment Counter (SetText)</button>
-        <button id="btn_highlight">Toggle Highlight (SetClass)</button>
-        <button id="btn_rml">Inject Markup (SetInnerRml)</button>
-        <button id="btn_popup">Toggle Popup (Show/Hide)</button>
-        <button id="btn_debugger">Toggle Debugger</button>
-        <button id="btn_describe">Log DescribeState</button>
+        <div class="divider"/>
+
+        <!-- Resource bars (static here; drive .fill width from script for live HUDs). -->
+        <div class="stat-row"><span class="label">Health</span><span class="caption mono">76 / 100</span></div>
+        <div class="bar hp" style="margin-bottom: 10dp;"><div class="fill" style="width: 76%;"/></div>
+
+        <div class="stat-row"><span class="label">Stamina</span><span class="caption mono">54 / 100</span></div>
+        <div class="bar" style="margin-bottom: 10dp;"><div class="fill" style="width: 54%;"/></div>
+
+        <div class="stat-row"><span class="label">Mana</span><span class="caption mono">88 / 100</span></div>
+        <div class="bar mana"><div class="fill" style="width: 88%;"/></div>
+
+        <div class="divider"/>
+
+        <div id="message" class="notice">Click the buttons to exercise the UI Lua API.</div>
+
+        <button id="btn_increment" class="btn btn-primary btn-block">Increment Counter</button>
+        <button id="btn_highlight" class="btn btn-block">Toggle Highlight</button>
+        <button id="btn_rml"       class="btn btn-block">Inject Markup</button>
+        <button id="btn_popup"     class="btn btn-block">Toggle Popup</button>
+        <button id="btn_debugger"  class="btn btn-ghost btn-block">Toggle Debugger</button>
+        <button id="btn_describe"  class="btn btn-ghost btn-block">Log DescribeState</button>
+
+        <div class="caption" style="margin-top: 4dp;">Toggle game input: <span class="kbd">Shift</span> <span class="kbd">F1</span></div>
+
     </div>
 </body>
 </rml>

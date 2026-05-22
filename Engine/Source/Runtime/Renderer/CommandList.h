@@ -201,7 +201,12 @@ namespace Lumina
         virtual void SetPushConstants(const void* Data, size_t ByteSize) = 0;
 
         virtual void SetGraphicsState(const FGraphicsState& State) = 0;
-        
+
+        // Dynamic scissor (vkCmdSetScissor) without rebuilding the graphics state.
+        // Valid after SetGraphicsState; all pipelines use dynamic scissor. Lets a
+        // batched pass (e.g. UI) change clip rects per draw without a full state set.
+        virtual void SetScissor(const FRect& Rect) = 0;
+
         virtual void SetLineWidth(float Width) = 0;
 
         virtual void Draw(uint32 VertexCount, uint32 InstanceCount, uint32 FirstVertex, uint32 FirstInstance) = 0;

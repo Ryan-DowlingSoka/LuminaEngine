@@ -333,7 +333,7 @@ namespace Lumina
                 static const FString LuaIcon = Paths::GetEngineResourceDirectory() + "/Textures/LuaScript.png";
                 ImTexture = ImGuiX::ToImTextureRef(LuaIcon);
             }
-            else if (ContentItem->GetExtension() == ".rml")
+            else if (ContentItem->GetExtension() == ".rml" || ContentItem->GetExtension() == ".rcss")
             {
                 static const FString RmlIcon = Paths::GetEngineResourceDirectory() + "/Textures/rmlui.png";
                 ImTexture = ImGuiX::ToImTextureRef(RmlIcon);
@@ -1594,6 +1594,23 @@ namespace Lumina
             FFixedString NewWidgetPath = SelectedPath + "/" + "NewWidget.rml";
             NewWidgetPath = VFS::MakeUniqueFilePath(NewWidgetPath);
             VFS::WriteFile(NewWidgetPath, "");
+            RefreshContentBrowser();
+        }
+
+        if (ImGui::MenuItem(LE_ICON_LANGUAGE_CSS3 " New UI Stylesheet"))
+        {
+            FFixedString NewSheetPath = SelectedPath + "/" + "NewStylesheet.rcss";
+            NewSheetPath = VFS::MakeUniqueFilePath(NewSheetPath);
+            VFS::WriteFile(NewSheetPath,
+                "/* New RCSS stylesheet. Link it from a document (relative path):\n"
+                "       <link type=\"text/rcss\" href=\"NewStylesheet.rcss\"/>\n"
+                "   CPU-safe styling only: gradients (vertical-/horizontal-gradient),\n"
+                "   border-radius, transforms, transitions, @keyframes, font-effect.\n"
+                "   Avoid box-shadow / filter / linear-gradient (need shaders). */\n\n"
+                "body\n"
+                "{\n"
+                "    color: #cdd6f4;\n"
+                "}\n");
             RefreshContentBrowser();
         }
 

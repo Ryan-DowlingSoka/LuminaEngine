@@ -83,6 +83,11 @@ namespace Lumina::RmlUi
     // Lay UI out at this size instead of the RT image size; {0,0} reverts. Used by the editor viewport.
     RUNTIME_API void            SetWorldDisplaySize(CWorld* World, const glm::uvec2& Size);
 
+    // Replace a world context's documents with one parsed from an in-memory RML
+    // body (e.g. the material editor's UI-material preview). SourceUrl resolves
+    // relative includes. Returns false on parse failure.
+    RUNTIME_API bool            SetWorldInlineDocument(CWorld* World, FStringView Body, FStringView SourceUrl);
+
     RUNTIME_API FRmlUiRenderer* GetRenderer();
 
     // Editor preview contexts. Caller owns lifetime; pass Target=nullptr to skip a frame.

@@ -142,6 +142,95 @@ namespace Lumina
         //   - common RCSS property names as known-identifiers
         // Limitations: embedded /* ... */ RCSS comments aren't colored
         // (TextEditor's Language only supports one multi-line comment pair).
+        // A .rcss file can't render on its own. Wrap the (live, unsaved) buffer
+        // in a component specimen so the preview pane shows the stylesheet's
+        // effect on representative elements. SourceUrl stays the .rcss path, so
+        // relative @decorator / font references resolve from the sheet's folder.
+        std::string BuildStylesheetSpecimen(const std::string& Rcss)
+        {
+            std::string Doc;
+            Doc.reserve(Rcss.size() + 2400);
+            Doc += "<rml><head>\n<style>\n";
+            Doc += Rcss;
+            Doc +=
+                "\n</style>\n<style>\n"
+                // Guarantee a loaded font on the scaffold so the specimen never
+                // logs missing-font warnings even while the edited sheet is mid-change.
+                "body { padding: 22dp; font-family: LatoLatin; }\n"
+                ".spec-label { display:block; font-family: LatoLatin; font-size:11dp; color:#6c7086; text-transform:uppercase; letter-spacing:1dp; margin-top:16dp; margin-bottom:6dp; }\n"
+                ".spec-row { display:flex; flex-direction:row; align-items:center; }\n"
+                ".spec-row > * { margin-right:8dp; }\n"
+                "</style>\n</head>\n<body>\n"
+                "<div class=\"h1\">Heading One</div>\n"
+                "<div class=\"h2\">Heading Two</div>\n"
+                "<p>The quick brown fox jumps. "
+                "<span class=\"text-primary\">primary</span> "
+                "<span class=\"text-success\">success</span> "
+                "<span class=\"text-warning\">warning</span> "
+                "<span class=\"text-danger\">danger</span> "
+                "<span class=\"text-muted\">muted</span></p>\n"
+                "<div class=\"spec-label\">Buttons</div>\n"
+                "<div class=\"spec-row\">"
+                "<button class=\"btn\">Default</button>"
+                "<button class=\"btn btn-primary\">Primary</button>"
+                "<button class=\"btn btn-danger\">Danger</button>"
+                "<button class=\"btn btn-ghost\">Ghost</button></div>\n"
+                "<div class=\"spec-label\">Badges</div>\n"
+                "<div class=\"spec-row\">"
+                "<span class=\"badge\">default</span>"
+                "<span class=\"badge badge-primary\">primary</span>"
+                "<span class=\"badge badge-success\">success</span>"
+                "<span class=\"badge badge-warning\">warning</span>"
+                "<span class=\"badge badge-danger\">danger</span></div>\n"
+                "<div class=\"spec-label\">Panel + bars</div>\n"
+                "<div class=\"panel\">"
+                "<div class=\"hud-title\">Panel Title</div>"
+                "<div class=\"bar hp\" style=\"margin-top:10dp;\"><div class=\"fill\" style=\"width:72%;\"/></div>"
+                "<div class=\"bar\" style=\"margin-top:8dp;\"><div class=\"fill\" style=\"width:48%;\"/></div>"
+                "<div class=\"bar mana\" style=\"margin-top:8dp;\"><div class=\"fill\" style=\"width:90%;\"/></div></div>\n"
+                "<div class=\"spec-label\">Keys</div>\n"
+                "<div class=\"spec-row\"><span class=\"kbd\">Ctrl</span><span class=\"kbd\">S</span></div>\n"
+                "</body></rml>\n";
+            return Doc;
+        }
+
+        // A .rml whose root is <template> is a reusable chrome, not a document;
+        // feeding it to LoadDocumentFromMemory trips RmlUi's inline-injection
+        // handler ("requires 'src'"). Detect it so the preview can adapt.
+        bool IsTemplateDocument(const std::string& Body)
+        {
+            size_t i = 0;
+            while (i < Body.size() && static_cast<unsigned char>(Body[i]) <= ' ')
+            {
+                ++i;
+            }
+            static const char* Tag = "<template";
+            const size_t N = std::strlen(Tag);
+            return (Body.size() - i >= N) && (std::memcmp(Body.data() + i, Tag, N) == 0);
+        }
+
+        // Render a template's own chrome: swap the <template ...> wrapper for
+        // <rml> so the framed body (with an empty content slot) previews directly.
+        std::string BuildTemplatePreview(const std::string& Body)
+        {
+            std::string Doc = Body;
+            const size_t Open = Doc.find("<template");
+            if (Open != std::string::npos)
+            {
+                const size_t Close = Doc.find('>', Open);
+                if (Close != std::string::npos)
+                {
+                    Doc.replace(Open, Close - Open + 1, "<rml>");
+                }
+            }
+            const size_t End = Doc.find("</template>");
+            if (End != std::string::npos)
+            {
+                Doc.replace(End, std::strlen("</template>"), "</rml>");
+            }
+            return Doc;
+        }
+
         const TextEditor::Language* GetRmlLanguage()
         {
             static bool Initialized = false;
@@ -330,6 +419,9 @@ namespace Lumina
         const FStringView ParentView = VFS::Parent(InVirtualPath, true);
         ParentDir = FString(ParentView.data(), ParentView.size());
 
+        bIsStylesheet = (VirtualPath.size() >= 5) &&
+            (FStringView(VirtualPath.c_str(), VirtualPath.size()).substr(VirtualPath.size() - 5) == FStringView(".rcss"));
+
         // Pull persisted preferences. Defaults are registered in LuminaEditor.cpp.
         EditorFontScale         = GConfig->GetFloat(kKeyFontScale);
         EditorTabSize           = std::max(1, std::min(8, GConfig->GetInt(kKeyTabSize)));
@@ -375,8 +467,11 @@ namespace Lumina
         ReloadDocument();
         StartWatching();
 
-        // Delayed change callback: fires once after 250ms of edit-quiet.
-        // Compare against the last-synced text to ignore programmatic SetText.
+        // Delayed change callback: fires once after the editor has been quiet for
+        // the delay below. Kept long enough that typing a path (e.g. an `src`)
+        // doesn't reload -- and spam asset-not-found warnings -- on every brief
+        // pause mid-word. Compare against the last-synced text to ignore
+        // programmatic SetText.
         CodeEditor.SetChangeCallback([this]
         {
             const std::string Current = CodeEditor.GetText();
@@ -389,7 +484,7 @@ namespace Lumina
             {
                 ReloadDocument();
             }
-        }, /*delay ms*/ 250);
+        }, /*delay ms*/ 900);
 
         CreateToolWindow(RmlEditorWindowName, [this](bool bFocused)
         {
@@ -955,8 +1050,16 @@ namespace Lumina
         {
             const TextEditor::CursorPosition Pos = CodeEditor.GetCurrentCursorPosition();
             const int LineCount = CodeEditor.GetLineCount();
-            const std::string Body = CodeEditor.GetText();
-            const size_t Bytes = Body.size();
+
+            // GetText() copies the whole document; only the byte count is shown here,
+            // so recompute it only when the buffer actually changed (undo index moves).
+            const size_t Undo = CodeEditor.GetUndoIndex();
+            if (Undo != CachedStatusUndoIndex)
+            {
+                CachedDocBytes = CodeEditor.GetText().size();
+                CachedStatusUndoIndex = Undo;
+            }
+            const size_t Bytes = CachedDocBytes;
 
             ImGui::Text("Ln %d, Col %d", Pos.line + 1, Pos.column + 1);
 
@@ -1353,6 +1456,19 @@ namespace Lumina
         const float LineHeight = CodeEditor.GetLineHeight();
         const float GlyphWidth = CodeEditor.GetGlyphWidth();
 
+        // Rebuild the line-text cache only on edits (undo index moves); the per-frame
+        // parse below reads cached strings instead of allocating one per visible line.
+        const size_t Undo = CodeEditor.GetUndoIndex();
+        if (Undo != CachedLinesUndoIndex || static_cast<int>(CachedLines.size()) != LineCount)
+        {
+            CachedLines.resize(LineCount);
+            for (int L = 0; L < LineCount; ++L)
+            {
+                CachedLines[L] = CodeEditor.GetLineText(L);
+            }
+            CachedLinesUndoIndex = Undo;
+        }
+
         const float SwatchSize = std::max(8.0f, LineHeight - 4.0f);
         const float SwatchPad  = 2.0f;
 
@@ -1372,7 +1488,7 @@ namespace Lumina
 
         for (int Line = FirstLine; Line <= LastLine && Line < LineCount; ++Line)
         {
-            const std::string Text = CodeEditor.GetLineText(Line);
+            const std::string& Text = CachedLines[Line];
             const int Len = static_cast<int>(Text.size());
 
             // Walk byte-by-byte tracking visual column so tabs map correctly.
@@ -1558,7 +1674,23 @@ namespace Lumina
             return;
         }
 
-        const FStringView View(Body.data(), Body.size());
+        // .rml is a document; .rcss is wrapped in a component specimen; a
+        // <template> file is shown as its own chrome (empty content slot).
+        std::string Doc;
+        if (bIsStylesheet)
+        {
+            Doc = BuildStylesheetSpecimen(Body);
+        }
+        else if (IsTemplateDocument(Body))
+        {
+            Doc = BuildTemplatePreview(Body);
+        }
+        else
+        {
+            Doc = Body;
+        }
+
+        const FStringView View(Doc.data(), Doc.size());
         const FStringView SourceUrl(VirtualPath.c_str(), VirtualPath.size());
 
         if (!RmlUi::ReplaceEditorContextDocument(PreviewContext, View, SourceUrl))

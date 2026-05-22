@@ -100,9 +100,11 @@ namespace Lumina
 		const FString BasePath = Paths::GetEngineResourceDirectory() + "/Shaders/MaterialShader/";
 		const bool bIsTerrain     = (MaterialType == EMaterialType::Terrain);
 		const bool bIsPostProcess = (MaterialType == EMaterialType::PostProcess);
+		const bool bIsUI          = (MaterialType == EMaterialType::UI);
 		const FString PixelPath  = bIsPostProcess ? (BasePath + "PostProcessPixelPass.slang")
-		                                          : (bIsTerrain ? BasePath + "TerrainBasePixelPass.slang"
-		                                                        : BasePath + "BasePixelPass.slang");
+		                                          : (bIsUI ? BasePath + "UIPixelPass.slang"
+		                                                   : (bIsTerrain ? BasePath + "TerrainBasePixelPass.slang"
+		                                                                 : BasePath + "BasePixelPass.slang"));
 
 		// Pixel: existing single-stage substitution. Output node already emits
 		// its own `FMaterialPixelInputs Material;` declaration, so we just
@@ -117,11 +119,11 @@ namespace Lumina
 			LOG_ERROR("Failed to find {}!", PixelPath);
 		}
 
-		// Vertex: PostProcess materials run as a fullscreen pass, so the
+		// Vertex: PostProcess and UI materials run as a fullscreen pass, so the
 		// vertex stage is the shared FullscreenQuad helper -- there is no
 		// $MATERIAL_VERTEX_INPUTS substitution and no per-material vertex
 		// code. WPO is meaningless without surface geometry.
-		if (bIsPostProcess)
+		if (bIsPostProcess || bIsUI)
 		{
 			OutVertexShader.clear();
 			const FString FullscreenQuadPath = Paths::GetEngineResourceDirectory() + "/Shaders/FullscreenQuad.slang";
@@ -994,6 +996,21 @@ namespace Lumina
 		return false;
 	}
 
+	bool FMaterialCompiler::RejectInUI(CMaterialGraphNode* Node, const char* NodeName)
+	{
+		if (CurrentMaterialType != EMaterialType::UI)
+		{
+			return false;
+		}
+
+		EdNodeGraph::FError Error;
+		Error.Name        = NodeName;
+		Error.Description = FString(NodeName) + " is not available in UI materials -- the fullscreen brush pass has no surface geometry, camera, or scene depth. It reads as a neutral default.";
+		Error.Node        = Node;
+		AddError(Error);
+		return true;
+	}
+
 	void FMaterialCompiler::NewLine()
 	{
 		GetActiveChunk().append("\n");
@@ -1001,23 +1018,43 @@ namespace Lumina
 
 	// Built-in scene inputs
 
-	void FMaterialCompiler::VertexNormal(const FString& ID)
+	void FMaterialCompiler::VertexNormal(const FString& ID, CMaterialGraphNode* Node)
 	{
+		if (RejectInUI(Node, "Vertex Normal"))
+		{
+			GetActiveChunk().append("float3 " + ID + " = float3(0.0, 0.0, 1.0);\n");
+			return;
+		}
 		GetActiveChunk().append("float3 " + ID + " = WorldNormal.xyz;\n");
 	}
 
-	void FMaterialCompiler::VertexTangent(const FString& ID)
+	void FMaterialCompiler::VertexTangent(const FString& ID, CMaterialGraphNode* Node)
 	{
+		if (RejectInUI(Node, "Vertex Tangent"))
+		{
+			GetActiveChunk().append("float3 " + ID + " = float3(1.0, 0.0, 0.0);\n");
+			return;
+		}
 		GetActiveChunk().append("float3 " + ID + " = Input.TangentWS.xyz;\n");
 	}
 
-	void FMaterialCompiler::VertexBitangent(const FString& ID)
+	void FMaterialCompiler::VertexBitangent(const FString& ID, CMaterialGraphNode* Node)
 	{
+		if (RejectInUI(Node, "Vertex Bitangent"))
+		{
+			GetActiveChunk().append("float3 " + ID + " = float3(0.0, 1.0, 0.0);\n");
+			return;
+		}
 		GetActiveChunk().append("float3 " + ID + " = cross(WorldNormal.xyz, Input.TangentWS.xyz) * Input.TangentWS.w;\n");
 	}
 
-	void FMaterialCompiler::VertexColor(const FString& ID)
+	void FMaterialCompiler::VertexColor(const FString& ID, CMaterialGraphNode* Node)
 	{
+		if (RejectInUI(Node, "Vertex Color"))
+		{
+			GetActiveChunk().append("float4 " + ID + " = float4(1.0, 1.0, 1.0, 1.0);\n");
+			return;
+		}
 		GetActiveChunk().append("float4 " + ID + " = VertexColor;\n");
 	}
 
@@ -1112,13 +1149,23 @@ namespace Lumina
 		SetOwningOutputType(UV, EMaterialInputType::Float2);
 	}
 
-	void FMaterialCompiler::WorldPos(const FString& ID)
+	void FMaterialCompiler::WorldPos(const FString& ID, CMaterialGraphNode* Node)
 	{
+		if (RejectInUI(Node, "World Position"))
+		{
+			GetActiveChunk().append("float3 " + ID + " = float3(0.0, 0.0, 0.0);\n");
+			return;
+		}
 		GetActiveChunk().append("float3 " + ID + " = WorldPosition;\n");
 	}
 
-	void FMaterialCompiler::CameraPos(const FString& ID)
+	void FMaterialCompiler::CameraPos(const FString& ID, CMaterialGraphNode* Node)
 	{
+		if (RejectInUI(Node, "Camera Position"))
+		{
+			GetActiveChunk().append("float3 " + ID + " = float3(0.0, 0.0, 0.0);\n");
+			return;
+		}
 		GetActiveChunk().append("float3 " + ID + " = GetCameraPosition();\n");
 	}
 
@@ -1144,18 +1191,33 @@ namespace Lumina
 		}
 	}
 
-	void FMaterialCompiler::ViewDirection(const FString& ID)
+	void FMaterialCompiler::ViewDirection(const FString& ID, CMaterialGraphNode* Node)
 	{
+		if (RejectInUI(Node, "View Direction"))
+		{
+			GetActiveChunk().append("float3 " + ID + " = float3(0.0, 0.0, 1.0);\n");
+			return;
+		}
 		GetActiveChunk().append("float3 " + ID + " = normalize(GetCameraPosition() - WorldPosition);\n");
 	}
 
-	void FMaterialCompiler::ReflectionVector(const FString& ID)
+	void FMaterialCompiler::ReflectionVector(const FString& ID, CMaterialGraphNode* Node)
 	{
+		if (RejectInUI(Node, "Reflection Vector"))
+		{
+			GetActiveChunk().append("float3 " + ID + " = float3(0.0, 0.0, 1.0);\n");
+			return;
+		}
 		GetActiveChunk().append("float3 " + ID + " = reflect(-normalize(GetCameraPosition() - WorldPosition), normalize(WorldNormal.xyz));\n");
 	}
 
-	void FMaterialCompiler::FragmentDepth(const FString& ID, bool bLinear)
+	void FMaterialCompiler::FragmentDepth(const FString& ID, bool bLinear, CMaterialGraphNode* Node)
 	{
+		if (RejectInUI(Node, "Fragment Depth"))
+		{
+			GetActiveChunk().append("float " + ID + " = 0.0;\n");
+			return;
+		}
 		if (bLinear)
 		{
 			GetActiveChunk().append("float " + ID + " = abs(ViewPosition.z);\n");

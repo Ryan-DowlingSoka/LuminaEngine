@@ -116,6 +116,7 @@ namespace Lumina
         static VkRect2D ToVkScissorRect(uint32 MinX, uint32 MinY, uint32 MaxX, uint32 MaxY);
         
         void SetGraphicsState(const FGraphicsState& State) override;
+        void SetScissor(const FRect& Rect) override;
         void SetLineWidth(float Width) override;
         void Draw(uint32 VertexCount, uint32 InstanceCount, uint32 FirstVertex, uint32 FirstInstance) override;
         void DrawIndexed(uint32 IndexCount, uint32 InstanceCount, uint32 FirstIndex, int32 VertexOffset, uint32 FirstInstance) override;

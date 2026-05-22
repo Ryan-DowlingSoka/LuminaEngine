@@ -66,8 +66,12 @@ namespace Lumina
         
         uint64 GetCompletedInstance() const;
         
-        /** Submission must happen from a single thread at a time */
-        uint64 Submit(ICommandList* const* CommandLists, uint32 NumCommandLists);
+        // Submit from one thread at a time. ExtraWait/ExtraSignal are binary semaphores bound to
+        // this exact submit (merged under the lock) so a concurrent submit can't steal them.
+        uint64 Submit(ICommandList* const* CommandLists, uint32 NumCommandLists,
+                      VkSemaphore ExtraWaitSemaphore = VK_NULL_HANDLE,
+                      VkPipelineStageFlags ExtraWaitStage = 0,
+                      VkSemaphore ExtraSignalSemaphore = VK_NULL_HANDLE);
         void SignalSemaphore(VkSemaphore SemaphoreToSignal);
 
         // External sync for the VkQueue; vkQueuePresentKHR must serialize
@@ -165,6 +169,9 @@ namespace Lumina
         NODISCARD FRHICommandListRef CreateCommandList(const FCommandListInfo& Info) override;
         NODISCARD FRHICommandListRef GetFrameCommandList() override;
         uint64 ExecuteCommandLists(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType) override;
+        // ExecuteCommandLists with extra binary wait/signal semaphores bound to this exact submit.
+        uint64 SubmitWithSemaphores(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType,
+                                    VkSemaphore ExtraWaitSemaphore, VkPipelineStageFlags ExtraWaitStage, VkSemaphore ExtraSignalSemaphore);
         
         NODISCARD VkInstance GetVulkanInstance() const { return VulkanInstance; }
         NODISCARD FVulkanDevice* GetDevice() const { return VulkanDevice; }

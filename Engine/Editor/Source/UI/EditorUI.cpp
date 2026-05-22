@@ -647,7 +647,7 @@ namespace Lumina
         }
 
         FEditorTool* NewTool = nullptr;
-        if (Ext == ".rml")
+        if (Ext == ".rml" || Ext == ".rcss")
         {
             NewTool = CreateTool<FRmlUiEditorTool>(this, VirtualPath);
         }

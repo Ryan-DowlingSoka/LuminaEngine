@@ -40,6 +40,8 @@ namespace Lumina
         
         TRefCountPtr<FVulkanImage> GetCurrentImage() const;
         FORCEINLINE VkSemaphore GetCurrentPresentSemaphore() const { return PresentSemaphores[CurrentImageIndex]; }
+        // Signaled by the last successful acquire (null if it failed); passed straight to the swapchain submit.
+        FORCEINLINE VkSemaphore GetCurrentAcquireSemaphore() const { return CurrentAcquireSemaphore; }
 
         bool AcquireNextImage();
         bool Present();
@@ -51,6 +53,7 @@ namespace Lumina
         VkSurfaceKHR                            Surface = VK_NULL_HANDLE;
         VkSwapchainKHR                          Swapchain = VK_NULL_HANDLE;
         uint64                                  AcquireSemaphoreIndex = 0;
+        VkSemaphore                             CurrentAcquireSemaphore = VK_NULL_HANDLE;
         
         TVector<TRefCountPtr<FVulkanImage>>     SwapchainImages;
         TVector<VkSemaphore>                    PresentSemaphores;

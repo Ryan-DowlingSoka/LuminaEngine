@@ -83,6 +83,12 @@ namespace Lumina
         };
 
         FRHIDescriptorTable* GetDescriptorTable() const { return DescriptorTable; }
+
+        // Diagnostics: live = currently-allocated descriptors (the index map holds exactly
+        // those), capacity = the table's current slot count (grows but never shrinks).
+        uint32 GetLiveDescriptorCount() const { return (uint32)DescriptorIndexMap.size(); }
+        uint32 GetDescriptorCapacity()  const { return (uint32)AllocatedDescriptors.size(); }
+
         int64 CreateDescriptor(FBindingSetItem Item);
         FDescriptorHandle CreateDescriptorHandle(const FBindingSetItem& Item);
         FBindingSetItem GetDescriptor(int64 Index);

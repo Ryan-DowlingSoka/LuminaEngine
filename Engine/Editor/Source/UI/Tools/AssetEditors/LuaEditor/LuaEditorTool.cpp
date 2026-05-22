@@ -874,7 +874,9 @@ namespace Lumina
         if (Line < 0 || Line >= CodeEditor.GetLineCount()) return;
         if (Line < CodeEditor.GetFirstVisibleLine() || Line > CodeEditor.GetLastVisibleLine()) return;
 
-        const std::string LineText = CodeEditor.GetLineText(Line);
+        RefreshLineCache();
+        if (Line >= static_cast<int>(CachedLines.size())) return;
+        const std::string& LineText = CachedLines[Line];
 
         // Visible-column to byte-index translation: tabs occupy [1..tabSize]
         // visual columns, so a naive Col-as-index lookup would skew on lines
@@ -3197,6 +3199,22 @@ namespace Lumina
         }
     }
 
+    void FLuaEditorTool::RefreshLineCache()
+    {
+        const size_t Undo = CodeEditor.GetUndoIndex();
+        const int LineCount = CodeEditor.GetLineCount();
+        if (Undo == CachedLinesUndoIndex && static_cast<int>(CachedLines.size()) == LineCount)
+        {
+            return;
+        }
+        CachedLines.resize(LineCount);
+        for (int L = 0; L < LineCount; ++L)
+        {
+            CachedLines[L] = CodeEditor.GetLineText(L);
+        }
+        CachedLinesUndoIndex = Undo;
+    }
+
     void FLuaEditorTool::DrawInlayHintsOverlay()
     {
         if (InlayHints.empty()) return;
@@ -3211,17 +3229,19 @@ namespace Lumina
         ImDrawList* DrawList = ImGui::GetWindowDrawList();
         const ImU32 GhostColor = IM_COL32(150, 165, 200, 200);
 
+        RefreshLineCache();
+
         for (const FLuaInlayHint& H : InlayHints)
         {
             const int LineIdx = H.Line - 1;
-            if (LineIdx < FirstVisible || LineIdx > LastVisible)
+            if (LineIdx < FirstVisible || LineIdx > LastVisible || LineIdx >= static_cast<int>(CachedLines.size()))
             {
                 continue;
             }
 
             // Translate the hint's anchor column (1-based) to a visible column
             // accounting for tab expansion. Cheap walk over the line text.
-            const std::string Line = CodeEditor.GetLineText(LineIdx);
+            const std::string& Line = CachedLines[LineIdx];
             const int TabSize  = CodeEditor.GetTabSize();
             const int AnchorB  = std::max(0, std::min((int)Line.size(), H.Column - 1));
             int Visible = 0;

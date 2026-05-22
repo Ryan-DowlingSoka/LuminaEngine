@@ -63,6 +63,46 @@ namespace Lumina::RmlUi
                 return true;
             }
 
+            // Resolve <link>/template/src paths against the engine VFS. The base
+            // implementation strips the leading '/' from absolute paths (treating
+            // them as relative to a working dir), which breaks our virtual paths.
+            // Keep absolute mount paths verbatim so `/Game/...`, `/Engine/...`, and
+            // future `/MyPlugin/...` resolve the same whether referenced absolutely
+            // or relatively -- important for plugin portability.
+            void JoinPath(Rml::String& OutPath, const Rml::String& DocumentPath, const Rml::String& Path) override
+            {
+                // Absolute virtual path -> use as-is.
+                if (!Path.empty() && Path[0] == '/')
+                {
+                    OutPath = Path;
+                    return;
+                }
+
+                // Scheme-prefixed source (e.g. "material:/Game/..") -- a ':' before
+                // any '/'. Pass through so custom URI schemes survive path joining.
+                const size_t Colon = Path.find(':');
+                const size_t Slash = Path.find('/');
+                if (Colon != Rml::String::npos && (Slash == Rml::String::npos || Colon < Slash))
+                {
+                    OutPath = Path;
+                    return;
+                }
+
+                // Relative path -> resolve against the document's directory,
+                // preserving its leading '/'.
+                OutPath = DocumentPath;
+                const size_t LastSlash = OutPath.rfind('/');
+                if (LastSlash != Rml::String::npos)
+                {
+                    OutPath.resize(LastSlash + 1);
+                }
+                else
+                {
+                    OutPath.clear();
+                }
+                OutPath += Path;
+            }
+
         private:
             std::chrono::steady_clock::time_point StartTime;
         };
@@ -271,17 +311,12 @@ namespace Lumina::RmlUi
         FRecursiveScopeLock Lock(State.StateMutex);
         if (!State.bInitialized && !State.System) return;
 
-        // Detach debugger before its host context dies; matters if Shutdown is followed by re-Init.
         if (State.DebuggerHost != nullptr)
         {
             Rml::Debugger::Shutdown();
             State.DebuggerHost = nullptr;
         }
-
-        // Editor contexts are bridge-owned, so drop them here. World contexts belong to
-        // their CWorld; once we flip bInitialized, any world torn down after this point
-        // just nulls its (now Rml::Shutdown-destroyed) context pointer instead of double
-        // removing it (see DestroyWorldUI).
+        
         for (auto& E : State.EditorContexts)
         {
             if (E->Context != nullptr)
@@ -381,6 +416,10 @@ namespace Lumina::RmlUi
             {
                 Rml::Debugger::Shutdown();
                 State.DebuggerHost = nullptr;
+                // Tearing down the host (e.g. ending PIE) turns the debugger off
+                // rather than letting it migrate -- still visible -- onto the
+                // editor's context the next time a world becomes active.
+                State.bDebuggerVisible = false;
             }
             // RmlUi tears down first (calls listener OnDetach), then we drop wrappers.
             Rml::RemoveContext(UI->Context->GetName());
@@ -589,6 +628,49 @@ namespace Lumina::RmlUi
         }
     }
 
+    bool SetWorldInlineDocument(CWorld* World, FStringView Body, FStringView SourceUrl)
+    {
+        if (World == nullptr)
+        {
+            return false;
+        }
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized)
+        {
+            return false;
+        }
+        FWorldUIContext* UI = World->GetUIContext();
+        if (UI == nullptr || UI->Context == nullptr)
+        {
+            return false;
+        }
+
+        // Drop whatever was loaded; the preview owns the whole context.
+        for (auto& KV : UI->Documents)
+        {
+            UI->Context->UnloadDocument(KV.second);
+        }
+        UI->Documents.clear();
+
+        if (Body.empty())
+        {
+            return false;
+        }
+
+        const Rml::String BodyStr(Body.data(), Body.size());
+        const Rml::String UrlStr(SourceUrl.data(), SourceUrl.size());
+        Rml::ElementDocument* Doc = UI->Context->LoadDocumentFromMemory(BodyStr, UrlStr);
+        if (Doc == nullptr)
+        {
+            LOG_ERROR("[RmlUi] SetWorldInlineDocument: failed to parse inline body.");
+            return false;
+        }
+        Doc->Show();
+        UI->Documents.emplace(FString("__inline__"), Doc);
+        return true;
+    }
+
     Rml::Context* CreateEditorContext(const char* Name, const glm::uvec2& InitialSize)
     {
         FState& State = S();
@@ -636,6 +718,7 @@ namespace Lumina::RmlUi
             {
                 Rml::Debugger::Shutdown();
                 State.DebuggerHost = nullptr;
+                State.bDebuggerVisible = false;
             }
 
             Rml::RemoveContext(E->Context->GetName());
@@ -888,7 +971,8 @@ namespace Lumina::RmlUi
         {
             FState& State = S();
             FRecursiveScopeLock Lock(State.StateMutex);
-            // Persists across PIE: SyncDebuggerToActiveContext re-reads after host rebind.
+            // Migrates with the active world while live; DestroyWorldUI resets it
+            // on host teardown so ending PIE doesn't leave it stuck on in the editor.
             State.bDebuggerVisible = bVisible;
             SyncDebuggerToActiveContext();
             LOG_INFO("[RmlUi] Debugger {}.", bVisible ? "shown" : "hidden");

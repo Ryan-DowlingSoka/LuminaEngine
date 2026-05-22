@@ -4,6 +4,7 @@
 #include "implot.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_vulkan.h"
+#include "Core/Console/ConsoleVariable.h"
 #include "Core/Engine/Engine.h"
 #include "Core/Profiler/Profile.h"
 #include "Core/Windows/Window.h"
@@ -16,6 +17,12 @@
 
 namespace Lumina
 {
+	// Shares the RHI.DiagnoseFrameGrowth gate: logs the ImGui texture cache size and the
+	// backend's shared texture list size. A climb here means GetOrCreateImTexture keys are
+	// churning (new descriptor sets every frame) and ProcessTextureUpdates_GameThread iterates
+	// a growing list under the graphics-queue lock -- inflating FQueue::Submit's wait.
+	static TConsoleVar<bool> CVarDiagnoseImGuiTextures("RHI.DiagnoseImGuiTextures", false,
+		"Log the ImGui texture cache + backend texture-list sizes to find growth behind the queue-lock contention.");
 
 
 	static FVulkanImage::ESubresourceViewType GetTextureViewType(EFormat BindingFormat, EFormat TextureFormat)
@@ -254,6 +261,13 @@ namespace Lumina
 			for (uint64 Delete : ToDelete)
 			{
 				DestroyImTexture(Delete);
+			}
+
+			if (CVarDiagnoseImGuiTextures.GetValue()) [[unlikely]]
+			{
+				LOG_INFO("[ImGuiTex] cacheEntries={} sweptThisPass={} backendTextureList={} viewports={}",
+					(uint32)Images.size(), (uint32)ToDelete.size(),
+					(uint32)ImGui::GetPlatformIO().Textures.Size, (uint32)ImGui::GetPlatformIO().Viewports.Size);
 			}
 		}
     }

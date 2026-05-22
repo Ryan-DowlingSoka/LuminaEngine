@@ -104,37 +104,62 @@ namespace Lumina
             return false;
         }
 
-        // Synchronous capture on the game thread; flush any in-flight render work first.
+        // Flush so the thumbnail world (created in Begin) is realized before we render it.
         FlushRenderingCommands();
 
-        // Extract uses the live CurrentFrameIndex slot; Render must read the same one,
-        // and we must signal it consumed afterwards or the slot's Produced/Consumed
-        // counters drift and the next capture deadlocks.
+        // Extract reads the ECS (game thread) and bumps the frame slot's Produced count;
+        // SignalFrameConsumed below balances it or the next capture deadlocks.
         const uint8 FrameIndex = (uint8)GRenderManager->GetCurrentFrameIndex();
         World->Extract();
 
-        FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
-        CommandList->Open();
-        World->Render(*CommandList, FrameIndex);
+        FRHIImage*          RenderTarget = nullptr;
+        FRHIStagingImageRef StagingImage;
 
-        FRHIImage* RenderTarget = World->GetRenderer()->GetRenderTarget();
-        if (RenderTarget == nullptr)
+        // Submit on the render thread (the sole graphics submitter) so we never race the
+        // swapchain frame. Capture is game-thread only, so EnqueueAndWait can't self-deadlock.
+        auto RecordCapture = [&]()
         {
+            FRHICommandListRef CommandList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
+            CommandList->Open();
+            World->Render(*CommandList, FrameIndex);
+
+            RenderTarget = World->GetRenderer()->GetRenderTarget();
+            if (RenderTarget == nullptr)
+            {
+                CommandList->Close();
+                return;
+            }
+
+            StagingImage = GRenderContext->CreateStagingImage(RenderTarget->GetDescription(), ERHIAccess::HostRead);
+            CommandList->CopyImage(RenderTarget, FTextureSlice(), StagingImage, FTextureSlice());
+
             CommandList->Close();
-            return false;
+            GRenderContext->ExecuteCommandList(CommandList);
+
+            // Wait on just this submission, not the whole device.
+            FRHIEventQueryRef Query = GRenderContext->CreateEventQuery();
+            GRenderContext->SetEventQuery(Query, ECommandQueue::Graphics);
+            GRenderContext->WaitEventQuery(Query);
+        };
+
+        if (GRenderThread != nullptr && GRenderThread->IsRunning())
+        {
+            GRenderThread->EnqueueAndWait("ThumbnailCapture", [&RecordCapture]() { RecordCapture(); });
         }
-
-        FRHIStagingImageRef StagingImage = GRenderContext->CreateStagingImage(RenderTarget->GetDescription(), ERHIAccess::HostRead);
-        CommandList->CopyImage(RenderTarget, FTextureSlice(), StagingImage, FTextureSlice());
-
-        CommandList->Close();
-        GRenderContext->ExecuteCommandList(CommandList);
-        GRenderContext->WaitIdle();
+        else
+        {
+            RecordCapture();
+        }
 
         // Balance the Produced++ that Extract did, since we bypassed the render lambda.
         if (IRenderScene* Scene = World->GetRenderer())
         {
             Scene->SignalFrameConsumed(FrameIndex);
+        }
+
+        if (RenderTarget == nullptr || !StagingImage.IsValid())
+        {
+            return false;
         }
 
         size_t RowPitch = 0;

@@ -1522,7 +1522,7 @@ namespace Lumina
 
             CurrentCommandBuffer->AddReferencedResource(State.IndexBuffer.Buffer);
         }
-        
+
         if (!State.VertexBuffers.empty() && !VectorsAreTriviallyEqual(State.VertexBuffers, CurrentGraphicsState.VertexBuffers))
         {
             VkBuffer VertexBuffer[16];
@@ -1550,9 +1550,19 @@ namespace Lumina
         PendingState.ClearPendingState(EPendingCommandState::DynamicBufferWrites);
     }
 
+    void FVulkanCommandList::SetScissor(const FRect& Rect)
+    {
+        const VkRect2D VkScissor = ToVkScissorRect(Rect.MinX, Rect.MaxX, Rect.MinY, Rect.MaxY);
+        vkCmdSetScissor(CurrentCommandBuffer->CommandBuffer, 0, 1, &VkScissor);
+
+        // Reflect the dynamic change in the cached state so the next SetGraphicsState
+        // diffs against what's actually bound (and doesn't skip a needed update).
+        CurrentGraphicsState.ViewportState.Scissors.assign(1, Rect);
+    }
+
     void FVulkanCommandList::SetLineWidth(float Width)
     {
-        
+
         vkCmdSetLineWidth(CurrentCommandBuffer->CommandBuffer, Width);
     }
 

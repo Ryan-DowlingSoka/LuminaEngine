@@ -71,11 +71,22 @@ namespace Lumina
 
         FString                     VirtualPath;
         FString                     ParentDir;
+        // .rcss stylesheets are edited the same as .rml, but can't render on
+        // their own -- the preview wraps them in a component specimen.
+        bool                        bIsStylesheet = false;
 
         TextEditor                  CodeEditor;
         std::string                 LastSyncedText;     // matches disk + last preview reload
         bool                        bBufferDirty = false;
         bool                        bAutoReload = true;
+
+        // Per-frame churn guards. The status bar and inline color swatches used to
+        // rebuild whole-document / per-line strings every frame; these caches are
+        // refreshed only when the editor's undo index changes (i.e. on an edit).
+        std::vector<std::string>    CachedLines;                    // backing for color-swatch parse
+        size_t                      CachedLinesUndoIndex = ~size_t(0);
+        size_t                      CachedDocBytes = 0;             // status-bar byte count
+        size_t                      CachedStatusUndoIndex = ~size_t(0);
 
         Rml::Context*               PreviewContext = nullptr;
         FRHIImageRef                PreviewTarget;

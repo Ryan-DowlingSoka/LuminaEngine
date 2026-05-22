@@ -37,20 +37,23 @@ namespace Lumina
         }
 
         const bool bPostProcess = MaterialType == EMaterialType::PostProcess;
+        const bool bUI          = MaterialType == EMaterialType::UI;
 
-        // PostProcess materials only consume Emissive; the surface attributes
-        // are inert for the fullscreen pass. WorldPositionOffset is a vertex-
-        // stage write and is meaningless without surface geometry.
-        if (BaseColorPin)            BaseColorPin->SetDisabled(bPostProcess);
-        if (MetallicPin)             MetallicPin->SetDisabled(bPostProcess);
-        if (RoughnessPin)            RoughnessPin->SetDisabled(bPostProcess);
-        if (SpecularPin)             SpecularPin->SetDisabled(bPostProcess);
-        if (AOPin)                   AOPin->SetDisabled(bPostProcess);
-        if (NormalPin)               NormalPin->SetDisabled(bPostProcess);
+        // PostProcess and UI materials run as a fullscreen pass: the surface
+        // attributes are inert and WorldPositionOffset is a vertex-stage write
+        // that's meaningless without geometry. UI keeps Opacity (it drives the
+        // brush alpha); PostProcess does not.
+        const bool bFullscreen = bPostProcess || bUI;
+        if (BaseColorPin)            BaseColorPin->SetDisabled(bFullscreen);
+        if (MetallicPin)             MetallicPin->SetDisabled(bFullscreen);
+        if (RoughnessPin)            RoughnessPin->SetDisabled(bFullscreen);
+        if (SpecularPin)             SpecularPin->SetDisabled(bFullscreen);
+        if (AOPin)                   AOPin->SetDisabled(bFullscreen);
+        if (NormalPin)               NormalPin->SetDisabled(bFullscreen);
         if (OpacityPin)              OpacityPin->SetDisabled(bPostProcess);
-        if (WorldPositionOffsetPin)  WorldPositionOffsetPin->SetDisabled(bPostProcess);
+        if (WorldPositionOffsetPin)  WorldPositionOffsetPin->SetDisabled(bFullscreen);
 
-        // Emissive is the post-process output; always enabled.
+        // Emissive is the fullscreen output color; always enabled.
         if (EmissivePin)             EmissivePin->SetDisabled(false);
 
         Super::DrawNodeTitleBar();

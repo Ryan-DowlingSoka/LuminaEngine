@@ -209,6 +209,9 @@ namespace Lumina
     	VkResult    Result    = VK_RESULT_MAX_ENUM;
     	VkSemaphore Semaphore = VK_NULL_HANDLE;
 
+    	// Only a successful acquire publishes a handle; a failed one must not leave a stale wait.
+    	CurrentAcquireSemaphore = VK_NULL_HANDLE;
+
 	    constexpr int MaxAttempts = 3;
 	    for (int Attempt = 0; Attempt < MaxAttempts; ++Attempt)
 	    {
@@ -247,8 +250,10 @@ namespace Lumina
 
     	if (Result == VK_SUCCESS || Result == VK_SUBOPTIMAL_KHR)
     	{
+    		// Bound to the swapchain submit directly, NOT the queue's shared wait list, so another
+    		// graphics submit can't steal it (would desync the ring and present sync).
+    		CurrentAcquireSemaphore = Semaphore;
     		AcquireSemaphoreIndex = (AcquireSemaphoreIndex + 1) % AcquireSemaphores.size();
-    		Context->GetQueue(ECommandQueue::Graphics)->AddWaitSemaphore(Semaphore, 0, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
     	}
 
     	return false;

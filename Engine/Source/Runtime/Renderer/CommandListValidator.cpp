@@ -15,11 +15,16 @@ namespace Lumina
 
     void FCommandListValidator::Open()
     {
+        MarkerDepth = 0;
         Inner->Open();
     }
 
     void FCommandListValidator::Close()
     {
+        // Unbalanced markers leak onto the queue debug-label stack at submit and are
+        // never popped, slowly inflating FQueue::Submit. Catch it at the offending
+        // recording instead of weeks later as an unexplained render-thread creep.
+        ASSERT(MarkerDepth == 0, "Command list closed with {} unclosed marker/profiler scope(s) -- every AddMarker/BeginProfilerZone needs a matching PopMarker/EndProfilerZone (prefer GPU_PROFILE_SCOPE).", MarkerDepth);
         Inner->Close();
     }
 
@@ -236,21 +241,33 @@ namespace Lumina
     void FCommandListValidator::AddMarker(const char* Name, const FColor& Color)
     {
         ASSERT(Name != nullptr);
+        ++MarkerDepth;
         Inner->AddMarker(Name, Color);
     }
 
     void FCommandListValidator::PopMarker()
     {
+        ASSERT(MarkerDepth > 0, "PopMarker with no open marker -- vkCmdEndDebugUtilsLabelEXT on an empty label stack is undefined.");
+        if (MarkerDepth > 0)
+        {
+            --MarkerDepth;
+        }
         Inner->PopMarker();
     }
 
     void FCommandListValidator::BeginProfilerZone(const char* Name, const FColor& Color)
     {
+        ++MarkerDepth;
         Inner->BeginProfilerZone(Name, Color);
     }
 
     void FCommandListValidator::EndProfilerZone()
     {
+        ASSERT(MarkerDepth > 0, "EndProfilerZone with no open zone -- unbalanced with BeginProfilerZone.");
+        if (MarkerDepth > 0)
+        {
+            --MarkerDepth;
+        }
         Inner->EndProfilerZone();
     }
 
@@ -296,6 +313,11 @@ namespace Lumina
     void FCommandListValidator::Draw(uint32 VertexCount, uint32 InstanceCount, uint32 FirstVertex, uint32 FirstInstance)
     {
         Inner->Draw(VertexCount, InstanceCount, FirstVertex, FirstInstance);
+    }
+
+    void FCommandListValidator::SetScissor(const FRect& Rect)
+    {
+        Inner->SetScissor(Rect);
     }
 
     void FCommandListValidator::DrawIndexed(uint32 IndexCount, uint32 InstanceCount, uint32 FirstIndex, int32 VertexOffset, uint32 FirstInstance)

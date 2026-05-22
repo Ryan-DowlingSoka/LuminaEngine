@@ -13,8 +13,11 @@
 #include "Renderer/RHIGlobals.h"
 #include "Renderer/ShaderCompiler.h"
 #include "Thumbnails/ThumbnailManager.h"
+#include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Assets/AssetRegistry/AssetData.h"
 #include "Tools/PrimitiveManager/PrimitiveManager.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
+#include "UI/RmlUiBridge.h"
 #include "UI/Tools/NodeGraph/Material/MaterialCompiler.h"
 #include "UI/Tools/NodeGraph/Material/MaterialNodeGraph.h"
 #include "world/entity/components/cameracomponent.h"
@@ -34,10 +37,11 @@ namespace Lumina
         , DirectionalLightEntity()
         , CompilationResult()
         , NodeGraph(nullptr)
+        , DebugMesh()
     {
     }
 
-    
+
     void FMaterialEditorTool::OnInitialize()
     {
         FAssetEditorTool::OnInitialize();
@@ -139,6 +143,15 @@ namespace Lumina
         {
             Camera->PostProcessMaterials.clear();
         }
+        
+        if (MaterialType != EMaterialType::UI)
+        {
+            RmlUi::SetWorldInlineDocument(World, FStringView(), FStringView());
+            if (StaticMeshComponent.StaticMesh == nullptr)
+            {
+                StaticMeshComponent.StaticMesh = CPrimitiveManager::Get().SphereMesh;
+            }
+        }
 
         if (MaterialType == EMaterialType::PostProcess)
         {
@@ -146,9 +159,31 @@ namespace Lumina
             {
                 Camera->PostProcessMaterials.push_back(MaterialInterface);
             }
-            // Sphere keeps no material override -- it falls back to the
-            // default material so the scene has something for the
-            // post-process to read.
+        }
+        else if (MaterialType == EMaterialType::UI)
+        {
+            StaticMeshComponent.StaticMesh = nullptr;
+
+            const FAssetData* Data = MaterialInterface
+                ? FAssetRegistry::Get().GetAssetByGUID(MaterialInterface->GetGUID())
+                : nullptr;
+            if (Data != nullptr)
+            {
+                FString Body;
+                Body.append("<rml><head><style>"
+                            "body{margin:0;padding:0;width:100%;height:100%;background-color:#000000;"
+                            "display:flex;align-items:center;justify-content:center;}"
+                            "img{width:75%;height:75%;}"
+                            "</style></head>");
+                Body.append("<body><img src=\"material:");
+                Body.append(Data->Path.c_str());
+                Body.append("\"/></body></rml>");
+                RmlUi::SetWorldInlineDocument(World, FStringView(Body.c_str(), Body.size()), FStringView("material_preview.rml"));
+            }
+            else
+            {
+                LOG_WARN("[MaterialEditor] UI material preview: no registry path (save the asset first).");
+            }
         }
         else
         {

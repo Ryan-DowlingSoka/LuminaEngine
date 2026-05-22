@@ -52,7 +52,7 @@ namespace Lumina
         Output->SetInputType(EMaterialInputType::Float3);
         Output->SetComponentMask(EComponentMask::RGB);
     }
-    void CMaterialExpression_WorldPos::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.WorldPos(FullName); }
+    void CMaterialExpression_WorldPos::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.WorldPos(FullName, this); }
 
     void CMaterialExpression_CameraPos::BuildNode()
     {
@@ -60,7 +60,7 @@ namespace Lumina
         Output->SetInputType(EMaterialInputType::Float3);
         Output->SetComponentMask(EComponentMask::RGB);
     }
-    void CMaterialExpression_CameraPos::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.CameraPos(FullName); }
+    void CMaterialExpression_CameraPos::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.CameraPos(FullName, this); }
 
     void CMaterialExpression_EntityID::BuildNode()
     {
@@ -75,7 +75,7 @@ namespace Lumina
         Output->SetInputType(EMaterialInputType::Float3);
         Output->SetComponentMask(EComponentMask::RGB);
     }
-    void CMaterialExpression_VertexNormal::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.VertexNormal(FullName); }
+    void CMaterialExpression_VertexNormal::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.VertexNormal(FullName, this); }
 
     void CMaterialExpression_VertexTangent::BuildNode()
     {
@@ -86,7 +86,7 @@ namespace Lumina
     void CMaterialExpression_VertexTangent::GenerateDefinition(FMaterialCompiler& Compiler)
     {
         if (!Compiler.RequirePixelStage(this, "VertexTangent")) return;
-        Compiler.VertexTangent(FullName);
+        Compiler.VertexTangent(FullName, this);
     }
 
     void CMaterialExpression_VertexBitangent::BuildNode()
@@ -98,7 +98,7 @@ namespace Lumina
     void CMaterialExpression_VertexBitangent::GenerateDefinition(FMaterialCompiler& Compiler)
     {
         if (!Compiler.RequirePixelStage(this, "VertexBitangent")) return;
-        Compiler.VertexBitangent(FullName);
+        Compiler.VertexBitangent(FullName, this);
     }
 
     void CMaterialExpression_VertexColor::BuildNode()
@@ -107,5 +107,5 @@ namespace Lumina
         Output->SetInputType(EMaterialInputType::Float4);
         Output->SetComponentMask(EComponentMask::RGBA);
     }
-    void CMaterialExpression_VertexColor::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.VertexColor(FullName); }
+    void CMaterialExpression_VertexColor::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.VertexColor(FullName, this); }
 }

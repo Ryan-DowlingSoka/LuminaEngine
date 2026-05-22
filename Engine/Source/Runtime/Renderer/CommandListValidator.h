@@ -71,6 +71,7 @@ namespace Lumina
         void SetPushConstants(const void* Data, size_t ByteSize) override;
 
         void SetGraphicsState(const FGraphicsState& State) override;
+        void SetScissor(const FRect& Rect) override;
         void SetLineWidth(float Width) override;
         void Draw(uint32 VertexCount, uint32 InstanceCount, uint32 FirstVertex, uint32 FirstInstance) override;
         void DrawIndexed(uint32 IndexCount, uint32 InstanceCount, uint32 FirstIndex, int32 VertexOffset, uint32 FirstInstance) override;
@@ -91,5 +92,11 @@ namespace Lumina
     private:
 
         FRHICommandListRef Inner;
+
+        // Net open debug-label/profiler-zone depth for the current recording. An
+        // unclosed label at Close() propagates onto the queue's debug-label stack at
+        // submit and is never popped -- a linear FQueue::Submit creep that no resource
+        // counter reveals. Reset on Open, asserted zero on Close.
+        int32 MarkerDepth = 0;
     };
 }

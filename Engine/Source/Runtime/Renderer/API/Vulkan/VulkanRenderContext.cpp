@@ -15,10 +15,13 @@
 #include "Core/Windows/Window.h"
 #include "FileSystem/FileSystem.h"
 #include "Paths/Paths.h"
+#include "Core/Console/ConsoleVariable.h"
 #include "Renderer/CommandList.h"
 #include "Renderer/CommandListValidator.h"
+#include "Renderer/RenderManager.h"
 #include "Renderer/RHIStaticStates.h"
 #include "Renderer/RenderThread.h"
+#include "Renderer/TextureManager.h"
 #include "Renderer/ShaderCompiler.h"
 #include "TaskSystem/TaskSystem.h"
 #include "Renderer/ErrorHandling/Vulkan/VulkanCrashTracker.h"
@@ -27,6 +30,13 @@
 
 namespace Lumina
 {
+    // Per-frame growth diagnostic. Logs (every ~120 frames) the queue depth, in-flight
+    // command buffers, pending wait semaphores, bindless descriptor live/capacity, and
+    // VMA allocation count/bytes -- so an unbounded climb (the source of FQueue::Present
+    // rising over time) shows up as one of these numbers monotonically increasing.
+    static TConsoleVar<bool> CVarDiagnoseFrameGrowth("RHI.DiagnoseFrameGrowth", false,
+        "Log per-frame GPU resource counts to find unbounded growth behind a rising Present time.");
+
     VkAllocationCallbacks GVulkanAllocationCallbacks;
     
     static void* VulkanAlloc(void* pUserData, size_t size, size_t alignment, VkSystemAllocationScope allocationScope)
@@ -297,10 +307,11 @@ namespace Lumina
         return CompletedInstance;
     }
 
-    uint64 FQueue::Submit(ICommandList* const* CommandLists, uint32 NumCommandLists)
+    uint64 FQueue::Submit(ICommandList* const* CommandLists, uint32 NumCommandLists,
+                          VkSemaphore ExtraWaitSemaphore, VkPipelineStageFlags ExtraWaitStage, VkSemaphore ExtraSignalSemaphore)
     {
         LUMINA_PROFILE_SCOPE();
-        
+
         std::scoped_lock Lock(Mutex);
         LockMark(Mutex);
         LastSubmittedID++;
@@ -343,6 +354,20 @@ namespace Lumina
         }
 
         AddSignalSemaphore(TimelineSemaphore, LastSubmittedID);
+
+        // Binary semaphores bound to this submit, merged under the lock. Value is ignored but
+        // must keep the parallel arrays aligned.
+        if (ExtraWaitSemaphore != VK_NULL_HANDLE)
+        {
+            WaitSemaphores.push_back(ExtraWaitSemaphore);
+            WaitSemaphoreValues.push_back(0);
+            WaitStageFlags.push_back(ExtraWaitStage);
+        }
+        if (ExtraSignalSemaphore != VK_NULL_HANDLE)
+        {
+            SignalSemaphores.push_back(ExtraSignalSemaphore);
+            SignalSemaphoreValues.push_back(0);
+        }
 
         VkTimelineSemaphoreSubmitInfo TimelineSubmitInfo    = {};
         TimelineSubmitInfo.sType                            = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
@@ -782,10 +807,8 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        // Acquire here on the render thread. The acquire semaphore is added to
-        // the graphics queue's pending wait list, which the ExecuteCommandLists
-        // below consumes atomically -- no game-thread/render-thread overlap on
-        // queue semaphore state, no double-acquires per submit.
+        // Acquire/present semaphores go straight into this submit (not the queue's shared wait
+        // list), so an interleaving graphics submit can't steal them. Render thread only.
         Swapchain->AcquireNextImage();
 
         CmdList.CopyImage(FEngine::GetEngineViewport()->GetRenderTarget(), FTextureSlice(), Swapchain->GetCurrentImage(), FTextureSlice());
@@ -793,10 +816,39 @@ namespace Lumina
         CmdList.Close();
         ICommandList* CL = &CmdList;
 
-        GetQueue(ECommandQueue::Graphics)->AddSignalSemaphore(Swapchain->GetCurrentPresentSemaphore(), 0);
-        ExecuteCommandLists(&CL, 1, ECommandQueue::Graphics);
+        SubmitWithSemaphores(&CL, 1, ECommandQueue::Graphics,
+                             Swapchain->GetCurrentAcquireSemaphore(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             Swapchain->GetCurrentPresentSemaphore());
 
         bool bSuccess = Swapchain->Present();
+
+        if (CVarDiagnoseFrameGrowth.GetValue()) [[unlikely]]
+        {
+            static uint64 sDiagFrame = 0;
+            if ((sDiagFrame++ % 120) == 0)
+            {
+                FQueue* GfxQ = GetQueue(ECommandQueue::Graphics);
+                GfxQ->UpdateLastFinishID();
+                const uint64 Behind = GfxQ->LastSubmittedID - GfxQ->LastFinishedID;
+
+                FGPUMemoryStats Mem = {};
+                GetGPUMemoryStats(Mem);
+
+                uint32 BindlessLive = 0;
+                uint32 BindlessCap  = 0;
+                if (GRenderManager != nullptr)
+                {
+                    BindlessLive = GRenderManager->GetTextureManager().GetLiveDescriptorCount();
+                    BindlessCap  = GRenderManager->GetTextureManager().GetDescriptorCapacity();
+                }
+
+                LOG_INFO("[FrameGrowth] gfxBehind={} cmdBuffersInFlight={} pendingWaitSem={} | bindlessLive={} bindlessCap={} | gfxPipelines={} computePipelines={} | vmaAllocs={} vmaUsedMB={}",
+                    Behind, (uint32)GfxQ->CommandBuffersInFlight.size(), (uint32)GfxQ->WaitSemaphores.size(),
+                    BindlessLive, BindlessCap,
+                    PipelineCache.GetGraphicsPipelineCount(), PipelineCache.GetComputePipelineCount(),
+                    Mem.TotalAllocations, Mem.TotalUsage / (1024ull * 1024ull));
+            }
+        }
 
         return bSuccess;
     }
@@ -925,11 +977,17 @@ namespace Lumina
 
     uint64 FVulkanRenderContext::ExecuteCommandLists(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType)
     {
+        return SubmitWithSemaphores(CommandLists, NumCommandLists, QueueType, VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    }
+
+    uint64 FVulkanRenderContext::SubmitWithSemaphores(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType,
+                                                      VkSemaphore ExtraWaitSemaphore, VkPipelineStageFlags ExtraWaitStage, VkSemaphore ExtraSignalSemaphore)
+    {
         LUMINA_PROFILE_SCOPE();
-        
+
         TUniquePtr<FQueue>& Queue = Queues[(uint32)QueueType];
 
-        uint64 SubmissionID = Queue->Submit(CommandLists, NumCommandLists);
+        uint64 SubmissionID = Queue->Submit(CommandLists, NumCommandLists, ExtraWaitSemaphore, ExtraWaitStage, ExtraSignalSemaphore);
 
         if (NumCommandLists > 30)
         {

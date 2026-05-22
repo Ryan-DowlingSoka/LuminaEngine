@@ -133,6 +133,13 @@ namespace Lumina
         // node's GenerateDefinition.
         bool RequirePixelStage(CMaterialGraphNode* Node, const FString& NodeKindName);
 
+        // UI materials run as a fullscreen brush pass with no surface geometry,
+        // camera, scene depth, or vertex attributes. Returns true (and records a
+        // graph error on Node) when the calling input node is unavailable in the
+        // UI domain; the caller then emits a neutral default so the shader still
+        // compiles. Mirrors the SceneColor/Terrain domain checks.
+        bool RejectInUI(CMaterialGraphNode* Node, const char* NodeName);
+
         // Parameter definitions
         void DefineFloatParameter(const FString& NodeID, const FName& ParamID, float Value);
         void DefineFloat2Parameter(const FString& NodeID, const FName& ParamID, float Value[2]);
@@ -163,10 +170,10 @@ namespace Lumina
         void TextureSampleParameter(const FString& ID, const FName& ParamID, CTexture* Texture, CMaterialInput* Input);
 
         // Built-in inputs
-        void VertexNormal(const FString& ID);
-        void VertexTangent(const FString& ID);
-        void VertexBitangent(const FString& ID);
-        void VertexColor(const FString& ID);
+        void VertexNormal(const FString& ID, CMaterialGraphNode* Node = nullptr);
+        void VertexTangent(const FString& ID, CMaterialGraphNode* Node = nullptr);
+        void VertexBitangent(const FString& ID, CMaterialGraphNode* Node = nullptr);
+        void VertexColor(const FString& ID, CMaterialGraphNode* Node = nullptr);
         void TexCoords(const FString& ID, uint32 Index, float UTiling, float VTiling);
         void Panner(CMaterialInput* UV, CMaterialInput* Time, CMaterialInput* Speed);
         void RotateUV(CMaterialInput* UV, CMaterialInput* Center, CMaterialInput* Rotation);
@@ -174,14 +181,14 @@ namespace Lumina
         void FlipBookUV(CMaterialInput* UV, CMaterialInput* NumCols, CMaterialInput* NumRows, CMaterialInput* Time, CMaterialInput* FPS);
         void PolarCoordinates(CMaterialInput* UV, CMaterialInput* Center);
         void TwirlUV(CMaterialInput* UV, CMaterialInput* Center, CMaterialInput* Strength);
-        void WorldPos(const FString& ID);
-        void CameraPos(const FString& ID);
+        void WorldPos(const FString& ID, CMaterialGraphNode* Node = nullptr);
+        void CameraPos(const FString& ID, CMaterialGraphNode* Node = nullptr);
         void EntityID(const FString& ID);
         void Time(const FString& ID);
         void ScreenPosition(const FString& ID, bool bRaw);
-        void ViewDirection(const FString& ID);
-        void ReflectionVector(const FString& ID);
-        void FragmentDepth(const FString& ID, bool bLinear);
+        void ViewDirection(const FString& ID, CMaterialGraphNode* Node = nullptr);
+        void ReflectionVector(const FString& ID, CMaterialGraphNode* Node = nullptr);
+        void FragmentDepth(const FString& ID, bool bLinear, CMaterialGraphNode* Node = nullptr);
         void ViewportSize(const FString& ID);
         void AspectRatio(const FString& ID);
         void SceneColor(const FString& ID, CMaterialInput* UV);

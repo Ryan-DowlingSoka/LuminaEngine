@@ -32,7 +32,12 @@ namespace Lumina
 
         void PostShaderRecompiled(const FRHIShader* Shader);
         void ReleasePipelines();
-        
+
+        // Diagnostics: a count that climbs every frame means a call site is varying the
+        // pipeline-desc hash and minting a new pipeline per frame instead of hitting the cache.
+        uint32 GetGraphicsPipelineCount() const { return (uint32)GraphicsPipelines.size(); }
+        uint32 GetComputePipelineCount()  const { return (uint32)ComputePipelines.size(); }
+
     private:
 
         FMutex ShaderMutex;

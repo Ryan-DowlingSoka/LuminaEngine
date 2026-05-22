@@ -1,21 +1,18 @@
-// RmlUi vertex shader.
+// RmlUi vertex shader (fully-bindless, single-draw path).
 //
-// Vertex layout matches Rml::Vertex exactly (RG32_FLOAT pos / RGBA8_UNORM
-// premultiplied colour / RG32_FLOAT uv). The CPU side feeds:
-//
-//   PC.MVP         = Ortho(pixel -> NDC) * (user transform from SetTransform)
-//   PC.Translation = per-RenderGeometry pixel-space offset
-//
-// We add Translation to the vertex's pixel position, then transform by MVP.
-// Doing the projection on CPU keeps the shader trivial and works uniformly
-// for both untransformed UI and CSS-3D-transformed elements.
+// The whole UI is one DrawIndexed. Each vertex carries a draw index; the
+// per-draw MVP/texture/clip live in a device-address buffer (see RmlUiCommon).
+// Translation is baked into the position on the CPU, so the shader just
+// transforms by the per-draw MVP.
 #pragma once
+#include "Includes/RmlUiCommon.slang"
 
 struct VSInput
 {
-    float2 Position : POSITION;
-    float4 Colour   : COLOR;
-    float2 UV       : TEXCOORD0;
+    float2 Position  : POSITION;
+    float4 Colour    : COLOR;       // premultiplied RGBA8
+    float2 UV        : TEXCOORD0;
+    uint   DrawIndex : TEXCOORD1;   // R32_UINT vertex attribute
 };
 
 struct VSOutput
@@ -23,25 +20,18 @@ struct VSOutput
     float4 Position : SV_Position;
     float4 Colour   : COLOR;
     float2 UV       : TEXCOORD0;
+    nointerpolation uint DrawIndex : TEXCOORD1;
 };
-
-struct FRmlUiPushConstants
-{
-    float4x4 MVP;          // 64 B
-    float2   Translation;  //  8 B
-    float2   _Pad;         //  8 B  (16-byte align for the next push constant block)
-};
-
-[[vk::push_constant]] ConstantBuffer<FRmlUiPushConstants> PC;
 
 [shader("vertex")]
 VSOutput VertexMain(VSInput Input)
 {
-    float2 PixelPos = Input.Position + PC.Translation;
+    FUiDraw Draw = PC.Draws[Input.DrawIndex];
 
     VSOutput Output;
-    Output.Position = mul(PC.MVP, float4(PixelPos, 0.0, 1.0));
-    Output.Colour   = Input.Colour;
-    Output.UV       = Input.UV;
+    Output.Position  = mul(Draw.MVP, float4(Input.Position, 0.0, 1.0));
+    Output.Colour    = Input.Colour;
+    Output.UV        = Input.UV;
+    Output.DrawIndex = Input.DrawIndex;
     return Output;
 }

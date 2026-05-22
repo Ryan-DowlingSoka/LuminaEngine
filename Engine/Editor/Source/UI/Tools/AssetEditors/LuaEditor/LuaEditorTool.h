@@ -133,6 +133,11 @@ namespace Lumina
         // GetText() copy every render frame. Recomputed in OnSave / LoadFromDisk
         // and in the (debounced) change callback.
         size_t              CachedBodySize = 0;
+        // Per-line text cache for overlays (inlay hints, hover tooltip) that would
+        // otherwise rebuild a std::string per visible line every frame. Refreshed
+        // only when the undo index moves.
+        std::vector<std::string> CachedLines;
+        size_t              CachedLinesUndoIndex = ~size_t(0);
         bool                bBufferDirty = false;
         // Set in OnSave so the OnScriptLoaded broadcast we just emitted from
         // FScriptingContext::ScriptReloaded doesn't bounce back as an external
@@ -339,5 +344,8 @@ namespace Lumina
         // Inlay-hints renderer; reads InlayHints and paints them on top of
         // the editor's already-drawn glyphs.
         void DrawInlayHintsOverlay();
+
+        // Refresh CachedLines from the editor if the buffer changed since last call.
+        void RefreshLineCache();
     };
 }

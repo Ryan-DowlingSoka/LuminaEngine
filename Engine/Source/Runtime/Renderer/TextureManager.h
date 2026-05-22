@@ -39,6 +39,10 @@ namespace Lumina::RHI
         NODISCARD FRHIBindingLayout* GetLayout() const { return Layout; }
         NODISCARD FRHIDescriptorTable* GetDescriptorTable() const { return DescriptorTableManager.GetDescriptorTable(); }
 
+        // Diagnostics: live bindless textures vs current table capacity.
+        NODISCARD uint32 GetLiveDescriptorCount() const { return DescriptorTableManager.GetLiveDescriptorCount(); }
+        NODISCARD uint32 GetDescriptorCapacity()  const { return DescriptorTableManager.GetDescriptorCapacity(); }
+
     private:
 
         void RegisterStockSamplers();
