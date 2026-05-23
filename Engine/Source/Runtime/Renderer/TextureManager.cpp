@@ -101,6 +101,31 @@ namespace Lumina::RHI
         }
     }
 
+    int32 FTextureManager::RegisterSubresourceSRV(FRHIImage* InTexture, const FTextureSubresourceSet& Subresources)
+    {
+        if (InTexture == nullptr)
+        {
+            return -1;
+        }
+
+        FWriteScopeLock Lock(Mutex);
+
+        FBindingSetItem Item = FBindingSetItem::TextureSRV(
+            ImageBinding, InTexture, nullptr, InTexture->GetDescription().Format, Subresources);
+        return static_cast<int32>(DescriptorTableManager.CreateDescriptor(Item));
+    }
+
+    void FTextureManager::ReleaseSubresourceSRV(int32 Index)
+    {
+        if (Index < 0)
+        {
+            return;
+        }
+
+        FWriteScopeLock Lock(Mutex);
+        DescriptorTableManager.ReleaseDescriptor(Index);
+    }
+
     void FTextureManager::RemoveTexture(FRHIImage* InTexture)
     {
         if (InTexture == nullptr)

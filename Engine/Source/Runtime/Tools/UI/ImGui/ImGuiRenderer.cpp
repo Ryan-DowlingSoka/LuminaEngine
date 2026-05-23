@@ -100,11 +100,6 @@ namespace Lumina
     	
     	io.ConfigWindowsMoveFromTitleBarOnly = true;
     	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
-    	// Gamepad nav intentionally NOT enabled: when set, ImGui's GLFW backend
-    	// polls XInput every frame in ImGui_ImplGlfw_NewFrame, which causes
-    	// 1-4ms hitches on Windows (USB enumeration / driver state transitions)
-    	// even with no controller connected. Re-enable only if/when the editor
-    	// genuinely needs gamepad-driven ImGui navigation.
     	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
     	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
     	io.BackendFlags |= ImGuiBackendFlags_PlatformHasViewports;
@@ -233,25 +228,25 @@ namespace Lumina
         ImGuiX::Notifications::Render();
         ImGui::Render();
 
-        // Everything below submits to the raw graphics VkQueue (texture uploads,
-        // platform-window present). Hold the same queue mutex the render thread
-        // uses so we serialize at submit only -- render-thread recording of the
-        // main viewport continues in parallel.
-        GRenderContext->LockQueueForExternalAccess(ECommandQueue::Graphics);
-
-        // Process all pending texture create/update/destroy here, on the game
-        // thread, while we hold the queue lock. The render thread must not do
-        // this from RenderDrawData: the texture list is shared, rebuilt every
-        // frame on this thread, and the backend uploads through a single shared
-        // command buffer + queue submit.
+        // Process all pending texture create/update/destroy on the game thread,
+        // before the snapshot is handed off, so ImTextureData TexIDs (font atlas)
+        // are valid when the render thread records. The bindless backend uploads
+        // through a normal RHI command list whose Submit locks the graphics queue
+        // internally -- no manual external-access lock (which would deadlock the
+        // self-locking Submit/Present below).
         ProcessTextureUpdates_GameThread();
 
+        // Update platform windows (create/destroy/move OS windows + their
+        // swapchains) on this thread, then deep-copy each secondary viewport's
+        // draw data into this slot. The render thread acquires/renders/presents
+        // those swapchains in RenderViewports_RenderThread -- we do NOT call
+        // RenderPlatformWindowsDefault (it would render+present on this thread,
+        // and cross-thread present ordering trips SyncVal WRITE_AFTER_PRESENT).
         if (Io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
         {
             ImGui::UpdatePlatformWindows();
-            ImGui::RenderPlatformWindowsDefault();
+            CaptureViewports_GameThread(Slot);
         }
-        GRenderContext->UnlockQueueForExternalAccess(ECommandQueue::Graphics);
 
         FImDrawDataSnapshot& Snapshot = Snapshots[Slot];
         Snapshot.SnapUsingSwap(ImGui::GetDrawData(), ImGui::GetTime());
@@ -284,11 +279,12 @@ namespace Lumina
         return &Snapshot;
     }
 
-    void IImGuiRenderer::RecordFrame_RenderThread(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot)
+    void IImGuiRenderer::RecordFrame_RenderThread(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot, uint8 FrameIndex)
     {
         LUMINA_PROFILE_SCOPE();
 
         OnEndFrame(CmdList, Snapshot);
+        RenderViewports_RenderThread(FrameIndex % FRAMES_IN_FLIGHT);
     }
 
     void IImGuiRenderer::SignalSnapshotSlotConsumed(uint8 FrameIndex)

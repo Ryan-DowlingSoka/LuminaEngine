@@ -51,7 +51,12 @@ LuminaWorkspaceSettings({
         include "Engine/Source/ThirdParty/EnTT"
 		include "Engine/Source/ThirdParty/glfw"
 		include "Engine/Source/ThirdParty/imgui"
-		include "Engine/Source/ThirdParty/Tracy"
+        -- Tracy is dropped entirely when profiling is disabled in every
+        -- configuration (BuildConfig.lua / --tracy=off); modules also stop
+        -- linking it (see Module.lua).
+        if LuminaOptions.IsActiveAny("Tracy") then
+            include "Engine/Source/ThirdParty/Tracy"
+        end
         include "Engine/Source/ThirdParty/MiniAudio"
         include "Engine/Source/ThirdParty/EnkiTS"
         include "Engine/Source/ThirdParty/Luau"

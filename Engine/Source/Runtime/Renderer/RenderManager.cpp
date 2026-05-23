@@ -69,22 +69,30 @@ namespace Lumina
     {
         GRenderContext = Memory::New<FVulkanRenderContext>();
 
-        #if LUMINA_SHIPPING
-        GRenderContext->Initialize(FRenderContextDesc{false, false});
+        #if defined(LUMINA_WITH_VALIDATION)
+        constexpr bool bValidation = true;
         #else
-        GRenderContext->Initialize(FRenderContextDesc{true, true});
+        constexpr bool bValidation = false;
         #endif
+
+        #if LUMINA_SHIPPING
+        constexpr bool bDebugUtils = false;
+        #else
+        constexpr bool bDebugUtils = true;
+        #endif
+
+        GRenderContext->Initialize(FRenderContextDesc{ bValidation, bDebugUtils });
 
         GRenderThread = Memory::New<FRenderThread>();
         GRenderThread->Start();
+
+        MaterialManager = MakeUnique<RHI::FMaterialManager>();
+        TextureManager = MakeUnique<RHI::FTextureManager>();
 
         #if WITH_EDITOR
         ImGuiRenderer = Memory::New<FVulkanImGuiRender>();
         ImGuiRenderer->Initialize();
         #endif
-
-        MaterialManager = MakeUnique<RHI::FMaterialManager>();
-        TextureManager = MakeUnique<RHI::FTextureManager>();
     }
 
     void FRenderManager::FrameStart(const FUpdateContext& UpdateContext)
@@ -103,7 +111,7 @@ namespace Lumina
         const uint8 ThisFrameIndex = CurrentFrameIndex;
         CurrentFrameIndex = (CurrentFrameIndex + 1) % FRAMES_IN_FLIGHT;
 
-        FImDrawDataSnapshot* ImGuiSnapshot = nullptr;
+        [[maybe_unused]] FImDrawDataSnapshot* ImGuiSnapshot = nullptr;
         #if WITH_EDITOR
         ImGuiSnapshot = ImGuiRenderer->BuildFrame_GameThread(ThisFrameIndex);
         #endif
@@ -115,13 +123,8 @@ namespace Lumina
 
             FGPUProfiler::Get().BeginFrame();
             GRenderContext->FrameStart(ThisFrameIndex);
-
-            // Single cmdlist for world + RmlUi + ImGui composite. Each world renders
-            // its own UI inside RenderWorlds (CWorld::Render); the RmlUi state lock it
-            // takes blocks next-frame UI tick / world destroy on the game thread until
-            // the DOM walk completes. Editor-only contexts render via RenderEditorContexts.
-            // Persistent per-frame-in-flight list (reused, not allocated fresh each frame).
-            FRHICommandListRef CmdList = GRenderContext->GetFrameCommandList();
+            
+            FRHICommandListRef CmdList = GRenderContext->CreateCommandList(FCommandListInfo::Graphics());
             CmdList->Open();
             ICommandList& CL = *CmdList;
 
@@ -142,7 +145,7 @@ namespace Lumina
                 #if WITH_EDITOR
                 if (Snapshot)
                 {
-                    ImGuiRenderer->RecordFrame_RenderThread(CL, *Snapshot);
+                    ImGuiRenderer->RecordFrame_RenderThread(CL, *Snapshot, ThisFrameIndex);
                     ImGuiRenderer->SignalSnapshotSlotConsumed(ThisFrameIndex);
                 }
                 #else

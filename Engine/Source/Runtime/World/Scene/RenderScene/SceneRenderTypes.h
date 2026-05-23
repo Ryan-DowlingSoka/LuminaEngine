@@ -418,11 +418,26 @@ namespace Lumina
     {
         glm::vec3       Position;
         float           Size;
-        
+
         uint32          ColorPack;
         uint32          TextureIndex;
         uint32          EntityID;
     };
+
+    // World-space UI widget quad. Matches FWidgetInstance in Common.slang (96B, dense).
+    struct alignas(16) FWidgetInstance
+    {
+        glm::mat4       Transform;      // entity world matrix
+        glm::vec2       WorldSize;      // quad size in world units
+        uint32          TextureIndex;   // bindless ResourceID of the widget RT
+        uint32          Flags;          // bit0 = billboard (face camera)
+        uint32          ColorPack;      // tint, PackColor()
+        uint32          EntityID;
+        uint32          Pad0;
+        uint32          Pad1;
+    };
+
+    static constexpr uint32 WIDGET_FLAG_BILLBOARD = 1u << 0;
     
     struct alignas(16) FCluster
     {

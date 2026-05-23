@@ -65,54 +65,18 @@ namespace Lumina::Memory
         rpmalloc_thread_finalize(1);
     }
 
-    NODISCARD inline size_t GetCurrentMappedMemory()
-    {
-        rpmalloc_global_statistics_t stats;
-        rpmalloc_global_statistics(&stats);
-        return stats.mapped;
-    }
-
-    NODISCARD inline size_t GetPeakMappedMemory()
-    {
-        rpmalloc_global_statistics_t stats;
-        rpmalloc_global_statistics(&stats);
-        return stats.mapped_peak;
-    }
-
-    NODISCARD inline size_t GetCachedMemory()
-    {
-        rpmalloc_global_statistics_t stats;
-        rpmalloc_global_statistics(&stats);
-        return stats.cached;
-    }
-
-    NODISCARD inline size_t GetCurrentHugeAllocMemory()
-    {
-        rpmalloc_global_statistics_t stats;
-        rpmalloc_global_statistics(&stats);
-        return stats.huge_alloc;
-    }
-
-    NODISCARD inline size_t GetPeakHugeAllocMemory()
-    {
-        rpmalloc_global_statistics_t stats;
-        rpmalloc_global_statistics(&stats);
-        return stats.huge_alloc_peak;
-    }
-
-    NODISCARD inline size_t GetTotalMappedMemory()
-    {
-        rpmalloc_global_statistics_t stats;
-        rpmalloc_global_statistics(&stats);
-        return stats.mapped_total;
-    }
-
-    NODISCARD inline size_t GetTotalUnmappedMemory()
-    {
-        rpmalloc_global_statistics_t stats;
-        rpmalloc_global_statistics(&stats);
-        return stats.unmapped_total;
-    }
+    // rpmalloc global statistics. These MUST be exported (not header-inline): each
+    // module statically links its own copy of rpmalloc, so an inline body would query
+    // the caller module's near-empty instance. Defined in Memory.cpp so they always
+    // report Runtime.dll's instance -- the one Memory::Malloc actually allocates from.
+    // All return 0 unless rpmalloc was built with ENABLE_STATISTICS (Debug/Development).
+    RUNTIME_API NODISCARD size_t GetCurrentMappedMemory();
+    RUNTIME_API NODISCARD size_t GetPeakMappedMemory();
+    RUNTIME_API NODISCARD size_t GetCachedMemory();
+    RUNTIME_API NODISCARD size_t GetCurrentHugeAllocMemory();
+    RUNTIME_API NODISCARD size_t GetPeakHugeAllocMemory();
+    RUNTIME_API NODISCARD size_t GetTotalMappedMemory();
+    RUNTIME_API NODISCARD size_t GetTotalUnmappedMemory();
     
     RUNTIME_API NODISCARD void* Malloc(size_t Size, size_t Alignment = DEFAULT_ALIGNMENT);
     
@@ -207,6 +171,23 @@ namespace Lumina::Memory
     {
         Free((void*&)Type);
     }
+}
+
+// C-ABI allocator shim for third-party static libs that allocate via raw malloc/free
+// and expose no allocator-injection hook (e.g. miniz, OpenFBX, MikkTSpace, RmlUi).
+// Routes their allocations through Memory::Malloc so they are tracked instead of
+// escaping to the CRT. Category is a string literal interned per call. A lib must use
+// these consistently for any given allocation (never mix with raw malloc/free).
+//
+// Declared plain (no RUNTIME_API) so vendored TUs can forward-declare them identically
+// without a dllexport/dllimport linkage clash. They are exported from Runtime.dll via
+// linker /EXPORT pragmas at their definition in Memory.cpp.
+extern "C"
+{
+    void* LmThirdPartyMalloc(size_t Size, const char* Category);
+    void* LmThirdPartyRealloc(void* Ptr, size_t Size, const char* Category);
+    void* LmThirdPartyCalloc(size_t Count, size_t Size, const char* Category);
+    void  LmThirdPartyFree(void* Ptr);
 }
 
 

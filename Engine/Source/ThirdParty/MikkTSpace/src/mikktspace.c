@@ -30,6 +30,13 @@
 
 #include "mikktspace.h"
 
+/* Route all allocations through Lumina's tracked allocator (LmThirdParty* shim).
+   All malloc/free here are matched within genTangSpace; no ownership escapes. */
+extern void* LmThirdPartyMalloc(size_t Size, const char* Category);
+extern void  LmThirdPartyFree(void* Ptr);
+#define malloc(x) LmThirdPartyMalloc((x), "MikkTSpace")
+#define free(x)   LmThirdPartyFree(x)
+
 #define TFALSE		0
 #define TTRUE		1
 

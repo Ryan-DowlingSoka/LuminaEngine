@@ -48,6 +48,17 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+
+// Route robin_hood's allocations through Lumina's tracked allocator (LmThirdParty* shim).
+// All sites are internal to robin_hood's own allocators and stay consistent with each other.
+extern "C" {
+    void* LmThirdPartyMalloc(size_t Size, const char* Category);
+    void* LmThirdPartyCalloc(size_t Count, size_t Size, const char* Category);
+    void  LmThirdPartyFree(void* Ptr);
+}
+#define ROBIN_HOOD_LM_MALLOC(sz)    ::LmThirdPartyMalloc((sz), "RmlUi")
+#define ROBIN_HOOD_LM_CALLOC(n, sz) ::LmThirdPartyCalloc((n), (sz), "RmlUi")
+#define ROBIN_HOOD_LM_FREE(p)       ::LmThirdPartyFree(p)
 #if __cplusplus >= 201703L
 #    include <string_view>
 #endif
@@ -392,7 +403,7 @@ public:
     void reset() noexcept {
         while (mListForFree) {
             T* tmp = *mListForFree;
-            std::free(mListForFree);
+            ROBIN_HOOD_LM_FREE(mListForFree);
             mListForFree = reinterpret_cast_no_cast_align_warning<T**>(tmp);
         }
         mHead = nullptr;
@@ -427,7 +438,7 @@ public:
         // calculate number of available elements in ptr
         if (numBytes < ALIGNMENT + ALIGNED_SIZE) {
             // not enough data for at least one element. Free and return.
-            std::free(ptr);
+            ROBIN_HOOD_LM_FREE(ptr);
         } else {
             add(ptr, numBytes);
         }
@@ -494,7 +505,7 @@ private:
         // alloc new memory: [prev |T, T, ... T]
         // std::cout << (sizeof(T*) + ALIGNED_SIZE * numElementsToAlloc) << " bytes" << std::endl;
         size_t const bytes = ALIGNMENT + ALIGNED_SIZE * numElementsToAlloc;
-        add(assertNotNull<std::bad_alloc>(std::malloc(bytes)), bytes);
+        add(assertNotNull<std::bad_alloc>(ROBIN_HOOD_LM_MALLOC(bytes)), bytes);
         return mHead;
     }
 
@@ -530,7 +541,7 @@ struct NodeAllocator<T, MinSize, MaxSize, true> {
 
     // we are not using the data, so just free it.
     void addOrFree(void* ptr, size_t ROBIN_HOOD_UNUSED(numBytes) /*unused*/) noexcept {
-        std::free(ptr);
+        ROBIN_HOOD_LM_FREE(ptr);
     }
 };
 
@@ -1573,7 +1584,7 @@ public:
 
             auto const numElementsWithBuffer = calcNumElementsWithBuffer(o.mMask + 1);
             mKeyVals = static_cast<Node*>(detail::assertNotNull<std::bad_alloc>(
-                std::malloc(calcNumBytesTotal(numElementsWithBuffer))));
+                ROBIN_HOOD_LM_MALLOC(calcNumBytesTotal(numElementsWithBuffer))));
             // no need for calloc because clonData does memcpy
             mInfo = reinterpret_cast<uint8_t*>(mKeyVals + numElementsWithBuffer);
             mNumElements = o.mNumElements;
@@ -1621,12 +1632,12 @@ public:
             // no luck: we don't have the same array size allocated, so we need to realloc.
             if (0 != mMask) {
                 // only deallocate if we actually have data!
-                std::free(mKeyVals);
+                ROBIN_HOOD_LM_FREE(mKeyVals);
             }
 
             auto const numElementsWithBuffer = calcNumElementsWithBuffer(o.mMask + 1);
             mKeyVals = static_cast<Node*>(detail::assertNotNull<std::bad_alloc>(
-                std::malloc(calcNumBytesTotal(numElementsWithBuffer))));
+                ROBIN_HOOD_LM_MALLOC(calcNumBytesTotal(numElementsWithBuffer))));
 
             // no need for calloc here because cloneData performs a memcpy.
             mInfo = reinterpret_cast<uint8_t*>(mKeyVals + numElementsWithBuffer);
@@ -2146,7 +2157,7 @@ private:
 
         // calloc also zeroes everything
         mKeyVals = reinterpret_cast<Node*>(detail::assertNotNull<std::bad_alloc>(
-            std::calloc(1, calcNumBytesTotal(numElementsWithBuffer))));
+            ROBIN_HOOD_LM_CALLOC(1, calcNumBytesTotal(numElementsWithBuffer))));
         mInfo = reinterpret_cast<uint8_t*>(mKeyVals + numElementsWithBuffer);
 
         // set sentinel
@@ -2333,7 +2344,7 @@ private:
         // reports a compile error: attempt to free a non-heap object 'fm'
         // [-Werror=free-nonheap-object]
         if (mKeyVals != reinterpret_cast_no_cast_align_warning<Node*>(&mMask)) {
-            std::free(mKeyVals);
+            ROBIN_HOOD_LM_FREE(mKeyVals);
         }
     }
 

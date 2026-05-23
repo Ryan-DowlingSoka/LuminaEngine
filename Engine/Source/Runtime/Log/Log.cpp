@@ -51,9 +51,16 @@ namespace Lumina::Logging
 			// Non-fatal; fall back to console-only logging.
 		}
 
+		// Match the runtime level to the compiled-in verbosity: when verbose
+		// logging is stripped (Shipping by default), TRACE/DEBUG/INFO macros are
+		// no-ops anyway, so floor the logger at warn for any direct calls.
+		#if defined(LUMINA_VERBOSE_LOGGING)
 		Logger->set_level(spdlog::level::trace);
+		#else
+		Logger->set_level(spdlog::level::warn);
+		#endif
 		// Flush eagerly so the last lines before a crash reach disk.
-		Logger->flush_on(spdlog::level::info);
+		Logger->flush_on(spdlog::level::warn);
 
 		LOG_TRACE("------- Log Initialized -------");
 	}

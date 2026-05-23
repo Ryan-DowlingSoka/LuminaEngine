@@ -148,6 +148,7 @@ namespace Lumina
         size_t CopyRuntimePayload(const std::filesystem::path& SourceDir,
                                   const std::filesystem::path& DestDir,
                                   const FString& ConfigSuffix,
+                                  FStringView ProjectName,
                                   const TFunction<void(FStringView)>& LogFunc)
         {
             size_t Copied = 0;
@@ -207,11 +208,24 @@ namespace Lumina
                     continue;
                 }
 
-                std::filesystem::path Dst = DestDir / Entry.path().filename();
+                // Rebrand the generic launcher to the project's name on the way
+                // out: MyGame.exe instead of Lumina-Shipping.exe. The launcher
+                // finds its DLLs (import table) and content ("the .pak next to
+                // me") without ever referencing its own filename, so renaming it
+                // is purely cosmetic and safe. Other payload files keep their name.
+                std::filesystem::path DstName = Entry.path().filename();
+                if (Ext == ".exe" && !ProjectName.empty())
+                {
+                    DstName = std::filesystem::path(
+                        FString().sprintf("%.*s.exe", (int)ProjectName.size(), ProjectName.data()).c_str());
+                }
+
+                std::filesystem::path Dst = DestDir / DstName;
                 if (CopyFileTo(Entry.path(), Dst))
                 {
                     ++Copied;
-                    Log(LogFunc, FString().sprintf("  + %s", FileName.c_str()).c_str());
+                    Log(LogFunc, FString().sprintf("  + %s -> %s",
+                        FileName.c_str(), DstName.string().c_str()).c_str());
                 }
                 else
                 {
@@ -282,7 +296,7 @@ namespace Lumina
         Log(LogFunc, FString().sprintf("Copying %s binaries from %s",
             Config.c_str(), BinariesDir.string().c_str()).c_str());
 
-        const size_t Copied = CopyRuntimePayload(BinariesDir, DestDir, Config, LogFunc);
+        const size_t Copied = CopyRuntimePayload(BinariesDir, DestDir, Config, ProjectName, LogFunc);
         if (Copied == 0)
         {
             Result.ErrorMessage = "MSBuild reported success but no matching binaries were found to copy. Check the build output.";

@@ -1,0 +1,33 @@
+<rml>
+<head>
+    <title>Widget Anim - One-shot</title>
+    <link type="text/rcss" href="/Game/UI/theme.rcss"/>
+    <link type="text/rcss" href="/Game/UI/animations.rcss"/>
+    <style>
+        body { margin: 0; padding: 0; }
+
+        #stage
+        {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            decorator: panel-grad;
+        }
+    </style>
+</head>
+<body>
+    <!-- Plays a single intro (fade-in-down + pop-in) on load, then holds still.
+         Once it settles, RmlUi reports idle and the output stops changing, so the
+         widget should go DORMANT -- per-frame Update/Render cost drops to ~0. This
+         verifies the optimization actually engages (not just that motion plays). -->
+    <div id="stage">
+        <div class="panel anim-fade-in-down" style="width: 240dp;">
+            <span class="hud-title anim-pop-in">Intro</span>
+            <span class="caption" style="margin-top: 8dp;">plays once, then goes dormant</span>
+        </div>
+    </div>
+</body>
+</rml>

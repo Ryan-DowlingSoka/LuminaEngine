@@ -35,12 +35,37 @@
 #include <limits.h>
 #include <string.h>
 #include FT_FREETYPE_H
+#include FT_MODULE_H
 #include FT_MULTIPLE_MASTERS_H
 #include FT_TRUETYPE_TABLES_H
+
+extern "C" {
+	void* LuminaRmlFreeTypeAlloc(size_t size);
+	void* LuminaRmlFreeTypeRealloc(void* block, size_t new_size);
+	void  LuminaRmlFreeTypeFree(void* block);
+}
 
 namespace Rml {
 
 static FT_Library ft_library = nullptr;
+
+static void* RmlFreeTypeAlloc(FT_Memory /*memory*/, long size)
+{
+	return LuminaRmlFreeTypeAlloc((size_t)size);
+}
+
+static void RmlFreeTypeFree(FT_Memory /*memory*/, void* block)
+{
+	LuminaRmlFreeTypeFree(block);
+}
+
+static void* RmlFreeTypeRealloc(FT_Memory /*memory*/, long /*cur_size*/, long new_size, void* block)
+{
+	return LuminaRmlFreeTypeRealloc(block, (size_t)new_size);
+}
+
+// File-static so it outlives the library; FT_New_Library does not take ownership.
+static FT_MemoryRec_ ft_memory = {nullptr, RmlFreeTypeAlloc, RmlFreeTypeFree, RmlFreeTypeRealloc};
 
 static bool BuildGlyph(FT_Face ft_face, Character character, FontGlyphMap& glyphs, float bitmap_scaling_factor);
 static void BuildGlyphMap(FT_Face ft_face, int size, FontGlyphMap& glyphs, float bitmap_scaling_factor, bool load_default_glyphs);
@@ -58,13 +83,17 @@ bool FreeType::Initialise()
 {
 	RMLUI_ASSERT(!ft_library);
 
-	FT_Error result = FT_Init_FreeType(&ft_library);
+	// FT_New_Library + FT_Add_Default_Modules is the long-hand of FT_Init_FreeType,
+	// the difference being we supply our own memory manager (ft_memory).
+	FT_Error result = FT_New_Library(&ft_memory, &ft_library);
 	if (result != 0)
 	{
 		Log::Message(Log::LT_ERROR, "Failed to initialise FreeType, error %d.", result);
 		Shutdown();
 		return false;
 	}
+
+	FT_Add_Default_Modules(ft_library);
 
 	return true;
 }
@@ -73,7 +102,9 @@ void FreeType::Shutdown()
 {
 	if (ft_library != nullptr)
 	{
-		FT_Done_FreeType(ft_library);
+		// FT_Done_Library (not FT_Done_FreeType): the library was created with
+		// FT_New_Library, so FreeType must not free our file-static ft_memory.
+		FT_Done_Library(ft_library);
 		ft_library = nullptr;
 	}
 }

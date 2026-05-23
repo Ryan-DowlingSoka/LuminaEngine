@@ -71,8 +71,13 @@ namespace Lumina
 
         VmaPoolCreateInfo PoolInfo = {};
         PoolInfo.memoryTypeIndex = MemoryTypeIndex;
-        // Linear bump-allocator; perfect for FIFO transient upload buffers.
-        PoolInfo.flags          = VMA_POOL_CREATE_LINEAR_ALGORITHM_BIT;
+        // General-purpose (TLSF) suballocation, NOT linear. Upload chunks are freed
+        // late and out of order (DestroyBuffer defers vmaDestroyBuffer to an async
+        // task, plus per-frame command-list churn), so a linear ring can never advance
+        // its front and allocates a fresh block every frame without bound. TLSF
+        // reclaims any freed region in any order, so the pool self-bounds to the
+        // live working set.
+        PoolInfo.flags          = 0;
         PoolInfo.blockSize      = UploadBlockSize;
         // Lazy: first upload triggers first block. Pre-warming OOMed startup on small BAR heaps.
         PoolInfo.minBlockCount  = 0;
@@ -211,22 +216,14 @@ namespace Lumina
     
     void FVulkanMemoryAllocator::DestroyBuffer(VkBuffer Buffer, VmaAllocation Allocation) const
     {
-        Task::AsyncTask(1, 1, [this, Buffer, Allocation](uint32, uint32, uint32)
-        {
-            LUMINA_PROFILE_SCOPE();
-            LUMINA_MEMORY_SCOPE("VmaBuffers");
-            vmaDestroyBuffer(Allocator, Buffer, Allocation);
-        });
+        LUMINA_PROFILE_SCOPE();
+        vmaDestroyBuffer(Allocator, Buffer, Allocation);
     }
     
     void FVulkanMemoryAllocator::DestroyImage(VkImage Image, VmaAllocation Allocation) const
     {
-        Task::AsyncTask(1, 1, [this, Image, Allocation](uint32, uint32, uint32)
-        {
-            LUMINA_PROFILE_SCOPE();
-            LUMINA_MEMORY_SCOPE("VmaImages");
-            vmaDestroyImage(Allocator, Image, Allocation);
-        });
+        LUMINA_PROFILE_SCOPE();
+        vmaDestroyImage(Allocator, Image, Allocation);
     }
     
     void* FVulkanMemoryAllocator::GetMappedMemory(const FVulkanBuffer* Buffer) const

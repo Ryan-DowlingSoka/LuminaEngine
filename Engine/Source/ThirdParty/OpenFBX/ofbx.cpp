@@ -14,9 +14,16 @@
 // placement new without the need to include any headers
 namespace ofbx { struct PlacementNewHelper {}; }
 inline void* operator new(size_t, ofbx::PlacementNewHelper, void* where) { return where; }
-inline void operator delete(void*, ofbx::PlacementNewHelper,  void*) { } 
+inline void operator delete(void*, ofbx::PlacementNewHelper,  void*) { }
 
 #define OFBX_PLACEMENT_NEW(x) new (ofbx::PlacementNewHelper(), x)
+
+// Route all allocations through Lumina's tracked allocator (LmThirdParty* shim).
+// OpenFBX container malloc/free are matched internally; no ownership escapes.
+extern "C" void* LmThirdPartyMalloc(size_t Size, const char* Category);
+extern "C" void  LmThirdPartyFree(void* Ptr);
+#define malloc(x) LmThirdPartyMalloc((x), "OpenFBX")
+#define free(x)   LmThirdPartyFree(x)
 
 namespace ofbx {
 

@@ -155,7 +155,12 @@ namespace Lumina
         LuaBytes = (size_t)Lua::FScriptingContext::Get().GetScriptMemoryUsageBytes();
 
         const float ToMB = 1.0f / (1024.0f * 1024.0f);
-        PushHistory(HistRSS, (float)Platform::GetProcessMemoryUsageBytes() * ToMB);
+        const size_t Process = Platform::GetProcessMemoryUsageBytes();
+        const size_t Mapped  = Memory::GetCurrentMappedMemory();
+        const size_t External = (Process > Mapped) ? (Process - Mapped) : 0;
+        PushHistory(HistRSS, (float)Process * ToMB);
+        PushHistory(HistMapped, (float)Mapped * ToMB);
+        PushHistory(HistExternal, (float)External * ToMB);
         PushHistory(HistVRAM, (float)GPUStats.TotalUsage * ToMB);
         PushHistory(HistLua, (float)LuaBytes * ToMB);
 #if LUMINA_MEMORY_TRACKING
@@ -180,10 +185,7 @@ namespace Lumina
             CopyAllStatsToClipboard();
         }
         ImGuiX::TextTooltip("Copies a full structured memory report (CPU + GPU heaps + memory-by-purpose + "
-                            "live resources + CPU categories + call sites) to the clipboard, formatted to "
-                            "paste straight into an AI assistant for usage tracking.");
-        ImGui::SameLine();
-        ImGui::TextDisabled(LE_ICON_INFORMATION " paste into an AI to track down where the memory goes");
+                            "live resources + CPU categories + call sites) to the clipboard");
         ImGui::Spacing();
 
         if (ImGui::BeginTabBar("##MemoryTabs"))
@@ -217,6 +219,16 @@ namespace Lumina
 #endif
         const size_t Untracked = (Process > Tracked) ? (Process - Tracked) : 0;
 
+        // Split "untracked" using rpmalloc's own footprint. Mapped is what rpmalloc
+        // has taken from the OS; everything above the tracked ledger is allocator
+        // retention (thread/global caches + fragmentation -- freed but not returned).
+        // Anything in RSS beyond rpmalloc's footprint is external: the GPU driver's
+        // host allocations, the Luau VM, raw CRT malloc, code + thread stacks.
+        const size_t Mapped    = Memory::GetCurrentMappedMemory();
+        const size_t Retained  = (Mapped > Tracked) ? (Mapped - Tracked) : 0;
+        const size_t External  = (Process > Mapped) ? (Process - Mapped) : 0;
+        (void)Untracked;
+
         const float Spacing = ImGui::GetStyle().ItemSpacing.x;
         const float CardW = (ImGui::GetContentRegionAvail().x - Spacing) * 0.5f;
         const float CardH = 104.0f;
@@ -239,7 +251,12 @@ namespace Lumina
             ImGui::Spacing();
             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.6f, 1.0f), "%s tracked", ImGuiX::FormatSize(Tracked).c_str());
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.9f, 0.55f, 0.55f, 1.0f), "  %s untracked", ImGuiX::FormatSize(Untracked).c_str());
+            ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "  %s retained", ImGuiX::FormatSize(Retained).c_str());
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.9f, 0.55f, 0.55f, 1.0f), "  %s external", ImGuiX::FormatSize(External).c_str());
+            ImGuiX::TextTooltip("tracked = ledger live bytes\n"
+                                "retained = rpmalloc mapped - tracked (caches + fragmentation; freed, not returned to OS)\n"
+                                "external = RSS - rpmalloc mapped (GPU driver host memory, Luau VM, CRT malloc, code/stacks)");
         }
         ImGui::EndChild();
 
@@ -577,8 +594,74 @@ namespace Lumina
         ImGui::Spacing();
     }
 
+    void FMemoryProfilerEditorTool::DrawCPUComposition()
+    {
+        const size_t Process = Platform::GetProcessMemoryUsageBytes();
+#if LUMINA_MEMORY_TRACKING
+        const size_t Tracked = Memory::GetTrackedLiveBytes();
+#else
+        const size_t Tracked = 0;
+#endif
+        const size_t Mapped   = Memory::GetCurrentMappedMemory();
+        const size_t Cached   = Memory::GetCachedMemory();
+        const size_t Retained = (Mapped > Tracked) ? (Mapped - Tracked) : 0;
+        const size_t External = (Process > Mapped) ? (Process - Mapped) : 0;
+
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "Composition  " LE_ICON_INFORMATION);
+        ImGuiX::TextTooltip("Where Process RSS lives. If 'retained' climbs, it's allocation churn -- rpmalloc "
+                            "holding freed/fragmented spans (rank Top Call Sites by Total Allocs to find it). "
+                            "If 'external' climbs, it's outside rpmalloc: GPU driver host memory or the Luau VM.");
+        ImGui::Spacing();
+
+        auto Row = [](const char* Label, size_t Bytes, const ImVec4& Color, const char* Note)
+        {
+            ImGui::TextColored(Color, "%14s", ImGuiX::FormatSize(Bytes).c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", Label);
+            if (Note && Note[0])
+            {
+                ImGui::SameLine();
+                ImGui::TextDisabled("- %s", Note);
+            }
+        };
+
+        Row("Process RSS", Process, ImVec4(0.85f, 0.92f, 1.0f, 1.0f), "total resident");
+        Row("rpmalloc mapped", Mapped, ImVec4(0.66f, 0.78f, 0.95f, 1.0f), "allocator's OS footprint");
+        Row("tracked live", Tracked, ImVec4(0.40f, 1.0f, 0.60f, 1.0f), "category ledger");
+        Row("retained", Retained, ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "caches + fragmentation (freed, not returned)");
+        Row("of which cached", Cached, ImVec4(0.70f, 0.62f, 0.42f, 1.0f), "rpmalloc global span cache");
+        Row("external", External, ImVec4(0.90f, 0.55f, 0.55f, 1.0f), "driver / Luau / CRT / code+stacks");
+
+        if (Mapped == 0)
+        {
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
+                LE_ICON_ALERT " rpmalloc statistics are zero -- build with ENABLE_STATISTICS (Debug/Development).");
+        }
+
+        ImGui::Spacing();
+        const float Spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float HalfW = (ImGui::GetContentRegionAvail().x - Spacing) * 0.5f;
+
+        ImGui::BeginChild("##MappedTL", ImVec2(HalfW, 150), false);
+        ImGui::TextColored(ImVec4(0.66f, 0.78f, 0.95f, 1.0f), "rpmalloc mapped (retained churn)");
+        DrawTimeline("##MappedPlot", HistMapped, ImVec4(0.66f, 0.78f, 0.95f, 1.0f), 110.0f);
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+
+        ImGui::BeginChild("##ExternalTL", ImVec2(0, 150), false);
+        ImGui::TextColored(ImVec4(0.90f, 0.55f, 0.55f, 1.0f), "external (driver / Luau)");
+        DrawTimeline("##ExternalPlot", HistExternal, ImVec4(0.90f, 0.55f, 0.55f, 1.0f), 110.0f);
+        ImGui::EndChild();
+
+        ImGui::Spacing();
+        ImGui::Separator();
+    }
+
     void FMemoryProfilerEditorTool::DrawCPUTab()
     {
+        DrawCPUComposition();
         DrawScriptMemory();
 
 #if !LUMINA_MEMORY_TRACKING
@@ -896,6 +979,10 @@ namespace Lumina
         const size_t Tracked = 0;
 #endif
         const size_t Untracked = (Process > Tracked) ? (Process - Tracked) : 0;
+        const size_t Mapped    = Memory::GetCurrentMappedMemory();
+        const size_t Cached    = Memory::GetCachedMemory();
+        const size_t Retained  = (Mapped > Tracked) ? (Mapped - Tracked) : 0;
+        const size_t External  = (Process > Mapped) ? (Process - Mapped) : 0;
 
         R += "# Lumina Engine - Memory Report\n\n";
         R += "Captured from the in-editor Memory tool. Sizes show human-readable form with exact\n";
@@ -917,10 +1004,14 @@ namespace Lumina
 
         // ---- CPU ----
         R += "## CPU memory\n";
-        R += FString().sprintf("- Process RSS: %s\n", SizeBoth(Process).c_str());
-        R += FString().sprintf("- Tracked:     %s\n", SizeBoth(Tracked).c_str());
-        R += FString().sprintf("- Untracked:   %s\n", SizeBoth(Untracked).c_str());
-        R += FString().sprintf("- Lua VM:      %s (Luau's own allocator; included in RSS, separate from the tracked categories below)\n\n",
+        R += FString().sprintf("- Process RSS:     %s\n", SizeBoth(Process).c_str());
+        R += FString().sprintf("- rpmalloc mapped: %s (allocator's OS footprint)\n", SizeBoth(Mapped).c_str());
+        R += FString().sprintf("- Tracked:         %s (category ledger, live)\n", SizeBoth(Tracked).c_str());
+        R += FString().sprintf("- Retained:        %s (mapped - tracked: rpmalloc caches + fragmentation, freed but not returned to OS)\n", SizeBoth(Retained).c_str());
+        R += FString().sprintf("- ...cached:       %s (rpmalloc global span cache)\n", SizeBoth(Cached).c_str());
+        R += FString().sprintf("- External:        %s (RSS - mapped: GPU driver host memory, Luau VM, CRT malloc, code + stacks)\n", SizeBoth(External).c_str());
+        R += FString().sprintf("- Untracked:       %s (RSS - tracked; = retained + external)\n", SizeBoth(Untracked).c_str());
+        R += FString().sprintf("- Lua VM:          %s (Luau's own allocator; part of External above)\n\n",
             SizeBoth(LuaBytes).c_str());
 
         // ---- GPU summary ----

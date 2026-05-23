@@ -29,6 +29,7 @@
 #include "Entity/Components/PostProcessComponent.h"
 #include "Entity/Components/TransformComponent.h"
 #include "Entity/Components/ScriptComponent.h"
+#include "Entity/Components/WidgetComponent.h"
 #include "Entity/Components/SingletonEntityComponent.h"
 #include "entity/components/tagcomponent.h"
 #include "Entity/Events/WorldEvents.h"
@@ -472,6 +473,9 @@ namespace Lumina
         EntityRegistry.on_construct <STransformComponent>()         .connect<&ThisClass::OnTransformComponentConstruct>(this);
         EntityRegistry.on_construct <SScriptComponent>()            .connect<&ThisClass::OnScriptComponentConstruct>(this);
         EntityRegistry.on_destroy   <SScriptComponent>()            .connect<&ThisClass::OnScriptComponentDestroyed>(this);
+        // Left connected through teardown: fires at EntityRegistry.clear() (post-WaitIdle) to
+        // release each widget's Rml context + RT, and on mid-game entity destruction.
+        EntityRegistry.on_destroy   <SWidgetComponent>()            .connect<&ThisClass::OnWidgetComponentDestroyed>(this);
         SystemContext.EventSink     <FSwitchActiveCameraEvent>()    .connect<&ThisClass::OnChangeCameraEvent>(this);
         SystemContext.EventSink     <FScriptComponentPendingReady>().connect<&ThisClass::OnScriptComponentPendingReady>(this);
 
@@ -736,6 +740,11 @@ namespace Lumina
     void CWorld::Render(ICommandList& CmdList, uint8 FrameIndex) const
     {
         LUMINA_PROFILE_SCOPE();
+
+        // Rasterize world-space widget documents into their offscreen RTs first; the scene's
+        // widget pass samples them this same frame.
+        RmlUi::RenderWorldWidgets(this, CmdList);
+
         if (RenderScene)
         {
             RenderScene->RenderView_RenderThread(CmdList, FrameIndex);
@@ -751,6 +760,9 @@ namespace Lumina
 
         // Game-thread DOM update for this world's UI; render thread composites it in Render().
         RmlUi::TickWorldUI(this);
+        // World-space widgets: lay out each into its offscreen RT and stamp the bindless id
+        // onto SWidgetComponent before the render-scene gather below reads it.
+        RmlUi::TickWorldWidgets(this);
 
         entt::entity CameraEntity = GetActiveCameraEntity();
         if (EntityRegistry.valid(CameraEntity))
@@ -1262,8 +1274,6 @@ namespace Lumina
     {
         if (RenderScene)
         {
-            // Covers SetActive(false). TeardownWorld already flushed before
-            // reaching here, so the second flush is a no-op on that path.
             FlushRenderingCommands();
 
             RenderScene->Shutdown();
@@ -1279,17 +1289,14 @@ namespace Lumina
 
             if (bActive)
             {
-                // Resumed: clear the idle stamp and re-create the renderer if a
-                // prior idle pass reclaimed it. Cheap no-op while still resident.
                 SuspendedTime = -1.0;
                 CreateRenderer();
-                // Resuming makes this the world the `UI.*` Lua module targets again.
                 RmlUi::SetActiveWorld(this);
             }
-            // Suspending no longer tears the renderer down here. UpdateWorlds/Render
-            // already skip suspended worlds, so the flag alone stops all work; the
-            // GPU resources are reclaimed later by ReclaimIdleRenderer once the world
-            // has stayed hidden past the grace window. This keeps tab flicking free.
+            else
+            {
+                DestroyRenderer();
+            }
         }
     }
 
@@ -1385,8 +1392,13 @@ namespace Lumina
         STransformComponent& TransformComponent = Registry.get<STransformComponent>(Entity);
         TransformComponent.Registry = &EntityRegistry;
         TransformComponent.Entity = Entity;
-        
+
         Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
+    }
+
+    void CWorld::OnWidgetComponentDestroyed(entt::registry& Registry, entt::entity Entity)
+    {
+        RmlUi::ReleaseWidget(this, Registry.get<SWidgetComponent>(Entity));
     }
 
     void CWorld::OnScriptComponentConstruct(entt::registry& Registry, entt::entity Entity)
@@ -1669,12 +1681,14 @@ namespace Lumina
 
     void CWorld::DrawLine(const glm::vec3& Start, const glm::vec3& End, const glm::vec4& Color, float Thickness, bool bDepthTest, float Duration)
     {
-        // EnqueueLine is thread-safe; the queue is drained once per render
-        // extraction tick. Routing every caller through it removes the
-        // foot-gun of accidentally calling DrawLine from a worker.
+        if (IsSuspended())
+        {
+            return;
+        }
+        
         LineBatcherComponent->EnqueueLine(Start, End, Color, Thickness, bDepthTest, Duration);
     }
-    
+
     TOptional<SRayResult> CWorld::CastRay(const SRayCastSettings& Settings)
     {
         LUMINA_PROFILE_SCOPE();

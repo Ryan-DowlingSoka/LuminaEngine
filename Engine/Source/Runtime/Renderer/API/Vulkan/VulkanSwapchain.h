@@ -4,6 +4,8 @@
 #include "Containers/Array.h"
 #include <volk/volk.h>
 
+struct GLFWwindow;
+
 namespace Lumina
 {
     class FVulkanRenderContext;
@@ -25,7 +27,10 @@ namespace Lumina
         FVulkanSwapchain& operator=(FVulkanSwapchain&&) = delete;
         
         
-        void CreateSwapchain(VkInstance Instance, FVulkanRenderContext* InContext, FWindow* Window, glm::uvec2 Extent, bool bFromResize = false);
+        // Window is a raw GLFWwindow* so secondary ImGui viewport windows (which
+        // aren't FWindows) can drive their own swapchain. bPrimary gates the
+        // GRenderManager->SwapchainResized broadcast to the one real swapchain.
+        void CreateSwapchain(VkInstance Instance, FVulkanRenderContext* InContext, GLFWwindow* Window, glm::uvec2 Extent, bool bFromResize = false, bool bPrimary = true);
 
         void RecreateSwapchain(const glm::uvec2& Extent);
         void SetPresentMode(VkPresentModeKHR NewMode);
@@ -37,6 +42,8 @@ namespace Lumina
         FORCEINLINE VkPresentModeKHR GetPresentMode() const { return CurrentPresentMode; }
         FORCEINLINE VkFormat GetSwapchainFormat() const { return Format; }
         FORCEINLINE const glm::uvec2& GetSwapchainExtent() const { return SwapchainExtent; }
+        // The last requested extent (may differ from the actual clamped SwapchainExtent).
+        FORCEINLINE const glm::uvec2& GetDesiredExtent() const { return DesiredExtent; }
         
         TRefCountPtr<FVulkanImage> GetCurrentImage() const;
         FORCEINLINE VkSemaphore GetCurrentPresentSemaphore() const { return PresentSemaphores[CurrentImageIndex]; }
@@ -50,6 +57,11 @@ namespace Lumina
     private:
 
         FVulkanRenderContext*                   Context = nullptr;
+        GLFWwindow*                             WindowHandle = nullptr;
+        bool                                    bIsPrimarySwapchain = true;
+        // Last extent we (re)created at. Secondary swapchains recreate to this on
+        // OUT_OF_DATE instead of querying GLFW (not thread-safe off the main thread).
+        glm::uvec2                              DesiredExtent = {};
         VkSurfaceKHR                            Surface = VK_NULL_HANDLE;
         VkSwapchainKHR                          Swapchain = VK_NULL_HANDLE;
         uint64                                  AcquireSemaphoreIndex = 0;

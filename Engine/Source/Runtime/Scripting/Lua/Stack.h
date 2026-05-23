@@ -2,6 +2,7 @@
 #include "lua.h"
 #include "lualib.h"
 #include "Traits.h"
+#include <memory>
 #include <entt/entt.hpp>
 #include "Core/Templates/Optional.h"
 #include "UserDataHeader.h"
@@ -496,7 +497,7 @@ namespace Lumina::Lua
         static void Push(lua_State* State, TArgs&&... Args)
         {
             void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(StorageT), TClassTraits<RawT>::Tag());
-            auto* Header = static_cast<StorageT*>(Block);
+            auto* Header = new (Block) StorageT{};
             Header->External = nullptr;
             Header->Emplace(eastl::forward<TArgs>(Args)...);
         }

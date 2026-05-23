@@ -120,6 +120,12 @@ namespace Lumina
 
         FCoreDelegates::OnPreEngineShutdown.BroadcastAndClear();
 
+        // Drain the render thread + GPU before tearing down UI: RmlUi::Shutdown frees widget
+        // render targets, and an in-flight frame may still sample them (bindless) -- freeing
+        // them under the GPU is a use-after-free / device loss.
+        FlushRenderingCommands();
+        GRenderContext->WaitIdle();
+
         // UI before renderer: RmlUi's shutdown releases resources through our render interface.
         RmlUi::Shutdown();
 

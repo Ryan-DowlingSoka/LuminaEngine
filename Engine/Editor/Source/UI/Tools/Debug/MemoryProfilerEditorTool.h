@@ -52,6 +52,7 @@ namespace Lumina
         void DrawResourceCounts();
 
         // CPU sub-panels.
+        void DrawCPUComposition();
         void DrawControls();
         void DrawCategoryTable(float Height);
         void DrawCallSites();
@@ -70,6 +71,8 @@ namespace Lumina
         // Rolling timelines in MB, advanced once per refresh tick.
         TVector<float>          HistRSS;
         TVector<float>          HistCPUTracked;
+        TVector<float>          HistMapped;     // rpmalloc's OS footprint (mapped bytes)
+        TVector<float>          HistExternal;   // RSS - mapped (driver / Luau / CRT)
         TVector<float>          HistVRAM;
         TVector<float>          HistLua;
 

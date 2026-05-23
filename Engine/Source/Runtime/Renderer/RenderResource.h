@@ -486,9 +486,6 @@ namespace Lumina
 		FString DebugName;
 		EResourceStates InitialState = EResourceStates::Common;
 		bool bKeepInitialState = false;
-		// When true, buffer is created with VK_SHARING_MODE_CONCURRENT across graphics+compute queue
-		// families so it can be touched from both without ownership-transfer barriers. Set this for
-		// any resource that will be accessed by an async compute pass and a graphics pass.
 		bool bConcurrentSharing = false;
 		TBitFlags<EBufferUsageFlags> Usage;
 

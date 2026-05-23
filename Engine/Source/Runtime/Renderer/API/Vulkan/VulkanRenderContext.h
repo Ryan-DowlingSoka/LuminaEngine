@@ -110,22 +110,7 @@ namespace Lumina
         ECommandQueue               Type = ECommandQueue::Num;
         uint32                      QueueFamilyIndex = 0;
     };
-
-    class FCommandListManager : INonCopyable
-    {
-    private:
-        
-        TArray<TConcurrentQueue<FRHICommandListRef>, (uint32)ECommandQueue::Num> CommandLists;
-
-    public:
-        FRHICommandListRef GetOrCreateCommandList(FVulkanRenderContext* RenderContext, const FCommandListInfo& CommandListInfo);
-
-        void Enqueue(ICommandList* RetiredCommandList);
-        void BulkEnqueue(ICommandList* const* RetiredCommandLists, uint32 Num, ECommandQueue QueueType);
-        void Cleanup();
-    };
-
-
+    
     
     class FVulkanRenderContext : public IRenderContext
     {
@@ -165,13 +150,9 @@ namespace Lumina
 
         FORCEINLINE NODISCARD FQueue* GetQueue(ECommandQueue Type) const { return Queues[(uint32)Type].get(); }
 
-        void ClearCommandListCache() override;
         NODISCARD FRHICommandListRef CreateCommandList(const FCommandListInfo& Info) override;
-        NODISCARD FRHICommandListRef GetFrameCommandList() override;
         uint64 ExecuteCommandLists(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType) override;
-        // ExecuteCommandLists with extra binary wait/signal semaphores bound to this exact submit.
-        uint64 SubmitWithSemaphores(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType,
-                                    VkSemaphore ExtraWaitSemaphore, VkPipelineStageFlags ExtraWaitStage, VkSemaphore ExtraSignalSemaphore);
+        uint64 SubmitWithSemaphores(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType, VkSemaphore ExtraWaitSemaphore, VkPipelineStageFlags ExtraWaitStage, VkSemaphore ExtraSignalSemaphore);
         
         NODISCARD VkInstance GetVulkanInstance() const { return VulkanInstance; }
         NODISCARD FVulkanDevice* GetDevice() const { return VulkanDevice; }
@@ -280,11 +261,7 @@ namespace Lumina
         THashMap<uint64, FRHIInputLayoutRef>                InputLayoutMap;
         THashMap<uint64, FRHISamplerRef>                    SamplerMap;
         FVulkanRenderContextFunctions                       DebugUtils;
-
-        FCommandListManager                                 CommandListManager;
-        // Persistent per-frame-in-flight graphics command lists (see GetFrameCommandList).
-        // Reused each frame instead of re-created; released in Deinitialize before queue teardown.
-        TArray<FRHICommandListRef, FRAMES_IN_FLIGHT>        FrameCommandLists;
+        
         FVulkanPipelineCache                                PipelineCache;
         FQueueArray                                         Queues;
         

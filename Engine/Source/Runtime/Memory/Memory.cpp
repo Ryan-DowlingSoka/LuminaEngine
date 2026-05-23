@@ -73,6 +73,14 @@ namespace Lumina
         rpfree(Memory);
     }
 
+    size_t Memory::GetCurrentMappedMemory()   { rpmalloc_global_statistics_t s; rpmalloc_global_statistics(&s); return s.mapped; }
+    size_t Memory::GetPeakMappedMemory()       { rpmalloc_global_statistics_t s; rpmalloc_global_statistics(&s); return s.mapped_peak; }
+    size_t Memory::GetCachedMemory()           { rpmalloc_global_statistics_t s; rpmalloc_global_statistics(&s); return s.cached; }
+    size_t Memory::GetCurrentHugeAllocMemory() { rpmalloc_global_statistics_t s; rpmalloc_global_statistics(&s); return s.huge_alloc; }
+    size_t Memory::GetPeakHugeAllocMemory()    { rpmalloc_global_statistics_t s; rpmalloc_global_statistics(&s); return s.huge_alloc_peak; }
+    size_t Memory::GetTotalMappedMemory()      { rpmalloc_global_statistics_t s; rpmalloc_global_statistics(&s); return s.mapped_total; }
+    size_t Memory::GetTotalUnmappedMemory()    { rpmalloc_global_statistics_t s; rpmalloc_global_statistics(&s); return s.unmapped_total; }
+
     void Memory::Initialize()
     {
         (void)EnsureAllocator();
@@ -124,3 +132,58 @@ namespace Lumina
         return GScratch;
     }
 }
+
+// C-ABI shim for third-party libs (see Memory.h). Attributes to the given category
+// when tracking is enabled; otherwise a thin pass-through to Memory::Malloc.
+// Exported from Runtime.dll undecorated (extern "C", x64) so static libs linked into
+// other modules resolve them through Runtime's import lib.
+#pragma comment(linker, "/EXPORT:LmThirdPartyMalloc")
+#pragma comment(linker, "/EXPORT:LmThirdPartyRealloc")
+#pragma comment(linker, "/EXPORT:LmThirdPartyCalloc")
+#pragma comment(linker, "/EXPORT:LmThirdPartyFree")
+
+#if LUMINA_MEMORY_TRACKING
+    #define LM_TP_SCOPE(Category) \
+        ::Lumina::Memory::FMemoryScope LmTpScope(::Lumina::Memory::RegisterCategory((Category) ? (Category) : "ThirdParty"))
+#else
+    #define LM_TP_SCOPE(Category) ((void)(Category))
+#endif
+
+extern "C" void* LmThirdPartyMalloc(size_t Size, const char* Category)
+{
+    LM_TP_SCOPE(Category);
+    return ::Lumina::Memory::Malloc(Size);
+}
+
+extern "C" void* LmThirdPartyRealloc(void* Ptr, size_t Size, const char* Category)
+{
+    LM_TP_SCOPE(Category);
+    return ::Lumina::Memory::Realloc(Ptr, Size);
+}
+
+extern "C" void* LmThirdPartyCalloc(size_t Count, size_t Size, const char* Category)
+{
+    const size_t Total = Count * Size;
+    if (Count != 0 && Total / Count != Size) // multiply overflow
+    {
+        return nullptr;
+    }
+
+    LM_TP_SCOPE(Category);
+    void* Ptr = ::Lumina::Memory::Malloc(Total);
+    if (Ptr != nullptr)
+    {
+        ::Lumina::Memory::Memset(Ptr, 0, Total);
+    }
+    return Ptr;
+}
+
+extern "C" void LmThirdPartyFree(void* Ptr)
+{
+    if (Ptr != nullptr)
+    {
+        ::Lumina::Memory::Free(Ptr);
+    }
+}
+
+#undef LM_TP_SCOPE

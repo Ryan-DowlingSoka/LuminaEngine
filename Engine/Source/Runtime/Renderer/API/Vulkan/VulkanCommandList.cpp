@@ -51,7 +51,7 @@ namespace Lumina
     FVulkanCommandList::FVulkanCommandList(FVulkanRenderContext* RESTRICT InContext, const FCommandListInfo& RESTRICT InInfo)
         : RenderContext(InContext)
         , UploadManager(MakeUnique<FUploadManager>(InContext, InInfo.UploadChunkSize, 0, false))
-        , ScratchManager(MakeUnique<FUploadManager>(InContext, InInfo.ScratchChunkSize, InInfo.ScratchMaxMemory, true))
+        , ScratchManager(nullptr /* Unused for now */)
         , Info(InInfo)
         , PushConstantVisibility(0)
         , CurrentPipelineLayout(nullptr)
@@ -93,10 +93,12 @@ namespace Lumina
         
         EndRenderPass();
         
+#if defined(TRACY_ENABLE)
         if (CurrentCommandBuffer->TracyContext != nullptr)
         {
             TracyVkCollect(CurrentCommandBuffer->TracyContext, CurrentCommandBuffer->CommandBuffer)
         }
+#endif
 
         StateTracker.KeepBufferInitialStates();
         StateTracker.KeepTextureInitialStates();
@@ -131,7 +133,7 @@ namespace Lumina
         StateTracker.CommandListSubmitted();
 
         UploadManager->SubmitChunks(MakeVersion(RecordingID, Queue->Type, false), MakeVersion(SubmissionID, Queue->Type, true));
-        ScratchManager->SubmitChunks(MakeVersion(RecordingID, Queue->Type, false), MakeVersion(SubmissionID, Queue->Type, true));
+        //ScratchManager->SubmitChunks(MakeVersion(RecordingID, Queue->Type, false), MakeVersion(SubmissionID, Queue->Type, true));
 
         DynamicBufferWrites.clear();
     }
@@ -741,12 +743,7 @@ namespace Lumina
             LOG_ERROR("Failed to suballocate %llu bytes from transient ring", Size);
             return Result;
         }
-
-        // The chunk's lifetime is owned by UploadManager's pool, which is owned
-        // by this command list; as long as the in-flight TrackedCommandBuffer
-        // pins this command list via ReferencedResources, the buffer outlives
-        // the GPU work that uses its BDA. Explicitly reference the ring buffer
-        // here so this guarantee survives any future cmdlist-lifetime refactor.
+        
         CurrentCommandBuffer->AddReferencedResource(RingBuffer);
 
         CommandListStats.NumTransientAllocs++;
@@ -788,8 +785,6 @@ namespace Lumina
 
     void FVulkanCommandList::UpdateGraphicsDynamicBuffers()
     {
-        LUMINA_PROFILE_SCOPE();
-        
         if (PendingState.IsInState(EPendingCommandState::DynamicBufferWrites) && CurrentGraphicsState.Pipeline)
         {
             FVulkanGraphicsPipeline* PSO = static_cast<FVulkanGraphicsPipeline*>(CurrentGraphicsState.Pipeline);
@@ -1147,6 +1142,7 @@ namespace Lumina
 
         AddMarker(Name, Color);
 
+        #if defined(TRACY_ENABLE)
         if (CurrentCommandBuffer->TracyContext != nullptr && TracyZoneDepth < MaxTracyZoneDepth && Name != nullptr)
         {
             constexpr const char* SourceFile = __FILE__;
@@ -1161,6 +1157,7 @@ namespace Lumina
                 true);
             ++TracyZoneDepth;
         }
+        #endif
     }
 
     void FVulkanCommandList::EndProfilerZone()
@@ -1170,12 +1167,14 @@ namespace Lumina
             return;
         }
 
+#if defined(TRACY_ENABLE)
         if (TracyZoneDepth > 0)
         {
             --TracyZoneDepth;
             auto* Scope = std::launder(reinterpret_cast<tracy::VkCtxScope*>(TracyZoneStorage[TracyZoneDepth]));
             Scope->~VkCtxScope();
         }
+#endif
 
         PopMarker();
     }
@@ -1418,8 +1417,6 @@ namespace Lumina
 
     void FVulkanCommandList::SetPushConstants(const void* Data, SIZE_T ByteSize)
     {
-        LUMINA_PROFILE_SCOPE();
-
         // Anything larger than the engine cap belongs in a UBO; pushing past
         // the device limit is undefined and crashes outright on AMD.
         ASSERT(ByteSize <= MaxPushConstantSize);
@@ -1552,7 +1549,10 @@ namespace Lumina
 
     void FVulkanCommandList::SetScissor(const FRect& Rect)
     {
-        const VkRect2D VkScissor = ToVkScissorRect(Rect.MinX, Rect.MaxX, Rect.MinY, Rect.MaxY);
+        // ToVkScissorRect takes (MinX, MinY, MaxX, MaxY) -- matching SetGraphicsState's
+        // call. Passing (MinX, MaxX, MinY, MaxY) put MaxX into offset.y and produced
+        // garbage extents, clipping dynamic-scissor draws (e.g. ImGui) to nonsense rects.
+        const VkRect2D VkScissor = ToVkScissorRect(Rect.MinX, Rect.MinY, Rect.MaxX, Rect.MaxY);
         vkCmdSetScissor(CurrentCommandBuffer->CommandBuffer, 0, 1, &VkScissor);
 
         // Reflect the dynamic change in the cached state so the next SetGraphicsState

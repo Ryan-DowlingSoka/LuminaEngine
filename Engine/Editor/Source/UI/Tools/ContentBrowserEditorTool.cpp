@@ -2,6 +2,7 @@
 
 #include "EditorToolContext.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Core/Delegates/CoreDelegates.h"
 #include "Assets/Factories/Factory.h"
 #include "Core/Object/Package/Package.h"
 #include "EASTL/sort.h"
@@ -933,12 +934,16 @@ namespace Lumina
         Watcher.Stop();
         Watcher.Watch(ScriptPath, [this, MakeVirtualPath](const FFileEvent& Event)
         {
+            const FFixedString RelativePath = MakeVirtualPath(Event.Path);
+
+            // Central content-change signal: subsystems (UI hot-reload, etc.) subscribe and
+            // filter by extension, so none has to run its own watcher or hard-code paths.
+            FCoreDelegates::OnContentFileModified.Broadcast(FStringView(RelativePath.c_str(), RelativePath.size()));
+
             if (!VFS::HasExtension(Event.Path, ".luau"))
             {
                 return;
             }
-
-            FFixedString RelativePath = MakeVirtualPath(Event.Path);
 
             switch (Event.Action)
             {

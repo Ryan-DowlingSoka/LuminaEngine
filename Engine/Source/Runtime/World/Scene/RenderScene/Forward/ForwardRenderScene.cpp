@@ -22,6 +22,7 @@
 #include "World/World.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/BillboardComponent.h"
+#include "World/Entity/Components/WidgetComponent.h"
 #include "world/entity/components/charactercontrollercomponent.h"
 #include "World/Entity/Components/EditorComponent.h"
 #include "world/entity/components/entitytags.h"
@@ -96,7 +97,6 @@ namespace Lumina
     void FForwardRenderScene::Init()
     {
         LUMINA_MEMORY_SCOPE("Render Scene");
-        LOG_TRACE("Initializing Forward Render Scene");
         
         GRenderContext->WaitIdle();
 
@@ -162,8 +162,6 @@ namespace Lumina
         GRenderContext->WaitIdle();
 
         FRenderManager::OnSwapchainResized.Remove(SwapchainResizedHandle);
-
-        LOG_TRACE("Shutting down Forward Render Scene");
     }
 
     void FForwardRenderScene::WaitForSlotConsumed(uint8 Slot, uint64 Target)
@@ -318,6 +316,13 @@ namespace Lumina
         for (const FRHIBufferRef& Buf : Frame.PinnedMeshBuffersThisFrame)
         {
             CmdList.KeepAlive(Buf.GetReference());
+        }
+
+        // Widget RTs sampled by the widget/picker passes: hold them until this frame's GPU work
+        // finishes so a mid-frame widget deletion can't free an RT the GPU is still reading.
+        for (const FRHIImageRef& RT : Frame.PinnedWidgetRTs)
+        {
+            CmdList.KeepAlive(RT.GetReference());
         }
 
         ResetPass_RenderThread(CmdList);
@@ -476,6 +481,12 @@ namespace Lumina
 
             #if USING(WITH_EDITOR)
             {
+                // World-space widgets stamp their entity id into the Picker buffer here (their
+                // color is drawn later, post-tone-map), so they stay click-selectable.
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Widget Picker", FColor(0.80f, 0.20f, 0.95f));
+                WidgetPickerPass(CmdList);
+            }
+            {
                 // After the last picker RT write; readback happens lazily in GetEntityAtPixel.
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Picker Readback", FColor(0.50f, 0.50f, 0.50f));
                 IssuePickerReadback(CmdList);
@@ -519,6 +530,13 @@ namespace Lumina
                     GPU_PROFILE_SCOPE(&CmdList, "Neighborhood Blend");
                     SMAANeighborhoodBlendPass(CmdList);
                 }
+            }
+
+            // World-space UI quads, drawn last onto the final display-referred target so their
+            // colors match the screen-space UI (not tone-mapped). Composited before RenderWorldUI.
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Widgets", FColor(0.80f, 0.20f, 0.95f));
+                WidgetPass(CmdList);
             }
         }
 
@@ -580,6 +598,8 @@ namespace Lumina
         auto& SimpleVertices         = Frame.SimpleVertices;
         auto& LineBatches            = Frame.LineBatches;
         auto& BillboardInstances     = Frame.BillboardInstances;
+        auto& WidgetInstances        = Frame.WidgetInstances;
+        auto& PinnedWidgetRTs        = Frame.PinnedWidgetRTs;
         auto& FrameStats             = Frame.FrameStats;
 
         {
@@ -594,6 +614,7 @@ namespace Lumina
             auto CharacterView      = Registry.view<SCharacterControllerComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto CameraView         = Registry.view<SCameraComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto BillboardView      = Registry.view<SBillboardComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            auto WidgetView         = Registry.view<SWidgetComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto LineBatcherView    = Registry.view<FLineBatcherComponent>();
             auto EnvironmentView    = Registry.view<SEnvironmentComponent>(entt::exclude<SDisabledTag>);
             auto FogView            = Registry.view<SExponentialHeightFogComponent>(entt::exclude<SDisabledTag>);
@@ -706,8 +727,74 @@ namespace Lumina
             
             Graph.Add([&]
             {
+                LUMINA_PROFILE_SECTION("Process Widget Primitives");
+
+                const FFrustum& WidgetFrustum = SceneGlobalData.CullData.Frustum;
+                const bool      bCullWidgets   = SceneGlobalData.CullData.bFrustumCull != 0u;
+
+                WidgetView.each([&](entt::entity Entity, SWidgetComponent& WidgetComponent, const STransformComponent& TransformComponent)
+                {
+                    FWidgetRuntime& Runtime = WidgetComponent.Runtime;
+
+                    // Frustum cull against the authoritative view (the same one meshes use, so it's
+                    // correct in both the editor viewport and game). Tested on transform + size only,
+                    // so it works even before the document is built -- the result drives whether
+                    // RmlUi::TickWorldWidgets bothers laying out + rasterizing the RT next frame.
+                    const glm::mat4 World = TransformComponent.GetWorldMatrix();
+                    const glm::vec3 Center = glm::vec3(World[3]);
+                    const float ScaleXY = glm::max(glm::length(glm::vec3(World[0])), glm::length(glm::vec3(World[1])));
+                    const float Radius  = 0.5f * glm::length(WidgetComponent.WorldSize) * glm::max(1.0f, ScaleXY);
+
+                    const bool bVisible = !bCullWidgets || WidgetFrustum.IntersectsSphere(Center, Radius);
+                    Runtime.bVisible = bVisible;
+
+                    if (!bVisible)
+                    {
+                        return;
+                    }
+
+                    // Runtime state is filled by RmlUi::TickWorldWidgets earlier this frame (same
+                    // game thread). No document / id means the RT isn't ready (first frame, empty path).
+                    if (Runtime.Document == nullptr || Runtime.ResourceID < 0)
+                    {
+                        return;
+                    }
+
+                    FWidgetInstance& Widget = WidgetInstances.emplace_back();
+                    Widget.Transform        = World;
+                    Widget.WorldSize        = WidgetComponent.WorldSize;
+                    Widget.TextureIndex     = (uint32)Runtime.ResourceID;
+                    Widget.Flags            = WidgetComponent.bBillboard ? WIDGET_FLAG_BILLBOARD : 0u;
+                    Widget.ColorPack        = PackColor(WidgetComponent.Tint);
+                    Widget.EntityID         = entt::to_integral(Entity);
+
+                    // Keep the RT alive for this frame's GPU work: the widget/picker passes sample it
+                    // bindlessly, and deleting the entity frees Runtime.Target. KeepAlive'd in RenderView.
+                    if (Runtime.Target)
+                    {
+                        PinnedWidgetRTs.push_back(Runtime.Target);
+                    }
+                });
+
+                // World-space UI blends with alpha and writes no depth, so overlapping widgets need
+                // painter's order. Sort farthest-first by distance to the camera.
+                if (WidgetInstances.size() > 1)
+                {
+                    const glm::vec3 CameraPos = glm::vec3(SceneGlobalData.CameraData.Location);
+                    eastl::sort(WidgetInstances.begin(), WidgetInstances.end(),
+                        [CameraPos](const FWidgetInstance& A, const FWidgetInstance& B)
+                        {
+                            const glm::vec3 DA = glm::vec3(A.Transform[3]) - CameraPos;
+                            const glm::vec3 DB = glm::vec3(B.Transform[3]) - CameraPos;
+                            return glm::dot(DA, DA) > glm::dot(DB, DB);
+                        });
+                }
+            });
+
+            Graph.Add([&]
+            {
                 LUMINA_PROFILE_SECTION("Process Billboard Primitives");
-                
+
                 BillboardView.each([this, &BillboardInstances](entt::entity Entity, const SBillboardComponent& BillboardComponent, const STransformComponent& TransformComponent)
                 {
                     if (!BillboardComponent.Texture.IsValid() || !BillboardComponent.Texture->GetRHIRef()->IsValid())
@@ -1045,6 +1132,7 @@ namespace Lumina
         // cover the shadow suffix even with no active shadows so the buffer can hold any shadow count.
         const SIZE_T LightUploadSize   = offsetof(FSceneLightData, Shadows) + ShadowsUploadSize;
         const SIZE_T BillboardSize     = BillboardInstances.size() * sizeof(FBillboardInstance);
+        const SIZE_T WidgetSize        = Frame.WidgetInstances.size() * sizeof(FWidgetInstance);
 
         // Per-instance meshlet prefix sum (one uint per instance + sentinel); cull pass binary-searches.
         const SIZE_T InstanceMeshletPrefixSize = glm::max<SIZE_T>(
@@ -1082,6 +1170,7 @@ namespace Lumina
         Resize(ENamedBuffer::SkinDescriptors,       SkinDescriptorSize);
         Resize(ENamedBuffer::Light,                 LightUploadSize);
         Resize(ENamedBuffer::Billboards,            BillboardSize);
+        Resize(ENamedBuffer::Widgets,               WidgetSize);
         Resize(ENamedBuffer::CullView,              CullViewSize);
         for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
         {
@@ -1129,6 +1218,10 @@ namespace Lumina
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::SimpleVertex), SimpleVertices.data(), SimpleVertexSize);
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Light), &LightData, LightUploadSize);
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Billboards), BillboardInstances.data(), BillboardSize);
+            if (!Frame.WidgetInstances.empty())
+            {
+                CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Widgets), Frame.WidgetInstances.data(), WidgetSize);
+            }
 
             // Skip env upload + IBL convolution when nothing they depend on changed.
             const bool bEnvParamsChanged = !bEnvironmentParamsUploaded || std::memcmp(&EnvironmentParams, &LastUploadedEnvironmentParams, sizeof(FEnvironmentParams)) != 0;
@@ -3047,7 +3140,7 @@ namespace Lumina
             }
         }
         Lines.resize(WriteIdx);
-        
+
         const uint32 BaseVertex = (uint32)SimpleVertices.size();
         uint32 Cursor = BaseVertex;
         for (FBucket& B : Buckets)
@@ -3124,9 +3217,11 @@ namespace Lumina
         Frame.SkinDescriptors.clear();
         Frame.TotalPreSkinnedVertices = 0;
         Frame.BillboardInstances.clear();
+        Frame.WidgetInstances.clear();
         // Previous frame's pin refs were already handed to the render
         // thread's command buffer; clearing here just drops our copy.
         Frame.PinnedMeshBuffersThisFrame.clear();
+        Frame.PinnedWidgetRTs.clear();
         Frame.FrameStats = {};
 
         for (int i = 0; i < (int)ELightType::Num; ++i)
@@ -5084,6 +5179,149 @@ namespace Lumina
         CmdList.Draw(6, BillboardInstances.size(), 0, 0);   
     }
 
+    void FForwardRenderScene::WidgetPickerPass(ICommandList& CmdList)
+    {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& WidgetInstances = Frame.WidgetInstances;
+
+        if (WidgetInstances.empty())
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Widget Picker Pass", tracy::Color::Magenta);
+
+        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("WidgetVert.slang");
+        FRHIPixelShaderRef PixelShader   = FShaderLibrary::GetPixelShader("WidgetPickerPixel.slang");
+
+        // Pre-tone-map, before the picker readback: stamp the widget's entity id into the Picker
+        // buffer wherever the widget is opaque. Depth-tested (no write) to match WidgetPass, so a
+        // widget picks only where it's actually visible (occluded by geometry just like its color).
+        FRHIImage* PickerImage = GetNamedImage(ENamedImage::Picker);
+
+        FRenderPassDesc::FAttachment PickerAttachment; PickerAttachment
+            .SetImage(PickerImage)
+            .SetLoadOp(ERenderLoadOp::Load);
+
+        FRenderPassDesc::FAttachment Depth; Depth
+            .SetImage(GetNamedImage(ENamedImage::DepthAttachment))
+            .SetLoadOp(ERenderLoadOp::Load);
+
+        FRenderPassDesc RenderPass; RenderPass
+            .AddColorAttachment(PickerAttachment)
+            .SetDepthAttachment(Depth)
+            .SetRenderArea(PickerImage->GetExtent());
+
+        FDepthStencilState DepthState; DepthState
+            .DisableDepthWrite()
+            .SetDepthTestEnable(true)
+            .SetDepthFunc(EComparisonFunc::GreaterOrEqual);
+
+        FRasterState RasterState; RasterState.SetCullNone();
+
+        FRenderState RenderState; RenderState
+            .SetDepthStencilState(DepthState)
+            .SetRasterState(RasterState);
+
+        FGraphicsPipelineDesc Desc; Desc
+            .SetDebugName("Widget Picker Pass")
+            .SetRenderState(RenderState)
+            .SetVertexShader(VertexShader)
+            .SetPixelShader(PixelShader)
+            .AddBindingLayout(SceneBindingLayout)
+            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+
+        FGraphicsState GraphicsState; GraphicsState
+            .SetRenderPass(RenderPass)
+            .SetViewportState(MakeViewportStateFromImage(PickerImage))
+            .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
+            .AddBindingSet(SceneBindingSetReadOnly)
+            .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+
+        CmdList.SetGraphicsState(GraphicsState);
+        CmdList.Draw(6, WidgetInstances.size(), 0, 0);
+    }
+
+    void FForwardRenderScene::WidgetPass(ICommandList& CmdList)
+    {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& WidgetInstances = Frame.WidgetInstances;
+
+        if (WidgetInstances.empty())
+        {
+            return;
+        }
+
+        FRHIImage* OutputImage = GetRenderTarget();
+        if (OutputImage == nullptr)
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Widget Pass", tracy::Color::Magenta);
+
+        FRHIVertexShaderRef VertexShader = FShaderLibrary::GetVertexShader("WidgetVert.slang");
+        FRHIPixelShaderRef PixelShader   = FShaderLibrary::GetPixelShader("WidgetPixel.slang");
+
+        // Drawn AFTER tone mapping onto the final display-referred target so widget colors match
+        // the screen-space UI (no tone map / exposure). GetRenderTarget(), HDR and the depth
+        // buffer all share one extent (HDR is cloned from the RT desc), so we can still depth-test
+        // against the scene depth here -- widgets are correctly occluded by geometry. No depth write.
+        FRenderPassDesc::FAttachment RenderTarget; RenderTarget
+            .SetImage(OutputImage)
+            .SetLoadOp(ERenderLoadOp::Load);
+
+        FRenderPassDesc::FAttachment Depth; Depth
+            .SetImage(GetNamedImage(ENamedImage::DepthAttachment))
+            .SetLoadOp(ERenderLoadOp::Load);
+
+        FRenderPassDesc RenderPass; RenderPass
+            .AddColorAttachment(RenderTarget)
+            .SetDepthAttachment(Depth)
+            .SetRenderArea(OutputImage->GetExtent());
+
+        // Reversed-Z: GreaterOrEqual keeps fragments at/in front of scene depth, discards occluded.
+        FDepthStencilState DepthState; DepthState
+            .DisableDepthWrite()
+            .SetDepthTestEnable(true)
+            .SetDepthFunc(EComparisonFunc::GreaterOrEqual);
+
+        FRasterState RasterState; RasterState.SetCullNone();
+
+        FBlendState BlendState; BlendState
+            .Targets[0]
+                .SetBlendEnable(true)
+                .SetSrcBlend(EBlendFactor::SrcAlpha)
+                .SetDestBlend(EBlendFactor::OneMinusSrcAlpha)
+                .SetBlendOp(EBlendOp::Add)
+                .SetSrcBlendAlpha(EBlendFactor::One)
+                .SetDestBlendAlpha(EBlendFactor::OneMinusSrcAlpha)
+                .SetBlendOpAlpha(EBlendOp::Add);
+
+        FRenderState RenderState; RenderState
+            .SetDepthStencilState(DepthState)
+            .SetRasterState(RasterState)
+            .SetBlendState(BlendState);
+
+        FGraphicsPipelineDesc Desc; Desc
+            .SetDebugName("Widget Pass")
+            .SetRenderState(RenderState)
+            .SetVertexShader(VertexShader)
+            .SetPixelShader(PixelShader)
+            .AddBindingLayout(SceneBindingLayout)
+            .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+
+        FGraphicsState GraphicsState; GraphicsState
+            .SetRenderPass(RenderPass)
+            .SetViewportState(MakeViewportStateFromImage(OutputImage))
+            .SetPipeline(GRenderContext->CreateGraphicsPipeline(Desc, RenderPass))
+            .AddBindingSet(SceneBindingSetReadOnly)
+            .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+
+        CmdList.SetGraphicsState(GraphicsState);
+        CmdList.Draw(6, WidgetInstances.size(), 0, 0);
+    }
+
     void FForwardRenderScene::TransparentPass(ICommandList& CmdList)
     {
         const FFrameData& Frame = *RenderFrame;
@@ -6896,6 +7134,17 @@ namespace Lumina
             NamedBuffers[(int)ENamedBuffer::Billboards] = GRenderContext->CreateBuffer(BufferDesc);
         }
 
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FWidgetInstance);
+            BufferDesc.Usage.SetMultipleFlags(BUF_StorageBuffer, BUF_Dynamic);
+            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::ShaderResource;
+            BufferDesc.DebugName = "Widget Data";
+            NamedBuffers[(int)ENamedBuffer::Widgets] = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
         // Per-view cull descriptors: camera, cascades, 6/point, 1/spot.
         {
             FRHIBufferDesc BufferDesc;
@@ -7481,6 +7730,11 @@ namespace Lumina
             FRHIBuffer* PreSkinnedBuf = GetNamedBuffer(ENamedBuffer::PreSkinnedVertices);
             BindingSetDesc.AddItem(bReadOnly ? FBindingSetItem::BufferSRV(20, PreSkinnedBuf) : FBindingSetItem::BufferUAV(20, PreSkinnedBuf));
             BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(21, GetNamedBuffer(ENamedBuffer::SkinDescriptors)));
+            // Widget quads (binding 22). MUST be added in binding-number order: BUF_Dynamic
+            // buffers map to dynamic descriptors and the RHI builds pDynamicOffsets in insertion
+            // order, which Vulkan matches to descriptors by binding -- inserting out of order
+            // shifts every later dynamic buffer's offset (corrupts the whole scene set).
+            BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(22, GetNamedBuffer(ENamedBuffer::Widgets)));
 
             // BRDF LUT (Karis split-sum), linear-clamp: sampled by (NdotV, Roughness) in
             // [0,1]; clamp matches the half-texel offsets baked into the LUT.

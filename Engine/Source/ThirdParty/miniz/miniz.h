@@ -586,9 +586,19 @@ typedef struct mz_dummy_time_t_tag
 #define MZ_FREE(x) (void)x, ((void)0)
 #define MZ_REALLOC(p, x) NULL
 #else
-#define MZ_MALLOC(x) malloc(x)
-#define MZ_FREE(x) free(x)
-#define MZ_REALLOC(p, x) realloc(p, x)
+/* Route all miniz allocations through Lumina's tracked allocator (LmThirdParty* shim). */
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern void* LmThirdPartyMalloc(size_t Size, const char* Category);
+extern void* LmThirdPartyRealloc(void* Ptr, size_t Size, const char* Category);
+extern void  LmThirdPartyFree(void* Ptr);
+#ifdef __cplusplus
+}
+#endif
+#define MZ_MALLOC(x) LmThirdPartyMalloc((x), "miniz")
+#define MZ_FREE(x) LmThirdPartyFree(x)
+#define MZ_REALLOC(p, x) LmThirdPartyRealloc((p), (x), "miniz")
 #endif
 
 #define MZ_MAX(a, b) (((a) > (b)) ? (a) : (b))

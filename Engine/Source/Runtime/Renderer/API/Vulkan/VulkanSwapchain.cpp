@@ -49,17 +49,19 @@ namespace Lumina
     	
     }
 
-    void FVulkanSwapchain::CreateSwapchain(VkInstance Instance, FVulkanRenderContext* InContext, FWindow* Window, glm::uvec2 Extent, bool bFromResize)
+    void FVulkanSwapchain::CreateSwapchain(VkInstance Instance, FVulkanRenderContext* InContext, GLFWwindow* Window, glm::uvec2 Extent, bool bFromResize, bool bPrimary)
     {
     	LUMINA_PROFILE_SCOPE();
 
     	Context = InContext;
-    	SwapchainExtent = Extent;
+    	DesiredExtent = Extent;   // requested target; the actual (clamped) extent is read back from vkb after build
     	VkDevice Device = Context->GetDevice()->GetDevice();
-    	
+
     	if (bFromResize == false)
     	{
-			VK_CHECK(glfwCreateWindowSurface(Instance, Window->GetWindow(), VK_ALLOC_CALLBACK, &Surface));
+    		WindowHandle = Window;
+    		bIsPrimarySwapchain = bPrimary;
+			VK_CHECK(glfwCreateWindowSurface(Instance, Window, VK_ALLOC_CALLBACK, &Surface));
     	}
 
     	VkPhysicalDevice PhysicalDevice = Context->GetDevice()->GetPhysicalDevice();
@@ -69,9 +71,7 @@ namespace Lumina
     	SurfaceFormat				= {};
         SurfaceFormat.format		= VK_FORMAT_B8G8R8A8_UNORM;
     	SurfaceFormat.colorSpace	= VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-
-    	LOG_TRACE("Creating Vulkan Swapchain - Format {} - Width: {} - Height: {}", "VK_FORMAT_B8G8R8A8_UNORM", Extent.x, Extent.y);
-
+    	
         auto vkbSwapchain = SwapchainBuilder
             .set_desired_format(SurfaceFormat)
             .set_desired_present_mode(CurrentPresentMode)
@@ -82,12 +82,8 @@ namespace Lumina
             .set_desired_extent(Extent.x, Extent.y)
             .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
             .build();
-
-    	if (!vkbSwapchain.has_value() || !vkbSwapchain->get_images().has_value())
-    	{
-    		LOG_CRITICAL("Failed to create swapchain! Error: {} - Extent: {}x{}", vkbSwapchain.error().message(), Extent.x, Extent.y);
-    		UNREACHABLE();
-    	}
+    	
+    	ASSERT(vkbSwapchain.has_value() && vkbSwapchain->get_images().has_value(), "Failed to create swapchain! Error: {} - Extent: {}x{}", vkbSwapchain.error().message(), Extent.x, Extent.y);
     	
     	if (bFromResize)
     	{
@@ -96,7 +92,13 @@ namespace Lumina
 		}
 
         Swapchain = vkbSwapchain->swapchain;
-    	
+
+    	// vkb clamps the requested extent to the surface's min/max -- use the ACTUAL
+    	// extent for the image desc + render area, or vkCmdBeginRendering trips
+    	// VUID-06080 (renderArea > imageView) and the GPU faults.
+    	const VkExtent2D ActualExtent = vkbSwapchain->extent;
+    	SwapchainExtent = glm::uvec2(ActualExtent.width, ActualExtent.height);
+
         std::vector<VkImage> RawImages = vkbSwapchain->get_images().value();
 
     	SwapchainImages.clear();
@@ -107,7 +109,7 @@ namespace Lumina
 	    	VkImage RawImage = RawImages[i];
 	    	
         	FRHIImageDesc ImageDescription;
-        	ImageDescription.Extent = Extent;
+        	ImageDescription.Extent = SwapchainExtent;   // actual (clamped) extent, not the request
         	ImageDescription.Format = EFormat::BGRA8_UNORM;
         	ImageDescription.InitialState = EResourceStates::Present;
         	ImageDescription.bKeepInitialState = true;
@@ -170,7 +172,7 @@ namespace Lumina
     	LUMINA_PROFILE_SCOPE();
 
     	Context->WaitIdle();
-    	CreateSwapchain(Context->GetVulkanInstance(), Context, Windowing::GetPrimaryWindowHandle(), Extent, true);
+    	CreateSwapchain(Context->GetVulkanInstance(), Context, WindowHandle, Extent, true);
 
     	bNeedsResize = false;
     }
@@ -215,25 +217,28 @@ namespace Lumina
 	    constexpr int MaxAttempts = 3;
 	    for (int Attempt = 0; Attempt < MaxAttempts; ++Attempt)
 	    {
-	    	// Recreate before acquiring when a prior frame flagged a resize/suboptimal. Doing it
-	    	// here (not after a failed acquire) means we always acquire against a fresh swapchain.
 	    	if (bNeedsResize)
 	    	{
-	    		RecreateSwapchain(Windowing::GetPrimaryWindowHandle()->GetExtent());
-	    		GRenderManager->SwapchainResized(Windowing::GetPrimaryWindowHandle()->GetExtent());
-	    	}
+	    		glm::uvec2 NewExtent = bIsPrimarySwapchain ? Windowing::GetPrimaryWindowHandle()->GetExtent() : DesiredExtent;
 
-	    	// Re-fetch every attempt: RecreateSwapchain destroys + rebuilds AcquireSemaphores, so a
-	    	// handle captured before a retry would dangle (and be used-after-free below).
+	    		if (NewExtent.x > 0 && NewExtent.y > 0)
+	    		{
+	    			RecreateSwapchain(NewExtent);
+	    			if (bIsPrimarySwapchain && GRenderManager != nullptr)
+	    			{
+	    				GRenderManager->SwapchainResized(NewExtent);
+	    			}
+	    		}
+	    		else
+	    		{
+	    			bNeedsResize = false;   // bad extent; don't spin recreating
+	    		}
+	    	}
+	    	
 	    	Semaphore = AcquireSemaphores[AcquireSemaphoreIndex];
 
 	    	Result = vkAcquireNextImageKHR(Context->GetDevice()->GetDevice(), Swapchain, UINT64_MAX, Semaphore, nullptr, &CurrentImageIndex);
-
-	    	// OUT_OF_DATE is the only result where NO image was acquired and the semaphore was left
-	    	// UNSIGNALED -- so it's safe to recreate and re-acquire on a fresh semaphore. SUBOPTIMAL
-	    	// (and SUCCESS) acquired an image and SIGNALED the semaphore; re-acquiring on it would trip
-	    	// VUID-vkAcquireNextImageKHR-semaphore-01286 and leak the acquired image (the source of the
-	    	// WRITE_AFTER_PRESENT hazard), so we keep this image and recreate next frame instead.
+	    	
 	    	if (Result == VK_ERROR_OUT_OF_DATE_KHR)
 	    	{
 	    		bNeedsResize = true;
@@ -242,7 +247,6 @@ namespace Lumina
 	    	break;
 	    }
 
-    	// Suboptimal image is still presentable; defer the recreate to the next acquire.
     	if (Result == VK_SUBOPTIMAL_KHR)
     	{
     		bNeedsResize = true;
@@ -250,12 +254,11 @@ namespace Lumina
 
     	if (Result == VK_SUCCESS || Result == VK_SUBOPTIMAL_KHR)
     	{
-    		// Bound to the swapchain submit directly, NOT the queue's shared wait list, so another
-    		// graphics submit can't steal it (would desync the ring and present sync).
     		CurrentAcquireSemaphore = Semaphore;
     		AcquireSemaphoreIndex = (AcquireSemaphoreIndex + 1) % AcquireSemaphores.size();
+    		return true;
     	}
-
+    	
     	return false;
     }
 

@@ -26,11 +26,11 @@
  *
  */
 
-#include "../../Include/RmlUi/Core/Profiling.h"
 
 #ifdef RMLUI_TRACY_MEMORY_PROFILING
 	#include <cstdlib>
 	#include <stddef.h>
+#include <tracy/public/tracy/Tracy.hpp>
 
 void* operator new(size_t n)
 {

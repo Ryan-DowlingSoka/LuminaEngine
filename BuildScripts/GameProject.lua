@@ -159,7 +159,8 @@ local function SetupProject(Def)
             return Out
         end
 
-        -- Tracy is Debug/Development-only; Shipping must not link Tracy.
+        -- Tracy links only where profiling is active (LuminaOptions). Strip it
+        -- from the link set for every other configuration.
         local function StripTracy(Libs)
             local Out = {}
             for _, Lib in ipairs(Libs) do
@@ -170,13 +171,15 @@ local function SetupProject(Def)
             return Out
         end
 
-        filter "configurations:Debug"
-            links(WithSuffix(BaseLinks, "-Debug"))
-        filter "configurations:Development"
-            links(WithSuffix(BaseLinks, "-Development"))
-        filter "configurations:Shipping"
-            links(WithSuffix(StripTracy(BaseLinks), "-Shipping"))
-        filter {}
+        for _, Cfg in ipairs({ "Debug", "Development", "Shipping" }) do
+            local Links = BaseLinks
+            if not LuminaOptions.IsActive("Tracy", Cfg) then
+                Links = StripTracy(BaseLinks)
+            end
+            filter("configurations:" .. Cfg)
+                links(WithSuffix(Links, "-" .. Cfg))
+            filter {}
+        end
 
         if Def.ExtraLinks and #Def.ExtraLinks > 0 then
             links(Def.ExtraLinks)

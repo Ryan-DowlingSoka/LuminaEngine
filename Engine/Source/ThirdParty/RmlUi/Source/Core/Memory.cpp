@@ -31,6 +31,13 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+// Route BasicStackAllocator's heap fallback through Lumina's tracked allocator
+// (LmThirdParty* shim). All malloc/free here are matched within the allocator.
+extern "C" void* LmThirdPartyMalloc(size_t Size, const char* Category);
+extern "C" void  LmThirdPartyFree(void* Ptr);
+#define malloc(x) LmThirdPartyMalloc((x), "RmlUi")
+#define free(x)   LmThirdPartyFree(x)
+
 namespace Rml {
 
 namespace Detail {

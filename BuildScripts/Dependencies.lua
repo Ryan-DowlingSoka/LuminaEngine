@@ -168,3 +168,8 @@ end
 -- Per-dependency third-party metadata. Modules pull a library's includes/links
 -- by naming it in Dependencies; there is no global include dump.
 include(path.join(_SCRIPT_DIR, "ThirdParty.lua"))
+
+-- Optional-feature toggles (Tracy / Vulkan validation / NVIDIA Aftermath).
+-- Resolves BuildConfig.lua + CLI flags into the LuminaOptions query API used by
+-- Workspace.lua and the module build to gate defines, links and DLL copies.
+include(path.join(_SCRIPT_DIR, "Options.lua"))

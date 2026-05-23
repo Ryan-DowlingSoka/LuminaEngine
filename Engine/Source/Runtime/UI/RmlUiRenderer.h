@@ -30,6 +30,23 @@ namespace Lumina
         void BeginFrame(ICommandList& CmdList, FRHIImage* Target, const glm::uvec2& ViewportSize, const glm::uvec2& LogicalSize = glm::uvec2(0));
         void EndFrame();
 
+        // Content-change gating. After Context::Render fills the draw list, PeekFrameHash hashes it;
+        // IsTargetUpToDate is true when this target's persistent batch already holds that exact draw
+        // list (so a caller whose RT persists -- world-space widgets -- can skip the whole pass).
+        // AbortFrame discards the pending draws without recording (flushing any generated textures).
+        uint64                      PeekFrameHash() const;
+        bool                        IsTargetUpToDate(FRHIImage* Target, uint64 Hash) const;
+        void                        AbortFrame();
+
+        // Drop a target's cached batch buffers (called when a widget RT is destroyed).
+        void                        ReleaseTargetBatch(FRHIImage* Target);
+
+        // Consecutive-stable-frame tracking for caller-side dormancy: bStable=true (draw list
+        // unchanged) increments, false (changed / deferred) resets. GetTargetStableFrames lets the
+        // game thread stop ticking a settled widget entirely. Returns 0 for unknown targets.
+        void                        NoteTargetStable(FRHIImage* Target, bool bStable);
+        uint32                      GetTargetStableFrames(FRHIImage* Target) const;
+
         Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> Vertices, Rml::Span<const int> Indices) override;
         void                        RenderGeometry(Rml::CompiledGeometryHandle Geometry, Rml::Vector2f Translation, Rml::TextureHandle Texture) override;
         void                        ReleaseGeometry(Rml::CompiledGeometryHandle Geometry) override;
@@ -44,10 +61,9 @@ namespace Lumina
         void                        SetTransform(const Rml::Matrix4f* Transform) override;
 
     private:
-        // RmlUi geometry is upload-grade: small, GPU-touched once per frame, then
-        // potentially re-uploaded on relayout. We keep CPU-side bytes here and
-        // suballocate from the cmdlist's transient ring at draw time -- no
-        // vmaCreateBuffer / vmaDestroyBuffer per Compile/Release pair.
+        // RmlUi compiles geometry once per element and keeps the handle across frames. We cache the
+        // CPU bytes here; at EndFrame the referenced geometry is concatenated into the target's
+        // resident VB/IB (rebuilt only when the draw list changes -- see FTargetBatch).
         struct FGeometry
         {
             TVector<uint8> VertexData;
@@ -107,7 +123,30 @@ namespace Lumina
             uint32    Pad1;
         };
 
+        // Persistent per-target geometry. The concatenated vertex/index batch lives in grown
+        // device buffers (uploaded only when the draw list changes), not the transient ring --
+        // UI geometry can be large and per-frame transient churn thrashes the upload pool. The
+        // per-draw data is small and stays transient (read in-shader via device address). Keyed
+        // by render target; widget RTs are 1:1 with a context, the world UI and editor previews
+        // each map to their own RT.
+        struct FTargetBatch
+        {
+            FRHIBufferRef     VertexBuffer;
+            FRHIBufferRef     IndexBuffer;
+            uint32            VBLowUsageFrames = 0;
+            uint32            IBLowUsageFrames = 0;
+            TVector<FUiDraw>  Draws;            // cached per-draw data; re-uploaded to transient each draw
+            uint32            IndexCount = 0;
+            uint64            LastHash = 0;
+            int32             TargetID = -1;     // RT bindless id, so a reused FRHIImage* can't serve stale geometry
+            uint32            StableFrames = 0;  // consecutive frames the draw list was unchanged (drives dormancy)
+            bool              bValid = false;
+        };
+
         bool                        CreatePipeline();
+        uint64                      ComputeDrawCallHash() const;
+        void                        EnsureBatchBuffers(FTargetBatch& Batch, uint32 VertexBytes, uint32 IndexBytes);
+        void                        ResetFrameState();   // clears the pending draw list + current frame target/cmdlist
         Rml::TextureHandle          RegisterTexturePending(TVector<uint8>&& Bytes, int Width, int Height);
         Rml::TextureHandle          LoadMaterialBrush(Rml::Vector2i& OutDimensions, class CMaterialInterface* Material, const FStringView& SourcePath, uint32 Width, uint32 Height);
         Rml::TextureHandle          LoadTextureAsset(Rml::Vector2i& OutDimensions, class CTexture* Texture);
@@ -132,8 +171,13 @@ namespace Lumina
 
         THashMap<Rml::CompiledGeometryHandle, FGeometry>    Geometries;
         THashMap<Rml::TextureHandle, FTexture>              Textures;
+        THashMap<FRHIImage*, FTargetBatch>                  TargetBatches;
         Rml::CompiledGeometryHandle                         NextGeometryHandle = 1;
         Rml::TextureHandle                                  NextTextureHandle = 1;
+
+        // Bumped each BeginFrame; salts the draw-call hash when a UI-material brush is referenced
+        // so animated brushes never get gated away as "unchanged".
+        uint64                      FrameCounter = 0;
 
         TVector<FPendingTexture>    PendingTextureUploads;
         TVector<FDrawCall>          DrawCalls;
@@ -147,8 +191,12 @@ namespace Lumina
         FRHIImage*                  CurrentTarget = nullptr;
         glm::uvec2                  CurrentSize = {0, 0};
         FRenderPassDesc             CurrentPassDesc;
-        bool                        bRenderPassOpen = false;
         bool                        bInitialized = false;
+
+        // PeekFrameHash (caller-side dormancy check) and EndFrame both need the draw-list hash;
+        // cache it across the pair so we hash once per frame. Invalidated each BeginFrame.
+        mutable uint64              CachedFrameHash = 0;
+        mutable bool                bCachedFrameHashValid = false;
 
         glm::mat4                   ProjectionMatrix = glm::mat4(1.0f);
         glm::mat4                   UserTransform = glm::mat4(1.0f);

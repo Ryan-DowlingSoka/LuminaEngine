@@ -12,6 +12,8 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <algorithm>
+
 #include "UI/Tools/EditorToolContext.h"
 
 namespace Lumina
@@ -676,7 +678,7 @@ namespace Lumina
         {
             return;
         }
-        eastl::vector<int> Sorted(Bookmarks.begin(), Bookmarks.end());
+        TVector<int> Sorted(Bookmarks.begin(), Bookmarks.end());
         std::sort(Sorted.begin(), Sorted.end());
         const int Cur = CodeEditor.GetCurrentCursorPosition().line;
         int Target = -1;
@@ -1452,7 +1454,7 @@ namespace Lumina
         TVector<FCandidate> Candidates;
         Candidates.reserve(64);
 
-        eastl::hash_set<FString> Seen;
+        THashSet<FString> Seen;
         auto Add = [&](const char* Name, size_t NameLen, std::string Detail, char Kind, int Tier)
         {
             const FString Key(Name, NameLen);
@@ -1468,7 +1470,7 @@ namespace Lumina
             C.Detail = std::move(Detail);
             C.Kind   = Kind;
             C.Rank   = Rank;
-            Candidates.push_back(eastl::move(C));
+            Candidates.push_back(Move(C));
         };
         
         auto TypedTier = [](char K) -> int
@@ -1992,7 +1994,7 @@ namespace Lumina
             }
             else
             {
-                eastl::vector<int> Sorted(Bookmarks.begin(), Bookmarks.end());
+                TVector<int> Sorted(Bookmarks.begin(), Bookmarks.end());
                 std::sort(Sorted.begin(), Sorted.end());
                 for (int Line : Sorted)
                 {
@@ -2777,7 +2779,7 @@ namespace Lumina
             FWatchEntry W;
             W.Expression.assign(WatchInputBuffer);
             W.bDirty = true;
-            Watches.push_back(eastl::move(W));
+            Watches.push_back(Move(W));
             WatchInputBuffer[0] = '\0';
             RefreshWatchValues();
         }
@@ -3282,7 +3284,7 @@ namespace Lumina
             Item.Detail.assign(E.Detail.c_str(), E.Detail.size());
             Item.Line   = E.Line - 1; // legacy zero-based
             Item.Indent = E.Indent;
-            DocumentOutline.push_back(eastl::move(Item));
+            DocumentOutline.push_back(Move(Item));
         }
     }
 
@@ -3297,8 +3299,7 @@ namespace Lumina
             return;
         }
 
-        if (Body.size() == Pretty.size()
-            && std::memcmp(Body.data(), Pretty.data(), Body.size()) == 0)
+        if (Body.size() == Pretty.size() && std::memcmp(Body.data(), Pretty.data(), Body.size()) == 0)
         {
             // Already pretty - skip the SetText round-trip so we don't burn
             // an undo entry or jolt the cursor for a no-op format.
@@ -3446,7 +3447,10 @@ namespace Lumina
 
     void FLuaEditorTool::DrawBreakpointSettingsPopup()
     {
-        if (RequestedBreakpointSettingsLine < 0) return;
+        if (RequestedBreakpointSettingsLine < 0)
+        {
+            return;
+        }
 
         const int Line = RequestedBreakpointSettingsLine;
         if (!ImGui::IsPopupOpen("##lua_bp_settings"))
@@ -3488,7 +3492,7 @@ namespace Lumina
         ImGui::Spacing();
         ImGui::SetNextItemWidth(120.0f);
         ImGui::InputInt("Skip first N hits", &BpIgnoreCount);
-        if (BpIgnoreCount < 0) BpIgnoreCount = 0;
+        BpIgnoreCount = std::max(BpIgnoreCount, 0);
 
         // Live-stats display for the user.
         const Lua::FBreakpointSettings* Live = Lua::FLuaDebugger::Get().GetBreakpointSettings(

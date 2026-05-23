@@ -171,11 +171,11 @@ namespace Lumina
         VkShaderStageFlags                                      PushConstantVisibility;
         VkPipelineLayout                                        CurrentPipelineLayout;
 
-        // Stack of Tracy VkCtxScope objects, lifetime-managed via placement new.
-        // Bounded nesting depth — far above any real profiler usage.
+        #if defined(TRACY_ENABLE)
         static constexpr uint32                                 MaxTracyZoneDepth = 32;
         alignas(tracy::VkCtxScope) uint8                        TracyZoneStorage[MaxTracyZoneDepth][sizeof(tracy::VkCtxScope)] = {};
         uint32                                                  TracyZoneDepth = 0;
+        #endif
     };
     
 }

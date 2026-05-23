@@ -24,8 +24,8 @@
 @decorator panel-grad       : vertical-gradient { start-color: #252537f0; stop-color: #1a1a28f0; }
 @decorator primary-grad     : horizontal-gradient { start-color: #89b4fa; stop-color: #74c7ec; }
 @decorator primary-grad-hi  : horizontal-gradient { start-color: #9bc1ff; stop-color: #86d0f0; }
-@decorator danger-grad      : horizontal-gradient { start-color: #f38ba8; stop-color: #eba0ac; }
-@decorator hp-grad          : horizontal-gradient { start-color: #f38ba8; stop-color: #fab387; }
+@decorator danger-grad      : horizontal-gradient { start-color: #FF0000; stop-color: #eba0ac; }
+@decorator hp-grad          : horizontal-gradient { start-color: #FF0000; stop-color: #F3A97B; }
 @decorator stamina-grad     : horizontal-gradient { start-color: #a6e3a1; stop-color: #94e2d5; }
 @decorator mana-grad        : horizontal-gradient { start-color: #89b4fa; stop-color: #cba6f7; }
 @decorator xp-grad          : horizontal-gradient { start-color: #f9e2af; stop-color: #fab387; }

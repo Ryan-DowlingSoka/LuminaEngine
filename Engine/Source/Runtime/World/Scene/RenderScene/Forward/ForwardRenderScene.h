@@ -236,6 +236,11 @@ namespace Lumina
             TVector<FSimpleElementVertex>    SimpleVertices;
             TVector<FLineBatch>              LineBatches;
             TVector<FBillboardInstance>      BillboardInstances;
+            TVector<FWidgetInstance>         WidgetInstances;
+            // Holds a ref to each widget's RT that WidgetInstances samples bindlessly, so deleting
+            // the widget (which frees Runtime.Target) can't pull the RT out from under in-flight GPU
+            // work. KeepAlive'd on the cmd list in RenderView; cleared on frame reset.
+            TVector<FRHIImageRef>            PinnedWidgetRTs;
 
             FSceneRenderStats                FrameStats = {};
         };
@@ -250,6 +255,8 @@ namespace Lumina
             Cluster,
             SimpleVertex,
             Billboards,
+            // World-space UI widget quads (bound at scene-set binding 22).
+            Widgets,
             // Per-view cull descriptors; one per logical render view
             // (main camera, each CSM cascade, each point face, each spot).
             CullView,
@@ -443,6 +450,8 @@ namespace Lumina
         void CascadedShowPass(ICommandList& CmdList);
         void BasePass(ICommandList& CmdList);
         void BillboardPass(ICommandList& CmdList);
+        void WidgetPass(ICommandList& CmdList);
+        void WidgetPickerPass(ICommandList& CmdList);
 
         uint32 ParticleSimulatePass(ICommandList& CmdList);
         

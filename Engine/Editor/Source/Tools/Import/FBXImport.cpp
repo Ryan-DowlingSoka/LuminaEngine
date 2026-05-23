@@ -8,9 +8,20 @@
 #include "Core/Utils/Defer.h"
 #include "FileSystem/FileSystem.h"
 #include "OpenFBX/ofbx.h"
+#include "OpenFBX/libdeflate.h"
 #include "Platform/Filesystem/FileHelper.h"
 #include "Renderer/MeshData.h"
 #include "TaskSystem/TaskSystem.h"
+
+// Route libdeflate (OpenFBX's bundled inflate) through Lumina's tracked allocator.
+extern "C" void* LmThirdPartyMalloc(size_t Size, const char* Category);
+extern "C" void  LmThirdPartyFree(void* Ptr);
+
+namespace
+{
+    void* LibdeflateTrackedMalloc(size_t Size) { return LmThirdPartyMalloc(Size, "libdeflate"); }
+    void  LibdeflateTrackedFree(void* Ptr)     { LmThirdPartyFree(Ptr); }
+}
 
 namespace Lumina::Import::Mesh::FBX
 {
@@ -27,6 +38,14 @@ namespace Lumina::Import::Mesh::FBX
     
     TExpected<FMeshImportData, FString> ImportFBX(const FMeshImportOptions& ImportOptions, FStringView FilePath, FScopedSlowTask* Progress)
     {
+        // Install our tracked allocator for libdeflate once, before the first ofbx::load.
+        static const bool bLibdeflateAllocInstalled = []
+        {
+            libdeflate_set_memory_allocator(&LibdeflateTrackedMalloc, &LibdeflateTrackedFree);
+            return true;
+        }();
+        (void)bLibdeflateAllocInstalled;
+
         // [DIAG] Time the file read vs. the ofbx parse so we can see where "Parsing source file" goes.
         if (Progress)
         {

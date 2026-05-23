@@ -106,16 +106,7 @@ namespace Lumina
         NODISCARD virtual FGPUDeviceInfo GetDeviceInfo() const = 0;
 
 
-        virtual void ClearCommandListCache() = 0;
         virtual FRHICommandListRef CreateCommandList(const FCommandListInfo& Info) = 0;
-
-        // Returns a persistent per-frame-in-flight graphics command list, reused each frame
-        // instead of allocated fresh (the recording wrapper + its upload managers + state
-        // tracker are otherwise re-created every frame). Reuse is gated by the frame-in-flight
-        // fence -- a slot's list is only handed out again once its prior GPU work has completed
-        // -- so its command buffer and (version-gated) upload chunks are never in flight on reuse.
-        // Default falls back to a transient list for backends without a pool.
-        virtual FRHICommandListRef GetFrameCommandList() { return CreateCommandList(FCommandListInfo::Graphics()); }
         virtual uint64 ExecuteCommandLists(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType) = 0;
 
 

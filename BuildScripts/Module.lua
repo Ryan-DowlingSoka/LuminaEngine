@@ -323,11 +323,16 @@ function LuminaModule(Def)
         links(AllLinks)
     end
 
-    -- Tracy is a Debug/Development-only profiler. Shipping builds have
-    -- TRACY_ENABLE removed (macros become no-ops) and must not link Tracy.
-    filter "configurations:Shipping"
-        removelinks { "Tracy" }
-    filter {}
+    -- Tracy links only in the configurations where profiling is active
+    -- (LuminaOptions). Remove it everywhere else so a "Tracy off" or
+    -- Shipping-only-disabled build doesn't pull in the profiler library.
+    for _, Cfg in ipairs({ "Debug", "Development", "Shipping" }) do
+        if not LuminaOptions.IsActive("Tracy", Cfg) then
+            filter("configurations:" .. Cfg)
+                removelinks { "Tracy" }
+            filter {}
+        end
+    end
 
     -- Editor-only module dependencies
     if #Def.EditorModuleDependencies > 0 then

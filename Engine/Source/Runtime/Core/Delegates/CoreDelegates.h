@@ -1,5 +1,6 @@
 #pragma once
 #include "Delegate.h"
+#include "Containers/String.h"
 
 
 namespace Lumina
@@ -22,5 +23,10 @@ namespace Lumina
         // is already torn down (ptr is identity-compare only); NewWorld is live.
         // Subscribers must drop cached entity handles / property tables on OldWorld.
         RUNTIME_API static TMulticastDelegate<void, CWorld*, CWorld*> OnWorldTravelled;
+
+        // Fired by editor file watchers when a content file changes on disk (arg = VFS path).
+        // Subscribers (UI hot-reload, Lua, plugins) filter by extension and react, so no
+        // subsystem hard-codes its own watcher or content paths. Editor-only in practice.
+        RUNTIME_API static TMulticastDelegate<void, FStringView>     OnContentFileModified;
     };
 }

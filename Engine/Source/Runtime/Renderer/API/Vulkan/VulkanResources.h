@@ -583,8 +583,12 @@ namespace Lumina
 
         const FBindingSetDesc* GetDesc() const override { return &Desc; }
         FRHIBindingLayout* GetLayout() const override { return Layout; }
-        void* GetAPIResourceImpl(EAPIResourceType) override;
         
+    protected:
+        
+        void* GetAPIResourceImpl(EAPIResourceType) override;
+    
+    public:
         
         TFixedVector<FRHIBufferRef, 2>              DynamicBuffers;
         TFixedVector<FRHIResourceRef, 4>            Resources;

@@ -39,8 +39,9 @@ namespace Lumina
         // render thread. Returns nullptr if there's no valid draw data.
         FImDrawDataSnapshot* BuildFrame_GameThread(uint8 FrameIndex);
 
-        // Render thread: record the snapshot's draw lists onto CmdList.
-        void RecordFrame_RenderThread(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot);
+        // Render thread: record the snapshot's draw lists onto CmdList, then
+        // render+present any secondary viewports captured for this frame's slot.
+        void RecordFrame_RenderThread(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot, uint8 FrameIndex);
 
         // Render thread: call after RecordFrame_RenderThread to release the
         // snapshot slot. The game thread may be blocked in BuildFrame_GameThread
@@ -53,6 +54,15 @@ namespace Lumina
 
         virtual void OnStartFrame(const FUpdateContext& UpdateContext) = 0;
         virtual void OnEndFrame(ICommandList& CmdList, FImDrawDataSnapshot& Snapshot) = 0;
+
+        // Multi-viewport on the render thread. The game thread deep-copies each
+        // secondary viewport's draw data into the slot (CaptureViewports), and the
+        // render thread acquires/renders/presents those swapchains (RenderViewports)
+        // -- so every vkQueuePresentKHR runs on one thread (SyncVal can't track
+        // cross-thread present ordering). Slot == FrameIndex % FRAMES_IN_FLIGHT,
+        // gated by the same snapshot producer/consumer counters as the main viewport.
+        virtual void CaptureViewports_GameThread(uint8 Slot) {}
+        virtual void RenderViewports_RenderThread(uint8 Slot) {}
 
         // Copy this frame's referenced texture refs into the snapshot so the
         // render thread keeps them alive while recording.

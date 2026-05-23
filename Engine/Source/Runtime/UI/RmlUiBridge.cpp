@@ -7,6 +7,7 @@
 
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Context.h>
+#include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/Event.h>
@@ -15,17 +16,58 @@
 #include <RmlUi/Core/SystemInterface.h>
 #include <RmlUi/Debugger.h>
 
+#include "FileSystem/FileSystem.h"
+#include "Core/Console/ConsoleVariable.h"
+#include "Core/Delegates/CoreDelegates.h"
 #include "Log/Log.h"
+#include "Memory/Memory.h"
+#include "Memory/MemoryTracking.h"
 #include "Memory/SmartPtr.h"
 #include "Core/Threading/Thread.h"
 #include "Renderer/CommandList.h"
 #include "Renderer/RenderResource.h"
+#include "Renderer/RenderContext.h"
+#include "Renderer/RenderTypes.h"
+#include "Renderer/Format.h"
+#include "Renderer/RHIGlobals.h"
 #include "Scripting/Lua/Reference.h"
+#include <filesystem>
 #include "World/World.h"
 #include "World/Scene/RenderScene/RenderScene.h"
+#include "World/Entity/Components/WidgetComponent.h"
+
+extern "C" void* LuminaRmlFreeTypeAlloc(size_t Size)
+{
+    LUMINA_MEMORY_SCOPE("RmlUi");
+    return ::Lumina::Memory::Malloc(Size);
+}
+
+extern "C" void* LuminaRmlFreeTypeRealloc(void* Block, size_t NewSize)
+{
+    LUMINA_MEMORY_SCOPE("RmlUi");
+    return ::Lumina::Memory::Realloc(Block, NewSize);
+}
+
+extern "C" void LuminaRmlFreeTypeFree(void* Block)
+{
+    ::Lumina::Memory::Free(Block);
+}
 
 namespace Lumina::RmlUi
 {
+    // Caps how many world-space widgets re-rasterize their RT in a single frame. Unchanged widgets
+    // are skipped for free (their RT persists); this only bounds the spike when many change at once
+    // (mass hot-reload, lots of animated HUDs). Skipped widgets keep last frame's RT and are retried
+    // next frame -- a rotating cursor keeps it fair.
+    static TConsoleVar<int32> CVarWidgetMaxRendersPerFrame("UI.Widget.MaxRendersPerFrame", 8,
+        "Max world-space widget RT rasterizations per frame; the rest reuse last frame's RT.");
+
+    // After this many consecutive frames with an unchanged rasterized result, a widget stops being
+    // ticked (no Context::Update / Context::Render) until it's reloaded, resized, or a future input/
+    // data path wakes it. An animation keeps the result changing, so it never settles. 0 disables.
+    static TConsoleVar<int32> CVarWidgetDormancyFrames("UI.Widget.DormancyFrames", 4,
+        "Frames of unchanged output before a world-space widget stops ticking; 0 = always tick.");
+
     namespace
     {
         class FLuminaSystemInterface final : public Rml::SystemInterface
@@ -150,6 +192,11 @@ namespace Lumina::RmlUi
             TUniquePtr<FRmlUiRenderer>          Renderer;
             TVector<TUniquePtr<FEditorEntry>>   EditorContexts;
 
+            // Editor hot-reload: a subscription to FCoreDelegates::OnContentFileModified raises
+            // this flag on any .rml/.rcss save; the game thread restyles every live document next
+            // TickWorldUI. No watcher here -- the editor's central watcher owns disk watching.
+            TAtomic<bool>                       bUIReloadPending{false};
+
             // World whose context the `UI.*` Lua module targets; the worlds themselves
             // own their FWorldUIContext (on CWorld). Null when no world is active.
             CWorld*                             ActiveWorld = nullptr;
@@ -157,6 +204,10 @@ namespace Lumina::RmlUi
             Rml::Context*                       DebuggerHost = nullptr;
             bool                                bDebuggerVisible = false;
             bool                                bInitialized = false;
+
+            // Rotating start offset into a world's WidgetJobs so the per-frame rasterization budget
+            // doesn't always starve the same widgets when more change than the budget allows.
+            uint32                              WidgetRenderCursor = 0;
 
             // Guards EditorContexts/ActiveWorld/Debugger* + serializes Rml::Context DOM
             // mutations (TickWorldUI/Update on game thread) against DOM traversal
@@ -187,23 +238,25 @@ namespace Lumina::RmlUi
         {
             FState& State = S();
             Rml::Context* Active = ActiveContext();
+            
+            Rml::Context* DesiredHost = State.bDebuggerVisible ? Active : nullptr;
 
-            if (State.DebuggerHost != Active)
+            if (State.DebuggerHost != DesiredHost)
             {
                 if (State.DebuggerHost != nullptr)
                 {
                     Rml::Debugger::Shutdown();
                     State.DebuggerHost = nullptr;
                 }
-                if (Active != nullptr)
+                if (DesiredHost != nullptr)
                 {
-                    if (Rml::Debugger::Initialise(Active))
+                    if (Rml::Debugger::Initialise(DesiredHost))
                     {
-                        State.DebuggerHost = Active;
+                        State.DebuggerHost = DesiredHost;
                     }
                     else
                     {
-                        LOG_WARN("[RmlUi] Debugger failed to attach to context '{}'.", Active->GetName());
+                        LOG_WARN("[RmlUi] Debugger failed to attach to context '{}'.", DesiredHost->GetName());
                     }
                 }
             }
@@ -240,6 +293,133 @@ namespace Lumina::RmlUi
                 return {};
             }
             return { Img, glm::uvec2(Img->GetSizeX(), Img->GetSizeY()) };
+        }
+
+        // Modified-time of a widget's .rml on disk (0 if unresolvable, e.g. inside a .pak).
+        // Drives editor hot-reload; in packaged builds it just returns 0 and reload is skipped.
+        int64 GetDocumentWriteTime(const FString& VirtualPath)
+        {
+            if (VirtualPath.empty())
+            {
+                return 0;
+            }
+            const FFixedString Physical = VFS::ResolvePath(VirtualPath);
+            if (Physical.empty())
+            {
+                return 0;
+            }
+            std::error_code Ec;
+            const auto Time = std::filesystem::last_write_time(Physical.c_str(), Ec);
+            return Ec ? 0 : (int64)Time.time_since_epoch().count();
+        }
+
+        // Tear down a widget's context + RT. Skips Rml when the backend is already down
+        // (Rml::Shutdown destroyed every context), matching DestroyWorldUI.
+        void DestroyWidgetRuntime(FWidgetRuntime& E)
+        {
+            if (E.Context != nullptr)
+            {
+                if (S().bInitialized)
+                {
+                    Rml::RemoveContext(E.Context->GetName());
+                }
+                E.Context  = nullptr;
+                E.Document = nullptr;
+            }
+            // Drop the renderer's cached batch for this RT before the RT itself goes away.
+            if (E.Target && S().Renderer != nullptr)
+            {
+                S().Renderer->ReleaseTargetBatch(E.Target.GetReference());
+            }
+            E.Target.SafeRelease();
+            E.ResourceID = -1;
+            E.BuiltSize  = glm::uvec2(0, 0);
+            E.LoadedPath.clear();
+        }
+
+        // Build a fresh context + offscreen RGBA8 RT for a widget at the given resolution.
+        // The RT's bindless ResourceID is assigned synchronously by CreateImage.
+        void EnsureWidgetResources(FWidgetRuntime& E, CWorld* World, entt::entity Entity, uint32 Width, uint32 Height)
+        {
+            DestroyWidgetRuntime(E);
+
+            char NameBuf[80];
+            std::snprintf(NameBuf, sizeof(NameBuf), "widget_%p_%u",
+                static_cast<void*>(World), entt::to_integral(Entity));
+
+            E.Context = Rml::CreateContext(NameBuf, Rml::Vector2i(int(Width), int(Height)));
+            if (E.Context == nullptr)
+            {
+                LOG_ERROR("[RmlUi] CreateContext failed for widget {}.", NameBuf);
+                return;
+            }
+
+            FRHIImageDesc Desc;
+            Desc.Extent            = glm::uvec2(Width, Height);
+            Desc.Format            = EFormat::RGBA8_UNORM;
+            Desc.Dimension         = EImageDimension::Texture2D;
+            Desc.NumMips           = 1;
+            Desc.ArraySize         = 1;
+            Desc.NumSamples        = 1;
+            Desc.DebugName         = "WidgetRT";
+            Desc.InitialState      = EResourceStates::ShaderResource;
+            Desc.bKeepInitialState = true;
+            Desc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
+
+            E.Target = GRenderContext->CreateImage(Desc);
+            E.ResourceID = (E.Target && E.Target->GetResourceID() >= 0) ? E.Target->GetResourceID() : -1;
+            E.BuiltSize  = glm::uvec2(Width, Height);
+        }
+
+        // Editor hot-reload: when a .rml/.rcss is saved (flag raised by the directory watchers),
+        // restyle EVERY live Rml document -- world UI, world-space widgets, and editor previews
+        // alike. Stylesheet reload re-reads the .rcss from disk (cache cleared first) and keeps
+        // the existing DOM, so Lua element references survive. Game thread, under StateMutex.
+        void ProcessPendingUIReload()
+        {
+            FState& State = S();
+            if (!State.bUIReloadPending.exchange(false, Atomic::MemoryOrderAcquire))
+            {
+                return;
+            }
+
+            Rml::Factory::ClearStyleSheetCache();
+            Rml::Factory::ClearTemplateCache();
+
+            const int NumContexts = Rml::GetNumContexts();
+            for (int i = 0; i < NumContexts; ++i)
+            {
+                Rml::Context* Ctx = Rml::GetContext(i);
+                if (Ctx == nullptr)
+                {
+                    continue;
+                }
+                const int NumDocs = Ctx->GetNumDocuments();
+                for (int d = 0; d < NumDocs; ++d)
+                {
+                    if (Rml::ElementDocument* Doc = Ctx->GetDocument(d))
+                    {
+                        Doc->ReloadStyleSheet();
+                    }
+                }
+            }
+            LOG_INFO("[RmlUi] UI hot-reload: restyled all documents across {} context(s).", NumContexts);
+        }
+
+        // Subscriber for FCoreDelegates::OnContentFileModified (any thread): raise the reload
+        // flag when a UI source file changes. Path-extension filter; reload itself is deferred
+        // to the game thread (ProcessPendingUIReload). Captures nothing -- safe for process life.
+        void OnContentFileModified(FStringView VirtualPath)
+        {
+            auto EndsWith = [&](FStringView Suffix)
+            {
+                return VirtualPath.size() >= Suffix.size()
+                    && VirtualPath.substr(VirtualPath.size() - Suffix.size()) == Suffix;
+            };
+            if (EndsWith(FStringView(".rml")) || EndsWith(FStringView(".rcss")))
+            {
+                S().bUIReloadPending.store(true, Atomic::MemoryOrderRelease);
+            }
         }
     }
 
@@ -301,6 +481,12 @@ namespace Lumina::RmlUi
         Rml::LoadFontFace("/Engine/Resources/Fonts/JetbrainsMono/JetBrainsMono-Bold.ttf", false);
 
         State.bInitialized = true;
+
+        // Editor hot-reload: react to content-file changes broadcast by the editor's central
+        // file watcher (works for plugin mounts too -- we don't watch any path ourselves).
+        // Subscribe once for process life; the handler only touches static state.
+        (void)FCoreDelegates::OnContentFileModified.AddStatic(&OnContentFileModified);
+
         LOG_INFO("[RmlUi] Initialized. Per-world contexts are owned by their CWorld.");
         return true;
     }
@@ -325,6 +511,9 @@ namespace Lumina::RmlUi
                 E->Context = nullptr;
             }
         }
+
+        // Widget contexts (owned by SWidgetComponent.Runtime) are torn down with their worlds
+        // via the on_destroy hook; Rml::Shutdown drops any that outlive their world here.
         Rml::Shutdown();
 
         State.EditorContexts.clear();
@@ -454,6 +643,10 @@ namespace Lumina::RmlUi
         {
             return;
         }
+
+        // Once per frame (flag self-clears): restyle all docs if a UI file changed on disk.
+        ProcessPendingUIReload();
+
         FWorldUIContext* UI = World->GetUIContext();
         if (UI == nullptr || UI->Context == nullptr)
         {
@@ -503,6 +696,208 @@ namespace Lumina::RmlUi
         State.Renderer->BeginFrame(CmdList, Tgt.Image, Tgt.Size, LayoutSize);
         UI->Context->Render();
         State.Renderer->EndFrame();
+    }
+
+    void TickWorldWidgets(CWorld* World)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || World == nullptr)
+        {
+            return;
+        }
+        FWorldUIContext* UI = World->GetUIContext();
+        if (UI == nullptr)
+        {
+            return;
+        }
+
+        // Render-job snapshot for the render thread; rebuilt every frame so RenderWorldWidgets
+        // never has to walk the live registry.
+        UI->WidgetJobs.clear();
+
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        Registry.view<SWidgetComponent>().each([&](entt::entity Entity, SWidgetComponent& Comp)
+        {
+            FWidgetRuntime& R = Comp.Runtime;
+
+            // Culled by the render gather last frame (frustum): skip layout + rasterization entirely
+            // and keep the last RT. A never-built widget (Context null) still falls through so it can
+            // build once and appear the first time it enters view.
+            if (!R.bVisible && R.Context != nullptr)
+            {
+                return;
+            }
+
+            const uint32 Width  = (uint32)glm::max(1, Comp.DrawWidth);
+            const uint32 Height = (uint32)glm::max(1, Comp.DrawHeight);
+
+            // (Re)create context + RT on first sight or resolution change. Also clears
+            // LoadedPath, forcing the document to reload into the fresh context below.
+            if (R.Context == nullptr || R.BuiltSize != glm::uvec2(Width, Height))
+            {
+                EnsureWidgetResources(R, World, Entity, Width, Height);
+            }
+            if (R.Context == nullptr)
+            {
+                return;
+            }
+
+            // (Re)load when the path changes OR the .rml is edited on disk (editor hot-reload).
+            // The on-disk check only fires once a document is loaded.
+            const int64 CurrentWriteTime = GetDocumentWriteTime(Comp.DocumentPath);
+            const bool  bPathChanged     = (R.LoadedPath != Comp.DocumentPath);
+            const bool  bFileChanged     = (R.Document != nullptr && CurrentWriteTime != 0 && CurrentWriteTime != R.DocWriteTime);
+
+            if (bPathChanged || bFileChanged)
+            {
+                // On-disk edit: drop RmlUi's cached stylesheets/templates so the re-parse picks
+                // up .rcss changes too, not just the .rml body.
+                if (bFileChanged)
+                {
+                    Rml::Factory::ClearStyleSheetCache();
+                    Rml::Factory::ClearTemplateCache();
+                }
+
+                R.Context->UnloadAllDocuments();
+                R.Document   = nullptr;
+                R.LoadedPath = Comp.DocumentPath;
+                if (!Comp.DocumentPath.empty())
+                {
+                    R.Document = R.Context->LoadDocument(Rml::String(Comp.DocumentPath.c_str()));
+                    if (R.Document != nullptr)
+                    {
+                        R.Document->SetProperty("width", "100%");
+                        R.Document->SetProperty("height", "100%");
+                        R.Document->Show();
+                    }
+                    else
+                    {
+                        LOG_WARN("[RmlUi] Widget failed to load document '{}'.", Comp.DocumentPath.c_str());
+                    }
+                }
+                R.DocWriteTime = CurrentWriteTime;
+            }
+            
+            const int32 DormancyFrames = CVarWidgetDormancyFrames.GetValue();
+            if (DormancyFrames > 0 && R.bRmlIdle && !bPathChanged && !bFileChanged && R.Target && State.Renderer != nullptr)
+            {
+                if (State.Renderer->GetTargetStableFrames(R.Target.GetReference()) >= (uint32)DormancyFrames)
+                {
+                    return;   // settled: no Update, no job; keep last RT
+                }
+            }
+
+            R.Context->SetDimensions(Rml::Vector2i(int(Width), int(Height)));
+            R.Context->SetDensityIndependentPixelRatio(std::max(0.1f, float(Height) / 1080.0f));
+            R.Context->Update();
+
+            // RmlUi sets the next-update timeout to infinity at the start of Update and lowers it when
+            // an animation/transition (incl. delayed) is pending. Huge => idle => dormancy-eligible.
+            R.bRmlIdle = (R.Context->GetNextUpdateDelay() > 1.0e6);
+
+            // Queue for the render thread (R.ResourceID is read by the scene gather directly).
+            if (R.Document != nullptr && R.Target)
+            {
+                UI->WidgetJobs.push_back(FWidgetRenderJob{ R.Context, R.Target.GetReference(), R.BuiltSize });
+            }
+        });
+    }
+
+    void RenderWorldWidgets(const CWorld* World, ICommandList& CmdList)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        if (!State.bInitialized || State.Renderer == nullptr || World == nullptr)
+        {
+            return;
+        }
+        const FWorldUIContext* UI = World->GetUIContext();
+        if (UI == nullptr)
+        {
+            return;
+        }
+
+        const size_t JobCount = UI->WidgetJobs.size();
+        if (JobCount == 0)
+        {
+            return;
+        }
+
+        const int32 Budget = glm::max(0, CVarWidgetMaxRendersPerFrame.GetValue());
+        int32 Rendered = 0;
+
+        // Rotate the start each frame so the budget doesn't always favor the first widgets.
+        for (size_t k = 0; k < JobCount; ++k)
+        {
+            const FWidgetRenderJob& Job = UI->WidgetJobs[(State.WidgetRenderCursor + k) % JobCount];
+            if (Job.Context == nullptr || Job.Target == nullptr)
+            {
+                continue;
+            }
+
+            // Lay the document into the renderer's draw list (cheap CPU walk), then check whether it
+            // matches what's already rasterized into this RT. If so, skip the clear + GPU pass
+            // entirely -- the persistent RT keeps the previous result.
+            State.Renderer->BeginFrame(CmdList, Job.Target, Job.Size);
+            Job.Context->Render();
+            const uint64 Hash = State.Renderer->PeekFrameHash();
+
+            if (State.Renderer->IsTargetUpToDate(Job.Target, Hash))
+            {
+                State.Renderer->AbortFrame();
+                State.Renderer->NoteTargetStable(Job.Target, true);   // unchanged -> closer to dormant
+                continue;
+            }
+
+            // Changed (or first sight). Defer past the per-frame budget; it stays "dirty" (hash
+            // still differs) so the rotating cursor picks it up on a later frame.
+            if (Budget > 0 && Rendered >= Budget)
+            {
+                State.Renderer->AbortFrame();
+                State.Renderer->NoteTargetStable(Job.Target, false);  // pending change -> keep awake
+                continue;
+            }
+
+            // Hold the RT for this frame's GPU work: we record clear/render commands against it
+            // here, and the entity (and its Runtime.Target) can be destroyed before the GPU runs.
+            CmdList.KeepAlive(Job.Target);
+
+            // Renderer composites with LoadOp=Load, so clear the RT to transparent first.
+            CmdList.SetImageState(Job.Target, AllSubresources, EResourceStates::CopyDest);
+            CmdList.CommitBarriers();
+            CmdList.ClearImageColor(Job.Target, FColor(0.0f, 0.0f, 0.0f, 0.0f));
+
+            State.Renderer->EndFrame();
+            State.Renderer->NoteTargetStable(Job.Target, false);      // just changed -> reset
+
+            // Make it sampleable by the scene's widget pass later this frame.
+            CmdList.SetImageState(Job.Target, AllSubresources, EResourceStates::ShaderResource);
+            CmdList.CommitBarriers();
+            ++Rendered;
+        }
+
+        State.WidgetRenderCursor = (uint32)((State.WidgetRenderCursor + 1) % JobCount);
+    }
+
+    void ReleaseWidget(CWorld* World, SWidgetComponent& Component)
+    {
+        FState& State = S();
+        FRecursiveScopeLock Lock(State.StateMutex);
+        
+        if (World != nullptr)
+        {
+            if (FWorldUIContext* UI = World->GetUIContext())
+            {
+                Rml::Context* DyingContext = Component.Runtime.Context;
+                for (auto It = UI->WidgetJobs.begin(); It != UI->WidgetJobs.end(); )
+                {
+                    It = (It->Context == DyingContext) ? UI->WidgetJobs.erase(It) : It + 1;
+                }
+            }
+        }
+
+        DestroyWidgetRuntime(Component.Runtime);
     }
 
     void TickEditorContexts()

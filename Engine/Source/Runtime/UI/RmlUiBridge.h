@@ -21,6 +21,7 @@ namespace Lumina
     class FRHIImage;
     class FRmlUiRenderer;
     struct FWorldUIContext;
+    struct SWidgetComponent;
 }
 
 namespace Lumina::Lua
@@ -42,6 +43,16 @@ namespace Lumina::RmlUi
     RUNTIME_API void            TickWorldUI(CWorld* World);
     // Render thread: composite one world's UI onto its render target (from CWorld::Render).
     RUNTIME_API void            RenderWorldUI(const CWorld* World, ICommandList& CmdList);
+
+    // World-space widgets (SWidgetComponent). Per-widget state lives on the component
+    // (SWidgetComponent::Runtime). TickWorldWidgets iterates the world's view, lays each
+    // document into its offscreen RT, and queues render jobs (game thread, from CWorld::Extract
+    // before the render gather). RenderWorldWidgets rasterizes those queued RTs (render thread,
+    // from CWorld::Render before the scene). ReleaseWidget tears down one widget's context + RT,
+    // called from the world's on_destroy<SWidgetComponent> hook.
+    RUNTIME_API void            TickWorldWidgets(CWorld* World);
+    RUNTIME_API void            RenderWorldWidgets(const CWorld* World, ICommandList& CmdList);
+    RUNTIME_API void            ReleaseWidget(CWorld* World, SWidgetComponent& Component);
 
     // The world whose context the `UI.*` Lua module targets. Set when a world comes
     // up or resumes; cleared when it tears down.

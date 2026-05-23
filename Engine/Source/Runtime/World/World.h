@@ -200,6 +200,7 @@ namespace Lumina
         void SetupScriptComponent(entt::entity Entity, SScriptComponent& ScriptComponent);
         void OnScriptComponentCreated(entt::entity Entity, SScriptComponent& ScriptComponent, bool bRunReady);
         void OnScriptComponentDestroyed(entt::registry& Registry, entt::entity Entity);
+        void OnWidgetComponentDestroyed(entt::registry& Registry, entt::entity Entity);
 
         // Hot-reload entry point: drop the existing script binding on this component
         // and run the OnScriptComponentCreated bind path again with the freshly

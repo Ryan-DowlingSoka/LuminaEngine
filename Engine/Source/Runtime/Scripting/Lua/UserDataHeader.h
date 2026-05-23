@@ -4,8 +4,6 @@
 
 namespace Lumina::Lua
 {
-    // External at offset 0 across all TUserdataHeader<T> so parent accessors can read it from child blocks.
-    // Inheritance dispatch (properties + namecalls) depends on this layout guarantee.
     template<typename T>
     struct TUserdataHeader
     {
@@ -32,7 +30,7 @@ namespace Lumina::Lua
                 return External;
             }
 
-            return reinterpret_cast<RawT*>(Buffer);
+            return std::launder(reinterpret_cast<RawT*>(Buffer));
         }
 
         void InvokeDtor()
@@ -43,7 +41,7 @@ namespace Lumina::Lua
                 {
                     return;
                 }
-                reinterpret_cast<RawT*>(Buffer)->~RawT();
+                std::launder(reinterpret_cast<RawT*>(Buffer))->~RawT();
             }
         }
     };

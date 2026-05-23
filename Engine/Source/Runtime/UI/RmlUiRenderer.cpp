@@ -23,6 +23,7 @@
 #include "FileSystem/FileSystem.h"
 #include "Renderer/GPUProfiler/GPUProfiler.h"
 #include "Renderer/RenderManager.h"
+#include "Renderer/RendererUtils.h"
 #include "Renderer/TextureManager.h"
 #include "Renderer/MaterialManager.h"
 
@@ -125,6 +126,7 @@ namespace Lumina
             }
         }
         Textures.clear();
+        TargetBatches.clear();
         DefaultWhiteImage.SafeRelease();
         MaterialBufferSet.SafeRelease();
         MaterialBufferLayout.SafeRelease();
@@ -237,7 +239,8 @@ namespace Lumina
         CurrentCmdList   = &CmdList;
         CurrentTarget    = Target;
         CurrentSize      = ViewportSize;
-        bRenderPassOpen  = false;
+        bCachedFrameHashValid = false;
+        ++FrameCounter;
 
         DrawCalls.clear();
 
@@ -257,6 +260,9 @@ namespace Lumina
         UserTransform = glm::mat4(1.0f);
         CachedMVP     = ProjectionMatrix;
         bScissorEnabled = false;
+        // Reset the leftover clip rect too: a stale region from the previously rendered context
+        // would otherwise clip this one's first draws (preview-into-live bleed).
+        CurrentScissor  = Rml::Rectanglei();
 
         // Cache pass desc so SetGraphicsState avoids Begin/End churn across draws.
         CurrentPassDesc = FRenderPassDesc{};
@@ -270,6 +276,149 @@ namespace Lumina
         }
     }
 
+    uint64 FRmlUiRenderer::ComputeDrawCallHash() const
+    {
+        // FNV-1a over the per-draw parameters. Compiled-geometry handles are monotonic and never
+        // reused, so a handle uniquely identifies its (immutable) vertex/index bytes -- no need to
+        // hash the geometry itself. Translation/MVP/scissor catch elements that move or re-clip.
+        uint64 Hash = 1469598103934665603ull;
+        auto Mix = [&Hash](const void* Data, size_t Size)
+        {
+            const uint8* Bytes = static_cast<const uint8*>(Data);
+            for (size_t i = 0; i < Size; ++i)
+            {
+                Hash ^= Bytes[i];
+                Hash *= 1099511628211ull;
+            }
+        };
+
+        const uint64 Count = DrawCalls.size();
+        Mix(&Count, sizeof(Count));
+
+        bool bHasBrush = false;
+        for (const FDrawCall& Draw : DrawCalls)
+        {
+            Mix(&Draw.Geometry, sizeof(Draw.Geometry));
+            Mix(&Draw.Texture, sizeof(Draw.Texture));
+            Mix(&Draw.Translation, sizeof(Draw.Translation));
+            Mix(&Draw.MVP, sizeof(Draw.MVP));
+            Mix(&Draw.bScissorEnabled, sizeof(Draw.bScissorEnabled));
+            Mix(&Draw.Scissor, sizeof(Draw.Scissor));
+
+            if (Draw.Texture != 0)
+            {
+                auto It = Textures.find(Draw.Texture);
+                if (It != Textures.end() && It->second.BrushMaterial != nullptr)
+                {
+                    bHasBrush = true;
+                }
+            }
+        }
+
+        // Animated UI-material brushes evaluate every frame into their own RT; the draw list that
+        // samples them is unchanged, so without a per-frame salt the brush would freeze.
+        if (bHasBrush)
+        {
+            Mix(&FrameCounter, sizeof(FrameCounter));
+        }
+        return Hash;
+    }
+
+    uint64 FRmlUiRenderer::PeekFrameHash() const
+    {
+        CachedFrameHash = ComputeDrawCallHash();
+        bCachedFrameHashValid = true;
+        return CachedFrameHash;
+    }
+
+    bool FRmlUiRenderer::IsTargetUpToDate(FRHIImage* Target, uint64 Hash) const
+    {
+        if (Target == nullptr)
+        {
+            return false;
+        }
+        auto It = TargetBatches.find(Target);
+        return It != TargetBatches.end() && It->second.bValid
+            && It->second.LastHash == Hash
+            && It->second.TargetID == Target->GetResourceID();
+    }
+
+    void FRmlUiRenderer::AbortFrame()
+    {
+        // Generated textures (font glyphs) are queued during Context::Render; flush them even when
+        // we skip the draw so a later render isn't missing its atlas. Safe -- outside any pass.
+        UploadPendingTextures();
+        ResetFrameState();
+    }
+
+    void FRmlUiRenderer::ResetFrameState()
+    {
+        DrawCalls.clear();
+        CurrentCmdList = nullptr;
+        CurrentTarget  = nullptr;
+    }
+
+    void FRmlUiRenderer::ReleaseTargetBatch(FRHIImage* Target)
+    {
+        TargetBatches.erase(Target);
+    }
+
+    void FRmlUiRenderer::NoteTargetStable(FRHIImage* Target, bool bStable)
+    {
+        auto It = TargetBatches.find(Target);
+        if (It == TargetBatches.end())
+        {
+            return;
+        }
+        if (bStable)
+        {
+            ++It->second.StableFrames;
+        }
+        else
+        {
+            It->second.StableFrames = 0;
+        }
+    }
+
+    uint32 FRmlUiRenderer::GetTargetStableFrames(FRHIImage* Target) const
+    {
+        auto It = TargetBatches.find(Target);
+        return It != TargetBatches.end() ? It->second.StableFrames : 0;
+    }
+
+    void FRmlUiRenderer::EnsureBatchBuffers(FTargetBatch& Batch, uint32 VertexBytes, uint32 IndexBytes)
+    {
+        if (!Batch.VertexBuffer)
+        {
+            FRHIBufferDesc Desc;
+            Desc.Size              = glm::max<uint32>(VertexBytes, 4096);
+            Desc.Usage.SetFlag(BUF_VertexBuffer);
+            Desc.bKeepInitialState = true;
+            Desc.InitialState      = EResourceStates::VertexBuffer;
+            Desc.DebugName         = "RmlUiVertex";
+            Batch.VertexBuffer     = GRenderContext->CreateBuffer(Desc);
+        }
+        else
+        {
+            RenderUtils::ResizeBufferIfNeeded(Batch.VertexBuffer, VertexBytes, 1.5f, Batch.VBLowUsageFrames);
+        }
+
+        if (!Batch.IndexBuffer)
+        {
+            FRHIBufferDesc Desc;
+            Desc.Size              = glm::max<uint32>(IndexBytes, 4096);
+            Desc.Usage.SetFlag(BUF_IndexBuffer);
+            Desc.bKeepInitialState = true;
+            Desc.InitialState      = EResourceStates::IndexBuffer;
+            Desc.DebugName         = "RmlUiIndex";
+            Batch.IndexBuffer      = GRenderContext->CreateBuffer(Desc);
+        }
+        else
+        {
+            RenderUtils::ResizeBufferIfNeeded(Batch.IndexBuffer, IndexBytes, 1.5f, Batch.IBLowUsageFrames);
+        }
+    }
+
     void FRmlUiRenderer::EndFrame()
     {
         if (CurrentCmdList == nullptr)
@@ -277,7 +426,7 @@ namespace Lumina
             return;
         }
         ICommandList& CmdList = *CurrentCmdList;
-        GPU_PROFILE_SCOPE(CurrentCmdList, "RmlUI");
+        GPU_PROFILE_SCOPE(CurrentCmdList, "RmlUi");
 
         // Texture uploads must be outside a render pass.
         UploadPendingTextures();
@@ -288,139 +437,172 @@ namespace Lumina
 
         if (DrawCalls.empty() || CurrentTarget == nullptr)
         {
-            DrawCalls.clear();
-            CurrentCmdList = nullptr;
-            CurrentTarget  = nullptr;
+            ResetFrameState();
             return;
         }
 
         LUMINA_PROFILE_SCOPE();
-        
-        BatchVertices.clear();
-        BatchIndices.clear();
-        BatchDrawData.clear();
+
+        FTargetBatch& Batch = TargetBatches[CurrentTarget];
+        const uint64 Hash   = bCachedFrameHashValid ? CachedFrameHash : ComputeDrawCallHash();
+
+        // Rebuild the persistent geometry only when the draw list actually changed. Unchanged
+        // frames (a static document re-composited onto a shared RT, e.g. the world UI) reuse the
+        // resident buffers and just re-record the draw -- no per-vertex conversion, no re-upload.
+        const int32 TargetID = CurrentTarget->GetResourceID();
+        const bool bRebuild = !Batch.bValid || Batch.LastHash != Hash || Batch.TargetID != TargetID
+            || !Batch.VertexBuffer || !Batch.IndexBuffer;
 
         const float FullW = float(CurrentSize.x);
         const float FullH = float(CurrentSize.y);
 
-        for (const FDrawCall& Draw : DrawCalls)
+        if (bRebuild)
         {
-            auto GeomIt = Geometries.find(Draw.Geometry);
-            if (GeomIt == Geometries.end())
-            {
-                continue;
-            }
-            const FGeometry& Geom = GeomIt->second;
-            if (Geom.VertexData.empty() || Geom.IndexData.empty() || Geom.IndexCount == 0)
-            {
-                continue;
-            }
+            BatchVertices.clear();
+            BatchIndices.clear();
+            BatchDrawData.clear();
 
-            // Bindless: untextured geometry samples the 1x1 white default's slot.
-            int32 ResourceID = DefaultWhiteResourceID;
-            if (Draw.Texture != 0)
+            for (const FDrawCall& Draw : DrawCalls)
             {
-                auto TexIt = Textures.find(Draw.Texture);
-                if (TexIt != Textures.end() && TexIt->second.ResourceID >= 0)
+                auto GeomIt = Geometries.find(Draw.Geometry);
+                if (GeomIt == Geometries.end())
                 {
-                    ResourceID = TexIt->second.ResourceID;
+                    continue;
+                }
+                const FGeometry& Geom = GeomIt->second;
+                if (Geom.VertexData.empty() || Geom.IndexData.empty() || Geom.IndexCount == 0)
+                {
+                    continue;
+                }
+
+                // Bindless: untextured geometry samples the 1x1 white default's slot.
+                int32 ResourceID = DefaultWhiteResourceID;
+                if (Draw.Texture != 0)
+                {
+                    auto TexIt = Textures.find(Draw.Texture);
+                    if (TexIt != Textures.end() && TexIt->second.ResourceID >= 0)
+                    {
+                        ResourceID = TexIt->second.ResourceID;
+                    }
+                }
+                if (ResourceID < 0)
+                {
+                    continue;
+                }
+
+                // Per-draw entry; this draw's vertices reference it by index.
+                const uint32 DrawIndex = uint32(BatchDrawData.size());
+                FUiDraw DD;
+                DD.MVP      = Draw.MVP;
+                DD.ClipRect = Draw.bScissorEnabled
+                    ? glm::vec4(float(Draw.Scissor.Position().x), float(Draw.Scissor.Position().y),
+                                float(Draw.Scissor.Position().x + Draw.Scissor.Width()),
+                                float(Draw.Scissor.Position().y + Draw.Scissor.Height()))
+                    : glm::vec4(0.0f, 0.0f, FullW, FullH);
+                DD.TextureID    = uint32(ResourceID);
+                DD.SamplerIndex = GRmlUiSamplerIndex;
+                DD.Pad0 = 0;
+                DD.Pad1 = 0;
+                BatchDrawData.push_back(DD);
+
+                const Rml::Vertex* SrcVerts = reinterpret_cast<const Rml::Vertex*>(Geom.VertexData.data());
+                const uint32 VtxCount = uint32(Geom.VertexData.size() / sizeof(Rml::Vertex));
+                const int*   SrcInds  = reinterpret_cast<const int*>(Geom.IndexData.data());
+
+                const uint32 BaseVertex = uint32(BatchVertices.size());
+
+                // Convert to the GPU vertex: bake translation, tag with the draw index.
+                BatchVertices.reserve(BatchVertices.size() + VtxCount);
+                for (uint32 v = 0; v < VtxCount; ++v)
+                {
+                    const Rml::Vertex& Src = SrcVerts[v];
+                    FUiVertex V;
+                    V.Position[0] = Src.position.x + Draw.Translation.x;
+                    V.Position[1] = Src.position.y + Draw.Translation.y;
+                    Memory::Memcpy(&V.Colour, &Src.colour, sizeof(uint32));
+                    V.UV[0]     = Src.tex_coord.x;
+                    V.UV[1]     = Src.tex_coord.y;
+                    V.DrawIndex = DrawIndex;
+                    BatchVertices.push_back(V);
+                }
+
+                // Rebase indices so we draw with VertexOffset = 0.
+                BatchIndices.reserve(BatchIndices.size() + Geom.IndexCount);
+                for (uint32 i = 0; i < Geom.IndexCount; ++i)
+                {
+                    BatchIndices.push_back(uint32(SrcInds[i]) + BaseVertex);
                 }
             }
-            if (ResourceID < 0)
+
+            if (BatchIndices.empty() || BatchDrawData.empty())
             {
-                continue;
+                Batch.IndexCount = 0;
+                Batch.bValid     = true;
+                Batch.LastHash   = Hash;
+                Batch.TargetID   = TargetID;
+                Batch.Draws.clear();
+                ResetFrameState();
+                return;
             }
 
-            // Per-draw entry; this draw's vertices reference it by index.
-            const uint32 DrawIndex = uint32(BatchDrawData.size());
-            FUiDraw DD;
-            DD.MVP      = Draw.MVP;
-            DD.ClipRect = Draw.bScissorEnabled
-                ? glm::vec4(float(Draw.Scissor.Position().x), float(Draw.Scissor.Position().y),
-                            float(Draw.Scissor.Position().x + Draw.Scissor.Width()),
-                            float(Draw.Scissor.Position().y + Draw.Scissor.Height()))
-                : glm::vec4(0.0f, 0.0f, FullW, FullH);
-            DD.TextureID    = uint32(ResourceID);
-            DD.SamplerIndex = GRmlUiSamplerIndex;
-            DD.Pad0 = 0;
-            DD.Pad1 = 0;
-            BatchDrawData.push_back(DD);
+            const uint32 VBytes = uint32(BatchVertices.size() * sizeof(FUiVertex));
+            const uint32 IBytes = uint32(BatchIndices.size()  * sizeof(uint32));
+            EnsureBatchBuffers(Batch, VBytes, IBytes);
 
-            const Rml::Vertex* SrcVerts = reinterpret_cast<const Rml::Vertex*>(Geom.VertexData.data());
-            const uint32 VtxCount = uint32(Geom.VertexData.size() / sizeof(Rml::Vertex));
-            const int*   SrcInds  = reinterpret_cast<const int*>(Geom.IndexData.data());
-
-            const uint32 BaseVertex = uint32(BatchVertices.size());
-
-            // Convert to the GPU vertex: bake translation, tag with the draw index.
-            BatchVertices.reserve(BatchVertices.size() + VtxCount);
-            for (uint32 v = 0; v < VtxCount; ++v)
-            {
-                const Rml::Vertex& Src = SrcVerts[v];
-                FUiVertex V;
-                V.Position[0] = Src.position.x + Draw.Translation.x;
-                V.Position[1] = Src.position.y + Draw.Translation.y;
-                Memory::Memcpy(&V.Colour, &Src.colour, sizeof(uint32));
-                V.UV[0]     = Src.tex_coord.x;
-                V.UV[1]     = Src.tex_coord.y;
-                V.DrawIndex = DrawIndex;
-                BatchVertices.push_back(V);
-            }
-
-            // Rebase indices so we draw with VertexOffset = 0.
-            BatchIndices.reserve(BatchIndices.size() + Geom.IndexCount);
-            for (uint32 i = 0; i < Geom.IndexCount; ++i)
-            {
-                BatchIndices.push_back(uint32(SrcInds[i]) + BaseVertex);
-            }
-        }
-
-        if (!BatchIndices.empty() && !BatchDrawData.empty())
-        {
-            CmdList.SetImageState(CurrentTarget, AllSubresources, EResourceStates::RenderTarget);
+            // Upload the bulk geometry into the resident buffers. Mirrors the scene's non-dynamic
+            // vertex upload: stage CopyDest with barriers off across the writes, then let automatic
+            // barriers move them to the vertex/index read state when they're bound below.
+            CmdList.SetBufferState(Batch.VertexBuffer, EResourceStates::CopyDest);
+            CmdList.SetBufferState(Batch.IndexBuffer,  EResourceStates::CopyDest);
             CmdList.CommitBarriers();
+            CmdList.DisableAutomaticBarriers();
+            CmdList.WriteBuffer(Batch.VertexBuffer, BatchVertices.data(), VBytes);
+            CmdList.WriteBuffer(Batch.IndexBuffer,  BatchIndices.data(),  IBytes);
+            CmdList.EnableAutomaticBarriers();
 
-            // Three transient allocations for the whole frame: vertices, indices,
-            // and the per-draw data (read in-shader via its device address).
-            const size_t VBytes = BatchVertices.size() * sizeof(FUiVertex);
-            const size_t IBytes = BatchIndices.size()  * sizeof(uint32);
-            const size_t DBytes = BatchDrawData.size() * sizeof(FUiDraw);
-            FTransientAlloc VBAlloc = CmdList.AllocateTransient(VBytes, alignof(FUiVertex));
-            FTransientAlloc IBAlloc = CmdList.AllocateTransient(IBytes, sizeof(uint32));
-            FTransientAlloc DBAlloc = CmdList.AllocateTransient(DBytes, 16);
-            if (VBAlloc.Buffer != nullptr && IBAlloc.Buffer != nullptr && DBAlloc.Buffer != nullptr)
-            {
-                Memory::Memcpy(VBAlloc.Cpu, BatchVertices.data(), VBytes);
-                Memory::Memcpy(IBAlloc.Cpu, BatchIndices.data(),  IBytes);
-                Memory::Memcpy(DBAlloc.Cpu, BatchDrawData.data(), DBytes);
-
-                // One graphics state for the whole UI: pipeline, bindless table,
-                // the shared VB/IB, full viewport + scissor. Clipping is per-draw
-                // in the shader (ClipRect), so no dynamic scissor is needed.
-                FGraphicsState State;
-                State.SetPipeline(Pipeline);
-                State.SetRenderPass(CurrentPassDesc);
-                State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
-                State.SetVertexBuffer(FVertexBufferBinding{}.SetBuffer(VBAlloc.Buffer).SetSlot(0).SetOffset(VBAlloc.Offset));
-                State.SetIndexBuffer(FIndexBufferBinding{}.SetBuffer(IBAlloc.Buffer).SetFormat(EFormat::R32_UINT).SetOffset(IBAlloc.Offset));
-                State.AddViewport(FViewport(0.0f, FullW, 0.0f, FullH, 0.0f, 1.0f));
-                State.AddScissor(FRect(0, int(CurrentSize.x), 0, int(CurrentSize.y)));
-                CmdList.SetGraphicsState(State);
-                
-                FRmlUiPushConstants PC;
-                PC.DrawsAddress = DBAlloc.Gpu;
-                CmdList.SetPushConstants(&PC, sizeof(PC));
-
-                CmdList.DrawIndexed(uint32(BatchIndices.size()), 1, 0, 0, 0);
-            }
-
-            CmdList.EndRenderPass();
-            bRenderPassOpen = false;
+            Batch.Draws      = BatchDrawData;
+            Batch.IndexCount = uint32(BatchIndices.size());
+            Batch.LastHash   = Hash;
+            Batch.TargetID   = TargetID;
+            Batch.bValid     = true;
         }
 
-        DrawCalls.clear();
-        CurrentCmdList = nullptr;
-        CurrentTarget  = nullptr;
+        if (Batch.IndexCount == 0 || Batch.Draws.empty() || !Batch.VertexBuffer || !Batch.IndexBuffer)
+        {
+            ResetFrameState();
+            return;
+        }
+
+        CmdList.SetImageState(CurrentTarget, AllSubresources, EResourceStates::RenderTarget);
+        CmdList.CommitBarriers();
+
+        // Only the small per-draw data is transient (read in-shader via device address); the bulk
+        // vertex/index data lives in the resident buffers above.
+        const size_t DBytes = Batch.Draws.size() * sizeof(FUiDraw);
+        FTransientAlloc DBAlloc = CmdList.AllocateTransient(DBytes, 16);
+        if (DBAlloc.Buffer != nullptr)
+        {
+            Memory::Memcpy(DBAlloc.Cpu, Batch.Draws.data(), DBytes);
+
+            FGraphicsState State;
+            State.SetPipeline(Pipeline);
+            State.SetRenderPass(CurrentPassDesc);
+            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            State.SetVertexBuffer(FVertexBufferBinding{}.SetBuffer(Batch.VertexBuffer).SetSlot(0).SetOffset(0));
+            State.SetIndexBuffer(FIndexBufferBinding{}.SetBuffer(Batch.IndexBuffer).SetFormat(EFormat::R32_UINT).SetOffset(0));
+            State.AddViewport(FViewport(0.0f, FullW, 0.0f, FullH, 0.0f, 1.0f));
+            State.AddScissor(FRect(0, int(CurrentSize.x), 0, int(CurrentSize.y)));
+            CmdList.SetGraphicsState(State);
+
+            FRmlUiPushConstants PC;
+            PC.DrawsAddress = DBAlloc.Gpu;
+            CmdList.SetPushConstants(&PC, sizeof(PC));
+
+            CmdList.DrawIndexed(Batch.IndexCount, 1, 0, 0, 0);
+        }
+
+        CmdList.EndRenderPass();
+        ResetFrameState();
     }
 
     Rml::CompiledGeometryHandle FRmlUiRenderer::CompileGeometry(Rml::Span<const Rml::Vertex> Vertices, Rml::Span<const int> Indices)
@@ -432,8 +614,8 @@ namespace Lumina
             return 0;
         }
 
-        // CPU-side cache only. At EndFrame all referenced geometry is concatenated
-        // into one transient VB/IB (translation baked in).
+        // CPU-side cache only. At EndFrame the referenced geometry is concatenated into the
+        // target's resident VB/IB (translation baked in), rebuilt only when the draw list changes.
         FGeometry Geom;
         const uint8* VBytes = reinterpret_cast<const uint8*>(Vertices.data());
         const uint8* IBytes = reinterpret_cast<const uint8*>(Indices.data());

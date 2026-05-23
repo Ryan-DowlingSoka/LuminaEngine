@@ -171,6 +171,36 @@ https://github.com/user-attachments/assets/3d797479-fc47-4b8f-baf4-87315709d0c2
    - Or copy `Templates/Blank/` to create a new project, then run its
      `GenerateProject.bat` to produce a solution.
 
+### Build Configuration
+
+Optional engine features are controlled from a single file,
+[`BuildScripts/BuildConfig.lua`](BuildScripts/BuildConfig.lua). Each feature is
+`"auto"`, `"on"` (force into every configuration) or `"off"` (strip from every
+configuration), and the choices are baked in when you regenerate the solution.
+
+| Feature      | What it controls                          | `"auto"` default                         |
+| ------------ | ----------------------------------------- | ---------------------------------------- |
+| `Tracy`          | Tracy CPU/GPU profiler (`LUMINA_PROFILE_*`)        | Debug + Development; **off** in Shipping |
+| `Validation`     | Vulkan validation + sync layers                   | Debug only                               |
+| `Aftermath`      | NVIDIA Nsight Aftermath GPU crash dumps            | NVIDIA machines, Debug + Development      |
+| `VerboseLogging` | `LOG_TRACE` / `LOG_DEBUG` / `LOG_INFO` macros      | Debug + Development; **off** in Shipping |
+
+`"off"` is a true strip: e.g. `Tracy = "off"` drops the Tracy library from the
+build entirely and turns every profiling macro into a no-op, and
+`VerboseLogging = "off"` removes `LOG_TRACE/DEBUG/INFO` (warnings and errors are
+always kept). `Aftermath` auto-enables only when an NVIDIA GPU is detected on the
+machine generating the solution.
+
+For a one-off build (e.g. a profiling-free package) you can override any feature
+on the command line without editing the file — the flag wins:
+
+```bash
+GenerateProjectFiles.bat --tracy=off --validation=on --verbose-logging=off
+```
+
+Regenerating prints the resolved feature set, e.g.
+`[Lumina] Build features: Tracy=auto (Debug, Development)  Validation=auto (Debug)  Aftermath=auto (Debug, Development)  VerboseLogging=auto (Debug, Development)  [NVIDIA GPU]`.
+
 ### Troubleshooting
 
 > [!TIP]

@@ -20,7 +20,10 @@ if not exist "%PREMAKE_EXE%" (
     exit /b 1
 )
 
-"%PREMAKE_EXE%" vs2022
+rem  Extra args pass straight through to premake, so feature toggles work here:
+rem    GenerateProjectFiles.bat --tracy=off --validation=on --aftermath=on
+rem  (persistent defaults live in BuildScripts\BuildConfig.lua)
+"%PREMAKE_EXE%" vs2022 %*
 if errorlevel 1 (
     echo.
     echo Project generation failed.

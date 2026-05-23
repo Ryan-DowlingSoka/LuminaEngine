@@ -66,21 +66,16 @@ function LuminaWorkspaceSettings(Opts)
             "GLM_FORCE_AVX2",
             "IMGUI_DEFINE_MATH_OPERATORS",
             "IMGUI_IMPL_VULKAN_USE_VOLK",
-            "WITH_AFTERMATH",
 
             "RMLUI_STATIC_LIB",
 
-            -- ABI-critical: these size Luau's user/light-userdata tag tables.
-            -- Engine and game MUST agree or script types mismatch at the DLL
-            -- boundary. Keep them here, not duplicated per workspace.
             "LUA_VECTOR_SIZE=4",
             "LUA_UTAG_LIMIT=2000",
             "LUA_LUTAG_LIMIT=2000",
 
-            "TRACY_ALLOW_SHADOW_WARNING",
-            "TRACY_ENABLE",
-            "TRACY_CALLSTACK",
-            "TRACY_ON_DEMAND",
+            -- Tracy, Vulkan validation and NVIDIA Aftermath defines are NOT
+            -- listed here; they are applied per-configuration further down,
+            -- driven by LuminaOptions (BuildConfig.lua + CLI flags).
 
             'LUMINA_SYSTEM_NAME=\"%{LuminaConfig.GetSystem()}\"',
             'LUMINA_ARCH_NAME=\"%{LuminaConfig.GetArchitecture()}\"',
@@ -113,8 +108,6 @@ function LuminaWorkspaceSettings(Opts)
                 "DLL_EXPORT=__declspec(dllexport)",
                 "DLL_IMPORT=__declspec(dllimport)",
                 "__AVX2__",
-                -- Block <windows.h> from defining min/max macros, which clobber
-                -- std::max/glm::min etc.
                 "NOMINMAX",
                 "WIN32_LEAN_AND_MEAN",
             }
@@ -176,7 +169,55 @@ function LuminaWorkspaceSettings(Opts)
             symbols "Off"
             runtime "Release"
             defines { "NDEBUG", "LE_SHIPPING", "LUMINA_SHIPPING" }
-            removedefines { "TRACY_ENABLE", "JPH_DEBUG_RENDERER" }
+            removedefines { "JPH_DEBUG_RENDERER" }
 
         filter {}
+
+        -- ====================================================================
+        -- Optional-feature defines (driven by LuminaOptions; see BuildConfig.lua)
+        --
+        -- Each feature is added only in the configurations where it is active,
+        -- so a "Tracy off" or non-Shipping-only feature simply never sees its
+        -- defines. The matching links / DLL copies are handled in Module.lua
+        -- and Options.LinkAftermath.
+        -- ====================================================================
+        ApplyLuminaFeatureDefines()
+end
+
+
+-- Apply the preprocessor defines for each optional feature in exactly the
+-- configurations LuminaOptions marks active. Kept as a free function so the
+-- workspace body above stays readable.
+function ApplyLuminaFeatureDefines()
+    local function Feature(name, defs)
+        local fstr = LuminaOptions.FilterFor(name)
+        if not fstr then return end
+        filter(fstr)
+            defines(defs)
+        filter {}
+    end
+
+    -- Tracy profiler. TRACY_ALLOW_SHADOW_WARNING only matters while Tracy
+    -- headers compile, so it travels with the rest of the Tracy define set.
+    Feature("Tracy",
+    {
+        "LUMINA_WITH_TRACY",
+        "TRACY_ENABLE",
+        "TRACY_CALLSTACK",
+        "TRACY_ON_DEMAND",
+        "TRACY_ALLOW_SHADOW_WARNING",
+        "RMLUI_TRACY_PROFILING",
+    })
+
+    -- Vulkan validation layers. Consumed by RenderManager to flip on the
+    -- validation/synchronization layers at device creation.
+    Feature("Validation", { "LUMINA_WITH_VALIDATION" })
+
+    -- NVIDIA Aftermath crash dumps. The import lib + DLL copy are wired by
+    -- Options.LinkAftermath in the Runtime/Editor modules.
+    Feature("Aftermath", { "WITH_AFTERMATH" })
+
+    -- Verbose logging (LOG_TRACE/DEBUG/INFO). When inactive, those macros
+    -- compile to nothing; see Log.h.
+    Feature("VerboseLogging", { "LUMINA_VERBOSE_LOGGING" })
 end

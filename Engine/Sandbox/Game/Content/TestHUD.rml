@@ -50,7 +50,7 @@
 
         <div id="message" class="notice">Click the buttons to exercise the UI Lua API.</div>
 
-        <button id="btn_increment" class="btn btn-primary btn-block">Increment Counter</button>
+        <button id="btn_increment" class="btn btn-primary btn-block">Increment Countddder</button>
         <button id="btn_highlight" class="btn btn-block">Toggle Highlight</button>
         <button id="btn_rml"       class="btn btn-block">Inject Markup</button>
         <button id="btn_popup"     class="btn btn-block">Toggle Popup</button>

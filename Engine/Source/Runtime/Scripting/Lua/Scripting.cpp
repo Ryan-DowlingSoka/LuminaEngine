@@ -336,7 +336,7 @@ namespace Lumina::Lua
 
     static void* ScriptingMemoryReallocFn([[maybe_unused]] void* Caller, void* Memory, [[maybe_unused]] size_t OldSize, size_t NewSize)
     {
-        LUMINA_MEMORY_SCOPE("Physics");
+        LUMINA_MEMORY_SCOPE("Scripting");
 
         if (NewSize == 0)
         {

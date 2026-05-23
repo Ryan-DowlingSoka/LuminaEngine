@@ -379,6 +379,23 @@ struct FBillboardInstance
     property float3 ColorTint { get { return UnpackColor(ColorPack).rgb; }}
 };
 
+// World-space UI widget quad. Matches FWidgetInstance on the C++ side (96B, dense).
+struct FWidgetInstance
+{
+    float4x4        Transform;
+    float2          WorldSize;
+    uint            TextureIndex;
+    uint            Flags;          // bit0 = billboard
+    private uint    ColorPack;
+    uint            EntityID;
+    private uint    Pad0;
+    private uint    Pad1;
+
+    property float4 Tint { get { return UnpackColor(ColorPack); }}
+};
+
+static const uint WIDGET_FLAG_BILLBOARD = 1u;
+
 // Hot per-light data. Sized to a single 64B cache line so the lighting loop
 // can stream lights with one L2 miss per light instead of reading through the
 // old 640B struct (which wasted ~90% of each fetched cache line on data only

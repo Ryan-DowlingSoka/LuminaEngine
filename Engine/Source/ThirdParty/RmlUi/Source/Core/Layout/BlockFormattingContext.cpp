@@ -27,6 +27,7 @@
  */
 
 #include "BlockFormattingContext.h"
+
 #include "../../../Include/RmlUi/Core/ComputedValues.h"
 #include "../../../Include/RmlUi/Core/Element.h"
 #include "../../../Include/RmlUi/Core/Profiling.h"

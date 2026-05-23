@@ -7,10 +7,7 @@ namespace Lumina
     struct RUNTIME_API FLineBatcherComponent
     {
         static constexpr auto in_place_delete = true;
-
-        // Self-contained line record. Storing endpoints + packed color
-        // directly removes the parallel Vertices array we used to keep,
-        // which had to be index-patched on every compaction.
+        
         struct FLineInstance
         {
             glm::vec3   Start;
@@ -21,9 +18,7 @@ namespace Lumina
             uint8       bDepthTest:1;
             uint8       bSingleFrame:1;
         };
-
-        // Cross-thread record. Same shape as FLineInstance minus the
-        // lifetime bookkeeping that DrainQueue fills in.
+        
         struct FQueuedLine
         {
             glm::vec3   Start;
@@ -36,11 +31,7 @@ namespace Lumina
         };
 
         TVector<FLineInstance>          Lines;
-
-        // MPMC queue. moodycamel's ConcurrentQueue is lock-free for both
-        // enqueue and dequeue; per-call cost is dominated by one atomic
-        // CAS on the producer block, which is well under the cost of the
-        // vector reserve/emplace path that DrainQueue replaces.
+        
         TConcurrentQueue<FQueuedLine>   Queue;
 
         // Thread-safe. Call from any worker. The line becomes visible the
@@ -57,7 +48,7 @@ namespace Lumina
             Q.bSingleFrame  = (Duration == -1.0f) ? 1u : 0u;
             Queue.enqueue(Q);
         }
-
+        
         // Pull every queued line into Lines. Single-threaded; call before
         // reading Lines for render extraction.
         void DrainQueue()

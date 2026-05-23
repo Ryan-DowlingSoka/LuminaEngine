@@ -52,7 +52,7 @@ namespace Lumina::Lua
         }
         else
         {
-           TStack<TParam>::Push(L, Param);
+           TStack<TParam>::Push(L, eastl::forward<TParam>(Param));
         }
     }
     

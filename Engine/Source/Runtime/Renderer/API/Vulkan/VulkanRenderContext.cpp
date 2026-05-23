@@ -30,15 +30,8 @@
 
 namespace Lumina
 {
-    // Per-frame growth diagnostic. Logs (every ~120 frames) the queue depth, in-flight
-    // command buffers, pending wait semaphores, bindless descriptor live/capacity, and
-    // VMA allocation count/bytes -- so an unbounded climb (the source of FQueue::Present
-    // rising over time) shows up as one of these numbers monotonically increasing.
-    static TConsoleVar<bool> CVarDiagnoseFrameGrowth("RHI.DiagnoseFrameGrowth", false,
-        "Log per-frame GPU resource counts to find unbounded growth behind a rising Present time.");
-
     VkAllocationCallbacks GVulkanAllocationCallbacks;
-    
+
     static void* VulkanAlloc(void* pUserData, size_t size, size_t alignment, VkSystemAllocationScope allocationScope)
     {
         return Memory::Malloc(size, alignment);
@@ -48,7 +41,7 @@ namespace Lumina
     {
         Memory::Free(pMemory);
     }
-    
+
     static void* VulkanRealloc(void* pUserData, void* pMemory, size_t size, size_t alignment, VkSystemAllocationScope allocationScope)
     {
         return Memory::Realloc(pMemory, size, alignment);
@@ -272,12 +265,6 @@ namespace Lumina
             {
                 Slot->ClearReferencedResources();
                 Slot->SubmissionID = 0;
-                // Reset here, not at next Begin. Pooled buffers retain descriptor-set
-                // tracking until reset; if a buffer sits idle in the pool with old
-                // descriptor bindings and validation/driver tries to free those
-                // descriptors (e.g. ImGui's periodic ImTexture cleanup), the buffer
-                // shows up as "still using" them. Resetting on retire releases the
-                // tracking immediately so descriptor frees are always safe.
                 vkResetCommandBuffer(Slot->CommandBuffer, 0);
                 ToEnqueue.emplace_back(Move(Slot));
             }
@@ -339,7 +326,8 @@ namespace Lumina
             
             TRefCountPtr<FTrackedCommandBuffer>& TrackedBuffer = VulkanCommandList->CurrentCommandBuffer;
             DEBUG_ASSERT(TrackedBuffer->Queue == this);
-
+            
+            TrackedBuffer->SubmissionID = LastSubmittedID;
 
             CommandBuffers[i] = TrackedBuffer->CommandBuffer;
             CommandBuffersInFlight.push_back(TrackedBuffer);
@@ -503,39 +491,6 @@ namespace Lumina
         WaitSemaphoreValues.push_back(Value);
         WaitStageFlags.push_back(Stage);
     }
-
-    
-    FRHICommandListRef FCommandListManager::GetOrCreateCommandList(FVulkanRenderContext* RenderContext, const FCommandListInfo& CommandListInfo)
-    {
-        TConcurrentQueue<FRHICommandListRef>& CommandListPool = CommandLists[(uint32)CommandListInfo.CommandQueue];
-
-        FRHICommandListRef CommandList;
-        if (!CommandListPool.try_dequeue(CommandList))
-        {
-            CommandList = MakeRefCount<FVulkanCommandList>(RenderContext, CommandListInfo);
-        }
-
-        return CommandList;
-    }
-
-    void FCommandListManager::Enqueue(ICommandList* RetiredCommandList)
-    {
-        CommandLists[(uint32)RetiredCommandList->GetCommandListInfo().CommandQueue].enqueue(RetiredCommandList);
-    }
-
-    void FCommandListManager::BulkEnqueue(ICommandList* const* RetiredCommandLists, uint32 Num, ECommandQueue QueueType)
-    {
-        CommandLists[(uint32)QueueType].enqueue_bulk(RetiredCommandLists, Num);
-    }
-
-    void FCommandListManager::Cleanup()
-    {
-        for (uint32 i = 0; i < (uint32)ECommandQueue::Num; ++i)
-        {
-            FRHICommandListRef Item;
-            while (CommandLists[i].try_dequeue(Item)) { }
-        }
-    }
     
     FVulkanRenderContext::FVulkanRenderContext()
         : TimerQueryAllocator(1024)
@@ -653,7 +608,7 @@ namespace Lumina
         DebugUtils.DebugUtilsObjectNameEXT      = (PFN_vkSetDebugUtilsObjectNameEXT)(vkGetInstanceProcAddr(VulkanInstance, "vkSetDebugUtilsObjectNameEXT"));
         
         Swapchain = Memory::New<FVulkanSwapchain>();
-        Swapchain->CreateSwapchain(VulkanInstance, this, Windowing::GetPrimaryWindowHandle(), Windowing::GetPrimaryWindowHandle()->GetExtent());
+        Swapchain->CreateSwapchain(VulkanInstance, this, Windowing::GetPrimaryWindowHandle()->GetWindow(), Windowing::GetPrimaryWindowHandle()->GetExtent());
         
         ShaderLibrary = MakeRefCount<FShaderLibrary>();
         ShaderCompiler = Memory::New<FSpirVShaderCompiler>();
@@ -678,17 +633,6 @@ namespace Lumina
         PipelineCache.ReleasePipelines();
         
         Memory::Delete(Swapchain);
-
-        // Drop command-list refs first. Each FRHICommandList holds an
-        // FTrackedCommandBuffer ref alongside FQueue::CommandBufferPool;
-        // releasing the manager first means the queue's pool drop is the
-        // refcount-zero edge that triggers vkDestroyCommandPool, which must
-        // happen before vkDestroyDevice at the end of this function.
-        for (FRHICommandListRef& FrameCmdList : FrameCommandLists)
-        {
-            FrameCmdList.SafeRelease();
-        }
-        CommandListManager.Cleanup();
 
         for (TUniquePtr<FQueue>& Queue : Queues)
         {
@@ -747,9 +691,7 @@ namespace Lumina
             {
                 continue;
             }
-
-            // vkGetSemaphoreCounterValue may itself return VK_ERROR_DEVICE_LOST after a
-            // GPU hang; tolerate failure and surface the result code regardless.
+            
             uint64 Completed = 0;
             VkResult R = vkGetSemaphoreCounterValue(VulkanDevice->GetDevice(), Q->TimelineSemaphore, &Completed);
             LOG_ERROR("[DeviceLost]   Queue[{}] LastSubmitted={} Completed={} InFlight={} status=0x{:x}",
@@ -765,14 +707,13 @@ namespace Lumina
 
     void FVulkanRenderContext::WaitIdle()
     {
-        // If a caller on the game thread asks for WaitIdle while the render
-        // thread has work in flight, vkDeviceWaitIdle alone does not stop the
-        // render thread from issuing another submit immediately after. Marshal
-        // through the render thread so the caller sees a true quiescent device.
         if (GRenderThread != nullptr && GRenderThread->IsRunning() && !Threading::IsRenderThread())
         {
-            GRenderThread->EnqueueAndWait("WaitIdle",
-                [this]() { VK_CHECK(vkDeviceWaitIdle(VulkanDevice->GetDevice())); });
+            GRenderThread->EnqueueAndWait("WaitIdle", [this]()
+            {
+                VK_CHECK(vkDeviceWaitIdle(VulkanDevice->GetDevice()));
+            });
+            
             return;
         }
         VK_CHECK(vkDeviceWaitIdle(VulkanDevice->GetDevice()));
@@ -781,9 +722,7 @@ namespace Lumina
     bool FVulkanRenderContext::FrameStart(uint8 InCurrentFrameIndex)
     {
         LUMINA_PROFILE_SCOPE();
-
-        // Game-thread bookkeeping only -- acquire moved to FrameEnd (render
-        // thread) so acquire/submit/present are paired atomically per frame.
+        
         CurrentFrameIndex = InCurrentFrameIndex;
         return true;
     }
@@ -821,34 +760,6 @@ namespace Lumina
                              Swapchain->GetCurrentPresentSemaphore());
 
         bool bSuccess = Swapchain->Present();
-
-        if (CVarDiagnoseFrameGrowth.GetValue()) [[unlikely]]
-        {
-            static uint64 sDiagFrame = 0;
-            if ((sDiagFrame++ % 120) == 0)
-            {
-                FQueue* GfxQ = GetQueue(ECommandQueue::Graphics);
-                GfxQ->UpdateLastFinishID();
-                const uint64 Behind = GfxQ->LastSubmittedID - GfxQ->LastFinishedID;
-
-                FGPUMemoryStats Mem = {};
-                GetGPUMemoryStats(Mem);
-
-                uint32 BindlessLive = 0;
-                uint32 BindlessCap  = 0;
-                if (GRenderManager != nullptr)
-                {
-                    BindlessLive = GRenderManager->GetTextureManager().GetLiveDescriptorCount();
-                    BindlessCap  = GRenderManager->GetTextureManager().GetDescriptorCapacity();
-                }
-
-                LOG_INFO("[FrameGrowth] gfxBehind={} cmdBuffersInFlight={} pendingWaitSem={} | bindlessLive={} bindlessCap={} | gfxPipelines={} computePipelines={} | vmaAllocs={} vmaUsedMB={}",
-                    Behind, (uint32)GfxQ->CommandBuffersInFlight.size(), (uint32)GfxQ->WaitSemaphores.size(),
-                    BindlessLive, BindlessCap,
-                    PipelineCache.GetGraphicsPipelineCount(), PipelineCache.GetComputePipelineCount(),
-                    Mem.TotalAllocations, Mem.TotalUsage / (1024ull * 1024ull));
-            }
-        }
 
         return bSuccess;
     }
@@ -944,12 +855,7 @@ namespace Lumina
             VK_VERSION_MAJOR(Props.apiVersion), VK_VERSION_MINOR(Props.apiVersion), VK_VERSION_PATCH(Props.apiVersion));
         return Info;
     }
-
-    void FVulkanRenderContext::ClearCommandListCache()
-    {
-        CommandListManager.Cleanup();
-    }
-
+    
     FRHICommandListRef FVulkanRenderContext::CreateCommandList(const FCommandListInfo& Info)
     {
         auto* Inner = new FVulkanCommandList(this, Info);
@@ -958,21 +864,6 @@ namespace Lumina
             return MakeRefCount<FCommandListValidator>(Inner);
         }
         return Inner;
-    }
-
-    FRHICommandListRef FVulkanRenderContext::GetFrameCommandList()
-    {
-        // One persistent list per frame-in-flight slot. Reused every FRAMES_IN_FLIGHT frames;
-        // by then this slot's prior submission has completed (frame-ring / WaitForGPU), so its
-        // command buffer and version-gated upload chunks are not in flight. Open()/Close()/
-        // Executed() reset all per-recording state, so reuse records cleanly.
-        // Render-thread only (CurrentFrameIndex is set in FrameStart on the render thread).
-        FRHICommandListRef& Slot = FrameCommandLists[CurrentFrameIndex];
-        if (!Slot)
-        {
-            Slot = CreateCommandList(FCommandListInfo::Graphics());
-        }
-        return Slot;
     }
 
     uint64 FVulkanRenderContext::ExecuteCommandLists(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType)

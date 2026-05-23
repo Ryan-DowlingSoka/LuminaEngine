@@ -1011,15 +1011,31 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg,
 			if (_glfw.hints.window.titlebar || !hasThickFrame || !wParam)
 				break;
 
+			NCCALCSIZE_PARAMS* params = (NCCALCSIZE_PARAMS*)lParam;
+			RECT* requestedClientRect = params->rgrc;
+
+            // Maximized: Windows over-sizes a maximized thick-frame window by the
+            // (invisible) frame, so the client would otherwise bleed past the
+            // monitor onto a neighbor. Pin the client to the monitor work area
+            // (also keeps the taskbar visible). IsZoomed reflects the real state
+            // here; window->win32.maximized is still stale during the transition.
+			if (IsZoomed(hWnd))
+			{
+				HMONITOR monitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+				MONITORINFO mi;
+				ZeroMemory(&mi, sizeof(mi));
+				mi.cbSize = sizeof(mi);
+				if (GetMonitorInfo(monitor, &mi))
+					*requestedClientRect = mi.rcWork;
+				return 0;
+			}
+
             // For custom frames
 
             // Shrink client area by border thickness so we can
             // resize window and see borders
 			const int resizeBorderX = GetSystemMetrics(SM_CXFRAME);
 			const int resizeBorderY = GetSystemMetrics(SM_CYFRAME);
-
-			NCCALCSIZE_PARAMS* params = (NCCALCSIZE_PARAMS*)lParam;
-			RECT* requestedClientRect = params->rgrc;
 
 			requestedClientRect->right -= resizeBorderX;
 			requestedClientRect->left += resizeBorderX;
@@ -1157,7 +1173,12 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg,
                 mmi->ptMaxTrackSize.y = window->maxheight + yoff;
             }
 
-            if (!window->decorated)
+            // Clamp the maximized size/position to the monitor work area for
+            // borderless windows AND custom-titlebar windows (titlebar hint off
+            // but still WS_THICKFRAME). Without this, Windows maximizes a
+            // thick-frame window to monitor + 2*frameBorder at -frameBorder, so the
+            // invisible frame bleeds past the monitor onto an adjacent display.
+            if (!window->decorated || (!_glfw.hints.window.titlebar && hasThickFrame))
             {
                 MONITORINFO mi;
                 const HMONITOR mh = MonitorFromWindow(window->win32.handle,

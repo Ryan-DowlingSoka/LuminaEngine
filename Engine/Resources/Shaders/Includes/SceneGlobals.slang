@@ -59,6 +59,9 @@
 [[vk::binding(20, 0)]] RWStructuredBuffer<FPreSkinnedVertex>          uPreSkinnedVertices;
 [[vk::binding(21, 0)]] StructuredBuffer<FSkinDescriptor>             uSkinDescriptors;
 
+// World-space UI widget quads (CPU-written, shader-read). Sampled by the widget pass.
+[[vk::binding(22, 0)]] StructuredBuffer<FWidgetInstance>             uWidgets;
+
 
 [[vk::binding(0, 1)]] Texture2D                                 uBindlessTex2D[];
 [[vk::binding(0, 1)]] TextureCube                               uBindlessTexCube[];

@@ -1,7 +1,7 @@
 #pragma once
 
 
-
+#include <Memory/MemoryConcurrentQueue.h>
 #include "concurrentqueue.h"
 #include "EASTL/fixed_hash_map.h"
 #include "Core/DisableAllWarnings.h"
@@ -136,7 +136,7 @@ namespace Lumina
     template<typename T>
     using TPriorityQueue = eastl::priority_queue<T>;
 
-    template<typename T, typename Traits = moodycamel::ConcurrentQueueDefaultTraits>
+    template<typename T, typename Traits = Memory::FTrackedConcurrentQueueTraits>
     using TConcurrentQueue = moodycamel::ConcurrentQueue<T, Traits>;
     
     template <typename T>

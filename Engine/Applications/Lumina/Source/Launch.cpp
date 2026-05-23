@@ -9,9 +9,15 @@
 #include "Core/CommandLine/CommandLine.h"
 #include "Core/Delegates/CoreDelegates.h"
 #include "Core/Engine/Engine.h"
+#include "Memory/Memory.h"
 #include "Platform/CrashHandler.h"
 
 using namespace Lumina;
+
+// Lumina.exe links Runtime.dll but is its own module: without this, plain new/delete
+// in the exe's own TUs (and any exe-only third-party C++) hit the CRT allocator and
+// escape the tracker. Routes them to Memory::Malloc like every other module.
+DECLARE_MODULE_ALLOCATOR_OVERRIDES();
 
 
 int LuminaMain(int ArgC, char** ArgV)  // NOLINT(misc-use-internal-linkage)

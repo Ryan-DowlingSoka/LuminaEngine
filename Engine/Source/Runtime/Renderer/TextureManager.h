@@ -35,6 +35,15 @@ namespace Lumina::RHI
         void AddTexture(FRHIImage* InTexture);
         void RemoveTexture(FRHIImage* InTexture);
 
+        // Register an SRV for a non-default subresource (e.g. a single mip) and
+        // return its bindless index; pair with ReleaseSubresourceSRV. The
+        // auto-registered ResourceID is the all-mips view, so tools that must
+        // display a specific mip/slice (texture editor) go through this. Do NOT
+        // pass AllSubresources here -- that aliases the texture's own ResourceID
+        // and releasing it would free the live default view.
+        NODISCARD int32 RegisterSubresourceSRV(FRHIImage* InTexture, const FTextureSubresourceSet& Subresources);
+        void ReleaseSubresourceSRV(int32 Index);
+
 
         NODISCARD FRHIBindingLayout* GetLayout() const { return Layout; }
         NODISCARD FRHIDescriptorTable* GetDescriptorTable() const { return DescriptorTableManager.GetDescriptorTable(); }

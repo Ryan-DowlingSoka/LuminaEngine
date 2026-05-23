@@ -904,34 +904,13 @@ namespace Lumina::ImGuiX
             
             ImGui::SetCursorPos(DragAreaStartPos);
             ImGui::InvisibleButton("TitleBarDragZone", ImVec2(remainingSpace, titleBarHeight));
-            
-            static bool isDragging = false;
-            static ImVec2 initialClickPos;
-            static ImVec2 initialWindowPos;
-
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+        	
+            if (FWindow* MainWindow = Windowing::GetPrimaryWindowHandle())
             {
-                isDragging = true;
-                initialClickPos = ImGui::GetMousePos();
-
-                int winX, winY;
-                Windowing::GetPrimaryWindowHandle()->GetWindowPosition(winX, winY);
-                initialWindowPos = ImVec2((float)winX, (float)winY);
+                MainWindow->SetTitleBarHovered(ImGui::IsItemHovered());
             }
 
-            if (isDragging && ImGui::IsMouseDown(ImGuiMouseButton_Left))
-            {
-                ImVec2 mousePos = ImGui::GetMousePos();
-                ImVec2 delta = ImVec2(mousePos.x - initialClickPos.x, mousePos.y - initialClickPos.y);
 
-                Windowing::GetPrimaryWindowHandle()->SetWindowPosition((int)(initialWindowPos.x + delta.x), (int)(initialWindowPos.y + delta.y));
-            }
-            else
-            {
-                isDragging = false;
-            }
-
-    
             if (menuSectionDesiredWidth > 0)
             {
                 ImGui::SetCursorPos(menuSectionStartPos);

@@ -16,12 +16,10 @@ LuminaModule({
         -- directly by the GLTF importer; BasicUniversal by the texture cooker.
         "TinyOBJLoader", "OpenFBX", "FastGLTF", "MeshOptimizer", "BasicUniversal",
     },
-    ExtraLinks = { "GFSDK_Aftermath_Lib" },
-    LibDirs =
-    {
-        LuminaConfig.EnginePath("Engine/Source/ThirdParty/NvidiaAftermath/lib"),
-    },
     -- Editor never compiles for Game platform — sources reference WITH_EDITOR-only
     -- engine APIs that are stripped under WITH_EDITOR=0.
     RemovePlatforms = { "Game" },
 })
+
+-- NVIDIA Aftermath import lib (no DLL copy here — Runtime handles the copy).
+LuminaOptions.LinkAftermath({ Copy = false })

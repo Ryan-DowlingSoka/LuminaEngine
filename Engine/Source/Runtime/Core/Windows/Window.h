@@ -39,6 +39,8 @@ namespace Lumina
 		RUNTIME_API void SetWindowPosition(int X, int Y);
 
 		RUNTIME_API void SetWindowSize(int X, int Y);
+		
+		RUNTIME_API void SetTitleBarHovered(bool bHovered) { bTitleBarHovered = bHovered; }
 
 		RUNTIME_API bool ShouldClose() const;
 		RUNTIME_API bool IsWindowMinimized() const;
@@ -54,6 +56,7 @@ namespace Lumina
 		static void MouseScrollCallback(GLFWwindow* window, double xoffset, double yoffset);
 		static void KeyCallback(GLFWwindow* window, int Key, int Scancode, int Action, int Mods);
 
+		static void TitleBarHitTestCallback(GLFWwindow* window, int x, int y, int* hit);
 		static void WindowResizeCallback(GLFWwindow* window, int width, int height);
 		static void WindowDropCallback(GLFWwindow* Window, int PathCount, const char* Paths[]);
 		static void WindowCloseCallback(GLFWwindow* window);
@@ -66,6 +69,7 @@ namespace Lumina
 		double LastMouseX, LastMouseY;
 
 		bool bInitialized = false;
+		bool bTitleBarHovered = false;
 		GLFWwindow* Window = nullptr;
 		FWindowSpecs Specs;
 	};

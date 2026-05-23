@@ -398,7 +398,7 @@ namespace Lumina
                 if (ImGui::MenuItem("Detach Children"))
                 {
                     // Snapshot child IDs before mutating relationships, then move each in the tree.
-                    TVector<entt::entity> Children;
+                    TFixedVector<entt::entity, 20> Children;
                     ECS::Utils::ForEachChild(Registry, Data.Entity, [&](entt::entity Child) { Children.push_back(Child); });
                     BeginTransaction();
                     ECS::Utils::DetachImmediateChildren(Registry, Data.Entity);
