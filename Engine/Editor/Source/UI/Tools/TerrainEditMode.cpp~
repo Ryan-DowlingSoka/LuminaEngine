@@ -105,19 +105,6 @@ namespace Lumina
         }
     }
 
-    void FTerrainEditMode::OnExit(CWorld* World)
-    {
-        // Leaving the mode mid-stroke (e.g. clicking another mode button) must still
-        // commit the in-flight transaction so undo stays balanced.
-        if (bTransactionOpen && Context)
-        {
-            Context->EndModeTransaction("Terrain Edit");
-        }
-        bTransactionOpen = false;
-        bHasStrokeHit    = false;
-        bRampStarted     = false;
-    }
-
     void FTerrainEditMode::DrawToolbar(CWorld* World, float ButtonSize)
     {
         if (!World)
@@ -157,20 +144,22 @@ namespace Lumina
         if (ImGui::Combo("Mode", &ModeIndex, ModeNames, IM_ARRAYSIZE(ModeNames)))
         {
             Mode = (ETerrainBrushMode)ModeIndex;
-            bRampStarted  = false;
-            bHasStrokeHit = false;
+            bRampStarted   = false;
+            bHasLastDabPos = false;
         }
 
         ImGui::SetNextItemWidth(140.0f);
         ImGui::SliderFloat("Radius",   &Radius,   8.0f,  4096.0f, "%.0f");
         ImGui::SetNextItemWidth(140.0f);
-        ImGui::SliderFloat("Strength", &Strength, 0.0f,  1024.0f, "%.0f");
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip("Height change rate at the brush center, in world units per second.");
-        }
+        ImGui::SliderFloat("Strength", &Strength, 0.0f,  256.0f,   "%.2f");
         ImGui::SetNextItemWidth(140.0f);
         ImGui::SliderFloat("Falloff",  &Falloff,  0.0f,  1.0f,    "%.2f");
+        ImGui::SetNextItemWidth(140.0f);
+        ImGui::SliderFloat("Spacing",  &Spacing,  0.0f,  1.0f,    "%.2f");
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Minimum cursor travel between dabs as a fraction of brush radius.\nKeeps brush strength independent of FPS.");
+        }
 
         if (Mode == ETerrainBrushMode::Sculpt || Mode == ETerrainBrushMode::Noise)
         {
@@ -200,19 +189,6 @@ namespace Lumina
         {
             ImGui::SetNextItemWidth(140.0f);
             ImGui::SliderFloat("Width", &RampHalfWidth, 8.0f, 4096.0f, "%.0f");
-
-            ImGui::Checkbox("Explicit heights", &bRampExplicitHeights);
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("Use fixed start/end heights instead of sampling the terrain under A and B.");
-            }
-            if (bRampExplicitHeights)
-            {
-                ImGui::SetNextItemWidth(140.0f);
-                ImGui::SliderFloat("Start H", &RampStartHeight, 0.0f, 1024.0f, "%.0f");
-                ImGui::SetNextItemWidth(140.0f);
-                ImGui::SliderFloat("End H",   &RampEndHeight,   0.0f, 1024.0f, "%.0f");
-            }
             ImGui::TextDisabled("Drag from A to B; release to commit.");
         }
 
@@ -402,22 +378,11 @@ namespace Lumina
     void FTerrainEditMode::Tick(CWorld* World, const SCameraComponent& Camera, bool bViewportHovered, ImVec2 ViewportScreenOrigin, ImVec2 ViewportSize)
     {
         bHitValid = false;
-
-        // A stroke is bounded by the left button being held. The moment it's released
-        // (anywhere — even off the viewport), commit the stroke's undo transaction.
-        if (bTransactionOpen && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
-        {
-            if (Context)
-            {
-                Context->EndModeTransaction("Terrain Edit");
-            }
-            bTransactionOpen = false;
-        }
-
         if (!World)
         {
-            bRampStarted  = false;
-            bHasStrokeHit = false;
+            bStrokeActive  = false;
+            bRampStarted   = false;
+            bHasLastDabPos = false;
             return;
         }
 
@@ -450,8 +415,9 @@ namespace Lumina
 
         if (!bViewportHovered)
         {
-            bRampStarted  = false;
-            bHasStrokeHit = false;
+            bStrokeActive  = false;
+            bRampStarted   = false;
+            bHasLastDabPos = false;
             return;
         }
 
@@ -472,8 +438,9 @@ namespace Lumina
             // No hit this frame -> stroke is broken; reset continuity bookkeeping.
             if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
             {
-                bRampStarted  = false;
-                bHasStrokeHit = false;
+                bStrokeActive  = false;
+                bRampStarted   = false;
+                bHasLastDabPos = false;
             }
             return;
         }
@@ -494,8 +461,9 @@ namespace Lumina
 
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
         {
-            bRampStarted  = false;
-            bHasStrokeHit = false;
+            bStrokeActive  = false;
+            bRampStarted   = false;
+            bHasLastDabPos = false;
             return;
         }
 
@@ -507,8 +475,22 @@ namespace Lumina
         // edit mode and would make every dab a no-op.
         const float RealDelta = std::max(ImGui::GetIO().DeltaTime, 0.0f);
 
-        // Continuous brushes integrate by frame time, so apply every frame while held
-        // (including with a stationary cursor — that's how you dig deeper in place).
+        // Spacing gate: every brush except Ramp wants discrete dabs along the stroke
+        // path. Ramp instead drags an endpoint continuously and re-applies each frame.
+        if (Mode != ETerrainBrushMode::Ramp)
+        {
+            if (bHasLastDabPos)
+            {
+                const float DSq = glm::dot(Hit - LastDabWorldPos, Hit - LastDabWorldPos);
+                const float Min = std::max(Radius * Spacing, 1.0f);
+                if (DSq < Min * Min)
+                {
+                    return;
+                }
+            }
+            LastDabWorldPos = Hit;
+            bHasLastDabPos  = true;
+        }
 
         // Ramp captures the start of the stroke once, then drags the end while held.
         if (Mode == ETerrainBrushMode::Ramp)
@@ -542,43 +524,9 @@ namespace Lumina
         Dab.RampStart      = RampStart;
         Dab.RampEnd        = RampEnd;
         Dab.RampHalfWidth  = std::max(RampHalfWidth, 1.0f);
-        Dab.RampUseExplicitHeights = bRampExplicitHeights;
-        Dab.RampStartHeight        = RampStartHeight;
-        Dab.RampEndHeight          = RampEndHeight;
 
-        // Open the stroke's undo transaction before the first edit so the snapshot
-        // captures the pre-stroke heightmap. Committed on mouse release (top of Tick).
-        if (!bTransactionOpen && Context)
-        {
-            Context->BeginModeTransaction();
-            bTransactionOpen = true;
-        }
-
-        // Ramp re-applies the whole Start->End line each frame, so a single dab is
-        // correct. The footprint brushes instead interpolate dabs along the cursor's
-        // travel since last frame so fast strokes don't leave gaps; the frame's time
-        // budget is split across them to keep total strength FPS-independent.
-        if (Mode == ETerrainBrushMode::Ramp || !bHasStrokeHit)
-        {
-            FTerrainSculptSystem::ApplyDab(Terrain, Dab);
-        }
-        else
-        {
-            const glm::vec3 Delta = Hit - LastStrokeHit;
-            const float Dist    = glm::length(glm::vec2(Delta.x, Delta.z));
-            const float Spacing = std::max(Radius * 0.25f, 1.0f);
-            const int   Steps   = glm::clamp((int)std::ceil(Dist / Spacing), 1, 32);
-            const float StepDt  = RealDelta / float(Steps);
-            for (int i = 1; i <= Steps; ++i)
-            {
-                Dab.WorldPosition = glm::mix(LastStrokeHit, Hit, float(i) / float(Steps));
-                Dab.DeltaSeconds  = StepDt;
-                FTerrainSculptSystem::ApplyDab(Terrain, Dab);
-            }
-        }
-
-        LastStrokeHit = Hit;
-        bHasStrokeHit = true;
+        bStrokeActive = true;
+        FTerrainSculptSystem::ApplyDab(Terrain, Dab);
     }
 
     void FTerrainEditMode::DrawOverlay(CWorld* World, ImVec2 ViewportScreenOrigin, ImVec2 ViewportSize, const SCameraComponent& Camera)

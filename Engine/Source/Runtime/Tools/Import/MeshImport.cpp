@@ -529,38 +529,45 @@ namespace Lumina::Import::Mesh
             }
         });
 
-        // Reduce extents across every cell so the global grid sizes for the largest meshlet at any LOD.
-        glm::vec3 MeshLo( FLT_MAX);
-        glm::vec3 MeshHi(-FLT_MAX);
-        for (const glm::vec3& P : MeshResource.Positions)
+        // Per-LOD grid: each LOD sizes its own grid to its own largest meshlet so a coarse
+        // sloppy LOD can't inflate the cell size that LOD 0 quantizes against. The grid is
+        // still shared by every meshlet within a LOD, so adjacent meshlets in a LOD snap a
+        // shared boundary vertex to the same cell and never crack.
+        glm::vec3 LODOrigin[MAX_MESH_LODS];
+        glm::vec3 LODInvStep[MAX_MESH_LODS];
+        for (uint32 lod = 0; lod < MAX_MESH_LODS; ++lod)
         {
-            MeshLo = glm::min(MeshLo, P);
-            MeshHi = glm::max(MeshHi, P);
-        }
-
-        glm::vec3 MaxMeshletExtent(0.0f);
-        for (const FSurfaceMeshletResult& R : Results)
-        {
-            if (R.bHasData)
+            glm::vec3 LodLo(FLT_MAX);
+            glm::vec3 LodMaxExtent(0.0f);
+            for (uint32 SurfaceIdx = 0; SurfaceIdx < NumSurfaces; ++SurfaceIdx)
             {
-                MaxMeshletExtent = glm::max(MaxMeshletExtent, R.MaxExtent);
+                const FSurfaceMeshletResult& R = Results[lod * NumSurfaces + SurfaceIdx];
+                if (!R.bHasData)
+                {
+                    continue;
+                }
+                LodMaxExtent = glm::max(LodMaxExtent, R.MaxExtent);
+                for (const glm::vec3& Lo : R.MeshletLo)
+                {
+                    LodLo = glm::min(LodLo, Lo);
+                }
             }
+
+            const bool bHasLOD = LodLo.x != FLT_MAX;
+            const glm::vec3 Origin = bHasLOD ? LodLo : glm::vec3(0.0f);
+
+            // 1022 (not 1023): round() can introduce a +1, so 1022 keeps q in [0, 1023].
+            glm::vec3 GridStep(0.0f);
+            glm::vec3 InvStep(0.0f);
+            if (LodMaxExtent.x > 0.0f) { GridStep.x = LodMaxExtent.x / 1022.0f; InvStep.x = 1.0f / GridStep.x; }
+            if (LodMaxExtent.y > 0.0f) { GridStep.y = LodMaxExtent.y / 1022.0f; InvStep.y = 1.0f / GridStep.y; }
+            if (LodMaxExtent.z > 0.0f) { GridStep.z = LodMaxExtent.z / 1022.0f; InvStep.z = 1.0f / GridStep.z; }
+
+            LODOrigin[lod]  = Origin;
+            LODInvStep[lod] = InvStep;
+            MeshResource.MeshletData.MeshOrigin[lod]   = Origin;
+            MeshResource.MeshletData.MeshGridStep[lod] = GridStep;
         }
-
-        // 1022 (not 1023): round() can introduce a +1, so 1022 keeps q in [0, 1023].
-        glm::vec3 GridStep(0.0f);
-        glm::vec3 InvGridStep(0.0f);
-        if (MaxMeshletExtent.x > 0.0f) { GridStep.x = MaxMeshletExtent.x / 1022.0f; InvGridStep.x = 1.0f / GridStep.x; }
-        if (MaxMeshletExtent.y > 0.0f) { GridStep.y = MaxMeshletExtent.y / 1022.0f; InvGridStep.y = 1.0f / GridStep.y; }
-        if (MaxMeshletExtent.z > 0.0f) { GridStep.z = MaxMeshletExtent.z / 1022.0f; InvGridStep.z = 1.0f / GridStep.z; }
-
-        MeshResource.MeshletData.MeshOrigin   = MeshLo;
-        MeshResource.MeshletData.MeshGridStep = GridStep;
-
-        auto GridIndex = [&](glm::vec3 P) -> glm::ivec3
-        {
-            return glm::ivec3(glm::round((P - MeshLo) * InvGridStep));
-        };
 
         size_t TotalMeshlets  = 0;
         size_t TotalVertices  = 0;
@@ -606,6 +613,15 @@ namespace Lumina::Import::Mesh
         // Phase 3: serial pack, LOD-major so LOD 0 is contiguous at the front of the buffer.
         for (uint32 lod = 0; lod < MAX_MESH_LODS; ++lod)
         {
+            // This LOD's grid. Quantizing every meshlet in the LOD against the same origin/step
+            // is what keeps the LOD seam-free.
+            const glm::vec3 GridOrigin = LODOrigin[lod];
+            const glm::vec3 GridInvStep = LODInvStep[lod];
+            auto GridIndex = [&](glm::vec3 P) -> glm::ivec3
+            {
+                return glm::ivec3(glm::round((P - GridOrigin) * GridInvStep));
+            };
+
             for (uint32 SurfaceIdx = 0; SurfaceIdx < NumSurfaces; ++SurfaceIdx)
             {
                 FGeometrySurface&      Section = MeshResource.GeometrySurfaces[SurfaceIdx];
@@ -625,7 +641,8 @@ namespace Lumina::Import::Mesh
                 {
                     FMeshlet Out = Result.OutMeshlets[MeshletIdx];
 
-                    Out.LoInt = GridIndex(Result.MeshletLo[MeshletIdx]);
+                    Out.LoInt    = GridIndex(Result.MeshletLo[MeshletIdx]);
+                    Out.LODIndex = lod;
 
                     const uint32 PackedVertexStart = MeshResource.bSkinnedMesh
                         ? (uint32)MeshResource.MeshletData.MeshletSkinnedVertices.size()

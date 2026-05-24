@@ -230,12 +230,14 @@ struct FCustomPrimitiveData
     property float4 AsColor     { get { return float4(unpack_u8u32(Packed)) / 255.0; } }
 }
 
-// Meshlet limits must match Lumina::MESHLET_MAX_VERTICES / MAX_TRIANGLES.
+// Meshlet limits must match Lumina::MESHLET_MAX_VERTICES / MAX_TRIANGLES / MAX_MESH_LODS.
 #define MESHLET_MAX_VERTICES  64
 #define MESHLET_MAX_TRIANGLES 124
 #define MESHLET_VERTICES_PER_DRAW (MESHLET_MAX_TRIANGLES * 3)  // 372
+#define MESHLET_MAX_LODS      6
 
-// Mirror of Lumina::FMeshlet. LoInt: meshlet quantization origin in grid units.
+// Mirror of Lumina::FMeshlet. LoInt: meshlet quantization origin in its LOD's grid units.
+// LODIndex selects the per-LOD grid in FMeshletHeader (MeshOrigin[LODIndex]/MeshGridStep[LODIndex]).
 struct FMeshlet
 {
     uint VertexOffset;
@@ -243,7 +245,7 @@ struct FMeshlet
     uint VertexCount;
     uint TriangleCount;
     int3 LoInt;
-    uint _Pad0;
+    uint LODIndex;
 };
 
 // Mirror of Lumina::FMeshletBounds. Sphere + cone drive culling.
@@ -257,16 +259,48 @@ struct FMeshletBounds
     float  _Pad0;
 };
 
-// Mirror of Lumina::FMeshletHeaderGPU.
+// Mirror of Lumina::FMeshletHeaderGPU. MeshOrigin/MeshGridStep are per-LOD; select by
+// FMeshlet::LODIndex via GetMeshOrigin/GetMeshGridStep. The per-LOD grids are flattened into
+// explicit fields rather than arrays: Slang asserts internally laying out an array member inside
+// a buffer-pointer (BDA) struct. Byte layout matches Lumina::FMeshletHeaderGPU's vec4[6] pair.
 struct FMeshletHeader
 {
     FMeshlet*       Meshlets;
     FMeshletBounds* Bounds;
     uint*           Vertices;
     uint*           Triangles;
-    float4          MeshOrigin;     // xyz: grid origin
-    float4          MeshGridStep;   // xyz: grid cell size
+    float4          MeshOrigin0;    float4 MeshOrigin1;    float4 MeshOrigin2;
+    float4          MeshOrigin3;    float4 MeshOrigin4;    float4 MeshOrigin5;
+    float4          MeshGridStep0;  float4 MeshGridStep1;  float4 MeshGridStep2;
+    float4          MeshGridStep3;  float4 MeshGridStep4;  float4 MeshGridStep5;
 };
+
+// Per-LOD grid selectors (see FMeshletHeader: arrays can't live in a BDA struct).
+float3 GetMeshOrigin(FMeshletHeader* H, uint LOD)
+{
+    switch (LOD)
+    {
+        case 0:  return H.MeshOrigin0.xyz;
+        case 1:  return H.MeshOrigin1.xyz;
+        case 2:  return H.MeshOrigin2.xyz;
+        case 3:  return H.MeshOrigin3.xyz;
+        case 4:  return H.MeshOrigin4.xyz;
+        default: return H.MeshOrigin5.xyz;
+    }
+}
+
+float3 GetMeshGridStep(FMeshletHeader* H, uint LOD)
+{
+    switch (LOD)
+    {
+        case 0:  return H.MeshGridStep0.xyz;
+        case 1:  return H.MeshGridStep1.xyz;
+        case 2:  return H.MeshGridStep2.xyz;
+        case 3:  return H.MeshGridStep3.xyz;
+        case 4:  return H.MeshGridStep4.xyz;
+        default: return H.MeshGridStep5.xyz;
+    }
+}
 
 // Mirror of Lumina::FSkinDescriptor. One per skinned entity; drives the skinning dispatch.
 struct FSkinDescriptor

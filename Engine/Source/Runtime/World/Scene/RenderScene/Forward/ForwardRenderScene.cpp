@@ -4608,14 +4608,75 @@ namespace Lumina
 
     namespace
     {
+        // Bilinear resample of a square row-major grid from OldRes^2 to NewRes^2.
+        template <typename T>
+        static void ResampleGrid(const T* Src, int32 OldRes, T* Dst, int32 NewRes)
+        {
+            for (int32 Y = 0; Y < NewRes; ++Y)
+            {
+                const float Fy = (NewRes > 1) ? float(Y) / float(NewRes - 1) * float(OldRes - 1) : 0.0f;
+                const int32 Y0 = int(Fy);
+                const int32 Y1 = std::min(Y0 + 1, OldRes - 1);
+                const float Ty = Fy - float(Y0);
+                for (int32 X = 0; X < NewRes; ++X)
+                {
+                    const float Fx = (NewRes > 1) ? float(X) / float(NewRes - 1) * float(OldRes - 1) : 0.0f;
+                    const int32 X0 = int(Fx);
+                    const int32 X1 = std::min(X0 + 1, OldRes - 1);
+                    const float Tx = Fx - float(X0);
+                    const float V00 = float(Src[size_t(Y0) * OldRes + X0]);
+                    const float V10 = float(Src[size_t(Y0) * OldRes + X1]);
+                    const float V01 = float(Src[size_t(Y1) * OldRes + X0]);
+                    const float V11 = float(Src[size_t(Y1) * OldRes + X1]);
+                    const float V   = glm::mix(glm::mix(V00, V10, Tx), glm::mix(V01, V11, Tx), Ty);
+                    if constexpr (std::is_integral_v<T>)
+                    {
+                        Dst[size_t(Y) * NewRes + X] = T(glm::clamp(V + 0.5f, 0.0f, 255.0f));
+                    }
+                    else
+                    {
+                        Dst[size_t(Y) * NewRes + X] = T(V);
+                    }
+                }
+            }
+        }
+
         // Resize CPU backing stores to match declared dimensions; called lazily so
-        // designers can tweak Resolution/LayerCount without rebooting.
+        // designers can tweak Resolution/LayerCount without rebooting. A resolution
+        // change resamples existing height + weights rather than wiping them.
         static void EnsureTerrainCpuBuffers(STerrainComponent& Terrain)
         {
-            const size_t NeededHeights = size_t(Terrain.Resolution) * size_t(Terrain.Resolution);
+            const int32  NewRes        = Terrain.Resolution;
+            const size_t NeededHeights = size_t(NewRes) * size_t(NewRes);
             if (Terrain.Heightmap.size() != NeededHeights)
             {
-                Terrain.Heightmap.assign(NeededHeights, 0.0f);
+                const size_t OldCount = Terrain.Heightmap.size();
+                const int32  OldRes   = (int32)std::llround(std::sqrt((double)OldCount));
+                const bool   bResample = !Terrain.Heightmap.empty() && NewRes >= 2 && OldRes >= 2
+                                       && size_t(OldRes) * size_t(OldRes) == OldCount;
+                if (bResample)
+                {
+                    TVector<float> Resampled(NeededHeights);
+                    ResampleGrid(Terrain.Heightmap.data(), OldRes, Resampled.data(), NewRes);
+                    Terrain.Heightmap = std::move(Resampled);
+
+                    const int32 LayerCount = (int32)Terrain.Layers.size();
+                    if (LayerCount > 0 && Terrain.LayerWeights.size() == size_t(LayerCount) * OldCount)
+                    {
+                        TVector<uint8> NewWeights(size_t(LayerCount) * NeededHeights);
+                        for (int32 L = 0; L < LayerCount; ++L)
+                        {
+                            ResampleGrid(Terrain.LayerWeights.data() + size_t(L) * OldCount, OldRes,
+                                         NewWeights.data() + size_t(L) * NeededHeights, NewRes);
+                        }
+                        Terrain.LayerWeights = std::move(NewWeights);
+                        Terrain.GPUState.bFullWeightsDirty = true;
+                    }
+                }
+                else
+                {
+                    Terrain.Heightmap.assign(NeededHeights, 0.0f);
+                }
                 Terrain.GPUState.bFullHeightmapDirty = true;
             }
             const size_t NeededWeights = size_t(Terrain.Layers.size()) * NeededHeights;
@@ -4708,18 +4769,36 @@ namespace Lumina
                 }
             }
 
-            bool bHeightDirty = false;
-            if (State.bFullHeightmapDirty)
+            // Capture the dirty region up front so the height upload, normal recompute,
+            // and meshlet rebuild can all touch just the edited rect instead of the whole
+            // map. A full upload re-pushes everything; a partial one uploads only the rect.
+            const int32 ResI          = (int32)Res;
+            const bool  bFullHeight   = State.bFullHeightmapDirty;
+            const bool  bPartialHeight = !bFullHeight && (State.HeightDirtyMax.x >= State.HeightDirtyMin.x);
+            const bool  bHeightDirty  = bFullHeight || bPartialHeight;
+
+            glm::ivec2 RectMin = glm::ivec2(0);
+            glm::ivec2 RectMax = glm::ivec2(ResI - 1);
+            if (bPartialHeight)
+            {
+                RectMin = glm::clamp(State.HeightDirtyMin, glm::ivec2(0), glm::ivec2(ResI - 1));
+                RectMax = glm::clamp(State.HeightDirtyMax, glm::ivec2(0), glm::ivec2(ResI - 1));
+            }
+
+            if (bFullHeight)
             {
                 CmdList.WriteImage(State.HeightmapTexture, 0u, 0u, Terrain.Heightmap.data(), Res * (uint32)sizeof(float), 0u);
-                State.bFullHeightmapDirty = false;
-                bHeightDirty = true;
             }
-            else if (State.HeightDirtyMax.x >= State.HeightDirtyMin.x)
+            else if (bPartialHeight)
             {
-                CmdList.WriteImage(State.HeightmapTexture, 0u, 0u, Terrain.Heightmap.data(), Res * (uint32)sizeof(float), 0u);
-                bHeightDirty = true;
+                const uint32 RegionW = uint32(RectMax.x - RectMin.x + 1);
+                const uint32 RegionH = uint32(RectMax.y - RectMin.y + 1);
+                const float* Src     = Terrain.Heightmap.data() + size_t(RectMin.y) * Res + size_t(RectMin.x);
+                CmdList.WriteImageRegion(State.HeightmapTexture, 0u, 0u,
+                                         (uint32)RectMin.x, (uint32)RectMin.y, RegionW, RegionH,
+                                         Src, Res * (uint32)sizeof(float));
             }
+            State.bFullHeightmapDirty = false;
 
             if (State.bFullWeightsDirty && !Terrain.LayerWeights.empty())
             {
@@ -4753,15 +4832,24 @@ namespace Lumina
 
             if (bHeightDirty && NormalShader)
             {
+                // Central-difference normals read one neighbor each side, so dilate the
+                // recompute region by a texel and clamp to the map.
+                const int32 NMinX = std::max(RectMin.x - 1, 0);
+                const int32 NMinY = std::max(RectMin.y - 1, 0);
+                const int32 NMaxX = std::min(RectMax.x + 1, ResI - 1);
+                const int32 NMaxY = std::min(RectMax.y + 1, ResI - 1);
+                const int32 NW    = NMaxX - NMinX + 1;
+                const int32 NH    = NMaxY - NMinY + 1;
+
                 FTerrainNormalParams NormalParams{};
-                NormalParams.Resolution    = (int32)Res;
-                NormalParams.RegionMinX    = 0;
-                NormalParams.RegionMinY    = 0;
-                NormalParams.RegionSizeX   = (int32)Res;
-                NormalParams.RegionSizeY   = (int32)Res;
+                NormalParams.Resolution    = ResI;
+                NormalParams.RegionMinX    = NMinX;
+                NormalParams.RegionMinY    = NMinY;
+                NormalParams.RegionSizeX   = NW;
+                NormalParams.RegionSizeY   = NH;
                 NormalParams.TileWorldSize = Terrain.TileWorldSize;
                 NormalParams.MaxHeight     = Terrain.MaxHeight;
-                
+
                 FTransientAlloc NormalParamsAlloc = CmdList.UploadTransient(NormalParams);
 
                 FRHISamplerRef ClampSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
@@ -4789,18 +4877,31 @@ namespace Lumina
 
                 CmdList.SetComputeState(NormalComputeState);
                 CmdList.SetPushConstants(&NormalParamsAlloc.Gpu, sizeof(uint64));
-                CmdList.Dispatch((Res + 7u) / 8u, (Res + 7u) / 8u, 1u);
+                CmdList.Dispatch((uint32(NW) + 7u) / 8u, (uint32(NH) + 7u) / 8u, 1u);
+            }
 
+            if (bHeightDirty)
+            {
                 State.HeightDirtyMin = glm::ivec2(INT32_MAX);
                 State.HeightDirtyMax = glm::ivec2(INT32_MIN);
             }
 
             // Rebuild chunk + meshlet metadata when heightmap geometry shifted; the cull
             // pass tests the AABBs computed here, so it must fire before the next cull.
+            // A localized edit only re-bounds the chunks it overlaps; a full/structural
+            // change rebuilds everything.
             if (State.bChunksDirty)
             {
                 const glm::vec3 WorldOrigin = glm::vec3(Transform.GetWorldMatrix()[3]);
-                TerrainMeshletBuilder::Build(Terrain, WorldOrigin);
+                const bool bFullRebuild = !bPartialHeight || State.Chunks.empty();
+                if (bFullRebuild)
+                {
+                    TerrainMeshletBuilder::Build(Terrain, WorldOrigin);
+                }
+                else
+                {
+                    TerrainMeshletBuilder::UpdateRegion(Terrain, WorldOrigin, RectMin, RectMax);
+                }
 
                 const uint32 ChunkCount   = (uint32)State.Chunks.size();
                 const uint32 MeshletCount = (uint32)State.Meshlets.size();

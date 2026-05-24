@@ -114,6 +114,11 @@ namespace Lumina
 
         virtual void WriteImage(FRHIImage* Dst, uint32 ArraySlice, uint32 MipLevel, const void* Data, uint32 RowPitch, uint32 DepthPitch) = 0;
 
+        // Upload a sub-rectangle of a mip. Data points at the region's top-left texel;
+        // RowPitch is the source stride in bytes (may span a wider backing buffer, so a
+        // dirty rect can be uploaded straight out of a full-resolution CPU array).
+        virtual void WriteImageRegion(FRHIImage* Dst, uint32 ArraySlice, uint32 MipLevel, uint32 OffsetX, uint32 OffsetY, uint32 Width, uint32 Height, const void* Data, uint32 RowPitch) = 0;
+
         virtual void ResolveImage(FRHIImage* Src, const FTextureSubresourceSet& SrcSubresources, FRHIImage* Dst, const FTextureSubresourceSet& DstSubresources) = 0;
 
         virtual void ClearImageFloat(FRHIImage* Image, FTextureSubresourceSet Subresource, const FColor& Color) = 0;

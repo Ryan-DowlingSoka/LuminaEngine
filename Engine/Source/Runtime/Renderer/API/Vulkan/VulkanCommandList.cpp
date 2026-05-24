@@ -387,6 +387,76 @@ namespace Lumina
 
     }
 
+    void FVulkanCommandList::WriteImageRegion(FRHIImage* RESTRICT Dst, uint32 ArraySlice, uint32 MipLevel, uint32 OffsetX, uint32 OffsetY, uint32 Width, uint32 Height, const void* RESTRICT Data, uint32 RowPitch)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        if (Width == 0 || Height == 0)
+        {
+            return;
+        }
+
+        // Block-compressed formats would need block-aligned offsets; the terrain maps
+        // that use this path are all single-texel-block (R32F / R8), so assert linearity.
+        const FFormatInfo& FormatInfo = RHI::Format::Info(Dst->GetDescription().Format);
+        ASSERT(FormatInfo.BlockSize == 1);
+
+        const uint32 RegionRowPitch = Width * FormatInfo.BytesPerBlock;
+        const uint64 DeviceMemSize  = uint64(RegionRowPitch) * uint64(Height);
+
+        FRHIBuffer* UploadBuffer;
+        uint64 UploadOffset;
+        void* UploadCPUVA;
+        if (!UploadManager->SuballocateBuffer(DeviceMemSize, UploadBuffer, UploadOffset, UploadCPUVA, MakeVersion(CurrentCommandBuffer->RecordingID, Info.CommandQueue, false)))
+        {
+            LOG_ERROR("Failed to suballocate buffer for size: %llu", DeviceMemSize);
+            return;
+        }
+
+        // Pack the region tightly into the staging buffer, pulling each row out of the
+        // (possibly wider) source via RowPitch.
+        const uint32 CopyRowBytes = std::min(RegionRowPitch, RowPitch ? RowPitch : RegionRowPitch);
+        uint8*       MappedPtr    = static_cast<uint8*>(UploadCPUVA);
+        const uint8* SourcePtr    = static_cast<const uint8*>(Data);
+        for (uint32 Row = 0; Row < Height; ++Row)
+        {
+            Memory::Memcpy(MappedPtr, SourcePtr, CopyRowBytes);
+            MappedPtr += RegionRowPitch;
+            SourcePtr += RowPitch;
+        }
+
+        FVulkanImage* VulkanImage = (FVulkanImage*)Dst;
+
+        VkBufferImageCopy CopyRegion = {};
+        CopyRegion.bufferOffset                     = UploadOffset;
+        CopyRegion.bufferRowLength                  = Width;
+        CopyRegion.bufferImageHeight                = Height;
+        CopyRegion.imageSubresource.aspectMask      = VulkanImage->GetFullAspectMask();
+        CopyRegion.imageSubresource.mipLevel        = MipLevel;
+        CopyRegion.imageSubresource.baseArrayLayer  = ArraySlice;
+        CopyRegion.imageSubresource.layerCount      = 1;
+        CopyRegion.imageOffset                      = { (int32)OffsetX, (int32)OffsetY, 0 };
+        CopyRegion.imageExtent                      = { Width, Height, 1 };
+
+        if (PendingState.IsInState(EPendingCommandState::AutomaticBarriers))
+        {
+            SetImageState(Dst, FTextureSubresourceSet(MipLevel, 1, ArraySlice, 1), EResourceStates::CopyDest);
+        }
+        CommitBarriers();
+
+        CurrentCommandBuffer->AddReferencedResource(Dst);
+        CurrentCommandBuffer->AddStagingResource(UploadBuffer);
+
+        CommandListStats.NumCopies++;
+        vkCmdCopyBufferToImage(
+            CurrentCommandBuffer->CommandBuffer,
+            UploadBuffer->GetAPI<VkBuffer>(),
+            Dst->GetAPI<VkImage, EAPIResourceType::Image>(),
+            RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL),
+            1, &CopyRegion
+        );
+    }
+
     void FVulkanCommandList::ResolveImage(FRHIImage* RESTRICT Src, const FTextureSubresourceSet& RESTRICT SrcSubresources, FRHIImage* RESTRICT Dst, const FTextureSubresourceSet& RESTRICT DstSubresources)
     {
         LUMINA_PROFILE_SCOPE();

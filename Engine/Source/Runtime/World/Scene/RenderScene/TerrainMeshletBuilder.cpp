@@ -19,6 +19,137 @@ namespace Lumina::TerrainMeshletBuilder
             const size_t Index = (size_t)SampleY * (size_t)Resolution + (size_t)SampleX;
             return Heightmap[Index] * MaxHeight;
         }
+
+        // Fixed layout derived from the terrain's resolution + chunk size. Shared by the
+        // full build and the partial update so their indexing can never diverge.
+        struct FLayout
+        {
+            int32 Resolution;
+            int32 QuadsPerChunk;
+            int32 ChunksPerSide;
+            int32 MeshletQuadSide;
+            int32 MeshletsPerChunkSide;
+            int32 MeshletsPerChunk;
+            int32 NumChunks;
+            int32 NumMeshlets;
+            float HalfSize;
+            float Stride;
+            glm::vec2 OriginXZ;
+            float WorldOriginY;
+            float MaxHeight;
+            float DilateXZ;
+            float DilateY;
+        };
+
+        bool ComputeLayout(const STerrainComponent& Terrain, const glm::vec3& WorldOrigin, FLayout& Out)
+        {
+            const int32 Resolution = Terrain.Resolution;
+            const int32 ChunkRes   = Terrain.ChunkResolution;
+            if (Resolution < 2 || ChunkRes < 2)
+            {
+                return false;
+            }
+            if ((int32)Terrain.Heightmap.size() != Resolution * Resolution)
+            {
+                return false;
+            }
+
+            Out.Resolution           = Resolution;
+            Out.QuadsPerChunk        = ChunkRes - 1;
+            Out.ChunksPerSide        = std::max(1, (Resolution - 1) / Out.QuadsPerChunk);
+            Out.MeshletQuadSide      = GTerrainMeshletQuads;
+            Out.MeshletsPerChunkSide = (Out.QuadsPerChunk + Out.MeshletQuadSide - 1) / Out.MeshletQuadSide;
+            Out.MeshletsPerChunk     = Out.MeshletsPerChunkSide * Out.MeshletsPerChunkSide;
+            Out.NumChunks            = Out.ChunksPerSide * Out.ChunksPerSide;
+            Out.NumMeshlets          = Out.NumChunks * Out.MeshletsPerChunk;
+
+            Out.HalfSize     = Terrain.TileWorldSize * 0.5f;
+            Out.Stride       = Terrain.TileWorldSize / float(Resolution - 1);
+            Out.OriginXZ     = glm::vec2(WorldOrigin.x - Out.HalfSize, WorldOrigin.z - Out.HalfSize);
+            Out.WorldOriginY = WorldOrigin.y;
+            Out.MaxHeight    = Terrain.MaxHeight;
+            Out.DilateXZ     = Out.Stride * 0.5f;
+            // Y dilation: matrix rounding can produce Y values microscopically outside the CPU range -> silhouette culling.
+            Out.DilateY      = std::max(0.05f, Out.MaxHeight * 0.01f);
+            return true;
+        }
+
+        // Recompute one meshlet's height range + world AABB from the heightmap, writing
+        // BoundsMin/Max in place. Returns the (min, max) world height for chunk aggregation.
+        glm::vec2 ComputeMeshletBounds(FTerrainMeshletInfo& Meshlet, const FTerrainChunkInfo& Chunk,
+                                       const TVector<float>& Heightmap, const FLayout& L)
+        {
+            const int32 SampleX0 = Chunk.QuadOrigin.x + Meshlet.ChunkLocalQuadOrigin.x;
+            const int32 SampleY0 = Chunk.QuadOrigin.y + Meshlet.ChunkLocalQuadOrigin.y;
+            const int32 NVertsX  = Meshlet.QuadExtent.x + 1;
+            const int32 NVertsY  = Meshlet.QuadExtent.y + 1;
+
+            float MinH =  std::numeric_limits<float>::infinity();
+            float MaxH = -std::numeric_limits<float>::infinity();
+            for (int32 vy = 0; vy < NVertsY; ++vy)
+            {
+                for (int32 vx = 0; vx < NVertsX; ++vx)
+                {
+                    const float H = SampleWorldHeight(Heightmap, SampleX0 + vx, SampleY0 + vy, L.Resolution, L.MaxHeight);
+                    MinH = std::min(MinH, H);
+                    MaxH = std::max(MaxH, H);
+                }
+            }
+
+            const float WorldXMin = L.OriginXZ.x + float(SampleX0) * L.Stride - L.DilateXZ;
+            const float WorldXMax = L.OriginXZ.x + float(SampleX0 + NVertsX - 1) * L.Stride + L.DilateXZ;
+            const float WorldZMin = L.OriginXZ.y + float(SampleY0) * L.Stride - L.DilateXZ;
+            const float WorldZMax = L.OriginXZ.y + float(SampleY0 + NVertsY - 1) * L.Stride + L.DilateXZ;
+
+            Meshlet.BoundsMin = glm::vec3(WorldXMin, L.WorldOriginY + MinH - L.DilateY, WorldZMin);
+            Meshlet.BoundsMax = glm::vec3(WorldXMax, L.WorldOriginY + MaxH + L.DilateY, WorldZMax);
+            return glm::vec2(MinH, MaxH);
+        }
+
+        // Recompute one chunk's AABB from the heightmap by rebuilding all its meshlets.
+        void RebuildChunk(FTerrainGPUState& State, int32 cx, int32 cy, const TVector<float>& Heightmap, const FLayout& L)
+        {
+            const int32 ChunkIndex = cy * L.ChunksPerSide + cx;
+            FTerrainChunkInfo& Chunk = State.Chunks[ChunkIndex];
+            Chunk.ChunkCoord    = glm::ivec2(cx, cy);
+            Chunk.QuadOrigin    = glm::ivec2(cx * L.QuadsPerChunk, cy * L.QuadsPerChunk);
+            Chunk.MeshletOffset = (uint32)(ChunkIndex * L.MeshletsPerChunk);
+            Chunk.MeshletCount  = (uint32)L.MeshletsPerChunk;
+
+            float ChunkHeightMin =  std::numeric_limits<float>::infinity();
+            float ChunkHeightMax = -std::numeric_limits<float>::infinity();
+
+            for (int32 my = 0; my < L.MeshletsPerChunkSide; ++my)
+            {
+                for (int32 mx = 0; mx < L.MeshletsPerChunkSide; ++mx)
+                {
+                    const int32 LocalMeshletIndex  = my * L.MeshletsPerChunkSide + mx;
+                    const int32 MeshletGlobalIndex = ChunkIndex * L.MeshletsPerChunk + LocalMeshletIndex;
+
+                    FTerrainMeshletInfo& Meshlet = State.Meshlets[MeshletGlobalIndex];
+                    Meshlet.ChunkIndex           = (uint32)ChunkIndex;
+                    Meshlet.ChunkLocalQuadOrigin = glm::ivec2(mx * L.MeshletQuadSide, my * L.MeshletQuadSide);
+
+                    const int32 RemainingX = L.QuadsPerChunk - Meshlet.ChunkLocalQuadOrigin.x;
+                    const int32 RemainingY = L.QuadsPerChunk - Meshlet.ChunkLocalQuadOrigin.y;
+                    Meshlet.QuadExtent = glm::ivec2(
+                        std::min(L.MeshletQuadSide, RemainingX),
+                        std::min(L.MeshletQuadSide, RemainingY));
+
+                    const glm::vec2 HRange = ComputeMeshletBounds(Meshlet, Chunk, Heightmap, L);
+                    ChunkHeightMin = std::min(ChunkHeightMin, HRange.x);
+                    ChunkHeightMax = std::max(ChunkHeightMax, HRange.y);
+                }
+            }
+
+            const float ChunkXMin = L.OriginXZ.x + float(Chunk.QuadOrigin.x) * L.Stride - L.DilateXZ;
+            const float ChunkXMax = L.OriginXZ.x + float(Chunk.QuadOrigin.x + L.QuadsPerChunk) * L.Stride + L.DilateXZ;
+            const float ChunkZMin = L.OriginXZ.y + float(Chunk.QuadOrigin.y) * L.Stride - L.DilateXZ;
+            const float ChunkZMax = L.OriginXZ.y + float(Chunk.QuadOrigin.y + L.QuadsPerChunk) * L.Stride + L.DilateXZ;
+
+            Chunk.BoundsMin = glm::vec3(ChunkXMin, L.WorldOriginY + ChunkHeightMin - L.DilateY, ChunkZMin);
+            Chunk.BoundsMax = glm::vec3(ChunkXMax, L.WorldOriginY + ChunkHeightMax + L.DilateY, ChunkZMax);
+        }
     }
 
     void Build(STerrainComponent& Terrain, const glm::vec3& WorldOrigin)
@@ -27,114 +158,53 @@ namespace Lumina::TerrainMeshletBuilder
         State.Chunks.clear();
         State.Meshlets.clear();
 
-        const int32 Resolution = Terrain.Resolution;
-        const int32 ChunkRes   = Terrain.ChunkResolution;
-        if (Resolution < 2 || ChunkRes < 2)
-        {
-            return;
-        }
-        if ((int32)Terrain.Heightmap.size() != Resolution * Resolution)
+        FLayout L;
+        if (!ComputeLayout(Terrain, WorldOrigin, L))
         {
             // Heightmap not sized yet; renderer will retry next frame after EnsureTerrainCpuBuffers().
             return;
         }
 
-        const int32 QuadsPerChunk        = ChunkRes - 1;
-        const int32 ChunksPerSide        = std::max(1, (Resolution - 1) / QuadsPerChunk);
-        const int32 MeshletQuadSide      = GTerrainMeshletQuads;
-        const int32 MeshletsPerChunkSide = (QuadsPerChunk + MeshletQuadSide - 1) / MeshletQuadSide;
-        const int32 MeshletsPerChunk     = MeshletsPerChunkSide * MeshletsPerChunkSide;
-        const int32 NumChunks            = ChunksPerSide * ChunksPerSide;
-        const int32 NumMeshlets          = NumChunks * MeshletsPerChunk;
+        State.Chunks.resize(L.NumChunks);
+        State.Meshlets.resize(L.NumMeshlets);
 
-        const float HalfSize             = Terrain.TileWorldSize * 0.5f;
-        const float Stride               = Terrain.TileWorldSize / float(Resolution - 1);
-        const glm::vec2 OriginXZ         = glm::vec2(WorldOrigin.x - HalfSize, WorldOrigin.z - HalfSize);
-        const float WorldOriginY         = WorldOrigin.y;
-        const float MaxHeight            = Terrain.MaxHeight;
-
-        State.Chunks.resize(NumChunks);
-        State.Meshlets.resize(NumMeshlets);
-
-        const float BoundsDilateXZ = Stride * 0.5f;
-        // Y dilation: matrix rounding can produce Y values microscopically outside the CPU range -> silhouette culling.
-        const float BoundsDilateY  = std::max(0.05f, MaxHeight * 0.01f);
-
-        for (int32 cy = 0; cy < ChunksPerSide; ++cy)
+        for (int32 cy = 0; cy < L.ChunksPerSide; ++cy)
         {
-            for (int32 cx = 0; cx < ChunksPerSide; ++cx)
+            for (int32 cx = 0; cx < L.ChunksPerSide; ++cx)
             {
-                const int32 ChunkIndex = cy * ChunksPerSide + cx;
+                RebuildChunk(State, cx, cy, Terrain.Heightmap, L);
+            }
+        }
+    }
 
-                FTerrainChunkInfo& Chunk = State.Chunks[ChunkIndex];
-                Chunk.ChunkCoord    = glm::ivec2(cx, cy);
-                Chunk.QuadOrigin    = glm::ivec2(cx * QuadsPerChunk, cy * QuadsPerChunk);
-                Chunk.MeshletOffset = (uint32)(ChunkIndex * MeshletsPerChunk);
-                Chunk.MeshletCount  = (uint32)MeshletsPerChunk;
+    void UpdateRegion(STerrainComponent& Terrain, const glm::vec3& WorldOrigin, const glm::ivec2& SampleMin, const glm::ivec2& SampleMax)
+    {
+        FTerrainGPUState& State = Terrain.GPUState;
 
-                float ChunkHeightMin =  std::numeric_limits<float>::infinity();
-                float ChunkHeightMax = -std::numeric_limits<float>::infinity();
+        FLayout L;
+        if (!ComputeLayout(Terrain, WorldOrigin, L))
+        {
+            return;
+        }
 
-                for (int32 my = 0; my < MeshletsPerChunkSide; ++my)
-                {
-                    for (int32 mx = 0; mx < MeshletsPerChunkSide; ++mx)
-                    {
-                        const int32 LocalMeshletIndex = my * MeshletsPerChunkSide + mx;
-                        const int32 MeshletGlobalIndex = ChunkIndex * MeshletsPerChunk + LocalMeshletIndex;
+        // Structure must already match; otherwise fall back to a full build so indices stay valid.
+        if ((int32)State.Chunks.size() != L.NumChunks || (int32)State.Meshlets.size() != L.NumMeshlets)
+        {
+            Build(Terrain, WorldOrigin);
+            return;
+        }
 
-                        FTerrainMeshletInfo& Meshlet = State.Meshlets[MeshletGlobalIndex];
-                        Meshlet.ChunkIndex            = (uint32)ChunkIndex;
-                        Meshlet.ChunkLocalQuadOrigin  = glm::ivec2(mx * MeshletQuadSide, my * MeshletQuadSide);
+        // Only chunks overlapping the dirty sample rect need their bounds recomputed.
+        const int32 CxMin = glm::clamp(SampleMin.x / L.QuadsPerChunk, 0, L.ChunksPerSide - 1);
+        const int32 CxMax = glm::clamp(SampleMax.x / L.QuadsPerChunk, 0, L.ChunksPerSide - 1);
+        const int32 CyMin = glm::clamp(SampleMin.y / L.QuadsPerChunk, 0, L.ChunksPerSide - 1);
+        const int32 CyMax = glm::clamp(SampleMax.y / L.QuadsPerChunk, 0, L.ChunksPerSide - 1);
 
-                        const int32 RemainingX = QuadsPerChunk - Meshlet.ChunkLocalQuadOrigin.x;
-                        const int32 RemainingY = QuadsPerChunk - Meshlet.ChunkLocalQuadOrigin.y;
-                        Meshlet.QuadExtent = glm::ivec2(
-                            std::min(MeshletQuadSide, RemainingX),
-                            std::min(MeshletQuadSide, RemainingY));
-
-                        const int32 SampleX0 = Chunk.QuadOrigin.x + Meshlet.ChunkLocalQuadOrigin.x;
-                        const int32 SampleY0 = Chunk.QuadOrigin.y + Meshlet.ChunkLocalQuadOrigin.y;
-                        const int32 NVertsX  = Meshlet.QuadExtent.x + 1;
-                        const int32 NVertsY  = Meshlet.QuadExtent.y + 1;
-
-                        float MinH =  std::numeric_limits<float>::infinity();
-                        float MaxH = -std::numeric_limits<float>::infinity();
-                        for (int32 vy = 0; vy < NVertsY; ++vy)
-                        {
-                            for (int32 vx = 0; vx < NVertsX; ++vx)
-                            {
-                                const float H = SampleWorldHeight(
-                                    Terrain.Heightmap,
-                                    SampleX0 + vx,
-                                    SampleY0 + vy,
-                                    Resolution,
-                                    MaxHeight);
-                                MinH = std::min(MinH, H);
-                                MaxH = std::max(MaxH, H);
-                            }
-                        }
-
-                        ChunkHeightMin = std::min(ChunkHeightMin, MinH);
-                        ChunkHeightMax = std::max(ChunkHeightMax, MaxH);
-
-                        // Convert sample-index extents to world-space XZ.
-                        const float WorldXMin = OriginXZ.x + float(SampleX0) * Stride - BoundsDilateXZ;
-                        const float WorldXMax = OriginXZ.x + float(SampleX0 + NVertsX - 1) * Stride + BoundsDilateXZ;
-                        const float WorldZMin = OriginXZ.y + float(SampleY0) * Stride - BoundsDilateXZ;
-                        const float WorldZMax = OriginXZ.y + float(SampleY0 + NVertsY - 1) * Stride + BoundsDilateXZ;
-
-                        Meshlet.BoundsMin = glm::vec3(WorldXMin, WorldOriginY + MinH - BoundsDilateY, WorldZMin);
-                        Meshlet.BoundsMax = glm::vec3(WorldXMax, WorldOriginY + MaxH + BoundsDilateY, WorldZMax);
-                    }
-                }
-
-                const float ChunkXMin = OriginXZ.x + float(Chunk.QuadOrigin.x) * Stride - BoundsDilateXZ;
-                const float ChunkXMax = OriginXZ.x + float(Chunk.QuadOrigin.x + QuadsPerChunk) * Stride + BoundsDilateXZ;
-                const float ChunkZMin = OriginXZ.y + float(Chunk.QuadOrigin.y) * Stride - BoundsDilateXZ;
-                const float ChunkZMax = OriginXZ.y + float(Chunk.QuadOrigin.y + QuadsPerChunk) * Stride + BoundsDilateXZ;
-
-                Chunk.BoundsMin = glm::vec3(ChunkXMin, WorldOriginY + ChunkHeightMin - BoundsDilateY, ChunkZMin);
-                Chunk.BoundsMax = glm::vec3(ChunkXMax, WorldOriginY + ChunkHeightMax + BoundsDilateY, ChunkZMax);
+        for (int32 cy = CyMin; cy <= CyMax; ++cy)
+        {
+            for (int32 cx = CxMin; cx <= CxMax; ++cx)
+            {
+                RebuildChunk(State, cx, cy, Terrain.Heightmap, L);
             }
         }
     }

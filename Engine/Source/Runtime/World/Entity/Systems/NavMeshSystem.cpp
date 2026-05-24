@@ -350,7 +350,7 @@ namespace Lumina
                     const uint32 V0 = Meshlet.VertexOffset;
                     for (uint32 v = 0; v < Meshlet.VertexCount; ++v)
                     {
-                        const glm::vec3 Local = DecodePosition(MV[V0 + v].Position, Meshlet.LoInt, Md.MeshOrigin, Md.MeshGridStep);
+                        const glm::vec3 Local = DecodePosition(MV[V0 + v].Position, Meshlet.LoInt, Md.MeshOrigin[Meshlet.LODIndex], Md.MeshGridStep[Meshlet.LODIndex]);
                         LocalVerts[v] = glm::vec3(W * glm::vec4(Local, 1.0f));
                     }
 

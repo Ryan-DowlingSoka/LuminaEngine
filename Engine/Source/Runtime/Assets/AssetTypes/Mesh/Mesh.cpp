@@ -131,11 +131,11 @@ namespace Lumina
             }
             else
             {
-                // Fallback (no bounds stored): the conservative whole-mesh grid extent.
-                const glm::vec3 Origin   = MD.MeshOrigin;
-                const glm::vec3 GridStep = MD.MeshGridStep;
+                // Fallback (no bounds stored): conservative per-meshlet grid extent.
                 for (const FMeshlet& M : MD.Meshlets)
                 {
+                    const glm::vec3 Origin   = MD.MeshOrigin[M.LODIndex];
+                    const glm::vec3 GridStep = MD.MeshGridStep[M.LODIndex];
                     const glm::vec3 Lo = Origin + glm::vec3(M.LoInt) * GridStep;
                     BoundingBox.Min = glm::min(BoundingBox.Min, Lo);
                     BoundingBox.Max = glm::max(BoundingBox.Max, Lo + glm::vec3(1023.0f) * GridStep);
@@ -210,8 +210,11 @@ namespace Lumina
             Header.BoundsAddress      = MeshResources->MeshBuffers.MeshletBoundsBuffer->GetAddress();
             Header.VerticesAddress    = MeshResources->MeshBuffers.MeshletVertexBuffer->GetAddress();
             Header.TrianglesAddress   = MeshResources->MeshBuffers.MeshletTriangleBuffer->GetAddress();
-            Header.MeshOriginAndPad   = glm::vec4(MData.MeshOrigin,   0.0f);
-            Header.MeshGridStepAndPad = glm::vec4(MData.MeshGridStep, 0.0f);
+            for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
+            {
+                Header.MeshOrigin[i]   = glm::vec4(MData.MeshOrigin[i],   0.0f);
+                Header.MeshGridStep[i] = glm::vec4(MData.MeshGridStep[i], 0.0f);
+            }
 
             FRHIBufferDesc HeaderDesc;
             HeaderDesc.Size       = sizeof(FMeshletHeaderGPU);

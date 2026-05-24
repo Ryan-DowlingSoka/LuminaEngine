@@ -64,6 +64,16 @@ namespace Lumina
         Inner->WriteImage(Dst, ArraySlice, MipLevel, Data, RowPitch, DepthPitch);
     }
 
+    void FCommandListValidator::WriteImageRegion(FRHIImage* Dst, uint32 ArraySlice, uint32 MipLevel, uint32 OffsetX, uint32 OffsetY, uint32 Width, uint32 Height, const void* Data, uint32 RowPitch)
+    {
+        ASSERT(Dst != nullptr && Data != nullptr);
+        if (Height > 1 && RowPitch == 0)
+        {
+            LOG_ERROR("WriteImageRegion: RowPitch is 0 but region has multiple rows");
+        }
+        Inner->WriteImageRegion(Dst, ArraySlice, MipLevel, OffsetX, OffsetY, Width, Height, Data, RowPitch);
+    }
+
     void FCommandListValidator::ResolveImage(FRHIImage* Src, const FTextureSubresourceSet& SrcSubresources, FRHIImage* Dst, const FTextureSubresourceSet& DstSubresources)
     {
         ASSERT(Src != nullptr && Dst != nullptr);

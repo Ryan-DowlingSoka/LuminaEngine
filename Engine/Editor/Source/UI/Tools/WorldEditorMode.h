@@ -9,6 +9,23 @@ namespace Lumina
     struct SCameraComponent;
 
     /**
+     * Host-provided services a mode can call into. Lets a mode wrap an interaction
+     * (e.g. a terrain sculpt stroke) in the editor's undo transaction without taking
+     * a hard dependency on the concrete tool class.
+     */
+    class IEditorModeContext
+    {
+    public:
+        virtual ~IEditorModeContext() = default;
+
+        /** Capture the pre-interaction state for undo. Pair with EndModeTransaction. */
+        virtual void BeginModeTransaction() = 0;
+
+        /** Capture the post-interaction state and push it onto the undo stack. */
+        virtual void EndModeTransaction(const char* Name) = 0;
+    };
+
+    /**
      * Mutually-exclusive viewport input mode for the world editor.
      *
      * Exactly one mode is active at a time. The host (FWorldEditorTool) routes
@@ -66,6 +83,13 @@ namespace Lumina
          *  The default Selection mode returns false; specialized modes (terrain,
          *  foliage paint, etc.) return true. */
         virtual bool ConsumesViewportInput() const { return true; }
+
+        /** Host injects itself after construction so modes can reach editor services. */
+        void SetContext(IEditorModeContext* InContext) { Context = InContext; }
+
+    protected:
+
+        IEditorModeContext* Context = nullptr;
     };
 
     /**

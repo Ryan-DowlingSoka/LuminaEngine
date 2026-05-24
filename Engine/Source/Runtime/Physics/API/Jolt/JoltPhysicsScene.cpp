@@ -1459,7 +1459,7 @@ namespace Lumina::Physics
                     const float qx  = (float)( P        & 0x3FFu);
                     const float qy  = (float)((P >> 10) & 0x3FFu);
                     const float qz  = (float)((P >> 20) & 0x3FFu);
-                    glm::vec3 Pos = MD.MeshOrigin + (glm::vec3(M.LoInt) + glm::vec3(qx, qy, qz)) * MD.MeshGridStep;
+                    glm::vec3 Pos = MD.MeshOrigin[M.LODIndex] + (glm::vec3(M.LoInt) + glm::vec3(qx, qy, qz)) * MD.MeshGridStep[M.LODIndex];
                     Pos *= Scale;
                     Vertices.push_back(JPH::Float3(Pos.x, Pos.y, Pos.z));
                 }

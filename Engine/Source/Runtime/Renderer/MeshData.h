@@ -22,7 +22,8 @@ namespace Lumina
     // shadow casters to topology-preserving LODs.
     constexpr uint32 MAX_SHADOW_LOD             = 3;
 
-    // LoInt: meshlet's quantization origin in mesh-global grid units.
+    // LoInt: meshlet's quantization origin in grid units of its LOD's grid.
+    // LODIndex: selects the per-LOD grid (MeshOrigin[LODIndex]/MeshGridStep[LODIndex]).
     // TriangleOffset is in dwords (3 micro-indices per dword).
     struct alignas(16) FMeshlet
     {
@@ -31,7 +32,7 @@ namespace Lumina
         uint32     VertexCount;
         uint32     TriangleCount;
         glm::ivec3 LoInt;
-        uint32     _Pad0;
+        uint32     LODIndex;
 
         friend FArchive& operator<<(FArchive& Ar, FMeshlet& Data)
         {
@@ -40,7 +41,7 @@ namespace Lumina
             Ar << Data.VertexCount;
             Ar << Data.TriangleCount;
             Ar << Data.LoInt;
-            Ar << Data._Pad0;
+            Ar << Data.LODIndex;
             return Ar;
         }
     };
@@ -76,10 +77,13 @@ namespace Lumina
         TVector<uint32>                 MeshletTriangles;
         TVector<FMeshletBounds>         MeshletBounds;
 
-        // Mesh-global integer-grid basis. GridStep sized so any meshlet's
-        // extent fits in <=1023 cells per axis.
-        glm::vec3                       MeshOrigin   = glm::vec3(0.0f);
-        glm::vec3                       MeshGridStep = glm::vec3(0.0f);
+        // Per-LOD integer-grid basis, indexed by FMeshlet::LODIndex. GridStep is sized so the
+        // LARGEST meshlet IN THAT LOD fits in <=1023 cells per axis. Per-LOD (not one global
+        // grid) so a coarse sloppy LOD can't inflate the cell size and degrade LOD 0's
+        // quantization; the grid is still shared across every meshlet WITHIN a LOD, which keeps
+        // each LOD seam-free (adjacent meshlets snap a shared boundary vertex to the same cell).
+        glm::vec3                       MeshOrigin[MAX_MESH_LODS]   = {};
+        glm::vec3                       MeshGridStep[MAX_MESH_LODS] = {};
 
         FORCEINLINE bool IsEmpty() const { return Meshlets.empty(); }
 
@@ -90,8 +94,11 @@ namespace Lumina
             MeshletSkinnedVertices.clear();
             MeshletTriangles.clear();
             MeshletBounds.clear();
-            MeshOrigin   = glm::vec3(0.0f);
-            MeshGridStep = glm::vec3(0.0f);
+            for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
+            {
+                MeshOrigin[i]   = glm::vec3(0.0f);
+                MeshGridStep[i] = glm::vec3(0.0f);
+            }
         }
 
         friend FArchive& operator<<(FArchive& Ar, FMeshletData& Data)
@@ -101,21 +108,29 @@ namespace Lumina
             Ar << Data.MeshletSkinnedVertices;
             Ar << Data.MeshletTriangles;
             Ar << Data.MeshletBounds;
-            Ar << Data.MeshOrigin;
-            Ar << Data.MeshGridStep;
+
+            for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
+            {
+                Ar << Data.MeshOrigin[i];
+            }
+            for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
+            {
+                Ar << Data.MeshGridStep[i];
+            }
             return Ar;
         }
     };
 
     // Per-mesh GPU header. Reached through FGPUInstance's MeshletHeader BDA.
+    // MeshOrigin/MeshGridStep are per-LOD; the VS indexes them by FMeshlet::LODIndex.
     struct alignas(16) FMeshletHeaderGPU
     {
-        uint64    MeshletsAddress;           // FMeshlet*
-        uint64    BoundsAddress;             // FMeshletBounds*
-        uint64    VerticesAddress;           // uint32*
-        uint64    TrianglesAddress;          // uint32*
-        glm::vec4 MeshOriginAndPad;          // xyz = grid origin
-        glm::vec4 MeshGridStepAndPad;        // xyz = grid cell size
+        uint64    MeshletsAddress;                  // FMeshlet*
+        uint64    BoundsAddress;                    // FMeshletBounds*
+        uint64    VerticesAddress;                  // uint32*
+        uint64    TrianglesAddress;                 // uint32*
+        glm::vec4 MeshOrigin[MAX_MESH_LODS];        // xyz = per-LOD grid origin
+        glm::vec4 MeshGridStep[MAX_MESH_LODS];      // xyz = per-LOD grid cell size
     };
 
     struct FGeometrySurface final

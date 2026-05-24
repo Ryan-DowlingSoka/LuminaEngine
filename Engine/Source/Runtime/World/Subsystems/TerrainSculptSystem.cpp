@@ -1,5 +1,6 @@
 #include "PCH.h"
 #include "TerrainSculptSystem.h"
+#include "Memory/Allocators/Allocator.h"
 #include "TaskSystem/TaskSystem.h"
 #include "World/Entity/Components/TerrainComponent.h"
 
@@ -63,39 +64,66 @@ namespace Lumina
 
     bool FTerrainSculptSystem::Raycast(const STerrainComponent& Terrain, const glm::vec3& TerrainOrigin, const glm::vec3& RayOrigin, const glm::vec3& RayDir, glm::vec3& OutHit)
     {
+        const int32 Res     = Terrain.Resolution;
         const float MaxDist = Terrain.TileWorldSize * 4.0f;
-        const float Step    = std::max(0.5f, Terrain.TileWorldSize / float(Terrain.Resolution) * 0.5f);
+        const float Step    = std::max(0.5f, Terrain.TileWorldSize / float(Res) * 0.5f);
 
         const glm::vec2 OriginXZ = TerrainOriginXZ(Terrain, TerrainOrigin);
         const float BaseY  = TerrainOrigin.y;
-        const float Stride = Terrain.TileWorldSize / float(Terrain.Resolution - 1);
-        
-        glm::vec3 Pos = RayOrigin;
-        bool bWasAbove = false;
+        const float Stride = Terrain.TileWorldSize / float(Res - 1);
 
-        for (float T = 0.0f; T < MaxDist; T += Step)
+        auto InBounds = [&](const glm::vec3& P)
         {
-            int SX = int((Pos.x - OriginXZ.x) / Stride);
-            int SY = int((Pos.z - OriginXZ.y) / Stride);
-            if (SX < 0 || SY < 0 || SX >= Terrain.Resolution || SY >= Terrain.Resolution)
-            {
-                Pos += RayDir * Step;
-                bWasAbove = false;
-                continue;
-            }
+            const float Lx = (P.x - OriginXZ.x) / Stride;
+            const float Lz = (P.z - OriginXZ.y) / Stride;
+            return Lx >= 0.0f && Lz >= 0.0f && Lx <= float(Res - 1) && Lz <= float(Res - 1);
+        };
 
-            const float Sample = Terrain.Heightmap[SY * Terrain.Resolution + SX];
-            const float TerrainY = BaseY + Sample * Terrain.MaxHeight;
-            if (Pos.y > TerrainY)
+        // Bilinear surface height at a world XZ (clamped to the tile), so the hit
+        // tracks the rendered surface smoothly instead of snapping to texels.
+        auto SurfaceY = [&](float Wx, float Wz)
+        {
+            const float Fx = glm::clamp((Wx - OriginXZ.x) / Stride, 0.0f, float(Res - 1));
+            const float Fz = glm::clamp((Wz - OriginXZ.y) / Stride, 0.0f, float(Res - 1));
+            const int X0 = int(Fx), Z0 = int(Fz);
+            const int X1 = std::min(X0 + 1, Res - 1), Z1 = std::min(Z0 + 1, Res - 1);
+            const float Tx = Fx - float(X0), Tz = Fz - float(Z0);
+            const float H00 = Terrain.Heightmap[size_t(Z0) * Res + X0];
+            const float H10 = Terrain.Heightmap[size_t(Z0) * Res + X1];
+            const float H01 = Terrain.Heightmap[size_t(Z1) * Res + X0];
+            const float H11 = Terrain.Heightmap[size_t(Z1) * Res + X1];
+            const float H   = glm::mix(glm::mix(H00, H10, Tx), glm::mix(H01, H11, Tx), Tz);
+            return BaseY + H * Terrain.MaxHeight;
+        };
+
+        glm::vec3 Prev      = RayOrigin;
+        bool      bPrevIn   = InBounds(Prev);
+        float     PrevDiff  = bPrevIn ? (Prev.y - SurfaceY(Prev.x, Prev.z)) : 0.0f;
+
+        for (float T = Step; T < MaxDist; T += Step)
+        {
+            const glm::vec3 Pos = RayOrigin + RayDir * T;
+            const bool bIn = InBounds(Pos);
+            if (bIn)
             {
-                bWasAbove = true;
+                const float Diff = Pos.y - SurfaceY(Pos.x, Pos.z);
+                // Downward crossing (above -> on/below) between Prev and Pos: bisect for a tight hit.
+                if (bPrevIn && PrevDiff > 0.0f && Diff <= 0.0f)
+                {
+                    glm::vec3 A = Prev, B = Pos;
+                    for (int i = 0; i < 8; ++i)
+                    {
+                        const glm::vec3 M = (A + B) * 0.5f;
+                        if (M.y - SurfaceY(M.x, M.z) > 0.0f) A = M; else B = M;
+                    }
+                    const glm::vec3 H = (A + B) * 0.5f;
+                    OutHit = glm::vec3(H.x, SurfaceY(H.x, H.z), H.z);
+                    return true;
+                }
+                PrevDiff = Diff;
             }
-            else if (bWasAbove)
-            {
-                OutHit = glm::vec3(Pos.x, TerrainY, Pos.z);
-                return true;
-            }
-            Pos += RayDir * Step;
+            Prev    = Pos;
+            bPrevIn = bIn;
         }
         return false;
     }
@@ -246,7 +274,9 @@ namespace Lumina
         const int32 SnapW    = SnapMaxX - SnapMinX + 1;
         const int32 SnapH    = SnapMaxY - SnapMinY + 1;
 
-        TVector<float> Snapshot;
+        // Scratch-backed so a held smooth stroke doesn't churn the heap every frame.
+        FMemMark Mark;
+        TScratchVector<float> Snapshot(Mark.Eastl());
         Snapshot.resize(size_t(SnapW) * size_t(SnapH));
         for (int32 Y = 0; Y < SnapH; ++Y)
         {
@@ -388,18 +418,23 @@ namespace Lumina
             return;
         }
 
+        // Endpoint heights are relative to the terrain origin, matching how the
+        // heightmap is sampled everywhere else; using absolute world Y would break
+        // ramps once the terrain entity is moved off Y=0.
         const float MaxH = std::max(Terrain.MaxHeight, 1e-3f);
         const float StartN = Dab.RampUseExplicitHeights
             ? glm::clamp(Dab.RampStartHeight / MaxH, 0.0f, 1.0f)
-            : glm::clamp(Dab.RampStart.y / MaxH, 0.0f, 1.0f);
+            : glm::clamp((Dab.RampStart.y - Dab.TerrainOrigin.y) / MaxH, 0.0f, 1.0f);
         const float EndN = Dab.RampUseExplicitHeights
             ? glm::clamp(Dab.RampEndHeight / MaxH, 0.0f, 1.0f)
-            : glm::clamp(Dab.RampEnd.y / MaxH, 0.0f, 1.0f);
+            : glm::clamp((Dab.RampEnd.y - Dab.TerrainOrigin.y) / MaxH, 0.0f, 1.0f);
 
         const float HalfWidth = std::max(Dab.RampHalfWidth, Stride);
+        const float InvLen    = 1.0f / std::sqrt(ABLen2);
+        const float Feather   = glm::clamp(Dab.Falloff, 0.0f, 1.0f);
 
         const int32 RowCount = Rect.w - Rect.y + 1;
-        Task::ParallelFor((uint32)RowCount, [&, Rect, Speed, Stride, OriginXZ, A, AB, ABLen2, StartN, EndN, HalfWidth](const Task::FParallelRange& Range)
+        Task::ParallelFor((uint32)RowCount, [&, Rect, Speed, Stride, OriginXZ, A, AB, ABLen2, StartN, EndN, HalfWidth, InvLen, Feather](const Task::FParallelRange& Range)
         {
             for (uint32 RowIdx = Range.Start; RowIdx < Range.End; ++RowIdx)
             {
@@ -409,23 +444,44 @@ namespace Lumina
                 {
                     float WorldX = OriginXZ.x + float(X) * Stride;
 
-                    const glm::vec2 P  = glm::vec2(WorldX, WorldZ) - A;
-                    const float T      = glm::clamp(glm::dot(P, AB) / ABLen2, 0.0f, 1.0f);
-                    const glm::vec2 C  = AB * T;
-                    const float Perp2  = glm::dot(P - C, P - C);
-                    const float Perp   = std::sqrt(Perp2);
+                    const glm::vec2 P     = glm::vec2(WorldX, WorldZ) - A;
+                    const float Along     = glm::dot(P, AB) / ABLen2;   // unclamped position along the ramp
+                    const float T         = glm::clamp(Along, 0.0f, 1.0f);
+                    const glm::vec2 C     = AB * T;
+                    const float Perp      = std::sqrt(glm::dot(P - C, P - C));
                     if (Perp > HalfWidth)
                     {
                         continue;
                     }
 
+                    // Lateral feather: full strength in an inner core, smoothstepped to 0 at the
+                    // edge so the ramp blends into the surrounding terrain instead of leaving a
+                    // vertical wall. Falloff sets the width of the feathered band.
                     const float Edge = Perp / HalfWidth;       // 0 center, 1 edge
-                    const float Lat  = 1.0f - Edge;            // lateral weight
-                    const float Soft = glm::mix(1.0f, Lat * Lat * (3.0f - 2.0f * Lat), Dab.Falloff);
+                    float Lat = 1.0f;
+                    if (Feather > 1e-4f)
+                    {
+                        const float U = glm::clamp((Edge - (1.0f - Feather)) / Feather, 0.0f, 1.0f);
+                        Lat = 1.0f - U * U * (3.0f - 2.0f * U);
+                    }
+
+                    // Longitudinal feather: fade the rounded end-caps over one half-width so the
+                    // ramp tapers into the terrain at each end rather than stamping a flat disc.
+                    float Long = 1.0f;
+                    const float CapU = HalfWidth * InvLen;
+                    if (Along < 0.0f)
+                    {
+                        Long = glm::clamp(1.0f + Along / CapU, 0.0f, 1.0f);
+                    }
+                    else if (Along > 1.0f)
+                    {
+                        Long = glm::clamp(1.0f - (Along - 1.0f) / CapU, 0.0f, 1.0f);
+                    }
+                    Long = Long * Long * (3.0f - 2.0f * Long);
 
                     const float Target = glm::mix(StartN, EndN, T);
                     float& H = Terrain.Heightmap[Y * Res + X];
-                    H = glm::mix(H, Target, Speed * Soft);
+                    H = glm::mix(H, Target, Speed * Lat * Long);
                 }
             }
         }, 64u);

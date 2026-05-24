@@ -31,6 +31,9 @@ namespace Lumina
 
         void OnEnter(CWorld* World) override;
 
+        /** Closes any in-flight sculpt transaction if the user leaves the mode mid-stroke. */
+        void OnExit(CWorld* World) override;
+
         /** Mode-specific brush toolbar shown beneath the mode-selector bar. */
         void DrawToolbar(CWorld* World, float ButtonSize) override;
 
@@ -48,7 +51,8 @@ namespace Lumina
 
         ETerrainBrushMode Mode = ETerrainBrushMode::Sculpt;
         float Radius          = 512.0f;
-        float Strength        = 2.0f;
+        // World units per second of height change at the brush center.
+        float Strength        = 128.0f;
         float Falloff         = 0.5f;
         float FlattenHeight   = 0.0f;
         int32 ActiveLayer     = 0;
@@ -56,11 +60,6 @@ namespace Lumina
         // Sculpt direction sign; held key (LAlt) momentarily flips it during a stroke.
         // Replaces the older Shift-modifier so Shift remains free for other shortcuts.
         bool  bInvertSculpt   = false;
-
-        // Dab spacing as a fraction of brush radius. A new dab fires once the cursor
-        // has moved at least this many radii from the last dab, keeping strength
-        // independent of mouse polling rate / FPS.
-        float Spacing         = 0.25f;
 
         // Noise brush controls.
         float NoiseFrequency  = 1.0f / 512.0f;
@@ -73,13 +72,22 @@ namespace Lumina
         glm::vec3 RampEnd        = glm::vec3(0.0f);
         float     RampHalfWidth  = 256.0f;
 
+        // Optional fixed ramp endpoint heights instead of sampling the terrain.
+        bool      bRampExplicitHeights = false;
+        float     RampStartHeight      = 0.0f;
+        float     RampEndHeight        = 0.0f;
+
         glm::vec3 LastHit     = glm::vec3(0.0f);
         bool      bHitValid   = false;
 
-        // Stroke continuity tracked across frames for spacing.
-        bool      bStrokeActive   = false;
-        bool      bHasLastDabPos  = false;
-        glm::vec3 LastDabWorldPos = glm::vec3(0.0f);
+        // Footprint brushes interpolate dabs from the previous frame's hit to this
+        // frame's so fast strokes stay gap-free. Reset whenever the stroke breaks.
+        glm::vec3 LastStrokeHit = glm::vec3(0.0f);
+        bool      bHasStrokeHit = false;
+
+        // True while an undo transaction is open for the current stroke (begun on the
+        // first dab, committed on mouse release). Lets one Ctrl+Z revert a whole stroke.
+        bool      bTransactionOpen = false;
 
         // Reused so we act on whatever terrain entity is currently in the world.
         entt::entity FindPreferredTerrain(CWorld* World) const;

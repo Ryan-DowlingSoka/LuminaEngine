@@ -36,6 +36,7 @@
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "TerrainEditMode.h"
+#include "World/Entity/Components/TerrainComponent.h"
 #include "UI/Tools/EditorEntityUtils.h"
 #include "World/WorldManager.h"
 #include "World/Entity/EntityUtils.h"
@@ -227,8 +228,6 @@ namespace Lumina
         {
             return;
         }
-        const glm::vec3 MeshOrigin = MeshletData.MeshOrigin;
-        const glm::vec3 GridStep   = MeshletData.MeshGridStep;
         const TVector<FMeshletVertex>& Verts = MeshletData.MeshletVertices;
         const TVector<FMeshlet>& Meshlets    = MeshletData.Meshlets;
 
@@ -250,7 +249,7 @@ namespace Lumina
                     Q.x = int32( P        & 0x3FFu);
                     Q.y = int32((P >> 10) & 0x3FFu);
                     Q.z = int32((P >> 20) & 0x3FFu);
-                    const glm::vec3 LocalPos = MeshOrigin + glm::vec3(M.LoInt + Q) * GridStep;
+                    const glm::vec3 LocalPos = MeshletData.MeshOrigin[M.LODIndex] + glm::vec3(M.LoInt + Q) * MeshletData.MeshGridStep[M.LODIndex];
                     Visit(LocalPos);
                 }
             }
@@ -942,6 +941,12 @@ namespace Lumina
         EditorModes.clear();
         EditorModes.push_back(MakeUnique<FSelectionEditorMode>());
         EditorModes.push_back(MakeUnique<FTerrainEditMode>());
+
+        // Modes call back into the host for editor services (e.g. undo transactions).
+        for (TUniquePtr<IWorldEditorMode>& Mode : EditorModes)
+        {
+            Mode->SetContext(this);
+        }
 
         ActiveModeIndex = 0;
         if (IWorldEditorMode* Active = GetActiveMode())
@@ -3481,6 +3486,20 @@ namespace Lumina
 
         // Outliner topology may have changed; force a rebuild.
         OutlinerListView.MarkTreeDirty();
+
+        // Terrain GPU mirrors are transient and not serialized, so the restored
+        // heightmap/weights won't show until we flag a full re-upload + chunk rebuild.
+        if (World)
+        {
+            auto TerrainView = World->GetEntityRegistry().view<STerrainComponent>();
+            for (entt::entity Entity : TerrainView)
+            {
+                FTerrainGPUState& State = World->GetEntityRegistry().get<STerrainComponent>(Entity).GPUState;
+                State.bFullHeightmapDirty = true;
+                State.bFullWeightsDirty   = true;
+                State.bChunksDirty        = true;
+            }
+        }
     }
     
     namespace

@@ -102,13 +102,7 @@ namespace Lumina
             Ar << Data.Channels;
             Ar << Data.Notifies;
             Ar << Data.NotifyStates;
-
-            // Appended in ANIMATION_NOTIFY_TRACKS; older clips predate the lane list
-            // and reconstruct it from their notifies on first edit (see editor tool).
-            if (Ar.GetFileVersion() >= (int32)ELuminaEngineVersion::ANIMATION_NOTIFY_TRACKS)
-            {
-                Ar << Data.NotifyTracks;
-            }
+            Ar << Data.NotifyTracks;
 
             return Ar;
         }

@@ -33,5 +33,13 @@ namespace Lumina
          * matrix.
          */
         RUNTIME_API void Build(STerrainComponent& Terrain, const glm::vec3& WorldOrigin);
+
+        /**
+         * Partial rebuild: recomputes bounds only for the chunks overlapping the
+         * inclusive heightmap sample rect [SampleMin, SampleMax], leaving the rest
+         * untouched. Falls back to a full Build if the chunk/meshlet structure
+         * doesn't match the current resolution. Use after a localized height edit.
+         */
+        RUNTIME_API void UpdateRegion(STerrainComponent& Terrain, const glm::vec3& WorldOrigin, const glm::ivec2& SampleMin, const glm::ivec2& SampleMax);
     }
 }

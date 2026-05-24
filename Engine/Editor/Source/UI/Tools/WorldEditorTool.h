@@ -22,7 +22,7 @@ namespace Lumina
     /**
      * Base class for display and manipulating scenes.
      */
-    class FWorldEditorTool : public FEditorTool
+    class FWorldEditorTool : public FEditorTool, public IEditorModeContext
     {
         using Super = FEditorTool;
         LUMINA_SINGLETON_EDITOR_TOOL(FWorldEditorTool)
@@ -113,6 +113,10 @@ namespace Lumina
         void StopAllSimulations();
         
         bool IsUnsavedDocument() override;
+
+        // IEditorModeContext: lets an active mode wrap an interaction in the undo system.
+        void BeginModeTransaction() override { BeginTransaction(); }
+        void EndModeTransaction(const char* Name) override { EndTransaction(FName(Name)); }
 
 
     protected:

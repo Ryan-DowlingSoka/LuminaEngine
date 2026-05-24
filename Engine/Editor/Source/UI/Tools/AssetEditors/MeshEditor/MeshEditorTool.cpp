@@ -672,8 +672,10 @@ namespace Lumina
                     for (uint32 m = OverlayOffset; m < End; ++m)
                     {
                         const FMeshlet& Mesh = MD.Meshlets[m];
-                        const glm::vec3 BoxLo = MD.MeshOrigin + glm::vec3(Mesh.LoInt) * MD.MeshGridStep;
-                        const glm::vec3 BoxHi = BoxLo + glm::vec3(1023.0f) * MD.MeshGridStep;
+                        const glm::vec3 GridOrigin = MD.MeshOrigin[Mesh.LODIndex];
+                        const glm::vec3 GridStep   = MD.MeshGridStep[Mesh.LODIndex];
+                        const glm::vec3 BoxLo = GridOrigin + glm::vec3(Mesh.LoInt) * GridStep;
+                        const glm::vec3 BoxHi = BoxLo + glm::vec3(1023.0f) * GridStep;
                         Lo = glm::min(Lo, BoxLo);
                         Hi = glm::max(Hi, BoxHi);
                     }
