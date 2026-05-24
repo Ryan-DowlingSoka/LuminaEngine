@@ -31,9 +31,7 @@ namespace Lumina::Logging
 		Logger = spdlog::stdout_color_mt("Lumina");
 		Logger->sinks().push_back(std::make_shared<FConsoleSink>(GetConsoleLogQueue()));
 
-		// File sink: cooked WindowedApp builds have no console; lives next to the exe.
-		// Rotating keeps the prior run's log around so a crash on launch #2
-		// doesn't wipe launch #1's evidence.
+		// Rotating file sink: keeps prior run evidence; WindowedApp builds have no console.
 		try
 		{
 			std::filesystem::path ExePath(Platform::BaseDir());
@@ -51,9 +49,7 @@ namespace Lumina::Logging
 			// Non-fatal; fall back to console-only logging.
 		}
 
-		// Match the runtime level to the compiled-in verbosity: when verbose
-		// logging is stripped (Shipping by default), TRACE/DEBUG/INFO macros are
-		// no-ops anyway, so floor the logger at warn for any direct calls.
+		// Floor at warn when verbose macros are stripped (Shipping); avoids unfiltered direct calls.
 		#if defined(LUMINA_VERBOSE_LOGGING)
 		Logger->set_level(spdlog::level::trace);
 		#else

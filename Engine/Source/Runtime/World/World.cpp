@@ -216,10 +216,7 @@ namespace Lumina
             return ScriptComp->Script->Reference;
         }
 
-        // Per-thread world resolver. Every entity script thread publishes its
-        // owning CWorld via lua_setthreaddata in SetupScriptComponent, so any
-        // C function bound into the global table can reach back into the
-        // correct world without taking it as an explicit argument.
+        // Per-thread resolver; world set via lua_setthreaddata in SetupScriptComponent.
         static CWorld* CurrentWorld(lua_State* L)
         {
             const auto* TD = static_cast<Lua::FScriptThreadData*>(lua_getthreaddata(L));
@@ -278,9 +275,7 @@ namespace Lumina
             .AddFunction<&LuaBinds::RuntimeViewGetEntities_Lua>("GetEntities")
             .Register();
         
-        // Camera/World tables: thin wrappers that resolve their target world
-        // from the per-thread script context. Raw cfunctions because the
-        // typed binding wrappers don't expose lua_State* to the body.
+        // Raw cfunctions: typed binding wrappers don't expose lua_State*.
         if (lua_State* VM = Lua::FScriptingContext::Get().GetVM())
         {
             Lua::FRef CameraTable = GlobalRef.NewTable("Camera");
@@ -438,9 +433,7 @@ namespace Lumina
         EntityRegistry.emplace<FSingletonEntityTag>(SingletonEntity);
         EntityRegistry.emplace<FHideInSceneOutliner>(SingletonEntity);
         
-        // Only worlds that actually simulate get a physics scene -- a Jolt scene reserves hundreds
-        // of MB up front, so creating one per editor/preview world (which never simulate; the
-        // editor picks via CPU AABB, not physics) wasted that memory and grew it per open world.
+        // Physics scene only for simulating worlds; Jolt reserves ~hundreds of MB up front.
         if (WorldType == EWorldType::Game || WorldType == EWorldType::Simulation)
         {
             PhysicsScene = Physics::GetPhysicsContext()->CreatePhysicsScene(this);
@@ -473,8 +466,7 @@ namespace Lumina
         EntityRegistry.on_construct <STransformComponent>()         .connect<&ThisClass::OnTransformComponentConstruct>(this);
         EntityRegistry.on_construct <SScriptComponent>()            .connect<&ThisClass::OnScriptComponentConstruct>(this);
         EntityRegistry.on_destroy   <SScriptComponent>()            .connect<&ThisClass::OnScriptComponentDestroyed>(this);
-        // Left connected through teardown: fires at EntityRegistry.clear() (post-WaitIdle) to
-        // release each widget's Rml context + RT, and on mid-game entity destruction.
+        // Left connected through teardown: fires at clear() to release widget RTs.
         EntityRegistry.on_destroy   <SWidgetComponent>()            .connect<&ThisClass::OnWidgetComponentDestroyed>(this);
         SystemContext.EventSink     <FSwitchActiveCameraEvent>()    .connect<&ThisClass::OnChangeCameraEvent>(this);
         SystemContext.EventSink     <FScriptComponentPendingReady>().connect<&ThisClass::OnScriptComponentPendingReady>(this);
@@ -525,8 +517,6 @@ namespace Lumina
         FlushRenderingCommands();
         GRenderContext->WaitIdle();
 
-        // Render thread is drained, so the UI context is safe to remove now (before the
-        // registry clear). Frees the Rml context this world owns; no external bookkeeping.
         RmlUi::DestroyWorldUI(this);
         UIContext.reset();
 
@@ -692,8 +682,6 @@ namespace Lumina
 
         const float DeltaSeconds = (float)DeltaTime;
 
-        // Defining OnEditorUpdate is what marks a script as editor-active, so the tag view
-        // is exactly the set that should tick (and whose lifecycle ran in this world).
         auto View = EntityRegistry.view<SScriptComponent, FScriptHasEditorUpdateFn>(entt::exclude<SDisabledTag>);
         View.each([&](entt::entity, SScriptComponent& ScriptComponent)
         {
@@ -741,8 +729,6 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        // Rasterize world-space widget documents into their offscreen RTs first; the scene's
-        // widget pass samples them this same frame.
         RmlUi::RenderWorldWidgets(this, CmdList);
 
         if (RenderScene)
@@ -758,10 +744,7 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        // Game-thread DOM update for this world's UI; render thread composites it in Render().
         RmlUi::TickWorldUI(this);
-        // World-space widgets: lay out each into its offscreen RT and stamp the bindless id
-        // onto SWidgetComponent before the render-scene gather below reads it.
         RmlUi::TickWorldWidgets(this);
 
         entt::entity CameraEntity = GetActiveCameraEntity();
@@ -818,8 +801,6 @@ namespace Lumina
                 }
             }
 
-            // Lower priority first so higher priority volumes blend last
-            // (their weight wins ties at full strength).
             eastl::sort(Contributions.begin(), Contributions.end(),
                 [](const FVolumeContribution& A, const FVolumeContribution& B)
                 {
@@ -831,10 +812,6 @@ namespace Lumina
                 BlendPostProcessSettings(ResolvedPostProcess, *Contribution.Settings, Contribution.Weight);
             }
 
-            // Gather the active post-process material chain. The camera's
-            // own list runs first; each contributing volume appends its
-            // materials in priority order so the visible chain is
-            // camera-then-overrides, matching the grading blend order.
             TVector<CMaterialInterface*> PostProcessMaterials;
             for (const TObjectPtr<CMaterialInterface>& M : Camera.PostProcessMaterials)
             {
@@ -843,11 +820,6 @@ namespace Lumina
                     PostProcessMaterials.push_back(M.Get());
                 }
             }
-            // Mirror the contributions sort -- volumes whose box test passed
-            // above are listed there in the priority order their materials
-            // should run in. We track the entity instead of a settings
-            // pointer so the lookup back to the SPostProcessComponent is
-            // structural rather than relying on offsetof on a REFLECT struct.
             struct FMaterialVolumeRef { entt::entity Entity; int32 Priority; };
             TVector<FMaterialVolumeRef> MaterialVolumes;
             for (entt::entity VolEntity : VolumeView)
@@ -953,9 +925,6 @@ namespace Lumina
         auto InvokeAttach = [&](entt::entity Entity) { Visit(Entity, &SScriptComponent::AttachFunc); };
         auto InvokeReady  = [&](entt::entity Entity) { Visit(Entity, &SScriptComponent::ReadyFunc);  };
 
-        // Walk every relationship root once. The traversal walks all descendants
-        // regardless of whether they carry a script. Visit is a no-op for the
-        // scriptless ones, but a non-script root may still have script descendants.
         auto RelationshipRoots = EntityRegistry.view<FRelationshipComponent>(entt::exclude<SDisabledTag>);
 
         RelationshipRoots.each([&](entt::entity Entity, const FRelationshipComponent& Relationship)
@@ -968,8 +937,7 @@ namespace Lumina
             ECS::Utils::ForEachDescendant(EntityRegistry, Entity, InvokeAttach);
         });
         
-        // Script entities with no relationship component at all are roots with no
-        // children, they fall outside the relationship view, so handle them here.
+        // Scriptless-root entities fall outside the relationship view; handle here.
         ScriptView.each([&](entt::entity Entity, SScriptComponent&)
         {
             if (!EntityRegistry.all_of<FRelationshipComponent>(Entity))
@@ -987,7 +955,7 @@ namespace Lumina
             ECS::Utils::ForEachDescendantReverse(EntityRegistry, Entity, InvokeReady);
             InvokeReady(Entity);
         });
-        
+
         ScriptView.each([&](entt::entity Entity, SScriptComponent&)
         {
             if (!EntityRegistry.all_of<FRelationshipComponent>(Entity))
@@ -1101,11 +1069,7 @@ namespace Lumina
                     continue;
                 }
 
-                // Scripts can't be bit-copied: their Lua refs point at the source's thread, the shared
-                // FScript would be shared, and self.Entity/self.Transform would resolve to the source.
-                // Re-emplace below with just the editable fields so on_construct re-runs SetupScriptComponent.
-                // SRigidBodyComponent is skipped too: bit-copying carries the source's live BodyID, and it
-                // must be re-emplaced (not copied) so on_construct builds a fresh Jolt body for the duplicate.
+                // Scripts/rigid bodies can't be bit-copied; re-emplaced below so on_construct fires fresh.
                 if (ID == entt::type_hash<FRelationshipComponent>::value()
                     || ID == entt::type_hash<SScriptComponent>::value()
                     || ID == entt::type_hash<SRigidBodyComponent>::value())
@@ -1119,19 +1083,14 @@ namespace Lumina
                 }
             }
 
-            // Bit-copying STransformComponent carries the source's self-references; rebind so MarkDirty
-            // and ResolveIfDirty operate on the duplicate, not the original.
+            // Rebind: bit-copy carries source's self-references (Entity/Registry ptr).
             if (STransformComponent* NewTransform = EntityRegistry.try_get<STransformComponent>(NewEntity))
             {
                 NewTransform->Bind(EntityRegistry, NewEntity);
                 EntityRegistry.emplace_or_replace<FNeedsTransformUpdate>(NewEntity);
             }
 
-            // Re-emplace SRigidBodyComponent from the source. A collider on_construct hook may have
-            // auto-emplaced a default rigid body (and built a default Jolt body) onto the duplicate, so
-            // emplace_or_replace here would only fire on_update -- a no-op -- and the body would never be
-            // rebuilt with the source's type/profile. Remove that default first so on_destroy tears down
-            // any wrong Jolt body, then emplace fresh (with an invalid BodyID) so on_construct builds the body.
+            // Remove auto-emplaced default first; emplace_or_replace would fire on_update (no-op), not on_construct.
             if (const SRigidBodyComponent* SourceBody = EntityRegistry.try_get<SRigidBodyComponent>(Source))
             {
                 SRigidBodyComponent NewBody = *SourceBody;
@@ -1141,8 +1100,7 @@ namespace Lumina
                 EntityRegistry.emplace<SRigidBodyComponent>(NewEntity, eastl::move(NewBody));
             }
 
-            // Emplace SScriptComponent with the editable fields only; on_construct fires the canonical
-            // attach flow which loads a unique FScript and binds fresh Lua refs to the new entity.
+            // Emplace editable fields only; on_construct loads a unique FScript for the duplicate.
             if (const SScriptComponent* SourceScript = EntityRegistry.try_get<SScriptComponent>(Source))
             {
                 SScriptComponent NewScript;
@@ -1423,9 +1381,7 @@ namespace Lumina
             return;
         }
 
-        // Publish per-thread context so yield-aware Lua APIs (e.g. TimerManager:Wait)
-        // can scope themselves to this entity. The address is stable for the script's
-        // lifetime since FScript is held by shared_ptr.
+        // Stable ptr: FScript is held by shared_ptr for the script's lifetime.
         ScriptComponent.Script->ThreadData.Entity = Entity;
         ScriptComponent.Script->ThreadData.World  = this;
         if (lua_State* ScriptThread = ScriptComponent.Script->Reference.GetState())
@@ -1455,17 +1411,11 @@ namespace Lumina
         ScriptComponent.FixedUpdateFunc     = ScriptComponent.Script->Reference["OnFixedUpdate"];
         ScriptComponent.EditorUpdateFunc    = ScriptComponent.Script->Reference["OnEditorUpdate"];
 
-        // Physics hooks: cache only if the script defined them. The base EntityScript
-        // table doesn't ship no-op fallbacks for these (unlike OnAttach/OnReady/OnDetach),
-        // so the FRef stays invalid for scripts that don't care, and the physics dispatch
-        // skips them via IsInvokable().
         ScriptComponent.ContactBeginFunc    = ScriptComponent.Script->Reference["OnContactBegin"];
         ScriptComponent.ContactEndFunc      = ScriptComponent.Script->Reference["OnContactEnd"];
         ScriptComponent.OverlapBeginFunc    = ScriptComponent.Script->Reference["OnOverlapBegin"];
         ScriptComponent.OverlapEndFunc      = ScriptComponent.Script->Reference["OnOverlapEnd"];
         
-        // Sync per-instance overrides with the current schema, then apply them
-        // by mutating the Exports table the script references.
         if (ScriptComponent.Script->ExportsSchema.IsValid())
         {
             Lua::ReconcileOverrides(
@@ -1537,10 +1487,6 @@ namespace Lumina
             break;
         }
 
-        // Presence tags: let the script systems iterate filtered views instead of testing
-        // each FRef per entity. Re-evaluated here so a hot-reload that adds/drops a hook
-        // updates the tag. None of OnUpdate/OnFixedUpdate/OnEditorUpdate has a base no-op,
-        // so an invalid FRef genuinely means the script didn't define it.
         if (ScriptComponent.UpdateFunc.IsValid())
             EntityRegistry.emplace_or_replace<FScriptHasUpdateFn>(Entity);
         else
@@ -1602,11 +1548,6 @@ namespace Lumina
 
     void CWorld::ReloadScriptForComponent(entt::entity Entity, SScriptComponent& ScriptComponent)
     {
-        // Mirror the destroy path so any state owned by the old script instance
-        // gets cleared: per-entity event bus subscriptions, pending timers, the
-        // OnDetach lifecycle hook. Cached FRefs (AttachFunc/UpdateFunc/etc.)
-        // and MessageHandlers all point into the soon-to-be-discarded FScript
-        // table; reset them before LoadUniqueScriptPath returns a new instance.
         if (ScriptComponent.Script != nullptr && ScriptComponent.DetachFunc.IsValid())
         {
             if (IsScriptActiveInWorld(Entity))
@@ -1637,8 +1578,6 @@ namespace Lumina
 
     void CWorld::OnScriptSourceReloaded(FStringView Path)
     {
-        // FScriptingContext fires this from ProcessDeferredActions on the main
-        // thread, so we can mutate registry-resident components directly.
         auto View = EntityRegistry.view<SScriptComponent>();
         for (entt::entity Entity : View)
         {

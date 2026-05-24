@@ -17,14 +17,8 @@ namespace Lumina
 		VertexOutputChunks.reserve(128);
 	}
 
-	// Vertex-stage alias preamble. The same node-emit code (e.g. `WorldNormal.xyz`,
-	// `UV0`, `WorldPosition`) is reused across stages; this block declares the
-	// pixel-stage variable names the emit code expects, mapped to the data
-	// available in the vertex stage. Pixel-only references (`Input.Position`,
-	// `Cull.CustomData`, `ViewPosition`) are stubbed to neutral values so a
-	// graph that uses those nodes can still compile in vertex stage; the
-	// emitted values are wrong but a real material wouldn't reach those nodes
-	// from WorldPositionOffset.
+	// Vertex-stage alias preamble: maps pixel-stage variable names to vertex equivalents.
+	// Pixel-only references are stubbed to neutral values; WPO-sourced nodes won't reach them.
 	static const char* GVertexStageAliasPreamble =
 		"\t// Material graph variable aliases (vertex stage).\n"
 		"\tfloat3 WorldPosition = WorldPos.xyz;\n"
@@ -35,9 +29,7 @@ namespace Lumina
 		"\tuint   EntityID      = Inst.EntityID;\n"
 		"\tfloat3 ViewPosition  = float3(0.0);\n";
 
-	// Terrain variant: TerrainBaseVertexPass.slang has no FVertexData / FGPUInstance
-	// in scope at the substitution point, so the alias sources are different.
-	// Keeping the same alias *names* lets the same node-emit code work for both.
+	// Terrain variant: TerrainBaseVertexPass.slang lacks FVertexData/FGPUInstance; same alias names keep node-emit code reusable.
 	static const char* GVertexStageAliasPreambleTerrain =
 		"\t// Material graph variable aliases (vertex stage, terrain).\n"
 		"\tfloat3 WorldPosition = WorldPos;\n"
@@ -106,9 +98,7 @@ namespace Lumina
 		                                                   : (bIsTerrain ? BasePath + "TerrainBasePixelPass.slang"
 		                                                                 : BasePath + "BasePixelPass.slang"));
 
-		// Pixel: existing single-stage substitution. Output node already emits
-		// its own `FMaterialPixelInputs Material;` declaration, so we just
-		// append body + output assignments.
+		// Pixel: output node declares FMaterialPixelInputs Material; only append body + assignments.
 		OutPixelShader.clear();
 		if (FileHelper::LoadFileIntoString(OutPixelShader, PixelPath))
 		{
@@ -119,10 +109,7 @@ namespace Lumina
 			LOG_ERROR("Failed to find {}!", PixelPath);
 		}
 
-		// Vertex: PostProcess and UI materials run as a fullscreen pass, so the
-		// vertex stage is the shared FullscreenQuad helper -- there is no
-		// $MATERIAL_VERTEX_INPUTS substitution and no per-material vertex
-		// code. WPO is meaningless without surface geometry.
+		// PostProcess/UI use a fullscreen quad vertex stage with no $MATERIAL_VERTEX_INPUTS substitution; WPO is meaningless here.
 		if (bIsPostProcess || bIsUI)
 		{
 			OutVertexShader.clear();
@@ -134,9 +121,7 @@ namespace Lumina
 			return;
 		}
 
-		// Vertex: alias preamble + body + output assignments. The vertex
-		// template declared `FMaterialVertexInputs Material;` inline above
-		// the token, so we only emit assignments here.
+		// Vertex template declares FMaterialVertexInputs Material above the token; only emit assignments.
 		const FString VertexPath = BasePath + (bIsTerrain ? "TerrainBaseVertexPass.slang" : "BaseVertexPass.slang");
 		OutVertexShader = BuildVertexShaderFromTemplate(VertexPath, MaterialType);
 	}
@@ -243,9 +228,7 @@ namespace Lumina
 		return GetTypedInputValue(Input, eastl::to_string(DefaultValue));
 	}
 
-	// Walks back through any chain of CEdNode_Reroute nodes connected to OutputPin and returns the
-	// first non-reroute output pin. Returns nullptr if the chain dead-ends at an unconnected reroute
-	// input (which is treated upstream the same as no connection at all).
+	// Returns nullptr if the reroute chain dead-ends at an unconnected input (treated same as no connection).
 	static CMaterialOutput* ResolveSourceOutputThroughReroutes(CMaterialOutput* OutputPin)
 	{
 		// Cap the walk so a malformed/cyclic graph can't hang the compiler.
@@ -381,10 +364,7 @@ namespace Lumina
 
 		GetActiveChunk().append(ResultTypeStr + " " + OwningNode + " = " + AValue.Value + RMask + " " + Op + " " + BValue.Value + GMask + ";\n");
 
-		// Stamp the owning node's output with the inferred result type AND mask. Previously only the
-		// caller wrote InputType, leaving Mask at its default (None). Downstream consumers that read
-		// the mask -- e.g. MaterialOutputNode::EmitMaterialAssignment -- saw component count 0 and
-		// fell into a generic float3() wrap, which fails to compile when the upstream is float4.
+		// Stamp both type and mask; leaving Mask=None causes downstream consumers to see component count 0 and emit a broken float3() wrap for float4 inputs.
 		SetOwningOutputType(A, ResultType);
 		return ResultType;
 	}
@@ -829,9 +809,7 @@ namespace Lumina
 
 	namespace
 	{
-		// Counts every occurrence of Needle inside Haystack. Substring-only -- does not validate that
-		// the match is at a token boundary, but the patterns we look for ('.Sample(', 'sin(', etc.)
-		// are unambiguous enough in generated shader code that this is fine.
+		// Substring-only match; patterns like '.Sample(' and 'sin(' are unambiguous in generated shader code.
 		uint32 CountSubstring(const FString& Haystack, const char* Needle)
 		{
 			const size_t NeedleLen = strlen(Needle);

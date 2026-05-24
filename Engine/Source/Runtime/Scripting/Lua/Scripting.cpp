@@ -393,9 +393,7 @@ namespace Lumina::Lua
     static int LuminaLuaLogWarn(lua_State* L)  { return LuminaLuaLogImpl(L, ELuaLogLevel::Warn);  }
     static int LuminaLuaLogError(lua_State* L) { return LuminaLuaLogImpl(L, ELuaLogLevel::Error); }
 
-    // Bound as the global `require` on every script thread. The actual resolution +
-    // bytecode cache lives on FScriptingContext; this is just the C entry point so the
-    // call appears in the lua stack trace and luaL_errorL plays nice with sandboxed threads.
+    // C entry point for the global `require`; keeps Luau's sandboxed-thread error path intact.
     static int LuminaLuaRequire(lua_State* L)
     {
         const char* ModName = luaL_checkstring(L, 1);
@@ -443,9 +441,7 @@ namespace Lumina::Lua
         lua_pushcfunction(L, LuminaLuaPrint, "LuminaLuaPrint");
         lua_setglobal(L, "print");
 
-        // Replace luaL_openlibs's `require` (which expects Lua 5.x's package.searchers
-        // machinery — Luau ships none of it) with a VFS-backed resolver. Sandboxed
-        // script threads pick this up via their __index fallback to the main globals.
+        // VFS-backed resolver; Luau ships no package.searchers machinery.
         lua_pushcfunction(L, LuminaLuaRequire, "require");
         lua_setglobal(L, "require");
 
@@ -837,11 +833,6 @@ namespace Lumina::Lua
 
     void FScriptingContext::LoadStdlibFiles()
     {
-        // Stdlib modules are loaded once at startup and also bound as globals
-        // under their basename so user scripts can write
-        //     local Script: EntityScript = EntityScript.new()
-        // without an explicit require, and so HarvestGlobalSymbols sees them
-        // for autocomplete.
         static const char* const kStdlibModules[] =
         {
             "Stdlib/EntityScript",
@@ -872,9 +863,6 @@ namespace Lumina::Lua
     {
         FWriteScopeLock Lock(SharedMutex);
 
-        // Walk every cached require() result and reload it identity-preservingly,
-        // so any FScript that captured a module table sees the new functions on
-        // its next call without being rebuilt.
         TVector<FName> Paths;
         Paths.reserve(ModuleCache.size());
         for (const auto& Pair : ModuleCache)
@@ -1009,9 +997,7 @@ namespace Lumina::Lua
                 return false;
             }
 
-            // Luau encodes compile errors as "version 0" bytecode: byte 0 is
-            // 0 (no real bytecode version starts at 0) followed by an error
-            // message string of form ":line: text". See BytecodeBuilder::getError.
+            // Luau "version 0" bytecode = compile error; see BytecodeBuilder::getError.
             if (BytecodeSize > 0 && Bytecode[0] == 0)
             {
                 if (OutDiag)
@@ -1478,11 +1464,7 @@ namespace Lumina::Lua
             }
         }
 
-        // For a function on top of the stack, fill the function-shape fields
-        // on Out via lua_getinfo "a". Luau treats every C function as
-        // varargs/0-params (no introspection), so we mirror that with
-        // bIsCFunction = true so the editor can render an unknown signature.
-        // Lua functions get their real numparams + is_vararg.
+        // Fills function-shape fields via lua_getinfo "a"; C functions report 0 params + vararg.
         void HarvestFunctionInfoTop(lua_State* L, FLuaSymbol& Out)
         {
             lua_Debug ar = {};

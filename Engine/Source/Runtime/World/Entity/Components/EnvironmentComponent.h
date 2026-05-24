@@ -134,18 +134,5 @@ namespace Lumina
         /** HDR equirect for IBL irradiance/prefilter. Texture must use ColorSpace = Environment. */
         PROPERTY(Editable, Category = "Sky|HDRI")
         TObjectPtr<CTexture> EnvironmentMap;
-
-
-        /** Base ambient (skylight) color; multiplied by AmbientIntensity. */
-        PROPERTY(Editable, Color, Category = "Ambient Light")
-        glm::vec3 AmbientColor = glm::vec3(0.6f, 0.7f, 1.0f);
-
-        /** Ambient brightness; >0.3 over-fills shadows. */
-        PROPERTY(Editable, Category = "Ambient Light", ClampMin = 0.0f, ClampMax = 1.0f, Delta = 0.001f)
-        float AmbientIntensity = 0.05f;
-
-        /** When true, AmbientColor is auto-derived from active sky; AmbientIntensity still scales. */
-        PROPERTY(Editable, Category = "Ambient Light")
-        bool bAmbientFromSky = false;
     };
 }

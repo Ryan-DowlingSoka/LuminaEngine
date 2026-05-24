@@ -83,9 +83,7 @@ namespace Lumina::Physics
     }
     #endif
 
-    // Tag at the allocation hook (not a call-site scope): Jolt allocates from its own job-system
-    // threads, so a thread-local scope around our calls would miss those. Wrapping the hook tags
-    // every Jolt allocation -- shapes, bodies, broadphase, collision/navmesh build -- as "Physics".
+    // Tag at the hook, not call-site: Jolt's job threads would miss a call-site scope.
     void* JPHCustomAllocate(size_t size)
     {
         LUMINA_MEMORY_SCOPE("Physics");

@@ -133,10 +133,7 @@ namespace Lumina
     }
 }
 
-// C-ABI shim for third-party libs (see Memory.h). Attributes to the given category
-// when tracking is enabled; otherwise a thin pass-through to Memory::Malloc.
-// Exported from Runtime.dll undecorated (extern "C", x64) so static libs linked into
-// other modules resolve them through Runtime's import lib.
+// C-ABI shim exported from Runtime.dll so third-party static libs route through our allocator.
 #pragma comment(linker, "/EXPORT:LmThirdPartyMalloc")
 #pragma comment(linker, "/EXPORT:LmThirdPartyRealloc")
 #pragma comment(linker, "/EXPORT:LmThirdPartyCalloc")

@@ -20,9 +20,8 @@ namespace Lumina
 
     void FEditorModalManager::DrawDialogue()
     {
-        // A blocking modal must host the slow-task popup as a nested child. ImGui keeps
-        // only one modal chain, so two sibling modals close each other every frame;
-        // nesting keeps both alive and stacks the progress popup cleanly on top.
+        // Slow-task popup nested inside the blocking modal: ImGui allows only one modal chain,
+        // so sibling modals would close each other every frame.
         if (ActiveModal && ActiveModal->bBlocking)
         {
             ImGui::OpenPopup(ActiveModal->Title.c_str());

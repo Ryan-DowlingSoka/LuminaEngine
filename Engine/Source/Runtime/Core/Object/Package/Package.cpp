@@ -134,9 +134,7 @@ namespace Lumina
 
         if (bFileNameDirty)
         {
-            // Source of truth is the live object set, not ExportTable: SavePackage clears
-            // ExportTable on every save, and freshly-created assets may have stale weak ptrs.
-            // Missing the rename here writes a desynced export name on the next save.
+            // Use live object set, not ExportTable (cleared each save; stale weak ptrs otherwise).
             const FName OldFileNameAsFName(OldFileName);
             const FName NewFileNameAsFName(FileName);
 
@@ -606,9 +604,7 @@ namespace Lumina
         FSaveContext SaveContext(Package);
         Package->BuildSaveContext(SaveContext);
 
-        // Exports first: serializing them populates Writer's ObjectToIndexMap with the
-        // canonical import order. WriteImports then builds ImportTable from that same
-        // map, so the indices emitted in export data line up with ImportTable slots.
+        // Exports first: populates ObjectToIndexMap so WriteImports indices align with export data.
         Package->WriteExports(Writer, Header, SaveContext);
         Package->WriteImports(Writer, Header, SaveContext);
 

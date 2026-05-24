@@ -134,9 +134,7 @@ namespace Lumina
         Threading::SetThreadName("Lumina Render");
         Threading::InitializeThreadHeap();
 
-        // Claim our own enki external-thread slot so render-thread paths that
-        // schedule tasks (resource destructors via FVulkanMemoryAllocator,
-        // shader compile callbacks, etc.) don't share slot 0 with the main thread.
+        // Register a dedicated enki slot; sharing slot 0 with the main thread causes task scheduling crashes.
         if (GTaskSystem != nullptr)
         {
             GTaskSystem->GetScheduler().RegisterExternalTaskThread();

@@ -18,9 +18,6 @@
 
 namespace Lumina
 {
-    // ---------------------------------------------------------------------
-    //  PIMPL state
-    // ---------------------------------------------------------------------
     struct FLuaAstAnalyzer::FImpl
     {
         std::unique_ptr<Luau::Allocator>    Allocator;
@@ -55,9 +52,7 @@ namespace Lumina
             return (Outer.begin < Inner.begin) || (Inner.end < Outer.end);
         }
 
-        // Translate an AstName into an FString. AstName::value is a NUL-terminated
-        // pointer into the AstNameTable's interned storage; safe while the
-        // analyzer lives.
+        // AstName::value is a pointer into interned storage; safe while the analyzer lives.
         inline FString FromAstName(Luau::AstName Name)
         {
             return FString(Name.value ? Name.value : "");
@@ -110,13 +105,7 @@ namespace Lumina
             return Out;
         }
 
-        // Stringify a type annotation for use as a key into the editor's
-        // SymbolsByPath map and as hover text. The generic Luau::toString
-        // routes through PrettyPrinter, which uses location-aware advance
-        // and pads the result with leading whitespace / newlines from the
-        // source. We need a clean identifier-shaped string, so we walk the
-        // common AST type shapes by hand and only fall back to toString
-        // for the rare structural-type cases.
+        // Walk common AST type shapes manually; Luau::toString pads with leading whitespace from source location.
         FString FormatTypeAnnotation(Luau::AstType* Annotation)
         {
             if (Annotation == nullptr) return {};
@@ -136,9 +125,7 @@ namespace Lumina
                 return Out;
             }
 
-            // Other shapes (table types, unions, function types, ...) - fall
-            // back to the generic stringifier and trim leading whitespace
-            // emitted by the location-aware writer.
+            // Fall back to generic stringifier and trim leading whitespace from location-aware writer.
             std::string Anno = Luau::toString(Annotation);
             size_t First = 0;
             while (First < Anno.size()
@@ -157,9 +144,7 @@ namespace Lumina
             return FString(Anno.data() + First, Last - First);
         }
 
-        // Cheap value-hint snapshot from an AstExpr's syntactic shape. Mirrors
-        // what the old regex parser produced - we do this without the type
-        // checker so unrelated lints don't have to wait on a Frontend pass.
+        // Syntactic value hint without the type checker so lints don't block on a Frontend pass.
         const char* InferValueHint(Luau::AstExpr* Expr)
         {
             if (Expr == nullptr) return nullptr;
@@ -174,9 +159,6 @@ namespace Lumina
         }
     }
 
-    // ---------------------------------------------------------------------
-    //  Outline / locals visitors
-    // ---------------------------------------------------------------------
     namespace
     {
         struct FOutlineVisitor : public Luau::AstVisitor
@@ -225,9 +207,7 @@ namespace Lumina
 
             bool visit(Luau::AstStatLocal* node) override
             {
-                // Surface only top-level (depth==0) named locals; deeper locals
-                // would crowd the outline. Also skip when paired with a function
-                // initializer - that path goes through AstStatLocalFunction.
+                // Only surface top-level (depth==0) locals; skip function-initializer locals (handled via AstStatLocalFunction).
                 if (FunctionDepth != 0) return true;
 
                 for (size_t I = 0; I < node->vars.size; ++I)
@@ -344,9 +324,7 @@ namespace Lumina
             bool visit(Luau::AstNode*) override     { return false; }
         };
 
-        // Locate an AstExprLocal whose location encloses (Pos). The walker also
-        // tracks AstLocals at their declaration site so a hover on the declared
-        // name (which isn't an AstExprLocal) still resolves.
+        // Also tracks declaration sites so hovering the declared name (not an AstExprLocal) still resolves.
         struct FResolveLocalVisitor : public Luau::AstVisitor
         {
             Luau::Position    Pos = {0, 0};
@@ -473,9 +451,6 @@ namespace Lumina
         };
     }
 
-    // ---------------------------------------------------------------------
-    //  Public API
-    // ---------------------------------------------------------------------
     FLuaAstAnalyzer::FLuaAstAnalyzer()
         : Impl(new FImpl())
     {
@@ -618,10 +593,7 @@ namespace Lumina
         if (!IsValid()) return false;
         if (!Impl->ParseResult.errors.empty()) return false; // syntactic failure - skip lint
 
-        // Minimal scope so the lint passes that touch Scope (LocalShadow,
-        // ForRange, ...) have somewhere to read from. We don't run the
-        // type checker, so all type-info-aware checks are deliberately
-        // disabled below.
+        // Minimal scope for lint passes; type checker not run, so type-info-aware checks are disabled.
         Luau::TypeArena    Arena;
         Luau::TypePackId   EmptyReturn = Arena.addTypePack({});
         Luau::ScopePtr     GlobalScope = std::make_shared<Luau::Scope>(EmptyReturn);

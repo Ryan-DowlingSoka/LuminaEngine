@@ -219,11 +219,6 @@ namespace Lumina
 #endif
         const size_t Untracked = (Process > Tracked) ? (Process - Tracked) : 0;
 
-        // Split "untracked" using rpmalloc's own footprint. Mapped is what rpmalloc
-        // has taken from the OS; everything above the tracked ledger is allocator
-        // retention (thread/global caches + fragmentation -- freed but not returned).
-        // Anything in RSS beyond rpmalloc's footprint is external: the GPU driver's
-        // host allocations, the Luau VM, raw CRT malloc, code + thread stacks.
         const size_t Mapped    = Memory::GetCurrentMappedMemory();
         const size_t Retained  = (Mapped > Tracked) ? (Mapped - Tracked) : 0;
         const size_t External  = (Process > Mapped) ? (Process - Mapped) : 0;

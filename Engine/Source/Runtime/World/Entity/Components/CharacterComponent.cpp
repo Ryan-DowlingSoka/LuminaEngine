@@ -1,9 +1,8 @@
 #include "pch.h"
 #include "CharacterComponent.h"
 
-// Pulling JoltCharacterHandle.h here -- and only here -- gives the destructor
-// of TUniquePtr<FJoltCharacterHandle> a complete type to work with, while the
-// header (CharacterComponent.h) stays Jolt-free for the rest of the codebase.
+// Included here only so TUniquePtr<FJoltCharacterHandle> has a complete type for its destructor;
+// keeps CharacterComponent.h Jolt-free.
 #include "Physics/API/Jolt/JoltCharacterHandle.h"
 
 namespace Lumina

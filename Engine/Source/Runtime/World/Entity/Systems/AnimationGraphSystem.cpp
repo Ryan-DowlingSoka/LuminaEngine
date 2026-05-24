@@ -41,17 +41,12 @@ namespace Lumina
             SAnimationGraphComponent& AnimGraph = View.get<SAnimationGraphComponent>(Entity);
             SSkeletalMeshComponent&   Mesh      = View.get<SSkeletalMeshComponent>(Entity);
 
-            // Off-screen pose evaluation skip: the graph VM is the per-skeleton hot path, so
-            // for crowds where most skeletons aren't on screen this is the big win. The pose
-            // simply freezes (and the clocks with it) until the mesh is rendered again.
             if (Mesh.VisibilityBasedAnimTick == EAnimUpdateMode::TickWhenRendered &&
                 (Now - Mesh.LastRenderedTime) > kAnimVisibilityGrace)
             {
                 return;
             }
 
-            // No graph or no mesh asset -> nothing to do. Leave BoneTransforms
-            // untouched; the renderer treats an empty buffer as "not skinned".
             if (!AnimGraph.Graph.IsValid() || !Mesh.SkeletalMesh.IsValid())
             {
                 return;
@@ -75,10 +70,7 @@ namespace Lumina
                 return;
             }
 
-            // Resolve the graph's referenced parameters from the entity's
-            // blackboard. Init the VM state first so it is sized and marked
-            // current -- Execute then won't re-init and wipe the values we write.
-            // No blackboard component -> values keep their compiled defaults.
+            // Init VM state first so Execute won't re-init and wipe the written values.
             if (SBlackboardComponent* Blackboard = SystemContext.TryGet<SBlackboardComponent>(Entity))
             {
                 Blackboard->EnsureInitialized();
@@ -92,9 +84,6 @@ namespace Lumina
                 }
             }
 
-            // FAnimationGraphVM::Execute lazily (re)initializes the VM state when
-            // it is stale, so a freshly added component or a swapped graph asset
-            // is handled here without an explicit init pass.
             FAnimationGraphVM::Execute(Graph, Skeleton, DeltaTime, AnimGraph.VMState, Mesh.BoneTransforms);
         });
     }

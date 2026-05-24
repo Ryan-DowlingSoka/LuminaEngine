@@ -23,9 +23,7 @@ namespace Lumina
             BlendTree = NewObject<CAnimationGraphNodeGraph>(GetPackage(), GraphName);
         }
 
-        // Context-free setup so the compiler can evaluate a state whose blend
-        // tree the user has never opened. Initialize() (context creation) is
-        // deferred to the editor tool, on first descent into this state.
+        // Context-free: compiler evaluates states never opened; Initialize() deferred to editor tool.
         BlendTree->EnsureSetup();
         return BlendTree.Get();
     }

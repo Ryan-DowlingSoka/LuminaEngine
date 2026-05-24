@@ -136,10 +136,6 @@ namespace Lumina
             str = str.substr(1, str.length() - 2);
         }
         
-        // Expected formats:
-        // XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX (36 chars)
-        // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (32 chars)
-        
         auto isHex = [](char c) {
             return (c >= '0' && c <= '9') || 
                    (c >= 'a' && c <= 'f') || 

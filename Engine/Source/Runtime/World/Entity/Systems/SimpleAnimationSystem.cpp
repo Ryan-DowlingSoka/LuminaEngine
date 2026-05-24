@@ -24,8 +24,7 @@ namespace Lumina
             return false;
         }
 
-        // Runs on the game thread (after the parallel pose pass) because Lua refs are
-        // single-threaded. Cheap: only entities that bound at least one handler reach here.
+        // Game thread only: Lua refs are not thread-safe.
         void FireNotifies(entt::entity Entity, SSimpleAnimationComponent& Anim)
         {
             FAnimationResource* Res = Anim.Animation->GetAnimationResource();
@@ -84,8 +83,6 @@ namespace Lumina
                     }
                 }
 
-                // End: states that were active last frame but no longer are. Fires on a
-                // natural exit, a loop wrap, or Stop()/seek -- so trails etc. always clean up.
                 for (int32 Idx : Anim.ActiveNotifyStates)
                 {
                     if (Idx < 0 || Idx >= (int32)Res->NotifyStates.size() || Contains(NowActive, Idx))
@@ -168,8 +165,6 @@ namespace Lumina
             SSimpleAnimationComponent& Anim = View.get<SSimpleAnimationComponent>(Entity);
             SSkeletalMeshComponent&    Mesh = View.get<SSkeletalMeshComponent>(Entity);
 
-            // Off-screen: freeze the pose (skip the SamplePose hot path and time advance)
-            // until the mesh is rendered again. Notifies don't fire while frozen.
             if (Mesh.VisibilityBasedAnimTick == EAnimUpdateMode::TickWhenRendered &&
                 (Now - Mesh.LastRenderedTime) > kAnimVisibilityGrace)
             {
@@ -177,9 +172,6 @@ namespace Lumina
                 return;
             }
 
-            // No animation or no mesh asset -> nothing to do. Don't clear the
-            // pose buffer; the renderer treats an empty BoneTransforms as "not
-            // a skinned draw".
             if (!Anim.Animation.IsValid() || !Mesh.SkeletalMesh.IsValid())
             {
                 Anim.bAdvancedThisFrame = false;
@@ -200,10 +192,6 @@ namespace Lumina
                 return;
             }
 
-            // Steady-state fast path: a paused-and-already-sampled component
-            // contributes nothing this frame. The pose buffer still holds the
-            // last sampled pose so the mesh keeps rendering at the frozen
-            // frame, and the render scene re-uploads it from the same vector.
             if (!Anim.bPlaying && !Anim.bDirty)
             {
                 Anim.bAdvancedThisFrame = false;
@@ -226,11 +214,6 @@ namespace Lumina
                     }
                     else
                     {
-                        // One-shot finished: clamp to the final frame so the pose
-                        // still resolves on this tick, then latch the finished
-                        // state. The dirty flag is cleared below so the next tick
-                        // skips the resample entirely until the user calls
-                        // PlayAnimation/Resume again.
                         Anim.CurrentTime = Duration;
                         Anim.bPlaying    = false;
                         Anim.bFinished   = true;
@@ -241,8 +224,6 @@ namespace Lumina
             }
             else
             {
-                // Dirty resample with no playback (scrub / Stop / freshly played but
-                // not yet ticked): no segment was traversed, so suppress point notifies.
                 Anim.PreviousTime       = Anim.CurrentTime;
                 Anim.bAdvancedThisFrame = false;
             }
@@ -251,8 +232,7 @@ namespace Lumina
             Anim.bDirty = false;
         });
 
-        // Serial pass: fire notifies for the (typically few) entities that bound
-        // handlers. Kept out of the ParallelFor because Lua refs are not thread-safe.
+        // Serial: Lua refs are not thread-safe.
         for (size_t i = 0; i < Handle->size(); ++i)
         {
             entt::entity Entity = (*Handle)[i];

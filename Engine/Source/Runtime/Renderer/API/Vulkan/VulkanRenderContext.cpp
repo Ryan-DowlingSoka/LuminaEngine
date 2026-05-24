@@ -997,9 +997,7 @@ namespace Lumina
         PhysicalDevice.enable_extension_if_present(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         PhysicalDevice.enable_extension_if_present(VK_EXT_SAMPLER_FILTER_MINMAX_EXTENSION_NAME);
 
-        // Slang embeds NonSemantic.Shader.DebugInfo.100 via SPV_KHR_non_semantic_info.
-        // Core in 1.3 but some drivers (notably AMD) still reject the SPIR-V OpExtension
-        // unless the matching device extension is explicitly enabled.
+        // AMD rejects NonSemantic SPIR-V without explicit extension enable even though it's core in 1.3.
         PhysicalDevice.enable_extension_if_present(VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME);
 
         // NV-only; AMD/Intel will skip the Aftermath diagnostics config pNext below.
@@ -1030,9 +1028,7 @@ namespace Lumina
             EnabledExtensions.SetFlag(EVulkanExtensions::ViewportIndexLayer);
         }
 
-        // VK_KHR_unified_image_layouts: keep every image in GENERAL, skip layout transitions.
-        // Skipped under validation: layers older than the extension reject its feature struct
-        // and warn they can't validate the path (VUID-VkDeviceCreateInfo-pNext-pNext spam).
+        // Skipped under validation: older layers reject the feature struct and spam VUID warnings.
         if (!Description.bValidation)
         {
             VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR UnifiedLayoutFeatures{};
@@ -1086,6 +1082,78 @@ namespace Lumina
             }
         }
 
+        // VK_EXT_memory_priority: NOT core in 1.4; required for VMA MEMORY_PRIORITY bit and pageable ext.
+        {
+            VkPhysicalDeviceMemoryPriorityFeaturesEXT MemoryPriorityFeatures{};
+            MemoryPriorityFeatures.sType          = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT;
+            MemoryPriorityFeatures.memoryPriority  = VK_TRUE;
+
+            if (PhysicalDevice.enable_extension_if_present(VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME)
+                && PhysicalDevice.enable_extension_features_if_present(MemoryPriorityFeatures))
+            {
+                EnabledExtensions.SetFlag(EVulkanExtensions::MemoryPriority);
+
+                // VK_EXT_pageable_device_local_memory: NOT core; requires memory_priority above.
+                VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT PageableFeatures{};
+                PageableFeatures.sType                      = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT;
+                PageableFeatures.pageableDeviceLocalMemory  = VK_TRUE;
+
+                if (PhysicalDevice.enable_extension_if_present(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME)
+                    && PhysicalDevice.enable_extension_features_if_present(PageableFeatures))
+                {
+                    EnabledExtensions.SetFlag(EVulkanExtensions::PageableDeviceLocalMemory);
+                }
+            }
+        }
+
+        // Core in 1.4 but probed optionally; a 1.4 driver lacking it must still boot.
+        {
+            VkPhysicalDeviceHostImageCopyFeatures HostImageCopyFeatures{};
+            HostImageCopyFeatures.sType          = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES;
+            HostImageCopyFeatures.hostImageCopy  = VK_TRUE;
+
+            if (PhysicalDevice.enable_extension_features_if_present(HostImageCopyFeatures))
+            {
+                EnabledExtensions.SetFlag(EVulkanExtensions::HostImageCopy);
+            }
+        }
+
+        // VK_KHR_fragment_shading_rate (NOT core): per-draw / attachment variable-rate shading.
+        // Enable whichever sub-rates the device reports; applying a rate is a separate, later step.
+        static VkPhysicalDeviceFragmentShadingRateFeaturesKHR FSREnable{};
+        bool bEnableFSR = false;
+        if (PhysicalDevice.enable_extension_if_present(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME))
+        {
+            VkPhysicalDeviceFragmentShadingRateFeaturesKHR FSRSupport{};
+            FSRSupport.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR;
+
+            VkPhysicalDeviceFeatures2 Features2{};
+            Features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            Features2.pNext = &FSRSupport;
+            vkGetPhysicalDeviceFeatures2(PhysicalDevice.physical_device, &Features2);
+
+            // Gate on pipelineFragmentShadingRate specifically; other sub-rates enabled if present.
+            if (FSRSupport.pipelineFragmentShadingRate)
+            {
+                FSREnable.sType                          = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR;
+                FSREnable.pipelineFragmentShadingRate    = FSRSupport.pipelineFragmentShadingRate;
+                FSREnable.primitiveFragmentShadingRate   = FSRSupport.primitiveFragmentShadingRate;
+                FSREnable.attachmentFragmentShadingRate  = FSRSupport.attachmentFragmentShadingRate;
+                bEnableFSR = true;
+                EnabledExtensions.SetFlag(EVulkanExtensions::FragmentShadingRate);
+
+                // Cache the max supported fragment size so pipeline creation can clamp requested
+                // rates (4x4 is not a guaranteed rate -- clamping keeps an unsupported pick safe).
+                VkPhysicalDeviceFragmentShadingRatePropertiesKHR FSRProps{};
+                FSRProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_PROPERTIES_KHR;
+                VkPhysicalDeviceProperties2 Props2{};
+                Props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+                Props2.pNext = &FSRProps;
+                vkGetPhysicalDeviceProperties2(PhysicalDevice.physical_device, &Props2);
+                ShadingRateMax = FSRProps.maxFragmentSize;
+            }
+        }
+
         // wideLines is optional; pipelines clamp lineWidth to 1.0 if unavailable.
         {
             VkPhysicalDeviceFeatures OptionalFeatures = {};
@@ -1106,6 +1174,10 @@ namespace Lumina
         if (bEnableEDS3)
         {
             DeviceBuilder.add_pNext(&EDS3Enable);
+        }
+        if (bEnableFSR)
+        {
+            DeviceBuilder.add_pNext(&FSREnable);
         }
 
         auto DeviceResult = DeviceBuilder.build();

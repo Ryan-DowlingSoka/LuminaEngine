@@ -31,8 +31,6 @@
 
 namespace Lumina
 {
-    // Matches RmlUiCommon.slang::FRmlUiPushConstants -- the device address of the
-    // per-draw data buffer (a BDA pointer). Everything else is read from there.
     struct FRmlUiPushConstants
     {
         uint64 DrawsAddress;
@@ -40,8 +38,6 @@ namespace Lumina
     static_assert(sizeof(FRmlUiPushConstants) == 8, "Push-constant must be a single device address.");
     static_assert(sizeof(FRmlUiPushConstants) <= MaxPushConstantSize, "Push-constants exceed RHI cap.");
 
-    // 32 B push block for the UI material brush pass. Mirrors
-    // UIMaterialGlobals.slang::FUIMaterialPushConstants.
     struct FUIMaterialBrushPush
     {
         glm::uvec4 ScreenSize;   // .xy = brush resolution
@@ -88,9 +84,6 @@ namespace Lumina
             DefaultWhiteResourceID = Textures[DefaultHandle].ResourceID;
         }
 
-        // Brushes cache (and root) their material; a rename/delete would otherwise
-        // leave the document rendering the stale asset. Flag a re-validation on any
-        // registry change instead of polling every frame.
         AssetRegistryUpdateHandle = FAssetRegistry::Get().GetOnAssetRegistryUpdated().AddLambda([this]()
         {
             bBrushRevalidatePending.store(true, std::memory_order_release);
@@ -161,9 +154,6 @@ namespace Lumina
         Attribs[3].ElementStride= sizeof(FUiVertex);
         InputLayout = GRenderContext->CreateInputLayout(Attribs, 4);
 
-        // Textures are sampled bindless through the engine texture table (set 0
-        // here): no per-texture descriptor set, draws pass a resource id by push
-        // constant. Layout/table must be alive (CreateImage already needs it).
         if (GRenderManager == nullptr || GRenderManager->GetTextureManager().GetLayout() == nullptr)
         {
             LOG_ERROR("[RmlUi] Texture manager bindless layout not available.");
@@ -244,8 +234,6 @@ namespace Lumina
 
         DrawCalls.clear();
 
-        // Logical size drives the projection (so layout pixels span the full RT regardless of
-        // its aspect); ViewportSize drives the RHI viewport / scissor.
         const glm::uvec2 ProjSize = (LogicalSize.x > 0 && LogicalSize.y > 0) ? LogicalSize : ViewportSize;
 
         // pixel -> NDC ortho; no Y-flip since Vulkan viewport is +Y-down.
@@ -278,9 +266,6 @@ namespace Lumina
 
     uint64 FRmlUiRenderer::ComputeDrawCallHash() const
     {
-        // FNV-1a over the per-draw parameters. Compiled-geometry handles are monotonic and never
-        // reused, so a handle uniquely identifies its (immutable) vertex/index bytes -- no need to
-        // hash the geometry itself. Translation/MVP/scissor catch elements that move or re-clip.
         uint64 Hash = 1469598103934665603ull;
         auto Mix = [&Hash](const void* Data, size_t Size)
         {
@@ -315,8 +300,7 @@ namespace Lumina
             }
         }
 
-        // Animated UI-material brushes evaluate every frame into their own RT; the draw list that
-        // samples them is unchanged, so without a per-frame salt the brush would freeze.
+        // Without per-frame salt an animated material brush would freeze (draw list unchanged).
         if (bHasBrush)
         {
             Mix(&FrameCounter, sizeof(FrameCounter));
@@ -345,8 +329,7 @@ namespace Lumina
 
     void FRmlUiRenderer::AbortFrame()
     {
-        // Generated textures (font glyphs) are queued during Context::Render; flush them even when
-        // we skip the draw so a later render isn't missing its atlas. Safe -- outside any pass.
+        // Flush glyph uploads even on abort so a later render finds the atlas complete.
         UploadPendingTextures();
         ResetFrameState();
     }
@@ -446,9 +429,6 @@ namespace Lumina
         FTargetBatch& Batch = TargetBatches[CurrentTarget];
         const uint64 Hash   = bCachedFrameHashValid ? CachedFrameHash : ComputeDrawCallHash();
 
-        // Rebuild the persistent geometry only when the draw list actually changed. Unchanged
-        // frames (a static document re-composited onto a shared RT, e.g. the world UI) reuse the
-        // resident buffers and just re-record the draw -- no per-vertex conversion, no re-upload.
         const int32 TargetID = CurrentTarget->GetResourceID();
         const bool bRebuild = !Batch.bValid || Batch.LastHash != Hash || Batch.TargetID != TargetID
             || !Batch.VertexBuffer || !Batch.IndexBuffer;
@@ -475,7 +455,6 @@ namespace Lumina
                     continue;
                 }
 
-                // Bindless: untextured geometry samples the 1x1 white default's slot.
                 int32 ResourceID = DefaultWhiteResourceID;
                 if (Draw.Texture != 0)
                 {

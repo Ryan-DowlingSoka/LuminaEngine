@@ -93,9 +93,7 @@ namespace Lumina
 
         Swapchain = vkbSwapchain->swapchain;
 
-    	// vkb clamps the requested extent to the surface's min/max -- use the ACTUAL
-    	// extent for the image desc + render area, or vkCmdBeginRendering trips
-    	// VUID-06080 (renderArea > imageView) and the GPU faults.
+    	// Use actual (clamped) extent; mismatching renderArea > imageView triggers VUID-06080.
     	const VkExtent2D ActualExtent = vkbSwapchain->extent;
     	SwapchainExtent = glm::uvec2(ActualExtent.width, ActualExtent.height);
 

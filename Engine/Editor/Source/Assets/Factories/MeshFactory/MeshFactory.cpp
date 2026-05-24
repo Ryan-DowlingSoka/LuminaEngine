@@ -385,9 +385,8 @@ namespace Lumina
     {
         using namespace Import::Mesh;
 
-        // Parse the source file off the main thread so a heavy asset (e.g. Sponza) doesn't
-        // freeze the editor. The slow-task popup shows progress; the caller opens the options
-        // dialog only once the parsed result has landed back on the main thread.
+        // Parse off-thread so a heavy asset doesn't freeze the editor; options dialog opens once
+        // the parsed result lands back on main thread.
         Task::AsyncTask(1, 1, [RawPath, OnReady = Move(OnReady)](uint32, uint32, uint32) mutable
         {
             FScopedSlowTask SlowTask(1.0f, "Reading Mesh", "Parsing source file...");

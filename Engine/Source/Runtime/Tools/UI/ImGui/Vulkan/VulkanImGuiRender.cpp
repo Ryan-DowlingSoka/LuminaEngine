@@ -28,9 +28,6 @@
 
 namespace Lumina
 {
-    // ImGui issues C-style platform/renderer callbacks with no user pointer, so
-    // the multi-viewport hooks reach the backend through this. One ImGui context
-    // -> one backend instance.
     static FVulkanImGuiRender* GImGuiBackend = nullptr;
 
     // Per secondary-viewport renderer state, stored in ImGuiViewport::RendererUserData.
@@ -99,11 +96,6 @@ namespace Lumina
         Attribs[2].ElementStride = sizeof(ImDrawVert);
         InputLayout = GRenderContext->CreateInputLayout(Attribs, 3);
 
-        // Install only the window-lifecycle hooks (platform side is ImGui_ImplGlfw).
-        // Render + present are NOT hooked here: we capture each secondary viewport's
-        // draw data on the game thread (CaptureViewports_GameThread) and acquire/
-        // render/present on the render thread (RenderViewports_RenderThread), so we
-        // never call RenderPlatformWindowsDefault.
         ImGuiPlatformIO& PlatformIO   = ImGui::GetPlatformIO();
         PlatformIO.Renderer_CreateWindow  = &FVulkanImGuiRender::OnRendererCreateWindow;
         PlatformIO.Renderer_DestroyWindow = &FVulkanImGuiRender::OnRendererDestroyWindow;
@@ -224,9 +216,6 @@ namespace Lumina
                    .SetDepthStencilState(DepthState)
                    .SetRasterState(RasterState);
 
-        // Dynamic-rendering pipeline bound to a single color format. The render
-        // pass passed to CreateGraphicsPipeline only needs a matching attachment
-        // format, so a throwaway attachment with the format is enough.
         FRenderPassDesc PassDesc;
         FRenderPassDesc::FAttachment Attachment;
         Attachment.SetFormat(ColorFormat).SetLoadOp(ERenderLoadOp::Clear);
@@ -289,10 +278,6 @@ namespace Lumina
         PC.Translate[1] = -1.0f - DrawData->DisplayPos.y * PC.Scale[1];
         PC.SamplerIndex = GImGuiSamplerIndex;
 
-        // Concatenate every draw list into one VB/IB so the whole UI binds state
-        // once (matches the stock backend's global-offset path). Per-cmd VtxOffset
-        // is relative to its list, so a running base is added per list. Two
-        // transient allocations for the frame, no per-list state changes.
         FTransientAlloc VB = CmdList.AllocateTransient((size_t)TotalVtx * sizeof(ImDrawVert), 16);
         FTransientAlloc IB = CmdList.AllocateTransient((size_t)TotalIdx * sizeof(ImDrawIdx), 4);
         if (!VB || !IB)
@@ -325,17 +310,10 @@ namespace Lumina
         State.AddViewport(FViewport(0.0f, FBW, 0.0f, FBH, 0.0f, 1.0f));
         State.AddScissor(FRect(0, (int)FBW, 0, (int)FBH));
 
-        // Bindless sampling is invisible to automatic barriers; the caller has
-        // already transitioned the sampled images + target, so suppress them
-        // here. SetGraphicsState opens the render pass (RmlUi pattern).
+        // Caller already transitioned images; suppress automatic barriers (bindless is invisible to them).
         CmdList.DisableAutomaticBarriers();
         CmdList.SetGraphicsState(State);
 
-        // ImGui issues one draw per ImDrawCmd, but consecutive commands almost
-        // always share the texture (the font atlas) and frequently the clip rect.
-        // Re-pushing the constant / re-setting the scissor every command is pure
-        // overhead (each SetPushConstants is a Tracy zone + vkCmdPushConstants,
-        // each SetScissor reassigns a vector), so only update them on change.
         int64 LastTexID  = INT64_MIN;
         FRect LastScissor(-1, -1, -1, -1);
 
@@ -428,9 +406,6 @@ namespace Lumina
 
         RecordDrawData(CmdList, Snapshot.GetDrawData(), Target);
 
-        // Amortized eviction of unused path/subresource textures. Entries hold
-        // FRHIImageRefs / bindless slots alive, so this only affects reclamation
-        // latency, not correctness.
         constexpr uint64 CleanupIntervalFrames = 60;
         constexpr uint64 UnusedFrameThreshold  = 120;
         const uint64 CurrentFrame = GEngine->GetUpdateContext().GetFrame();
@@ -466,10 +441,6 @@ namespace Lumina
             }
         }
     }
-
-    //--------------------------------------------------------------------------
-    // Texture handling
-    //--------------------------------------------------------------------------
 
     ImTextureID FVulkanImGuiRender::GetOrCreateImTexture(FStringView Path)
     {
@@ -550,10 +521,7 @@ namespace Lumina
 
     void FVulkanImGuiRender::DestroyImTexture(uint64 Hash)
     {
-        // Bindless ids are owned by the FRHIImage / the bindless table now; there
-        // is nothing per-id to free here. Lifetime is the path/subres caches
-        // (swept in OnEndFrame) and the asset that owns the image. Kept to honor
-        // the interface.
+        // Bindless IDs are owned by FRHIImage/the bindless table; nothing to free per-ID.
         (void)Hash;
     }
 
@@ -562,9 +530,6 @@ namespace Lumina
         LUMINA_PROFILE_SCOPE();
         FRecursiveScopeLock Lock(Mutex);
 
-        // Create + SetTexID on the game thread so the snapshot's draw cmds have a
-        // valid bindless id; queue the pixels for the render thread to upload on
-        // the frame command list (upload + sample in one submit).
         for (ImTextureData* Tex : ImGui::GetPlatformIO().Textures)
         {
             if (Tex->Status == ImTextureStatus_WantCreate)
@@ -577,9 +542,6 @@ namespace Lumina
                 auto It = FontTextures.find(Tex->UniqueID);
                 if (It != FontTextures.end() && It->second.Image != nullptr && Tex->GetPixels() != nullptr)
                 {
-                    // Full-atlas copy. ImGui only writes regions never used by a
-                    // prior draw, so a whole-texture upload is correct; partial
-                    // UpdateRect uploads are a later optimization (rare after warmup).
                     FPendingFontUpload Pending;
                     Pending.Image  = It->second.Image;
                     Pending.Width  = (uint32)Tex->Width;
@@ -636,17 +598,8 @@ namespace Lumina
             return;
         }
 
-        // WriteImage on the same frame list that samples the atlas below, so the
-        // copy and the draw are one submit (no cross-submit ordering). Two things
-        // matter for correctness:
-        //  1. Dedup per image, newest wins. The game thread can queue several
-        //     full-atlas uploads for the same image before we drain (snapshot ring
-        //     lets it run ahead); back-to-back copies to one image with no barrier
-        //     between trip SYNC-HAZARD-WRITE-AFTER-WRITE.
-        //  2. WriteImage leaves the image in CopyDest. RecordDrawData disables
-        //     automatic barriers and the atlas isn't in ReferencedImages, so we
-        //     must transition it back to ShaderResource + commit here, or the draw
-        //     samples a TRANSFER_DST image (black UI).
+        // Dedup newest-wins: back-to-back copies without barrier → SYNC-HAZARD-WRITE-AFTER-WRITE.
+        // WriteImage leaves CopyDest; must transition to ShaderResource here or draw samples black.
         TFixedVector<FRHIImage*, 8> Uploaded;
         for (int32 i = (int32)PendingFontUploads.size() - 1; i >= 0; --i)
         {
@@ -692,10 +645,6 @@ namespace Lumina
         Tex->SetStatus(ImTextureStatus_Destroyed);
     }
 
-    //--------------------------------------------------------------------------
-    // Multi-viewport renderer hooks (game thread; platform side is ImGui_ImplGlfw)
-    //--------------------------------------------------------------------------
-
     void FVulkanImGuiRender::OnRendererCreateWindow(ImGuiViewport* Viewport)
     {
         FVulkanImGuiRender* Self = GImGuiBackend;
@@ -729,16 +678,10 @@ namespace Lumina
             return;
         }
 
-        // The render thread owns acquire/present for this swapchain and a capture
-        // from an earlier frame may still reference it, so hand the swapchain off
-        // to be destroyed there once no capture can (RenderViewports_RenderThread).
+        // Drain GPU before destroy: ImGui kills the GLFW surface right after this hook;
+        // any in-flight capture would recreate against a dead surface (failed_query_surface_support_details).
         if (Data->Swapchain != nullptr)
         {
-            // The render thread acquires/renders/presents this swapchain, and ImGui
-            // destroys the GLFW window (killing the surface) immediately after this
-            // hook. Drain the render thread + GPU first so no in-flight capture
-            // recreates/uses a swapchain whose surface just died
-            // (failed_query_surface_support_details). Window close/redock is rare.
             FlushRenderingCommands();
             GRenderContext->WaitIdle();
             Memory::Delete(Data->Swapchain);
@@ -750,10 +693,7 @@ namespace Lumina
 
     void FVulkanImGuiRender::OnRendererSetWindowSize(ImGuiViewport* Viewport, ImVec2 Size)
     {
-        // No swapchain recreate here: the swapchain is driven by the render thread
-        // (acquire/present), so resizing it from the game thread would race. The OS
-        // resize makes the next render-thread acquire return OUT_OF_DATE, and it
-        // recreates the swapchain then. We only record the requested size.
+        // Only record the size; render thread recreates the swapchain on next OUT_OF_DATE acquire.
         FImGuiViewportData* Data = (FImGuiViewportData*)Viewport->RendererUserData;
         if (Data != nullptr)
         {
@@ -765,9 +705,6 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        // SecondaryCaptures[Slot] is gated by the same snapshot producer/consumer
-        // counters as the main viewport, so the render thread isn't reading this
-        // slot while we rewrite it -- no lock needed for the captures themselves.
         TVector<FCapturedViewport>& Captures = SecondaryCaptures[Slot];
         Captures.clear();
 
@@ -860,19 +797,13 @@ namespace Lumina
             return;
         }
 
-        // Resize to the captured viewport size if the REQUEST changed (compare to
-        // the desired extent, not the actual one -- the actual is clamped by the
-        // surface, so comparing to it would recreate every frame). Done here on the
-        // render thread with the game-thread-provided extent, so we never query
-        // GLFW off the main thread. RecreateSwapchain reuses the existing surface.
+        // Compare against desired (not actual) extent to avoid recreating every frame when surface clamps.
         const glm::uvec2 WantExtent((uint32)Cap.FbWidth, (uint32)Cap.FbHeight);
         if (WantExtent.x > 0 && WantExtent.y > 0 && Cap.Swapchain->GetDesiredExtent() != WantExtent)
         {
             Cap.Swapchain->RecreateSwapchain(WantExtent);
         }
 
-        // Pace + acquire on the render thread (the only thread that touches this
-        // swapchain's per-image state). OUT_OF_DATE -> skip; rebuilt next frame.
         Cap.Swapchain->WaitForFramePace();
         if (!Cap.Swapchain->AcquireNextImage())
         {
@@ -968,8 +899,6 @@ namespace Lumina
         CmdList.CommitBarriers();
         CmdListRef->Close();
 
-        // Acquire/present semaphores bound to this exact submit; present is on the
-        // render thread, serialized with the main present (FrameEnd).
         ICommandList* RawList = &CmdList;
         VulkanRenderContext->SubmitWithSemaphores(&RawList, 1, ECommandQueue::Graphics,
             Cap.Swapchain->GetCurrentAcquireSemaphore(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,

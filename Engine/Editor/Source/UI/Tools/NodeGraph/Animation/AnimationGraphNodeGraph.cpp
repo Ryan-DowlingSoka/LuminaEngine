@@ -249,10 +249,7 @@ namespace Lumina
 
     void CAnimationGraphNodeGraph::CompileGraph(FAnimationGraphCompiler& Compiler)
     {
-        // Harvest every parameter declared anywhere in the graph tree BEFORE the
-        // topo-sort walk. Without this, an unconnected Get Parameter node or a
-        // state machine whose Result pin isn't hooked up would leave the
-        // Parameters panel empty and Lua SetFloat() calls silently no-op.
+        // Collect parameters before topo-sort; unconnected Get Parameter nodes would otherwise be invisible to Lua SetFloat().
         CollectAllParameters(Compiler);
 
         uint16 ResultRegister = 0;

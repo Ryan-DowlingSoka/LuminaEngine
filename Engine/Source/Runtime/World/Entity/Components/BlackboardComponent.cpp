@@ -34,11 +34,6 @@ namespace Lumina
             return;
         }
 
-        // Reconcile against the current schema: ensure every declared key has a
-        // value seeded from its default. This keeps the store correct when keys
-        // are renamed / retyped / added on the asset (e.g. edited live in the
-        // editor) -- new / renamed keys pick up their default and missing keys
-        // never crash a lookup. Entries for removed keys simply linger unused.
         for (const FBlackboardKey& Key : Schema->Keys)
         {
             if (Key.Name.IsNone() || Values.find(Key.Name) != Values.end())

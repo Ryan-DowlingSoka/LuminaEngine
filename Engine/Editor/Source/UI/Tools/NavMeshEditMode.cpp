@@ -9,10 +9,6 @@ namespace Lumina
 {
     namespace
     {
-        // Pick the first nav-bounds entity in the world. Multi-bounds support
-        // (Unreal allows N bounds volumes) layers on top later; the current
-        // bake walks each component independently, so multiple entities
-        // already work - we just need a UI affordance.
         entt::entity FindFirstNavMesh(CWorld* World)
         {
             if (!World) return entt::null;

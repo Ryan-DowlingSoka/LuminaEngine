@@ -20,10 +20,7 @@ namespace Lumina
 
     void FTimerManager::RegisterLuaModule(Lua::FRef& GlobalRef)
     {
-        // Register the metatable under a name that does NOT collide with the script-side
-        // binding "TimerManager". TClass also writes an empty table into the parent globals
-        // under this name, and Luau caches it as the GETIMPORT constant for any matching
-        // identifier — which would shadow the per-script userdata bound via Environment.RawSet.
+        // Name must not collide with "TimerManager"; Luau caches GETIMPORT and would shadow the per-script userdata.
         GlobalRef.NewClass<FTimerManager>("FTimerManager")
             .AddFunction<&FTimerManager::Delay_Lua>("Delay")
             .AddFunction<&FTimerManager::SetTimer_Lua>("SetTimer")
@@ -165,8 +162,6 @@ namespace Lumina
             return;
         }
 
-        // Snapshot timers that existed at tick start so callbacks that schedule
-        // new timers don't cause those new timers to fire this same frame.
         TVector<entt::entity> ToTick;
         {
             auto View = Registry.view<FTimer>();
@@ -198,8 +193,7 @@ namespace Lumina
                 continue;
             }
 
-            // Swap-out the callback references so re-entrant SetTimer/ClearTimer
-            // on this same slot (from within the callback) is well-defined.
+            // Swap-out callbacks so re-entrant SetTimer/ClearTimer from within the callback is well-defined.
             FTimerCallback NativeCallback = eastl::move(Timer.NativeCallback);
             Lua::FRef      LuaCallback    = eastl::move(Timer.LuaCallback);
             const bool     bLoop          = Timer.bLoop;
@@ -328,22 +322,17 @@ namespace Lumina
                            "(spawn from a script lifecycle hook or coroutine.wrap).");
         }
 
-        // Pin the calling thread in the registry so it survives until the timer resumes it.
-        // Refs are global to the lua_State family — we record the main state for the eventual
-        // unref so the unref happens on a state that's guaranteed to outlive the sub-thread.
+        // Unref must happen on the main state, which is guaranteed to outlive the sub-thread.
         lua_State* MainState = lua_mainthread(L);
         lua_pushthread(L);
         const int ThreadRef = lua_ref(L, -1);
         lua_pop(L, 1);
 
-        // Resolve owning entity (if any) so the timer is tied to the script's lifetime —
-        // ClearTimersForEntity will then auto-clean if the entity dies during the wait.
+        // Tie timer to the entity so ClearTimersForEntity auto-cleans on entity death.
         const auto* ThreadData = static_cast<const Lua::FScriptThreadData*>(lua_getthreaddata(L));
         const entt::entity Owner = ThreadData ? ThreadData->Entity : entt::null;
 
-        // RAII holder so the registry pin is released whether the timer fires normally or
-        // is cleared early (e.g. entity destroyed mid-wait). Captured by-shared-ptr in the
-        // timer lambda; destruction of the lambda destructs the holder.
+        // RAII: releases the registry pin whether the timer fires or is cleared early.
         struct FWaitState
         {
             lua_State* MainState = nullptr;
@@ -362,8 +351,6 @@ namespace Lumina
         State->MainState = MainState;
         State->ThreadRef = ThreadRef;
 
-        // Capture L (the sub-coroutine to resume). It's kept alive by ThreadRef until the
-        // lambda destructs, so the pointer is safe for the lifetime of the timer.
         Self->CreateTimer(Seconds, /*bLoop=*/false, /*FirstDelay=*/-1.0f, Owner,
             [State, L]()
             {

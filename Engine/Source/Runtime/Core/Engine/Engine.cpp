@@ -204,9 +204,7 @@ namespace Lumina
                 DeveloperToolUI->Update(UpdateContext);
                 #endif
 
-                // Free render scenes of worlds left hidden past the grace window.
-                // Uses last frame's visibility (set during the UI update); a one-frame
-                // lag is irrelevant against a multi-second grace.
+                // Reclaim hidden-world renderers after the grace window expires.
                 GWorldManager->ReclaimIdleRenderers(UpdateContext.GetFrameStartTime());
 
                 GWorldManager->UpdateWorlds(UpdateContext);
@@ -303,9 +301,7 @@ namespace Lumina
 
                 OnUpdateStage(UpdateContext);
 
-                // Kick physics last: all game-thread ECS access for the frame is done (Extract, the
-                // FrameEnd module update, deferred actions), so the worker races with nothing. Results
-                // land next frame at FrameStart -- PostPhysics stages read previous-frame physics.
+                // Kick physics after all game-thread ECS access; results land next frame.
                 GWorldManager->KickPhysics();
             }
         }
@@ -496,9 +492,7 @@ namespace Lumina
             return;
         }
 
-        // Run on a duplicate so the cached asset is never the live world. Without this, the first
-        // Travel call tears down the cached asset (LoadObject returns it again on the next Travel,
-        // now empty), and DuplicateWorld would serialize a live, already-initialized registry.
+        // Duplicate so the cached asset isn't the live world; Travel would tear it down otherwise.
         CWorld* StartupWorld = CWorld::DuplicateWorld(SourceWorld);
         if (StartupWorld == nullptr)
         {

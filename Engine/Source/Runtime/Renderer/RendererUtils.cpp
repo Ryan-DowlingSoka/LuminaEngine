@@ -27,9 +27,6 @@ namespace Lumina::RenderUtils
             return true;
         }
 
-        // Shrink with hysteresis: reclaim memory only after usage has stayed well below capacity
-        // for a sustained run of frames (e.g. the camera left a dense area), and only down to a
-        // size that still leaves headroom -- so transient dips don't thrash reallocation.
         constexpr float  kShrinkUsageThreshold = 0.5f;   // "low" = live size < 50% of capacity
         constexpr uint32 kShrinkAfterFrames    = 180;    // ~3s at 60fps of sustained low usage
         constexpr float  kShrinkHeadroom       = 1.5f;   // shrink to 1.5x the live size

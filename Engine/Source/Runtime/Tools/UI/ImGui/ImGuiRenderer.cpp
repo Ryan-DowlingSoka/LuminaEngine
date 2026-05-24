@@ -213,12 +213,7 @@ namespace Lumina
 
         const uint8 Slot = FrameIndex % FRAMES_IN_FLIGHT;
 
-        // Block here if the render thread hasn't finished consuming the
-        // previous use of this slot. Without this gate, a slow render thread
-        // (or a frame with no world to gate Extract) would let the game thread
-        // wrap around the snapshot ring and overwrite Snapshots[Slot] while
-        // the render thread is still recording from it -- which manifests as
-        // null draw lists inside ImGui_ImplVulkan_RenderDrawData.
+        // Must wait: game thread wrapping the ring while render thread reads it → null draw lists.
         WaitForSnapshotSlot(Slot, SnapshotProduced[Slot].load(std::memory_order_acquire));
 
         ImGuiIO& Io = ImGui::GetIO();
@@ -228,20 +223,9 @@ namespace Lumina
         ImGuiX::Notifications::Render();
         ImGui::Render();
 
-        // Process all pending texture create/update/destroy on the game thread,
-        // before the snapshot is handed off, so ImTextureData TexIDs (font atlas)
-        // are valid when the render thread records. The bindless backend uploads
-        // through a normal RHI command list whose Submit locks the graphics queue
-        // internally -- no manual external-access lock (which would deadlock the
-        // self-locking Submit/Present below).
         ProcessTextureUpdates_GameThread();
 
-        // Update platform windows (create/destroy/move OS windows + their
-        // swapchains) on this thread, then deep-copy each secondary viewport's
-        // draw data into this slot. The render thread acquires/renders/presents
-        // those swapchains in RenderViewports_RenderThread -- we do NOT call
-        // RenderPlatformWindowsDefault (it would render+present on this thread,
-        // and cross-thread present ordering trips SyncVal WRITE_AFTER_PRESENT).
+        // Do NOT call RenderPlatformWindowsDefault: cross-thread present ordering trips SyncVal WRITE_AFTER_PRESENT.
         if (Io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
         {
             ImGui::UpdatePlatformWindows();
@@ -260,13 +244,7 @@ namespace Lumina
             return nullptr;
         }
 
-        // The snapshot's DrawData.Textures still aliases the live, shared
-        // g.PlatformIO.Textures vector -- which this thread rebuilds (resize(0))
-        // every frame and which we just fully processed above. Null it so the
-        // render thread's ImGui_ImplVulkan_RenderDrawData skips its texture
-        // loop and only records draws; otherwise it iterates a vector we're
-        // rebuilding and reruns UpdateTexture on the shared backend command
-        // buffer (missing glyphs + device lost).
+        // Null Textures: render thread must not re-iterate the live PlatformIO.Textures we just processed (device lost).
         if (ImDrawData* SnapshotDrawData = Snapshot.GetDrawData())
         {
             SnapshotDrawData->Textures = nullptr;

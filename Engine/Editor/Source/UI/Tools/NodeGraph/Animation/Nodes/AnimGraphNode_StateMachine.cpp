@@ -24,9 +24,7 @@ namespace Lumina
             StateMachineGraph = NewObject<CAnimStateMachineGraph>(GetPackage(), GraphName);
         }
 
-        // Context-free setup so the compiler can walk a state machine the user
-        // has never opened. Initialize() (context creation) is deferred to the
-        // editor tool, on first descent into this node.
+        // Context-free: compiler walks state machines never opened; Initialize() deferred to editor tool.
         StateMachineGraph->EnsureSetup();
         return StateMachineGraph.Get();
     }

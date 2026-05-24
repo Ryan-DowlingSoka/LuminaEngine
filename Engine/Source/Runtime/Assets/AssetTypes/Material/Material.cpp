@@ -205,9 +205,7 @@ namespace Lumina
             NotifyInstancesParentChanged();
 
 #if !USING(WITH_EDITOR)
-            // The RHI shaders now own their compiled code; the serialized SPIR-V blobs are dead in a
-            // cooked build (nothing recompiles or re-saves the material, device loss panics). The editor
-            // keeps them -- the material editor reads/rewrites these on recompile and save.
+            // SPIR-V blobs are dead in cooked builds; editor keeps them for recompile/save.
             auto Drop = [](TVector<uint32>& V) { V.clear(); V.shrink_to_fit(); };
             Drop(VertexShaderBinaries);
             Drop(PixelShaderBinaries);

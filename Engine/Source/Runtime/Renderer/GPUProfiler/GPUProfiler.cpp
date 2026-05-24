@@ -93,10 +93,7 @@ namespace Lumina
     {
         FGPUProfileFrame& Slot = Frames[RecordingSlot];
 
-        // Drain the barrier accumulators into this frame and plot them. Done
-        // unconditionally (not gated on the timing CVar) so a Tracy capture
-        // always carries the barrier counts even when the in-engine timing
-        // profiler is disabled.
+        // Unconditional: Tracy always needs barrier counts regardless of in-engine profiler CVar.
         const uint32 NumBufferBarriers = PendingBufferBarriers.exchange(0, std::memory_order_relaxed);
         const uint32 NumImageBarriers  = PendingImageBarriers.exchange(0, std::memory_order_relaxed);
         Slot.NumBufferBarriers = NumBufferBarriers;
@@ -118,10 +115,7 @@ namespace Lumina
         PendingBufferBarriers.fetch_add(NumBuffer, std::memory_order_relaxed);
         PendingImageBarriers.fetch_add(NumImage, std::memory_order_relaxed);
 
-        // Attribute to the innermost open GPU scope (the pass that triggered the
-        // barrier) when profiling is active. Barriers committed between/outside
-        // scopes land only in the frame total above. Locked because barriers can
-        // be committed from any command-list-recording thread.
+        // Attribute barriers to the innermost open scope; locked for cross-thread cmd-list recording.
         if (!IsEnabled())
         {
             return;

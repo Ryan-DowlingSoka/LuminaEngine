@@ -23,10 +23,7 @@ namespace Lumina
 
     void CMaterialOutputNode::DrawNodeTitleBar()
     {
-        // Refresh per-pin disabled state from the material domain. Cheap
-        // (a handful of flag writes) and runs once per node draw, so the
-        // greyed-out state tracks MaterialType edits without a separate
-        // refresh hook.
+        // Cheap per-draw refresh; tracks MaterialType changes without a separate hook.
         EMaterialType MaterialType = EMaterialType::PBR;
         if (CMaterialNodeGraph* Graph = Cast<CMaterialNodeGraph>(GetOwningGraph()))
         {
@@ -39,10 +36,7 @@ namespace Lumina
         const bool bPostProcess = MaterialType == EMaterialType::PostProcess;
         const bool bUI          = MaterialType == EMaterialType::UI;
 
-        // PostProcess and UI materials run as a fullscreen pass: the surface
-        // attributes are inert and WorldPositionOffset is a vertex-stage write
-        // that's meaningless without geometry. UI keeps Opacity (it drives the
-        // brush alpha); PostProcess does not.
+        // PostProcess/UI: surface attributes inert, WPO meaningless; UI keeps Opacity (brush alpha), PostProcess does not.
         const bool bFullscreen = bPostProcess || bUI;
         if (BaseColorPin)            BaseColorPin->SetDisabled(bFullscreen);
         if (MetallicPin)             MetallicPin->SetDisabled(bFullscreen);
@@ -101,10 +95,7 @@ namespace Lumina
         WorldPositionOffsetPin->SetPinName("World Position Offset (XYZ)");
     }
 
-    // Build a `Material.<member> = <expression>;` line that handles component
-    // count widening / narrowing between the connected pin's value type and
-    // the expected member width. Pulled out so the same emitter serves both
-    // the pixel-stage assignments and the vertex-stage (WPO) assignment.
+    // Handles component widening/narrowing; shared by pixel-stage assignments and vertex-stage WPO.
     static FString EmitMaterialAssignment(const FString& MemberName, CEdNodeGraphPin* Pin, const FString& DefaultValue, int32 RequiredComponents)
     {
         FString Out = "\tMaterial." + MemberName + " = ";
@@ -117,9 +108,7 @@ namespace Lumina
         CMaterialOutput* ConnectedPin = Pin->GetConnection<CMaterialOutput>(0);
         FString NodeName              = ConnectedPin->GetOwningNode()->GetNodeFullName();
         int32 ConnectedComponents     = FMaterialCompiler::GetComponentCount(ConnectedPin->GetComponentMask());
-        // Mask is optional metadata -- some emitters only stamp InputType. If the mask is None
-        // (count == 0) fall back to the type's intrinsic width so we don't drop into the generic
-        // float3(value) branch and emit a constructor with a wider-than-expected argument.
+        // If mask is None (count==0) fall back to intrinsic width; avoids a float3() wrap with a wider argument.
         if (ConnectedComponents == 0)
         {
             ConnectedComponents = FMaterialCompiler::GetComponentCount(ConnectedPin->InputType);
@@ -156,9 +145,7 @@ namespace Lumina
         PixelOut += "\n\n";
         PixelOut += "\tFMaterialPixelInputs Material;\n";
 
-        // Post-process materials use Emissive as the final scene color. An
-        // unconnected Emissive means "passthrough" (return the scene as-is)
-        // rather than "black"; surface materials keep the legacy zero default.
+        // PostProcess: unconnected Emissive = passthrough (SceneColor); surface materials default to black.
         const bool bPostProcess = Compiler.GetMaterialType() == EMaterialType::PostProcess;
         const FString EmissiveDefault = bPostProcess ? FString("SceneColor.rgb") : FString("float3(0.0, 0.0, 0.0)");
 
@@ -171,11 +158,7 @@ namespace Lumina
         PixelOut += EmitMaterialAssignment("Normal",           NormalPin,    "float3(0.0, 0.0, 1.0)", 3);
         PixelOut += EmitMaterialAssignment("Opacity",          OpacityPin,   "1.0",                    1);
 
-        // Tangent-space normal-map decode. Two paths depending on whether the
-        // upstream sample came from a NormalMap-flagged texture (BC5 2-channel
-        // store -> reconstruct Z) versus a 3-channel source (textbook decode).
-        // Unconnected default `float3(0, 0, 1)` is already in [-1, 1] so only
-        // the connected case is patched.
+        // Normal decode: BC5 2-channel (reconstruct Z) vs. 3-channel; only connected case needs patching.
         if (NormalPin->HasConnection())
         {
             CMaterialOutput* ConnectedPin   = NormalPin->GetConnection<CMaterialOutput>(0);
@@ -195,8 +178,7 @@ namespace Lumina
 
         Compiler.AddPixelOutput(PixelOut);
 
-        // The vertex template already declares `FMaterialVertexInputs Material;`
-        // inline above the token, so we only emit the assignment here.
+        // Vertex template declares FMaterialVertexInputs Material above the token; only emit assignment.
         FString VertexOut;
         VertexOut += "\n";
         VertexOut += EmitMaterialAssignment("WorldPositionOffset", WorldPositionOffsetPin, "float3(0.0, 0.0, 0.0)", 3);

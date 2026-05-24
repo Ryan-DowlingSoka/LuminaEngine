@@ -9,6 +9,7 @@
 #include "UI/Tools/NodeGraph/Particle/ParticleCompiler.h"
 #include "UI/Tools/NodeGraph/Particle/ParticleNodeGraph.h"
 #include "World/entity/components/environmentcomponent.h"
+#include "World/Entity/Components/SkyLightComponent.h"
 #include "World/entity/components/lightcomponent.h"
 #include "World/Entity/Components/ParticleSystemComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
@@ -33,6 +34,7 @@ namespace Lumina
         DirectionalLightEntity = World->ConstructEntity("Directional Light");
         World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
         World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
+        World->GetEntityRegistry().emplace<SSkyLightComponent>(DirectionalLightEntity);
 
         ParticleEntity = World->ConstructEntity("Particle System");
         SParticleSystemComponent& ParticleComponent = World->GetEntityRegistry().emplace<SParticleSystemComponent>(ParticleEntity);

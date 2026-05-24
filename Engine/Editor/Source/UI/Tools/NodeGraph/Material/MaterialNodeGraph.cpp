@@ -181,11 +181,8 @@ namespace Lumina
         CEdNodeGraph::Shutdown();
     }
 
-    // Reverse-BFS the input-edge closure starting at any nodes feeding the
-    // given pin. Used to partition the graph into "nodes that contribute to
-    // the pixel stage" vs. "nodes that contribute to the vertex stage (WPO)".
-    // Reroute nodes are traversed for connectivity (so true upstream nodes are reached) but are
-    // not themselves added to the result set -- the compile loop skips reroutes anyway.
+    // Reverse-BFS from a pin to partition nodes into pixel vs. vertex (WPO) sets.
+    // Reroutes are traversed but not added to the set; the compile loop skips them anyway.
     static void CollectInputClosure(CEdNodeGraphPin* StartPin, THashSet<CEdGraphNode*>& OutSet)
     {
         if (StartPin == nullptr || !StartPin->HasConnection())
@@ -236,8 +233,7 @@ namespace Lumina
         }
     }
 
-    // Chases an output pin back through any reroute nodes connected to it, returning the first
-    // non-reroute output. Returns nullptr if the chain dead-ends at a disconnected reroute.
+    // Returns nullptr if the reroute chain dead-ends at a disconnected input.
     static CMaterialOutput* ResolveOutputThroughReroutes(CMaterialOutput* OutputPin)
     {
         constexpr int MaxHops = 64;
@@ -265,9 +261,7 @@ namespace Lumina
         return nullptr;
     }
 
-    // Walks back from any output node, accumulating the inferred output InputType for each visited
-    // expression node. Used by ValidateOutputConnections so we can report the type a downstream pin
-    // will actually see -- after binary-op result-type promotion -- without running the full emit.
+    // Infers the promoted output type after binary-op promotion without running full emit.
     static EMaterialInputType InferOutputType(CEdNodeGraphPin* InputPin)
     {
         if (InputPin == nullptr || !InputPin->HasConnection())
@@ -285,9 +279,7 @@ namespace Lumina
         return SourcePin->InputType;
     }
 
-    // Pre-emit type-compatibility check for the material output's pins. Catches the cases the
-    // existing emit-time checks miss -- specifically connections where no math op fires (so no
-    // ResultType promotion happens) but the connected width still doesn't fit the target attribute.
+    // Pre-emit type check: catches mismatches where no math op fires so no promotion happens.
     static void ValidateOutputConnections(CMaterialOutputNode* OutputNode, FMaterialCompiler& Compiler)
     {
         if (OutputNode == nullptr)
@@ -418,9 +410,7 @@ namespace Lumina
             return;
         }
 
-        // Find the output node and partition the graph into vertex- and
-        // pixel-reachable sets. Nodes appearing in both sets get walked twice
-        // (once per stage) so they emit into both chunk buffers.
+        // Nodes in both sets are walked twice (once per stage) to emit into both chunk buffers.
         CMaterialOutputNode* OutputNode = nullptr;
         for (const TObjectPtr<CEdGraphNode>& N : Nodes)
         {
@@ -431,10 +421,7 @@ namespace Lumina
             }
         }
 
-        // Pre-emit validation: catch type mismatches at the output-node boundary so the user gets a
-        // clear, node-anchored error before slang sees malformed code. If anything fires here we
-        // still proceed through the rest of the compile so additional errors accumulate, but the
-        // editor's HasErrors() gate will skip the shader compiler call.
+        // Pre-emit validation catches output-boundary mismatches; compile proceeds to accumulate further errors.
         ValidateOutputConnections(OutputNode, Compiler);
 
         THashSet<CEdGraphNode*> VertexSet;
@@ -476,8 +463,7 @@ namespace Lumina
                 continue;
             }
 
-            // Reroute nodes are visual-only: GetTypedInputValue resolves through them, so the
-            // emit pass skips them entirely.
+            // Reroute nodes are resolved by GetTypedInputValue; skip them in the emit pass.
             if (Node->IsRerouteNode())
             {
                 continue;
@@ -486,9 +472,7 @@ namespace Lumina
             static_cast<CMaterialGraphNode*>(Node)->GenerateDefinition(Compiler);
         }
 
-        // Walk vertex set in topo order with stage = Vertex. Skipped entirely
-        // when WPO is unconnected (VertexSet empty), so unmodified materials
-        // pay zero compile-time cost.
+        // Skipped when VertexSet empty (WPO unconnected); unmodified materials pay zero compile-time cost.
         if (!VertexSet.empty())
         {
             Compiler.SetStage(EMaterialShaderStage::Vertex);

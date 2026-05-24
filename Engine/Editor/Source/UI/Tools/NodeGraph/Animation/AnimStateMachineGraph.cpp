@@ -69,9 +69,6 @@ namespace Lumina
 
     const FEdGraphSchema& CAnimStateMachineGraph::GetSchema() const
     {
-        // The animation schema already restricts connections to matching pin
-        // types (StateFlow <-> StateFlow) and honors bAllowMultipleConnections
-        // on the State In pin, so it works unchanged for the state machine canvas.
         return GetAnimGraphSchema();
     }
 
@@ -108,9 +105,8 @@ namespace Lumina
             }
         }
 
-        // Reconcile transition objects against the live State -> State wires.
-        // The Entry node's wire is a StateFlow link too, but it has no transition
-        // data, so only links between two State nodes count.
+        // Reconcile transition objects against live State->State wires; Entry wires have no
+        // transition data, so only State->State links count.
         THashSet<uint64> LiveKeys;
 
         for (CEdGraphNode* Node : Nodes)

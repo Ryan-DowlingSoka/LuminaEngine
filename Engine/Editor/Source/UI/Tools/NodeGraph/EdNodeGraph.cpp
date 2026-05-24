@@ -159,9 +159,7 @@ namespace Lumina
     {
         using namespace ax;
 
-        // Tight visual: small filled circle, no header, no labels. The pin icons collapse to the
-        // same screen position via PivotAlignment / zero pin radius so the dot reads as a single
-        // point even though there are two pins under the hood.
+        // Two pins share one visual dot via PivotAlignment + zero radius.
         constexpr float DotRadius = 6.0f;
         constexpr ImU32 DotColor  = IM_COL32(220, 220, 220, 255);
         constexpr ImU32 DotShadow = IM_COL32(  0,   0,   0, 180);
@@ -370,11 +368,8 @@ namespace Lumina
 
                     ImGui::TextUnformatted(InputPin->GetPinName().c_str());
 
-                    // Inline editor: an unconnected input pin can render a compact
-                    // widget (default value, enum selector) so it's editable on the
-                    // node face. A stretch spring pushes it to the row's right edge
-                    // so editors line up in a tidy column regardless of pin-name
-                    // length. Opt-in per graph; see ShouldDrawInlinePinEditors().
+                    // Inline editor for unconnected pins; spring aligns editors in a column.
+                    // Opt-in per graph via ShouldDrawInlinePinEditors().
                     if (ShouldDrawInlinePinEditors() && !InputPin->HasConnection() && InputPin->HasInlineEditor())
                     {
                         ImGui::Spring(1.0f, 12.0f);
@@ -719,11 +714,8 @@ namespace Lumina
             }
         }
 
-        // Double-clicking a wire splits it with a reroute node, anchored at the click position.
-        // Graphs that haven't opted in via GetRerouteNodeClass() get a no-op.
-        // imgui-node-editor transforms io.MousePos into canvas-local coords while the canvas is
-        // active (i.e. outside Suspend()), so GetMousePos() here is already in canvas space --
-        // an extra ScreenToCanvas would double-transform and pin the node to the top-left.
+        // Double-click a wire to insert a reroute at the click position.
+        // MousePos is already in canvas space outside Suspend(); ScreenToCanvas would double-transform.
         if (NodeEditor::LinkId DoubleClickedLink = NodeEditor::GetDoubleClickedLink())
         {
             const uint64 LinkIndex = DoubleClickedLink.Get() - 1u;
@@ -732,8 +724,7 @@ namespace Lumina
                 CEdNodeGraphPin* SidePinA = Links[LinkIndex].first;
                 CEdNodeGraphPin* SidePinB = Links[LinkIndex].second;
 
-                // Links are emitted as (InputPin, ConnectedOutputPin) by the per-node loop. Pick
-                // them apart so InsertRerouteOnLink gets (Output, Input) regardless of order.
+                // Links are (InputPin, OutputPin); normalize to (Output, Input) for InsertRerouteOnLink.
                 CEdNodeGraphPin* OutputSide = SidePinA->bInputPin ? SidePinB : SidePinA;
                 CEdNodeGraphPin* InputSide  = SidePinA->bInputPin ? SidePinA : SidePinB;
 
@@ -844,9 +835,7 @@ namespace Lumina
             NodeEditor::NodeId NodeId = 0;
             while (NodeEditor::QueryDeletedNode(&NodeId))
             {
-                // Unfortunately the way we do this now is a bit gross, it's too much of a pain to keep these nodes and the internal NodeEditor nodes in sync.
-                // This is the way it's done in the examples, and even though it's essentially O(n^2), it seems to be working correctly.
-                // Realistically it shouldn't matter too much.
+                // O(n^2) scan mirrors the approach from the imgui-node-editor examples; acceptable for typical graph sizes.
                 auto NodeItr = eastl::find_if(Nodes.begin(), Nodes.end(), [NodeId] (const TObjectPtr<CEdGraphNode>& A)
                 {
                     return std::cmp_equal(A->GetNodeID(), NodeId.Get()) && A->IsDeletable();

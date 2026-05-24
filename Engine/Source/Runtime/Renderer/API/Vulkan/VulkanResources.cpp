@@ -418,11 +418,7 @@ namespace Lumina
         {
             FRHIBufferDesc Desc;
             Desc.Size = Size;
-            // Transient routes through the linear upload pool (O(1) bump alloc).
-            // VB/IB flags let callers bind a transient slice as fixed-function
-            // vertex/index input. UniformBuffer is intentionally NOT added: chunks
-            // can exceed maxUniformBufferRange (and the FVulkanBuffer ctor asserts
-            // on it). Constant-buffer-style reads should go through BDA instead.
+            // UniformBuffer intentionally omitted: chunks can exceed maxUniformBufferRange. Use BDA instead.
             Desc.Usage.SetMultipleFlags(
                 EBufferUsageFlags::CPUWritable,
                 EBufferUsageFlags::StagingBuffer,
@@ -494,7 +490,6 @@ namespace Lumina
         FQueue* Queue = Context->GetQueue(queue);
         uint64 CompletedInstance = Queue->GetCompletedInstance();
 
-        // Retire GPU-done chunks for reuse.
         for (auto& Chunk : ChunkPool)
         {
             if (VersionGetSubmitted(Chunk->Version) && VersionGetInstance(Chunk->Version) <= CompletedInstance)
@@ -503,9 +498,6 @@ namespace Lumina
             }
         }
 
-        // Smallest-fit to avoid wasting big chunks on tiny uploads. For non-scratch
-        // pools the chunk MUST have a live mapped pointer; skip any pool entry that
-        // doesn't (defensive against a fallback allocator path that loses MAPPED_BIT).
         TSharedPtr<FBufferChunk> BestFit;
         for (auto& Chunk : ChunkPool)
         {
@@ -540,10 +532,7 @@ namespace Lumina
 
         if (!CurrentChunk)
         {
-            // Pow-2 sizing >= max(req, default). LargestChunkSize is intentionally
-            // not part of the floor: ratcheting it caused every subsequent chunk
-            // to inflate to the largest historical size, blowing past the upload
-            // pool block size and forcing dedicated allocations on small BAR heaps.
+            // Pow-2 sizing; LargestChunkSize excluded from floor — ratcheting inflated every chunk past the upload pool block size.
             uint64 Target = std::max<uint64>(Size, DefaultChunkSize);
             uint64 SizeToAllocate = NextPow2_u64(Target);
             SizeToAllocate = Align(SizeToAllocate, FBufferChunk::GSizeAlignment);
@@ -581,9 +570,6 @@ namespace Lumina
 
         CpuVA = CurrentChunk->MappedMemory;
 
-        // Non-scratch pools always have host-mapped chunks; if we somehow ended
-        // up with a null pointer (allocator failure on the fallback path) refuse
-        // the alloc rather than handing out a CpuVA that will SIGSEGV on memcpy.
         if (!bIsScratchBuffer && CpuVA == nullptr)
         {
             CurrentChunk.reset();
@@ -609,11 +595,7 @@ namespace Lumina
             CurrentChunk.reset();
         }
 
-        // Bump every non-submitted chunk owned by this submission's queue to the
-        // submitted version. The previous code only matched chunks whose Version
-        // equaled CurrentVersion exactly, which leaks chunks recorded across an
-        // Open/Close/Open cycle without an intervening Submit (their RecordingID
-        // no longer matches CurrentVersion, so they'd never get reclaimed).
+        // Stamp all unsubmitted chunks on this queue: exact-match missed chunks from an Open/Close/Open cycle.
         const ECommandQueue SubmitQueue = VersionGetQueue(CurrentVersion);
         for (const TSharedPtr<FBufferChunk>& Chunk : ChunkPool)
         {
@@ -628,11 +610,6 @@ namespace Lumina
             Chunk->Version = SubmittedVersion;
         }
 
-        // Reclaim the high-water bloat: a one-off large upload mints an oversized chunk
-        // that smallest-fit never reuses for small uploads and the new-allocation eviction
-        // never trims, so it stays pinned for the (pooled) command list's whole lifetime.
-        // Free chunks larger than the reusable baseline once they've sat unused past the
-        // hysteresis window AND their GPU work has completed. Baseline-sized chunks stay.
         static constexpr uint32 kReclaimIdleCycles = 128;
         const uint64 BaselineSize = Align(NextPow2_u64(DefaultChunkSize), FBufferChunk::GSizeAlignment);
         const uint64 Completed    = Context->GetQueue(SubmitQueue)->GetCompletedInstance();
@@ -758,9 +735,7 @@ namespace Lumina
         BufferCreateInfo.usage          = ToVkBufferUsage(InDescription.Usage);
         BufferCreateInfo.flags          = 0;
 
-        // Concurrent sharing: list distinct queue families so graphics & async-compute can both
-        // touch the buffer without ownership-transfer barriers. Only flips to CONCURRENT when
-        // the device exposes >=2 distinct families; otherwise EXCLUSIVE remains valid and faster.
+        // CONCURRENT only when >=2 distinct queue families; otherwise EXCLUSIVE is valid and faster.
         uint32 ConcurrentFamilies[3] = {};
         uint32 ConcurrentFamilyCount = 0;
         if (InDescription.bConcurrentSharing)
@@ -1357,11 +1332,8 @@ namespace Lumina
         CreateInfo.bindingCount = (uint32)Bindings.size();
         CreateInfo.pBindings = Bindings.data();
 
-        // Bindless descriptor sets get UPDATE_AFTER_BIND so FTextureManager can
-        // register/unregister images mid-frame without invalidating in-flight
-        // command buffers that have the table bound. PARTIALLY_BOUND lets us
-        // sample slots that haven't been written yet (e.g. holes left by
-        // RemoveTexture). Non-bindless sets keep the old strict semantics.
+        // UPDATE_AFTER_BIND: allows mid-frame texture registration without invalidating bound cmd buffers.
+        // PARTIALLY_BOUND: allows sampling unwritten slots (holes from RemoveTexture).
         VkDescriptorBindingFlags PerBindingFlags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
         if (bBindless)
         {
@@ -1376,9 +1348,6 @@ namespace Lumina
         ExtendedInfo.bindingCount = (uint32)Bindings.size();
         ExtendedInfo.pBindingFlags = BindFlags.data();
 
-        // VK_EXT_mutable_descriptor_type wiring. Each binding gets a
-        // VkMutableDescriptorTypeListEXT entry; only Image_Mutable bindings
-        // populate the list, the rest are empty.
         static const VkDescriptorType ImageMutableTypes[] =
         {
             VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
@@ -1637,10 +1606,6 @@ namespace Lumina
                     Write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
                     DynamicBuffers.push_back(Buffer);
 
-                    // BUF_Dynamic buffers are host-mapped and synchronized via the per-version
-                    // tracker (WriteDynamicBuffer picks a slot whose prior submission has retired).
-                    // They are exempt from the command-list state tracker, so no transition is
-                    // needed at bind time and PermanentState has no meaning here.
                 }
                 break;
             case ERHIBindingResourceType::Buffer_Storage_Dynamic:
@@ -1784,9 +1749,7 @@ namespace Lumina
 
     VkPipeline CreateGraphicsVkPipeline(FVulkanDevice* Device, const FGraphicsPipelineDesc& Desc, const FRenderPassDesc& RenderPassDesc, VkPipelineLayout Layout, const FDynamicPipelineStates& Dyn)
     {
-        // Scissor/viewport/line-width are always dynamic; the rest depend on device support.
-        // States declared dynamic here have their baked CreateInfo values ignored by the
-        // driver and are instead supplied per-draw by SetGraphicsState.
+        // Scissor/viewport/line-width always dynamic; remaining states depend on device EDS support.
         TFixedVector<VkDynamicState, 16> DynamicStates;
         DynamicStates.push_back(VK_DYNAMIC_STATE_SCISSOR);
         DynamicStates.push_back(VK_DYNAMIC_STATE_VIEWPORT);
@@ -1798,10 +1761,7 @@ namespace Lumina
         if (Dyn.bDepthCompareOp)     DynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_COMPARE_OP);
         if (Dyn.bPolygonMode)        DynamicStates.push_back(VK_DYNAMIC_STATE_POLYGON_MODE_EXT);
 
-        // Blend states are per-color-attachment: only declare them dynamic when the pass
-        // has color attachments, otherwise a depth-only pipeline (shadows) would require a
-        // vkCmdSetColorBlend* call that has no attachments to target. SetGraphicsState gates
-        // the matching vkCmdSet* on the same condition (ColorAttachmentCount > 0).
+        // Depth-only pipelines (shadows) must NOT declare blend dynamic — vkCmdSetColorBlend* with no attachments is invalid.
         const bool bHasColorAttachments = !RenderPassDesc.ColorAttachments.empty();
         if (Dyn.bColorBlendEnable   && bHasColorAttachments) DynamicStates.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
         if (Dyn.bColorBlendEquation && bHasColorAttachments) DynamicStates.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT);
@@ -1938,6 +1898,49 @@ namespace Lumina
         RenderingCreateInfo.stencilAttachmentFormat         = VK_FORMAT_UNDEFINED;
         RenderingCreateInfo.viewMask                        = RenderPassDesc.ViewMask;
 
+        VkPipelineFragmentShadingRateStateCreateInfoKHR ShadingRateInfo = {};
+        if (Desc.ShadingRateState.bEnabled
+            && Desc.ShadingRateState.ShadingRate != EVariableShadingRate::e1x1
+            && static_cast<FVulkanRenderContext*>(GRenderContext)->SupportsFragmentShadingRate())
+        {
+            const auto RateToExtent = [](EVariableShadingRate Rate) -> VkExtent2D
+            {
+                switch (Rate)
+                {
+                    case EVariableShadingRate::e1x2: return { 1, 2 };
+                    case EVariableShadingRate::e2x1: return { 2, 1 };
+                    case EVariableShadingRate::e2x2: return { 2, 2 };
+                    case EVariableShadingRate::e2x4: return { 2, 4 };
+                    case EVariableShadingRate::e4x2: return { 4, 2 };
+                    case EVariableShadingRate::e4x4: return { 4, 4 };
+                    default:                         return { 1, 1 };
+                }
+            };
+            const auto ToCombiner = [](EShadingRateCombiner C) -> VkFragmentShadingRateCombinerOpKHR
+            {
+                switch (C)
+                {
+                    case EShadingRateCombiner::Override:      return VK_FRAGMENT_SHADING_RATE_COMBINER_OP_REPLACE_KHR;
+                    case EShadingRateCombiner::Min:           return VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MIN_KHR;
+                    case EShadingRateCombiner::Max:           return VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MAX_KHR;
+                    case EShadingRateCombiner::ApplyRelative: return VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MUL_KHR;
+                    default:                                  return VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR;
+                }
+            };
+
+            VkExtent2D Size = RateToExtent(Desc.ShadingRateState.ShadingRate);
+            const VkExtent2D MaxSize = static_cast<FVulkanRenderContext*>(GRenderContext)->GetMaxShadingRate();
+            Size.width  = std::min(Size.width,  std::max(MaxSize.width,  1u));
+            Size.height = std::min(Size.height, std::max(MaxSize.height, 1u));
+
+            ShadingRateInfo.sType          = VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR;
+            ShadingRateInfo.fragmentSize   = Size;
+            ShadingRateInfo.combinerOps[0] = ToCombiner(Desc.ShadingRateState.PipelinePrimitiveCombiner);
+            ShadingRateInfo.combinerOps[1] = ToCombiner(Desc.ShadingRateState.ImageCombiner);
+            ShadingRateInfo.pNext          = RenderingCreateInfo.pNext;
+            RenderingCreateInfo.pNext      = &ShadingRateInfo;
+        }
+
         VkGraphicsPipelineCreateInfo CreateInfo = {};
         CreateInfo.sType                        = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
         CreateInfo.pNext                        = &RenderingCreateInfo;
@@ -1974,9 +1977,7 @@ namespace Lumina
         // Real (non-canonicalized) values are fed to vkCmdSet* at draw time.
         DynamicStateValues = ComputeGraphicsDynamicStateValues(InDesc, RenderPassDesc);
 
-        // The underlying VkPipeline is shared across descs that differ only in dynamic
-        // state. Stored in the base Pipeline member; the cache owns its lifetime, so the
-        // dtor nulls it to keep ~FVulkanPipeline from destroying it.
+        // VkPipeline shared across descs differing only in dynamic state; cache owns its lifetime (dtor nulls Pipeline).
         Pipeline = InCache->GetOrCreateSharedVkPipeline(InDevice, InDesc, RenderPassDesc, PipelineLayout, SharedPipelineHash);
 
         DEBUG_ASSERT(Pipeline != VK_NULL_HANDLE);

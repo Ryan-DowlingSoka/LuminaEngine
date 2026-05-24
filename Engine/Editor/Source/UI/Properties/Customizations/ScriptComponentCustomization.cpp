@@ -478,9 +478,8 @@ namespace Lumina
             
             ImGui::PopStyleColor(3);
 
-            // Export-value edits mutate the component live and aren't deferred, so they're kept
-            // out of the change-op for now — they'd otherwise push an empty transaction (the
-            // mutation already happened before BeginTransaction could snapshot the old state).
+            // Export-value edits mutate live immediately; excluded from change-op to avoid an
+            // empty transaction (mutation precedes BeginTransaction's snapshot).
             bool bExportsChanged = false;
             DrawExportsSection(*ScriptComponent, bExportsChanged);
 

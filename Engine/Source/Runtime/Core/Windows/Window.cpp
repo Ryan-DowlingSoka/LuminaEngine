@@ -133,23 +133,15 @@ namespace Lumina
 			glfwSetDropCallback(Window, WindowDropCallback);
 			glfwSetWindowCloseCallback(Window, WindowCloseCallback);
 
-			// Custom-titlebar (editor) windows: route the title-bar hit-test through
-			// the OS so dragging it is an HTCAPTION move -> native Aero Snap / drag-
-			// to-maximize. No-op when the OS draws the title bar (game build).
 #if WITH_EDITOR
+			// Route title-bar hit-test through OS for native Aero Snap / drag-to-maximize.
 			glfwSetTitlebarHitTestCallback(Window, TitleBarHitTestCallback);
 #endif
 		}
 	}
 
-	// Custom-titlebar window management (drag/snap + maximize work-area clamp) is
-	// implemented in the patched GLFW win32 backend (WM_NCHITTEST/NCCALCSIZE/
-	// GETMINMAXINFO); this callback feeds it the title-bar drag region.
 	void FWindow::TitleBarHitTestCallback(GLFWwindow* window, int /*x*/, int /*y*/, int* hit)
 	{
-		// The editor title bar marks each frame whether the cursor is over its
-		// draggable region (SetTitleBarHovered); report that here so the OS treats
-		// the drag as a caption move.
 		const FWindow* WindowHandle = (const FWindow*)glfwGetWindowUserPointer(window);
 		*hit = (WindowHandle != nullptr && WindowHandle->bTitleBarHovered) ? 1 : 0;
 	}

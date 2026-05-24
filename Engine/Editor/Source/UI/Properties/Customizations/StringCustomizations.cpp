@@ -201,9 +201,6 @@ namespace Lumina
             {
                 BoneFilter.Draw("##Filter", 320.0f);
 
-                // Horizontal scrollbar + a tight indent so deep bone chains
-                // (pelvis -> spine -> ... -> hand -> fingers) stay readable
-                // instead of running off the right edge of the popup.
                 if (ImGui::BeginChild("##BoneTree", ImVec2(340, 400), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar))
                 {
                     ImGui::PushStyleVar(ImGuiStyleVar_IndentSpacing, 14.0f);
@@ -259,9 +256,7 @@ namespace Lumina
 
     EPropertyChangeOp FStringPropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
     {
-        // The "FilePath" meta turns a plain string field into an asset-path
-        // picker: a "..." button opens a searchable list of registered assets
-        // and drops the selected virtual path into the string.
+        // "FilePath" meta turns the field into an asset-path picker ("..." button, searchable).
         const bool bFilePath = Property->Property->HasMetadata("FilePath");
         const float ButtonWidth = bFilePath ? ImGui::GetFrameHeight() : 0.0f;
 

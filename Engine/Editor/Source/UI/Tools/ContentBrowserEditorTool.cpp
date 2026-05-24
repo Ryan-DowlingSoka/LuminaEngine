@@ -310,16 +310,13 @@ namespace Lumina
             
             ImVec4 TintColor = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
 
-            // Static icons resolve once: ToImTextureRef hashes the path and takes a lock on every
-            // call, so the resolved ref is cached. Only asset thumbnails are re-queried per frame
-            // (they stream in), falling back to the shared asset icon until ready.
+            // Cache static icon refs; asset thumbnails are re-queried per frame until they stream in.
             ImTextureRef ImTexture;
             switch (ContentItem->GetIconKind())
             {
             case EIconKind::Directory:
                 {
-                    static const ImTextureRef Icon = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/Folder.png");
-                    ImTexture = Icon;
+                    ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/Folder.png");
                     TintColor  = ImVec4(1.0f, 0.9f, 0.6f, 1.0f);
                     break;
                 }
@@ -331,27 +328,23 @@ namespace Lumina
                     }
                     else
                     {
-                        static const ImTextureRef Icon = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/Asset.png");
-                        ImTexture = Icon;
+                        ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/Asset.png");
                     }
                     break;
                 }
             case EIconKind::LuaScript:
                 {
-                    static const ImTextureRef Icon = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/LuaScript.png");
-                    ImTexture = Icon;
+                    ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/LuaScript.png");
                     break;
                 }
             case EIconKind::Markup:
                 {
-                    static const ImTextureRef Icon = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/rmlui.png");
-                    ImTexture = Icon;
+                    ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/rmlui.png");
                     break;
                 }
             case EIconKind::Audio:
                 {
-                    static const ImTextureRef Icon = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/Audio.png");
-                    ImTexture = Icon;
+                    ImTexture = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/Audio.png");
                     break;
                 }
             case EIconKind::Generic:
@@ -441,9 +434,7 @@ namespace Lumina
             }
             else
             {
-                // Non-CObject files (e.g. .rml) get a file-extension dispatch;
-                // OpenFileEditor falls back to the OS launcher if no editor is
-                // registered for the extension.
+                // Non-CObject files (e.g. .rml): OpenFileEditor falls back to OS launcher if no editor is registered.
                 ToolContext->OpenFileEditor(ContentItem->GetVirtualPath());
             }
         };
@@ -746,10 +737,7 @@ namespace Lumina
 
             if (Extension == ".lasset")
             {
-                // CPackage::RenamePackage owns both the disk move (atomic
-                // tmp+rename) and the in-memory rename. Only update the
-                // registry if the move succeeded — otherwise the registry
-                // would point at a path that doesn't exist on disk.
+                // RenamePackage owns the disk move + in-memory rename; only update registry on success.
                 if (!CPackage::RenamePackage(Rename.OldName, Rename.NewName))
                 {
                     ImGuiX::Notifications::NotifyError("Rename Failed: {0}", Rename.OldName);
@@ -762,9 +750,7 @@ namespace Lumina
             }
             else if (Extension.empty())
             {
-                // Folder rename. Snapshot the contained .lasset files BEFORE
-                // touching the filesystem so we can map old → new path for
-                // each one regardless of how the iterator orders entries.
+                // Snapshot contained .lasset files before touching the filesystem to map old→new paths.
                 struct FFolderRenameEntry
                 {
                     FFixedString OldPath;
@@ -800,9 +786,7 @@ namespace Lumina
                     return;
                 }
 
-                // Disk side is committed. Update in-memory packages and the
-                // registry. File names didn't change (only the directory
-                // portion of the path), so no content rewrite is needed.
+                // File names unchanged (only directory portion); no content rewrite needed.
                 for (const FFolderRenameEntry& Entry : Entries)
                 {
                     CPackage::OnPackageMovedExternally(Entry.OldPath, Entry.NewPath);
@@ -945,10 +929,7 @@ namespace Lumina
 
         auto MakeVirtualPath = [WatchRootLen](FStringView AbsPath) -> FFixedString
         {
-            // The watcher root *is* the project's Content folder, so the engine's
-            // virtual path is "/Game" + the tail past the root, with separator
-            // normalization. Both AbsPath (set by the watcher) and the captured
-            // root were normalized to forward slashes above.
+            // Virtual path = "/Game" + tail past watcher root (both pre-normalized to forward slashes).
             FFixedString Out;
             Out.append_convert("/Game");
             if (AbsPath.size() > WatchRootLen)

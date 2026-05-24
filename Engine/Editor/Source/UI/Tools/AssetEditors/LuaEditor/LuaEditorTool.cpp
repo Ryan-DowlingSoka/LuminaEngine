@@ -880,9 +880,7 @@ namespace Lumina
         if (Line >= static_cast<int>(CachedLines.size())) return;
         const std::string& LineText = CachedLines[Line];
 
-        // Visible-column to byte-index translation: tabs occupy [1..tabSize]
-        // visual columns, so a naive Col-as-index lookup would skew on lines
-        // that lead with tabs.
+        // Tabs occupy 1..tabSize visual columns; naive Col-as-index skews on tab-leading lines.
         const int TabSize = CodeEditor.GetTabSize();
         int Visible = 0;
         int ByteIdx = 0;
@@ -901,9 +899,7 @@ namespace Lumina
         FStringHit Hit;
         if (FindStringAt(LineText, ByteIdx, Hit))
         {
-            // Body excludes quotes. Bytes here are the raw source bytes (what
-            // the file actually pays for; not the interpreted runtime length
-            // (escapes like \n are 2 bytes in source, 1 at runtime).
+            // Body excludes quotes; raw source bytes (\n = 2 bytes in source, 1 at runtime).
             const int InnerStart = Hit.StartCol + 1;
             const int InnerEnd   = Hit.bClosed ? (Hit.EndCol - 1) : Hit.EndCol;
             const int BodyLen    = std::max(0, InnerEnd - InnerStart);
@@ -1554,9 +1550,7 @@ namespace Lumina
                 }
             }
 
-            // Engine members. Skip underscore-prefixed children; those are
-            // metadata slots on the base table (e.g. _Shape, __index) and
-            // shouldn't pollute the suggestion list.
+            // Skip underscore-prefixed members (_Shape, __index are metadata slots, not user API).
             if (Itr != SymbolsByPath.end())
             {
                 for (const Lua::FLuaSymbol& Symbol : Itr->second)
@@ -1567,10 +1561,7 @@ namespace Lumina
                 }
             }
 
-            // Per-instance fields surfaced via the script's _Shape table.
-            // Engine attaches these onto the live instance at runtime, so
-            // they aren't visible to the type checker but ARE in the user's
-            // mental model.
+            // _Shape table holds per-instance runtime fields not visible to the type checker.
             if (!ResolvedType.empty())
             {
                 FString ShapePath = ResolvedType;
@@ -1640,9 +1631,7 @@ namespace Lumina
 
     void FLuaEditorTool::RefreshBreakpointMarkers()
     {
-        // TextEditor::AddMarker is additive; clear-and-readd to keep state in
-        // sync with our breakpoint set AND the live PC if the debugger is
-        // paused at this file.
+        // AddMarker is additive; clear-and-readd to sync breakpoint set with live PC.
         CodeEditor.ClearMarkers();
         constexpr ImU32 Red          = IM_COL32(220, 60, 60, 255);
         constexpr ImU32 Translucent  = IM_COL32(220, 60, 60, 40);
@@ -1711,10 +1700,7 @@ namespace Lumina
             CodeEditor.AddMarker(Line, Blue, BlueFill, "Bookmark", "Bookmark (F2 to navigate, Ctrl+F2 to toggle)");
         }
 
-        // Yellow PC arrow on the line we're paused at; only if the
-        // debugger's source matches this editor's virtual path. A breakpoint
-        // marker on the same line gets overwritten visually by the PC color
-        // because addMarker is additive but draws last-writer-wins per line.
+        // PC arrow only when debugger source matches this editor's path; last AddMarker call wins per line.
         if (IsDebuggerPausedHere())
         {
             const int PCLine = Lua::FLuaDebugger::Get().GetPausedLineZeroBased();
@@ -1731,9 +1717,7 @@ namespace Lumina
             PCMarkerLine = -1;
         }
 
-        // Compile-error stripe. Drawn last so it dominates whatever else is
-        // on the line (a stale breakpoint on a syntax-broken line is the
-        // less useful piece of information). Line is 1-based from Luau.
+        // Compile-error stripe drawn last so it dominates breakpoints on the same line. Line is 1-based from Luau.
         if (bHasCompileError && CompileErrorLine >= 1 && CompileErrorLine <= CodeEditor.GetLineCount())
         {
             const ImU32 ErrorCol  = IM_COL32(255, 80, 80, 255);
@@ -1743,12 +1727,7 @@ namespace Lumina
             CodeEditor.AddMarker(CompileErrorLine - 1, ErrorCol, ErrorFill, "Compile error", Tip);
         }
 
-        // Type errors: salmon gutter strip + "Type error" tooltip with the
-        // full Luau diagnostic. Type errors come from the typed Frontend's
-        // check pass and are stricter than lint - each entry indicates code
-        // the runtime can't safely execute. Multiple errors per line collapse
-        // into one marker; the tooltip lists all of them.
-        // Skipped on the compile-error line (compile error wins).
+        // Type errors: skipped on compile-error line; multiple errors per line collapse into one marker.
         if (!TypeErrors.empty())
         {
             const ImU32 TypeErrCol  = IM_COL32(255, 110, 110, 255);
@@ -1773,11 +1752,7 @@ namespace Lumina
             }
         }
 
-        // Lint warnings: amber gutter strip + "Lint: name" tooltip with the
-        // full Luau message. Skipped on the compile-error line so the user's
-        // attention isn't split between an error and a stale lint about the
-        // same code. Type-error lines also win - lint after a type error is
-        // usually downstream noise.
+        // Lint warnings: skipped on compile-error line and on lines that already have a type error.
         const ImU32 LintCol  = IM_COL32(220, 165, 60, 255);
         const ImU32 LintFill = IM_COL32(220, 165, 60, 35);
         for (const FLuaLintWarning& W : LintWarnings)
@@ -1802,9 +1777,7 @@ namespace Lumina
             CodeEditor.AddMarker(LineIdx, LintCol, LintFill, Title, Tip);
         }
 
-        // Highlight-all-references: subtle teal stripe on every line that
-        // mentions the local under the cursor. Cleared by toggling off or by
-        // moving to a different identifier.
+        // Highlight-all-references: teal stripe cleared when toggled off or cursor moves to a different identifier.
         if (!HighlightedReferences.empty())
         {
             const ImU32 RefCol  = IM_COL32(80, 200, 180, 255);
@@ -1826,10 +1799,7 @@ namespace Lumina
             return false;
         }
 
-        // Tolerant path match. Luau's chunkname can carry a sigil prefix
-        // (`@`, `=`) and the virtual path used to open the editor may or
-        // may not have a leading `/`. Compare suffix-style with case
-        // folding so any of those variations still pair.
+        // Strip sigil prefix (@, =) and leading slash before comparing so chunk names and virtual paths pair correctly.
         auto Normalize = [](FStringView S)
         {
             while (!S.empty() && (S[0] == '@' || S[0] == '=' || S[0] == '/' || S[0] == '\\'))
@@ -2092,9 +2062,7 @@ namespace Lumina
         ImGui::TextDisabled("|");
         ImGui::SameLine();
 
-        // Problems: aggregated list of compile errors + type errors + lint
-        // warnings, click-to-jump. Button label includes counts so the user
-        // can see what's pending without opening the popup.
+        // Problems button label includes error/warning counts.
         const size_t TotalErrors  = (bHasCompileError ? 1u : 0u) + TypeErrors.size();
         const size_t TotalWarn    = LintWarnings.size();
         char ProblemsLabel[64];
@@ -2190,9 +2158,7 @@ namespace Lumina
         if (ImGui::Checkbox("Show inlay hints", &bShowInlayHints))
         {
             bDirty = true;
-            // Clear immediately when toggling off so the overlay disappears
-            // on the next frame; otherwise the cached vector would still
-            // paint until the next change-callback tick.
+            // Clear immediately when toggling off; cached vector would paint until the next change-callback tick otherwise.
             if (!bShowInlayHints) InlayHints.clear();
             else                  RefreshAnalysis();
         }
@@ -2292,9 +2258,7 @@ namespace Lumina
         {
             return;
         }
-        // ReplaceTextInCurrentCursor inserts at the cursor (or replaces a
-        // selection), participates in the editor's undo/redo, and triggers
-        // the change callback so the dirty flag updates correctly.
+        // ReplaceTextInCurrentCursor participates in undo/redo and triggers the change callback.
         CodeEditor.ReplaceTextInCurrentCursor(std::string_view(Snippet));
         CodeEditor.SetFocus();
     }
@@ -2622,9 +2586,7 @@ namespace Lumina
             Debugger.RequestStop();
         }
 
-        // Keyboard shortcuts only fire when this editor is the focused tool
-        // ImGui::IsWindowFocused gates them so they don't steal F5 etc. from
-        // other panels (game preview, console, etc.).
+        // Gate shortcuts on focus so F5/F10/F11 don't fire in other panels.
         if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
         {
             if (ImGui::IsKeyPressed(ImGuiKey_F5,  false)) Debugger.RequestContinue();
@@ -3065,9 +3027,7 @@ namespace Lumina
             }
         }
 
-        // F12: jump to local definition. Shift+F12: highlight references.
-        // Plain F12 with no Shift held only does the jump; reference
-        // highlighting is opt-in to avoid surprising flashes.
+        // F12: go to definition; Shift+F12: toggle reference highlights (opt-in to avoid flashes).
         if (ImGui::IsKeyPressed(ImGuiKey_F12, false))
         {
             if (Io.KeyShift)
@@ -3112,10 +3072,7 @@ namespace Lumina
             return;
         }
 
-        // Locals shadow upvalues; check locals first so a hit short-circuits
-        // before we look at upvalues. Linear scan is faster than rebuilding a
-        // hashmap with FString keys every frame for the typical frame size
-        // (well under fifty entries).
+        // Locals shadow upvalues; check locals first. Linear scan beats a hashmap for typical frame size.
         auto FindByName = [&](FStringView Name) -> const Lua::FStackVariable*
         {
             for (const Lua::FStackVariable& V : F.Locals)
@@ -3478,9 +3435,7 @@ namespace Lumina
         ImGui::TextDisabled("Log message (log point: logs and continues)");
         ImGui::SetNextItemWidth(-1);
         ImGui::InputTextWithHint("##bp_log", "e.g. health=<braces>self.Health<braces> ...", BpLogMessageBuffer, sizeof(BpLogMessageBuffer));
-        // Tooltip uses a runtime-formatted string. TextTooltip's compile-time
-        // format validation rejects `{expr}` placeholders in literals, so we
-        // build the message at runtime instead.
+        // Build tooltip at runtime: TextTooltip's compile-time validation rejects {expr} placeholders in literals.
         if (ImGui::IsItemHovered())
         {
             ImGui::BeginTooltip();
@@ -3542,9 +3497,7 @@ namespace Lumina
         {
             const TextEditor::CursorPosition Pos = CodeEditor.GetCurrentCursorPosition();
             const int LineCount = CodeEditor.GetLineCount();
-            // CachedBodySize is refreshed by the (debounced) change callback,
-            // OnSave, and LoadFromDisk. Reading it here avoids a per-frame
-            // GetText() copy of the entire document.
+            // CachedBodySize is refreshed on change/save/load to avoid per-frame GetText() copies.
             const size_t Bytes = CachedBodySize;
 
             ImGui::Text("Ln %d, Col %d", Pos.line + 1, Pos.column + 1);

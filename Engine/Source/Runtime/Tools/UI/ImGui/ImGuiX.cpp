@@ -280,7 +280,6 @@ namespace Lumina::ImGuiX
         int32 Result = INDEX_NONE;
         const ImGuiStyle& Style = ImGui::GetStyle();
 
-        // Key the filter on the combo's own ID so each selector keeps its own search text.
         const ImGuiID ComboId = ImGui::GetID(StrId);
 
         // Mirror the chosen item's icon into the closed preview so it matches the open list.
@@ -292,8 +291,6 @@ namespace Lumina::ImGuiX
             PreviewStr += Preview;
         }
 
-        // HeightLargest lets the popup grow to fit the inner list instead of clamping to
-        // ~8 items; the list child is then the only thing that scrolls -- no double bar.
         if (ImGui::BeginCombo(StrId, PreviewStr.c_str(), ImGuiComboFlags_HeightLargest))
         {
             const float PopupWidth = ImGui::GetContentRegionAvail().x;
@@ -336,7 +333,6 @@ namespace Lumina::ImGuiX
                     }
                     bAnyVisible = true;
 
-                    // Row text is "<icon>  <label>"; the icon glyph reads as a leading marker.
                     FFixedString Row;
                     if (ItemIcon != nullptr)
                     {

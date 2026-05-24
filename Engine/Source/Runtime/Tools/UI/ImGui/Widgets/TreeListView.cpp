@@ -110,7 +110,6 @@ namespace Lumina
         DEBUG_ASSERT(Context.RebuildTreeFunction);
         DEBUG_ASSERT(bDirty);
 
-        // Snapshot expansion state by hash so users keep their open subtrees across rebuilds.
         THashSet<uint64> CachedExpandedItems;
         CachedExpandedItems.reserve(AliveCount);
         for (const FNode& Node : Nodes)
@@ -121,10 +120,7 @@ namespace Lumina
             }
         }
 
-        // Do NOT call ClearSelections here. It fires ItemSelectedFunction with InvalidTreeNode,
-        // which clients treat as "user cleared selection" and propagate to their canonical state
-        // (e.g. registry tags). A structural rebuild is unrelated to user intent — the rebuild
-        // path is expected to re-apply bSelected from the client's own source of truth.
+        // Do NOT call ClearSelections: structural rebuild != user intent; clients re-apply bSelected from their own source of truth.
         ClearTree();
 
         Context.RebuildTreeFunction(*this);
@@ -165,8 +161,6 @@ namespace Lumina
             return;
         }
 
-        // Snapshot the children indices because callbacks during draw aren't supposed to mutate
-        // the tree, but defensively iterate by index to avoid iterator-invalidation bugs.
         const int32 NumChildren = static_cast<int32>(Node.Children.size());
         for (int32 i = 0; i < NumChildren; ++i)
         {
@@ -422,7 +416,6 @@ namespace Lumina
     {
         const int32 Idx = AllocNode();
 
-        // Compute hash before any further mutation so we don't hold a reference across grow.
         const uint64 NodeHash = (Hash == 0) ? Hash::GetHash64(Name.data(), Name.length()) : Hash;
 
         bool bShouldBeDisabled = false;
@@ -432,9 +425,7 @@ namespace Lumina
             ParentDepth = Nodes[Parent.Index].Depth;
             bShouldBeDisabled = Nodes[Parent.Index].State.bDisabled;
             Nodes[Parent.Index].Children.push_back(Idx);
-            // Note: we deliberately do NOT set bChildrenBuilt here. Callers can mix explicit
-            // CreateNode calls with lazy BuildChildrenFunction; the lazy callback is responsible
-            // for being idempotent (skipping already-present children) if both are used.
+            // Do NOT set bChildrenBuilt: callers may mix explicit CreateNode + lazy BuildChildrenFunction; the lazy cb must be idempotent.
         }
         else
         {
@@ -539,10 +530,7 @@ namespace Lumina
 
     void FTreeListView::SetSelection(FTreeNodeID Item, const FTreeListViewContext& Context, bool bShouldClear)
     {
-        // bShouldClear == true is the plain-click path: replace the selection with this one row.
-        // bShouldClear == false is the Ctrl-click (multi-select) path: toggle just this row's
-        // selected state and leave any other selected rows alone. Single-select consumers don't
-        // care: they ignore bShouldClear and treat every callback as "this is now the selection".
+        // true = plain-click (replace); false = Ctrl-click (toggle). Single-select consumers ignore bShouldClear.
         if (bShouldClear)
         {
             for (FNode& Node : Nodes)
@@ -589,9 +577,6 @@ namespace Lumina
             }
         }
 
-        // Notify the client so any external selection state stays in lockstep with the
-        // visual state. Single-select consumers can ignore the InvalidTreeNode callback;
-        // multi-select consumers (e.g. the world outliner) clear their canonical set here.
         if (Context.ItemSelectedFunction)
         {
             Context.ItemSelectedFunction(*this, InvalidTreeNode, true);

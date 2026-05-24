@@ -12,9 +12,6 @@ namespace Lumina
 {
     namespace
     {
-        // Copy a query path into the component's fixed-size corner array,
-        // truncating if the result exceeds MaxCorners. Truncation is rare
-        // for typical agent ranges; bumping MaxCorners is a free knob.
         void StorePath(SPathFollowComponent& Comp, const FNavPath& Path)
         {
             const int32 N = (int32)std::min<size_t>(Path.Corners.size(), (size_t)SPathFollowComponent::MaxCorners);
@@ -26,13 +23,7 @@ namespace Lumina
             Comp.CurrentCorner = 0;
         }
 
-        // Resolve the active goal: prefer a tracked entity's current
-        // location over the latched static world position. Returns false if
-        // the tracked entity has been destroyed since SetTargetEntity.
-        //
-        // Reads STransformComponent::WorldTransform directly. The caller
-        // must have flushed dirty transforms via ResolveAllDirtyTransforms
-        // before invoking this from the parallel body.
+        // Caller must flush dirty transforms before calling from a parallel body.
         bool ResolveGoal(const FSystemContext& Context, SPathFollowComponent& Comp, glm::vec3& OutGoal)
         {
             if (Comp.TargetEntity != entt::null)
@@ -62,22 +53,9 @@ namespace Lumina
         auto Handle = View.handle();
         if (Handle->empty()) return;
 
-        // Bulk-resolve every dirty transform once on the calling thread so
-        // the parallel body below can read STransformComponent::WorldTransform
-        // directly and skip the global ResolveTransformChain mutex on every
-        // access. Cost is O(dirty), so an empty-dirty frame is essentially free.
-        //
-        // Contract for the ParallelFor body: it MUST NOT mutate any
-        // transform. Today the only ECS write inside the loop is
-        // SCharacterControllerComponent::AddMovementInput, which only
-        // touches MoveInput - if that ever changes, either revert these
-        // reads to GetWorldTransform()/GetWorldLocation() or call
-        // ResolveAllDirtyTransforms again before the affected reads.
+        // Bulk-resolve before the parallel body; body must NOT mutate any transform.
         ECS::Utils::ResolveAllDirtyTransforms(Context.GetRegistry());
 
-        // Path-follow is per-entity-independent: each agent's path request,
-        // corner advance, and steering write-out is isolated. Parallel-fan
-        // matches the SimpleAnimationSystem pattern.
         Task::ParallelFor(Handle->size(), [&](uint32 Index)
         {
             entt::entity Entity = (*Handle)[Index];
@@ -105,10 +83,6 @@ namespace Lumina
 
             const glm::vec3 AgentPos = Xform.WorldTransform.Location;
 
-            // Decide whether to (re)plan. Reasons: path was explicitly
-            // marked dirty (target swap), no cached corners, target moved
-            // beyond RepathDistance from the source point, or the
-            // backstop interval elapsed.
             const bool bMovedTarget = glm::length(Goal - Comp.PathSourceTarget) > Comp.RepathDistance;
             const bool bIntervalElapsed = Comp.TimeSinceLastPath > Comp.RepathInterval;
             const bool bNeedRepath = Comp.bPathDirty || Comp.CornerCount == 0 || bMovedTarget || bIntervalElapsed;
@@ -128,12 +102,7 @@ namespace Lumina
                 }
                 else
                 {
-                    // Path failed - latch the failure so script can react,
-                    // but keep any prior corners in case the next tick
-                    // succeeds; clearing here would stutter the agent
-                    // during a transient nav-edge case. Reset the timer so
-                    // the next attempt waits one full RepathInterval
-                    // instead of hammering FindPath every tick.
+                    // Keep prior corners on failure; reset timer to avoid hammering FindPath every tick.
                     Comp.Status = EPathFollowStatus::Failed;
                     ++Comp.ConsecutiveFailures;
                     Comp.TimeSinceLastPath = 0.0f;
@@ -145,9 +114,6 @@ namespace Lumina
                 }
             }
 
-            // Advance the corner cursor while the agent is within the
-            // acceptance radius of the current corner. Multiple corners
-            // can collapse in a single tick at high speed / dense paths.
             while (Comp.CurrentCorner < Comp.CornerCount)
             {
                 const glm::vec3 ToCorner = Comp.PathCorners[Comp.CurrentCorner] - AgentPos;
@@ -169,9 +135,6 @@ namespace Lumina
                 return;
             }
 
-            // Steer toward the next corner. Project to horizontal so the
-            // controller doesn't try to walk vertically; vertical motion
-            // is the controller / physics' problem.
             const glm::vec3 Dir = Comp.PathCorners[Comp.CurrentCorner] - AgentPos;
             const glm::vec3 Flat(Dir.x, 0.0f, Dir.z);
             const float Len = glm::length(Flat);
@@ -190,9 +153,7 @@ namespace Lumina
             }
         });
 
-        // Debug draw is a sequential pass: the line batcher's vector
-        // pushes aren't thread-safe, so we can't emit from inside the
-        // ParallelFor. Cheap relative to the steering work above.
+        // Sequential: line batcher push_back is not thread-safe.
         const glm::vec3 Lift(0.0f, 0.1f, 0.0f);
         const glm::vec4 PathColor(0.4f, 0.8f, 1.0f, 1.0f);
         const glm::vec4 ActiveSegmentColor(1.0f, 0.95f, 0.2f, 1.0f);

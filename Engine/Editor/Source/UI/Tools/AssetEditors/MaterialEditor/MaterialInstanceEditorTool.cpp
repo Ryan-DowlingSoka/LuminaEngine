@@ -18,6 +18,7 @@
 #include "UI/Tools/ContentBrowserEditorTool.h"
 #include "World/Entity/Components/CameraComponent.h"
 #include "World/Entity/Components/EnvironmentComponent.h"
+#include "World/Entity/Components/SkyLightComponent.h"
 #include "World/Entity/Components/LightComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
@@ -54,6 +55,7 @@ namespace Lumina
         DirectionalLightEntity = World->ConstructEntity("Directional Light");
         World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
         World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
+        World->GetEntityRegistry().emplace<SSkyLightComponent>(DirectionalLightEntity);
 
         MeshEntity = World->ConstructEntity("MeshEntity");
         SStaticMeshComponent& StaticMeshComponent = World->GetEntityRegistry().emplace<SStaticMeshComponent>(MeshEntity);

@@ -285,8 +285,7 @@ namespace Lumina::ECS::Utils
     
     void ReparentEntity(FEntityRegistry& Registry, entt::entity Child, entt::entity Parent)
     {
-        // These guards are correctness-critical, not just debug aids: a self-parent or circular
-        // hierarchy produces an infinite loop inside ForEachChild / UpdateChildrenRecursive.
+        // Self-parent or circular hierarchy causes an infinite loop in ForEachChild.
         if (Child == Parent)
         {
             LOG_ERROR("Cannot parent an entity to itself!");
@@ -570,19 +569,10 @@ namespace Lumina::ECS::Utils
     {
         LUMINA_PROFILE_SCOPE();
 
-        // Serialize all chain resolves AND any concurrent MarkDirty calls.
-        // Multiple workers calling GetWorldMatrix on different entities
-        // would otherwise both mutate the FNeedsTransformUpdate pool
-        // (erase/remove inside, emplace from MarkDirty) and corrupt its
-        // sparse set. Recursive so a resolver that triggers another
-        // resolver downstream doesn't deadlock.
+        // Recursive mutex: concurrent MarkDirty + GetWorldMatrix would corrupt the sparse set; resolver may recurse.
         FRecursiveScopeLock Lock(GetTransformResolveMutex());
 
-        // Walk to the root and record the topmost dirty ancestor. Even
-        // when Entity itself is clean, a dirty ancestor invalidates our
-        // cached world matrix - moving a parent does not mark its
-        // descendants dirty, so a query against the descendant must
-        // chase the dirty bit upward.
+        // Chase dirty bit up to root; a dirty ancestor invalidates descendants even when they are clean.
         TFixedVector<entt::entity, 64> AncestorChain;
         int32 TopmostDirtyIndex = -1;
 
@@ -615,10 +605,6 @@ namespace Lumina::ECS::Utils
             return;
         }
 
-        // Refresh the chain from the topmost dirty ancestor down to Entity.
-        // Each step reads its parent's just-recomputed CachedMatrix, so
-        // intermediate clean ancestors get refreshed too (their cache is
-        // stale by virtue of having a dirty ancestor above them).
         for (int32 i = TopmostDirtyIndex; i >= 0; --i)
         {
             entt::entity Ancestor = AncestorChain[i];
@@ -640,11 +626,7 @@ namespace Lumina::ECS::Utils
             Registry.remove<FNeedsTransformUpdate>(Ancestor);
         }
 
-        // Push the new world transforms across the full subtree rooted at
-        // the topmost dirty ancestor - sibling branches of Entity also
-        // referenced that ancestor's matrix. Skipping them would leave
-        // their CachedMatrix stale with no dirty bit to trigger a later
-        // resolve, so a subsequent query would return wrong data.
+        // Propagate down the full subtree: sibling branches also referenced the ancestor's matrix.
         TFunction<void(entt::entity)> UpdateChildrenRecursive;
         UpdateChildrenRecursive = [&](entt::entity ParentEntity)
         {
@@ -669,16 +651,12 @@ namespace Lumina::ECS::Utils
     {
         LUMINA_PROFILE_SCOPE();
 
-        // Two passes: parented entities (need parent x local) and roots
-        // (world == local). Iterating only FNeedsTransformUpdate keeps the
-        // empty-frame cost negligible.
         auto SingleView        = Registry.view<FNeedsTransformUpdate, STransformComponent>(entt::exclude<FRelationshipComponent>);
         auto RelationshipGroup = Registry.group<FNeedsTransformUpdate, FRelationshipComponent>(entt::get<STransformComponent>);
 
         if (!RelationshipGroup.empty())
         {
-            // Snapshot dirty entities before mutating the group; iterating
-            // a group while members are removed during the body is unsafe.
+            // Snapshot before iterating: removing members during iteration is unsafe.
             TFixedVector<entt::entity, 100> DirtyEntities;
             DirtyEntities.reserve(RelationshipGroup.size());
             for (auto Entity : RelationshipGroup)
@@ -706,9 +684,6 @@ namespace Lumina::ECS::Utils
 
                 DirtyTransform.CachedMatrix = DirtyTransform.WorldTransform.GetMatrix();
 
-                // Push the new world transform down the subtree. A child that
-                // was independently dirty also gets refreshed here; clearing
-                // FNeedsTransformUpdate at the end handles the dedupe.
                 TFunction<void(entt::entity)> UpdateChildrenRecursive;
                 UpdateChildrenRecursive = [&](entt::entity ParentEntity)
                 {
@@ -837,11 +812,7 @@ namespace Lumina::ECS::Utils
             {
                 if (Storage.contains(Source) && !Storage.contains(To))
                 {
-                    // Scripts can't be bit-copied: their Lua refs point at the source's thread, the shared
-                    // FScript would be shared, and self.Entity/self.Transform would resolve to the source.
-                    // Re-emplace below with just the editable fields so on_construct re-runs SetupScriptComponent.
-                    // SRigidBodyComponent is skipped too: bit-copying carries the source's live BodyID, and it
-                    // must be re-emplaced (not copied) so on_construct builds a fresh Jolt body for the duplicate.
+                        // Scripts/rigid bodies can't be bit-copied; re-emplaced below so on_construct fires fresh.
                     if (ID == entt::type_hash<FRelationshipComponent>::value()
                         || ID == entt::type_hash<SScriptComponent>::value()
                         || ID == entt::type_hash<SRigidBodyComponent>::value())
@@ -853,19 +824,14 @@ namespace Lumina::ECS::Utils
                 }
             }
 
-            // Bit-copying STransformComponent carries the source's self-references; rebind so MarkDirty
-            // and ResolveIfDirty operate on the duplicate, not the original.
+            // Rebind: bit-copy carries source's self-references (Entity/Registry ptr).
             if (STransformComponent* NewTransform = Registry.try_get<STransformComponent>(To))
             {
                 NewTransform->Bind(Registry, To);
                 Registry.emplace_or_replace<FNeedsTransformUpdate>(To);
             }
 
-            // Re-emplace SRigidBodyComponent from the source. A collider on_construct hook may have
-            // auto-emplaced a default rigid body (and built a default Jolt body) onto the duplicate, so
-            // emplace_or_replace here would only fire on_update -- a no-op -- and the body would never be
-            // rebuilt with the source's type/profile. Remove that default first so on_destroy tears down
-            // any wrong Jolt body, then emplace fresh (with an invalid BodyID) so on_construct builds the body.
+            // Remove auto-emplaced default first; emplace_or_replace would fire on_update (no-op), not on_construct.
             if (const SRigidBodyComponent* SourceBody = Registry.try_get<SRigidBodyComponent>(Source))
             {
                 SRigidBodyComponent NewBody = *SourceBody;
@@ -875,8 +841,7 @@ namespace Lumina::ECS::Utils
                 Registry.emplace<SRigidBodyComponent>(To, eastl::move(NewBody));
             }
 
-            // Emplace SScriptComponent with the editable fields only; on_construct fires the canonical
-            // attach flow which loads a unique FScript and binds fresh Lua refs to the new entity.
+            // Emplace editable fields only; on_construct loads a unique FScript for the duplicate.
             if (const SScriptComponent* SourceScript = Registry.try_get<SScriptComponent>(Source))
             {
                 SScriptComponent NewScript;

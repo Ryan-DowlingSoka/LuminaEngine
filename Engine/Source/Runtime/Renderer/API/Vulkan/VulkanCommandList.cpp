@@ -198,10 +198,6 @@ namespace Lumina
         const FRHIImageDesc& SrcDesc = Source->GetDescription();
         const FRHIImageDesc& DstDesc = Destination->GetDesc();
 
-        // SrcSlice describes the sub-region of the source image to copy: X/Y/Z are the
-        // texel offset, Width/Height/Depth the extent. uint32(-1) extent means "to the
-        // end of the image from the offset", so a default FTextureSlice() copies the
-        // whole image -- preserving the existing full-image callers.
         const uint32 SrcMip   = SrcSlice.MipLevel;
         const uint32 SrcMipW  = (SrcDesc.Extent.x >> SrcMip) > 0 ? (SrcDesc.Extent.x >> SrcMip) : 1u;
         const uint32 SrcMipH  = (SrcDesc.Extent.y >> SrcMip) > 0 ? (SrcDesc.Extent.y >> SrcMip) : 1u;
@@ -1188,10 +1184,7 @@ namespace Lumina
             EndRenderPass();
         }
 
-        // Empty/clear-only passes never call SetGraphicsState, so the attachment
-        // states must be promoted here. Without this, LoadOp::Clear writes go
-        // unrecorded and a later transition emits TOP_OF_PIPE as srcStage,
-        // hiding the LATE_FRAGMENT_TESTS write and triggering a SyncVal WAW.
+        // Clear-only passes skip SetGraphicsState; promote states here or LoadOp::Clear WAWs are invisible to SyncVal.
         if (PendingState.IsInState(EPendingCommandState::AutomaticBarriers))
         {
             SetResourceStateForRenderPass(InPassInfo);
@@ -1363,9 +1356,6 @@ namespace Lumina
         //@ TODO This might not be possible to support both, since we allocate binding sets, so having an API that expects both
         
         uint32 CurrentBatchStart = UINT32_MAX;
-        // Inline-sized for the common case so this per-draw helper stays on the stack: up to
-        // MaxBindingLayouts sets, and the scene set alone binds several dynamic buffers
-        // (Scene/Light/Instance/Bone/...). Inline 4 overflowed to the heap every draw.
         TFixedVector<VkDescriptorSet, 8> CurrentDescriptorBatch;
         TFixedVector<uint32, 16> DynamicOffsets;
     
@@ -1467,9 +1457,7 @@ namespace Lumina
             vkCmdBindPipeline(VkCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, State.Pipeline->GetAPI<VkPipeline, EAPIResourceType::Pipeline>());
             CurrentCommandBuffer->AddReferencedResource(State.Pipeline);
 
-            // States the device made dynamic (so the PSO didn't bake them) are supplied
-            // here from the bound pipeline's precomputed values. The shared VkPipeline
-            // declared them dynamic; not setting them would leave them undefined.
+            // Dynamic states declared in the shared VkPipeline must be set here; leaving them unset is undefined.
             const FDynamicPipelineStates& Dyn = RenderContext->GetDynamicPipelineStates();
             const FGraphicsDynamicStateValues& DV = static_cast<FVulkanGraphicsPipeline*>(State.Pipeline)->GetDynamicStateValues();
 
@@ -1569,9 +1557,7 @@ namespace Lumina
 
     void FVulkanCommandList::SetScissor(const FRect& Rect)
     {
-        // ToVkScissorRect takes (MinX, MinY, MaxX, MaxY) -- matching SetGraphicsState's
-        // call. Passing (MinX, MaxX, MinY, MaxY) put MaxX into offset.y and produced
-        // garbage extents, clipping dynamic-scissor draws (e.g. ImGui) to nonsense rects.
+        // Order is (MinX, MinY, MaxX, MaxY); swapping Y/X args put MaxX into offset.y → garbage extents.
         const VkRect2D VkScissor = ToVkScissorRect(Rect.MinX, Rect.MinY, Rect.MaxX, Rect.MaxY);
         vkCmdSetScissor(CurrentCommandBuffer->CommandBuffer, 0, 1, &VkScissor);
 
@@ -1650,10 +1636,7 @@ namespace Lumina
             const bool bAutoBarriers = PendingState.IsInState(EPendingCommandState::AutomaticBarriers);
             for (const FBufferAccess& Access : State.BufferAccesses)
             {
-                // A declared access implies GPU use, so keep the resource alive for
-                // this submission. Device-address / bindless resources have no
-                // descriptor binding to reference them otherwise, so without this a
-                // later resize/free could destroy them while still in flight.
+                // Keep BDA/bindless resources alive — no descriptor binding holds them otherwise.
                 CurrentCommandBuffer->AddReferencedResource(Access.Buffer);
                 if (bAutoBarriers)
                 {

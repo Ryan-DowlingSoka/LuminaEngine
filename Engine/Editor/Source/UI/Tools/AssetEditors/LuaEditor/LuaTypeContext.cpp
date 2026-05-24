@@ -23,11 +23,7 @@ namespace Lumina
 {
     namespace
     {
-        // Single-buffer FileResolver: hands out our editor's source for one
-        // module name and nothing else. Consumers calling require() against a
-        // path the editor doesn't own get nullopt - lint/typecheck just
-        // treats those modules as `any`. Good enough until we wire a real
-        // project-aware resolver.
+        // Resolves only the editor's own module; all other require() calls return nullopt (treated as any).
         struct FBufferFileResolver : public Luau::FileResolver
         {
             std::string OwnedName;
@@ -115,8 +111,7 @@ namespace Lumina
     {
         if (!Impl->bRegisteredBuiltins)
         {
-            // Wire stdlib (math, string, table, ...) into the global scope so
-            // autocomplete + hover can resolve them. Done once per Frontend.
+            // Wire stdlib into global scope for autocomplete/hover. Done once per Frontend.
             Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globals);
             Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globalsForAutocomplete, /*forAutocomplete*/ true);
             Impl->bRegisteredBuiltins = true;
@@ -135,8 +130,7 @@ namespace Lumina
         }
         catch (...)
         {
-            // Frontend can throw on internal errors; we treat that as "no type
-            // info available right now" and let callers fall back.
+            // Frontend can throw internally; treat as "no type info" and let callers fall back.
             Impl->bDirty = false; // avoid retry storm
             return false;
         }
@@ -204,10 +198,7 @@ namespace Lumina
 
     namespace
     {
-        // Walks every AstStatLocal that lacks an annotation and emits inlay
-        // hints for the locals whose initializer has a resolvable type. Skips
-        // anonymous-loop counters and `_` placeholders so the overlay stays
-        // calm on dense code.
+        // Emits inlay hints for unannotated locals; skips loop counters and _ placeholders.
         struct FInlayVisitor : public Luau::AstVisitor
         {
             Luau::ModulePtr             Module;
@@ -299,10 +290,7 @@ namespace Lumina
 
     namespace
     {
-        // Add `name` to one GlobalTypes scope as both a value binding and a
-        // type alias, both resolving to `any`. Wraps the BuiltinDefinitions
-        // helper for the value side and writes directly into the scope's
-        // exportedTypeBindings for the type-alias side.
+        // Adds name as both a value binding and a type alias (both = any); writes into exportedTypeBindings for the type-alias side.
         void RegisterAnyBindingInto(Luau::Frontend& Frontend, Luau::GlobalTypes& Globals, const std::string& Name)
         {
             Luau::TypeId AnyTy = Frontend.builtinTypes->anyType;
@@ -317,9 +305,7 @@ namespace Lumina
     void FLuaTypeContext::RegisterEngineSymbol(FStringView Name)
     {
         if (Name.empty()) return;
-        // Need built-ins registered before we touch GlobalTypes: registerBuiltinGlobals
-        // builds globalScope and freezes the underlying TypeArena layout that
-        // addGlobalBinding writes into.
+        // registerBuiltinGlobals must run first: it builds globalScope and freezes the TypeArena layout addGlobalBinding writes into.
         if (!Impl->bRegisteredBuiltins)
         {
             Luau::registerBuiltinGlobals(*Impl->Frontend, Impl->Frontend->globals);

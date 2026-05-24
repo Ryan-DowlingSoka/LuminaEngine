@@ -23,9 +23,7 @@ namespace Lumina
 
     void FMemoryReader::Seek(int64 InPos)
     {
-        // Clamp + flag instead of letting a corrupt offset land at a negative
-        // or out-of-range position; downstream Serialize() would then index
-        // through a junk pointer.
+        // Clamp + flag: a corrupt offset reaching downstream Serialize() indexes a junk pointer.
         const int64 Total = TotalSize();
         if (InPos < 0 || InPos > Total)
         {

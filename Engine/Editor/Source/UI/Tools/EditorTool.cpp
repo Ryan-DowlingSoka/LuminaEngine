@@ -156,9 +156,7 @@ namespace Lumina
 
         if (HasWorld())
         {
-            // Initialize the world (creates its context) if it hasn't been already. Use the
-            // world context as the "is initialized" signal -- not the physics scene, which
-            // editor worlds intentionally don't have.
+            // Use world context as "is initialized" — editor worlds don't have a physics scene.
             if (GWorldManager->FindContext(World) == nullptr)
             {
                 GWorldManager->CreateWorldContext(World, EWorldType::Editor);
@@ -696,9 +694,7 @@ namespace Lumina
             return;
         }
 
-        // When entering Orbit, derive yaw/pitch/distance from the current camera so the
-        // first frame doesn't snap. If the camera was looking through OrbitTarget already,
-        // distance falls out naturally; otherwise it's just the magnitude of the offset.
+        // Derive orbit yaw/pitch/distance from current camera so the first frame doesn't snap.
         if (Mode == EEditorCameraMode::Orbit && HasWorld() && EditorEntity != entt::null
             && World->GetEntityRegistry().valid(EditorEntity))
         {
@@ -716,9 +712,7 @@ namespace Lumina
         CameraState.Mode = Mode;
         CameraState.Velocity = glm::vec3(0.0f);
 
-        // Snap the entity transform now so the first frame after SetupWorldForTool sees the
-        // mesh framed correctly — TickEditorCamera otherwise wouldn't run until the viewport
-        // gets focus, leaving the camera at FEditorTool::SetupWorldForTool's default origin.
+        // Apply immediately so the first render after SetupWorldForTool isn't at the default origin.
         if (Mode == EEditorCameraMode::Orbit)
         {
             ApplyOrbitTransform();
@@ -895,9 +889,7 @@ namespace Lumina
 
         if (CameraState.Mode == EEditorCameraMode::Free)
         {
-            // Free-cam consumes input directly into the entity transform; no derived state
-            // to apply if the viewport isn't focused, so just bail. Skip input while the
-            // focus lerp is still running so the camera doesn't fight the lerp.
+            // Skip input during focus lerp so the camera doesn't fight it.
             if (!bViewportFocused || CameraState.bFocusInterp)
             {
                 return;
@@ -947,10 +939,8 @@ namespace Lumina
         }
         else // Orbit
         {
-            // Input is gated on focus, but the transform application below is not — the
-            // orbit camera position is purely derived from CameraState, so we always want
-            // it written back to the entity (otherwise the first frame after SetupWorldForTool
-            // renders with the default origin transform until the user clicks the viewport).
+            // Transform application is unconditional: orbit is purely derived from CameraState,
+            // so it must be written back even without focus to avoid rendering at the default origin.
             if (bViewportFocused)
             {
                 if (bWantLook)
@@ -1134,12 +1124,6 @@ namespace Lumina
             ImGui::TextUnformatted(Text);
         }
     }
-
-    //
-    // Transactions snapshot the entity registry on Begin and again on End; Undo restores the
-    // before-state, Redo restores the after. Lives on the base so every editor tool with a
-    // World (FWorldEditorTool, FAssetEditorTool subclasses with preview worlds) gets undo
-    // for free.
 
     static constexpr int32 GMaxUndoHistory = 64;
 

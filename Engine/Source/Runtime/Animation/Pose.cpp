@@ -186,9 +186,7 @@ namespace Lumina
 
     namespace Detail
     {
-        // Local-space FK up to (and including) BoneIndex's parent. Returns
-        // identity for a root bone. Uses Pose's current TRS so chained
-        // BoneTransform nodes compose in component space.
+        // Uses Pose's current TRS so chained BoneTransform nodes compose correctly in component space.
         static glm::mat4 ComputeParentGlobal(const FPose& Pose, const FSkeletonResource* Skeleton, int32 BoneIndex)
         {
             const int32 ParentIndex = Skeleton->GetBone(BoneIndex).ParentIndex;

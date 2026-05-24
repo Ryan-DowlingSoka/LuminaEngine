@@ -59,9 +59,7 @@ namespace Lumina
             return Array;
         }
 
-        // Tolerant array reader: returns up to N components, padding with 0
-        // when the JSON is shorter or wrong-typed. Lets the editor recover
-        // gracefully from a malformed value instead of crashing.
+        // Reads up to N floats from a JSON array, padding with 0 for short/wrong-typed input.
         bool JsonToVec(const Json& Node, float* Out, int32 N)
         {
             if (!Node.is_array())

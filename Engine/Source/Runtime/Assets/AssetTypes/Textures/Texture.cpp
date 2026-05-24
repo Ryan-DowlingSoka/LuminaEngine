@@ -50,10 +50,7 @@ namespace Lumina
         GRenderContext->ExecuteCommandList(TransferCommandList, ECommandQueue::Compute);
 
 #if !USING(WITH_EDITOR)
-        // WriteImage has already copied each mip into the upload staging buffer, so the CPU pixel
-        // copy is dead after this point in a cooked build: nothing re-cooks, re-saves or regenerates
-        // thumbnails from it, and a device loss panics rather than recreating. (The editor keeps it --
-        // import re-cook, thumbnails and asset save all read Mips.Pixels.)
+        // CPU pixels are dead after upload in cooked builds; editor retains them for reimport/thumbnails.
         for (FTextureResource::FMip& Mip : TextureResource->Mips)
         {
             Mip.Pixels.clear();

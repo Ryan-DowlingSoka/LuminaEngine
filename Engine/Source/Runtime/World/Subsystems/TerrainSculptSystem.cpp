@@ -7,17 +7,13 @@ namespace Lumina
 {
     namespace
     {
-        // Terrain renderer places sample(0,0) at TerrainOrigin.xz, HalfSize in world
-        // space (see ForwardRenderScene OriginXZ). Sculpt math must use the same
-        // offset so the brush affects the samples the user actually sees under the cursor.
+        // Matches ForwardRenderScene OriginXZ so brush hits the same samples the renderer sees.
         glm::vec2 TerrainOriginXZ(const STerrainComponent& Terrain, const glm::vec3& TerrainOrigin)
         {
             const float HalfSize = Terrain.TileWorldSize * 0.5f;
             return glm::vec2(TerrainOrigin.x - HalfSize, TerrainOrigin.z - HalfSize);
         }
 
-        // World-space footprint mapped to heightmap sample bounds, clipped to the grid.
-        // Returns (MinX, MinY, MaxX, MaxY) inclusive or a zero-area rect when outside.
         glm::ivec4 ComputeSampleRect(const STerrainComponent& Terrain, const glm::vec3& TerrainOrigin, const glm::vec3& WorldPos, float Radius)
         {
             const float Stride = Terrain.TileWorldSize / float(Terrain.Resolution - 1);
@@ -114,10 +110,7 @@ namespace Lumina
         glm::ivec4 Rect;
         if (Dab.Mode == ETerrainBrushMode::Ramp)
         {
-            // Tight AABB of the start->end segment padded by half-width. Building it
-            // from two rect-unions instead of a circumscribing circle keeps the parallel
-            // scan limited to roughly the ramp's footprint on long diagonals.
-            const glm::ivec4 R1 = ComputeSampleRect(Terrain, Dab.TerrainOrigin, Dab.RampStart, Dab.RampHalfWidth);
+                const glm::ivec4 R1 = ComputeSampleRect(Terrain, Dab.TerrainOrigin, Dab.RampStart, Dab.RampHalfWidth);
             const glm::ivec4 R2 = ComputeSampleRect(Terrain, Dab.TerrainOrigin, Dab.RampEnd,   Dab.RampHalfWidth);
             const bool V1 = !(R1.z < R1.x || R1.w < R1.y);
             const bool V2 = !(R2.z < R2.x || R2.w < R2.y);
@@ -239,10 +232,7 @@ namespace Lumina
 
     void FTerrainSculptSystem::ApplySmooth(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect)
     {
-        // 3x3 box-blur read against a snapshot of only the affected rect (plus a 1px
-        // apron for neighbor sampling). Copying the full heightmap each dab was costing
-        // multiple MB of allocation traffic at 1025x1025 and dominated the brush's
-        // per-frame cost.
+        // Snapshot only the affected rect+1px apron; copying the full map at 1025^2 dominated per-dab cost.
         const int32 Res    = Terrain.Resolution;
         const float Stride = Terrain.TileWorldSize / float(Res - 1);
         const float Speed  = glm::clamp(Dab.Strength * Dab.DeltaSeconds, 0.0f, 1.0f);
@@ -304,8 +294,6 @@ namespace Lumina
 
     namespace
     {
-        // Cheap 2D value-hash noise (no glm::perlin dependency, predictable across
-        // platforms). Used for the Noise brush; quality is fine for fbm sculpting.
         inline float Hash2D(int X, int Y)
         {
             uint32 N = uint32(X) * 374761393u + uint32(Y) * 668265263u;
@@ -481,10 +469,6 @@ namespace Lumina
                         continue;
                     }
 
-                    // Paint nudges only the active layer, toward 1.0 normally,
-                    // toward 0.0 while Shift is held (erase). The shader normalizes
-                    // weights at sample time so the visual blend with every other
-                    // layer is purely a function of relative weight.
                     const size_t Pixel = size_t(Y) * size_t(Res) + size_t(X);
                     uint8& Target  = Terrain.LayerWeights[size_t(Layer) * LayerStride + Pixel];
                     float  Current = float(Target) / 255.0f;

@@ -194,9 +194,7 @@ namespace Lumina
 
     bool FInputViewport::ForwardMouseEventToRmlUi(FEvent& Event)
     {
-        // Lock held for the full ProcessXxx call: input dispatch can fire event
-        // listeners that mutate the DOM, so the render thread must not be
-        // walking it during this window.
+        // Hold lock for full ProcessXxx: event listeners can mutate the DOM concurrently read by render.
         RmlUi::FLockedWorldContext Ctx(World);
         if (!Ctx)
         {
@@ -207,11 +205,7 @@ namespace Lumina
 
         if (Event.IsA<FMouseMovedEvent>())
         {
-            // Raw accessors so UI mode (which gates GetMouseX/Y to 0 for game
-            // scripts) doesn't pin RmlUi's cursor to the origin. MouseX/Y are in
-            // render-target space; the context lays out at its own dimensions
-            // (panel size in the editor, which stretches the fixed-size RT), so
-            // rescale RT space -> context space or the cursor won't line up.
+            // Raw accessors bypass UI-mode 0-pin; rescale RT space -> context space (panel stretches RT).
             const double Cx = Context->GetMouseXRaw();
             const double Cy = Context->GetMouseYRaw();
             const auto   Dims = Ctx->GetDimensions();

@@ -54,9 +54,6 @@ namespace Lumina
             return false;
         }
 
-        // Decodes an enum carried in a scalar register. Enum pins compile to a
-        // float (the enum's integer index); we round, clamp to the valid range,
-        // and cast back. Garbage / out-of-range registers fall back to value 0.
         template <typename TEnum>
         static FORCEINLINE TEnum ReadEnumReg(const float* Scalars, SIZE_T NumScalar, uint16 Reg, int32 MaxValue)
         {
@@ -103,9 +100,7 @@ namespace Lumina
             State.Parameters[i] = Graph->Parameters[i].DefaultValue;
         }
 
-        // Seed each state machine's persistent slots: start in the entry state
-        // with no transition in flight. The slots were zeroed above, so only
-        // the non-zero seeds (entry index, From = -1) need writing.
+        // Seed non-zero slot values (entry state index, From = -1); zeroed slots are already correct.
         const SIZE_T NumSlots = State.StateSlots.size();
         for (const FAnimGraphStateMachine& SM : Graph->StateMachines)
         {
@@ -133,8 +128,7 @@ namespace Lumina
             return;
         }
 
-        // Re-initialize when the state is stale: never initialized, sized for a
-        // different register layout, or pointing at a different graph asset.
+        // Re-initialize when the state is stale or sized for a different graph asset.
         if (!State.bInitialized ||
             State.SourceGraph != Graph ||
             (int32)State.ScalarRegisters.size() != Graph->NumScalarRegisters ||
@@ -383,9 +377,7 @@ namespace Lumina
                     break;
                 }
 
-                // The compiler allocates all four bookkeeping slots together;
-                // a slot out of range means corrupt / version-mismatched
-                // bytecode. Fall back to the bind pose rather than read garbage.
+                // Out-of-range slot = corrupt/version-mismatched bytecode; fall back to bind pose.
                 if (SM.CurrentStateSlot >= NumState || SM.FromStateSlot >= NumState ||
                     SM.TimerSlot >= NumState || SM.DurationSlot >= NumState)
                 {
@@ -452,10 +444,7 @@ namespace Lumina
 
                         if (Detail::EvalTransitionCondition(Transition, Graph, State.Parameters))
                         {
-                            // Begin a new cross-fade from the (current) target
-                            // state to the new one. Without per-frame pose
-                            // caching there's a small visible pop at the seam;
-                            // longer BlendDurations hide it.
+                            // Without per-frame pose caching there's a small pop at the seam; longer BlendDurations hide it.
                             From     = Current;
                             Current  = Transition.ToState;
                             Timer    = 0.0f;

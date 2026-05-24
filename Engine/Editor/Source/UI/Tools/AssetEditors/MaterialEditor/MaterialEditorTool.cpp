@@ -22,6 +22,7 @@
 #include "UI/Tools/NodeGraph/Material/MaterialNodeGraph.h"
 #include "world/entity/components/cameracomponent.h"
 #include "world/entity/components/environmentcomponent.h"
+#include "World/Entity/Components/SkyLightComponent.h"
 #include "World/entity/components/lightcomponent.h"
 #include "World/entity/components/staticmeshcomponent.h"
 
@@ -115,6 +116,7 @@ namespace Lumina
         DirectionalLightEntity = World->ConstructEntity("Directional Light");
         auto& Directional = World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
         auto& Environment = World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
+        World->GetEntityRegistry().emplace<SSkyLightComponent>(DirectionalLightEntity);
 
         DirectionalEditor = MakeUnique<FPropertyTable>(&Directional, SDirectionalLightComponent::StaticStruct());
         EnvironmentEditor = MakeUnique<FPropertyTable>(&Environment, SEnvironmentComponent::StaticStruct());
@@ -233,8 +235,7 @@ namespace Lumina
         const ImVec2 WindowBottomRight = { WindowPosition.x + ViewportSize.x, WindowPosition.y + ViewportSize.y };
         float AspectRatio = (ViewportSize.x / ViewportSize.y);
 
-        // Enforce per-frame: setting once in SetupWorldForTool is unreliable because the renderer
-        // can be (re)created after that hook runs, leaving the default true in the new instance.
+        // Enforce per-frame: renderer can be recreated after SetupWorldForTool, resetting defaults.
         if (IRenderScene* Scene = World ? World->GetRenderer() : nullptr)
         {
             FSceneRenderSettings& Settings = Scene->GetSceneRenderSettings();
@@ -471,8 +472,7 @@ namespace Lumina
         const ImVec4 ValueColor (1.00f, 1.00f, 1.00f, 1.0f);
         const ImVec4 HeaderColor(0.70f, 0.85f, 1.00f, 1.0f);
 
-        // Color the cost number based on a rough budget. Numbers picked to feel reasonable for the
-        // node graph; tweak after some real materials are profiled.
+        // Cost color thresholds.
         ImVec4 CostColor;
         const uint32 Cost = ShaderStats.EstimatedCost;
         if      (Cost < 50)   CostColor = ImVec4(0.40f, 1.00f, 0.45f, 1.0f);
@@ -578,9 +578,7 @@ namespace Lumina
             return;
         }
 
-        // The node editor's selection / navigation API requires its context to be the active one.
-        // DrawGraph rebinds it every frame, but we may be called from outside that scope (e.g. a
-        // button in the stats panel), so the safe pattern is to set, act, and clear.
+        // May be called outside DrawGraph scope (e.g. stats panel); safe to set-act-clear manually.
         ax::NodeEditor::EditorContext* PrevCtx = ax::NodeEditor::GetCurrentEditor();
         ax::NodeEditor::EditorContext* OurCtx  = NodeGraph->GetEditorContext();
         if (OurCtx == nullptr)
@@ -624,18 +622,14 @@ namespace Lumina
         }
         else
         {
-            // Single call yields both pixel and vertex shader source with their
-            // respective $MATERIAL_INPUTS / $MATERIAL_VERTEX_INPUTS tokens
-            // substituted from the per-stage compiler chunks.
+            // BuildShaders yields both pixel and vertex source with tokens substituted.
             FString VertexSource;
             Compiler.BuildShaders(Tree, VertexSource, Material->GetMaterialType());
             VertexTree = VertexSource;
             ShaderStats = Compiler.GetStats();
             bHasCompiledOnce = true;
 
-            // ReplacementStart / ReplacementEnd power the GLSL preview's syntax
-            // highlight band. Recompute against Tree (the pixel shader) so the
-            // preview keeps highlighting the substituted region.
+            // ReplacementStart/End power the GLSL preview highlight band; recompute against the pixel shader tree.
             ReplacementStart = Tree.find("$MATERIAL_INPUTS");
             ReplacementEnd   = ReplacementStart;
 
@@ -723,9 +717,7 @@ namespace Lumina
             Material->PostLoad();
             Material->GetPackage()->MarkDirty();
 
-            // The user may have flipped MaterialType between PBR and
-            // PostProcess -- re-route the asset so the preview matches the
-            // freshly compiled domain.
+            // Re-route asset to preview in case MaterialType changed during compile.
             ApplyMaterialToPreview();
         }
     }
@@ -741,10 +733,7 @@ namespace Lumina
 
         ImGuiID leftDockID = 0, rightDockID = 0, rightBottomDockID = 0;
 
-        // Outer split: 70% material graph on the left, 30% inspector column on the right.
         ImGui::DockBuilderSplitNode(InDockspaceID, ImGuiDir_Right, 0.3f, &rightDockID, &leftDockID);
-
-        // Right column: top viewport, bottom inspector (Stats + Properties tabbed).
         ImGui::DockBuilderSplitNode(rightDockID, ImGuiDir_Down, 0.3f, &rightBottomDockID, &rightDockID);
 
         ImGui::DockBuilderDockWindow(GetToolWindowName(MaterialGraphName).c_str(),       leftDockID);

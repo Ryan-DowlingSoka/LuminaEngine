@@ -10,9 +10,6 @@ namespace Lumina
 {
     RUNTIME_API FWorldManager* GWorldManager = nullptr;
 
-    // Seconds a world may stay hidden before its render scene is reclaimed. Big
-    // enough that tab flicking / brief PIE never crosses it; small enough that a
-    // genuinely idle background world doesn't sit on ~hundreds of MB of GPU memory.
     static TConsoleVar<float> CVarIdleReclaimSeconds("Editor.RenderScene.IdleReclaimSeconds", 3.0f,
         "Seconds a hidden world's render scene is kept resident before being freed.");
 
@@ -57,9 +54,7 @@ namespace Lumina
 
         const double Grace = (double)CVarIdleReclaimSeconds.GetValue();
 
-        // Reclaim at most one world per frame: DestroyRenderer does a full GPU
-        // WaitIdle, so freeing a batch of just-suspended worlds in one frame would
-        // stall hard. Spreading them keeps any single frame to one stall.
+        // One reclaim per frame: DestroyRenderer calls WaitIdle; batching stalls hard.
         for (const TUniquePtr<FWorldContext>& Context : Contexts)
         {
             CWorld* World = Context->World.Get();
@@ -195,8 +190,7 @@ namespace Lumina
             return;
         }
 
-        // RenderWorlds iterates Contexts on the render thread. Flush before any
-        // mutation of the vector or destruction of the world it points at.
+        // Flush before mutating Contexts: render thread iterates it.
         FlushRenderingCommands();
 
         for (size_t i = 0; i < Contexts.size(); ++i)

@@ -21,9 +21,7 @@ namespace Lumina
 
     void FCommandListValidator::Close()
     {
-        // Unbalanced markers leak onto the queue debug-label stack at submit and are
-        // never popped, slowly inflating FQueue::Submit. Catch it at the offending
-        // recording instead of weeks later as an unexplained render-thread creep.
+        // Unbalanced markers inflate FQueue::Submit label stack silently; catch at recording site.
         ASSERT(MarkerDepth == 0, "Command list closed with {} unclosed marker/profiler scope(s) -- every AddMarker/BeginProfilerZone needs a matching PopMarker/EndProfilerZone (prefer GPU_PROFILE_SCOPE).", MarkerDepth);
         Inner->Close();
     }

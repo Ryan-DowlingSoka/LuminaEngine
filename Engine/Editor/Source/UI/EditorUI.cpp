@@ -161,16 +161,10 @@ namespace Lumina
         ImGui::SetCurrentContext(Context);
         ImPlot::SetCurrentContext(PlotContext);
 
-        // The Editor links its own copy of ImGui (separate allocator globals). Route it through
-        // our allocator here -- alongside binding the shared context -- so font/draw buffers
-        // allocated by Runtime and grown here (ImFontBaked_BuildGrowIndex) stay on one heap.
-        // FEditorModule::StartupModule is NOT viable: the editor is linked by the exe, not
-        // LoadModule'd, so its StartupModule never runs.
+        // Editor links its own ImGui copy; install allocator here because StartupModule never runs (editor links directly, not LoadModule'd).
         ImGuiX::InstallImGuiAllocator();
 
-        // Force ThumbnailManager init before any world load so engine primitive
-        // meshes (Cube/Sphere/etc.) are already in the transient package and
-        // resolvable when a saved world's mesh imports are deserialized.
+        // Init ThumbnailManager before world load so engine primitive meshes are in the transient package before deserialization.
         (void)CThumbnailManager::Get();
 
         PropertyCustomizationRegistry = Memory::New<FPropertyCustomizationRegistry>();
@@ -420,12 +414,6 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        // Auto-open + focus the script editor whenever the debugger pauses
-        // at a new source. Reacting to source changes (rather than just the
-        // running→paused transition) means a Step Into that crosses into a
-        // different file follows the user with a tab switch. The inline
-        // debugger panel lives inside FLuaEditorTool, so opening the file
-        // is enough to get the toolbar, call stack, and locals on screen.
         Lua::FLuaDebugger& Debugger = Lua::FLuaDebugger::Get();
         if (Debugger.IsPaused())
         {
@@ -433,15 +421,10 @@ namespace Lumina
             const FStringView Last(LuaDebuggerLastOpenedSource.c_str(), LuaDebuggerLastOpenedSource.size());
             if (!Source.empty() && Source != Last)
             {
-                // OpenFileEditor — not OpenScriptEditor — routes .lua to the
-                // in-engine FLuaEditorTool. OpenScriptEditor calls LaunchURL
-                // and would shell out to VS Code instead.
+                // OpenFileEditor (not OpenScriptEditor) routes .lua in-engine; OpenScriptEditor shells to VS Code.
                 OpenFileEditor(Source);
 
-                // Drive a real tab switch via the FocusTargetWindowName
-                // pipeline that runs in OnStartFrame. Plain ImGui::SetWindowFocus
-                // doesn't always raise a docked tab to the foreground, but the
-                // pipeline explicitly sets DockNode->TabBar->NextSelectedTabId.
+                // Use FocusTargetWindowName pipeline (runs in OnStartFrame); plain SetWindowFocus doesn't reliably raise docked tabs.
                 FString Key(Source.data(), Source.size());
                 auto Itr = ActiveFileTools.find(Key);
                 if (Itr != ActiveFileTools.end())
@@ -780,11 +763,8 @@ namespace Lumina
         ImGui::SetNextWindowSizeConstraints(ImVec2(128, 128), ImVec2(FLT_MAX, FLT_MAX));
         ImGui::SetNextWindowSize(ImVec2(1024, 768), ImGuiCond_FirstUseEver);
 
-        // Undock detection: when a tool tears off a dock node it inherits the node's
-        // bounds, which is often a tall sliver or a wide stripe. Reset to a sensible
-        // floating size + center on the main viewport for one frame.
-        // CurrDockID still holds last frame's value at this point; CurrentWindow->DockId
-        // is what ImGui has assigned for the upcoming frame.
+        // On undock, inherit bounds are often a sliver; reset to a sensible floating size for one frame.
+        // CurrDockID is last frame's value; CurrentWindow->DockId is the upcoming frame's assignment.
         const ImGuiID PrevFrameDockID = EditorTool->CurrDockID;
         const ImGuiID NextFrameDockID = CurrentWindow ? CurrentWindow->DockId : 0;
         if (PrevFrameDockID != 0 && NextFrameDockID == 0 && CurrentWindow != nullptr)
@@ -1012,9 +992,7 @@ namespace Lumina
 
                     if (Tool->IsViewportFullscreen())
                     {
-                        // Begin/End the docked viewport empty so its dock-node slot stays
-                        // alive — letting the window snap back into place when we exit
-                        // fullscreen instead of orphaning at the last fullscreen rect.
+                        // Begin/End empty to keep the dock-node slot alive for when fullscreen exits.
                         ImGui::SetNextWindowClass(&Tool->ToolWindowsClass);
                         ImGui::SetNextWindowSizeConstraints(ImVec2(128, 128), ImVec2(FLT_MAX, FLT_MAX));
                         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));

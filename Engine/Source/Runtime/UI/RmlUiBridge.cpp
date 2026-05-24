@@ -56,16 +56,9 @@ extern "C" void LuminaRmlFreeTypeFree(void* Block)
 
 namespace Lumina::RmlUi
 {
-    // Caps how many world-space widgets re-rasterize their RT in a single frame. Unchanged widgets
-    // are skipped for free (their RT persists); this only bounds the spike when many change at once
-    // (mass hot-reload, lots of animated HUDs). Skipped widgets keep last frame's RT and are retried
-    // next frame -- a rotating cursor keeps it fair.
     static TConsoleVar<int32> CVarWidgetMaxRendersPerFrame("UI.Widget.MaxRendersPerFrame", 8,
         "Max world-space widget RT rasterizations per frame; the rest reuse last frame's RT.");
 
-    // After this many consecutive frames with an unchanged rasterized result, a widget stops being
-    // ticked (no Context::Update / Context::Render) until it's reloaded, resized, or a future input/
-    // data path wakes it. An animation keeps the result changing, so it never settles. 0 disables.
     static TConsoleVar<int32> CVarWidgetDormancyFrames("UI.Widget.DormancyFrames", 4,
         "Frames of unchanged output before a world-space widget stops ticking; 0 = always tick.");
 
@@ -106,12 +99,7 @@ namespace Lumina::RmlUi
                 return true;
             }
 
-            // Resolve <link>/template/src paths against the engine VFS. The base
-            // implementation strips the leading '/' from absolute paths (treating
-            // them as relative to a working dir), which breaks our virtual paths.
-            // Keep absolute mount paths verbatim so `/Game/...`, `/Engine/...`, and
-            // future `/MyPlugin/...` resolve the same whether referenced absolutely
-            // or relatively -- important for plugin portability.
+            // Absolute virtual paths must pass through verbatim; base impl strips leading '/'.
             void JoinPath(Rml::String& OutPath, const Rml::String& DocumentPath, const Rml::String& Path) override
             {
                 // Absolute virtual path -> use as-is.
@@ -198,22 +186,15 @@ namespace Lumina::RmlUi
             // TickWorldUI. No watcher here -- the editor's central watcher owns disk watching.
             TAtomic<bool>                       bUIReloadPending{false};
 
-            // World whose context the `UI.*` Lua module targets; the worlds themselves
-            // own their FWorldUIContext (on CWorld). Null when no world is active.
             CWorld*                             ActiveWorld = nullptr;
 
             Rml::Context*                       DebuggerHost = nullptr;
             bool                                bDebuggerVisible = false;
             bool                                bInitialized = false;
 
-            // Rotating start offset into a world's WidgetJobs so the per-frame rasterization budget
-            // doesn't always starve the same widgets when more change than the budget allows.
             uint32                              WidgetRenderCursor = 0;
 
-            // Guards EditorContexts/ActiveWorld/Debugger* + serializes Rml::Context DOM
-            // mutations (TickWorldUI/Update on game thread) against DOM traversal
-            // (RenderWorldUI on render thread). Recursive because Update may fire event
-            // callbacks that re-enter public bridge API on the same thread.
+            // Recursive: Update may fire event callbacks that re-enter the bridge on the same thread.
             FRecursiveMutex                     StateMutex;
         };
 
@@ -296,8 +277,6 @@ namespace Lumina::RmlUi
             return { Img, glm::uvec2(Img->GetSizeX(), Img->GetSizeY()) };
         }
 
-        // Modified-time of a widget's .rml on disk (0 if unresolvable, e.g. inside a .pak).
-        // Drives editor hot-reload; in packaged builds it just returns 0 and reload is skipped.
         int64 GetDocumentWriteTime(const FString& VirtualPath)
         {
             if (VirtualPath.empty())
@@ -314,8 +293,6 @@ namespace Lumina::RmlUi
             return Ec ? 0 : (int64)Time.time_since_epoch().count();
         }
 
-        // Tear down a widget's context + RT. Skips Rml when the backend is already down
-        // (Rml::Shutdown destroyed every context), matching DestroyWorldUI.
         void DestroyWidgetRuntime(FWidgetRuntime& E)
         {
             if (E.Context != nullptr)
@@ -338,8 +315,6 @@ namespace Lumina::RmlUi
             E.LoadedPath.clear();
         }
 
-        // Build a fresh context + offscreen RGBA8 RT for a widget at the given resolution.
-        // The RT's bindless ResourceID is assigned synchronously by CreateImage.
         void EnsureWidgetResources(FWidgetRuntime& E, CWorld* World, entt::entity Entity, uint32 Width, uint32 Height)
         {
             DestroyWidgetRuntime(E);
@@ -372,10 +347,6 @@ namespace Lumina::RmlUi
             E.BuiltSize  = glm::uvec2(Width, Height);
         }
 
-        // Editor hot-reload: when a .rml/.rcss is saved (flag raised by the directory watchers),
-        // restyle EVERY live Rml document -- world UI, world-space widgets, and editor previews
-        // alike. Stylesheet reload re-reads the .rcss from disk (cache cleared first) and keeps
-        // the existing DOM, so Lua element references survive. Game thread, under StateMutex.
         void ProcessPendingUIReload()
         {
             FState& State = S();
@@ -407,9 +378,6 @@ namespace Lumina::RmlUi
             LOG_INFO("[RmlUi] UI hot-reload: restyled all documents across {} context(s).", NumContexts);
         }
 
-        // Subscriber for FCoreDelegates::OnContentFileModified (any thread): raise the reload
-        // flag when a UI source file changes. Path-extension filter; reload itself is deferred
-        // to the game thread (ProcessPendingUIReload). Captures nothing -- safe for process life.
         void OnContentFileModified(FStringView VirtualPath)
         {
             auto EndsWith = [&](FStringView Suffix)
@@ -483,9 +451,6 @@ namespace Lumina::RmlUi
 
         State.bInitialized = true;
 
-        // Editor hot-reload: react to content-file changes broadcast by the editor's central
-        // file watcher (works for plugin mounts too -- we don't watch any path ourselves).
-        // Subscribe once for process life; the handler only touches static state.
         (void)FCoreDelegates::OnContentFileModified.AddStatic(&OnContentFileModified);
 
         LOG_INFO("[RmlUi] Initialized. Per-world contexts are owned by their CWorld.");
@@ -606,9 +571,6 @@ namespace Lumina::RmlUi
             {
                 Rml::Debugger::Shutdown();
                 State.DebuggerHost = nullptr;
-                // Tearing down the host (e.g. ending PIE) turns the debugger off
-                // rather than letting it migrate -- still visible -- onto the
-                // editor's context the next time a world becomes active.
                 State.bDebuggerVisible = false;
             }
             // RmlUi tears down first (calls listener OnDetach), then we drop wrappers.
@@ -673,9 +635,6 @@ namespace Lumina::RmlUi
     void RenderWorldUI(const CWorld* World, ICommandList& CmdList)
     {
         FState& State = S();
-        // Render thread holds the lock for the DOM walk. Game-thread mutators
-        // (TickWorldUI, DestroyWorldUI) block until this completes, so the
-        // Context* is stable for the duration of the render.
         FRecursiveScopeLock Lock(State.StateMutex);
         if (!State.bInitialized || State.Renderer == nullptr || World == nullptr)
         {
@@ -713,8 +672,6 @@ namespace Lumina::RmlUi
             return;
         }
 
-        // Render-job snapshot for the render thread; rebuilt every frame so RenderWorldWidgets
-        // never has to walk the live registry.
         UI->WidgetJobs.clear();
 
         FEntityRegistry& Registry = World->GetEntityRegistry();
@@ -722,9 +679,6 @@ namespace Lumina::RmlUi
         {
             FWidgetRuntime& R = Comp.Runtime;
 
-            // Culled by the render gather last frame (frustum): skip layout + rasterization entirely
-            // and keep the last RT. A never-built widget (Context null) still falls through so it can
-            // build once and appear the first time it enters view.
             if (!R.bVisible && R.Context != nullptr)
             {
                 return;
@@ -733,8 +687,6 @@ namespace Lumina::RmlUi
             const uint32 Width  = (uint32)glm::max(1, Comp.DrawWidth);
             const uint32 Height = (uint32)glm::max(1, Comp.DrawHeight);
 
-            // (Re)create context + RT on first sight or resolution change. Also clears
-            // LoadedPath, forcing the document to reload into the fresh context below.
             if (R.Context == nullptr || R.BuiltSize != glm::uvec2(Width, Height))
             {
                 EnsureWidgetResources(R, World, Entity, Width, Height);
@@ -744,8 +696,6 @@ namespace Lumina::RmlUi
                 return;
             }
 
-            // (Re)load when the path changes OR the .rml is edited on disk (editor hot-reload).
-            // The on-disk check only fires once a document is loaded.
             const int64 CurrentWriteTime = GetDocumentWriteTime(Comp.DocumentPath);
             const bool  bPathChanged     = (R.LoadedPath != Comp.DocumentPath);
             const bool  bFileChanged     = (R.Document != nullptr && CurrentWriteTime != 0 && CurrentWriteTime != R.DocWriteTime);
@@ -837,9 +787,6 @@ namespace Lumina::RmlUi
                 continue;
             }
 
-            // Lay the document into the renderer's draw list (cheap CPU walk), then check whether it
-            // matches what's already rasterized into this RT. If so, skip the clear + GPU pass
-            // entirely -- the persistent RT keeps the previous result.
             State.Renderer->BeginFrame(CmdList, Job.Target, Job.Size);
             Job.Context->Render();
             const uint64 Hash = State.Renderer->PeekFrameHash();
@@ -851,8 +798,6 @@ namespace Lumina::RmlUi
                 continue;
             }
 
-            // Changed (or first sight). Defer past the per-frame budget; it stays "dirty" (hash
-            // still differs) so the rotating cursor picks it up on a later frame.
             if (Budget > 0 && Rendered >= Budget)
             {
                 State.Renderer->AbortFrame();
@@ -860,8 +805,7 @@ namespace Lumina::RmlUi
                 continue;
             }
 
-            // Hold the RT for this frame's GPU work: we record clear/render commands against it
-            // here, and the entity (and its Runtime.Target) can be destroyed before the GPU runs.
+            // Entity (and its Runtime.Target) can be destroyed before the GPU runs; keep it alive.
             CmdList.KeepAlive(Job.Target);
 
             // Renderer composites with LoadOp=Load, so clear the RT to transparent first.

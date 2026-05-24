@@ -180,9 +180,7 @@ namespace Lumina
                 TargetDesc.profile = SLangGlobalSession->findProfile("spirv_1_5");
                 TargetDesc.flags   = SLANG_TARGET_FLAG_GENERATE_SPIRV_DIRECTLY | SLANG_TARGET_FLAG_GENERATE_WHOLE_PROGRAM;
 
-                // MINIMAL keeps OpLine source mapping for Nsight/Aftermath; STANDARD emits
-                // NonSemantic.Shader.DebugInfo.100 with DebugFunctionDefinition outside the
-                // entry block, which AMDVLK's spirv-val rejects and crashes pipeline create.
+                // STANDARD crashes AMDVLK pipeline create (DebugFunctionDefinition outside entry block); keep MINIMAL.
                 slang::CompilerOptionEntry TargetOptions[1] = {};
                 TargetOptions[0].name = slang::CompilerOptionName::DebugInformation;
                 TargetOptions[0].value.kind = slang::CompilerOptionValueKind::Int;

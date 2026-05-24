@@ -190,11 +190,7 @@ namespace Lumina::Platform
         TVector<wchar_t> CmdBuffer(CmdLine.begin(), CmdLine.end());
         CmdBuffer.push_back(L'\0');
 
-        // Pipe for child stdout+stderr. Only the read end stays in the parent;
-        // the write end is inheritable so the child can use it as both
-        // stdout and stderr. Stderr-into-stdout means MSBuild diagnostics
-        // appear inline with regular log output, which is what we want for
-        // a build log.
+        // Write end is inheritable for both stdout+stderr; stderr merged inline for build log.
         SECURITY_ATTRIBUTES sa{};
         sa.nLength = sizeof(sa);
         sa.bInheritHandle = TRUE;
@@ -234,9 +230,7 @@ namespace Lumina::Platform
             &si,
             &pi);
 
-        // Drop our copy of the write end immediately — only the child should
-        // hold it open. Without this, ReadFile below blocks forever after the
-        // child exits because the OS still sees a writer.
+        // Release parent's write end; without this ReadFile blocks forever after child exits.
         CloseHandle(WriteEnd);
 
         if (!ok)
@@ -245,9 +239,6 @@ namespace Lumina::Platform
             return -1;
         }
 
-        // Stream the pipe one chunk at a time, splitting on '\n' and emitting
-        // each complete line through the callback. Carries any partial trailing
-        // line across reads.
         FString Pending;
         char ReadBuf[4096];
         DWORD BytesRead = 0;
@@ -326,9 +317,7 @@ namespace Lumina::Platform
         si.cb = sizeof(si);
         PROCESS_INFORMATION pi{};
 
-        // CREATE_NEW_CONSOLE keeps the child's stdout out of our window so
-        // it doesn't garble the editor; the user can watch the spawned
-        // console for build progress.
+        // CREATE_NEW_CONSOLE keeps child stdout out of the editor window; visible in spawned console.
         const DWORD CreationFlags = CREATE_NEW_CONSOLE;
 
         BOOL ok = CreateProcessW(

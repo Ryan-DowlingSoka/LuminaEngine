@@ -5,6 +5,7 @@
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "world/entity/components/environmentcomponent.h"
+#include "World/Entity/Components/SkyLightComponent.h"
 #include "World/Entity/Components/LightComponent.h"
 #include "world/entity/components/skeletalmeshcomponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
@@ -153,6 +154,7 @@ namespace Lumina
         DirectionalLightEntity = World->ConstructEntity("Directional Light");
         World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
         World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
+        World->GetEntityRegistry().emplace<SSkyLightComponent>(DirectionalLightEntity);
         
         CSkeleton* Skeleton = GetAsset<CSkeleton>();
         

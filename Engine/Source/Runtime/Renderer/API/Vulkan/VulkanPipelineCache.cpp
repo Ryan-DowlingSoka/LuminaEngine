@@ -8,10 +8,7 @@
 
 namespace Lumina
 {
-    // Zero out the desc fields that are supplied dynamically at draw time so descs that
-    // differ only in those fields produce one shared VkPipeline. Must stay in lockstep
-    // with the dynamic states declared in CreateGraphicsVkPipeline / applied in
-    // SetGraphicsState, and with FVulkanRenderContext::GetDynamicPipelineStates().
+    // Zero dynamic-state fields so descs differing only in them map to one shared VkPipeline.
     static void CanonicalizeForDynamicState(FGraphicsPipelineDesc& Desc, const FDynamicPipelineStates& Dyn)
     {
         FRasterState&       Raster = Desc.RenderState.RasterState;
@@ -47,11 +44,6 @@ namespace Lumina
         }
     }
 
-    // Pipeline compatibility (Vulkan dynamic rendering) depends only on attachment
-    // formats, sample count and view mask -- NOT the actual images, load/store ops,
-    // clear color or render area. Keying the cache on the full render pass desc minted
-    // a fresh pipeline set per scene (new RTs => new image pointers), so the global
-    // cache grew without bound. Mirror exactly the inputs vkCreateGraphicsPipelines reads.
     static EFormat ResolveAttachmentFormat(const FRenderPassDesc::FAttachment& Attachment)
     {
         return Attachment.Format == EFormat::UNKNOWN
@@ -131,9 +123,7 @@ namespace Lumina
 
     void FVulkanPipelineCache::DestroyOrphanedSharedPipelines()
     {
-        // A shared VkPipeline is still needed iff some surviving RHI pipeline object points
-        // at its canonical hash. Canonical hash includes the shaders, so any pipeline sharing
-        // it has the same (recompiled) shaders and was erased alongside -- no dangling refs.
+        // A shared VkPipeline is live iff any RHI pipeline references its canonical hash.
         for (auto it = SharedGraphicsPipelines.begin(); it != SharedGraphicsPipelines.end(); )
         {
             bool bReferenced = false;

@@ -25,6 +25,7 @@
 #include "World/Entity/Components/EditorComponent.h"
 #include "World/Entity/Components/EntityTags.h"
 #include "World/Entity/Components/EnvironmentComponent.h"
+#include "World/Entity/Components/SkyLightComponent.h"
 #include "World/Entity/Components/LightComponent.h"
 #include "World/Entity/Components/NameComponent.h"
 #include "World/Entity/Components/RelationshipComponent.h"
@@ -311,6 +312,7 @@ namespace Lumina
         World->GetEntityRegistry().emplace<FHideInSceneOutliner>(DirectionalLightEntity);
         World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
         World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
+        World->GetEntityRegistry().emplace<SSkyLightComponent>(DirectionalLightEntity);
 
         // Pitch the preview light so meshes don't render with a flat-top look.
         if (STransformComponent* LightTransform = World->GetEntityRegistry().try_get<STransformComponent>(DirectionalLightEntity))
@@ -793,10 +795,6 @@ namespace Lumina
         Asset->GetPackage()->MarkDirty();
     }
 
-    //
-    // Selection — multi-select mirroring the world editor.
-    //
-
     void FPrefabEditorTool::SetSingleSelectedEntity(entt::entity Entity)
     {
         if (World == nullptr)
@@ -966,10 +964,6 @@ namespace Lumina
         EditorTransform.SetLocation(Center - Forward * Distance);
         EditorTransform.SetRotation(Math::FindLookAtRotation(Center, Center - Forward * Distance));
     }
-
-    //
-    // Outliner helpers.
-    //
 
     void FPrefabEditorTool::DrawAddEntityButton()
     {

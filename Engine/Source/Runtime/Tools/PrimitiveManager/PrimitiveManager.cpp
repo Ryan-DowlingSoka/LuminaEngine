@@ -14,9 +14,7 @@ namespace Lumina
 
     void CPrimitiveManager::Initialize()
     {
-        // Engine primitive meshes live in the in-memory transient package with
-        // stable, deterministic GUIDs so worlds can reference them and survive
-        // a save/load cycle without needing a .lasset on disk.
+        // Transient package with stable GUIDs so worlds reference them across save/load without disk files.
         CPackage* TransientPackage = CPackage::GetTransientPackage();
 
         auto BuildPrimitive = [TransientPackage](TObjectPtr<CStaticMesh>& OutMesh,

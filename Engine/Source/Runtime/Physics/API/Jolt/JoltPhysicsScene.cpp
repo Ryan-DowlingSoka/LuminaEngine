@@ -168,9 +168,7 @@ namespace Lumina::Physics
 
     namespace
     {
-        // Contact callbacks run with all bodies locked. Pull the manifold's
-        // average contact point + normal and the bodies' pre-step linear
-        // velocities so the game-thread dispatch is purely table-building.
+        // Contact callbacks run with all bodies locked; velocities are pre-step.
         FContactRecord BuildContactRecord(EContactEventType Type,
                                           const JPH::Body& InBody1,
                                           const JPH::Body& InBody2,
@@ -220,9 +218,7 @@ namespace Lumina::Physics
 
     void FJoltContactListener::OnContactPersisted(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings)
     {
-        // Persisted contacts are intentionally not surfaced to scripts -- they fire
-        // every step and would drown the bus. Enter/Exit cover the script use case;
-        // C++ systems that want continuous contacts can read the bodies directly.
+        // Persisted contacts fire every step and would drown the bus; Enter/Exit cover the script use case.
     }
 
     void FJoltContactListener::OnContactRemoved(const JPH::SubShapeIDPair& inSubShapePair)
@@ -232,9 +228,7 @@ namespace Lumina::Physics
             return;
         }
 
-        // Bodies may have been removed by the time this fires; resolve via the
-        // no-lock interface, populate just what we can, and skip if either side
-        // is already gone.
+        // Bodies may have been removed by the time this fires; skip if either side is already gone.
         const JPH::Body* B1 = BodyLockInterface->TryGetBody(inSubShapePair.GetBody1ID());
         const JPH::Body* B2 = BodyLockInterface->TryGetBody(inSubShapePair.GetBody2ID());
         if (B1 == nullptr || B2 == nullptr)
@@ -242,9 +236,7 @@ namespace Lumina::Physics
             return;
         }
 
-        // OnContactRemoved fires in a phase where Jolt does not grant velocity
-        // read access to this thread; GetLinearVelocity hits a BodyAccess
-        // assert (UB in release). Only non-velocity fields are safe here.
+        // OnContactRemoved: Jolt denies velocity read access here; GetLinearVelocity asserts (UB in release).
         FContactRecord Record;
         Record.Type      = EContactEventType::Removed;
         Record.EntityA   = static_cast<entt::entity>(B1->GetUserData());
@@ -270,10 +262,7 @@ namespace Lumina::Physics
 
     namespace
     {
-        // Build the per-listener payload table. Each side gets its own payload so
-        // self/other are correctly oriented. The Body* fields are 0xFFFFFFFF (Jolt
-        // invalid id) when the body has already been destroyed by the time the
-        // event drains -- scripts should treat them as informational.
+        // Each side gets its own payload so self/other are correctly oriented.
         Lua::FRef BuildCollisionPayload(lua_State* L,
                                         bool bIsTriggerSide,
                                         entt::entity SelfEntity,
@@ -589,10 +578,7 @@ namespace Lumina::Physics
     {
         LUMINA_PROFILE_SCOPE();
         
-        // Drain pending body creations on the physics thread, BEFORE the step.
-        // on_construct hands entities to this queue (game thread); we build + add the
-        // Jolt body here where it's safe. CreateRigidBodyImmediate may re-enqueue if
-        // the entity is still waiting on a shape/transform, so release the lock per pop.
+        // Drain pending body creations before the step; release lock per pop so re-enqueue is safe.
         for (;;)
         {
             entt::entity Entity;
@@ -686,8 +672,6 @@ namespace Lumina::Physics
             
             for (uint32 Step = 0; Step < CollisionSteps; ++Step)
             {
-                // Prev = state one fixed step behind the final state. Pairs with the
-                // Accumulator/FixedTimestep alpha below for smooth sub-frame interpolation.
                 if (Step == CollisionSteps - 1)
                 {
                     SnapshotBodyStates();
@@ -1535,8 +1519,7 @@ namespace Lumina::Physics
             return nullptr;
         }
 
-        // Jolt rounds mSampleCount UP to the next multiple of mBlockSize, so we must
-        // size the sample buffer to the rounded count to avoid out-of-bounds reads.
+        // Jolt rounds mSampleCount up to mBlockSize multiples; buffer must match or Jolt reads OOB.
         constexpr uint32 BlockSize = 2;
         const uint32 SampleCount   = ((uint32(Res) + BlockSize - 1) / BlockSize) * BlockSize;
         const float   Stride       = Terrain.TileWorldSize / float(Res - 1);
@@ -1584,9 +1567,6 @@ namespace Lumina::Physics
         Error,          // Shape build failed and was logged; do not retry.
     };
 
-    // Output of the (thread-safe) shape-build phase. The body is created on
-    // the main thread from this; LastBodyPosition/Rotation seed interpolation
-    // so the first frame blends instead of snapping from an uninitialized quat.
     struct FRigidBodyBuildResult
     {
         JPH::BodyCreationSettings   Settings;
@@ -1594,11 +1574,7 @@ namespace Lumina::Physics
         glm::quat                   LastBodyRotation = glm::identity<glm::quat>();
     };
 
-    // Pure CPU shape-build + settings assembly. Reads only the registry,
-    // collider components, transforms, and loaded mesh/terrain assets — no
-    // Jolt PhysicsSystem state, no global mutation — so callers may invoke
-    // this from multiple worker threads in parallel as long as the registry
-    // is not being mutated.
+    // Thread-safe: reads only registry + loaded assets; no PhysicsSystem mutation.
     static EBodyBuildStatus TryBuildRigidBodyCreationSettings(FJoltPhysicsScene* Scene, entt::registry& Registry, entt::entity Entity, FRigidBodyBuildResult& Out)
     {
         LUMINA_PROFILE_SCOPE();
@@ -1718,10 +1694,7 @@ namespace Lumina::Physics
         glm::quat Rotation      = TransformComponent->GetRotation();
         glm::vec3 Position      = TransformComponent->GetLocation();
 
-        // Only wrap in a RotatedTranslatedShape when there's an actual offset. The
-        // wrapper is a per-body allocation and adds a transform indirection to every
-        // collision query, so skipping it lets unoffset bodies share the bare cached
-        // shape (the common case for piles of identical primitives).
+        // Skip the wrapper when there's no offset; unoffset bodies can share the bare cached shape.
         const bool bHasColliderOffset = glm::length2(ColliderTranslationOffset) > LE_SMALL_NUMBER
                                      || glm::length2(ColliderRotationOffset)    > LE_SMALL_NUMBER;
         if (bHasColliderOffset)
@@ -1788,12 +1761,7 @@ namespace Lumina::Physics
     {
         LUMINA_PROFILE_SCOPE();
 
-        // Jolt forbids BodyInterface::CreateBody/AddBody during a step. If we're on the
-        // physics thread the step may be in flight, so defer to the drain at the top of
-        // Update. On the game thread the worker is provably idle (physics is kicked last
-        // in FrameEnd and joined first in FrameStart), so build the body now -- that way
-        // the BodyID is live for the same script call that spawned the entity.
-        // CreateRigidBodyImmediate re-queues if the shape/transform isn't ready yet.
+        // Jolt forbids CreateBody/AddBody during a step; defer if on the physics thread.
         if (Threading::IsPhysicsThread())
         {
             FScopeLock Lock(PendingRigidBodyMutex);

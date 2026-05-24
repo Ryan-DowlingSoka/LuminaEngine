@@ -938,9 +938,7 @@ namespace Lumina
 
     void FWorldEditorTool::RegisterEditorModes()
     {
-        // Selection must be first so ActiveModeIndex=0 matches the pre-existing
-        // default. Append new viewport modes here; they show up in the mode bar
-        // in registration order.
+        // Selection must be first so ActiveModeIndex=0 matches the pre-existing default.
         EditorModes.clear();
         EditorModes.push_back(MakeUnique<FSelectionEditorMode>());
         EditorModes.push_back(MakeUnique<FTerrainEditMode>());
@@ -965,9 +963,7 @@ namespace Lumina
         NewIndex = glm::clamp(NewIndex, 0, (int32)EditorModes.size() - 1);
         if (NewIndex == ActiveModeIndex) return;
 
-        // Drop any half-drag gizmo state before yielding the viewport to a mode
-        // that won't see the mouse release. Without this, bImGuizmoUsedOnce sticks
-        // true and IsOver()'s gating blocks clicks indefinitely after switching back.
+        // Drop half-drag gizmo state before yielding: bImGuizmoUsedOnce sticks true otherwise and blocks clicks after switching back.
         if (bImGuizmoUsedOnce)
         {
             EndTransaction("Transform");
@@ -1111,9 +1107,7 @@ namespace Lumina
         {
             ImDrawList* DL = ImGui::GetWindowDrawList();
 
-            // The viewport image is drawn at the cursor BEFORE the caller insets it
-            // by ItemSpacing (see FEditorTool::DrawViewport), so back that out to land
-            // the outline exactly on the image rect.
+            // Back out ItemSpacing to land the outline exactly on the image rect.
             const ImVec2 Spacing = ImGui::GetStyle().ItemSpacing;
             const ImVec2 Cursor  = ImGui::GetCursorScreenPos();
             const ImVec2 Min(Cursor.x - Spacing.x, Cursor.y - Spacing.y);
@@ -1175,9 +1169,7 @@ namespace Lumina
         }
         NavMeshEditMode.DrawOverlay(World);
 
-        // Modes that own the viewport (terrain, future painting tools) get exclusive
-        // input — the host's click-to-select, drag-marquee, and transform gizmo are
-        // suppressed so brush strokes don't fight with selection clicks.
+        // Modes that own the viewport suppress selection, marquee, and gizmo input.
         const bool bModeOwnsInput = GetActiveMode() && GetActiveMode()->ConsumesViewportInput();
 
         auto SelectionView = World->GetEntityRegistry().view<FSelectedInEditorComponent, STransformComponent>();
@@ -1623,9 +1615,7 @@ namespace Lumina
                         entt::entity EntityHandle = World->GetRenderer()->GetEntityAtPixel(TexX, TexY);
                         EntityHandle = ResolveSelectionRootForViewportPick(World->GetEntityRegistry(), EntityHandle);
 
-                        // Sync selection to the right-clicked entity when the picker hits one. When the picker
-                        // misses (readback not ready, light icon / billboard, edge of silhouette, etc.) keep
-                        // the existing selection so the menu still has something to act on.
+                        // On a picker miss keep existing selection so the menu still has something to act on.
                         if (EntityHandle != entt::null && !IsEntitySelected(EntityHandle))
                         {
                             SetSingleSelectedEntity(EntityHandle);
@@ -2024,9 +2014,7 @@ namespace Lumina
         
                 DrawViewportOptions(ButtonSize);
 
-                // Mode-selector bar: one toggle button per registered viewport mode.
-                // Modes are mutually exclusive — switching here drives OnEnter/OnExit
-                // and clears any half-drag gizmo state via SetActiveMode.
+                // Mode-selector bar: mutually exclusive; switching drives OnEnter/OnExit.
                 ImGui::SameLine();
                 ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
                 ImGui::SameLine();
@@ -2668,9 +2656,7 @@ namespace Lumina
             if (Prefab == nullptr) { ErrorMessage = "Failed to create prefab object."; return false; }
             Prefab->SetFlag(OF_Public);
 
-            // Single-root: capture directly. Multi-root: build a scratch parent at the pivot, reparent the
-            // top-level entities under it (preserving world transforms via ReparentEntity), then capture and
-            // restore. ReparentEntity is world-preserving in both directions, so the world ends up unchanged.
+            // Multi-root: build scratch parent at pivot, reparent top-level entities under it (ReparentEntity is world-preserving), then capture and restore.
             entt::entity CaptureRoot = entt::null;
             entt::entity ScratchRoot = entt::null;
             TVector<entt::entity> OriginalParents;
@@ -2768,10 +2754,7 @@ namespace Lumina
             return;
         }
 
-        // Drive the same modal as the viewport selection path, but force a single-root request so children
-        // get pulled in via descendant walk (no synthetic root needed). Reuse SelectionModal by stashing
-        // the override into SelectedEntities-equivalent state would be invasive; instead replicate the few
-        // lines of setup and call PushCreatePrefabFromSelectionModal indirectly by faking the selection.
+        // Fake single-entity selection to reuse PushCreatePrefabFromSelectionModal without a more invasive hook.
         const THashSet<entt::entity> SavedSelection = SelectedEntities;
         SelectedEntities.clear();
         SelectedEntities.insert(Entity);
@@ -3833,9 +3816,7 @@ namespace Lumina
             DetailsEntity = entt::null;
             bDetailsDirty = true;
 
-            // Clear selection tags on the editor world before stashing it. Otherwise they
-            // linger on ProxyWorld and the outliner rebuild on PIE-exit re-marks those rows
-            // selected from leftover tags while the SelectedEntities cache is empty.
+            // Clear selection tags before stashing: leftover tags on ProxyWorld confuse the outliner rebuild on PIE-exit.
             World->GetEntityRegistry().clear<FSelectedInEditorComponent>();
             World->GetEntityRegistry().clear<FLastSelectedTag>();
 
@@ -3922,9 +3903,7 @@ namespace Lumina
             bDetailsDirty = true;
             bSimulatingWorld = true;
 
-            // Clear selection tags on the editor world before stashing it. Otherwise they
-            // linger on ProxyWorld and the outliner rebuild on Simulate-exit re-marks those rows
-            // selected from leftover tags while the SelectedEntities cache is empty.
+            // Clear selection tags before stashing: leftover tags on ProxyWorld confuse the outliner rebuild on Simulate-exit.
             World->GetEntityRegistry().clear<FSelectedInEditorComponent>();
             World->GetEntityRegistry().clear<FLastSelectedTag>();
 

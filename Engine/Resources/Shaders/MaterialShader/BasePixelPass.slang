@@ -722,7 +722,7 @@ PSOutput FragmentMain(PSInput Input)
     // it with the BRDF integration LUT. Metals get colored reflections of
     // the sky (F0 = Albedo) instead of going black in shadowed regions.
     // GetAmbientLightIntensity() now scales the entire IBL ambient so the
-    // existing Environment.AmbientIntensity slider still drives sky strength.
+    // SkyLight's Intensity slider still drives sky strength.
     float3 IBLAmbient = EvaluateIBLAmbient(N, V, Albedo, F0, Roughness, Metallic);
     float3 Ambient    = IBLAmbient * GetAmbientLightIntensity() * AO;
     float3 Color      = Ambient + Lo + Material.Emissive;

@@ -51,9 +51,7 @@ namespace Lumina
             Wait();
         }
 
-        // FNodes are placement-constructed in the block allocator, which frees its raw
-        // blocks without running destructors. Destroy each node explicitly so its Deps
-        // (enki::Dependency teardown) and captured-function storage run.
+        // Block allocator skips destructors; run them explicitly for Deps + captured-function teardown.
         for (FNode* Node : Nodes)
         {
             Node->~FNode();

@@ -9,9 +9,6 @@ namespace Lumina::RHI
 {
     namespace
     {
-        // Single mutable image binding (sampled or storage at any slot) plus a
-        // separate sampler array. See SceneGlobals.slang for the matching shader
-        // declarations.
         constexpr uint32 ImageBinding   = 0;
         constexpr uint32 SamplerBinding = 1;
 
@@ -77,9 +74,7 @@ namespace Lumina::RHI
 
         FWriteScopeLock Lock(Mutex);
 
-        // The all-mips SRV. Mutable bindings hold one descriptor type per element,
-        // but distinct array indices can hold different types — so per-mip UAVs
-        // sit at their own slots and don't clobber this one.
+        // All-mips SRV; per-mip UAVs use distinct array indices and don't clobber this slot.
         FBindingSetItem SRVItem = FBindingSetItem::TextureSRV(ImageBinding, InTexture);
         const int64 Index = DescriptorTableManager.CreateDescriptor(SRVItem);
         InTexture->SetResourceID(static_cast<int32>(Index));

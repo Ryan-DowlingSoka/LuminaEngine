@@ -39,9 +39,8 @@ namespace Lumina
             "Increase atlas size if utilization regularly hits 100%.");
     }
 
-    // Warmer hue for bigger tiles: blue (small) -> red (big). Keeps the eye
-    // drawn to the expensive allocations which are exactly what you care
-    // about when debugging atlas pressure.
+    // Warmer hue for bigger tiles (blue->red) so expensive allocations stand out
+    // when debugging atlas pressure.
     static ImU32 ColorForSize(uint32 SizePixels, uint32 MinSize, uint32 MaxSize)
     {
         const float LogMin = std::log2((float)MinSize);

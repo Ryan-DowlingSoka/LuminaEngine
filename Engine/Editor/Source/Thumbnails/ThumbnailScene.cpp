@@ -83,10 +83,7 @@ namespace Lumina
         const glm::quat Rotation = Math::FindLookAtRotation(Target, Position);
         Transform.SetRotation(Rotation);
 
-        // Push the transform straight onto the camera. The world is never
-        // ticked, so CameraSystem doesn't run — we mirror its work here.
-        // Forward/Up are derived from Position→Target directly so we don't
-        // depend on the quat-to-axis convention matching SetView's contract.
+        // World is never ticked so CameraSystem doesn't run; set view directly here.
         SCameraComponent& Camera = World->GetEntityRegistry().get<SCameraComponent>(CameraEntity);
         Camera.SetFOV(FOVDegrees);
         Camera.SetAspectRatio(1.0f);

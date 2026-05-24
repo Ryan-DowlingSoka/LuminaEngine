@@ -42,9 +42,6 @@ namespace Lumina::TerrainMeshletBuilder
         const int32 QuadsPerChunk        = ChunkRes - 1;
         const int32 ChunksPerSide        = std::max(1, (Resolution - 1) / QuadsPerChunk);
         const int32 MeshletQuadSide      = GTerrainMeshletQuads;
-        // ceil-divide so a chunk size that doesn't evenly divide by the meshlet
-        // quad side still gets enough meshlets; the trailing meshlet's QuadExtent
-        // shrinks to cover only what's left.
         const int32 MeshletsPerChunkSide = (QuadsPerChunk + MeshletQuadSide - 1) / MeshletQuadSide;
         const int32 MeshletsPerChunk     = MeshletsPerChunkSide * MeshletsPerChunkSide;
         const int32 NumChunks            = ChunksPerSide * ChunksPerSide;
@@ -59,17 +56,8 @@ namespace Lumina::TerrainMeshletBuilder
         State.Chunks.resize(NumChunks);
         State.Meshlets.resize(NumMeshlets);
 
-        // Half-stride dilation absorbs any vertex shader sampling skew (the
-        // height texture is sampled at the integer grid, so all vertices are
-        // *on* the chunk edges, but a tiny dilation keeps the cull bound
-        // strictly conservative under FP error).
         const float BoundsDilateXZ = Stride * 0.5f;
-        // Y dilation is conservative: a tiny absolute floor plus ~1% of the
-        // height range. The texture sampler's float32 path is exact at integer
-        // texel centers, but the chunk-level bound walks meshlet vertex grids
-        // and rounding through the matrix transforms in the pixel/vertex
-        // pipeline can give Y values microscopically outside the CPU range,
-        // which manifests as occasional silhouette-edge culling.
+        // Y dilation: matrix rounding can produce Y values microscopically outside the CPU range -> silhouette culling.
         const float BoundsDilateY  = std::max(0.05f, MaxHeight * 0.01f);
 
         for (int32 cy = 0; cy < ChunksPerSide; ++cy)
@@ -98,16 +86,12 @@ namespace Lumina::TerrainMeshletBuilder
                         Meshlet.ChunkIndex            = (uint32)ChunkIndex;
                         Meshlet.ChunkLocalQuadOrigin  = glm::ivec2(mx * MeshletQuadSide, my * MeshletQuadSide);
 
-                        // Trailing meshlets along the chunk's far edge cover
-                        // fewer quads. Clamp so we never index past the chunk.
                         const int32 RemainingX = QuadsPerChunk - Meshlet.ChunkLocalQuadOrigin.x;
                         const int32 RemainingY = QuadsPerChunk - Meshlet.ChunkLocalQuadOrigin.y;
                         Meshlet.QuadExtent = glm::ivec2(
                             std::min(MeshletQuadSide, RemainingX),
                             std::min(MeshletQuadSide, RemainingY));
 
-                        // Walk the meshlet's vertex grid (QuadExtent + 1 verts
-                        // per axis) to find tight Y bounds.
                         const int32 SampleX0 = Chunk.QuadOrigin.x + Meshlet.ChunkLocalQuadOrigin.x;
                         const int32 SampleY0 = Chunk.QuadOrigin.y + Meshlet.ChunkLocalQuadOrigin.y;
                         const int32 NVertsX  = Meshlet.QuadExtent.x + 1;

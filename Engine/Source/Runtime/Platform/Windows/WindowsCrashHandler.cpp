@@ -130,9 +130,7 @@ namespace Lumina::CrashHandler
             }
         }
 
-        // Walks a captured context up to MaxFrames deep, resolves to symbols if
-        // available, and writes to OutBuffer. Best-effort: bails the moment
-        // anything fails, since we are already in a crashed process.
+        // Best-effort: bails on first failure since we are already in a crashed process.
         void CaptureStackTraceFromContext(CONTEXT* ContextRecord, char* OutBuffer, size_t BufferSize)
         {
             if (!ContextRecord || !OutBuffer || BufferSize == 0)

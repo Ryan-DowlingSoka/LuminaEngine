@@ -67,9 +67,6 @@ namespace Lumina::FShaderCache
             return Joined;
         }
 
-        // Resolve `import Foo.Bar;` or `#include "Foo/Bar.slang"` against the
-        // shader root and the directory of the including file. Returns "" if
-        // neither candidate exists in the VFS.
         FString ResolveInclude(FStringView Token, bool bIsImport, FStringView IncludingDir, FStringView ShaderRoot)
         {
             FString Candidate;
@@ -129,10 +126,6 @@ namespace Lumina::FShaderCache
             return Path.substr(0, Slash);
         }
 
-        // Recursively walks `import` and `#include` directives, hashing every
-        // file we can resolve. Files we can't resolve (engine-builtin modules,
-        // generated names) are silently skipped — worst case we under-invalidate
-        // the cache and the user has to bump SHADER_CACHE_VERSION.
         void GatherSourceHash(FStringView VirtualPath, FStringView ShaderRoot, THashSet<FString>& Visited, uint64& Hash)
         {
             FString PathStr(VirtualPath.data(), VirtualPath.size());

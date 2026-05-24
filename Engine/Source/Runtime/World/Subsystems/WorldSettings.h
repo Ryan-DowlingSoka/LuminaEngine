@@ -24,6 +24,14 @@ namespace Lumina
         X8,
     };
 
+    REFLECT()
+    enum class EVariableRateShading : uint8
+    {
+        Off,        // 1x1 - full rate
+        Rate2x2,    // quarter the fragment shader invocations
+        Rate4x4,    // sixteenth (clamped to the GPU's max supported rate)
+    };
+
     /** Map the (sequential) reflected enum to its actual GPU sample count. */
     constexpr uint8 GetMSAASampleCount(EMSAASampleCount Quality)
     {
@@ -60,6 +68,13 @@ namespace Lumina
         /** MSAA sample count. Off = no multisampling. Applied at scene init; reload the world to change. */
         PROPERTY(Editable, Category = "Rendering")
         EMSAASampleCount MSAASampleCount = EMSAASampleCount::Off;
+
+        /** Variable-rate shading rate applied to opted-in passes (sky, particles, translucency,
+        fog, and the opaque base pass). Coarser = fewer fragment shader invocations (faster,
+        softer). Off by default; note the base pass also writes the picker buffer, so coarse
+        rates reduce click-picking precision. No effect on GPUs without pipeline FSR support. */
+        PROPERTY(Editable, Category = "Rendering")
+        EVariableRateShading VariableRateShading = EVariableRateShading::Off;
 
         /** Normalized direction of gravity in world space. */
         PROPERTY(Editable, Category = "Physics")

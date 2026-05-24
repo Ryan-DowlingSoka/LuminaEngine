@@ -50,9 +50,6 @@ namespace Lumina
 
         if (ShouldGenerateThumbnailOnSave() && Asset->GetPackage())
         {
-            // Prefer the per-asset-class transient render path; falls back to
-            // grabbing the live editor viewport when no renderer is registered
-            // for this asset type.
             if (!CThumbnailManager::Get().GenerateThumbnail(Asset, Asset->GetPackage()))
             {
                 GenerateThumbnail(Asset->GetPackage());

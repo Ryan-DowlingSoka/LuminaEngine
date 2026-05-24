@@ -364,9 +364,7 @@ namespace Lumina::Import::Mesh::GLTF
                 if (auto* URI = std::get_if<fastgltf::sources::URI>(&Image.data))
                 {
                     GLTFImage.RelativePath = URI->uri.c_str();
-                    // Thumbnails are GPU resources; skip them on the preview parse,
-                    // which runs on a worker thread. The dialog builds them on the
-                    // main thread once the parse result is adopted.
+                    // Skip thumbnail on worker-thread preview parse; built on main thread after adoption.
                     if (!ImportOptions.bSkipFinalization)
                     {
                         FFixedString FullPath = Paths::Combine(VFS::Parent(FilePath), GLTFImage.RelativePath);
@@ -386,9 +384,7 @@ namespace Lumina::Import::Mesh::GLTF
                     }
 
                     AssignFallbackName();
-                    // Thumbnails are GPU resources; skip them on the preview parse,
-                    // which runs on a worker thread. The dialog builds them on the
-                    // main thread once the parse result is adopted.
+                    // Skip thumbnail on worker-thread preview parse; built on main thread after adoption.
                     if (!ImportOptions.bSkipFinalization)
                     {
                         GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
@@ -400,9 +396,7 @@ namespace Lumina::Import::Mesh::GLTF
                     const uint8* Start = Array->bytes.data();
                     GLTFImage.Bytes.assign(Start, Start + Array->bytes.size());
                     AssignFallbackName();
-                    // Thumbnails are GPU resources; skip them on the preview parse,
-                    // which runs on a worker thread. The dialog builds them on the
-                    // main thread once the parse result is adopted.
+                    // Skip thumbnail on worker-thread preview parse; built on main thread after adoption.
                     if (!ImportOptions.bSkipFinalization)
                     {
                         GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
@@ -414,9 +408,7 @@ namespace Lumina::Import::Mesh::GLTF
                     const uint8* Start = Vector->bytes.data();
                     GLTFImage.Bytes.assign(Start, Start + Vector->bytes.size());
                     AssignFallbackName();
-                    // Thumbnails are GPU resources; skip them on the preview parse,
-                    // which runs on a worker thread. The dialog builds them on the
-                    // main thread once the parse result is adopted.
+                    // Skip thumbnail on worker-thread preview parse; built on main thread after adoption.
                     if (!ImportOptions.bSkipFinalization)
                     {
                         GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
@@ -428,9 +420,7 @@ namespace Lumina::Import::Mesh::GLTF
                     const uint8* Start = reinterpret_cast<const uint8*>(ByteView->bytes.data());
                     GLTFImage.Bytes.assign(Start, Start + ByteView->bytes.size());
                     AssignFallbackName();
-                    // Thumbnails are GPU resources; skip them on the preview parse,
-                    // which runs on a worker thread. The dialog builds them on the
-                    // main thread once the parse result is adopted.
+                    // Skip thumbnail on worker-thread preview parse; built on main thread after adoption.
                     if (!ImportOptions.bSkipFinalization)
                     {
                         GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));

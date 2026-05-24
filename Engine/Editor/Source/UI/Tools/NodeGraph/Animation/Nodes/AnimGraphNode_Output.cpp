@@ -10,9 +10,7 @@ namespace Lumina
 
     void CAnimGraphNode_Output::GenerateBytecode(FAnimationGraphCompiler& Compiler)
     {
-        // Resolve the pose feeding the graph but do not emit the Output opcode
-        // here -- the owning graph decides whether this is the final frame
-        // output (top-level) or a state's sub-graph result (state machine).
+        // Don't emit Output opcode here; the owning graph decides top-level vs sub-graph output.
         ResolvedPoseRegister = ResolvePoseInput(ResultPosePin, Compiler);
     }
 }

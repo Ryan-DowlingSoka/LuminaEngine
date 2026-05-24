@@ -15,9 +15,7 @@ namespace Lumina::Import::Mesh
 {
     namespace
     {
-        // Route meshoptimizer through our allocator + tracker, attributed to "MeshOpt".
-        // meshopt_setAllocator only stores function pointers (no allocation), so running it
-        // from a static initializer is safe and guarantees it's set before any import call.
+        // meshopt_setAllocator stores function pointers only, so static-init is safe.
         void* MeshoptAlloc(size_t Size) { LUMINA_MEMORY_SCOPE("MeshOpt"); return Memory::Malloc(Size); }
         void  MeshoptFree(void* Ptr)    { if (Ptr) { Memory::Free(Ptr); } }
         const bool GMeshoptAllocatorSet = []{ meshopt_setAllocator(MeshoptAlloc, MeshoptFree); return true; }();
@@ -991,9 +989,6 @@ namespace Lumina::Import::Mesh
         Data.MeshStatistics.OverdrawStatics.clear();
         Data.MeshStatistics.VertexFetchStatics.clear();
 
-        // Coalesce surfaces by material first (cheap, parallel) so the optimize/meshlet
-        // passes operate on bigger contiguous slices, the renderer iterates one
-        // FGeometrySurface per material, and we can size progress by final surface count.
         if (Progress)
         {
             Progress->UpdateMessage("Merging surfaces...");

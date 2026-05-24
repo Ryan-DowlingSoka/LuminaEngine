@@ -28,8 +28,7 @@ namespace Lumina
 
     void SCameraSystem::Update(const FSystemContext& SystemContext) noexcept
     {
-        // View matrix is baked lazily in CWorld::Render from the camera entity's
-        // transform, so any script or system that writes the camera transform up
-        // to the end of PostPhysics is reflected in the same frame.
+        // View matrix is baked lazily in CWorld::Render; camera transform writes up to
+        // end of PostPhysics are reflected in the same frame.
     }
 }

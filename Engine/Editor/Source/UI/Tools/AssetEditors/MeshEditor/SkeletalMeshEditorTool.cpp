@@ -5,6 +5,7 @@
 #include "Core/Object/Cast.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "world/entity/components/environmentcomponent.h"
+#include "World/Entity/Components/SkyLightComponent.h"
 #include "World/Entity/Components/LightComponent.h"
 #include "World/Entity/Components/SkeletalMeshComponent.h"
 #include <UI/Tools/AssetEditors/AssetEditorTool.h>
@@ -388,6 +389,7 @@ namespace Lumina
         DirectionalLightEntity = World->ConstructEntity("Directional Light");
         World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
         World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
+        World->GetEntityRegistry().emplace<SSkyLightComponent>(DirectionalLightEntity);
         
         CSkeletalMesh* SkeletalMesh = Cast<CSkeletalMesh>(Asset.Get());
         

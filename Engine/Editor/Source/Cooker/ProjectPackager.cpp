@@ -208,11 +208,7 @@ namespace Lumina
                     continue;
                 }
 
-                // Rebrand the generic launcher to the project's name on the way
-                // out: MyGame.exe instead of Lumina-Shipping.exe. The launcher
-                // finds its DLLs (import table) and content ("the .pak next to
-                // me") without ever referencing its own filename, so renaming it
-                // is purely cosmetic and safe. Other payload files keep their name.
+                // Rename launcher to <ProjectName>.exe; safe because it never reads its own filename.
                 std::filesystem::path DstName = Entry.path().filename();
                 if (Ext == ".exe" && !ProjectName.empty())
                 {

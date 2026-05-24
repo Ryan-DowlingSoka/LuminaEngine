@@ -19,9 +19,7 @@ namespace Lumina::Memory
 {
     namespace
     {
-        // ~~ Category registry ~~
-        // Interned category names. Insert-only; a stable index is the category id,
-        // cached at each call site by LUMINA_MEMORY_SCOPE. Index 0 is always "Default".
+        // Interned category names; index 0 is always "Default", cached per call site.
         struct FCategory
         {
             char            Name[64];
@@ -67,10 +65,8 @@ namespace Lumina::Memory
         TAtomic<uint64> gGlobalLiveCount;
         TAtomic<uint64> gOverflowCount;
 
-        // Always-on whenever LUMINA_MEMORY_TRACKING is compiled in (Debug/Development).
-        // Constant-initialized to true so even early static-init allocations are captured.
-        // Safe: OnAlloc only runs from Memory::Malloc (after rpmalloc is live), and the
-        // ledger allocates via rpmalloc on that same already-initialized thread.
+        // Constant-initialized so early static-init allocations are captured; OnAlloc
+        // only runs from Memory::Malloc, after rpmalloc is already live on that thread.
         TAtomic<bool>   gEnabled{ true };
 
         // ~~ Call-site capture ~~

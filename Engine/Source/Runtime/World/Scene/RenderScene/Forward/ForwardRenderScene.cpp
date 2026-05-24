@@ -32,6 +32,7 @@
 #include "World/Entity/Components/LineBatcherComponent.h"
 #include "World/Entity/Components/ParticleSystemComponent.h"
 #include "World/Entity/Components/SkeletalMeshComponent.h"
+#include "World/Entity/Components/SkyLightComponent.h"
 #include "world/entity/components/staticmeshcomponent.h"
 #include "World/Entity/Components/TerrainComponent.h"
 #include "World/Scene/RenderScene/EnvironmentRenderTypes.h"
@@ -46,10 +47,6 @@ namespace Lumina
 {
     namespace
     {
-        // Froxel volumetric fog grid (camera-frustum-aligned 3D volume). Fixed at
-        // compile time so the two 3D volumes are allocated once in InitImages.
-        // 160x90x128 RGBA16F = ~29.5 MB per volume. The deeper Z grid (vs 64) plus
-        // the apply-pass depth dither keep the exponential slicing from banding.
         constexpr uint32 GFroxelGridX = 160;
         constexpr uint32 GFroxelGridY = 90;
         constexpr uint32 GFroxelGridZ = 128;
@@ -62,6 +59,18 @@ namespace Lumina
             "r.VolFog.Enabled",
             true,
             "Enable froxel volumetric fog. Still requires an enabled ExponentialHeightFog component.");
+    }
+
+    static FVariableRateShadingState MakeWorldShadingRate(const SDefaultWorldSettings& Settings)
+    {
+        FVariableRateShadingState ShadingRate;
+        switch (Settings.VariableRateShading)
+        {
+            case EVariableRateShading::Rate2x2: ShadingRate.SetEnabled(true).SetShadingRate(EVariableShadingRate::e2x2); break;
+            case EVariableRateShading::Rate4x4: ShadingRate.SetEnabled(true).SetShadingRate(EVariableShadingRate::e4x4); break;
+            default: break;
+        }
+        return ShadingRate;
     }
 
     static FRHIImageRef CreateSMAALUTImage(const uint8* Bytes, uint32 Width, uint32 Height, EFormat Format, uint32 RowPitch, const char* DebugName)
@@ -104,9 +113,7 @@ namespace Lumina
 
         InitBuffers();
 
-        // Process-wide immutable resources (BRDF LUT, SMAA LUTs, editor icons). Aliased
-        // from FRenderManager; built once on the first scene. Must precede CreateLayouts()
-        // (inside InitFrameResources) so the BRDF + SMAA binding sets see valid images.
+        // Must precede CreateLayouts() (inside InitFrameResources) so the BRDF + SMAA binding sets see valid images.
         InitSharedResources();
 
         // Sky cube allocated before CreateLayouts(); contents filled per-frame by SkyCubeCapturePass().
@@ -617,6 +624,7 @@ namespace Lumina
             auto WidgetView         = Registry.view<SWidgetComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto LineBatcherView    = Registry.view<FLineBatcherComponent>();
             auto EnvironmentView    = Registry.view<SEnvironmentComponent>(entt::exclude<SDisabledTag>);
+            auto SkyLightView       = Registry.view<SSkyLightComponent>(entt::exclude<SDisabledTag>);
             auto FogView            = Registry.view<SExponentialHeightFogComponent>(entt::exclude<SDisabledTag>);
             auto StaticView         = Registry.view<SStaticMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             auto SkeletalView       = Registry.view<SSkeletalMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
@@ -635,9 +643,7 @@ namespace Lumina
 
             const uint32 NumThreads = GTaskSystem->GetScheduler().GetNumTaskThreads();
 
-            // Block must exceed one thread's worst-case single TFrameVector doubling. The bone
-            // vector dominates (skeletons x bones x 48B now the last row is dropped); 8MB gives
-            // headroom for ~12k+ across thread/bone counts. Reserved lazily, per active thread.
+            // 8MB: bone vector dominates (skeletons x bones x 48B); headroom for ~12k+ per thread.
             constexpr SIZE_T kArenaBlockSize = 8 * 1024 * 1024;
             if (FrameArenas.size() < NumThreads)
             {
@@ -854,7 +860,7 @@ namespace Lumina
                         EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::DirectionalLightIcon, glm::vec4(Light.Color, 1.0f));
                     });
 
-                    EnvironmentView.each([&](entt::entity Entity, const SEnvironmentComponent&)
+                    SkyLightView.each([&](entt::entity Entity, const SSkyLightComponent&)
                     {
                         const auto& Transform = Registry.get<STransformComponent>(Entity);
                         EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::SkyLightIcon, glm::vec4(1.0f));
@@ -933,22 +939,23 @@ namespace Lumina
             // Serial fit/allocate after parallel light pass; shrinks when sum(area) exceeds atlas budget.
             AllocateShadowTiles();
 
-            // Serial: bAmbientFromSky needs LightData.SunDirection from ProcessDirectionalLight.
-            // Last enabled SEnvironmentComponent wins.
+            // Serial after parallel light pass; skylight below reads ActiveEnv + LightData.SunDirection set by ProcessDirectionalLight.
+            const SEnvironmentComponent* ActiveEnv = nullptr;
             {
                 LUMINA_PROFILE_SECTION("Environment Processing");
 
                 RenderSettings.bHasEnvironment = false;
                 RenderSettings.bSSAO           = false;
-                LightData.AmbientLight         = glm::vec4(0.0f);
                 EnvironmentParams              = FEnvironmentParams{};
                 EnvironmentMapImage            = nullptr;
                 // Set true below if any IBL input differs from the last bake snapshot.
                 Frame.bIBLDirty                = false;
                 Frame.bIBLConvolutionDirty     = false;
 
-                EnvironmentView.each([this, &LightData, &EnvironmentParams, &EnvironmentMapImage] (const SEnvironmentComponent& Env)
+                EnvironmentView.each([this, &EnvironmentParams, &EnvironmentMapImage, &ActiveEnv] (const SEnvironmentComponent& Env)
                 {
+                    ActiveEnv = &Env;
+
                     // bRenderSky gates the sky pass; ambient/skylight still flow when off (indoor scenes).
                     RenderSettings.bHasEnvironment = Env.bRenderSky;
 
@@ -994,21 +1001,36 @@ namespace Lumina
                                                                 Env.bMoonOpposeSun ? 1.0f : 0.0f);
                     EnvironmentParams.MoonDirection = glm::vec4(Env.MoonDirection, 0.0f);
                     EnvironmentParams.GalaxyParams  = glm::vec4(Env.GalaxyIntensity, Env.GalaxyTilt, 0.0f, 0.0f);
+                });
+            }
 
-                    // bAmbientFromSky derives ambient from active sky mode (avoids syncing two pickers).
-                    glm::vec3 AmbientRGB = Env.AmbientColor;
-                    if (Env.bAmbientFromSky)
+            // Skylight (ambient fill + IBL scale). Last enabled SSkyLightComponent wins.
+            // bAmbientFromSky derives the color from the active sky (needs ActiveEnv + SunDirection).
+            {
+                LUMINA_PROFILE_SECTION("Skylight Processing");
+
+                LightData.AmbientLight = glm::vec4(0.0f);
+
+                SkyLightView.each([&LightData, ActiveEnv] (const SSkyLightComponent& Sky)
+                {
+                    if (!Sky.bAffectsWorld)
                     {
-                        if (Env.SkyMode == ESkyMode::SolidColor)
+                        return;
+                    }
+
+                    glm::vec3 AmbientRGB = Sky.AmbientColor;
+                    if (Sky.bAmbientFromSky && ActiveEnv)
+                    {
+                        if (ActiveEnv->SkyMode == ESkyMode::SolidColor)
                         {
-                            AmbientRGB = Env.SolidSkyColor;
+                            AmbientRGB = ActiveEnv->SolidSkyColor;
                         }
-                        else if (Env.SkyMode == ESkyMode::Gradient)
+                        else if (ActiveEnv->SkyMode == ESkyMode::Gradient)
                         {
                             // 70/30 zenith/horizon matches what an upward-facing surface would integrate.
-                            AmbientRGB = Env.ZenithColor * 0.7f + Env.HorizonColor * 0.3f;
+                            AmbientRGB = ActiveEnv->ZenithColor * 0.7f + ActiveEnv->HorizonColor * 0.3f;
                         }
-                        else // Dynamic
+                        else // Dynamic / HDRI
                         {
                             // SunDirection points FROM surface TO sun, so .y is elevation.
                             const float SunHeight = LightData.bHasSun
@@ -1020,7 +1042,7 @@ namespace Lumina
                                                   Day);
                         }
                     }
-                    LightData.AmbientLight = glm::vec4(AmbientRGB, Env.AmbientIntensity);
+                    LightData.AmbientLight = glm::vec4(AmbientRGB, Sky.Intensity);
                 });
             }
 
@@ -1040,9 +1062,6 @@ namespace Lumina
                         return;
                     }
 
-                    // The entity's world height drives the fog layer; FogBaseHeight is a
-                    // fine-tune offset on top. (Height fog only depends on Y, so moving the
-                    // entity horizontally legitimately has no effect.)
                     float BaseHeight = Fog.FogBaseHeight;
                     if (const STransformComponent* Transform = Registry.try_get<STransformComponent>(Entity))
                     {
@@ -1661,10 +1680,8 @@ namespace Lumina
             return;
         }
 
-        // Stamp the time this mesh was in the CAMERA view (not just kept for shadows) so the
-        // animation systems can skip pose evaluation for skeletons that haven't been on-screen
-        // recently. Shadow-only casters intentionally don't refresh this -- a pose that only
-        // feeds an off-screen shadow doesn't need per-frame eval.
+        // Shadow-only casters intentionally excluded: a pose feeding only an off-screen shadow
+        // doesn't need per-frame eval.
         if (SceneCullContext.IsCameraVisible(
                 Center,
                 Radius,
@@ -1794,10 +1811,7 @@ namespace Lumina
             Item._Pad                 = 0;
         }
 
-        // Resolve the meshlet span actually rendered (surface + shadow LODs, across surfaces)
-        // so the pre-skin slice covers only those LODs, not the whole mesh -- distant entities
-        // at low LODs then cost a fraction of the storage. Meshlets are LOD-major, so the span
-        // is contiguous; GlobalSkinnedBase is finalized in merge as (compacted base - span start).
+        // Meshlets are LOD-major so the span is contiguous; GlobalSkinnedBase = compacted base - span start.
         uint32 SkinSliceSize = 0u;
         if (LocalBoneOffset != ~0u && MeshletHeaderAddress != 0ull)
         {
@@ -1870,9 +1884,6 @@ namespace Lumina
             ThreadBoneBase[t] = (uint32)BonesData.size();
             BonesData.insert(BonesData.end(), Local.BonesData.begin(), Local.BonesData.end());
 
-            // GPU pre-skinning: give each skinned entity a slice in the pre-skinned buffer
-            // and emit a descriptor (resolved to global bone/skin offsets) for the compute
-            // dispatch. Stored back into the record so the parallel write reads it.
             for (FEntityRecord& Rec : Local.EntityRecords)
             {
                 if (Rec.LocalBoneOffset == ~0u || Rec.SkinSliceSize == 0u)
@@ -4137,7 +4148,8 @@ namespace Lumina
                 .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
                 .AddBindingLayout(EmptySet2Layout)
-                .AddBindingLayout(ShadowSamplingBindingLayout);
+                .AddBindingLayout(ShadowSamplingBindingLayout)
+                .SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
 
             FGraphicsState GraphicsState; GraphicsState
                 .SetRenderPass(RenderPass)
@@ -4571,6 +4583,8 @@ namespace Lumina
                 .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
                 .AddBindingLayout(ParticleLayout);
+
+            Desc.SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
 
             FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
@@ -5413,7 +5427,8 @@ namespace Lumina
                 .AddBindingLayout(SceneBindingLayout)
                 .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
                 .AddBindingLayout(EmptySet2Layout)
-                .AddBindingLayout(ShadowSamplingBindingLayout);
+                .AddBindingLayout(ShadowSamplingBindingLayout)
+                .SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
 
             FGraphicsState GraphicsState;
             GraphicsState.SetRenderPass(RenderPass)
@@ -5780,6 +5795,7 @@ namespace Lumina
         Desc.AddBindingLayout(Layout);
         Desc.SetVertexShader(VS);
         Desc.SetPixelShader(PS);
+        Desc.SetVariableRateShadingState(MakeWorldShadingRate(Frame.CachedWorldSettings));
 
         FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 
@@ -6166,6 +6182,7 @@ namespace Lumina
         Desc.AddBindingLayout(EnvLayout);
         Desc.SetVertexShader(VertexShader);
         Desc.SetPixelShader(PixelShader);
+        Desc.SetVariableRateShadingState(MakeWorldShadingRate(RenderFrame->CachedWorldSettings));
 
         FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
 

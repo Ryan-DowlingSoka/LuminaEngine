@@ -21,10 +21,7 @@ namespace Lumina
     static constexpr ImU32      ModifiedMarkerColor = IM_COL32(245, 175, 0, 255);
     static constexpr ImU32      CategoryBgColor = IM_COL32(38, 38, 42, 255);
 
-    // Renders the orange "this differs from default" indicator as a thin
-    // vertical bar at the left edge of the current table row. Caller passes
-    // explicit Y bounds since the table row's bottom isn't queryable until
-    // after the row finalizes.
+    // Caller passes explicit Y bounds; the table row's bottom isn't queryable until after row finalization.
     static void DrawModifiedMarker(float RowTopY, float RowBottomY)
     {
         ImGuiTable* Table = ImGui::GetCurrentTable();
@@ -81,9 +78,7 @@ namespace Lumina
     {
         Update();
 
-        // Children can only accumulate a ChangeOp if they were drawn last frame,
-        // which only happens when we are expanded. Skipping collapsed subtrees
-        // keeps property grids with huge arrays cheap.
+        // Skip collapsed subtrees: children only accumulate ChangeOp when drawn, and huge arrays get expensive.
         if (bExpanded)
         {
             for (const TUniquePtr<FPropertyRow>& Child : Children)
@@ -117,10 +112,7 @@ namespace Lumina
 
         PropertyHandle->ResetToDefault();
 
-        // The customization caches the displayed value (slider buffer, color
-        // picker swatch, etc). Without this re-sync the cache is stale and
-        // DispatchChange's UpdatePropertyValue would immediately push the
-        // stale cache back into the container, undoing the reset.
+        // Re-sync customization cache after reset; stale cache would push the old value back via UpdatePropertyValue.
         if (Customization)
         {
             Customization->HandleExternalUpdate(PropertyHandle);
@@ -175,14 +167,11 @@ namespace Lumina
 
         ImGui::TableNextRow();
 
-        // Diff-from-default state is computed once per frame so both the marker
-        // and the reset button stay consistent within the row.
         const bool bIsCategory = IsCategory();
         const bool bHasDefault = !bIsCategory && PropertyHandle && PropertyHandle->HasDefault();
         const bool bDiffers = bHasDefault && PropertyHandle->DiffersFromDefault();
 
-        // Capture row top before drawing so the modified-marker can be
-        // rendered with full row height once the bottom Y is known.
+        // Capture row top before drawing for later modified-marker rendering.
         ImGuiTable* CurrentTable = ImGui::GetCurrentTable();
         const float RowTopY = CurrentTable ? CurrentTable->RowPosY1 : 0.0f;
 
@@ -190,9 +179,7 @@ namespace Lumina
         ImGui::AlignTextToFramePadding();
         DrawHeader(Offset);
 
-        // Right-click context menu on the header gives an alternate path to
-        // reset (more discoverable than the icon button for users who learned
-        // it once). Categories don't get a menu.
+        // Right-click context menu; categories don't get one.
         if (!bIsCategory && PropertyHandle && PropertyHandle->Property)
         {
             if (ImGui::BeginPopupContextItem("##PropCtx"))
@@ -410,8 +397,7 @@ namespace Lumina
             return false;
         }
 
-        // The element-options menu only has resize and reorder actions, so an
-        // array locked against both has nothing to show.
+        // No menu for arrays locked against both resize and reorder.
         const FArrayPropertyRow* ArrayRow = static_cast<const FArrayPropertyRow*>(ParentRow);
         return ArrayRow->AllowResize() || ArrayRow->AllowReorder();
     }
@@ -491,10 +477,7 @@ namespace Lumina
 
         if (!PendingMutations.empty())
         {
-            // Structural edits (add / clear / remove) must notify like a value edit, otherwise
-            // change listeners never see them (e.g. a registry patch -> on_update), and the edit
-            // isn't captured for undo. Started fires before the mutation so the transaction snapshots
-            // the pre-edit array; Updated/Finished fire after so PostChangeCallback sees the new contents.
+            // Structural edits must notify like value edits; Started fires before mutation so the undo snapshot captures the pre-edit array.
             DispatchChange(EPropertyChangeOp::Started);
 
             for (const TFunction<void()>& Mutation : PendingMutations)
@@ -620,10 +603,7 @@ namespace Lumina
         void* DefaultContainerPtr = GetPropertyHandle()->DefaultContainerPtr;
         const size_t ElementCount = ArrayProperty->GetNum(ContainerPtr);
 
-        // The default array may be a different length. Indices past the default's
-        // end fall back to no-default (i.e. always considered modified).
-        // We pass the *element* pointer directly as the child's container, since
-        // the inner property has Offset=0 and treats its container as the value.
+        // Indices past default array end are treated as always-modified; element pointer used directly as container (Offset=0).
         const size_t DefaultElementCount = DefaultContainerPtr != nullptr
             ? ArrayProperty->GetNum(DefaultContainerPtr) : 0;
 
@@ -874,10 +854,7 @@ namespace Lumina
             return;
         }
 
-        // The optional owns the storage for T; pass &T directly as the child's
-        // container pointer so the inner row's customization edits in-place.
-        // The default's payload is only meaningful when the default itself is
-        // engaged; otherwise the live engaged value is always "modified".
+        // Pass &T directly as the child container; default payload is only meaningful when the default is also engaged.
         void* DefaultPayload = nullptr;
         if (DefaultContainerPtr != nullptr && OptionalProperty->HasValue(DefaultContainerPtr))
         {

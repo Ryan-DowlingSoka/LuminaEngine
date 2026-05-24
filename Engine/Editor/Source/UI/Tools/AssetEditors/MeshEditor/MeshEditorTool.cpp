@@ -7,6 +7,7 @@
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "world/entity/components/environmentcomponent.h"
+#include "World/Entity/Components/SkyLightComponent.h"
 #include "World/Entity/Components/LightComponent.h"
 #include "World/Entity/Components/StaticMeshComponent.h"
 #include "World/Scene/RenderScene/SceneRenderTypes.h"
@@ -14,9 +15,7 @@
 
 namespace Lumina
 {
-    // Sum the triangle counts of meshlets in [Offset, Offset + Count). Bounded
-    // by Meshlets.size() defensively so a malformed asset can't run off the
-    // end while we're rendering the editor UI.
+    // Bounded by Meshlets.size() so a malformed asset can't overrun during UI rendering.
     static uint32 SumTrianglesInRange(const TVector<FMeshlet>& Meshlets, uint32 Offset, uint32 Count)
     {
         uint32 Tris = 0;
@@ -79,8 +78,7 @@ namespace Lumina
                 PropertyRow("Meshlets", eastl::to_string(Resource.MeshletData.Meshlets.size()));
                 PropertyRow("Surfaces", eastl::to_string(Resource.GetNumSurfaces()));
 
-                // Maximum NumLODs across surfaces -- thumbnail-style summary
-                // for the LOD ladder. Per-surface detail lives below.
+                // Maximum LOD count across surfaces.
                 uint32 MaxLODsAcrossSurfaces = 0;
                 for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
                 {
@@ -297,12 +295,7 @@ namespace Lumina
             ImGui::Spacing();
             ImGui::Spacing();
 
-            // LOD configuration + visualization. Lets the user override which
-            // LOD the preview entity renders (forces all surfaces to the
-            // chosen LOD) and tune per-LOD distance thresholds. The forced
-            // LOD is pushed onto the SStaticMeshComponent each frame in
-            // Update(); thresholds live on FGeometrySurface and persist with
-            // the asset.
+            // LOD override is pushed onto SStaticMeshComponent each frame in Update(); thresholds persist on FGeometrySurface.
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
             ImGui::SeparatorText("Levels of Detail");
             ImGuiX::Font::PopFont();
@@ -310,9 +303,7 @@ namespace Lumina
             ImGui::Spacing();
 
             {
-                // Preview combo: -1 = automatic, 0..MAX-1 = forced index.
-                // Names built at runtime so the combo tracks MAX_MESH_LODS
-                // without a parallel hand-maintained string list.
+                // Names built at runtime; no parallel string list needed for MAX_MESH_LODS tracking.
                 char        LODNames[MAX_MESH_LODS][24];
                 const char* PreviewItems[MAX_MESH_LODS + 1];
                 PreviewItems[0] = "Automatic (distance)";
@@ -340,9 +331,7 @@ namespace Lumina
 
             ImGui::Spacing();
 
-            // Per-LOD aggregate stats across surfaces. Sums let you see how
-            // much geometry each LOD costs at a glance without expanding
-            // every surface.
+            // Per-LOD aggregate stats across surfaces.
             uint32 LODAggMeshlets[MAX_MESH_LODS]  = { 0 };
             uint32 LODAggTriangles[MAX_MESH_LODS] = { 0 };
             uint32 LODAggSurfaces[MAX_MESH_LODS]  = { 0 };
@@ -399,10 +388,7 @@ namespace Lumina
             ImGui::TextDisabled("Distance thresholds (distance / radius). The renderer picks the highest LOD whose threshold the instance has exceeded.");
             ImGui::Spacing();
 
-            // Aggregate threshold editor. Most assets share the same threshold
-            // ramp across surfaces, so editing once here writes to every
-            // surface in lockstep. Per-surface customization still works via
-            // the surface details panel below.
+            // Shared threshold editor writes to every surface in lockstep; per-surface overrides still work below.
             if (!Resource.GeometrySurfaces.empty())
             {
                 float SharedThresholds[MAX_MESH_LODS];
@@ -440,9 +426,7 @@ namespace Lumina
                         ImGui::SetNextItemWidth(-FLT_MIN);
 
                         float Value = SharedThresholds[lod];
-                        // Min clamp = previous LOD's threshold + epsilon to
-                        // keep the ramp monotonic. The pick loop's
-                        // "first-miss-wins" rule degenerates without it.
+                        // Clamp min to previous threshold + epsilon; monotonic ramp required for first-miss-wins picker.
                         const float MinValue = SharedThresholds[lod - 1] + 0.01f;
                         if (ImGui::DragFloat("##Threshold", &Value, 0.5f, MinValue, 1024.0f, "%.2f"))
                         {
@@ -539,10 +523,7 @@ namespace Lumina
                             ImGui::EndTable();
                         }
 
-                        // Per-LOD breakdown for this surface, with per-surface
-                        // threshold overrides. Useful when one surface should
-                        // pop to a coarser LOD earlier than the rest of the
-                        // mesh (e.g. a small bolt vs. a big hull).
+                        // Per-surface threshold overrides (e.g. small bolt pops coarser earlier than large hull).
                         ImGui::Spacing();
                         if (ImGui::BeginTable("##SurfaceLODs", 5,
                             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
@@ -598,8 +579,7 @@ namespace Lumina
                     ImGui::PopID();
                 }
 
-                // Defensive: an asset reload may shrink the surface list below
-                // our selection. Clear it rather than draw garbage.
+                // Asset reload may shrink the surface list; clear stale selection rather than draw garbage.
                 if (SelectedSurfaceIndex >= (int32)Resource.GeometrySurfaces.size())
                 {
                     SelectedSurfaceIndex = -1;
@@ -626,6 +606,7 @@ namespace Lumina
         DirectionalLightEntity = World->ConstructEntity("Directional Light");
         World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
         World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
+        World->GetEntityRegistry().emplace<SSkyLightComponent>(DirectionalLightEntity);
         
         CStaticMesh* StaticMesh = Cast<CStaticMesh>(Asset.Get());
 
@@ -638,7 +619,6 @@ namespace Lumina
         float FloorY = MeshTransform.GetLocation().y + StaticMesh->GetAABB().Min.y;
         CreateFloorPlane(FloorY);
 
-        // Frame the mesh and default to orbit so the user can immediately tumble around it.
         const FAABB Bounds = StaticMesh->GetAABB();
         const glm::vec3 Center = MeshTransform.GetLocation() + Bounds.GetCenter();
         const float Radius = glm::max(glm::length(Bounds.GetSize() * 0.5f), 0.5f);
@@ -658,10 +638,7 @@ namespace Lumina
         SStaticMeshComponent& StaticMeshComponent = World->GetEntityRegistry().get<SStaticMeshComponent>(MeshEntity);
         STransformComponent&  Transform           = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
 
-        // Push the editor's preview override onto the component every frame.
-        // The renderer reads ForcedLODIndex during instance build, so this is
-        // the cheapest way to keep the viewport in sync with the LOD combo
-        // even as the user scrubs through values.
+        // Renderer reads ForcedLODIndex during instance build; push every frame to stay in sync with the LOD combo.
         StaticMeshComponent.ForcedLODIndex = PreviewLODIndex;
 
         if (bShowAABB)
@@ -670,10 +647,7 @@ namespace Lumina
             World->DrawBox(AABB.GetCenter(), AABB.GetSize() * 0.5f, glm::quat(1, 0, 0, 0), FColor::Green);
         }
 
-        // Highlight the selected surface by deriving its AABB from the per-
-        // meshlet LoInt range of whichever LOD is *currently being rendered*.
-        // Forcing the LOD changes the meshlet set in the viewport, so the
-        // overlay should follow -- LOD 0's bounds will look stale otherwise.
+        // Derive overlay AABB from the currently rendered LOD's meshlet range; LOD 0 bounds look stale after a forced LOD change.
         if (SelectedSurfaceIndex >= 0 && IsValid(StaticMeshComponent.StaticMesh))
         {
             const FMeshResource& Resource = StaticMeshComponent.StaticMesh->GetMeshResource();
@@ -682,9 +656,7 @@ namespace Lumina
                 const FGeometrySurface& Surface = Resource.GeometrySurfaces[SelectedSurfaceIndex];
                 const FMeshletData&     MD      = Resource.MeshletData;
 
-                // Pick the LOD whose meshlet range we'll bound. Auto preview
-                // shows LOD 0; forced preview shows that LOD (clamped to
-                // what the surface actually has).
+                // Use LOD 0 for auto preview; forced preview uses selected LOD clamped to surface NumLODs.
                 const uint32 OverlayLOD = (PreviewLODIndex >= 0 && Surface.NumLODs > 0)
                     ? (uint32)glm::min((int32)Surface.NumLODs - 1, PreviewLODIndex)
                     : 0u;

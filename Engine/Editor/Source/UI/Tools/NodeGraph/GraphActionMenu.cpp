@@ -27,10 +27,6 @@ namespace Lumina
         FORCEINLINE bool IsUpper(char C) { return C >= 'A' && C <= 'Z'; }
     }
 
-    // Scoring heuristic inspired by fts_fuzzy_match / VS Code's symbol search. Walks Target once
-    // consuming Query characters in order; non-matches subtract from the score, word-boundary and
-    // consecutive matches add to it. Result: exact prefixes beat subsequence matches beat far-apart
-    // fragments. Good enough for node menus, not a general-purpose fuzzy library.
     bool FuzzyMatch(const char* Query, const char* Target, int32& OutScore, TVector<uint16>& OutMatchIndices)
     {
         OutScore = 0;

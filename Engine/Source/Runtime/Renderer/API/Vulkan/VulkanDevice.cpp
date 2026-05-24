@@ -34,7 +34,14 @@ namespace Lumina
         Info.pVulkanFunctions       = &Functions;
         Info.pAllocationCallbacks   = VK_ALLOC_CALLBACK;
 
-        Info.flags = VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT | VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT | VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+        Info.flags = VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT | VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+
+        // The priority bit is only valid when VK_EXT_memory_priority was enabled on the device;
+        // setting it otherwise is undefined per VMA. Pairs with VK_EXT_pageable_device_local_memory.
+        if (RenderContext->SupportsMemoryPriority())
+        {
+            Info.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT;
+        }
 
         VK_CHECK(vmaCreateAllocator(&Info, &Allocator));
 
@@ -71,12 +78,7 @@ namespace Lumina
 
         VmaPoolCreateInfo PoolInfo = {};
         PoolInfo.memoryTypeIndex = MemoryTypeIndex;
-        // General-purpose (TLSF) suballocation, NOT linear. Upload chunks are freed
-        // late and out of order (DestroyBuffer defers vmaDestroyBuffer to an async
-        // task, plus per-frame command-list churn), so a linear ring can never advance
-        // its front and allocates a fresh block every frame without bound. TLSF
-        // reclaims any freed region in any order, so the pool self-bounds to the
-        // live working set.
+        // TLSF (flags=0), NOT linear: deferred/out-of-order chunk frees stall the linear ring front → unbounded block growth.
         PoolInfo.flags          = 0;
         PoolInfo.blockSize      = UploadBlockSize;
         // Lazy: first upload triggers first block. Pre-warming OOMed startup on small BAR heaps.

@@ -15,6 +15,7 @@
 #include "TaskSystem/TaskSystem.h"
 #include "Tools/PrimitiveManager/PrimitiveManager.h"
 #include "World/Entity/Components/EnvironmentComponent.h"
+#include "World/Entity/Components/SkyLightComponent.h"
 #include "World/Entity/Components/LightComponent.h"
 #include "World/Entity/Components/ParticleSystemComponent.h"
 #include "World/Entity/Components/PostProcessComponent.h"
@@ -45,6 +46,7 @@ namespace Lumina
             entt::entity Light = World->ConstructEntity("StudioLight");
             Registry.emplace<SDirectionalLightComponent>(Light);
             Registry.emplace<SEnvironmentComponent>(Light);
+            Registry.emplace<SSkyLightComponent>(Light);
         };
 
         RegisterThumbnailRenderer(CStaticMesh::StaticClass(), [SetupStudioLighting](FThumbnailScene& Scene, CObject* Asset)
@@ -87,11 +89,7 @@ namespace Lumina
 
                 SetupStudioLighting(World);
 
-                // Post-process materials run as a screen-space pass after tone
-                // mapping, not as a surface shader. Applying one as a mesh
-                // override falls back to the default material in BasePass.
-                // Drive it through a post-process volume instead so the
-                // pass actually executes against the lit sphere.
+                // PP materials are screen-space; mesh override falls back to default. Use a volume.
                 CMaterial* BaseMaterial = Material->GetMaterial();
                 const bool bIsPostProcess = BaseMaterial != nullptr && BaseMaterial->GetMaterialType() == EMaterialType::PostProcess;
 
@@ -132,9 +130,7 @@ namespace Lumina
                 entt::entity ParticleEntity = World->ConstructEntity("ParticleSystem");
                 Registry.emplace<SParticleSystemComponent>(ParticleEntity).ParticleSystem = PS;
 
-                // Particles emit around origin; pull the camera back enough to
-                // capture a typical spawn radius without trying to derive it
-                // from the asset (no AABB on a particle system).
+                // No AABB on a particle system; fixed pull-back for typical spawn radius.
                 const glm::vec3 Dir = glm::normalize(glm::vec3(0.0f, 0.25f, 1.0f));
                 Scene.SetCameraTransform(Dir * 4.0f, glm::vec3(0.0f), kThumbnailFOV);
             });
@@ -264,9 +260,6 @@ namespace Lumina
             return false;
         }
 
-        // Walk up the asset's class hierarchy looking for a registered renderer.
-        // Lets a single entry on a base class (CMaterialInterface) cover all
-        // derivatives (CMaterial, CMaterialInstance) without duplicate setup.
         FThumbnailRendererFn* Renderer = nullptr;
         for (CClass* Klass = Asset->GetClass(); Klass != nullptr; Klass = Cast<CClass>(Klass->GetSuperClass()))
         {

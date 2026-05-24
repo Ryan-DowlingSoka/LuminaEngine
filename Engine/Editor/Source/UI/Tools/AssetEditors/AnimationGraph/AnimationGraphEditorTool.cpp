@@ -21,6 +21,7 @@
 #include "Assets/AssetTypes/Blackboard/Blackboard.h"
 #include "World/WorldManager.h"
 #include "World/Entity/Components/EnvironmentComponent.h"
+#include "World/Entity/Components/SkyLightComponent.h"
 #include "World/Entity/Components/LightComponent.h"
 #include "World/Entity/Components/AnimationGraphComponent.h"
 #include "World/Entity/Components/BlackboardComponent.h"
@@ -246,6 +247,7 @@ namespace Lumina
         DirectionalLightEntity = World->ConstructEntity("Directional Light");
         World->GetEntityRegistry().emplace<SDirectionalLightComponent>(DirectionalLightEntity);
         World->GetEntityRegistry().emplace<SEnvironmentComponent>(DirectionalLightEntity);
+        World->GetEntityRegistry().emplace<SSkyLightComponent>(DirectionalLightEntity);
 
         CameraState.Speed = 5.0f;
 

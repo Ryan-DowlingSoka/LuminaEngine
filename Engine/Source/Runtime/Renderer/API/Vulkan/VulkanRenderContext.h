@@ -44,6 +44,10 @@ namespace Lumina
         ViewportIndexLayer,
         UnifiedImageLayouts,
         ExtendedDynamicState3,
+        MemoryPriority,
+        PageableDeviceLocalMemory,
+        FragmentShadingRate,
+        HostImageCopy,
     };
 
     // Pipeline states moved to dynamic so descs differing only in these no longer mint a
@@ -266,6 +270,23 @@ namespace Lumina
         // are issued (the swapchain still needs PRESENT_SRC to present).
         FORCEINLINE bool SupportsUnifiedImageLayouts() const { return EnabledExtensions.IsFlagSet(EVulkanExtensions::UnifiedImageLayouts); }
 
+        // VK_EXT_memory_priority (not core in 1.4): gates VMA's MEMORY_PRIORITY allocator bit;
+        // prerequisite for pageable device-local memory.
+        FORCEINLINE bool SupportsMemoryPriority() const { return EnabledExtensions.IsFlagSet(EVulkanExtensions::MemoryPriority); }
+
+        // VK_EXT_pageable_device_local_memory (not core): driver pages VRAM in/out by priority.
+        FORCEINLINE bool SupportsPageableDeviceLocalMemory() const { return EnabledExtensions.IsFlagSet(EVulkanExtensions::PageableDeviceLocalMemory); }
+
+        // VK_KHR_fragment_shading_rate (not core): per-draw / attachment variable-rate shading.
+        FORCEINLINE bool SupportsFragmentShadingRate() const { return EnabledExtensions.IsFlagSet(EVulkanExtensions::FragmentShadingRate); }
+
+        // hostImageCopy (core in 1.4): host<->image copies without a staging buffer.
+        FORCEINLINE bool SupportsHostImageCopy() const { return EnabledExtensions.IsFlagSet(EVulkanExtensions::HostImageCopy); }
+
+        // Max fragment shading rate the device supports (maxFragmentSize); {1,1} if FSR is off.
+        // Pipeline creation clamps requested rates to this so an unsupported pick can't fault.
+        FORCEINLINE VkExtent2D GetMaxShadingRate() const { return ShadingRateMax; }
+
         // Collapses any optimal layout to GENERAL when unified layouts are active.
         // PRESENT_SRC and UNDEFINED pass through (present is the one real transition,
         // UNDEFINED is the initial discard).
@@ -290,6 +311,8 @@ namespace Lumina
 
         FBitSetAllocator                                    PipelineStatsAllocator;
         VkQueryPool                                         PipelineStatsQueryPool = VK_NULL_HANDLE;
+
+        VkExtent2D                                          ShadingRateMax = { 1, 1 };
 
         FVulkanSwapchain*                                   Swapchain = nullptr;
         FVulkanDevice*                                      VulkanDevice = nullptr;

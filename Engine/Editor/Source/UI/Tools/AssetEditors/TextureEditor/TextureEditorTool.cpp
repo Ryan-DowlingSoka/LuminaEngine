@@ -87,12 +87,8 @@ namespace Lumina
                 2.0f
             );
 
-            // ImGui's draw shader doesn't tone-map; HDR values >1 clip
-            // to white in the LDR swap chain. Apply the exposure stops
-            // as a per-channel tint multiplier so the user can dim the
-            // preview to recover detail in bright regions. For LDR
-            // formats the slider stays at 0 stops (mul = 1) so the
-            // preview is unchanged.
+            // ImGui draw shader doesn't tone-map; exposure stops as a tint multiplier lets
+            // the user recover detail in HDR regions that clip to white on LDR swapchains.
             const float ExposureMul = std::pow(2.0f, ExposureStops);
             const int TintByte = std::clamp((int)std::round(ExposureMul * 255.0f), 0, 255);
             DrawList->AddImage(

@@ -40,11 +40,8 @@ namespace Lumina
             return FString();
         }
 
-        // ImGuiKey -> EKey. Polling ImGui (rather than Lumina's FEventProcessor)
-        // is required because detached editor tool windows are secondary ImGui
-        // viewports — their GLFW key callback is owned by ImGui and does not
-        // chain back to Lumina's window callback, so events for those windows
-        // never reach FEventProcessor.
+        // Must poll ImGui, not FEventProcessor: detached tool windows are secondary ImGui viewports
+        // whose GLFW key callbacks never chain back to Lumina's window callback.
         EKey ImGuiKeyToEKey(ImGuiKey Key)
         {
             if (Key >= ImGuiKey_A && Key <= ImGuiKey_Z) return static_cast<EKey>(int(EKey::A) + (Key - ImGuiKey_A));

@@ -22,9 +22,7 @@ namespace Lumina::SkeletonDebugDraw
             return;
         }
 
-        // A live pose stores one skinning matrix (Global * InvBind) per bone; recover the
-        // model-space global by undoing the inverse-bind. Without a pose, FK the bind locals
-        // (Bones[] is ordered parents-before-children, so a single linear pass suffices).
+        // Live pose has Global*InvBind; recover model-space by undoing InvBind.
         if ((int32)BoneTransforms.size() == NumBones)
         {
             for (int32 i = 0; i < NumBones; ++i)
@@ -46,8 +44,6 @@ namespace Lumina::SkeletonDebugDraw
 
     namespace
     {
-        // A tapered octahedral "bone": a small square ridge near the parent that fans out to
-        // four faces meeting at the child joint -- the familiar DCC bone silhouette, in wireframe.
         void DrawOctahedralBone(IPrimitiveDrawInterface* DI, const glm::vec3& From, const glm::vec3& To,
                                 const glm::vec4& Color, float Thickness, bool bDepthTest)
         {

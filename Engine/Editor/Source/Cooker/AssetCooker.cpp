@@ -45,9 +45,7 @@ namespace Lumina
             return true;
         }
 
-        // Walks the asset reference graph via each package's on-disk ImportTable.
-        // Avoids FullyLoad/BuildSaveContext, which only see references on objects already realized in memory —
-        // that path missed actor/component refs whenever the level wasn't open in the editor.
+        // Walks the on-disk ImportTable; FullyLoad/BuildSaveContext misses refs for unopened levels.
         void CollectAssetReferences(const FString& RootPackagePath, THashSet<FString>& OutPaths, const TFunction<void(FStringView)>& LogFunc)
         {
             TQueue<FString> Queue;
