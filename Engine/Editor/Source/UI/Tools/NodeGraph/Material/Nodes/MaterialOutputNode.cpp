@@ -158,22 +158,17 @@ namespace Lumina
         PixelOut += EmitMaterialAssignment("Normal",           NormalPin,    "float3(0.0, 0.0, 1.0)", 3);
         PixelOut += EmitMaterialAssignment("Opacity",          OpacityPin,   "1.0",                    1);
 
-        // Normal decode: BC5 2-channel (reconstruct Z) vs. 3-channel; only connected case needs patching.
+        // Normal decode. The Normal pin carries a [0,1]-encoded tangent-space
+        // normal; decode XY and reconstruct Z from them. A unit tangent normal
+        // always has Z = sqrt(1 - x^2 - y^2) >= 0, so this is correct for both
+        // 3-channel (BC7) and 2-channel (BC5) normal maps and no longer depends
+        // on detecting the source texture's format -- detection broke BC5 maps
+        // routed through intermediate nodes, fed from texture parameters, or
+        // compiled before the texture's color space was set to NormalMap.
         if (NormalPin->HasConnection())
         {
-            CMaterialOutput* ConnectedPin   = NormalPin->GetConnection<CMaterialOutput>(0);
-            const FString    UpstreamName   = ConnectedPin->GetOwningNode()->GetNodeFullName();
-            const bool       bNormalMapSrc  = Compiler.IsNormalMapSampleNode(UpstreamName);
-
-            if (bNormalMapSrc)
-            {
-                PixelOut += "\tMaterial.Normal.xy = Material.Normal.xy * 2.0 - 1.0;\n";
-                PixelOut += "\tMaterial.Normal.z  = sqrt(saturate(1.0 - dot(Material.Normal.xy, Material.Normal.xy)));\n";
-            }
-            else
-            {
-                PixelOut += "\tMaterial.Normal = normalize(Material.Normal * 2.0 - 1.0);\n";
-            }
+            PixelOut += "\tMaterial.Normal.xy = Material.Normal.xy * 2.0 - 1.0;\n";
+            PixelOut += "\tMaterial.Normal.z  = sqrt(saturate(1.0 - dot(Material.Normal.xy, Material.Normal.xy)));\n";
         }
 
         Compiler.AddPixelOutput(PixelOut);

@@ -549,7 +549,7 @@ float3 CascadeDebugColor(float3 FragmentPos, float3 ViewPosition, float3 ShadedB
 }
 
 
-float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3 V, float3 Albedo, float Roughness, float Metallic, float3 F0, float3 PrecomputedL, float PrecomputedDist)
+float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3 V, float3 Albedo, float Roughness, float Metallic, float3 F0, float3 PrecomputedL, float PrecomputedDist, float3 EnergyComp)
 {
     bool bSpotLight   = HasFlag(Light.Flags, ELightFlags::Spot);
     bool bDirectional = HasFlag(Light.Flags, ELightFlags::Directional);
@@ -588,6 +588,10 @@ float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3
     float3 F            = FresnelSchlick(max(dot(H, V), 0.0), F0);
 
     float3 Spec         = (NDF * G * F) / (4.0 * max(dot(N, V), 1e-4) * max(dot(N, L), 1e-4));
+    // Multiple-scattering energy compensation (Turquin 2019). Adds back the
+    // energy the single-scatter GGX lobe loses to roughness so rough metals
+    // don't darken; EnergyComp is precomputed per-pixel from the BRDF LUT.
+    Spec               *= EnergyComp;
     float3 kD           = (1.0 - F) * (1.0 - Metallic);
     float  NdotL        = max(dot(N, L), 0.0);
 
@@ -638,8 +642,19 @@ PSOutput FragmentMain(PSInput Input)
     float3 N  = GetWorldNormal(WorldNormal, Input.TangentWS, Normal);
     float3 V  = normalize(GetCameraPosition() - WorldPosition);
 
-    static const float3 F0_DIELECTRIC = float3(0.04);
+    // Dielectric F0 from the material's specular reflectance (UE4 convention:
+    // 0.08 * Specular, so the default Specular = 0.5 lands at the usual 0.04).
+    // Metals override F0 with their albedo.
+    float3 F0_DIELECTRIC = float3(0.08 * Material.Specular);
     float3 F0 = lerp(F0_DIELECTRIC, Albedo, Metallic);
+
+    // Multiple-scattering energy compensation factor (Turquin 2019), constant
+    // per pixel. Ess = single-scatter directional albedo (BRDF LUT scale+bias);
+    // scaling specular by this adds back the energy lost to roughness, tinted
+    // by F0 so colored metals get colored multi-bounce.
+    float  NdotV_EC    = saturate(dot(N, V));
+    float2 DFG_EC      = SampleBRDFLUT(NdotV_EC, Roughness);
+    float3 EnergyComp  = 1.0 + F0 * (1.0 / max(DFG_EC.x + DFG_EC.y, 1e-4) - 1.0);
 
     float  ZNear      = GetNearPlane();
     float  ZFar       = GetFarPlane();
@@ -674,7 +689,7 @@ PSOutput FragmentMain(PSInput Input)
         if (SunNdotL > 0.0)
         {
             float Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, Inst.HasFlag(EInstanceFlags::ReceiveShadow));
-            Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, float3(0.0), 0.0) * Shadow;
+            Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, float3(0.0), 0.0, EnergyComp) * Shadow;
         }
     }
 
@@ -713,7 +728,7 @@ PSOutput FragmentMain(PSInput Input)
             Shadow = ComputeShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, Inst.HasFlag(EInstanceFlags::ReceiveShadow));
         }
 
-        Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight) * Shadow;
+        Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight, EnergyComp) * Shadow;
     }
 
     // IBL ambient: split-sum convolutions of the captured sky cube. Diffuse
@@ -723,8 +738,8 @@ PSOutput FragmentMain(PSInput Input)
     // the sky (F0 = Albedo) instead of going black in shadowed regions.
     // GetAmbientLightIntensity() now scales the entire IBL ambient so the
     // SkyLight's Intensity slider still drives sky strength.
-    float3 IBLAmbient = EvaluateIBLAmbient(N, V, Albedo, F0, Roughness, Metallic);
-    float3 Ambient    = IBLAmbient * GetAmbientLightIntensity() * AO;
+    float3 IBLAmbient = EvaluateIBLAmbient(N, V, Albedo, F0, Roughness, Metallic, AO);
+    float3 Ambient    = IBLAmbient * GetAmbientLightIntensity();
     float3 Color      = Ambient + Lo + Material.Emissive;
 
 #endif // UNLIT

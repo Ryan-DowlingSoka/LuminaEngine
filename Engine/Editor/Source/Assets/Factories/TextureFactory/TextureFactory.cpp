@@ -108,6 +108,11 @@ namespace Lumina
     // Encodes RGBA8 via Basis Universal; shared by initial import and Recook.
     static bool CookTexturePixels(CTexture* Texture, const TVector<uint8>& Pixels, glm::uvec2 Dimensions, ETextureColorSpace ColorSpace)
     {
+        // basisu's encoder tables are per-DLL static state. FEngine::Init's
+        // basisu_encoder_init() runs in the Runtime module, not this Editor one,
+        // so init the Editor's copy here. Idempotent (mutex + g_library_initialized).
+        basisu::basisu_encoder_init();
+
         const bool bIsSRGB     = (ColorSpace == ETextureColorSpace::SRGB);
         const bool bIsNormalMap = (ColorSpace == ETextureColorSpace::NormalMap);
 

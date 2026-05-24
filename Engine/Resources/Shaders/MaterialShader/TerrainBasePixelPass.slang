@@ -370,7 +370,7 @@ float3 CascadeDebugColorTerrain(float3 FragmentPos, float3 ViewPosition, float3 
 }
 
 
-float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3 V, float3 Albedo, float Roughness, float Metallic, float3 F0, float3 PrecomputedL, float PrecomputedDist)
+float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3 V, float3 Albedo, float Roughness, float Metallic, float3 F0, float3 PrecomputedL, float PrecomputedDist, float3 EnergyComp)
 {
     bool bSpotLight   = HasFlag(Light.Flags, ELightFlags::Spot);
     bool bDirectional = HasFlag(Light.Flags, ELightFlags::Directional);
@@ -409,6 +409,8 @@ float3 EvaluateLightContribution(FLight Light, float3 Position, float3 N, float3
     float3 F            = FresnelSchlick(max(dot(H, V), 0.0), F0);
 
     float3 Spec         = (NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001);
+    // Multiple-scattering energy compensation (Turquin 2019); see BasePixelPass.
+    Spec               *= EnergyComp;
     float3 kD           = (1.0 - F) * (1.0 - Metallic);
     float  NdotL        = max(dot(N, L), 0.0);
 
@@ -509,8 +511,15 @@ PSOutput FragmentMain(PSInput Input)
     float3 N  = GetWorldNormal(WorldNormal, Input.TangentWS, Normal);
     float3 V  = normalize(GetCameraPosition() - WorldPosition);
 
-    static const float3 F0_DIELECTRIC = float3(0.04);
+    // Dielectric F0 from material specular reflectance (UE4: 0.08 * Specular,
+    // default 0.5 -> 0.04). See BasePixelPass for rationale.
+    float3 F0_DIELECTRIC = float3(0.08 * Material.Specular);
     float3 F0 = lerp(F0_DIELECTRIC, Albedo, Metallic);
+
+    // Per-pixel multiple-scattering energy compensation factor (Turquin 2019).
+    float  NdotV_EC    = saturate(dot(N, V));
+    float2 DFG_EC      = SampleBRDFLUT(NdotV_EC, Roughness);
+    float3 EnergyComp  = 1.0 + F0 * (1.0 / max(DFG_EC.x + DFG_EC.y, 1e-4) - 1.0);
 
     float  ZNear      = GetNearPlane();
     float  ZFar       = GetFarPlane();
@@ -543,7 +552,7 @@ PSOutput FragmentMain(PSInput Input)
         if (SunNdotL > 0.0)
         {
             float Shadow = ComputeTerrainShadowFactor(Light, WorldPosition, N, ViewPosition, Input.Position.xy, true);
-            Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, float3(0.0), 0.0) * Shadow;
+            Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, float3(0.0), 0.0, EnergyComp) * Shadow;
         }
     }
 
@@ -575,14 +584,14 @@ PSOutput FragmentMain(PSInput Input)
             continue;
         }
 
-        Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight);
+        Lo += EvaluateLightContribution(Light, WorldPosition, N, V, Albedo, Roughness, Metallic, F0, L, DistToLight, EnergyComp);
     }
 
     // IBL ambient: see BasePixelPass for the rationale; mirrored here so
     // terrain reflects the same sky cube and stays visually consistent
     // with mesh surfaces under the same lighting.
-    float3 IBLAmbient = EvaluateIBLAmbient(N, V, Albedo, F0, Roughness, Metallic);
-    float3 Ambient    = IBLAmbient * GetAmbientLightIntensity() * AO;
+    float3 IBLAmbient = EvaluateIBLAmbient(N, V, Albedo, F0, Roughness, Metallic, AO);
+    float3 Ambient    = IBLAmbient * GetAmbientLightIntensity();
     float3 Color      = Ambient + Lo + Material.Emissive;
 
 #endif // UNLIT

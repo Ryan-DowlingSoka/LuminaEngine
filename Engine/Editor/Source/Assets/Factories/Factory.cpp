@@ -40,9 +40,19 @@ namespace Lumina
     {
         FFixedString SafePath = SanitizeObjectName(Path);
         CPackage* Package = CPackage::CreatePackage(SafePath);
+        if (Package == nullptr)
+        {
+            return nullptr;
+        }
+        
         FStringView FileName = VFS::FileName(Path, true);
 
         CObject* New = CreateNew(FileName, Package);
+        if (New == nullptr)
+        {
+            return nullptr;
+        }
+        
         Package->ExportTable.emplace_back(New);
         
         New->SetFlag(OF_Public);

@@ -317,16 +317,6 @@ namespace Lumina
         FORCEINLINE void AddError(const EdNodeGraph::FError& Error) { Errors.push_back(Error); }
         FORCEINLINE const TVector<EdNodeGraph::FError>& GetErrors() const { return Errors; }
 
-        /** True if the named sample emit was a TextureSample whose texture is
-         *  marked as a tangent-space normal map. The Normal pin in
-         *  MaterialOutputNode queries this to choose between the standard
-         *  (xyz * 2 - 1) decode and the BC5-friendly XY decode + Z reconstruct. */
-        FORCEINLINE bool IsNormalMapSampleNode(const FString& NodeName) const
-        {
-            return NormalMapSampleNodes.find(NodeName) != NormalMapSampleNodes.end();
-        }
-
-
         FInputValue GetTypedInputValue(CMaterialInput* Input, float DefaultValue = 0.0f);
         FInputValue GetTypedInputValue(CMaterialInput* Input, const FString& DefaultValueStr);
 
@@ -369,13 +359,6 @@ namespace Lumina
         THashMap<FName, FScalarParam>  ScalarParameters;
         THashMap<FName, FVectorParam>  VectorParameters;
         THashMap<FName, FTextureParam> TextureParameters;
-
-        // Set of node names whose TextureSample emission was for a normal-map
-        // texture (CTexture::ColorSpace == NormalMap). Populated by
-        // TextureSample / TextureSampleParameter, queried by the material
-        // output node to decide whether the Normal pin should do a 2-channel
-        // decode + Z reconstruct (BC5-friendly) or a 3-channel decode.
-        THashSet<FString> NormalMapSampleNodes;
 
         uint16 NumScalarParams = 0;
         uint16 NumVectorParams = 0;

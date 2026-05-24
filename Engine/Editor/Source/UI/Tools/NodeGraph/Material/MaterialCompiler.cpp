@@ -764,11 +764,6 @@ namespace Lumina
 		}
 
 		GetActiveChunk().append("float4 " + ID + " = SampleBindless2D(GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + "), SAMPLER_LINEAR_WRAP, " + UVStr + ");\n");
-
-		if (Texture->ColorSpace == ETextureColorSpace::NormalMap)
-		{
-			NormalMapSampleNodes.insert(ID);
-		}
 	}
 
 	void FMaterialCompiler::TextureSampleParameter(const FString& ID, const FName& ParamID, CTexture* Texture, CMaterialInput* Input)
@@ -800,11 +795,6 @@ namespace Lumina
 		}
 
 		GetActiveChunk().append("float4 " + ID + " = SampleBindless2D(GetMaterialTexture(MaterialIndex, " + eastl::to_string(Index) + "), SAMPLER_LINEAR_WRAP, " + UVStr + ");\n");
-
-		if (Texture && Texture->ColorSpace == ETextureColorSpace::NormalMap)
-		{
-			NormalMapSampleNodes.insert(ID);
-		}
 	}
 
 	namespace
