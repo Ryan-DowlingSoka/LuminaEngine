@@ -930,8 +930,6 @@ namespace Lumina
         Features12.bufferDeviceAddress              = VK_TRUE;
         Features12.descriptorIndexing                                 = VK_TRUE;
         Features12.descriptorBindingPartiallyBound                    = VK_TRUE;
-        // UpdateAfterBind lets FTextureManager register/unregister bindless
-        // images mid-frame without invalidating in-flight command buffers.
         Features12.descriptorBindingSampledImageUpdateAfterBind       = VK_TRUE;
         Features12.descriptorBindingStorageImageUpdateAfterBind       = VK_TRUE;
         Features12.descriptorBindingUniformBufferUpdateAfterBind      = VK_TRUE;
@@ -956,10 +954,7 @@ namespace Lumina
         Features13.sType                            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         Features13.dynamicRendering                 = VK_TRUE;
         Features13.synchronization2                 = VK_TRUE;
-
-        // vk-bootstrap memcpys each features struct by size and rebuilds its
-        // own pNext chain; structs chained via pNext are silently dropped.
-        // Register each extension feature separately so it reaches the device.
+        
         vkb::PhysicalDeviceSelector selector(Instance);
         auto PhysicalDeviceResult = selector
             .set_minimum_version(1, 4)
@@ -1035,6 +1030,62 @@ namespace Lumina
             EnabledExtensions.SetFlag(EVulkanExtensions::ViewportIndexLayer);
         }
 
+        // VK_KHR_unified_image_layouts: keep every image in GENERAL, skip layout transitions.
+        // Skipped under validation: layers older than the extension reject its feature struct
+        // and warn they can't validate the path (VUID-VkDeviceCreateInfo-pNext-pNext spam).
+        if (!Description.bValidation)
+        {
+            VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR UnifiedLayoutFeatures{};
+            UnifiedLayoutFeatures.sType               = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR;
+            UnifiedLayoutFeatures.unifiedImageLayouts = VK_TRUE;
+
+            if (PhysicalDevice.enable_extension_if_present(VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME)
+                && PhysicalDevice.enable_extension_features_if_present(UnifiedLayoutFeatures))
+            {
+                EnabledExtensions.SetFlag(EVulkanExtensions::UnifiedImageLayouts);
+            }
+        }
+
+        // Dynamic pipeline state to collapse PSO permutations. Cull/front-face/depth
+        // test/write/compare are core in Vulkan 1.4 (EDS1) -- always dynamic-capable.
+        DynamicPipelineStates.bCullMode         = true;
+        DynamicPipelineStates.bFrontFace        = true;
+        DynamicPipelineStates.bDepthTestEnable  = true;
+        DynamicPipelineStates.bDepthWriteEnable = true;
+        DynamicPipelineStates.bDepthCompareOp   = true;
+        
+        static VkPhysicalDeviceExtendedDynamicState3FeaturesEXT EDS3Enable{};
+        bool bEnableEDS3 = false;
+        if (PhysicalDevice.enable_extension_if_present(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME))
+        {
+            VkPhysicalDeviceExtendedDynamicState3FeaturesEXT EDS3Support{};
+            EDS3Support.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
+
+            VkPhysicalDeviceFeatures2 Features2{};
+            Features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            Features2.pNext = &EDS3Support;
+            vkGetPhysicalDeviceFeatures2(PhysicalDevice.physical_device, &Features2);
+
+            DynamicPipelineStates.bPolygonMode        = EDS3Support.extendedDynamicState3PolygonMode;
+            DynamicPipelineStates.bColorBlendEnable   = EDS3Support.extendedDynamicState3ColorBlendEnable;
+            DynamicPipelineStates.bColorBlendEquation = EDS3Support.extendedDynamicState3ColorBlendEquation;
+            DynamicPipelineStates.bColorWriteMask     = EDS3Support.extendedDynamicState3ColorWriteMask;
+
+            EDS3Enable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
+            EDS3Enable.extendedDynamicState3PolygonMode        = EDS3Support.extendedDynamicState3PolygonMode;
+            EDS3Enable.extendedDynamicState3ColorBlendEnable   = EDS3Support.extendedDynamicState3ColorBlendEnable;
+            EDS3Enable.extendedDynamicState3ColorBlendEquation = EDS3Support.extendedDynamicState3ColorBlendEquation;
+            EDS3Enable.extendedDynamicState3ColorWriteMask     = EDS3Support.extendedDynamicState3ColorWriteMask;
+
+            bEnableEDS3 = DynamicPipelineStates.bPolygonMode || DynamicPipelineStates.bColorBlendEnable
+                       || DynamicPipelineStates.bColorBlendEquation || DynamicPipelineStates.bColorWriteMask;
+
+            if (bEnableEDS3)
+            {
+                EnabledExtensions.SetFlag(EVulkanExtensions::ExtendedDynamicState3);
+            }
+        }
+
         // wideLines is optional; pipelines clamp lineWidth to 1.0 if unavailable.
         {
             VkPhysicalDeviceFeatures OptionalFeatures = {};
@@ -1052,6 +1103,10 @@ namespace Lumina
             DeviceBuilder.add_pNext(&DeviceFaultFeatures);
             CrashTracker->SetDeviceFaultEnabled(true);
         }
+        if (bEnableEDS3)
+        {
+            DeviceBuilder.add_pNext(&EDS3Enable);
+        }
 
         auto DeviceResult = DeviceBuilder.build();
         if (!DeviceResult.has_value())
@@ -1064,7 +1119,7 @@ namespace Lumina
             return false;
         }
 
-        vkb::Device vkbDevice = DeviceResult.value();
+        const vkb::Device& vkbDevice = DeviceResult.value();
         VkDevice Device = vkbDevice.device;
         volkLoadDevice(Device);
 
@@ -1273,7 +1328,7 @@ namespace Lumina
 
                     VkDescriptorImageInfo& ImageInfo = ImageWriteInfos.emplace_back();
                     ImageInfo.imageView = View;
-                    ImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    ImageInfo.imageLayout = GetEffectiveImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
                     // SRV-into-mutable writes a plain SAMPLED_IMAGE (sampler comes
                     // from the bindless sampler array). Otherwise fall back to the

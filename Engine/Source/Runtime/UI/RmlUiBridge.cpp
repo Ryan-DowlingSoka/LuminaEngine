@@ -10,6 +10,7 @@
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/ElementDocument.h>
+#include <RmlUi/Core/ElementText.h>
 #include <RmlUi/Core/Event.h>
 #include <RmlUi/Core/EventListener.h>
 #include <RmlUi/Core/Input.h>
@@ -1332,10 +1333,22 @@ namespace Lumina::RmlUi
             FRecursiveScopeLock Lock(S().StateMutex);
             auto* Doc = FindDoc(Path);
             if (Doc == nullptr) return;
-            if (Rml::Element* El = Doc->GetElementById(Rml::String(ElementId.data(), ElementId.size())))
+            Rml::Element* El = Doc->GetElementById(Rml::String(ElementId.data(), ElementId.size()));
+            if (El == nullptr) return;
+
+            const Rml::String NewText(Text.data(), Text.size());
+            
+            if (El->GetNumChildren() == 1)
             {
-                El->SetInnerRML(Rml::String(Text.data(), Text.size()));
+                Rml::Element* Child = El->GetChild(0);
+                if (Child != nullptr && Child->GetTagName() == "#text")
+                {
+                    static_cast<Rml::ElementText*>(Child)->SetText(NewText);
+                    return;
+                }
             }
+
+            El->SetInnerRML(NewText);
         }
 
         void SetInnerRml(FStringView Path, FStringView ElementId, FStringView Rml_)

@@ -26,8 +26,9 @@ namespace Lumina
             : bExpanded(false)
             , bVisible(false)
             , bSelected(false)
+            , bDisplayNameCached(false)
         {}
-        
+
         virtual ~FTileViewItem() = default;
         LE_NO_COPYMOVE(FTileViewItem);
 
@@ -47,15 +48,30 @@ namespace Lumina
         {
             return { GetName().begin(), GetName().end() };
         }
-        
+
+        // Display name resolved once on first draw, then reused. GetName()/GetDisplayName() may
+        // parse paths and allocate, so they must never run per-frame in the draw loop.
+        FStringView GetCachedDisplayName()
+        {
+            if (!bDisplayNameCached)
+            {
+                CachedDisplayName = GetDisplayName();
+                bDisplayNameCached = true;
+            }
+            return FStringView(CachedDisplayName.data(), CachedDisplayName.size());
+        }
+
         bool IsSelected() const { return bSelected; }
-    
+
     protected:
-        
+
+        FFixedString                CachedDisplayName;
+
         uint8                       bExpanded:1;
         uint8                       bVisible:1;
         uint8                       bSelected:1;
-        
+        uint8                       bDisplayNameCached:1;
+
     };
 
     struct RUNTIME_API FTileViewContext
@@ -113,7 +129,10 @@ namespace Lumina
         bool HandleKeyPressed(const FTileViewContext& Context, FTileViewItem& Item, ImGuiKey Key);
         
         void RebuildTree(const FTileViewContext& Context, bool bKeepSelections = false);
-        
+
+        // Draws one full cell (icon button + label) as a single group for SameLine layout.
+        void DrawTile(FTileViewItem* Item, const FTileViewContext& Context);
+
         void DrawItem(FTileViewItem* ItemToDraw, const FTileViewContext& Context, ImVec2 DrawSize);
 
         void ToggleSelection(FTileViewItem* Item, const FTileViewContext& Context);

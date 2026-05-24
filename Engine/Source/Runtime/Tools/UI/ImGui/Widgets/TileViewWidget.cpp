@@ -1,67 +1,99 @@
 #include "pch.h"
 #include "TileViewWidget.h"
 
+#include "Tools/UI/ImGui/ImGuiFonts.h"
+
 namespace Lumina
 {
+    namespace
+    {
+        constexpr float GTileSpacing  = 5.0f;   // gap between cells, horizontal and vertical
+        constexpr float GLabelGap     = 4.0f;   // gap between the icon button and its label
+        constexpr float GLabelHeight  = 36.0f;  // fixed label band; keeps every row the same height
+        constexpr float GColumnBudget = 8.0f;   // slack for the button's frame padding when packing columns
+    }
+
     void FTileViewWidget::Draw(const FTileViewContext& Context)
     {
+        // Rebuild lazily, then fall through and draw the fresh tree the same frame (no blank frame).
         if (bDirty)
         {
             RebuildTree(Context);
+        }
+
+        const int ItemCount = (int)ListItems.size();
+        if (ItemCount == 0)
+        {
             return;
         }
-    
-        float PaneWidth = ImGui::GetContentRegionAvail().x;
-        constexpr float TileSpacing = 5.0f;
-        constexpr float TextHeight = 36.0f;
-        float CellSize = TileSize + TileSpacing;
-        int ItemsPerRow = std::max(1, int(PaneWidth / CellSize) - 1);
-    
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(TileSpacing, TileSpacing));
-    
-        int ItemIndex = 0;
-        for (FTileViewItem* Item : ListItems)
+
+        const float PaneWidth   = ImGui::GetContentRegionAvail().x;
+        const float CellWidth   = TileSize + GColumnBudget + GTileSpacing;
+        const int   ItemsPerRow = std::max(1, (int)((PaneWidth + GTileSpacing) / CellWidth));
+        const int   RowCount    = (ItemCount + ItemsPerRow - 1) / ItemsPerRow;
+
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(GTileSpacing, GTileSpacing));
+
+        // Virtualize by row: the clipper measures one row's height and only submits visible rows,
+        // so a folder with thousands of files costs the same as one screenful.
+        ImGuiListClipper Clipper;
+        Clipper.Begin(RowCount);
+        while (Clipper.Step())
         {
-            const char* DisplayName = Item->GetDisplayName().c_str();
-    
-            if (ItemIndex % ItemsPerRow != 0)
+            for (int Row = Clipper.DisplayStart; Row < Clipper.DisplayEnd; ++Row)
             {
-                ImGui::SameLine();
+                const int RowBegin = Row * ItemsPerRow;
+                const int RowEnd   = std::min(RowBegin + ItemsPerRow, ItemCount);
+
+                for (int Index = RowBegin; Index < RowEnd; ++Index)
+                {
+                    if (Index > RowBegin)
+                    {
+                        ImGui::SameLine();
+                    }
+                    DrawTile(ListItems[Index], Context);
+                }
             }
-    
-            ImGui::PushID(Item);
-            ImGui::BeginGroup();
-    
-            DrawItem(Item, Context, ImVec2(TileSize, TileSize));
-    
-            ImFont* Font = ImGui::GetIO().Fonts->Fonts[3];
-            ImGui::PushFont(Font);
-    
-            float WrapWidth = TileSize;
-            ImVec2 TextSize = ImGui::CalcTextSize(DisplayName, nullptr, false, WrapWidth);
-            
-            float TextPosX = (TileSize - std::min(TextSize.x, WrapWidth)) * 0.5f;
-            
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + TextPosX);
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
-            
-            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + WrapWidth);
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 0.9f, 1.0f));
-            ImGui::TextWrapped("%s", DisplayName);
-            ImGui::PopStyleColor();
-            ImGui::PopTextWrapPos();
-    
-            ImGui::PopFont();
-    
-            ImGui::Dummy(ImVec2(0, std::max(0.0f, TextHeight - TextSize.y)));
-    
-            ImGui::EndGroup();
-            ImGui::PopID();
-    
-            ++ItemIndex;
         }
-    
+        Clipper.End();
+
         ImGui::PopStyleVar();
+    }
+
+    void FTileViewWidget::DrawTile(FTileViewItem* Item, const FTileViewContext& Context)
+    {
+        ImGui::PushID(Item);
+        ImGui::BeginGroup();
+
+        DrawItem(Item, Context, ImVec2(TileSize, TileSize));
+
+        // Measure the label in its font, then draw it straight into the draw list. Drawing the text
+        // as a raw primitive (not an ImGui item) keeps the cell's logical height fixed regardless of
+        // name length, which is what lets the row clipper stay aligned.
+        const FStringView Name = Item->GetCachedDisplayName();
+        const char* NameBegin  = Name.data();
+        const char* NameEnd    = Name.data() + Name.size();
+
+        ImGuiX::Font::PushFont(ImGuiX::Font::EFont::SmallBold);
+        ImFont*      LabelFont = ImGui::GetFont();
+        const float  FontSize  = ImGui::GetFontSize();
+        const ImVec2 TextSize  = ImGui::CalcTextSize(NameBegin, NameEnd, false, TileSize);
+        ImGuiX::Font::PopFont();
+
+        ImGui::Dummy(ImVec2(0.0f, GLabelGap));
+
+        const ImVec2 LabelPos = ImGui::GetCursorScreenPos();
+        const float  TextX    = LabelPos.x + (TileSize - std::min(TextSize.x, TileSize)) * 0.5f;
+        const ImVec4 ClipRect(LabelPos.x, LabelPos.y, LabelPos.x + TileSize, LabelPos.y + GLabelHeight);
+
+        ImGui::GetWindowDrawList()->AddText(LabelFont, FontSize, ImVec2(TextX, LabelPos.y),
+            ImGui::GetColorU32(ImVec4(0.9f, 0.9f, 0.9f, 1.0f)), NameBegin, NameEnd, TileSize, &ClipRect);
+
+        // Reserve the fixed label band so the group (and thus every row) has a uniform height.
+        ImGui::Dummy(ImVec2(TileSize, GLabelHeight));
+
+        ImGui::EndGroup();
+        ImGui::PopID();
     }
     
     void FTileViewWidget::ClearTree()

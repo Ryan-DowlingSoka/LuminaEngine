@@ -309,42 +309,55 @@ namespace Lumina
             FContentBrowserTileViewItem* ContentItem = static_cast<FContentBrowserTileViewItem*>(Item);
             
             ImVec4 TintColor = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-            
+
+            // Static icons resolve once: ToImTextureRef hashes the path and takes a lock on every
+            // call, so the resolved ref is cached. Only asset thumbnails are re-queried per frame
+            // (they stream in), falling back to the shared asset icon until ready.
             ImTextureRef ImTexture;
-            if (ContentItem->IsDirectory())
+            switch (ContentItem->GetIconKind())
             {
-                static const FString FolderIcon = Paths::GetEngineResourceDirectory() + "/Textures/Folder.png";
-                ImTexture = ImGuiX::ToImTextureRef(FolderIcon);
-                TintColor = ImVec4(1.0f, 0.9f, 0.6f, 1.0f);
-            }
-            else if (ContentItem->IsAsset())
-            {
-                if (FPackageThumbnail* MaybeThumbnail = CThumbnailManager::Get().GetThumbnailForPackage(ContentItem->GetVirtualPath()))
+            case EIconKind::Directory:
                 {
-                    ImTexture = ImGuiX::ToImTextureRef(MaybeThumbnail->LoadedImage);
+                    static const ImTextureRef Icon = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/Folder.png");
+                    ImTexture = Icon;
+                    TintColor  = ImVec4(1.0f, 0.9f, 0.6f, 1.0f);
+                    break;
                 }
-                else
+            case EIconKind::Asset:
                 {
-                    static const FString AssetIcon = Paths::GetEngineResourceDirectory() + "/Textures/Asset.png";
-                    ImTexture = ImGuiX::ToImTextureRef(AssetIcon);
+                    if (FPackageThumbnail* MaybeThumbnail = CThumbnailManager::Get().GetThumbnailForPackage(ContentItem->GetVirtualPath()))
+                    {
+                        ImTexture = ImGuiX::ToImTextureRef(MaybeThumbnail->LoadedImage);
+                    }
+                    else
+                    {
+                        static const ImTextureRef Icon = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/Asset.png");
+                        ImTexture = Icon;
+                    }
+                    break;
                 }
+            case EIconKind::LuaScript:
+                {
+                    static const ImTextureRef Icon = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/LuaScript.png");
+                    ImTexture = Icon;
+                    break;
+                }
+            case EIconKind::Markup:
+                {
+                    static const ImTextureRef Icon = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/rmlui.png");
+                    ImTexture = Icon;
+                    break;
+                }
+            case EIconKind::Audio:
+                {
+                    static const ImTextureRef Icon = ImGuiX::ToImTextureRef(Paths::GetEngineResourceDirectory() + "/Textures/Audio.png");
+                    ImTexture = Icon;
+                    break;
+                }
+            case EIconKind::Generic:
+                break;
             }
-            else if (ContentItem->IsLuaScript())
-            {
-                static const FString LuaIcon = Paths::GetEngineResourceDirectory() + "/Textures/LuaScript.png";
-                ImTexture = ImGuiX::ToImTextureRef(LuaIcon);
-            }
-            else if (ContentItem->GetExtension() == ".rml" || ContentItem->GetExtension() == ".rcss")
-            {
-                static const FString RmlIcon = Paths::GetEngineResourceDirectory() + "/Textures/rmlui.png";
-                ImTexture = ImGuiX::ToImTextureRef(RmlIcon);
-            }
-            else if (ContentItem->GetExtension() == ".wav")
-            {
-                static const FString AudioIcon = Paths::GetEngineResourceDirectory() + "/Textures/Audio.png";
-                ImTexture = ImGuiX::ToImTextureRef(AudioIcon);
-            }
-            
+
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.16f, 0.17f, 1.0f)); 
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.22f, 0.24f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.26f, 0.26f, 0.28f, 1.0f));
@@ -460,11 +473,30 @@ namespace Lumina
 
         ContentBrowserTileViewContext.RebuildTreeFunction = [this] (FTileViewWidget* Tree)
         {
+            // The Filter menu toggles asset classes. Directories, scripts, and loose files are not
+            // class-filterable, so they are always shown; assets are hidden when their class is off.
+            auto PassesFilter = [this](const VFS::FFileInfo& Info) -> bool
+            {
+                if (!Info.IsLAsset())
+                {
+                    return true;
+                }
+
+                const FAssetData* Data = FAssetRegistry::Get().GetAssetByPath(FStringView(Info.VirtualPath.c_str(), Info.VirtualPath.size()));
+                if (Data == nullptr)
+                {
+                    return true;
+                }
+
+                auto It = FilterState.find(Data->AssetClass);
+                return It == FilterState.end() || It->second;
+            };
+
             TVector<VFS::FFileInfo> SortedPaths;
-            
+
             VFS::DirectoryIterator(SelectedPath, [&](const VFS::FFileInfo& FileInfo)
             {
-                if (FileInfo.IsHidden())
+                if (FileInfo.IsHidden() || !PassesFilter(FileInfo))
                 {
                     return;
                 }

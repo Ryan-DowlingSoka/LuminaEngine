@@ -13,6 +13,8 @@ namespace Lumina
 {
     class FBitSetAllocator;
     class FVulkanRenderContext;
+    class FVulkanPipelineCache;
+    struct FDynamicPipelineStates;
 
     // Note: avoid vec3 in UBOs (std140 padding); pad to vec4 manually.
     VkFormat ConvertFormat(EFormat Format);
@@ -646,24 +648,55 @@ namespace Lumina
 
     };
     
+    // Vulkan-ready values for the states the device made dynamic, precomputed at pipeline
+    // creation (where the EConvert helpers live) so SetGraphicsState just feeds them to
+    // vkCmdSet* without re-converting per draw. Per-attachment arrays cover blend states.
+    struct FGraphicsDynamicStateValues
+    {
+        VkCullModeFlags         CullMode            = VK_CULL_MODE_NONE;
+        VkFrontFace             FrontFace           = VK_FRONT_FACE_CLOCKWISE;
+        VkBool32                DepthTestEnable     = VK_FALSE;
+        VkBool32                DepthWriteEnable    = VK_FALSE;
+        VkCompareOp             DepthCompareOp      = VK_COMPARE_OP_ALWAYS;
+        VkPolygonMode           PolygonMode         = VK_POLYGON_MODE_FILL;
+        uint32                  ColorAttachmentCount = 0;
+        VkBool32                BlendEnable[MaxRenderTargets]              = {};
+        VkColorBlendEquationEXT BlendEquation[MaxRenderTargets]           = {};
+        VkColorComponentFlags   ColorWriteMask[MaxRenderTargets]          = {};
+    };
+
+    // Builds a VkPipeline from a (canonicalized) desc, declaring the states in Dyn as
+    // dynamic. Shared across RHI pipeline objects that differ only in dynamic state.
+    VkPipeline CreateGraphicsVkPipeline(FVulkanDevice* Device, const FGraphicsPipelineDesc& Desc, const FRenderPassDesc& RenderPassDesc, VkPipelineLayout Layout, const FDynamicPipelineStates& Dyn);
+    FGraphicsDynamicStateValues ComputeGraphicsDynamicStateValues(const FGraphicsPipelineDesc& Desc, const FRenderPassDesc& RenderPassDesc);
+
     class FVulkanGraphicsPipeline : public FRHIGraphicsPipeline,  public FVulkanPipeline
     {
     public:
 
         friend class FVulkanRenderContext;
 
-        FVulkanGraphicsPipeline(FVulkanDevice* InDevice, const FGraphicsPipelineDesc& InDesc, const FRenderPassDesc& RenderPassDesc);
+        FVulkanGraphicsPipeline(FVulkanDevice* InDevice, const FGraphicsPipelineDesc& InDesc, const FRenderPassDesc& RenderPassDesc, FVulkanPipelineCache* InCache);
+
+        // The shared VkPipeline (stored in the base Pipeline member) is owned by the
+        // pipeline cache, not this object -- null it so ~FVulkanPipeline doesn't free it.
+        ~FVulkanGraphicsPipeline() { Pipeline = VK_NULL_HANDLE; }
 
         const FGraphicsPipelineDesc& GetDesc() const override { return Desc; }
-        
+
+        const FGraphicsDynamicStateValues& GetDynamicStateValues() const { return DynamicStateValues; }
+        size_t GetSharedPipelineHash() const { return SharedPipelineHash; }
+
     protected:
-        
+
         void* GetAPIResourceImpl(EAPIResourceType InType) override;
-    
+
     private:
 
         FGraphicsPipelineDesc       Desc;
-        
+        FGraphicsDynamicStateValues DynamicStateValues;
+        size_t                      SharedPipelineHash = 0;
+
     };
 
     class FVulkanComputePipeline : public FRHIComputePipeline,  public FVulkanPipeline

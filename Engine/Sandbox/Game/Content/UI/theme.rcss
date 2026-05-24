@@ -71,7 +71,8 @@ p { display: block; margin-bottom: 8dp; line-height: 1.45; color: #bac2de; }
 .text-warning { color: #f9e2af; }
 .text-danger  { color: #f38ba8; }
 
-/* Big monospace readout for HUD numbers. */
+/* Big monospace readout for HUD numbers. Right-aligned by its .stat-row (block + text-align:right),
+   so it needs no width/flex of its own -- it's just inline content in the line box. */
 .stat-value
 {
     font-family: JetBrains Mono;
@@ -87,7 +88,25 @@ p { display: block; margin-bottom: 8dp; line-height: 1.45; color: #bac2de; }
 .center  { align-items: center; justify-content: center; }
 .end     { justify-content: flex-end; }
 .grow    { flex-grow: 1; }
-.stat-row { display: flex; flex-direction: row; align-items: center; justify-content: space-between; margin-bottom: 7dp; }
+/* A stat-row is a cheap BLOCK line, not flex. The label floats into a definite-width left column
+   and the value is right-aligned inline content in the line box. This avoids flexbox entirely --
+   flex shrink-to-fit runs a full independent sub-layout per auto-sized item on every reflow, the
+   dominant cost for a live HUD that relayouts each frame. line-height keeps the two columns
+   vertically aligned in place of flex's align-items:center. */
+.stat-row
+{
+    display: block;
+    clear: both;
+    text-align: right;
+    line-height: 22dp;
+    margin-bottom: 7dp;
+}
+.stat-row .label
+{
+    float: left;
+    width: 50%;
+    text-align: left;
+}
 
 /* ---- Surfaces ------------------------------------------------------- */
 .panel

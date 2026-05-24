@@ -161,9 +161,9 @@ namespace Lumina
         VkBlitImageInfo2 BlitInfo                   = {};
         BlitInfo.sType                              = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2;
         BlitInfo.srcImage                           = Src->GetAPI<VkImage>();
-        BlitInfo.srcImageLayout                     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        BlitInfo.srcImageLayout                     = RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         BlitInfo.dstImage                           = Dst->GetAPI<VkImage>();
-        BlitInfo.dstImageLayout                     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        BlitInfo.dstImageLayout                     = RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         BlitInfo.filter                             = VK_FILTER_LINEAR;
 
         VkImageBlit2 BlitRegion                     = {};
@@ -249,7 +249,7 @@ namespace Lumina
         CurrentCommandBuffer->AddReferencedResource(Destination);
         CurrentCommandBuffer->AddStagingResource(Destination->Buffer);
 
-        vkCmdCopyImageToBuffer(CurrentCommandBuffer->CommandBuffer, Source->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, Destination->Buffer->Buffer, 1, &ImageCopy);
+        vkCmdCopyImageToBuffer(CurrentCommandBuffer->CommandBuffer, Source->GetImage(), RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL), Destination->Buffer->Buffer, 1, &ImageCopy);
         CommandListStats.NumCopies++;
     }
 
@@ -296,7 +296,7 @@ namespace Lumina
         CurrentCommandBuffer->AddReferencedResource(Destination);
         CurrentCommandBuffer->AddStagingResource(Source->Buffer);
 
-        vkCmdCopyBufferToImage(CurrentCommandBuffer->CommandBuffer, Source->Buffer->Buffer, Destination->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ImageCopy);
+        vkCmdCopyBufferToImage(CurrentCommandBuffer->CommandBuffer, Source->Buffer->Buffer, Destination->GetImage(), RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL), 1, &ImageCopy);
         CommandListStats.NumCopies++;
     }
 
@@ -385,7 +385,7 @@ namespace Lumina
             CurrentCommandBuffer->CommandBuffer,
             UploadBuffer->GetAPI<VkBuffer>(),
             Dst->GetAPI<VkImage, EAPIResourceType::Image>(),
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL),
             1, &CopyRegion
         );
 
@@ -437,7 +437,7 @@ namespace Lumina
 
         CommitBarriers();
 
-        vkCmdResolveImage(CurrentCommandBuffer->CommandBuffer, Source->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, Destination->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, Regions.size(), Regions.data());
+        vkCmdResolveImage(CurrentCommandBuffer->CommandBuffer, Source->GetImage(), RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL), Destination->GetImage(), RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL), Regions.size(), Regions.data());
     }
 
     void FVulkanCommandList::ClearImageFloat(FRHIImage* RESTRICT Image, FTextureSubresourceSet Subresource, const FColor& RESTRICT Color)
@@ -471,7 +471,7 @@ namespace Lumina
         CurrentCommandBuffer->AddReferencedResource(Image);
 
         CommandListStats.NumClearCommands++;
-        vkCmdClearColorImage(CurrentCommandBuffer->CommandBuffer, VulkanImage->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &Value, 1, &SubresourceRange);
+        vkCmdClearColorImage(CurrentCommandBuffer->CommandBuffer, VulkanImage->GetImage(), RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL), &Value, 1, &SubresourceRange);
 
     }
 
@@ -505,7 +505,7 @@ namespace Lumina
             DepthValue.depth    = (float)Color;
             DepthValue.stencil  = 0;
 
-            vkCmdClearDepthStencilImage(CurrentCommandBuffer->CommandBuffer, VulkanImage->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &DepthValue, 1, &SubresourceRange);
+            vkCmdClearDepthStencilImage(CurrentCommandBuffer->CommandBuffer, VulkanImage->GetImage(), RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL), &DepthValue, 1, &SubresourceRange);
 
             return;
         }
@@ -522,7 +522,7 @@ namespace Lumina
         Value.int32[3] = (int32)Color;
         
         CommandListStats.NumClearCommands++;
-        vkCmdClearColorImage(CurrentCommandBuffer->CommandBuffer, VulkanImage->GetImage(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &Value, 1, &SubresourceRange);
+        vkCmdClearColorImage(CurrentCommandBuffer->CommandBuffer, VulkanImage->GetImage(), RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL), &Value, 1, &SubresourceRange);
     }
 
     void FVulkanCommandList::CopyBuffer(FRHIBuffer* RESTRICT Source, uint64 SrcOffset, FRHIBuffer* RESTRICT Destination, uint64 DstOffset, uint64 CopySize)
@@ -1222,7 +1222,7 @@ namespace Lumina
             Attachment = {};
             Attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             Attachment.imageView = View;
-            Attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            Attachment.imageLayout = RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
             Attachment.loadOp = (PassAttachment.LoadOp == ERenderLoadOp::Clear) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
             Attachment.storeOp = (PassAttachment.StoreOp == ERenderStoreOp::Store) ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
 
@@ -1235,7 +1235,7 @@ namespace Lumina
 
                 Attachment.resolveMode = PickColorResolveMode(Format);
                 Attachment.resolveImageView = ResolveView;
-                Attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                Attachment.resolveImageLayout = RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
             }
 
             if (PassAttachment.LoadOp == ERenderLoadOp::Clear)
@@ -1273,7 +1273,7 @@ namespace Lumina
 
             DepthAttachment.sType        = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             DepthAttachment.imageView    = View;
-            DepthAttachment.imageLayout  = DepthDesc.bReadOnly ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            DepthAttachment.imageLayout  = RenderContext->GetEffectiveImageLayout(DepthDesc.bReadOnly ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
             DepthAttachment.loadOp       = (DepthDesc.LoadOp == ERenderLoadOp::Clear) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
             DepthAttachment.storeOp      = (DepthDesc.StoreOp == ERenderStoreOp::Store) ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
 
@@ -1288,7 +1288,7 @@ namespace Lumina
 
                 DepthAttachment.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
                 DepthAttachment.resolveImageView = ResolveView;
-                DepthAttachment.resolveImageLayout = DepthDesc.bReadOnly ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+                DepthAttachment.resolveImageLayout = RenderContext->GetEffectiveImageLayout(DepthDesc.bReadOnly ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
             }
 
             if (NumArraySlices)
@@ -1353,7 +1353,7 @@ namespace Lumina
         Range.baseArrayLayer = 0;                           // First layer in the image
         Range.layerCount     = 1;                           // Only clearing one layer
         
-        vkCmdClearColorImage(CurrentCommandBuffer->CommandBuffer, Image->GetAPI<VkImage, EAPIResourceType::Image>(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &Value, 1, &Range);
+        vkCmdClearColorImage(CurrentCommandBuffer->CommandBuffer, Image->GetAPI<VkImage, EAPIResourceType::Image>(), RenderContext->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL), &Value, 1, &Range);
     }
 
     void FVulkanCommandList::BindBindingSets(VkPipelineBindPoint BindPoint, VkPipelineLayout PipelineLayout, const TFixedVector<FRHIBindingSet*, 4>& BindingSets)
@@ -1466,6 +1466,26 @@ namespace Lumina
             CommandListStats.NumPipelineSwitches++;
             vkCmdBindPipeline(VkCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, State.Pipeline->GetAPI<VkPipeline, EAPIResourceType::Pipeline>());
             CurrentCommandBuffer->AddReferencedResource(State.Pipeline);
+
+            // States the device made dynamic (so the PSO didn't bake them) are supplied
+            // here from the bound pipeline's precomputed values. The shared VkPipeline
+            // declared them dynamic; not setting them would leave them undefined.
+            const FDynamicPipelineStates& Dyn = RenderContext->GetDynamicPipelineStates();
+            const FGraphicsDynamicStateValues& DV = static_cast<FVulkanGraphicsPipeline*>(State.Pipeline)->GetDynamicStateValues();
+
+            if (Dyn.bCullMode)         vkCmdSetCullMode(VkCmdBuffer, DV.CullMode);
+            if (Dyn.bFrontFace)        vkCmdSetFrontFace(VkCmdBuffer, DV.FrontFace);
+            if (Dyn.bDepthTestEnable)  vkCmdSetDepthTestEnable(VkCmdBuffer, DV.DepthTestEnable);
+            if (Dyn.bDepthWriteEnable) vkCmdSetDepthWriteEnable(VkCmdBuffer, DV.DepthWriteEnable);
+            if (Dyn.bDepthCompareOp)   vkCmdSetDepthCompareOp(VkCmdBuffer, DV.DepthCompareOp);
+            if (Dyn.bPolygonMode)      vkCmdSetPolygonModeEXT(VkCmdBuffer, DV.PolygonMode);
+
+            if (DV.ColorAttachmentCount > 0)
+            {
+                if (Dyn.bColorBlendEnable)   vkCmdSetColorBlendEnableEXT(VkCmdBuffer, 0, DV.ColorAttachmentCount, DV.BlendEnable);
+                if (Dyn.bColorBlendEquation) vkCmdSetColorBlendEquationEXT(VkCmdBuffer, 0, DV.ColorAttachmentCount, DV.BlendEquation);
+                if (Dyn.bColorWriteMask)     vkCmdSetColorWriteMaskEXT(VkCmdBuffer, 0, DV.ColorAttachmentCount, DV.ColorWriteMask);
+            }
         }
 
         if (CurrentGraphicsState.RenderPass != State.RenderPass)
@@ -1789,6 +1809,11 @@ namespace Lumina
 
             FilterBarrierForQueue(Before.StageFlags, Before.AccessMask, Info.CommandQueue);
             FilterBarrierForQueue(After.StageFlags,  After.AccessMask,  Info.CommandQueue);
+
+            // Under unified image layouts, every transition collapses to GENERAL->GENERAL
+            // (no layout change); only the access/stage sync remains.
+            Before.ImageLayout = RenderContext->GetEffectiveImageLayout(Before.ImageLayout);
+            After.ImageLayout  = RenderContext->GetEffectiveImageLayout(After.ImageLayout);
 
             ASSERT(After.ImageLayout != VK_IMAGE_LAYOUT_UNDEFINED);
 

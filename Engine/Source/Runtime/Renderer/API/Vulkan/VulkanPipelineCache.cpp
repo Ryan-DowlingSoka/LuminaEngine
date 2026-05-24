@@ -2,10 +2,51 @@
 #include "VulkanPipelineCache.h"
 
 #include "VulkanResources.h"
+#include "VulkanRenderContext.h"
+#include "Renderer/RHIGlobals.h"
 #include "Core/Profiler/Profile.h"
 
 namespace Lumina
 {
+    // Zero out the desc fields that are supplied dynamically at draw time so descs that
+    // differ only in those fields produce one shared VkPipeline. Must stay in lockstep
+    // with the dynamic states declared in CreateGraphicsVkPipeline / applied in
+    // SetGraphicsState, and with FVulkanRenderContext::GetDynamicPipelineStates().
+    static void CanonicalizeForDynamicState(FGraphicsPipelineDesc& Desc, const FDynamicPipelineStates& Dyn)
+    {
+        FRasterState&       Raster = Desc.RenderState.RasterState;
+        FDepthStencilState& Depth  = Desc.RenderState.DepthStencilState;
+        FBlendState&        Blend  = Desc.RenderState.BlendState;
+
+        if (Dyn.bCullMode)         Raster.CullMode = ERasterCullMode::None;
+        if (Dyn.bFrontFace)        Raster.FrontCounterClockwise = false;
+        if (Dyn.bPolygonMode)      Raster.FillMode = ERasterFillMode::Solid;
+        if (Dyn.bDepthTestEnable)  Depth.DepthTestEnable = false;
+        if (Dyn.bDepthWriteEnable) Depth.DepthWriteEnable = false;
+        if (Dyn.bDepthCompareOp)   Depth.DepthFunc = EComparisonFunc::Always;
+
+        if (Dyn.bColorBlendEnable || Dyn.bColorBlendEquation || Dyn.bColorWriteMask)
+        {
+            for (uint32 i = 0; i < MaxRenderTargets; ++i)
+            {
+                FBlendState::RenderTarget& RT = Blend.Targets[i];
+                if (Dyn.bColorBlendEnable)
+                {
+                    RT.bBlendEnable = false;
+                }
+                if (Dyn.bColorBlendEquation)
+                {
+                    RT.SrcBlend = EBlendFactor::One;  RT.DestBlend = EBlendFactor::Zero;  RT.BlendOp = EBlendOp::Add;
+                    RT.SrcBlendAlpha = EBlendFactor::One;  RT.DestBlendAlpha = EBlendFactor::Zero;  RT.BlendOpAlpha = EBlendOp::Add;
+                }
+                if (Dyn.bColorWriteMask)
+                {
+                    RT.ColorWriteMask = EColorMask::All;
+                }
+            }
+        }
+    }
+
     // Pipeline compatibility (Vulkan dynamic rendering) depends only on attachment
     // formats, sample count and view mask -- NOT the actual images, load/store ops,
     // clear color or render area. Keying the cache on the full render pass desc minted
@@ -51,11 +92,70 @@ namespace Lumina
             return It->second;
         }
 
-        auto NewPipeline = TRefCountPtr<FVulkanGraphicsPipeline>::Create(Device, InDesc, RenderPassDesc);
+        auto NewPipeline = TRefCountPtr<FVulkanGraphicsPipeline>::Create(Device, InDesc, RenderPassDesc, this);
 
 
         GraphicsPipelines.emplace(Hash, NewPipeline);
         return NewPipeline;
+    }
+
+    VkPipeline FVulkanPipelineCache::GetOrCreateSharedVkPipeline(FVulkanDevice* Device, const FGraphicsPipelineDesc& InDesc, const FRenderPassDesc& InRenderPassDesc, VkPipelineLayout Layout, size_t& OutCanonicalHash)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        FRenderPassDesc RenderPassDesc = InRenderPassDesc;
+        RenderPassDesc.SampleCount = RenderPassDesc.DeriveSampleCount();
+
+        const FDynamicPipelineStates& Dyn = static_cast<FVulkanRenderContext*>(GRenderContext)->GetDynamicPipelineStates();
+
+        FGraphicsPipelineDesc CanonicalDesc = InDesc;
+        CanonicalizeForDynamicState(CanonicalDesc, Dyn);
+
+        size_t Hash = 0;
+        Hash::HashCombine(Hash, CanonicalDesc);
+        Hash::HashCombine(Hash, HashRenderPassForPipeline(RenderPassDesc));
+        OutCanonicalHash = Hash;
+
+        FScopeLock Lock(ShaderMutex);
+
+        auto It = SharedGraphicsPipelines.find(Hash);
+        if (It != SharedGraphicsPipelines.end())
+        {
+            return It->second.Pipeline;
+        }
+
+        VkPipeline NewVkPipeline = CreateGraphicsVkPipeline(Device, CanonicalDesc, RenderPassDesc, Layout, Dyn);
+        SharedGraphicsPipelines.emplace(Hash, FSharedGraphicsPipeline{ NewVkPipeline, Device->GetDevice() });
+        return NewVkPipeline;
+    }
+
+    void FVulkanPipelineCache::DestroyOrphanedSharedPipelines()
+    {
+        // A shared VkPipeline is still needed iff some surviving RHI pipeline object points
+        // at its canonical hash. Canonical hash includes the shaders, so any pipeline sharing
+        // it has the same (recompiled) shaders and was erased alongside -- no dangling refs.
+        for (auto it = SharedGraphicsPipelines.begin(); it != SharedGraphicsPipelines.end(); )
+        {
+            bool bReferenced = false;
+            for (auto& [OuterHash, Pipeline] : GraphicsPipelines)
+            {
+                if (static_cast<FVulkanGraphicsPipeline*>(Pipeline.GetReference())->GetSharedPipelineHash() == it->first)
+                {
+                    bReferenced = true;
+                    break;
+                }
+            }
+
+            if (!bReferenced)
+            {
+                vkDestroyPipeline(it->second.Device, it->second.Pipeline, VK_ALLOC_CALLBACK);
+                it = SharedGraphicsPipelines.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
     }
 
     FRHIComputePipeline* FVulkanPipelineCache::GetOrCreateComputePipeline(FVulkanDevice* Device, const FComputePipelineDesc& InDesc)
@@ -114,19 +214,32 @@ namespace Lumina
                     ++it;
                 }
             }
+
+            // Drop any shared VkPipelines the erased graphics pipelines were the last to use.
+            DestroyOrphanedSharedPipelines();
         }
         else
         {
             GraphicsPipelines.clear();
             ComputePipelines.clear();
+            for (auto& [Hash, Pipeline] : SharedGraphicsPipelines)
+            {
+                vkDestroyPipeline(Pipeline.Device, Pipeline.Pipeline, VK_ALLOC_CALLBACK);
+            }
+            SharedGraphicsPipelines.clear();
         }
     }
-    
+
     void FVulkanPipelineCache::ReleasePipelines()
     {
         FScopeLock Lock(ShaderMutex);
 
         GraphicsPipelines.clear();
         ComputePipelines.clear();
+        for (auto& [Hash, Pipeline] : SharedGraphicsPipelines)
+        {
+            vkDestroyPipeline(Pipeline.Device, Pipeline.Pipeline, VK_ALLOC_CALLBACK);
+        }
+        SharedGraphicsPipelines.clear();
     }
 }

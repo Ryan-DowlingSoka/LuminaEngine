@@ -49,14 +49,27 @@ namespace Lumina
             FFixedString Path;
         };
 
+        // Picks which icon a tile draws. Resolved once at construction so the draw loop never
+        // re-parses the extension (which allocates) or re-classifies the file every frame.
+        enum class EIconKind : uint8
+        {
+            Directory,
+            Asset,
+            LuaScript,
+            Markup,     // .rml / .rcss
+            Audio,      // .wav
+            Generic,
+        };
+
         class FContentBrowserTileViewItem : public FTileViewItem
         {
         public:
-            
+
             FContentBrowserTileViewItem(FTileViewItem* InParent, const VFS::FFileInfo& InInfo, bool bInProtected)
                 : FTileViewItem(InParent)
                 , bProtected(bInProtected)
                 , FileInfo(InInfo)
+                , IconKind(ClassifyIcon(InInfo))
             {
             }
 
@@ -96,11 +109,25 @@ namespace Lumina
             NODISCARD bool IsLuaScript() const { return FileInfo.IsLua(); }
             NODISCARD FString GetExtension() const { return FileInfo.GetExt(); }
             NODISCARD bool IsProtected() const { return bProtected; }
-            
+            NODISCARD EIconKind GetIconKind() const { return IconKind; }
+
         private:
-            
+
+            static EIconKind ClassifyIcon(const VFS::FFileInfo& Info)
+            {
+                if (Info.IsDirectory()) { return EIconKind::Directory; }
+                if (Info.IsLAsset())    { return EIconKind::Asset; }
+                if (Info.IsLua())       { return EIconKind::LuaScript; }
+
+                const FString Ext = Info.GetExt();
+                if (Ext == ".rml" || Ext == ".rcss") { return EIconKind::Markup; }
+                if (Ext == ".wav")                   { return EIconKind::Audio; }
+                return EIconKind::Generic;
+            }
+
             bool            bProtected = false;
             VFS::FFileInfo  FileInfo;
+            EIconKind       IconKind = EIconKind::Generic;
         };
 
         LUMINA_SINGLETON_EDITOR_TOOL(FContentBrowserEditorTool)

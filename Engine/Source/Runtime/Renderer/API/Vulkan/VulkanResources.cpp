@@ -1520,7 +1520,7 @@ namespace Lumina
                     
                     VkDescriptorImageInfo& ImageInfo = ImageInfos.emplace_back();
                     ImageInfo.imageView = View;
-                    ImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    ImageInfo.imageLayout = static_cast<FVulkanRenderContext*>(GRenderContext)->GetEffectiveImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                     ImageInfo.sampler = Item.GetTextureResource().Sampler ?
                     Item.GetTextureResource().Sampler->GetAPI<VkSampler>() : TStaticRHISampler<>::GetRHI()->GetAPI<VkSampler>();
                     
@@ -1751,26 +1751,68 @@ namespace Lumina
         static_cast<FVulkanRenderContext*>(GRenderContext)->SetVulkanObjectName(DebugName, VK_OBJECT_TYPE_PIPELINE_LAYOUT, (uintptr_t)PipelineLayout);
     }
 
-    FVulkanGraphicsPipeline::FVulkanGraphicsPipeline(FVulkanDevice* InDevice, const FGraphicsPipelineDesc& InDesc, const FRenderPassDesc& RenderPassDesc)
-        :FVulkanPipeline(InDevice)
+    FGraphicsDynamicStateValues ComputeGraphicsDynamicStateValues(const FGraphicsPipelineDesc& Desc, const FRenderPassDesc& RenderPassDesc)
     {
-        Desc = InDesc;
+        const FRasterState&       RasterState = Desc.RenderState.RasterState;
+        const FDepthStencilState& DepthState  = Desc.RenderState.DepthStencilState;
+        const FBlendState&        BlendState  = Desc.RenderState.BlendState;
 
-        CreatePipelineLayout(InDesc.DebugName, InDesc.BindingLayouts, VK_SHADER_STAGE_ALL_GRAPHICS, PushConstantVisibility);
-        
-        VkDynamicState DynamicStates[] =
+        FGraphicsDynamicStateValues Values;
+        Values.CullMode         = ToVkCullModeFlags(RasterState.CullMode);
+        Values.FrontFace        = RasterState.FrontCounterClockwise ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
+        Values.DepthTestEnable  = DepthState.DepthTestEnable ? VK_TRUE : VK_FALSE;
+        Values.DepthWriteEnable = DepthState.DepthWriteEnable ? VK_TRUE : VK_FALSE;
+        Values.DepthCompareOp   = ToVkCompareOp(DepthState.DepthFunc);
+        Values.PolygonMode      = ToVkPolygonMode(RasterState.FillMode);
+
+        Values.ColorAttachmentCount = (uint32)RenderPassDesc.ColorAttachments.size();
+        for (uint32 i = 0; i < Values.ColorAttachmentCount && i < MaxRenderTargets; ++i)
         {
-            VK_DYNAMIC_STATE_SCISSOR,
-            VK_DYNAMIC_STATE_VIEWPORT,
-            VK_DYNAMIC_STATE_LINE_WIDTH,
-        };
-        
+            const FBlendState::RenderTarget& RT = BlendState.Targets[i];
+            Values.BlendEnable[i]                          = RT.bBlendEnable ? VK_TRUE : VK_FALSE;
+            Values.BlendEquation[i].srcColorBlendFactor    = ToVkBlendFactor(RT.SrcBlend);
+            Values.BlendEquation[i].dstColorBlendFactor    = ToVkBlendFactor(RT.DestBlend);
+            Values.BlendEquation[i].colorBlendOp           = (RT.BlendOp == EBlendOp::Add) ? VK_BLEND_OP_ADD : VK_BLEND_OP_MAX;
+            Values.BlendEquation[i].srcAlphaBlendFactor    = ToVkBlendFactor(RT.SrcBlendAlpha);
+            Values.BlendEquation[i].dstAlphaBlendFactor    = ToVkBlendFactor(RT.DestBlendAlpha);
+            Values.BlendEquation[i].alphaBlendOp           = (RT.BlendOpAlpha == EBlendOp::Add) ? VK_BLEND_OP_ADD : VK_BLEND_OP_MAX;
+            // EColorMask bits are defined equal to VkColorComponentFlagBits (R=1,G=2,B=4,A=8).
+            Values.ColorWriteMask[i]                       = (VkColorComponentFlags)RT.ColorWriteMask;
+        }
+        return Values;
+    }
+
+    VkPipeline CreateGraphicsVkPipeline(FVulkanDevice* Device, const FGraphicsPipelineDesc& Desc, const FRenderPassDesc& RenderPassDesc, VkPipelineLayout Layout, const FDynamicPipelineStates& Dyn)
+    {
+        // Scissor/viewport/line-width are always dynamic; the rest depend on device support.
+        // States declared dynamic here have their baked CreateInfo values ignored by the
+        // driver and are instead supplied per-draw by SetGraphicsState.
+        TFixedVector<VkDynamicState, 16> DynamicStates;
+        DynamicStates.push_back(VK_DYNAMIC_STATE_SCISSOR);
+        DynamicStates.push_back(VK_DYNAMIC_STATE_VIEWPORT);
+        DynamicStates.push_back(VK_DYNAMIC_STATE_LINE_WIDTH);
+        if (Dyn.bCullMode)           DynamicStates.push_back(VK_DYNAMIC_STATE_CULL_MODE);
+        if (Dyn.bFrontFace)          DynamicStates.push_back(VK_DYNAMIC_STATE_FRONT_FACE);
+        if (Dyn.bDepthTestEnable)    DynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE);
+        if (Dyn.bDepthWriteEnable)   DynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE);
+        if (Dyn.bDepthCompareOp)     DynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_COMPARE_OP);
+        if (Dyn.bPolygonMode)        DynamicStates.push_back(VK_DYNAMIC_STATE_POLYGON_MODE_EXT);
+
+        // Blend states are per-color-attachment: only declare them dynamic when the pass
+        // has color attachments, otherwise a depth-only pipeline (shadows) would require a
+        // vkCmdSetColorBlend* call that has no attachments to target. SetGraphicsState gates
+        // the matching vkCmdSet* on the same condition (ColorAttachmentCount > 0).
+        const bool bHasColorAttachments = !RenderPassDesc.ColorAttachments.empty();
+        if (Dyn.bColorBlendEnable   && bHasColorAttachments) DynamicStates.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
+        if (Dyn.bColorBlendEquation && bHasColorAttachments) DynamicStates.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT);
+        if (Dyn.bColorWriteMask     && bHasColorAttachments) DynamicStates.push_back(VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT);
+
         TFixedVector<VkPipelineShaderStageCreateInfo, 2> ShaderStages;
-        if (InDesc.VS)
+        if (Desc.VS)
         {
             VkPipelineShaderStageCreateInfo VertexStage = {};
             VertexStage.sType                   = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-            VertexStage.module                  = InDesc.VS->GetAPI<VkShaderModule>();
+            VertexStage.module                  = Desc.VS->GetAPI<VkShaderModule>();
             VertexStage.pName                   = "main";
             VertexStage.pNext                   = nullptr;
             VertexStage.stage                   = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1778,27 +1820,27 @@ namespace Lumina
             ShaderStages.push_back(VertexStage);
         }
 
-        if (InDesc.PS)
+        if (Desc.PS)
         {
             VkPipelineShaderStageCreateInfo FragmentStage = {};
             FragmentStage.sType                 = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-            FragmentStage.module                = InDesc.PS->GetAPI<VkShaderModule>();
+            FragmentStage.module                = Desc.PS->GetAPI<VkShaderModule>();
             FragmentStage.pName                 = "main";
             FragmentStage.pNext                 = nullptr;
             FragmentStage.stage                 = VK_SHADER_STAGE_FRAGMENT_BIT;
             FragmentStage.pSpecializationInfo   = nullptr;
             ShaderStages.push_back(FragmentStage);
         }
-        
+
         DEBUG_ASSERT(!ShaderStages.empty());
 
         VkPipelineDynamicStateCreateInfo DynamicState = {};
         DynamicState.sType                      = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        DynamicState.dynamicStateCount          = (uint32)std::size(DynamicStates);
-        DynamicState.pDynamicStates             = DynamicStates;
+        DynamicState.dynamicStateCount          = (uint32)DynamicStates.size();
+        DynamicState.pDynamicStates             = DynamicStates.data();
 
-        FVulkanInputLayout* InputLayout = InDesc.InputLayout.As<FVulkanInputLayout>();
-        
+        FVulkanInputLayout* InputLayout = Desc.InputLayout.As<FVulkanInputLayout>();
+
         VkPipelineVertexInputStateCreateInfo VertexInputState = {};
         VertexInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
         if (InputLayout != nullptr)
@@ -1808,19 +1850,19 @@ namespace Lumina
             VertexInputState.pVertexBindingDescriptions         = InputLayout->BindingDesc.data();
             VertexInputState.vertexBindingDescriptionCount      = (uint32)InputLayout->BindingDesc.size();
         }
-        
+
         VkPipelineInputAssemblyStateCreateInfo InputAssemblyState = {};
         InputAssemblyState.sType                    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-        InputAssemblyState.topology                 = ToVkPrimitiveTopology(InDesc.PrimType);
+        InputAssemblyState.topology                 = ToVkPrimitiveTopology(Desc.PrimType);
         InputAssemblyState.primitiveRestartEnable   = VK_FALSE;
-        
+
         VkPipelineViewportStateCreateInfo ViewportState = {};
         ViewportState.sType                 = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
         ViewportState.viewportCount         = 1;
         ViewportState.scissorCount          = 1;
 
-        const FRasterState& RasterState = InDesc.RenderState.RasterState;
-        
+        const FRasterState& RasterState = Desc.RenderState.RasterState;
+
         VkPipelineRasterizationStateCreateInfo RasterizationState = {};
         RasterizationState.sType                        = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
         RasterizationState.polygonMode                  = ToVkPolygonMode(RasterState.FillMode);
@@ -1832,8 +1874,8 @@ namespace Lumina
         RasterizationState.depthBiasClamp               = RasterState.DepthBiasClamp;
         RasterizationState.depthBiasSlopeFactor         = RasterState.SlopeScaledDepthBias;
 
-        const FDepthStencilState& DepthState = InDesc.RenderState.DepthStencilState;
-        
+        const FDepthStencilState& DepthState = Desc.RenderState.DepthStencilState;
+
         VkPipelineDepthStencilStateCreateInfo DepthStencilState = {};
         DepthStencilState.sType                     = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         DepthStencilState.depthTestEnable           = DepthState.DepthTestEnable;
@@ -1843,7 +1885,7 @@ namespace Lumina
         ConvertStencilOps(DepthState.FrontFaceStencil, DepthStencilState);
         ConvertStencilOps(DepthState.BackFaceStencil, DepthStencilState);
 
-        const FBlendState& BlendState = InDesc.RenderState.BlendState;
+        const FBlendState& BlendState = Desc.RenderState.BlendState;
 
 
         TFixedVector<VkFormat, 8> ColorAttachmentFormats(RenderPassDesc.ColorAttachments.size());
@@ -1856,7 +1898,7 @@ namespace Lumina
 
             const FBlendState::RenderTarget& RenderTarget           = BlendState.Targets[i];
             ColorAttachmentFormats[i]                               = ConvertFormat(AttachmentFormat);
-            
+
             ColorBlendAttachmentStates[i].colorWriteMask            = VK_COLOR_COMPONENT_FLAG_BITS_MAX_ENUM;
             ColorBlendAttachmentStates[i].colorBlendOp              = (RenderTarget.BlendOp == EBlendOp::Add) ? VK_BLEND_OP_ADD : VK_BLEND_OP_MAX;
             ColorBlendAttachmentStates[i].alphaBlendOp              = (RenderTarget.BlendOpAlpha == EBlendOp::Add) ? VK_BLEND_OP_ADD : VK_BLEND_OP_MAX;
@@ -1873,7 +1915,7 @@ namespace Lumina
         ColorBlendState.attachmentCount     = (uint32)ColorBlendAttachmentStates.size();
         ColorBlendState.pAttachments        = ColorBlendAttachmentStates.data();
 
-        
+
         VkFormat DepthAttachmentFormat = VK_FORMAT_UNDEFINED;
         if (RenderPassDesc.DepthAttachment.IsValid())
         {
@@ -1887,7 +1929,7 @@ namespace Lumina
         VkPipelineMultisampleStateCreateInfo MultisampleState = {};
         MultisampleState.sType                  = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
         MultisampleState.rasterizationSamples   = ToVkSampleCount(RenderPassDesc.SampleCount);
-        
+
         VkPipelineRenderingCreateInfo RenderingCreateInfo   = {};
         RenderingCreateInfo.sType                           = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
         RenderingCreateInfo.colorAttachmentCount            = (uint32)ColorBlendAttachmentStates.size();
@@ -1895,7 +1937,7 @@ namespace Lumina
         RenderingCreateInfo.depthAttachmentFormat           = DepthAttachmentFormat;
         RenderingCreateInfo.stencilAttachmentFormat         = VK_FORMAT_UNDEFINED;
         RenderingCreateInfo.viewMask                        = RenderPassDesc.ViewMask;
-        
+
         VkGraphicsPipelineCreateInfo CreateInfo = {};
         CreateInfo.sType                        = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
         CreateInfo.pNext                        = &RenderingCreateInfo;
@@ -1909,15 +1951,35 @@ namespace Lumina
         CreateInfo.pDynamicState                = &DynamicState;
         CreateInfo.stageCount                   = (uint32)ShaderStages.size();
         CreateInfo.pStages                      = ShaderStages.data();
-        CreateInfo.layout                       = PipelineLayout;
+        CreateInfo.layout                       = Layout;
         CreateInfo.renderPass                   = VK_NULL_HANDLE;
         CreateInfo.subpass                      = 0;
-        
+
+        VkPipeline Pipeline = VK_NULL_HANDLE;
         VK_CHECK(vkCreateGraphicsPipelines(Device->GetDevice(), nullptr, 1, &CreateInfo, VK_ALLOC_CALLBACK, &Pipeline));
-        
+
         DEBUG_ASSERT(Pipeline != VK_NULL_HANDLE);
         static_cast<FVulkanRenderContext*>(GRenderContext)->SetVulkanObjectName(Desc.DebugName, VK_OBJECT_TYPE_PIPELINE, (uintptr_t)Pipeline);
 
+        return Pipeline;
+    }
+
+    FVulkanGraphicsPipeline::FVulkanGraphicsPipeline(FVulkanDevice* InDevice, const FGraphicsPipelineDesc& InDesc, const FRenderPassDesc& RenderPassDesc, FVulkanPipelineCache* InCache)
+        :FVulkanPipeline(InDevice)
+    {
+        Desc = InDesc;
+
+        CreatePipelineLayout(InDesc.DebugName, InDesc.BindingLayouts, VK_SHADER_STAGE_ALL_GRAPHICS, PushConstantVisibility);
+
+        // Real (non-canonicalized) values are fed to vkCmdSet* at draw time.
+        DynamicStateValues = ComputeGraphicsDynamicStateValues(InDesc, RenderPassDesc);
+
+        // The underlying VkPipeline is shared across descs that differ only in dynamic
+        // state. Stored in the base Pipeline member; the cache owns its lifetime, so the
+        // dtor nulls it to keep ~FVulkanPipeline from destroying it.
+        Pipeline = InCache->GetOrCreateSharedVkPipeline(InDevice, InDesc, RenderPassDesc, PipelineLayout, SharedPipelineHash);
+
+        DEBUG_ASSERT(Pipeline != VK_NULL_HANDLE);
     }
 
     void* FVulkanGraphicsPipeline::GetAPIResourceImpl(EAPIResourceType InType)

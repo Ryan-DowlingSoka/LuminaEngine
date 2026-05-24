@@ -42,6 +42,25 @@ namespace Lumina
         PushDescriptors,
         ConservativeRasterization,
         ViewportIndexLayer,
+        UnifiedImageLayouts,
+        ExtendedDynamicState3,
+    };
+
+    // Pipeline states moved to dynamic so descs differing only in these no longer mint a
+    // separate PSO. Cull/front-face/depth are core in Vulkan 1.4 (always on); the EDS3
+    // states are gated per-feature on VK_EXT_extended_dynamic_state3 and fall back to
+    // baked-in-the-PSO when unsupported.
+    struct FDynamicPipelineStates
+    {
+        bool bCullMode           = false;
+        bool bFrontFace          = false;
+        bool bDepthTestEnable    = false;
+        bool bDepthWriteEnable   = false;
+        bool bDepthCompareOp     = false;
+        bool bPolygonMode        = false;
+        bool bColorBlendEnable   = false;
+        bool bColorBlendEquation = false;
+        bool bColorWriteMask     = false;
     };
 
     VkImageAspectFlags GuessImageAspectFlags(VkFormat Format);
@@ -241,7 +260,29 @@ namespace Lumina
         
         void SetVulkanObjectName(FName Name, VkObjectType ObjectType, uint64 Handle);
         FVulkanRenderContextFunctions& GetDebugUtils();
-    
+
+        // VK_KHR_unified_image_layouts: when enabled, GENERAL is universally optimal,
+        // so every image stays in GENERAL for its whole life and no layout transitions
+        // are issued (the swapchain still needs PRESENT_SRC to present).
+        FORCEINLINE bool SupportsUnifiedImageLayouts() const { return EnabledExtensions.IsFlagSet(EVulkanExtensions::UnifiedImageLayouts); }
+
+        // Collapses any optimal layout to GENERAL when unified layouts are active.
+        // PRESENT_SRC and UNDEFINED pass through (present is the one real transition,
+        // UNDEFINED is the initial discard).
+        FORCEINLINE VkImageLayout GetEffectiveImageLayout(VkImageLayout Layout) const
+        {
+            if (SupportsUnifiedImageLayouts() && Layout != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR && Layout != VK_IMAGE_LAYOUT_UNDEFINED)
+            {
+                return VK_IMAGE_LAYOUT_GENERAL;
+            }
+            return Layout;
+        }
+
+        // Which pipeline states are dynamic on this device (see FDynamicPipelineStates).
+        // Read by both pipeline creation (which states to declare dynamic + canonicalize
+        // out of the cache key) and SetGraphicsState (which vkCmdSet* to issue).
+        FORCEINLINE const FDynamicPipelineStates& GetDynamicPipelineStates() const { return DynamicPipelineStates; }
+
     private:
 
         FBitSetAllocator                                    TimerQueryAllocator;
@@ -269,6 +310,7 @@ namespace Lumina
         FMutex                                              SamplerMutex;
 
         TBitFlags<EVulkanExtensions>                        EnabledExtensions;
+        FDynamicPipelineStates                              DynamicPipelineStates;
 
         uint8                                               CurrentFrameIndex;
         FRenderContextDesc                                  Description;
