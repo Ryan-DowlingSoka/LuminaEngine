@@ -397,8 +397,6 @@ namespace Lumina
 
     void FPrefabEditorTool::CommitPreviewWorldToPrefab()
     {
-        using namespace entt::literals;
-
         CPrefab* Prefab = GetPrefab();
         if (Prefab == nullptr || World == nullptr)
         {
@@ -407,63 +405,20 @@ namespace Lumina
 
         entt::registry& WorldRegistry = World->GetEntityRegistry();
 
-        // Gather every entity that belongs to the prefab (tagged with SPrefabComponent).
+        // Gather every entity that belongs to the prefab (tagged with SPrefabComponent); the
+        // preview world also holds preview-only lights/floor/camera that must not be captured.
         TVector<entt::entity> PrefabEntities;
         WorldRegistry.view<SPrefabComponent>().each([&](entt::entity E, const SPrefabComponent&)
         {
             PrefabEntities.push_back(E);
         });
 
-        // Rebuild the prefab's registry from scratch to avoid accumulating dead entities.
+        // Rebuild from scratch (avoids accumulating dead entities). CopyRegistry copies just the
+        // tagged subset, skips the editor-only set, and remaps hierarchy + entity-handle fields.
         Prefab->Registry = entt::registry{};
-
         THashMap<entt::entity, entt::entity> SrcToDst;
-        for (entt::entity SrcE : PrefabEntities)
-        {
-            SrcToDst[SrcE] = Prefab->Registry.create();
-        }
-
-        for (auto&& [ID, SrcSet] : WorldRegistry.storage())
-        {
-            // Skip every editor-only state plus FRelationshipComponent (we remap below).
-            if (ID == entt::type_hash<FRelationshipComponent>::value()) continue;
-            if (EditorEntityUtils::IsEditorOnlyComponent(ID)) continue;
-
-            entt::meta_type MetaType = entt::resolve(SrcSet.info());
-            if (!MetaType) continue;
-
-            for (entt::entity SrcE : PrefabEntities)
-            {
-                if (!SrcSet.contains(SrcE)) continue;
-
-                entt::entity DstE = SrcToDst[SrcE];
-                void* Ptr = SrcSet.value(SrcE);
-                entt::meta_any Any = MetaType.from_void(Ptr);
-                ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs,
-                    entt::forward_as_meta(Prefab->Registry), DstE, entt::forward_as_meta(Any));
-            }
-        }
-
-        // Remap relationships: parent/sibling pointers that escape the captured set become null.
-        auto Remap = [&](entt::entity& E)
-        {
-            if (E == entt::null) return;
-            auto It = SrcToDst.find(E);
-            E = (It != SrcToDst.end()) ? It->second : entt::null;
-        };
-
-        for (entt::entity SrcE : PrefabEntities)
-        {
-            if (const FRelationshipComponent* Rel = WorldRegistry.try_get<FRelationshipComponent>(SrcE))
-            {
-                FRelationshipComponent DstRel = *Rel;
-                Remap(DstRel.First);
-                Remap(DstRel.Prev);
-                Remap(DstRel.Next);
-                Remap(DstRel.Parent);
-                Prefab->Registry.emplace_or_replace<FRelationshipComponent>(SrcToDst[SrcE], DstRel);
-            }
-        }
+        CPrefab::CopyRegistry(WorldRegistry, Prefab->Registry, SrcToDst, &PrefabEntities,
+            +[](entt::id_type ID) { return EditorEntityUtils::IsEditorOnlyComponent(ID); });
     }
 
     void FPrefabEditorTool::OnSave()

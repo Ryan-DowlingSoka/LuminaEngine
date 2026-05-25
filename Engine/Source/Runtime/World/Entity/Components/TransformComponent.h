@@ -158,8 +158,12 @@ namespace Lumina
         FUNCTION(Script)
         void SetWorldTransform(const FTransform& InTransform)
         {
-            WorldTransform = InTransform;
-            MarkDirty();
+            // Convert to the parent-relative local transform; assigning WorldTransform directly
+            // would be discarded by the next ResolveIfDirty (world = parentWorld * local).
+            if (Registry)
+            {
+                ECS::Utils::SetEntityWorldTransform(*Registry, Entity, InTransform);
+            }
         }
         
         FUNCTION(Script)
@@ -274,7 +278,6 @@ namespace Lumina
     
         FEntityRegistry*    Registry = nullptr;
         entt::entity        Entity   = entt::null;
-        bool                bDirty = false;
     };
     
 }

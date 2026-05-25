@@ -1,5 +1,7 @@
 ﻿#pragma once
 #include "Components/RelationshipComponent.h"
+#include "Containers/Array.h"
+#include "Containers/Name.h"
 #include "Core/Serialization/Archiver.h"
 #include "Registry/EntityRegistry.h"
 #include "Scripting/Lua/Reference.h"
@@ -9,6 +11,7 @@
 namespace Lumina
 {
 	class CStruct;
+	struct FTransform;
 }
 
 namespace Lumina::ECS::Utils
@@ -24,6 +27,28 @@ namespace Lumina::ECS::Utils
 	RUNTIME_API bool IsDescendantOf(FEntityRegistry& Registry, entt::entity Potential, entt::entity Ancestor);
 	RUNTIME_API bool IsChild(FEntityRegistry& Registry, entt::entity Entity);
 	RUNTIME_API bool IsParent(FEntityRegistry& Registry, entt::entity Entity);
+
+	// Immediate parent, or entt::null when the entity is a root / has no relationship component.
+	RUNTIME_API entt::entity GetParent(FEntityRegistry& Registry, entt::entity Entity);
+
+	// Walk up the parent chain to the topmost ancestor; returns Entity itself when it has no parent.
+	RUNTIME_API entt::entity GetRootEntity(FEntityRegistry& Registry, entt::entity Entity);
+
+	// Immediate parent up to the root, nearest first. Does not include Entity.
+	RUNTIME_API void CollectAncestors(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutAncestors);
+
+	// First direct child whose SNameComponent matches Name, or entt::null. Scoped to Parent's children.
+	RUNTIME_API entt::entity FindChildByName(FEntityRegistry& Registry, entt::entity Parent, const FName& Name);
+
+	// As FindChildByName but searches the whole subtree depth-first (pre-order, nearest first).
+	RUNTIME_API entt::entity FindDescendantByName(FEntityRegistry& Registry, entt::entity Parent, const FName& Name);
+
+	// Next/previous entry in the parent's sibling list, or entt::null at the ends / when parentless.
+	RUNTIME_API entt::entity GetNextSibling(FEntityRegistry& Registry, entt::entity Entity);
+	RUNTIME_API entt::entity GetPrevSibling(FEntityRegistry& Registry, entt::entity Entity);
+
+	// Other children of this entity's parent, excluding Entity itself. Empty when parentless.
+	RUNTIME_API void CollectSiblings(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutSiblings);
 	RUNTIME_API size_t GetChildCount(FEntityRegistry& Registry, entt::entity Parent);
 	RUNTIME_API size_t GetSiblingIndex(FEntityRegistry& Registry, entt::entity Entity);
 	RUNTIME_API void CollectDescendants(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutDescendants);
@@ -87,6 +112,30 @@ namespace Lumina::ECS::Utils
 	RUNTIME_API glm::vec3 TranslateEntity(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Translation);
 	
 	RUNTIME_API entt::entity DuplicateEntity(FEntityRegistry& Registry, entt::entity Entity);
+
+	/**
+	 * Remap every reflected entity-handle field on Entity's components through Map.
+	 * An entity handle is a uint32 property tagged with the "Entity" metadata - the
+	 * same fields the editor draws with FEntityPropertyCustomization - storing an
+	 * entt::entity's integral id. Nested struct fields are walked too. The typed
+	 * entt::entity links inside FRelationshipComponent are NOT touched here; the
+	 * hierarchy-aware caller remaps those.
+	 *
+	 * Ids absent from Map are left untouched when bClearUnmapped is false (a duplicate
+	 * keeps references to entities outside the copied set), or reset to entt::null when
+	 * true (self-contained copies such as prefab instantiation, where a dangling id
+	 * would otherwise alias an unrelated entity in the target world).
+	 */
+	RUNTIME_API void RemapEntityReferences(FEntityRegistry& Registry, entt::entity Entity, const THashMap<entt::entity, entt::entity>& Map, bool bClearUnmapped);
+
+	/**
+	 * Set an entity's world-space transform by converting it into the parent-relative
+	 * local transform that resolves back to it. Writing WorldTransform directly is wrong:
+	 * the next ResolveIfDirty recomputes world = parentWorld * local and discards it. This
+	 * is the single source of truth for world->local conversion (reparent, detach, the
+	 * STransformComponent::SetWorldTransform script call).
+	 */
+	RUNTIME_API void SetEntityWorldTransform(FEntityRegistry& Registry, entt::entity Entity, const FTransform& WorldTransform);
 
 	RUNTIME_API glm::vec3 GetDirectionVector(FEntityRegistry& Registry, entt::entity To, entt::entity From);
 	

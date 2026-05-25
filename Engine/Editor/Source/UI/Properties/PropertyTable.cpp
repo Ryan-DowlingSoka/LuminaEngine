@@ -8,6 +8,7 @@
 #include "Core/Reflection/Type/Properties/OptionalProperty.h"
 #include "Core/Reflection/Type/Properties/StructProperty.h"
 #include "Customizations/CoreTypeCustomization.h"
+#include "Customizations/EntityPropertyCustomization.h"
 #include "Tools/UI/DevelopmentToolUI.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
@@ -309,7 +310,16 @@ namespace Lumina
             Customization = FNumericPropertyCustomization<uint16, ImGuiDataType_U16>::MakeInstance();
             break;
         case EPropertyTypeFlags::UInt32:
-            Customization = FNumericPropertyCustomization<uint32, ImGuiDataType_U32>::MakeInstance();
+            // A uint32 tagged PROPERTY(Entity) is an entity reference: draw the picker
+            // instead of a raw number field.
+            if (PropertyHandle->Property->HasMetadata("Entity"))
+            {
+                Customization = FEntityPropertyCustomization::MakeInstance();
+            }
+            else
+            {
+                Customization = FNumericPropertyCustomization<uint32, ImGuiDataType_U32>::MakeInstance();
+            }
             break;
         case EPropertyTypeFlags::UInt64:
             Customization = FNumericPropertyCustomization<uint64, ImGuiDataType_U64>::MakeInstance();

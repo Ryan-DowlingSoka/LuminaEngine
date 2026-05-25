@@ -183,70 +183,72 @@ namespace Lumina
         PROPERTY(Editable, Category = "Simulation")
         bool bLooping = true;
 
-        PROPERTY(Editable, Category = "Simulation")
+        // The behavior fields below are now authored as modules in the particle editor's stack and
+        // are baked into the generated compute shader. They remain as serialized data (non-editable)
+        // so the legacy uniform-driven ParticleSimulate.slang still works for assets that have not
+        // been compiled to a module stack yet. Do not surface them in the editor.
+        PROPERTY()
         EParticleShaderMode ShaderMode = EParticleShaderMode::Default;
 
-        PROPERTY(Editable, Category = "Emitter Shape")
+        PROPERTY()
         EParticleEmitterShape Shape = EParticleEmitterShape::Point;
 
-        /** Sphere: x=radius. Box: xyz=half extents. Cone: x=base radius, y=height. Ring/Disk: x=outer, y=inner. */
-        PROPERTY(Editable, Category = "Emitter Shape")
+        PROPERTY()
         glm::vec3 ShapeSize = glm::vec3(1.0f, 1.0f, 1.0f);
 
-        /** Cone half-angle in degrees. */
-        PROPERTY(Editable, Category = "Emitter Shape", ClampMin = 0.0f, ClampMax = 180.0f)
+        PROPERTY()
         float ShapeAngle = 30.0f;
 
-        PROPERTY(Editable, Category = "Velocity")
+        PROPERTY()
         EParticleVelocityMode VelocityMode = EParticleVelocityMode::Explicit;
 
-        PROPERTY(Editable, Category = "Velocity")
+        PROPERTY()
         glm::vec3 VelocityMin = glm::vec3(-0.5f, 1.0f, -0.5f);
 
-        PROPERTY(Editable, Category = "Velocity")
+        PROPERTY()
         glm::vec3 VelocityMax = glm::vec3(0.5f, 3.0f, 0.5f);
 
-        PROPERTY(Editable, Category = "Velocity")
+        PROPERTY()
         glm::vec2 SpeedRange = glm::vec2(1.0f, 3.0f);
 
-        PROPERTY(Editable, Category = "Lifetime", ClampMin = 0.01f)
+        PROPERTY()
         glm::vec2 LifetimeRange = glm::vec2(1.0f, 2.0f);
 
-        PROPERTY(Editable, Category = "Physics")
+        PROPERTY()
         glm::vec3 Gravity = glm::vec3(0.0f, -9.8f, 0.0f);
 
-        PROPERTY(Editable, Category = "Physics", ClampMin = 0.0f)
+        PROPERTY()
         float Drag = 0.0f;
 
-        /** 0 = world-space spawns; 1 = particles flow with emitter motion. */
-        PROPERTY(Editable, Category = "Physics", ClampMin = 0.0f, ClampMax = 1.0f)
+        /** 0 = world-space spawns; 1 = particles flow with emitter motion. Applied at spawn regardless of modules. */
+        PROPERTY(Editable, Category = "Emitter", ClampMin = 0.0f, ClampMax = 1.0f)
         float InheritEmitterVelocity = 0.0f;
 
-        PROPERTY(Editable, Category = "Color", Color)
+        PROPERTY()
         glm::vec4 StartColor = glm::vec4(1.0f, 0.6f, 0.2f, 1.0f);
 
-        PROPERTY(Editable, Category = "Color", Color)
+        PROPERTY()
         glm::vec4 EndColor = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
 
-        PROPERTY(Editable, Category = "Size", ClampMin = 0.0f)
+        PROPERTY()
         glm::vec2 StartSizeRange = glm::vec2(0.2f, 0.3f);
 
-        PROPERTY(Editable, Category = "Size", ClampMin = 0.0f)
+        PROPERTY()
         glm::vec2 EndSizeRange = glm::vec2(0.0f, 0.0f);
 
-        PROPERTY(Editable, Category = "Rotation")
+        PROPERTY()
         glm::vec2 RotationRange = glm::vec2(0.0f, 0.0f);
 
-        PROPERTY(Editable, Category = "Rotation")
+        PROPERTY()
         glm::vec2 RotationSpeedRange = glm::vec2(0.0f, 0.0f);
 
-        PROPERTY(Editable, Category = "Noise")
+        PROPERTY()
         glm::vec3 NoiseStrength = glm::vec3(0.0f);
 
-        PROPERTY(Editable, Category = "Noise", ClampMin = 0.0001f)
+        PROPERTY()
         float NoiseScale = 1.0f;
 
-        PROPERTY(Editable, Category = "Noise")
+        PROPERTY()
         float NoiseSpeed = 1.0f;
 
         PROPERTY(Editable, Category = "Render")

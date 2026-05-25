@@ -181,6 +181,21 @@ namespace Lumina
         float     PendingLookYaw       = 0.0f;
         bool      bHasPendingMoveInput = false;
         bool      bPendingJump         = false;
+
+        // Input magnitude clamped to [0,1], scales MoveSpeed this step. Lets an
+        // analog stick (or a path follower's Speed) walk below full speed.
+        float     PendingMoveThrottle  = 0.0f;
+
+        // Staged Launch (jump pad / knockback / dash) consumed in the physics step.
+        glm::vec3 PendingLaunchVelocity     = glm::vec3(0.0f);
+        bool      bPendingLaunch            = false;
+        bool      bLaunchOverrideHorizontal = false;
+        bool      bLaunchOverrideVertical   = false;
+
+        // Staged Teleport (respawn) consumed in the physics step; moves the
+        // authoritative CharacterVirtual, which a plain transform write cannot.
+        glm::vec3 PendingTeleportLocation = glm::vec3(0.0f);
+        bool      bPendingTeleport        = false;
     };
 
     

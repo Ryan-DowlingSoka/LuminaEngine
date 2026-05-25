@@ -45,6 +45,13 @@ namespace Lumina
             return nullptr;
         }
 
+        // A package/object marked for destroy is logically gone even though it
+        // lingers in the table until DrainPendingDestroys frees it.
+        if (It->second->HasAnyFlag(OF_MarkedDestroy))
+        {
+            return nullptr;
+        }
+
         return It->second;
     }
 
@@ -61,7 +68,7 @@ namespace Lumina
 
         for (CObjectBase* Object : It->second)
         {
-            if (Object->GetName() == Name)
+            if (Object->GetName() == Name && !Object->HasAnyFlag(OF_MarkedDestroy))
             {
                 return Object;
             }

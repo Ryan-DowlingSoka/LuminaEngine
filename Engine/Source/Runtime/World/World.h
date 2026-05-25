@@ -94,6 +94,15 @@ namespace Lumina
 
         FUNCTION(Script)
         entt::entity SpawnPrefab(const FName& Path);
+
+        /**
+         * Shatter a destructible entity into physics-driven fragments. Origin is the
+         * world-space blast point fragments are pushed away from; Strength is the
+         * outward launch speed (m/s, 0 = use the component's ExplosionStrength).
+         * No-op unless the entity has an SDestructibleComponent and has not already broken.
+         */
+        FUNCTION(Script)
+        bool FractureEntity(entt::entity Entity, const glm::vec3& Origin, float Strength = 0.0f);
         
         FUNCTION(Script)
         void SpawnPrefabAsync(const FName& Path, const TFunction<void(entt::entity)>& Callback);

@@ -6,6 +6,7 @@
 #include "GUID/GUID.h"
 #include "World/Entity/Components/EditorComponent.h"
 #include "World/Entity/Components/NameComponent.h"
+#include "World/Entity/Components/PhysicsComponent.h"
 #include "World/Entity/Components/RelationshipComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/Entity/EntityUtils.h"
@@ -31,6 +32,14 @@ namespace Lumina
         {
             return FName(FGuid::New().ToShortString());
         }
+
+        // CopyRegistry extra-skip used when capturing out of a live world: a captured nested
+        // instance's tracking component must not leak into the new prefab (it gets fresh
+        // SPrefabComponent tags instead).
+        bool ShouldSkipInstanceComponent(entt::id_type ID)
+        {
+            return ID == entt::type_hash<SPrefabInstanceComponent>::value();
+        }
     }
 
     void CPrefab::Serialize(FArchive& Ar)
@@ -39,18 +48,35 @@ namespace Lumina
         ECS::Utils::SerializeRegistry(Ar, Registry);
     }
 
-    void CPrefab::CopyRegistry(entt::registry& Source, entt::registry& Dest, THashMap<entt::entity, entt::entity>& OutMap)
+    void CPrefab::CopyRegistry(entt::registry& Source, entt::registry& Dest, THashMap<entt::entity, entt::entity>& OutMap,
+        const TVector<entt::entity>* SourceEntities, bool(*ExtraSkipStorage)(entt::id_type))
     {
         using namespace entt::literals;
 
-        Source.view<entt::entity>().each([&](entt::entity SrcE)
+        if (SourceEntities != nullptr)
         {
-            OutMap[SrcE] = Dest.create();
-        });
+            for (entt::entity SrcE : *SourceEntities)
+            {
+                if (Source.valid(SrcE))
+                {
+                    OutMap[SrcE] = Dest.create();
+                }
+            }
+        }
+        else
+        {
+            Source.view<entt::entity>().each([&](entt::entity SrcE)
+            {
+                OutMap[SrcE] = Dest.create();
+            });
+        }
 
         for (auto&& [ID, SrcSet] : Source.storage())
         {
-            if (IsNonReplicatedStorage(ID))
+            // Rigid bodies carry a runtime Jolt BodyID that must not be copied; handled below.
+            if (IsNonReplicatedStorage(ID)
+                || ID == entt::type_hash<SRigidBodyComponent>::value()
+                || (ExtraSkipStorage != nullptr && ExtraSkipStorage(ID)))
             {
                 continue;
             }
@@ -78,6 +104,20 @@ namespace Lumina
             }
         }
 
+        // Rigid bodies own a runtime Jolt BodyID; carrying it to a copy makes the physics scene
+        // think the body already exists (TryBuildRigidBodyCreationSettings -> AlreadyExists) and
+        // skip creation. Re-emplace with an invalid id so on_construct builds a fresh body - same
+        // contract as CWorld::DuplicateEntity.
+        for (auto& [SrcE, DestE] : OutMap)
+        {
+            if (const SRigidBodyComponent* SrcBody = Source.try_get<SRigidBodyComponent>(SrcE))
+            {
+                SRigidBodyComponent NewBody = *SrcBody;
+                NewBody.BodyID = 0xFFFFFFFFu;
+                Dest.emplace_or_replace<SRigidBodyComponent>(DestE, NewBody);
+            }
+        }
+
         auto Remap = [&](entt::entity& E)
         {
             if (E != entt::null)
@@ -102,6 +142,13 @@ namespace Lumina
             Remap(DestRel.Parent);
             Dest.emplace_or_replace<FRelationshipComponent>(It->second, DestRel);
         });
+
+        // Remap reflected entity-handle fields onto the copied entities; references escaping the
+        // copied set are cleared so a stale id can't alias an unrelated entity in Dest.
+        for (auto& [SrcE, DestE] : OutMap)
+        {
+            ECS::Utils::RemapEntityReferences(Dest, DestE, OutMap, /*bClearUnmapped*/ true);
+        }
     }
 
     entt::entity CPrefab::Instantiate(CWorld* TargetWorld, const FTransform& OffsetTransform, entt::entity Parent)
@@ -210,6 +257,18 @@ namespace Lumina
             }
         });
 
+        // Prefab-entity -> instance-entity, so entity-handle fields copied from the prefab can be
+        // remapped onto the matching instance entities (mirrors what CopyRegistry does on spawn).
+        THashMap<entt::entity, entt::entity> PrefabToInstance;
+        Registry.view<SPrefabComponent>().each([&](entt::entity PrefabE, const SPrefabComponent& PrefabComp)
+        {
+            auto It = InstanceByStableID.find(PrefabComp.StableID);
+            if (It != InstanceByStableID.end())
+            {
+                PrefabToInstance[PrefabE] = It->second;
+            }
+        });
+
         Registry.view<SPrefabComponent>().each([&](entt::entity PrefabE, const SPrefabComponent& PrefabComp)
         {
             auto It = InstanceByStableID.find(PrefabComp.StableID);
@@ -252,6 +311,10 @@ namespace Lumina
                 ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs,
                     entt::forward_as_meta(WorldRegistry), WorldE, entt::forward_as_meta(SrcAny));
             }
+
+            // Entity-handle fields just copied from the prefab still hold prefab ids; remap them
+            // onto the instance entities (ids with no matching instance are cleared).
+            ECS::Utils::RemapEntityReferences(WorldRegistry, WorldE, PrefabToInstance, /*bClearUnmapped*/ true);
         });
 
         for (auto& [StableID, WorldE] : InstanceByStableID)
@@ -316,73 +379,23 @@ namespace Lumina
             EntitiesToCapture.push_back(E);
         });
 
-        // Scratch registry holding only captured entities so CopyRegistry can be reused.
-        entt::registry Scratch;
-        THashMap<entt::entity, entt::entity> ToScratch;
+        // Copy the captured subtree straight into a fresh registry. CopyRegistry remaps the
+        // hierarchy (the root's parent and any escaping siblings fall to null) and entity-handle
+        // fields, and skips nested instances' tracking components.
+        Registry = entt::registry{};
+        THashMap<entt::entity, entt::entity> Map;
+        CopyRegistry(WorldRegistry, Registry, Map, &EntitiesToCapture, &ShouldSkipInstanceComponent);
+
+        // Tag every captured entity with a stable id (reused from an existing instance tag when
+        // present) so RefreshInstance can later match prefab entities to their placed counterparts.
         for (entt::entity SrcE : EntitiesToCapture)
         {
-            ToScratch[SrcE] = Scratch.create();
-        }
-
-        using namespace entt::literals;
-        for (auto&& [ID, SrcSet] : WorldRegistry.storage())
-        {
-            if (IsNonReplicatedStorage(ID))
-            {
-                continue;
-            }
-            if (ID == entt::type_hash<SPrefabInstanceComponent>::value())
+            auto It = Map.find(SrcE);
+            if (It == Map.end())
             {
                 continue;
             }
 
-            entt::meta_type MetaType = entt::resolve(SrcSet.info());
-            if (!MetaType)
-            {
-                continue;
-            }
-
-            for (entt::entity SrcE : EntitiesToCapture)
-            {
-                if (!SrcSet.contains(SrcE))
-                {
-                    continue;
-                }
-                entt::entity DestE = ToScratch[SrcE];
-                void* SrcCompPtr = SrcSet.value(SrcE);
-                entt::meta_any SrcAny = MetaType.from_void(SrcCompPtr);
-                ECS::Utils::InvokeMetaFunc(MetaType, "emplace"_hs,
-                    entt::forward_as_meta(Scratch), DestE, entt::forward_as_meta(SrcAny));
-            }
-        }
-
-        auto Remap = [&](entt::entity& E)
-        {
-            if (E == entt::null) return;
-            auto It = ToScratch.find(E);
-            E = (It != ToScratch.end()) ? It->second : entt::null;
-        };
-
-        for (entt::entity SrcE : EntitiesToCapture)
-        {
-            const FRelationshipComponent* SrcRel = WorldRegistry.try_get<FRelationshipComponent>(SrcE);
-            if (SrcRel == nullptr) continue;
-
-            FRelationshipComponent DestRel = *SrcRel;
-            Remap(DestRel.First);
-            Remap(DestRel.Prev);
-            Remap(DestRel.Next);
-            Remap(DestRel.Parent);
-            if (SrcE == RootEntity)
-            {
-                DestRel.Parent = entt::null;
-            }
-            Scratch.emplace_or_replace<FRelationshipComponent>(ToScratch[SrcE], DestRel);
-        }
-
-        for (entt::entity SrcE : EntitiesToCapture)
-        {
-            entt::entity DestE = ToScratch[SrcE];
             FName StableID;
             if (const SPrefabInstanceComponent* Inst = WorldRegistry.try_get<SPrefabInstanceComponent>(SrcE))
             {
@@ -392,13 +405,8 @@ namespace Lumina
             {
                 StableID = GenerateStableID();
             }
-            Scratch.emplace_or_replace<SPrefabComponent>(DestE).StableID = StableID;
+            Registry.emplace_or_replace<SPrefabComponent>(It->second).StableID = StableID;
         }
-
-        Registry.clear<>();
-        Registry = entt::registry{};
-        THashMap<entt::entity, entt::entity> UnusedMap;
-        CopyRegistry(Scratch, Registry, UnusedMap);
 
         if (CPackage* Package = GetPackage())
         {

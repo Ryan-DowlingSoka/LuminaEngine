@@ -40,6 +40,7 @@
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Assets/AssetTypes/Animation/AnimationGraph/AnimationGraph.h"
 #include "Assets/AssetTypes/Blackboard/Blackboard.h"
+#include "Assets/AssetTypes/GeometryCollection/GeometryCollection.h"
 #include "Assets/AssetTypes/Material/Material.h"
 #include "Assets/AssetTypes/Material/MaterialInstance.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
@@ -97,6 +98,7 @@
 #include "Tools/AssetEditors/Animation/AnimationEditorTool.h"
 #include "Tools/AssetEditors/AnimationGraph/AnimationGraphEditorTool.h"
 #include "Tools/AssetEditors/Blackboard/BlackboardEditorTool.h"
+#include "Tools/AssetEditors/GeometryCollection/GeometryCollectionEditorTool.h"
 #include "Tools/AssetEditors/MaterialEditor/MaterialEditorTool.h"
 #include "Tools/AssetEditors/MaterialEditor/MaterialInstanceEditorTool.h"
 #include "Tools/AssetEditors/MeshEditor/MeshEditorTool.h"
@@ -556,6 +558,10 @@ namespace Lumina
         else if (Asset->IsA<CBlackboard>())
         {
             NewTool = CreateTool<FBlackboardEditorTool>(this, Asset);
+        }
+        else if (Asset->IsA<CGeometryCollection>())
+        {
+            NewTool = CreateTool<FGeometryCollectionEditorTool>(this, Asset);
         }
         else if (Asset->IsA<CTexture>())
         {

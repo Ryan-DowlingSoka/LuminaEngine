@@ -1,12 +1,13 @@
 #pragma once
 
 #include "Core/Object/ObjectHandleTyped.h"
+#include "Particles/ParticleModule.h"
 #include "UI/Tools/AssetEditors/AssetEditorTool.h"
 
 namespace Lumina
 {
-    class CEdGraphNode;
-    class CParticleNodeGraph;
+    class CParticleEmitterStack;
+    class CParticleModule;
 
     class FParticleSystemEditorTool : public FAssetEditorTool
     {
@@ -39,20 +40,28 @@ namespace Lumina
 
     private:
 
-        void DrawParticleGraph();
-        void DrawParticleProperties();
-        void DrawShaderPreview();
-        void DrawPropertyBindings();
+        void DrawStack();
+        void DrawStackSection(EParticleModuleStage Stage, const char* Label);
+        void DrawAddModulePopup(EParticleModuleStage Stage);
+        void DrawSystemProperties();
+
+        void SelectModule(CParticleModule* Module);
 
     private:
 
         entt::entity            ParticleEntity;
         entt::entity            DirectionalLightEntity;
 
-        CEdGraphNode*           SelectedNode = nullptr;
+        CParticleModule*        SelectedModule = nullptr;
         FCompilationResultInfo  CompilationResult;
-        FString                 CompiledSource;
 
-        TObjectPtr<CParticleNodeGraph> NodeGraph;
+        // Set when the stack changes structurally (add / remove / reorder / toggle); consumed at the
+        // end of DrawStack to recompile once, after the UI loop rather than mid-iteration.
+        bool                    bStackDirty = false;
+
+        // Stage whose "+ Add Module" popup is open this frame.
+        EParticleModuleStage    PendingAddStage = EParticleModuleStage::Spawn;
+
+        TObjectPtr<CParticleEmitterStack> EmitterStack;
     };
 }

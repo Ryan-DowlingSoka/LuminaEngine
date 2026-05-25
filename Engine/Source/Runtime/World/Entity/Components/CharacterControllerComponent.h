@@ -63,7 +63,29 @@ namespace Lumina
         
         FUNCTION(Script)
         void Jump() { bJumpPressed = true; }
-        
+
+        /** Add a velocity impulse to the character (jump pad, knockback, dash).
+         *  Override flags replace the existing velocity on that axis instead of
+         *  adding to it: horizontal = the X/Z plane, vertical = the Y (up) axis. */
+        FUNCTION(Script)
+        void Launch(const glm::vec3& Velocity, bool bOverrideHorizontal, bool bOverrideVertical)
+        {
+            PendingLaunchVelocity     = Velocity;
+            bLaunchOverrideHorizontal = bOverrideHorizontal;
+            bLaunchOverrideVertical   = bOverrideVertical;
+            bLaunchRequested          = true;
+        }
+
+        /** Move the character to a world location. Use this instead of writing the
+         *  transform directly: the physics capsule owns the entity's position and
+         *  a plain transform write is overwritten on the next physics step. */
+        FUNCTION(Script)
+        void TeleportTo(const glm::vec3& Location)
+        {
+            PendingTeleportLocation = Location;
+            bTeleportRequested      = true;
+        }
+
         /** Accumulated movement input vector, consumed each physics frame. */
         PROPERTY(Script, ReadOnly)
         glm::vec3 MoveInput;
@@ -79,5 +101,14 @@ namespace Lumina
         /** True for one frame after Jump() is called; consumed by the movement system. */
         PROPERTY(Script, ReadOnly)
         bool bJumpPressed = false;
+
+        // Transient Launch/Teleport requests, latched into the movement
+        // component before the physics step (same path as bJumpPressed).
+        glm::vec3 PendingLaunchVelocity     = glm::vec3(0.0f);
+        bool      bLaunchRequested          = false;
+        bool      bLaunchOverrideHorizontal = false;
+        bool      bLaunchOverrideVertical   = false;
+        glm::vec3 PendingTeleportLocation   = glm::vec3(0.0f);
+        bool      bTeleportRequested        = false;
     };
 }

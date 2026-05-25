@@ -5,11 +5,15 @@
 #include "Components/EditorComponent.h"
 #include "components/entitytags.h"
 #include "Components/PhysicsComponent.h"
+#include "Components/NameComponent.h"
 #include "Components/RelationshipComponent.h"
 #include "Components/ScriptComponent.h"
 #include "components/tagcomponent.h"
 #include "Components/TransformComponent.h"
 #include "Core/Object/Class.h"
+#include "Core/Reflection/Type/LuminaTypes.h"
+#include "Core/Reflection/Type/Properties/ArrayProperty.h"
+#include "Core/Reflection/Type/Properties/StructProperty.h"
 #include "Scripting/Lua/ScriptTypes.h"
 
 using namespace entt::literals; 
@@ -298,13 +302,13 @@ namespace Lumina::ECS::Utils
             return;
         }
 
-        #if LE_DEBUG
+        // Always guarded: a cycle here infinite-loops in ForEachChild traversal, so this
+        // must reject in shipping builds too, not just debug.
         if (Parent != entt::null && IsDescendantOf(Registry, Parent, Child))
         {
             LOG_ERROR("Cannot create circular hierarchy - parent is a descendant of child!");
             return;
         }
-        #endif
         
         FRelationshipComponent& ChildRelationship = Registry.get_or_emplace<FRelationshipComponent>(Child);
         STransformComponent& ChildTransform = Registry.get<STransformComponent>(Child);
@@ -406,9 +410,19 @@ namespace Lumina::ECS::Utils
             return;
         }
 
+        // Snapshot the world transform while the parent chain is still intact; once detached the
+        // entity has no parent, so its local space becomes its world space (see SetEntityWorldTransform).
+        FTransform WorldSnapshot;
+        bool bHasTransform = false;
+        if (STransformComponent* TransformComponent = Registry.try_get<STransformComponent>(Child))
+        {
+            WorldSnapshot = TransformComponent->GetWorldTransform();
+            bHasTransform = true;
+        }
+
         entt::entity OldParent = ChildRelationship->Parent;
         FRelationshipComponent* ParentRelationship = Registry.try_get<FRelationshipComponent>(OldParent);
-            
+
         if (!ParentRelationship)
         {
             return;
@@ -435,15 +449,13 @@ namespace Lumina::ECS::Utils
         ChildRelationship->Parent = entt::null;
         ChildRelationship->Prev = entt::null;
         ChildRelationship->Next = entt::null;
-        
-        STransformComponent* TransformComponent = Registry.try_get<STransformComponent>(Child);
-        if (!ALERT_IF_NOT(TransformComponent, "Missing child transform component"))
+
+        // Bake the snapshot back as local now that there's no parent to inherit from, so the
+        // detached entity keeps its world placement.
+        if (bHasTransform)
         {
-            return;
+            SetEntityWorldTransform(Registry, Child, WorldSnapshot);
         }
-        
-        TransformComponent->SetWorldTransform(TransformComponent->WorldTransform);
-        Registry.emplace_or_replace<STransformComponent>(Child, *TransformComponent);
     }
 
     bool IsDescendantOf(FEntityRegistry& Registry, entt::entity Potential, entt::entity Ancestor)
@@ -482,6 +494,110 @@ namespace Lumina::ECS::Utils
     bool IsParent(FEntityRegistry& Registry, entt::entity Entity)
     {
         return GetChildCount(Registry, Entity) != 0;
+    }
+
+    entt::entity GetParent(FEntityRegistry& Registry, entt::entity Entity)
+    {
+        FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity);
+        return Relationship ? Relationship->Parent : entt::null;
+    }
+
+    entt::entity GetRootEntity(FEntityRegistry& Registry, entt::entity Entity)
+    {
+        entt::entity Current = Entity;
+        while (Current != entt::null)
+        {
+            FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Current);
+            if (!Relationship || Relationship->Parent == entt::null)
+            {
+                break;
+            }
+
+            Current = Relationship->Parent;
+        }
+
+        return Current;
+    }
+
+    void CollectAncestors(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutAncestors)
+    {
+        ForEachAncestor(Registry, Entity, [&](entt::entity Ancestor)
+        {
+            OutAncestors.push_back(Ancestor);
+        });
+    }
+
+    entt::entity FindChildByName(FEntityRegistry& Registry, entt::entity Parent, const FName& Name)
+    {
+        entt::entity Found = entt::null;
+        ForEachChild(Registry, Parent, [&](entt::entity Child)
+        {
+            if (Found != entt::null)
+            {
+                return;
+            }
+
+            if (const SNameComponent* NameComponent = Registry.try_get<SNameComponent>(Child))
+            {
+                if (NameComponent->Name == Name)
+                {
+                    Found = Child;
+                }
+            }
+        });
+
+        return Found;
+    }
+
+    entt::entity FindDescendantByName(FEntityRegistry& Registry, entt::entity Parent, const FName& Name)
+    {
+        entt::entity Found = entt::null;
+        ForEachDescendant(Registry, Parent, [&](entt::entity Descendant)
+        {
+            if (Found != entt::null)
+            {
+                return;
+            }
+
+            if (const SNameComponent* NameComponent = Registry.try_get<SNameComponent>(Descendant))
+            {
+                if (NameComponent->Name == Name)
+                {
+                    Found = Descendant;
+                }
+            }
+        });
+
+        return Found;
+    }
+
+    entt::entity GetNextSibling(FEntityRegistry& Registry, entt::entity Entity)
+    {
+        FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity);
+        return Relationship ? Relationship->Next : entt::null;
+    }
+
+    entt::entity GetPrevSibling(FEntityRegistry& Registry, entt::entity Entity)
+    {
+        FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity);
+        return Relationship ? Relationship->Prev : entt::null;
+    }
+
+    void CollectSiblings(FEntityRegistry& Registry, entt::entity Entity, TVector<entt::entity>& OutSiblings)
+    {
+        FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity);
+        if (!Relationship || Relationship->Parent == entt::null)
+        {
+            return;
+        }
+
+        ForEachChild(Registry, Relationship->Parent, [&](entt::entity Sibling)
+        {
+            if (Sibling != Entity)
+            {
+                OutSiblings.push_back(Sibling);
+            }
+        });
     }
 
     size_t GetChildCount(FEntityRegistry& Registry, entt::entity Parent)
@@ -804,9 +920,12 @@ namespace Lumina::ECS::Utils
 
     entt::entity DuplicateEntity(FEntityRegistry& Registry, entt::entity Entity)
     {
+        THashMap<entt::entity, entt::entity> SourceToDuplicate;
+
         auto DuplicateRecursive = [&](auto& Self, entt::entity Source, entt::entity NewParent) -> entt::entity
         {
             entt::entity To = Registry.create();
+            SourceToDuplicate[Source] = To;
 
             for (auto&& [ID, Storage] : Registry.storage())
             {
@@ -873,7 +992,156 @@ namespace Lumina::ECS::Utils
             return To;
         };
 
-        return DuplicateRecursive(DuplicateRecursive, Entity, entt::null);
+        entt::entity Root = DuplicateRecursive(DuplicateRecursive, Entity, entt::null);
+
+        // Fix up entity-handle properties so references between duplicated entities point at the
+        // new copies; references to entities outside the duplicated set are left untouched.
+        for (auto& [Source, Dup] : SourceToDuplicate)
+        {
+            RemapEntityReferences(Registry, Dup, SourceToDuplicate, /*bClearUnmapped*/ false);
+        }
+
+        return Root;
+    }
+
+    namespace
+    {
+        // Remap one stored entity-handle id (uint32 of an entt::entity) in place: through Map if
+        // present, else cleared to null when bClearUnmapped. entt::null is left as-is.
+        void RemapEntityHandle(uint32& Value, const THashMap<entt::entity, entt::entity>& Map, bool bClearUnmapped)
+        {
+            const entt::entity Stored = static_cast<entt::entity>(Value);
+            if (Stored == entt::null)
+            {
+                return;
+            }
+
+            auto It = Map.find(Stored);
+            if (It != Map.end())
+            {
+                Value = static_cast<uint32>(entt::to_integral(It->second));
+            }
+            else if (bClearUnmapped)
+            {
+                Value = static_cast<uint32>(entt::to_integral(static_cast<entt::entity>(entt::null)));
+            }
+        }
+
+        // Walk one struct's reflected properties: remap uint32 "Entity"-tagged handles through Map,
+        // recurse into nested struct fields, and walk arrays of handles or of structs.
+        void RemapEntityRefsInStruct(CStruct* Struct, void* Data, const THashMap<entt::entity, entt::entity>& Map, bool bClearUnmapped)
+        {
+            for (CStruct* Cur = Struct; Cur != nullptr; Cur = Cur->GetSuperStruct())
+            {
+                for (FProperty* Property = Cur->LinkedProperty; Property != nullptr; Property = static_cast<FProperty*>(Property->Next))
+                {
+                    if (Property->IsA(EPropertyTypeFlags::UInt32) && Property->HasMetadata("Entity"))
+                    {
+                        uint32 Value = 0;
+                        Property->GetValue(Data, &Value);
+                        RemapEntityHandle(Value, Map, bClearUnmapped);
+                        Property->SetValue(Data, Value);
+                    }
+                    else if (Property->IsA(EPropertyTypeFlags::Struct))
+                    {
+                        if (CStruct* Inner = static_cast<FStructProperty*>(Property)->GetStruct())
+                        {
+                            RemapEntityRefsInStruct(Inner, Property->GetValuePtr<void>(Data), Map, bClearUnmapped);
+                        }
+                    }
+                    else if (Property->IsA(EPropertyTypeFlags::Vector))
+                    {
+                        FArrayProperty* ArrayProperty = static_cast<FArrayProperty*>(Property);
+                        FProperty* Inner = ArrayProperty->GetInternalProperty();
+                        if (Inner == nullptr)
+                        {
+                            continue;
+                        }
+
+                        void* ArrayPtr = Property->GetValuePtr<void>(Data);
+
+                        if (Inner->IsA(EPropertyTypeFlags::UInt32) && Property->HasMetadata("Entity"))
+                        {
+                            ArrayProperty->ForEach<uint32>(ArrayPtr, [&](uint32* Elem, SIZE_T)
+                            {
+                                RemapEntityHandle(*Elem, Map, bClearUnmapped);
+                            });
+                        }
+                        else if (Inner->IsA(EPropertyTypeFlags::Struct))
+                        {
+                            if (CStruct* ElemStruct = static_cast<FStructProperty*>(Inner)->GetStruct())
+                            {
+                                ArrayProperty->ForEach(ArrayPtr, [&](void* Elem, SIZE_T)
+                                {
+                                    RemapEntityRefsInStruct(ElemStruct, Elem, Map, bClearUnmapped);
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    void RemapEntityReferences(FEntityRegistry& Registry, entt::entity Entity, const THashMap<entt::entity, entt::entity>& Map, bool bClearUnmapped)
+    {
+        using namespace entt::literals;
+
+        for (auto&& [ID, Storage] : Registry.storage())
+        {
+            if (!Storage.contains(Entity))
+            {
+                continue;
+            }
+
+            entt::meta_type MetaType = entt::resolve(Storage.info());
+            if (!MetaType)
+            {
+                continue;
+            }
+
+            entt::meta_any Result = InvokeMetaFunc(MetaType, "static_struct"_hs);
+            if (!Result)
+            {
+                continue;
+            }
+
+            if (CStruct* Struct = Result.cast<CStruct*>())
+            {
+                RemapEntityRefsInStruct(Struct, Storage.value(Entity), Map, bClearUnmapped);
+            }
+        }
+    }
+
+    void SetEntityWorldTransform(FEntityRegistry& Registry, entt::entity Entity, const FTransform& WorldTransform)
+    {
+        STransformComponent* Transform = Registry.try_get<STransformComponent>(Entity);
+        if (Transform == nullptr)
+        {
+            return;
+        }
+
+        glm::mat4 ParentWorldMatrix(1.0f);
+        if (const FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity))
+        {
+            if (Relationship->Parent != entt::null)
+            {
+                ParentWorldMatrix = Registry.get<STransformComponent>(Relationship->Parent).GetWorldMatrix();
+            }
+        }
+
+        glm::mat4 LocalMatrix = glm::inverse(ParentWorldMatrix) * WorldTransform.GetMatrix();
+
+        glm::vec3 Translation, Scale, Skew;
+        glm::quat Rotation;
+        glm::vec4 Perspective;
+        glm::decompose(LocalMatrix, Scale, Rotation, Translation, Skew, Perspective);
+
+        FTransform NewLocal;
+        NewLocal.Location = Translation;
+        NewLocal.Rotation = Rotation;
+        NewLocal.Scale    = Scale;
+        Transform->SetLocalTransform(NewLocal);
     }
 
     glm::vec3 GetDirectionVector(FEntityRegistry& Registry, entt::entity To, entt::entity From)

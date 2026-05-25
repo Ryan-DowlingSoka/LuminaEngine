@@ -41,6 +41,7 @@
 #include "World/Entity/Components/TerrainComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "world/entity/components/velocitycomponent.h"
+#include "World/Entity/Events/CollisionEvent.h"
 #include "World/Entity/Events/ImpulseEvent.h"
 #include "World/Entity/Events/LuaEventBus.h"
 #include "World/Subsystems/WorldSettings.h"
@@ -262,55 +263,35 @@ namespace Lumina::Physics
 
     namespace
     {
-        // Each side gets its own payload so self/other are correctly oriented.
-        Lua::FRef BuildCollisionPayload(lua_State* L,
-                                        bool bIsTriggerSide,
-                                        entt::entity SelfEntity,
-                                        entt::entity OtherEntity,
-                                        uint32 SelfBodyID,
-                                        uint32 OtherBodyID,
-                                        const FContactRecord& Record,
-                                        bool bFlipNormal)
+        // Orient a contact record for one receiving side. Filling a POD struct is just
+        // a few assignments; the Lua cost is a single tagged-userdata push downstream,
+        // so dispatching a frame full of contacts no longer builds a table per event.
+        SCollisionEvent BuildCollisionEvent(entt::entity SelfEntity,
+                                            entt::entity OtherEntity,
+                                            uint32 SelfBodyID,
+                                            uint32 OtherBodyID,
+                                            const FContactRecord& Record,
+                                            bool bFlipNormal)
         {
-            lua_newtable(L);
-
-            Lua::TStack<entt::entity>::Push(L, SelfEntity);
-            lua_setfield(L, -2, "Entity");
-
-            Lua::TStack<entt::entity>::Push(L, OtherEntity);
-            lua_setfield(L, -2, "Other");
-
-            Lua::TStack<uint32>::Push(L, SelfBodyID);
-            lua_setfield(L, -2, "BodyID");
-
-            Lua::TStack<uint32>::Push(L, OtherBodyID);
-            lua_setfield(L, -2, "OtherBodyID");
-
-            Lua::TStack<glm::vec3>::Push(L, Record.Point);
-            lua_setfield(L, -2, "Point");
+            SCollisionEvent Event;
+            Event.Entity      = static_cast<uint32>(entt::to_integral(SelfEntity));
+            Event.Other       = static_cast<uint32>(entt::to_integral(OtherEntity));
+            Event.BodyID      = SelfBodyID;
+            Event.OtherBodyID = OtherBodyID;
+            Event.Point       = Record.Point;
 
             // Convention: Normal points outward from self toward other so scripts
             // can react with `-Normal` to bounce away from the impact.
-            const glm::vec3 Normal = bFlipNormal ? -Record.Normal : Record.Normal;
-            Lua::TStack<glm::vec3>::Push(L, Normal);
-            lua_setfield(L, -2, "Normal");
+            Event.Normal           = bFlipNormal ? -Record.Normal : Record.Normal;
+            Event.Velocity         = bFlipNormal ? Record.VelocityB : Record.VelocityA;
+            Event.OtherVelocity    = bFlipNormal ? Record.VelocityA : Record.VelocityB;
+            Event.RelativeVelocity = Event.OtherVelocity - Event.Velocity;
+            Event.ImpactSpeed      = Record.ImpactSpeed;
 
-            const glm::vec3 SelfVel  = bFlipNormal ? Record.VelocityB : Record.VelocityA;
-            const glm::vec3 OtherVel = bFlipNormal ? Record.VelocityA : Record.VelocityB;
-            Lua::TStack<glm::vec3>::Push(L, SelfVel);
-            lua_setfield(L, -2, "Velocity");
-            Lua::TStack<glm::vec3>::Push(L, OtherVel);
-            lua_setfield(L, -2, "OtherVelocity");
-            Lua::TStack<glm::vec3>::Push(L, OtherVel - SelfVel);
-            lua_setfield(L, -2, "RelativeVelocity");
-
-            Lua::TStack<float>::Push(L, Record.ImpactSpeed);
-            lua_setfield(L, -2, "ImpactSpeed");
-
-            Lua::TStack<bool>::Push(L, bIsTriggerSide);
-            lua_setfield(L, -2, "bIsTrigger");
-
-            return Lua::FRef(L, -1);
+            // bIsTrigger reports whether the OTHER side was a sensor; useful when the
+            // same handler covers both kinds.
+            Event.bIsTrigger = bFlipNormal ? Record.bSensorA : Record.bSensorB;
+            return Event;
         }
     }
 
@@ -358,19 +339,12 @@ namespace Lumina::Physics
                 return;
             }
 
-            // bIsTrigger field on the payload tells the script whether the OTHER side
-            // was a sensor; useful when the same handler covers both kinds.
-            const bool bOtherIsTrigger = bFlipNormal ? Record.bSensorA : Record.bSensorB;
-            Lua::FRef Payload = BuildCollisionPayload(L,
-                bOtherIsTrigger,
-                Self, Other,
-                SelfBody, OtherBody,
-                Record,
-                bFlipNormal);
+            const SCollisionEvent Event = BuildCollisionEvent(Self, Other, SelfBody, OtherBody, Record, bFlipNormal);
 
             // Pass the script's `self` table as the first argument so the user can write
-            // `function MyScript:OnContactBegin(Event)` and access self.Entity etc.
-            Comp->Script->InvokeAsCoroutine(Func, Comp->Script->Reference, Payload);
+            // `function MyScript:OnContactBegin(Event)` and access self.Entity etc. The
+            // event is pushed as a tagged userdata (one allocation, no per-field setfield).
+            Comp->Script->InvokeAsCoroutine(Func, Comp->Script->Reference, Event);
         };
 
         for (const FContactRecord& Record : Drain)
@@ -964,9 +938,11 @@ namespace Lumina::Physics
                 glm::vec3 Up      = glm::cross(Right, Forward);
 
                 glm::vec3 Direction = Right * Controller.MoveInput.x + Up * Controller.MoveInput.y + Forward * Controller.MoveInput.z;
-                if (glm::length2(Direction) > LE_SMALL_NUMBER)
+                const float Magnitude = glm::length(Direction);
+                if (Magnitude > LE_SMALL_NUMBER)
                 {
-                    Movement.PendingMoveDirection = glm::normalize(Direction);
+                    Movement.PendingMoveDirection = Direction / Magnitude;
+                    Movement.PendingMoveThrottle  = glm::min(Magnitude, 1.0f);
                     Movement.bHasPendingMoveInput = true;
                 }
                 else
@@ -983,11 +959,27 @@ namespace Lumina::Physics
 
             Movement.PendingLookYaw = Controller.LookInput.x;
             Controller.MoveInput    = {};
-            
+
             if (Controller.bJumpPressed)
             {
                 Movement.bPendingJump    = true;
                 Controller.bJumpPressed  = false;
+            }
+
+            if (Controller.bLaunchRequested)
+            {
+                Controller.bLaunchRequested        = false;
+                Movement.PendingLaunchVelocity     = Controller.PendingLaunchVelocity;
+                Movement.bLaunchOverrideHorizontal = Controller.bLaunchOverrideHorizontal;
+                Movement.bLaunchOverrideVertical   = Controller.bLaunchOverrideVertical;
+                Movement.bPendingLaunch            = true;
+            }
+
+            if (Controller.bTeleportRequested)
+            {
+                Controller.bTeleportRequested    = false;
+                Movement.PendingTeleportLocation = Controller.PendingTeleportLocation;
+                Movement.bPendingTeleport        = true;
             }
         });
     }
@@ -1026,11 +1018,26 @@ namespace Lumina::Physics
             {
                 return;
             }
-            
+
+            // Teleport before any integration: move the authoritative capsule,
+            // zero velocity, and reseed the interpolation snapshot so the render
+            // transform doesn't streak across the jump.
+            if (Movement.bPendingTeleport)
+            {
+                Movement.bPendingTeleport = false;
+
+                const glm::vec3 TeleportLocation = Movement.PendingTeleportLocation;
+                Character->SetPosition(JoltUtils::ToJPHRVec3(TeleportLocation));
+                Character->SetLinearVelocity(JPH::Vec3::sZero());
+                Movement.Velocity        = glm::vec3(0.0f);
+                Physics.LastBodyPosition = TeleportLocation;
+                return;
+            }
+
             const bool bHasMovementInput = Movement.bHasPendingMoveInput;
             const glm::vec3 DesiredDirection = Movement.PendingMoveDirection;
 
-            const float    TargetSpeed    = bHasMovementInput ? Movement.MoveSpeed : 0.0f;
+            const float    TargetSpeed    = bHasMovementInput ? Movement.MoveSpeed * Movement.PendingMoveThrottle : 0.0f;
             const glm::vec3 TargetVelocity = DesiredDirection * TargetSpeed;
 
             JPH::CharacterVirtual::ExtendedUpdateSettings UpdateSettings;
@@ -1064,7 +1071,10 @@ namespace Lumina::Physics
 
             if (bHasMovementInput)
             {
-                const float Blend = glm::clamp(Movement.Acceleration * FixedDt, 0.0f, 1.0f);
+                // Airborne steering is scaled by AirControl (0 = no air steering).
+                const float Accel = Movement.bGrounded ? Movement.Acceleration
+                                                       : Movement.Acceleration * Movement.AirControl;
+                const float Blend = glm::clamp(Accel * FixedDt, 0.0f, 1.0f);
                 HorizontalVelocity = glm::mix(HorizontalVelocity, TargetVelocity, Blend);
             }
             else if (Movement.bGrounded)
@@ -1109,10 +1119,37 @@ namespace Lumina::Physics
             {
                 Movement.bPendingJump = false;
 
-                if (Movement.JumpCount != Movement.MaxJumpCount)
+                if (Movement.JumpCount < Movement.MaxJumpCount)
                 {
                     Movement.Velocity.y = Movement.JumpSpeed;
                     Movement.JumpCount++;
+                }
+            }
+
+            // Launch applied after the ground-velocity block and jump so an
+            // upward impulse survives even when the character is still grounded.
+            if (Movement.bPendingLaunch)
+            {
+                Movement.bPendingLaunch = false;
+
+                if (Movement.bLaunchOverrideHorizontal)
+                {
+                    Movement.Velocity.x = Movement.PendingLaunchVelocity.x;
+                    Movement.Velocity.z = Movement.PendingLaunchVelocity.z;
+                }
+                else
+                {
+                    Movement.Velocity.x += Movement.PendingLaunchVelocity.x;
+                    Movement.Velocity.z += Movement.PendingLaunchVelocity.z;
+                }
+
+                if (Movement.bLaunchOverrideVertical)
+                {
+                    Movement.Velocity.y = Movement.PendingLaunchVelocity.y;
+                }
+                else
+                {
+                    Movement.Velocity.y += Movement.PendingLaunchVelocity.y;
                 }
             }
 

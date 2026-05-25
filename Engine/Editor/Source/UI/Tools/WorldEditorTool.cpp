@@ -38,6 +38,7 @@
 #include "TerrainEditMode.h"
 #include "World/Entity/Components/TerrainComponent.h"
 #include "UI/Tools/EditorEntityUtils.h"
+#include "UI/Properties/EntityPropertyContext.h"
 #include "World/WorldManager.h"
 #include "World/Entity/EntityUtils.h"
 #include "World/Entity/Components/CameraComponent.h"
@@ -5337,9 +5338,13 @@ namespace Lumina
             ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.12f, 0.12f, 0.14f, 1.0f));
             
             ImGui::Indent(8.0f);
-            
-            Table->DrawTree();
-            
+
+            // Make this component's world resolvable to any PROPERTY(Entity) picker in the table.
+            {
+                FScopedEntityPropertyContext EntityContext(World);
+                Table->DrawTree();
+            }
+
             ImGui::Unindent(8.0f);
             
             ImGui::PopStyleColor(2);

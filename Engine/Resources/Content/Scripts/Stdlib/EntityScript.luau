@@ -179,6 +179,120 @@ function EntityScript:GetScriptTable(Entity)
     return self._Registry:GetScriptTable(Entity)
 end
 
+-- ---- Hierarchy -----------------------------------------------------------
+-- Parent/child traversal over the entity relationship graph. Single-entity
+-- getters return nil instead of a null id when there's no parent, so they
+-- read cleanly in `if`/`and` chains; list getters return arrays of entity
+-- ids (possibly empty) ready for ipairs.
+
+function EntityScript:HasParent()
+    -- valid(entt::null) is false, so this doubles as the "has a parent" test.
+    return self._Registry:Valid(self._Registry:GetParent(self.Entity))
+end
+
+-- Immediate parent entity id, or nil if this entity is a root.
+function EntityScript:GetParent()
+    local Parent = self._Registry:GetParent(self.Entity)
+    if not self._Registry:Valid(Parent) then return nil end
+    return Parent
+end
+
+-- The parent's script table, or nil when there's no parent or it has no script.
+-- Use colon syntax on the result to call its methods: GetParentScript():Foo().
+function EntityScript:GetParentScript()
+    local Parent = self:GetParent()
+    if Parent == nil then return nil end
+    return self._Registry:GetScriptTable(Parent)
+end
+
+-- Topmost ancestor in the parent chain; returns this entity's own id when it
+-- has no parent.
+function EntityScript:GetRoot()
+    return self._Registry:GetRoot(self.Entity)
+end
+
+-- Immediate children (array of entity ids; empty when none).
+function EntityScript:GetChildren()
+    return self._Registry:GetChildren(self.Entity)
+end
+
+-- Ancestors from immediate parent up to the root, nearest first.
+function EntityScript:GetAncestors()
+    return self._Registry:GetAncestors(self.Entity)
+end
+
+-- Every descendant in the subtree (depth-first), excluding this entity.
+function EntityScript:GetDescendants()
+    return self._Registry:GetDescendants(self.Entity)
+end
+
+-- True when Ancestor sits somewhere above this entity in the parent chain.
+function EntityScript:IsChildOf(Ancestor)
+    return self._Registry:IsDescendantOf(self.Entity, Ancestor)
+end
+
+function EntityScript:GetChildCount()
+    return self._Registry:GetChildCount(self.Entity)
+end
+
+-- Reparent under NewParent, or pass nil to detach to the world root. The
+-- entity's world transform is preserved across the move.
+function EntityScript:SetParent(NewParent)
+    if NewParent == nil then
+        self._Registry:Detach(self.Entity)
+    else
+        self._Registry:Reparent(self.Entity, NewParent)
+    end
+end
+
+-- Reparent Child under this entity (the inverse of SetParent).
+function EntityScript:AddChild(Child)
+    self._Registry:Reparent(Child, self.Entity)
+end
+
+-- True when this entity sits somewhere above Other in its parent chain.
+function EntityScript:IsAncestorOf(Other)
+    return self._Registry:IsDescendantOf(Other, self.Entity)
+end
+
+-- First direct child named Name, or nil. Scoped to this entity's children, so
+-- it's unambiguous where a global World.FindByName would not be.
+function EntityScript:FindChild(Name: string)
+    local Child = self._Registry:FindChild(self.Entity, Name)
+    if not self._Registry:Valid(Child) then return nil end
+    return Child
+end
+
+-- As FindChild but searches the entire subtree (depth-first), or nil.
+function EntityScript:FindDescendant(Name: string)
+    local Found = self._Registry:FindDescendant(self.Entity, Name)
+    if not self._Registry:Valid(Found) then return nil end
+    return Found
+end
+
+-- Other children of this entity's parent (array; empty when parentless).
+function EntityScript:GetSiblings()
+    return self._Registry:GetSiblings(self.Entity)
+end
+
+-- Zero-based position among the parent's children (0 when parentless).
+function EntityScript:GetSiblingIndex()
+    return self._Registry:GetSiblingIndex(self.Entity)
+end
+
+-- Next/previous entry in the parent's child list, or nil at the ends.
+function EntityScript:GetNextSibling()
+    local Sibling = self._Registry:GetNextSibling(self.Entity)
+    if not self._Registry:Valid(Sibling) then return nil end
+    return Sibling
+end
+
+function EntityScript:GetPrevSibling()
+    local Sibling = self._Registry:GetPrevSibling(self.Entity)
+    if not self._Registry:Valid(Sibling) then return nil end
+    return Sibling
+end
+
 -- ---- Events --------------------------------------------------------------
 -- Subscribe is automatically scoped to this entity, so subscriptions are
 -- cleaned up when the entity is destroyed. Use Dispatch to broadcast.

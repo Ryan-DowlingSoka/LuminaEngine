@@ -105,8 +105,9 @@ namespace Lumina
         PROPERTY(Editable, Category = "PathFollow", ClampMin = 0.05f)
         float AcceptanceRadius = 0.5f;
 
-        /** Linear movement scale fed into the controller. Tune per-agent for runspeed. */
-        PROPERTY(Editable, Category = "PathFollow", ClampMin = 0.0f)
+        /** Throttle (0..1) applied to the controller's MoveSpeed; 1 = full speed.
+         *  Lower it for a walk; the movement system supplies the absolute m/s. */
+        PROPERTY(Editable, Category = "PathFollow", ClampMin = 0.0f, ClampMax = 1.0f)
         float Speed = 1.0f;
 
         /**

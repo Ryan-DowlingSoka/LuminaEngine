@@ -1,13 +1,16 @@
 #include "ParticleSystemEditorTool.h"
 #include "Assets/AssetTypes/ParticleSystem/ParticleSystem.h"
 #include "Core/Object/Cast.h"
+#include "Core/Object/Class.h"
 #include "Core/Object/Package/Package.h"
+#include "Core/Reflection/PropertyChangedEvent.h"
+#include "Particles/ParticleEmitterStack.h"
+#include "Particles/ParticleStockModules.h"
+#include "UI/Tools/NodeGraph/Particle/ParticleCompiler.h"
 #include "Paths/Paths.h"
 #include "Renderer/RenderContext.h"
 #include "Renderer/RHIGlobals.h"
 #include "Renderer/ShaderCompiler.h"
-#include "UI/Tools/NodeGraph/Particle/ParticleCompiler.h"
-#include "UI/Tools/NodeGraph/Particle/ParticleNodeGraph.h"
 #include "World/entity/components/environmentcomponent.h"
 #include "World/Entity/Components/SkyLightComponent.h"
 #include "World/entity/components/lightcomponent.h"
@@ -16,14 +19,37 @@
 
 namespace Lumina
 {
-    static const char* ParticleGraphName       = "Particle Graph";
-    static const char* ParticlePropertiesName  = "Properties";
-    static const char* ShaderPreviewName       = "Shader Preview";
+    static const char* EmitterWindowName    = "Emitter";
+    static const char* SelectionWindowName  = "Details";
+
+    // All module classes the add-module palette offers. Built lazily so reflected classes are
+    // registered by the time it runs. Add new stock modules here.
+    static const TVector<CClass*>& GetModuleClasses()
+    {
+        static TVector<CClass*> Classes;
+        if (Classes.empty())
+        {
+            Classes.push_back(CParticleModule_SpawnLocation::StaticClass());
+            Classes.push_back(CParticleModule_InitialVelocity::StaticClass());
+            Classes.push_back(CParticleModule_InitialColor::StaticClass());
+            Classes.push_back(CParticleModule_InitialSize::StaticClass());
+            Classes.push_back(CParticleModule_Lifetime::StaticClass());
+            Classes.push_back(CParticleModule_InitialRotation::StaticClass());
+            Classes.push_back(CParticleModule_GravityForce::StaticClass());
+            Classes.push_back(CParticleModule_Drag::StaticClass());
+            Classes.push_back(CParticleModule_CurlNoiseForce::StaticClass());
+            Classes.push_back(CParticleModule_ColorOverLife::StaticClass());
+            Classes.push_back(CParticleModule_SizeOverLife::StaticClass());
+            Classes.push_back(CParticleModule_Integrate::StaticClass());
+        }
+        return Classes;
+    }
 
     FParticleSystemEditorTool::FParticleSystemEditorTool(IEditorToolContext* Context, CObject* InAsset)
         : FAssetEditorTool(Context, InAsset->GetName().c_str(), InAsset, NewObject<CWorld>())
         , ParticleEntity()
-        , DirectionalLightEntity(), NodeGraph(nullptr)
+        , DirectionalLightEntity()
+        , EmitterStack(nullptr)
     {
     }
 
@@ -50,88 +76,58 @@ namespace Lumina
     {
         FAssetEditorTool::OnInitialize();
 
-        CreateToolWindow(ParticleGraphName, [&](bool bFocused)
+        CreateToolWindow(EmitterWindowName, [&](bool bFocused)
         {
-            DrawParticleGraph();
+            DrawStack();
         });
 
-        CreateToolWindow(ParticlePropertiesName, [&](bool bFocused)
+        CreateToolWindow(SelectionWindowName, [&](bool bFocused)
         {
-            DrawPropertyBindings();
+            GetPropertyTable()->DrawTree();
         });
 
-        CreateToolWindow(ShaderPreviewName, [&](bool bFocused)
+        const FString StackName = "AssetParticleStack";
+        EmitterStack = Cast<CParticleEmitterStack>(Asset->GetPackage()->LoadObjectByName(StackName));
+        if (EmitterStack == nullptr)
         {
-            DrawParticleProperties();
-            //DrawShaderPreview();
-        });
-
-        FString GraphName = "AssetParticleGraph";
-        NodeGraph = Cast<CParticleNodeGraph>(Asset->GetPackage()->LoadObjectByName(GraphName));
-
-        if (NodeGraph == nullptr)
-        {
-            NodeGraph = NewObject<CParticleNodeGraph>(Asset->GetPackage(), GraphName);
+            EmitterStack = NewObject<CParticleEmitterStack>(Asset->GetPackage(), StackName);
         }
+        EmitterStack->EnsureDefaultStack();
 
-        NodeGraph->SetParticleSystem(Cast<CParticleSystem>(Asset.Get()));
-        NodeGraph->Initialize();
-
-        NodeGraph->SetNodeSelectedCallback([this](CEdGraphNode* Node)
+        // Live preview: recompile when a module input edit finishes (mouse-up), so the viewport
+        // updates without a manual Compile. System-setting edits (no module selected) feed the
+        // sim uniforms directly and need no recompile.
+        GetPropertyTable()->SetFinishEditCallback([this](const FPropertyChangedEvent&)
         {
-            if (Node != SelectedNode)
+            if (SelectedModule != nullptr)
             {
-                SelectedNode = Node;
-
-                if (SelectedNode == nullptr)
-                {
-                    GetPropertyTable()->SetObject(Asset, Asset->GetClass());
-                }
-                else
-                {
-                    GetPropertyTable()->SetObject(Node, Node->GetClass());
-                }
+                Compile();
             }
         });
 
-        NodeGraph->SetPreNodeDeletedCallback([this](const CEdGraphNode* Node)
-        {
-            if (Node == SelectedNode)
-            {
-                GetPropertyTable()->SetObject(nullptr, nullptr);
-            }
-        });
+        // Default the Details panel to the system-wide settings.
+        SelectModule(nullptr);
     }
 
     void FParticleSystemEditorTool::OnDeinitialize(const FUpdateContext& UpdateContext)
     {
-        if (NodeGraph)
-        {
-            NodeGraph->Shutdown();
-            NodeGraph = nullptr;
-        }
+        EmitterStack = nullptr;
     }
 
     void FParticleSystemEditorTool::DrawHelpMenu()
     {
-        DrawHelpTextRow("Graph",
-            "Particle behaviour is built from nodes — emitters, lifetime/velocity modifiers, render modules. "
-            "Right-click empty space to spawn nodes; drag pin-to-pin to wire them.");
+        DrawHelpTextRow("Stack",
+            "An emitter is built from a Spawn stack (runs once per particle) and an Update stack "
+            "(runs every frame). Add modules with the + buttons and reorder them — order matters.");
+        DrawHelpTextRow("Modules",
+            "Each module is one behavior (shape, velocity, gravity, color over life, ...). Select a "
+            "module to edit its inputs in the Details panel. Toggle the checkbox to disable it.");
         DrawHelpTextRow("Compile",
-            "Compile bakes the graph into the asset's runtime data. Save also recompiles. "
-            "Compile errors surface in the log and on the failing node.");
+            "Compile bakes the stacks into the asset's compute shader. Save also compiles. "
+            "Place 'Solve Forces and Velocity' last in Update so all forces are applied first.");
         DrawHelpTextRow("Preview",
-            "The viewport spawns the system at the origin. Toggle camera follow / restart from the toolbar. "
-            "Reset clears all live particles instantly.");
-        DrawHelpTextRow("Material",
-            "Drag a material onto the render module to swap. Translucent materials are sorted back-to-front "
-            "per draw so authoring blend modes per system is OK.");
-
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted("Debug Node IDs");
-        ImGui::TableNextColumn();
-        ImGui::Checkbox("##DebugID", &NodeGraph->bDebug);
+            "The viewport spawns the system at the origin. System-wide spawn rate, lifetime budget "
+            "and render settings live in the Details panel when no module is selected.");
     }
 
     void FParticleSystemEditorTool::DrawToolMenu(const FUpdateContext& UpdateContext)
@@ -142,256 +138,217 @@ namespace Lumina
         }
     }
 
-    void FParticleSystemEditorTool::DrawParticleGraph()
+    void FParticleSystemEditorTool::SelectModule(CParticleModule* Module)
     {
-        NodeGraph->DrawGraph();
-    }
-
-    void FParticleSystemEditorTool::DrawParticleProperties()
-    {
-        GetPropertyTable()->DrawTree();
-    }
-
-    namespace
-    {
-        struct FBindableProperty
+        SelectedModule = Module;
+        if (Module != nullptr)
         {
-            const char*             PropertyName;
-            const char*             Category;
-            EParticleParameterType  ExpectedType;
-        };
-
-        static const FBindableProperty GBindableProperties[] =
-        {
-            { "SpawnRate",              "Simulation",     EParticleParameterType::Float },
-            { "BurstCount",             "Simulation",     EParticleParameterType::Int   },
-            { "Duration",               "Simulation",     EParticleParameterType::Float },
-            { "bLooping",               "Simulation",     EParticleParameterType::Bool  },
-
-            { "ShapeSize",              "Emitter Shape",  EParticleParameterType::Vec3  },
-            { "ShapeAngle",             "Emitter Shape",  EParticleParameterType::Float },
-
-            { "VelocityMin",            "Velocity",       EParticleParameterType::Vec3  },
-            { "VelocityMax",            "Velocity",       EParticleParameterType::Vec3  },
-            { "SpeedRange",             "Velocity",       EParticleParameterType::Vec2  },
-
-            { "LifetimeRange",          "Lifetime",       EParticleParameterType::Vec2  },
-
-            { "Gravity",                "Physics",        EParticleParameterType::Vec3  },
-            { "Drag",                   "Physics",        EParticleParameterType::Float },
-            { "InheritEmitterVelocity", "Physics",        EParticleParameterType::Float },
-
-            { "StartColor",             "Color",          EParticleParameterType::Color },
-            { "EndColor",               "Color",          EParticleParameterType::Color },
-
-            { "StartSizeRange",         "Size",           EParticleParameterType::Vec2  },
-            { "EndSizeRange",           "Size",           EParticleParameterType::Vec2  },
-
-            { "RotationRange",          "Rotation",       EParticleParameterType::Vec2  },
-            { "RotationSpeedRange",     "Rotation",       EParticleParameterType::Vec2  },
-
-            { "NoiseStrength",          "Noise",          EParticleParameterType::Vec3  },
-            { "NoiseScale",             "Noise",          EParticleParameterType::Float },
-            { "NoiseSpeed",             "Noise",          EParticleParameterType::Float },
-
-            { "bBillboardToCamera",     "Render",         EParticleParameterType::Bool  },
-            { "bWriteDepth",            "Render",         EParticleParameterType::Bool  },
-        };
-
-        static const char* ParameterTypeLabel(EParticleParameterType T)
-        {
-            switch (T)
-            {
-            case EParticleParameterType::Float: return "Float";
-            case EParticleParameterType::Int:   return "Int";
-            case EParticleParameterType::Bool:  return "Bool";
-            case EParticleParameterType::Vec2:  return "Vec2";
-            case EParticleParameterType::Vec3:  return "Vec3";
-            case EParticleParameterType::Vec4:  return "Vec4";
-            case EParticleParameterType::Color: return "Color";
-            }
-            return "?";
+            GetPropertyTable()->SetObject(Module, Module->GetClass());
         }
-
-        static bool IsCompatible(EParticleParameterType Expected, EParticleParameterType Actual)
+        else
         {
-            if (Expected == Actual) return true;
-            // Color and Vec4 share storage and are interchangeable as drivers.
-            if ((Expected == EParticleParameterType::Color && Actual == EParticleParameterType::Vec4) ||
-                (Expected == EParticleParameterType::Vec4  && Actual == EParticleParameterType::Color))
-            {
-                return true;
-            }
-            return false;
+            GetPropertyTable()->SetObject(Asset, Asset->GetClass());
         }
     }
 
-    void FParticleSystemEditorTool::DrawPropertyBindings()
+    void FParticleSystemEditorTool::DrawStack()
     {
-        CParticleSystem* PS = Cast<CParticleSystem>(Asset.Get());
-        if (PS == nullptr)
+        if (EmitterStack == nullptr)
         {
             return;
         }
 
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 4));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6, 4));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6, 5));
 
-        ImGui::TextDisabled("Bind any built-in property to a user parameter so scripts and C++ can drive it at runtime.");
+        if (CompilationResult.bIsError)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(235, 90, 90, 255));
+            ImGui::TextWrapped("%s", CompilationResult.CompilationLog.c_str());
+            ImGui::PopStyleColor();
+            ImGui::Separator();
+        }
+
+        // System header selects the asset so its sim / render settings show in Details.
+        const bool bSystemSelected = (SelectedModule == nullptr);
+        if (ImGui::Selectable(LE_ICON_COG" System Settings", bSystemSelected))
+        {
+            SelectModule(nullptr);
+        }
+        ImGui::Spacing();
+
+        DrawStackSection(EParticleModuleStage::Spawn,  "Particle Spawn");
+        ImGui::Spacing();
+        DrawStackSection(EParticleModuleStage::Update, "Particle Update");
+
+        ImGui::PopStyleVar(2);
+
+        // Recompile once after the UI loop if the stack changed structurally this frame.
+        if (bStackDirty)
+        {
+            bStackDirty = false;
+            Compile();
+        }
+    }
+
+    void FParticleSystemEditorTool::DrawStackSection(EParticleModuleStage Stage, const char* Label)
+    {
+        ImGui::PushID(Label);
+
+        TVector<TObjectPtr<CParticleModule>>& Stack = EmitterStack->GetStack(Stage);
+
+        // One uniform button width that actually fits an icon glyph + frame padding, used for every
+        // control on a row. (A frame-height square clips wider glyphs like the trash icon.)
+        const float Spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float Pad     = ImGui::GetStyle().FramePadding.x;
+        const float BtnW    = ImGui::CalcTextSize(LE_ICON_DELETE).x + Pad * 2.0f;
+        const float Cluster = BtnW * 3.0f + Spacing * 3.0f; // up + down + delete, plus the gaps
+
+        // Section header with a right-aligned + add button.
+        const float HeaderWidth = ImGui::GetContentRegionAvail().x;
+        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(120, 200, 130, 255));
+        ImGui::TextUnformatted(Label);
+        ImGui::PopStyleColor();
+        ImGui::SameLine(HeaderWidth - BtnW);
+        if (ImGui::Button(LE_ICON_PLUS"##add", ImVec2(BtnW, 0)))
+        {
+            PendingAddStage = Stage;
+            ImGui::OpenPopup("##AddModule");
+        }
         ImGui::Separator();
 
-        const char* CurrentCategory = nullptr;
-        for (const FBindableProperty& Prop : GBindableProperties)
+        CParticleModule* PendingRemove = nullptr;
+        for (int32 i = 0; i < (int32)Stack.size(); ++i)
         {
-            if (CurrentCategory == nullptr || strcmp(CurrentCategory, Prop.Category) != 0)
+            CParticleModule* Module = Stack[i].Get();
+            if (Module == nullptr)
             {
-                CurrentCategory = Prop.Category;
-                ImGui::Spacing();
-                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(220, 220, 222, 255));
-                ImGui::TextUnformatted(Prop.Category);
-                ImGui::PopStyleColor();
-                ImGui::Separator();
+                continue;
             }
 
-            ImGui::PushID(Prop.PropertyName);
+            ImGui::PushID(i);
 
-            const FName PropName(Prop.PropertyName);
-            const FName BoundParam = PS->GetPropertyBinding(PropName);
+            bool bEnabled = Module->bEnabled;
+            if (ImGui::Checkbox("##en", &bEnabled))
+            {
+                Module->bEnabled = bEnabled;
+                Asset->GetPackage()->MarkDirty();
+                bStackDirty = true;
+            }
+            ImGui::SameLine();
 
-            const float NameWidth = 180.0f;
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(Prop.PropertyName);
-            ImGui::SameLine(NameWidth);
-
-            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(140, 140, 145, 255));
-            ImGui::TextUnformatted(ParameterTypeLabel(Prop.ExpectedType));
+            const uint32 Accent = Module->GetAccentColor();
+            ImGui::PushStyleColor(ImGuiCol_Text, bEnabled ? Accent : IM_COL32(120, 120, 125, 255));
+            const bool bSelected = (SelectedModule == Module);
+            const float Remaining = ImGui::GetContentRegionAvail().x - Cluster;
+            const float RowWidth = Remaining > 40.0f ? Remaining : 40.0f;
+            if (ImGui::Selectable(Module->GetDisplayName().c_str(), bSelected, 0, ImVec2(RowWidth, 0)))
+            {
+                SelectModule(Module);
+            }
             ImGui::PopStyleColor();
-            ImGui::SameLine(NameWidth + 60.0f);
-
-            const char* PreviewLabel = BoundParam.IsNone() ? "(literal)" : BoundParam.c_str();
-            const float ComboWidth = ImGui::GetContentRegionAvail().x - 28.0f;
-            ImGui::PushItemWidth(ComboWidth);
-            if (ImGui::BeginCombo("##Bind", PreviewLabel))
+            if (ImGui::IsItemHovered() && !Module->GetTooltip().empty())
             {
-                if (ImGui::Selectable("(literal)", BoundParam.IsNone()))
-                {
-                    PS->ClearPropertyBinding(PropName);
-                    PS->GetPackage()->MarkDirty();
-                }
-
-                for (const FParticleParameter& Param : PS->UserParameters)
-                {
-                    if (Param.Name.IsNone()) continue;
-                    const bool bCompat = IsCompatible(Prop.ExpectedType, Param.Type);
-                    if (!bCompat) continue;
-
-                    const bool bSelected = (BoundParam == Param.Name);
-                    if (ImGui::Selectable(Param.Name.c_str(), bSelected))
-                    {
-                        PS->SetPropertyBinding(PropName, Param.Name);
-                        PS->GetPackage()->MarkDirty();
-                    }
-                }
-
-                bool bAnyMismatch = false;
-                for (const FParticleParameter& Param : PS->UserParameters)
-                {
-                    if (!Param.Name.IsNone() && !IsCompatible(Prop.ExpectedType, Param.Type))
-                    {
-                        bAnyMismatch = true;
-                        break;
-                    }
-                }
-                if (bAnyMismatch)
-                {
-                    ImGui::Separator();
-                    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(140, 140, 145, 255));
-                    ImGui::TextUnformatted("Incompatible:");
-                    ImGui::PopStyleColor();
-                    for (const FParticleParameter& Param : PS->UserParameters)
-                    {
-                        if (Param.Name.IsNone() || IsCompatible(Prop.ExpectedType, Param.Type)) continue;
-                        ImGui::BeginDisabled();
-                        char Label[160];
-                        snprintf(Label, sizeof(Label), "%s (%s)", Param.Name.c_str(), ParameterTypeLabel(Param.Type));
-                        ImGui::Selectable(Label, false);
-                        ImGui::EndDisabled();
-                    }
-                }
-
-                ImGui::EndCombo();
+                ImGui::SetTooltip("%s", Module->GetTooltip().c_str());
             }
-            ImGui::PopItemWidth();
 
             ImGui::SameLine();
-            ImGui::BeginDisabled(BoundParam.IsNone());
-            if (ImGui::Button("X", ImVec2(22, 0)))
-            {
-                PS->ClearPropertyBinding(PropName);
-                PS->GetPackage()->MarkDirty();
-            }
+            ImGui::BeginDisabled(i == 0);
+            if (ImGui::Button(LE_ICON_ARROW_UP"##up", ImVec2(BtnW, 0))) { EmitterStack->MoveModule(Module, -1); Asset->GetPackage()->MarkDirty(); bStackDirty = true; }
             ImGui::EndDisabled();
+
+            ImGui::SameLine();
+            ImGui::BeginDisabled(i == (int32)Stack.size() - 1);
+            if (ImGui::Button(LE_ICON_ARROW_DOWN"##down", ImVec2(BtnW, 0))) { EmitterStack->MoveModule(Module, 1); Asset->GetPackage()->MarkDirty(); bStackDirty = true; }
+            ImGui::EndDisabled();
+
+            ImGui::SameLine();
+            if (ImGui::Button(LE_ICON_DELETE"##del", ImVec2(BtnW, 0)))
+            {
+                PendingRemove = Module;
+            }
 
             ImGui::PopID();
         }
 
-        ImGui::PopStyleVar(2);
+        if (PendingRemove != nullptr)
+        {
+            if (SelectedModule == PendingRemove)
+            {
+                SelectModule(nullptr);
+            }
+            EmitterStack->RemoveModule(PendingRemove);
+            Asset->GetPackage()->MarkDirty();
+            bStackDirty = true;
+        }
+
+        DrawAddModulePopup(Stage);
+
+        ImGui::PopID();
     }
 
-    void FParticleSystemEditorTool::DrawShaderPreview()
+    void FParticleSystemEditorTool::DrawAddModulePopup(EParticleModuleStage Stage)
     {
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12, 12));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
-
-        if (CompilationResult.bIsError)
+        if (PendingAddStage != Stage)
         {
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.15f, 0.18f, 1.0f));
-            ImGui::BeginChild("##error_preview", ImVec2(0, 0), true);
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
-            ImGui::TextUnformatted(CompilationResult.CompilationLog.c_str());
-            ImGui::PopStyleColor();
-            ImGui::EndChild();
-            ImGui::PopStyleColor();
-            ImGui::PopStyleVar(2);
             return;
         }
 
-        if (CompiledSource.empty())
+        if (ImGui::BeginPopup("##AddModule"))
         {
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.15f, 0.18f, 1.0f));
-            ImGui::BeginChild("##empty_preview", ImVec2(0, 0), true);
-            ImVec2 Available = ImGui::GetContentRegionAvail();
-            ImVec2 TextSize  = ImGui::CalcTextSize("Compile to see shader");
-            ImGui::SetCursorPos(ImVec2((Available.x - TextSize.x) * 0.5f, (Available.y - TextSize.y) * 0.5f));
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.65f, 1.0f));
-            ImGui::TextUnformatted("Compile to see shader");
-            ImGui::PopStyleColor();
-            ImGui::EndChild();
-            ImGui::PopStyleColor();
-            ImGui::PopStyleVar(2);
-            return;
-        }
+            ImGui::TextDisabled("Add Module");
+            ImGui::Separator();
 
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.12f, 0.15f, 1.0f));
-        ImGui::BeginChild("##shader_preview", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.85f, 1.0f, 1.0f));
-        ImGui::TextUnformatted("Compute Shader Source");
-        ImGui::PopStyleColor();
-        ImGui::Separator();
-        ImGui::Spacing();
-        ImGui::TextUnformatted(CompiledSource.c_str());
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar(2);
+            FString CurrentCategory;
+            for (CClass* ModuleClass : GetModuleClasses())
+            {
+                CParticleModule* CDO = ModuleClass->GetDefaultObject<CParticleModule>();
+                if (CDO == nullptr || CDO->GetStage() != Stage)
+                {
+                    continue;
+                }
+
+                if (CDO->GetCategory() != CurrentCategory)
+                {
+                    CurrentCategory = CDO->GetCategory();
+                    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(150, 150, 155, 255));
+                    ImGui::TextUnformatted(CurrentCategory.c_str());
+                    ImGui::PopStyleColor();
+                }
+
+                ImGui::Indent(10.0f);
+                if (ImGui::Selectable(CDO->GetDisplayName().c_str()))
+                {
+                    CParticleModule* Added = EmitterStack->AddModule(ModuleClass);
+                    if (Added != nullptr)
+                    {
+                        SelectModule(Added);
+                        Asset->GetPackage()->MarkDirty();
+                        bStackDirty = true;
+                    }
+                }
+                if (ImGui::IsItemHovered() && !CDO->GetTooltip().empty())
+                {
+                    ImGui::SetTooltip("%s", CDO->GetTooltip().c_str());
+                }
+                ImGui::Unindent(10.0f);
+            }
+
+            ImGui::EndPopup();
+        }
     }
 
     void FParticleSystemEditorTool::Compile()
     {
         CompilationResult = FCompilationResultInfo();
         CParticleSystem* PS = Cast<CParticleSystem>(Asset.Get());
+        if (PS == nullptr || EmitterStack == nullptr)
+        {
+            return;
+        }
 
         FParticleCompiler Compiler;
-        NodeGraph->CompileGraph(Compiler);
+        EmitterStack->CompileStacks(Compiler);
 
         if (Compiler.HasErrors())
         {
@@ -403,9 +360,8 @@ namespace Lumina
             return;
         }
 
-        CompiledSource = Compiler.BuildShader();
-
-        if (CompiledSource.empty())
+        const FString Source = Compiler.BuildShader();
+        if (Source.empty())
         {
             CompilationResult.CompilationLog = "Failed to build shader source.";
             CompilationResult.bIsError = true;
@@ -413,23 +369,24 @@ namespace Lumina
         }
 
         IShaderCompiler* ShaderCompiler = GRenderContext->GetShaderCompiler();
-
-        ShaderCompiler->CompilerShaderRaw(CompiledSource, {}, [this](const FShaderHeader& Header) mutable
+        ShaderCompiler->CompilerShaderRaw(Source, {}, [this](const FShaderHeader& Header) mutable
         {
             CParticleSystem* PS = Cast<CParticleSystem>(Asset.Get());
             PS->ComputeShader = GRenderContext->CreateComputeShader(Header);
             PS->ComputeShaderBinaries.assign(Header.Binaries.begin(), Header.Binaries.end());
             GRenderContext->OnShaderCompiled(PS->ComputeShader, false, true);
         });
-
         ShaderCompiler->Flush();
 
+        // Route the renderer to the generated module-stack shader.
+        PS->ShaderMode = EParticleShaderMode::Custom;
         PS->PostLoad();
         PS->GetPackage()->MarkDirty();
     }
 
     void FParticleSystemEditorTool::OnSave()
     {
+        Compile();
         FAssetEditorTool::OnSave();
     }
 
@@ -438,14 +395,11 @@ namespace Lumina
         ImGui::DockBuilderRemoveNodeChildNodes(InDockspaceID);
 
         ImGuiID LeftDockID = 0, RightDockID = 0, RightBottomDockID = 0;
-        ImGui::DockBuilderSplitNode(InDockspaceID, ImGuiDir_Right, 0.3f, &RightDockID, &LeftDockID);
-        ImGui::DockBuilderSplitNode(RightDockID, ImGuiDir_Down, 0.3f, &RightBottomDockID, &RightDockID);
+        ImGui::DockBuilderSplitNode(InDockspaceID, ImGuiDir_Left, 0.28f, &LeftDockID, &RightDockID);
+        ImGui::DockBuilderSplitNode(RightDockID, ImGuiDir_Down, 0.32f, &RightBottomDockID, &RightDockID);
 
-        // Particle Graph and Shader Preview share the left pane as tabs (intentional -- the user
-        // toggles between authoring the graph and inspecting the generated shader).
-        ImGui::DockBuilderDockWindow(GetToolWindowName(ParticleGraphName).c_str(),       LeftDockID);
-        ImGui::DockBuilderDockWindow(GetToolWindowName(ShaderPreviewName).c_str(),       LeftDockID);
-        ImGui::DockBuilderDockWindow(GetToolWindowName(ViewportWindowName).c_str(),      RightDockID);
-        ImGui::DockBuilderDockWindow(GetToolWindowName(ParticlePropertiesName).c_str(),  RightBottomDockID);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(EmitterWindowName).c_str(),    LeftDockID);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(ViewportWindowName).c_str(),   RightDockID);
+        ImGui::DockBuilderDockWindow(GetToolWindowName(SelectionWindowName).c_str(),  RightBottomDockID);
     }
 }

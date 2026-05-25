@@ -1,10 +1,12 @@
 #include "pch.h"
 #include "World.h"
+#include <cmath>
 #include <utility>
 #include "lua.h"
 #include "WorldManager.h"
 #include "WorldContext.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Assets/AssetTypes/GeometryCollection/GeometryCollection.h"
 #include "Assets/AssetTypes/Material/MaterialInterface.h"
 #include "Assets/AssetTypes/Prefabs/Prefab.h"
 #include "Core/Object/Cast.h"
@@ -20,8 +22,12 @@
 #include "EASTL/sort.h"
 #include "Entity/EntityUtils.h"
 #include "Entity/Components/CameraComponent.h"
+#include "Entity/Components/DestructibleComponent.h"
 #include "Entity/Components/DirtyComponent.h"
 #include "Entity/Components/EditorComponent.h"
+#include "Entity/Components/LifetimeComponent.h"
+#include "Entity/Components/StaticMeshComponent.h"
+#include "Entity/Events/ImpulseEvent.h"
 #include "entity/components/entitytags.h"
 #include "Entity/Components/LineBatcherComponent.h"
 #include "Entity/Components/NameComponent.h"
@@ -199,6 +205,94 @@ namespace Lumina
             return ECS::Utils::DuplicateEntity(Registry, Entity);
         }
 
+        static entt::entity GetParent_Lua(FEntityRegistry& Registry, entt::entity Entity)
+        {
+            return ECS::Utils::GetParent(Registry, Entity);
+        }
+
+        static entt::entity GetRoot_Lua(FEntityRegistry& Registry, entt::entity Entity)
+        {
+            return ECS::Utils::GetRootEntity(Registry, Entity);
+        }
+
+        static TVector<entt::entity> GetChildren_Lua(FEntityRegistry& Registry, entt::entity Entity)
+        {
+            TVector<entt::entity> Children;
+            ECS::Utils::CollectChildren(Registry, Entity, Children);
+            return Children;
+        }
+
+        static TVector<entt::entity> GetAncestors_Lua(FEntityRegistry& Registry, entt::entity Entity)
+        {
+            TVector<entt::entity> Ancestors;
+            ECS::Utils::CollectAncestors(Registry, Entity, Ancestors);
+            return Ancestors;
+        }
+
+        static TVector<entt::entity> GetDescendants_Lua(FEntityRegistry& Registry, entt::entity Entity)
+        {
+            // CollectDescendants includes the entity itself at index 0; drop it so callers get descendants only.
+            TVector<entt::entity> Descendants;
+            ECS::Utils::CollectDescendants(Registry, Entity, Descendants);
+            if (!Descendants.empty())
+            {
+                Descendants.erase(Descendants.begin());
+            }
+            return Descendants;
+        }
+
+        static bool IsDescendantOf_Lua(FEntityRegistry& Registry, entt::entity Entity, entt::entity Ancestor)
+        {
+            return ECS::Utils::IsDescendantOf(Registry, Entity, Ancestor);
+        }
+
+        static size_t GetChildCount_Lua(FEntityRegistry& Registry, entt::entity Entity)
+        {
+            return ECS::Utils::GetChildCount(Registry, Entity);
+        }
+
+        static void Reparent_Lua(FEntityRegistry& Registry, entt::entity Child, entt::entity Parent)
+        {
+            ECS::Utils::ReparentEntity(Registry, Child, Parent);
+        }
+
+        static void Detach_Lua(FEntityRegistry& Registry, entt::entity Child)
+        {
+            ECS::Utils::RemoveFromParent(Registry, Child);
+        }
+
+        static entt::entity FindChild_Lua(FEntityRegistry& Registry, entt::entity Entity, FName Name)
+        {
+            return ECS::Utils::FindChildByName(Registry, Entity, Name);
+        }
+
+        static entt::entity FindDescendant_Lua(FEntityRegistry& Registry, entt::entity Entity, FName Name)
+        {
+            return ECS::Utils::FindDescendantByName(Registry, Entity, Name);
+        }
+
+        static TVector<entt::entity> GetSiblings_Lua(FEntityRegistry& Registry, entt::entity Entity)
+        {
+            TVector<entt::entity> Siblings;
+            ECS::Utils::CollectSiblings(Registry, Entity, Siblings);
+            return Siblings;
+        }
+
+        static size_t GetSiblingIndex_Lua(FEntityRegistry& Registry, entt::entity Entity)
+        {
+            return ECS::Utils::GetSiblingIndex(Registry, Entity);
+        }
+
+        static entt::entity GetNextSibling_Lua(FEntityRegistry& Registry, entt::entity Entity)
+        {
+            return ECS::Utils::GetNextSibling(Registry, Entity);
+        }
+
+        static entt::entity GetPrevSibling_Lua(FEntityRegistry& Registry, entt::entity Entity)
+        {
+            return ECS::Utils::GetPrevSibling(Registry, Entity);
+        }
+
         static Lua::FRef GetScriptTable_Lua(FEntityRegistry& Registry, entt::entity Entity)
         {
             LUMINA_PROFILE_SECTION("Get Script Table [Lua]");
@@ -348,6 +442,41 @@ namespace Lumina
                 return 1;
             }, "World.GetTimeSinceCreation");
             lua_rawsetfield(VM, -2, "GetTimeSinceCreation");
+
+            // World.Fracture(entity): shatter using the component defaults, blast centered on the entity.
+            lua_pushcfunction(VM, +[](lua_State* L) -> int
+            {
+                CWorld* World = LuaBinds::CurrentWorld(L);
+                const entt::entity E = lua_isnumber(L, 1)
+                    ? static_cast<entt::entity>(static_cast<uint32>(lua_tointeger(L, 1)))
+                    : entt::null;
+                bool bResult = false;
+                if (World && E != entt::null)
+                {
+                    bResult = World->FractureEntity(E, World->GetEntityLocation(E), 0.0f);
+                }
+                lua_pushboolean(L, bResult);
+                return 1;
+            }, "World.Fracture");
+            lua_rawsetfield(VM, -2, "Fracture");
+
+            // World.FractureAt(entity, x, y, z [, strength]): shatter with an explicit blast origin and speed.
+            lua_pushcfunction(VM, +[](lua_State* L) -> int
+            {
+                CWorld* World = LuaBinds::CurrentWorld(L);
+                const entt::entity E = lua_isnumber(L, 1)
+                    ? static_cast<entt::entity>(static_cast<uint32>(lua_tointeger(L, 1)))
+                    : entt::null;
+                const glm::vec3 Origin(
+                    static_cast<float>(luaL_checknumber(L, 2)),
+                    static_cast<float>(luaL_checknumber(L, 3)),
+                    static_cast<float>(luaL_checknumber(L, 4)));
+                const float Strength = static_cast<float>(luaL_optnumber(L, 5, 0.0));
+                const bool bResult = World && E != entt::null && World->FractureEntity(E, Origin, Strength);
+                lua_pushboolean(L, bResult);
+                return 1;
+            }, "World.FractureAt");
+            lua_rawsetfield(VM, -2, "FractureAt");
             lua_pop(VM, 1);
         }
 
@@ -365,6 +494,21 @@ namespace Lumina
             .AddFunction<&LuaBinds::ForEachEntity_Lua>("ForEachEntity")
             .AddFunction<&LuaBinds::GetComponent_Lua>("Get")
             .AddFunction<&LuaBinds::GetScriptTable_Lua>("GetScriptTable")
+            .AddFunction<&LuaBinds::GetParent_Lua>("GetParent")
+            .AddFunction<&LuaBinds::GetRoot_Lua>("GetRoot")
+            .AddFunction<&LuaBinds::GetChildren_Lua>("GetChildren")
+            .AddFunction<&LuaBinds::GetAncestors_Lua>("GetAncestors")
+            .AddFunction<&LuaBinds::GetDescendants_Lua>("GetDescendants")
+            .AddFunction<&LuaBinds::IsDescendantOf_Lua>("IsDescendantOf")
+            .AddFunction<&LuaBinds::GetChildCount_Lua>("GetChildCount")
+            .AddFunction<&LuaBinds::FindChild_Lua>("FindChild")
+            .AddFunction<&LuaBinds::FindDescendant_Lua>("FindDescendant")
+            .AddFunction<&LuaBinds::GetSiblings_Lua>("GetSiblings")
+            .AddFunction<&LuaBinds::GetSiblingIndex_Lua>("GetSiblingIndex")
+            .AddFunction<&LuaBinds::GetNextSibling_Lua>("GetNextSibling")
+            .AddFunction<&LuaBinds::GetPrevSibling_Lua>("GetPrevSibling")
+            .AddFunction<&LuaBinds::Reparent_Lua>("Reparent")
+            .AddFunction<&LuaBinds::Detach_Lua>("Detach")
             .AddFunction<&LuaBinds::IsEntityNull_Lua>("IsNull")
             .AddFunction<&LuaBinds::RuntimeView_Lua>("RuntimeView")
             .AddFunction<&LuaBinds::DispatchEvent_Lua>("DispatchEvent")
@@ -1020,6 +1164,214 @@ namespace Lumina
         return NewEntity;
     }
     
+    bool CWorld::FractureEntity(entt::entity Entity, const glm::vec3& Origin, float Strength)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        if (!EntityRegistry.valid(Entity))
+        {
+            return false;
+        }
+
+        SDestructibleComponent* Destructible = EntityRegistry.try_get<SDestructibleComponent>(Entity);
+        if (Destructible == nullptr || Destructible->bFractured)
+        {
+            return false;
+        }
+
+        // Resolve the mesh to shatter: explicit fragment override, else the entity's own static mesh.
+        SStaticMeshComponent* MeshComp = EntityRegistry.try_get<SStaticMeshComponent>(Entity);
+        CStaticMesh* SourceMesh = Destructible->FragmentMesh.Get();
+        if (SourceMesh == nullptr && MeshComp != nullptr)
+        {
+            SourceMesh = MeshComp->StaticMesh.Get();
+        }
+
+        if (SourceMesh == nullptr)
+        {
+            LOG_WARN("FractureEntity: entity {} has no mesh to fracture", entt::to_integral(Entity));
+            return false;
+        }
+
+        const FTransform OwnerTransform = EntityRegistry.get<STransformComponent>(Entity).GetWorldTransform();
+        const glm::vec3 OwnerScale = OwnerTransform.Scale;
+
+        // Inherit the intact body's linear velocity so fragments keep the object's momentum.
+        glm::vec3 InheritedVelocity(0.0f);
+        if (PhysicsScene)
+        {
+            if (const SRigidBodyComponent* RB = EntityRegistry.try_get<SRigidBodyComponent>(Entity))
+            {
+                if (RB->BodyID != 0xFFFFFFFFu)
+                {
+                    InheritedVelocity = PhysicsScene->GetLinearVelocity(RB->BodyID);
+                }
+            }
+        }
+
+        const float LaunchSpeed = Strength > 0.0f ? Strength : Destructible->ExplosionStrength;
+        const float SpinSpeed   = Destructible->SpinStrength;
+
+        // Deterministic per-fragment jitter (good for replays / lockstep): hash the index.
+        auto Hash01 = [](uint32 V) -> float
+        {
+            V ^= V >> 16; V *= 0x7feb352dU; V ^= V >> 15; V *= 0x846ca68bU; V ^= V >> 16;
+            return static_cast<float>(V) / static_cast<float>(0xFFFFFFFFU);
+        };
+
+        // Inherited momentum + an outward blast (radial from Origin) + random spin on a fresh body.
+        auto LaunchBody = [&](uint32 BodyID, const glm::vec3& WorldCenter, uint32 Seed)
+        {
+            if (!PhysicsScene || BodyID == 0xFFFFFFFFu)
+            {
+                return;
+            }
+            glm::vec3 Direction = WorldCenter - Origin;
+            const float Distance = glm::length(Direction);
+            Direction = Distance > 1e-4f
+                ? Direction / Distance
+                : glm::normalize(glm::vec3(Hash01(Seed) - 0.5f, Hash01(Seed + 1) + 0.25f, Hash01(Seed + 2) - 0.5f));
+
+            const float SpeedJitter = 0.7f + 0.6f * Hash01(Seed + 3);
+            const glm::vec3 LaunchVelocity = InheritedVelocity
+                + Direction * (LaunchSpeed * SpeedJitter)
+                + glm::vec3(0.0f, LaunchSpeed * 0.2f, 0.0f);
+            PhysicsScene->OnSetVelocityEvent(SSetVelocityEvent{ BodyID, LaunchVelocity });
+
+            if (SpinSpeed > 0.0f)
+            {
+                const glm::vec3 Spin(Hash01(Seed + 4) - 0.5f, Hash01(Seed + 5) - 0.5f, Hash01(Seed + 6) - 0.5f);
+                PhysicsScene->OnSetAngularVelocityEvent(SSetAngularVelocityEvent{ BodyID, Spin * (2.0f * SpinSpeed) });
+            }
+        };
+
+        int32 Spawned = 0;
+
+        // Source of pieces: an assigned collection if present, else a convex Voronoi fracture
+        // generated on the fly from the mesh bounds (real chunks with zero authoring).
+        const FFractureData* CollectionData = nullptr;
+        if (CGeometryCollection* Collection = Destructible->Collection.Get())
+        {
+            if (Collection->GetNumPieces() > 0)
+            {
+                CollectionData = &Collection->GetFractureData();
+            }
+        }
+
+        TVector<FFracturePiece> GeneratedPieces;
+        if (CollectionData == nullptr)
+        {
+            FFractureSettings Settings;
+            Settings.NumPieces = Destructible->FragmentCount;
+            Settings.Seed      = entt::to_integral(Entity) * 2654435761U + 1u;
+            Fracture::GenerateConvexFracture(SourceMesh, Settings, GeneratedPieces);
+        }
+
+        const TVector<FFracturePiece>& Pieces = CollectionData ? CollectionData->Pieces : GeneratedPieces;
+
+        if (!Pieces.empty())
+        {
+            const TVector<TObjectPtr<CMaterialInterface>>& PieceMaterials =
+                (CollectionData && !Destructible->Collection->Materials.empty())
+                    ? Destructible->Collection->Materials
+                    : SourceMesh->Materials;
+
+            for (const FFracturePiece& Piece : Pieces)
+            {
+                CStaticMesh* PieceMesh = Fracture::BuildPieceMesh(Piece, PieceMaterials, "GCPiece");
+                if (PieceMesh == nullptr)
+                {
+                    continue;
+                }
+
+                // Pieces live in the source mesh's local space, so each fragment shares the owner's
+                // world transform and reconstructs the object exactly until physics pulls it apart.
+                const entt::entity Fragment = ConstructEntity("Fragment", OwnerTransform);
+                EntityRegistry.emplace_or_replace<FNeedsTransformUpdate>(Fragment);
+
+                EntityRegistry.emplace<SStaticMeshComponent>(Fragment).StaticMesh = PieceMesh;
+
+                // Mesh colliders don't auto-add a body: emplace the collider first, then the rigid
+                // body, so its on_construct builds the convex Jolt body synchronously with a valid id.
+                SMeshColliderComponent& Collider = EntityRegistry.emplace<SMeshColliderComponent>(Fragment);
+                Collider.Mesh    = PieceMesh;
+                Collider.bConvex = true;
+                EntityRegistry.emplace<SRigidBodyComponent>(Fragment);
+
+                EntityRegistry.emplace<SLifetimeComponent>(Fragment).Lifetime = Destructible->FragmentLifetime;
+                EntityRegistry.emplace<SFragmentComponent>(Fragment).Source   = entt::to_integral(Entity);
+
+                const glm::vec3 WorldCenter = OwnerTransform.Location + OwnerTransform.Rotation * (OwnerTransform.Scale * Piece.Center);
+                LaunchBody(EntityRegistry.get<SRigidBodyComponent>(Fragment).BodyID, WorldCenter, entt::to_integral(Fragment) + static_cast<uint32>(Spawned));
+
+                ++Spawned;
+            }
+        }
+        else
+        {
+            // Fallback (degenerate fracture): subdivide the bounds into a grid of textured box chunks.
+            const FAABB& LocalBounds = SourceMesh->GetAABB();
+            const glm::vec3 LocalExtent = glm::max(LocalBounds.GetSize(), glm::vec3(0.01f));
+            const glm::vec3 LocalCenter = LocalBounds.GetCenter();
+            const int32 Target = glm::clamp(Destructible->FragmentCount, 2, 512);
+            const int32 Dims   = glm::max(1, static_cast<int32>(std::ceil(std::cbrt(static_cast<float>(Target)))));
+            const glm::vec3 LocalCell = LocalExtent / static_cast<float>(Dims);
+            const glm::vec3 FragScale = OwnerScale / static_cast<float>(Dims);
+            const glm::vec3 ColliderHalf = LocalExtent * 0.5f;
+            CStaticMesh* GridMesh = Destructible->FragmentMesh.Get() ? Destructible->FragmentMesh.Get() : SourceMesh;
+
+            for (int32 zi = 0; zi < Dims && Spawned < Target; ++zi)
+            for (int32 yi = 0; yi < Dims && Spawned < Target; ++yi)
+            for (int32 xi = 0; xi < Dims && Spawned < Target; ++xi)
+            {
+                const glm::vec3 CellLocalCenter = LocalBounds.Min + (glm::vec3(xi, yi, zi) + 0.5f) * LocalCell;
+                const glm::vec3 CellWorldCenter = OwnerTransform.Location + OwnerTransform.Rotation * (OwnerScale * CellLocalCenter);
+
+                FTransform FragmentTransform;
+                FragmentTransform.Location = CellWorldCenter - OwnerTransform.Rotation * (FragScale * LocalCenter);
+                FragmentTransform.Rotation = OwnerTransform.Rotation;
+                FragmentTransform.Scale    = FragScale;
+
+                const entt::entity Fragment = ConstructEntity("Fragment", FragmentTransform);
+                EntityRegistry.emplace_or_replace<FNeedsTransformUpdate>(Fragment);
+
+                SStaticMeshComponent& FragmentMeshComp = EntityRegistry.emplace<SStaticMeshComponent>(Fragment);
+                FragmentMeshComp.StaticMesh = GridMesh;
+                if (MeshComp != nullptr)
+                {
+                    FragmentMeshComp.MaterialOverrides = MeshComp->MaterialOverrides;
+                }
+
+                // Box collider auto-emplaces a Dynamic rigid body, built synchronously off the physics thread.
+                EntityRegistry.emplace<SBoxColliderComponent>(Fragment).HalfExtent = ColliderHalf;
+
+                EntityRegistry.emplace<SLifetimeComponent>(Fragment).Lifetime = Destructible->FragmentLifetime;
+                EntityRegistry.emplace<SFragmentComponent>(Fragment).Source   = entt::to_integral(Entity);
+
+                LaunchBody(EntityRegistry.get<SRigidBodyComponent>(Fragment).BodyID, CellWorldCenter, entt::to_integral(Fragment) + static_cast<uint32>(Spawned));
+
+                ++Spawned;
+            }
+        }
+
+        Destructible->bFractured = true;
+
+        // Retire the original. Strip render + physics now so it vanishes this frame, and
+        // let the lifetime system reap the entity at FrameEnd -- safe even when this was
+        // called from the entity's own script callback.
+        if (Destructible->bDestroyOriginal)
+        {
+            EntityRegistry.remove<SStaticMeshComponent>(Entity);
+            EntityRegistry.remove<SRigidBodyComponent>(Entity);
+            EntityRegistry.remove<SBoxColliderComponent>(Entity);
+            EntityRegistry.remove<SSphereColliderComponent>(Entity);
+            EntityRegistry.remove<SMeshColliderComponent>(Entity);
+            EntityRegistry.emplace_or_replace<SLifetimeComponent>(Entity).Lifetime = 0.01f;
+        }
+
+        return Spawned > 0;
+    }
+
     entt::entity CWorld::SpawnPrefab(const FName& Path)
     {
         FAssetData* AssetData = FAssetRegistry::Get().GetAssetByPath(FStringView(Path.c_str()));
@@ -1058,9 +1410,12 @@ namespace Lumina
     {
         ASSERT(To != From);
 
+        THashMap<entt::entity, entt::entity> SourceToDuplicate;
+
         auto DuplicateRecursive = [&](auto& Self, entt::entity Source, entt::entity NewParent) -> entt::entity
         {
             entt::entity NewEntity = EntityRegistry.create();
+            SourceToDuplicate[Source] = NewEntity;
 
             for (auto&& [ID, Storage] : EntityRegistry.storage())
             {
@@ -1132,6 +1487,13 @@ namespace Lumina
         };
 
         To = DuplicateRecursive(DuplicateRecursive, From, entt::null);
+
+        // Fix up entity-handle properties so references between duplicated entities point at the
+        // new copies; references to entities outside the duplicated set are left untouched.
+        for (auto& [Source, Dup] : SourceToDuplicate)
+        {
+            ECS::Utils::RemapEntityReferences(EntityRegistry, Dup, SourceToDuplicate, /*bClearUnmapped*/ false);
+        }
     }
 
     void CWorld::DestroyEntity(entt::entity Entity)

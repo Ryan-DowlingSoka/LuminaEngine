@@ -9,6 +9,20 @@ namespace Lumina
     static constexpr const char* SpawnToken  = "$PARTICLE_SPAWN_FUNC";
     static constexpr const char* UpdateToken = "$PARTICLE_UPDATE_FUNC";
 
+    // Replaces every occurrence of Token in Source with Replacement (single pass, no rescanning of
+    // inserted text). Used to splice the module-stack chunks into the function-body tokens in
+    // ParticleSimulateTemplate.slang.
+    static void ReplaceAll(FString& Source, const char* Token, const FString& Replacement)
+    {
+        const size_t TokenLen = strlen(Token);
+        size_t Pos = Source.find(Token);
+        while (Pos != FString::npos)
+        {
+            Source.replace(Pos, TokenLen, Replacement);
+            Pos = Source.find(Token, Pos + Replacement.length());
+        }
+    }
+
     FString FParticleCompiler::BuildShader() const
     {
         FString Path = Paths::GetEngineResourceDirectory() + "/Shaders/Particles/ParticleSimulateTemplate.slang";
@@ -18,38 +32,10 @@ namespace Lumina
             return Source;
         }
 
-        // Seed the spawn result with safe defaults so a graph that doesn't wire
-        // every output still compiles to something sensible.
-        FString SpawnFunc;
-        SpawnFunc += "FParticleSpawnResult GetParticleSpawnInfo(float TotalTime, uint SpawnIndex)\n";
-        SpawnFunc += "{\n";
-        SpawnFunc += "\tFParticleSpawnResult Result;\n";
-        SpawnFunc += "\tResult.InitialVelocity = float3(0.0, 0.0, 0.0);\n";
-        SpawnFunc += "\tResult.Lifetime        = 1.0;\n";
-        SpawnFunc += "\tResult.StartColor      = float4(1.0, 1.0, 1.0, 1.0);\n";
-        SpawnFunc += "\tResult.StartSize       = 0.1;\n";
-        SpawnFunc += SpawnChunks;
-        SpawnFunc += "\treturn Result;\n";
-        SpawnFunc += "}\n";
-
-        FString UpdateFunc;
-        UpdateFunc += "void SimulateParticle(inout FGPUParticle P, float DeltaTime, float TotalTime)\n";
-        UpdateFunc += "{\n";
-        UpdateFunc += UpdateChunks;
-        UpdateFunc += "}\n";
-        
-        const size_t SpawnTokenLen  = strlen(SpawnToken);
-        const size_t UpdateTokenLen = strlen(UpdateToken);
-
-        for (size_t Pos = Source.find(SpawnToken); Pos != FString::npos; Pos = Source.find(SpawnToken, Pos + SpawnFunc.length()))
-        {
-            Source.replace(Pos, SpawnTokenLen, SpawnFunc);
-        }
-
-        for (size_t Pos = Source.find(UpdateToken); Pos != FString::npos; Pos = Source.find(UpdateToken, Pos + UpdateFunc.length()))
-        {
-            Source.replace(Pos, UpdateTokenLen, UpdateFunc);
-        }
+        // The tokens sit inside SpawnParticleGraph / UpdateParticleGraph in the template, so the
+        // chunks are spliced in as raw statement bodies. Empty stacks splice to nothing.
+        ReplaceAll(Source, SpawnToken,  SpawnChunks);
+        ReplaceAll(Source, UpdateToken, UpdateChunks);
 
         return Source;
     }

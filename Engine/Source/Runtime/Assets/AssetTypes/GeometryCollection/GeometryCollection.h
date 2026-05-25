@@ -1,0 +1,119 @@
+#pragma once
+
+#include "Core/Object/Object.h"
+#include "Core/Object/ObjectHandleTyped.h"
+#include "Core/Math/AABB.h"
+#include "Containers/Array.h"
+#include "Renderer/Vertex.h"
+#include "GeometryCollection.generated.h"
+
+namespace Lumina
+{
+    class CMesh;
+    class CStaticMesh;
+    class CMaterialInterface;
+
+    /** One convex chunk of a fractured mesh: render geometry (also drives convex collision) + a local centroid. */
+    struct FFracturePiece
+    {
+        TVector<FVertex> Vertices;
+        TVector<uint32>  Indices;
+        glm::vec3        Center = glm::vec3(0.0f);   // local-space centroid, used as the launch pivot
+        FAABB            Bounds;
+
+        friend FArchive& operator<<(FArchive& Ar, FFracturePiece& P)
+        {
+            Ar << P.Vertices;
+            Ar << P.Indices;
+            Ar << P.Center;
+            Ar << P.Bounds.Min;
+            Ar << P.Bounds.Max;
+            return Ar;
+        }
+    };
+
+    /** Baked fracture: the full set of pieces plus the bounds they were generated from. */
+    struct FFractureData
+    {
+        TVector<FFracturePiece> Pieces;
+        FAABB                   SourceBounds;
+
+        FORCEINLINE bool IsEmpty() const { return Pieces.empty(); }
+
+        friend FArchive& operator<<(FArchive& Ar, FFractureData& D)
+        {
+            Ar << D.Pieces;
+            Ar << D.SourceBounds.Min;
+            Ar << D.SourceBounds.Max;
+            return Ar;
+        }
+    };
+
+    struct FFractureSettings
+    {
+        /** Number of convex chunks to generate. */
+        int32  NumPieces = 16;
+        /** Deterministic seed for the seed-point scatter (same seed → same fracture). */
+        uint32 Seed      = 1337u;
+    };
+
+    /**
+     * Pre-fractured geometry asset. Holds the baked convex pieces of a source mesh so a
+     * destructible can shatter into real chunks at runtime. Pure data -- piece render/collision
+     * meshes are built on demand via Fracture::BuildPieceMesh, so the asset holds no GPU resources.
+     */
+    REFLECT()
+    class RUNTIME_API CGeometryCollection : public CObject
+    {
+        GENERATED_BODY()
+
+    public:
+
+        bool IsAsset() const override { return true; }
+        void Serialize(FArchive& Ar) override;
+
+        FORCEINLINE int32 GetNumPieces() const { return static_cast<int32>(Data.Pieces.size()); }
+        FORCEINLINE const FFractureData& GetFractureData() const { return Data; }
+        FORCEINLINE const FFracturePiece& GetPiece(int32 Index) const { return Data.Pieces[Index]; }
+
+        /** Re-bake the pieces from SourceMesh using NumPieces/Seed and copy its materials. Returns the piece count. */
+        int32 Rebuild();
+
+        /** Bake convex Voronoi pieces from a source mesh's bounds. Returns a new collection owned by Outer. */
+        static CGeometryCollection* GenerateFromMesh(CStaticMesh* Source, const FFractureSettings& Settings, CObject* Outer = nullptr);
+
+        /** Source mesh whose bounds are fractured. Pick it in the editor, then Generate. */
+        PROPERTY(Editable, Category = "Fracture")
+        TObjectPtr<CStaticMesh> SourceMesh;
+
+        /** Number of convex chunks produced by the next bake. */
+        PROPERTY(Editable, ClampMin = 2, ClampMax = 512, Category = "Fracture")
+        int32 NumPieces = 16;
+
+        /** Deterministic fracture seed (same value reproduces the same break). */
+        PROPERTY(Editable, Category = "Fracture")
+        int32 Seed = 1337;
+
+        /** Shared materials applied to each piece (copied from the source mesh at bake time). */
+        PROPERTY(Editable, NoResize, Category = "Materials")
+        TVector<TObjectPtr<CMaterialInterface>> Materials;
+
+    private:
+
+        FFractureData Data;   // serialized geometry blob (not a reflected property)
+    };
+
+    namespace Fracture
+    {
+        /**
+         * Convex Voronoi fracture of a mesh: clip the mesh's convex hull (its triangle
+         * supporting planes) by the perpendicular bisector against every other seed point.
+         * Cells are disjoint convex polyhedra that tile the hull, so pieces follow the mesh
+         * silhouette rather than its bounding box. Falls back to the AABB for degenerate/dense meshes.
+         */
+        RUNTIME_API void GenerateConvexFracture(const CMesh* SourceMesh, const FFractureSettings& Settings, TVector<FFracturePiece>& OutPieces);
+
+        /** Build a transient, render- and collision-ready CStaticMesh from one piece. */
+        RUNTIME_API CStaticMesh* BuildPieceMesh(const FFracturePiece& Piece, const TVector<TObjectPtr<CMaterialInterface>>& Materials, const char* DebugName);
+    }
+}
