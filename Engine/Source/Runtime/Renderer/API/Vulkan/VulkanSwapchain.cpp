@@ -5,7 +5,7 @@
 #ifdef _WIN32
 	#include <Windows.h>
 #endif
-#include <glfw/glfw3.h>
+#include "Core/Windows/GLFWInclude.h"
 #include "VkBootstrap.h"
 #include "VulkanDevice.h"
 #include "VulkanMacros.h"

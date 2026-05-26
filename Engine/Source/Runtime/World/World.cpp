@@ -37,6 +37,7 @@
 #include "Entity/Components/ScriptComponent.h"
 #include "Entity/Components/WidgetComponent.h"
 #include "Entity/Components/SingletonEntityComponent.h"
+#include "Entity/Systems/SystemSingletons.h"
 #include "entity/components/tagcomponent.h"
 #include "Entity/Events/WorldEvents.h"
 #include "Entity/Events/LuaEventBus.h"
@@ -592,6 +593,11 @@ namespace Lumina
         EntityRegistry.ctx().emplace<CWorld*>(this);
         EntityRegistry.ctx().emplace<FLuaEventBus*>(&LuaEventBus);
 
+        // System-produced singletons: SCameraSystem writes FResolvedSceneView (read in Extract);
+        // SScriptSystem owns FScriptFixedUpdateState (fixed-step accumulator).
+        EntityRegistry.ctx().emplace<FResolvedSceneView>();
+        EntityRegistry.ctx().emplace<FScriptFixedUpdateState>();
+
         CreateRenderer();
         UIContext = RmlUi::CreateWorldUI(this);
         RegisterSystems();
@@ -759,82 +765,6 @@ namespace Lumina
             CPU_PROFILE_SCOPE("Systems");
             TickSystems(SystemContext);
         }
-        
-        if (Stage == EUpdateStage::PrePhysics)
-        {
-            TickFixedUpdate();
-        }
-        else if (Stage == EUpdateStage::Paused && WorldType == EWorldType::Editor)
-        {
-            TickEditorUpdate();
-        }
-    }
-
-    void CWorld::TickFixedUpdate()
-    {
-        if (WorldType != EWorldType::Game && WorldType != EWorldType::Simulation)
-        {
-            return;
-        }
-        if (Lua::FLuaDebugger::Get().IsPaused())
-        {
-            return;
-        }
-
-        const SDefaultWorldSettings& WorldSettings = GetDefaultWorldSettings();
-        const float Hz          = glm::max(10.0f, WorldSettings.PhysicsHz);
-        const float FixedDt     = 1.0f / Hz;
-        const int32 MaxSteps    = (int32)WorldSettings.MaxPhysicsSteps;
-        const float MaxAccum    = (float)MaxSteps * FixedDt;
-
-        FixedUpdateAccumulator += (float)DeltaTime;
-        // Clamp so a hitch can't trigger a step storm (matches the physics scene).
-        FixedUpdateAccumulator = glm::min(FixedUpdateAccumulator, MaxAccum);
-
-        int32 Steps = (FixedUpdateAccumulator >= FixedDt) ? (int32)(FixedUpdateAccumulator / FixedDt) : 0;
-        if (Steps <= 0)
-        {
-            return;
-        }
-        Steps = glm::min(Steps, MaxSteps);
-        FixedUpdateAccumulator -= (float)Steps * FixedDt;
-        
-        auto View = EntityRegistry.view<SScriptComponent, FScriptHasFixedUpdateFn>(entt::exclude<SDisabledTag>);
-        for (int32 Step = 0; Step < Steps; ++Step)
-        {
-            View.each([&](entt::entity, SScriptComponent& ScriptComponent)
-            {
-                const TSharedPtr<Lua::FScript>& Script = ScriptComponent.Script;
-                if (Script)
-                {
-                    #if USING(WITH_EDITOR)
-                    (void)Script->InvokeAsCoroutine(ScriptComponent.FixedUpdateFunc, Script->Reference, FixedDt);
-                    #else
-                    (void)ScriptComponent.FixedUpdateFunc.Invoke(Script->Reference, FixedDt);
-                    #endif
-                }
-            });
-        }
-    }
-
-    void CWorld::TickEditorUpdate()
-    {
-        if (Lua::FLuaDebugger::Get().IsPaused())
-        {
-            return;
-        }
-
-        const float DeltaSeconds = (float)DeltaTime;
-
-        auto View = EntityRegistry.view<SScriptComponent, FScriptHasEditorUpdateFn>(entt::exclude<SDisabledTag>);
-        View.each([&](entt::entity, SScriptComponent& ScriptComponent)
-        {
-            const TSharedPtr<Lua::FScript>& Script = ScriptComponent.Script;
-            if (Script)
-            {
-                (void)Script->InvokeAsCoroutine(ScriptComponent.EditorUpdateFunc, Script->Reference, DeltaSeconds);
-            }
-        });
     }
 
     bool CWorld::IsScriptActiveInWorld(entt::entity Entity) const
@@ -891,122 +821,14 @@ namespace Lumina
         RmlUi::TickWorldUI(this);
         RmlUi::TickWorldWidgets(this);
 
-        entt::entity CameraEntity = GetActiveCameraEntity();
-        if (EntityRegistry.valid(CameraEntity))
+        // SCameraSystem resolves the active view + post-process volumes into this
+        // singleton at the tail of the update; we just forward it to the renderer.
+        const FResolvedSceneView& View = EntityRegistry.ctx().get<FResolvedSceneView>();
+
+        if (View.bHasView)
         {
-            const STransformComponent& CameraTransform = EntityRegistry.get<STransformComponent>(CameraEntity);
-            (void)CameraTransform.GetWorldMatrix();
-            
-            const glm::quat CameraRotation = CameraTransform.GetWorldRotation();
-            const SCameraComponent& Camera = EntityRegistry.get<SCameraComponent>(CameraEntity);
-            const_cast<SCameraComponent&>(Camera).SetView(
-                CameraTransform.GetWorldLocation(),
-                CameraRotation * glm::vec3(0.0f, 0.0f, 1.0f),
-                CameraRotation * glm::vec3(0.0f, 1.0f, 0.0f));
-            
-            const glm::vec3 CameraWorldPos = EntityRegistry.get<STransformComponent>(CameraEntity).GetWorldLocation();
-            SPostProcessSettings ResolvedPostProcess = Camera.PostProcess;
-
-            struct FVolumeContribution { float Weight; const SPostProcessSettings* Settings; int32 Priority; };
-            TVector<FVolumeContribution> Contributions;
-
-            auto VolumeView = EntityRegistry.view<const SPostProcessComponent, const STransformComponent>(entt::exclude<SDisabledTag>);
-            for (entt::entity VolEntity : VolumeView)
-            {
-                const SPostProcessComponent& Volume = VolumeView.get<const SPostProcessComponent>(VolEntity);
-                if (!Volume.bEnabled || Volume.BlendWeight <= 0.0f)
-                {
-                    continue;
-                }
-
-                float Weight = Volume.BlendWeight;
-
-                if (!Volume.bInfiniteExtent)
-                {
-                    const STransformComponent& VolXform = VolumeView.get<const STransformComponent>(VolEntity);
-                    const glm::mat4 InvWorld = glm::inverse(VolXform.GetWorldMatrix());
-                    const glm::vec3 LocalCam = glm::vec3(InvWorld * glm::vec4(CameraWorldPos, 1.0f));
-                    const glm::vec3 D = glm::abs(LocalCam) - Volume.BoxExtent;
-                    const float Outside = glm::max(D.x, glm::max(D.y, D.z));
-
-                    if (Outside > Volume.BlendDistance)
-                    {
-                        continue;
-                    }
-                    if (Outside > 0.0f && Volume.BlendDistance > 0.0001f)
-                    {
-                        Weight *= 1.0f - (Outside / Volume.BlendDistance);
-                    }
-                }
-
-                if (Weight > 0.0f)
-                {
-                    Contributions.push_back({Weight, &Volume.Settings, Volume.Priority});
-                }
-            }
-
-            eastl::sort(Contributions.begin(), Contributions.end(),
-                [](const FVolumeContribution& A, const FVolumeContribution& B)
-                {
-                    return A.Priority < B.Priority;
-                });
-
-            for (const FVolumeContribution& Contribution : Contributions)
-            {
-                BlendPostProcessSettings(ResolvedPostProcess, *Contribution.Settings, Contribution.Weight);
-            }
-
-            TVector<CMaterialInterface*> PostProcessMaterials;
-            for (const TObjectPtr<CMaterialInterface>& M : Camera.PostProcessMaterials)
-            {
-                if (M.IsValid())
-                {
-                    PostProcessMaterials.push_back(M.Get());
-                }
-            }
-            struct FMaterialVolumeRef { entt::entity Entity; int32 Priority; };
-            TVector<FMaterialVolumeRef> MaterialVolumes;
-            for (entt::entity VolEntity : VolumeView)
-            {
-                const SPostProcessComponent& Volume = VolumeView.get<const SPostProcessComponent>(VolEntity);
-                if (!Volume.bEnabled || Volume.PostProcessMaterials.empty())
-                {
-                    continue;
-                }
-                if (!Volume.bInfiniteExtent)
-                {
-                    const STransformComponent& VolXform = VolumeView.get<const STransformComponent>(VolEntity);
-                    const glm::mat4 InvWorld = glm::inverse(VolXform.GetWorldMatrix());
-                    const glm::vec3 LocalCam = glm::vec3(InvWorld * glm::vec4(CameraWorldPos, 1.0f));
-                    const glm::vec3 D = glm::abs(LocalCam) - Volume.BoxExtent;
-                    const float Outside = glm::max(D.x, glm::max(D.y, D.z));
-                    if (Outside > Volume.BlendDistance)
-                    {
-                        continue;
-                    }
-                }
-                MaterialVolumes.push_back({VolEntity, Volume.Priority});
-            }
-            eastl::sort(MaterialVolumes.begin(), MaterialVolumes.end(),
-                [](const FMaterialVolumeRef& A, const FMaterialVolumeRef& B)
-                {
-                    return A.Priority < B.Priority;
-                });
-            for (const FMaterialVolumeRef& Ref : MaterialVolumes)
-            {
-                const SPostProcessComponent& Volume = VolumeView.get<const SPostProcessComponent>(Ref.Entity);
-                for (const TObjectPtr<CMaterialInterface>& M : Volume.PostProcessMaterials)
-                {
-                    if (M.IsValid())
-                    {
-                        PostProcessMaterials.push_back(M.Get());
-                    }
-                }
-            }
-            RenderScene->SetActivePostProcessMaterials(PostProcessMaterials);
-
-            RenderScene->Extract(Camera.GetViewVolume(), &ResolvedPostProcess);
-
+            RenderScene->SetActivePostProcessMaterials(View.PostProcessMaterials);
+            RenderScene->Extract(View.ViewVolume, View.bHasPostProcess ? &View.PostProcess : nullptr);
             return;
         }
 
@@ -1137,7 +959,9 @@ namespace Lumina
                 const FUpdatePriorityList& PrioListB = eastl::visit([&](const auto& System) { return System.GetUpdatePriorityList(); }, B);
                 const uint8 PriorityA = PrioListA.GetPriorityForStage((EUpdateStage)i);
                 const uint8 PriorityB = PrioListB.GetPriorityForStage((EUpdateStage)i);
-                return PriorityA > PriorityB;
+                // Lower enum value = higher priority (Highest=0 .. Low=192), so ascending
+                // order runs Highest first and Low last within the stage.
+                return PriorityA < PriorityB;
             };
 
             eastl::sort(SystemUpdateList[i].begin(), SystemUpdateList[i].end(), Predicate);

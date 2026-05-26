@@ -97,6 +97,16 @@ namespace Lumina::Platform
         timeEndPeriod(1);
     }
 
+    double GetTime()
+    {
+        static const LARGE_INTEGER Frequency = []{ LARGE_INTEGER F; QueryPerformanceFrequency(&F); return F; }();
+        static const LARGE_INTEGER Start     = []{ LARGE_INTEGER S; QueryPerformanceCounter(&S);   return S; }();
+
+        LARGE_INTEGER Now;
+        QueryPerformanceCounter(&Now);
+        return double(Now.QuadPart - Start.QuadPart) / double(Frequency.QuadPart);
+    }
+
     FString GetCurrentProcessPath()
     {
         char buffer[MAX_PATH];

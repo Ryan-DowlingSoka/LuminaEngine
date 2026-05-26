@@ -49,6 +49,12 @@ namespace Lumina
         virtual FFixedString GetNodeCategory() const { return "General"; }
         
         FString GetNodeFullName() { return FullName; }
+
+        // The variable name a node emits derives from FullName. The material-function inliner
+        // temporarily prefixes a function's interior node names so repeated/nested call sites don't
+        // collide in the generated shader, then restores them. Not for general use.
+        void SetNodeFullName(const FString& In) { FullName = In; }
+
         virtual bool WantsTitlebar() const { return true; }
         virtual FString GetNodeDisplayName() const { return "Node"; }
         virtual FString GetNodeTooltip() const { return "No Tooltip"; }
@@ -84,7 +90,7 @@ namespace Lumina
         bool HasError() const { return Error.has_value(); }
         void ClearError() { Error = eastl::nullopt; }
         
-        CEdNodeGraphPin* GetPin(uint16 ID, ENodePinDirection Direction);
+        CEdNodeGraphPin* GetPin(uint32 ID, ENodePinDirection Direction);
         CEdNodeGraphPin* GetPinByIndex(uint32 Index, ENodePinDirection Direction);
         
         int64 GetNodeID() const { return NodeID; }

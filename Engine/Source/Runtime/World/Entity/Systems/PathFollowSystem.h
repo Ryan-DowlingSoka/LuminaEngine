@@ -14,7 +14,7 @@ namespace Lumina
      * physics-driven motion handles the actual locomotion.
      *
      * Lives in PrePhysics so movement input is consumed by the same
-     * frame's physics step, matching CharacterMovementSystem.
+     * frame's physics step.
      */
     REFLECT(System)
     struct RUNTIME_API SPathFollowSystem

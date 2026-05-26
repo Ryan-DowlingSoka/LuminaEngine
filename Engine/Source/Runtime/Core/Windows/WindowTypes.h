@@ -11,4 +11,11 @@ namespace Lumina
         bool bFullscreen = false;
         bool bShowTitlebar = false;
     };
+
+    enum class ECursorMode
+    {
+        Normal,     // visible, free
+        Hidden,     // hidden, free
+        Disabled,   // hidden, locked/captured
+    };
 }

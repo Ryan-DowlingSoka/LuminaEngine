@@ -43,6 +43,9 @@ namespace Lumina
     #define US_FrameEnd         EUpdateStage::FrameEnd
     #define US_Paused           EUpdateStage::Paused
 
+    // Lower value = higher priority = runs earlier within a stage. Systems sort
+    // ascending by this value, so Highest ticks first and Low ticks last; Disabled
+    // drops the system from the stage entirely.
     enum class EUpdatePriority : uint8
     {
         Highest     = 0,

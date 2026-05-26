@@ -1,12 +1,15 @@
 #pragma once
 
 #include "Platform/GenericPlatform.h"
-#include "MiniAudio/miniaudio.h"
+#include "Memory/SmartPtr.h"
 
 namespace Lumina
 {
+    struct FProceduralAudioStreamImpl;
+
     // Lock-free SPSC ring buffer for streaming PCM float samples to the audio thread.
     // Producer is whoever calls Write (game/Lua thread). Consumer is the audio thread.
+    // The miniaudio ring buffer lives behind a Pimpl so miniaudio.h stays out of this header.
     class RUNTIME_API FProceduralAudioStream
     {
     public:
@@ -26,12 +29,13 @@ namespace Lumina
         uint32 GetSampleRate() const { return SampleRate; }
         uint32 GetChannelCount() const { return ChannelCount; }
 
-        // Underlying miniaudio data source — only the audio thread should pass this to ma_sound.
-        ma_data_source* GetDataSource() { return bInitialized ? (ma_data_source*)&RingBuffer : nullptr; }
+        // Underlying miniaudio data source (a ma_data_source*, which is void*); only the audio
+        // thread should pass this to ma_sound. Returns null until successfully initialized.
+        void* GetDataSource();
 
     private:
 
-        ma_pcm_rb RingBuffer{};
+        TUniquePtr<FProceduralAudioStreamImpl> Impl;
         uint32 SampleRate = 0;
         uint32 ChannelCount = 0;
         bool bInitialized = false;

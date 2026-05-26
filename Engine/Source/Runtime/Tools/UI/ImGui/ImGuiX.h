@@ -114,13 +114,7 @@ namespace Lumina::ImGuiX
 
     RUNTIME_API TPair<bool, uint32> DirectoryTreeViewRecursive(const std::filesystem::path& Path, uint32* Count, int* SelectionMask);
 
-    // A searchable single-select dropdown. The popup holds a filter box plus one
-    // scrolling list, so it never shows the nested double-scrollbar that a BeginChild
-    // inside a height-clamped BeginCombo produces. GetItemLabel(i) returns row i's text;
-    // CurrentIndex is highlighted and scrolled to on open. ItemIcon, if given, is drawn
-    // before every row and the chosen item in the closed preview (pass an LE_ICON_*).
-    // Returns the index picked this frame, or INDEX_NONE. Set the width with
-    // ImGui::SetNextItemWidth before calling, as with BeginCombo.
+    // A searchable single-select dropdown.
     RUNTIME_API int32 SearchableCombo(const char* StrId, const char* Preview, int32 ItemCount, int32 CurrentIndex, const TFunction<FFixedString(int32)>& GetItemLabel, const char* ItemIcon = nullptr);
 
     RUNTIME_API void SameLineSeparator( float width = 0, const ImColor& color = ImColor(0));

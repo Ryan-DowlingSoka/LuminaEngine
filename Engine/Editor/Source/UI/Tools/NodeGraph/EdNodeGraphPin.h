@@ -58,7 +58,7 @@ namespace Lumina
 
         bool IsSingleInput() const { return bSingleInput; }
         bool HasConnection() const { return !Connections.empty(); }
-        uint16 GetPinGUID() const { return PinID; }
+        uint32 GetPinGUID() const { return PinID; }
         CEdGraphNode* GetOwningNode() const { return OwningNode; }
 
         bool ShouldDrawEditor() const { return bDrawPinEditor; }
@@ -92,8 +92,9 @@ namespace Lumina
         FString                         PinName;
         uint32                          PinColor = IM_COL32(255, 255, 255, 255);
 
-        /** Index of the pin relative to the owning node */
-        uint16                          PinID;
+        /** Stable per-pin id, hashed from the owning node's name + pin name + direction. 32-bit: a
+            16-bit space collided on large graphs and mis-restored links on load. */
+        uint32                          PinID;
         
         TVector<CEdNodeGraphPin*>       Connections;
         

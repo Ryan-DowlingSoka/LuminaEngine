@@ -99,7 +99,7 @@ namespace Lumina
                     {
                         if (Binding.OnEnd.IsInvokable())
                         {
-                            Binding.OnEnd.Invoke(Entity, State.NotifyName, State.EndTime);
+                            std::ignore = Binding.OnEnd.Invoke(Entity, State.NotifyName, State.EndTime);
                         }
                     }
                 }

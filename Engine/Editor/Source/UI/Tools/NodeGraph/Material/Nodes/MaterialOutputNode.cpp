@@ -106,7 +106,11 @@ namespace Lumina
         }
 
         CMaterialOutput* ConnectedPin = Pin->GetConnection<CMaterialOutput>(0);
-        FString NodeName              = ConnectedPin->GetOwningNode()->GetNodeFullName();
+        // A material-function call output pin emits its own per-output local and binds it via
+        // ResolvedVar; everything else reads the source node's single FullName variable.
+        FString NodeName              = ConnectedPin->ResolvedVar.empty()
+                                      ? ConnectedPin->GetOwningNode()->GetNodeFullName()
+                                      : ConnectedPin->ResolvedVar;
         int32 ConnectedComponents     = FMaterialCompiler::GetComponentCount(ConnectedPin->GetComponentMask());
         // If mask is None (count==0) fall back to intrinsic width; avoids a float3() wrap with a wider argument.
         if (ConnectedComponents == 0)

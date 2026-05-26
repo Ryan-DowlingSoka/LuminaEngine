@@ -168,8 +168,18 @@ function LuminaWorkspaceSettings(Opts)
             optimize "Full"
             symbols "Off"
             runtime "Release"
+            incrementallink "Off"
+            -- /Gy: function-level COMDATs so /OPT:REF can strip unused functions
+            -- at function (not object-file) granularity.
+            buildoptions { "/Gy" }
             defines { "NDEBUG", "LE_SHIPPING", "LUMINA_SHIPPING" }
             removedefines { "JPH_DEBUG_RENDERER" }
+
+        -- /OPT:REF drops unreferenced code/data; /OPT:ICF folds identical COMDATs.
+        -- Both default on under LTCG+non-incremental, but make it explicit. Scoped
+        -- off StaticLib so lib.exe doesn't warn LNK4044 on the linker-only flags.
+        filter { "configurations:Shipping", "kind:not StaticLib" }
+            linkoptions { "/OPT:REF", "/OPT:ICF" }
 
         filter {}
 

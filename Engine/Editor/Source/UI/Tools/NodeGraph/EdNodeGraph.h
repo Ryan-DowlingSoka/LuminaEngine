@@ -141,9 +141,9 @@ namespace Lumina
         PROPERTY()
         TVector<TObjectPtr<CEdGraphNode>>               Nodes;
 
-        /** Serialized connection data encoding pin-to-pin links. */
+        /** Serialized connection data encoding pin-to-pin links (pairs of 32-bit pin ids). */
         PROPERTY()
-        TVector<uint16>                                 Connections;
+        TVector<uint32>                                 Connections;
 
         /** Serialized node editor layout state (positions, zoom, etc.). */
         PROPERTY()

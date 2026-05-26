@@ -13,6 +13,7 @@
 #include "Core/Math/Alignment.h"
 #include "Core/Profiler/Profile.h"
 #include "Core/Windows/Window.h"
+#include "Core/Windows/GLFWInclude.h"
 #include "FileSystem/FileSystem.h"
 #include "Paths/Paths.h"
 #include "Core/Console/ConsoleVariable.h"

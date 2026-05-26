@@ -15,6 +15,15 @@ namespace Lumina
     {
         Super::Initialize();
 
+        EnsureRootNodes();
+        RegisterCommonMaterialNodes();
+        RegisterGraphTypeNodes();
+
+        ValidateGraph();
+    }
+
+    void CMaterialNodeGraph::EnsureRootNodes()
+    {
         bool bHasOutputNode = false;
         for (const TObjectPtr<CEdGraphNode>& Node : Nodes)
         {
@@ -29,7 +38,10 @@ namespace Lumina
         {
             CreateNode(CMaterialOutputNode::StaticClass());
         }
+    }
 
+    void CMaterialNodeGraph::RegisterCommonMaterialNodes()
+    {
         RegisterGraphNode(CMaterialExpression_Addition::StaticClass());
         RegisterGraphNode(CMaterialExpression_Subtraction::StaticClass());
         RegisterGraphNode(CMaterialExpression_Multiplication::StaticClass());
@@ -166,9 +178,9 @@ namespace Lumina
         RegisterGraphNode(CMaterialExpression_TerrainLayerWeights::StaticClass());
         RegisterGraphNode(CMaterialExpression_TerrainLayerBlend::StaticClass());
 
-        RegisterGraphNode(CMaterialReroute::StaticClass());
+        RegisterGraphNode(CMaterialExpression_MaterialFunctionCall::StaticClass());
 
-        ValidateGraph();
+        RegisterGraphNode(CMaterialReroute::StaticClass());
     }
 
     CClass* CMaterialNodeGraph::GetRerouteNodeClass() const

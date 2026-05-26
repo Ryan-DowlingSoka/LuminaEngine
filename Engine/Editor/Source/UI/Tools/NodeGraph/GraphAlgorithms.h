@@ -6,51 +6,10 @@
 
 namespace Lumina::GraphAlgorithms
 {
-    // Topologically sorts the subset of Nodes reachable (via input edges) from the first node matching
-    // RootPredicate. SortedNodes is written with nodes in dependency order (roots-last).
-    // Returns the first node participating in a cycle, or nullptr on success / when no root is found.
-    template <typename TRootPredicate>
-    CEdGraphNode* TopologicalSortFromRoot(const TVector<TObjectPtr<CEdGraphNode>>& Nodes, TVector<CEdGraphNode*>& SortedNodes, TRootPredicate&& IsRoot)
+    // Kahn's algorithm over a pre-computed reachable set. Writes SortedNodes in dependency order
+    // (roots-last). Returns the first node participating in a cycle, or nullptr on success.
+    inline CEdGraphNode* TopologicalSortReachable(const TVector<TObjectPtr<CEdGraphNode>>& Nodes, const THashSet<CEdGraphNode*>& ReachableNodes, TVector<CEdGraphNode*>& SortedNodes)
     {
-        CEdGraphNode* RootNode = nullptr;
-        for (CEdGraphNode* Node : Nodes)
-        {
-            if (IsRoot(Node))
-            {
-                RootNode = Node;
-                break;
-            }
-        }
-
-        if (RootNode == nullptr)
-        {
-            SortedNodes.clear();
-            return nullptr;
-        }
-
-        THashSet<CEdGraphNode*> ReachableNodes;
-        TQueue<CEdGraphNode*> ReverseQueue;
-        ReverseQueue.push(RootNode);
-        ReachableNodes.insert(RootNode);
-
-        while (!ReverseQueue.empty())
-        {
-            CEdGraphNode* Node = ReverseQueue.front();
-            ReverseQueue.pop();
-
-            for (CEdNodeGraphPin* InputPin : Node->GetInputPins())
-            {
-                for (CEdNodeGraphPin* ConnectedPin : InputPin->GetConnections())
-                {
-                    CEdGraphNode* ConnectedNode = ConnectedPin->GetOwningNode();
-                    if (ReachableNodes.insert(ConnectedNode).second)
-                    {
-                        ReverseQueue.push(ConnectedNode);
-                    }
-                }
-            }
-        }
-
         THashMap<CEdGraphNode*, uint32> InDegree;
         for (CEdGraphNode* Node : Nodes)
         {
@@ -128,5 +87,83 @@ namespace Lumina::GraphAlgorithms
         }
 
         return nullptr;
+    }
+
+    // Reverse-BFS the input edges from RootNode, collecting every node it depends on.
+    inline void CollectReachableFromRoot(CEdGraphNode* RootNode, THashSet<CEdGraphNode*>& ReachableNodes)
+    {
+        TQueue<CEdGraphNode*> ReverseQueue;
+        if (ReachableNodes.insert(RootNode).second)
+        {
+            ReverseQueue.push(RootNode);
+        }
+
+        while (!ReverseQueue.empty())
+        {
+            CEdGraphNode* Node = ReverseQueue.front();
+            ReverseQueue.pop();
+
+            for (CEdNodeGraphPin* InputPin : Node->GetInputPins())
+            {
+                for (CEdNodeGraphPin* ConnectedPin : InputPin->GetConnections())
+                {
+                    CEdGraphNode* ConnectedNode = ConnectedPin->GetOwningNode();
+                    if (ReachableNodes.insert(ConnectedNode).second)
+                    {
+                        ReverseQueue.push(ConnectedNode);
+                    }
+                }
+            }
+        }
+    }
+
+    // Topologically sorts the subset of Nodes reachable (via input edges) from the first node matching
+    // RootPredicate. SortedNodes is written with nodes in dependency order (roots-last).
+    // Returns the first node participating in a cycle, or nullptr on success / when no root is found.
+    template <typename TRootPredicate>
+    CEdGraphNode* TopologicalSortFromRoot(const TVector<TObjectPtr<CEdGraphNode>>& Nodes, TVector<CEdGraphNode*>& SortedNodes, TRootPredicate&& IsRoot)
+    {
+        CEdGraphNode* RootNode = nullptr;
+        for (CEdGraphNode* Node : Nodes)
+        {
+            if (IsRoot(Node))
+            {
+                RootNode = Node;
+                break;
+            }
+        }
+
+        if (RootNode == nullptr)
+        {
+            SortedNodes.clear();
+            return nullptr;
+        }
+
+        THashSet<CEdGraphNode*> ReachableNodes;
+        CollectReachableFromRoot(RootNode, ReachableNodes);
+        return TopologicalSortReachable(Nodes, ReachableNodes, SortedNodes);
+    }
+
+    // Multi-root variant: seeds the reachability walk from EVERY node matching RootPredicate. A
+    // material function graph has one output node per declared output, so the walk must seed from all.
+    template <typename TRootPredicate>
+    CEdGraphNode* TopologicalSortFromRoots(const TVector<TObjectPtr<CEdGraphNode>>& Nodes, TVector<CEdGraphNode*>& SortedNodes, TRootPredicate&& IsRoot)
+    {
+        THashSet<CEdGraphNode*> ReachableNodes;
+        for (CEdGraphNode* Node : Nodes)
+        {
+            if (IsRoot(Node))
+            {
+                CollectReachableFromRoot(Node, ReachableNodes);
+            }
+        }
+
+        if (ReachableNodes.empty())
+        {
+            SortedNodes.clear();
+            return nullptr;
+        }
+
+        return TopologicalSortReachable(Nodes, ReachableNodes, SortedNodes);
     }
 }

@@ -72,7 +72,7 @@ namespace Lumina
         #if defined(LUMINA_WITH_VALIDATION)
         constexpr bool bValidation = true;
         #else
-        constexpr bool bValidation = true;
+        constexpr bool bValidation = false;
         #endif
 
         #if LUMINA_SHIPPING

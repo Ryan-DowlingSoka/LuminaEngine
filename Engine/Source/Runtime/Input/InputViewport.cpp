@@ -15,16 +15,16 @@ namespace Lumina
     {
         void ApplyCursorModeToWindow(EMouseMode Mode)
         {
-            int Desired = GLFW_CURSOR_NORMAL;
+            ECursorMode CursorMode = ECursorMode::Normal;
             switch (Mode)
             {
-            case EMouseMode::Hidden:   Desired = GLFW_CURSOR_HIDDEN;   break;
-            case EMouseMode::Normal:   Desired = GLFW_CURSOR_NORMAL;   break;
-            case EMouseMode::Captured: Desired = GLFW_CURSOR_DISABLED; break;
+            case EMouseMode::Hidden:   CursorMode = ECursorMode::Hidden;   break;
+            case EMouseMode::Normal:   CursorMode = ECursorMode::Normal;   break;
+            case EMouseMode::Captured: CursorMode = ECursorMode::Disabled; break;
             }
             if (FWindow* Window = Windowing::GetPrimaryWindowHandle())
             {
-                glfwSetInputMode(Window->GetWindow(), GLFW_CURSOR, Desired);
+                Window->SetCursorMode(CursorMode);
             }
         }
 

@@ -304,7 +304,7 @@ namespace Lumina::ImGuiX
             }
             Filter.Draw("##filter", PopupWidth);
 
-            // Grey magnify hint while the search box is empty.
+            // Gray magnify hint while the search box is empty.
             if (!Filter.IsActive())
             {
                 ImVec2 HintPos = ImGui::GetItemRectMin();
@@ -315,12 +315,15 @@ namespace Lumina::ImGuiX
 
             ImGui::Separator();
 
+            // Push the row spacing first so the height math below measures the rows we
+            // actually draw; using the default spacing over-counts and leaves a gap.
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(Style.ItemSpacing.x, 2.0f));
+
             // Cap the visible rows; the child scrolls past that. The popup auto-fits this
             // child exactly, so the combo window itself never grows a scrollbar.
             const int32 VisibleRows = ItemCount < 12 ? ItemCount : 12;
             const float ListHeight = VisibleRows * ImGui::GetTextLineHeightWithSpacing() + Style.FramePadding.y * 2.0f;
 
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(Style.ItemSpacing.x, 2.0f));
             if (ImGui::BeginChild("##list", ImVec2(PopupWidth, ListHeight)))
             {
                 bool bAnyVisible = false;

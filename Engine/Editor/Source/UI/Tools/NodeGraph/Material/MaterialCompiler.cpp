@@ -211,6 +211,38 @@ namespace Lumina
 		}
 	}
 
+	FString FMaterialCompiler::GetHLSLTypeName(EMaterialInputType Type)
+	{
+		return GetVectorType(Type);
+	}
+
+	const FString& FMaterialCompiler::GetCurrentInlinePrefix() const
+	{
+		static const FString Empty;
+		return InlinePrefixStack.empty() ? Empty : InlinePrefixStack.back();
+	}
+
+	bool FMaterialCompiler::BeginInlineFunction(CMaterialFunction* Function)
+	{
+		for (CMaterialFunction* Active : InlineFunctionStack)
+		{
+			if (Active == Function)
+			{
+				return false;
+			}
+		}
+		InlineFunctionStack.push_back(Function);
+		return true;
+	}
+
+	void FMaterialCompiler::EndInlineFunction(CMaterialFunction* Function)
+	{
+		if (!InlineFunctionStack.empty())
+		{
+			InlineFunctionStack.pop_back();
+		}
+	}
+
 	static EMaterialInputType GetTypeFromComponentCount(int32 Count)
 	{
 		switch (Count)
@@ -279,7 +311,9 @@ namespace Lumina
 				return Result;
 			}
 
-			FString NodeName		= Conn->GetOwningNode()->GetNodeFullName();
+			// A function-call output pin binds its own emitted local via ResolvedVar; everything
+			// else reads the owning node's single FullName variable.
+			FString NodeName		= Conn->ResolvedVar.empty() ? Conn->GetOwningNode()->GetNodeFullName() : Conn->ResolvedVar;
 
 			Result.Type				= Conn->InputType;
 			Result.ComponentCount	= GetComponentCount(Result.Type);

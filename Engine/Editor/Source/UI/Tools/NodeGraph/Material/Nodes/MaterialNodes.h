@@ -19,4 +19,5 @@
 #include "MaterialNodeGetTime.h"
 #include "MaterialNode_PrimitiveData.h"
 #include "MaterialNode_TextureSample.h"
+#include "MaterialNode_Function.h"
 #include "MaterialOutputNode.h"

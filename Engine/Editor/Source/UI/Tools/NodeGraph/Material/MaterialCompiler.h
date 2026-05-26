@@ -12,6 +12,7 @@ namespace Lumina
 {
     class CMaterialExpression_CustomPrimitiveData;
     class CTexture;
+    class CMaterialFunction;
     class FMaterialNodePin;
     class CMaterialGraphNode;
     class CMaterialInput;
@@ -323,6 +324,24 @@ namespace Lumina
         static int32 GetComponentCount(EComponentMask Mask);
         static int32 GetComponentCount(EMaterialInputType Type);
 
+        // HLSL scalar/vector type name ("float", "float2", ...) for an input type. Public so the
+        // material-function call node can declare its argument/result locals.
+        static FString GetHLSLTypeName(EMaterialInputType Type);
+
+        // --- Material function inlining ---
+        // A function's inlined nodes get their variable names prefixed so repeated and nested calls
+        // never collide. The host graph compiles with an empty prefix; a function-call node pushes a
+        // per-call prefix (composed with the current one, so nesting accumulates) around its emission.
+        void PushInlinePrefix(const FString& Prefix) { InlinePrefixStack.push_back(Prefix); }
+        void PopInlinePrefix() { if (!InlinePrefixStack.empty()) { InlinePrefixStack.pop_back(); } }
+        const FString& GetCurrentInlinePrefix() const;
+
+        // Recursion guard. BeginInlineFunction returns false when Function is already being inlined
+        // higher on the stack (a direct or transitive self-call); the caller then emits an error and
+        // bails instead of inlining forever. Always pair a true result with EndInlineFunction.
+        bool BeginInlineFunction(CMaterialFunction* Function);
+        void EndInlineFunction(CMaterialFunction* Function);
+
     private:
 
         EMaterialInputType DetermineResultType(EMaterialInputType A, EMaterialInputType B, bool IsComponentWise = true);
@@ -365,5 +384,9 @@ namespace Lumina
         uint16 NumTextureParams = 0;
 
         EMaterialType CurrentMaterialType = EMaterialType::PBR;
+
+        // Active material-function inlining state (see PushInlinePrefix / BeginInlineFunction).
+        TVector<FString>            InlinePrefixStack;
+        TVector<CMaterialFunction*> InlineFunctionStack;
     };
 }

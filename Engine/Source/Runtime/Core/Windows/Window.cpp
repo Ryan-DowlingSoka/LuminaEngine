@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Window.h"
+#include "Core/Windows/GLFWInclude.h"
 #include "stb_image.h"
 #include "Core/Application/Application.h"
 #include "Events/Event.h"
@@ -45,48 +46,186 @@ namespace
 
 namespace Lumina
 {
+	// All GLFW-facing state lives here so glfw3.h never reaches the public header.
+	struct FWindowImpl
+	{
+		GLFWwindow*		Window = nullptr;
+		FWindow*		Owner = nullptr;
+		FWindowSpecs	Specs;
+		double			LastMouseX = 0.0;
+		double			LastMouseY = 0.0;
+		bool			bFirstMouseUpdate = true;
+		bool			bInitialized = false;
+		bool			bTitleBarHovered = false;
+	};
+
 	FWindowResizeDelegate FWindow::OnWindowResized;
 
-	GLFWmonitor* GetCurrentMonitor(GLFWwindow* window)
+	namespace
 	{
-		int windowX, windowY, windowWidth, windowHeight;
-		glfwGetWindowPos(window, &windowX, &windowY);
-		glfwGetWindowSize(window, &windowWidth, &windowHeight);
-
-		int monitorCount;
-		GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
-
-		GLFWmonitor* bestMonitor = nullptr;
-		int maxOverlap = 0;
-
-		for (int i = 0; i < monitorCount; ++i)
+		FWindowImpl* ImplFrom(GLFWwindow* Window)
 		{
-			int monitorX, monitorY, monitorWidth, monitorHeight;
-			glfwGetMonitorWorkarea(monitors[i], &monitorX, &monitorY, &monitorWidth, &monitorHeight);
+			return static_cast<FWindowImpl*>(glfwGetWindowUserPointer(Window));
+		}
 
-			int overlapX = std::max(0, std::min(windowX + windowWidth, monitorX + monitorWidth) - std::max(windowX, monitorX));
-			int overlapY = std::max(0, std::min(windowY + windowHeight, monitorY + monitorHeight) - std::max(windowY, monitorY));
-			int overlapArea = overlapX * overlapY;
+		void MouseButtonCallback(GLFWwindow* Window, int Button, int Action, int /*Mods*/)
+		{
+			double xpos, ypos;
+			glfwGetCursorPos(Window, &xpos, &ypos);
 
-			if (overlapArea > maxOverlap)
+			switch (Action)
 			{
-				maxOverlap = overlapArea;
-				bestMonitor = monitors[i];
+			case GLFW_PRESS:
+				GApp->GetEventProcessor().Dispatch<FMouseButtonPressedEvent>(static_cast<EMouseKey>(Button), xpos, ypos);
+				break;
+
+			case GLFW_RELEASE:
+				GApp->GetEventProcessor().Dispatch<FMouseButtonReleasedEvent>(static_cast<EMouseKey>(Button), xpos, ypos);
+				break;
 			}
 		}
 
-		return bestMonitor;
+		void MousePosCallback(GLFWwindow* Window, double xpos, double ypos)
+		{
+			FWindowImpl* Impl = ImplFrom(Window);
+
+			if (Impl->bFirstMouseUpdate)
+			{
+				Impl->LastMouseX = xpos;
+				Impl->LastMouseY = ypos;
+				Impl->bFirstMouseUpdate = false;
+
+				GApp->GetEventProcessor().Dispatch<FMouseMovedEvent>(xpos, ypos, 0.0, 0.0);
+				return;
+			}
+
+			double DeltaX = xpos - Impl->LastMouseX;
+			double DeltaY = ypos - Impl->LastMouseY;
+
+			Impl->LastMouseX = xpos;
+			Impl->LastMouseY = ypos;
+
+			GApp->GetEventProcessor().Dispatch<FMouseMovedEvent>(xpos, ypos, DeltaX, DeltaY);
+		}
+
+		void MouseScrollCallback(GLFWwindow* /*Window*/, double /*xoffset*/, double yoffset)
+		{
+			// Vertical scroll only.
+			GApp->GetEventProcessor().Dispatch<FMouseScrolledEvent>(EMouseKey::Scroll, yoffset);
+		}
+
+		void KeyCallback(GLFWwindow* /*Window*/, int Key, int /*Scancode*/, int Action, int Mods)
+		{
+			if (Key == GLFW_KEY_UNKNOWN)
+			{
+				return;
+			}
+
+			bool Ctrl = Mods & GLFW_MOD_CONTROL;
+			bool Shift = Mods & GLFW_MOD_SHIFT;
+			bool Alt = Mods & GLFW_MOD_ALT;
+			bool Super = Mods & GLFW_MOD_SUPER;
+
+			switch (Action)
+			{
+			case GLFW_RELEASE:
+				GApp->GetEventProcessor().Dispatch<FKeyReleasedEvent>(static_cast<EKey>(Key), Ctrl, Shift, Alt, Super);
+				break;
+			case GLFW_PRESS:
+				GApp->GetEventProcessor().Dispatch<FKeyPressedEvent>(static_cast<EKey>(Key), Ctrl, Shift, Alt, Super);
+				break;
+			case GLFW_REPEAT:
+				GApp->GetEventProcessor().Dispatch<FKeyPressedEvent>(static_cast<EKey>(Key), Ctrl, Shift, Alt, Super, /* Repeat */ true);
+				break;
+			}
+		}
+
+		void WindowResizeCallback(GLFWwindow* Window, int width, int height)
+		{
+			FWindowImpl* Impl = ImplFrom(Window);
+			Impl->Specs.Extent.x = width;
+			Impl->Specs.Extent.y = height;
+
+			GApp->GetEventProcessor().Dispatch<FWindowResizeEvent>(width, height);
+
+			FWindow::OnWindowResized.Broadcast(Impl->Owner, Impl->Specs.Extent);
+		}
+
+		void WindowDropCallback(GLFWwindow* Window, int PathCount, const char* Paths[])
+		{
+			double xpos, ypos;
+			glfwGetCursorPos(Window, &xpos, &ypos);
+
+			TVector<FFixedString> StringPaths;
+
+			for (int i = 0; i < PathCount; ++i)
+			{
+				StringPaths.emplace_back(Paths[i]);
+			}
+
+			GApp->GetEventProcessor().Dispatch<FFileDropEvent>(StringPaths, static_cast<float>(xpos), static_cast<float>(ypos));
+		}
+
+		void WindowCloseCallback(GLFWwindow* /*Window*/)
+		{
+			FApplication::RequestExit();
+		}
+
+		void TitleBarHitTestCallback(GLFWwindow* Window, int /*x*/, int /*y*/, int* hit)
+		{
+			const FWindowImpl* Impl = ImplFrom(Window);
+			*hit = (Impl != nullptr && Impl->bTitleBarHovered) ? 1 : 0;
+		}
+
+		[[maybe_unused]] GLFWmonitor* GetCurrentMonitor(GLFWwindow* window)
+		{
+			int windowX, windowY, windowWidth, windowHeight;
+			glfwGetWindowPos(window, &windowX, &windowY);
+			glfwGetWindowSize(window, &windowWidth, &windowHeight);
+
+			int monitorCount;
+			GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
+
+			GLFWmonitor* bestMonitor = nullptr;
+			int maxOverlap = 0;
+
+			for (int i = 0; i < monitorCount; ++i)
+			{
+				int monitorX, monitorY, monitorWidth, monitorHeight;
+				glfwGetMonitorWorkarea(monitors[i], &monitorX, &monitorY, &monitorWidth, &monitorHeight);
+
+				int overlapX = std::max(0, std::min(windowX + windowWidth, monitorX + monitorWidth) - std::max(windowX, monitorX));
+				int overlapY = std::max(0, std::min(windowY + windowHeight, monitorY + monitorHeight) - std::max(windowY, monitorY));
+				int overlapArea = overlapX * overlapY;
+
+				if (overlapArea > maxOverlap)
+				{
+					maxOverlap = overlapArea;
+					bestMonitor = monitors[i];
+				}
+			}
+
+			return bestMonitor;
+		}
+	}
+
+	FWindow::FWindow(const FWindowSpecs& InSpecs)
+		: Impl(MakeUnique<FWindowImpl>())
+	{
+		Impl->Owner = this;
+		Impl->Specs = InSpecs;
+		Init();
 	}
 
 	FWindow::~FWindow()
 	{
-		glfwDestroyWindow(Window);
+		glfwDestroyWindow(Impl->Window);
 		glfwTerminate();
 	}
 
 	void FWindow::Init()
 	{
-		if (LIKELY(!bInitialized))
+		if (LIKELY(!Impl->bInitialized))
 		{
 			glfwInitAllocator(&CustomAllocator);
 			glfwInit();
@@ -102,17 +241,17 @@ namespace Lumina
 			GLFWmonitor* Monitor = glfwGetPrimaryMonitor();
 			const GLFWvidmode* Mode = glfwGetVideoMode(Monitor);
 
-			Specs.Extent.x = Mode->width - 300;
-			Specs.Extent.y = Mode->height - 300;
+			Impl->Specs.Extent.x = Mode->width - 300;
+			Impl->Specs.Extent.y = Mode->height - 300;
 
-			Window = glfwCreateWindow(Specs.Extent.x, Specs.Extent.y, Specs.Title.c_str(), nullptr, nullptr);
-			glfwSetWindowAttrib(Window, GLFW_RESIZABLE, GLFW_TRUE);
-			
-			const int PosX = (Mode->width  - Specs.Extent.x) / 2;
-			const int PosY = (Mode->height - Specs.Extent.y) / 2;
-			glfwSetWindowPos(Window, PosX, PosY);			
-			
-			LOG_TRACE("Initializing Window: {} (Width: {}p Height: {}p)", Specs.Title, Specs.Extent.x, Specs.Extent.y);
+			Impl->Window = glfwCreateWindow(Impl->Specs.Extent.x, Impl->Specs.Extent.y, Impl->Specs.Title.c_str(), nullptr, nullptr);
+			glfwSetWindowAttrib(Impl->Window, GLFW_RESIZABLE, GLFW_TRUE);
+
+			const int PosX = (Mode->width  - (int)Impl->Specs.Extent.x) / 2;
+			const int PosY = (Mode->height - (int)Impl->Specs.Extent.y) / 2;
+			glfwSetWindowPos(Impl->Window, PosX, PosY);
+
+			LOG_TRACE("Initializing Window: {} (Width: {}p Height: {}p)", Impl->Specs.Title, Impl->Specs.Extent.x, Impl->Specs.Extent.y);
 
 			GLFWimage Icon;
 			int Channels;
@@ -120,30 +259,24 @@ namespace Lumina
 			Icon.pixels = stbi_load(IconPathStr.c_str(), &Icon.width, &Icon.height, &Channels, 4);
 			if (Icon.pixels)
 			{
-				glfwSetWindowIcon(Window, 1, &Icon);
+				glfwSetWindowIcon(Impl->Window, 1, &Icon);
 				stbi_image_free(Icon.pixels);
 			}
 
-			glfwSetMouseButtonCallback(Window, MouseButtonCallback);
-			glfwSetCursorPosCallback(Window, MousePosCallback);
-			glfwSetScrollCallback(Window, MouseScrollCallback);
-			glfwSetKeyCallback(Window, KeyCallback);
-			glfwSetWindowUserPointer(Window, this);
-			glfwSetWindowSizeCallback(Window, WindowResizeCallback);
-			glfwSetDropCallback(Window, WindowDropCallback);
-			glfwSetWindowCloseCallback(Window, WindowCloseCallback);
+			glfwSetWindowUserPointer(Impl->Window, Impl.get());
+			glfwSetMouseButtonCallback(Impl->Window, MouseButtonCallback);
+			glfwSetCursorPosCallback(Impl->Window, MousePosCallback);
+			glfwSetScrollCallback(Impl->Window, MouseScrollCallback);
+			glfwSetKeyCallback(Impl->Window, KeyCallback);
+			glfwSetWindowSizeCallback(Impl->Window, WindowResizeCallback);
+			glfwSetDropCallback(Impl->Window, WindowDropCallback);
+			glfwSetWindowCloseCallback(Impl->Window, WindowCloseCallback);
 
 #if WITH_EDITOR
 			// Route title-bar hit-test through OS for native Aero Snap / drag-to-maximize.
-			glfwSetTitlebarHitTestCallback(Window, TitleBarHitTestCallback);
+			glfwSetTitlebarHitTestCallback(Impl->Window, TitleBarHitTestCallback);
 #endif
 		}
-	}
-
-	void FWindow::TitleBarHitTestCallback(GLFWwindow* window, int /*x*/, int /*y*/, int* hit)
-	{
-		const FWindow* WindowHandle = (const FWindow*)glfwGetWindowUserPointer(window);
-		*hit = (WindowHandle != nullptr && WindowHandle->bTitleBarHovered) ? 1 : 0;
 	}
 
 	void FWindow::ProcessMessages()
@@ -151,10 +284,15 @@ namespace Lumina
 		glfwPollEvents();
 	}
 
+	GLFWwindow* FWindow::GetWindow() const
+	{
+		return Impl->Window;
+	}
+
 	glm::uvec2 FWindow::GetExtent() const
 	{
 		glm::ivec2 ReturnVal;
-		glfwGetWindowSize(Window, &ReturnVal.x, &ReturnVal.y);
+		glfwGetWindowSize(Impl->Window, &ReturnVal.x, &ReturnVal.y);
 
 		return ReturnVal;
 	}
@@ -171,165 +309,69 @@ namespace Lumina
 
 	bool FWindow::IsWindowMaximized() const
 	{
-		return glfwGetWindowAttrib(Window, GLFW_MAXIMIZED);
+		return glfwGetWindowAttrib(Impl->Window, GLFW_MAXIMIZED);
 	}
 
 	void FWindow::GetWindowPosition(int& X, int& Y)
 	{
-		glfwGetWindowPos(Window, &X, &Y);
+		glfwGetWindowPos(Impl->Window, &X, &Y);
 	}
 
 	void FWindow::SetWindowPosition(int X, int Y)
 	{
-		glfwSetWindowPos(Window, X, Y);
+		glfwSetWindowPos(Impl->Window, X, Y);
 	}
 
 	void FWindow::SetWindowSize(int X, int Y)
 	{
-		glfwSetWindowSize(Window, X, Y);
+		glfwSetWindowSize(Impl->Window, X, Y);
+	}
+
+	void FWindow::SetTitleBarHovered(bool bHovered)
+	{
+		Impl->bTitleBarHovered = bHovered;
+	}
+
+	void FWindow::SetCursorMode(ECursorMode Mode)
+	{
+		int Value = GLFW_CURSOR_NORMAL;
+		switch (Mode)
+		{
+		case ECursorMode::Normal:   Value = GLFW_CURSOR_NORMAL;   break;
+		case ECursorMode::Hidden:   Value = GLFW_CURSOR_HIDDEN;   break;
+		case ECursorMode::Disabled: Value = GLFW_CURSOR_DISABLED; break;
+		}
+		glfwSetInputMode(Impl->Window, GLFW_CURSOR, Value);
 	}
 
 	bool FWindow::ShouldClose() const
 	{
-		return glfwWindowShouldClose(Window);
+		return glfwWindowShouldClose(Impl->Window);
 	}
 
 	bool FWindow::IsWindowMinimized() const
 	{
-		return glfwGetWindowAttrib(Window, GLFW_ICONIFIED);
+		return glfwGetWindowAttrib(Impl->Window, GLFW_ICONIFIED);
 	}
-	
+
 	void FWindow::Minimize()
 	{
-		glfwIconifyWindow(Window);
+		glfwIconifyWindow(Impl->Window);
 	}
 
 	void FWindow::Restore()
 	{
-		glfwRestoreWindow(Window);
+		glfwRestoreWindow(Impl->Window);
 	}
 
 	void FWindow::Maximize()
 	{
-		glfwMaximizeWindow(Window);
+		glfwMaximizeWindow(Impl->Window);
 	}
 
 	void FWindow::Close()
 	{
-		glfwSetWindowShouldClose(Window, GLFW_TRUE);
-	}
-
-	void FWindow::MouseButtonCallback(GLFWwindow* window, int Button, int Action, int Mods)
-	{
-		double xpos, ypos;
-		glfwGetCursorPos(window, &xpos, &ypos);
-
-		switch (Action)
-		{
-		case GLFW_PRESS:
-		{
-			GApp->GetEventProcessor().Dispatch<FMouseButtonPressedEvent>(static_cast<EMouseKey>(Button), xpos, ypos);
-		}
-		break;
-
-		case GLFW_RELEASE:
-		{
-			GApp->GetEventProcessor().Dispatch<FMouseButtonReleasedEvent>(static_cast<EMouseKey>(Button), xpos, ypos);
-		}
-		break;
-		}
-	}
-
-	void FWindow::MousePosCallback(GLFWwindow* window, double xpos, double ypos)
-	{
-		FWindow* WindowHandle = (FWindow*)glfwGetWindowUserPointer(window);
-
-		if (WindowHandle->bFirstMouseUpdate)
-		{
-			WindowHandle->LastMouseX = xpos;
-			WindowHandle->LastMouseY = ypos;
-			WindowHandle->bFirstMouseUpdate = false;
-
-			GApp->GetEventProcessor().Dispatch<FMouseMovedEvent>(xpos, ypos, 0.0, 0.0);
-			return;
-		}
-
-		double DeltaX = xpos - WindowHandle->LastMouseX;
-		double DeltaY = ypos - WindowHandle->LastMouseY;
-
-		WindowHandle->LastMouseX = xpos;
-		WindowHandle->LastMouseY = ypos;
-
-		GApp->GetEventProcessor().Dispatch<FMouseMovedEvent>(xpos, ypos, DeltaX, DeltaY);
-	}
-
-	void FWindow::MouseScrollCallback(GLFWwindow* window, double xoffset, double yoffset)
-	{
-		// Vertical scroll only.
-		GApp->GetEventProcessor().Dispatch<FMouseScrolledEvent>(EMouseKey::Scroll, yoffset);
-	}
-
-	void FWindow::KeyCallback(GLFWwindow* window, int Key, int Scancode, int Action, int Mods)
-	{
-		if (Key == GLFW_KEY_UNKNOWN)
-		{
-			return;
-		}
-
-		bool Ctrl = Mods & GLFW_MOD_CONTROL;
-		bool Shift = Mods & GLFW_MOD_SHIFT;
-		bool Alt = Mods & GLFW_MOD_ALT;
-		bool Super = Mods & GLFW_MOD_SUPER;
-
-		switch (Action)
-		{
-		case GLFW_RELEASE:
-		{
-			GApp->GetEventProcessor().Dispatch<FKeyReleasedEvent>(static_cast<EKey>(Key), Ctrl, Shift, Alt, Super);
-		}
-		break;
-		case GLFW_PRESS:
-		{
-			GApp->GetEventProcessor().Dispatch<FKeyPressedEvent>(static_cast<EKey>(Key), Ctrl, Shift, Alt, Super);
-		}
-		break;
-		case GLFW_REPEAT:
-		{
-			GApp->GetEventProcessor().Dispatch<FKeyPressedEvent>(static_cast<EKey>(Key), Ctrl, Shift, Alt, Super, /* Repeat */ true);
-		}
-		break;
-		}
-	}
-
-	void FWindow::WindowResizeCallback(GLFWwindow* window, int width, int height)
-	{
-		auto WindowHandle = (FWindow*)glfwGetWindowUserPointer(window);
-		WindowHandle->Specs.Extent.x = width;
-		WindowHandle->Specs.Extent.y = height;
-
-		GApp->GetEventProcessor().Dispatch<FWindowResizeEvent>(width, height);
-
-		OnWindowResized.Broadcast(WindowHandle, WindowHandle->Specs.Extent);
-	}
-
-	void FWindow::WindowDropCallback(GLFWwindow* Window, int PathCount, const char* Paths[])
-	{
-		double xpos, ypos;
-		glfwGetCursorPos(Window, &xpos, &ypos);
-
-		TVector<FFixedString> StringPaths;
-
-		for (int i = 0; i < PathCount; ++i)
-		{
-			StringPaths.emplace_back(Paths[i]);
-		}
-
-		GApp->GetEventProcessor().Dispatch<FFileDropEvent>(StringPaths, static_cast<float>(xpos), static_cast<float>(ypos));
-	}
-
-	void FWindow::WindowCloseCallback(GLFWwindow* window)
-	{
-		FApplication::RequestExit();
+		glfwSetWindowShouldClose(Impl->Window, GLFW_TRUE);
 	}
 
 	namespace Windowing

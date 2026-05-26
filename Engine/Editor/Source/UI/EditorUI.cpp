@@ -42,6 +42,7 @@
 #include "Assets/AssetTypes/Blackboard/Blackboard.h"
 #include "Assets/AssetTypes/GeometryCollection/GeometryCollection.h"
 #include "Assets/AssetTypes/Material/Material.h"
+#include "Assets/AssetTypes/MaterialFunction/MaterialFunction.h"
 #include "Assets/AssetTypes/Material/MaterialInstance.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
 #include "Assets/AssetTypes/Mesh/SkeletalMesh/SkeletalMesh.h"
@@ -101,6 +102,7 @@
 #include "Tools/AssetEditors/GeometryCollection/GeometryCollectionEditorTool.h"
 #include "Tools/AssetEditors/MaterialEditor/MaterialEditorTool.h"
 #include "Tools/AssetEditors/MaterialEditor/MaterialInstanceEditorTool.h"
+#include "Tools/AssetEditors/MaterialFunctionEditor/MaterialFunctionEditorTool.h"
 #include "Tools/AssetEditors/MeshEditor/MeshEditorTool.h"
 #include "Tools/AssetEditors/MeshEditor/SkeletalMeshEditorTool.h"
 #include "Tools/AssetEditors/MeshEditor/SkeletonEditorTool.h"
@@ -586,6 +588,10 @@ namespace Lumina
         else if (Asset->IsA<CMaterialInstance>())
         {
             NewTool = CreateTool<FMaterialInstanceEditorTool>(this, Asset);
+        }
+        else if (Asset->IsA<CMaterialFunction>())
+        {
+            NewTool = CreateTool<FMaterialFunctionEditorTool>(this, Asset);
         }
         else if (Asset->IsA<CPrefab>())
         {

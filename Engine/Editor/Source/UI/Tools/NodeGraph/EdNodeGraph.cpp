@@ -82,7 +82,7 @@ namespace Lumina
         Super::PostLoad();
         
         TVector<TObjectPtr<CEdGraphNode>> SavedNodes = Move(Nodes);
-        TVector<uint16> SavedConnections = Move(Connections);
+        TVector<uint32> SavedConnections = Move(Connections);
         Nodes.clear();
         Connections.clear();
 
@@ -96,8 +96,8 @@ namespace Lumina
 
         for (size_t i = 0; i + 1 < SavedConnections.size(); i += 2)
         {
-            uint16 InputID = SavedConnections[i];
-            uint16 OutputID = SavedConnections[i + 1];
+            uint32 InputID = SavedConnections[i];
+            uint32 OutputID = SavedConnections[i + 1];
 
             CEdNodeGraphPin* InputPin = nullptr;
             CEdNodeGraphPin* OutputPin = nullptr;
@@ -131,6 +131,12 @@ namespace Lumina
             OutputPin->AddConnection(InputPin);
             InputPin->AddConnection(OutputPin);
         }
+
+        // Rebuild the serialized Connections array from the freshly-restored pin links. Each AddNode
+        // above ran ValidateGraph() while no connections existed yet, leaving the member empty; without
+        // this, saving after load (with no connection edit to re-trigger ValidateGraph) would persist an
+        // empty array and silently drop every link.
+        ValidateGraph();
     }
 
     CPackage* CEdNodeGraph::GetNodeOuter()
@@ -743,8 +749,8 @@ namespace Lumina
                     CEdNodeGraphPin* StartPin = nullptr;
                     CEdNodeGraphPin* EndPin = nullptr;
 
-                    const uint16 StartGUID = static_cast<uint16>(StartPinID.Get());
-                    const uint16 EndGUID   = static_cast<uint16>(EndPinID.Get());
+                    const uint32 StartGUID = static_cast<uint32>(StartPinID.Get());
+                    const uint32 EndGUID   = static_cast<uint32>(EndPinID.Get());
 
                     for (CEdGraphNode* Node : Nodes)
                     {
@@ -810,7 +816,7 @@ namespace Lumina
                 if (NodeEditor::AcceptNewItem())
                 {
                     CEdNodeGraphPin* SourcePin = nullptr;
-                    const uint16 PinGUID = static_cast<uint16>(NewNodeFromPinId.Get());
+                    const uint32 PinGUID = static_cast<uint32>(NewNodeFromPinId.Get());
                     for (CEdGraphNode* Node : Nodes)
                     {
                         SourcePin = Node->GetPin(PinGUID, ENodePinDirection::Output);

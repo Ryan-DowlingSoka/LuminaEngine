@@ -174,7 +174,7 @@ namespace Lumina
         bEngineReadyToClose = true;
         bCloseRequested = bApplicationWantsExit;
 
-        UpdateContext.MarkFrameStart(glfwGetTime());
+        UpdateContext.MarkFrameStart(Platform::GetTime());
 
         FCPUProfiler::Get().BeginFrame();
 
@@ -308,7 +308,7 @@ namespace Lumina
         
         FCPUProfiler::Get().EndFrame();
 
-        UpdateContext.MarkFrameEnd(glfwGetTime());
+        UpdateContext.MarkFrameEnd(Platform::GetTime());
 
         int32 MaxFrameRate = CVarMaxFrameRate.GetValue();
         if (MaxFrameRate > 0)
@@ -320,13 +320,13 @@ namespace Lumina
 
             // Sleep the bulk, leaving margin for OS scheduler overshoot, then spin for precision.
             constexpr double SpinMargin = 0.001;
-            double Remaining = TargetEndTime - glfwGetTime();
+            double Remaining = TargetEndTime - Platform::GetTime();
             if (Remaining > SpinMargin)
             {
                 std::this_thread::sleep_for(std::chrono::duration<double>(Remaining - SpinMargin));
             }
 
-            while (glfwGetTime() < TargetEndTime)
+            while (Platform::GetTime() < TargetEndTime)
             {
                 std::this_thread::yield();
             }
