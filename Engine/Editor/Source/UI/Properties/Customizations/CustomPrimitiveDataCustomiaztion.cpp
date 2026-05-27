@@ -9,7 +9,7 @@ namespace Lumina
         return MakeShared<FCustomPrimDataPropertyCustomization>();
     }
 
-    EPropertyChangeOp FCustomPrimDataPropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
+    EPropertyChangeOp FCustomPrimDataPropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         bool bWasChanged = false;
     
@@ -118,13 +118,13 @@ namespace Lumina
         return EPropertyChangeOp::None;
     }
 
-    void FCustomPrimDataPropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
+    void FCustomPrimDataPropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
-        Property->Property->SetValue(Property->ContainerPtr, Value);
+        Property->SetValue(Value);
     }
 
-    void FCustomPrimDataPropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
+    void FCustomPrimDataPropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
-        Property->Property->GetValue(Property->ContainerPtr, &Value);
+        Property->GetValue(&Value);
     }
 }

@@ -366,8 +366,7 @@ namespace Lumina
             Hull = MakeBox(Mn, Mx);   // hull clip collapsed (bad data) -> fall back to box
         }
 
-        LOG_INFO("[Fracture] meshletVerts={} tris={} hullPlanes={} hullFacesAfterClip={} boundsDiag={}",
-            NumPos, NumTri, HullPlanes.size(), FacesAfterClip, Diag);
+        LOG_INFO("[Fracture] MeshletVerts={} Tris={} HullPlanes={} HullFacesAfterClip={} BoundsDiag={}", NumPos, NumTri, HullPlanes.size(), FacesAfterClip, Diag);
 
         auto InsideHull = [&](const glm::vec3& S) -> bool
         {
@@ -437,7 +436,12 @@ namespace Lumina
         Resource->ReserveVertices(Piece.Vertices.size());
         for (const FVertex& V : Piece.Vertices)
         {
-            Resource->AppendVertex(V);
+            // Pieces are stored in source-local space; recenter to the piece centroid so the
+            // built mesh's origin (and the convex collider's center of mass) sits on the chunk.
+            // Callers place the entity at Piece.Center to reconstruct the original position.
+            FVertex Centered = V;
+            Centered.Position -= Piece.Center;
+            Resource->AppendVertex(Centered);
         }
         Resource->Indices = Piece.Indices;
 
@@ -464,8 +468,40 @@ namespace Lumina
         Ar << Data;
     }
 
+    void CGeometryCollection::PostLoad()
+    {
+        Super::PostLoad();
+        BuildPieceMeshes();
+    }
+
+    void CGeometryCollection::BuildPieceMeshes()
+    {
+        if (!PieceMeshes.empty() || Data.Pieces.empty())
+        {
+            return;
+        }
+
+        // Match the runtime fracture's material choice: the baked collection materials, else the source mesh's.
+        const TVector<TObjectPtr<CMaterialInterface>>& Mats =
+            (!Materials.empty() || SourceMesh.Get() == nullptr) ? Materials : SourceMesh->Materials;
+
+        PieceMeshes.reserve(Data.Pieces.size());
+        for (const FFracturePiece& Piece : Data.Pieces)
+        {
+            PieceMeshes.push_back(Fracture::BuildPieceMesh(Piece, Mats, "GCPiece"));
+        }
+    }
+
+    const TVector<TObjectPtr<CStaticMesh>>& CGeometryCollection::GetPieceMeshes()
+    {
+        BuildPieceMeshes();
+        return PieceMeshes;
+    }
+
     int32 CGeometryCollection::Rebuild()
     {
+        PieceMeshes.clear();   // invalidate the shared mesh cache; GetPieceMeshes() rebuilds on demand
+
         CStaticMesh* Source = SourceMesh.Get();
         if (Source == nullptr)
         {

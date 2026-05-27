@@ -106,6 +106,24 @@ namespace Lumina::Physics
         UNREACHABLE();
     }
     
+    static void CheckJoltError(JPH::EPhysicsUpdateError Error)
+    {
+        switch (Error)
+        {
+        case JPH::EPhysicsUpdateError::None:
+            break;
+        case JPH::EPhysicsUpdateError::ManifoldCacheFull:
+            LOG_ERROR("[Jolt Error] - Manifold Cache is full");
+            break;
+        case JPH::EPhysicsUpdateError::BodyPairCacheFull:
+            LOG_ERROR("[Jolt Error] - Body-Pair Cache is full");
+            break;
+        case JPH::EPhysicsUpdateError::ContactConstraintsFull:
+            LOG_ERROR("[Jolt Error] - Contact Constraints are full.");
+            break;
+        }
+    }
+    
     class FObjectVsBroadPhaseLayerFilterImpl : public JPH::ObjectVsBroadPhaseLayerFilter
     {
     public:
@@ -651,7 +669,7 @@ namespace Lumina::Physics
                     SnapshotBodyStates();
                 }
 
-                JoltSystem->Update(FixedTimestep, 1, &Allocator, FJoltPhysicsContext::GetThreadPool());
+                CheckJoltError(JoltSystem->Update(FixedTimestep, 1, &Allocator, FJoltPhysicsContext::GetThreadPool()));
                 UpdateCharacters(FixedTimestep);
             }
 
@@ -1684,7 +1702,7 @@ namespace Lumina::Physics
                 return EBodyBuildStatus::Defer;
             }
 
-            Shape = BuildMeshColliderShape(Mesh, TransformComponent->GetScale(), MC->bConvex);
+            Shape = Scene->GetOrCreateMeshShape(Mesh, TransformComponent->GetScale(), MC->bConvex);
             if (Shape == nullptr)
             {
                 LOG_ERROR("Failed to create MeshCollider Shape for Entity: {}", entt::to_integral(Entity));
@@ -1798,6 +1816,13 @@ namespace Lumina::Physics
     {
         LUMINA_PROFILE_SCOPE();
 
+        // Inside a game-thread batch (e.g. fracture): collect and create together in EndBodyBatch.
+        if (bBatchingBodies && !Threading::IsPhysicsThread())
+        {
+            BatchedBodyCreations.push_back(Entity);
+            return;
+        }
+
         // Jolt forbids CreateBody/AddBody during a step; defer if on the physics thread.
         if (Threading::IsPhysicsThread())
         {
@@ -1807,6 +1832,20 @@ namespace Lumina::Physics
         }
 
         CreateRigidBodyImmediate(Registry, Entity);
+    }
+
+    void FJoltPhysicsScene::BeginBodyBatch()
+    {
+        // Game-thread only; fracture is synchronous so no nesting is expected.
+        bBatchingBodies = true;
+        BatchedBodyCreations.clear();
+    }
+
+    void FJoltPhysicsScene::EndBodyBatch()
+    {
+        bBatchingBodies = false;
+        CreateRigidBodiesBatched(BatchedBodyCreations);
+        BatchedBodyCreations.clear();
     }
 
     void FJoltPhysicsScene::CreateRigidBodyImmediate(entt::registry& Registry, entt::entity Entity)
@@ -1901,6 +1940,32 @@ namespace Lumina::Physics
         return Shape;
     }
 
+    JPH::ShapeRefC FJoltPhysicsScene::GetOrCreateMeshShape(const CMesh* Mesh, const glm::vec3& Scale, bool bConvex)
+    {
+        const FMeshShapeKey Key{ Mesh, Scale.x, Scale.y, Scale.z, (uint8)(bConvex ? 1 : 0) };
+
+        {
+            FScopeLock Lock(MeshShapeCacheMutex);
+            auto It = MeshShapeCache.find(Key);
+            if (It != MeshShapeCache.end())
+            {
+                return It->second;
+            }
+        }
+
+        // Build outside the lock: a fracture builds N distinct meshes in parallel, so holding the
+        // lock across QuickHull would serialize them. Distinct keys never collide; the try_emplace
+        // below only guards the rare same-key race.
+        JPH::ShapeRefC Shape = BuildMeshColliderShape(Mesh, Scale, bConvex);
+        if (Shape == nullptr)
+        {
+            return {};
+        }
+
+        FScopeLock Lock(MeshShapeCacheMutex);
+        return MeshShapeCache.try_emplace(Key, Shape).first->second;
+    }
+
     void FJoltPhysicsScene::BulkCreateRigidBodies(entt::registry& Registry)
     {
         LUMINA_PROFILE_SCOPE();
@@ -1913,21 +1978,28 @@ namespace Lumina::Physics
             Candidates.push_back(Entity);
         }
 
+        CreateRigidBodiesBatched(Candidates);
+    }
+
+    void FJoltPhysicsScene::CreateRigidBodiesBatched(const TVector<entt::entity>& Candidates)
+    {
+        LUMINA_PROFILE_SCOPE();
+
         const uint32 Count = (uint32)Candidates.size();
         if (Count == 0)
         {
             return;
         }
 
+        entt::registry& Registry = World->GetEntityRegistry();
+
         TVector<FRigidBodyBuildResult> Results(Count);
         TVector<EBodyBuildStatus>      Statuses(Count, EBodyBuildStatus::Error);
-
 
         Task::ParallelFor(Count, [&](uint32 Index)
         {
             Statuses[Index] = TryBuildRigidBodyCreationSettings(this, Registry, Candidates[Index], Results[Index]);
         });
-
 
         JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
         TVector<JPH::BodyID> BodyIDsToAdd;
@@ -1940,8 +2012,11 @@ namespace Lumina::Physics
             {
             case EBodyBuildStatus::Defer:
             case EBodyBuildStatus::NoCollider:
+            {
+                FScopeLock Lock(PendingRigidBodyMutex);
                 PendingRigidBodyCreations.push(Entity);
                 continue;
+            }
             case EBodyBuildStatus::AlreadyExists:
             case EBodyBuildStatus::Error:
                 continue;
@@ -2118,5 +2193,15 @@ namespace Lumina::Physics
     {
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         return JoltUtils::FromJPHQuat(Interface.GetRotation(JPH::BodyID(BodyID)));
+    }
+
+    uint32 FJoltPhysicsScene::GetBodyCount()
+    {
+        return (uint32)JoltSystem->GetNumBodies();
+    }
+
+    uint32 FJoltPhysicsScene::GetMaxBodyCount()
+    {
+        return (uint32)JoltSystem->GetMaxBodies();
     }
 }

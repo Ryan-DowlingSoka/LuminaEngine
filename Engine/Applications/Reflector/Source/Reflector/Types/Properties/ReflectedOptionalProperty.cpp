@@ -56,36 +56,39 @@ namespace Lumina
         FReflectedProperty::DefineAccessors(Writer, ReflectedType);
 
         const eastl::string& Q = ReflectedType->QualifiedName;
-        const eastl::string& D = ReflectedType->DisplayName;
         const char* N = Name.c_str();
+        const char* Raw = RawTypeName.c_str();      // The wrapper type, e.g. TOptional<T>.
+        const char* Elem = ElementTypeName.c_str(); // The payload type T.
+
+        // Object is the optional instance itself (&TOptional<T>), not the owning struct.
+        // The caller resolves the member offset via GetValuePtr, so optionals compose.
 
         // HasValue
         Writer.Linef("bool %s::%sOptionalHasValue_WrapperImpl(const void* Object)", Q.c_str(), N);
         Writer.BeginBlock();
-        Writer.Linef("const %s* Obj = (const %s*)Object;", D.c_str(), D.c_str());
-        Writer.Linef("return Obj->%s.has_value();", N);
+        Writer.Linef("return ((const %s*)Object)->has_value();", Raw);
         Writer.EndBlock();
         Writer.Line();
 
         // GetValue (raw pointer to held T; only valid when HasValue is true).
         Writer.Linef("void* %s::%sOptionalGetValue_WrapperImpl(void* Object)", Q.c_str(), N);
         Writer.BeginBlock();
-        Writer.Linef("%s* Obj = (%s*)Object;", D.c_str(), D.c_str());
-        Writer.Linef("return Obj->%s.has_value() ? &Obj->%s.value() : nullptr;", N, N);
+        Writer.Linef("%s* Opt = (%s*)Object;", Raw, Raw);
+        Writer.Line("return Opt->has_value() ? &Opt->value() : nullptr;");
         Writer.EndBlock();
         Writer.Line();
 
         // SetValue: copy-emplace when given a value, default-construct when null.
         Writer.Linef("void %s::%sOptionalSetValue_WrapperImpl(void* Object, const void* InValue)", Q.c_str(), N);
         Writer.BeginBlock();
-        Writer.Linef("%s* Obj = (%s*)Object;", D.c_str(), D.c_str());
+        Writer.Linef("%s* Opt = (%s*)Object;", Raw, Raw);
         Writer.Line("if (InValue)");
         Writer.BeginBlock();
-        Writer.Linef("Obj->%s = *(const %s*)InValue;", N, ElementTypeName.c_str());
+        Writer.Linef("*Opt = *(const %s*)InValue;", Elem);
         Writer.EndBlock();
         Writer.Line("else");
         Writer.BeginBlock();
-        Writer.Linef("Obj->%s.emplace();", N);
+        Writer.Line("Opt->emplace();");
         Writer.EndBlock();
         Writer.EndBlock();
         Writer.Line();
@@ -93,8 +96,7 @@ namespace Lumina
         // Reset
         Writer.Linef("void %s::%sOptionalReset_WrapperImpl(void* Object)", Q.c_str(), N);
         Writer.BeginBlock();
-        Writer.Linef("%s* Obj = (%s*)Object;", D.c_str(), D.c_str());
-        Writer.Linef("Obj->%s.reset();", N);
+        Writer.Linef("((%s*)Object)->reset();", Raw);
         Writer.EndBlock();
         Writer.Line();
 

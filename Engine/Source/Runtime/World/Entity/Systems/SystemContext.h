@@ -134,6 +134,9 @@ namespace Lumina
         RUNTIME_API void ActivateBody(uint32 BodyID);
         RUNTIME_API void DeactivateBody(uint32 BodyID);
         RUNTIME_API void ChangeBodyMotionType(uint32 BodyID, EBodyType NewType);
+
+        /** Physics body id for an entity, or ~0u when it has no body / no physics scene. */
+        RUNTIME_API uint32 GetEntityBodyID(entt::entity Entity) const;
         
         RUNTIME_API TVector<SRayResult> CastSphere(const SSphereCastSettings& Settings) const;
 

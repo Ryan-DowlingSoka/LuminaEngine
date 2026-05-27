@@ -198,6 +198,9 @@ namespace Lumina
         // hierarchy changes (drag-drop, unparent).
         void ReparentEntityInOutliner(entt::entity Entity);
 
+        // Re-evaluate an entity row's expander from its current child count.
+        void RefreshOutlinerExpander(entt::entity Entity);
+
         // EnTT signal handlers wired to the world's SNameComponent storage.
         void OnOutlinerEntityConstructed(entt::registry& Registry, entt::entity Entity);
         void OnOutlinerEntityDestroyed(entt::registry& Registry, entt::entity Entity);

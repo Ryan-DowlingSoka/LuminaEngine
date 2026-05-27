@@ -19,7 +19,7 @@ namespace Lumina
         return MakeShared<FParticleParameterCustomization>();
     }
 
-    EPropertyChangeOp FParticleParameterCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
+    EPropertyChangeOp FParticleParameterCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         bool bChanged = false;
 
@@ -119,14 +119,14 @@ namespace Lumina
         return bChanged ? EPropertyChangeOp::Updated : EPropertyChangeOp::None;
     }
 
-    void FParticleParameterCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
+    void FParticleParameterCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
-        Property->Property->SetValue(Property->ContainerPtr, Value, Property->Index);
+        Property->SetValue(Value);
     }
 
-    void FParticleParameterCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
+    void FParticleParameterCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
-        Property->Property->GetValue(Property->ContainerPtr, &Value, Property->Index);
+        Property->GetValue(&Value);
 
         const char* NameStr = Value.Name.IsNone() ? "" : Value.Name.c_str();
         strncpy(NameBuffer, NameStr, sizeof(NameBuffer));

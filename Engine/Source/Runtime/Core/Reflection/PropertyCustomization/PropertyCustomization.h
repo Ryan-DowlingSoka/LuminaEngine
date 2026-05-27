@@ -1,10 +1,11 @@
 ﻿#pragma once
 #include "Containers/Function.h"
 #include "Memory/SmartPtr.h"
+#include "Core/Reflection/Type/LuminaTypes.h"
 
 namespace Lumina
 {
-    class FProperty;
+    class FArrayProperty;
 
     class RUNTIME_API FPropertyHandle
     {
@@ -12,6 +13,52 @@ namespace Lumina
 
         FPropertyHandle(void* InContainerPtr, FProperty* InProperty, int64 InIndex = 0);
         FPropertyHandle(void* InContainerPtr, void* InDefaultContainerPtr, FProperty* InProperty, int64 InIndex = 0);
+
+        /**
+         * Array-element handle. ContainerPtr is the array *instance* (the TVector), not a cached
+         * element pointer — the element address is resolved via GetAt on every access, so it stays
+         * valid across vector reallocation (push_back/resize). InProperty is the element property.
+         */
+        FPropertyHandle(FArrayProperty* InOwnerArray, void* InArrayPtr, void* InDefaultArrayPtr, FProperty* InElementProperty, int64 InIndex);
+
+        /** Resolves to the property's value (the member itself, or the live array element). Null container yields null. */
+        void* GetValuePtr() const;
+
+        /** As GetValuePtr but against the default container; null when no default is plumbed. */
+        void* GetDefaultValuePtr() const;
+
+        /** Accessor-aware typed read/write for plain members; direct (no accessor) for array elements. */
+        template<typename T>
+        void GetValue(T* OutValue) const
+        {
+            if (OwnerArray != nullptr)
+            {
+                if (const void* Ptr = GetValuePtr())
+                {
+                    *OutValue = *static_cast<const T*>(Ptr);
+                }
+            }
+            else
+            {
+                Property->GetValue(ContainerPtr, OutValue, Index);
+            }
+        }
+
+        template<typename T>
+        void SetValue(const T& InValue) const
+        {
+            if (OwnerArray != nullptr)
+            {
+                if (void* Ptr = GetValuePtr())
+                {
+                    *static_cast<T*>(Ptr) = InValue;
+                }
+            }
+            else
+            {
+                Property->SetValue(ContainerPtr, InValue, Index);
+            }
+        }
 
         /** False if no default container plumbed (e.g. struct edited without a CDO). */
         bool DiffersFromDefault() const;
@@ -25,6 +72,9 @@ namespace Lumina
         void* DefaultContainerPtr = nullptr;
         FProperty* Property;
         int64 Index = 0;
+
+        /** Non-null marks this as an array element; ContainerPtr is then the array instance. */
+        FArrayProperty* OwnerArray = nullptr;
     };
 
     enum class RUNTIME_API EPropertyChangeOp : uint8
@@ -39,13 +89,13 @@ namespace Lumina
     {
     public:
 
-        virtual EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) = 0;
+        virtual EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) = 0;
         
         EPropertyChangeOp UpdateAndDraw(const TSharedPtr<FPropertyHandle>& Property, bool bReadOnly);
 
-        virtual void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) = 0;
+        virtual void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) = 0;
 
-        virtual void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) = 0;
+        virtual void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) = 0;
         
     };
     

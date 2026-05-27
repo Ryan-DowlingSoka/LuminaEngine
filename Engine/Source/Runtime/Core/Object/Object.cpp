@@ -71,14 +71,14 @@ namespace Lumina
                 TVector<uint8> Bytes;
                 
                 {
-                    void* ValuePtr = Current->IsA(EPropertyTypeFlags::Vector) ? this : Current->GetValuePtr<void>(this);
+                    void* ValuePtr = Current->GetValuePtr<void>(this);
                     FMemoryWriter Writer(Bytes);
                     FObjectProxyArchiver WriterProxy(Writer, true);
                     Current->Serialize(WriterProxy, ValuePtr);
                 }
-                
+
                 {
-                    void* ValuePtr = Current->IsA(EPropertyTypeFlags::Vector) ? Duplicate : Current->GetValuePtr<void>(Duplicate);
+                    void* ValuePtr = Current->GetValuePtr<void>(Duplicate);
                     FMemoryReader Reader(Bytes);
                     FObjectProxyArchiver ReaderProxy(Reader, true);
                     Current->Serialize(ReaderProxy, ValuePtr);

@@ -170,7 +170,10 @@ namespace Lumina
         void DestroyEntity(entt::entity Entity);
         
         void SetActiveCamera(entt::entity InEntity) const;
-        
+
+        /** Switch the active camera, easing from the current view over BlendTime seconds (0 = snap). */
+        void SetActiveCamera(entt::entity InEntity, float BlendTime, ECameraBlendFunction Function = ECameraBlendFunction::EaseInOut) const;
+
         SCameraComponent* GetActiveCamera() const;
         
         entt::entity GetActiveCameraEntity() const;
@@ -302,6 +305,11 @@ namespace Lumina
         
         EWorldType                                          WorldType = EWorldType::None;
         bool                                                bInitializing = true;
+
+        // FIFO of live destruction fragments (FractureEntity). Oldest are reaped to keep the live
+        // fragment count under the Physics.Destruction.MaxLiveFragments budget so the physics
+        // body/contact buffers never overflow. May hold already-dead entities; validated on reap.
+        TDeque<entt::entity>                                ActiveFragments;
     };
     
     

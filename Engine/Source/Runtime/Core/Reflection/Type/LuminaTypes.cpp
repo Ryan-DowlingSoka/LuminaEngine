@@ -96,11 +96,6 @@ namespace Lumina
 
     bool FProperty::Identical_InContainer(const void* ContainerA, const void* ContainerB, int64 ArrayIndex) const
     {
-        // Vector property wrappers need the raw container pointer, not container+offset.
-        if (IsA(EPropertyTypeFlags::Vector))
-        {
-            return Identical(ContainerA, ContainerB);
-        }
         const void* A = GetValuePtrInternal(const_cast<void*>(ContainerA), ArrayIndex);
         const void* B = GetValuePtrInternal(const_cast<void*>(ContainerB), ArrayIndex);
         return Identical(A, B);
@@ -108,11 +103,6 @@ namespace Lumina
 
     void FProperty::CopyCompleteValue_InContainer(void* DstContainer, const void* SrcContainer, int64 ArrayIndex) const
     {
-        if (IsA(EPropertyTypeFlags::Vector))
-        {
-            CopyCompleteValue(DstContainer, SrcContainer);
-            return;
-        }
         void* D = GetValuePtrInternal(DstContainer, ArrayIndex);
         const void* S = GetValuePtrInternal(const_cast<void*>(SrcContainer), ArrayIndex);
         CopyCompleteValue(D, S);

@@ -100,15 +100,15 @@ namespace Lumina
 
         /** Max rigid bodies the scene pre-allocates for. Drives up-front physics memory; exceeding it at runtime drops new bodies, so raise it for dense worlds. */
         PROPERTY(Editable, Category = "Physics")
-        uint32 MaxPhysicsBodies = 16384;
+        uint32 MaxPhysicsBodies = 65536;
 
-        /** Max simultaneously-overlapping body pairs the broad phase tracks. */
+        /** Max simultaneously-overlapping body pairs the broad phase tracks. Dense fracture piles overflow this; overflow trips a Jolt update error. */
         PROPERTY(Editable, Category = "Physics")
-        uint32 MaxPhysicsBodyPairs = 32768;
+        uint32 MaxPhysicsBodyPairs = 98304;
 
         /** Max contact constraints the solver pre-allocates -- the dominant per-scene physics memory cost. Raise it if dense contact piles start interpenetrating. */
         PROPERTY(Editable, Category = "Physics")
-        uint32 MaxPhysicsContactConstraints = 65536;
+        uint32 MaxPhysicsContactConstraints = 131072;
 
         /** Global velocity solver iterations. Entities can raise this per-body via NumVelocityStepsOverride. Minimum 2 required for friction. */
         PROPERTY(Editable, Category = "Physics")

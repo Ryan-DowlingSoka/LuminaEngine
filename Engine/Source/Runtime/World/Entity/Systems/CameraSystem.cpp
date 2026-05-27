@@ -8,6 +8,19 @@
 
 namespace Lumina
 {
+    float EvaluateCameraBlend(ECameraBlendFunction Function, float Alpha)
+    {
+        Alpha = glm::clamp(Alpha, 0.0f, 1.0f);
+        switch (Function)
+        {
+        case ECameraBlendFunction::EaseIn:    return Alpha * Alpha;
+        case ECameraBlendFunction::EaseOut:   return Alpha * (2.0f - Alpha);
+        case ECameraBlendFunction::EaseInOut: return Alpha * Alpha * (3.0f - 2.0f * Alpha); // smoothstep
+        case ECameraBlendFunction::Linear:
+        default:                              return Alpha;
+        }
+    }
+
     namespace Detail
     {
         static void NewCameraConstructed(entt::registry& Registry, entt::entity Entity)
@@ -50,14 +63,14 @@ namespace Lumina
         const STransformComponent& CameraTransform = Registry.get<STransformComponent>(CameraEntity);
         (void)CameraTransform.GetWorldMatrix();
 
-        const glm::quat CameraRotation = CameraTransform.GetWorldRotation();
         SCameraComponent& Camera = Registry.get<SCameraComponent>(CameraEntity);
-        Camera.SetView(
-            CameraTransform.GetWorldLocation(),
-            CameraRotation * glm::vec3(0.0f, 0.0f, 1.0f),
-            CameraRotation * glm::vec3(0.0f, 1.0f, 0.0f));
 
-        const glm::vec3 CameraWorldPos = CameraTransform.GetWorldLocation();
+        // Live pose of the active camera; the blend (if any) eases toward this.
+        const glm::vec3 TargetPosition = CameraTransform.GetWorldLocation();
+        const glm::quat TargetRotation = CameraTransform.GetWorldRotation();
+        const float     TargetFOV      = Camera.FOV;
+
+        const glm::vec3 CameraWorldPos = TargetPosition;
         SPostProcessSettings ResolvedPostProcess = Camera.PostProcess;
 
         struct FVolumeContribution { float Weight; const SPostProcessSettings* Settings; int32 Priority; };
@@ -158,9 +171,47 @@ namespace Lumina
             }
         }
 
-        Resolved.ViewVolume = Camera.GetViewVolume();
-        Resolved.PostProcess = ResolvedPostProcess;
-        Resolved.bHasView = true;
+        // Drive the camera-to-camera blend: ease from the snapshot toward the live target.
+        CameraManager->TickBlend((float)Context.GetDeltaTime());
+
+        glm::vec3            FinalPosition    = TargetPosition;
+        glm::quat            FinalRotation    = TargetRotation;
+        float                FinalFOV         = TargetFOV;
+        SPostProcessSettings FinalPostProcess = ResolvedPostProcess;
+
+        if (CameraManager->IsBlending())
+        {
+            const FCameraManager::FBlendState& B = CameraManager->GetBlend();
+            const float Alpha = EvaluateCameraBlend(B.Function, B.Duration > 0.0f ? B.Elapsed / B.Duration : 1.0f);
+
+            glm::quat To = TargetRotation;
+            if (glm::dot(B.FromRotation, To) < 0.0f)
+            {
+                To = -To; // Shortest-arc slerp.
+            }
+
+            FinalPosition = glm::mix(B.FromPosition, TargetPosition, Alpha);
+            FinalRotation = glm::slerp(B.FromRotation, To, Alpha);
+            FinalFOV      = glm::mix(B.FromFOV, TargetFOV, Alpha);
+
+            FinalPostProcess = B.FromPostProcess;
+            BlendPostProcessSettings(FinalPostProcess, ResolvedPostProcess, Alpha);
+        }
+
+        // Bake the resolved view into the camera component so consumers reading its
+        // matrices directly (editor gizmo, CPU picking) match the rendered view.
+        // SetResolvedView leaves the authored FOV property intact for the blend target.
+        Camera.SetResolvedView(
+            FinalPosition,
+            FinalRotation * glm::vec3(0.0f, 0.0f, 1.0f),
+            FinalRotation * glm::vec3(0.0f, 1.0f, 0.0f),
+            FinalFOV);
+
+        Resolved.ViewVolume      = Camera.GetViewVolume();
+        Resolved.PostProcess     = FinalPostProcess;
+        Resolved.bHasView        = true;
         Resolved.bHasPostProcess = true;
+
+        CameraManager->StoreResolvedView(FinalPosition, FinalRotation, FinalFOV, FinalPostProcess);
     }
 }

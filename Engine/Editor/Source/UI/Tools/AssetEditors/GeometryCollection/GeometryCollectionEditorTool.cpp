@@ -137,10 +137,13 @@ namespace Lumina
                 continue;
             }
 
-            const glm::vec3 Delta = Collection->GetPiece(i).Center - Center;
+            // Piece meshes are recentered to their centroid in BuildPieceMesh, so place each
+            // entity at its centroid to reassemble the source mesh; explode pushes outward from there.
+            const glm::vec3 PieceCenter = Collection->GetPiece(i).Center;
+            const glm::vec3 Delta = PieceCenter - Center;
             const float Length = glm::length(Delta);
             const glm::vec3 Offset = (Length > 1e-4f ? Delta / Length : glm::vec3(0.0f)) * ExplodeAmount;
-            World->GetEntityRegistry().get<STransformComponent>(Entity).SetLocation(Offset);
+            World->GetEntityRegistry().get<STransformComponent>(Entity).SetLocation(PieceCenter + Offset);
         }
     }
 

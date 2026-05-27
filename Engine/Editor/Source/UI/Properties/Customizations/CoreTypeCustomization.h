@@ -25,18 +25,13 @@ namespace Lumina
             return MakeShared<FNumericPropertyCustomization>();
         }
         
-        EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override
         {
             FProperty* Prop = Property->Property;
             float Speed = Prop->HasMetadata("Delta") ? std::stof(Prop->GetMetadata("Delta").c_str()) : (IsFloatType(DT) ? 0.01f : 1.0f);
-
-            // ImGui::DragScalar reads sizeof(T) bytes from Min/Max as the
-            // property's actual type. Passing &float when T is int32 makes
-            // ImGui reinterpret the float bit pattern as an int, which is
-            // why drags on int properties used to snap to ~1e9 (the
-            // bit-pattern of float(3.0) is 0x40400000 = 1077936128).
-            std::optional<ValueType> MinOpt;
-            std::optional<ValueType> MaxOpt;
+            
+            TOptional<ValueType> MinOpt;
+            TOptional<ValueType> MaxOpt;
 
             if (Prop->HasMetadata("ClampMin"))
             {
@@ -71,16 +66,16 @@ namespace Lumina
             return Result;
         }
         
-        void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override
         {
             CachedValue = DisplayValue;
-            Property->Property->SetValue(Property->ContainerPtr, CachedValue, Property->Index);
+            Property->SetValue(CachedValue);
         }
 
-        void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override
         {
             ValueType ActualValue;
-            Property->Property->GetValue(Property->ContainerPtr, &ActualValue, Property->Index);
+            Property->GetValue(&ActualValue);
         
             if (!Math::IsNearlyEqual(CachedValue, ActualValue, LE_SMALL_NUMBER))
             {
@@ -102,7 +97,7 @@ namespace Lumina
             return MakeShared<FBoolPropertyCustomization>();
         }
         
-        EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override
         {
             ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
             ImGui::Checkbox("##", &bValue);
@@ -125,14 +120,14 @@ namespace Lumina
             return Result;
         }
         
-        void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override
         {
-            Property->Property->SetValue(Property->ContainerPtr, bValue, Property->Index);
+            Property->SetValue(bValue);
         }
 
-        void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override
         {
-            Property->Property->GetValue(Property->ContainerPtr, &bValue, Property->Index);
+            Property->GetValue(&bValue);
         }
 
         bool bValue;
@@ -147,11 +142,11 @@ namespace Lumina
             return MakeShared<FCObjectPropertyCustomization>();
         }
         
-        EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override;
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
         
-        void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
 
-        void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
 
     private:
 
@@ -173,9 +168,9 @@ namespace Lumina
             return MakeShared<FEnumPropertyCustomization>();
         }
 
-        EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override;
-        void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override;
-        void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override;
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
 
     private:
 
@@ -191,9 +186,9 @@ namespace Lumina
             return MakeShared<FNamePropertyCustomization>();
         }
 
-        EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override;
-        void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override;
-        void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override;
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
 
     private:
 
@@ -211,9 +206,9 @@ namespace Lumina
             return MakeShared<FStringPropertyCustomization>();
         }
 
-        EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override;
-        void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override;
-        void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override;
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
 
     private:
 
@@ -230,9 +225,9 @@ namespace Lumina
             return MakeShared<FVec2PropertyCustomization>();
         }
 
-        EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override;
-        void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override;
-        void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override;
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
 
     private:
 
@@ -249,9 +244,9 @@ namespace Lumina
             return MakeShared<FVec3PropertyCustomization>();
         }
 
-        EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override;
-        void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override;
-        void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override;
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
 
     private:
         
@@ -268,9 +263,9 @@ namespace Lumina
             return MakeShared<FVec4PropertyCustomization>();
         }
 
-        EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override;
-        void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override;
-        void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override;
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
 
     private:
 
@@ -287,9 +282,9 @@ namespace Lumina
             return MakeShared<FQuatPropertyCustomization>();
         }
 
-        EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override;
-        void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override;
-        void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override;
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
 
     private:
 
@@ -306,9 +301,9 @@ namespace Lumina
             return MakeShared<FTransformPropertyCustomization>();
         }
 
-        EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override;
-        void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override;
-        void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override;
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
 
         FTransform CachedValue{};
         FTransform DisplayValue{};

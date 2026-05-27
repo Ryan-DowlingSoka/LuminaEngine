@@ -10,11 +10,29 @@
 namespace Lumina
 {
     class CMaterialInterface;
+
+    /**
+     * Interpolation curve used when blending the active camera from one view to
+     * another (see FCameraManager::SetActiveCamera). Evaluated by
+     * EvaluateCameraBlend, which maps a normalized [0..1] time onto [0..1].
+     */
+    REFLECT()
+    enum class ECameraBlendFunction : uint8
+    {
+        Linear      = 0, // Constant velocity.
+        EaseIn      = 1, // Quadratic; starts slow.
+        EaseOut     = 2, // Quadratic; ends slow.
+        EaseInOut   = 3, // Smoothstep; slow at both ends. The cinematic default.
+    };
+
+    /** Maps normalized blend time [0..1] through Function to an eased [0..1] alpha. */
+    RUNTIME_API float EvaluateCameraBlend(ECameraBlendFunction Function, float Alpha);
+
     REFLECT(Component, Category = "Camera")
     struct RUNTIME_API SCameraComponent
     {
         GENERATED_BODY()
-        
+
         SCameraComponent(float fov = 90.0f, float aspect = 16.0f / 9.0f)
             :ViewVolume(fov, aspect)
         {}
@@ -23,9 +41,21 @@ namespace Lumina
         {
             ViewVolume.SetView(Position, ViewDirection, UpDirection);
         }
-        
+
+        // Bake the resolved (possibly blended) view into the view volume without
+        // writing the authored FOV property. Consumers that read the component's
+        // matrices directly (editor gizmo, CPU picking) then match the rendered
+        // view, while FOV stays the blend target. Called by SCameraSystem.
+        void SetResolvedView(const glm::vec3& Position, const glm::vec3& ViewDirection, const glm::vec3& UpDirection, float InFOV)
+        {
+            ViewVolume.SetFOV(InFOV);
+            ViewVolume.SetView(Position, ViewDirection, UpDirection);
+        }
+
+        FUNCTION(Script)
         void SetFOV(float NewFOV)
         {
+            FOV = NewFOV;
             ViewVolume.SetFOV(NewFOV);
         }
         
@@ -39,6 +69,7 @@ namespace Lumina
             ViewVolume.SetViewPosition(NewPosition);
         }
 
+        FUNCTION(Script)
         float GetFOV() const { return ViewVolume.GetFOV(); }
         float GetAspectRatio() const { return ViewVolume.GetAspectRatio(); }
         const glm::mat4& GetViewMatrix() const { return ViewVolume.GetViewMatrix(); }
@@ -67,7 +98,7 @@ namespace Lumina
          *  this from the active camera each frame and applies it during the
          *  final composite pass. Defaults give an identity grade with AGX
          *  tone mapping. */
-        PROPERTY(Editable, Category = "Camera")
+        PROPERTY(Editable, Category = "Camera", DefaultCollapsed)
         SPostProcessSettings PostProcess;
 
         /** Post-process materials applied in order after tone mapping.

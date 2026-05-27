@@ -528,6 +528,16 @@ namespace Lumina
             && Nodes[Handle.Index].bAlive;
     }
 
+    FTreeNodeID FTreeListView::GetParentNode(FTreeNodeID Handle) const
+    {
+        if (!IsValid(Handle))
+        {
+            return InvalidTreeNode;
+        }
+        const int32 ParentIdx = Nodes[Handle.Index].ParentIdx;
+        return ParentIdx >= 0 ? FTreeNodeID{ParentIdx} : InvalidTreeNode;
+    }
+
     void FTreeListView::SetSelection(FTreeNodeID Item, const FTreeListViewContext& Context, bool bShouldClear)
     {
         // true = plain-click (replace); false = Ctrl-click (toggle). Single-select consumers ignore bShouldClear.

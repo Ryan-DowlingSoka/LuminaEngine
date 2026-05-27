@@ -6,7 +6,7 @@
 
 namespace Lumina
 {
-    EPropertyChangeOp FEnumPropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
+    EPropertyChangeOp FEnumPropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         FEnumProperty* EnumProperty = static_cast<FEnumProperty*>(Property->Property);
         bool bWasChanged = false;
@@ -86,8 +86,10 @@ namespace Lumina
             }
 
             const FFixedString Preview = Enum->GetNameAtValue(CachedValue).c_str();
-            const int32 Picked = ImGuiX::SearchableCombo("##enum", Preview.c_str(), (int32)EnumCount, CurrentIndex,
-                [Enum](int32 Index) { return FFixedString(Enum->GetNameAtIndex(Index).c_str()); }, LE_ICON_RHOMBUS_OUTLINE);
+            const int32 Picked = ImGuiX::SearchableCombo("##enum", Preview.c_str(), (int32)EnumCount, CurrentIndex, [Enum](int32 Index)
+            {
+                return FFixedString(Enum->GetNameAtIndex(Index).c_str());
+            }, LE_ICON_RHOMBUS_OUTLINE);
 
             if (Picked != INDEX_NONE)
             {
@@ -101,15 +103,15 @@ namespace Lumina
         return bWasChanged ? EPropertyChangeOp::Updated : EPropertyChangeOp::None;
     }
 
-    void FEnumPropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
+    void FEnumPropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
         FEnumProperty* EnumProperty = static_cast<FEnumProperty*>(Property->Property);
-        EnumProperty->GetInnerProperty()->SetIntPropertyValue(Property->Property->GetValuePtr<void>(Property->ContainerPtr), CachedValue);
+        EnumProperty->GetInnerProperty()->SetIntPropertyValue(Property->GetValuePtr(), CachedValue);
     }
 
-    void FEnumPropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
+    void FEnumPropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
         FEnumProperty* EnumProperty = static_cast<FEnumProperty*>(Property->Property);
-        CachedValue = EnumProperty->GetInnerProperty()->GetSignedIntPropertyValue(Property->Property->GetValuePtr<void>(Property->ContainerPtr));
+        CachedValue = EnumProperty->GetInnerProperty()->GetSignedIntPropertyValue(Property->GetValuePtr());
     }
 }

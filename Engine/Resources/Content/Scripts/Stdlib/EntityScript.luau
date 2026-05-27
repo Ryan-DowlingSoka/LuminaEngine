@@ -386,6 +386,28 @@ function EntityScript:SetLocation(Location)        self.Transform:SetLocation(Lo
 function EntityScript:SetRotation(Rotation)        self.Transform:SetRotation(Rotation)               end
 function EntityScript:SetRotationFromEuler(Euler)  self.Transform:SetRotationFromEuler(Euler)         end
 
+-- ---- Camera --------------------------------------------------------------
+-- Make this entity's camera the active view. BlendTime > 0 eases from the
+-- current camera over that many seconds; Ease defaults to EaseInOut. Use the
+-- Camera.Ease.* constants (Linear, EaseIn, EaseOut, EaseInOut).
+function EntityScript:SetActiveCamera(BlendTime, Ease)
+    Camera.SetActive(self.Entity, BlendTime or 0.0, Ease or Camera.Ease.EaseInOut)
+end
+
+-- Point this entity's follow / spring-arm rig at a target entity. No-op if the
+-- entity has neither rig component.
+function EntityScript:SetCameraTarget(Target)
+    local Follow = self:GetComponent(SCameraFollowComponent)
+    if Follow then
+        Follow:SetTarget(Target)
+        return
+    end
+    local Arm = self:GetComponent(SSpringArmComponent)
+    if Arm then
+        Arm:SetTarget(Target)
+    end
+end
+
 -- ---- Tweens --------------------------------------------------------------
 -- Per-script tween scheduler. Lazily allocated on first use; advanced via
 -- a chained zero-second timer that auto-stops when the queue empties.

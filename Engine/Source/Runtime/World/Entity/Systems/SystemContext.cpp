@@ -56,6 +56,11 @@ namespace Lumina
     {
         World->PhysicsScene->ChangeBodyMotionType(BodyID, NewType);
     }
+
+    uint32 FSystemContext::GetEntityBodyID(entt::entity Entity) const
+    {
+        return World->PhysicsScene ? World->PhysicsScene->GetEntityBodyID(Entity) : ~0u;
+    }
     
 
     TVector<SRayResult> FSystemContext::CastSphere(const SSphereCastSettings& Settings) const

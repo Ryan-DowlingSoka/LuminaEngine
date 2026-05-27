@@ -1,7 +1,5 @@
 #include "ReflectedArrayProperty.h"
 
-#include <cstdio>
-
 #include "Reflector/CodeGeneration/CodeWriter.h"
 #include "Reflector/Types/ReflectedType.h"
 
@@ -68,64 +66,62 @@ namespace Lumina
         FReflectedProperty::DefineAccessors(Writer, ReflectedType);
 
         const eastl::string& Q = ReflectedType->QualifiedName;
-        const eastl::string& D = ReflectedType->DisplayName;
         const char* N = Name.c_str();
+        const char* Raw = RawTypeName.c_str();      // The container type, e.g. TVector<T>.
+        const char* Elem = ElementTypeName.c_str(); // The element type T.
+
+        // Object is the container instance itself (&TVector<T>), not the owning struct.
+        // The caller resolves the member offset via GetValuePtr, so arrays compose.
 
         // Getter (exposes the raw vector pointer for debug / inspection).
         Writer.Linef("void %s::%sArrayGetter_WrapperImpl(const void* Object, void* OutValue)", Q.c_str(), N);
         Writer.BeginBlock();
-        Writer.Linef("const %s* Obj = (const %s*)Object;", D.c_str(), D.c_str());
-        Writer.Linef("*(const %s**)OutValue = &Obj->%s;", RawTypeName.c_str(), N);
+        Writer.Linef("*(const %s**)OutValue = (const %s*)Object;", Raw, Raw);
         Writer.EndBlock();
         Writer.Line();
 
         // PushBack: copy-emplace when given a value, default-construct when null.
         Writer.Linef("void %s::%sArrayPushBack_WrapperImpl(void* Object, const void* InValue)", Q.c_str(), N);
         Writer.BeginBlock();
-        Writer.Linef("%s* Obj = (%s*)Object;", D.c_str(), D.c_str());
+        Writer.Linef("%s* Vec = (%s*)Object;", Raw, Raw);
         Writer.Line("if (InValue)");
         Writer.BeginBlock();
-        Writer.Linef("Obj->%s.push_back(*(const %s*)InValue);", N, ElementTypeName.c_str());
+        Writer.Linef("Vec->push_back(*(const %s*)InValue);", Elem);
         Writer.EndBlock();
         Writer.Line("else");
         Writer.BeginBlock();
-        Writer.Linef("Obj->%s.emplace_back();", N);
+        Writer.Line("Vec->emplace_back();");
         Writer.EndBlock();
         Writer.EndBlock();
         Writer.Line();
 
-        // Single-line wrappers: (ReturnType, function-name-suffix + signature, body printf).
-        // Body gets Name printf'd in up to twice.
+        // Single-line wrappers: (ReturnType, function-name-suffix + signature, const-Object, body).
         struct FSimple
         {
             const char* Return;
-            const char* Suffix;    // "ArrayGetNum_WrapperImpl(const void* Object)"
+            const char* Suffix;
             bool        bConstObj;
-            const char* BodyFmt;
+            const char* Body;
         };
         const FSimple Simples[] =
         {
-            { "size_t", "ArrayGetNum_WrapperImpl(const void* Object)",                  true,  "return Obj->%s.size();" },
-            { "void",   "ArrayRemoveAt_WrapperImpl(void* Object, size_t Index)",        false, "Obj->%s.erase(Obj->%s.begin() + Index);" },
-            { "void",   "ArrayClear_WrapperImpl(void* Object)",                         false, "Obj->%s.clear();" },
-            { "void*",  "ArrayGetAt_WrapperImpl(void* Object, size_t Index)",           false, "return &Obj->%s[Index];" },
-            { "void",   "ArrayResize_WrapperImpl(void* Object, size_t Size)",           false, "Obj->%s.resize(Size);" },
-            { "void",   "ArrayReserve_WrapperImpl(void* Object, size_t Size)",          false, "Obj->%s.reserve(Size);" },
-            { "void",   "ArraySwap_WrapperImpl(void* Object, size_t RHS, size_t LHS)",  false, "std::swap(Obj->%s[RHS], Obj->%s[LHS]);" },
+            { "size_t", "ArrayGetNum_WrapperImpl(const void* Object)",                  true,  "return Vec->size();" },
+            { "void",   "ArrayRemoveAt_WrapperImpl(void* Object, size_t Index)",        false, "Vec->erase(Vec->begin() + Index);" },
+            { "void",   "ArrayClear_WrapperImpl(void* Object)",                         false, "Vec->clear();" },
+            { "void*",  "ArrayGetAt_WrapperImpl(void* Object, size_t Index)",           false, "return &(*Vec)[Index];" },
+            { "void",   "ArrayResize_WrapperImpl(void* Object, size_t Size)",           false, "Vec->resize(Size);" },
+            { "void",   "ArrayReserve_WrapperImpl(void* Object, size_t Size)",          false, "Vec->reserve(Size);" },
+            { "void",   "ArraySwap_WrapperImpl(void* Object, size_t LHS, size_t RHS)",  false, "std::swap((*Vec)[LHS], (*Vec)[RHS]);" },
         };
 
         for (const FSimple& S : Simples)
         {
             Writer.Linef("%s %s::%s%s", S.Return, Q.c_str(), N, S.Suffix);
             Writer.BeginBlock();
-            Writer.Linef("%s%s* Obj = (%s%s*)Object;",
-                S.bConstObj ? "const " : "", D.c_str(),
-                S.bConstObj ? "const " : "", D.c_str());
-
-            char Formatted[256];
-            std::snprintf(Formatted, sizeof(Formatted), S.BodyFmt, N, N);
-            Writer.Line(Formatted);
-
+            Writer.Linef("%s%s* Vec = (%s%s*)Object;",
+                S.bConstObj ? "const " : "", Raw,
+                S.bConstObj ? "const " : "", Raw);
+            Writer.Line(S.Body);
             Writer.EndBlock();
             Writer.Line();
         }

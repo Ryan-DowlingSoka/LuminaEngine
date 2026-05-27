@@ -9,6 +9,7 @@
 #include "Assets/AssetTypes/GeometryCollection/GeometryCollection.h"
 #include "Assets/AssetTypes/Material/MaterialInterface.h"
 #include "Assets/AssetTypes/Prefabs/Prefab.h"
+#include "Core/Console/ConsoleVariable.h"
 #include "Core/Object/Cast.h"
 #include "Core/Object/Package/Package.h"
 #include "Audio/AudioGlobals.h"
@@ -376,16 +377,33 @@ namespace Lumina
             Lua::FRef CameraTable = GlobalRef.NewTable("Camera");
             CameraTable.Push();
 
+            // Camera.SetActive(entity [, blendTime [, easeFn]]) -- blendTime 0 snaps.
             lua_pushcfunction(VM, +[](lua_State* L) -> int
             {
                 CWorld* World = LuaBinds::CurrentWorld(L);
                 const entt::entity E = lua_isnumber(L, 1)
                     ? static_cast<entt::entity>(static_cast<uint32>(lua_tointeger(L, 1)))
                     : entt::null;
-                if (World) World->SetActiveCamera(E);
+                const float Blend = static_cast<float>(luaL_optnumber(L, 2, 0.0));
+                const auto  Fn    = static_cast<ECameraBlendFunction>(static_cast<uint8>(luaL_optinteger(L, 3, static_cast<int>(ECameraBlendFunction::EaseInOut))));
+                if (World) World->SetActiveCamera(E, Blend, Fn);
                 return 0;
             }, "Camera.SetActive");
             lua_rawsetfield(VM, -2, "SetActive");
+
+            // Camera.BlendTo(entity, blendTime [, easeFn]) -- reads like the cinematic call.
+            lua_pushcfunction(VM, +[](lua_State* L) -> int
+            {
+                CWorld* World = LuaBinds::CurrentWorld(L);
+                const entt::entity E = lua_isnumber(L, 1)
+                    ? static_cast<entt::entity>(static_cast<uint32>(lua_tointeger(L, 1)))
+                    : entt::null;
+                const float Blend = static_cast<float>(luaL_optnumber(L, 2, 0.0));
+                const auto  Fn    = static_cast<ECameraBlendFunction>(static_cast<uint8>(luaL_optinteger(L, 3, static_cast<int>(ECameraBlendFunction::EaseInOut))));
+                if (World) World->SetActiveCamera(E, Blend, Fn);
+                return 0;
+            }, "Camera.BlendTo");
+            lua_rawsetfield(VM, -2, "BlendTo");
 
             lua_pushcfunction(VM, +[](lua_State* L) -> int
             {
@@ -395,6 +413,15 @@ namespace Lumina
                 return 1;
             }, "Camera.GetActive");
             lua_rawsetfield(VM, -2, "GetActive");
+
+            // Camera.Ease.{Linear,EaseIn,EaseOut,EaseInOut} -- pass as the easeFn arg.
+            lua_newtable(VM);
+            lua_pushinteger(VM, static_cast<int>(ECameraBlendFunction::Linear));    lua_rawsetfield(VM, -2, "Linear");
+            lua_pushinteger(VM, static_cast<int>(ECameraBlendFunction::EaseIn));     lua_rawsetfield(VM, -2, "EaseIn");
+            lua_pushinteger(VM, static_cast<int>(ECameraBlendFunction::EaseOut));    lua_rawsetfield(VM, -2, "EaseOut");
+            lua_pushinteger(VM, static_cast<int>(ECameraBlendFunction::EaseInOut));  lua_rawsetfield(VM, -2, "EaseInOut");
+            lua_rawsetfield(VM, -2, "Ease");
+
             lua_pop(VM, 1);
 
             Lua::FRef WorldTable = GlobalRef.NewTable("World");
@@ -1017,10 +1044,8 @@ namespace Lumina
             return false;
         }
 
-        const FTransform OwnerTransform = EntityRegistry.get<STransformComponent>(Entity).GetWorldTransform();
-        const glm::vec3 OwnerScale = OwnerTransform.Scale;
-
-        // Inherit the intact body's linear velocity so fragments keep the object's momentum.
+        FTransform OwnerTransform = EntityRegistry.get<STransformComponent>(Entity).GetWorldTransform();
+        
         glm::vec3 InheritedVelocity(0.0f);
         if (PhysicsScene)
         {
@@ -1028,10 +1053,14 @@ namespace Lumina
             {
                 if (RB->BodyID != 0xFFFFFFFFu)
                 {
-                    InheritedVelocity = PhysicsScene->GetLinearVelocity(RB->BodyID);
+                    OwnerTransform.Location = PhysicsScene->GetBodyPosition(RB->BodyID);
+                    OwnerTransform.Rotation = PhysicsScene->GetBodyRotation(RB->BodyID);
+                    InheritedVelocity       = PhysicsScene->GetLinearVelocity(RB->BodyID);
                 }
             }
         }
+
+        const glm::vec3 OwnerScale = OwnerTransform.Scale;
 
         const float LaunchSpeed = Strength > 0.0f ? Strength : Destructible->ExplosionStrength;
         const float SpinSpeed   = Destructible->SpinStrength;
@@ -1093,6 +1122,39 @@ namespace Lumina
 
         const TVector<FFracturePiece>& Pieces = CollectionData ? CollectionData->Pieces : GeneratedPieces;
 
+        // Create every fragment body in one batch (AddBodiesPrepare/Finalize) rather than a separate
+        // AddBody per piece. BodyIDs are only valid after EndBodyBatch, so collect the launch impulses
+        // and apply them once the batch has been inserted.
+        struct FPendingLaunch { entt::entity Fragment; glm::vec3 Center; uint32 Seed; };
+        TVector<FPendingLaunch> PendingLaunches;
+        PendingLaunches.reserve(Pieces.size());
+
+        // Cap fragments at the physics body headroom. Spawning past Jolt's body buffer (or piling so
+        // many shards that the contact/pair buffers overflow) trips a hard update assert, so clamp and
+        // warn instead of crashing. Raise World Settings > Physics > Max* for denser destruction.
+        uint32 MaxFragments = 0xFFFFFFFFu;
+        if (PhysicsScene)
+        {
+            const uint32 MaxBodies = PhysicsScene->GetMaxBodyCount();
+            const uint32 Used      = glm::min(PhysicsScene->GetBodyCount(), MaxBodies);
+            const uint32 Headroom  = MaxBodies - Used;
+            MaxFragments = Headroom > 16 ? Headroom - 16 : 0;
+
+            const uint32 Desired = Pieces.empty()
+                ? (uint32)glm::clamp(Destructible->FragmentCount, 2, 512)
+                : (uint32)Pieces.size();
+            if (Desired > MaxFragments)
+            {
+                LOG_WARN("FractureEntity: clamped {} fragments to {} (physics body headroom {}/{}). Raise World Settings > Physics > MaxPhysicsBodies.",
+                    Desired, MaxFragments, Used, MaxBodies);
+            }
+        }
+
+        if (PhysicsScene)
+        {
+            PhysicsScene->BeginBodyBatch();
+        }
+
         if (!Pieces.empty())
         {
             const TVector<TObjectPtr<CMaterialInterface>>& PieceMaterials =
@@ -1100,33 +1162,50 @@ namespace Lumina
                     ? Destructible->Collection->Materials
                     : SourceMesh->Materials;
 
-            for (const FFracturePiece& Piece : Pieces)
+            // Pre-baked collections cache their piece meshes (built at load), so gameplay fracture
+            // does no meshlet build or GPU upload per piece. The on-the-fly Voronoi path has no
+            // cache, so it builds each piece mesh inline.
+            const TVector<TObjectPtr<CStaticMesh>>* CachedMeshes =
+                CollectionData ? &Destructible->Collection->GetPieceMeshes() : nullptr;
+
+            for (size_t PieceIndex = 0; PieceIndex < Pieces.size() && (uint32)Spawned < MaxFragments; ++PieceIndex)
             {
-                CStaticMesh* PieceMesh = Fracture::BuildPieceMesh(Piece, PieceMaterials, "GCPiece");
+                const FFracturePiece& Piece = Pieces[PieceIndex];
+
+                CStaticMesh* PieceMesh = CachedMeshes
+                    ? (PieceIndex < CachedMeshes->size() ? (*CachedMeshes)[PieceIndex].Get() : nullptr)
+                    : Fracture::BuildPieceMesh(Piece, PieceMaterials, "GCPiece");
                 if (PieceMesh == nullptr)
                 {
                     continue;
                 }
 
-                // Pieces live in the source mesh's local space, so each fragment shares the owner's
-                // world transform and reconstructs the object exactly until physics pulls it apart.
-                const entt::entity Fragment = ConstructEntity("Fragment", OwnerTransform);
+                // BuildPieceMesh recenters the geometry to the piece centroid, so each fragment's
+                // origin sits on its own chunk (natural pivot + physics center of mass). Place the
+                // entity at the centroid's world position so the pieces reconstruct the object at t=0.
+                const glm::vec3 WorldCenter = OwnerTransform.Location + OwnerTransform.Rotation * (OwnerTransform.Scale * Piece.Center);
+                FTransform PieceTransform;
+                PieceTransform.Location = WorldCenter;
+                PieceTransform.Rotation = OwnerTransform.Rotation;
+                PieceTransform.Scale    = OwnerTransform.Scale;
+
+                const entt::entity Fragment = ConstructEntity("Fragment", PieceTransform);
                 EntityRegistry.emplace_or_replace<FNeedsTransformUpdate>(Fragment);
 
                 EntityRegistry.emplace<SStaticMeshComponent>(Fragment).StaticMesh = PieceMesh;
 
-                // Mesh colliders don't auto-add a body: emplace the collider first, then the rigid
-                // body, so its on_construct builds the convex Jolt body synchronously with a valid id.
-                SMeshColliderComponent& Collider = EntityRegistry.emplace<SMeshColliderComponent>(Fragment);
-                Collider.Mesh    = PieceMesh;
-                Collider.bConvex = true;
-                EntityRegistry.emplace<SRigidBodyComponent>(Fragment);
+                // The collider's on_construct auto-adds the rigid body and builds the Jolt shape
+                // synchronously, so Mesh + bConvex must be set before insertion -- otherwise the
+                // body is built from the default (non-convex) settings and forced Static.
+                SMeshColliderComponent ColliderDesc;
+                ColliderDesc.Mesh    = PieceMesh;
+                ColliderDesc.bConvex = true;
+                EntityRegistry.emplace<SMeshColliderComponent>(Fragment, std::move(ColliderDesc));
 
                 EntityRegistry.emplace<SLifetimeComponent>(Fragment).Lifetime = Destructible->FragmentLifetime;
                 EntityRegistry.emplace<SFragmentComponent>(Fragment).Source   = entt::to_integral(Entity);
-
-                const glm::vec3 WorldCenter = OwnerTransform.Location + OwnerTransform.Rotation * (OwnerTransform.Scale * Piece.Center);
-                LaunchBody(EntityRegistry.get<SRigidBodyComponent>(Fragment).BodyID, WorldCenter, entt::to_integral(Fragment) + static_cast<uint32>(Spawned));
+                
+                PendingLaunches.push_back({ Fragment, WorldCenter, entt::to_integral(Fragment) + static_cast<uint32>(Spawned) });
 
                 ++Spawned;
             }
@@ -1144,9 +1223,9 @@ namespace Lumina
             const glm::vec3 ColliderHalf = LocalExtent * 0.5f;
             CStaticMesh* GridMesh = Destructible->FragmentMesh.Get() ? Destructible->FragmentMesh.Get() : SourceMesh;
 
-            for (int32 zi = 0; zi < Dims && Spawned < Target; ++zi)
-            for (int32 yi = 0; yi < Dims && Spawned < Target; ++yi)
-            for (int32 xi = 0; xi < Dims && Spawned < Target; ++xi)
+            for (int32 zi = 0; zi < Dims && Spawned < Target && (uint32)Spawned < MaxFragments; ++zi)
+            for (int32 yi = 0; yi < Dims && Spawned < Target && (uint32)Spawned < MaxFragments; ++yi)
+            for (int32 xi = 0; xi < Dims && Spawned < Target && (uint32)Spawned < MaxFragments; ++xi)
             {
                 const glm::vec3 CellLocalCenter = LocalBounds.Min + (glm::vec3(xi, yi, zi) + 0.5f) * LocalCell;
                 const glm::vec3 CellWorldCenter = OwnerTransform.Location + OwnerTransform.Rotation * (OwnerScale * CellLocalCenter);
@@ -1166,16 +1245,29 @@ namespace Lumina
                     FragmentMeshComp.MaterialOverrides = MeshComp->MaterialOverrides;
                 }
 
-                // Box collider auto-emplaces a Dynamic rigid body, built synchronously off the physics thread.
-                EntityRegistry.emplace<SBoxColliderComponent>(Fragment).HalfExtent = ColliderHalf;
+                // Box collider auto-emplaces a Dynamic rigid body, built synchronously from these
+                // settings the instant the component is inserted, so set HalfExtent up front.
+                SBoxColliderComponent BoxDesc;
+                BoxDesc.HalfExtent = ColliderHalf;
+                EntityRegistry.emplace<SBoxColliderComponent>(Fragment, std::move(BoxDesc));
 
                 EntityRegistry.emplace<SLifetimeComponent>(Fragment).Lifetime = Destructible->FragmentLifetime;
                 EntityRegistry.emplace<SFragmentComponent>(Fragment).Source   = entt::to_integral(Entity);
 
-                LaunchBody(EntityRegistry.get<SRigidBodyComponent>(Fragment).BodyID, CellWorldCenter, entt::to_integral(Fragment) + static_cast<uint32>(Spawned));
+                PendingLaunches.push_back({ Fragment, CellWorldCenter, entt::to_integral(Fragment) + static_cast<uint32>(Spawned) });
 
                 ++Spawned;
             }
+        }
+
+        // Insert all the queued bodies at once, then apply the launch impulses now that BodyIDs exist.
+        if (PhysicsScene)
+        {
+            PhysicsScene->EndBodyBatch();
+        }
+        for (const FPendingLaunch& Launch : PendingLaunches)
+        {
+            LaunchBody(EntityRegistry.get<SRigidBodyComponent>(Launch.Fragment).BodyID, Launch.Center, Launch.Seed);
         }
 
         Destructible->bFractured = true;
@@ -1357,6 +1449,11 @@ namespace Lumina
 
     void CWorld::SetActiveCamera(entt::entity InEntity) const
     {
+        SetActiveCamera(InEntity, 0.0f);
+    }
+
+    void CWorld::SetActiveCamera(entt::entity InEntity, float BlendTime, ECameraBlendFunction Function) const
+    {
         if (!EntityRegistry.valid(InEntity))
         {
             return;
@@ -1364,7 +1461,7 @@ namespace Lumina
 
         if (EntityRegistry.all_of<SCameraComponent>(InEntity))
         {
-            CameraManager->SetActiveCamera(InEntity);
+            CameraManager->SetActiveCamera(InEntity, BlendTime, Function);
         }
     }
 

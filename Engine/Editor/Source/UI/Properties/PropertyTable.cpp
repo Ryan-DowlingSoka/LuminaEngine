@@ -421,7 +421,7 @@ namespace Lumina
     {
         FArrayPropertyRow* ArrayRow = static_cast<FArrayPropertyRow*>(ParentRow);
         FArrayProperty* ArrayProperty = ArrayRow->ArrayProperty;
-        void* ContainerPtr = ArrayRow->GetPropertyHandle()->ContainerPtr;
+        void* ContainerPtr = ArrayRow->GetPropertyHandle()->GetValuePtr();
         const size_t ArrayNum = ArrayProperty->GetNum(ContainerPtr);
         const int64 Index = PropertyHandle->Index;
         const bool bAllowResize = ArrayRow->AllowResize();
@@ -512,7 +512,7 @@ namespace Lumina
         ImGui::Dummy(ImVec2(Offset, 0));
         ImGui::SameLine();
 
-        const size_t ElementCount = ArrayProperty->GetNum(GetPropertyHandle()->ContainerPtr);
+        const size_t ElementCount = ArrayProperty->GetNum(GetPropertyHandle()->GetValuePtr());
 
         ImGui::SetNextItemOpen(bExpanded);
         ImGui::PushStyleColor(ImGuiCol_Header, 0);
@@ -527,7 +527,7 @@ namespace Lumina
 
     void FArrayPropertyRow::DrawEditor(bool bReadOnly)
     {
-        const size_t ElementCount = ArrayProperty->GetNum(GetPropertyHandle()->ContainerPtr);
+        const size_t ElementCount = ArrayProperty->GetNum(GetPropertyHandle()->GetValuePtr());
         ImGui::TextColored(ImVec4(0.24f, 0.24f, 0.24f, 1.0f), "%llu Elements", static_cast<unsigned long long>(ElementCount));
     }
 
@@ -609,13 +609,9 @@ namespace Lumina
     {
         DestroyChildren();
 
-        void* ContainerPtr = GetPropertyHandle()->ContainerPtr;
-        void* DefaultContainerPtr = GetPropertyHandle()->DefaultContainerPtr;
+        void* ContainerPtr = GetPropertyHandle()->GetValuePtr();
+        void* DefaultContainerPtr = GetPropertyHandle()->GetDefaultValuePtr();
         const size_t ElementCount = ArrayProperty->GetNum(ContainerPtr);
-
-        // Indices past default array end are treated as always-modified; element pointer used directly as container (Offset=0).
-        const size_t DefaultElementCount = DefaultContainerPtr != nullptr
-            ? ArrayProperty->GetNum(DefaultContainerPtr) : 0;
 
         // Reset the truncation override whenever the array shape changes, so a
         // resize or clear does not leave a stale "show all" flag in place.
@@ -625,12 +621,13 @@ namespace Lumina
         FProperty* InnerProperty = ArrayProperty->GetInternalProperty();
         for (size_t i = 0; i < ElementCount; ++i)
         {
-            void* DefaultElementPtr = (i < DefaultElementCount)
-                ? ArrayProperty->GetAt(DefaultContainerPtr, i) : nullptr;
-
+            // Element handle stores the array instance + index; it resolves the live element
+            // address on each access, so a mid-edit reallocation can't leave a dangling pointer.
+            // Indices past the default array's end resolve to a null default (treated as modified).
             TSharedPtr<FPropertyHandle> ElementPropHandle = MakeShared<FPropertyHandle>(
-                ArrayProperty->GetAt(ContainerPtr, i),
-                DefaultElementPtr,
+                ArrayProperty,
+                ContainerPtr,
+                DefaultContainerPtr,
                 InnerProperty,
                 static_cast<int64>(i));
             TUniquePtr<FPropertyRow> NewRow = CreatePropertyRow(ElementPropHandle, this, Callbacks);
@@ -664,7 +661,7 @@ namespace Lumina
     void FArrayPropertyRow::DrawExtraControlsSection()
     {
         FArrayProperty* LocalArrayProperty = ArrayProperty;
-        void* LocalContainerPtr = PropertyHandle->ContainerPtr;
+        void* LocalContainerPtr = PropertyHandle->GetValuePtr();
 
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 4));
         if (ImGuiX::FlatButton(LE_ICON_PLUS, ImVec2(18, 24), ArrayControlSeed))
@@ -702,6 +699,11 @@ namespace Lumina
     {
         FPropertyCustomizationRegistry* Registry = GEngine->GetDevelopmentToolsUI()->GetPropertyCustomizationRegistry();
         Customization = Registry->GetPropertyCustomizationForType(StructProperty->GetStruct()->GetName());
+        
+        if (StructProperty->HasMetadata("DefaultCollapsed"))
+        {
+            bExpanded = false;
+        }
 
         if (!Customization)
         {
@@ -724,7 +726,7 @@ namespace Lumina
         ImGui::PushStyleColor(ImGuiCol_Header, 0);
         ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0);
         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0);
-        bExpanded = ImGui::CollapsingHeader(StructProperty->GetPropertyDisplayName().c_str(), ImGuiTreeNodeFlags_Leaf);
+        bExpanded = ImGui::CollapsingHeader(StructProperty->GetPropertyDisplayName().c_str());
         ImGui::PopStyleColor(3);
 
         DrawPropertyTooltip(StructProperty);
@@ -758,12 +760,8 @@ namespace Lumina
 
     void FStructPropertyRow::RebuildChildren()
     {
-        void* InstancePtr = PropertyHandle->Property->GetValuePtr<void>(PropertyHandle->ContainerPtr);
-        void* DefaultInstancePtr = nullptr;
-        if (PropertyHandle->DefaultContainerPtr != nullptr)
-        {
-            DefaultInstancePtr = PropertyHandle->Property->GetValuePtr<void>(PropertyHandle->DefaultContainerPtr);
-        }
+        void* InstancePtr = PropertyHandle->GetValuePtr();
+        void* DefaultInstancePtr = PropertyHandle->GetDefaultValuePtr();
         PropertyTable = MakeUnique<FPropertyTable>(InstancePtr, StructProperty->GetStruct(), DefaultInstancePtr);
         PropertyTable->RebuildTree();
     }
@@ -772,7 +770,7 @@ namespace Lumina
         : FPropertyRow(InPropHandle, InParentRow, InCallbacks)
         , OptionalProperty(static_cast<FOptionalProperty*>(InPropHandle->Property))
     {
-        bWasEngaged = OptionalProperty->HasValue(GetPropertyHandle()->ContainerPtr);
+        bWasEngaged = OptionalProperty->HasValue(GetPropertyHandle()->GetValuePtr());
         RebuildChildren();
     }
 
@@ -780,7 +778,7 @@ namespace Lumina
     {
         // Detect external mutations of the engaged state (e.g. gameplay code or
         // an undo) and rebuild the child tree to match before drawing.
-        const bool bEngagedNow = OptionalProperty->HasValue(GetPropertyHandle()->ContainerPtr);
+        const bool bEngagedNow = OptionalProperty->HasValue(GetPropertyHandle()->GetValuePtr());
         if (bEngagedNow != bWasEngaged)
         {
             bWasEngaged = bEngagedNow;
@@ -801,7 +799,7 @@ namespace Lumina
 
     void FOptionalPropertyRow::DrawEditor(bool bReadOnly)
     {
-        void* ContainerPtr = GetPropertyHandle()->ContainerPtr;
+        void* ContainerPtr = GetPropertyHandle()->GetValuePtr();
         bool bEngaged = OptionalProperty->HasValue(ContainerPtr);
 
         ImGui::BeginDisabled(bReadOnly || IsReadOnly());
@@ -843,7 +841,7 @@ namespace Lumina
 
     void FOptionalPropertyRow::OnValueResetToDefault()
     {
-        bWasEngaged = OptionalProperty->HasValue(GetPropertyHandle()->ContainerPtr);
+        bWasEngaged = OptionalProperty->HasValue(GetPropertyHandle()->GetValuePtr());
         RebuildChildren();
     }
 
@@ -851,8 +849,8 @@ namespace Lumina
     {
         DestroyChildren();
 
-        void* ContainerPtr = GetPropertyHandle()->ContainerPtr;
-        void* DefaultContainerPtr = GetPropertyHandle()->DefaultContainerPtr;
+        void* ContainerPtr = GetPropertyHandle()->GetValuePtr();
+        void* DefaultContainerPtr = GetPropertyHandle()->GetDefaultValuePtr();
         if (!OptionalProperty->HasValue(ContainerPtr))
         {
             return;
@@ -870,8 +868,7 @@ namespace Lumina
         {
             DefaultPayload = OptionalProperty->GetValue(DefaultContainerPtr);
         }
-        TSharedPtr<FPropertyHandle> InnerHandle = MakeShared<FPropertyHandle>(
-            OptionalProperty->GetValue(ContainerPtr), DefaultPayload, Inner);
+        TSharedPtr<FPropertyHandle> InnerHandle = MakeShared<FPropertyHandle>(OptionalProperty->GetValue(ContainerPtr), DefaultPayload, Inner);
         Children.push_back(CreatePropertyRow(InnerHandle, this, Callbacks));
     }
 
@@ -890,10 +887,6 @@ namespace Lumina
 
     FCategoryPropertyRow* FCategoryPropertyRow::FindOrCreateChildCategory(const FName& InCategory)
     {
-        // First look for an already-created sub-category row so multiple
-        // properties sharing the same `Outer|Inner` prefix coalesce into a
-        // single child row. We walk Children directly because their order
-        // is the draw order and we want a stable layout.
         for (const TUniquePtr<FPropertyRow>& Child : Children)
         {
             if (Child->IsCategory())
@@ -942,10 +935,6 @@ namespace Lumina
         , Object(InObject)
     {
         ChangeEventCallbacks.Type = InType;
-        // Auto-resolve a default-instance for diff/reset. Works uniformly for
-        // CObject classes (returns CDO) and plain reflected structs (returns
-        // a lazily allocated default-constructed mirror). InObject == default
-        // would compare to itself, so skip in that case.
         if (InType != nullptr && InObject != nullptr)
         {
             void* MaybeDefault = InType->GetDefaultInstance();
@@ -1004,12 +993,7 @@ namespace Lumina
                 {
                     CategoryPath = Current->Metadata.GetMetadata("Category");
                 }
-
-                // Split the metadata path on '|' so `Foo|Bar|Baz` walks
-                // through Foo -> Bar -> Baz as nested category rows. The
-                // leaf row owns the property; intermediate rows are reused
-                // across properties that share the prefix so we don't
-                // duplicate headers.
+                
                 FCategoryPropertyRow* TargetRow = nullptr;
                 size_t SegmentStart = 0;
                 while (SegmentStart <= CategoryPath.length())
@@ -1034,9 +1018,7 @@ namespace Lumina
                     }
                     SegmentStart = Sep + 1;
                 }
-
-                // Empty / pathological "|" or "||" -- fall back to General so
-                // the property still has a home.
+                
                 if (TargetRow == nullptr)
                 {
                     TargetRow = FindOrCreateCategoryRow(FName("General"));
@@ -1079,9 +1061,6 @@ namespace Lumina
             const EPropertyChangeOp ChangeOp = Customization->UpdateAndDraw(PropertyHandle, bReadOnly);
             if (ChangeOp != EPropertyChangeOp::None)
             {
-                // Mirror FPropertyRow::DispatchChange: customizations may defer their
-                // mutation into UpdatePropertyValue and drive a Started/Finished cycle,
-                // so the whole sequence has to be replayed here, not just Updated.
                 const FPropertyChangedEvent Event{Struct, PropertyHandle->Property,
                     PropertyHandle->Property ? PropertyHandle->Property->Name : FName()};
 
@@ -1120,11 +1099,7 @@ namespace Lumina
         ImGui::PushStyleColor(ImGuiCol_TableRowBg, IM_COL32(30, 30, 32, 255));
         ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt, IM_COL32(34, 34, 36, 255));
         ImGui::PushID(this);
-
-        // Size the header column to fit the widest visible label so short
-        // property names don't waste space and force the editor cell to be
-        // cramped. Recomputed every frame so changes in expansion state
-        // (collapsing a category, opening a struct) tighten or widen as needed.
+        
         float HeaderColumnWidth = 0.0f;
         for (auto& [Name, Row] : CategoryMap)
         {

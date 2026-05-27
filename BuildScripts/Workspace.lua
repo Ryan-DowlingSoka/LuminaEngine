@@ -42,7 +42,7 @@ function LuminaWorkspaceSettings(Opts)
         platforms { "Editor", "Game" }
         defaultplatform "Editor"
 
-        filter "configurations:Debug"
+        filter "configurations:Debug or Development"
             defines
             {
                 "JPH_FLOATING_POINT_EXCEPTIONS_ENABLED",

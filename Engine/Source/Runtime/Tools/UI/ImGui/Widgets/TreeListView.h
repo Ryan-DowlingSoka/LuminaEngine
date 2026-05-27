@@ -134,6 +134,9 @@ namespace Lumina
         NODISCARD bool IsValid(FTreeNodeID Handle) const;
         NODISCARD int32 NumNodes() const { return AliveCount; }
 
+        // Parent node of Handle, or InvalidTreeNode if it's a root or invalid.
+        NODISCARD FTreeNodeID GetParentNode(FTreeNodeID Handle) const;
+
         // -- Per-node component access --
         // Get<FTreeNodeState>, Get<FTreeNodeDisplay>, or Get<UserDataT> (the type previously
         // installed via EmplaceUserData on this node).

@@ -17,6 +17,7 @@ namespace Lumina
 {
 	struct SImpulseEvent;
 	class CWorld;
+	class CMesh;
 }
 
 namespace Lumina::Physics
@@ -178,7 +179,13 @@ namespace Lumina::Physics
     	glm::vec3 GetCenterOfMass(uint32 BodyID) override;
     	glm::vec3 GetBodyPosition(uint32 BodyID) override;
     	glm::quat GetBodyRotation(uint32 BodyID) override;
-    	
+
+    	uint32 GetBodyCount() override;
+    	uint32 GetMaxBodyCount() override;
+
+    	void BeginBodyBatch() override;
+    	void EndBodyBatch() override;
+
     	JPH::PhysicsSystem* GetPhysicsSystem() const { return JoltSystem.get(); }
     	
     	void EnqueueContactRecord(const FContactRecord& Record);
@@ -189,6 +196,11 @@ namespace Lumina::Physics
     	JPH::ShapeRefC GetOrCreateSphereShape(float Radius);
     	JPH::ShapeRefC GetOrCreateBoxShape(const glm::vec3& HalfExtent);
 
+    	// Mesh-collider (convex hull / triangle mesh) shape, cached by mesh + scale + convexity so
+    	// fracture shards built from the same shared piece meshes reuse one hull instead of each
+    	// re-running QuickHull. Builds outside the lock so parallel distinct-mesh builds don't serialize.
+    	JPH::ShapeRefC GetOrCreateMeshShape(const CMesh* Mesh, const glm::vec3& Scale, bool bConvex);
+
     private:
     	
     	void DispatchContactEvents();
@@ -196,6 +208,10 @@ namespace Lumina::Physics
     	void SnapshotBodyStates();
     	
     	void BulkCreateRigidBodies(entt::registry& Registry);
+
+    	// Build the given entities' bodies in parallel, then insert them all with a single
+    	// AddBodiesPrepare/Finalize. Game-thread only (outside JoltSystem->Update()).
+    	void CreateRigidBodiesBatched(const TVector<entt::entity>& Entities);
 
     	// Build + add a single body to Jolt. Must run on the physics thread,
     	// outside JoltSystem->Update(). The on_construct hook only enqueues;
@@ -233,8 +249,41 @@ namespace Lumina::Physics
     	FMutex												ShapeCacheMutex;
     	THashMap<FShapeKey, JPH::ShapeRefC, FShapeKeyHash>	ShapeCache;
 
+    	// Mesh-collider shape cache, keyed by mesh pointer + scale + convexity. Pointer-keyed: valid
+    	// because piece meshes outlive their bodies; cleared with the (per-world) scene on teardown.
+    	struct FMeshShapeKey
+    	{
+    		const void*	Mesh;
+    		float		SX, SY, SZ;
+    		uint8		Convex;
+    		bool operator==(const FMeshShapeKey& Other) const
+    		{
+    			return Mesh == Other.Mesh && SX == Other.SX && SY == Other.SY && SZ == Other.SZ && Convex == Other.Convex;
+    		}
+    	};
+    	struct FMeshShapeKeyHash
+    	{
+    		size_t operator()(const FMeshShapeKey& Key) const
+    		{
+    			size_t Hash = 1469598103934665603ull;
+    			auto Mix = [&Hash](uint64 Value) { Hash = (Hash ^ Value) * 1099511628211ull; };
+    			Mix(reinterpret_cast<uint64>(Key.Mesh));
+    			auto MixF = [&](float Value) { uint32 Bits; std::memcpy(&Bits, &Value, sizeof(Bits)); Mix(Bits); };
+    			MixF(Key.SX); MixF(Key.SY); MixF(Key.SZ);
+    			Mix(Key.Convex);
+    			return Hash;
+    		}
+    	};
+    	FMutex													MeshShapeCacheMutex;
+    	THashMap<FMeshShapeKey, JPH::ShapeRefC, FMeshShapeKeyHash>	MeshShapeCache;
+
     	FMutex										PendingRigidBodyMutex;
     	TQueue<entt::entity>						PendingRigidBodyCreations;
+
+    	// When set (between BeginBodyBatch/EndBodyBatch on the game thread), rigid-body
+    	// constructions are collected here and created together instead of one at a time.
+    	bool										bBatchingBodies = false;
+    	TVector<entt::entity>						BatchedBodyCreations;
     	// Malloc-fallback variant: a modest base buffer covers typical steps with no per-frame
     	// allocation; a heavy frame that exceeds it falls back to malloc (correct, just slower)
     	// instead of forcing a giant always-reserved buffer per scene.

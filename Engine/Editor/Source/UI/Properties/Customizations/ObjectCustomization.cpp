@@ -27,7 +27,7 @@ namespace Lumina
 {
     static constexpr ImVec2 GButtonSize(42, 0);
 
-    EPropertyChangeOp FCObjectPropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
+    EPropertyChangeOp FCObjectPropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         FObjectProperty* ObjectProperty = static_cast<FObjectProperty*>(Property->Property);
         
@@ -249,16 +249,16 @@ namespace Lumina
         return EPropertyChangeOp::None;
     }
 
-    void FCObjectPropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
+    void FCObjectPropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
         TObjectPtr<CObject> Value = Object.Lock();
-        Property->Property->SetValue(Property->ContainerPtr, Value, 0);
+        Property->SetValue(Value);
     }
 
-    void FCObjectPropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
+    void FCObjectPropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
         TObjectPtr<CObject> Value;
-        Property->Property->GetValue(Property->ContainerPtr, &Value, 0);
+        Property->GetValue(&Value);
         Object = Value;
     }
 }

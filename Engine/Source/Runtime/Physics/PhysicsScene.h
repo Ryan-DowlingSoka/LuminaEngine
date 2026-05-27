@@ -50,5 +50,18 @@ namespace Lumina::Physics
         // STransformComponent is the lagged display value.
         virtual glm::vec3 GetBodyPosition(uint32 BodyID) = 0;
         virtual glm::quat GetBodyRotation(uint32 BodyID) = 0;
+
+        /** Current live body count and the configured ceiling. Lets bulk spawners (fracture) clamp to capacity instead of overflowing Jolt's body buffer. */
+        virtual uint32 GetBodyCount() = 0;
+        virtual uint32 GetMaxBodyCount() = 0;
+
+        /**
+         * Batch body creation. Between Begin/End, rigid-body constructions (e.g. collider
+         * on_construct during a fracture) are queued instead of created immediately; End builds
+         * them all and inserts them with one AddBodiesPrepare/Finalize instead of N individual
+         * AddBody calls. Game-thread only; must be balanced. BodyIDs are valid after EndBodyBatch.
+         */
+        virtual void BeginBodyBatch() = 0;
+        virtual void EndBodyBatch() = 0;
     };
 }

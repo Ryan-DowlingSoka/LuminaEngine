@@ -37,21 +37,39 @@ namespace Lumina
         }
     }
 
-    EPropertyChangeOp FEntityPropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
+    FEntityPropertyCustomization::~FEntityPropertyCustomization()
+    {
+        if (IsEntityPickActiveFor(reinterpret_cast<uint64>(this)))
+        {
+            CancelEntityPick();
+        }
+    }
+
+    EPropertyChangeOp FEntityPropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         CWorld* World = GetEntityPropertyContextWorld();
-
-        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
 
         // No world to resolve against (e.g. an asset editor); show the raw id, read-only.
         if (World == nullptr)
         {
+            ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
             int Value = static_cast<int>(CachedValue);
             ImGui::BeginDisabled(true);
             ImGui::InputInt("##entity", &Value, 0, 0, ImGuiInputTextFlags_ReadOnly);
             ImGui::EndDisabled();
             ImGui::PopItemWidth();
             return EPropertyChangeOp::None;
+        }
+
+        const uint64 Token = reinterpret_cast<uint64>(this);
+        bool bChanged = false;
+
+        // Apply an entity clicked in the viewport since last frame (eyedropper result).
+        uint32 PickedEntity = 0;
+        if (ConsumeEntityPickResult(Token, PickedEntity))
+        {
+            CachedValue = PickedEntity;
+            bChanged = true;
         }
 
         FEntityRegistry& Registry = World->GetEntityRegistry();
@@ -75,6 +93,11 @@ namespace Lumina
 
         const FFixedString Preview = bHasCurrent ? MakeEntityLabel(Registry, CurrentEntity) : FFixedString("None");
 
+        // Leave room on the right for the square eyedropper button.
+        const float LineHeight = ImGui::GetFrameHeight();
+        const float Spacing    = ImGui::GetStyle().ItemInnerSpacing.x;
+        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - LineHeight - Spacing);
+
         const int32 Picked = ImGuiX::SearchableCombo("##entity", Preview.c_str(), static_cast<int32>(Candidates.size()), CurrentIndex,
             [&Registry, &Candidates](int32 Index) -> FFixedString
             {
@@ -90,19 +113,39 @@ namespace Lumina
         if (Picked != INDEX_NONE)
         {
             CachedValue = (Picked == 0) ? GNoneEntityId : static_cast<uint32>(entt::to_integral(Candidates[Picked]));
-            return EPropertyChangeOp::Updated;
+            bChanged = true;
         }
 
-        return EPropertyChangeOp::None;
+        // Eyedropper: arm a viewport pick; click again (or Esc in the viewport) to cancel.
+        ImGui::SameLine(0.0f, Spacing);
+        const bool bPicking = IsEntityPickActiveFor(Token);
+        if (bPicking)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        }
+        if (ImGui::Button(LE_ICON_EYEDROPPER "##pickentity", ImVec2(LineHeight, LineHeight)))
+        {
+            bPicking ? CancelEntityPick() : RequestEntityPick(Token);
+        }
+        if (bPicking)
+        {
+            ImGui::PopStyleColor();
+        }
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(bPicking ? "Click an entity in the viewport (Esc to cancel)" : "Pick an entity from the viewport");
+        }
+
+        return bChanged ? EPropertyChangeOp::Updated : EPropertyChangeOp::None;
     }
 
-    void FEntityPropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
+    void FEntityPropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
-        Property->Property->SetValue(Property->ContainerPtr, CachedValue, Property->Index);
+        Property->SetValue(CachedValue);
     }
 
-    void FEntityPropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
+    void FEntityPropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
-        Property->Property->GetValue(Property->ContainerPtr, &CachedValue, Property->Index);
+        Property->GetValue(&CachedValue);
     }
 }

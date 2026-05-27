@@ -18,9 +18,13 @@ namespace Lumina
             return MakeShared<FEntityPropertyCustomization>();
         }
 
-        EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override;
-        void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override;
-        void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override;
+        // Cancels an in-flight eyedropper pick if this picker is torn down mid-pick
+        // (e.g. the details panel rebuilds), so the viewport doesn't stay in pick mode.
+        ~FEntityPropertyCustomization();
+
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
 
     private:
 

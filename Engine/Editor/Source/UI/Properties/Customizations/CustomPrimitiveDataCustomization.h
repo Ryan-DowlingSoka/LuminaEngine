@@ -13,11 +13,11 @@ namespace Lumina
 
         static TSharedPtr<FCustomPrimDataPropertyCustomization> MakeInstance();
         
-        EPropertyChangeOp DrawProperty(TSharedPtr<FPropertyHandle> Property) override;
+        EPropertyChangeOp DrawProperty(const TSharedPtr<FPropertyHandle>& Property) override;
         
-        void UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property) override;
+        void UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property) override;
 
-        void HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property) override;
+        void HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property) override;
 
         SCustomPrimitiveData Value;
         ImGuiTextFilter SearchFilter;

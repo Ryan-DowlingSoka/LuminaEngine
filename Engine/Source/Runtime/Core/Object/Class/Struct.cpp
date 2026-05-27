@@ -167,8 +167,8 @@ namespace Lumina
             
                 PropertyTag.Offset = AfterTagPosition;
                 
-                void* ValuePtr = Current->IsA(EPropertyTypeFlags::Vector) ? Data : Current->GetValuePtr<void>(Data);
-                
+                void* ValuePtr = Current->GetValuePtr<void>(Data);
+
                 Current->Serialize(Ar, ValuePtr);
 
                 int64 DataEndPosition = Ar.Tell();
@@ -241,7 +241,7 @@ namespace Lumina
                     
                     if (FoundProperty->GetTypeName() == Tag.Type)
                     {
-                        void* ValuePtr = FoundProperty->IsA(EPropertyTypeFlags::Vector) ? Data : FoundProperty->GetValuePtr<void>(Data);
+                        void* ValuePtr = FoundProperty->GetValuePtr<void>(Data);
                         FoundProperty->Serialize(Ar, ValuePtr);
                     }
                     else if (IsPropertyNumeric(FoundProperty->GetTypeName()) && IsPropertyNumeric(Tag.Type))

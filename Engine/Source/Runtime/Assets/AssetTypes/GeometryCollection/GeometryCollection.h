@@ -72,9 +72,19 @@ namespace Lumina
         bool IsAsset() const override { return true; }
         void Serialize(FArchive& Ar) override;
 
+        /** Pre-build the shared piece meshes so the first runtime fracture doesn't hitch. */
+        void PostLoad() override;
+
         FORCEINLINE int32 GetNumPieces() const { return static_cast<int32>(Data.Pieces.size()); }
         FORCEINLINE const FFractureData& GetFractureData() const { return Data; }
         FORCEINLINE const FFracturePiece& GetPiece(int32 Index) const { return Data.Pieces[Index]; }
+
+        /**
+         * Render/collision-ready CStaticMesh for each piece, built once and shared across every
+         * fracture of this collection (built lazily here, or eagerly in PostLoad). Indices match
+         * GetFractureData().Pieces. Lets runtime fracture spawn fragments with zero mesh-build cost.
+         */
+        const TVector<TObjectPtr<CStaticMesh>>& GetPieceMeshes();
 
         /** Re-bake the pieces from SourceMesh using NumPieces/Seed and copy its materials. Returns the piece count. */
         int32 Rebuild();
@@ -100,7 +110,13 @@ namespace Lumina
 
     private:
 
+        /** Build PieceMeshes from Data.Pieces (no-op if already built). */
+        void BuildPieceMeshes();
+
         FFractureData Data;   // serialized geometry blob (not a reflected property)
+
+        /** Shared per-piece meshes, built once. Strong refs keep them alive; cleared on Rebuild. Not serialized. */
+        TVector<TObjectPtr<CStaticMesh>> PieceMeshes;
     };
 
     namespace Fracture

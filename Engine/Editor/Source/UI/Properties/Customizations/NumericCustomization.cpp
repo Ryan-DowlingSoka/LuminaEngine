@@ -13,7 +13,7 @@
 namespace Lumina
 {
 
-    EPropertyChangeOp FVec2PropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
+    EPropertyChangeOp FVec2PropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
         FStructProperty* Prop = static_cast<FStructProperty*>(Property->Property);
@@ -54,16 +54,16 @@ namespace Lumina
         return Result;
     }
 
-    void FVec2PropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
+    void FVec2PropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
         CachedValue = DisplayValue;
-        Property->Property->SetValue(Property->ContainerPtr, CachedValue, Property->Index);
+        Property->SetValue(CachedValue);
     }
 
-    void FVec2PropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
+    void FVec2PropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
         glm::vec2 ActualValue;
-        Property->Property->GetValue(Property->ContainerPtr, &ActualValue, Property->Index);
+        Property->GetValue(&ActualValue);
         
         if (CachedValue != ActualValue)
         {
@@ -71,7 +71,7 @@ namespace Lumina
         }
     }
 
-    EPropertyChangeOp FVec3PropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
+    EPropertyChangeOp FVec3PropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         FStructProperty* Prop = static_cast<FStructProperty*>(Property->Property);
 
@@ -121,16 +121,16 @@ namespace Lumina
         return Result;
     }
     
-    void FVec3PropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
+    void FVec3PropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
         CachedValue = DisplayValue;
-        Property->Property->SetValue(Property->ContainerPtr, CachedValue, Property->Index);
+        Property->SetValue(CachedValue);
     }
 
-    void FVec3PropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
+    void FVec3PropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
         glm::vec3 ActualValue;
-        Property->Property->GetValue(Property->ContainerPtr, &ActualValue, Property->Index);
+        Property->GetValue(&ActualValue);
         
         if (CachedValue != ActualValue)
         {
@@ -138,7 +138,7 @@ namespace Lumina
         }
     }
 
-    EPropertyChangeOp FVec4PropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
+    EPropertyChangeOp FVec4PropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         FStructProperty* Prop = static_cast<FStructProperty*>(Property->Property);
 
@@ -187,16 +187,16 @@ namespace Lumina
         return Result;
     }
 
-    void FVec4PropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
+    void FVec4PropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
         CachedValue = DisplayValue;
-        Property->Property->SetValue(Property->ContainerPtr, CachedValue, Property->Index);
+        Property->SetValue(CachedValue);
     }
 
-    void FVec4PropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
+    void FVec4PropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
         glm::vec4 ActualValue;
-        Property->Property->GetValue(Property->ContainerPtr, &ActualValue, Property->Index);
+        Property->GetValue(&ActualValue);
         
         if (CachedValue != ActualValue)
         {
@@ -204,7 +204,7 @@ namespace Lumina
         }
     }
 
-    EPropertyChangeOp FQuatPropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
+    EPropertyChangeOp FQuatPropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
 
@@ -229,16 +229,16 @@ namespace Lumina
         return Result;
     }
 
-    void FQuatPropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
+    void FQuatPropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
         CachedValue = DisplayValue;
-        Property->Property->SetValue(Property->ContainerPtr, CachedValue, Property->Index);
+        Property->SetValue(CachedValue);
     }
 
-    void FQuatPropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
+    void FQuatPropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
         glm::quat ActualValue;
-        Property->Property->GetValue(Property->ContainerPtr, &ActualValue, Property->Index);
+        Property->GetValue(&ActualValue);
         
         if (CachedValue != ActualValue)
         {
@@ -246,7 +246,7 @@ namespace Lumina
         }
     }
     
-    EPropertyChangeOp FTransformPropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
+    EPropertyChangeOp FTransformPropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         EPropertyChangeOp Result = EPropertyChangeOp::None;
         ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
@@ -323,16 +323,16 @@ namespace Lumina
         return Result;
     }
 
-    void FTransformPropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
+    void FTransformPropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
         CachedValue = DisplayValue;
-        Property->Property->SetValue(Property->ContainerPtr, CachedValue, Property->Index);
+        Property->SetValue(CachedValue);
     }
 
-    void FTransformPropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
+    void FTransformPropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
         FTransform ActualValue;
-        Property->Property->GetValue(Property->ContainerPtr, &ActualValue, Property->Index);
+        Property->GetValue(&ActualValue);
         
         if (CachedValue != ActualValue)
         {

@@ -4,6 +4,7 @@
 #include "imgui.h"
 #include "Core/Assertions/Assert.h"
 #include "Core/Reflection/Type/LuminaTypes.h"
+#include "Core/Reflection/Type/Properties/ArrayProperty.h"
 
 namespace Lumina
 {
@@ -22,22 +23,62 @@ namespace Lumina
     {
     }
 
+    FPropertyHandle::FPropertyHandle(FArrayProperty* InOwnerArray, void* InArrayPtr, void* InDefaultArrayPtr, FProperty* InElementProperty, int64 InIndex)
+        : ContainerPtr(InArrayPtr)
+        , DefaultContainerPtr(InDefaultArrayPtr)
+        , Property(InElementProperty)
+        , Index(InIndex)
+        , OwnerArray(InOwnerArray)
+    {
+    }
+
+    void* FPropertyHandle::GetValuePtr() const
+    {
+        if (ContainerPtr == nullptr || Property == nullptr)
+        {
+            return nullptr;
+        }
+        // Resolve the element fresh each call so a vector reallocation can't leave us with a stale pointer.
+        if (OwnerArray != nullptr)
+        {
+            return Index < (int64)OwnerArray->GetNum(ContainerPtr) ? OwnerArray->GetAt(ContainerPtr, (size_t)Index) : nullptr;
+        }
+        return Property->GetValuePtr<void>(ContainerPtr, Index);
+    }
+
+    void* FPropertyHandle::GetDefaultValuePtr() const
+    {
+        if (DefaultContainerPtr == nullptr || Property == nullptr)
+        {
+            return nullptr;
+        }
+        if (OwnerArray != nullptr)
+        {
+            return Index < (int64)OwnerArray->GetNum(DefaultContainerPtr) ? OwnerArray->GetAt(DefaultContainerPtr, (size_t)Index) : nullptr;
+        }
+        return Property->GetValuePtr<void>(DefaultContainerPtr, Index);
+    }
+
     bool FPropertyHandle::DiffersFromDefault() const
     {
-        if (ContainerPtr == nullptr || DefaultContainerPtr == nullptr || Property == nullptr)
+        const void* Value = GetValuePtr();
+        const void* Default = GetDefaultValuePtr();
+        if (Value == nullptr || Default == nullptr)
         {
             return false;
         }
-        return !Property->Identical_InContainer(ContainerPtr, DefaultContainerPtr, Index);
+        return !Property->Identical(Value, Default);
     }
 
     void FPropertyHandle::ResetToDefault()
     {
-        if (ContainerPtr == nullptr || DefaultContainerPtr == nullptr || Property == nullptr)
+        void* Value = GetValuePtr();
+        const void* Default = GetDefaultValuePtr();
+        if (Value == nullptr || Default == nullptr)
         {
             return;
         }
-        Property->CopyCompleteValue_InContainer(ContainerPtr, DefaultContainerPtr, Index);
+        Property->CopyCompleteValue(Value, Default);
     }
 
     EPropertyChangeOp IPropertyTypeCustomization::UpdateAndDraw(const TSharedPtr<FPropertyHandle>& Property, bool bReadOnly)

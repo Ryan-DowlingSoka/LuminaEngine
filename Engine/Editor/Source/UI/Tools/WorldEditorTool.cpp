@@ -1595,8 +1595,29 @@ namespace Lumina
             World->GetRenderer()->SetPickerCursor(TexX, TexY, true);
 
             bool bOverImGuizmo = bImGuizmoUsedOnce ? ImGuizmo::IsOver() : false;
-            
-            if (!bOverImGuizmo)
+
+            // Eyedropper: a details-panel entity-reference picker is waiting for a click.
+            // Intercept it here so the click assigns the reference instead of selecting.
+            if (IsEntityPickRequested())
+            {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                ImGui::SetTooltip(LE_ICON_EYEDROPPER " Click an entity to assign (Esc to cancel)");
+
+                if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+                {
+                    CancelEntityPick();
+                }
+                else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                {
+                    entt::entity Hit = World->GetRenderer()->GetEntityAtPixel(TexX, TexY);
+                    Hit = ResolveSelectionRootForViewportPick(World->GetEntityRegistry(), Hit);
+                    if (Hit != entt::null)
+                    {
+                        FulfillEntityPick(static_cast<uint32>(entt::to_integral(Hit)));
+                    }
+                }
+            }
+            else if (!bOverImGuizmo)
             {
                 ImVec2 LeftDragDelta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
                 float LeftDragDistance = sqrtf(LeftDragDelta.x * LeftDragDelta.x + LeftDragDelta.y * LeftDragDelta.y);
@@ -4713,9 +4734,41 @@ namespace Lumina
 
     void FWorldEditorTool::ReparentEntityInOutliner(entt::entity Entity)
     {
+        // Remember the old tree parent before the move; it may lose its last child here.
+        entt::entity OldParent = entt::null;
+        if (auto It = EntityToTreeNode.find(Entity); It != EntityToTreeNode.end())
+        {
+            FTreeNodeID ParentNode = OutlinerListView.GetParentNode(It->second);
+            if (ParentNode.IsValid())
+            {
+                OldParent = OutlinerListView.Get<FEntityListViewItemData>(ParentNode).Entity;
+            }
+        }
+
         // Drop and re-add the row; new parent's lazy children rebuild on next expand.
         RemoveEntityFromOutliner(Entity);
         AddEntityToOutliner(Entity);
+
+        // The old parent's expander is stale if that was its only child.
+        RefreshOutlinerExpander(OldParent);
+    }
+
+    void FWorldEditorTool::RefreshOutlinerExpander(entt::entity Entity)
+    {
+        if (Entity == entt::null)
+        {
+            return;
+        }
+        auto It = EntityToTreeNode.find(Entity);
+        if (It == EntityToTreeNode.end())
+        {
+            return;
+        }
+
+        FEntityRegistry& Registry = World->GetEntityRegistry();
+        const FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity);
+        const bool bHasChildren = Rel != nullptr && Rel->Children > 0;
+        OutlinerListView.MarkHasLazyChildren(It->second, bHasChildren);
     }
 
     void FWorldEditorTool::BuildEntityChildren(FTreeListView& Tree, FTreeNodeID Item)

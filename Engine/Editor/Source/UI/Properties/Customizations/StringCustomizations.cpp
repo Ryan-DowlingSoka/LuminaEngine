@@ -95,7 +95,7 @@ namespace Lumina
         }
     }
 
-    EPropertyChangeOp FNamePropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
+    EPropertyChangeOp FNamePropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         const bool bBonePicker = Property->Property->HasMetadata("BonePicker");
         const bool bParamPicker = Property->Property->HasMetadata("ParameterPicker");
@@ -237,16 +237,16 @@ namespace Lumina
         return Result;
     }
 
-    void FNamePropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
+    void FNamePropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
         CachedValue = DisplayValue;
-        Property->Property->SetValue(Property->ContainerPtr, CachedValue, Property->Index);
+        Property->SetValue(CachedValue);
     }
 
-    void FNamePropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
+    void FNamePropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
         FName ActualValue;
-        Property->Property->GetValue(Property->ContainerPtr, &ActualValue, Property->Index);
+        Property->GetValue(&ActualValue);
         
         if (CachedValue != ActualValue)
         {
@@ -254,7 +254,7 @@ namespace Lumina
         }
     }
 
-    EPropertyChangeOp FStringPropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
+    EPropertyChangeOp FStringPropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         // "FilePath" meta turns the field into an asset-path picker ("..." button, searchable).
         const bool bFilePath = Property->Property->HasMetadata("FilePath");
@@ -320,15 +320,15 @@ namespace Lumina
     }
 
     
-    void FStringPropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
+    void FStringPropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
-        Property->Property->SetValue(Property->ContainerPtr, DisplayValue, Property->Index);
+        Property->SetValue(DisplayValue);
     }
 
-    void FStringPropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
+    void FStringPropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
         FString ActualValue;
-        Property->Property->GetValue(Property->ContainerPtr, &ActualValue, Property->Index);
+        Property->GetValue(&ActualValue);
         
         DisplayValue = ActualValue;
     }

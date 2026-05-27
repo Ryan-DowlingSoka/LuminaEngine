@@ -261,7 +261,7 @@ namespace Lumina
         return MakeShared<FScriptComponentPropertyCustomization>();
     }
 
-    EPropertyChangeOp FScriptComponentPropertyCustomization::DrawProperty(TSharedPtr<FPropertyHandle> Property)
+    EPropertyChangeOp FScriptComponentPropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         bool bWasChanged = false;
 
@@ -513,7 +513,7 @@ namespace Lumina
         return EPropertyChangeOp::None;
     }
 
-    void FScriptComponentPropertyCustomization::UpdatePropertyValue(TSharedPtr<FPropertyHandle> Property)
+    void FScriptComponentPropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)
     {
         // Runs inside DispatchChange, after BeginTransaction — replay the deferred edit here so
         // the undo snapshot captured the pre-change state.
@@ -524,7 +524,7 @@ namespace Lumina
         }
     }
 
-    void FScriptComponentPropertyCustomization::HandleExternalUpdate(TSharedPtr<FPropertyHandle> Property)
+    void FScriptComponentPropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
 
     }
