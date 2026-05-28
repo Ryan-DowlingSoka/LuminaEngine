@@ -5,6 +5,8 @@
 #include <memory>
 #include <entt/entt.hpp>
 #include "Core/Templates/Optional.h"
+#include "Core/Object/Object.h"
+#include "Core/Object/ObjectHandleTyped.h"
 #include "UserDataHeader.h"
 #include "Containers/Array.h"
 #include "Containers/Function.h"
@@ -49,6 +51,20 @@ namespace Lumina::Lua
     template<> struct TLuaNativeType<glm::vec3>         : eastl::true_type {};
     template<> struct TLuaNativeType<glm::vec4>         : eastl::true_type {};
 
+    // Marks a function parameter as supplied by the Lua execution context (the lua_State* or
+    // something resolved from its thread data) rather than read positionally from the call's
+    // argument stack. The invoker fills these in automatically and does NOT advance the stack
+    // index for them, so a binding can declare e.g. `void Foo(CWorld*, float x)` and call it as
+    // `Foo(x)` from Lua. Specialize for a type and provide `static T Get(lua_State*)`.
+    template<typename T>
+    struct TLuaContext : eastl::false_type {};
+
+    template<>
+    struct TLuaContext<lua_State*> : eastl::true_type
+    {
+        static lua_State* Get(lua_State* State) { return State; }
+    };
+
     template<typename T>
     struct TStack {};
     
@@ -87,7 +103,9 @@ namespace Lumina::Lua
 
         static TOptional<T> Get(lua_State* State, int Index)
         {
-            if (lua_isnil(State, Index))
+            // None (argument omitted) as well as nil resolve to an empty optional, so a trailing
+            // optional parameter can simply be left off at the call site.
+            if (lua_isnoneornil(State, Index))
             {
                 return eastl::nullopt;
             }
@@ -96,7 +114,7 @@ namespace Lumina::Lua
 
         static bool Check(lua_State* State, int Index)
         {
-            return lua_isnil(State, Index) || TStack<T>::Check(State, Index);
+            return lua_isnoneornil(State, Index) || TStack<T>::Check(State, Index);
         }
     };
     
@@ -531,8 +549,22 @@ namespace Lumina::Lua
                 return;
             }
 
-            void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(RawT*), TClassTraits<RawT>::Tag());
-            *static_cast<RawT**>(Block) = Ptr;
+            if constexpr (eastl::is_base_of_v<CObject, RawT>)
+            {
+                // CObjects are owned by an embedded TObjectPtr: its ctor takes a strong GC ref and
+                // the type's userdata destructor runs ~TObjectPtr to release it -- ordinary C++
+                // lifetime, no bespoke ref bookkeeping. TObjectPtr is a single RawT* at offset 0, so
+                // the raw-pointer readers (Get/invokers/properties) recover the pointee unchanged.
+                static_assert(sizeof(TObjectPtr<RawT>) == sizeof(RawT*), "TObjectPtr must be pointer-sized for offset-0 recovery");
+                void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(TObjectPtr<RawT>), TClassTraits<RawT>::Tag());
+                new (Block) TObjectPtr<RawT>(Ptr);
+            }
+            else
+            {
+                // Non-owning raw pointer (engine-managed lifetime, e.g. component refs / subsystems).
+                void* Block = lua_newuserdatataggedwithmetatable(State, sizeof(RawT*), TClassTraits<RawT>::Tag());
+                *static_cast<RawT**>(Block) = Ptr;
+            }
         }
 
         static RawT* Get(lua_State* State, int Index)
@@ -542,7 +574,7 @@ namespace Lumina::Lua
             {
                 return nullptr;
             }
-            
+
             return Header->Underlying();
         }
 
@@ -552,6 +584,18 @@ namespace Lumina::Lua
         }
     };
     
+    // A strong handle marshals exactly like the object pointer it owns: the pushed userdata embeds
+    // its own TObjectPtr (one ref), and a C++ side reading it back gets a fresh owning handle.
+    template<typename T>
+    struct TStack<TObjectPtr<T>>
+    {
+        static FStringView TypeName(lua_State* State) { return lua_typename(State, LUA_TUSERDATA); }
+
+        static void Push(lua_State* State, const TObjectPtr<T>& Handle) { TStack<T*>::Push(State, Handle.Get()); }
+        static TObjectPtr<T> Get(lua_State* State, int Index)           { return TObjectPtr<T>(TStack<T*>::Get(State, Index)); }
+        static bool Check(lua_State* State, int Index)                  { return TStack<T*>::Check(State, Index); }
+    };
+
     template<>
     struct TStack<void*>
     {

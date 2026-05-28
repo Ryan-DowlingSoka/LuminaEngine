@@ -117,8 +117,11 @@ namespace Lumina::ImGuiX
     // A searchable single-select dropdown.
     RUNTIME_API int32 SearchableCombo(const char* StrId, const char* Preview, int32 ItemCount, int32 CurrentIndex, const TFunction<FFixedString(int32)>& GetItemLabel, const char* ItemIcon = nullptr);
 
-    RUNTIME_API void SameLineSeparator( float width = 0, const ImColor& color = ImColor(0));
-
+    // Searchable combo for picking an asset of (or deriving from) FilterClass from the asset
+    // registry. Shows the current selection, writes the chosen asset's GUID into InOutGUID and
+    // returns true when it changes. The one widget every "select an underlying asset" UI uses.
+    RUNTIME_API bool AssetReferenceCombo(const char* StrId, CClass* FilterClass, FGuid& InOutGUID, const char* ItemIcon = nullptr);
+    
     RUNTIME_API ImTextureRef ToImTextureRef(FRHIImage* Image);
     RUNTIME_API ImTextureRef ToImTextureRef(FStringView Path);
 

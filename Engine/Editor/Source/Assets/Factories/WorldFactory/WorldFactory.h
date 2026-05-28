@@ -13,6 +13,7 @@ namespace Lumina
     public:
 
         CClass* GetAssetClass() const override { return CWorld::StaticClass(); }
+        FString GetCategory() const override { return "World"; }
         FString GetAssetName() const override { return "World"; }
         FStringView GetDefaultAssetCreationName() override { return "NewWorld"; }
         

@@ -10,6 +10,7 @@
 #include "Physics/PhysicsScene.h"
 #include "Entity/Systems/SystemContext.h"
 #include "Scene/RenderScene/RenderScene.h"
+#include "Scene/RenderScene/TexturePaintTypes.h"
 #include "UI/WorldUIContext.h"
 #include "Subsystems/FCameraManager.h"
 #include "Subsystems/TimerManager.h"
@@ -30,6 +31,8 @@ namespace Lumina
     struct SDefaultWorldSettings;
     struct FLineBatcherComponent;
     struct FWorldContext;
+    class CTexture;
+    class CTextureRenderTarget;
     enum class ENetMode : uint8;
 }
 
@@ -230,6 +233,22 @@ namespace Lumina
         void DrawBillboard(FRHIImage* Image, const glm::vec3& Location, float Scale) override;
         void DrawLine(const glm::vec3& Start, const glm::vec3& End, const glm::vec4& Color, float Thickness = 1.0f, bool bDepthTest = true, float Duration = -1.0f) override;
         //~ End Debug Drawing
+
+        //~ Begin Render Target Painting
+        /**
+         * Stamp a soft radial brush of Color into Target at UV (0..1 in texture space). RadiusUV is
+         * relative to the target's longer side; Strength is the center opacity (0..1); Hardness > 1
+         * sharpens the falloff. Optional BrushMask is a grayscale coverage texture (white = full).
+         * Queued now, executed on the render thread next frame (TexturePaintPass).
+         */
+        void PaintRenderTarget(CTextureRenderTarget* Target, const glm::vec2& UV, float RadiusUV, const glm::vec4& Color, float Strength = 1.0f, float Hardness = 1.0f, CTexture* BrushMask = nullptr);
+
+        /** Clear an entire render target to Color (queued; executed on the render thread). */
+        void ClearRenderTarget(CTextureRenderTarget* Target, const glm::vec4& Color);
+
+        /** Render-scene Extract drains the queued paint/clear ops into the frame snapshot. */
+        void DrainRenderTargetPaints(TVector<FTexturePaintOp>& OutOps);
+        //~ End Render Target Painting
         
         FORCEINLINE bool IsGameWorld() const { return WorldType == EWorldType::Game; }
         
@@ -283,6 +302,9 @@ namespace Lumina
         FDelegateHandle                                     ScriptReloadedHandle;
 
         FLineBatcherComponent*                              LineBatcherComponent;
+
+        // Render-target paint/clear requests; drained each Extract into the frame snapshot.
+        TConcurrentQueue<FTexturePaintOp>                   RenderTargetPaintQueue;
 
         // World-scoped Lua bindings hoisted off the per-script setup path.
         // The DrawInterface table holds debug-draw functions captured against

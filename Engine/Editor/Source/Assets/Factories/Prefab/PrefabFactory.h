@@ -11,6 +11,7 @@ namespace Lumina
     public:
         
         CClass* GetAssetClass() const override;
+        FString GetCategory() const override { return "Gameplay"; }
         FString GetAssetName() const override { return "Prefab"; }
         FStringView GetDefaultAssetCreationName() override { return "NewPrefab"; }
         

@@ -18,5 +18,6 @@ namespace Lumina
         FStringView GetDefaultAssetCreationName() override { return "NewGeometryCollection"; }
         FString GetAssetDescription() const override { return "Pre-fractured geometry: a mesh broken into convex chunks a destructible shatters into. Open it and pick a source mesh to bake."; }
         CClass* GetAssetClass() const override { return CGeometryCollection::StaticClass(); }
+        FString GetCategory() const override { return "Mesh"; }
     };
 }

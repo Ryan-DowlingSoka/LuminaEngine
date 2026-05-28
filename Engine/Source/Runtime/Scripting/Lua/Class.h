@@ -290,17 +290,17 @@ namespace Lumina::Lua
         {
             FClassBuilder::Register(TClassTraits<ClassT>::Tag());
 
-            // CObject pushes are always external; POD structs use static type push instead.
+            // CObject pushes embed an owning TObjectPtr<ClassT> (one strong GC ref); the userdata
+            // destructor above runs ~TObjectPtr to release it. Pointer-sized, ClassT* at offset 0.
             if constexpr (eastl::is_base_of_v<CObject, ClassT>)
             {
-                // External-only layout: skip inline Buffer + Initialize, just write the pointer.
                 FUserdataLayout Layout;
                 Layout.Tag         = TClassTraits<ClassT>::Tag();
-                Layout.Size        = sizeof(ClassT*);
+                Layout.Size        = sizeof(TObjectPtr<ClassT>);
                 Layout.Initialize  = +[](void*) {};
                 Layout.SetExternal = +[](void* Block, void* Ptr)
                 {
-                    *static_cast<ClassT**>(Block) = static_cast<ClassT*>(Ptr);
+                    new (Block) TObjectPtr<ClassT>(static_cast<ClassT*>(Ptr));
                 };
                 RegisterCObjectLayout(ClassT::StaticClass(), Layout);
             }
@@ -326,7 +326,16 @@ namespace Lumina::Lua
 
         void InstallUserdataDestructor(int Tag) override
         {
-            if constexpr (!eastl::is_trivially_destructible_v<ClassT>)
+            if constexpr (eastl::is_base_of_v<CObject, ClassT>)
+            {
+                // CObject userdata embeds a TObjectPtr<ClassT>; running its destructor releases the
+                // strong GC ref it took on construction -- same lifetime path as any owning handle.
+                lua_setuserdatadtor(L, Tag, [](lua_State*, void* UD)
+                {
+                    static_cast<TObjectPtr<ClassT>*>(UD)->~TObjectPtr<ClassT>();
+                });
+            }
+            else if constexpr (!eastl::is_trivially_destructible_v<ClassT>)
             {
                 lua_setuserdatadtor(L, Tag, [](lua_State*, void* UD)
                 {

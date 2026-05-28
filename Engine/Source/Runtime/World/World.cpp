@@ -9,8 +9,10 @@
 #include "Assets/AssetTypes/GeometryCollection/GeometryCollection.h"
 #include "Assets/AssetTypes/Material/MaterialInterface.h"
 #include "Assets/AssetTypes/Prefabs/Prefab.h"
+#include "Assets/AssetTypes/Textures/TextureRenderTarget.h"
 #include "Core/Console/ConsoleVariable.h"
 #include "Core/Object/Cast.h"
+#include "Core/Object/ObjectCore.h"
 #include "Core/Object/Package/Package.h"
 #include "Audio/AudioGlobals.h"
 #include "Core/Delegates/CoreDelegates.h"
@@ -21,7 +23,9 @@
 #include "Core/Serialization/MemoryArchiver.h"
 #include "Core/Serialization/ObjectArchiver.h"
 #include "EASTL/sort.h"
+#include "Assets/AssetTypes/EntityComponent/EntityComponentType.h"
 #include "Entity/EntityUtils.h"
+#include "Entity/RuntimeComponent.h"
 #include "Entity/Components/CameraComponent.h"
 #include "Entity/Components/DestructibleComponent.h"
 #include "Entity/Components/DirtyComponent.h"
@@ -46,6 +50,7 @@
 #include "Renderer/RenderThread.h"
 #include "Scene/RenderScene/Forward/ForwardRenderScene.h"
 #include "Scripting/Lua/Scripting.h"
+#include "Scripting/Lua/Stack.h"
 #include "Scripting/Lua/VariadicArgs.h"
 #include "Scripting/Lua/Debugger/LuaDebugger.h"
 #include "Subsystems/FCameraManager.h"
@@ -53,6 +58,22 @@
 #include "UI/RmlUiBridge.h"
 #include "World/Entity/Components/RelationshipComponent.h"
 #include "World/entity/systems/EntitySystem.h"
+
+// Lets Lua bindings declare a leading CWorld* parameter that the invoker fills in from the
+// calling script's thread data, so World/Camera/etc. functions bind with SetFunction and need
+// no manual lua_State plumbing. Must precede RegisterLuaModule (its instantiation point).
+namespace Lumina::Lua
+{
+    template<>
+    struct TLuaContext<Lumina::CWorld*> : eastl::true_type
+    {
+        static Lumina::CWorld* Get(lua_State* L)
+        {
+            const auto* TD = static_cast<FScriptThreadData*>(lua_getthreaddata(L));
+            return TD ? TD->World : nullptr;
+        }
+    };
+}
 
 namespace Lumina
 {
@@ -63,33 +84,76 @@ namespace Lumina
         static bool HasComponent_Lua(FEntityRegistry& Registry, entt::entity Entity, Lua::FRef Ref)
         {
             LUMINA_PROFILE_SECTION("Has Component [Lua]");
-            entt::id_type Type = ECS::Utils::GetTypeID(eastl::move(Ref));
-            auto Meta = ECS::Utils::InvokeMetaFunc(Type, "has"_hs, entt::forward_as_meta(Registry), Entity);
-            return Meta.cast<bool>();
+            entt::id_type Type = ECS::Utils::GetTypeID(Ref);
+            if (entt::resolve(Type))
+            {
+                auto Meta = ECS::Utils::InvokeMetaFunc(Type, "has"_hs, entt::forward_as_meta(Registry), Entity);
+                return Meta.cast<bool>();
+            }
+            FRuntimeComponentStorage* Storage = ECS::Utils::FindRuntimeStorageById(Registry, Type);
+            return Storage != nullptr && Storage->contains(Entity);
         }
-        
+
         static Lua::FRef GetComponent_Lua(FEntityRegistry& Registry, entt::entity Entity, Lua::FRef Ref)
         {
             LUMINA_PROFILE_SECTION("Get Component [Lua]");
             entt::id_type Type = ECS::Utils::GetTypeID(Ref);
-            auto Meta = ECS::Utils::InvokeMetaFunc(Type, "get_lua"_hs, entt::forward_as_meta(Registry), Entity, entt::forward_as_meta(Ref));
-            return Meta.cast<Lua::FRef>();
+            if (entt::resolve(Type))
+            {
+                auto Meta = ECS::Utils::InvokeMetaFunc(Type, "get_lua"_hs, entt::forward_as_meta(Registry), Entity, entt::forward_as_meta(Ref));
+                return Meta.cast<Lua::FRef>();
+            }
+
+            // Runtime (data-authored) component: push the FProperty-backed proxy, or nil if absent.
+            lua_State* L = Ref.GetState();
+            if (ResolveRuntimeComponentType(Type) != nullptr)
+            {
+                FRuntimeComponentStorage* Storage = ECS::Utils::FindRuntimeStorageById(Registry, Type);
+                if (Storage != nullptr && Storage->contains(Entity))
+                {
+                    PushRuntimeComponent(L, &Registry, Entity, Type);
+                    return Lua::FRef(L, -1);
+                }
+            }
+            lua_pushnil(L);
+            return Lua::FRef(L, -1);
         }
-        
+
         static size_t RemoveComponent_Lua(FEntityRegistry& Registry, entt::entity Entity, Lua::FRef Ref)
         {
             LUMINA_PROFILE_SECTION("Remove Component [Lua]");
             entt::id_type Type = ECS::Utils::GetTypeID(Ref);
-            auto Meta = ECS::Utils::InvokeMetaFunc(Type, "remove"_hs, entt::forward_as_meta(Registry), Entity);
-            return Meta.cast<size_t>();
+            if (entt::resolve(Type))
+            {
+                auto Meta = ECS::Utils::InvokeMetaFunc(Type, "remove"_hs, entt::forward_as_meta(Registry), Entity);
+                return Meta.cast<size_t>();
+            }
+            if (CEntityComponentType* RuntimeType = ResolveRuntimeComponentType(Type))
+            {
+                return ECS::Utils::RemoveRuntimeComponent(Registry, Entity, RuntimeType) ? 1u : 0u;
+            }
+            return 0;
         }
-        
+
         static Lua::FRef EmplaceComponent_Lua(FEntityRegistry& Registry, entt::entity Entity, Lua::FRef Ref)
         {
             LUMINA_PROFILE_SECTION("Emplace Component [Lua]");
             entt::id_type Type = ECS::Utils::GetTypeID(Ref);
-            auto Meta = ECS::Utils::InvokeMetaFunc(Type, "emplace_lua"_hs, entt::forward_as_meta(Registry), Entity, entt::forward_as_meta(Ref));
-            return Meta.cast<Lua::FRef>();
+            if (entt::resolve(Type))
+            {
+                auto Meta = ECS::Utils::InvokeMetaFunc(Type, "emplace_lua"_hs, entt::forward_as_meta(Registry), Entity, entt::forward_as_meta(Ref));
+                return Meta.cast<Lua::FRef>();
+            }
+
+            lua_State* L = Ref.GetState();
+            if (CEntityComponentType* RuntimeType = ResolveRuntimeComponentType(Type))
+            {
+                ECS::Utils::AddRuntimeComponent(Registry, Entity, RuntimeType);
+                PushRuntimeComponent(L, &Registry, Entity, Type);
+                return Lua::FRef(L, -1);
+            }
+            lua_pushnil(L);
+            return Lua::FRef(L, -1);
         }
         
         static void ForEachEntity_Lua(FEntityRegistry& Registry, Lua::FRef Ref)
@@ -312,11 +376,53 @@ namespace Lumina
             return ScriptComp->Script->Reference;
         }
 
-        // Per-thread resolver; world set via lua_setthreaddata in SetupScriptComponent.
-        static CWorld* CurrentWorld(lua_State* L)
+        // The bindings below take a leading CWorld* that the invoker injects from the calling
+        // script's thread data (TLuaContext<CWorld*>), and trailing TOptional<> args that may be
+        // omitted at the call site. They bind directly via FRef::SetFunction -- no lua_State plumbing.
+
+        static void Camera_SetActive(CWorld* World, entt::entity Entity, TOptional<float> Blend, TOptional<int> Ease)
         {
-            const auto* TD = static_cast<Lua::FScriptThreadData*>(lua_getthreaddata(L));
-            return TD ? TD->World : nullptr;
+            if (World == nullptr) return;
+            const auto Fn = static_cast<ECameraBlendFunction>(static_cast<uint8>(Ease.value_or(static_cast<int>(ECameraBlendFunction::EaseInOut))));
+            World->SetActiveCamera(Entity, Blend.value_or(0.0f), Fn);
+        }
+
+        static entt::entity Camera_GetActive(CWorld* World)
+        {
+            return World ? World->GetActiveCameraEntity() : entt::null;
+        }
+
+        static entt::entity World_FindByName(CWorld* World, FName Name) { return World ? World->GetEntityByName(Name) : entt::null; }
+        static entt::entity World_FindByTag (CWorld* World, FName Tag)  { return World ? World->GetEntityByTag(Tag)   : entt::null; }
+        static int64        World_GetNumEntities(CWorld* World)         { return World ? (int64)World->GetNumEntities() : 0; }
+        static double       World_GetDeltaTime(CWorld* World)          { return World ? World->GetWorldDeltaTime() : 0.0; }
+        static double       World_GetTimeSinceCreation(CWorld* World)  { return World ? World->GetTimeSinceWorldCreation() : 0.0; }
+
+        static bool World_Fracture(CWorld* World, entt::entity Entity)
+        {
+            return World != nullptr && Entity != entt::null && World->FractureEntity(Entity, World->GetEntityLocation(Entity), 0.0f);
+        }
+
+        static bool World_FractureAt(CWorld* World, entt::entity Entity, float X, float Y, float Z, TOptional<float> Strength)
+        {
+            return World != nullptr && Entity != entt::null && World->FractureEntity(Entity, glm::vec3(X, Y, Z), Strength.value_or(0.0f));
+        }
+
+        // RT is a handle from Engine.LoadObject("/Game/X"); color defaults to opaque red (blood).
+        static void RenderTarget_Paint(CWorld* World, CTextureRenderTarget* RT, float U, float V, float Radius,
+            TOptional<float> R, TOptional<float> G, TOptional<float> B, TOptional<float> A,
+            TOptional<float> Strength, TOptional<float> Hardness)
+        {
+            if (World == nullptr || RT == nullptr) return;
+            World->PaintRenderTarget(RT, glm::vec2(U, V), Radius,
+                glm::vec4(R.value_or(1.0f), G.value_or(0.0f), B.value_or(0.0f), A.value_or(1.0f)),
+                Strength.value_or(1.0f), Hardness.value_or(1.0f), nullptr);
+        }
+
+        static void RenderTarget_Clear(CWorld* World, CTextureRenderTarget* RT, TOptional<float> R, TOptional<float> G, TOptional<float> B, TOptional<float> A)
+        {
+            if (World == nullptr || RT == nullptr) return;
+            World->ClearRenderTarget(RT, glm::vec4(R.value_or(0.0f), G.value_or(0.0f), B.value_or(0.0f), A.value_or(0.0f)));
         }
     }
     
@@ -326,6 +432,48 @@ namespace Lumina
         , SystemContext(this)
         , LineBatcherComponent(nullptr)
     {
+    }
+
+    void CWorld::PaintRenderTarget(CTextureRenderTarget* Target, const glm::vec2& UV, float RadiusUV, const glm::vec4& Color, float Strength, float Hardness, CTexture* BrushMask)
+    {
+        if (Target == nullptr || Target->GetRHIRef() == nullptr)
+        {
+            return;
+        }
+
+        FTexturePaintOp Op;
+        Op.Target     = Target->GetTextureResource().RHIImage;
+        Op.Mode       = FTexturePaintOp::EMode::Paint;
+        Op.CenterUV   = UV;
+        Op.RadiusUV   = RadiusUV;
+        Op.Color      = Color;
+        Op.Strength   = Strength;
+        Op.Hardness   = Hardness;
+        Op.BrushIndex = (BrushMask != nullptr && BrushMask->GetRHIRef() != nullptr) ? BrushMask->GetRHIRef()->GetResourceID() : -1;
+        RenderTargetPaintQueue.enqueue(Move(Op));
+    }
+
+    void CWorld::ClearRenderTarget(CTextureRenderTarget* Target, const glm::vec4& Color)
+    {
+        if (Target == nullptr || Target->GetRHIRef() == nullptr)
+        {
+            return;
+        }
+
+        FTexturePaintOp Op;
+        Op.Target = Target->GetTextureResource().RHIImage;
+        Op.Mode   = FTexturePaintOp::EMode::Clear;
+        Op.Color  = Color;
+        RenderTargetPaintQueue.enqueue(Move(Op));
+    }
+
+    void CWorld::DrainRenderTargetPaints(TVector<FTexturePaintOp>& OutOps)
+    {
+        FTexturePaintOp Op;
+        while (RenderTargetPaintQueue.try_dequeue(Op))
+        {
+            OutOps.push_back(Move(Op));
+        }
     }
 
     void CWorld::RegisterLuaModule(Lua::FRef& GlobalRef)
@@ -370,143 +518,43 @@ namespace Lumina
             .AddFunction<&LuaBinds::RuntimeViewSizeHint_Lua>("SizeHint")
             .AddFunction<&LuaBinds::RuntimeViewGetEntities_Lua>("GetEntities")
             .Register();
-        
-        // Raw cfunctions: typed binding wrappers don't expose lua_State*.
-        if (lua_State* VM = Lua::FScriptingContext::Get().GetVM())
-        {
-            Lua::FRef CameraTable = GlobalRef.NewTable("Camera");
-            CameraTable.Push();
 
-            // Camera.SetActive(entity [, blendTime [, easeFn]]) -- blendTime 0 snaps.
-            lua_pushcfunction(VM, +[](lua_State* L) -> int
-            {
-                CWorld* World = LuaBinds::CurrentWorld(L);
-                const entt::entity E = lua_isnumber(L, 1)
-                    ? static_cast<entt::entity>(static_cast<uint32>(lua_tointeger(L, 1)))
-                    : entt::null;
-                const float Blend = static_cast<float>(luaL_optnumber(L, 2, 0.0));
-                const auto  Fn    = static_cast<ECameraBlendFunction>(static_cast<uint8>(luaL_optinteger(L, 3, static_cast<int>(ECameraBlendFunction::EaseInOut))));
-                if (World) World->SetActiveCamera(E, Blend, Fn);
-                return 0;
-            }, "Camera.SetActive");
-            lua_rawsetfield(VM, -2, "SetActive");
+        // Render-target handle type, so Engine.LoadObject("/Game/MyRT") returns a usable value.
+        GlobalRef.NewClass<CTextureRenderTarget>("RenderTargetTexture")
+            .AddFunction<&CTextureRenderTarget::GetWidth>("GetWidth")
+            .AddFunction<&CTextureRenderTarget::GetHeight>("GetHeight")
+            .Register();
 
-            // Camera.BlendTo(entity, blendTime [, easeFn]) -- reads like the cinematic call.
-            lua_pushcfunction(VM, +[](lua_State* L) -> int
-            {
-                CWorld* World = LuaBinds::CurrentWorld(L);
-                const entt::entity E = lua_isnumber(L, 1)
-                    ? static_cast<entt::entity>(static_cast<uint32>(lua_tointeger(L, 1)))
-                    : entt::null;
-                const float Blend = static_cast<float>(luaL_optnumber(L, 2, 0.0));
-                const auto  Fn    = static_cast<ECameraBlendFunction>(static_cast<uint8>(luaL_optinteger(L, 3, static_cast<int>(ECameraBlendFunction::EaseInOut))));
-                if (World) World->SetActiveCamera(E, Blend, Fn);
-                return 0;
-            }, "Camera.BlendTo");
-            lua_rawsetfield(VM, -2, "BlendTo");
+        // Camera.* / World.* / RenderTarget.* bind through FRef::SetFunction: their leading CWorld*
+        // is injected from the calling script's thread data (TLuaContext<CWorld*>) and trailing
+        // TOptional<> args may be omitted at the call site -- no manual lua_State plumbing.
+        Lua::FRef CameraTable = GlobalRef.NewTable("Camera");
+        CameraTable.SetFunction<&LuaBinds::Camera_SetActive>("SetActive");      // SetActive(entity [, blendTime [, easeFn]])
+        CameraTable.SetFunction<&LuaBinds::Camera_SetActive>("BlendTo");        // alias that reads like the cinematic call
+        CameraTable.SetFunction<&LuaBinds::Camera_GetActive>("GetActive");
 
-            lua_pushcfunction(VM, +[](lua_State* L) -> int
-            {
-                CWorld* World = LuaBinds::CurrentWorld(L);
-                const entt::entity E = World ? World->GetActiveCameraEntity() : entt::null;
-                lua_pushinteger(L, static_cast<int64_t>(static_cast<uint32>(E)));
-                return 1;
-            }, "Camera.GetActive");
-            lua_rawsetfield(VM, -2, "GetActive");
+        // Camera.Ease.{Linear,EaseIn,EaseOut,EaseInOut} -- pass as the easeFn arg.
+        Lua::FRef CameraEase = CameraTable.NewTable("Ease");
+        CameraEase.Set("Linear",    static_cast<int>(ECameraBlendFunction::Linear));
+        CameraEase.Set("EaseIn",    static_cast<int>(ECameraBlendFunction::EaseIn));
+        CameraEase.Set("EaseOut",   static_cast<int>(ECameraBlendFunction::EaseOut));
+        CameraEase.Set("EaseInOut", static_cast<int>(ECameraBlendFunction::EaseInOut));
 
-            // Camera.Ease.{Linear,EaseIn,EaseOut,EaseInOut} -- pass as the easeFn arg.
-            lua_newtable(VM);
-            lua_pushinteger(VM, static_cast<int>(ECameraBlendFunction::Linear));    lua_rawsetfield(VM, -2, "Linear");
-            lua_pushinteger(VM, static_cast<int>(ECameraBlendFunction::EaseIn));     lua_rawsetfield(VM, -2, "EaseIn");
-            lua_pushinteger(VM, static_cast<int>(ECameraBlendFunction::EaseOut));    lua_rawsetfield(VM, -2, "EaseOut");
-            lua_pushinteger(VM, static_cast<int>(ECameraBlendFunction::EaseInOut));  lua_rawsetfield(VM, -2, "EaseInOut");
-            lua_rawsetfield(VM, -2, "Ease");
+        Lua::FRef WorldTable = GlobalRef.NewTable("World");
+        WorldTable.SetFunction<&LuaBinds::World_FindByName>("FindByName");
+        WorldTable.SetFunction<&LuaBinds::World_FindByTag>("FindByTag");
+        WorldTable.SetFunction<&LuaBinds::World_GetNumEntities>("GetNumEntities");
+        WorldTable.SetFunction<&LuaBinds::World_GetDeltaTime>("GetDeltaTime");
+        WorldTable.SetFunction<&LuaBinds::World_GetTimeSinceCreation>("GetTimeSinceCreation");
+        WorldTable.SetFunction<&LuaBinds::World_Fracture>("Fracture");          // Fracture(entity)
+        WorldTable.SetFunction<&LuaBinds::World_FractureAt>("FractureAt");      // FractureAt(entity, x, y, z [, strength])
 
-            lua_pop(VM, 1);
-
-            Lua::FRef WorldTable = GlobalRef.NewTable("World");
-            WorldTable.Push();
-
-            lua_pushcfunction(VM, +[](lua_State* L) -> int
-            {
-                CWorld* World = LuaBinds::CurrentWorld(L);
-                const char* Name = luaL_checkstring(L, 1);
-                const entt::entity E = World ? World->GetEntityByName(FName(Name)) : entt::null;
-                lua_pushinteger(L, static_cast<int64_t>(static_cast<uint32>(E)));
-                return 1;
-            }, "World.FindByName");
-            lua_rawsetfield(VM, -2, "FindByName");
-
-            lua_pushcfunction(VM, +[](lua_State* L) -> int
-            {
-                CWorld* World = LuaBinds::CurrentWorld(L);
-                const char* Tag = luaL_checkstring(L, 1);
-                const entt::entity E = World ? World->GetEntityByTag(FName(Tag)) : entt::null;
-                lua_pushinteger(L, static_cast<int64_t>(static_cast<uint32>(E)));
-                return 1;
-            }, "World.FindByTag");
-            lua_rawsetfield(VM, -2, "FindByTag");
-
-            lua_pushcfunction(VM, +[](lua_State* L) -> int
-            {
-                CWorld* World = LuaBinds::CurrentWorld(L);
-                lua_pushinteger(L, World ? static_cast<int64_t>(World->GetNumEntities()) : 0);
-                return 1;
-            }, "World.GetNumEntities");
-            lua_rawsetfield(VM, -2, "GetNumEntities");
-
-            lua_pushcfunction(VM, +[](lua_State* L) -> int
-            {
-                CWorld* World = LuaBinds::CurrentWorld(L);
-                lua_pushnumber(L, World ? World->GetWorldDeltaTime() : 0.0);
-                return 1;
-            }, "World.GetDeltaTime");
-            lua_rawsetfield(VM, -2, "GetDeltaTime");
-
-            lua_pushcfunction(VM, +[](lua_State* L) -> int
-            {
-                CWorld* World = LuaBinds::CurrentWorld(L);
-                lua_pushnumber(L, World ? World->GetTimeSinceWorldCreation() : 0.0);
-                return 1;
-            }, "World.GetTimeSinceCreation");
-            lua_rawsetfield(VM, -2, "GetTimeSinceCreation");
-
-            // World.Fracture(entity): shatter using the component defaults, blast centered on the entity.
-            lua_pushcfunction(VM, +[](lua_State* L) -> int
-            {
-                CWorld* World = LuaBinds::CurrentWorld(L);
-                const entt::entity E = lua_isnumber(L, 1)
-                    ? static_cast<entt::entity>(static_cast<uint32>(lua_tointeger(L, 1)))
-                    : entt::null;
-                bool bResult = false;
-                if (World && E != entt::null)
-                {
-                    bResult = World->FractureEntity(E, World->GetEntityLocation(E), 0.0f);
-                }
-                lua_pushboolean(L, bResult);
-                return 1;
-            }, "World.Fracture");
-            lua_rawsetfield(VM, -2, "Fracture");
-
-            // World.FractureAt(entity, x, y, z [, strength]): shatter with an explicit blast origin and speed.
-            lua_pushcfunction(VM, +[](lua_State* L) -> int
-            {
-                CWorld* World = LuaBinds::CurrentWorld(L);
-                const entt::entity E = lua_isnumber(L, 1)
-                    ? static_cast<entt::entity>(static_cast<uint32>(lua_tointeger(L, 1)))
-                    : entt::null;
-                const glm::vec3 Origin(
-                    static_cast<float>(luaL_checknumber(L, 2)),
-                    static_cast<float>(luaL_checknumber(L, 3)),
-                    static_cast<float>(luaL_checknumber(L, 4)));
-                const float Strength = static_cast<float>(luaL_optnumber(L, 5, 0.0));
-                const bool bResult = World && E != entt::null && World->FractureEntity(E, Origin, Strength);
-                lua_pushboolean(L, bResult);
-                return 1;
-            }, "World.FractureAt");
-            lua_rawsetfield(VM, -2, "FractureAt");
-            lua_pop(VM, 1);
-        }
+        // RenderTarget.Paint(target, u, v, radius [, r, g, b, a [, strength [, hardness]]])
+        // target is a handle from Engine.LoadObject("/Game/X"). UV in 0..1; radius relative to the
+        // longer side; color defaults to opaque red (blood).
+        Lua::FRef RenderTargetTable = GlobalRef.NewTable("RenderTarget");
+        RenderTargetTable.SetFunction<&LuaBinds::RenderTarget_Paint>("Paint");
+        RenderTargetTable.SetFunction<&LuaBinds::RenderTarget_Clear>("Clear");
 
         GlobalRef.NewClass<FEntityRegistry>("FEntityRegistry")
             .AddFunction<&FEntityRegistry::valid>("Valid")
@@ -760,6 +808,14 @@ namespace Lumina
         {
             DeltaTime = Context.GetDeltaTime() * GetDefaultWorldSettings().DeltaTimeScale;
             TimeSinceCreation += DeltaTime;
+
+#if USING(WITH_EDITOR)
+            // Migrate any runtime-component storage whose type schema was edited (Case B fixup).
+            // Editor-only: component-type schemas are immutable at game runtime (no schema editor),
+            // so a packaged build never needs this sweep. Runs even while paused (incl. PIE) so
+            // editor worlds reflect live schema edits. Cost is a cheap per-pool revision compare.
+            ECS::Utils::RefreshRuntimeComponentSchemas(EntityRegistry);
+#endif
         }
 
         if (bPaused && Stage != EUpdateStage::Paused || (!bPaused && Stage == EUpdateStage::Paused))

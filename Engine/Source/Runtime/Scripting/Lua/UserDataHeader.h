@@ -7,10 +7,14 @@ namespace Lumina::Lua
     template<typename T>
     struct TUserdataHeader
     {
-        using RawT = eastl::remove_pointer_t<eastl::decay_t<T>>;
+        using DecayT = eastl::decay_t<T>;
+        using RawT   = eastl::remove_pointer_t<DecayT>;
 
-        RawT*                          External = nullptr;
-        alignas(RawT) unsigned char    Buffer[sizeof(RawT)];
+        RawT*                            External = nullptr;
+        // Inline value storage, used only when T is a value type. For pointer storage the External
+        // path is used and this buffer is inert, so it's sized by the decayed type (pointer-sized)
+        // rather than the pointee -- otherwise a forward-declared pointee would fail to compile.
+        alignas(DecayT) unsigned char    Buffer[sizeof(DecayT)];
 
         template<typename... TArgs>
         void Emplace(TArgs&&... Args)

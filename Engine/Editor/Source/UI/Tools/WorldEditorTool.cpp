@@ -2,6 +2,7 @@
 #include <glm/gtx/string_cast.hpp>
 #include "EditorToolContext.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Assets/AssetTypes/EntityComponent/EntityComponentType.h"
 #include "Assets/AssetTypes/Prefabs/Prefab.h"
 #include "Assets/AssetTypes/Prefabs/PrefabComponents.h"
 #include "Components/EditorEntityTags.h"
@@ -12,6 +13,7 @@
 #include "Core/Delegates/CoreDelegates.h"
 #include "Core/Object/Cast.h"
 #include "Core/Object/Class.h"
+#include "Core/Object/ObjectArray.h"
 #include "Core/Object/ObjectCore.h"
 #include "Core/Object/ObjectIterator.h"
 #include "Core/Object/Package/Package.h"
@@ -597,9 +599,78 @@ namespace Lumina
         }
     }
 
+    void FWorldEditorTool::UpdateCameraPreview()
+    {
+        bCameraPreviewActive = false;
+
+        IRenderScene* RenderScene = World ? World->GetRenderer() : nullptr;
+        if (RenderScene == nullptr)
+        {
+            return;
+        }
+
+        // The render scene can be torn down + rebuilt (idle reclaim), invalidating our handle.
+        // Detect the swap and force re-registration against the new scene.
+        if (RenderScene != CameraPreviewScene)
+        {
+            CameraPreviewScene  = RenderScene;
+            CameraPreviewHandle = -1;
+        }
+
+        // Only preview in the editor (not during PIE / game-view), and only for a selected
+        // camera entity. Otherwise leave the capture registered but disabled (no render cost).
+        entt::registry& Registry = World->GetEntityRegistry();
+        const entt::entity Selected = GetLastSelectedEntity();
+        const bool bWantPreview =
+            !World->IsGameWorld() && !bGameViewMode &&
+            Registry.valid(Selected) &&
+            Registry.all_of<SCameraComponent, STransformComponent>(Selected);
+
+        if (!bWantPreview)
+        {
+            if (CameraPreviewHandle >= 0)
+            {
+                RenderScene->SetCaptureView(CameraPreviewHandle, FViewVolume{}, false);
+            }
+            return;
+        }
+
+        if (CameraPreviewHandle < 0)
+        {
+            CameraPreviewHandle = RenderScene->RegisterCaptureView(glm::uvec2(CameraPreviewWidth, CameraPreviewHeight));
+            if (CameraPreviewHandle < 0)
+            {
+                return;
+            }
+        }
+
+        // Build the camera's view from its world transform + FOV (its own ViewVolume isn't
+        // resolved while it's a non-active camera). Forward/up convention matches SCameraSystem.
+        const SCameraComponent& Camera = Registry.get<SCameraComponent>(Selected);
+        STransformComponent& Transform = Registry.get<STransformComponent>(Selected);
+        (void)Transform.GetWorldMatrix();   // ensure the world transform is current
+
+        const glm::vec3 Position = Transform.GetWorldLocation();
+        const glm::quat Rotation = Transform.GetWorldRotation();
+        const glm::vec3 Forward  = Rotation * glm::vec3(0.0f, 0.0f, 1.0f);
+        const glm::vec3 Up       = Rotation * glm::vec3(0.0f, 1.0f, 0.0f);
+
+        // Use the authored FOV property, not GetFOV(): the latter reads the camera's internal
+        // ViewVolume, which only tracks the property for the *active* camera (via SCameraSystem).
+        // A non-active selected camera's ViewVolume is stale, so editing FOV wouldn't show.
+        FViewVolume View(Camera.FOV, (float)CameraPreviewWidth / (float)CameraPreviewHeight);
+        View.SetView(Position, Forward, Up);
+
+        RenderScene->SetCaptureView(CameraPreviewHandle, View, true);
+        bCameraPreviewActive = true;
+    }
+
     void FWorldEditorTool::Update(const FUpdateContext& UpdateContext)
     {
         FEditorTool::Update(UpdateContext);
+
+        // Drive the selected-camera preview before the world extracts this frame.
+        UpdateCameraPreview();
 
         // Reassert Game focus each frame: a game script's SetMouseMode("Normal")
         // clears NoMouse, which would otherwise re-enable ImGui mid-play.
@@ -1993,6 +2064,29 @@ namespace Lumina
         DrawCursorWorldPositionOverlay(ViewportOrigin, ViewportSize, CameraComponent);
         DrawEntityDebugOverlay(ViewportOrigin, ViewportSize, CameraComponent);
         DrawOffscreenSelectionIndicators(ViewportOrigin, ViewportSize, CameraComponent);
+
+        // Selected-camera preview: a small picture-in-picture of what that camera sees,
+        // pinned to the viewport's bottom-right. The render scene shades it into a capture RT
+        // (driven in UpdateCameraPreview); here we just composite it.
+        if (bCameraPreviewActive && CameraPreviewHandle >= 0)
+        {
+            if (FRHIImage* PreviewRT = World->GetRenderer()->GetCaptureRenderTarget(CameraPreviewHandle))
+            {
+                const float Scale  = 0.6f;
+                const float Margin = 14.0f;
+                const ImVec2 Size((float)CameraPreviewWidth * Scale, (float)CameraPreviewHeight * Scale);
+                const ImVec2 Max(ViewportOrigin.x + ViewportSize.x - Margin,
+                                 ViewportOrigin.y + ViewportSize.y - Margin);
+                const ImVec2 Min(Max.x - Size.x, Max.y - Size.y);
+
+                ImDrawList* DL = ImGui::GetWindowDrawList();
+                DL->AddRectFilled(ImVec2(Min.x - 3.0f, Min.y - 18.0f), ImVec2(Max.x + 3.0f, Max.y + 3.0f),
+                    IM_COL32(0, 0, 0, 190), 4.0f);
+                DL->AddText(ImVec2(Min.x + 2.0f, Min.y - 16.0f), IM_COL32(235, 235, 235, 220), "Camera Preview");
+                DL->AddImage(ImGuiX::ToImTextureRef(PreviewRT), Min, Max);
+                DL->AddRect(Min, Max, IM_COL32(255, 255, 255, 110), 2.0f);
+            }
+        }
     }
 
     void FWorldEditorTool::DrawViewportToolbar(const FUpdateContext& UpdateContext)
@@ -2244,14 +2338,29 @@ namespace Lumina
 
             if (ImGui::BeginChild("##ComponentsList", ImVec2(0, ListHeight), true))
             {
-                entt::meta_type PickedMetaType;
-                CStruct*        PickedStruct = nullptr;
-                if (DrawAddableComponentList(*Filter, PickedMetaType, PickedStruct))
+                entt::meta_type       PickedMetaType;
+                CStruct*              PickedStruct = nullptr;
+                CEntityComponentType* PickedRuntime = nullptr;
+                if (DrawAddableComponentList(*Filter, PickedMetaType, PickedStruct, PickedRuntime))
                 {
                     using namespace entt::literals;
-                    BeginTransaction();
-                    ECS::Utils::InvokeMetaFunc(PickedMetaType, "emplace"_hs, entt::forward_as_meta(World->GetEntityRegistry()), Entity, entt::forward_as_meta(entt::meta_any{}));
-                    EndTransaction("Emplace Component");
+                    if (PickedRuntime != nullptr)
+                    {
+                        BeginTransaction();
+                        ECS::Utils::AddRuntimeComponent(World->GetEntityRegistry(), Entity, PickedRuntime);
+                        EndTransaction("Add Runtime Component");
+                        if (World->GetPackage() != nullptr)
+                        {
+                            World->GetPackage()->MarkDirty();
+                        }
+                        bDetailsDirty = true;
+                    }
+                    else
+                    {
+                        BeginTransaction();
+                        ECS::Utils::InvokeMetaFunc(PickedMetaType, "emplace"_hs, entt::forward_as_meta(World->GetEntityRegistry()), Entity, entt::forward_as_meta(entt::meta_any{}));
+                        EndTransaction("Emplace Component");
+                    }
 
                     bComponentAdded = true;
                 }
@@ -3892,9 +4001,18 @@ namespace Lumina
             // Hand input back to the editor on stop.
             SetInputFocus(EInputFocus::Editor);
 
+            // SetWorld -> SetupWorldForTool builds a fresh editor entity at the default origin. Stash the
+            // pre-Play camera pose so we can restore it; otherwise the viewport snaps back to world 0 on stop.
+            bool bHasSavedCamera = false;
+            FTransform SavedCameraTransform;
+            SCameraComponent SavedCamera;
             // Use ProxyEditorEntity (captured at PIE entry); EditorEntity may be null if Travel swapped worlds mid-PIE.
             if (ProxyEditorEntity != entt::null && ProxyWorld->GetEntityRegistry().valid(ProxyEditorEntity))
             {
+                SavedCameraTransform = ProxyWorld->GetEntityRegistry().get<STransformComponent>(ProxyEditorEntity).GetWorldTransform();
+                SavedCamera = ProxyWorld->GetEntityRegistry().get<SCameraComponent>(ProxyEditorEntity);
+                bHasSavedCamera = true;
+
                 ProxyWorld->DestroyEntity(ProxyEditorEntity);
             }
             ProxyEditorEntity = entt::null;
@@ -3902,6 +4020,15 @@ namespace Lumina
 
             SetWorld(ProxyWorld);
             ProxyWorld->SetActive(true);
+
+            if (bHasSavedCamera && World->GetEntityRegistry().valid(EditorEntity))
+            {
+                World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetLocalTransform(SavedCameraTransform);
+                World->GetEntityRegistry().patch<SCameraComponent>(EditorEntity, [SavedCamera](SCameraComponent& Patch)
+                {
+                    Patch = SavedCamera;
+                });
+            }
 
             WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
 
@@ -4071,12 +4198,19 @@ namespace Lumina
         return FEditorTool::OnEvent(Event);
     }
 
-    bool FWorldEditorTool::DrawAddableComponentList(const ImGuiTextFilter& Filter, entt::meta_type& OutMetaType, CStruct*& OutStruct)
+    bool FWorldEditorTool::DrawAddableComponentList(const ImGuiTextFilter& Filter, entt::meta_type& OutMetaType, CStruct*& OutStruct, CEntityComponentType*& OutRuntimeType)
     {
+        OutRuntimeType = nullptr;
+
         struct FComponentEntry
         {
             entt::meta_type MetaType;
-            CStruct*        Struct;
+            CStruct*        Struct = nullptr;   // reflected component
+            // Data-authored type: listed straight from the asset registry (so it shows whether or
+            // not it is loaded) and loaded on pick, exactly like every other asset reference.
+            bool            bRuntime = false;
+            FGuid           RuntimeGuid;
+            FString         RuntimeName;
         };
 
         struct FComponentCategory
@@ -4130,7 +4264,33 @@ namespace Lumina
                 ? Struct->GetMeta("Category")
                 : DefaultCategoryName;
 
-            FindOrAddCategory(CategoryName).Entries.push_back({MetaType, Struct});
+            FComponentEntry NewEntry;
+            NewEntry.MetaType = MetaType;
+            NewEntry.Struct   = Struct;
+            FindOrAddCategory(CategoryName).Entries.push_back(NewEntry);
+        }
+
+        // Runtime (data-authored) component types appear in the same list, under "Data". They are
+        // enumerated from the asset registry -- not GObjectArray -- so every one on disk shows up
+        // regardless of whether it has been loaded yet; the pick loads it on demand.
+        TVector<FAssetData*> RuntimeTypes = FAssetRegistry::Get().FindByPredicate([](const FAssetData& Data)
+        {
+            CClass* DataClass = FindObject<CClass>(Data.AssetClass);
+            return DataClass != nullptr && DataClass->IsChildOf(CEntityComponentType::StaticClass());
+        });
+
+        for (const FAssetData* Data : RuntimeTypes)
+        {
+            if (!Filter.PassFilter(Data->AssetName.c_str()))
+            {
+                continue;
+            }
+
+            FComponentEntry NewEntry;
+            NewEntry.bRuntime    = true;
+            NewEntry.RuntimeGuid = Data->AssetGUID;
+            NewEntry.RuntimeName = Data->AssetName.ToString();
+            FindOrAddCategory("Data").Entries.push_back(NewEntry);
         }
 
         eastl::sort(Categories.begin(), Categories.end(), [](const FComponentCategory& LHS, const FComponentCategory& RHS)
@@ -4148,9 +4308,13 @@ namespace Lumina
         bool bPicked = false;
         for (FComponentCategory& Category : Categories)
         {
-            eastl::sort(Category.Entries.begin(), Category.Entries.end(), [](const FComponentEntry& LHS, const FComponentEntry& RHS)
+            auto EntryName = [](const FComponentEntry& E) -> FString
             {
-                return LHS.Struct->GetName().ToString() < RHS.Struct->GetName().ToString();
+                return E.bRuntime ? E.RuntimeName : E.Struct->GetName().ToString();
+            };
+            eastl::sort(Category.Entries.begin(), Category.Entries.end(), [&](const FComponentEntry& LHS, const FComponentEntry& RHS)
+            {
+                return EntryName(LHS) < EntryName(RHS);
             });
 
             ImGui::PushID(Category.Name.c_str());
@@ -4166,7 +4330,16 @@ namespace Lumina
 
             for (const FComponentEntry& Entry : Category.Entries)
             {
-                ImGui::PushID(Entry.Struct);
+                // Stable per-item ID across frames (the entry list is rebuilt every frame, so its
+                // address is not stable -- an unstable ID breaks click press/release matching).
+                if (Entry.bRuntime)
+                {
+                    ImGui::PushID(static_cast<int>(Entry.RuntimeGuid.Hash()));
+                }
+                else
+                {
+                    ImGui::PushID((void*)Entry.Struct);
+                }
 
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.18f, 0.21f, 1.0f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.35f, 0.45f, 1.0f));
@@ -4176,12 +4349,20 @@ namespace Lumina
 
                 const float ButtonWidth = ImGui::GetContentRegionAvail().x;
 
-                FFixedString DisplayName = Entry.Struct->MakeDisplayName();
+                FFixedString DisplayName = Entry.bRuntime ? FFixedString(Entry.RuntimeName.c_str()) : Entry.Struct->MakeDisplayName();
                 if (ImGui::Button(DisplayName.c_str(), ImVec2(ButtonWidth, 0.0f)))
                 {
-                    OutMetaType = Entry.MetaType;
-                    OutStruct   = Entry.Struct;
-                    bPicked     = true;
+                    if (Entry.bRuntime)
+                    {
+                        // Load on pick (returns the cached instance if already loaded).
+                        OutRuntimeType = LoadObject<CEntityComponentType>(Entry.RuntimeGuid);
+                    }
+                    else
+                    {
+                        OutMetaType = Entry.MetaType;
+                        OutStruct   = Entry.Struct;
+                    }
+                    bPicked = true;
                 }
 
                 ImGui::PopStyleVar(2);
@@ -4421,13 +4602,39 @@ namespace Lumina
                     }
                 }
 
-                entt::meta_type PickedMetaType;
-                CStruct*        PickedStruct = nullptr;
-                if (DrawAddableComponentList(AddEntityComponentFilter, PickedMetaType, PickedStruct))
+                entt::meta_type       PickedMetaType;
+                CStruct*              PickedStruct = nullptr;
+                CEntityComponentType* PickedRuntime = nullptr;
+                if (DrawAddableComponentList(AddEntityComponentFilter, PickedMetaType, PickedStruct, PickedRuntime))
                 {
-                    if (World->GetEntityRegistry().valid(Entity))
+                    using namespace entt::literals;
+
+                    if (PickedRuntime != nullptr)
                     {
-                        using namespace entt::literals;
+                        BeginTransaction();
+                        entt::entity Target = World->GetEntityRegistry().valid(Entity)
+                            ? Entity
+                            : World->ConstructEntity("Entity", GetCameraSpawnTransform());
+
+                        ECS::Utils::AddRuntimeComponent(World->GetEntityRegistry(), Target, PickedRuntime);
+                        EndTransaction("Add Runtime Component");
+
+                        if (World->GetPackage() != nullptr)
+                        {
+                            World->GetPackage()->MarkDirty();
+                        }
+                        OutlinerListView.MarkTreeDirty();
+                        if (Target != Entity)
+                        {
+                            SetSingleSelectedEntity(Target);
+                        }
+                        else if (Target == DetailsEntity)
+                        {
+                            bDetailsDirty = true;
+                        }
+                    }
+                    else if (World->GetEntityRegistry().valid(Entity))
+                    {
                         ECS::Utils::InvokeMetaFunc(PickedMetaType, "emplace"_hs, entt::forward_as_meta(World->GetEntityRegistry()), Entity, entt::forward_as_meta(entt::meta_any{}));
                         OutlinerListView.MarkTreeDirty();
                         if (Entity == DetailsEntity)
@@ -5173,12 +5380,24 @@ namespace Lumina
     void FWorldEditorTool::DrawComponentList(entt::entity Entity)
     {
         LUMINA_PROFILE_SCOPE();
-        
-        for (TUniquePtr<FPropertyTable>& Table : PropertyTables)
+
+        for (FComponentTableEntry& Entry : PropertyTables)
         {
-            DrawComponentHeader(Table, Entity);
-        
+            DrawComponentHeader(Entry, Entity);
+
             ImGui::Spacing();
+        }
+
+        // Deferred so we never remove a storage element while iterating / drawing its table.
+        if (PendingRuntimeRemove != nullptr)
+        {
+            ECS::Utils::RemoveRuntimeComponent(World->GetEntityRegistry(), Entity, PendingRuntimeRemove);
+            PendingRuntimeRemove = nullptr;
+            bDetailsDirty = true;
+            if (World != nullptr && World->GetPackage() != nullptr)
+            {
+                World->GetPackage()->MarkDirty();
+            }
         }
     }
 
@@ -5311,30 +5530,65 @@ namespace Lumina
         ImGui::PopID();
     }
 
-    void FWorldEditorTool::DrawComponentHeader(const TUniquePtr<FPropertyTable>& Table, entt::entity Entity)
+    void FWorldEditorTool::DrawComponentHeader(FComponentTableEntry& Entry, entt::entity Entity)
     {
         using namespace entt::literals;
-        
-        const bool bIsRequired = (Table->GetType() == STransformComponent::StaticStruct() || Table->GetType() == SNameComponent::StaticStruct());
-    
-        if (Table->GetType() == STagComponent::StaticStruct())
+
+        const bool bRuntime = Entry.bRuntime;
+
+        // The live runtime type is fetched from the storage (which strong-refs it) -- never from a
+        // cached pointer, which could dangle if the type asset was deleted.
+        CEntityComponentType* RuntimeType = nullptr;
+
+        // Visibility / existence check + (runtime) re-point. Reflected components verify via meta;
+        // runtime ones verify the storage still holds the entity and re-bind the table if the
+        // contiguous storage moved this element (realloc) or migrated its layout.
+        if (!bRuntime)
         {
-            return;
+            if (Entry.ReflectedType == STagComponent::StaticStruct())
+            {
+                return;
+            }
+
+            entt::meta_type MetaType = entt::resolve(entt::hashed_string(Entry.ReflectedType->GetName().c_str()));
+            if (!ECS::Utils::HasComponent(World->GetEntityRegistry(), Entity, MetaType))
+            {
+                return;
+            }
         }
-        
-        entt::meta_type MetaType = entt::resolve(entt::hashed_string(Table->GetType()->GetName().c_str()));
-        if (!ECS::Utils::HasComponent(World->GetEntityRegistry(), Entity, MetaType))
+        else
         {
-            return;
+            FRuntimeComponentStorage* Storage = ECS::Utils::FindRuntimeStorageById(World->GetEntityRegistry(), Entry.RuntimeStorageId);
+            // Missing / invalidated (type deleted) / no longer on the entity -> drop this row.
+            if (Storage == nullptr || !Storage->IsBound() || !Storage->contains(Entity))
+            {
+                bDetailsDirty = true;
+                return;
+            }
+            RuntimeType = Storage->GetSchemaType();
+            if (Entry.Table != nullptr)
+            {
+                void* CurrentData = Storage->value(Entity);
+                CStruct* CurrentLayout = Storage->GetLayout();
+                if (CurrentData != Entry.BoundData || CurrentLayout != Entry.BoundLayout)
+                {
+                    Entry.Table->SetObject(CurrentData, CurrentLayout);
+                    Entry.BoundData = CurrentData;
+                    Entry.BoundLayout = CurrentLayout;
+                }
+            }
         }
-        
-        ImGui::PushID(Table.get());
-            
-        constexpr ImGuiTableFlags Flags = 
-        ImGuiTableFlags_BordersOuter | 
-        ImGuiTableFlags_NoBordersInBodyUntilResize | 
+
+        const bool bIsRequired = !bRuntime
+            && (Entry.ReflectedType == STransformComponent::StaticStruct() || Entry.ReflectedType == SNameComponent::StaticStruct());
+
+        ImGui::PushID(&Entry);
+
+        constexpr ImGuiTableFlags Flags =
+        ImGuiTableFlags_BordersOuter |
+        ImGuiTableFlags_NoBordersInBodyUntilResize |
         ImGuiTableFlags_SizingFixedFit;
-            
+
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 10.0f)); // increase Y for taller header
         ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0, 0));
         bool bIsOpen = false;
@@ -5343,69 +5597,79 @@ namespace Lumina
             ImGui::TableSetupColumn("##Header", ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableNextColumn();
             ImGui::AlignTextToFramePadding();
-            
+
             ImGui::PushStyleColor(ImGuiCol_Header, 0xFF3A3A3A);
             ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0xFF484848);
             ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0xFF404040);
             ImGui::SetNextItemAllowOverlap();
-            bIsOpen = ImGui::CollapsingHeader(Table->GetType()->MakeDisplayName().c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+            // Runtime rows show the live type name so renaming the type asset updates the row
+            // immediately (the cached title is only refreshed on a details rebuild).
+            const char* HeaderTitle = (bRuntime && RuntimeType != nullptr) ? RuntimeType->GetName().c_str() : Entry.Title.c_str();
+            bIsOpen = ImGui::CollapsingHeader(HeaderTitle, ImGuiTreeNodeFlags_DefaultOpen);
             ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, 0xFF1C1C1C);
 
             ImGui::PopStyleColor(3);
-            
+
             if (!bIsRequired)
             {
                 ImGui::SameLine(ImGui::GetContentRegionAvail().x - 28.0f);
-            
+
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.0f, 0.0f, 0.0f, 0.0f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.25f, 0.25f, 0.8f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.6f, 0.2f, 0.2f, 0.9f));
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.4f, 0.4f, 1.0f));
                 ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
-            
+
                 if (ImGui::SmallButton(LE_ICON_TRASH_CAN "##RemoveComponent"))
                 {
-                    ComponentDestroyRequests.push(FComponentDestroyRequest{Table->GetType(), Entity});
+                    if (bRuntime)
+                    {
+                        PendingRuntimeRemove = RuntimeType;
+                    }
+                    else
+                    {
+                        ComponentDestroyRequests.push(FComponentDestroyRequest{ Entry.ReflectedType, Entity });
+                    }
                 }
-            
+
                 ImGuiX::TextTooltip("{}", "Remove Component");
-            
+
                 ImGui::PopStyleVar();
                 ImGui::PopStyleColor(4);
             }
-                        
+
             ImGui::EndTable();
         }
-        
+
         ImGui::PopStyleVar(2);
-        
-        
-        if (bIsOpen)
+
+
+        if (bIsOpen && Entry.Table != nullptr)
         {
             ImGui::Spacing();
-            
+
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 6.0f));
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 1.0f);
             ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.015f, 0.015f, 0.015f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.12f, 0.12f, 0.14f, 1.0f));
-            
+
             ImGui::Indent(8.0f);
 
             // Make this component's world resolvable to any PROPERTY(Entity) picker in the table.
             {
                 FScopedEntityPropertyContext EntityContext(World);
-                Table->DrawTree();
+                Entry.Table->DrawTree();
             }
 
             ImGui::Unindent(8.0f);
-            
+
             ImGui::PopStyleColor(2);
             ImGui::PopStyleVar(3);
-            
+
             ImGui::Spacing();
         }
-            
+
         ImGui::PopID();
     }
 
@@ -5575,8 +5839,18 @@ namespace Lumina
 
         if (World->GetEntityRegistry().valid(Entity))
         {
-            using PairType = TPair<void*, CStruct*>;
-            TVector<PairType> Sorted;
+            // One intermediate row for both reflected and runtime components so they sort together.
+            struct FPendingRow
+            {
+                void*                 Data = nullptr;
+                CStruct*              Layout = nullptr;        // reflected CStruct, or runtime layout
+                const CStruct*        ReflectedType = nullptr; // null for runtime
+                CEntityComponentType* RuntimeType = nullptr;   // null for reflected
+                FString               Title;
+            };
+
+            TVector<FPendingRow> Pending;
+
             ECS::Utils::ForEachComponent(World->GetEntityRegistry(), Entity, [&](void* Component, entt::basic_sparse_set<>& Set, const entt::meta_type& Type)
             {
                 entt::meta_any Any = ECS::Utils::InvokeMetaFunc(Type, "static_struct"_hs);
@@ -5584,69 +5858,79 @@ namespace Lumina
                 {
                     return;
                 }
-                    
-                CStruct* Struct = Any.cast<CStruct*>();
 
-                Sorted.emplace_back(Component, Struct);
+                CStruct* Struct = Any.cast<CStruct*>();
+                Pending.push_back({ Component, Struct, Struct, nullptr, Struct->MakeDisplayName().c_str() });
             });
-            
-            eastl::sort(Sorted.begin(), Sorted.end(), [&](const PairType& LHS, const PairType& RHS)
+
+            ECS::Utils::ForEachRuntimeComponent(World->GetEntityRegistry(), Entity,
+                [&](CEntityComponentType* Type, CStruct* Layout, void* Data)
             {
-                const FFixedString A = LHS.second->MakeDisplayName();
-                const FFixedString B = RHS.second->MakeDisplayName();
-                
-                auto Comparator = [] (const CStruct* Type)
+                if (Type == nullptr)
                 {
-                    if (Type == SNameComponent::StaticStruct())
-                    {
-                        return 0;
-                    }
-                    
-                    if (Type == STransformComponent::StaticStruct())
-                    {
-                        return 1;
-                    }
-                    
+                    return;
+                }
+                Pending.push_back({ Data, Layout, nullptr, Type, Type->GetName().ToString() });
+            });
+
+            eastl::sort(Pending.begin(), Pending.end(), [&](const FPendingRow& LHS, const FPendingRow& RHS)
+            {
+                // Name first, Transform second, everything else (incl. runtime) alphabetical.
+                auto Priority = [](const FPendingRow& Row) -> uint32
+                {
+                    if (Row.ReflectedType == SNameComponent::StaticStruct())      { return 0; }
+                    if (Row.ReflectedType == STransformComponent::StaticStruct()) { return 1; }
                     return 2;
                 };
-                
-                uint32 APriority = Comparator(LHS.second);
-                uint32 BPriority = Comparator(RHS.second);
-                
+
+                const uint32 APriority = Priority(LHS);
+                const uint32 BPriority = Priority(RHS);
                 if (APriority != BPriority)
                 {
-                    return  APriority < BPriority;
+                    return APriority < BPriority;
                 }
-                
-                return A < B;
+                return LHS.Title < RHS.Title;
             });
 
-
-            for (const auto& [Component, Struct] : Sorted)
+            for (const FPendingRow& Row : Pending)
             {
-                TUniquePtr<FPropertyTable> NewTable = MakeUnique<FPropertyTable>(Component, Struct);
-                
-                NewTable->SetPreEditCallback([&](const FPropertyChangedEvent& Event)
+                FComponentTableEntry Entry;
+                Entry.ReflectedType = Row.ReflectedType;
+                Entry.bRuntime      = (Row.RuntimeType != nullptr);
+                Entry.RuntimeStorageId = (Row.RuntimeType != nullptr) ? Row.RuntimeType->GetStorageId() : 0;
+                Entry.Title         = Row.Title;
+
+                if (Row.RuntimeType != nullptr)
                 {
-                    OnPrePropertyChangeEvent(Event);
-                });
-                
-                NewTable->SetPostEditCallback([&] (const FPropertyChangedEvent& Event)
+                    // Runtime row: a field-less type has no value buffer, so leave Table null (the
+                    // header still draws, just with no body).
+                    if (Row.Data != nullptr && Row.Layout != nullptr)
+                    {
+                        Entry.Table = MakeUnique<FPropertyTable>(Row.Data, Row.Layout);
+                        Entry.Table->SetPostEditCallback([this](const FPropertyChangedEvent&)
+                        {
+                            // Values live in the storage and serialize with the world; just mark dirty.
+                            if (World != nullptr && World->GetPackage() != nullptr)
+                            {
+                                World->GetPackage()->MarkDirty();
+                            }
+                        });
+                        Entry.Table->MarkDirty();
+                        Entry.BoundLayout = Row.Layout;
+                        Entry.BoundData   = Row.Data;
+                    }
+                }
+                else
                 {
-                    OnPostPropertyChangeEvent(Event);
-                });
-                
-                NewTable->SetStartEditCallback([&](const FPropertyChangedEvent& Event)
-                {
-                    BeginTransaction();
-                });
-                
-                NewTable->SetFinishEditCallback([&](const FPropertyChangedEvent& Event)
-                {
-                    EndTransaction(Event.PropertyName);
-                });
-                
-                PropertyTables.emplace_back(Move(NewTable))->MarkDirty();
+                    Entry.Table = MakeUnique<FPropertyTable>(Row.Data, Row.Layout);
+                    Entry.Table->SetPreEditCallback([&](const FPropertyChangedEvent& Event)    { OnPrePropertyChangeEvent(Event); });
+                    Entry.Table->SetPostEditCallback([&](const FPropertyChangedEvent& Event)   { OnPostPropertyChangeEvent(Event); });
+                    Entry.Table->SetStartEditCallback([&](const FPropertyChangedEvent& Event)  { BeginTransaction(); });
+                    Entry.Table->SetFinishEditCallback([&](const FPropertyChangedEvent& Event) { EndTransaction(Event.PropertyName); });
+                    Entry.Table->MarkDirty();
+                }
+
+                PropertyTables.emplace_back(Move(Entry));
             }
         }
     }

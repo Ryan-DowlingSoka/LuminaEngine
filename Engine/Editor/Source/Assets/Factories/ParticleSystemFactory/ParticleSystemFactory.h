@@ -18,5 +18,6 @@ namespace Lumina
 		FStringView GetDefaultAssetCreationName() override { return "NewParticleSystem"; }
 		FString GetAssetDescription() const override { return "A GPU particle system."; }
 		CClass* GetAssetClass() const override { return CParticleSystem::StaticClass(); }
+		FString GetCategory() const override { return "Effects"; }
 	};
 }

@@ -5,6 +5,7 @@
 #include "Assets/AssetTypes/Mesh/SkeletalMesh/SkeletalMesh.h"
 #include "Assets/AssetTypes/Mesh/Skeleton/Skeleton.h"
 #include "Renderer/MeshData.h"
+#include "world/entity/components/entitytags.h"
 #include "World/Entity/Components/SimpleAnimationComponent.h"
 #include "World/Entity/Components/SkeletalMeshComponent.h"
 
@@ -14,14 +15,10 @@ namespace Lumina
     {
         bool Contains(const TVector<int32>& Indices, int32 Value)
         {
-            for (int32 V : Indices)
+            return eastl::any_of(Indices.begin(), Indices.end(), [Value] (int32 Index)
             {
-                if (V == Value)
-                {
-                    return true;
-                }
-            }
-            return false;
+                return Index == Value;
+            });
         }
 
         // Game thread only: Lua refs are not thread-safe.
@@ -59,7 +56,7 @@ namespace Lumina
                         {
                             if (Callback.IsInvokable())
                             {
-                                Callback.Invoke(Entity, Notify.NotifyName, Notify.Time);
+                                std::ignore = Callback.Invoke(Entity, Notify.NotifyName, Notify.Time);
                             }
                         }
                     }
@@ -123,11 +120,11 @@ namespace Lumina
                     {
                         if (!bWasActive && bAdvanced && Binding.OnBegin.IsInvokable())
                         {
-                            Binding.OnBegin.Invoke(Entity, State.NotifyName, State.StartTime);
+                            std::ignore = Binding.OnBegin.Invoke(Entity, State.NotifyName, State.StartTime);
                         }
                         if (bAdvanced && Binding.OnTick.IsInvokable())
                         {
-                            Binding.OnTick.Invoke(Entity, State.NotifyName, Alpha);
+                            std::ignore = Binding.OnTick.Invoke(Entity, State.NotifyName, Alpha);
                         }
                     }
                 }
@@ -140,7 +137,7 @@ namespace Lumina
     void SSimpleAnimationSystem::Update(const FSystemContext& SystemContext) noexcept
     {
         LUMINA_PROFILE_SCOPE();
-        auto View = SystemContext.CreateView<SSimpleAnimationComponent, SSkeletalMeshComponent>();
+        auto View = SystemContext.CreateView<SSimpleAnimationComponent, SSkeletalMeshComponent>(entt::exclude<SDisabledTag>);
 
         auto Handle = View.handle();
         if (Handle->empty())

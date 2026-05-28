@@ -80,9 +80,11 @@ namespace Lumina::RHI
         InTexture->SetResourceID(static_cast<int32>(Index));
 
         // Per-mip storage views for SPD-style passes that write each mip via the
-        // bindless RW table without allocating a per-pass binding set.
+        // bindless RW table without allocating a per-pass binding set. Single-mip
+        // storage images (render targets painted by compute) get a mip-0 UAV too;
+        // GetMipUAVIndex(0) is the bindless RWTexture2D slot the paint shader writes.
         const FRHIImageDesc& Desc = InTexture->GetDescription();
-        if (Desc.Flags.IsFlagSet(EImageCreateFlags::Storage) && Desc.NumMips > 1)
+        if (Desc.Flags.IsFlagSet(EImageCreateFlags::Storage))
         {
             TVector<int32>& MipIndices = InTexture->GetMipUAVIndices();
             MipIndices.resize(Desc.NumMips);

@@ -6,6 +6,7 @@
 #include "Paths/Paths.h"
 #include "Platform/Filesystem/FileHelper.h"
 #include "TaskSystem/TaskSystem.h"
+#include "TaskSystem/ThreadedCallback.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 
 namespace Lumina
@@ -62,6 +63,11 @@ namespace Lumina
     {
         ImGuiX::Notifications::NotifySuccess("Asset Registry Finished Initial Discovery: Num [{}]", Assets.size());
         LOG_INFO("Asset Registry Finished Initial Discovery: Num [{}]", Assets.size());
+
+        MainThread::Enqueue([this]
+        {
+            BroadcastRegistryUpdate();
+        });
     }
 
     void FAssetRegistry::AssetCreated(const CObject* Asset)

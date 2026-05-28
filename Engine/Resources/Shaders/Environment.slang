@@ -17,6 +17,10 @@
 // each frame -- either from the procedural sky shader or from the
 // imported HDRI via EquirectToCubemap.
 [[vk::binding(1, 2)]] SamplerCube                        uSkyCube;
+// Imported HDRI equirect, sampled directly for the visible background so the
+// sky shows full source resolution instead of the 256-face IBL cube. Bound to
+// a placeholder in non-HDRI modes, where it is never read.
+[[vk::binding(2, 2)]] Sampler2D                          uEquirect;
 
 struct FragmentInput  { float2 UV : TEXCOORD0; };
 struct FragmentOutput { float4 Color : SV_Target0; };
@@ -52,10 +56,23 @@ FragmentOutput FragmentMain(FragmentInput Input)
     }
     else
     {
-        // Gradient / Dynamic / HDRI all live in uSkyCube now. The cube is
-        // produced by SkyCubeCapturePass earlier this frame.
+        // Gradient / Dynamic read uSkyCube (produced by SkyCubeCapturePass).
+        // HDRI samples its source equirect directly: the 256-face cube is fine
+        // for IBL but too coarse to show full-screen, so reading the panorama
+        // per-pixel restores its detail.
         float3 RayDir = GetViewRay(Input.UV);
-        Color = uSkyCube.SampleLevel(RayDir, 0.0).rgb;
+        if (SkyMode == SKY_MODE_HDRI)
+        {
+            // World ray -> equirect UV. Matches EquirectToCubemap.slang so the
+            // visible sky lines up with the cube-derived IBL / reflections.
+            float u = 0.5 + atan2(-RayDir.z, RayDir.x) * (1.0 / TWO_PI);
+            float v = 0.5 - asin(clamp(RayDir.y, -1.0, 1.0)) * INV_PI;
+            Color = uEquirect.SampleLevel(float2(u, v), 0.0).rgb;
+        }
+        else
+        {
+            Color = uSkyCube.SampleLevel(RayDir, 0.0).rgb;
+        }
 
         // Per-pixel overlays (Dynamic mode only). Sun, moon, and stars are
         // pixel-scale features that look blocky baked into a 256 cube, so

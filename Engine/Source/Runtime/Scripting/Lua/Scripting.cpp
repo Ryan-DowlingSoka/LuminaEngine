@@ -19,7 +19,10 @@
 #include "Memory/SmartPtr.h"
 #include "Paths/Paths.h"
 #include "Platform/Filesystem/FileHelper.h"
+#include "Assets/AssetRegistry/AssetRegistry.h"
+#include "TaskSystem/ThreadedCallback.h"
 #include "World/World.h"
+#include "World/Entity/RuntimeComponent.h"
 #include "UI/RmlUiBridge.h"
 #include "Core/Application/Application.h"
 #include "Core/Object/Class.h"
@@ -331,6 +334,8 @@ namespace Lumina::Lua
 
         void* Block = lua_newuserdatataggedwithmetatable(L, Layout->Size, Layout->Tag);
         Layout->Initialize(Block);
+        // SetExternal constructs the userdata's owning TObjectPtr<ClassT> (takes a strong GC ref);
+        // the tag's destructor (TClass::Register) runs ~TObjectPtr to release it.
         Layout->SetExternal(Block, Object);
     }
 
@@ -827,6 +832,19 @@ namespace Lumina::Lua
             .AddFunction<[](float Angle, glm::vec3 Axis) { return glm::angleAxis(Angle, Axis); }>("FromAngleAxis")
             .AddFunction<[](glm::quat& Self, glm::vec3 V) { return Self * V; }>("RotateVector")
             .Register();
+
+        RegisterRuntimeComponentMetatable(L);
+        RegisterAllRuntimeComponentTypeGlobals(L);
+
+        // Re-register on registry updates (discovery finishes after init; deferred to avoid
+        // deadlock with AssetsMutex held during the broadcast).
+        FAssetRegistry::Get().GetOnAssetRegistryUpdated().AddLambda([this]
+        {
+            MainThread::Enqueue([this]
+            {
+                RegisterAllRuntimeComponentTypeGlobals(L);
+            });
+        });
 
         LoadStdlibFiles();
     }
@@ -1413,7 +1431,27 @@ namespace Lumina::Lua
 
     void FScriptingContext::RunGC()
     {
-        
+        if (L == nullptr)
+        {
+            return;
+        }
+
+        // Userdata finalizers release the C++ strong refs they hold; those releases can unpin
+        // further Lua objects (registry FRefs in CObject dtors), so collect until the heap is
+        // stable to drain cascading ownership chains instead of leaking them past teardown.
+        auto TotalBytes = [&] { return (lua_gc(L, LUA_GCCOUNT, 0) * 1024) + lua_gc(L, LUA_GCCOUNTB, 0); };
+
+        int Prev = TotalBytes();
+        for (int Pass = 0; Pass < 8; ++Pass)
+        {
+            lua_gc(L, LUA_GCCOLLECT, 0);
+            const int Now = TotalBytes();
+            if (Now >= Prev)
+            {
+                break;
+            }
+            Prev = Now;
+        }
     }
 
     FRef FScriptingContext::GetGlobalsRef() const

@@ -18,6 +18,7 @@ namespace Lumina
         FStringView GetDefaultAssetCreationName() override { return "NewMaterialFunction"; }
         FString GetAssetDescription() const override { return "A reusable material subgraph with inputs and outputs, usable inside materials."; }
         CClass* GetAssetClass() const override { return CMaterialFunction::StaticClass(); }
+        FString GetCategory() const override { return "Material"; }
 
     };
 }

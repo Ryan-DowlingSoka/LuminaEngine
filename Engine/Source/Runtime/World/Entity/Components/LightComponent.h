@@ -122,9 +122,11 @@ namespace Lumina
         PROPERTY(Editable, Category = "Cascaded Shadows")
         bool bCastShadows = true;
 
-        /** Blend between uniform (0) and logarithmic (1) cascade split distribution. Higher packs detail near the camera. */
+        /** Blend between uniform (0) and logarithmic (1) cascade split distribution. Higher packs detail
+        near the camera but shrinks cascade 0, so the sharp range ends close and the jump to the lower-res
+        outer cascade is abrupt. ~0.85 pushes the first split outward for a longer high-quality range. */
         PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 0.0f, ClampMax = 1.0f, Delta = 0.01f)
-        float CascadeSplitLambda = 0.97f;
+        float CascadeSplitLambda = 0.85f;
 
         /** Maximum view distance that receives cascaded shadows; shadows fade out before this. */
         PROPERTY(Editable, Category = "Cascaded Shadows", ClampMin = 1.0f)

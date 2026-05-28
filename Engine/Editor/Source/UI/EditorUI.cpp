@@ -40,6 +40,8 @@
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Assets/AssetTypes/Animation/AnimationGraph/AnimationGraph.h"
 #include "Assets/AssetTypes/Blackboard/Blackboard.h"
+#include "Assets/AssetTypes/DataAsset/DataAsset.h"
+#include "Assets/AssetTypes/DataAsset/DataAssetSchema.h"
 #include "Assets/AssetTypes/GeometryCollection/GeometryCollection.h"
 #include "Assets/AssetTypes/Material/Material.h"
 #include "Assets/AssetTypes/MaterialFunction/MaterialFunction.h"
@@ -89,6 +91,7 @@
 #include "Tools/ToolFlags.h"
 #include "Tools/WorldEditorTool.h"
 #include "Tools/Debug/AboutEditorTool.h"
+#include "Tools/Debug/AssetRegistryEditorTool.h"
 #include "Tools/Debug/ConsoleVariableEditorTool.h"
 #include "Tools/Debug/MemoryProfilerEditorTool.h"
 #include "Tools/Debug/ObjectBrowserEditorTool.h"
@@ -99,6 +102,9 @@
 #include "Tools/AssetEditors/Animation/AnimationEditorTool.h"
 #include "Tools/AssetEditors/AnimationGraph/AnimationGraphEditorTool.h"
 #include "Tools/AssetEditors/Blackboard/BlackboardEditorTool.h"
+#include "Tools/AssetEditors/DataAsset/DataAssetEditorTool.h"
+#include "Tools/AssetEditors/DataAsset/DataAssetSchemaEditorTool.h"
+#include "Tools/AssetEditors/EntityComponentType/EntityComponentTypeEditorTool.h"
 #include "Tools/AssetEditors/GeometryCollection/GeometryCollectionEditorTool.h"
 #include "Tools/AssetEditors/MaterialEditor/MaterialEditorTool.h"
 #include "Tools/AssetEditors/MaterialEditor/MaterialInstanceEditorTool.h"
@@ -560,6 +566,18 @@ namespace Lumina
         else if (Asset->IsA<CBlackboard>())
         {
             NewTool = CreateTool<FBlackboardEditorTool>(this, Asset);
+        }
+        else if (Asset->IsA<CDataAssetSchema>())
+        {
+            NewTool = CreateTool<FDataAssetSchemaEditorTool>(this, Asset);
+        }
+        else if (Asset->IsA<CDataAsset>())
+        {
+            NewTool = CreateTool<FDataAssetEditorTool>(this, Asset);
+        }
+        else if (Asset->IsA<CEntityComponentType>())
+        {
+            NewTool = CreateTool<FEntityComponentTypeEditorTool>(this, Asset);
         }
         else if (Asset->IsA<CGeometryCollection>())
         {
@@ -1492,14 +1510,7 @@ namespace Lumina
         }
     
         ImGui::Separator();
-    
-        if (ImGui::MenuItem(LE_ICON_DATABASE " Asset Registry"))
-        {
-            AssetRegistryDialog();
-        }
-    
-        ImGui::Separator();
-    
+
         DrawToolMenuItem<FProjectPackagerEditorTool>(LE_ICON_PACKAGE_VARIANT " Package Project...", this);
 
         ImGui::EndMenu();
@@ -1515,6 +1526,7 @@ namespace Lumina
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.62f, 1.0f), "Debug Windows");
         ImGui::Separator();
 
+        DrawToolMenuItem<FAssetRegistryEditorTool>(LE_ICON_DATABASE " Asset Registry", this);
         DrawToolMenuItem<FInputActionEditorTool>(LE_ICON_KEYBOARD " Input Actions", this);
         DrawToolMenuItem<FScriptsInfoEditorTool>(LE_ICON_LANGUAGE_LUA " Scripts Info", this);
         DrawToolMenuItem<FLuaDebuggerEditorTool>(LE_ICON_BUG " Lua Debugger", this);
@@ -1913,109 +1925,4 @@ namespace Lumina
         }
     }
 
-    void FEditorUI::AssetRegistryDialog()
-    {
-        struct FAssetDialogueState
-        {
-            FAssetData* SelectedData = nullptr;
-        };
-        
-        auto DialogueState = MakeUnique<FAssetDialogueState>();
-        
-        ModalManager.CreateDialogue("Asset Registry", ImVec2(1000, 700), [DialogueState = Move(DialogueState)] () -> bool
-        {
-            ImGui::BeginChild("SettingsCategories", ImVec2(200, 0), true);
-            {
-                ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "Assets");
-                ImGui::Separator();
-                ImGui::Spacing();
-                
-                const FAssetDataMap& Assets = FAssetRegistry::Get().GetAssets();
-                
-                if (ImGui::BeginTable("##AssetList", 1, ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY))
-                {
-                    ImGui::TableSetupColumn("Name");
-                    ImGui::TableHeadersRow();
-    
-                    for (const TUniquePtr<FAssetData>& Asset : Assets)
-                    {
-                        ImGui::TableNextRow();
-                        
-                        ImGui::TableNextColumn();
-                        bool bIsSelected = (DialogueState->SelectedData == Asset.get());
-                        if (ImGui::Selectable(Asset->AssetName.c_str(), bIsSelected))
-                        {
-                            DialogueState->SelectedData = Asset.get();
-                        }
-                    }
-                    
-                    ImGui::EndTable();
-                }
-            }
-            ImGui::EndChild();
-            
-            ImGui::SameLine();
-            
-            ImGui::BeginChild("SettingsContent", ImVec2(0, -40), true);
-            {
-                if (DialogueState->SelectedData)
-                {
-                    FAssetData* Asset = DialogueState->SelectedData;
-                    
-                    ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "Asset Details");
-                    ImGui::Separator();
-                    ImGui::Spacing();
-                    
-                    ImGui::Columns(2, nullptr, false);
-                    ImGui::SetColumnWidth(0, 100);
-                    
-                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Name:");
-                    ImGui::NextColumn();
-                    ImGui::TextUnformatted(Asset->AssetName.c_str());
-                    ImGui::NextColumn();
-                    ImGui::Spacing();
-                    
-                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Class:");
-                    ImGui::NextColumn();
-                    ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "%s", Asset->AssetClass.c_str());
-                    ImGui::NextColumn();
-                    ImGui::Spacing();
-                    
-                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Path:");
-                    ImGui::NextColumn();
-                    ImGui::TextWrapped("%s", Asset->Path.c_str());
-                    ImGui::NextColumn();
-                    ImGui::Spacing();
-                    
-                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "GUID:");
-                    ImGui::NextColumn();
-                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", Asset->AssetGUID.ToString().c_str());
-                    ImGui::NextColumn();
-                    ImGui::Spacing();
-
-                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Size On Disk:");
-                    ImGui::NextColumn();
-                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", ImGuiX::FormatSize(VFS::Size(Asset->Path)).c_str());
-                    ImGui::NextColumn();
-                    
-                    ImGui::Columns(1);
-                }
-                else
-                {
-                    ImGui::TextDisabled("Select an asset to view details");
-                }
-            }
-            ImGui::EndChild();
-            
-            ImGui::Spacing();
-            
-            if (ImGui::Button("Close", ImVec2(120, 0)))
-            {
-                return true;
-            }
-            
-            return false;
-        }, false);
-    }
-    
 }

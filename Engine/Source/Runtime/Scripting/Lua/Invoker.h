@@ -37,7 +37,7 @@ namespace Lumina::Lua
     static void PushArg(lua_State* L, TParam&& Param)
     {
         using BaseT = eastl::decay_t<TParam>;
-    
+
         if constexpr (TLuaNativeType<BaseT>::value)
         {
             TStack<BaseT>::Push(L, Param);
@@ -53,6 +53,42 @@ namespace Lumina::Lua
         else
         {
            TStack<TParam>::Push(L, eastl::forward<TParam>(Param));
+        }
+    }
+
+    namespace ArgResolve
+    {
+        // Count of the parameters before index I that are read from the argument stack (i.e. not
+        // TLuaContext-injected). Used to map a parameter index to its absolute stack slot so that
+        // injected parameters don't shift the positional reads after them.
+        template<typename ArgsT, size_t... J>
+        constexpr int CountStackArgsImpl(eastl::index_sequence<J...>)
+        {
+            return (0 + ... + (TLuaContext<eastl::remove_cvref_t<eastl::tuple_element_t<J, ArgsT>>>::value ? 0 : 1));
+        }
+
+        template<typename ArgsT, size_t I>
+        constexpr int CountStackArgsBefore()
+        {
+            return CountStackArgsImpl<ArgsT>(eastl::make_index_sequence<I>{});
+        }
+
+        // Resolve parameter I: context parameters come from the execution context (no stack slot);
+        // the rest are read positionally from StackBase + (# stack parameters before I). Each call
+        // computes an absolute index, so the unspecified argument-evaluation order is irrelevant.
+        template<typename ArgsT, size_t I>
+        decltype(auto) ResolveArg(lua_State* L, int StackBase)
+        {
+            using P     = eastl::tuple_element_t<I, ArgsT>;
+            using BaseP = eastl::remove_cvref_t<P>;
+            if constexpr (TLuaContext<BaseP>::value)
+            {
+                return TLuaContext<BaseP>::Get(L);
+            }
+            else
+            {
+                return GetArg<P>(L, StackBase + CountStackArgsBefore<ArgsT, I>());
+            }
         }
     }
     
@@ -77,12 +113,12 @@ namespace Lumina::Lua
                 
                 if constexpr (eastl::is_void_v<ReturnT>)
                 {
-                    (Self->*TFunc)(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 2)...);
+                    (Self->*TFunc)(ArgResolve::ResolveArg<ArgsT, Is>(L, 2)...);
                     return 0;
                 }
                 else
                 {
-                    decltype(auto) Ret = (Self->*TFunc)(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 2)...);
+                    decltype(auto) Ret = (Self->*TFunc)(ArgResolve::ResolveArg<ArgsT, Is>(L, 2)...);
                     PushArg(L, eastl::forward<decltype(Ret)>(Ret));
                     return 1;
                 }
@@ -91,12 +127,12 @@ namespace Lumina::Lua
             {
                 if constexpr (eastl::is_void_v<ReturnT>)
                 {
-                    TFunc(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 1)...);
+                    TFunc(ArgResolve::ResolveArg<ArgsT, Is>(L, 1)...);
                     return 0;
                 }
                 else
                 {
-                    decltype(auto) Ret = TFunc(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 1)...);
+                    decltype(auto) Ret = TFunc(ArgResolve::ResolveArg<ArgsT, Is>(L, 1)...);
                     PushArg(L, eastl::forward<decltype(Ret)>(Ret));
                     return 1;
                 }
@@ -131,12 +167,12 @@ namespace Lumina::Lua
         {
             if constexpr (eastl::is_void_v<ReturnT>)
             {
-                (Self->*TFunc)(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 2)...);
+                (Self->*TFunc)(ArgResolve::ResolveArg<ArgsT, Is>(L, 2)...);
                 return 0;
             }
             else
             {
-                decltype(auto) Ret = (Self->*TFunc)(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 2)...);
+                decltype(auto) Ret = (Self->*TFunc)(ArgResolve::ResolveArg<ArgsT, Is>(L, 2)...);
                 PushArg(L, eastl::forward<decltype(Ret)>(Ret));
                 return 1;
             }
@@ -166,12 +202,12 @@ namespace Lumina::Lua
                 
                 if constexpr (eastl::is_void_v<ReturnT>)
                 {
-                    (Self->*TFunc)(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 2)...);
+                    (Self->*TFunc)(ArgResolve::ResolveArg<ArgsT, Is>(L, 2)...);
                     return 0;
                 }
                 else
                 {
-                    decltype(auto) Ret = (Self->*TFunc)(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 2)...);
+                    decltype(auto) Ret = (Self->*TFunc)(ArgResolve::ResolveArg<ArgsT, Is>(L, 2)...);
                     PushArg(L, eastl::forward<decltype(Ret)>(Ret));
                     return 1;
                 }
@@ -180,12 +216,12 @@ namespace Lumina::Lua
             {
                 if constexpr (eastl::is_void_v<ReturnT>)
                 {
-                    TFunc(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 1)...);
+                    TFunc(ArgResolve::ResolveArg<ArgsT, Is>(L, 1)...);
                     return 0;
                 }
                 else
                 {
-                    decltype(auto) Ret = TFunc(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 1)...);
+                    decltype(auto) Ret = TFunc(ArgResolve::ResolveArg<ArgsT, Is>(L, 1)...);
                     PushArg(L, eastl::forward<decltype(Ret)>(Ret));
                     return 1;
                 }
@@ -216,12 +252,12 @@ namespace Lumina::Lua
                 
                 if constexpr (eastl::is_void_v<ReturnT>)
                 {
-                    (Self->*TFunc)(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 1)...);
+                    (Self->*TFunc)(ArgResolve::ResolveArg<ArgsT, Is>(L, 1)...);
                     return 0;
                 }
                 else
                 {
-                    decltype(auto) Ret = (Self->*TFunc)(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 1)...);
+                    decltype(auto) Ret = (Self->*TFunc)(ArgResolve::ResolveArg<ArgsT, Is>(L, 1)...);
                     PushArg(L, eastl::forward<decltype(Ret)>(Ret));
                     return 1;
                 }
@@ -230,12 +266,12 @@ namespace Lumina::Lua
             {
                 if constexpr (eastl::is_void_v<ReturnT>)
                 {
-                    TFunc(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 1)...);
+                    TFunc(ArgResolve::ResolveArg<ArgsT, Is>(L, 1)...);
                     return 0;
                 }
                 else
                 {
-                    decltype(auto) Ret = TFunc(GetArg<eastl::tuple_element_t<Is, ArgsT>>(L, Is + 1)...);
+                    decltype(auto) Ret = TFunc(ArgResolve::ResolveArg<ArgsT, Is>(L, 1)...);
                     PushArg(L, eastl::forward<decltype(Ret)>(Ret));
                     return 1;
                 }

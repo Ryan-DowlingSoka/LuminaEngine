@@ -198,7 +198,16 @@ namespace Lumina
         ImGui::TableNextColumn();
         {
             const bool bHasExtras = HasExtraControls();
-            const int ColumnCount = bHasExtras ? 3 : 2;
+
+            // Opt-in per-row trailing control (e.g. a delete button), gated to top-level
+            // rows -- a category child -- so nested struct members / array elements don't
+            // inherit it from the shared callbacks.
+            const bool bHasTrailing = Callbacks.RowTrailingControlFn
+                && PropertyHandle && PropertyHandle->Property
+                && ParentRow != nullptr && ParentRow->IsCategory();
+            const float TrailingWidth = Callbacks.RowTrailingControlWidth > 0.0f ? Callbacks.RowTrailingControlWidth : 24.0f;
+
+            const int ColumnCount = 2 + (bHasExtras ? 1 : 0) + (bHasTrailing ? 1 : 0);
 
             constexpr ImGuiTableFlags Flags = ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_SizingFixedFit;
             ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(2, 0));
@@ -208,6 +217,10 @@ namespace Lumina
                 if (bHasExtras)
                 {
                     ImGui::TableSetupColumn("##Extra", ImGuiTableColumnFlags_WidthFixed, GetExtraControlsSectionWidth());
+                }
+                if (bHasTrailing)
+                {
+                    ImGui::TableSetupColumn("##Trailing", ImGuiTableColumnFlags_WidthFixed, TrailingWidth);
                 }
                 ImGui::TableSetupColumn("##Reset", ImGuiTableColumnFlags_WidthFixed, ResetColumnWidth);
 
@@ -220,6 +233,12 @@ namespace Lumina
                 {
                     ImGui::TableNextColumn();
                     DrawExtraControlsSection();
+                }
+
+                if (bHasTrailing)
+                {
+                    ImGui::TableNextColumn();
+                    Callbacks.RowTrailingControlFn(PropertyHandle->Property);
                 }
 
                 ImGui::TableNextColumn();

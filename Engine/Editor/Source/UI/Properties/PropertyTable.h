@@ -32,6 +32,11 @@ namespace Lumina
         FPropertyChangedEventFn StartChangeCallback;
         FPropertyChangedEventFn FinishChangeCallback;
 
+        // Optional trailing control (e.g. a delete button) drawn at the end of each
+        // top-level property row, in its own fixed column. Receives that row's property.
+        // Null by default, so tables that don't set it render exactly as before.
+        TFunction<void(FProperty*)> RowTrailingControlFn;
+        float                       RowTrailingControlWidth = 0.0f;
     };
     
     class FPropertyRow

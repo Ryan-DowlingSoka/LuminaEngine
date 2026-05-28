@@ -59,6 +59,10 @@ namespace Lumina
         virtual FString GetAssetName() const { return ""; }
         virtual FString GetAssetDescription() const { return ""; }
         virtual CClass* GetAssetClass() const { return nullptr; }
+
+        // Groups this asset type in the content browser's "New Asset" menu. Keep the set of
+        // category strings small and shared across related factories.
+        virtual FString GetCategory() const { return "Miscellaneous"; }
         virtual FStringView GetDefaultAssetCreationName() { return "New_Asset"; }
         
         virtual CObject* CreateNew(const FName& Name, CPackage* Package) { return nullptr; }

@@ -21,6 +21,10 @@ namespace Lumina::Lua
     struct FScript;
     DECLARE_MULTICAST_DELEGATE(FScriptTransactionDelegate, FStringView);
 
+    // Fired when the set of live VM globals changes (e.g. a runtime component type's global is
+    // registered/unregistered). Editors re-harvest their autocomplete symbol index in response.
+    DECLARE_MULTICAST_DELEGATE(FLuaGlobalsChangedDelegate);
+
     // Result of a single luau_compile attempt. Line is 1-based as Luau
     // reports it (begin.line + 1); -1 means the message had no parsable
     // location prefix.
@@ -171,8 +175,11 @@ namespace Lumina::Lua
         FScriptCompileErrorDelegate   OnScriptCompileError;
         FScriptCompileSuccessDelegate OnScriptCompileSuccess;
 
+        // Broadcast when globals are added/removed at runtime (see FLuaGlobalsChangedDelegate).
+        FLuaGlobalsChangedDelegate    OnGlobalsChanged;
+
     public:
-        
+
         RUNTIME_API lua_State* GetVM() const { return L; }
 
     private:

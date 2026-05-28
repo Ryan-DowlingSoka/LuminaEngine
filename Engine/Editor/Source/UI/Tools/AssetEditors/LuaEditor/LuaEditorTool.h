@@ -250,6 +250,11 @@ namespace Lumina
         // status-bar line. Cleared on a successful recompile.
         FDelegateHandle                     CompileErrorHandle;
         FDelegateHandle                     CompileSuccessHandle;
+
+        // Globals changed (e.g. a runtime component type created/removed) -> re-harvest the symbol
+        // index. Coalesced to one rebuild per frame via the dirty flag (the signal can fire in bursts).
+        FDelegateHandle                     GlobalsChangedHandle;
+        bool                                bSymbolsDirty = false;
         bool                                bHasCompileError = false;
         int                                 CompileErrorLine = -1; // 1-based
         FString                             CompileErrorMessage;

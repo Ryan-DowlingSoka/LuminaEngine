@@ -201,7 +201,7 @@ float2 CascadeAtlasUV(int ShadowDataIndex, int CascadeIndex, float2 CascadeUV)
 // scales the PCF radius by receiver-to-blocker depth so the kernel
 // collapses to a near-point sample at contact and opens to a soft penumbra
 // at distance.
-#define PCSS_BLOCKER_SEARCH_TAPS   8
+#define PCSS_BLOCKER_SEARCH_TAPS   16
 static const float PCSS_BlockerSearchRadius = 0.0035;  // UV radius of blocker search
 static const float PCSS_LightSize           = 0.05;     // Tunable: larger = softer far shadows
 static const float PCSS_MinFilterRadius     = 0.00001; // Near-point sample at contact
@@ -257,10 +257,16 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
 
     float SearchRadius = PCSS_BlockerSearchRadius * CascadeScale;
 
+    // Fixed (non per-pixel) rotation for the blocker search. Whether a pixel
+    // finds an occluder feeds a near-binary lit/shadow decision; rotating the
+    // sparse pattern per pixel turns that into a random gamble that stipples
+    // across thin-occluder penumbras (a capsule's whole soft shadow). A shared
+    // angle makes the estimate spatially coherent so the lit/shadow boundary
+    // follows the occluder smoothly. The final PCF keeps per-pixel rotation.
     [unroll]
     for (int s = 0; s < PCSS_BLOCKER_SEARCH_TAPS; ++s)
     {
-        float2 Offset   = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, Angle) * SearchRadius;
+        float2 Offset   = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, 0.0) * SearchRadius;
         float2 SampleUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
         float2 AtlasUV  = CascadeAtlasUV(Light.ShadowDataIndex, CascadeIndex, SampleUV);
         float  Depth    = uShadowCascadePoint.SampleLevel(AtlasUV, 0.0).r;
@@ -298,10 +304,17 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     FilterRadius *= lerp(0.75, 1.0, BlockerCoverage);
 
     // --- Stage 3: PCF with contact-hardened radius ------------------------------
-    // Tap count is per-light (ShadowParams2.y) so it can be tuned at runtime
-    // without a recompile. It's a uniform value, so the loop count never
-    // diverges across a wavefront; dropping [unroll] only costs the unroll.
-    int SampleCount = clamp(int(uLightData[0].ShadowParams2.y), 1, SHADOW_MAX_SAMPLE_COUNT);
+    // ShadowParams2.y is the per-light base tap count. A fixed count
+    // undersamples wide penumbras: the same taps spread over a larger radius
+    // drop sample density and the per-pixel rotated disk shows through as
+    // grain (worst on stretched grazing-angle shadows, where the receiver-to-
+    // blocker gap opens the filter to its cap). Scale the count with penumbra
+    // width so density stays roughly constant -- contact shadows stay cheap,
+    // soft shadows ramp toward the cap and smooth out.
+    int   BaseTaps    = clamp(int(uLightData[0].ShadowParams2.y), 1, SHADOW_MAX_SAMPLE_COUNT);
+    float RadiusFrac  = saturate(FilterRadius / max(MaxRadius, 1e-6));
+    int   SampleCount = clamp(int(lerp(float(BaseTaps), float(SHADOW_MAX_SAMPLE_COUNT), RadiusFrac)),
+                              BaseTaps, SHADOW_MAX_SAMPLE_COUNT);
     float Shadow = 0.0;
     [loop]
     for (int i = 0; i < SampleCount; ++i)

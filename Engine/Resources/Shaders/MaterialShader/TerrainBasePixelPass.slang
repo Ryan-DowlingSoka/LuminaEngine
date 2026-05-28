@@ -152,7 +152,7 @@ float2 TerrainCascadeAtlasUV(int ShadowDataIndex, int CascadeIndex, float2 Casca
 }
 
 // Mirrors BasePixelPass.slang PCSS so terrain matches mesh shadow behavior.
-#define PCSS_BLOCKER_SEARCH_TAPS   8
+#define PCSS_BLOCKER_SEARCH_TAPS   16
 static const float PCSS_BlockerSearchRadius = 0.0035;
 static const float PCSS_LightSize           = 0.05;
 static const float PCSS_MinFilterRadius     = 0.00001;
@@ -187,10 +187,12 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
 
     float SearchRadius = PCSS_BlockerSearchRadius * CascadeScale;
 
+    // Fixed rotation so the blocker (lit/shadow) decision is spatially coherent
+    // and doesn't stipple across thin-occluder penumbras. Matches BasePixelPass.
     [unroll]
     for (int s = 0; s < PCSS_BLOCKER_SEARCH_TAPS; ++s)
     {
-        float2 Offset   = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, Angle) * SearchRadius;
+        float2 Offset   = VogelDiskSample(s, PCSS_BLOCKER_SEARCH_TAPS, 0.0) * SearchRadius;
         float2 SampleUV = clamp(ProjectionUV + Offset, 0.001, 0.999);
         float2 AtlasUV  = TerrainCascadeAtlasUV(Light.ShadowDataIndex, CascadeIndex, SampleUV);
         float  Depth    = uShadowCascadePoint.SampleLevel(AtlasUV, 0.0).r;
@@ -217,9 +219,12 @@ float SampleDirectionalCascade(FLight Light, int CascadeIndex, float3 FragmentPo
     float BlockerCoverage = float(NumBlockers) / float(PCSS_BLOCKER_SEARCH_TAPS);
     FilterRadius *= lerp(0.75, 1.0, BlockerCoverage);
 
-    // Per-light runtime tap count (ShadowParams2.y); uniform, so no wavefront
-    // divergence from the dynamic loop. Matches BasePixelPass.
-    int SampleCount = clamp(int(uLightData[0].ShadowParams2.y), 1, SHADOW_MAX_SAMPLE_COUNT);
+    // Scale tap count with penumbra width so wide soft shadows keep their
+    // sample density and don't dither. Matches BasePixelPass.
+    int   BaseTaps    = clamp(int(uLightData[0].ShadowParams2.y), 1, SHADOW_MAX_SAMPLE_COUNT);
+    float RadiusFrac  = saturate(FilterRadius / max(MaxRadius, 1e-6));
+    int   SampleCount = clamp(int(lerp(float(BaseTaps), float(SHADOW_MAX_SAMPLE_COUNT), RadiusFrac)),
+                              BaseTaps, SHADOW_MAX_SAMPLE_COUNT);
     float Shadow = 0.0;
     [loop]
     for (int i = 0; i < SampleCount; ++i)
@@ -471,6 +476,10 @@ float4 GetTerrainLayerWeights4(float2 HeightUV)
 //  Main
 // ============================================================================
 
+// Terrain runs a depth pre-pass; the shaded pass tests (no depth write), so
+// force the depth test ahead of this heavy ~80-tap shadow PBR shader even
+// though it can discard (masked materials).
+[earlydepthstencil]
 [shader("fragment")]
 PSOutput FragmentMain(PSInput Input)
 {

@@ -106,23 +106,156 @@ namespace Lumina
     void FForwardRenderScene::Init()
     {
         LUMINA_MEMORY_SCOPE("Render Scene");
-        
+
         GRenderContext->WaitIdle();
 
-        SceneViewport = GRenderContext->CreateViewport(Windowing::GetPrimaryWindowHandle()->GetExtent(), "Forward Renderer Viewport");
+        // MSAA is a scene-global world setting; cached here and used to size every view's
+        // MS scratch images. Init runs before any Extract -- read straight from the world.
+        const SDefaultWorldSettings& InitSettings = World ? World->GetDefaultWorldSettings() : SDefaultWorldSettings{};
+        MSAASampleCount = ::Lumina::GetMSAASampleCount(InitSettings.MSAASampleCount);
 
+        {
+            FVertexAttributeDesc VertexDesc[2];
+            VertexDesc[0].SetElementStride(sizeof(FSimpleElementVertex));
+            VertexDesc[0].SetOffset(offsetof(FSimpleElementVertex, Position));
+            VertexDesc[0].Format = EFormat::RGBA32_FLOAT;
+
+            VertexDesc[1].SetElementStride(sizeof(FSimpleElementVertex));
+            VertexDesc[1].SetOffset(offsetof(FSimpleElementVertex, Color));
+            VertexDesc[1].Format = EFormat::R32_UINT;
+
+            SimpleVertexLayoutInput = GRenderContext->CreateInputLayout(VertexDesc, eastl::size(VertexDesc));
+        }
+
+        // Shared (view-independent) buffers + images first; the per-view binding sets
+        // built in AddSceneView reference these.
         InitBuffers();
 
-        // Must precede CreateLayouts() (inside InitFrameResources) so the BRDF + SMAA binding sets see valid images.
+        // Must precede the per-view binding sets so the BRDF + SMAA sets see valid images.
         InitSharedResources();
 
-        // Sky cube allocated before CreateLayouts(); contents filled per-frame by SkyCubeCapturePass().
+        // Sky cube allocated before any binding set; contents filled per-frame by SkyCubeCapturePass().
         InitSkyCube();
         InitIBLConvolutionTargets();
 
-        InitFrameResources();
+        // Cascade shadow atlas: shared across all views. Capture (preview) cameras reuse the
+        // primary camera's CSM cascades rather than fitting their own, so it's created once here.
+        {
+            FRHIImageDesc ImageDesc = {};
+            ImageDesc.Extent = glm::uvec2(GCSMAtlasWidth, GCSMAtlasHeight);
+            ImageDesc.Format = EFormat::D32;
+            ImageDesc.Dimension = EImageDimension::Texture2D;
+            ImageDesc.InitialState = EResourceStates::DepthWrite;
+            ImageDesc.bKeepInitialState = true;
+            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::DepthAttachment, EImageCreateFlags::ShaderResource);
+            ImageDesc.DebugName = "ShadowCascadeAtlas";
+            NamedImages[(int)ENamedImage::Cascade] = GRenderContext->CreateImage(ImageDesc);
+        }
+
+        // Shared layouts + view-independent sets (shadow sampling, empty set 2).
+        CreateSharedLayouts();
+
+        // Reserve so capture-view registration never reallocates SceneViews -- the render
+        // thread holds raw FSceneView* (CurrentView) and indexes SceneViews by snapshot.
+        SceneViews.reserve(MaxSceneViews);
+
+        // Primary view (index 0) tracks the swapchain; AddSceneView builds its per-view
+        // images/buffers/binding sets and lazily creates the shared scene/compose/SMAA/OIT layouts.
+        FRHIViewportRef PrimaryViewport = GRenderContext->CreateViewport(Windowing::GetPrimaryWindowHandle()->GetExtent(), "Forward Renderer Viewport");
+        AddSceneView(PrimaryViewport, /*bPrimary*/ true);
 
         SwapchainResizedHandle = FRenderManager::OnSwapchainResized.AddMember(this, &FForwardRenderScene::SwapchainResized);
+    }
+
+    FForwardRenderScene::FSceneView& FForwardRenderScene::AddSceneView(const FRHIViewportRef& Viewport, bool bPrimary)
+    {
+        // SceneViews backing storage is stable during a frame; views are only added/removed
+        // at controlled points (init / capture register), never mid-RenderView.
+        SceneViews.emplace_back();
+        FSceneView& View = SceneViews.back();
+        View.Viewport   = Viewport;
+        View.bIsPrimary = bPrimary;
+        View.Size       = Viewport->GetRenderTarget()->GetExtent();
+
+        // Per-view camera UBO (the only per-view constant buffer in set 2).
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FSceneGlobalData);
+            BufferDesc.Usage.SetMultipleFlags(BUF_UniformBuffer, BUF_Dynamic);
+            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::ConstantBuffer;
+            BufferDesc.DebugName = "Scene Global Data";
+            View.SceneBuffer = GRenderContext->CreateBuffer(BufferDesc);
+        }
+
+        // Per-view clustered-lighting grid (built from this view's projection).
+        {
+            FRHIBufferDesc BufferDesc;
+            BufferDesc.Size = sizeof(FCluster) * NumClusters;
+            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
+            BufferDesc.bKeepInitialState = true;
+            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
+            BufferDesc.DebugName = "Cluster SSBO";
+            View.ClusterBuffer = GRenderContext->CreateBuffer(BufferDesc);
+        }
+        View.bClusterGridDirty = true;   // fresh buffer has undefined contents.
+
+        InitViewImages(View);
+        View.ViewportState = MakeViewportStateFromImage(View.Images[(int)ENamedImage::HDR]);
+        CreateViewBindingSets(View);
+
+        return View;
+    }
+
+    int32 FForwardRenderScene::RegisterCaptureView(const glm::uvec2& Size)
+    {
+        // Reuse a disabled capture view of the same size if one exists (avoids growing
+        // SceneViews on repeated select/deselect); else allocate a new one.
+        const glm::uvec2 ClampedSize = glm::max(Size, glm::uvec2(1));
+        for (int32 i = 1; i < (int32)SceneViews.size(); ++i)
+        {
+            if (!SceneViews[i].bEnabled && SceneViews[i].Size == ClampedSize)
+            {
+                return i;
+            }
+        }
+
+        // Cap capture views so the reserved SceneViews never reallocates (which would dangle
+        // the render thread's CurrentView). The editor reuses one preview slot, so this is
+        // only reachable by a caller registering many simultaneous captures.
+        if (SceneViews.size() >= MaxSceneViews)
+        {
+            return -1;
+        }
+
+        // No WaitIdle needed: RHI resource creation is mutex-serialized, the new view's
+        // resources aren't referenced by any in-flight frame, and SceneViews is reserved so
+        // the push-back can't reallocate under the render thread (which only indexes views
+        // present in the frame snapshot, never this brand-new one until the next Extract).
+        FRHIViewportRef Viewport = GRenderContext->CreateViewport(ClampedSize, "Capture View");
+        const int32 Handle = (int32)SceneViews.size();
+        AddSceneView(Viewport, /*bPrimary*/ false);
+        return Handle;
+    }
+
+    void FForwardRenderScene::SetCaptureView(int32 Handle, const FViewVolume& View, bool bEnabled)
+    {
+        if (Handle <= 0 || Handle >= (int32)SceneViews.size())
+        {
+            return;
+        }
+        SceneViews[Handle].PendingViewVolume = View;
+        SceneViews[Handle].bEnabled          = bEnabled;
+    }
+
+    FRHIImage* FForwardRenderScene::GetCaptureRenderTarget(int32 Handle) const
+    {
+        if (Handle <= 0 || Handle >= (int32)SceneViews.size() || !SceneViews[Handle].Viewport)
+        {
+            return nullptr;
+        }
+        return SceneViews[Handle].Viewport->GetRenderTarget();
     }
 
     void FForwardRenderScene::InitSharedResources()
@@ -235,24 +368,29 @@ namespace Lumina
 
         Frame.ActivePostProcessMaterials = PendingPostProcessMaterials;
 
-        SceneViewport->SetViewVolume(ViewVolume);
+        // Extract (game thread) drives the primary view. Operate on the primary viewport via a
+        // LOCAL pointer -- never the shared SceneViewport member, which is render-thread state
+        // (repointed per view by PointAtView). Writing it here races RenderView and, with a
+        // capture view active, makes a capture pass occasionally target the main RT (flicker).
+        FRHIViewport* PrimaryViewport = SceneViews[0].Viewport.GetReference();
+        PrimaryViewport->SetViewVolume(ViewVolume);
 
         FSceneGlobalData& SceneGlobalData = Frame.SceneGlobalData;
-        SceneGlobalData.CameraData.Location             = glm::vec4(SceneViewport->GetViewVolume().GetViewPosition(), 1.0f);
-        SceneGlobalData.CameraData.Up                   = glm::vec4(SceneViewport->GetViewVolume().GetUpVector(), 1.0f);
-        SceneGlobalData.CameraData.Right                = glm::vec4(SceneViewport->GetViewVolume().GetRightVector(), 1.0f);
-        SceneGlobalData.CameraData.Forward              = glm::vec4(SceneViewport->GetViewVolume().GetForwardVector(), 1.0f);
-        SceneGlobalData.CameraData.View                 = SceneViewport->GetViewVolume().GetViewMatrix();
-        SceneGlobalData.CameraData.InverseView          = SceneViewport->GetViewVolume().GetInverseViewMatrix();
-        SceneGlobalData.CameraData.Projection           = SceneViewport->GetViewVolume().GetProjectionMatrix();
-        SceneGlobalData.CameraData.InverseProjection    = SceneViewport->GetViewVolume().GetInverseProjectionMatrix();
-        SceneGlobalData.ScreenSize                      = glm::vec4(SceneViewport->GetSize().x, SceneViewport->GetSize().y, 0.0f, 0.0f);
+        SceneGlobalData.CameraData.Location             = glm::vec4(PrimaryViewport->GetViewVolume().GetViewPosition(), 1.0f);
+        SceneGlobalData.CameraData.Up                   = glm::vec4(PrimaryViewport->GetViewVolume().GetUpVector(), 1.0f);
+        SceneGlobalData.CameraData.Right                = glm::vec4(PrimaryViewport->GetViewVolume().GetRightVector(), 1.0f);
+        SceneGlobalData.CameraData.Forward              = glm::vec4(PrimaryViewport->GetViewVolume().GetForwardVector(), 1.0f);
+        SceneGlobalData.CameraData.View                 = PrimaryViewport->GetViewVolume().GetViewMatrix();
+        SceneGlobalData.CameraData.InverseView          = PrimaryViewport->GetViewVolume().GetInverseViewMatrix();
+        SceneGlobalData.CameraData.Projection           = PrimaryViewport->GetViewVolume().GetProjectionMatrix();
+        SceneGlobalData.CameraData.InverseProjection    = PrimaryViewport->GetViewVolume().GetInverseProjectionMatrix();
+        SceneGlobalData.ScreenSize                      = glm::vec4(PrimaryViewport->GetSize().x, PrimaryViewport->GetSize().y, 0.0f, 0.0f);
         SceneGlobalData.GridSize                        = glm::vec4(ClusterGridSizeX, ClusterGridSizeY, ClusterGridSizeZ, 0.0f);
         SceneGlobalData.Time                            = (float)World->GetTimeSinceWorldCreation();
         SceneGlobalData.DeltaTime                       = Frame.CachedWorldDeltaTime;
-        SceneGlobalData.FarPlane                        = SceneViewport->GetViewVolume().GetFar();
-        SceneGlobalData.NearPlane                       = SceneViewport->GetViewVolume().GetNear();
-        SceneGlobalData.CullData.Frustum                = SceneViewport->GetViewVolume().GetFrustum();
+        SceneGlobalData.FarPlane                        = PrimaryViewport->GetViewVolume().GetFar();
+        SceneGlobalData.NearPlane                       = PrimaryViewport->GetViewVolume().GetNear();
+        SceneGlobalData.CullData.Frustum                = PrimaryViewport->GetViewVolume().GetFrustum();
         SceneGlobalData.CullData.ShadowFrustum          = SceneGlobalData.CullData.Frustum; // Rebuilt after directional light is processed.
         SceneGlobalData.CullData.bHasDirectional        = 0u;
         SceneGlobalData.CullData.InstanceNum            = (uint32)Frame.Instances.size();
@@ -275,11 +413,67 @@ namespace Lumina
         // never sees half-populated containers.
         ResetPass_GameThread();
 
+        // Snapshot the enabled capture views (camera + RT) before the gather, so BuildCullViews
+        // (inside CompileDrawCommands_GameThread) can append a frustum-only cull view for each.
+        for (int32 i = 1; i < (int32)SceneViews.size(); ++i)
+        {
+            if (!SceneViews[i].bEnabled)
+            {
+                continue;
+            }
+            FFrameData::FCaptureViewData Capture;
+            Capture.ViewVolume     = SceneViews[i].PendingViewVolume;
+            Capture.SceneViewIndex = i;
+            Frame.CaptureViews.push_back(Capture);
+        }
+
         // CPU half: parallel ECS gather + cull setup.
         CompileDrawCommands_GameThread();
 
+        // Finalize each capture view's per-view constants: inherit the primary's shared state
+        // (debug mode, time, instance count) then override the camera-specific fields.
+        for (FFrameData::FCaptureViewData& Capture : Frame.CaptureViews)
+        {
+            const FViewVolume& VV = Capture.ViewVolume;
+            FSceneGlobalData& Data = Capture.SceneGlobalData;
+            Data = Frame.SceneGlobalData;
+            Data.CameraData.Location          = glm::vec4(VV.GetViewPosition(), 1.0f);
+            Data.CameraData.Up                = glm::vec4(VV.GetUpVector(), 1.0f);
+            Data.CameraData.Right             = glm::vec4(VV.GetRightVector(), 1.0f);
+            Data.CameraData.Forward           = glm::vec4(VV.GetForwardVector(), 1.0f);
+            Data.CameraData.View              = VV.GetViewMatrix();
+            Data.CameraData.InverseView       = VV.GetInverseViewMatrix();
+            Data.CameraData.Projection        = VV.GetProjectionMatrix();
+            Data.CameraData.InverseProjection = VV.GetInverseProjectionMatrix();
+            const glm::uvec2 CaptureSize      = SceneViews[Capture.SceneViewIndex].Size;
+            Data.ScreenSize                   = glm::uvec4(CaptureSize.x, CaptureSize.y, 0, 0);
+            Data.FarPlane                     = VV.GetFar();
+            Data.NearPlane                    = VV.GetNear();
+            Data.CullData.Frustum             = VV.GetFrustum();
+        }
+
         // Per-slot copy of the atlas tile table -- render passes read this, not the live atlas.
         Frame.AtlasTiles = ShadowAtlas.GetAllocatedTiles();
+
+        // Capture the live terrain set here (game thread) so the render-thread terrain passes
+        // iterate this snapshot instead of the registry. Extract has exclusive ECS access;
+        // iterating the view on the render thread races concurrent entity spawn/destroy.
+        Frame.TerrainExtracts.clear();
+        {
+            FEntityRegistry& TerrainRegistry = World->GetEntityRegistry();
+            auto TerrainView = TerrainRegistry.view<STerrainComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            for (entt::entity Entity : TerrainView)
+            {
+                STerrainComponent& Terrain           = TerrainView.get<STerrainComponent>(Entity);
+                const STransformComponent& Transform = TerrainView.get<STransformComponent>(Entity);
+                Frame.TerrainExtracts.push_back({ Entity, &Terrain, Transform.GetWorldMatrix() });
+            }
+        }
+
+        // Drain pending render-target paint/clear requests into this frame's snapshot; the
+        // render thread replays them in TexturePaintPass. Each op pins its target image.
+        Frame.PaintOps.clear();
+        World->DrainRenderTargetPaints(Frame.PaintOps);
 
         Frame.bExtractedThisFrame = true;
 
@@ -307,8 +501,12 @@ namespace Lumina
         }
 
         CurrentFrameSlot        = Slot;
-        SceneBindingSet         = SceneBindingSets[CurrentFrameSlot];
-        SceneBindingSetReadOnly = SceneBindingSetReadOnlys[CurrentFrameSlot];
+
+        // Shared passes (cull/skinning/shadows/sky) run once with CurrentView = primary; the
+        // primary's full two-pass sequence then runs below, and capture views are shaded after.
+        PointAtView(SceneViews[0]);
+        CurrentCameraEarlyView = 0u;                          // primary's early/frustum cull view
+        CurrentCameraLateView  = Frame.CameraLateViewIndex;   // primary's late/occlusion cull view
 
         // DepthPyramid only changes on swapchain resize -- render-thread read is race-safe.
         Frame.SceneGlobalData.CullData.PyramidWidth      = (float)GetNamedImage(ENamedImage::DepthPyramid)->GetSizeX();
@@ -334,7 +532,12 @@ namespace Lumina
 
         ResetPass_RenderThread(CmdList);
         CompileDrawCommands_RenderThread(CmdList);
-        
+
+        {
+            GPU_PROFILE_SCOPE_COLOR(&CmdList, "Texture Paint", FColor(0.80f, 0.10f, 0.10f));
+            TexturePaintPass(CmdList);
+        }
+
         {
             LUMINA_PROFILE_SECTION("RenderPasses");
 
@@ -429,6 +632,12 @@ namespace Lumina
             {
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Cull", FColor(0.20f, 0.85f, 0.50f));
                 TerrainCullPass(CmdList);
+            }
+
+            // VS-only early-Z so the heavy terrain PS shades each visible pixel once.
+            {
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Terrain Depth", FColor(0.20f, 0.60f, 0.45f));
+                TerrainDepthPrePass(CmdList);
             }
 
             {
@@ -545,11 +754,88 @@ namespace Lumina
                 GPU_PROFILE_SCOPE_COLOR(&CmdList, "Widgets", FColor(0.80f, 0.20f, 0.95f));
                 WidgetPass(CmdList);
             }
+
+            // === Capture views ===
+            // Shade each enabled capture camera into its own RT, reusing the shared geometry,
+            // shadows and sky produced above (their draw lists were filled by the shared cull).
+            // Reduced single-pass sequence -- no two-pass occlusion, no editor/debug overlays.
+            for (const FFrameData::FCaptureViewData& Capture : Frame.CaptureViews)
+            {
+                if (Capture.SceneViewIndex <= 0 || Capture.SceneViewIndex >= (int32)SceneViews.size())
+                {
+                    continue;
+                }
+
+                GPU_PROFILE_SCOPE_COLOR(&CmdList, "Capture View", FColor(0.30f, 0.85f, 0.65f));
+
+                FSceneView& View = SceneViews[Capture.SceneViewIndex];
+                PointAtView(View);
+                // Render-thread-only mutation (game thread only touches the primary viewport),
+                // so cluster build / light cull read this capture's projection via SceneViewport.
+                View.Viewport->SetViewVolume(Capture.ViewVolume);
+                CurrentCameraEarlyView = Capture.CameraViewIndex;
+                CurrentCameraLateView  = ~0u;   // frustum-only: no late occlusion pass
+
+                // This view's camera UBO (BUF_Dynamic; host-mapped write, no barrier).
+                CmdList.WriteBuffer(View.SceneBuffer, &Capture.SceneGlobalData, sizeof(FSceneGlobalData));
+
+                RenderCaptureView(CmdList);
+            }
         }
 
         // ImGui composite + present still read FrameRing[Slot] later in the
         // render lambda; SignalFrameConsumed fires the per-slot signal there.
         RenderFrame = nullptr;
+    }
+
+    void FForwardRenderScene::RenderCaptureView(ICommandList& CmdList)
+    {
+        // CurrentView/SceneViewport/SceneBindingSet/cull indices already point at this capture.
+        // Geometry, shadows and sky are shared (already produced); this is a reduced forward
+        // sequence into the capture's own image chain. No HZB/late occlusion, no editor/debug
+        // overlays (picker, lines, billboards, widgets), no SMAA/post-process materials.
+
+        // Occluder depth (clears this view's depth); base pass fills the rest via GreaterOrEqual.
+        // With no occluders the prepass is skipped, so clear the capture's depth explicitly
+        // (the primary's ResetPass clear targets the primary view, not this one).
+        if (RenderFrame->OpaqueOccluderDrawList.empty())
+        {
+            CmdList.ClearImageUInt(GetNamedImage(ENamedImage::DepthAttachment), AllSubresources, 0);
+        }
+        DepthPrePassEarly(CmdList);
+
+        // Clustered lighting for this camera, then forward shading.
+        ClusterBuildPass(CmdList);
+        LightCullPass(CmdList);
+        EnvironmentPass(CmdList);
+        BasePass(CmdList);
+        // Terrain cull is frustum-only (reads this capture's camera from the scene set, no HZB)
+        // and writes per-terrain buffers; running after the primary, barriers order the WAR.
+        TerrainCullPass(CmdList);
+        TerrainDepthPrePass(CmdList);
+        TerrainRenderPass(CmdList);
+        TransparentPass(CmdList);
+        OITResolvePass(CmdList);
+
+        // Volumetric fog (froxel grid is per-view, camera-frustum aligned).
+        FroxelInjectPass(CmdList);
+        FroxelIntegratePass(CmdList);
+        FroxelApplyPass(CmdList);
+
+        // Tone-map chain into the capture RT (GetViewOutputTarget()). ToneMapping routes to the
+        // LDR intermediate when SMAA / post-process materials are active, expecting a later pass
+        // to write the final RT -- so the capture must run that tail too, or its RT stays black.
+        BloomPass(CmdList);
+        AutoExposurePass(CmdList);
+        ToneMappingPass(CmdList);
+        PostProcessMaterialPass(CmdList);
+
+        if (RenderFrame->CachedWorldSettings.SMAAQuality != ESMAAQuality::Off)
+        {
+            SMAAEdgeDetectionPass(CmdList);
+            SMAABlendWeightPass(CmdList);
+            SMAANeighborhoodBlendPass(CmdList);
+        }
     }
 
     void FForwardRenderScene::SignalFrameConsumed(uint8 FrameIndex)
@@ -563,7 +849,10 @@ namespace Lumina
         // they'd wipe pipelines shared across scenes/RmlUi/ImGui -> device lost.
         BindingCache.ReleaseResources();
 
-        SceneViewport = GRenderContext->CreateViewport(NewSize, "Forward Renderer Viewport");
+        // Only the primary view tracks the swapchain; capture views keep their own size.
+        FSceneView& Primary = SceneViews[0];
+        Primary.Viewport = GRenderContext->CreateViewport(NewSize, "Forward Renderer Viewport");
+        Primary.Size     = glm::uvec2((uint32)NewSize.x, (uint32)NewSize.y);
 
         InitFrameResources();
 
@@ -626,8 +915,9 @@ namespace Lumina
             auto EnvironmentView    = Registry.view<SEnvironmentComponent>(entt::exclude<SDisabledTag>);
             auto SkyLightView       = Registry.view<SSkyLightComponent>(entt::exclude<SDisabledTag>);
             auto FogView            = Registry.view<SExponentialHeightFogComponent>(entt::exclude<SDisabledTag>);
-            auto StaticView         = Registry.view<SStaticMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-            auto SkeletalView       = Registry.view<SSkeletalMeshComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            auto StaticView         = Registry.view<SStaticMeshComponent>(entt::exclude<SDisabledTag>);
+            auto SkeletalView       = Registry.view<SSkeletalMeshComponent>(entt::exclude<SDisabledTag>);
+            auto& TransformStorage  = Registry.storage<STransformComponent>();
             
             ECS::Utils::ResolveAllDirtyTransforms(Registry);
 
@@ -691,7 +981,7 @@ namespace Lumina
                     if (StaticView.contains(Entity))
                     {
                         const SStaticMeshComponent& MeshComponent      = StaticView.get<SStaticMeshComponent>(Entity);
-                        const STransformComponent&  TransformComponent = StaticView.get<STransformComponent>(Entity);
+                        const STransformComponent&  TransformComponent = TransformStorage.get(Entity);
                         ProcessStaticMeshEntityInternal(Entity, MeshComponent, TransformComponent, Local);
                     }
                 }
@@ -708,7 +998,7 @@ namespace Lumina
                     if (SkeletalView.contains(Entity))
                     {
                         SSkeletalMeshComponent&     MeshComponent      = SkeletalView.get<SSkeletalMeshComponent>(Entity);
-                        const STransformComponent&  TransformComponent = SkeletalView.get<STransformComponent>(Entity);
+                        const STransformComponent&  TransformComponent = TransformStorage.get(Entity);
                         ProcessSkeletalMeshEntityInternal(Entity, MeshComponent, TransformComponent, Local);
                     }
                 }
@@ -1104,7 +1394,10 @@ namespace Lumina
 
         // Populates CullViews[]/IndirectArgs[]; must run after AllocateShadowTiles so
         // every shadow view's VP is settled. Downstream size calcs read its lengths.
-        BuildCullViews(SceneViewport->GetViewVolume());
+        // Primary view volume from the frame snapshot -- NOT SceneViewport, which is
+        // render-thread state (repointed per view) and would be the capture's after a
+        // multi-view frame, culling the primary against the preview camera's frustum.
+        BuildCullViews(ExtractFrame->ViewVolume);
     }
 
     void FForwardRenderScene::CompileDrawCommands_RenderThread(ICommandList& CmdList)
@@ -1201,7 +1494,14 @@ namespace Lumina
 
         if (bAnyBufferResized)
         {
-            CreateLayouts();
+            // Shared buffers (Instance/Bone/Light/...) grew; every view's scene binding set
+            // references them, so rebuild each view's sets against the new buffers.
+            for (FSceneView& View : SceneViews)
+            {
+                CreateViewBindingSets(View);
+            }
+            // CreateViewBindingSets left the live members aimed at the last view; restore them.
+            PointAtView(*CurrentView);
         }
 
         {
@@ -1214,7 +1514,9 @@ namespace Lumina
             CmdList.CommitBarriers();
 
             CmdList.DisableAutomaticBarriers();
-            CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Scene), &SceneGlobalData, sizeof(FSceneGlobalData));
+            // Primary view's camera UBO (CurrentView is the primary here). Capture views
+            // upload their own SceneBuffer in the per-view capture loop in RenderView.
+            CmdList.WriteBuffer(CurrentView->SceneBuffer, &SceneGlobalData, sizeof(FSceneGlobalData));
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Instance), Instances.data(), InstanceSize);
             CmdList.WriteBuffer(GetNamedBuffer(ENamedBuffer::Bone), BonesData.data(),  BoneDataSize);
             if (!Frame.SkinDescriptors.empty())
@@ -1659,7 +1961,10 @@ namespace Lumina
             return;
         }
 
-        const glm::mat4 TransformMatrix = TransformComponent.GetWorldMatrix();
+        // ResolveAllDirtyTransforms already ran serially before this parallel gather, so CachedMatrix
+        // is authoritative. Read it directly like the static path -- GetWorldMatrix() would re-walk the
+        // parent chain and mutate the registry (remove<FNeedsTransformUpdate>) from a worker thread.
+        const glm::mat4& TransformMatrix = TransformComponent.CachedMatrix;
 
         // Reject before uploading bones (biggest per-entity skeletal cost).
         const float     CullScale   = glm::max(MeshComponent.BoundsScale, 1.0f);
@@ -1772,6 +2077,13 @@ namespace Lumina
         EntityRecord.LocalBoneOffset      = LocalBoneOffset;
         EntityRecord.GlobalSkinnedBase    = 0u;   // resolved during merge
 
+        // Skin-span accumulation folded into the draw-item loop below: the gate is known up front,
+        // and the per-surface offsets/counts the span needs are exactly what that loop computes --
+        // no second pass over GeometrySurfaces (which re-resolved every LOD).
+        const bool bAccumulateSkinSpan = (LocalBoneOffset != ~0u && MeshletHeaderAddress != 0ull);
+        uint32 MinMeshlet    = ~0u;
+        uint32 MaxMeshletEnd = 0u;
+
         for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
         {
             const FResolvedSlot Slot = ResolveSlot(Local, MeshComponent, Surface.MaterialIndex, bSignificantOccluder);
@@ -1809,39 +2121,34 @@ namespace Lumina
             Item.LocalBatchIndex      = LocalBatchIdx;
             Item.LocalDrawIndex       = LocalDrawIdx;
             Item._Pad                 = 0;
+
+            // Same offsets/counts the dropped second pass recomputed; fold them into the span here.
+            if (bAccumulateSkinSpan)
+            {
+                if (SurfaceMeshletCount > 0u)
+                {
+                    MinMeshlet    = glm::min(MinMeshlet, SurfaceMeshletOffset);
+                    MaxMeshletEnd = glm::max(MaxMeshletEnd, SurfaceMeshletOffset + SurfaceMeshletCount);
+                }
+                if (ShadowMeshletCount > 0u)
+                {
+                    MinMeshlet    = glm::min(MinMeshlet, ShadowMeshletOffset);
+                    MaxMeshletEnd = glm::max(MaxMeshletEnd, ShadowMeshletOffset + ShadowMeshletCount);
+                }
+            }
         }
 
         // Meshlets are LOD-major so the span is contiguous; GlobalSkinnedBase = compacted base - span start.
         uint32 SkinSliceSize = 0u;
-        if (LocalBoneOffset != ~0u && MeshletHeaderAddress != 0ull)
+        if (bAccumulateSkinSpan && MaxMeshletEnd > MinMeshlet)
         {
             const TVector<FMeshlet>& Meshlets = Resource.MeshletData.Meshlets;
-            uint32 MinMeshlet    = ~0u;
-            uint32 MaxMeshletEnd = 0u;
-            for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
-            {
-                const uint32 LODIndex       = ResolveSurfaceLOD(Surface, MeshComponent.ForcedLODIndex, RenderSettings.bUseLODs, DistanceOverRadius);
-                const uint32 ShadowLODIndex = ResolveShadowLOD(Surface, LODIndex, RenderSettings.ShadowLODBias);
-                const uint32 Offsets[2] = { Surface.LODMeshletOffset[LODIndex], Surface.LODMeshletOffset[ShadowLODIndex] };
-                const uint32 Counts[2]  = { Surface.LODMeshletCount[LODIndex],  Surface.LODMeshletCount[ShadowLODIndex]  };
-                for (int k = 0; k < 2; ++k)
-                {
-                    if (Counts[k] > 0u)
-                    {
-                        MinMeshlet    = glm::min(MinMeshlet, Offsets[k]);
-                        MaxMeshletEnd = glm::max(MaxMeshletEnd, Offsets[k] + Counts[k]);
-                    }
-                }
-            }
-            if (MaxMeshletEnd > MinMeshlet)
-            {
-                const FMeshlet& First = Meshlets[MinMeshlet];
-                const FMeshlet& Last  = Meshlets[MaxMeshletEnd - 1u];
-                EntityRecord.SkinMeshletStart = MinMeshlet;
-                EntityRecord.SkinMeshletCount = MaxMeshletEnd - MinMeshlet;
-                EntityRecord.SkinSpanStart    = First.VertexOffset;
-                SkinSliceSize                 = (Last.VertexOffset + Last.VertexCount) - First.VertexOffset;
-            }
+            const FMeshlet& First = Meshlets[MinMeshlet];
+            const FMeshlet& Last  = Meshlets[MaxMeshletEnd - 1u];
+            EntityRecord.SkinMeshletStart = MinMeshlet;
+            EntityRecord.SkinMeshletCount = MaxMeshletEnd - MinMeshlet;
+            EntityRecord.SkinSpanStart    = First.VertexOffset;
+            SkinSliceSize                 = (Last.VertexOffset + Last.VertexCount) - First.VertexOffset;
         }
         EntityRecord.SkinSliceSize = SkinSliceSize;
         if (SkinSliceSize == 0u)
@@ -1927,6 +2234,12 @@ namespace Lumina
             return;
         }
 
+        // Sub-thread scheduling dominates the merge for typical scenes: NumBatches is only tens, and the
+        // count/cursor passes are pure bookkeeping, so each dispatch + join costs more than the work it
+        // hands out. Only fan out once there's enough to amortize it; below the threshold every pass
+        // below runs inline on this thread (FParallelRange{0, N, 0}).
+        const bool bParallelMerge = TotalInstances > 4096;
+
         // Linear search: per-thread batch tables are tiny (tens of entries).
         // Scratch lives on scene members so capacity is reused across frames.
         MergeGlobalBatchKeys.clear();
@@ -2007,9 +2320,7 @@ namespace Lumina
             MergeGlobalDrawsPerBatch[b].clear();
         }
         {
-            DedupTaskGraph.Reset();   // reuse the persistent graph (allocator block + capacity)
-            FTaskGraph& DedupGraph = DedupTaskGraph;
-            DedupGraph.AddParallelFor(NumBatches, 1, [&](const Task::FParallelRange& Range)
+            auto DedupBody = [&](const Task::FParallelRange& Range)
             {
                 TFrameHashMap<uint64, uint32> Dedupe(FFrameArenaAllocator(FrameArenas[Range.Thread].get()));
                 for (uint32 b = Range.Start; b < Range.End; ++b)
@@ -2039,9 +2350,19 @@ namespace Lumina
                         }
                     }
                 }
-            });
-            DedupGraph.Dispatch();
-            DedupGraph.Wait();
+            };
+            if (bParallelMerge)
+            {
+                DedupTaskGraph.Reset();   // reuse the persistent graph (allocator block + capacity)
+                FTaskGraph& DedupGraph = DedupTaskGraph;
+                DedupGraph.AddParallelFor(NumBatches, 1, DedupBody);
+                DedupGraph.Dispatch();
+                DedupGraph.Wait();
+            }
+            else
+            {
+                DedupBody(Task::FParallelRange{ 0u, NumBatches, 0u });
+            }
         }
 
         // Each batch gets a contiguous block of draw args.
@@ -2064,7 +2385,7 @@ namespace Lumina
 
         // Per-batch GlobalDraw ranges are disjoint, so writes don't race.
         {
-            Task::ParallelFor(NumBatches, [&](const Task::FParallelRange& Range)
+            auto CountBody = [&](const Task::FParallelRange& Range)
             {
                 for (uint32 b = Range.Start; b < Range.End; ++b)
                 {
@@ -2080,7 +2401,9 @@ namespace Lumina
                         }
                     }
                 }
-            }, 1);
+            };
+            if (bParallelMerge) { Task::ParallelFor(NumBatches, CountBody, 1); }
+            else                { CountBody(Task::FParallelRange{ 0u, NumBatches, 0u }); }
         }
 
         // Prefix sum for instance offsets (serial; data dependency).
@@ -2098,7 +2421,7 @@ namespace Lumina
         // Per-batch DrawCursor slices are disjoint; race-free.
         MergeDrawCursor.assign(MergeDrawInstanceOffsets.begin(), MergeDrawInstanceOffsets.begin() + TotalDrawArgs);
         {
-            Task::ParallelFor(NumBatches, [&](const Task::FParallelRange& Range)
+            auto CursorBody = [&](const Task::FParallelRange& Range)
             {
                 for (uint32 b = Range.Start; b < Range.End; ++b)
                 {
@@ -2114,7 +2437,9 @@ namespace Lumina
                         }
                     }
                 }
-            }, 1);
+            };
+            if (bParallelMerge) { Task::ParallelFor(NumBatches, CursorBody, 1); }
+            else                { CursorBody(Task::FParallelRange{ 0u, NumBatches, 0u }); }
         }
 
         // Per-draw meshlet prefix sum; CullMeshlets atomically appends into per-view disjoint slices.
@@ -2130,7 +2455,7 @@ namespace Lumina
         {
             LUMINA_PROFILE_SECTION("Parallel Instance Write");
 
-            Task::ParallelFor(NumThreads, [&](const Task::FParallelRange& Range)
+            auto InstanceWriteBody = [&](const Task::FParallelRange& Range)
             {
                 for (uint32 t = Range.Start; t < Range.End; ++t)
                 {
@@ -2164,7 +2489,9 @@ namespace Lumina
                         Out.SkinnedVertexBase          = Entity.GlobalSkinnedBase;
                     }
                 }
-            }, 1);
+            };
+            if (bParallelMerge) { Task::ParallelFor(NumThreads, InstanceWriteBody, 1); }
+            else                { InstanceWriteBody(Task::FParallelRange{ 0u, NumThreads, 0u }); }
         }
 
         // Inclusive prefix sum; cull pass binary-searches to recover (instance, meshletLocal).
@@ -2224,6 +2551,13 @@ namespace Lumina
         if (!SceneCullContext.bEnabled)
         {
             return;
+        }
+
+        // Union in each active capture (preview camera) frustum so instances visible only to
+        // a preview survive the CPU pre-cull and reach the GPU per-view cull.
+        for (const FFrameData::FCaptureViewData& Capture : Frame.CaptureViews)
+        {
+            SceneCullContext.CaptureFrusta.push_back(Capture.ViewVolume.GetFrustum());
         }
 
         FEntityRegistry& Registry = World->GetEntityRegistry();
@@ -2319,7 +2653,7 @@ namespace Lumina
 
         if (PointLight.bCastShadows && ShouldRequestShadow(Light.Position, Light.Radius))
         {
-            const glm::vec3 CamPos = SceneViewport->GetViewVolume().GetViewPosition();
+            const glm::vec3 CamPos = ExtractFrame->ViewVolume.GetViewPosition();
             const float Dist = glm::distance(CamPos, Light.Position);
             constexpr float ResolutionScale = 2048.0f;
             const uint32 DesiredPixels = (uint32)((Light.Radius / glm::max(Dist, 0.01f)) * ResolutionScale);
@@ -2385,7 +2719,7 @@ namespace Lumina
 
         if (SpotLight.bCastShadows && ShouldRequestShadow(Light.Position, Light.Radius))
         {
-            const glm::vec3 CamPos = SceneViewport->GetViewVolume().GetViewPosition();
+            const glm::vec3 CamPos = ExtractFrame->ViewVolume.GetViewPosition();
             const float Dist = glm::distance(CamPos, Light.Position);
             constexpr float ResolutionScale = 2048.0f;
             const uint32 DesiredPixels = (uint32)((Light.Radius / glm::max(Dist, 0.01f)) * ResolutionScale);
@@ -2727,16 +3061,19 @@ namespace Lumina
                 Arg.StartInstanceLocation = ViewDrawListBase + DrawMeshletStartOffsets[d];
                 IndirectArgs.push_back(Arg);
             }
+            return ViewIndex;
         };
 
         // AllocateShadowTiles already guaranteed NumViews <= GMaxCullViews. The +1 camera-late
-        // view (two-pass occlusion) is appended last so earlier view-base indices stay valid.
+        // view (two-pass occlusion) is appended last so earlier view-base indices stay valid;
+        // capture camera views (frustum-only) are appended after that.
         const uint32 NumViews =
             1u +                                                        // Camera (early)
             (LightData.bHasSun ? (uint32)NumCascades : 0u) +            // CSM cascades
             (uint32)PackedShadows[(uint32)ELightType::Point].size() * 6u +
             (uint32)PackedShadows[(uint32)ELightType::Spot].size() +
-            1u;                                                         // Camera (late, phase 1)
+            1u +                                                        // Camera (late, phase 1)
+            (uint32)Frame.CaptureViews.size();                          // Capture cameras (frustum-only)
 
         ASSERT(NumViews <= (uint32)GMaxCullViews);
 
@@ -2837,6 +3174,16 @@ namespace Lumina
             CameraLateViewIndex = (uint32)CullViews.size();
             PushView(CameraVP, ViewVolume.GetViewPosition(), CameraLateFlags);
         }
+
+        // Capture cameras: frustum-only (cone is cheap; no occlusion -> no two-pass HZB, no
+        // shadow flags). The shared cull fills each one's draw-list slice; its draw passes
+        // index it via CameraViewIndex. Appended last so the indices above stay valid.
+        for (FFrameData::FCaptureViewData& Capture : Frame.CaptureViews)
+        {
+            const glm::mat4 CaptureVP = Capture.ViewVolume.GetProjectionMatrix() * Capture.ViewVolume.GetViewMatrix();
+            const uint32 CaptureFlags = ECullViewFlags::Frustum | ECullViewFlags::Cone;
+            Capture.CameraViewIndex = PushView(CaptureVP, Capture.ViewVolume.GetViewPosition(), CaptureFlags);
+        }
     }
 
     // Correlated-color-temperature -> linear RGB tint (Tanner Helland approximation),
@@ -2887,7 +3234,9 @@ namespace Lumina
         auto& SceneGlobalData      = Frame.SceneGlobalData;
 
         LightData.bHasSun = true;
-        const FViewVolume& ViewVolume = SceneViewport->GetViewVolume();
+        // Primary camera (frame snapshot), not the render-thread SceneViewport: CSM cascades
+        // fit to the primary view; capture views reuse these cascades rather than fitting their own.
+        const FViewVolume& ViewVolume = Frame.ViewVolume;
 
         const float NearClip = ViewVolume.GetNear();
         const float FarClip  = ViewVolume.GetFar();
@@ -3214,6 +3563,7 @@ namespace Lumina
         Frame.DrawMeshletStartOffsets.clear();
         Frame.IndirectArgs.clear();
         Frame.CullViews.clear();
+        Frame.CaptureViews.clear();
         Frame.TotalMeshletBound = 0;
         Frame.NumDrawsPerView   = 0;
         Frame.CameraLateViewIndex = ~0u;
@@ -3429,6 +3779,127 @@ namespace Lumina
         CmdList.Dispatch(DispatchX, DispatchY, 1u);
     }
 
+    void FForwardRenderScene::TexturePaintPass(ICommandList& CmdList)
+    {
+        const FFrameData& Frame = *RenderFrame;
+        if (Frame.PaintOps.empty())
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Texture Paint Pass", tracy::Color::Red);
+
+        FRHIComputeShaderRef PaintShader = FShaderLibrary::GetComputeShader("TexturePaint.slang");
+        if (!PaintShader)
+        {
+            return;
+        }
+
+        FComputePipelineDesc PipelineDesc;
+        PipelineDesc.SetComputeShader(PaintShader);
+        PipelineDesc.AddBindingLayout(SceneBindingLayout);
+        PipelineDesc.AddBindingLayout(GRenderManager->GetTextureManager().GetLayout());
+        PipelineDesc.DebugName = "TexturePaint";
+        FRHIComputePipelineRef Pipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
+
+        // Push-constant block mirroring TexturePaint.slang. All fields are 4-byte aligned and the
+        // uint2/float2 members sit on natural 8-byte boundaries, so the offsets are identical under
+        // scalar and std430 layout. Color is four scalars (not a vec4) to keep it that way.
+        struct FPaintPC
+        {
+            uint32      TargetIndex;
+            int32       BrushIndex;
+            uint32      TargetSize[2];
+            uint32      RectMin[2];
+            uint32      RectMax[2];
+            float       CenterPx[2];
+            float       RadiusPx;
+            float       Strength;
+            float       Hardness;
+            float       ColorR;
+            float       ColorG;
+            float       ColorB;
+            float       ColorA;
+        };
+
+        for (const FTexturePaintOp& Op : Frame.PaintOps)
+        {
+            FRHIImage* Target = Op.Target.GetReference();
+            if (Target == nullptr)
+            {
+                continue;
+            }
+
+            if (Op.Mode == FTexturePaintOp::EMode::Clear)
+            {
+                CmdList.ClearImageFloat(Target, AllSubresources,
+                    FColor(Op.Color.r, Op.Color.g, Op.Color.b, Op.Color.a));
+                continue;
+            }
+
+            const int32 UAVIndex = Target->GetMipUAVIndex(0);
+            if (UAVIndex < 0)
+            {
+                continue;
+            }
+
+            const uint32 W = Target->GetSizeX();
+            const uint32 H = Target->GetSizeY();
+            const float  CenterX = Op.CenterUV.x * (float)W;
+            const float  CenterY = Op.CenterUV.y * (float)H;
+            // Radius is relative to the longer side so the brush stays circular in pixels.
+            const float  RadiusPx = std::max(Op.RadiusUV * (float)std::max(W, H), 1.0f);
+
+            const int32 MinX = std::clamp((int32)std::floor(CenterX - RadiusPx), 0, (int32)W);
+            const int32 MinY = std::clamp((int32)std::floor(CenterY - RadiusPx), 0, (int32)H);
+            const int32 MaxX = std::clamp((int32)std::ceil (CenterX + RadiusPx), 0, (int32)W);
+            const int32 MaxY = std::clamp((int32)std::ceil (CenterY + RadiusPx), 0, (int32)H);
+            if (MaxX <= MinX || MaxY <= MinY)
+            {
+                continue;
+            }
+
+            FComputeState State;
+            State.SetPipeline(Pipeline);
+            State.AddBindingSet(SceneBindingSetReadOnly);
+            State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
+            State.Writes(Target);   // -> UnorderedAccess (and a UAV barrier between same-target ops)
+            CmdList.SetComputeState(State);
+
+            FPaintPC PC = {};
+            PC.TargetIndex   = (uint32)UAVIndex;
+            PC.BrushIndex    = Op.BrushIndex;
+            PC.TargetSize[0] = W;             PC.TargetSize[1] = H;
+            PC.RectMin[0]    = (uint32)MinX;  PC.RectMin[1]    = (uint32)MinY;
+            PC.RectMax[0]    = (uint32)MaxX;  PC.RectMax[1]    = (uint32)MaxY;
+            PC.CenterPx[0]   = CenterX;       PC.CenterPx[1]   = CenterY;
+            PC.RadiusPx      = RadiusPx;
+            PC.Strength      = Op.Strength;
+            PC.Hardness      = Op.Hardness;
+            PC.ColorR        = Op.Color.r;
+            PC.ColorG        = Op.Color.g;
+            PC.ColorB        = Op.Color.b;
+            PC.ColorA        = Op.Color.a;
+            CmdList.SetPushConstants(&PC, sizeof(PC));
+
+            const uint32 DispatchX = RenderUtils::GetGroupCount((uint32)(MaxX - MinX), 8u);
+            const uint32 DispatchY = RenderUtils::GetGroupCount((uint32)(MaxY - MinY), 8u);
+            CmdList.Dispatch(DispatchX, DispatchY, 1u);
+        }
+
+        // Restore every painted target to ShaderResource and emit the barriers now: the
+        // geometry passes sample these via the bindless table without declaring Reads, so
+        // nothing else would transition them out of UnorderedAccess/transfer-dst.
+        for (const FTexturePaintOp& Op : Frame.PaintOps)
+        {
+            if (FRHIImage* Target = Op.Target.GetReference())
+            {
+                CmdList.SetImageState(Target, AllSubresources, EResourceStates::ShaderResource);
+            }
+        }
+        CmdList.CommitBarriers();
+    }
+
     static void RecordDepthPrePassSlice(
         ICommandList& CmdList,
         const TVector<FMeshDrawCommand>& DrawCommands,
@@ -3525,7 +3996,7 @@ namespace Lumina
             SceneBindingSetReadOnly,
             SceneViewportState,
             GetIndirectArgs(),
-            0u,
+            CurrentCameraEarlyView,
             NumDrawsPerView,
             true,
             GetSceneDepthResolve());
@@ -3644,8 +4115,7 @@ namespace Lumina
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands = Frame.DrawCommands;
 
-        auto TerrainView = World->GetEntityRegistry().view<STerrainComponent>(entt::exclude<SDisabledTag>);
-        const bool bHasTerrain = TerrainView.begin() != TerrainView.end();
+        const bool bHasTerrain = !Frame.TerrainExtracts.empty();
         if (DrawCommands.empty() && !bHasTerrain)
         {
             return;
@@ -3662,20 +4132,20 @@ namespace Lumina
         // Cluster AABBs are view-space, depending only on projection + RT size; skip the
         // dispatch while unchanged since the Cluster buffer is persistent.
         const bool bNeedsRebuild =
-            bClusterGridDirty
-            || ClusterPC.InverseProjection != LastClusterInvProjection
-            || ClusterPC.zNearFar          != LastClusterNearFar
-            || ClusterPC.ScreenSize        != LastClusterScreenSize;
+            CurrentView->bClusterGridDirty
+            || ClusterPC.InverseProjection != CurrentView->LastClusterInvProjection
+            || ClusterPC.zNearFar          != CurrentView->LastClusterNearFar
+            || ClusterPC.ScreenSize        != CurrentView->LastClusterScreenSize;
 
         if (!bNeedsRebuild)
         {
             return;
         }
 
-        LastClusterInvProjection = ClusterPC.InverseProjection;
-        LastClusterNearFar       = ClusterPC.zNearFar;
-        LastClusterScreenSize    = ClusterPC.ScreenSize;
-        bClusterGridDirty        = false;
+        CurrentView->LastClusterInvProjection = ClusterPC.InverseProjection;
+        CurrentView->LastClusterNearFar       = ClusterPC.zNearFar;
+        CurrentView->LastClusterScreenSize    = ClusterPC.ScreenSize;
+        CurrentView->bClusterGridDirty        = false;
 
         FRHIComputeShaderRef ComputeShader = FShaderLibrary::GetComputeShader("ClusterBuild.slang");
 
@@ -3705,8 +4175,7 @@ namespace Lumina
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands = Frame.DrawCommands;
 
-        auto TerrainView = World->GetEntityRegistry().view<STerrainComponent>(entt::exclude<SDisabledTag>);
-        const bool bHasTerrain = TerrainView.begin() != TerrainView.end();
+        const bool bHasTerrain = !Frame.TerrainExtracts.empty();
         if (DrawCommands.empty() && !bHasTerrain)
         {
             return;
@@ -4092,13 +4561,15 @@ namespace Lumina
         const auto& DrawCommands         = Frame.DrawCommands;
         const auto& OpaqueDrawList       = Frame.OpaqueDrawList;
         const uint32 NumDrawsPerView     = Frame.NumDrawsPerView;
-        const uint32 CameraLateViewIndex = Frame.CameraLateViewIndex;
+        // The view being shaded (primary: 0 / CameraLateViewIndex; capture: its frustum view / ~0).
+        const uint32 CameraEarlyViewIndex = CurrentCameraEarlyView;
+        const uint32 CameraLateViewIndex  = CurrentCameraLateView;
 
         if (DrawCommands.empty())
         {
             return;
         }
-        
+
         LUMINA_PROFILE_SECTION_COLORED("Forward Base Pass", tracy::Color::Red);
         
         FRenderPassDesc::FAttachment RenderTarget;
@@ -4163,7 +4634,8 @@ namespace Lumina
 
             CmdList.SetGraphicsState(GraphicsState);
 
-            CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
+            const uint32 EarlyBase = CameraEarlyViewIndex * NumDrawsPerView;
+            CmdList.DrawIndirect(Batch.DrawCount, (EarlyBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
 
             if (CameraLateViewIndex != ~0u)
             {
@@ -4714,14 +5186,15 @@ namespace Lumina
 
         FRHIComputeShaderRef NormalShader = FShaderLibrary::GetComputeShader("TerrainNormalCompute.slang");
 
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        auto TerrainView = Registry.view<STerrainComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+        const FFrameData& Frame = *RenderFrame;
 
-        TerrainView.each([&](entt::entity Entity, STerrainComponent& Terrain, const STransformComponent& Transform)
+        for (const FFrameData::FTerrainExtract& TerrainItem : Frame.TerrainExtracts)
         {
+            const entt::entity Entity  = TerrainItem.Entity;
+            STerrainComponent& Terrain = *TerrainItem.Component;
             if (Terrain.Resolution < 2 || Terrain.ChunkResolution < 2)
             {
-                return;
+                continue;
             }
 
             EnsureTerrainCpuBuffers(Terrain);
@@ -4892,7 +5365,7 @@ namespace Lumina
             // change rebuilds everything.
             if (State.bChunksDirty)
             {
-                const glm::vec3 WorldOrigin = glm::vec3(Transform.GetWorldMatrix()[3]);
+                const glm::vec3 WorldOrigin = glm::vec3(TerrainItem.WorldMatrix[3]);
                 const bool bFullRebuild = !bPartialHeight || State.Chunks.empty();
                 if (bFullRebuild)
                 {
@@ -4945,14 +5418,13 @@ namespace Lumina
 
                 State.bChunksDirty = false;
             }
-        });
+        }
     }
 
     void FForwardRenderScene::TerrainCullPass(ICommandList& CmdList)
     {
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        auto TerrainView = Registry.view<STerrainComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-        if (TerrainView.begin() == TerrainView.end())
+        const FFrameData& Frame = *RenderFrame;
+        if (Frame.TerrainExtracts.empty())
         {
             return;
         }
@@ -4981,16 +5453,16 @@ namespace Lumina
                     .AddBindingLayout(CullLayout);
         FRHIComputePipelineRef CullPipeline = GRenderContext->CreateComputePipeline(PipelineDesc);
 
-        TerrainView.each([&](STerrainComponent& Terrain, const STransformComponent&)
+        for (const FFrameData::FTerrainExtract& TerrainItem : Frame.TerrainExtracts)
         {
-            FTerrainGPUState& State = Terrain.GPUState;
+            FTerrainGPUState& State = TerrainItem.Component->GPUState;
             if (!State.ChunkInfoBuffer || !State.MeshletInfoBuffer || !State.VisibleMeshletBuffer || !State.IndirectDrawBuffer)
             {
-                return;
+                continue;
             }
             if (State.AllocatedChunkCount == 0u || State.AllocatedMeshletCount == 0u)
             {
-                return;
+                continue;
             }
 
             // Seed the indirect args slot. Six verts per quad * meshletQuads^2
@@ -5025,7 +5497,168 @@ namespace Lumina
             // One workgroup per chunk, one thread per meshlet; the chunk-level test on
             // thread 0 gates the rest via groupshared.
             CmdList.Dispatch(State.AllocatedChunkCount, 1u, 1u);
-        });
+        }
+    }
+
+    // Depth-only pre-pass over the culled terrain meshlets. Lays down terrain
+    // depth (reverse-Z, DepthWrite on) so the heavy shaded pass that follows
+    // early-Z rejects terrain-behind-terrain overdraw and runs its ~80-tap
+    // shadow PBR shader once per visible pixel. Shares the material vertex
+    // shader; no pixel shader is bound for opaque terrain.
+    void FForwardRenderScene::TerrainDepthPrePass(ICommandList& CmdList)
+    {
+        const FFrameData& Frame = *RenderFrame;
+        const auto& DrawCommands = Frame.DrawCommands;
+
+        if (Frame.TerrainExtracts.empty())
+        {
+            return;
+        }
+
+        LUMINA_PROFILE_SECTION_COLORED("Terrain Depth", tracy::Color::SeaGreen);
+
+        for (const FFrameData::FTerrainExtract& TerrainItem : Frame.TerrainExtracts)
+        {
+            STerrainComponent& Terrain = *TerrainItem.Component;
+            if (Terrain.Resolution < 2 || Terrain.ChunkResolution < 2)
+            {
+                continue;
+            }
+
+            FTerrainGPUState& State = Terrain.GPUState;
+            if (!State.HeightmapTexture || !State.NormalTexture || !State.LayerWeightTexture)
+            {
+                continue;
+            }
+            if (!State.ChunkInfoBuffer || !State.MeshletInfoBuffer || !State.VisibleMeshletBuffer || !State.IndirectDrawBuffer)
+            {
+                continue;
+            }
+            if (State.AllocatedMeshletCount == 0u)
+            {
+                continue;
+            }
+
+            CMaterialInterface* MaterialInterface = Terrain.Material.Get();
+            if (MaterialInterface && MaterialInterface->GetMaterialType() != EMaterialType::Terrain)
+            {
+                continue;
+            }
+            if (!MaterialInterface || !MaterialInterface->IsReadyForRender())
+            {
+                MaterialInterface = CMaterial::GetDefaultTerrainMaterial();
+            }
+            if (!MaterialInterface || !MaterialInterface->IsReadyForRender())
+            {
+                continue;
+            }
+
+            FRHIVertexShader* VertexShader = MaterialInterface->GetVertexShader();
+            if (!VertexShader)
+            {
+                continue;
+            }
+
+            const entt::entity Entity = TerrainItem.Entity;
+            const uint32 Res = (uint32)Terrain.Resolution;
+
+            const glm::mat4 WorldMat    = TerrainItem.WorldMatrix;
+            const glm::vec3 WorldOrigin = glm::vec3(WorldMat[3]);
+            const float HalfSize        = Terrain.TileWorldSize * 0.5f;
+
+            const int32 QuadsPerChunk        = std::max(1, Terrain.ChunkResolution - 1);
+            const int32 ChunksPerSide        = std::max(1, ((int32)Res - 1) / QuadsPerChunk);
+            const int32 MeshletsPerChunkSide = (QuadsPerChunk + GTerrainMeshletQuads - 1) / GTerrainMeshletQuads;
+
+            FTerrainRenderParams RenderParams{};
+            RenderParams.OriginXZ             = glm::vec2(WorldOrigin.x - HalfSize, WorldOrigin.z - HalfSize);
+            RenderParams.TileWorldSize        = Terrain.TileWorldSize;
+            RenderParams.MaxHeight            = Terrain.MaxHeight;
+            RenderParams.Resolution           = (int32)Res;
+            RenderParams.ChunkResolution      = Terrain.ChunkResolution;
+            RenderParams.ChunksPerSide        = ChunksPerSide;
+            RenderParams.LayerCount           = (int32)Terrain.Layers.size();
+            RenderParams.WorldOriginY         = glm::vec3(WorldOrigin.y, 0.0f, 0.0f);
+            RenderParams.EntityID             = (uint32)Entity;
+            RenderParams.MaterialIndex        = (uint32)std::max(MaterialInterface->GetMaterialIndex(), 0);
+            RenderParams.MeshletsPerChunkSide = MeshletsPerChunkSide;
+            RenderParams.MeshletQuadSide      = GTerrainMeshletQuads;
+
+            FTransientAlloc RenderParamsAlloc = CmdList.UploadTransient(RenderParams);
+
+            // First depth writer when there are no meshes; otherwise the mesh
+            // depth pre-pass / base pass already populated this view's depth.
+            FRenderPassDesc::FAttachment Depth;
+            Depth.SetImage(GetSceneDepthRT())
+                 .SetDepthClearValue(0.0f);
+            if (!DrawCommands.empty())
+            {
+                Depth.SetLoadOp(ERenderLoadOp::Load);
+            }
+
+            FRenderPassDesc RenderPass;
+            RenderPass.SetDepthAttachment(Depth)
+                .SetRenderArea(GetNamedImage(ENamedImage::HDR)->GetExtent());
+
+            FRasterState RasterState;
+            RasterState.EnableDepthClip()
+                       .SetCullMode(ERasterCullMode::None);
+
+            FDepthStencilState DepthState;
+            DepthState.SetDepthFunc(EComparisonFunc::GreaterOrEqual)
+                      .EnableDepthWrite();
+
+            FRenderState RenderState;
+            RenderState.SetRasterState(RasterState)
+                       .SetDepthStencilState(DepthState);
+
+            FRHISamplerRef HeightSampler = TStaticRHISampler<true, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+            FBindingLayoutDesc TerrainLayoutDesc;
+            TerrainLayoutDesc.SetBindingIndex(2)
+                .SetVisibility(ERHIShaderType::Vertex)
+                .SetVisibility(ERHIShaderType::Fragment)
+                .AddItem(FBindingLayoutItem::Texture_SRV(0))
+                .AddItem(FBindingLayoutItem::Texture_SRV(1))
+                .AddItem(FBindingLayoutItem::Texture_SRV(2))
+                .AddItem(FBindingLayoutItem::Buffer_SRV(4))
+                .AddItem(FBindingLayoutItem::Buffer_SRV(5))
+                .AddItem(FBindingLayoutItem::Buffer_SRV(6));
+            FRHIBindingLayout* TerrainLayout = BindingCache.GetOrCreateBindingLayout(TerrainLayoutDesc);
+
+            FBindingSetDesc TerrainSetDesc;
+            TerrainSetDesc.AddItem(FBindingSetItem::TextureSRV(0, State.HeightmapTexture, HeightSampler))
+                          .AddItem(FBindingSetItem::TextureSRV(1, State.NormalTexture,    HeightSampler))
+                          .AddItem(FBindingSetItem::TextureSRV(2, State.LayerWeightTexture, HeightSampler))
+                          .AddItem(FBindingSetItem::BufferSRV(4, State.ChunkInfoBuffer))
+                          .AddItem(FBindingSetItem::BufferSRV(5, State.MeshletInfoBuffer))
+                          .AddItem(FBindingSetItem::BufferSRV(6, State.VisibleMeshletBuffer));
+            FRHIBindingSetRef TerrainSet = GRenderContext->CreateBindingSet(TerrainSetDesc, TerrainLayout);
+
+            FGraphicsPipelineDesc Desc;
+            Desc.SetDebugName("TerrainDepth")
+                .SetRenderState(RenderState)
+                .SetVertexShader(VertexShader)
+                .AddBindingLayout(SceneBindingLayout)
+                .AddBindingLayout(GRenderManager->GetTextureManager().GetLayout())
+                .AddBindingLayout(TerrainLayout);
+
+            FRHIGraphicsPipelineRef Pipeline = GRenderContext->CreateGraphicsPipeline(Desc, RenderPass);
+
+            FGraphicsState GraphicsState;
+            GraphicsState.SetRenderPass(RenderPass)
+                .SetViewportState(MakeViewportStateFromImage(GetNamedImage(ENamedImage::HDR)))
+                .SetPipeline(Pipeline)
+                .AddBindingSet(SceneBindingSetReadOnly)
+                .AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable())
+                .AddBindingSet(TerrainSet)
+                .SetIndirectParams(State.IndirectDrawBuffer);
+
+            CmdList.SetGraphicsState(GraphicsState);
+            CmdList.SetPushConstants(&RenderParamsAlloc.Gpu, sizeof(uint64));
+
+            CmdList.DrawIndirect(1u, 0u);
+        }
     }
 
     void FForwardRenderScene::TerrainRenderPass(ICommandList& CmdList)
@@ -5033,39 +5666,36 @@ namespace Lumina
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands = Frame.DrawCommands;
 
-        FEntityRegistry& PreCheckRegistry = World->GetEntityRegistry();
-        auto PreCheckView = PreCheckRegistry.view<STerrainComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-        if (PreCheckView.begin() == PreCheckView.end())
+        if (Frame.TerrainExtracts.empty())
         {
             return;
         }
 
         LUMINA_PROFILE_SECTION_COLORED("Terrain Render", tracy::Color::SeaGreen);
 
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        auto TerrainView = Registry.view<STerrainComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-
-        TerrainView.each([&](entt::entity Entity, STerrainComponent& Terrain, const STransformComponent& Transform)
+        for (const FFrameData::FTerrainExtract& TerrainItem : Frame.TerrainExtracts)
         {
+            const entt::entity Entity  = TerrainItem.Entity;
+            STerrainComponent& Terrain = *TerrainItem.Component;
             if (Terrain.Resolution < 2 || Terrain.ChunkResolution < 2)
             {
-                return;
+                continue;
             }
 
             FTerrainGPUState& State = Terrain.GPUState;
             if (!State.HeightmapTexture || !State.NormalTexture || !State.LayerWeightTexture)
             {
-                return;
+                continue;
             }
             // Cull output makes the indirect draw legal; bail when it isn't built
             // yet (first frame, or heightmap dirty before TerrainUpdatePass ran).
             if (!State.ChunkInfoBuffer || !State.MeshletInfoBuffer || !State.VisibleMeshletBuffer || !State.IndirectDrawBuffer)
             {
-                return;
+                continue;
             }
             if (State.AllocatedMeshletCount == 0u)
             {
-                return;
+                continue;
             }
 
 
@@ -5074,7 +5704,7 @@ namespace Lumina
             CMaterialInterface* MaterialInterface = Terrain.Material.Get();
             if (MaterialInterface && MaterialInterface->GetMaterialType() != EMaterialType::Terrain)
             {
-                return;
+                continue;
             }
             if (!MaterialInterface || !MaterialInterface->IsReadyForRender())
             {
@@ -5082,19 +5712,19 @@ namespace Lumina
             }
             if (!MaterialInterface || !MaterialInterface->IsReadyForRender())
             {
-                return;
+                continue;
             }
 
             FRHIVertexShader* VertexShader = MaterialInterface->GetVertexShader();
             FRHIPixelShader*  PixelShader  = MaterialInterface->GetPixelShader();
             if (!VertexShader || !PixelShader)
             {
-                return;
+                continue;
             }
 
             const uint32 Res = (uint32)Terrain.Resolution;
 
-            const glm::mat4 WorldMat = Transform.GetWorldMatrix();
+            const glm::mat4 WorldMat = TerrainItem.WorldMatrix;
             const glm::vec3 WorldOrigin = glm::vec3(WorldMat[3]);
             const float HalfSize = Terrain.TileWorldSize * 0.5f;
 
@@ -5136,14 +5766,13 @@ namespace Lumina
                 PickerAttachment.SetLoadOp(ERenderLoadOp::Load);
             }
 
+            // TerrainDepthPrePass laid down terrain depth (and cleared when there
+            // were no meshes), so always load and let early-Z drop the overdraw.
             FRenderPassDesc::FAttachment Depth;
             Depth.SetImage(GetSceneDepthRT())
                  .SetResolveImage(GetSceneDepthResolve())
-                 .SetDepthClearValue(0.0f);
-            if (!DrawCommands.empty())
-            {
-                Depth.SetLoadOp(ERenderLoadOp::Load);
-            }
+                 .SetDepthClearValue(0.0f)
+                 .SetLoadOp(ERenderLoadOp::Load);
 
             FRenderPassDesc RenderPass;
             RenderPass.AddColorAttachment(RenderTarget)
@@ -5157,7 +5786,7 @@ namespace Lumina
 
             FDepthStencilState DepthState;
             DepthState.SetDepthFunc(EComparisonFunc::GreaterOrEqual)
-                      .EnableDepthWrite();
+                      .DisableDepthWrite();
 
             FRenderState RenderState;
             RenderState.SetRasterState(RasterState)
@@ -5217,7 +5846,7 @@ namespace Lumina
             // Cull populated the single indirect args slot (VertexCount = MeshletQuads^2*6,
             // InstanceCount = surviving meshlets). One GPU-driven draw.
             CmdList.DrawIndirect(1u, 0u);
-        });
+        }
     }
 
     void FForwardRenderScene::BillboardPass(ICommandList& CmdList)
@@ -5367,7 +5996,7 @@ namespace Lumina
             return;
         }
 
-        FRHIImage* OutputImage = GetRenderTarget();
+        FRHIImage* OutputImage = GetViewOutputTarget();
         if (OutputImage == nullptr)
         {
             return;
@@ -5442,6 +6071,8 @@ namespace Lumina
         const FFrameData& Frame = *RenderFrame;
         const auto& DrawCommands        = Frame.DrawCommands;
         const auto& TranslucentDrawList = Frame.TranslucentDrawList;
+        const uint32 NumDrawsPerView    = Frame.NumDrawsPerView;
+        const uint32 ViewBase           = CurrentCameraEarlyView * NumDrawsPerView;
 
         if (TranslucentDrawList.empty())
         {
@@ -5542,8 +6173,8 @@ namespace Lumina
                          .AddBindingSet(ShadowSamplingBindingSet);
 
             CmdList.SetGraphicsState(GraphicsState);
-            // View 0 = camera.
-            CmdList.DrawIndirect(Batch.DrawCount, Batch.IndirectDrawOffset * sizeof(FDrawIndirectArguments));
+            // Camera view (primary or capture) slice of the shared indirect args.
+            CmdList.DrawIndirect(Batch.DrawCount, (ViewBase + Batch.IndirectDrawOffset) * sizeof(FDrawIndirectArguments));
         }
     }
 
@@ -5754,7 +6385,7 @@ namespace Lumina
     void FForwardRenderScene::FroxelIntegratePass(ICommandList& CmdList)
     {
         const FFrameData& Frame = *RenderFrame;
-        if (!Frame.bHasFog || !CVarVolFogEnabled.GetValue())
+        if (!Frame.bHasFog)
         {
             return;
         }
@@ -6254,18 +6885,30 @@ namespace Lumina
         FRenderState RenderState;
         RenderState.SetRasterState(RasterState);
 
-        // Set 2: env params CB at slot 0, SkyCube at slot 1 for SKY_MODE_HDRI. SkyCube is
-        // filled by SkyCubeCapturePass; auto-barriers handle the UAV->SRV transition.
+        // Set 2: env params CB at slot 0, SkyCube at slot 1 (gradient/dynamic),
+        // source HDRI equirect at slot 2 (SKY_MODE_HDRI). SkyCube is filled by
+        // SkyCubeCapturePass; auto-barriers handle the UAV->SRV transition.
         FBindingLayoutDesc EnvLayoutDesc;
         EnvLayoutDesc.SetBindingIndex(2)
             .SetVisibility(ERHIShaderType::Fragment)
             // Buffer_UD: Environment buffer is BUF_Dynamic; layout must declare dynamic to match.
             .AddItem(FBindingLayoutItem::Buffer_UD(0))
-            .AddItem(FBindingLayoutItem::Texture_SRV(1));
+            .AddItem(FBindingLayoutItem::Texture_SRV(1))
+            .AddItem(FBindingLayoutItem::Texture_SRV(2));
         FRHIBindingLayout* EnvLayout = BindingCache.GetOrCreateBindingLayout(EnvLayoutDesc);
 
         FRHIImage* SkyCube = GetNamedImage(ENamedImage::SkyCube);
+        // HDRI visible background samples the source equirect directly for full
+        // resolution; the SkyCube remains the IBL source. The BRDF LUT (a
+        // persistent 2D SRV) is a harmless placeholder in non-HDRI modes, where
+        // the shader never reads slot 2.
+        FRHIImage* Equirect = RenderFrame->EnvironmentMapImage
+            ? RenderFrame->EnvironmentMapImage
+            : GetNamedImage(ENamedImage::BRDFLut);
         FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+        // Wrap longitude (U), clamp latitude (V): keeps the 360-degree seam
+        // continuous instead of duplicating the edge column.
+        FRHISamplerRef EquirectSampler = TStaticRHISampler<true, true, AM_Wrap, AM_Clamp, AM_Clamp>::GetRHI();
 
         FBindingSetDesc EnvSetDesc;
         EnvSetDesc.AddItem(FBindingSetItem::BufferCBV(0, GetNamedBuffer(ENamedBuffer::Environment)));
@@ -6273,6 +6916,10 @@ namespace Lumina
             1, SkyCube, LinearClamp, SkyCube->GetFormat(),
             FTextureSubresourceSet(0, 1, 0, FTextureSubresourceSet::AllArraySlices),
             EImageDimension::TextureCube));
+        EnvSetDesc.AddItem(FBindingSetItem::TextureSRV(
+            2, Equirect, EquirectSampler, Equirect->GetFormat(),
+            FTextureSubresourceSet(0, 1, 0, 1),
+            EImageDimension::Texture2D));
         FRHIBindingSet* EnvSet = BindingCache.GetOrCreateBindingSet(EnvSetDesc, EnvLayout);
 
         FGraphicsPipelineDesc Desc;
@@ -6743,7 +7390,7 @@ namespace Lumina
         // (both need to ping-pong before the final blit); otherwise straight to RT.
         const bool bSMAAEnabled = CachedWorldSettings.SMAAQuality != ESMAAQuality::Off;
         const bool bPPMaterials = !ActivePostProcessMaterials.empty();
-        FRHIImage* OutputImage = (bSMAAEnabled || bPPMaterials) ? GetNamedImage(ENamedImage::LDR) : GetRenderTarget();
+        FRHIImage* OutputImage = (bSMAAEnabled || bPPMaterials) ? GetNamedImage(ENamedImage::LDR) : GetViewOutputTarget();
 
         FRenderPassDesc::FAttachment Attachment; Attachment
             .SetImage(OutputImage);
@@ -6926,7 +7573,7 @@ namespace Lumina
         }
         else
         {
-            CmdList.CopyImage(Source, FTextureSlice(), GetRenderTarget(), FTextureSlice());
+            CmdList.CopyImage(Source, FTextureSlice(), GetViewOutputTarget(), FTextureSlice());
         }
     }
 
@@ -7100,7 +7747,7 @@ namespace Lumina
             return;
         }
 
-        FRHIImage* OutputImage = GetRenderTarget();
+        FRHIImage* OutputImage = GetViewOutputTarget();
 
         FRenderPassDesc::FAttachment Attachment; Attachment
             .SetImage(OutputImage);
@@ -7148,16 +7795,7 @@ namespace Lumina
     
     void FForwardRenderScene::InitBuffers()
     {
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FSceneGlobalData);
-            BufferDesc.Usage.SetMultipleFlags(BUF_UniformBuffer, BUF_Dynamic);
-            BufferDesc.MaxVersions = FRAMES_IN_FLIGHT + 1;
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::ConstantBuffer;
-            BufferDesc.DebugName = "Scene Global Data";
-            NamedBuffers[(int)ENamedBuffer::Scene] = GRenderContext->CreateBuffer(BufferDesc);
-        }
+        // Scene (camera UBO) and Cluster grid are per-view; created in AddSceneView.
 
         {
             FRHIBufferDesc BufferDesc;
@@ -7216,19 +7854,6 @@ namespace Lumina
             BufferDesc.InitialState = EResourceStates::ShaderResource;
             BufferDesc.DebugName = "Light Data Buffer";
             NamedBuffers[(int)ENamedBuffer::Light] = GRenderContext->CreateBuffer(BufferDesc);
-        }
-
-        {
-            FRHIBufferDesc BufferDesc;
-            BufferDesc.Size = sizeof(FCluster) * NumClusters;
-            BufferDesc.Usage.SetFlag(BUF_StorageBuffer);
-            BufferDesc.bKeepInitialState = true;
-            BufferDesc.InitialState = EResourceStates::UnorderedAccess;
-            BufferDesc.DebugName = "Cluster SSBO";
-            NamedBuffers[(int)ENamedBuffer::Cluster] = GRenderContext->CreateBuffer(BufferDesc);
-
-            // Fresh buffer has undefined contents; force ClusterBuildPass to run.
-            bClusterGridDirty = true;
         }
 
         {
@@ -7409,7 +8034,7 @@ namespace Lumina
         return r;
     }
 
-    void FForwardRenderScene::AllocateMSAAImages(const glm::uvec2& Extent)
+    void FForwardRenderScene::AllocateMSAAImages(FSceneView& View, const glm::uvec2& Extent)
     {
         if (MSAASampleCount <= 1)
         {
@@ -7426,7 +8051,7 @@ namespace Lumina
             ImageDesc.bKeepInitialState = true;
             ImageDesc.Flags.SetFlag(EImageCreateFlags::ColorAttachment);
             ImageDesc.DebugName         = "HDR_MS";
-            NamedImages[(int)ENamedImage::HDR_MS] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::HDR_MS] = GRenderContext->CreateImage(ImageDesc);
         }
 
         {
@@ -7439,7 +8064,7 @@ namespace Lumina
             ImageDesc.bKeepInitialState = true;
             ImageDesc.Dimension         = EImageDimension::Texture2D;
             ImageDesc.DebugName         = "Depth_MS";
-            NamedImages[(int)ENamedImage::Depth_MS] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::Depth_MS] = GRenderContext->CreateImage(ImageDesc);
         }
 
         {
@@ -7452,7 +8077,7 @@ namespace Lumina
             ImageDesc.bKeepInitialState = true;
             ImageDesc.Flags.SetFlag(EImageCreateFlags::ColorAttachment);
             ImageDesc.DebugName         = "Picker_MS";
-            NamedImages[(int)ENamedImage::Picker_MS] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::Picker_MS] = GRenderContext->CreateImage(ImageDesc);
         }
     }
 
@@ -7469,44 +8094,50 @@ namespace Lumina
             return;
         }
 
-        NamedImages[(int)ENamedImage::HDR_MS]    = nullptr;
-        NamedImages[(int)ENamedImage::Depth_MS]  = nullptr;
-        NamedImages[(int)ENamedImage::Picker_MS] = nullptr;
-
         MSAASampleCount = Desired;
 
-        if (MSAASampleCount > 1)
+        // MS scratch is per-view; reallocate (or drop) it for every view + rebuild that
+        // view's binding sets so geometry passes pick up the new sample count.
+        for (FSceneView& View : SceneViews)
         {
-            AllocateMSAAImages(Windowing::GetPrimaryWindowHandle()->GetExtent());
+            View.Images[(int)ENamedImage::HDR_MS]    = nullptr;
+            View.Images[(int)ENamedImage::Depth_MS]  = nullptr;
+            View.Images[(int)ENamedImage::Picker_MS] = nullptr;
+
+            if (MSAASampleCount > 1)
+            {
+                AllocateMSAAImages(View, View.Size);
+            }
         }
     }
 
-    void FForwardRenderScene::InitImages()
+    void FForwardRenderScene::InitViewImages(FSceneView& View)
     {
-        glm::uvec2 Extent = Windowing::GetPrimaryWindowHandle()->GetExtent();
+        const glm::uvec2 Extent = View.Size;
 
-        // Init runs before any Extract -- read straight from the world.
-        const SDefaultWorldSettings& InitSettings = World ? World->GetDefaultWorldSettings() : SDefaultWorldSettings{};
-        MSAASampleCount = ::Lumina::GetMSAASampleCount(InitSettings.MSAASampleCount);
+        // Seed with the scene's shared images (BRDF LUT, sky cubes, SMAA LUTs, cascade
+        // atlas, editor icons) so GetNamedImage() reads them uniformly through CurrentView;
+        // the per-view slots below overwrite their entries.
+        View.Images = NamedImages;
 
         {
-            FRHIImageDesc ImageDesc = GetRenderTarget()->GetDescription();
+            FRHIImageDesc ImageDesc = View.Viewport->GetRenderTarget()->GetDescription();
             ImageDesc.Format = EFormat::RGBA16_FLOAT;
             ImageDesc.DebugName = "HDR";
-            NamedImages[(int)ENamedImage::HDR] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::HDR] = GRenderContext->CreateImage(ImageDesc);
         }
 
         {
-            FRHIImageDesc ImageDesc = GetRenderTarget()->GetDescription();
+            FRHIImageDesc ImageDesc = View.Viewport->GetRenderTarget()->GetDescription();
             ImageDesc.DebugName = "LDR";
-            NamedImages[(int)ENamedImage::LDR] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::LDR] = GRenderContext->CreateImage(ImageDesc);
         }
 
         // Ping-pong scratch for the post-process material chain.
         {
-            FRHIImageDesc ImageDesc = GetRenderTarget()->GetDescription();
+            FRHIImageDesc ImageDesc = View.Viewport->GetRenderTarget()->GetDescription();
             ImageDesc.DebugName = "PostProcessScratch";
-            NamedImages[(int)ENamedImage::PostProcessScratch] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::PostProcessScratch] = GRenderContext->CreateImage(ImageDesc);
         }
 
         {
@@ -7518,7 +8149,7 @@ namespace Lumina
             ImageDesc.bKeepInitialState = true;
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
             ImageDesc.DebugName         = "SMAA Edges";
-            NamedImages[(int)ENamedImage::SMAAEdges] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::SMAAEdges] = GRenderContext->CreateImage(ImageDesc);
         }
 
         {
@@ -7530,7 +8161,7 @@ namespace Lumina
             ImageDesc.bKeepInitialState = true;
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
             ImageDesc.DebugName         = "SMAA Blend";
-            NamedImages[(int)ENamedImage::SMAABlend] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::SMAABlend] = GRenderContext->CreateImage(ImageDesc);
         }
 
         {
@@ -7542,8 +8173,8 @@ namespace Lumina
             ImageDesc.bKeepInitialState = true;
             ImageDesc.Dimension = EImageDimension::Texture2D;
             ImageDesc.DebugName = "Depth Attachment";
-        
-            NamedImages[(int)ENamedImage::DepthAttachment] = GRenderContext->CreateImage(ImageDesc);
+
+            View.Images[(int)ENamedImage::DepthAttachment] = GRenderContext->CreateImage(ImageDesc);
         }
 
         {
@@ -7561,7 +8192,7 @@ namespace Lumina
             ImageDesc.Dimension         = EImageDimension::Texture2D;
             ImageDesc.DebugName         = "Depth Pyramid";
 
-            NamedImages[(int)ENamedImage::DepthPyramid] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::DepthPyramid] = GRenderContext->CreateImage(ImageDesc);
         }
 
         {
@@ -7574,25 +8205,11 @@ namespace Lumina
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ColorAttachment, EImageCreateFlags::ShaderResource);
             ImageDesc.DebugName = "Picker";
 
-            NamedImages[(int)ENamedImage::Picker] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::Picker] = GRenderContext->CreateImage(ImageDesc);
         }
 
-        AllocateMSAAImages(Extent);
+        AllocateMSAAImages(View, Extent);
 
-        {
-            // CSM atlas: three 4096² cascades packed side by side (see GCSMAtlasW/H).
-            FRHIImageDesc ImageDesc = {};
-            ImageDesc.Extent = glm::uvec2(GCSMAtlasWidth, GCSMAtlasHeight);
-            ImageDesc.Format = EFormat::D32;
-            ImageDesc.Dimension = EImageDimension::Texture2D;
-            ImageDesc.InitialState = EResourceStates::DepthWrite;
-            ImageDesc.bKeepInitialState = true;
-            ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::DepthAttachment, EImageCreateFlags::ShaderResource);
-            ImageDesc.DebugName = "ShadowCascadeAtlas";
-
-            NamedImages[(int)ENamedImage::Cascade] = GRenderContext->CreateImage(ImageDesc);
-        }
-        
         {
             FRHIImageDesc ImageDesc = {};
             ImageDesc.Extent = Extent;
@@ -7602,10 +8219,10 @@ namespace Lumina
             ImageDesc.bKeepInitialState = true;
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
             ImageDesc.DebugName = "Accum";
-            
-            NamedImages[(int)ENamedImage::Accum] = GRenderContext->CreateImage(ImageDesc);
+
+            View.Images[(int)ENamedImage::Accum] = GRenderContext->CreateImage(ImageDesc);
         }
-        
+
         {
             // WBOIT revealage = multiplicative product of (1-a_i); R16F is the reference format.
             FRHIImageDesc ImageDesc = {};
@@ -7617,7 +8234,7 @@ namespace Lumina
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
             ImageDesc.DebugName = "Revealage";
 
-            NamedImages[(int)ENamedImage::Revealage] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::Revealage] = GRenderContext->CreateImage(ImageDesc);
         }
 
         {
@@ -7637,10 +8254,10 @@ namespace Lumina
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::Storage, EImageCreateFlags::ShaderResource);
 
             ImageDesc.DebugName = "Froxel Scatter";
-            NamedImages[(int)ENamedImage::FroxelScatter] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::FroxelScatter] = GRenderContext->CreateImage(ImageDesc);
 
             ImageDesc.DebugName = "Froxel Integrated";
-            NamedImages[(int)ENamedImage::FroxelIntegrated] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::FroxelIntegrated] = GRenderContext->CreateImage(ImageDesc);
         }
 
         {
@@ -7659,7 +8276,7 @@ namespace Lumina
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage);
             ImageDesc.DebugName         = "Bloom Chain";
 
-            BloomChain = GRenderContext->CreateImage(ImageDesc);
+            View.BloomChainImage = GRenderContext->CreateImage(ImageDesc);
         }
 
         {
@@ -7678,7 +8295,7 @@ namespace Lumina
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage);
             ImageDesc.DebugName         = "Adapted Luminance";
 
-            NamedImages[(int)ENamedImage::AdaptedLuminance] = GRenderContext->CreateImage(ImageDesc);
+            View.Images[(int)ENamedImage::AdaptedLuminance] = GRenderContext->CreateImage(ImageDesc);
         }
     }
 
@@ -7795,40 +8412,60 @@ namespace Lumina
 
     void FForwardRenderScene::InitFrameResources()
     {
-        InitImages();
-        
-        float SizeY = (float)GetNamedImage(ENamedImage::HDR)->GetSizeY();
-        float SizeX = (float)GetNamedImage(ENamedImage::HDR)->GetSizeX();
-
-        SceneViewportState = {};
-        SceneViewportState.Viewports.emplace_back(FViewport(SizeX, SizeY));
-        SceneViewportState.Scissors.emplace_back(FRect((int)SizeX, (int)SizeY));
-        
-        FVertexAttributeDesc VertexDesc[2];
-        VertexDesc[0].SetElementStride(sizeof(FSimpleElementVertex));
-        VertexDesc[0].SetOffset(offsetof(FSimpleElementVertex, Position));
-        VertexDesc[0].Format = EFormat::RGBA32_FLOAT;
-        
-        VertexDesc[1].SetElementStride(sizeof(FSimpleElementVertex));
-        VertexDesc[1].SetOffset(offsetof(FSimpleElementVertex, Color));
-        VertexDesc[1].Format = EFormat::R32_UINT;
-        
-        SimpleVertexLayoutInput = GRenderContext->CreateInputLayout(VertexDesc, eastl::size(VertexDesc));
-        
-        CreateLayouts();
+        // Swapchain resize: rebuild the primary view's images + viewport state + binding sets.
+        // The per-view Scene/Cluster buffers are size-independent and persist across resize.
+        FSceneView& Primary = SceneViews[0];
+        Primary.Size = Primary.Viewport->GetRenderTarget()->GetExtent();
+        InitViewImages(Primary);
+        Primary.ViewportState = MakeViewportStateFromImage(Primary.Images[(int)ENamedImage::HDR]);
+        CreateViewBindingSets(Primary);
     }
 
-    void FForwardRenderScene::CreateLayouts()
+    void FForwardRenderScene::CreateSharedLayouts()
     {
-        // One scene binding set per frame slot, one shared layout. bReadOnly flips the
-        // GPU-written-then-read buffers UAV->SRV; IndirectArgs stays UAV (draw source).
+        // Empty set-2 placeholder: BasePass/TransparentPass use sets 0,1,3 but Vulkan
+        // indexes layouts by set, so set 2's slot needs a real (empty) layout.
+        {
+            FBindingSetDesc EmptyDesc;
+            TBitFlags<ERHIShaderType> Visibility;
+            Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
+            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, EmptyDesc, EmptySet2Layout, EmptySet2BindingSet);
+        }
+
+        // Set 3 -- shadow textures bound only by passes that SAMPLE shadows; rendering passes
+        // skip it so the cascade/atlas aren't shader-read in the same pass that depth-writes them.
+        // Cascade + atlas are shared across views, so this set is view-independent.
+        {
+            FBindingSetDesc ShadowSetDesc;
+            // 0: cascade with comparison sampler — hardware PCF.
+            ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(0, NamedImages[(int)ENamedImage::Cascade],
+                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
+            // 1: shadow atlas with comparison sampler.
+            ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(1, ShadowAtlas.GetImage(),
+                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
+            // 2: cascade again, with point/standard sampler — PCSS blocker search needs raw depth.
+            ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(2, NamedImages[(int)ENamedImage::Cascade],
+                TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Standard>::GetRHI()));
+
+            TBitFlags<ERHIShaderType> Visibility;
+            Visibility.SetMultipleFlags(ERHIShaderType::Fragment, ERHIShaderType::Compute);
+            GRenderContext->CreateBindingSetAndLayout(Visibility, 3, ShadowSetDesc, ShadowSamplingBindingLayout, ShadowSamplingBindingSet);
+        }
+    }
+
+    void FForwardRenderScene::CreateViewBindingSets(FSceneView& View)
+    {
+        // One scene binding set per frame slot, sharing SceneBindingLayout (created lazily
+        // off the first view's slot-0 desc). bReadOnly flips the GPU-written-then-read buffers
+        // UAV->SRV; IndirectArgs stays UAV (draw source). Reads this view's per-view Scene/
+        // Cluster buffers + this view's (aliased) shared images; everything else is shared.
         auto BuildSceneDesc = [&](uint32 Slot, bool bReadOnly) -> FBindingSetDesc
         {
-            FRHIBuffer* ClusterBuf  = GetNamedBuffer(ENamedBuffer::Cluster);
+            FRHIBuffer* ClusterBuf  = View.ClusterBuffer;
             FRHIBuffer* DrawListBuf = MeshletDrawListRing[Slot];
 
             FBindingSetDesc BindingSetDesc;
-            BindingSetDesc.AddItem(FBindingSetItem::BufferCBV(0, GetNamedBuffer(ENamedBuffer::Scene)));
+            BindingSetDesc.AddItem(FBindingSetItem::BufferCBV(0, View.SceneBuffer));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(1, GetNamedBuffer(ENamedBuffer::Light)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(2, GetNamedBuffer(ENamedBuffer::Instance)));
             BindingSetDesc.AddItem(FBindingSetItem::BufferUAV(3, GetNamedBuffer(ENamedBuffer::Bone)));
@@ -7855,16 +8492,16 @@ namespace Lumina
             BindingSetDesc.AddItem(FBindingSetItem::BufferSRV(22, GetNamedBuffer(ENamedBuffer::Widgets)));
 
             // BRDF LUT (Karis split-sum), linear-clamp: sampled by (NdotV, Roughness) in
-            // [0,1]; clamp matches the half-texel offsets baked into the LUT.
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(17, GetNamedImage(ENamedImage::BRDFLut),
+            // [0,1]; clamp matches the half-texel offsets baked into the LUT. (Shared, aliased.)
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(17, View.Images[(int)ENamedImage::BRDFLut],
                 TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI()));
 
             // IBL cubemaps, linear-clamp: smooth HDR convolutions, and bilinear between
             // prefilter mips smooths the roughness-step transitions.
             FRHISamplerRef IBLCubeSampler = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(18, GetNamedImage(ENamedImage::SkyIrradiance), IBLCubeSampler,
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(18, View.Images[(int)ENamedImage::SkyIrradiance], IBLCubeSampler,
                 EFormat::UNKNOWN, AllSubresources, EImageDimension::TextureCube));
-            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(19, GetNamedImage(ENamedImage::SkyPrefilter),  IBLCubeSampler,
+            BindingSetDesc.AddItem(FBindingSetItem::TextureSRV(19, View.Images[(int)ENamedImage::SkyPrefilter],  IBLCubeSampler,
                 EFormat::UNKNOWN, AllSubresources, EImageDimension::TextureCube));
             return BindingSetDesc;
         };
@@ -7872,51 +8509,19 @@ namespace Lumina
         for (uint32 Slot = 0; Slot < FRAMES_IN_FLIGHT; ++Slot)
         {
             FBindingSetDesc WritableDesc = BuildSceneDesc(Slot, false);
-            if (Slot == 0)
+            if (!SceneBindingLayout)
             {
                 TBitFlags<ERHIShaderType> Visibility;
                 Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
-                GRenderContext->CreateBindingSetAndLayout(Visibility, 0, WritableDesc, SceneBindingLayout, SceneBindingSets[0]);
+                GRenderContext->CreateBindingSetAndLayout(Visibility, 0, WritableDesc, SceneBindingLayout, View.SceneBindingSets[Slot]);
             }
             else
             {
-                SceneBindingSets[Slot] = GRenderContext->CreateBindingSet(WritableDesc, SceneBindingLayout);
+                View.SceneBindingSets[Slot] = GRenderContext->CreateBindingSet(WritableDesc, SceneBindingLayout);
             }
 
             FBindingSetDesc ReadOnlyDesc = BuildSceneDesc(Slot, true);
-            SceneBindingSetReadOnlys[Slot] = GRenderContext->CreateBindingSet(ReadOnlyDesc, SceneBindingLayout);
-        }
-
-        // Default to slot 0; RenderView_RenderThread re-points both per frame.
-        SceneBindingSet         = SceneBindingSets[CurrentFrameSlot];
-        SceneBindingSetReadOnly = SceneBindingSetReadOnlys[CurrentFrameSlot];
-
-        // Empty set-2 placeholder: BasePass/TransparentPass use sets 0,1,3 but Vulkan
-        // indexes layouts by set, so set 2's slot needs a real (empty) layout.
-        {
-            FBindingSetDesc EmptyDesc;
-            TBitFlags<ERHIShaderType> Visibility;
-            Visibility.SetMultipleFlags(ERHIShaderType::Vertex, ERHIShaderType::Fragment, ERHIShaderType::Compute);
-            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, EmptyDesc, EmptySet2Layout, EmptySet2BindingSet);
-        }
-
-        // Set 3 -- shadow textures bound only by passes that SAMPLE shadows; rendering passes
-        // skip it so the cascade/atlas aren't shader-read in the same pass that depth-writes them.
-        {
-            FBindingSetDesc ShadowSetDesc;
-            // 0: cascade with comparison sampler — hardware PCF.
-            ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::Cascade),
-                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
-            // 1: shadow atlas with comparison sampler.
-            ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(1, ShadowAtlas.GetImage(),
-                TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Comparison>::GetRHI()));
-            // 2: cascade again, with point/standard sampler — PCSS blocker search needs raw depth.
-            ShadowSetDesc.AddItem(FBindingSetItem::TextureSRV(2, GetNamedImage(ENamedImage::Cascade),
-                TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp, ESamplerReductionType::Standard>::GetRHI()));
-
-            TBitFlags<ERHIShaderType> Visibility;
-            Visibility.SetMultipleFlags(ERHIShaderType::Fragment, ERHIShaderType::Compute);
-            GRenderContext->CreateBindingSetAndLayout(Visibility, 3, ShadowSetDesc, ShadowSamplingBindingLayout, ShadowSamplingBindingSet);
+            View.SceneBindingSetReadOnlys[Slot] = GRenderContext->CreateBindingSet(ReadOnlyDesc, SceneBindingLayout);
         }
 
         // Standalone set-2 for ToneMapping: 0=HDR color, 1=Bloom mip 0, 2=color grading UBO
@@ -7925,15 +8530,22 @@ namespace Lumina
             FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
             FBindingSetDesc ComposeSetDesc;
-            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::HDR), LinearClamp));
-            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(1, BloomChain, LinearClamp,
+            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(0, View.Images[(int)ENamedImage::HDR], LinearClamp));
+            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(1, View.BloomChainImage, LinearClamp,
                 EFormat::UNKNOWN, FTextureSubresourceSet(0, 1, 0, 1)));
             ComposeSetDesc.AddItem(FBindingSetItem::BufferCBV(2, GetNamedBuffer(ENamedBuffer::ColorGrading)));
-            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(3, GetNamedImage(ENamedImage::AdaptedLuminance), LinearClamp));
+            ComposeSetDesc.AddItem(FBindingSetItem::TextureSRV(3, View.Images[(int)ENamedImage::AdaptedLuminance], LinearClamp));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
-            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, ComposeSetDesc, ComposeBindingLayout, ComposeBindingSet);
+            if (!ComposeBindingLayout)
+            {
+                GRenderContext->CreateBindingSetAndLayout(Visibility, 2, ComposeSetDesc, ComposeBindingLayout, View.ComposeBindingSet);
+            }
+            else
+            {
+                View.ComposeBindingSet = GRenderContext->CreateBindingSet(ComposeSetDesc, ComposeBindingLayout);
+            }
         }
 
         // SMAA Pass 1 (Edge Detection): reads LDR tonemapped color with point-clamp,
@@ -7942,11 +8554,18 @@ namespace Lumina
             FRHISamplerRef PointClamp  = TStaticRHISampler<false, false, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
             FBindingSetDesc SetDesc;
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::LDR), PointClamp));
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, View.Images[(int)ENamedImage::LDR], PointClamp));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
-            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, SetDesc, SMAAEdgeBindingLayout, SMAAEdgeBindingSet);
+            if (!SMAAEdgeBindingLayout)
+            {
+                GRenderContext->CreateBindingSetAndLayout(Visibility, 2, SetDesc, SMAAEdgeBindingLayout, View.SMAAEdgeBindingSet);
+            }
+            else
+            {
+                View.SMAAEdgeBindingSet = GRenderContext->CreateBindingSet(SetDesc, SMAAEdgeBindingLayout);
+            }
         }
 
         // SMAA Pass 2 (Blend Weight): reads edges, AreaTex, SearchTex. SearchTex uses
@@ -7955,13 +8574,20 @@ namespace Lumina
             FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
             FBindingSetDesc SetDesc;
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::SMAAEdges), LinearClamp));
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(1, GetNamedImage(ENamedImage::SMAAArea), LinearClamp));
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(2, GetNamedImage(ENamedImage::SMAASearch), LinearClamp));
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, View.Images[(int)ENamedImage::SMAAEdges], LinearClamp));
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(1, View.Images[(int)ENamedImage::SMAAArea], LinearClamp));
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(2, View.Images[(int)ENamedImage::SMAASearch], LinearClamp));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
-            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, SetDesc, SMAABlendWeightBindingLayout, SMAABlendWeightBindingSet);
+            if (!SMAABlendWeightBindingLayout)
+            {
+                GRenderContext->CreateBindingSetAndLayout(Visibility, 2, SetDesc, SMAABlendWeightBindingLayout, View.SMAABlendWeightBindingSet);
+            }
+            else
+            {
+                View.SMAABlendWeightBindingSet = GRenderContext->CreateBindingSet(SetDesc, SMAABlendWeightBindingLayout);
+            }
         }
 
         // SMAA Pass 3 (Neighborhood Blend): reads LDR color and blend weights, both linear-clamp.
@@ -7969,24 +8595,50 @@ namespace Lumina
             FRHISamplerRef LinearClamp = TStaticRHISampler<true, true, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
             FBindingSetDesc SetDesc;
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::LDR), LinearClamp));
-            SetDesc.AddItem(FBindingSetItem::TextureSRV(1, GetNamedImage(ENamedImage::SMAABlend), LinearClamp));
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(0, View.Images[(int)ENamedImage::LDR], LinearClamp));
+            SetDesc.AddItem(FBindingSetItem::TextureSRV(1, View.Images[(int)ENamedImage::SMAABlend], LinearClamp));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
-            GRenderContext->CreateBindingSetAndLayout(Visibility, 2, SetDesc, SMAANeighborhoodBindingLayout, SMAANeighborhoodBindingSet);
+            if (!SMAANeighborhoodBindingLayout)
+            {
+                GRenderContext->CreateBindingSetAndLayout(Visibility, 2, SetDesc, SMAANeighborhoodBindingLayout, View.SMAANeighborhoodBindingSet);
+            }
+            else
+            {
+                View.SMAANeighborhoodBindingSet = GRenderContext->CreateBindingSet(SetDesc, SMAANeighborhoodBindingLayout);
+            }
         }
 
         // Standalone set-0 layout for OITResolve (uAccum at 0, uRevealage at 1).
         {
             FBindingSetDesc OITSetDesc;
-            OITSetDesc.AddItem(FBindingSetItem::TextureSRV(0, GetNamedImage(ENamedImage::Accum)));
-            OITSetDesc.AddItem(FBindingSetItem::TextureSRV(1, GetNamedImage(ENamedImage::Revealage)));
+            OITSetDesc.AddItem(FBindingSetItem::TextureSRV(0, View.Images[(int)ENamedImage::Accum]));
+            OITSetDesc.AddItem(FBindingSetItem::TextureSRV(1, View.Images[(int)ENamedImage::Revealage]));
 
             TBitFlags<ERHIShaderType> Visibility;
             Visibility.SetMultipleFlags(ERHIShaderType::Fragment);
-            GRenderContext->CreateBindingSetAndLayout(Visibility, 0, OITSetDesc, OITBindingLayout, OITBindingSet);
+            if (!OITBindingLayout)
+            {
+                GRenderContext->CreateBindingSetAndLayout(Visibility, 0, OITSetDesc, OITBindingLayout, View.OITBindingSet);
+            }
+            else
+            {
+                View.OITBindingSet = GRenderContext->CreateBindingSet(OITSetDesc, OITBindingLayout);
+            }
         }
+
+        // Default the live pointers to this view; RenderView re-points them per view/slot.
+        SceneBindingSet            = View.SceneBindingSets[CurrentFrameSlot];
+        SceneBindingSetReadOnly    = View.SceneBindingSetReadOnlys[CurrentFrameSlot];
+        ComposeBindingSet          = View.ComposeBindingSet;
+        SMAAEdgeBindingSet         = View.SMAAEdgeBindingSet;
+        SMAABlendWeightBindingSet  = View.SMAABlendWeightBindingSet;
+        SMAANeighborhoodBindingSet = View.SMAANeighborhoodBindingSet;
+        OITBindingSet              = View.OITBindingSet;
+        BloomChain                 = View.BloomChainImage;
+        SceneViewportState         = View.ViewportState;
+        SceneViewport              = View.Viewport.GetReference();
     }
 
     FViewportState FForwardRenderScene::MakeViewportStateFromImage(const FRHIImage* Image)
@@ -8003,7 +8655,13 @@ namespace Lumina
 
     FRHIImage* FForwardRenderScene::GetRenderTarget() const
     {
-        return SceneViewport ? SceneViewport->GetRenderTarget() : nullptr;
+        // Editor-facing: always the primary view's RT, independent of the live SceneViewport
+        // (which tracks CurrentView during RenderView and would otherwise leak a capture's RT).
+        if (SceneViews.empty() || !SceneViews[0].Viewport)
+        {
+            return nullptr;
+        }
+        return SceneViews[0].Viewport->GetRenderTarget();
     }
 
     const FSceneRenderStats& FForwardRenderScene::GetRenderStats() const

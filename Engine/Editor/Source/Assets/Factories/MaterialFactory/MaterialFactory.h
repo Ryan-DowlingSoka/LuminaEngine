@@ -19,6 +19,7 @@ namespace Lumina
 		FStringView GetDefaultAssetCreationName() override { return "NewMaterial"; }
 		FString GetAssetDescription() const override { return "A material."; }
 		CClass* GetAssetClass() const override { return CMaterial::StaticClass(); }
+		FString GetCategory() const override { return "Material"; }
 
 	};
 }

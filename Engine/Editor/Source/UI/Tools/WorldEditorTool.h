@@ -17,6 +17,7 @@
 namespace Lumina
 {
     class CStaticMesh;
+    class CEntityComponentType;
     DECLARE_MULTICAST_DELEGATE(FOnGamePreview);
     
     /**
@@ -176,7 +177,7 @@ namespace Lumina
          * Populates OutMetaType / OutStruct and returns true when the user clicks an entry.
          * Caller is responsible for the actual emplace / create-entity behavior and popup closure.
          */
-        bool DrawAddableComponentList(const ImGuiTextFilter& Filter, entt::meta_type& OutMetaType, CStruct*& OutStruct);
+        bool DrawAddableComponentList(const ImGuiTextFilter& Filter, entt::meta_type& OutMetaType, CStruct*& OutStruct, CEntityComponentType*& OutRuntimeType);
 
         // Initial population (called on tree dirty); just enumerates roots and lets lazy children
         // build subtrees on first expand.
@@ -217,7 +218,8 @@ namespace Lumina
         void DrawEntityActionButtons(entt::entity Entity);
         void DrawComponentList(entt::entity Entity);
         void DrawTagList(entt::entity Entity);
-        void DrawComponentHeader(const TUniquePtr<FPropertyTable>& Table, entt::entity Entity);
+        struct FComponentTableEntry;
+        void DrawComponentHeader(FComponentTableEntry& Entry, entt::entity Entity);
         void RemoveComponent(entt::entity Entity, const CStruct* ComponentType);
         void DrawEmptyState();
         
@@ -298,8 +300,31 @@ namespace Lumina
 
         TQueue<FComponentDestroyRequest>        ComponentDestroyRequests;
         TQueue<entt::entity>                    EntityDestroyRequests;
-        TVector<TUniquePtr<FPropertyTable>>     PropertyTables;
+
+        // One details-panel component row -- either a reflected component or a runtime
+        // (data-authored) one. They share a single ordered list so they sort together and render
+        // through the same header, keeping the visual hierarchy uniform.
+        struct FComponentTableEntry
+        {
+            TUniquePtr<FPropertyTable> Table;
+            const CStruct*             ReflectedType = nullptr;  // reflected component CStruct; null if runtime
+            bool                       bRuntime = false;
+            // Runtime rows are keyed by the storage id (from the type GUID), NOT a cached type
+            // pointer -- the type asset can be deleted out from under the inspector, so the live
+            // type is re-fetched from the storage each frame and never dereferenced if stale.
+            uint32                     RuntimeStorageId = 0;
+            // For runtime rows, the (Layout, Data) the table is bound to. The contiguous storage can
+            // reallocate (another entity gaining this component, or a live schema migration), so
+            // these are re-checked each frame and the table re-pointed when they drift.
+            CStruct*                   BoundLayout = nullptr;
+            void*                      BoundData = nullptr;
+            FString                    Title;                    // header label + sort key
+        };
+        TVector<FComponentTableEntry>           PropertyTables;
         TUniquePtr<FPropertyTable>              WorldSettingsPropertyTable;
+
+        // Deferred removal of a runtime component (processed after the draw loop).
+        CEntityComponentType*                   PendingRuntimeRemove = nullptr;
 
         // SelectedEntities is the authoritative set; FSelectedInEditorComponent on the
         // registry is mirrored from it (other systems — render highlight, prefab editor,
@@ -335,6 +360,19 @@ namespace Lumina
         static constexpr int32                  NumCameraBookmarks = 9;
         FTransform                              CameraBookmarks[NumCameraBookmarks];
         bool                                    bCameraBookmarkSet[NumCameraBookmarks] = {};
+
+        // Camera preview: when a camera entity is selected, the render scene shades its view
+        // into a dedicated capture RT, drawn as a small overlay in the viewport. Handle is
+        // lazily acquired from the renderer; bActive gates the overlay draw each frame.
+        void UpdateCameraPreview();
+        // Handle into the render scene's capture views, and the scene it was registered with.
+        // The scene can be torn down + rebuilt (idle reclaim), which invalidates the handle;
+        // we detect the swap and re-register.
+        class IRenderScene*                     CameraPreviewScene = nullptr;
+        int32                                   CameraPreviewHandle = -1;
+        bool                                    bCameraPreviewActive = false;
+        static constexpr uint32                 CameraPreviewWidth  = 720;
+        static constexpr uint32                 CameraPreviewHeight = 405;
 
 
         float                                   GuizmoSnapTranslate = 0.1f;

@@ -1,6 +1,7 @@
 ﻿#include "pch.h"
 #include "CameraSystem.h"
 #include "SystemSingletons.h"
+#include "World/World.h"
 #include "World/Entity/Components/CameraComponent.h"
 #include "World/Entity/Components/PostProcessComponent.h"
 #include "World/Entity/Components/EntityTags.h"
@@ -25,6 +26,14 @@ namespace Lumina
     {
         static void NewCameraConstructed(entt::registry& Registry, entt::entity Entity)
         {
+            // Auto-activate is a play-mode spawn convenience. In the editor it would hijack the
+            // viewport with no easy way back.
+            const CWorld* World = Registry.ctx().get<CWorld*>();
+            if (World == nullptr || World->GetWorldType() == EWorldType::Editor)
+            {
+                return;
+            }
+
             SCameraComponent& Camera = Registry.get<SCameraComponent>(Entity);
             if (Camera.bAutoActivate)
             {

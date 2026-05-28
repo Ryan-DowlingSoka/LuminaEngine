@@ -8,6 +8,7 @@
 #include "Core/Application/Application.h"
 #include "Core/Engine/Engine.h"
 #include "Core/Object/Class.h"
+#include "Core/Object/ObjectCore.h"
 #include "Core/Reflection/Type/LuminaTypes.h"
 #include "Core/Windows/Window.h"
 #include "Paths/Paths.h"
@@ -376,23 +377,46 @@ namespace Lumina::ImGuiX
         return Result;
     }
 
-    void SameLineSeparator(float width, const ImColor& color)
+    bool AssetReferenceCombo(const char* StrId, CClass* FilterClass, FGuid& InOutGUID, const char* ItemIcon)
     {
-        const ImColor separatorColor = ImGui::GetStyleColorVec4( ImGuiCol_Separator);
-        const ImVec2 seperatorSize( width <= 0 ? ( ImGui::GetStyle().ItemSpacing.x * 2 ) + 1 : width, ImGui::GetFrameHeight() );
+        if (FilterClass == nullptr)
+        {
+            return false;
+        }
 
-        ImGui::SameLine( 0, 0 );
+        // Every asset whose class is-a FilterClass, sorted by name.
+        TVector<FAssetData*> Assets = FAssetRegistry::Get().FindByPredicate([FilterClass](const FAssetData& Data)
+        {
+            CClass* DataClass = FindObject<CClass>(Data.AssetClass);
+            return DataClass != nullptr && DataClass->IsChildOf(FilterClass);
+        });
 
-        ImVec2 const canvasPos = ImGui::GetCursorScreenPos();
-        float const startPosX = canvasPos.x + std::floor( seperatorSize.x / 2 );
-        float const startPosY = canvasPos.y + 1;
-        float const endPosY = startPosY + seperatorSize.y - 2;
+        eastl::sort(Assets.begin(), Assets.end(), [](const FAssetData* A, const FAssetData* B)
+        {
+            return A->AssetName.ToString() < B->AssetName.ToString();
+        });
 
-        ImDrawList* pDrawList = ImGui::GetWindowDrawList();
-        pDrawList->AddLine( ImVec2( startPosX, startPosY ), ImVec2( startPosX, endPosY ), separatorColor, 1 );
+        int32 CurrentIndex = INDEX_NONE;
+        for (int32 i = 0; i < (int32)Assets.size(); ++i)
+        {
+            if (Assets[i]->AssetGUID == InOutGUID)
+            {
+                CurrentIndex = i;
+                break;
+            }
+        }
 
-        ImGui::Dummy( seperatorSize );
-        ImGui::SameLine( 0, 0 );
+        const char* Preview = (CurrentIndex != INDEX_NONE) ? Assets[CurrentIndex]->AssetName.c_str() : "Select an asset...";
+
+        const int32 Picked = SearchableCombo(StrId, Preview, (int32)Assets.size(), CurrentIndex,
+            [&Assets](int32 Index) { return FFixedString(Assets[Index]->AssetName.c_str()); }, ItemIcon);
+
+        if (Picked != INDEX_NONE && Picked != CurrentIndex)
+        {
+            InOutGUID = Assets[Picked]->AssetGUID;
+            return true;
+        }
+        return false;
     }
 
     ImTextureRef ToImTextureRef(FRHIImage* Image)

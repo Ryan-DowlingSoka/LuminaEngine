@@ -18,6 +18,7 @@ namespace Lumina
         FStringView GetDefaultAssetCreationName() override { return "NewAnimationGraph"; }
         FString GetAssetDescription() const override { return "An animation graph."; }
         CClass* GetAssetClass() const override { return CAnimationGraph::StaticClass(); }
+        FString GetCategory() const override { return "Animation"; }
 
     };
 }

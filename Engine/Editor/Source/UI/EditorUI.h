@@ -106,8 +106,6 @@ namespace Lumina
 
         void OnProjectLoaded();
 
-        void AssetRegistryDialog();
-
         void HandleUserInput(const FUpdateContext& UpdateContext);
 
     private:

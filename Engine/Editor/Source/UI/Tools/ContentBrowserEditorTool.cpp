@@ -15,6 +15,7 @@
 #include "Tools/Dialogs/Dialogs.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
+#include "World/WorldManager.h"
 #include <string.h>
 #include <cstdarg>
 #include <filesystem>
@@ -676,12 +677,44 @@ namespace Lumina
         
     }
     
+    // True while a Play-In-Editor or Simulate session is running. Deleting an asset out from under a
+    // live world can free objects the simulation still references, so deletes are blocked meanwhile.
+    static bool IsAnyWorldPlayingOrSimulating()
+    {
+        if (GWorldManager == nullptr)
+        {
+            return false;
+        }
+        for (const TUniquePtr<FWorldContext>& Context : GWorldManager->GetContexts())
+        {
+            if (Context && (Context->Type == EWorldType::Game || Context->Type == EWorldType::Simulation))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void FContentBrowserEditorTool::EndFrame()
     {
         bool bWroteSomething = false;
-        
+
+        // Drop (don't queue) any delete requests while playing/simulating -- one notification covers them.
+        const bool bWorldActive = IsAnyWorldPlayingOrSimulating();
+        bool bBlockNotified = false;
+
         ActionRegistry.ProcessAllOf<FPendingDestroy>([&] (const FPendingDestroy& Destroy)
         {
+            if (bWorldActive)
+            {
+                if (!bBlockNotified)
+                {
+                    ImGuiX::Notifications::NotifyError("Cannot delete assets while playing or simulating. Stop play first.");
+                    bBlockNotified = true;
+                }
+                return;
+            }
+
             if (VFS::IsDirectory(Destroy.PendingDestroy))
             {
                 VFS::RemoveAll(Destroy.PendingDestroy);
@@ -1499,9 +1532,10 @@ namespace Lumina
         ImGui::Separator();
 
         ImGui::PushStyleColor(ImGuiCol_Text,          kMenuDanger);
+        const bool bWorldActive = IsAnyWorldPlayingOrSimulating();
         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, kMenuDangerHover);
         ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0.85f, 0.22f, 0.24f, 0.85f));
-        const bool bDeleteClicked = ImGui::MenuItem(LE_ICON_TRASH_CAN " Delete", "Del", false, !bIsProtected);
+        const bool bDeleteClicked = ImGui::MenuItem(LE_ICON_TRASH_CAN " Delete", "Del", false, !bIsProtected && !bWorldActive);
         ImGui::PopStyleColor(3);
 
         if (bIsProtected)
@@ -1511,6 +1545,16 @@ namespace Lumina
             const float OldX = ImGui::GetCursorPosX();
             ImGui::SetCursorPosX(OldX + 4.0f);
             ImGui::TextUnformatted(LE_ICON_LOCK " Protected, cannot be deleted");
+            ImGui::PopStyleColor();
+            ImGuiX::Font::PopFont();
+        }
+        else if (bWorldActive)
+        {
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Tiny);
+            ImGui::PushStyleColor(ImGuiCol_Text, kMenuTextDim);
+            const float OldX = ImGui::GetCursorPosX();
+            ImGui::SetCursorPosX(OldX + 4.0f);
+            ImGui::TextUnformatted(LE_ICON_LOCK " Stop play to delete");
             ImGui::PopStyleColor();
             ImGuiX::Font::PopFont();
         }
@@ -1543,58 +1587,101 @@ namespace Lumina
             RefreshContentBrowser();
         }
 
-        // Aggregated asset creation submenu (factory-driven).
+        // Aggregated asset creation submenu (factory-driven), grouped into per-category submenus.
         const TVector<CFactory*>& Factories = CFactoryRegistry::Get().GetFactories();
         if (ImGui::BeginMenu(LE_ICON_PLUS_BOX " New Asset"))
         {
-            DrawMenuSection("ASSET TYPES");
+            auto CreateFromFactory = [this](CFactory* Factory)
+            {
+                FFixedString Path = Paths::Combine(SelectedPath, Factory->GetDefaultAssetCreationName());
+                CPackage::AddPackageExt(Path);
+                Path = VFS::MakeUniqueFilePath(Path);
+
+                if (Factory->HasCreationDialogue())
+                {
+                    ToolContext->PushModal("Create New", {500, 500}, [this, Factory, Path = Move(Path)]
+                    {
+                        bool bShouldClose = CFactory::ShowCreationDialogue(Factory, Path);
+                        if (bShouldClose)
+                        {
+                            ImGuiX::Notifications::NotifySuccess("Successfully Created: \"{0}\"", Path);
+                        }
+                        return bShouldClose;
+                    });
+                }
+                else if (CObject* Object = Factory->TryCreateNew(Path))
+                {
+                    if (CPackage::SavePackage(Object->GetPackage(), Path))
+                    {
+                        FAssetRegistry::Get().AssetCreated(Object);
+                        ImGuiX::Notifications::NotifySuccess("Successfully Created: \"{0}\"", Path);
+                    }
+                    else
+                    {
+                        ImGuiX::Notifications::NotifyError("Failed to save new asset: \"{0}\"", Path);
+                    }
+                }
+                else
+                {
+                    ImGuiX::Notifications::NotifyError("Failed to create new: \"{0}\"", Path);
+                }
+            };
+
+            // Collect the creatable factories and their distinct categories.
+            TVector<CFactory*> Creatable;
+            TVector<FString>   Categories;
             for (CFactory* Factory : Factories)
             {
                 if (Factory->CanImport() || Factory->GetAssetClass() == nullptr)
                 {
                     continue;
                 }
+                Creatable.push_back(Factory);
 
-                FString DisplayName = FString(LE_ICON_FILE_DOCUMENT_PLUS) + " " + Factory->GetAssetName();
-                if (ImGui::MenuItem(DisplayName.c_str()))
+                const FString Category = Factory->GetCategory();
+                bool bSeen = false;
+                for (const FString& Existing : Categories)
                 {
-                    FFixedString Path = Paths::Combine(SelectedPath, Factory->GetDefaultAssetCreationName());
-                    CPackage::AddPackageExt(Path);
-                    Path = VFS::MakeUniqueFilePath(Path);
+                    if (Existing == Category) { bSeen = true; break; }
+                }
+                if (!bSeen)
+                {
+                    Categories.push_back(Category);
+                }
+            }
 
-                    if (Factory->HasCreationDialogue())
-                    {
-                        ToolContext->PushModal("Create New", {500, 500}, [this, Factory, Path = Move(Path)]
-                        {
-                            bool bShouldClose = CFactory::ShowCreationDialogue(Factory, Path);
-                            if (bShouldClose)
-                            {
-                                ImGuiX::Notifications::NotifySuccess("Successfully Created: \"{0}\"", Path);
-                            }
+            eastl::sort(Categories.begin(), Categories.end());
 
-                            return bShouldClose;
-                        });
-                    }
-                    else
+            for (const FString& Category : Categories)
+            {
+                if (!ImGui::BeginMenu(Category.c_str()))
+                {
+                    continue;
+                }
+
+                TVector<CFactory*> InCategory;
+                for (CFactory* Factory : Creatable)
+                {
+                    if (Factory->GetCategory() == Category)
                     {
-                        if (CObject* Object = Factory->TryCreateNew(Path))
-                        {
-                            if (CPackage::SavePackage(Object->GetPackage(), Path))
-                            {
-                                FAssetRegistry::Get().AssetCreated(Object);
-                                ImGuiX::Notifications::NotifySuccess("Successfully Created: \"{0}\"", Path);
-                            }
-                            else
-                            {
-                                ImGuiX::Notifications::NotifyError("Failed to save new asset: \"{0}\"", Path);
-                            }
-                        }
-                        else
-                        {
-                            ImGuiX::Notifications::NotifyError("Failed to create new: \"{0}\"", Path);
-                        }
+                        InCategory.push_back(Factory);
                     }
                 }
+                eastl::sort(InCategory.begin(), InCategory.end(), [](CFactory* A, CFactory* B)
+                {
+                    return A->GetAssetName() < B->GetAssetName();
+                });
+
+                for (CFactory* Factory : InCategory)
+                {
+                    FString DisplayName = FString(LE_ICON_FILE_DOCUMENT_PLUS) + " " + Factory->GetAssetName();
+                    if (ImGui::MenuItem(DisplayName.c_str()))
+                    {
+                        CreateFromFactory(Factory);
+                    }
+                }
+
+                ImGui::EndMenu();
             }
             ImGui::EndMenu();
         }

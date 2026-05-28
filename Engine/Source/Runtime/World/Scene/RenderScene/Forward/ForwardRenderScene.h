@@ -10,6 +10,7 @@
 #include "World/Scene/RenderScene/MeshDrawCommand.h"
 #include "World/Scene/RenderScene/RenderScene.h"
 #include "World/Scene/RenderScene/SceneCullContext.h"
+#include "World/Scene/RenderScene/TexturePaintTypes.h"
 #include "World/Entity/Components/PostProcessSettings.h"
 #include "World/Subsystems/WorldSettings.h"
 
@@ -233,16 +234,37 @@ namespace Lumina
             bool                             bHasActivePostProcess = false;
             TVector<CMaterialInterface*>     ActivePostProcessMaterials;
 
+            // Render-target paint/clear ops drained from the world this frame; replayed as
+            // compute dispatches by TexturePaintPass before the geometry passes sample them.
+            TVector<FTexturePaintOp>         PaintOps;
+
             TVector<FSimpleElementVertex>    SimpleVertices;
             TVector<FLineBatch>              LineBatches;
             TVector<FBillboardInstance>      BillboardInstances;
             TVector<FWidgetInstance>         WidgetInstances;
-            // Holds a ref to each widget's RT that WidgetInstances samples bindlessly, so deleting
-            // the widget (which frees Runtime.Target) can't pull the RT out from under in-flight GPU
-            // work. KeepAlive'd on the cmd list in RenderView; cleared on frame reset.
             TVector<FRHIImageRef>            PinnedWidgetRTs;
+            
+            struct FTerrainExtract
+            {
+                entt::entity        Entity;
+                STerrainComponent*  Component;
+                glm::mat4           WorldMatrix;
+            };
+            TVector<FTerrainExtract>         TerrainExtracts;
 
             FSceneRenderStats                FrameStats = {};
+
+            // Per-frame snapshot of the enabled capture views, in registration order.
+            // The shared gather/cull fills each view's cull-view slice; RenderView shades
+            // each into SceneViews[SceneViewIndex] after the primary view.
+            struct FCaptureViewData
+            {
+                FSceneGlobalData    SceneGlobalData = {};
+                FViewVolume         ViewVolume      = {};
+                uint32              CameraViewIndex = ~0u;   // its cull-view index (frustum-only)
+                int32               SceneViewIndex  = -1;    // index into FForwardRenderScene::SceneViews
+            };
+            TVector<FCaptureViewData>        CaptureViews;
         };
 
         enum class ENamedBuffer : uint8
@@ -352,10 +374,56 @@ namespace Lumina
             CharacterIcon,
             ParticleSystemIcon,
             #endif
-            
+
             Num,
         };
-        
+
+        // All per-output-view rendering state. The scene gathers geometry/lights once
+        // (the shared members further down) then runs the shading passes once per
+        // FSceneView into that view's own image chain. Index 0 is the primary view
+        // (editor/game camera); additional views are registered captures.
+        struct FSceneView
+        {
+            FRHIViewportRef                                 Viewport;
+            FViewportState                                  ViewportState;
+            glm::uvec2                                      Size = glm::uvec2(0);
+            bool                                            bIsPrimary = false;
+
+            // Capture views only: the camera this view renders from (set each frame by the
+            // owner before Extract) and whether it renders this frame. The primary view's
+            // camera comes from Extract's argument instead.
+            FViewVolume                                     PendingViewVolume;
+            bool                                            bEnabled = false;
+
+            // Indexed by ENamedImage. Per-view slots own their image; view-independent
+            // slots (BRDF LUT, sky cubes, SMAA LUTs, editor icons) alias the scene's
+            // shared image so GetNamedImage() reads uniformly through CurrentView.
+            TArray<FRHIImageRef, (int)ENamedImage::Num>     Images = {};
+            FRHIImageRef                                    BloomChainImage;
+
+            // Per-view camera UBO + cluster grid -- the only per-camera entries in set 2.
+            FRHIBufferRef                                   SceneBuffer;
+            FRHIBufferRef                                   ClusterBuffer;
+
+            // Scene set (and its read-only twin) per frame slot; reference this view's
+            // SceneBuffer/ClusterBuffer alongside the shared buffers.
+            TArray<FRHIBindingSetRef, FRAMES_IN_FLIGHT>     SceneBindingSets = {};
+            TArray<FRHIBindingSetRef, FRAMES_IN_FLIGHT>     SceneBindingSetReadOnlys = {};
+            // Post-chain sets referencing this view's HDR/LDR/Accum/Revealage/Bloom.
+            FRHIBindingSetRef                               ComposeBindingSet;
+            FRHIBindingSetRef                               SMAAEdgeBindingSet;
+            FRHIBindingSetRef                               SMAABlendWeightBindingSet;
+            FRHIBindingSetRef                               SMAANeighborhoodBindingSet;
+            FRHIBindingSetRef                               OITBindingSet;
+
+            // Cluster-grid cache: view-space AABBs depend only on this view's projection
+            // + RT size, so the build is skipped while those are unchanged.
+            glm::mat4                                       LastClusterInvProjection = glm::mat4(0.0f);
+            glm::vec2                                       LastClusterNearFar       = glm::vec2(0.0f);
+            glm::uvec2                                      LastClusterScreenSize    = glm::uvec2(0);
+            bool                                            bClusterGridDirty        = true;
+        };
+
         void Init() override;
         void Shutdown() override;
         
@@ -368,6 +436,10 @@ namespace Lumina
         void SetActivePostProcessMaterials(const TVector<CMaterialInterface*>& Materials) override { PendingPostProcessMaterials = Materials; }
         void SwapchainResized(glm::vec2 NewSize);
         void Resize(const glm::uvec2& NewSize) override { SwapchainResized(glm::vec2(NewSize)); }
+
+        int32 RegisterCaptureView(const glm::uvec2& Size) override;
+        void  SetCaptureView(int32 Handle, const FViewVolume& View, bool bEnabled) override;
+        FRHIImage* GetCaptureRenderTarget(int32 Handle) const override;
         
         void DrawBillboard(FRHIImage* Image, const glm::vec3& Location, float Scale) override;
         void DrawLine(const glm::vec3& Start, const glm::vec3& End, const glm::vec4& Color, float Thickness, bool bDepthTest, float Duration) override { }
@@ -375,7 +447,11 @@ namespace Lumina
         static FViewportState MakeViewportStateFromImage(const FRHIImage* Image);
         
         FRHIBuffer* GetNamedBuffer(ENamedBuffer Buffer) const { return NamedBuffers[(int)Buffer]; }
-        FRHIImage* GetNamedImage(ENamedImage Image) const { return NamedImages[(int)Image];}
+        // Per-view images route through the view being rendered (CurrentView). Shared
+        // slots are aliased into every view's array, so view-independent passes read the
+        // same image regardless of CurrentView. Falls back to the shared store during Init
+        // (before any view exists); nothing reads a per-view slot then.
+        FRHIImage* GetNamedImage(ENamedImage Image) const { return CurrentView ? CurrentView->Images[(int)Image] : NamedImages[(int)Image]; }
 
         // Ringed accessors for the cull-pass scratch (see IndirectArgsRing).
         FRHIBuffer* GetIndirectArgs()     const { return IndirectArgsRing[CurrentFrameSlot]; }
@@ -408,11 +484,52 @@ namespace Lumina
         
         
     private:
-        
+
+        // Shared (view-independent) per-frame buffers: instances, bones, lights, cull
+        // views, the cull-scratch rings, etc. Per-view Scene/Cluster buffers live on FSceneView.
         void InitBuffers();
-        void InitImages();
+        // Per-view image chain (HDR/LDR/Depth/Pyramid/Picker/post scratch/SMAA/bloom/...)
+        // sized to View.Viewport's render target. Shared images are aliased into View.Images.
+        void InitViewImages(FSceneView& View);
+        // (Re)builds the primary view's images/buffers/binding sets + viewport state. Called
+        // on init and swapchain resize.
         void InitFrameResources();
-        void CreateLayouts();
+        // Shared binding layouts + the view-independent sets (shadow sampling, empty set 2).
+        void CreateSharedLayouts();
+        // Per-view binding sets (scene rw/ro per slot, compose, SMAA, OIT) against the
+        // shared layouts, referencing this view's per-view buffers/images.
+        void CreateViewBindingSets(FSceneView& View);
+
+        // Allocates + wires a new FSceneView (per-view images, Scene/Cluster buffers, binding
+        // sets) around an existing viewport/RT, appends it to SceneViews, and returns it.
+        FSceneView& AddSceneView(const FRHIViewportRef& Viewport, bool bPrimary);
+
+        // Render thread: shade the current capture view (CurrentView) into its RT. A reduced,
+        // single-pass (no two-pass occlusion) sequence reusing the per-view passes; geometry/
+        // shadows/sky were already produced by the shared passes before the capture loop.
+        void RenderCaptureView(ICommandList& CmdList);
+
+        // The view being shaded's final output RT (the live SceneViewport's RT). Primary and
+        // capture passes write here; GetRenderTarget() (public) always returns the primary's.
+        FRHIImage* GetViewOutputTarget() const { return SceneViewport ? SceneViewport->GetRenderTarget() : nullptr; }
+
+        // Re-point CurrentView + every live per-view member (binding sets, viewport, bloom)
+        // at View, so the shading passes -- which read the live members -- operate on it.
+        // Called once per view in RenderView_RenderThread.
+        void PointAtView(FSceneView& View)
+        {
+            CurrentView                = &View;
+            SceneBindingSet            = View.SceneBindingSets[CurrentFrameSlot];
+            SceneBindingSetReadOnly    = View.SceneBindingSetReadOnlys[CurrentFrameSlot];
+            ComposeBindingSet          = View.ComposeBindingSet;
+            SMAAEdgeBindingSet         = View.SMAAEdgeBindingSet;
+            SMAABlendWeightBindingSet  = View.SMAABlendWeightBindingSet;
+            SMAANeighborhoodBindingSet = View.SMAANeighborhoodBindingSet;
+            OITBindingSet              = View.OITBindingSet;
+            BloomChain                 = View.BloomChainImage;
+            SceneViewportState         = View.ViewportState;
+            SceneViewport              = View.Viewport.GetReference();
+        }
 
         // Aliases the process-wide immutable resources (BRDF LUT, SMAA LUTs, editor
         // icons) into this scene's NamedImages, building them once on the first scene.
@@ -439,6 +556,11 @@ namespace Lumina
         // before any draw pass that reads skinned geometry.
         void SkinningPass(ICommandList& CmdList);
 
+        // Replays this frame's render-target paint/clear ops (Frame.PaintOps) as compute
+        // brush dispatches into each target's bindless UAV, then restores them to
+        // ShaderResource so the geometry passes can sample them.
+        void TexturePaintPass(ICommandList& CmdList);
+
         
         void DepthPrePassEarly(ICommandList& CmdList);
         void DepthPrePassLate(ICommandList& CmdList);
@@ -459,6 +581,7 @@ namespace Lumina
         void TerrainUpdatePass(ICommandList& CmdList);
 
         void TerrainCullPass(ICommandList& CmdList);
+        void TerrainDepthPrePass(ICommandList& CmdList);
         void TerrainRenderPass(ICommandList& CmdList);
         void TransparentPass(ICommandList& CmdList);
         void OITResolvePass(ICommandList& CmdList);
@@ -531,18 +654,40 @@ namespace Lumina
         /** MSAA sample count cached from world settings. 1 == disabled (no overhead). */
         uint8                                           MSAASampleCount = 1;
 
-        /** Allocate the MS-only scratch images (HDR_MS, Depth_MS, Picker_MS). No-op when MSAA is off. */
-        void AllocateMSAAImages(const glm::uvec2& Extent);
+        /** Allocate a view's MS-only scratch images (HDR_MS, Depth_MS, Picker_MS). No-op when MSAA is off. */
+        void AllocateMSAAImages(FSceneView& View, const glm::uvec2& Extent);
 
-        /** Reconcile cached sample count with the world setting; reallocates MS images when it changes. */
+        /** Reconcile cached sample count with the world setting; reallocates every view's MS images when it changes. */
         void SyncMSAAState();
 
         // Bloom mip chain (one image, BLOOM_MIP_COUNT mips). SPD downsample writes
         // mips 0..N-1 from HDR; upsample walks back additively. Tone-mapping samples mip 0.
         static constexpr uint32                         BLOOM_MIP_COUNT = 5;
-        FRHIImageRef                                    BloomChain;
-        
+
+        // The scene gathers once, then shades each FSceneView into its own image chain.
+        // SceneViews[0] is the primary (editor/game) view; the rest are registered captures.
+        // CurrentView is repointed at the top of each view's pass sequence; the live
+        // members below (SceneViewport, SceneViewportState, the scene/compose/SMAA/OIT
+        // binding sets, BloomChain) are re-aimed at it then so the passes need no changes.
+        // SceneViews is reserved to MaxSceneViews and never grows past it: CurrentView is a
+        // raw pointer the render thread holds across a frame, so a reallocation (from a
+        // game-thread RegisterCaptureView) would dangle it. Registration refuses past the cap.
+        static constexpr uint32                 MaxSceneViews = 16;
+        TVector<FSceneView>                     SceneViews;
+        FSceneView*                             CurrentView = nullptr;
+
+        // Cull-view indices of the view being shaded, so the camera draw passes index the
+        // right IndirectArgs slice. Primary: 0 / Frame.CameraLateViewIndex. Capture: its
+        // appended frustum-only view / ~0u (no two-pass occlusion).
+        uint32                                  CurrentCameraEarlyView = 0;
+        uint32                                  CurrentCameraLateView  = ~0u;
+
+        // Live pointer into CurrentView->BloomChainImage.
+        FRHIImage*                              BloomChain = nullptr;
+
         FViewportState                          SceneViewportState;
+        // Live pointer into CurrentView->Viewport.
+        FRHIViewport*                           SceneViewport = nullptr;
         FDelegateHandle                         SwapchainResizedHandle;
         CWorld*                                 World = nullptr;
 
@@ -574,31 +719,20 @@ namespace Lumina
         FExponentialHeightFogParams             LastUploadedFogParams = {};
         bool                                    bFogParamsUploaded    = false;
 
-        // Cluster-grid change tracking: view-space AABBs depend only on projection +
-        // RT size, so the pass is skipped while those are unchanged.
-        glm::mat4                               LastClusterInvProjection = glm::mat4(0.0f);
-        glm::vec2                               LastClusterNearFar       = glm::vec2(0.0f);
-        glm::uvec2                              LastClusterScreenSize    = glm::uvec2(0);
-        bool                                    bClusterGridDirty        = true;
-        
         FBindingCache                           BindingCache;
-
-        FRHIViewportRef                         SceneViewport;
 
         // Latest post-process material list from the world; captured into
         // FFrameData::ActivePostProcessMaterials at the start of Extract.
         TVector<CMaterialInterface*>            PendingPostProcessMaterials;
 
-        // Non-owning view of SceneBindingSets[CurrentFrameSlot], refreshed at the top of
-        // RenderView; bind sites read through it so they don't need to know about ringing.
+        // Non-owning view of CurrentView->SceneBindingSets[CurrentFrameSlot], refreshed at
+        // the top of each view; bind sites read through it so they ignore view/slot ringing.
         FRHIBindingSet*                                                 SceneBindingSet = nullptr;
-        TArray<FRHIBindingSetRef, FRAMES_IN_FLIGHT>                     SceneBindingSets = {};
         FRHIBindingLayoutRef                                            SceneBindingLayout;
 
         // Read-only twin of SceneBindingSet (shared layout) binding GPU-written buffers as
         // SRV; read-only passes use it so the tracker skips the per-pass UAV barrier.
         FRHIBindingSet*                                                 SceneBindingSetReadOnly = nullptr;
-        TArray<FRHIBindingSetRef, FRAMES_IN_FLIGHT>                     SceneBindingSetReadOnlys = {};
 
         // GPU-atomic-written by CullMeshlets, consumed by DrawIndirect, so it can't be
         // BUF_Dynamic (no dynamic offset to vkCmdDrawIndirect). Manual N-buffer ring.
@@ -626,19 +760,21 @@ namespace Lumina
         FRHIBindingLayoutRef                    EmptySet2Layout;
 
 
-        FRHIBindingSetRef                       ComposeBindingSet;
+        // Compose/SMAA/OIT sets are per-view (reference this view's HDR/LDR/etc.), so the
+        // sets are live pointers into CurrentView; only the layouts are shared and owned here.
+        FRHIBindingSet*                         ComposeBindingSet = nullptr;
         FRHIBindingLayoutRef                    ComposeBindingLayout;
 
-        FRHIBindingSetRef                       SMAAEdgeBindingSet;
+        FRHIBindingSet*                         SMAAEdgeBindingSet = nullptr;
         FRHIBindingLayoutRef                    SMAAEdgeBindingLayout;
 
-        FRHIBindingSetRef                       SMAABlendWeightBindingSet;
+        FRHIBindingSet*                         SMAABlendWeightBindingSet = nullptr;
         FRHIBindingLayoutRef                    SMAABlendWeightBindingLayout;
 
-        FRHIBindingSetRef                       SMAANeighborhoodBindingSet;
+        FRHIBindingSet*                         SMAANeighborhoodBindingSet = nullptr;
         FRHIBindingLayoutRef                    SMAANeighborhoodBindingLayout;
 
-        FRHIBindingSetRef                       OITBindingSet;
+        FRHIBindingSet*                         OITBindingSet = nullptr;
         FRHIBindingLayoutRef                    OITBindingLayout;
         
         FRHIInputLayoutRef                      SimpleVertexLayoutInput;
@@ -664,12 +800,7 @@ namespace Lumina
         // Per-worker draw-gather scratch, persisted so outer storage keeps capacity;
         // arena-backed members are reset each frame (ResetForFrame) to avoid aliasing.
         TVector<FThreadLocalDrawData>           ThreadLocalStorage;
-
-        // Persistent task graphs reused each frame (Reset) instead of constructed locally,
-        // which churned ~85k heap allocs/sec. DrawTaskGraph: the gather/light graph in
-        // CompileDrawCommands_GameThread. DedupTaskGraph: the per-batch dedup graph in
-        // MergeMeshDrawData (runs nested inside DrawTaskGraph's merge node). Each is used by
-        // a single thread per frame, so reusing the member is race-free.
+        
         FTaskGraph                              DrawTaskGraph;
         FTaskGraph                              DedupTaskGraph;
 
@@ -701,7 +832,7 @@ namespace Lumina
             uint64              SubmittedFrame = 0;
             bool                bPending = false;
         };
-        mutable TArray<FPickerReadbackSlot, PickerReadbackRingSize> PickerReadbackRing;
+        mutable TArray<FPickerReadbackSlot,     PickerReadbackRingSize> PickerReadbackRing;
         uint64                                  PickerReadbackFrame = 0;
         uint32                                  PickerReadbackWriteIndex = 0;
 

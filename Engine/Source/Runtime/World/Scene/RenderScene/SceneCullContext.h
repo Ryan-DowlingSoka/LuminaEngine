@@ -46,12 +46,20 @@ namespace Lumina
          */
         TVector<FLightSphere> ShadowLights;
 
+        /**
+         * One frustum per active scene-capture (preview camera) view. An instance
+         * outside the main camera but inside any capture frustum must still be
+         * uploaded, or the GPU per-view cull has nothing to draw for that view.
+         */
+        TVector<FFrustum> CaptureFrusta;
+
         bool bEnabled  = true;
         bool bHasSun   = false;
 
         void Reset()
         {
             ShadowLights.clear();
+            CaptureFrusta.clear();
             bEnabled = true;
             bHasSun  = false;
         }
@@ -96,6 +104,15 @@ namespace Lumina
             if (Frustum.IntersectsSphere(Center, Radius))
             {
                 return true;
+            }
+
+            // Visible to a preview/capture camera: keep regardless of shadow casting.
+            for (const FFrustum& CaptureFrustum : CaptureFrusta)
+            {
+                if (CaptureFrustum.IntersectsSphere(Center, Radius))
+                {
+                    return true;
+                }
             }
 
             if (!bCastsShadow)
@@ -150,7 +167,22 @@ namespace Lumina
                 }
             }
 
-            return Frustum.IntersectsSphere(Center, Radius);
+            if (Frustum.IntersectsSphere(Center, Radius))
+            {
+                return true;
+            }
+
+            // A mesh visible only in a preview/capture view is still "rendered", so its
+            // pose must keep ticking or the preview shows a frozen animation.
+            for (const FFrustum& CaptureFrustum : CaptureFrusta)
+            {
+                if (CaptureFrustum.IntersectsSphere(Center, Radius))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     };
 }

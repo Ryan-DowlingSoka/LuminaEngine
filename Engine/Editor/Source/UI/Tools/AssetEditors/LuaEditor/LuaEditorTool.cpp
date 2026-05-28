@@ -334,6 +334,13 @@ namespace Lumina
             bExternalChangePending = true;
         });
 
+        // Runtime component type created/removed (or any global change) -> re-harvest symbols. Mark
+        // dirty here; Update coalesces bursts into a single rebuild.
+        GlobalsChangedHandle = SC.OnGlobalsChanged.AddLambda([this]
+        {
+            bSymbolsDirty = true;
+        });
+
         // Re-hydrate breakpoints from the debugger (source of truth) so they survive editor reopen.
         for (int Line : Lua::FLuaDebugger::Get().GetBreakpointLines(FStringView(VirtualPath.c_str(), VirtualPath.size())))
         {
@@ -497,6 +504,7 @@ namespace Lumina
         SC.OnScriptCompileError.Remove(CompileErrorHandle);
         SC.OnScriptCompileSuccess.Remove(CompileSuccessHandle);
         SC.OnScriptLoaded.Remove(ScriptLoadedHandle);
+        SC.OnGlobalsChanged.Remove(GlobalsChangedHandle);
     }
 
     void FLuaEditorTool::ApplyCompileError(int Line, const FString& Message)
@@ -525,6 +533,14 @@ namespace Lumina
     void FLuaEditorTool::Update(const FUpdateContext& UpdateContext)
     {
         FAssetEditorTool::Update(UpdateContext);
+
+        // Coalesce global-set changes (e.g. component types created/removed) into one re-harvest.
+        if (bSymbolsDirty)
+        {
+            bSymbolsDirty = false;
+            RebuildSymbolIndex();
+            RefreshAnalysis();
+        }
 
         if (bExternalChangePending)
         {

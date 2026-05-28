@@ -50,6 +50,16 @@ namespace Lumina
 
         virtual FRHIImage* GetRenderTarget() const = 0;
 
+        // Scene-capture views: render the same world from an additional camera into a
+        // dedicated render target (e.g. an editor camera-preview overlay). The scene
+        // gathers geometry once and shades each registered+enabled view into its own RT.
+        // RegisterCaptureView returns an opaque handle (-1 on failure); the renderer owns
+        // the RT. SetCaptureView updates the view's camera + enabled flag each frame
+        // (game thread, before Extract). GetCaptureRenderTarget returns the RT to display.
+        virtual int32 RegisterCaptureView(const glm::uvec2& Size) { return -1; }
+        virtual void  SetCaptureView(int32 Handle, const FViewVolume& View, bool bEnabled) {}
+        virtual FRHIImage* GetCaptureRenderTarget(int32 Handle) const { return nullptr; }
+
         // Re-create the scene's render target at a new size. Used by transient
         // render paths (e.g. thumbnail capture) that need a fixed RT independent
         // of the swapchain.
