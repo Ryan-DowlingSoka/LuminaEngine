@@ -289,33 +289,20 @@ namespace Lumina
         
         FTreeListView                           OutlinerListView;
         FTreeListViewContext                    OutlinerContext;
-
-        // World entity → outliner tree node. Populated incrementally as entities are created
-        // and torn down via the on_construct/on_destroy hooks for SNameComponent.
+        
         THashMap<entt::entity, FTreeNodeID>     EntityToTreeNode;
-
-        // Entities created since last outliner flush, queued because their FRelationshipComponent
-        // may not be set yet at on_construct time. Drained at the top of DrawOutliner.
+        
         TVector<entt::entity>                   PendingOutlinerAdds;
 
         TQueue<FComponentDestroyRequest>        ComponentDestroyRequests;
         TQueue<entt::entity>                    EntityDestroyRequests;
-
-        // One details-panel component row -- either a reflected component or a runtime
-        // (data-authored) one. They share a single ordered list so they sort together and render
-        // through the same header, keeping the visual hierarchy uniform.
+        
         struct FComponentTableEntry
         {
             TUniquePtr<FPropertyTable> Table;
             const CStruct*             ReflectedType = nullptr;  // reflected component CStruct; null if runtime
             bool                       bRuntime = false;
-            // Runtime rows are keyed by the storage id (from the type GUID), NOT a cached type
-            // pointer -- the type asset can be deleted out from under the inspector, so the live
-            // type is re-fetched from the storage each frame and never dereferenced if stale.
             uint32                     RuntimeStorageId = 0;
-            // For runtime rows, the (Layout, Data) the table is bound to. The contiguous storage can
-            // reallocate (another entity gaining this component, or a live schema migration), so
-            // these are re-checked each frame and the table re-pointed when they drift.
             CStruct*                   BoundLayout = nullptr;
             void*                      BoundData = nullptr;
             FString                    Title;                    // header label + sort key
@@ -325,50 +312,28 @@ namespace Lumina
 
         // Deferred removal of a runtime component (processed after the draw loop).
         CEntityComponentType*                   PendingRuntimeRemove = nullptr;
-
-        // SelectedEntities is the authoritative set; FSelectedInEditorComponent on the
-        // registry is mirrored from it (other systems — render highlight, prefab editor,
-        // visualizers — read the tag). LastSelectedEntity is the focus target for the
-        // gizmo pivot and details panel. FLastSelectedTag mirrors it for systems that
-        // observe via the registry. All mutations go through ApplySelectionMutation.
+        
         THashSet<entt::entity>                  SelectedEntities;
         entt::entity                            LastSelectedEntity = entt::null;
-
-        // The entity whose components are currently shown in the Details panel.
-        // PropertyTables hold raw pointers into that entity's component storage and
-        // become stale whenever LastSelectedEntity changes; tracking this separately
-        // lets us rebuild lazily on draw rather than on every selection mutation.
+        
         entt::entity                            DetailsEntity = entt::null;
         bool                                    bDetailsDirty = false;
-
-        // Registered viewport modes; index 0 is always the default Selection mode so
-        // initial state matches the pre-mode-system behavior. SetActiveMode handles
-        // OnEnter/OnExit hooks and resets gizmo bookkeeping so partial-drag state
-        // can't leak across a mode switch.
+        
         TVector<TUniquePtr<IWorldEditorMode>>   EditorModes;
         int32                                   ActiveModeIndex = 0;
 
         FNavMeshEditMode                        NavMeshEditMode;
-
-        // Viewport-local transform clipboard (Ctrl+Shift+C / Ctrl+Shift+V). Captured from
-        // the last-selected entity's world transform; pasted onto every selected entity.
+        
         FTransform                              CopiedTransform;
         bool                                    bHasCopiedTransform = false;
-
-        // Camera bookmark slots. Index 0..8 maps to keys 1..9; Ctrl+N saves the current
-        // EditorEntity transform into slot N, plain N recalls it. Session-only for now.
+        
         static constexpr int32                  NumCameraBookmarks = 9;
         FTransform                              CameraBookmarks[NumCameraBookmarks];
         bool                                    bCameraBookmarkSet[NumCameraBookmarks] = {};
-
-        // Camera preview: when a camera entity is selected, the render scene shades its view
-        // into a dedicated capture RT, drawn as a small overlay in the viewport. Handle is
-        // lazily acquired from the renderer; bActive gates the overlay draw each frame.
+        
         void UpdateCameraPreview();
-        // Handle into the render scene's capture views, and the scene it was registered with.
-        // The scene can be torn down + rebuilt (idle reclaim), which invalidates the handle;
-        // we detect the swap and re-register.
-        class IRenderScene*                     CameraPreviewScene = nullptr;
+
+        IRenderScene*                           CameraPreviewScene = nullptr;
         int32                                   CameraPreviewHandle = -1;
         bool                                    bCameraPreviewActive = false;
         static constexpr uint32                 CameraPreviewWidth  = 720;
@@ -386,22 +351,13 @@ namespace Lumina
         bool                                    bGamePreviewRunning = false;
         bool                                    bSimulatingWorld = false;
 
-        // Who owns the mouse/keyboard while playing. Game = ImGui ignores input
-        // (editor chrome + picking inert), routed to game + UI; Editor = ImGui live
-        // so you can drive panels. Toggled with Shift+F1 during Play. Simulate stays
-        // Editor (live editing) and never enters Game focus.
-        enum class EInputFocus : uint8 { Editor, Game };
+        // Who owns the mouse/keyboard while playing.
+        enum class EInputFocus                  : uint8 { Editor, Game };
         EInputFocus                             InputFocus = EInputFocus::Editor;
-
-        // Sets ImGui NoMouse|NoKeyboard per InputFocus; reasserted each frame while
-        // in Game focus so a script's SetMouseMode("Normal") can't re-enable ImGui.
+        
         void ApplyInputFocus();
         void SetInputFocus(EInputFocus NewFocus);
-
-        // Game view mode (toggled with G): hides grid, component visualizers, billboards
-        // and bounds so the viewport shows just what a runtime camera would see. The
-        // "Saved*" fields snapshot the user's prior toggles on enter so toggling back
-        // off restores their preferences instead of forcing everything on.
+        
         bool                                    bGameViewMode = false;
         bool                                    bSavedWorldGridEnabled = true;
         bool                                    bSavedShowComponentVisualizers = true;
@@ -412,16 +368,11 @@ namespace Lumina
         
         /** IDK, this thing will return IsUsing = true always if it's never been used */
         bool                                    bImGuizmoUsedOnce = false;
-
-        // Vertex snap (Godot-style): while CTRL is held during a translate drag,
-        // snap a chosen vertex on the dragged mesh to the nearest vertex on a
-        // non-selected mesh in screen space. AnchorLocal is captured once per
-        // drag in the pivot mesh's local frame.
         bool                                    bVertexSnapAnchorValid = false;
-        FVector3                               VertexSnapAnchorLocal = FVector3(0.0f);
+        FVector3                                VertexSnapAnchorLocal = FVector3(0.0f);
         bool                                    bVertexSnapApplied = false;
-        FVector3                               VertexSnapTargetWorld = FVector3(0.0f);
-        FVector3                               VertexSnapAnchorWorld = FVector3(0.0f);
+        FVector3                                VertexSnapTargetWorld = FVector3(0.0f);
+        FVector3                                VertexSnapAnchorWorld = FVector3(0.0f);
         float                                   VertexSnapPixelRadius = 16.0f;
     };
     

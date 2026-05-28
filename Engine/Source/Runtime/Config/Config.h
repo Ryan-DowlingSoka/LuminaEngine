@@ -109,10 +109,10 @@ namespace Lumina
         float               GetFloat(FStringView Key) const;
         FString             GetString(FStringView Key) const;
         FString             GetPath(FStringView Key) const          { return GetString(Key); }
-        FVector2           GetVec2(FStringView Key) const;
-        FVector3           GetVec3(FStringView Key) const;
-        FVector4           GetVec4(FStringView Key) const;
-        FVector4           GetColor(FStringView Key) const         { return GetVec4(Key); }
+        FVector2            GetVec2(FStringView Key) const;
+        FVector3            GetVec3(FStringView Key) const;
+        FVector4            GetVec4(FStringView Key) const;
+        FVector4            GetColor(FStringView Key) const         { return GetVec4(Key); }
         TVector<FString>    GetStringArray(FStringView Key) const;
 
         // Raw JSON access for the editor / advanced cases.
