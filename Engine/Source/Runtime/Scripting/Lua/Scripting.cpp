@@ -865,7 +865,7 @@ namespace Lumina::Lua
 
         // Re-register on registry updates (discovery finishes after init; deferred to avoid
         // deadlock with AssetsMutex held during the broadcast).
-        FAssetRegistry::Get().GetOnAssetRegistryUpdated().AddLambda([this]
+        std::ignore = FAssetRegistry::Get().GetOnAssetRegistryUpdated().AddLambda([this]
         {
             MainThread::Enqueue([this]
             {
