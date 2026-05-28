@@ -16,8 +16,8 @@ namespace Lumina
 
         EMode           Mode        = EMode::Paint;
 
-        glm::vec4       Color       = glm::vec4(1.0f);   // RGBA brush/clear color
-        glm::vec2       CenterUV    = glm::vec2(0.5f);   // brush center, 0..1
+        FVector4       Color       = FVector4(1.0f);   // RGBA brush/clear color
+        FVector2       CenterUV    = FVector2(0.5f);   // brush center, 0..1
         float           RadiusUV    = 0.05f;             // brush radius in UV units
         float           Strength    = 1.0f;              // 0..1 opacity at the brush center
         float           Hardness    = 1.0f;              // edge falloff exponent; >1 sharper

@@ -30,8 +30,8 @@ namespace Lumina
             ECameraBlendFunction    Function = ECameraBlendFunction::EaseInOut;
 
             // Snapshot of the displayed view when the blend began.
-            glm::vec3               FromPosition = glm::vec3(0.0f);
-            glm::quat               FromRotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            FVector3               FromPosition = FVector3(0.0f);
+            FQuat               FromRotation = FQuat(1.0f, 0.0f, 0.0f, 0.0f);
             float                   FromFOV = 90.0f;
             SPostProcessSettings    FromPostProcess;
         };
@@ -52,7 +52,7 @@ namespace Lumina
         FORCEINLINE const FBlendState& GetBlend() const { return Blend; }
 
         /** Record the view actually displayed this frame so a later switch can blend from it. */
-        void StoreResolvedView(const glm::vec3& Position, const glm::quat& Rotation, float FOV, const SPostProcessSettings& PostProcess);
+        void StoreResolvedView(const FVector3& Position, const FQuat& Rotation, float FOV, const SPostProcessSettings& PostProcess);
         FORCEINLINE bool HasResolvedView() const { return bHasResolvedView; }
 
     private:
@@ -63,8 +63,8 @@ namespace Lumina
         FBlendState         Blend;
 
         // Last fully resolved (post-blend) view; the source for the next blend's snapshot.
-        glm::vec3               LastViewPosition = glm::vec3(0.0f);
-        glm::quat               LastViewRotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        FVector3               LastViewPosition = FVector3(0.0f);
+        FQuat               LastViewRotation = FQuat(1.0f, 0.0f, 0.0f, 0.0f);
         float                   LastViewFOV = 90.0f;
         SPostProcessSettings    LastPostProcess;
         bool                    bHasResolvedView = false;

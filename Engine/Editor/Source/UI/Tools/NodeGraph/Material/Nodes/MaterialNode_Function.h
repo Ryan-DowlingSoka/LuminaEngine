@@ -50,7 +50,7 @@ namespace Lumina
 
         /** Value used when a call node leaves this input unconnected (and for in-editor preview). */
         PROPERTY(Editable, Category = "Function Input")
-        glm::vec4 DefaultValue = glm::vec4(0.0f);
+        FVector4 DefaultValue = FVector4(0.0f);
 
         /** Lower values sort earlier in the call node's pin list. */
         PROPERTY(Editable, Category = "Function Input")

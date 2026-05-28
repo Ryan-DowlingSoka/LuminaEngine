@@ -35,8 +35,8 @@ namespace Lumina
         TSharedPtr<FJoltCharacterHandle> Character;
 
         // Snapshots for interpolation.
-        glm::vec3 LastBodyPosition;
-        glm::quat LastBodyRotation;
+        FVector3 LastBodyPosition;
+        FQuat LastBodyRotation;
 
         /** Layer and mask controlling which bodies this character collides with. */
         PROPERTY(Script, Editable, Category = "Physics")
@@ -157,7 +157,7 @@ namespace Lumina
 
         /** Current velocity of the character in world space. */
         PROPERTY(Script, Visible, Category = "Movement")
-        glm::vec3 Velocity;
+        FVector3 Velocity;
 
         /** When true, the character's yaw matches the controller's look direction. */
         PROPERTY(Script, Editable, Category = "Rotation")
@@ -177,7 +177,7 @@ namespace Lumina
 
         // Internal staging: input is latched from the controller once per
         // frame in PrePhysics, then consumed at fixed-step rate in physics.
-        glm::vec3 PendingMoveDirection = glm::vec3(0.0f);
+        FVector3 PendingMoveDirection = FVector3(0.0f);
         float     PendingLookYaw       = 0.0f;
         bool      bHasPendingMoveInput = false;
         bool      bPendingJump         = false;
@@ -187,14 +187,14 @@ namespace Lumina
         float     PendingMoveThrottle  = 0.0f;
 
         // Staged Launch (jump pad / knockback / dash) consumed in the physics step.
-        glm::vec3 PendingLaunchVelocity     = glm::vec3(0.0f);
+        FVector3 PendingLaunchVelocity     = FVector3(0.0f);
         bool      bPendingLaunch            = false;
         bool      bLaunchOverrideHorizontal = false;
         bool      bLaunchOverrideVertical   = false;
 
         // Staged Teleport (respawn) consumed in the physics step; moves the
         // authoritative CharacterVirtual, which a plain transform write cannot.
-        glm::vec3 PendingTeleportLocation = glm::vec3(0.0f);
+        FVector3 PendingTeleportLocation = FVector3(0.0f);
         bool      bPendingTeleport        = false;
     };
 

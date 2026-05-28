@@ -24,7 +24,7 @@ namespace Lumina
         CWorld* World = Context.GetRegistry().ctx().get<CWorld*>();
         const SDefaultWorldSettings& WorldSettings = World->GetDefaultWorldSettings();
 
-        const float Hz       = glm::max(10.0f, WorldSettings.PhysicsHz);
+        const float Hz       = Math::Max(10.0f, WorldSettings.PhysicsHz);
         const float FixedDt  = 1.0f / Hz;
         const int32 MaxSteps = (int32)WorldSettings.MaxPhysicsSteps;
         const float MaxAccum = (float)MaxSteps * FixedDt;
@@ -32,14 +32,14 @@ namespace Lumina
         FScriptFixedUpdateState& State = Context.GetRegistry().ctx().get<FScriptFixedUpdateState>();
         State.Accumulator += (float)Context.GetDeltaTime();
         // Clamp so a hitch can't trigger a step storm (matches the physics scene).
-        State.Accumulator = glm::min(State.Accumulator, MaxAccum);
+        State.Accumulator = Math::Min(State.Accumulator, MaxAccum);
 
         int32 Steps = (State.Accumulator >= FixedDt) ? (int32)(State.Accumulator / FixedDt) : 0;
         if (Steps <= 0)
         {
             return;
         }
-        Steps = glm::min(Steps, MaxSteps);
+        Steps = Math::Min(Steps, MaxSteps);
         State.Accumulator -= (float)Steps * FixedDt;
 
         auto View = Context.CreateView<SScriptComponent, FScriptHasFixedUpdateFn>(entt::exclude<SDisabledTag>);

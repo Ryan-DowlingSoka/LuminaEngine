@@ -65,7 +65,7 @@ namespace Lumina
     int32 SBlackboardComponent::GetInt(const FName& Key, int32 Default) const
     {
         auto It = Values.find(Key);
-        return It == Values.end() ? Default : (int32)glm::round(It->second.Scalar);
+        return It == Values.end() ? Default : (int32)Math::Round(It->second.Scalar);
     }
 
     void SBlackboardComponent::SetBool(const FName& Key, bool bValue)
@@ -90,13 +90,13 @@ namespace Lumina
         return It == Values.end() ? nullptr : It->second.Object.Get();
     }
 
-    void SBlackboardComponent::SetVector(const FName& Key, const glm::vec3& Value)
+    void SBlackboardComponent::SetVector(const FName& Key, const FVector3& Value)
     {
         EnsureInitialized();
         Values[Key].Vector = Value;
     }
 
-    glm::vec3 SBlackboardComponent::GetVector(const FName& Key, const glm::vec3& Default) const
+    FVector3 SBlackboardComponent::GetVector(const FName& Key, const FVector3& Default) const
     {
         auto It = Values.find(Key);
         return It == Values.end() ? Default : It->second.Vector;

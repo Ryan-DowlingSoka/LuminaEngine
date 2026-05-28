@@ -17,12 +17,12 @@ namespace Lumina
             return entt::null;
         }
 
-        const glm::vec4 kVolumeColor(0.95f, 0.65f, 0.10f, 1.0f);
-        const glm::vec4 kBakedColor (0.30f, 0.85f, 0.45f, 1.0f);
-        const glm::vec4 kBakingColor(0.85f, 0.85f, 0.20f, 1.0f);
+        const FVector4 kVolumeColor(0.95f, 0.65f, 0.10f, 1.0f);
+        const FVector4 kBakedColor (0.30f, 0.85f, 0.45f, 1.0f);
+        const FVector4 kBakingColor(0.85f, 0.85f, 0.20f, 1.0f);
     }
 
-    entt::entity FNavMeshEditMode::CreateNavMeshBounds(CWorld* World, const glm::vec3& WorldLocation)
+    entt::entity FNavMeshEditMode::CreateNavMeshBounds(CWorld* World, const FVector3& WorldLocation)
     {
         if (!World) return entt::null;
 
@@ -32,7 +32,7 @@ namespace Lumina
 
         SNavMeshComponent& Nav = World->GetEntityRegistry().emplace<SNavMeshComponent>(Entity);
         Nav.Center  = WorldLocation;
-        Nav.Extents = glm::vec3(64.0f, 16.0f, 64.0f);
+        Nav.Extents = FVector3(64.0f, 16.0f, 64.0f);
         // Don't auto-bake on create. The user usually wants to position +
         // resize the bounds first; an explicit Bake click matches Unreal.
         return Entity;
@@ -81,7 +81,7 @@ namespace Lumina
         {
             SNavMeshComponent& Nav = View.get<SNavMeshComponent>(Entity);
 
-            glm::vec3 Center = Nav.Center;
+            FVector3 Center = Nav.Center;
             if (auto* Xform = Reg.try_get<STransformComponent>(Entity))
             {
                 // Mirror the transform's location so the user can drag the
@@ -91,10 +91,10 @@ namespace Lumina
                 Nav.Center = Center;
             }
 
-            const glm::vec4 Color = Nav.HasBakedData() ? kBakedColor : kVolumeColor;
+            const FVector4 Color = Nav.HasBakedData() ? kBakedColor : kVolumeColor;
             // Duration=-1 marks the box "single frame"; the editor overlay
             // re-emits each tick so the bounds wireframe is always present.
-            World->DrawBox(Center, Nav.Extents, glm::quat(1.0f, 0.0f, 0.0f, 0.0f), Color, 1.5f, true, -1.0f);
+            World->DrawBox(Center, Nav.Extents, FQuat(1.0f, 0.0f, 0.0f, 0.0f), Color, 1.5f, true, -1.0f);
         }
     }
 }

@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "MiniaudioContext.h"
 
-#include <glm/gtx/quaternion.hpp>
+#include "Core/Math/Math.h"
 #include "FileSystem/FileSystem.h"
 #include "Log/Log.h"
 #include "Memory/Memory.h"
@@ -81,11 +81,11 @@ namespace Lumina
 	{
 		FAudioHandle Handle = AllocateHandle();
 		CommandQueue.enqueue(FAudioCommand::MakePlay(
-			Handle, File, false, glm::vec3(0.0f), Volume, Pitch, 1.0f, 50.0f, bLooping));
+			Handle, File, false, FVector3(0.0f), Volume, Pitch, 1.0f, 50.0f, bLooping));
 		return Handle;
 	}
 
-	FAudioHandle FMiniaudioContext::PlaySoundAtLocation(FStringView File, glm::vec3 Location,
+	FAudioHandle FMiniaudioContext::PlaySoundAtLocation(FStringView File, FVector3 Location,
 		float Volume, float Pitch, float MinDistance, float MaxDistance, bool bLooping)
 	{
 		FAudioHandle Handle = AllocateHandle();
@@ -114,7 +114,7 @@ namespace Lumina
 		CommandQueue.enqueue(FAudioCommand::MakeSetLooping(Handle, bLooping));
 	}
 
-	void FMiniaudioContext::SetPosition(FAudioHandle Handle, glm::vec3 Position)
+	void FMiniaudioContext::SetPosition(FAudioHandle Handle, FVector3 Position)
 	{
 		CommandQueue.enqueue(FAudioCommand::MakeSetPosition(Handle, Position));
 	}
@@ -124,7 +124,7 @@ namespace Lumina
 		CommandQueue.enqueue(FAudioCommand::MakeSetMinMaxDistance(Handle, MinDistance, MaxDistance));
 	}
 
-	void FMiniaudioContext::UpdateListenerPosition(glm::vec3 Location, glm::quat Rotation)
+	void FMiniaudioContext::UpdateListenerPosition(FVector3 Location, FQuat Rotation)
 	{
 		CommandQueue.enqueue(FAudioCommand::MakeUpdateListener(Location, Rotation));
 	}
@@ -140,7 +140,7 @@ namespace Lumina
 	}
 
 	FAudioHandle FMiniaudioContext::PlayProceduralStream(TSharedPtr<FProceduralAudioStream> Stream, bool bSpatialized,
-		glm::vec3 Position, float Volume, float Pitch, float MinDistance, float MaxDistance)
+		FVector3 Position, float Volume, float Pitch, float MinDistance, float MaxDistance)
 	{
 		FAudioHandle Handle = AllocateHandle();
 
@@ -326,8 +326,8 @@ namespace Lumina
 
 		case EAudioCommandType::UpdateListener:
 		{
-			glm::vec3 Forward = glm::normalize(glm::rotate(Cmd.Listener.Rotation, glm::vec3(0.0f, 0.0f, 1.0f)));
-			glm::vec3 Up      = glm::normalize(glm::rotate(Cmd.Listener.Rotation, glm::vec3(0.0f, 1.0f, 0.0f)));
+			FVector3 Forward = Math::Normalize(Math::Rotate(Cmd.Listener.Rotation, FVector3(0.0f, 0.0f, 1.0f)));
+			FVector3 Up      = Math::Normalize(Math::Rotate(Cmd.Listener.Rotation, FVector3(0.0f, 1.0f, 0.0f)));
 
 			ma_engine_listener_set_position(&Engine, 0,
 				Cmd.Listener.Position.x, Cmd.Listener.Position.y, Cmd.Listener.Position.z);

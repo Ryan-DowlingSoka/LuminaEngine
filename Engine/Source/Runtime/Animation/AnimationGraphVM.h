@@ -116,6 +116,6 @@ namespace Lumina
                             FSkeletonResource* Skeleton,
                             float DeltaTime,
                             FAnimGraphVMState& State,
-                            TVector<glm::mat4>& OutMatrices);
+                            TVector<FMatrix4>& OutMatrices);
     };
 }

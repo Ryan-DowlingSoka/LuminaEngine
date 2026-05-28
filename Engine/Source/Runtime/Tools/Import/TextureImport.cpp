@@ -19,7 +19,7 @@
 namespace Lumina::Import::Textures
 {
     
-    static void ResizeResult(FTextureImportResult& Source, glm::uvec2 TargetSize)
+    static void ResizeResult(FTextureImportResult& Source, FUIntVector2 TargetSize)
     {
         const uint32 SrcW = Source.Dimensions.x;
         const uint32 SrcH = Source.Dimensions.y;
@@ -62,7 +62,7 @@ namespace Lumina::Import::Textures
         Source.Dimensions = TargetSize;
     }
     
-    TOptional<FTextureImportResult> ImportTexture(FStringView RawFilePath, bool bFlipVertical, glm::uvec2 Size)
+    TOptional<FTextureImportResult> ImportTexture(FStringView RawFilePath, bool bFlipVertical, FUIntVector2 Size)
     {
         FTextureImportResult Result = {};
         
@@ -188,7 +188,7 @@ namespace Lumina::Import::Textures
             Result.Pixels.assign(data, data + static_cast<size_t>(x) * y * channels);
         }
         
-        Result.Dimensions = glm::uvec2(x, y);
+        Result.Dimensions = FUIntVector2(x, y);
         
         if (Size.x > 0 && Size.y > 0)
         {
@@ -199,7 +199,7 @@ namespace Lumina::Import::Textures
         return Result;
     }
 
-    TOptional<FTextureImportResult> ImportTexture(TSpan<const uint8> ImageData, bool bFlipVertical, glm::uvec2 Size)
+    TOptional<FTextureImportResult> ImportTexture(TSpan<const uint8> ImageData, bool bFlipVertical, FUIntVector2 Size)
     {
         FTextureImportResult Result = {};
         
@@ -326,7 +326,7 @@ namespace Lumina::Import::Textures
             Result.Pixels.assign(data, data + static_cast<size_t>(x) * y * channels);
         }
         
-        Result.Dimensions = glm::uvec2(x, y);
+        Result.Dimensions = FUIntVector2(x, y);
         
         if (Size.x > 0 && Size.y > 0)
         {
@@ -337,7 +337,7 @@ namespace Lumina::Import::Textures
         return Result;
     }
 
-    FRHIImageRef CreateTextureFromImport(FStringView RawFilePath, bool bFlipVerticalOnLoad, glm::uvec2 Size)
+    FRHIImageRef CreateTextureFromImport(FStringView RawFilePath, bool bFlipVerticalOnLoad, FUIntVector2 Size)
     {
         LUMINA_PROFILE_SCOPE();
 

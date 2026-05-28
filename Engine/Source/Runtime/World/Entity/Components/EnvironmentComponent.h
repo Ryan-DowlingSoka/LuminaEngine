@@ -40,20 +40,20 @@ namespace Lumina
 
         /** SolidColor mode output; HDR-range, values >1 feed bloom. */
         PROPERTY(Editable, Color, Category = "Sky|Solid")
-        glm::vec3 SolidSkyColor = glm::vec3(0.45f, 0.65f, 1.0f);
+        FVector3 SolidSkyColor = FVector3(0.45f, 0.65f, 1.0f);
 
 
         /** Color directly overhead. */
         PROPERTY(Editable, Color, Category = "Sky|Gradient")
-        glm::vec3 ZenithColor = glm::vec3(0.05f, 0.1f, 0.4f);
+        FVector3 ZenithColor = FVector3(0.05f, 0.1f, 0.4f);
 
         /** Color at the horizon (Y == 0). */
         PROPERTY(Editable, Color, Category = "Sky|Gradient")
-        glm::vec3 HorizonColor = glm::vec3(0.6f, 0.8f, 1.0f);
+        FVector3 HorizonColor = FVector3(0.6f, 0.8f, 1.0f);
 
         /** Color directly below the horizon. */
         PROPERTY(Editable, Color, Category = "Sky|Gradient")
-        glm::vec3 GroundColor = glm::vec3(0.2f, 0.18f, 0.15f);
+        FVector3 GroundColor = FVector3(0.2f, 0.18f, 0.15f);
 
         /** Horizon-to-zenith curvature; 1.0 = clean cosine, smaller widens horizon band. */
         PROPERTY(Editable, Category = "Sky|Gradient", ClampMin = 0.05f, ClampMax = 4.0f)
@@ -69,7 +69,7 @@ namespace Lumina
 
         /** Tint on TOD sun color (Dynamic) and sun disc (Gradient). */
         PROPERTY(Editable, Color, Category = "Sky|Sun")
-        glm::vec3 SunColorTint = glm::vec3(1.0f);
+        FVector3 SunColorTint = FVector3(1.0f);
 
         /** Exposure on dynamic sky scattering before write. */
         PROPERTY(Editable, Category = "Sky|Dynamic", ClampMin = 0.05f, ClampMax = 8.0f)
@@ -81,7 +81,7 @@ namespace Lumina
 
         /** Night sky base color (multiplied by NightBrightness). */
         PROPERTY(Editable, Color, Category = "Sky|Night")
-        glm::vec3 NightSkyColor = glm::vec3(0.012f, 0.018f, 0.04f);
+        FVector3 NightSkyColor = FVector3(0.012f, 0.018f, 0.04f);
 
         /** Night sky brightness; independent of star/moon brightness. */
         PROPERTY(Editable, Category = "Sky|Night", ClampMin = 0.0f, ClampMax = 8.0f)
@@ -129,7 +129,7 @@ namespace Lumina
 
         /** Manual moon direction (FROM viewer TO moon) used when bMoonOpposeSun is false. */
         PROPERTY(Editable, Category = "Sky|Moon")
-        glm::vec3 MoonDirection = glm::vec3(0.0f, -1.0f, 0.0f);
+        FVector3 MoonDirection = FVector3(0.0f, -1.0f, 0.0f);
 
         /** HDR equirect for IBL irradiance/prefilter. Texture must use ColorSpace = Environment. */
         PROPERTY(Editable, Category = "Sky|HDRI")

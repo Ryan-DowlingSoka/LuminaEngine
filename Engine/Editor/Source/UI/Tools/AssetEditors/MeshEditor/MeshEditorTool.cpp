@@ -2,8 +2,7 @@
 
 #include "ImGuiDrawUtils.h"
 #include "Core/Object/Cast.h"
-#include "glm/glm.hpp"
-#include "glm/gtx/string_cast.hpp"
+#include "Core/Math/Math.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "world/entity/components/environmentcomponent.h"
@@ -19,7 +18,7 @@ namespace Lumina
     static uint32 SumTrianglesInRange(const TVector<FMeshlet>& Meshlets, uint32 Offset, uint32 Count)
     {
         uint32 Tris = 0;
-        const uint32 End = glm::min(Offset + Count, (uint32)Meshlets.size());
+        const uint32 End = Math::Min(Offset + Count, (uint32)Meshlets.size());
         for (uint32 m = Offset; m < End; ++m)
         {
             Tris += Meshlets[m].TriangleCount;
@@ -82,7 +81,7 @@ namespace Lumina
                 uint32 MaxLODsAcrossSurfaces = 0;
                 for (const FGeometrySurface& Surface : Resource.GeometrySurfaces)
                 {
-                    MaxLODsAcrossSurfaces = glm::max(MaxLODsAcrossSurfaces, Surface.NumLODs);
+                    MaxLODsAcrossSurfaces = Math::Max(MaxLODsAcrossSurfaces, Surface.NumLODs);
                 }
                 PropertyRow("LOD Levels", eastl::to_string(MaxLODsAcrossSurfaces));
                 
@@ -107,11 +106,11 @@ namespace Lumina
                 ImGui::TableSetColumnIndex(0);
                 ImGui::Dummy(ImVec2(0, 4));
                 
-                PropertyRow("Bounds Min", glm::to_string(BoundingBox.Min).c_str());
-                PropertyRow("Bounds Max", glm::to_string(BoundingBox.Max).c_str());
+                PropertyRow("Bounds Min", Math::ToString(BoundingBox.Min).c_str());
+                PropertyRow("Bounds Max", Math::ToString(BoundingBox.Max).c_str());
                 
-                glm::vec3 extents = BoundingBox.Max - BoundingBox.Min;
-                PropertyRow("Bounds Extents", glm::to_string(extents).c_str());
+                FVector3 extents = BoundingBox.Max - BoundingBox.Min;
+                PropertyRow("Bounds Extents", Math::ToString(extents).c_str());
     
                 ImGui::EndTable();
             }
@@ -127,7 +126,7 @@ namespace Lumina
             {
                 Task::ParallelFor(Resource.GetNumVertices(), [&](uint32 Index)
                 {
-                    glm::vec2 UV = Resource.GetUVAt(Index);
+                    FVector2 UV = Resource.GetUVAt(Index);
                     UV.y = 1.0f - UV.y;
                     Resource.SetUVAt(Index, UV);
                 });
@@ -142,7 +141,7 @@ namespace Lumina
             {
                 Task::ParallelFor(Resource.GetNumVertices(), [&](uint32 Index)
                 {
-                    glm::vec2 UV = Resource.GetUVAt(Index);
+                    FVector2 UV = Resource.GetUVAt(Index);
                     UV.x = 1.0f - UV.x;
                     Resource.SetUVAt(Index, UV);
                 });
@@ -159,7 +158,7 @@ namespace Lumina
             {
                 Task::ParallelFor(Resource.GetNumVertices(), [&](uint32 Index)
                 {
-                    glm::vec3 Normal = UnpackNormal(Resource.GetNormalAt(Index));
+                    FVector3 Normal = UnpackNormal(Resource.GetNormalAt(Index));
                     Resource.SetNormalAt(Index, PackNormal(-Normal));
                 });
                 StaticMesh->PostLoad();
@@ -175,11 +174,11 @@ namespace Lumina
             {
                 Task::ParallelFor(Resource.GetNumVertices(), [&](uint32 Index)
                 {
-                    glm::vec3 Position = Resource.GetPositionAt(Index);
+                    FVector3 Position = Resource.GetPositionAt(Index);
                     std::swap(Position.y, Position.z);
                     Resource.SetPositionAt(Index, Position);
             
-                    glm::vec3 Normal = UnpackNormal(Resource.GetNormalAt(Index));
+                    FVector3 Normal = UnpackNormal(Resource.GetNormalAt(Index));
                     std::swap(Normal.y, Normal.z);
                     Resource.SetNormalAt(Index, PackNormal(Normal));
                 });
@@ -194,11 +193,11 @@ namespace Lumina
             {
                 Task::ParallelFor(Resource.GetNumVertices(), [&](uint32 Index)
                 {
-                    glm::vec3 Position = Resource.GetPositionAt(Index);
+                    FVector3 Position = Resource.GetPositionAt(Index);
                     Position.x = -Position.x;
                     Resource.SetPositionAt(Index, Position);
             
-                    glm::vec3 Normal = UnpackNormal(Resource.GetNormalAt(Index));
+                    FVector3 Normal = UnpackNormal(Resource.GetNormalAt(Index));
                     Normal.x = -Normal.x;
                     Resource.SetNormalAt(Index, PackNormal(Normal));
                 });
@@ -220,19 +219,19 @@ namespace Lumina
             
             if (ImGui::Button("Apply Rotation##Transform", ImVec2(150, 0)))
             {
-                glm::mat4 RotX = glm::rotate(glm::mat4(1.0f), glm::radians(RotationAngles[0]), glm::vec3(1, 0, 0));
-                glm::mat4 RotY = glm::rotate(glm::mat4(1.0f), glm::radians(RotationAngles[1]), glm::vec3(0, 1, 0));
-                glm::mat4 RotZ = glm::rotate(glm::mat4(1.0f), glm::radians(RotationAngles[2]), glm::vec3(0, 0, 1));
-                glm::mat4 Rotation = RotZ * RotY * RotX;
-                glm::mat3 NormalMatrix = glm::transpose(glm::inverse(glm::mat3(Rotation)));
+                FMatrix4 RotX = Math::Rotate(FMatrix4(1.0f), Math::Radians(RotationAngles[0]), FVector3(1, 0, 0));
+                FMatrix4 RotY = Math::Rotate(FMatrix4(1.0f), Math::Radians(RotationAngles[1]), FVector3(0, 1, 0));
+                FMatrix4 RotZ = Math::Rotate(FMatrix4(1.0f), Math::Radians(RotationAngles[2]), FVector3(0, 0, 1));
+                FMatrix4 Rotation = RotZ * RotY * RotX;
+                FMatrix3 NormalMatrix = Math::Transpose(Math::Inverse(FMatrix3(Rotation)));
 
                 Task::ParallelFor(Resource.GetNumVertices(), [&](uint32 Index)
                 {
-                    glm::vec3 Position = Resource.GetPositionAt(Index);
-                    Resource.SetPositionAt(Index, glm::vec3(Rotation * glm::vec4(Position, 1.0f)));
+                    FVector3 Position = Resource.GetPositionAt(Index);
+                    Resource.SetPositionAt(Index, FVector3(Rotation * FVector4(Position, 1.0f)));
 
-                    glm::vec3 Normal = UnpackNormal(Resource.GetNormalAt(Index));
-                    Resource.SetNormalAt(Index, PackNormal(glm::normalize(NormalMatrix * Normal)));
+                    FVector3 Normal = UnpackNormal(Resource.GetNormalAt(Index));
+                    Resource.SetNormalAt(Index, PackNormal(Math::Normalize(NormalMatrix * Normal)));
                 });
 
                 RotationAngles[0] = RotationAngles[1] = RotationAngles[2] = 0.0f;
@@ -430,7 +429,7 @@ namespace Lumina
                         const float MinValue = SharedThresholds[lod - 1] + 0.01f;
                         if (ImGui::DragFloat("##Threshold", &Value, 0.5f, MinValue, 1024.0f, "%.2f"))
                         {
-                            SharedThresholds[lod] = glm::max(Value, MinValue);
+                            SharedThresholds[lod] = Math::Max(Value, MinValue);
                             bThresholdChanged = true;
                         }
 
@@ -563,7 +562,7 @@ namespace Lumina
                                     const float MinValue = SurfaceRW.LODScreenThreshold[lod - 1] + 0.01f;
                                     if (ImGui::DragFloat("##SurfaceThreshold", &Value, 0.5f, MinValue, 1024.0f, "%.2f"))
                                     {
-                                        SurfaceRW.LODScreenThreshold[lod] = glm::max(Value, MinValue);
+                                        SurfaceRW.LODScreenThreshold[lod] = Math::Max(Value, MinValue);
                                         Asset->GetPackage()->MarkDirty();
                                     }
                                     ImGui::PopID();
@@ -620,8 +619,8 @@ namespace Lumina
         CreateFloorPlane(FloorY);
 
         const FAABB Bounds = StaticMesh->GetAABB();
-        const glm::vec3 Center = MeshTransform.GetLocation() + Bounds.GetCenter();
-        const float Radius = glm::max(glm::length(Bounds.GetSize() * 0.5f), 0.5f);
+        const FVector3 Center = MeshTransform.GetLocation() + Bounds.GetCenter();
+        const float Radius = Math::Max(Math::Length(Bounds.GetSize() * 0.5f), 0.5f);
         SetOrbitTarget(Center, Radius * 3.0f);
         SetCameraMode(EEditorCameraMode::Orbit);
     }
@@ -644,7 +643,7 @@ namespace Lumina
         if (bShowAABB)
         {
             FAABB AABB = StaticMeshComponent.StaticMesh->GetAABB().ToWorld(Transform.GetWorldMatrix());
-            World->DrawBox(AABB.GetCenter(), AABB.GetSize() * 0.5f, glm::quat(1, 0, 0, 0), FColor::Green);
+            World->DrawBox(AABB.GetCenter(), AABB.GetSize() * 0.5f, FQuat(1, 0, 0, 0), FColor::Green);
         }
 
         // Derive overlay AABB from the currently rendered LOD's meshlet range; LOD 0 bounds look stale after a forced LOD change.
@@ -658,7 +657,7 @@ namespace Lumina
 
                 // Use LOD 0 for auto preview; forced preview uses selected LOD clamped to surface NumLODs.
                 const uint32 OverlayLOD = (PreviewLODIndex >= 0 && Surface.NumLODs > 0)
-                    ? (uint32)glm::min((int32)Surface.NumLODs - 1, PreviewLODIndex)
+                    ? (uint32)Math::Min((int32)Surface.NumLODs - 1, PreviewLODIndex)
                     : 0u;
 
                 const uint32 OverlayOffset = Surface.LODMeshletOffset[OverlayLOD];
@@ -666,25 +665,25 @@ namespace Lumina
 
                 if (OverlayCount > 0 && !MD.Meshlets.empty())
                 {
-                    glm::vec3 Lo( FLT_MAX);
-                    glm::vec3 Hi(-FLT_MAX);
+                    FVector3 Lo( FLT_MAX);
+                    FVector3 Hi(-FLT_MAX);
                     const uint32 End = OverlayOffset + OverlayCount;
                     for (uint32 m = OverlayOffset; m < End; ++m)
                     {
                         const FMeshlet& Mesh = MD.Meshlets[m];
-                        const glm::vec3 GridOrigin = MD.MeshOrigin[Mesh.LODIndex];
-                        const glm::vec3 GridStep   = MD.MeshGridStep[Mesh.LODIndex];
-                        const glm::vec3 BoxLo = GridOrigin + glm::vec3(Mesh.LoInt) * GridStep;
-                        const glm::vec3 BoxHi = BoxLo + glm::vec3(1023.0f) * GridStep;
-                        Lo = glm::min(Lo, BoxLo);
-                        Hi = glm::max(Hi, BoxHi);
+                        const FVector3 GridOrigin = MD.MeshOrigin[Mesh.LODIndex];
+                        const FVector3 GridStep   = MD.MeshGridStep[Mesh.LODIndex];
+                        const FVector3 BoxLo = GridOrigin + FVector3(Mesh.LoInt) * GridStep;
+                        const FVector3 BoxHi = BoxLo + FVector3(1023.0f) * GridStep;
+                        Lo = Math::Min(Lo, BoxLo);
+                        Hi = Math::Max(Hi, BoxHi);
                     }
 
                     FAABB SurfaceAABB;
                     SurfaceAABB.Min = Lo;
                     SurfaceAABB.Max = Hi;
                     SurfaceAABB     = SurfaceAABB.ToWorld(Transform.GetWorldMatrix());
-                    World->DrawBox(SurfaceAABB.GetCenter(), SurfaceAABB.GetSize() * 0.5f, glm::quat(1, 0, 0, 0), FColor::Yellow, 2.0f);
+                    World->DrawBox(SurfaceAABB.GetCenter(), SurfaceAABB.GetSize() * 0.5f, FQuat(1, 0, 0, 0), FColor::Yellow, 2.0f);
                 }
             }
         }

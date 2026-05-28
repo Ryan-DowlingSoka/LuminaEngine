@@ -37,7 +37,7 @@ namespace Lumina
             :ViewVolume(fov, aspect)
         {}
 
-        void SetView(const glm::vec3& Position, const glm::vec3& ViewDirection, const glm::vec3& UpDirection)
+        void SetView(const FVector3& Position, const FVector3& ViewDirection, const FVector3& UpDirection)
         {
             ViewVolume.SetView(Position, ViewDirection, UpDirection);
         }
@@ -46,7 +46,7 @@ namespace Lumina
         // writing the authored FOV property. Consumers that read the component's
         // matrices directly (editor gizmo, CPU picking) then match the rendered
         // view, while FOV stays the blend target. Called by SCameraSystem.
-        void SetResolvedView(const glm::vec3& Position, const glm::vec3& ViewDirection, const glm::vec3& UpDirection, float InFOV)
+        void SetResolvedView(const FVector3& Position, const FVector3& ViewDirection, const FVector3& UpDirection, float InFOV)
         {
             ViewVolume.SetFOV(InFOV);
             ViewVolume.SetView(Position, ViewDirection, UpDirection);
@@ -64,7 +64,7 @@ namespace Lumina
             ViewVolume.SetPerspective(ViewVolume.GetFOV(), NewAspect);
         }
 
-        void SetPosition(const glm::vec3& NewPosition)
+        void SetPosition(const FVector3& NewPosition)
         {
             ViewVolume.SetViewPosition(NewPosition);
         }
@@ -72,19 +72,19 @@ namespace Lumina
         FUNCTION(Script)
         float GetFOV() const { return ViewVolume.GetFOV(); }
         float GetAspectRatio() const { return ViewVolume.GetAspectRatio(); }
-        const glm::mat4& GetViewMatrix() const { return ViewVolume.GetViewMatrix(); }
-        const glm::mat4& GetProjectionMatrix() const { return ViewVolume.GetProjectionMatrix(); }
-        const glm::mat4& GetViewProjectionMatrix() const { return ViewVolume.GetViewProjectionMatrix(); }
+        const FMatrix4& GetViewMatrix() const { return ViewVolume.GetViewMatrix(); }
+        const FMatrix4& GetProjectionMatrix() const { return ViewVolume.GetProjectionMatrix(); }
+        const FMatrix4& GetViewProjectionMatrix() const { return ViewVolume.GetViewProjectionMatrix(); }
         const FViewVolume& GetViewVolume() const { return ViewVolume; }
         
         FUNCTION(Script)
-        glm::vec3 GetPosition() const { return ViewVolume.GetViewPosition(); }
+        FVector3 GetPosition() const { return ViewVolume.GetViewPosition(); }
         
         FUNCTION(Script)
-        glm::vec3 GetForwardVector() const { return ViewVolume.GetForwardVector(); }
+        FVector3 GetForwardVector() const { return ViewVolume.GetForwardVector(); }
         
         FUNCTION(Script)
-        glm::vec3 GetRightVector() const { return ViewVolume.GetRightVector(); }
+        FVector3 GetRightVector() const { return ViewVolume.GetRightVector(); }
 
         /** Vertical field of view in degrees. */
         PROPERTY(Editable, Category = "Camera")

@@ -26,9 +26,9 @@ namespace Lumina
         FName TargetBone; 
         ETargetPath TargetPath;
         TVector<float> Timestamps;
-        TVector<glm::vec3> Translations;
-        TVector<glm::quat> Rotations;
-        TVector<glm::vec3> Scales;
+        TVector<FVector3> Translations;
+        TVector<FQuat> Rotations;
+        TVector<FVector3> Scales;
         
         friend FArchive& operator << (FArchive& Ar, FAnimationChannel& Data)
         {
@@ -48,7 +48,7 @@ namespace Lumina
         FName NotifyName;
         float Time;
         FName NotifyTrack;
-        glm::vec4 Color;
+        FVector4 Color;
     
         friend FArchive& operator << (FArchive& Ar, FAnimationNotify& Data)
         {
@@ -66,7 +66,7 @@ namespace Lumina
         float StartTime;
         float EndTime;
         FName NotifyTrack;
-        glm::vec4 Color;
+        FVector4 Color;
     
         friend FArchive& operator << (FArchive& Ar, FAnimationNotifyState& Data)
         {
@@ -123,7 +123,7 @@ namespace Lumina
         bool IsAsset() const override { return true; }
         
         /** Writes (Global * InvBind) per bone; bones without channels keep their bind-pose local transform. */
-        void SamplePose(float Time, FSkeletonResource* RESTRICT InSkeleton, TVector<glm::mat4>& RESTRICT OutBoneTransforms) const;
+        void SamplePose(float Time, FSkeletonResource* RESTRICT InSkeleton, TVector<FMatrix4>& RESTRICT OutBoneTransforms) const;
 
         /** Samples the clip into a local-space TRS pose; bones without channels keep their bind-pose local transform. */
         void SampleLocalPose(float Time, FSkeletonResource* RESTRICT InSkeleton, FPose& RESTRICT OutPose) const;

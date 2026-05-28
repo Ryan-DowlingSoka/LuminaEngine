@@ -8,7 +8,7 @@
 #include "Core/Math/Math.h"
 #include "Core/Object/Cast.h"
 #include "Core/Object/ObjectArray.h"
-#include "glm/gtc/type_ptr.inl"
+#include "Core/Math/Math.h"
 #include "Paths/Paths.h"
 #include "Renderer/RenderManager.h"
 #include "Thumbnails/ThumbnailManager.h"
@@ -291,8 +291,8 @@ namespace Lumina
                             ImGui::TextDisabled("Invalid index");
                             break;
                         }
-                        glm::vec4 Value = Instance->MaterialUniforms.Vectors[Param.Index];
-                        if (ImGui::ColorEdit4("##Vector", glm::value_ptr(Value), ImGuiColorEditFlags_Float))
+                        FVector4 Value = Instance->MaterialUniforms.Vectors[Param.Index];
+                        if (ImGui::ColorEdit4("##Vector", Math::ValuePtr(Value), ImGuiColorEditFlags_Float))
                         {
                             Instance->SetVectorValue(Param.ParameterName, Value);
                             Asset->GetPackage()->MarkDirty();

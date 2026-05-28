@@ -32,7 +32,7 @@ namespace Lumina
          * so the cull shader doesn't have to multiply by a per-instance
          * matrix.
          */
-        RUNTIME_API void Build(STerrainComponent& Terrain, const glm::vec3& WorldOrigin);
+        RUNTIME_API void Build(STerrainComponent& Terrain, const FVector3& WorldOrigin);
 
         /**
          * Partial rebuild: recomputes bounds only for the chunks overlapping the
@@ -40,6 +40,6 @@ namespace Lumina
          * untouched. Falls back to a full Build if the chunk/meshlet structure
          * doesn't match the current resolution. Use after a localized height edit.
          */
-        RUNTIME_API void UpdateRegion(STerrainComponent& Terrain, const glm::vec3& WorldOrigin, const glm::ivec2& SampleMin, const glm::ivec2& SampleMax);
+        RUNTIME_API void UpdateRegion(STerrainComponent& Terrain, const FVector3& WorldOrigin, const FIntVector2& SampleMin, const FIntVector2& SampleMax);
     }
 }

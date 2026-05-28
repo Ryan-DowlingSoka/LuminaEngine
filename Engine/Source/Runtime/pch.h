@@ -86,6 +86,16 @@
 //                        log already go through Log.h. The fmt template
 //                        expansion was paying for every TU regardless.
 //   <Jolt/Jolt.h> -- only ~7 files use Jolt; they include it directly.
-#include <glm/glm.hpp>
 #include <entt/entt.hpp>
 #include <xxhash.h>
+
+// Lumina vector + quaternion types. Like glm, used in nearly every TU; the PCH
+// also makes the real FVector*/FQuat aliases visible to the reflection-unity TU
+// that compiles their manually-reflected registration (Core/Object/ManualReflectTypes.h).
+#include "Core/Math/Vector/Vector.h"
+#include "Core/Math/Quat/Quat.h"
+#include "Core/Math/Matrix/Matrix.h"
+#include "Core/Math/Matrix/MatrixMath.h"
+#include "Core/Math/Scalar.h"
+#include "Core/Math/Packing.h"
+#include "Core/Math/MathString.h"

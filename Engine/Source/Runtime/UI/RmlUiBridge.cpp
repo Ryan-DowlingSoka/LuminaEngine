@@ -168,10 +168,10 @@ namespace Lumina::RmlUi
         {
             Rml::Context*         Context = nullptr;
             FRHIImage*            Target = nullptr;
-            glm::uvec2            Size{0, 0};
+            FUIntVector2            Size{0, 0};
             Rml::ElementDocument* Document = nullptr;
             float                 DpiScale = 1.0f;
-            glm::vec4             ClearColor{0.10f, 0.10f, 0.12f, 1.0f};
+            FVector4             ClearColor{0.10f, 0.10f, 0.12f, 1.0f};
         };
 
         struct FState
@@ -257,7 +257,7 @@ namespace Lumina::RmlUi
             return (It != UI->Documents.end()) ? It->second : nullptr;
         }
 
-        struct FWorldTarget { FRHIImage* Image = nullptr; glm::uvec2 Size{0, 0}; };
+        struct FWorldTarget { FRHIImage* Image = nullptr; FUIntVector2 Size{0, 0}; };
         FWorldTarget GetWorldTarget(const CWorld* World)
         {
             if (World == nullptr)
@@ -274,7 +274,7 @@ namespace Lumina::RmlUi
             {
                 return {};
             }
-            return { Img, glm::uvec2(Img->GetSizeX(), Img->GetSizeY()) };
+            return { Img, FUIntVector2(Img->GetSizeX(), Img->GetSizeY()) };
         }
 
         int64 GetDocumentWriteTime(const FString& VirtualPath)
@@ -311,7 +311,7 @@ namespace Lumina::RmlUi
             }
             E.Target.SafeRelease();
             E.ResourceID = -1;
-            E.BuiltSize  = glm::uvec2(0, 0);
+            E.BuiltSize  = FUIntVector2(0, 0);
             E.LoadedPath.clear();
         }
 
@@ -331,7 +331,7 @@ namespace Lumina::RmlUi
             }
 
             FRHIImageDesc Desc;
-            Desc.Extent            = glm::uvec2(Width, Height);
+            Desc.Extent            = FUIntVector2(Width, Height);
             Desc.Format            = EFormat::RGBA8_UNORM;
             Desc.Dimension         = EImageDimension::Texture2D;
             Desc.NumMips           = 1;
@@ -344,7 +344,7 @@ namespace Lumina::RmlUi
 
             E.Target = GRenderContext->CreateImage(Desc);
             E.ResourceID = (E.Target && E.Target->GetResourceID() >= 0) ? E.Target->GetResourceID() : -1;
-            E.BuiltSize  = glm::uvec2(Width, Height);
+            E.BuiltSize  = FUIntVector2(Width, Height);
         }
 
         void ProcessPendingUIReload()
@@ -621,7 +621,7 @@ namespace Lumina::RmlUi
         {
             // DisplaySize override (set by editor each frame) lets the UI lay out at the
             // panel's aspect instead of the RT's. Falls back to RT size in standalone.
-            const glm::uvec2 LayoutSize = (UI->DisplaySize.x > 0 && UI->DisplaySize.y > 0) ? UI->DisplaySize : Tgt.Size;
+            const FUIntVector2 LayoutSize = (UI->DisplaySize.x > 0 && UI->DisplaySize.y > 0) ? UI->DisplaySize : Tgt.Size;
 
             constexpr float NominalHeight = 1080.0f;
             UI->Context->SetDimensions(Rml::Vector2i(int(LayoutSize.x), int(LayoutSize.y)));
@@ -652,7 +652,7 @@ namespace Lumina::RmlUi
             return;
         }
 
-        const glm::uvec2 LayoutSize = (UI->DisplaySize.x > 0 && UI->DisplaySize.y > 0) ? UI->DisplaySize : Tgt.Size;
+        const FUIntVector2 LayoutSize = (UI->DisplaySize.x > 0 && UI->DisplaySize.y > 0) ? UI->DisplaySize : Tgt.Size;
         State.Renderer->BeginFrame(CmdList, Tgt.Image, Tgt.Size, LayoutSize);
         UI->Context->Render();
         State.Renderer->EndFrame();
@@ -684,10 +684,10 @@ namespace Lumina::RmlUi
                 return;
             }
 
-            const uint32 Width  = (uint32)glm::max(1, Comp.DrawWidth);
-            const uint32 Height = (uint32)glm::max(1, Comp.DrawHeight);
+            const uint32 Width  = (uint32)Math::Max(1, Comp.DrawWidth);
+            const uint32 Height = (uint32)Math::Max(1, Comp.DrawHeight);
 
-            if (R.Context == nullptr || R.BuiltSize != glm::uvec2(Width, Height))
+            if (R.Context == nullptr || R.BuiltSize != FUIntVector2(Width, Height))
             {
                 EnsureWidgetResources(R, World, Entity, Width, Height);
             }
@@ -775,7 +775,7 @@ namespace Lumina::RmlUi
             return;
         }
 
-        const int32 Budget = glm::max(0, CVarWidgetMaxRendersPerFrame.GetValue());
+        const int32 Budget = Math::Max(0, CVarWidgetMaxRendersPerFrame.GetValue());
         int32 Rendered = 0;
 
         // Rotate the start each frame so the budget doesn't always favor the first widgets.
@@ -954,7 +954,7 @@ namespace Lumina::RmlUi
         }
     }
 
-    void SetWorldDisplaySize(CWorld* World, const glm::uvec2& Size)
+    void SetWorldDisplaySize(CWorld* World, const FUIntVector2& Size)
     {
         if (World == nullptr)
         {
@@ -1011,7 +1011,7 @@ namespace Lumina::RmlUi
         return true;
     }
 
-    Rml::Context* CreateEditorContext(const char* Name, const glm::uvec2& InitialSize)
+    Rml::Context* CreateEditorContext(const char* Name, const FUIntVector2& InitialSize)
     {
         FState& State = S();
         FRecursiveScopeLock Lock(State.StateMutex);
@@ -1074,7 +1074,7 @@ namespace Lumina::RmlUi
         }
     }
 
-    void SetEditorContextTarget(Rml::Context* Context, FRHIImage* Target, const glm::uvec2& Size)
+    void SetEditorContextTarget(Rml::Context* Context, FRHIImage* Target, const FUIntVector2& Size)
     {
         if (Context == nullptr)
         {
@@ -1111,7 +1111,7 @@ namespace Lumina::RmlUi
         }
     }
 
-    void SetEditorContextClearColor(Rml::Context* Context, const glm::vec4& Color)
+    void SetEditorContextClearColor(Rml::Context* Context, const FVector4& Color)
     {
         if (Context == nullptr)
         {

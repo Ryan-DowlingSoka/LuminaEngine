@@ -15,7 +15,7 @@ namespace Lumina
         float ApplyDamage(float Damage) { Health -= Damage; return Health; }
 
         FUNCTION(Script)
-        void GiveHealth(float NewHealth) { Health = glm::clamp(Health + NewHealth, 0.0f, MaxHealth); }
+        void GiveHealth(float NewHealth) { Health = Math::Clamp(Health + NewHealth, 0.0f, MaxHealth); }
 
         /** Current health points of the entity. */
         PROPERTY(Script, Editable, Category = "Health")

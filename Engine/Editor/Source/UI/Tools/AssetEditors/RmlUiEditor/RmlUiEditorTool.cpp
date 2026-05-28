@@ -451,7 +451,7 @@ namespace Lumina
         char NameBuf[96];
         std::snprintf(NameBuf, sizeof(NameBuf), "rml_editor_%p", static_cast<void*>(this));
 
-        const glm::uvec2 InitialSize{1280u, 720u};
+        const FUIntVector2 InitialSize{1280u, 720u};
         PreviewContext = RmlUi::CreateEditorContext(NameBuf, InitialSize);
         if (PreviewContext == nullptr)
         {
@@ -461,7 +461,7 @@ namespace Lumina
         {
             RmlUi::SetEditorContextDpiScale(PreviewContext, PreviewDpiScale);
             // Start with a transparent clear so checker/solid bg can show through.
-            RmlUi::SetEditorContextClearColor(PreviewContext, glm::vec4(0.0f, 0.0f, 0.0f, 0.0f));
+            RmlUi::SetEditorContextClearColor(PreviewContext, FVector4(0.0f, 0.0f, 0.0f, 0.0f));
         }
 
         ReloadDocument();
@@ -1258,15 +1258,15 @@ namespace Lumina
         // Push the bridge clear color according to the chosen background.
         // For checker/transparent we clear to alpha=0 so ImGui composites
         // bg below the image. For solid we clear with the chosen color.
-        glm::vec4 ClearColor;
+        FVector4 ClearColor;
         switch (BgMode)
         {
-        case EBgMode::Solid:       ClearColor = glm::vec4(BgColor.x, BgColor.y, BgColor.z, 1.0f); break;
+        case EBgMode::Solid:       ClearColor = FVector4(BgColor.x, BgColor.y, BgColor.z, 1.0f); break;
         case EBgMode::Checker:     // fallthrough — we draw the checker in ImGui below
-        case EBgMode::Transparent: ClearColor = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); break;
+        case EBgMode::Transparent: ClearColor = FVector4(0.0f, 0.0f, 0.0f, 0.0f); break;
         }
         RmlUi::SetEditorContextClearColor(PreviewContext, ClearColor);
-        RmlUi::SetEditorContextTarget(PreviewContext, PreviewTarget.GetReference(), glm::uvec2(PreviewWidth, PreviewHeight));
+        RmlUi::SetEditorContextTarget(PreviewContext, PreviewTarget.GetReference(), FUIntVector2(PreviewWidth, PreviewHeight));
 
         // Scrollable / pan child for the canvas.
         ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(18, 18, 22, 255));
@@ -1713,7 +1713,7 @@ namespace Lumina
         FRHIImageDesc Desc;
         Desc.Format = EFormat::RGBA8_UNORM;
         Desc.Flags.SetMultipleFlags(EImageCreateFlags::RenderTarget, EImageCreateFlags::ShaderResource);
-        Desc.Extent = glm::uvec2(Width, Height);
+        Desc.Extent = FUIntVector2(Width, Height);
         Desc.InitialState = EResourceStates::RenderTarget;
         Desc.bKeepInitialState = true;
         Desc.DebugName = "RmlUiEditorPreview";
@@ -1733,7 +1733,7 @@ namespace Lumina
         if (PreviewContext != nullptr)
         {
             RmlUi::ClearEditorContextDocument(PreviewContext);
-            RmlUi::SetEditorContextTarget(PreviewContext, nullptr, glm::uvec2(0, 0));
+            RmlUi::SetEditorContextTarget(PreviewContext, nullptr, FUIntVector2(0, 0));
             RmlUi::DestroyEditorContext(PreviewContext);
             PreviewContext = nullptr;
         }

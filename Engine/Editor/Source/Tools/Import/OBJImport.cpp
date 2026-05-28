@@ -1,5 +1,5 @@
 ﻿#include "PCH.h"
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 #include <tinyobjloader/tiny_obj_loader.h>
 #include "MeshFormatImport.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
@@ -182,24 +182,24 @@ namespace Lumina::Import::Mesh::OBJ
                         Vertex.Tangent  = 0;  // Filled by MikkTSpace in GenerateMeshlets.
                         Vertex.UV       = 0;
                         Vertex.Color    = 0xFFFFFFFF;
-                        Vertex.JointIndices = glm::u8vec4(0);
-                        Vertex.JointWeights = glm::u8vec4(0);
+                        Vertex.JointIndices = FU8Vector4(0);
+                        Vertex.JointWeights = FU8Vector4(0);
                         Vertex.Position.x = Attribute.vertices[3 * Index.vertex_index + 0];
                         Vertex.Position.y = Attribute.vertices[3 * Index.vertex_index + 1];
                         Vertex.Position.z = Attribute.vertices[3 * Index.vertex_index + 2];
 
                         if (Index.normal_index >= 0)
                         {
-                            glm::vec3 Normal;
+                            FVector3 Normal;
                             Normal.x = Attribute.normals[3 * Index.normal_index + 0];
                             Normal.y = Attribute.normals[3 * Index.normal_index + 1];
                             Normal.z = Attribute.normals[3 * Index.normal_index + 2];
-                            Vertex.Normal = PackNormal(glm::normalize(Normal));
+                            Vertex.Normal = PackNormal(Math::Normalize(Normal));
                         }
 
                         if (Index.texcoord_index >= 0)
                         {
-                            Vertex.UV = glm::packHalf2x16(glm::vec2(Attribute.texcoords[2 * Index.texcoord_index + 0], Attribute.texcoords[2 * Index.texcoord_index + 1]));
+                            Vertex.UV = Math::PackHalf2x16(FVector2(Attribute.texcoords[2 * Index.texcoord_index + 0], Attribute.texcoords[2 * Index.texcoord_index + 1]));
                         }
 
                         if (bIsSkinned)

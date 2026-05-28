@@ -3,7 +3,7 @@
 #define USE_IMGUI_API
 #include <imgui.h>
 #include <entt/entt.hpp>
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 
 #include "WorldEditorMode.h"
 #include "World/Entity/Components/TerrainBrushComponent.h"
@@ -68,8 +68,8 @@ namespace Lumina
         // Ramp brush state. Stroke captures Start on mousedown and updates End each
         // frame until release; dabs apply the current Start->End line.
         bool      bRampStarted   = false;
-        glm::vec3 RampStart      = glm::vec3(0.0f);
-        glm::vec3 RampEnd        = glm::vec3(0.0f);
+        FVector3 RampStart      = FVector3(0.0f);
+        FVector3 RampEnd        = FVector3(0.0f);
         float     RampHalfWidth  = 256.0f;
 
         // Optional fixed ramp endpoint heights instead of sampling the terrain.
@@ -77,12 +77,12 @@ namespace Lumina
         float     RampStartHeight      = 0.0f;
         float     RampEndHeight        = 0.0f;
 
-        glm::vec3 LastHit     = glm::vec3(0.0f);
+        FVector3 LastHit     = FVector3(0.0f);
         bool      bHitValid   = false;
 
         // Footprint brushes interpolate dabs from the previous frame's hit to this
         // frame's so fast strokes stay gap-free. Reset whenever the stroke breaks.
-        glm::vec3 LastStrokeHit = glm::vec3(0.0f);
+        FVector3 LastStrokeHit = FVector3(0.0f);
         bool      bHasStrokeHit = false;
 
         // True while an undo transaction is open for the current stroke (begun on the

@@ -49,7 +49,7 @@ namespace Lumina
     	
     }
 
-    void FVulkanSwapchain::CreateSwapchain(VkInstance Instance, FVulkanRenderContext* InContext, GLFWwindow* Window, glm::uvec2 Extent, bool bFromResize, bool bPrimary)
+    void FVulkanSwapchain::CreateSwapchain(VkInstance Instance, FVulkanRenderContext* InContext, GLFWwindow* Window, FUIntVector2 Extent, bool bFromResize, bool bPrimary)
     {
     	LUMINA_PROFILE_SCOPE();
 
@@ -95,7 +95,7 @@ namespace Lumina
 
     	// Use actual (clamped) extent; mismatching renderArea > imageView triggers VUID-06080.
     	const VkExtent2D ActualExtent = vkbSwapchain->extent;
-    	SwapchainExtent = glm::uvec2(ActualExtent.width, ActualExtent.height);
+    	SwapchainExtent = FUIntVector2(ActualExtent.width, ActualExtent.height);
 
         std::vector<VkImage> RawImages = vkbSwapchain->get_images().value();
 
@@ -165,7 +165,7 @@ namespace Lumina
     	CurrentImageIndex = 0;
     }
 
-    void FVulkanSwapchain::RecreateSwapchain(const glm::uvec2& Extent)
+    void FVulkanSwapchain::RecreateSwapchain(const FUIntVector2& Extent)
     {
     	LUMINA_PROFILE_SCOPE();
 
@@ -217,7 +217,7 @@ namespace Lumina
 	    {
 	    	if (bNeedsResize)
 	    	{
-	    		glm::uvec2 NewExtent = bIsPrimarySwapchain ? Windowing::GetPrimaryWindowHandle()->GetExtent() : DesiredExtent;
+	    		FUIntVector2 NewExtent = bIsPrimarySwapchain ? Windowing::GetPrimaryWindowHandle()->GetExtent() : DesiredExtent;
 
 	    		if (NewExtent.x > 0 && NewExtent.y > 0)
 	    		{

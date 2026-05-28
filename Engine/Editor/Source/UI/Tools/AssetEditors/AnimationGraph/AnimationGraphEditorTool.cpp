@@ -296,7 +296,7 @@ namespace Lumina
             STransformComponent& MeshTransform   = Registry.get<STransformComponent>(MeshEntity);
             STransformComponent& EditorTransform = Registry.get<STransformComponent>(EditorEntity);
 
-            glm::quat Rotation = Math::FindLookAtRotation(MeshTransform.GetLocation() + glm::vec3(0.0f, 0.85f, 0.0f), EditorTransform.GetLocation());
+            FQuat Rotation = Math::FindLookAtRotation(MeshTransform.GetLocation() + FVector3(0.0f, 0.85f, 0.0f), EditorTransform.GetLocation());
             EditorTransform.SetRotation(Rotation);
             return;
         }
@@ -703,7 +703,7 @@ namespace Lumina
             }
             case EBlackboardKeyType::Int:
             {
-                int IntValue = (int)glm::round(Value);
+                int IntValue = (int)Math::Round(Value);
                 if (ImGui::DragInt(Name, &IntValue)) Value = (float)IntValue;
                 break;
             }
@@ -712,7 +712,7 @@ namespace Lumina
                 CEnum* Enum = ResolveReflectedEnum(Key.EnumType);
                 if (Enum != nullptr)
                 {
-                    const int Current = (int)glm::round(Value);
+                    const int Current = (int)Math::Round(Value);
 
                     int32 CurrentIndex = INDEX_NONE;
                     for (int64 e = 0; e < (int64)Enum->Names.size(); ++e)
@@ -735,7 +735,7 @@ namespace Lumina
                 }
                 else
                 {
-                    int IntValue = (int)glm::round(Value);
+                    int IntValue = (int)Math::Round(Value);
                     if (ImGui::DragInt(Name, &IntValue)) Value = (float)IntValue;
                 }
                 break;

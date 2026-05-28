@@ -43,7 +43,7 @@ namespace Lumina
         struct FVectorParam
         {
             uint16 Index;
-            glm::vec4 Value;
+            FVector4 Value;
         };
 
         struct FTextureParam

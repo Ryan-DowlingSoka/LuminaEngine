@@ -53,21 +53,21 @@ namespace Lumina::Import::Mesh
         void Mikk_GetPosition(const SMikkTSpaceContext* Ctx, float Out[], int iFace, int iVert)
         {
             const FMikkSurfaceContext* S = static_cast<const FMikkSurfaceContext*>(Ctx->m_pUserData);
-            const glm::vec3 P = S->Mesh->Positions[MikkVertexIndex(Ctx, iFace, iVert)];
+            const FVector3 P = S->Mesh->Positions[MikkVertexIndex(Ctx, iFace, iVert)];
             Out[0] = P.x; Out[1] = P.y; Out[2] = P.z;
         }
 
         void Mikk_GetNormal(const SMikkTSpaceContext* Ctx, float Out[], int iFace, int iVert)
         {
             const FMikkSurfaceContext* S = static_cast<const FMikkSurfaceContext*>(Ctx->m_pUserData);
-            const glm::vec3 N = UnpackNormal(S->Mesh->Normals[MikkVertexIndex(Ctx, iFace, iVert)]);
+            const FVector3 N = UnpackNormal(S->Mesh->Normals[MikkVertexIndex(Ctx, iFace, iVert)]);
             Out[0] = N.x; Out[1] = N.y; Out[2] = N.z;
         }
 
         void Mikk_GetTexCoord(const SMikkTSpaceContext* Ctx, float Out[], int iFace, int iVert)
         {
             const FMikkSurfaceContext* S = static_cast<const FMikkSurfaceContext*>(Ctx->m_pUserData);
-            const glm::vec2 UV = S->Mesh->GetUVAt(MikkVertexIndex(Ctx, iFace, iVert));
+            const FVector2 UV = S->Mesh->GetUVAt(MikkVertexIndex(Ctx, iFace, iVert));
             Out[0] = UV.x; Out[1] = UV.y;
         }
 
@@ -76,22 +76,22 @@ namespace Lumina::Import::Mesh
             const FMikkSurfaceContext* S = static_cast<const FMikkSurfaceContext*>(Ctx->m_pUserData);
             // Disjoint surfaces rarely share a vertex post-dedup; when they do, both write a
             // valid tangent and the aligned uint32 store is atomic, so it is last-writer-wins.
-            S->Mesh->Tangents[MikkVertexIndex(Ctx, iFace, iVert)] = PackTangent(glm::vec3(Tangent[0], Tangent[1], Tangent[2]), Sign);
+            S->Mesh->Tangents[MikkVertexIndex(Ctx, iFace, iVert)] = PackTangent(FVector3(Tangent[0], Tangent[1], Tangent[2]), Sign);
         }
 
         // Describe every active SoA vertex stream for meshopt's multi-stream remap.
         uint32 BuildVertexStreams(FMeshResource& M, meshopt_Stream* OutStreams)
         {
             uint32 Count = 0;
-            OutStreams[Count++] = { M.Positions.data(), sizeof(glm::vec3),   sizeof(glm::vec3) };
+            OutStreams[Count++] = { M.Positions.data(), sizeof(FVector3),   sizeof(FVector3) };
             OutStreams[Count++] = { M.Normals.data(),   sizeof(uint32),      sizeof(uint32) };
             OutStreams[Count++] = { M.Tangents.data(),  sizeof(uint32),      sizeof(uint32) };
             OutStreams[Count++] = { M.UVs.data(),       sizeof(uint32),      sizeof(uint32) };
             OutStreams[Count++] = { M.Colors.data(),    sizeof(uint32),      sizeof(uint32) };
             if (M.bSkinnedMesh)
             {
-                OutStreams[Count++] = { M.JointIndices.data(), sizeof(glm::u8vec4), sizeof(glm::u8vec4) };
-                OutStreams[Count++] = { M.JointWeights.data(), sizeof(glm::u8vec4), sizeof(glm::u8vec4) };
+                OutStreams[Count++] = { M.JointIndices.data(), sizeof(FU8Vector4), sizeof(FU8Vector4) };
+                OutStreams[Count++] = { M.JointWeights.data(), sizeof(FU8Vector4), sizeof(FU8Vector4) };
             }
             return Count;
         }
@@ -222,7 +222,7 @@ namespace Lumina::Import::Mesh
                     &MeshResource.Indices[Section.StartIndex],
                     Section.IndexCount,
                     VertexPositions,
-                    NumVertices, sizeof(glm::vec3), Threshold);
+                    NumVertices, sizeof(FVector3), Threshold);
             });
         }
 
@@ -277,8 +277,8 @@ namespace Lumina::Import::Mesh
             TVector<uint8>           Triangles;
             TVector<FMeshlet>        OutMeshlets;
             TVector<FMeshletBounds>  Bounds;
-            TVector<glm::vec3>       MeshletLo;
-            glm::vec3                MaxExtent = glm::vec3(0.0f);
+            TVector<FVector3>       MeshletLo;
+            FVector3                MaxExtent = FVector3(0.0f);
             bool                     bHasData  = false;
         };
 
@@ -355,23 +355,23 @@ namespace Lumina::Import::Mesh
                     VertexPositions, NumVertices, VertexSize);
 
                 FMeshletBounds Bounds{};
-                Bounds.Center     = glm::vec3(B.center[0],    B.center[1],    B.center[2]);
+                Bounds.Center     = FVector3(B.center[0],    B.center[1],    B.center[2]);
                 Bounds.Radius     = B.radius;
-                Bounds.ConeApex   = glm::vec3(B.cone_apex[0], B.cone_apex[1], B.cone_apex[2]);
-                Bounds.ConeAxis   = glm::vec3(B.cone_axis[0], B.cone_axis[1], B.cone_axis[2]);
+                Bounds.ConeApex   = FVector3(B.cone_apex[0], B.cone_apex[1], B.cone_apex[2]);
+                Bounds.ConeAxis   = FVector3(B.cone_axis[0], B.cone_axis[1], B.cone_axis[2]);
                 Bounds.ConeCutoff = B.cone_cutoff;
                 Result.Bounds.push_back(Bounds);
 
-                glm::vec3 Lo( FLT_MAX);
-                glm::vec3 Hi(-FLT_MAX);
+                FVector3 Lo( FLT_MAX);
+                FVector3 Hi(-FLT_MAX);
                 for (uint32 i = 0; i < M.vertex_count; ++i)
                 {
-                    const glm::vec3 P = ReadPosition(Result.Vertices[M.vertex_offset + i]);
-                    Lo = glm::min(Lo, P);
-                    Hi = glm::max(Hi, P);
+                    const FVector3 P = ReadPosition(Result.Vertices[M.vertex_offset + i]);
+                    Lo = Math::Min(Lo, P);
+                    Hi = Math::Max(Hi, P);
                 }
                 Result.MeshletLo.push_back(Lo);
-                Result.MaxExtent = glm::max(Result.MaxExtent, Hi - Lo);
+                Result.MaxExtent = Math::Max(Result.MaxExtent, Hi - Lo);
             }
 
             Result.bHasData = !Result.OutMeshlets.empty();
@@ -395,8 +395,8 @@ namespace Lumina::Import::Mesh
 
         const size_t NumVertices = MeshResource.GetNumVertices();
         const size_t NumIndices  = MeshResource.Indices.size();
-        // meshopt position-stream stride; the SoA Positions array is tightly packed glm::vec3.
-        constexpr size_t PositionStride = sizeof(glm::vec3);
+        // meshopt position-stream stride; the SoA Positions array is tightly packed FVector3.
+        constexpr size_t PositionStride = sizeof(FVector3);
 
         if (NumVertices == 0 || NumIndices == 0)
         {
@@ -419,7 +419,7 @@ namespace Lumina::Import::Mesh
 
         const float* VertexPositions = reinterpret_cast<const float*>(MeshResource.Positions.data());
 
-        auto ReadPosition = [&](uint32 GlobalIdx) -> glm::vec3
+        auto ReadPosition = [&](uint32 GlobalIdx) -> FVector3
         {
             return MeshResource.Positions[GlobalIdx];
         };
@@ -533,12 +533,12 @@ namespace Lumina::Import::Mesh
         // sloppy LOD can't inflate the cell size that LOD 0 quantizes against. The grid is
         // still shared by every meshlet within a LOD, so adjacent meshlets in a LOD snap a
         // shared boundary vertex to the same cell and never crack.
-        glm::vec3 LODOrigin[MAX_MESH_LODS];
-        glm::vec3 LODInvStep[MAX_MESH_LODS];
+        FVector3 LODOrigin[MAX_MESH_LODS];
+        FVector3 LODInvStep[MAX_MESH_LODS];
         for (uint32 lod = 0; lod < MAX_MESH_LODS; ++lod)
         {
-            glm::vec3 LodLo(FLT_MAX);
-            glm::vec3 LodMaxExtent(0.0f);
+            FVector3 LodLo(FLT_MAX);
+            FVector3 LodMaxExtent(0.0f);
             for (uint32 SurfaceIdx = 0; SurfaceIdx < NumSurfaces; ++SurfaceIdx)
             {
                 const FSurfaceMeshletResult& R = Results[lod * NumSurfaces + SurfaceIdx];
@@ -546,19 +546,19 @@ namespace Lumina::Import::Mesh
                 {
                     continue;
                 }
-                LodMaxExtent = glm::max(LodMaxExtent, R.MaxExtent);
-                for (const glm::vec3& Lo : R.MeshletLo)
+                LodMaxExtent = Math::Max(LodMaxExtent, R.MaxExtent);
+                for (const FVector3& Lo : R.MeshletLo)
                 {
-                    LodLo = glm::min(LodLo, Lo);
+                    LodLo = Math::Min(LodLo, Lo);
                 }
             }
 
             const bool bHasLOD = LodLo.x != FLT_MAX;
-            const glm::vec3 Origin = bHasLOD ? LodLo : glm::vec3(0.0f);
+            const FVector3 Origin = bHasLOD ? LodLo : FVector3(0.0f);
 
             // 1022 (not 1023): round() can introduce a +1, so 1022 keeps q in [0, 1023].
-            glm::vec3 GridStep(0.0f);
-            glm::vec3 InvStep(0.0f);
+            FVector3 GridStep(0.0f);
+            FVector3 InvStep(0.0f);
             if (LodMaxExtent.x > 0.0f) { GridStep.x = LodMaxExtent.x / 1022.0f; InvStep.x = 1.0f / GridStep.x; }
             if (LodMaxExtent.y > 0.0f) { GridStep.y = LodMaxExtent.y / 1022.0f; InvStep.y = 1.0f / GridStep.y; }
             if (LodMaxExtent.z > 0.0f) { GridStep.z = LodMaxExtent.z / 1022.0f; InvStep.z = 1.0f / GridStep.z; }
@@ -615,11 +615,11 @@ namespace Lumina::Import::Mesh
         {
             // This LOD's grid. Quantizing every meshlet in the LOD against the same origin/step
             // is what keeps the LOD seam-free.
-            const glm::vec3 GridOrigin = LODOrigin[lod];
-            const glm::vec3 GridInvStep = LODInvStep[lod];
-            auto GridIndex = [&](glm::vec3 P) -> glm::ivec3
+            const FVector3 GridOrigin = LODOrigin[lod];
+            const FVector3 GridInvStep = LODInvStep[lod];
+            auto GridIndex = [&](FVector3 P) -> FIntVector3
             {
-                return glm::ivec3(glm::round((P - GridOrigin) * GridInvStep));
+                return FIntVector3(Math::Round((P - GridOrigin) * GridInvStep));
             };
 
             for (uint32 SurfaceIdx = 0; SurfaceIdx < NumSurfaces; ++SurfaceIdx)
@@ -709,7 +709,7 @@ namespace Lumina::Import::Mesh
     void AnalyzeMeshStatistics(FMeshResource& MeshResource, FMeshStatistics& OutMeshStats)
     {
         OutMeshStats.VertexFetchStatics.emplace_back(meshopt_analyzeVertexFetch(MeshResource.Indices.data(), MeshResource.Indices.size(), MeshResource.GetNumVertices(), MeshResource.GetVertexTypeSize()));
-        OutMeshStats.OverdrawStatics.emplace_back(meshopt_analyzeOverdraw(MeshResource.Indices.data(), MeshResource.Indices.size(), reinterpret_cast<const float*>(MeshResource.Positions.data()), MeshResource.GetNumVertices(), sizeof(glm::vec3)));
+        OutMeshStats.OverdrawStatics.emplace_back(meshopt_analyzeOverdraw(MeshResource.Indices.data(), MeshResource.Indices.size(), reinterpret_cast<const float*>(MeshResource.Positions.data()), MeshResource.GetNumVertices(), sizeof(FVector3)));
     }
 
     namespace
@@ -803,9 +803,9 @@ namespace Lumina::Import::Mesh
             const uint32 BaseVert = (uint32)Dst.GetNumVertices();
             const uint32 BaseIdx  = (uint32)Dst.Indices.size();
 
-            const glm::mat4 PosMatrix    = Src.ImportTransform;
-            const glm::mat3 NormalMatrix = glm::transpose(glm::inverse(glm::mat3(PosMatrix)));
-            const bool bIdentity         = PosMatrix == glm::mat4(1.0f);
+            const FMatrix4 PosMatrix    = Src.ImportTransform;
+            const FMatrix3 NormalMatrix = Math::Transpose(Math::Inverse(FMatrix3(PosMatrix)));
+            const bool bIdentity         = PosMatrix == FMatrix4(1.0f);
 
             // Append every active stream; joint streams only when both sides are skinned.
             const size_t Start    = Dst.GetNumVertices();
@@ -827,8 +827,8 @@ namespace Lumina::Import::Mesh
             {
                 for (size_t i = Start; i < Start + SrcCount; ++i)
                 {
-                    Dst.Positions[i] = glm::vec3(PosMatrix * glm::vec4(Dst.Positions[i], 1.0f));
-                    Dst.Normals[i]   = PackNormal(glm::normalize(NormalMatrix * UnpackNormal(Dst.Normals[i])));
+                    Dst.Positions[i] = FVector3(PosMatrix * FVector4(Dst.Positions[i], 1.0f));
+                    Dst.Normals[i]   = PackNormal(Math::Normalize(NormalMatrix * UnpackNormal(Dst.Normals[i])));
                 }
             }
 
@@ -890,13 +890,13 @@ namespace Lumina::Import::Mesh
                     }
                     if (bFlipUVs)
                     {
-                        glm::vec2 UV = M.GetUVAt(i);
+                        FVector2 UV = M.GetUVAt(i);
                         UV.y = 1.0f - UV.y;
                         M.SetUVAt(i, UV);
                     }
                     if (bFlipNormals)
                     {
-                        glm::vec3 N = UnpackNormal(M.GetNormalAt(i));
+                        FVector3 N = UnpackNormal(M.GetNormalAt(i));
                         M.SetNormalAt(i, PackNormal(-N));
                     }
                 }
@@ -938,7 +938,7 @@ namespace Lumina::Import::Mesh
                 {
                     if (Ch.TargetPath == FAnimationChannel::ETargetPath::Translation)
                     {
-                        for (glm::vec3& T : Ch.Translations)
+                        for (FVector3& T : Ch.Translations)
                         {
                             T *= Scale;
                         }

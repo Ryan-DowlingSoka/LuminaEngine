@@ -9,16 +9,16 @@ namespace Lumina
     namespace
     {
         // Matches ForwardRenderScene OriginXZ so brush hits the same samples the renderer sees.
-        glm::vec2 TerrainOriginXZ(const STerrainComponent& Terrain, const glm::vec3& TerrainOrigin)
+        FVector2 TerrainOriginXZ(const STerrainComponent& Terrain, const FVector3& TerrainOrigin)
         {
             const float HalfSize = Terrain.TileWorldSize * 0.5f;
-            return glm::vec2(TerrainOrigin.x - HalfSize, TerrainOrigin.z - HalfSize);
+            return FVector2(TerrainOrigin.x - HalfSize, TerrainOrigin.z - HalfSize);
         }
 
-        glm::ivec4 ComputeSampleRect(const STerrainComponent& Terrain, const glm::vec3& TerrainOrigin, const glm::vec3& WorldPos, float Radius)
+        FIntVector4 ComputeSampleRect(const STerrainComponent& Terrain, const FVector3& TerrainOrigin, const FVector3& WorldPos, float Radius)
         {
             const float Stride = Terrain.TileWorldSize / float(Terrain.Resolution - 1);
-            const glm::vec2 OriginXZ = TerrainOriginXZ(Terrain, TerrainOrigin);
+            const FVector2 OriginXZ = TerrainOriginXZ(Terrain, TerrainOrigin);
             const float LocalX = WorldPos.x - OriginXZ.x;
             const float LocalZ = WorldPos.z - OriginXZ.y;
 
@@ -34,10 +34,10 @@ namespace Lumina
 
             if (MaxX < MinX || MaxY < MinY)
             {
-                return glm::ivec4(0, 0, -1, -1);
+                return FIntVector4(0, 0, -1, -1);
             }
 
-            return glm::ivec4(MinX, MinY, MaxX, MaxY);
+            return FIntVector4(MinX, MinY, MaxX, MaxY);
         }
 
         // Smoothstep-shaped disk falloff. Returns 0 outside the radius.
@@ -51,28 +51,28 @@ namespace Lumina
             }
 
             float T = 1.0f - std::sqrt(DistSq) / R;           // 1 at center, 0 at edge
-            float H = glm::mix(1.0f, T * T * (3.0f - 2.0f * T), Falloff);
+            float H = Math::Mix(1.0f, T * T * (3.0f - 2.0f * T), Falloff);
             return H;
         }
     }
 
-    glm::ivec2 FTerrainSculptSystem::WorldToSample(const STerrainComponent& Terrain, const glm::vec3& WorldPos)
+    FIntVector2 FTerrainSculptSystem::WorldToSample(const STerrainComponent& Terrain, const FVector3& WorldPos)
     {
         const float Stride = Terrain.TileWorldSize / float(Terrain.Resolution - 1);
-        return glm::ivec2(int(WorldPos.x / Stride), int(WorldPos.z / Stride));
+        return FIntVector2(int(WorldPos.x / Stride), int(WorldPos.z / Stride));
     }
 
-    bool FTerrainSculptSystem::Raycast(const STerrainComponent& Terrain, const glm::vec3& TerrainOrigin, const glm::vec3& RayOrigin, const glm::vec3& RayDir, glm::vec3& OutHit)
+    bool FTerrainSculptSystem::Raycast(const STerrainComponent& Terrain, const FVector3& TerrainOrigin, const FVector3& RayOrigin, const FVector3& RayDir, FVector3& OutHit)
     {
         const int32 Res     = Terrain.Resolution;
         const float MaxDist = Terrain.TileWorldSize * 4.0f;
         const float Step    = std::max(0.5f, Terrain.TileWorldSize / float(Res) * 0.5f);
 
-        const glm::vec2 OriginXZ = TerrainOriginXZ(Terrain, TerrainOrigin);
+        const FVector2 OriginXZ = TerrainOriginXZ(Terrain, TerrainOrigin);
         const float BaseY  = TerrainOrigin.y;
         const float Stride = Terrain.TileWorldSize / float(Res - 1);
 
-        auto InBounds = [&](const glm::vec3& P)
+        auto InBounds = [&](const FVector3& P)
         {
             const float Lx = (P.x - OriginXZ.x) / Stride;
             const float Lz = (P.z - OriginXZ.y) / Stride;
@@ -83,8 +83,8 @@ namespace Lumina
         // tracks the rendered surface smoothly instead of snapping to texels.
         auto SurfaceY = [&](float Wx, float Wz)
         {
-            const float Fx = glm::clamp((Wx - OriginXZ.x) / Stride, 0.0f, float(Res - 1));
-            const float Fz = glm::clamp((Wz - OriginXZ.y) / Stride, 0.0f, float(Res - 1));
+            const float Fx = Math::Clamp((Wx - OriginXZ.x) / Stride, 0.0f, float(Res - 1));
+            const float Fz = Math::Clamp((Wz - OriginXZ.y) / Stride, 0.0f, float(Res - 1));
             const int X0 = int(Fx), Z0 = int(Fz);
             const int X1 = std::min(X0 + 1, Res - 1), Z1 = std::min(Z0 + 1, Res - 1);
             const float Tx = Fx - float(X0), Tz = Fz - float(Z0);
@@ -92,17 +92,17 @@ namespace Lumina
             const float H10 = Terrain.Heightmap[size_t(Z0) * Res + X1];
             const float H01 = Terrain.Heightmap[size_t(Z1) * Res + X0];
             const float H11 = Terrain.Heightmap[size_t(Z1) * Res + X1];
-            const float H   = glm::mix(glm::mix(H00, H10, Tx), glm::mix(H01, H11, Tx), Tz);
+            const float H   = Math::Mix(Math::Mix(H00, H10, Tx), Math::Mix(H01, H11, Tx), Tz);
             return BaseY + H * Terrain.MaxHeight;
         };
 
-        glm::vec3 Prev      = RayOrigin;
+        FVector3 Prev      = RayOrigin;
         bool      bPrevIn   = InBounds(Prev);
         float     PrevDiff  = bPrevIn ? (Prev.y - SurfaceY(Prev.x, Prev.z)) : 0.0f;
 
         for (float T = Step; T < MaxDist; T += Step)
         {
-            const glm::vec3 Pos = RayOrigin + RayDir * T;
+            const FVector3 Pos = RayOrigin + RayDir * T;
             const bool bIn = InBounds(Pos);
             if (bIn)
             {
@@ -110,14 +110,14 @@ namespace Lumina
                 // Downward crossing (above -> on/below) between Prev and Pos: bisect for a tight hit.
                 if (bPrevIn && PrevDiff > 0.0f && Diff <= 0.0f)
                 {
-                    glm::vec3 A = Prev, B = Pos;
+                    FVector3 A = Prev, B = Pos;
                     for (int i = 0; i < 8; ++i)
                     {
-                        const glm::vec3 M = (A + B) * 0.5f;
+                        const FVector3 M = (A + B) * 0.5f;
                         if (M.y - SurfaceY(M.x, M.z) > 0.0f) A = M; else B = M;
                     }
-                    const glm::vec3 H = (A + B) * 0.5f;
-                    OutHit = glm::vec3(H.x, SurfaceY(H.x, H.z), H.z);
+                    const FVector3 H = (A + B) * 0.5f;
+                    OutHit = FVector3(H.x, SurfaceY(H.x, H.z), H.z);
                     return true;
                 }
                 PrevDiff = Diff;
@@ -135,11 +135,11 @@ namespace Lumina
             return;
         }
 
-        glm::ivec4 Rect;
+        FIntVector4 Rect;
         if (Dab.Mode == ETerrainBrushMode::Ramp)
         {
-                const glm::ivec4 R1 = ComputeSampleRect(Terrain, Dab.TerrainOrigin, Dab.RampStart, Dab.RampHalfWidth);
-            const glm::ivec4 R2 = ComputeSampleRect(Terrain, Dab.TerrainOrigin, Dab.RampEnd,   Dab.RampHalfWidth);
+                const FIntVector4 R1 = ComputeSampleRect(Terrain, Dab.TerrainOrigin, Dab.RampStart, Dab.RampHalfWidth);
+            const FIntVector4 R2 = ComputeSampleRect(Terrain, Dab.TerrainOrigin, Dab.RampEnd,   Dab.RampHalfWidth);
             const bool V1 = !(R1.z < R1.x || R1.w < R1.y);
             const bool V2 = !(R2.z < R2.x || R2.w < R2.y);
             if (!V1 && !V2)
@@ -148,7 +148,7 @@ namespace Lumina
             }
             if (V1 && V2)
             {
-                Rect = glm::ivec4(std::min(R1.x, R2.x), std::min(R1.y, R2.y), std::max(R1.z, R2.z), std::max(R1.w, R2.w));
+                Rect = FIntVector4(std::min(R1.x, R2.x), std::min(R1.y, R2.y), std::max(R1.z, R2.z), std::max(R1.w, R2.w));
             }
             else
             {
@@ -180,24 +180,24 @@ namespace Lumina
             if (Layer >= 0 && Layer < (int32)Terrain.Layers.size())
             {
                 Terrain.MarkWeightsDirty((uint32)Layer,
-                                         glm::ivec2(Rect.x, Rect.y),
-                                         glm::ivec2(Rect.z, Rect.w));
+                                         FIntVector2(Rect.x, Rect.y),
+                                         FIntVector2(Rect.z, Rect.w));
             }
         }
         else
         {
-            Terrain.MarkHeightDirty(glm::ivec2(Rect.x, Rect.y), glm::ivec2(Rect.z, Rect.w));
+            Terrain.MarkHeightDirty(FIntVector2(Rect.x, Rect.y), FIntVector2(Rect.z, Rect.w));
         }
     }
     
-    void FTerrainSculptSystem::ApplySculpt(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect)
+    void FTerrainSculptSystem::ApplySculpt(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const FIntVector4& Rect)
     {
         const float Stride    = Terrain.TileWorldSize / float(Terrain.Resolution - 1);
         const float Radius    = Dab.Radius;
         
         // Strength is expressed in normalized height units per second (i.e. 1.0 == full
         const float DeltaVal = (Dab.Strength * Dab.DeltaSeconds * static_cast<float>(Dab.SculptSign)) / Terrain.MaxHeight;
-        const glm::vec2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
+        const FVector2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
 
         const int32 RowCount = Rect.w - Rect.y + 1;
         Task::ParallelFor((uint32)RowCount, [&, Rect, Radius, DeltaVal, Stride, OriginXZ](const Task::FParallelRange& Range)
@@ -219,19 +219,19 @@ namespace Lumina
                     }
 
                     float& H = Terrain.Heightmap[Y * Terrain.Resolution + X];
-                    H = glm::clamp(H + DeltaVal * W, 0.0f, 1.0f);
+                    H = Math::Clamp(H + DeltaVal * W, 0.0f, 1.0f);
                 }
             }
         }, 64u);
     }
 
-    void FTerrainSculptSystem::ApplyFlatten(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect)
+    void FTerrainSculptSystem::ApplyFlatten(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const FIntVector4& Rect)
     {
         const float Stride = Terrain.TileWorldSize / float(Terrain.Resolution - 1);
-        const float Target = Terrain.MaxHeight > 0.0f ? glm::clamp(Dab.FlattenHeight / Terrain.MaxHeight, 0.0f, 1.0f) : 0.0f;
-        const float Speed  = glm::clamp(Dab.Strength * Dab.DeltaSeconds, 0.0f, 1.0f);
+        const float Target = Terrain.MaxHeight > 0.0f ? Math::Clamp(Dab.FlattenHeight / Terrain.MaxHeight, 0.0f, 1.0f) : 0.0f;
+        const float Speed  = Math::Clamp(Dab.Strength * Dab.DeltaSeconds, 0.0f, 1.0f);
         const float Radius = Dab.Radius;
-        const glm::vec2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
+        const FVector2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
 
         const int32 RowCount = Rect.w - Rect.y + 1;
         Task::ParallelFor((uint32)RowCount, [&, Rect, Radius, Target, Speed, Stride, OriginXZ](const Task::FParallelRange& Range)
@@ -252,20 +252,20 @@ namespace Lumina
                     }
 
                     float& H = Terrain.Heightmap[Y * Terrain.Resolution + X];
-                    H = glm::mix(H, Target, Speed * W);
+                    H = Math::Mix(H, Target, Speed * W);
                 }
             }
         }, 64u);
     }
 
-    void FTerrainSculptSystem::ApplySmooth(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect)
+    void FTerrainSculptSystem::ApplySmooth(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const FIntVector4& Rect)
     {
         // Snapshot only the affected rect+1px apron; copying the full map at 1025^2 dominated per-dab cost.
         const int32 Res    = Terrain.Resolution;
         const float Stride = Terrain.TileWorldSize / float(Res - 1);
-        const float Speed  = glm::clamp(Dab.Strength * Dab.DeltaSeconds, 0.0f, 1.0f);
+        const float Speed  = Math::Clamp(Dab.Strength * Dab.DeltaSeconds, 0.0f, 1.0f);
         const float Radius = Dab.Radius;
-        const glm::vec2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
+        const FVector2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
 
         const int32 SnapMinX = std::max(Rect.x - 1, 0);
         const int32 SnapMinY = std::max(Rect.y - 1, 0);
@@ -316,7 +316,7 @@ namespace Lumina
                     float Avg = Sum / float(Count);
 
                     float& H = Terrain.Heightmap[Y * Res + X];
-                    H = glm::mix(H, Avg, Speed * W);
+                    H = Math::Mix(H, Avg, Speed * W);
                 }
             }
         }, 64u);
@@ -344,9 +344,9 @@ namespace Lumina
             const float V10 = Hash2D(Xi + 1, Yi);
             const float V01 = Hash2D(Xi,     Yi + 1);
             const float V11 = Hash2D(Xi + 1, Yi + 1);
-            const float A = glm::mix(V00, V10, Ux);
-            const float B = glm::mix(V01, V11, Ux);
-            return glm::mix(A, B, Uy) * 2.0f - 1.0f;   // [-1, 1]
+            const float A = Math::Mix(V00, V10, Ux);
+            const float B = Math::Mix(V01, V11, Ux);
+            return Math::Mix(A, B, Uy) * 2.0f - 1.0f;   // [-1, 1]
         }
 
         inline float Fbm2D(float X, float Y, int Octaves)
@@ -366,15 +366,15 @@ namespace Lumina
         }
     }
 
-    void FTerrainSculptSystem::ApplyNoise(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect)
+    void FTerrainSculptSystem::ApplyNoise(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const FIntVector4& Rect)
     {
         const int32 Res    = Terrain.Resolution;
         const float Stride = Terrain.TileWorldSize / float(Res - 1);
         const float Radius = Dab.Radius;
         const float DeltaPerSecond = (Dab.Strength * Dab.DeltaSeconds * float(Dab.SculptSign)) / Terrain.MaxHeight;
         const float Freq = std::max(Dab.NoiseFrequency, 1e-6f);
-        const int   Octaves = glm::clamp(Dab.NoiseOctaves, 1, 8);
-        const glm::vec2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
+        const int   Octaves = Math::Clamp(Dab.NoiseOctaves, 1, 8);
+        const FVector2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
 
         const int32 RowCount = Rect.w - Rect.y + 1;
         Task::ParallelFor((uint32)RowCount, [&, Rect, Radius, DeltaPerSecond, Stride, OriginXZ, Freq, Octaves](const Task::FParallelRange& Range)
@@ -396,23 +396,23 @@ namespace Lumina
 
                     const float N = Fbm2D(WorldX * Freq, WorldZ * Freq, Octaves);
                     float& H = Terrain.Heightmap[Y * Res + X];
-                    H = glm::clamp(H + DeltaPerSecond * W * N, 0.0f, 1.0f);
+                    H = Math::Clamp(H + DeltaPerSecond * W * N, 0.0f, 1.0f);
                 }
             }
         }, 64u);
     }
 
-    void FTerrainSculptSystem::ApplyRamp(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect)
+    void FTerrainSculptSystem::ApplyRamp(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const FIntVector4& Rect)
     {
         const int32 Res    = Terrain.Resolution;
         const float Stride = Terrain.TileWorldSize / float(Res - 1);
-        const float Speed  = glm::clamp(Dab.Strength * Dab.DeltaSeconds, 0.0f, 1.0f);
-        const glm::vec2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
+        const float Speed  = Math::Clamp(Dab.Strength * Dab.DeltaSeconds, 0.0f, 1.0f);
+        const FVector2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
 
-        const glm::vec2 A   = glm::vec2(Dab.RampStart.x, Dab.RampStart.z);
-        const glm::vec2 B   = glm::vec2(Dab.RampEnd.x,   Dab.RampEnd.z);
-        const glm::vec2 AB  = B - A;
-        const float ABLen2  = glm::dot(AB, AB);
+        const FVector2 A   = FVector2(Dab.RampStart.x, Dab.RampStart.z);
+        const FVector2 B   = FVector2(Dab.RampEnd.x,   Dab.RampEnd.z);
+        const FVector2 AB  = B - A;
+        const float ABLen2  = Math::Dot(AB, AB);
         if (ABLen2 < 1e-3f)
         {
             return;
@@ -423,15 +423,15 @@ namespace Lumina
         // ramps once the terrain entity is moved off Y=0.
         const float MaxH = std::max(Terrain.MaxHeight, 1e-3f);
         const float StartN = Dab.RampUseExplicitHeights
-            ? glm::clamp(Dab.RampStartHeight / MaxH, 0.0f, 1.0f)
-            : glm::clamp((Dab.RampStart.y - Dab.TerrainOrigin.y) / MaxH, 0.0f, 1.0f);
+            ? Math::Clamp(Dab.RampStartHeight / MaxH, 0.0f, 1.0f)
+            : Math::Clamp((Dab.RampStart.y - Dab.TerrainOrigin.y) / MaxH, 0.0f, 1.0f);
         const float EndN = Dab.RampUseExplicitHeights
-            ? glm::clamp(Dab.RampEndHeight / MaxH, 0.0f, 1.0f)
-            : glm::clamp((Dab.RampEnd.y - Dab.TerrainOrigin.y) / MaxH, 0.0f, 1.0f);
+            ? Math::Clamp(Dab.RampEndHeight / MaxH, 0.0f, 1.0f)
+            : Math::Clamp((Dab.RampEnd.y - Dab.TerrainOrigin.y) / MaxH, 0.0f, 1.0f);
 
         const float HalfWidth = std::max(Dab.RampHalfWidth, Stride);
         const float InvLen    = 1.0f / std::sqrt(ABLen2);
-        const float Feather   = glm::clamp(Dab.Falloff, 0.0f, 1.0f);
+        const float Feather   = Math::Clamp(Dab.Falloff, 0.0f, 1.0f);
 
         const int32 RowCount = Rect.w - Rect.y + 1;
         Task::ParallelFor((uint32)RowCount, [&, Rect, Speed, Stride, OriginXZ, A, AB, ABLen2, StartN, EndN, HalfWidth, InvLen, Feather](const Task::FParallelRange& Range)
@@ -444,11 +444,11 @@ namespace Lumina
                 {
                     float WorldX = OriginXZ.x + float(X) * Stride;
 
-                    const glm::vec2 P     = glm::vec2(WorldX, WorldZ) - A;
-                    const float Along     = glm::dot(P, AB) / ABLen2;   // unclamped position along the ramp
-                    const float T         = glm::clamp(Along, 0.0f, 1.0f);
-                    const glm::vec2 C     = AB * T;
-                    const float Perp      = std::sqrt(glm::dot(P - C, P - C));
+                    const FVector2 P     = FVector2(WorldX, WorldZ) - A;
+                    const float Along     = Math::Dot(P, AB) / ABLen2;   // unclamped position along the ramp
+                    const float T         = Math::Clamp(Along, 0.0f, 1.0f);
+                    const FVector2 C     = AB * T;
+                    const float Perp      = std::sqrt(Math::Dot(P - C, P - C));
                     if (Perp > HalfWidth)
                     {
                         continue;
@@ -461,7 +461,7 @@ namespace Lumina
                     float Lat = 1.0f;
                     if (Feather > 1e-4f)
                     {
-                        const float U = glm::clamp((Edge - (1.0f - Feather)) / Feather, 0.0f, 1.0f);
+                        const float U = Math::Clamp((Edge - (1.0f - Feather)) / Feather, 0.0f, 1.0f);
                         Lat = 1.0f - U * U * (3.0f - 2.0f * U);
                     }
 
@@ -471,23 +471,23 @@ namespace Lumina
                     const float CapU = HalfWidth * InvLen;
                     if (Along < 0.0f)
                     {
-                        Long = glm::clamp(1.0f + Along / CapU, 0.0f, 1.0f);
+                        Long = Math::Clamp(1.0f + Along / CapU, 0.0f, 1.0f);
                     }
                     else if (Along > 1.0f)
                     {
-                        Long = glm::clamp(1.0f - (Along - 1.0f) / CapU, 0.0f, 1.0f);
+                        Long = Math::Clamp(1.0f - (Along - 1.0f) / CapU, 0.0f, 1.0f);
                     }
                     Long = Long * Long * (3.0f - 2.0f * Long);
 
-                    const float Target = glm::mix(StartN, EndN, T);
+                    const float Target = Math::Mix(StartN, EndN, T);
                     float& H = Terrain.Heightmap[Y * Res + X];
-                    H = glm::mix(H, Target, Speed * Lat * Long);
+                    H = Math::Mix(H, Target, Speed * Lat * Long);
                 }
             }
         }, 64u);
     }
 
-    void FTerrainSculptSystem::ApplyPaint(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const glm::ivec4& Rect)
+    void FTerrainSculptSystem::ApplyPaint(STerrainComponent& Terrain, const FTerrainSculptDab& Dab, const FIntVector4& Rect)
     {
         const int32 Layer = Dab.ActiveLayer;
         if (Layer < 0 || Layer >= (int32)Terrain.Layers.size())
@@ -503,9 +503,9 @@ namespace Lumina
         }
 
         const float Stride = Terrain.TileWorldSize / float(Terrain.Resolution - 1);
-        const float Speed  = glm::clamp(Dab.Strength * Dab.DeltaSeconds, 0.0f, 1.0f);
+        const float Speed  = Math::Clamp(Dab.Strength * Dab.DeltaSeconds, 0.0f, 1.0f);
         const float Radius = Dab.Radius;
-        const glm::vec2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
+        const FVector2 OriginXZ = TerrainOriginXZ(Terrain, Dab.TerrainOrigin);
 
         const int32 RowCount = Rect.w - Rect.y + 1;
         Task::ParallelFor((uint32)RowCount, [&, Rect, Radius, Speed, Stride, OriginXZ, Layer, LayerStride, Res](const Task::FParallelRange& Range)
@@ -529,8 +529,8 @@ namespace Lumina
                     uint8& Target  = Terrain.LayerWeights[size_t(Layer) * LayerStride + Pixel];
                     float  Current = float(Target) / 255.0f;
                     float  Goal    = (Dab.SculptSign >= 0) ? 1.0f : 0.0f;
-                    float  New     = glm::mix(Current, Goal, Speed * W);
-                    Target = uint8(glm::clamp(New * 255.0f + 0.5f, 0.0f, 255.0f));
+                    float  New     = Math::Mix(Current, Goal, Speed * W);
+                    Target = uint8(Math::Clamp(New * 255.0f + 0.5f, 0.0f, 255.0f));
                 }
             }
         }, 64u);

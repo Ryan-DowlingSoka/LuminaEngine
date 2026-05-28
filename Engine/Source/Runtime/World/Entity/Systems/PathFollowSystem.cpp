@@ -24,7 +24,7 @@ namespace Lumina
         }
 
         // Caller must flush dirty transforms before calling from a parallel body.
-        bool ResolveGoal(const FSystemContext& Context, SPathFollowComponent& Comp, glm::vec3& OutGoal)
+        bool ResolveGoal(const FSystemContext& Context, SPathFollowComponent& Comp, FVector3& OutGoal)
         {
             if (Comp.TargetEntity != entt::null)
             {
@@ -73,7 +73,7 @@ namespace Lumina
                 return;
             }
 
-            glm::vec3 Goal;
+            FVector3 Goal;
             if (!ResolveGoal(Context, Comp, Goal))
             {
                 Comp.CornerCount = 0;
@@ -81,9 +81,9 @@ namespace Lumina
                 return;
             }
 
-            const glm::vec3 AgentPos = Xform.WorldTransform.Location;
+            const FVector3 AgentPos = Xform.WorldTransform.Location;
 
-            const bool bMovedTarget = glm::length(Goal - Comp.PathSourceTarget) > Comp.RepathDistance;
+            const bool bMovedTarget = Math::Length(Goal - Comp.PathSourceTarget) > Comp.RepathDistance;
             const bool bIntervalElapsed = Comp.TimeSinceLastPath > Comp.RepathInterval;
             const bool bNeedRepath = Comp.bPathDirty || Comp.CornerCount == 0 || bMovedTarget || bIntervalElapsed;
 
@@ -116,9 +116,9 @@ namespace Lumina
 
             while (Comp.CurrentCorner < Comp.CornerCount)
             {
-                const glm::vec3 ToCorner = Comp.PathCorners[Comp.CurrentCorner] - AgentPos;
-                const glm::vec3 Flat(ToCorner.x, 0.0f, ToCorner.z);
-                if (glm::length(Flat) <= Comp.AcceptanceRadius)
+                const FVector3 ToCorner = Comp.PathCorners[Comp.CurrentCorner] - AgentPos;
+                const FVector3 Flat(ToCorner.x, 0.0f, ToCorner.z);
+                if (Math::Length(Flat) <= Comp.AcceptanceRadius)
                 {
                     ++Comp.CurrentCorner;
                     continue;
@@ -135,14 +135,14 @@ namespace Lumina
                 return;
             }
 
-            const glm::vec3 Dir = Comp.PathCorners[Comp.CurrentCorner] - AgentPos;
-            const glm::vec3 Flat(Dir.x, 0.0f, Dir.z);
-            const float Len = glm::length(Flat);
+            const FVector3 Dir = Comp.PathCorners[Comp.CurrentCorner] - AgentPos;
+            const FVector3 Flat(Dir.x, 0.0f, Dir.z);
+            const float Len = Math::Length(Flat);
             if (Len < 1e-4f)
             {
                 return;
             }
-            const glm::vec3 Move = (Flat / Len) * Comp.Speed;
+            const FVector3 Move = (Flat / Len) * Comp.Speed;
 
             if (Comp.bDriveCharacterController)
             {
@@ -154,10 +154,10 @@ namespace Lumina
         });
 
         // Sequential: line batcher push_back is not thread-safe.
-        const glm::vec3 Lift(0.0f, 0.1f, 0.0f);
-        const glm::vec4 PathColor(0.4f, 0.8f, 1.0f, 1.0f);
-        const glm::vec4 ActiveSegmentColor(1.0f, 0.95f, 0.2f, 1.0f);
-        const glm::vec4 GoalColor(1.0f, 0.4f, 0.4f, 1.0f);
+        const FVector3 Lift(0.0f, 0.1f, 0.0f);
+        const FVector4 PathColor(0.4f, 0.8f, 1.0f, 1.0f);
+        const FVector4 ActiveSegmentColor(1.0f, 0.95f, 0.2f, 1.0f);
+        const FVector4 GoalColor(1.0f, 0.4f, 0.4f, 1.0f);
         for (entt::entity Entity : View)
         {
             SPathFollowComponent& Comp = View.get<SPathFollowComponent>(Entity);
@@ -167,7 +167,7 @@ namespace Lumina
             }
             STransformComponent& Xform = View.get<STransformComponent>(Entity);
             // Same fresh-as-of-top-of-Update guarantee from the bulk resolve.
-            const glm::vec3 AgentPos = Xform.WorldTransform.Location + Lift;
+            const FVector3 AgentPos = Xform.WorldTransform.Location + Lift;
 
             // Active segment from the agent to the next pending corner.
             const int32 Cur = std::min(Comp.CurrentCorner, Comp.CornerCount - 1);
@@ -180,10 +180,10 @@ namespace Lumina
             }
 
             // Goal marker (small horizontal cross at the final corner).
-            const glm::vec3 Goal = Comp.PathCorners[Comp.CornerCount - 1] + Lift;
+            const FVector3 Goal = Comp.PathCorners[Comp.CornerCount - 1] + Lift;
             const float CrossSize = std::max(Comp.AcceptanceRadius, 0.25f);
-            Context.DrawDebugLine(Goal - glm::vec3(CrossSize, 0, 0), Goal + glm::vec3(CrossSize, 0, 0), GoalColor, 1.5f, -1.0f);
-            Context.DrawDebugLine(Goal - glm::vec3(0, 0, CrossSize), Goal + glm::vec3(0, 0, CrossSize), GoalColor, 1.5f, -1.0f);
+            Context.DrawDebugLine(Goal - FVector3(CrossSize, 0, 0), Goal + FVector3(CrossSize, 0, 0), GoalColor, 1.5f, -1.0f);
+            Context.DrawDebugLine(Goal - FVector3(0, 0, CrossSize), Goal + FVector3(0, 0, CrossSize), GoalColor, 1.5f, -1.0f);
         }
     }
 }

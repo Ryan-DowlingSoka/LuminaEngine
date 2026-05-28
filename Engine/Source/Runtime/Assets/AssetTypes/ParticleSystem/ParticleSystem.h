@@ -74,7 +74,7 @@ namespace Lumina
         int32       Integer = 0;
         bool        Boolean = false;
         /** Vec2/Vec3/Vec4/Color storage; higher components zero for narrower types. */
-        glm::vec4   Vector  = glm::vec4(0.0f);
+        FVector4   Vector  = FVector4(0.0f);
 
         /** Writes only the storage matching Type. */
         bool Serialize(FArchive& Ar);
@@ -194,7 +194,7 @@ namespace Lumina
         EParticleEmitterShape Shape = EParticleEmitterShape::Point;
 
         PROPERTY()
-        glm::vec3 ShapeSize = glm::vec3(1.0f, 1.0f, 1.0f);
+        FVector3 ShapeSize = FVector3(1.0f, 1.0f, 1.0f);
 
         PROPERTY()
         float ShapeAngle = 30.0f;
@@ -203,19 +203,19 @@ namespace Lumina
         EParticleVelocityMode VelocityMode = EParticleVelocityMode::Explicit;
 
         PROPERTY()
-        glm::vec3 VelocityMin = glm::vec3(-0.5f, 1.0f, -0.5f);
+        FVector3 VelocityMin = FVector3(-0.5f, 1.0f, -0.5f);
 
         PROPERTY()
-        glm::vec3 VelocityMax = glm::vec3(0.5f, 3.0f, 0.5f);
+        FVector3 VelocityMax = FVector3(0.5f, 3.0f, 0.5f);
 
         PROPERTY()
-        glm::vec2 SpeedRange = glm::vec2(1.0f, 3.0f);
+        FVector2 SpeedRange = FVector2(1.0f, 3.0f);
 
         PROPERTY()
-        glm::vec2 LifetimeRange = glm::vec2(1.0f, 2.0f);
+        FVector2 LifetimeRange = FVector2(1.0f, 2.0f);
 
         PROPERTY()
-        glm::vec3 Gravity = glm::vec3(0.0f, -9.8f, 0.0f);
+        FVector3 Gravity = FVector3(0.0f, -9.8f, 0.0f);
 
         PROPERTY()
         float Drag = 0.0f;
@@ -225,25 +225,25 @@ namespace Lumina
         float InheritEmitterVelocity = 0.0f;
 
         PROPERTY()
-        glm::vec4 StartColor = glm::vec4(1.0f, 0.6f, 0.2f, 1.0f);
+        FVector4 StartColor = FVector4(1.0f, 0.6f, 0.2f, 1.0f);
 
         PROPERTY()
-        glm::vec4 EndColor = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+        FVector4 EndColor = FVector4(1.0f, 0.0f, 0.0f, 0.0f);
 
         PROPERTY()
-        glm::vec2 StartSizeRange = glm::vec2(0.2f, 0.3f);
+        FVector2 StartSizeRange = FVector2(0.2f, 0.3f);
 
         PROPERTY()
-        glm::vec2 EndSizeRange = glm::vec2(0.0f, 0.0f);
+        FVector2 EndSizeRange = FVector2(0.0f, 0.0f);
 
         PROPERTY()
-        glm::vec2 RotationRange = glm::vec2(0.0f, 0.0f);
+        FVector2 RotationRange = FVector2(0.0f, 0.0f);
 
         PROPERTY()
-        glm::vec2 RotationSpeedRange = glm::vec2(0.0f, 0.0f);
+        FVector2 RotationSpeedRange = FVector2(0.0f, 0.0f);
 
         PROPERTY()
-        glm::vec3 NoiseStrength = glm::vec3(0.0f);
+        FVector3 NoiseStrength = FVector3(0.0f);
 
         PROPERTY()
         float NoiseScale = 1.0f;
@@ -276,27 +276,27 @@ namespace Lumina
         bool                    bLooping                = true;
 
         EParticleEmitterShape   Shape                   = EParticleEmitterShape::Point;
-        glm::vec3               ShapeSize               = glm::vec3(1.0f);
+        FVector3               ShapeSize               = FVector3(1.0f);
         float                   ShapeAngle              = 30.0f;
 
         EParticleVelocityMode   VelocityMode            = EParticleVelocityMode::Explicit;
-        glm::vec3               VelocityMin             = glm::vec3(0.0f);
-        glm::vec3               VelocityMax             = glm::vec3(0.0f);
-        glm::vec2               SpeedRange              = glm::vec2(1.0f, 3.0f);
-        glm::vec2               LifetimeRange           = glm::vec2(1.0f, 2.0f);
+        FVector3               VelocityMin             = FVector3(0.0f);
+        FVector3               VelocityMax             = FVector3(0.0f);
+        FVector2               SpeedRange              = FVector2(1.0f, 3.0f);
+        FVector2               LifetimeRange           = FVector2(1.0f, 2.0f);
 
-        glm::vec3               Gravity                 = glm::vec3(0.0f, -9.8f, 0.0f);
+        FVector3               Gravity                 = FVector3(0.0f, -9.8f, 0.0f);
         float                   Drag                    = 0.0f;
         float                   InheritEmitterVelocity  = 0.0f;
 
-        glm::vec4               StartColor              = glm::vec4(1.0f);
-        glm::vec4               EndColor                = glm::vec4(1.0f);
-        glm::vec2               StartSizeRange          = glm::vec2(0.2f, 0.3f);
-        glm::vec2               EndSizeRange            = glm::vec2(0.0f);
-        glm::vec2               RotationRange           = glm::vec2(0.0f);
-        glm::vec2               RotationSpeedRange      = glm::vec2(0.0f);
+        FVector4               StartColor              = FVector4(1.0f);
+        FVector4               EndColor                = FVector4(1.0f);
+        FVector2               StartSizeRange          = FVector2(0.2f, 0.3f);
+        FVector2               EndSizeRange            = FVector2(0.0f);
+        FVector2               RotationRange           = FVector2(0.0f);
+        FVector2               RotationSpeedRange      = FVector2(0.0f);
 
-        glm::vec3               NoiseStrength           = glm::vec3(0.0f);
+        FVector3               NoiseStrength           = FVector3(0.0f);
         float                   NoiseScale              = 1.0f;
         float                   NoiseSpeed              = 1.0f;
 

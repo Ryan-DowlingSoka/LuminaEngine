@@ -30,9 +30,9 @@ namespace Lumina
         // Window is a raw GLFWwindow* so secondary ImGui viewport windows (which
         // aren't FWindows) can drive their own swapchain. bPrimary gates the
         // GRenderManager->SwapchainResized broadcast to the one real swapchain.
-        void CreateSwapchain(VkInstance Instance, FVulkanRenderContext* InContext, GLFWwindow* Window, glm::uvec2 Extent, bool bFromResize = false, bool bPrimary = true);
+        void CreateSwapchain(VkInstance Instance, FVulkanRenderContext* InContext, GLFWwindow* Window, FUIntVector2 Extent, bool bFromResize = false, bool bPrimary = true);
 
-        void RecreateSwapchain(const glm::uvec2& Extent);
+        void RecreateSwapchain(const FUIntVector2& Extent);
         void SetPresentMode(VkPresentModeKHR NewMode);
 
         FORCEINLINE const VkSurfaceFormatKHR& GetSurfaceFormat() const { return SurfaceFormat; }
@@ -41,9 +41,9 @@ namespace Lumina
         FORCEINLINE uint32 GetImageCount() const { return (uint32)SwapchainImages.size(); }
         FORCEINLINE VkPresentModeKHR GetPresentMode() const { return CurrentPresentMode; }
         FORCEINLINE VkFormat GetSwapchainFormat() const { return Format; }
-        FORCEINLINE const glm::uvec2& GetSwapchainExtent() const { return SwapchainExtent; }
+        FORCEINLINE const FUIntVector2& GetSwapchainExtent() const { return SwapchainExtent; }
         // The last requested extent (may differ from the actual clamped SwapchainExtent).
-        FORCEINLINE const glm::uvec2& GetDesiredExtent() const { return DesiredExtent; }
+        FORCEINLINE const FUIntVector2& GetDesiredExtent() const { return DesiredExtent; }
         
         TRefCountPtr<FVulkanImage> GetCurrentImage() const;
         FORCEINLINE VkSemaphore GetCurrentPresentSemaphore() const { return PresentSemaphores[CurrentImageIndex]; }
@@ -61,7 +61,7 @@ namespace Lumina
         bool                                    bIsPrimarySwapchain = true;
         // Last extent we (re)created at. Secondary swapchains recreate to this on
         // OUT_OF_DATE instead of querying GLFW (not thread-safe off the main thread).
-        glm::uvec2                              DesiredExtent = {};
+        FUIntVector2                              DesiredExtent = {};
         VkSurfaceKHR                            Surface = VK_NULL_HANDLE;
         VkSwapchainKHR                          Swapchain = VK_NULL_HANDLE;
         uint64                                  AcquireSemaphoreIndex = 0;
@@ -76,7 +76,7 @@ namespace Lumina
         TFixedList<FRHIEventQueryRef, FRAMES_IN_FLIGHT + 1>  FramesInFlight;
         TFixedVector<FRHIEventQueryRef, 4>      QueryPool;
         
-        glm::uvec2                              SwapchainExtent = {};
+        FUIntVector2                              SwapchainExtent = {};
         
         VkSurfaceFormatKHR                      SurfaceFormat = {};
         

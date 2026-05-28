@@ -42,7 +42,7 @@ namespace Lumina
     {
     public:
 
-        static TMulticastDelegate<void, glm::vec2> OnSwapchainResized;
+        static TMulticastDelegate<void, FVector2> OnSwapchainResized;
 
         FRenderManager();
         ~FRenderManager();
@@ -58,7 +58,7 @@ namespace Lumina
         // each context's DOM against next-frame mutation.
         void FrameEnd();
 
-        void SwapchainResized(glm::vec2 NewSize);
+        void SwapchainResized(FVector2 NewSize);
 
 
         #if WITH_EDITOR

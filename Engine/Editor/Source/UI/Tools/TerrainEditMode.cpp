@@ -3,9 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <glm/gtc/constants.hpp>
-#include <glm/gtc/matrix_inverse.hpp>
-#include <glm/gtc/type_ptr.hpp>
+#include "Core/Math/Math.h"
 
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "World/Entity/Components/CameraComponent.h"
@@ -20,7 +18,7 @@ namespace Lumina
 {
     namespace
     {
-        void BuildRayFromScreen(const SCameraComponent& Camera, ImVec2 PixelWithinViewport, ImVec2 ViewportSize, glm::vec3& OutOrigin, glm::vec3& OutDir)
+        void BuildRayFromScreen(const SCameraComponent& Camera, ImVec2 PixelWithinViewport, ImVec2 ViewportSize, FVector3& OutOrigin, FVector3& OutDir)
         {
             const float W = std::max(ViewportSize.x, 1.0f);
             const float H = std::max(ViewportSize.y, 1.0f);
@@ -30,16 +28,16 @@ namespace Lumina
             const float Sy = 1.0f - (PixelWithinViewport.y / H) * 2.0f;
 
             const FViewVolume& View    = Camera.GetViewVolume();
-            const glm::vec3    Forward = View.GetForwardVector();
-            const glm::vec3    Up      = View.GetUpVector();
+            const FVector3    Forward = View.GetForwardVector();
+            const FVector3    Up      = View.GetUpVector();
 
-            const glm::vec3    Right   = glm::normalize(glm::cross(Up, Forward));
+            const FVector3    Right   = Math::Normalize(Math::Cross(Up, Forward));
 
             const float AspectRatio = W / H;
-            const float TanHalfFov  = std::tan(glm::radians(View.GetFOV()) * 0.5f);
+            const float TanHalfFov  = std::tan(Math::Radians(View.GetFOV()) * 0.5f);
 
             OutOrigin = Camera.GetPosition();
-            OutDir    = glm::normalize(Forward
+            OutDir    = Math::Normalize(Forward
                                        + Right * (Sx * TanHalfFov * AspectRatio)
                                        + Up    * (Sy * TanHalfFov));
         }
@@ -435,7 +433,7 @@ namespace Lumina
         // The renderer centers the terrain on the owning entity's transform, so the
         // sculpt system needs that origin to match sample coords to rendered world coords.
         const STransformComponent& TerrainTransform = World->GetEntityRegistry().get<STransformComponent>(TerrainEntity);
-        const glm::vec3 TerrainOrigin = TerrainTransform.GetWorldLocation();
+        const FVector3 TerrainOrigin = TerrainTransform.GetWorldLocation();
 
         // Bracket keys resize the brush multiplicatively, like UE / Photoshop. Wired
         // to ImGui's repeat so holding the key still scrubs the size.
@@ -463,10 +461,10 @@ namespace Lumina
             return;
         }
 
-        glm::vec3 RayOrigin, RayDir;
+        FVector3 RayOrigin, RayDir;
         BuildRayFromScreen(Camera, Local, ViewportSize, RayOrigin, RayDir);
 
-        glm::vec3 Hit;
+        FVector3 Hit;
         if (!FTerrainSculptSystem::Raycast(Terrain, TerrainOrigin, RayOrigin, RayDir, Hit))
         {
             // No hit this frame -> stroke is broken; reset continuity bookkeeping.
@@ -564,14 +562,14 @@ namespace Lumina
         }
         else
         {
-            const glm::vec3 Delta = Hit - LastStrokeHit;
-            const float Dist    = glm::length(glm::vec2(Delta.x, Delta.z));
+            const FVector3 Delta = Hit - LastStrokeHit;
+            const float Dist    = Math::Length(FVector2(Delta.x, Delta.z));
             const float Spacing = std::max(Radius * 0.25f, 1.0f);
-            const int   Steps   = glm::clamp((int)std::ceil(Dist / Spacing), 1, 32);
+            const int   Steps   = Math::Clamp((int)std::ceil(Dist / Spacing), 1, 32);
             const float StepDt  = RealDelta / float(Steps);
             for (int i = 1; i <= Steps; ++i)
             {
-                Dab.WorldPosition = glm::mix(LastStrokeHit, Hit, float(i) / float(Steps));
+                Dab.WorldPosition = Math::Mix(LastStrokeHit, Hit, float(i) / float(Steps));
                 Dab.DeltaSeconds  = StepDt;
                 FTerrainSculptSystem::ApplyDab(Terrain, Dab);
             }
@@ -594,15 +592,15 @@ namespace Lumina
         // each one individually. NDC.y is mapped directly (not inverted) to match
         // BuildRayFromScreen and the Vulkan-native framebuffer convention used by
         // the renderer.
-        const glm::mat4 ViewProj = Camera.GetProjectionMatrix() * Camera.GetViewMatrix();
-        auto ProjectToScreen = [&](const glm::vec3& W, ImVec2& Out) -> bool
+        const FMatrix4 ViewProj = Camera.GetProjectionMatrix() * Camera.GetViewMatrix();
+        auto ProjectToScreen = [&](const FVector3& W, ImVec2& Out) -> bool
         {
-            glm::vec4 Clip = ViewProj * glm::vec4(W, 1.0f);
+            FVector4 Clip = ViewProj * FVector4(W, 1.0f);
             if (Clip.w <= 0.0f)
             {
                 return false;
             }
-            glm::vec3 Ndc = glm::vec3(Clip) / Clip.w;
+            FVector3 Ndc = FVector3(Clip) / Clip.w;
             Out.x = ViewportScreenOrigin.x + (Ndc.x * 0.5f + 0.5f) * ViewportSize.x;
             Out.y = ViewportScreenOrigin.y + (Ndc.y * 0.5f + 0.5f) * ViewportSize.y;
             return true;
@@ -623,8 +621,8 @@ namespace Lumina
             int Count = 0;
             for (int i = 0; i < Segments; ++i)
             {
-                const float A = (static_cast<float>(i) / static_cast<float>(Segments)) * glm::two_pi<float>();
-                const glm::vec3 P = LastHit + glm::vec3(std::cos(A) * WorldRadius, 0.0f, std::sin(A) * WorldRadius);
+                const float A = (static_cast<float>(i) / static_cast<float>(Segments)) * Math::TwoPi<float>();
+                const FVector3 P = LastHit + FVector3(std::cos(A) * WorldRadius, 0.0f, std::sin(A) * WorldRadius);
                 ImVec2 S;
                 if (ProjectToScreen(P, S))
                 {
@@ -652,12 +650,12 @@ namespace Lumina
                 Draw->AddLine(Anchor, Center, IM_COL32( 80, 220, 255, 220), 2.0f);
             }
 
-            const glm::vec2 AB2 = glm::vec2(RampEnd.x - RampStart.x, RampEnd.z - RampStart.z);
-            const float Len = glm::length(AB2);
+            const FVector2 AB2 = FVector2(RampEnd.x - RampStart.x, RampEnd.z - RampStart.z);
+            const float Len = Math::Length(AB2);
             if (Len > 1e-3f)
             {
-                const glm::vec2 N = glm::vec2(-AB2.y, AB2.x) / Len;
-                const glm::vec3 N3 = glm::vec3(N.x, 0.0f, N.y) * RampHalfWidth;
+                const FVector2 N = FVector2(-AB2.y, AB2.x) / Len;
+                const FVector3 N3 = FVector3(N.x, 0.0f, N.y) * RampHalfWidth;
 
                 ImVec2 P0, P1;
                 if (ProjectToScreen(RampStart + N3, P0) && ProjectToScreen(RampEnd + N3, P1))

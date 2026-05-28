@@ -44,7 +44,7 @@ namespace Lumina
 
         FRHIImageDesc& Desc = TextureResource->ImageDescription;
         Desc = FRHIImageDesc{};
-        Desc.Extent             = glm::uvec2(Width  > 0 ? Width  : 1u, Height > 0 ? Height : 1u);
+        Desc.Extent             = FUIntVector2(Width  > 0 ? Width  : 1u, Height > 0 ? Height : 1u);
         Desc.Format             = GetRHIFormat();
         Desc.Dimension          = EImageDimension::Texture2D;
         Desc.NumMips            = 1;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 #include "SkyLightComponent.generated.h"
 
 namespace Lumina
@@ -24,7 +24,7 @@ namespace Lumina
 
         /** Base ambient (skylight) color; multiplied by Intensity. Ignored when bAmbientFromSky is set. */
         PROPERTY(Editable, Color, Category = "Sky Light")
-        glm::vec3 AmbientColor = glm::vec3(0.6f, 0.7f, 1.0f);
+        FVector3 AmbientColor = FVector3(0.6f, 0.7f, 1.0f);
 
         /** Ambient brightness; also scales IBL ambient. >0.3 over-fills shadows. */
         PROPERTY(Editable, Category = "Sky Light", ClampMin = 0.0f, ClampMax = 1.0f, Delta = 0.001f)

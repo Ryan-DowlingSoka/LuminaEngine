@@ -3,7 +3,7 @@
 #include "Core/Object/ObjectCore.h"
 #include "Core/Reflection/Type/LuminaTypes.h"
 #include <limits>
-#include <glm/gtc/type_ptr.hpp>
+#include "Core/Math/Math.h"
 
 #include "Core/Math/Transform.h"
 #include "Core/Reflection/Type/Properties/StructProperty.h"
@@ -33,7 +33,7 @@ namespace Lumina
         float Min = MinOpt ? MinOpt.value() : 0.0f;
         float Max = MaxOpt ? MaxOpt.value() : 0.0f;
         
-        ImGui::DragFloat2("##", glm::value_ptr(DisplayValue), 0.01f, Min, Max);
+        ImGui::DragFloat2("##", Math::ValuePtr(DisplayValue), 0.01f, Min, Max);
 
         ImGui::PopItemWidth();
 
@@ -62,7 +62,7 @@ namespace Lumina
 
     void FVec2PropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
-        glm::vec2 ActualValue;
+        FVector2 ActualValue;
         Property->GetValue(&ActualValue);
         
         if (CachedValue != ActualValue)
@@ -79,7 +79,7 @@ namespace Lumina
 
         if (Prop->Metadata.HasMetadata("Color"))
         {
-            ImGui::ColorEdit3("##", glm::value_ptr(DisplayValue));
+            ImGui::ColorEdit3("##", Math::ValuePtr(DisplayValue));
         }
         else
         {
@@ -99,7 +99,7 @@ namespace Lumina
             float Max = MaxOpt ? MaxOpt.value() : 0.0f;
         
             
-            ImGui::DragFloat3("##", glm::value_ptr(DisplayValue), 0.01f, Min, Max);
+            ImGui::DragFloat3("##", Math::ValuePtr(DisplayValue), 0.01f, Min, Max);
         }
         
         ImGui::PopItemWidth();
@@ -129,7 +129,7 @@ namespace Lumina
 
     void FVec3PropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
-        glm::vec3 ActualValue;
+        FVector3 ActualValue;
         Property->GetValue(&ActualValue);
         
         if (CachedValue != ActualValue)
@@ -146,7 +146,7 @@ namespace Lumina
 
         if (Prop->Metadata.HasMetadata("Color"))
         {
-            ImGui::ColorEdit4("##", glm::value_ptr(DisplayValue));
+            ImGui::ColorEdit4("##", Math::ValuePtr(DisplayValue));
         }
         else
         {
@@ -165,7 +165,7 @@ namespace Lumina
             float Min = MinOpt ? MinOpt.value() : 0.0f;
             float Max = MaxOpt ? MaxOpt.value() : 0.0f;
                     
-            ImGui::DragFloat4("##", glm::value_ptr(DisplayValue), 0.01f, Min, Max);
+            ImGui::DragFloat4("##", Math::ValuePtr(DisplayValue), 0.01f, Min, Max);
         }
 
         ImGui::PopItemWidth();
@@ -195,7 +195,7 @@ namespace Lumina
 
     void FVec4PropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
-        glm::vec4 ActualValue;
+        FVector4 ActualValue;
         Property->GetValue(&ActualValue);
         
         if (CachedValue != ActualValue)
@@ -208,7 +208,7 @@ namespace Lumina
     {
         ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
 
-        ImGui::DragFloat4("##", glm::value_ptr(DisplayValue), 0.01f);
+        ImGui::DragFloat4("##", Math::ValuePtr(DisplayValue), 0.01f);
 
         ImGui::PopItemWidth();
         
@@ -237,7 +237,7 @@ namespace Lumina
 
     void FQuatPropertyCustomization::HandleExternalUpdate(const TSharedPtr<FPropertyHandle>& Property)
     {
-        glm::quat ActualValue;
+        FQuat ActualValue;
         Property->GetValue(&ActualValue);
         
         if (CachedValue != ActualValue)
@@ -260,7 +260,7 @@ namespace Lumina
             ImGui::SetTooltip("Translation (Location)");
         }
 
-        if (ImGui::DragFloat3("T", glm::value_ptr(DisplayValue.Location), 0.01f))
+        if (ImGui::DragFloat3("T", Math::ValuePtr(DisplayValue.Location), 0.01f))
         {
             Result = EPropertyChangeOp::Updated;
         }
@@ -282,8 +282,8 @@ namespace Lumina
         }
         ImGui::SameLine();
         
-        glm::vec3 EulerRotation = glm::degrees(glm::eulerAngles(DisplayValue.Rotation));
-        if (ImGui::DragFloat3("R", glm::value_ptr(EulerRotation), 0.01f))
+        FVector3 EulerRotation = Math::Degrees(Math::EulerAngles(DisplayValue.Rotation));
+        if (ImGui::DragFloat3("R", Math::ValuePtr(EulerRotation), 0.01f))
         {
             DisplayValue.SetRotationFromEuler(EulerRotation);
             Result = EPropertyChangeOp::Updated;
@@ -306,7 +306,7 @@ namespace Lumina
         }
         ImGui::SameLine();
         
-        if (ImGui::DragFloat3("S", glm::value_ptr(DisplayValue.Scale), 0.01f))
+        if (ImGui::DragFloat3("S", Math::ValuePtr(DisplayValue.Scale), 0.01f))
         {
             Result = EPropertyChangeOp::Updated;
         }

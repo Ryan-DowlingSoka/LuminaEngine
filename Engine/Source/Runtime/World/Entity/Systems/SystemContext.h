@@ -143,23 +143,23 @@ namespace Lumina
         
         RUNTIME_API STransformComponent& GetEntityTransform(entt::entity Entity) const;
         
-        RUNTIME_API glm::vec3 TranslateEntity(entt::entity Entity, const glm::vec3& Translation);
-        RUNTIME_API void SetEntityLocation(entt::entity Entity, const glm::vec3& Location);
-        RUNTIME_API void SetEntityRotation(entt::entity Entity, const glm::quat& Rotation);
-        RUNTIME_API void SetEntityScale(entt::entity Entity, const glm::vec3& Scale);
+        RUNTIME_API FVector3 TranslateEntity(entt::entity Entity, const FVector3& Translation);
+        RUNTIME_API void SetEntityLocation(entt::entity Entity, const FVector3& Location);
+        RUNTIME_API void SetEntityRotation(entt::entity Entity, const FQuat& Rotation);
+        RUNTIME_API void SetEntityScale(entt::entity Entity, const FVector3& Scale);
         
         //~ Begin Debug Drawing
-        RUNTIME_API void DrawDebugLine(const glm::vec3& Start, const glm::vec3& End, const glm::vec4& Color, float Thickness = 1.0f, float Duration = 1.0f) const;
-        RUNTIME_API void DrawDebugBox(const glm::vec3& Center, const glm::vec3& Extents, const glm::quat& Rotation, const glm::vec4& Color, float Thickness = 1.0f, float Duration = 1.0f) const;
-        RUNTIME_API void DrawDebugSphere(const glm::vec3& Center, float Radius, const glm::vec4& Color, uint8 Segments = 16, float Thickness = 1.0f, float Duration = 1.0f) const;
-        RUNTIME_API void DrawDebugCone(const glm::vec3& Apex, const glm::vec3& Direction, float AngleRadians, float Length, const glm::vec4& Color, uint8 Segments = 16, uint8 Stacks = 4, float Thickness = 1.0f, float Duration = 1.0f) const;
-        RUNTIME_API void DrawFrustum(const glm::mat4& Matrix, float zNear, float zFar, const glm::vec4& Color, float Thickness = 1.0f, float Duration = 1.0f) const;
-        RUNTIME_API void DrawDebugArrow(const glm::vec3& Start, const glm::vec3& Direction, float Length, const glm::vec4& Color, float Thickness = 1.0f, float Duration = 1.0f, float HeadSize = 0.2f) const;
+        RUNTIME_API void DrawDebugLine(const FVector3& Start, const FVector3& End, const FVector4& Color, float Thickness = 1.0f, float Duration = 1.0f) const;
+        RUNTIME_API void DrawDebugBox(const FVector3& Center, const FVector3& Extents, const FQuat& Rotation, const FVector4& Color, float Thickness = 1.0f, float Duration = 1.0f) const;
+        RUNTIME_API void DrawDebugSphere(const FVector3& Center, float Radius, const FVector4& Color, uint8 Segments = 16, float Thickness = 1.0f, float Duration = 1.0f) const;
+        RUNTIME_API void DrawDebugCone(const FVector3& Apex, const FVector3& Direction, float AngleRadians, float Length, const FVector4& Color, uint8 Segments = 16, uint8 Stacks = 4, float Thickness = 1.0f, float Duration = 1.0f) const;
+        RUNTIME_API void DrawFrustum(const FMatrix4& Matrix, float zNear, float zFar, const FVector4& Color, float Thickness = 1.0f, float Duration = 1.0f) const;
+        RUNTIME_API void DrawDebugArrow(const FVector3& Start, const FVector3& Direction, float Length, const FVector4& Color, float Thickness = 1.0f, float Duration = 1.0f, float HeadSize = 0.2f) const;
         //~ End Debug Drawing
         
         RUNTIME_API entt::runtime_view CreateRuntimeView(const THashSet<entt::id_type>& Components) const;
 
-        RUNTIME_API entt::entity Create(glm::vec3 Location) const;
+        RUNTIME_API entt::entity Create(FVector3 Location) const;
         RUNTIME_API entt::entity Create() const;
         RUNTIME_API void Destroy(entt::entity Entity) const { Registry.destroy(Entity); }
 

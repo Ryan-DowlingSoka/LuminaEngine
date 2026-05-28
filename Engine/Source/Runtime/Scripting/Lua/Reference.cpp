@@ -130,6 +130,14 @@ namespace Lumina::Lua
         return FRef(State, -1);
     }
 
+    void FRef::SetRawFunction(FStringView Key, lua_CFunction Fn)
+    {
+        Push();
+        lua_pushcfunction(State, Fn, Key.data());
+        lua_rawsetfield(State, -2, Key.data());
+        lua_pop(State, 1);
+    }
+
     bool FRef::IsValid() const
     {
         return State != nullptr && Ref != LUA_NOREF && Ref != LUA_REFNIL;

@@ -125,27 +125,27 @@ namespace Lumina
         return Result;
     }
 
-    CStruct* TBaseStructure<glm::vec<2, float>>::Get()
+    CStruct* TBaseStructure<FVector2>::Get()
     {
-	    static CStruct* Struct = StaticGetBaseStructureInternal("vec2");
+        static CStruct* Struct = StaticGetBaseStructureInternal("FVector2");
         return Struct;
     }
 
-    CStruct* TBaseStructure<glm::vec<3, float>>::Get()
+    CStruct* TBaseStructure<FVector3>::Get()
     {
-        static CStruct* Struct = StaticGetBaseStructureInternal("vec3");
+        static CStruct* Struct = StaticGetBaseStructureInternal("FVector3");
         return Struct;
     }
 
-    CStruct* TBaseStructure<glm::vec<4, float>>::Get()
+    CStruct* TBaseStructure<FVector4>::Get()
     {
-        static CStruct* Struct = StaticGetBaseStructureInternal("vec4");
-        return Struct;   
+        static CStruct* Struct = StaticGetBaseStructureInternal("FVector4");
+        return Struct;
     }
 
-    CStruct* TBaseStructure<glm::quat>::Get()
+    CStruct* TBaseStructure<FQuat>::Get()
     {
-        static CStruct* Struct = StaticGetBaseStructureInternal("quat");
-        return Struct;   
+        static CStruct* Struct = StaticGetBaseStructureInternal("FQuat");
+        return Struct;
     }
 }

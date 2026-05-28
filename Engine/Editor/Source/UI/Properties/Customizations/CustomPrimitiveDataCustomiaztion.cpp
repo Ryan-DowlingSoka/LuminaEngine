@@ -57,7 +57,7 @@ namespace Lumina
                 int32 V = (int32)Value.Data.UInt;
                 if (ImGui::DragInt("##Value", &V, 1.0f, 0, INT_MAX))
                 {
-                    Value.Data.UInt = (uint32)glm::max(0, V);
+                    Value.Data.UInt = (uint32)Math::Max(0, V);
                     bWasChanged = true;
                 }
                 break;

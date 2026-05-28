@@ -197,7 +197,7 @@ namespace Lumina
 
     uint16 FAnimationGraphCompiler::EmitBoneTransform(uint16 SrcPoseReg, uint16 AlphaReg, uint16 BoneIndex,
                                                      uint16 SpaceReg, uint16 ModeReg,
-                                                     const glm::vec3& Translation, const glm::quat& Rotation, const glm::vec3& Scale)
+                                                     const FVector3& Translation, const FQuat& Rotation, const FVector3& Scale)
     {
         const uint16 Dst = AllocPoseReg();
         WriteOp(EAnimOp::BoneTransform);
@@ -216,7 +216,7 @@ namespace Lumina
     uint16 FAnimationGraphCompiler::EmitTwoBoneIK(uint16 SrcPoseReg, uint16 AlphaReg,
                                                   uint16 TargetXReg, uint16 TargetYReg, uint16 TargetZReg,
                                                   uint16 RootIndex, uint16 MidIndex, uint16 EndIndex,
-                                                  const glm::vec3& Pole)
+                                                  const FVector3& Pole)
     {
         const uint16 Dst = AllocPoseReg();
         WriteOp(EAnimOp::TwoBoneIK);
@@ -267,7 +267,7 @@ namespace Lumina
                 const int32 BoneIdx = Skeleton->FindBoneIndex(Entry.BoneName);
                 if (BoneIdx >= 0 && BoneIdx < NumBones)
                 {
-                    Mask.Weights[BoneIdx] = glm::clamp(Entry.Weight, 0.0f, 1.0f);
+                    Mask.Weights[BoneIdx] = Math::Clamp(Entry.Weight, 0.0f, 1.0f);
                 }
             }
 

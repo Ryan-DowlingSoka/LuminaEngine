@@ -68,7 +68,7 @@ namespace Lumina
 
         STransformComponent& ParticleTransform = World->GetEntityRegistry().get<STransformComponent>(ParticleEntity);
         STransformComponent& EditorTransform   = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
-        const glm::quat LookRotation = Math::FindLookAtRotation(ParticleTransform.GetLocation(), EditorTransform.GetLocation());
+        const FQuat LookRotation = Math::FindLookAtRotation(ParticleTransform.GetLocation(), EditorTransform.GetLocation());
         EditorTransform.SetRotation(LookRotation);
     }
 

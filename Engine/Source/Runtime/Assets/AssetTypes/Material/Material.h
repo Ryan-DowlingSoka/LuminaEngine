@@ -39,7 +39,7 @@ namespace Lumina
         void OnDestroy() override;
         
         bool SetScalarValue(const FName& Name, const float Value) override;
-        bool SetVectorValue(const FName& Name, const glm::vec4& Value) override;
+        bool SetVectorValue(const FName& Name, const FVector4& Value) override;
         bool GetParameterValue(EMaterialParameterType Type, const FName& Name, FMaterialParameter& Param) override;
         FMaterialUniforms* GetMaterialUniforms() override { return &MaterialUniforms; }
         

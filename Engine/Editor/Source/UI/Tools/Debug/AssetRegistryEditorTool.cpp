@@ -132,13 +132,13 @@ namespace Lumina
             const FMeshResource& MR = Mesh->GetMeshResource();
             uint64 Bytes = 0;
 
-            Bytes += MR.Positions.capacity()  * sizeof(glm::vec3);
+            Bytes += MR.Positions.capacity()  * sizeof(FVector3);
             Bytes += MR.Normals.capacity()    * sizeof(uint32);
             Bytes += MR.Tangents.capacity()   * sizeof(uint32);
             Bytes += MR.UVs.capacity()        * sizeof(uint32);
             Bytes += MR.Colors.capacity()     * sizeof(uint32);
-            Bytes += MR.JointIndices.capacity() * sizeof(glm::u8vec4);
-            Bytes += MR.JointWeights.capacity() * sizeof(glm::u8vec4);
+            Bytes += MR.JointIndices.capacity() * sizeof(FU8Vector4);
+            Bytes += MR.JointWeights.capacity() * sizeof(FU8Vector4);
             Bytes += MR.Indices.capacity()    * sizeof(uint32);
             Bytes += MR.GeometrySurfaces.capacity() * sizeof(FGeometrySurface);
 

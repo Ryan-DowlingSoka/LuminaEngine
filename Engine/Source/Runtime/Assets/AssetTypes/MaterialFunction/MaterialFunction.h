@@ -5,7 +5,7 @@
 #include "Containers/String.h"
 #include "Core/Object/Object.h"
 #include "Core/Object/ObjectMacros.h"
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 #include "MaterialFunction.generated.h"
 
 namespace Lumina
@@ -38,7 +38,7 @@ namespace Lumina
 
         /** Used when a call node leaves this input pin unconnected. */
         PROPERTY()
-        glm::vec4 DefaultValue = glm::vec4(0.0f);
+        FVector4 DefaultValue = FVector4(0.0f);
 
         PROPERTY()
         FString Description;

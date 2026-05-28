@@ -2,7 +2,7 @@
 
 #include "ParticleModule.h"
 #include "Assets/AssetTypes/ParticleSystem/ParticleSystem.h"
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 #include "ParticleStockModules.generated.h"
 
 namespace Lumina
@@ -41,7 +41,7 @@ namespace Lumina
 
         /** Sphere: x=radius. Box: xyz=half extents. Cone: x=base radius, y=height. Ring/Disk: x=outer, y=inner. */
         PROPERTY(Editable, Category = "Shape")
-        glm::vec3 ShapeSize = glm::vec3(1.0f);
+        FVector3 ShapeSize = FVector3(1.0f);
 
         /** Cone half-angle in degrees. */
         PROPERTY(Editable, Category = "Shape", ClampMin = 0.0f, ClampMax = 180.0f)
@@ -65,14 +65,14 @@ namespace Lumina
         EParticleInitVelocityMode Mode = EParticleInitVelocityMode::Explicit;
 
         PROPERTY(Editable, Category = "Velocity")
-        glm::vec3 VelocityMin = glm::vec3(-0.5f, 1.0f, -0.5f);
+        FVector3 VelocityMin = FVector3(-0.5f, 1.0f, -0.5f);
 
         PROPERTY(Editable, Category = "Velocity")
-        glm::vec3 VelocityMax = glm::vec3(0.5f, 3.0f, 0.5f);
+        FVector3 VelocityMax = FVector3(0.5f, 3.0f, 0.5f);
 
         /** Speed range for Radial / Cone modes. */
         PROPERTY(Editable, Category = "Velocity")
-        glm::vec2 SpeedRange = glm::vec2(1.0f, 3.0f);
+        FVector2 SpeedRange = FVector2(1.0f, 3.0f);
 
         /** Cone half-angle in degrees for Cone mode. */
         PROPERTY(Editable, Category = "Velocity", ClampMin = 0.0f, ClampMax = 180.0f)
@@ -93,7 +93,7 @@ namespace Lumina
         void Generate(FParticleCompiler& Compiler, int32 ModuleIndex) override;
 
         PROPERTY(Editable, Category = "Color", Color)
-        glm::vec4 Color = glm::vec4(1.0f, 0.6f, 0.2f, 1.0f);
+        FVector4 Color = FVector4(1.0f, 0.6f, 0.2f, 1.0f);
     };
 
     /** Sets the initial particle size (random within a range). */
@@ -110,7 +110,7 @@ namespace Lumina
         void Generate(FParticleCompiler& Compiler, int32 ModuleIndex) override;
 
         PROPERTY(Editable, Category = "Size", ClampMin = 0.0f)
-        glm::vec2 SizeRange = glm::vec2(0.2f, 0.3f);
+        FVector2 SizeRange = FVector2(0.2f, 0.3f);
     };
 
     /** Sets how long newborn particles live (random within a range). */
@@ -127,7 +127,7 @@ namespace Lumina
         void Generate(FParticleCompiler& Compiler, int32 ModuleIndex) override;
 
         PROPERTY(Editable, Category = "Lifetime", ClampMin = 0.01f)
-        glm::vec2 LifetimeRange = glm::vec2(1.0f, 2.0f);
+        FVector2 LifetimeRange = FVector2(1.0f, 2.0f);
     };
 
     /** Sets the initial rotation and rotation speed (random within ranges). */
@@ -144,10 +144,10 @@ namespace Lumina
         void Generate(FParticleCompiler& Compiler, int32 ModuleIndex) override;
 
         PROPERTY(Editable, Category = "Rotation")
-        glm::vec2 RotationRange = glm::vec2(0.0f, 0.0f);
+        FVector2 RotationRange = FVector2(0.0f, 0.0f);
 
         PROPERTY(Editable, Category = "Rotation")
-        glm::vec2 RotationSpeedRange = glm::vec2(0.0f, 0.0f);
+        FVector2 RotationSpeedRange = FVector2(0.0f, 0.0f);
     };
 
     // -------------------------------------------------------------------------
@@ -168,7 +168,7 @@ namespace Lumina
         void Generate(FParticleCompiler& Compiler, int32 ModuleIndex) override;
 
         PROPERTY(Editable, Category = "Forces")
-        glm::vec3 Gravity = glm::vec3(0.0f, -9.8f, 0.0f);
+        FVector3 Gravity = FVector3(0.0f, -9.8f, 0.0f);
     };
 
     /** Exponentially damps velocity (framerate-independent). */
@@ -202,7 +202,7 @@ namespace Lumina
         void Generate(FParticleCompiler& Compiler, int32 ModuleIndex) override;
 
         PROPERTY(Editable, Category = "Noise")
-        glm::vec3 Strength = glm::vec3(1.0f);
+        FVector3 Strength = FVector3(1.0f);
 
         PROPERTY(Editable, Category = "Noise", ClampMin = 0.0001f)
         float Scale = 1.0f;
@@ -225,10 +225,10 @@ namespace Lumina
         void Generate(FParticleCompiler& Compiler, int32 ModuleIndex) override;
 
         PROPERTY(Editable, Category = "Color", Color)
-        glm::vec4 StartColor = glm::vec4(1.0f, 0.6f, 0.2f, 1.0f);
+        FVector4 StartColor = FVector4(1.0f, 0.6f, 0.2f, 1.0f);
 
         PROPERTY(Editable, Category = "Color", Color)
-        glm::vec4 EndColor = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+        FVector4 EndColor = FVector4(1.0f, 0.0f, 0.0f, 0.0f);
     };
 
     /** Interpolates size from Start to End over the particle's life. */

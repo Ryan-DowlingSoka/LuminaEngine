@@ -118,7 +118,7 @@ namespace Lumina
         friend class FVulkanRenderContext;
         
 
-        FVulkanViewport(const glm::uvec2& InSize, IRenderContext* InContext, FString&& DebugName)
+        FVulkanViewport(const FUIntVector2& InSize, IRenderContext* InContext, FString&& DebugName)
             : FRHIViewport(InSize, InContext, Move(DebugName))
         {}
 
@@ -309,7 +309,7 @@ namespace Lumina
         uint32 GetSubresourceIndex(uint32 MipLevel, uint32 ArrayLayer) const;
         
         const FRHIImageDesc& GetDescription() const override { return Description; }
-        const glm::uvec2& GetExtent() const override { return Description.Extent; }
+        const FUIntVector2& GetExtent() const override { return Description.Extent; }
         uint32 GetSizeX() const override { return Description.Extent.x; }
         uint32 GetSizeY() const override { return Description.Extent.y; }
         EFormat GetFormat() const override { return Description.Format; }

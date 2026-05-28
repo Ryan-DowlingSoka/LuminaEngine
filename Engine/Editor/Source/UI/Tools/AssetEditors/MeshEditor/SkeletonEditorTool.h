@@ -29,7 +29,7 @@ namespace Lumina
         void DrawToolMenu(const FUpdateContext& UpdateContext) override;
         void DrawHelpMenu() override;
         void InitializeDockingLayout(ImGuiID InDockspaceID, const ImVec2& InDockspaceSize) const override;
-        static void DrawBoneHierarchy(CWorld* DrawWorld, FSkeletonResource* SkeletonResource, const TVector<glm::mat4>& WorldTransforms, int32 BoneIndex);
+        static void DrawBoneHierarchy(CWorld* DrawWorld, FSkeletonResource* SkeletonResource, const TVector<FMatrix4>& WorldTransforms, int32 BoneIndex);
 
         
         ImGuizmo::OPERATION GuizmoOp = ImGuizmo::TRANSLATE;

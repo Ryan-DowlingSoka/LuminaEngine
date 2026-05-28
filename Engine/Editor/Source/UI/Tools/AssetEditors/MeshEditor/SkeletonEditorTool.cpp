@@ -1,7 +1,7 @@
 ﻿#include "SkeletonEditorTool.h"
 #include "ImGuiDrawUtils.h"
 #include "assets/assettypes/mesh/skeleton/skeleton.h"
-#include "glm/gtx/string_cast.hpp"
+#include "Core/Math/Math.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "world/entity/components/environmentcomponent.h"
@@ -173,7 +173,7 @@ namespace Lumina
         STransformComponent& MeshTransform = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
         STransformComponent& EditorTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
 
-        glm::quat Rotation = Math::FindLookAtRotation(MeshTransform.GetWorldLocation()+ glm::vec3(0.0f, 0.85f, 0.0f), EditorTransform.GetLocation());
+        FQuat Rotation = Math::FindLookAtRotation(MeshTransform.GetWorldLocation()+ FVector3(0.0f, 0.85f, 0.0f), EditorTransform.GetLocation());
         EditorTransform.SetRotation(Rotation);
     }
 
@@ -197,9 +197,9 @@ namespace Lumina
     
             STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
             FSkeletonResource* SkeletonResource = Skeleton->GetSkeletonResource();
-            TVector<glm::mat4> WorldTransforms;
+            TVector<FMatrix4> WorldTransforms;
             WorldTransforms.resize(SkeletonResource->GetNumBones());
-            glm::mat4 EntityMatrix = Transform.GetWorldMatrix();
+            FMatrix4 EntityMatrix = Transform.GetWorldMatrix();
 
             for (int i = 0; i < SkeletonResource->GetNumBones(); ++i)
             {
@@ -285,7 +285,7 @@ namespace Lumina
         ImGui::DockBuilderDockWindow(GetToolWindowName(BoneHierarchyName).c_str(), leftID);
     }
 
-    void FSkeletonEditorTool::DrawBoneHierarchy(CWorld* DrawWorld, FSkeletonResource* SkeletonResource, const TVector<glm::mat4>& WorldTransforms, int32 BoneIndex)
+    void FSkeletonEditorTool::DrawBoneHierarchy(CWorld* DrawWorld, FSkeletonResource* SkeletonResource, const TVector<FMatrix4>& WorldTransforms, int32 BoneIndex)
     {
         if (BoneIndex < 0 || BoneIndex >= SkeletonResource->GetNumBones())
         {
@@ -293,13 +293,13 @@ namespace Lumina
         }
     
         const FSkeletonResource::FBoneInfo& Bone = SkeletonResource->GetBone(BoneIndex);
-        glm::vec3 BonePosition = glm::vec3(WorldTransforms[BoneIndex][3]);
+        FVector3 BonePosition = FVector3(WorldTransforms[BoneIndex][3]);
     
         DrawWorld->DrawSphere(BonePosition, 0.025f, FColor::Red, 8, 1.0f, false);
     
         if (Bone.ParentIndex != INDEX_NONE)
         {
-            glm::vec3 ParentPosition = glm::vec3(WorldTransforms[Bone.ParentIndex][3]);
+            FVector3 ParentPosition = FVector3(WorldTransforms[Bone.ParentIndex][3]);
             DrawWorld->DrawLine(ParentPosition, BonePosition, FColor::Green, 10.0f, false);
         }
     

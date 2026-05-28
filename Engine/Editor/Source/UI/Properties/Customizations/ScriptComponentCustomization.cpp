@@ -213,6 +213,106 @@ namespace Lumina
             }
         }
 
+        // Engine-recognized lifecycle / physics callbacks; these are driven by the world, not
+        // meant to be fired by hand, so they're excluded from the editor action list.
+        bool IsReservedCallbackName(const FString& Name)
+        {
+            static const char* const Reserved[] =
+            {
+                "OnAttach", "OnReady", "OnUpdate", "OnDetach",
+                "OnFixedUpdate", "OnEditorUpdate",
+                "OnContactBegin", "OnContactEnd",
+                "OnOverlapBegin", "OnOverlapEnd",
+            };
+            for (const char* R : Reserved)
+            {
+                if (Name == R) return true;
+            }
+            return false;
+        }
+
+        // True for a Lua (non-C) function that takes no caller-supplied arguments: either zero
+        // params or a single `self` (the colon-method convention). lua_getinfo "a" yields arity;
+        // C functions report nparams=0/vararg=1 and are rejected so only script-authored routines
+        // surface as editor actions.
+        bool IsZeroInputLuaFunction(const Lua::FRef& Func)
+        {
+            if (!Func.IsValid() || !Func.IsInvokable())
+            {
+                return false;
+            }
+
+            lua_State* State = Func.GetState();
+            if (State == nullptr)
+            {
+                return false;
+            }
+
+            Func.Push();
+            bool bResult = false;
+            if (!lua_iscfunction(State, -1))
+            {
+                lua_Debug Info = {};
+                if (lua_getinfo(State, -1, "a", &Info) != 0)
+                {
+                    bResult = (Info.isvararg == 0) && (Info.nparams <= 1);
+                }
+            }
+            lua_pop(State, 1);
+            return bResult;
+        }
+
+        // A button per zero-input script function; clicking defers the call into OutInvoke so the
+        // script runs after the property draw completes (it may spawn/destroy entities, unsafe
+        // mid-draw). Self is passed to match the colon-method convention used by the lifecycle hooks.
+        void DrawCallableFunctionsSection(SScriptComponent& Component, TFunction<void()>& OutInvoke)
+        {
+            using namespace Lua;
+            if (!Component.Script || !Component.Script->Reference.IsValid() || !Component.Script->Reference.IsTable())
+            {
+                return;
+            }
+
+            TVector<TPair<FString, FRef>> Callables;
+            for (auto&& [Key, Value] : Component.Script->Reference)
+            {
+                if (Key.GetType() != EType::String)
+                {
+                    continue;
+                }
+                FString Name = Key.ToString();
+                if (IsReservedCallbackName(Name) || !IsZeroInputLuaFunction(Value))
+                {
+                    continue;
+                }
+                Callables.emplace_back(eastl::move(Name), Value);
+            }
+
+            if (Callables.empty())
+            {
+                return;
+            }
+
+            if (!ImGui::CollapsingHeader("Functions", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                return;
+            }
+
+            for (const TPair<FString, FRef>& Entry : Callables)
+            {
+                const FString& Name = Entry.first;
+                const FRef& Func = Entry.second;
+                if (ImGui::Button(Name.c_str()))
+                {
+                    OutInvoke = [Script = Component.Script, Func]
+                    {
+                        Script->InvokeAsCoroutine(Func, Script->Reference);
+                    };
+                }
+                ImGuiX::TextTooltip("Execute {}() on this script", Name);
+            }
+        }
+
         void DrawExportsSection(SScriptComponent& Component, bool& bOutChanged)
         {
             if (!Component.Script || !Component.Script->ExportsSchema.IsValid())
@@ -264,6 +364,10 @@ namespace Lumina
     EPropertyChangeOp FScriptComponentPropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
         bool bWasChanged = false;
+
+        // Set when an editor-triggered script function is clicked; replayed after the draw so the
+        // script (which may spawn/destroy entities) doesn't run while we're mid-component-draw.
+        TFunction<void()> PendingInvoke;
 
         ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
         SScriptComponent* ScriptComponent = static_cast<SScriptComponent*>(Property->ContainerPtr);
@@ -457,22 +561,27 @@ namespace Lumina
             if (ScriptComponent->Script && ScriptComponent->Script->Reference.IsValid()
                 && ScriptComponent->Script->Reference.IsTable())
             {
-                if (ImGui::BeginTable("ScriptReference", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
+                // Debug-only dump of the live script table; collapsed by default so it doesn't
+                // render (or walk the table) unless the user expands it.
+                if (ImGui::CollapsingHeader("Reference Table"))
                 {
-                    ImGui::TableSetupColumn("Key");
-                    ImGui::TableSetupColumn("Value");
-                    ImGui::TableHeadersRow();
-
-                    for (auto&& [Key, Value] : ScriptComponent->Script->Reference)
+                    if (ImGui::BeginTable("ScriptReference", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
                     {
-                        ImGui::TableNextRow();
-                        ImGui::TableSetColumnIndex(0);
-                        ImGui::TextUnformatted(SafeRefDisplay(Key).c_str());
-                        ImGui::TableSetColumnIndex(1);
-                        ImGui::TextUnformatted(SafeRefDisplay(Value).c_str());
-                    }
+                        ImGui::TableSetupColumn("Key");
+                        ImGui::TableSetupColumn("Value");
+                        ImGui::TableHeadersRow();
 
-                    ImGui::EndTable();
+                        for (auto&& [Key, Value] : ScriptComponent->Script->Reference)
+                        {
+                            ImGui::TableNextRow();
+                            ImGui::TableSetColumnIndex(0);
+                            ImGui::TextUnformatted(SafeRefDisplay(Key).c_str());
+                            ImGui::TableSetColumnIndex(1);
+                            ImGui::TextUnformatted(SafeRefDisplay(Value).c_str());
+                        }
+
+                        ImGui::EndTable();
+                    }
                 }
             }
             
@@ -483,6 +592,8 @@ namespace Lumina
             bool bExportsChanged = false;
             DrawExportsSection(*ScriptComponent, bExportsChanged);
 
+            DrawCallableFunctionsSection(*ScriptComponent, PendingInvoke);
+
             ImGui::EndGroup();
         }
         ImGui::EndChild();
@@ -490,6 +601,12 @@ namespace Lumina
         ImGui::PopID();
 
         ImGui::PopItemWidth();
+
+        // Component draw is complete; safe to run a function that may mutate the world.
+        if (PendingInvoke)
+        {
+            PendingInvoke();
+        }
 
         if (bWasChanged)
         {

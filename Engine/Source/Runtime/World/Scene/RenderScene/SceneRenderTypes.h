@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 
 #include "Containers/Array.h"
 #include "Core/Threading/Thread.h"
@@ -136,14 +136,14 @@ namespace Lumina
     
     struct FCameraData
     {
-        glm::vec4 Location          = {};
-        glm::vec4 Up                = {};
-        glm::vec4 Right             = {};
-        glm::vec4 Forward           = {};
-        glm::mat4 View              = {};
-        glm::mat4 InverseView       = {};
-        glm::mat4 Projection        = {};
-        glm::mat4 InverseProjection = {};
+        FVector4 Location          = {};
+        FVector4 Up                = {};
+        FVector4 Right             = {};
+        FVector4 Forward           = {};
+        FMatrix4 View              = {};
+        FMatrix4 InverseView       = {};
+        FMatrix4 Projection        = {};
+        FMatrix4 InverseProjection = {};
     };
 
     constexpr uint32 LIGHT_TYPE_MASK      = 0x0000FFFF; // lower 16 bits
@@ -172,8 +172,8 @@ namespace Lumina
 
     struct FShadowTile
     {
-        glm::vec2 UVOffset;     // Normalized origin (0-1 range) of this tile in the atlas.
-        glm::vec2 UVScale;      // Normalized size (square: UVScale.x == UVScale.y).
+        FVector2 UVOffset;     // Normalized origin (0-1 range) of this tile in the atlas.
+        FVector2 UVScale;      // Normalized size (square: UVScale.x == UVScale.y).
     };
 
     // Quad-tree shadow atlas allocator. Tiles sized by projected radius; reset per-frame via FreeTiles().
@@ -185,7 +185,7 @@ namespace Lumina
             : Config(InConfig)
         {
             FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = glm::uvec2(InConfig.AtlasResolution);
+            ImageDesc.Extent            = FUIntVector2(InConfig.AtlasResolution);
             ImageDesc.Format            = EFormat::D32;
             ImageDesc.bKeepInitialState = true;
             ImageDesc.InitialState      = EResourceStates::DepthWrite;
@@ -209,7 +209,7 @@ namespace Lumina
         {
             FScopeLock Lock(AllocMutex);
 
-            const uint32 ClampedSize = glm::clamp(RoundUpPow2(DesiredPixels), Config.MinTileResolution, Config.MaxTileResolution);
+            const uint32 ClampedSize = Math::Clamp(RoundUpPow2(DesiredPixels), Config.MinTileResolution, Config.MaxTileResolution);
             const uint32 StartLevel  = Log2Floor(ClampedSize) - MinLevel;
 
             for (uint32 Level = StartLevel; Level < NumLevels; ++Level)
@@ -234,8 +234,8 @@ namespace Lumina
                     const int32 Handle = (int32)Tiles.size();
                     const float InvAtlas = 1.0f / (float)Config.AtlasResolution;
                     FShadowTile Tile;
-                    Tile.UVOffset = glm::vec2(Rect.X * InvAtlas, Rect.Y * InvAtlas);
-                    Tile.UVScale  = glm::vec2(Rect.Size * InvAtlas);
+                    Tile.UVOffset = FVector2(Rect.X * InvAtlas, Rect.Y * InvAtlas);
+                    Tile.UVScale  = FVector2(Rect.Size * InvAtlas);
                     Tiles.push_back(Tile);
                     return Handle;
                 }
@@ -309,8 +309,8 @@ namespace Lumina
 
     struct FLightShadow
     {
-        glm::vec2   AtlasUVOffset;
-        glm::vec2   AtlasUVScale;
+        FVector2   AtlasUVOffset;
+        FVector2   AtlasUVScale;
 
         int32       ShadowMapIndex;
         int32       LightIndex;
@@ -323,15 +323,15 @@ namespace Lumina
     // Hot per-light data. Keeping it at 64 bytes cuts the L2 footprint of the inner loop ~10x.
     struct FLight
     {
-        glm::vec3       Position;
+        FVector3       Position;
         uint32          Color;
 
-        glm::vec3       Direction;
+        FVector3       Direction;
         float           Radius;
 
         float           Intensity;
         float           Falloff;
-        glm::vec2       Angles;
+        FVector2       Angles;
 
         ELightFlags     Flags;
         int32           ShadowDataIndex;    // INDEX_NONE if no shadow
@@ -349,7 +349,7 @@ namespace Lumina
     // Cold shadow-caster data; hot lighting loop never touches it.
     struct FLightShadowData
     {
-        glm::mat4       ViewProjection[6];  // 384 B
+        FMatrix4       ViewProjection[6];  // 384 B
         FLightShadow    Shadow[6];          // 192 B
     };
 
@@ -358,7 +358,7 @@ namespace Lumina
 
     struct FSkyLight
     {
-        glm::vec4 Color;
+        FVector4 Color;
     };
 
     struct FSceneLightData
@@ -366,23 +366,23 @@ namespace Lumina
         uint32              NumLights{};
         uint32              Padding0[3];
 
-        glm::vec3           SunDirection{};
+        FVector3           SunDirection{};
         uint32              bHasSun{};
 
-        glm::vec4           CascadeSplits{};
+        FVector4           CascadeSplits{};
         // Half-extent of each CSM cascade; used to convert shadow texel to world length.
-        glm::vec4           CascadeRadii{};
+        FVector4           CascadeRadii{};
         // Per-cascade shadow-map resolution; xyzw = cascades 0..3.
-        glm::vec4           CascadeResolutions{};
+        FVector4           CascadeResolutions{};
 
         // Directional shadow tuning from SDirectionalLightComponent.
         // x = normal-bias scale, y = constant depth bias, z = PCSS softness (light size),
         // w = cascade cross-fade fraction.
-        glm::vec4           ShadowParams{ 1.0f, 0.0f, 0.05f, 0.20f };
+        FVector4           ShadowParams{ 1.0f, 0.0f, 0.05f, 0.20f };
         // x = far-cascade distance-fade fraction; yzw reserved.
-        glm::vec4           ShadowParams2{ 0.15f, 0.0f, 0.0f, 0.0f };
+        FVector4           ShadowParams2{ 0.15f, 0.0f, 0.0f, 0.0f };
 
-        glm::vec4           AmbientLight{};
+        FVector4           AmbientLight{};
 
         FLight              Lights[MAX_LIGHTS]{};
         FLightShadowData    Shadows[MAX_SHADOWS]{};
@@ -404,7 +404,7 @@ namespace Lumina
 
         uint32 Padding;
 
-        glm::vec4 Samples[SSAO_KERNEL_SIZE];
+        FVector4 Samples[SSAO_KERNEL_SIZE];
     };
 
     struct FGBuffer
@@ -416,7 +416,7 @@ namespace Lumina
     
     struct alignas(16) FBillboardInstance
     {
-        glm::vec3       Position;
+        FVector3       Position;
         float           Size;
 
         uint32          ColorPack;
@@ -427,8 +427,8 @@ namespace Lumina
     // World-space UI widget quad. Matches FWidgetInstance in Common.slang (96B, dense).
     struct alignas(16) FWidgetInstance
     {
-        glm::mat4       Transform;      // entity world matrix
-        glm::vec2       WorldSize;      // quad size in world units
+        FMatrix4       Transform;      // entity world matrix
+        FVector2       WorldSize;      // quad size in world units
         uint32          TextureIndex;   // bindless ResourceID of the widget RT
         uint32          Flags;          // bit0 = billboard (face camera)
         uint32          ColorPack;      // tint, PackColor()
@@ -441,8 +441,8 @@ namespace Lumina
     
     struct alignas(16) FCluster
     {
-        glm::vec4 MinPoint;
-        glm::vec4 MaxPoint;
+        FVector4 MinPoint;
+        FVector4 MaxPoint;
         uint32 LightIndices[LIGHTS_PER_CLUSTER];
         uint32 Count;
     };
@@ -451,10 +451,10 @@ namespace Lumina
     
     struct FLightClusterPC
     {
-        glm::mat4 InverseProjection;
-        glm::vec2 zNearFar;
-        glm::uvec2 ScreenSize;
-        glm::uvec4 GridSize;
+        FMatrix4 InverseProjection;
+        FVector2 zNearFar;
+        FUIntVector2 ScreenSize;
+        FUIntVector4 GridSize;
     };
 
     // 128B per-instance descriptor. Empty ctor skips zero-init on resize() (parallel writer overwrites everything).
@@ -462,8 +462,8 @@ namespace Lumina
     {
         FGPUInstance() noexcept {}
 
-        glm::mat4x4     Transform;
-        glm::vec4       SphereBounds;
+        FMatrix4     Transform;
+        FVector4       SphereBounds;
 
         uint64          VBAddress;
 
@@ -528,20 +528,20 @@ namespace Lumina
     // 48 B vs 64 B, lossless for affine transforms. Read only by the skinning compute now.
     struct FBoneTransform
     {
-        glm::vec4   Row0;
-        glm::vec4   Row1;
-        glm::vec4   Row2;
+        FVector4   Row0;
+        FVector4   Row1;
+        FVector4   Row2;
     };
     static_assert(sizeof(FBoneTransform) == 48, "FBoneTransform must match shader");
     VERIFY_SSBO_ALIGNMENT(FBoneTransform)
 
     // Drop the redundant 4th row of an affine skinning matrix. p' = M*p == dot(Row_r, p4).
-    FORCEINLINE FBoneTransform PackBoneTransform(const glm::mat4& M)
+    FORCEINLINE FBoneTransform PackBoneTransform(const FMatrix4& M)
     {
         return {
-            glm::vec4(M[0][0], M[1][0], M[2][0], M[3][0]),
-            glm::vec4(M[0][1], M[1][1], M[2][1], M[3][1]),
-            glm::vec4(M[0][2], M[1][2], M[2][2], M[3][2]),
+            FVector4(M[0][0], M[1][0], M[2][0], M[3][0]),
+            FVector4(M[0][1], M[1][1], M[2][1], M[3][1]),
+            FVector4(M[0][2], M[1][2], M[2][2], M[3][2]),
         };
     }
 
@@ -605,8 +605,8 @@ namespace Lumina
     // Mirror of FCullView in Common.slang; one entry per render view.
     struct alignas(16) FCullView
     {
-        glm::vec4   FrustumPlanes[6];           // 96 B
-        glm::vec4   ViewOriginAndFlags;         // 16 B: xyz=origin, w=asfloat(flags)
+        FVector4   FrustumPlanes[6];           // 96 B
+        FVector4   ViewOriginAndFlags;         // 16 B: xyz=origin, w=asfloat(flags)
         uint32      DrawListOffset;             // Into uMeshletDrawList
         uint32      DrawListCapacity;           // Max FMeshletDraw entries this view may emit
         uint32      IndirectArgsOffset;         // v * NumDraws
@@ -624,33 +624,33 @@ namespace Lumina
     // 288 byte layout, must match FParticleSimParams in ParticleSimulate.slang / ParticleSimulateTemplate.slang.
     struct alignas(16) FParticleSimParamsGPU
     {
-        glm::vec4  EmitterPosition;
-        glm::vec4  EmitterForward;
-        glm::vec4  EmitterRight;
-        glm::vec4  EmitterUp;
-        glm::uvec4 Counts;              // x=MaxParticles, y=SpawnCount, z=FrameSeed, w=SimFlags
-        glm::uvec4 Modes;               // x=Shape, y=VelocityMode
-        glm::vec4  ShapeSize;           // xyz dims; w=cone half-angle (radians)
-        glm::vec4  VelocityMin;
-        glm::vec4  VelocityMax;
-        glm::vec4  SpeedAndLifetime;    // x=speedMin, y=speedMax, z=lifeMin, w=lifeMax
-        glm::vec4  Gravity;             // xyz=gravity, w=drag
-        glm::vec4  StartColor;
-        glm::vec4  EndColor;
-        glm::vec4  SizeRange;           // xy=start(min,max); zw=end(min,max)
-        glm::vec4  RotationRange;       // xy=rot(min,max); zw=rotSpeed(min,max)
-        glm::vec4  NoiseStrength;       // xyz=strength; w=scale
-        glm::vec4  NoiseParams;         // x=speed
-        glm::vec4  Timing;              // x=DeltaTime, y=TotalTime, z=SystemAge
+        FVector4  EmitterPosition;
+        FVector4  EmitterForward;
+        FVector4  EmitterRight;
+        FVector4  EmitterUp;
+        FUIntVector4 Counts;              // x=MaxParticles, y=SpawnCount, z=FrameSeed, w=SimFlags
+        FUIntVector4 Modes;               // x=Shape, y=VelocityMode
+        FVector4  ShapeSize;           // xyz dims; w=cone half-angle (radians)
+        FVector4  VelocityMin;
+        FVector4  VelocityMax;
+        FVector4  SpeedAndLifetime;    // x=speedMin, y=speedMax, z=lifeMin, w=lifeMax
+        FVector4  Gravity;             // xyz=gravity, w=drag
+        FVector4  StartColor;
+        FVector4  EndColor;
+        FVector4  SizeRange;           // xy=start(min,max); zw=end(min,max)
+        FVector4  RotationRange;       // xy=rot(min,max); zw=rotSpeed(min,max)
+        FVector4  NoiseStrength;       // xyz=strength; w=scale
+        FVector4  NoiseParams;         // x=speed
+        FVector4  Timing;              // x=DeltaTime, y=TotalTime, z=SystemAge
     };
     static_assert(sizeof(FParticleSimParamsGPU) == 288, "FParticleSimParamsGPU layout must match shader");
 
     // 48 byte layout. must match FParticleRenderParams in ParticleVertex.slang.
     struct alignas(16) FParticleRenderParamsGPU
     {
-        glm::uvec4 Flags;       // x=TextureIndex, y=BillboardToCamera
-        glm::vec4  Tint;        // xyz=color, w=intensity
-        glm::vec4  UVParams;    // reserved
+        FUIntVector4 Flags;       // x=TextureIndex, y=BillboardToCamera
+        FVector4  Tint;        // xyz=color, w=intensity
+        FVector4  UVParams;    // reserved
     };
     static_assert(sizeof(FParticleRenderParamsGPU) == 48, "FParticleRenderParamsGPU layout must match shader");
     
@@ -662,8 +662,8 @@ namespace Lumina
     struct FSceneGlobalData
     {
         FCameraData     CameraData;
-        glm::uvec4      ScreenSize;
-        glm::uvec4      GridSize;
+        FUIntVector4      ScreenSize;
+        FUIntVector4      GridSize;
 
         float           Time;
         float           DeltaTime;

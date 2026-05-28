@@ -4,8 +4,7 @@
 #include "Core/Math/Frustum.h"
 #include "Core/Object/ObjectMacros.h"
 PRAGMA_DISABLE_ALL_WARNINGS
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
+#include "Core/Math/Math.h"
 PRAGMA_ENABLE_ALL_WARNINGS
 
 namespace Lumina
@@ -18,24 +17,24 @@ namespace Lumina
 
         FViewVolume& SetNear(float InNear);
         FViewVolume& SetFar(float InFar);
-        FViewVolume& SetViewPosition(const glm::vec3& Position);
-        FViewVolume& SetView(const glm::vec3& Position, const glm::vec3& ViewDirection, const glm::vec3& UpDirection);
+        FViewVolume& SetViewPosition(const FVector3& Position);
+        FViewVolume& SetView(const FVector3& Position, const FVector3& ViewDirection, const FVector3& UpDirection);
         FViewVolume& SetPerspective(float InFov, float InAspect);
         FViewVolume& SetAspectRatio(float InAspect);
         FViewVolume& SetFOV(float InFOV);
-        FViewVolume& Rotate(float Angle, glm::vec3 Axis);
+        FViewVolume& Rotate(float Angle, FVector3 Axis);
         
-        FORCEINLINE const glm::vec3& GetViewPosition() const { return ViewPosition; }
+        FORCEINLINE const FVector3& GetViewPosition() const { return ViewPosition; }
 
-        FORCEINLINE const glm::mat4& GetViewMatrix() const { return ViewMatrix; }
-        FORCEINLINE glm::mat4 GetInverseViewMatrix() const { return glm::inverse(ViewMatrix); }
-        FORCEINLINE const glm::mat4& GetViewProjectionMatrix() const { return ViewProjectionMatrix; }
-        FORCEINLINE const glm::mat4& GetProjectionMatrix() const { return ProjectionMatrix; }
-        FORCEINLINE glm::mat4 GetInverseProjectionMatrix() const { return glm::inverse(ProjectionMatrix); }
-        FORCEINLINE const glm::vec3& GetForwardVector() const { return ForwardVector; }
-        FORCEINLINE const glm::vec3& GetRightVector() const { return RightVector; }
-        FORCEINLINE const glm::vec3& GetUpVector() const { return UpVector; }
-        glm::mat4 ToReverseDepthViewProjectionMatrix() const;
+        FORCEINLINE const FMatrix4& GetViewMatrix() const { return ViewMatrix; }
+        FORCEINLINE FMatrix4 GetInverseViewMatrix() const { return Math::Inverse(ViewMatrix); }
+        FORCEINLINE const FMatrix4& GetViewProjectionMatrix() const { return ViewProjectionMatrix; }
+        FORCEINLINE const FMatrix4& GetProjectionMatrix() const { return ProjectionMatrix; }
+        FORCEINLINE FMatrix4 GetInverseProjectionMatrix() const { return Math::Inverse(ProjectionMatrix); }
+        FORCEINLINE const FVector3& GetForwardVector() const { return ForwardVector; }
+        FORCEINLINE const FVector3& GetRightVector() const { return RightVector; }
+        FORCEINLINE const FVector3& GetUpVector() const { return UpVector; }
+        FMatrix4 ToReverseDepthViewProjectionMatrix() const;
 
         FORCEINLINE float GetNear() const { return Near; }
         FORCEINLINE float GetFar() const { return Far; }
@@ -43,25 +42,25 @@ namespace Lumina
         FORCEINLINE float GetFOV() const { return FOV; }
         FORCEINLINE float GetAspectRatio() const { return AspectRatio; }
 
-        static glm::vec3 UpAxis;
-        static glm::vec3 DownAxis;
-        static glm::vec3 RightAxis;
-        static glm::vec3 LeftAxis;
-        static glm::vec3 ForwardAxis;
-        static glm::vec3 BackwardAxis;
+        static FVector3 UpAxis;
+        static FVector3 DownAxis;
+        static FVector3 RightAxis;
+        static FVector3 LeftAxis;
+        static FVector3 ForwardAxis;
+        static FVector3 BackwardAxis;
         
     private:
 
         void UpdateMatrices();
 
-        glm::vec3           ViewPosition;
-        glm::vec3           ForwardVector;
-        glm::vec3           UpVector;
-        glm::vec3           RightVector;
+        FVector3           ViewPosition;
+        FVector3           ForwardVector;
+        FVector3           UpVector;
+        FVector3           RightVector;
 
-        glm::mat4           ProjectionMatrix;
-        glm::mat4           ViewMatrix;
-        glm::mat4           ViewProjectionMatrix;
+        FMatrix4           ProjectionMatrix;
+        FMatrix4           ViewMatrix;
+        FMatrix4           ViewProjectionMatrix;
 
         float               Near;
         float               Far;

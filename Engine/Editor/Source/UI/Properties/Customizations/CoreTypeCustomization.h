@@ -4,7 +4,7 @@
 #include "Core/Object/ObjectHandleTyped.h"
 #include "Core/Reflection/PropertyCustomization/PropertyCustomization.h"
 #include "Core/Reflection/Type/LuminaTypes.h"
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 
 namespace Lumina
 {
@@ -231,8 +231,8 @@ namespace Lumina
 
     private:
 
-        glm::vec2 CachedValue{};
-        glm::vec2 DisplayValue{};
+        FVector2 CachedValue{};
+        FVector2 DisplayValue{};
     };
 
     class FVec3PropertyCustomization : public IPropertyTypeCustomization
@@ -250,8 +250,8 @@ namespace Lumina
 
     private:
         
-        glm::vec3 CachedValue{};
-        glm::vec3 DisplayValue{};
+        FVector3 CachedValue{};
+        FVector3 DisplayValue{};
     };
 
     class FVec4PropertyCustomization : public IPropertyTypeCustomization
@@ -269,8 +269,8 @@ namespace Lumina
 
     private:
 
-        glm::vec4 CachedValue{};
-        glm::vec4 DisplayValue{};
+        FVector4 CachedValue{};
+        FVector4 DisplayValue{};
     };
 
     class FQuatPropertyCustomization : public IPropertyTypeCustomization
@@ -288,8 +288,8 @@ namespace Lumina
 
     private:
 
-        glm::quat CachedValue{};
-        glm::quat DisplayValue{};
+        FQuat CachedValue{};
+        FQuat DisplayValue{};
     };
 
     class FTransformPropertyCustomization : public IPropertyTypeCustomization

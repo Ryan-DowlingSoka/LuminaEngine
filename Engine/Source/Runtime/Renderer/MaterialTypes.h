@@ -1,6 +1,6 @@
 #pragma once
 #include "Core/Object/ObjectMacros.h"
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 #include "MaterialTypes.generated.h"
 
 #define MAX_VECTORS 24
@@ -24,7 +24,7 @@ namespace Lumina
 
     struct FMaterialUniforms
     {
-        glm::vec4   Vectors[MAX_VECTORS];
+        FVector4   Vectors[MAX_VECTORS];
         float       Scalars[MAX_SCALARS];
         uint32      Textures[MAX_TEXTURES];
         uint32      Flags;
@@ -61,6 +61,6 @@ namespace Lumina
         float ScalarDefault = 0.0f;
 
         PROPERTY()
-        glm::vec4 VectorDefault = glm::vec4(0.0f);
+        FVector4 VectorDefault = FVector4(0.0f);
     };
 }

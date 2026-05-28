@@ -25,7 +25,7 @@ namespace Lumina
 
         /** Offset from the target. Local to the target's orientation unless bWorldSpaceOffset. */
         PROPERTY(Editable, Category = "Camera|Follow")
-        glm::vec3 Offset = glm::vec3(0.0f, 2.0f, -5.0f);
+        FVector3 Offset = FVector3(0.0f, 2.0f, -5.0f);
 
         /** When true, Offset is in world space; otherwise it rotates with the target. */
         PROPERTY(Editable, Category = "Camera|Follow")
@@ -45,7 +45,7 @@ namespace Lumina
 
         /** World-space offset added to the look-at point (e.g. aim above the feet). */
         PROPERTY(Editable, Category = "Camera|Follow")
-        glm::vec3 LookAtOffset = glm::vec3(0.0f, 1.0f, 0.0f);
+        FVector3 LookAtOffset = FVector3(0.0f, 1.0f, 0.0f);
 
         /** Set the followed entity and re-seat the camera on the next tick (no lag for the first frame). */
         FUNCTION(Script)
@@ -66,8 +66,8 @@ namespace Lumina
         // Runtime smoothing state (non-reflected). bInitialized triggers a snap on
         // the first tick (or after SetTarget) so the camera doesn't sweep in from a
         // stale position.
-        glm::vec3   CurrentPosition = glm::vec3(0.0f);
-        glm::quat   CurrentRotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        FVector3   CurrentPosition = FVector3(0.0f);
+        FQuat   CurrentRotation = FQuat(1.0f, 0.0f, 0.0f, 0.0f);
         bool        bInitialized = false;
     };
 }

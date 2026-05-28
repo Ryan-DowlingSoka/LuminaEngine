@@ -14,7 +14,7 @@
 #include "Core/Serialization/Archiver.h"
 #include "Core/Templates/Align.h"
 #include "Memory/Memory.h"
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 
 namespace Lumina
 {
@@ -164,9 +164,9 @@ namespace Lumina
             case EBagPropertyType::Name:    Out.Size = sizeof(FName);  Out.Alignment = alignof(FName);  Out.Construct = &ConstructAt<FName>; return true;
             case EBagPropertyType::String:  Out.Size = sizeof(FString);Out.Alignment = alignof(FString);Out.Construct = &ConstructAt<FString>; Out.Destruct = &DestructAt<FString>; return true;
 
-            case EBagPropertyType::Vector2: Out.StructType = TBaseStructure<glm::vec2>::Get(); Out.Size = sizeof(glm::vec2); Out.Alignment = alignof(glm::vec2); break;
-            case EBagPropertyType::Vector3: Out.StructType = TBaseStructure<glm::vec3>::Get(); Out.Size = sizeof(glm::vec3); Out.Alignment = alignof(glm::vec3); break;
-            case EBagPropertyType::Vector4: Out.StructType = TBaseStructure<glm::vec4>::Get(); Out.Size = sizeof(glm::vec4); Out.Alignment = alignof(glm::vec4); break;
+            case EBagPropertyType::Vector2: Out.StructType = TBaseStructure<FVector2>::Get(); Out.Size = sizeof(FVector2); Out.Alignment = alignof(FVector2); break;
+            case EBagPropertyType::Vector3: Out.StructType = TBaseStructure<FVector3>::Get(); Out.Size = sizeof(FVector3); Out.Alignment = alignof(FVector3); break;
+            case EBagPropertyType::Vector4: Out.StructType = TBaseStructure<FVector4>::Get(); Out.Size = sizeof(FVector4); Out.Alignment = alignof(FVector4); break;
 
             case EBagPropertyType::Struct:
                 Out.StructType = FindObject<CStruct>(TypeName);

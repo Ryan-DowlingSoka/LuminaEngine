@@ -49,9 +49,6 @@ end
 
 function PlayerControllerScript:OnReady()
     self._PC = self:GetComponent(SCharacterControllerComponent)
-    
-    local Test = self:GetComponent(TestType)
-    print(Test.Health)
 
     local Move = self:GetComponent(SCharacterMovementComponent)
     if Move then

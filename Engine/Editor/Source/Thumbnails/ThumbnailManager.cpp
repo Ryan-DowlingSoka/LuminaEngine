@@ -68,10 +68,10 @@ namespace Lumina
                 // Use the bounding-sphere radius (extent length) so wide-flat
                 // and tall-narrow meshes frame the same as cubes.
                 const FAABB Bounds   = Mesh->GetAABB();
-                const glm::vec3 Cen  = Bounds.GetCenter();
-                const float Radius   = glm::max(glm::length(Bounds.GetSize() * 0.5f), 0.5f);
-                const glm::vec3 Dir  = glm::normalize(glm::vec3(1.0f, 0.6f, 1.0f));
-                const glm::vec3 CamPos = Cen + Dir * (Radius * kMeshFramingScale);
+                const FVector3 Cen  = Bounds.GetCenter();
+                const float Radius   = Math::Max(Math::Length(Bounds.GetSize() * 0.5f), 0.5f);
+                const FVector3 Dir  = Math::Normalize(FVector3(1.0f, 0.6f, 1.0f));
+                const FVector3 CamPos = Cen + Dir * (Radius * kMeshFramingScale);
 
                 Scene.SetCameraTransform(CamPos, Cen, kThumbnailFOV);
             });
@@ -110,8 +110,8 @@ namespace Lumina
                 }
 
                 // Sphere mesh has unit radius.
-                const glm::vec3 Dir = glm::normalize(glm::vec3(0.0f, 0.25f, 1.0f));
-                Scene.SetCameraTransform(Dir * kSphereFramingScale, glm::vec3(0.0f), kThumbnailFOV);
+                const FVector3 Dir = Math::Normalize(FVector3(0.0f, 0.25f, 1.0f));
+                Scene.SetCameraTransform(Dir * kSphereFramingScale, FVector3(0.0f), kThumbnailFOV);
             });
 
         RegisterThumbnailRenderer(CParticleSystem::StaticClass(), [SetupStudioLighting](FThumbnailScene& Scene, CObject* Asset)
@@ -131,8 +131,8 @@ namespace Lumina
                 Registry.emplace<SParticleSystemComponent>(ParticleEntity).ParticleSystem = PS;
 
                 // No AABB on a particle system; fixed pull-back for typical spawn radius.
-                const glm::vec3 Dir = glm::normalize(glm::vec3(0.0f, 0.25f, 1.0f));
-                Scene.SetCameraTransform(Dir * 4.0f, glm::vec3(0.0f), kThumbnailFOV);
+                const FVector3 Dir = Math::Normalize(FVector3(0.0f, 0.25f, 1.0f));
+                Scene.SetCameraTransform(Dir * 4.0f, FVector3(0.0f), kThumbnailFOV);
             });
     }
 

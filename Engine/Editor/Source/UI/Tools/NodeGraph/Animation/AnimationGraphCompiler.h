@@ -111,14 +111,14 @@ namespace Lumina
         // pose register; (T, R, S) are baked into the bytecode at compile time.
         uint16 EmitBoneTransform(uint16 SrcPoseReg, uint16 AlphaReg, uint16 BoneIndex,
                                  uint16 SpaceReg, uint16 ModeReg,
-                                 const glm::vec3& Translation, const glm::quat& Rotation, const glm::vec3& Scale);
+                                 const FVector3& Translation, const FQuat& Rotation, const FVector3& Scale);
 
         // Two-bone analytical IK. Target X/Y/Z come from scalar registers so they
         // can be driven dynamically; Pole is baked at compile time.
         uint16 EmitTwoBoneIK(uint16 SrcPoseReg, uint16 AlphaReg,
                              uint16 TargetXReg, uint16 TargetYReg, uint16 TargetZReg,
                              uint16 RootIndex, uint16 MidIndex, uint16 EndIndex,
-                             const glm::vec3& Pole);
+                             const FVector3& Pole);
 
         // -- Bone masks / skeleton -------------------------------------------
         // The editor tool calls SetSkeleton + ResolveBoneMasks once, up front,

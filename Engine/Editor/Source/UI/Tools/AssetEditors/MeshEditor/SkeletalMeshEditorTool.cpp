@@ -26,8 +26,7 @@
 #include <World/Entity/Components/TransformComponent.h>
 #include <World/World.h>
 #include <EASTL/string.h>
-#include <glm/fwd.hpp>
-#include <glm/gtx/string_cast.hpp>
+#include "Core/Math/Math.h"
 #include <imgui.h>
 #include <ImGuizmo.h>
 #include <imgui_internal.h>
@@ -106,11 +105,11 @@ namespace Lumina
                 ImGui::Dummy(ImVec2(0, 4));
                 
                 // Bounding box
-                PropertyRow("Bounds Min", glm::to_string(BoundingBox.Min).c_str());
-                PropertyRow("Bounds Max", glm::to_string(BoundingBox.Max).c_str());
+                PropertyRow("Bounds Min", Math::ToString(BoundingBox.Min).c_str());
+                PropertyRow("Bounds Max", Math::ToString(BoundingBox.Max).c_str());
                 
-                glm::vec3 extents = BoundingBox.Max - BoundingBox.Min;
-                PropertyRow("Bounds Extents", glm::to_string(extents).c_str());
+                FVector3 extents = BoundingBox.Max - BoundingBox.Min;
+                PropertyRow("Bounds Extents", Math::ToString(extents).c_str());
     
                 ImGui::EndTable();
             }
@@ -159,12 +158,12 @@ namespace Lumina
                             {
                                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++)
                                 {
-                                    const glm::vec3& Position = Resource.GetPositionAt(i);
-                                    glm::vec3 Normal = UnpackNormal(Resource.GetNormalAt(i));
-                                    glm::u16vec2 UV = Resource.GetUVAt(i);
-                                    glm::vec4 Color = UnpackColor(Resource.GetColorAt(i));
-                                    glm::vec4 Weights = glm::vec4(Resource.GetJointWeightsAt(i)) / 255.0f;
-                                    glm::u8vec4 Joints = Resource.GetJointIndicesAt(i);
+                                    const FVector3& Position = Resource.GetPositionAt(i);
+                                    FVector3 Normal = UnpackNormal(Resource.GetNormalAt(i));
+                                    FU16Vector2 UV = Resource.GetUVAt(i);
+                                    FVector4 Color = UnpackColor(Resource.GetColorAt(i));
+                                    FVector4 Weights = FVector4(Resource.GetJointWeightsAt(i)) / 255.0f;
+                                    FU8Vector4 Joints = Resource.GetJointIndicesAt(i);
 
                                     ImGui::TableNextRow();
                                     ImGui::TableNextColumn();
@@ -409,7 +408,7 @@ namespace Lumina
 
         STransformComponent& EditorTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
 
-        glm::quat Rotation = Math::FindLookAtRotation(MeshTransform.GetLocation() + glm::vec3(0.0f, 0.85f, 0.0f), EditorTransform.GetLocation());
+        FQuat Rotation = Math::FindLookAtRotation(MeshTransform.GetLocation() + FVector3(0.0f, 0.85f, 0.0f), EditorTransform.GetLocation());
         EditorTransform.SetRotation(Rotation);
     }
 
@@ -429,7 +428,7 @@ namespace Lumina
 
             FAABB AABB = MeshComponent.GetAABB().ToWorld(Transform.GetWorldMatrix());
             
-            World->DrawBox(AABB.GetCenter(), AABB.GetSize() * 0.5f, glm::quat(1, 0, 0, 0), FColor::Green);
+            World->DrawBox(AABB.GetCenter(), AABB.GetSize() * 0.5f, FQuat(1, 0, 0, 0), FColor::Green);
         }
         
         CSkeleton* Skeleton = GetAsset<CSkeletalMesh>()->Skeleton;
@@ -438,9 +437,9 @@ namespace Lumina
             STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
 
             FSkeletonResource* SkeletonResource = Skeleton->GetSkeletonResource();
-            TVector<glm::mat4> WorldTransforms;
+            TVector<FMatrix4> WorldTransforms;
             WorldTransforms.resize(SkeletonResource->GetNumBones());
-            glm::mat4 EntityMatrix = Transform.GetWorldMatrix();
+            FMatrix4 EntityMatrix = Transform.GetWorldMatrix();
 
             for (int i = 0; i < SkeletonResource->GetNumBones(); ++i)
             {
@@ -459,13 +458,13 @@ namespace Lumina
             {
                 const FSkeletonResource::FBoneInfo& Bone = SkeletonResource->GetBone(i);
         
-                glm::vec3 BonePosition = glm::vec3(WorldTransforms[i][3]);
+                FVector3 BonePosition = FVector3(WorldTransforms[i][3]);
         
                 World->DrawSphere(BonePosition, 0.05f, FColor::Red, 8);
         
                 if (Bone.ParentIndex != -1)
                 {
-                    glm::vec3 ParentPosition = glm::vec3(WorldTransforms[Bone.ParentIndex][3]);
+                    FVector3 ParentPosition = FVector3(WorldTransforms[Bone.ParentIndex][3]);
                     World->DrawLine(ParentPosition, BonePosition, FColor::Green);
                 }
             }

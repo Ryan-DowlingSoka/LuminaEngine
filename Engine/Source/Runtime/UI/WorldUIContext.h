@@ -1,6 +1,6 @@
 #pragma once
 
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 #include "Containers/Array.h"
 #include "Containers/String.h"
 
@@ -22,7 +22,7 @@ namespace Lumina
     {
         Rml::Context* Context = nullptr;
         FRHIImage*    Target = nullptr;
-        glm::uvec2    Size{0, 0};
+        FUIntVector2    Size{0, 0};
     };
 
     // Per-world UI state, owned by CWorld (mirrors RenderScene/PhysicsScene ownership).
@@ -36,7 +36,7 @@ namespace Lumina
 
         // Editor override: lay UI out at this size instead of the RT image size.
         // Zero means use the RT size (standalone-runtime default).
-        glm::uvec2                               DisplaySize{0, 0};
+        FUIntVector2                               DisplaySize{0, 0};
 
         // Per-frame world-space widget render jobs (cleared + refilled each TickWorldWidgets).
         TVector<FWidgetRenderJob>                WidgetJobs;

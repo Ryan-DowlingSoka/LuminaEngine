@@ -5,7 +5,7 @@
 // debugger plus editor-only preview contexts. Input flows from FInputViewport
 // via FLockedWorldContext.
 
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 #include "Containers/String.h"
 #include "Memory/SmartPtr.h"
 
@@ -92,7 +92,7 @@ namespace Lumina::RmlUi
     };
 
     // Lay UI out at this size instead of the RT image size; {0,0} reverts. Used by the editor viewport.
-    RUNTIME_API void            SetWorldDisplaySize(CWorld* World, const glm::uvec2& Size);
+    RUNTIME_API void            SetWorldDisplaySize(CWorld* World, const FUIntVector2& Size);
 
     // Replace a world context's documents with one parsed from an in-memory RML
     // body (e.g. the material editor's UI-material preview). SourceUrl resolves
@@ -102,15 +102,15 @@ namespace Lumina::RmlUi
     RUNTIME_API FRmlUiRenderer* GetRenderer();
 
     // Editor preview contexts. Caller owns lifetime; pass Target=nullptr to skip a frame.
-    RUNTIME_API Rml::Context*   CreateEditorContext(const char* Name, const glm::uvec2& InitialSize);
+    RUNTIME_API Rml::Context*   CreateEditorContext(const char* Name, const FUIntVector2& InitialSize);
     RUNTIME_API void            DestroyEditorContext(Rml::Context* Context);
-    RUNTIME_API void            SetEditorContextTarget(Rml::Context* Context, FRHIImage* Target, const glm::uvec2& Size);
+    RUNTIME_API void            SetEditorContextTarget(Rml::Context* Context, FRHIImage* Target, const FUIntVector2& Size);
 
     /** Editor contexts skip the world auto-DPI heuristic. */
     RUNTIME_API void            SetEditorContextDpiScale(Rml::Context* Context, float Scale);
 
     /** RGBA8; 0-alpha clear allows the editor to composite its own background. */
-    RUNTIME_API void            SetEditorContextClearColor(Rml::Context* Context, const glm::vec4& Color);
+    RUNTIME_API void            SetEditorContextClearColor(Rml::Context* Context, const FVector4& Color);
 
     /** SourceUrl resolves relative includes. Previous document unloads either way; returns false on parse failure. */
     RUNTIME_API bool            ReplaceEditorContextDocument(Rml::Context* Context, FStringView Body, FStringView SourceUrl);

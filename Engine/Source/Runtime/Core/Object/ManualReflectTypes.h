@@ -4,10 +4,10 @@
 
 #include "ObjectMacros.h"
 
-namespace glm
+namespace Lumina
 {
     REFLECT(NoLua)
-    struct vec2
+    struct FVector2
     {
         PROPERTY(Editable)
         float x;
@@ -17,7 +17,7 @@ namespace glm
     };
 
     REFLECT(NoLua)
-    struct vec3
+    struct FVector3
     {
         PROPERTY(Editable)
         float x;
@@ -30,7 +30,7 @@ namespace glm
     };
 
     REFLECT(NoLua)
-    struct vec4
+    struct FVector4
     {
         PROPERTY(Editable)
         float x;
@@ -46,7 +46,7 @@ namespace glm
     };
 
     REFLECT(NoLua)
-    struct quat
+    struct FQuat
     {
         PROPERTY(Editable)
         float x;

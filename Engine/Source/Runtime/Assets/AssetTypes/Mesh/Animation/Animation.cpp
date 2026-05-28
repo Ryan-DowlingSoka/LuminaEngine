@@ -10,12 +10,12 @@ namespace Lumina
 {
     namespace Detail
     {
-        static glm::vec3 SampleVec3(const TVector<float>& Times, const TVector<glm::vec3>& Values, float Time)
+        static FVector3 SampleVec3(const TVector<float>& Times, const TVector<FVector3>& Values, float Time)
         {
             const size_t N = Times.size();
             if (N == 0 || Values.empty())
             {
-                return glm::vec3(0.0f);
+                return FVector3(0.0f);
             }
             if (N == 1 || Time <= Times[0])
             {
@@ -37,15 +37,15 @@ namespace Lumina
 
             const float Dt = Times[Lo + 1] - Times[Lo];
             const float t  = Dt > 0.0f ? (Time - Times[Lo]) / Dt : 0.0f;
-            return glm::mix(Values[Lo], Values[Lo + 1], t);
+            return Math::Mix(Values[Lo], Values[Lo + 1], t);
         }
 
-        static glm::quat SampleQuat(const TVector<float>& Times, const TVector<glm::quat>& Values, float Time)
+        static FQuat SampleQuat(const TVector<float>& Times, const TVector<FQuat>& Values, float Time)
         {
             const size_t N = Times.size();
             if (N == 0 || Values.empty())
             {
-                return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+                return FQuat(1.0f, 0.0f, 0.0f, 0.0f);
             }
             if (N == 1 || Time <= Times[0])
             {
@@ -67,38 +67,38 @@ namespace Lumina
             const float Dt = Times[Lo + 1] - Times[Lo];
             const float t  = Dt > 0.0f ? (Time - Times[Lo]) / Dt : 0.0f;
 
-            glm::quat Q0 = Values[Lo];
-            glm::quat Q1 = Values[Lo + 1];
-            if (glm::dot(Q0, Q1) < 0.0f)
+            FQuat Q0 = Values[Lo];
+            FQuat Q1 = Values[Lo + 1];
+            if (Math::Dot(Q0, Q1) < 0.0f)
             {
                 Q1 = -Q1;
             }
-            return glm::slerp(Q0, Q1, t);
+            return Math::Slerp(Q0, Q1, t);
         }
 
-        // Cheap TRS extract for rigid + per-axis-scale matrices; glm::decompose's polar iteration is overkill here.
-        static FORCEINLINE void FastDecomposeTRS(const glm::mat4& M,
-                                                  glm::vec3& OutT,
-                                                  glm::quat& OutR,
-                                                  glm::vec3& OutS)
+        // Cheap TRS extract for rigid + per-axis-scale matrices; Math::Decompose's polar iteration is overkill here.
+        static FORCEINLINE void FastDecomposeTRS(const FMatrix4& M,
+                                                  FVector3& OutT,
+                                                  FQuat& OutR,
+                                                  FVector3& OutS)
         {
-            OutT = glm::vec3(M[3]);
+            OutT = FVector3(M[3]);
 
-            const glm::vec3 C0(M[0]);
-            const glm::vec3 C1(M[1]);
-            const glm::vec3 C2(M[2]);
+            const FVector3 C0(M[0]);
+            const FVector3 C1(M[1]);
+            const FVector3 C2(M[2]);
 
-            OutS = glm::vec3(glm::length(C0), glm::length(C1), glm::length(C2));
+            OutS = FVector3(Math::Length(C0), Math::Length(C1), Math::Length(C2));
 
             const float InvSx = OutS.x > 1e-8f ? 1.0f / OutS.x : 0.0f;
             const float InvSy = OutS.y > 1e-8f ? 1.0f / OutS.y : 0.0f;
             const float InvSz = OutS.z > 1e-8f ? 1.0f / OutS.z : 0.0f;
 
-            glm::mat3 Rot;
+            FMatrix3 Rot;
             Rot[0] = C0 * InvSx;
             Rot[1] = C1 * InvSy;
             Rot[2] = C2 * InvSz;
-            OutR = glm::quat_cast(Rot);
+            OutR = Math::ToQuat(Rot);
         }
 
         static constexpr uint8 TouchedT = 1u << 0;
@@ -120,7 +120,7 @@ namespace Lumina
         Ar << *AnimationResource;
     }
 
-    void CAnimation::SamplePose(float Time, FSkeletonResource* RESTRICT InSkeleton, TVector<glm::mat4>& RESTRICT OutBoneTransforms) const
+    void CAnimation::SamplePose(float Time, FSkeletonResource* RESTRICT InSkeleton, TVector<FMatrix4>& RESTRICT OutBoneTransforms) const
     {
         LUMINA_PROFILE_SCOPE();
 
@@ -133,9 +133,9 @@ namespace Lumina
         }
 
         // Per-thread scratch reused across frames; thread_local required since SamplePose runs in ParallelFor.
-        thread_local TVector<glm::vec3> ScratchT;
-        thread_local TVector<glm::quat> ScratchR;
-        thread_local TVector<glm::vec3> ScratchS;
+        thread_local TVector<FVector3> ScratchT;
+        thread_local TVector<FQuat> ScratchR;
+        thread_local TVector<FVector3> ScratchS;
         thread_local TVector<uint8>     ScratchTouched;
 
         if ((int32)ScratchT.size() < NumBones)
@@ -191,14 +191,14 @@ namespace Lumina
             if (Touched == Detail::TouchedAll)
             {
                 OutBoneTransforms[i] =
-                    glm::translate(glm::mat4(1.0f), ScratchT[i]) *
-                    glm::mat4_cast(ScratchR[i]) *
-                    glm::scale(glm::mat4(1.0f), ScratchS[i]);
+                    Math::Translate(FMatrix4(1.0f), ScratchT[i]) *
+                    Math::ToMatrix4(ScratchR[i]) *
+                    Math::Scale(FMatrix4(1.0f), ScratchS[i]);
                 continue;
             }
 
-            glm::vec3 T, S;
-            glm::quat R;
+            FVector3 T, S;
+            FQuat R;
             Detail::FastDecomposeTRS(Bone.LocalTransform, T, R, S);
 
             if (Touched & Detail::TouchedT) T = ScratchT[i];
@@ -206,9 +206,9 @@ namespace Lumina
             if (Touched & Detail::TouchedS) S = ScratchS[i];
 
             OutBoneTransforms[i] =
-                glm::translate(glm::mat4(1.0f), T) *
-                glm::mat4_cast(R) *
-                glm::scale(glm::mat4(1.0f), S);
+                Math::Translate(FMatrix4(1.0f), T) *
+                Math::ToMatrix4(R) *
+                Math::Scale(FMatrix4(1.0f), S);
         }
 
         // Pass 3: FK in skeleton order; Bones[] is parents-before-children so a single linear pass works.
@@ -242,9 +242,9 @@ namespace Lumina
         }
 
         // Per-thread scratch reused across frames; thread_local required since this runs in ParallelFor.
-        thread_local TVector<glm::vec3> ScratchT;
-        thread_local TVector<glm::quat> ScratchR;
-        thread_local TVector<glm::vec3> ScratchS;
+        thread_local TVector<FVector3> ScratchT;
+        thread_local TVector<FQuat> ScratchR;
+        thread_local TVector<FVector3> ScratchS;
         thread_local TVector<uint8>     ScratchTouched;
 
         if ((int32)ScratchT.size() < NumBones)
@@ -299,8 +299,8 @@ namespace Lumina
                 continue;
             }
 
-            glm::vec3 T, S;
-            glm::quat R;
+            FVector3 T, S;
+            FQuat R;
             Detail::FastDecomposeTRS(Bone.LocalTransform, T, R, S);
 
             if (Touched & Detail::TouchedT) T = ScratchT[i];

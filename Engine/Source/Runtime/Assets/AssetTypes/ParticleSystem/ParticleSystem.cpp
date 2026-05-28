@@ -144,19 +144,19 @@ namespace Lumina
         return ParamName.IsNone() ? Literal : Comp.GetBool(ParamName, Literal);
     }
 
-    static glm::vec2 ResolveBoundVec2(const CParticleSystem& Asset, const SParticleSystemComponent& Comp, FName PropName, glm::vec2 Literal)
+    static FVector2 ResolveBoundVec2(const CParticleSystem& Asset, const SParticleSystemComponent& Comp, FName PropName, FVector2 Literal)
     {
         const FName ParamName = Asset.GetPropertyBinding(PropName);
         return (ParamName.IsNone() || !Comp.HasParameter(ParamName)) ? Literal : Comp.GetVec2(ParamName);
     }
 
-    static glm::vec3 ResolveBoundVec3(const CParticleSystem& Asset, const SParticleSystemComponent& Comp, FName PropName, glm::vec3 Literal)
+    static FVector3 ResolveBoundVec3(const CParticleSystem& Asset, const SParticleSystemComponent& Comp, FName PropName, FVector3 Literal)
     {
         const FName ParamName = Asset.GetPropertyBinding(PropName);
         return (ParamName.IsNone() || !Comp.HasParameter(ParamName)) ? Literal : Comp.GetVec3(ParamName);
     }
 
-    static glm::vec4 ResolveBoundVec4(const CParticleSystem& Asset, const SParticleSystemComponent& Comp, FName PropName, glm::vec4 Literal)
+    static FVector4 ResolveBoundVec4(const CParticleSystem& Asset, const SParticleSystemComponent& Comp, FName PropName, FVector4 Literal)
     {
         const FName ParamName = Asset.GetPropertyBinding(PropName);
         if (ParamName.IsNone())

@@ -514,20 +514,20 @@ namespace Lumina::ECS::Utils
             return;
         }
 
-        glm::mat4 ChildWorldMatrix = ChildTransform.GetWorldMatrix();
-        glm::mat4 ParentWorldMatrix = glm::mat4(1.0f);
+        FMatrix4 ChildWorldMatrix = ChildTransform.GetWorldMatrix();
+        FMatrix4 ParentWorldMatrix = FMatrix4(1.0f);
         
         if (Parent != entt::null)
         {
             ParentWorldMatrix = Registry.get<STransformComponent>(Parent).GetWorldMatrix();
         }
 
-        glm::mat4 NewLocalMatrix = glm::inverse(ParentWorldMatrix) * ChildWorldMatrix;
+        FMatrix4 NewLocalMatrix = Math::Inverse(ParentWorldMatrix) * ChildWorldMatrix;
 
-        glm::vec3 Translation, Scale, Skew;
-        glm::quat Rotation;
-        glm::vec4 Perspective;
-        glm::decompose(NewLocalMatrix, Scale, Rotation, Translation, Skew, Perspective);
+        FVector3 Translation, Scale, Skew;
+        FQuat Rotation;
+        FVector4 Perspective;
+        Math::Decompose(NewLocalMatrix, Scale, Rotation, Translation, Skew, Perspective);
 
         RemoveFromParent(Registry, Child);
 
@@ -925,8 +925,8 @@ namespace Lumina::ECS::Utils
             FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Ancestor);
             if (Rel && Rel->Parent != entt::null && Registry.valid(Rel->Parent))
             {
-                glm::mat4 ParentWorld = Registry.get<STransformComponent>(Rel->Parent).CachedMatrix;
-                glm::mat4 Local       = Transform.LocalTransform.GetMatrix();
+                FMatrix4 ParentWorld = Registry.get<STransformComponent>(Rel->Parent).CachedMatrix;
+                FMatrix4 Local       = Transform.LocalTransform.GetMatrix();
                 Transform.WorldTransform = FTransform(ParentWorld * Local);
             }
             else
@@ -945,7 +945,7 @@ namespace Lumina::ECS::Utils
         TFunction<void(entt::entity)> UpdateChildrenRecursive;
         UpdateChildrenRecursive = [&](entt::entity ParentEntity)
         {
-            const glm::mat4 ParentMatrix = TransformStorage.get(ParentEntity).CachedMatrix;
+            const FMatrix4 ParentMatrix = TransformStorage.get(ParentEntity).CachedMatrix;
             ForEachChild(Registry, ParentEntity, [&](entt::entity Child)
             {
                 auto& ChildTransform = TransformStorage.get(Child);
@@ -992,8 +992,8 @@ namespace Lumina::ECS::Utils
 
                 if (DirtyRelationship.Parent != entt::null && Registry.valid(DirtyRelationship.Parent))
                 {
-                    glm::mat4 ParentWorld = TransformStorage.get(DirtyRelationship.Parent).WorldTransform.GetMatrix();
-                    glm::mat4 LocalMat    = DirtyTransform.LocalTransform.GetMatrix();
+                    FMatrix4 ParentWorld = TransformStorage.get(DirtyRelationship.Parent).WorldTransform.GetMatrix();
+                    FMatrix4 LocalMat    = DirtyTransform.LocalTransform.GetMatrix();
                     DirtyTransform.WorldTransform = FTransform(ParentWorld * LocalMat);
                 }
                 else
@@ -1006,12 +1006,12 @@ namespace Lumina::ECS::Utils
                 TFunction<void(entt::entity)> UpdateChildrenRecursive;
                 UpdateChildrenRecursive = [&](entt::entity ParentEntity)
                 {
-                    const glm::mat4 ParentWorld = TransformStorage.get(ParentEntity).WorldTransform.GetMatrix();
+                    const FMatrix4 ParentWorld = TransformStorage.get(ParentEntity).WorldTransform.GetMatrix();
                     ForEachChild(Registry, ParentEntity, [&](entt::entity Child)
                     {
                         auto& ChildTransform = TransformStorage.get(Child);
 
-                        glm::mat4 ChildLocal = ChildTransform.LocalTransform.GetMatrix();
+                        FMatrix4 ChildLocal = ChildTransform.LocalTransform.GetMatrix();
 
                         ChildTransform.WorldTransform = FTransform(ParentWorld * ChildLocal);
                         ChildTransform.CachedMatrix   = ChildTransform.WorldTransform.GetMatrix();
@@ -1067,25 +1067,25 @@ namespace Lumina::ECS::Utils
         Registry.clear<FNeedsTransformUpdate>();
     }
 
-    glm::vec3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity)
+    FVector3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity)
     {
         auto* Transform = Registry.try_get<STransformComponent>(Entity);
-        return Transform ? Transform->GetWorldLocation() : glm::vec3{};    
+        return Transform ? Transform->GetWorldLocation() : FVector3{};    
     }
 
-    glm::quat GetEntityRotation(FEntityRegistry& Registry, entt::entity Entity)
+    FQuat GetEntityRotation(FEntityRegistry& Registry, entt::entity Entity)
     {
         auto* Transform = Registry.try_get<STransformComponent>(Entity);
-        return Transform ? Transform->GetWorldRotation() : glm::quat{};
+        return Transform ? Transform->GetWorldRotation() : FQuat{};
     }
 
-    glm::vec3 GetEntityScale(FEntityRegistry& Registry, entt::entity Entity)
+    FVector3 GetEntityScale(FEntityRegistry& Registry, entt::entity Entity)
     {
         auto* Transform = Registry.try_get<STransformComponent>(Entity);
-        return Transform ? Transform->GetWorldScale() : glm::vec3{};
+        return Transform ? Transform->GetWorldScale() : FVector3{};
     }
 
-    void SetEntityLocation(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Location)
+    void SetEntityLocation(FEntityRegistry& Registry, entt::entity Entity, const FVector3& Location)
     {
         if (auto* Transform = Registry.try_get<STransformComponent>(Entity))
         {
@@ -1093,7 +1093,7 @@ namespace Lumina::ECS::Utils
         }    
     }
 
-    void SetEntityRotation(FEntityRegistry& Registry, entt::entity Entity, const glm::quat& Rotation)
+    void SetEntityRotation(FEntityRegistry& Registry, entt::entity Entity, const FQuat& Rotation)
     {
         if (auto* Transform = Registry.try_get<STransformComponent>(Entity))
         {
@@ -1101,7 +1101,7 @@ namespace Lumina::ECS::Utils
         }
     }
 
-    void SetEntityScale(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Scale)
+    void SetEntityScale(FEntityRegistry& Registry, entt::entity Entity, const FVector3& Scale)
     {
         if (auto* Transform = Registry.try_get<STransformComponent>(Entity))
         {
@@ -1114,10 +1114,10 @@ namespace Lumina::ECS::Utils
         return Registry.valid(Entity);
     }
 
-    glm::vec3 TranslateEntity(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Translation)
+    FVector3 TranslateEntity(FEntityRegistry& Registry, entt::entity Entity, const FVector3& Translation)
     {
         auto* Transform = Registry.try_get<STransformComponent>(Entity);
-        return Transform ? Transform->Translate(Translation) : glm::vec3{};
+        return Transform ? Transform->Translate(Translation) : FVector3{};
     }
 
     entt::entity DuplicateEntity(FEntityRegistry& Registry, entt::entity Entity)
@@ -1323,7 +1323,7 @@ namespace Lumina::ECS::Utils
             return;
         }
 
-        glm::mat4 ParentWorldMatrix(1.0f);
+        FMatrix4 ParentWorldMatrix(1.0f);
         if (const FRelationshipComponent* Relationship = Registry.try_get<FRelationshipComponent>(Entity))
         {
             if (Relationship->Parent != entt::null)
@@ -1332,12 +1332,12 @@ namespace Lumina::ECS::Utils
             }
         }
 
-        glm::mat4 LocalMatrix = glm::inverse(ParentWorldMatrix) * WorldTransform.GetMatrix();
+        FMatrix4 LocalMatrix = Math::Inverse(ParentWorldMatrix) * WorldTransform.GetMatrix();
 
-        glm::vec3 Translation, Scale, Skew;
-        glm::quat Rotation;
-        glm::vec4 Perspective;
-        glm::decompose(LocalMatrix, Scale, Rotation, Translation, Skew, Perspective);
+        FVector3 Translation, Scale, Skew;
+        FQuat Rotation;
+        FVector4 Perspective;
+        Math::Decompose(LocalMatrix, Scale, Rotation, Translation, Skew, Perspective);
 
         FTransform NewLocal;
         NewLocal.Location = Translation;
@@ -1346,11 +1346,11 @@ namespace Lumina::ECS::Utils
         Transform->SetLocalTransform(NewLocal);
     }
 
-    glm::vec3 GetDirectionVector(FEntityRegistry& Registry, entt::entity To, entt::entity From)
+    FVector3 GetDirectionVector(FEntityRegistry& Registry, entt::entity To, entt::entity From)
     {
-        glm::vec3 ToLoc = GetEntityLocation(Registry, To);
-        glm::vec3 FromLoc = GetEntityLocation(Registry, From);
-        glm::vec3 Direction = glm::normalize(ToLoc - FromLoc);
+        FVector3 ToLoc = GetEntityLocation(Registry, To);
+        FVector3 FromLoc = GetEntityLocation(Registry, From);
+        FVector3 Direction = Math::Normalize(ToLoc - FromLoc);
         return Direction;
     }
 

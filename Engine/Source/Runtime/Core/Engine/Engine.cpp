@@ -353,7 +353,7 @@ namespace Lumina
         return EngineViewport;
     }
 
-    void FEngine::SetEngineViewportSize(const glm::uvec2& InSize)
+    void FEngine::SetEngineViewportSize(const FUIntVector2& InSize)
     {
         EngineViewport = GRenderContext->CreateViewport(InSize, "Engine Viewport");
     }

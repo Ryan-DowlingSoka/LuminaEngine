@@ -20,21 +20,21 @@ namespace Lumina
 		void* GetNative() const override { return (void*)&Engine; }
 
 		FAudioHandle PlaySound2D(FStringView File, float Volume, float Pitch, bool bLooping) override;
-		FAudioHandle PlaySoundAtLocation(FStringView File, glm::vec3 Location,
+		FAudioHandle PlaySoundAtLocation(FStringView File, FVector3 Location,
 			float Volume, float Pitch, float MinDistance, float MaxDistance, bool bLooping) override;
 
 		void StopSound(FAudioHandle Handle, EAudioStopMode Mode) override;
 		void SetVolume(FAudioHandle Handle, float Volume) override;
 		void SetPitch(FAudioHandle Handle, float Pitch) override;
 		void SetLooping(FAudioHandle Handle, bool bLooping) override;
-		void SetPosition(FAudioHandle Handle, glm::vec3 Position) override;
+		void SetPosition(FAudioHandle Handle, FVector3 Position) override;
 		void SetMinMaxDistance(FAudioHandle Handle, float MinDistance, float MaxDistance) override;
-		void UpdateListenerPosition(glm::vec3 Location, glm::quat Rotation) override;
+		void UpdateListenerPosition(FVector3 Location, FQuat Rotation) override;
 		void StopAllSounds() override;
 
 		TSharedPtr<FProceduralAudioStream> CreateProceduralStream(uint32 SampleRate, uint32 ChannelCount, uint32 BufferFrames) override;
 		FAudioHandle PlayProceduralStream(TSharedPtr<FProceduralAudioStream> Stream, bool bSpatialized,
-			glm::vec3 Position, float Volume, float Pitch, float MinDistance, float MaxDistance) override;
+			FVector3 Position, float Volume, float Pitch, float MinDistance, float MaxDistance) override;
 
 	private:
 
@@ -62,7 +62,7 @@ namespace Lumina
 			FAudioHandle Handle;
 			TSharedPtr<FProceduralAudioStream> Stream;
 			bool bSpatialized;
-			glm::vec3 Position;
+			FVector3 Position;
 			float Volume;
 			float Pitch;
 			float MinDistance;

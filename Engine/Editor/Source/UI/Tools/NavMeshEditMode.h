@@ -3,7 +3,7 @@
 #define USE_IMGUI_API
 #include <imgui.h>
 #include <entt/entt.hpp>
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 
 namespace Lumina
 {
@@ -27,6 +27,6 @@ namespace Lumina
         void DrawOverlay(CWorld* World) const;
 
         /** Drop a fresh nav-bounds entity centered at WorldLocation. */
-        static entt::entity CreateNavMeshBounds(CWorld* World, const glm::vec3& WorldLocation = glm::vec3(0.0f));
+        static entt::entity CreateNavMeshBounds(CWorld* World, const FVector3& WorldLocation = FVector3(0.0f));
     };
 }

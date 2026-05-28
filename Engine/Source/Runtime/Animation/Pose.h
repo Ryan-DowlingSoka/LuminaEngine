@@ -13,9 +13,9 @@ namespace Lumina
     // GPU skinning matrices happens once when the final pose is resolved.
     struct RUNTIME_API FPose
     {
-        TVector<glm::vec3> Translations;
-        TVector<glm::quat> Rotations;
-        TVector<glm::vec3> Scales;
+        TVector<FVector3> Translations;
+        TVector<FQuat> Rotations;
+        TVector<FVector3> Scales;
 
         FORCEINLINE int32 GetNumBones() const { return (int32)Rotations.size(); }
         FORCEINLINE bool IsValid() const { return !Rotations.empty(); }
@@ -51,7 +51,7 @@ namespace Lumina
         RUNTIME_API void ApplyAdditive(const FPose& Base, const FPose& Delta, float Alpha, FPose& Out);
 
         // Resolves a local-space pose into GPU skinning matrices (Global * InvBind).
-        RUNTIME_API void ToSkinningMatrices(const FPose& Pose, const FSkeletonResource* Skeleton, TVector<glm::mat4>& OutMatrices);
+        RUNTIME_API void ToSkinningMatrices(const FPose& Pose, const FSkeletonResource* Skeleton, TVector<FMatrix4>& OutMatrices);
 
         enum class EBoneSpace : uint8
         {
@@ -73,9 +73,9 @@ namespace Lumina
                                             int32 BoneIndex,
                                             EBoneSpace Space,
                                             EBoneApplyMode Mode,
-                                            const glm::vec3& Translation,
-                                            const glm::quat& Rotation,
-                                            const glm::vec3& Scale,
+                                            const FVector3& Translation,
+                                            const FQuat& Rotation,
+                                            const FVector3& Scale,
                                             float Alpha);
 
         // In-place analytical two-bone IK: rotates RootIdx + MidIdx so that the
@@ -85,8 +85,8 @@ namespace Lumina
         RUNTIME_API void TwoBoneIK(FPose& Pose,
                                    const FSkeletonResource* Skeleton,
                                    int32 RootIdx, int32 MidIdx, int32 EndIdx,
-                                   const glm::vec3& Target,
-                                   const glm::vec3& Pole,
+                                   const FVector3& Target,
+                                   const FVector3& Pole,
                                    float Alpha);
     }
 }

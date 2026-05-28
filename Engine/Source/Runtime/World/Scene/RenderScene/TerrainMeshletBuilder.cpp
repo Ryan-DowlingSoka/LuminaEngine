@@ -14,8 +14,8 @@ namespace Lumina::TerrainMeshletBuilder
             int32                 Resolution,
             float                 MaxHeight)
         {
-            SampleX = glm::clamp(SampleX, 0, Resolution - 1);
-            SampleY = glm::clamp(SampleY, 0, Resolution - 1);
+            SampleX = Math::Clamp(SampleX, 0, Resolution - 1);
+            SampleY = Math::Clamp(SampleY, 0, Resolution - 1);
             const size_t Index = (size_t)SampleY * (size_t)Resolution + (size_t)SampleX;
             return Heightmap[Index] * MaxHeight;
         }
@@ -34,14 +34,14 @@ namespace Lumina::TerrainMeshletBuilder
             int32 NumMeshlets;
             float HalfSize;
             float Stride;
-            glm::vec2 OriginXZ;
+            FVector2 OriginXZ;
             float WorldOriginY;
             float MaxHeight;
             float DilateXZ;
             float DilateY;
         };
 
-        bool ComputeLayout(const STerrainComponent& Terrain, const glm::vec3& WorldOrigin, FLayout& Out)
+        bool ComputeLayout(const STerrainComponent& Terrain, const FVector3& WorldOrigin, FLayout& Out)
         {
             const int32 Resolution = Terrain.Resolution;
             const int32 ChunkRes   = Terrain.ChunkResolution;
@@ -65,7 +65,7 @@ namespace Lumina::TerrainMeshletBuilder
 
             Out.HalfSize     = Terrain.TileWorldSize * 0.5f;
             Out.Stride       = Terrain.TileWorldSize / float(Resolution - 1);
-            Out.OriginXZ     = glm::vec2(WorldOrigin.x - Out.HalfSize, WorldOrigin.z - Out.HalfSize);
+            Out.OriginXZ     = FVector2(WorldOrigin.x - Out.HalfSize, WorldOrigin.z - Out.HalfSize);
             Out.WorldOriginY = WorldOrigin.y;
             Out.MaxHeight    = Terrain.MaxHeight;
             Out.DilateXZ     = Out.Stride * 0.5f;
@@ -76,7 +76,7 @@ namespace Lumina::TerrainMeshletBuilder
 
         // Recompute one meshlet's height range + world AABB from the heightmap, writing
         // BoundsMin/Max in place. Returns the (min, max) world height for chunk aggregation.
-        glm::vec2 ComputeMeshletBounds(FTerrainMeshletInfo& Meshlet, const FTerrainChunkInfo& Chunk,
+        FVector2 ComputeMeshletBounds(FTerrainMeshletInfo& Meshlet, const FTerrainChunkInfo& Chunk,
                                        const TVector<float>& Heightmap, const FLayout& L)
         {
             const int32 SampleX0 = Chunk.QuadOrigin.x + Meshlet.ChunkLocalQuadOrigin.x;
@@ -101,9 +101,9 @@ namespace Lumina::TerrainMeshletBuilder
             const float WorldZMin = L.OriginXZ.y + float(SampleY0) * L.Stride - L.DilateXZ;
             const float WorldZMax = L.OriginXZ.y + float(SampleY0 + NVertsY - 1) * L.Stride + L.DilateXZ;
 
-            Meshlet.BoundsMin = glm::vec3(WorldXMin, L.WorldOriginY + MinH - L.DilateY, WorldZMin);
-            Meshlet.BoundsMax = glm::vec3(WorldXMax, L.WorldOriginY + MaxH + L.DilateY, WorldZMax);
-            return glm::vec2(MinH, MaxH);
+            Meshlet.BoundsMin = FVector3(WorldXMin, L.WorldOriginY + MinH - L.DilateY, WorldZMin);
+            Meshlet.BoundsMax = FVector3(WorldXMax, L.WorldOriginY + MaxH + L.DilateY, WorldZMax);
+            return FVector2(MinH, MaxH);
         }
 
         // Recompute one chunk's AABB from the heightmap by rebuilding all its meshlets.
@@ -111,8 +111,8 @@ namespace Lumina::TerrainMeshletBuilder
         {
             const int32 ChunkIndex = cy * L.ChunksPerSide + cx;
             FTerrainChunkInfo& Chunk = State.Chunks[ChunkIndex];
-            Chunk.ChunkCoord    = glm::ivec2(cx, cy);
-            Chunk.QuadOrigin    = glm::ivec2(cx * L.QuadsPerChunk, cy * L.QuadsPerChunk);
+            Chunk.ChunkCoord    = FIntVector2(cx, cy);
+            Chunk.QuadOrigin    = FIntVector2(cx * L.QuadsPerChunk, cy * L.QuadsPerChunk);
             Chunk.MeshletOffset = (uint32)(ChunkIndex * L.MeshletsPerChunk);
             Chunk.MeshletCount  = (uint32)L.MeshletsPerChunk;
 
@@ -128,15 +128,15 @@ namespace Lumina::TerrainMeshletBuilder
 
                     FTerrainMeshletInfo& Meshlet = State.Meshlets[MeshletGlobalIndex];
                     Meshlet.ChunkIndex           = (uint32)ChunkIndex;
-                    Meshlet.ChunkLocalQuadOrigin = glm::ivec2(mx * L.MeshletQuadSide, my * L.MeshletQuadSide);
+                    Meshlet.ChunkLocalQuadOrigin = FIntVector2(mx * L.MeshletQuadSide, my * L.MeshletQuadSide);
 
                     const int32 RemainingX = L.QuadsPerChunk - Meshlet.ChunkLocalQuadOrigin.x;
                     const int32 RemainingY = L.QuadsPerChunk - Meshlet.ChunkLocalQuadOrigin.y;
-                    Meshlet.QuadExtent = glm::ivec2(
+                    Meshlet.QuadExtent = FIntVector2(
                         std::min(L.MeshletQuadSide, RemainingX),
                         std::min(L.MeshletQuadSide, RemainingY));
 
-                    const glm::vec2 HRange = ComputeMeshletBounds(Meshlet, Chunk, Heightmap, L);
+                    const FVector2 HRange = ComputeMeshletBounds(Meshlet, Chunk, Heightmap, L);
                     ChunkHeightMin = std::min(ChunkHeightMin, HRange.x);
                     ChunkHeightMax = std::max(ChunkHeightMax, HRange.y);
                 }
@@ -147,12 +147,12 @@ namespace Lumina::TerrainMeshletBuilder
             const float ChunkZMin = L.OriginXZ.y + float(Chunk.QuadOrigin.y) * L.Stride - L.DilateXZ;
             const float ChunkZMax = L.OriginXZ.y + float(Chunk.QuadOrigin.y + L.QuadsPerChunk) * L.Stride + L.DilateXZ;
 
-            Chunk.BoundsMin = glm::vec3(ChunkXMin, L.WorldOriginY + ChunkHeightMin - L.DilateY, ChunkZMin);
-            Chunk.BoundsMax = glm::vec3(ChunkXMax, L.WorldOriginY + ChunkHeightMax + L.DilateY, ChunkZMax);
+            Chunk.BoundsMin = FVector3(ChunkXMin, L.WorldOriginY + ChunkHeightMin - L.DilateY, ChunkZMin);
+            Chunk.BoundsMax = FVector3(ChunkXMax, L.WorldOriginY + ChunkHeightMax + L.DilateY, ChunkZMax);
         }
     }
 
-    void Build(STerrainComponent& Terrain, const glm::vec3& WorldOrigin)
+    void Build(STerrainComponent& Terrain, const FVector3& WorldOrigin)
     {
         FTerrainGPUState& State = Terrain.GPUState;
         State.Chunks.clear();
@@ -177,7 +177,7 @@ namespace Lumina::TerrainMeshletBuilder
         }
     }
 
-    void UpdateRegion(STerrainComponent& Terrain, const glm::vec3& WorldOrigin, const glm::ivec2& SampleMin, const glm::ivec2& SampleMax)
+    void UpdateRegion(STerrainComponent& Terrain, const FVector3& WorldOrigin, const FIntVector2& SampleMin, const FIntVector2& SampleMax)
     {
         FTerrainGPUState& State = Terrain.GPUState;
 
@@ -195,10 +195,10 @@ namespace Lumina::TerrainMeshletBuilder
         }
 
         // Only chunks overlapping the dirty sample rect need their bounds recomputed.
-        const int32 CxMin = glm::clamp(SampleMin.x / L.QuadsPerChunk, 0, L.ChunksPerSide - 1);
-        const int32 CxMax = glm::clamp(SampleMax.x / L.QuadsPerChunk, 0, L.ChunksPerSide - 1);
-        const int32 CyMin = glm::clamp(SampleMin.y / L.QuadsPerChunk, 0, L.ChunksPerSide - 1);
-        const int32 CyMax = glm::clamp(SampleMax.y / L.QuadsPerChunk, 0, L.ChunksPerSide - 1);
+        const int32 CxMin = Math::Clamp(SampleMin.x / L.QuadsPerChunk, 0, L.ChunksPerSide - 1);
+        const int32 CxMax = Math::Clamp(SampleMax.x / L.QuadsPerChunk, 0, L.ChunksPerSide - 1);
+        const int32 CyMin = Math::Clamp(SampleMin.y / L.QuadsPerChunk, 0, L.ChunksPerSide - 1);
+        const int32 CyMax = Math::Clamp(SampleMax.y / L.QuadsPerChunk, 0, L.ChunksPerSide - 1);
 
         for (int32 cy = CyMin; cy <= CyMax; ++cy)
         {

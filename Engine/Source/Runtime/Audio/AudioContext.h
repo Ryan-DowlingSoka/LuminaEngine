@@ -27,17 +27,17 @@ namespace Lumina
 
 		NODISCARD virtual FAudioHandle PlaySound2D(FStringView File, float Volume = 1.0f, float Pitch = 1.0f, bool bLooping = false) = 0;
 
-		NODISCARD virtual FAudioHandle PlaySoundAtLocation(FStringView File, glm::vec3 Location,
+		NODISCARD virtual FAudioHandle PlaySoundAtLocation(FStringView File, FVector3 Location,
 			float Volume = 1.0f, float Pitch = 1.0f, float MinDistance = 1.0f, float MaxDistance = 50.0f, bool bLooping = false) = 0;
 
 		virtual void StopSound(FAudioHandle Handle, EAudioStopMode Mode = EAudioStopMode::Immediate) = 0;
 		virtual void SetVolume(FAudioHandle Handle, float Volume) = 0;
 		virtual void SetPitch(FAudioHandle Handle, float Pitch) = 0;
 		virtual void SetLooping(FAudioHandle Handle, bool bLooping) = 0;
-		virtual void SetPosition(FAudioHandle Handle, glm::vec3 Position) = 0;
+		virtual void SetPosition(FAudioHandle Handle, FVector3 Position) = 0;
 		virtual void SetMinMaxDistance(FAudioHandle Handle, float MinDistance, float MaxDistance) = 0;
 
-		virtual void UpdateListenerPosition(glm::vec3 Location, glm::quat Rotation) = 0;
+		virtual void UpdateListenerPosition(FVector3 Location, FQuat Rotation) = 0;
 
 		virtual void StopAllSounds() = 0;
 
@@ -49,7 +49,7 @@ namespace Lumina
 			uint32 SampleRate, uint32 ChannelCount, uint32 BufferFrames) = 0;
 
 		NODISCARD virtual FAudioHandle PlayProceduralStream(TSharedPtr<FProceduralAudioStream> Stream,
-			bool bSpatialized, glm::vec3 Position, float Volume = 1.0f, float Pitch = 1.0f,
+			bool bSpatialized, FVector3 Position, float Volume = 1.0f, float Pitch = 1.0f,
 			float MinDistance = 1.0f, float MaxDistance = 50.0f) = 0;
 	};
 }

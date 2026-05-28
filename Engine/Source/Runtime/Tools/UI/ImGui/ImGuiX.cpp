@@ -543,8 +543,8 @@ namespace Lumina::ImGuiX
 					g.NextWindowData.SizeCallback(&data);
 					new_size = data.DesiredSize;
 				}
-				new_size.x = glm::floor(new_size.x);
-				new_size.y = glm::floor(new_size.y);
+				new_size.x = Math::Floor(new_size.x);
+				new_size.y = Math::Floor(new_size.y);
 			}
 
 			// Minimum size
@@ -626,7 +626,7 @@ namespace Lumina::ImGuiX
 		int border_held = -1;
 		ImU32 resize_grip_col[4] = {};
 		const int resize_grip_count = g.IO.ConfigWindowsResizeFromEdges ? 2 : 1; // Allow resize from lower-left if we have the mouse cursor feedback for it.
-		const float resize_grip_draw_size = glm::floor(ImMax(g.FontSize * 1.10f, Window->WindowRounding + 1.0f + g.FontSize * 0.2f));
+		const float resize_grip_draw_size = Math::Floor(ImMax(g.FontSize * 1.10f, Window->WindowRounding + 1.0f + g.FontSize * 0.2f));
 		Window->ResizeBorderHeld = (signed char)border_held;
 
 		//const ImRect& visibility_rect;
@@ -711,8 +711,8 @@ namespace Lumina::ImGuiX
 
     	bool ret_auto_fit = false;
 		const int resize_border_count = g.IO.ConfigWindowsResizeFromEdges ? 4 : 0;
-		const float grip_draw_size = glm::floor(ImMax(g.FontSize * 1.35f, Window->WindowRounding + 1.0f + g.FontSize * 0.2f));
-		const float grip_hover_inner_size = glm::floor(grip_draw_size * 0.75f);
+		const float grip_draw_size = Math::Floor(ImMax(g.FontSize * 1.35f, Window->WindowRounding + 1.0f + g.FontSize * 0.2f));
+		const float grip_hover_inner_size = Math::Floor(grip_draw_size * 0.75f);
 		const float grip_hover_outer_size = g.IO.ConfigWindowsResizeFromEdges ? WINDOWS_HOVER_PADDING : 0.0f;
 
 		ImVec2 pos_target(FLT_MAX, FLT_MAX);
@@ -893,7 +893,7 @@ namespace Lumina::ImGuiX
 
     void ApplicationTitleBar::Draw(TFunction<void()>&& menuDrawFunction, float menuSectionDesiredWidth, TFunction<void()>&& controlsSectionDrawFunction, float controlsSectionDesiredWidth)
     {
-        Rect = glm::vec4(1.0f);
+        Rect = FVector4(1.0f);
     
         const ImVec2 TitleBarPadding(0, 8);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, TitleBarPadding);
@@ -905,7 +905,7 @@ namespace Lumina::ImGuiX
     
             const float titleBarWidth = ImGui::GetWindowSize().x;
             const float titleBarHeight = ImGui::GetWindowSize().y;
-            Rect = glm::vec4(0.0f, 0.0f, titleBarWidth, titleBarHeight);
+            Rect = FVector4(0.0f, 0.0f, titleBarWidth, titleBarHeight);
     
             const float windowControlsWidth = GetWindowsControlsWidth();
             const float windowControlsStartPosX = eastl::max(0.0f, ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - windowControlsWidth);

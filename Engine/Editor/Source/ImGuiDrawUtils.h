@@ -1,7 +1,7 @@
 #pragma once
 
 #include <string>
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -9,7 +9,9 @@
 
 namespace ImGuiUtils
 {
-	inline void DrawVec3Control(const std::string& label, glm::vec3& values, float resetValue = 0.0f, float columnWidth = 100.0f)
+	using namespace Lumina;
+
+	inline void DrawVec3Control(const std::string& label, FVector3& values, float resetValue = 0.0f, float columnWidth = 100.0f)
 	{
 		ImGuiIO& io = ImGui::GetIO();
 		auto boldFont = io.Fonts->Fonts[0];

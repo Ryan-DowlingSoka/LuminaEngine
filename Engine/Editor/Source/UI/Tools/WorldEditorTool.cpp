@@ -1,5 +1,5 @@
 ﻿#include "WorldEditorTool.h"
-#include <glm/gtx/string_cast.hpp>
+#include "Core/Math/Math.h"
 #include "EditorToolContext.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Assets/AssetTypes/EntityComponent/EntityComponentType.h"
@@ -22,8 +22,6 @@
 #include "Core/Serialization/JsonArchiver.h"
 #include "Core/Serialization/ObjectArchiver.h"
 #include "EASTL/sort.h"
-#include "glm/gtc/type_ptr.hpp"
-#include "glm/gtx/matrix_decompose.hpp"
 #include "Input/InputContext.h"
 #include "Input/InputProcessor.h"
 #include "UI/RmlUiBridge.h"
@@ -63,7 +61,7 @@ namespace Lumina
     static constexpr const char* WorldSettingsName = "World Settings";
     static constexpr const char* SceneGraphName = "Scene Graph";
     
-    static glm::vec3 SanitizeManipulationScale(glm::vec3 Scale)
+    static FVector3 SanitizeManipulationScale(FVector3 Scale)
     {
         constexpr float MinScale = 0.001f;
         for (int i = 0; i < 3; ++i)
@@ -130,11 +128,11 @@ namespace Lumina
     // CPU marquee-pick + drop-to-floor: editor world has no physics scene, so we project mesh AABBs in software.
 
     // Project world AABB to screen rect (y-down, viewport pixels). Returns false if the box is behind near plane.
-    static bool ProjectAABBToScreenRect(const FAABB& WorldAABB, const glm::mat4& ViewProj,
+    static bool ProjectAABBToScreenRect(const FAABB& WorldAABB, const FMatrix4& ViewProj,
                                         const ImVec2& ViewportSize,
                                         ImVec2& OutMin, ImVec2& OutMax)
     {
-        const glm::vec3 Corners[8] = {
+        const FVector3 Corners[8] = {
             { WorldAABB.Min.x, WorldAABB.Min.y, WorldAABB.Min.z },
             { WorldAABB.Max.x, WorldAABB.Min.y, WorldAABB.Min.z },
             { WorldAABB.Min.x, WorldAABB.Max.y, WorldAABB.Min.z },
@@ -149,9 +147,9 @@ namespace Lumina
         OutMax = ImVec2(-FLT_MAX, -FLT_MAX);
         bool bAnyInFront = false;
 
-        for (const glm::vec3& Corner : Corners)
+        for (const FVector3& Corner : Corners)
         {
-            glm::vec4 Clip = ViewProj * glm::vec4(Corner, 1.0f);
+            FVector4 Clip = ViewProj * FVector4(Corner, 1.0f);
             if (Clip.w <= 1e-4f)
             {
                 continue;
@@ -161,10 +159,10 @@ namespace Lumina
             // Caller flipped [1][1] to GL-Y-up; convert NDC +Y up to y-down pixels.
             const float Px = (NdcX * 0.5f + 0.5f) * ViewportSize.x;
             const float Py = (1.0f - (NdcY * 0.5f + 0.5f)) * ViewportSize.y;
-            OutMin.x = glm::min(OutMin.x, Px);
-            OutMin.y = glm::min(OutMin.y, Py);
-            OutMax.x = glm::max(OutMax.x, Px);
-            OutMax.y = glm::max(OutMax.y, Py);
+            OutMin.x = Math::Min(OutMin.x, Px);
+            OutMin.y = Math::Min(OutMin.y, Py);
+            OutMax.x = Math::Max(OutMax.x, Px);
+            OutMax.y = Math::Max(OutMax.y, Py);
             bAnyInFront = true;
         }
 
@@ -172,14 +170,14 @@ namespace Lumina
     }
 
     // Slab ray-vs-AABB; OutT is along (possibly unnormalized) Dir. Returns true on hit in front of origin.
-    static bool RayVsAABB(const glm::vec3& Origin, const glm::vec3& Dir,
+    static bool RayVsAABB(const FVector3& Origin, const FVector3& Dir,
                           const FAABB& Box, float& OutT)
     {
         float TMin = 0.0f;
         float TMax = FLT_MAX;
         for (int Axis = 0; Axis < 3; ++Axis)
         {
-            if (glm::abs(Dir[Axis]) < 1e-6f)
+            if (Math::Abs(Dir[Axis]) < 1e-6f)
             {
                 if (Origin[Axis] < Box.Min[Axis] || Origin[Axis] > Box.Max[Axis])
                 {
@@ -190,8 +188,8 @@ namespace Lumina
             float T1 = (Box.Min[Axis] - Origin[Axis]) / Dir[Axis];
             float T2 = (Box.Max[Axis] - Origin[Axis]) / Dir[Axis];
             if (T1 > T2) { eastl::swap(T1, T2); }
-            TMin = glm::max(TMin, T1);
-            TMax = glm::min(TMax, T2);
+            TMin = Math::Max(TMin, T1);
+            TMax = Math::Min(TMax, T2);
             if (TMin > TMax)
             {
                 return false;
@@ -202,10 +200,10 @@ namespace Lumina
     }
 
     // Project world point to viewport pixels (y-down); ViewProj uses GL-Y-up like ProjectAABBToScreenRect.
-    static bool ProjectPointToScreen(const glm::vec3& WorldPos, const glm::mat4& ViewProj,
+    static bool ProjectPointToScreen(const FVector3& WorldPos, const FMatrix4& ViewProj,
                                      const ImVec2& ViewportSize, ImVec2& OutScreen)
     {
-        glm::vec4 Clip = ViewProj * glm::vec4(WorldPos, 1.0f);
+        FVector4 Clip = ViewProj * FVector4(WorldPos, 1.0f);
         if (Clip.w <= 1e-4f)
         {
             return false;
@@ -248,11 +246,11 @@ namespace Lumina
                 for (uint32 v = 0; v < M.VertexCount; ++v)
                 {
                     const uint32 P = Verts[M.VertexOffset + v].Position;
-                    glm::ivec3 Q;
+                    FIntVector3 Q;
                     Q.x = int32( P        & 0x3FFu);
                     Q.y = int32((P >> 10) & 0x3FFu);
                     Q.z = int32((P >> 20) & 0x3FFu);
-                    const glm::vec3 LocalPos = MeshletData.MeshOrigin[M.LODIndex] + glm::vec3(M.LoInt + Q) * MeshletData.MeshGridStep[M.LODIndex];
+                    const FVector3 LocalPos = MeshletData.MeshOrigin[M.LODIndex] + FVector3(M.LoInt + Q) * MeshletData.MeshGridStep[M.LODIndex];
                     Visit(LocalPos);
                 }
             }
@@ -261,13 +259,13 @@ namespace Lumina
 
     // LOD-0 vertex closest to TargetScreenPos; returns true if any projected within MaxScreenDistPx.
     static bool FindClosestVertexToScreenPoint(const CStaticMesh& Mesh,
-                                               const glm::mat4& MeshWorldMatrix,
-                                               const glm::mat4& ViewProj,
+                                               const FMatrix4& MeshWorldMatrix,
+                                               const FMatrix4& ViewProj,
                                                const ImVec2& ViewportSize,
                                                const ImVec2& TargetScreenPos,
                                                float MaxScreenDistPx,
-                                               glm::vec3& OutLocalPos,
-                                               glm::vec3& OutWorldPos)
+                                               FVector3& OutLocalPos,
+                                               FVector3& OutWorldPos)
     {
         const FMeshResource& Resource = Mesh.GetMeshResource();
         if (Resource.bSkinnedMesh || Resource.MeshletData.IsEmpty())
@@ -288,13 +286,13 @@ namespace Lumina
             return false;
         }
 
-        const glm::mat4 MVP = ViewProj * MeshWorldMatrix;
+        const FMatrix4 MVP = ViewProj * MeshWorldMatrix;
         float BestDistSq = MaxScreenDistPx * MaxScreenDistPx;
         bool  bFound = false;
 
-        ForEachMeshVertexLocal(Mesh, [&](const glm::vec3& LocalPos)
+        ForEachMeshVertexLocal(Mesh, [&](const FVector3& LocalPos)
         {
-            glm::vec4 Clip = MVP * glm::vec4(LocalPos, 1.0f);
+            FVector4 Clip = MVP * FVector4(LocalPos, 1.0f);
             if (Clip.w <= 1e-4f)
             {
                 return;
@@ -308,7 +306,7 @@ namespace Lumina
             {
                 BestDistSq  = DistSq;
                 OutLocalPos = LocalPos;
-                OutWorldPos = glm::vec3(MeshWorldMatrix * glm::vec4(LocalPos, 1.0f));
+                OutWorldPos = FVector3(MeshWorldMatrix * FVector4(LocalPos, 1.0f));
                 bFound = true;
             }
         });
@@ -637,7 +635,7 @@ namespace Lumina
 
         if (CameraPreviewHandle < 0)
         {
-            CameraPreviewHandle = RenderScene->RegisterCaptureView(glm::uvec2(CameraPreviewWidth, CameraPreviewHeight));
+            CameraPreviewHandle = RenderScene->RegisterCaptureView(FUIntVector2(CameraPreviewWidth, CameraPreviewHeight));
             if (CameraPreviewHandle < 0)
             {
                 return;
@@ -650,10 +648,10 @@ namespace Lumina
         STransformComponent& Transform = Registry.get<STransformComponent>(Selected);
         (void)Transform.GetWorldMatrix();   // ensure the world transform is current
 
-        const glm::vec3 Position = Transform.GetWorldLocation();
-        const glm::quat Rotation = Transform.GetWorldRotation();
-        const glm::vec3 Forward  = Rotation * glm::vec3(0.0f, 0.0f, 1.0f);
-        const glm::vec3 Up       = Rotation * glm::vec3(0.0f, 1.0f, 0.0f);
+        const FVector3 Position = Transform.GetWorldLocation();
+        const FQuat Rotation = Transform.GetWorldRotation();
+        const FVector3 Forward  = Rotation * FVector3(0.0f, 0.0f, 1.0f);
+        const FVector3 Up       = Rotation * FVector3(0.0f, 1.0f, 0.0f);
 
         // Use the authored FOV property, not GetFOV(): the latter reads the camera's internal
         // ViewVolume, which only tracks the property for the *active* camera (via SCameraSystem).
@@ -1030,14 +1028,14 @@ namespace Lumina
     IWorldEditorMode* FWorldEditorTool::GetActiveMode() const
     {
         if (EditorModes.empty()) return nullptr;
-        const int32 Idx = glm::clamp(ActiveModeIndex, 0, (int32)EditorModes.size() - 1);
+        const int32 Idx = Math::Clamp(ActiveModeIndex, 0, (int32)EditorModes.size() - 1);
         return EditorModes[Idx].get();
     }
 
     void FWorldEditorTool::SetActiveMode(int32 NewIndex)
     {
         if (EditorModes.empty()) return;
-        NewIndex = glm::clamp(NewIndex, 0, (int32)EditorModes.size() - 1);
+        NewIndex = Math::Clamp(NewIndex, 0, (int32)EditorModes.size() - 1);
         if (NewIndex == ActiveModeIndex) return;
 
         // Drop half-drag gizmo state before yielding: bImGuizmoUsedOnce sticks true otherwise and blocks clicks after switching back.
@@ -1220,8 +1218,8 @@ namespace Lumina
         
         SCameraComponent& CameraComponent = World->GetEntityRegistry().get<SCameraComponent>(EditorEntity);
 
-        glm::mat4 ViewMatrix = CameraComponent.GetViewMatrix();
-        glm::mat4 ProjectionMatrix = CameraComponent.GetProjectionMatrix();
+        FMatrix4 ViewMatrix = CameraComponent.GetViewMatrix();
+        FMatrix4 ProjectionMatrix = CameraComponent.GetProjectionMatrix();
         // Camera projection bakes Vulkan +Y-down NDC; ImGuizmo expects GL convention.
         ProjectionMatrix[1][1] *= -1.0f;
 
@@ -1271,14 +1269,14 @@ namespace Lumina
                 STransformComponent& PivotTransformComponent = World->GetEntityRegistry().get<STransformComponent>(PivotEntity);
 
                 // Padded AABB so the gizmo stays visible when the pivot is just outside the frustum but handles aren't.
-                const glm::vec3 PivotWorld = PivotTransformComponent.GetWorldLocation();
-                const FAABB PivotBounds(PivotWorld - glm::vec3(1.0f), PivotWorld + glm::vec3(1.0f));
+                const FVector3 PivotWorld = PivotTransformComponent.GetWorldLocation();
+                const FAABB PivotBounds(PivotWorld - FVector3(1.0f), PivotWorld + FVector3(1.0f));
                 const bool bPivotVisible = CameraComponent.GetViewVolume().GetFrustum().IsInside(PivotBounds);
 
                 // Mid-drag stays drawn so ImGuizmo's release fires; otherwise bImGuizmoUsedOnce sticks and IsOver() blocks clicks.
                 if (bPivotVisible || bImGuizmoUsedOnce)
                 {
-                    glm::mat4 EntityMatrix = PivotTransformComponent.GetWorldMatrix();
+                    FMatrix4 EntityMatrix = PivotTransformComponent.GetWorldMatrix();
 
                     float* SnapValues = nullptr;
                     float SnapArray[3] = {};
@@ -1310,16 +1308,16 @@ namespace Lumina
                         }
                     }
 
-                    glm::mat4 PreManipulateMatrix = EntityMatrix;
+                    FMatrix4 PreManipulateMatrix = EntityMatrix;
                     
                     const bool bCtrlHeld = ImGui::GetIO().KeyCtrl;
                     const bool bVertexSnapArmed = bCtrlHeld
                                                && GuizmoOp == ImGuizmo::TRANSLATE
                                                && GuizmoMode == ImGuizmo::WORLD
                                                && !World->IsGameWorld();
-                    const glm::mat4 SnapViewProj = ProjectionMatrix * ViewMatrix;
-                    glm::vec3 PreviewAnchorLocal(0.0f);
-                    glm::vec3 PreviewAnchorWorld(0.0f);
+                    const FMatrix4 SnapViewProj = ProjectionMatrix * ViewMatrix;
+                    FVector3 PreviewAnchorLocal(0.0f);
+                    FVector3 PreviewAnchorWorld(0.0f);
                     bool bPreviewAnchorValid = false;
                     if (bVertexSnapArmed)
                     {
@@ -1335,9 +1333,9 @@ namespace Lumina
                         }
                     }
 
-                    glm::mat4 GizmoDeltaMatrix(1.0f);
-                    ImGuizmo::Manipulate(glm::value_ptr(ViewMatrix), glm::value_ptr(ProjectionMatrix),
-                        GuizmoOp, GuizmoMode, glm::value_ptr(EntityMatrix), glm::value_ptr(GizmoDeltaMatrix), SnapValues);
+                    FMatrix4 GizmoDeltaMatrix(1.0f);
+                    ImGuizmo::Manipulate(Math::ValuePtr(ViewMatrix), Math::ValuePtr(ProjectionMatrix),
+                        GuizmoOp, GuizmoMode, Math::ValuePtr(EntityMatrix), Math::ValuePtr(GizmoDeltaMatrix), SnapValues);
 
                     if (ImGuizmo::IsUsing())
                     {
@@ -1349,12 +1347,12 @@ namespace Lumina
                             SelectionBox.bActive = false;
                         }
                         
-                        const glm::mat4& DeltaMatrix = GizmoDeltaMatrix;
+                        const FMatrix4& DeltaMatrix = GizmoDeltaMatrix;
 
-                        glm::vec3 DeltaTranslation, DeltaScale, DeltaSkew;
-                        glm::quat DeltaRotation;
-                        glm::vec4 DeltaPerspective;
-                        glm::decompose(DeltaMatrix, DeltaScale, DeltaRotation, DeltaTranslation, DeltaSkew, DeltaPerspective);
+                        FVector3 DeltaTranslation, DeltaScale, DeltaSkew;
+                        FQuat DeltaRotation;
+                        FVector4 DeltaPerspective;
+                        Math::Decompose(DeltaMatrix, DeltaScale, DeltaRotation, DeltaTranslation, DeltaSkew, DeltaPerspective);
 
                         // Override DeltaTranslation to align the anchor vertex to the closest non-selected vertex.
                         bVertexSnapApplied = false;
@@ -1370,14 +1368,14 @@ namespace Lumina
                             if (bVertexSnapAnchorValid)
                             {
                                 FEntityRegistry& Registry = World->GetEntityRegistry();
-                                const glm::vec3 AnchorPreWorld = glm::vec3(PreManipulateMatrix * glm::vec4(VertexSnapAnchorLocal, 1.0f));
-                                const glm::vec3 AnchorCandidateWorld = AnchorPreWorld + DeltaTranslation;
+                                const FVector3 AnchorPreWorld = FVector3(PreManipulateMatrix * FVector4(VertexSnapAnchorLocal, 1.0f));
+                                const FVector3 AnchorCandidateWorld = AnchorPreWorld + DeltaTranslation;
 
                                 ImVec2 AnchorScreen;
                                 if (ProjectPointToScreen(AnchorCandidateWorld, SnapViewProj, ViewportSize, AnchorScreen))
                                 {
                                     float BestDistSq = VertexSnapPixelRadius * VertexSnapPixelRadius;
-                                    glm::vec3 BestTargetWorld(0.0f);
+                                    FVector3 BestTargetWorld(0.0f);
                                     bool bFoundTarget = false;
 
                                     Registry.view<SStaticMeshComponent, STransformComponent>().each(
@@ -1392,7 +1390,7 @@ namespace Lumina
                                             return;
                                         }
 
-                                        glm::vec3 LP, WP;
+                                        FVector3 LP, WP;
                                         if (!FindClosestVertexToScreenPoint(*MeshComp.StaticMesh.Get(),
                                                                             Xform.GetWorldMatrix(), SnapViewProj,
                                                                             ViewportSize, AnchorScreen,
@@ -1434,12 +1432,12 @@ namespace Lumina
 
                         if (GuizmoMode == ImGuizmo::LOCAL)
                         {
-                            glm::mat4 LocalDeltaMatrix = glm::inverse(PreManipulateMatrix) * EntityMatrix;
+                            FMatrix4 LocalDeltaMatrix = Math::Inverse(PreManipulateMatrix) * EntityMatrix;
 
-                            glm::vec3 LocalDeltaTrans, LocalDeltaScaleVec, LocalDeltaSkew;
-                            glm::quat LocalDeltaRot;
-                            glm::vec4 LocalDeltaPersp;
-                            const bool bLocalDeltaValid = glm::decompose(
+                            FVector3 LocalDeltaTrans, LocalDeltaScaleVec, LocalDeltaSkew;
+                            FQuat LocalDeltaRot;
+                            FVector4 LocalDeltaPersp;
+                            const bool bLocalDeltaValid = Math::Decompose(
                                 LocalDeltaMatrix, LocalDeltaScaleVec, LocalDeltaRot, LocalDeltaTrans, LocalDeltaSkew, LocalDeltaPersp);
 
                             SelectionView.each([&](entt::entity, STransformComponent& Transform)
@@ -1454,14 +1452,14 @@ namespace Lumina
                                     case ImGuizmo::TRANSLATE:
                                     {
                                         // Delta is in entity-local axes; rotate into parent space before adding.
-                                        glm::vec3 ParentSpaceDelta = Transform.GetLocalRotation() * LocalDeltaTrans;
+                                        FVector3 ParentSpaceDelta = Transform.GetLocalRotation() * LocalDeltaTrans;
                                         Transform.SetLocalLocation(Transform.GetLocalLocation() + ParentSpaceDelta);
                                         break;
                                     }
 
                                     case ImGuizmo::ROTATE:
                                     {
-                                        Transform.SetLocalRotation(glm::normalize(Transform.GetLocalRotation() * LocalDeltaRot));
+                                        Transform.SetLocalRotation(Math::Normalize(Transform.GetLocalRotation() * LocalDeltaRot));
                                         break;
                                     }
 
@@ -1475,61 +1473,61 @@ namespace Lumina
                         }
                         else
                         {
-                            glm::vec3 PivotPosition = PivotTransformComponent.WorldTransform.Location;
+                            FVector3 PivotPosition = PivotTransformComponent.WorldTransform.Location;
 
                             SelectionView.each([&](entt::entity Entity, STransformComponent& Transform)
                             {
-                                glm::mat4 DesiredWorldMatrix;
+                                FMatrix4 DesiredWorldMatrix;
 
                                 switch (GuizmoOp)
                                 {
                                     case ImGuizmo::TRANSLATE:
                                     {
-                                        glm::mat4 TranslationDelta = glm::translate(glm::mat4(1.f), DeltaTranslation);
+                                        FMatrix4 TranslationDelta = Math::Translate(FMatrix4(1.f), DeltaTranslation);
                                         DesiredWorldMatrix = TranslationDelta * Transform.GetWorldMatrix();
                                         break;
                                     }
 
                                     case ImGuizmo::ROTATE:
                                     {
-                                        glm::vec3 OffsetFromPivot = Transform.WorldTransform.Location - PivotPosition;
-                                        glm::vec3 RotatedOffset   = DeltaRotation * OffsetFromPivot;
-                                        glm::vec3 NewWorldPos     = PivotPosition + RotatedOffset;
-                                        glm::quat NewWorldRot     = DeltaRotation * Transform.GetWorldRotation();
-                                        glm::vec3 WorldScale      = Transform.GetWorldScale();
+                                        FVector3 OffsetFromPivot = Transform.WorldTransform.Location - PivotPosition;
+                                        FVector3 RotatedOffset   = DeltaRotation * OffsetFromPivot;
+                                        FVector3 NewWorldPos     = PivotPosition + RotatedOffset;
+                                        FQuat NewWorldRot     = DeltaRotation * Transform.GetWorldRotation();
+                                        FVector3 WorldScale      = Transform.GetWorldScale();
 
-                                        DesiredWorldMatrix = glm::translate(glm::mat4(1.f), NewWorldPos)
-                                                           * glm::mat4_cast(NewWorldRot)
-                                                           * glm::scale(glm::mat4(1.f), WorldScale);
+                                        DesiredWorldMatrix = Math::Translate(FMatrix4(1.f), NewWorldPos)
+                                                           * Math::ToMatrix4(NewWorldRot)
+                                                           * Math::Scale(FMatrix4(1.f), WorldScale);
                                         break;
                                     }
 
                                     case ImGuizmo::SCALE:
                                     {
-                                        const glm::vec3 CurrentWorldScale = Transform.GetWorldScale();
-                                        glm::vec3 ClampedDeltaScale       = DeltaScale;
+                                        const FVector3 CurrentWorldScale = Transform.GetWorldScale();
+                                        FVector3 ClampedDeltaScale       = DeltaScale;
                                         constexpr float MinScale          = 0.001f;
                                         for (int Axis = 0; Axis < 3; ++Axis)
                                         {
                                             const float Target = CurrentWorldScale[Axis] * DeltaScale[Axis];
-                                            if (!std::isfinite(Target) || glm::abs(Target) < MinScale)
+                                            if (!std::isfinite(Target) || Math::Abs(Target) < MinScale)
                                             {
                                                 const float SignedMin = (Target < 0.0f) ? -MinScale : MinScale;
-                                                ClampedDeltaScale[Axis] = (glm::abs(CurrentWorldScale[Axis]) > 1e-8f)
+                                                ClampedDeltaScale[Axis] = (Math::Abs(CurrentWorldScale[Axis]) > 1e-8f)
                                                                         ? SignedMin / CurrentWorldScale[Axis]
                                                                         : 1.0f;
                                             }
                                         }
 
-                                        glm::vec3 OffsetFromPivot = Transform.WorldTransform.Location - PivotPosition;
-                                        glm::vec3 ScaledOffset    = OffsetFromPivot * ClampedDeltaScale;
-                                        glm::vec3 NewWorldPos     = PivotPosition + ScaledOffset;
-                                        glm::quat WorldRot        = Transform.GetWorldRotation();
-                                        glm::vec3 NewWorldScale   = CurrentWorldScale * ClampedDeltaScale;
+                                        FVector3 OffsetFromPivot = Transform.WorldTransform.Location - PivotPosition;
+                                        FVector3 ScaledOffset    = OffsetFromPivot * ClampedDeltaScale;
+                                        FVector3 NewWorldPos     = PivotPosition + ScaledOffset;
+                                        FQuat WorldRot        = Transform.GetWorldRotation();
+                                        FVector3 NewWorldScale   = CurrentWorldScale * ClampedDeltaScale;
 
-                                        DesiredWorldMatrix = glm::translate(glm::mat4(1.f), NewWorldPos)
-                                                           * glm::mat4_cast(WorldRot)
-                                                           * glm::scale(glm::mat4(1.f), NewWorldScale);
+                                        DesiredWorldMatrix = Math::Translate(FMatrix4(1.f), NewWorldPos)
+                                                           * Math::ToMatrix4(WorldRot)
+                                                           * Math::Scale(FMatrix4(1.f), NewWorldScale);
                                         break;
                                     }
                                 }
@@ -1538,13 +1536,13 @@ namespace Lumina
                                 if (Rel && Rel->Parent != entt::null)
                                 {
                                     STransformComponent& ParentTransform = World->GetEntityRegistry().get<STransformComponent>(Rel->Parent);
-                                    glm::mat4 LocalMatrix = glm::inverse(ParentTransform.GetWorldMatrix()) * DesiredWorldMatrix;
+                                    FMatrix4 LocalMatrix = Math::Inverse(ParentTransform.GetWorldMatrix()) * DesiredWorldMatrix;
 
-                                    glm::vec3 LocalTranslation, LocalScale, LocalSkew;
-                                    glm::quat LocalRotation;
-                                    glm::vec4 LocalPerspective;
+                                    FVector3 LocalTranslation, LocalScale, LocalSkew;
+                                    FQuat LocalRotation;
+                                    FVector4 LocalPerspective;
 
-                                    if (!glm::decompose(LocalMatrix, LocalScale, LocalRotation, LocalTranslation, LocalSkew, LocalPerspective))
+                                    if (!Math::Decompose(LocalMatrix, LocalScale, LocalRotation, LocalTranslation, LocalSkew, LocalPerspective))
                                     {
                                         return;
                                     }
@@ -1555,10 +1553,10 @@ namespace Lumina
                                 }
                                 else
                                 {
-                                    glm::vec3 WorldTranslation, WorldScale, WorldSkew;
-                                    glm::quat WorldRotation;
-                                    glm::vec4 WorldPerspective;
-                                    if (!glm::decompose(DesiredWorldMatrix, WorldScale, WorldRotation, WorldTranslation, WorldSkew, WorldPerspective))
+                                    FVector3 WorldTranslation, WorldScale, WorldSkew;
+                                    FQuat WorldRotation;
+                                    FVector4 WorldPerspective;
+                                    if (!Math::Decompose(DesiredWorldMatrix, WorldScale, WorldRotation, WorldTranslation, WorldSkew, WorldPerspective))
                                     {
                                         return;
                                     }
@@ -1596,13 +1594,13 @@ namespace Lumina
                             bVertexSnapApplied ? SnapCol : ArmedCol, Label);
 
                         // Live anchor marker.
-                        glm::vec3 AnchorWorld(0.0f);
+                        FVector3 AnchorWorld(0.0f);
                         bool bHaveAnchor = false;
                         if (bVertexSnapAnchorValid)
                         {
                             AnchorWorld = bVertexSnapApplied
                                 ? VertexSnapAnchorWorld
-                                : glm::vec3(PivotTransformComponent.GetWorldMatrix() * glm::vec4(VertexSnapAnchorLocal, 1.0f));
+                                : FVector3(PivotTransformComponent.GetWorldMatrix() * FVector4(VertexSnapAnchorLocal, 1.0f));
                             bHaveAnchor = true;
                         }
                         else if (bPreviewAnchorValid)
@@ -1653,8 +1651,8 @@ namespace Lumina
             MousePosInViewport.x = mousePos.x - viewportScreenPos.x;
             MousePosInViewport.y = mousePos.y - viewportScreenPos.y;
 
-            MousePosInViewport.x = glm::clamp(MousePosInViewport.x, 0.0f, ViewportSize.x - 1.0f);
-            MousePosInViewport.y = glm::clamp(MousePosInViewport.y, 0.0f, ViewportSize.y - 1.0f);
+            MousePosInViewport.x = Math::Clamp(MousePosInViewport.x, 0.0f, ViewportSize.x - 1.0f);
+            MousePosInViewport.y = Math::Clamp(MousePosInViewport.y, 0.0f, ViewportSize.y - 1.0f);
 
             float ScaleX = static_cast<float>(PickerWidth) / ViewportSize.x;
             float ScaleY = static_cast<float>(PickerHeight) / ViewportSize.y;
@@ -1769,9 +1767,9 @@ namespace Lumina
                     }
                     else
                     {
-                        const ImVec2 RectMin(glm::min(Start.x, End.x), glm::min(Start.y, End.y));
-                        const ImVec2 RectMax(glm::max(Start.x, End.x), glm::max(Start.y, End.y));
-                        const glm::mat4 ViewProj = ProjectionMatrix * ViewMatrix;
+                        const ImVec2 RectMin(Math::Min(Start.x, End.x), Math::Min(Start.y, End.y));
+                        const ImVec2 RectMax(Math::Max(Start.x, End.x), Math::Max(Start.y, End.y));
+                        const FMatrix4 ViewProj = ProjectionMatrix * ViewMatrix;
 
                         entt::registry& Registry = World->GetEntityRegistry();
 
@@ -1795,8 +1793,8 @@ namespace Lumina
                             }
                             else
                             {
-                                const glm::vec3 P = Transform.GetWorldLocation();
-                                glm::vec4 Clip = ViewProj * glm::vec4(P, 1.0f);
+                                const FVector3 P = Transform.GetWorldLocation();
+                                FVector4 Clip = ViewProj * FVector4(P, 1.0f);
                                 if (Clip.w <= 1e-4f)
                                 {
                                     return;
@@ -2611,7 +2609,7 @@ namespace Lumina
         struct FCreatePrefabRequest
         {
             TVector<entt::entity> Roots;
-            glm::vec3 Pivot;
+            FVector3 Pivot;
             FFixedString DefaultName;
             uint32 TotalEntityCount;
         };
@@ -2620,7 +2618,7 @@ namespace Lumina
         {
             FCreatePrefabRequest Out;
             Out.Roots = eastl::move(InitialRoots);
-            Out.Pivot = glm::vec3(0.0f);
+            Out.Pivot = FVector3(0.0f);
             Out.TotalEntityCount = 0;
 
             for (entt::entity Entity : Out.Roots)
@@ -3106,7 +3104,7 @@ namespace Lumina
                 ImGui::SetTooltip("Translation (Location)");
             }
                 
-            ImGui::DragFloat3("T", glm::value_ptr(CameraTransform.WorldTransform.Location), 0.01f);
+            ImGui::DragFloat3("T", Math::ValuePtr(CameraTransform.WorldTransform.Location), 0.01f);
         
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 1.0f, 0.7f, 1.0f));
             ImGui::TextUnformatted(LE_ICON_ROTATE_360);
@@ -3116,8 +3114,8 @@ namespace Lumina
         
             ImGui::SameLine();
         
-            glm::vec3 EulerRotation = CameraTransform.GetRotationAsEuler();
-            if (ImGui::DragFloat3("R", glm::value_ptr(EulerRotation), 0.01f))
+            FVector3 EulerRotation = CameraTransform.GetRotationAsEuler();
+            if (ImGui::DragFloat3("R", Math::ValuePtr(EulerRotation), 0.01f))
             {
                 CameraTransform.SetRotationFromEuler(EulerRotation);
             }
@@ -3126,12 +3124,12 @@ namespace Lumina
             
             if (ImGui::Button("Reset Position", ImVec2(-1, 0)))
             {
-                World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetLocation(glm::vec3(0.0f));
+                World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetLocation(FVector3(0.0f));
             }
             
             if (ImGui::Button("Reset Rotation", ImVec2(-1, 0)))
             {
-                World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetRotation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+                World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetRotation(FQuat(1.0f, 0.0f, 0.0f, 0.0f));
             }
             
             ImGui::Spacing();
@@ -6019,7 +6017,7 @@ namespace Lumina
             return;
         }
 
-        glm::vec3 Median(0.0f);
+        FVector3 Median(0.0f);
         for (entt::entity Entity : Targets)
         {
             Median += Registry.get<STransformComponent>(Entity).GetWorldLocation();
@@ -6098,13 +6096,13 @@ namespace Lumina
         BeginTransaction();
 
         bool bAnyMoved = false;
-        const glm::vec3 Down(0.0f, -1.0f, 0.0f);
+        const FVector3 Down(0.0f, -1.0f, 0.0f);
 
         for (entt::entity Entity : Targets)
         {
             STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
-            const glm::vec3 WorldLocation = Transform.GetWorldLocation();
-            const glm::vec3 Origin = WorldLocation + glm::vec3(0.0f, 0.5f, 0.0f);
+            const FVector3 WorldLocation = Transform.GetWorldLocation();
+            const FVector3 Origin = WorldLocation + FVector3(0.0f, 0.5f, 0.0f);
 
             float BestT = FLT_MAX;
             for (const FCandidate& C : Candidates)
@@ -6133,11 +6131,11 @@ namespace Lumina
             FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity);
             if (Rel != nullptr && Rel->Parent != entt::null && Registry.valid(Rel->Parent))
             {
-                glm::mat4 ParentWorld = Registry.get<STransformComponent>(Rel->Parent).GetWorldMatrix();
-                glm::mat4 NewLocalMat = glm::inverse(ParentWorld) * NewWorld.GetMatrix();
+                FMatrix4 ParentWorld = Registry.get<STransformComponent>(Rel->Parent).GetWorldMatrix();
+                FMatrix4 NewLocalMat = Math::Inverse(ParentWorld) * NewWorld.GetMatrix();
 
-                glm::vec3 LT, LS, LSkew; glm::quat LR; glm::vec4 LP;
-                glm::decompose(NewLocalMat, LS, LR, LT, LSkew, LP);
+                FVector3 LT, LS, LSkew; FQuat LR; FVector4 LP;
+                Math::Decompose(NewLocalMat, LS, LR, LT, LSkew, LP);
 
                 Transform.SetLocalLocation(LT);
                 Transform.SetLocalRotation(LR);
@@ -6174,8 +6172,8 @@ namespace Lumina
             return;
         }
 
-        glm::vec3 Min(FLT_MAX);
-        glm::vec3 Max(-FLT_MAX);
+        FVector3 Min(FLT_MAX);
+        FVector3 Max(-FLT_MAX);
         bool bAny = false;
 
         auto View = Registry.view<STransformComponent>();
@@ -6186,9 +6184,9 @@ namespace Lumina
                 continue;
             }
 
-            const glm::vec3 Loc = Registry.get<STransformComponent>(Entity).GetWorldLocation();
-            Min = glm::min(Min, Loc);
-            Max = glm::max(Max, Loc);
+            const FVector3 Loc = Registry.get<STransformComponent>(Entity).GetWorldLocation();
+            Min = Math::Min(Min, Loc);
+            Max = Math::Max(Max, Loc);
             bAny = true;
         }
 
@@ -6197,16 +6195,16 @@ namespace Lumina
             return;
         }
 
-        const glm::vec3 Center = (Min + Max) * 0.5f;
-        const float Radius = glm::max(glm::length(Max - Min) * 0.5f, 1.0f);
+        const FVector3 Center = (Min + Max) * 0.5f;
+        const float Radius = Math::Max(Math::Length(Max - Min) * 0.5f, 1.0f);
 
         const SCameraComponent& Camera = Registry.get<SCameraComponent>(EditorEntity);
-        const float HalfFov = glm::radians(Camera.GetFOV() * 0.5f);
-        const float Distance = (Radius / glm::tan(glm::max(HalfFov, glm::radians(1.0f)))) * 1.5f;
+        const float HalfFov = Math::Radians(Camera.GetFOV() * 0.5f);
+        const float Distance = (Radius / Math::Tan(Math::Max(HalfFov, Math::Radians(1.0f)))) * 1.5f;
 
         STransformComponent& EditorTransform = Registry.get<STransformComponent>(EditorEntity);
-        const glm::vec3 Forward = EditorTransform.GetForward();
-        const glm::vec3 NewPos  = Center - Forward * Distance;
+        const FVector3 Forward = EditorTransform.GetForward();
+        const FVector3 NewPos  = Center - Forward * Distance;
         EditorTransform.SetLocation(NewPos);
         EditorTransform.SetRotation(Math::FindLookAtRotation(Center, NewPos));
     }
@@ -6262,11 +6260,11 @@ namespace Lumina
             FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity);
             if (Rel != nullptr && Rel->Parent != entt::null && Registry.valid(Rel->Parent))
             {
-                glm::mat4 ParentWorld = Registry.get<STransformComponent>(Rel->Parent).GetWorldMatrix();
-                glm::mat4 NewLocalMat = glm::inverse(ParentWorld) * CopiedTransform.GetMatrix();
+                FMatrix4 ParentWorld = Registry.get<STransformComponent>(Rel->Parent).GetWorldMatrix();
+                FMatrix4 NewLocalMat = Math::Inverse(ParentWorld) * CopiedTransform.GetMatrix();
 
-                glm::vec3 LT, LS, LSkew; glm::quat LR; glm::vec4 LP;
-                glm::decompose(NewLocalMat, LS, LR, LT, LSkew, LP);
+                FVector3 LT, LS, LSkew; FQuat LR; FVector4 LP;
+                Math::Decompose(NewLocalMat, LS, LR, LT, LSkew, LP);
 
                 Transform.SetLocalLocation(LT);
                 Transform.SetLocalRotation(LR);
@@ -6339,23 +6337,23 @@ namespace Lumina
         }
 
         // Unproject through camera ViewProj; flip Y because camera bakes Vulkan +Y-down NDC.
-        glm::mat4 Proj = Camera.GetProjectionMatrix();
+        FMatrix4 Proj = Camera.GetProjectionMatrix();
         Proj[1][1] *= -1.0f;
-        const glm::mat4 InvVP = glm::inverse(Proj * Camera.GetViewMatrix());
+        const FMatrix4 InvVP = Math::Inverse(Proj * Camera.GetViewMatrix());
 
         const float NdcX = (LocalX / ViewportSize.x) * 2.0f - 1.0f;
         const float NdcY = 1.0f - (LocalY / ViewportSize.y) * 2.0f;
-        glm::vec4 Far = InvVP * glm::vec4(NdcX, NdcY, 1.0f, 1.0f);
-        if (glm::abs(Far.w) < 1e-6f)
+        FVector4 Far = InvVP * FVector4(NdcX, NdcY, 1.0f, 1.0f);
+        if (Math::Abs(Far.w) < 1e-6f)
         {
             return;
         }
-        const glm::vec3 FarWorld = glm::vec3(Far) / Far.w;
-        const glm::vec3 Origin   = Camera.GetPosition();
-        const glm::vec3 Dir      = glm::normalize(FarWorld - Origin);
+        const FVector3 FarWorld = FVector3(Far) / Far.w;
+        const FVector3 Origin   = Camera.GetPosition();
+        const FVector3 Dir      = Math::Normalize(FarWorld - Origin);
 
         // Intersect Y=0 plane; skip nearly-parallel rays or up-pointing rays from above.
-        if (glm::abs(Dir.y) < 1e-4f)
+        if (Math::Abs(Dir.y) < 1e-4f)
         {
             return;
         }
@@ -6364,7 +6362,7 @@ namespace Lumina
         {
             return;
         }
-        const glm::vec3 Hit = Origin + Dir * T;
+        const FVector3 Hit = Origin + Dir * T;
 
         ImDrawList* DrawList = ImGui::GetWindowDrawList();
         const ImVec2 TextPos(ViewportOrigin.x + 12.0f, ViewportOrigin.y + ViewportSize.y - 24.0f);
@@ -6383,11 +6381,11 @@ namespace Lumina
             return;
         }
 
-        glm::mat4 Proj = Camera.GetProjectionMatrix();
+        FMatrix4 Proj = Camera.GetProjectionMatrix();
         Proj[1][1] *= -1.0f;
-        const glm::mat4 ViewProj = Proj * Camera.GetViewMatrix();
+        const FMatrix4 ViewProj = Proj * Camera.GetViewMatrix();
         FFrustum Frustum = Camera.GetViewVolume().GetFrustum();
-        const glm::vec3 CameraPos = Camera.GetPosition();
+        const FVector3 CameraPos = Camera.GetPosition();
 
         FEntityRegistry& Registry = World->GetEntityRegistry();
         auto View = Registry.view<STransformComponent>(entt::exclude<FEditorComponent>);
@@ -6405,7 +6403,7 @@ namespace Lumina
         for (entt::entity Entity : View)
         {
             const STransformComponent& Transform = View.get<STransformComponent>(Entity);
-            const glm::vec3 WorldPos = Transform.GetWorldLocation();
+            const FVector3 WorldPos = Transform.GetWorldLocation();
             if (!Frustum.IsInside(WorldPos))
             {
                 continue;
@@ -6417,8 +6415,8 @@ namespace Lumina
                 continue;
             }
 
-            const glm::vec3 Delta = WorldPos - CameraPos;
-            Candidates.push_back({ Entity, Screen, glm::dot(Delta, Delta) });
+            const FVector3 Delta = WorldPos - CameraPos;
+            Candidates.push_back({ Entity, Screen, Math::Dot(Delta, Delta) });
         }
 
         // Front-to-back so closer labels claim space first.
@@ -6440,7 +6438,7 @@ namespace Lumina
         {
             const SNameComponent* NameComp = Registry.try_get<SNameComponent>(C.Entity);
             const STransformComponent& Transform = Registry.get<STransformComponent>(C.Entity);
-            const glm::vec3 P = Transform.GetWorldLocation();
+            const FVector3 P = Transform.GetWorldLocation();
 
             char Line0[96];
             char Line1[96];
@@ -6450,7 +6448,7 @@ namespace Lumina
 
             const ImVec2 Size0 = ImGui::CalcTextSize(Line0);
             const ImVec2 Size1 = ImGui::CalcTextSize(Line1);
-            const float BoxW = glm::max(Size0.x, Size1.x) + Padding * 2.0f;
+            const float BoxW = Math::Max(Size0.x, Size1.x) + Padding * 2.0f;
             const float BoxH = LineHeight * 2.0f + Padding * 2.0f;
 
             // Anchor above the entity, then nudge down on collision until clear or we give up.
@@ -6460,7 +6458,7 @@ namespace Lumina
             // Clamp to viewport horizontally so labels don't drift offscreen.
             const float MinX = ViewportOrigin.x + 2.0f;
             const float MaxX = ViewportOrigin.x + ViewportSize.x - BoxW - 2.0f;
-            Anchor.x = glm::clamp(Anchor.x, MinX, MaxX);
+            Anchor.x = Math::Clamp(Anchor.x, MinX, MaxX);
 
             ImRect Rect(Anchor, ImVec2(Anchor.x + BoxW, Anchor.y + BoxH));
 
@@ -6518,9 +6516,9 @@ namespace Lumina
             return;
         }
 
-        glm::mat4 Proj = Camera.GetProjectionMatrix();
+        FMatrix4 Proj = Camera.GetProjectionMatrix();
         Proj[1][1] *= -1.0f;
-        const glm::mat4 ViewProj = Proj * Camera.GetViewMatrix();
+        const FMatrix4 ViewProj = Proj * Camera.GetViewMatrix();
 
         ImDrawList* DrawList = ImGui::GetWindowDrawList();
         const float EdgePadding = 32.0f;
@@ -6537,9 +6535,9 @@ namespace Lumina
         for (entt::entity Entity : SelView)
         {
             const STransformComponent& Transform = SelView.get<STransformComponent>(Entity);
-            const glm::vec3 WorldPos = Transform.GetWorldLocation();
+            const FVector3 WorldPos = Transform.GetWorldLocation();
 
-            glm::vec4 Clip = ViewProj * glm::vec4(WorldPos, 1.0f);
+            FVector4 Clip = ViewProj * FVector4(WorldPos, 1.0f);
 
             // Reflect points behind the camera through origin so the indicator points back toward the entity.
             const bool bBehind = Clip.w <= 0.0f;
@@ -6549,14 +6547,14 @@ namespace Lumina
                 Clip.y = -Clip.y;
                 Clip.w = -Clip.w;
             }
-            const float SafeW = glm::max(Clip.w, 1e-4f);
+            const float SafeW = Math::Max(Clip.w, 1e-4f);
             float NdcX = Clip.x / SafeW;
             float NdcY = Clip.y / SafeW;
 
             // Force NDC outside [-1,1] for behind-camera entities so we still emit an indicator.
             if (bBehind)
             {
-                const float Mag = glm::max(glm::abs(NdcX), glm::abs(NdcY));
+                const float Mag = Math::Max(Math::Abs(NdcX), Math::Abs(NdcY));
                 if (Mag > 1e-4f)
                 {
                     const float Scale = 1.5f / Mag;
@@ -6596,7 +6594,7 @@ namespace Lumina
             const float TY = (Dir.y > 0.0f) ? (RectMax.y - Center.y) / Dir.y
                             : (Dir.y < 0.0f) ? (RectMin.y - Center.y) / Dir.y
                             : FLT_MAX;
-            const float T = glm::min(TX, TY);
+            const float T = Math::Min(TX, TY);
             if (T <= 0.0f)
             {
                 continue;

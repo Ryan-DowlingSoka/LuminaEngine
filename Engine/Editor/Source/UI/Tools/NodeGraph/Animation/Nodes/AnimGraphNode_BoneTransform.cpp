@@ -50,8 +50,8 @@ namespace Lumina
             ? ResolveValueInput(ModePin, Compiler)
             : Compiler.EmitLoadConst((float)Mode);
 
-        const glm::vec3 RadEuler = glm::radians(Rotation);
-        const glm::quat Quat     = glm::normalize(glm::quat(RadEuler));
+        const FVector3 RadEuler = Math::Radians(Rotation);
+        const FQuat Quat     = Math::Normalize(FQuat(RadEuler));
 
         const uint16 ResultReg = Compiler.EmitBoneTransform(SrcReg, AlphaReg, (uint16)BoneIndex,
                                                             SpaceReg, ModeReg,

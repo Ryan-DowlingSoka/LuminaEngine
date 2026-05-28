@@ -76,7 +76,7 @@ namespace Lumina
     static FRHIImageRef CreateSMAALUTImage(const uint8* Bytes, uint32 Width, uint32 Height, EFormat Format, uint32 RowPitch, const char* DebugName)
     {
         FRHIImageDesc Desc;
-        Desc.Extent            = glm::uvec2(Width, Height);
+        Desc.Extent            = FUIntVector2(Width, Height);
         Desc.Format            = Format;
         Desc.Dimension         = EImageDimension::Texture2D;
         Desc.NumMips           = 1;
@@ -142,7 +142,7 @@ namespace Lumina
         // primary camera's CSM cascades rather than fitting their own, so it's created once here.
         {
             FRHIImageDesc ImageDesc = {};
-            ImageDesc.Extent = glm::uvec2(GCSMAtlasWidth, GCSMAtlasHeight);
+            ImageDesc.Extent = FUIntVector2(GCSMAtlasWidth, GCSMAtlasHeight);
             ImageDesc.Format = EFormat::D32;
             ImageDesc.Dimension = EImageDimension::Texture2D;
             ImageDesc.InitialState = EResourceStates::DepthWrite;
@@ -208,11 +208,11 @@ namespace Lumina
         return View;
     }
 
-    int32 FForwardRenderScene::RegisterCaptureView(const glm::uvec2& Size)
+    int32 FForwardRenderScene::RegisterCaptureView(const FUIntVector2& Size)
     {
         // Reuse a disabled capture view of the same size if one exists (avoids growing
         // SceneViews on repeated select/deselect); else allocate a new one.
-        const glm::uvec2 ClampedSize = glm::max(Size, glm::uvec2(1));
+        const FUIntVector2 ClampedSize = Math::Max(Size, FUIntVector2(1));
         for (int32 i = 1; i < (int32)SceneViews.size(); ++i)
         {
             if (!SceneViews[i].bEnabled && SceneViews[i].Size == ClampedSize)
@@ -376,16 +376,16 @@ namespace Lumina
         PrimaryViewport->SetViewVolume(ViewVolume);
 
         FSceneGlobalData& SceneGlobalData = Frame.SceneGlobalData;
-        SceneGlobalData.CameraData.Location             = glm::vec4(PrimaryViewport->GetViewVolume().GetViewPosition(), 1.0f);
-        SceneGlobalData.CameraData.Up                   = glm::vec4(PrimaryViewport->GetViewVolume().GetUpVector(), 1.0f);
-        SceneGlobalData.CameraData.Right                = glm::vec4(PrimaryViewport->GetViewVolume().GetRightVector(), 1.0f);
-        SceneGlobalData.CameraData.Forward              = glm::vec4(PrimaryViewport->GetViewVolume().GetForwardVector(), 1.0f);
+        SceneGlobalData.CameraData.Location             = FVector4(PrimaryViewport->GetViewVolume().GetViewPosition(), 1.0f);
+        SceneGlobalData.CameraData.Up                   = FVector4(PrimaryViewport->GetViewVolume().GetUpVector(), 1.0f);
+        SceneGlobalData.CameraData.Right                = FVector4(PrimaryViewport->GetViewVolume().GetRightVector(), 1.0f);
+        SceneGlobalData.CameraData.Forward              = FVector4(PrimaryViewport->GetViewVolume().GetForwardVector(), 1.0f);
         SceneGlobalData.CameraData.View                 = PrimaryViewport->GetViewVolume().GetViewMatrix();
         SceneGlobalData.CameraData.InverseView          = PrimaryViewport->GetViewVolume().GetInverseViewMatrix();
         SceneGlobalData.CameraData.Projection           = PrimaryViewport->GetViewVolume().GetProjectionMatrix();
         SceneGlobalData.CameraData.InverseProjection    = PrimaryViewport->GetViewVolume().GetInverseProjectionMatrix();
-        SceneGlobalData.ScreenSize                      = glm::vec4(PrimaryViewport->GetSize().x, PrimaryViewport->GetSize().y, 0.0f, 0.0f);
-        SceneGlobalData.GridSize                        = glm::vec4(ClusterGridSizeX, ClusterGridSizeY, ClusterGridSizeZ, 0.0f);
+        SceneGlobalData.ScreenSize                      = FVector4(PrimaryViewport->GetSize().x, PrimaryViewport->GetSize().y, 0.0f, 0.0f);
+        SceneGlobalData.GridSize                        = FVector4(ClusterGridSizeX, ClusterGridSizeY, ClusterGridSizeZ, 0.0f);
         SceneGlobalData.Time                            = (float)World->GetTimeSinceWorldCreation();
         SceneGlobalData.DeltaTime                       = Frame.CachedWorldDeltaTime;
         SceneGlobalData.FarPlane                        = PrimaryViewport->GetViewVolume().GetFar();
@@ -437,16 +437,16 @@ namespace Lumina
             const FViewVolume& VV = Capture.ViewVolume;
             FSceneGlobalData& Data = Capture.SceneGlobalData;
             Data = Frame.SceneGlobalData;
-            Data.CameraData.Location          = glm::vec4(VV.GetViewPosition(), 1.0f);
-            Data.CameraData.Up                = glm::vec4(VV.GetUpVector(), 1.0f);
-            Data.CameraData.Right             = glm::vec4(VV.GetRightVector(), 1.0f);
-            Data.CameraData.Forward           = glm::vec4(VV.GetForwardVector(), 1.0f);
+            Data.CameraData.Location          = FVector4(VV.GetViewPosition(), 1.0f);
+            Data.CameraData.Up                = FVector4(VV.GetUpVector(), 1.0f);
+            Data.CameraData.Right             = FVector4(VV.GetRightVector(), 1.0f);
+            Data.CameraData.Forward           = FVector4(VV.GetForwardVector(), 1.0f);
             Data.CameraData.View              = VV.GetViewMatrix();
             Data.CameraData.InverseView       = VV.GetInverseViewMatrix();
             Data.CameraData.Projection        = VV.GetProjectionMatrix();
             Data.CameraData.InverseProjection = VV.GetInverseProjectionMatrix();
-            const glm::uvec2 CaptureSize      = SceneViews[Capture.SceneViewIndex].Size;
-            Data.ScreenSize                   = glm::uvec4(CaptureSize.x, CaptureSize.y, 0, 0);
+            const FUIntVector2 CaptureSize      = SceneViews[Capture.SceneViewIndex].Size;
+            Data.ScreenSize                   = FUIntVector4(CaptureSize.x, CaptureSize.y, 0, 0);
             Data.FarPlane                     = VV.GetFar();
             Data.NearPlane                    = VV.GetNear();
             Data.CullData.Frustum             = VV.GetFrustum();
@@ -843,7 +843,7 @@ namespace Lumina
         SignalSlotConsumed((uint8)(FrameIndex % FRAMES_IN_FLIGHT));
     }
     
-    void FForwardRenderScene::SwapchainResized(glm::vec2 NewSize)
+    void FForwardRenderScene::SwapchainResized(FVector2 NewSize)
     {
         // BindingCache is per-scene; safe to clear. GRenderContext->Clear* are NOT --
         // they'd wipe pipelines shared across scenes/RmlUi/ImGui -> device lost.
@@ -852,7 +852,7 @@ namespace Lumina
         // Only the primary view tracks the swapchain; capture views keep their own size.
         FSceneView& Primary = SceneViews[0];
         Primary.Viewport = GRenderContext->CreateViewport(NewSize, "Forward Renderer Viewport");
-        Primary.Size     = glm::uvec2((uint32)NewSize.x, (uint32)NewSize.y);
+        Primary.Size     = FUIntVector2((uint32)NewSize.x, (uint32)NewSize.y);
 
         InitFrameResources();
 
@@ -1036,10 +1036,10 @@ namespace Lumina
                     // correct in both the editor viewport and game). Tested on transform + size only,
                     // so it works even before the document is built -- the result drives whether
                     // RmlUi::TickWorldWidgets bothers laying out + rasterizing the RT next frame.
-                    const glm::mat4 World = TransformComponent.GetWorldMatrix();
-                    const glm::vec3 Center = glm::vec3(World[3]);
-                    const float ScaleXY = glm::max(glm::length(glm::vec3(World[0])), glm::length(glm::vec3(World[1])));
-                    const float Radius  = 0.5f * glm::length(WidgetComponent.WorldSize) * glm::max(1.0f, ScaleXY);
+                    const FMatrix4 World = TransformComponent.GetWorldMatrix();
+                    const FVector3 Center = FVector3(World[3]);
+                    const float ScaleXY = Math::Max(Math::Length(FVector3(World[0])), Math::Length(FVector3(World[1])));
+                    const float Radius  = 0.5f * Math::Length(WidgetComponent.WorldSize) * Math::Max(1.0f, ScaleXY);
 
                     const bool bVisible = !bCullWidgets || WidgetFrustum.IntersectsSphere(Center, Radius);
                     Runtime.bVisible = bVisible;
@@ -1076,13 +1076,13 @@ namespace Lumina
                 // painter's order. Sort farthest-first by distance to the camera.
                 if (WidgetInstances.size() > 1)
                 {
-                    const glm::vec3 CameraPos = glm::vec3(SceneGlobalData.CameraData.Location);
+                    const FVector3 CameraPos = FVector3(SceneGlobalData.CameraData.Location);
                     eastl::sort(WidgetInstances.begin(), WidgetInstances.end(),
                         [CameraPos](const FWidgetInstance& A, const FWidgetInstance& B)
                         {
-                            const glm::vec3 DA = glm::vec3(A.Transform[3]) - CameraPos;
-                            const glm::vec3 DB = glm::vec3(B.Transform[3]) - CameraPos;
-                            return glm::dot(DA, DA) > glm::dot(DB, DB);
+                            const FVector3 DA = FVector3(A.Transform[3]) - CameraPos;
+                            const FVector3 DB = FVector3(B.Transform[3]) - CameraPos;
+                            return Math::Dot(DA, DA) > Math::Dot(DB, DB);
                         });
                 }
             });
@@ -1109,7 +1109,7 @@ namespace Lumina
                 // Editor visualizers: billboards for lights/cameras/sky/particles. Skipped in game/thumbnail worlds.
                 if (!World->IsGameWorld())
                 {
-                    auto EmplaceVisualizer = [this, &BillboardInstances](entt::entity Entity, const glm::vec3& Position, ENamedImage Icon, const glm::vec4& Color, float Size = 0.20f)
+                    auto EmplaceVisualizer = [this, &BillboardInstances](entt::entity Entity, const FVector3& Position, ENamedImage Icon, const FVector4& Color, float Size = 0.20f)
                     {
                         FBillboardInstance& Billboard = BillboardInstances.emplace_back();
                         Billboard.TextureIndex        = GetNamedImage(Icon)->GetResourceID();
@@ -1136,30 +1136,30 @@ namespace Lumina
 
                     PointLightView.each([&](entt::entity Entity, const SPointLightComponent& Light, const STransformComponent& Transform)
                     {
-                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::PointLightIcon, glm::vec4(Light.LightColor, 1.0f));
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::PointLightIcon, FVector4(Light.LightColor, 1.0f));
                     });
 
                     SpotLightView.each([&](entt::entity Entity, const SSpotLightComponent& Light, const STransformComponent& Transform)
                     {
-                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::SpotLightIcon, glm::vec4(Light.LightColor, 1.0f));
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::SpotLightIcon, FVector4(Light.LightColor, 1.0f));
                     });
 
                     DirectionalView.each([&](entt::entity Entity, const SDirectionalLightComponent& Light)
                     {
                         const auto& Transform = Registry.get<STransformComponent>(Entity);
-                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::DirectionalLightIcon, glm::vec4(Light.Color, 1.0f));
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::DirectionalLightIcon, FVector4(Light.Color, 1.0f));
                     });
 
                     SkyLightView.each([&](entt::entity Entity, const SSkyLightComponent&)
                     {
                         const auto& Transform = Registry.get<STransformComponent>(Entity);
-                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::SkyLightIcon, glm::vec4(1.0f));
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::SkyLightIcon, FVector4(1.0f));
                     });
 
                     auto ParticleView = Registry.view<SParticleSystemComponent, STransformComponent>(entt::exclude<SDisabledTag>);
                     ParticleView.each([&](entt::entity Entity, const SParticleSystemComponent&, const STransformComponent& Transform)
                     {
-                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::ParticleSystemIcon, glm::vec4(1.0f));
+                        EmplaceVisualizer(Entity, Transform.WorldTransform.Location, ENamedImage::ParticleSystemIcon, FVector4(1.0f));
                     });
                 }
                 #endif
@@ -1224,7 +1224,7 @@ namespace Lumina
 
 
             // LightCount can overshoot MAX_LIGHTS; clamp to match what Process*Light wrote.
-            LightData.NumLights = glm::min(LightCount.load(std::memory_order_acquire), (uint32)MAX_LIGHTS);
+            LightData.NumLights = Math::Min(LightCount.load(std::memory_order_acquire), (uint32)MAX_LIGHTS);
 
             // Serial fit/allocate after parallel light pass; shrinks when sum(area) exceeds atlas budget.
             AllocateShadowTiles();
@@ -1270,27 +1270,27 @@ namespace Lumina
                     float SkyModeAsFloat;
                     std::memcpy(&SkyModeAsFloat, &SkyModeBits, sizeof(float));
 
-                    EnvironmentParams.SolidSkyColor = glm::vec4(Env.SolidSkyColor, 0.0f);
-                    EnvironmentParams.ZenithColor   = glm::vec4(Env.ZenithColor, Env.HorizonExponent);
-                    EnvironmentParams.HorizonColor  = glm::vec4(Env.HorizonColor, 0.0f);
-                    EnvironmentParams.GroundColor   = glm::vec4(Env.GroundColor, 0.0f);
-                    EnvironmentParams.SunTint       = glm::vec4(Env.SunColorTint, Env.SunIntensity);
-                    EnvironmentParams.Misc          = glm::vec4(SkyModeAsFloat,
+                    EnvironmentParams.SolidSkyColor = FVector4(Env.SolidSkyColor, 0.0f);
+                    EnvironmentParams.ZenithColor   = FVector4(Env.ZenithColor, Env.HorizonExponent);
+                    EnvironmentParams.HorizonColor  = FVector4(Env.HorizonColor, 0.0f);
+                    EnvironmentParams.GroundColor   = FVector4(Env.GroundColor, 0.0f);
+                    EnvironmentParams.SunTint       = FVector4(Env.SunColorTint, Env.SunIntensity);
+                    EnvironmentParams.Misc          = FVector4(SkyModeAsFloat,
                                                                 Env.SunDiscScale,
                                                                 Env.SkyExposure,
                                                                 Env.MieAnisotropy);
 
-                    EnvironmentParams.NightSkyColor = glm::vec4(Env.NightSkyColor, Env.NightBrightness);
-                    EnvironmentParams.StarParams    = glm::vec4(Env.StarDensity,
+                    EnvironmentParams.NightSkyColor = FVector4(Env.NightSkyColor, Env.NightBrightness);
+                    EnvironmentParams.StarParams    = FVector4(Env.StarDensity,
                                                                 Env.StarBrightness,
                                                                 Env.StarTwinkleSpeed,
                                                                 Env.StarSize);
-                    EnvironmentParams.MoonParams    = glm::vec4(Env.MoonSize,
+                    EnvironmentParams.MoonParams    = FVector4(Env.MoonSize,
                                                                 Env.MoonGlowSize,
                                                                 Env.MoonBrightness,
                                                                 Env.bMoonOpposeSun ? 1.0f : 0.0f);
-                    EnvironmentParams.MoonDirection = glm::vec4(Env.MoonDirection, 0.0f);
-                    EnvironmentParams.GalaxyParams  = glm::vec4(Env.GalaxyIntensity, Env.GalaxyTilt, 0.0f, 0.0f);
+                    EnvironmentParams.MoonDirection = FVector4(Env.MoonDirection, 0.0f);
+                    EnvironmentParams.GalaxyParams  = FVector4(Env.GalaxyIntensity, Env.GalaxyTilt, 0.0f, 0.0f);
                 });
             }
 
@@ -1299,7 +1299,7 @@ namespace Lumina
             {
                 LUMINA_PROFILE_SECTION("Skylight Processing");
 
-                LightData.AmbientLight = glm::vec4(0.0f);
+                LightData.AmbientLight = FVector4(0.0f);
 
                 SkyLightView.each([&LightData, ActiveEnv] (const SSkyLightComponent& Sky)
                 {
@@ -1308,7 +1308,7 @@ namespace Lumina
                         return;
                     }
 
-                    glm::vec3 AmbientRGB = Sky.AmbientColor;
+                    FVector3 AmbientRGB = Sky.AmbientColor;
                     if (Sky.bAmbientFromSky && ActiveEnv)
                     {
                         if (ActiveEnv->SkyMode == ESkyMode::SolidColor)
@@ -1324,15 +1324,15 @@ namespace Lumina
                         {
                             // SunDirection points FROM surface TO sun, so .y is elevation.
                             const float SunHeight = LightData.bHasSun
-                                ? glm::clamp(LightData.SunDirection.y, -1.0f, 1.0f)
+                                ? Math::Clamp(LightData.SunDirection.y, -1.0f, 1.0f)
                                 : 0.5f;
-                            const float Day = glm::clamp(SunHeight * 2.0f + 0.2f, 0.0f, 1.0f);
-                            AmbientRGB = glm::mix(glm::vec3(0.05f, 0.06f, 0.10f),
-                                                  glm::vec3(0.40f, 0.55f, 0.85f),
+                            const float Day = Math::Clamp(SunHeight * 2.0f + 0.2f, 0.0f, 1.0f);
+                            AmbientRGB = Math::Mix(FVector3(0.05f, 0.06f, 0.10f),
+                                                  FVector3(0.40f, 0.55f, 0.85f),
                                                   Day);
                         }
                     }
-                    LightData.AmbientLight = glm::vec4(AmbientRGB, Sky.Intensity);
+                    LightData.AmbientLight = FVector4(AmbientRGB, Sky.Intensity);
                 });
             }
 
@@ -1359,19 +1359,19 @@ namespace Lumina
                     }
 
                     FExponentialHeightFogParams& P = Frame.FogParams;
-                    P.InscatteringColor = glm::vec4(Fog.FogInscatteringColor, Fog.FogDensity);
-                    P.HeightParams      = glm::vec4(Fog.FogHeightFalloff, BaseHeight,
+                    P.InscatteringColor = FVector4(Fog.FogInscatteringColor, Fog.FogDensity);
+                    P.HeightParams      = FVector4(Fog.FogHeightFalloff, BaseHeight,
                                                     Fog.FogStartDistance, Fog.FogMaxOpacity);
-                    P.DirectionalColor  = glm::vec4(Fog.DirectionalInscatteringColor,
+                    P.DirectionalColor  = FVector4(Fog.DirectionalInscatteringColor,
                                                     Fog.DirectionalInscatteringExponent);
-                    P.VolumetricParams  = glm::vec4(Fog.VolumetricScatteringIntensity,
+                    P.VolumetricParams  = FVector4(Fog.VolumetricScatteringIntensity,
                                                     Fog.VolumetricAnisotropy,
                                                     Fog.VolumetricMaxDistance,
                                                     Fog.DirectionalInscatteringStartDistance);
 
                     Frame.bHasFog             = true;
                     Frame.bVolumetricFog      = Fog.bVolumetricFog;
-                    Frame.VolumetricStepCount = (uint32)glm::clamp(Fog.VolumetricStepCount, 4, 128);
+                    Frame.VolumetricStepCount = (uint32)Math::Clamp(Fog.VolumetricStepCount, 4, 128);
                 });
             }
         }
@@ -1381,7 +1381,7 @@ namespace Lumina
 
         if (LightData.bHasSun)
         {
-            const glm::vec3 SunDir = glm::normalize(LightData.SunDirection);
+            const FVector3 SunDir = Math::Normalize(LightData.SunDirection);
             constexpr float ShadowSweepDistance = 2000.0f;
             SceneGlobalData.CullData.ShadowFrustum   = SceneGlobalData.CullData.Frustum.Extruded(SunDir, ShadowSweepDistance);
             SceneGlobalData.CullData.bHasDirectional = 1u;
@@ -1433,12 +1433,12 @@ namespace Lumina
         const SIZE_T BoneDataSize         = BonesData.size() * sizeof(FBoneTransform);
 
         // GPU pre-skinning: compute-written vertex buffer + CPU-uploaded descriptor list.
-        const SIZE_T PreSkinnedSize       = glm::max<SIZE_T>(sizeof(FPreSkinnedVertex),
+        const SIZE_T PreSkinnedSize       = Math::Max<SIZE_T>(sizeof(FPreSkinnedVertex),
                                             (SIZE_T)Frame.TotalPreSkinnedVertices * sizeof(FPreSkinnedVertex));
-        const SIZE_T SkinDescriptorSize   = glm::max<SIZE_T>(sizeof(FSkinDescriptor),
+        const SIZE_T SkinDescriptorSize   = Math::Max<SIZE_T>(sizeof(FSkinDescriptor),
                                             Frame.SkinDescriptors.size() * sizeof(FSkinDescriptor));
 
-        const uint32 ActiveShadowCount = glm::min<uint32>(ShadowDataCount.load(std::memory_order_acquire), (uint32)MAX_SHADOWS);
+        const uint32 ActiveShadowCount = Math::Min<uint32>(ShadowDataCount.load(std::memory_order_acquire), (uint32)MAX_SHADOWS);
         const SIZE_T ShadowsUploadSize = ActiveShadowCount * sizeof(FLightShadowData);
         // Single contiguous upload (header + all FLight slots + active shadow prefix). Sized to
         // cover the shadow suffix even with no active shadows so the buffer can hold any shadow count.
@@ -1447,26 +1447,26 @@ namespace Lumina
         const SIZE_T WidgetSize        = Frame.WidgetInstances.size() * sizeof(FWidgetInstance);
 
         // Per-instance meshlet prefix sum (one uint per instance + sentinel); cull pass binary-searches.
-        const SIZE_T InstanceMeshletPrefixSize = glm::max<SIZE_T>(
+        const SIZE_T InstanceMeshletPrefixSize = Math::Max<SIZE_T>(
             sizeof(uint32),
             InstanceMeshletPrefix.size() * sizeof(uint32));
 
         // Shared draw list: NumViews * TotalMeshletBound FMeshletDraw; views own disjoint slices via FCullView.DrawListOffset.
-        const SIZE_T MeshletDrawListSize = glm::max<SIZE_T>(
+        const SIZE_T MeshletDrawListSize = Math::Max<SIZE_T>(
             sizeof(uint32) * 2,
             (SIZE_T)NumCullViews * (SIZE_T)TotalMeshletBound * sizeof(uint32) * 2);
 
         // Shared indirect args: NumViews * NumDraws FDrawIndirectArguments.
-        const SIZE_T IndirectArgsSize = glm::max<SIZE_T>(
+        const SIZE_T IndirectArgsSize = Math::Max<SIZE_T>(
             sizeof(FDrawIndirectArguments),
             IndirectArgs.size() * sizeof(FDrawIndirectArguments));
 
-        const SIZE_T CullViewSize = glm::max<SIZE_T>(
+        const SIZE_T CullViewSize = Math::Max<SIZE_T>(
             sizeof(FCullView),
             (SIZE_T)NumCullViews * sizeof(FCullView));
 
         // Worst case: every meshlet HZB-occluded in phase 0 (first frame). Stride matches FMeshletDeferred.
-        const SIZE_T DeferListSize = glm::max<SIZE_T>(
+        const SIZE_T DeferListSize = Math::Max<SIZE_T>(
             sizeof(uint32) * 4,
             (SIZE_T)TotalMeshletBound * sizeof(uint32) * 4);
 
@@ -1587,7 +1587,7 @@ namespace Lumina
             float SunCos = 1.0f;
             if (bLastConvolvedHasSun && LightData.bHasSun)
             {
-                SunCos = glm::dot(LastConvolvedSunDirection, LightData.SunDirection);
+                SunCos = Math::Dot(LastConvolvedSunDirection, LightData.SunDirection);
             }
             const bool bConvSunChanged = bConvHasSunChanged || (SunCos < SunCosThreshold);
             const bool bConvParamsChanged =
@@ -1797,7 +1797,7 @@ namespace Lumina
         }
         if (ForcedLODIndex >= 0)
         {
-            return (uint32)glm::min((int32)Surface.NumLODs - 1, ForcedLODIndex);
+            return (uint32)Math::Min((int32)Surface.NumLODs - 1, ForcedLODIndex);
         }
         if (bUseLODs)
         {
@@ -1813,8 +1813,8 @@ namespace Lumina
             return 0u;
         }
         const int32 Biased = (int32)CameraLOD + ShadowLODBias;
-        const int32 MaxLOD = (int32)glm::min<uint32>(Surface.NumLODs - 1u, MAX_SHADOW_LOD);
-        return (uint32)glm::clamp(Biased, 0, MaxLOD);
+        const int32 MaxLOD = (int32)Math::Min<uint32>(Surface.NumLODs - 1u, MAX_SHADOW_LOD);
+        return (uint32)Math::Clamp(Biased, 0, MaxLOD);
     }
 
     void FForwardRenderScene::ProcessStaticMeshEntityInternal(entt::entity Entity, const SStaticMeshComponent& MeshComponent, const STransformComponent& TransformComponent, FThreadLocalDrawData& Local)
@@ -1829,23 +1829,23 @@ namespace Lumina
             return;
         }
 
-        const glm::mat4& TransformMatrix = TransformComponent.CachedMatrix;
+        const FMatrix4& TransformMatrix = TransformComponent.CachedMatrix;
 
         // World bounds first so we can reject before paying for mesh/surface lookups.
         // BoundsScale inflates cull sphere when animation/displacement push past asset AABB.
-        const float     CullScale   = glm::max(MeshComponent.BoundsScale, 1.0f);
+        const float     CullScale   = Math::Max(MeshComponent.BoundsScale, 1.0f);
         const FAABB     BoundingBox = Mesh->GetAABB().ToWorld(TransformMatrix);
-        const glm::vec3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
-        const glm::vec3 Extents     = BoundingBox.Max - Center;
-        const float     Radius      = glm::length(Extents) * CullScale;
-        const glm::vec4 SphereBounds = glm::vec4(Center, Radius);
+        const FVector3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
+        const FVector3 Extents     = BoundingBox.Max - Center;
+        const float     Radius      = Math::Length(Extents) * CullScale;
+        const FVector4 SphereBounds = FVector4(Center, Radius);
 
         if (!SceneCullContext.ShouldKeep(
                 Center,
                 Radius,
                 MeshComponent.bCastShadow,
                 MeshComponent.MaxDrawDistance,
-                glm::vec3(SceneGlobalData.CameraData.Location)))
+                FVector3(SceneGlobalData.CameraData.Location)))
         {
             ++Local.Stats.NumInstancesCulled;
             return;
@@ -1873,15 +1873,15 @@ namespace Lumina
         }
 
         // Angular size proxy (2r/d, squared to skip sqrt). Tiny props skip depth pre-pass.
-        const glm::vec3 CameraPos  = glm::vec3(SceneGlobalData.CameraData.Location);
-        const glm::vec3 ToCamera   = Center - CameraPos;
-        const float     DistSq     = glm::dot(ToCamera, ToCamera);
+        const FVector3 CameraPos  = FVector3(SceneGlobalData.CameraData.Location);
+        const FVector3 ToCamera   = Center - CameraPos;
+        const float     DistSq     = Math::Dot(ToCamera, ToCamera);
         constexpr float kMinAngularSize = 0.05f;
         const bool bSignificantOccluder = (Radius * Radius) > DistSq * (kMinAngularSize * kMinAngularSize);
 
         // Distance in radii; one sqrt+divide hoisted out of the per-surface loop.
         const float DistanceOverRadius = (Radius > 0.0f)
-            ? (glm::sqrt(DistSq) / Radius)
+            ? (Math::Sqrt(DistSq) / Radius)
             : 0.0f;
 
         EInstanceFlags BaseFlags = EInstanceFlags::None;
@@ -1964,22 +1964,22 @@ namespace Lumina
         // ResolveAllDirtyTransforms already ran serially before this parallel gather, so CachedMatrix
         // is authoritative. Read it directly like the static path -- GetWorldMatrix() would re-walk the
         // parent chain and mutate the registry (remove<FNeedsTransformUpdate>) from a worker thread.
-        const glm::mat4& TransformMatrix = TransformComponent.CachedMatrix;
+        const FMatrix4& TransformMatrix = TransformComponent.CachedMatrix;
 
         // Reject before uploading bones (biggest per-entity skeletal cost).
-        const float     CullScale   = glm::max(MeshComponent.BoundsScale, 1.0f);
+        const float     CullScale   = Math::Max(MeshComponent.BoundsScale, 1.0f);
         const FAABB     BoundingBox = Mesh->GetAABB().ToWorld(TransformMatrix);
-        const glm::vec3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
-        const glm::vec3 Extents     = BoundingBox.Max - Center;
-        const float     Radius      = glm::length(Extents) * CullScale;
-        const glm::vec4 SphereBounds = glm::vec4(Center, Radius);
+        const FVector3 Center      = (BoundingBox.Min + BoundingBox.Max) * 0.5f;
+        const FVector3 Extents     = BoundingBox.Max - Center;
+        const float     Radius      = Math::Length(Extents) * CullScale;
+        const FVector4 SphereBounds = FVector4(Center, Radius);
 
         if (!SceneCullContext.ShouldKeep(
                 Center,
                 Radius,
                 MeshComponent.bCastShadow,
                 MeshComponent.MaxDrawDistance,
-                glm::vec3(SceneGlobalData.CameraData.Location)))
+                FVector3(SceneGlobalData.CameraData.Location)))
         {
             ++Local.Stats.NumInstancesCulled;
             return;
@@ -1991,7 +1991,7 @@ namespace Lumina
                 Center,
                 Radius,
                 MeshComponent.MaxDrawDistance,
-                glm::vec3(SceneGlobalData.CameraData.Location)))
+                FVector3(SceneGlobalData.CameraData.Location)))
         {
             MeshComponent.LastRenderedTime = World->GetTimeSinceWorldCreation();
         }
@@ -2014,7 +2014,7 @@ namespace Lumina
             {
                 // Pack each mat4 down to its 3 rows (last row is always (0,0,0,1) for affine).
                 Local.BonesData.reserve(Local.BonesData.size() + SkeletonBoneCount);
-                for (const glm::mat4& M : MeshComponent.BoneTransforms)
+                for (const FMatrix4& M : MeshComponent.BoneTransforms)
                 {
                     Local.BonesData.push_back(PackBoneTransform(M));
                 }
@@ -2022,7 +2022,7 @@ namespace Lumina
             else
             {
                 // No active animation: BoneWorld * InvBindMatrix collapses to identity for every bone.
-                static const FBoneTransform IdentityBone{ glm::vec4(1,0,0,0), glm::vec4(0,1,0,0), glm::vec4(0,0,1,0) };
+                static const FBoneTransform IdentityBone{ FVector4(1,0,0,0), FVector4(0,1,0,0), FVector4(0,0,1,0) };
                 Local.BonesData.resize(Local.BonesData.size() + SkeletonBoneCount, IdentityBone);
             }
         }
@@ -2030,14 +2030,14 @@ namespace Lumina
         const uint32 NumBones = SkeletonBoneCount;
 
         // Angular size proxy; bind-pose bounds are conservative but fine for this coarse test.
-        const glm::vec3 CameraPos  = glm::vec3(SceneGlobalData.CameraData.Location);
-        const glm::vec3 ToCamera   = Center - CameraPos;
-        const float     DistSq     = glm::dot(ToCamera, ToCamera);
+        const FVector3 CameraPos  = FVector3(SceneGlobalData.CameraData.Location);
+        const FVector3 ToCamera   = Center - CameraPos;
+        const float     DistSq     = Math::Dot(ToCamera, ToCamera);
         constexpr float kMinAngularSize = 0.05f;
         const bool bSignificantOccluder = (Radius * Radius) > DistSq * (kMinAngularSize * kMinAngularSize);
 
         const float DistanceOverRadius = (Radius > 0.0f)
-            ? (glm::sqrt(DistSq) / Radius)
+            ? (Math::Sqrt(DistSq) / Radius)
             : 0.0f;
 
         // Skeletal assets always carry FSkinnedVertex; flag is unconditional.
@@ -2127,13 +2127,13 @@ namespace Lumina
             {
                 if (SurfaceMeshletCount > 0u)
                 {
-                    MinMeshlet    = glm::min(MinMeshlet, SurfaceMeshletOffset);
-                    MaxMeshletEnd = glm::max(MaxMeshletEnd, SurfaceMeshletOffset + SurfaceMeshletCount);
+                    MinMeshlet    = Math::Min(MinMeshlet, SurfaceMeshletOffset);
+                    MaxMeshletEnd = Math::Max(MaxMeshletEnd, SurfaceMeshletOffset + SurfaceMeshletCount);
                 }
                 if (ShadowMeshletCount > 0u)
                 {
-                    MinMeshlet    = glm::min(MinMeshlet, ShadowMeshletOffset);
-                    MaxMeshletEnd = glm::max(MaxMeshletEnd, ShadowMeshletOffset + ShadowMeshletCount);
+                    MinMeshlet    = Math::Min(MinMeshlet, ShadowMeshletOffset);
+                    MaxMeshletEnd = Math::Max(MaxMeshletEnd, ShadowMeshletOffset + ShadowMeshletCount);
                 }
             }
         }
@@ -2531,7 +2531,7 @@ namespace Lumina
         }
     }
 
-    bool FForwardRenderScene::ShouldRequestShadow(const glm::vec3& LightPosition, float LightRadius) const
+    bool FForwardRenderScene::ShouldRequestShadow(const FVector3& LightPosition, float LightRadius) const
     {
         return ExtractFrame->SceneGlobalData.CullData.Frustum.IntersectsSphere(LightPosition, LightRadius);
     }
@@ -2567,10 +2567,10 @@ namespace Lumina
         for (entt::entity Entity : DirectionalView)
         {
             const SDirectionalLightComponent& Light = DirectionalView.get<SDirectionalLightComponent>(Entity);
-            const float DirLenSq = glm::dot(Light.Direction, Light.Direction);
+            const float DirLenSq = Math::Dot(Light.Direction, Light.Direction);
             if (DirLenSq > 0.0001f)
             {
-                SceneCullContext.SunDirection = glm::normalize(Light.Direction);
+                SceneCullContext.SunDirection = Math::Normalize(Light.Direction);
                 SceneCullContext.bHasSun      = true;
                 break;
             }
@@ -2595,7 +2595,7 @@ namespace Lumina
                 continue;
             }
             const STransformComponent&  Transform = PointView.get<STransformComponent>(Entity);
-            const glm::vec3 Position = Transform.WorldTransform.Location;
+            const FVector3 Position = Transform.WorldTransform.Location;
             const float     Radius   = Light.Attenuation;
             if (!SceneCullContext.Frustum.IntersectsSphere(Position, Radius))
             {
@@ -2613,7 +2613,7 @@ namespace Lumina
                 continue;
             }
             const STransformComponent& Transform = SpotView.get<STransformComponent>(Entity);
-            const glm::vec3 Position = Transform.WorldTransform.Location;
+            const FVector3 Position = Transform.WorldTransform.Location;
             const float     Radius   = Light.Attenuation;
             if (!SceneCullContext.Frustum.IntersectsSphere(Position, Radius))
             {
@@ -2640,7 +2640,7 @@ namespace Lumina
         FLight Light                = {};
         Light.Flags                 = ELightFlags::Point;
         Light.Falloff               = PointLight.Falloff;
-        Light.Color                 = PackColor(glm::vec4(PointLight.LightColor, 1.0));
+        Light.Color                 = PackColor(FVector4(PointLight.LightColor, 1.0));
         Light.Intensity             = PointLight.Intensity;
         Light.Radius                = PointLight.Attenuation;
         Light.Position              = TransformComponent.WorldTransform.Location;
@@ -2653,10 +2653,10 @@ namespace Lumina
 
         if (PointLight.bCastShadows && ShouldRequestShadow(Light.Position, Light.Radius))
         {
-            const glm::vec3 CamPos = ExtractFrame->ViewVolume.GetViewPosition();
-            const float Dist = glm::distance(CamPos, Light.Position);
+            const FVector3 CamPos = ExtractFrame->ViewVolume.GetViewPosition();
+            const float Dist = Math::Distance(CamPos, Light.Position);
             constexpr float ResolutionScale = 2048.0f;
-            const uint32 DesiredPixels = (uint32)((Light.Radius / glm::max(Dist, 0.01f)) * ResolutionScale);
+            const uint32 DesiredPixels = (uint32)((Light.Radius / Math::Max(Dist, 0.01f)) * ResolutionScale);
 
             FShadowRequest Req;
             Req.LightIndex      = Lights;
@@ -2664,8 +2664,8 @@ namespace Lumina
             Req.DesiredPixels   = DesiredPixels;
             Req.DistanceToCamera = Dist;
             Req.Position        = Light.Position;
-            Req.Direction       = glm::vec3(0.0f);
-            Req.Up              = glm::vec3(0.0f);
+            Req.Direction       = FVector3(0.0f);
+            Req.Up              = FVector3(0.0f);
             Req.Attenuation     = Light.Radius;
             Req.OuterFOVDegrees = 0.0f;
             {
@@ -2691,25 +2691,25 @@ namespace Lumina
             return;
         }
 
-        const glm::quat WorldRotation = TransformComponent.GetWorldRotation();
-        glm::vec3 UpdatedForward    = WorldRotation * FViewVolume::ForwardAxis;
-        glm::vec3 UpdatedUp         = WorldRotation * FViewVolume::UpAxis;
+        const FQuat WorldRotation = TransformComponent.GetWorldRotation();
+        FVector3 UpdatedForward    = WorldRotation * FViewVolume::ForwardAxis;
+        FVector3 UpdatedUp         = WorldRotation * FViewVolume::UpAxis;
 
         float InnerDegrees = SpotLight.InnerConeAngle;
         float OuterDegrees = SpotLight.OuterConeAngle;
 
-        float InnerCos = glm::cos(glm::radians(InnerDegrees));
-        float OuterCos = glm::cos(glm::radians(OuterDegrees));
+        float InnerCos = Math::Cos(Math::Radians(InnerDegrees));
+        float OuterCos = Math::Cos(Math::Radians(OuterDegrees));
 
         FLight Light                = {};
         Light.Flags                 = ELightFlags::Spot;
         Light.Position              = TransformComponent.WorldTransform.Location;
-        Light.Direction             = glm::normalize(UpdatedForward);
+        Light.Direction             = Math::Normalize(UpdatedForward);
         Light.Falloff               = SpotLight.Falloff;
-        Light.Color                 = PackColor(glm::vec4(SpotLight.LightColor, 1.0));
+        Light.Color                 = PackColor(FVector4(SpotLight.LightColor, 1.0));
         Light.Intensity             = SpotLight.Intensity;
         Light.Radius                = SpotLight.Attenuation;
-        Light.Angles                = glm::vec2(InnerCos, OuterCos);
+        Light.Angles                = FVector2(InnerCos, OuterCos);
         Light.ShadowDataIndex       = INDEX_NONE;
         if (SpotLight.bVolumetric)
         {
@@ -2719,10 +2719,10 @@ namespace Lumina
 
         if (SpotLight.bCastShadows && ShouldRequestShadow(Light.Position, Light.Radius))
         {
-            const glm::vec3 CamPos = ExtractFrame->ViewVolume.GetViewPosition();
-            const float Dist = glm::distance(CamPos, Light.Position);
+            const FVector3 CamPos = ExtractFrame->ViewVolume.GetViewPosition();
+            const float Dist = Math::Distance(CamPos, Light.Position);
             constexpr float ResolutionScale = 2048.0f;
-            const uint32 DesiredPixels = (uint32)((Light.Radius / glm::max(Dist, 0.01f)) * ResolutionScale);
+            const uint32 DesiredPixels = (uint32)((Light.Radius / Math::Max(Dist, 0.01f)) * ResolutionScale);
 
             FShadowRequest Req;
             Req.LightIndex      = Lights;
@@ -2846,7 +2846,7 @@ namespace Lumina
                 V |= V >> 8;  V |= V >> 16;
                 ++V;
             }
-            Sizes[i] = glm::clamp(V, MinTile, MaxTile);
+            Sizes[i] = Math::Clamp(V, MinTile, MaxTile);
         }
 
         // Point lights cost six tiles (one per cube face), spots one; reflect that
@@ -2938,7 +2938,7 @@ namespace Lumina
 
                 // Near plane scales with radius; a fixed 0.01 collapses NDC z to the
                 // last ~0.001 of the depth buffer, leaving no precision for PCF.
-                const float ShadowNear = glm::max(Req.Attenuation * 0.01f, 0.1f);
+                const float ShadowNear = Math::Max(Req.Attenuation * 0.01f, 0.1f);
                 FViewVolume LightView(90.0f, 1.0f, ShadowNear, Req.Attenuation);
 
                 auto SetFace = [&](uint32 Face)
@@ -2990,7 +2990,7 @@ namespace Lumina
                 FLightShadowData& ShadowData = LightData.Shadows[ShadowSlot];
                 const FShadowTile& Tile      = ShadowAtlas.GetTile(TileIndex);
 
-                const float ShadowNear = glm::max(Req.Attenuation * 0.01f, 0.1f);
+                const float ShadowNear = Math::Max(Req.Attenuation * 0.01f, 0.1f);
                 FViewVolume ViewVolume(Req.OuterFOVDegrees * 2.0f, 1.0f, ShadowNear, Req.Attenuation);
                 ViewVolume.SetView(Req.Position, Req.Direction, Req.Up);
                 ShadowData.ViewProjection[0] = ViewVolume.ToReverseDepthViewProjectionMatrix();
@@ -3026,7 +3026,7 @@ namespace Lumina
         // IndirectArgs slot (v,d) = v*NumDraws + d. CullMeshlets owns all atomic appends.
         const uint32 NumDraws = Frame.NumDrawsPerView;
 
-        auto PushView = [&](const glm::mat4& ViewProjection, const glm::vec3& Origin, uint32 Flags)
+        auto PushView = [&](const FMatrix4& ViewProjection, const FVector3& Origin, uint32 Flags)
         {
             // AllocateShadowTiles guarantees the total view count fits in
             // GMaxCullViews before we get here, so no runtime clamp is needed.
@@ -3042,7 +3042,7 @@ namespace Lumina
             // shader's asuint(ViewOriginAndFlags.w) unpack.
             float FlagsAsFloat;
             std::memcpy(&FlagsAsFloat, &Flags, sizeof(float));
-            View.ViewOriginAndFlags = glm::vec4(Origin, FlagsAsFloat);
+            View.ViewOriginAndFlags = FVector4(Origin, FlagsAsFloat);
             View.DrawListOffset     = ViewIndex * TotalMeshletBound;
             View.DrawListCapacity   = TotalMeshletBound;
             View.IndirectArgsOffset = ViewIndex * NumDraws;
@@ -3090,7 +3090,7 @@ namespace Lumina
         // View 0: main camera. Frustum + occlusion gated by render settings so the
         // toggles disable culling at runtime; cone is always cheap so it stays.
         {
-            const glm::mat4 CameraVP = ViewVolume.GetProjectionMatrix() * ViewVolume.GetViewMatrix();
+            const FMatrix4 CameraVP = ViewVolume.GetProjectionMatrix() * ViewVolume.GetViewMatrix();
             uint32 CameraFlags = ECullViewFlags::Cone;
             if (RenderSettings.bFrustumCull)   CameraFlags |= ECullViewFlags::Frustum;
             if (RenderSettings.bOcclusionCull) CameraFlags |= ECullViewFlags::Occlusion;
@@ -3166,7 +3166,7 @@ namespace Lumina
 
         // Camera-late view: phase 1 re-tests the defer list against the rebuilt HZB.
         {
-            const glm::mat4 CameraVP = ViewVolume.GetProjectionMatrix() * ViewVolume.GetViewMatrix();
+            const FMatrix4 CameraVP = ViewVolume.GetProjectionMatrix() * ViewVolume.GetViewMatrix();
             const uint32 CameraLateFlags =
                 ECullViewFlags::Occlusion |
                 ECullViewFlags::PhaseLate;
@@ -3180,7 +3180,7 @@ namespace Lumina
         // index it via CameraViewIndex. Appended last so the indices above stay valid.
         for (FFrameData::FCaptureViewData& Capture : Frame.CaptureViews)
         {
-            const glm::mat4 CaptureVP = Capture.ViewVolume.GetProjectionMatrix() * Capture.ViewVolume.GetViewMatrix();
+            const FMatrix4 CaptureVP = Capture.ViewVolume.GetProjectionMatrix() * Capture.ViewVolume.GetViewMatrix();
             const uint32 CaptureFlags = ECullViewFlags::Frustum | ECullViewFlags::Cone;
             Capture.CameraViewIndex = PushView(CaptureVP, Capture.ViewVolume.GetViewPosition(), CaptureFlags);
         }
@@ -3189,9 +3189,9 @@ namespace Lumina
     // Correlated-color-temperature -> linear RGB tint (Tanner Helland approximation),
     // normalized so the brightest channel is 1.0 -- it tints the sun without changing
     // its intensity (that's the separate Intensity multiplier). ~6500K ≈ white.
-    static glm::vec3 ColorTemperatureToRGB(float Kelvin)
+    static FVector3 ColorTemperatureToRGB(float Kelvin)
     {
-        const float Temp = glm::clamp(Kelvin, 1000.0f, 40000.0f) / 100.0f;
+        const float Temp = Math::Clamp(Kelvin, 1000.0f, 40000.0f) / 100.0f;
 
         float R;
         float G;
@@ -3200,12 +3200,12 @@ namespace Lumina
         if (Temp <= 66.0f)
         {
             R = 255.0f;
-            G = 99.4708025861f * glm::log(Temp) - 161.1195681661f;
+            G = 99.4708025861f * Math::Log(Temp) - 161.1195681661f;
         }
         else
         {
-            R = 329.698727446f * glm::pow(Temp - 60.0f, -0.1332047592f);
-            G = 288.1221695283f * glm::pow(Temp - 60.0f, -0.0755148492f);
+            R = 329.698727446f * Math::Pow(Temp - 60.0f, -0.1332047592f);
+            G = 288.1221695283f * Math::Pow(Temp - 60.0f, -0.0755148492f);
         }
 
         if (Temp >= 66.0f)
@@ -3218,12 +3218,12 @@ namespace Lumina
         }
         else
         {
-            B = 138.5177312231f * glm::log(Temp - 10.0f) - 305.0447927307f;
+            B = 138.5177312231f * Math::Log(Temp - 10.0f) - 305.0447927307f;
         }
 
-        glm::vec3 RGB = glm::clamp(glm::vec3(R, G, B) / 255.0f, glm::vec3(0.0f), glm::vec3(1.0f));
-        const float MaxC = glm::max(RGB.x, glm::max(RGB.y, RGB.z));
-        return MaxC > 1e-4f ? RGB / MaxC : glm::vec3(1.0f);
+        FVector3 RGB = Math::Clamp(FVector3(R, G, B) / 255.0f, FVector3(0.0f), FVector3(1.0f));
+        const float MaxC = Math::Max(RGB.x, Math::Max(RGB.y, RGB.z));
+        return MaxC > 1e-4f ? RGB / MaxC : FVector3(1.0f);
     }
 
     void FForwardRenderScene::ProcessDirectionalLight(const SDirectionalLightComponent& DirectionalLight, TAtomic<uint32>& LightCount)
@@ -3242,7 +3242,7 @@ namespace Lumina
         const float FarClip  = ViewVolume.GetFar();
 
         // Optional black-body tint: physical sun color from correlated color temperature.
-        glm::vec3 LightColor = DirectionalLight.Color;
+        FVector3 LightColor = DirectionalLight.Color;
         if (DirectionalLight.bUseTemperature)
         {
             LightColor *= ColorTemperatureToRGB(DirectionalLight.Temperature);
@@ -3250,9 +3250,9 @@ namespace Lumina
 
         FLight Light            = {};
         Light.Flags             = ELightFlags::Directional;
-        Light.Color             = PackColor(glm::vec4(LightColor, 1.0));
+        Light.Color             = PackColor(FVector4(LightColor, 1.0));
         Light.Intensity         = DirectionalLight.Intensity;
-        Light.Direction         = glm::normalize(DirectionalLight.Direction);
+        Light.Direction         = Math::Normalize(DirectionalLight.Direction);
         Light.ShadowDataIndex   = INDEX_NONE;
         LightData.SunDirection  = Light.Direction;
         if (DirectionalLight.bVolumetric)
@@ -3280,40 +3280,40 @@ namespace Lumina
         SceneGlobalData.CullData.ShadowMaxDistance = DirectionalLight.ShadowMaxDistance;
 
         // Shadow tuning forwarded to the lit pixel shaders via the light buffer.
-        LightData.ShadowParams  = glm::vec4(DirectionalLight.ShadowNormalBias,
+        LightData.ShadowParams  = FVector4(DirectionalLight.ShadowNormalBias,
                                             DirectionalLight.ShadowDepthBias,
                                             DirectionalLight.ShadowSoftness,
                                             DirectionalLight.CascadeBlend);
-        LightData.ShadowParams2 = glm::vec4(DirectionalLight.ShadowDistanceFade,
+        LightData.ShadowParams2 = FVector4(DirectionalLight.ShadowDistanceFade,
                                             float(DirectionalLight.ShadowSampleCount),
                                             0.0f, 0.0f);
 
-        const float CascadeSplitLambda = glm::clamp(DirectionalLight.CascadeSplitLambda, 0.0f, 1.0f);
+        const float CascadeSplitLambda = Math::Clamp(DirectionalLight.CascadeSplitLambda, 0.0f, 1.0f);
 
         constexpr float ShadowMinDistance   = 1.0f;
 
-        const float ShadowFar  = glm::min(FarClip, DirectionalLight.ShadowMaxDistance);
-        const float ShadowNear = glm::max(NearClip, ShadowMinDistance);
+        const float ShadowFar  = Math::Min(FarClip, DirectionalLight.ShadowMaxDistance);
+        const float ShadowNear = Math::Max(NearClip, ShadowMinDistance);
         const float ClipRange  = ShadowFar - ShadowNear;
         const float MinDepth   = ShadowNear;
         const float MaxDepth   = ShadowFar;
-        const float DepthRatio = MaxDepth / glm::max(MinDepth, 0.0001f);
+        const float DepthRatio = MaxDepth / Math::Max(MinDepth, 0.0001f);
         
         float CascadeFarDistances[NumCascades];
         for (int i = 0; i < NumCascades; ++i)
         {
             const float P       = (float)(i + 1) / (float)NumCascades;
-            const float LogD    = MinDepth * glm::pow(DepthRatio, P);
+            const float LogD    = MinDepth * Math::Pow(DepthRatio, P);
             const float UniD    = MinDepth + ClipRange * P;
             const float D       = CascadeSplitLambda * (LogD - UniD) + UniD;
             CascadeFarDistances[i]      = D;
             LightData.CascadeSplits[i]  = D; // World-distance, view-space Z.
         }
         
-        const glm::mat4& CamView   = ViewVolume.GetViewMatrix();
+        const FMatrix4& CamView   = ViewVolume.GetViewMatrix();
         const float      CamFOV    = ViewVolume.GetFOV();
         const float      CamAspect = ViewVolume.GetAspectRatio();
-        const glm::vec3  LightDir  = Light.Direction; // Toward the sun.
+        const FVector3  LightDir  = Light.Direction; // Toward the sun.
         
         float LastSplitDistance = ShadowNear;
         for (int i = 0; i < NumCascades; ++i)
@@ -3329,15 +3329,15 @@ namespace Lumina
 
             // World-space corners of sub-frustum [SplitNear, SplitFar]. Standard-Z perspective
             // so ComputeFrustumCorners un-projects the canonical NDC cube despite reverse-Z.
-            const glm::mat4 SliceProj = glm::perspective(glm::radians(CamFOV), CamAspect, SplitNear, SplitFar);
-            const glm::mat4 SliceVP   = SliceProj * CamView;
+            const FMatrix4 SliceProj = Math::Perspective(Math::Radians(CamFOV), CamAspect, SplitNear, SplitFar);
+            const FMatrix4 SliceVP   = SliceProj * CamView;
 
-            glm::vec3 Corners[8];
+            FVector3 Corners[8];
             FFrustum::ComputeFrustumCorners(SliceVP, Corners);
 
             // Bound the slice with a sphere, rotation-invariant, so the cascade
             // size doesn't pulse as the camera turns.
-            glm::vec3 SphereCenter(0.0f);
+            FVector3 SphereCenter(0.0f);
             for (int j = 0; j < 8; ++j)
             {
                 SphereCenter += Corners[j];
@@ -3347,54 +3347,54 @@ namespace Lumina
             float Radius = 0.0f;
             for (int j = 0; j < 8; ++j)
             {
-                Radius = glm::max(Radius, glm::length(Corners[j] - SphereCenter));
+                Radius = Math::Max(Radius, Math::Length(Corners[j] - SphereCenter));
             }
 
             
-            const float Octave    = std::exp2(std::floor(std::log2(glm::max(Radius, 1e-4f))));
+            const float Octave    = std::exp2(std::floor(std::log2(Math::Max(Radius, 1e-4f))));
             const float QuantStep = Octave / 8.0f;
             Radius = std::ceil(Radius / QuantStep) * QuantStep;
             const float TexelSize = (Radius * 2.0f) / CascadeResFloat;
 
             // BackDistance pushes the light eye behind the cascade so off-screen occluders
             // still write depth; low sun angles need larger values (D/tan(theta) light-space height).
-            const float BackDistance = glm::max(DirectionalLight.CascadeBackDistance, 1.0f);
+            const float BackDistance = Math::Max(DirectionalLight.CascadeBackDistance, 1.0f);
             const float OrthoRange   = Radius * 2.0f + BackDistance;
 
             // lookAt target = origin (not SphereCenter) so the rotation
             // depends only on LightDir; otherwise the texel snap below collapses.
-            const glm::mat4 LightRotation = glm::lookAt(
+            const FMatrix4 LightRotation = Math::LookAt(
                 LightDir * (Radius + BackDistance),
-                glm::vec3(0.0f),
+                FVector3(0.0f),
                 FViewVolume::UpAxis);
 
 
-            glm::vec4 CenterLS = LightRotation * glm::vec4(SphereCenter, 1.0f);
+            FVector4 CenterLS = LightRotation * FVector4(SphereCenter, 1.0f);
             CenterLS.x = std::round(CenterLS.x / TexelSize) * TexelSize;
             CenterLS.y = std::round(CenterLS.y / TexelSize) * TexelSize;
-            const glm::vec3 SnappedCenter = glm::vec3(glm::inverse(LightRotation) * CenterLS);
+            const FVector3 SnappedCenter = FVector3(Math::Inverse(LightRotation) * CenterLS);
 
-            const glm::mat4 LightView = glm::lookAt(
+            const FMatrix4 LightView = Math::LookAt(
                 SnappedCenter + LightDir * (Radius + BackDistance),
                 SnappedCenter,
                 FViewVolume::UpAxis);
             
-            glm::mat4 LightProjection = glm::ortho(
+            FMatrix4 LightProjection = Math::Ortho(
                 -Radius, +Radius,
                 -Radius, +Radius,
                 0.0f, OrthoRange);
             LightProjection[1][1] *= -1.0f;
 
-            const glm::mat4 CascadeVP = LightProjection * LightView;
+            const FMatrix4 CascadeVP = LightProjection * LightView;
             if (CascadeShadowData)
             {
                 CascadeShadowData->ViewProjection[i] = CascadeVP;
                 
                 FLightShadow& CascadeTile = CascadeShadowData->Shadow[i];
-                CascadeTile.AtlasUVOffset = glm::vec2(
+                CascadeTile.AtlasUVOffset = FVector2(
                     (float)GCSMCascadeOriginX[i] / (float)GCSMAtlasWidth,
                     (float)GCSMCascadeOriginY[i] / (float)GCSMAtlasHeight);
-                CascadeTile.AtlasUVScale = glm::vec2(
+                CascadeTile.AtlasUVScale = FVector2(
                     (float)GCSMCascadeSizes[i]  / (float)GCSMAtlasWidth,
                     (float)GCSMCascadeSizes[i]  / (float)GCSMAtlasHeight);
                 CascadeTile.ShadowMapIndex  = INDEX_NONE;
@@ -3450,7 +3450,7 @@ namespace Lumina
             {
                 const FBucket& B = Buckets[i];
                 if (B.bDepthTest == bDepthTest &&
-                    glm::epsilonEqual(B.Thickness, Thickness, LE_SMALL_NUMBER))
+                    Math::EpsilonEqual(B.Thickness, Thickness, LE_SMALL_NUMBER))
                 {
                     return i;
                 }
@@ -3461,8 +3461,8 @@ namespace Lumina
         
         struct FLineDraw
         {
-            glm::vec3 Start;
-            glm::vec3 End;
+            FVector3 Start;
+            FVector3 End;
             uint32    ColorPacked;
             uint8     BucketIdx;
         };
@@ -3476,7 +3476,7 @@ namespace Lumina
         {
             FLineBatcherComponent::FLineInstance& Line = Lines[i];
 
-            const FAABB LineBounds(glm::min(Line.Start, Line.End), glm::max(Line.Start, Line.End));
+            const FAABB LineBounds(Math::Min(Line.Start, Line.End), Math::Max(Line.Start, Line.End));
             if (ViewFrustum.IsInside(LineBounds))
             {
                 const uint32 BucketIdx = FindOrCreateBucket(Line.Thickness, Line.bDepthTest);
@@ -3536,7 +3536,7 @@ namespace Lumina
         LOG_WARN("[Rendering] - Maximum Lights Hit! {}", MAX_LIGHTS);
     }
 
-    void FForwardRenderScene::DrawBillboard(FRHIImage* Image, const glm::vec3& Location, float Scale)
+    void FForwardRenderScene::DrawBillboard(FRHIImage* Image, const FVector3& Location, float Scale)
     {
         if (Image->GetResourceID() == -1 || ExtractFrame == nullptr)
         {
@@ -4125,9 +4125,9 @@ namespace Lumina
 
         FLightClusterPC ClusterPC;
         ClusterPC.InverseProjection = SceneViewport->GetViewVolume().GetInverseProjectionMatrix();
-        ClusterPC.zNearFar = glm::vec2(SceneViewport->GetViewVolume().GetNear(), SceneViewport->GetViewVolume().GetFar());
-        ClusterPC.GridSize = glm::vec4(ClusterGridSizeX, ClusterGridSizeY, ClusterGridSizeZ, 0.0f);
-        ClusterPC.ScreenSize = glm::uvec2(GetNamedImage(ENamedImage::HDR)->GetSizeX(), GetNamedImage(ENamedImage::HDR)->GetSizeY());
+        ClusterPC.zNearFar = FVector2(SceneViewport->GetViewVolume().GetNear(), SceneViewport->GetViewVolume().GetFar());
+        ClusterPC.GridSize = FVector4(ClusterGridSizeX, ClusterGridSizeY, ClusterGridSizeZ, 0.0f);
+        ClusterPC.ScreenSize = FUIntVector2(GetNamedImage(ENamedImage::HDR)->GetSizeX(), GetNamedImage(ENamedImage::HDR)->GetSizeY());
 
         // Cluster AABBs are view-space, depending only on projection + RT size; skip the
         // dispatch while unchanged since the Cluster buffer is persistent.
@@ -4198,9 +4198,9 @@ namespace Lumina
         State.AddBindingSet(GRenderManager->GetTextureManager().GetDescriptorTable());
         CmdList.SetComputeState(State);
 
-        glm::mat4 ViewProj = SceneViewport->GetViewVolume().GetViewMatrix();
+        FMatrix4 ViewProj = SceneViewport->GetViewVolume().GetViewMatrix();
 
-        CmdList.SetPushConstants(&ViewProj, sizeof(glm::mat4));
+        CmdList.SetPushConstants(&ViewProj, sizeof(FMatrix4));
         
         constexpr uint32 LightCullGroupSize = 128;
         constexpr uint32 LightCullGroups    = (NumClusters + LightCullGroupSize - 1) / LightCullGroupSize;
@@ -4247,7 +4247,7 @@ namespace Lumina
 
         FRenderPassDesc RenderPass; RenderPass
             .SetDepthAttachment(Depth)
-            .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
+            .SetRenderArea(FUIntVector2(GShadowAtlasResolution, GShadowAtlasResolution));
         
         FGraphicsPipelineDesc DescTemplate; DescTemplate
             .SetDebugName("Point Light Shadow Pass")
@@ -4372,7 +4372,7 @@ namespace Lumina
 
         FRenderPassDesc RenderPass; RenderPass
             .SetDepthAttachment(Depth)
-            .SetRenderArea(glm::uvec2(GShadowAtlasResolution, GShadowAtlasResolution));
+            .SetRenderArea(FUIntVector2(GShadowAtlasResolution, GShadowAtlasResolution));
         
         // Pipeline desc reused across batches; per-batch loop swaps in a WPO
         // VS variant when the material has WorldPositionOffset connected.
@@ -4511,7 +4511,7 @@ namespace Lumina
 
             FRenderPassDesc RenderPass; RenderPass
                 .SetDepthAttachment(Depth)
-                .SetRenderArea(glm::uvec2(GCSMAtlasWidth, GCSMAtlasHeight));
+                .SetRenderArea(FUIntVector2(GCSMAtlasWidth, GCSMAtlasHeight));
 
             // Per-cascade viewport: only this tile rasterizes; coords from the
             // GCSMCascadeOrigin/Sizes packing table.
@@ -4796,13 +4796,13 @@ namespace Lumina
             // dispatch. Idle systems no longer pay for it.
             CmdList.FillBuffer(State.SpawnCounterBuffer, 0u);
 
-            const glm::mat4 WorldMat = Transform.GetWorldMatrix();
-            const glm::vec3 EmitterWorld = glm::vec3(WorldMat * glm::vec4(Component.EmitterOffset, 1.0f));
-            const glm::vec3 EmitterRight   = glm::normalize(glm::vec3(WorldMat[0]));
-            const glm::vec3 EmitterUp      = glm::normalize(glm::vec3(WorldMat[1]));
-            const glm::vec3 EmitterForward = glm::normalize(glm::vec3(WorldMat[2]));
+            const FMatrix4 WorldMat = Transform.GetWorldMatrix();
+            const FVector3 EmitterWorld = FVector3(WorldMat * FVector4(Component.EmitterOffset, 1.0f));
+            const FVector3 EmitterRight   = Math::Normalize(FVector3(WorldMat[0]));
+            const FVector3 EmitterUp      = Math::Normalize(FVector3(WorldMat[1]));
+            const FVector3 EmitterForward = Math::Normalize(FVector3(WorldMat[2]));
             
-            glm::vec3 EmitterVelocity(0.0f);
+            FVector3 EmitterVelocity(0.0f);
             if (State.bHasPrevPosition && DeltaTime > 0.0f)
             {
                 EmitterVelocity = (EmitterWorld - State.PrevEmitterPosition) / DeltaTime;
@@ -4810,7 +4810,7 @@ namespace Lumina
             State.PrevEmitterPosition = EmitterWorld;
             State.bHasPrevPosition    = true;
 
-            const float InheritFactor = glm::clamp(Resolved.InheritEmitterVelocity, 0.0f, 1.0f);
+            const float InheritFactor = Math::Clamp(Resolved.InheritEmitterVelocity, 0.0f, 1.0f);
 
             State.FrameSeed = (State.FrameSeed + 2654435761u) ^ (uint32)Entity;
 
@@ -4827,24 +4827,24 @@ namespace Lumina
             FParticleSimParamsGPU SimParams{};
             // Pack EmitterVelocity.xyz into the w components of the basis vectors to
             // avoid growing the CBV layout. The shader reconstructs it from these slots.
-            SimParams.EmitterPosition   = glm::vec4(EmitterWorld, 1.0f);
-            SimParams.EmitterForward    = glm::vec4(EmitterForward, EmitterVelocity.x);
-            SimParams.EmitterRight      = glm::vec4(EmitterRight,   EmitterVelocity.y);
-            SimParams.EmitterUp         = glm::vec4(EmitterUp,      EmitterVelocity.z);
-            SimParams.Counts            = glm::uvec4(MaxParticles, SpawnCount, State.FrameSeed, SimFlags);
-            SimParams.Modes             = glm::uvec4((uint32)Resolved.Shape, (uint32)Resolved.VelocityMode, 0u, 0u);
-            SimParams.ShapeSize         = glm::vec4(Resolved.ShapeSize, glm::radians(Resolved.ShapeAngle));
-            SimParams.VelocityMin       = glm::vec4(Resolved.VelocityMin, 0.0f);
-            SimParams.VelocityMax       = glm::vec4(Resolved.VelocityMax, 0.0f);
-            SimParams.SpeedAndLifetime  = glm::vec4(Resolved.SpeedRange.x, Resolved.SpeedRange.y, Resolved.LifetimeRange.x, Resolved.LifetimeRange.y);
-            SimParams.Gravity           = glm::vec4(Resolved.Gravity, Resolved.Drag);
+            SimParams.EmitterPosition   = FVector4(EmitterWorld, 1.0f);
+            SimParams.EmitterForward    = FVector4(EmitterForward, EmitterVelocity.x);
+            SimParams.EmitterRight      = FVector4(EmitterRight,   EmitterVelocity.y);
+            SimParams.EmitterUp         = FVector4(EmitterUp,      EmitterVelocity.z);
+            SimParams.Counts            = FUIntVector4(MaxParticles, SpawnCount, State.FrameSeed, SimFlags);
+            SimParams.Modes             = FUIntVector4((uint32)Resolved.Shape, (uint32)Resolved.VelocityMode, 0u, 0u);
+            SimParams.ShapeSize         = FVector4(Resolved.ShapeSize, Math::Radians(Resolved.ShapeAngle));
+            SimParams.VelocityMin       = FVector4(Resolved.VelocityMin, 0.0f);
+            SimParams.VelocityMax       = FVector4(Resolved.VelocityMax, 0.0f);
+            SimParams.SpeedAndLifetime  = FVector4(Resolved.SpeedRange.x, Resolved.SpeedRange.y, Resolved.LifetimeRange.x, Resolved.LifetimeRange.y);
+            SimParams.Gravity           = FVector4(Resolved.Gravity, Resolved.Drag);
             SimParams.StartColor        = Resolved.StartColor;
             SimParams.EndColor          = Resolved.EndColor;
-            SimParams.SizeRange         = glm::vec4(Resolved.StartSizeRange.x, Resolved.StartSizeRange.y, Resolved.EndSizeRange.x, Resolved.EndSizeRange.y);
-            SimParams.RotationRange     = glm::vec4(Resolved.RotationRange.x, Resolved.RotationRange.y, Resolved.RotationSpeedRange.x, Resolved.RotationSpeedRange.y);
-            SimParams.NoiseStrength     = glm::vec4(Resolved.NoiseStrength, Resolved.NoiseScale);
-            SimParams.NoiseParams       = glm::vec4(Resolved.NoiseSpeed, InheritFactor, 0.0f, 0.0f);
-            SimParams.Timing            = glm::vec4(ScaledDelta, State.TotalTime, State.SystemAge, 0.0f);
+            SimParams.SizeRange         = FVector4(Resolved.StartSizeRange.x, Resolved.StartSizeRange.y, Resolved.EndSizeRange.x, Resolved.EndSizeRange.y);
+            SimParams.RotationRange     = FVector4(Resolved.RotationRange.x, Resolved.RotationRange.y, Resolved.RotationSpeedRange.x, Resolved.RotationSpeedRange.y);
+            SimParams.NoiseStrength     = FVector4(Resolved.NoiseStrength, Resolved.NoiseScale);
+            SimParams.NoiseParams       = FVector4(Resolved.NoiseSpeed, InheritFactor, 0.0f, 0.0f);
+            SimParams.Timing            = FVector4(ScaledDelta, State.TotalTime, State.SystemAge, 0.0f);
 
             CmdList.WriteBuffer(State.SimParamsBuffer, &SimParams, sizeof(SimParams));
 
@@ -5023,9 +5023,9 @@ namespace Lumina
             }
 
             FParticleRenderParamsGPU RenderParams{};
-            RenderParams.Flags      = glm::uvec4(TextureIndex, Resolved.bBillboardToCamera ? 1u : 0u, 0u, 0u);
-            RenderParams.Tint       = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
-            RenderParams.UVParams   = glm::vec4(0.0f);
+            RenderParams.Flags      = FUIntVector4(TextureIndex, Resolved.bBillboardToCamera ? 1u : 0u, 0u, 0u);
+            RenderParams.Tint       = FVector4(1.0f, 1.0f, 1.0f, 1.0f);
+            RenderParams.UVParams   = FVector4(0.0f);
             CmdList.WriteBuffer(State.RenderParamsBuffer, &RenderParams, sizeof(RenderParams));
 
             FBlendState BlendState;
@@ -5100,10 +5100,10 @@ namespace Lumina
                     const float V10 = float(Src[size_t(Y0) * OldRes + X1]);
                     const float V01 = float(Src[size_t(Y1) * OldRes + X0]);
                     const float V11 = float(Src[size_t(Y1) * OldRes + X1]);
-                    const float V   = glm::mix(glm::mix(V00, V10, Tx), glm::mix(V01, V11, Tx), Ty);
+                    const float V   = Math::Mix(Math::Mix(V00, V10, Tx), Math::Mix(V01, V11, Tx), Ty);
                     if constexpr (std::is_integral_v<T>)
                     {
-                        Dst[size_t(Y) * NewRes + X] = T(glm::clamp(V + 0.5f, 0.0f, 255.0f));
+                        Dst[size_t(Y) * NewRes + X] = T(Math::Clamp(V + 0.5f, 0.0f, 255.0f));
                     }
                     else
                     {
@@ -5162,7 +5162,7 @@ namespace Lumina
         static FRHIImageRef CreateTerrainImage(const FString& DebugName, uint32 Size, uint16 ArraySize, EFormat Format, bool bUav, bool bArrayView = false)
         {
             FRHIImageDesc Desc;
-            Desc.Extent       = glm::uvec2(Size, Size);
+            Desc.Extent       = FUIntVector2(Size, Size);
             Desc.ArraySize    = ArraySize;
             // Shader samples weight maps as Sampler2DArray; Texture2D collapses array slices
             // in FTextureSubresourceSet::Resolve, breaking per-slice state tracking.
@@ -5250,12 +5250,12 @@ namespace Lumina
             const bool  bPartialHeight = !bFullHeight && (State.HeightDirtyMax.x >= State.HeightDirtyMin.x);
             const bool  bHeightDirty  = bFullHeight || bPartialHeight;
 
-            glm::ivec2 RectMin = glm::ivec2(0);
-            glm::ivec2 RectMax = glm::ivec2(ResI - 1);
+            FIntVector2 RectMin = FIntVector2(0);
+            FIntVector2 RectMax = FIntVector2(ResI - 1);
             if (bPartialHeight)
             {
-                RectMin = glm::clamp(State.HeightDirtyMin, glm::ivec2(0), glm::ivec2(ResI - 1));
-                RectMax = glm::clamp(State.HeightDirtyMax, glm::ivec2(0), glm::ivec2(ResI - 1));
+                RectMin = Math::Clamp(State.HeightDirtyMin, FIntVector2(0), FIntVector2(ResI - 1));
+                RectMax = Math::Clamp(State.HeightDirtyMax, FIntVector2(0), FIntVector2(ResI - 1));
             }
 
             if (bFullHeight)
@@ -5355,8 +5355,8 @@ namespace Lumina
 
             if (bHeightDirty)
             {
-                State.HeightDirtyMin = glm::ivec2(INT32_MAX);
-                State.HeightDirtyMax = glm::ivec2(INT32_MIN);
+                State.HeightDirtyMin = FIntVector2(INT32_MAX);
+                State.HeightDirtyMax = FIntVector2(INT32_MIN);
             }
 
             // Rebuild chunk + meshlet metadata when heightmap geometry shifted; the cull
@@ -5365,7 +5365,7 @@ namespace Lumina
             // change rebuilds everything.
             if (State.bChunksDirty)
             {
-                const glm::vec3 WorldOrigin = glm::vec3(TerrainItem.WorldMatrix[3]);
+                const FVector3 WorldOrigin = FVector3(TerrainItem.WorldMatrix[3]);
                 const bool bFullRebuild = !bPartialHeight || State.Chunks.empty();
                 if (bFullRebuild)
                 {
@@ -5562,8 +5562,8 @@ namespace Lumina
             const entt::entity Entity = TerrainItem.Entity;
             const uint32 Res = (uint32)Terrain.Resolution;
 
-            const glm::mat4 WorldMat    = TerrainItem.WorldMatrix;
-            const glm::vec3 WorldOrigin = glm::vec3(WorldMat[3]);
+            const FMatrix4 WorldMat    = TerrainItem.WorldMatrix;
+            const FVector3 WorldOrigin = FVector3(WorldMat[3]);
             const float HalfSize        = Terrain.TileWorldSize * 0.5f;
 
             const int32 QuadsPerChunk        = std::max(1, Terrain.ChunkResolution - 1);
@@ -5571,14 +5571,14 @@ namespace Lumina
             const int32 MeshletsPerChunkSide = (QuadsPerChunk + GTerrainMeshletQuads - 1) / GTerrainMeshletQuads;
 
             FTerrainRenderParams RenderParams{};
-            RenderParams.OriginXZ             = glm::vec2(WorldOrigin.x - HalfSize, WorldOrigin.z - HalfSize);
+            RenderParams.OriginXZ             = FVector2(WorldOrigin.x - HalfSize, WorldOrigin.z - HalfSize);
             RenderParams.TileWorldSize        = Terrain.TileWorldSize;
             RenderParams.MaxHeight            = Terrain.MaxHeight;
             RenderParams.Resolution           = (int32)Res;
             RenderParams.ChunkResolution      = Terrain.ChunkResolution;
             RenderParams.ChunksPerSide        = ChunksPerSide;
             RenderParams.LayerCount           = (int32)Terrain.Layers.size();
-            RenderParams.WorldOriginY         = glm::vec3(WorldOrigin.y, 0.0f, 0.0f);
+            RenderParams.WorldOriginY         = FVector3(WorldOrigin.y, 0.0f, 0.0f);
             RenderParams.EntityID             = (uint32)Entity;
             RenderParams.MaterialIndex        = (uint32)std::max(MaterialInterface->GetMaterialIndex(), 0);
             RenderParams.MeshletsPerChunkSide = MeshletsPerChunkSide;
@@ -5724,8 +5724,8 @@ namespace Lumina
 
             const uint32 Res = (uint32)Terrain.Resolution;
 
-            const glm::mat4 WorldMat = TerrainItem.WorldMatrix;
-            const glm::vec3 WorldOrigin = glm::vec3(WorldMat[3]);
+            const FMatrix4 WorldMat = TerrainItem.WorldMatrix;
+            const FVector3 WorldOrigin = FVector3(WorldMat[3]);
             const float HalfSize = Terrain.TileWorldSize * 0.5f;
 
             const int32 QuadsPerChunk        = std::max(1, Terrain.ChunkResolution - 1);
@@ -5733,14 +5733,14 @@ namespace Lumina
             const int32 MeshletsPerChunkSide = (QuadsPerChunk + GTerrainMeshletQuads - 1) / GTerrainMeshletQuads;
 
             FTerrainRenderParams RenderParams{};
-            RenderParams.OriginXZ             = glm::vec2(WorldOrigin.x - HalfSize, WorldOrigin.z - HalfSize);
+            RenderParams.OriginXZ             = FVector2(WorldOrigin.x - HalfSize, WorldOrigin.z - HalfSize);
             RenderParams.TileWorldSize        = Terrain.TileWorldSize;
             RenderParams.MaxHeight            = Terrain.MaxHeight;
             RenderParams.Resolution           = (int32)Res;
             RenderParams.ChunkResolution      = Terrain.ChunkResolution;
             RenderParams.ChunksPerSide        = ChunksPerSide;
             RenderParams.LayerCount           = (int32)Terrain.Layers.size();
-            RenderParams.WorldOriginY         = glm::vec3(WorldOrigin.y, 0.0f, 0.0f);
+            RenderParams.WorldOriginY         = FVector3(WorldOrigin.y, 0.0f, 0.0f);
             RenderParams.EntityID             = (uint32)Entity;
             RenderParams.MaterialIndex        = (uint32)std::max(MaterialInterface->GetMaterialIndex(), 0);
             RenderParams.MeshletsPerChunkSide = MeshletsPerChunkSide;
@@ -6084,12 +6084,12 @@ namespace Lumina
         FRenderPassDesc::FAttachment RenderTarget0;
         RenderTarget0.SetImage(GetNamedImage(ENamedImage::Accum))
                     .SetLoadOp(ERenderLoadOp::Clear)
-                    .SetClearColor(glm::vec4(0.0));
+                    .SetClearColor(FVector4(0.0));
         
         FRenderPassDesc::FAttachment RenderTarget1;
         RenderTarget1.SetImage(GetNamedImage(ENamedImage::Revealage))
                     .SetLoadOp(ERenderLoadOp::Clear)
-                    .SetClearColor(glm::vec4(1.0));
+                    .SetClearColor(FVector4(1.0));
         
         FRenderPassDesc::FAttachment PickerImageAttachment; 
         PickerImageAttachment.SetImage(GetNamedImage(ENamedImage::Picker))
@@ -6360,13 +6360,13 @@ namespace Lumina
         State.Writes(Scatter);
         CmdList.SetComputeState(State);
 
-        const float FogRange = glm::clamp(Frame.FogParams.VolumetricParams.z, 1.0f, SceneGlobalData.FarPlane);
+        const float FogRange = Math::Clamp(Frame.FogParams.VolumetricParams.z, 1.0f, SceneGlobalData.FarPlane);
 
         FFroxelInjectPushConstants PC = {};
         PC.GridSize[0]        = GFroxelGridX;
         PC.GridSize[1]        = GFroxelGridY;
         PC.GridSize[2]        = GFroxelGridZ;
-        PC.NearPlane          = glm::max(SceneGlobalData.NearPlane, 0.05f);
+        PC.NearPlane          = Math::Max(SceneGlobalData.NearPlane, 0.05f);
         PC.FogRange           = FogRange;
         PC.bSunVolumetric     = bSunVolumetric ? 1u : 0u;
         PC.NumLocalVolumetric = NumLocal;
@@ -6429,13 +6429,13 @@ namespace Lumina
         State.Writes(Integrated);
         CmdList.SetComputeState(State);
 
-        const float FogRange = glm::clamp(Frame.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
+        const float FogRange = Math::Clamp(Frame.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
 
         FFroxelIntegratePushConstants PC = {};
         PC.GridSize[0] = GFroxelGridX;
         PC.GridSize[1] = GFroxelGridY;
         PC.GridSize[2] = GFroxelGridZ;
-        PC.NearPlane   = glm::max(Frame.SceneGlobalData.NearPlane, 0.05f);
+        PC.NearPlane   = Math::Max(Frame.SceneGlobalData.NearPlane, 0.05f);
         PC.FogRange    = FogRange;
         CmdList.SetPushConstants(&PC, sizeof(PC));
 
@@ -6543,8 +6543,8 @@ namespace Lumina
 
         FFroxelApplyPushConstants PC = {};
         PC.GridZ     = GFroxelGridZ;
-        PC.NearPlane = glm::max(Frame.SceneGlobalData.NearPlane, 0.05f);
-        PC.FogRange  = glm::clamp(Frame.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
+        PC.NearPlane = Math::Max(Frame.SceneGlobalData.NearPlane, 0.05f);
+        PC.FogRange  = Math::Clamp(Frame.FogParams.VolumetricParams.z, 1.0f, Frame.SceneGlobalData.FarPlane);
         CmdList.SetPushConstants(&PC, sizeof(PC));
 
         CmdList.Draw(3, 1, 0, 0);
@@ -6664,7 +6664,7 @@ namespace Lumina
 
         struct FSkyCapturePC
         {
-            glm::vec3 SunDirection;
+            FVector3 SunDirection;
             float     Time;
         } PC = {};
 
@@ -6672,11 +6672,11 @@ namespace Lumina
         // falls back to a daytime direction if no sun so the cube still has IBL structure.
         if (LightData.bHasSun)
         {
-            PC.SunDirection = glm::normalize(LightData.SunDirection);
+            PC.SunDirection = Math::Normalize(LightData.SunDirection);
         }
         else
         {
-            PC.SunDirection = glm::normalize(glm::vec3(0.3f, 0.8f, 0.4f));
+            PC.SunDirection = Math::Normalize(FVector3(0.3f, 0.8f, 0.4f));
         }
         // Star twinkle samples Time, but the cube only re-bakes on env/sun change so
         // it effectively freezes (stars blur to nothing in convolution anyway).
@@ -7072,17 +7072,17 @@ namespace Lumina
             float    Time;
             float    BloomIntensity;     // 0 disables the bloom composite path in the shader.
 
-            glm::vec4 ColorFilter;
+            FVector4 ColorFilter;
 
             // .a slots carry film-grain knobs (Shadows.a=Intensity, Midtones.a=Size,
             // Highlights.a=Response) -- avoids growing past Vulkan's 128B push guarantee.
-            glm::vec4 Shadows;
-            glm::vec4 Midtones;
-            glm::vec4 Highlights;
-            glm::vec4 VignetteColor;
+            FVector4 Shadows;
+            FVector4 Midtones;
+            FVector4 Highlights;
+            FVector4 VignetteColor;
 
             // .rgb = bloom tint, .a = chromatic aberration intensity.
-            glm::vec4 BloomTint;
+            FVector4 BloomTint;
 
             float    AutoExposureKey;    // middle-grey key; <= 0 disables auto-exposure.
             float    AutoExposureMinMul; // 2^MinEV clamp on the adapted multiplier.
@@ -7106,12 +7106,12 @@ namespace Lumina
             PC.TonemapMode        = (uint32)EToneMapper::AGX;
             PC.Time               = Time;
             PC.BloomIntensity     = 0.0f;
-            PC.ColorFilter        = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
-            PC.Shadows            = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
-            PC.Midtones           = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
-            PC.Highlights         = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
-            PC.VignetteColor      = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
-            PC.BloomTint          = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
+            PC.ColorFilter        = FVector4(1.0f, 1.0f, 1.0f, 1.0f);
+            PC.Shadows            = FVector4(1.0f, 1.0f, 1.0f, 0.0f);
+            PC.Midtones           = FVector4(1.0f, 1.0f, 1.0f, 0.0f);
+            PC.Highlights         = FVector4(1.0f, 1.0f, 1.0f, 0.0f);
+            PC.VignetteColor      = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
+            PC.BloomTint          = FVector4(1.0f, 1.0f, 1.0f, 0.0f);
             PC.AutoExposureKey    = 0.0f;
             PC.AutoExposureMinMul = 0.0f;
             PC.AutoExposureMaxMul = 1.0f;
@@ -7140,12 +7140,12 @@ namespace Lumina
             PC.TonemapMode        = (uint32)Settings->ToneMapper;
             PC.Time               = Time;
             PC.BloomIntensity     = Settings->BloomIntensity;
-            PC.ColorFilter        = glm::vec4(Settings->ColorFilter, Settings->ColorFilterIntensity);
-            PC.Shadows            = glm::vec4(Settings->Shadows,    Settings->FilmGrainIntensity);
-            PC.Midtones           = glm::vec4(Settings->Midtones,   std::max(Settings->FilmGrainSize, 0.0001f));
-            PC.Highlights         = glm::vec4(Settings->Highlights, Settings->FilmGrainResponse);
-            PC.VignetteColor      = glm::vec4(Settings->VignetteColor, 0.0f);
-            PC.BloomTint          = glm::vec4(Settings->BloomTint, Settings->ChromaticAberration);
+            PC.ColorFilter        = FVector4(Settings->ColorFilter, Settings->ColorFilterIntensity);
+            PC.Shadows            = FVector4(Settings->Shadows,    Settings->FilmGrainIntensity);
+            PC.Midtones           = FVector4(Settings->Midtones,   std::max(Settings->FilmGrainSize, 0.0001f));
+            PC.Highlights         = FVector4(Settings->Highlights, Settings->FilmGrainResponse);
+            PC.VignetteColor      = FVector4(Settings->VignetteColor, 0.0f);
+            PC.BloomTint          = FVector4(Settings->BloomTint, Settings->ChromaticAberration);
             // 0.18 == photographic middle grey. Key <= 0 tells the shader to
             // ignore the adapted luminance and use the manual exposure alone.
             PC.AutoExposureKey    = Settings->bAutoExposure ? 0.18f : 0.0f;
@@ -7163,15 +7163,15 @@ namespace Lumina
         // source SRV, MipUAV[i] picks the per-mip UAV — no pass-local binding set.
         struct FBloomDownSPDPushConstants
         {
-            glm::uvec2 PyramidSize;     // bloom mip 0 size (= HDR / 2)
+            FUIntVector2 PyramidSize;     // bloom mip 0 size (= HDR / 2)
             uint32     NumMips;
             uint32     HDRIndex;
 
-            glm::vec2  InvHDRSize;
+            FVector2  InvHDRSize;
             float      Threshold;
             float      _Pad0;
 
-            glm::vec3  KneeCurve;
+            FVector3  KneeCurve;
             float      _Pad1;
 
             uint32     MipUAV[BloomMaxMips];
@@ -7182,11 +7182,11 @@ namespace Lumina
         // bindless SRV of BloomChain; SrcMip picks the level via SampleLevel.
         struct FBloomUpCSPushConstants
         {
-            glm::vec2  SrcTexelSize;
+            FVector2  SrcTexelSize;
             float      Radius;
             uint32     SrcIndex;
 
-            glm::uvec2 DstSize;
+            FUIntVector2 DstSize;
             uint32     DstUAV;
             float      SrcMip;
         };
@@ -7228,7 +7228,7 @@ namespace Lumina
         const float Knee      = ActivePostProcess->BloomSoftKnee * Threshold + 1e-5f;
 
         {
-            const glm::vec3 KneeCurve(Threshold - Knee, 2.0f * Knee, 0.25f / Knee);
+            const FVector3 KneeCurve(Threshold - Knee, 2.0f * Knee, 0.25f / Knee);
 
             FComputePipelineDesc PipelineDesc;
             // Set 0 reserved for SceneBindingSet (compatibility with bindless at set 1).
@@ -7247,10 +7247,10 @@ namespace Lumina
             CmdList.SetComputeState(State);
 
             FBloomDownSPDPushConstants PC = {};
-            PC.PyramidSize  = glm::uvec2(Mip0W, Mip0H);
+            PC.PyramidSize  = FUIntVector2(Mip0W, Mip0H);
             PC.NumMips      = BLOOM_MIP_COUNT;
             PC.HDRIndex     = (uint32)HDR->GetResourceID();
-            PC.InvHDRSize   = glm::vec2(1.0f / (float)HDRWidth, 1.0f / (float)HDRHght);
+            PC.InvHDRSize   = FVector2(1.0f / (float)HDRWidth, 1.0f / (float)HDRHght);
             PC.Threshold    = Threshold;
             PC.KneeCurve    = KneeCurve;
             for (uint32 i = 0; i < BloomMaxMips; ++i)
@@ -7293,10 +7293,10 @@ namespace Lumina
             CmdList.SetComputeState(State);
 
             FBloomUpCSPushConstants PC = {};
-            PC.SrcTexelSize = glm::vec2(1.0f / (float)SrcW, 1.0f / (float)SrcH);
+            PC.SrcTexelSize = FVector2(1.0f / (float)SrcW, 1.0f / (float)SrcH);
             PC.Radius       = 1.0f;
             PC.SrcIndex     = (uint32)Bloom->GetResourceID();
-            PC.DstSize      = glm::uvec2(DstW, DstH);
+            PC.DstSize      = FUIntVector2(DstW, DstH);
             PC.DstUAV       = (uint32)Bloom->GetMipUAVIndex(DstMip);
             PC.SrcMip       = (float)SrcMip;
             CmdList.SetPushConstants(&PC, sizeof(PC));
@@ -7579,7 +7579,7 @@ namespace Lumina
 
     struct FSMAAPushConstants
     {
-        glm::vec4 RTMetrics;  // x = 1/w, y = 1/h, z = w, w = h
+        FVector4 RTMetrics;  // x = 1/w, y = 1/h, z = w, w = h
         float     EdgeThreshold;
         float     DebugMode;
         float     _Pad0;
@@ -7603,7 +7603,7 @@ namespace Lumina
         FSMAAPushConstants PC;
         const float W = (float)Image->GetSizeX();
         const float H = (float)Image->GetSizeY();
-        PC.RTMetrics      = glm::vec4(1.0f / W, 1.0f / H, W, H);
+        PC.RTMetrics      = FVector4(1.0f / W, 1.0f / H, W, H);
         PC.EdgeThreshold  = GetSMAAEdgeThreshold(Settings.SMAAQuality);
         PC.DebugMode      = 0.0f;
         PC._Pad0 = 0.0f;
@@ -7629,7 +7629,7 @@ namespace Lumina
 
         FRenderPassDesc::FAttachment Attachment; Attachment
             .SetImage(OutputImage)
-            .SetClearColor(glm::vec4(0.0f));
+            .SetClearColor(FVector4(0.0f));
 
         FRenderPassDesc RenderPass; RenderPass
             .AddColorAttachment(Attachment)
@@ -7690,7 +7690,7 @@ namespace Lumina
 
         FRenderPassDesc::FAttachment Attachment; Attachment
             .SetImage(OutputImage)
-            .SetClearColor(glm::vec4(0.0f));
+            .SetClearColor(FVector4(0.0f));
 
         FRenderPassDesc RenderPass; RenderPass
             .AddColorAttachment(Attachment)
@@ -8034,7 +8034,7 @@ namespace Lumina
         return r;
     }
 
-    void FForwardRenderScene::AllocateMSAAImages(FSceneView& View, const glm::uvec2& Extent)
+    void FForwardRenderScene::AllocateMSAAImages(FSceneView& View, const FUIntVector2& Extent)
     {
         if (MSAASampleCount <= 1)
         {
@@ -8113,7 +8113,7 @@ namespace Lumina
 
     void FForwardRenderScene::InitViewImages(FSceneView& View)
     {
-        const glm::uvec2 Extent = View.Size;
+        const FUIntVector2 Extent = View.Size;
 
         // Seed with the scene's shared images (BRDF LUT, sky cubes, SMAA LUTs, cascade
         // atlas, editor icons) so GetNamedImage() reads them uniformly through CurrentView;
@@ -8184,7 +8184,7 @@ namespace Lumina
             // R16_FLOAT HZB: reverse-Z [0,1], min-reduced; quantization error is conservative.
             FRHIImageDesc ImageDesc;
             ImageDesc.Flags.SetMultipleFlags(EImageCreateFlags::ShaderResource, EImageCreateFlags::Storage);
-            ImageDesc.Extent            = glm::uvec2(Width, Height);
+            ImageDesc.Extent            = FUIntVector2(Width, Height);
             ImageDesc.Format            = EFormat::R16_FLOAT;
             ImageDesc.NumMips           = (uint8)RenderUtils::CalculateMipCount(Width, Height);
             ImageDesc.InitialState      = EResourceStates::ShaderResource;
@@ -8244,7 +8244,7 @@ namespace Lumina
             // the compute inject/integrate UAVs, ShaderResource for the integrate read
             // and the apply-pass trilinear sample.
             FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = glm::uvec2(GFroxelGridX, GFroxelGridY);
+            ImageDesc.Extent            = FUIntVector2(GFroxelGridX, GFroxelGridY);
             ImageDesc.Depth             = (uint16)GFroxelGridZ;
             ImageDesc.Format            = EFormat::RGBA16_FLOAT;
             ImageDesc.Dimension         = EImageDimension::Texture3D;
@@ -8267,7 +8267,7 @@ namespace Lumina
             const uint32 BloomH = eastl::max<uint32>(Extent.y / 2u, 1u);
 
             FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = glm::uvec2(BloomW, BloomH);
+            ImageDesc.Extent            = FUIntVector2(BloomW, BloomH);
             ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
             ImageDesc.Dimension         = EImageDimension::Texture2D;
             ImageDesc.NumMips           = (uint8)BLOOM_MIP_COUNT;
@@ -8286,7 +8286,7 @@ namespace Lumina
             // ShaderResource so the grading pass can read it even on frames
             // where auto-exposure is disabled and the compute pass is skipped.
             FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = glm::uvec2(1, 1);
+            ImageDesc.Extent            = FUIntVector2(1, 1);
             ImageDesc.Format            = EFormat::R32_FLOAT;
             ImageDesc.Dimension         = EImageDimension::Texture2D;
             ImageDesc.NumMips           = 1;
@@ -8304,7 +8304,7 @@ namespace Lumina
         constexpr uint32 BRDFLutSize = 256u;
 
         FRHIImageDesc ImageDesc;
-        ImageDesc.Extent            = glm::uvec2(BRDFLutSize, BRDFLutSize);
+        ImageDesc.Extent            = FUIntVector2(BRDFLutSize, BRDFLutSize);
         ImageDesc.Format            = EFormat::RG16_FLOAT;
         ImageDesc.Dimension         = EImageDimension::Texture2D;
         ImageDesc.NumMips           = 1;
@@ -8358,7 +8358,7 @@ namespace Lumina
         constexpr uint32 SkyCubeFaceSize = 256u;
 
         FRHIImageDesc ImageDesc;
-        ImageDesc.Extent            = glm::uvec2(SkyCubeFaceSize, SkyCubeFaceSize);
+        ImageDesc.Extent            = FUIntVector2(SkyCubeFaceSize, SkyCubeFaceSize);
         ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
         ImageDesc.Dimension         = EImageDimension::TextureCube;
         ImageDesc.ArraySize         = 6;
@@ -8377,7 +8377,7 @@ namespace Lumina
             constexpr uint32 IrradianceFaceSize = 32u;
 
             FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = glm::uvec2(IrradianceFaceSize, IrradianceFaceSize);
+            ImageDesc.Extent            = FUIntVector2(IrradianceFaceSize, IrradianceFaceSize);
             ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
             ImageDesc.Dimension         = EImageDimension::TextureCube;
             ImageDesc.ArraySize         = 6;
@@ -8396,7 +8396,7 @@ namespace Lumina
             constexpr uint32 PrefilterFaceSize = 128u;
 
             FRHIImageDesc ImageDesc;
-            ImageDesc.Extent            = glm::uvec2(PrefilterFaceSize, PrefilterFaceSize);
+            ImageDesc.Extent            = FUIntVector2(PrefilterFaceSize, PrefilterFaceSize);
             ImageDesc.Format            = EFormat::R11G11B10_FLOAT;
             ImageDesc.Dimension         = EImageDimension::TextureCube;
             ImageDesc.ArraySize         = 6;
@@ -8774,15 +8774,15 @@ namespace Lumina
             return;
         }
 
-        const uint32 CursorX = glm::min((uint32)((Packed >> 1) & 0x1FFFFF), ImgW - 1);
-        const uint32 CursorY = glm::min((uint32)((Packed >> 22) & 0x1FFFFF), ImgH - 1);
+        const uint32 CursorX = Math::Min((uint32)((Packed >> 1) & 0x1FFFFF), ImgW - 1);
+        const uint32 CursorY = Math::Min((uint32)((Packed >> 22) & 0x1FFFFF), ImgH - 1);
 
         // Copy a small window around the cursor, not the whole RT; clamp it inside the
         // image so the region size is fixed and the cursor pixel stays inside.
-        const uint32 RegionW = glm::min(PickerRegionExtent, ImgW);
-        const uint32 RegionH = glm::min(PickerRegionExtent, ImgH);
-        const uint32 OriginX = glm::min(CursorX - glm::min(CursorX, RegionW / 2), ImgW - RegionW);
-        const uint32 OriginY = glm::min(CursorY - glm::min(CursorY, RegionH / 2), ImgH - RegionH);
+        const uint32 RegionW = Math::Min(PickerRegionExtent, ImgW);
+        const uint32 RegionH = Math::Min(PickerRegionExtent, ImgH);
+        const uint32 OriginX = Math::Min(CursorX - Math::Min(CursorX, RegionW / 2), ImgW - RegionW);
+        const uint32 OriginY = Math::Min(CursorY - Math::Min(CursorY, RegionH / 2), ImgH - RegionH);
 
         FPickerReadbackSlot& Slot = PickerReadbackRing[PickerReadbackWriteIndex];
 
@@ -8791,7 +8791,7 @@ namespace Lumina
             // First use of this slot, or region size changed (post-resize). Allocate a
             // staging image sized to the region; bPending stays false until the copy below.
             FRHIImageDesc StagingDesc = PickerImage->GetDescription();
-            StagingDesc.Extent = glm::uvec2(RegionW, RegionH);
+            StagingDesc.Extent = FUIntVector2(RegionW, RegionH);
             Slot.Staging = GRenderContext->CreateStagingImage(StagingDesc, ERHIAccess::HostRead);
             Slot.Width = RegionW;
             Slot.Height = RegionH;

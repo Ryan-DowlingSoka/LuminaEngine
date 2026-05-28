@@ -41,7 +41,7 @@ namespace Lumina
         
         if (IRenderScene* Scene = World->GetRenderer())
         {
-            Scene->Resize(glm::uvec2(RTSize, RTSize));
+            Scene->Resize(FUIntVector2(RTSize, RTSize));
             // Editor-only debug overlays don't belong in saved thumbnails.
             Scene->GetSceneRenderSettings().bDrawBillboards = false;
         }
@@ -71,7 +71,7 @@ namespace Lumina
         bInitialized = false;
     }
 
-    void FThumbnailScene::SetCameraTransform(const glm::vec3& Position, const glm::vec3& Target, float FOVDegrees)
+    void FThumbnailScene::SetCameraTransform(const FVector3& Position, const FVector3& Target, float FOVDegrees)
     {
         if (!bInitialized || CameraEntity == entt::null)
         {
@@ -80,17 +80,17 @@ namespace Lumina
 
         STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(CameraEntity);
         Transform.SetLocation(Position);
-        const glm::quat Rotation = Math::FindLookAtRotation(Target, Position);
+        const FQuat Rotation = Math::FindLookAtRotation(Target, Position);
         Transform.SetRotation(Rotation);
 
         // World is never ticked so CameraSystem doesn't run; set view directly here.
         SCameraComponent& Camera = World->GetEntityRegistry().get<SCameraComponent>(CameraEntity);
         Camera.SetFOV(FOVDegrees);
         Camera.SetAspectRatio(1.0f);
-        const glm::vec3 Forward = glm::normalize(Target - Position);
-        const glm::vec3 WorldUp(0.0f, 1.0f, 0.0f);
-        const glm::vec3 Right   = glm::normalize(glm::cross(WorldUp, Forward));
-        const glm::vec3 Up      = glm::normalize(glm::cross(Forward, Right));
+        const FVector3 Forward = Math::Normalize(Target - Position);
+        const FVector3 WorldUp(0.0f, 1.0f, 0.0f);
+        const FVector3 Right   = Math::Normalize(Math::Cross(WorldUp, Forward));
+        const FVector3 Up      = Math::Normalize(Math::Cross(Forward, Right));
         Camera.SetView(Position, Forward, Up);
     }
 

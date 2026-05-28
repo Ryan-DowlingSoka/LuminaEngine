@@ -1,7 +1,7 @@
 #include "MaterialNode_Constants.h"
 
 #include "Core/Object/Cast.h"
-#include "glm/gtc/type_ptr.hpp"
+#include "Core/Math/Math.h"
 #include "UI/Tools/NodeGraph/Material/MaterialOutput.h"
 #include "UI/Tools/NodeGraph/Material/MaterialCompiler.h"
 
@@ -147,7 +147,7 @@ namespace Lumina
     void CMaterialExpression_ConstantFloat::DrawNodeBody()
     {
         ImGui::SetNextItemWidth(126.0f);
-        ImGui::DragFloat("##", glm::value_ptr(Value), 0.01f);
+        ImGui::DragFloat("##", Math::ValuePtr(Value), 0.01f);
     }
 
     void CMaterialExpression_ConstantFloat2::GenerateDefinition(FMaterialCompiler& Compiler)
@@ -164,7 +164,7 @@ namespace Lumina
     void CMaterialExpression_ConstantFloat2::DrawNodeBody()
     {
         ImGui::SetNextItemWidth(126.0f);
-        ImGui::DragFloat2("##", glm::value_ptr(Value), 0.01f);
+        ImGui::DragFloat2("##", Math::ValuePtr(Value), 0.01f);
     }
 
     void CMaterialExpression_ConstantFloat3::GenerateDefinition(FMaterialCompiler& Compiler)
@@ -181,7 +181,7 @@ namespace Lumina
     void CMaterialExpression_ConstantFloat3::DrawNodeBody()
     {
         ImGui::SetNextItemWidth(126.0f);
-        ImGui::ColorPicker3("##", glm::value_ptr(Value));
+        ImGui::ColorPicker3("##", Math::ValuePtr(Value));
     }
 
     void CMaterialExpression_ConstantFloat4::GenerateDefinition(FMaterialCompiler& Compiler)
@@ -198,7 +198,7 @@ namespace Lumina
     void CMaterialExpression_ConstantFloat4::DrawNodeBody()
     {
         ImGui::SetNextItemWidth(126.0f);
-        ImGui::ColorPicker4("##", glm::value_ptr(Value));
+        ImGui::ColorPicker4("##", Math::ValuePtr(Value));
     }
 
     void CMaterialExpression_NumericConstant::BuildNode()

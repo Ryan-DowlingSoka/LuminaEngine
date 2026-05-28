@@ -12,7 +12,7 @@ namespace Lumina
 	class FWindow;
 	struct FWindowImpl;
 
-	DECLARE_MULTICAST_DELEGATE(FWindowResizeDelegate, FWindow*, const glm::uvec2&);
+	DECLARE_MULTICAST_DELEGATE(FWindowResizeDelegate, FWindow*, const FUIntVector2&);
 
 	class FWindow
 	{
@@ -28,7 +28,7 @@ namespace Lumina
 		// Native handle for code that genuinely needs it (Vulkan surface, ImGui GLFW backend).
 		GLFWwindow* GetWindow() const;
 
-		RUNTIME_API glm::uvec2 GetExtent() const;
+		RUNTIME_API FUIntVector2 GetExtent() const;
 		RUNTIME_API uint32 GetWidth() const;
 		RUNTIME_API uint32 GetHeight() const;
 

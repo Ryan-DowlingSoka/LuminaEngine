@@ -1,13 +1,12 @@
 #include "AnimationEditorTool.h"
 
-#include <glm/ext/scalar_common.hpp>
+#include "Core/Math/Math.h"
 #include <imgui_internal.h>
 
 #include "ImGuiDrawUtils.h"
 #include "implot.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
 #include "assets/assettypes/mesh/skeleton/skeleton.h"
-#include "glm/gtx/string_cast.hpp"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "world/entity/components/environmentcomponent.h"
@@ -31,7 +30,7 @@ namespace Lumina
         constexpr float kTrackHeight = 28.0f;
 
         // A palette so new tracks/notifies get distinct, readable colors.
-        const glm::vec4 kPalette[] =
+        const FVector4 kPalette[] =
         {
             { 0.93f, 0.42f, 0.36f, 1.0f }, // red
             { 0.40f, 0.75f, 0.95f, 1.0f }, // blue
@@ -41,12 +40,12 @@ namespace Lumina
             { 0.40f, 0.88f, 0.80f, 1.0f }, // teal
         };
 
-        ImU32 ToU32(const glm::vec4& C)
+        ImU32 ToU32(const FVector4& C)
         {
             return ImGui::ColorConvertFloat4ToU32(ImVec4(C.x, C.y, C.z, C.w));
         }
 
-        glm::vec4 PaletteColor(int32 Index)
+        FVector4 PaletteColor(int32 Index)
         {
             return kPalette[((Index % (int32)IM_ARRAYSIZE(kPalette)) + IM_ARRAYSIZE(kPalette)) % IM_ARRAYSIZE(kPalette)];
         }
@@ -104,7 +103,7 @@ namespace Lumina
         STransformComponent& MeshTransform = World->GetEntityRegistry().get<STransformComponent>(MeshEntity);
         STransformComponent& EditorTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
 
-        glm::quat Rotation = Math::FindLookAtRotation(MeshTransform.GetLocation() + glm::vec3(0.0f, 0.85f, 0.0f), EditorTransform.GetLocation());
+        FQuat Rotation = Math::FindLookAtRotation(MeshTransform.GetLocation() + FVector3(0.0f, 0.85f, 0.0f), EditorTransform.GetLocation());
         EditorTransform.SetRotation(Rotation);
     }
 
@@ -149,7 +148,7 @@ namespace Lumina
             const float Step = 1.0f / (float)FrameRate;
             Time = roundf(Time / Step) * Step;
         }
-        return glm::clamp(Time, 0.0f, Duration);
+        return Math::Clamp(Time, 0.0f, Duration);
     }
 
     void FAnimationEditorTool::ClearSelection()
@@ -201,7 +200,7 @@ namespace Lumina
             State.NotifyName  = FName("NewNotifyState");
             State.NotifyTrack = Track;
             State.StartTime   = Time;
-            State.EndTime     = glm::min(Time + glm::max(Resource->Duration * 0.1f, 0.1f), Resource->Duration);
+            State.EndTime     = Math::Min(Time + Math::Max(Resource->Duration * 0.1f, 0.1f), Resource->Duration);
             State.Color       = PaletteColor(ColorIdx);
             Resource->NotifyStates.push_back(State);
 
@@ -325,7 +324,7 @@ namespace Lumina
             return;
         }
 
-        const float Duration = glm::max(Animation->GetDuration(), 0.0001f);
+        const float Duration = Math::Max(Animation->GetDuration(), 0.0001f);
 
         DrawTransport(AnimComp, Duration);
 
@@ -428,7 +427,7 @@ namespace Lumina
         std::string Readout = std::format("{:.3f}s / {:.3f}s   (frame {}/{})", AnimComp->CurrentTime, Duration, Frame, TotalFrame);
         const float TextW = ImGui::CalcTextSize(Readout.c_str()).x;
         ImGui::SameLine();
-        ImGui::SetCursorPosX(glm::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - TextW - 16.0f));
+        ImGui::SetCursorPosX(Math::Max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - TextW - 16.0f));
         ImGui::TextUnformatted(Readout.c_str());
     }
 
@@ -454,7 +453,7 @@ namespace Lumina
 
         const float LaneX0 = CanvasPos.x + kHeaderWidth;
         const float LaneX1 = CanvasPos.x + CanvasSize.x;
-        const float LaneW  = glm::max(LaneX1 - LaneX0, 1.0f);
+        const float LaneW  = Math::Max(LaneX1 - LaneX0, 1.0f);
         const float RulerY0 = CanvasPos.y;
         const float TracksY0 = CanvasPos.y + kRulerHeight;
 
@@ -462,8 +461,8 @@ namespace Lumina
         const float PPS     = BasePPS * TimelineZoom;
 
         // Clamp pan so the clip stays reachable.
-        const float MaxPan = glm::max(0.0f, Duration - LaneW / PPS);
-        TimelinePanSeconds = glm::clamp(TimelinePanSeconds, 0.0f, MaxPan);
+        const float MaxPan = Math::Max(0.0f, Duration - LaneW / PPS);
+        TimelinePanSeconds = Math::Clamp(TimelinePanSeconds, 0.0f, MaxPan);
 
         auto TimeToX = [&](float T) { return LaneX0 + (T - TimelinePanSeconds) * PPS; };
         auto XToTime = [&](float X) { return TimelinePanSeconds + (X - LaneX0) / PPS; };
@@ -481,7 +480,7 @@ namespace Lumina
             else
             {
                 const float CursorT = XToTime(IO.MousePos.x);
-                TimelineZoom = glm::clamp(TimelineZoom * (IO.MouseWheel > 0 ? 1.15f : 1.0f / 1.15f), 1.0f, 16.0f);
+                TimelineZoom = Math::Clamp(TimelineZoom * (IO.MouseWheel > 0 ? 1.15f : 1.0f / 1.15f), 1.0f, 16.0f);
                 const float NewPPS = BasePPS * TimelineZoom;
                 TimelinePanSeconds = CursorT - (IO.MousePos.x - LaneX0) / NewPPS;
             }
@@ -528,7 +527,7 @@ namespace Lumina
             DrawList->AddLine(ImVec2(CanvasPos.x, RowY1), ImVec2(LaneX1, RowY1), IM_COL32(0, 0, 0, 120));
 
             // Header: color chip + name + context menu.
-            const glm::vec4 TrackColor = PaletteColor(t);
+            const FVector4 TrackColor = PaletteColor(t);
             DrawList->AddRectFilled(ImVec2(CanvasPos.x + 6, RowY0 + 7), ImVec2(CanvasPos.x + 16, RowY0 + kTrackHeight - 7), ToU32(TrackColor), 2.0f);
 
             ImGui::SetCursorScreenPos(ImVec2(CanvasPos.x + 22, RowY0 + 5));
@@ -611,7 +610,7 @@ namespace Lumina
         DrawList->PushClipRect(ImVec2(LaneX0, TracksY0), ImVec2(LaneX1, CanvasPos.y + CanvasSize.y), true);
 
         // Decay flash timers.
-        for (float& F : NotifyFlash) { F = glm::max(0.0f, F - IO.DeltaTime * 3.0f); }
+        for (float& F : NotifyFlash) { F = Math::Max(0.0f, F - IO.DeltaTime * 3.0f); }
 
         // Detect playhead crossings during preview to flash point notifies.
         if (bIsPlaying && AnimComp->CurrentTime != LastPlayheadTime)
@@ -642,8 +641,8 @@ namespace Lumina
             const float BarY1 = RowY0 + kTrackHeight - 5.0f;
 
             const bool bSel = (SelectedKind == ENotifyKind::State && SelectedIndex == i);
-            glm::vec4 C = State.Color;
-            DrawList->AddRectFilled(ImVec2(X0, BarY0), ImVec2(X1, BarY1), ToU32(glm::vec4(C.x, C.y, C.z, 0.35f)), 3.0f);
+            FVector4 C = State.Color;
+            DrawList->AddRectFilled(ImVec2(X0, BarY0), ImVec2(X1, BarY1), ToU32(FVector4(C.x, C.y, C.z, 0.35f)), 3.0f);
             DrawList->AddRect(ImVec2(X0, BarY0), ImVec2(X1, BarY1), bSel ? IM_COL32(255, 255, 255, 230) : ToU32(C), 3.0f, 0, bSel ? 2.0f : 1.0f);
             // Edge grips.
             DrawList->AddRectFilled(ImVec2(X0, BarY0), ImVec2(X0 + 3.0f, BarY1), ToU32(C));
@@ -685,8 +684,8 @@ namespace Lumina
 
             const bool bSel = (SelectedKind == ENotifyKind::Point && SelectedIndex == i);
             const float Flash = (i < IM_ARRAYSIZE(NotifyFlash)) ? NotifyFlash[i] : 0.0f;
-            glm::vec4 C = Notify.Color;
-            if (Flash > 0.0f) { C = glm::mix(C, glm::vec4(1.0f), Flash * 0.8f); }
+            FVector4 C = Notify.Color;
+            if (Flash > 0.0f) { C = Math::Mix(C, FVector4(1.0f), Flash * 0.8f); }
 
             // Flag shape: stem + pennant.
             DrawList->AddLine(ImVec2(X, Top), ImVec2(X, Bot), ToU32(C), 2.0f);
@@ -756,12 +755,12 @@ namespace Lumina
                 else if (DragKind == ENotifyKind::State && DragIndex >= 0 && DragIndex < (int)Resource->NotifyStates.size())
                 {
                     FAnimationNotifyState& S = Resource->NotifyStates[DragIndex];
-                    if (DragMode == EDragMode::ResizeStart)      { S.StartTime = glm::min(T, S.EndTime - 0.001f); }
-                    else if (DragMode == EDragMode::ResizeEnd)   { S.EndTime   = glm::max(T, S.StartTime + 0.001f); }
+                    if (DragMode == EDragMode::ResizeStart)      { S.StartTime = Math::Min(T, S.EndTime - 0.001f); }
+                    else if (DragMode == EDragMode::ResizeEnd)   { S.EndTime   = Math::Max(T, S.StartTime + 0.001f); }
                     else /* MoveItem */
                     {
                         const float Len = S.EndTime - S.StartTime;
-                        S.StartTime = glm::clamp(T, 0.0f, Duration - Len);
+                        S.StartTime = Math::Clamp(T, 0.0f, Duration - Len);
                         S.EndTime   = S.StartTime + Len;
                     }
                     MarkAnimationDirty();
@@ -788,7 +787,7 @@ namespace Lumina
                 {
                     FAnimationNotifyState& S = Resource->NotifyStates[SelectedIndex];
                     const float Len = S.EndTime - S.StartTime;
-                    S.StartTime = glm::clamp(AnimComp->CurrentTime, 0.0f, Duration - Len);
+                    S.StartTime = Math::Clamp(AnimComp->CurrentTime, 0.0f, Duration - Len);
                     S.EndTime = S.StartTime + Len;
                 }
                 MarkAnimationDirty();
@@ -806,7 +805,7 @@ namespace Lumina
     void FAnimationEditorTool::DrawNotifyInspector(CAnimation* Animation)
     {
         FAnimationResource* Resource = Animation->GetAnimationResource();
-        const float Duration = glm::max(Animation->GetDuration(), 0.0001f);
+        const float Duration = Math::Max(Animation->GetDuration(), 0.0001f);
 
         char NameBuf[128];
 
@@ -849,7 +848,7 @@ namespace Lumina
             ImGui::SameLine();
             if (ImGui::ColorEdit4("##c", &Col.x, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel))
             {
-                N.Color = glm::vec4(Col.x, Col.y, Col.z, Col.w); MarkAnimationDirty();
+                N.Color = FVector4(Col.x, Col.y, Col.z, Col.w); MarkAnimationDirty();
             }
             ImGui::SameLine();
             if (ImGui::Button(LE_ICON_DELETE " Delete")) { DeleteSelected(Resource); }
@@ -875,7 +874,7 @@ namespace Lumina
             ImGui::SameLine();
             if (ImGui::ColorEdit4("##c", &Col.x, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel))
             {
-                S.Color = glm::vec4(Col.x, Col.y, Col.z, Col.w); MarkAnimationDirty();
+                S.Color = FVector4(Col.x, Col.y, Col.z, Col.w); MarkAnimationDirty();
             }
             ImGui::SameLine();
             if (ImGui::Button(LE_ICON_DELETE " Delete")) { DeleteSelected(Resource); }
@@ -940,7 +939,7 @@ namespace Lumina
                 const float TimeBefore = AnimComp->CurrentTime;
                 double CurrentTimeDouble = AnimComp->CurrentTime;
                 ImPlot::DragLineX(0, &CurrentTimeDouble, ImVec4(1, 1, 0, 1), 2.0f);
-                AnimComp->CurrentTime = glm::clamp((float)CurrentTimeDouble, 0.0f, Duration);
+                AnimComp->CurrentTime = Math::Clamp((float)CurrentTimeDouble, 0.0f, Duration);
 
                 // Scrubbing the curve playhead must resample the pose: the editor world
                 // is paused, so the animation system only re-evaluates when bDirty is set.
@@ -955,7 +954,7 @@ namespace Lumina
                     case FAnimationChannel::ETargetPath::Translation:
                     case FAnimationChannel::ETargetPath::Scale:
                     {
-                        TVector<glm::vec3>& Data = (Channel.TargetPath == FAnimationChannel::ETargetPath::Translation)
+                        TVector<FVector3>& Data = (Channel.TargetPath == FAnimationChannel::ETargetPath::Translation)
                             ? Channel.Translations : Channel.Scales;
                         if (!Data.empty())
                         {
@@ -974,7 +973,7 @@ namespace Lumina
                             TVector<float> XVals, YVals, ZVals;
                             for (const auto& Q : Channel.Rotations)
                             {
-                                glm::vec3 Euler = glm::degrees(glm::eulerAngles(Q));
+                                FVector3 Euler = Math::Degrees(Math::EulerAngles(Q));
                                 XVals.push_back(Euler.x); YVals.push_back(Euler.y); ZVals.push_back(Euler.z);
                             }
                             ImPlot::PlotLine("X (deg)", Channel.Timestamps.data(), XVals.data(), (int)Channel.Rotations.size());

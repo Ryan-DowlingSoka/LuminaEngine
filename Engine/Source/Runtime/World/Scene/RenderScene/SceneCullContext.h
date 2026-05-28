@@ -2,7 +2,7 @@
 
 #include "Containers/Array.h"
 #include "Core/Math/Frustum.h"
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 
 namespace Lumina
 {
@@ -20,7 +20,7 @@ namespace Lumina
         /** World-space sphere for a shadow-casting light's influence region. */
         struct FLightSphere
         {
-            glm::vec3   Center;
+            FVector3   Center;
             float       Radius;
         };
 
@@ -36,7 +36,7 @@ namespace Lumina
          */
         FFrustum SunShadowFrustum;
 
-        glm::vec3 SunDirection = glm::vec3(0.0f);
+        FVector3 SunDirection = FVector3(0.0f);
 
         /**
          * One entry per shadow-casting point / spot light. Sized by the
@@ -79,11 +79,11 @@ namespace Lumina
          * enforced, so we honor it here as a nearly-free bonus.
          */
         FORCEINLINE bool ShouldKeep(
-            const glm::vec3& Center,
+            const FVector3& Center,
             float            Radius,
             bool             bCastsShadow,
             float            MaxDrawDistance,
-            const glm::vec3& CameraPosition) const
+            const FVector3& CameraPosition) const
         {
             if (!bEnabled)
             {
@@ -92,8 +92,8 @@ namespace Lumina
 
             if (MaxDrawDistance > 0.0f)
             {
-                const glm::vec3 ToCamera = Center - CameraPosition;
-                const float     DistSq   = glm::dot(ToCamera, ToCamera);
+                const FVector3 ToCamera = Center - CameraPosition;
+                const float     DistSq   = Math::Dot(ToCamera, ToCamera);
                 const float     CutOff   = MaxDrawDistance + Radius;
                 if (DistSq > CutOff * CutOff)
                 {
@@ -127,8 +127,8 @@ namespace Lumina
 
             for (const FLightSphere& Light : ShadowLights)
             {
-                const glm::vec3 Delta  = Center - Light.Center;
-                const float     DistSq = glm::dot(Delta, Delta);
+                const FVector3 Delta  = Center - Light.Center;
+                const float     DistSq = Math::Dot(Delta, Delta);
                 const float     Sum    = Radius + Light.Radius;
                 if (DistSq <= Sum * Sum)
                 {
@@ -146,10 +146,10 @@ namespace Lumina
          * so the anim systems can stop ticking its pose while it's off-screen.
          */
         FORCEINLINE bool IsCameraVisible(
-            const glm::vec3& Center,
+            const FVector3& Center,
             float            Radius,
             float            MaxDrawDistance,
-            const glm::vec3& CameraPosition) const
+            const FVector3& CameraPosition) const
         {
             if (!bEnabled)
             {
@@ -158,8 +158,8 @@ namespace Lumina
 
             if (MaxDrawDistance > 0.0f)
             {
-                const glm::vec3 ToCamera = Center - CameraPosition;
-                const float     DistSq   = glm::dot(ToCamera, ToCamera);
+                const FVector3 ToCamera = Center - CameraPosition;
+                const float     DistSq   = Math::Dot(ToCamera, ToCamera);
                 const float     CutOff   = MaxDrawDistance + Radius;
                 if (DistSq > CutOff * CutOff)
                 {

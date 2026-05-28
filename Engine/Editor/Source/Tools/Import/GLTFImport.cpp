@@ -4,12 +4,10 @@
 #include <meshoptimizer.h>
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>
-#include <fastgltf/glm_element_traits.hpp>
+#include "Tools/Import/FastGLTFLuminaTraits.h"
 #include <fastgltf/tools.hpp>
 #include <fastgltf/types.hpp>
-#include <glm/glm.hpp>
-#include <glm/gtc/type_ptr.hpp>
-#include <glm/gtx/string_cast.hpp>
+#include "Core/Math/Math.h"
 
 #include "MeshFormatImport.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
@@ -166,7 +164,7 @@ namespace Lumina::Import::Mesh::GLTF
                 const auto& ValueAccessor = Asset.accessors[Sampler.outputAccessor];
                 if (Channel.path == fastgltf::AnimationPath::Translation || Channel.path == fastgltf::AnimationPath::Scale)
                 {
-                    fastgltf::iterateAccessor<glm::vec3>(Asset, ValueAccessor, [&](glm::vec3 Value)
+                    fastgltf::iterateAccessor<FVector3>(Asset, ValueAccessor, [&](FVector3 Value)
                     {
                         if (Channel.path == fastgltf::AnimationPath::Translation)
                         {
@@ -181,14 +179,14 @@ namespace Lumina::Import::Mesh::GLTF
                 }
                 else if (Channel.path == fastgltf::AnimationPath::Rotation)
                 {
-                    fastgltf::iterateAccessor<glm::vec4>(Asset, ValueAccessor, [&](glm::vec4 value)
+                    fastgltf::iterateAccessor<FVector4>(Asset, ValueAccessor, [&](FVector4 value)
                     {
-                        AnimChannel.Rotations.push_back(glm::quat(value.w, value.x, value.y, value.z));
+                        AnimChannel.Rotations.push_back(FQuat(value.w, value.x, value.y, value.z));
                     });
                 }
                 
                 AnimClip->Channels.push_back(AnimChannel);
-                AnimClip->Duration = glm::max(AnimClip->Duration, AnimChannel.Timestamps.back());
+                AnimClip->Duration = Math::Max(AnimClip->Duration, AnimChannel.Timestamps.back());
             }
             
             ImportData.Animations.push_back(Move(AnimClip));
@@ -209,13 +207,13 @@ namespace Lumina::Import::Mesh::GLTF
             
             NewSkeleton->Bones.reserve(Skin.joints.size());
             
-            TVector<glm::mat4> InverseBindMatrices;
+            TVector<FMatrix4> InverseBindMatrices;
             if (Skin.inverseBindMatrices.has_value())
             {
                 const fastgltf::Accessor& MatrixAccessor = Asset.accessors[Skin.inverseBindMatrices.value()];
                 InverseBindMatrices.reserve(MatrixAccessor.count);
                 
-                fastgltf::iterateAccessor<glm::mat4>(Asset, MatrixAccessor, [&](const glm::mat4& matrix)
+                fastgltf::iterateAccessor<FMatrix4>(Asset, MatrixAccessor, [&](const FMatrix4& matrix)
                 {
                     InverseBindMatrices.push_back(matrix);
                 });
@@ -256,18 +254,18 @@ namespace Lumina::Import::Mesh::GLTF
                     }
                 }
                 
-                glm::mat4 LocalTransform(1.0f);
+                FMatrix4 LocalTransform(1.0f);
                 if (auto* trs = std::get_if<fastgltf::TRS>(&BoneNode.transform))
                 {
-                    glm::mat4 translation = glm::translate(glm::mat4(1.0f), glm::vec3(trs->translation[0], trs->translation[1], trs->translation[2]));
-                    glm::quat rotation(trs->rotation[3], trs->rotation[0], trs->rotation[1], trs->rotation[2]);
-                    glm::mat4 rotationMat = glm::mat4_cast(rotation);
-                    glm::mat4 scale = glm::scale(glm::mat4(1.0f), glm::vec3(trs->scale[0], trs->scale[1], trs->scale[2]));
+                    FMatrix4 translation = Math::Translate(FMatrix4(1.0f), FVector3(trs->translation[0], trs->translation[1], trs->translation[2]));
+                    FQuat rotation(trs->rotation[3], trs->rotation[0], trs->rotation[1], trs->rotation[2]);
+                    FMatrix4 rotationMat = Math::ToMatrix4(rotation);
+                    FMatrix4 scale = Math::Scale(FMatrix4(1.0f), FVector3(trs->scale[0], trs->scale[1], trs->scale[2]));
                     LocalTransform = translation * rotationMat * scale;
                 }
                 else if (auto* mat = std::get_if<fastgltf::Node::TransformMatrix>(&BoneNode.transform))
                 {
-                    LocalTransform = glm::make_mat4(mat->data());
+                    LocalTransform = Math::MakeMat4(mat->data());
                 }
                 
                 Bone.LocalTransform = LocalTransform;
@@ -278,7 +276,7 @@ namespace Lumina::Import::Mesh::GLTF
                 }
                 else
                 {
-                    Bone.InvBindMatrix = glm::mat4(1.0f);
+                    Bone.InvBindMatrix = FMatrix4(1.0f);
                 }
                 
                 NewSkeleton->Bones.push_back(Bone);
@@ -368,7 +366,7 @@ namespace Lumina::Import::Mesh::GLTF
                     if (!ImportOptions.bSkipFinalization)
                     {
                         FFixedString FullPath = Paths::Combine(VFS::Parent(FilePath), GLTFImage.RelativePath);
-                        GLTFImage.DisplayImage = Textures::CreateTextureFromImport(FullPath, true, glm::uvec2(128, 128));
+                        GLTFImage.DisplayImage = Textures::CreateTextureFromImport(FullPath, true, FUIntVector2(128, 128));
                     }
                     ImportData.Textures.emplace(Move(GLTFImage));
                 }
@@ -387,7 +385,7 @@ namespace Lumina::Import::Mesh::GLTF
                     // Skip thumbnail on worker-thread preview parse; built on main thread after adoption.
                     if (!ImportOptions.bSkipFinalization)
                     {
-                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, FUIntVector2(128, 128));
                     }
                     ImportData.Textures.emplace(Move(GLTFImage));
                 }
@@ -399,7 +397,7 @@ namespace Lumina::Import::Mesh::GLTF
                     // Skip thumbnail on worker-thread preview parse; built on main thread after adoption.
                     if (!ImportOptions.bSkipFinalization)
                     {
-                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, FUIntVector2(128, 128));
                     }
                     ImportData.Textures.emplace(Move(GLTFImage));
                 }
@@ -411,7 +409,7 @@ namespace Lumina::Import::Mesh::GLTF
                     // Skip thumbnail on worker-thread preview parse; built on main thread after adoption.
                     if (!ImportOptions.bSkipFinalization)
                     {
-                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, FUIntVector2(128, 128));
                     }
                     ImportData.Textures.emplace(Move(GLTFImage));
                 }
@@ -423,7 +421,7 @@ namespace Lumina::Import::Mesh::GLTF
                     // Skip thumbnail on worker-thread preview parse; built on main thread after adoption.
                     if (!ImportOptions.bSkipFinalization)
                     {
-                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, glm::uvec2(128, 128));
+                        GLTFImage.DisplayImage = RenderUtils::CreateImageFromPixels(GLTFImage.Bytes, true, FUIntVector2(128, 128));
                     }
                     ImportData.Textures.emplace(Move(GLTFImage));
                 }
@@ -437,20 +435,20 @@ namespace Lumina::Import::Mesh::GLTF
             Progress->EnterProgressFrame(0.05f, "Reading geometry...");
         }
 
-        auto NodeLocalMatrix = [](const fastgltf::Node& Node) -> glm::mat4
+        auto NodeLocalMatrix = [](const fastgltf::Node& Node) -> FMatrix4
         {
             if (auto* Trs = std::get_if<fastgltf::TRS>(&Node.transform))
             {
-                glm::mat4 T = glm::translate(glm::mat4(1.0f), glm::vec3(Trs->translation[0], Trs->translation[1], Trs->translation[2]));
-                glm::quat R(Trs->rotation[3], Trs->rotation[0], Trs->rotation[1], Trs->rotation[2]);
-                glm::mat4 S = glm::scale(glm::mat4(1.0f), glm::vec3(Trs->scale[0], Trs->scale[1], Trs->scale[2]));
-                return T * glm::mat4_cast(R) * S;
+                FMatrix4 T = Math::Translate(FMatrix4(1.0f), FVector3(Trs->translation[0], Trs->translation[1], Trs->translation[2]));
+                FQuat R(Trs->rotation[3], Trs->rotation[0], Trs->rotation[1], Trs->rotation[2]);
+                FMatrix4 S = Math::Scale(FMatrix4(1.0f), FVector3(Trs->scale[0], Trs->scale[1], Trs->scale[2]));
+                return T * Math::ToMatrix4(R) * S;
             }
             if (auto* Mat = std::get_if<fastgltf::Node::TransformMatrix>(&Node.transform))
             {
-                return glm::make_mat4(Mat->data());
+                return Math::MakeMat4(Mat->data());
             }
-            return glm::mat4(1.0f);
+            return FMatrix4(1.0f);
         };
 
         // Per-mesh primitive extraction; concurrent across resources but serial in merge mode (shared targets).
@@ -460,10 +458,10 @@ namespace Lumina::Import::Mesh::GLTF
             FMeshResource*        StaticTarget,
             FMeshResource*        SkinnedTarget,
             THashMap<int16, int16>* MergedMaterialRemapPtr,
-            const glm::mat4&      WorldMatrix)
+            const FMatrix4&      WorldMatrix)
         {
-            const glm::mat4 PosMatrix    = glm::scale(glm::mat4(1.0f), glm::vec3(ImportScale)) * WorldMatrix;
-            const glm::mat3 NormalMatrix = glm::transpose(glm::inverse(glm::mat3(WorldMatrix)));
+            const FMatrix4 PosMatrix    = Math::Scale(FMatrix4(1.0f), FVector3(ImportScale)) * WorldMatrix;
+            const FMatrix3 NormalMatrix = Math::Transpose(Math::Inverse(FMatrix3(WorldMatrix)));
 
             for (auto& Primitive : Mesh.primitives)
             {
@@ -524,27 +522,27 @@ namespace Lumina::Import::Mesh::GLTF
                 NewResource->ResizeVertices(InitialVert + VertexCount);
 
                 // Position: bulk-copy raw values, then bake the world+scale transform in place.
-                fastgltf::copyFromAccessor<glm::vec3>(Asset, PosAccessor, NewResource->Positions.data() + InitialVert);
+                fastgltf::copyFromAccessor<FVector3>(Asset, PosAccessor, NewResource->Positions.data() + InitialVert);
                 for (size_t i = 0; i < VertexCount; ++i)
                 {
-                    glm::vec3& P = NewResource->Positions[InitialVert + i];
-                    P = glm::vec3(PosMatrix * glm::vec4(P, 1.0f));
+                    FVector3& P = NewResource->Positions[InitialVert + i];
+                    P = FVector3(PosMatrix * FVector4(P, 1.0f));
                 }
 
                 // Normal: bulk-copy into scratch, then transform + octahedral-pack into the stream.
                 auto NormalAttr = Primitive.findAttribute("NORMAL");
                 if (NormalAttr != Primitive.attributes.end())
                 {
-                    TVector<glm::vec3> ScratchNormals(VertexCount);
-                    fastgltf::copyFromAccessor<glm::vec3>(Asset, Asset.accessors[NormalAttr->second], ScratchNormals.data());
+                    TVector<FVector3> ScratchNormals(VertexCount);
+                    fastgltf::copyFromAccessor<FVector3>(Asset, Asset.accessors[NormalAttr->second], ScratchNormals.data());
                     for (size_t i = 0; i < VertexCount; ++i)
                     {
-                        NewResource->Normals[InitialVert + i] = PackNormal(glm::normalize(NormalMatrix * ScratchNormals[i]));
+                        NewResource->Normals[InitialVert + i] = PackNormal(Math::Normalize(NormalMatrix * ScratchNormals[i]));
                     }
                 }
                 else
                 {
-                    const uint32 DefaultNormal = PackNormal(glm::normalize(NormalMatrix * FViewVolume::UpAxis));
+                    const uint32 DefaultNormal = PackNormal(Math::Normalize(NormalMatrix * FViewVolume::UpAxis));
                     for (size_t i = 0; i < VertexCount; ++i)
                     {
                         NewResource->Normals[InitialVert + i] = DefaultNormal;
@@ -555,13 +553,13 @@ namespace Lumina::Import::Mesh::GLTF
                 auto UVAttr = Primitive.findAttribute("TEXCOORD_0");
                 if (UVAttr != Primitive.attributes.end())
                 {
-                    fastgltf::iterateAccessorWithIndex<glm::vec2>(Asset, Asset.accessors[UVAttr->second], [&](glm::vec2 Value, size_t Index)
+                    fastgltf::iterateAccessorWithIndex<FVector2>(Asset, Asset.accessors[UVAttr->second], [&](FVector2 Value, size_t Index)
                     {
                         if (ImportOptions.bFlipUVs)
                         {
                             Value.y = 1.0f - Value.y;
                         }
-                        NewResource->UVs[InitialVert + Index] = glm::packHalf2x16(Value);
+                        NewResource->UVs[InitialVert + Index] = Math::PackHalf2x16(Value);
                     });
                 }
 
@@ -569,7 +567,7 @@ namespace Lumina::Import::Mesh::GLTF
                 auto ColorAttr = Primitive.findAttribute("COLOR_0");
                 if (ColorAttr != Primitive.attributes.end())
                 {
-                    fastgltf::iterateAccessorWithIndex<glm::vec4>(Asset, Asset.accessors[ColorAttr->second], [&](glm::vec4 Value, size_t Index)
+                    fastgltf::iterateAccessorWithIndex<FVector4>(Asset, Asset.accessors[ColorAttr->second], [&](FVector4 Value, size_t Index)
                     {
                         NewResource->Colors[InitialVert + Index] = PackColor(Value);
                     });
@@ -586,13 +584,13 @@ namespace Lumina::Import::Mesh::GLTF
 
                 if (bSkinnedPrim)
                 {
-                    fastgltf::iterateAccessorWithIndex<glm::u8vec4>(Asset, Asset.accessors[Joints->second], [&](glm::u8vec4 Value, size_t Index)
+                    fastgltf::iterateAccessorWithIndex<FU8Vector4>(Asset, Asset.accessors[Joints->second], [&](FU8Vector4 Value, size_t Index)
                     {
                         NewResource->JointIndices[InitialVert + Index] = Value;
                     });
-                    fastgltf::iterateAccessorWithIndex<glm::vec4>(Asset, Asset.accessors[Weights->second], [&](glm::vec4 Value, size_t Index)
+                    fastgltf::iterateAccessorWithIndex<FVector4>(Asset, Asset.accessors[Weights->second], [&](FVector4 Value, size_t Index)
                     {
-                        NewResource->JointWeights[InitialVert + Index] = glm::u8vec4(Value * 255.0f);
+                        NewResource->JointWeights[InitialVert + Index] = FU8Vector4(Value * 255.0f);
                     });
                 }
 
@@ -636,7 +634,7 @@ namespace Lumina::Import::Mesh::GLTF
             THashMap<int16, int16> MergedMaterialRemap;
 
             // Walk the scene graph (not Asset.meshes) to accumulate node->world transforms; required for correct placement.
-            auto VisitMeshInstance = [&](size_t MeshIdx, const glm::mat4& WorldMatrix)
+            auto VisitMeshInstance = [&](size_t MeshIdx, const FMatrix4& WorldMatrix)
             {
                 const fastgltf::Mesh& Mesh = Asset.meshes[MeshIdx];
 
@@ -664,12 +662,12 @@ namespace Lumina::Import::Mesh::GLTF
                 struct FStackEntry
                 {
                     size_t    NodeIdx;
-                    glm::mat4 ParentWorld;
+                    FMatrix4 ParentWorld;
                 };
                 TVector<FStackEntry> Stack;
                 for (size_t Root : Asset.scenes[SceneIdx].nodeIndices)
                 {
-                    Stack.push_back({Root, glm::mat4(1.0f)});
+                    Stack.push_back({Root, FMatrix4(1.0f)});
                 }
 
                 while (!Stack.empty())
@@ -678,7 +676,7 @@ namespace Lumina::Import::Mesh::GLTF
                     Stack.pop_back();
 
                     const fastgltf::Node& Node = Asset.nodes[Entry.NodeIdx];
-                    glm::mat4 World = Entry.ParentWorld * NodeLocalMatrix(Node);
+                    FMatrix4 World = Entry.ParentWorld * NodeLocalMatrix(Node);
 
                     if (Node.meshIndex.has_value())
                     {
@@ -696,7 +694,7 @@ namespace Lumina::Import::Mesh::GLTF
                 // No scene info; fall back to identity-transform iteration.
                 for (size_t MeshIdx = 0; MeshIdx < Asset.meshes.size(); ++MeshIdx)
                 {
-                    VisitMeshInstance(MeshIdx, glm::mat4(1.0f));
+                    VisitMeshInstance(MeshIdx, FMatrix4(1.0f));
                 }
             }
 
@@ -739,14 +737,14 @@ namespace Lumina::Import::Mesh::GLTF
             struct FInstance
             {
                 size_t       MeshIdx;
-                glm::mat4    World;
+                FMatrix4    World;
                 FFixedString MeshName;
             };
 
             TVector<FInstance> Instances;
             THashMap<size_t, uint32> InstanceCountPerMesh;
 
-            auto EmitInstance = [&](size_t MeshIdx, const glm::mat4& World)
+            auto EmitInstance = [&](size_t MeshIdx, const FMatrix4& World)
             {
                 const fastgltf::Mesh& Mesh = Asset.meshes[MeshIdx];
 
@@ -783,12 +781,12 @@ namespace Lumina::Import::Mesh::GLTF
                 struct FStackEntry
                 {
                     size_t    NodeIdx;
-                    glm::mat4 ParentWorld;
+                    FMatrix4 ParentWorld;
                 };
                 TVector<FStackEntry> Stack;
                 for (size_t Root : Asset.scenes[SceneIdx].nodeIndices)
                 {
-                    Stack.push_back({Root, glm::mat4(1.0f)});
+                    Stack.push_back({Root, FMatrix4(1.0f)});
                 }
 
                 while (!Stack.empty())
@@ -797,7 +795,7 @@ namespace Lumina::Import::Mesh::GLTF
                     Stack.pop_back();
 
                     const fastgltf::Node& Node = Asset.nodes[Entry.NodeIdx];
-                    glm::mat4 World = Entry.ParentWorld * NodeLocalMatrix(Node);
+                    FMatrix4 World = Entry.ParentWorld * NodeLocalMatrix(Node);
 
                     if (Node.meshIndex.has_value())
                     {
@@ -815,7 +813,7 @@ namespace Lumina::Import::Mesh::GLTF
                 // No scene info; fall back to one identity-transform instance per mesh.
                 for (size_t MeshIdx = 0; MeshIdx < Asset.meshes.size(); ++MeshIdx)
                 {
-                    EmitInstance(MeshIdx, glm::mat4(1.0f));
+                    EmitInstance(MeshIdx, FMatrix4(1.0f));
                 }
             }
 

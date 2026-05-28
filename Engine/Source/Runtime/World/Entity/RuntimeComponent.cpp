@@ -15,7 +15,7 @@
 #include "Scripting/Lua/Class.h"
 #include "Scripting/Lua/Scripting.h"
 #include "Scripting/Lua/Stack.h"
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 
 namespace Lumina
 {
@@ -387,9 +387,9 @@ namespace Lumina
 
         bool IsVectorStruct(CStruct* S)
         {
-            return S == TBaseStructure<glm::vec2>::Get()
-                || S == TBaseStructure<glm::vec3>::Get()
-                || S == TBaseStructure<glm::vec4>::Get();
+            return S == TBaseStructure<FVector2>::Get()
+                || S == TBaseStructure<FVector3>::Get()
+                || S == TBaseStructure<FVector4>::Get();
         }
 
         FRuntimeComponentStorage* ResolveRefStorage(const FRuntimeComponentRef& Ref, void*& OutData, CStruct*& OutLayout)
@@ -447,9 +447,9 @@ namespace Lumina
             if (Prop->IsA(EPropertyTypeFlags::Struct))
             {
                 CStruct* S = static_cast<FStructProperty*>(Prop)->GetStruct();
-                if (S == TBaseStructure<glm::vec2>::Get()) { Lua::TStack<glm::vec2>::Push(L, *static_cast<glm::vec2*>(V)); return 1; }
-                if (S == TBaseStructure<glm::vec3>::Get()) { Lua::TStack<glm::vec3>::Push(L, *static_cast<glm::vec3*>(V)); return 1; }
-                if (S == TBaseStructure<glm::vec4>::Get()) { Lua::TStack<glm::vec4>::Push(L, *static_cast<glm::vec4*>(V)); return 1; }
+                if (S == TBaseStructure<FVector2>::Get()) { Lua::TStack<FVector2>::Push(L, *static_cast<FVector2*>(V)); return 1; }
+                if (S == TBaseStructure<FVector3>::Get()) { Lua::TStack<FVector3>::Push(L, *static_cast<FVector3*>(V)); return 1; }
+                if (S == TBaseStructure<FVector4>::Get()) { Lua::TStack<FVector4>::Push(L, *static_cast<FVector4*>(V)); return 1; }
                 if (S != nullptr)
                 {
                     PushProxy(L, ParentRef.Registry, ParentRef.Entity, ParentRef.StorageId, ParentRef.ByteOffset + Prop->Offset, S);
@@ -477,9 +477,9 @@ namespace Lumina
             if (Prop->IsA(EPropertyTypeFlags::Struct))
             {
                 CStruct* S = static_cast<FStructProperty*>(Prop)->GetStruct();
-                if (S == TBaseStructure<glm::vec2>::Get()) { *static_cast<glm::vec2*>(V) = Lua::TStack<glm::vec2>::Get(L, ValueIndex); return; }
-                if (S == TBaseStructure<glm::vec3>::Get()) { *static_cast<glm::vec3*>(V) = Lua::TStack<glm::vec3>::Get(L, ValueIndex); return; }
-                if (S == TBaseStructure<glm::vec4>::Get()) { *static_cast<glm::vec4*>(V) = Lua::TStack<glm::vec4>::Get(L, ValueIndex); return; }
+                if (S == TBaseStructure<FVector2>::Get()) { *static_cast<FVector2*>(V) = Lua::TStack<FVector2>::Get(L, ValueIndex); return; }
+                if (S == TBaseStructure<FVector3>::Get()) { *static_cast<FVector3*>(V) = Lua::TStack<FVector3>::Get(L, ValueIndex); return; }
+                if (S == TBaseStructure<FVector4>::Get()) { *static_cast<FVector4*>(V) = Lua::TStack<FVector4>::Get(L, ValueIndex); return; }
 
                 if (S != nullptr)
                 {

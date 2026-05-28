@@ -26,7 +26,7 @@ namespace Lumina
 
         /** World-space offset added to the pivot (e.g. raise the focus to head height). */
         PROPERTY(Editable, Category = "Camera|Spring Arm")
-        glm::vec3 TargetOffset = glm::vec3(0.0f, 1.5f, 0.0f);
+        FVector3 TargetOffset = FVector3(0.0f, 1.5f, 0.0f);
 
         /** Desired distance from the pivot to the camera along the arm (meters). */
         PROPERTY(Editable, Category = "Camera|Spring Arm", ClampMin = 0.0f)
@@ -34,7 +34,7 @@ namespace Lumina
 
         /** Local-space offset applied at the camera end of the arm (e.g. over-the-shoulder X). */
         PROPERTY(Editable, Category = "Camera|Spring Arm")
-        glm::vec3 SocketOffset = glm::vec3(0.0f);
+        FVector3 SocketOffset = FVector3(0.0f);
 
         /** When true, the arm orientation follows the camera entity's rotation; otherwise the target's. */
         PROPERTY(Editable, Category = "Camera|Spring Arm")
@@ -66,7 +66,7 @@ namespace Lumina
 
         // Runtime smoothing state (non-reflected). bInitialized snaps on the first
         // tick (or after SetTarget) so the boom doesn't sweep in from a stale pose.
-        glm::vec3   CurrentPivot = glm::vec3(0.0f);
+        FVector3   CurrentPivot = FVector3(0.0f);
         float       CurrentArmLength = 4.0f;
         bool        bInitialized = false;
     };

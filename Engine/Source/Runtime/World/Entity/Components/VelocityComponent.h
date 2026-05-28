@@ -1,6 +1,6 @@
 #pragma once
 
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 #include "VelocityComponent.generated.h"
 
 namespace Lumina
@@ -12,7 +12,7 @@ namespace Lumina
 
         /** Current velocity vector in world space (meters/second). */
         PROPERTY(ReadOnly)
-        glm::vec3 Velocity;
+        FVector3 Velocity;
 
         /** Magnitude of the velocity (meters/second). */
         PROPERTY(Editable)

@@ -53,6 +53,6 @@ namespace Lumina
 
         /** Color the target is cleared to on (re)build. */
         PROPERTY(Editable)
-        glm::vec4 ClearColor = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        FVector4 ClearColor = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
     };
 }

@@ -19,7 +19,7 @@ namespace Lumina
 
 		ActiveHandle = GAudioContext->PlaySoundAtLocation(
 			FStringView(SoundFile),
-			glm::vec3(0.0f), // Position will be set by the system from the transform.
+			FVector3(0.0f), // Position will be set by the system from the transform.
 			Volume,
 			Pitch,
 			MinDistance,

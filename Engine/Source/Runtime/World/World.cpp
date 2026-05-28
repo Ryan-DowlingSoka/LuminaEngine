@@ -405,7 +405,7 @@ namespace Lumina
 
         static bool World_FractureAt(CWorld* World, entt::entity Entity, float X, float Y, float Z, TOptional<float> Strength)
         {
-            return World != nullptr && Entity != entt::null && World->FractureEntity(Entity, glm::vec3(X, Y, Z), Strength.value_or(0.0f));
+            return World != nullptr && Entity != entt::null && World->FractureEntity(Entity, FVector3(X, Y, Z), Strength.value_or(0.0f));
         }
 
         // RT is a handle from Engine.LoadObject("/Game/X"); color defaults to opaque red (blood).
@@ -414,15 +414,15 @@ namespace Lumina
             TOptional<float> Strength, TOptional<float> Hardness)
         {
             if (World == nullptr || RT == nullptr) return;
-            World->PaintRenderTarget(RT, glm::vec2(U, V), Radius,
-                glm::vec4(R.value_or(1.0f), G.value_or(0.0f), B.value_or(0.0f), A.value_or(1.0f)),
+            World->PaintRenderTarget(RT, FVector2(U, V), Radius,
+                FVector4(R.value_or(1.0f), G.value_or(0.0f), B.value_or(0.0f), A.value_or(1.0f)),
                 Strength.value_or(1.0f), Hardness.value_or(1.0f), nullptr);
         }
 
         static void RenderTarget_Clear(CWorld* World, CTextureRenderTarget* RT, TOptional<float> R, TOptional<float> G, TOptional<float> B, TOptional<float> A)
         {
             if (World == nullptr || RT == nullptr) return;
-            World->ClearRenderTarget(RT, glm::vec4(R.value_or(0.0f), G.value_or(0.0f), B.value_or(0.0f), A.value_or(0.0f)));
+            World->ClearRenderTarget(RT, FVector4(R.value_or(0.0f), G.value_or(0.0f), B.value_or(0.0f), A.value_or(0.0f)));
         }
     }
     
@@ -434,7 +434,7 @@ namespace Lumina
     {
     }
 
-    void CWorld::PaintRenderTarget(CTextureRenderTarget* Target, const glm::vec2& UV, float RadiusUV, const glm::vec4& Color, float Strength, float Hardness, CTexture* BrushMask)
+    void CWorld::PaintRenderTarget(CTextureRenderTarget* Target, const FVector2& UV, float RadiusUV, const FVector4& Color, float Strength, float Hardness, CTexture* BrushMask)
     {
         if (Target == nullptr || Target->GetRHIRef() == nullptr)
         {
@@ -453,7 +453,7 @@ namespace Lumina
         RenderTargetPaintQueue.enqueue(Move(Op));
     }
 
-    void CWorld::ClearRenderTarget(CTextureRenderTarget* Target, const glm::vec4& Color)
+    void CWorld::ClearRenderTarget(CTextureRenderTarget* Target, const FVector4& Color)
     {
         if (Target == nullptr || Target->GetRHIRef() == nullptr)
         {
@@ -502,7 +502,6 @@ namespace Lumina
             .AddFunction<&Physics::IPhysicsScene::OnSetAngularVelocityEvent>("SetAngularVelocity")
             .AddFunction<&Physics::IPhysicsScene::OnAddImpulseAtPositionEvent>("AddImpulseAtPosition")
             .AddFunction<&Physics::IPhysicsScene::OnAddForceAtPositionEvent>("AddForceAtPosition")
-            .AddFunction<&Physics::IPhysicsScene::OnAddImpulseAtPositionEvent>("AddImpulseAtPosition")
             .AddFunction<&Physics::IPhysicsScene::OnSetGravityFactorEvent>("SetGravityFactor")
             .AddFunction<&Physics::IPhysicsScene::GetVelocityAtPoint>("GetVelocityAtPoint")
             .AddFunction<&Physics::IPhysicsScene::GetLinearVelocity>("GetLinearVelocity")
@@ -1071,7 +1070,7 @@ namespace Lumina
         return NewEntity;
     }
     
-    bool CWorld::FractureEntity(entt::entity Entity, const glm::vec3& Origin, float Strength)
+    bool CWorld::FractureEntity(entt::entity Entity, const FVector3& Origin, float Strength)
     {
         LUMINA_PROFILE_SCOPE();
 
@@ -1102,7 +1101,7 @@ namespace Lumina
 
         FTransform OwnerTransform = EntityRegistry.get<STransformComponent>(Entity).GetWorldTransform();
         
-        glm::vec3 InheritedVelocity(0.0f);
+        FVector3 InheritedVelocity(0.0f);
         if (PhysicsScene)
         {
             if (const SRigidBodyComponent* RB = EntityRegistry.try_get<SRigidBodyComponent>(Entity))
@@ -1116,7 +1115,7 @@ namespace Lumina
             }
         }
 
-        const glm::vec3 OwnerScale = OwnerTransform.Scale;
+        const FVector3 OwnerScale = OwnerTransform.Scale;
 
         const float LaunchSpeed = Strength > 0.0f ? Strength : Destructible->ExplosionStrength;
         const float SpinSpeed   = Destructible->SpinStrength;
@@ -1129,27 +1128,27 @@ namespace Lumina
         };
 
         // Inherited momentum + an outward blast (radial from Origin) + random spin on a fresh body.
-        auto LaunchBody = [&](uint32 BodyID, const glm::vec3& WorldCenter, uint32 Seed)
+        auto LaunchBody = [&](uint32 BodyID, const FVector3& WorldCenter, uint32 Seed)
         {
             if (!PhysicsScene || BodyID == 0xFFFFFFFFu)
             {
                 return;
             }
-            glm::vec3 Direction = WorldCenter - Origin;
-            const float Distance = glm::length(Direction);
+            FVector3 Direction = WorldCenter - Origin;
+            const float Distance = Math::Length(Direction);
             Direction = Distance > 1e-4f
                 ? Direction / Distance
-                : glm::normalize(glm::vec3(Hash01(Seed) - 0.5f, Hash01(Seed + 1) + 0.25f, Hash01(Seed + 2) - 0.5f));
+                : Math::Normalize(FVector3(Hash01(Seed) - 0.5f, Hash01(Seed + 1) + 0.25f, Hash01(Seed + 2) - 0.5f));
 
             const float SpeedJitter = 0.7f + 0.6f * Hash01(Seed + 3);
-            const glm::vec3 LaunchVelocity = InheritedVelocity
+            const FVector3 LaunchVelocity = InheritedVelocity
                 + Direction * (LaunchSpeed * SpeedJitter)
-                + glm::vec3(0.0f, LaunchSpeed * 0.2f, 0.0f);
+                + FVector3(0.0f, LaunchSpeed * 0.2f, 0.0f);
             PhysicsScene->OnSetVelocityEvent(SSetVelocityEvent{ BodyID, LaunchVelocity });
 
             if (SpinSpeed > 0.0f)
             {
-                const glm::vec3 Spin(Hash01(Seed + 4) - 0.5f, Hash01(Seed + 5) - 0.5f, Hash01(Seed + 6) - 0.5f);
+                const FVector3 Spin(Hash01(Seed + 4) - 0.5f, Hash01(Seed + 5) - 0.5f, Hash01(Seed + 6) - 0.5f);
                 PhysicsScene->OnSetAngularVelocityEvent(SSetAngularVelocityEvent{ BodyID, Spin * (2.0f * SpinSpeed) });
             }
         };
@@ -1181,7 +1180,7 @@ namespace Lumina
         // Create every fragment body in one batch (AddBodiesPrepare/Finalize) rather than a separate
         // AddBody per piece. BodyIDs are only valid after EndBodyBatch, so collect the launch impulses
         // and apply them once the batch has been inserted.
-        struct FPendingLaunch { entt::entity Fragment; glm::vec3 Center; uint32 Seed; };
+        struct FPendingLaunch { entt::entity Fragment; FVector3 Center; uint32 Seed; };
         TVector<FPendingLaunch> PendingLaunches;
         PendingLaunches.reserve(Pieces.size());
 
@@ -1192,12 +1191,12 @@ namespace Lumina
         if (PhysicsScene)
         {
             const uint32 MaxBodies = PhysicsScene->GetMaxBodyCount();
-            const uint32 Used      = glm::min(PhysicsScene->GetBodyCount(), MaxBodies);
+            const uint32 Used      = Math::Min(PhysicsScene->GetBodyCount(), MaxBodies);
             const uint32 Headroom  = MaxBodies - Used;
             MaxFragments = Headroom > 16 ? Headroom - 16 : 0;
 
             const uint32 Desired = Pieces.empty()
-                ? (uint32)glm::clamp(Destructible->FragmentCount, 2, 512)
+                ? (uint32)Math::Clamp(Destructible->FragmentCount, 2, 512)
                 : (uint32)Pieces.size();
             if (Desired > MaxFragments)
             {
@@ -1239,7 +1238,7 @@ namespace Lumina
                 // BuildPieceMesh recenters the geometry to the piece centroid, so each fragment's
                 // origin sits on its own chunk (natural pivot + physics center of mass). Place the
                 // entity at the centroid's world position so the pieces reconstruct the object at t=0.
-                const glm::vec3 WorldCenter = OwnerTransform.Location + OwnerTransform.Rotation * (OwnerTransform.Scale * Piece.Center);
+                const FVector3 WorldCenter = OwnerTransform.Location + OwnerTransform.Rotation * (OwnerTransform.Scale * Piece.Center);
                 FTransform PieceTransform;
                 PieceTransform.Location = WorldCenter;
                 PieceTransform.Rotation = OwnerTransform.Rotation;
@@ -1270,21 +1269,21 @@ namespace Lumina
         {
             // Fallback (degenerate fracture): subdivide the bounds into a grid of textured box chunks.
             const FAABB& LocalBounds = SourceMesh->GetAABB();
-            const glm::vec3 LocalExtent = glm::max(LocalBounds.GetSize(), glm::vec3(0.01f));
-            const glm::vec3 LocalCenter = LocalBounds.GetCenter();
-            const int32 Target = glm::clamp(Destructible->FragmentCount, 2, 512);
-            const int32 Dims   = glm::max(1, static_cast<int32>(std::ceil(std::cbrt(static_cast<float>(Target)))));
-            const glm::vec3 LocalCell = LocalExtent / static_cast<float>(Dims);
-            const glm::vec3 FragScale = OwnerScale / static_cast<float>(Dims);
-            const glm::vec3 ColliderHalf = LocalExtent * 0.5f;
+            const FVector3 LocalExtent = Math::Max(LocalBounds.GetSize(), FVector3(0.01f));
+            const FVector3 LocalCenter = LocalBounds.GetCenter();
+            const int32 Target = Math::Clamp(Destructible->FragmentCount, 2, 512);
+            const int32 Dims   = Math::Max(1, static_cast<int32>(std::ceil(std::cbrt(static_cast<float>(Target)))));
+            const FVector3 LocalCell = LocalExtent / static_cast<float>(Dims);
+            const FVector3 FragScale = OwnerScale / static_cast<float>(Dims);
+            const FVector3 ColliderHalf = LocalExtent * 0.5f;
             CStaticMesh* GridMesh = Destructible->FragmentMesh.Get() ? Destructible->FragmentMesh.Get() : SourceMesh;
 
             for (int32 zi = 0; zi < Dims && Spawned < Target && (uint32)Spawned < MaxFragments; ++zi)
             for (int32 yi = 0; yi < Dims && Spawned < Target && (uint32)Spawned < MaxFragments; ++yi)
             for (int32 xi = 0; xi < Dims && Spawned < Target && (uint32)Spawned < MaxFragments; ++xi)
             {
-                const glm::vec3 CellLocalCenter = LocalBounds.Min + (glm::vec3(xi, yi, zi) + 0.5f) * LocalCell;
-                const glm::vec3 CellWorldCenter = OwnerTransform.Location + OwnerTransform.Rotation * (OwnerScale * CellLocalCenter);
+                const FVector3 CellLocalCenter = LocalBounds.Min + (FVector3(xi, yi, zi) + 0.5f) * LocalCell;
+                const FVector3 CellWorldCenter = OwnerTransform.Location + OwnerTransform.Rotation * (OwnerScale * CellLocalCenter);
 
                 FTransform FragmentTransform;
                 FragmentTransform.Location = CellWorldCenter - OwnerTransform.Rotation * (FragScale * LocalCenter);
@@ -1478,22 +1477,22 @@ namespace Lumina
         return EntityRegistry.get<STransformComponent>(Entity);
     }
 
-    glm::vec3 CWorld::GetEntityLocation(entt::entity Entity)
+    FVector3 CWorld::GetEntityLocation(entt::entity Entity)
     {
         return GetEntityTransform(Entity).GetWorldLocation();
     }
 
-    void CWorld::SetEntityLocation(entt::entity Entity, glm::vec3 Location)
+    void CWorld::SetEntityLocation(entt::entity Entity, FVector3 Location)
     {
         GetEntityTransform(Entity).SetLocation(Location);
     }
 
-    void CWorld::SetEntityRotation(entt::entity Entity, glm::quat Rotation)
+    void CWorld::SetEntityRotation(entt::entity Entity, FQuat Rotation)
     {
         GetEntityTransform(Entity).SetRotation(Rotation);
     }
 
-    glm::vec3 CWorld::TranslateEntity(entt::entity Entity, glm::vec3 Translation)
+    FVector3 CWorld::TranslateEntity(entt::entity Entity, FVector3 Translation)
     {
         return GetEntityTransform(Entity).Translate(Translation);
     }
@@ -1952,12 +1951,12 @@ namespace Lumina
         }
     }
 
-    void CWorld::DrawBillboard(FRHIImage* Image, const glm::vec3& Location, float Scale)
+    void CWorld::DrawBillboard(FRHIImage* Image, const FVector3& Location, float Scale)
     {
         RenderScene->DrawBillboard(Image, Location, Scale);
     }
 
-    void CWorld::DrawLine(const glm::vec3& Start, const glm::vec3& End, const glm::vec4& Color, float Thickness, bool bDepthTest, float Duration)
+    void CWorld::DrawLine(const FVector3& Start, const FVector3& End, const FVector4& Color, float Thickness, bool bDepthTest, float Duration)
     {
         if (IsSuspended())
         {
@@ -1985,10 +1984,10 @@ namespace Lumina
                 SRayResult RayResult = Result.value();
                 DrawLine(Settings.Start, RayResult.Location, FColor(Settings.DebugMissColor), 3.0f, true, Settings.DebugDuration);
                 
-                glm::vec3 NormalEnd = RayResult.Location + RayResult.Normal * 0.5f;
+                FVector3 NormalEnd = RayResult.Location + RayResult.Normal * 0.5f;
                 DrawLine(RayResult.Location, NormalEnd, FColor::Blue, 3.0f,true, Settings.DebugDuration);
                 
-                DrawBox(RayResult.Location, glm::vec3(0.05f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), FColor::Yellow, 3.0, true, Settings.DebugDuration);
+                DrawBox(RayResult.Location, FVector3(0.05f), FQuat(1.0f, 0.0f, 0.0f, 0.0f), FColor::Yellow, 3.0, true, Settings.DebugDuration);
                 
                 DrawLine(RayResult.Location, Settings.End, FColor(Settings.DebugHitColor), 3.0f, true, Settings.DebugDuration);
             }

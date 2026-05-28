@@ -3,9 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <glm/gtc/constants.hpp>
-#include <glm/gtc/matrix_inverse.hpp>
-#include <glm/gtc/type_ptr.hpp>
+#include "Core/Math/Math.h"
 
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "World/Entity/Components/CameraComponent.h"

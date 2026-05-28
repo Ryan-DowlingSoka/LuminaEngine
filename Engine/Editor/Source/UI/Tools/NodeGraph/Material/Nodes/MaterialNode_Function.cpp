@@ -27,7 +27,7 @@ namespace Lumina
     }
 
     // HLSL literal for a value of the given width, e.g. Float3 -> "float3(x, y, z)".
-    static FString VecLiteral(EMaterialValueType Type, const glm::vec4& V)
+    static FString VecLiteral(EMaterialValueType Type, const FVector4& V)
     {
         switch (Type)
         {
@@ -124,7 +124,7 @@ namespace Lumina
             return;
         }
 
-        FMaterialCompiler::FInputValue Val = Compiler.GetTypedInputValue(Input, VecLiteral(OutputType, glm::vec4(0.0f)));
+        FMaterialCompiler::FInputValue Val = Compiler.GetTypedInputValue(Input, VecLiteral(OutputType, FVector4(0.0f)));
         Compiler.AddRaw(FMaterialCompiler::GetHLSLTypeName(Val.Type) + " " + GetNodeFullName() + " = " + Val.Value + GetSwizzleForMask(Val.Mask) + ";\n");
     }
 
@@ -418,7 +418,7 @@ namespace Lumina
 
             if (MatchNode != nullptr && MatchNode->Input != nullptr && MatchNode->Input->HasConnection())
             {
-                FMaterialCompiler::FInputValue Val = Compiler.GetTypedInputValue(MatchNode->Input, VecLiteral(Decl.Type, glm::vec4(0.0f)));
+                FMaterialCompiler::FInputValue Val = Compiler.GetTypedInputValue(MatchNode->Input, VecLiteral(Decl.Type, FVector4(0.0f)));
                 Compiler.AddRaw(FMaterialCompiler::GetHLSLTypeName(Val.Type) + " " + OutVar + " = " + Val.Value + GetSwizzleForMask(Val.Mask) + ";\n");
                 OutPin->SetInputType(Val.Type);
                 OutPin->SetComponentMask(FullMaskForType(Val.Type));

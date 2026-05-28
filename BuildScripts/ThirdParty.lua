@@ -120,7 +120,6 @@ end
 -- header-only or compiled inline; the linkable ones (EA, ImGui, ...) are
 -- linked by whichever module references their symbols.
 LuminaThirdParty.Register({ Name = "EA",            IncludeDirs = { "EA/EASTL/include", "EA/EABase/include/Common" } })
-LuminaThirdParty.Register({ Name = "GLM",           IncludeDirs = { "glm" },                Link = false })
 LuminaThirdParty.Register({ Name = "Entt",          IncludeDirs = { "entt" },               Link = false })
 LuminaThirdParty.Register({ Name = "SPDLog",        IncludeDirs = { "spdlog/include" },     Link = false })
 LuminaThirdParty.Register({ Name = "NlohmannJson",  IncludeDirs = { "json" },               Link = false })
@@ -191,7 +190,7 @@ LuminaThirdParty.Register({ Name = "FastGLTF",      IncludeDirs = { "fastgltf/in
 -- Everything the Runtime module links or exposes through its public headers.
 LuminaThirdParty.RuntimePublicDeps =
 {
-    "EA", "GLM", "Entt", "SPDLog", "NlohmannJson", "StbImage", "RenderDoc",
+    "EA", "Entt", "SPDLog", "NlohmannJson", "StbImage", "RenderDoc",
     "ConcurrentQueue", "RPMalloc", "XXHash", "Miniz", "Tracy",
     "GLFW", "ImGui", "FreeType", "RmlUi",
     "Vulkan", "Volk", "VMA", "VKBootstrap", "SLang",

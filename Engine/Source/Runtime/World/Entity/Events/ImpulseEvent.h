@@ -16,7 +16,7 @@ namespace Lumina
 
         /** Impulse vector in world space (kg·m/s). */
         PROPERTY(Script)
-        glm::vec3 Impulse;
+        FVector3 Impulse;
     };
 
     REFLECT(Event)
@@ -30,7 +30,7 @@ namespace Lumina
 
         /** Continuous force vector in world space (N). Applied for one physics step. */
         PROPERTY(Script)
-        glm::vec3 Force;
+        FVector3 Force;
     };
 
     REFLECT(Event)
@@ -44,7 +44,7 @@ namespace Lumina
 
         /** Torque vector in world space (N·m). Applied for one physics step. */
         PROPERTY(Script)
-        glm::vec3 Torque;
+        FVector3 Torque;
     };
 
     REFLECT(Event)
@@ -58,7 +58,7 @@ namespace Lumina
 
         /** Angular impulse in world space (kg·m²/s). */
         PROPERTY(Script)
-        glm::vec3 AngularImpulse;
+        FVector3 AngularImpulse;
     };
 
     REFLECT(Event)
@@ -72,7 +72,7 @@ namespace Lumina
 
         /** New linear velocity in world space (m/s). */
         PROPERTY(Script)
-        glm::vec3 Velocity;
+        FVector3 Velocity;
     };
 
     REFLECT(Event)
@@ -86,7 +86,7 @@ namespace Lumina
 
         /** New angular velocity in world space (rad/s). */
         PROPERTY(Script)
-        glm::vec3 AngularVelocity;
+        FVector3 AngularVelocity;
     };
 
     REFLECT(Event)
@@ -100,11 +100,11 @@ namespace Lumina
 
         /** Impulse vector in world space (kg·m/s). */
         PROPERTY(Script)
-        glm::vec3 Impulse;
+        FVector3 Impulse;
 
         /** World-space position where the impulse is applied. */
         PROPERTY(Script)
-        glm::vec3 Position;
+        FVector3 Position;
     };
 
     REFLECT(Event)
@@ -118,11 +118,11 @@ namespace Lumina
 
         /** Force vector in world space (N). */
         PROPERTY(Script)
-        glm::vec3 Force;
+        FVector3 Force;
 
         /** World-space position where the force is applied. */
         PROPERTY(Script)
-        glm::vec3 Position;
+        FVector3 Position;
     };
 
     REFLECT(Event)

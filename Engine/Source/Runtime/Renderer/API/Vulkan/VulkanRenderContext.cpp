@@ -1240,7 +1240,7 @@ namespace Lumina
         return Math::GetAligned(Size, MinAlignment);
     }
     
-    FRHIViewportRef FVulkanRenderContext::CreateViewport(const glm::uvec2& Size, FString&& DebugName)
+    FRHIViewportRef FVulkanRenderContext::CreateViewport(const FUIntVector2& Size, FString&& DebugName)
     {
         return MakeRefCount<FVulkanViewport>(Size, this, Move(DebugName));
     }

@@ -39,7 +39,7 @@ namespace Lumina
         void GenerateDefinition(FParticleCompiler& Compiler) override;
 
         PROPERTY(Editable, Category = "Value")
-        glm::vec3 Value = glm::vec3(0.0f);
+        FVector3 Value = FVector3(0.0f);
 
         CParticleOutput* Output = nullptr;
     };
@@ -58,7 +58,7 @@ namespace Lumina
         void GenerateDefinition(FParticleCompiler& Compiler) override;
 
         PROPERTY(Editable, Category = "Value")
-        glm::vec4 Value = glm::vec4(1.0f);
+        FVector4 Value = FVector4(1.0f);
 
         CParticleOutput* Output = nullptr;
     };

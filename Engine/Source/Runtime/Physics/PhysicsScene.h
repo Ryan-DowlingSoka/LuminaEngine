@@ -39,17 +39,17 @@ namespace Lumina::Physics
         virtual void OnAddForceAtPositionEvent(const SAddForceAtPositionEvent& Event) = 0;
         virtual void OnSetGravityFactorEvent(const SSetGravityFactorEvent& Event) = 0;
         
-        virtual glm::vec3 GetVelocityAtPoint(uint32 BodyID, const glm::vec3& Point) = 0;
-        virtual glm::vec3 GetLinearVelocity(uint32 BodyID) = 0;
-        virtual glm::vec3 GetAngularVelocity(uint32 BodyID) = 0;
-        virtual glm::vec3 GetCenterOfMass(uint32 BodyID)= 0;
+        virtual FVector3 GetVelocityAtPoint(uint32 BodyID, const FVector3& Point) = 0;
+        virtual FVector3 GetLinearVelocity(uint32 BodyID) = 0;
+        virtual FVector3 GetAngularVelocity(uint32 BodyID) = 0;
+        virtual FVector3 GetCenterOfMass(uint32 BodyID)= 0;
 
         // Body's actual current pose, NOT the interpolated render transform.
         // Use this when a script reads the body in PrePhysics and needs the
         // position physics will integrate from this frame -- the cached
         // STransformComponent is the lagged display value.
-        virtual glm::vec3 GetBodyPosition(uint32 BodyID) = 0;
-        virtual glm::quat GetBodyRotation(uint32 BodyID) = 0;
+        virtual FVector3 GetBodyPosition(uint32 BodyID) = 0;
+        virtual FQuat GetBodyRotation(uint32 BodyID) = 0;
 
         /** Current live body count and the configured ceiling. Lets bulk spawners (fracture) clamp to capacity instead of overflowing Jolt's body buffer. */
         virtual uint32 GetBodyCount() = 0;

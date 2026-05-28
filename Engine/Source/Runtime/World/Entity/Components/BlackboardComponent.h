@@ -5,7 +5,7 @@
 #include "Containers/Name.h"
 #include "Core/Object/ObjectMacros.h"
 #include "Core/Object/ObjectHandleTyped.h"
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 #include "BlackboardComponent.generated.h"
 
 namespace Lumina
@@ -15,7 +15,7 @@ namespace Lumina
     struct FBlackboardValue
     {
         float                Scalar = 0.0f;
-        glm::vec3            Vector = glm::vec3(0.0f);
+        FVector3            Vector = FVector3(0.0f);
         TObjectPtr<CObject>  Object;
     };
 
@@ -61,8 +61,8 @@ namespace Lumina
         FUNCTION(Script)
         RUNTIME_API bool HasKey(const FName& Key) const;
 
-        RUNTIME_API void SetVector(const FName& Key, const glm::vec3& Value);
-        RUNTIME_API glm::vec3 GetVector(const FName& Key, const glm::vec3& Default = glm::vec3(0.0f)) const;
+        RUNTIME_API void SetVector(const FName& Key, const FVector3& Value);
+        RUNTIME_API FVector3 GetVector(const FName& Key, const FVector3& Default = FVector3(0.0f)) const;
 
         // (Re)seeds the value store from the schema defaults when first used or
         // when the referenced Blackboard asset changes. Safe to call every frame.

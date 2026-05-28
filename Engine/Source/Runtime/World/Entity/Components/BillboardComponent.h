@@ -23,6 +23,6 @@ namespace Lumina
 
         /** RGBA tint multiplied with the billboard texture color. */
         PROPERTY(Editable, Color)
-        glm::vec4 Tint;
+        FVector4 Tint;
     };
 }

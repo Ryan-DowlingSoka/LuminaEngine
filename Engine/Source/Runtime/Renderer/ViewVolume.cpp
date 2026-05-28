@@ -5,15 +5,15 @@
 namespace Lumina
 {
 
-    glm::vec3 FViewVolume::UpAxis        = glm::vec3(0.0f,  1.0f,  0.0f);
-    glm::vec3 FViewVolume::DownAxis      = glm::vec3(0.0f, -1.0f,  0.0f);
-    glm::vec3 FViewVolume::RightAxis     = glm::vec3(1.0f,  0.0f,  0.0f);
-    glm::vec3 FViewVolume::LeftAxis      = glm::vec3(-1.0f, 0.0f,  0.0f);
-    glm::vec3 FViewVolume::ForwardAxis   = glm::vec3(0.0f,  0.0f,  1.0f);
-    glm::vec3 FViewVolume::BackwardAxis  = glm::vec3(0.0f,  0.0f, -1.0f);
+    FVector3 FViewVolume::UpAxis        = FVector3(0.0f,  1.0f,  0.0f);
+    FVector3 FViewVolume::DownAxis      = FVector3(0.0f, -1.0f,  0.0f);
+    FVector3 FViewVolume::RightAxis     = FVector3(1.0f,  0.0f,  0.0f);
+    FVector3 FViewVolume::LeftAxis      = FVector3(-1.0f, 0.0f,  0.0f);
+    FVector3 FViewVolume::ForwardAxis   = FVector3(0.0f,  0.0f,  1.0f);
+    FVector3 FViewVolume::BackwardAxis  = FVector3(0.0f,  0.0f, -1.0f);
     
     FViewVolume::FViewVolume(float fov, float aspect, float InNear, float InFar)
-        : ViewPosition(glm::vec3(1.0))
+        : ViewPosition(FVector3(1.0))
         // Seeded so SetView's normalize/cross chain never sees uninitialized memory.
         , ForwardVector(ForwardAxis)
         , UpVector(UpAxis)
@@ -24,13 +24,13 @@ namespace Lumina
         , AspectRatio(aspect)
     {
         SetPerspective(fov, aspect);
-        SetView(glm::vec3(0.0), ForwardAxis, UpAxis);
+        SetView(FVector3(0.0), ForwardAxis, UpAxis);
     }
 
     // Y-flip bakes Vulkan +Y-down NDC into the matrix; reverse-Z via swapped Far/Near.
-    static glm::mat4 BuildVulkanReverseZPerspective(float FovDegrees, float Aspect, float Near, float Far)
+    static FMatrix4 BuildVulkanReverseZPerspective(float FovDegrees, float Aspect, float Near, float Far)
     {
-        glm::mat4 P = glm::perspective(glm::radians(FovDegrees), Aspect, Far, Near);
+        FMatrix4 P = Math::Perspective(Math::Radians(FovDegrees), Aspect, Far, Near);
         P[1][1] *= -1.0f;
         return P;
     }
@@ -54,7 +54,7 @@ namespace Lumina
     }
 
 
-    FViewVolume& FViewVolume::SetViewPosition(const glm::vec3& Position)
+    FViewVolume& FViewVolume::SetViewPosition(const FVector3& Position)
     {
         ViewPosition = Position;
         UpdateMatrices();
@@ -62,13 +62,13 @@ namespace Lumina
         return *this;
     }
 
-    FViewVolume& FViewVolume::SetView(const glm::vec3& Position, const glm::vec3& ViewDirection, const glm::vec3& UpDirection)
+    FViewVolume& FViewVolume::SetView(const FVector3& Position, const FVector3& ViewDirection, const FVector3& UpDirection)
     {
         ViewPosition    = Position;
-        UpVector        = glm::normalize(UpDirection);
-        ForwardVector   = glm::normalize(ViewDirection);
-        RightVector     = glm::normalize(glm::cross(UpVector, ForwardVector));
-        UpVector        = glm::normalize(glm::cross(ForwardVector, RightVector));
+        UpVector        = Math::Normalize(UpDirection);
+        ForwardVector   = Math::Normalize(ViewDirection);
+        RightVector     = Math::Normalize(Math::Cross(UpVector, ForwardVector));
+        UpVector        = Math::Normalize(Math::Cross(ForwardVector, RightVector));
 
         UpdateMatrices();
 
@@ -107,31 +107,31 @@ namespace Lumina
         return *this;
     }
 
-    FViewVolume& FViewVolume::Rotate(float Angle, glm::vec3 Axis)
+    FViewVolume& FViewVolume::Rotate(float Angle, FVector3 Axis)
     {
-        float Radians   = glm::radians(Angle);
-        glm::mat4 R     = glm::rotate(glm::mat4(1), Radians, Axis);
+        float Radians   = Math::Radians(Angle);
+        FMatrix4 R     = Math::Rotate(FMatrix4(1), Radians, Axis);
         
-        ForwardVector = glm::normalize(R * glm::vec4(ForwardVector, 0));
-        UpVector      = glm::normalize(R * glm::vec4(UpVector, 0));
+        ForwardVector = Math::Normalize(R * FVector4(ForwardVector, 0));
+        UpVector      = Math::Normalize(R * FVector4(UpVector, 0));
         
-        RightVector   = glm::normalize(glm::cross(UpVector, ForwardVector));
+        RightVector   = Math::Normalize(Math::Cross(UpVector, ForwardVector));
 
         UpdateMatrices();
         return *this;
     }
 
-    glm::mat4 FViewVolume::ToReverseDepthViewProjectionMatrix() const
+    FMatrix4 FViewVolume::ToReverseDepthViewProjectionMatrix() const
     {
         // Standard-Z projection (not reverse-Z) for shadow face VPs; keeps Vulkan Y-flip.
-        glm::mat4 P = glm::perspective(glm::radians(FOV), AspectRatio, Near, Far);
+        FMatrix4 P = Math::Perspective(Math::Radians(FOV), AspectRatio, Near, Far);
         P[1][1] *= -1.0f;
         return P * ViewMatrix;
     }
 
     FFrustum FViewVolume::GetFrustum() const
     {
-        const glm::mat4& matrix = ViewProjectionMatrix;
+        const FMatrix4& matrix = ViewProjectionMatrix;
 
         FFrustum Frustum = {};
         Frustum.Planes[FFrustum::LEFT].x = matrix[0].w + matrix[0].x;
@@ -166,7 +166,7 @@ namespace Lumina
 
         for (auto i = 0; i < FFrustum::NUM; i++)
         {
-            float length = glm::sqrt(Frustum.Planes[i].x * Frustum.Planes[i].x + Frustum.Planes[i].y * Frustum.Planes[i].y + Frustum.Planes[i].z * Frustum.Planes[i].z);
+            float length = Math::Sqrt(Frustum.Planes[i].x * Frustum.Planes[i].x + Frustum.Planes[i].y * Frustum.Planes[i].y + Frustum.Planes[i].z * Frustum.Planes[i].z);
             Frustum.Planes[i] /= length;
         }
 
@@ -175,7 +175,7 @@ namespace Lumina
     
     void FViewVolume::UpdateMatrices()
     {
-        ViewMatrix = glm::lookAt(ViewPosition, ViewPosition + ForwardVector, UpVector);
+        ViewMatrix = Math::LookAt(ViewPosition, ViewPosition + ForwardVector, UpVector);
         ViewProjectionMatrix = ProjectionMatrix * ViewMatrix;
     }
 }

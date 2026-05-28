@@ -12,8 +12,8 @@
 namespace Lumina::SkeletonDebugDraw
 {
     void ComputeGlobalBoneTransforms(const FSkeletonResource* Skeleton,
-                                     const TVector<glm::mat4>& BoneTransforms,
-                                     TVector<glm::mat4>& OutGlobals)
+                                     const TVector<FMatrix4>& BoneTransforms,
+                                     TVector<FMatrix4>& OutGlobals)
     {
         const int32 NumBones = Skeleton ? Skeleton->GetNumBones() : 0;
         OutGlobals.resize(NumBones);
@@ -27,7 +27,7 @@ namespace Lumina::SkeletonDebugDraw
         {
             for (int32 i = 0; i < NumBones; ++i)
             {
-                OutGlobals[i] = BoneTransforms[i] * glm::inverse(Skeleton->GetBone(i).InvBindMatrix);
+                OutGlobals[i] = BoneTransforms[i] * Math::Inverse(Skeleton->GetBone(i).InvBindMatrix);
             }
         }
         else
@@ -44,26 +44,26 @@ namespace Lumina::SkeletonDebugDraw
 
     namespace
     {
-        void DrawOctahedralBone(IPrimitiveDrawInterface* DI, const glm::vec3& From, const glm::vec3& To,
-                                const glm::vec4& Color, float Thickness, bool bDepthTest)
+        void DrawOctahedralBone(IPrimitiveDrawInterface* DI, const FVector3& From, const FVector3& To,
+                                const FVector4& Color, float Thickness, bool bDepthTest)
         {
-            const glm::vec3 Axis = To - From;
-            const float Length   = glm::length(Axis);
+            const FVector3 Axis = To - From;
+            const float Length   = Math::Length(Axis);
             if (Length < 1e-5f)
             {
                 return;
             }
 
-            const glm::vec3 Dir  = Axis / Length;
-            glm::vec3 Up         = (fabsf(Dir.y) < 0.99f) ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
-            const glm::vec3 Side = glm::normalize(glm::cross(Dir, Up));
-            Up                   = glm::normalize(glm::cross(Side, Dir));
+            const FVector3 Dir  = Axis / Length;
+            FVector3 Up         = (fabsf(Dir.y) < 0.99f) ? FVector3(0, 1, 0) : FVector3(1, 0, 0);
+            const FVector3 Side = Math::Normalize(Math::Cross(Dir, Up));
+            Up                   = Math::Normalize(Math::Cross(Side, Dir));
 
             const float RidgeDist   = Length * 0.18f;
-            const float RidgeRadius = glm::clamp(Length * 0.10f, 0.006f, 0.05f);
-            const glm::vec3 Center  = From + Dir * RidgeDist;
+            const float RidgeRadius = Math::Clamp(Length * 0.10f, 0.006f, 0.05f);
+            const FVector3 Center  = From + Dir * RidgeDist;
 
-            const glm::vec3 R[4] =
+            const FVector3 R[4] =
             {
                 Center + Side * RidgeRadius,
                 Center + Up   * RidgeRadius,
@@ -82,8 +82,8 @@ namespace Lumina::SkeletonDebugDraw
 
     void DrawSkeleton(IPrimitiveDrawInterface* DrawInterface,
                       const FSkeletonResource* Skeleton,
-                      const TVector<glm::mat4>& GlobalBoneTransforms,
-                      const glm::mat4& MeshWorldMatrix,
+                      const TVector<FMatrix4>& GlobalBoneTransforms,
+                      const FMatrix4& MeshWorldMatrix,
                       const FOptions& Options)
     {
         if (DrawInterface == nullptr || Skeleton == nullptr)
@@ -100,12 +100,12 @@ namespace Lumina::SkeletonDebugDraw
         for (int32 i = 0; i < NumBones; ++i)
         {
             const FSkeletonResource::FBoneInfo& Bone = Skeleton->GetBone(i);
-            const glm::mat4 WorldBone = MeshWorldMatrix * GlobalBoneTransforms[i];
-            const glm::vec3 Position  = glm::vec3(WorldBone[3]);
+            const FMatrix4 WorldBone = MeshWorldMatrix * GlobalBoneTransforms[i];
+            const FVector3 Position  = FVector3(WorldBone[3]);
 
             if (Options.bBones && Bone.ParentIndex >= 0)
             {
-                const glm::vec3 ParentPos = glm::vec3((MeshWorldMatrix * GlobalBoneTransforms[Bone.ParentIndex])[3]);
+                const FVector3 ParentPos = FVector3((MeshWorldMatrix * GlobalBoneTransforms[Bone.ParentIndex])[3]);
                 if (Options.bOctahedral)
                 {
                     DrawOctahedralBone(DrawInterface, ParentPos, Position, Options.BoneColor, Options.BoneThickness, Options.bDepthTest);
@@ -119,19 +119,19 @@ namespace Lumina::SkeletonDebugDraw
             if (Options.bJoints)
             {
                 const bool  bRoot  = (Bone.ParentIndex < 0);
-                const glm::vec4 Color = bRoot ? Options.RootColor : Options.JointColor;
+                const FVector4 Color = bRoot ? Options.RootColor : Options.JointColor;
                 const float Radius = bRoot ? Options.JointRadius * 1.8f : Options.JointRadius;
                 DrawInterface->DrawSphere(Position, Radius, Color, 8, Options.BoneThickness, Options.bDepthTest);
             }
 
             if (Options.bAxes)
             {
-                const glm::vec3 AxisX = glm::normalize(glm::vec3(WorldBone[0])) * Options.AxisLength;
-                const glm::vec3 AxisY = glm::normalize(glm::vec3(WorldBone[1])) * Options.AxisLength;
-                const glm::vec3 AxisZ = glm::normalize(glm::vec3(WorldBone[2])) * Options.AxisLength;
-                DrawInterface->DrawLine(Position, Position + AxisX, glm::vec4(1.0f, 0.25f, 0.25f, 1.0f), 1.5f, Options.bDepthTest);
-                DrawInterface->DrawLine(Position, Position + AxisY, glm::vec4(0.35f, 1.0f, 0.35f, 1.0f), 1.5f, Options.bDepthTest);
-                DrawInterface->DrawLine(Position, Position + AxisZ, glm::vec4(0.35f, 0.55f, 1.0f, 1.0f), 1.5f, Options.bDepthTest);
+                const FVector3 AxisX = Math::Normalize(FVector3(WorldBone[0])) * Options.AxisLength;
+                const FVector3 AxisY = Math::Normalize(FVector3(WorldBone[1])) * Options.AxisLength;
+                const FVector3 AxisZ = Math::Normalize(FVector3(WorldBone[2])) * Options.AxisLength;
+                DrawInterface->DrawLine(Position, Position + AxisX, FVector4(1.0f, 0.25f, 0.25f, 1.0f), 1.5f, Options.bDepthTest);
+                DrawInterface->DrawLine(Position, Position + AxisY, FVector4(0.35f, 1.0f, 0.35f, 1.0f), 1.5f, Options.bDepthTest);
+                DrawInterface->DrawLine(Position, Position + AxisZ, FVector4(0.35f, 0.55f, 1.0f, 1.0f), 1.5f, Options.bDepthTest);
             }
         }
     }
@@ -151,7 +151,7 @@ namespace Lumina::SkeletonDebugDraw
             FEntityRegistry& Registry = World->GetEntityRegistry();
             auto View = Registry.view<SSkeletalMeshComponent, STransformComponent>();
 
-            TVector<glm::mat4> Globals;
+            TVector<FMatrix4> Globals;
             for (entt::entity Entity : View)
             {
                 const SSkeletalMeshComponent& Mesh = View.get<SSkeletalMeshComponent>(Entity);
@@ -172,7 +172,7 @@ namespace Lumina::SkeletonDebugDraw
                     continue;
                 }
 
-                const glm::mat4 MeshWorld = View.get<STransformComponent>(Entity).GetWorldMatrix();
+                const FMatrix4 MeshWorld = View.get<STransformComponent>(Entity).GetWorldMatrix();
                 ComputeGlobalBoneTransforms(Skeleton, Mesh.BoneTransforms, Globals);
                 Callback(Skeleton, MeshWorld, Globals);
             }
@@ -186,7 +186,7 @@ namespace Lumina::SkeletonDebugDraw
             return;
         }
 
-        ForEachSkeletalMesh(World, [&](const FSkeletonResource* Skeleton, const glm::mat4& MeshWorld, const TVector<glm::mat4>& Globals)
+        ForEachSkeletalMesh(World, [&](const FSkeletonResource* Skeleton, const FMatrix4& MeshWorld, const TVector<FMatrix4>& Globals)
         {
             DrawSkeleton(DrawInterface, Skeleton, Globals, MeshWorld, Options);
         });
@@ -194,12 +194,12 @@ namespace Lumina::SkeletonDebugDraw
 
     void GatherWorldBoneLabels(CWorld* World, TVector<FBoneLabel>& OutLabels)
     {
-        ForEachSkeletalMesh(World, [&](const FSkeletonResource* Skeleton, const glm::mat4& MeshWorld, const TVector<glm::mat4>& Globals)
+        ForEachSkeletalMesh(World, [&](const FSkeletonResource* Skeleton, const FMatrix4& MeshWorld, const TVector<FMatrix4>& Globals)
         {
             const int32 NumBones = Skeleton->GetNumBones();
             for (int32 i = 0; i < NumBones; ++i)
             {
-                OutLabels.push_back({ Skeleton->GetBone(i).Name, glm::vec3((MeshWorld * Globals[i])[3]) });
+                OutLabels.push_back({ Skeleton->GetBone(i).Name, FVector3((MeshWorld * Globals[i])[3]) });
             }
         });
     }

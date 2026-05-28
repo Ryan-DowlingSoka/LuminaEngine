@@ -29,7 +29,7 @@ namespace Lumina
         float Scalar = 0.0f;
 
         PROPERTY()
-        glm::vec4 Vector = glm::vec4(0.0f);
+        FVector4 Vector = FVector4(0.0f);
 
         PROPERTY()
         TObjectPtr<CTexture> Texture;
@@ -48,7 +48,7 @@ namespace Lumina
 
         CMaterial* GetMaterial() const override;
         bool SetScalarValue(const FName& Name, const float Value) override;
-        bool SetVectorValue(const FName& Name, const glm::vec4& Value) override;
+        bool SetVectorValue(const FName& Name, const FVector4& Value) override;
         bool SetTextureValue(const FName& Name, CTexture* TextureValue);
         bool GetParameterValue(EMaterialParameterType Type, const FName& Name, FMaterialParameter& Param) override;
         FMaterialUniforms* GetMaterialUniforms() override { return &MaterialUniforms; }

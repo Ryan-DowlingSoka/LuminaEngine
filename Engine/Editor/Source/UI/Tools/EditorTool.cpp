@@ -244,10 +244,10 @@ namespace Lumina
 
         // Same convention the world editor uses for its off-screen indicators: flip the
         // projection Y, then map NDC -> panel pixels.
-        glm::mat4 Proj = Camera->GetProjectionMatrix();
+        FMatrix4 Proj = Camera->GetProjectionMatrix();
         Proj[1][1] *= -1.0f;
-        const glm::mat4 ViewProj = Proj * Camera->GetViewMatrix();
-        const glm::vec3 CameraPos = glm::vec3(glm::inverse(Camera->GetViewMatrix())[3]);
+        const FMatrix4 ViewProj = Proj * Camera->GetViewMatrix();
+        const FVector3 CameraPos = FVector3(Math::Inverse(Camera->GetViewMatrix())[3]);
 
         const float MaxDist     = CVarSkeletonNameDist.GetValue();
         const float MaxDistSq   = MaxDist * MaxDist;
@@ -261,13 +261,13 @@ namespace Lumina
         DrawList->PushClipRect(ViewportOrigin, ImVec2(ViewportOrigin.x + ViewportSize.x, ViewportOrigin.y + ViewportSize.y), true);
         for (const SkeletonDebugDraw::FBoneLabel& Label : Labels)
         {
-            const glm::vec3 Delta = Label.WorldPosition - CameraPos;
-            if (glm::dot(Delta, Delta) > MaxDistSq)
+            const FVector3 Delta = Label.WorldPosition - CameraPos;
+            if (Math::Dot(Delta, Delta) > MaxDistSq)
             {
                 continue;
             }
 
-            const glm::vec4 Clip = ViewProj * glm::vec4(Label.WorldPosition, 1.0f);
+            const FVector4 Clip = ViewProj * FVector4(Label.WorldPosition, 1.0f);
             if (Clip.w <= 1e-4f)
             {
                 continue; // behind the camera
@@ -443,7 +443,7 @@ namespace Lumina
         World->GetEntityRegistry().emplace<SCameraComponent>(EditorEntity);
         World->GetEntityRegistry().emplace<SInputComponent>(EditorEntity);
         World->GetEntityRegistry().emplace<FEditorComponent>(EditorEntity);
-        World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetLocation(glm::vec3(0.0f, 1.25f, 3.25f));
+        World->GetEntityRegistry().get<STransformComponent>(EditorEntity).SetLocation(FVector3(0.0f, 1.25f, 3.25f));
 
         World->SetActiveCamera(EditorEntity);
     }
@@ -452,8 +452,8 @@ namespace Lumina
     {
         FTransform Transform;
         Transform.Rotate({-90.0f, 0.0f, 0.0f});
-        Transform.SetScale(glm::vec3(ScaleX, ScaleY, 1.0f));
-        Transform.Translate(glm::vec3(0.0f, YOffset, 0.0f));
+        Transform.SetScale(FVector3(ScaleX, ScaleY, 1.0f));
+        Transform.Translate(FVector3(0.0f, YOffset, 0.0f));
         
         entt::entity FloorEntity = World->ConstructEntity("FloorPlane", Transform);
         World->GetEntityRegistry().emplace<FHideInSceneOutliner>(FloorEntity);
@@ -532,8 +532,8 @@ namespace Lumina
         const ImVec2 WindowBottomRight = { WindowPosition.x + ViewportSize.x, WindowPosition.y + ViewportSize.y };
         float AspectRatio = (ViewportSize.x / ViewportSize.y);
         float t = (ViewportSize.x - 500) / (1200 - 500);
-        t = glm::clamp(t, 0.0f, 1.0f);
-        float NewFOV = glm::mix(120.0f, 50.0f, t);
+        t = Math::Clamp(t, 0.0f, 1.0f);
+        float NewFOV = Math::Mix(120.0f, 50.0f, t);
 
         if (SCameraComponent* CameraComponent =  World->GetActiveCamera())
         {
@@ -595,7 +595,7 @@ namespace Lumina
             // leaves it at correct proportions on screen instead of squishing it.
             if (World != nullptr)
             {
-                RmlUi::SetWorldDisplaySize(World, glm::uvec2(uint32(eastl::max(ViewportSize.x, 1.0f)), uint32(eastl::max(ViewportSize.y, 1.0f))));
+                RmlUi::SetWorldDisplaySize(World, FUIntVector2(uint32(eastl::max(ViewportSize.x, 1.0f)), uint32(eastl::max(ViewportSize.y, 1.0f))));
             }
 
             InputViewport->SetHovered(bViewportHovered);
@@ -666,7 +666,7 @@ namespace Lumina
         STransformComponent& EditorTransform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
 
         // Resolve to world space — local would mis-frame any entity parented under another.
-        const glm::vec3 EntityWorldLocation = EntityTransform.GetWorldLocation();
+        const FVector3 EntityWorldLocation = EntityTransform.GetWorldLocation();
         const float FocusDistance = (CameraState.Mode == EEditorCameraMode::Orbit) ? CameraState.OrbitDistance : 10.0f;
 
         if (CameraState.Mode == EEditorCameraMode::Orbit)
@@ -681,7 +681,7 @@ namespace Lumina
             return;
         }
 
-        glm::vec3 CurrentForward = EditorTransform.GetForward();
+        FVector3 CurrentForward = EditorTransform.GetForward();
         CameraState.FocusFreePosition = EntityWorldLocation - CurrentForward * FocusDistance;
         CameraState.FocusFreeRotation = Math::FindLookAtRotation(EntityWorldLocation, CameraState.FocusFreePosition);
         CameraState.bFocusInterp      = true;
@@ -699,18 +699,18 @@ namespace Lumina
             && World->GetEntityRegistry().valid(EditorEntity))
         {
             const STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
-            const glm::vec3 Position = Transform.GetLocation();
-            const glm::vec3 Offset   = Position - CameraState.OrbitTarget;
-            const float Distance = glm::length(Offset);
+            const FVector3 Position = Transform.GetLocation();
+            const FVector3 Offset   = Position - CameraState.OrbitTarget;
+            const float Distance = Math::Length(Offset);
 
-            CameraState.OrbitDistance = glm::max(Distance, 0.1f);
+            CameraState.OrbitDistance = Math::Max(Distance, 0.1f);
             // Yaw is around world-Y measured from +Z; pitch is the elevation above the XZ plane.
-            CameraState.OrbitYaw   = glm::degrees(std::atan2(Offset.x, Offset.z));
-            CameraState.OrbitPitch = glm::degrees(std::asin(glm::clamp(Offset.y / CameraState.OrbitDistance, -1.0f, 1.0f)));
+            CameraState.OrbitYaw   = Math::Degrees(std::atan2(Offset.x, Offset.z));
+            CameraState.OrbitPitch = Math::Degrees(std::asin(Math::Clamp(Offset.y / CameraState.OrbitDistance, -1.0f, 1.0f)));
         }
 
         CameraState.Mode = Mode;
-        CameraState.Velocity = glm::vec3(0.0f);
+        CameraState.Velocity = FVector3(0.0f);
 
         // Apply immediately so the first render after SetupWorldForTool isn't at the default origin.
         if (Mode == EEditorCameraMode::Orbit)
@@ -719,7 +719,7 @@ namespace Lumina
         }
     }
 
-    void FEditorTool::SetOrbitTarget(const glm::vec3& Target, float Distance)
+    void FEditorTool::SetOrbitTarget(const FVector3& Target, float Distance)
     {
         CameraState.OrbitTarget = Target;
         CameraState.OrbitAnchor = Target;
@@ -754,14 +754,14 @@ namespace Lumina
             return;
         }
 
-        const float YawRad   = glm::radians(CameraState.OrbitYaw);
-        const float PitchRad = glm::radians(CameraState.OrbitPitch);
-        const glm::vec3 Offset(
+        const float YawRad   = Math::Radians(CameraState.OrbitYaw);
+        const float PitchRad = Math::Radians(CameraState.OrbitPitch);
+        const FVector3 Offset(
             CameraState.OrbitDistance * std::cos(PitchRad) * std::sin(YawRad),
             CameraState.OrbitDistance * std::sin(PitchRad),
             CameraState.OrbitDistance * std::cos(PitchRad) * std::cos(YawRad));
 
-        const glm::vec3 NewPosition = CameraState.OrbitTarget + Offset;
+        const FVector3 NewPosition = CameraState.OrbitTarget + Offset;
         STransformComponent& Transform = World->GetEntityRegistry().get<STransformComponent>(EditorEntity);
         Transform.SetLocation(NewPosition);
         Transform.SetRotation(Math::FindLookAtRotation(CameraState.OrbitTarget, NewPosition));
@@ -789,7 +789,7 @@ namespace Lumina
         // moved OrbitTarget off its anchor. Hidden otherwise so it doesn't add noise.
         if (CameraState.Mode == EEditorCameraMode::Orbit)
         {
-            const bool bPanned = glm::distance(CameraState.OrbitTarget, CameraState.OrbitAnchor) > 1e-4f;
+            const bool bPanned = Math::Distance(CameraState.OrbitTarget, CameraState.OrbitAnchor) > 1e-4f;
             ImGui::SameLine();
             ImGui::BeginDisabled(!bPanned);
             if (ImGui::Button(LE_ICON_HOME "##ResetPan"))
@@ -860,12 +860,12 @@ namespace Lumina
                 const float Alpha = 1.0f - std::exp(-CameraState.FocusInterpRate * static_cast<float>(DeltaTime));
                 if (CameraState.Mode == EEditorCameraMode::Free)
                 {
-                    const glm::vec3 NewLoc = glm::mix(Transform.GetLocation(), CameraState.FocusFreePosition, Alpha);
-                    const glm::quat NewRot = glm::slerp(Transform.GetRotation(), CameraState.FocusFreeRotation, Alpha);
+                    const FVector3 NewLoc = Math::Mix(Transform.GetLocation(), CameraState.FocusFreePosition, Alpha);
+                    const FQuat NewRot = Math::Slerp(Transform.GetRotation(), CameraState.FocusFreeRotation, Alpha);
                     Transform.SetLocation(NewLoc);
                     Transform.SetRotation(NewRot);
 
-                    if (glm::distance(NewLoc, CameraState.FocusFreePosition) < 1e-3f)
+                    if (Math::Distance(NewLoc, CameraState.FocusFreePosition) < 1e-3f)
                     {
                         Transform.SetLocation(CameraState.FocusFreePosition);
                         Transform.SetRotation(CameraState.FocusFreeRotation);
@@ -874,10 +874,10 @@ namespace Lumina
                 }
                 else
                 {
-                    CameraState.OrbitTarget   = glm::mix(CameraState.OrbitTarget, CameraState.FocusOrbitTarget, Alpha);
-                    CameraState.OrbitDistance = glm::mix(CameraState.OrbitDistance, CameraState.FocusOrbitDistance, Alpha);
+                    CameraState.OrbitTarget   = Math::Mix(CameraState.OrbitTarget, CameraState.FocusOrbitTarget, Alpha);
+                    CameraState.OrbitDistance = Math::Mix(CameraState.OrbitDistance, CameraState.FocusOrbitDistance, Alpha);
 
-                    if (glm::distance(CameraState.OrbitTarget, CameraState.FocusOrbitTarget) < 1e-3f)
+                    if (Math::Distance(CameraState.OrbitTarget, CameraState.FocusOrbitTarget) < 1e-3f)
                     {
                         CameraState.OrbitTarget   = CameraState.FocusOrbitTarget;
                         CameraState.OrbitDistance = CameraState.FocusOrbitDistance;
@@ -895,9 +895,9 @@ namespace Lumina
                 return;
             }
 
-            const glm::vec3 Forward = Transform.GetForward();
-            const glm::vec3 Right   = Transform.GetRight();
-            const glm::vec3 Up      = Transform.GetUp();
+            const FVector3 Forward = Transform.GetForward();
+            const FVector3 Right   = Transform.GetRight();
+            const FVector3 Up      = Transform.GetUp();
 
             float Speed = CameraState.Speed;
             if (Input.IsKeyDown(EKey::LeftShift))
@@ -905,7 +905,7 @@ namespace Lumina
                 Speed *= 10.0f;
             }
 
-            glm::vec3 Acceleration(0.0f);
+            FVector3 Acceleration(0.0f);
             if (Input.IsKeyDown(EKey::W)) Acceleration += Forward;
             if (Input.IsKeyDown(EKey::S)) Acceleration -= Forward;
             if (Input.IsKeyDown(EKey::D)) Acceleration += Right;
@@ -913,9 +913,9 @@ namespace Lumina
             if (Input.IsKeyDown(EKey::E)) Acceleration += Up;
             if (Input.IsKeyDown(EKey::Q)) Acceleration -= Up;
 
-            if (glm::length(Acceleration) > 0.0f)
+            if (Math::Length(Acceleration) > 0.0f)
             {
-                Acceleration = glm::normalize(Acceleration) * Speed;
+                Acceleration = Math::Normalize(Acceleration) * Speed;
             }
 
             CameraState.Velocity += Acceleration * static_cast<float>(DeltaTime);
@@ -948,15 +948,15 @@ namespace Lumina
                     Input.SetMouseMode(EMouseMode::Captured);
                     CameraState.OrbitYaw   -= static_cast<float>(Input.GetMouseDeltaX() * 0.4);
                     CameraState.OrbitPitch += static_cast<float>(Input.GetMouseDeltaY() * 0.4);
-                    CameraState.OrbitPitch = glm::clamp(CameraState.OrbitPitch, -89.0f, 89.0f);
+                    CameraState.OrbitPitch = Math::Clamp(CameraState.OrbitPitch, -89.0f, 89.0f);
                 }
 
                 if (Input.IsMouseButtonDown(EMouseKey::ButtonMiddle))
                 {
                     Input.SetMouseMode(EMouseMode::Captured);
                     const float PanScale = CameraState.OrbitDistance * 0.002f;
-                    const glm::vec3 Right = Transform.GetRight();
-                    const glm::vec3 Up    = Transform.GetUp();
+                    const FVector3 Right = Transform.GetRight();
+                    const FVector3 Up    = Transform.GetUp();
                     CameraState.OrbitTarget -= Right * static_cast<float>(Input.GetMouseDeltaX()) * PanScale;
                     CameraState.OrbitTarget += Up    * static_cast<float>(Input.GetMouseDeltaY()) * PanScale;
                 }
@@ -966,7 +966,7 @@ namespace Lumina
                 {
                     const float Zoom = 0.1f * CameraState.OrbitDistance;
                     CameraState.OrbitDistance -= static_cast<float>(WheelZ) * Zoom;
-                    CameraState.OrbitDistance = glm::max(CameraState.OrbitDistance, 0.05f);
+                    CameraState.OrbitDistance = Math::Max(CameraState.OrbitDistance, 0.05f);
                 }
             }
 
@@ -982,28 +982,28 @@ namespace Lumina
             {
                 const float Coord = static_cast<float>(i * Spacing);
                 
-                const glm::vec4 ZAxisColor  = (i == 0) ? glm::vec4(0.0f, 0.0f, 1.0f, 1.0f) : glm::vec4(0.05f);
-                const glm::vec4 XAxisColor  = (i == 0) ? glm::vec4(1.0f, 0.0f, 0.0f, 1.0f) : glm::vec4(0.05f);
+                const FVector4 ZAxisColor  = (i == 0) ? FVector4(0.0f, 0.0f, 1.0f, 1.0f) : FVector4(0.05f);
+                const FVector4 XAxisColor  = (i == 0) ? FVector4(1.0f, 0.0f, 0.0f, 1.0f) : FVector4(0.05f);
                 const float AxisThickness   = (i == 0) ? 5.0f : 3.5f;
 
                 World->DrawLine(
-                    glm::vec3(Coord, 0, -Scale * Spacing),
-                    glm::vec3(Coord, 0,  Scale * Spacing),
+                    FVector3(Coord, 0, -Scale * Spacing),
+                    FVector3(Coord, 0,  Scale * Spacing),
                     ZAxisColor,
                     AxisThickness);
                 
 
                 World->DrawLine(
-                    glm::vec3(-Scale * Spacing, 0, Coord),
-                    glm::vec3( Scale * Spacing, 0, Coord),
+                    FVector3(-Scale * Spacing, 0, Coord),
+                    FVector3( Scale * Spacing, 0, Coord),
                     XAxisColor,
                     AxisThickness);
             }
             
             World->DrawLine(
-            glm::vec3(0, -Scale, 0),
-            glm::vec3(0,  Scale, 0),
-            glm::vec4(0.0f, 1.0f, 0.0f, 1.0f),
+            FVector3(0, -Scale, 0),
+            FVector3(0,  Scale, 0),
+            FVector4(0.0f, 1.0f, 0.0f, 1.0f),
             8.0f);
         }
     }
@@ -1257,7 +1257,7 @@ namespace Lumina
             return Result;
         }
 
-        const glm::vec3 Position = Camera->GetPosition() + Camera->GetForwardVector() * DistanceForward;
+        const FVector3 Position = Camera->GetPosition() + Camera->GetForwardVector() * DistanceForward;
         Result.SetLocation(Position);
         return Result;
     }

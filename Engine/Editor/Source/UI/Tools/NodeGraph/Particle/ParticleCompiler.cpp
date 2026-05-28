@@ -93,14 +93,14 @@ namespace Lumina
             }
             case EParticlePinType::Float3:
             {
-                const glm::vec3& V = Pin->GetDefaultFloat3();
+                const FVector3& V = Pin->GetDefaultFloat3();
                 Result.Value = "float3(" + FString(eastl::to_string(V.x)) + ", " + FString(eastl::to_string(V.y)) + ", " + FString(eastl::to_string(V.z)) + ")";
                 Result.Type  = EParticlePinType::Float3;
                 break;
             }
             case EParticlePinType::Float4:
             {
-                const glm::vec4& V = Pin->GetDefaultFloat4();
+                const FVector4& V = Pin->GetDefaultFloat4();
                 Result.Value = "float4(" + FString(eastl::to_string(V.x)) + ", " + FString(eastl::to_string(V.y)) + ", " + FString(eastl::to_string(V.z)) + ", " + FString(eastl::to_string(V.w)) + ")";
                 Result.Type  = EParticlePinType::Float4;
                 break;
@@ -122,7 +122,7 @@ namespace Lumina
         return V;
     }
 
-    FParticleInputValue FParticleCompiler::GetInputFloat3(CParticleInput* Pin, const glm::vec3& Default)
+    FParticleInputValue FParticleCompiler::GetInputFloat3(CParticleInput* Pin, const FVector3& Default)
     {
         FParticleInputValue V = GetInputValue(Pin);
         if (V.Value.empty())
@@ -133,7 +133,7 @@ namespace Lumina
         return V;
     }
 
-    FParticleInputValue FParticleCompiler::GetInputFloat4(CParticleInput* Pin, const glm::vec4& Default)
+    FParticleInputValue FParticleCompiler::GetInputFloat4(CParticleInput* Pin, const FVector4& Default)
     {
         FParticleInputValue V = GetInputValue(Pin);
         if (V.Value.empty())

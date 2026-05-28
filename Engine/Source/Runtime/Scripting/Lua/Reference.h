@@ -112,7 +112,11 @@ namespace Lumina::Lua
         
         template<auto TFunc, typename TClass = void>
         void SetFunction(EMetaMethod Meta, TClass* Instance = nullptr);
-        
+
+        // Assign a raw lua_CFunction to a table field. For variadic / custom-stack builtins that
+        // don't fit the typed Invoker (e.g. loggers); mirrors SetFunction's table handling.
+        void SetRawFunction(FStringView Key, lua_CFunction Fn);
+
         template<typename T>
         NODISCARD bool Is() const;
         

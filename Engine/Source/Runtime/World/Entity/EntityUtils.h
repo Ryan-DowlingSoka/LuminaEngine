@@ -144,17 +144,17 @@ namespace Lumina::ECS::Utils
 	 */
 	RUNTIME_API void MarkTransformDirty(FEntityRegistry& Registry, entt::entity Entity);
 	
-	RUNTIME_API glm::vec3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity);
-	RUNTIME_API glm::quat GetEntityRotation(FEntityRegistry& Registry, entt::entity Entity);
-	RUNTIME_API glm::vec3 GetEntityScale(FEntityRegistry& Registry, entt::entity Entity);
+	RUNTIME_API FVector3 GetEntityLocation(FEntityRegistry& Registry, entt::entity Entity);
+	RUNTIME_API FQuat GetEntityRotation(FEntityRegistry& Registry, entt::entity Entity);
+	RUNTIME_API FVector3 GetEntityScale(FEntityRegistry& Registry, entt::entity Entity);
 
-	RUNTIME_API void SetEntityLocation(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Location);
-	RUNTIME_API void SetEntityRotation(FEntityRegistry& Registry, entt::entity Entity, const glm::quat& Rotation);
-	RUNTIME_API void SetEntityScale(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Scale);
+	RUNTIME_API void SetEntityLocation(FEntityRegistry& Registry, entt::entity Entity, const FVector3& Location);
+	RUNTIME_API void SetEntityRotation(FEntityRegistry& Registry, entt::entity Entity, const FQuat& Rotation);
+	RUNTIME_API void SetEntityScale(FEntityRegistry& Registry, entt::entity Entity, const FVector3& Scale);
 	
 	RUNTIME_API bool IsEntityValid(FEntityRegistry& Registry, entt::entity Entity);
 	
-	RUNTIME_API glm::vec3 TranslateEntity(FEntityRegistry& Registry, entt::entity Entity, const glm::vec3& Translation);
+	RUNTIME_API FVector3 TranslateEntity(FEntityRegistry& Registry, entt::entity Entity, const FVector3& Translation);
 	
 	RUNTIME_API entt::entity DuplicateEntity(FEntityRegistry& Registry, entt::entity Entity);
 
@@ -182,7 +182,7 @@ namespace Lumina::ECS::Utils
 	 */
 	RUNTIME_API void SetEntityWorldTransform(FEntityRegistry& Registry, entt::entity Entity, const FTransform& WorldTransform);
 
-	RUNTIME_API glm::vec3 GetDirectionVector(FEntityRegistry& Registry, entt::entity To, entt::entity From);
+	RUNTIME_API FVector3 GetDirectionVector(FEntityRegistry& Registry, entt::entity To, entt::entity From);
 	
 	RUNTIME_API void DestroyEntity(FEntityRegistry& Registry, entt::entity Entity);
 

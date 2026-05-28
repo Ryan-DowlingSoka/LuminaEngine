@@ -24,12 +24,12 @@ namespace Lumina
             float  Unit() { return static_cast<float>(Next() & 0xFFFFFFu) / static_cast<float>(0x1000000); } // [0,1)
         };
 
-        using FFace = TVector<glm::vec3>;
+        using FFace = TVector<FVector3>;
         struct FConvexPoly { TVector<FFace> Faces; };
 
-        FConvexPoly MakeBox(const glm::vec3& Mn, const glm::vec3& Mx)
+        FConvexPoly MakeBox(const FVector3& Mn, const FVector3& Mx)
         {
-            auto Quad = [](const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, const glm::vec3& D)
+            auto Quad = [](const FVector3& A, const FVector3& B, const FVector3& C, const FVector3& D)
             {
                 FFace F; F.push_back(A); F.push_back(B); F.push_back(C); F.push_back(D); return F;
             };
@@ -45,42 +45,42 @@ namespace Lumina
         }
 
         // Order coplanar points (lying on a plane with normal N) into a convex CCW loop.
-        FFace OrderCoplanarLoop(const TVector<glm::vec3>& Pts, const glm::vec3& N, float Eps)
+        FFace OrderCoplanarLoop(const TVector<FVector3>& Pts, const FVector3& N, float Eps)
         {
-            TVector<glm::vec3> Unique;
-            for (const glm::vec3& P : Pts)
+            TVector<FVector3> Unique;
+            for (const FVector3& P : Pts)
             {
                 bool bDup = false;
-                for (const glm::vec3& Q : Unique)
+                for (const FVector3& Q : Unique)
                 {
-                    if (glm::distance(P, Q) <= Eps) { bDup = true; break; }
+                    if (Math::Distance(P, Q) <= Eps) { bDup = true; break; }
                 }
                 if (!bDup) Unique.push_back(P);
             }
             if (Unique.size() < 3) return {};
 
-            glm::vec3 Center(0.0f);
-            for (const glm::vec3& P : Unique) Center += P;
+            FVector3 Center(0.0f);
+            for (const FVector3& P : Unique) Center += P;
             Center /= static_cast<float>(Unique.size());
 
-            const glm::vec3 Ref = glm::abs(N.x) < 0.9f ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
-            const glm::vec3 U = glm::normalize(glm::cross(N, Ref));
-            const glm::vec3 V = glm::cross(N, U);
+            const FVector3 Ref = Math::Abs(N.x) < 0.9f ? FVector3(1, 0, 0) : FVector3(0, 1, 0);
+            const FVector3 U = Math::Normalize(Math::Cross(N, Ref));
+            const FVector3 V = Math::Cross(N, U);
 
-            eastl::sort(Unique.begin(), Unique.end(), [&](const glm::vec3& A, const glm::vec3& B)
+            eastl::sort(Unique.begin(), Unique.end(), [&](const FVector3& A, const FVector3& B)
             {
-                const float AngleA = std::atan2(glm::dot(A - Center, V), glm::dot(A - Center, U));
-                const float AngleB = std::atan2(glm::dot(B - Center, V), glm::dot(B - Center, U));
+                const float AngleA = std::atan2(Math::Dot(A - Center, V), Math::Dot(A - Center, U));
+                const float AngleB = std::atan2(Math::Dot(B - Center, V), Math::Dot(B - Center, U));
                 return AngleA < AngleB;
             });
             return Unique;
         }
 
         // Clip the convex polyhedron by the half-space { x : dot(N,x) - D <= 0 }, capping the cut.
-        void ClipPolyByPlane(FConvexPoly& Poly, const glm::vec3& N, float D, float Eps)
+        void ClipPolyByPlane(FConvexPoly& Poly, const FVector3& N, float D, float Eps)
         {
             TVector<FFace>     NewFaces;
-            TVector<glm::vec3> CapPoints;
+            TVector<FVector3> CapPoints;
 
             for (const FFace& Face : Poly.Faces)
             {
@@ -88,10 +88,10 @@ namespace Lumina
                 const size_t L = Face.size();
                 for (size_t k = 0; k < L; ++k)
                 {
-                    const glm::vec3& A = Face[k];
-                    const glm::vec3& B = Face[(k + 1) % L];
-                    const float da = glm::dot(N, A) - D;
-                    const float db = glm::dot(N, B) - D;
+                    const FVector3& A = Face[k];
+                    const FVector3& B = Face[(k + 1) % L];
+                    const float da = Math::Dot(N, A) - D;
+                    const float db = Math::Dot(N, B) - D;
 
                     if (da <= Eps)
                     {
@@ -100,7 +100,7 @@ namespace Lumina
                     if ((da < -Eps && db > Eps) || (da > Eps && db < -Eps))
                     {
                         const float t = da / (da - db);
-                        const glm::vec3 P = A + t * (B - A);
+                        const FVector3 P = A + t * (B - A);
                         Out.push_back(P);
                         CapPoints.push_back(P);
                     }
@@ -123,14 +123,14 @@ namespace Lumina
             Poly.Faces = Move(NewFaces);
         }
 
-        glm::vec3 NewellNormal(const FFace& Face)
+        FVector3 NewellNormal(const FFace& Face)
         {
-            glm::vec3 N(0.0f);
+            FVector3 N(0.0f);
             const size_t L = Face.size();
             for (size_t k = 0; k < L; ++k)
             {
-                const glm::vec3& A = Face[k];
-                const glm::vec3& B = Face[(k + 1) % L];
+                const FVector3& A = Face[k];
+                const FVector3& B = Face[(k + 1) % L];
                 N.x += (A.y - B.y) * (A.z + B.z);
                 N.y += (A.z - B.z) * (A.x + B.x);
                 N.z += (A.x - B.x) * (A.y + B.y);
@@ -146,11 +146,11 @@ namespace Lumina
                 return false;
             }
 
-            glm::vec3 Centroid(0.0f);
+            FVector3 Centroid(0.0f);
             uint32 Count = 0;
             for (const FFace& Face : Poly.Faces)
             {
-                for (const glm::vec3& V : Face) { Centroid += V; ++Count; }
+                for (const FVector3& V : Face) { Centroid += V; ++Count; }
             }
             if (Count == 0)
             {
@@ -158,8 +158,8 @@ namespace Lumina
             }
             Centroid /= static_cast<float>(Count);
 
-            glm::vec3 Mn(FLT_MAX);
-            glm::vec3 Mx(-FLT_MAX);
+            FVector3 Mn(FLT_MAX);
+            FVector3 Mx(-FLT_MAX);
             Out.Vertices.clear();
             Out.Indices.clear();
 
@@ -170,47 +170,47 @@ namespace Lumina
                     continue;
                 }
 
-                glm::vec3 Newell = NewellNormal(SrcFace);
-                if (glm::length(Newell) < 1e-10f)
+                FVector3 Newell = NewellNormal(SrcFace);
+                if (Math::Length(Newell) < 1e-10f)
                 {
                     continue;
                 }
-                Newell = glm::normalize(Newell);
+                Newell = Math::Normalize(Newell);
 
-                glm::vec3 FaceCenter(0.0f);
-                for (const glm::vec3& V : SrcFace) FaceCenter += V;
+                FVector3 FaceCenter(0.0f);
+                for (const FVector3& V : SrcFace) FaceCenter += V;
                 FaceCenter /= static_cast<float>(SrcFace.size());
 
                 // Reverse the loop if its winding faces inward, so emitted triangles face outward.
                 FFace Face = SrcFace;
-                glm::vec3 Normal = Newell;
-                if (glm::dot(Newell, FaceCenter - Centroid) < 0.0f)
+                FVector3 Normal = Newell;
+                if (Math::Dot(Newell, FaceCenter - Centroid) < 0.0f)
                 {
                     eastl::reverse(Face.begin(), Face.end());
                     Normal = -Newell;
                 }
 
-                glm::vec3 Tangent = glm::abs(Normal.x) < 0.9f ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
-                Tangent = glm::normalize(Tangent - Normal * glm::dot(Tangent, Normal));
-                const glm::vec3 Bitangent = glm::cross(Normal, Tangent);
+                FVector3 Tangent = Math::Abs(Normal.x) < 0.9f ? FVector3(1, 0, 0) : FVector3(0, 1, 0);
+                Tangent = Math::Normalize(Tangent - Normal * Math::Dot(Tangent, Normal));
+                const FVector3 Bitangent = Math::Cross(Normal, Tangent);
 
                 const uint32 PackedNormal  = PackNormal(Normal);
                 const uint32 PackedTangent = PackTangent(Tangent, 1.0f);
-                const uint32 PackedColor   = PackColor(glm::vec4(1.0f));
+                const uint32 PackedColor   = PackColor(FVector4(1.0f));
 
                 const uint32 Base = static_cast<uint32>(Out.Vertices.size());
-                for (const glm::vec3& P : Face)
+                for (const FVector3& P : Face)
                 {
                     FVertex Vert;
                     Vert.Position = P;
                     Vert.Normal   = PackedNormal;
                     Vert.Tangent  = PackedTangent;
-                    Vert.UV       = glm::packHalf2x16(glm::vec2(glm::dot(P, Tangent), glm::dot(P, Bitangent)));
+                    Vert.UV       = Math::PackHalf2x16(FVector2(Math::Dot(P, Tangent), Math::Dot(P, Bitangent)));
                     Vert.Color    = PackedColor;
                     Out.Vertices.push_back(Vert);
 
-                    Mn = glm::min(Mn, P);
-                    Mx = glm::max(Mx, P);
+                    Mn = Math::Min(Mn, P);
+                    Mx = Math::Max(Mx, P);
                 }
 
                 // Fan triangulation of the convex loop.
@@ -235,7 +235,7 @@ namespace Lumina
 
         // Pull LOD0 positions + triangles out of the mesh's meshlet data (the scratch vertex
         // streams are dropped after GPU upload, so dequantize from the meshlets like the collider does).
-        void GatherMeshGeometry(const CMesh* Mesh, TVector<glm::vec3>& OutPositions, TVector<glm::uvec3>& OutTriangles)
+        void GatherMeshGeometry(const CMesh* Mesh, TVector<FVector3>& OutPositions, TVector<FUIntVector3>& OutTriangles)
         {
             const FMeshResource& Resource = Mesh->GetMeshResource();
             const FMeshletData&  MD       = Resource.MeshletData;
@@ -259,14 +259,14 @@ namespace Lumina
                         const float qx  = static_cast<float>( P        & 0x3FFu);
                         const float qy  = static_cast<float>((P >> 10) & 0x3FFu);
                         const float qz  = static_cast<float>((P >> 20) & 0x3FFu);
-                        const glm::vec3 Pos = MD.MeshOrigin[M.LODIndex] + (glm::vec3(M.LoInt) + glm::vec3(qx, qy, qz)) * MD.MeshGridStep[M.LODIndex];
+                        const FVector3 Pos = MD.MeshOrigin[M.LODIndex] + (FVector3(M.LoInt) + FVector3(qx, qy, qz)) * MD.MeshGridStep[M.LODIndex];
                         OutPositions.push_back(Pos);
                     }
 
                     for (uint32 t = 0; t < M.TriangleCount; ++t)
                     {
                         const uint32 Packed = MD.MeshletTriangles[M.TriangleOffset + t];
-                        OutTriangles.push_back(glm::uvec3(
+                        OutTriangles.push_back(FUIntVector3(
                             BaseVertex + ( Packed        & 0xFFu),
                             BaseVertex + ((Packed >>  8) & 0xFFu),
                             BaseVertex + ((Packed >> 16) & 0xFFu)));
@@ -278,42 +278,42 @@ namespace Lumina
         // Convex-hull supporting planes (outward normal N, offset D; interior is dot(N,x) <= D).
         // A triangle's plane is a hull face iff every vertex sits on one side -- true for convex
         // meshes (all faces) and concave ones (only the hull faces qualify).
-        void ComputeHullPlanes(const TVector<glm::vec3>& Positions, const TVector<glm::uvec3>& Triangles, float Tol, TVector<glm::vec4>& OutPlanes)
+        void ComputeHullPlanes(const TVector<FVector3>& Positions, const TVector<FUIntVector3>& Triangles, float Tol, TVector<FVector4>& OutPlanes)
         {
-            auto AddUnique = [&](const glm::vec3& N, float D)
+            auto AddUnique = [&](const FVector3& N, float D)
             {
-                for (const glm::vec4& Existing : OutPlanes)
+                for (const FVector4& Existing : OutPlanes)
                 {
-                    if (glm::dot(glm::vec3(Existing), N) > 0.999f && glm::abs(Existing.w - D) <= Tol)
+                    if (Math::Dot(FVector3(Existing), N) > 0.999f && Math::Abs(Existing.w - D) <= Tol)
                     {
                         return;
                     }
                 }
-                OutPlanes.push_back(glm::vec4(N, D));
+                OutPlanes.push_back(FVector4(N, D));
             };
 
-            for (const glm::uvec3& Tri : Triangles)
+            for (const FUIntVector3& Tri : Triangles)
             {
-                const glm::vec3& A = Positions[Tri.x];
-                const glm::vec3& B = Positions[Tri.y];
-                const glm::vec3& C = Positions[Tri.z];
+                const FVector3& A = Positions[Tri.x];
+                const FVector3& B = Positions[Tri.y];
+                const FVector3& C = Positions[Tri.z];
 
-                glm::vec3 N = glm::cross(B - A, C - A);
-                const float Len = glm::length(N);
+                FVector3 N = Math::Cross(B - A, C - A);
+                const float Len = Math::Length(N);
                 if (Len < 1e-12f)
                 {
                     continue;
                 }
                 N /= Len;
-                const float D = glm::dot(N, A);
+                const float D = Math::Dot(N, A);
 
                 float MaxProj = -FLT_MAX;
                 float MinProj =  FLT_MAX;
-                for (const glm::vec3& P : Positions)
+                for (const FVector3& P : Positions)
                 {
-                    const float d = glm::dot(N, P);
-                    MaxProj = glm::max(MaxProj, d);
-                    MinProj = glm::min(MinProj, d);
+                    const float d = Math::Dot(N, P);
+                    MaxProj = Math::Max(MaxProj, d);
+                    MinProj = Math::Min(MinProj, d);
                 }
 
                 if (MaxProj <= D + Tol)       AddUnique( N,  D);   // mesh on the negative side -> outward = N
@@ -331,20 +331,20 @@ namespace Lumina
         }
 
         const FAABB Bounds = SourceMesh->GetAABB();
-        const glm::vec3 Mn = Bounds.Min;
-        const glm::vec3 Mx = Bounds.Max;
-        const glm::vec3 Size = glm::max(Mx - Mn, glm::vec3(1e-4f));
-        const float Diag    = glm::length(Size);
+        const FVector3 Mn = Bounds.Min;
+        const FVector3 Mx = Bounds.Max;
+        const FVector3 Size = Math::Max(Mx - Mn, FVector3(1e-4f));
+        const float Diag    = Math::Length(Size);
         const float Eps     = Diag * 1e-5f + 1e-6f;
         const float HullTol = Diag * 1e-3f;
 
         // Hull supporting planes from the mesh triangles.
-        TVector<glm::vec4> HullPlanes;
+        TVector<FVector4> HullPlanes;
         size_t NumPos = 0;
         size_t NumTri = 0;
         {
-            TVector<glm::vec3>  Positions;
-            TVector<glm::uvec3> Triangles;
+            TVector<FVector3>  Positions;
+            TVector<FUIntVector3> Triangles;
             GatherMeshGeometry(SourceMesh, Positions, Triangles);
             NumPos = Positions.size();
             NumTri = Triangles.size();
@@ -356,9 +356,9 @@ namespace Lumina
 
         // Clip the bounds box down to the hull once; every cell starts from this shape.
         FConvexPoly Hull = MakeBox(Mn, Mx);
-        for (const glm::vec4& Plane : HullPlanes)
+        for (const FVector4& Plane : HullPlanes)
         {
-            ClipPolyByPlane(Hull, glm::vec3(Plane), Plane.w, Eps);
+            ClipPolyByPlane(Hull, FVector3(Plane), Plane.w, Eps);
         }
         const size_t FacesAfterClip = Hull.Faces.size();
         if (Hull.Faces.size() < 4)
@@ -368,11 +368,11 @@ namespace Lumina
 
         LOG_INFO("[Fracture] MeshletVerts={} Tris={} HullPlanes={} HullFacesAfterClip={} BoundsDiag={}", NumPos, NumTri, HullPlanes.size(), FacesAfterClip, Diag);
 
-        auto InsideHull = [&](const glm::vec3& S) -> bool
+        auto InsideHull = [&](const FVector3& S) -> bool
         {
-            for (const glm::vec4& Plane : HullPlanes)
+            for (const FVector4& Plane : HullPlanes)
             {
-                if (glm::dot(glm::vec3(Plane), S) > Plane.w + HullTol)
+                if (Math::Dot(FVector3(Plane), S) > Plane.w + HullTol)
                 {
                     return false;
                 }
@@ -380,18 +380,18 @@ namespace Lumina
             return true;
         };
 
-        const int32 N = glm::clamp(Settings.NumPieces, 2, 512);
+        const int32 N = Math::Clamp(Settings.NumPieces, 2, 512);
         FRng Rng(Settings.Seed);
 
         // Rejection-sample seeds inside the hull so cells fill the shape evenly.
-        TVector<glm::vec3> Seeds;
+        TVector<FVector3> Seeds;
         Seeds.reserve(N);
         for (int32 i = 0; i < N; ++i)
         {
-            glm::vec3 S = Mn + Size * glm::vec3(Rng.Unit(), Rng.Unit(), Rng.Unit());
+            FVector3 S = Mn + Size * FVector3(Rng.Unit(), Rng.Unit(), Rng.Unit());
             for (int32 Attempt = 0; Attempt < 64 && !InsideHull(S); ++Attempt)
             {
-                S = Mn + Size * glm::vec3(Rng.Unit(), Rng.Unit(), Rng.Unit());
+                S = Mn + Size * FVector3(Rng.Unit(), Rng.Unit(), Rng.Unit());
             }
             Seeds.push_back(S);
         }
@@ -406,15 +406,15 @@ namespace Lumina
                 {
                     continue;
                 }
-                const glm::vec3 Delta = Seeds[j] - Seeds[i];
-                const float Length = glm::length(Delta);
+                const FVector3 Delta = Seeds[j] - Seeds[i];
+                const float Length = Math::Length(Delta);
                 if (Length < Eps)
                 {
                     continue;
                 }
-                const glm::vec3 Normal = Delta / Length;
-                const glm::vec3 Mid = 0.5f * (Seeds[i] + Seeds[j]);
-                ClipPolyByPlane(Poly, Normal, glm::dot(Normal, Mid), Eps);
+                const FVector3 Normal = Delta / Length;
+                const FVector3 Mid = 0.5f * (Seeds[i] + Seeds[j]);
+                ClipPolyByPlane(Poly, Normal, Math::Dot(Normal, Mid), Eps);
             }
 
             FFracturePiece Piece;

@@ -4,7 +4,7 @@
 #include "Containers/Name.h"
 #include "Containers/String.h"
 #include "Memory/SmartPtr.h"
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 #include "Platform/GenericPlatform.h"
 
 struct lua_State;
@@ -66,7 +66,7 @@ namespace Lumina::Lua
         int64                       AsInt    = 0;
         double                      AsDouble = 0.0;
         FString                     AsString;
-        glm::vec4                   AsVec    {0.0f};     ///< Covers vec2/3/4.
+        FVector4                   AsVec    {0.0f};     ///< Covers vec2/3/4.
         FName                       UserdataTypeName;
 
         TVector<FScriptPropertyValue> Items;             ///< When Kind == Array.

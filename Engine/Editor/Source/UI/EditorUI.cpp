@@ -26,7 +26,7 @@
 #include <Events/Event.h>
 #include <FileSystem/FileSystem.h>
 #include <GLFW/glfw3.h>
-#include <glm/fwd.hpp>
+#include "Core/Math/Math.h"
 #include <GUID/GUID.h>
 #include <Memory/SmartPtr.h>
 #include <Paths/Paths.h>
@@ -178,19 +178,19 @@ namespace Lumina
         (void)CThumbnailManager::Get();
 
         PropertyCustomizationRegistry = Memory::New<FPropertyCustomizationRegistry>();
-        PropertyCustomizationRegistry->RegisterPropertyCustomization(TBaseStructure<glm::vec2>::Get()->GetName(), []
+        PropertyCustomizationRegistry->RegisterPropertyCustomization(TBaseStructure<FVector2>::Get()->GetName(), []
         {
             return FVec2PropertyCustomization::MakeInstance();
         });
-        PropertyCustomizationRegistry->RegisterPropertyCustomization(TBaseStructure<glm::vec3>::Get()->GetName(), []
+        PropertyCustomizationRegistry->RegisterPropertyCustomization(TBaseStructure<FVector3>::Get()->GetName(), []
         {
             return FVec3PropertyCustomization::MakeInstance();
         });
-        PropertyCustomizationRegistry->RegisterPropertyCustomization(TBaseStructure<glm::vec4>::Get()->GetName(), []
+        PropertyCustomizationRegistry->RegisterPropertyCustomization(TBaseStructure<FVector4>::Get()->GetName(), []
         {
             return FVec4PropertyCustomization::MakeInstance();
         });
-        PropertyCustomizationRegistry->RegisterPropertyCustomization(TBaseStructure<glm::quat>::Get()->GetName(), []
+        PropertyCustomizationRegistry->RegisterPropertyCustomization(TBaseStructure<FQuat>::Get()->GetName(), []
         {
             return FVec3PropertyCustomization::MakeInstance();
         });

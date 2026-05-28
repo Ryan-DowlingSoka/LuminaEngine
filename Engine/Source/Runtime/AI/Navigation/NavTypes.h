@@ -111,7 +111,7 @@ namespace Lumina
     /** Result of an async path request. Owned by the requester; can be polled or awaited. */
     struct FNavPath
     {
-        TVector<glm::vec3> Corners;
+        TVector<FVector3> Corners;
         bool bPartial = false;
         bool bValid   = false;
     };
@@ -124,7 +124,7 @@ namespace Lumina
         float  AreaCost[64] = {};   // 1.0 default; copied into dtQueryFilter
 
         /** Half-extents for findNearestPoly snapping; generous on Y for cell-quantized poly Y. */
-        glm::vec3 QueryExtents = glm::vec3(2.0f, 16.0f, 2.0f);
+        FVector3 QueryExtents = FVector3(2.0f, 16.0f, 2.0f);
 
         FNavQueryFilter()
         {

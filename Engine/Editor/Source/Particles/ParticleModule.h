@@ -3,7 +3,7 @@
 #include <imgui.h>
 #include "Containers/String.h"
 #include "Core/Object/Object.h"
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 #include "ParticleModule.generated.h"
 
 namespace Lumina
@@ -63,8 +63,8 @@ namespace Lumina
 
         /** Float / vector literal formatting for baking input values into the shader. */
         static FString Lit(float V);
-        static FString Lit(const glm::vec2& V);
-        static FString Lit(const glm::vec3& V);
-        static FString Lit(const glm::vec4& V);
+        static FString Lit(const FVector2& V);
+        static FString Lit(const FVector3& V);
+        static FString Lit(const FVector4& V);
     };
 }

@@ -6,8 +6,7 @@
 #include "Core/Templates/CanBulkSerialize.h"
 #include "Core/Templates/IsSigned.h"
 #include "Core/Versioning/CoreVersion.h"
-#include "glm/glm.hpp"
-#include <glm/gtc/quaternion.hpp>
+#include "Core/Math/Math.h"
 
 #include "EASTL/bit.h"
 #include "Log/Log.h"
@@ -409,115 +408,115 @@ namespace Lumina
         D = !!BoolValue;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::vec2& v)
+    inline FArchive& operator<<(FArchive& Ar, FVector2& v)
     {
         Ar << v.x << v.y;
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::vec3& v)
+    inline FArchive& operator<<(FArchive& Ar, FVector3& v)
     {
         Ar << v.x << v.y << v.z;
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::vec4& v)
+    inline FArchive& operator<<(FArchive& Ar, FVector4& v)
     {
         Ar << v.x << v.y << v.z << v.w;
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::ivec2& v)
+    inline FArchive& operator<<(FArchive& Ar, FIntVector2& v)
     {
         Ar << v.x << v.y;
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::ivec3& v)
+    inline FArchive& operator<<(FArchive& Ar, FIntVector3& v)
     {
         Ar << v.x << v.y << v.z;
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::ivec4& v)
+    inline FArchive& operator<<(FArchive& Ar, FIntVector4& v)
     {
         Ar << v.x << v.y << v.z << v.w;
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::uvec2& v)
+    inline FArchive& operator<<(FArchive& Ar, FUIntVector2& v)
     {
         Ar << v.x << v.y;
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::uvec3& v)
+    inline FArchive& operator<<(FArchive& Ar, FUIntVector3& v)
     {
         Ar << v.x << v.y << v.z;
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::uvec4& v)
-    {
-        Ar << v.x << v.y << v.z << v.w;
-        return Ar;
-    }
-    
-    inline FArchive& operator<<(FArchive& Ar, glm::u8vec2& v)
-    {
-        Ar << v.x << v.y;
-        return Ar;
-    }
-
-    inline FArchive& operator<<(FArchive& Ar, glm::u8vec3& v)
-    {
-        Ar << v.x << v.y << v.z;
-        return Ar;
-    }
-    
-    inline FArchive& operator<<(FArchive& Ar, glm::u8vec4& v)
+    inline FArchive& operator<<(FArchive& Ar, FUIntVector4& v)
     {
         Ar << v.x << v.y << v.z << v.w;
         return Ar;
     }
     
-    inline FArchive& operator<<(FArchive& Ar, glm::u16vec2& v)
+    inline FArchive& operator<<(FArchive& Ar, FU8Vector2& v)
     {
         Ar << v.x << v.y;
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::u16vec3& v)
+    inline FArchive& operator<<(FArchive& Ar, FU8Vector3& v)
+    {
+        Ar << v.x << v.y << v.z;
+        return Ar;
+    }
+    
+    inline FArchive& operator<<(FArchive& Ar, FU8Vector4& v)
+    {
+        Ar << v.x << v.y << v.z << v.w;
+        return Ar;
+    }
+    
+    inline FArchive& operator<<(FArchive& Ar, FU16Vector2& v)
+    {
+        Ar << v.x << v.y;
+        return Ar;
+    }
+
+    inline FArchive& operator<<(FArchive& Ar, FU16Vector3& v)
     {
         Ar << v.x << v.y << v.z;
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::u16vec4& v)
+    inline FArchive& operator<<(FArchive& Ar, FU16Vector4& v)
     {
         Ar << v.x << v.y << v.z << v.w;
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::mat2& m)
+    inline FArchive& operator<<(FArchive& Ar, FMatrix2& m)
     {
         Ar << m[0] << m[1];
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::mat3& m)
+    inline FArchive& operator<<(FArchive& Ar, FMatrix3& m)
     {
         Ar << m[0] << m[1] << m[2];
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::mat4& m)
+    inline FArchive& operator<<(FArchive& Ar, FMatrix4& m)
     {
         Ar << m[0] << m[1] << m[2] << m[3];
         return Ar;
     }
 
-    inline FArchive& operator<<(FArchive& Ar, glm::quat& q)
+    inline FArchive& operator<<(FArchive& Ar, FQuat& q)
     {
         Ar << q.x << q.y << q.z << q.w;
         return Ar;

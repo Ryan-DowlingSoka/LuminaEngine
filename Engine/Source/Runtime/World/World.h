@@ -105,7 +105,7 @@ namespace Lumina
          * No-op unless the entity has an SDestructibleComponent and has not already broken.
          */
         FUNCTION(Script)
-        bool FractureEntity(entt::entity Entity, const glm::vec3& Origin, float Strength = 0.0f);
+        bool FractureEntity(entt::entity Entity, const FVector3& Origin, float Strength = 0.0f);
         
         FUNCTION(Script)
         void SpawnPrefabAsync(const FName& Path, const TFunction<void(entt::entity)>& Callback);
@@ -120,16 +120,16 @@ namespace Lumina
         STransformComponent& GetEntityTransform(entt::entity Entity);
         
         FUNCTION(Script)
-        glm::vec3 GetEntityLocation(entt::entity Entity);
+        FVector3 GetEntityLocation(entt::entity Entity);
         
         FUNCTION(Script)
-        void SetEntityLocation(entt::entity Entity, glm::vec3 Location);
+        void SetEntityLocation(entt::entity Entity, FVector3 Location);
         
         FUNCTION(Script)
-        void SetEntityRotation(entt::entity Entity, glm::quat Rotation);
+        void SetEntityRotation(entt::entity Entity, FQuat Rotation);
         
         FUNCTION(Script)
-        glm::vec3 TranslateEntity(entt::entity Entity, glm::vec3 Translation);
+        FVector3 TranslateEntity(entt::entity Entity, FVector3 Translation);
         
         FUNCTION(Script)
         uint32 GetNumEntities() const;
@@ -230,8 +230,8 @@ namespace Lumina
         void RegisterSystems();
         
         //~ Begin Debug Drawing
-        void DrawBillboard(FRHIImage* Image, const glm::vec3& Location, float Scale) override;
-        void DrawLine(const glm::vec3& Start, const glm::vec3& End, const glm::vec4& Color, float Thickness = 1.0f, bool bDepthTest = true, float Duration = -1.0f) override;
+        void DrawBillboard(FRHIImage* Image, const FVector3& Location, float Scale) override;
+        void DrawLine(const FVector3& Start, const FVector3& End, const FVector4& Color, float Thickness = 1.0f, bool bDepthTest = true, float Duration = -1.0f) override;
         //~ End Debug Drawing
 
         //~ Begin Render Target Painting
@@ -241,10 +241,10 @@ namespace Lumina
          * sharpens the falloff. Optional BrushMask is a grayscale coverage texture (white = full).
          * Queued now, executed on the render thread next frame (TexturePaintPass).
          */
-        void PaintRenderTarget(CTextureRenderTarget* Target, const glm::vec2& UV, float RadiusUV, const glm::vec4& Color, float Strength = 1.0f, float Hardness = 1.0f, CTexture* BrushMask = nullptr);
+        void PaintRenderTarget(CTextureRenderTarget* Target, const FVector2& UV, float RadiusUV, const FVector4& Color, float Strength = 1.0f, float Hardness = 1.0f, CTexture* BrushMask = nullptr);
 
         /** Clear an entire render target to Color (queued; executed on the render thread). */
-        void ClearRenderTarget(CTextureRenderTarget* Target, const glm::vec4& Color);
+        void ClearRenderTarget(CTextureRenderTarget* Target, const FVector4& Color);
 
         /** Render-scene Extract drains the queued paint/clear ops into the frame snapshot. */
         void DrainRenderTargetPaints(TVector<FTexturePaintOp>& OutOps);

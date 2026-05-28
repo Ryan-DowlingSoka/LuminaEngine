@@ -12,8 +12,8 @@ namespace Lumina
     /** Cached collider AABB for change detection; key = (entity << 8 | colliderType). */
     struct FNavSourceEntity
     {
-        glm::vec3   AABBMin = glm::vec3( FLT_MAX);
-        glm::vec3   AABBMax = glm::vec3(-FLT_MAX);
+        FVector3   AABBMin = FVector3( FLT_MAX);
+        FVector3   AABBMax = FVector3(-FLT_MAX);
     };
 
     /** Per-tile rebake task in flight. */
@@ -105,11 +105,11 @@ namespace Lumina
 
         /** World-space center of the bake volume. */
         PROPERTY(Editable, Category = "NavMesh|Bounds")
-        glm::vec3 Center = glm::vec3(0.0f);
+        FVector3 Center = FVector3(0.0f);
 
         /** Half-extents of the bake volume. */
         PROPERTY(Editable, Category = "NavMesh|Bounds")
-        glm::vec3 Extents = glm::vec3(64.0f, 16.0f, 64.0f);
+        FVector3 Extents = FVector3(64.0f, 16.0f, 64.0f);
 
         /** Editor "Bake" button flag; consumed next tick by SNavMeshSystem. */
         bool bBakeRequested = false;
@@ -120,7 +120,7 @@ namespace Lumina
 
         /** Bake origin (= bounds min). */
         PROPERTY(Category = "NavMesh|Baked")
-        glm::vec3 Origin = glm::vec3(0.0f);
+        FVector3 Origin = FVector3(0.0f);
 
         /** Tile size in world units. */
         PROPERTY(Category = "NavMesh|Baked")

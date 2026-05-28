@@ -60,7 +60,7 @@ namespace Lumina
         const STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
         
         PDI->DrawSphere(Transform.GetWorldLocation(), PointLight.Attenuation, 
-            glm::vec4(PointLight.LightColor, 1.0f), 32, 1.0f, true, 0.0f);
+            FVector4(PointLight.LightColor, 1.0f), 32, 1.0f, true, 0.0f);
     }
 
     CStruct* CComponentVisualizer_SpotLight::GetSupportedComponentType() const
@@ -72,10 +72,10 @@ namespace Lumina
     {
         const SSpotLightComponent& SpotLight    = Registry.get<SSpotLightComponent>(Entity);
         const STransformComponent& Transform    = Registry.get<STransformComponent>(Entity);
-        glm::vec3 Forward                       = Transform.GetWorldRotation() * FViewVolume::ForwardAxis;
+        FVector3 Forward                       = Transform.GetWorldRotation() * FViewVolume::ForwardAxis;
 
-        PDI->DrawCone(Transform.GetWorldLocation(), -Forward, glm::radians(SpotLight.OuterConeAngle), SpotLight.Attenuation, glm::vec4(SpotLight.LightColor, 1.0f));
-        PDI->DrawCone(Transform.GetWorldLocation(), -Forward, glm::radians(SpotLight.InnerConeAngle), SpotLight.Attenuation, glm::vec4(SpotLight.LightColor, 1.0f));
+        PDI->DrawCone(Transform.GetWorldLocation(), -Forward, Math::Radians(SpotLight.OuterConeAngle), SpotLight.Attenuation, FVector4(SpotLight.LightColor, 1.0f));
+        PDI->DrawCone(Transform.GetWorldLocation(), -Forward, Math::Radians(SpotLight.InnerConeAngle), SpotLight.Attenuation, FVector4(SpotLight.LightColor, 1.0f));
     }
 
     CStruct* CComponentVisualizer_DirectionalLight::GetSupportedComponentType() const
@@ -114,7 +114,7 @@ namespace Lumina
         const SBoxColliderComponent& Box = Registry.get<SBoxColliderComponent>(Entity);
         const STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
         
-        glm::quat OffsetQuat(Box.RotationOffset);
+        FQuat OffsetQuat(Box.RotationOffset);
         PDI->DrawBox(Transform.GetWorldLocation() + Box.TranslationOffset, Box.HalfExtent * Transform.GetWorldScale(), Transform.GetWorldRotation() * OffsetQuat, FColor::Green, 3.5f, true, 0.0f);
     }
 
@@ -129,12 +129,12 @@ namespace Lumina
         const STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
 
         // Match Jolt: Start/End are cylinder-axis endpoints; Radius scales by MaxScale.
-        const glm::vec3 Location = Transform.GetWorldLocation();
-        const glm::vec3 Axis = Transform.GetWorldRotation() * glm::vec3(0.0f, Character.HalfHeight, 0.0f);
-        const glm::vec3 Start = Location - Axis;
-        const glm::vec3 End   = Location + Axis;
+        const FVector3 Location = Transform.GetWorldLocation();
+        const FVector3 Axis = Transform.GetWorldRotation() * FVector3(0.0f, Character.HalfHeight, 0.0f);
+        const FVector3 Start = Location - Axis;
+        const FVector3 End   = Location + Axis;
 
-        PDI->DrawCapsule(Start, End, Character.Radius * Transform.MaxScale(), glm::vec4(0.0f, 1.0f, 0.0f, 1.0f), 12, 2.0f, true, 0.0f);
+        PDI->DrawCapsule(Start, End, Character.Radius * Transform.MaxScale(), FVector4(0.0f, 1.0f, 0.0f, 1.0f), 12, 2.0f, true, 0.0f);
     }
 
     CStruct* CComponentVisualizer_RigidBody::GetSupportedComponentType() const
@@ -147,16 +147,16 @@ namespace Lumina
         const SRigidBodyComponent& Body      = Registry.get<SRigidBodyComponent>(Entity);
         const STransformComponent& Transform = Registry.get<STransformComponent>(Entity);
 
-        if (glm::dot(Body.CenterOfMassOffset, Body.CenterOfMassOffset) <= 0.0f)
+        if (Math::Dot(Body.CenterOfMassOffset, Body.CenterOfMassOffset) <= 0.0f)
         {
             return;
         }
 
-        const glm::vec3 WorldCOM = Transform.GetWorldLocation()
+        const FVector3 WorldCOM = Transform.GetWorldLocation()
             + Transform.GetWorldRotation() * (Body.CenterOfMassOffset * Transform.GetWorldScale());
 
-        PDI->DrawSphere(WorldCOM, 0.08f, glm::vec4(1.0f, 0.0f, 1.0f, 1.0f), 12, 2.0f, false, 0.0f);
-        PDI->DrawLine(Transform.GetWorldLocation(), WorldCOM, glm::vec4(1.0f, 0.0f, 1.0f, 1.0f), 2.0f, false, 0.0f);
+        PDI->DrawSphere(WorldCOM, 0.08f, FVector4(1.0f, 0.0f, 1.0f, 1.0f), 12, 2.0f, false, 0.0f);
+        PDI->DrawLine(Transform.GetWorldLocation(), WorldCOM, FVector4(1.0f, 0.0f, 1.0f, 1.0f), 2.0f, false, 0.0f);
     }
 
     CStruct* CComponentVisualizer_Camera::GetSupportedComponentType() const
@@ -171,6 +171,6 @@ namespace Lumina
 
         
         PDI->DrawFrustum(Camera.GetViewProjectionMatrix(), 0.01f, 1000.0f, FColor::White, 4.0f);
-        PDI->DrawArrow(Transform.GetWorldLocation(), Transform.GetWorldRotation() * glm::vec3(0.0, 0.0, 1.0), 3.5f, FColor::Green, 4.0f);
+        PDI->DrawArrow(Transform.GetWorldLocation(), Transform.GetWorldRotation() * FVector3(0.0, 0.0, 1.0), 3.5f, FColor::Green, 4.0f);
     }
 }

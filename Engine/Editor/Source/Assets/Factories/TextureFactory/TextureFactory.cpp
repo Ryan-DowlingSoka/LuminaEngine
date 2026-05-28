@@ -14,7 +14,7 @@
 #include "Renderer/RenderTypes.h"
 #include "Renderer/RHIGlobals.h"
 #include "Tools/Import/ImportHelpers.h"
-#include <glm/gtc/packing.hpp>
+#include "Core/Math/Math.h"
 
 namespace Lumina
 {
@@ -59,13 +59,13 @@ namespace Lumina
             const float G = SrcChannels >= 2 ? Src[1] : 0.0f;
             const float B = SrcChannels >= 3 ? Src[2] : 0.0f;
             const float A = SrcChannels >= 4 ? Src[3] : 1.0f;
-            Halves[i * 2 + 0] = glm::packHalf2x16(glm::vec2(R, G));
-            Halves[i * 2 + 1] = glm::packHalf2x16(glm::vec2(B, A));
+            Halves[i * 2 + 0] = Math::PackHalf2x16(FVector2(R, G));
+            Halves[i * 2 + 1] = Math::PackHalf2x16(FVector2(B, A));
         }
 
         FRHIImageDesc ImageDescription;
         ImageDescription.Format            = EFormat::RGBA16_FLOAT;
-        ImageDescription.Extent            = glm::uvec2(Width, Height);
+        ImageDescription.Extent            = FUIntVector2(Width, Height);
         ImageDescription.Flags             .SetMultipleFlags(EImageCreateFlags::ShaderResource);
         ImageDescription.NumMips           = 1;
         ImageDescription.InitialState      = EResourceStates::ShaderResource;
@@ -106,7 +106,7 @@ namespace Lumina
     }
 
     // Encodes RGBA8 via Basis Universal; shared by initial import and Recook.
-    static bool CookTexturePixels(CTexture* Texture, const TVector<uint8>& Pixels, glm::uvec2 Dimensions, ETextureColorSpace ColorSpace)
+    static bool CookTexturePixels(CTexture* Texture, const TVector<uint8>& Pixels, FUIntVector2 Dimensions, ETextureColorSpace ColorSpace)
     {
         // basisu's encoder tables are per-DLL static state. FEngine::Init's
         // basisu_encoder_init() runs in the Runtime module, not this Editor one,
@@ -184,7 +184,7 @@ namespace Lumina
 
         FRHIImageDesc ImageDescription;
         ImageDescription.Format            = StoredFormat;
-        ImageDescription.Extent            = glm::uvec2(Width, Height);
+        ImageDescription.Extent            = FUIntVector2(Width, Height);
         ImageDescription.Flags             .SetMultipleFlags(EImageCreateFlags::ShaderResource);
         ImageDescription.NumMips           = static_cast<uint8>(NumMips);
         ImageDescription.InitialState      = EResourceStates::ShaderResource;

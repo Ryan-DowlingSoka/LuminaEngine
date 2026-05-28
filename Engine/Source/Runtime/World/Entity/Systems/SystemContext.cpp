@@ -73,58 +73,58 @@ namespace Lumina
         return Get<STransformComponent>(Entity);
     }
 
-    glm::vec3 FSystemContext::TranslateEntity(entt::entity Entity, const glm::vec3& Translation)
+    FVector3 FSystemContext::TranslateEntity(entt::entity Entity, const FVector3& Translation)
     {
-        glm::vec3 NewLocation = Registry.get<STransformComponent>(Entity).Translate(Translation);
+        FVector3 NewLocation = Registry.get<STransformComponent>(Entity).Translate(Translation);
         return NewLocation;
     }
 
-    void FSystemContext::SetEntityLocation(entt::entity Entity, const glm::vec3& Location)
+    void FSystemContext::SetEntityLocation(entt::entity Entity, const FVector3& Location)
     {
         Registry.get<STransformComponent>(Entity).SetLocation(Location);
     }
 
-    void FSystemContext::SetEntityRotation(entt::entity Entity, const glm::quat& Rotation)
+    void FSystemContext::SetEntityRotation(entt::entity Entity, const FQuat& Rotation)
     {
         Registry.get<STransformComponent>(Entity).SetRotation(Rotation);
     }
 
-    void FSystemContext::SetEntityScale(entt::entity Entity, const glm::vec3& Scale)
+    void FSystemContext::SetEntityScale(entt::entity Entity, const FVector3& Scale)
     {
         Registry.get<STransformComponent>(Entity).SetScale(Scale);
     }
 
-    void FSystemContext::DrawDebugLine(const glm::vec3& Start, const glm::vec3& End, const glm::vec4& Color, float Thickness, float Duration) const
+    void FSystemContext::DrawDebugLine(const FVector3& Start, const FVector3& End, const FVector4& Color, float Thickness, float Duration) const
     {
         World->DrawLine(Start, End, Color, Thickness, true, Duration);
     }
 
-    void FSystemContext::DrawDebugBox(const glm::vec3& Center, const glm::vec3& Extents, const glm::quat& Rotation, const glm::vec4& Color, float Thickness, float Duration) const
+    void FSystemContext::DrawDebugBox(const FVector3& Center, const FVector3& Extents, const FQuat& Rotation, const FVector4& Color, float Thickness, float Duration) const
     {
         World->DrawBox(Center, Extents, Rotation, Color, Thickness, true, Duration);
     }
 
-    void FSystemContext::DrawDebugSphere(const glm::vec3& Center, float Radius, const glm::vec4& Color, uint8 Segments, float Thickness, float Duration) const
+    void FSystemContext::DrawDebugSphere(const FVector3& Center, float Radius, const FVector4& Color, uint8 Segments, float Thickness, float Duration) const
     {
         World->DrawSphere(Center, Radius, Color, Segments, Thickness, true, Duration);
     }
 
-    void FSystemContext::DrawDebugCone(const glm::vec3& Apex, const glm::vec3& Direction, float AngleRadians, float Length, const glm::vec4& Color, uint8 Segments, uint8 Stacks, float Thickness, float Duration) const
+    void FSystemContext::DrawDebugCone(const FVector3& Apex, const FVector3& Direction, float AngleRadians, float Length, const FVector4& Color, uint8 Segments, uint8 Stacks, float Thickness, float Duration) const
     {
         World->DrawCone(Apex, Direction, AngleRadians, Length, Color, Segments, Stacks, Thickness, true, Duration);
     }
 
-    void FSystemContext::DrawFrustum(const glm::mat4& Matrix, float zNear, float zFar, const glm::vec4& Color, float Thickness, float Duration) const
+    void FSystemContext::DrawFrustum(const FMatrix4& Matrix, float zNear, float zFar, const FVector4& Color, float Thickness, float Duration) const
     {
         World->DrawFrustum(Matrix, zNear, zFar, Color, Thickness, true, Duration);
     }
 
-    void FSystemContext::DrawDebugArrow(const glm::vec3& Start, const glm::vec3& Direction, float Length, const glm::vec4& Color, float Thickness, float Duration, float HeadSize) const
+    void FSystemContext::DrawDebugArrow(const FVector3& Start, const FVector3& Direction, float Length, const FVector4& Color, float Thickness, float Duration, float HeadSize) const
     {
         World->DrawArrow(Start, Direction, Length, Color, Thickness, true, Duration, HeadSize);
     }
     
-    entt::entity FSystemContext::Create(glm::vec3 Location) const
+    entt::entity FSystemContext::Create(FVector3 Location) const
     {
         LUMINA_PROFILE_SCOPE();
 

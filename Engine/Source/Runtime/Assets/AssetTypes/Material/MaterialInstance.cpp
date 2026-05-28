@@ -121,7 +121,7 @@ namespace Lumina
         return true;
     }
 
-    bool CMaterialInstance::SetVectorValue(const FName& Name, const glm::vec4& Value)
+    bool CMaterialInstance::SetVectorValue(const FName& Name, const FVector4& Value)
     {
         if (!Material)
         {

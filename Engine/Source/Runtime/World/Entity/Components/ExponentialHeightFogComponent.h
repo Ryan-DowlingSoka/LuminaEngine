@@ -1,6 +1,6 @@
 #pragma once
 
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 #include "ExponentialHeightFogComponent.generated.h"
 
 namespace Lumina
@@ -44,11 +44,11 @@ namespace Lumina
 
         /** Base fog color (HDR; values >1 feed bloom). */
         PROPERTY(Editable, Color, Category = "Fog")
-        glm::vec3 FogInscatteringColor = glm::vec3(0.5f, 0.6f, 0.7f);
+        FVector3 FogInscatteringColor = FVector3(0.5f, 0.6f, 0.7f);
 
         /** Fog tint blended in when looking toward the sun (light shafts / haze glow). */
         PROPERTY(Editable, Color, Category = "Directional Inscatter")
-        glm::vec3 DirectionalInscatteringColor = glm::vec3(1.0f, 0.9f, 0.7f);
+        FVector3 DirectionalInscatteringColor = FVector3(1.0f, 0.9f, 0.7f);
 
         /** Tightness of the sun-facing inscatter lobe; larger = smaller, sharper glow. */
         PROPERTY(Editable, Category = "Directional Inscatter", ClampMin = 1.0f, ClampMax = 64.0f)

@@ -18,7 +18,7 @@ namespace Lumina::RenderUtils
     // memory without thrashing. LowUsageFrames is per-buffer state the caller persists.
     RUNTIME_API bool ResizeBufferIfNeeded(FRHIBufferRef& Buffer, uint32 DesiredSize, float GrowthFactor, uint32& LowUsageFrames);
     
-    RUNTIME_API FRHIImageRef CreateImageFromPixels(TSpan<uint8> PixelData, bool bFlipVertically = true, glm::uvec2 Size = {});
+    RUNTIME_API FRHIImageRef CreateImageFromPixels(TSpan<uint8> PixelData, bool bFlipVertically = true, FUIntVector2 Size = {});
     
     inline uint32 CalculateMipCount(uint32 Width, uint32 Height)
     {
@@ -32,9 +32,9 @@ namespace Lumina::RenderUtils
         return Levels;
     }
     
-    inline glm::uvec2 SplitAddress(uint64 Address) 
+    inline FUIntVector2 SplitAddress(uint64 Address) 
     {
-        return glm::uvec2(static_cast<uint32>(Address & 0xFFFFFFFFull), static_cast<uint32>(Address >> 32));
+        return FUIntVector2(static_cast<uint32>(Address & 0xFFFFFFFFull), static_cast<uint32>(Address >> 32));
     }
 
     inline uint32 GetMipDim(uint32 BaseWidth, uint32 Level)
@@ -65,42 +65,42 @@ namespace Lumina::RenderUtils
     }
 
 
-    inline glm::quat GetCameraRotation(float yaw, float pitch)
+    inline FQuat GetCameraRotation(float yaw, float pitch)
     {
-        float yawRad = glm::radians(yaw);
-        float pitchRad = glm::radians(pitch);
+        float yawRad = Math::Radians(yaw);
+        float pitchRad = Math::Radians(pitch);
 
-        glm::quat pitchQuat = glm::angleAxis(pitchRad, glm::vec3(1, 0, 0));
-        glm::quat yawQuat = glm::angleAxis(yawRad, glm::vec3(0, 1, 0));
+        FQuat pitchQuat = Math::AngleAxis(pitchRad, FVector3(1, 0, 0));
+        FQuat yawQuat = Math::AngleAxis(yawRad, FVector3(0, 1, 0));
 
         return yawQuat * pitchQuat;
     }
 
-    inline glm::vec3 GetForwardVector(float yaw, float pitch)
+    inline FVector3 GetForwardVector(float yaw, float pitch)
     {
-        float yawRad = glm::radians(yaw);
-        float pitchRad = glm::radians(pitch);
+        float yawRad = Math::Radians(yaw);
+        float pitchRad = Math::Radians(pitch);
         
-        return glm::vec3(
-            glm::cos(pitchRad) * glm::sin(yawRad),
-            -glm::sin(pitchRad),
-            glm::cos(pitchRad) * glm::cos(yawRad)
+        return FVector3(
+            Math::Cos(pitchRad) * Math::Sin(yawRad),
+            -Math::Sin(pitchRad),
+            Math::Cos(pitchRad) * Math::Cos(yawRad)
         );
     }
 
-    inline glm::vec3 GetRightVector(float yaw)
+    inline FVector3 GetRightVector(float yaw)
     {
-        float yawRad = glm::radians(yaw);
-        return glm::vec3(glm::cos(yawRad), 0.0f, -glm::sin(yawRad));
+        float yawRad = Math::Radians(yaw);
+        return FVector3(Math::Cos(yawRad), 0.0f, -Math::Sin(yawRad));
     }
 
-    inline glm::vec3 GetUpVector(float yaw, float pitch)
+    inline FVector3 GetUpVector(float yaw, float pitch)
     {
-        return glm::cross(GetRightVector(yaw), GetForwardVector(yaw, pitch));
+        return Math::Cross(GetRightVector(yaw), GetForwardVector(yaw, pitch));
     }
 
-    inline glm::vec3 GetCameraPosition(const glm::vec3& characterPos, float eyeHeight)
+    inline FVector3 GetCameraPosition(const FVector3& characterPos, float eyeHeight)
     {
-        return characterPos + glm::vec3(0, eyeHeight, 0);
+        return characterPos + FVector3(0, eyeHeight, 0);
     }
 }

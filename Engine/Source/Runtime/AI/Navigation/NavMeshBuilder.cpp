@@ -35,7 +35,7 @@ namespace Lumina::NavMeshBuilder
 
         struct FTileGrid
         {
-            glm::vec3   Origin;             // BoundsMin
+            FVector3   Origin;             // BoundsMin
             float       TileWorldSize;      // TileSizeVoxels * CellSize
             float       BorderSize;         // world units of per-tile expand for seam consistency
             int32       TilesX = 0;
@@ -50,7 +50,7 @@ namespace Lumina::NavMeshBuilder
             // AgentRadius/CellSize + 3 is the Recast convention; tiles need a voxel border for seam triangles.
             const int32 BorderVoxels = (int32)std::ceil(In.Settings.AgentRadius / In.Settings.CellSize) + 3;
             Grid.BorderSize = (float)BorderVoxels * In.Settings.CellSize;
-            const glm::vec3 Span = In.BoundsMax - In.BoundsMin;
+            const FVector3 Span = In.BoundsMax - In.BoundsMin;
             Grid.TilesX = (int32)std::ceil(std::max(Span.x, 0.0f) / Grid.TileWorldSize);
             Grid.TilesY = (int32)std::ceil(std::max(Span.z, 0.0f) / Grid.TileWorldSize);
             Grid.TilesX = std::max(Grid.TilesX, 1);

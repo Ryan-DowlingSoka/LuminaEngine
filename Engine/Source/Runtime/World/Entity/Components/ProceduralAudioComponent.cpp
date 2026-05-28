@@ -25,7 +25,7 @@ namespace Lumina
 		ActiveHandle = GAudioContext->PlayProceduralStream(
 			Stream,
 			bSpatialized,
-			glm::vec3(0.0f), // Updated each tick by SAudioSystem.
+			FVector3(0.0f), // Updated each tick by SAudioSystem.
 			Volume, Pitch, MinDistance, MaxDistance);
 
 		bPlaying = true;

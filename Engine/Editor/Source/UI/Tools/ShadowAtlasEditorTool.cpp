@@ -46,7 +46,7 @@ namespace Lumina
         const float LogMin = std::log2((float)MinSize);
         const float LogMax = std::log2((float)MaxSize);
         const float LogCur = std::log2((float)SizePixels);
-        const float T = LogMax > LogMin ? glm::clamp((LogCur - LogMin) / (LogMax - LogMin), 0.0f, 1.0f) : 0.0f;
+        const float T = LogMax > LogMin ? Math::Clamp((LogCur - LogMin) / (LogMax - LogMin), 0.0f, 1.0f) : 0.0f;
 
         // Simple blue->green->red lerp through HSV-like hues.
         const float R = T;

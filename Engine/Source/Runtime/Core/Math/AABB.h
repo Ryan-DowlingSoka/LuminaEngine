@@ -1,5 +1,6 @@
 #pragma once
-#include "glm/glm.hpp"
+#include "Core/Math/Vector/Vector.h"
+#include "Core/Math/Matrix/Matrix.h"
 #include "Platform/Platform.h"
 #include "Core/Object/ObjectMacros.h"
 #include "AABB.generated.h"
@@ -13,42 +14,42 @@ namespace Lumina
         GENERATED_BODY()
         
         PROPERTY(Script, Editable)
-        glm::vec3 Min;
+        FVector3 Min;
 
         PROPERTY(Script, Editable)
-        glm::vec3 Max;
+        FVector3 Max;
         
         FAABB()
             : Min(0.0f), Max(0.0f)
         {}
 
-        FAABB(const glm::vec3& InMin, const glm::vec3& InMax)
+        FAABB(const FVector3& InMin, const FVector3& InMax)
             : Min(InMin), Max(InMax)
         {}
 
         FUNCTION(Script)
-        FORCEINLINE float MaxScale() const { return glm::max(GetSize().x, glm::max(GetSize().y, GetSize().z)); }
+        FORCEINLINE float MaxScale() const { return Math::Max(GetSize().x, Math::Max(GetSize().y, GetSize().z)); }
         
         FUNCTION(Script)
-        FORCEINLINE glm::vec3 GetSize() const { return Max - Min; }
+        FORCEINLINE FVector3 GetSize() const { return Max - Min; }
         
         FUNCTION(Script)
-        FORCEINLINE glm::vec3 GetCenter() const { return Min + GetSize() * 0.5f; }
+        FORCEINLINE FVector3 GetCenter() const { return Min + GetSize() * 0.5f; }
         
-        NODISCARD FAABB ToWorld(const glm::mat4& World) const
+        NODISCARD FAABB ToWorld(const FMatrix4& World) const
         {
-            glm::vec3 NewMin = glm::vec3(World[3]);
-            glm::vec3 NewMax = glm::vec3(World[3]);
+            FVector3 NewMin = FVector3(World[3]);
+            FVector3 NewMax = FVector3(World[3]);
 
             for (int i = 0; i < 3; i++)
             {
-                glm::vec3 Axis = glm::vec3(World[i]);
+                FVector3 Axis = FVector3(World[i]);
 
-                glm::vec3 MinContrib = Axis * Min[i];
-                glm::vec3 MaxContrib = Axis * Max[i];
+                FVector3 MinContrib = Axis * Min[i];
+                FVector3 MaxContrib = Axis * Max[i];
 
-                NewMin += glm::min(MinContrib, MaxContrib);
-                NewMax += glm::max(MinContrib, MaxContrib);
+                NewMin += Math::Min(MinContrib, MaxContrib);
+                NewMax += Math::Max(MinContrib, MaxContrib);
             }
 
             return FAABB(NewMin, NewMax);

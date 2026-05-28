@@ -1,13 +1,13 @@
 #pragma once
 #include <Containers/String.h>
-#include <glm/fwd.hpp>
+#include "Core/Math/Math.h"
 
 namespace Lumina
 {
     struct FWindowSpecs
     {
         FString Title = "Lumina";
-        glm::uvec2 Extent{};
+        FUIntVector2 Extent{};
         bool bFullscreen = false;
         bool bShowTitlebar = false;
     };

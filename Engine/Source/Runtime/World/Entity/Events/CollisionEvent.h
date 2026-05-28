@@ -33,23 +33,23 @@ namespace Lumina
 
         /** World-space contact point. */
         PROPERTY(Script)
-        glm::vec3 Point = glm::vec3(0.0f);
+        FVector3 Point = FVector3(0.0f);
 
         /** Contact normal pointing away from self toward the other body. */
         PROPERTY(Script)
-        glm::vec3 Normal = glm::vec3(0.0f, 1.0f, 0.0f);
+        FVector3 Normal = FVector3(0.0f, 1.0f, 0.0f);
 
         /** This body's linear velocity at contact time (m/s). */
         PROPERTY(Script)
-        glm::vec3 Velocity = glm::vec3(0.0f);
+        FVector3 Velocity = FVector3(0.0f);
 
         /** The other body's linear velocity at contact time (m/s). */
         PROPERTY(Script)
-        glm::vec3 OtherVelocity = glm::vec3(0.0f);
+        FVector3 OtherVelocity = FVector3(0.0f);
 
         /** Other - Self linear velocity (m/s). */
         PROPERTY(Script)
-        glm::vec3 RelativeVelocity = glm::vec3(0.0f);
+        FVector3 RelativeVelocity = FVector3(0.0f);
 
         /** |relative velocity along the normal| (m/s). */
         PROPERTY(Script)

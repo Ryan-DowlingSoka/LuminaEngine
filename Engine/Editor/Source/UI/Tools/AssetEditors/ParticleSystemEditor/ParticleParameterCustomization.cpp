@@ -11,7 +11,7 @@ namespace Lumina
         Param.Scalar  = 0.0f;
         Param.Integer = 0;
         Param.Boolean = false;
-        Param.Vector  = glm::vec4(0.0f);
+        Param.Vector  = FVector4(0.0f);
     }
 
     TSharedPtr<FParticleParameterCustomization> FParticleParameterCustomization::MakeInstance()

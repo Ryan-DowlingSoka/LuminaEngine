@@ -15,7 +15,7 @@ namespace Lumina
         Ar << *SkeletonResource;
     }
 
-    void CSkeleton::ComputeBindPoseSkinningMatrices(TVector<glm::mat4>& OutMatrices) const
+    void CSkeleton::ComputeBindPoseSkinningMatrices(TVector<FMatrix4>& OutMatrices) const
     {
         const int32 NumBones = SkeletonResource->GetNumBones();
         OutMatrices.resize(NumBones);
@@ -24,7 +24,7 @@ namespace Lumina
         for (int32 i = 0; i < NumBones; ++i)
         {
             const FSkeletonResource::FBoneInfo& Bone = SkeletonResource->GetBone(i);
-            const glm::mat4 World = (Bone.ParentIndex == INDEX_NONE)
+            const FMatrix4 World = (Bone.ParentIndex == INDEX_NONE)
                 ? Bone.LocalTransform
                 : OutMatrices[Bone.ParentIndex] * Bone.LocalTransform;
             OutMatrices[i] = World;

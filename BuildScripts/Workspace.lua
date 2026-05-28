@@ -60,10 +60,6 @@ function LuminaWorkspaceSettings(Opts)
             "_CRT_SECURE_NO_WARNINGS",
             "_SILENCE_CXX23_ALIGNED_UNION_DEPRECATION_WARNING",
             "_SILENCE_CXX23_ALIGNED_STORAGE_DEPRECATION_WARNING",
-            "GLM_FORCE_DEPTH_ZERO_TO_ONE",
-            "GLM_FORCE_LEFT_HANDED",
-            "GLM_ENABLE_EXPERIMENTAL",
-            "GLM_FORCE_AVX2",
             "IMGUI_DEFINE_MATH_OPERATORS",
             "IMGUI_IMPL_VULKAN_USE_VOLK",
 

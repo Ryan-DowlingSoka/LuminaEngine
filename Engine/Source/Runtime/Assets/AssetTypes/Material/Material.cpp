@@ -242,7 +242,7 @@ namespace Lumina
         return false;
     }
 
-    bool CMaterial::SetVectorValue(const FName& Name, const glm::vec4& Value)
+    bool CMaterial::SetVectorValue(const FName& Name, const FVector4& Value)
     {
         auto It = ParameterLookup.find(Name);
         if (It != ParameterLookup.end() && It->second.Type == EMaterialParameterType::Vector)

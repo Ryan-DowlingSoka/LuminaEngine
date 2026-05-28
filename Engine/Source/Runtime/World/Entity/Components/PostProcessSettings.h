@@ -86,7 +86,7 @@ namespace Lumina
 
         /** Multiplicative color filter in linear space; (1,1,1) is no-op. */
         PROPERTY(Editable, Color, Category = "Post Process|Color Filter")
-        glm::vec3 ColorFilter = glm::vec3(1.0f);
+        FVector3 ColorFilter = FVector3(1.0f);
 
         /** Color filter strength; 0 disables. */
         PROPERTY(Editable, Category = "Post Process|Color Filter", ClampMin = 0.0f, ClampMax = 2.0f)
@@ -94,15 +94,15 @@ namespace Lumina
 
         /** Shadow tint (lift). */
         PROPERTY(Editable, Color, Category = "Post Process|Lift Gamma Gain")
-        glm::vec3 Shadows = glm::vec3(1.0f);
+        FVector3 Shadows = FVector3(1.0f);
 
         /** Midtone tint (power-style). */
         PROPERTY(Editable, Color, Category = "Post Process|Lift Gamma Gain")
-        glm::vec3 Midtones = glm::vec3(1.0f);
+        FVector3 Midtones = FVector3(1.0f);
 
         /** Highlight tint (gain). */
         PROPERTY(Editable, Color, Category = "Post Process|Lift Gamma Gain")
-        glm::vec3 Highlights = glm::vec3(1.0f);
+        FVector3 Highlights = FVector3(1.0f);
 
 
         /** Corner darkening; 0 = off. */
@@ -119,7 +119,7 @@ namespace Lumina
 
         /** Vignette tint. */
         PROPERTY(Editable, Color, Category = "Post Process|Vignette")
-        glm::vec3 VignetteColor = glm::vec3(0.0f);
+        FVector3 VignetteColor = FVector3(0.0f);
 
         /** Bloom strength; 0 skips bloom passes entirely. 0.04-0.12 cinematic, >0.3 stylized. */
         PROPERTY(Editable, Category = "Post Process|Bloom", ClampMin = 0.0f, ClampMax = 1.0f, Delta = 0.005f)
@@ -135,7 +135,7 @@ namespace Lumina
 
         /** Bloom tint. */
         PROPERTY(Editable, Color, Category = "Post Process|Bloom")
-        glm::vec3 BloomTint = glm::vec3(1.0f);
+        FVector3 BloomTint = FVector3(1.0f);
 
         /** Radial RGB split; 0 = off. 0.001-0.005 subtle anamorphic, >0.01 stylized/VHS. */
         PROPERTY(Editable, Category = "Post Process|Chromatic Aberration", ClampMin = 0.0f, ClampMax = 0.05f, Delta = 0.0005f)
@@ -167,7 +167,7 @@ namespace Lumina
         Weight = (Weight < 1.0f) ? Weight : 1.0f;
 
         const auto LerpF  = [Weight](float A, float B)         { return A + (B - A) * Weight; };
-        const auto LerpV3 = [Weight](glm::vec3 A, glm::vec3 B) { return A + (B - A) * Weight; };
+        const auto LerpV3 = [Weight](FVector3 A, FVector3 B) { return A + (B - A) * Weight; };
 
         InOut.ExposureCompensation = LerpF (InOut.ExposureCompensation, In.ExposureCompensation);
         InOut.AutoExposureMinEV    = LerpF (InOut.AutoExposureMinEV,    In.AutoExposureMinEV);

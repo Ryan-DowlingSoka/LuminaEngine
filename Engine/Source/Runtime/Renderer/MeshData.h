@@ -31,7 +31,7 @@ namespace Lumina
         uint32     TriangleOffset;
         uint32     VertexCount;
         uint32     TriangleCount;
-        glm::ivec3 LoInt;
+        FIntVector3 LoInt;
         uint32     LODIndex;
 
         friend FArchive& operator<<(FArchive& Ar, FMeshlet& Data)
@@ -49,11 +49,11 @@ namespace Lumina
     // Sphere for frustum/occlusion, cone for backface culling.
     struct alignas(16) FMeshletBounds
     {
-        glm::vec3 Center;
+        FVector3 Center;
         float     Radius;
-        glm::vec3 ConeApex;
+        FVector3 ConeApex;
         float     ConeCutoff;   // = cos(angle / 2)
-        glm::vec3 ConeAxis;
+        FVector3 ConeAxis;
         float     _Pad0;
 
         friend FArchive& operator<<(FArchive& Ar, FMeshletBounds& Data)
@@ -82,8 +82,8 @@ namespace Lumina
         // grid) so a coarse sloppy LOD can't inflate the cell size and degrade LOD 0's
         // quantization; the grid is still shared across every meshlet WITHIN a LOD, which keeps
         // each LOD seam-free (adjacent meshlets snap a shared boundary vertex to the same cell).
-        glm::vec3                       MeshOrigin[MAX_MESH_LODS]   = {};
-        glm::vec3                       MeshGridStep[MAX_MESH_LODS] = {};
+        FVector3                       MeshOrigin[MAX_MESH_LODS]   = {};
+        FVector3                       MeshGridStep[MAX_MESH_LODS] = {};
 
         FORCEINLINE bool IsEmpty() const { return Meshlets.empty(); }
 
@@ -96,8 +96,8 @@ namespace Lumina
             MeshletBounds.clear();
             for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
             {
-                MeshOrigin[i]   = glm::vec3(0.0f);
-                MeshGridStep[i] = glm::vec3(0.0f);
+                MeshOrigin[i]   = FVector3(0.0f);
+                MeshGridStep[i] = FVector3(0.0f);
             }
         }
 
@@ -129,8 +129,8 @@ namespace Lumina
         uint64    BoundsAddress;                    // FMeshletBounds*
         uint64    VerticesAddress;                  // uint32*
         uint64    TrianglesAddress;                 // uint32*
-        glm::vec4 MeshOrigin[MAX_MESH_LODS];        // xyz = per-LOD grid origin
-        glm::vec4 MeshGridStep[MAX_MESH_LODS];      // xyz = per-LOD grid cell size
+        FVector4 MeshOrigin[MAX_MESH_LODS];        // xyz = per-LOD grid origin
+        FVector4 MeshGridStep[MAX_MESH_LODS];      // xyz = per-LOD grid cell size
     };
 
     struct FGeometrySurface final
@@ -174,13 +174,13 @@ namespace Lumina
         // Import-time scratch vertex streams (structure-of-arrays); not serialized,
         // dropped after GenerateMeshlets. All active streams stay parallel and equal
         // length. Joint streams are populated only when bSkinnedMesh, else empty.
-        TVector<glm::vec3>          Positions;
+        TVector<FVector3>          Positions;
         TVector<uint32>             Normals;        // octahedral pack (PackNormal)
         TVector<uint32>             Tangents;       // octahedral + handedness (PackTangent)
         TVector<uint32>             UVs;            // packHalf2x16
         TVector<uint32>             Colors;         // RGBA8 (PackColor)
-        TVector<glm::u8vec4>        JointIndices;
-        TVector<glm::u8vec4>        JointWeights;
+        TVector<FU8Vector4>        JointIndices;
+        TVector<FU8Vector4>        JointWeights;
 
         TVector<uint32>             Indices;
         TVector<FGeometrySurface>   GeometrySurfaces;
@@ -189,7 +189,7 @@ namespace Lumina
         bool                        bSkinnedMesh = false;
 
         // Source scene-graph world transform; baked into vertices at merge time.
-        glm::mat4                   ImportTransform = glm::mat4(1.0f);
+        FMatrix4                   ImportTransform = FMatrix4(1.0f);
 
         FORCEINLINE size_t GetNumSurfaces() const { return GeometrySurfaces.size(); }
 
@@ -272,8 +272,8 @@ namespace Lumina
         }
 
         // --- per-vertex accessors (thin; direct stream indexing) -----------
-        FORCEINLINE glm::vec3 GetPositionAt(size_t Index) const { return Positions[Index]; }
-        FORCEINLINE void SetPositionAt(size_t Index, glm::vec3 Position) { Positions[Index] = Position; }
+        FORCEINLINE FVector3 GetPositionAt(size_t Index) const { return Positions[Index]; }
+        FORCEINLINE void SetPositionAt(size_t Index, FVector3 Position) { Positions[Index] = Position; }
 
         FORCEINLINE uint32 GetNormalAt(size_t Index) const { return Normals[Index]; }
         FORCEINLINE void SetNormalAt(size_t Index, uint32 Normal) { Normals[Index] = Normal; }
@@ -281,17 +281,17 @@ namespace Lumina
         FORCEINLINE uint32 GetTangentAt(size_t Index) const { return Tangents[Index]; }
         FORCEINLINE void SetTangentAt(size_t Index, uint32 Tangent) { Tangents[Index] = Tangent; }
 
-        FORCEINLINE glm::vec2 GetUVAt(size_t Index) const { return glm::unpackHalf2x16(UVs[Index]); }
-        FORCEINLINE void SetUVAt(size_t Index, glm::vec2 UV) { UVs[Index] = glm::packHalf2x16(UV); }
+        FORCEINLINE FVector2 GetUVAt(size_t Index) const { return Math::UnpackHalf2x16(UVs[Index]); }
+        FORCEINLINE void SetUVAt(size_t Index, FVector2 UV) { UVs[Index] = Math::PackHalf2x16(UV); }
 
         FORCEINLINE uint32 GetColorAt(size_t Index) const { return Colors[Index]; }
         FORCEINLINE void SetColorAt(size_t Index, uint32 Color) { Colors[Index] = Color; }
 
-        FORCEINLINE glm::u8vec4 GetJointIndicesAt(size_t Index) const { return JointIndices[Index]; }
-        FORCEINLINE void SetJointIndicesAt(size_t Index, glm::u8vec4 InIndices) { JointIndices[Index] = InIndices; }
+        FORCEINLINE FU8Vector4 GetJointIndicesAt(size_t Index) const { return JointIndices[Index]; }
+        FORCEINLINE void SetJointIndicesAt(size_t Index, FU8Vector4 InIndices) { JointIndices[Index] = InIndices; }
 
-        FORCEINLINE glm::u8vec4 GetJointWeightsAt(size_t Index) const { return JointWeights[Index]; }
-        FORCEINLINE void SetJointWeightsAt(size_t Index, glm::u8vec4 Weights) { JointWeights[Index] = Weights; }
+        FORCEINLINE FU8Vector4 GetJointWeightsAt(size_t Index) const { return JointWeights[Index]; }
+        FORCEINLINE void SetJointWeightsAt(size_t Index, FU8Vector4 Weights) { JointWeights[Index] = Weights; }
 
         friend FArchive& operator << (FArchive& Ar, FMeshResource& Data)
         {
@@ -323,8 +323,8 @@ namespace Lumina
         {
             FName Name;
             int32 ParentIndex;           // -1 for root bone
-            glm::mat4 InvBindMatrix;     // Inverse bind pose matrix
-            glm::mat4 LocalTransform;    // Local transform (relative to parent)
+            FMatrix4 InvBindMatrix;     // Inverse bind pose matrix
+            FMatrix4 LocalTransform;    // Local transform (relative to parent)
         
             friend FArchive& operator << (FArchive& Ar, FBoneInfo& Data)
             {

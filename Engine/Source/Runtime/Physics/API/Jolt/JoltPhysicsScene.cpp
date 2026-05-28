@@ -14,7 +14,7 @@
 #include "Core/Utils/Defer.h"
 #endif
 #include <algorithm>
-#include <glm/gtx/norm.hpp>
+#include "Core/Math/Math.h"
 
 #include "JoltPhysics.h"
 #include "JoltUtils.h"
@@ -264,10 +264,10 @@ namespace Lumina::Physics
         Record.BodyIDB   = B2->GetID().GetIndexAndSequenceNumber();
         Record.bSensorA  = B1->IsSensor();
         Record.bSensorB  = B2->IsSensor();
-        Record.Point     = glm::vec3(0.0f);
-        Record.Normal    = glm::vec3(0.0f, 1.0f, 0.0f);
-        Record.VelocityA = glm::vec3(0.0f);
-        Record.VelocityB = glm::vec3(0.0f);
+        Record.Point     = FVector3(0.0f);
+        Record.Normal    = FVector3(0.0f, 1.0f, 0.0f);
+        Record.VelocityA = FVector3(0.0f);
+        Record.VelocityB = FVector3(0.0f);
         Record.ImpactSpeed = 0.0f;
 
         Scene->EnqueueContactRecord(Record);
@@ -397,9 +397,9 @@ namespace Lumina::Physics
         JoltSystem->Init(InitSettings.MaxPhysicsBodies, 0, InitSettings.MaxPhysicsBodyPairs,
             InitSettings.MaxPhysicsContactConstraints, GJoltLayerInterface, GObjectVsBroadPhaseLayerFilter, GObjectVsObjectLayerFilter);
 
-        glm::vec3 GravityDir = glm::length2(InitSettings.GravityDirection) > 0.0f
-            ? glm::normalize(InitSettings.GravityDirection) : glm::vec3(0.0f, -1.0f, 0.0f);
-        JoltSystem->SetGravity(JoltUtils::ToJPHVec3(GravityDir * glm::abs(GEarthGravity) * InitSettings.GravityScale));
+        FVector3 GravityDir = Math::LengthSquared(InitSettings.GravityDirection) > 0.0f
+            ? Math::Normalize(InitSettings.GravityDirection) : FVector3(0.0f, -1.0f, 0.0f);
+        JoltSystem->SetGravity(JoltUtils::ToJPHVec3(GravityDir * Math::Abs(GEarthGravity) * InitSettings.GravityScale));
 
         JPH::PhysicsSettings JoltSettings;
         JoltSettings.mDeterministicSimulation                   = InitSettings.bDeterministicSimulation;
@@ -594,9 +594,9 @@ namespace Lumina::Physics
 
         // Re-apply global physics settings each frame so editor changes take effect immediately.
         {
-            glm::vec3 GravityDir = glm::length2(WorldSettings.GravityDirection) > 0.0f
-                ? glm::normalize(WorldSettings.GravityDirection) : glm::vec3(0.0f, -1.0f, 0.0f);
-            JoltSystem->SetGravity(JoltUtils::ToJPHVec3(GravityDir * glm::abs(GEarthGravity) * WorldSettings.GravityScale));
+            FVector3 GravityDir = Math::LengthSquared(WorldSettings.GravityDirection) > 0.0f
+                ? Math::Normalize(WorldSettings.GravityDirection) : FVector3(0.0f, -1.0f, 0.0f);
+            JoltSystem->SetGravity(JoltUtils::ToJPHVec3(GravityDir * Math::Abs(GEarthGravity) * WorldSettings.GravityScale));
 
             JPH::PhysicsSettings JoltSettings                           = JoltSystem->GetPhysicsSettings();
             JoltSettings.mDeterministicSimulation                       = WorldSettings.bDeterministicSimulation;
@@ -679,7 +679,7 @@ namespace Lumina::Physics
         }
         
         const float InterpolationAlpha = WorldSettings.bEnablePhysicsInterpolation
-            ? glm::clamp(Accumulator / FixedTimestep, 0.0f, 1.0f)
+            ? Math::Clamp(Accumulator / FixedTimestep, 0.0f, 1.0f)
             : 1.0f;
         
         BuildInterpolatedTransforms(InterpolationAlpha);
@@ -852,8 +852,8 @@ namespace Lumina::Physics
 
             if (CurrPos.GetY() < KillHeight)
             {
-                Staged.Location   = glm::vec3(0.0f);
-                Staged.Rotation   = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+                Staged.Location   = FVector3(0.0f);
+                Staged.Rotation   = FQuat(1.0f, 0.0f, 0.0f, 0.0f);
                 Staged.bBelowKill = true;
                 Staged.bSkip      = false;
                 return;
@@ -861,10 +861,10 @@ namespace Lumina::Physics
 
             // Interpolate between the pre-step snapshot and the current physics state.
             // Falls back to the current state on the first frame (no snapshot yet).
-            Staged.Location   = glm::mix(BodyComponent.LastBodyPosition,
+            Staged.Location   = Math::Mix(BodyComponent.LastBodyPosition,
                                          JoltUtils::FromJPHVec3(CurrPos),
                                          Alpha);
-            Staged.Rotation   = glm::normalize(glm::slerp(BodyComponent.LastBodyRotation,
+            Staged.Rotation   = Math::Normalize(Math::Slerp(BodyComponent.LastBodyRotation,
                                                           JoltUtils::FromJPHQuat(CurrRot),
                                                           Alpha));
             Staged.bBelowKill = false;
@@ -886,14 +886,14 @@ namespace Lumina::Physics
 
             if (CurrPos.GetY() < KillHeight)
             {
-                InterpolatedTransforms.emplace_back(Entity, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), true, false);
+                InterpolatedTransforms.emplace_back(Entity, FVector3(0.0f), FQuat(1.0f, 0.0f, 0.0f, 0.0f), true, false);
                 return;
             }
 
-            const glm::vec3 Location = glm::mix(CharacterComponent.LastBodyPosition,
+            const FVector3 Location = Math::Mix(CharacterComponent.LastBodyPosition,
                                                 JoltUtils::FromJPHVec3(CurrPos),
                                                 Alpha);
-            const glm::quat Rotation = glm::normalize(glm::slerp(CharacterComponent.LastBodyRotation,
+            const FQuat Rotation = Math::Normalize(Math::Slerp(CharacterComponent.LastBodyRotation,
                                                                  JoltUtils::FromJPHQuat(CurrRot),
                                                                  Alpha));
 
@@ -949,29 +949,29 @@ namespace Lumina::Physics
 
         View.each([&](SCharacterControllerComponent& Controller, SCharacterMovementComponent& Movement)
         {
-            if (glm::length2(Controller.MoveInput) > LE_SMALL_NUMBER)
+            if (Math::LengthSquared(Controller.MoveInput) > LE_SMALL_NUMBER)
             {
-                glm::vec3 Forward = RenderUtils::GetForwardVector(Controller.LookInput.x, 0.0f);
-                glm::vec3 Right   = RenderUtils::GetRightVector(Controller.LookInput.x);
-                glm::vec3 Up      = glm::cross(Right, Forward);
+                FVector3 Forward = RenderUtils::GetForwardVector(Controller.LookInput.x, 0.0f);
+                FVector3 Right   = RenderUtils::GetRightVector(Controller.LookInput.x);
+                FVector3 Up      = Math::Cross(Right, Forward);
 
-                glm::vec3 Direction = Right * Controller.MoveInput.x + Up * Controller.MoveInput.y + Forward * Controller.MoveInput.z;
-                const float Magnitude = glm::length(Direction);
+                FVector3 Direction = Right * Controller.MoveInput.x + Up * Controller.MoveInput.y + Forward * Controller.MoveInput.z;
+                const float Magnitude = Math::Length(Direction);
                 if (Magnitude > LE_SMALL_NUMBER)
                 {
                     Movement.PendingMoveDirection = Direction / Magnitude;
-                    Movement.PendingMoveThrottle  = glm::min(Magnitude, 1.0f);
+                    Movement.PendingMoveThrottle  = Math::Min(Magnitude, 1.0f);
                     Movement.bHasPendingMoveInput = true;
                 }
                 else
                 {
-                    Movement.PendingMoveDirection = glm::vec3(0.0f);
+                    Movement.PendingMoveDirection = FVector3(0.0f);
                     Movement.bHasPendingMoveInput = false;
                 }
             }
             else
             {
-                Movement.PendingMoveDirection = glm::vec3(0.0f);
+                Movement.PendingMoveDirection = FVector3(0.0f);
                 Movement.bHasPendingMoveInput = false;
             }
 
@@ -1044,19 +1044,19 @@ namespace Lumina::Physics
             {
                 Movement.bPendingTeleport = false;
 
-                const glm::vec3 TeleportLocation = Movement.PendingTeleportLocation;
+                const FVector3 TeleportLocation = Movement.PendingTeleportLocation;
                 Character->SetPosition(JoltUtils::ToJPHRVec3(TeleportLocation));
                 Character->SetLinearVelocity(JPH::Vec3::sZero());
-                Movement.Velocity        = glm::vec3(0.0f);
+                Movement.Velocity        = FVector3(0.0f);
                 Physics.LastBodyPosition = TeleportLocation;
                 return;
             }
 
             const bool bHasMovementInput = Movement.bHasPendingMoveInput;
-            const glm::vec3 DesiredDirection = Movement.PendingMoveDirection;
+            const FVector3 DesiredDirection = Movement.PendingMoveDirection;
 
             const float    TargetSpeed    = bHasMovementInput ? Movement.MoveSpeed * Movement.PendingMoveThrottle : 0.0f;
-            const glm::vec3 TargetVelocity = DesiredDirection * TargetSpeed;
+            const FVector3 TargetVelocity = DesiredDirection * TargetSpeed;
 
             JPH::CharacterVirtual::ExtendedUpdateSettings UpdateSettings;
             UpdateSettings.mStickToFloorStepDown = JPH::Vec3(0.0f, -0.5f, 0.0f);
@@ -1071,50 +1071,50 @@ namespace Lumina::Physics
                 Movement.JumpCount = 0;
             }
             
-            glm::quat TargetRotation = JoltUtils::FromJPHQuat(Character->GetRotation());
+            FQuat TargetRotation = JoltUtils::FromJPHQuat(Character->GetRotation());
             if (Movement.bUseControllerRotation)
             {
-                TargetRotation = glm::quat(glm::vec3(0.0f, glm::radians(Movement.PendingLookYaw), 0.0f));
+                TargetRotation = FQuat(FVector3(0.0f, Math::Radians(Movement.PendingLookYaw), 0.0f));
             }
             else if (Movement.bOrientRotationToMovement && bHasMovementInput)
             {
-                float TargetYaw    = glm::atan(DesiredDirection.x, DesiredDirection.z);
-                glm::quat Rotation = glm::quat(glm::vec3(0.0f, TargetYaw, 0.0f));
-                TargetRotation     = glm::slerp(TargetRotation, Rotation, glm::clamp(Movement.RotationRate * FixedDt, 0.0f, 1.0f));
+                float TargetYaw    = Math::Atan2(DesiredDirection.x, DesiredDirection.z);
+                FQuat Rotation = FQuat(FVector3(0.0f, TargetYaw, 0.0f));
+                TargetRotation     = Math::Slerp(TargetRotation, Rotation, Math::Clamp(Movement.RotationRate * FixedDt, 0.0f, 1.0f));
             }
 
             // Horizontal velocity integration with accel / friction / air drag.
-            glm::vec3 HorizontalVelocity(Movement.Velocity.x, 0.0f, Movement.Velocity.z);
-            const float CurrentSpeed = glm::length(HorizontalVelocity);
+            FVector3 HorizontalVelocity(Movement.Velocity.x, 0.0f, Movement.Velocity.z);
+            const float CurrentSpeed = Math::Length(HorizontalVelocity);
 
             if (bHasMovementInput)
             {
                 // Airborne steering is scaled by AirControl (0 = no air steering).
                 const float Accel = Movement.bGrounded ? Movement.Acceleration
                                                        : Movement.Acceleration * Movement.AirControl;
-                const float Blend = glm::clamp(Accel * FixedDt, 0.0f, 1.0f);
-                HorizontalVelocity = glm::mix(HorizontalVelocity, TargetVelocity, Blend);
+                const float Blend = Math::Clamp(Accel * FixedDt, 0.0f, 1.0f);
+                HorizontalVelocity = Math::Mix(HorizontalVelocity, TargetVelocity, Blend);
             }
             else if (Movement.bGrounded)
             {
                 const float DecelerationAmount = Movement.Deceleration * FixedDt;
-                const float NewSpeed           = glm::max(0.0f, CurrentSpeed - DecelerationAmount);
+                const float NewSpeed           = Math::Max(0.0f, CurrentSpeed - DecelerationAmount);
 
                 if (CurrentSpeed > 0.001f)
                 {
-                    HorizontalVelocity = glm::normalize(HorizontalVelocity) * NewSpeed;
+                    HorizontalVelocity = Math::Normalize(HorizontalVelocity) * NewSpeed;
                 }
                 else
                 {
-                    HorizontalVelocity = glm::vec3(0.0f);
+                    HorizontalVelocity = FVector3(0.0f);
                 }
 
-                const float Friction = glm::max(0.0f, 1.0f - Movement.GroundFriction * FixedDt);
+                const float Friction = Math::Max(0.0f, 1.0f - Movement.GroundFriction * FixedDt);
                 HorizontalVelocity *= Friction;
             }
             else
             {
-                const float AirFriction = glm::max(0.0f, 1.0f - (Movement.GroundFriction * 0.1f) * FixedDt);
+                const float AirFriction = Math::Max(0.0f, 1.0f - (Movement.GroundFriction * 0.1f) * FixedDt);
                 HorizontalVelocity *= AirFriction;
             }
 
@@ -1271,8 +1271,8 @@ namespace Lumina::Physics
         
         JPH::Vec3 SurfaceNormal = Body->GetWorldSpaceSurfaceNormal(Hit.mSubShapeID2, Ray.GetPointOnRay(Hit.mFraction));
         
-        glm::vec3 Distance  = (Settings.Start - Settings.End);
-        float Length        = glm::length(Distance);
+        FVector3 Distance  = (Settings.Start - Settings.End);
+        float Length        = Math::Length(Distance);
         
         SRayResult Result
         {
@@ -1281,7 +1281,7 @@ namespace Lumina::Physics
             .Start      = Settings.Start,
             .End        = Settings.End,
             .Location   = JoltUtils::FromJPHRVec3(Ray.GetPointOnRay(Hit.mFraction)),
-            .Normal     = glm::normalize(JoltUtils::FromJPHVec3(SurfaceNormal)),
+            .Normal     = Math::Normalize(JoltUtils::FromJPHVec3(SurfaceNormal)),
             .Fraction   = Hit.mFraction,
             .Distance   = Hit.mFraction * Length,
         };
@@ -1327,7 +1327,7 @@ namespace Lumina::Physics
                 R.Start    = Settings.Start;
                 R.End      = Settings.End;
                 R.Location = JoltUtils::FromJPHVec3(Hit.mContactPointOn2);
-                R.Normal   = glm::normalize(JoltUtils::FromJPHVec3(Hit.mPenetrationAxis.Normalized()));
+                R.Normal   = Math::Normalize(JoltUtils::FromJPHVec3(Hit.mPenetrationAxis.Normalized()));
                 R.Fraction = Hit.mFraction;
 
                 Out.emplace_back(Move(R));
@@ -1485,7 +1485,7 @@ namespace Lumina::Physics
         
     }
 
-    static JPH::ShapeRefC BuildMeshColliderShape(const CMesh* Mesh, const glm::vec3& Scale, bool bConvex)
+    static JPH::ShapeRefC BuildMeshColliderShape(const CMesh* Mesh, const FVector3& Scale, bool bConvex)
     {
         const FMeshResource& Resource = Mesh->GetMeshResource();
         const FMeshletData&  MD       = Resource.MeshletData;
@@ -1514,7 +1514,7 @@ namespace Lumina::Physics
                     const float qx  = (float)( P        & 0x3FFu);
                     const float qy  = (float)((P >> 10) & 0x3FFu);
                     const float qz  = (float)((P >> 20) & 0x3FFu);
-                    glm::vec3 Pos = MD.MeshOrigin[M.LODIndex] + (glm::vec3(M.LoInt) + glm::vec3(qx, qy, qz)) * MD.MeshGridStep[M.LODIndex];
+                    FVector3 Pos = MD.MeshOrigin[M.LODIndex] + (FVector3(M.LoInt) + FVector3(qx, qy, qz)) * MD.MeshGridStep[M.LODIndex];
                     Pos *= Scale;
                     Vertices.push_back(JPH::Float3(Pos.x, Pos.y, Pos.z));
                 }
@@ -1625,8 +1625,8 @@ namespace Lumina::Physics
     struct FRigidBodyBuildResult
     {
         JPH::BodyCreationSettings   Settings;
-        glm::vec3                   LastBodyPosition = glm::vec3(0.0f);
-        glm::quat                   LastBodyRotation = glm::identity<glm::quat>();
+        FVector3                   LastBodyPosition = FVector3(0.0f);
+        FQuat                   LastBodyRotation = FQuat::Identity();
     };
 
     // Thread-safe: reads only registry + loaded assets; no PhysicsSystem mutation.
@@ -1652,8 +1652,8 @@ namespace Lumina::Physics
         }
 
         JPH::ShapeRefC Shape;
-        glm::vec3 ColliderTranslationOffset(0.0f);
-        glm::vec3 ColliderRotationOffset(0.0f);
+        FVector3 ColliderTranslationOffset(0.0f);
+        FVector3 ColliderRotationOffset(0.0f);
         bool      bIsTriangleMesh = false;
         bool      bColliderIsTrigger = false;
 
@@ -1746,15 +1746,15 @@ namespace Lumina::Physics
             MotionType = JPH::EMotionType::Static;
         }
 
-        glm::quat Rotation      = TransformComponent->GetRotation();
-        glm::vec3 Position      = TransformComponent->GetLocation();
+        FQuat Rotation      = TransformComponent->GetRotation();
+        FVector3 Position      = TransformComponent->GetLocation();
 
         // Skip the wrapper when there's no offset; unoffset bodies can share the bare cached shape.
-        const bool bHasColliderOffset = glm::length2(ColliderTranslationOffset) > LE_SMALL_NUMBER
-                                     || glm::length2(ColliderRotationOffset)    > LE_SMALL_NUMBER;
+        const bool bHasColliderOffset = Math::LengthSquared(ColliderTranslationOffset) > LE_SMALL_NUMBER
+                                     || Math::LengthSquared(ColliderRotationOffset)    > LE_SMALL_NUMBER;
         if (bHasColliderOffset)
         {
-            glm::quat QuatRotation(ColliderRotationOffset);
+            FQuat QuatRotation(ColliderRotationOffset);
             JPH::RotatedTranslatedShapeSettings RTS(JoltUtils::ToJPHVec3(ColliderTranslationOffset), JoltUtils::ToJPHQuat(QuatRotation), Shape);
             auto RTSResult = RTS.Create();
             if (RTSResult.HasError())
@@ -1766,7 +1766,7 @@ namespace Lumina::Physics
             Shape = RTSResult.Get();
         }
 
-        if (glm::dot(RigidBodyComponent->CenterOfMassOffset, RigidBodyComponent->CenterOfMassOffset) > 0.0f)
+        if (Math::Dot(RigidBodyComponent->CenterOfMassOffset, RigidBodyComponent->CenterOfMassOffset) > 0.0f)
         {
             JPH::OffsetCenterOfMassShapeSettings COMS(JoltUtils::ToJPHVec3(RigidBodyComponent->CenterOfMassOffset), Shape);
             auto COMResult = COMS.Create();
@@ -1915,7 +1915,7 @@ namespace Lumina::Physics
         return Shape;
     }
 
-    JPH::ShapeRefC FJoltPhysicsScene::GetOrCreateBoxShape(const glm::vec3& HalfExtent)
+    JPH::ShapeRefC FJoltPhysicsScene::GetOrCreateBoxShape(const FVector3& HalfExtent)
     {
         const FShapeKey Key{ 1, HalfExtent.x, HalfExtent.y, HalfExtent.z };
 
@@ -1940,7 +1940,7 @@ namespace Lumina::Physics
         return Shape;
     }
 
-    JPH::ShapeRefC FJoltPhysicsScene::GetOrCreateMeshShape(const CMesh* Mesh, const glm::vec3& Scale, bool bConvex)
+    JPH::ShapeRefC FJoltPhysicsScene::GetOrCreateMeshShape(const CMesh* Mesh, const FVector3& Scale, bool bConvex)
     {
         const FMeshShapeKey Key{ Mesh, Scale.x, Scale.y, Scale.z, (uint8)(bConvex ? 1 : 0) };
 
@@ -2149,7 +2149,7 @@ namespace Lumina::Physics
         Interface.SetGravityFactor(BodyID, Event.GravityFactor);
     }
 
-    glm::vec3 FJoltPhysicsScene::GetVelocityAtPoint(uint32 BodyID, const glm::vec3& Point)
+    FVector3 FJoltPhysicsScene::GetVelocityAtPoint(uint32 BodyID, const FVector3& Point)
     {
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID JPHBodyID = JPH::BodyID(BodyID);
@@ -2159,7 +2159,7 @@ namespace Lumina::Physics
         return JoltUtils::FromJPHVec3(PointVelocity);
     }
 
-    glm::vec3 FJoltPhysicsScene::GetLinearVelocity(uint32 BodyID)
+    FVector3 FJoltPhysicsScene::GetLinearVelocity(uint32 BodyID)
     {
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID JPHBodyID = JPH::BodyID(BodyID);
@@ -2167,7 +2167,7 @@ namespace Lumina::Physics
         return JoltUtils::FromJPHVec3(Interface.GetLinearVelocity(JPHBodyID));
     }
 
-    glm::vec3 FJoltPhysicsScene::GetAngularVelocity(uint32 BodyID)
+    FVector3 FJoltPhysicsScene::GetAngularVelocity(uint32 BodyID)
     {
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID JPHBodyID = JPH::BodyID(BodyID);
@@ -2175,7 +2175,7 @@ namespace Lumina::Physics
         return JoltUtils::FromJPHVec3(Interface.GetAngularVelocity(JPHBodyID));
     }
 
-    glm::vec3 FJoltPhysicsScene::GetCenterOfMass(uint32 BodyID)
+    FVector3 FJoltPhysicsScene::GetCenterOfMass(uint32 BodyID)
     {
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         JPH::BodyID JPHBodyID = JPH::BodyID(BodyID);
@@ -2183,13 +2183,13 @@ namespace Lumina::Physics
         return JoltUtils::FromJPHVec3(Interface.GetCenterOfMassPosition(JPHBodyID));
     }
 
-    glm::vec3 FJoltPhysicsScene::GetBodyPosition(uint32 BodyID)
+    FVector3 FJoltPhysicsScene::GetBodyPosition(uint32 BodyID)
     {
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         return JoltUtils::FromJPHVec3(Interface.GetPosition(JPH::BodyID(BodyID)));
     }
 
-    glm::quat FJoltPhysicsScene::GetBodyRotation(uint32 BodyID)
+    FQuat FJoltPhysicsScene::GetBodyRotation(uint32 BodyID)
     {
         JPH::BodyInterface& Interface = JoltSystem->GetBodyInterface();
         return JoltUtils::FromJPHQuat(Interface.GetRotation(JPH::BodyID(BodyID)));

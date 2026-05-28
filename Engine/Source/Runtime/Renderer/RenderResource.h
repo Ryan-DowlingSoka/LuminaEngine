@@ -428,7 +428,7 @@ namespace Lumina
 
 		RENDER_RESOURCE(RRT_Viewport)
 		
-		FRHIViewport(const glm::uvec2& InSize, IRenderContext* InContext, FString&& InDebugName)
+		FRHIViewport(const FUIntVector2& InSize, IRenderContext* InContext, FString&& InDebugName)
 			: RenderContext(InContext)
 			, Size(InSize)
 			, DebugName(Move(InDebugName))
@@ -436,7 +436,7 @@ namespace Lumina
 			CreateRenderTarget(InSize);
 		}
 
-		FRHIViewport(const FViewVolume& InVolume, const glm::uvec2& InSize, IRenderContext* InContext, FString&& InDebugName)
+		FRHIViewport(const FViewVolume& InVolume, const FUIntVector2& InSize, IRenderContext* InContext, FString&& InDebugName)
 			: RenderContext(InContext)
 			, ViewVolume(InVolume)
 			, Size(InSize)
@@ -445,25 +445,25 @@ namespace Lumina
 			CreateRenderTarget(InSize);
 		}
 		
-		void SetSize(const glm::uvec2& InSize);
+		void SetSize(const FUIntVector2& InSize);
 		
 
 		const FViewVolume& GetViewVolume() const { return ViewVolume; }
-		const glm::uvec2& GetSize() const { return Size; }
+		const FUIntVector2& GetSize() const { return Size; }
 
 		void SetViewVolume(const FViewVolume& InVolume) { ViewVolume = InVolume;}
 		virtual FRHIImageRef GetRenderTarget() const { return RenderTarget; }
 
 	private:
 
-		void CreateRenderTarget(const glm::uvec2& InSize);
+		void CreateRenderTarget(const FUIntVector2& InSize);
 
 	protected:
 
 		IRenderContext*		RenderContext;
 		FRHIImageRef		RenderTarget;
 		FViewVolume        	ViewVolume;
-		glm::uvec2       	Size; 
+		FUIntVector2       	Size; 
 		FString				DebugName;
 	};
 
@@ -541,7 +541,7 @@ namespace Lumina
 	{
 		TBitFlags<EImageCreateFlags> Flags = 0;
 		uint32 ExtraData = 0;
-		glm::uvec2 Extent = glm::uvec2(1);
+		FUIntVector2 Extent = FUIntVector2(1);
 		uint16 Depth = 1;
 		uint16 ArraySize = 1;
 		uint8 NumMips = 1;
@@ -667,7 +667,7 @@ namespace Lumina
 		struct alignas(16) FAttachment
 		{
 			FTextureSubresourceSet	Subresources	= FTextureSubresourceSet(0, 1, 0 ,1);
-			glm::vec4				ClearColor		= glm::vec4(0.0f);
+			FVector4				ClearColor		= FVector4(0.0f);
 			FRHIImage*				Image			= nullptr;
 			FRHIImage*				ResolveImage	= nullptr;
 			ERenderLoadOp			LoadOp			= ERenderLoadOp::Clear;
@@ -681,7 +681,7 @@ namespace Lumina
 			FORCEINLINE constexpr FAttachment& SetLoadOp(ERenderLoadOp Op) { LoadOp = Op; return *this; }
 			FORCEINLINE constexpr FAttachment& SetStoreOp(ERenderStoreOp Op) { StoreOp = Op; return *this; }
 			FORCEINLINE constexpr FAttachment& SetDepthClearValue(float Value) { ClearColor.r = Value; return *this; }
-			FORCEINLINE constexpr FAttachment& SetClearColor(glm::vec4 Col) { ClearColor = Col; return *this; }
+			FORCEINLINE constexpr FAttachment& SetClearColor(FVector4 Col) { ClearColor = Col; return *this; }
 			FORCEINLINE constexpr FAttachment& SetSubresources(const FTextureSubresourceSet& Value) { Subresources = Value; return *this; }
 			FORCEINLINE constexpr FAttachment& SetArraySlice(uint32 index) { Subresources.BaseArraySlice = index; Subresources.NumArraySlices = 1; return *this; }
 			FORCEINLINE constexpr FAttachment& SetNumSlices(uint32 Value) { Subresources.NumArraySlices = Value; return *this; }
@@ -695,7 +695,7 @@ namespace Lumina
         
 		TFixedVector<FAttachment, 2>	ColorAttachments;
 		FAttachment						DepthAttachment;
-		glm::uvec2						RenderArea;
+		FUIntVector2						RenderArea;
 		uint32							ViewMask = 0;
 		uint16							SampleCount = 1;
 
@@ -705,7 +705,7 @@ namespace Lumina
 		RUNTIME_API uint16 DeriveSampleCount() const noexcept;
 
 		FORCEINLINE FRenderPassDesc& SetViewMask(uint32 Mask) { ViewMask = Mask; return *this; }
-		FORCEINLINE FRenderPassDesc& SetRenderArea(const glm::uvec2& Area) { RenderArea = Area; return *this; }
+		FORCEINLINE FRenderPassDesc& SetRenderArea(const FUIntVector2& Area) { RenderArea = Area; return *this; }
 		FORCEINLINE FRenderPassDesc& AddColorAttachment(const FAttachment& a) { ColorAttachments.push_back(a); return *this; }
 		FORCEINLINE FRenderPassDesc& AddColorAttachment(FRHIImage* texture) { ColorAttachments.push_back(FAttachment().SetImage(texture)); return *this; }
 		FORCEINLINE FRenderPassDesc& AddColorAttachment(FRHIImage* texture, FTextureSubresourceSet subresources) { ColorAttachments.push_back(FAttachment().SetImage(texture).SetSubresources(subresources)); return *this; }
@@ -838,7 +838,7 @@ namespace Lumina
 		RENDER_RESOURCE(RRT_Image)
 		
 		virtual const FRHIImageDesc& GetDescription() const = 0;
-		virtual const glm::uvec2& GetExtent() const = 0;
+		virtual const FUIntVector2& GetExtent() const = 0;
 		virtual uint32 GetSizeX() const = 0;
 		virtual uint32 GetSizeY() const = 0;
 		virtual EFormat GetFormat() const = 0;

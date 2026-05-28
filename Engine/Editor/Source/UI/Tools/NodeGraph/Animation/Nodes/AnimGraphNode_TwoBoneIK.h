@@ -37,7 +37,7 @@ namespace Lumina
         /** Component-space "pole" point that picks the bend side of the chain
          *  (e.g. in front of the elbow). The chain bends toward this point. */
         PROPERTY(Editable, Category = "Pole")
-        glm::vec3 PoleVector = glm::vec3(0.0f, 0.0f, 1.0f);
+        FVector3 PoleVector = FVector3(0.0f, 0.0f, 1.0f);
 
         CAnimGraphPin* PoseInPin = nullptr;
         CAnimGraphPin* AlphaPin = nullptr;

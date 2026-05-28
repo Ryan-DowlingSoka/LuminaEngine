@@ -3,9 +3,9 @@
 
 namespace Lumina
 {
-    static glm::vec4 PromoteToVec4(const glm::vec2& V) { return glm::vec4(V, 0.0f, 0.0f); }
-    static glm::vec4 PromoteToVec4(const glm::vec3& V) { return glm::vec4(V, 0.0f); }
-    static glm::vec4 PromoteToVec4(const glm::vec4& V) { return V; }
+    static FVector4 PromoteToVec4(const FVector2& V) { return FVector4(V, 0.0f, 0.0f); }
+    static FVector4 PromoteToVec4(const FVector3& V) { return FVector4(V, 0.0f); }
+    static FVector4 PromoteToVec4(const FVector4& V) { return V; }
 
     const FParticleParameter* SParticleSystemComponent::FindParameter(const FName& Name) const
     {
@@ -83,28 +83,28 @@ namespace Lumina
         return (Param && Param->Type == EParticleParameterType::Bool) ? Param->Boolean : Default;
     }
 
-    glm::vec2 SParticleSystemComponent::GetVec2(const FName& Name) const
+    FVector2 SParticleSystemComponent::GetVec2(const FName& Name) const
     {
         const FParticleParameter* Param = FindParameter(Name);
-        return (Param && Param->Type == EParticleParameterType::Vec2) ? glm::vec2(Param->Vector) : glm::vec2(0.0f);
+        return (Param && Param->Type == EParticleParameterType::Vec2) ? FVector2(Param->Vector) : FVector2(0.0f);
     }
 
-    glm::vec3 SParticleSystemComponent::GetVec3(const FName& Name) const
+    FVector3 SParticleSystemComponent::GetVec3(const FName& Name) const
     {
         const FParticleParameter* Param = FindParameter(Name);
-        return (Param && Param->Type == EParticleParameterType::Vec3) ? glm::vec3(Param->Vector) : glm::vec3(0.0f);
+        return (Param && Param->Type == EParticleParameterType::Vec3) ? FVector3(Param->Vector) : FVector3(0.0f);
     }
 
-    glm::vec4 SParticleSystemComponent::GetVec4(const FName& Name) const
+    FVector4 SParticleSystemComponent::GetVec4(const FName& Name) const
     {
         const FParticleParameter* Param = FindParameter(Name);
-        return (Param && Param->Type == EParticleParameterType::Vec4) ? Param->Vector : glm::vec4(0.0f);
+        return (Param && Param->Type == EParticleParameterType::Vec4) ? Param->Vector : FVector4(0.0f);
     }
 
-    glm::vec4 SParticleSystemComponent::GetColor(const FName& Name) const
+    FVector4 SParticleSystemComponent::GetColor(const FName& Name) const
     {
         const FParticleParameter* Param = FindParameter(Name);
-        return (Param && Param->Type == EParticleParameterType::Color) ? Param->Vector : glm::vec4(0.0f);
+        return (Param && Param->Type == EParticleParameterType::Color) ? Param->Vector : FVector4(0.0f);
     }
 
     void SParticleSystemComponent::SetFloat(const FName& Name, float Value)
@@ -131,7 +131,7 @@ namespace Lumina
         }
     }
 
-    void SParticleSystemComponent::SetVec2(const FName& Name, glm::vec2 Value)
+    void SParticleSystemComponent::SetVec2(const FName& Name, FVector2 Value)
     {
         if (FParticleParameter* P = GetOrCreateOverride(Name, EParticleParameterType::Vec2))
         {
@@ -139,7 +139,7 @@ namespace Lumina
         }
     }
 
-    void SParticleSystemComponent::SetVec3(const FName& Name, glm::vec3 Value)
+    void SParticleSystemComponent::SetVec3(const FName& Name, FVector3 Value)
     {
         if (FParticleParameter* P = GetOrCreateOverride(Name, EParticleParameterType::Vec3))
         {
@@ -147,7 +147,7 @@ namespace Lumina
         }
     }
 
-    void SParticleSystemComponent::SetVec4(const FName& Name, glm::vec4 Value)
+    void SParticleSystemComponent::SetVec4(const FName& Name, FVector4 Value)
     {
         if (FParticleParameter* P = GetOrCreateOverride(Name, EParticleParameterType::Vec4))
         {
@@ -155,7 +155,7 @@ namespace Lumina
         }
     }
 
-    void SParticleSystemComponent::SetColor(const FName& Name, glm::vec4 Value)
+    void SParticleSystemComponent::SetColor(const FName& Name, FVector4 Value)
     {
         if (FParticleParameter* P = GetOrCreateOverride(Name, EParticleParameterType::Color))
         {

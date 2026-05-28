@@ -43,16 +43,16 @@ namespace Lumina
 
         /** Translation offset (or target, in Replace mode), in the selected space. */
         PROPERTY(Editable, Category = "Transform")
-        glm::vec3 Translation = glm::vec3(0.0f);
+        FVector3 Translation = FVector3(0.0f);
 
         /** Euler rotation in degrees (X = pitch, Y = yaw, Z = roll). Converted to
          *  a quaternion at compile time. */
         PROPERTY(Editable, Category = "Transform")
-        glm::vec3 Rotation = glm::vec3(0.0f);
+        FVector3 Rotation = FVector3(0.0f);
 
         /** Scale. In Add mode, 1.0 leaves the bone unchanged. */
         PROPERTY(Editable, Category = "Transform")
-        glm::vec3 Scale = glm::vec3(1.0f);
+        FVector3 Scale = FVector3(1.0f);
 
         CAnimGraphPin* PoseInPin = nullptr;
         CAnimGraphPin* AlphaPin = nullptr;

@@ -418,10 +418,10 @@ namespace Lumina
         // non-selected mesh in screen space. AnchorLocal is captured once per
         // drag in the pivot mesh's local frame.
         bool                                    bVertexSnapAnchorValid = false;
-        glm::vec3                               VertexSnapAnchorLocal = glm::vec3(0.0f);
+        FVector3                               VertexSnapAnchorLocal = FVector3(0.0f);
         bool                                    bVertexSnapApplied = false;
-        glm::vec3                               VertexSnapTargetWorld = glm::vec3(0.0f);
-        glm::vec3                               VertexSnapAnchorWorld = glm::vec3(0.0f);
+        FVector3                               VertexSnapTargetWorld = FVector3(0.0f);
+        FVector3                               VertexSnapAnchorWorld = FVector3(0.0f);
         float                                   VertexSnapPixelRadius = 16.0f;
     };
     

@@ -58,7 +58,7 @@ namespace Lumina
         static FORCEINLINE TEnum ReadEnumReg(const float* Scalars, SIZE_T NumScalar, uint16 Reg, int32 MaxValue)
         {
             const float Value = Reg < NumScalar ? Scalars[Reg] : 0.0f;
-            const int32 Index = glm::clamp((int32)glm::round(Value), 0, MaxValue);
+            const int32 Index = Math::Clamp((int32)Math::Round(Value), 0, MaxValue);
             return (TEnum)Index;
         }
 
@@ -70,13 +70,13 @@ namespace Lumina
             case EAnimScalarOp::Sub:      return A - B;
             case EAnimScalarOp::Mul:      return A * B;
             case EAnimScalarOp::Div:      return B != 0.0f ? A / B : 0.0f;
-            case EAnimScalarOp::Min:      return glm::min(A, B);
-            case EAnimScalarOp::Max:      return glm::max(A, B);
-            case EAnimScalarOp::Clamp01:  return glm::clamp(A, 0.0f, 1.0f);
+            case EAnimScalarOp::Min:      return Math::Min(A, B);
+            case EAnimScalarOp::Max:      return Math::Max(A, B);
+            case EAnimScalarOp::Clamp01:  return Math::Clamp(A, 0.0f, 1.0f);
             case EAnimScalarOp::OneMinus: return 1.0f - A;
-            case EAnimScalarOp::Abs:      return glm::abs(A);
-            case EAnimScalarOp::Sin:      return glm::sin(A);
-            case EAnimScalarOp::Cos:      return glm::cos(A);
+            case EAnimScalarOp::Abs:      return Math::Abs(A);
+            case EAnimScalarOp::Sin:      return Math::Sin(A);
+            case EAnimScalarOp::Cos:      return Math::Cos(A);
             }
             return 0.0f;
         }
@@ -118,7 +118,7 @@ namespace Lumina
         State.bInitialized = true;
     }
 
-    void FAnimationGraphVM::Execute(const CAnimationGraph* Graph, FSkeletonResource* Skeleton, float DeltaTime, FAnimGraphVMState& State, TVector<glm::mat4>& OutMatrices)
+    void FAnimationGraphVM::Execute(const CAnimationGraph* Graph, FSkeletonResource* Skeleton, float DeltaTime, FAnimGraphVMState& State, TVector<FMatrix4>& OutMatrices)
     {
         LUMINA_PROFILE_SCOPE();
 
@@ -390,7 +390,7 @@ namespace Lumina
                 float Timer    = State.StateSlots[SM.TimerSlot];
                 float Duration = State.StateSlots[SM.DurationSlot];
 
-                Current = glm::clamp(Current, 0, NumStates - 1);
+                Current = Math::Clamp(Current, 0, NumStates - 1);
 
                 if (From < 0)
                 {
@@ -412,7 +412,7 @@ namespace Lumina
                             From     = Current;
                             Current  = Transition.ToState;
                             Timer    = 0.0f;
-                            Duration = glm::max(Transition.BlendDuration, 0.0f);
+                            Duration = Math::Max(Transition.BlendDuration, 0.0f);
                             break;
                         }
                     }
@@ -423,7 +423,7 @@ namespace Lumina
                     // current target state that opt into bCanInterrupt are
                     // re-checked every frame, so a higher-priority condition
                     // can pre-empt the cross-fade in flight.
-                    From   = glm::clamp(From, 0, NumStates - 1);
+                    From   = Math::Clamp(From, 0, NumStates - 1);
                     Timer += DeltaTime;
 
                     bool bInterrupted = false;
@@ -448,7 +448,7 @@ namespace Lumina
                             From     = Current;
                             Current  = Transition.ToState;
                             Timer    = 0.0f;
-                            Duration = glm::max(Transition.BlendDuration, 0.0f);
+                            Duration = Math::Max(Transition.BlendDuration, 0.0f);
                             bInterrupted = true;
                             break;
                         }
@@ -471,7 +471,7 @@ namespace Lumina
                 if (From >= 0 && From < NumStates)
                 {
                     const uint16 FromReg = SM.StatePoseRegisters[From];
-                    const float Alpha = Duration > 0.0f ? glm::clamp(Timer / Duration, 0.0f, 1.0f) : 1.0f;
+                    const float Alpha = Duration > 0.0f ? Math::Clamp(Timer / Duration, 0.0f, 1.0f) : 1.0f;
                     if (CurReg < NumPose && FromReg < NumPose)
                     {
                         AnimPose::Blend(State.PoseRegisters[FromReg], State.PoseRegisters[CurReg], Alpha, State.PoseRegisters[Dst]);
@@ -491,9 +491,9 @@ namespace Lumina
                 const uint16 BoneIdx  = Reader.Read<uint16>();
                 const uint16 SpaceReg = Reader.Read<uint16>();
                 const uint16 ModeReg  = Reader.Read<uint16>();
-                const glm::vec3 T     = Reader.Read<glm::vec3>();
-                const glm::quat R     = Reader.Read<glm::quat>();
-                const glm::vec3 S     = Reader.Read<glm::vec3>();
+                const FVector3 T     = Reader.Read<FVector3>();
+                const FQuat R     = Reader.Read<FQuat>();
+                const FVector3 S     = Reader.Read<FVector3>();
                 const uint16 Dst      = Reader.Read<uint16>();
 
                 if (Src < NumPose && Dst < NumPose)
@@ -528,13 +528,13 @@ namespace Lumina
                 const uint16 RootIdx  = Reader.Read<uint16>();
                 const uint16 MidIdx   = Reader.Read<uint16>();
                 const uint16 EndIdx   = Reader.Read<uint16>();
-                const glm::vec3 Pole  = Reader.Read<glm::vec3>();
+                const FVector3 Pole  = Reader.Read<FVector3>();
                 const uint16 Dst      = Reader.Read<uint16>();
 
                 if (Src < NumPose && Dst < NumPose)
                 {
                     const float AlphaValue = AlphaReg < NumScalar ? Scalars[AlphaReg] : 1.0f;
-                    const glm::vec3 Target(
+                    const FVector3 Target(
                         TX < NumScalar ? Scalars[TX] : 0.0f,
                         TY < NumScalar ? Scalars[TY] : 0.0f,
                         TZ < NumScalar ? Scalars[TZ] : 0.0f);

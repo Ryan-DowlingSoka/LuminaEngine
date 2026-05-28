@@ -47,9 +47,9 @@ namespace Lumina::Lua
     template<> struct TLuaNativeType<FStringView>       : eastl::true_type {};
     template<> struct TLuaNativeType<FName>             : eastl::true_type {};
     template<> struct TLuaNativeType<const char*>       : eastl::true_type {};
-    template<> struct TLuaNativeType<glm::vec2>         : eastl::true_type {};
-    template<> struct TLuaNativeType<glm::vec3>         : eastl::true_type {};
-    template<> struct TLuaNativeType<glm::vec4>         : eastl::true_type {};
+    template<> struct TLuaNativeType<FVector2>         : eastl::true_type {};
+    template<> struct TLuaNativeType<FVector3>         : eastl::true_type {};
+    template<> struct TLuaNativeType<FVector4>         : eastl::true_type {};
 
     // Marks a function parameter as supplied by the Lua execution context (the lua_State* or
     // something resolved from its thread data) rather than read positionally from the call's
@@ -309,16 +309,16 @@ namespace Lumina::Lua
     };
     
     template<>
-    struct TStack<glm::vec2>
+    struct TStack<FVector2>
     {
         static FStringView TypeName(lua_State* State) { return lua_typename(State, LUA_TVECTOR); }
 
-        static void Push(lua_State* State, const glm::vec2& Value)
+        static void Push(lua_State* State, const FVector2& Value)
         {
             lua_pushvector(State, Value.x, Value.y, 0.0f, 0.0f);
         }
     
-        static glm::vec2 Get(lua_State* State, int Index)
+        static FVector2 Get(lua_State* State, int Index)
         {
             const float* V = luaL_checkvector(State, Index);
             return { V[0], V[1] };
@@ -331,15 +331,15 @@ namespace Lumina::Lua
     };
     
     template<>
-    struct TStack<glm::vec3>
+    struct TStack<FVector3>
     {
         static FStringView TypeName(lua_State* State) { return lua_typename(State, LUA_TVECTOR); }
-        static void Push(lua_State* State, const glm::vec3& Value)
+        static void Push(lua_State* State, const FVector3& Value)
         {
             lua_pushvector(State, Value.x, Value.y, Value.z, 0.0f);
         }
     
-        static glm::vec3 Get(lua_State* State, int Index)
+        static FVector3 Get(lua_State* State, int Index)
         {
             const float* V = luaL_checkvector(State, Index);
             return { V[0], V[1], V[2] };
@@ -352,15 +352,15 @@ namespace Lumina::Lua
     };
     
     template<>
-    struct TStack<glm::vec4>
+    struct TStack<FVector4>
     {
         static FStringView TypeName(lua_State* State) { return lua_typename(State, LUA_TVECTOR); }
-        static void Push(lua_State* State, const glm::vec4& Value)
+        static void Push(lua_State* State, const FVector4& Value)
         {
             lua_pushvector(State, Value.x, Value.y, Value.z, Value.w);
         }
     
-        static glm::vec4 Get(lua_State* State, int Index)
+        static FVector4 Get(lua_State* State, int Index)
         {
             const float* V = luaL_checkvector(State, Index);
             return { V[0], V[1], V[2], V[3]};

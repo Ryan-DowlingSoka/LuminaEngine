@@ -18,7 +18,7 @@ namespace Lumina
     {
         TVector<FVertex> Vertices;
         TVector<uint32>  Indices;
-        glm::vec3        Center = glm::vec3(0.0f);   // local-space centroid, used as the launch pivot
+        FVector3        Center = FVector3(0.0f);   // local-space centroid, used as the launch pivot
         FAABB            Bounds;
 
         friend FArchive& operator<<(FArchive& Ar, FFracturePiece& P)

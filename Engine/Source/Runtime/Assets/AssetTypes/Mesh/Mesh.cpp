@@ -109,10 +109,10 @@ namespace Lumina
 
         if (MeshResources && MeshResources->GetNumVertices() > 0)
         {
-            for (const glm::vec3& P : MeshResources->Positions)
+            for (const FVector3& P : MeshResources->Positions)
             {
-                BoundingBox.Min = glm::min(BoundingBox.Min, P);
-                BoundingBox.Max = glm::max(BoundingBox.Max, P);
+                BoundingBox.Min = Math::Min(BoundingBox.Min, P);
+                BoundingBox.Max = Math::Max(BoundingBox.Max, P);
             }
             return;
         }
@@ -125,8 +125,8 @@ namespace Lumina
             {
                 for (const FMeshletBounds& B : MD.MeshletBounds)
                 {
-                    BoundingBox.Min = glm::min(BoundingBox.Min, B.Center - glm::vec3(B.Radius));
-                    BoundingBox.Max = glm::max(BoundingBox.Max, B.Center + glm::vec3(B.Radius));
+                    BoundingBox.Min = Math::Min(BoundingBox.Min, B.Center - FVector3(B.Radius));
+                    BoundingBox.Max = Math::Max(BoundingBox.Max, B.Center + FVector3(B.Radius));
                 }
             }
             else
@@ -134,11 +134,11 @@ namespace Lumina
                 // Fallback (no bounds stored): conservative per-meshlet grid extent.
                 for (const FMeshlet& M : MD.Meshlets)
                 {
-                    const glm::vec3 Origin   = MD.MeshOrigin[M.LODIndex];
-                    const glm::vec3 GridStep = MD.MeshGridStep[M.LODIndex];
-                    const glm::vec3 Lo = Origin + glm::vec3(M.LoInt) * GridStep;
-                    BoundingBox.Min = glm::min(BoundingBox.Min, Lo);
-                    BoundingBox.Max = glm::max(BoundingBox.Max, Lo + glm::vec3(1023.0f) * GridStep);
+                    const FVector3 Origin   = MD.MeshOrigin[M.LODIndex];
+                    const FVector3 GridStep = MD.MeshGridStep[M.LODIndex];
+                    const FVector3 Lo = Origin + FVector3(M.LoInt) * GridStep;
+                    BoundingBox.Min = Math::Min(BoundingBox.Min, Lo);
+                    BoundingBox.Max = Math::Max(BoundingBox.Max, Lo + FVector3(1023.0f) * GridStep);
                 }
             }
         }
@@ -212,8 +212,8 @@ namespace Lumina
             Header.TrianglesAddress   = MeshResources->MeshBuffers.MeshletTriangleBuffer->GetAddress();
             for (uint32 i = 0; i < MAX_MESH_LODS; ++i)
             {
-                Header.MeshOrigin[i]   = glm::vec4(MData.MeshOrigin[i],   0.0f);
-                Header.MeshGridStep[i] = glm::vec4(MData.MeshGridStep[i], 0.0f);
+                Header.MeshOrigin[i]   = FVector4(MData.MeshOrigin[i],   0.0f);
+                Header.MeshGridStep[i] = FVector4(MData.MeshGridStep[i], 0.0f);
             }
 
             FRHIBufferDesc HeaderDesc;

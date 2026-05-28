@@ -49,7 +49,7 @@ namespace Lumina
     public:
 
         virtual CMaterial* GetMaterial() const { return nullptr; }
-        virtual bool SetVectorValue(const FName& Name, const glm::vec4& Value) { return false; }
+        virtual bool SetVectorValue(const FName& Name, const FVector4& Value) { return false; }
         virtual bool SetScalarValue(const FName& Name, const float Value) { return false; }
         virtual bool GetParameterValue(EMaterialParameterType Type, const FName& Name, FMaterialParameter& Param) { return false; }
         virtual FMaterialUniforms* GetMaterialUniforms() { return nullptr; }

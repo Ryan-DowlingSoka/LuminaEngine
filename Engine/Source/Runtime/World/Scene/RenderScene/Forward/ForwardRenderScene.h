@@ -43,8 +43,8 @@ namespace Lumina
         // into this table so Transform/Bounds aren't duplicated per surface.
         struct FEntityRecord
         {
-            glm::mat4               Transform;
-            glm::vec4               SphereBounds;
+            FMatrix4               Transform;
+            FVector4               SphereBounds;
             uint64                  MeshletHeaderAddress;
             uint32                  CustomData;
             uint32                  EntityID;
@@ -170,9 +170,9 @@ namespace Lumina
             ELightType  Type;
             uint32      DesiredPixels;
             float       DistanceToCamera;
-            glm::vec3   Position;
-            glm::vec3   Direction;      // Spot only
-            glm::vec3   Up;             // Spot only
+            FVector3   Position;
+            FVector3   Direction;      // Spot only
+            FVector3   Up;             // Spot only
             float       Attenuation;
             float       OuterFOVDegrees;
         };
@@ -248,7 +248,7 @@ namespace Lumina
             {
                 entt::entity        Entity;
                 STerrainComponent*  Component;
-                glm::mat4           WorldMatrix;
+                FMatrix4           WorldMatrix;
             };
             TVector<FTerrainExtract>         TerrainExtracts;
 
@@ -386,7 +386,7 @@ namespace Lumina
         {
             FRHIViewportRef                                 Viewport;
             FViewportState                                  ViewportState;
-            glm::uvec2                                      Size = glm::uvec2(0);
+            FUIntVector2                                      Size = FUIntVector2(0);
             bool                                            bIsPrimary = false;
 
             // Capture views only: the camera this view renders from (set each frame by the
@@ -418,9 +418,9 @@ namespace Lumina
 
             // Cluster-grid cache: view-space AABBs depend only on this view's projection
             // + RT size, so the build is skipped while those are unchanged.
-            glm::mat4                                       LastClusterInvProjection = glm::mat4(0.0f);
-            glm::vec2                                       LastClusterNearFar       = glm::vec2(0.0f);
-            glm::uvec2                                      LastClusterScreenSize    = glm::uvec2(0);
+            FMatrix4                                       LastClusterInvProjection = FMatrix4(0.0f);
+            FVector2                                       LastClusterNearFar       = FVector2(0.0f);
+            FUIntVector2                                      LastClusterScreenSize    = FUIntVector2(0);
             bool                                            bClusterGridDirty        = true;
         };
 
@@ -434,15 +434,15 @@ namespace Lumina
         void RenderView_RenderThread(ICommandList& CmdList, uint8 FrameIndex) override;
         void SignalFrameConsumed(uint8 FrameIndex) override;
         void SetActivePostProcessMaterials(const TVector<CMaterialInterface*>& Materials) override { PendingPostProcessMaterials = Materials; }
-        void SwapchainResized(glm::vec2 NewSize);
-        void Resize(const glm::uvec2& NewSize) override { SwapchainResized(glm::vec2(NewSize)); }
+        void SwapchainResized(FVector2 NewSize);
+        void Resize(const FUIntVector2& NewSize) override { SwapchainResized(FVector2(NewSize)); }
 
-        int32 RegisterCaptureView(const glm::uvec2& Size) override;
+        int32 RegisterCaptureView(const FUIntVector2& Size) override;
         void  SetCaptureView(int32 Handle, const FViewVolume& View, bool bEnabled) override;
         FRHIImage* GetCaptureRenderTarget(int32 Handle) const override;
         
-        void DrawBillboard(FRHIImage* Image, const glm::vec3& Location, float Scale) override;
-        void DrawLine(const glm::vec3& Start, const glm::vec3& End, const glm::vec4& Color, float Thickness, bool bDepthTest, float Duration) override { }
+        void DrawBillboard(FRHIImage* Image, const FVector3& Location, float Scale) override;
+        void DrawLine(const FVector3& Start, const FVector3& End, const FVector4& Color, float Thickness, bool bDepthTest, float Duration) override { }
 
         static FViewportState MakeViewportStateFromImage(const FRHIImage* Image);
         
@@ -637,7 +637,7 @@ namespace Lumina
 
         // CPU early-out for shadow requests: false when the light's attenuation sphere
         // is fully outside the camera frustum, skipping its shadow view/tile/slice.
-        bool ShouldRequestShadow(const glm::vec3& LightPosition, float LightRadius) const;
+        bool ShouldRequestShadow(const FVector3& LightPosition, float LightRadius) const;
 
 
     private:
@@ -655,7 +655,7 @@ namespace Lumina
         uint8                                           MSAASampleCount = 1;
 
         /** Allocate a view's MS-only scratch images (HDR_MS, Depth_MS, Picker_MS). No-op when MSAA is off. */
-        void AllocateMSAAImages(FSceneView& View, const glm::uvec2& Extent);
+        void AllocateMSAAImages(FSceneView& View, const FUIntVector2& Extent);
 
         /** Reconcile cached sample count with the world setting; reallocates every view's MS images when it changes. */
         void SyncMSAAState();
@@ -700,13 +700,13 @@ namespace Lumina
         // these last-baked inputs change. bIBLConvolutionDirty gates the costly convolution.
         FEnvironmentParams                      LastIBLEnvironmentParams = {};
         FRHIImage*                              LastIBLEnvironmentMap    = nullptr;
-        glm::vec3                               LastIBLSunDirection      = glm::vec3(0.0f);
+        FVector3                               LastIBLSunDirection      = FVector3(0.0f);
         bool                                    bLastIBLHasSun           = false;
         bool                                    bIBLValid                = false;
 
         FEnvironmentParams                      LastConvolvedEnvironmentParams = {};
         FRHIImage*                              LastConvolvedEnvironmentMap    = nullptr;
-        glm::vec3                               LastConvolvedSunDirection      = glm::vec3(0.0f);
+        FVector3                               LastConvolvedSunDirection      = FVector3(0.0f);
         bool                                    bLastConvolvedHasSun           = false;
         bool                                    bIBLConvolutionValid           = false;
 

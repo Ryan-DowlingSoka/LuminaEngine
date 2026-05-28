@@ -20,29 +20,29 @@ namespace Lumina
             {
                 return 1.0f;
             }
-            return 1.0f - glm::exp(-LagSpeed * Dt);
+            return 1.0f - Math::Exp(-LagSpeed * Dt);
         }
 
         // Rotation whose +Z (forward) axis points along Forward, +Y near WorldUp.
         // Matches the camera convention (forward = rotation * (0,0,1)).
-        static glm::quat MakeLookRotation(const glm::vec3& Forward, const glm::vec3& WorldUp)
+        static FQuat MakeLookRotation(const FVector3& Forward, const FVector3& WorldUp)
         {
-            const glm::vec3 F = glm::normalize(Forward);
-            glm::vec3 Up = WorldUp;
-            if (glm::abs(glm::dot(F, Up)) > 0.999f)
+            const FVector3 F = Math::Normalize(Forward);
+            FVector3 Up = WorldUp;
+            if (Math::Abs(Math::Dot(F, Up)) > 0.999f)
             {
-                Up = glm::vec3(0.0f, 0.0f, 1.0f);
-                if (glm::abs(glm::dot(F, Up)) > 0.999f)
+                Up = FVector3(0.0f, 0.0f, 1.0f);
+                if (Math::Abs(Math::Dot(F, Up)) > 0.999f)
                 {
-                    Up = glm::vec3(1.0f, 0.0f, 0.0f);
+                    Up = FVector3(1.0f, 0.0f, 0.0f);
                 }
             }
-            const glm::vec3 R = glm::normalize(glm::cross(Up, F));
-            const glm::vec3 U = glm::cross(F, R);
-            return glm::quat_cast(glm::mat3(R, U, F));
+            const FVector3 R = Math::Normalize(Math::Cross(Up, F));
+            const FVector3 U = Math::Cross(F, R);
+            return Math::ToQuat(FMatrix3(R, U, F));
         }
 
-        static void ApplyWorldPose(entt::registry& Registry, entt::entity Entity, const STransformComponent& Xform, const glm::vec3& Location, const glm::quat& Rotation)
+        static void ApplyWorldPose(entt::registry& Registry, entt::entity Entity, const STransformComponent& Xform, const FVector3& Location, const FQuat& Rotation)
         {
             FTransform World;
             World.Location = Location;
@@ -73,21 +73,21 @@ namespace Lumina
             const STransformComponent& Xform       = FollowView.get<STransformComponent>(Entity);
             const STransformComponent& TargetXform = Registry.get<STransformComponent>(Target);
 
-            const glm::vec3 TargetPos = TargetXform.GetWorldLocation();
-            const glm::quat TargetRot = TargetXform.GetWorldRotation();
+            const FVector3 TargetPos = TargetXform.GetWorldLocation();
+            const FQuat TargetRot = TargetXform.GetWorldRotation();
 
-            const glm::vec3 DesiredPos = Follow.bWorldSpaceOffset
+            const FVector3 DesiredPos = Follow.bWorldSpaceOffset
                 ? TargetPos + Follow.Offset
                 : TargetPos + TargetRot * Follow.Offset;
 
-            glm::quat DesiredRot = Xform.GetWorldRotation();
+            FQuat DesiredRot = Xform.GetWorldRotation();
             if (Follow.bLookAtTarget)
             {
-                const glm::vec3 LookPoint = TargetPos + Follow.LookAtOffset;
-                const glm::vec3 Dir = LookPoint - DesiredPos;
-                if (glm::dot(Dir, Dir) > 1e-6f)
+                const FVector3 LookPoint = TargetPos + Follow.LookAtOffset;
+                const FVector3 Dir = LookPoint - DesiredPos;
+                if (Math::Dot(Dir, Dir) > 1e-6f)
                 {
-                    DesiredRot = Detail::MakeLookRotation(Dir, glm::vec3(0.0f, 1.0f, 0.0f));
+                    DesiredRot = Detail::MakeLookRotation(Dir, FVector3(0.0f, 1.0f, 0.0f));
                 }
             }
 
@@ -99,15 +99,15 @@ namespace Lumina
             }
             else
             {
-                Follow.CurrentPosition = glm::mix(Follow.CurrentPosition, DesiredPos, Detail::SmoothAlpha(Follow.PositionLagSpeed, Dt));
+                Follow.CurrentPosition = Math::Mix(Follow.CurrentPosition, DesiredPos, Detail::SmoothAlpha(Follow.PositionLagSpeed, Dt));
                 if (Follow.bLookAtTarget)
                 {
-                    glm::quat To = DesiredRot;
-                    if (glm::dot(Follow.CurrentRotation, To) < 0.0f)
+                    FQuat To = DesiredRot;
+                    if (Math::Dot(Follow.CurrentRotation, To) < 0.0f)
                     {
                         To = -To;
                     }
-                    Follow.CurrentRotation = glm::slerp(Follow.CurrentRotation, To, Detail::SmoothAlpha(Follow.RotationLagSpeed, Dt));
+                    Follow.CurrentRotation = Math::Slerp(Follow.CurrentRotation, To, Detail::SmoothAlpha(Follow.RotationLagSpeed, Dt));
                 }
                 else
                 {
@@ -128,8 +128,8 @@ namespace Lumina
             const entt::entity Target = (entt::entity)Arm.Target;
             const bool bHasTarget = Registry.valid(Target) && Registry.all_of<STransformComponent>(Target);
 
-            glm::vec3 PivotBase;
-            glm::quat ControlRot;
+            FVector3 PivotBase;
+            FQuat ControlRot;
             if (bHasTarget)
             {
                 const STransformComponent& TargetXform = Registry.get<STransformComponent>(Target);
@@ -142,7 +142,7 @@ namespace Lumina
                 ControlRot = Xform.GetWorldRotation();
             }
 
-            const glm::vec3 Pivot = PivotBase + Arm.TargetOffset;
+            const FVector3 Pivot = PivotBase + Arm.TargetOffset;
 
             if (!Arm.bInitialized)
             {
@@ -152,12 +152,12 @@ namespace Lumina
             }
             else
             {
-                Arm.CurrentPivot = glm::mix(Arm.CurrentPivot, Pivot, Detail::SmoothAlpha(Arm.PositionLagSpeed, Dt));
+                Arm.CurrentPivot = Math::Mix(Arm.CurrentPivot, Pivot, Detail::SmoothAlpha(Arm.PositionLagSpeed, Dt));
             }
 
-            const glm::vec3 Back        = ControlRot * glm::vec3(0.0f, 0.0f, -1.0f);
-            const glm::vec3 SocketWorld = ControlRot * Arm.SocketOffset;
-            const glm::vec3 DesiredEnd  = Arm.CurrentPivot + Back * Arm.TargetArmLength + SocketWorld;
+            const FVector3 Back        = ControlRot * FVector3(0.0f, 0.0f, -1.0f);
+            const FVector3 SocketWorld = ControlRot * Arm.SocketOffset;
+            const FVector3 DesiredEnd  = Arm.CurrentPivot + Back * Arm.TargetArmLength + SocketWorld;
 
             float DesiredLength = Arm.TargetArmLength;
             if (Arm.bDoCollisionTest && Arm.TargetArmLength > 0.0f)
@@ -175,9 +175,9 @@ namespace Lumina
                 float Nearest = 1.0f;
                 for (const SRayResult& Hit : Context.CastSphere(Settings))
                 {
-                    Nearest = glm::min(Nearest, Hit.Fraction);
+                    Nearest = Math::Min(Nearest, Hit.Fraction);
                 }
-                DesiredLength = glm::max(0.0f, Arm.TargetArmLength * Nearest);
+                DesiredLength = Math::Max(0.0f, Arm.TargetArmLength * Nearest);
             }
 
             // Snap inward to avoid clipping; ease back out when the obstruction clears.
@@ -187,10 +187,10 @@ namespace Lumina
             }
             else
             {
-                Arm.CurrentArmLength = glm::mix(Arm.CurrentArmLength, DesiredLength, Detail::SmoothAlpha(Arm.LengthLagSpeed, Dt));
+                Arm.CurrentArmLength = Math::Mix(Arm.CurrentArmLength, DesiredLength, Detail::SmoothAlpha(Arm.LengthLagSpeed, Dt));
             }
 
-            const glm::vec3 FinalPos = Arm.CurrentPivot + Back * Arm.CurrentArmLength + SocketWorld;
+            const FVector3 FinalPos = Arm.CurrentPivot + Back * Arm.CurrentArmLength + SocketWorld;
             Detail::ApplyWorldPose(Registry, Entity, Xform, FinalPos, ControlRot);
         }
     }

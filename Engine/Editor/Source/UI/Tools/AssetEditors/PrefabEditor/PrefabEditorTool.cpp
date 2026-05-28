@@ -12,8 +12,7 @@
 #include "Core/Object/Package/Package.h"
 #include "EASTL/sort.h"
 #include "GUID/GUID.h"
-#include "glm/gtc/type_ptr.hpp"
-#include "glm/gtx/matrix_decompose.hpp"
+#include "Core/Math/Math.h"
 #include "Tools/ComponentVisualizers/ComponentVisualizer.h"
 #include "Tools/PrimitiveManager/PrimitiveManager.h"
 #include "Tools/UI/ImGui/ImGuiDragDrop.h"
@@ -317,7 +316,7 @@ namespace Lumina
         // Pitch the preview light so meshes don't render with a flat-top look.
         if (STransformComponent* LightTransform = World->GetEntityRegistry().try_get<STransformComponent>(DirectionalLightEntity))
         {
-            LightTransform->SetRotationFromEuler(glm::vec3(-50.0f, 35.0f, 0.0f));
+            LightTransform->SetRotationFromEuler(FVector3(-50.0f, 35.0f, 0.0f));
         }
 
         CreateFloorPlane(0.0f);
@@ -740,9 +739,9 @@ namespace Lumina
         {
             if (STransformComponent* Transform = Registry.try_get<STransformComponent>(Entity))
             {
-                Transform->SetLocalLocation(glm::vec3(0.0f));
-                Transform->SetLocalRotation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
-                Transform->SetLocalScale(glm::vec3(1.0f));
+                Transform->SetLocalLocation(FVector3(0.0f));
+                Transform->SetLocalRotation(FQuat(1.0f, 0.0f, 0.0f, 0.0f));
+                Transform->SetLocalScale(FVector3(1.0f));
                 Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
             }
         }
@@ -898,7 +897,7 @@ namespace Lumina
         }
 
         entt::registry& Registry = World->GetEntityRegistry();
-        glm::vec3 Center;
+        FVector3 Center;
         float Radius;
         if (!EditorEntityUtils::ComputeFocusBoundsForEntity(Registry, Root, Center, Radius))
         {
@@ -911,11 +910,11 @@ namespace Lumina
         }
 
         const SCameraComponent& Camera = Registry.get<SCameraComponent>(EditorEntity);
-        const float HalfFov  = glm::radians(Camera.GetFOV() * 0.5f);
-        const float Distance = (Radius / glm::tan(glm::max(HalfFov, glm::radians(1.0f)))) * 1.5f;
+        const float HalfFov  = Math::Radians(Camera.GetFOV() * 0.5f);
+        const float Distance = (Radius / Math::Tan(Math::Max(HalfFov, Math::Radians(1.0f)))) * 1.5f;
 
         STransformComponent& EditorTransform = Registry.get<STransformComponent>(EditorEntity);
-        const glm::vec3 Forward = EditorTransform.GetForward();
+        const FVector3 Forward = EditorTransform.GetForward();
         EditorTransform.SetLocation(Center - Forward * Distance);
         EditorTransform.SetRotation(Math::FindLookAtRotation(Center, Center - Forward * Distance));
     }
@@ -1653,8 +1652,8 @@ namespace Lumina
             return;
         }
 
-        glm::mat4 ViewMatrix = CameraComponent->GetViewMatrix();
-        glm::mat4 ProjectionMatrix = CameraComponent->GetProjectionMatrix();
+        FMatrix4 ViewMatrix = CameraComponent->GetViewMatrix();
+        FMatrix4 ProjectionMatrix = CameraComponent->GetProjectionMatrix();
         ProjectionMatrix[1][1] *= -1.0f;
 
         const ImVec2 ViewportOrigin = ImGui::GetCursorScreenPos();
@@ -1698,8 +1697,8 @@ namespace Lumina
             return;
         }
 
-        glm::mat4 EntityMatrix = PivotTransform->GetWorldMatrix();
-        glm::mat4 PreManipulate = EntityMatrix;
+        FMatrix4 EntityMatrix = PivotTransform->GetWorldMatrix();
+        FMatrix4 PreManipulate = EntityMatrix;
 
         float* SnapValues = nullptr;
         float SnapArray[3] = {};
@@ -1722,8 +1721,8 @@ namespace Lumina
             }
         }
 
-        ImGuizmo::Manipulate(glm::value_ptr(ViewMatrix), glm::value_ptr(ProjectionMatrix),
-            GuizmoOp, GuizmoMode, glm::value_ptr(EntityMatrix), nullptr, SnapValues);
+        ImGuizmo::Manipulate(Math::ValuePtr(ViewMatrix), Math::ValuePtr(ProjectionMatrix),
+            GuizmoOp, GuizmoMode, Math::ValuePtr(EntityMatrix), nullptr, SnapValues);
 
         if (ImGuizmo::IsUsing())
         {
@@ -1738,18 +1737,18 @@ namespace Lumina
             // Pivot delta in world space. Apply the same translation/rotation to every selected
             // entity so multi-select drags move as a rigid group; scale is per-entity to avoid
             // skew artefacts when selection has mixed parent transforms.
-            glm::mat4 DeltaWorld = EntityMatrix * glm::inverse(PreManipulate);
-            glm::vec3 DeltaTranslation, DeltaScale, DeltaSkew;
-            glm::quat DeltaRotation;
-            glm::vec4 DeltaPersp;
-            glm::decompose(DeltaWorld, DeltaScale, DeltaRotation, DeltaTranslation, DeltaSkew, DeltaPersp);
+            FMatrix4 DeltaWorld = EntityMatrix * Math::Inverse(PreManipulate);
+            FVector3 DeltaTranslation, DeltaScale, DeltaSkew;
+            FQuat DeltaRotation;
+            FVector4 DeltaPersp;
+            Math::Decompose(DeltaWorld, DeltaScale, DeltaRotation, DeltaTranslation, DeltaSkew, DeltaPersp);
 
             // Pivot itself: drive it directly with the manipulator's full output.
             EditorEntityUtils::ApplyWorldMatrixToTransform(Registry, PivotEntity, EntityMatrix);
 
             // Co-move every other selected entity by the pivot's delta. Skip locked-prefab-style
             // children — prefab editor has no locked instances, so the only filter is "valid + not pivot".
-            const glm::vec3 PivotPreLocation = glm::vec3(PreManipulate[3]);
+            const FVector3 PivotPreLocation = FVector3(PreManipulate[3]);
             for (entt::entity Other : SelectedEntities)
             {
                 if (Other == PivotEntity || !Registry.valid(Other))
@@ -1762,34 +1761,34 @@ namespace Lumina
                     continue;
                 }
 
-                const glm::mat4 OtherWorld = OtherTransform->GetWorldMatrix();
-                glm::mat4 NewWorld = OtherWorld;
+                const FMatrix4 OtherWorld = OtherTransform->GetWorldMatrix();
+                FMatrix4 NewWorld = OtherWorld;
 
                 switch (GuizmoOp)
                 {
                 case ImGuizmo::TRANSLATE:
-                    NewWorld[3] = glm::vec4(glm::vec3(OtherWorld[3]) + DeltaTranslation, 1.0f);
+                    NewWorld[3] = FVector4(FVector3(OtherWorld[3]) + DeltaTranslation, 1.0f);
                     break;
                 case ImGuizmo::ROTATE:
                 {
-                    const glm::vec3 OffsetFromPivot = glm::vec3(OtherWorld[3]) - PivotPreLocation;
-                    const glm::vec3 RotatedOffset   = DeltaRotation * OffsetFromPivot;
-                    NewWorld = glm::translate(glm::mat4(1.f), PivotPreLocation + RotatedOffset)
-                             * glm::mat4_cast(DeltaRotation)
-                             * glm::mat4(glm::mat3(OtherWorld));
+                    const FVector3 OffsetFromPivot = FVector3(OtherWorld[3]) - PivotPreLocation;
+                    const FVector3 RotatedOffset   = DeltaRotation * OffsetFromPivot;
+                    NewWorld = Math::Translate(FMatrix4(1.f), PivotPreLocation + RotatedOffset)
+                             * Math::ToMatrix4(DeltaRotation)
+                             * FMatrix4(FMatrix3(OtherWorld));
                     break;
                 }
                 case ImGuizmo::SCALE:
                 {
-                    const glm::vec3 OffsetFromPivot = glm::vec3(OtherWorld[3]) - PivotPreLocation;
-                    const glm::vec3 ScaledOffset    = OffsetFromPivot * DeltaScale;
-                    glm::quat OtherRot;
-                    glm::vec3 OtherTr, OtherSc, OtherSk;
-                    glm::vec4 OtherPe;
-                    glm::decompose(OtherWorld, OtherSc, OtherRot, OtherTr, OtherSk, OtherPe);
-                    NewWorld = glm::translate(glm::mat4(1.f), PivotPreLocation + ScaledOffset)
-                             * glm::mat4_cast(OtherRot)
-                             * glm::scale(glm::mat4(1.f), OtherSc * DeltaScale);
+                    const FVector3 OffsetFromPivot = FVector3(OtherWorld[3]) - PivotPreLocation;
+                    const FVector3 ScaledOffset    = OffsetFromPivot * DeltaScale;
+                    FQuat OtherRot;
+                    FVector3 OtherTr, OtherSc, OtherSk;
+                    FVector4 OtherPe;
+                    Math::Decompose(OtherWorld, OtherSc, OtherRot, OtherTr, OtherSk, OtherPe);
+                    NewWorld = Math::Translate(FMatrix4(1.f), PivotPreLocation + ScaledOffset)
+                             * Math::ToMatrix4(OtherRot)
+                             * Math::Scale(FMatrix4(1.f), OtherSc * DeltaScale);
                     break;
                 }
                 default: break;

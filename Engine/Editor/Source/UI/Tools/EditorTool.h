@@ -36,11 +36,11 @@ namespace Lumina
 
         float       Speed       = 50.0f;
         float       SpeedScale  = 1.0f;
-        glm::vec3   Velocity    = glm::vec3(0.0f);
+        FVector3   Velocity    = FVector3(0.0f);
 
         // Yaw/pitch in degrees on +Z forward. OrbitAnchor is "home"; MMB-pan moves OrbitTarget, ResetOrbitPan snaps back.
-        glm::vec3   OrbitTarget   = glm::vec3(0.0f);
-        glm::vec3   OrbitAnchor   = glm::vec3(0.0f);
+        FVector3   OrbitTarget   = FVector3(0.0f);
+        FVector3   OrbitAnchor   = FVector3(0.0f);
         float       OrbitDistance = 5.0f;
         float       OrbitYaw      = 0.0f;
         float       OrbitPitch    = -15.0f;
@@ -52,9 +52,9 @@ namespace Lumina
         bool        bFocusInterp        = false;
         // Exponential-decay rate (1/s); ~12 yields ~250ms to ~95%.
         float       FocusInterpRate     = 12.0f;
-        glm::vec3   FocusFreePosition   = glm::vec3(0.0f);
-        glm::quat   FocusFreeRotation   = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-        glm::vec3   FocusOrbitTarget    = glm::vec3(0.0f);
+        FVector3   FocusFreePosition   = FVector3(0.0f);
+        FQuat   FocusFreeRotation   = FQuat(1.0f, 0.0f, 0.0f, 0.0f);
+        FVector3   FocusOrbitTarget    = FVector3(0.0f);
         float       FocusOrbitDistance  = 5.0f;
     };
 
@@ -169,7 +169,7 @@ namespace Lumina
         void SetCameraMode(EEditorCameraMode Mode);
 
         /** Re-anchor orbit on a new world point; updates OrbitTarget and the OrbitAnchor ResetOrbitPan returns to. */
-        void SetOrbitTarget(const glm::vec3& Target, float Distance = -1.0f);
+        void SetOrbitTarget(const FVector3& Target, float Distance = -1.0f);
 
         /** Snap OrbitTarget back to OrbitAnchor (undo MMB-drag pan). */
         void ResetOrbitPan();

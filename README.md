@@ -306,7 +306,6 @@ Listed alphabetically.
 | EnTT | Fast entity component system with sparse-set storage and signals |
 | FastGLTF | High-performance glTF 2.0 parser with full specification support |
 | GLFW | Multi-platform window and input library for OpenGL and Vulkan |
-| GLM | Header-only mathematics library with GLSL-compatible syntax |
 | GoogleTest | C++ testing framework with assertions, fixtures, and test discovery |
 | ImGui | Immediate-mode GUI for rapid tool development |
 | JoltPhysics | Multi-threaded physics engine with continuous collision detection |

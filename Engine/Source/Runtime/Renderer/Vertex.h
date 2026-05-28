@@ -4,23 +4,23 @@
 
 namespace Lumina
 {
-    inline uint32 PackColor(glm::vec4 color)
+    inline uint32 PackColor(FVector4 color)
     {
-        uint8 r = (uint8)(glm::clamp(color.r, 0.0f, 1.0f) * 255.0f);
-        uint8 g = (uint8)(glm::clamp(color.g, 0.0f, 1.0f) * 255.0f);
-        uint8 b = (uint8)(glm::clamp(color.b, 0.0f, 1.0f) * 255.0f);
-        uint8 a = (uint8)(glm::clamp(color.a, 0.0f, 1.0f) * 255.0f);
+        uint8 r = (uint8)(Math::Clamp(color.r, 0.0f, 1.0f) * 255.0f);
+        uint8 g = (uint8)(Math::Clamp(color.g, 0.0f, 1.0f) * 255.0f);
+        uint8 b = (uint8)(Math::Clamp(color.b, 0.0f, 1.0f) * 255.0f);
+        uint8 a = (uint8)(Math::Clamp(color.a, 0.0f, 1.0f) * 255.0f);
         return (a << 24) | (b << 16) | (g << 8) | r;
     }
 
-    inline glm::vec4 UnpackColor(uint32 packed)
+    inline FVector4 UnpackColor(uint32 packed)
     {
         uint8 r = (packed >> 0) & 0xFF;
         uint8 g = (packed >> 8) & 0xFF;
         uint8 b = (packed >> 16) & 0xFF;
         uint8 a = (packed >> 24) & 0xFF;
 
-        return glm::vec4(
+        return FVector4(
             (float)r / 255.0f,
             (float)g / 255.0f,
             (float)b / 255.0f,
@@ -29,40 +29,40 @@ namespace Lumina
     }
 
     // Octahedral 16-16 unit-normal pack.
-    inline uint32 PackNormal(glm::vec3 n)
+    inline uint32 PackNormal(FVector3 n)
     {
-        n /= glm::abs(n.x) + glm::abs(n.y) + glm::abs(n.z) + 1e-12f;
-        glm::vec2 e = glm::vec2(n.x, n.y);
+        n /= Math::Abs(n.x) + Math::Abs(n.y) + Math::Abs(n.z) + 1e-12f;
+        FVector2 e = FVector2(n.x, n.y);
         if (n.z < 0.0f)
         {
-            e = glm::vec2(
-                (1.0f - glm::abs(e.y)) * (e.x >= 0.0f ? 1.0f : -1.0f),
-                (1.0f - glm::abs(e.x)) * (e.y >= 0.0f ? 1.0f : -1.0f));
+            e = FVector2(
+                (1.0f - Math::Abs(e.y)) * (e.x >= 0.0f ? 1.0f : -1.0f),
+                (1.0f - Math::Abs(e.x)) * (e.y >= 0.0f ? 1.0f : -1.0f));
         }
-        int32 qx = (int32)glm::round(glm::clamp(e.x, -1.0f, 1.0f) * 32767.0f);
-        int32 qy = (int32)glm::round(glm::clamp(e.y, -1.0f, 1.0f) * 32767.0f);
+        int32 qx = (int32)Math::Round(Math::Clamp(e.x, -1.0f, 1.0f) * 32767.0f);
+        int32 qy = (int32)Math::Round(Math::Clamp(e.y, -1.0f, 1.0f) * 32767.0f);
         return ((uint32)(qx & 0xFFFF)) | (((uint32)(qy & 0xFFFF)) << 16);
     }
 
-    inline glm::vec3 UnpackNormal(uint32 packed)
+    inline FVector3 UnpackNormal(uint32 packed)
     {
         int16 sx = (int16)(packed & 0xFFFF);
         int16 sy = (int16)((packed >> 16) & 0xFFFF);
-        glm::vec2 e = glm::vec2((float)sx, (float)sy) / 32767.0f;
-        glm::vec3 n(e.x, e.y, 1.0f - glm::abs(e.x) - glm::abs(e.y));
+        FVector2 e = FVector2((float)sx, (float)sy) / 32767.0f;
+        FVector3 n(e.x, e.y, 1.0f - Math::Abs(e.x) - Math::Abs(e.y));
         if (n.z < 0.0f)
         {
-            float nx = (1.0f - glm::abs(n.y)) * (n.x >= 0.0f ? 1.0f : -1.0f);
-            float ny = (1.0f - glm::abs(n.x)) * (n.y >= 0.0f ? 1.0f : -1.0f);
+            float nx = (1.0f - Math::Abs(n.y)) * (n.x >= 0.0f ? 1.0f : -1.0f);
+            float ny = (1.0f - Math::Abs(n.x)) * (n.y >= 0.0f ? 1.0f : -1.0f);
             n.x = nx;
             n.y = ny;
         }
-        return glm::normalize(n);
+        return Math::Normalize(n);
     }
 
     // 10-10-10 pack of a meshlet-local integer offset. Dequant is
     // MeshOrigin + (LoInt + q) * GridStep.
-    inline uint32 PackMeshletPosition(glm::ivec3 q)
+    inline uint32 PackMeshletPosition(FIntVector3 q)
     {
         return  (uint32(q.x) & 0x3FFu)
              | ((uint32(q.y) & 0x3FFu) << 10)
@@ -71,25 +71,25 @@ namespace Lumina
 
     // Octahedral 15-15 tangent + 1-bit handedness packed into uint32 (4-byte aligned).
     // Layout: [0..14]=qx, [15..29]=qy, [30]=hand (1=+, 0=-), [31]=reserved.
-    inline uint32 PackTangent(glm::vec3 t, float Sign)
+    inline uint32 PackTangent(FVector3 t, float Sign)
     {
-        t /= glm::abs(t.x) + glm::abs(t.y) + glm::abs(t.z) + 1e-12f;
-        glm::vec2 e = glm::vec2(t.x, t.y);
+        t /= Math::Abs(t.x) + Math::Abs(t.y) + Math::Abs(t.z) + 1e-12f;
+        FVector2 e = FVector2(t.x, t.y);
         if (t.z < 0.0f)
         {
-            e = glm::vec2(
-                (1.0f - glm::abs(e.y)) * (e.x >= 0.0f ? 1.0f : -1.0f),
-                (1.0f - glm::abs(e.x)) * (e.y >= 0.0f ? 1.0f : -1.0f));
+            e = FVector2(
+                (1.0f - Math::Abs(e.y)) * (e.x >= 0.0f ? 1.0f : -1.0f),
+                (1.0f - Math::Abs(e.x)) * (e.y >= 0.0f ? 1.0f : -1.0f));
         }
-        int32 qx = (int32)glm::round(glm::clamp(e.x, -1.0f, 1.0f) * 16383.0f);
-        int32 qy = (int32)glm::round(glm::clamp(e.y, -1.0f, 1.0f) * 16383.0f);
+        int32 qx = (int32)Math::Round(Math::Clamp(e.x, -1.0f, 1.0f) * 16383.0f);
+        int32 qy = (int32)Math::Round(Math::Clamp(e.y, -1.0f, 1.0f) * 16383.0f);
         uint32 Hand = (Sign >= 0.0f) ? 1u : 0u;
         return ((uint32)(qx & 0x7FFFu))
              | (((uint32)(qy & 0x7FFFu)) << 15)
              | (Hand << 30);
     }
 
-    inline glm::vec4 UnpackTangent(uint32 Packed)
+    inline FVector4 UnpackTangent(uint32 Packed)
     {
         // Sign-extend 15-bit fields into int32.
         auto SignExtend15 = [](uint32 V) -> int32
@@ -99,24 +99,24 @@ namespace Lumina
         };
         int32 sx = SignExtend15(Packed);
         int32 sy = SignExtend15(Packed >> 15);
-        glm::vec2 e = glm::vec2((float)sx, (float)sy) / 16383.0f;
-        glm::vec3 t(e.x, e.y, 1.0f - glm::abs(e.x) - glm::abs(e.y));
+        FVector2 e = FVector2((float)sx, (float)sy) / 16383.0f;
+        FVector3 t(e.x, e.y, 1.0f - Math::Abs(e.x) - Math::Abs(e.y));
         if (t.z < 0.0f)
         {
-            float tx = (1.0f - glm::abs(t.y)) * (t.x >= 0.0f ? 1.0f : -1.0f);
-            float ty = (1.0f - glm::abs(t.x)) * (t.y >= 0.0f ? 1.0f : -1.0f);
+            float tx = (1.0f - Math::Abs(t.y)) * (t.x >= 0.0f ? 1.0f : -1.0f);
+            float ty = (1.0f - Math::Abs(t.x)) * (t.y >= 0.0f ? 1.0f : -1.0f);
             t.x = tx;
             t.y = ty;
         }
         float Sign = ((Packed >> 30) & 1u) != 0u ? 1.0f : -1.0f;
-        return glm::vec4(glm::normalize(t), Sign);
+        return FVector4(Math::Normalize(t), Sign);
     }
 
     // Importers must zero Tangent: dedup byte-compares before MikkTSpace runs.
     // Cannot use member initializer — would break TCanBulkSerialize (needs trivial).
     struct FVertex
     {
-        glm::vec3       Position;
+        FVector3       Position;
         uint32          Normal;
         uint32          Tangent;
         uint32          UV;
@@ -135,8 +135,8 @@ namespace Lumina
 
     struct FSkinnedVertex : FVertex
     {
-        glm::u8vec4     JointIndices;
-        glm::u8vec4     JointWeights;
+        FU8Vector4     JointIndices;
+        FU8Vector4     JointWeights;
 
         friend FArchive& operator<<(FArchive& Ar, FSkinnedVertex& Data)
         {
@@ -170,13 +170,13 @@ namespace Lumina
 
     struct FSimpleElementVertex
     {
-        glm::vec3   Position;
+        FVector3   Position;
         uint32      Color;
     };
 
     struct FBillboardVertex
     {
-        glm::vec3   Position;
+        FVector3   Position;
         float       Size;
     };
 

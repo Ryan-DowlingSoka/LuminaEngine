@@ -230,7 +230,7 @@ namespace Lumina
 
     void CParticleExpression_Normalize::GenerateDefinition(FParticleCompiler& Compiler)
     {
-        FParticleInputValue Val = Compiler.GetInputFloat3(A, glm::vec3(0.0f, 1.0f, 0.0f));
+        FParticleInputValue Val = Compiler.GetInputFloat3(A, FVector3(0.0f, 1.0f, 0.0f));
         const FString Expr = FParticleCompiler::Coerce(Val, EParticlePinType::Float3);
         Compiler.EmitCurrent("float3 " + GetNodeFullName() + " = normalize(" + Expr + ");");
 

@@ -42,49 +42,49 @@ namespace Lumina
     {
         // Per-area colors for at-a-glance area classification. Alpha currently unused by the line batcher,
         // but kept consistent so future translucent rendering doesn't need a second table.
-        FORCEINLINE glm::vec4 NavAreaColor(uint8 Area)
+        FORCEINLINE FVector4 NavAreaColor(uint8 Area)
         {
             switch ((ENavArea)Area)
             {
-                case ENavArea::Ground: return glm::vec4(0.20f, 0.85f, 0.30f, 1.0f);
-                case ENavArea::Water:  return glm::vec4(0.20f, 0.45f, 0.95f, 1.0f);
-                case ENavArea::Door:   return glm::vec4(0.95f, 0.65f, 0.15f, 1.0f);
-                case ENavArea::Danger: return glm::vec4(0.95f, 0.20f, 0.20f, 1.0f);
-                case ENavArea::Null:   return glm::vec4(0.40f, 0.40f, 0.40f, 1.0f);
-                default:               return glm::vec4(0.75f, 0.30f, 0.95f, 1.0f);
+                case ENavArea::Ground: return FVector4(0.20f, 0.85f, 0.30f, 1.0f);
+                case ENavArea::Water:  return FVector4(0.20f, 0.45f, 0.95f, 1.0f);
+                case ENavArea::Door:   return FVector4(0.95f, 0.65f, 0.15f, 1.0f);
+                case ENavArea::Danger: return FVector4(0.95f, 0.20f, 0.20f, 1.0f);
+                case ENavArea::Null:   return FVector4(0.40f, 0.40f, 0.40f, 1.0f);
+                default:               return FVector4(0.75f, 0.30f, 0.95f, 1.0f);
             }
         }
 
         void DrawNavDebug(const FSystemContext& Context, const SNavMeshComponent& Comp)
         {
             const FNavMesh& Mesh = *Comp.Runtime.Mesh;
-            const glm::vec3 Lift(0.0f, CVarNavDebugLift.GetValue(), 0.0f);
+            const FVector3 Lift(0.0f, CVarNavDebugLift.GetValue(), 0.0f);
             const bool bColorByArea = CVarNavDebugColorArea.GetValue();
 
             if (CVarNavDebugBounds.GetValue())
             {
-                Context.DrawDebugBox(Comp.Center, Comp.Extents, glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
-                    glm::vec4(1.0f, 0.85f, 0.10f, 1.0f), 4.0f, -1.0f);
+                Context.DrawDebugBox(Comp.Center, Comp.Extents, FQuat(1.0f, 0.0f, 0.0f, 0.0f),
+                    FVector4(1.0f, 0.85f, 0.10f, 1.0f), 4.0f, -1.0f);
             }
 
             if (CVarNavDebugTiles.GetValue())
             {
-                const glm::vec4 TileColor(0.20f, 0.65f, 1.0f, 1.0f);
+                const FVector4 TileColor(0.20f, 0.65f, 1.0f, 1.0f);
                 Mesh.ForEachLoadedTile([&Context, TileColor](const FNavTileBounds& T)
                 {
-                    const glm::vec3 Center = (T.Min + T.Max) * 0.5f;
-                    const glm::vec3 Half   = (T.Max - T.Min) * 0.5f;
-                    Context.DrawDebugBox(Center, Half, glm::quat(1.0f, 0.0f, 0.0f, 0.0f), TileColor, 4.0f, -1.0f);
+                    const FVector3 Center = (T.Min + T.Max) * 0.5f;
+                    const FVector3 Half   = (T.Max - T.Min) * 0.5f;
+                    Context.DrawDebugBox(Center, Half, FQuat(1.0f, 0.0f, 0.0f, 0.0f), TileColor, 4.0f, -1.0f);
                 });
             }
 
             if (CVarNavDebugEdges.GetValue())
             {
                 // Faint interior triangle edges so the mesh fill reads, without drowning the boundary.
-                Mesh.ParallelForEachTriangle([&Context, &Lift, bColorByArea](const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, uint8 Area)
+                Mesh.ParallelForEachTriangle([&Context, &Lift, bColorByArea](const FVector3& A, const FVector3& B, const FVector3& C, uint8 Area)
                 {
-                    glm::vec4 Color = bColorByArea ? NavAreaColor(Area) : glm::vec4(0.05f, 1.0f, 0.15f, 1.0f);
-                    Color *= glm::vec4(0.6f, 0.6f, 0.6f, 1.0f);
+                    FVector4 Color = bColorByArea ? NavAreaColor(Area) : FVector4(0.05f, 1.0f, 0.15f, 1.0f);
+                    Color *= FVector4(0.6f, 0.6f, 0.6f, 1.0f);
                     constexpr float Thickness = 1.0f;
                     Context.DrawDebugLine(A + Lift, B + Lift, Color, Thickness, -1.0f);
                     Context.DrawDebugLine(B + Lift, C + Lift, Color, Thickness, -1.0f);
@@ -92,9 +92,9 @@ namespace Lumina
                 });
 
                 // Poly perimeter on top, thicker and brighter so the actual nav polygon shape stands out.
-                Mesh.ForEachBoundaryEdge([&Context, &Lift, bColorByArea](const glm::vec3& A, const glm::vec3& B, uint8 Area)
+                Mesh.ForEachBoundaryEdge([&Context, &Lift, bColorByArea](const FVector3& A, const FVector3& B, uint8 Area)
                 {
-                    const glm::vec4 Color = bColorByArea ? NavAreaColor(Area) : glm::vec4(0.0f, 0.95f, 1.0f, 1.0f);
+                    const FVector4 Color = bColorByArea ? NavAreaColor(Area) : FVector4(0.0f, 0.95f, 1.0f, 1.0f);
                     Context.DrawDebugLine(A + Lift, B + Lift, Color, 3.0f, -1.0f);
                 });
             }
@@ -102,9 +102,9 @@ namespace Lumina
             if (CVarNavDebugVerts.GetValue())
             {
                 const float R = CVarNavDebugVertSize.GetValue();
-                const glm::vec4 VColor(1.0f, 0.85f, 0.0f, 1.0f);
+                const FVector4 VColor(1.0f, 0.85f, 0.0f, 1.0f);
                 // Boundary endpoints == poly vertices == the "intersections" users want to see.
-                Mesh.ForEachBoundaryEdge([&Context, R, VColor, &Lift](const glm::vec3& A, const glm::vec3& B, uint8)
+                Mesh.ForEachBoundaryEdge([&Context, R, VColor, &Lift](const FVector3& A, const FVector3& B, uint8)
                 {
                     Context.DrawDebugSphere(A + Lift, R, VColor, 8, 4.0f, -1.0f);
                     Context.DrawDebugSphere(B + Lift, R, VColor, 8, 4.0f, -1.0f);
@@ -114,21 +114,21 @@ namespace Lumina
             if (CVarNavDebugCenters.GetValue())
             {
                 const float R = std::max(0.02f, CVarNavDebugVertSize.GetValue() * 0.5f);
-                Mesh.ParallelForEachTriangle([&Context, R, &Lift, bColorByArea](const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, uint8 Area)
+                Mesh.ParallelForEachTriangle([&Context, R, &Lift, bColorByArea](const FVector3& A, const FVector3& B, const FVector3& C, uint8 Area)
                 {
-                    const glm::vec3 C0 = (A + B + C) * (1.0f / 3.0f) + Lift;
-                    const glm::vec4 Color = bColorByArea ? NavAreaColor(Area) : glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+                    const FVector3 C0 = (A + B + C) * (1.0f / 3.0f) + Lift;
+                    const FVector4 Color = bColorByArea ? NavAreaColor(Area) : FVector4(1.0f, 1.0f, 1.0f, 1.0f);
                     Context.DrawDebugSphere(C0, R, Color, 6, 4.0f, -1.0f);
                 });
             }
 
             if (CVarNavDebugLinks.GetValue())
             {
-                const glm::vec4 LinkColor(1.0f, 0.30f, 0.95f, 1.0f);
-                Mesh.ForEachOffMeshLink([&Context, LinkColor, &Lift](const glm::vec3& A, const glm::vec3& B)
+                const FVector4 LinkColor(1.0f, 0.30f, 0.95f, 1.0f);
+                Mesh.ForEachOffMeshLink([&Context, LinkColor, &Lift](const FVector3& A, const FVector3& B)
                 {
-                    const glm::vec3 Dir = B - A;
-                    const float Len = glm::length(Dir);
+                    const FVector3 Dir = B - A;
+                    const float Len = Math::Length(Dir);
                     if (Len > 1e-4f)
                     {
                         Context.DrawDebugArrow(A + Lift, Dir / Len, Len, LinkColor, 2.5f, -1.0f, 0.25f);
@@ -144,10 +144,10 @@ namespace Lumina
     {
         struct FGatherAccumulator
         {
-            TVector<glm::vec3> Vertices;
+            TVector<FVector3> Vertices;
             TVector<uint32>    Indices;
-            glm::vec3          AABBMin = glm::vec3( FLT_MAX);
-            glm::vec3          AABBMax = glm::vec3(-FLT_MAX);
+            FVector3          AABBMin = FVector3( FLT_MAX);
+            FVector3          AABBMax = FVector3(-FLT_MAX);
         };
 
         // 8-bit local indices packed 3 per uint32; vertex indices local to Meshlet.VertexOffset.
@@ -159,19 +159,19 @@ namespace Lumina
         }
 
         // 10-10-10 unsigned position; MeshOrigin + (LoInt + q) * GridStep.
-        FORCEINLINE glm::vec3 DecodePosition(uint32 Packed, const glm::ivec3& LoInt, const glm::vec3& MeshOrigin, const glm::vec3& GridStep)
+        FORCEINLINE FVector3 DecodePosition(uint32 Packed, const FIntVector3& LoInt, const FVector3& MeshOrigin, const FVector3& GridStep)
         {
-            const glm::ivec3 Q(
+            const FIntVector3 Q(
                 (int32)((Packed >>  0) & 0x3FFu),
                 (int32)((Packed >> 10) & 0x3FFu),
                 (int32)((Packed >> 20) & 0x3FFu));
-            return MeshOrigin + glm::vec3(LoInt + Q) * GridStep;
+            return MeshOrigin + FVector3(LoInt + Q) * GridStep;
         }
 
-        bool TriIntersectsAABB(const glm::vec3& A, const glm::vec3& B, const glm::vec3& C, const glm::vec3& BMin, const glm::vec3& BMax)
+        bool TriIntersectsAABB(const FVector3& A, const FVector3& B, const FVector3& C, const FVector3& BMin, const FVector3& BMax)
         {
-            const glm::vec3 TMin = glm::min(glm::min(A, B), C);
-            const glm::vec3 TMax = glm::max(glm::max(A, B), C);
+            const FVector3 TMin = Math::Min(Math::Min(A, B), C);
+            const FVector3 TMax = Math::Max(Math::Max(A, B), C);
             return !(TMax.x < BMin.x || TMin.x > BMax.x ||
                      TMax.y < BMin.y || TMin.y > BMax.y ||
                      TMax.z < BMin.z || TMin.z > BMax.z);
@@ -186,14 +186,14 @@ namespace Lumina
         }
 
         // Matches Jolt body placement so nav geometry overlaps physics exactly.
-        FORCEINLINE glm::mat4 ColliderToWorld(const STransformComponent& X, const glm::vec3& TransOffset, const glm::vec3& EulerOffset)
+        FORCEINLINE FMatrix4 ColliderToWorld(const STransformComponent& X, const FVector3& TransOffset, const FVector3& EulerOffset)
         {
-            const glm::mat4 LocalOffset = glm::translate(glm::mat4(1.0f), TransOffset)
-                                        * glm::mat4_cast(glm::quat(EulerOffset));
+            const FMatrix4 LocalOffset = Math::Translate(FMatrix4(1.0f), TransOffset)
+                                        * Math::ToMatrix4(FQuat(EulerOffset));
             return X.GetWorldMatrix() * LocalOffset;
         }
 
-        FORCEINLINE void EmitTri(FGatherAccumulator& Acc, const glm::vec3& BakeMin, const glm::vec3& BakeMax, const glm::vec3& A, const glm::vec3& B, const glm::vec3& C)
+        FORCEINLINE void EmitTri(FGatherAccumulator& Acc, const FVector3& BakeMin, const FVector3& BakeMax, const FVector3& A, const FVector3& B, const FVector3& C)
         {
             if (!TriIntersectsAABB(A, B, C, BakeMin, BakeMax))
             {
@@ -206,24 +206,24 @@ namespace Lumina
             Acc.Indices.push_back(Base + 0);
             Acc.Indices.push_back(Base + 1);
             Acc.Indices.push_back(Base + 2);
-            Acc.AABBMin = glm::min(Acc.AABBMin, glm::min(A, glm::min(B, C)));
-            Acc.AABBMax = glm::max(Acc.AABBMax, glm::max(A, glm::max(B, C)));
+            Acc.AABBMin = Math::Min(Acc.AABBMin, Math::Min(A, Math::Min(B, C)));
+            Acc.AABBMax = Math::Max(Acc.AABBMax, Math::Max(A, Math::Max(B, C)));
         }
 
         // 12 tris (2 per face); world matrix precomputed by caller.
-        void EmitBoxGeometry(const glm::mat4& W, const glm::vec3& HalfExtent, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
+        void EmitBoxGeometry(const FMatrix4& W, const FVector3& HalfExtent, const FVector3& BakeMin, const FVector3& BakeMax, FGatherAccumulator& Acc)
         {
-            const glm::vec3 H = HalfExtent;
-            const glm::vec3 LocalCorners[8] = {
+            const FVector3 H = HalfExtent;
+            const FVector3 LocalCorners[8] = {
                 {-H.x,-H.y,-H.z}, { H.x,-H.y,-H.z},
                 { H.x,-H.y, H.z}, {-H.x,-H.y, H.z},
                 {-H.x, H.y,-H.z}, { H.x, H.y,-H.z},
                 { H.x, H.y, H.z}, {-H.x, H.y, H.z},
             };
-            glm::vec3 V[8];
+            FVector3 V[8];
             for (int i = 0; i < 8; ++i)
             {
-                V[i] = glm::vec3(W * glm::vec4(LocalCorners[i], 1.0f));
+                V[i] = FVector3(W * FVector4(LocalCorners[i], 1.0f));
             }
             // Outward-wound for Recast's slope test (top face = walkable).
             EmitTri(Acc, BakeMin, BakeMax, V[0], V[1], V[2]); EmitTri(Acc, BakeMin, BakeMax, V[0], V[2], V[3]);
@@ -235,11 +235,11 @@ namespace Lumina
         }
 
         // Low-poly UV-sphere (12x8); nav doesn't need detail past tile resolution.
-        void EmitSphereGeometry(const glm::mat4& W, float Radius, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
+        void EmitSphereGeometry(const FMatrix4& W, float Radius, const FVector3& BakeMin, const FVector3& BakeMax, FGatherAccumulator& Acc)
         {
             constexpr int Segments = 12;
             constexpr int Stacks   = 8;
-            glm::vec3 Verts[(Stacks + 1) * (Segments + 1)];
+            FVector3 Verts[(Stacks + 1) * (Segments + 1)];
             for (int s = 0; s <= Stacks; ++s)
             {
                 const float Phi = LE_PI_F * (float)s / (float)Stacks;
@@ -248,18 +248,18 @@ namespace Lumina
                 for (int g = 0; g <= Segments; ++g)
                 {
                     const float Theta = (2.0f * LE_PI_F) * (float)g / (float)Segments;
-                    const glm::vec3 Local(Radius * SinP * std::cos(Theta), Radius * CosP, Radius * SinP * std::sin(Theta));
-                    Verts[s * (Segments + 1) + g] = glm::vec3(W * glm::vec4(Local, 1.0f));
+                    const FVector3 Local(Radius * SinP * std::cos(Theta), Radius * CosP, Radius * SinP * std::sin(Theta));
+                    Verts[s * (Segments + 1) + g] = FVector3(W * FVector4(Local, 1.0f));
                 }
             }
             for (int s = 0; s < Stacks; ++s)
             {
                 for (int g = 0; g < Segments; ++g)
                 {
-                    const glm::vec3& A = Verts[(s + 0) * (Segments + 1) + g + 0];
-                    const glm::vec3& B = Verts[(s + 1) * (Segments + 1) + g + 0];
-                    const glm::vec3& C = Verts[(s + 1) * (Segments + 1) + g + 1];
-                    const glm::vec3& D = Verts[(s + 0) * (Segments + 1) + g + 1];
+                    const FVector3& A = Verts[(s + 0) * (Segments + 1) + g + 0];
+                    const FVector3& B = Verts[(s + 1) * (Segments + 1) + g + 0];
+                    const FVector3& C = Verts[(s + 1) * (Segments + 1) + g + 1];
+                    const FVector3& D = Verts[(s + 0) * (Segments + 1) + g + 1];
                     EmitTri(Acc, BakeMin, BakeMax, A, D, C);
                     EmitTri(Acc, BakeMin, BakeMax, A, C, B);
                 }
@@ -267,13 +267,13 @@ namespace Lumina
         }
 
         // Cylinder + hemispheres along +Y (Jolt CapsuleShape). Total height = 2*HalfHeight + 2*Radius.
-        void EmitCapsuleGeometry(const glm::mat4& W, float HalfHeight, float Radius, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
+        void EmitCapsuleGeometry(const FMatrix4& W, float HalfHeight, float Radius, const FVector3& BakeMin, const FVector3& BakeMax, FGatherAccumulator& Acc)
         {
             constexpr int Segments = 12;
             constexpr int HemiStacks = 4;
             const int Rings = 2 * HemiStacks + 2;
 
-            TVector<glm::vec3> Verts;
+            TVector<FVector3> Verts;
             Verts.resize(Rings * (Segments + 1));
 
             int RingIdx = 0;
@@ -286,8 +286,8 @@ namespace Lumina
                 for (int g = 0; g <= Segments; ++g)
                 {
                     const float Theta = (2.0f * LE_PI_F) * (float)g / (float)Segments;
-                    const glm::vec3 Local(Radius * SinP * std::cos(Theta), HalfHeight + Radius * CosP, Radius * SinP * std::sin(Theta));
-                    Verts[RingIdx * (Segments + 1) + g] = glm::vec3(W * glm::vec4(Local, 1.0f));
+                    const FVector3 Local(Radius * SinP * std::cos(Theta), HalfHeight + Radius * CosP, Radius * SinP * std::sin(Theta));
+                    Verts[RingIdx * (Segments + 1) + g] = FVector3(W * FVector4(Local, 1.0f));
                 }
             }
             // Bottom hemisphere at -Y * HalfHeight.
@@ -299,8 +299,8 @@ namespace Lumina
                 for (int g = 0; g <= Segments; ++g)
                 {
                     const float Theta = (2.0f * LE_PI_F) * (float)g / (float)Segments;
-                    const glm::vec3 Local(Radius * SinP * std::cos(Theta), -HalfHeight + Radius * CosP, Radius * SinP * std::sin(Theta));
-                    Verts[RingIdx * (Segments + 1) + g] = glm::vec3(W * glm::vec4(Local, 1.0f));
+                    const FVector3 Local(Radius * SinP * std::cos(Theta), -HalfHeight + Radius * CosP, Radius * SinP * std::sin(Theta));
+                    Verts[RingIdx * (Segments + 1) + g] = FVector3(W * FVector4(Local, 1.0f));
                 }
             }
 
@@ -308,10 +308,10 @@ namespace Lumina
             {
                 for (int g = 0; g < Segments; ++g)
                 {
-                    const glm::vec3& A = Verts[(s + 0) * (Segments + 1) + g + 0];
-                    const glm::vec3& B = Verts[(s + 1) * (Segments + 1) + g + 0];
-                    const glm::vec3& C = Verts[(s + 1) * (Segments + 1) + g + 1];
-                    const glm::vec3& D = Verts[(s + 0) * (Segments + 1) + g + 1];
+                    const FVector3& A = Verts[(s + 0) * (Segments + 1) + g + 0];
+                    const FVector3& B = Verts[(s + 1) * (Segments + 1) + g + 0];
+                    const FVector3& C = Verts[(s + 1) * (Segments + 1) + g + 1];
+                    const FVector3& D = Verts[(s + 0) * (Segments + 1) + g + 1];
                     EmitTri(Acc, BakeMin, BakeMax, A, D, C);
                     EmitTri(Acc, BakeMin, BakeMax, A, C, B);
                 }
@@ -328,7 +328,7 @@ namespace Lumina
             return Fallback ? Fallback->StaticMesh.Get() : nullptr;
         }
 
-        void EmitMeshGeometry(const glm::mat4& W, CStaticMesh* Mesh, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
+        void EmitMeshGeometry(const FMatrix4& W, CStaticMesh* Mesh, const FVector3& BakeMin, const FVector3& BakeMax, FGatherAccumulator& Acc)
         {
             if (!Mesh) return;
             const FMeshResource& Res = Mesh->GetMeshResource();
@@ -346,12 +346,12 @@ namespace Lumina
                 {
                     const FMeshlet& Meshlet = Md.Meshlets[First + m];
 
-                    glm::vec3 LocalVerts[MESHLET_MAX_VERTICES];
+                    FVector3 LocalVerts[MESHLET_MAX_VERTICES];
                     const uint32 V0 = Meshlet.VertexOffset;
                     for (uint32 v = 0; v < Meshlet.VertexCount; ++v)
                     {
-                        const glm::vec3 Local = DecodePosition(MV[V0 + v].Position, Meshlet.LoInt, Md.MeshOrigin[Meshlet.LODIndex], Md.MeshGridStep[Meshlet.LODIndex]);
-                        LocalVerts[v] = glm::vec3(W * glm::vec4(Local, 1.0f));
+                        const FVector3 Local = DecodePosition(MV[V0 + v].Position, Meshlet.LoInt, Md.MeshOrigin[Meshlet.LODIndex], Md.MeshGridStep[Meshlet.LODIndex]);
+                        LocalVerts[v] = FVector3(W * FVector4(Local, 1.0f));
                     }
 
                     const uint32 T0 = Meshlet.TriangleOffset;
@@ -366,14 +366,14 @@ namespace Lumina
         }
 
         // Collect nav source colliders from all entities with bAffectsNavigation set.
-        void GatherSourceGeometry(const FSystemContext& Context, const glm::vec3& BakeMin, const glm::vec3& BakeMax, FGatherAccumulator& Acc)
+        void GatherSourceGeometry(const FSystemContext& Context, const FVector3& BakeMin, const FVector3& BakeMax, FGatherAccumulator& Acc)
         {
             auto BoxView = Context.CreateView<SBoxColliderComponent, STransformComponent>();
             for (entt::entity Entity : BoxView)
             {
                 SBoxColliderComponent& Box = BoxView.get<SBoxColliderComponent>(Entity);
                 if (!Box.bAffectsNavigation) continue;
-                const glm::mat4 W = ColliderToWorld(BoxView.get<STransformComponent>(Entity), Box.TranslationOffset, Box.RotationOffset);
+                const FMatrix4 W = ColliderToWorld(BoxView.get<STransformComponent>(Entity), Box.TranslationOffset, Box.RotationOffset);
                 EmitBoxGeometry(W, Box.HalfExtent, BakeMin, BakeMax, Acc);
             }
 
@@ -382,7 +382,7 @@ namespace Lumina
             {
                 SSphereColliderComponent& Sphere = SphereView.get<SSphereColliderComponent>(Entity);
                 if (!Sphere.bAffectsNavigation) continue;
-                const glm::mat4 W = ColliderToWorld(SphereView.get<STransformComponent>(Entity), Sphere.TranslationOffset, glm::vec3(0.0f));
+                const FMatrix4 W = ColliderToWorld(SphereView.get<STransformComponent>(Entity), Sphere.TranslationOffset, FVector3(0.0f));
                 EmitSphereGeometry(W, Sphere.Radius, BakeMin, BakeMax, Acc);
             }
 
@@ -393,7 +393,7 @@ namespace Lumina
                 if (!MC.bAffectsNavigation) continue;
                 const SStaticMeshComponent* Fallback = Context.GetRegistry().try_get<SStaticMeshComponent>(Entity);
                 CStaticMesh* Mesh = ResolveMeshColliderAsset(MC, Fallback);
-                const glm::mat4 W = ColliderToWorld(MeshView.get<STransformComponent>(Entity), MC.TranslationOffset, MC.RotationOffset);
+                const FMatrix4 W = ColliderToWorld(MeshView.get<STransformComponent>(Entity), MC.TranslationOffset, MC.RotationOffset);
                 EmitMeshGeometry(W, Mesh, BakeMin, BakeMax, Acc);
             }
 
@@ -402,12 +402,12 @@ namespace Lumina
             {
                 SCharacterPhysicsComponent& Cap = CapsuleView.get<SCharacterPhysicsComponent>(Entity);
                 if (!Cap.bAffectsNavigation) continue;
-                const glm::mat4 W = ColliderToWorld(CapsuleView.get<STransformComponent>(Entity), glm::vec3(0.0f), glm::vec3(0.0f));
+                const FMatrix4 W = ColliderToWorld(CapsuleView.get<STransformComponent>(Entity), FVector3(0.0f), FVector3(0.0f));
                 EmitCapsuleGeometry(W, Cap.HalfHeight, Cap.Radius, BakeMin, BakeMax, Acc);
             }
         }
 
-        FORCEINLINE void TilesForAABB(const glm::vec3& AABBMin, const glm::vec3& AABBMax, const glm::vec3& Origin, float TileWorldSize, int32 TilesX, int32 TilesY,
+        FORCEINLINE void TilesForAABB(const FVector3& AABBMin, const FVector3& AABBMax, const FVector3& Origin, float TileWorldSize, int32 TilesX, int32 TilesY,
                                       int32& OutTX0, int32& OutTY0, int32& OutTX1, int32& OutTY1)
         {
             OutTX0 = std::clamp((int32)std::floor((AABBMin.x - Origin.x) / TileWorldSize), 0, TilesX - 1);
@@ -420,75 +420,75 @@ namespace Lumina
 
         // Conservative world AABBs; change detector and cache rebuild MUST produce byte-identical values.
 
-        bool ComputeBoxColliderAABB(const SBoxColliderComponent& Box, const STransformComponent& X, glm::vec3& OutMin, glm::vec3& OutMax)
+        bool ComputeBoxColliderAABB(const SBoxColliderComponent& Box, const STransformComponent& X, FVector3& OutMin, FVector3& OutMax)
         {
-            const glm::mat4 W = ColliderToWorld(X, Box.TranslationOffset, Box.RotationOffset);
-            const glm::vec3 H = Box.HalfExtent;
-            const glm::vec3 LocalCorners[8] = {
+            const FMatrix4 W = ColliderToWorld(X, Box.TranslationOffset, Box.RotationOffset);
+            const FVector3 H = Box.HalfExtent;
+            const FVector3 LocalCorners[8] = {
                 {-H.x,-H.y,-H.z}, { H.x,-H.y,-H.z},
                 { H.x,-H.y, H.z}, {-H.x,-H.y, H.z},
                 {-H.x, H.y,-H.z}, { H.x, H.y,-H.z},
                 { H.x, H.y, H.z}, {-H.x, H.y, H.z},
             };
-            OutMin = glm::vec3( FLT_MAX);
-            OutMax = glm::vec3(-FLT_MAX);
+            OutMin = FVector3( FLT_MAX);
+            OutMax = FVector3(-FLT_MAX);
             for (int i = 0; i < 8; ++i)
             {
-                const glm::vec3 P = glm::vec3(W * glm::vec4(LocalCorners[i], 1.0f));
-                OutMin = glm::min(OutMin, P);
-                OutMax = glm::max(OutMax, P);
+                const FVector3 P = FVector3(W * FVector4(LocalCorners[i], 1.0f));
+                OutMin = Math::Min(OutMin, P);
+                OutMax = Math::Max(OutMax, P);
             }
             return true;
         }
 
-        bool ComputeSphereColliderAABB(const SSphereColliderComponent& Sphere, const STransformComponent& X, glm::vec3& OutMin, glm::vec3& OutMax)
+        bool ComputeSphereColliderAABB(const SSphereColliderComponent& Sphere, const STransformComponent& X, FVector3& OutMin, FVector3& OutMax)
         {
-            const glm::mat4 W = ColliderToWorld(X, Sphere.TranslationOffset, glm::vec3(0.0f));
-            const glm::vec3 Center = glm::vec3(W * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+            const FMatrix4 W = ColliderToWorld(X, Sphere.TranslationOffset, FVector3(0.0f));
+            const FVector3 Center = FVector3(W * FVector4(0.0f, 0.0f, 0.0f, 1.0f));
             // Conservative radius: longest column basis under arbitrary scale.
-            const float Sx = glm::length(glm::vec3(W[0]));
-            const float Sy = glm::length(glm::vec3(W[1]));
-            const float Sz = glm::length(glm::vec3(W[2]));
+            const float Sx = Math::Length(FVector3(W[0]));
+            const float Sy = Math::Length(FVector3(W[1]));
+            const float Sz = Math::Length(FVector3(W[2]));
             const float R  = Sphere.Radius * std::max(Sx, std::max(Sy, Sz));
-            OutMin = Center - glm::vec3(R);
-            OutMax = Center + glm::vec3(R);
+            OutMin = Center - FVector3(R);
+            OutMax = Center + FVector3(R);
             return true;
         }
 
-        bool ComputeCapsuleColliderAABB(const SCharacterPhysicsComponent& Cap, const STransformComponent& X, glm::vec3& OutMin, glm::vec3& OutMax)
+        bool ComputeCapsuleColliderAABB(const SCharacterPhysicsComponent& Cap, const STransformComponent& X, FVector3& OutMin, FVector3& OutMax)
         {
-            const glm::mat4 W = X.GetWorldMatrix();
-            const glm::vec3 TopCenter = glm::vec3(W * glm::vec4(0.0f,  Cap.HalfHeight, 0.0f, 1.0f));
-            const glm::vec3 BotCenter = glm::vec3(W * glm::vec4(0.0f, -Cap.HalfHeight, 0.0f, 1.0f));
-            const float Sx = glm::length(glm::vec3(W[0]));
-            const float Sy = glm::length(glm::vec3(W[1]));
-            const float Sz = glm::length(glm::vec3(W[2]));
+            const FMatrix4 W = X.GetWorldMatrix();
+            const FVector3 TopCenter = FVector3(W * FVector4(0.0f,  Cap.HalfHeight, 0.0f, 1.0f));
+            const FVector3 BotCenter = FVector3(W * FVector4(0.0f, -Cap.HalfHeight, 0.0f, 1.0f));
+            const float Sx = Math::Length(FVector3(W[0]));
+            const float Sy = Math::Length(FVector3(W[1]));
+            const float Sz = Math::Length(FVector3(W[2]));
             const float R  = Cap.Radius * std::max(Sx, std::max(Sy, Sz));
-            OutMin = glm::min(TopCenter, BotCenter) - glm::vec3(R);
-            OutMax = glm::max(TopCenter, BotCenter) + glm::vec3(R);
+            OutMin = Math::Min(TopCenter, BotCenter) - FVector3(R);
+            OutMax = Math::Max(TopCenter, BotCenter) + FVector3(R);
             return true;
         }
 
-        bool ComputeMeshColliderAABB(const SMeshColliderComponent& MC, const STransformComponent& X, const SStaticMeshComponent* Fallback, glm::vec3& OutMin, glm::vec3& OutMax)
+        bool ComputeMeshColliderAABB(const SMeshColliderComponent& MC, const STransformComponent& X, const SStaticMeshComponent* Fallback, FVector3& OutMin, FVector3& OutMax)
         {
             CStaticMesh* Mesh = ResolveMeshColliderAsset(MC, Fallback);
             if (!Mesh || Mesh->GetMeshResource().bSkinnedMesh) return false;
 
             const FAABB& Local = Mesh->GetAABB();
-            const glm::vec3 Corners[8] = {
+            const FVector3 Corners[8] = {
                 {Local.Min.x, Local.Min.y, Local.Min.z}, {Local.Max.x, Local.Min.y, Local.Min.z},
                 {Local.Min.x, Local.Max.y, Local.Min.z}, {Local.Max.x, Local.Max.y, Local.Min.z},
                 {Local.Min.x, Local.Min.y, Local.Max.z}, {Local.Max.x, Local.Min.y, Local.Max.z},
                 {Local.Min.x, Local.Max.y, Local.Max.z}, {Local.Max.x, Local.Max.y, Local.Max.z},
             };
-            const glm::mat4 W = ColliderToWorld(X, MC.TranslationOffset, MC.RotationOffset);
-            OutMin = glm::vec3( FLT_MAX);
-            OutMax = glm::vec3(-FLT_MAX);
+            const FMatrix4 W = ColliderToWorld(X, MC.TranslationOffset, MC.RotationOffset);
+            OutMin = FVector3( FLT_MAX);
+            OutMax = FVector3(-FLT_MAX);
             for (int i = 0; i < 8; ++i)
             {
-                const glm::vec3 P = glm::vec3(W * glm::vec4(Corners[i], 1.0f));
-                OutMin = glm::min(OutMin, P);
-                OutMax = glm::max(OutMax, P);
+                const FVector3 P = FVector3(W * FVector4(Corners[i], 1.0f));
+                OutMin = Math::Min(OutMin, P);
+                OutMax = Math::Max(OutMax, P);
             }
             return true;
         }
@@ -503,7 +503,7 @@ namespace Lumina
             {
                 SBoxColliderComponent& Box = BoxView.get<SBoxColliderComponent>(Entity);
                 if (!Box.bAffectsNavigation) continue;
-                glm::vec3 Mn, Mx;
+                FVector3 Mn, Mx;
                 if (!ComputeBoxColliderAABB(Box, BoxView.get<STransformComponent>(Entity), Mn, Mx)) continue;
                 OutCache[PackSourceKey(Entity, ENavColliderType::Box)] = FNavSourceEntity{ Mn, Mx };
             }
@@ -513,7 +513,7 @@ namespace Lumina
             {
                 SSphereColliderComponent& Sphere = SphereView.get<SSphereColliderComponent>(Entity);
                 if (!Sphere.bAffectsNavigation) continue;
-                glm::vec3 Mn, Mx;
+                FVector3 Mn, Mx;
                 if (!ComputeSphereColliderAABB(Sphere, SphereView.get<STransformComponent>(Entity), Mn, Mx)) continue;
                 OutCache[PackSourceKey(Entity, ENavColliderType::Sphere)] = FNavSourceEntity{ Mn, Mx };
             }
@@ -524,7 +524,7 @@ namespace Lumina
                 SMeshColliderComponent& MC = MeshView.get<SMeshColliderComponent>(Entity);
                 if (!MC.bAffectsNavigation) continue;
                 const SStaticMeshComponent* Fallback = Context.GetRegistry().try_get<SStaticMeshComponent>(Entity);
-                glm::vec3 Mn, Mx;
+                FVector3 Mn, Mx;
                 if (!ComputeMeshColliderAABB(MC, MeshView.get<STransformComponent>(Entity), Fallback, Mn, Mx)) continue;
                 OutCache[PackSourceKey(Entity, ENavColliderType::Mesh)] = FNavSourceEntity{ Mn, Mx };
             }
@@ -534,7 +534,7 @@ namespace Lumina
             {
                 SCharacterPhysicsComponent& Cap = CapsuleView.get<SCharacterPhysicsComponent>(Entity);
                 if (!Cap.bAffectsNavigation) continue;
-                glm::vec3 Mn, Mx;
+                FVector3 Mn, Mx;
                 if (!ComputeCapsuleColliderAABB(Cap, CapsuleView.get<STransformComponent>(Entity), Mn, Mx)) continue;
                 OutCache[PackSourceKey(Entity, ENavColliderType::Capsule)] = FNavSourceEntity{ Mn, Mx };
             }
@@ -624,8 +624,8 @@ namespace Lumina
             // bRuntimeDirty branch is essential: re-bake otherwise leaves old Mesh and state stuck Building.
             if (Comp.HasBakedData() && !Comp.Runtime.PendingInit && (Comp.Runtime.bRuntimeDirty || !Comp.Runtime.Mesh))
             {
-                const glm::vec3 BakeMin = Comp.Center - Comp.Extents;
-                const glm::vec3 BakeMax = Comp.Center + Comp.Extents;
+                const FVector3 BakeMin = Comp.Center - Comp.Extents;
+                const FVector3 BakeMax = Comp.Center + Comp.Extents;
                 Comp.Runtime.TilesX = std::max(1, (int32)std::ceil((BakeMax.x - BakeMin.x) / Comp.TileWorldSize));
                 Comp.Runtime.TilesY = std::max(1, (int32)std::ceil((BakeMax.z - BakeMin.z) / Comp.TileWorldSize));
                 Comp.Runtime.LiveLayout.Origin          = Comp.Origin;
@@ -640,7 +640,7 @@ namespace Lumina
 
                 // Copy tiles so worker owns its data; Comp.Tiles stays serialized source of truth.
                 TVector<FNavTileData> TilesCopy = Comp.Tiles;
-                const glm::vec3 InitOrigin = Comp.Origin;
+                const FVector3 InitOrigin = Comp.Origin;
                 const float InitTileSize = Comp.TileWorldSize;
                 const int32 InitMaxTiles = (int32)TilesCopy.size();
                 const int32 InitMaxPolys = Comp.MaxPolysPerTile;
@@ -713,7 +713,7 @@ namespace Lumina
             THashMap<uint64, FNavSourceEntity> CurrentAABBs;
             CurrentAABBs.reserve(Comp.Runtime.EntityAABBs.size());
 
-            auto MarkDirtyForAABB = [&](const glm::vec3& Mn, const glm::vec3& Mx)
+            auto MarkDirtyForAABB = [&](const FVector3& Mn, const FVector3& Mx)
             {
                 int32 TX0, TY0, TX1, TY1;
                 TilesForAABB(Mn, Mx, Comp.Origin, Comp.TileWorldSize, Comp.Runtime.TilesX, Comp.Runtime.TilesY, TX0, TY0, TX1, TY1);
@@ -726,7 +726,7 @@ namespace Lumina
                 }
             };
 
-            auto VisitSource = [&](uint64 Key, const glm::vec3& Mn, const glm::vec3& Mx)
+            auto VisitSource = [&](uint64 Key, const FVector3& Mn, const FVector3& Mx)
             {
                 CurrentAABBs[Key] = FNavSourceEntity{ Mn, Mx };
                 auto It = Comp.Runtime.EntityAABBs.find(Key);
@@ -748,7 +748,7 @@ namespace Lumina
             {
                 SBoxColliderComponent& Box = BoxCheckView.get<SBoxColliderComponent>(E);
                 if (!Box.bAffectsNavigation) continue;
-                glm::vec3 Mn, Mx;
+                FVector3 Mn, Mx;
                 if (!ComputeBoxColliderAABB(Box, BoxCheckView.get<STransformComponent>(E), Mn, Mx)) continue;
                 VisitSource(PackSourceKey(E, ENavColliderType::Box), Mn, Mx);
             }
@@ -758,7 +758,7 @@ namespace Lumina
             {
                 SSphereColliderComponent& Sphere = SphereCheckView.get<SSphereColliderComponent>(E);
                 if (!Sphere.bAffectsNavigation) continue;
-                glm::vec3 Mn, Mx;
+                FVector3 Mn, Mx;
                 if (!ComputeSphereColliderAABB(Sphere, SphereCheckView.get<STransformComponent>(E), Mn, Mx)) continue;
                 VisitSource(PackSourceKey(E, ENavColliderType::Sphere), Mn, Mx);
             }
@@ -769,7 +769,7 @@ namespace Lumina
                 SMeshColliderComponent& MC = MeshCheckView.get<SMeshColliderComponent>(E);
                 if (!MC.bAffectsNavigation) continue;
                 const SStaticMeshComponent* Fallback = Context.GetRegistry().try_get<SStaticMeshComponent>(E);
-                glm::vec3 Mn, Mx;
+                FVector3 Mn, Mx;
                 if (!ComputeMeshColliderAABB(MC, MeshCheckView.get<STransformComponent>(E), Fallback, Mn, Mx)) continue;
                 VisitSource(PackSourceKey(E, ENavColliderType::Mesh), Mn, Mx);
             }
@@ -779,7 +779,7 @@ namespace Lumina
             {
                 SCharacterPhysicsComponent& Cap = CapCheckView.get<SCharacterPhysicsComponent>(E);
                 if (!Cap.bAffectsNavigation) continue;
-                glm::vec3 Mn, Mx;
+                FVector3 Mn, Mx;
                 if (!ComputeCapsuleColliderAABB(Cap, CapCheckView.get<STransformComponent>(E), Mn, Mx)) continue;
                 VisitSource(PackSourceKey(E, ENavColliderType::Capsule), Mn, Mx);
             }
@@ -818,10 +818,10 @@ namespace Lumina
                 Comp.Runtime.PendingRebakes.push_back(std::move(Job));
             }
 
-            struct FBoxSnap     { glm::mat4 World; glm::vec3 HalfExtent; };
-            struct FSphereSnap  { glm::mat4 World; float Radius; };
-            struct FMeshSnap    { glm::mat4 World; CStaticMesh* Mesh; };
-            struct FCapsuleSnap { glm::mat4 World; float HalfHeight; float Radius; };
+            struct FBoxSnap     { FMatrix4 World; FVector3 HalfExtent; };
+            struct FSphereSnap  { FMatrix4 World; float Radius; };
+            struct FMeshSnap    { FMatrix4 World; CStaticMesh* Mesh; };
+            struct FCapsuleSnap { FMatrix4 World; float HalfHeight; float Radius; };
 
             struct FInputSnapshot
             {
@@ -829,8 +829,8 @@ namespace Lumina
                 TVector<FSphereSnap>  Spheres;
                 TVector<FMeshSnap>    Meshes;
                 TVector<FCapsuleSnap> Capsules;
-                glm::vec3             BakeMin;
-                glm::vec3             BakeMax;
+                FVector3             BakeMin;
+                FVector3             BakeMax;
                 FNavBuildSettings     Settings;
                 FNavBuildOutput       Layout;
             };
@@ -853,7 +853,7 @@ namespace Lumina
                 {
                     SSphereColliderComponent& Sphere = SphereSnapView.get<SSphereColliderComponent>(E);
                     if (!Sphere.bAffectsNavigation) continue;
-                    Snap->Spheres.push_back({ ColliderToWorld(SphereSnapView.get<STransformComponent>(E), Sphere.TranslationOffset, glm::vec3(0.0f)), Sphere.Radius });
+                    Snap->Spheres.push_back({ ColliderToWorld(SphereSnapView.get<STransformComponent>(E), Sphere.TranslationOffset, FVector3(0.0f)), Sphere.Radius });
                 }
 
                 auto MeshSnapView = Context.CreateView<SMeshColliderComponent, STransformComponent>();
@@ -872,7 +872,7 @@ namespace Lumina
                 {
                     SCharacterPhysicsComponent& Cap = CapSnapView.get<SCharacterPhysicsComponent>(E);
                     if (!Cap.bAffectsNavigation) continue;
-                    Snap->Capsules.push_back({ ColliderToWorld(CapSnapView.get<STransformComponent>(E), glm::vec3(0.0f), glm::vec3(0.0f)), Cap.HalfHeight, Cap.Radius });
+                    Snap->Capsules.push_back({ ColliderToWorld(CapSnapView.get<STransformComponent>(E), FVector3(0.0f), FVector3(0.0f)), Cap.HalfHeight, Cap.Radius });
                 }
             }
 
@@ -1001,7 +1001,7 @@ namespace Lumina
         }
 
         // Catch zero/negative bounds up front; otherwise user gets a misleading "0 walkable" warning later.
-        const glm::vec3 Span = Comp.Extents * 2.0f;
+        const FVector3 Span = Comp.Extents * 2.0f;
         if (Span.x <= 0.0f || Span.y <= 0.0f || Span.z <= 0.0f)
         {
             LOG_ERROR("NavMesh bake skipped: bounds extents must be positive on all axes (got {:.2f}, {:.2f}, {:.2f}).",
@@ -1040,19 +1040,19 @@ namespace Lumina
 
     namespace Nav
     {
-        bool FindPath(const FSystemContext& Context, const glm::vec3& Start, const glm::vec3& End, const FNavQueryFilter& Filter, FNavPath& Out)
+        bool FindPath(const FSystemContext& Context, const FVector3& Start, const FVector3& End, const FNavQueryFilter& Filter, FNavPath& Out)
         {
             FNavMesh* Mesh = FirstReadyNavMesh(Context);
             return Mesh && Mesh->FindPath(Start, End, Filter, Out);
         }
 
-        bool ProjectPoint(const FSystemContext& Context, const glm::vec3& World, const glm::vec3& Extents, const FNavQueryFilter& Filter, glm::vec3& Out)
+        bool ProjectPoint(const FSystemContext& Context, const FVector3& World, const FVector3& Extents, const FNavQueryFilter& Filter, FVector3& Out)
         {
             FNavMesh* Mesh = FirstReadyNavMesh(Context);
             return Mesh && Mesh->ProjectPoint(World, Extents, Filter, Out);
         }
 
-        bool Raycast(const FSystemContext& Context, const glm::vec3& Start, const glm::vec3& End, const FNavQueryFilter& Filter, glm::vec3& HitOut)
+        bool Raycast(const FSystemContext& Context, const FVector3& Start, const FVector3& End, const FNavQueryFilter& Filter, FVector3& HitOut)
         {
             FNavMesh* Mesh = FirstReadyNavMesh(Context);
             return Mesh && Mesh->Raycast(Start, End, Filter, HitOut);
@@ -1082,57 +1082,57 @@ namespace Lumina
             return FirstReadyNavMeshFromWorld(World) != nullptr;
         }
 
-        bool FindPath(CWorld* World, const glm::vec3& Start, const glm::vec3& End, FNavPath& Out)
+        bool FindPath(CWorld* World, const FVector3& Start, const FVector3& End, FNavPath& Out)
         {
             FNavMesh* Mesh = FirstReadyNavMeshFromWorld(World);
             FNavQueryFilter Filter;
             return Mesh && Mesh->FindPath(Start, End, Filter, Out);
         }
 
-        bool ProjectPoint(CWorld* World, const glm::vec3& Point, const glm::vec3& Extents, glm::vec3& Out)
+        bool ProjectPoint(CWorld* World, const FVector3& Point, const FVector3& Extents, FVector3& Out)
         {
             FNavMesh* Mesh = FirstReadyNavMeshFromWorld(World);
             FNavQueryFilter Filter;
             return Mesh && Mesh->ProjectPoint(Point, Extents, Filter, Out);
         }
 
-        bool Raycast(CWorld* World, const glm::vec3& Start, const glm::vec3& End, glm::vec3& OutHit)
+        bool Raycast(CWorld* World, const FVector3& Start, const FVector3& End, FVector3& OutHit)
         {
             FNavMesh* Mesh = FirstReadyNavMeshFromWorld(World);
             FNavQueryFilter Filter;
             return Mesh && Mesh->Raycast(Start, End, Filter, OutHit);
         }
 
-        bool FindRandomReachablePoint(CWorld* World, const glm::vec3& Origin, float Radius, glm::vec3& Out)
+        bool FindRandomReachablePoint(CWorld* World, const FVector3& Origin, float Radius, FVector3& Out)
         {
             FNavMesh* Mesh = FirstReadyNavMeshFromWorld(World);
             FNavQueryFilter Filter;
             return Mesh && Mesh->FindRandomPoint(Origin, Radius, Filter, Out);
         }
 
-        bool IsReachable(CWorld* World, const glm::vec3& From, const glm::vec3& To)
+        bool IsReachable(CWorld* World, const FVector3& From, const FVector3& To)
         {
             FNavPath Path;
             return FindPath(World, From, To, Path) && Path.bValid && !Path.bPartial;
         }
 
-        float PathLength(CWorld* World, const glm::vec3& From, const glm::vec3& To)
+        float PathLength(CWorld* World, const FVector3& From, const FVector3& To)
         {
             FNavPath Path;
             if (!FindPath(World, From, To, Path) || !Path.bValid) return -1.0f;
             float Len = 0.0f;
             for (size_t i = 1; i < Path.Corners.size(); ++i)
             {
-                Len += glm::length(Path.Corners[i] - Path.Corners[i - 1]);
+                Len += Math::Length(Path.Corners[i] - Path.Corners[i - 1]);
             }
             return Len;
         }
 
-        void DrawPath(CWorld* World, const FNavPath& Path, const glm::vec4& Color, float Thickness, float Lift, float Duration)
+        void DrawPath(CWorld* World, const FNavPath& Path, const FVector4& Color, float Thickness, float Lift, float Duration)
         {
             if (!World || !Path.bValid || Path.Corners.size() < 2) return;
 
-            const glm::vec3 LiftV(0.0f, Lift, 0.0f);
+            const FVector3 LiftV(0.0f, Lift, 0.0f);
             for (size_t i = 1; i < Path.Corners.size(); ++i)
             {
                 World->DrawLine(Path.Corners[i - 1] + LiftV, Path.Corners[i] + LiftV, Color, Thickness, true, Duration);
@@ -1142,17 +1142,17 @@ namespace Lumina
             for (size_t i = 0; i < Path.Corners.size(); ++i)
             {
                 const bool bGoal = (i + 1 == Path.Corners.size());
-                const glm::vec4 SphColor = bGoal ? glm::vec4(1.0f, 1.0f, 1.0f, 1.0f) : Color;
+                const FVector4 SphColor = bGoal ? FVector4(1.0f, 1.0f, 1.0f, 1.0f) : Color;
                 World->DrawSphere(Path.Corners[i] + LiftV, bGoal ? R * 1.6f : R, SphColor, 10, 1.0f, true, Duration);
             }
             // Partial paths are easy to misread; flag them with a red marker on the last corner.
             if (Path.bPartial)
             {
-                World->DrawSphere(Path.Corners.back() + LiftV, 0.25f, glm::vec4(1.0f, 0.2f, 0.2f, 1.0f), 12, 1.0f, true, Duration);
+                World->DrawSphere(Path.Corners.back() + LiftV, 0.25f, FVector4(1.0f, 0.2f, 0.2f, 1.0f), 12, 1.0f, true, Duration);
             }
         }
 
-        bool DrawDebugPath(CWorld* World, const glm::vec3& From, const glm::vec3& To, const glm::vec4& Color, float Duration)
+        bool DrawDebugPath(CWorld* World, const FVector3& From, const FVector3& To, const FVector4& Color, float Duration)
         {
             FNavPath Path;
             if (!FindPath(World, From, To, Path) || !Path.bValid) return false;
@@ -1165,35 +1165,35 @@ namespace Lumina
             Lua::FRef NavTable = Globals.NewTable("Nav");
 
             NavTable.SetFunction<[](CWorld* W) { return Nav::IsReady(W); }>("IsReady");
-            NavTable.SetFunction<[](CWorld* W, glm::vec3 From, glm::vec3 To) { return Nav::IsReachable(W, From, To); }>("IsReachable");
+            NavTable.SetFunction<[](CWorld* W, FVector3 From, FVector3 To) { return Nav::IsReachable(W, From, To); }>("IsReachable");
 
             // PathLength returns < 0 when no path.
-            NavTable.SetFunction<[](CWorld* W, glm::vec3 From, glm::vec3 To) { return Nav::PathLength(W, From, To); }>("PathLength");
+            NavTable.SetFunction<[](CWorld* W, FVector3 From, FVector3 To) { return Nav::PathLength(W, From, To); }>("PathLength");
 
             // Returns the input on failure; pair with IsReady/IsReachable when validity matters.
-            NavTable.SetFunction<[](CWorld* W, glm::vec3 P, glm::vec3 E) -> glm::vec3
+            NavTable.SetFunction<[](CWorld* W, FVector3 P, FVector3 E) -> FVector3
             {
-                glm::vec3 Out = P;
+                FVector3 Out = P;
                 Nav::ProjectPoint(W, P, E, Out);
                 return Out;
             }>("ProjectPoint");
 
-            NavTable.SetFunction<[](CWorld* W, glm::vec3 S, glm::vec3 E) -> glm::vec3
+            NavTable.SetFunction<[](CWorld* W, FVector3 S, FVector3 E) -> FVector3
             {
-                glm::vec3 Out = E;
+                FVector3 Out = E;
                 Nav::Raycast(W, S, E, Out);
                 return Out;
             }>("Raycast");
 
-            NavTable.SetFunction<[](CWorld* W, glm::vec3 O, float R) -> glm::vec3
+            NavTable.SetFunction<[](CWorld* W, FVector3 O, float R) -> FVector3
             {
-                glm::vec3 Out = O;
+                FVector3 Out = O;
                 Nav::FindRandomReachablePoint(W, O, R, Out);
                 return Out;
             }>("FindRandomReachablePoint");
 
             // Empty array when no path exists.
-            NavTable.SetFunction<[](CWorld* W, glm::vec3 S, glm::vec3 E) -> TVector<glm::vec3>
+            NavTable.SetFunction<[](CWorld* W, FVector3 S, FVector3 E) -> TVector<FVector3>
             {
                 FNavPath Path;
                 Nav::FindPath(W, S, E, Path);
@@ -1201,9 +1201,9 @@ namespace Lumina
             }>("FindPath");
 
             // Duration <= 0 draws for a single frame; useful for tick-driven scripts.
-            NavTable.SetFunction<[](CWorld* W, glm::vec3 S, glm::vec3 E, float Duration) -> bool
+            NavTable.SetFunction<[](CWorld* W, FVector3 S, FVector3 E, float Duration) -> bool
             {
-                return Nav::DrawDebugPath(W, S, E, glm::vec4(0.10f, 1.0f, 0.95f, 1.0f), Duration);
+                return Nav::DrawDebugPath(W, S, E, FVector4(0.10f, 1.0f, 0.95f, 1.0f), Duration);
             }>("DrawDebugPath");
         }
     }

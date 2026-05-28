@@ -21,7 +21,7 @@ namespace Lumina
         uint32          FrameSeed           = 0u;
         bool            bBurstPending       = true;
         bool            bPendingReset       = false;
-        glm::vec3       PrevEmitterPosition = glm::vec3(0.0f);
+        FVector3       PrevEmitterPosition = FVector3(0.0f);
         bool            bHasPrevPosition    = false;
         // CPU-side estimate of remaining simulated time before all particles
         // are guaranteed dead. Bumped to MaxLifetime on every frame that
@@ -75,7 +75,7 @@ namespace Lumina
 
         /** Local-space offset applied to the emitter origin relative to the entity transform. */
         PROPERTY(Editable, Category = "Particle System")
-        glm::vec3 EmitterOffset = glm::vec3(0.0f);
+        FVector3 EmitterOffset = FVector3(0.0f);
 
         /** Scales the asset's continuous spawn rate. 0 disables spawning, 1 uses the asset value. */
         PROPERTY(Editable, Category = "Particle System", ClampMin = 0.0f)
@@ -149,16 +149,16 @@ namespace Lumina
         bool GetBool(const FName& Name, bool Default = false) const;
         
         FUNCTION(Script) 
-        glm::vec2 GetVec2(const FName& Name) const;
+        FVector2 GetVec2(const FName& Name) const;
         
         FUNCTION(Script) 
-        glm::vec3 GetVec3(const FName& Name) const;
+        FVector3 GetVec3(const FName& Name) const;
         
         FUNCTION(Script)
-        glm::vec4 GetVec4(const FName& Name) const;
+        FVector4 GetVec4(const FName& Name) const;
         
         FUNCTION(Script)
-        glm::vec4 GetColor(const FName& Name) const;
+        FVector4 GetColor(const FName& Name) const;
 
         FUNCTION(Script) 
         void SetFloat(const FName& Name, float Value);
@@ -170,16 +170,16 @@ namespace Lumina
         void SetBool(const FName& Name, bool Value);
         
         FUNCTION(Script) 
-        void SetVec2(const FName& Name, glm::vec2 Value);
+        void SetVec2(const FName& Name, FVector2 Value);
         
         FUNCTION(Script) 
-        void SetVec3(const FName& Name, glm::vec3 Value);
+        void SetVec3(const FName& Name, FVector3 Value);
         
         FUNCTION(Script) 
-        void SetVec4(const FName& Name, glm::vec4 Value);
+        void SetVec4(const FName& Name, FVector4 Value);
         
         FUNCTION(Script) 
-        void SetColor(const FName& Name, glm::vec4 Value);
+        void SetColor(const FName& Name, FVector4 Value);
 
         /** Drop the override for this parameter, reverting to the asset default. */
         FUNCTION(Script) 

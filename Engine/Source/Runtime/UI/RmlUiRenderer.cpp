@@ -10,7 +10,7 @@
 #include "Renderer/RenderTypes.h"
 #include "Renderer/RHIGlobals.h"
 
-#include <glm/gtc/type_ptr.hpp>
+#include "Core/Math/Math.h"
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Vertex.h>
 
@@ -40,10 +40,10 @@ namespace Lumina
 
     struct FUIMaterialBrushPush
     {
-        glm::uvec4 ScreenSize;   // .xy = brush resolution
+        FUIntVector4 ScreenSize;   // .xy = brush resolution
         float      Time;
         uint32     MaterialIndex;
-        glm::uvec2 _Pad;
+        FUIntVector2 _Pad;
     };
     static_assert(sizeof(FUIMaterialBrushPush) == 32, "Must match the UIPixelPass.slang push block.");
 
@@ -224,7 +224,7 @@ namespace Lumina
         return true;
     }
 
-    void FRmlUiRenderer::BeginFrame(ICommandList& CmdList, FRHIImage* Target, const glm::uvec2& ViewportSize, const glm::uvec2& LogicalSize)
+    void FRmlUiRenderer::BeginFrame(ICommandList& CmdList, FRHIImage* Target, const FUIntVector2& ViewportSize, const FUIntVector2& LogicalSize)
     {
         CurrentCmdList   = &CmdList;
         CurrentTarget    = Target;
@@ -234,18 +234,18 @@ namespace Lumina
 
         DrawCalls.clear();
 
-        const glm::uvec2 ProjSize = (LogicalSize.x > 0 && LogicalSize.y > 0) ? LogicalSize : ViewportSize;
+        const FUIntVector2 ProjSize = (LogicalSize.x > 0 && LogicalSize.y > 0) ? LogicalSize : ViewportSize;
 
         // pixel -> NDC ortho; no Y-flip since Vulkan viewport is +Y-down.
         const float W = ProjSize.x > 0 ? float(ProjSize.x) : 1.0f;
         const float H = ProjSize.y > 0 ? float(ProjSize.y) : 1.0f;
-        ProjectionMatrix = glm::mat4(
+        ProjectionMatrix = FMatrix4(
             2.0f / W,  0.0f,       0.0f,  0.0f,
             0.0f,      2.0f / H,   0.0f,  0.0f,
             0.0f,      0.0f,       1.0f,  0.0f,
            -1.0f,     -1.0f,       0.0f,  1.0f);
 
-        UserTransform = glm::mat4(1.0f);
+        UserTransform = FMatrix4(1.0f);
         CachedMVP     = ProjectionMatrix;
         bScissorEnabled = false;
         // Reset the leftover clip rect too: a stale region from the previously rendered context
@@ -374,7 +374,7 @@ namespace Lumina
         if (!Batch.VertexBuffer)
         {
             FRHIBufferDesc Desc;
-            Desc.Size              = glm::max<uint32>(VertexBytes, 4096);
+            Desc.Size              = Math::Max<uint32>(VertexBytes, 4096);
             Desc.Usage.SetFlag(BUF_VertexBuffer);
             Desc.bKeepInitialState = true;
             Desc.InitialState      = EResourceStates::VertexBuffer;
@@ -389,7 +389,7 @@ namespace Lumina
         if (!Batch.IndexBuffer)
         {
             FRHIBufferDesc Desc;
-            Desc.Size              = glm::max<uint32>(IndexBytes, 4096);
+            Desc.Size              = Math::Max<uint32>(IndexBytes, 4096);
             Desc.Usage.SetFlag(BUF_IndexBuffer);
             Desc.bKeepInitialState = true;
             Desc.InitialState      = EResourceStates::IndexBuffer;
@@ -474,10 +474,10 @@ namespace Lumina
                 FUiDraw DD;
                 DD.MVP      = Draw.MVP;
                 DD.ClipRect = Draw.bScissorEnabled
-                    ? glm::vec4(float(Draw.Scissor.Position().x), float(Draw.Scissor.Position().y),
+                    ? FVector4(float(Draw.Scissor.Position().x), float(Draw.Scissor.Position().y),
                                 float(Draw.Scissor.Position().x + Draw.Scissor.Width()),
                                 float(Draw.Scissor.Position().y + Draw.Scissor.Height()))
-                    : glm::vec4(0.0f, 0.0f, FullW, FullH);
+                    : FVector4(0.0f, 0.0f, FullW, FullH);
                 DD.TextureID    = uint32(ResourceID);
                 DD.SamplerIndex = GRmlUiSamplerIndex;
                 DD.Pad0 = 0;
@@ -612,7 +612,7 @@ namespace Lumina
         FDrawCall Draw;
         Draw.Geometry        = Geometry;
         Draw.Texture         = Texture;
-        Draw.Translation     = glm::vec2(Translation.x, Translation.y);
+        Draw.Translation     = FVector2(Translation.x, Translation.y);
         Draw.MVP             = CachedMVP;
         Draw.bScissorEnabled = bScissorEnabled;
         Draw.Scissor         = CurrentScissor;
@@ -735,7 +735,7 @@ namespace Lumina
         // Persistent RGBA8 brush RT; resting state ShaderResource so the UI can
         // sample it, transitioned to RenderTarget each frame in RenderMaterialBrushes.
         FRHIImageDesc Desc;
-        Desc.Extent      = glm::uvec2(Width, Height);
+        Desc.Extent      = FUIntVector2(Width, Height);
         Desc.Format      = EFormat::RGBA8_UNORM;
         Desc.Dimension   = EImageDimension::Texture2D;
         Desc.NumMips     = 1;
@@ -760,7 +760,7 @@ namespace Lumina
         Tex.Image           = Image;
         Tex.ResourceID      = Image->GetResourceID();
         Tex.BrushMaterial   = Material;
-        Tex.BrushSize       = glm::uvec2(Width, Height);
+        Tex.BrushSize       = FUIntVector2(Width, Height);
         Tex.BrushSourcePath = FString(SourcePath.data(), SourcePath.size());
         Textures.emplace(Handle, Move(Tex));
 
@@ -785,7 +785,7 @@ namespace Lumina
 
         // Resting state ShaderResource; bKeepInitialState pins across frames.
         FRHIImageDesc Desc;
-        Desc.Extent      = glm::uvec2(uint32(Width), uint32(Height));
+        Desc.Extent      = FUIntVector2(uint32(Width), uint32(Height));
         Desc.Format      = EFormat::RGBA8_UNORM;
         Desc.Dimension   = EImageDimension::Texture2D;
         Desc.NumMips     = 1;
@@ -873,11 +873,11 @@ namespace Lumina
         if (Transform)
         {
             // RmlUi defaults column-major (matches glm); RMLUI_MATRIX_ROW_MAJOR would require a transpose.
-            std::memcpy(glm::value_ptr(UserTransform), Transform->data(), sizeof(float) * 16);
+            std::memcpy(Math::ValuePtr(UserTransform), Transform->data(), sizeof(float) * 16);
         }
         else
         {
-            UserTransform = glm::mat4(1.0f);
+            UserTransform = FMatrix4(1.0f);
         }
         CachedMVP = ProjectionMatrix * UserTransform;
     }
@@ -1073,7 +1073,7 @@ namespace Lumina
             CmdList.SetGraphicsState(State);
 
             FUIMaterialBrushPush PC = {};
-            PC.ScreenSize    = glm::uvec4(Tex.BrushSize.x, Tex.BrushSize.y, 0u, 0u);
+            PC.ScreenSize    = FUIntVector4(Tex.BrushSize.x, Tex.BrushSize.y, 0u, 0u);
             PC.Time          = Time;
             PC.MaterialIndex = (uint32)Material->GetMaterialIndex();
             CmdList.SetPushConstants(&PC, sizeof(PC));

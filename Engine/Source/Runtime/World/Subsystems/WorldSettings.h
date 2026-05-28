@@ -78,7 +78,7 @@ namespace Lumina
 
         /** Normalized direction of gravity in world space. */
         PROPERTY(Editable, Category = "Physics")
-        glm::vec3 GravityDirection = glm::vec3(0.0f, -1.0f, 0.0f);
+        FVector3 GravityDirection = FVector3(0.0f, -1.0f, 0.0f);
 
         /** Fixed physics update rate in Hz. Higher = more accurate but more CPU. */
         PROPERTY(Editable, Category = "Physics")

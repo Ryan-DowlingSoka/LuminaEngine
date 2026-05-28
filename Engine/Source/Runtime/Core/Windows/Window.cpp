@@ -289,9 +289,9 @@ namespace Lumina
 		return Impl->Window;
 	}
 
-	glm::uvec2 FWindow::GetExtent() const
+	FUIntVector2 FWindow::GetExtent() const
 	{
-		glm::ivec2 ReturnVal;
+		FIntVector2 ReturnVal;
 		glfwGetWindowSize(Impl->Window, &ReturnVal.x, &ReturnVal.y);
 
 		return ReturnVal;

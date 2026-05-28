@@ -1,6 +1,6 @@
 ﻿#include "PCH.h"
 #include <chrono>
-#include <glm/gtx/string_cast.hpp>
+#include "Core/Math/Math.h"
 #include "MeshFormatImport.h"
 #include "Assets/AssetTypes/Mesh/Animation/Animation.h"
 #include "Core/Progress/SlowTask.h"
@@ -25,9 +25,9 @@ namespace
 
 namespace Lumina::Import::Mesh::FBX
 {
-    static glm::mat4 ConvertMatrix(const ofbx::DMatrix& m)
+    static FMatrix4 ConvertMatrix(const ofbx::DMatrix& m)
     {
-        return glm::mat4(
+        return FMatrix4(
             m.m[0], m.m[1], m.m[2], m.m[3],
             m.m[4], m.m[5], m.m[6], m.m[7],
             m.m[8], m.m[9], m.m[10], m.m[11],
@@ -205,9 +205,9 @@ namespace Lumina::Import::Mesh::FBX
                 struct KeyframeData
                 {
                     float Time;
-                    glm::vec3 Translation;
-                    glm::quat Rotation;
-                    glm::vec3 Scale;
+                    FVector3 Translation;
+                    FQuat Rotation;
+                    FVector3 Scale;
                 };
                 
                 TVector<KeyframeData> Keyframes;
@@ -243,7 +243,7 @@ namespace Lumina::Import::Mesh::FBX
                     }
                     
                     ofbx::DMatrix LocalMatrix = Bone->evalLocal(AnimTranslation, AnimRotation, AnimScale);
-                    glm::mat4 Mat = ConvertMatrix(LocalMatrix);
+                    FMatrix4 Mat = ConvertMatrix(LocalMatrix);
                     
                     Mat[3][0] *= SceneScale;
                     Mat[3][1] *= SceneScale;
@@ -251,9 +251,9 @@ namespace Lumina::Import::Mesh::FBX
                     
                     KeyframeData Keyframe;
                     Keyframe.Time = Time;
-                    Keyframe.Translation = glm::vec3(Mat[3][0], Mat[3][1], Mat[3][2]);
-                    Keyframe.Rotation = glm::quat_cast(Mat);
-                    Keyframe.Scale = glm::vec3(glm::length(glm::vec3(Mat[0])), glm::length(glm::vec3(Mat[1])), glm::length(glm::vec3(Mat[2])));
+                    Keyframe.Translation = FVector3(Mat[3][0], Mat[3][1], Mat[3][2]);
+                    Keyframe.Rotation = Math::ToQuat(Mat);
+                    Keyframe.Scale = FVector3(Math::Length(FVector3(Mat[0])), Math::Length(FVector3(Mat[1])), Math::Length(FVector3(Mat[2])));
                     
                     Keyframes.push_back(Keyframe);
                 }
@@ -419,13 +419,13 @@ namespace Lumina::Import::Mesh::FBX
                     int32 BoneIndex = It->second;
                     
                     ofbx::DMatrix TransformLinkMatrix = Cluster->getTransformLinkMatrix();
-                    glm::mat4 JointWorldTransform = ConvertMatrix(TransformLinkMatrix);
+                    FMatrix4 JointWorldTransform = ConvertMatrix(TransformLinkMatrix);
                     
                     JointWorldTransform[3][0] *= SceneScale;
                     JointWorldTransform[3][1] *= SceneScale;
                     JointWorldTransform[3][2] *= SceneScale;
                     
-                    Skeleton->Bones[BoneIndex].InvBindMatrix = glm::inverse(JointWorldTransform);
+                    Skeleton->Bones[BoneIndex].InvBindMatrix = Math::Inverse(JointWorldTransform);
                 }
             }
         
@@ -450,7 +450,7 @@ namespace Lumina::Import::Mesh::FBX
                 }
     
                 ofbx::DMatrix LocalMatrix = BoneObj->getLocalTransform();
-                glm::mat4 LocalTransform = ConvertMatrix(LocalMatrix);
+                FMatrix4 LocalTransform = ConvertMatrix(LocalMatrix);
                 
                 LocalTransform[3][0] *= SceneScale;
                 LocalTransform[3][1] *= SceneScale;
@@ -509,11 +509,11 @@ namespace Lumina::Import::Mesh::FBX
 
             // Bake FBX transform: WorldVertex = GlobalTransform * GeometricMatrix * LocalVertex.
             // Per-mesh GeometricMatrix is FBX-specific; ignoring it leaves meshes inconsistently oriented.
-            const glm::mat4 GlobalMatrix    = ConvertMatrix(Mesh->getGlobalTransform());
-            const glm::mat4 GeometricMatrix = ConvertMatrix(Mesh->getGeometricMatrix());
-            const glm::mat4 MeshToWorld     = GlobalMatrix * GeometricMatrix;
-            const glm::mat4 PosMatrix       = glm::scale(glm::mat4(1.0f), glm::vec3(SceneScale)) * MeshToWorld;
-            const glm::mat3 NormalMatrix    = glm::transpose(glm::inverse(glm::mat3(MeshToWorld)));
+            const FMatrix4 GlobalMatrix    = ConvertMatrix(Mesh->getGlobalTransform());
+            const FMatrix4 GeometricMatrix = ConvertMatrix(Mesh->getGeometricMatrix());
+            const FMatrix4 MeshToWorld     = GlobalMatrix * GeometricMatrix;
+            const FMatrix4 PosMatrix       = Math::Scale(FMatrix4(1.0f), FVector3(SceneScale)) * MeshToWorld;
+            const FMatrix3 NormalMatrix    = Math::Transpose(Math::Inverse(FMatrix3(MeshToWorld)));
 
             const int CPCount = Mesh->getGeometry()->getGeometryData().getPositions().count;
 
@@ -635,17 +635,17 @@ namespace Lumina::Import::Mesh::FBX
                         else
                         {
                             ofbx::Vec3 Position = Positions.get(Index);
-                            glm::vec3 PosLocal(Position.x, Position.y, Position.z);
-                            glm::vec3 Pos = glm::vec3(PosMatrix * glm::vec4(PosLocal, 1.0f));
+                            FVector3 PosLocal(Position.x, Position.y, Position.z);
+                            FVector3 Pos = FVector3(PosMatrix * FVector4(PosLocal, 1.0f));
 
-                            glm::vec3 Normal = glm::normalize(NormalMatrix * glm::vec3(0.0f, 1.0f, 0.0f));
+                            FVector3 Normal = Math::Normalize(NormalMatrix * FVector3(0.0f, 1.0f, 0.0f));
                             if (Normals.values)
                             {
                                 ofbx::Vec3 N = Normals.get(Index);
-                                Normal = glm::normalize(NormalMatrix * glm::vec3(N.x, N.y, N.z));
+                                Normal = Math::Normalize(NormalMatrix * FVector3(N.x, N.y, N.z));
                             }
 
-                            glm::vec2 UV(0, 0);
+                            FVector2 UV(0, 0);
                             if (UVs.values)
                             {
                                 ofbx::Vec2 U = UVs.get(Index);
@@ -655,14 +655,14 @@ namespace Lumina::Import::Mesh::FBX
                                     U.y = 1.0f - U.y;
                                 }
 
-                                UV = glm::vec2(U.x, U.y);
+                                UV = FVector2(U.x, U.y);
                             }
 
-                            glm::vec4 Col(1.0f);
+                            FVector4 Col(1.0f);
                             if (Colors.values)
                             {
                                 ofbx::Vec4 Color = Colors.get(Index);
-                                Col = glm::vec4(Color.x, Color.y, Color.z, Color.w);
+                                Col = FVector4(Color.x, Color.y, Color.z, Color.w);
                             }
 
                             if (bSkinned)
@@ -671,11 +671,11 @@ namespace Lumina::Import::Mesh::FBX
                                 Vertex.Position = Pos;
                                 Vertex.Normal   = PackNormal(Normal);
                                 Vertex.Tangent  = 0;
-                                Vertex.UV       = glm::packHalf2x16(UV);
+                                Vertex.UV       = Math::PackHalf2x16(UV);
                                 Vertex.Color    = PackColor(Col);
 
-                                glm::u8vec4 JointIndices{};
-                                glm::vec4   JointWeights{};
+                                FU8Vector4 JointIndices{};
+                                FVector4   JointWeights{};
 
                                 if (Positions.indices)
                                 {
@@ -691,7 +691,7 @@ namespace Lumina::Import::Mesh::FBX
                                 }
 
                                 Vertex.JointIndices = JointIndices;
-                                Vertex.JointWeights = glm::u8vec4(JointWeights * 255.0f);
+                                Vertex.JointWeights = FU8Vector4(JointWeights * 255.0f);
 
                                 VertexIdx = (uint32)Result.SkinnedVerts.size();
                                 Result.SkinnedVerts.push_back(Vertex);
@@ -702,7 +702,7 @@ namespace Lumina::Import::Mesh::FBX
                                 Vertex.Position = Pos;
                                 Vertex.Normal   = PackNormal(Normal);
                                 Vertex.Tangent  = 0;
-                                Vertex.UV       = glm::packHalf2x16(UV);
+                                Vertex.UV       = Math::PackHalf2x16(UV);
                                 Vertex.Color    = PackColor(Col);
 
                                 VertexIdx = (uint32)Result.StaticVerts.size();

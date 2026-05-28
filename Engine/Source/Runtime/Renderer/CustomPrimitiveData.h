@@ -22,7 +22,7 @@ namespace Lumina
         int32       Int;
         uint32      UInt;
         bool        Bool;
-        glm::u8vec4 Bytes;
+        FU8Vector4 Bytes;
 
         static ECustomPrimitiveDataUnion FromFloat(float Value)
         {
@@ -52,7 +52,7 @@ namespace Lumina
             return D;
         }
 
-        static ECustomPrimitiveDataUnion FromColor(glm::u8vec4 Bytes)
+        static ECustomPrimitiveDataUnion FromColor(FU8Vector4 Bytes)
         {
             ECustomPrimitiveDataUnion D;
             D.Bytes = Bytes;
@@ -96,7 +96,7 @@ namespace Lumina
         bool AsBool() const { return Data.Bool; }
         
         FUNCTION(Script)
-        glm::vec4 AsColor() const { return glm::vec4(Data.Bytes) / 255.0f; }
+        FVector4 AsColor() const { return FVector4(Data.Bytes) / 255.0f; }
         
         FUNCTION(Script)
         void SetAsFloat(float X)
@@ -120,10 +120,10 @@ namespace Lumina
         }
         
         FUNCTION(Script)
-        void SetAsColor(glm::vec4 Color)
+        void SetAsColor(FVector4 Color)
         {
             Type = ECustomPrimitiveDataType::Color;
-            Data.Bytes = glm::u8vec4(glm::clamp(Color, 0.0f, 1.0f) * 255.0f);
+            Data.Bytes = FU8Vector4(Math::Clamp(Color, 0.0f, 1.0f) * 255.0f);
         }
     };
 }

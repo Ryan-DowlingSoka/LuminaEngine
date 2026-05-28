@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "Config.h"
 
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 
 #include "FileSystem/FileSystem.h"
 #include "Log/Log.h"
@@ -366,9 +366,9 @@ namespace Lumina
         return FString();
     }
 
-    glm::vec2 FConfig::GetVec2(FStringView Key) const
+    FVector2 FConfig::GetVec2(FStringView Key) const
     {
-        glm::vec2 Out(0.0f);
+        FVector2 Out(0.0f);
         if (const Json* Node = GetRaw(Key))
         {
             JsonToVec(*Node, &Out.x, 2);
@@ -380,9 +380,9 @@ namespace Lumina
         return Out;
     }
 
-    glm::vec3 FConfig::GetVec3(FStringView Key) const
+    FVector3 FConfig::GetVec3(FStringView Key) const
     {
-        glm::vec3 Out(0.0f);
+        FVector3 Out(0.0f);
         if (const Json* Node = GetRaw(Key))
         {
             JsonToVec(*Node, &Out.x, 3);
@@ -394,9 +394,9 @@ namespace Lumina
         return Out;
     }
 
-    glm::vec4 FConfig::GetVec4(FStringView Key) const
+    FVector4 FConfig::GetVec4(FStringView Key) const
     {
-        glm::vec4 Out(0.0f);
+        FVector4 Out(0.0f);
         if (const Json* Node = GetRaw(Key))
         {
             JsonToVec(*Node, &Out.x, 4);

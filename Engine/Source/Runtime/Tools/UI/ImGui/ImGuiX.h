@@ -8,7 +8,7 @@
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Containers/Array.h"
 #include "Containers/Function.h"
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 #include "Platform/GenericPlatform.h"
 
 struct ImGuiWindow;
@@ -192,11 +192,11 @@ namespace Lumina::ImGuiX
         void Draw(TFunction<void()>&& menuSectionDrawFunction = TFunction<void()>(), float menuSectionWidth = 0, TFunction<void()>&& controlsSectionDrawFunction = TFunction<void()>(), float controlsSectionWidth = 0);
 
         // Get the screen space rectangle for this title bar
-        glm::vec4 const& GetScreenRectangle() const { return Rect; }
+        FVector4 const& GetScreenRectangle() const { return Rect; }
 
     private:
 
-        glm::vec4 Rect = glm::vec4(0.0f);
+        FVector4 Rect = FVector4(0.0f);
     };
     
 }

@@ -45,8 +45,8 @@ namespace Lumina
         RebuildPreview();
 
         CGeometryCollection* Collection = Cast<CGeometryCollection>(Asset.Get());
-        const FAABB Bounds = Collection ? Collection->GetFractureData().SourceBounds : FAABB(glm::vec3(-1.0f), glm::vec3(1.0f));
-        const float Radius = glm::max(glm::length(Bounds.GetSize() * 0.5f), 0.5f);
+        const FAABB Bounds = Collection ? Collection->GetFractureData().SourceBounds : FAABB(FVector3(-1.0f), FVector3(1.0f));
+        const float Radius = Math::Max(Math::Length(Bounds.GetSize() * 0.5f), 0.5f);
         SetOrbitTarget(Bounds.GetCenter(), Radius * 3.0f);
         SetCameraMode(EEditorCameraMode::Orbit);
     }
@@ -126,8 +126,8 @@ namespace Lumina
             return;
         }
 
-        const glm::vec3 Center = Collection->GetFractureData().SourceBounds.GetCenter();
-        const int32 Count = glm::min((int32)PieceEntities.size(), Collection->GetNumPieces());
+        const FVector3 Center = Collection->GetFractureData().SourceBounds.GetCenter();
+        const int32 Count = Math::Min((int32)PieceEntities.size(), Collection->GetNumPieces());
 
         for (int32 i = 0; i < Count; ++i)
         {
@@ -139,10 +139,10 @@ namespace Lumina
 
             // Piece meshes are recentered to their centroid in BuildPieceMesh, so place each
             // entity at its centroid to reassemble the source mesh; explode pushes outward from there.
-            const glm::vec3 PieceCenter = Collection->GetPiece(i).Center;
-            const glm::vec3 Delta = PieceCenter - Center;
-            const float Length = glm::length(Delta);
-            const glm::vec3 Offset = (Length > 1e-4f ? Delta / Length : glm::vec3(0.0f)) * ExplodeAmount;
+            const FVector3 PieceCenter = Collection->GetPiece(i).Center;
+            const FVector3 Delta = PieceCenter - Center;
+            const float Length = Math::Length(Delta);
+            const FVector3 Offset = (Length > 1e-4f ? Delta / Length : FVector3(0.0f)) * ExplodeAmount;
             World->GetEntityRegistry().get<STransformComponent>(Entity).SetLocation(PieceCenter + Offset);
         }
     }

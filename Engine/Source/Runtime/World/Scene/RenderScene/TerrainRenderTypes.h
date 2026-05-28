@@ -1,6 +1,6 @@
 #pragma once
 
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 #include "Platform/GenericPlatform.h"
 
 #ifndef VERIFY_SSBO_ALIGNMENT
@@ -23,7 +23,7 @@ namespace Lumina
     /** Mirror of FTerrainRenderParams in TerrainBase{Vertex,Pixel}Pass.slang. */
     struct alignas(16) FTerrainRenderParams
     {
-        glm::vec2   OriginXZ        = glm::vec2(0.0f);
+        FVector2   OriginXZ        = FVector2(0.0f);
         float       TileWorldSize   = 4096.0f;
         float       MaxHeight       = 256.0f;
 
@@ -32,7 +32,7 @@ namespace Lumina
         int32       ChunksPerSide   = 0;
         int32       LayerCount      = 0;
 
-        glm::vec3   WorldOriginY    = glm::vec3(0.0f);
+        FVector3   WorldOriginY    = FVector3(0.0f);
         uint32      EntityID        = 0u;
 
         uint32      MaterialIndex   = 0u;
@@ -60,14 +60,14 @@ namespace Lumina
     /** Per-chunk metadata: tight world AABBs + meshlet range. Cull pass tests against frustum/HiZ. */
     struct alignas(16) FTerrainChunkInfo
     {
-        glm::vec3   BoundsMin       = glm::vec3(0.0f);
+        FVector3   BoundsMin       = FVector3(0.0f);
         float       _Pad0           = 0.0f;
-        glm::vec3   BoundsMax       = glm::vec3(0.0f);
+        FVector3   BoundsMax       = FVector3(0.0f);
         float       _Pad1           = 0.0f;
 
         // QuadOriginXY = ChunkCoord * QuadsPerChunk.
-        glm::ivec2  ChunkCoord      = glm::ivec2(0);
-        glm::ivec2  QuadOrigin      = glm::ivec2(0);
+        FIntVector2  ChunkCoord      = FIntVector2(0);
+        FIntVector2  QuadOrigin      = FIntVector2(0);
 
         // Range into per-terrain meshlet array; MeshletCount stored for future partial chunks.
         uint32      MeshletOffset   = 0u;
@@ -80,14 +80,14 @@ namespace Lumina
     /** Per-meshlet sub-region of its parent chunk's quad grid; cull pass appends survivors. */
     struct alignas(16) FTerrainMeshletInfo
     {
-        glm::vec3   BoundsMin       = glm::vec3(0.0f);
+        FVector3   BoundsMin       = FVector3(0.0f);
         float       _Pad0           = 0.0f;
-        glm::vec3   BoundsMax       = glm::vec3(0.0f);
+        FVector3   BoundsMax       = FVector3(0.0f);
         float       _Pad1           = 0.0f;
 
-        glm::ivec2  ChunkLocalQuadOrigin = glm::ivec2(0);
+        FIntVector2  ChunkLocalQuadOrigin = FIntVector2(0);
         // Quads covered per axis; smaller for partial meshlets at chunk far edge.
-        glm::ivec2  QuadExtent      = glm::ivec2(0);
+        FIntVector2  QuadExtent      = FIntVector2(0);
 
         uint32      ChunkIndex      = 0u;
         uint32      _Pad2           = 0u;

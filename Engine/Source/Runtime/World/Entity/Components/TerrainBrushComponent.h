@@ -51,7 +51,7 @@ namespace Lumina
         int32 ActiveLayer = 0;
 
         /** World-space brush center raycast from the viewport cursor each frame. */
-        glm::vec3 WorldPosition = glm::vec3(0.0f);
+        FVector3 WorldPosition = FVector3(0.0f);
 
         /** True while the mouse button is held, consumed by the sculpt task. */
         bool bStrokeActive = false;

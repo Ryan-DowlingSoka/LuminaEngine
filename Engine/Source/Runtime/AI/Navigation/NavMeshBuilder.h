@@ -8,12 +8,12 @@ namespace Lumina
     /** World-space triangle snapshot. Areas is one ENavArea per tri (empty = all Ground). */
     struct FNavBuildInput
     {
-        TVector<glm::vec3>      Vertices;
+        TVector<FVector3>      Vertices;
         TVector<uint32>         Indices;
         TVector<uint8>          Areas;          // optional, size = NumTris
 
-        glm::vec3               BoundsMin = glm::vec3( FLT_MAX);
-        glm::vec3               BoundsMax = glm::vec3(-FLT_MAX);
+        FVector3               BoundsMin = FVector3( FLT_MAX);
+        FVector3               BoundsMax = FVector3(-FLT_MAX);
 
         FNavBuildSettings       Settings;
     };
@@ -21,7 +21,7 @@ namespace Lumina
     /** Passed to FNavMesh::Initialize. */
     struct FNavBuildOutput
     {
-        glm::vec3               Origin = glm::vec3(0.0f);
+        FVector3               Origin = FVector3(0.0f);
         float                   TileWorldSize = 0.0f;
         int32                   MaxTiles = 0;
         int32                   MaxPolysPerTile = 0;

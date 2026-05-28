@@ -57,7 +57,7 @@ namespace Lumina
         }
     }
 
-    void FCameraManager::StoreResolvedView(const glm::vec3& Position, const glm::quat& Rotation, float FOV, const SPostProcessSettings& PostProcess)
+    void FCameraManager::StoreResolvedView(const FVector3& Position, const FQuat& Rotation, float FOV, const SPostProcessSettings& PostProcess)
     {
         LastViewPosition = Position;
         LastViewRotation = Rotation;

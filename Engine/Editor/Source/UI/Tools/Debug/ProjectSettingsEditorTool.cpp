@@ -1,7 +1,7 @@
 #include "ProjectSettingsEditorTool.h"
 
 #include <EASTL/sort.h>
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 
 #include "Config/Config.h"
 #include "FileSystem/FileSystem.h"
@@ -295,7 +295,7 @@ namespace Lumina
         }
         case EConfigValueType::Color:
         {
-            glm::vec4 Value = GConfig->GetColor(Setting.Key);
+            FVector4 Value = GConfig->GetColor(Setting.Key);
             if (ImGui::ColorEdit4("##v", &Value.x))
             {
                 std::vector<float> J = { Value.x, Value.y, Value.z, Value.w };
@@ -305,7 +305,7 @@ namespace Lumina
         }
         case EConfigValueType::Vec2:
         {
-            glm::vec2 Value = GConfig->GetVec2(Setting.Key);
+            FVector2 Value = GConfig->GetVec2(Setting.Key);
             if (ImGui::DragFloat2("##v", &Value.x, 0.05f))
             {
                 std::vector<float> J = { Value.x, Value.y };
@@ -315,7 +315,7 @@ namespace Lumina
         }
         case EConfigValueType::Vec3:
         {
-            glm::vec3 Value = GConfig->GetVec3(Setting.Key);
+            FVector3 Value = GConfig->GetVec3(Setting.Key);
             if (ImGui::DragFloat3("##v", &Value.x, 0.05f))
             {
                 std::vector<float> J = { Value.x, Value.y, Value.z };
@@ -325,7 +325,7 @@ namespace Lumina
         }
         case EConfigValueType::Vec4:
         {
-            glm::vec4 Value = GConfig->GetVec4(Setting.Key);
+            FVector4 Value = GConfig->GetVec4(Setting.Key);
             if (ImGui::DragFloat4("##v", &Value.x, 0.05f))
             {
                 std::vector<float> J = { Value.x, Value.y, Value.z, Value.w };

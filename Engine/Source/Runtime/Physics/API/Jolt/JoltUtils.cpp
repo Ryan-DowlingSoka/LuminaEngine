@@ -1,6 +1,6 @@
 ﻿#include "pch.h"
 #include "JoltUtils.h"
-#include <glm/detail/type_quat.hpp>
+#include "Core/Math/Math.h"
 #include "Jolt/Physics/Collision/ObjectLayer.h"
 
 
@@ -11,37 +11,37 @@ namespace Lumina::JoltUtils
         return ((uint32)Profile.Mask << 16) | (uint32)Profile.Layer;
     }
 
-    JPH::Vec3 ToJPHVec3(const glm::vec3& Vec)
+    JPH::Vec3 ToJPHVec3(const FVector3& Vec)
     {
         return JPH::Vec3(Vec.x, Vec.y, Vec.z);
     }
     
-    glm::vec3 FromJPHVec3(const JPH::Vec3& Vec)
+    FVector3 FromJPHVec3(const JPH::Vec3& Vec)
     {
-        return glm::vec3(Vec.GetX(), Vec.GetY(), Vec.GetZ());
+        return FVector3(Vec.GetX(), Vec.GetY(), Vec.GetZ());
     }
     
-    JPH::Vec4 ToJPHVec4(const glm::vec4& Vec)
+    JPH::Vec4 ToJPHVec4(const FVector4& Vec)
     {
         return JPH::Vec4(Vec.x, Vec.y, Vec.z, Vec.w);
     }
     
-    glm::vec4 FromJPHVec4(const JPH::Vec4& Vec)
+    FVector4 FromJPHVec4(const JPH::Vec4& Vec)
     {
-        return glm::vec4(Vec.GetX(), Vec.GetY(), Vec.GetZ(), Vec.GetW());
+        return FVector4(Vec.GetX(), Vec.GetY(), Vec.GetZ(), Vec.GetW());
     }
     
-    JPH::Quat ToJPHQuat(const glm::quat& Quat)
+    JPH::Quat ToJPHQuat(const FQuat& Quat)
     {
         return JPH::Quat(Quat.x, Quat.y, Quat.z, Quat.w);
     }
     
-    glm::quat FromJPHQuat(const JPH::Quat& Quat)
+    FQuat FromJPHQuat(const JPH::Quat& Quat)
     {
-        return glm::quat(Quat.GetW(), Quat.GetX(), Quat.GetY(), Quat.GetZ());
+        return FQuat(Quat.GetW(), Quat.GetX(), Quat.GetY(), Quat.GetZ());
     }
     
-    JPH::Mat44 ToJPHMat44(const glm::mat4& Mat)
+    JPH::Mat44 ToJPHMat44(const FMatrix4& Mat)
     {
         return JPH::Mat44(
             JPH::Vec4(Mat[0][0], Mat[0][1], Mat[0][2], Mat[0][3]),
@@ -51,9 +51,9 @@ namespace Lumina::JoltUtils
         );
     }
     
-    glm::mat4 FromJPHMat44(const JPH::Mat44& Mat)
+    FMatrix4 FromJPHMat44(const JPH::Mat44& Mat)
     {
-        glm::mat4 Result;
+        FMatrix4 Result;
         for (int col = 0; col < 4; ++col)
         {
             JPH::Vec4 Column = Mat.GetColumn4(col);
@@ -65,17 +65,17 @@ namespace Lumina::JoltUtils
         return Result;
     }
     
-    JPH::RVec3 ToJPHRVec3(const glm::dvec3& Vec)
+    JPH::RVec3 ToJPHRVec3(const FDoubleVector3& Vec)
     {
         return JPH::RVec3(Vec.x, Vec.y, Vec.z);
     }
     
-    glm::dvec3 FromJPHRVec3(const JPH::RVec3& Vec)
+    FDoubleVector3 FromJPHRVec3(const JPH::RVec3& Vec)
     {
-        return glm::dvec3(Vec.GetX(), Vec.GetY(), Vec.GetZ());
+        return FDoubleVector3(Vec.GetX(), Vec.GetY(), Vec.GetZ());
     }
     
-    JPH::Color ToJPHColor(const glm::vec4& Color)
+    JPH::Color ToJPHColor(const FVector4& Color)
     {
         return JPH::Color(
             static_cast<uint8_t>(Color.r * 255.0f),
@@ -85,9 +85,9 @@ namespace Lumina::JoltUtils
         );
     }
     
-    glm::vec4 FromJPHColor(const JPH::Color& Color)
+    FVector4 FromJPHColor(const JPH::Color& Color)
     {
-        return glm::vec4(
+        return FVector4(
             Color.r / 255.0f,
             Color.g / 255.0f,
             Color.b / 255.0f,
@@ -95,7 +95,7 @@ namespace Lumina::JoltUtils
         );
     }
     
-    JPH::RMat44 ToJPHRMat44(const glm::mat4& Mat)
+    JPH::RMat44 ToJPHRMat44(const FMatrix4& Mat)
     {
         return JPH::RMat44(
             JPH::Vec4(Mat[0][0], Mat[0][1], Mat[0][2], Mat[0][3]),
@@ -105,9 +105,9 @@ namespace Lumina::JoltUtils
         );
     }
     
-    glm::mat4 FromJPHRMat44(const JPH::RMat44& Mat)
+    FMatrix4 FromJPHRMat44(const JPH::RMat44& Mat)
     {
-        glm::mat4 Result;
+        FMatrix4 Result;
         for (int col = 0; col < 3; ++col)
         {
             JPH::Vec4 Column = Mat.GetColumn4(col);

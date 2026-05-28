@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 #include "Core/Math/Transform.h"
 #include "Core/Math/Sine.h"
 #include "InterpolatingMovementComponent.generated.h"
@@ -37,7 +37,7 @@ namespace Lumina
     
         /** World-space axis the entity oscillates along. */
         PROPERTY(Editable, Category = "Wave")
-        glm::vec3 Axis = glm::vec3(0.0f, 1.0f, 0.0f);
+        FVector3 Axis = FVector3(0.0f, 1.0f, 0.0f);
 
         /** Peak displacement distance from the rest position (meters). */
         PROPERTY(Editable, Category = "Wave")
@@ -57,7 +57,7 @@ namespace Lumina
 
         /** World-space axis for the secondary wave. */
         PROPERTY(Editable, Category = "Multi-Axis")
-        glm::vec3 SecondaryAxis = glm::vec3(1.0f, 0.0f, 0.0f);
+        FVector3 SecondaryAxis = FVector3(1.0f, 0.0f, 0.0f);
 
         /** Peak displacement of the secondary wave (meters). */
         PROPERTY(Editable, Category = "Multi-Axis")
@@ -103,7 +103,7 @@ namespace Lumina
         PROPERTY(Editable, Category = "Behavior")
         float StartDelay = 0.0f;
     
-        glm::vec3 InitialPosition = glm::vec3(0.0f);
+        FVector3 InitialPosition = FVector3(0.0f);
         float CurrentTime = 0.0f;
         float CurrentAmplitude = 0.0f;
         bool bInitialized = false;

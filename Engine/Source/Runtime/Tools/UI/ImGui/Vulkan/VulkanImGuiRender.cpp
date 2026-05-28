@@ -34,7 +34,7 @@ namespace Lumina
     struct FImGuiViewportData
     {
         FVulkanSwapchain* Swapchain = nullptr;   // created on game thread; driven + destroyed on render thread
-        glm::uvec2        Size = {0, 0};
+        FUIntVector2        Size = {0, 0};
     };
 
     // 24 B push block; must mirror Includes/ImGuiCommon.slang::FImGuiPushConstants.
@@ -563,7 +563,7 @@ namespace Lumina
     void FVulkanImGuiRender::CreateFontTexture(ImTextureData* Tex)
     {
         FRHIImageDesc Desc;
-        Desc.Extent            = glm::uvec2((uint32)Tex->Width, (uint32)Tex->Height);
+        Desc.Extent            = FUIntVector2((uint32)Tex->Width, (uint32)Tex->Height);
         Desc.Format            = EFormat::RGBA8_UNORM;   // ImGui only emits RGBA32 with RendererHasTextures
         Desc.Dimension         = EImageDimension::Texture2D;
         Desc.NumMips           = 1;
@@ -661,7 +661,7 @@ namespace Lumina
 
         int FbW = 0, FbH = 0;
         glfwGetFramebufferSize(Window, &FbW, &FbH);
-        const glm::uvec2 Extent((uint32)std::max(FbW, 1), (uint32)std::max(FbH, 1));
+        const FUIntVector2 Extent((uint32)std::max(FbW, 1), (uint32)std::max(FbH, 1));
 
         FImGuiViewportData* Data = IM_NEW(FImGuiViewportData)();
         Data->Swapchain = Memory::New<FVulkanSwapchain>();
@@ -697,7 +697,7 @@ namespace Lumina
         FImGuiViewportData* Data = (FImGuiViewportData*)Viewport->RendererUserData;
         if (Data != nullptr)
         {
-            Data->Size = glm::uvec2((uint32)std::max(Size.x, 1.0f), (uint32)std::max(Size.y, 1.0f));
+            Data->Size = FUIntVector2((uint32)std::max(Size.x, 1.0f), (uint32)std::max(Size.y, 1.0f));
         }
     }
 
@@ -798,7 +798,7 @@ namespace Lumina
         }
 
         // Compare against desired (not actual) extent to avoid recreating every frame when surface clamps.
-        const glm::uvec2 WantExtent((uint32)Cap.FbWidth, (uint32)Cap.FbHeight);
+        const FUIntVector2 WantExtent((uint32)Cap.FbWidth, (uint32)Cap.FbHeight);
         if (WantExtent.x > 0 && WantExtent.y > 0 && Cap.Swapchain->GetDesiredExtent() != WantExtent)
         {
             Cap.Swapchain->RecreateSwapchain(WantExtent);
@@ -839,7 +839,7 @@ namespace Lumina
 
             // The image extent may be clamped below the requested (captured) size,
             // so viewport/scissor/renderArea must use the ACTUAL image extent.
-            const glm::uvec2 ImgExtent = Target->GetExtent();
+            const FUIntVector2 ImgExtent = Target->GetExtent();
             const float ImgW = (float)ImgExtent.x;
             const float ImgH = (float)ImgExtent.y;
 

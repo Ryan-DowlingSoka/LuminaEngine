@@ -87,12 +87,12 @@ namespace Lumina
                 }
                 if (Texture.IsBytes())
                 {
-                    Texture.DisplayImage = RenderUtils::CreateImageFromPixels(Texture.Bytes, true, glm::uvec2(128, 128));
+                    Texture.DisplayImage = RenderUtils::CreateImageFromPixels(Texture.Bytes, true, FUIntVector2(128, 128));
                 }
                 else
                 {
                     FFixedString FullPath = Paths::Combine(VFS::Parent(RawPath), Texture.RelativePath);
-                    Texture.DisplayImage = Import::Textures::CreateTextureFromImport(FullPath, true, glm::uvec2(128, 128));
+                    Texture.DisplayImage = Import::Textures::CreateTextureFromImport(FullPath, true, FUIntVector2(128, 128));
                 }
             });
         }

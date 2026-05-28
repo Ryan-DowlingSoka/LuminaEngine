@@ -4,7 +4,7 @@
 #include "Core/Object/Object.h"
 #include "Core/Object/ObjectHandleTyped.h"
 #include "Containers/Array.h"
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 #include "Blackboard.generated.h"
 
 namespace Lumina
@@ -79,7 +79,7 @@ namespace Lumina
 
         /** Default for Vector keys. */
         PROPERTY(Editable, Category = "Blackboard")
-        glm::vec3 DefaultVector = glm::vec3(0.0f);
+        FVector3 DefaultVector = FVector3(0.0f);
 
         /** Default for Object keys. */
         PROPERTY(Editable, Category = "Blackboard")

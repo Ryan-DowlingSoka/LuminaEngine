@@ -19,16 +19,16 @@ namespace Lumina
         uint32 Entity = entt::null;
 
         PROPERTY(Script)
-        glm::vec3 Start;
+        FVector3 Start;
 
         PROPERTY(Script)
-        glm::vec3 End;
+        FVector3 End;
 
         PROPERTY(Script)
-        glm::vec3 Location;
+        FVector3 Location;
 
         PROPERTY(Script)
-        glm::vec3 Normal;
+        FVector3 Normal;
 
         /** Normalized distance along ray (0 = start, 1 = end). */
         PROPERTY(Script)
@@ -44,10 +44,10 @@ namespace Lumina
         GENERATED_BODY()
 
         PROPERTY(Script)
-        glm::vec3 Start = glm::vec3(0.0f);
+        FVector3 Start = FVector3(0.0f);
 
         PROPERTY(Script)
-        glm::vec3 End = glm::vec3(0.0f);
+        FVector3 End = FVector3(0.0f);
 
         PROPERTY(Script)
         bool bDrawDebug = false;
@@ -60,10 +60,10 @@ namespace Lumina
         bool bIgnoreSelf = false;
 
         PROPERTY(Script)
-        glm::vec3 DebugHitColor = glm::vec3(0.0, 1.0f, 0.0f);
+        FVector3 DebugHitColor = FVector3(0.0, 1.0f, 0.0f);
 
         PROPERTY(Script)
-        glm::vec3 DebugMissColor = glm::vec3(1.0f, 0.0f, 0.0f);
+        FVector3 DebugMissColor = FVector3(1.0f, 0.0f, 0.0f);
 
         PROPERTY(Script)
         ECollisionProfiles LayerMask;
@@ -84,10 +84,10 @@ namespace Lumina
         GENERATED_BODY()
 
         PROPERTY(Script)
-        glm::vec3 Start = glm::vec3(0.0f);
+        FVector3 Start = FVector3(0.0f);
 
         PROPERTY(Script)
-        glm::vec3 End = glm::vec3(0.0f);
+        FVector3 End = FVector3(0.0f);
 
         /** Sphere radius (meters). */
         PROPERTY(Script)
@@ -101,10 +101,10 @@ namespace Lumina
         float DebugDuration = 0.0f;
 
         PROPERTY(Script)
-        glm::vec3 DebugHitColor = glm::vec3(0.0, 1.0f, 0.0f);
+        FVector3 DebugHitColor = FVector3(0.0, 1.0f, 0.0f);
 
         PROPERTY(Script)
-        glm::vec3 DebugMissColor = glm::vec3(1.0f, 0.0f, 0.0f);
+        FVector3 DebugMissColor = FVector3(1.0f, 0.0f, 0.0f);
 
         PROPERTY(Script)
         ECollisionProfiles LayerMask;

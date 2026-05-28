@@ -69,8 +69,8 @@ namespace Lumina
         FParticleInputValue GetInputValue(CParticleInput* Pin);
 
         FParticleInputValue GetInputFloat(CParticleInput* Pin,  float Default = 0.0f);
-        FParticleInputValue GetInputFloat3(CParticleInput* Pin, const glm::vec3& Default = glm::vec3(0.0f));
-        FParticleInputValue GetInputFloat4(CParticleInput* Pin, const glm::vec4& Default = glm::vec4(1.0f));
+        FParticleInputValue GetInputFloat3(CParticleInput* Pin, const FVector3& Default = FVector3(0.0f));
+        FParticleInputValue GetInputFloat4(CParticleInput* Pin, const FVector4& Default = FVector4(1.0f));
 
         /** Scalar / float3 / float4 coercion helpers. Used by nodes that need a specific type. */
         static FString Coerce(const FParticleInputValue& Value, EParticlePinType Target);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 #include "Platform/GenericPlatform.h"
 
 #ifndef VERIFY_SSBO_ALIGNMENT
@@ -28,25 +28,25 @@ namespace Lumina
      */
     struct alignas(16) FEnvironmentParams
     {
-        glm::vec4   SolidSkyColor    = glm::vec4(0.45f, 0.65f, 1.0f, 0.0f); // rgb=color, w unused
-        glm::vec4   ZenithColor      = glm::vec4(0.05f, 0.1f, 0.4f, 0.7f);  // rgb=color, w=horizonExponent
-        glm::vec4   HorizonColor     = glm::vec4(0.6f, 0.8f, 1.0f, 0.0f);   // rgb=color, w unused
-        glm::vec4   GroundColor      = glm::vec4(0.2f, 0.18f, 0.15f, 0.0f); // rgb=color, w unused
-        glm::vec4   SunTint          = glm::vec4(1.0f, 1.0f, 1.0f, 20.0f);  // rgb=tint, w=sunIntensity
+        FVector4   SolidSkyColor    = FVector4(0.45f, 0.65f, 1.0f, 0.0f); // rgb=color, w unused
+        FVector4   ZenithColor      = FVector4(0.05f, 0.1f, 0.4f, 0.7f);  // rgb=color, w=horizonExponent
+        FVector4   HorizonColor     = FVector4(0.6f, 0.8f, 1.0f, 0.0f);   // rgb=color, w unused
+        FVector4   GroundColor      = FVector4(0.2f, 0.18f, 0.15f, 0.0f); // rgb=color, w unused
+        FVector4   SunTint          = FVector4(1.0f, 1.0f, 1.0f, 20.0f);  // rgb=tint, w=sunIntensity
         // x=skyMode (uint cast to float), y=sunDiscScale, z=skyExposure, w=mieAnisotropy
-        glm::vec4   Misc             = glm::vec4(2.0f, 1.0f, 1.5f, 0.76f);
+        FVector4   Misc             = FVector4(2.0f, 1.0f, 1.5f, 0.76f);
 
         // -- Procedural night additions (Dynamic mode only) --
         // rgb = night zenith tint (deep blue/purple), w = brightness scalar
-        glm::vec4   NightSkyColor    = glm::vec4(0.012f, 0.018f, 0.04f, 0.4f);
+        FVector4   NightSkyColor    = FVector4(0.012f, 0.018f, 0.04f, 0.4f);
         // x=density, y=brightness, z=twinkleSpeed, w=size
-        glm::vec4   StarParams       = glm::vec4(0.55f, 1.0f, 2.5f, 0.5f);
+        FVector4   StarParams       = FVector4(0.55f, 1.0f, 2.5f, 0.5f);
         // x=size (multiples of 0.5deg), y=glowSize, z=brightness, w=autoOpposeSun (>=0.5 = auto)
-        glm::vec4   MoonParams       = glm::vec4(3.0f, 0.4f, 0.6f, 1.0f);
+        FVector4   MoonParams       = FVector4(3.0f, 0.4f, 0.6f, 1.0f);
         // xyz = manual moon direction (used when MoonParams.w < 0.5), w unused
-        glm::vec4   MoonDirection    = glm::vec4(0.0f, -1.0f, 0.0f, 0.0f);
+        FVector4   MoonDirection    = FVector4(0.0f, -1.0f, 0.0f, 0.0f);
         // x = milky-way band intensity, y = band tilt (radians), z/w reserved
-        glm::vec4   GalaxyParams     = glm::vec4(0.06f, 0.45f, 0.0f, 0.0f);
+        FVector4   GalaxyParams     = FVector4(0.06f, 0.45f, 0.0f, 0.0f);
     };
     VERIFY_SSBO_ALIGNMENT(FEnvironmentParams);
 
@@ -59,14 +59,14 @@ namespace Lumina
     struct alignas(16) FExponentialHeightFogParams
     {
         // rgb = fog inscattering color, w = fog density at base height
-        glm::vec4   InscatteringColor = glm::vec4(0.5f, 0.6f, 0.7f, 0.02f);
+        FVector4   InscatteringColor = FVector4(0.5f, 0.6f, 0.7f, 0.02f);
         // x = height falloff, y = base height (world Y), z = start distance, w = max opacity
-        glm::vec4   HeightParams      = glm::vec4(0.2f, 0.0f, 0.0f, 1.0f);
+        FVector4   HeightParams      = FVector4(0.2f, 0.0f, 0.0f, 1.0f);
         // rgb = directional (sun) inscatter color, w = directional exponent
-        glm::vec4   DirectionalColor  = glm::vec4(1.0f, 0.9f, 0.7f, 4.0f);
+        FVector4   DirectionalColor  = FVector4(1.0f, 0.9f, 0.7f, 4.0f);
         // x = volumetric scattering intensity, y = volumetric anisotropy,
         // z = volumetric max distance, w = directional inscatter start distance
-        glm::vec4   VolumetricParams  = glm::vec4(1.0f, 0.6f, 200.0f, 0.0f);
+        FVector4   VolumetricParams  = FVector4(1.0f, 0.6f, 200.0f, 0.0f);
     };
     VERIFY_SSBO_ALIGNMENT(FExponentialHeightFogParams);
 }

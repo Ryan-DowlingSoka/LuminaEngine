@@ -1,6 +1,6 @@
 #pragma once
 
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 #include "Containers/String.h"
 #include "Core/Object/ObjectMacros.h"
 #include "Renderer/RenderResource.h"
@@ -23,7 +23,7 @@ namespace Lumina
         Rml::Context*         Context = nullptr;
         Rml::ElementDocument* Document = nullptr;
         FRHIImageRef          Target;
-        glm::uvec2            BuiltSize{0, 0};
+        FUIntVector2            BuiltSize{0, 0};
         FString               LoadedPath;
         int64                 DocWriteTime = 0;   // last-seen .rml mtime, for hot-reload
         int32                 ResourceID   = -1;  // bindless id of Target, read by the gather
@@ -61,7 +61,7 @@ namespace Lumina
 
         /** Physical quad size in world units. */
         PROPERTY(Editable, Category = "Widget")
-        glm::vec2 WorldSize = glm::vec2(1.0f, 1.0f);
+        FVector2 WorldSize = FVector2(1.0f, 1.0f);
 
         /** When true the quad always faces the camera; otherwise it uses the entity's orientation. */
         PROPERTY(Editable, Category = "Widget")
@@ -69,7 +69,7 @@ namespace Lumina
 
         /** RGBA tint multiplied with the widget color. */
         PROPERTY(Editable, Color, Category = "Widget")
-        glm::vec4 Tint = glm::vec4(1.0f);
+        FVector4 Tint = FVector4(1.0f);
 
         FWidgetRuntime Runtime;
     };

@@ -37,7 +37,7 @@ namespace Lumina
 
 		void Shutdown();
 		
-		void WindowResized(FWindow* Window, const glm::uvec2& Extent);
+		void WindowResized(FWindow* Window, const FUIntVector2& Extent);
 
 		static void RequestExit();
 

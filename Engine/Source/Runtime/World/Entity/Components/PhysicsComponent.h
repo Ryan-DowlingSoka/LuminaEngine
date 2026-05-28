@@ -15,8 +15,8 @@ namespace Lumina
         GENERATED_BODY()
         
         // Snapshots for interpolation.
-        glm::vec3 LastBodyPosition;
-        glm::quat LastBodyRotation;
+        FVector3 LastBodyPosition;
+        FQuat LastBodyRotation;
         
         /** Internal Jolt body ID, read-only, assigned by the physics system. */
         PROPERTY(Script, ReadOnly, Category = "Physics")
@@ -32,7 +32,7 @@ namespace Lumina
 
         /** Local-space offset applied to the body's center of mass. Lower the Y for car-like weight bias. */
         PROPERTY(Script, Editable, Category = "Physics")
-        glm::vec3 CenterOfMassOffset = glm::vec3(0.0f);
+        FVector3 CenterOfMassOffset = FVector3(0.0f);
 
         /** Layer and mask controlling which bodies this one collides with. */
         PROPERTY(Script, Editable, Category = "Physics")
@@ -107,15 +107,15 @@ namespace Lumina
 
         /** Half-size of the box along each axis in local space (meters). */
         PROPERTY(Editable)
-        glm::vec3 HalfExtent = glm::vec3(0.5f);
+        FVector3 HalfExtent = FVector3(0.5f);
 
         /** Local-space offset applied to the collider position relative to the entity. */
         PROPERTY(Editable)
-        glm::vec3 TranslationOffset;
+        FVector3 TranslationOffset;
 
         /** Local-space euler rotation offset applied to the collider. */
         PROPERTY(Editable)
-        glm::vec3 RotationOffset;
+        FVector3 RotationOffset;
 
         /** When true, the body produces overlap events but no contact response (trigger volume). */
         PROPERTY(Editable)
@@ -137,7 +137,7 @@ namespace Lumina
 
         /** Local-space offset applied to the collider position relative to the entity. */
         PROPERTY(Editable)
-        glm::vec3 TranslationOffset;
+        FVector3 TranslationOffset;
 
         /** When true, the body produces overlap events but no contact response (trigger volume). */
         PROPERTY(Editable)
@@ -178,11 +178,11 @@ namespace Lumina
 
         /** Local-space offset applied to the collider position relative to the entity. */
         PROPERTY(Editable)
-        glm::vec3 TranslationOffset;
+        FVector3 TranslationOffset;
 
         /** Local-space euler rotation offset applied to the collider. */
         PROPERTY(Editable)
-        glm::vec3 RotationOffset;
+        FVector3 RotationOffset;
 
         /** When true, the body produces overlap events but no contact response (trigger volume). */
         PROPERTY(Editable)

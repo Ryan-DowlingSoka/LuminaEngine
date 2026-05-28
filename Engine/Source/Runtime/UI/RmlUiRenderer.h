@@ -27,7 +27,7 @@ namespace Lumina
         void Shutdown();
 
         // LogicalSize=0 mirrors ViewportSize; nonzero decouples projection (layout pixels) from RT pixels.
-        void BeginFrame(ICommandList& CmdList, FRHIImage* Target, const glm::uvec2& ViewportSize, const glm::uvec2& LogicalSize = glm::uvec2(0));
+        void BeginFrame(ICommandList& CmdList, FRHIImage* Target, const FUIntVector2& ViewportSize, const FUIntVector2& LogicalSize = FUIntVector2(0));
         void EndFrame();
 
         // Content-change gating. After Context::Render fills the draw list, PeekFrameHash hashes it;
@@ -77,7 +77,7 @@ namespace Lumina
             int32                      ResourceID = -1;        // bindless slot (FRHIImage::GetResourceID)
             class CTexture*            AssetKeepalive = nullptr;   // rooted while held; released on ReleaseTexture
             class CMaterialInterface*  BrushMaterial  = nullptr;   // UI-material brush; rooted while held, rendered each frame
-            glm::uvec2                 BrushSize = {0, 0};
+            FUIntVector2                 BrushSize = {0, 0};
             FString                    BrushSourcePath;            // resolved asset path; re-validated so a rename/delete breaks the brush
             bool                       bBrushStale = false;        // source path no longer resolves -> cleared + not rendered (material stays rooted so a rename-back can resume)
         };
@@ -94,8 +94,8 @@ namespace Lumina
         {
             Rml::CompiledGeometryHandle Geometry = 0;
             Rml::TextureHandle          Texture = 0;
-            glm::vec2                   Translation = {0.0f, 0.0f};
-            glm::mat4                   MVP = glm::mat4(1.0f);
+            FVector2                   Translation = {0.0f, 0.0f};
+            FMatrix4                   MVP = FMatrix4(1.0f);
             bool                        bScissorEnabled = false;
             Rml::Rectanglei             Scissor;
         };
@@ -115,8 +115,8 @@ namespace Lumina
         // RmlUiCommon.slang::FUiDraw.
         struct FUiDraw
         {
-            glm::mat4 MVP;
-            glm::vec4 ClipRect;     // minX, minY, maxX, maxY (framebuffer pixels)
+            FMatrix4 MVP;
+            FVector4 ClipRect;     // minX, minY, maxX, maxY (framebuffer pixels)
             uint32    TextureID;
             uint32    SamplerIndex;
             uint32    Pad0;
@@ -189,7 +189,7 @@ namespace Lumina
 
         ICommandList*               CurrentCmdList = nullptr;
         FRHIImage*                  CurrentTarget = nullptr;
-        glm::uvec2                  CurrentSize = {0, 0};
+        FUIntVector2                  CurrentSize = {0, 0};
         FRenderPassDesc             CurrentPassDesc;
         bool                        bInitialized = false;
 
@@ -198,9 +198,9 @@ namespace Lumina
         mutable uint64              CachedFrameHash = 0;
         mutable bool                bCachedFrameHashValid = false;
 
-        glm::mat4                   ProjectionMatrix = glm::mat4(1.0f);
-        glm::mat4                   UserTransform = glm::mat4(1.0f);
-        glm::mat4                   CachedMVP = glm::mat4(1.0f);
+        FMatrix4                   ProjectionMatrix = FMatrix4(1.0f);
+        FMatrix4                   UserTransform = FMatrix4(1.0f);
+        FMatrix4                   CachedMVP = FMatrix4(1.0f);
         bool                        bScissorEnabled = false;
         Rml::Rectanglei             CurrentScissor;
     };

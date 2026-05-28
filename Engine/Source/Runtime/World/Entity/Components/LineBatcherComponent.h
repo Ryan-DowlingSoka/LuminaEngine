@@ -10,8 +10,8 @@ namespace Lumina
         
         struct FLineInstance
         {
-            glm::vec3   Start;
-            glm::vec3   End;
+            FVector3   Start;
+            FVector3   End;
             uint32      ColorPacked;
             float       RemainingLifetime;
             float       Thickness;
@@ -21,8 +21,8 @@ namespace Lumina
         
         struct FQueuedLine
         {
-            glm::vec3   Start;
-            glm::vec3   End;
+            FVector3   Start;
+            FVector3   End;
             uint32      ColorPacked;
             float       Duration;
             float       Thickness;
@@ -36,7 +36,7 @@ namespace Lumina
 
         // Thread-safe. Call from any worker. The line becomes visible the
         // next time DrainQueue runs (once per render-extraction tick).
-        void EnqueueLine(const glm::vec3& Start, const glm::vec3& End, const glm::vec4& Color, float Thickness = 1.0f, bool bDepthTest = true, float Duration = -1.0f)
+        void EnqueueLine(const FVector3& Start, const FVector3& End, const FVector4& Color, float Thickness = 1.0f, bool bDepthTest = true, float Duration = -1.0f)
         {
             FQueuedLine Q;
             Q.Start         = Start;

@@ -41,7 +41,7 @@ namespace Lumina
          *  BoxExtent on each axis, centered on the entity). The world-
          *  space box rotates and scales with the transform. */
         PROPERTY(Editable, Category = "Volume", ClampMin = 0.01f)
-        glm::vec3 BoxExtent = glm::vec3(500.0f);
+        FVector3 BoxExtent = FVector3(500.0f);
 
         /** World-space distance over which the volume fades out at its
          *  boundary. 0 == hard edge (instant pop on enter/exit). 100..500

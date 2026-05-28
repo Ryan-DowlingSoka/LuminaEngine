@@ -242,23 +242,23 @@ namespace Lumina
     {
     };
 
-    template<> struct TBaseStructure<glm::vec2> 
+    template<> struct TBaseStructure<FVector2>
     {
-        static RUNTIME_API CStruct* Get(); 
+        static RUNTIME_API CStruct* Get();
     };
 
-    template<> struct TBaseStructure<glm::vec3> 
+    template<> struct TBaseStructure<FVector3>
     {
-        static RUNTIME_API CStruct* Get(); 
-    };
-    
-    template<> struct TBaseStructure<glm::vec4> 
-    {
-        static RUNTIME_API CStruct* Get(); 
+        static RUNTIME_API CStruct* Get();
     };
 
-    template<> struct TBaseStructure<glm::quat> 
+    template<> struct TBaseStructure<FVector4>
     {
-        static RUNTIME_API CStruct* Get(); 
+        static RUNTIME_API CStruct* Get();
+    };
+
+    template<> struct TBaseStructure<FQuat>
+    {
+        static RUNTIME_API CStruct* Get();
     };
 }

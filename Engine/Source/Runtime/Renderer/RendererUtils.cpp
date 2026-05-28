@@ -53,7 +53,7 @@ namespace Lumina::RenderUtils
         return false;
     }
 
-    FRHIImageRef CreateImageFromPixels(TSpan<uint8> PixelData, bool bFlipVertically, glm::uvec2 Size)
+    FRHIImageRef CreateImageFromPixels(TSpan<uint8> PixelData, bool bFlipVertically, FUIntVector2 Size)
     {
         TOptional<Import::Textures::FTextureImportResult> Result = Import::Textures::ImportTexture(PixelData, bFlipVertically, Size);
         if (!Result.has_value())

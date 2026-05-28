@@ -34,7 +34,7 @@ namespace Lumina
 
         #if !WITH_EDITOR
         PrimaryViewport = MakeUnique<FInputViewport>();
-        const glm::uvec2 WinExtent = MainWindow->GetExtent();
+        const FUIntVector2 WinExtent = MainWindow->GetExtent();
         PrimaryViewport->SetWindowRect(0, 0, int(WinExtent.x), int(WinExtent.y));
         PrimaryViewport->SetRenderTargetSize(WinExtent.x, WinExtent.y);
         PrimaryViewport->SetHovered(true);
@@ -85,7 +85,7 @@ namespace Lumina
 
     }
 
-    void FApplication::WindowResized(FWindow* Window, const glm::uvec2& Extent)
+    void FApplication::WindowResized(FWindow* Window, const FUIntVector2& Extent)
     {
         if (!Window->IsWindowMinimized())
         {

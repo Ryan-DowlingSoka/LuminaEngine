@@ -50,7 +50,7 @@ namespace Lumina
 
         RUNTIME_API static FRHIViewport* GetEngineViewport();
         
-        RUNTIME_API void SetEngineViewportSize(const glm::uvec2& InSize);
+        RUNTIME_API void SetEngineViewportSize(const FUIntVector2& InSize);
         
         /** Used to optionally load a project as a DLL from the command line */
         RUNTIME_API virtual void LoadProject(FStringView Path);

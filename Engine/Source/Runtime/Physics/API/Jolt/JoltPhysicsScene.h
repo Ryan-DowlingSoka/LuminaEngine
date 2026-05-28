@@ -41,10 +41,10 @@ namespace Lumina::Physics
 		entt::entity		EntityB;
 		uint32				BodyIDA;
 		uint32				BodyIDB;
-		glm::vec3			Point;          // average manifold point (world space)
-		glm::vec3			Normal;         // contact normal in world space (points from A toward B)
-		glm::vec3			VelocityA;      // pre-step linear velocity of A
-		glm::vec3			VelocityB;      // pre-step linear velocity of B
+		FVector3			Point;          // average manifold point (world space)
+		FVector3			Normal;         // contact normal in world space (points from A toward B)
+		FVector3			VelocityA;      // pre-step linear velocity of A
+		FVector3			VelocityB;      // pre-step linear velocity of B
 		float				ImpactSpeed;    // |relative velocity along normal|
 		bool				bSensorA;
 		bool				bSensorB;
@@ -173,12 +173,12 @@ namespace Lumina::Physics
         void OnAddForceAtPositionEvent(const SAddForceAtPositionEvent& Event) override;
         void OnSetGravityFactorEvent(const SSetGravityFactorEvent& Event) override;
     	
-    	glm::vec3 GetVelocityAtPoint(uint32 BodyID, const glm::vec3& Point) override;
-    	glm::vec3 GetLinearVelocity(uint32 BodyID) override;
-    	glm::vec3 GetAngularVelocity(uint32 BodyID) override;
-    	glm::vec3 GetCenterOfMass(uint32 BodyID) override;
-    	glm::vec3 GetBodyPosition(uint32 BodyID) override;
-    	glm::quat GetBodyRotation(uint32 BodyID) override;
+    	FVector3 GetVelocityAtPoint(uint32 BodyID, const FVector3& Point) override;
+    	FVector3 GetLinearVelocity(uint32 BodyID) override;
+    	FVector3 GetAngularVelocity(uint32 BodyID) override;
+    	FVector3 GetCenterOfMass(uint32 BodyID) override;
+    	FVector3 GetBodyPosition(uint32 BodyID) override;
+    	FQuat GetBodyRotation(uint32 BodyID) override;
 
     	uint32 GetBodyCount() override;
     	uint32 GetMaxBodyCount() override;
@@ -194,12 +194,12 @@ namespace Lumina::Physics
     	// first request. Lets N identical bodies reference one JPH::Shape instead of
     	// each allocating its own. Thread-safe: called from the parallel body build.
     	JPH::ShapeRefC GetOrCreateSphereShape(float Radius);
-    	JPH::ShapeRefC GetOrCreateBoxShape(const glm::vec3& HalfExtent);
+    	JPH::ShapeRefC GetOrCreateBoxShape(const FVector3& HalfExtent);
 
     	// Mesh-collider (convex hull / triangle mesh) shape, cached by mesh + scale + convexity so
     	// fracture shards built from the same shared piece meshes reuse one hull instead of each
     	// re-running QuickHull. Builds outside the lock so parallel distinct-mesh builds don't serialize.
-    	JPH::ShapeRefC GetOrCreateMeshShape(const CMesh* Mesh, const glm::vec3& Scale, bool bConvex);
+    	JPH::ShapeRefC GetOrCreateMeshShape(const CMesh* Mesh, const FVector3& Scale, bool bConvex);
 
     private:
     	
@@ -308,8 +308,8 @@ namespace Lumina::Physics
     	struct FStagedTransform
     	{
     		entt::entity	Entity;
-    		glm::vec3		Location;
-    		glm::quat		Rotation;
+    		FVector3		Location;
+    		FQuat		Rotation;
     		bool			bBelowKill;
     		bool			bSkip;          // static / missing body: leave the slot untouched
     	};

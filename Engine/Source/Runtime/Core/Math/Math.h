@@ -3,11 +3,19 @@
 #include <random>
 #include "Core/Assertions/Assert.h"
 #include <eastl/type_traits.h>
-#include <glm/glm.hpp>
-#include <glm/gtc/quaternion.hpp>
 #include "Core/LuminaMacros.h"
 #include "eastl/utility.h"
 #include "Platform/GenericPlatform.h"
+
+// The Lumina math hub. Pulls in the in-house vector/quat/matrix library and adds
+// the scalar utilities that don't belong to a single type. No glm.
+#include "Core/Math/Scalar.h"
+#include "Core/Math/Vector/Vector.h"
+#include "Core/Math/Quat/Quat.h"
+#include "Core/Math/Matrix/Matrix.h"
+#include "Core/Math/Matrix/MatrixMath.h"
+#include "Core/Math/Packing.h"
+#include "Core/Math/MathString.h"
 
 namespace Lumina::Math
 {
@@ -22,70 +30,31 @@ namespace Lumina::Math
         v++;
         return v;
     }
-    
+
     template <typename T>
     [[nodiscard]] constexpr T AlignUp(T InV, uint64 InAlignment)
     {
         return T((static_cast<uint64>(InV) + InAlignment - 1) & ~(InAlignment - 1));
     }
-    
-    template<typename T>
-    [[nodiscard]] constexpr T Max(const T& First, const T& Second)
-    {
-        return glm::max(First, Second);
-    }
 
-    template<typename T>
-    [[nodiscard]] constexpr T Min(const T& First, const T& Second)
-    {
-        return glm::min(First, Second);
-    }
-
-    template<typename T>
-    [[nodiscard]] constexpr T Clamp(const T& A, const T& First, const T& Second)
-    {
-        return glm::clamp(A,First,Second);
-    }
-
-    template<typename T>
-    [[nodiscard]] constexpr T Abs(const T& A)
-    {
-        return glm::abs(A);
-    }
-
-    template<typename T>
-    [[nodiscard]] constexpr T Floor(const T& A)
-    {
-        return glm::floor(A);
-    }
-
-    template<typename T>
-    [[nodiscard]] constexpr T Pow(const T& A, const T& B)
-    {
-        return glm::pow(A,B);
-    }
-
+    // Generic linear interpolation for any type with +, - and *scalar (scalars,
+    // FColor, ...). Vectors resolve to the more specialized overload in VectorMath.h.
     template<typename T>
     [[nodiscard]] constexpr T Lerp(const T& A, const T& B, float Alpha)
     {
         return A + (B - A) * Alpha;
     }
-    
+
     [[nodiscard]] constexpr bool IsNearlyEqual(float LHS, float RHS, float Epsilon = LE_KINDA_SMALL_NUMBER)
     {
         return Abs(LHS - RHS) <= Epsilon;
     }
-    
+
     [[nodiscard]] constexpr bool IsNearlyZero(float Value, float Epsilon = LE_KINDA_SMALL_NUMBER)
     {
         return Abs(Value) <= Epsilon;
     }
-    
-    [[nodiscard]] inline bool IsNearlyEqual(const glm::vec3& A, const glm::vec3& B, float Epsilon = 1e-4f)
-    {
-        return glm::all(glm::lessThanEqual(glm::abs(A - B), glm::vec3(Epsilon)));
-    }
-    
+
     [[nodiscard]] constexpr uint64 CountTrailingZeros64(uint64 Value)
     {
         if (Value == 0)
@@ -100,13 +69,13 @@ namespace Lumina::Math
         }
         return Result;
     }
-    
+
     template<std::integral T>
     [[nodiscard]] constexpr bool IsEven(T Val)
     {
         return ((Val) & 1) == 0;
     }
-    
+
     template<std::integral T>
     requires(eastl::is_unsigned_v<T> && (sizeof(T) <= 4))
     [[nodiscard]] T RandRange(T First, T Second)
@@ -115,22 +84,22 @@ namespace Lumina::Math
         {
             eastl::swap(First, Second);
         }
-        
+
         thread_local std::mt19937 Random([]()
         {
             std::random_device RD;
             std::seed_seq Seed{ RD(), RD(), RD(), RD(), RD(), RD(), RD(), RD() };
             return std::mt19937(Seed);
         }());
-        
+
         std::uniform_int_distribution<uint32> Distribution(First, Second);
-    
+
         return Distribution(Random);
     }
 
-    [[nodiscard]] inline glm::quat FindLookAtRotation(const glm::vec3& Target, const glm::vec3& From)
+    [[nodiscard]] inline FQuat FindLookAtRotation(const FVector3& Target, const FVector3& From)
     {
-        glm::vec3 ForwardDirection = glm::normalize(Target - From);
-        return glm::quatLookAt(ForwardDirection, glm::vec3(0.0f, 1.0f, 0.0f));
+        const FVector3 ForwardDirection = Normalize(Target - From);
+        return QuatLookAt(ForwardDirection, FVector3(0.0f, 1.0f, 0.0f));
     }
 }

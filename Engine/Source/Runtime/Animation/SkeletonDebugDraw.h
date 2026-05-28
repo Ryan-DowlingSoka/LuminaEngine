@@ -2,7 +2,7 @@
 
 #include "Containers/Array.h"
 #include "Containers/Name.h"
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 
 namespace Lumina
 {
@@ -34,16 +34,16 @@ namespace Lumina
             float     BoneThickness = 2.4f;
             // Warm, saturated palette: reads clearly over both dark and lit viewports,
             // and deliberately avoids white (which washes out against bright geometry).
-            glm::vec4 BoneColor    = { 1.00f, 0.66f, 0.22f, 1.0f }; // amber
-            glm::vec4 RootColor    = { 0.30f, 0.92f, 0.70f, 1.0f }; // teal-green (roots stand out)
-            glm::vec4 JointColor   = { 1.00f, 0.82f, 0.40f, 1.0f }; // bright gold
+            FVector4 BoneColor    = { 1.00f, 0.66f, 0.22f, 1.0f }; // amber
+            FVector4 RootColor    = { 0.30f, 0.92f, 0.70f, 1.0f }; // teal-green (roots stand out)
+            FVector4 JointColor   = { 1.00f, 0.82f, 0.40f, 1.0f }; // bright gold
         };
 
         // A bone's name paired with its world-space origin, for screen-space labelling.
         struct FBoneLabel
         {
             FName     Name;
-            glm::vec3 WorldPosition;
+            FVector3 WorldPosition;
         };
 
         /**
@@ -52,14 +52,14 @@ namespace Lumina
          * otherwise falls back to the skeleton's bind pose via forward kinematics.
          */
         RUNTIME_API void ComputeGlobalBoneTransforms(const FSkeletonResource* Skeleton,
-                                                     const TVector<glm::mat4>& BoneTransforms,
-                                                     TVector<glm::mat4>& OutGlobals);
+                                                     const TVector<FMatrix4>& BoneTransforms,
+                                                     TVector<FMatrix4>& OutGlobals);
 
         /** Draw one skeleton's bones/joints/axes. GlobalBoneTransforms is model-space (see above). */
         RUNTIME_API void DrawSkeleton(IPrimitiveDrawInterface* DrawInterface,
                                       const FSkeletonResource* Skeleton,
-                                      const TVector<glm::mat4>& GlobalBoneTransforms,
-                                      const glm::mat4& MeshWorldMatrix,
+                                      const TVector<FMatrix4>& GlobalBoneTransforms,
+                                      const FMatrix4& MeshWorldMatrix,
                                       const FOptions& Options);
 
         /** Draw every skeletal mesh in the world (bone lines/joints/axes only; no names). */

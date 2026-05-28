@@ -1,7 +1,7 @@
 ﻿#pragma once
 
 #include "Containers/Array.h"
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 #include "Renderer/Vertex.h"
 
 
@@ -9,13 +9,13 @@ namespace Lumina::PrimitiveMeshes
 {
     inline void GenerateCube(TVector<FVertex>& OutVertices, TVector<uint32>& OutIndices)
     {
-        const glm::vec3 normals[] =
+        const FVector3 normals[] =
         {
             { 0,  0,  1}, { 0,  0, -1}, {-1,  0,  0},
             { 1,  0,  0}, { 0,  1,  0}, { 0, -1,  0}
         };
 
-        const glm::vec3 positions[24] =
+        const FVector3 positions[24] =
         {
             // Front
             {-1, -1,  1}, {1, -1,  1}, {1, 1,  1}, {-1, 1,  1},
@@ -31,7 +31,7 @@ namespace Lumina::PrimitiveMeshes
             {-1, -1, -1}, {1, -1, -1}, {1, -1, 1}, {-1, -1, 1},
         };
 
-        const glm::vec2 uvs[4] =
+        const FVector2 uvs[4] =
         {
             {0, 0}, {1, 0}, {1, 1}, {0, 1}
         };
@@ -50,7 +50,7 @@ namespace Lumina::PrimitiveMeshes
                 vertex.Position = positions[idx];
                 vertex.Normal = PackNormal(normals[face]);
                 vertex.Tangent = 0; // MikkTSpace fills this in GenerateMeshlets; zero so dedup byte-compare works.
-                vertex.UV = glm::packHalf2x16(uvs[i]);
+                vertex.UV = Math::PackHalf2x16(uvs[i]);
                 vertex.Color = 0xFFFFFFFF; // White
 
                 OutVertices.push_back(vertex);
@@ -68,13 +68,13 @@ namespace Lumina::PrimitiveMeshes
 
     inline void GeneratePlane(TVector<FVertex>& OutVertices, TVector<uint32>& OutIndices)
     {
-        const glm::vec3 normal = { 0, 0, 1 };
-        const glm::vec3 positions[4] =
+        const FVector3 normal = { 0, 0, 1 };
+        const FVector3 positions[4] =
         {
             {-1, -1, 0}, {1, -1, 0}, {1, 1, 0}, {-1, 1, 0}
         };
 
-        const glm::vec2 uvs[4] = { {0,0}, {1,0}, {1,1}, {0,1} };
+        const FVector2 uvs[4] = { {0,0}, {1,0}, {1,1}, {0,1} };
 
         OutVertices.clear();
         OutIndices.clear();
@@ -87,7 +87,7 @@ namespace Lumina::PrimitiveMeshes
             v.Position = positions[i];
             v.Normal = PackNormal(normal);
             v.Tangent = 0;
-            v.UV     = glm::packHalf2x16(uvs[i]);
+            v.UV     = Math::PackHalf2x16(uvs[i]);
             v.Color = 0xFFFFFFFF;
             OutVertices.push_back(v);
         }
@@ -103,14 +103,14 @@ namespace Lumina::PrimitiveMeshes
         for (int y = 0; y <= LatitudeSegments; ++y)
         {
             float v = (float)y / LatitudeSegments;
-            float phi = v * glm::pi<float>();
+            float phi = v * Math::Pi<float>();
 
             for (int x = 0; x <= LongitudeSegments; ++x)
             {
                 float u = (float)x / LongitudeSegments;
-                float theta = u * glm::two_pi<float>();
+                float theta = u * Math::TwoPi<float>();
 
-                glm::vec3 pos =
+                FVector3 pos =
                 {
                     std::sin(phi) * std::cos(theta),
                     std::cos(phi),
@@ -119,9 +119,9 @@ namespace Lumina::PrimitiveMeshes
 
                 FVertex vert;
                 vert.Position = pos;
-                vert.Normal = PackNormal(glm::normalize(pos));
+                vert.Normal = PackNormal(Math::Normalize(pos));
                 vert.Tangent = 0;
-                vert.UV     = glm::packHalf2x16(glm::vec2(u, v));
+                vert.UV     = Math::PackHalf2x16(FVector2(u, v));
                 vert.Color = 0xFFFFFFFF;
                 OutVertices.push_back(vert);
             }
@@ -157,16 +157,16 @@ namespace Lumina::PrimitiveMeshes
         for (int i = 0; i <= Segments; ++i)
         {
             float u = (float)i / Segments;
-            float theta = u * glm::two_pi<float>();
-            glm::vec3 dir = { std::cos(theta), 0, std::sin(theta) };
+            float theta = u * Math::TwoPi<float>();
+            FVector3 dir = { std::cos(theta), 0, std::sin(theta) };
     
             for (int j = 0; j < 2; ++j)
             {
                 FVertex v;
                 v.Position = { dir.x, j ? halfHeight : -halfHeight, dir.z };
-                v.Normal = PackNormal(glm::normalize(dir));
+                v.Normal = PackNormal(Math::Normalize(dir));
                 v.Tangent = 0;
-                v.UV = glm::packHalf2x16(glm::vec2(u, j));
+                v.UV = Math::PackHalf2x16(FVector2(u, j));
                 v.Color = 0xFFFFFFFF;
                 OutVertices.push_back(v);
             }
@@ -187,14 +187,14 @@ namespace Lumina::PrimitiveMeshes
         for (int cap = 0; cap < 2; ++cap)
         {
             float y = cap ? halfHeight : -halfHeight;
-            glm::vec3 n = { 0, cap ? 1 : -1, 0 };
+            FVector3 n = { 0, cap ? 1 : -1, 0 };
     
             // center vertex
             FVertex center;
             center.Position = { 0, y, 0 };
             center.Normal = PackNormal(n);
             center.Tangent = 0;
-            center.UV = glm::packHalf2x16(glm::vec2(32768, 32768));
+            center.UV = Math::PackHalf2x16(FVector2(32768, 32768));
             center.Color = 0xFFFFFFFF;
             OutVertices.push_back(center);
             uint32 centerIdx = (uint32)OutVertices.size() - 1;
@@ -202,14 +202,14 @@ namespace Lumina::PrimitiveMeshes
             for (int i = 0; i <= Segments; ++i)
             {
                 float u = (float)i / Segments;
-                float theta = u * glm::two_pi<float>();
-                glm::vec3 dir = { std::cos(theta), 0, std::sin(theta) };
+                float theta = u * Math::TwoPi<float>();
+                FVector3 dir = { std::cos(theta), 0, std::sin(theta) };
 
                 FVertex v;
                 v.Position = { dir.x, y, dir.z };
                 v.Normal = PackNormal(n);
                 v.Tangent = 0;
-                v.UV    = glm::packHalf2x16(glm::vec2(u, cap));
+                v.UV    = Math::PackHalf2x16(FVector2(u, cap));
                 v.Color = 0xFFFFFFFF;
                 OutVertices.push_back(v);
     
@@ -244,33 +244,33 @@ namespace Lumina::PrimitiveMeshes
         {
             float u0 = (float)i / Segments;
             float u1 = (float)(i + 1) / Segments;
-            float theta0 = u0 * glm::two_pi<float>();
-            float theta1 = u1 * glm::two_pi<float>();
+            float theta0 = u0 * Math::TwoPi<float>();
+            float theta1 = u1 * Math::TwoPi<float>();
             float thetaMid = (theta0 + theta1) * 0.5f;
 
-            glm::vec3 normal0   = glm::normalize(glm::vec3(H * std::cos(theta0),   radius, H * std::sin(theta0)));
-            glm::vec3 normal1   = glm::normalize(glm::vec3(H * std::cos(theta1),   radius, H * std::sin(theta1)));
-            glm::vec3 normalTip = glm::normalize(glm::vec3(H * std::cos(thetaMid), radius, H * std::sin(thetaMid)));
+            FVector3 normal0   = Math::Normalize(FVector3(H * std::cos(theta0),   radius, H * std::sin(theta0)));
+            FVector3 normal1   = Math::Normalize(FVector3(H * std::cos(theta1),   radius, H * std::sin(theta1)));
+            FVector3 normalTip = Math::Normalize(FVector3(H * std::cos(thetaMid), radius, H * std::sin(thetaMid)));
 
             FVertex v0;
             v0.Position = { std::cos(theta0) * radius, -halfHeight, std::sin(theta0) * radius };
             v0.Normal   = PackNormal(normal0);
             v0.Tangent  = 0;
-            v0.UV       = glm::packHalf2x16(glm::vec2(u0, 0));
+            v0.UV       = Math::PackHalf2x16(FVector2(u0, 0));
             v0.Color    = 0xFFFFFFFF;
 
             FVertex v1;
             v1.Position = { std::cos(theta1) * radius, -halfHeight, std::sin(theta1) * radius };
             v1.Normal   = PackNormal(normal1);
             v1.Tangent  = 0;
-            v1.UV       = glm::packHalf2x16(glm::vec2(u1, 0));
+            v1.UV       = Math::PackHalf2x16(FVector2(u1, 0));
             v1.Color    = 0xFFFFFFFF;
 
             FVertex vTip;
             vTip.Position = { 0, halfHeight, 0 };
             vTip.Normal   = PackNormal(normalTip);
             vTip.Tangent  = 0;
-            vTip.UV       = glm::packHalf2x16(glm::vec2((u0 + u1) * 0.5f, 1));
+            vTip.UV       = Math::PackHalf2x16(FVector2((u0 + u1) * 0.5f, 1));
             vTip.Color    = 0xFFFFFFFF;
 
             uint32 base = (uint32)OutVertices.size();
@@ -284,13 +284,13 @@ namespace Lumina::PrimitiveMeshes
         }
 
         // Bottom cap
-        const glm::vec3 capNormal = { 0, -1, 0 };
+        const FVector3 capNormal = { 0, -1, 0 };
 
         FVertex centerVert;
         centerVert.Position = { 0, -halfHeight, 0 };
         centerVert.Normal   = PackNormal(capNormal);
         centerVert.Tangent  = 0;
-        centerVert.UV       = glm::packHalf2x16(glm::vec2(0.5f, 0.5f));
+        centerVert.UV       = Math::PackHalf2x16(FVector2(0.5f, 0.5f));
         centerVert.Color    = 0xFFFFFFFF;
 
         uint32 centerIdx = (uint32)OutVertices.size();
@@ -299,14 +299,14 @@ namespace Lumina::PrimitiveMeshes
         for (int i = 0; i <= Segments; ++i)
         {
             float u = (float)i / Segments;
-            float theta = u * glm::two_pi<float>();
-            glm::vec3 dir = { std::cos(theta), 0, std::sin(theta) };
+            float theta = u * Math::TwoPi<float>();
+            FVector3 dir = { std::cos(theta), 0, std::sin(theta) };
 
             FVertex v;
             v.Position = { dir.x * radius, -halfHeight, dir.z * radius };
             v.Normal   = PackNormal(capNormal);
             v.Tangent  = 0;
-            v.UV       = glm::packHalf2x16(glm::vec2(0.5f + 0.5f * dir.x, 0.5f + 0.5f * dir.z));
+            v.UV       = Math::PackHalf2x16(FVector2(0.5f + 0.5f * dir.x, 0.5f + 0.5f * dir.z));
             v.Color    = 0xFFFFFFFF;
             OutVertices.push_back(v);
 
@@ -332,17 +332,17 @@ namespace Lumina::PrimitiveMeshes
         const float radius = Radius;
         const float halfHeight = HalfHeight;
 
-        const float cylinderHalf = glm::max(0.0f, halfHeight - radius);
+        const float cylinderHalf = Math::Max(0.0f, halfHeight - radius);
         const int hemiSegments = Segments;
         const int circleSegments = Segments;
     
-        auto addVertex = [&](const glm::vec3& pos, const glm::vec3& n, const glm::vec2& uv)
+        auto addVertex = [&](const FVector3& pos, const FVector3& n, const FVector2& uv)
         {
             FVertex v;
             v.Position = pos;
             v.Normal   = PackNormal(n);
             v.Tangent  = 0;
-            v.UV       = glm::packHalf2x16(uv);
+            v.UV       = Math::PackHalf2x16(uv);
             v.Color    = 0xFFFFFFFF;
             OutVertices.push_back(v);
         };
@@ -352,16 +352,16 @@ namespace Lumina::PrimitiveMeshes
             float u0 = (float)i / circleSegments;
             float u1 = (float)(i + 1) / circleSegments;
     
-            float t0 = u0 * glm::two_pi<float>();
-            float t1 = u1 * glm::two_pi<float>();
+            float t0 = u0 * Math::TwoPi<float>();
+            float t1 = u1 * Math::TwoPi<float>();
     
-            glm::vec3 p0 = { std::cos(t0) * radius, -cylinderHalf, std::sin(t0) * radius };
-            glm::vec3 p1 = { std::cos(t1) * radius, -cylinderHalf, std::sin(t1) * radius };
-            glm::vec3 p2 = { std::cos(t1) * radius,  cylinderHalf, std::sin(t1) * radius };
-            glm::vec3 p3 = { std::cos(t0) * radius,  cylinderHalf, std::sin(t0) * radius };
+            FVector3 p0 = { std::cos(t0) * radius, -cylinderHalf, std::sin(t0) * radius };
+            FVector3 p1 = { std::cos(t1) * radius, -cylinderHalf, std::sin(t1) * radius };
+            FVector3 p2 = { std::cos(t1) * radius,  cylinderHalf, std::sin(t1) * radius };
+            FVector3 p3 = { std::cos(t0) * radius,  cylinderHalf, std::sin(t0) * radius };
     
-            glm::vec3 n0 = glm::normalize(glm::vec3(p0.x, 0, p0.z));
-            glm::vec3 n1 = glm::normalize(glm::vec3(p1.x, 0, p1.z));
+            FVector3 n0 = Math::Normalize(FVector3(p0.x, 0, p0.z));
+            FVector3 n1 = Math::Normalize(FVector3(p1.x, 0, p1.z));
     
             uint32 base = (uint32)OutVertices.size();
     
@@ -380,52 +380,52 @@ namespace Lumina::PrimitiveMeshes
         auto buildHemisphere = [&](bool top)
         {
             float sign = top ? 1.0f : -1.0f;
-            glm::vec3 centerOffset = { 0, sign * cylinderHalf, 0 };
+            FVector3 centerOffset = { 0, sign * cylinderHalf, 0 };
     
             for (int y = 0; y < hemiSegments; ++y)
             {
                 float v0 = (float)y / hemiSegments;
                 float v1 = (float)(y + 1) / hemiSegments;
     
-                float phi0 = v0 * (glm::half_pi<float>());
-                float phi1 = v1 * (glm::half_pi<float>());
+                float phi0 = v0 * (Math::HalfPi<float>());
+                float phi1 = v1 * (Math::HalfPi<float>());
     
                 for (int x = 0; x < circleSegments; ++x)
                 {
                     float u0 = (float)x / circleSegments;
                     float u1 = (float)(x + 1) / circleSegments;
     
-                    float t0 = u0 * glm::two_pi<float>();
-                    float t1 = u1 * glm::two_pi<float>();
+                    float t0 = u0 * Math::TwoPi<float>();
+                    float t1 = u1 * Math::TwoPi<float>();
     
-                    glm::vec3 p00 = {
+                    FVector3 p00 = {
                         std::cos(t0) * std::cos(phi0),
                         std::sin(phi0) * sign,
                         std::sin(t0) * std::cos(phi0)
                     };
     
-                    glm::vec3 p10 = {
+                    FVector3 p10 = {
                         std::cos(t1) * std::cos(phi0),
                         std::sin(phi0) * sign,
                         std::sin(t1) * std::cos(phi0)
                     };
     
-                    glm::vec3 p01 = {
+                    FVector3 p01 = {
                         std::cos(t0) * std::cos(phi1),
                         std::sin(phi1) * sign,
                         std::sin(t0) * std::cos(phi1)
                     };
     
-                    glm::vec3 p11 = {
+                    FVector3 p11 = {
                         std::cos(t1) * std::cos(phi1),
                         std::sin(phi1) * sign,
                         std::sin(t1) * std::cos(phi1)
                     };
     
-                    glm::vec3 n00 = glm::normalize(p00);
-                    glm::vec3 n10 = glm::normalize(p10);
-                    glm::vec3 n01 = glm::normalize(p01);
-                    glm::vec3 n11 = glm::normalize(p11);
+                    FVector3 n00 = Math::Normalize(p00);
+                    FVector3 n10 = Math::Normalize(p10);
+                    FVector3 n01 = Math::Normalize(p01);
+                    FVector3 n11 = Math::Normalize(p11);
     
                     uint32 base = (uint32)OutVertices.size();
     

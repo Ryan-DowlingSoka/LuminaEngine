@@ -1,6 +1,6 @@
 #pragma once
 
-#include <glm/glm.hpp>
+#include "Core/Math/Math.h"
 #include "Core/Threading/Thread.h"
 #include "DirtyComponent.h"
 #include "Core/Math/Transform.h"
@@ -26,22 +26,22 @@ namespace Lumina
         {}
     
         FUNCTION(Script)
-        glm::vec3 GetLocalLocation() const { return LocalTransform.Location; }
+        FVector3 GetLocalLocation() const { return LocalTransform.Location; }
     
         FUNCTION(Script)
-        glm::quat GetLocalRotation() const { return LocalTransform.Rotation; }
+        FQuat GetLocalRotation() const { return LocalTransform.Rotation; }
     
         FUNCTION(Script)
-        glm::vec3 GetLocalScale()    const { return LocalTransform.Scale; }
+        FVector3 GetLocalScale()    const { return LocalTransform.Scale; }
     
         FUNCTION(Script)
-        glm::vec3 GetLocalRotationAsEuler() const
+        FVector3 GetLocalRotationAsEuler() const
         {
-            return glm::degrees(glm::eulerAngles(LocalTransform.Rotation));
+            return Math::Degrees(Math::EulerAngles(LocalTransform.Rotation));
         }
     
         FUNCTION(Script)
-        glm::vec3 SetLocalLocation(const glm::vec3& InLocation)
+        FVector3 SetLocalLocation(const FVector3& InLocation)
         {
             LocalTransform.Location = InLocation;
             MarkDirty();
@@ -49,7 +49,7 @@ namespace Lumina
         }
     
         FUNCTION(Script)
-        glm::vec3 Translate(const glm::vec3& Delta)
+        FVector3 Translate(const FVector3& Delta)
         {
             LocalTransform.Location += Delta;
             MarkDirty();
@@ -57,7 +57,7 @@ namespace Lumina
         }
     
         FUNCTION(Script)
-        glm::quat SetLocalRotation(const glm::quat& InRotation)
+        FQuat SetLocalRotation(const FQuat& InRotation)
         {
             LocalTransform.Rotation = InRotation;
             MarkDirty();
@@ -65,17 +65,17 @@ namespace Lumina
         }
     
         FUNCTION(Script)
-        glm::vec3 SetLocalRotationFromEuler(const glm::vec3& EulerDegrees)
+        FVector3 SetLocalRotationFromEuler(const FVector3& EulerDegrees)
         {
-            LocalTransform.Rotation = glm::quat(glm::radians(EulerDegrees));
+            LocalTransform.Rotation = FQuat(Math::Radians(EulerDegrees));
             MarkDirty();
             return GetLocalRotationAsEuler();
         }
     
         FUNCTION(Script)
-        glm::vec3 AddLocalRotationFromEuler(const glm::vec3& EulerDegrees)
+        FVector3 AddLocalRotationFromEuler(const FVector3& EulerDegrees)
         {
-            LocalTransform.Rotation = glm::quat(glm::radians(EulerDegrees)) * LocalTransform.Rotation;
+            LocalTransform.Rotation = FQuat(Math::Radians(EulerDegrees)) * LocalTransform.Rotation;
             MarkDirty();
             return GetLocalRotationAsEuler();
         }
@@ -83,30 +83,30 @@ namespace Lumina
         FUNCTION(Script)
         void AddYaw(float Degrees)
         {
-            glm::quat YawQuat = glm::angleAxis(glm::radians(Degrees), glm::vec3(0.f, 1.f, 0.f));
-            LocalTransform.Rotation = glm::normalize(YawQuat * LocalTransform.Rotation);
+            FQuat YawQuat = Math::AngleAxis(Math::Radians(Degrees), FVector3(0.f, 1.f, 0.f));
+            LocalTransform.Rotation = Math::Normalize(YawQuat * LocalTransform.Rotation);
             MarkDirty();
         }
     
         FUNCTION(Script)
         void AddPitch(float Degrees, float ClampMin = -89.9f, float ClampMax = 89.9f)
         {
-            float Clamped = glm::clamp(Degrees, ClampMin, ClampMax);
-            glm::quat PitchQuat = glm::angleAxis(glm::radians(Clamped), LocalTransform.GetRight());
-            LocalTransform.Rotation = glm::normalize(PitchQuat * LocalTransform.Rotation);
+            float Clamped = Math::Clamp(Degrees, ClampMin, ClampMax);
+            FQuat PitchQuat = Math::AngleAxis(Math::Radians(Clamped), LocalTransform.GetRight());
+            LocalTransform.Rotation = Math::Normalize(PitchQuat * LocalTransform.Rotation);
             MarkDirty();
         }
     
         FUNCTION(Script)
         void AddRoll(float Degrees)
         {
-            glm::quat RollQuat = glm::angleAxis(glm::radians(Degrees), LocalTransform.GetForward());
-            LocalTransform.Rotation = glm::normalize(RollQuat * LocalTransform.Rotation);
+            FQuat RollQuat = Math::AngleAxis(Math::Radians(Degrees), LocalTransform.GetForward());
+            LocalTransform.Rotation = Math::Normalize(RollQuat * LocalTransform.Rotation);
             MarkDirty();
         }
     
         FUNCTION(Script)
-        glm::vec3 SetLocalScale(const glm::vec3& InScale)
+        FVector3 SetLocalScale(const FVector3& InScale)
         {
             LocalTransform.Scale = InScale;
             MarkDirty();
@@ -114,35 +114,35 @@ namespace Lumina
         }
     
         FUNCTION(Script)
-        glm::vec3 GetWorldLocation() const
+        FVector3 GetWorldLocation() const
         {
             ResolveIfDirty();
             return WorldTransform.Location;
         }
     
         FUNCTION(Script)
-        glm::quat GetWorldRotation() const
+        FQuat GetWorldRotation() const
         {
             ResolveIfDirty();
             return WorldTransform.Rotation;
         }
     
         FUNCTION(Script)
-        glm::vec3 GetWorldScale() const
+        FVector3 GetWorldScale() const
         {
             ResolveIfDirty();
             return WorldTransform.Scale;
         }
     
         FUNCTION(Script)
-        glm::vec3 GetWorldRotationAsEuler() const
+        FVector3 GetWorldRotationAsEuler() const
         {
             ResolveIfDirty();
-            return glm::degrees(glm::eulerAngles(WorldTransform.Rotation));
+            return Math::Degrees(Math::EulerAngles(WorldTransform.Rotation));
         }
     
         FUNCTION(Script)
-        glm::mat4 GetWorldMatrix() const
+        FMatrix4 GetWorldMatrix() const
         {
             ResolveIfDirty();
             return CachedMatrix;
@@ -174,21 +174,21 @@ namespace Lumina
         }
     
         FUNCTION(Script)
-        glm::vec3 GetForward() const
+        FVector3 GetForward() const
         {
             ResolveIfDirty();
             return LocalTransform.GetForward();
         }
     
         FUNCTION(Script)
-        glm::vec3 GetRight()   const
+        FVector3 GetRight()   const
         {
             ResolveIfDirty();
             return LocalTransform.GetRight();
         }
     
         FUNCTION(Script)
-        glm::vec3 GetUp()      const
+        FVector3 GetUp()      const
         {
             ResolveIfDirty();
             return LocalTransform.GetUp();
@@ -197,38 +197,38 @@ namespace Lumina
         FUNCTION(Script)
         float MaxScale() const
         {
-            return glm::max(LocalTransform.Scale.x, glm::max(LocalTransform.Scale.y, LocalTransform.Scale.z));
+            return Math::Max(LocalTransform.Scale.x, Math::Max(LocalTransform.Scale.y, LocalTransform.Scale.z));
         }
     
         FUNCTION(Script)
-        glm::vec3 GetLocation() const { return GetLocalLocation(); }
+        FVector3 GetLocation() const { return GetLocalLocation(); }
     
         FUNCTION(Script)
-        glm::vec3 GetPosition() const { return GetLocalLocation(); }
+        FVector3 GetPosition() const { return GetLocalLocation(); }
     
         FUNCTION(Script)
-        glm::quat GetRotation() const { return GetLocalRotation(); }
+        FQuat GetRotation() const { return GetLocalRotation(); }
     
         FUNCTION(Script)
-        glm::vec3 GetScale()    const { return GetLocalScale(); }
+        FVector3 GetScale()    const { return GetLocalScale(); }
     
         FUNCTION(Script)
-        glm::vec3 SetLocation(const glm::vec3& L)    { return SetLocalLocation(L); }
+        FVector3 SetLocation(const FVector3& L)    { return SetLocalLocation(L); }
     
         FUNCTION(Script)
-        glm::quat SetRotation(const glm::quat& R)    { return SetLocalRotation(R); }
+        FQuat SetRotation(const FQuat& R)    { return SetLocalRotation(R); }
     
         FUNCTION(Script)
-        glm::vec3 SetScale(const glm::vec3& S)       { return SetLocalScale(S); }
+        FVector3 SetScale(const FVector3& S)       { return SetLocalScale(S); }
     
         FUNCTION(Script)
-        glm::vec3 SetRotationFromEuler(const glm::vec3& E)  { return SetLocalRotationFromEuler(E); }
+        FVector3 SetRotationFromEuler(const FVector3& E)  { return SetLocalRotationFromEuler(E); }
     
         FUNCTION(Script)
-        glm::vec3 AddRotationFromEuler(const glm::vec3& E)  { return AddLocalRotationFromEuler(E); }
+        FVector3 AddRotationFromEuler(const FVector3& E)  { return AddLocalRotationFromEuler(E); }
     
         FUNCTION(Script)
-        glm::vec3 GetRotationAsEuler() const { return GetLocalRotationAsEuler(); }
+        FVector3 GetRotationAsEuler() const { return GetLocalRotationAsEuler(); }
 
         // Bind this component to its owning entity. Called after duplication or post-load to rewire the
         // self-referential pointers used by MarkDirty/ResolveIfDirty. World init also does this directly via friend access.
@@ -238,7 +238,7 @@ namespace Lumina
             Entity = InEntity;
         }
         
-        void SetFromPhysics(const glm::vec3& Location, const glm::quat& Rotation)
+        void SetFromPhysics(const FVector3& Location, const FQuat& Rotation)
         {
             LocalTransform.Location = Location;
             LocalTransform.Rotation = Rotation;
@@ -251,7 +251,7 @@ namespace Lumina
         FTransform LocalTransform;
     
         FTransform WorldTransform;
-        glm::mat4  CachedMatrix = glm::mat4(1.f);
+        FMatrix4  CachedMatrix = FMatrix4(1.f);
     
     private:
         

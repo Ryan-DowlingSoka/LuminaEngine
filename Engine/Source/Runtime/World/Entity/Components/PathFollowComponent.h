@@ -43,7 +43,7 @@ namespace Lumina
 
         /** Set a static world-space goal. Triggers a fresh path request next tick. */
         FUNCTION(Script)
-        void SetTargetLocation(const glm::vec3& World)
+        void SetTargetLocation(const FVector3& World)
         {
             TargetLocation = World;
             TargetEntity   = entt::null;
@@ -93,7 +93,7 @@ namespace Lumina
 
         /** Closest queued path corner, or the target if no path is cached. */
         FUNCTION(Script)
-        glm::vec3 GetNextCorner() const
+        FVector3 GetNextCorner() const
         {
             if (CornerCount == 0 || CurrentCorner >= CornerCount) return TargetLocation;
             return PathCorners[CurrentCorner];
@@ -132,14 +132,14 @@ namespace Lumina
 
         /** Cached path corners filled by the system. Capped to a fixed array to avoid per-tick heap churn. */
         static constexpr int32 MaxCorners = 64;
-        glm::vec3   PathCorners[MaxCorners] = {};
+        FVector3   PathCorners[MaxCorners] = {};
         int32       CornerCount   = 0;
         int32       CurrentCorner = 0;
 
         /** World location of the active goal (latched from entity if tracking one). */
-        glm::vec3   TargetLocation = glm::vec3(0.0f);
+        FVector3   TargetLocation = FVector3(0.0f);
         entt::entity TargetEntity = entt::null;
-        glm::vec3   PathSourceTarget = glm::vec3(0.0f); // target location at the moment the cached path was generated
+        FVector3   PathSourceTarget = FVector3(0.0f); // target location at the moment the cached path was generated
         float       TimeSinceLastPath = 0.0f;
         bool        bHasTarget = false;
         bool        bPathDirty = false;

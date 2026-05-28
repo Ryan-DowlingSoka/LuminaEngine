@@ -1,7 +1,6 @@
 #include "pch.h"
 #include "Scripting.h"
-#include <glm/gtx/quaternion.hpp>
-#include <glm/gtx/string_cast.hpp>
+#include "Core/Math/Math.h"
 #include "lstate.h"
 #include "luacode.h"
 #include "lualib.h"
@@ -430,97 +429,69 @@ namespace Lumina::Lua
         return *GScriptingContext.get();
     }
     
-    void FScriptingContext::Initialize()
+    // --- Engine script library ------------------------------------------------
+    // Each function owns one top-level global table (plus closely related
+    // userdata classes) and is invoked once from FScriptingContext::Initialize.
+    // Grouping the bind list by domain keeps it readable and gives each engine
+    // system an obvious home to grow its script surface (e.g. RHI.* lives in
+    // RegisterRenderLibrary).
+
+    static void RegisterConsoleLibrary(lua_State* L, FRef& GlobalsRef)
     {
-        L = lua_newstate(ScriptingMemoryReallocFn, this);
-
-        lua_Callbacks* Callbacks    = lua_callbacks(L);
-        Callbacks->useratom         = AtomString;
-        Callbacks->panic            = LuaPanicHandler;
-
-        // Hook before any scripts load so callbacks are visible to every coroutine.
-        FLuaDebugger::Get().Initialize(L);
-
-        luaL_openlibs(L);
-
-        lua_pushcfunction(L, LuminaLuaPrint, "LuminaLuaPrint");
-        lua_setglobal(L, "print");
-
-        // VFS-backed resolver; Luau ships no package.searchers machinery.
-        lua_pushcfunction(L, LuminaLuaRequire, "require");
-        lua_setglobal(L, "require");
-
-        lua_pushvalue(L, LUA_GLOBALSINDEX);
-        FRef GlobalsRef(L, -1);
-
-        CWorld::RegisterLuaModule(GlobalsRef);
-        RmlUi::RegisterLuaModule(GlobalsRef);
-        Nav::RegisterLuaModule(GlobalsRef);
-
-        // `print` stays globally aliased to Console.Log.
+        // `print` is also aliased to Console.Log globally (see Initialize). These are raw
+        // variadic loggers, so they bind as raw cfunctions rather than typed Invokers.
         FRef ConsoleTable = GlobalsRef.NewTable("Console");
-        lua_pushcfunction(L, LuminaLuaPrint,    "Console.Log");
-        lua_setfield(L, -2, "Log");
-        lua_pushcfunction(L, LuminaLuaLogWarn,  "Console.Warn");
-        lua_setfield(L, -2, "Warn");
-        lua_pushcfunction(L, LuminaLuaLogError, "Console.Error");
-        lua_setfield(L, -2, "Error");
+        ConsoleTable.SetRawFunction("Log",   LuminaLuaPrint);
+        ConsoleTable.SetRawFunction("Warn",  LuminaLuaLogWarn);
+        ConsoleTable.SetRawFunction("Error", LuminaLuaLogError);
+    }
 
+    static void RegisterTimeLibrary(lua_State* L, FRef& GlobalsRef)
+    {
         // Reads from UpdateContext so all scripts see the same frame values.
         FRef TimeTable = GlobalsRef.NewTable("Time");
         TimeTable.SetFunction<[]() -> double { return GEngine ? GEngine->GetUpdateContext().GetDeltaTime() : 0.0; }>("DeltaTime");
         TimeTable.SetFunction<[]() -> double { return GEngine ? GEngine->GetUpdateContext().GetTime() : 0.0; }>("Now");
         TimeTable.SetFunction<[]() -> uint64 { return GEngine ? GEngine->GetUpdateContext().GetFrame() : uint64{0}; }>("FrameNumber");
         TimeTable.SetFunction<[]() -> float  { return GEngine ? GEngine->GetUpdateContext().GetFPS() : 0.0f; }>("FPS");
-        
-        // Flat layout. Engine table is for engine-wide queries that don't fit other buckets.
-        FRef EngineTable        = GlobalsRef.NewTable("Engine");
-        FRef VFSTable           = GlobalsRef.NewTable("VFS");
-        FRef MathTable          = GlobalsRef.NewTable("Math");
-        FRef AudioTable         = GlobalsRef.NewTable("Audio");
-        FRef FileHelperTable    = GlobalsRef.NewTable("FileHelper");
-        FRef PathTable          = GlobalsRef.NewTable("Paths");
-        FRef RHITable           = GlobalsRef.NewTable("RHI");
-        FRef ECSTable           = GlobalsRef.NewTable("ECS");
+    }
 
-        // Raw cfunction, not Invoker — needs polymorphic push so subclass methods are visible.
-        EngineTable.Push();
-        lua_pushcfunction(L, +[](lua_State* State) -> int
+    static void RegisterEngineLibrary(lua_State* L, FRef& GlobalsRef)
+    {
+        FRef EngineTable = GlobalsRef.NewTable("Engine");
+
+        // Returns the loaded object pushed as its actual derived type so subclass methods are
+        // visible. TStack pushes a pointer under its static type's metatable, so we do the
+        // polymorphic push by hand and hand back the result as an FRef.
+        EngineTable.SetFunction<[](lua_State* State, FStringView Path) -> FRef
         {
-            const char* Path = luaL_checkstring(State, 1);
-            CObject* Object = StaticLoadObject(FStringView(Path));
+            CObject* Object = StaticLoadObject(Path);
             PushCObjectAsActualType(State, Object);
-            return 1;
-        }, "LoadObject");
-        lua_rawsetfield(L, -2, "LoadObject");
-        lua_pop(L, 1);
+            return FRef(State, -1);
+        }>("LoadObject");
+
         EngineTable.SetFunction<&FEngine::GetProjectName>("GetProjectName", GEngine);
         EngineTable.SetFunction<&FEngine::GetProjectPath>("GetProjectPath", GEngine);
         EngineTable.SetFunction<&FEngine::Travel>("Travel", GEngine);
         EngineTable.SetFunction<[]() { FScriptingContext::Get().ReloadStdlib(); }>("ReloadStdlib");
 
-        // Game/editor mode probe. CWorld::IsGameWorld is the source of truth;
-        // the per-thread script context published by SetupScriptComponent
-        // tells us which world this script belongs to.
-        EngineTable.Push();
-        lua_pushcfunction(L, +[](lua_State* State) -> int
+        // Game/editor mode probe. The lua_State is injected (TLuaContext<lua_State*>); the world
+        // this script belongs to comes from its thread data, published by SetupScriptComponent.
+        EngineTable.SetFunction<[](lua_State* State) -> bool
         {
             const auto* TD = static_cast<FScriptThreadData*>(lua_getthreaddata(State));
-            lua_pushboolean(State, (TD && TD->World && TD->World->IsGameWorld()) ? 1 : 0);
-            return 1;
-        }, "IsGame");
-        lua_rawsetfield(L, -2, "IsGame");
+            return TD && TD->World && TD->World->IsGameWorld();
+        }>("IsGame");
+        EngineTable.SetFunction<[](lua_State* State) -> bool
+        {
+            const auto* TD = static_cast<FScriptThreadData*>(lua_getthreaddata(State));
+            return TD && TD->World && TD->World->GetWorldType() == EWorldType::Editor;
+        }>("IsEditor");
+    }
 
-        lua_pushcfunction(L, +[](lua_State* State) -> int
-        {
-            const auto* TD = static_cast<FScriptThreadData*>(lua_getthreaddata(State));
-            const bool bEditor = TD && TD->World && TD->World->GetWorldType() == EWorldType::Editor;
-            lua_pushboolean(State, bEditor ? 1 : 0);
-            return 1;
-        }, "IsEditor");
-        lua_rawsetfield(L, -2, "IsEditor");
-        lua_pop(L, 1);
-        
+    static void RegisterFileSystemLibrary(lua_State* L, FRef& GlobalsRef)
+    {
+        FRef VFSTable = GlobalsRef.NewTable("VFS");
         VFSTable.SetFunction<&VFS::Exists>("Exists");
         VFSTable.SetFunction<&VFS::CreateDir>("CreateDir");
         VFSTable.SetFunction<&VFS::FileName>("FileName");
@@ -551,21 +522,30 @@ namespace Lumina::Lua
         {
             return VFS::WriteFile(Path, Data);
         }>("WriteFileString");
-        
-        
+
+        FRef FileHelperTable = GlobalsRef.NewTable("FileHelper");
+        FileHelperTable.SetFunction<&FileHelper::CreateNewFile>("CreateNewFile");
+
+        FRef PathTable = GlobalsRef.NewTable("Paths");
+        PathTable.SetFunction<&Paths::Exists>("Exists");
+        PathTable.SetFunction<&Paths::GetEngineContentDirectory>("GetEngineContentDirectory");
+        PathTable.SetFunction<&Paths::GetEngineConfigDirectory>("GetEngineConfigDirectory");
+        PathTable.SetFunction<&Paths::GetEngineShadersDirectory>("GetEngineShadersDirectory");
+    }
+
+    static void RegisterRenderLibrary(lua_State* L, FRef& GlobalsRef)
+    {
+        FRef RHITable = GlobalsRef.NewTable("RHI");
         RHITable.SetFunction<&IRenderContext::WaitIdle>("WaitIdle", GRenderContext);
         RHITable.SetFunction<&IRenderContext::GetAllocatedMemory>("GetAllocatedMemory", GRenderContext);
         RHITable.SetFunction<&IRenderContext::GetAvailableMemory>("GetAvailableMemory", GRenderContext);
         RHITable.SetFunction<&IRenderContext::SetVSyncEnabled>("SetVSyncEnabled");
         RHITable.SetFunction<&IRenderContext::IsVSyncEnabled>("IsVSyncEnabled");
-        
-        FileHelperTable.SetFunction<&FileHelper::CreateNewFile>("CreateNewFile");
-        
-        PathTable.SetFunction<&Paths::Exists>("Exists");
-        PathTable.SetFunction<&Paths::GetEngineContentDirectory>("GetEngineContentDirectory");
-        PathTable.SetFunction<&Paths::GetEngineConfigDirectory>("GetEngineConfigDirectory");
-        PathTable.SetFunction<&Paths::GetEngineShadersDirectory>("GetEngineShadersDirectory");
-        
+    }
+
+    static void RegisterECSLibrary(lua_State* L, FRef& GlobalsRef)
+    {
+        FRef ECSTable = GlobalsRef.NewTable("ECS");
         ECSTable.SetFunction<&ECS::Utils::IsParent>("IsEntityParent");
         
         ECSTable.SetFunction<&ECS::Utils::IsEntityValid>("IsEntityValid");
@@ -583,81 +563,118 @@ namespace Lumina::Lua
         ECSTable.SetFunction<&ECS::Utils::SetEntityLocation>("SetEntityLocation");
         ECSTable.SetFunction<&ECS::Utils::SetEntityRotation>("SetEntityRotation");
         ECSTable.SetFunction<&ECS::Utils::SetEntityScale>("SetEntityScale");
+    }
 
+    static void RegisterMathLibrary(lua_State* L, FRef& GlobalsRef)
+    {
+        FRef MathTable = GlobalsRef.NewTable("Math");
 
-        
-        MathTable.Set("Pi",        glm::pi<float>());
-        MathTable.Set("TwoPi",     glm::two_pi<float>());
-        MathTable.Set("HalfPi",    glm::half_pi<float>());
-        MathTable.Set("Epsilon",   glm::epsilon<float>());
+        MathTable.Set("Pi",        Math::Pi<float>());
+        MathTable.Set("TwoPi",     Math::TwoPi<float>());
+        MathTable.Set("HalfPi",    Math::HalfPi<float>());
+        MathTable.Set("Epsilon",   Math::Epsilon<float>());
         MathTable.Set("Infinity",  eastl::numeric_limits<float>::infinity());
         
-        MathTable.SetFunction<[](glm::vec3 Target, glm::vec3 From) { return Math::FindLookAtRotation(Target, From); }>("FindLookAtRotation");
+        MathTable.SetFunction<[](FVector3 Target, FVector3 From) { return Math::FindLookAtRotation(Target, From); }>("FindLookAtRotation");
 
-        MathTable.SetFunction<[](float X) { return glm::abs(X); }>("Abs");
-        MathTable.SetFunction<[](float X) { return glm::sign(X); }>("Sign");
-        MathTable.SetFunction<[](float X) { return glm::floor(X); }>("Floor");
-        MathTable.SetFunction<[](float X) { return glm::ceil(X); }>("Ceil");
-        MathTable.SetFunction<[](float X) { return glm::round(X); }>("Round");
-        MathTable.SetFunction<[](float X) { return glm::fract(X); }>("Fract");
-        MathTable.SetFunction<[](float X) { return glm::sqrt(X); }>("Sqrt");
-        MathTable.SetFunction<[](float X) { return glm::inversesqrt(X); }>("InverseSqrt");
-        MathTable.SetFunction<[](float X, float Y) { return glm::mod(X, Y); }>("Mod");
-        MathTable.SetFunction<[](float X, float Y) { return glm::pow(X, Y); }>("Pow");
-        MathTable.SetFunction<[](float X) { return glm::exp(X); }>("Exp");
-        MathTable.SetFunction<[](float X) { return glm::log(X); }>("Log");
-        MathTable.SetFunction<[](float X) { return glm::exp2(X); }>("Exp2");
-        MathTable.SetFunction<[](float X) { return glm::log2(X); }>("Log2");
+        MathTable.SetFunction<[](float X) { return Math::Abs(X); }>("Abs");
+        MathTable.SetFunction<[](float X) { return Math::Sign(X); }>("Sign");
+        MathTable.SetFunction<[](float X) { return Math::Floor(X); }>("Floor");
+        MathTable.SetFunction<[](float X) { return Math::Ceil(X); }>("Ceil");
+        MathTable.SetFunction<[](float X) { return Math::Round(X); }>("Round");
+        MathTable.SetFunction<[](float X) { return Math::Fract(X); }>("Fract");
+        MathTable.SetFunction<[](float X) { return Math::Sqrt(X); }>("Sqrt");
+        MathTable.SetFunction<[](float X) { return Math::InverseSqrt(X); }>("InverseSqrt");
+        MathTable.SetFunction<[](float X, float Y) { return Math::Mod(X, Y); }>("Mod");
+        MathTable.SetFunction<[](float X, float Y) { return Math::Pow(X, Y); }>("Pow");
+        MathTable.SetFunction<[](float X) { return Math::Exp(X); }>("Exp");
+        MathTable.SetFunction<[](float X) { return Math::Log(X); }>("Log");
+        MathTable.SetFunction<[](float X) { return Math::Exp2(X); }>("Exp2");
+        MathTable.SetFunction<[](float X) { return Math::Log2(X); }>("Log2");
         
-        MathTable.SetFunction<[](float A, float B, float T) { return glm::mix(A, B, T); }>("Lerp");
-        MathTable.SetFunction<[](float X, float E0, float E1) { return glm::smoothstep(E0, E1, X); }>("SmoothStep");
-        MathTable.SetFunction<[](float X, float E) { return glm::step(E, X); }>("Step");
-        MathTable.SetFunction<[](float X, float Min, float Max) { return glm::clamp(X, Min, Max); }>("Clamp");
-        MathTable.SetFunction<[](float A, float B) { return glm::min(A, B); }>("Min");
-        MathTable.SetFunction<[](float A, float B) { return glm::max(A, B); }>("Max");
+        MathTable.SetFunction<[](float A, float B, float T) { return Math::Mix(A, B, T); }>("Lerp");
+        MathTable.SetFunction<[](float X, float E0, float E1) { return Math::SmoothStep(E0, E1, X); }>("SmoothStep");
+        MathTable.SetFunction<[](float X, float E) { return Math::Step(E, X); }>("Step");
+        MathTable.SetFunction<[](float X, float Min, float Max) { return Math::Clamp(X, Min, Max); }>("Clamp");
+        MathTable.SetFunction<[](float A, float B) { return Math::Min(A, B); }>("Min");
+        MathTable.SetFunction<[](float A, float B) { return Math::Max(A, B); }>("Max");
         
-        MathTable.SetFunction<[](float X) { return glm::radians(X); }>("Radians");
-        MathTable.SetFunction<[](float X) { return glm::degrees(X); }>("Degrees");
-        MathTable.SetFunction<[](float X) { return glm::sin(X); }>("Sin");
-        MathTable.SetFunction<[](float X) { return glm::cos(X); }>("Cos");
-        MathTable.SetFunction<[](float X) { return glm::tan(X); }>("Tan");
-        MathTable.SetFunction<[](float X) { return glm::asin(X); }>("Asin");
-        MathTable.SetFunction<[](float X) { return glm::acos(X); }>("Acos");
-        MathTable.SetFunction<[](float Y, float X) { return glm::atan(Y, X); }>("Atan2");
+        MathTable.SetFunction<[](float X) { return Math::Radians(X); }>("Radians");
+        MathTable.SetFunction<[](float X) { return Math::Degrees(X); }>("Degrees");
+        MathTable.SetFunction<[](float X) { return Math::Sin(X); }>("Sin");
+        MathTable.SetFunction<[](float X) { return Math::Cos(X); }>("Cos");
+        MathTable.SetFunction<[](float X) { return Math::Tan(X); }>("Tan");
+        MathTable.SetFunction<[](float X) { return Math::Asin(X); }>("Asin");
+        MathTable.SetFunction<[](float X) { return Math::Acos(X); }>("Acos");
+        MathTable.SetFunction<[](float Y, float X) { return Math::Atan2(Y, X); }>("Atan2");
         
-        MathTable.SetFunction<[](glm::vec2 A, glm::vec2 B) { return glm::dot(A, B); }>("Dot2");
-        MathTable.SetFunction<[](glm::vec2 V) { return glm::length(V); }>("Length2");
-        MathTable.SetFunction<[](glm::vec2 V) { return glm::normalize(V); }>("Normalize2");
-        MathTable.SetFunction<[](glm::vec2 A, glm::vec2 B) { return glm::distance(A, B); }>("Distance2");
-        MathTable.SetFunction<[](glm::vec2 A, glm::vec2 B, float T) { return glm::mix(A, B, T); }>("Lerp2");
-        MathTable.SetFunction<[](glm::vec2 A, glm::vec2 B) { return glm::reflect(A, B); }>("Reflect2");
+        MathTable.SetFunction<[](FVector2 A, FVector2 B) { return Math::Dot(A, B); }>("Dot2");
+        MathTable.SetFunction<[](FVector2 V) { return Math::Length(V); }>("Length2");
+        MathTable.SetFunction<[](FVector2 V) { return Math::Normalize(V); }>("Normalize2");
+        MathTable.SetFunction<[](FVector2 A, FVector2 B) { return Math::Distance(A, B); }>("Distance2");
+        MathTable.SetFunction<[](FVector2 A, FVector2 B, float T) { return Math::Mix(A, B, T); }>("Lerp2");
+        MathTable.SetFunction<[](FVector2 A, FVector2 B) { return Math::Reflect(A, B); }>("Reflect2");
         
-        MathTable.SetFunction<[](glm::vec3 A, glm::vec3 B) { return glm::dot(A, B); }>("Dot3");
-        MathTable.SetFunction<[](glm::vec3 A, glm::vec3 B) { return glm::cross(A, B); }>("Cross");
-        MathTable.SetFunction<[](glm::vec3 V) { return glm::length(V); }>("Length3");
-        MathTable.SetFunction<[](glm::vec3 V) { return glm::normalize(V); }>("Normalize3");
-        MathTable.SetFunction<[](glm::vec3 A, glm::vec3 B) { return glm::distance(A, B); }>("Distance3");
-        MathTable.SetFunction<[](glm::vec3 A, glm::vec3 B, float T) { return glm::mix(A, B, T); }>("Lerp3");
-        MathTable.SetFunction<[](glm::vec3 A, glm::vec3 B) { return glm::reflect(A, B); }>("Reflect3");
-        MathTable.SetFunction<[](glm::vec3 A, glm::vec3 B, float Eta) { return glm::refract(A, B, Eta); }>("Refract3");
+        MathTable.SetFunction<[](FVector3 A, FVector3 B) { return Math::Dot(A, B); }>("Dot3");
+        MathTable.SetFunction<[](FVector3 A, FVector3 B) { return Math::Cross(A, B); }>("Cross");
+        MathTable.SetFunction<[](FVector3 V) { return Math::Length(V); }>("Length3");
+        MathTable.SetFunction<[](FVector3 V) { return Math::Normalize(V); }>("Normalize3");
+        MathTable.SetFunction<[](FVector3 A, FVector3 B) { return Math::Distance(A, B); }>("Distance3");
+        MathTable.SetFunction<[](FVector3 A, FVector3 B, float T) { return Math::Mix(A, B, T); }>("Lerp3");
+        MathTable.SetFunction<[](FVector3 A, FVector3 B) { return Math::Reflect(A, B); }>("Reflect3");
+        MathTable.SetFunction<[](FVector3 A, FVector3 B, float Eta) { return Math::Refract(A, B, Eta); }>("Refract3");
         
-        MathTable.SetFunction<[](glm::vec4 A, glm::vec4 B) { return glm::dot(A, B); }>("Dot4");
-        MathTable.SetFunction<[](glm::vec4 V) { return glm::length(V); }>("Length4");
-        MathTable.SetFunction<[](glm::vec4 V) { return glm::normalize(V); }>("Normalize4");
-        MathTable.SetFunction<[](glm::vec4 A, glm::vec4 B, float T) { return glm::mix(A, B, T); }>("Lerp4");
+        MathTable.SetFunction<[](FVector4 A, FVector4 B) { return Math::Dot(A, B); }>("Dot4");
+        MathTable.SetFunction<[](FVector4 V) { return Math::Length(V); }>("Length4");
+        MathTable.SetFunction<[](FVector4 V) { return Math::Normalize(V); }>("Normalize4");
+        MathTable.SetFunction<[](FVector4 A, FVector4 B, float T) { return Math::Mix(A, B, T); }>("Lerp4");
         
-        MathTable.SetFunction<[](glm::quat A, glm::quat B) { return glm::dot(A, B); }>("QuatDot");
-        MathTable.SetFunction<[](glm::quat A, glm::quat B, float T) { return glm::slerp(A, B, T); }>("QuatSlerp");
-        MathTable.SetFunction<[](glm::quat Q) { return glm::normalize(Q); }>("QuatNormalize");
-        MathTable.SetFunction<[](glm::quat Q) { return glm::inverse(Q); }>("QuatInverse");
-        MathTable.SetFunction<[](glm::quat Q) { return glm::conjugate(Q); }>("QuatConjugate");
-        MathTable.SetFunction<[](glm::quat Q) { return glm::eulerAngles(Q); }>("QuatEuler");
-        MathTable.SetFunction<[](float Angle, glm::vec3 Axis) { return glm::angleAxis(Angle, Axis); }>("QuatAngleAxis");
-        MathTable.SetFunction<[](glm::vec3 Euler) { return glm::quat(Euler); }>("QuatFromEuler");
-        MathTable.SetFunction<[](glm::quat Q) { return glm::mat4_cast(Q); }>("QuatToMatrix");
-        MathTable.SetFunction<[](glm::vec3 From, glm::vec3 To) { return glm::rotation(From, To); }>("QuatFromTo");
-        MathTable.SetFunction<[](glm::quat Rot) { return glm::normalize(glm::rotate(Rot, glm::vec3(0.0f, 0.0f, 1.0f))); } >("QuatForward");
-        
+        MathTable.SetFunction<[](FQuat A, FQuat B) { return Math::Dot(A, B); }>("QuatDot");
+        MathTable.SetFunction<[](FQuat A, FQuat B, float T) { return Math::Slerp(A, B, T); }>("QuatSlerp");
+        MathTable.SetFunction<[](FQuat Q) { return Math::Normalize(Q); }>("QuatNormalize");
+        MathTable.SetFunction<[](FQuat Q) { return Math::Inverse(Q); }>("QuatInverse");
+        MathTable.SetFunction<[](FQuat Q) { return Math::Conjugate(Q); }>("QuatConjugate");
+        MathTable.SetFunction<[](FQuat Q) { return Math::EulerAngles(Q); }>("QuatEuler");
+        MathTable.SetFunction<[](float Angle, FVector3 Axis) { return Math::AngleAxis(Angle, Axis); }>("QuatAngleAxis");
+        MathTable.SetFunction<[](FVector3 Euler) { return FQuat(Euler); }>("QuatFromEuler");
+        MathTable.SetFunction<[](FQuat Q) { return Math::ToMatrix4(Q); }>("QuatToMatrix");
+        MathTable.SetFunction<[](FVector3 From, FVector3 To) { return Math::RotationBetween(From, To); }>("QuatFromTo");
+        MathTable.SetFunction<[](FQuat Rot) { return Math::Normalize(Math::Rotate(Rot, FVector3(0.0f, 0.0f, 1.0f))); } >("QuatForward");
+
+        GlobalsRef.NewClass<FMatrix4>("Mat4")
+            .Register();
+
+        GlobalsRef.NewClass<FQuat>("Quat")
+            .AddProperty<&FQuat::x>("X")
+            .AddProperty<&FQuat::y>("Y")
+            .AddProperty<&FQuat::z>("Z")
+            .AddProperty<&FQuat::w>("W")
+
+            .AddFunction<[](FQuat& A, FQuat B) { return A * B; }>(EMetaMethod::Mul)
+            .AddFunction<[](FQuat& A, FQuat B) { return A + B; }>(EMetaMethod::Add)
+            .AddFunction<[](FQuat& A, FQuat B) { return A - B; }>(EMetaMethod::Sub)
+            .AddFunction<[](FQuat& A) { return -A; }>(EMetaMethod::UnaryMinus)
+            .AddFunction<[](FQuat& A, FQuat B) { return A == B; }>(EMetaMethod::Eq)
+            .AddFunction<[](FQuat& Self) { return Math::ToString(Self); }>(EMetaMethod::ToString)
+            .AddFunction<[](FQuat& Self) { return Math::Length(Self); }>(EMetaMethod::Len)
+
+            .AddFunction<[](FQuat& Self) { return Math::EulerAngles(Self); }>("EulerAngles")
+            .AddFunction<[](FQuat& Self) { return Math::Normalize(Self); }>("Normalize")
+            .AddFunction<[](FQuat& Self) { return Math::Inverse(Self); }>("Inverse")
+            .AddFunction<[](FQuat& Self) { return Math::Length(Self); }>("Length")
+            .AddFunction<[](FQuat& Self) { return Math::Conjugate(Self); }>("Conjugate")
+            .AddFunction<[](FQuat& Self) { return Math::Dot(Self, Self); }>("LengthSquared")
+            .AddFunction<[](FQuat& A, FQuat B) { return Math::Dot(A, B); }>("Dot")
+            .AddFunction<[](FQuat& A, FQuat B, float T) { return Math::Slerp(A, B, T); }>("SLerp")
+            .AddFunction<[](FQuat& A, FQuat B, float T) { return Math::Lerp(A, B, T); }>("Lerp")
+            .AddFunction<[](FQuat& Self) { return Math::ToMatrix4(Self); }>("ToMatrix")
+            .AddFunction<[](float Angle, FVector3 Axis) { return Math::AngleAxis(Angle, Axis); }>("FromAngleAxis")
+            .AddFunction<[](FQuat& Self, FVector3 V) { return Self * V; }>("RotateVector")
+            .Register();
+    }
+
+    static void RegisterInputLibrary(lua_State* L, FRef& GlobalsRef)
+    {
         FRef InputTable = GlobalsRef.NewTable("Input");
         InputTable.SetFunction<&FInputProcessor::IsKeyDown>("IsKeyDown", &FInputProcessor::Get());
         InputTable.SetFunction<&FInputProcessor::IsKeyUp>("IsKeyUp", &FInputProcessor::Get());
@@ -781,11 +798,14 @@ namespace Lumina::Lua
             if (V == nullptr) return;
             V->GetContext().UnregisterActionCallback(Id);
         }>("UnbindAction");
+    }
 
-
-        AudioTable.SetFunction<[](FStringView File, glm::vec3 Location) { return GAudioContext->PlaySoundAtLocation(File, Location); }>("PlaySoundAtLocation");
+    static void RegisterAudioLibrary(lua_State* L, FRef& GlobalsRef)
+    {
+        FRef AudioTable = GlobalsRef.NewTable("Audio");
+        AudioTable.SetFunction<[](FStringView File, FVector3 Location) { return GAudioContext->PlaySoundAtLocation(File, Location); }>("PlaySoundAtLocation");
         AudioTable.SetFunction<[](FStringView File) { return GAudioContext->PlaySound2D(File); }>("PlaySound2D");
-        AudioTable.SetFunction<[](FStringView File, glm::vec3 Loc, float Volume, float Pitch, bool bLooping)
+        AudioTable.SetFunction<[](FStringView File, FVector3 Loc, float Volume, float Pitch, bool bLooping)
             { return GAudioContext->PlaySoundAtLocation(File, Loc, Volume, Pitch, 1.0f, 50.0f, bLooping); }>("PlaySoundAtLocationEx");
         AudioTable.SetFunction<[](FStringView File, float Volume, float Pitch, bool bLooping)
             { return GAudioContext->PlaySound2D(File, Volume, Pitch, bLooping); }>("PlaySound2DEx");
@@ -798,40 +818,47 @@ namespace Lumina::Lua
             .AddFunction<[](FAudioHandle& Self, float Volume) { GAudioContext->SetVolume(Self, Volume); }>("SetVolume")
             .AddFunction<[](FAudioHandle& Self, float Pitch)  { GAudioContext->SetPitch(Self, Pitch); }>("SetPitch")
             .AddFunction<[](FAudioHandle& Self, bool bLoop)   { GAudioContext->SetLooping(Self, bLoop); }>("SetLooping")
-            .AddFunction<[](FAudioHandle& Self, glm::vec3 P)  { GAudioContext->SetPosition(Self, P); }>("SetPosition")
+            .AddFunction<[](FAudioHandle& Self, FVector3 P)  { GAudioContext->SetPosition(Self, P); }>("SetPosition")
             .AddFunction<[](FAudioHandle& Self, float Min, float Max) { GAudioContext->SetMinMaxDistance(Self, Min, Max); }>("SetMinMaxDistance")
             .Register();
-        
-        GlobalsRef.NewClass<glm::mat4>("Mat4")
-            .Register();
-        
-        GlobalsRef.NewClass<glm::quat>("Quat")
-            .AddProperty<&glm::quat::x>("X")
-            .AddProperty<&glm::quat::y>("Y")
-            .AddProperty<&glm::quat::z>("Z")
-            .AddProperty<&glm::quat::w>("W")
+    }
 
-            .AddFunction<[](glm::quat& A, glm::quat B) { return A * B; }>(EMetaMethod::Mul)
-            .AddFunction<[](glm::quat& A, glm::quat B) { return A + B; }>(EMetaMethod::Add)
-            .AddFunction<[](glm::quat& A, glm::quat B) { return A - B; }>(EMetaMethod::Sub)
-            .AddFunction<[](glm::quat& A) { return -A; }>(EMetaMethod::UnaryMinus)
-            .AddFunction<[](glm::quat& A, glm::quat B) { return A == B; }>(EMetaMethod::Eq)
-            .AddFunction<[](glm::quat& Self) { return glm::to_string(Self); }>(EMetaMethod::ToString)
-            .AddFunction<[](glm::quat& Self) { return glm::length(Self); }>(EMetaMethod::Len)
+    void FScriptingContext::Initialize()
+    {
+        L = lua_newstate(ScriptingMemoryReallocFn, this);
 
-            .AddFunction<[](glm::quat& Self) { return glm::eulerAngles(Self); }>("EulerAngles")
-            .AddFunction<[](glm::quat& Self) { return glm::normalize(Self); }>("Normalize")
-            .AddFunction<[](glm::quat& Self) { return glm::inverse(Self); }>("Inverse")
-            .AddFunction<[](glm::quat& Self) { return glm::length(Self); }>("Length")
-            .AddFunction<[](glm::quat& Self) { return glm::conjugate(Self); }>("Conjugate")
-            .AddFunction<[](glm::quat& Self) { return glm::dot(Self, Self); }>("LengthSquared")
-            .AddFunction<[](glm::quat& A, glm::quat B) { return glm::dot(A, B); }>("Dot")
-            .AddFunction<[](glm::quat& A, glm::quat B, float T) { return glm::slerp(A, B, T); }>("SLerp")
-            .AddFunction<[](glm::quat& A, glm::quat B, float T) { return glm::lerp(A, B, T); }>("Lerp")
-            .AddFunction<[](glm::quat& Self) { return glm::mat4_cast(Self); }>("ToMatrix")
-            .AddFunction<[](float Angle, glm::vec3 Axis) { return glm::angleAxis(Angle, Axis); }>("FromAngleAxis")
-            .AddFunction<[](glm::quat& Self, glm::vec3 V) { return Self * V; }>("RotateVector")
-            .Register();
+        lua_Callbacks* Callbacks    = lua_callbacks(L);
+        Callbacks->useratom         = AtomString;
+        Callbacks->panic            = LuaPanicHandler;
+
+        // Hook before any scripts load so callbacks are visible to every coroutine.
+        FLuaDebugger::Get().Initialize(L);
+
+        luaL_openlibs(L);
+
+        lua_pushcfunction(L, LuminaLuaPrint, "LuminaLuaPrint");
+        lua_setglobal(L, "print");
+
+        // VFS-backed resolver; Luau ships no package.searchers machinery.
+        lua_pushcfunction(L, LuminaLuaRequire, "require");
+        lua_setglobal(L, "require");
+
+        lua_pushvalue(L, LUA_GLOBALSINDEX);
+        FRef GlobalsRef(L, -1);
+
+        CWorld::RegisterLuaModule(GlobalsRef);
+        RmlUi::RegisterLuaModule(GlobalsRef);
+        Nav::RegisterLuaModule(GlobalsRef);
+
+        RegisterConsoleLibrary(L, GlobalsRef);
+        RegisterTimeLibrary(L, GlobalsRef);
+        RegisterEngineLibrary(L, GlobalsRef);
+        RegisterFileSystemLibrary(L, GlobalsRef);
+        RegisterRenderLibrary(L, GlobalsRef);
+        RegisterECSLibrary(L, GlobalsRef);
+        RegisterMathLibrary(L, GlobalsRef);
+        RegisterInputLibrary(L, GlobalsRef);
+        RegisterAudioLibrary(L, GlobalsRef);
 
         RegisterRuntimeComponentMetatable(L);
         RegisterAllRuntimeComponentTypeGlobals(L);

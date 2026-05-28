@@ -13,7 +13,7 @@
 #include "World/Entity/Components/SkeletalMeshComponent.h"
 #include "World/Entity/Components/TransformComponent.h"
 #include "World/World.h"
-#include "glm/gtx/matrix_decompose.hpp"
+#include "Core/Math/Math.h"
 
 namespace Lumina::EditorEntityUtils
 {
@@ -61,7 +61,7 @@ namespace Lumina::EditorEntityUtils
         InOutMode = (InOutMode == ImGuizmo::WORLD) ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
     }
 
-    void ApplyWorldMatrixToTransform(FEntityRegistry& Registry, entt::entity Entity, const glm::mat4& WorldMatrix)
+    void ApplyWorldMatrixToTransform(FEntityRegistry& Registry, entt::entity Entity, const FMatrix4& WorldMatrix)
     {
         if (!Registry.valid(Entity))
         {
@@ -74,22 +74,22 @@ namespace Lumina::EditorEntityUtils
             return;
         }
 
-        glm::mat4 LocalMatrix = WorldMatrix;
+        FMatrix4 LocalMatrix = WorldMatrix;
         if (FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity))
         {
             if (Rel->Parent != entt::null && Registry.valid(Rel->Parent))
             {
                 if (STransformComponent* ParentTransform = Registry.try_get<STransformComponent>(Rel->Parent))
                 {
-                    LocalMatrix = glm::inverse(ParentTransform->GetWorldMatrix()) * WorldMatrix;
+                    LocalMatrix = Math::Inverse(ParentTransform->GetWorldMatrix()) * WorldMatrix;
                 }
             }
         }
 
-        glm::vec3 LocalLocation, LocalScale, LocalSkew;
-        glm::quat LocalRotation;
-        glm::vec4 LocalPersp;
-        glm::decompose(LocalMatrix, LocalScale, LocalRotation, LocalLocation, LocalSkew, LocalPersp);
+        FVector3 LocalLocation, LocalScale, LocalSkew;
+        FQuat LocalRotation;
+        FVector4 LocalPersp;
+        Math::Decompose(LocalMatrix, LocalScale, LocalRotation, LocalLocation, LocalSkew, LocalPersp);
 
         Transform->SetLocalLocation(LocalLocation);
         Transform->SetLocalRotation(LocalRotation);
@@ -105,15 +105,15 @@ namespace Lumina::EditorEntityUtils
         return Out;
     }
 
-    bool ComputeFocusBoundsForEntity(FEntityRegistry& Registry, entt::entity Entity, glm::vec3& OutCenter, float& OutRadius)
+    bool ComputeFocusBoundsForEntity(FEntityRegistry& Registry, entt::entity Entity, FVector3& OutCenter, float& OutRadius)
     {
         if (!Registry.valid(Entity))
         {
             return false;
         }
 
-        glm::vec3 Min(FLT_MAX);
-        glm::vec3 Max(-FLT_MAX);
+        FVector3 Min(FLT_MAX);
+        FVector3 Max(-FLT_MAX);
         bool bAny = false;
 
         auto Accumulate = [&](entt::entity E)
@@ -129,15 +129,15 @@ namespace Lumina::EditorEntityUtils
                 return;
             }
 
-            const glm::mat4 WorldMatrix = Transform->GetWorldMatrix();
+            const FMatrix4 WorldMatrix = Transform->GetWorldMatrix();
 
             if (const SStaticMeshComponent* Mesh = Registry.try_get<SStaticMeshComponent>(E))
             {
                 if (Mesh->StaticMesh)
                 {
                     const FAABB Box = Mesh->GetAABB().ToWorld(WorldMatrix);
-                    Min = glm::min(Min, Box.Min);
-                    Max = glm::max(Max, Box.Max);
+                    Min = Math::Min(Min, Box.Min);
+                    Max = Math::Max(Max, Box.Max);
                     bAny = true;
                     return;
                 }
@@ -148,16 +148,16 @@ namespace Lumina::EditorEntityUtils
                 if (Skinned->SkeletalMesh)
                 {
                     const FAABB Box = Skinned->GetAABB().ToWorld(WorldMatrix);
-                    Min = glm::min(Min, Box.Min);
-                    Max = glm::max(Max, Box.Max);
+                    Min = Math::Min(Min, Box.Min);
+                    Max = Math::Max(Max, Box.Max);
                     bAny = true;
                     return;
                 }
             }
 
-            const glm::vec3 Loc = Transform->GetWorldLocation();
-            Min = glm::min(Min, Loc);
-            Max = glm::max(Max, Loc);
+            const FVector3 Loc = Transform->GetWorldLocation();
+            Min = Math::Min(Min, Loc);
+            Max = Math::Max(Max, Loc);
             bAny = true;
         };
 
@@ -173,11 +173,11 @@ namespace Lumina::EditorEntityUtils
         }
 
         OutCenter = (Min + Max) * 0.5f;
-        OutRadius = glm::max(glm::length(Max - Min) * 0.5f, 0.5f);
+        OutRadius = Math::Max(Math::Length(Max - Min) * 0.5f, 0.5f);
         return true;
     }
 
-    bool GetEntityDrawBox(FEntityRegistry& Registry, entt::entity Entity, glm::vec3& OutCenter, glm::vec3& OutHalfExtents, glm::quat& OutRotation)
+    bool GetEntityDrawBox(FEntityRegistry& Registry, entt::entity Entity, FVector3& OutCenter, FVector3& OutHalfExtents, FQuat& OutRotation)
     {
         if (!Registry.valid(Entity))
         {
@@ -193,7 +193,7 @@ namespace Lumina::EditorEntityUtils
         OutRotation = Transform->GetWorldRotation();
 
         // Padding so the box sits just outside the mesh silhouette.
-        const glm::vec3 WorldScale = Transform->GetWorldScale();
+        const FVector3 WorldScale = Transform->GetWorldScale();
 
         // Resolve the local-space AABB if the entity has a renderable mesh asset.
         const SStaticMeshComponent*   Mesh    = Registry.try_get<SStaticMeshComponent>(Entity);
@@ -215,8 +215,8 @@ namespace Lumina::EditorEntityUtils
         if (bHasBounds)
         {
             constexpr float Padding = 1.05f;
-            const glm::vec3 LocalCenter = (Local.Min + Local.Max) * 0.5f;
-            const glm::vec3 LocalHalf   = (Local.Max - Local.Min) * 0.5f;
+            const FVector3 LocalCenter = (Local.Min + Local.Max) * 0.5f;
+            const FVector3 LocalHalf   = (Local.Max - Local.Min) * 0.5f;
 
             OutCenter      = Transform->GetWorldLocation() + (OutRotation * (LocalCenter * WorldScale));
             OutHalfExtents = LocalHalf * WorldScale * Padding;
@@ -231,20 +231,20 @@ namespace Lumina::EditorEntityUtils
         return true;
     }
 
-    void DrawEntityBounds(CWorld* World, entt::entity Entity, const glm::vec4& Color, float Thickness, bool bDepthTest)
+    void DrawEntityBounds(CWorld* World, entt::entity Entity, const FVector4& Color, float Thickness, bool bDepthTest)
     {
-        glm::vec3 Center, HalfExtents;
-        glm::quat Rotation;
+        FVector3 Center, HalfExtents;
+        FQuat Rotation;
         if (World && GetEntityDrawBox(World->GetEntityRegistry(), Entity, Center, HalfExtents, Rotation))
         {
             World->DrawBoxCorners(Center, HalfExtents, Rotation, Color, Thickness, bDepthTest);
         }
     }
 
-    void DrawEntitySelectionBox(CWorld* World, entt::entity Entity, const glm::vec4& Color, float CornerFraction, float Thickness, bool bDepthTest)
+    void DrawEntitySelectionBox(CWorld* World, entt::entity Entity, const FVector4& Color, float CornerFraction, float Thickness, bool bDepthTest)
     {
-        glm::vec3 Center, HalfExtents;
-        glm::quat Rotation;
+        FVector3 Center, HalfExtents;
+        FQuat Rotation;
         if (World && GetEntityDrawBox(World->GetEntityRegistry(), Entity, Center, HalfExtents, Rotation))
         {
             World->DrawBoxCorners(Center, HalfExtents, Rotation, Color, CornerFraction, Thickness, bDepthTest);

@@ -292,7 +292,7 @@ namespace Lumina
         });
     }
 
-    void FRHIViewport::SetSize(const glm::uvec2& InSize)
+    void FRHIViewport::SetSize(const FUIntVector2& InSize)
     {
         if (Size == InSize)
         {
@@ -302,7 +302,7 @@ namespace Lumina
         CreateRenderTarget(InSize);
     }
 
-    void FRHIViewport::CreateRenderTarget(const glm::uvec2& InSize)
+    void FRHIViewport::CreateRenderTarget(const FUIntVector2& InSize)
     {
         FRHIImageDesc Desc;
         Desc.Format = EFormat::RGBA8_UNORM;

@@ -20,7 +20,7 @@
 
 namespace Lumina
 {
-    TMulticastDelegate<void, glm::vec2> FRenderManager::OnSwapchainResized;
+    TMulticastDelegate<void, FVector2> FRenderManager::OnSwapchainResized;
     RUNTIME_API FRenderManager* GRenderManager = nullptr;
 
     static TConsoleVar CVarMaxFrameRate("Core.VSync", true, "Toggles v-sync", [](const CVarValueType& Value)
@@ -177,7 +177,7 @@ namespace Lumina
         });
     }
 
-    void FRenderManager::SwapchainResized(glm::vec2 NewSize)
+    void FRenderManager::SwapchainResized(FVector2 NewSize)
     {
         OnSwapchainResized.Broadcast(NewSize);
     }

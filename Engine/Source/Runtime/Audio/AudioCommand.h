@@ -2,8 +2,7 @@
 
 #include "AudioTypes.h"
 #include "Containers/String.h"
-#include <glm/glm.hpp>
-#include <glm/gtc/quaternion.hpp>
+#include "Core/Math/Math.h"
 
 namespace Lumina
 {
@@ -23,7 +22,7 @@ namespace Lumina
 				float Pitch;
 				float MinDistance;
 				float MaxDistance;
-				glm::vec3 Position;
+				FVector3 Position;
 				bool bSpatialized;
 				bool bLooping;
 			} Play;
@@ -45,7 +44,7 @@ namespace Lumina
 
 			struct
 			{
-				glm::vec3 Position;
+				FVector3 Position;
 			} SetPosition;
 
 			struct
@@ -56,13 +55,13 @@ namespace Lumina
 
 			struct
 			{
-				glm::vec3 Position;
-				glm::quat Rotation;
+				FVector3 Position;
+				FQuat Rotation;
 			} Listener;
 		};
 		
 		static FAudioCommand MakePlay(FAudioHandle InHandle, FStringView Path, bool bSpatialized,
-			glm::vec3 Position, float Volume, float Pitch, float MinDistance, float MaxDistance, bool bLooping)
+			FVector3 Position, float Volume, float Pitch, float MinDistance, float MaxDistance, bool bLooping)
 		{
 			FAudioCommand Cmd;
 			Cmd.Type   = EAudioCommandType::PlaySound;
@@ -125,7 +124,7 @@ namespace Lumina
 			return Cmd;
 		}
 
-		static FAudioCommand MakeSetPosition(FAudioHandle InHandle, glm::vec3 Position)
+		static FAudioCommand MakeSetPosition(FAudioHandle InHandle, FVector3 Position)
 		{
 			FAudioCommand Cmd;
 			Cmd.Type                 = EAudioCommandType::SetPosition;
@@ -144,7 +143,7 @@ namespace Lumina
 			return Cmd;
 		}
 
-		static FAudioCommand MakeUpdateListener(glm::vec3 Position, glm::quat Rotation)
+		static FAudioCommand MakeUpdateListener(FVector3 Position, FQuat Rotation)
 		{
 			FAudioCommand Cmd;
 			Cmd.Type                = EAudioCommandType::UpdateListener;

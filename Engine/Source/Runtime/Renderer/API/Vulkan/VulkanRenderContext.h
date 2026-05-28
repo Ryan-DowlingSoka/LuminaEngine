@@ -212,7 +212,7 @@ namespace Lumina
         
         //-------------------------------------------------------------------------------------
 
-        NODISCARD FRHIViewportRef CreateViewport(const glm::uvec2& Size, FString&& DebugName) override;
+        NODISCARD FRHIViewportRef CreateViewport(const FUIntVector2& Size, FString&& DebugName) override;
         
         NODISCARD FRHIStagingImageRef CreateStagingImage(const FRHIImageDesc& Desc, ERHIAccess Access) override;
         void* MapStagingTexture(FRHIStagingImage* Image, const FTextureSlice& slice, ERHIAccess Access, size_t* OutRowPitch) override;

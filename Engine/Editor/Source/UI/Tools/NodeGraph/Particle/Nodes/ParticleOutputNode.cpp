@@ -9,7 +9,7 @@ namespace Lumina
     {
         InitialVelocityPin = Cast<CParticleInput>(CreatePin(CParticleInput::StaticClass(), "Initial Velocity", ENodePinDirection::Input));
         InitialVelocityPin->SetPinType(EParticlePinType::Float3);
-        InitialVelocityPin->SetDefaultFloat3(glm::vec3(0.0f, 2.0f, 0.0f));
+        InitialVelocityPin->SetDefaultFloat3(FVector3(0.0f, 2.0f, 0.0f));
 
         LifetimePin = Cast<CParticleInput>(CreatePin(CParticleInput::StaticClass(), "Lifetime", ENodePinDirection::Input));
         LifetimePin->SetPinType(EParticlePinType::Float);
@@ -17,11 +17,11 @@ namespace Lumina
 
         GravityPin = Cast<CParticleInput>(CreatePin(CParticleInput::StaticClass(), "Gravity", ENodePinDirection::Input));
         GravityPin->SetPinType(EParticlePinType::Float3);
-        GravityPin->SetDefaultFloat3(glm::vec3(0.0f, -9.8f, 0.0f));
+        GravityPin->SetDefaultFloat3(FVector3(0.0f, -9.8f, 0.0f));
 
         StartColorPin = Cast<CParticleInput>(CreatePin(CParticleInput::StaticClass(), "Start Color", ENodePinDirection::Input));
         StartColorPin->SetPinType(EParticlePinType::Float4);
-        StartColorPin->SetDefaultFloat4(glm::vec4(1.0f, 0.5f, 0.1f, 1.0f));
+        StartColorPin->SetDefaultFloat4(FVector4(1.0f, 0.5f, 0.1f, 1.0f));
 
         StartSizePin = Cast<CParticleInput>(CreatePin(CParticleInput::StaticClass(), "Start Size", ENodePinDirection::Input));
         StartSizePin->SetPinType(EParticlePinType::Float);
@@ -32,9 +32,9 @@ namespace Lumina
     {
         if (Compiler.GetContext() == EParticleContext::Spawn)
         {
-            const FParticleInputValue Velocity = Compiler.GetInputFloat3(InitialVelocityPin, glm::vec3(0.0f, 2.0f, 0.0f));
+            const FParticleInputValue Velocity = Compiler.GetInputFloat3(InitialVelocityPin, FVector3(0.0f, 2.0f, 0.0f));
             const FParticleInputValue Lifetime = Compiler.GetInputFloat (LifetimePin,       3.0f);
-            const FParticleInputValue Color    = Compiler.GetInputFloat4(StartColorPin,     glm::vec4(1.0f, 0.5f, 0.1f, 1.0f));
+            const FParticleInputValue Color    = Compiler.GetInputFloat4(StartColorPin,     FVector4(1.0f, 0.5f, 0.1f, 1.0f));
             const FParticleInputValue Size     = Compiler.GetInputFloat (StartSizePin,      0.1f);
 
             Compiler.EmitSpawn("Result.InitialVelocity = " + FParticleCompiler::Coerce(Velocity, EParticlePinType::Float3) + ";");
@@ -44,7 +44,7 @@ namespace Lumina
         }
         else
         {
-            const FParticleInputValue Gravity = Compiler.GetInputFloat3(GravityPin, glm::vec3(0.0f, -9.8f, 0.0f));
+            const FParticleInputValue Gravity = Compiler.GetInputFloat3(GravityPin, FVector3(0.0f, -9.8f, 0.0f));
 
             Compiler.EmitUpdate("float3 Gravity_ = " + FParticleCompiler::Coerce(Gravity, EParticlePinType::Float3) + ";");
             Compiler.EmitUpdate("P.Velocity += Gravity_ * DeltaTime;");

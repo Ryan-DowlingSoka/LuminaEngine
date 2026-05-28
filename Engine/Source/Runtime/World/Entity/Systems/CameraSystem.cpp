@@ -11,7 +11,7 @@ namespace Lumina
 {
     float EvaluateCameraBlend(ECameraBlendFunction Function, float Alpha)
     {
-        Alpha = glm::clamp(Alpha, 0.0f, 1.0f);
+        Alpha = Math::Clamp(Alpha, 0.0f, 1.0f);
         switch (Function)
         {
         case ECameraBlendFunction::EaseIn:    return Alpha * Alpha;
@@ -75,11 +75,11 @@ namespace Lumina
         SCameraComponent& Camera = Registry.get<SCameraComponent>(CameraEntity);
 
         // Live pose of the active camera; the blend (if any) eases toward this.
-        const glm::vec3 TargetPosition = CameraTransform.GetWorldLocation();
-        const glm::quat TargetRotation = CameraTransform.GetWorldRotation();
+        const FVector3 TargetPosition = CameraTransform.GetWorldLocation();
+        const FQuat TargetRotation = CameraTransform.GetWorldRotation();
         const float     TargetFOV      = Camera.FOV;
 
-        const glm::vec3 CameraWorldPos = TargetPosition;
+        const FVector3 CameraWorldPos = TargetPosition;
         SPostProcessSettings ResolvedPostProcess = Camera.PostProcess;
 
         struct FVolumeContribution { float Weight; const SPostProcessSettings* Settings; int32 Priority; };
@@ -99,10 +99,10 @@ namespace Lumina
             if (!Volume.bInfiniteExtent)
             {
                 const STransformComponent& VolXform = VolumeView.get<const STransformComponent>(VolEntity);
-                const glm::mat4 InvWorld = glm::inverse(VolXform.GetWorldMatrix());
-                const glm::vec3 LocalCam = glm::vec3(InvWorld * glm::vec4(CameraWorldPos, 1.0f));
-                const glm::vec3 D = glm::abs(LocalCam) - Volume.BoxExtent;
-                const float Outside = glm::max(D.x, glm::max(D.y, D.z));
+                const FMatrix4 InvWorld = Math::Inverse(VolXform.GetWorldMatrix());
+                const FVector3 LocalCam = FVector3(InvWorld * FVector4(CameraWorldPos, 1.0f));
+                const FVector3 D = Math::Abs(LocalCam) - Volume.BoxExtent;
+                const float Outside = Math::Max(D.x, Math::Max(D.y, D.z));
 
                 if (Outside > Volume.BlendDistance)
                 {
@@ -151,10 +151,10 @@ namespace Lumina
             if (!Volume.bInfiniteExtent)
             {
                 const STransformComponent& VolXform = VolumeView.get<const STransformComponent>(VolEntity);
-                const glm::mat4 InvWorld = glm::inverse(VolXform.GetWorldMatrix());
-                const glm::vec3 LocalCam = glm::vec3(InvWorld * glm::vec4(CameraWorldPos, 1.0f));
-                const glm::vec3 D = glm::abs(LocalCam) - Volume.BoxExtent;
-                const float Outside = glm::max(D.x, glm::max(D.y, D.z));
+                const FMatrix4 InvWorld = Math::Inverse(VolXform.GetWorldMatrix());
+                const FVector3 LocalCam = FVector3(InvWorld * FVector4(CameraWorldPos, 1.0f));
+                const FVector3 D = Math::Abs(LocalCam) - Volume.BoxExtent;
+                const float Outside = Math::Max(D.x, Math::Max(D.y, D.z));
                 if (Outside > Volume.BlendDistance)
                 {
                     continue;
@@ -183,8 +183,8 @@ namespace Lumina
         // Drive the camera-to-camera blend: ease from the snapshot toward the live target.
         CameraManager->TickBlend((float)Context.GetDeltaTime());
 
-        glm::vec3            FinalPosition    = TargetPosition;
-        glm::quat            FinalRotation    = TargetRotation;
+        FVector3            FinalPosition    = TargetPosition;
+        FQuat            FinalRotation    = TargetRotation;
         float                FinalFOV         = TargetFOV;
         SPostProcessSettings FinalPostProcess = ResolvedPostProcess;
 
@@ -193,15 +193,15 @@ namespace Lumina
             const FCameraManager::FBlendState& B = CameraManager->GetBlend();
             const float Alpha = EvaluateCameraBlend(B.Function, B.Duration > 0.0f ? B.Elapsed / B.Duration : 1.0f);
 
-            glm::quat To = TargetRotation;
-            if (glm::dot(B.FromRotation, To) < 0.0f)
+            FQuat To = TargetRotation;
+            if (Math::Dot(B.FromRotation, To) < 0.0f)
             {
                 To = -To; // Shortest-arc slerp.
             }
 
-            FinalPosition = glm::mix(B.FromPosition, TargetPosition, Alpha);
-            FinalRotation = glm::slerp(B.FromRotation, To, Alpha);
-            FinalFOV      = glm::mix(B.FromFOV, TargetFOV, Alpha);
+            FinalPosition = Math::Mix(B.FromPosition, TargetPosition, Alpha);
+            FinalRotation = Math::Slerp(B.FromRotation, To, Alpha);
+            FinalFOV      = Math::Mix(B.FromFOV, TargetFOV, Alpha);
 
             FinalPostProcess = B.FromPostProcess;
             BlendPostProcessSettings(FinalPostProcess, ResolvedPostProcess, Alpha);
@@ -212,8 +212,8 @@ namespace Lumina
         // SetResolvedView leaves the authored FOV property intact for the blend target.
         Camera.SetResolvedView(
             FinalPosition,
-            FinalRotation * glm::vec3(0.0f, 0.0f, 1.0f),
-            FinalRotation * glm::vec3(0.0f, 1.0f, 0.0f),
+            FinalRotation * FVector3(0.0f, 0.0f, 1.0f),
+            FinalRotation * FVector3(0.0f, 1.0f, 0.0f),
             FinalFOV);
 
         Resolved.ViewVolume      = Camera.GetViewVolume();

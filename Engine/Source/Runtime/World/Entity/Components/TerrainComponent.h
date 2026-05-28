@@ -54,11 +54,11 @@ namespace Lumina
         bool    bChunksDirty = true;
 
         /** Inclusive dirty rects awaiting partial upload. */
-        glm::ivec2  HeightDirtyMin = glm::ivec2(INT32_MAX);
-        glm::ivec2  HeightDirtyMax = glm::ivec2(INT32_MIN);
+        FIntVector2  HeightDirtyMin = FIntVector2(INT32_MAX);
+        FIntVector2  HeightDirtyMax = FIntVector2(INT32_MIN);
 
-        glm::ivec2  WeightDirtyMin = glm::ivec2(INT32_MAX);
-        glm::ivec2  WeightDirtyMax = glm::ivec2(INT32_MIN);
+        FIntVector2  WeightDirtyMin = FIntVector2(INT32_MAX);
+        FIntVector2  WeightDirtyMax = FIntVector2(INT32_MIN);
         uint32      WeightDirtyLayerMask = 0u;
 
         TVector<FTerrainChunkInfo>      Chunks;
@@ -156,18 +156,18 @@ namespace Lumina
                 || GPUState.AllocatedLayerCount  != ExpectedLayers;
         }
 
-        void MarkHeightDirty(const glm::ivec2& Min, const glm::ivec2& Max)
+        void MarkHeightDirty(const FIntVector2& Min, const FIntVector2& Max)
         {
-            GPUState.HeightDirtyMin = glm::min(GPUState.HeightDirtyMin, Min);
-            GPUState.HeightDirtyMax = glm::max(GPUState.HeightDirtyMax, Max);
+            GPUState.HeightDirtyMin = Math::Min(GPUState.HeightDirtyMin, Min);
+            GPUState.HeightDirtyMax = Math::Max(GPUState.HeightDirtyMax, Max);
             // Heights drive chunk/meshlet bounds; cull must test against fresh geometry.
             GPUState.bChunksDirty = true;
         }
 
-        void MarkWeightsDirty(uint32 LayerIndex, const glm::ivec2& Min, const glm::ivec2& Max)
+        void MarkWeightsDirty(uint32 LayerIndex, const FIntVector2& Min, const FIntVector2& Max)
         {
-            GPUState.WeightDirtyMin = glm::min(GPUState.WeightDirtyMin, Min);
-            GPUState.WeightDirtyMax = glm::max(GPUState.WeightDirtyMax, Max);
+            GPUState.WeightDirtyMin = Math::Min(GPUState.WeightDirtyMin, Min);
+            GPUState.WeightDirtyMax = Math::Max(GPUState.WeightDirtyMax, Max);
             GPUState.WeightDirtyLayerMask |= (1u << LayerIndex);
         }
     };

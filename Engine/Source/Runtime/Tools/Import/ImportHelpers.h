@@ -42,16 +42,16 @@ namespace Lumina::Import
         struct FTextureImportResult
         {
             TVector<uint8>  Pixels;
-            glm::uvec2      Dimensions;
+            FUIntVector2      Dimensions;
             EFormat         Format;
         };
         
         /** Gets an image's raw pixel data */
-        RUNTIME_API TOptional<FTextureImportResult> ImportTexture(FStringView RawFilePath, bool bFlipVertical = true, glm::uvec2 Size = {});
-        RUNTIME_API TOptional<FTextureImportResult> ImportTexture(TSpan<const uint8> ImageData, bool bFlipVertical = true, glm::uvec2 Size = {});
+        RUNTIME_API TOptional<FTextureImportResult> ImportTexture(FStringView RawFilePath, bool bFlipVertical = true, FUIntVector2 Size = {});
+        RUNTIME_API TOptional<FTextureImportResult> ImportTexture(TSpan<const uint8> ImageData, bool bFlipVertical = true, FUIntVector2 Size = {});
     
         /** Creates a raw RHI Image */
-        NODISCARD RUNTIME_API FRHIImageRef CreateTextureFromImport(FStringView RawFilePath, bool bFlipVerticalOnLoad = true, glm::uvec2 Size = {});
+        NODISCARD RUNTIME_API FRHIImageRef CreateTextureFromImport(FStringView RawFilePath, bool bFlipVerticalOnLoad = true, FUIntVector2 Size = {});
     }
 
     

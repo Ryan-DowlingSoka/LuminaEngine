@@ -474,7 +474,7 @@ namespace Lumina
 		if (VectorParameters.find(ParamID) == VectorParameters.end())
 		{
 			VectorParameters[ParamID].Index = NumVectorParams++;
-			VectorParameters[ParamID].Value = glm::vec4(Value[0], Value[1], 0.0f, 1.0f);
+			VectorParameters[ParamID].Value = FVector4(Value[0], Value[1], 0.0f, 1.0f);
 		}
 
 		FString IndexString = eastl::to_string(VectorParameters[ParamID].Index);
@@ -486,7 +486,7 @@ namespace Lumina
 		if (VectorParameters.find(ParamID) == VectorParameters.end())
 		{
 			VectorParameters[ParamID].Index = NumVectorParams++;
-			VectorParameters[ParamID].Value = glm::vec4(Value[0], Value[1], Value[2], 1.0f);
+			VectorParameters[ParamID].Value = FVector4(Value[0], Value[1], Value[2], 1.0f);
 		}
 
 		FString IndexString = eastl::to_string(VectorParameters[ParamID].Index);
@@ -498,7 +498,7 @@ namespace Lumina
 		if (VectorParameters.find(ParamID) == VectorParameters.end())
 		{
 			VectorParameters[ParamID].Index = NumVectorParams++;
-			VectorParameters[ParamID].Value = glm::vec4(Value[0], Value[1], Value[2], Value[3]);
+			VectorParameters[ParamID].Value = FVector4(Value[0], Value[1], Value[2], Value[3]);
 		}
 
 		FString IndexString = eastl::to_string(VectorParameters[ParamID].Index);

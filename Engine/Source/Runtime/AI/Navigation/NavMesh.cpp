@@ -14,8 +14,8 @@ namespace Lumina
 {
     namespace
     {
-        FORCEINLINE void Pack(const glm::vec3& In, float* Out) { Out[0] = In.x; Out[1] = In.y; Out[2] = In.z; }
-        FORCEINLINE glm::vec3 Unpack(const float* In) { return glm::vec3(In[0], In[1], In[2]); }
+        FORCEINLINE void Pack(const FVector3& In, float* Out) { Out[0] = In.x; Out[1] = In.y; Out[2] = In.z; }
+        FORCEINLINE FVector3 Unpack(const float* In) { return FVector3(In[0], In[1], In[2]); }
 
 #if defined(LUMINA_HAS_RECAST)
         void ApplyFilter(const FNavQueryFilter& In, dtQueryFilter& Out)
@@ -37,7 +37,7 @@ namespace Lumina
         Shutdown();
     }
 
-    bool FNavMesh::Initialize(const glm::vec3& InOrigin, float InTileWorldSize, int32 MaxTiles, int32 MaxPolysPerTile, TVector<FNavTileData>&& Tiles)
+    bool FNavMesh::Initialize(const FVector3& InOrigin, float InTileWorldSize, int32 MaxTiles, int32 MaxPolysPerTile, TVector<FNavTileData>&& Tiles)
     {
         Shutdown();
 
@@ -194,7 +194,7 @@ namespace Lumina
         return {};
     }
 
-    bool FNavMesh::ProjectPoint(const glm::vec3& World, const glm::vec3& Extents, const FNavQueryFilter& Filter, glm::vec3& Out) const
+    bool FNavMesh::ProjectPoint(const FVector3& World, const FVector3& Extents, const FNavQueryFilter& Filter, FVector3& Out) const
     {
 #if defined(LUMINA_HAS_RECAST)
         FAcquiredQuery Q = AcquireQuery();
@@ -217,7 +217,7 @@ namespace Lumina
 #endif
     }
 
-    bool FNavMesh::FindPath(const glm::vec3& Start, const glm::vec3& End, const FNavQueryFilter& Filter, FNavPath& Out) const
+    bool FNavMesh::FindPath(const FVector3& Start, const FVector3& End, const FNavQueryFilter& Filter, FNavPath& Out) const
     {
         Out = {};
 
@@ -306,8 +306,8 @@ namespace Lumina
             if (!Tile || !Tile->header) continue;
 
             FNavTileBounds Tb;
-            Tb.Min = glm::vec3(Tile->header->bmin[0], Tile->header->bmin[1], Tile->header->bmin[2]);
-            Tb.Max = glm::vec3(Tile->header->bmax[0], Tile->header->bmax[1], Tile->header->bmax[2]);
+            Tb.Min = FVector3(Tile->header->bmin[0], Tile->header->bmin[1], Tile->header->bmin[2]);
+            Tb.Max = FVector3(Tile->header->bmax[0], Tile->header->bmax[1], Tile->header->bmax[2]);
             Tb.X   = Tile->header->x;
             Tb.Y   = Tile->header->y;
             CachedTileBounds.push_back(Tb);
@@ -456,7 +456,7 @@ namespace Lumina
 #endif
     }
 
-    bool FNavMesh::FindRandomPoint(const glm::vec3& Center, float Radius, const FNavQueryFilter& Filter, glm::vec3& Out) const
+    bool FNavMesh::FindRandomPoint(const FVector3& Center, float Radius, const FNavQueryFilter& Filter, FVector3& Out) const
     {
 #if defined(LUMINA_HAS_RECAST)
         FAcquiredQuery Q = AcquireQuery();
@@ -498,7 +498,7 @@ namespace Lumina
 #endif
     }
 
-    bool FNavMesh::Raycast(const glm::vec3& Start, const glm::vec3& End, const FNavQueryFilter& Filter, glm::vec3& HitOut) const
+    bool FNavMesh::Raycast(const FVector3& Start, const FVector3& End, const FNavQueryFilter& Filter, FVector3& HitOut) const
     {
 #if defined(LUMINA_HAS_RECAST)
         FAcquiredQuery Q = AcquireQuery();
@@ -521,7 +521,7 @@ namespace Lumina
         {
             return false;
         }
-        HitOut = (T >= 1.0f) ? End : glm::mix(Start, End, T);
+        HitOut = (T >= 1.0f) ? End : Math::Mix(Start, End, T);
         return true;
 #else
         (void)Start; (void)End; (void)Filter; (void)HitOut;

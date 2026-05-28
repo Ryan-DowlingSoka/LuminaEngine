@@ -23,7 +23,7 @@ namespace Lumina
 
         /** Default value of the constant, also used as the parameter default. */
         PROPERTY(Editable, Color, Category = "Value")
-        glm::vec4           Value = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        FVector4           Value = FVector4(0.0f, 0.0f, 0.0f, 1.0f);
 
         EMaterialInputType  ValueType = EMaterialInputType::Float;
     };

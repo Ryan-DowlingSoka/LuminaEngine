@@ -1,6 +1,6 @@
 #pragma once
 
-#include "glm/glm.hpp"
+#include "Core/Math/Math.h"
 #include "LightComponent.generated.h"
 
 namespace Lumina
@@ -12,7 +12,7 @@ namespace Lumina
 
         /** RGB color of the light emission. */
         PROPERTY(Editable, Color, Category = "Light")
-        glm::vec3 LightColor = glm::vec3(1.0f);
+        FVector3 LightColor = FVector3(1.0f);
 
         /** Brightness of the light in lux. */
         PROPERTY(Editable, Category = "Light", ClampMin = 0.0f)
@@ -46,7 +46,7 @@ namespace Lumina
 
         /** RGB color of the light emission. */
         PROPERTY(Editable, Color, Category = "Light")
-        glm::vec3 LightColor = glm::vec3(1.0f);
+        FVector3 LightColor = FVector3(1.0f);
 
         /** Brightness of the light in lux. */
         PROPERTY(Editable, Category = "Light", ClampMin = 0.0f, ClampMax = 1000.0f)
@@ -100,11 +100,11 @@ namespace Lumina
 
         /** RGB color of the directional light. Multiplied by the temperature tint when bUseTemperature is set. */
         PROPERTY(Editable, Color, Category = "Light")
-        glm::vec3 Color = glm::vec4(1.0f);
+        FVector3 Color = FVector4(1.0f);
 
         /** Normalized world-space direction the light travels (points away from the source). */
         PROPERTY(Editable, Category = "Light")
-        glm::vec3 Direction = glm::vec3(0.0f, 0.3f, 0.8f);
+        FVector3 Direction = FVector3(0.0f, 0.3f, 0.8f);
 
         /** Brightness multiplier of the directional light. */
         PROPERTY(Editable, Category = "Light", ClampMin = 0.0f)

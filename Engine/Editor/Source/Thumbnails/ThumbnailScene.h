@@ -36,7 +36,7 @@ namespace Lumina
 
         // Place the thumbnail camera. Recomputes the view matrix immediately
         // so render results are deterministic without ticking the world.
-        void SetCameraTransform(const glm::vec3& Position, const glm::vec3& Target, float FOVDegrees = 35.0f);
+        void SetCameraTransform(const FVector3& Position, const FVector3& Target, float FOVDegrees = 35.0f);
 
         // Renders one frame and reads back into Thumbnail (256x256 RGBA8).
         // Returns false if the world or render target is missing.
