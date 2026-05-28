@@ -3,13 +3,13 @@
 #include "Core/Math/Vector/Vector.h"
 #include <type_traits>
 
-// Lumina matrices. Conventions match the engine's prior glm setup so they slot
-// in and upload byte-for-byte: COLUMN-MAJOR storage (C columns, each a TVec<T,R>),
-// indexed m[col][row]. Left-handed / zero-to-one depth only matter for the
-// projection builders (perspective/ortho/lookAt), which live in the math
-// function library, not here. This header is the type + its core algebra.
+// Lumina matrices. COLUMN-MAJOR storage (C columns, each a TVec<T,R>), indexed
+// m[col][row], so they upload to the GPU byte-for-byte. Left-handed / zero-to-one
+// depth only matter for the projection builders (perspective/ortho/lookAt), which
+// live in the math function library, not here. This header is the type + its core
+// algebra.
 //
-// Not reflected: matrices were never in ManualReflectTypes.h under glm either.
+// Not reflected (no stubs in ManualReflectTypes.h).
 
 namespace Lumina
 {
@@ -26,7 +26,7 @@ namespace Lumina
 
         ColumnType Cols[C];
 
-        // Trivial default ctor (matches glm: uninitialized). Use TMat(1) or
+        // Trivial default ctor: uninitialized. Use TMat(1) or
         // TMat::Identity() for the identity matrix.
         TMat() = default;
 
@@ -44,7 +44,7 @@ namespace Lumina
             requires (sizeof...(Cs) == C && C >= 2 && (std::is_convertible_v<Cs, ColumnType> && ...))
         constexpr TMat(const Cs&... InCols) : Cols{ ColumnType(InCols)... } {}
 
-        // From C*R scalars in column-major order (matches glm's scalar ctor).
+        // From C*R scalars in column-major order.
         template<typename... Ss>
             requires (sizeof...(Ss) == C * R && C * R != C && (std::is_convertible_v<Ss, T> && ...))
         constexpr TMat(Ss... InScalars)
@@ -68,7 +68,7 @@ namespace Lumina
             }
         }
 
-        // Resize (glm: mat3(mat4) keeps the upper-left; mat4(mat3) fills the rest
+        // Resize: a smaller target keeps the upper-left; a larger one fills the rest
         // with identity). The overlapping block is copied, the remainder identity.
         template<int C2, int R2>
             requires (C2 != C || R2 != R)

@@ -3,9 +3,8 @@
 #include "Platform/GenericPlatform.h"
 #include <type_traits>
 
-// Lumina vector types. Conventions match the engine's prior GLM setup:
-// left-handed, column-vector math, components stored contiguously so the
-// memory layout is interchangeable with the old glm::vec* types on upload.
+// Lumina vector types. Left-handed, column-vector math, components stored
+// contiguously so the memory layout uploads to the GPU without repacking.
 //
 // Storage is specialized per dimension (below) to expose named x/y/z/w members
 // plus the r/g/b/a and s/t/p/q aliases that share the same bytes. Behavior
@@ -32,7 +31,7 @@ namespace Lumina
 
         T Data[N];
 
-        // Trivial default ctor (matches glm: uninitialized, keeps the type trivial
+        // Trivial default ctor: uninitialized, keeps the type trivial
         // so it is bulk-serializable and usable in unions).
         TVec() = default;
 
@@ -69,16 +68,16 @@ namespace Lumina
         TVec() = default;
         explicit constexpr TVec(T Scalar) : x(Scalar), y(Scalar) {}
 
-        // Per-component (glm accepts mixed/int args; cast removes brace-narrowing).
+        // Per-component; accepts mixed/int args, the cast removes brace-narrowing.
         template<typename A, typename B>
             requires (std::is_arithmetic_v<A> && std::is_arithmetic_v<B>)
         constexpr TVec(A InX, B InY) : x(T(InX)), y(T(InY)) {}
 
-        // Implicit truncation from larger vectors (matches glm).
+        // Implicit truncation from larger vectors.
         constexpr TVec(const TVec<T, 3>& V) : x(V.x), y(V.y) {}
         constexpr TVec(const TVec<T, 4>& V) : x(V.x), y(V.y) {}
 
-        // Cross-precision conversion (implicit, matching glm).
+        // Cross-precision conversion (implicit).
         template<typename U>
         constexpr TVec(const TVec<U, 2>& V) : x(T(V.x)), y(T(V.y)) {}
 
@@ -114,7 +113,7 @@ namespace Lumina
         constexpr TVec(A InX, B InY, C InZ) : x(T(InX)), y(T(InY)), z(T(InZ)) {}
 
         constexpr TVec(const TVec<T, 2>& XY, T InZ) : x(XY.x), y(XY.y), z(InZ) {}
-        constexpr TVec(const TVec<T, 4>& V) : x(V.x), y(V.y), z(V.z) {} // implicit truncate (glm)
+        constexpr TVec(const TVec<T, 4>& V) : x(V.x), y(V.y), z(V.z) {} // implicit truncate
 
         template<typename U>
         constexpr TVec(const TVec<U, 3>& V) : x(T(V.x)), y(T(V.y)), z(T(V.z)) {}
@@ -231,19 +230,12 @@ namespace Lumina
         return !(A == B);
     }
 
-    // ---- Concrete aliases ---------------------------------------------------
-    // Only the float FVector* types are reflected: ManualReflectTypes.h supplies
-    // plain-struct stubs under these exact names, so the real alias is hidden from
-    // the reflection parser to avoid a redefinition (same way glm's real headers
-    // are absent during the parse).
 #ifndef REFLECTION_PARSER
     using FVector2 = TVec<float, 2>;
     using FVector3 = TVec<float, 3>;
     using FVector4 = TVec<float, 4>;
 #endif
-
-    // The remaining precisions are NOT reflected (no stubs), so they must stay
-    // defined during the reflection parse — they appear as ordinary member types.
+    
     using FIntVector2 = TVec<int32, 2>;
     using FIntVector3 = TVec<int32, 3>;
     using FIntVector4 = TVec<int32, 4>;

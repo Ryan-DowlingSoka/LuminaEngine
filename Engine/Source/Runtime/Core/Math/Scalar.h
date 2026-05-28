@@ -7,13 +7,13 @@
 #include <concepts>
 #include <type_traits>
 
-// Scalar math in Lumina::Math. Mirrors the glm scalar/common functions the
+// Scalar math in Lumina::Math. The common scalar functions the
 // engine uses (radians, trig, mix, clamp, step, ...) so call sites are a direct
 // rename. Vector component-wise overloads live in Vector/VectorMath.h.
 
 namespace Lumina::Math
 {
-    // ---- Constants (glm::pi<T>() etc.) --------------------------------------
+    // ---- Constants (Pi<T>() etc.) -------------------------------------------
     template<typename T> [[nodiscard]] constexpr T Pi()       { return T(3.141592653589793238462643383279502884L); }
     template<typename T> [[nodiscard]] constexpr T TwoPi()    { return T(2) * Pi<T>(); }
     template<typename T> [[nodiscard]] constexpr T HalfPi()   { return Pi<T>() / T(2); }
@@ -66,13 +66,13 @@ namespace Lumina::Math
 
     template<std::floating_point T> [[nodiscard]] constexpr T Saturate(T V) { return Clamp(V, T(0), T(1)); }
 
-    // glm::mix(a, b, t) = a*(1-t) + b*t.
+    // Linear blend: a*(1-t) + b*t.
     template<typename T> [[nodiscard]] constexpr T Mix(T A, T B, T Alpha) { return A * (T(1) - Alpha) + B * Alpha; }
 
-    // glm::step(edge, x).
+    // step(edge, x): 0 if x < edge, else 1.
     template<std::floating_point T> [[nodiscard]] constexpr T Step(T Edge, T X) { return X < Edge ? T(0) : T(1); }
 
-    // glm::smoothstep(edge0, edge1, x).
+    // Smooth Hermite interpolation between edge0 and edge1.
     template<std::floating_point T> [[nodiscard]] constexpr T SmoothStep(T Edge0, T Edge1, T X)
     {
         const T Tt = Clamp((X - Edge0) / (Edge1 - Edge0), T(0), T(1));
@@ -81,7 +81,7 @@ namespace Lumina::Math
 
     template<std::floating_point T> [[nodiscard]] T Fma(T A, T B, T C) { return std::fma(A, B, C); }
 
-    // glm::epsilonEqual(a, b, eps).
+    // |a - b| <= eps.
     template<typename T> requires std::is_arithmetic_v<T>
     [[nodiscard]] constexpr bool EpsilonEqual(T A, T B, T Eps) { return Abs(A - B) <= Eps; }
 }

@@ -4,14 +4,12 @@
 #include "Core/LuminaMacros.h"
 #include <cmath>
 
-// Lumina quaternion. Conventions match the engine's prior glm setup so it slots
-// in: memory layout is x,y,z,w (imaginary first, real last) and the 4-scalar
-// constructor takes the real part FIRST — TQuat(w, x, y, z) — exactly like
-// glm::quat. Left-handed, unit quaternions represent rotations.
+// Lumina quaternion. Memory layout is x,y,z,w (imaginary first, real last) and the
+// 4-scalar constructor takes the real part FIRST — TQuat(w, x, y, z). Left-handed;
+// unit quaternions represent rotations.
 //
 // Plain members (no union) so the type is standard-layout and offsetof on x/y/z/w
-// is well-defined for reflection. The euler<->quat formulas mirror glm's so a
-// migration produces identical rotations.
+// is well-defined for reflection.
 
 #if defined(_MSC_VER)
     #pragma warning(push)
@@ -27,17 +25,17 @@ namespace Lumina
 
         T x, y, z, w;
 
-        // Trivial default ctor (matches glm: uninitialized; keeps the type trivial
+        // Trivial default ctor: uninitialized; keeps the type trivial
         // for unions / bulk serialization). Use TQuat::Identity() for identity.
         TQuat() = default;
 
-        // Real part first, matching glm::quat(w, x, y, z).
+        // Real part first: TQuat(w, x, y, z).
         constexpr TQuat(T InW, T InX, T InY, T InZ) : x(InX), y(InY), z(InZ), w(InW) {}
 
         // Scalar (real) + imaginary vector.
         constexpr TQuat(T InW, const TVec<T, 3>& V) : x(V.x), y(V.y), z(V.z), w(InW) {}
 
-        // From euler angles in radians (matches glm::quat(vec3)).
+        // From euler angles in radians.
         explicit TQuat(const TVec<T, 3>& EulerRadians)
         {
             const TVec<T, 3> C(std::cos(EulerRadians.x * T(0.5)), std::cos(EulerRadians.y * T(0.5)), std::cos(EulerRadians.z * T(0.5)));
@@ -172,7 +170,7 @@ namespace Lumina::Math
         return TQuat<T>(static_cast<T>(std::cos(Half)), A.x, A.y, A.z);
     }
 
-    // Euler angles (radians) as (pitch=x, yaw=y, roll=z); mirrors glm::eulerAngles.
+    // Euler angles (radians) as (pitch=x, yaw=y, roll=z).
     template<typename T>
     [[nodiscard]] TVec<T, 3> EulerAngles(const TQuat<T>& Q)
     {
@@ -215,7 +213,7 @@ namespace Lumina::Math
         return Q * V;
     }
 
-    // glm::value_ptr — contiguous x,y,z,w.
+    // Pointer to contiguous x,y,z,w (GPU upload / interop).
     template<typename T> [[nodiscard]] const T* ValuePtr(const TQuat<T>& Q) { return &Q.x; }
     template<typename T> [[nodiscard]] T*       ValuePtr(TQuat<T>& Q)       { return &Q.x; }
 }

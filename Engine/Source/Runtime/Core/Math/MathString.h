@@ -4,7 +4,7 @@
 #include "Quat/Quat.h"
 #include <string>
 
-// glm::to_string equivalents (debug / property display).
+// Stringify helpers for the math types (debug / property display).
 
 namespace Lumina::Math
 {

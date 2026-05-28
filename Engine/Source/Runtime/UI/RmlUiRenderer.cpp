@@ -872,7 +872,7 @@ namespace Lumina
     {
         if (Transform)
         {
-            // RmlUi defaults column-major (matches glm); RMLUI_MATRIX_ROW_MAJOR would require a transpose.
+            // RmlUi defaults column-major (matches our matrices); RMLUI_MATRIX_ROW_MAJOR would require a transpose.
             std::memcpy(Math::ValuePtr(UserTransform), Transform->data(), sizeof(float) * 16);
         }
         else

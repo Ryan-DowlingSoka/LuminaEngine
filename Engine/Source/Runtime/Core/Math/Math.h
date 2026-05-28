@@ -8,7 +8,7 @@
 #include "Platform/GenericPlatform.h"
 
 // The Lumina math hub. Pulls in the in-house vector/quat/matrix library and adds
-// the scalar utilities that don't belong to a single type. No glm.
+// the scalar utilities that don't belong to a single type.
 #include "Core/Math/Scalar.h"
 #include "Core/Math/Vector/Vector.h"
 #include "Core/Math/Quat/Quat.h"

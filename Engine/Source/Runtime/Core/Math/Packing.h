@@ -4,7 +4,7 @@
 #include "Vector/VectorTypes.h"
 #include <cstring>
 
-// Bit-packing helpers matching glm's gtc/packing (the subset the engine uses).
+// Bit-packing helpers (half-float pack/unpack) the engine uses.
 
 namespace Lumina::Math
 {
@@ -81,7 +81,7 @@ namespace Lumina::Math
         }
     }
 
-    // glm::packHalf2x16: x -> low 16 bits, y -> high 16 bits.
+    // PackHalf2x16: x -> low 16 bits, y -> high 16 bits.
     [[nodiscard]] inline uint32 PackHalf2x16(const TVec<float, 2>& V)
     {
         return static_cast<uint32>(Detail::FloatToHalf(V.x)) |

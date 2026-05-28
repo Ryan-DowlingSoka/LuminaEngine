@@ -1,6 +1,6 @@
 #pragma once
 
-// Editor PCH. Includes Runtime's PCH (which carries STL/EASTL/glm/entt/xxhash)
+// Editor PCH. Includes Runtime's PCH (which carries STL/EASTL/entt/xxhash)
 // plus the editor-only heavies (ImGui).
 //
 // Keep this lean: anything pulled in here is paid by all 95 Editor TUs every
@@ -20,6 +20,6 @@
 #include <imgui_internal.h>
 
 // ImGuiX is included by 29+ Editor TUs and transitively pulls imgui_internal,
-// ImGuizmo, AssetRegistry, glm, and a handful of Containers. Hoisting it
+// ImGuizmo, AssetRegistry, and a handful of Containers. Hoisting it
 // into the PCH replaces ~29 redundant parses with one.
 #include "Tools/UI/ImGui/ImGuiX.h"

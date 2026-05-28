@@ -3,7 +3,7 @@
 // ===================
 // Standard Library
 // ===================
-// Kept: small, used everywhere, or required by EASTL/glm/etc. transitively.
+// Kept: small, used everywhere, or required by EASTL/etc. transitively.
 // Removed (moved to direct includes in their few users):
 //   <iostream> <iomanip> <sstream> -- 0 uses anywhere.
 //   <variant> <span> <bitset> <random> <stdexcept> -- <=7 uses, low fan-out.
@@ -76,7 +76,6 @@
 // Third-Party Libraries
 // ===================
 // Kept here:
-//   glm     - vec/mat types are used in nearly every TU.
 //   entt    - 48+ files reach into entt:: directly via component / system
 //             headers; pulling it out of the PCH would just shift the parse
 //             cost from "once" to "48+ times".
@@ -89,7 +88,7 @@
 #include <entt/entt.hpp>
 #include <xxhash.h>
 
-// Lumina vector + quaternion types. Like glm, used in nearly every TU; the PCH
+// Lumina vector + quaternion types, used in nearly every TU; the PCH
 // also makes the real FVector*/FQuat aliases visible to the reflection-unity TU
 // that compiles their manually-reflected registration (Core/Object/ManualReflectTypes.h).
 #include "Core/Math/Vector/Vector.h"

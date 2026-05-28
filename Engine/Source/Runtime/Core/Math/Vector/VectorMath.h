@@ -131,7 +131,7 @@ namespace Lumina::Math
         return true;
     }
 
-    // ---- Component-wise unary (glm applies these per element) ---------------
+    // ---- Component-wise unary (applied per element) -------------------------
     // Each maps the matching scalar Math:: function over the components.
     #define LUMINA_VEC_MAP1(Name)                                                          \
         template<typename T, int N> [[nodiscard]] TVec<T, N> Name(const TVec<T, N>& V)      \
@@ -157,7 +157,7 @@ namespace Lumina::Math
     LUMINA_VEC_MAP1(Saturate)
     #undef LUMINA_VEC_MAP1
 
-    // ---- Scalar-broadcast min/max/clamp (glm::max(v, 0.0f) etc.) ------------
+    // ---- Scalar-broadcast min/max/clamp (e.g. Max(v, 0.0f)) -----------------
     template<typename T, int N>
     [[nodiscard]] constexpr TVec<T, N> Max(const TVec<T, N>& V, std::type_identity_t<T> S)
     {
@@ -199,7 +199,7 @@ namespace Lumina::Math
         return R;
     }
 
-    // glm::mix — scalar and per-component interpolant.
+    // Linear blend (mix) — scalar and per-component interpolant.
     template<typename T, int N>
     [[nodiscard]] constexpr TVec<T, N> Mix(const TVec<T, N>& A, const TVec<T, N>& B, T Alpha)
     {
@@ -222,7 +222,7 @@ namespace Lumina::Math
         return R;
     }
 
-    // glm::refract(I, N, eta) for a normalized incident I and normal N.
+    // Refract a normalized incident I about normal N with index ratio eta.
     template<typename T, int N>
     [[nodiscard]] TVec<T, N> Refract(const TVec<T, N>& I, const TVec<T, N>& Nrm, T Eta)
     {
@@ -232,7 +232,7 @@ namespace Lumina::Math
         return I * Eta - Nrm * (Eta * DotNI + Sqrt(K));
     }
 
-    // glm::value_ptr — pointer to contiguous components (GPU upload / interop).
+    // Pointer to contiguous components (GPU upload / interop).
     template<typename T, int N> [[nodiscard]] const T* ValuePtr(const TVec<T, N>& V) { return &V[0]; }
     template<typename T, int N> [[nodiscard]] T*       ValuePtr(TVec<T, N>& V)       { return &V[0]; }
 }

@@ -20,7 +20,7 @@ namespace Lumina
     };
 
     // CStruct/CEnum::MakeDisplayName() blindly strips the first character, mangling
-    // non-prefixed reflected names (glm "vec3" -> "ec3"); strip only a PascalCase prefix.
+    // non-prefixed reflected names ("vec3" -> "ec3"); strip only a PascalCase prefix.
     static FString PrettyReflectedName(const FName& Name)
     {
         FString Result = Name.ToString();

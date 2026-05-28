@@ -5,10 +5,8 @@
 #include <cmath>
 
 // Matrix free functions + quaternion<->matrix conversions, in Lumina::Math.
-// Conventions match the engine's prior glm setup exactly (verified numerically
-// against glm): COLUMN-MAJOR storage, LEFT-HANDED, and ZERO-TO-ONE clip depth
-// for the projection builders (== glm with GLM_FORCE_LEFT_HANDED +
-// GLM_FORCE_DEPTH_ZERO_TO_ONE). Do not "fix" the handedness/depth here.
+// Conventions: COLUMN-MAJOR storage, LEFT-HANDED, and ZERO-TO-ONE clip depth for
+// the projection builders. Do not "fix" the handedness/depth here.
 
 namespace Lumina::Math
 {
@@ -74,7 +72,7 @@ namespace Lumina::Math
         return R;
     }
 
-    // glm's coefficient method (matches glm::inverse bit-for-bit on affine + general 4x4).
+    // Cofactor (coefficient) method; full general 4x4 inverse.
     template<typename T>
     [[nodiscard]] constexpr TMat<T, 4, 4> Inverse(const TMat<T, 4, 4>& M)
     {
@@ -136,7 +134,7 @@ namespace Lumina::Math
         return Inv * OneOverDet;
     }
 
-    // ---- Affine builders (mirror glm::translate/scale/rotate(mat, ...)) ------
+    // ---- Affine builders (Translate / Scale / Rotate a matrix) ------
     template<typename T>
     [[nodiscard]] constexpr TMat<T, 4, 4> Translate(const TMat<T, 4, 4>& M, const TVec<T, 3>& V)
     {
@@ -255,7 +253,7 @@ namespace Lumina::Math
     }
 
     // ---- Quaternion <-> matrix ---------------------------------------------
-    // glm::mat3_cast / mat4_cast.
+    // Quaternion -> rotation matrix.
     template<typename T>
     [[nodiscard]] constexpr TMat<T, 3, 3> ToMatrix3(const TQuat<T>& Q)
     {
@@ -287,7 +285,7 @@ namespace Lumina::Math
         return Result;
     }
 
-    // glm::quat_cast (matrix -> quaternion), branch-by-largest-component.
+    // Rotation matrix -> quaternion, branch-by-largest-component.
     template<typename T>
     [[nodiscard]] TQuat<T> ToQuat(const TMat<T, 3, 3>& M)
     {
@@ -323,7 +321,7 @@ namespace Lumina::Math
             TVec<T, 3>(M[2].x, M[2].y, M[2].z)));
     }
 
-    // glm::angleAxis(angle, axis) — argument order matches glm.
+    // Quaternion from an axis and angle (radians).
     template<typename T>
     [[nodiscard]] TQuat<T> AngleAxis(T AngleRadians, const TVec<T, 3>& Axis)
     {
@@ -332,7 +330,7 @@ namespace Lumina::Math
         return TQuat<T>(static_cast<T>(std::cos(Half)), Axis.x * S, Axis.y * S, Axis.z * S);
     }
 
-    // glm::quatLookAt(direction, up).
+    // Look-rotation quaternion from a forward direction and up vector.
     template<typename T>
     [[nodiscard]] TQuat<T> QuatLookAt(const TVec<T, 3>& Direction, const TVec<T, 3>& Up)
     {
@@ -344,8 +342,8 @@ namespace Lumina::Math
         return ToQuat(Result);
     }
 
-    // Affine TRS decompose (matches glm::decompose for non-skewed, non-projective
-    // transforms — which is all the engine builds). Returns false on singular.
+    // Affine TRS decompose (for non-skewed, non-projective
+    // transforms, which is all the engine builds). Returns false on singular.
     template<typename T>
     bool Decompose(const TMat<T, 4, 4>& M, TVec<T, 3>& OutScale, TQuat<T>& OutRotation, TVec<T, 3>& OutTranslation)
     {
@@ -382,7 +380,7 @@ namespace Lumina::Math
         return true;
     }
 
-    // glm::decompose signature (skew/perspective are filled for affine transforms).
+    // Full decompose signature (skew/perspective are filled for affine transforms).
     template<typename T>
     bool Decompose(const TMat<T, 4, 4>& M, TVec<T, 3>& OutScale, TQuat<T>& OutRotation,
                    TVec<T, 3>& OutTranslation, TVec<T, 3>& OutSkew, TVec<T, 4>& OutPerspective)
@@ -392,7 +390,7 @@ namespace Lumina::Math
         return Decompose(M, OutScale, OutRotation, OutTranslation);
     }
 
-    // glm::rotation(from, to) — shortest-arc quaternion rotating From onto To
+    // Shortest-arc quaternion rotating From onto To
     // (both expected normalized).
     template<typename T>
     [[nodiscard]] TQuat<T> RotationBetween(const TVec<T, 3>& From, const TVec<T, 3>& To)
@@ -419,7 +417,7 @@ namespace Lumina::Math
         return TQuat<T>(S * T(0.5), Axis.x * InvS, Axis.y * InvS, Axis.z * InvS);
     }
 
-    // glm::make_mat4 — build from 16 column-major scalars.
+    // Build a 4x4 matrix from 16 column-major scalars.
     template<typename T>
     [[nodiscard]] TMat<T, 4, 4> MakeMat4(const T* Ptr)
     {
@@ -434,7 +432,7 @@ namespace Lumina::Math
         return Result;
     }
 
-    // glm::value_ptr — contiguous column-major scalars.
+    // Pointer to contiguous column-major scalars (GPU upload / interop).
     template<typename T, int C, int R> [[nodiscard]] const T* ValuePtr(const TMat<T, C, R>& M) { return M.GetData(); }
     template<typename T, int C, int R> [[nodiscard]] T*       ValuePtr(TMat<T, C, R>& M)       { return M.GetData(); }
 }

@@ -1,9 +1,7 @@
 #pragma once
 
-// fastgltf element traits for Lumina math types — the in-house equivalent of
-// fastgltf/glm_element_traits.hpp, so iterateAccessor<FVector3> etc. work after
-// the glm removal. Layouts match (tight contiguous components), so fastgltf reads
-// straight into them.
+// fastgltf element traits for the Lumina math types, so iterateAccessor<FVector3>
+// etc. read straight into them. Layouts are tight contiguous components.
 
 #include <fastgltf/tools.hpp>
 #include "Core/Math/Vector/Vector.h"

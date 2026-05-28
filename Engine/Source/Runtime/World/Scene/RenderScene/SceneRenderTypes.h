@@ -524,7 +524,7 @@ namespace Lumina
     static_assert(sizeof(FSkinDescriptor) == 24, "FSkinDescriptor must match shader");
 
     // A bone skinning matrix with its always-(0,0,0,1) last row dropped: the first 3 rows of
-    // the 4x4 (row r = (M[0][r], M[1][r], M[2][r], M[3][r]) in glm's column-major storage).
+    // the 4x4 (row r = (M[0][r], M[1][r], M[2][r], M[3][r]) in column-major storage).
     // 48 B vs 64 B, lossless for affine transforms. Read only by the skinning compute now.
     struct FBoneTransform
     {
