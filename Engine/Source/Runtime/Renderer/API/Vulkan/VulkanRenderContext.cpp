@@ -735,12 +735,12 @@ namespace Lumina
 
     void FVulkanRenderContext::LockQueueForExternalAccess(ECommandQueue QueueType)
     {
-        Queues[(uint32)QueueType]->Mutex.lock();
+        GetQueue(QueueType)->Mutex.lock();
     }
 
     void FVulkanRenderContext::UnlockQueueForExternalAccess(ECommandQueue QueueType)
     {
-        Queues[(uint32)QueueType]->Mutex.unlock();
+        GetQueue(QueueType)->Mutex.unlock();
     }
 
     bool FVulkanRenderContext::FrameEnd(ICommandList& CmdList)
@@ -877,7 +877,7 @@ namespace Lumina
     {
         LUMINA_PROFILE_SCOPE();
 
-        TUniquePtr<FQueue>& Queue = Queues[(uint32)QueueType];
+        FQueue* Queue = GetQueue(QueueType);
 
         uint64 SubmissionID = Queue->Submit(CommandLists, NumCommandLists, ExtraWaitSemaphore, ExtraWaitStage, ExtraSignalSemaphore);
 
@@ -886,7 +886,7 @@ namespace Lumina
             Task::ParallelFor(NumCommandLists, [&](uint32 Index)
             {
                 FVulkanCommandList* CommandList = static_cast<FVulkanCommandList*>(CommandLists[Index]->GetUnwrappedCommandList());
-                CommandList->Executed(Queue.get(), SubmissionID);
+                CommandList->Executed(Queue, SubmissionID);
             });
         }
         else
@@ -894,7 +894,7 @@ namespace Lumina
             for (uint32 i = 0; i < NumCommandLists; ++i)
             {
                 FVulkanCommandList* CommandList = static_cast<FVulkanCommandList*>(CommandLists[i]->GetUnwrappedCommandList());
-                CommandList->Executed(Queue.get(), SubmissionID);
+                CommandList->Executed(Queue, SubmissionID);
             }
         }
         
@@ -965,8 +965,11 @@ namespace Lumina
             .set_required_features_13(Features13)
             .add_required_extension_features(MutableDescriptorFeature)
             .add_required_extension(VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME)
-            .require_separate_transfer_queue()
-            .require_separate_compute_queue()
+            // Dedicated compute/transfer queues are a preference, not a hard
+            // requirement -- requiring them rejects GPUs that expose a single
+            // combined queue family (many Intel iGPUs, virtualized GPUs). We
+            // alias onto the graphics queue at queue-setup time when they're
+            // absent (see CreateDevice queue block).
             .defer_surface_initialization()
             .select();
 
@@ -1201,28 +1204,60 @@ namespace Lumina
         VkPhysicalDevice VulkanPhysicalDevice = PhysicalDevice.physical_device;
         VulkanDevice = Memory::New<FVulkanDevice>(this, VulkanInstance, VulkanPhysicalDevice, Device);
 
+        // Graphics always exists and always owns its FQueue.
+        FQueue* GraphicsQueue = nullptr;
         if (vkbDevice.get_queue(vkb::QueueType::graphics).has_value())
         {
             VkQueue Queue = vkbDevice.get_queue(vkb::QueueType::graphics).value();
             uint32 Index = vkbDevice.get_queue_index(vkb::QueueType::graphics).value();
             Queues[uint32(ECommandQueue::Graphics)] = MakeUnique<FQueue>(this, Queue, Index, ECommandQueue::Graphics);
+            GraphicsQueue = Queues[uint32(ECommandQueue::Graphics)].get();
+            QueueByType[uint32(ECommandQueue::Graphics)] = GraphicsQueue;
             SetVulkanObjectName("Graphics Queue", VK_OBJECT_TYPE_QUEUE, (uintptr_t)Queue);
         }
 
-        if (vkbDevice.get_queue(vkb::QueueType::compute).has_value())
+        const uint32 GraphicsFamily = GraphicsQueue ? GraphicsQueue->QueueFamilyIndex : UINT32_MAX;
+
+        // Own a dedicated compute FQueue only when it's a distinct family. On a
+        // single combined-family GPU, vkb hands back the graphics queue here; we
+        // alias onto it so exactly one FQueue (and one mutex) owns each VkQueue --
+        // two FQueues submitting to the same VkQueue would race (Vulkan requires
+        // external synchronization per queue).
+        uint32 ComputeFamily = GraphicsFamily;
+        if (vkbDevice.get_queue(vkb::QueueType::compute).has_value()
+            && vkbDevice.get_queue_index(vkb::QueueType::compute).value() != GraphicsFamily)
         {
             VkQueue Queue = vkbDevice.get_queue(vkb::QueueType::compute).value();
-            uint32 Index = vkbDevice.get_queue_index(vkb::QueueType::compute).value();
-            Queues[uint32(ECommandQueue::Compute)] = MakeUnique<FQueue>(this, Queue, Index, ECommandQueue::Compute);
+            ComputeFamily = vkbDevice.get_queue_index(vkb::QueueType::compute).value();
+            Queues[uint32(ECommandQueue::Compute)] = MakeUnique<FQueue>(this, Queue, ComputeFamily, ECommandQueue::Compute);
+            QueueByType[uint32(ECommandQueue::Compute)] = Queues[uint32(ECommandQueue::Compute)].get();
             SetVulkanObjectName("Compute Queue", VK_OBJECT_TYPE_QUEUE, (uintptr_t)Queue);
         }
+        else
+        {
+            QueueByType[uint32(ECommandQueue::Compute)] = GraphicsQueue;
+            LOG_DISPLAY("No dedicated compute queue family; routing compute submissions to the graphics queue.");
+        }
 
-        if (vkbDevice.get_queue(vkb::QueueType::transfer).has_value())
+        // Transfer: dedicated FQueue only when distinct from BOTH graphics and
+        // compute families; otherwise alias onto whichever shares its family.
+        const uint32 TransferFamily = vkbDevice.get_queue(vkb::QueueType::transfer).has_value()
+            ? vkbDevice.get_queue_index(vkb::QueueType::transfer).value()
+            : GraphicsFamily;
+
+        if (TransferFamily != GraphicsFamily && TransferFamily != ComputeFamily)
         {
             VkQueue Queue = vkbDevice.get_queue(vkb::QueueType::transfer).value();
-            uint32 Index = vkbDevice.get_queue_index(vkb::QueueType::transfer).value();
-            Queues[uint32(ECommandQueue::Transfer)] = MakeUnique<FQueue>(this, Queue, Index, ECommandQueue::Transfer);
+            Queues[uint32(ECommandQueue::Transfer)] = MakeUnique<FQueue>(this, Queue, TransferFamily, ECommandQueue::Transfer);
+            QueueByType[uint32(ECommandQueue::Transfer)] = Queues[uint32(ECommandQueue::Transfer)].get();
             SetVulkanObjectName("Transfer Queue", VK_OBJECT_TYPE_QUEUE, (uintptr_t)Queue);
+        }
+        else
+        {
+            QueueByType[uint32(ECommandQueue::Transfer)] = (TransferFamily == ComputeFamily)
+                ? QueueByType[uint32(ECommandQueue::Compute)]
+                : GraphicsQueue;
+            LOG_DISPLAY("No dedicated transfer queue family; routing transfer submissions to a shared queue.");
         }
 
         return true;
@@ -1831,8 +1866,16 @@ namespace Lumina
 
     void FVulkanRenderContext::AddCommandQueueWait(ECommandQueue Waiting, ECommandQueue WaitOn)
     {
-        FQueue* WaitingQueue = Queues[(uint32)Waiting].get();
-        FQueue* WaitOnQueue = Queues[(uint32)WaitOn].get();
+        FQueue* WaitingQueue = GetQueue(Waiting);
+        FQueue* WaitOnQueue = GetQueue(WaitOn);
+
+        // When families collapse, both resolve to the same FQueue. Work submitted
+        // to one VkQueue is already ordered against itself, so a self-wait is
+        // unnecessary (and would wait on a timeline value from the same queue).
+        if (WaitingQueue == WaitOnQueue)
+        {
+            return;
+        }
 
         VkPipelineStageFlags WaitStage = 0;
         

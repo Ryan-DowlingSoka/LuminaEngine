@@ -171,7 +171,7 @@ namespace Lumina
         FGPUDeviceInfo GetDeviceInfo() const override;
 
 
-        FORCEINLINE NODISCARD FQueue* GetQueue(ECommandQueue Type) const { return Queues[(uint32)Type].get(); }
+        FORCEINLINE NODISCARD FQueue* GetQueue(ECommandQueue Type) const { return QueueByType[(uint32)Type]; }
 
         NODISCARD FRHICommandListRef CreateCommandList(const FCommandListInfo& Info) override;
         uint64 ExecuteCommandLists(ICommandList* const* CommandLists, uint32 NumCommandLists, ECommandQueue QueueType) override;
@@ -327,8 +327,15 @@ namespace Lumina
         FVulkanRenderContextFunctions                       DebugUtils;
         
         FVulkanPipelineCache                                PipelineCache;
+
+        // Owning storage: graphics always owns; compute/transfer own a slot only
+        // when they have a distinct queue family. QueueByType is the resolver --
+        // it maps each ECommandQueue to its effective FQueue, aliasing onto the
+        // graphics (or compute) queue when families collapse onto one. Always go
+        // through GetQueue()/QueueByType, never index Queues directly for submits.
         FQueueArray                                         Queues;
-        
+        FQueue*                                             QueueByType[(uint32)ECommandQueue::Num] = {};
+
         FMutex                                              LayoutMutex;
         FMutex                                              SamplerMutex;
 

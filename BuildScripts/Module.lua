@@ -157,7 +157,7 @@ function LuminaModule(Def)
         kind(Def.Kind)
         rtti "off"
         staticruntime "Off"
-        vectorextensions "AVX2"
+        vectorextensions "AVX" -- See Workspace.lua: AVX2 #UD-crashes on CPUs without it.
 
     -- Monolithic Shipping: every SharedLib gets re-kinded to StaticLib so
     -- the final exe (Lumina) can WHOLEARCHIVE-link them. WindowedApp /

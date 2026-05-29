@@ -532,9 +532,23 @@ namespace Lumina
             return;
         }
         
-        Json Data = Json::parse(JsonData.c_str());
-        DEBUG_ASSERT(!Data.empty());
-        
+        Json Data;
+        try
+        {
+            Data = Json::parse(JsonData.c_str(), JsonData.c_str() + JsonData.size());
+        }
+        catch (const std::exception& Ex)
+        {
+            LOG_ERROR("Failed to parse project file '{}': {}", Path, Ex.what());
+            return;
+        }
+
+        if (!Data.is_object() || !Data.contains("ProjectID") || !Data.contains("Name"))
+        {
+            LOG_ERROR("Project file '{}' is missing required fields (ProjectID/Name).", Path);
+            return;
+        }
+
         FGuid ProjectID                 = FGuid::FromString(Data["ProjectID"].get<std::string>().c_str());
         ProjectPath                     .assign_convert(VFS::Parent(Paths::Normalize(Path)));
         ProjectName                     = Data["Name"].get<std::string>().c_str();

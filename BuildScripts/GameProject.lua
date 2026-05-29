@@ -67,7 +67,7 @@ local function SetupProject(Def)
         kind "SharedLib"
         rtti "off"
         staticruntime "Off"
-        vectorextensions "AVX2"
+        vectorextensions "AVX" -- See Workspace.lua: AVX2 #UD-crashes on CPUs without it.
 
         -- Force-include the project's API header, which includes ModuleAPI.h to
         -- pull in RUNTIME_API / EDITOR_API / etc.

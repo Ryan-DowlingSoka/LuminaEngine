@@ -32,7 +32,14 @@ function LuminaWorkspaceSettings(Opts)
         enableunitybuild "Off"
         fastuptodate "On"
         multiprocessorcompile "On"
-        vectorextensions "AVX2"
+        -- AVX (not AVX2): the compiler may emit these instructions anywhere,
+        -- including pre-main static initializers, with no CPU-feature gate. AVX2
+        -- would #UD-crash on launch on any CPU without it (pre-Haswell Intel, all
+        -- Atom/Celeron/Pentium through ~2016, AMD pre-Zen). AVX covers everything
+        -- from ~2011. Keep this in sync with the /arch flag and __AVX__ define below,
+        -- and with vectorextensions in GameProject.lua / Module.lua -- Jolt selects
+        -- its SIMD path from the compiler's /arch macro.
+        vectorextensions "AVX"
 
         if Opts.StartProject then
             startproject(Opts.StartProject)
@@ -108,13 +115,13 @@ function LuminaWorkspaceSettings(Opts)
                 "LE_PLATFORM_WINDOWS",
                 "DLL_EXPORT=__declspec(dllexport)",
                 "DLL_IMPORT=__declspec(dllimport)",
-                "__AVX2__",
+                "__AVX__",
                 "NOMINMAX",
                 "WIN32_LEAN_AND_MEAN",
             }
             buildoptions
             {
-                "/arch:AVX2",
+                "/arch:AVX",
                 "/Zc:preprocessor",
                 "/Zc:inline",
                 "/Zc:__cplusplus",

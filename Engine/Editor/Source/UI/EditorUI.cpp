@@ -1871,10 +1871,16 @@ namespace Lumina
         
         if (ImGui::MenuItem(LE_ICON_WATCH" Tracy Profiler", "Ctrl+P"))
         {
-            FString LuminaDirEnv = std::getenv("LUMINA_DIR");
-            FString FullPath = LuminaDirEnv + "/External/Tracy/tracy-profiler.exe";
-            
-            Platform::LaunchURL(StringUtils::ToWideString(FullPath).c_str());
+            const FString& EngineRoot = Paths::GetEngineInstallDirectory();
+            if (EngineRoot.empty())
+            {
+                LOG_ERROR("Cannot locate Tracy: engine install directory is unresolved.");
+            }
+            else
+            {
+                FString FullPath = EngineRoot + "/External/Tracy/tracy-profiler.exe";
+                Platform::LaunchURL(StringUtils::ToWideString(FullPath).c_str());
+            }
         }
         
         if (ImGui::MenuItem(LE_ICON_CAMERA " RenderDoc Capture", "F11"))

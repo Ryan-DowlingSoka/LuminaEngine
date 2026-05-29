@@ -62,7 +62,10 @@ namespace Lumina
 
     		IconFontConfig.GlyphOffset = GlyphOffset;
     		IconFontConfig.GlyphMinAdvanceX = IconFontSize;
-    		io.Fonts->AddFontFromFileTTF(IconFontFile.c_str(), IconFontSize, &IconFontConfig, IconRanges);
+    		if (io.Fonts->AddFontFromFileTTF(IconFontFile.c_str(), IconFontSize, &IconFontConfig, IconRanges) == nullptr)
+    		{
+    			LOG_ERROR("Failed to load icon font '{}'; editor icons will be missing. Check engine resources / LUMINA_DIR.", IconFontFile.c_str());
+    		}
     	};
 		
 
