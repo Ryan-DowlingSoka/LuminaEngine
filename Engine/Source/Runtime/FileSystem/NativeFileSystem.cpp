@@ -10,6 +10,21 @@
 
 namespace Lumina::VFS
 {
+    namespace
+    {
+        // Create the parent directory of FullPath so an ofstream open can't fail
+        // just because the folder was never committed (e.g. an empty Config dir).
+        void EnsureParentDir(const FFixedString& FullPath)
+        {
+            std::error_code EC;
+            std::filesystem::path Parent = std::filesystem::path(FullPath.c_str()).parent_path();
+            if (!Parent.empty())
+            {
+                std::filesystem::create_directories(Parent, EC);
+            }
+        }
+    }
+
     FNativeFileSystem::FNativeFileSystem(const FFixedString& InAliasPath, FStringView InBasePath)
         : AliasPath(Paths::Normalize(InAliasPath))
         , BasePath(Paths::Normalize(InBasePath))
@@ -100,6 +115,7 @@ namespace Lumina::VFS
     bool FNativeFileSystem::WriteFile(FStringView Path, FStringView Data)
     {
         FFixedString FullPath = ResolveVirtualPath(Path);
+        EnsureParentDir(FullPath);
         std::ofstream File(FullPath.data(), std::ios::binary | std::ios::trunc);
         if (!File)
         {
@@ -113,6 +129,7 @@ namespace Lumina::VFS
     bool FNativeFileSystem::WriteFile(FStringView Path, TSpan<const uint8> Data)
     {
         FFixedString FullPath = ResolveVirtualPath(Path);
+        EnsureParentDir(FullPath);
         std::ofstream OutFile(FullPath.data(), std::ios::binary | std::ios::trunc);
         if (!OutFile)
         {
@@ -134,6 +151,8 @@ namespace Lumina::VFS
         {
             return false;
         }
+
+        EnsureParentDir(FullPath);
 
         FFixedString TempPath = FullPath;
         TempPath.append(".tmp");
@@ -240,8 +259,29 @@ namespace Lumina::VFS
     void FNativeFileSystem::DirectoryIterator(FStringView Path, const TFunction<void(const FFileInfo&)>& Callback) const
     {
         FFixedString ResolvedPath = ResolveVirtualPath(Path);
-        
-        for (auto& Itr : std::filesystem::directory_iterator(ResolvedPath.c_str()))
+        if (ResolvedPath.empty())
+        {
+            LOG_WARN("DirectoryIterator: path '{0}' does not resolve under alias '{1}'", Path, AliasPath);
+            return;
+        }
+
+        std::error_code EC;
+        if (!std::filesystem::is_directory(ResolvedPath.c_str(), EC) || EC)
+        {
+            LOG_WARN("DirectoryIterator: skipping '{0}' (resolved '{1}'): {2}",
+                FString(Path.data(), Path.size()), ResolvedPath,
+                EC ? EC.message() : std::string("not a directory"));
+            return;
+        }
+
+        std::filesystem::directory_iterator Begin(ResolvedPath.c_str(), std::filesystem::directory_options::skip_permission_denied, EC);
+        if (EC)
+        {
+            LOG_WARN("DirectoryIterator: failed to open '{0}': {1}", ResolvedPath, EC.message());
+            return;
+        }
+
+        for (auto& Itr : Begin)
         {
             std::string FilePath        = Itr.path().generic_string();
             std::string RelativeStr     = FilePath.substr(BasePath.size());

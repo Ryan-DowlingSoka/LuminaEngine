@@ -67,3 +67,4 @@ Engine/Sandbox/Game/Scripts/Definitions/GlobalDefs.d.luau
 Engine/Applications/Lumina/imgui.ini
 /Engine/Sandbox/Game/Scripts/Definitions
 Engine/Applications/Lumina/imgui.ini
+Engine/Editor/Config/EditorSettings.json
