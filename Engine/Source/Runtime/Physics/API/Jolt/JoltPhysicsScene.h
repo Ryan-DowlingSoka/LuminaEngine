@@ -322,20 +322,37 @@ namespace Lumina::Physics
     	float										Accumulator = 0.0f;
     	uint32										CollisionSteps = 0;
 
-    	// Per-body interpolated transform staged by the physics thread
+    	// Per-body interpolated transforms staged by the physics thread
     	// (BuildInterpolatedTransforms) and consumed by the game thread
     	// (ApplyInterpolatedTransforms). The FrameStart join guarantees the
-    	// physics worker has finished writing before the game thread reads, so
-    	// this is single-buffered for now; removing that join later is what
-    	// requires promoting it to a published double buffer.
-    	struct FStagedTransform
+    	// physics worker finished writing before the game thread reads.
+    	//
+    	// Struct-of-arrays, index-aligned. Positions are flat float3 streams (lerp
+    	// is componentwise); rotations are deinterleaved to x/y/z/w so the nlerp
+    	// dot/normalize vectorize vertically. Buffers are grow-only -- capacity is
+    	// retained across frames, so steady state does zero allocation at 10k+
+    	// bodies. Gather + the SIMD interp write into Curr* in place; Apply reads
+    	// Curr*.
+    	enum class EInterpFlag : uint8 { Interpolate = 0, Skip = 1, BelowKill = 2 };
+    	struct FInterpStaging
     	{
-    		entt::entity	Entity;
-    		FVector3		Location;
-    		FQuat		Rotation;
-    		bool			bBelowKill;
-    		bool			bSkip;          // static / missing body: leave the slot untouched
+    		TVector<entt::entity>	Entities;
+    		TVector<EInterpFlag>	Flags;
+
+    		TVector<FVector3>		PrevPos;
+    		TVector<FVector3>		CurrPos;   // overwritten with the interpolated result
+
+    		TVector<float>			PrevQx, PrevQy, PrevQz, PrevQw;
+    		TVector<float>			CurrQx, CurrQy, CurrQz, CurrQw;  // overwritten with result
+
+    		void Resize(uint32 N)
+    		{
+    			Entities.resize(N); Flags.resize(N);
+    			PrevPos.resize(N);  CurrPos.resize(N);
+    			PrevQx.resize(N); PrevQy.resize(N); PrevQz.resize(N); PrevQw.resize(N);
+    			CurrQx.resize(N); CurrQy.resize(N); CurrQz.resize(N); CurrQw.resize(N);
+    		}
     	};
-    	TVector<FStagedTransform>					InterpolatedTransforms;
+    	FInterpStaging								InterpStaging;
     };
 }

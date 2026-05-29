@@ -20,10 +20,19 @@
 --   self.Name      — entity FName
 --   self.Exports   — editable properties table (also reachable as self.<key>)
 --
--- Engine services live on `self` under underscore-prefixed slots
--- (self._Registry, self._Events, self._Messages, self._Timers, self._Draw,
--- self._Physics). Prefer the helpers below; reach for the underscore
--- services only when an operation isn't covered by a helper.
+-- The script-facing API is split between flat helpers on `self` (the common,
+-- entity-core operations: lifecycle, transform, components, identity) and
+-- namespaced facets for the larger domains. The facets read like the engine's
+-- global tables but are scoped to THIS entity:
+--   self.Physics  — forces, velocity, body pose      (self.Physics:ApplyImpulse(v))
+--   self.Tree     — parent / child hierarchy          (self.Tree:GetParent())
+--   self.Timers   — delays, intervals, waits          (self.Timers:After(1, fn))
+--   self.Events   — pub/sub event bus                 (self.Events:Subscribe("Hit", fn))
+--   self.Draw     — debug primitives                  (self.Draw:Sphere(p, r, c))
+--   self.Tween    — per-script tween scheduler        (self.Tween:To("Yaw", 90, 0.5))
+-- Facets are built lazily on first access and cached, so an entity only pays
+-- for the ones it uses. Engine services are injected under private (underscore)
+-- slots and live behind these facets — game code never touches them directly.
 
 local EntityScript = {}
 
@@ -36,21 +45,44 @@ EntityScript._Shape = {
     Transform = "STransformComponent",
     Name      = "FName",
     Exports   = "table",
+    Input     = "SInputComponent (after EnableInput)",
+    Physics   = "facet: forces, velocity, body pose",
+    Tree      = "facet: parent / child hierarchy",
+    Timers    = "facet: delays, intervals, waits",
+    Events    = "facet: pub/sub event bus",
+    Draw      = "facet: debug primitives",
+    Tween     = "facet: per-script tween scheduler",
 }
 
+-- ---- Facets --------------------------------------------------------------
+-- A facet is a method table keyed by its self.<Name> slot. The first time a
+-- script reads self.<Name>, __index builds a tiny instance bound to the owner
+-- ({ Owner = self }) and caches it back onto the instance, so subsequent reads
+-- skip __index entirely. Facet methods reach the owner's entity / world and the
+-- injected engine services through self.Owner.
+
+local Facets = {}
+
+local function DefineFacet(Name: string)
+    local Class = {}
+    Class.__index = Class
+    Facets[Name] = Class
+    return Class
+end
+
 -- ---- Metatable -----------------------------------------------------------
--- __index: instance miss → method on EntityScript → Exports[key] → nil.
+-- __index: instance miss → method on EntityScript → facet → Exports[key] → nil.
 -- __newindex: instance miss → write into Exports (so user-declared property
 -- writes land where the editor / serializer can see them). Engine-injected
 -- slots (Entity, World, Transform, Name, Exports, _*) are populated via
 -- rawset on the C++ side, so they bypass __newindex; explicit user writes
 -- to those names will still hit __newindex and route to Exports — engine
 -- writes win because they happen first and via raw access.
-
+--
 -- Underscore-prefixed keys are private runtime state (caches, handles,
 -- engine-injected services). They live as raw fields on the instance and
--- never round-trip through Exports — this keeps internal slots out of
--- the property panel and out of any future serialization pass.
+-- never round-trip through Exports — this keeps internal slots out of the
+-- property panel and out of any future serialization pass.
 
 local function IsPrivateKey(Key)
     return type(Key) == "string" and string.sub(Key, 1, 1) == "_"
@@ -59,6 +91,15 @@ end
 function EntityScript.__index(Self, Key)
     local Method = rawget(EntityScript, Key)
     if Method ~= nil then return Method end
+
+    -- Lazily materialize and cache a facet on first access.
+    local FacetClass = Facets[Key]
+    if FacetClass ~= nil then
+        local Instance = setmetatable({ Owner = Self }, FacetClass)
+        rawset(Self, Key, Instance)
+        return Instance
+    end
+
     if IsPrivateKey(Key) then return nil end
     local Exports = rawget(Self, "Exports")
     if Exports ~= nil then return Exports[Key] end
@@ -118,6 +159,15 @@ function EntityScript:OnDetach() end
 --     the editor at all (its OnAttach/OnReady/OnDetach then fire there too) --
 --     the editor-mode counterpart to OnUpdate. Use for tool-style preview /
 --     gizmo logic.
+--
+-- Physics contact callbacks (define any; the engine skips delivery if absent):
+--   function MyScript:OnContactBegin(Event) ... end -- solid impact began
+--   function MyScript:OnContactEnd(Event)   ... end -- solid contact ended
+--   function MyScript:OnOverlapBegin(Event) ... end -- entered a trigger volume
+--   function MyScript:OnOverlapEnd(Event)   ... end -- left a trigger volume
+-- Event payload: Entity, Other (entt ids); BodyID, OtherBodyID (Jolt ids);
+-- Point, Normal; Velocity, OtherVelocity, RelativeVelocity; ImpactSpeed;
+-- bIsTrigger (true if the OTHER side was a trigger/sensor).
 
 -- ---- Identity ------------------------------------------------------------
 
@@ -133,29 +183,11 @@ function EntityScript:Clone()
     return self._Registry:Duplicate(self.Entity)
 end
 
-function EntityScript:Spawn(PrefabPath: string)
-    return self.World:SpawnPrefab(PrefabPath)
-end
-
 -- ---- Components ----------------------------------------------------------
 -- ComponentType is the reflected struct global (e.g. STransformComponent,
--- SStaticMeshComponent). Pass the type itself, not a string.
---
--- Player input is component-gated: only an entity with SInputComponent can
--- read keys, actions, or mouse delta. Call self:EnableInput() once (typically
--- in OnReady) to add the component and cache it as self._Input, then query
--- via the colon API:
---   self._Input:IsActionDown("Jump")
---   self._Input:GetActionAxis("MoveX")
---   self._Input:GetMouseDeltaX()
---   local Id = self._Input:BindAction("Fire", function() ... end)
---   self._Input:UnbindAction(Id)
--- Call self:DisableInput() to remove the component (and drop any bound
--- callbacks). For a temporary mute that keeps bindings, set
--- self._Input.bEnabled = false instead.
--- The global `Input.*` table only carries window-scoped knobs
--- (SetMouseMode, SetMode, GetMode); every gameplay query lives on the
--- component.
+-- SStaticMeshComponent). Pass the type itself, not a string. These act on
+-- THIS entity; to read a component off another entity id use the global
+-- World.GetComponent(entity, Type) / World.HasComponent(entity, Type).
 
 function EntityScript:GetComponent(ComponentType)
     return self._Registry:Get(self.Entity, ComponentType)
@@ -174,240 +206,43 @@ function EntityScript:RemoveComponent(ComponentType)
 end
 
 -- ---- Input opt-in --------------------------------------------------------
--- Sugar over Add/Remove for SInputComponent that also keeps self._Input in
--- sync so query call-sites (self._Input:GetActionAxis(...) etc.) don't have
--- to manually re-cache. Idempotent: calling EnableInput when the component
--- already exists just refreshes the cache.
+-- Player input is component-gated: only an entity with SInputComponent can
+-- read keys, actions, or mouse delta. Call self:EnableInput() once (typically
+-- in OnReady) to add the component and cache it as self.Input, then query
+-- via the component:
+--   self.Input:IsActionDown("Jump")
+--   self.Input:GetActionAxis("MoveX")
+--   self.Input:GetMouseDeltaX()
+--   local Id = self.Input:BindAction("Fire", function() ... end)
+--   self.Input:UnbindAction(Id)
+-- Call self:DisableInput() to remove the component (and drop bound callbacks).
+-- For a temporary mute that keeps bindings, set self.Input.bEnabled = false.
+-- The global `Input.*` table only carries window-scoped knobs (SetMouseMode,
+-- SetMode, GetMode); every gameplay query lives on the component.
+--
+-- EnableInput is idempotent: when the component already exists it just
+-- refreshes the self.Input cache.
 
 function EntityScript:EnableInput()
     local C = self:GetComponent(SInputComponent)
     if C == nil then
         C = self:AddComponent(SInputComponent)
     end
-    self._Input = C
+    self.Input = C
     return C
 end
 
 function EntityScript:DisableInput()
-    self._Input = nil
+    self.Input = nil
     if self:HasComponent(SInputComponent) then
         self:RemoveComponent(SInputComponent)
     end
 end
 
--- Same as the Self-targeted helpers but for an arbitrary entity. Use these
--- when you've cached another entity's id and want to read its components
--- without grabbing the registry directly.
-
-function EntityScript:GetComponentOf(Entity, ComponentType)
-    return self._Registry:Get(Entity, ComponentType)
-end
-
-function EntityScript:HasComponentOf(Entity, ComponentType)
-    return self._Registry:Has(Entity, ComponentType)
-end
-
--- ---- Cross-script access -------------------------------------------------
--- Returns the Lua table of another entity's script, or nil if the entity
--- has no script component. Use colon syntax to invoke methods on it:
---     local Other = self:GetScriptTable(TargetEntity)
---     if Other then Other:DoThing(arg) end
-
-function EntityScript:GetScriptTable(Entity)
-    return self._Registry:GetScriptTable(Entity)
-end
-
--- ---- Hierarchy -----------------------------------------------------------
--- Parent/child traversal over the entity relationship graph. Single-entity
--- getters return nil instead of a null id when there's no parent, so they
--- read cleanly in `if`/`and` chains; list getters return arrays of entity
--- ids (possibly empty) ready for ipairs.
-
-function EntityScript:HasParent()
-    -- valid(entt::null) is false, so this doubles as the "has a parent" test.
-    return self._Registry:Valid(self._Registry:GetParent(self.Entity))
-end
-
--- Immediate parent entity id, or nil if this entity is a root.
-function EntityScript:GetParent()
-    local Parent = self._Registry:GetParent(self.Entity)
-    if not self._Registry:Valid(Parent) then return nil end
-    return Parent
-end
-
--- The parent's script table, or nil when there's no parent or it has no script.
--- Use colon syntax on the result to call its methods: GetParentScript():Foo().
-function EntityScript:GetParentScript()
-    local Parent = self:GetParent()
-    if Parent == nil then return nil end
-    return self._Registry:GetScriptTable(Parent)
-end
-
--- Topmost ancestor in the parent chain; returns this entity's own id when it
--- has no parent.
-function EntityScript:GetRoot()
-    return self._Registry:GetRoot(self.Entity)
-end
-
--- Immediate children (array of entity ids; empty when none).
-function EntityScript:GetChildren()
-    return self._Registry:GetChildren(self.Entity)
-end
-
--- Ancestors from immediate parent up to the root, nearest first.
-function EntityScript:GetAncestors()
-    return self._Registry:GetAncestors(self.Entity)
-end
-
--- Every descendant in the subtree (depth-first), excluding this entity.
-function EntityScript:GetDescendants()
-    return self._Registry:GetDescendants(self.Entity)
-end
-
--- True when Ancestor sits somewhere above this entity in the parent chain.
-function EntityScript:IsChildOf(Ancestor)
-    return self._Registry:IsDescendantOf(self.Entity, Ancestor)
-end
-
-function EntityScript:GetChildCount()
-    return self._Registry:GetChildCount(self.Entity)
-end
-
--- Reparent under NewParent, or pass nil to detach to the world root. The
--- entity's world transform is preserved across the move.
-function EntityScript:SetParent(NewParent)
-    if NewParent == nil then
-        self._Registry:Detach(self.Entity)
-    else
-        self._Registry:Reparent(self.Entity, NewParent)
-    end
-end
-
--- Reparent Child under this entity (the inverse of SetParent).
-function EntityScript:AddChild(Child)
-    self._Registry:Reparent(Child, self.Entity)
-end
-
--- True when this entity sits somewhere above Other in its parent chain.
-function EntityScript:IsAncestorOf(Other)
-    return self._Registry:IsDescendantOf(Other, self.Entity)
-end
-
--- First direct child named Name, or nil. Scoped to this entity's children, so
--- it's unambiguous where a global World.FindByName would not be.
-function EntityScript:FindChild(Name: string)
-    local Child = self._Registry:FindChild(self.Entity, Name)
-    if not self._Registry:Valid(Child) then return nil end
-    return Child
-end
-
--- As FindChild but searches the entire subtree (depth-first), or nil.
-function EntityScript:FindDescendant(Name: string)
-    local Found = self._Registry:FindDescendant(self.Entity, Name)
-    if not self._Registry:Valid(Found) then return nil end
-    return Found
-end
-
--- Other children of this entity's parent (array; empty when parentless).
-function EntityScript:GetSiblings()
-    return self._Registry:GetSiblings(self.Entity)
-end
-
--- Zero-based position among the parent's children (0 when parentless).
-function EntityScript:GetSiblingIndex()
-    return self._Registry:GetSiblingIndex(self.Entity)
-end
-
--- Next/previous entry in the parent's child list, or nil at the ends.
-function EntityScript:GetNextSibling()
-    local Sibling = self._Registry:GetNextSibling(self.Entity)
-    if not self._Registry:Valid(Sibling) then return nil end
-    return Sibling
-end
-
-function EntityScript:GetPrevSibling()
-    local Sibling = self._Registry:GetPrevSibling(self.Entity)
-    if not self._Registry:Valid(Sibling) then return nil end
-    return Sibling
-end
-
--- ---- Events --------------------------------------------------------------
--- Subscribe is automatically scoped to this entity, so subscriptions are
--- cleaned up when the entity is destroyed. Use Dispatch to broadcast.
-
-function EntityScript:Subscribe(EventName: string, Handler)
-    self._Events:SubscribeEntity(self.Entity, EventName, Handler)
-end
-
-function EntityScript:Dispatch(EventName: string, Payload)
-    self._Events:Dispatch(EventName, Payload)
-end
-
-function EntityScript:DispatchDeferred(EventName: string, Payload)
-    self._Events:DispatchDeferred(EventName, Payload)
-end
-
--- ---- Physics callbacks ---------------------------------------------------
--- Define any of these on your script and the physics layer will call them
--- when contacts begin/end on this entity's body. Nothing to subscribe to:
--- the engine caches the function ref at attach time and skips delivery if
--- you didn't define one.
---
---   function MyScript:OnContactBegin(Event) ... end -- solid impact began
---   function MyScript:OnContactEnd(Event)   ... end -- solid contact ended
---   function MyScript:OnOverlapBegin(Event) ... end -- entered a trigger volume
---   function MyScript:OnOverlapEnd(Event)   ... end -- left a trigger volume
---
--- Event payload:
---   Entity, Other        — entt entity ids (self / other)
---   BodyID, OtherBodyID  — Jolt body ids
---   Point                — world-space contact point
---   Normal               — contact normal pointing away from self toward other
---   Velocity             — self linear velocity at contact time (m/s)
---   OtherVelocity        — other body linear velocity (m/s)
---   RelativeVelocity     — Other - Self (m/s)
---   ImpactSpeed          — |relative velocity along normal| (m/s)
---   bIsTrigger           — true if the OTHER side was a trigger/sensor
-
--- ---- Direct messages -----------------------------------------------------
--- Send a directed message to a specific entity's `On<Name>` handler.
-
-function EntityScript:Send(Target, MessageName: string, Payload)
-    self._Messages:Send(Target, MessageName, Payload)
-end
-
-function EntityScript:SendDeferred(Target, MessageName: string, Payload)
-    self._Messages:SendDeferred(Target, MessageName, Payload)
-end
-
--- ---- Timers --------------------------------------------------------------
--- After/Every are scoped to this entity, so timers stop when the entity
--- is destroyed. Returned handle can be passed to CancelTimer.
--- Wait yields the current coroutine for N seconds. Lifecycle methods
--- (OnReady/OnUpdate/OnContact*/etc.) run as direct pcalls, NOT coroutines —
--- calling self:Wait() from one will error. Use self:After(seconds, fn)
--- instead, or invoke from a coroutine you spawned yourself.
-
-function EntityScript:Wait(Seconds: number)
-    self._Timers:Wait(Seconds)
-end
-
-function EntityScript:After(Seconds: number, Callback)
-    return self._Timers:Delay(Seconds, Callback)
-end
-
-function EntityScript:Every(Seconds: number, Callback)
-    return self._Timers:SetEntityTimer(self.Entity, Seconds, Callback)
-end
-
-function EntityScript:CancelTimer(Handle)
-    self._Timers:ClearTimer(Handle)
-end
-
 -- ---- Transform shorthand -------------------------------------------------
--- Forwarders for the most common STransformComponent calls so simple
--- scripts don't need `self.Transform:Foo(...)` boilerplate. Anything not
--- covered here is still reachable through self.Transform directly.
+-- Forwarders for the most common STransformComponent calls so simple scripts
+-- don't need `self.Transform:Foo(...)` boilerplate. Anything not covered here
+-- is still reachable through self.Transform directly.
 
 function EntityScript:Translate(Delta)            return self.Transform:Translate(Delta)            end
 function EntityScript:AddRotationFromEuler(Euler) return self.Transform:AddRotationFromEuler(Euler) end
@@ -446,203 +281,385 @@ function EntityScript:SetCameraTarget(Target)
     end
 end
 
--- ---- Tweens --------------------------------------------------------------
--- Per-script tween scheduler. Lazily allocated on first use; advanced via
--- a chained zero-second timer that auto-stops when the queue empties.
--- TweenTo(field, value, duration, easing) is the common shorthand;
--- TweenRun lets you supply an arbitrary setter for compound writes
--- (e.g. self.Transform:SetLocation(v)).
---
--- Hot-reloading the script clears all running tweens implicitly because
--- the scheduler lives on `self`, which gets rebuilt with the new instance.
+-- ==========================================================================
+-- Facet: self.Physics
+-- ==========================================================================
+-- Thin wrappers around IPhysicsScene that build the event struct and fill in
+-- this entity's body id, so scripts don't repeat the SImpulseEvent etc.
+-- boilerplate. Cross-entity physics work still goes through the global APIs.
 
-local function EnsureTweenScheduler(Self)
-    if Self._TweenScheduler ~= nil then return Self._TweenScheduler end
+local Physics = DefineFacet("Physics")
+
+function Physics:GetBodyID()
+    local Owner = self.Owner
+    return Owner._Physics:GetEntityBodyID(Owner.Entity)
+end
+
+function Physics:ApplyImpulse(Impulse)
+    local E = SImpulseEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.Impulse = Impulse
+    self.Owner._Physics:ApplyImpulse(E)
+end
+
+function Physics:ApplyForce(Force)
+    local E = SForceEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.Force = Force
+    self.Owner._Physics:ApplyForce(E)
+end
+
+function Physics:ApplyTorque(Torque)
+    local E = STorqueEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.Torque = Torque
+    self.Owner._Physics:ApplyTorque(E)
+end
+
+function Physics:ApplyAngularImpulse(AngularImpulse)
+    local E = SAngularImpulseEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.AngularImpulse = AngularImpulse
+    self.Owner._Physics:ApplyAngularImpulse(E)
+end
+
+function Physics:ApplyImpulseAt(Impulse, Position)
+    local E = SAddImpulseAtPositionEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.Impulse = Impulse
+    E.Position = Position
+    self.Owner._Physics:AddImpulseAtPosition(E)
+end
+
+function Physics:ApplyForceAt(Force, Position)
+    local E = SAddForceAtPositionEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.Force = Force
+    E.Position = Position
+    self.Owner._Physics:AddForceAtPosition(E)
+end
+
+function Physics:SetVelocity(Velocity)
+    local E = SSetVelocityEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.Velocity = Velocity
+    self.Owner._Physics:SetVelocity(E)
+end
+
+function Physics:SetAngularVelocity(AngularVelocity)
+    local E = SSetAngularVelocityEvent.new()
+    E.BodyID = self:GetBodyID()
+    E.AngularVelocity = AngularVelocity
+    self.Owner._Physics:SetAngularVelocity(E)
+end
+
+function Physics:GetLinearVelocity()
+    return self.Owner._Physics:GetLinearVelocity(self:GetBodyID())
+end
+
+function Physics:GetAngularVelocity()
+    return self.Owner._Physics:GetAngularVelocity(self:GetBodyID())
+end
+
+function Physics:GetVelocityAtPoint(Point)
+    return self.Owner._Physics:GetVelocityAtPoint(self:GetBodyID(), Point)
+end
+
+-- Body's actual current pose. Use these instead of self.Transform when the
+-- script runs in PrePhysics and needs to compute force application points or
+-- ray origins relative to the body — the cached transform component holds the
+-- lagged interpolated render value, not what physics will integrate from.
+
+function Physics:GetBodyPosition()
+    return self.Owner._Physics:GetBodyPosition(self:GetBodyID())
+end
+
+function Physics:GetBodyRotation()
+    return self.Owner._Physics:GetBodyRotation(self:GetBodyID())
+end
+
+function Physics:GetForward()
+    return self:GetBodyRotation():RotateVector(vector.create(0.0, 0.0, 1.0))
+end
+
+function Physics:GetRight()
+    return self:GetBodyRotation():RotateVector(vector.create(1.0, 0.0, 0.0))
+end
+
+function Physics:GetUp()
+    return self:GetBodyRotation():RotateVector(vector.create(0.0, 1.0, 0.0))
+end
+
+-- ==========================================================================
+-- Facet: self.Tree
+-- ==========================================================================
+-- Parent/child traversal over the entity relationship graph. Single-entity
+-- getters return nil instead of a null id when there's no parent, so they read
+-- cleanly in `if`/`and` chains; list getters return arrays of entity ids
+-- (possibly empty) ready for ipairs.
+
+local Tree = DefineFacet("Tree")
+
+function Tree:HasParent()
+    -- valid(entt::null) is false, so this doubles as the "has a parent" test.
+    local R = self.Owner._Registry
+    return R:Valid(R:GetParent(self.Owner.Entity))
+end
+
+-- Immediate parent entity id, or nil if this entity is a root.
+function Tree:GetParent()
+    local R = self.Owner._Registry
+    local Parent = R:GetParent(self.Owner.Entity)
+    if not R:Valid(Parent) then return nil end
+    return Parent
+end
+
+-- The parent's script table, or nil when there's no parent or it has no script.
+function Tree:GetParentScript()
+    local Parent = self:GetParent()
+    if Parent == nil then return nil end
+    return self.Owner._Registry:GetScriptTable(Parent)
+end
+
+-- Topmost ancestor in the parent chain; returns this entity's own id when it
+-- has no parent.
+function Tree:GetRoot()
+    return self.Owner._Registry:GetRoot(self.Owner.Entity)
+end
+
+-- Immediate children (array of entity ids; empty when none).
+function Tree:GetChildren()
+    return self.Owner._Registry:GetChildren(self.Owner.Entity)
+end
+
+-- Ancestors from immediate parent up to the root, nearest first.
+function Tree:GetAncestors()
+    return self.Owner._Registry:GetAncestors(self.Owner.Entity)
+end
+
+-- Every descendant in the subtree (depth-first), excluding this entity.
+function Tree:GetDescendants()
+    return self.Owner._Registry:GetDescendants(self.Owner.Entity)
+end
+
+-- True when Ancestor sits somewhere above this entity in the parent chain.
+function Tree:IsChildOf(Ancestor)
+    return self.Owner._Registry:IsDescendantOf(self.Owner.Entity, Ancestor)
+end
+
+-- True when this entity sits somewhere above Other in its parent chain.
+function Tree:IsAncestorOf(Other)
+    return self.Owner._Registry:IsDescendantOf(Other, self.Owner.Entity)
+end
+
+function Tree:GetChildCount()
+    return self.Owner._Registry:GetChildCount(self.Owner.Entity)
+end
+
+-- Reparent under NewParent, or pass nil to detach to the world root. The
+-- entity's world transform is preserved across the move.
+function Tree:SetParent(NewParent)
+    local R = self.Owner._Registry
+    if NewParent == nil then
+        R:Detach(self.Owner.Entity)
+    else
+        R:Reparent(self.Owner.Entity, NewParent)
+    end
+end
+
+-- Reparent Child under this entity (the inverse of SetParent).
+function Tree:AddChild(Child)
+    self.Owner._Registry:Reparent(Child, self.Owner.Entity)
+end
+
+-- First direct child named Name, or nil. Scoped to this entity's children, so
+-- it's unambiguous where a global World.FindByName would not be.
+function Tree:FindChild(Name: string)
+    local R = self.Owner._Registry
+    local Child = R:FindChild(self.Owner.Entity, Name)
+    if not R:Valid(Child) then return nil end
+    return Child
+end
+
+-- As FindChild but searches the entire subtree (depth-first), or nil.
+function Tree:FindDescendant(Name: string)
+    local R = self.Owner._Registry
+    local Found = R:FindDescendant(self.Owner.Entity, Name)
+    if not R:Valid(Found) then return nil end
+    return Found
+end
+
+-- Other children of this entity's parent (array; empty when parentless).
+function Tree:GetSiblings()
+    return self.Owner._Registry:GetSiblings(self.Owner.Entity)
+end
+
+-- Zero-based position among the parent's children (0 when parentless).
+function Tree:GetSiblingIndex()
+    return self.Owner._Registry:GetSiblingIndex(self.Owner.Entity)
+end
+
+-- Next/previous entry in the parent's child list, or nil at the ends.
+function Tree:GetNextSibling()
+    local R = self.Owner._Registry
+    local Sibling = R:GetNextSibling(self.Owner.Entity)
+    if not R:Valid(Sibling) then return nil end
+    return Sibling
+end
+
+function Tree:GetPrevSibling()
+    local R = self.Owner._Registry
+    local Sibling = R:GetPrevSibling(self.Owner.Entity)
+    if not R:Valid(Sibling) then return nil end
+    return Sibling
+end
+
+-- ==========================================================================
+-- Facet: self.Timers
+-- ==========================================================================
+-- After/Every are scoped to this entity, so timers stop when the entity is
+-- destroyed. Returned handle can be passed to Cancel. Wait yields the current
+-- coroutine for N seconds — lifecycle methods (OnReady/OnUpdate/OnContact*)
+-- run as direct pcalls, NOT coroutines, so calling Wait from one errors; use
+-- After instead, or invoke from a coroutine you spawned yourself.
+
+local Timers = DefineFacet("Timers")
+
+function Timers:Wait(Seconds: number)
+    self.Owner._Timers:Wait(Seconds)
+end
+
+function Timers:After(Seconds: number, Callback)
+    return self.Owner._Timers:Delay(Seconds, Callback)
+end
+
+function Timers:Every(Seconds: number, Callback)
+    return self.Owner._Timers:SetEntityTimer(self.Owner.Entity, Seconds, Callback)
+end
+
+function Timers:Cancel(Handle)
+    self.Owner._Timers:ClearTimer(Handle)
+end
+
+-- ==========================================================================
+-- Facet: self.Events
+-- ==========================================================================
+-- Subscribe is automatically scoped to this entity, so subscriptions are
+-- cleaned up when the entity is destroyed. Use Dispatch to broadcast.
+
+local Events = DefineFacet("Events")
+
+function Events:Subscribe(EventName: string, Handler)
+    self.Owner._Events:SubscribeEntity(self.Owner.Entity, EventName, Handler)
+end
+
+function Events:Dispatch(EventName: string, Payload)
+    self.Owner._Events:Dispatch(EventName, Payload)
+end
+
+function Events:DispatchDeferred(EventName: string, Payload)
+    self.Owner._Events:DispatchDeferred(EventName, Payload)
+end
+
+-- ==========================================================================
+-- Facet: self.Draw
+-- ==========================================================================
+-- Each call forwards directly to the world DrawInterface. Trailing arguments
+-- are optional and default to sane values; pass `false` for DepthTest to keep
+-- lines visible through geometry.
+--
+-- The underlying Draw* bindings are registered via SetFunction(..., Instance)
+-- on the C++ side, which routes the instance through a closure upvalue rather
+-- than argument 1, so the calls below MUST use dot syntax — colon syntax would
+-- push the draw interface as arg #1 and shift every C++ parameter by one.
+
+local Draw = DefineFacet("Draw")
+
+function Draw:Line(Start, End, Color, Thickness, DepthTest, Duration)
+    self.Owner._Draw.DrawLine(Start, End, Color, Thickness or 1.0, DepthTest ~= false, Duration or 0.0)
+end
+
+function Draw:Box(Center, HalfExtents, Rotation, Color, Thickness, DepthTest, Duration)
+    self.Owner._Draw.DrawBox(Center, HalfExtents, Rotation, Color, Thickness or 1.0, DepthTest ~= false, Duration or 0.0)
+end
+
+function Draw:Sphere(Center, Radius, Color, Segments, Thickness, DepthTest, Duration)
+    self.Owner._Draw.DrawSphere(Center, Radius, Color, Segments or 16, Thickness or 1.0, DepthTest ~= false, Duration or 0.0)
+end
+
+function Draw:Capsule(Start, End, Radius, Color, Segments, Thickness, DepthTest, Duration)
+    self.Owner._Draw.DrawCapsule(Start, End, Radius, Color, Segments or 16, Thickness or 1.0, DepthTest ~= false, Duration or 0.0)
+end
+
+function Draw:Cone(Apex, Direction, AngleRadians, Length, Color, Segments, Stacks, Thickness, DepthTest, Duration)
+    self.Owner._Draw.DrawCone(Apex, Direction, AngleRadians, Length, Color, Segments or 16, Stacks or 4, Thickness or 1.0, DepthTest ~= false, Duration or 0.0)
+end
+
+function Draw:Arrow(Start, Direction, Length, Color, Thickness, DepthTest, Duration, HeadSize)
+    self.Owner._Draw.DrawArrow(Start, Direction, Length, Color, Thickness or 1.0, DepthTest ~= false, Duration or 0.0, HeadSize or 0.2)
+end
+
+-- ==========================================================================
+-- Facet: self.Tween
+-- ==========================================================================
+-- Per-script tween scheduler. Lazily allocated on first use; advanced via a
+-- chained zero-second timer that auto-stops when the queue empties.
+--   self.Tween:To(field, value, duration, easing, onComplete)
+--     Tween a field on the script instance (e.g. an exported number) toward a
+--     value. Reads the current value as the start.
+--   self.Tween:Run(from, to, duration, easing, setter, onComplete)
+--     Arbitrary setter for compound writes (e.g. self.Transform:SetLocation(v)).
+-- Scheduler state lives on the facet, which is rebuilt with the instance on
+-- hot-reload, so running tweens clear implicitly when the script reloads.
+
+local Tween = DefineFacet("Tween")
+
+local function EnsureScheduler(self)
+    if self.Scheduler ~= nil then return self.Scheduler end
 
     local TweenLib = require("Stdlib/Tween")
     local Sched    = TweenLib.New()
-    Self._TweenScheduler = Sched
+    self.Scheduler = Sched
 
-    local Timers = Self._Timers
+    local Timers = self.Owner._Timers
     local function Tick()
         Sched:Step(Time.DeltaTime())
         if Sched:HasActive() then
             Timers:Delay(0.0, Tick)
         else
-            Self._TweenSchedulerRunning = false
+            self.Running = false
         end
     end
 
-    Self._TweenSchedulerStart = function()
-        if Self._TweenSchedulerRunning then return end
-        Self._TweenSchedulerRunning = true
+    self.Start = function()
+        if self.Running then return end
+        self.Running = true
         Timers:Delay(0.0, Tick)
     end
 
     return Sched
 end
 
-function EntityScript:TweenTo(Field: string, ToValue, Duration: number, Easing, OnComplete)
-    local Sched = EnsureTweenScheduler(self)
-    local Handle = Sched:To(self, Field, ToValue, Duration, Easing, OnComplete)
-    self._TweenSchedulerStart()
+function Tween:To(Field: string, ToValue, Duration: number, Easing, OnComplete)
+    local Sched = EnsureScheduler(self)
+    local Handle = Sched:To(self.Owner, Field, ToValue, Duration, Easing, OnComplete)
+    self.Start()
     return Handle
 end
 
-function EntityScript:TweenRun(From, To, Duration: number, Easing, Setter, OnComplete)
-    local Sched = EnsureTweenScheduler(self)
+function Tween:Run(From, To, Duration: number, Easing, Setter, OnComplete)
+    local Sched = EnsureScheduler(self)
     local Handle = Sched:Run(From, To, Duration, Easing, Setter, OnComplete)
-    self._TweenSchedulerStart()
+    self.Start()
     return Handle
 end
 
-function EntityScript:CancelTween(Handle)
-    if self._TweenScheduler then self._TweenScheduler:Cancel(Handle) end
+function Tween:Cancel(Handle)
+    if self.Scheduler then self.Scheduler:Cancel(Handle) end
 end
 
-function EntityScript:CancelAllTweens()
-    if self._TweenScheduler then self._TweenScheduler:CancelAll() end
-end
-
--- ---- Debug draw ----------------------------------------------------------
--- Each call forwards directly to the world DrawInterface. Trailing
--- arguments are optional and default to sane values; pass `false` for
--- DepthTest to keep lines visible through geometry.
-
--- Draw* bindings are registered via SetFunction(..., Instance) on the C++
--- side, which routes the instance through a closure upvalue rather than
--- argument 1. That means the calls below MUST use dot syntax — colon syntax
--- would push self._Draw as Lua arg #1 and shift every C++ parameter by one,
--- which produces "argument #N: number expected, got <wrong type>" errors at
--- runtime when the bool DepthTest slot lands where Duration is expected.
-
-function EntityScript:DrawLine(Start, End, Color, Thickness, DepthTest, Duration)
-    self._Draw.DrawLine(Start, End, Color, Thickness or 1.0, DepthTest ~= false, Duration or 0.0)
-end
-
-function EntityScript:DrawBox(Center, HalfExtents, Rotation, Color, Thickness, DepthTest, Duration)
-    self._Draw.DrawBox(Center, HalfExtents, Rotation, Color, Thickness or 1.0, DepthTest ~= false, Duration or 0.0)
-end
-
-function EntityScript:DrawSphere(Center, Radius, Color, Segments, Thickness, DepthTest, Duration)
-    self._Draw.DrawSphere(Center, Radius, Color, Segments or 16, Thickness or 1.0, DepthTest ~= false, Duration or 0.0)
-end
-
-function EntityScript:DrawCapsule(Start, End, Radius, Color, Segments, Thickness, DepthTest, Duration)
-    self._Draw.DrawCapsule(Start, End, Radius, Color, Segments or 16, Thickness or 1.0, DepthTest ~= false, Duration or 0.0)
-end
-
-function EntityScript:DrawCone(Apex, Direction, AngleRadians, Length, Color, Segments, Stacks, Thickness, DepthTest, Duration)
-    self._Draw.DrawCone(Apex, Direction, AngleRadians, Length, Color, Segments or 16, Stacks or 4, Thickness or 1.0, DepthTest ~= false, Duration or 0.0)
-end
-
-function EntityScript:DrawArrow(Start, Direction, Length, Color, Thickness, DepthTest, Duration, HeadSize)
-    self._Draw.DrawArrow(Start, Direction, Length, Color, Thickness or 1.0, DepthTest ~= false, Duration or 0.0, HeadSize or 0.2)
-end
-
--- ---- Physics -------------------------------------------------------------
--- Thin wrappers around IPhysicsScene that build the event struct and fill
--- in this entity's body id, so scripts don't repeat the SImpulseEvent etc.
--- boilerplate. Cross-entity physics work still goes through self._Physics.
-
-function EntityScript:GetBodyID()
-    return self._Physics:GetEntityBodyID(self.Entity)
-end
-
-function EntityScript:ApplyImpulse(Impulse)
-    local E = SImpulseEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.Impulse = Impulse
-    self._Physics:ApplyImpulse(E)
-end
-
-function EntityScript:ApplyForce(Force)
-    local E = SForceEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.Force = Force
-    self._Physics:ApplyForce(E)
-end
-
-function EntityScript:ApplyTorque(Torque)
-    local E = STorqueEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.Torque = Torque
-    self._Physics:ApplyTorque(E)
-end
-
-function EntityScript:ApplyAngularImpulse(AngularImpulse)
-    local E = SAngularImpulseEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.AngularImpulse = AngularImpulse
-    self._Physics:ApplyAngularImpulse(E)
-end
-
-function EntityScript:ApplyImpulseAt(Impulse, Position)
-    local E = SAddImpulseAtPositionEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.Impulse = Impulse
-    E.Position = Position
-    self._Physics:AddImpulseAtPosition(E)
-end
-
-function EntityScript:ApplyForceAt(Force, Position)
-    local E = SAddForceAtPositionEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.Force = Force
-    E.Position = Position
-    self._Physics:AddForceAtPosition(E)
-end
-
-function EntityScript:SetVelocity(Velocity)
-    local E = SSetVelocityEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.Velocity = Velocity
-    self._Physics:SetVelocity(E)
-end
-
-function EntityScript:SetAngularVelocity(AngularVelocity)
-    local E = SSetAngularVelocityEvent.new()
-    E.BodyID = self:GetBodyID()
-    E.AngularVelocity = AngularVelocity
-    self._Physics:SetAngularVelocity(E)
-end
-
-function EntityScript:GetLinearVelocity()
-    return self._Physics:GetLinearVelocity(self:GetBodyID())
-end
-
-function EntityScript:GetAngularVelocity()
-    return self._Physics:GetAngularVelocity(self:GetBodyID())
-end
-
-function EntityScript:GetVelocityAtPoint(Point)
-    return self._Physics:GetVelocityAtPoint(self:GetBodyID(), Point)
-end
-
--- Body's actual current pose. Use these instead of self.Transform when the
--- script runs in PrePhysics and needs to compute force application points
--- or ray origins relative to the body — the cached transform component
--- holds the lagged interpolated render value, not what physics will
--- integrate from this step.
-
-function EntityScript:GetBodyPosition()
-    return self._Physics:GetBodyPosition(self:GetBodyID())
-end
-
-function EntityScript:GetBodyRotation()
-    return self._Physics:GetBodyRotation(self:GetBodyID())
-end
-
-function EntityScript:GetBodyForward()
-    return self:GetBodyRotation():RotateVector(vector.create(0.0, 0.0, 1.0))
-end
-
-function EntityScript:GetBodyRight()
-    return self:GetBodyRotation():RotateVector(vector.create(1.0, 0.0, 0.0))
-end
-
-function EntityScript:GetBodyUp()
-    return self:GetBodyRotation():RotateVector(vector.create(0.0, 1.0, 0.0))
+function Tween:CancelAll()
+    if self.Scheduler then self.Scheduler:CancelAll() end
 end
 
 return EntityScript

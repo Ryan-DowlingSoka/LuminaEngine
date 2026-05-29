@@ -45,6 +45,13 @@ namespace Lumina
                 }
                 ImGui::EndPopup();
             }
+            else if (!ActiveModal->bOpen)
+            {
+                // X button: BeginPopupModal sets bOpen=false, closes the popup itself, and
+                // returns false, so the body never runs. Without this teardown the modal would
+                // be re-opened every frame by OpenPopup above, blocking all input invisibly.
+                ActiveModal.reset();
+            }
             return;
         }
 

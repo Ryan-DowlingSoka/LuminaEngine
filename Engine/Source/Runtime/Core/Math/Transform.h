@@ -49,11 +49,20 @@ namespace Lumina
 
         FMatrix4 GetMatrix() const
         {
-            FMatrix4 T = Math::Translate(FMatrix4(1.0f), Location);
-            FMatrix4 R = Math::ToMatrix4(Rotation);
-            FMatrix4 S = Math::Scale(FMatrix4(1.0f), Scale);
+            // Direct TRS compose: scale the rotation columns and drop in the
+            // translation. Bit-identical to Translate*Rotate*Scale (rotation
+            // columns have w=0, so the translate-multiply adds nothing to them),
+            // but avoids two full 4x4 multiplies -- this runs per dirty entity
+            // every frame (physics re-placement, scene-graph resolve).
+            using namespace SIMD;
+            const FMatrix4 Rot = Math::ToMatrix4(Rotation);
 
-            return T * R * S;
+            FMatrix4 M;
+            (VFloat4::Load(&Rot.Cols[0][0]) * VFloat4::Broadcast(Scale.x)).Store(&M.Cols[0][0]);
+            (VFloat4::Load(&Rot.Cols[1][0]) * VFloat4::Broadcast(Scale.y)).Store(&M.Cols[1][0]);
+            (VFloat4::Load(&Rot.Cols[2][0]) * VFloat4::Broadcast(Scale.z)).Store(&M.Cols[2][0]);
+            M.Cols[3] = FVector4(Location.x, Location.y, Location.z, 1.0f);
+            return M;
         }
         
         FORCEINLINE FVector3 GetForward() const

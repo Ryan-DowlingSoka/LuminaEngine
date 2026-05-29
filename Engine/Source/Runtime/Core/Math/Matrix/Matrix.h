@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Math/Vector/Vector.h"
+#include "Core/Math/SIMD/SIMD.h"
 #include <type_traits>
 
 // Lumina matrices. COLUMN-MAJOR storage (C columns, each a TVec<T,R>)
@@ -109,6 +110,45 @@ namespace Lumina
             Result.Cols[j] = A * B.Cols[j];
         }
         return Result;
+    }
+
+    // SIMD fast paths for 4x4 float (the hot case: transform concatenation in the
+    // dirty-transform resolve, renderer per-instance matrices, animation bone
+    // matrices). Exact-type non-template overloads win over the generic templates
+    // above; each result column is a 4-wide linear combination of A's columns, so
+    // the result matches the scalar path.
+    [[nodiscard]] inline TVec<float, 4> operator*(const TMat<float, 4, 4>& M, const TVec<float, 4>& V)
+    {
+        using namespace SIMD;
+        const VFloat4 C0 = VFloat4::Load(&M.Cols[0][0]);
+        const VFloat4 C1 = VFloat4::Load(&M.Cols[1][0]);
+        const VFloat4 C2 = VFloat4::Load(&M.Cols[2][0]);
+        const VFloat4 C3 = VFloat4::Load(&M.Cols[3][0]);
+        const VFloat4 Vv = VFloat4::Load(&V[0]);
+
+        const VFloat4 R = MulAdd(SplatW(Vv), C3, MulAdd(SplatZ(Vv), C2, MulAdd(SplatY(Vv), C1, SplatX(Vv) * C0)));
+
+        TVec<float, 4> Out;
+        R.Store(&Out[0]);
+        return Out;
+    }
+
+    [[nodiscard]] inline TMat<float, 4, 4> operator*(const TMat<float, 4, 4>& A, const TMat<float, 4, 4>& B)
+    {
+        using namespace SIMD;
+        const VFloat4 A0 = VFloat4::Load(&A.Cols[0][0]);
+        const VFloat4 A1 = VFloat4::Load(&A.Cols[1][0]);
+        const VFloat4 A2 = VFloat4::Load(&A.Cols[2][0]);
+        const VFloat4 A3 = VFloat4::Load(&A.Cols[3][0]);
+
+        TMat<float, 4, 4> Out;
+        for (int j = 0; j < 4; ++j)
+        {
+            const VFloat4 Bc = VFloat4::Load(&B.Cols[j][0]);
+            const VFloat4 R  = MulAdd(SplatW(Bc), A3, MulAdd(SplatZ(Bc), A2, MulAdd(SplatY(Bc), A1, SplatX(Bc) * A0)));
+            R.Store(&Out.Cols[j][0]);
+        }
+        return Out;
     }
 
     template<typename T, int C, int R>

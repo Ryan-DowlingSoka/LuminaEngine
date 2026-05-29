@@ -401,6 +401,63 @@ namespace Lumina
         static double       World_GetDeltaTime(CWorld* World)          { return World ? World->GetWorldDeltaTime() : 0.0; }
         static double       World_GetTimeSinceCreation(CWorld* World)  { return World ? World->GetTimeSinceWorldCreation() : 0.0; }
 
+        static entt::entity World_SpawnPrefab(CWorld* World, FName Path)                  { return World ? World->SpawnPrefab(Path) : entt::null; }
+        static entt::entity World_SpawnPrefabAt(CWorld* World, FName Path, FVector3 Loc)  { return World ? World->SpawnPrefabAt(Path, FTransform(Loc)) : entt::null; }
+
+        // Bulk entity lifecycle / transform on an ARBITRARY entity id, with the registry
+        // injected from thread data. These mirror the ECS.* utilities but drop the leading
+        // registry arg, so scripts operating on ids they spawned (not `self`) never reach
+        // into self._Registry. Locations are WORLD-space, matching World.GetLocation.
+        static entt::entity World_Duplicate(CWorld* World, entt::entity Entity)           { return World ? ECS::Utils::DuplicateEntity(World->GetEntityRegistry(), Entity) : entt::null; }
+        static void         World_Destroy(CWorld* World, entt::entity Entity)             { if (World) ECS::Utils::DestroyEntity(World->GetEntityRegistry(), Entity); }
+        static bool         World_IsValid(CWorld* World, entt::entity Entity)             { return World && ECS::Utils::IsEntityValid(World->GetEntityRegistry(), Entity); }
+
+        static FVector3     World_GetLocation(CWorld* World, entt::entity Entity)         { return World ? ECS::Utils::GetEntityLocation(World->GetEntityRegistry(), Entity) : FVector3{}; }
+        static FQuat        World_GetRotation(CWorld* World, entt::entity Entity)         { return World ? ECS::Utils::GetEntityRotation(World->GetEntityRegistry(), Entity) : FQuat{}; }
+        static FVector3     World_GetScale(CWorld* World, entt::entity Entity)            { return World ? ECS::Utils::GetEntityScale(World->GetEntityRegistry(), Entity)    : FVector3{1.0f}; }
+
+        static FVector3     World_Translate(CWorld* World, entt::entity Entity, FVector3 Delta) { return World ? ECS::Utils::TranslateEntity(World->GetEntityRegistry(), Entity, Delta) : FVector3{}; }
+
+        // World-space setter: rebuilds local from the parent chain so it stays correct under
+        // reparenting (unlike ECS.SetEntityLocation, which writes local space directly).
+        static void World_SetLocation(CWorld* World, entt::entity Entity, FVector3 Location)
+        {
+            if (World == nullptr) return;
+            FEntityRegistry& Registry = World->GetEntityRegistry();
+            FTransform WorldTransform;
+            WorldTransform.Location = Location;
+            WorldTransform.Rotation = ECS::Utils::GetEntityRotation(Registry, Entity);
+            WorldTransform.Scale    = ECS::Utils::GetEntityScale(Registry, Entity);
+            ECS::Utils::SetEntityWorldTransform(Registry, Entity, WorldTransform);
+        }
+
+        static void World_SetRotation(CWorld* World, entt::entity Entity, FQuat Rotation)   { if (World) ECS::Utils::SetEntityRotation(World->GetEntityRegistry(), Entity, Rotation); }
+        static void World_SetScale(CWorld* World, entt::entity Entity, FVector3 Scale)      { if (World) ECS::Utils::SetEntityScale(World->GetEntityRegistry(), Entity, Scale); }
+
+        // Cross-entity component access: forwards to the world's registry so scripts can
+        // read components off ANY entity id (e.g. one returned by World.FindByName), not
+        // just `self`. Same get/has semantics as self:GetComponent.
+        static Lua::FRef World_GetComponent(CWorld* World, entt::entity Entity, Lua::FRef Ref)
+        {
+            if (World == nullptr)
+            {
+                lua_pushnil(Ref.GetState());
+                return Lua::FRef(Ref.GetState(), -1);
+            }
+            return GetComponent_Lua(World->GetEntityRegistry(), Entity, Ref);
+        }
+
+        static bool World_HasComponent(CWorld* World, entt::entity Entity, Lua::FRef Ref)
+        {
+            return World != nullptr && HasComponent_Lua(World->GetEntityRegistry(), Entity, Ref);
+        }
+
+        static Lua::FRef World_GetScript(CWorld* World, entt::entity Entity)
+        {
+            if (World == nullptr) return {};
+            return GetScriptTable_Lua(World->GetEntityRegistry(), Entity);
+        }
+
         static bool World_Fracture(CWorld* World, entt::entity Entity)
         {
             return World != nullptr && Entity != entt::null && World->FractureEntity(Entity, World->GetEntityLocation(Entity), 0.0f);
@@ -548,6 +605,21 @@ namespace Lumina
         WorldTable.SetFunction<&LuaBinds::World_GetNumEntities>("GetNumEntities");
         WorldTable.SetFunction<&LuaBinds::World_GetDeltaTime>("GetDeltaTime");
         WorldTable.SetFunction<&LuaBinds::World_GetTimeSinceCreation>("GetTimeSinceCreation");
+        WorldTable.SetFunction<&LuaBinds::World_SpawnPrefab>("SpawnPrefab");        // SpawnPrefab(path) -> entity
+        WorldTable.SetFunction<&LuaBinds::World_SpawnPrefabAt>("SpawnPrefabAt");    // SpawnPrefabAt(path, location) -> entity
+        WorldTable.SetFunction<&LuaBinds::World_Duplicate>("Duplicate");            // Duplicate(entity) -> entity
+        WorldTable.SetFunction<&LuaBinds::World_Destroy>("Destroy");                // Destroy(entity)
+        WorldTable.SetFunction<&LuaBinds::World_IsValid>("IsValid");                // IsValid(entity) -> bool
+        WorldTable.SetFunction<&LuaBinds::World_GetLocation>("GetLocation");        // GetLocation(entity) -> vector (world)
+        WorldTable.SetFunction<&LuaBinds::World_SetLocation>("SetLocation");        // SetLocation(entity, vector) (world)
+        WorldTable.SetFunction<&LuaBinds::World_Translate>("Translate");            // Translate(entity, delta) -> vector
+        WorldTable.SetFunction<&LuaBinds::World_GetRotation>("GetRotation");        // GetRotation(entity) -> quat
+        WorldTable.SetFunction<&LuaBinds::World_SetRotation>("SetRotation");        // SetRotation(entity, quat)
+        WorldTable.SetFunction<&LuaBinds::World_GetScale>("GetScale");              // GetScale(entity) -> vector
+        WorldTable.SetFunction<&LuaBinds::World_SetScale>("SetScale");              // SetScale(entity, vector)
+        WorldTable.SetFunction<&LuaBinds::World_GetComponent>("GetComponent");      // GetComponent(entity, Type)
+        WorldTable.SetFunction<&LuaBinds::World_HasComponent>("HasComponent");      // HasComponent(entity, Type)
+        WorldTable.SetFunction<&LuaBinds::World_GetScript>("GetScript");            // GetScript(entity) -> script table or nil
         WorldTable.SetFunction<&LuaBinds::World_Fracture>("Fracture");          // Fracture(entity)
         WorldTable.SetFunction<&LuaBinds::World_FractureAt>("FractureAt");      // FractureAt(entity, x, y, z [, strength])
 

@@ -27,11 +27,7 @@ namespace Lumina
         SCharacterPhysicsComponent& operator=(const SCharacterPhysicsComponent&);
         SCharacterPhysicsComponent(SCharacterPhysicsComponent&&) noexcept;
         SCharacterPhysicsComponent& operator=(SCharacterPhysicsComponent&&) noexcept;
-
-        // Pimpl: TSharedPtr keeps the component copyable (entt's component
-        // emplace machinery instantiates a copy path even when not used),
-        // while the underlying Jolt CharacterVirtual still has exactly one
-        // physical instance reachable through ref counting.
+        
         TSharedPtr<FJoltCharacterHandle> Character;
 
         // Snapshots for interpolation.

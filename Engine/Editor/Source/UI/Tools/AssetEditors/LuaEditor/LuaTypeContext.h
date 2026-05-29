@@ -17,15 +17,6 @@ namespace Lumina
         bool    bDeprecated = false;
     };
 
-    // Inferred type rendered as inlay text after a `local foo = ...` binding.
-    // Ghost-text rendering is the editor's job; we just provide where + what.
-    struct FLuaInlayHint
-    {
-        int     Line   = 1;     // 1-based source line of the local declaration
-        int     Column = 1;     // 1-based column to anchor the hint to
-        FString Text;           // ": <type>" - prefixed with ": " ready for paint
-    };
-
     // One type-checker error mapped from Luau::TypeError into engine types.
     // Type errors are stricter than lint warnings: each one indicates code
     // the runtime can't safely execute (calling a non-function, wrong arity,
@@ -74,12 +65,6 @@ namespace Lumina
         // Inferred type at (Line1, Col1). Returns false if no expression
         // covers the position or the type couldn't be resolved.
         bool GetTypeAt(int Line1, int Col1, FString& OutType);
-
-        // Walks the typed module for `local x = expr` declarations missing a
-        // type annotation; emits the inferred type as an inlay hint anchored
-        // after the local name. Out is appended to (not cleared) so callers
-        // can collect multiple sources.
-        void GetInlayHints(TVector<FLuaInlayHint>& Out);
 
         // Collect type-checker errors from the most recent check. Each entry
         // points at a span of source the type checker rejected. Fills nothing

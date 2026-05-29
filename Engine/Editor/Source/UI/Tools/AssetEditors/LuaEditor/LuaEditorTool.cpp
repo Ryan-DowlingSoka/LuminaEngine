@@ -467,11 +467,6 @@ namespace Lumina
             {
                 DrawInlineValueOverlay();
             }
-            
-            if (!bPausedHere && bShowInlayHints && !InlayHints.empty())
-            {
-                DrawInlayHintsOverlay();
-            }
 
             ImGui::PopFontSize();
             ImGuiX::Font::PopFont();
@@ -806,7 +801,6 @@ namespace Lumina
             Locals.clear();
             LintWarnings.clear();
             TypeErrors.clear();
-            InlayHints.clear();
             HoverTypeCache = {};
             HighlightedReferences.clear();
             RefreshBreakpointMarkers();
@@ -828,13 +822,7 @@ namespace Lumina
         HoverTypeCache = {};
         
         TypeContext->GetTypeErrors(TypeErrors);
-        
-        InlayHints.clear();
-        if (bShowInlayHints)
-        {
-            TypeContext->GetInlayHints(InlayHints);
-        }
-        
+
         HighlightedReferences.clear();
 
         RefreshBreakpointMarkers();
@@ -1859,118 +1847,125 @@ namespace Lumina
 
     void FLuaEditorTool::DrawToolbar()
     {
-        ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Large);
-        ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "%s", VirtualPath.c_str());
-        ImGuiX::Font::PopFont();
+        // Frequent actions as compact icon buttons; everything else lives in
+        // the overflow menu on the right. The filename shows in the window tab,
+        // so it's no longer repeated here.
 
-        if (bBufferDirty)
-        {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "  *unsaved");
-        }
-
-        ImGui::Spacing();
-
-        if (ImGui::Button(LE_ICON_CONTENT_SAVE " Save"))
-        {
-            OnSave();
-        }
-        ImGuiX::TextTooltip("Write the buffer to disk (Ctrl+S).");
+        // Save tints amber while the buffer is dirty.
+        if (bBufferDirty) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.7f, 0.2f, 1.0f));
+        if (ImGui::Button(LE_ICON_CONTENT_SAVE)) OnSave();
+        if (bBufferDirty) ImGui::PopStyleColor();
+        if (bBufferDirty) ImGuiX::TextTooltip("Save - unsaved changes (Ctrl+S).");
+        else              ImGuiX::TextTooltip("Save (Ctrl+S).");
 
         ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_REFRESH " Reload"))
-        {
-            LoadFromDisk();
-        }
-        ImGuiX::TextTooltip("Discard buffer changes and reload from disk.");
-
-        ImGui::SameLine();
-        ImGui::TextDisabled("|");
-        ImGui::SameLine();
-
         ImGui::BeginDisabled(!CodeEditor.CanUndo());
-        if (ImGui::Button(LE_ICON_UNDO_VARIANT " Undo"))
-        {
-            CodeEditor.Undo();
-        }
-        ImGuiX::TextTooltip("Undo last change (Ctrl+Z).");
+        if (ImGui::Button(LE_ICON_UNDO_VARIANT)) CodeEditor.Undo();
         ImGui::EndDisabled();
+        ImGuiX::TextTooltip("Undo (Ctrl+Z).");
 
         ImGui::SameLine();
         ImGui::BeginDisabled(!CodeEditor.CanRedo());
-        if (ImGui::Button(LE_ICON_REDO_VARIANT " Redo"))
-        {
-            CodeEditor.Redo();
-        }
-        ImGuiX::TextTooltip("Redo last undone change (Ctrl+Y).");
+        if (ImGui::Button(LE_ICON_REDO_VARIANT)) CodeEditor.Redo();
         ImGui::EndDisabled();
+        ImGuiX::TextTooltip("Redo (Ctrl+Y).");
 
         ImGui::SameLine();
         ImGui::TextDisabled("|");
         ImGui::SameLine();
 
-        if (ImGui::Button(LE_ICON_MAGNIFY " Find"))
-        {
-            CodeEditor.OpenFindReplaceWindow();
-        }
-        ImGuiX::TextTooltip("Open the find/replace bar (Ctrl+F).");
+        if (ImGui::Button(LE_ICON_MAGNIFY)) CodeEditor.OpenFindReplaceWindow();
+        ImGuiX::TextTooltip("Find / replace (Ctrl+F).");
 
         ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_FORMAT_LINE_SPACING " Goto"))
-        {
-            bRequestOpenGoto = true;
-        }
-        ImGuiX::TextTooltip("Jump to a specific line number (Ctrl+G).");
+        if (ImGui::Button(LE_ICON_FORMAT_LINE_SPACING)) bRequestOpenGoto = true;
+        ImGuiX::TextTooltip("Go to line (Ctrl+G).");
 
         ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_CODE_BRACES " Snippets"))
-        {
-            ImGui::OpenPopup("##lua_snippets");
-        }
-        ImGuiX::TextTooltip("Insert a code snippet at the cursor.");
-        DrawSnippetsPopup();
-
-        ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_AUTO_FIX " Format"))
-        {
-            ImGui::OpenPopup("##lua_format");
-        }
-        ImGuiX::TextTooltip("Whitespace and case transforms.");
-        DrawFormatPopup();
+        if (ImGui::Button(LE_ICON_AUTO_FIX)) ImGui::OpenPopup("##lua_format");
+        ImGuiX::TextTooltip("Format / whitespace transforms.");
 
         ImGui::SameLine();
         ImGui::TextDisabled("|");
         ImGui::SameLine();
 
-        if (ImGui::Button(LE_ICON_REFRESH " Symbols"))
-        {
-            RebuildSymbolIndex();
-            ImGuiX::Notifications::NotifySuccess("Re-harvested {0} Lua symbols.", (int)AllSymbols.size());
-        }
-        ImGuiX::TextTooltip("Re-walk the live Lua VM to refresh autocomplete suggestions.\nUse after registering new globals from C++.");
-
-        ImGui::SameLine();
-        ImGui::TextDisabled("|");
-        ImGui::SameLine();
-
-        // Outline toggle. Reflects state via active-button styling.
+        // Outline toggle reflects state via active-button styling.
         ImGui::PushStyleColor(ImGuiCol_Button, bShowOutline ? ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive) : ImGui::GetStyleColorVec4(ImGuiCol_Button));
-        if (ImGui::Button(LE_ICON_FORMAT_LIST_BULLETED " Outline"))
+        if (ImGui::Button(LE_ICON_FORMAT_LIST_BULLETED))
         {
             bShowOutline = !bShowOutline;
-            if (bShowOutline)
-            {
-                RebuildDocumentOutline();
-            }
+            if (bShowOutline) RebuildDocumentOutline();
         }
         ImGui::PopStyleColor();
-        ImGuiX::TextTooltip("Toggle the right-side outline panel (Ctrl+\\).\nLists functions and locals in this file.");
+        ImGuiX::TextTooltip("Toggle the outline panel (Ctrl+\\).");
+
+        // Problems: icon + count, colored by worst severity.
+        const size_t TotalErrors = (bHasCompileError ? 1u : 0u) + TypeErrors.size();
+        const size_t TotalWarn   = LintWarnings.size();
+        char ProblemsLabel[48];
+        if (TotalErrors == 0 && TotalWarn == 0)
+            std::snprintf(ProblemsLabel, sizeof(ProblemsLabel), LE_ICON_ALERT_CIRCLE);
+        else
+            std::snprintf(ProblemsLabel, sizeof(ProblemsLabel), LE_ICON_ALERT_CIRCLE " %zu", TotalErrors + TotalWarn);
 
         ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_BOOKMARK " Bookmarks"))
+        if (TotalErrors > 0)    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 110, 110, 255));
+        else if (TotalWarn > 0) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(220, 165, 60, 255));
+        if (ImGui::Button(ProblemsLabel)) ImGui::OpenPopup("##lua_problems");
+        if (TotalErrors > 0 || TotalWarn > 0) ImGui::PopStyleColor();
+        ImGuiX::TextTooltip("Problems: compile / type errors and lint warnings.\nClick to jump to one.");
+
+        // Overflow menu, right-aligned.
+        const float OverflowW = ImGui::CalcTextSize(LE_ICON_DOTS_HORIZONTAL).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        ImGui::SameLine();
+        const float OverflowX = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - OverflowW;
+        ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), OverflowX));
+        if (ImGui::Button(LE_ICON_DOTS_HORIZONTAL)) ImGui::OpenPopup("##lua_overflow");
+        ImGuiX::TextTooltip("More actions.");
+
+        if (ImGui::BeginPopup("##lua_overflow"))
         {
-            ImGui::OpenPopup("##lua_bookmarks");
+            if (ImGui::MenuItem(LE_ICON_REFRESH " Reload from disk")) LoadFromDisk();
+            if (ImGui::MenuItem(LE_ICON_REFRESH " Refresh symbols"))
+            {
+                RebuildSymbolIndex();
+                ImGuiX::Notifications::NotifySuccess("Re-harvested {0} Lua symbols.", (int)AllSymbols.size());
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem(LE_ICON_CODE_BRACES " Snippets..."))  bRequestOpenSnippets  = true;
+            if (ImGui::MenuItem(LE_ICON_BOOKMARK " Bookmarks..."))    bRequestOpenBookmarks = true;
+            ImGui::BeginDisabled(!IsDebuggerPausedHere());
+            if (ImGui::MenuItem(LE_ICON_DEBUG_STEP_OVER " Run to cursor")) RunToCursor();
+            ImGui::EndDisabled();
+            if (ImGui::MenuItem(LE_ICON_BUG " Breakpoints..."))      bRequestOpenBreakpoints = true;
+            ImGui::Separator();
+            if (ImGui::MenuItem(LE_ICON_HELP_CIRCLE " Help..."))     bRequestOpenHelp     = true;
+            if (ImGui::MenuItem(LE_ICON_COG " Settings..."))         bRequestOpenSettings = true;
+            ImGui::EndPopup();
         }
+
+        // Deferred opens: OpenPopup must fire at this (root) ID-stack scope,
+        // not from inside the overflow menu above.
+        if (bRequestOpenGoto)
+        {
+            ImGui::OpenPopup("##lua_goto_line");
+            bRequestOpenGoto = false;
+            GotoLineBuffer = CodeEditor.GetCurrentCursorPosition().line + 1;
+        }
+        if (bRequestOpenSnippets)    { ImGui::OpenPopup("##lua_snippets");        bRequestOpenSnippets    = false; }
+        if (bRequestOpenBookmarks)   { ImGui::OpenPopup("##lua_bookmarks");       bRequestOpenBookmarks   = false; }
+        if (bRequestOpenBreakpoints) { ImGui::OpenPopup("##lua_breakpoints");     bRequestOpenBreakpoints = false; }
+        if (bRequestOpenHelp)        { ImGui::OpenPopup("##lua_help");            bRequestOpenHelp        = false; }
+        if (bRequestOpenSettings)    { ImGui::OpenPopup("##lua_editor_settings"); bRequestOpenSettings    = false; }
+
+        // Popup bodies (each no-ops unless its popup is open).
+        DrawGotoLinePopup();
+        DrawSnippetsPopup();
+        DrawFormatPopup();
+        DrawProblemsPopup();
+        DrawHelpPopup();
+        DrawSettingsPopup();
+
         if (ImGui::BeginPopup("##lua_bookmarks"))
         {
             if (Bookmarks.empty())
@@ -2001,22 +1996,7 @@ namespace Lumina
             }
             ImGui::EndPopup();
         }
-        ImGuiX::TextTooltip("Bookmarks. Ctrl+F2 toggles, F2/Shift+F2 cycle.");
 
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!IsDebuggerPausedHere());
-        if (ImGui::Button(LE_ICON_DEBUG_STEP_OVER " Run to cursor"))
-        {
-            RunToCursor();
-        }
-        ImGui::EndDisabled();
-        ImGuiX::TextTooltip("Continue execution until the cursor's line is reached (Ctrl+F10).");
-
-        ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_BUG " Breakpoints"))
-        {
-            ImGui::OpenPopup("##lua_breakpoints");
-        }
         if (ImGui::BeginPopup("##lua_breakpoints"))
         {
             if (Breakpoints.empty())
@@ -2069,71 +2049,8 @@ namespace Lumina
                     RefreshBreakpointMarkers();
                 }
             }
-
             ImGui::EndPopup();
         }
-        ImGuiX::TextTooltip("Manage breakpoints. Hit a breakpoint to open the debugger panel.");
-
-        ImGui::SameLine();
-        ImGui::TextDisabled("|");
-        ImGui::SameLine();
-
-        // Problems button label includes error/warning counts.
-        const size_t TotalErrors  = (bHasCompileError ? 1u : 0u) + TypeErrors.size();
-        const size_t TotalWarn    = LintWarnings.size();
-        char ProblemsLabel[64];
-        if (TotalErrors == 0 && TotalWarn == 0)
-        {
-            std::snprintf(ProblemsLabel, sizeof(ProblemsLabel),
-                          LE_ICON_ALERT_CIRCLE " Problems");
-        }
-        else
-        {
-            std::snprintf(ProblemsLabel, sizeof(ProblemsLabel),
-                          LE_ICON_ALERT_CIRCLE " Problems (%zu)",
-                          TotalErrors + TotalWarn);
-        }
-        if (TotalErrors > 0)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 110, 110, 255));
-        }
-        else if (TotalWarn > 0)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(220, 165, 60, 255));
-        }
-        if (ImGui::Button(ProblemsLabel))
-        {
-            ImGui::OpenPopup("##lua_problems");
-        }
-        if (TotalErrors > 0 || TotalWarn > 0)
-        {
-            ImGui::PopStyleColor();
-        }
-        ImGuiX::TextTooltip("All compile errors, type errors, and lint warnings on this file.\nClick to jump to a diagnostic.");
-        DrawProblemsPopup();
-
-        ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_HELP_CIRCLE " Help"))
-        {
-            ImGui::OpenPopup("##lua_help");
-        }
-        ImGuiX::TextTooltip("Quick Luau reference and editor shortcuts.");
-        DrawHelpPopup();
-
-        ImGui::SameLine();
-        if (ImGui::Button(LE_ICON_COG " Settings"))
-        {
-            ImGui::OpenPopup("##lua_editor_settings");
-        }
-        DrawSettingsPopup();
-
-        if (bRequestOpenGoto)
-        {
-            ImGui::OpenPopup("##lua_goto_line");
-            bRequestOpenGoto = false;
-            GotoLineBuffer = CodeEditor.GetCurrentCursorPosition().line + 1;
-        }
-        DrawGotoLinePopup();
     }
 
     void FLuaEditorTool::DrawSettingsPopup()
@@ -2167,18 +2084,6 @@ namespace Lumina
         if (ImGui::Checkbox("Insert spaces on Tab", &bInsertSpacesOnTabs))   bDirty = true;
         ImGuiX::TextTooltip("When on, pressing Tab inserts spaces instead of a tab character.");
         ImGui::Checkbox("Trim trailing whitespace on save", &bTrimTrailingOnSave);
-
-        ImGui::Spacing();
-        ImGui::TextDisabled("Type-aware features");
-        ImGui::Separator();
-        if (ImGui::Checkbox("Show inlay hints", &bShowInlayHints))
-        {
-            bDirty = true;
-            // Clear immediately when toggling off; cached vector would paint until the next change-callback tick otherwise.
-            if (!bShowInlayHints) InlayHints.clear();
-            else                  RefreshAnalysis();
-        }
-        ImGuiX::TextTooltip("Show inferred type as ghost text after `local x = ...` declarations.");
 
         ImGui::Spacing();
         ImGui::TextDisabled("Autocomplete");
@@ -3188,46 +3093,6 @@ namespace Lumina
             CachedLines[L] = CodeEditor.GetLineText(L);
         }
         CachedLinesUndoIndex = Undo;
-    }
-
-    void FLuaEditorTool::DrawInlayHintsOverlay()
-    {
-        if (InlayHints.empty()) return;
-
-        const float LineHeight = CodeEditor.GetLineHeight();
-        const float GlyphWidth = CodeEditor.GetGlyphWidth();
-        if (LineHeight <= 0.0f || GlyphWidth <= 0.0f) return;
-
-        const int FirstVisible = CodeEditor.GetFirstVisibleLine();
-        const int LastVisible  = CodeEditor.GetLastVisibleLine();
-
-        ImDrawList* DrawList = ImGui::GetWindowDrawList();
-        const ImU32 GhostColor = IM_COL32(150, 165, 200, 200);
-
-        RefreshLineCache();
-
-        for (const FLuaInlayHint& H : InlayHints)
-        {
-            const int LineIdx = H.Line - 1;
-            if (LineIdx < FirstVisible || LineIdx > LastVisible || LineIdx >= static_cast<int>(CachedLines.size()))
-            {
-                continue;
-            }
-
-            // Translate the hint's anchor column (1-based) to a visible column
-            // accounting for tab expansion. Cheap walk over the line text.
-            const std::string& Line = CachedLines[LineIdx];
-            const int TabSize  = CodeEditor.GetTabSize();
-            const int AnchorB  = std::max(0, std::min((int)Line.size(), H.Column - 1));
-            int Visible = 0;
-            for (int K = 0; K < AnchorB; ++K)
-            {
-                Visible += (Line[K] == '\t') ? (TabSize - (Visible % TabSize)) : 1;
-            }
-
-            const ImVec2 Pos = CodeEditor.GetScreenPosForCoordinate(LineIdx, Visible);
-            DrawList->AddText(Pos, GhostColor, H.Text.c_str());
-        }
     }
 
     void FLuaEditorTool::RebuildDocumentOutline()

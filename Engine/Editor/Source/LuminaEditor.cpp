@@ -4,6 +4,7 @@
 #include <thread>
 #include <Core/Engine/Engine.h>
 #include <Core/Engine/EngineMetaContext.h>
+#include <Core/Plugin/PluginManager.h>
 #include <Core/Progress/SlowTask.h>
 #include <Memory/Memory.h>
 #include <Tools/UI/DevelopmentToolUI.h>
@@ -326,6 +327,132 @@ namespace Lumina
         ReplaceAll(Text, "$PROJECTNAME", Ctx.Name);
     }
 
+    // Tokens for the plugin template. The runtime/editor module names and their
+    // uppercased API-macro forms are precomputed so the template never has to
+    // compose tokens, which keeps replacement order-independent.
+    struct FPluginTemplateContext
+    {
+        FString Name;               // e.g. "Combat"
+        FString NameUpper;          // e.g. "COMBAT"
+        FString Description;
+        FString RuntimeModule;      // e.g. "CombatRuntime"
+        FString RuntimeModuleUpper; // e.g. "COMBATRUNTIME"
+        FString EditorModule;       // e.g. "CombatEditor"
+        FString EditorModuleUpper;  // e.g. "COMBATEDITOR"
+    };
+
+    static void ReplacePluginTokens(FString& Text, const FPluginTemplateContext& Ctx)
+    {
+        auto ReplaceAll = [](FString& Str, const FString& From, const FString& To)
+        {
+            if (From.empty())
+            {
+                return;
+            }
+            size_t Pos = 0;
+            while ((Pos = Str.find(From, Pos)) != FString::npos)
+            {
+                Str.replace(Pos, From.size(), To);
+                Pos += To.size();
+            }
+        };
+
+        // Longest / most-specific tokens first so prefixes (e.g. $RUNTIMEMODULE
+        // inside $RUNTIMEMODULEUPPER, or $PLUGINNAME inside $PLUGINNAMEUPPER)
+        // aren't eaten early.
+        ReplaceAll(Text, "$RUNTIMEMODULEUPPER", Ctx.RuntimeModuleUpper);
+        ReplaceAll(Text, "$EDITORMODULEUPPER", Ctx.EditorModuleUpper);
+        ReplaceAll(Text, "$PLUGINNAMEUPPER", Ctx.NameUpper);
+        ReplaceAll(Text, "$PLUGINDESCRIPTION", Ctx.Description);
+        ReplaceAll(Text, "$RUNTIMEMODULE", Ctx.RuntimeModule);
+        ReplaceAll(Text, "$EDITORMODULE", Ctx.EditorModule);
+        ReplaceAll(Text, "$PLUGINNAME", Ctx.Name);
+    }
+
+    // Recursively copies a template tree to DestDir, running ReplaceTokens over
+    // both relative paths (so $TOKEN filenames are substituted) and the contents
+    // of text files. Binary files are copied verbatim. Shared by project and
+    // plugin scaffolding.
+    static bool CopyTemplateTree(
+        const FFixedString&              TemplateDir,
+        const FFixedString&              DestDir,
+        const TFunction<void(FString&)>& ReplaceTokens,
+        FString&                         OutError)
+    {
+        std::error_code CreateEc;
+        std::filesystem::create_directories(DestDir.c_str(), CreateEc);
+        if (CreateEc)
+        {
+            OutError = "Failed to create directory: ";
+            OutError.append(CreateEc.message().c_str());
+            return false;
+        }
+
+        for (auto& Entry : std::filesystem::recursive_directory_iterator(TemplateDir.c_str()))
+        {
+            std::filesystem::path RelativePath = std::filesystem::relative(Entry.path(), TemplateDir.c_str());
+
+            FString RelativePathStr = RelativePath.string().c_str();
+            eastl::replace(RelativePathStr.begin(), RelativePathStr.end(), '\\', '/');
+
+            ReplaceTokens(RelativePathStr);
+            FFixedString DestPath = Paths::Combine(DestDir, RelativePathStr);
+
+            if (Entry.is_directory())
+            {
+                std::filesystem::create_directories(DestPath.c_str());
+            }
+            else if (Entry.is_regular_file())
+            {
+                std::filesystem::path DestPathFS(DestPath.c_str());
+                std::filesystem::create_directories(DestPathFS.parent_path());
+
+                const std::filesystem::path SourcePath = Entry.path();
+                const std::string Ext = SourcePath.extension().string();
+
+                // Token replace only on text files; binaries (premake5.exe, etc.) copy verbatim.
+                const bool bIsTextFile =
+                    Ext == ".h"          || Ext == ".hpp"        || Ext == ".cpp"     ||
+                    Ext == ".c"          || Ext == ".inl"        || Ext == ".lua"     ||
+                    Ext == ".json"       || Ext == ".lproject"   || Ext == ".lplugin" ||
+                    Ext == ".luau"       || Ext == ".bat"        || Ext == ".py"      ||
+                    Ext == ".md"         || Ext == ".txt"        || Ext == ".gitignore" ||
+                    Ext == ".cfg"        || Ext == ".yaml"       || Ext == ".yml"     ||
+                    Ext == ".xml";
+
+                if (!bIsTextFile)
+                {
+                    std::filesystem::copy_file(
+                        SourcePath,
+                        DestPath.c_str(),
+                        std::filesystem::copy_options::overwrite_existing);
+                    continue;
+                }
+
+                std::ifstream InputFile(SourcePath, std::ios::binary);
+                if (!InputFile.is_open())
+                {
+                    continue;
+                }
+
+                std::string FileContentStr((std::istreambuf_iterator<char>(InputFile)), std::istreambuf_iterator<char>());
+                InputFile.close();
+
+                FString FileContents = FileContentStr.c_str();
+                ReplaceTokens(FileContents);
+
+                std::ofstream OutputFile(DestPath.c_str(), std::ios::binary);
+                if (OutputFile.is_open())
+                {
+                    OutputFile.write(FileContents.data(), FileContents.size());
+                    OutputFile.close();
+                }
+            }
+        }
+
+        return true;
+    }
+
     // Project name must produce a valid C identifier (it becomes the module
     // name, vcxproj name, and goes into source identifiers via the API macro).
     static bool ValidateProjectName(FStringView Name, FString& OutError)
@@ -429,77 +556,100 @@ namespace Lumina
         Ctx.LuminaDirBackslash = Ctx.LuminaDir;
         eastl::replace(Ctx.LuminaDirBackslash.begin(), Ctx.LuminaDirBackslash.end(), '/', '\\');
 
-        std::error_code CreateEc;
-        std::filesystem::create_directories(Combined.c_str(), CreateEc);
-        if (CreateEc)
+        if (!CopyTemplateTree(BlankProjectPath, Combined,
+            [&Ctx](FString& Text) { ReplaceProjectTokens(Text, Ctx); },
+            OutError))
         {
-            OutError = "Failed to create project directory: ";
-            OutError.append(CreateEc.message().c_str());
             return false;
         }
 
-        for (auto& Entry : std::filesystem::recursive_directory_iterator(BlankProjectPath.c_str()))
+        OutProjectFile = Paths::Combine(Combined, FFixedString(Ctx.Name.c_str()).append(".lproject"));
+        return true;
+    }
+
+    bool FEditorEngine::CreatePlugin(FStringView NewPluginName, FStringView Description, FFixedString& OutPluginDir, FString& OutError)
+    {
+        OutPluginDir.clear();
+        OutError.clear();
+
+        if (!ValidateProjectName(NewPluginName, OutError))
         {
-            std::filesystem::path RelativePath = std::filesystem::relative(Entry.path(), BlankProjectPath.c_str());
-
-            FString RelativePathStr = RelativePath.string().c_str();
-            eastl::replace(RelativePathStr.begin(), RelativePathStr.end(), '\\', '/');
-
-            ReplaceProjectTokens(RelativePathStr, Ctx);
-            FFixedString DestPath = Paths::Combine(Combined, RelativePathStr);
-
-            if (Entry.is_directory())
-            {
-                std::filesystem::create_directories(DestPath.c_str());
-            }
-            else if (Entry.is_regular_file())
-            {
-                std::filesystem::path DestPathFS(DestPath.c_str());
-                std::filesystem::create_directories(DestPathFS.parent_path());
-
-                const std::filesystem::path SourcePath = Entry.path();
-                const std::string Ext = SourcePath.extension().string();
-
-                // Token replace only on text files; binaries (premake5.exe, etc.) copy verbatim.
-                const bool bIsTextFile =
-                    Ext == ".h"          || Ext == ".hpp"        || Ext == ".cpp"    ||
-                    Ext == ".c"          || Ext == ".inl"        || Ext == ".lua"    ||
-                    Ext == ".json"       || Ext == ".lproject"   || Ext == ".luau"   ||
-                    Ext == ".bat"        || Ext == ".py"         || Ext == ".md"     ||
-                    Ext == ".txt"        || Ext == ".gitignore"  || Ext == ".cfg"    ||
-                    Ext == ".yaml"       || Ext == ".yml"        || Ext == ".xml";
-
-                if (!bIsTextFile)
-                {
-                    std::filesystem::copy_file(
-                        SourcePath,
-                        DestPath.c_str(),
-                        std::filesystem::copy_options::overwrite_existing);
-                    continue;
-                }
-
-                std::ifstream InputFile(SourcePath, std::ios::binary);
-                if (!InputFile.is_open())
-                {
-                    continue;
-                }
-
-                std::string FileContentStr((std::istreambuf_iterator<char>(InputFile)), std::istreambuf_iterator<char>());
-                InputFile.close();
-
-                FString FileContents = FileContentStr.c_str();
-                ReplaceProjectTokens(FileContents, Ctx);
-
-                std::ofstream OutputFile(DestPath.c_str(), std::ios::binary);
-                if (OutputFile.is_open())
-                {
-                    OutputFile.write(FileContents.data(), FileContents.size());
-                    OutputFile.close();
-                }
-            }
+            return false;
         }
 
-        OutProjectFile = Paths::Combine(Combined, FFixedString(Ctx.Name.c_str()).append(".lproject"));
+        // Project-local plugins live next to the .lproject; we need one loaded.
+        if (GetProjectName().empty())
+        {
+            OutError = "No project is loaded. Open a project before creating a plugin.";
+            return false;
+        }
+
+        const FString& EngineDir = Paths::GetEngineInstallDirectory();
+        if (EngineDir.empty())
+        {
+            OutError = "Engine install directory is not set (LUMINA_DIR missing). Run the engine's Setup.bat.";
+            return false;
+        }
+
+        const FFixedString TemplatePath = Paths::Combine(EngineDir, "Templates", "Plugin");
+        if (!Paths::Exists(TemplatePath))
+        {
+            OutError = "Plugin template not found at: ";
+            OutError.append(TemplatePath.c_str(), TemplatePath.size());
+            return false;
+        }
+
+        // Reject collisions with any already-discovered plugin (engine or project);
+        // plugin names must be globally unique or discovery silently drops one.
+        const FString NameStr(NewPluginName.data(), NewPluginName.size());
+        if (FPluginManager::Get().FindPlugin(NameStr) != nullptr)
+        {
+            OutError = "A plugin named '";
+            OutError += NameStr;
+            OutError += "' already exists.";
+            return false;
+        }
+
+        // Destination: <ProjectPath>/Plugins/<PluginName>/
+        const FFixedString PluginDir = Paths::Combine(Paths::Combine(GetProjectPath(), "Plugins"), NameStr);
+
+        std::error_code ExistEc;
+        if (std::filesystem::exists(PluginDir.c_str(), ExistEc) &&
+            !std::filesystem::is_empty(PluginDir.c_str(), ExistEc))
+        {
+            OutError = "A non-empty folder already exists at: ";
+            OutError.append(PluginDir.c_str(), PluginDir.size());
+            return false;
+        }
+
+        auto ToUpper = [](FString& S)
+        {
+            eastl::transform(S.begin(), S.end(), S.begin(),
+                [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        };
+
+        FPluginTemplateContext Ctx;
+        Ctx.Name = NameStr;
+        Ctx.Description.assign(Description.data(), Description.size());
+        if (Ctx.Description.empty())
+        {
+            Ctx.Description = "A Lumina plugin";
+        }
+        Ctx.NameUpper = Ctx.Name;
+        ToUpper(Ctx.NameUpper);
+        Ctx.RuntimeModule = Ctx.Name; Ctx.RuntimeModule += "Runtime";
+        Ctx.EditorModule  = Ctx.Name; Ctx.EditorModule  += "Editor";
+        Ctx.RuntimeModuleUpper = Ctx.RuntimeModule; ToUpper(Ctx.RuntimeModuleUpper);
+        Ctx.EditorModuleUpper  = Ctx.EditorModule;  ToUpper(Ctx.EditorModuleUpper);
+
+        if (!CopyTemplateTree(TemplatePath, PluginDir,
+            [&Ctx](FString& Text) { ReplacePluginTokens(Text, Ctx); },
+            OutError))
+        {
+            return false;
+        }
+
+        OutPluginDir = PluginDir;
         return true;
     }
 

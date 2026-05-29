@@ -16,6 +16,7 @@
 #endif
 #include <algorithm>
 #include "Core/Math/Math.h"
+#include "Core/Math/SIMD/SIMD.h"
 
 #include "JoltPhysics.h"
 #include "JoltUtils.h"
@@ -550,11 +551,10 @@ namespace Lumina::Physics
         const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
         JPH::BodyInterface& BodyInterface = JoltSystem->GetBodyInterface();
 
-        // Jolt bodies are moved using the fixed step duration so kinematic /
-        // velocity-matched motion lands exactly in one sub-step, regardless of
-        // the current frame's wall-clock delta.
-        auto BodySyncView = Registry.view<SRigidBodyComponent, STransformComponent, FNeedsPhysicsBodyUpdate>();
+        
+        auto BodySyncView = Registry.view<SRigidBodyComponent, FNeedsPhysicsBodyUpdate>();
         auto Handle = BodySyncView.handle();
+        auto&& Storage = Registry.storage<STransformComponent>();
         Task::ParallelFor(Handle->size(), [&] (uint32 Index)
         {
             entt::entity Entity = (*Handle)[Index];
@@ -564,7 +564,7 @@ namespace Lumina::Physics
             }
          
             const auto& BodyComponent       = BodySyncView.get<SRigidBodyComponent>(Entity);
-            const auto& TransformComponent  = BodySyncView.get<STransformComponent>(Entity);
+            const auto& TransformComponent  = Storage.get(Entity);
             const auto& Update              = BodySyncView.get<FNeedsPhysicsBodyUpdate>(Entity);
 
             JPH::BodyID BodyID = JPH::BodyID(BodyComponent.BodyID);
@@ -852,11 +852,6 @@ namespace Lumina::Physics
         Task::ParallelFor(RigidHandle->size(), [&](uint32 Index)
         {
             entt::entity Entity = (*RigidHandle)[Index];
-            if (!RigidView.contains(Entity))
-            {
-                return;
-            }
-
             SRigidBodyComponent& BodyComponent = RigidView.get<SRigidBodyComponent>(Entity);
 
             const JPH::Body* Body = LockInterface.TryGetBody(JPH::BodyID(BodyComponent.BodyID));
@@ -882,131 +877,206 @@ namespace Lumina::Physics
         });
     }
 
+    // In-place SoA quaternion nlerp toward Prev along the shortest arc, 8 quats
+    // per iteration. Curr* hold the current rotation on entry and the normalized
+    // blended result on exit. nlerp (not slerp): the per-frame alpha is a tiny
+    // fraction of one fixed step, so the constant-angular-velocity difference is
+    // invisible -- and it drops the per-body acos/sin that slerp pays at 10k+.
+    static void NlerpQuatsSoA(float* Qx, float* Qy, float* Qz, float* Qw,
+                              const float* Px, const float* Py, const float* Pz, const float* Pw,
+                              uint32 Count, float Alpha)
+    {
+        using namespace SIMD;
+        const VFloat8 A         = VFloat8::Broadcast(Alpha);
+        const VFloat8 OneMinusA = VFloat8::Broadcast(1.0f - Alpha);
+        const VFloat8 VZero     = VFloat8::Zero();
+
+        uint32 i = 0;
+        for (; i + 8 <= Count; i += 8)
+        {
+            const VFloat8 px = VFloat8::Load(Px + i), py = VFloat8::Load(Py + i),
+                          pz = VFloat8::Load(Pz + i), pw = VFloat8::Load(Pw + i);
+            VFloat8 cx = VFloat8::Load(Qx + i), cy = VFloat8::Load(Qy + i),
+                    cz = VFloat8::Load(Qz + i), cw = VFloat8::Load(Qw + i);
+
+            const VFloat8 Dot  = MulAdd(px, cx, MulAdd(py, cy, MulAdd(pz, cz, pw * cw)));
+            const VFloat8 Flip = CmpLt(Dot, VZero);
+            cx = Select(Flip, -cx, cx); cy = Select(Flip, -cy, cy);
+            cz = Select(Flip, -cz, cz); cw = Select(Flip, -cw, cw);
+
+            VFloat8 ox = MulAdd(px, OneMinusA, cx * A);
+            VFloat8 oy = MulAdd(py, OneMinusA, cy * A);
+            VFloat8 oz = MulAdd(pz, OneMinusA, cz * A);
+            VFloat8 ow = MulAdd(pw, OneMinusA, cw * A);
+
+            const VFloat8 Inv = InvSqrt(MulAdd(ox, ox, MulAdd(oy, oy, MulAdd(oz, oz, ow * ow))));
+            (ox * Inv).Store(Qx + i); (oy * Inv).Store(Qy + i);
+            (oz * Inv).Store(Qz + i); (ow * Inv).Store(Qw + i);
+        }
+
+        const float OneMinus = 1.0f - Alpha;
+        for (; i < Count; ++i)
+        {
+            const float px = Px[i], py = Py[i], pz = Pz[i], pw = Pw[i];
+            float cx = Qx[i], cy = Qy[i], cz = Qz[i], cw = Qw[i];
+            if (px * cx + py * cy + pz * cz + pw * cw < 0.0f) { cx = -cx; cy = -cy; cz = -cz; cw = -cw; }
+
+            const float ox = px * OneMinus + cx * Alpha, oy = py * OneMinus + cy * Alpha,
+                        oz = pz * OneMinus + cz * Alpha, ow = pw * OneMinus + cw * Alpha;
+            const float Inv = 1.0f / std::sqrt(ox * ox + oy * oy + oz * oz + ow * ow);
+            Qx[i] = ox * Inv; Qy[i] = oy * Inv; Qz[i] = oz * Inv; Qw[i] = ow * Inv;
+        }
+    }
+
     void FJoltPhysicsScene::BuildInterpolatedTransforms(float Alpha)
     {
         LUMINA_PROFILE_SCOPE();
 
         const float KillHeight = World->GetDefaultWorldSettings().WorldKillHeight;
-
         const JPH::BodyLockInterfaceNoLock& LockInterface = JoltSystem->GetBodyLockInterfaceNoLock();
         entt::registry& Registry = World->GetEntityRegistry();
-        
-        auto View = Registry.view<SRigidBodyComponent, STransformComponent>();
-        auto Handle = View.handle();
-        const uint32 RigidCount = (uint32)Handle->size();
 
-        InterpolatedTransforms.clear();
-        InterpolatedTransforms.resize(RigidCount);
+        auto RigidView   = Registry.view<SRigidBodyComponent>();
+        auto RigidHandle = RigidView.handle();
+        const uint32 RigidCount = (uint32)RigidHandle->size();
 
-        Task::ParallelFor(RigidCount, [&](uint32 Index)
+        auto CharView = Registry.view<SCharacterPhysicsComponent>();
+        const uint32 CharCount = (uint32)CharView.handle()->size();
+
+        const uint32 Total = RigidCount + CharCount;
+        InterpStaging.Resize(Total);
+
+        // Identity-fill a skipped/killed slot so the bulk interp never sees NaNs
+        // (physics builds enable FP exceptions).
+        auto WriteIdentity = [&](uint32 i)
         {
-            entt::entity EntityID = (*Handle)[Index];
-            FStagedTransform& Staged = InterpolatedTransforms[Index];
-            Staged.Entity = EntityID;
+            InterpStaging.PrevPos[i] = FVector3(0.0f);
+            InterpStaging.CurrPos[i] = FVector3(0.0f);
+            InterpStaging.PrevQx[i] = InterpStaging.CurrQx[i] = 0.0f;
+            InterpStaging.PrevQy[i] = InterpStaging.CurrQy[i] = 0.0f;
+            InterpStaging.PrevQz[i] = InterpStaging.CurrQz[i] = 0.0f;
+            InterpStaging.PrevQw[i] = InterpStaging.CurrQw[i] = 1.0f;
+        };
 
-            if (!View.contains(EntityID))
-            {
-                Staged.bSkip = true;
-                return;
-            }
+        auto StoreState = [&](uint32 i, const FVector3& Prev, const FVector3& Curr, const FQuat& PrevR, const FQuat& CurrR)
+        {
+            InterpStaging.Flags[i]   = EInterpFlag::Interpolate;
+            InterpStaging.PrevPos[i] = Prev;   InterpStaging.CurrPos[i] = Curr;
+            InterpStaging.PrevQx[i] = PrevR.x; InterpStaging.PrevQy[i] = PrevR.y; InterpStaging.PrevQz[i] = PrevR.z; InterpStaging.PrevQw[i] = PrevR.w;
+            InterpStaging.CurrQx[i] = CurrR.x; InterpStaging.CurrQy[i] = CurrR.y; InterpStaging.CurrQz[i] = CurrR.z; InterpStaging.CurrQw[i] = CurrR.w;
+        };
 
-            const SRigidBodyComponent& BodyComponent = View.get<SRigidBodyComponent>(EntityID);
+        // Gather: pull prev (pre-step snapshot on the component) + curr (Jolt) into
+        // the SoA buffers. No interpolation math here -- this pass is latency-bound
+        // on the body lookups, so we keep it branchy/scalar and parallel.
+        Task::ParallelFor(RigidCount, [&](uint32 i)
+        {
+            const entt::entity Entity = (*RigidHandle)[i];
+            InterpStaging.Entities[i] = Entity;
+
+            const SRigidBodyComponent& BodyComponent = RigidView.get<SRigidBodyComponent>(Entity);
             const JPH::Body* Body = LockInterface.TryGetBody(JPH::BodyID(BodyComponent.BodyID));
             if (Body == nullptr || Body->IsStatic())
             {
-                Staged.bSkip = true;
+                InterpStaging.Flags[i] = EInterpFlag::Skip;
+                WriteIdentity(i);
                 return;
             }
 
             const JPH::RVec3 CurrPos = Body->GetPosition();
-            const JPH::Quat  CurrRot = Body->GetRotation();
-
             if (CurrPos.GetY() < KillHeight)
             {
-                Staged.Location   = FVector3(0.0f);
-                Staged.Rotation   = FQuat(1.0f, 0.0f, 0.0f, 0.0f);
-                Staged.bBelowKill = true;
-                Staged.bSkip      = false;
+                InterpStaging.Flags[i] = EInterpFlag::BelowKill;
+                WriteIdentity(i);
                 return;
             }
 
-            // Interpolate between the pre-step snapshot and the current physics state.
-            // Falls back to the current state on the first frame (no snapshot yet).
-            Staged.Location   = Math::Mix(BodyComponent.LastBodyPosition,
-                                         JoltUtils::FromJPHVec3(CurrPos),
-                                         Alpha);
-            Staged.Rotation   = Math::Normalize(Math::Slerp(BodyComponent.LastBodyRotation,
-                                                          JoltUtils::FromJPHQuat(CurrRot),
-                                                          Alpha));
-            Staged.bBelowKill = false;
-            Staged.bSkip      = false;
+            StoreState(i, BodyComponent.LastBodyPosition, JoltUtils::FromJPHVec3(CurrPos),
+                          BodyComponent.LastBodyRotation, JoltUtils::FromJPHQuat(Body->GetRotation()));
         });
 
-        auto CharacterView = Registry.view<SCharacterPhysicsComponent, STransformComponent>();
-        InterpolatedTransforms.reserve(InterpolatedTransforms.size() + CharacterView.size_hint());
-
-        CharacterView.each([&](entt::entity Entity, SCharacterPhysicsComponent& CharacterComponent, STransformComponent&)
+        // Characters are few -- gather them serially into the tail of the batch.
+        uint32 ci = RigidCount;
+        CharView.each([&](entt::entity Entity, SCharacterPhysicsComponent& CharacterComponent)
         {
+            const uint32 i = ci++;
+            InterpStaging.Entities[i] = Entity;
+
             if (CharacterComponent.Character == nullptr)
             {
+                InterpStaging.Flags[i] = EInterpFlag::Skip;
+                WriteIdentity(i);
                 return;
             }
 
             const JPH::RVec3 CurrPos = CharacterComponent.Character->Ref->GetPosition();
-            const JPH::Quat  CurrRot = CharacterComponent.Character->Ref->GetRotation();
-
             if (CurrPos.GetY() < KillHeight)
             {
-                InterpolatedTransforms.emplace_back(Entity, FVector3(0.0f), FQuat(1.0f, 0.0f, 0.0f, 0.0f), true, false);
+                InterpStaging.Flags[i] = EInterpFlag::BelowKill;
+                WriteIdentity(i);
                 return;
             }
 
-            const FVector3 Location = Math::Mix(CharacterComponent.LastBodyPosition,
-                                                JoltUtils::FromJPHVec3(CurrPos),
-                                                Alpha);
-            const FQuat Rotation = Math::Normalize(Math::Slerp(CharacterComponent.LastBodyRotation,
-                                                                 JoltUtils::FromJPHQuat(CurrRot),
-                                                                 Alpha));
-
-            InterpolatedTransforms.push_back({ Entity, Location, Rotation, false, false });
+            StoreState(i, CharacterComponent.LastBodyPosition, JoltUtils::FromJPHVec3(CurrPos),
+                          CharacterComponent.LastBodyRotation, JoltUtils::FromJPHQuat(CharacterComponent.Character->Ref->GetRotation()));
         });
+
+        // Interp: one SIMD pass over the whole batch -- position lerp + quat nlerp,
+        // both in place (Curr* become the result).
+        if (Total > 0)
+        {
+            SIMD::LerpArray(reinterpret_cast<float*>(InterpStaging.CurrPos.data()),
+                            reinterpret_cast<const float*>(InterpStaging.PrevPos.data()),
+                            reinterpret_cast<const float*>(InterpStaging.CurrPos.data()),
+                            int(Total) * 3, Alpha);
+
+            NlerpQuatsSoA(InterpStaging.CurrQx.data(), InterpStaging.CurrQy.data(),
+                          InterpStaging.CurrQz.data(), InterpStaging.CurrQw.data(),
+                          InterpStaging.PrevQx.data(), InterpStaging.PrevQy.data(),
+                          InterpStaging.PrevQz.data(), InterpStaging.PrevQw.data(),
+                          Total, Alpha);
+        }
     }
 
     void FJoltPhysicsScene::ApplyInterpolatedTransforms()
     {
         LUMINA_PROFILE_SCOPE();
 
-        if (InterpolatedTransforms.empty())
+        const uint32 Count = (uint32)InterpStaging.Entities.size();
+        if (Count == 0)
         {
             return;
         }
 
         entt::registry& Registry = World->GetEntityRegistry();
+        auto& TransformStorage = Registry.storage<STransformComponent>();
 
-        for (const FStagedTransform& Staged : InterpolatedTransforms)
+        for (uint32 i = 0; i < Count; ++i)
         {
-            if (Staged.bSkip || !Registry.valid(Staged.Entity))
+            const EInterpFlag Flag    = InterpStaging.Flags[i];
+            const entt::entity Entity = InterpStaging.Entities[i];
+
+            if (Flag == EInterpFlag::Skip || !Registry.valid(Entity))
             {
                 continue;
             }
 
-            if (Staged.bBelowKill)
+            if (Flag == EInterpFlag::BelowKill)
             {
-                Registry.destroy(Staged.Entity);
+                Registry.destroy(Entity);
                 continue;
             }
 
-            STransformComponent* TransformComponent = Registry.try_get<STransformComponent>(Staged.Entity);
-            if (TransformComponent == nullptr)
+            if (!TransformStorage.contains(Entity))
             {
                 continue;
             }
 
-            TransformComponent->SetFromPhysics(Staged.Location, Staged.Rotation);
-            Registry.emplace_or_replace<FNeedsTransformUpdate>(Staged.Entity);
+            STransformComponent& TransformComponent = TransformStorage.get(Entity);
+            TransformComponent.SetFromPhysics(InterpStaging.CurrPos[i],
+                FQuat(InterpStaging.CurrQw[i], InterpStaging.CurrQx[i], InterpStaging.CurrQy[i], InterpStaging.CurrQz[i]));
+            Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
         }
-
-        InterpolatedTransforms.clear();
 
         ECS::Utils::ResolveAllDirtyTransforms(Registry);
     }

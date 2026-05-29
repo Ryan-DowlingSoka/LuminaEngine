@@ -89,6 +89,15 @@ namespace Lumina
 
     private:
 
+        // Shared tail of tool creation: initializes the tool and queues it for
+        // addition. Accepts (and passes through) nullptr so registry-driven
+        // creation can chain without a null check at every call site.
+        FEditorTool* FinalizeNewTool(FEditorTool* Tool);
+
+        // Registers the built-in asset/file editors with FEditorToolRegistry.
+        // Plugins add their own via the same registry in StartupModule.
+        void RegisterBuiltinEditorTools();
+
         FEditorTool* FindToolByTypeID(uint32 TypeID) const;
 
         void EditorToolLayoutCopy(FEditorTool* SourceTool);
@@ -162,10 +171,7 @@ namespace Lumina
     requires eastl::is_base_of_v<FEditorTool, T> && eastl::is_constructible_v<T, Args...>
     T* FEditorUI::CreateTool(Args&&... args)
     {
-        T* NewTool = Memory::New<T>(std::forward<Args>(args)...);
-        NewTool->Initialize();
-        ToolsPendingAdd.push(NewTool);
-        return NewTool;
+        return static_cast<T*>(FinalizeNewTool(Memory::New<T>(std::forward<Args>(args)...)));
     }
 
     template <typename T>

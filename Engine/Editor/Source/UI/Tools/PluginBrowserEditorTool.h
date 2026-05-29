@@ -60,6 +60,10 @@ namespace Lumina
         // Open the "restart required" modal via the editor's modal manager.
         void PromptRestart();
 
+        // Open the "create plugin" modal (name + description → scaffold into
+        // <Project>/Plugins/ and regenerate the project). Project must be loaded.
+        void OpenCreatePluginDialog();
+
     private:
 
         // Plugin name (FName) → desired enabled. Sparse: only contains
@@ -74,5 +78,13 @@ namespace Lumina
         // After ApplyAndPersist succeeds, sticky banner that says
         // "<N> change(s) saved; restart to apply".
         bool     bChangesSavedBanner = false;
+
+        // Create-plugin modal state. Buffers persist across frames while the
+        // modal is open; CreatePluginResult holds the post-create confirmation
+        // (non-empty switches the modal to its "done" view).
+        char     NewPluginNameBuf[64]  = {};
+        char     NewPluginDescBuf[160] = {};
+        FString  NewPluginError;
+        FString  CreatePluginResult;
     };
 }

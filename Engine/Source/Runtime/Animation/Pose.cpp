@@ -2,6 +2,7 @@
 #include "Pose.h"
 
 #include "Renderer/MeshData.h"
+#include "Core/Math/SIMD/SIMD.h"
 
 namespace Lumina
 {
@@ -36,6 +37,7 @@ namespace Lumina
                    Math::ToMatrix4(R) *
                    Math::Scale(FMatrix4(1.0f), S);
         }
+
     }
 
     void FPose::ResetToBindPose(const FSkeletonResource* Skeleton)
@@ -73,11 +75,19 @@ namespace Lumina
             return;
         }
 
+        // Translation + scale are componentwise lerps -- blend both arrays as flat
+        // float streams (8-wide). Rotation needs the neighbourhood fix + slerp, so
+        // it stays a per-bone scalar pass.
+        const int32 NumComponents = NumBones * 3;
+        SIMD::LerpArray(reinterpret_cast<float*>(Out.Translations.data()),
+                        reinterpret_cast<const float*>(A.Translations.data()),
+                        reinterpret_cast<const float*>(B.Translations.data()), NumComponents, Alpha);
+        SIMD::LerpArray(reinterpret_cast<float*>(Out.Scales.data()),
+                        reinterpret_cast<const float*>(A.Scales.data()),
+                        reinterpret_cast<const float*>(B.Scales.data()), NumComponents, Alpha);
+
         for (int32 i = 0; i < NumBones; ++i)
         {
-            Out.Translations[i] = Math::Mix(A.Translations[i], B.Translations[i], Alpha);
-            Out.Scales[i]       = Math::Mix(A.Scales[i], B.Scales[i], Alpha);
-
             FQuat QA = A.Rotations[i];
             FQuat QB = B.Rotations[i];
             if (Math::Dot(QA, QB) < 0.0f)

@@ -134,6 +134,59 @@ namespace Lumina::Math
         return Inv * OneOverDet;
     }
 
+    // SIMD fast path for the 4x4 float inverse (the GLM SSE cofactor/adjugate
+    // algorithm). Same math as the template above -- the cofactor sub-factors are
+    // built with shuffles instead of 18 scalar 2x2 determinants. Exact-type
+    // non-template overload, so it transparently replaces the scalar path for
+    // FMatrix4 (inverse view-projection, shadow cascades, bone inverse-bind, ...).
+    [[nodiscard]] inline TMat<float, 4, 4> Inverse(const TMat<float, 4, 4>& M)
+    {
+        using namespace SIMD;
+
+        const VFloat4 In0 = VFloat4::Load(&M.Cols[0][0]);
+        const VFloat4 In1 = VFloat4::Load(&M.Cols[1][0]);
+        const VFloat4 In2 = VFloat4::Load(&M.Cols[2][0]);
+        const VFloat4 In3 = VFloat4::Load(&M.Cols[3][0]);
+
+        // Each cofactor vector is C*A' - B'*D, where A',B' broadcast lane 2 into 0..2.
+        auto Fac = [](VFloat4 A, VFloat4 B, VFloat4 C, VFloat4 D)
+        {
+            return C * Permute<0, 0, 0, 2>(A) - Permute<0, 0, 0, 2>(B) * D;
+        };
+        const VFloat4 Fac0 = Fac(Shuffle<3,3,3,3>(In3,In2), Shuffle<2,2,2,2>(In3,In2), Shuffle<2,2,2,2>(In2,In1), Shuffle<3,3,3,3>(In2,In1));
+        const VFloat4 Fac1 = Fac(Shuffle<3,3,3,3>(In3,In2), Shuffle<1,1,1,1>(In3,In2), Shuffle<1,1,1,1>(In2,In1), Shuffle<3,3,3,3>(In2,In1));
+        const VFloat4 Fac2 = Fac(Shuffle<2,2,2,2>(In3,In2), Shuffle<1,1,1,1>(In3,In2), Shuffle<1,1,1,1>(In2,In1), Shuffle<2,2,2,2>(In2,In1));
+        const VFloat4 Fac3 = Fac(Shuffle<3,3,3,3>(In3,In2), Shuffle<0,0,0,0>(In3,In2), Shuffle<0,0,0,0>(In2,In1), Shuffle<3,3,3,3>(In2,In1));
+        const VFloat4 Fac4 = Fac(Shuffle<2,2,2,2>(In3,In2), Shuffle<0,0,0,0>(In3,In2), Shuffle<0,0,0,0>(In2,In1), Shuffle<2,2,2,2>(In2,In1));
+        const VFloat4 Fac5 = Fac(Shuffle<1,1,1,1>(In3,In2), Shuffle<0,0,0,0>(In3,In2), Shuffle<0,0,0,0>(In2,In1), Shuffle<1,1,1,1>(In2,In1));
+
+        // Columns of M reorganized for the adjugate combine.
+        const VFloat4 V0 = Permute<0,2,2,2>(Shuffle<0,0,0,0>(In1, In0));
+        const VFloat4 V1 = Permute<0,2,2,2>(Shuffle<1,1,1,1>(In1, In0));
+        const VFloat4 V2 = Permute<0,2,2,2>(Shuffle<2,2,2,2>(In1, In0));
+        const VFloat4 V3 = Permute<0,2,2,2>(Shuffle<3,3,3,3>(In1, In0));
+
+        // Signs match the scalar path: Inv columns 0/2 use (+,-,+,-), 1/3 use (-,+,-,+).
+        const VFloat4 SignA( 1.0f, -1.0f,  1.0f, -1.0f);
+        const VFloat4 SignB(-1.0f,  1.0f, -1.0f,  1.0f);
+
+        const VFloat4 Inv0 = SignA * (V1 * Fac0 - V2 * Fac1 + V3 * Fac2);
+        const VFloat4 Inv1 = SignB * (V0 * Fac0 - V2 * Fac3 + V3 * Fac4);
+        const VFloat4 Inv2 = SignA * (V0 * Fac1 - V1 * Fac3 + V3 * Fac5);
+        const VFloat4 Inv3 = SignB * (V0 * Fac2 - V1 * Fac4 + V2 * Fac5);
+
+        // Determinant = dot(column 0, (Inv0[0], Inv1[0], Inv2[0], Inv3[0])).
+        const VFloat4 Row = Shuffle<0,2,0,2>(Shuffle<0,0,0,0>(Inv0, Inv1), Shuffle<0,0,0,0>(Inv2, Inv3));
+        const VFloat4 Rcp = VFloat4::Broadcast(1.0f / Dot(In0, Row));
+
+        TMat<float, 4, 4> Out;
+        (Inv0 * Rcp).Store(&Out.Cols[0][0]);
+        (Inv1 * Rcp).Store(&Out.Cols[1][0]);
+        (Inv2 * Rcp).Store(&Out.Cols[2][0]);
+        (Inv3 * Rcp).Store(&Out.Cols[3][0]);
+        return Out;
+    }
+
     // ---- Affine builders (Translate / Scale / Rotate a matrix) ------
     template<typename T>
     [[nodiscard]] constexpr TMat<T, 4, 4> Translate(const TMat<T, 4, 4>& M, const TVec<T, 3>& V)

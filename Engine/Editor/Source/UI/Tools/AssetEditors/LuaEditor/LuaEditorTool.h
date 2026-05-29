@@ -162,6 +162,16 @@ namespace Lumina
         int                 GotoLineBuffer = 1;
         bool                bRequestOpenGoto = false;
 
+        // Deferred-open flags for popups invoked from the toolbar overflow menu.
+        // OpenPopup can't fire from inside the menu (wrong ID-stack scope), so
+        // the menu sets these and DrawToolbar opens the popup at root scope next
+        // frame -- same pattern as bRequestOpenGoto.
+        bool                bRequestOpenSnippets    = false;
+        bool                bRequestOpenBookmarks   = false;
+        bool                bRequestOpenBreakpoints = false;
+        bool                bRequestOpenHelp        = false;
+        bool                bRequestOpenSettings    = false;
+
         // External-change flag: flipped on by the OnScriptLoaded broadcast
         // (fired from FScriptingContext after either our own save or the
         // central content-browser file watcher detects a disk modification).
@@ -282,11 +292,7 @@ namespace Lumina
         TVector<FLuaSymbolRef>              HighlightedReferences;
         
         TUniquePtr<FLuaTypeContext>         TypeContext;
-        
-        bool                                bShowInlayHints = true;
 
-        TVector<FLuaInlayHint>              InlayHints;
-        
         struct FHoverTypeCache
         {
             int     Line   = -1;
@@ -296,7 +302,6 @@ namespace Lumina
         };
         FHoverTypeCache                     HoverTypeCache;
         
-        void DrawInlayHintsOverlay();
         void RefreshLineCache();
     };
 }

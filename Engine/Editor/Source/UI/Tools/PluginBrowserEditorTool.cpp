@@ -10,6 +10,7 @@
 #include "Platform/Filesystem/FileHelper.h"
 
 #include <filesystem>
+#include "LuminaEditor.h"
 #include "Tools/UI/ImGui/ImGuiAllocator.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "Tools/UI/ImGui/ImGuiFonts.h"
@@ -167,6 +168,19 @@ namespace Lumina
         ImGui::Checkbox("Engine", &bShowEngine);
         ImGui::SameLine();
         ImGui::Checkbox("Project", &bShowProject);
+
+        ImGui::SameLine();
+        const bool bHasProject = GEngine && !GEngine->GetProjectName().empty();
+        if (!bHasProject) ImGui::BeginDisabled();
+        if (ImGui::Button(LE_ICON_PUZZLE_PLUS " New Plugin"))
+        {
+            OpenCreatePluginDialog();
+        }
+        if (!bHasProject) ImGui::EndDisabled();
+        if (!bHasProject && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            ImGui::SetTooltip("Load a project to create a plugin.");
+        }
 
         // Right-aligned scope hint.
         const char* ScopeHint = GEngine && !GEngine->GetProjectName().empty()
@@ -529,6 +543,91 @@ namespace Lumina
                 ImGui::SameLine();
                 if (ImGui::Button("Later", ImVec2(ButtonWidth, 0)))
                 {
+                    return true;
+                }
+                return false;
+            });
+    }
+
+    //-------------------------------------------------------------------------
+
+    void FPluginBrowserEditorTool::OpenCreatePluginDialog()
+    {
+        NewPluginNameBuf[0] = '\0';
+        NewPluginDescBuf[0] = '\0';
+        NewPluginError.clear();
+        CreatePluginResult.clear();
+
+        ToolContext->PushModal("Create Plugin", ImVec2(480, 290),
+            [this]() -> bool
+            {
+                // Confirmation view, shown after a successful create.
+                if (!CreatePluginResult.empty())
+                {
+                    ImGui::TextWrapped("%s", CreatePluginResult.c_str());
+                    ImGui::Spacing();
+                    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 120.0f) * 0.5f);
+                    if (ImGui::Button("OK", ImVec2(120, 0)))
+                    {
+                        CreatePluginResult.clear();
+                        return true;
+                    }
+                    return false;
+                }
+
+                ImGui::TextDisabled("Creates <Project>/Plugins/<Name>/ with a Runtime + Editor module pair.");
+                ImGui::Spacing();
+
+                ImGui::TextUnformatted("Plugin name");
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::InputTextWithHint("##pluginname", "e.g. Combat", NewPluginNameBuf, sizeof(NewPluginNameBuf));
+
+                ImGui::TextUnformatted("Description");
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::InputTextWithHint("##plugindesc", "Optional", NewPluginDescBuf, sizeof(NewPluginDescBuf));
+
+                if (!NewPluginError.empty())
+                {
+                    ImGui::Spacing();
+                    ImGui::TextColored(ImVec4(0.96f, 0.36f, 0.38f, 1.0f), "%s", NewPluginError.c_str());
+                }
+
+                ImGui::Spacing();
+                const float ButtonWidth = 130.0f;
+                const float TotalWidth  = ButtonWidth * 2.0f + 12.0f;
+                ImGui::SetCursorPosX((ImGui::GetWindowWidth() - TotalWidth) * 0.5f);
+
+                const bool bNameEmpty = NewPluginNameBuf[0] == '\0';
+                if (bNameEmpty) ImGui::BeginDisabled();
+                if (ImGui::Button(LE_ICON_PUZZLE_PLUS " Create", ImVec2(ButtonWidth, 0)))
+                {
+                    FFixedString OutDir;
+                    FString Error;
+                    if (GEditorEngine->CreatePlugin(NewPluginNameBuf, NewPluginDescBuf, OutDir, Error))
+                    {
+                        LOG_INFO("[PluginBrowser] Created plugin at {}", OutDir.c_str());
+
+                        // Regenerate the project so the new modules join its
+                        // .sln, then prompt a rebuild + restart to load them.
+                        GEditorEngine->GenerateProjectFiles(GEngine->GetProjectPath());
+
+                        CreatePluginResult = "Created plugin '";
+                        CreatePluginResult += NewPluginNameBuf;
+                        CreatePluginResult += "'.\n\nProject files are regenerating. Rebuild the solution "
+                                              "and restart the editor to load the new modules.";
+                        NewPluginError.clear();
+                    }
+                    else
+                    {
+                        NewPluginError = Error;
+                    }
+                }
+                if (bNameEmpty) ImGui::EndDisabled();
+
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(ButtonWidth, 0)))
+                {
+                    NewPluginError.clear();
                     return true;
                 }
                 return false;

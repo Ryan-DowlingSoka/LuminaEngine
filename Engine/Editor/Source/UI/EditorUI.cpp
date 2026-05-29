@@ -83,6 +83,7 @@
 #include "Tools/ConsoleLogEditorTool.h"
 #include "Tools/ContentBrowserEditorTool.h"
 #include "Tools/EditorTool.h"
+#include "Tools/EditorToolRegistry.h"
 #include "Tools/LuaDebuggerEditorTool.h"
 #include "Tools/CPUProfilerEditorTool.h"
 #include "Tools/GPUProfilerEditorTool.h"
@@ -404,6 +405,8 @@ namespace Lumina
 
         // Init ThumbnailManager before world load so engine primitive meshes are in the transient package before deserialization.
         (void)CThumbnailManager::Get();
+
+        RegisterBuiltinEditorTools();
 
         PropertyCustomizationRegistry = Memory::New<FPropertyCustomizationRegistry>();
         PropertyCustomizationRegistry->RegisterPropertyCustomization(TBaseStructure<FVector2>::Get()->GetName(), []
@@ -783,6 +786,46 @@ namespace Lumina
         Platform::LaunchURL(StringUtils::ToWideString(ScriptPath.data()).c_str());
     }
 
+    FEditorTool* FEditorUI::FinalizeNewTool(FEditorTool* Tool)
+    {
+        if (Tool != nullptr)
+        {
+            Tool->Initialize();
+            ToolsPendingAdd.push(Tool);
+        }
+
+        return Tool;
+    }
+
+    void FEditorUI::RegisterBuiltinEditorTools()
+    {
+        FEditorToolRegistry& Registry = FEditorToolRegistry::Get();
+
+        // Asset editors, keyed by asset class. Lookup walks the class hierarchy
+        // most-derived first, so sibling/override registrations resolve cleanly.
+        Registry.RegisterAssetEditor<CParticleSystem,     FParticleSystemEditorTool>();
+        Registry.RegisterAssetEditor<CMaterial,           FMaterialEditorTool>();
+        Registry.RegisterAssetEditor<CMaterialInstance,   FMaterialInstanceEditorTool>();
+        Registry.RegisterAssetEditor<CMaterialFunction,   FMaterialFunctionEditorTool>();
+        Registry.RegisterAssetEditor<CAnimationGraph,     FAnimationGraphEditorTool>();
+        Registry.RegisterAssetEditor<CBlackboard,         FBlackboardEditorTool>();
+        Registry.RegisterAssetEditor<CDataAssetSchema,    FDataAssetSchemaEditorTool>();
+        Registry.RegisterAssetEditor<CDataAsset,          FDataAssetEditorTool>();
+        Registry.RegisterAssetEditor<CPhysicsMaterial,    FPhysicsMaterialEditorTool>();
+        Registry.RegisterAssetEditor<CEntityComponentType, FEntityComponentTypeEditorTool>();
+        Registry.RegisterAssetEditor<CGeometryCollection, FGeometryCollectionEditorTool>();
+        Registry.RegisterAssetEditor<CTexture,            FTextureEditorTool>();
+        Registry.RegisterAssetEditor<CStaticMesh,         FStaticMeshEditorTool>();
+        Registry.RegisterAssetEditor<CSkeleton,           FSkeletonEditorTool>();
+        Registry.RegisterAssetEditor<CAnimation,          FAnimationEditorTool>();
+        Registry.RegisterAssetEditor<CSkeletalMesh,       FSkeletalMeshEditorTool>();
+        Registry.RegisterAssetEditor<CPrefab,             FPrefabEditorTool>();
+
+        // File editors, keyed by extension (CObject-less, raw content).
+        Registry.RegisterFileEditor<FRmlUiEditorTool>({ ".rml", ".rcss" });
+        Registry.RegisterFileEditor<FLuaEditorTool>({ ".lua", ".luau" });
+    }
+
     void FEditorUI::OpenAssetEditor(const FGuid& AssetGUID)
     {
         CObject* Asset = LoadObject<CObject>(AssetGUID);
@@ -806,86 +849,21 @@ namespace Lumina
             ImGui::SetWindowFocus(Name);
             return;
         }
-        
-        FEditorTool* NewTool = nullptr;
-        if (Asset->IsA<CParticleSystem>())
-        {
-            NewTool = CreateTool<FParticleSystemEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CMaterial>())
-        {
-            NewTool = CreateTool<FMaterialEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CAnimationGraph>())
-        {
-            NewTool = CreateTool<FAnimationGraphEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CBlackboard>())
-        {
-            NewTool = CreateTool<FBlackboardEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CDataAssetSchema>())
-        {
-            NewTool = CreateTool<FDataAssetSchemaEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CDataAsset>())
-        {
-            NewTool = CreateTool<FDataAssetEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CPhysicsMaterial>())
-        {
-            NewTool = CreateTool<FPhysicsMaterialEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CEntityComponentType>())
-        {
-            NewTool = CreateTool<FEntityComponentTypeEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CGeometryCollection>())
-        {
-            NewTool = CreateTool<FGeometryCollectionEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CTexture>())
-        {
-            NewTool = CreateTool<FTextureEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CStaticMesh>())
-        {
-            NewTool = CreateTool<FStaticMeshEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CSkeleton>())
-        {
-            NewTool = CreateTool<FSkeletonEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CAnimation>())
-        {
-            NewTool = CreateTool<FAnimationEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CSkeletalMesh>())
-        {
-            NewTool = CreateTool<FSkeletalMeshEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CMaterialInstance>())
-        {
-            NewTool = CreateTool<FMaterialInstanceEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CMaterialFunction>())
-        {
-            NewTool = CreateTool<FMaterialFunctionEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CPrefab>())
-        {
-            NewTool = CreateTool<FPrefabEditorTool>(this, Asset);
-        }
-        else if (Asset->IsA<CWorld>())
+
+        // Worlds are special: rather than spawning a dedicated tool we retarget
+        // the singleton WorldEditorTool, so this stays outside the registry.
+        if (Asset->IsA<CWorld>())
         {
             if (WorldEditorTool->HasSimulatingWorld())
             {
                 WorldEditorTool->StopAllSimulations();
             }
-            
+
             WorldEditorTool->SetWorld(Cast<CWorld>(Asset));
+            return;
         }
 
+        FEditorTool* NewTool = FinalizeNewTool(FEditorToolRegistry::Get().CreateAssetEditor(this, Asset));
         if (NewTool)
         {
             ActiveAssetTools.insert_or_assign(Asset, NewTool);
@@ -920,16 +898,7 @@ namespace Lumina
             return;
         }
 
-        FEditorTool* NewTool = nullptr;
-        if (Ext == ".rml" || Ext == ".rcss")
-        {
-            NewTool = CreateTool<FRmlUiEditorTool>(this, VirtualPath);
-        }
-        else if (bIsLuaScript)
-        {
-            NewTool = CreateTool<FLuaEditorTool>(this, VirtualPath);
-        }
-
+        FEditorTool* NewTool = FinalizeNewTool(FEditorToolRegistry::Get().CreateFileEditor(this, VirtualPath));
         if (NewTool == nullptr)
         {
             // No registered editor for this extension; fall back to OS default.
