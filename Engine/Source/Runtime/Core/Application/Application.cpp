@@ -104,17 +104,26 @@ namespace Lumina
         GApp->bExitRequested = true;
     }
 
+    void FApplication::CancelExit()
+    {
+        GApp->bExitRequested = false;
+        if (GApp->MainWindow)
+        {
+            GApp->MainWindow->CancelClose();
+        }
+    }
+
     void FApplication::PreInitStartup()
     {
         InitializeCObjectSystem();
 
         Paths::InitializePaths();
 
-        if (TOptional<FFixedString> Project = GCommandLine->Get("Project"))
-        {
-            GEngine->LoadProject(Project.value());
-        }
-
+        // The --Project= load used to live here but it triggers the game DLL
+        // load, whose reflected types call ConstructCEnum/Class/Struct — those
+        // dereference the Lua VM, which isn't initialized until GEngine->Init().
+        // Loading the project there instead avoids a null-deref crash. See
+        // FEngine::Init().
     }
 
     bool FApplication::CreateApplicationWindow()

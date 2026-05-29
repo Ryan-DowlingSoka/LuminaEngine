@@ -39,6 +39,16 @@ namespace Lumina
             return Instance;
         }
     }
+    
+    // In modular builds Runtime.dll's DllMain calls InitializeThreadHeap on
+    // DLL_PROCESS_ATTACH / DLL_THREAD_ATTACH; monolithic Shipping has no
+    // DllMain for the main exe, so global ctors and foreign threads can hit
+    // an uninitialized rpmalloc. The call is idempotent so paying it on
+    // every malloc primitive is cheap.
+    FORCEINLINE static void EnsureThisThreadInitialized()
+    {
+        rpmalloc_thread_initialize();
+    }
 
     void* Memory::FMalloc::Malloc(size_t Size, size_t Alignment)
     {
@@ -46,11 +56,7 @@ namespace Lumina
         DEBUG_ASSERT((Alignment & (Alignment - 1)) == 0);
         DEBUG_ASSERT(Alignment % sizeof(void*) == 0);
         
-        if (!rpmalloc_is_thread_initialized())
-        {
-            rpmalloc_thread_initialize();
-        }
-
+        EnsureThisThreadInitialized();
         return rpaligned_alloc(Alignment, Size);
     }
 
@@ -59,21 +65,17 @@ namespace Lumina
         DEBUG_ASSERT(Alignment >= sizeof(void*));
         DEBUG_ASSERT((Alignment & (Alignment - 1)) == 0);
         DEBUG_ASSERT(Alignment % sizeof(void*) == 0);
-
-        if (!rpmalloc_is_thread_initialized())
-        {
-            rpmalloc_thread_initialize();
-        }
-
+        EnsureThisThreadInitialized();
         return rpaligned_realloc(Memory, Alignment, NewSize, 0, 0);
     }
 
     void Memory::FMalloc::Free(void* Memory)
     {
+        EnsureThisThreadInitialized();
         rpfree(Memory);
     }
 
-    size_t Memory::GetCurrentMappedMemory()   { rpmalloc_global_statistics_t s; rpmalloc_global_statistics(&s); return s.mapped; }
+    size_t Memory::GetCurrentMappedMemory()    { rpmalloc_global_statistics_t s; rpmalloc_global_statistics(&s); return s.mapped; }
     size_t Memory::GetPeakMappedMemory()       { rpmalloc_global_statistics_t s; rpmalloc_global_statistics(&s); return s.mapped_peak; }
     size_t Memory::GetCachedMemory()           { rpmalloc_global_statistics_t s; rpmalloc_global_statistics(&s); return s.cached; }
     size_t Memory::GetCurrentHugeAllocMemory() { rpmalloc_global_statistics_t s; rpmalloc_global_statistics(&s); return s.huge_alloc; }
@@ -92,6 +94,9 @@ namespace Lumina
         rpmalloc_thread_initialize();
     }
 
+    // Per-thread rpmalloc init happens inside FMalloc's three primitives;
+    // the public wrappers don't need to repeat it. rpmalloc_thread_initialize
+    // is idempotent so the double-call was correct but redundant.
     void* Memory::Malloc(size_t Size, size_t Alignment)
     {
         FMalloc& Allocator = (GMalloc != nullptr) ? *GMalloc : EnsureAllocator();

@@ -372,20 +372,56 @@ namespace Lumina
 
             if (ImGui::TreeNode("##list", "%s [%zu]", Preview.c_str(), Values.size()))
             {
+                // When the setting has a FileFilter, treat the array as a
+                // list of asset paths and offer a per-row Browse button
+                // (mirrors the single-Path renderer above). Otherwise it's
+                // just text inputs.
+                const bool bHasPicker = !Setting.FileFilter.empty();
+                const float PickerWidth = bHasPicker ? 80.0f : 0.0f;
+                const float TrashWidth  = 28.0f;
+                const float Spacing     = ImGui::GetStyle().ItemSpacing.x;
+
                 bool bDirty = false;
                 for (size_t i = 0; i < Values.size(); ++i)
                 {
                     ImGui::PushID((int)i);
+
                     char Buf[256];
                     const size_t N = eastl::min<size_t>(Values[i].size(), sizeof(Buf) - 1);
                     memcpy(Buf, Values[i].c_str(), N);
                     Buf[N] = '\0';
-                    ImGui::SetNextItemWidth(-60.0f);
-                    if (ImGui::InputText("##entry", Buf, sizeof(Buf), ImGuiInputTextFlags_EnterReturnsTrue))
+
+                    const float Avail = ImGui::GetContentRegionAvail().x;
+                    const float InputW = Avail - PickerWidth - (bHasPicker ? Spacing : 0.0f) - TrashWidth - Spacing;
+                    ImGui::SetNextItemWidth(InputW);
+                    // Commit on every keystroke: without this, ImGui's
+                    // Buf gets reset from the stale Values[i] each frame
+                    // because we re-fetch from GConfig at the top, so
+                    // anything typed disappears between frames.
+                    if (ImGui::InputText("##entry", Buf, sizeof(Buf)))
                     {
                         Values[i] = Buf;
                         bDirty = true;
                     }
+
+                    if (bHasPicker)
+                    {
+                        ImGui::SameLine();
+                        if (ImGui::Button(LE_ICON_FOLDER_OPEN " Browse", ImVec2(PickerWidth, 0)))
+                        {
+                            FFixedString Picked;
+                            if (Platform::OpenFileDialogue(Picked, Setting.Key.c_str(), Setting.FileFilter.c_str()))
+                            {
+                                // Same VFS conversion as the single-Path
+                                // renderer — keep the value comparable to
+                                // anything the registry/cooker looks up.
+                                const FFixedString Virtual = VFS::ResolveToVirtualPath(FStringView(Picked.c_str(), Picked.size()));
+                                Values[i] = FString(Virtual.c_str(), Virtual.size());
+                                bDirty = true;
+                            }
+                        }
+                    }
+
                     ImGui::SameLine();
                     if (ImGui::SmallButton(LE_ICON_TRASH_CAN))
                     {

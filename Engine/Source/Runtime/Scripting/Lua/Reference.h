@@ -132,6 +132,12 @@ namespace Lumina::Lua
         template<typename... TArgs>
         NODISCARD FRef Invoke(TArgs&& ... Args);
 
+        // Fire-and-forget pcall: 0 returns, no result FRef allocation. Use for hot-path
+        // lifecycle hooks (OnUpdate, OnReady, contact callbacks) that discard the result —
+        // skips the lua_ref the Invoke return path would pin per call.
+        template<typename... TArgs>
+        bool Call(TArgs&& ... Args) const;
+
         // Invoke on a fresh sub-coroutine; required for yield-aware APIs since lua_pcall cannot yield.
         // On yield, ownership of the thread transfers to whoever requested the yield.
         template<typename... TArgs>
@@ -347,6 +353,30 @@ namespace Lumina::Lua
         
         FRef Result(State, -1);
         return Result;
+    }
+
+    template <typename ... TArgs>
+    bool FRef::Call(TArgs&&... Args) const
+    {
+        if (State == nullptr || Ref == LUA_NOREF)
+        {
+            return false;
+        }
+
+        Push();
+        DEBUG_ASSERT(lua_type(State, -1) == LUA_TFUNCTION);
+
+        (TStack<eastl::decay_t<TArgs>>::Push(State, eastl::forward<TArgs>(Args)), ...);
+
+        const int Status = lua_pcall(State, sizeof...(Args), 0, 0);
+        if (Status != LUA_OK)
+        {
+            const char* ErrMsg = lua_tostring(State, -1);
+            LOG_ERROR("[Lua] - Call failed: {}", ErrMsg ? ErrMsg : "<unknown>");
+            lua_pop(State, 1);
+            return false;
+        }
+        return true;
     }
 
     template <typename ... TArgs>

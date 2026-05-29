@@ -131,6 +131,12 @@ namespace Lumina
             return Registry.emplace_or_replace<T>(entity, std::forward<TArgs>(Args)...);
         }
         
+        template<typename T>
+        decltype(auto) GetStorage() const
+        {
+            return Registry.storage<T>();
+        }
+        
         RUNTIME_API void ActivateBody(uint32 BodyID);
         RUNTIME_API void DeactivateBody(uint32 BodyID);
         RUNTIME_API void ChangeBodyMotionType(uint32 BodyID, EBodyType NewType);
@@ -140,7 +146,6 @@ namespace Lumina
         
         RUNTIME_API TVector<SRayResult> CastSphere(const SSphereCastSettings& Settings) const;
 
-        
         RUNTIME_API STransformComponent& GetEntityTransform(entt::entity Entity) const;
         
         RUNTIME_API FVector3 TranslateEntity(entt::entity Entity, const FVector3& Translation);

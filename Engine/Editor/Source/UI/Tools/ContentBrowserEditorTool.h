@@ -3,6 +3,7 @@
 #include "Assets/AssetRegistry/AssetData.h"
 #include "Core/LuminaCommonTypes.h"
 #include "FileSystem/FileSystem.h"
+#include "Memory/SmartPtr.h"
 #include "Paths/Paths.h"
 #include "Platform/Filesystem/DirectoryWatcher.h"
 #include "Tools/Actions/DeferredActions.h"
@@ -174,7 +175,18 @@ namespace Lumina
         float                       ContentBrowserTileSize = 84.0f;
 
         FDeferredActionRegistry     ActionRegistry;
-        FDirectoryWatcher           Watcher;
+
+        // One watcher per content root (Game project + every enabled plugin
+        // with a content mount). Each carries its own virtual-path prefix
+        // ("/Game", "/<PluginName>") so script reload + content broadcasts
+        // resolve correctly regardless of which root saw the change.
+        struct FContentWatcher
+        {
+            TUniquePtr<FDirectoryWatcher>   Watcher;
+            FFixedString                    VirtualPrefix;
+            size_t                          WatchRootLen = 0;
+        };
+        TVector<FContentWatcher>    Watchers;
         
         FTreeListView               DirectoryListView;
         FTreeListViewContext        DirectoryContext;

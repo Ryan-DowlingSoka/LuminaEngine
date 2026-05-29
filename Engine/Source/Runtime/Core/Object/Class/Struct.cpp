@@ -155,7 +155,13 @@ namespace Lumina
                 {
                     continue;
                 }
-                
+                // Cook-mode strip: editor-only properties are absent in
+                // shipped packages.
+                if (Ar.IsCooking() && Current->IsEditorOnly())
+                {
+                    continue;
+                }
+
                 FPropertyTag PropertyTag;
                 PropertyTag.Type = Current->GetTypeName();
                 PropertyTag.Name = Current->GetPropertyName();

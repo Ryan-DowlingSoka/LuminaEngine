@@ -41,6 +41,7 @@
 #include "Assets/AssetTypes/Animation/AnimationGraph/AnimationGraph.h"
 #include "Assets/AssetTypes/Blackboard/Blackboard.h"
 #include "Assets/AssetTypes/DataAsset/DataAsset.h"
+#include "Assets/AssetTypes/PhysicsMaterial/PhysicsMaterial.h"
 #include "Assets/AssetTypes/DataAsset/DataAssetSchema.h"
 #include "Assets/AssetTypes/GeometryCollection/GeometryCollection.h"
 #include "Assets/AssetTypes/Material/Material.h"
@@ -85,6 +86,7 @@
 #include "Tools/LuaDebuggerEditorTool.h"
 #include "Tools/CPUProfilerEditorTool.h"
 #include "Tools/GPUProfilerEditorTool.h"
+#include "Tools/PluginBrowserEditorTool.h"
 #include "Tools/ShadowAtlasEditorTool.h"
 #include "Tools/EditorToolModal.h"
 #include "Tools/GamePreviewTool.h"
@@ -103,6 +105,7 @@
 #include "Tools/AssetEditors/AnimationGraph/AnimationGraphEditorTool.h"
 #include "Tools/AssetEditors/Blackboard/BlackboardEditorTool.h"
 #include "Tools/AssetEditors/DataAsset/DataAssetEditorTool.h"
+#include "Tools/AssetEditors/PhysicsMaterial/PhysicsMaterialEditorTool.h"
 #include "Tools/AssetEditors/DataAsset/DataAssetSchemaEditorTool.h"
 #include "Tools/AssetEditors/EntityComponentType/EntityComponentTypeEditorTool.h"
 #include "Tools/AssetEditors/GeometryCollection/GeometryCollectionEditorTool.h"
@@ -120,11 +123,236 @@
 #include "Tools/UI/ImGui/ImGuiAllocator.h"
 #include "Tools/UI/ImGui/ImGuiDesignIcons.h"
 #include "Tools/UI/ImGui/ImGuiRenderer.h"
+#include "Tools/UI/ImGui/ImGuiFonts.h"
 #include "Tools/UI/ImGui/ImGuiX.h"
 #include "World/Scene/RenderScene/RenderScene.h"
 
 namespace Lumina
 {
+    // =================================================================================
+    // Project dialog styling
+    //
+    // Local palette + row primitives used by OpenProjectDialog/NewProjectDialog.
+    // Mirrors the convention in ContentBrowserEditorTool.cpp (constexpr ImVec4 set +
+    // ImDrawList-painted rows) so the project dialogs feel like the rest of the editor.
+    // =================================================================================
+    namespace
+    {
+        constexpr ImVec4 kProjDialogPanelBg     = ImVec4(0.10f, 0.10f, 0.12f, 1.00f);
+        constexpr ImVec4 kProjDialogRowBg       = ImVec4(0.14f, 0.14f, 0.17f, 1.00f);
+        constexpr ImVec4 kProjDialogRowBgHover  = ImVec4(0.19f, 0.20f, 0.24f, 1.00f);
+        constexpr ImVec4 kProjDialogRowBgActive = ImVec4(0.16f, 0.17f, 0.21f, 1.00f);
+        constexpr ImVec4 kProjDialogTextPrimary = ImVec4(0.90f, 0.90f, 0.93f, 1.00f);
+        constexpr ImVec4 kProjDialogTextDim     = ImVec4(0.55f, 0.56f, 0.62f, 1.00f);
+        constexpr ImVec4 kProjDialogTextMuted   = ImVec4(0.42f, 0.42f, 0.47f, 1.00f);
+        constexpr ImVec4 kProjDialogTextSection = ImVec4(0.50f, 0.58f, 0.72f, 1.00f);
+        constexpr ImVec4 kProjDialogAccentBlue  = ImVec4(0.36f, 0.66f, 1.00f, 1.00f);
+        constexpr ImVec4 kProjDialogAccentGold  = ImVec4(1.00f, 0.78f, 0.40f, 1.00f);
+        constexpr ImVec4 kProjDialogAccentSoft  = ImVec4(0.45f, 0.48f, 0.55f, 1.00f);
+        constexpr ImVec4 kProjDialogDanger      = ImVec4(0.96f, 0.36f, 0.38f, 1.00f);
+
+        // Small uppercase section label in the section-text color.
+        void DrawSectionHeader(const char* Label)
+        {
+            ImGui::Spacing();
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::TinyBold);
+            ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextSection);
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 4.0f);
+            ImGui::TextUnformatted(Label);
+            ImGui::PopStyleColor();
+            ImGuiX::Font::PopFont();
+            ImGui::Spacing();
+        }
+
+        // Two-line row with an optional left accent bar and a hover/active background.
+        // Returns true on left-click. RowHeight 44 fits Small + Tiny stacked with padding.
+        // If bCompact is true, the row is single-line and shorter (used for de-emphasized rows).
+        // OutCloseClicked is set when the user clicks the trailing × button (if bShowClose).
+        bool DrawProjectRow(
+            const char*     Icon,
+            const char*     Title,
+            const char*     Subtitle,
+            const ImVec4&   Accent,
+            bool            bCompact      = false,
+            bool            bShowClose    = false,
+            bool*           OutCloseClicked = nullptr)
+        {
+            if (OutCloseClicked)
+            {
+                *OutCloseClicked = false;
+            }
+
+            const float Avail     = ImGui::GetContentRegionAvail().x;
+            const float Height    = bCompact ? 30.0f : 50.0f;
+            const float CloseW    = bShowClose ? 28.0f : 0.0f;
+            const ImVec2 P0       = ImGui::GetCursorScreenPos();
+            const ImVec2 P1       = ImVec2(P0.x + Avail, P0.y + Height);
+
+            ImGui::PushID(Title);
+
+            // Invisible button covers the full row area (minus the close column).
+            ImGui::SetCursorScreenPos(P0);
+            const bool bRowClicked = ImGui::InvisibleButton(
+                "##row",
+                ImVec2(Avail - CloseW, Height));
+            const bool bHovered    = ImGui::IsItemHovered();
+            const bool bActive     = ImGui::IsItemActive();
+
+            ImDrawList* DL = ImGui::GetWindowDrawList();
+            const ImU32  BgCol = ImGui::ColorConvertFloat4ToU32(
+                bActive ? kProjDialogRowBgActive : (bHovered ? kProjDialogRowBgHover : kProjDialogRowBg));
+            DL->AddRectFilled(P0, P1, BgCol, 4.0f);
+            DL->AddRectFilled(P0, ImVec2(P0.x + 3.0f, P1.y),
+                ImGui::ColorConvertFloat4ToU32(Accent), 4.0f);
+
+            // Icon column.
+            const float IconCol  = 30.0f;
+            const ImVec2 IconPos = ImVec2(P0.x + 12.0f, P0.y + (Height - ImGui::GetFontSize()) * 0.5f);
+            ImGui::SetCursorScreenPos(IconPos);
+            ImGui::PushStyleColor(ImGuiCol_Text, Accent);
+            ImGui::TextUnformatted(Icon);
+            ImGui::PopStyleColor();
+
+            // Title (+ optional subtitle stacked beneath).
+            const float TextX = P0.x + 12.0f + IconCol;
+            if (bCompact || Subtitle == nullptr || Subtitle[0] == '\0')
+            {
+                ImGui::SetCursorScreenPos(ImVec2(TextX, P0.y + (Height - ImGui::GetFontSize()) * 0.5f));
+                ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextPrimary);
+                ImGui::TextUnformatted(Title);
+                ImGui::PopStyleColor();
+                if (Subtitle && Subtitle[0])
+                {
+                    ImGui::SameLine(0.0f, 12.0f);
+                    ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextDim);
+                    ImGui::TextUnformatted(Subtitle);
+                    ImGui::PopStyleColor();
+                }
+            }
+            else
+            {
+                ImGui::SetCursorScreenPos(ImVec2(TextX, P0.y + 7.0f));
+                ImGuiX::Font::PushFont(ImGuiX::Font::EFont::SmallBold);
+                ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextPrimary);
+                ImGui::TextUnformatted(Title);
+                ImGui::PopStyleColor();
+                ImGuiX::Font::PopFont();
+
+                ImGui::SetCursorScreenPos(ImVec2(TextX, P0.y + 27.0f));
+                ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Tiny);
+                ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextDim);
+                ImGui::TextUnformatted(Subtitle);
+                ImGui::PopStyleColor();
+                ImGuiX::Font::PopFont();
+            }
+
+            // Trailing × button.
+            if (bShowClose)
+            {
+                const ImVec2 CloseP0 = ImVec2(P1.x - CloseW, P0.y);
+                const ImVec2 CloseP1 = ImVec2(P1.x, P1.y);
+                ImGui::SetCursorScreenPos(CloseP0);
+                const bool bClose = ImGui::InvisibleButton("##close", ImVec2(CloseW, Height));
+                const bool bCloseHover = ImGui::IsItemHovered();
+                if (bCloseHover)
+                {
+                    DL->AddRectFilled(CloseP0, CloseP1,
+                        ImGui::ColorConvertFloat4ToU32(kProjDialogDanger), 4.0f);
+                }
+                ImGui::SetCursorScreenPos(ImVec2(CloseP0.x + 8.0f, CloseP0.y + (Height - ImGui::GetFontSize()) * 0.5f));
+                ImGui::PushStyleColor(ImGuiCol_Text,
+                    bCloseHover ? kProjDialogTextPrimary : kProjDialogTextDim);
+                ImGui::TextUnformatted(LE_ICON_CLOSE);
+                ImGui::PopStyleColor();
+                if (OutCloseClicked && bClose)
+                {
+                    *OutCloseClicked = true;
+                }
+            }
+
+            // Advance cursor past the row + a small gap.
+            ImGui::SetCursorScreenPos(ImVec2(P0.x, P1.y + 6.0f));
+            ImGui::PopID();
+            return bRowClicked;
+        }
+
+        // Recent-projects storage. Stores absolute .lproject paths; most recent
+        // first; deduplicates; capped at kMaxRecents. Backed by the existing
+        // "Editor.RecentProjects" StringArray config key.
+        constexpr size_t kMaxRecents = 10;
+
+        void PushRecentProject(FStringView LprojPath)
+        {
+            if (LprojPath.empty())
+            {
+                return;
+            }
+
+            const std::string NewEntry(LprojPath.data(), LprojPath.size());
+            auto Recents = GConfig->Get<std::vector<std::string>>("Editor.RecentProjects");
+
+            // Drop legacy name-only entries and any prior occurrence of this path.
+            Recents.erase(std::remove_if(Recents.begin(), Recents.end(),
+                [&](const std::string& Entry)
+                {
+                    return Entry == NewEntry ||
+                           Entry.find(".lproject") == std::string::npos;
+                }),
+                Recents.end());
+
+            Recents.insert(Recents.begin(), NewEntry);
+            if (Recents.size() > kMaxRecents)
+            {
+                Recents.resize(kMaxRecents);
+            }
+
+            GConfig->Set("Editor.RecentProjects", Recents);
+        }
+
+        void RemoveRecentProject(const std::string& LprojPath)
+        {
+            auto Recents = GConfig->Get<std::vector<std::string>>("Editor.RecentProjects");
+            Recents.erase(std::remove(Recents.begin(), Recents.end(), LprojPath), Recents.end());
+            GConfig->Set("Editor.RecentProjects", Recents);
+        }
+
+        // Drop entries whose .lproject file no longer exists on disk. Returns
+        // the cleaned list AND writes it back if anything was pruned, so the
+        // File→Recent menu and the dialog stay in sync after the user deletes
+        // a project folder out from under us.
+        std::vector<std::string> PruneMissingRecents()
+        {
+            auto Recents = GConfig->Get<std::vector<std::string>>("Editor.RecentProjects");
+            const size_t Before = Recents.size();
+
+            Recents.erase(std::remove_if(Recents.begin(), Recents.end(),
+                [](const std::string& Entry)
+                {
+                    if (Entry.find(".lproject") == std::string::npos)
+                    {
+                        return true;
+                    }
+                    std::error_code Ec;
+                    return !std::filesystem::exists(Entry, Ec);
+                }),
+                Recents.end());
+
+            if (Recents.size() != Before)
+            {
+                GConfig->Set("Editor.RecentProjects", Recents);
+            }
+            return Recents;
+        }
+
+        // Returns the project display name from an absolute .lproject path
+        // (basename without extension). Cheap; no filesystem access.
+        FString DisplayNameFromLprojPath(const std::string& LprojPath)
+        {
+            std::filesystem::path P(LprojPath);
+            return P.stem().string().c_str();
+        }
+    }
+
     bool FEditorUI::OnEvent(FEvent& Event)
     {
         // Consume input ImGui owns so it doesn't fall through; pass everything
@@ -226,7 +454,24 @@ namespace Lumina
         
         if (GEditorEngine->GetProjectName().empty())
         {
-            OpenProjectDialog();
+            // No --Project arg loaded a project at startup. Try the
+            // last-opened project we stashed in Editor.StartupProject;
+            // fall through to the Open dialog if that's also missing/stale.
+            const std::string StartupPath = GConfig->Get<std::string>("Editor.StartupProject");
+            if (!StartupPath.empty() && StartupPath != "NULL")
+            {
+                std::error_code Ec;
+                if (std::filesystem::exists(StartupPath, Ec))
+                {
+                    GEditorEngine->LoadProject(FStringView(StartupPath.c_str(), StartupPath.size()));
+                    OnProjectLoaded();
+                }
+            }
+
+            if (GEditorEngine->GetProjectName().empty())
+            {
+                OpenProjectDialog();
+            }
         }
     }
 
@@ -362,13 +607,15 @@ namespace Lumina
 
         if (GEngine->IsCloseRequested())
         {
-            static bool IsVerifyingPackages = false;
-            if (IsVerifyingPackages == false)
+            if (!bVerifyingDirtyPackages)
             {
-                IsVerifyingPackages = true;
+                bVerifyingDirtyPackages = true;
                 VerifyDirtyPackages();
             }
 
+            // Keep the engine alive while the prompt is up. If the user
+            // Cancels, VerifyDirtyPackages's callback flips bExitRequested
+            // back off via FApplication::CancelExit and re-arms our guard.
             if (ModalManager.HasModal())
             {
                 GEngine->SetEngineReadyToClose(false);
@@ -418,6 +665,16 @@ namespace Lumina
         }
         
         ModalManager.DrawDialogue();
+
+        // Run any dialog queued by the previous frame's modal (e.g. Open →
+        // New). The FEditorModalManager rejects CreateDialogue while a modal
+        // is active, so chained dialogs have to defer to the next frame.
+        if (PendingDialogAction && !ModalManager.HasModal())
+        {
+            TFunction<void()> Action = std::move(PendingDialogAction);
+            PendingDialogAction = nullptr;
+            Action();
+        }
     }
 
     void FEditorUI::OnUpdate(const FUpdateContext& UpdateContext)
@@ -574,6 +831,10 @@ namespace Lumina
         else if (Asset->IsA<CDataAsset>())
         {
             NewTool = CreateTool<FDataAssetEditorTool>(this, Asset);
+        }
+        else if (Asset->IsA<CPhysicsMaterial>())
+        {
+            NewTool = CreateTool<FPhysicsMaterialEditorTool>(this, Asset);
         }
         else if (Asset->IsA<CEntityComponentType>())
         {
@@ -1151,185 +1412,229 @@ namespace Lumina
         TVector<ESaveState> SaveStates;
         SaveStates.resize(DirtyPackages.size(), ESaveState::Idle);
         
-        ModalManager.CreateDialogue("Save Modified Packages", ImVec2(450, 600), [&, Packages = Move(DirtyPackages), PackageSelection, SaveStates] () mutable
+        ModalManager.CreateDialogue("Unsaved Changes", ImVec2(620, 540),
+            [this, Packages = Move(DirtyPackages), Selection = Move(PackageSelection), States = Move(SaveStates)]() mutable
         {
-            bool bShouldClose = false;
-            
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 12));
-            
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), LE_ICON_EXCLAMATION_THICK " Unsaved Changes Detected");
-            
-            ImGui::Spacing();
-            ImGui::TextWrapped("The following packages have unsaved changes. Select which packages you would like to save before continuing.");
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-            
-            ImGui::BeginGroup();
-            {
-                if (ImGui::Button(LE_ICON_SELECT_ALL " Select All", ImVec2(140, 0)))
-                {
-                    for (bool& Selected : PackageSelection)
-                    {
-                        Selected = true;
-                    }
-                }
-                ImGui::SameLine();
-                if (ImGui::Button(LE_ICON_SQUARE_OUTLINE " Deselect All", ImVec2(140, 0)))
-                {
-                    for (bool& Selected : PackageSelection)
-                    {
-                        Selected = false;
-                    }
-                }
-                
-                ImGui::SameLine();
-                ImGui::TextDisabled("|");
-                ImGui::SameLine();
-                
-                int32 SelectedCount = 0;
-                for (bool Selected : PackageSelection)
-                {
-                    if (Selected)
-                    {
-                        SelectedCount++;
-                    }
-                }
+            // Hero header: matches the Open/New Project dialog opener so the
+            // shutdown prompt reads as part of the same family.
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::MediumBold);
+            ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogAccentGold);
+            ImGui::TextUnformatted(LE_ICON_ALERT_CIRCLE_OUTLINE "  Unsaved Changes");
+            ImGui::PopStyleColor();
+            ImGuiX::Font::PopFont();
 
-                ImGui::Text("%d of %d selected", SelectedCount, (int32)Packages.size());
-            }
-            ImGui::EndGroup();
-            
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-            
-            ImVec2 ListSize = ImVec2(-1, -80);
-            if (ImGui::BeginChild("PackageList", ListSize, true, ImGuiWindowFlags_AlwaysVerticalScrollbar))
+            ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextDim);
+            ImGui::TextWrapped("%d package%s ha%s pending edits. Choose what to do before the editor closes.",
+                (int32)Packages.size(),
+                Packages.size() == 1 ? "" : "s",
+                Packages.size() == 1 ? "s" : "ve");
+            ImGui::PopStyleColor();
+
+            DrawSectionHeader("PACKAGES");
+
+            // Selection toolbar (compact, palette-aligned).
+            int32 SelectedCount = 0;
+            for (bool S : Selection) { if (S) ++SelectedCount; }
+
+            ImGui::PushStyleColor(ImGuiCol_Button,        kProjDialogRowBg);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kProjDialogRowBgHover);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  kProjDialogRowBgActive);
+            if (ImGui::SmallButton(LE_ICON_CHECKBOX_MULTIPLE_OUTLINE " All"))
             {
-                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
-                
+                for (bool& S : Selection) S = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton(LE_ICON_CHECKBOX_BLANK_OUTLINE " None"))
+            {
+                for (bool& S : Selection) S = false;
+            }
+            ImGui::PopStyleColor(3);
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextDim);
+            ImGui::Text("%d of %d selected", SelectedCount, (int32)Packages.size());
+            ImGui::PopStyleColor();
+
+            ImGui::Spacing();
+
+            // Package list. Each row mimics DrawProjectRow visually (left
+            // accent bar + hover background) but with a checkbox up front
+            // and a status badge on the right; sharing kProjDialog colors
+            // keeps it visually tied to the rest of the editor's modals.
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, kProjDialogPanelBg);
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
+            if (ImGui::BeginChild("##PackagesBody", ImVec2(0, -68), true,
+                ImGuiWindowFlags_AlwaysVerticalScrollbar))
+            {
                 for (size_t i = 0; i < Packages.size(); ++i)
                 {
-                    CPackage* Package = Packages[i];
-                    
+                    CPackage*  Package = Packages[i];
+                    const bool bSaved  = States[i] == ESaveState::Success;
+                    const bool bFailed = States[i] == ESaveState::Failed;
+
+                    const ImVec4 Accent =
+                        bFailed ? kProjDialogDanger    :
+                        bSaved  ? kProjDialogAccentSoft :
+                                  kProjDialogAccentGold;
+
+                    const float Avail   = ImGui::GetContentRegionAvail().x;
+                    const float Height  = 50.0f;
+                    const ImVec2 P0     = ImGui::GetCursorScreenPos();
+                    const ImVec2 P1     = ImVec2(P0.x + Avail, P0.y + Height);
+
                     ImGui::PushID((int)i);
-                    
-                    ImVec2 ItemStart = ImGui::GetCursorScreenPos();
-                    ImVec2 ItemSize = ImVec2(ImGui::GetContentRegionAvail().x, 64);
-                    
-                    bool bIsHovered = ImGui::IsMouseHoveringRect(ItemStart, ImVec2(ItemStart.x + ItemSize.x, ItemStart.y + ItemSize.y));
-                    
-                    ImU32 BgColor = bIsHovered ? 
-                        IM_COL32(50, 50, 55, 180) : 
-                        IM_COL32(35, 35, 40, 180);
-                    
-                    ImGui::GetWindowDrawList()->AddRectFilled(
-                        ItemStart, 
-                        ImVec2(ItemStart.x + ItemSize.x, ItemStart.y + ItemSize.y),
-                        BgColor,
-                        4.0f
-                    );
-                    
-                    ImGui::BeginGroup();
+
+                    // Hover-only background; click anywhere on the row
+                    // toggles the checkbox.
+                    ImGui::SetCursorScreenPos(P0);
+                    const bool bRowClicked = ImGui::InvisibleButton("##row", ImVec2(Avail, Height));
+                    const bool bHovered    = ImGui::IsItemHovered();
+                    if (bRowClicked && States[i] == ESaveState::Idle)
                     {
-                        ImGui::Dummy(ImVec2(0, 4));
-                        
-                        ImGui::Checkbox("##select", &PackageSelection[i]);
-                        ImGui::SameLine();
-                        
-                        ImGui::BeginGroup();
-                        {
-                            ImGui::Text(LE_ICON_FILE " %s", Package->GetName().c_str());
-                            
-                            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", Package->GetPackagePath().c_str());
-                            
-                            switch (SaveStates[i])
-                            {
-                                case ESaveState::Saving:
-                                    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), LE_ICON_WATCH_VIBRATE " Saving...");
-                                    break;
-                                case ESaveState::Success:
-                                    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), LE_ICON_CHECK " Saved");
-                                    break;
-                                case ESaveState::Failed:
-                                    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), LE_ICON_EXCLAMATION_THICK " Failed to save");
-                                    break;
-                            }
-                        }
-                        ImGui::EndGroup();
-                        
-                        ImGui::Dummy(ImVec2(0, 4));
+                        Selection[i] = !Selection[i];
                     }
-                    ImGui::EndGroup();
-                    
+
+                    ImDrawList* DL = ImGui::GetWindowDrawList();
+                    const ImU32 BgCol = ImGui::ColorConvertFloat4ToU32(
+                        bHovered ? kProjDialogRowBgHover : kProjDialogRowBg);
+                    DL->AddRectFilled(P0, P1, BgCol, 4.0f);
+                    DL->AddRectFilled(P0, ImVec2(P0.x + 3.0f, P1.y),
+                        ImGui::ColorConvertFloat4ToU32(Accent), 4.0f);
+
+                    // Checkbox (gets click priority over the row-wide
+                    // invisible button thanks to ImGui's per-widget rect).
+                    ImGui::SetCursorScreenPos(ImVec2(P0.x + 14.0f, P0.y + 16.0f));
+                    if (States[i] != ESaveState::Idle) ImGui::BeginDisabled();
+                    ImGui::Checkbox("##sel", &Selection[i]);
+                    if (States[i] != ESaveState::Idle) ImGui::EndDisabled();
+
+                    // Title + path stacked.
+                    const float TextX = P0.x + 48.0f;
+                    ImGui::SetCursorScreenPos(ImVec2(TextX, P0.y + 7.0f));
+                    ImGuiX::Font::PushFont(ImGuiX::Font::EFont::SmallBold);
+                    ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextPrimary);
+                    ImGui::TextUnformatted(Package->GetName().c_str());
+                    ImGui::PopStyleColor();
+                    ImGuiX::Font::PopFont();
+
+                    ImGui::SetCursorScreenPos(ImVec2(TextX, P0.y + 27.0f));
+                    ImGuiX::Font::PushFont(ImGuiX::Font::EFont::Tiny);
+                    ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextDim);
+                    ImGui::TextUnformatted(Package->GetPackagePath().c_str());
+                    ImGui::PopStyleColor();
+                    ImGuiX::Font::PopFont();
+
+                    // Trailing status badge (right-aligned).
+                    const char* StatusIcon = nullptr;
+                    const char* StatusText = nullptr;
+                    ImVec4      StatusCol  = kProjDialogTextDim;
+                    switch (States[i])
+                    {
+                        case ESaveState::Saving:
+                            StatusIcon = LE_ICON_WATCH_VIBRATE;
+                            StatusText = "Saving...";
+                            StatusCol  = kProjDialogAccentBlue;
+                            break;
+                        case ESaveState::Success:
+                            StatusIcon = LE_ICON_CHECK_CIRCLE_OUTLINE;
+                            StatusText = "Saved";
+                            StatusCol  = ImVec4(0.45f, 0.85f, 0.55f, 1.0f);
+                            break;
+                        case ESaveState::Failed:
+                            StatusIcon = LE_ICON_ALERT_CIRCLE_OUTLINE;
+                            StatusText = "Failed";
+                            StatusCol  = kProjDialogDanger;
+                            break;
+                        default: break;
+                    }
+                    if (StatusText)
+                    {
+                        const ImVec2 LabelSize = ImGui::CalcTextSize(StatusText);
+                        const ImVec2 IconSize  = ImGui::CalcTextSize(StatusIcon);
+                        const float  StatusW   = LabelSize.x + IconSize.x + 10.0f;
+                        ImGui::SetCursorScreenPos(ImVec2(P1.x - StatusW - 12.0f,
+                            P0.y + (Height - LabelSize.y) * 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_Text, StatusCol);
+                        ImGui::Text("%s %s", StatusIcon, StatusText);
+                        ImGui::PopStyleColor();
+                    }
+
+                    ImGui::SetCursorScreenPos(ImVec2(P0.x, P1.y + 6.0f));
                     ImGui::PopID();
-                    
-                    ImGui::Spacing();
                 }
-                
-                ImGui::PopStyleVar();
             }
             ImGui::EndChild();
-            
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-            
-            ImGui::BeginGroup();
-            {
-                float ButtonWidth = 150.0f;
-                float Spacing = 8.0f;
-                float TotalWidth = (ButtonWidth * 2) + (Spacing * 2);
-                float OffsetX = (ImGui::GetContentRegionAvail().x - TotalWidth) * 0.5f;
-                
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + OffsetX);
-                
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.7f, 0.3f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.15f, 0.5f, 0.15f, 1.0f));
-                
-                if (ImGui::Button(LE_ICON_CONTENT_SAVE " Save Selected", ImVec2(ButtonWidth, 35)))
-                {
-                    for (size_t i = 0; i < Packages.size(); ++i)
-                    {
-                        if (PackageSelection[i])
-                        {
-                            SaveStates[i] = ESaveState::Saving;
-                            
-                            bool bSaveSuccess = CPackage::SavePackage(Packages[i], Packages[i]->GetPackagePath());
-                            SaveStates[i] = bSaveSuccess ? ESaveState::Success : ESaveState::Failed;
-                        }
-                    }
-                    
-                    bShouldClose = true;
-                }
-                ImGui::PopStyleColor(3);
-                
-                ImGui::SameLine();
-                
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.4f, 0.2f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.5f, 0.3f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.5f, 0.3f, 0.15f, 1.0f));
-                
-                if (ImGui::Button(LE_ICON_SQUARE " Don't Save", ImVec2(ButtonWidth, 35)))
-                {
-                    bShouldClose = true;
-                }
-                ImGui::PopStyleColor(3);
-                
-                //ImGui::SameLine();
-                //
-                //if (ImGui::Button(LE_ICON_CANCEL " Cancel", ImVec2(ButtonWidth, 35)))
-                //{
-                //    
-                //    bShouldClose = true;
-                //}
-            }
-            ImGui::EndGroup();
-            
             ImGui::PopStyleVar();
-            
+            ImGui::PopStyleColor();
+
+            // Footer: primary (blue) Save & Exit, secondary (gold) Discard
+            // & Exit, dismiss (soft) Cancel. Right-aligned so the primary
+            // action lands at the natural F-pattern target.
+            const float ButtonH    = 32.0f;
+            const float SaveW      = 150.0f;
+            const float DiscardW   = 150.0f;
+            const float CancelW    = 90.0f;
+            const float Gap        = 8.0f;
+            const float Total      = SaveW + DiscardW + CancelW + Gap * 2.0f;
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f);
+            ImGui::SetCursorPosX(ImGui::GetWindowWidth() - Total - 16.0f);
+
+            bool bShouldClose = false;
+
+            // Save & Exit — primary.
+            const bool bAnySelected = SelectedCount > 0;
+            ImGui::PushStyleColor(ImGuiCol_Button,        kProjDialogAccentBlue);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.46f, 0.74f, 1.00f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.30f, 0.58f, 0.92f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.06f, 0.08f, 0.12f, 1.0f));
+            if (!bAnySelected) ImGui::BeginDisabled();
+            if (ImGui::Button(LE_ICON_CONTENT_SAVE " Save && Exit", ImVec2(SaveW, ButtonH)))
+            {
+                // Synchronous save loop — the dialog stays open this frame
+                // so failed entries get a visible "Failed" badge instead of
+                // disappearing silently.
+                bool bAllOK = true;
+                for (size_t i = 0; i < Packages.size(); ++i)
+                {
+                    if (!Selection[i]) continue;
+                    States[i] = ESaveState::Saving;
+                    const bool bOK = CPackage::SavePackage(Packages[i], Packages[i]->GetPackagePath());
+                    States[i] = bOK ? ESaveState::Success : ESaveState::Failed;
+                    if (!bOK) bAllOK = false;
+                }
+                // Only close (and let exit proceed) if every selected save
+                // succeeded. A failed save keeps the dialog up so the user
+                // can see what went wrong and pick another action.
+                bShouldClose = bAllOK;
+            }
+            if (!bAnySelected) ImGui::EndDisabled();
+            ImGui::PopStyleColor(4);
+            ImGui::SameLine(0.0f, Gap);
+
+            // Discard & Exit — gold accent, makes the consequence visible.
+            ImGui::PushStyleColor(ImGuiCol_Button,        kProjDialogRowBg);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kProjDialogRowBgHover);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  kProjDialogRowBgActive);
+            ImGui::PushStyleColor(ImGuiCol_Text,          kProjDialogAccentGold);
+            if (ImGui::Button(LE_ICON_DELETE " Discard && Exit", ImVec2(DiscardW, ButtonH)))
+            {
+                bShouldClose = true;
+            }
+            ImGui::PopStyleColor(4);
+            ImGui::SameLine(0.0f, Gap);
+
+            // Cancel — soft, abort the exit entirely.
+            ImGui::PushStyleColor(ImGuiCol_Button,        kProjDialogRowBg);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kProjDialogRowBgHover);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  kProjDialogRowBgActive);
+            ImGui::PushStyleColor(ImGuiCol_Text,          kProjDialogAccentSoft);
+            if (ImGui::Button("Cancel", ImVec2(CancelW, ButtonH)))
+            {
+                FApplication::CancelExit();
+                bVerifyingDirtyPackages = false; // re-arm for the next exit attempt
+                bShouldClose = true;
+            }
+            ImGui::PopStyleColor(4);
+
             return bShouldClose;
         });
     }
@@ -1406,15 +1711,27 @@ namespace Lumina
         
         if (ImGui::BeginMenu(LE_ICON_ROTATE_LEFT " Recent"))
         {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.62f, 1.0f));
-         
-            auto Recents = GConfig->Get<std::vector<std::string>>("Editor.RecentProjects");
+            auto Recents = PruneMissingRecents();
+            bool bAny = false;
             for (const auto& Item : Recents)
             {
-                ImGui::TextUnformatted(Item.c_str());
+                bAny = true;
+
+                const FString DisplayName = DisplayNameFromLprojPath(Item);
+                if (ImGui::MenuItem(DisplayName.c_str(), Item.c_str()))
+                {
+                    GEditorEngine->LoadProject(FStringView(Item.c_str(), Item.size()));
+                    OnProjectLoaded();
+                }
             }
-            ImGui::PopStyleColor();
-            
+
+            if (!bAny)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.62f, 1.0f));
+                ImGui::TextUnformatted("(none)");
+                ImGui::PopStyleColor();
+            }
+
             ImGui::EndMenu();
         }
 
@@ -1536,6 +1853,7 @@ namespace Lumina
         DrawToolMenuItem<FMemoryProfilerEditorTool>(LE_ICON_MEMORY " Memory", this);
         DrawToolMenuItem<FObjectBrowserEditorTool>(LE_ICON_LIST_BOX " Object Browser", this);
         DrawToolMenuItem<FConsoleVariableEditorTool>(LE_ICON_TUNE " Console Variables", this);
+        DrawToolMenuItem<FPluginBrowserEditorTool>(LE_ICON_PUZZLE " Plugin Browser", this);
         
         ImGui::Spacing();
         
@@ -1673,157 +1991,147 @@ namespace Lumina
 
     void FEditorUI::OpenProjectDialog()
     {
-        ModalManager.CreateDialogue("Open Project", ImVec2(1000, 650), [this] () -> bool
+        ModalManager.CreateDialogue("Open Project", ImVec2(720, 560), [this] () -> bool
         {
             bool bShouldClose = false;
 
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 0.9f, 1.0f));
-            ImGui::TextWrapped(LE_ICON_FOLDER_OPEN " Select a project to open or browse for an existing project");
+            // ── Title bar ──────────────────────────────────────────────────
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::MediumBold);
+            ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextPrimary);
+            ImGui::TextUnformatted(LE_ICON_FOLDER_OPEN " Open Project");
             ImGui::PopStyleColor();
-
+            ImGuiX::Font::PopFont();
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
 
-            ImGui::BeginChild("ProjectContent", ImVec2(0, -50), false);
+            // ── Hero: Create New Project (primary action) ─────────────────
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.50f, 0.95f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.60f, 1.00f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.15f, 0.45f, 0.90f, 1.00f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14, 12));
+            if (ImGui::Button(LE_ICON_FOLDER_PLUS "  Create New Project", ImVec2(-1, 0)))
             {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.7f, 1.0f, 1.0f));
-                ImGui::Text(LE_ICON_FOLDER_OPEN " Example Projects");
-                ImGui::PopStyleColor();
-                ImGui::Spacing();
-
-                ImGui::BeginChild("ProjectCards", ImVec2(0, 0), false);
-                {
-                    const float CardWidth = 280.0f;
-                    const float CardHeight = 200.0f;
-                    const float Padding = 16.0f;
-
-                    float availWidth = ImGui::GetContentRegionAvail().x;
-                    int CardsPerRow = Math::Max(1, (int)((availWidth + Padding) / (CardWidth + Padding)));
-
-                    ImGui::BeginGroup();
-                    {
-                        ImVec2 CursorPos = ImGui::GetCursorScreenPos();
-                        ImDrawList* drawList = ImGui::GetWindowDrawList();
-
-                        ImVec4 cardBgColor = ImVec4(0.15f, 0.15f, 0.16f, 1.0f);
-                        ImVec4 cardBgHoverColor = ImVec4(0.18f, 0.18f, 0.19f, 1.0f);
-                        ImVec4 accentColor = ImVec4(0.3f, 0.6f, 1.0f, 1.0f);
-
-                        ImGui::PushStyleColor(ImGuiCol_Button, cardBgColor);
-                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, cardBgHoverColor);
-                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.2f, 0.21f, 1.0f));
-                        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-                        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(18, 18));
-
-                        if (ImGui::Button("##SandboxCard", ImVec2(CardWidth, CardHeight)))
-                        {
-                            FString SandboxProjectDirectory = Paths::GetEngineDirectory() + "/Sandbox/Sandbox.lproject";
-                            GEditorEngine->LoadProject(SandboxProjectDirectory);
-                            OnProjectLoaded();
-                            bShouldClose = true;
-                        }
-
-                        ImGui::PopStyleVar(2);
-                        ImGui::PopStyleColor(3);
-
-                        drawList->AddRectFilled(
-                            CursorPos,
-                            ImVec2(CursorPos.x + CardWidth, CursorPos.y + 4),
-                            ImGui::GetColorU32(accentColor)
-                        );
-
-                        ImGui::SetCursorScreenPos(ImVec2(CursorPos.x + 16, CursorPos.y + 20));
-                        ImGui::Dummy(ImVec2(0, 0));
-
-                        ImGui::BeginGroup();
-                        {
-                            ImVec2 iconPos = ImGui::GetCursorScreenPos();
-                            drawList->AddCircleFilled(
-                                ImVec2(iconPos.x + 20, iconPos.y + 20),
-                                20.0f,
-                                ImGui::GetColorU32(ImVec4(0.3f, 0.6f, 1.0f, 0.2f))
-                            );
-
-                            ImGui::PushStyleColor(ImGuiCol_Text, accentColor);
-                            ImGui::SetCursorScreenPos(ImVec2(iconPos.x + 10, iconPos.y + 10));
-                            ImGui::Text(LE_ICON_FOLDER_OPEN);
-                            ImGui::PopStyleColor();
-
-                            ImGui::SetCursorScreenPos(ImVec2(CursorPos.x + 16, iconPos.y + 50));
-
-                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-                            ImGui::Text("Sandbox Project");
-                            ImGui::PopStyleColor();
-
-                            ImGui::Spacing();
-
-                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-                            ImGui::BeginChild("##SandboxDesc", ImVec2(CardWidth - 32, 60), false, ImGuiWindowFlags_NoScrollbar);
-                            ImGui::TextWrapped("A basic sandbox environment for testing and experimentation. Perfect for learning the engine basics.");
-                            ImGui::EndChild();
-                            ImGui::PopStyleColor();
-
-                            ImGui::SetCursorScreenPos(ImVec2(CursorPos.x + 16, CursorPos.y + CardHeight - 30));
-
-                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.8f, 0.5f, 1.0f));
-                            ImGui::Text("Example Project");
-                            ImGui::PopStyleColor();
-
-                            ImGui::EndGroup();
-                        }
-                    }
-                    ImGui::EndGroup();
-
-
-                    ImGui::EndChild();
-                }
-
-                ImGui::EndChild();
+                DeferShowDialog([this] { NewProjectDialog(); });
+                bShouldClose = true;
             }
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor(3);
 
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            ImGui::BeginGroup();
+            // ── Scrollable list body ──────────────────────────────────────
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+            ImGui::BeginChild("##ProjectListBody", ImVec2(0, -52), false);
             {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.6f, 1.0f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.4f, 0.7f, 1.0f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.5f, 0.9f, 1.0f));
+                // ── Recent projects ────────────────────────────────────
+                DrawSectionHeader("RECENT PROJECTS");
 
-                if (ImGui::Button(LE_ICON_FOLDER_OPEN " Browse for Project...", ImVec2(200, 32)))
+                // Prune entries whose .lproject is gone (project folder
+                // deleted on disk) and legacy name-only entries in one pass.
+                auto Recents = PruneMissingRecents();
+
+                bool bAnyRecent = false;
+                std::string PendingRemove;
+                FFixedString PendingLoad;
+                for (const auto& Entry : Recents)
                 {
-                    FFixedString Project;
-                    if (Platform::OpenFileDialogue(
-                        Project,
-                        "Open Project",
-                        "Lumina Project (*.lproject)\0*.lproject\0All Files (*.*)\0*.*\0",
-                        nullptr
-                    ))
+                    if (Entry.find(".lproject") == std::string::npos)
                     {
-                        GEditorEngine->LoadProject(Project);
-                        OnProjectLoaded();
-                        bShouldClose = true;
+                        continue;
+                    }
+                    bAnyRecent = true;
+
+                    const FString DisplayName = DisplayNameFromLprojPath(Entry);
+                    bool bCloseClicked = false;
+                    const bool bClicked = DrawProjectRow(
+                        LE_ICON_FOLDER,
+                        DisplayName.c_str(),
+                        Entry.c_str(),
+                        kProjDialogAccentGold,
+                        /*bCompact=*/false,
+                        /*bShowClose=*/true,
+                        &bCloseClicked);
+
+                    if (bClicked)
+                    {
+                        PendingLoad = Entry.c_str();
+                    }
+                    if (bCloseClicked)
+                    {
+                        PendingRemove = Entry;
                     }
                 }
 
-                ImGui::PopStyleColor(3);
-
-                ImGui::SameLine(ImGui::GetContentRegionAvail().x - 120);
-
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
-
-                if (ImGui::Button("Cancel", ImVec2(120, 32)))
+                if (!bAnyRecent)
                 {
+                    ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextMuted);
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 8.0f);
+                    ImGui::TextUnformatted("No recent projects yet.");
+                    ImGui::PopStyleColor();
+                }
+
+                if (!PendingRemove.empty())
+                {
+                    RemoveRecentProject(PendingRemove);
+                }
+                if (!PendingLoad.empty())
+                {
+                    GEditorEngine->LoadProject(PendingLoad);
+                    OnProjectLoaded();
                     bShouldClose = true;
                 }
 
-                ImGui::PopStyleColor(3);
-
-                ImGui::EndGroup();
+                // ── Examples (de-emphasized) ──────────────────────────
+                DrawSectionHeader("EXAMPLES");
+                if (DrawProjectRow(
+                        LE_ICON_CUBE_OUTLINE,
+                        "Sandbox",
+                        "Engine sample project",
+                        kProjDialogAccentSoft,
+                        /*bCompact=*/true))
+                {
+                    FString SandboxProjectDirectory = Paths::GetEngineDirectory() + "/Sandbox/Sandbox.lproject";
+                    GEditorEngine->LoadProject(SandboxProjectDirectory);
+                    OnProjectLoaded();
+                    bShouldClose = true;
+                }
             }
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
+
+            // ── Footer: Browse + Cancel ───────────────────────────────────
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+
+            if (ImGui::Button(LE_ICON_FOLDER_OPEN "  Browse for project file...", ImVec2(260, 30)))
+            {
+                FFixedString Project;
+                if (Platform::OpenFileDialogue(
+                        Project,
+                        "Open Project",
+                        "Lumina Project (*.lproject)\0*.lproject\0All Files (*.*)\0*.*\0",
+                        nullptr))
+                {
+                    GEditorEngine->LoadProject(Project);
+                    OnProjectLoaded();
+                    bShouldClose = true;
+                }
+            }
+
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 116);
+
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.20f, 0.22f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.26f, 0.29f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.16f, 0.16f, 0.18f, 1.00f));
+            if (ImGui::Button("Cancel", ImVec2(120, 30)))
+            {
+                bShouldClose = true;
+            }
+            ImGui::PopStyleColor(3);
+
+            ImGui::PopStyleVar();
 
             return bShouldClose;
         }, true, false);
@@ -1831,70 +2139,295 @@ namespace Lumina
 
     void FEditorUI::NewProjectDialog()
     {
-        ModalManager.CreateDialogue("New Project", ImVec2(900, 600), [this] () -> bool
+        ModalManager.CreateDialogue("New Project", ImVec2(720, 600), [this] () -> bool
         {
-            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), LE_ICON_FOLDER_PLUS " Create a new Lumina project");
-            ImGui::Separator();
-            ImGui::Spacing();
-            
             static char NewProjectName[256] = "MyProject";
             static char NewProjectPath[512] = "";
-            
-            ImGui::Text("Project Name:");
+            static FString LastError;
+
+            // ── Title bar ──────────────────────────────────────────────────
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::MediumBold);
+            ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextPrimary);
+            ImGui::TextUnformatted(LE_ICON_FOLDER_PLUS " Create New Project");
+            ImGui::PopStyleColor();
+            ImGuiX::Font::PopFont();
+            ImGui::Spacing();
+            ImGui::Separator();
+
+            // ── Scrollable body so the footer stays pinned ────────────────
+            ImGui::BeginChild("##NewProjBody", ImVec2(0, -52), false);
+
+            // Template section ────────────────────────────────────────────
+            DrawSectionHeader("TEMPLATE");
+            DrawProjectRow(
+                LE_ICON_CUBE,
+                "Blank Project (C++)",
+                "Empty C++ module + Lua scripting. F5 in the generated .sln launches the editor with the project loaded.",
+                kProjDialogAccentBlue,
+                /*bCompact=*/false);
+
+            // Name ────────────────────────────────────────────────────────
+            DrawSectionHeader("PROJECT NAME");
+            ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.15f, 0.15f, 0.18f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.20f, 0.20f, 0.25f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  ImVec4(0.25f, 0.25f, 0.30f, 1.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 8.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
             ImGui::SetNextItemWidth(-1);
             ImGui::InputText("##ProjectName", NewProjectName, sizeof(NewProjectName));
-        
-            ImGui::Spacing();
-        
-            ImGui::Text("Project Location:");
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor(3);
+
+            // Location ────────────────────────────────────────────────────
+            DrawSectionHeader("LOCATION");
+            ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.15f, 0.15f, 0.18f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.20f, 0.20f, 0.25f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  ImVec4(0.25f, 0.25f, 0.30f, 1.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 8.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
             ImGui::SetNextItemWidth(-120);
             ImGui::InputText("##ProjectPath", NewProjectPath, sizeof(NewProjectPath));
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor(3);
             ImGui::SameLine();
-            if (ImGui::Button("Browse...", ImVec2(110, 0)))
+            // OpenFileDialogue with null filter → folder picker (FOS_PICKFOLDERS).
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+            if (ImGui::Button(LE_ICON_FOLDER " Browse", ImVec2(110, 0)))
             {
                 FFixedString File;
-                if (Platform::OpenFileDialogue(File,"Browse..."))
+                if (Platform::OpenFileDialogue(File, "Select project location"))
                 {
                     strncpy_s(NewProjectPath, sizeof(NewProjectPath), File.c_str(), _TRUNCATE);
                 }
             }
-            
+            ImGui::PopStyleVar();
+
+            // Inline error box (red bordered child, matching rename modal) ─
+            if (!LastError.empty())
+            {
+                ImGui::Spacing();
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.30f, 0.10f, 0.10f, 0.30f));
+                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.80f, 0.20f, 0.20f, 0.40f));
+                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+                ImGui::BeginChild("##NewProjError", ImVec2(-1, 0), true,
+                    ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.45f, 1.0f));
+                ImGui::TextUnformatted(LE_ICON_ALERT_OCTAGON);
+                ImGui::SameLine();
+                ImGui::TextWrapped("%s", LastError.c_str());
+                ImGui::PopStyleColor();
+                ImGui::EndChild();
+                ImGui::PopStyleVar(2);
+                ImGui::PopStyleColor(2);
+            }
+
+            ImGui::EndChild();
+
+            // ── Footer: Back + Create ─────────────────────────────────────
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+
+            // Back returns to the Open Project dialog. Defer so the modal can
+            // close cleanly before the next CreateDialogue.
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.20f, 0.22f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.26f, 0.29f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.16f, 0.16f, 0.18f, 1.00f));
+            const bool bBack = ImGui::Button(LE_ICON_ARROW_LEFT "  Back", ImVec2(110, 30));
+            ImGui::PopStyleColor(3);
+
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 156);
+
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.50f, 0.95f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.60f, 1.00f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.15f, 0.45f, 0.90f, 1.00f));
+            const bool bCreateClicked = ImGui::Button(LE_ICON_CHECK "  Create Project", ImVec2(160, 30));
+            ImGui::PopStyleColor(3);
+
+            ImGui::PopStyleVar();
+
+            if (bBack)
+            {
+                LastError.clear();
+                DeferShowDialog([this] { OpenProjectDialog(); });
+                return true;
+            }
+
+            if (bCreateClicked)
+            {
+                FFixedString ProjectFile;
+                FString Error;
+                if (GEditorEngine->CreateProject(NewProjectName, NewProjectPath, ProjectFile, Error))
+                {
+                    LastError.clear();
+
+                    GEditorEngine->GenerateProjectFiles(VFS::Parent(ProjectFile));
+                    PushRecentProject(ProjectFile.c_str());
+
+                    // Chain into the "Project Created" dialog so the user knows
+                    // they need to act (the editor has no project loaded).
+                    const FString ProjectFileCopy(ProjectFile.c_str(), ProjectFile.size());
+                    DeferShowDialog([this, ProjectFileCopy]
+                    {
+                        ProjectCreatedDialog(FStringView(ProjectFileCopy.c_str(), ProjectFileCopy.size()));
+                    });
+                    return true;
+                }
+
+                LastError = Error;
+            }
+
+            return false;
+        });
+    }
+
+    void FEditorUI::ProjectCreatedDialog(FStringView ProjectFile)
+    {
+        const FString ProjectFileCopy(ProjectFile.data(), ProjectFile.size());
+
+        // Derive the .sln path from the .lproject path (sibling file).
+        FString SlnPath = ProjectFileCopy;
+        {
+            const size_t Dot = SlnPath.find_last_of('.');
+            if (Dot != FString::npos)
+            {
+                SlnPath.erase(Dot);
+            }
+            SlnPath.append(".sln");
+        }
+
+        ModalManager.CreateDialogue("Project Created", ImVec2(640, 400), [this, ProjectFileCopy, SlnPath] () -> bool
+        {
+            // Polled each frame; cheap (stat call on local disk).
+            std::error_code Ec;
+            const bool bSlnReady = std::filesystem::exists(SlnPath.c_str(), Ec);
+
+            // ── Title ──────────────────────────────────────────────────────
+            ImGuiX::Font::PushFont(ImGuiX::Font::EFont::MediumBold);
+            ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextPrimary);
+            ImGui::TextUnformatted(LE_ICON_CHECK_CIRCLE " Project Created");
+            ImGui::PopStyleColor();
+            ImGuiX::Font::PopFont();
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
-            
-            ImGui::Text("Project Template:");
-            ImGui::BeginChild("Templates", ImVec2(0, -40), true);
-            {
-                if (ImGui::Selectable(LE_ICON_CUBE " Blank Project"))
-                {
-                    
-                }
-            }
-            ImGui::EndChild();
-            
-            ImGui::Spacing();
-            
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.55f, 0.3f, 1.0f));
-            if (ImGui::Button(LE_ICON_CHECK " Create Project", ImVec2(140, 0)))
-            {
-                GEditorEngine->CreateProject(NewProjectName, NewProjectPath);
-                ImGui::PopStyleColor();
-                
-                ImGuiX::Notifications::NotifySuccess("Successfully created project, please close the engine and relaunch");
-                return true;
-            }
+
+            // ── Body ───────────────────────────────────────────────────────
+            ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextDim);
+            ImGui::TextWrapped(
+                "Your project was created. premake is generating its Visual Studio "
+                "solution in the background — watch the editor log for output.");
             ImGui::PopStyleColor();
-            
+
+            ImGui::Spacing();
+
+            // Project path callout with a Copy button.
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, kProjDialogRowBg);
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
+            ImGui::BeginChild("##ProjectPath", ImVec2(-1, 38), true, ImGuiWindowFlags_NoScrollbar);
+            ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogAccentGold);
+            ImGui::TextUnformatted(LE_ICON_FOLDER);
+            ImGui::PopStyleColor();
             ImGui::SameLine();
-            
-            if (ImGui::Button("Cancel", ImVec2(120, 0)))
+            ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextPrimary);
+            ImGui::TextUnformatted(ProjectFileCopy.c_str());
+            ImGui::PopStyleColor();
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 26);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextDim);
+            if (ImGui::SmallButton(LE_ICON_CONTENT_COPY))
             {
+                ImGui::SetClipboardText(ProjectFileCopy.c_str());
+                ImGuiX::Notifications::NotifyInfo("Project path copied.");
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::EndChild();
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor();
+
+            // Solution-status indicator.
+            ImGui::Spacing();
+            if (bSlnReady)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.85f, 0.55f, 1.0f));
+                ImGui::TextUnformatted(LE_ICON_CHECK " Solution ready.");
+                ImGui::PopStyleColor();
+            }
+            else
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, kProjDialogTextMuted);
+                ImGui::TextUnformatted(LE_ICON_CLOCK_OUTLINE " Waiting for premake to finish...");
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::Spacing();
+            ImGui::Spacing();
+
+            // ── Action buttons ─────────────────────────────────────────────
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+
+            const float Avail = ImGui::GetContentRegionAvail().x;
+            const float BtnH  = 36.0f;
+            const float Gap   = 8.0f;
+            const float BtnW  = (Avail - Gap * 2.0f) / 3.0f;
+
+            // Reveal in Explorer — always available.
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.22f, 0.22f, 0.26f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.30f, 0.34f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.18f, 0.18f, 0.20f, 1.00f));
+            if (ImGui::Button(LE_ICON_FOLDER_OPEN "  Reveal in Explorer", ImVec2(BtnW, BtnH)))
+            {
+                Platform::ShowFileInExplorer(UTF8_TO_TCHAR(ProjectFileCopy.c_str()));
+            }
+            ImGui::PopStyleColor(3);
+
+            ImGui::SameLine(0.0f, Gap);
+
+            // Close Editor — secondary.
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.22f, 0.22f, 0.26f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.30f, 0.34f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.18f, 0.18f, 0.20f, 1.00f));
+            bool bCloseEditor = false;
+            if (ImGui::Button(LE_ICON_POWER "  Close Editor", ImVec2(BtnW, BtnH)))
+            {
+                bCloseEditor = true;
+            }
+            ImGui::PopStyleColor(3);
+
+            ImGui::SameLine(0.0f, Gap);
+
+            // Open Solution — primary blue, disabled until premake finishes.
+            ImGui::BeginDisabled(!bSlnReady);
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.50f, 0.95f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.60f, 1.00f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.15f, 0.45f, 0.90f, 1.00f));
+            bool bOpenSln = false;
+            if (ImGui::Button(LE_ICON_PLAY "  Open Solution", ImVec2(BtnW, BtnH)))
+            {
+                bOpenSln = true;
+            }
+            ImGui::PopStyleColor(3);
+            ImGui::EndDisabled();
+
+            ImGui::PopStyleVar();
+
+            if (bOpenSln)
+            {
+                Platform::LaunchURL(UTF8_TO_TCHAR(SlnPath.c_str()));
+                FApplication::RequestExit();
                 return true;
             }
-            
+
+            if (bCloseEditor)
+            {
+                FApplication::RequestExit();
+                return true;
+            }
+
             return false;
-        });
+        }, /*bBlocking=*/true, /*bCloseable=*/false);
     }
 
     void FEditorUI::OnProjectLoaded()
@@ -1912,16 +2445,31 @@ namespace Lumina
             OpenAssetEditor(Data->AssetGUID);
         }
         
-        auto Recents = GConfig->Get<std::vector<std::string>>("Editor.RecentProjects");
-        bool bDoesNotContains = eastl::none_of(Recents.begin(), Recents.end(), [&](const std::string& Item)
+        // Push the project's .lproject path (move-to-front, deduped, capped).
+        // GEngine stores the project's parent directory + name, so we reconstruct
+        // the descriptor file path here. Also stash the path as
+        // Editor.StartupProject so the next bare launch (no --Project) auto-loads
+        // it instead of popping the Open Project dialog.
+        //
+        // Re-normalize after the join — VFS::Parent returns the dir WITH a
+        // trailing slash, and naively appending "/" before the name yields
+        // ".../Sandbox//Sandbox.lproject". Paths::Normalize collapses that
+        // back to a single slash and also self-heals any prior dirty value
+        // ("Sandbox/////////Sandbox.lproject") loaded from the old config.
+        const FStringView ProjectDir  = GEngine->GetProjectPath();
+        const FStringView ProjectName = GEngine->GetProjectName();
+        if (!ProjectDir.empty() && !ProjectName.empty())
         {
-            return Item == std::string(GEngine->GetProjectName().data());
-        });
-        
-        if (bDoesNotContains)
-        {
-            Recents.emplace_back(GEngine->GetProjectName().data());
-            GConfig->Set("Editor.RecentProjects", Recents);
+            FFixedString LprojPath;
+            LprojPath.assign(ProjectDir.data(), ProjectDir.size());
+            LprojPath.append("/");
+            LprojPath.append(ProjectName.data(), ProjectName.size());
+            LprojPath.append(".lproject");
+            Paths::Normalize(LprojPath);
+
+            PushRecentProject(FStringView(LprojPath.c_str(), LprojPath.size()));
+
+            GConfig->Set("Editor.StartupProject", std::string(LprojPath.c_str(), LprojPath.size()));
         }
     }
 

@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "AudioSystem.h"
 #include "Audio/AudioGlobals.h"
+#include "World/Entity/EntityHandle.h"
 #include "World/Entity/Components/AudioSourceComponent.h"
 #include "World/Entity/Components/ProceduralAudioComponent.h"
 
@@ -39,25 +40,30 @@ namespace Lumina
 	void SAudioSystem::Update(const FSystemContext& SystemContext) noexcept
 	{
 		LUMINA_PROFILE_SCOPE();
+		
+		auto&& XFormStorage = SystemContext.GetStorage<STransformComponent>();
 
 		{
-			auto ListenerView = SystemContext.CreateView<SAudioListenerComponent, STransformComponent>();
-			ListenerView.each([](SAudioListenerComponent&, const STransformComponent& Transform)
+			auto ListenerView = SystemContext.CreateView<SAudioListenerComponent>();
+			ListenerView.each([&](FEntity Entity, const SAudioListenerComponent&)
 			{
+				const STransformComponent& Transform = XFormStorage.get(Entity);
 				GAudioContext->UpdateListenerPosition(Transform.GetWorldLocation(), Transform.GetWorldRotation());
 			});
 		}
 
 		{
-			auto SourceView = SystemContext.CreateView<SAudioSourceComponent, STransformComponent>();
-			SourceView.each([](SAudioSourceComponent& Audio, const STransformComponent& Transform)
+			auto SourceView = SystemContext.CreateView<SAudioSourceComponent>();
+			SourceView.each([&](FEntity Entity, SAudioSourceComponent& Audio)
 			{
+
 				if (!Audio.bReady)
 				{
 					Audio.bReady = true;
 
 					if (Audio.bPlayOnReady && !Audio.SoundFile.empty())
 					{
+						const STransformComponent& Transform = XFormStorage.get(Entity);
 						Audio.ActiveHandle = GAudioContext->PlaySoundAtLocation(
 							FStringView(Audio.SoundFile),
 							Transform.GetWorldLocation(),
@@ -73,6 +79,7 @@ namespace Lumina
 
 				if (Audio.bPlaying && Audio.ActiveHandle.IsValid())
 				{
+					const STransformComponent& Transform = XFormStorage.get(Entity);
 					GAudioContext->SetPosition(Audio.ActiveHandle, Transform.GetWorldLocation());
 
 					if (Audio.bVolumeDirty)
@@ -97,8 +104,8 @@ namespace Lumina
 		}
 
 		{
-			auto ProceduralView = SystemContext.CreateView<SProceduralAudioComponent, STransformComponent>();
-			ProceduralView.each([](SProceduralAudioComponent& Audio, const STransformComponent& Transform)
+			auto ProceduralView = SystemContext.CreateView<SProceduralAudioComponent>();
+			ProceduralView.each([&](FEntity Entity, SProceduralAudioComponent& Audio)
 			{
 				if (!Audio.bReady)
 				{
@@ -114,6 +121,7 @@ namespace Lumina
 				{
 					if (Audio.bSpatialized)
 					{
+						const STransformComponent& Transform = XFormStorage.get(Entity);
 						GAudioContext->SetPosition(Audio.ActiveHandle, Transform.GetWorldLocation());
 					}
 

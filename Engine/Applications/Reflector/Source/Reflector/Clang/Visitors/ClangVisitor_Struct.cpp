@@ -17,6 +17,7 @@
 #include "Reflector/Types/Properties/ReflectedNumericProperty.h"
 #include "Reflector/Types/Properties/ReflectedObjectProperty.h"
 #include "Reflector/Types/Properties/ReflectedOptionalProperty.h"
+#include "Reflector/Types/Properties/ReflectedSoftObjectProperty.h"
 #include "Reflector/Types/Properties/ReflectedStringProperty.h"
 #include "Reflector/Types/Properties/ReflectedStructProperty.h"
 
@@ -381,6 +382,27 @@ namespace Lumina::Reflection::Visitor
 			ParamFieldInfo->Name = FieldInfo.Name; // Replace the empty template property name with the parent.
 
 			NewProperty = CreateProperty<FReflectedObjectProperty>(ParamFieldInfo.value());
+		}
+		break;
+		case EPropertyTypeFlags::SoftObject:
+		{
+			// FSoftObjectPath: no template arg; reflect against itself.
+			// TSoftObjectPtr<T>: extract T to capture the target class for the inspector.
+			const CXType ArgType = clang_Type_getTemplateArgumentAsType(FieldInfo.Type, 0);
+			eastl::optional<FFieldInfo> ParamFieldInfo;
+			if (ArgType.kind != CXType_Invalid)
+			{
+				ParamFieldInfo = CreateSubFieldInfo(Context, ArgType, FieldInfo);
+			}
+			if (!ParamFieldInfo.has_value())
+			{
+				// Bare FSoftObjectPath — keep the outer field as the descriptor.
+				ParamFieldInfo = FieldInfo;
+			}
+
+			ParamFieldInfo->Name = FieldInfo.Name;
+
+			NewProperty = CreateProperty<FReflectedSoftObjectProperty>(ParamFieldInfo.value());
 		}
 		break;
 		case EPropertyTypeFlags::Vector:

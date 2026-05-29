@@ -106,13 +106,52 @@ namespace Lumina
         return *this;
     }
 
+    void FPackageSaver::RegisterSoftAssetReference(const FGuid& AssetGUID)
+    {
+        if (!AssetGUID.IsValid())
+        {
+            return;
+        }
+        SoftReferencedGUIDs.insert(AssetGUID);
+    }
+
     void FPackageSaver::PopulateImportTable(TVector<FObjectImport>& Out) const
     {
         Out.clear();
+
+        // Hard imports first: same slots they were assigned at write time
+        // (so any FObjectPackageIndex referencing them in the data stream
+        // still points at the right entry).
         Out.resize(CurrentImportIndex);
+        THashSet<FGuid> HardGUIDs;
+        HardGUIDs.reserve(ObjectToIndexMap.size());
         for (const auto& [Obj, Idx] : ObjectToIndexMap)
         {
-            Out[Idx] = FObjectImport(Obj);
+            FObjectImport Entry(Obj);
+            Entry.Type = EDependencyType::Hard;
+            HardGUIDs.insert(Entry.ObjectGUID);
+            Out[Idx] = Move(Entry);
+        }
+
+        // Append soft imports that weren't already pulled in as hard. They
+        // have no data-stream index — the FSoftObjectPath already wrote its
+        // own Path+GUID inline. They live here purely so AssetRegistry +
+        // FCookGraph see a typed dependency edge.
+        //
+        // Sort first so cook output is reproducible: SoftReferencedGUIDs is
+        // a hash_set and iterates in undefined order; without sorting,
+        // identical sources can produce byte-different packages.
+        TVector<FGuid> SortedSoft;
+        SortedSoft.reserve(SoftReferencedGUIDs.size());
+        for (const FGuid& Guid : SoftReferencedGUIDs)
+        {
+            if (HardGUIDs.find(Guid) != HardGUIDs.end()) continue;
+            SortedSoft.push_back(Guid);
+        }
+        eastl::sort(SortedSoft.begin(), SortedSoft.end());
+        for (const FGuid& Guid : SortedSoft)
+        {
+            Out.emplace_back(Guid, EDependencyType::Soft);
         }
     }
 }

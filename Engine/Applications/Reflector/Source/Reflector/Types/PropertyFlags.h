@@ -68,6 +68,7 @@ void EnumRemoveFlags(Enum& Flags, Enum FlagsToRemove)
         // Other types
         Bool,
         Object,
+        SoftObject,
         Class,
         Name,
         String,
@@ -92,6 +93,9 @@ void EnumRemoveFlags(Enum& Flags, Enum FlagsToRemove)
         Script          = BIT(8),
         Builtin         = BIT(9),
         BulkSerialize   = BIT(10),
+        // Property exists only for editor tooling. Stripped from cooked
+        // packages (see CStruct::SerializeTaggedProperties + FArchive::IsCooking).
+        EditorOnly      = BIT(11),
     };
 
     ENUM_CLASS_FLAGS(EPropertyFlags)
@@ -128,6 +132,7 @@ void EnumRemoveFlags(Enum& Flags, Enum FlagsToRemove)
         AppendFlag(EPropertyFlags::Script, "Lumina::EPropertyFlags::Script");
         AppendFlag(EPropertyFlags::Builtin, "Lumina::EPropertyFlags::Builtin");
         AppendFlag(EPropertyFlags::BulkSerialize, "Lumina::EPropertyFlags::BulkSerialize");
+        AppendFlag(EPropertyFlags::EditorOnly, "Lumina::EPropertyFlags::EditorOnly");
 
         return Result;
     }

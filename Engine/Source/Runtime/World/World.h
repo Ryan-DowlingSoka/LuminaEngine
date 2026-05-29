@@ -98,6 +98,11 @@ namespace Lumina
         FUNCTION(Script)
         entt::entity SpawnPrefab(const FName& Path);
 
+        /** Like SpawnPrefab(Path), but positions the spawned root at SpawnTransform and
+         *  optionally reparents under Parent (entt::null = world root). */
+        FUNCTION(Script)
+        entt::entity SpawnPrefabAt(const FName& Path, const FTransform& SpawnTransform, entt::entity Parent = entt::null);
+
         /**
          * Shatter a destructible entity into physics-driven fragments. Origin is the
          * world-space blast point fragments are pushed away from; Strength is the
@@ -216,6 +221,7 @@ namespace Lumina
         void OnScriptComponentCreated(entt::entity Entity, SScriptComponent& ScriptComponent, bool bRunReady);
         void OnScriptComponentDestroyed(entt::registry& Registry, entt::entity Entity);
         void OnWidgetComponentDestroyed(entt::registry& Registry, entt::entity Entity);
+        void OnInputComponentDestroyed(entt::registry& Registry, entt::entity Entity);
 
         // Hot-reload entry point: drop the existing script binding on this component
         // and run the OnScriptComponentCreated bind path again with the freshly

@@ -38,7 +38,7 @@ namespace Lumina
 
         FORCEINLINE float GetNear() const { return Near; }
         FORCEINLINE float GetFar() const { return Far; }
-        FORCEINLINE FFrustum GetFrustum() const;
+        FFrustum GetFrustum() const;
         FORCEINLINE float GetFOV() const { return FOV; }
         FORCEINLINE float GetAspectRatio() const { return AspectRatio; }
 

@@ -67,7 +67,7 @@ namespace Lumina
     {
         return World->CastSphere(Settings);
     }
-
+    
     STransformComponent& FSystemContext::GetEntityTransform(entt::entity Entity) const
     {
         return Get<STransformComponent>(Entity);

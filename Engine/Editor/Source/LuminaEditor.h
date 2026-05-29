@@ -24,7 +24,20 @@ namespace Lumina
         IDevelopmentToolUI* CreateDevelopmentTools() override;
         #endif
 
-        void CreateProject(FStringView NewProjectName, FStringView NewProjectPath);
+        /**
+         * Creates a new project on disk from the Blank template.
+         * Returns true on success and fills OutProjectFile with the absolute
+         * path to the generated .lproject. On failure, returns false and
+         * writes a human-readable reason into OutError.
+         */
+        bool CreateProject(FStringView NewProjectName, FStringView NewProjectPath, FFixedString& OutProjectFile, FString& OutError);
+
+        /**
+         * Synchronously runs the project's GenerateProject.bat in a detached
+         * console so the user can watch premake's output. Returns true if the
+         * spawn succeeded; the user closes the console when premake finishes.
+         */
+        bool GenerateProjectFiles(FStringView ProjectDirectory) const;
 
     protected:
 

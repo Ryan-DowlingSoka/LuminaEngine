@@ -1,7 +1,10 @@
 {
     "Project": {
+        "CookRoots": [
+            "/Game/NewWorld.lasset"
+        ],
         "EditorStartupMap": "",
-        "GameStartupMap": "/Game/CarGame/L_RaceTrack.lasset",
+        "GameStartupMap": "/Game/NewWorld.lasset",
         "LuaModuleFile": "/Game/Scripts/SandboxModule.luau"
     }
 }

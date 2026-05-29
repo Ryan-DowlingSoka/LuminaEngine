@@ -195,11 +195,29 @@ namespace Lumina::Physics
     	// each allocating its own. Thread-safe: called from the parallel body build.
     	JPH::ShapeRefC GetOrCreateSphereShape(float Radius);
     	JPH::ShapeRefC GetOrCreateBoxShape(const FVector3& HalfExtent);
+    	JPH::ShapeRefC GetOrCreateCapsuleShape(float Radius, float HalfHeight);
+    	JPH::ShapeRefC GetOrCreateCylinderShape(float Radius, float HalfHeight, float CapRadius);
 
     	// Mesh-collider (convex hull / triangle mesh) shape, cached by mesh + scale + convexity so
     	// fracture shards built from the same shared piece meshes reuse one hull instead of each
     	// re-running QuickHull. Builds outside the lock so parallel distinct-mesh builds don't serialize.
     	JPH::ShapeRefC GetOrCreateMeshShape(const CMesh* Mesh, const FVector3& Scale, bool bConvex);
+
+    	// Per-body material data consumed by the contact listener's OverrideFrictionAndRestitution.
+    	struct FBodyMaterialEntry
+    	{
+    		float	Friction            = 0.0f;
+    		float	Restitution         = 0.0f;
+    		uint8	FrictionCombine     = 0;    // EPhysicsMaterialCombineMode
+    		uint8	RestitutionCombine  = 0;
+    		bool	bHasMaterial        = false;
+    	};
+
+    	// Side-table accessors for the contact listener. GetBodyMaterial is hot-path (called per
+    	// contact pair during the physics step) and never resizes; Store/Clear run game-thread only.
+    	void StoreBodyMaterial(JPH::BodyID BodyID, const struct FRigidBodyBuildResult& Build);
+    	void ClearBodyMaterial(JPH::BodyID BodyID);
+    	const FBodyMaterialEntry* GetBodyMaterial(JPH::BodyID BodyID) const;
 
     private:
     	
@@ -295,6 +313,11 @@ namespace Lumina::Physics
     	
     	FMutex										ContactQueueMutex;
     	TVector<FContactRecord>						PendingContacts;
+
+    	// Per-body material side table. Indexed by JPH::BodyID::GetIndex() and sized once at scene
+    	// init to MaxPhysicsBodies, so the contact listener reads it without locking. Writes are
+    	// game-thread-only (between physics steps).
+    	TVector<FBodyMaterialEntry>					BodyMaterials;
 
     	float										Accumulator = 0.0f;
     	uint32										CollisionSteps = 0;

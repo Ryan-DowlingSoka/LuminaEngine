@@ -2,6 +2,7 @@
 #include "PakArchive.h"
 #include <fstream>
 #include "miniz.h"
+#include "Core/Math/Hash/Hash.h"
 #include "Core/Templates/LuminaTemplate.h"
 #include "Log/Log.h"
 #include "Memory/SmartPtr.h"
@@ -41,6 +42,7 @@ namespace Lumina
             uint64 Offset;
             uint64 CompressedSize;
             uint64 UncompressedSize;
+            uint64 ContentHash;     // v3: xxh64 of uncompressed bytes; verified on load.
             uint8  Method;
         };
     }
@@ -124,6 +126,7 @@ namespace Lumina
             if (!ReadPOD(Data, Size, Cursor, P.Offset)
              || !ReadPOD(Data, Size, Cursor, P.CompressedSize)
              || !ReadPOD(Data, Size, Cursor, P.UncompressedSize)
+             || !ReadPOD(Data, Size, Cursor, P.ContentHash)
              || !ReadPOD(Data, Size, Cursor, P.Method)
              || Cursor + sizeof(Pad) > Size)
             {
@@ -183,6 +186,19 @@ namespace Lumina
                 LOG_ERROR("FPakArchive: entry '{}' has unknown compression method {}",
                     P.Path.c_str(), (uint32)P.Method);
                 return nullptr;
+            }
+
+            // Verify v3 per-entry hash on the just-decompressed bytes.
+            // Hash of 0 means "not set" (legacy / empty); accept silently.
+            if (P.ContentHash != 0 && P.UncompressedSize > 0)
+            {
+                const uint64 Actual = Hash::XXHash::GetHash64(Dst, (size_t)P.UncompressedSize);
+                if (Actual != P.ContentHash)
+                {
+                    LOG_ERROR("FPakArchive: content hash mismatch for '{}' (expected 0x{:016X}, got 0x{:016X}); PAK is corrupt",
+                        P.Path.c_str(), P.ContentHash, Actual);
+                    return nullptr;
+                }
             }
 
             FPakEntry Entry{};

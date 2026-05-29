@@ -6,6 +6,8 @@
 #include "RHIGlobals.h"
 #include "slang-com-ptr.h"
 #include "slang.h"
+#include "Core/Plugin/Plugin.h"
+#include "Core/Plugin/PluginManager.h"
 #include "Core/Serialization/MemoryArchiver.h"
 #include "Core/Utils/Defer.h"
 #include "ErrorHandling/CrashTracker.h"
@@ -199,9 +201,28 @@ namespace Lumina
                 SessionDesc.targets     = &TargetDesc;
                 SessionDesc.targetCount = 1;
 
-                const char* SearchPaths[] = { "/Engine/Resources/Shaders" };
-                SessionDesc.searchPaths     = SearchPaths;
-                SessionDesc.searchPathCount = 1;
+                // Engine first, then every enabled plugin's Shaders/ root. The
+                // resolved roots vector keeps the FString backing live across the
+                // Slang call; SearchPaths just holds pointers into it.
+                TVector<FString>     SlangSearchRoots;
+                TVector<const char*> SearchPaths;
+                SlangSearchRoots.reserve(8);
+                SlangSearchRoots.emplace_back("/Engine/Resources/Shaders");
+                for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
+                {
+                    if (!Plugin->IsEnabled())        continue;
+                    if (!Plugin->IsContentMounted()) continue;
+                    FString Root = Plugin->GetMountAlias();
+                    Root += "/Shaders";
+                    if (VFS::Exists(Root))
+                    {
+                        SlangSearchRoots.emplace_back(Move(Root));
+                    }
+                }
+                SearchPaths.reserve(SlangSearchRoots.size());
+                for (const FString& R : SlangSearchRoots) SearchPaths.push_back(R.c_str());
+                SessionDesc.searchPaths     = SearchPaths.data();
+                SessionDesc.searchPathCount = (SlangInt)SearchPaths.size();
                 
                 TVector<slang::PreprocessorMacroDesc> Macros;
                 Macros.reserve(Options[i].MacroDefinitions.size());
@@ -377,13 +398,29 @@ namespace Lumina
         slang::createGlobalSession(SLangGlobalSession.writeRef());
 
         TVector<FString> Shaders;
-        VFS::DirectoryIterator("/Engine/Resources/Shaders", [&](const VFS::FFileInfo& Info)
+        auto EnumerateShadersUnder = [&](FStringView Root)
         {
-            if (Info.GetExt() == ".slang")
+            VFS::DirectoryIterator(Root, [&](const VFS::FFileInfo& Info)
             {
-                Shaders.emplace_back(Info.VirtualPath.c_str());
+                if (Info.GetExt() == ".slang")
+                {
+                    Shaders.emplace_back(Info.VirtualPath.c_str());
+                }
+            });
+        };
+
+        EnumerateShadersUnder("/Engine/Resources/Shaders");
+        for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
+        {
+            if (!Plugin->IsEnabled())        continue;
+            if (!Plugin->IsContentMounted()) continue;
+            FString Root = Plugin->GetMountAlias();
+            Root += "/Shaders";
+            if (VFS::Exists(Root))
+            {
+                EnumerateShadersUnder(FStringView(Root.c_str(), Root.size()));
             }
-        });
+        }
 
         if (Shaders.empty())
         {

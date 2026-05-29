@@ -453,6 +453,27 @@ namespace Lumina
             }
             ImGuiX::TextTooltip("{}", "Save this entity (and its descendants) as a reusable prefab asset.");
 
+            // Detach: only on a prefab instance root. After detach the entities become plain
+            // and stop syncing to the source asset.
+            if (const SPrefabInstanceComponent* Instance = Registry.try_get<SPrefabInstanceComponent>(Data.Entity);
+                Instance != nullptr && Instance->bIsRoot)
+            {
+                if (ImGui::MenuItem(LE_ICON_LINK_VARIANT_OFF " Detach from Prefab"))
+                {
+                    BeginTransaction();
+                    if (CPrefab::DetachInstance(World, Data.Entity))
+                    {
+                        EndTransaction("Detach from Prefab");
+                        OutlinerListView.MarkTreeDirty();
+                    }
+                    else
+                    {
+                        PendingBeforeState.clear();
+                    }
+                }
+                ImGuiX::TextTooltip("{}", "Unlink this instance from its source prefab; the entities become plain and stop syncing.");
+            }
+
             if (!bLocked && ImGui::MenuItem("Delete"))
             {
                 EntityDestroyRequests.push(Data.Entity);
@@ -2031,6 +2052,26 @@ namespace Lumina
                     ImGui::CloseCurrentPopup();
                 }
                 ImGuiX::TextTooltip("{}", "Save the selection as a reusable prefab asset. Children of selected entities are included automatically.");
+
+                if (const SPrefabInstanceComponent* Instance = Registry.try_get<SPrefabInstanceComponent>(LastSelectedEntity);
+                    Instance != nullptr && Instance->bIsRoot)
+                {
+                    if (ImGui::MenuItem(LE_ICON_LINK_VARIANT_OFF " Detach from Prefab"))
+                    {
+                        BeginTransaction();
+                        if (CPrefab::DetachInstance(World, LastSelectedEntity))
+                        {
+                            EndTransaction("Detach from Prefab");
+                            OutlinerListView.MarkTreeDirty();
+                        }
+                        else
+                        {
+                            PendingBeforeState.clear();
+                        }
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGuiX::TextTooltip("{}", "Unlink this instance from its source prefab; the entities become plain and stop syncing.");
+                }
 
                 ImGui::Spacing();
                 ImGui::Separator();

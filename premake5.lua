@@ -7,6 +7,7 @@ if _ACTION == "setup" then return end
 include "BuildScripts/Dependencies"
 include "BuildScripts/Workspace"
 include "BuildScripts/Module"
+include "BuildScripts/PluginDiscovery"
 include "BuildScripts/Actions/Reflection"
 include "BuildScripts/Actions/Clean"
 
@@ -36,6 +37,15 @@ LuminaWorkspaceSettings({
         include "Engine/Editor"
         include "Engine/Sandbox"
 	group ""
+
+    -- Engine plugins drop in here automatically: anything under
+    -- Engine/Plugins/<Name>/<Name>.lua gets included as projects in the
+    -- "Plugins" group. The runtime side (FPluginManager) walks the same
+    -- folder at startup, parses .lplugin descriptors, and loads the
+    -- matching DLLs per phase.
+    group "Plugins"
+        LuminaDiscoverEnginePlugins()
+    group ""
 
     group "Applications"
     	include "Engine/Applications/Lumina"

@@ -35,6 +35,9 @@
 #include <Events/Event.h>
 #include <FileSystem/FileInfo.h>
 #include <Memory/SmartPtr.h>
+#include <Core/Plugin/Plugin.h>
+#include <Core/Plugin/PluginManager.h>
+#include <Memory/SmartPtr.h>
 #include <Platform/Filesystem/DirectoryWatcher.h>
 #include <Platform/GenericPlatform.h>
 #include <Platform/Platform.h>
@@ -949,77 +952,110 @@ namespace Lumina
 
     void FContentBrowserEditorTool::OnProjectLoaded()
     {
-        FFixedString ScriptPath = GEditorEngine->GetProjectContentDirectory();
-        Paths::Normalize(ScriptPath);
-
-        // Strip any trailing separator so the prefix length is unambiguous.
-        while (!ScriptPath.empty() && (ScriptPath.back() == '/' || ScriptPath.back() == '\\'))
+        // Tear down any prior set; project reload (or plugin reconfiguration)
+        // rebuilds it from scratch. FDirectoryWatcher's destructor stops its
+        // worker thread, so just clearing the vector is safe.
+        for (FContentWatcher& W : Watchers)
         {
-            ScriptPath.pop_back();
+            if (W.Watcher) W.Watcher->Stop();
         }
+        Watchers.clear();
 
-        const size_t WatchRootLen = ScriptPath.size();
-
-        auto MakeVirtualPath = [WatchRootLen](FStringView AbsPath) -> FFixedString
+        auto TrimTrailingSeparators = [](FFixedString& Path)
         {
-            // Virtual path = "/Game" + tail past watcher root (both pre-normalized to forward slashes).
-            FFixedString Out;
-            Out.append_convert("/Game");
-            if (AbsPath.size() > WatchRootLen)
+            while (!Path.empty() && (Path.back() == '/' || Path.back() == '\\'))
             {
-                FStringView Tail = AbsPath.substr(WatchRootLen);
-                if (!Tail.empty() && Tail.front() != '/')
-                {
-                    Out.append_convert("/");
-                }
-                Out.append_convert(Tail.data(), Tail.size());
+                Path.pop_back();
             }
-            return Out;
         };
 
-        Watcher.Stop();
-        Watcher.Watch(ScriptPath, [this, MakeVirtualPath](const FFileEvent& Event)
+        auto SpawnWatcher = [this, &TrimTrailingSeparators](FFixedString DiskRoot, FStringView VirtualPrefix)
         {
-            const FFixedString RelativePath = MakeVirtualPath(Event.Path);
+            Paths::Normalize(DiskRoot);
+            TrimTrailingSeparators(DiskRoot);
+            if (DiskRoot.empty()) return;
 
-            // Central content-change signal: subsystems (UI hot-reload, etc.) subscribe and
-            // filter by extension, so none has to run its own watcher or hard-code paths.
-            FCoreDelegates::OnContentFileModified.Broadcast(FStringView(RelativePath.c_str(), RelativePath.size()));
+            FContentWatcher Entry;
+            Entry.VirtualPrefix.assign_convert(VirtualPrefix.data(), VirtualPrefix.size());
+            Entry.WatchRootLen = DiskRoot.size();
+            Entry.Watcher      = MakeUnique<FDirectoryWatcher>();
 
-            if (!VFS::HasExtension(Event.Path, ".luau"))
+            // Capture the prefix + root length by value so the callback is
+            // self-contained even if Watchers ever reallocates (we hold
+            // TUniquePtr<FDirectoryWatcher>, so the watcher itself is stable).
+            const FFixedString Prefix = Entry.VirtualPrefix;
+            const size_t       RootLen = Entry.WatchRootLen;
+
+            auto MakeVirtualPath = [Prefix, RootLen](FStringView AbsPath) -> FFixedString
             {
-                return;
-            }
-
-            switch (Event.Action)
-            {
-            case EFileAction::Added:
+                FFixedString Out;
+                Out.append_convert(Prefix.c_str(), Prefix.size());
+                if (AbsPath.size() > RootLen)
                 {
+                    FStringView Tail = AbsPath.substr(RootLen);
+                    if (!Tail.empty() && Tail.front() != '/')
+                    {
+                        Out.append_convert("/");
+                    }
+                    Out.append_convert(Tail.data(), Tail.size());
+                }
+                return Out;
+            };
+
+            Entry.Watcher->Watch(DiskRoot, [this, MakeVirtualPath](const FFileEvent& Event)
+            {
+                const FFixedString RelativePath = MakeVirtualPath(Event.Path);
+
+                // Central content-change signal: subsystems (UI hot-reload, etc.) subscribe and
+                // filter by extension, so none has to run its own watcher or hard-code paths.
+                FCoreDelegates::OnContentFileModified.Broadcast(FStringView(RelativePath.c_str(), RelativePath.size()));
+
+                if (!VFS::HasExtension(Event.Path, ".luau"))
+                {
+                    return;
+                }
+
+                switch (Event.Action)
+                {
+                case EFileAction::Added:
                     Lua::FScriptingContext::Get().ScriptCreated(RelativePath);
                     RefreshContentBrowser();
-                }
-                break;
-            case EFileAction::Modified:
-                {
+                    break;
+                case EFileAction::Modified:
                     Lua::FScriptingContext::Get().ScriptReloaded(RelativePath);
                     RefreshContentBrowser();
-                }
-                break;
-            case EFileAction::Removed:
-                {
+                    break;
+                case EFileAction::Removed:
                     Lua::FScriptingContext::Get().ScriptDeleted(RelativePath);
                     RefreshContentBrowser();
-                }
-                break;
-            case EFileAction::Renamed:
+                    break;
+                case EFileAction::Renamed:
                 {
                     FFixedString RelativeOldPath = MakeVirtualPath(Event.OldPath);
                     Lua::FScriptingContext::Get().ScriptRenamed(RelativePath, RelativeOldPath);
                     RefreshContentBrowser();
+                    break;
                 }
-                break;
-            }
-        });
+                }
+            });
+
+            Watchers.emplace_back(Move(Entry));
+        };
+
+        // Project's /Game content. Always present.
+        SpawnWatcher(FFixedString(GEditorEngine->GetProjectContentDirectory()), FStringView("/Game"));
+
+        // Every enabled plugin with a content mount. Same callback shape,
+        // virtual prefix is the plugin's mount alias ("/<PluginName>").
+        for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
+        {
+            if (!Plugin->IsEnabled())        continue;
+            if (!Plugin->IsContentMounted()) continue;
+            const FString Disk  = Plugin->GetContentDirectory();
+            const FString Mount = Plugin->GetMountAlias();
+            SpawnWatcher(FFixedString(Disk.c_str(), Disk.size()),
+                         FStringView(Mount.c_str(), Mount.size()));
+        }
     }
 
     void FContentBrowserEditorTool::TryImport(const FFixedString& Path)

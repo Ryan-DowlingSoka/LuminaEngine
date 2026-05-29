@@ -47,22 +47,30 @@ namespace Lumina
     void SPathFollowSystem::Update(const FSystemContext& Context) noexcept
     {
         LUMINA_PROFILE_SCOPE();
+        
+        constexpr FVector3 Lift(0.0f, 0.1f, 0.0f);
+        constexpr FVector4 PathColor(0.4f, 0.8f, 1.0f, 1.0f);
+        constexpr FVector4 ActiveSegmentColor(1.0f, 0.95f, 0.2f, 1.0f);
+        constexpr FVector4 GoalColor(1.0f, 0.4f, 0.4f, 1.0f);
 
         const float DeltaTime = (float)Context.GetDeltaTime();
-        auto View = Context.CreateView<SPathFollowComponent, STransformComponent>();
+        auto View = Context.CreateView<SPathFollowComponent>();
         auto Handle = View.handle();
-        if (Handle->empty()) return;
+        if (Handle->empty())
+        {
+            return;
+        }
 
         // Bulk-resolve before the parallel body; body must NOT mutate any transform.
         ECS::Utils::ResolveAllDirtyTransforms(Context.GetRegistry());
 
-        Task::ParallelFor(Handle->size(), [&](uint32 Index)
+        auto&& TransformStorage = Context.GetRegistry().storage<STransformComponent>();
+        Task::ParallelFor((uint32)Handle->size(), [&](uint32 Index)
         {
             entt::entity Entity = (*Handle)[Index];
-            if (!View.contains(Entity)) return;
-
-            SPathFollowComponent& Comp = View.get<SPathFollowComponent>(Entity);
-            STransformComponent&  Xform = View.get<STransformComponent>(Entity);
+            
+            SPathFollowComponent& Comp  = View.get<SPathFollowComponent>(Entity);
+            STransformComponent&  Xform = TransformStorage.get(Entity);
 
             Comp.TimeSinceLastPath += DeltaTime;
 
@@ -151,24 +159,12 @@ namespace Lumina
                     CC->AddMovementInput(Move);
                 }
             }
-        });
-
-        // Sequential: line batcher push_back is not thread-safe.
-        const FVector3 Lift(0.0f, 0.1f, 0.0f);
-        const FVector4 PathColor(0.4f, 0.8f, 1.0f, 1.0f);
-        const FVector4 ActiveSegmentColor(1.0f, 0.95f, 0.2f, 1.0f);
-        const FVector4 GoalColor(1.0f, 0.4f, 0.4f, 1.0f);
-        for (entt::entity Entity : View)
-        {
-            SPathFollowComponent& Comp = View.get<SPathFollowComponent>(Entity);
+            
             if (!Comp.bDrawDebugPath || Comp.CornerCount == 0)
             {
-                continue;
+                return;
             }
-            STransformComponent& Xform = View.get<STransformComponent>(Entity);
-            // Same fresh-as-of-top-of-Update guarantee from the bulk resolve.
-            const FVector3 AgentPos = Xform.WorldTransform.Location + Lift;
-
+            
             // Active segment from the agent to the next pending corner.
             const int32 Cur = std::min(Comp.CurrentCorner, Comp.CornerCount - 1);
             Context.DrawDebugLine(AgentPos, Comp.PathCorners[Cur] + Lift, ActiveSegmentColor, 2.0f, -1.0f);
@@ -179,11 +175,9 @@ namespace Lumina
                 Context.DrawDebugLine(Comp.PathCorners[i] + Lift, Comp.PathCorners[i + 1] + Lift, PathColor, 1.5f, -1.0f);
             }
 
-            // Goal marker (small horizontal cross at the final corner).
-            const FVector3 Goal = Comp.PathCorners[Comp.CornerCount - 1] + Lift;
             const float CrossSize = std::max(Comp.AcceptanceRadius, 0.25f);
             Context.DrawDebugLine(Goal - FVector3(CrossSize, 0, 0), Goal + FVector3(CrossSize, 0, 0), GoalColor, 1.5f, -1.0f);
             Context.DrawDebugLine(Goal - FVector3(0, 0, CrossSize), Goal + FVector3(0, 0, CrossSize), GoalColor, 1.5f, -1.0f);
-        }
+        });
     }
 }

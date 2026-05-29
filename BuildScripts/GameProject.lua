@@ -44,6 +44,7 @@
 
 assert(LuminaConfig, "GameProject.lua: include BuildScripts/Dependencies first")
 include(path.join(_SCRIPT_DIR, "Workspace.lua"))
+include(path.join(_SCRIPT_DIR, "PluginDiscovery.lua"))
 
 
 -- Standard third-party dependencies every Lumina game project links. Engine
@@ -72,6 +73,25 @@ local function SetupProject(Def)
         -- pull in RUNTIME_API / EDITOR_API / etc.
         forceincludes { Def.Name .. "API.h" }
 
+        -- Ensure the matching-config engine libraries exist before building
+        -- this game project. First-time builds against an unbuilt engine
+        -- config (e.g. game Debug against an engine that's only been built
+        -- Development) used to fail with "Runtime-Debug.lib not found"; the
+        -- script transparently invokes msbuild on Lumina.sln and is a no-op
+        -- once the libs exist. See BuildScripts/EnsureEngineBuilt.bat.
+        local LuminaDirForBat = os.getenv("LUMINA_DIR")
+        if LuminaDirForBat then
+            local EnsureBat = '"' .. path.translate(path.join(LuminaDirForBat, "BuildScripts", "EnsureEngineBuilt.bat"), "\\") .. '"'
+
+            filter "configurations:Debug"
+                prebuildcommands { EnsureBat .. " Debug" }
+            filter "configurations:Development"
+                prebuildcommands { EnsureBat .. " Development" }
+            filter "configurations:Shipping"
+                prebuildcommands { EnsureBat .. " Shipping" }
+            filter {}
+        end
+
         -- Reflection: run the project-local ReflectionRunner.bat so premake
         -- processes THIS project's premake5.lua and generates its own
         -- ReflectionUnity.gen.cpp scoped to this project's headers.
@@ -99,6 +119,11 @@ local function SetupProject(Def)
         for _, Pattern in ipairs(Def.ExtraFiles or {}) do
             table.insert(FilePatterns, Pattern)
         end
+
+        -- Single canonical EASTL allocator binding from the engine install;
+        -- the game DLL needs its own compiled copy so eastl::allocator has the
+        -- right `dllimport` decoration in this image.
+        table.insert(FilePatterns, LuminaConfig.GetEASTLImplFile())
 
         files(FilePatterns)
 
@@ -185,6 +210,29 @@ local function SetupProject(Def)
             links(Def.ExtraLinks)
         end
 
+        -- Visual Studio debugger wiring: F5 in the game's .sln launches the
+        -- editor with this project pre-loaded, so breakpoints in the game DLL
+        -- are hit as soon as IMPLEMENT_MODULE runs. Mirrors the UE workflow.
+        --
+        -- Engine binaries are resolved at generate time via LUMINA_DIR; the
+        -- project's own premake5.lua already asserts that variable is set.
+        local LuminaDir = os.getenv("LUMINA_DIR")
+        if LuminaDir then
+            local EngineBin = path.join(LuminaDir, "Binaries", "Windows64")
+            local LprojPath = path.join("%{wks.location}", Def.Name .. ".lproject")
+
+            debugdir(EngineBin)
+            debugargs { "--Project=\"" .. LprojPath .. "\"" }
+
+            filter "configurations:Debug"
+                debugcommand(path.join(EngineBin, "Lumina-Debug.exe"))
+            filter "configurations:Development"
+                debugcommand(path.join(EngineBin, "Lumina-Development.exe"))
+            filter "configurations:Shipping"
+                debugcommand(path.join(EngineBin, "Lumina-Shipping.exe"))
+            filter {}
+        end
+
         -- Editor platform: link the Editor module (+ extras), expose its
         -- headers and the editor-only third-party the engine exposes.
         local EditorBaseLinks = { "Editor" }
@@ -223,11 +271,22 @@ function LuminaGameProject(Def)
     Def.Dependencies = Def.Dependencies or DefaultGameDependencies
 
     LuminaWorkspaceSettings({
-        Name         = Def.Name,
-        StartProject = Def.Name,
-        TargetDir    = path.join("%{wks.location}", "Binaries", LuminaConfig.OutputDirectory),
-        ObjDir       = path.join("%{wks.location}", "Intermediates", "Obj", LuminaConfig.OutputDirectory, "%{prj.name}"),
+        Name           = Def.Name,
+        StartProject   = Def.Name,
+        TargetDir      = path.join("%{wks.location}", "Binaries", LuminaConfig.OutputDirectory),
+        ObjDir         = path.join("%{wks.location}", "Intermediates", "Obj", LuminaConfig.OutputDirectory, "%{prj.name}"),
+        -- Default to Development for game projects — Debug is ~3x slower to
+        -- compile and rarely needed for iteration; users can still pick it.
+        Configurations = { "Development", "Debug", "Shipping" },
     })
 
     SetupProject(Def)
+
+    -- Engine plugins ship pre-built with the engine; we don't re-include
+    -- them here (they already live in Lumina.sln's "Plugins" group). Only
+    -- project-local plugins under <Project>/Plugins/ get added to the
+    -- game's .sln. The runtime side loads both kinds at startup.
+    group "Plugins"
+        LuminaDiscoverPlugins(path.join(_MAIN_SCRIPT_DIR, "Plugins"))
+    group ""
 end

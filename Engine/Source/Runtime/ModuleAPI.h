@@ -12,6 +12,17 @@
 
 #ifndef REFLECTION_PARSER
 
+// Monolithic builds (LUMINA_MONOLITHIC, set in Shipping config by
+// Workspace.lua) link every module statically into one image, so the
+// dllexport/dllimport dance is not just unnecessary -- it's wrong.
+// Define the macros as empty BEFORE the per-module blocks so each
+// module's #ifndef-guarded block silently skips.
+#ifdef LUMINA_MONOLITHIC
+	#define RUNTIME_API
+	#define EDITOR_API
+	#define SANDBOX_API
+#endif
+
 // Runtime
 #ifndef RUNTIME_API
 	#ifdef RUNTIME_EXPORTS

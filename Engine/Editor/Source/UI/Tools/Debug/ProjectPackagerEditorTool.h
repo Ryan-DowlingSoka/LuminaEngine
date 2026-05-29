@@ -11,9 +11,11 @@ namespace Lumina
 {
     /**
      * Editor tool for packaging the project — Godot-style "Export":
-     *   1. Cooks the asset graph rooted at Project.GameStartupMap into a .pak
+     *   1. Cooks the asset graph rooted at FEngine::GetCookRoots() — union
+     *      of project + enabled-plugin CookRoots[] + every asset flagged
+     *      EAssetFlags::Primary — into one .pak per chunk.
      *   2. Optionally invokes MSBuild to produce the Game|Shipping executable
-     *   3. Copies the resulting exe + DLLs alongside the .pak
+     *   3. Copies the resulting exe + DLLs alongside the .pak set
      *
      * The cook step runs on the main thread (touches the asset registry +
      * CObject system, both racy with engine GC), but the long MSBuild +
@@ -90,8 +92,18 @@ namespace Lumina
         EStage              Stage           = EStage::Idle;
         bool                bLastSuccess    = false;
         FString             LastError;
-        FString             LastPakPath;
+        FString             LastPakPath;       // Main chunk PAK; reused for "Open Output".
         FString             LastOutputDir;
+        // One entry per chunk PAK written by the last successful cook
+        // (Main always present; UI/Script/Primary/etc. only when in-use).
+        struct FChunkSummary
+        {
+            FString Name;
+            FString Path;
+            size_t  Assets = 0;
+            size_t  Bytes  = 0;
+        };
+        TVector<FChunkSummary> LastChunks;
         TVector<FString>    LogLines;           // ring-bounded; UI thread only
         bool                bAutoScroll     = true;
 

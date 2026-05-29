@@ -49,14 +49,22 @@ namespace Lumina::Logging
 			// Non-fatal; fall back to console-only logging.
 		}
 
-		// Floor at warn when verbose macros are stripped (Shipping); avoids unfiltered direct calls.
+		// Verbose build: every macro emits, including TRACE/DEBUG. Non-verbose
+		// (Shipping): TRACE/DEBUG/INFO macros expand to nothing at compile
+		// time, but LOG_DISPLAY still emits at info severity — so the
+		// runtime filter must accept info too, otherwise DISPLAY lines get
+		// silently dropped at the spdlog level and Shipping post-mortems
+		// have no boot breadcrumbs (which is exactly the bug LOG_DISPLAY
+		// exists to fix).
 		#if defined(LUMINA_VERBOSE_LOGGING)
 		Logger->set_level(spdlog::level::trace);
 		#else
-		Logger->set_level(spdlog::level::warn);
+		Logger->set_level(spdlog::level::info);
 		#endif
 		// Flush eagerly so the last lines before a crash reach disk.
-		Logger->flush_on(spdlog::level::warn);
+		// Including info so LOG_DISPLAY boot breadcrumbs survive a hang
+		// before any warn fires.
+		Logger->flush_on(spdlog::level::info);
 
 		LOG_TRACE("------- Log Initialized -------");
 	}

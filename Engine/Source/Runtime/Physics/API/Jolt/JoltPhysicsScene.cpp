@@ -8,6 +8,7 @@
 #include "Physics/Ray/RayCast.h"
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #if JPH_DEBUG_RENDERER
 #include <Jolt/Renderer/DebugRendererSimple.h>
@@ -29,6 +30,7 @@
 #include "Jolt/Physics/Collision/Shape/HeightFieldShape.h"
 #include "Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h"
 #include "Assets/AssetTypes/Mesh/StaticMesh/StaticMesh.h"
+#include "Assets/AssetTypes/PhysicsMaterial/PhysicsMaterial.h"
 #include "Renderer/MeshData.h"
 #include "Renderer/RendererUtils.h"
 #include "World/World.h"
@@ -229,6 +231,10 @@ namespace Lumina::Physics
 
     void FJoltContactListener::OnContactAdded(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings)
     {
+        // Apply per-material combine first so the constraint uses the right friction/restitution
+        // (Jolt invokes this once per contact pair per step before solving).
+        OverrideFrictionAndRestitution(inBody1, inBody2, inManifold, ioSettings);
+
         if (Scene)
         {
             Scene->EnqueueContactRecord(BuildContactRecord(EContactEventType::Added, inBody1, inBody2, inManifold));
@@ -238,6 +244,9 @@ namespace Lumina::Physics
     void FJoltContactListener::OnContactPersisted(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings)
     {
         // Persisted contacts fire every step and would drown the bus; Enter/Exit cover the script use case.
+        // Material combine still has to run each step or the resting-contact response would silently
+        // revert to Jolt's default combiner.
+        OverrideFrictionAndRestitution(inBody1, inBody2, inManifold, ioSettings);
     }
 
     void FJoltContactListener::OnContactRemoved(const JPH::SubShapeIDPair& inSubShapePair)
@@ -362,7 +371,7 @@ namespace Lumina::Physics
             // Pass the script's `self` table as the first argument so the user can write
             // `function MyScript:OnContactBegin(Event)` and access self.Entity etc. The
             // event is pushed as a tagged userdata (one allocation, no per-field setfield).
-            Comp->Script->InvokeAsCoroutine(Func, Comp->Script->Reference, Event);
+            Func.Call(Comp->Script->Reference, Event);
         };
 
         for (const FContactRecord& Record : Drain)
@@ -377,13 +386,67 @@ namespace Lumina::Physics
         }
     }
 
+    namespace
+    {
+        // Combine a pair of values under a combine mode. The pair's effective mode is the max of
+        // each side's mode (Max > Min > Multiply > Average) so a "sticky" surface always wins.
+        FORCEINLINE float CombineUnder(EPhysicsMaterialCombineMode Mode, float A, float B)
+        {
+            switch (Mode)
+            {
+            case EPhysicsMaterialCombineMode::Min:      return Math::Min(A, B);
+            case EPhysicsMaterialCombineMode::Multiply: return A * B;
+            case EPhysicsMaterialCombineMode::Max:      return Math::Max(A, B);
+            case EPhysicsMaterialCombineMode::Average:
+            default:                                    return (A + B) * 0.5f;
+            }
+        }
+
+        FORCEINLINE EPhysicsMaterialCombineMode PairMode(uint8 A, uint8 B)
+        {
+            // Enum order (Average=0, Min=1, Multiply=2, Max=3) chosen so raw max yields the
+            // documented precedence.
+            return (EPhysicsMaterialCombineMode)Math::Max<uint8>(A, B);
+        }
+    }
+
     void FJoltContactListener::OverrideFrictionAndRestitution(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings)
     {
+        const auto* M1 = Scene->GetBodyMaterial(inBody1.GetID());
+        const auto* M2 = Scene->GetBodyMaterial(inBody2.GetID());
+
+        // No materials on either side: leave Jolt's defaults (already populated from the body's
+        // mFriction / mRestitution by the contact solver).
+        if ((M1 == nullptr || !M1->bHasMaterial) && (M2 == nullptr || !M2->bHasMaterial))
+        {
+            return;
+        }
+
+        const float F1 = (M1 && M1->bHasMaterial) ? M1->Friction       : inBody1.GetFriction();
+        const float R1 = (M1 && M1->bHasMaterial) ? M1->Restitution    : inBody1.GetRestitution();
+        const float F2 = (M2 && M2->bHasMaterial) ? M2->Friction       : inBody2.GetFriction();
+        const float R2 = (M2 && M2->bHasMaterial) ? M2->Restitution    : inBody2.GetRestitution();
+
+        const uint8 F1Mode = (M1 && M1->bHasMaterial) ? M1->FrictionCombine    : (uint8)EPhysicsMaterialCombineMode::Average;
+        const uint8 F2Mode = (M2 && M2->bHasMaterial) ? M2->FrictionCombine    : (uint8)EPhysicsMaterialCombineMode::Average;
+        const uint8 R1Mode = (M1 && M1->bHasMaterial) ? M1->RestitutionCombine : (uint8)EPhysicsMaterialCombineMode::Average;
+        const uint8 R2Mode = (M2 && M2->bHasMaterial) ? M2->RestitutionCombine : (uint8)EPhysicsMaterialCombineMode::Average;
+
+        ioSettings.mCombinedFriction    = CombineUnder(PairMode(F1Mode, F2Mode), F1, F2);
+        ioSettings.mCombinedRestitution = CombineUnder(PairMode(R1Mode, R2Mode), R1, R2);
     }
 
     void FJoltContactListener::GetFrictionAndRestitution(const JPH::Body& inBody, const JPH::SubShapeID& inSubShapeID, float& outFriction, float& outRestitution) const
     {
-        
+        const auto* M = Scene->GetBodyMaterial(inBody.GetID());
+        if (M != nullptr && M->bHasMaterial)
+        {
+            outFriction    = M->Friction;
+            outRestitution = M->Restitution;
+            return;
+        }
+        outFriction    = inBody.GetFriction();
+        outRestitution = inBody.GetRestitution();
     }
     
     FJoltPhysicsScene::FJoltPhysicsScene(CWorld* InWorld)
@@ -396,6 +459,10 @@ namespace Lumina::Physics
         
         JoltSystem->Init(InitSettings.MaxPhysicsBodies, 0, InitSettings.MaxPhysicsBodyPairs,
             InitSettings.MaxPhysicsContactConstraints, GJoltLayerInterface, GObjectVsBroadPhaseLayerFilter, GObjectVsObjectLayerFilter);
+
+        // Sized once to MaxPhysicsBodies; JPH::BodyID::GetIndex() is bounded by this so the
+        // contact-listener lookup is a bare array index with no resize race.
+        BodyMaterials.resize(InitSettings.MaxPhysicsBodies);
 
         FVector3 GravityDir = Math::LengthSquared(InitSettings.GravityDirection) > 0.0f
             ? Math::Normalize(InitSettings.GravityDirection) : FVector3(0.0f, -1.0f, 0.0f);
@@ -438,6 +505,8 @@ namespace Lumina::Physics
 
         Registry.on_construct<SSphereColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SBoxColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<SCapsuleColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<SCylinderColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SMeshColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<STerrainColliderComponent>().connect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
     }
@@ -448,6 +517,8 @@ namespace Lumina::Physics
 
         Registry.on_construct<SSphereColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SBoxColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<SCapsuleColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
+        Registry.on_construct<SCylinderColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<SMeshColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
         Registry.on_construct<STerrainColliderComponent>().disconnect<&entt::registry::emplace_or_replace<SRigidBodyComponent>>();
     }
@@ -1627,6 +1698,13 @@ namespace Lumina::Physics
         JPH::BodyCreationSettings   Settings;
         FVector3                   LastBodyPosition = FVector3(0.0f);
         FQuat                   LastBodyRotation = FQuat::Identity();
+        // Resolved from the collider's PhysicsMaterial (if any), copied into BodyMaterials on commit.
+        // Cached on the build result so the parallel build never touches the registry post-commit.
+        bool                       bHasMaterial = false;
+        float                      MaterialFriction = 0.0f;
+        float                      MaterialRestitution = 0.0f;
+        uint8                      MaterialFrictionCombine = 0;
+        uint8                      MaterialRestitutionCombine = 0;
     };
 
     // Thread-safe: reads only registry + loaded assets; no PhysicsSystem mutation.
@@ -1656,12 +1734,14 @@ namespace Lumina::Physics
         FVector3 ColliderRotationOffset(0.0f);
         bool      bIsTriangleMesh = false;
         bool      bColliderIsTrigger = false;
+        const CPhysicsMaterial* ResolvedMaterial = nullptr;
 
         if (const SBoxColliderComponent* BC = Registry.try_get<SBoxColliderComponent>(Entity))
         {
             ColliderTranslationOffset       = BC->TranslationOffset;
             ColliderRotationOffset          = BC->RotationOffset;
             bColliderIsTrigger              = BC->bIsTrigger;
+            ResolvedMaterial                = BC->PhysicsMaterial.Get();
 
             Shape = Scene->GetOrCreateBoxShape(BC->HalfExtent * TransformComponent->GetScale());
             if (Shape == nullptr)
@@ -1674,6 +1754,7 @@ namespace Lumina::Physics
         {
             ColliderTranslationOffset           = SC->TranslationOffset;
             bColliderIsTrigger                  = SC->bIsTrigger;
+            ResolvedMaterial                    = SC->PhysicsMaterial.Get();
 
             Shape = Scene->GetOrCreateSphereShape(SC->Radius * TransformComponent->MaxScale());
             if (Shape == nullptr)
@@ -1682,11 +1763,46 @@ namespace Lumina::Physics
                 return EBodyBuildStatus::Error;
             }
         }
+        else if (const SCapsuleColliderComponent* CC = Registry.try_get<SCapsuleColliderComponent>(Entity))
+        {
+            ColliderTranslationOffset           = CC->TranslationOffset;
+            ColliderRotationOffset              = CC->RotationOffset;
+            bColliderIsTrigger                  = CC->bIsTrigger;
+            ResolvedMaterial                    = CC->PhysicsMaterial.Get();
+
+            // Capsule scales uniformly with the entity (Jolt has no non-uniform capsule).
+            const float ScaleFactor = TransformComponent->MaxScale();
+            Shape = Scene->GetOrCreateCapsuleShape(CC->Radius * ScaleFactor, CC->HalfHeight * ScaleFactor);
+            if (Shape == nullptr)
+            {
+                LOG_ERROR("Failed to create CapsuleCollider Shape for Entity: {}", entt::to_integral(Entity));
+                return EBodyBuildStatus::Error;
+            }
+        }
+        else if (const SCylinderColliderComponent* CyC = Registry.try_get<SCylinderColliderComponent>(Entity))
+        {
+            ColliderTranslationOffset           = CyC->TranslationOffset;
+            ColliderRotationOffset              = CyC->RotationOffset;
+            bColliderIsTrigger                  = CyC->bIsTrigger;
+            ResolvedMaterial                    = CyC->PhysicsMaterial.Get();
+
+            const float ScaleFactor = TransformComponent->MaxScale();
+            Shape = Scene->GetOrCreateCylinderShape(
+                CyC->Radius     * ScaleFactor,
+                CyC->HalfHeight * ScaleFactor,
+                CyC->CapRadius  * ScaleFactor);
+            if (Shape == nullptr)
+            {
+                LOG_ERROR("Failed to create CylinderCollider Shape for Entity: {}", entt::to_integral(Entity));
+                return EBodyBuildStatus::Error;
+            }
+        }
         else if (const SMeshColliderComponent* MC = Registry.try_get<SMeshColliderComponent>(Entity))
         {
             ColliderTranslationOffset = MC->TranslationOffset;
             ColliderRotationOffset    = MC->RotationOffset;
             bColliderIsTrigger        = MC->bIsTrigger;
+            ResolvedMaterial          = MC->PhysicsMaterial.Get();
 
             CStaticMesh* Mesh = MC->Mesh.Get();
             if (Mesh == nullptr)
@@ -1714,6 +1830,7 @@ namespace Lumina::Physics
         else if (const STerrainColliderComponent* TC = Registry.try_get<STerrainColliderComponent>(Entity))
         {
             bColliderIsTrigger = TC->bIsTrigger;
+            ResolvedMaterial   = TC->PhysicsMaterial.Get();
 
             const STerrainComponent* Terrain = Registry.try_get<STerrainComponent>(Entity);
             if (Terrain == nullptr || Terrain->Heightmap.empty())
@@ -1795,8 +1912,23 @@ namespace Lumina::Physics
         Out.Settings.mMotionQuality             = RigidBodyComponent->MotionQualityLevel == 0 ? JPH::EMotionQuality::Discrete : JPH::EMotionQuality::LinearCast;
         Out.Settings.mMaxLinearVelocity         = RigidBodyComponent->MaxLinearVelocity;
         Out.Settings.mMaxAngularVelocity        = RigidBodyComponent->MaxAngularVelocity;
-        Out.Settings.mRestitution               = RigidBodyComponent->RestitutionOverride;
-        Out.Settings.mFriction                  = RigidBodyComponent->FrictionOverride;
+        // PhysicsMaterial on the collider, when present, supersedes the rigid body's *Override fields.
+        // The Override fields stay as the fallback for un-materialed bodies so existing scenes don't shift.
+        if (ResolvedMaterial != nullptr)
+        {
+            Out.Settings.mFriction              = ResolvedMaterial->Friction;
+            Out.Settings.mRestitution           = ResolvedMaterial->Restitution;
+            Out.bHasMaterial                    = true;
+            Out.MaterialFriction                = ResolvedMaterial->Friction;
+            Out.MaterialRestitution             = ResolvedMaterial->Restitution;
+            Out.MaterialFrictionCombine         = (uint8)ResolvedMaterial->FrictionCombine;
+            Out.MaterialRestitutionCombine      = (uint8)ResolvedMaterial->RestitutionCombine;
+        }
+        else
+        {
+            Out.Settings.mRestitution           = RigidBodyComponent->RestitutionOverride;
+            Out.Settings.mFriction              = RigidBodyComponent->FrictionOverride;
+        }
         Out.Settings.mAngularDamping            = RigidBodyComponent->AngularDamping;
         Out.Settings.mLinearDamping             = RigidBodyComponent->LinearDamping;
 
@@ -1887,6 +2019,8 @@ namespace Lumina::Physics
         RigidBodyComponent.LastBodyPosition     = BuildResult.LastBodyPosition;
         RigidBodyComponent.LastBodyRotation     = BuildResult.LastBodyRotation;
 
+        StoreBodyMaterial(Body->GetID(), BuildResult);
+
         BodyInterface.AddBody(Body->GetID(), JPH::EActivation::Activate);
     }
 
@@ -1938,6 +2072,97 @@ namespace Lumina::Physics
         JPH::ShapeRefC Shape = Result.Get();
         ShapeCache.emplace(Key, Shape);
         return Shape;
+    }
+
+    JPH::ShapeRefC FJoltPhysicsScene::GetOrCreateCapsuleShape(float Radius, float HalfHeight)
+    {
+        // Kind = 2 (capsule). Z unused.
+        const FShapeKey Key{ 2, Radius, HalfHeight, 0.0f };
+
+        FScopeLock Lock(ShapeCacheMutex);
+        auto It = ShapeCache.find(Key);
+        if (It != ShapeCache.end())
+        {
+            return It->second;
+        }
+
+        JPH::CapsuleShapeSettings Settings(HalfHeight, Radius);
+        Settings.SetEmbedded();
+        auto Result = Settings.Create();
+        if (Result.HasError())
+        {
+            LOG_ERROR("Failed to create cached capsule shape (r {}, hh {}): {}", Radius, HalfHeight, Result.GetError());
+            return {};
+        }
+
+        JPH::ShapeRefC Shape = Result.Get();
+        ShapeCache.emplace(Key, Shape);
+        return Shape;
+    }
+
+    JPH::ShapeRefC FJoltPhysicsScene::GetOrCreateCylinderShape(float Radius, float HalfHeight, float CapRadius)
+    {
+        // Kind = 3 (cylinder). Z = cap (edge-rounding) radius so two cylinders with different
+        // bevels don't share a cached shape.
+        const FShapeKey Key{ 3, Radius, HalfHeight, CapRadius };
+
+        FScopeLock Lock(ShapeCacheMutex);
+        auto It = ShapeCache.find(Key);
+        if (It != ShapeCache.end())
+        {
+            return It->second;
+        }
+
+        // Jolt requires CapRadius <= min(Radius, HalfHeight); clamp defensively so authoring an
+        // oversized bevel never trips an internal assert.
+        const float ClampedCap = Math::Clamp(CapRadius, 0.0f, Math::Min(Radius, HalfHeight));
+        JPH::CylinderShapeSettings Settings(HalfHeight, Radius, ClampedCap);
+        Settings.SetEmbedded();
+        auto Result = Settings.Create();
+        if (Result.HasError())
+        {
+            LOG_ERROR("Failed to create cached cylinder shape (r {}, hh {}, cap {}): {}", Radius, HalfHeight, ClampedCap, Result.GetError());
+            return {};
+        }
+
+        JPH::ShapeRefC Shape = Result.Get();
+        ShapeCache.emplace(Key, Shape);
+        return Shape;
+    }
+
+    void FJoltPhysicsScene::StoreBodyMaterial(JPH::BodyID BodyID, const FRigidBodyBuildResult& Build)
+    {
+        const uint32 Index = BodyID.GetIndex();
+        if (Index >= BodyMaterials.size())
+        {
+            return;
+        }
+        FBodyMaterialEntry& Entry  = BodyMaterials[Index];
+        Entry.bHasMaterial         = Build.bHasMaterial;
+        Entry.Friction             = Build.MaterialFriction;
+        Entry.Restitution          = Build.MaterialRestitution;
+        Entry.FrictionCombine      = Build.MaterialFrictionCombine;
+        Entry.RestitutionCombine   = Build.MaterialRestitutionCombine;
+    }
+
+    void FJoltPhysicsScene::ClearBodyMaterial(JPH::BodyID BodyID)
+    {
+        const uint32 Index = BodyID.GetIndex();
+        if (Index >= BodyMaterials.size())
+        {
+            return;
+        }
+        BodyMaterials[Index] = FBodyMaterialEntry{};
+    }
+
+    const FJoltPhysicsScene::FBodyMaterialEntry* FJoltPhysicsScene::GetBodyMaterial(JPH::BodyID BodyID) const
+    {
+        const uint32 Index = BodyID.GetIndex();
+        if (Index >= BodyMaterials.size())
+        {
+            return nullptr;
+        }
+        return &BodyMaterials[Index];
     }
 
     JPH::ShapeRefC FJoltPhysicsScene::GetOrCreateMeshShape(const CMesh* Mesh, const FVector3& Scale, bool bConvex)
@@ -2038,6 +2263,8 @@ namespace Lumina::Physics
             RigidBodyComponent.LastBodyPosition     = Results[i].LastBodyPosition;
             RigidBodyComponent.LastBodyRotation     = Results[i].LastBodyRotation;
 
+            StoreBodyMaterial(Body->GetID(), Results[i]);
+
             BodyIDsToAdd.push_back(Body->GetID());
         }
 
@@ -2058,6 +2285,8 @@ namespace Lumina::Physics
         {
             return;
         }
+
+        ClearBodyMaterial(BodyID);
 
         BodyInterface.RemoveBody(BodyID);
         BodyInterface.DestroyBody(BodyID);

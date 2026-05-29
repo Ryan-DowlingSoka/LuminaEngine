@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "Lumina.h"
+#include "Assets/AssetRegistry/AssetData.h"
 #include "Core/Delegates/Delegate.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/Object.h"
@@ -50,16 +51,23 @@ namespace Lumina
     {
         FObjectImport() = default;
         FObjectImport(CObject* InObject);
-       
+        FObjectImport(const FGuid& InGUID, EDependencyType InType)
+            : ObjectGUID(InGUID), Type(InType) {}
 
         FGuid ObjectGUID;
         /** Resolved after import is loaded. */
         TWeakObjectPtr<CObject> Object;
 
+        /** Cook-graph edge classification. Hard for direct CObject* refs;
+         *  Soft for FSoftObjectPath via FArchive::RegisterSoftAssetReference. */
+        EDependencyType Type = EDependencyType::Hard;
+
         FORCEINLINE friend FArchive& operator << (FArchive& Ar, FObjectImport& Data)
         {
             Ar << Data.ObjectGUID;
-            
+            uint8 T = static_cast<uint8>(Data.Type);
+            Ar << T;
+            if (Ar.IsReading()) Data.Type = static_cast<EDependencyType>(T);
             return Ar;
         }
     };
@@ -206,6 +214,12 @@ namespace Lumina
         RUNTIME_API static CPackage* LoadPackage(FStringView Path);
 
         RUNTIME_API static bool SavePackage(CPackage* Package, FStringView Path);
+
+        /** Save a fully-loaded package into a compressed byte buffer with
+         *  EArchiverFlags::Cooking set on the writer. EditorOnly properties
+         *  are stripped, thumbnails are skipped. Used by the cooker to
+         *  produce the bytes that land in the shipped PAK. */
+        RUNTIME_API NODISCARD static bool SavePackageForCook(CPackage* Package, TVector<uint8>& OutCompressed);
 
         /** Reads a package file from disk and decompresses it into the raw uncompressed package binary. */
         RUNTIME_API static bool ReadPackageFile(FStringView Path, TVector<uint8>& OutBinary);

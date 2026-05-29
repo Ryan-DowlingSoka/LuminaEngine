@@ -81,6 +81,12 @@ namespace Lumina
 
         void VerifyDirtyPackages();
 
+        // Re-entry guard for the dirty-packages prompt. Goes true the first
+        // frame we open the dialog and stays true until the dialog closes
+        // (either an exit-completion path or user-cancel). Kept as a member
+        // — not a function-local static — so Cancel can re-arm it.
+        bool bVerifyingDirtyPackages = false;
+
     private:
 
         FEditorTool* FindToolByTypeID(uint32 TypeID) const;
@@ -103,6 +109,12 @@ namespace Lumina
         void DrawHelpMenu();
         void OpenProjectDialog();
         void NewProjectDialog();
+        void ProjectCreatedDialog(FStringView ProjectFile);
+
+        // Queues a modal to be opened on the next frame; used to chain dialogs
+        // (Open → New) because FEditorModalManager only allows one active modal
+        // at a time. Consumed in OnInitialize/post-DrawDialogue.
+        void DeferShowDialog(TFunction<void()> Action) { PendingDialogAction = std::move(Action); }
 
         void OnProjectLoaded();
 
@@ -111,6 +123,7 @@ namespace Lumina
     private:
 
         FEditorModalManager                             ModalManager;
+        TFunction<void()>                               PendingDialogAction;
 
         ImGuiX::ApplicationTitleBar                     TitleBar;
         ImGuiWindowClass                                EditorWindowClass;

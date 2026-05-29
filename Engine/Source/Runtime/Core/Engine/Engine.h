@@ -4,6 +4,7 @@
 #include "Core/Delegates/Delegate.h"
 #include "Memory/SmartPtr.h"
 #include "Scripting/Lua/Reference.h"
+#include "Assets/AssetRegistry/CookRoot.h"
 
 
 namespace Lumina
@@ -91,6 +92,13 @@ namespace Lumina
         RUNTIME_API NODISCARD FStringView GetProjectPath() const { return ProjectPath; }
         RUNTIME_API NODISCARD FFixedString GetProjectContentDirectory() const;
 
+        // Union of all cook roots in effect for the loaded project:
+        // the .lproject's `CookRoots` array + every enabled plugin's
+        // `CookRoots`. Legacy `Project.GameStartupMap` (if set and no
+        // explicit roots exist) gets auto-converted to a single root
+        // for backward compatibility. Cooker iterates this for BFS seeds.
+        RUNTIME_API TVector<FCookRoot> GetCookRoots() const;
+
         RUNTIME_API CGameInstance* GetGameInstance() const { return GameInstance; }
 
         /** Queues world travel; swap runs at next FrameStart. Prefers PIE Game world; preserves editor proxy on PIE exit. */
@@ -125,7 +133,7 @@ namespace Lumina
         TSharedPtr<Lua::FScript>    ProjectScript;
         Lua::FRef                   ModuleUpdateFunc;
         CGameInstance*              GameInstance = nullptr;
-        
+
 
         FProjectLoadedDelegate  OnProjectLoaded;
         

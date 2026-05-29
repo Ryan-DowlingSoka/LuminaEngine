@@ -159,6 +159,16 @@ function LuminaModule(Def)
         staticruntime "Off"
         vectorextensions "AVX2"
 
+    -- Monolithic Shipping: every SharedLib gets re-kinded to StaticLib so
+    -- the final exe (Lumina) can WHOLEARCHIVE-link them. WindowedApp /
+    -- ConsoleApp / Utility / StaticLib are unaffected; the exe stays
+    -- an exe, build tools stay tools. See LUMINA_MONOLITHIC.
+    if Def.Kind == "SharedLib" then
+        filter "configurations:Shipping"
+            kind "StaticLib"
+        filter {}
+    end
+
     -- Remove platforms if requested (e.g. Editor removes "Game")
     if Def.RemovePlatforms then
         removeplatforms(Def.RemovePlatforms)
@@ -218,6 +228,28 @@ function LuminaModule(Def)
     end
 
     files(FilePatterns)
+
+    -- EASTL allocator binding: every image (SharedLib/WindowedApp/ConsoleApp)
+    -- that uses EASTL containers must compile its own copy of EASTLImpl.cpp
+    -- so eastl::allocator gets defined with the right per-DLL decoration.
+    -- Runtime picks the file up via its **.cpp glob; everyone else needs an
+    -- explicit `files {}` add. In monolithic Shipping the SharedLibs above
+    -- become StaticLibs and the final exe (Lumina, WindowedApp) owns the
+    -- single definition -- strip the file from every other Shipping target.
+    if (Def.Kind == "SharedLib" or Def.Kind == "WindowedApp" or Def.Kind == "ConsoleApp")
+        and not Def.RootFiles then
+        files { LuminaConfig.GetEASTLImplFile() }
+    end
+
+    if Def.Kind == "SharedLib" then
+        filter "configurations:Shipping"
+            removefiles { LuminaConfig.GetEASTLImplFile() }
+            -- Runtime (RootFiles=true) globbed the file in via its relative
+            -- path; the absolute removefiles above doesn't always catch that
+            -- so list the relative variant too.
+            removefiles { "Memory/EASTLImpl.cpp" }
+        filter {}
+    end
 
     -- Disable PCH for third-party sources
     if Def.PCH then
@@ -330,6 +362,33 @@ function LuminaModule(Def)
         if not LuminaOptions.IsActive("Tracy", Cfg) then
             filter("configurations:" .. Cfg)
                 removelinks { "Tracy" }
+            filter {}
+        end
+    end
+
+    -- Monolithic Shipping: SharedLib modules become StaticLib and the
+    -- final exe (Lumina) WHOLEARCHIVE-links them. With MSBuild's
+    -- LinkLibraryDependencies=True (the default for VS C++ projects),
+    -- the LIB tool bakes referenced libs' .objs into the resulting .lib
+    -- when archiving. WHOLEARCHIVE then pulls those baked-in .objs into
+    -- the exe N times -> LNK2005 duplicate symbols. Strip BOTH the
+    -- third-party links AND the cross-module links from SharedLib
+    -- modules in Shipping; the Lumina exe links each engine module once
+    -- and the union of third-party deps once, end of duplicates.
+    if Def.Kind == "SharedLib" then
+        local StripInShipping = {}
+        for _, Lib in ipairs(ThirdPartyLinks) do
+            table.insert(StripInShipping, Lib)
+        end
+        for _, Dep in ipairs(Def.ModuleDependencies) do
+            table.insert(StripInShipping, Dep)
+        end
+        for _, Dep in ipairs(Def.EditorModuleDependencies) do
+            table.insert(StripInShipping, Dep)
+        end
+        if #StripInShipping > 0 then
+            filter "configurations:Shipping"
+                removelinks(StripInShipping)
             filter {}
         end
     end

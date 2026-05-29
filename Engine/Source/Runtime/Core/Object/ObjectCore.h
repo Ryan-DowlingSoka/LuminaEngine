@@ -122,6 +122,9 @@ namespace Lumina
         Script              = BIT(8),
         Builtin             = BIT(9),
         BulkSerialize       = BIT(10),
+        // Property exists only for editor tooling. Stripped from cooked
+        // packages (see CStruct::SerializeTaggedProperties + FArchive::IsCooking).
+        EditorOnly          = BIT(11),
     };
 
     ENUM_CLASS_FLAGS(EPropertyFlags);
@@ -146,6 +149,7 @@ namespace Lumina
 
         Bool,
         Object,
+        SoftObject,
         Class,
         Name,
         String,
@@ -177,6 +181,7 @@ namespace Lumina
 
         "BoolProperty",
         "ObjectProperty",
+        "SoftObjectProperty",
         "ClassProperty",
         "NameProperty",
         "StringProperty",
@@ -271,6 +276,17 @@ namespace Lumina
     };
 
     struct FObjectPropertyParams : FPropertyParams
+    {
+        CClass*                     (*ClassFunc)();
+
+        uint16                      NumMetaData;
+        const FMetaDataPairParam*   MetaDataArray;
+    };
+
+    // Soft equivalent of FObjectPropertyParams. ClassFunc returns the
+    // expected target class (T from TSoftObjectPtr<T>); for bare
+    // FSoftObjectPath the codegen sets it to CObject::StaticClass.
+    struct FSoftObjectPropertyParams : FPropertyParams
     {
         CClass*                     (*ClassFunc)();
 

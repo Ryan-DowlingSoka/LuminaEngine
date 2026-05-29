@@ -4,11 +4,18 @@
 #include <nlohmann/json.hpp>
 #include "Assets/AssetRegistry/AssetRegistry.h"
 #include "Assets/AssetRegistry/AssetData.h"
+#include "Assets/AssetRegistry/CookRoot.h"
 #include "Config/Config.h"
 #include "Core/Engine/Engine.h"
 #include "Core/Object/Object.h"
 #include "Core/Object/Package/Package.h"
+#include "Core/Plugin/Plugin.h"
+#include "Core/Plugin/PluginManager.h"
 #include "Core/Serialization/Package/PackageSaver.h"
+#include "Cooker/Analyzers/LuauAssetScan.h"
+#include "Cooker/Analyzers/RmlUiAssetScan.h"
+#include "Cooker/CookDDC.h"
+#include "Cooker/Graph/CookGraph.h"
 #include "FileSystem/FileSystem.h"
 #include "Log/Log.h"
 #include "Pak/PakWriter.h"
@@ -45,45 +52,55 @@ namespace Lumina
             return true;
         }
 
-        // Walks the on-disk ImportTable; FullyLoad/BuildSaveContext misses refs for unopened levels.
-        void CollectAssetReferences(const FString& RootPackagePath, THashSet<FString>& OutPaths, const TFunction<void(FStringView)>& LogFunc)
+        // Load the .lasset at VirtualPath, re-save through a cooking
+        // FPackageSaver (strips EditorOnly properties + thumbnails), and
+        // bundle the resulting bytes. The DDC short-circuits this: if the
+        // source content hash hasn't changed since the last cook, the
+        // cached bytes are reused without re-loading the package.
+        //
+        // Falls back to a verbatim copy with a WARN on load/resave failure
+        // so a single bad asset doesn't kill the cook — the bundled bytes
+        // will still load but won't be stripped.
+        bool BundleAssetCooked(FPakWriter& Writer, FStringView VirtualPath, const TFunction<void(FStringView)>& LogFunc)
         {
-            TQueue<FString> Queue;
-            Queue.push(RootPackagePath);
+            FAssetData* Data = FAssetRegistry::Get().GetAssetByPath(VirtualPath);
+            const uint64 SourceHash = Data ? Data->ContentHash : 0;
+            const FCookInputHash Key = FCookDDC::ComputeKey(SourceHash);
 
-            while (!Queue.empty())
+            TVector<uint8> CookedBytes;
+            if (FCookDDC::TryGet(Key, CookedBytes))
             {
-                FString Path = Queue.front();
-                Queue.pop();
-
-                if (OutPaths.find(Path) != OutPaths.end())
-                {
-                    continue;
-                }
-                OutPaths.insert(Path);
-
-                CPackage* Pkg = CPackage::LoadPackage(Path);
-                if (Pkg == nullptr)
-                {
-                    Log(LogFunc, FString().sprintf("  [warn] could not load: %s", Path.c_str()).c_str());
-                    continue;
-                }
-
-                for (const FObjectImport& Import : Pkg->ImportTable)
-                {
-                    const FAssetData* Data = FAssetRegistry::Get().GetAssetByGUID(Import.ObjectGUID);
-                    if (Data == nullptr)
-                    {
-                        // Engine-resident objects (CDOs, classes, primitives) have no asset record.
-                        continue;
-                    }
-                    FString DepPath(Data->Path.c_str());
-                    if (OutPaths.find(DepPath) == OutPaths.end())
-                    {
-                        Queue.push(Move(DepPath));
-                    }
-                }
+                Writer.AddEntry(VirtualPath, TSpan<const uint8>(CookedBytes.data(), CookedBytes.size()));
+                Log(LogFunc, FString().sprintf("  + %.*s (ddc, %zu bytes)",
+                    (int)VirtualPath.size(), VirtualPath.data(),
+                    CookedBytes.size()).c_str());
+                return true;
             }
+
+            CPackage* Package = CPackage::LoadPackage(VirtualPath);
+            if (Package == nullptr)
+            {
+                Log(LogFunc, FString().sprintf("  [warn] failed to load for cook, falling back to verbatim: %.*s",
+                    (int)VirtualPath.size(), VirtualPath.data()).c_str());
+                return BundleVfsFile(Writer, VirtualPath, LogFunc);
+            }
+
+            if (!CPackage::SavePackageForCook(Package, CookedBytes))
+            {
+                Log(LogFunc, FString().sprintf("  [warn] cook-save failed, falling back to verbatim: %.*s",
+                    (int)VirtualPath.size(), VirtualPath.data()).c_str());
+                return BundleVfsFile(Writer, VirtualPath, LogFunc);
+            }
+
+            // Stash into DDC for next cook. Silent failure is fine — we still
+            // emit the freshly-cooked bytes; the cache just won't help next time.
+            FCookDDC::Put(Key, CookedBytes);
+
+            Writer.AddEntry(VirtualPath, TSpan<const uint8>(CookedBytes.data(), CookedBytes.size()));
+            Log(LogFunc, FString().sprintf("  + %.*s (cooked, %zu bytes)",
+                (int)VirtualPath.size(), VirtualPath.data(),
+                CookedBytes.size()).c_str());
+            return true;
         }
 
         // VirtualPath ends in ".lasset" (case-insensitive).
@@ -104,27 +121,37 @@ namespace Lumina
             return true;
         }
 
-        // Bundle every non-.lasset file under /Game; .lasset files come in via the asset reference graph.
-        // Whole-tree ship is fine since require()/href tracing across our language mix isn't feasible.
-        size_t BundleGameLooseFiles(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
+        // Bundle every non-.lasset file under /Game and every enabled
+        // plugin's content mount. .lasset files come in via the
+        // dependency-graph traversal; this picks up loose files (.luau,
+        // .rml, .rcss, JSON, fonts) that have no asset-reflected refs
+        // but are still loaded by name at runtime. Future Phase 2 will
+        // route these through the registry too via a script analyzer
+        // pass, at which point this whole-tree fallback can shrink.
+        size_t BundleLooseContent(FPakWriter& Writer, const TFunction<void(FStringView)>& LogFunc)
         {
             size_t Count = 0;
-            VFS::RecursiveDirectoryIterator("/Game", [&](const VFS::FFileInfo& Info)
+            auto Walk = [&](FStringView Root)
             {
-                if (Info.IsDirectory())
+                VFS::RecursiveDirectoryIterator(Root, [&](const VFS::FFileInfo& Info)
                 {
-                    return;
-                }
-                FStringView Vp(Info.VirtualPath.c_str(), Info.VirtualPath.size());
-                if (IsLAssetPath(Vp))
-                {
-                    return;
-                }
-                if (BundleVfsFile(Writer, Vp, LogFunc))
-                {
-                    ++Count;
-                }
-            });
+                    if (Info.IsDirectory()) return;
+                    FStringView Vp(Info.VirtualPath.c_str(), Info.VirtualPath.size());
+                    if (IsLAssetPath(Vp)) return;
+                    if (BundleVfsFile(Writer, Vp, LogFunc))
+                    {
+                        ++Count;
+                    }
+                });
+            };
+
+            Walk("/Game");
+            for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
+            {
+                if (!Plugin->IsEnabled())          continue;
+                if (!Plugin->IsContentMounted())   continue;
+                Walk(Plugin->GetMountAlias());
+            }
             return Count;
         }
 
@@ -298,6 +325,7 @@ namespace Lumina
     FCookResult FAssetCooker::Cook(FStringView OutputPakPath, const FCookOptions& Options, const TFunction<void(FStringView)>& LogFunc)
     {
         FCookResult Result;
+        FCookDDC::Reset();
 
         if (GEngine == nullptr || GEngine->GetProjectName().empty())
         {
@@ -305,87 +333,275 @@ namespace Lumina
             return Result;
         }
 
-        const FString RawStartupMap = GConfig->Get<std::string>("Project.GameStartupMap").c_str();
-        if (RawStartupMap.empty())
+        const TVector<FCookRoot> Roots = GEngine->GetCookRoots();
+        if (Roots.empty())
         {
-            Result.ErrorMessage = "Project.GameStartupMap is not set.";
+            Result.ErrorMessage =
+                "No cook roots defined.\n"
+                "  Open Project Settings -> Maps -> Cook Roots and add at least one asset path,\n"
+                "  declare CookRoots in a plugin's .lplugin, or flag an asset EAssetFlags::Primary.";
             return Result;
         }
 
-        // Accept VFS paths or legacy absolute paths (older configs predate the resolver).
-        const FFixedString ResolvedFixed = VFS::ResolveToVirtualPath(RawStartupMap);
-        const FString ResolvedStartupMap(ResolvedFixed.c_str(), ResolvedFixed.size());
+        Log(LogFunc, FString().sprintf("Building cook graph from %zu root(s)...", Roots.size()).c_str());
 
-        const FAssetData* StartupAsset = FAssetRegistry::Get().GetAssetByPath(ResolvedStartupMap);
-        if (StartupAsset == nullptr)
+        FCookGraph Graph(FAssetRegistry::Get());
+        Graph.AddRoots(Roots);
+
+        // Auto-root every asset flagged Primary (EAssetFlags::Primary).
+        // These are gameplay-named entry points the FAssetManager exposes
+        // via FPrimaryAssetId; cooking them implicitly means game code
+        // doesn't have to list them in .lproject CookRoots[].
+        //
+        // FindByPredicate iterates the registry's hash_set in undefined
+        // order; sort by GUID before adding so the cook graph is built
+        // deterministically.
         {
-            Result.ErrorMessage = FString().sprintf(
-                "Startup map not found in asset registry.\n"
-                "  Configured: %s\n"
-                "  Resolved to: %s\n"
-                "  Hint: re-pick it in Project Settings -> Project / Maps; the path must live under a mounted alias (/Game/Content/...).",
-                RawStartupMap.c_str(), ResolvedStartupMap.c_str()).c_str();
-            return Result;
-        }
-
-        Log(LogFunc, FString().sprintf("Cooking from startup map: %s", StartupAsset->Path.c_str()).c_str());
-
-        THashSet<FString> Reachable;
-        CollectAssetReferences(FString(StartupAsset->Path.c_str()), Reachable, LogFunc);
-
-        Log(LogFunc, FString().sprintf("Reachable assets: %zu", Reachable.size()).c_str());
-
-        FPakWriter Writer;
-        for (const FString& Path : Reachable)
-        {
-            if (BundleVfsFile(Writer, Path, LogFunc))
+            TVector<FAssetData*> Primaries = FAssetRegistry::Get().FindByPredicate(
+                [](const FAssetData& D) { return HasFlag(D.Flags, EAssetFlags::Primary); });
+            eastl::sort(Primaries.begin(), Primaries.end(),
+                [](const FAssetData* A, const FAssetData* B) { return A->AssetGUID < B->AssetGUID; });
+            if (!Primaries.empty())
             {
-                ++Result.NumAssetsCooked;
+                Log(LogFunc, FString().sprintf("  Primary assets: %zu -> implicit cook roots", Primaries.size()).c_str());
+            }
+            for (const FAssetData* Data : Primaries)
+            {
+                FCookRoot Root;
+                Root.Asset = FString(Data->Path.c_str(), Data->Path.size());
+                Root.Chunk = FName("Primary");
+                Graph.AddRoot(Root);
             }
         }
 
-        if (BundleConfigWithProjectName(Writer, LogFunc))
+        // Content roots scanned by both the UI and Luau analyzers below:
+        // /Game + every enabled plugin's mount.
+        TVector<FString> ContentRoots;
+        ContentRoots.emplace_back("/Game");
+        for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
         {
-            ++Result.NumExtraFiles;
-        }
-        Result.NumExtraFiles += BundleAuxConfigFiles(Writer, LogFunc);
-
-        Log(LogFunc, "Bundling engine resources...");
-        const size_t NumEngine = BundleEngineResources(Writer, LogFunc);
-        Result.NumExtraFiles += NumEngine;
-        Log(LogFunc, FString().sprintf("  bundled %zu engine files", NumEngine).c_str());
-
-        Log(LogFunc, "Bundling shader cache...");
-        const size_t NumShaders = BundleShaderCache(Writer, LogFunc);
-        Result.NumExtraFiles += NumShaders;
-        Log(LogFunc, FString().sprintf("  bundled %zu cached shaders", NumShaders).c_str());
-
-        // Loose /Game files (.luau, .rml, JSON, etc). Skipped in loose-files mode; .lasset files come via the asset graph.
-        if (!Options.bExtractScriptsAsLooseFiles)
-        {
-            Result.NumExtraFiles += BundleGameLooseFiles(Writer, LogFunc);
-        }
-        else
-        {
-            Log(LogFunc, "Skipping loose /Game files in PAK (loose mode).");
+            if (!Plugin->IsEnabled())        continue;
+            if (!Plugin->IsContentMounted()) continue;
+            ContentRoots.emplace_back(Plugin->GetMountAlias());
         }
 
-        if (!Options.ExtraFiles.empty() || !Options.ExtraDirectories.empty())
+        // Scan .rml/.rcss for asset references and fold them in as implicit
+        // Soft cook roots. Without this, assets reachable ONLY via UI (e.g.
+        // a material referenced by an .rcss decorator) would be dropped by
+        // reachability.
+        //
+        // Both scans walk the VFS in filesystem order which is OS-dependent;
+        // sort the resolved paths before adding to the graph so the cook
+        // is reproducible.
         {
-            Log(LogFunc, "Bundling extras...");
-            Result.NumExtraFiles += BundleExtras(Writer, Options, LogFunc);
+            FRmlUiAssetScan::FResult UiScan = FRmlUiAssetScan::ScanRoots(
+                ContentRoots, FAssetRegistry::Get(), LogFunc);
+            eastl::sort(UiScan.AssetPaths.begin(), UiScan.AssetPaths.end());
+            if (UiScan.FilesScanned > 0)
+            {
+                Log(LogFunc, FString().sprintf(
+                    "  UI scan: %zu file(s), %zu candidate ref(s), %zu resolved -> implicit cook roots",
+                    UiScan.FilesScanned, UiScan.RawCandidates, UiScan.ResolvedRefs).c_str());
+            }
+            for (const FString& Path : UiScan.AssetPaths)
+            {
+                FCookRoot Root;
+                Root.Asset = Path;
+                Root.Chunk = FName("UI");
+                Graph.AddRoot(Root);
+            }
         }
 
-        Result.TotalBytes = Writer.TotalEntryBytes();
-        if (!Writer.Finalize(OutputPakPath))
+        // Scan .luau for Asset.Hard/Soft/LoadAsync("…") call sites and add
+        // each resolved path as an implicit Script cook root. Same intent
+        // as the UI scan: anything reachable only from scripts gets cooked.
         {
-            Result.ErrorMessage = FString("Failed to write PAK at ") + FString(OutputPakPath.data(), OutputPakPath.size());
-            return Result;
+            FLuauAssetScan::FResult ScriptScan = FLuauAssetScan::ScanRoots(
+                ContentRoots, FAssetRegistry::Get(), LogFunc);
+            eastl::sort(ScriptScan.AssetPaths.begin(), ScriptScan.AssetPaths.end());
+            if (ScriptScan.FilesScanned > 0)
+            {
+                Log(LogFunc, FString().sprintf(
+                    "  Script scan: %zu file(s), %zu candidate ref(s), %zu resolved -> implicit cook roots",
+                    ScriptScan.FilesScanned, ScriptScan.RawCandidates, ScriptScan.ResolvedRefs).c_str());
+            }
+            for (const FString& Path : ScriptScan.AssetPaths)
+            {
+                FCookRoot Root;
+                Root.Asset = Path;
+                Root.Chunk = FName("Script");
+                Graph.AddRoot(Root);
+            }
         }
 
-        Log(LogFunc, FString().sprintf("Wrote PAK: %.*s (%zu entries, %zu bytes)",
-            (int)OutputPakPath.size(), OutputPakPath.data(),
-            Writer.NumEntries(), Result.TotalBytes).c_str());
+        Graph.Traverse();
+
+        for (const FCookGraphIssue& Issue : Graph.GetIssues())
+        {
+            Log(LogFunc, FString().sprintf("  [warn] %s: %s",
+                Issue.Source.c_str(), Issue.Detail.c_str()).c_str());
+        }
+
+        const auto Reachable = Graph.GetReachableNodesSorted();
+        Log(LogFunc, FString().sprintf("Reachable assets: %zu", Reachable.size()).c_str());
+
+        // Bucket reachable assets by chunk. Sorted-by-GUID input order is
+        // preserved per chunk so PAK entry order is deterministic.
+        const FName kMainChunk("Main");
+        THashMap<FName, TVector<const FCookNode*>> ByChunk;
+        for (const FCookNode* Node : Reachable)
+        {
+            const FName Chunk = Node->Chunk.IsNone() ? kMainChunk : Node->Chunk;
+            ByChunk[Chunk].push_back(Node);
+        }
+
+        // Stable chunk iteration order: alphabetical by name, with "Main"
+        // forced to the front so its PAK is written first (it carries the
+        // shared content and uses the caller's verbatim OutputPakPath).
+        TVector<FName> ChunkOrder;
+        ChunkOrder.reserve(ByChunk.size());
+        for (const auto& Pair : ByChunk) ChunkOrder.push_back(Pair.first);
+        if (ByChunk.find(kMainChunk) == ByChunk.end())
+        {
+            ByChunk[kMainChunk] = {};      // ensure a Main PAK exists for shared content
+            ChunkOrder.push_back(kMainChunk);
+        }
+        eastl::sort(ChunkOrder.begin(), ChunkOrder.end(),
+            [&](const FName& A, const FName& B)
+            {
+                if (A == kMainChunk) return true;
+                if (B == kMainChunk) return false;
+                return A.ToString() < B.ToString();
+            });
+
+        // Derive per-chunk output paths from OutputPakPath. Main keeps the
+        // caller's name verbatim; others become "<stem>-<chunk><ext>".
+        auto ChunkPakPath = [&](FName Chunk) -> FString
+        {
+            const FString FullPath(OutputPakPath.data(), OutputPakPath.size());
+            if (Chunk == kMainChunk) return FullPath;
+
+            const size_t DotPos = FullPath.find_last_of('.');
+            const size_t SlashPos = FullPath.find_last_of("/\\");
+            const bool bExtAfterSlash = DotPos != FString::npos
+                && (SlashPos == FString::npos || DotPos > SlashPos);
+
+            const FString Stem = bExtAfterSlash ? FullPath.substr(0, DotPos) : FullPath;
+            const FString Ext  = bExtAfterSlash ? FullPath.substr(DotPos)    : FString(".pak");
+            FString Out = Stem;
+            Out += "-";
+            Out += Chunk.ToString().c_str();
+            Out += Ext;
+            return Out;
+        };
+
+        for (const FName& Chunk : ChunkOrder)
+        {
+            FPakWriter Writer;
+            const bool bIsMain = (Chunk == kMainChunk);
+
+            for (const FCookNode* Node : ByChunk[Chunk])
+            {
+                FStringView Vp(Node->Path.c_str(), Node->Path.size());
+                if (BundleAssetCooked(Writer, Vp, LogFunc))
+                {
+                    ++Result.NumAssetsCooked;
+                }
+            }
+
+            size_t ChunkExtras = 0;
+            if (bIsMain)
+            {
+                if (BundleConfigWithProjectName(Writer, LogFunc)) { ++ChunkExtras; }
+                ChunkExtras += BundleAuxConfigFiles(Writer, LogFunc);
+
+                Log(LogFunc, "Bundling engine resources...");
+                const size_t NumEngine = BundleEngineResources(Writer, LogFunc);
+                ChunkExtras += NumEngine;
+                Log(LogFunc, FString().sprintf("  bundled %zu engine files", NumEngine).c_str());
+
+                Log(LogFunc, "Bundling shader cache...");
+                const size_t NumShaders = BundleShaderCache(Writer, LogFunc);
+                ChunkExtras += NumShaders;
+                Log(LogFunc, FString().sprintf("  bundled %zu cached shaders", NumShaders).c_str());
+
+                if (!Options.bExtractScriptsAsLooseFiles)
+                {
+                    ChunkExtras += BundleLooseContent(Writer, LogFunc);
+                }
+                else
+                {
+                    Log(LogFunc, "Skipping loose content in PAK (loose mode).");
+                }
+
+                if (!Options.ExtraFiles.empty() || !Options.ExtraDirectories.empty())
+                {
+                    Log(LogFunc, "Bundling extras...");
+                    ChunkExtras += BundleExtras(Writer, Options, LogFunc);
+                }
+
+                // Pre-baked asset registry — runtime cooked-mode loads this
+                // from the VFS at startup instead of walking the filesystem
+                // and re-extracting every package header. Lives in Main so
+                // it's always present (no chunk discovery race at boot).
+                //
+                // Guard: a tiny registry (almost no entries) is almost
+                // always a sign the editor's live registry is stale or
+                // got wiped by a failed discovery. Warn loudly so the cook
+                // log shows the cause of a future black-screen Shipping run.
+                {
+                    const size_t LiveCount = FAssetRegistry::Get().GetAssets().size();
+                    TVector<uint8> Bytes;
+                    FMemoryWriter Ar(Bytes);
+                    FAssetRegistry::Get().WriteToArchive(Ar);
+                    if (Writer.AddEntry("/Engine/AssetRegistry.bin",
+                        TSpan<const uint8>(Bytes.data(), Bytes.size())))
+                    {
+                        ++ChunkExtras;
+                        Log(LogFunc, FString().sprintf(
+                            "  + /Engine/AssetRegistry.bin (cooked, %zu bytes, %zu live entries)",
+                            Bytes.size(), LiveCount).c_str());
+                    }
+                    // Only loud-warn at zero — a minimal/fresh project legitimately
+                    // has very few assets. Zero however means discovery
+                    // never ran or wiped the registry; recovery is to
+                    // delete the .assetdb cache + restart.
+                    if (LiveCount == 0)
+                    {
+                        Log(LogFunc, FString().sprintf(
+                            "  [warn] live registry has 0 entries — Shipping runtime will not find anything. "
+                            "Delete <EngineInstall>/Intermediates/AssetRegistry.assetdb and restart the editor "
+                            "to force a fresh discovery, then re-cook.").c_str());
+                    }
+                }
+            }
+
+            const FString OutPath = ChunkPakPath(Chunk);
+            const size_t ChunkBytes = Writer.TotalEntryBytes();
+            if (!Writer.Finalize(OutPath))
+            {
+                Result.ErrorMessage = FString("Failed to write PAK at ") + OutPath;
+                return Result;
+            }
+
+            FCookChunkResult ChunkResult;
+            ChunkResult.Chunk     = Chunk;
+            ChunkResult.PakPath   = OutPath;
+            ChunkResult.NumAssets = ByChunk[Chunk].size();
+            ChunkResult.NumExtras = ChunkExtras;
+            ChunkResult.Bytes     = ChunkBytes;
+            Result.Chunks.push_back(Move(ChunkResult));
+
+            Result.NumExtraFiles += ChunkExtras;
+            Result.TotalBytes    += ChunkBytes;
+
+            Log(LogFunc, FString().sprintf("Wrote chunk '%s' -> %s (%zu entries, %zu bytes)",
+                Chunk.ToString().c_str(), OutPath.c_str(),
+                Writer.NumEntries(), ChunkBytes).c_str());
+        }
+
+        Log(LogFunc, FString().sprintf("DDC: %zu hits, %zu misses (%zu bytes written this cook)",
+            FCookDDC::Hits(), FCookDDC::Misses(), FCookDDC::WrittenBytes()).c_str());
 
         Result.bSuccess = true;
         return Result;

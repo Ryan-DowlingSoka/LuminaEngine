@@ -88,6 +88,15 @@ namespace Lumina::VFS
         }
     }
 
+    bool DoesAliasExists(const FName& Alias)
+    {
+        // FileSystemStorage is keyed by normalized FFixedString (e.g. "/Game").
+        FStringView View = Alias.ToString();
+        FFixedString Key = Paths::Normalize(View);
+        auto It = Detail::FileSystemStorage.find(Key);
+        return It != Detail::FileSystemStorage.end() && !It->second.empty();
+    }
+
     FStringView Extension(FStringView Path)
     {
         size_t Dot = Path.find_last_of('.');

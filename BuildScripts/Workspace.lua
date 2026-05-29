@@ -38,7 +38,12 @@ function LuminaWorkspaceSettings(Opts)
             startproject(Opts.StartProject)
         end
 
-        configurations { "Debug", "Development", "Shipping" }
+        -- First-listed configuration is the .sln default for fresh opens.
+        -- Engine devs care about Debug for debugging the engine itself, so
+        -- the engine workspace stays Debug-first; game projects override
+        -- with Development-first since the user almost never wants the
+        -- slower Debug build for game iteration.
+        configurations(Opts.Configurations or { "Debug", "Development", "Shipping" })
         platforms { "Editor", "Game" }
         defaultplatform "Editor"
 
@@ -168,7 +173,11 @@ function LuminaWorkspaceSettings(Opts)
             -- /Gy: function-level COMDATs so /OPT:REF can strip unused functions
             -- at function (not object-file) granularity.
             buildoptions { "/Gy" }
-            defines { "NDEBUG", "LE_SHIPPING", "LUMINA_SHIPPING" }
+            -- LUMINA_MONOLITHIC strips dllexport/dllimport from API macros
+            -- and switches IMPLEMENT_MODULE to register into a static
+            -- table instead of exporting an InitializeModule entry. Paired
+            -- with the SharedLib -> StaticLib flip in Module.lua/Plugin.lua.
+            defines { "NDEBUG", "LE_SHIPPING", "LUMINA_SHIPPING", "LUMINA_MONOLITHIC" }
             removedefines { "JPH_DEBUG_RENDERER" }
 
         -- /OPT:REF drops unreferenced code/data; /OPT:ICF folds identical COMDATs.

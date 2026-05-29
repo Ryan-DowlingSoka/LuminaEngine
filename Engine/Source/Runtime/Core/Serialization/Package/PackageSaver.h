@@ -70,7 +70,14 @@ namespace Lumina
         virtual FArchive& operator<<(CObject*& Value) override;
         virtual FArchive& operator<<(FObjectHandle& Value) override;
 
-        /** Build the package's ImportTable from the order in which imports were discovered while writing exports. */
+        /** FSoftObjectPath::operator<< calls this so we can fold the soft
+         *  target's GUID into the ImportTable as a Soft edge. Same GUID as
+         *  a hard import takes the hard slot (deduped). */
+        virtual void RegisterSoftAssetReference(const FGuid& AssetGUID) override;
+
+        /** Build the package's ImportTable. Hard imports first (allocation
+         *  order they were discovered while writing exports), then soft
+         *  imports that didn't already appear as hard. */
         void PopulateImportTable(TVector<FObjectImport>& Out) const;
 
         uint32 GetImportCount() const { return CurrentImportIndex; }
@@ -79,6 +86,7 @@ namespace Lumina
 
         CPackage*                   Package;
         THashMap<CObject*, uint32>  ObjectToIndexMap;
+        THashSet<FGuid>             SoftReferencedGUIDs;
         uint32                      CurrentImportIndex = 0;
     };
 }

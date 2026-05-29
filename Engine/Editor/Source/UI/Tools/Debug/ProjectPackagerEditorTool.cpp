@@ -2,10 +2,13 @@
 
 #include <filesystem>
 
+#include "Assets/AssetRegistry/CookRoot.h"
 #include "Config/Config.h"
 #include "Cooker/AssetCooker.h"
 #include "Cooker/ProjectPackager.h"
 #include "Core/Engine/Engine.h"
+#include "Core/Plugin/Plugin.h"
+#include "Core/Plugin/PluginManager.h"
 #include "Platform/Process/PlatformProcess.h"
 
 namespace Lumina
@@ -33,10 +36,21 @@ namespace Lumina
     void FProjectPackagerEditorTool::DrawHelpMenu()
     {
         DrawHelpTextRow("What this does",
-            "Cooks the asset graph rooted at Project.GameStartupMap into a .pak, optionally invokes MSBuild "
-            "for the Game|Shipping target, and copies the binary + DLLs alongside the .pak.");
+            "Walks FAssetData dependencies from the cook roots (project + enabled-plugin CookRoots[], "
+            "plus every asset flagged EAssetFlags::Primary), strips EditorOnly properties via a cook-mode "
+            "FPackageSaver, and writes one .pak per chunk. The Main chunk also carries shared content "
+            "(/Engine resources, shader cache, /Config) and a pre-baked /Engine/AssetRegistry.bin so the "
+            "runtime skips the filesystem rescan.");
+        DrawHelpTextRow("Chunks",
+            "FCookGraph assigns each asset a chunk name (inherited along Hard/Owned edges from its root). "
+            "The cooker writes <name>.pak for Main and <name>-<chunk>.pak for others, side-by-side. The "
+            "runtime mounts every .pak next to the exe at startup.");
+        DrawHelpTextRow("DDC",
+            "Cooked bytes are cached at <EngineInstall>/Intermediates/DDC/. Repeat cooks of unchanged "
+            "assets skip the load+resave entirely. Bump FCookDDC::kCookStamp in code to invalidate the "
+            "whole cache after changing cook logic.");
         DrawHelpTextRow("Cook vs Full Package",
-            "Cook Only stops after the .pak — fast iteration when you only changed assets. "
+            "Cook Only stops after the .pak set — fast iteration when you only changed assets. "
             "Full Package runs cook + build + copy and produces a runnable distribution.");
         DrawHelpTextRow("Configurations",
             "Shipping (default): no editor / no debug overhead, optimized. Development: profiler scopes + "
@@ -64,7 +78,29 @@ namespace Lumina
         LastError.clear();
         LastPakPath.clear();
         LastOutputDir.clear();
+        LastChunks.clear();
         bLastSuccess = false;
+    }
+
+    namespace
+    {
+        // Hand-rolled mirror of FCookResult::Chunks into the tool's
+        // FChunkSummary so the UI doesn't keep a pointer into a stale result.
+        template<typename ToolT>
+        void CaptureChunksFromResult(const FCookResult& Result, ToolT& Out)
+        {
+            Out.clear();
+            Out.reserve(Result.Chunks.size());
+            for (const FCookChunkResult& C : Result.Chunks)
+            {
+                typename ToolT::value_type Entry;
+                Entry.Name   = C.Chunk.ToString().c_str();
+                Entry.Path   = C.PakPath;
+                Entry.Assets = C.NumAssets;
+                Entry.Bytes  = C.Bytes;
+                Out.push_back(Move(Entry));
+            }
+        }
     }
 
     void FProjectPackagerEditorTool::DrainSession()
@@ -164,8 +200,9 @@ namespace Lumina
             bLastSuccess = true;
             LastPakPath = PakPath;
             LastOutputDir = PakDir;
-            AppendLog(FString().sprintf("DONE: %zu assets, %zu bytes -> %s",
-                Result.NumAssetsCooked, Result.TotalBytes, PakPath.c_str()).c_str());
+            CaptureChunksFromResult(Result, LastChunks);
+            AppendLog(FString().sprintf("DONE: %zu assets across %zu chunk(s), %zu bytes total -> %s",
+                Result.NumAssetsCooked, Result.Chunks.size(), Result.TotalBytes, PakDir.c_str()).c_str());
         }
         else
         {
@@ -229,8 +266,9 @@ namespace Lumina
             return;
         }
 
-        AppendLog(FString().sprintf("Cook OK: %zu assets, %zu bytes",
-            Cook.NumAssetsCooked, Cook.TotalBytes).c_str());
+        CaptureChunksFromResult(Cook, LastChunks);
+        AppendLog(FString().sprintf("Cook OK: %zu assets across %zu chunk(s), %zu bytes total",
+            Cook.NumAssetsCooked, Cook.Chunks.size(), Cook.TotalBytes).c_str());
 
         // 1.5) Loose-script extraction must run on the main thread (uses VFS).
         if (bExtractScriptsLoose)
@@ -311,20 +349,34 @@ namespace Lumina
             MSBuildPath = FProjectPackager::DefaultMSBuildPath();
         }
 
-        // Project + startup-map summary.
+        // Project + cook-roots summary.
         ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), LE_ICON_PACKAGE_VARIANT " Package Project");
         ImGui::Separator();
 
-        const FString StartupMap = GConfig->Get<std::string>("Project.GameStartupMap").c_str();
         ImGui::Text("Project:    %.*s", (int)GEngine->GetProjectName().size(), GEngine->GetProjectName().data());
-        if (StartupMap.empty())
+
+        const TVector<FCookRoot> Roots = GEngine->GetCookRoots();
+        if (Roots.empty())
         {
             ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
-                "Startup Map: <not set — go to Project Settings -> Project / Maps>");
+                "Cook Roots: <none — open Project Settings > Maps > Cook Roots to add asset paths,");
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+                "             or declare CookRoots in a .lplugin / flag assets EAssetFlags::Primary>");
         }
         else
         {
-            ImGui::Text("Startup Map: %s", StartupMap.c_str());
+            const int32 ShownLimit = 6;
+            ImGui::Text("Cook Roots: %zu", Roots.size());
+            const int32 Count = (int32)Roots.size();
+            for (int32 i = 0; i < Count && i < ShownLimit; ++i)
+            {
+                const FName ChunkName = Roots[i].Chunk.IsNone() ? FName("Main") : Roots[i].Chunk;
+                ImGui::TextDisabled("    [%s]  %s", ChunkName.ToString().c_str(), Roots[i].Asset.c_str());
+            }
+            if (Count > ShownLimit)
+            {
+                ImGui::TextDisabled("    ... (+%d more)", Count - ShownLimit);
+            }
         }
 
         // Status badge — visible at a glance while a build is running.
@@ -385,7 +437,7 @@ namespace Lumina
         ImGui::Spacing();
 
         // Action buttons.
-        ImGui::BeginDisabled(bIsRunning || StartupMap.empty());
+        ImGui::BeginDisabled(bIsRunning || Roots.empty());
         {
             if (ImGui::Button(LE_ICON_PACKAGE_VARIANT " Cook + Build", ImVec2(180, 32)))
             {
@@ -411,6 +463,43 @@ namespace Lumina
             if (ImGui::Button(LE_ICON_FOLDER_OPEN " Open Output", ImVec2(140, 32)))
             {
                 Platform::LaunchURL(StringUtils::ToWideString(LastOutputDir).c_str());
+            }
+        }
+
+        // Per-chunk PAK summary from the last successful cook. Compact
+        // table; one row per .pak written, with click-to-open.
+        if (!LastChunks.empty())
+        {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1.0f),
+                LE_ICON_FILE_OUTLINE " Last cook output (%zu chunk%s):",
+                LastChunks.size(), LastChunks.size() == 1 ? "" : "s");
+
+            if (ImGui::BeginTable("##chunks", 4,
+                ImGuiTableFlags_BordersInner | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX))
+            {
+                ImGui::TableSetupColumn("Chunk",  ImGuiTableColumnFlags_WidthFixed, 90.0f);
+                ImGui::TableSetupColumn("Assets", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+                ImGui::TableSetupColumn("Size",   ImGuiTableColumnFlags_WidthFixed, 90.0f);
+                ImGui::TableSetupColumn("Path",   ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableHeadersRow();
+
+                for (const FChunkSummary& C : LastChunks)
+                {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(C.Name.c_str());
+                    ImGui::TableSetColumnIndex(1); ImGui::Text("%zu", C.Assets);
+                    ImGui::TableSetColumnIndex(2);
+                    if (C.Bytes >= 1024 * 1024)
+                        ImGui::Text("%.2f MiB", (double)C.Bytes / (1024.0 * 1024.0));
+                    else if (C.Bytes >= 1024)
+                        ImGui::Text("%.1f KiB", (double)C.Bytes / 1024.0);
+                    else
+                        ImGui::Text("%zu B", C.Bytes);
+                    ImGui::TableSetColumnIndex(3);
+                    ImGui::TextUnformatted(C.Path.c_str());
+                }
+                ImGui::EndTable();
             }
         }
 

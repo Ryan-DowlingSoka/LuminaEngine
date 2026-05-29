@@ -374,6 +374,11 @@ namespace Lumina
 		glfwSetWindowShouldClose(Impl->Window, GLFW_TRUE);
 	}
 
+	void FWindow::CancelClose()
+	{
+		glfwSetWindowShouldClose(Impl->Window, GLFW_FALSE);
+	}
+
 	namespace Windowing
 	{
 		FWindow* PrimaryWindow;

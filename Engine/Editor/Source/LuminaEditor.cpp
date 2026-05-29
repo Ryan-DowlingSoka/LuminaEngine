@@ -1,13 +1,16 @@
 #include "LuminaEditor.h"
 #include <filesystem>
 #include <fstream>
+#include <thread>
 #include <Core/Engine/Engine.h>
 #include <Core/Engine/EngineMetaContext.h>
+#include <Core/Progress/SlowTask.h>
 #include <Memory/Memory.h>
 #include <Tools/UI/DevelopmentToolUI.h>
 #include "Config/Config.h"
 #include "FileSystem/FileSystem.h"
 #include "GUID/GUID.h"
+#include "Log/Log.h"
 #include "Paths/Paths.h"
 #include "Platform/Process/PlatformProcess.h"
 #include "UI/EditorUI.h"
@@ -277,6 +280,8 @@ namespace Lumina
         FString NameUpper;
         FString Guid;
         FString Description;
+        FString LuminaDir;        // Absolute path to engine install, fwd-slashed
+        FString LuminaDirBackslash; // Same, backslashed (for .run.xml and Windows tools)
     };
 
     static void ReplaceProjectTokens(FString& Text, const FProjectTemplateContext& Ctx)
@@ -299,11 +304,96 @@ namespace Lumina
         ReplaceAll(Text, "$PROJECTNAMEUPPER", Ctx.NameUpper);
         ReplaceAll(Text, "$PROJECTDESCRIPTION", Ctx.Description);
         ReplaceAll(Text, "$PROJECTGUID", Ctx.Guid);
+        ReplaceAll(Text, "$LUMINADIRBACKSLASH", Ctx.LuminaDirBackslash);
+        ReplaceAll(Text, "$LUMINADIR", Ctx.LuminaDir);
         ReplaceAll(Text, "$PROJECTNAME", Ctx.Name);
     }
 
-    void FEditorEngine::CreateProject(FStringView NewProjectName, FStringView NewProjectPath)
+    // Project name must produce a valid C identifier (it becomes the module
+    // name, vcxproj name, and goes into source identifiers via the API macro).
+    static bool ValidateProjectName(FStringView Name, FString& OutError)
     {
+        if (Name.empty())
+        {
+            OutError = "Project name is empty.";
+            return false;
+        }
+
+        const char First = Name.front();
+        if (!std::isalpha(static_cast<unsigned char>(First)) && First != '_')
+        {
+            OutError = "Project name must start with a letter or underscore.";
+            return false;
+        }
+
+        for (char c : Name)
+        {
+            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-')
+            {
+                OutError = "Project name may only contain letters, digits, underscores and hyphens.";
+                return false;
+            }
+        }
+
+        if (Name.size() > 64)
+        {
+            OutError = "Project name is too long (max 64 chars).";
+            return false;
+        }
+
+        return true;
+    }
+
+    bool FEditorEngine::CreateProject(FStringView NewProjectName, FStringView NewProjectPath, FFixedString& OutProjectFile, FString& OutError)
+    {
+        OutProjectFile.clear();
+        OutError.clear();
+
+        if (!ValidateProjectName(NewProjectName, OutError))
+        {
+            return false;
+        }
+
+        if (NewProjectPath.empty())
+        {
+            OutError = "Project location is empty.";
+            return false;
+        }
+
+        const FString& EngineDir = Paths::GetEngineInstallDirectory();
+        if (EngineDir.empty())
+        {
+            OutError = "Engine install directory is not set (LUMINA_DIR missing). Run the engine's Setup.bat.";
+            return false;
+        }
+
+        const FFixedString BlankProjectPath = Paths::Combine(EngineDir, "Templates", "Blank");
+        if (!Paths::Exists(BlankProjectPath))
+        {
+            OutError = "Blank template not found at: ";
+            OutError.append(BlankProjectPath.c_str(), BlankProjectPath.size());
+            return false;
+        }
+
+        const FFixedString Combined = Paths::Combine(NewProjectPath, NewProjectName);
+        std::error_code ParentEc;
+        const FString ParentPathStr(NewProjectPath.data(), NewProjectPath.size());
+        if (!std::filesystem::exists(ParentPathStr.c_str(), ParentEc))
+        {
+            OutError = "Project location does not exist: ";
+            OutError.append(NewProjectPath.data(), NewProjectPath.size());
+            return false;
+        }
+
+        std::error_code ExistEc;
+        if (std::filesystem::exists(Combined.c_str(), ExistEc) &&
+            !std::filesystem::is_empty(Combined.c_str(), ExistEc))
+        {
+            OutError = "A non-empty folder already exists at: ";
+            OutError.append(Combined.c_str(), Combined.size());
+            return false;
+        }
+
         FProjectTemplateContext Ctx;
         Ctx.Name.assign(NewProjectName.data(), NewProjectName.size());
         Ctx.NameUpper = Ctx.Name;
@@ -317,12 +407,20 @@ namespace Lumina
             });
         Ctx.Guid = FGuid::New().ToString(true, true);
         Ctx.Description = "A Lumina game project";
+        Ctx.LuminaDir = EngineDir;
+        eastl::replace(Ctx.LuminaDir.begin(), Ctx.LuminaDir.end(), '\\', '/');
+        Ctx.LuminaDirBackslash = Ctx.LuminaDir;
+        eastl::replace(Ctx.LuminaDirBackslash.begin(), Ctx.LuminaDirBackslash.end(), '/', '\\');
 
-        FFixedString BlankProjectPath = Paths::Combine(Paths::GetEngineInstallDirectory(), "Templates", "Blank");
+        std::error_code CreateEc;
+        std::filesystem::create_directories(Combined.c_str(), CreateEc);
+        if (CreateEc)
+        {
+            OutError = "Failed to create project directory: ";
+            OutError.append(CreateEc.message().c_str());
+            return false;
+        }
 
-        FFixedString Combined = Paths::Combine(NewProjectPath, NewProjectName);
-        std::filesystem::create_directories(Combined.c_str());
-        
         for (auto& Entry : std::filesystem::recursive_directory_iterator(BlankProjectPath.c_str()))
         {
             std::filesystem::path RelativePath = std::filesystem::relative(Entry.path(), BlankProjectPath.c_str());
@@ -347,11 +445,12 @@ namespace Lumina
 
                 // Token replace only on text files; binaries (premake5.exe, etc.) copy verbatim.
                 const bool bIsTextFile =
-                    Ext == ".h"     || Ext == ".hpp"        || Ext == ".cpp"    ||
-                    Ext == ".c"     || Ext == ".inl"        || Ext == ".lua"    ||
-                    Ext == ".json"  || Ext == ".lproject"   || Ext == ".luau"   ||
-                    Ext == ".bat"   || Ext == ".py"         || Ext == ".md"     ||
-                    Ext == ".txt";
+                    Ext == ".h"          || Ext == ".hpp"        || Ext == ".cpp"    ||
+                    Ext == ".c"          || Ext == ".inl"        || Ext == ".lua"    ||
+                    Ext == ".json"       || Ext == ".lproject"   || Ext == ".luau"   ||
+                    Ext == ".bat"        || Ext == ".py"         || Ext == ".md"     ||
+                    Ext == ".txt"        || Ext == ".gitignore"  || Ext == ".cfg"    ||
+                    Ext == ".yaml"       || Ext == ".yml"        || Ext == ".xml";
 
                 if (!bIsTextFile)
                 {
@@ -382,8 +481,59 @@ namespace Lumina
                 }
             }
         }
-        
-        Platform::LaunchURL(UTF8_TO_TCHAR(Combined.c_str()));
-        
+
+        OutProjectFile = Paths::Combine(Combined, FFixedString(Ctx.Name.c_str()).append(".lproject"));
+        return true;
+    }
+
+    bool FEditorEngine::GenerateProjectFiles(FStringView ProjectDirectory) const
+    {
+        FFixedString BatPath = Paths::Combine(ProjectDirectory, "GenerateProject.bat");
+        if (!Paths::Exists(BatPath))
+        {
+            LOG_ERROR("GenerateProjectFiles: missing {0}", BatPath.c_str());
+            return false;
+        }
+
+        // Detached worker thread runs premake, captures stdout+stderr, and
+        // streams each line into the editor log under a [premake] tag so the
+        // user sees what's happening without a separate console window. The
+        // FScopedSlowTask drives a centred progress modal for the duration.
+        const std::string BatPathStr(BatPath.c_str(), BatPath.size());
+        const std::string WorkingDirStr(ProjectDirectory.data(), ProjectDirectory.size());
+
+        std::thread([BatPathStr, WorkingDirStr]()
+        {
+            FScopedSlowTask Task(1.0f, "Generating project files", "Running premake5 vs2022...");
+
+            LOG_INFO("[premake] running {0}", BatPathStr.c_str());
+
+            FWString WideExe = StringUtils::ToWideString(BatPathStr.c_str());
+            FWString WideCwd = StringUtils::ToWideString(WorkingDirStr.c_str());
+
+            const int ExitCode = Platform::RunProcessAndWaitCapture(
+                WideExe.c_str(),
+                nullptr,
+                WideCwd.c_str(),
+                [](FStringView Line)
+                {
+                    if (Line.empty())
+                    {
+                        return;
+                    }
+                    LOG_INFO("[premake] {0}", FString(Line.data(), Line.size()).c_str());
+                });
+
+            if (ExitCode == 0)
+            {
+                LOG_INFO("[premake] project files generated successfully.");
+            }
+            else
+            {
+                LOG_ERROR("[premake] generation failed (exit code {0}).", ExitCode);
+            }
+        }).detach();
+
+        return true;
     }
 }

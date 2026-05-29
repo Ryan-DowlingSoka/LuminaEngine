@@ -140,10 +140,14 @@ namespace Lumina::Platform
             URLString += Params;
         }
 
+        // DETACHED_PROCESS and CREATE_NEW_CONSOLE are mutually exclusive per
+        // Microsoft docs; combining them returns ERROR_INVALID_PARAMETER (87).
+        // For "detached" we want the child to own its own console window and
+        // outlive whatever the parent does — that's exactly CREATE_NEW_CONSOLE.
         DWORD creationFlags = 0;
         if (bLaunchDetached)
         {
-            creationFlags |= DETACHED_PROCESS | CREATE_NEW_CONSOLE;
+            creationFlags |= CREATE_NEW_CONSOLE;
         }
 
         // CreateProcessW modifies the command line string, so make a writable buffer
@@ -540,6 +544,73 @@ namespace Lumina::Platform
         FileDialog->Release();
         CoUninitialize();
         return bResult;
+    }
+
+    // ─── OS shell integration ──────────────────────────────────────────────
+
+    void ShowFileInExplorer(const TCHAR* Path)
+    {
+        if (!Path || !Path[0])
+        {
+            return;
+        }
+
+        // Normalize to backslashes and quote — explorer is picky about both.
+        FWString Normalized(Path);
+        eastl::replace(Normalized.begin(), Normalized.end(), L'/', L'\\');
+
+        FWString Args = L"/select,\"";
+        Args += Normalized;
+        Args += L"\"";
+
+        ShellExecuteW(nullptr, L"open", L"explorer.exe", Args.c_str(), nullptr, SW_SHOWNORMAL);
+    }
+
+    void ShowFolderInExplorer(const TCHAR* Directory)
+    {
+        if (!Directory || !Directory[0])
+        {
+            return;
+        }
+
+        FWString Normalized(Directory);
+        eastl::replace(Normalized.begin(), Normalized.end(), L'/', L'\\');
+
+        ShellExecuteW(nullptr, L"open", Normalized.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+
+    void OpenTerminalAt(const TCHAR* Directory)
+    {
+        if (!Directory || !Directory[0])
+        {
+            return;
+        }
+
+        FWString Normalized(Directory);
+        eastl::replace(Normalized.begin(), Normalized.end(), L'/', L'\\');
+
+        // Prefer Windows Terminal when present; the -d flag sets the starting
+        // directory and the new tab gets the user's default profile.
+        const HINSTANCE WtResult = ShellExecuteW(
+            nullptr,
+            L"open",
+            L"wt.exe",
+            (FWString(L"-d \"") + Normalized + L"\"").c_str(),
+            nullptr,
+            SW_SHOWNORMAL);
+
+        // ShellExecute returns >32 on success. If wt isn't installed we get
+        // SE_ERR_FNF (2) — fall back to plain cmd.exe.
+        if (reinterpret_cast<INT_PTR>(WtResult) <= 32)
+        {
+            ShellExecuteW(
+                nullptr,
+                L"open",
+                L"cmd.exe",
+                nullptr,
+                Normalized.c_str(),
+                SW_SHOWNORMAL);
+        }
     }
 }
 

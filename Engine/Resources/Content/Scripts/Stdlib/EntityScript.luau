@@ -140,6 +140,22 @@ end
 -- ---- Components ----------------------------------------------------------
 -- ComponentType is the reflected struct global (e.g. STransformComponent,
 -- SStaticMeshComponent). Pass the type itself, not a string.
+--
+-- Player input is component-gated: only an entity with SInputComponent can
+-- read keys, actions, or mouse delta. Call self:EnableInput() once (typically
+-- in OnReady) to add the component and cache it as self._Input, then query
+-- via the colon API:
+--   self._Input:IsActionDown("Jump")
+--   self._Input:GetActionAxis("MoveX")
+--   self._Input:GetMouseDeltaX()
+--   local Id = self._Input:BindAction("Fire", function() ... end)
+--   self._Input:UnbindAction(Id)
+-- Call self:DisableInput() to remove the component (and drop any bound
+-- callbacks). For a temporary mute that keeps bindings, set
+-- self._Input.bEnabled = false instead.
+-- The global `Input.*` table only carries window-scoped knobs
+-- (SetMouseMode, SetMode, GetMode); every gameplay query lives on the
+-- component.
 
 function EntityScript:GetComponent(ComponentType)
     return self._Registry:Get(self.Entity, ComponentType)
@@ -155,6 +171,28 @@ end
 
 function EntityScript:RemoveComponent(ComponentType)
     return self._Registry:Remove(self.Entity, ComponentType)
+end
+
+-- ---- Input opt-in --------------------------------------------------------
+-- Sugar over Add/Remove for SInputComponent that also keeps self._Input in
+-- sync so query call-sites (self._Input:GetActionAxis(...) etc.) don't have
+-- to manually re-cache. Idempotent: calling EnableInput when the component
+-- already exists just refreshes the cache.
+
+function EntityScript:EnableInput()
+    local C = self:GetComponent(SInputComponent)
+    if C == nil then
+        C = self:AddComponent(SInputComponent)
+    end
+    self._Input = C
+    return C
+end
+
+function EntityScript:DisableInput()
+    self._Input = nil
+    if self:HasComponent(SInputComponent) then
+        self:RemoveComponent(SInputComponent)
+    end
 end
 
 -- Same as the Self-targeted helpers but for an arbitrary entity. Use these
@@ -345,10 +383,10 @@ end
 -- ---- Timers --------------------------------------------------------------
 -- After/Every are scoped to this entity, so timers stop when the entity
 -- is destroyed. Returned handle can be passed to CancelTimer.
--- Wait yields the current coroutine for N seconds — only valid in lifecycle
--- methods or coroutines spawned via the engine; you can't Wait from a raw
--- callback (e.g. an Input.OnActionPressed handler) because there's no
--- coroutine to yield.
+-- Wait yields the current coroutine for N seconds. Lifecycle methods
+-- (OnReady/OnUpdate/OnContact*/etc.) run as direct pcalls, NOT coroutines —
+-- calling self:Wait() from one will error. Use self:After(seconds, fn)
+-- instead, or invoke from a coroutine you spawned yourself.
 
 function EntityScript:Wait(Seconds: number)
     self._Timers:Wait(Seconds)

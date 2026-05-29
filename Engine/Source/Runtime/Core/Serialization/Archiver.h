@@ -15,6 +15,7 @@
 namespace Lumina
 {
     class FField;
+    class FGuid;
 }
 
 enum class EArchiverFlags : uint8
@@ -25,6 +26,9 @@ enum class EArchiverFlags : uint8
     Compress    = 3,
     Encrypt     = 4,
     NoFields    = 5,
+    // Saver is producing cooked (shipping) output. Property serializers
+    // honor this to strip EditorOnly properties.
+    Cooking     = 6,
 };
 
 namespace Lumina
@@ -55,6 +59,10 @@ namespace Lumina
 
         /** Reading from a buffer (i.e. deserializing into a class). */
         FORCEINLINE bool virtual IsReading() const { return HasFlag(EArchiverFlags::Reading); }
+
+        /** True when producing cooked shipping output. Property serializers
+         *  drop EditorOnly properties when this is set. */
+        FORCEINLINE bool IsCooking() const { return HasFlag(EArchiverFlags::Cooking); }
 
         FORCEINLINE void SetHasError(bool bIsError) { bHasError = bIsError; }
         FORCEINLINE virtual bool HasError() const { return bHasError; }
@@ -92,6 +100,12 @@ namespace Lumina
             LOG_ERROR("Serializing FFields is not supported by this archive.");
             return *this;
         }
+
+        /** Soft-reference hook. FSoftObjectPath::operator<< calls this on
+         *  write so the saver can register the GUID as a Soft entry in the
+         *  package's ImportTable for the cooker. No-op on archives that
+         *  don't build an import table (memory readers/writers, etc.). */
+        virtual void RegisterSoftAssetReference(const FGuid& AssetGUID) {}
     
         virtual FArchive& operator<<(uint8& Value)
         {

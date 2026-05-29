@@ -14,6 +14,7 @@
 #include "Core/Reflection/Type/Properties/ArrayProperty.h"
 #include "Core/Reflection/Type/Properties/EnumProperty.h"
 #include "Core/Reflection/Type/Properties/ObjectProperty.h"
+#include "Core/Reflection/Type/Properties/SoftObjectProperty.h"
 #include "Core/Reflection/Type/Properties/OptionalProperty.h"
 #include "Core/Reflection/Type/Properties/StringProperty.h"
 #include "Core/Reflection/Type/Properties/StructProperty.h"
@@ -375,6 +376,9 @@ namespace Lumina
             break;
         case EPropertyTypeFlags::Object:
             NewFProperty<FObjectProperty, FObjectPropertyParams>(FieldOwner, Param);
+            break;
+        case EPropertyTypeFlags::SoftObject:
+            NewFProperty<FSoftObjectProperty, FSoftObjectPropertyParams>(FieldOwner, Param);
             break;
         case EPropertyTypeFlags::Class:
             break;

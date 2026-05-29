@@ -247,7 +247,7 @@ namespace Lumina
         FEnumDeferredRegistry& EnumRegistry = FEnumDeferredRegistry::Get();
         FStructDeferredRegistry& StructRegistry = FStructDeferredRegistry::Get();
 
-        while (GFirstPendingRegistrant 
+        while (GFirstPendingRegistrant
             || ClassRegistry.HasPendingRegistrations()
             || EnumRegistry.HasPendingRegistrations()
             || StructRegistry.HasPendingRegistrations())

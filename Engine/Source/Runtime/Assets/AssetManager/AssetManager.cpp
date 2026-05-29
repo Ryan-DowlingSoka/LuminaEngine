@@ -1,6 +1,9 @@
 #include "pch.h"
 
 #include "AssetManager.h"
+#include "Assets/AssetRegistry/AssetData.h"
+#include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Log/Log.h"
 #include "TaskScheduler.h"
 #include "TaskSystem/TaskSystem.h"
 
@@ -56,7 +59,48 @@ namespace Lumina
 
     void FAssetManager::FlushAsyncLoading()
     {
-        
+
+    }
+
+    FAssetData* FAssetManager::ResolvePrimaryAsset(const FPrimaryAssetId& Id) const
+    {
+        if (!Id.IsValid())
+        {
+            return nullptr;
+        }
+
+        const FName Target = Id.GetName();
+        FAssetData* Hit = nullptr;
+        const TVector<FAssetData*> Candidates = FAssetRegistry::Get().FindByPredicate(
+            [&](const FAssetData& D)
+            {
+                return HasFlag(D.Flags, EAssetFlags::Primary) && D.AssetName == Target;
+            });
+
+        if (Candidates.empty())
+        {
+            return nullptr;
+        }
+        if (Candidates.size() > 1)
+        {
+            LOG_WARN("FAssetManager: primary id '{}' resolves to {} assets; returning the first. Primary names must be unique.",
+                Target.ToString(), Candidates.size());
+        }
+        return Candidates[0];
+    }
+
+    CObject* FAssetManager::LoadPrimaryAssetSynchronous(const FPrimaryAssetId& Id)
+    {
+        FAssetData* Data = ResolvePrimaryAsset(Id);
+        if (Data == nullptr) return nullptr;
+        return LoadAssetSynchronous(Data->Path, Data->AssetGUID);
+    }
+
+    TSharedPtr<FAssetRequest> FAssetManager::LoadPrimaryAssetAsync(const FPrimaryAssetId& Id)
+    {
+        FAssetData* Data = ResolvePrimaryAsset(Id);
+        if (Data == nullptr) return {};
+        return LoadAssetAsync(Data->Path, Data->AssetGUID);
     }
 
     TSharedPtr<FAssetRequest> FAssetManager::CreateOrFindAssetRequest(const FFixedString& InAssetPath, const FGuid& GUID, bool& bAlreadyInQueue)

@@ -99,6 +99,28 @@ namespace Lumina
     };
     
     REFLECT()
+    class EDITOR_API CComponentVisualizer_CapsuleCollider : public CComponentVisualizer
+    {
+        GENERATED_BODY()
+    public:
+
+        CStruct* GetSupportedComponentType() const override;
+
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+    };
+
+    REFLECT()
+    class EDITOR_API CComponentVisualizer_CylinderCollider : public CComponentVisualizer
+    {
+        GENERATED_BODY()
+    public:
+
+        CStruct* GetSupportedComponentType() const override;
+
+        void Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity) override;
+    };
+
+    REFLECT()
     class EDITOR_API CComponentVisualizer_CharacterPhysics : public CComponentVisualizer
     {
         GENERATED_BODY()

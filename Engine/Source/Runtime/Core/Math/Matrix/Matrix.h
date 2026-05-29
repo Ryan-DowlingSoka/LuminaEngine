@@ -3,13 +3,7 @@
 #include "Core/Math/Vector/Vector.h"
 #include <type_traits>
 
-// Lumina matrices. COLUMN-MAJOR storage (C columns, each a TVec<T,R>), indexed
-// m[col][row], so they upload to the GPU byte-for-byte. Left-handed / zero-to-one
-// depth only matter for the projection builders (perspective/ortho/lookAt), which
-// live in the math function library, not here. This header is the type + its core
-// algebra.
-//
-// Not reflected (no stubs in ManualReflectTypes.h).
+// Lumina matrices. COLUMN-MAJOR storage (C columns, each a TVec<T,R>)
 
 namespace Lumina
 {
@@ -41,12 +35,12 @@ namespace Lumina
 
         // From C column vectors: TMat(col0, col1, ...).
         template<typename... Cs>
-            requires (sizeof...(Cs) == C && C >= 2 && (std::is_convertible_v<Cs, ColumnType> && ...))
+        requires (sizeof...(Cs) == C && C >= 2 && (std::is_convertible_v<Cs, ColumnType> && ...))
         constexpr TMat(const Cs&... InCols) : Cols{ ColumnType(InCols)... } {}
 
         // From C*R scalars in column-major order.
         template<typename... Ss>
-            requires (sizeof...(Ss) == C * R && C * R != C && (std::is_convertible_v<Ss, T> && ...))
+        requires (sizeof...(Ss) == C * R && C * R != C && (std::is_convertible_v<Ss, T> && ...))
         constexpr TMat(Ss... InScalars)
         {
             const T Vals[C * R] = { static_cast<T>(InScalars)... };
@@ -67,11 +61,9 @@ namespace Lumina
                 Cols[c] = ColumnType(M.Cols[c]);
             }
         }
-
-        // Resize: a smaller target keeps the upper-left; a larger one fills the rest
-        // with identity). The overlapping block is copied, the remainder identity.
+        
         template<int C2, int R2>
-            requires (C2 != C || R2 != R)
+        requires (C2 != C || R2 != R)
         explicit constexpr TMat(const TMat<T, C2, R2>& M) : TMat(T(1))
         {
             constexpr int CC = C < C2 ? C : C2;
@@ -94,9 +86,7 @@ namespace Lumina
 
         static constexpr TMat Identity() { return TMat(T(1)); }
     };
-
-    // ---- Core algebra (generic over TMat<T,C,R>) ----------------------------
-
+    
     // M (R x C) * column vector (C) -> column vector (R): linear combination of columns.
     template<typename T, int C, int R>
     constexpr TVec<T, R> operator*(const TMat<T, C, R>& M, const TVec<T, C>& V)
@@ -175,9 +165,7 @@ namespace Lumina
     {
         return !(A == B);
     }
-
-    // ---- Concrete aliases ---------------------------------------------------
-
+    
     using FMatrix2 = TMat<float, 2, 2>;
     using FMatrix3 = TMat<float, 3, 3>;
     using FMatrix4 = TMat<float, 4, 4>;

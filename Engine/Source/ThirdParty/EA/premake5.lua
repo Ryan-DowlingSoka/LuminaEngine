@@ -1,6 +1,6 @@
 project "EA"
 	kind "StaticLib"
-	language "C++" 
+	language "C++"
 
 	files
 	{
@@ -8,7 +8,7 @@ project "EA"
 		"**.cpp",
 		"**.lua",
 	}
-	
+
 	includedirs
 	{
 		"EABase",

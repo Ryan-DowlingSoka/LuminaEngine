@@ -62,6 +62,10 @@ namespace Lumina
             {
                 PropertyFlags |= EPropertyFlags::Script;
             }
+            else if (MetadataPair.Key == "EditorOnly")
+            {
+                PropertyFlags |= EPropertyFlags::EditorOnly;
+            }
             else if (MetadataPair.Key == "Getter")
             {
                 GetterFunc = MetadataPair.Value.empty() ? ("Get" + Name) : MetadataPair.Value;

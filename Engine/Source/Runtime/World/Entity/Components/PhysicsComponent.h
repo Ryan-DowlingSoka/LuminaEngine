@@ -8,6 +8,7 @@
 namespace Lumina
 {
     class CStaticMesh;
+    class CPhysicsMaterial;
 
     REFLECT(Component, Category = "Physics")
     struct RUNTIME_API alignas(Threading::GCacheLineSize) SRigidBodyComponent
@@ -117,6 +118,10 @@ namespace Lumina
         PROPERTY(Editable)
         FVector3 RotationOffset;
 
+        /** Physics material driving friction/restitution. Null falls back to the rigid body's *Override fields. */
+        PROPERTY(Editable)
+        TObjectPtr<CPhysicsMaterial> PhysicsMaterial;
+
         /** When true, the body produces overlap events but no contact response (trigger volume). */
         PROPERTY(Editable)
         bool bIsTrigger = false;
@@ -139,6 +144,92 @@ namespace Lumina
         PROPERTY(Editable)
         FVector3 TranslationOffset;
 
+        /** Physics material driving friction/restitution. Null falls back to the rigid body's *Override fields. */
+        PROPERTY(Editable)
+        TObjectPtr<CPhysicsMaterial> PhysicsMaterial;
+
+        /** When true, the body produces overlap events but no contact response (trigger volume). */
+        PROPERTY(Editable)
+        bool bIsTrigger = false;
+
+        /** When true, this collider contributes its shape to NavMesh bakes. */
+        PROPERTY(Editable, Category = "Navigation")
+        bool bAffectsNavigation = true;
+    };
+
+    /**
+     * Capsule collider: a cylinder of length 2*HalfHeight capped by hemispheres of radius Radius,
+     * aligned along the local Y axis. Use RotationOffset to lay it on its side. Total height is
+     * 2*(HalfHeight + Radius).
+     */
+    REFLECT(Component, Category = "Physics")
+    struct RUNTIME_API SCapsuleColliderComponent
+    {
+        GENERATED_BODY()
+
+        /** Radius of the hemispherical caps (meters). */
+        PROPERTY(Editable, ClampMin = 0.001f)
+        float Radius = 0.5f;
+
+        /** Half-height of the cylindrical middle section (meters). Total height is 2*(HalfHeight + Radius). */
+        PROPERTY(Editable, ClampMin = 0.001f)
+        float HalfHeight = 0.5f;
+
+        /** Local-space offset applied to the collider position relative to the entity. */
+        PROPERTY(Editable)
+        FVector3 TranslationOffset;
+
+        /** Local-space euler rotation offset applied to the collider. Set X or Z to 90° to lie sideways. */
+        PROPERTY(Editable)
+        FVector3 RotationOffset;
+
+        /** Physics material driving friction/restitution. Null falls back to the rigid body's *Override fields. */
+        PROPERTY(Editable)
+        TObjectPtr<CPhysicsMaterial> PhysicsMaterial;
+
+        /** When true, the body produces overlap events but no contact response (trigger volume). */
+        PROPERTY(Editable)
+        bool bIsTrigger = false;
+
+        /** When true, this collider contributes its shape to NavMesh bakes. */
+        PROPERTY(Editable, Category = "Navigation")
+        bool bAffectsNavigation = true;
+    };
+
+    /**
+     * Cylinder collider: a flat-ended cylinder aligned along the local Y axis. Cheaper than a
+     * convex hull but rolls realistically. Total height is 2*HalfHeight; CapRadius rounds the
+     * top/bottom rim edges (0 = sharp edges).
+     */
+    REFLECT(Component, Category = "Physics")
+    struct RUNTIME_API SCylinderColliderComponent
+    {
+        GENERATED_BODY()
+
+        /** Radius at the cylinder's equator (meters). */
+        PROPERTY(Editable, ClampMin = 0.001f)
+        float Radius = 0.5f;
+
+        /** Half the cylinder's total height (meters). */
+        PROPERTY(Editable, ClampMin = 0.001f)
+        float HalfHeight = 0.5f;
+
+        /** Rounding of the top/bottom rim. Set to a small value (e.g. 0.02) to avoid sharp-edge stuck contacts. */
+        PROPERTY(Editable, ClampMin = 0.0f)
+        float CapRadius = 0.05f;
+
+        /** Local-space offset applied to the collider position relative to the entity. */
+        PROPERTY(Editable)
+        FVector3 TranslationOffset;
+
+        /** Local-space euler rotation offset applied to the collider. */
+        PROPERTY(Editable)
+        FVector3 RotationOffset;
+
+        /** Physics material driving friction/restitution. Null falls back to the rigid body's *Override fields. */
+        PROPERTY(Editable)
+        TObjectPtr<CPhysicsMaterial> PhysicsMaterial;
+
         /** When true, the body produces overlap events but no contact response (trigger volume). */
         PROPERTY(Editable)
         bool bIsTrigger = false;
@@ -153,6 +244,10 @@ namespace Lumina
     struct RUNTIME_API STerrainColliderComponent
     {
         GENERATED_BODY()
+
+        /** Physics material driving friction/restitution. Null falls back to the rigid body's *Override fields. */
+        PROPERTY(Editable)
+        TObjectPtr<CPhysicsMaterial> PhysicsMaterial;
 
         /** When true, the body produces overlap events but no contact response (trigger volume). */
         PROPERTY(Editable)
@@ -183,6 +278,10 @@ namespace Lumina
         /** Local-space euler rotation offset applied to the collider. */
         PROPERTY(Editable)
         FVector3 RotationOffset;
+
+        /** Physics material driving friction/restitution. Null falls back to the rigid body's *Override fields. */
+        PROPERTY(Editable)
+        TObjectPtr<CPhysicsMaterial> PhysicsMaterial;
 
         /** When true, the body produces overlap events but no contact response (trigger volume). */
         PROPERTY(Editable)

@@ -31,6 +31,13 @@ namespace Lumina::Logging
 #define LOG_ERROR(...)		::Lumina::Logging::GetLogger()->error(__VA_ARGS__)
 #define LOG_WARN(...)		::Lumina::Logging::GetLogger()->warn(__VA_ARGS__)
 
+// DISPLAY also always compiles in — info-severity, but reserved for one-shot
+// boot/system milestones we still want in Shipping so post-mortem debugging
+// of a packaged game (black screen, missing map, plugin not loaded, etc.) has
+// breadcrumbs. NOT a general-purpose info channel — keep these rare; use
+// LOG_INFO for everyday verbose status.
+#define LOG_DISPLAY(...)	::Lumina::Logging::GetLogger()->info(__VA_ARGS__)
+
 // TRACE/DEBUG/INFO are verbose levels gated by the VerboseLogging build option
 // (LUMINA_VERBOSE_LOGGING, see BuildConfig.lua). When it's off, these expand to
 // nothing so their format strings are dropped from the binary and the per-call

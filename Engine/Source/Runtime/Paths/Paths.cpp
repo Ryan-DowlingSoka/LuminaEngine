@@ -204,20 +204,57 @@ namespace Lumina::Paths
         return CachedDirectories[EngineInstallDirectoryName];
     }
 
+    namespace
+    {
+        // In-place: replace '\\' with '/', then collapse runs of '/' to a
+        // single '/'. Required by VFS::Parent (returns parent with trailing
+        // slash) + any path-join site that does dir + "/" + name — without
+        // collapse, every join adds one more slash and the config grows
+        // forever (`H:/Engine/Sandbox/////////Sandbox.lproject`).
+        template<typename StringT>
+        void NormalizeInPlace(StringT& Path)
+        {
+            // 1) backslashes → forward slashes
+            for (auto& c : Path)
+            {
+                if (c == '\\') c = '/';
+            }
+
+            // 2) collapse runs of '/' to a single '/'.
+            size_t Write = 0;
+            bool PrevSlash = false;
+            for (size_t Read = 0; Read < Path.size(); ++Read)
+            {
+                const char c = Path[Read];
+                if (c == '/')
+                {
+                    if (PrevSlash) continue;
+                    PrevSlash = true;
+                }
+                else
+                {
+                    PrevSlash = false;
+                }
+                Path[Write++] = c;
+            }
+            Path.resize(Write);
+        }
+    }
+
     void Normalize(FString& Path)
     {
-        eastl::replace(Path.begin(), Path.end(), '\\', '/');
+        NormalizeInPlace(Path);
     }
 
     void Normalize(FFixedString& Path)
     {
-        eastl::replace(Path.begin(), Path.end(), '\\', '/');
+        NormalizeInPlace(Path);
     }
 
     FFixedString Normalize(FStringView Path)
     {
         FFixedString RetVal = { Path.begin(), Path.end() };
-        eastl::replace(RetVal.begin(), RetVal.end(), '\\', '/');
+        NormalizeInPlace(RetVal);
         return RetVal;
     }
 

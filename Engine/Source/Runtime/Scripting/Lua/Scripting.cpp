@@ -18,10 +18,16 @@
 #include "Memory/SmartPtr.h"
 #include "Paths/Paths.h"
 #include "Platform/Filesystem/FileHelper.h"
+#include "Assets/AssetManager/AssetManager.h"
+#include "Assets/AssetManager/PrimaryAssetId.h"
 #include "Assets/AssetRegistry/AssetRegistry.h"
+#include "Core/Object/SoftObjectPtr.h"
+#include "Core/Plugin/Plugin.h"
+#include "Core/Plugin/PluginManager.h"
 #include "TaskSystem/ThreadedCallback.h"
 #include "World/World.h"
 #include "World/Entity/RuntimeComponent.h"
+#include "World/Entity/Components/InputComponent.h"
 #include "UI/RmlUiBridge.h"
 #include "Core/Application/Application.h"
 #include "Core/Object/Class.h"
@@ -426,15 +432,13 @@ namespace Lumina::Lua
 
     FScriptingContext& FScriptingContext::Get()
     {
+        if (!GScriptingContext)
+        {
+            PANIC("FScriptingContext::Get called before Lua::Initialize. Module load that registers reflected types must run after Engine::Init.");
+        }
         return *GScriptingContext.get();
     }
     
-    // --- Engine script library ------------------------------------------------
-    // Each function owns one top-level global table (plus closely related
-    // userdata classes) and is invoked once from FScriptingContext::Initialize.
-    // Grouping the bind list by domain keeps it readable and gives each engine
-    // system an obvious home to grow its script surface (e.g. RHI.* lives in
-    // RegisterRenderLibrary).
 
     static void RegisterConsoleLibrary(lua_State* L, FRef& GlobalsRef)
     {
@@ -487,6 +491,63 @@ namespace Lumina::Lua
             const auto* TD = static_cast<FScriptThreadData*>(lua_getthreaddata(State));
             return TD && TD->World && TD->World->GetWorldType() == EWorldType::Editor;
         }>("IsEditor");
+    }
+
+    static void RegisterAssetLibrary(lua_State* L, FRef& GlobalsRef)
+    {
+        // Cook-graph note: the Luau analyzer (FLuauAssetScan) literally scans
+        // for `Asset.Hard("...")` / `Asset.Soft("...")` / `Asset.LoadAsync("...")`
+        // call sites and lifts the path arg as a Script cook root. Keep the
+        // function names and the leading-string-arg shape stable, or update
+        // the analyzer in lockstep.
+        FRef AssetTable = GlobalsRef.NewTable("Asset");
+
+        // Asset.Hard(path) — blocking load; pushed as actual derived type.
+        AssetTable.SetFunction<[](lua_State* State, FStringView Path) -> FRef
+        {
+            CObject* Object = StaticLoadObject(Path);
+            PushCObjectAsActualType(State, Object);
+            return FRef(State, -1);
+        }>("Hard");
+
+        // Asset.Soft(path) — returns the FSoftObjectPath (resolves lazily).
+        AssetTable.SetFunction<[](FStringView Path) -> FSoftObjectPath
+        {
+            return FSoftObjectPath(Path);
+        }>("Soft");
+
+        // Asset.LoadAsync(path, callback) — fire-and-forget; callback fires
+        // on the main thread when load completes (or immediately with nil
+        // if the path doesn't resolve).
+        AssetTable.SetFunction<[](lua_State* State, FStringView Path, FRef Callback)
+        {
+            FSoftObjectPath Soft(Path);
+            // Capture callback by ref so we can fire it on completion.
+            // The FRef holds an L registry slot; capture-by-value preserves it.
+            Soft.LoadAsync([State, Callback](CObject* Obj) mutable
+            {
+                MainThread::Enqueue([State, Callback = Move(Callback), Obj]() mutable
+                {
+                    Callback.Push();
+                    PushCObjectAsActualType(State, Obj);
+                    lua_pcall(State, 1, 0, 0);
+                });
+            });
+        }>("LoadAsync");
+
+        // Asset.Exists(path) — registry probe, no load.
+        AssetTable.SetFunction<[](FStringView Path) -> bool
+        {
+            return FAssetRegistry::Get().GetAssetByPath(Path) != nullptr;
+        }>("Exists");
+
+        // Asset.LoadPrimary(name) — sync load via FAssetManager.
+        AssetTable.SetFunction<[](lua_State* State, FName Name) -> FRef
+        {
+            CObject* Obj = FAssetManager::Get().LoadPrimaryAssetSynchronous(FPrimaryAssetId(Name));
+            PushCObjectAsActualType(State, Obj);
+            return FRef(State, -1);
+        }>("LoadPrimary");
     }
 
     static void RegisterFileSystemLibrary(lua_State* L, FRef& GlobalsRef)
@@ -675,22 +736,13 @@ namespace Lumina::Lua
 
     static void RegisterInputLibrary(lua_State* L, FRef& GlobalsRef)
     {
+        // Only viewport/window-scoped knobs live on the global Input table.
+        // Every per-frame gameplay query (keys, mouse delta, actions, bind
+        // callbacks) is gated through SInputComponent so an entity with no
+        // input component has no way to read player input. See
+        // SInputComponent in InputComponent.h for the per-entity API.
         FRef InputTable = GlobalsRef.NewTable("Input");
-        InputTable.SetFunction<&FInputProcessor::IsKeyDown>("IsKeyDown", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::IsKeyUp>("IsKeyUp", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::IsKeyPressed>("IsKeyPressed", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::IsKeyRepeated>("IsKeyRepeated", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::IsKeyReleased>("IsKeyReleased", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::IsMouseButtonPressed>("IsMouseButtonPressed", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::IsMouseButtonReleased>("IsMouseButtonReleased", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::GetMouseButtonHeldTime>("GetMouseButtonHeldTime", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::IsMouseButtonDown>("IsMouseButtonDown", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::IsMouseButtonUp>("IsMouseButtonUp", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::GetMouseX>("GetMouseX", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::GetMouseY>("GetMouseY", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::GetMouseZ>("GetMouseZ", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::GetMouseDeltaX>("GetMouseDeltaX", &FInputProcessor::Get());
-        InputTable.SetFunction<&FInputProcessor::GetMouseDeltaY>("GetMouseDeltaY", &FInputProcessor::Get());
+
         // Accept strings: "Hidden", "Normal", "Captured".
         InputTable.SetFunction<[](FStringView Mode)
         {
@@ -712,7 +764,6 @@ namespace Lumina::Lua
                          FString(Mode.data(), Mode.size()).c_str());
             }
         }>("SetMouseMode");
-
 
         InputTable.SetFunction<[](FStringView Mode)
         {
@@ -738,66 +789,54 @@ namespace Lumina::Lua
             FInputProcessor::Get().SetInputMode(Out);
             LOG_INFO("[Input] Mode -> {}", InputModeToString(Out));
         }>("SetMode");
+
         InputTable.SetFunction<[]() -> FString
         {
             return FString(InputModeToString(FInputProcessor::Get().GetInputMode()));
         }>("GetMode");
 
-        InputTable.SetFunction<[](FStringView Name) -> bool
-        {
-            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
-            if (V == nullptr) return false;
-            return FInputActionMap::Get().IsActionDown(FName(FString(Name.data(), Name.size()).c_str()), V->GetContext());
-        }>("IsActionDown");
-
-        InputTable.SetFunction<[](FStringView Name) -> bool
-        {
-            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
-            if (V == nullptr) return false;
-            return FInputActionMap::Get().IsActionPressed(FName(FString(Name.data(), Name.size()).c_str()), V->GetContext());
-        }>("IsActionPressed");
-
-        InputTable.SetFunction<[](FStringView Name) -> bool
-        {
-            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
-            if (V == nullptr) return false;
-            return FInputActionMap::Get().IsActionReleased(FName(FString(Name.data(), Name.size()).c_str()), V->GetContext());
-        }>("IsActionReleased");
-
-        InputTable.SetFunction<[](FStringView Name) -> float
-        {
-            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
-            if (V == nullptr) return 0.0f;
-            return FInputActionMap::Get().GetActionAxis(FName(FString(Name.data(), Name.size()).c_str()), V->GetContext());
-        }>("GetActionAxis");
-
-        // Returns an ID for UnbindAction; scoped to the active context.
-        InputTable.SetFunction<[](FStringView Name, Lua::FRef Callback) -> uint64
-        {
-            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
-            if (V == nullptr) return uint64{0};
-            return V->GetContext().RegisterActionCallback(
-                FName(FString(Name.data(), Name.size()).c_str()),
-                FInputContext::EActionTrigger::Pressed,
-                std::move(Callback));
-        }>("OnActionPressed");
-
-        InputTable.SetFunction<[](FStringView Name, Lua::FRef Callback) -> uint64
-        {
-            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
-            if (V == nullptr) return uint64{0};
-            return V->GetContext().RegisterActionCallback(
-                FName(FString(Name.data(), Name.size()).c_str()),
-                FInputContext::EActionTrigger::Released,
-                std::move(Callback));
-        }>("OnActionReleased");
-
-        InputTable.SetFunction<[](uint64 Id)
-        {
-            FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
-            if (V == nullptr) return;
-            V->GetContext().UnregisterActionCallback(Id);
-        }>("UnbindAction");
+        // ---- SInputComponent: Lua::FRef-taking methods --------------------
+        // FUNCTION(Script) covers the polling queries (see InputComponent.h);
+        // BindAction lives here because reflected FUNCTION params don't
+        // marshal Lua::FRef. We push the callback ID onto the component so
+        // CWorld::OnInputComponentDestroyed can release the FRef even if
+        // the script forgets to Unbind.
+        GlobalsRef.NewClass<SInputComponent>("SInputComponent")
+            .AddFunction<[](SInputComponent& Self, FStringView Name, Lua::FRef Callback) -> uint64
+            {
+                FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
+                if (V == nullptr) return uint64{0};
+                const uint64 Id = V->GetContext().RegisterActionCallback(
+                    FName(FString(Name.data(), Name.size()).c_str()),
+                    FInputContext::EActionTrigger::Pressed,
+                    std::move(Callback));
+                Self.ActionCallbackIds.push_back(Id);
+                return Id;
+            }>("BindAction")
+            .AddFunction<[](SInputComponent& Self, FStringView Name, Lua::FRef Callback) -> uint64
+            {
+                FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
+                if (V == nullptr) return uint64{0};
+                const uint64 Id = V->GetContext().RegisterActionCallback(
+                    FName(FString(Name.data(), Name.size()).c_str()),
+                    FInputContext::EActionTrigger::Released,
+                    std::move(Callback));
+                Self.ActionCallbackIds.push_back(Id);
+                return Id;
+            }>("BindActionReleased")
+            .AddFunction<[](SInputComponent& Self, uint64 Id)
+            {
+                FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport();
+                if (V != nullptr)
+                {
+                    V->GetContext().UnregisterActionCallback(Id);
+                }
+                for (auto It = Self.ActionCallbackIds.begin(); It != Self.ActionCallbackIds.end(); ++It)
+                {
+                    if (*It == Id) { Self.ActionCallbackIds.erase(It); break; }
+                }
+            }>("UnbindAction")
+            .Register();
     }
 
     static void RegisterAudioLibrary(lua_State* L, FRef& GlobalsRef)
@@ -853,6 +892,7 @@ namespace Lumina::Lua
         RegisterConsoleLibrary(L, GlobalsRef);
         RegisterTimeLibrary(L, GlobalsRef);
         RegisterEngineLibrary(L, GlobalsRef);
+        RegisterAssetLibrary(L, GlobalsRef);
         RegisterFileSystemLibrary(L, GlobalsRef);
         RegisterRenderLibrary(L, GlobalsRef);
         RegisterECSLibrary(L, GlobalsRef);
@@ -1253,16 +1293,12 @@ namespace Lumina::Lua
         }
 
         // Search roots, in order. Engine stdlib first so user code can override only by
-        // explicit absolute path, never by accident.
-        static const char* const kRoots[] =
+        // explicit absolute path, never by accident. Plugins follow the same rule:
+        // their /<Mount>/Scripts/ root sits between Engine and Game, so /Game can't
+        // accidentally shadow a plugin module either.
+        auto TryRoot = [&](FStringView Root) -> bool
         {
-            "/Engine/Resources/Content/Scripts/",
-            "/Game/Scripts/",
-        };
-
-        for (const char* Root : kRoots)
-        {
-            FString Candidate = Root;
+            FString Candidate(Root.data(), Root.size());
             Candidate += Normalized;
             Candidate += ".luau";
             if (VFS::Exists(Candidate))
@@ -1270,7 +1306,21 @@ namespace Lumina::Lua
                 OutPath = eastl::move(Candidate);
                 return true;
             }
+            return false;
+        };
+
+        if (TryRoot("/Engine/Resources/Content/Scripts/")) return true;
+
+        for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
+        {
+            if (!Plugin->IsEnabled())        continue;
+            if (!Plugin->IsContentMounted()) continue;
+            FString Root = Plugin->GetMountAlias();
+            Root += "/Scripts/";
+            if (TryRoot(FStringView(Root.c_str(), Root.size()))) return true;
         }
+
+        if (TryRoot("/Game/Scripts/")) return true;
 
         return false;
     }

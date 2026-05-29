@@ -19,20 +19,15 @@
 
 namespace Lumina
 {
-    // Primary template: generic, array-backed vector of any positive dimension.
-    // Specialized for N = 2,3,4 to expose named members.
     template<typename T, int N>
+    requires (N > 0)
     struct TVec
     {
-        static_assert(N > 0, "TVec requires a positive dimension");
-
         using ScalarType = T;
         static constexpr int Dimensions = N;
 
         T Data[N];
-
-        // Trivial default ctor: uninitialized, keeps the type trivial
-        // so it is bulk-serializable and usable in unions).
+        
         TVec() = default;
 
         explicit constexpr TVec(T Scalar) : Data{}
@@ -44,7 +39,7 @@ namespace Lumina
         }
 
         template<typename... Args>
-            requires (sizeof...(Args) == N && sizeof...(Args) >= 2 && (std::is_arithmetic_v<Args> && ...))
+        requires (sizeof...(Args) == N && sizeof...(Args) >= 2 && (std::is_arithmetic_v<Args> && ...))
         constexpr TVec(Args... InArgs) : Data{ static_cast<T>(InArgs)... } {}
 
         constexpr T&       operator[](int i)       { return Data[i]; }
@@ -70,7 +65,7 @@ namespace Lumina
 
         // Per-component; accepts mixed/int args, the cast removes brace-narrowing.
         template<typename A, typename B>
-            requires (std::is_arithmetic_v<A> && std::is_arithmetic_v<B>)
+        requires (std::is_arithmetic_v<A> && std::is_arithmetic_v<B>)
         constexpr TVec(A InX, B InY) : x(T(InX)), y(T(InY)) {}
 
         // Implicit truncation from larger vectors.
@@ -146,7 +141,7 @@ namespace Lumina
         explicit constexpr TVec(T Scalar) : x(Scalar), y(Scalar), z(Scalar), w(Scalar) {}
 
         template<typename A, typename B, typename C, typename D>
-            requires (std::is_arithmetic_v<A> && std::is_arithmetic_v<B> && std::is_arithmetic_v<C> && std::is_arithmetic_v<D>)
+        requires (std::is_arithmetic_v<A> && std::is_arithmetic_v<B> && std::is_arithmetic_v<C> && std::is_arithmetic_v<D>)
         constexpr TVec(A InX, B InY, C InZ, D InW) : x(T(InX)), y(T(InY)), z(T(InZ)), w(T(InW)) {}
 
         constexpr TVec(const TVec<T, 3>& XYZ, T InW) : x(XYZ.x), y(XYZ.y), z(XYZ.z), w(InW) {}

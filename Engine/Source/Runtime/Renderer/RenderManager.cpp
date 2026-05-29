@@ -139,18 +139,15 @@ namespace Lumina
                 RmlUi::RenderEditorContexts(CL);
             }
 
+            GPU_PROFILE_SCOPE(&CL, "Frame Composite");
             {
-                GPU_PROFILE_SCOPE(&CL, "Frame Composite");
-
-                #if WITH_EDITOR
+                #if USING(WITH_EDITOR)
                 if (Snapshot)
                 {
                     ImGuiRenderer->RecordFrame_RenderThread(CL, *Snapshot, ThisFrameIndex);
                     ImGuiRenderer->SignalSnapshotSlotConsumed(ThisFrameIndex);
                 }
                 #else
-                // Game build: copy the primary world's RT directly to the
-                // engine viewport (which the swap copies from in FrameEnd).
                 if (FWorldContext* Ctx = GWorldManager->GetPrimaryGameContext())
                 {
                     if (CWorld* World = Ctx->World.Get())

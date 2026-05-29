@@ -26,28 +26,39 @@ namespace Lumina
         for (int i = 1; i < argc; ++i)
         {
             FStringView Arg(argv[i], strlen(argv[i]));
-    
+
             if (Arg.starts_with("--"))
             {
-                FFixedString Key = Detail::Normalize(Arg.substr(2));
+                // Skip the leading "--"; split on '=' so we can lowercase the
+                // KEY but preserve the VALUE's original case (matters for
+                // paths, identifiers and any other case-sensitive payload).
+                const FStringView Raw = Arg.substr(2);
+                FFixedString Key;
                 FFixedString Value;
-    
-                size_t Equals = Key.find('=');
-                if (Equals != FString::npos)
+
+                const size_t Equals = Raw.find('=');
+                if (Equals != FStringView::npos)
                 {
-                    Value   = Key.substr(Equals + 1, 0);
-                    Key     = Key.substr(0, Equals);
+                    Key   = Detail::Normalize(Raw.substr(0, Equals));
+                    // substr(pos, count) — passing 0 used to silently empty
+                    // the value; we want the rest of the string.
+                    const FStringView ValueView = Raw.substr(Equals + 1);
+                    Value.assign(ValueView.data(), ValueView.size());
                 }
-                else if (i + 1 < argc)
+                else
                 {
-                    FStringView NextArg(argv[i + 1]);
-                    if (NextArg.starts_with("--") == false)
+                    Key = Detail::Normalize(Raw);
+                    if (i + 1 < argc)
                     {
-                        Value = argv[++i];
+                        FStringView NextArg(argv[i + 1]);
+                        if (!NextArg.starts_with("--"))
+                        {
+                            Value = argv[++i];
+                        }
                     }
                 }
-    
-                Args[Key] = Detail::Normalize(Value);
+
+                Args[Key] = Value;
             }
             else if (Arg.starts_with('-') && Arg.size() > 1)
             {

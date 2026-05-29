@@ -118,6 +118,73 @@ namespace Lumina
         PDI->DrawBox(Transform.GetWorldLocation() + Box.TranslationOffset, Box.HalfExtent * Transform.GetWorldScale(), Transform.GetWorldRotation() * OffsetQuat, FColor::Green, 3.5f, true, 0.0f);
     }
 
+    CStruct* CComponentVisualizer_CapsuleCollider::GetSupportedComponentType() const
+    {
+        return SCapsuleColliderComponent::StaticStruct();
+    }
+
+    void CComponentVisualizer_CapsuleCollider::Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity)
+    {
+        const SCapsuleColliderComponent& Capsule = Registry.get<SCapsuleColliderComponent>(Entity);
+        const STransformComponent& Transform     = Registry.get<STransformComponent>(Entity);
+
+        // DrawCapsule wants the two cylinder-axis endpoints (caps tangent there), Y-aligned in local space.
+        const float Scale     = Transform.MaxScale();
+        const FVector3 Center = Transform.GetWorldLocation() + Capsule.TranslationOffset;
+        const FQuat WorldRot  = Transform.GetWorldRotation() * FQuat(Capsule.RotationOffset);
+        const FVector3 Axis   = WorldRot * FVector3(0.0f, Capsule.HalfHeight * Scale, 0.0f);
+
+        PDI->DrawCapsule(Center - Axis, Center + Axis, Capsule.Radius * Scale, FColor::Green, 12, 3.5f, true, 0.0f);
+    }
+
+    CStruct* CComponentVisualizer_CylinderCollider::GetSupportedComponentType() const
+    {
+        return SCylinderColliderComponent::StaticStruct();
+    }
+
+    void CComponentVisualizer_CylinderCollider::Draw(IPrimitiveDrawInterface* PDI, entt::registry& Registry, entt::entity Entity)
+    {
+        const SCylinderColliderComponent& Cyl = Registry.get<SCylinderColliderComponent>(Entity);
+        const STransformComponent& Transform  = Registry.get<STransformComponent>(Entity);
+
+        // No DrawCylinder primitive: stitch one from two rings plus N vertical spokes. Y-aligned in local space.
+        const float Scale     = Transform.MaxScale();
+        const FVector3 Center = Transform.GetWorldLocation() + Cyl.TranslationOffset;
+        const FQuat WorldRot  = Transform.GetWorldRotation() * FQuat(Cyl.RotationOffset);
+        const float Radius    = Cyl.Radius * Scale;
+        const float HalfH     = Cyl.HalfHeight * Scale;
+
+        const FVector3 Up     = WorldRot * FVector3(0.0f, 1.0f, 0.0f);
+        const FVector3 Right  = WorldRot * FVector3(1.0f, 0.0f, 0.0f);
+        const FVector3 Fwd    = WorldRot * FVector3(0.0f, 0.0f, 1.0f);
+        const FVector3 Top    = Center + Up * HalfH;
+        const FVector3 Bottom = Center - Up * HalfH;
+
+        constexpr int kSegments = 24;
+        FVector3 PrevTop, PrevBottom;
+        for (int i = 0; i <= kSegments; ++i)
+        {
+            const float A    = (float(i) / float(kSegments)) * Math::TwoPi<float>();
+            const float Cs   = Math::Cos(A);
+            const float Sn   = Math::Sin(A);
+            const FVector3 Offset = Right * (Cs * Radius) + Fwd * (Sn * Radius);
+            const FVector3 T = Top    + Offset;
+            const FVector3 B = Bottom + Offset;
+            if (i > 0)
+            {
+                PDI->DrawLine(PrevTop,    T, FColor::Green, 3.5f, true, 0.0f);
+                PDI->DrawLine(PrevBottom, B, FColor::Green, 3.5f, true, 0.0f);
+                // A few vertical spokes (every 6 segments) so the side is readable.
+                if ((i % 6) == 0)
+                {
+                    PDI->DrawLine(T, B, FColor::Green, 3.5f, true, 0.0f);
+                }
+            }
+            PrevTop = T;
+            PrevBottom = B;
+        }
+    }
+
     CStruct* CComponentVisualizer_CharacterPhysics::GetSupportedComponentType() const
     {
         return SCharacterPhysicsComponent::StaticStruct();

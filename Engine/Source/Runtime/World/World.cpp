@@ -41,6 +41,9 @@
 #include "Entity/Components/TransformComponent.h"
 #include "Entity/Components/ScriptComponent.h"
 #include "Entity/Components/WidgetComponent.h"
+#include "Entity/Components/InputComponent.h"
+#include "Input/InputContext.h"
+#include "Input/InputViewport.h"
 #include "Entity/Components/SingletonEntityComponent.h"
 #include "Entity/Systems/SystemSingletons.h"
 #include "entity/components/tagcomponent.h"
@@ -594,7 +597,7 @@ namespace Lumina
     void CWorld::Serialize(FArchive& Ar)
     {
         CObject::Serialize(Ar);
-        
+
         if (Ar.IsReading())
         {
             RegistryPending.clear<>();
@@ -602,7 +605,14 @@ namespace Lumina
         }
         else
         {
-            ECS::Utils::SerializeRegistry(Ar, EntityRegistry);
+            // A freshly-loaded asset holds its entities in RegistryPending until
+            // InitializeWorld swaps them into EntityRegistry. DuplicateWorld
+            // serializes source worlds before they're initialized, so write
+            // from whichever side currently holds the data.
+            FEntityRegistry& Source = (EntityRegistry.storage<entt::entity>().size() > 0)
+                ? EntityRegistry
+                : RegistryPending;
+            ECS::Utils::SerializeRegistry(Ar, Source);
         }
     }
 
@@ -692,6 +702,7 @@ namespace Lumina
         EntityRegistry.on_destroy   <SScriptComponent>()            .connect<&ThisClass::OnScriptComponentDestroyed>(this);
         // Left connected through teardown: fires at clear() to release widget RTs.
         EntityRegistry.on_destroy   <SWidgetComponent>()            .connect<&ThisClass::OnWidgetComponentDestroyed>(this);
+        EntityRegistry.on_destroy   <SInputComponent>()             .connect<&ThisClass::OnInputComponentDestroyed>(this);
         SystemContext.EventSink     <FSwitchActiveCameraEvent>()    .connect<&ThisClass::OnChangeCameraEvent>(this);
         SystemContext.EventSink     <FScriptComponentPendingReady>().connect<&ThisClass::OnScriptComponentPendingReady>(this);
 
@@ -717,6 +728,26 @@ namespace Lumina
             TransformComponent.Entity = Entity;
         });
         
+        if (WorldType == EWorldType::Game || WorldType == EWorldType::Simulation)
+        {
+            const auto AnyCameraView = EntityRegistry.view<SCameraComponent>();
+            if (AnyCameraView.begin() == AnyCameraView.end())
+            {
+                LOG_WARN("CWorld::Initialize: world '{}' has no camera entity; spawning a fallback at (0, 2, 5) looking at origin. Add a camera entity for proper gameplay.",
+                    GetName());
+
+                constexpr FVector3 FallbackPos(0.0f, 2.0f, 5.0f);
+
+                const entt::entity Fallback = EntityRegistry.create();
+                STransformComponent& Xf = EntityRegistry.emplace<STransformComponent>(Fallback);
+                Xf.LocalTransform.Location = FallbackPos;
+                Xf.LocalTransform.Rotation = Math::FindLookAtRotation(FVector3(0.0f), FallbackPos);
+
+                SCameraComponent& Cam = EntityRegistry.emplace<SCameraComponent>(Fallback);
+                Cam.bAutoActivate = true;
+            }
+        }
+
         auto CameraView = EntityRegistry.view<SCameraComponent>(entt::exclude<SDisabledTag>);
         CameraView.each([&](entt::entity Entity, const SCameraComponent& Camera)
         {
@@ -935,7 +966,7 @@ namespace Lumina
             
         if (ScriptComponent->ReadyFunc.IsValid())
         {
-            ScriptComponent->Script->InvokeAsCoroutine(ScriptComponent->ReadyFunc, ScriptComponent->Script->Reference);
+            ScriptComponent->ReadyFunc.Call(ScriptComponent->Script->Reference);
         }
     }
 
@@ -966,7 +997,7 @@ namespace Lumina
             const Lua::FRef& HookRef = Component->*Hook;
             if (HookRef.IsValid())
             {
-                Component->Script->InvokeAsCoroutine(HookRef, Component->Script->Reference);
+                HookRef.Call(Component->Script->Reference);
             }
         };
 
@@ -1345,6 +1376,11 @@ namespace Lumina
 
     entt::entity CWorld::SpawnPrefab(const FName& Path)
     {
+        return SpawnPrefabAt(Path, FTransform(), entt::null);
+    }
+
+    entt::entity CWorld::SpawnPrefabAt(const FName& Path, const FTransform& SpawnTransform, entt::entity Parent)
+    {
         FAssetData* AssetData = FAssetRegistry::Get().GetAssetByPath(FStringView(Path.c_str()));
         if (AssetData == nullptr)
         {
@@ -1359,7 +1395,7 @@ namespace Lumina
             return entt::null;
         }
 
-        return Prefab->Instantiate(this, FTransform(), entt::null);
+        return Prefab->Instantiate(this, SpawnTransform, Parent);
     }
 
     void CWorld::SpawnPrefabAsync(const FName& Path, const TFunction<void(entt::entity)>& Callback)
@@ -1371,8 +1407,9 @@ namespace Lumina
             {
                 LOG_WARN("SpawnPrefab: asset '{}' is not a CPrefab", Path.c_str());
                 Callback(entt::null);
+                return;
             }
-            
+
             Callback(Prefab->Instantiate(this, FTransform(), entt::null));
         });
     }
@@ -1640,12 +1677,14 @@ namespace Lumina
         FMemoryReader Reader(Data);
         FObjectProxyArchiver ReaderProxy(Reader, true);
         
-        CWorld* PIEWorld = NewObject<CWorld>(OF_Transient);
-        
+        // Inherit the source world's name so logs/profilers identify
+        // "NewWorld" rather than the auto-generated "CWorld_1".
+        CWorld* PIEWorld = NewObject<CWorld>(/*Package*/ nullptr, OwningWorld->GetName(), FGuid::New(), OF_Transient);
+
         PIEWorld->PreLoad();
         PIEWorld->Serialize(ReaderProxy);
         PIEWorld->PostLoad();
-        
+
         return PIEWorld;
     }
 
@@ -1695,6 +1734,26 @@ namespace Lumina
     void CWorld::OnWidgetComponentDestroyed(entt::registry& Registry, entt::entity Entity)
     {
         RmlUi::ReleaseWidget(this, Registry.get<SWidgetComponent>(Entity));
+    }
+
+    void CWorld::OnInputComponentDestroyed(entt::registry& Registry, entt::entity Entity)
+    {
+        // Release every action callback this entity registered so its
+        // captured Lua FRefs don't keep the script env alive (and so the
+        // callback can't fire after the entity is gone).
+        SInputComponent& Input = Registry.get<SInputComponent>(Entity);
+        if (Input.ActionCallbackIds.empty())
+        {
+            return;
+        }
+        if (FInputViewport* V = FInputViewportRegistry::Get().GetActiveViewport())
+        {
+            for (uint64 Id : Input.ActionCallbackIds)
+            {
+                V->GetContext().UnregisterActionCallback(Id);
+            }
+        }
+        Input.ActionCallbackIds.clear();
     }
 
     void CWorld::OnScriptComponentConstruct(entt::registry& Registry, entt::entity Entity)
@@ -1857,7 +1916,7 @@ namespace Lumina
 
         if (ScriptComponent.AttachFunc.IsValid())
         {
-            ScriptComponent.Script->InvokeAsCoroutine(ScriptComponent.AttachFunc, ScriptComponent.Script->Reference);
+            ScriptComponent.AttachFunc.Call(ScriptComponent.Script->Reference);
         }
 
         if (bRunReady)
@@ -1880,7 +1939,7 @@ namespace Lumina
 
         if (IsScriptActiveInWorld(Entity))
         {
-            ScriptComponent.Script->InvokeAsCoroutine(ScriptComponent.DetachFunc, ScriptComponent.Script->Reference);
+            ScriptComponent.DetachFunc.Call(ScriptComponent.Script->Reference);
         }
     }
 
@@ -1890,7 +1949,7 @@ namespace Lumina
         {
             if (IsScriptActiveInWorld(Entity))
             {
-                ScriptComponent.Script->InvokeAsCoroutine(ScriptComponent.DetachFunc, ScriptComponent.Script->Reference);
+                ScriptComponent.DetachFunc.Call(ScriptComponent.Script->Reference);
             }
         }
 
@@ -1935,7 +1994,7 @@ namespace Lumina
         {
             SystemUpdateList[i].clear();
         }
-        
+
         for (auto&& [_, Meta] : entt::resolve())
         {
             ECS::ETraits Traits = Meta.traits<ECS::ETraits>();
@@ -1944,7 +2003,7 @@ namespace Lumina
                 FEntitySystemWrapper Wrapper;
                 Wrapper.Underlying = Meta;
                 Wrapper.Instance = Meta.construct();
-                
+
                 FSystemVariant Variant = Wrapper;
                 RegisterSystem(Variant);
             }

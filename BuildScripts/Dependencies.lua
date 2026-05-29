@@ -105,8 +105,17 @@ function LuminaConfig.ProjectPath(Subpath)
     return path.join("%{prj.location}", Subpath)
 end
 
-function LuminaConfig.GetReflectionFiles() 
+function LuminaConfig.GetReflectionFiles()
     return path.join(LuminaConfig.ReflectionDirectory, "ReflectionUnity.gen.cpp")
+end
+
+-- Absolute path to the single canonical EASTL allocator binding. Every linked
+-- image that uses EASTL containers needs its own compiled copy of this file
+-- (eastl::allocator is non-template / non-inline; one definition per image).
+-- Module.lua and GameProject.lua auto-add it to consumer compile sets so the
+-- user never has to ship boilerplate next to their own source.
+function LuminaConfig.GetEASTLImplFile()
+    return LuminaConfig.EnginePath("Engine/Source/Runtime/Memory/EASTLImpl.cpp")
 end
 
 -- Engine module headers a consumer always needs regardless of which

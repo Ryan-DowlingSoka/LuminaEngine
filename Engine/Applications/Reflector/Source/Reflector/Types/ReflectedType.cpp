@@ -51,6 +51,8 @@ namespace Lumina::Reflection
             case Fnv1aLike("Lumina::TObjectPtr"):       return EPropertyTypeFlags::Object;
             case Fnv1aLike("Lumina::TWeakObjectPtr"):   return EPropertyTypeFlags::Object;
             case Fnv1aLike("Lumina::CObject"):          return EPropertyTypeFlags::Object;
+            case Fnv1aLike("Lumina::TSoftObjectPtr"):   return EPropertyTypeFlags::SoftObject;
+            case Fnv1aLike("Lumina::FSoftObjectPath"):  return EPropertyTypeFlags::SoftObject;
             default:                                       return EPropertyTypeFlags::None;
         }
     }

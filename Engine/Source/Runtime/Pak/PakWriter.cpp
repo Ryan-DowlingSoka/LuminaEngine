@@ -4,6 +4,7 @@
 #include <cstring>
 #include <fstream>
 
+#include "Core/Math/Hash/Hash.h"
 #include "Core/Templates/LuminaTemplate.h"
 #include "Log/Log.h"
 #include "miniz.h"
@@ -57,6 +58,7 @@ namespace Lumina
             uint64 Offset;
             uint64 CompressedSize;
             uint64 UncompressedSize;
+            uint64 ContentHash;     // xxh64 of UNCOMPRESSED bytes; v3 integrity check.
             uint8  Method;
         };
 
@@ -74,6 +76,9 @@ namespace Lumina
             FWriteRecord Rec{};
             Rec.Offset = Offset;
             Rec.UncompressedSize = Original;
+            Rec.ContentHash = Original > 0
+                ? Hash::XXHash::GetHash64(Entry.Data.data(), Entry.Data.size())
+                : 0;
 
             const uint8* WritePtr = Entry.Data.data();
             uint64 WriteSize = Original;
@@ -122,6 +127,7 @@ namespace Lumina
             File.write(reinterpret_cast<const char*>(&Rec.Offset),           sizeof(Rec.Offset));
             File.write(reinterpret_cast<const char*>(&Rec.CompressedSize),   sizeof(Rec.CompressedSize));
             File.write(reinterpret_cast<const char*>(&Rec.UncompressedSize), sizeof(Rec.UncompressedSize));
+            File.write(reinterpret_cast<const char*>(&Rec.ContentHash),      sizeof(Rec.ContentHash));
             File.write(reinterpret_cast<const char*>(&Rec.Method),           sizeof(Rec.Method));
 
             const uint8 Pad[7] = {};

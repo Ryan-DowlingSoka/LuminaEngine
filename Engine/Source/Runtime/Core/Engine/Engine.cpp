@@ -8,6 +8,7 @@
 #include "Core/Delegates/CoreDelegates.h"
 #include "Core/Module/ModuleManager.h"
 #include "Core/Object/ObjectIterator.h"
+#include "Core/Plugin/PluginManager.h"
 #include "Core/Object/Package/Package.h"
 #include "Core/Profiler/CPUProfiler.h"
 #include "Core/Profiler/Profile.h"
@@ -42,6 +43,7 @@
 #include "World/WorldContext.h"
 #include "UI/RmlUiBridge.h"
 #include "GameInstance.h"
+#include "Core/CommandLine/CommandLine.h"
 #include "Core/Object/Cast.h"
 #include "Core/Object/Class.h"
 #include "Core/Object/ObjectCore.h"
@@ -51,17 +53,109 @@
 namespace Lumina
 {
     RUNTIME_API FEngine* GEngine;
-    
+
     static FRHIViewportRef EngineViewport;
-    
+
     static TConsoleVar CVarMaxFrameRate("Core.MaxFPS", 4000, "Changes the maximum frame-rate of your engine");
+
+    // Lightweight pre-parse of just the "Plugins" array from a .lproject so
+    // engine-plugin module loading at Earliest/Core/PreEngineInit phases
+    // can already see project overrides. The full LoadProject() runs much
+    // later (post Lua + post WorldManager); without this pass, disabling a
+    // plugin in the .lproject would have no effect on its PreEngineInit
+    // modules because the override would land after the DLL was loaded.
+    static void PreloadProjectPluginOverrides(FStringView LprojPath)
+    {
+        if (LprojPath.empty()) return;
+        std::error_code EC;
+        if (!std::filesystem::exists(std::filesystem::path(LprojPath.data(), LprojPath.data() + LprojPath.size()), EC))
+        {
+            return;
+        }
+
+        FString Json;
+        if (!FileHelper::LoadFileIntoString(Json, LprojPath))
+        {
+            return;
+        }
+
+        nlohmann::json Root;
+        try
+        {
+            Root = nlohmann::json::parse(Json.c_str(), Json.c_str() + Json.size());
+        }
+        catch (const std::exception&)
+        {
+            return; // Malformed JSON; LoadProject will surface a real error later.
+        }
+        if (!Root.is_object()) return;
+
+        auto It = Root.find("Plugins");
+        if (It == Root.end() || !It->is_array() || It->empty()) return;
+
+        TVector<FProjectPluginOverride> Overrides;
+        Overrides.reserve(It->size());
+        for (const auto& Entry : *It)
+        {
+            if (!Entry.is_object()) continue;
+            FProjectPluginOverride Override;
+            if (auto NameIt = Entry.find("Name"); NameIt != Entry.end() && NameIt->is_string())
+            {
+                const std::string& S = NameIt->get_ref<const std::string&>();
+                Override.Name.assign(S.c_str(), S.size());
+            }
+            if (auto EnIt = Entry.find("Enabled"); EnIt != Entry.end() && EnIt->is_boolean())
+            {
+                Override.bEnabled = EnIt->get<bool>();
+            }
+            if (!Override.Name.empty())
+            {
+                Overrides.emplace_back(Move(Override));
+            }
+        }
+        if (!Overrides.empty())
+        {
+            FPluginManager::Get().ApplyProjectOverrides(Overrides);
+        }
+    }
     
     bool FEngine::Init()
     {
         LUMINA_PROFILE_SCOPE();
 
         Platform::EnableHighResolutionTiming();
-        
+
+        // Plugin discovery has to happen before the renderer / Lua so
+        // Earliest- and Core-phase plugins can wedge themselves in ahead.
+        // Discovery is read-only (parses .lplugin files) and idempotent.
+        FPluginManager::Get().DiscoverEnginePlugins();
+
+        // Apply project overrides BEFORE any module loads. The resolved
+        // .lproject path comes from --Project, falling back to the editor's
+        // last-loaded stash (Editor.StartupProject) so a bare-launch reopen
+        // still respects per-project plugin enable/disable. The full
+        // LoadProject() runs later and re-applies these as a no-op, plus
+        // picks up any newly-discovered project plugins.
+        {
+            FString PreloadLproj;
+            if (TOptional<FFixedString> ProjectArg = GCommandLine->Get("Project"))
+            {
+                const FFixedString& V = ProjectArg.value();
+                PreloadLproj.assign(V.c_str(), V.size());
+            }
+            else if (GConfig)
+            {
+                const std::string Stashed = GConfig->Get<std::string>("Editor.StartupProject");
+                if (!Stashed.empty() && Stashed != "NULL")
+                {
+                    PreloadLproj.assign(Stashed.c_str(), Stashed.size());
+                }
+            }
+            PreloadProjectPluginOverrides(PreloadLproj);
+        }
+
+        FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::Earliest);
+
         const FString& EngineDir = Paths::GetEngineDirectory();
         if (!EngineDir.empty() && std::filesystem::exists(EngineDir.c_str()))
         {
@@ -84,6 +178,8 @@ namespace Lumina
         Task::Initialize();
         Physics::Initialize();
 
+        FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::Core);
+
         GPhysicsThread = Memory::New<FPhysicsThread>();
         GPhysicsThread->Start();
         
@@ -95,19 +191,46 @@ namespace Lumina
 
         ProcessNewlyLoadedCObjects();
 
+        // Engine-plugin runtime modules go here: post Lua + reflection, so
+        // their IMPLEMENT_MODULE/ConstructCEnum static initializers don't
+        // null-deref the VM; pre world manager, so anything they spawn at
+        // WorldManager construction can see them.
+        FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::PreEngineInit);
+        ProcessNewlyLoadedCObjects();
+
         // Built-in primitive meshes must exist before any world deserializes.
         CPrimitiveManager::Get();
 
         GWorldManager = Memory::New<FWorldManager>();
+
+        FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::EngineInit);
+        ProcessNewlyLoadedCObjects();
+
+        // --Project= load runs HERE (post-Lua, post-WorldManager, pre-EditorUI):
+        //   - post Lua::Initialize, so reflection ConstructCEnum/Class/Struct
+        //     that touch the VM during DLL load don't null-deref.
+        //   - post WorldManager, so LoadStartupMap can spawn a world.
+        //   - pre editor UI, so EditorUI::OnInitialize sees a non-empty
+        //     ProjectName and skips the Open Project dialog.
+        if (TOptional<FFixedString> ProjectArg = GCommandLine->Get("Project"))
+        {
+            LoadProject(ProjectArg.value());
+        }
 
         #if USING(WITH_EDITOR)
         DeveloperToolUI = CreateDevelopmentTools();
         DeveloperToolUI->Initialize(UpdateContext);
         // Below the viewport router, so panel clicks reach the world first.
         GApp->GetEventProcessor().RegisterEventHandler(DeveloperToolUI, (int32)EInputLayer::EditorChrome);
+
+        FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::EditorInit);
+        ProcessNewlyLoadedCObjects();
         #endif
         
         RmlUi::Initialize();
+
+        FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::PostEngineInit);
+        ProcessNewlyLoadedCObjects();
 
         FCoreDelegates::OnPostEngineInit.BroadcastAndClear();
 
@@ -159,7 +282,11 @@ namespace Lumina
         Physics::Shutdown();
         Task::Shutdown();
         Audio::Shutdown();
-        
+
+        // Drop our plugin records before the module manager rips DLLs out
+        // from under us; FPluginManager just clears its bookkeeping, the
+        // actual DLL teardown happens in UnloadAllModules.
+        FPluginManager::Get().ShutdownAllPlugins();
         FModuleManager::Get().UnloadAllModules();
 
         Platform::DisableHighResolutionTiming();
@@ -358,6 +485,42 @@ namespace Lumina
         EngineViewport = GRenderContext->CreateViewport(InSize, "Engine Viewport");
     }
 
+    TVector<FCookRoot> FEngine::GetCookRoots() const
+    {
+        TVector<FCookRoot> Result;
+
+        // Project roots from the Project.CookRoots StringArray (edited via
+        // the Project Settings UI; persisted in GameSettings.json). Each
+        // entry is an asset path with implicit chunk "Main"; advanced
+        // chunking is plugin-only.
+        if (GConfig != nullptr)
+        {
+            const TVector<FString> Paths = GConfig->GetStringArray("Project.CookRoots");
+            Result.reserve(Paths.size());
+            for (const FString& P : Paths)
+            {
+                if (P.empty()) continue;
+                FCookRoot Root;
+                Root.Asset = P;
+                Root.Chunk = FName("Main");
+                Result.emplace_back(Move(Root));
+            }
+        }
+
+        // Plugin-contributed roots (only from enabled plugins). Plugin
+        // descriptors can specify per-root chunk hints.
+        for (const FPlugin* Plugin : FPluginManager::Get().GetAllPlugins())
+        {
+            if (!Plugin->IsEnabled())                  continue;
+            for (const FCookRoot& Root : Plugin->GetDescriptor().CookRoots)
+            {
+                Result.push_back(Root);
+            }
+        }
+
+        return Result;
+    }
+
     void FEngine::LoadProject(FStringView Path)
     {
         using Json = nlohmann::json;
@@ -375,15 +538,49 @@ namespace Lumina
         FGuid ProjectID                 = FGuid::FromString(Data["ProjectID"].get<std::string>().c_str());
         ProjectPath                     .assign_convert(VFS::Parent(Paths::Normalize(Path)));
         ProjectName                     = Data["Name"].get<std::string>().c_str();
-        
+
         FFixedString ConfigDir          = Paths::Combine(ProjectPath, "Config");
         FFixedString GameDir            = Paths::Combine(ProjectPath, "Game", "Content");
         FFixedString BinariesDirectory  = Paths::Combine(ProjectPath, "Binaries");
-        
+
         VFS::Mount<VFS::FNativeFileSystem>("/Game", GameDir);
         VFS::Mount<VFS::FNativeFileSystem>("/Config", ConfigDir);
 
         GConfig->LoadPath("/Config");
+
+        // Project plugins are discovered AFTER /Game mounts (so they can
+        // refer to project paths if they want) but BEFORE the project DLL
+        // loads, so any types they introduce are already in reflection
+        // when the project DLL's modules construct.
+        FPluginManager::Get().DiscoverProjectPlugins(ProjectPath);
+
+        // Per-project plugin overrides from the .lproject "Plugins" array.
+        // Each entry: { "Name": "...", "Enabled": true|false }. Missing
+        // array means "no overrides"; descriptor defaults stand.
+        if (auto It = Data.find("Plugins"); It != Data.end() && It->is_array())
+        {
+            TVector<FProjectPluginOverride> Overrides;
+            Overrides.reserve(It->size());
+            for (const auto& Entry : *It)
+            {
+                if (!Entry.is_object()) continue;
+                FProjectPluginOverride Override;
+                if (auto NameIt = Entry.find("Name"); NameIt != Entry.end() && NameIt->is_string())
+                {
+                    const std::string& S = NameIt->get_ref<const std::string&>();
+                    Override.Name.assign(S.c_str(), S.size());
+                }
+                if (auto EnIt = Entry.find("Enabled"); EnIt != Entry.end() && EnIt->is_boolean())
+                {
+                    Override.bEnabled = EnIt->get<bool>();
+                }
+                if (!Override.Name.empty())
+                {
+                    Overrides.emplace_back(Move(Override));
+                }
+            }
+            FPluginManager::Get().ApplyProjectOverrides(Overrides);
+        }
 
         // Engine-read project settings; games may register more from their module init.
         const FStringView ProjectFile = "/Config/GameSettings.json";
@@ -409,6 +606,53 @@ namespace Lumina
             .WithDescription("World opened automatically when the editor finishes loading the project.")
             .WithFileFilter("Lumina Asset (*.lasset)\0*.lasset\0")
             .WithOwnerFile(ProjectFile));
+
+        // Cook roots — the asset paths the cooker uses to seed the
+        // dependency graph. Typically a list of map .lasset paths; everything
+        // they transitively reference gets cooked into the shipped PAK.
+        // Plugin-supplied roots come from .lplugin descriptors separately.
+        // The .lasset FileFilter activates the per-row Browse picker in the
+        // StringArray renderer (ProjectSettingsEditorTool).
+        GConfig->RegisterSetting(FConfigSetting::Make("Project.CookRoots", EConfigValueType::StringArray)
+            .WithCategory("Project/Maps")
+            .WithDescription("Asset paths the cooker walks from to build the shipped PAK. Usually maps.")
+            .WithFileFilter("Lumina Asset (*.lasset)\0*.lasset\0")
+            .WithOwnerFile(ProjectFile));
+
+        // One-shot migration: if an older project still has its CookRoots[]
+        // in the .lproject JSON and Project.CookRoots in GameSettings.json
+        // is empty, copy them over so the editor's Project Settings UI
+        // picks them up. Chunk hints from the JSON form are dropped (the
+        // settings UI only exposes asset paths — plugins still own chunked
+        // routing via .lplugin).
+        if (auto It = Data.find("CookRoots"); It != Data.end() && It->is_array() && GConfig != nullptr)
+        {
+            const TVector<FString> Existing = GConfig->GetStringArray("Project.CookRoots");
+            if (Existing.empty() && !It->empty())
+            {
+                std::vector<std::string> Migrated;
+                Migrated.reserve(It->size());
+                for (const auto& R : *It)
+                {
+                    if (R.is_string())
+                    {
+                        Migrated.push_back(R.get<std::string>());
+                    }
+                    else if (R.is_object())
+                    {
+                        if (auto AIt = R.find("Asset"); AIt != R.end() && AIt->is_string())
+                        {
+                            Migrated.push_back(AIt->get<std::string>());
+                        }
+                    }
+                }
+                if (!Migrated.empty())
+                {
+                    LOG_INFO("LoadProject: migrating {} cook root(s) from .lproject to Project.CookRoots", Migrated.size());
+                    GConfig->Set("Project.CookRoots", Migrated);
+                }
+            }
+        }
         
         FFixedString DLLPath;
         
@@ -435,7 +679,13 @@ namespace Lumina
                 LOG_INFO("No project module found");
             }
         }
-        
+
+        // Project DLL is now in; project-plugin modules that need to wire
+        // up to project types (Lua bindings for project gameplay classes,
+        // editor extensions tied to project assets, etc.) load here.
+        FPluginManager::Get().LoadModulesForPhase(EPluginLoadingPhase::PostProjectLoad);
+        ProcessNewlyLoadedCObjects();
+
         FAssetRegistry::Get().RunInitialDiscovery();
 
         FString ModuleFile = GConfig->Get<std::string>("Project.LuaModuleFile").c_str();
@@ -475,15 +725,32 @@ namespace Lumina
 
     void FEngine::LoadStartupMap()
     {
-        const FString RawMapName = GConfig->Get<std::string>("Project.GameStartupMap").c_str();
+        // Priority: explicit Project.GameStartupMap > first CookRoots entry.
+        // The cook-roots fallback means a simple project that only declares
+        // CookRoots[] (the now-preferred path) Just Works without also
+        // setting the legacy single-map field.
+        FString RawMapName = GConfig->Get<std::string>("Project.GameStartupMap").c_str();
         if (RawMapName.empty())
         {
-            LOG_WARN("No Project.GameStartupMap configured; runtime has no world to run.");
+            const TVector<FCookRoot> Roots = GetCookRoots();
+            if (!Roots.empty())
+            {
+                RawMapName = Roots[0].Asset;
+                // DISPLAY (not INFO) so a Shipping post-mortem can see this fallback fired.
+                LOG_DISPLAY("No Project.GameStartupMap set; falling back to first cook root '{}'.", RawMapName.c_str());
+            }
+        }
+
+        if (RawMapName.empty())
+        {
+            LOG_WARN("No startup map: set Project.GameStartupMap or add at least one Project.CookRoots entry. Runtime has no world to run.");
             return;
         }
 
         // Tolerate legacy absolute paths from before the path resolver.
         const FFixedString MapName = VFS::ResolveToVirtualPath(RawMapName);
+        // DISPLAY — survives Shipping; first diagnostic to look at on a black screen.
+        LOG_DISPLAY("LoadStartupMap: loading '{}' (resolved '{}').", RawMapName.c_str(), MapName.c_str());
 
         CWorld* SourceWorld = LoadObject<CWorld>(FStringView(MapName.c_str(), MapName.size()));
         if (SourceWorld == nullptr)
@@ -501,15 +768,21 @@ namespace Lumina
         }
 
         FWorldContext* Context = GWorldManager->CreateWorldContext(StartupWorld, EWorldType::Game, ENetMode::Standalone);
-        if (Context != nullptr)
+        if (Context == nullptr)
         {
-            Context->SourceWorld  = SourceWorld;
-            Context->GameInstance = GameInstance;
+            LOG_ERROR("LoadStartupMap: CreateWorldContext returned null; world won't tick.");
+            return;
         }
+        Context->SourceWorld  = SourceWorld;
+        Context->GameInstance = GameInstance;
 
         if (FInputViewport* Primary = GApp ? GApp->GetPrimaryViewport() : nullptr)
         {
             Primary->SetWorld(StartupWorld);
+        }
+        else
+        {
+            LOG_WARN("LoadStartupMap: no primary viewport — world loaded but nothing will render.");
         }
     }
 
@@ -632,41 +905,53 @@ namespace Lumina
             ? ExeFullPath
             : ExeFullPath.substr(0, LastSlash);
 
-        FFixedString PakPath;
+        // Collect every .pak next to the exe — chunked cooking produces
+        // one file per chunk (Main + Primary + UI + Script + ...). Sorted
+        // so mount order is deterministic across launches.
+        TVector<FFixedString> PakPaths;
         for (const auto& Entry : std::filesystem::directory_iterator(ExeDir.c_str()))
         {
-            if (!Entry.is_regular_file())
-            {
-                continue;
-            }
-            if (Entry.path().extension() == ".pak")
-            {
-                PakPath.assign_convert(Entry.path().generic_string().c_str());
-                break;
-            }
+            if (!Entry.is_regular_file()) continue;
+            if (Entry.path().extension() != ".pak") continue;
+            FFixedString P;
+            P.assign_convert(Entry.path().generic_string().c_str());
+            PakPaths.push_back(Move(P));
         }
+        eastl::sort(PakPaths.begin(), PakPaths.end());
 
-        if (PakPath.empty())
+        if (PakPaths.empty())
         {
             LOG_ERROR("FEngine::LoadCookedRuntime: no .pak file found next to '{}'.", ExeDir.c_str());
             return false;
         }
 
-        TSharedPtr<FPakArchive> Archive = FPakArchive::Open(PakPath);
-        if (!Archive)
+        // Keep one FPakArchive alive per file (shared via TSharedPtr across
+        // every alias mount). The first archive that exposes /Config drives
+        // the GameSettings probe below.
+        TSharedPtr<FPakArchive> ConfigArchive;
+        for (const FFixedString& PakPath : PakPaths)
         {
-            LOG_ERROR("FEngine::LoadCookedRuntime: failed to open '{}'.", PakPath.c_str());
-            return false;
+            TSharedPtr<FPakArchive> Archive = FPakArchive::Open(PakPath);
+            if (!Archive)
+            {
+                LOG_ERROR("FEngine::LoadCookedRuntime: failed to open '{}'.", PakPath.c_str());
+                return false;
+            }
+
+            const TVector<FString> Aliases = Archive->GetTopLevelAliases();
+            for (const FString& Alias : Aliases)
+            {
+                FFixedString AliasFixed(Alias.c_str(), Alias.size());
+                VFS::Mount<VFS::FPakFileSystem>(AliasFixed, Archive);
+                LOG_DISPLAY("FEngine::LoadCookedRuntime: mounted PAK '{}' at '{}'", PakPath.c_str(), Alias.c_str());
+            }
+
+            if (!ConfigArchive && Archive->HasEntry("/Config/GameSettings.json"))
+            {
+                ConfigArchive = Archive;
+            }
         }
 
-        // Mount under each TOC top-level alias (/Engine, /Game, /Config), sharing one FPakArchive via TSharedPtr.
-        TVector<FString> Aliases = Archive->GetTopLevelAliases();
-        for (const FString& Alias : Aliases)
-        {
-            FFixedString AliasFixed(Alias.c_str(), Alias.size());
-            VFS::Mount<VFS::FPakFileSystem>(AliasFixed, Archive);
-            LOG_INFO("FEngine::LoadCookedRuntime: mounted PAK at '{}'", Alias.c_str());
-        }
 
         // Loose-files overlay; mounted after PAK so most-recently-mounted wins and users can tweak shipped scripts.
         const FString LooseGameDir = ExeDir + "/Game";
@@ -676,13 +961,13 @@ namespace Lumina
             LOG_INFO("FEngine::LoadCookedRuntime: mounted loose overlay at '/Game' -> {}", LooseGameDir.c_str());
         }
 
-        if (Archive->HasEntry("/Config/GameSettings.json"))
+        if (ConfigArchive)
         {
             GConfig->LoadPath("/Config");
         }
         else
         {
-            LOG_WARN("FEngine::LoadCookedRuntime: no /Config/GameSettings.json in PAK; using defaults.");
+            LOG_WARN("FEngine::LoadCookedRuntime: no /Config/GameSettings.json in any PAK; using defaults.");
         }
 
         return true;
@@ -697,13 +982,38 @@ namespace Lumina
             ? ExeFullPath
             : ExeFullPath.substr(0, LastSlash);
 
-        // Discovery is async; MUST wait before LoadStartupMap or GetAssetByPath silently fails on empty registry.
-        FAssetRegistry::Get().RunInitialDiscovery();
-        if (GTaskSystem != nullptr)
+        // Prefer the pre-baked registry the cooker bundled at /Engine/AssetRegistry.bin
+        // — avoids walking every .lasset on disk and re-extracting headers
+        // at game startup. Fall back to the full discovery only if the
+        // cooked blob is missing (dev iteration / corrupt PAK).
+        bool bLoadedFromBlob = false;
         {
-            GTaskSystem->WaitForAll();
+            TVector<uint8> Blob;
+            if (VFS::ReadFile(Blob, "/Engine/AssetRegistry.bin"))
+            {
+                FMemoryReader Reader(Blob);
+                if (FAssetRegistry::Get().LoadFromArchive(Reader))
+                {
+                    LOG_DISPLAY("FEngine::LoadCookedRuntime: loaded pre-baked registry ({} bytes).", Blob.size());
+                    bLoadedFromBlob = true;
+                }
+                else
+                {
+                    LOG_WARN("FEngine::LoadCookedRuntime: /Engine/AssetRegistry.bin failed validation; falling back to discovery.");
+                }
+            }
         }
-        LOG_INFO("FEngine::LoadCookedRuntime: asset discovery complete.");
+
+        if (!bLoadedFromBlob)
+        {
+            // Discovery is async; MUST wait before LoadStartupMap or GetAssetByPath silently fails on empty registry.
+            FAssetRegistry::Get().RunInitialDiscovery();
+            if (GTaskSystem != nullptr)
+            {
+                GTaskSystem->WaitForAll();
+            }
+            LOG_DISPLAY("FEngine::LoadCookedRuntime: asset discovery complete.");
+        }
 
         const FString ScriptPath = GConfig->Get<std::string>("Project.LuaModuleFile").c_str();
         if (!ScriptPath.empty())

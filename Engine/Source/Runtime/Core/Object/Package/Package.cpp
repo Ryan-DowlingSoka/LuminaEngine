@@ -574,6 +574,65 @@ namespace Lumina
         return Package;
     }
 
+    namespace
+    {
+        // Build the on-disk byte sequence (uncompressed + compressed) for a
+        // package. Shared by editor save (write to disk + refresh loader)
+        // and cook save (return bytes only). Mutates Package->ExportTable
+        // and Package->ImportTable — both paths clear-then-repopulate so
+        // back-to-back saves stay consistent.
+        bool BuildPackageBytes(CPackage* Package, bool bCooking,
+                               TVector<uint8>& OutUncompressed,
+                               TVector<uint8>& OutCompressed)
+        {
+            (void)Package->FullyLoad();
+
+            Package->ExportTable.clear();
+            Package->ImportTable.clear();
+
+            FPackageSaver Writer(OutUncompressed, Package);
+            if (bCooking)
+            {
+                Writer.SetFlag(EArchiverFlags::Cooking);
+            }
+
+            FPackageHeader Header;
+            Header.Tag = PACKAGE_FILE_TAG;
+            Header.Version = GPackageFileLuminaVersion.FileVersion;
+
+            Writer.Seek(sizeof(FPackageHeader));
+
+            FSaveContext SaveContext(Package);
+            Package->BuildSaveContext(SaveContext);
+
+            Package->WriteExports(Writer, Header, SaveContext);
+            Package->WriteImports(Writer, Header, SaveContext);
+
+            Header.ImportCount = static_cast<int32>(Package->ImportTable.size());
+            Header.ExportCount = static_cast<int32>(Package->ExportTable.size());
+
+            // Cook output never carries thumbnails — they're editor-only.
+            if (bCooking)
+            {
+                Header.ThumbnailDataOffset = 0;
+            }
+            else
+            {
+#if USING(WITH_EDITOR)
+                Header.ThumbnailDataOffset = Writer.Tell();
+                Package->GetPackageThumbnail()->Serialize(Writer);
+#else
+                Header.ThumbnailDataOffset = 0;
+#endif
+            }
+
+            Writer.Seek(0);
+            Writer << Header;
+
+            return CompressPackageBinary(OutUncompressed, OutCompressed);
+        }
+    }
+
     bool CPackage::SavePackage(CPackage* Package, FStringView Path)
     {
         LUMINA_PROFILE_SCOPE();
@@ -586,44 +645,9 @@ namespace Lumina
             return false;
         }
 
-        (void)Package->FullyLoad();
-
-        Package->ExportTable.clear();
-        Package->ImportTable.clear();
-
         TVector<uint8> FileBinary;
-        FPackageSaver Writer(FileBinary, Package);
-
-        FPackageHeader Header;
-        Header.Tag = PACKAGE_FILE_TAG;
-        Header.Version = GPackageFileLuminaVersion.FileVersion;
-
-        // Skip header; written last once offsets are known.
-        Writer.Seek(sizeof(FPackageHeader));
-
-        FSaveContext SaveContext(Package);
-        Package->BuildSaveContext(SaveContext);
-
-        // Exports first: populates ObjectToIndexMap so WriteImports indices align with export data.
-        Package->WriteExports(Writer, Header, SaveContext);
-        Package->WriteImports(Writer, Header, SaveContext);
-
-        Header.ImportCount = static_cast<int32>(Package->ImportTable.size());
-        Header.ExportCount = static_cast<int32>(Package->ExportTable.size());
-
-#if USING(WITH_EDITOR)
-        Header.ThumbnailDataOffset = Writer.Tell();
-        Package->GetPackageThumbnail()->Serialize(Writer);
-#else
-        // Non-editor: zero signals loader to skip thumbnail.
-        Header.ThumbnailDataOffset = 0;
-#endif
-
-        Writer.Seek(0);
-        Writer << Header;
-
         TVector<uint8> DiskBinary;
-        if (!CompressPackageBinary(FileBinary, DiskBinary))
+        if (!BuildPackageBytes(Package, /*bCooking*/ false, FileBinary, DiskBinary))
         {
             LOG_ERROR("Failed to compress package: {}", Path);
             return false;
@@ -650,6 +674,21 @@ namespace Lumina
         Package->ClearDirty();
 
         return true;
+    }
+
+    bool CPackage::SavePackageForCook(CPackage* Package, TVector<uint8>& OutCompressed)
+    {
+        LUMINA_PROFILE_SCOPE();
+
+        ASSERT(Package != nullptr);
+
+        if (Package->IsTransientPackage())
+        {
+            return false;
+        }
+
+        TVector<uint8> FileBinary;
+        return BuildPackageBytes(Package, /*bCooking*/ true, FileBinary, OutCompressed);
     }
 
     void CPackage::CreateLoader(const TVector<uint8>& FileBinary)

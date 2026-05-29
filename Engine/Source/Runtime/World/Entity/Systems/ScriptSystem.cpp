@@ -50,11 +50,7 @@ namespace Lumina
                 const TSharedPtr<Lua::FScript>& Script = ScriptComponent.Script;
                 if (Script)
                 {
-                    #if USING(WITH_EDITOR)
-                    (void)Script->InvokeAsCoroutine(ScriptComponent.FixedUpdateFunc, Script->Reference, FixedDt);
-                    #else
-                    (void)ScriptComponent.FixedUpdateFunc.Invoke(Script->Reference, FixedDt);
-                    #endif
+                    ScriptComponent.FixedUpdateFunc.Call(Script->Reference, FixedDt);
                 }
             });
         }
@@ -77,7 +73,7 @@ namespace Lumina
             const TSharedPtr<Lua::FScript>& Script = ScriptComponent.Script;
             if (Script)
             {
-                (void)Script->InvokeAsCoroutine(ScriptComponent.EditorUpdateFunc, Script->Reference, DeltaSeconds);
+                ScriptComponent.EditorUpdateFunc.Call(Script->Reference, DeltaSeconds);
             }
         });
     }
@@ -100,22 +96,14 @@ namespace Lumina
 
                 if (ScriptComponent.TickRate <= 0.0f)
                 {
-                    #if USING(WITH_EDITOR)
-                    (void)Script->InvokeAsCoroutine(ScriptComponent.UpdateFunc, Script->Reference, DeltaTime);
-                    #else
-                    (void)ScriptComponent.UpdateFunc.Invoke(Script->Reference, DeltaTime);
-                    #endif
+                    ScriptComponent.UpdateFunc.Call(Script->Reference, DeltaTime);
                 }
                 else
                 {
                     ScriptComponent.AccumulatedTime += DeltaTime;
                     if (ScriptComponent.AccumulatedTime >= ScriptComponent.TickRate)
                     {
-                        #if USING(WITH_EDITOR)
-                        (void)Script->InvokeAsCoroutine(ScriptComponent.UpdateFunc, Script->Reference, ScriptComponent.AccumulatedTime);
-                        #else
-                        (void)ScriptComponent.UpdateFunc.Invoke(Script->Reference, ScriptComponent.AccumulatedTime);
-                        #endif
+                        ScriptComponent.UpdateFunc.Call(Script->Reference, ScriptComponent.AccumulatedTime);
                         ScriptComponent.AccumulatedTime = 0.0f;
                     }
                 }

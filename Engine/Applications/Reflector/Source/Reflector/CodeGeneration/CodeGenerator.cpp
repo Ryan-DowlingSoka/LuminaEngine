@@ -177,13 +177,18 @@ namespace Lumina::Reflection
         // Stub guard: every reflection-enabled project lists ReflectionUnity.gen.cpp
         // in its vcxproj sources, so the file MUST exist on disk even if the
         // project has zero reflected types (e.g. a freshly-templated game project).
-        // We only write the stub if no file exists yet — this keeps incremental
-        // builds fast (no mtime touch) and lets the dirty path above overwrite
-        // it the moment the project actually gets reflected types.
+        // We only write a file if none exists yet — this keeps incremental builds
+        // fast (no mtime touch) and lets the dirty path above overwrite it the
+        // moment the project actually gets reflected types.
         //
-        // The __has_include guard makes the same stub work whether the host
-        // project has a PCH (Runtime/Editor/Lumina include "pch.h") or not
-        // (game-template projects don't set one up).
+        // If the project has reflected types this run (UnityPerProject has an
+        // entry), write the real accumulated includes — otherwise a manually
+        // deleted unity file would be replaced by the stub even though Runtime
+        // wasn't in DirtyProjects, breaking link.
+        //
+        // The __has_include guard makes the stub work whether the host project
+        // has a PCH (Runtime/Editor/Lumina include "pch.h") or not (game-template
+        // projects don't set one up).
         for (auto& Project : Workspace->ReflectedProjects)
         {
             const eastl::string Path = MakeUnityPath(Workspace->GetPath(), *Project);
@@ -192,7 +197,9 @@ namespace Lumina::Reflection
                 continue;
             }
 
-            WriteTextFile(Path, kUnityStubContents);
+            auto It = UnityPerProject.find(Project.get());
+            const bool bHasContent = It != UnityPerProject.end() && !It->second.empty();
+            WriteTextFile(Path, bHasContent ? It->second : eastl::string(kUnityStubContents));
         }
     }
 

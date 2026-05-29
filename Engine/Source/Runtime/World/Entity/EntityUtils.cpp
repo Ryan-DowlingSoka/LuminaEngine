@@ -318,6 +318,10 @@ namespace Lumina::ECS::Utils
                             Layout->SerializeTaggedProperties(Ar, Storage.value(Entity));
                         }
                     }
+                    else
+                    {
+                        LOG_WARN("[ECS] Entity {}: skipping runtime component (schema asset not found, {} bytes). Save will drop this component.", (uint32)Entity, ComponentSize);
+                    }
                 }
                 else if (CStruct* Struct = FindObject<CStruct>(TypeName))
                 {
@@ -326,7 +330,7 @@ namespace Lumina::ECS::Utils
                         STagComponent NewTagComponent;
                         Struct->SerializeTaggedProperties(Ar, &NewTagComponent);
                         auto HashedString = entt::hashed_string(NewTagComponent.Tag.c_str());
-                        
+
                         if (!Registry.storage<STagComponent>(HashedString).contains(Entity))
                         {
                             Registry.storage<STagComponent>(HashedString).emplace(Entity, NewTagComponent);
@@ -338,11 +342,20 @@ namespace Lumina::ECS::Utils
                         if (entt::meta_type Meta = entt::resolve(HashString))
                         {
                             entt::meta_any Any = Meta.construct();
-                            
+
                             InvokeMetaFunc(Meta, "serialize"_hs, entt::forward_as_meta(Ar), entt::forward_as_meta(Any));
                             InvokeMetaFunc(Meta, "emplace"_hs, entt::forward_as_meta(Registry), Entity, entt::forward_as_meta(Any));
                         }
+                        else
+                        {
+                            LOG_WARN("[ECS] Entity {}: component '{}' has CStruct but no entt meta_type; skipping ({} bytes).",
+                                (uint32)Entity, TypeName, ComponentSize);
+                        }
                     }
+                }
+                else
+                {
+                    LOG_WARN("[ECS] Entity {}: skipping unknown component '{}' ({} bytes). Disabled plugin? Save will drop this component.", (uint32)Entity, TypeName, ComponentSize);
                 }
 
                 int64 ComponentEnd = ComponentSize + ComponentStart;

@@ -20,10 +20,18 @@
             "TrimTrailingOnSave": false
         },
         "RecentProjects": [
-            "Sandbox",
-            "Prototyping"
+            "H:/luminaengine/Engine/Sandbox/Sandbox.lproject",
+            "H:/luminaengine/Engine/Sandbox/////////////////Sandbox.lproject",
+            "H:/luminaengine/Engine/Sandbox////////////////Sandbox.lproject",
+            "H:/luminaengine/Engine/Sandbox///////////////Sandbox.lproject",
+            "H:/luminaengine/Engine/Sandbox//////////////Sandbox.lproject",
+            "H:/luminaengine/Engine/Sandbox/////////////Sandbox.lproject",
+            "H:/luminaengine/Engine/Sandbox////////////Sandbox.lproject",
+            "H:/luminaengine/Engine/Sandbox///////////Sandbox.lproject",
+            "H:/luminaengine/Engine/Sandbox//////////Sandbox.lproject",
+            "H:/luminaengine/Engine/Sandbox/////////Sandbox.lproject"
         ],
-        "StartupProject": "NULL",
+        "StartupProject": "H:/luminaengine/Engine/Sandbox/Sandbox.lproject",
         "UI": {
             "DPIAware": true,
             "GlobalScale": 0.7099999785423279
