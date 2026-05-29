@@ -8,6 +8,7 @@ Script.Exports = {
     Count     = 10000,
     Radius    = 500.0,
     Speed     = 5.0,
+    Center    = vector.zero,
 }
 
 local Entities = {}
@@ -26,14 +27,7 @@ function Script:OnReady()
 end
 
 function Script:OnUpdate(DeltaTime: number)
-    local Step = self.Speed * DeltaTime
-
-    for _, E in ipairs(Entities) do
-        local Pos = World.GetLocation(E)
-        if Math.Length3(Pos) >= 0.01 then
-            World.Translate(E, Math.Normalize3(-Pos) * Step)
-        end
-    end
+    World.MoveToward(Entities, self.Center, self.Speed * DeltaTime)
 end
 
 return Script

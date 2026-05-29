@@ -434,6 +434,68 @@ namespace Lumina
         static void World_SetRotation(CWorld* World, entt::entity Entity, FQuat Rotation)   { if (World) ECS::Utils::SetEntityRotation(World->GetEntityRegistry(), Entity, Rotation); }
         static void World_SetScale(CWorld* World, entt::entity Entity, FVector3 Scale)      { if (World) ECS::Utils::SetEntityScale(World->GetEntityRegistry(), Entity, Scale); }
 
+        // Batched homing: advance a whole list of entities toward Target by Step units (clamped so
+        // they don't overshoot). The point is to cross the Lua boundary ONCE and take the transform
+        // resolve mutex ONCE for the whole list, instead of paying two guarded, profiled
+        // ResolveTransformChain/MarkTransformDirty calls per entity (the cost that dominates a 10k
+        // per-frame Lua loop). Roots -- the common bulk-spawn case -- need no chain resolve at all
+        // (world == local), so the hot path is just a storage read + dirty flag under the held lock.
+        static void World_MoveToward(CWorld* World, TVector<entt::entity> Entities, FVector3 Target, float Step)
+        {
+            if (World == nullptr || Step <= 0.0f)
+            {
+                return;
+            }
+
+            FEntityRegistry& Registry = World->GetEntityRegistry();
+            auto& Storage = Registry.storage<STransformComponent>();
+
+            FRecursiveScopeLock Lock(ECS::Utils::GetTransformResolveMutex());
+
+            for (entt::entity Entity : Entities)
+            {
+                if (!Storage.contains(Entity))
+                {
+                    continue;
+                }
+
+                STransformComponent& Transform = Storage.get(Entity);
+
+                const FRelationshipComponent* Rel = Registry.try_get<FRelationshipComponent>(Entity);
+                const bool bRooted = Rel == nullptr || Rel->Parent == entt::null || !Registry.valid(Rel->Parent);
+
+                if (bRooted)
+                {
+                    // World == local: LocalTransform.Location is authoritative and never stale.
+                    const FVector3 ToTarget = Target - Transform.LocalTransform.Location;
+                    const float Distance = Math::Length(ToTarget);
+                    if (Distance < 0.01f)
+                    {
+                        continue;
+                    }
+
+                    Transform.LocalTransform.Location += (ToTarget / Distance) * Math::Min(Step, Distance);
+                    Registry.emplace_or_replace<FNeedsTransformUpdate>(Entity);
+                }
+                else
+                {
+                    // Parented (rare for bulk spawns): resolve the chain for a correct world read,
+                    // then route the world-space move back through the parent-relative converter.
+                    ECS::Utils::ResolveTransformChain(Registry, Entity);
+                    const FVector3 ToTarget = Target - Transform.WorldTransform.Location;
+                    const float Distance = Math::Length(ToTarget);
+                    if (Distance < 0.01f)
+                    {
+                        continue;
+                    }
+
+                    FTransform WorldTransform = Transform.WorldTransform;
+                    WorldTransform.Location += (ToTarget / Distance) * Math::Min(Step, Distance);
+                    ECS::Utils::SetEntityWorldTransform(Registry, Entity, WorldTransform);
+                }
+            }
+        }
+
         // Cross-entity component access: forwards to the world's registry so scripts can
         // read components off ANY entity id (e.g. one returned by World.FindByName), not
         // just `self`. Same get/has semantics as self:GetComponent.
@@ -613,6 +675,7 @@ namespace Lumina
         WorldTable.SetFunction<&LuaBinds::World_GetLocation>("GetLocation");        // GetLocation(entity) -> vector (world)
         WorldTable.SetFunction<&LuaBinds::World_SetLocation>("SetLocation");        // SetLocation(entity, vector) (world)
         WorldTable.SetFunction<&LuaBinds::World_Translate>("Translate");            // Translate(entity, delta) -> vector
+        WorldTable.SetFunction<&LuaBinds::World_MoveToward>("MoveToward");          // MoveToward(entities, target, step) -- batched, one boundary crossing
         WorldTable.SetFunction<&LuaBinds::World_GetRotation>("GetRotation");        // GetRotation(entity) -> quat
         WorldTable.SetFunction<&LuaBinds::World_SetRotation>("SetRotation");        // SetRotation(entity, quat)
         WorldTable.SetFunction<&LuaBinds::World_GetScale>("GetScale");              // GetScale(entity) -> vector
