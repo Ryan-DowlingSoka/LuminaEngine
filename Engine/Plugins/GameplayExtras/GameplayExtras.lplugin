@@ -1,0 +1,21 @@
+{
+    "FormatVersion": 1,
+    "Name": "GameplayExtras",
+    "Version": 1,
+    "VersionName": "0.1.0",
+    "Author": "Lumina Team",
+    "Description": "Optional gameplay-flavored components that aren't core engine functionality. Lives outside Runtime so a project can opt out by disabling the plugin in its .lproject.",
+    "Category": "Gameplay",
+    "EnabledByDefault": true,
+    "EditorOnly": false,
+    "ContainsContent": false,
+    "SupportedPlatforms": [],
+    "Dependencies": [],
+    "Modules": [
+        {
+            "Name": "GameplayExtrasRuntime",
+            "Type": "Runtime",
+            "LoadingPhase": "PreEngineInit"
+        }
+    ]
+}

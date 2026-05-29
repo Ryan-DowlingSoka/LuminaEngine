@@ -2,11 +2,20 @@
 *.d
 
 # Build Directories
-/Binaries/
-/Intermediates/
+Binaries/
+Intermediates/
 /.idea/
 /External/
 /CrashDumps/
+
+# Packaged game output
+Engine/Sandbox/Build/
+Engine/*/Build/
+
+# Stray root test artifacts
+/newworld_cooked.bin
+/newworld_decomp.bin
+/*.log
 
 *.zip
 /.claude/
