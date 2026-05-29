@@ -22,6 +22,7 @@
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "PathCch.lib")
 #pragma comment(lib, "Winmm.lib")
+#pragma comment(lib, "Advapi32.lib")
 
 namespace Lumina::Platform
 {
@@ -117,6 +118,58 @@ namespace Lumina::Platform
         }
         
         return FString(buffer, length);
+    }
+
+    bool SetEnvVariable(const FString& Name, const FString& Value)
+    {
+        if (_putenv_s(Name.c_str(), Value.c_str()) == 0)
+        {
+            LOG_TRACE("Environment variable {} set to {}", Name, Value);
+            return true;
+        }
+
+        LOG_WARN("Failed to set environment variable {}", Name);
+        return false;
+    }
+
+    bool PersistUserEnvVariable(const FString& Name, const FString& Value)
+    {
+        HKEY Key = nullptr;
+        if (RegOpenKeyExA(HKEY_CURRENT_USER, "Environment", 0, KEY_READ | KEY_WRITE, &Key) != ERROR_SUCCESS)
+        {
+            LOG_WARN("Failed to open HKCU\\Environment to persist {}", Name);
+            return false;
+        }
+
+        // Skip the write (and the broadcast) when the stored value already matches,
+        // so a normal launch doesn't churn the registry or spam WM_SETTINGCHANGE.
+        char Existing[1024] = {};
+        DWORD ExistingSize = sizeof(Existing);
+        DWORD Type = 0;
+        if (RegQueryValueExA(Key, Name.c_str(), nullptr, &Type, reinterpret_cast<LPBYTE>(Existing), &ExistingSize) == ERROR_SUCCESS
+            && (Type == REG_SZ || Type == REG_EXPAND_SZ)
+            && Paths::PathsEqual(Existing, Value.c_str()))
+        {
+            RegCloseKey(Key);
+            return false;
+        }
+
+        const LONG WriteResult = RegSetValueExA(Key, Name.c_str(), 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(Value.c_str()), static_cast<DWORD>(Value.size() + 1));
+        RegCloseKey(Key);
+
+        if (WriteResult != ERROR_SUCCESS)
+        {
+            LOG_WARN("Failed to persist environment variable {}", Name);
+            return false;
+        }
+
+        // Tell already-running shells/Explorer to reload the environment block so
+        // newly-spawned processes pick up the change without a reboot.
+        SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+            reinterpret_cast<LPARAM>("Environment"), SMTO_ABORTIFHUNG, 5000, nullptr);
+
+        return true;
     }
 
     int LaunchProcess(const TCHAR* URL, const TCHAR* Params, bool bLaunchDetached)

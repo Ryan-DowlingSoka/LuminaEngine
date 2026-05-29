@@ -52,6 +52,12 @@ namespace Lumina
     	auto CreateFontFromFile = [&] (FStringView Path, float FontSize, float IconFontSize, ImGuiX::Font::EFont FontID, const ImVec2& GlyphOffset)
     	{
     		ImFont* pFont = io.Fonts->AddFontFromFileTTF(Path.data(), FontSize, &FontConfig);
+    		if (pFont == nullptr)
+    		{
+    			PANIC("Failed to load font '{}'. Engine resources could not be resolved -- "
+    			      "LUMINA_DIR may be unset or pointing at the wrong directory. Run the engine's Setup.bat.",
+    			      Path.data());
+    		}
 		    ImGuiX::Font::GFonts[static_cast<uint8>(FontID)] = pFont;
 
     		IconFontConfig.GlyphOffset = GlyphOffset;

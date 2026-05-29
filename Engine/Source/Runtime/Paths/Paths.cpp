@@ -2,6 +2,8 @@
 #include "Paths.h"
 #include <filesystem>
 #include "Core/Assertions/Assert.h"
+#include "Platform/Process/PlatformProcess.h"
+#include "Log/Log.h"
 
 namespace Lumina::Paths
 {
@@ -24,7 +26,31 @@ namespace Lumina::Paths
         const char* LuminaDirEnv = std::getenv("LUMINA_DIR");
         FString LuminaDir = LuminaDirEnv ? FString(LuminaDirEnv) : FString();
         Normalize(LuminaDir);
-            
+
+        // Fall back to an executable-relative root when LUMINA_DIR is unset (e.g. a
+        // machine where Setup.bat never ran, or the env var didn't propagate to the
+        // session). The editor exe lives at <root>/Binaries/Windows64/Lumina-*.exe,
+        // so the engine root is two directories up. Without this, every resource path
+        // is malformed and font loading hard-crashes.
+        if (LuminaDir.empty() || !std::filesystem::exists((LuminaDir + "/Engine/Resources").c_str()))
+        {
+            FString ExePath = Platform::GetCurrentProcessPath();
+            Normalize(ExePath);
+
+            FString Candidate = Parent(Parent(Parent(ExePath, true), true), true);
+            if (!Candidate.empty() && std::filesystem::exists((Candidate + "/Engine/Resources").c_str()))
+            {
+                LOG_DISPLAY("LUMINA_DIR unset or invalid; using executable-relative engine root: {}", Candidate.c_str());
+                LuminaDir = Candidate;
+            }
+            else
+            {
+                LOG_ERROR("Could not resolve engine root. LUMINA_DIR='{}', exe-relative candidate='{}'. "
+                          "Run the engine's Setup.bat. Resources (fonts, shaders) will fail to load.",
+                          LuminaDir.c_str(), Candidate.c_str());
+            }
+        }
+
         CachedDirectories[EngineInstallDirectoryName]   = LuminaDir;
         CachedDirectories[EngineDirectoryName]          = LuminaDir + "/Engine";
         CachedDirectories[EngineConfigDirectoryName]    = GetEngineDirectory() + "/Config";
@@ -287,24 +313,4 @@ namespace Lumina::Paths
         return true;
     }
     
-    bool SetEnvVariable(const FString& name, const FString& value)
-    {
-#ifdef _WIN32
-        if (_putenv_s(name.c_str(), value.c_str()) == 0)
-        {
-            LOG_TRACE("Environment variable {} set to {}", name, value);
-            return true;
-        }
-        LOG_WARN("Failed to set environment variable {}", name);
-        return false;
-#else
-        if (setenv(name.c_str(), value.c_str(), 1) == 0)
-        {
-            LOG_TRACE("Environment variable {} set to {}", name, value);
-            return true;
-        }
-        LOG_WARN("Failed to set environment variable {}", name);
-        return false;
-#endif
-    }
 }

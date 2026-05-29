@@ -41,6 +41,23 @@ namespace Lumina::Platform
         LUMINA_WARN_ONCE("Platform::OpenTerminalAt");
     }
 
+    bool SetEnvVariable(const FString& Name, const FString& Value)
+    {
+        if (setenv(Name.c_str(), Value.c_str(), 1) == 0)
+        {
+            return true;
+        }
+
+        LOG_WARN("Failed to set environment variable {}", Name);
+        return false;
+    }
+
+    bool PersistUserEnvVariable(const FString& /*Name*/, const FString& /*Value*/)
+    {
+        LUMINA_WARN_ONCE("Platform::PersistUserEnvVariable");
+        return false;
+    }
+
     #undef LUMINA_WARN_ONCE
 }
 

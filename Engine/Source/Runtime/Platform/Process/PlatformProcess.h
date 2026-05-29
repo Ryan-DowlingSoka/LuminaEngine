@@ -26,6 +26,17 @@ namespace Lumina::Platform
     RUNTIME_API uint32 GetCurrentCoreNumber();
     RUNTIME_API FString GetCurrentProcessPath();
 
+    // Set an environment variable for THIS process (and any child processes it
+    // spawns afterward). Does not persist beyond the process lifetime.
+    RUNTIME_API bool SetEnvVariable(const FString& Name, const FString& Value);
+
+    // Persist an environment variable to the user's environment so future
+    // processes (shells, IDEs, build tools) inherit it. Idempotent: skips the
+    // write when the stored value already matches, and returns true only when a
+    // change was actually made. No-op returning false on platforms without a
+    // user-environment store.
+    RUNTIME_API bool PersistUserEnvVariable(const FString& Name, const FString& Value);
+
     // Request the OS use its highest-resolution scheduler tick so std::this_thread::sleep_for
     // honors sub-millisecond durations. Paired calls; Disable must follow Enable.
     RUNTIME_API void EnableHighResolutionTiming();

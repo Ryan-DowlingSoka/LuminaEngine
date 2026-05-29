@@ -45,9 +45,6 @@ namespace Lumina::Paths
 
     RUNTIME_API FString Parent(FStringView Path, bool bRemoveTrailingSlash = true);
 
-    
-    RUNTIME_API bool SetEnvVariable(const FString& name, const FString& value);
-
     template<typename T>
     concept ValidStringType = requires(T s)
     {

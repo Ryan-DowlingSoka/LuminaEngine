@@ -241,12 +241,29 @@ namespace Lumina
         GConfig->RegisterSetting(FConfigSetting::Make("Editor.RmlUiEditor.Palette", EConfigValueType::String)
             .WithCategory("Editor/RmlUi Editor")
             .WithDescription("Color palette for the RmlUi editor (\"Dark\" or \"Light\")")
-            .WithDefault(std::string("Dark"))
+            .WithDefault("Dark")
             .WithOwnerFile(EditorFile));
     }
 
     bool FEditorEngine::Init()
     {
+        // Keep LUMINA_DIR in sync with this engine install. The editor knows the
+        // authoritative root (Paths resolved it from this exe's location), so it
+        // heals a missing or stale env var for everything downstream that still
+        // depends on it -- shells, the IDE, and external game-project builds whose
+        // premake hard-fails without it. Process-local set covers tools we spawn
+        // this session; the persist covers future sessions. Editor-only on purpose:
+        // a shipped game must never touch the player's environment.
+        const FString& EngineRoot = Paths::GetEngineInstallDirectory();
+        if (!EngineRoot.empty())
+        {
+            Platform::SetEnvVariable("LUMINA_DIR", EngineRoot);
+            if (Platform::PersistUserEnvVariable("LUMINA_DIR", EngineRoot))
+            {
+                LOG_DISPLAY("Persisted LUMINA_DIR={} for future shells and build tools.", EngineRoot);
+            }
+        }
+
         VFS::Mount<VFS::FNativeFileSystem>("/Editor", Paths::Combine(Paths::GetEngineDirectory(), "Editor"));
 
         GConfig->LoadPath("/Editor/Config");

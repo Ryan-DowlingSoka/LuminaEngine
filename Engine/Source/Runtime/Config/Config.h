@@ -52,7 +52,7 @@ namespace Lumina
         double              MaxValue        = 0.0;
         bool                bHasRange       = false;
 
-        // Builder helpers — keep registration call sites readable.
+        // Builder helpers
         FConfigSetting& WithDefault(nlohmann::json Value)       { DefaultValue = Move(Value); return *this; }
         FConfigSetting& WithCategory(FStringView InCategory)    { Category.assign(InCategory.data(), InCategory.size()); return *this; }
         FConfigSetting& WithDescription(FStringView InDesc)     { Description.assign(InDesc.data(), InDesc.size()); return *this; }
