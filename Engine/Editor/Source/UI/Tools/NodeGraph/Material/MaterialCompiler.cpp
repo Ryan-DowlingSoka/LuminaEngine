@@ -1060,9 +1060,11 @@ namespace Lumina
 		GetActiveChunk().append("float4 " + ID + " = VertexColor;\n");
 	}
 
-	void FMaterialCompiler::TexCoords(const FString& ID, uint32 Index, float UTiling, float VTiling)
+	void FMaterialCompiler::TexCoords(const FString& ID, uint32 Index, CMaterialInput* Tiling, float UTiling, float VTiling)
 	{
-		GetActiveChunk().append("float2 " + ID + " = UV0 * float2(" + eastl::to_string(UTiling) + ", " + eastl::to_string(VTiling) + ");\n");
+		// Connected Tiling pin overrides the inline UTiling/VTiling defaults.
+		FInputValue TilingValue = GetTypedInputValue(Tiling, "float2(" + eastl::to_string(UTiling) + ", " + eastl::to_string(VTiling) + ")");
+		GetActiveChunk().append("float2 " + ID + " = UV0 * " + TilingValue.Value + ";\n");
 	}
 
 	void FMaterialCompiler::Panner(CMaterialInput* UV, CMaterialInput* Time, CMaterialInput* Speed)
@@ -1169,6 +1171,32 @@ namespace Lumina
 			return;
 		}
 		GetActiveChunk().append("float3 " + ID + " = GetCameraPosition();\n");
+	}
+
+	void FMaterialCompiler::ObjectScale(const FString& ID, CMaterialGraphNode* Node)
+	{
+		// Only PBR surface passes carry the per-instance FGPUInstance; others get a neutral 1.
+		if (RejectInUI(Node, "Object Scale") || CurrentMaterialType != EMaterialType::PBR)
+		{
+			GetActiveChunk().append("float3 " + ID + " = float3(1.0, 1.0, 1.0);\n");
+			return;
+		}
+		// Scale = world-space length of each basis column of the object->world matrix.
+		GetActiveChunk().append(
+			"float3 " + ID + " = float3("
+			"length(mul(Inst.ModelMatrix, float4(1.0, 0.0, 0.0, 0.0)).xyz), "
+			"length(mul(Inst.ModelMatrix, float4(0.0, 1.0, 0.0, 0.0)).xyz), "
+			"length(mul(Inst.ModelMatrix, float4(0.0, 0.0, 1.0, 0.0)).xyz));\n");
+	}
+
+	void FMaterialCompiler::ObjectPosition(const FString& ID, CMaterialGraphNode* Node)
+	{
+		if (RejectInUI(Node, "Object Position") || CurrentMaterialType != EMaterialType::PBR)
+		{
+			GetActiveChunk().append("float3 " + ID + " = float3(0.0, 0.0, 0.0);\n");
+			return;
+		}
+		GetActiveChunk().append("float3 " + ID + " = mul(Inst.ModelMatrix, float4(0.0, 0.0, 0.0, 1.0)).xyz;\n");
 	}
 
 	void FMaterialCompiler::EntityID(const FString& ID)

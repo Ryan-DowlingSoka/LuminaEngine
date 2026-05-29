@@ -5333,88 +5333,113 @@ namespace Lumina
             ImGui::TableSetupColumn("##Editor", ImGuiTableColumnFlags_WidthStretch);
 
             ImGui::TableNextColumn();
-            ImGui::BeginHorizontal(EntityName.c_str());
-        
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(35, 35, 35, 255));
+
+            // align 0.5 vertically centers each item; let the layout handle it rather than
+            // AlignTextToFramePadding, which would push the text below center.
+            ImGui::BeginHorizontal(EntityName.c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0.0f), 0.5f);
+
+            ImGuiX::TextColoredUnformatted(ImVec4(0.40f, 0.70f, 1.0f, 1.0f), LE_ICON_CUBE);
+
             ImGuiX::Font::PushFont(ImGuiX::Font::EFont::LargeBold);
-            ImGui::AlignTextToFramePadding();
-            ImGuiX::Text("Entity: {} (ID: ({})", EntityName, entt::to_integral(Entity));
+            ImGuiX::Text("{}", EntityName);
             ImGui::PopFont();
 
-            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(35, 35, 35, 255));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.55f, 1.0f));
+            ImGuiX::Text("ID {}", entt::to_integral(Entity));
+            ImGui::PopStyleColor();
+
+            // Push the action buttons to the right edge so they read as a toolbar, not an afterthought.
+            ImGui::Spring(1.0f);
+
+            // Square buttons; zero horizontal frame padding so the icon glyph centers in the full width
+            // (the inherited 8px padding would otherwise crowd the glyph against the left edge).
+            const float ActionDim = ImGui::GetFrameHeight();
+            const ImVec2 ActionSize(ActionDim, ActionDim);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, ImGui::GetStyle().FramePadding.y));
+
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.55f, 0.3f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.65f, 0.35f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.5f, 0.25f, 1.0f));
-        
-            if (ImGui::Button(LE_ICON_PLUS))
+
+            if (ImGui::Button(LE_ICON_PLUS, ActionSize))
             {
                 ImGui::OpenPopup("AddToEntityMenu");
             }
-            
+
             DrawAddToEntityOrWorldPopup(Entity);
-        
+
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
             {
                 ImGui::SetTooltip("Add Component");
             }
-        
-            ImGui::PopStyleColor(3);
-        
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.55f, 0.3f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.65f, 0.35f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.5f, 0.25f, 1.0f));
-        
-            if (ImGui::Button(LE_ICON_TAG))
+
+            if (ImGui::Button(LE_ICON_TAG, ActionSize))
             {
                 PushAddTagModal(Entity);
             }
-        
+
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
             {
                 ImGui::SetTooltip("Add Tag");
             }
-        
+
             ImGui::PopStyleColor(3);
-        
+
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.2f, 0.2f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.25f, 0.25f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.55f, 0.18f, 0.18f, 1.0f));
-        
-            if (ImGui::Button(LE_ICON_TRASH_CAN))
+
+            if (ImGui::Button(LE_ICON_TRASH_CAN, ActionSize))
             {
-                if (Dialogs::Confirmation("Confirm Deletion", 
-                    "Are you sure you want to delete entity \"{0}\"?\n\nThis action cannot be undone.", 
+                if (Dialogs::Confirmation("Confirm Deletion",
+                    "Are you sure you want to delete entity \"{0}\"?\n\nThis action cannot be undone.",
                     (uint32)Entity))
                 {
                     EntityDestroyRequests.push(Entity);
                 }
             }
-        
+
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
             {
                 ImGui::SetTooltip("Delete Entity");
             }
-        
+
             ImGui::PopStyleColor(3);
-        
+            ImGui::PopStyleVar();
+
             ImGui::EndHorizontal();
             ImGui::PopStyleVar(3);
-            
+
             ImGui::EndTable();
         }
 
         ImGui::SeparatorText("Details");
 
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(LE_ICON_PUZZLE " Tags");
-        ImGui::PopStyleColor();
-        
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        
-        DrawTagList(Entity);
-        
+        bool bHasTags = false;
+        for (auto [Name, Storage] : World->GetEntityRegistry().storage())
+        {
+            if (Storage.info() == entt::type_id<STagComponent>() && Storage.contains(Entity))
+            {
+                bHasTags = true;
+                break;
+            }
+        }
+
+        if (bHasTags)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(LE_ICON_PUZZLE " Tags");
+            ImGui::PopStyleColor();
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            DrawTagList(Entity);
+        }
+
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(LE_ICON_CUBE " Components");

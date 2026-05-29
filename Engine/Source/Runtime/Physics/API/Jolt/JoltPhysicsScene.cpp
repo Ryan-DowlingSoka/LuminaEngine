@@ -111,19 +111,23 @@ namespace Lumina::Physics
     
     static void CheckJoltError(JPH::EPhysicsUpdateError Error)
     {
-        switch (Error)
+        // EPhysicsUpdateError is a bit field; multiple errors can be set in one update.
+        if (Error == JPH::EPhysicsUpdateError::None)
         {
-        case JPH::EPhysicsUpdateError::None:
-            break;
-        case JPH::EPhysicsUpdateError::ManifoldCacheFull:
-            LOG_ERROR("[Jolt Error] - Manifold Cache is full");
-            break;
-        case JPH::EPhysicsUpdateError::BodyPairCacheFull:
-            LOG_ERROR("[Jolt Error] - Body-Pair Cache is full");
-            break;
-        case JPH::EPhysicsUpdateError::ContactConstraintsFull:
-            LOG_ERROR("[Jolt Error] - Contact Constraints are full.");
-            break;
+            return;
+        }
+
+        if ((Error & JPH::EPhysicsUpdateError::ManifoldCacheFull) != JPH::EPhysicsUpdateError::None)
+        {
+            LOG_ERROR("[Jolt Error] - Manifold Cache is full; increase MaxPhysicsContactConstraints. Some contacts were dropped.");
+        }
+        if ((Error & JPH::EPhysicsUpdateError::BodyPairCacheFull) != JPH::EPhysicsUpdateError::None)
+        {
+            LOG_ERROR("[Jolt Error] - Body-Pair Cache is full; increase MaxPhysicsBodyPairs. Some contacts were dropped.");
+        }
+        if ((Error & JPH::EPhysicsUpdateError::ContactConstraintsFull) != JPH::EPhysicsUpdateError::None)
+        {
+            LOG_ERROR("[Jolt Error] - Contact Constraints buffer is full; increase MaxPhysicsContactConstraints. Some contacts were dropped.");
         }
     }
     
@@ -852,6 +856,16 @@ namespace Lumina::Physics
         Task::ParallelFor(RigidHandle->size(), [&](uint32 Index)
         {
             entt::entity Entity = (*RigidHandle)[Index];
+
+            // Reflected components are in_place_delete (pointer stability for Lua/reflection),
+            // so the packed array carries tombstone holes. Raw [Index] hits them; get() on a
+            // tombstone indexes out of bounds. Range-for/each() skip these for us, manual
+            // indexing must too. Do NOT remove.
+            if (Entity == entt::tombstone)
+            {
+                return;
+            }
+
             SRigidBodyComponent& BodyComponent = RigidView.get<SRigidBodyComponent>(Entity);
 
             const JPH::Body* Body = LockInterface.TryGetBody(JPH::BodyID(BodyComponent.BodyID));
@@ -973,6 +987,15 @@ namespace Lumina::Physics
         {
             const entt::entity Entity = (*RigidHandle)[i];
             InterpStaging.Entities[i] = Entity;
+
+            // In_place_delete leaves tombstone holes in the packed array (see SnapshotBodyStates);
+            // skip them, identity-filling the slot so the bulk SIMD pass never sees NaNs.
+            if (Entity == entt::tombstone)
+            {
+                InterpStaging.Flags[i] = EInterpFlag::Skip;
+                WriteIdentity(i);
+                return;
+            }
 
             const SRigidBodyComponent& BodyComponent = RigidView.get<SRigidBodyComponent>(Entity);
             const JPH::Body* Body = LockInterface.TryGetBody(JPH::BodyID(BodyComponent.BodyID));

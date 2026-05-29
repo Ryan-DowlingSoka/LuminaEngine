@@ -114,6 +114,8 @@ namespace Lumina
         RegisterGraphNode(CMaterialExpression_VertexColor::StaticClass());
         RegisterGraphNode(CMaterialExpression_WorldPos::StaticClass());
         RegisterGraphNode(CMaterialExpression_CameraPos::StaticClass());
+        RegisterGraphNode(CMaterialExpression_ObjectScale::StaticClass());
+        RegisterGraphNode(CMaterialExpression_ObjectPosition::StaticClass());
         RegisterGraphNode(CMaterialExpression_EntityID::StaticClass());
         RegisterGraphNode(CMaterialNodeGetTime::StaticClass());
         RegisterGraphNode(CMaterialExpression_CustomPrimitiveData::StaticClass());

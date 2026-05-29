@@ -12,6 +12,87 @@
 
 namespace Lumina
 {
+    namespace
+    {
+        // Per-axis tag colors (X/Y/Z), matching the gizmo.
+        constexpr ImVec4 GAxisColors[3] =
+        {
+            ImVec4(0.72f, 0.27f, 0.30f, 1.0f),
+            ImVec4(0.36f, 0.58f, 0.30f, 1.0f),
+            ImVec4(0.24f, 0.44f, 0.78f, 1.0f),
+        };
+        constexpr const char* GAxisLabels[3] = { "X", "Y", "Z" };
+
+        // Tracks a just-drawn item and folds its interaction into the running op
+        // (Finished > Started > Updated, matching the rest of the customizations).
+        void AccumulateOp(EPropertyChangeOp& Op)
+        {
+            if (ImGui::IsItemEdited())                  Op = EPropertyChangeOp::Updated;
+            if (ImGui::IsItemActivated())               Op = EPropertyChangeOp::Started;
+            if (ImGui::IsItemDeactivatedAfterEdit())    Op = EPropertyChangeOp::Finished;
+        }
+
+        // One labeled row: leading category icon + three color-tagged XYZ drag fields.
+        // Clicking an axis tag zeroes that component and sets bResetClicked.
+        EPropertyChangeOp DrawAxisRow(const char* ID, const char* Icon, const ImVec4& IconColor, const char* Tooltip, float* Values, float Speed, bool& bResetClicked)
+        {
+            EPropertyChangeOp Op = EPropertyChangeOp::None;
+            const ImGuiStyle& Style = ImGui::GetStyle();
+            const float LineHeight = ImGui::GetFrameHeight();
+            const float IconColumnW = LineHeight + Style.ItemInnerSpacing.x * 2.0f;
+
+            ImGui::PushID(ID);
+
+            ImGui::AlignTextToFramePadding();
+            ImGuiX::TextColoredUnformatted(IconColor, Icon);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            {
+                ImGui::SetTooltip("%s", Tooltip);
+            }
+            ImGui::SameLine(IconColumnW);
+
+            const float TagW = LineHeight;
+            const float Avail = ImGui::GetContentRegionAvail().x;
+            const float FieldW = Math::Max((Avail - 3.0f * (TagW + Style.ItemInnerSpacing.x)) / 3.0f, 1.0f);
+
+            for (int32 Axis = 0; Axis < 3; ++Axis)
+            {
+                ImGui::PushID(Axis);
+                if (Axis > 0)
+                {
+                    ImGui::SameLine(0.0f, Style.ItemInnerSpacing.x);
+                }
+
+                ImGui::PushStyleColor(ImGuiCol_Button, GAxisColors[Axis]);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, GAxisColors[Axis]);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, GAxisColors[Axis]);
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
+                if (ImGui::Button(GAxisLabels[Axis], ImVec2(TagW, LineHeight)))
+                {
+                    Values[Axis] = 0.0f;
+                    bResetClicked = true;
+                }
+                ImGui::PopStyleVar();
+                ImGui::PopStyleColor(3);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                {
+                    ImGui::SetTooltip("Reset to 0");
+                }
+
+                ImGui::SameLine(0.0f, 0.0f);
+                ImGui::SetNextItemWidth(FieldW);
+                if (ImGui::DragScalar("##V", ImGuiDataType_Float, &Values[Axis], Speed, nullptr, nullptr, "%.3f"))
+                {
+                    Op = EPropertyChangeOp::Updated;
+                }
+                AccumulateOp(Op);
+                ImGui::PopID();
+            }
+
+            ImGui::PopID();
+            return Op;
+        }
+    }
 
     EPropertyChangeOp FVec2PropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
@@ -271,79 +352,48 @@ namespace Lumina
     
     EPropertyChangeOp FTransformPropertyCustomization::DrawProperty(const TSharedPtr<FPropertyHandle>& Property)
     {
-        EPropertyChangeOp Result = EPropertyChangeOp::None;
-        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
-        
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.7f, 1.0f, 1.0f));
-        ImGui::TextUnformatted(LE_ICON_AXIS_ARROW);
-        ImGui::PopStyleColor();
-        ImGui::SameLine();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        EPropertyChangeOp DragOp = EPropertyChangeOp::None;
+        auto Merge = [&DragOp](EPropertyChangeOp Op)
         {
-            ImGui::SetTooltip("Translation (Location)");
-        }
+            if (Op != EPropertyChangeOp::None)
+            {
+                DragOp = Op;
+            }
+        };
 
-        if (ImGui::DragFloat3("T", Math::ValuePtr(DisplayValue.Location), 0.01f))
-        {
-            Result = EPropertyChangeOp::Updated;
-        }
-        if (ImGui::IsItemActivated())
-        {
-            Result = EPropertyChangeOp::Started;
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit())
-        {
-            Result = EPropertyChangeOp::Finished;
-        }
+        bool bReset = false;
+        Merge(DrawAxisRow("T", LE_ICON_AXIS_ARROW, ImVec4(0.40f, 0.70f, 1.0f, 1.0f), "Translation (Location)", Math::ValuePtr(DisplayValue.Location), 0.01f, bReset));
 
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 1.0f, 0.7f, 1.0f));
-        ImGui::TextUnformatted(LE_ICON_ROTATE_360);
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-        {
-            ImGui::SetTooltip("Rotation (Euler Angles)");
-        }
-        ImGui::SameLine();
-        
         FVector3 EulerRotation = Math::Degrees(Math::EulerAngles(DisplayValue.Rotation));
-        if (ImGui::DragFloat3("R", Math::ValuePtr(EulerRotation), 0.01f))
+        bool bRotationReset = false;
+        const EPropertyChangeOp RotationOp = DrawAxisRow("R", LE_ICON_ROTATE_360, ImVec4(0.40f, 1.0f, 0.70f, 1.0f), "Rotation (Euler Angles)", Math::ValuePtr(EulerRotation), 0.1f, bRotationReset);
+        if (RotationOp == EPropertyChangeOp::Updated || bRotationReset)
         {
             DisplayValue.SetRotationFromEuler(EulerRotation);
-            Result = EPropertyChangeOp::Updated;
         }
-        if (ImGui::IsItemActivated())
+        Merge(RotationOp);
+        bReset |= bRotationReset;
+
+        Merge(DrawAxisRow("S", LE_ICON_ARROW_TOP_RIGHT_BOTTOM_LEFT, ImVec4(1.0f, 0.70f, 0.40f, 1.0f), "Scale", Math::ValuePtr(DisplayValue.Scale), 0.01f, bReset));
+
+        // A reset writes the value this frame: open the undo transaction now (Started),
+        // commit it next frame (Finished), like the discrete object/array edits.
+        if (bReset)
         {
-            Result = EPropertyChangeOp::Started;
+            if (bFinishPending)
+            {
+                return EPropertyChangeOp::Updated;
+            }
+            bFinishPending = true;
+            return EPropertyChangeOp::Started;
         }
-        if (ImGui::IsItemDeactivatedAfterEdit())
+        if (bFinishPending)
         {
-            Result = EPropertyChangeOp::Finished;
+            bFinishPending = false;
+            return EPropertyChangeOp::Finished;
         }
-    
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.7f, 0.4f, 1.0f));
-        ImGui::TextUnformatted(LE_ICON_ARROW_TOP_RIGHT_BOTTOM_LEFT);
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-        {
-            ImGui::SetTooltip("Scale");
-        }
-        ImGui::SameLine();
-        
-        if (ImGui::DragFloat3("S", Math::ValuePtr(DisplayValue.Scale), 0.01f))
-        {
-            Result = EPropertyChangeOp::Updated;
-        }
-        if (ImGui::IsItemActivated())
-        {
-            Result = EPropertyChangeOp::Started;
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit())
-        {
-            Result = EPropertyChangeOp::Finished;
-        }
-    
-        ImGui::PopItemWidth();
-        return Result;
+
+        return DragOp;
     }
 
     void FTransformPropertyCustomization::UpdatePropertyValue(const TSharedPtr<FPropertyHandle>& Property)

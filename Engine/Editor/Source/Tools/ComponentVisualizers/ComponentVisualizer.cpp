@@ -236,8 +236,22 @@ namespace Lumina
         const auto& Transform   = Registry.get<STransformComponent>(Entity);
         const auto& Camera      = Registry.get<SCameraComponent>(Entity);
 
-        
-        PDI->DrawFrustum(Camera.GetViewProjectionMatrix(), 0.01f, 1000.0f, FColor::White, 4.0f);
-        PDI->DrawArrow(Transform.GetWorldLocation(), Transform.GetWorldRotation() * FVector3(0.0, 0.0, 1.0), 3.5f, FColor::Green, 4.0f);
+        // The component's cached ViewVolume is only refreshed at runtime by
+        // SCameraSystem, so in the editor it holds the construction-time default.
+        // Rebuild the view-projection from the entity's live transform. The camera's
+        // real far plane is effectively infinite, so clamp only the gizmo's far to a
+        // display-friendly distance -- this affects the drawing, never the camera.
+        constexpr float GizmoFar = 25.0f;
+        const FVector3 Location = Transform.GetWorldLocation();
+        const FQuat    Rotation = Transform.GetWorldRotation();
+        const FVector3 Forward  = Rotation * FViewVolume::ForwardAxis;
+        const FVector3 Up       = Rotation * FViewVolume::UpAxis;
+
+        FViewVolume Volume(Camera.GetFOV(), Camera.GetAspectRatio(), Camera.GetViewVolume().GetNear(), GizmoFar);
+        Volume.SetView(Location, Forward, Up);
+
+        // Reverse-Z Vulkan NDC: near plane is z=1, far plane is z=0.
+        PDI->DrawFrustum(Volume.GetViewProjectionMatrix(), 1.0f, 0.0f, FColor::White, 4.0f);
+        PDI->DrawArrow(Location, Forward, 3.5f, FColor::Green, 4.0f);
     }
 }

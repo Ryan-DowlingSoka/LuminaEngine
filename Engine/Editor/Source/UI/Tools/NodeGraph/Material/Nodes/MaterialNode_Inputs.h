@@ -13,19 +13,22 @@ namespace Lumina
         void BuildNode() override;
         FFixedString GetNodeCategory() const override { return "Inputs"; }
         FString GetNodeDisplayName() const override { return "TexCoords"; }
-        FString GetNodeTooltip() const override { return "Returns the mesh's UV coordinates from the given texcoord set, scaled by the tiling factors."; }
+        FString GetNodeTooltip() const override { return "Returns the mesh's UV coordinates from the given texcoord set, scaled by the tiling factors. Connect Tiling to drive the scale from another node; otherwise the UTiling/VTiling defaults are used."; }
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
 
+        /** Optional float2 tiling multiplier. Overrides UTiling/VTiling when connected. */
+        CMaterialInput* Tiling = nullptr;
+
         /** Index of the UV set to sample from the mesh. */
-        PROPERTY(Editable) 
+        PROPERTY(Editable)
         uint32 TextureIndex = 0;
 
-        /** Tiling multiplier applied to the U axis. */
-        PROPERTY(Editable) 
+        /** Default tiling multiplier applied to the U axis when the Tiling pin is unconnected. */
+        PROPERTY(Editable)
         float UTiling = 1.0f;
 
-        /** Tiling multiplier applied to the V axis. */
-        PROPERTY(Editable) 
+        /** Default tiling multiplier applied to the V axis when the Tiling pin is unconnected. */
+        PROPERTY(Editable)
         float VTiling = 1.0f;
     };
 
@@ -75,6 +78,32 @@ namespace Lumina
         FFixedString GetNodeCategory() const override { return "Inputs"; }
         FString GetNodeDisplayName() const override { return "CameraPosition"; }
         FString GetNodeTooltip() const override { return "Returns the world-space position of the active camera (float3)."; }
+        void GenerateDefinition(FMaterialCompiler& Compiler) override;
+    };
+
+    REFLECT()
+    class CMaterialExpression_ObjectScale : public CMaterialExpression
+    {
+        GENERATED_BODY()
+    public:
+        void BuildNode() override;
+        uint32 GetNodeTitleColor() const override { return IM_COL32(25, 25, 255, 255); }
+        FFixedString GetNodeCategory() const override { return "Inputs"; }
+        FString GetNodeDisplayName() const override { return "ObjectScale"; }
+        FString GetNodeTooltip() const override { return "Returns the world-space scale of the object being rendered (float3). Useful for keeping UV/texel density constant under non-uniform scaling."; }
+        void GenerateDefinition(FMaterialCompiler& Compiler) override;
+    };
+
+    REFLECT()
+    class CMaterialExpression_ObjectPosition : public CMaterialExpression
+    {
+        GENERATED_BODY()
+    public:
+        void BuildNode() override;
+        uint32 GetNodeTitleColor() const override { return IM_COL32(25, 25, 255, 255); }
+        FFixedString GetNodeCategory() const override { return "Inputs"; }
+        FString GetNodeDisplayName() const override { return "ObjectPosition"; }
+        FString GetNodeTooltip() const override { return "Returns the world-space position of the object's origin (float3)."; }
         void GenerateDefinition(FMaterialCompiler& Compiler) override;
     };
 

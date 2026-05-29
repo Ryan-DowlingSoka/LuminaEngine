@@ -409,8 +409,21 @@ namespace Lumina
         // registry arg, so scripts operating on ids they spawned (not `self`) never reach
         // into self._Registry. Locations are WORLD-space, matching World.GetLocation.
         static entt::entity World_Duplicate(CWorld* World, entt::entity Entity)           { return World ? ECS::Utils::DuplicateEntity(World->GetEntityRegistry(), Entity) : entt::null; }
+
+        // Bulk-spawn helper: wrap a spawn/duplicate loop in BeginPhysicsBatch/EndPhysicsBatch so the
+        // N new rigid bodies are inserted into the broadphase in a single batched pass (parallel
+        // settings build + one AddBodiesPrepare/Finalize) instead of N individual AddBody calls.
+        // Must be balanced on the game thread; BodyIDs are only valid after EndPhysicsBatch.
+        static void World_BeginPhysicsBatch(CWorld* World) { if (World && World->GetPhysicsScene()) World->GetPhysicsScene()->BeginBodyBatch(); }
+        static void World_EndPhysicsBatch(CWorld* World)   { if (World && World->GetPhysicsScene()) World->GetPhysicsScene()->EndBodyBatch();   }
         static void         World_Destroy(CWorld* World, entt::entity Entity)             { if (World) ECS::Utils::DestroyEntity(World->GetEntityRegistry(), Entity); }
         static bool         World_IsValid(CWorld* World, entt::entity Entity)             { return World && ECS::Utils::IsEntityValid(World->GetEntityRegistry(), Entity); }
+
+        // Removes the tombstone holes that destroyed entities leave in every component pool
+        // (reflected components are in_place_delete for pointer stability). Compaction reorders
+        // elements, so it invalidates any cached raw component pointer -- only call it at a quiet
+        // point (e.g. after a big batch of Destroy calls), never mid-iteration.
+        static void         World_Compact(CWorld* World)                                 { if (World) World->GetEntityRegistry().compact(); }
 
         static FVector3     World_GetLocation(CWorld* World, entt::entity Entity)         { return World ? ECS::Utils::GetEntityLocation(World->GetEntityRegistry(), Entity) : FVector3{}; }
         static FQuat        World_GetRotation(CWorld* World, entt::entity Entity)         { return World ? ECS::Utils::GetEntityRotation(World->GetEntityRegistry(), Entity) : FQuat{}; }
@@ -670,8 +683,11 @@ namespace Lumina
         WorldTable.SetFunction<&LuaBinds::World_SpawnPrefab>("SpawnPrefab");        // SpawnPrefab(path) -> entity
         WorldTable.SetFunction<&LuaBinds::World_SpawnPrefabAt>("SpawnPrefabAt");    // SpawnPrefabAt(path, location) -> entity
         WorldTable.SetFunction<&LuaBinds::World_Duplicate>("Duplicate");            // Duplicate(entity) -> entity
+        WorldTable.SetFunction<&LuaBinds::World_BeginPhysicsBatch>("BeginPhysicsBatch"); // wrap a bulk spawn loop; batches body creation
+        WorldTable.SetFunction<&LuaBinds::World_EndPhysicsBatch>("EndPhysicsBatch");      // must be paired with BeginPhysicsBatch
         WorldTable.SetFunction<&LuaBinds::World_Destroy>("Destroy");                // Destroy(entity)
         WorldTable.SetFunction<&LuaBinds::World_IsValid>("IsValid");                // IsValid(entity) -> bool
+        WorldTable.SetFunction<&LuaBinds::World_Compact>("Compact");                // Compact() -- reclaim tombstones; invalidates cached component ptrs
         WorldTable.SetFunction<&LuaBinds::World_GetLocation>("GetLocation");        // GetLocation(entity) -> vector (world)
         WorldTable.SetFunction<&LuaBinds::World_SetLocation>("SetLocation");        // SetLocation(entity, vector) (world)
         WorldTable.SetFunction<&LuaBinds::World_Translate>("Translate");            // Translate(entity, delta) -> vector
@@ -771,6 +787,11 @@ namespace Lumina
         // Re-apply prefab asset state to any prefab instances that were serialized into this world.
         // Keeps placed instances in sync with their source prefab whenever the prefab is edited.
         CPrefab::RefreshAllInstancesInWorld(this);
+
+        // Compact once the load-time structural churn (deserialized tombstones + prefab refresh
+        // adds/removes) has settled, so the world starts dense. Done before any on_construct hook
+        // is connected; compaction reorders elements but nothing here holds a component pointer.
+        EntityRegistry.compact();
 
         EntityRegistry.ctx().emplace<entt::dispatcher&>(SingletonDispatcher);
         

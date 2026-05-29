@@ -19,11 +19,13 @@ function Script:OnReady()
         return
     end
 
+	World.BeginPhysicsBatch()
     for _ = 1, self.Count do
         local New = World.Duplicate(Template)
         World.SetLocation(New, Random.InSphere(self.Radius))
         table.insert(Entities, New)
     end
+    World.EndPhysicsBatch()
 end
 
 function Script:OnUpdate(DeltaTime: number)

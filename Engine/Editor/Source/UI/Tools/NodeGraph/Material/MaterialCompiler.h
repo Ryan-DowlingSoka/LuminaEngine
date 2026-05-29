@@ -175,7 +175,7 @@ namespace Lumina
         void VertexTangent(const FString& ID, CMaterialGraphNode* Node = nullptr);
         void VertexBitangent(const FString& ID, CMaterialGraphNode* Node = nullptr);
         void VertexColor(const FString& ID, CMaterialGraphNode* Node = nullptr);
-        void TexCoords(const FString& ID, uint32 Index, float UTiling, float VTiling);
+        void TexCoords(const FString& ID, uint32 Index, CMaterialInput* Tiling, float UTiling, float VTiling);
         void Panner(CMaterialInput* UV, CMaterialInput* Time, CMaterialInput* Speed);
         void RotateUV(CMaterialInput* UV, CMaterialInput* Center, CMaterialInput* Rotation);
         void TilingAndOffset(CMaterialInput* UV, CMaterialInput* Tiling, CMaterialInput* Offset);
@@ -184,6 +184,8 @@ namespace Lumina
         void TwirlUV(CMaterialInput* UV, CMaterialInput* Center, CMaterialInput* Strength);
         void WorldPos(const FString& ID, CMaterialGraphNode* Node = nullptr);
         void CameraPos(const FString& ID, CMaterialGraphNode* Node = nullptr);
+        void ObjectScale(const FString& ID, CMaterialGraphNode* Node = nullptr);
+        void ObjectPosition(const FString& ID, CMaterialGraphNode* Node = nullptr);
         void EntityID(const FString& ID);
         void Time(const FString& ID);
         void ScreenPosition(const FString& ID, bool bRaw);

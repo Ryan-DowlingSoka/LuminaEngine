@@ -3,6 +3,7 @@
 #include <Core/Console/ConsoleVariable.h>
 
 #include <algorithm>
+#include <cstring>
 #include "JoltPhysicsScene.h"
 #include "Core/Threading/Thread.h"
 #include "Jolt/RegisterTypes.h"
@@ -12,6 +13,12 @@
 #include "World/World.h"
 
 static_assert(sizeof(JPH::ObjectLayer) == 4);
+
+#if defined(LE_PLATFORM_WINDOWS)
+extern "C" __declspec(dllimport) int __stdcall IsDebuggerPresent();
+#else
+static int IsDebuggerPresent() { return 0; }
+#endif
 
 namespace Lumina::Physics
 {
@@ -67,7 +74,7 @@ namespace Lumina::Physics
         });
     #endif
     
-    #if JPH_ASSERT
+    #ifdef JPH_ENABLE_ASSERTS
     static void JoltTraceCallback(const char* format, ...)
     {
         va_list list;
@@ -115,12 +122,27 @@ namespace Lumina::Physics
     static bool JoltAssertionFailed(const char* expr, const char* msg, const char* file, uint32 line)
     {
         LOG_CRITICAL("JOLT ASSERT FAILED: Message {}, File: {} - {}", expr, msg, file, line);
-        return true;
+
+        // The physics-update error assert (contact / body-pair / manifold cache overflow) is
+        // recoverable: Jolt drops the excess contacts and returns the error, which CheckJoltError
+        // logs. It is a content-driven condition, not an engine bug, so never break on it -- not
+        // even under a debugger.
+        if (expr != nullptr && std::strstr(expr, "EPhysicsUpdateError") != nullptr)
+        {
+            return false;
+        }
+
+        // Any other assert is a genuine bug: break only when a debugger is attached, otherwise
+        // log and continue so a standalone run does not hard-crash on STATUS_BREAKPOINT.
+        return ::IsDebuggerPresent() != 0;
     }
 
     void FJoltPhysicsContext::Initialize()
     {
-        #if JPH_ASSERT
+        // NOTE: must be JPH_ENABLE_ASSERTS, not JPH_ASSERT. JPH_ASSERT is a function-like macro,
+        // so `#if JPH_ASSERT` evaluates to 0 and this block never compiled in -- the handler below
+        // was never installed and Jolt's default (always-break) handler ran instead.
+        #ifdef JPH_ENABLE_ASSERTS
         JPH::Trace              = JoltTraceCallback;
         JPH::AssertFailed       = JoltAssertionFailed;
         #endif

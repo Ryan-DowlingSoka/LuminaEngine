@@ -37,13 +37,19 @@ namespace Lumina
     void CMaterialExpression_TexCoords::BuildNode()
     {
         CMaterialExpression::BuildNode();
+
+        Tiling = Cast<CMaterialInput>(CreatePin(CMaterialInput::StaticClass(), "Tiling", ENodePinDirection::Input));
+        Tiling->SetHideDuringConnection(false);
+        Tiling->SetPinName("Tiling");
+        Tiling->SetInputType(EMaterialInputType::Float2);
+
         Output->SetInputType(EMaterialInputType::Float2);
         Output->SetComponentMask(EComponentMask::RG);
     }
 
     void CMaterialExpression_TexCoords::GenerateDefinition(FMaterialCompiler& Compiler)
     {
-        Compiler.TexCoords(FullName, TextureIndex, UTiling, VTiling);
+        Compiler.TexCoords(FullName, TextureIndex, Tiling, UTiling, VTiling);
     }
 
     void CMaterialExpression_WorldPos::BuildNode()
@@ -61,6 +67,22 @@ namespace Lumina
         Output->SetComponentMask(EComponentMask::RGB);
     }
     void CMaterialExpression_CameraPos::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.CameraPos(FullName, this); }
+
+    void CMaterialExpression_ObjectScale::BuildNode()
+    {
+        Super::BuildNode();
+        Output->SetInputType(EMaterialInputType::Float3);
+        Output->SetComponentMask(EComponentMask::RGB);
+    }
+    void CMaterialExpression_ObjectScale::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.ObjectScale(FullName, this); }
+
+    void CMaterialExpression_ObjectPosition::BuildNode()
+    {
+        Super::BuildNode();
+        Output->SetInputType(EMaterialInputType::Float3);
+        Output->SetComponentMask(EComponentMask::RGB);
+    }
+    void CMaterialExpression_ObjectPosition::GenerateDefinition(FMaterialCompiler& Compiler) { Compiler.ObjectPosition(FullName, this); }
 
     void CMaterialExpression_EntityID::BuildNode()
     {
