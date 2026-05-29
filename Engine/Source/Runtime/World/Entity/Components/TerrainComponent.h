@@ -15,7 +15,7 @@ namespace Lumina
         GENERATED_BODY()
 
         /** World-space tiling applied to the layer's albedo/normal sampling. */
-        PROPERTY(Editable, Category = "Terrain Layer", ClampMin = 0.01f)
+        PROPERTY(Editable, Category = "Terrain Layer", ClampMin = 0.01f, NoDrag, Delta = 0.1f)
         float UVScale = 1.0f;
 
         /** Optional human-readable label shown in the paint tool. */
@@ -23,37 +23,21 @@ namespace Lumina
         FString Name;
     };
 
-    /** Transient GPU state; not serialized, rebuilt on load and on dirty regions. */
-    struct FTerrainGPUState
+    /**
+     * Game-thread-owned CPU mirror + dirty tracking. Mutated only on the game
+     * thread (sculpt/paint, resolution edits, Extract prep). The render thread
+     * never touches this directly; Extract snapshots the dirty bytes into the
+     * per-frame FTerrainExtract so the renderer reads a private copy.
+     */
+    struct FTerrainCPUState
     {
-        /** R32_FLOAT mirror of CPU Heightmap. */
-        FRHIImageRef    HeightmapTexture;
-
-        /** RG16_SNORM XY slope; derived on GPU. */
-        FRHIImageRef    NormalTexture;
-
-        /** R8_UNORM array, one slice per layer. */
-        FRHIImageRef    LayerWeightTexture;
-
-        FRHIBufferRef   ChunkInfoBuffer;
-        FRHIBufferRef   MeshletInfoBuffer;
-        FRHIBufferRef   VisibleMeshletBuffer;
-
-        /** Single FDrawIndirectArguments slot; cull atomic-increments InstanceCount. */
-        FRHIBufferRef   IndirectDrawBuffer;
-
-        uint32  AllocatedResolution = 0;
-        uint32  AllocatedLayerCount = 0;
-        uint32  AllocatedChunkCount = 0;
-        uint32  AllocatedMeshletCount = 0;
-
         bool    bFullHeightmapDirty = true;
         bool    bFullWeightsDirty   = true;
 
-        /** Chunk + meshlet metadata buffers need rebuild before next cull. */
+        /** Chunk + meshlet metadata need a rebuild before the next cull. */
         bool    bChunksDirty = true;
 
-        /** Inclusive dirty rects awaiting partial upload. */
+        /** Inclusive dirty rects awaiting upload. */
         FIntVector2  HeightDirtyMin = FIntVector2(INT32_MAX);
         FIntVector2  HeightDirtyMax = FIntVector2(INT32_MIN);
 
@@ -61,6 +45,12 @@ namespace Lumina
         FIntVector2  WeightDirtyMax = FIntVector2(INT32_MIN);
         uint32      WeightDirtyLayerMask = 0u;
 
+        /** Dimensions last handed to the renderer; a mismatch is a structural change. */
+        int32   PreparedResolution      = 0;
+        int32   PreparedChunkResolution = 0;
+        int32   PreparedLayerCount      = -1;
+
+        /** CPU mirror of the per-chunk/meshlet metadata; partial edits re-bound in place. */
         TVector<FTerrainChunkInfo>      Chunks;
         TVector<FTerrainMeshletInfo>    Meshlets;
     };
@@ -101,7 +91,10 @@ namespace Lumina
                 MaxHeight       = Other.MaxHeight;
                 bCastShadow     = Other.bCastShadow;
                 bReceiveShadow  = Other.bReceiveShadow;
-                GPUState        = FTerrainGPUState{};
+                // Transient CPU mirror state never carries across a copy; the assigned-to
+                // terrain rebuilds from its fresh CPU data (and the render scene allocates
+                // its own GPU state keyed by the new entity).
+                CPUState        = FTerrainCPUState{};
             }
             return *this;
         }
@@ -126,18 +119,18 @@ namespace Lumina
         TObjectPtr<CMaterialInterface> Material;
 
         /** Must be (pow2 + 1) for clean chunking (513, 1025). */
-        PROPERTY(Editable, Category = "Terrain|Layout", ClampMin = 33)
+        PROPERTY(Editable, Category = "Terrain|Layout", ClampMin = 33, NoDrag, Delta = 32)
         int32 Resolution = 513;
 
         /** Cull/draw dispatch unit. */
-        PROPERTY(Editable, Category = "Terrain|Layout", ClampMin = 16)
+        PROPERTY(Editable, Category = "Terrain|Layout", ClampMin = 16, NoDrag, Delta = 16)
         int32 ChunkResolution = 64;
 
-        PROPERTY(Editable, Category = "Terrain|Layout", ClampMin = 1.0f)
+        PROPERTY(Editable, Category = "Terrain|Layout", ClampMin = 1.0f, NoDrag, Delta = 64.0f)
         float TileWorldSize = 4096.0f;
 
         /** World displacement at heightmap sample == 1.0. */
-        PROPERTY(Editable, Category = "Terrain|Layout", ClampMin = 0.0f)
+        PROPERTY(Editable, Category = "Terrain|Layout", ClampMin = 0.0f, NoDrag, Delta = 8.0f)
         float MaxHeight = 256.0f;
 
         PROPERTY(Editable, Category = "Terrain|Shadows")
@@ -146,29 +139,25 @@ namespace Lumina
         PROPERTY(Editable, Category = "Terrain|Shadows")
         bool bReceiveShadow = true;
 
-        /** Transient; populated on first simulate tick. */
-        FTerrainGPUState GPUState;
-
-        bool NeedsReallocation() const
-        {
-            const uint32 ExpectedLayers = (uint32)std::max<size_t>(Layers.size(), 1u);
-            return GPUState.AllocatedResolution != (uint32)Resolution
-                || GPUState.AllocatedLayerCount  != ExpectedLayers;
-        }
+        /**
+         * Game-thread-owned CPU mirror + dirty tracking; transient. The matching GPU
+         * resources are render-owned in FForwardRenderScene::TerrainGPUStates, keyed by entity.
+         */
+        FTerrainCPUState CPUState;
 
         void MarkHeightDirty(const FIntVector2& Min, const FIntVector2& Max)
         {
-            GPUState.HeightDirtyMin = Math::Min(GPUState.HeightDirtyMin, Min);
-            GPUState.HeightDirtyMax = Math::Max(GPUState.HeightDirtyMax, Max);
+            CPUState.HeightDirtyMin = Math::Min(CPUState.HeightDirtyMin, Min);
+            CPUState.HeightDirtyMax = Math::Max(CPUState.HeightDirtyMax, Max);
             // Heights drive chunk/meshlet bounds; cull must test against fresh geometry.
-            GPUState.bChunksDirty = true;
+            CPUState.bChunksDirty = true;
         }
 
         void MarkWeightsDirty(uint32 LayerIndex, const FIntVector2& Min, const FIntVector2& Max)
         {
-            GPUState.WeightDirtyMin = Math::Min(GPUState.WeightDirtyMin, Min);
-            GPUState.WeightDirtyMax = Math::Max(GPUState.WeightDirtyMax, Max);
-            GPUState.WeightDirtyLayerMask |= (1u << LayerIndex);
+            CPUState.WeightDirtyMin = Math::Min(CPUState.WeightDirtyMin, Min);
+            CPUState.WeightDirtyMax = Math::Max(CPUState.WeightDirtyMax, Max);
+            CPUState.WeightDirtyLayerMask |= (1u << LayerIndex);
         }
     };
 }

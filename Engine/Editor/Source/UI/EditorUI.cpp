@@ -454,6 +454,11 @@ namespace Lumina
         WorldEditorTool = CreateTool<FWorldEditorTool>(this, NewObject<CWorld>(nullptr, "Transient World", FGuid::New(), OF_Transient));
         ConsoleLogTool = CreateTool<FConsoleLogEditorTool>(this);
         ContentBrowser = CreateTool<FContentBrowserEditorTool>(this);
+
+        // Footer drawers: Content Browser (Ctrl+Space, UE-style) and Output Log.
+        // They start undocked, living in the bottom status bar instead of a dock split.
+        FooterDrawers.push_back({ ContentBrowser, LE_ICON_FOLDER,       "Content Browser", ImGuiMod_Ctrl | ImGuiKey_Space });
+        FooterDrawers.push_back({ ConsoleLogTool, LE_ICON_CONSOLE_LINE, "Output Log",       ImGuiMod_Ctrl | ImGuiKey_J });
         
         if (GEditorEngine->GetProjectName().empty())
         {
@@ -506,9 +511,17 @@ namespace Lumina
             DrawTitleBarInfoStats(UpdateContext);
         };
 
-        TitleBar.Draw(TitleBarLeftContents, 400, TitleBarRightContents, 230);
-        
-        const ImGuiID DockspaceID = ImGui::GetID("EditorDockSpace");
+        const float TitleBarScale = ImGuiX::GetUIScale();
+        TitleBar.Draw(TitleBarLeftContents, 400 * TitleBarScale, TitleBarRightContents, 230 * TitleBarScale);
+
+        // Reserve the bottom status bar before the dockspace reads the viewport work area.
+        DrawStatusBar(UpdateContext);
+
+        // "V2": renamed from "EditorDockSpace" so saved layouts from before the footer
+        // drawers (which had a permanent bottom split for Content/Console) are orphaned
+        // and rebuilt fresh with the world editor filling the dockspace.
+        const ImGuiID DockspaceID = ImGui::GetID("EditorDockSpaceV2");
+        MainDockspaceID = DockspaceID;
 
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->WorkPos);
@@ -529,15 +542,11 @@ namespace Lumina
             {
                 ImGui::DockBuilderAddNode(DockspaceID, ImGuiDockNodeFlags_DockSpace);
                 ImGui::DockBuilderSetNodeSize(DockspaceID, ImGui::GetContentRegionAvail());
-
-                ImGuiID TopDockID = 0, BottomDockID = 0;
-                ImGui::DockBuilderSplitNode(DockspaceID, ImGuiDir_Down, 0.3f, &BottomDockID, &TopDockID);
-                
                 ImGui::DockBuilderFinish(DockspaceID);
 
-                ImGui::DockBuilderDockWindow(WorldEditorTool->GetToolName().c_str(), TopDockID);
-                ImGui::DockBuilderDockWindow(ContentBrowser->GetToolName().c_str(), BottomDockID);
-                ImGui::DockBuilderDockWindow(ConsoleLogTool->GetToolName().c_str(), BottomDockID);
+                // World editor fills the whole dockspace; the Content Browser and Output
+                // Log default to footer drawers rather than eating a permanent bottom split.
+                ImGui::DockBuilderDockWindow(WorldEditorTool->GetToolName().c_str(), DockspaceID);
             }
 
             // Create the actual dock space
@@ -626,9 +635,17 @@ namespace Lumina
         }
         
         FEditorTool* ToolToClose = nullptr;
-        
+
         for (FEditorTool* Tool : EditorTools)
         {
+            // Undocked drawer tools render in the footer drawer, not the dock layout;
+            // still tick them so their per-frame logic keeps running.
+            if (FFooterDrawer* Drawer = FindDrawerForTool(Tool); Drawer != nullptr && !Drawer->bDocked)
+            {
+                Tool->Update(UpdateContext);
+                continue;
+            }
+
             if (!SubmitToolMainWindow(UpdateContext, Tool, DockspaceID))
             {
                 ToolToClose = Tool;
@@ -641,8 +658,24 @@ namespace Lumina
             {
                 continue;
             }
-            
+
+            if (FFooterDrawer* Drawer = FindDrawerForTool(Tool); Drawer != nullptr && !Drawer->bDocked)
+            {
+                continue;
+            }
+
             DrawToolContents(UpdateContext, Tool);
+        }
+
+        // A docked drawer tool closed via its tab returns to drawer mode instead of
+        // being destroyed.
+        if (ToolToClose)
+        {
+            if (FFooterDrawer* Drawer = FindDrawerForTool(ToolToClose); Drawer != nullptr)
+            {
+                Drawer->bDocked = false;
+                ToolToClose = nullptr;
+            }
         }
 
         
@@ -667,6 +700,8 @@ namespace Lumina
             EditorTools.push_back(NewTool);
         }
         
+        DrawFooterDrawer(UpdateContext);
+
         ModalManager.DrawDialogue();
 
         // Run any dialog queued by the previous frame's modal (e.g. Open →
@@ -986,6 +1021,226 @@ namespace Lumina
         }
     }
 
+    FEditorUI::FFooterDrawer* FEditorUI::FindDrawerForTool(const FEditorTool* Tool)
+    {
+        for (FFooterDrawer& Drawer : FooterDrawers)
+        {
+            if (Drawer.Tool == Tool)
+            {
+                return &Drawer;
+            }
+        }
+        return nullptr;
+    }
+
+    void FEditorUI::ActivateDrawer(FFooterDrawer& Drawer)
+    {
+        bDrawerActivatedThisFrame = true;
+
+        // Already pinned into the layout — just focus its tab instead of opening a drawer.
+        if (Drawer.bDocked)
+        {
+            FocusTargetWindowName = Drawer.Tool->GetToolName().c_str();
+            return;
+        }
+
+        const bool bWasOpen = (OpenDrawer == Drawer.Tool);
+        OpenDrawer = bWasOpen ? nullptr : Drawer.Tool;
+        if (!bWasOpen)
+        {
+            DrawerOpenAmount = 0.0f;   // restart the slide
+        }
+    }
+
+    void FEditorUI::DrawStatusBar(const FUpdateContext& UpdateContext)
+    {
+        bDrawerActivatedThisFrame = false;
+
+        // Global drawer shortcuts (suppressed while typing into a text field).
+        if (!ImGui::GetIO().WantTextInput)
+        {
+            for (FFooterDrawer& Drawer : FooterDrawers)
+            {
+                if (Drawer.Shortcut != 0 && ImGui::IsKeyChordPressed(Drawer.Shortcut))
+                {
+                    ActivateDrawer(Drawer);
+                }
+            }
+        }
+
+        const float Scale = ImGuiX::GetUIScale();
+        const float BarHeight = ImGui::GetFrameHeight() + 6.0f * Scale;
+
+        ImGuiViewport* Viewport = ImGui::GetMainViewport();
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f * Scale, 2.0f * Scale));
+        if (ImGui::BeginViewportSideBar("##EditorStatusBar", Viewport, ImGuiDir_Down, BarHeight,
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNav))
+        {
+            for (FFooterDrawer& Drawer : FooterDrawers)
+            {
+                const bool bActive = (OpenDrawer == Drawer.Tool) || Drawer.bDocked;
+                if (bActive)
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                }
+
+                const FFixedString Label(FFixedString::CtorSprintf(), "%s  %s", Drawer.Icon, Drawer.Label);
+                // Trigger on press, not release: the drawer's auto-dismiss runs on mouse-down,
+                // so a release-triggered toggle would re-open a drawer the press just closed.
+                if (ImGui::ButtonEx(Label.c_str(), ImVec2(0, 0), ImGuiButtonFlags_PressedOnClick))
+                {
+                    ActivateDrawer(Drawer);
+                }
+
+                if (bActive)
+                {
+                    ImGui::PopStyleColor();
+                }
+
+                if (ImGui::IsItemHovered())
+                {
+                    ImGui::SetTooltip("%s%s", Drawer.bDocked ? "Focus " : "Toggle ", Drawer.Label);
+                }
+
+                ImGui::SameLine();
+            }
+        }
+        ImGui::End();
+        ImGui::PopStyleVar();
+    }
+
+    void FEditorUI::DrawFooterDrawer(const FUpdateContext& UpdateContext)
+    {
+        if (OpenDrawer == nullptr)
+        {
+            DrawerOpenAmount = 0.0f;
+            return;
+        }
+
+        // Ease the slide toward fully open.
+        DrawerOpenAmount = eastl::min(1.0f, DrawerOpenAmount + static_cast<float>(UpdateContext.GetDeltaTime()) * 8.0f);
+        const float Eased = DrawerOpenAmount * DrawerOpenAmount * (3.0f - 2.0f * DrawerOpenAmount); // smoothstep
+
+        const float Scale = ImGuiX::GetUIScale();
+        ImGuiViewport* Viewport = ImGui::GetMainViewport();
+        FFooterDrawer* Drawer = FindDrawerForTool(OpenDrawer);
+
+        // WorkPos/WorkSize already exclude the title bar and status bar, so the bottom of
+        // the work area sits just above the status bar — exactly where the drawer anchors.
+        const float MaxHeight = Viewport->WorkSize.y * (Drawer ? Drawer->HeightFrac : 0.4f);
+        const float Height    = MaxHeight * Eased;
+        const ImVec2 DrawerPos(Viewport->WorkPos.x, Viewport->WorkPos.y + Viewport->WorkSize.y - Height);
+        const ImVec2 DrawerSize(Viewport->WorkSize.x, Height);
+
+        ImGui::SetNextWindowPos(DrawerPos);
+        ImGui::SetNextWindowSize(DrawerSize);
+        ImGui::SetNextWindowViewport(Viewport->ID);
+        ImGui::SetNextWindowBgAlpha(1.0f);
+        if (bDrawerActivatedThisFrame)
+        {
+            ImGui::SetNextWindowFocus();
+        }
+
+        constexpr ImGuiWindowFlags Flags =
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+        ImGui::Begin("##EditorFooterDrawer", nullptr, Flags);
+
+        const bool bFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+
+        // Top-edge resize handle: drawer is bottom-anchored, so dragging up grows it.
+        // Only active once fully open so it doesn't fight the slide-in animation.
+        if (Drawer != nullptr && DrawerOpenAmount >= 1.0f)
+        {
+            const float HandleH = 5.0f * Scale;
+            ImGui::SetCursorPos(ImVec2(0.0f, 0.0f));
+            ImGui::InvisibleButton("##DrawerResize", ImVec2(ImGui::GetWindowWidth(), HandleH));
+            const bool bHandleHovered = ImGui::IsItemHovered();
+            const bool bHandleActive  = ImGui::IsItemActive();
+            if (bHandleHovered || bHandleActive)
+            {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+            }
+            if (bHandleActive)
+            {
+                const float DeltaFrac = -ImGui::GetIO().MouseDelta.y / eastl::max(1.0f, Viewport->WorkSize.y);
+                Drawer->HeightFrac = eastl::clamp(Drawer->HeightFrac + DeltaFrac, 0.15f, 0.85f);
+            }
+
+            const ImVec2 WinMin = ImGui::GetWindowPos();
+            const ImU32 HandleCol = ImGui::GetColorU32(bHandleActive ? ImGuiCol_SeparatorActive
+                : bHandleHovered ? ImGuiCol_SeparatorHovered : ImGuiCol_Border);
+            ImGui::GetWindowDrawList()->AddLine(WinMin, ImVec2(WinMin.x + ImGui::GetWindowWidth(), WinMin.y), HandleCol, 2.0f);
+        }
+
+        // Toolbar: a child with a menu bar so the tool's own settings (DrawMainToolbar /
+        // DrawToolMenu — e.g. the Output Log's Filter/Settings) show exactly as when docked,
+        // plus Dock-in-Layout + close on the right.
+        const ImGuiStyle& Style = ImGui::GetStyle();
+        const float ToolbarHeight = ImGui::GetFrameHeight() + Style.FramePadding.y * 2.0f;
+        if (ImGui::BeginChild("##DrawerToolbar", ImVec2(0.0f, ToolbarHeight), false, ImGuiWindowFlags_MenuBar))
+        {
+            if (ImGui::BeginMenuBar())
+            {
+                if (Drawer != nullptr)
+                {
+                    ImGui::TextUnformatted(Drawer->Icon);
+                    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+                }
+
+                if (OpenDrawer != nullptr)
+                {
+                    OpenDrawer->DrawMainToolbar(UpdateContext);
+                }
+
+                const char* DockLabel = LE_ICON_DOCK_BOTTOM " Dock";
+                const float DockWidth  = ImGui::CalcTextSize(DockLabel).x + Style.FramePadding.x * 2.0f;
+                const float CloseWidth = ImGui::CalcTextSize(LE_ICON_CLOSE).x + Style.FramePadding.x * 2.0f;
+                ImGui::SameLine();
+                const float RightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+                ImGui::SetCursorPosX(RightEdgeX - DockWidth - CloseWidth - Style.ItemSpacing.x);
+
+                if (ImGui::MenuItem(DockLabel) && Drawer != nullptr)
+                {
+                    Drawer->bDocked = true;
+                    Drawer->Tool->DesiredDockID = MainDockspaceID;   // FEditorUI is a friend of FEditorTool
+                    FocusTargetWindowName = Drawer->Tool->GetToolName().c_str();
+                    OpenDrawer = nullptr;
+                }
+                ImGuiX::TextTooltip("Dock this panel into the main layout");
+
+                if (ImGui::MenuItem(LE_ICON_CLOSE))
+                {
+                    OpenDrawer = nullptr;
+                }
+
+                ImGui::EndMenuBar();
+            }
+        }
+        ImGui::EndChild();
+
+        if (OpenDrawer != nullptr)
+        {
+            OpenDrawer->DrawDrawerContent(bFocused);
+        }
+
+        ImGui::End();
+        ImGui::PopStyleVar();
+
+        // Auto-dismiss on focus loss (click outside), unless a footer button / shortcut
+        // toggled it this frame, or one of the drawer's own menus/context popups is open
+        // (those read as a separate focused window).
+        const bool bPopupOpen = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup);
+        if (!bFocused && !bPopupOpen && !bDrawerActivatedThisFrame && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        {
+            OpenDrawer = nullptr;
+            DrawerOpenAmount = 0.0f;
+        }
+    }
+
     bool FEditorUI::SubmitToolMainWindow(const FUpdateContext& UpdateContext, FEditorTool* EditorTool, ImGuiID TopLevelDockspaceID)
     {
         LUMINA_PROFILE_SCOPE();
@@ -993,7 +1248,9 @@ namespace Lumina
         ASSERT(TopLevelDockspaceID != 0);
 
         bool bIsToolStillOpen = true;
-        bool* bIsToolOpen = (EditorTool == WorldEditorTool || EditorTool == ContentBrowser || EditorTool == ConsoleLogTool) ? nullptr : &bIsToolStillOpen; // Prevent closing the map-editor editor tool
+        // The world editor can never be closed. Drawer tools (Content Browser / Output
+        // Log) are closable while docked — closing sends them back to the footer drawer.
+        bool* bIsToolOpen = (EditorTool == WorldEditorTool) ? nullptr : &bIsToolStillOpen;
         
         // Top level editors can only be docked with each others
         ImGui::SetNextWindowClass(&EditorWindowClass);

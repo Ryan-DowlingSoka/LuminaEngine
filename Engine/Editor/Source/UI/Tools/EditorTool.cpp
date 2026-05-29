@@ -207,6 +207,17 @@ namespace Lumina
         DrawSkeletonDebug();
     }
 
+    void FEditorTool::DrawDrawerContent(bool bFocused)
+    {
+        for (const TUniquePtr<FToolWindow>& Window : ToolWindows)
+        {
+            if (Window && Window->DrawFunction)
+            {
+                Window->DrawFunction(bFocused);
+            }
+        }
+    }
+
     void FEditorTool::DrawSkeletonDebug()
     {
         if (World == nullptr || !CVarDrawSkeletons.GetValue())

@@ -52,6 +52,13 @@ namespace Lumina
             .WithRange(0.001, 10.0)
             .WithOwnerFile(EditorFile));
 
+        GConfig->RegisterSetting(FConfigSetting::Make("Editor.UIScale", EConfigValueType::Float)
+            .WithCategory("Editor/General")
+            .WithDescription("Editor UI scale. 0 = auto (monitor DPI + resolution); otherwise an explicit factor (e.g. 1.0 = 100%).")
+            .WithDefault(0.0f)
+            .WithRange(0.0, 3.0)
+            .WithOwnerFile(EditorFile));
+
         GConfig->RegisterSetting(FConfigSetting::Make("Editor.ContentBrowser.TileSize", EConfigValueType::Float)
             .WithCategory("Editor/Content Browser")
             .WithDescription("Pixel size of asset tiles in the content browser")

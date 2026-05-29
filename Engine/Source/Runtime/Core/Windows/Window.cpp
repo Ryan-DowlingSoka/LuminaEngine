@@ -302,6 +302,28 @@ namespace Lumina
 		return GetExtent().x;
 	}
 
+	float FWindow::GetContentScale() const
+	{
+		float XScale = 1.0f;
+		float YScale = 1.0f;
+		glfwGetWindowContentScale(Impl->Window, &XScale, &YScale);
+		return std::max(XScale, YScale);
+	}
+
+	FUIntVector2 FWindow::GetMonitorResolution() const
+	{
+		GLFWmonitor* Monitor = GetCurrentMonitor(Impl->Window);
+		if (Monitor == nullptr)
+		{
+			Monitor = glfwGetPrimaryMonitor();
+		}
+		if (const GLFWvidmode* Mode = glfwGetVideoMode(Monitor))
+		{
+			return FUIntVector2(Mode->width, Mode->height);
+		}
+		return FUIntVector2(1920, 1080);
+	}
+
 	uint32 FWindow::GetHeight() const
 	{
 		return GetExtent().y;

@@ -107,7 +107,7 @@ namespace Lumina::TerrainMeshletBuilder
         }
 
         // Recompute one chunk's AABB from the heightmap by rebuilding all its meshlets.
-        void RebuildChunk(FTerrainGPUState& State, int32 cx, int32 cy, const TVector<float>& Heightmap, const FLayout& L)
+        void RebuildChunk(FTerrainCPUState& State, int32 cx, int32 cy, const TVector<float>& Heightmap, const FLayout& L)
         {
             const int32 ChunkIndex = cy * L.ChunksPerSide + cx;
             FTerrainChunkInfo& Chunk = State.Chunks[ChunkIndex];
@@ -154,7 +154,7 @@ namespace Lumina::TerrainMeshletBuilder
 
     void Build(STerrainComponent& Terrain, const FVector3& WorldOrigin)
     {
-        FTerrainGPUState& State = Terrain.GPUState;
+        FTerrainCPUState& State = Terrain.CPUState;
         State.Chunks.clear();
         State.Meshlets.clear();
 
@@ -179,7 +179,7 @@ namespace Lumina::TerrainMeshletBuilder
 
     void UpdateRegion(STerrainComponent& Terrain, const FVector3& WorldOrigin, const FIntVector2& SampleMin, const FIntVector2& SampleMax)
     {
-        FTerrainGPUState& State = Terrain.GPUState;
+        FTerrainCPUState& State = Terrain.CPUState;
 
         FLayout L;
         if (!ComputeLayout(Terrain, WorldOrigin, L))

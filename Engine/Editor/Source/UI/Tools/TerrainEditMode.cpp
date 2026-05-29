@@ -88,8 +88,8 @@ namespace Lumina
         }
 
         Terrain.LayerWeights.assign(N * Terrain.Layers.size(), uint8(0));
-        Terrain.GPUState.bFullHeightmapDirty = true;
-        Terrain.GPUState.bFullWeightsDirty   = true;
+        Terrain.CPUState.bFullHeightmapDirty = true;
+        Terrain.CPUState.bFullWeightsDirty   = true;
         return Entity;
     }
 
@@ -285,7 +285,7 @@ namespace Lumina
                 L.Name.sprintf("Layer%d", LayerCount);
                 L.UVScale = 1.0f / 16.0f;
                 EnsureLayerWeightStorage(Terrain);
-                Terrain.GPUState.bFullWeightsDirty = true;
+                Terrain.CPUState.bFullWeightsDirty = true;
             }
         }
         else
@@ -374,7 +374,7 @@ namespace Lumina
         std::memcpy(PA,         PB, LayerStride);
         std::memcpy(PB, Tmp.data(), LayerStride);
 
-        Terrain.GPUState.bFullWeightsDirty = true;
+        Terrain.CPUState.bFullWeightsDirty = true;
     }
 
     void FTerrainEditMode::RemoveLayer(STerrainComponent& Terrain, int32 Index)
@@ -394,7 +394,7 @@ namespace Lumina
         }
         Terrain.LayerWeights.resize(size_t(LayerCount - 1) * LayerStride);
         Terrain.Layers.erase(Terrain.Layers.begin() + Index);
-        Terrain.GPUState.bFullWeightsDirty = true;
+        Terrain.CPUState.bFullWeightsDirty = true;
     }
 
     void FTerrainEditMode::Tick(CWorld* World, const SCameraComponent& Camera, bool bViewportHovered, ImVec2 ViewportScreenOrigin, ImVec2 ViewportSize)

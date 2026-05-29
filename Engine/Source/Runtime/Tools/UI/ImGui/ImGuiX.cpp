@@ -16,6 +16,21 @@
 
 namespace Lumina::ImGuiX
 {
+    namespace
+    {
+        float GUIScale = 1.0f;
+    }
+
+    float GetUIScale()
+    {
+        return GUIScale;
+    }
+
+    void SetUIScale(float Scale)
+    {
+        GUIScale = Scale > 0.0f ? Scale : 1.0f;
+    }
+
     void TextTooltip_Internal(FStringView String)
     {
         ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
@@ -176,7 +191,9 @@ namespace Lumina::ImGuiX
             bool const isDisabled = g.CurrentItemFlags & ImGuiItemFlags_Disabled;
             const ImU32 finalIconColor = isDisabled ? iconColor : iconColor;
 
-            if ( shouldCenterContents )
+            // Icon-only buttons always center: left-aligning a lone glyph looks ragged
+            // across icons with different advance widths (e.g. the viewport toolbar).
+            if ( shouldCenterContents || labelSize.x <= 0.0f )
             {
                 if ( labelSize.x > 0 )
                 {
@@ -859,14 +876,16 @@ namespace Lumina::ImGuiX
 
         FWindow* Window = Windowing::GetPrimaryWindowHandle();
 
+        const float ButtonWidth = WindowControlButtonWidth * GetUIScale();
+
         ImGui::BeginHorizontal("TitleBar");
 
-        if (ImGuiX::FlatButton(LE_ICON_WINDOW_MINIMIZE "##Min", ImVec2(WindowControlButtonWidth, -1)))
+        if (ImGuiX::FlatButton(LE_ICON_WINDOW_MINIMIZE "##Min", ImVec2(ButtonWidth, -1)))
         {
             Window->Minimize();
         }
-    	
-        if (ImGuiX::FlatButton(LE_ICON_WINDOW_RESTORE "##Res", ImVec2(WindowControlButtonWidth, -1)))
+
+        if (ImGuiX::FlatButton(LE_ICON_WINDOW_RESTORE "##Res", ImVec2(ButtonWidth, -1)))
         {
             if (Window->IsWindowMaximized())
             {
@@ -879,7 +898,7 @@ namespace Lumina::ImGuiX
         }
     	
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
-        if (ImGuiX::FlatButton(LE_ICON_WINDOW_CLOSE "##X", ImVec2(WindowControlButtonWidth, -1)))
+        if (ImGuiX::FlatButton(LE_ICON_WINDOW_CLOSE "##X", ImVec2(ButtonWidth, -1)))
         {
             FApplication::RequestExit();
         }
@@ -891,102 +910,102 @@ namespace Lumina::ImGuiX
     }
 
 
-    void ApplicationTitleBar::Draw(TFunction<void()>&& menuDrawFunction, float menuSectionDesiredWidth, TFunction<void()>&& controlsSectionDrawFunction, float controlsSectionDesiredWidth)
+    void ApplicationTitleBar::Draw(TFunction<void()>&& MenuDrawFunction, float MenuSectionWidth, TFunction<void()>&& ControlsDrawFunction, float ControlsSectionWidth)
     {
         Rect = FVector4(1.0f);
-    
-        const ImVec2 TitleBarPadding(0, 8);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, TitleBarPadding);
-        ImGuiViewport* pViewport = ImGui::GetMainViewport();
-    
-        if (ImGui::BeginViewportSideBar("TitleBar", pViewport, ImGuiDir_Up, 40, ImGuiWindowFlags_NoDecoration))
+
+        // Fonts/style scale with DPI, so the title bar's fixed pixel sizes must too.
+        const float Scale = GetUIScale();
+        const float BarHeight = 40.0f * Scale;
+        const float SectionPadding = s_sectionPadding * Scale;
+        const float DraggableGap = s_minimumDraggableGap * Scale;
+        const float WindowControlsW = GetWindowsControlsWidth() * Scale;
+
+        const ImVec2 BarPadding(0.0f, 8.0f * Scale);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, BarPadding);
+        ImGuiViewport* Viewport = ImGui::GetMainViewport();
+
+        if (!ImGui::BeginViewportSideBar("TitleBar", Viewport, ImGuiDir_Up, BarHeight, ImGuiWindowFlags_NoDecoration))
         {
-            ImGui::PopStyleVar();
-    
-            const float titleBarWidth = ImGui::GetWindowSize().x;
-            const float titleBarHeight = ImGui::GetWindowSize().y;
-            Rect = FVector4(0.0f, 0.0f, titleBarWidth, titleBarHeight);
-    
-            const float windowControlsWidth = GetWindowsControlsWidth();
-            const float windowControlsStartPosX = eastl::max(0.0f, ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - windowControlsWidth);
-            const ImVec2 windowControlsStartPos(windowControlsStartPosX, ImGui::GetCursorPosY() - TitleBarPadding.y);
-
-            const float availableSpace = titleBarWidth - windowControlsWidth - s_minimumDraggableGap - ( s_sectionPadding * 2 );
-            float remainingSpace = availableSpace;
-
-            const float menuSectionFinalWidth = ( remainingSpace - menuSectionDesiredWidth ) > 0 ? menuSectionDesiredWidth : eastl::max( 0.0f, remainingSpace );
-            remainingSpace -= menuSectionFinalWidth;
-            const ImVec2 menuSectionStartPos( s_sectionPadding, ImGui::GetCursorPosY() );
-
-            const float controlSectionFinalWidth = ( remainingSpace - controlsSectionDesiredWidth ) > 0 ? controlsSectionDesiredWidth : eastl::max( 0.0f, remainingSpace );
-            remainingSpace -= controlSectionFinalWidth;
-            const ImVec2 controlSectionStartPos( windowControlsStartPos.x - s_sectionPadding - controlSectionFinalWidth, ImGui::GetCursorPosY() );
-
-            ImVec2 DragAreaStartPos = menuSectionStartPos;
-            DragAreaStartPos.x += menuSectionFinalWidth + 10;
-            
-            ImGui::SetCursorPos(DragAreaStartPos);
-            ImGui::InvisibleButton("TitleBarDragZone", ImVec2(remainingSpace, titleBarHeight));
-        	
-            if (FWindow* MainWindow = Windowing::GetPrimaryWindowHandle())
-            {
-                MainWindow->SetTitleBarHovered(ImGui::IsItemHovered());
-            }
-
-
-            if (menuSectionDesiredWidth > 0)
-            {
-                ImGui::SetCursorPos(menuSectionStartPos);
-                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImGui::GetStyle().FramePadding + ImVec2(0, 2));
-                bool const drawMenuSection = ImGui::BeginChild("Left", ImVec2(menuSectionDesiredWidth, titleBarHeight), 
-                                                               ImGuiChildFlags_AlwaysUseWindowPadding, 
-                                                               ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_MenuBar);
-                
-                
-                ImGui::PopStyleVar(2);
-                if (drawMenuSection)
-                {
-                    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(16, 8));
-                    if (ImGui::BeginMenuBar())
-                    {
-                        menuDrawFunction();
-                        ImGui::EndMenuBar();
-                    }
-                    ImGui::PopStyleVar();
-                }
-                ImGui::EndChild();
-            }
-            
-            if (controlsSectionDesiredWidth > 0)
-            {
-                ImGui::SetCursorPos(controlSectionStartPos);
-                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-                bool const drawControlsSection = ImGui::BeginChild( "Right", ImVec2( controlSectionFinalWidth, titleBarHeight),
-                    ImGuiChildFlags_AlwaysUseWindowPadding,
-                    ImGuiWindowFlags_NoDecoration);
-                
-                ImGui::PopStyleVar();
-
-                if (drawControlsSection)
-                {
-                    controlsSectionDrawFunction();
-                }
-                ImGui::EndChild();
-
-            }
-
-    
-            ImGui::SetCursorPos(windowControlsStartPos);
-            if (ImGui::BeginChild("WindowControls", ImVec2(windowControlsWidth, titleBarHeight), false, ImGuiWindowFlags_NoDecoration))
-            {
-                DrawWindowControls();
-                ImGui::EndChild();
-            }
-            
             ImGui::End();
+            ImGui::PopStyleVar();
+            return;
         }
-        
+        ImGui::PopStyleVar();
+
+        const float BarWidth = ImGui::GetWindowSize().x;
+        Rect = FVector4(0.0f, 0.0f, BarWidth, ImGui::GetWindowSize().y);
+
+        // Window controls (min/restore/close) are pinned to the far right.
+        const float ControlsX = eastl::max(0.0f, ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - WindowControlsW);
+        const ImVec2 ControlsPos(ControlsX, ImGui::GetCursorPosY() - BarPadding.y);
+
+        // Left-to-right: menu section, draggable gap, controls section. Each shrinks
+        // to fit when space runs low.
+        float Remaining = BarWidth - WindowControlsW - DraggableGap - (SectionPadding * 2.0f);
+
+        const float MenuWidth = (Remaining - MenuSectionWidth) > 0.0f ? MenuSectionWidth : eastl::max(0.0f, Remaining);
+        Remaining -= MenuWidth;
+        const ImVec2 MenuPos(SectionPadding, ImGui::GetCursorPosY());
+
+        const float ControlsWidth = (Remaining - ControlsSectionWidth) > 0.0f ? ControlsSectionWidth : eastl::max(0.0f, Remaining);
+        Remaining -= ControlsWidth;
+        const ImVec2 ControlsSectionPos(ControlsPos.x - SectionPadding - ControlsWidth, ImGui::GetCursorPosY());
+
+        // Drag zone fills the gap between the menu and the controls.
+        ImGui::SetCursorPos(ImVec2(MenuPos.x + MenuWidth + 10.0f * Scale, MenuPos.y));
+        ImGui::InvisibleButton("TitleBarDragZone", ImVec2(Remaining, BarHeight));
+        if (FWindow* MainWindow = Windowing::GetPrimaryWindowHandle())
+        {
+            MainWindow->SetTitleBarHovered(ImGui::IsItemHovered());
+        }
+
+        if (MenuSectionWidth > 0.0f)
+        {
+            ImGui::SetCursorPos(MenuPos);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImGui::GetStyle().FramePadding + ImVec2(0.0f, 2.0f));
+            const bool bVisible = ImGui::BeginChild("Left", ImVec2(MenuSectionWidth, BarHeight),
+                ImGuiChildFlags_AlwaysUseWindowPadding,
+                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_MenuBar);
+            ImGui::PopStyleVar(2);
+
+            if (bVisible)
+            {
+                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(16.0f, 8.0f));
+                if (ImGui::BeginMenuBar())
+                {
+                    MenuDrawFunction();
+                    ImGui::EndMenuBar();
+                }
+                ImGui::PopStyleVar();
+            }
+            ImGui::EndChild();
+        }
+
+        if (ControlsSectionWidth > 0.0f)
+        {
+            ImGui::SetCursorPos(ControlsSectionPos);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+            const bool bVisible = ImGui::BeginChild("Right", ImVec2(ControlsWidth, BarHeight),
+                ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoDecoration);
+            ImGui::PopStyleVar();
+
+            if (bVisible)
+            {
+                ControlsDrawFunction();
+            }
+            ImGui::EndChild();
+        }
+
+        ImGui::SetCursorPos(ControlsPos);
+        if (ImGui::BeginChild("WindowControls", ImVec2(WindowControlsW, BarHeight), false, ImGuiWindowFlags_NoDecoration))
+        {
+            DrawWindowControls();
+        }
+        ImGui::EndChild();
+
+        ImGui::End();
     }
 }
 

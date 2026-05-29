@@ -31,6 +31,18 @@ namespace Lumina::ImGuiX
     };
     
     //--------------------------------------------------------------
+    // DPI / UI scaling
+    //--------------------------------------------------------------
+
+    // Current editor UI scale (monitor DPI * bias). 1.0 = no scaling. ImGui fonts
+    // and style track this automatically; multiply any hardcoded pixel dimension
+    // (fixed button/toolbar sizes) by this so custom layouts stay aligned.
+    RUNTIME_API float GetUIScale();
+
+    // Set by the ImGui renderer whenever the scale is (re)resolved.
+    RUNTIME_API void SetUIScale(float Scale);
+
+    //--------------------------------------------------------------
     // Generic draw helpers...
     //--------------------------------------------------------------
 

@@ -688,6 +688,16 @@ namespace Lumina
     {
         FEditorTool::Update(UpdateContext);
 
+        // Esc requested an end to the play session (queued from OnEvent).
+        if (bStopPlayRequested)
+        {
+            bStopPlayRequested = false;
+            if (bGamePreviewRunning)
+            {
+                SetWorldPlayInEditor(false);
+            }
+        }
+
         // Drive the selected-camera preview before the world extracts this frame.
         UpdateCameraPreview();
 
@@ -744,7 +754,11 @@ namespace Lumina
 
         auto View = World->GetEntityRegistry().view<FSelectedInEditorComponent>();
 
-        if (bViewportHovered)
+        // Selection edit shortcuts (Copy/Duplicate/Delete) work over the viewport OR the
+        // Scene Graph outliner. Gated off text input so renaming an entity doesn't delete it.
+        const bool bSelectionEditActive = (bViewportHovered || bOutlinerActive) && !ImGui::GetIO().WantTextInput;
+
+        if (bSelectionEditActive)
         {
             bool bCopyPressed = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_C);
             bool bDuplicatePressed = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_D);
@@ -847,7 +861,7 @@ namespace Lumina
             EditorEntityUtils::DrawEntitySelectionBox(World, Entity, FColor::Green, 0.2f, 5.0f);
         }
 
-        const bool bPastePressed = bViewportHovered
+        const bool bPastePressed = bSelectionEditActive
             && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)
             && ImGui::IsKeyPressed(ImGuiKey_V, false);
 
@@ -2130,11 +2144,13 @@ namespace Lumina
 
     void FWorldEditorTool::DrawViewportToolbar(const FUpdateContext& UpdateContext)
     {
-        constexpr float Padding = 8.0f;
-        constexpr float ItemSpacing = 6.0f;
+        const float Scale = ImGuiX::GetUIScale();
+        const float Padding = 8.0f * Scale;
+        const float ItemSpacing = 6.0f * Scale;
         // While playing, the only control is Stop: shrink it and make the bar solid
         // so it reads as a small, deliberate widget instead of a distracting overlay.
-        const float ButtonSize = bGamePreviewRunning ? 24.0f : 32.0f;
+        // Scaled with UI/DPI so the icon glyphs stay centered and uncropped.
+        const float ButtonSize = (bGamePreviewRunning ? 24.0f : 32.0f) * Scale;
         constexpr float CornerRounding = 8.0f;
 
         ImVec2 Pos = ImGui::GetWindowPos();
@@ -3020,6 +3036,12 @@ namespace Lumina
         {
             if (!bSimulatingWorld)
             {
+                // Play/Simulate duplicate the world, which needs a package. An unsaved transient
+                // world has none, so disable both rather than letting StartPIE return null mid-launch.
+                const bool bCanSimulate = World != nullptr && World->GetPackage() != nullptr;
+
+                ImGui::BeginDisabled(!bCanSimulate);
+
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.7f, 0.3f, 0.8f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.8f, 0.4f, 1.0f));
                 if (ImGuiX::IconButton(LE_ICON_PLAY, "##PlayBtn", 0xFFFFFFFF, BtnSize))
@@ -3027,23 +3049,25 @@ namespace Lumina
                     SetWorldPlayInEditor(true);
                 }
                 ImGui::PopStyleColor(2);
-                
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_AllowWhenDisabled))
                 {
-                    ImGui::SetTooltip("Play (Start game preview)");
+                    ImGui::SetTooltip(bCanSimulate ? "Play (Start game preview)" : "Save the world before playing");
                 }
-                
+
                 ImGui::SameLine();
-                
+
                 if (ImGuiX::IconButton(LE_ICON_COG_BOX, "##SimulateBtn", 0xFFFFFFFF, BtnSize))
                 {
                     SetWorldNewSimulate(true);
                 }
-                
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_AllowWhenDisabled))
                 {
-                    ImGui::SetTooltip("Simulate (Run physics without gameplay)");
+                    ImGui::SetTooltip(bCanSimulate ? "Simulate (Run physics without gameplay)" : "Save the world before simulating");
                 }
+
+                ImGui::EndDisabled();
             }
             else
             {
@@ -3664,7 +3688,7 @@ namespace Lumina
             auto TerrainView = World->GetEntityRegistry().view<STerrainComponent>();
             for (entt::entity Entity : TerrainView)
             {
-                FTerrainGPUState& State = World->GetEntityRegistry().get<STerrainComponent>(Entity).GPUState;
+                FTerrainCPUState& State = World->GetEntityRegistry().get<STerrainComponent>(Entity).CPUState;
                 State.bFullHeightmapDirty = true;
                 State.bFullWeightsDirty   = true;
                 State.bChunksDirty        = true;
@@ -4014,7 +4038,20 @@ namespace Lumina
             ProxyEditorEntity = EditorEntity;
 
             // PIE world is owned by FWorldManager; RebindToWorld is a pointer-only swap.
-            RebindToWorld(GWorldManager->StartPIE(ProxyWorld, EWorldType::Game, ENetMode::Standalone));
+            // StartPIE returns null when the world can't be duplicated (e.g. an unsaved
+            // transient world has no package). Bail before rebinding to null and dereferencing it.
+            CWorld* PIEWorld = GWorldManager->StartPIE(ProxyWorld, EWorldType::Game, ENetMode::Standalone);
+            if (PIEWorld == nullptr)
+            {
+                LOG_WARN("Cannot Play '{0}': world has no package (save the world before playing).", World->GetName().c_str());
+                ImGuiX::Notifications::NotifyError("Cannot Play: save the world first.");
+                World->SetActive(true);
+                ProxyWorld = nullptr;
+                ProxyEditorEntity = entt::null;
+                bGamePreviewRunning = false;
+                return;
+            }
+            RebindToWorld(PIEWorld);
             EditorEntity = entt::null;
 
             WorldSettingsPropertyTable = MakeUnique<FPropertyTable>(&World->GetDefaultWorldSettings(), SDefaultWorldSettings::StaticStruct());
@@ -4120,7 +4157,21 @@ namespace Lumina
             World->SetActive(false);
             ProxyWorld = World;
             ProxyEditorEntity = EditorEntity;
-            RebindToWorld(GWorldManager->StartPIE(ProxyWorld, EWorldType::Simulation, ENetMode::Standalone));
+
+            // StartPIE returns null when the world can't be duplicated (e.g. an unsaved
+            // transient world has no package). Bail before rebinding to null and dereferencing it.
+            CWorld* SimWorld = GWorldManager->StartPIE(ProxyWorld, EWorldType::Simulation, ENetMode::Standalone);
+            if (SimWorld == nullptr)
+            {
+                LOG_WARN("Cannot Simulate '{0}': world has no package (save the world before simulating).", World->GetName().c_str());
+                ImGuiX::Notifications::NotifyError("Cannot Simulate: save the world first.");
+                World->SetActive(true);
+                ProxyWorld = nullptr;
+                ProxyEditorEntity = entt::null;
+                bSimulatingWorld = false;
+                return;
+            }
+            RebindToWorld(SimWorld);
 
             if (ProxyEditorEntity != entt::null && ProxyWorld->GetEntityRegistry().valid(ProxyEditorEntity))
             {
@@ -4231,6 +4282,15 @@ namespace Lumina
             if (Key.GetKeyCode() == EKey::F1 && Key.IsShiftDown() && !Key.IsRepeat())
             {
                 SetInputFocus(InputFocus == EInputFocus::Game ? EInputFocus::Editor : EInputFocus::Game);
+                return true;
+            }
+
+            // Esc ends the play session (UE-style). Handled here, not via ImGui, because
+            // Game focus sets NoKeyboard and hides the key from ImGui::IsKeyPressed.
+            // Deferred to Update — stopping tears down the PIE world.
+            if (Key.GetKeyCode() == EKey::Escape && !Key.IsRepeat())
+            {
+                bStopPlayRequested = true;
                 return true;
             }
         }
@@ -5148,8 +5208,13 @@ namespace Lumina
 
     void FWorldEditorTool::DrawOutliner(bool bFocused)
     {
+        // Track focus/hover so Delete (and other selection shortcuts) work from here.
+        // Read next frame in Update(), which runs before the tool windows draw.
+        bOutlinerActive = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+                       || ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
+
         const ImGuiStyle& Style = ImGui::GetStyle();
-        
+
         {
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
             

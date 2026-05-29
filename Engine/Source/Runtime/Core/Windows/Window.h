@@ -32,6 +32,12 @@ namespace Lumina
 		RUNTIME_API uint32 GetWidth() const;
 		RUNTIME_API uint32 GetHeight() const;
 
+		// Monitor content scale (1.0 = 96 DPI). Drives editor UI / ImGui DPI scaling.
+		RUNTIME_API float GetContentScale() const;
+
+		// Resolution of the monitor the window currently sits on (pixels).
+		RUNTIME_API FUIntVector2 GetMonitorResolution() const;
+
 		RUNTIME_API void GetWindowPosition(int& X, int& Y);
 		RUNTIME_API void SetWindowPosition(int X, int Y);
 

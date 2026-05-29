@@ -112,6 +112,31 @@ namespace Lumina
 
         void DrawTitleBarMenu(const FUpdateContext& UpdateContext);
         void DrawTitleBarInfoStats(const FUpdateContext& UpdateContext);
+
+        // --- Footer drawers (UE-style Content Drawer) -----------------------
+        // A drawer tool lives in the bottom status bar as a toggle button and,
+        // when undocked, slides up as a transient overlay instead of eating a
+        // permanent dock split. "Dock in Layout" pins it back into the dockspace.
+        struct FFooterDrawer
+        {
+            FEditorTool*  Tool       = nullptr;
+            const char*   Icon       = nullptr;
+            const char*   Label      = nullptr;
+            ImGuiKeyChord Shortcut   = 0;       // 0 = no shortcut
+            bool          bDocked    = false;   // true = drawn in the dock layout, not as a drawer
+            float         HeightFrac = 0.4f;    // open height as a fraction of the work area (session-only)
+        };
+
+        // Bottom status bar: drawer toggle buttons (left) + status text (right).
+        void DrawStatusBar(const FUpdateContext& UpdateContext);
+
+        // Renders the currently-open drawer as a slide-up overlay above the status bar.
+        void DrawFooterDrawer(const FUpdateContext& UpdateContext);
+
+        // Footer-button / shortcut action: focus when docked, else toggle the drawer.
+        void ActivateDrawer(FFooterDrawer& Drawer);
+
+        FFooterDrawer* FindDrawerForTool(const FEditorTool* Tool);
         void DrawFileMenu();
         void DrawProjectMenu();
         void DrawToolsMenu();
@@ -143,6 +168,12 @@ namespace Lumina
         FConsoleLogEditorTool*                          ConsoleLogTool = nullptr;
         FContentBrowserEditorTool*                      ContentBrowser = nullptr;
         TVector<FEditorTool*>                           EditorTools;
+
+        TVector<FFooterDrawer>                          FooterDrawers;
+        FEditorTool*                                    OpenDrawer = nullptr;   // tool whose drawer is open (nullptr = none)
+        float                                           DrawerOpenAmount = 0.0f; // 0..1 slide animation
+        bool                                            bDrawerActivatedThisFrame = false; // guards focus-loss auto-close
+        ImGuiID                                         MainDockspaceID = 0;    // root editor dockspace, for "Dock in Layout"
         FEditorTool*                                    LastActiveTool = nullptr;
         FString                                         FocusTargetWindowName; // If this is set we need to switch focus to this window
 

@@ -10,7 +10,9 @@
 #include "World/Scene/RenderScene/MeshDrawCommand.h"
 #include "World/Scene/RenderScene/RenderScene.h"
 #include "World/Scene/RenderScene/SceneCullContext.h"
+#include "World/Scene/RenderScene/TerrainRenderTypes.h"
 #include "World/Scene/RenderScene/TexturePaintTypes.h"
+#include "Assets/AssetTypes/ParticleSystem/ParticleSystem.h"
 #include "World/Entity/Components/PostProcessSettings.h"
 #include "World/Subsystems/WorldSettings.h"
 
@@ -244,13 +246,88 @@ namespace Lumina
             TVector<FWidgetInstance>         WidgetInstances;
             TVector<FRHIImageRef>            PinnedWidgetRTs;
             
+            // Per-frame snapshot of one terrain. Extract (game thread) fills this from
+            // the live component; the render-thread terrain passes read ONLY this. GPU
+            // resources live in the render-owned FForwardRenderScene::TerrainGPUStates map
+            // keyed by Entity, so the render thread never dereferences the component (which
+            // the game thread may have destroyed within the in-flight window).
             struct FTerrainExtract
             {
                 entt::entity        Entity;
-                STerrainComponent*  Component;
-                FMatrix4           WorldMatrix;
+                FMatrix4            WorldMatrix;
+
+                // Snapshot of the scalar params the render passes need.
+                int32               Resolution      = 0;
+                int32               ChunkResolution = 0;
+                float               TileWorldSize   = 0.0f;
+                float               MaxHeight       = 0.0f;
+                int32               LayerCount       = 0;
+                CMaterialInterface* Material        = nullptr;   // resolved on the game thread
+                bool                bCastShadow     = true;
+                bool                bReceiveShadow  = true;
+
+                // Dimensions changed this frame -> render thread (re)creates GPU textures
+                // and the Full upload payloads below re-seed every slice.
+                bool                bStructuralChange = false;
+
+                // Height upload: 0 none, 1 full map, 2 packed dirty rect.
+                uint8               HeightUpload    = 0;
+                FIntVector2         HeightRectMin   = FIntVector2(0);
+                FIntVector2         HeightRectMax   = FIntVector2(0);
+                TVector<float>      HeightBytes;     // full map, or tightly-packed rect rows
+
+                // Weight upload: 0 none, 1 all slices, 2 selected dirty slices.
+                uint8               WeightUpload    = 0;
+                uint32              WeightSliceMask = 0u;         // bit L set => slice L present
+                TVector<uint8>      WeightBytes;     // dirty slices packed back-to-back
+
+                // Chunk/meshlet metadata rebuilt this frame (copied so the next frame's
+                // game-thread rebuild can't race the render-thread upload).
+                bool                         bGeometryRebuilt = false;
+                TVector<FTerrainChunkInfo>   Chunks;
+                TVector<FTerrainMeshletInfo> Meshlets;
             };
             TVector<FTerrainExtract>         TerrainExtracts;
+
+            // Every entity carrying STerrainComponent this frame, INCLUDING disabled ones
+            // (which are excluded from TerrainExtracts). The render thread prunes
+            // TerrainGPUStates entries whose key is absent here, reclaiming destroyed
+            // terrains while preserving a temporarily-disabled terrain's GPU resources.
+            TVector<entt::entity>            LiveTerrainEntities;
+
+            // Per-frame snapshot of one particle emitter. Extract (game thread) fills this;
+            // the render-thread simulate/render passes read ONLY this. GPU + sim state lives
+            // in the render-owned FForwardRenderScene::ParticleGPUStates map keyed by Entity,
+            // so the render thread never dereferences a (possibly destroyed) component.
+            struct FParticleExtract
+            {
+                entt::entity            Entity;
+                FMatrix4                WorldMatrix;
+
+                FVector3                EmitterOffset       = FVector3(0.0f);
+                float                   TimeScale           = 1.0f;
+                float                   SpawnRateMultiplier = 1.0f;
+                bool                    bEmit               = true;
+                bool                    bBurstOnSpawn       = true;
+
+                // Game-thread Activate()/Deactivate() intents, applied once then cleared.
+                bool                    bForceBurst         = false;
+                bool                    bForceReset         = false;
+
+                // Asset+override params resolved on the game thread.
+                FResolvedParticleParams Resolved;
+
+                bool                    bReady              = false;  // asset ready to simulate
+                bool                    bUsesCustomShader   = false;
+                FRHIComputeShaderRef    CustomComputeShader;          // set iff bUsesCustomShader
+                uint32                  TextureIndex        = 0u;     // bindless slot, resolved game-side
+            };
+            TVector<FParticleExtract>        ParticleExtracts;
+
+            // Every entity carrying SParticleSystemComponent this frame, INCLUDING disabled
+            // ones (excluded from ParticleExtracts). The render thread prunes ParticleGPUStates
+            // entries absent here, preserving a disabled emitter's GPU/sim state.
+            TVector<entt::entity>            LiveParticleEntities;
 
             FSceneRenderStats                FrameStats = {};
 
@@ -780,6 +857,15 @@ namespace Lumina
         FRHIInputLayoutRef                      SimpleVertexLayoutInput;
 
         FShadowAtlas                            ShadowAtlas;
+
+        // Render-thread-owned terrain GPU resources, keyed by entity. Decoupled from the
+        // STerrainComponent lifetime so a mid-flight entity destruction can't dangle a
+        // pointer here; entries are reclaimed in TerrainUpdatePass via FFrameData::LiveTerrainEntities.
+        THashMap<entt::entity, FTerrainGPUState> TerrainGPUStates;
+
+        // Render-thread-owned particle GPU + sim state, keyed by entity. Same decoupling as
+        // TerrainGPUStates; reclaimed in ParticleSimulatePass via FFrameData::LiveParticleEntities.
+        THashMap<entt::entity, FParticleGPUState> ParticleGPUStates;
 
         // One bump arena per worker thread, reset each frame; backs all per-frame
         // TFrameVector / TFrameHashMap members on FThreadLocalDrawData.

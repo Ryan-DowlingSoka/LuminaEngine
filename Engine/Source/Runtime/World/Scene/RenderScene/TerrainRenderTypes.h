@@ -2,6 +2,7 @@
 
 #include "Core/Math/Math.h"
 #include "Platform/GenericPlatform.h"
+#include "Renderer/RenderResource.h"
 
 #ifndef VERIFY_SSBO_ALIGNMENT
 #define VERIFY_SSBO_ALIGNMENT(Type) \
@@ -103,6 +104,36 @@ namespace Lumina
         uint32  MeshletIndex = 0u;
     };
     static_assert(sizeof(FTerrainVisibleMeshlet) == 8);
+
+    /**
+     * Render-thread-owned GPU resources for one terrain. Lives in the render scene's
+     * per-entity map (FForwardRenderScene::TerrainGPUStates), NOT on the component, so
+     * the render thread never dereferences a component the game thread may have freed.
+     * Only ever touched by the render thread.
+     */
+    struct FTerrainGPUState
+    {
+        /** R32_FLOAT mirror of CPU Heightmap. */
+        FRHIImageRef    HeightmapTexture;
+
+        /** RGBA8 normal; derived on GPU. */
+        FRHIImageRef    NormalTexture;
+
+        /** R8_UNORM array, one slice per layer. */
+        FRHIImageRef    LayerWeightTexture;
+
+        FRHIBufferRef   ChunkInfoBuffer;
+        FRHIBufferRef   MeshletInfoBuffer;
+        FRHIBufferRef   VisibleMeshletBuffer;
+
+        /** Single FDrawIndirectArguments slot; cull atomic-increments InstanceCount. */
+        FRHIBufferRef   IndirectDrawBuffer;
+
+        uint32  AllocatedResolution = 0;
+        uint32  AllocatedLayerCount = 0;
+        uint32  AllocatedChunkCount = 0;
+        uint32  AllocatedMeshletCount = 0;
+    };
 
     /** TerrainCull.slang push constants; frustum lives in scene globals. */
     struct FTerrainCullPushConstants

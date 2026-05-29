@@ -7,30 +7,6 @@
 
 namespace Lumina
 {
-    /** Transient GPU-resident simulation state for a particle emitter instance. */
-    struct FParticleGPUState
-    {
-        FRHIBufferRef   ParticleBuffer;      // RW structured buffer of FGPUParticle (64B stride)
-        FRHIBufferRef   SimParamsBuffer;     // Constant buffer, 288 bytes
-        FRHIBufferRef   RenderParamsBuffer;  // Constant buffer, 48 bytes
-        FRHIBufferRef   SpawnCounterBuffer;  // Single uint, cleared per frame
-        uint32          AllocatedMax        = 0;
-        float           SpawnAccumulator    = 0.0f;
-        float           TotalTime           = 0.0f;
-        float           SystemAge           = 0.0f;
-        uint32          FrameSeed           = 0u;
-        bool            bBurstPending       = true;
-        bool            bPendingReset       = false;
-        FVector3       PrevEmitterPosition = FVector3(0.0f);
-        bool            bHasPrevPosition    = false;
-        // CPU-side estimate of remaining simulated time before all particles
-        // are guaranteed dead. Bumped to MaxLifetime on every frame that
-        // spawns; decremented by ScaledDelta otherwise. When this hits 0 and
-        // no spawns happen this frame, the simulate dispatch is skipped --
-        // there is nothing for the GPU to do.
-        float           AliveTimeRemaining  = 0.0f;
-    };
-
     REFLECT(Component, Category = "Effects")
     struct RUNTIME_API SParticleSystemComponent
     {
@@ -61,7 +37,10 @@ namespace Lumina
                 bEmit               = Other.bEmit;
                 bBurstOnSpawn       = Other.bBurstOnSpawn;
                 ParameterOverrides  = Other.ParameterOverrides;
-                GPUState            = FParticleGPUState{};
+                // Transient activation intents never carry across a copy; the render scene
+                // allocates fresh GPU/sim state keyed by the new entity.
+                bForceBurst         = false;
+                bForceReset         = false;
             }
             return *this;
         }
@@ -100,8 +79,13 @@ namespace Lumina
         PROPERTY()
         TVector<FParticleParameter> ParameterOverrides;
 
-        /** Live GPU state, populated on the first simulate tick. Not serialized. */
-        FParticleGPUState GPUState;
+        /**
+         * Game-thread activation intents consumed by Extract and applied to the render-owned
+         * sim state (FForwardRenderScene::ParticleGPUStates). Not serialized; transient.
+         * bForceBurst re-arms the burst; bForceReset additionally clears live particles.
+         */
+        bool bForceBurst = false;
+        bool bForceReset = false;
 
         /**
          * Turn the emitter on. When bReset is true, any currently-alive particles are cleared
@@ -110,13 +94,11 @@ namespace Lumina
         FUNCTION(Script)
         void Activate(bool bReset = false)
         {
-            bEmit = true;
-            GPUState.bBurstPending = true;
+            bEmit       = true;
+            bForceBurst = true;
             if (bReset)
             {
-                GPUState.bPendingReset  = true;
-                GPUState.SpawnAccumulator = 0.0f;
-                GPUState.SystemAge        = 0.0f;
+                bForceReset = true;
             }
         }
 

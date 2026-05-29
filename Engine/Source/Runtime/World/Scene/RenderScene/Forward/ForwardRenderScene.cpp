@@ -335,6 +335,13 @@ namespace Lumina
         SlotCV.notify_all();
     }
 
+    namespace
+    {
+        // Defined in the terrain helper block below; game-thread Extract prep.
+        static void PrepareTerrainExtract(STerrainComponent& Terrain, const FMatrix4& WorldMatrix,
+                                          FForwardRenderScene::FFrameData::FTerrainExtract& Out);
+    }
+
     void FForwardRenderScene::Extract(const FViewVolume& ViewVolume, const SPostProcessSettings* PostProcess)
     {
         LUMINA_PROFILE_SCOPE();
@@ -459,15 +466,91 @@ namespace Lumina
         // iterate this snapshot instead of the registry. Extract has exclusive ECS access;
         // iterating the view on the render thread races concurrent entity spawn/destroy.
         Frame.TerrainExtracts.clear();
+        Frame.LiveTerrainEntities.clear();
         {
             FEntityRegistry& TerrainRegistry = World->GetEntityRegistry();
+
+            // Every terrain entity (including disabled) -- the render thread reclaims
+            // TerrainGPUStates entries absent from this set, so a disabled terrain keeps
+            // its GPU resources while excluded from the draw extract below.
+            for (entt::entity Entity : TerrainRegistry.view<STerrainComponent>())
+            {
+                Frame.LiveTerrainEntities.push_back(Entity);
+            }
+
             auto TerrainView = TerrainRegistry.view<STerrainComponent, STransformComponent>(entt::exclude<SDisabledTag>);
             for (entt::entity Entity : TerrainView)
             {
                 STerrainComponent& Terrain           = TerrainView.get<STerrainComponent>(Entity);
                 const STransformComponent& Transform = TerrainView.get<STransformComponent>(Entity);
-                Frame.TerrainExtracts.push_back({ Entity, &Terrain, Transform.GetWorldMatrix() });
+
+                FFrameData::FTerrainExtract Item;
+                Item.Entity      = Entity;
+                Item.WorldMatrix = Transform.GetWorldMatrix();
+                // Game-thread prep: size CPU buffers, rebuild dirty meshlets, and snapshot
+                // the upload payload so the render thread never reads live CPU data.
+                PrepareTerrainExtract(Terrain, Item.WorldMatrix, Item);
+                Frame.TerrainExtracts.push_back(std::move(Item));
             }
+        }
+
+        // Snapshot particle emitters (game thread): resolve asset+override params and the
+        // component fields/intents the simulate+render passes need, so the render thread
+        // never dereferences the live component or its asset. GPU + sim state stays render-
+        // owned in ParticleGPUStates, reclaimed against LiveParticleEntities.
+        Frame.ParticleExtracts.clear();
+        Frame.LiveParticleEntities.clear();
+        {
+            FEntityRegistry& Registry = World->GetEntityRegistry();
+
+            for (entt::entity Entity : Registry.view<SParticleSystemComponent>())
+            {
+                Frame.LiveParticleEntities.push_back(Entity);
+            }
+
+            auto ParticleView = Registry.view<SParticleSystemComponent, STransformComponent>(entt::exclude<SDisabledTag>);
+            ParticleView.each([&](entt::entity Entity, SParticleSystemComponent& Component, const STransformComponent& Transform)
+            {
+                FFrameData::FParticleExtract Item;
+                Item.Entity              = Entity;
+                Item.WorldMatrix         = Transform.GetWorldMatrix();
+                Item.EmitterOffset       = Component.EmitterOffset;
+                Item.TimeScale           = Component.TimeScale;
+                Item.SpawnRateMultiplier = Component.SpawnRateMultiplier;
+                Item.bEmit               = Component.bEmit;
+                Item.bBurstOnSpawn       = Component.bBurstOnSpawn;
+                Item.bForceBurst         = Component.bForceBurst;
+                Item.bForceReset         = Component.bForceReset;
+
+                // Consume the one-shot activation intents now that they're captured.
+                Component.bForceBurst = false;
+                Component.bForceReset = false;
+
+                CParticleSystem* PS = Component.ParticleSystem.Get();
+                Item.bReady = PS && PS->IsReadyForSimulation();
+                if (Item.bReady)
+                {
+                    Item.Resolved          = ResolveParticleParams(*PS, Component);
+                    Item.bUsesCustomShader = PS->UsesCustomShader();
+                    if (Item.bUsesCustomShader)
+                    {
+                        Item.CustomComputeShader = PS->GetCustomComputeShader();
+                    }
+                    if (CTexture* Tex = PS->Texture.Get())
+                    {
+                        if (FRHIImage* Image = Tex->GetRHIRef())
+                        {
+                            const int32 CacheIdx = Image->GetResourceID();
+                            if (CacheIdx > 0)
+                            {
+                                Item.TextureIndex = (uint32)CacheIdx;
+                            }
+                        }
+                    }
+                }
+
+                Frame.ParticleExtracts.push_back(std::move(Item));
+            });
         }
 
         // Drain pending render-target paint/clear requests into this frame's snapshot; the
@@ -4653,33 +4736,62 @@ namespace Lumina
         const FFrameData& Frame = *RenderFrame;
         const float DeltaTime   = Frame.CachedWorldDeltaTime;
 
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-
         uint32 DispatchCount = 0;
 
-        auto ParticleView = Registry.view<SParticleSystemComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-        ParticleView.each([&](entt::entity Entity, SParticleSystemComponent& Component, const STransformComponent& Transform)
+        // Reclaim GPU/sim state for emitters that no longer exist (destroyed entities).
+        // Disabled emitters stay in LiveParticleEntities, so their resources survive.
+        // KeepAlive each resource on this frame's command list before dropping the ref, so
+        // in-flight GPU work from prior frames finishes before the resource is released.
+        if (!ParticleGPUStates.empty())
         {
-            CParticleSystem* PS = Component.ParticleSystem.Get();
-            if (!PS || !PS->IsReadyForSimulation())
+            const TVector<entt::entity>& Live = Frame.LiveParticleEntities;
+            auto IsLive = [&](entt::entity E)
             {
-                return;
+                return std::find(Live.begin(), Live.end(), E) != Live.end();
+            };
+
+            for (auto It = ParticleGPUStates.begin(); It != ParticleGPUStates.end();)
+            {
+                if (!IsLive(It->first))
+                {
+                    FParticleGPUState& Dead = It->second;
+                    auto Keep = [&](const auto& Ref) { if (Ref) CmdList.KeepAlive(Ref.GetReference()); };
+                    Keep(Dead.ParticleBuffer);
+                    Keep(Dead.SimParamsBuffer);
+                    Keep(Dead.RenderParamsBuffer);
+                    Keep(Dead.SpawnCounterBuffer);
+                    It = ParticleGPUStates.erase(It);
+                }
+                else
+                {
+                    ++It;
+                }
+            }
+        }
+
+        for (const FFrameData::FParticleExtract& Item : Frame.ParticleExtracts)
+        {
+            if (!Item.bReady)
+            {
+                continue;
             }
 
-            const FResolvedParticleParams Resolved = ResolveParticleParams(*PS, Component);
+            const FResolvedParticleParams& Resolved = Item.Resolved;
 
             const uint32 MaxParticles = (uint32)Resolved.MaxParticles;
             if (MaxParticles == 0)
             {
-                return;
+                continue;
             }
 
-            FParticleGPUState& State = Component.GPUState;
+            // GPUState is render-thread-owned (this map); everything else comes from the
+            // game-thread snapshot in Item, never from the live component or its asset.
+            FParticleGPUState& State = ParticleGPUStates[Item.Entity];
 
             const bool bNeedsAlloc = (!State.ParticleBuffer) || (State.AllocatedMax != MaxParticles);
             if (bNeedsAlloc)
             {
-                const FString AssetName = PS->GetName().ToString();
+                const FString AssetName = FString("Particles_") + std::to_string((uint32)Item.Entity).c_str();
 
                 // Particle SSBOs cross queues: written on async compute, read on graphics.
                 // Concurrent sharing avoids ownership-transfer barriers.
@@ -4730,14 +4842,20 @@ namespace Lumina
                 State.bBurstPending     = true;
             }
 
-            if (State.bPendingReset)
+            // Apply the game-thread Activate()/Deactivate() intents to the render-owned sim state.
+            if (Item.bForceReset)
             {
                 CmdList.FillBuffer(State.ParticleBuffer, 0u);
-                State.bPendingReset      = false;
                 State.AliveTimeRemaining = 0.0f;
+                State.SpawnAccumulator   = 0.0f;
+                State.SystemAge          = 0.0f;
+            }
+            if (Item.bForceBurst)
+            {
+                State.bBurstPending = true;
             }
 
-            const float ScaledDelta = DeltaTime * Component.TimeScale;
+            const float ScaledDelta = DeltaTime * Item.TimeScale;
             State.TotalTime += DeltaTime;
             State.SystemAge += ScaledDelta;
 
@@ -4751,12 +4869,12 @@ namespace Lumina
                 }
             }
 
-            const bool bEmitActive = Component.bEmit && !(bDurationExpired && !Resolved.bLooping);
+            const bool bEmitActive = Item.bEmit && !(bDurationExpired && !Resolved.bLooping);
 
             uint32 SpawnCount = 0;
-            if (bEmitActive && Resolved.SpawnRate > 0.0f && Component.SpawnRateMultiplier > 0.0f)
+            if (bEmitActive && Resolved.SpawnRate > 0.0f && Item.SpawnRateMultiplier > 0.0f)
             {
-                State.SpawnAccumulator += DeltaTime * Resolved.SpawnRate * Component.SpawnRateMultiplier;
+                State.SpawnAccumulator += DeltaTime * Resolved.SpawnRate * Item.SpawnRateMultiplier;
                 SpawnCount = (uint32)State.SpawnAccumulator;
                 State.SpawnAccumulator -= (float)SpawnCount;
             }
@@ -4765,13 +4883,13 @@ namespace Lumina
                 State.SpawnAccumulator = 0.0f;
             }
 
-            const bool bDoBurst = bEmitActive && Component.bBurstOnSpawn && State.bBurstPending && Resolved.BurstCount > 0;
+            const bool bDoBurst = bEmitActive && Item.bBurstOnSpawn && State.bBurstPending && Resolved.BurstCount > 0;
             if (bDoBurst)
             {
                 SpawnCount += (uint32)Resolved.BurstCount;
                 State.bBurstPending = false;
             }
-            else if (!Component.bBurstOnSpawn)
+            else if (!Item.bBurstOnSpawn)
             {
                 State.bBurstPending = false;
             }
@@ -4789,15 +4907,15 @@ namespace Lumina
 
             if (SpawnCount == 0 && State.AliveTimeRemaining <= 0.0f)
             {
-                return;
+                continue;
             }
 
             // Zero the spawn counter only when we are actually going to
             // dispatch. Idle systems no longer pay for it.
             CmdList.FillBuffer(State.SpawnCounterBuffer, 0u);
 
-            const FMatrix4 WorldMat = Transform.GetWorldMatrix();
-            const FVector3 EmitterWorld = FVector3(WorldMat * FVector4(Component.EmitterOffset, 1.0f));
+            const FMatrix4 WorldMat = Item.WorldMatrix;
+            const FVector3 EmitterWorld = FVector3(WorldMat * FVector4(Item.EmitterOffset, 1.0f));
             const FVector3 EmitterRight   = Math::Normalize(FVector3(WorldMat[0]));
             const FVector3 EmitterUp      = Math::Normalize(FVector3(WorldMat[1]));
             const FVector3 EmitterForward = Math::Normalize(FVector3(WorldMat[2]));
@@ -4812,7 +4930,7 @@ namespace Lumina
 
             const float InheritFactor = Math::Clamp(Resolved.InheritEmitterVelocity, 0.0f, 1.0f);
 
-            State.FrameSeed = (State.FrameSeed + 2654435761u) ^ (uint32)Entity;
+            State.FrameSeed = (State.FrameSeed + 2654435761u) ^ (uint32)Item.Entity;
 
             uint32 SimFlags = 0u;
             if (Resolved.bLooping)
@@ -4849,9 +4967,9 @@ namespace Lumina
             CmdList.WriteBuffer(State.SimParamsBuffer, &SimParams, sizeof(SimParams));
 
             FRHIComputeShaderRef ComputeShader;
-            if (PS->UsesCustomShader())
+            if (Item.bUsesCustomShader)
             {
-                ComputeShader = PS->GetCustomComputeShader();
+                ComputeShader = Item.CustomComputeShader;
             }
             else
             {
@@ -4860,7 +4978,7 @@ namespace Lumina
 
             if (!ComputeShader)
             {
-                return;
+                continue;
             }
 
             FBindingLayoutDesc LayoutDesc;
@@ -4889,7 +5007,7 @@ namespace Lumina
             CmdList.SetComputeState(ComputeState);
             CmdList.Dispatch((MaxParticles + 63u) / 64u, 1, 1);
             ++DispatchCount;
-        });
+        }
 
         return DispatchCount;
     }
@@ -4990,40 +5108,29 @@ namespace Lumina
             .AddItem(FBindingLayoutItem::Buffer_CBV(1));
         FRHIBindingLayout* ParticleLayout = BindingCache.GetOrCreateBindingLayout(ParticleLayoutDesc);
 
-        FEntityRegistry& Registry = World->GetEntityRegistry();
-        auto ParticleView = Registry.view<SParticleSystemComponent, STransformComponent>(entt::exclude<SDisabledTag>);
-
-        ParticleView.each([&](SParticleSystemComponent& Component, const STransformComponent&)
+        for (const FFrameData::FParticleExtract& Item : Frame.ParticleExtracts)
         {
-            CParticleSystem* PS = Component.ParticleSystem.Get();
-            if (!PS || !PS->IsReadyForSimulation())
+            if (!Item.bReady)
             {
-                return;
+                continue;
             }
 
-            FParticleGPUState& State = Component.GPUState;
+            // GPUState is render-owned; the snapshot supplies everything else.
+            auto ParticleStateIt = ParticleGPUStates.find(Item.Entity);
+            if (ParticleStateIt == ParticleGPUStates.end())
+            {
+                continue;
+            }
+            FParticleGPUState& State = ParticleStateIt->second;
             if (!State.ParticleBuffer || !State.RenderParamsBuffer)
             {
-                return;
+                continue;
             }
 
-            const FResolvedParticleParams Resolved = ResolveParticleParams(*PS, Component);
-
-            uint32 TextureIndex = 0u;
-            if (CTexture* Tex = PS->Texture.Get())
-            {
-                if (FRHIImage* Image = Tex->GetRHIRef())
-                {
-                    const int32 CacheIdx = Image->GetResourceID();
-                    if (CacheIdx > 0)
-                    {
-                        TextureIndex = (uint32)CacheIdx;
-                    }
-                }
-            }
+            const FResolvedParticleParams& Resolved = Item.Resolved;
 
             FParticleRenderParamsGPU RenderParams{};
-            RenderParams.Flags      = FUIntVector4(TextureIndex, Resolved.bBillboardToCamera ? 1u : 0u, 0u, 0u);
+            RenderParams.Flags      = FUIntVector4(Item.TextureIndex, Resolved.bBillboardToCamera ? 1u : 0u, 0u, 0u);
             RenderParams.Tint       = FVector4(1.0f, 1.0f, 1.0f, 1.0f);
             RenderParams.UVParams   = FVector4(0.0f);
             CmdList.WriteBuffer(State.RenderParamsBuffer, &RenderParams, sizeof(RenderParams));
@@ -5075,7 +5182,7 @@ namespace Lumina
 
             CmdList.SetGraphicsState(GraphicsState);
             CmdList.Draw(6u * State.AllocatedMax, 1u, 0u, 0u);
-        });
+        }
     }
 
     namespace
@@ -5142,21 +5249,179 @@ namespace Lumina
                                          NewWeights.data() + size_t(L) * NeededHeights, NewRes);
                         }
                         Terrain.LayerWeights = std::move(NewWeights);
-                        Terrain.GPUState.bFullWeightsDirty = true;
+                        Terrain.CPUState.bFullWeightsDirty = true;
                     }
                 }
                 else
                 {
                     Terrain.Heightmap.assign(NeededHeights, 0.0f);
                 }
-                Terrain.GPUState.bFullHeightmapDirty = true;
+                Terrain.CPUState.bFullHeightmapDirty = true;
             }
             const size_t NeededWeights = size_t(Terrain.Layers.size()) * NeededHeights;
             if (Terrain.LayerWeights.size() != NeededWeights)
             {
                 Terrain.LayerWeights.resize(NeededWeights, 0u);
-                Terrain.GPUState.bFullWeightsDirty = true;
+                Terrain.CPUState.bFullWeightsDirty = true;
             }
+        }
+
+        // Game-thread terrain prep: run during Extract while we hold exclusive ECS
+        // access. Sizes the CPU buffers, rebuilds chunk/meshlet metadata for dirty
+        // regions, and copies just the bytes the render thread needs into the
+        // per-frame extract. The render thread then uploads from that private copy
+        // and never touches the live component's CPU data, so a concurrent sculpt
+        // or resolution edit can't reallocate a vector out from under it.
+        static void PrepareTerrainExtract(STerrainComponent& Terrain, const FMatrix4& WorldMatrix,
+                                          FForwardRenderScene::FFrameData::FTerrainExtract& Out)
+        {
+            EnsureTerrainCpuBuffers(Terrain);
+
+            FTerrainCPUState& CPU = Terrain.CPUState;
+
+            const int32  Res        = Terrain.Resolution;
+            const int32  LayerCount = (int32)std::max<size_t>(Terrain.Layers.size(), 1u);
+            const size_t SlicePixels = size_t(Res) * size_t(Res);
+
+            // Snapshot the scalar params (render passes read these, not the component).
+            Out.Resolution      = Res;
+            Out.ChunkResolution = Terrain.ChunkResolution;
+            Out.TileWorldSize   = Terrain.TileWorldSize;
+            Out.MaxHeight       = Terrain.MaxHeight;
+            Out.LayerCount      = (int32)Terrain.Layers.size();
+            Out.Material        = Terrain.Material.Get();
+            Out.bCastShadow     = Terrain.bCastShadow;
+            Out.bReceiveShadow  = Terrain.bReceiveShadow;
+
+            Out.HeightUpload      = 0;
+            Out.WeightUpload      = 0;
+            Out.WeightSliceMask   = 0u;
+            Out.bGeometryRebuilt  = false;
+            Out.bStructuralChange = false;
+            Out.HeightBytes.clear();
+            Out.WeightBytes.clear();
+            Out.Chunks.clear();
+            Out.Meshlets.clear();
+
+            if (Res < 2 || Terrain.ChunkResolution < 2)
+            {
+                return;
+            }
+
+            // A dimension change vs what we last prepared forces a full re-seed and a
+            // GPU texture realloc on the render side.
+            const bool bStructural = CPU.PreparedResolution      != Res
+                                  || CPU.PreparedChunkResolution != Terrain.ChunkResolution
+                                  || CPU.PreparedLayerCount      != Out.LayerCount;
+            Out.bStructuralChange = bStructural;
+
+            // ---- Height upload ----
+            const bool bFullHeight = CPU.bFullHeightmapDirty || bStructural;
+            const bool bRectHeight = !bFullHeight && (CPU.HeightDirtyMax.x >= CPU.HeightDirtyMin.x);
+
+            FIntVector2 RectMin = FIntVector2(0);
+            FIntVector2 RectMax = FIntVector2(Res - 1);
+            if (bFullHeight && Terrain.Heightmap.size() == SlicePixels)
+            {
+                Out.HeightUpload = 1;
+                Out.HeightRectMin = FIntVector2(0);
+                Out.HeightRectMax = FIntVector2(Res - 1);
+                Out.HeightBytes.assign(Terrain.Heightmap.begin(), Terrain.Heightmap.end());
+            }
+            else if (bRectHeight && Terrain.Heightmap.size() == SlicePixels)
+            {
+                RectMin = Math::Clamp(CPU.HeightDirtyMin, FIntVector2(0), FIntVector2(Res - 1));
+                RectMax = Math::Clamp(CPU.HeightDirtyMax, FIntVector2(0), FIntVector2(Res - 1));
+                const int32 RegionW = RectMax.x - RectMin.x + 1;
+                const int32 RegionH = RectMax.y - RectMin.y + 1;
+                Out.HeightUpload  = 2;
+                Out.HeightRectMin = RectMin;
+                Out.HeightRectMax = RectMax;
+                Out.HeightBytes.resize(size_t(RegionW) * size_t(RegionH));
+                for (int32 Row = 0; Row < RegionH; ++Row)
+                {
+                    const float* Src = Terrain.Heightmap.data() + size_t(RectMin.y + Row) * Res + RectMin.x;
+                    std::memcpy(Out.HeightBytes.data() + size_t(Row) * RegionW, Src, size_t(RegionW) * sizeof(float));
+                }
+            }
+
+            // ---- Weight upload (whole slices, matching the GPU upload granularity) ----
+            const bool bFullWeights = CPU.bFullWeightsDirty || bStructural;
+            if (!Terrain.LayerWeights.empty())
+            {
+                if (bFullWeights)
+                {
+                    uint32 Mask = 0u;
+                    for (int32 L = 0; L < LayerCount && (size_t(L + 1) * SlicePixels) <= Terrain.LayerWeights.size(); ++L)
+                    {
+                        Mask |= (1u << L);
+                    }
+                    if (Mask != 0u)
+                    {
+                        Out.WeightUpload    = 1;
+                        Out.WeightSliceMask = Mask;
+                        // Pack only the present slices back-to-back, in ascending slice order.
+                        for (int32 L = 0; L < LayerCount; ++L)
+                        {
+                            if ((Mask & (1u << L)) == 0u) continue;
+                            const uint8* Slice = Terrain.LayerWeights.data() + size_t(L) * SlicePixels;
+                            Out.WeightBytes.insert(Out.WeightBytes.end(), Slice, Slice + SlicePixels);
+                        }
+                    }
+                }
+                else if (CPU.WeightDirtyLayerMask != 0u)
+                {
+                    uint32 Mask = 0u;
+                    for (int32 L = 0; L < LayerCount; ++L)
+                    {
+                        if ((CPU.WeightDirtyLayerMask & (1u << L)) == 0u) continue;
+                        if ((size_t(L + 1) * SlicePixels) > Terrain.LayerWeights.size()) continue;
+                        Mask |= (1u << L);
+                        const uint8* Slice = Terrain.LayerWeights.data() + size_t(L) * SlicePixels;
+                        Out.WeightBytes.insert(Out.WeightBytes.end(), Slice, Slice + SlicePixels);
+                    }
+                    if (Mask != 0u)
+                    {
+                        Out.WeightUpload    = 2;
+                        Out.WeightSliceMask = Mask;
+                    }
+                }
+            }
+
+            // ---- Chunk / meshlet metadata ----
+            if (CPU.bChunksDirty || bStructural)
+            {
+                const FVector3 WorldOrigin = FVector3(WorldMatrix[3]);
+                const bool bFullRebuild = bStructural || !bRectHeight || CPU.Chunks.empty();
+                if (bFullRebuild)
+                {
+                    TerrainMeshletBuilder::Build(Terrain, WorldOrigin);
+                }
+                else
+                {
+                    TerrainMeshletBuilder::UpdateRegion(Terrain, WorldOrigin, RectMin, RectMax);
+                }
+
+                if (!CPU.Chunks.empty() && !CPU.Meshlets.empty())
+                {
+                    Out.bGeometryRebuilt = true;
+                    Out.Chunks.assign(CPU.Chunks.begin(), CPU.Chunks.end());
+                    Out.Meshlets.assign(CPU.Meshlets.begin(), CPU.Meshlets.end());
+                }
+            }
+
+            // Consume the dirty state now that it's captured for this frame.
+            CPU.bFullHeightmapDirty = false;
+            CPU.bFullWeightsDirty   = false;
+            CPU.bChunksDirty        = false;
+            CPU.HeightDirtyMin      = FIntVector2(INT32_MAX);
+            CPU.HeightDirtyMax      = FIntVector2(INT32_MIN);
+            CPU.WeightDirtyMin      = FIntVector2(INT32_MAX);
+            CPU.WeightDirtyMax      = FIntVector2(INT32_MIN);
+            CPU.WeightDirtyLayerMask = 0u;
+            CPU.PreparedResolution      = Res;
+            CPU.PreparedChunkResolution = Terrain.ChunkResolution;
+            CPU.PreparedLayerCount      = Out.LayerCount;
         }
 
         static FRHIImageRef CreateTerrainImage(const FString& DebugName, uint32 Size, uint16 ArraySize, EFormat Format, bool bUav, bool bArrayView = false)
@@ -5188,23 +5453,59 @@ namespace Lumina
 
         const FFrameData& Frame = *RenderFrame;
 
+        // Reclaim GPU state for terrains that no longer exist (destroyed entities). Disabled
+        // terrains stay in LiveTerrainEntities, so their resources survive. KeepAlive each
+        // resource on this frame's command list before dropping the ref, so in-flight GPU
+        // work from prior frames finishes before the underlying resource is released.
+        if (!TerrainGPUStates.empty())
+        {
+            const TVector<entt::entity>& Live = Frame.LiveTerrainEntities;
+            auto IsLive = [&](entt::entity E)
+            {
+                return std::find(Live.begin(), Live.end(), E) != Live.end();
+            };
+
+            for (auto It = TerrainGPUStates.begin(); It != TerrainGPUStates.end();)
+            {
+                if (!IsLive(It->first))
+                {
+                    FTerrainGPUState& Dead = It->second;
+                    auto Keep = [&](const auto& Ref) { if (Ref) CmdList.KeepAlive(Ref.GetReference()); };
+                    Keep(Dead.HeightmapTexture);
+                    Keep(Dead.NormalTexture);
+                    Keep(Dead.LayerWeightTexture);
+                    Keep(Dead.ChunkInfoBuffer);
+                    Keep(Dead.MeshletInfoBuffer);
+                    Keep(Dead.VisibleMeshletBuffer);
+                    Keep(Dead.IndirectDrawBuffer);
+                    It = TerrainGPUStates.erase(It);
+                }
+                else
+                {
+                    ++It;
+                }
+            }
+        }
+
         for (const FFrameData::FTerrainExtract& TerrainItem : Frame.TerrainExtracts)
         {
-            const entt::entity Entity  = TerrainItem.Entity;
-            STerrainComponent& Terrain = *TerrainItem.Component;
-            if (Terrain.Resolution < 2 || Terrain.ChunkResolution < 2)
+            const entt::entity Entity = TerrainItem.Entity;
+            if (TerrainItem.Resolution < 2 || TerrainItem.ChunkResolution < 2)
             {
                 continue;
             }
 
-            EnsureTerrainCpuBuffers(Terrain);
+            // GPUState is render-thread-owned (this map); the CPU payload comes entirely
+            // from the game-thread snapshot in TerrainItem, never from the live component.
+            FTerrainGPUState& State = TerrainGPUStates[TerrainItem.Entity];
+            const uint32 Res        = (uint32)TerrainItem.Resolution;
+            const uint32 LayerCount = (uint32)std::max(TerrainItem.LayerCount, 1);
+            const size_t SlicePixels = size_t(Res) * size_t(Res);
 
-            FTerrainGPUState& State = Terrain.GPUState;
-            const uint32 Res        = (uint32)Terrain.Resolution;
-            const uint32 LayerCount = (uint32)std::max<size_t>(Terrain.Layers.size(), 1u);
-
-            // (Re)allocate GPU textures if the CPU dimensions drifted.
-            if (Terrain.NeedsReallocation())
+            // (Re)allocate GPU textures when the GPU dimensions no longer match what the
+            // game thread prepared. A structural change always ships Full payloads below.
+            const bool bRealloc = State.AllocatedResolution != Res || State.AllocatedLayerCount != LayerCount;
+            if (bRealloc)
             {
                 const FString Name = FString("Terrain_") + std::to_string((uint32)Entity).c_str();
                 State.HeightmapTexture   = CreateTerrainImage(Name + "_Height",  Res, 1u,          EFormat::R32_FLOAT, false);
@@ -5212,29 +5513,12 @@ namespace Lumina
                 State.LayerWeightTexture = CreateTerrainImage(Name + "_Weights", Res, (uint16)std::max(LayerCount, 1u), EFormat::R8_UNORM, false, true);
                 State.AllocatedResolution = Res;
                 State.AllocatedLayerCount = LayerCount;
-                State.bFullHeightmapDirty = true;
-                State.bFullWeightsDirty   = true;
-                // New texture geometry implies fresh chunk bounds; force a rebuild
-                // so the chunk/meshlet metadata uses the right Resolution/ChunkRes.
-                State.bChunksDirty        = true;
 
-                // Vulkan doesn't zero new image memory; upload every slice from the CPU
-                // buffer so no slice reads undefined data, and clear dirty flags.
-                if (!Terrain.LayerWeights.empty())
+                // Vulkan doesn't zero new image memory. If there's no weight payload this
+                // frame, clear every slice so a sampler can't read garbage; otherwise the
+                // weight upload below seeds them.
+                if (TerrainItem.WeightUpload == 0)
                 {
-                    const size_t SlicePixels = size_t(Res) * size_t(Res);
-                    for (uint32 L = 0; L < LayerCount && (size_t(L + 1) * SlicePixels) <= Terrain.LayerWeights.size(); ++L)
-                    {
-                        const uint8* Slice = Terrain.LayerWeights.data() + L * SlicePixels;
-                        CmdList.WriteImage(State.LayerWeightTexture, L, 0u, Slice, Res, 0u);
-                    }
-                    State.bFullWeightsDirty    = false;
-                    State.WeightDirtyLayerMask = 0u;
-                }
-                else
-                {
-                    // No CPU data yet: zero every slice so a sampler can't
-                    // read garbage; next paint/sculpt tick populates.
                     CmdList.ClearImageFloat(
                         State.LayerWeightTexture,
                         FTextureSubresourceSet(0u, 1u, 0u, (uint16)std::max(LayerCount, 1u)),
@@ -5242,65 +5526,46 @@ namespace Lumina
                 }
             }
 
-            // Capture the dirty region up front so the height upload, normal recompute,
-            // and meshlet rebuild can all touch just the edited rect instead of the whole
-            // map. A full upload re-pushes everything; a partial one uploads only the rect.
-            const int32 ResI          = (int32)Res;
-            const bool  bFullHeight   = State.bFullHeightmapDirty;
-            const bool  bPartialHeight = !bFullHeight && (State.HeightDirtyMax.x >= State.HeightDirtyMin.x);
-            const bool  bHeightDirty  = bFullHeight || bPartialHeight;
-
+            // ---- Height upload (from the snapshot) ----
+            const int32 ResI = (int32)Res;
+            const bool  bHeightDirty = TerrainItem.HeightUpload != 0;
             FIntVector2 RectMin = FIntVector2(0);
             FIntVector2 RectMax = FIntVector2(ResI - 1);
-            if (bPartialHeight)
-            {
-                RectMin = Math::Clamp(State.HeightDirtyMin, FIntVector2(0), FIntVector2(ResI - 1));
-                RectMax = Math::Clamp(State.HeightDirtyMax, FIntVector2(0), FIntVector2(ResI - 1));
-            }
 
-            if (bFullHeight)
+            if (TerrainItem.HeightUpload == 1 && TerrainItem.HeightBytes.size() == SlicePixels)
             {
-                CmdList.WriteImage(State.HeightmapTexture, 0u, 0u, Terrain.Heightmap.data(), Res * (uint32)sizeof(float), 0u);
+                CmdList.WriteImage(State.HeightmapTexture, 0u, 0u, TerrainItem.HeightBytes.data(), Res * (uint32)sizeof(float), 0u);
             }
-            else if (bPartialHeight)
+            else if (TerrainItem.HeightUpload == 2)
             {
+                RectMin = TerrainItem.HeightRectMin;
+                RectMax = TerrainItem.HeightRectMax;
                 const uint32 RegionW = uint32(RectMax.x - RectMin.x + 1);
                 const uint32 RegionH = uint32(RectMax.y - RectMin.y + 1);
-                const float* Src     = Terrain.Heightmap.data() + size_t(RectMin.y) * Res + size_t(RectMin.x);
+                // Snapshot rect is tightly packed, so the source row pitch is RegionW, not Res.
                 CmdList.WriteImageRegion(State.HeightmapTexture, 0u, 0u,
                                          (uint32)RectMin.x, (uint32)RectMin.y, RegionW, RegionH,
-                                         Src, Res * (uint32)sizeof(float));
+                                         TerrainItem.HeightBytes.data(), RegionW * (uint32)sizeof(float));
             }
-            State.bFullHeightmapDirty = false;
 
-            if (State.bFullWeightsDirty && !Terrain.LayerWeights.empty())
+            // ---- Weight upload (whole slices, packed in ascending order in the snapshot) ----
+            if (TerrainItem.WeightUpload != 0 && !TerrainItem.WeightBytes.empty())
             {
-                const size_t SlicePixels = size_t(Res) * size_t(Res);
-                for (uint32 L = 0; L < LayerCount && (size_t(L + 1) * SlicePixels) <= Terrain.LayerWeights.size(); ++L)
-                {
-                    const uint8* Slice = Terrain.LayerWeights.data() + L * SlicePixels;
-                    CmdList.WriteImage(State.LayerWeightTexture, L, 0u, Slice, Res, 0u);
-                }
-                State.bFullWeightsDirty   = false;
-                State.WeightDirtyLayerMask = 0u;
-            }
-            else if (State.WeightDirtyLayerMask != 0u && !Terrain.LayerWeights.empty())
-            {
-                const size_t SlicePixels = size_t(Res) * size_t(Res);
+                const uint8* Cursor = TerrainItem.WeightBytes.data();
+                const uint8* End    = Cursor + TerrainItem.WeightBytes.size();
                 for (uint32 L = 0; L < LayerCount; ++L)
                 {
-                    if ((State.WeightDirtyLayerMask & (1u << L)) == 0u)
+                    if ((TerrainItem.WeightSliceMask & (1u << L)) == 0u)
                     {
                         continue;
                     }
-                    if ((size_t(L + 1) * SlicePixels) > Terrain.LayerWeights.size())
+                    if (Cursor + SlicePixels > End)
                     {
-                        continue;
+                        break;
                     }
-                    const uint8* Slice = Terrain.LayerWeights.data() + L * SlicePixels;
-                    CmdList.WriteImage(State.LayerWeightTexture, L, 0u, Slice, Res, 0u);
+                    CmdList.WriteImage(State.LayerWeightTexture, L, 0u, Cursor, Res, 0u);
+                    Cursor += SlicePixels;
                 }
-                State.WeightDirtyLayerMask = 0u;
             }
 
             if (bHeightDirty && NormalShader)
@@ -5320,8 +5585,8 @@ namespace Lumina
                 NormalParams.RegionMinY    = NMinY;
                 NormalParams.RegionSizeX   = NW;
                 NormalParams.RegionSizeY   = NH;
-                NormalParams.TileWorldSize = Terrain.TileWorldSize;
-                NormalParams.MaxHeight     = Terrain.MaxHeight;
+                NormalParams.TileWorldSize = TerrainItem.TileWorldSize;
+                NormalParams.MaxHeight     = TerrainItem.MaxHeight;
 
                 FTransientAlloc NormalParamsAlloc = CmdList.UploadTransient(NormalParams);
 
@@ -5353,31 +5618,12 @@ namespace Lumina
                 CmdList.Dispatch((uint32(NW) + 7u) / 8u, (uint32(NH) + 7u) / 8u, 1u);
             }
 
-            if (bHeightDirty)
+            // Upload chunk + meshlet metadata the game thread rebuilt this frame; the
+            // cull pass tests these AABBs, so it must land before the next cull.
+            if (TerrainItem.bGeometryRebuilt)
             {
-                State.HeightDirtyMin = FIntVector2(INT32_MAX);
-                State.HeightDirtyMax = FIntVector2(INT32_MIN);
-            }
-
-            // Rebuild chunk + meshlet metadata when heightmap geometry shifted; the cull
-            // pass tests the AABBs computed here, so it must fire before the next cull.
-            // A localized edit only re-bounds the chunks it overlaps; a full/structural
-            // change rebuilds everything.
-            if (State.bChunksDirty)
-            {
-                const FVector3 WorldOrigin = FVector3(TerrainItem.WorldMatrix[3]);
-                const bool bFullRebuild = !bPartialHeight || State.Chunks.empty();
-                if (bFullRebuild)
-                {
-                    TerrainMeshletBuilder::Build(Terrain, WorldOrigin);
-                }
-                else
-                {
-                    TerrainMeshletBuilder::UpdateRegion(Terrain, WorldOrigin, RectMin, RectMax);
-                }
-
-                const uint32 ChunkCount   = (uint32)State.Chunks.size();
-                const uint32 MeshletCount = (uint32)State.Meshlets.size();
+                const uint32 ChunkCount   = (uint32)TerrainItem.Chunks.size();
+                const uint32 MeshletCount = (uint32)TerrainItem.Meshlets.size();
 
                 if (ChunkCount > 0 && MeshletCount > 0)
                 {
@@ -5409,14 +5655,12 @@ namespace Lumina
                     AllocSSBO(State.VisibleMeshletBuffer, uint64(MeshletCount) * sizeof(FTerrainVisibleMeshlet), DebugBase + "_Visible",  false);
                     AllocSSBO(State.IndirectDrawBuffer,   sizeof(FDrawIndirectArguments),                        DebugBase + "_Indirect", true);
 
-                    CmdList.WriteBuffer(State.ChunkInfoBuffer,   State.Chunks.data(),   ChunkCount * sizeof(FTerrainChunkInfo));
-                    CmdList.WriteBuffer(State.MeshletInfoBuffer, State.Meshlets.data(), MeshletCount * sizeof(FTerrainMeshletInfo));
+                    CmdList.WriteBuffer(State.ChunkInfoBuffer,   TerrainItem.Chunks.data(),   ChunkCount * sizeof(FTerrainChunkInfo));
+                    CmdList.WriteBuffer(State.MeshletInfoBuffer, TerrainItem.Meshlets.data(), MeshletCount * sizeof(FTerrainMeshletInfo));
 
                     State.AllocatedChunkCount   = ChunkCount;
                     State.AllocatedMeshletCount = MeshletCount;
                 }
-
-                State.bChunksDirty = false;
             }
         }
     }
@@ -5455,7 +5699,12 @@ namespace Lumina
 
         for (const FFrameData::FTerrainExtract& TerrainItem : Frame.TerrainExtracts)
         {
-            FTerrainGPUState& State = TerrainItem.Component->GPUState;
+            auto TerrainStateIt = TerrainGPUStates.find(TerrainItem.Entity);
+            if (TerrainStateIt == TerrainGPUStates.end())
+            {
+                continue;
+            }
+            FTerrainGPUState& State = TerrainStateIt->second;
             if (!State.ChunkInfoBuffer || !State.MeshletInfoBuffer || !State.VisibleMeshletBuffer || !State.IndirectDrawBuffer)
             {
                 continue;
@@ -5519,13 +5768,17 @@ namespace Lumina
 
         for (const FFrameData::FTerrainExtract& TerrainItem : Frame.TerrainExtracts)
         {
-            STerrainComponent& Terrain = *TerrainItem.Component;
-            if (Terrain.Resolution < 2 || Terrain.ChunkResolution < 2)
+            if (TerrainItem.Resolution < 2 || TerrainItem.ChunkResolution < 2)
             {
                 continue;
             }
 
-            FTerrainGPUState& State = Terrain.GPUState;
+            auto TerrainStateIt = TerrainGPUStates.find(TerrainItem.Entity);
+            if (TerrainStateIt == TerrainGPUStates.end())
+            {
+                continue;
+            }
+            FTerrainGPUState& State = TerrainStateIt->second;
             if (!State.HeightmapTexture || !State.NormalTexture || !State.LayerWeightTexture)
             {
                 continue;
@@ -5539,7 +5792,7 @@ namespace Lumina
                 continue;
             }
 
-            CMaterialInterface* MaterialInterface = Terrain.Material.Get();
+            CMaterialInterface* MaterialInterface = TerrainItem.Material;
             if (MaterialInterface && MaterialInterface->GetMaterialType() != EMaterialType::Terrain)
             {
                 continue;
@@ -5560,24 +5813,24 @@ namespace Lumina
             }
 
             const entt::entity Entity = TerrainItem.Entity;
-            const uint32 Res = (uint32)Terrain.Resolution;
+            const uint32 Res = (uint32)TerrainItem.Resolution;
 
             const FMatrix4 WorldMat    = TerrainItem.WorldMatrix;
             const FVector3 WorldOrigin = FVector3(WorldMat[3]);
-            const float HalfSize        = Terrain.TileWorldSize * 0.5f;
+            const float HalfSize        = TerrainItem.TileWorldSize * 0.5f;
 
-            const int32 QuadsPerChunk        = std::max(1, Terrain.ChunkResolution - 1);
+            const int32 QuadsPerChunk        = std::max(1, TerrainItem.ChunkResolution - 1);
             const int32 ChunksPerSide        = std::max(1, ((int32)Res - 1) / QuadsPerChunk);
             const int32 MeshletsPerChunkSide = (QuadsPerChunk + GTerrainMeshletQuads - 1) / GTerrainMeshletQuads;
 
             FTerrainRenderParams RenderParams{};
             RenderParams.OriginXZ             = FVector2(WorldOrigin.x - HalfSize, WorldOrigin.z - HalfSize);
-            RenderParams.TileWorldSize        = Terrain.TileWorldSize;
-            RenderParams.MaxHeight            = Terrain.MaxHeight;
+            RenderParams.TileWorldSize        = TerrainItem.TileWorldSize;
+            RenderParams.MaxHeight            = TerrainItem.MaxHeight;
             RenderParams.Resolution           = (int32)Res;
-            RenderParams.ChunkResolution      = Terrain.ChunkResolution;
+            RenderParams.ChunkResolution      = TerrainItem.ChunkResolution;
             RenderParams.ChunksPerSide        = ChunksPerSide;
-            RenderParams.LayerCount           = (int32)Terrain.Layers.size();
+            RenderParams.LayerCount           = TerrainItem.LayerCount;
             RenderParams.WorldOriginY         = FVector3(WorldOrigin.y, 0.0f, 0.0f);
             RenderParams.EntityID             = (uint32)Entity;
             RenderParams.MaterialIndex        = (uint32)std::max(MaterialInterface->GetMaterialIndex(), 0);
@@ -5676,13 +5929,17 @@ namespace Lumina
         for (const FFrameData::FTerrainExtract& TerrainItem : Frame.TerrainExtracts)
         {
             const entt::entity Entity  = TerrainItem.Entity;
-            STerrainComponent& Terrain = *TerrainItem.Component;
-            if (Terrain.Resolution < 2 || Terrain.ChunkResolution < 2)
+            if (TerrainItem.Resolution < 2 || TerrainItem.ChunkResolution < 2)
             {
                 continue;
             }
 
-            FTerrainGPUState& State = Terrain.GPUState;
+            auto TerrainStateIt = TerrainGPUStates.find(TerrainItem.Entity);
+            if (TerrainStateIt == TerrainGPUStates.end())
+            {
+                continue;
+            }
+            FTerrainGPUState& State = TerrainStateIt->second;
             if (!State.HeightmapTexture || !State.NormalTexture || !State.LayerWeightTexture)
             {
                 continue;
@@ -5701,7 +5958,7 @@ namespace Lumina
 
             // Terrain pipeline binds set 2 to heightmap/weight/meshlet resources, valid only
             // against a TERRAIN shader; a non-terrain material would bind wrong slots, so skip.
-            CMaterialInterface* MaterialInterface = Terrain.Material.Get();
+            CMaterialInterface* MaterialInterface = TerrainItem.Material;
             if (MaterialInterface && MaterialInterface->GetMaterialType() != EMaterialType::Terrain)
             {
                 continue;
@@ -5722,24 +5979,24 @@ namespace Lumina
                 continue;
             }
 
-            const uint32 Res = (uint32)Terrain.Resolution;
+            const uint32 Res = (uint32)TerrainItem.Resolution;
 
             const FMatrix4 WorldMat = TerrainItem.WorldMatrix;
             const FVector3 WorldOrigin = FVector3(WorldMat[3]);
-            const float HalfSize = Terrain.TileWorldSize * 0.5f;
+            const float HalfSize = TerrainItem.TileWorldSize * 0.5f;
 
-            const int32 QuadsPerChunk        = std::max(1, Terrain.ChunkResolution - 1);
+            const int32 QuadsPerChunk        = std::max(1, TerrainItem.ChunkResolution - 1);
             const int32 ChunksPerSide        = std::max(1, ((int32)Res - 1) / QuadsPerChunk);
             const int32 MeshletsPerChunkSide = (QuadsPerChunk + GTerrainMeshletQuads - 1) / GTerrainMeshletQuads;
 
             FTerrainRenderParams RenderParams{};
             RenderParams.OriginXZ             = FVector2(WorldOrigin.x - HalfSize, WorldOrigin.z - HalfSize);
-            RenderParams.TileWorldSize        = Terrain.TileWorldSize;
-            RenderParams.MaxHeight            = Terrain.MaxHeight;
+            RenderParams.TileWorldSize        = TerrainItem.TileWorldSize;
+            RenderParams.MaxHeight            = TerrainItem.MaxHeight;
             RenderParams.Resolution           = (int32)Res;
-            RenderParams.ChunkResolution      = Terrain.ChunkResolution;
+            RenderParams.ChunkResolution      = TerrainItem.ChunkResolution;
             RenderParams.ChunksPerSide        = ChunksPerSide;
-            RenderParams.LayerCount           = (int32)Terrain.Layers.size();
+            RenderParams.LayerCount           = TerrainItem.LayerCount;
             RenderParams.WorldOriginY         = FVector3(WorldOrigin.y, 0.0f, 0.0f);
             RenderParams.EntityID             = (uint32)Entity;
             RenderParams.MaterialIndex        = (uint32)std::max(MaterialInterface->GetMaterialIndex(), 0);

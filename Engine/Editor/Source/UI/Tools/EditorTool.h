@@ -159,6 +159,10 @@ namespace Lumina
         /** Optionally draw a toolbar at the top of the window */
         void DrawMainToolbar(const FUpdateContext& UpdateContext);
 
+        /** Draws the tool's registered tool-window content inline (no dockspace wrapper),
+         *  for use inside the editor's footer drawers. */
+        void DrawDrawerContent(bool bFocused);
+
         /** Drives the editor-entity camera; called from FEditorTool::Update. */
         void TickEditorCamera(double DeltaTime);
 

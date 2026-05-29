@@ -351,6 +351,14 @@ namespace Lumina
         bool                                    bGamePreviewRunning = false;
         bool                                    bSimulatingWorld = false;
 
+        // True while the Scene Graph outliner is focused/hovered, so selection
+        // shortcuts (Delete/Copy/Duplicate) work there too — not just over the viewport.
+        bool                                    bOutlinerActive = false;
+
+        // Set from the raw event handler (Esc during play) and consumed in Update,
+        // since stopping tears down the PIE world and shouldn't run mid-dispatch.
+        bool                                    bStopPlayRequested = false;
+
         // Who owns the mouse/keyboard while playing.
         enum class EInputFocus                  : uint8 { Editor, Game };
         EInputFocus                             InputFocus = EInputFocus::Editor;

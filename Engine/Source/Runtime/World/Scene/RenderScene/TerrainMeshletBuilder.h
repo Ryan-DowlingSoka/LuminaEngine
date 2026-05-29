@@ -13,15 +13,16 @@ namespace Lumina
      * world-space AABBs derived from the heightmap sample range across the
      * patch they cover.
      *
-     * Called by the renderer when STerrainComponent::GPUState.bChunksDirty is
-     * set: full rebuild of the metadata, GPU upload, and a freshly-sized
-     * indirect-args / visible-meshlet buffer follow.
+     * Called on the game thread (Extract) when STerrainComponent::CPUState.bChunksDirty
+     * is set: rebuild of the CPU metadata, which Extract then snapshots for the
+     * render thread to upload alongside a freshly-sized indirect-args /
+     * visible-meshlet buffer.
      */
     namespace TerrainMeshletBuilder
     {
         /**
-         * Walks the heightmap, populates Terrain.GPUState.Chunks and
-         * Terrain.GPUState.Meshlets from scratch. Bounds are computed in
+         * Walks the heightmap, populates Terrain.CPUState.Chunks and
+         * Terrain.CPUState.Meshlets from scratch. Bounds are computed in
          * world space using the same OriginXZ / TileWorldSize / MaxHeight
          * conventions the vertex shader uses, and are inflated by half a
          * grid step on each axis so meshlet rasterization sliver-coverage

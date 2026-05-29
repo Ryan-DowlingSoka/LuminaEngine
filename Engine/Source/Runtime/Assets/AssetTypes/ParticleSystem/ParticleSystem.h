@@ -266,6 +266,33 @@ namespace Lumina
         FRHIComputeShaderRef ComputeShader;
     };
 
+    /**
+     * Render-thread-owned GPU + simulation state for one emitter instance. Lives in the
+     * render scene's per-entity map (FForwardRenderScene::ParticleGPUStates), NOT on the
+     * component, so the render thread never dereferences a component the game thread may
+     * have destroyed. Only ever touched by the render thread (the persistent sim fields --
+     * age, accumulators, seed -- advance once per frame in ParticleSimulatePass).
+     */
+    struct FParticleGPUState
+    {
+        FRHIBufferRef   ParticleBuffer;      // RW structured buffer of FGPUParticle (64B stride)
+        FRHIBufferRef   SimParamsBuffer;     // Constant buffer, 288 bytes
+        FRHIBufferRef   RenderParamsBuffer;  // Constant buffer, 48 bytes
+        FRHIBufferRef   SpawnCounterBuffer;  // Single uint, cleared per frame
+        uint32          AllocatedMax        = 0;
+        float           SpawnAccumulator    = 0.0f;
+        float           TotalTime           = 0.0f;
+        float           SystemAge           = 0.0f;
+        uint32          FrameSeed           = 0u;
+        bool            bBurstPending       = true;
+        FVector3        PrevEmitterPosition = FVector3(0.0f);
+        bool            bHasPrevPosition    = false;
+        // CPU-side estimate of remaining simulated time before all particles are guaranteed
+        // dead. Bumped to MaxLifetime on every frame that spawns; decremented otherwise.
+        // When it hits 0 with no spawn this frame, the simulate dispatch is skipped.
+        float           AliveTimeRemaining  = 0.0f;
+    };
+
     /** Per-frame, per-emitter snapshot of simulation properties after binding resolution. */
     struct RUNTIME_API FResolvedParticleParams
     {

@@ -32,8 +32,16 @@ namespace Lumina
 
         float Min = MinOpt ? MinOpt.value() : 0.0f;
         float Max = MaxOpt ? MaxOpt.value() : 0.0f;
-        
-        ImGui::DragFloat2("##", Math::ValuePtr(DisplayValue), 0.01f, Min, Max);
+
+        float Speed = Prop->HasMetadata("Delta") ? std::stof(Prop->GetMetadata("Delta").c_str()) : 0.01f;
+        if (Prop->HasMetadata("NoDrag"))
+        {
+            ImGui::InputScalarN("##", ImGuiDataType_Float, Math::ValuePtr(DisplayValue), 2, &Speed, nullptr, nullptr);
+        }
+        else
+        {
+            ImGui::DragFloat2("##", Math::ValuePtr(DisplayValue), Speed, Min, Max);
+        }
 
         ImGui::PopItemWidth();
 
@@ -97,9 +105,16 @@ namespace Lumina
 
             float Min = MinOpt ? MinOpt.value() : 0.0f;
             float Max = MaxOpt ? MaxOpt.value() : 0.0f;
-        
-            
-            ImGui::DragFloat3("##", Math::ValuePtr(DisplayValue), 0.01f, Min, Max);
+
+            float Speed = Prop->HasMetadata("Delta") ? std::stof(Prop->GetMetadata("Delta").c_str()) : 0.01f;
+            if (Prop->HasMetadata("NoDrag"))
+            {
+                ImGui::InputScalarN("##", ImGuiDataType_Float, Math::ValuePtr(DisplayValue), 3, &Speed, nullptr, nullptr);
+            }
+            else
+            {
+                ImGui::DragFloat3("##", Math::ValuePtr(DisplayValue), Speed, Min, Max);
+            }
         }
         
         ImGui::PopItemWidth();
@@ -164,8 +179,16 @@ namespace Lumina
 
             float Min = MinOpt ? MinOpt.value() : 0.0f;
             float Max = MaxOpt ? MaxOpt.value() : 0.0f;
-                    
-            ImGui::DragFloat4("##", Math::ValuePtr(DisplayValue), 0.01f, Min, Max);
+
+            float Speed = Prop->HasMetadata("Delta") ? std::stof(Prop->GetMetadata("Delta").c_str()) : 0.01f;
+            if (Prop->HasMetadata("NoDrag"))
+            {
+                ImGui::InputScalarN("##", ImGuiDataType_Float, Math::ValuePtr(DisplayValue), 4, &Speed, nullptr, nullptr);
+            }
+            else
+            {
+                ImGui::DragFloat4("##", Math::ValuePtr(DisplayValue), Speed, Min, Max);
+            }
         }
 
         ImGui::PopItemWidth();

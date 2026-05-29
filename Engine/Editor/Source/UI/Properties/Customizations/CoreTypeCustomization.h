@@ -46,7 +46,18 @@ namespace Lumina
             const ValueType* Max = MaxOpt ? &MaxOpt.value() : nullptr;
 
             ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
-            ImGui::DragScalar("##Value", DT, &DisplayValue, Speed, Min, Max);
+            if (Prop->HasMetadata("NoDrag"))
+            {
+                // Type-only entry; +/- buttons step by Delta, no click-drag scrubbing.
+                ValueType Step = static_cast<ValueType>(Speed);
+                ImGui::InputScalar("##Value", DT, &DisplayValue, &Step, nullptr, nullptr);
+                if (Min && DisplayValue < *Min) DisplayValue = *Min;
+                if (Max && DisplayValue > *Max) DisplayValue = *Max;
+            }
+            else
+            {
+                ImGui::DragScalar("##Value", DT, &DisplayValue, Speed, Min, Max);
+            }
             ImGui::PopItemWidth();
 
             EPropertyChangeOp Result = EPropertyChangeOp::None;

@@ -16,9 +16,84 @@
 #include "implot.h"
 #include "Paths/Paths.h"
 #include "Tools/UI/ImGui/ImGuiAllocator.h"
+#include "Config/Config.h"
+#include "Core/Windows/Window.h"
 
 namespace Lumina
 {
+    namespace
+    {
+        // Unscaled reference style captured right after Initialize() configures it.
+        // UI scaling resets to this before re-applying, so repeated scale changes
+        // don't compound (ScaleAllSizes multiplies the values it sees).
+        ImGuiStyle GBaseStyle;
+        bool       GBaseStyleValid = false;
+        float      GAppliedScale   = -1.0f;
+
+        // Auto-derived scale is biased below the raw monitor scale: 1:1 DPI made the
+        // editor feel cramped, so we trade a little crispness for more usable room.
+        constexpr float kAutoScaleBias = 0.85f;
+
+        // The UI is tuned for high-res screens. Below the reference height we scale
+        // down further (the editor gets "chunky" on 1080p otherwise); at/above it we
+        // apply no extra reduction. Lerps MinFactor..1 across 0..ReferenceHeight.
+        float ResolutionFactor(float ScreenHeight)
+        {
+            constexpr float ReferenceHeight = 2160.0f;  // 4K, where the UI looks right
+            constexpr float MinFactor = 0.9f;           // gentle low-res reduction (~0.95 at 1080p)
+            const float T = std::max(0.0f, std::min(1.0f, ScreenHeight / ReferenceHeight));
+            return MinFactor + (1.0f - MinFactor) * T;
+        }
+
+        float ResolveUIScale()
+        {
+            // Editor.UIScale: 0 = auto (monitor DPI + resolution), >0 = explicit factor.
+            // Registered as an editor setting in LuminaEditor.cpp; unset in game builds.
+            const float Override = GConfig ? GConfig->GetFloat("Editor.UIScale") : 0.0f;
+            if (Override > 0.0f)
+            {
+                return Override;
+            }
+
+            float Scale = 1.0f;
+            if (FWindow* Window = Windowing::PrimaryWindow)
+            {
+                Scale = Window->GetContentScale();
+                Scale *= ResolutionFactor(static_cast<float>(Window->GetMonitorResolution().y));
+            }
+            Scale = (Scale > 0.0f ? Scale : 1.0f) * kAutoScaleBias;
+            return std::max(Scale, 0.5f);
+        }
+
+        void ApplyUIScale()
+        {
+            if (!GBaseStyleValid)
+            {
+                return;
+            }
+
+            const float Scale = ResolveUIScale();
+            ImGuiStyle& Style = ImGui::GetStyle();
+            Style = GBaseStyle;             // reset to unscaled reference (keeps colors)
+            Style.ScaleAllSizes(Scale);
+            Style.FontScaleMain = Scale;    // 1.92 dynamic fonts rasterize at the scaled size
+            GAppliedScale = Scale;
+
+            // Publish so custom toolbars can scale their hardcoded pixel dimensions.
+            ImGuiX::SetUIScale(Scale);
+        }
+
+        // Cheap per-frame poll: re-apply only when the resolved scale actually changes
+        // (e.g. the user edits Editor.UIScale in the settings editor).
+        void RefreshUIScaleIfNeeded()
+        {
+            if (GBaseStyleValid && ResolveUIScale() != GAppliedScale)
+            {
+                ApplyUIScale();
+            }
+        }
+    }
+
     void IImGuiRenderer::Initialize()
     {
         IMGUI_CHECKVERSION();
@@ -195,6 +270,11 @@ namespace Lumina
     	Style.TabRounding			= 6.0f;
     	Style.ScrollbarSize			= 16.0f;
     	Style.ScrollbarRounding 	= 0.0f;
+
+    	// Snapshot the fully-configured (unscaled) style, then apply DPI/UI scale.
+    	GBaseStyle = Style;
+    	GBaseStyleValid = true;
+    	ApplyUIScale();
     }
 
     void IImGuiRenderer::Deinitialize()
@@ -205,6 +285,7 @@ namespace Lumina
 
     void IImGuiRenderer::StartFrame(const FUpdateContext& UpdateContext)
     {
+    	RefreshUIScaleIfNeeded();
     	OnStartFrame(UpdateContext);
     }
 
